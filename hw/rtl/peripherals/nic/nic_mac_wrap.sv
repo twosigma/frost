@@ -17,8 +17,9 @@
 /*
  * MAC/PCS clock crossings, packet FIFOs, resets, and raw loopback.
  *
- * RX beats cross as 68-bit FIFO words {code, data}; TX adds the abort bit and 15-bit checksum
- * request for 84 bits (nic_pkg beat code: {last, bytes - 1}). Each domain's reset comes from nic_domain_reset
+ * RX and TX beats cross as 68-bit FIFO words {code, data}. TX checksum requests cross
+ * once per frame in a side FIFO, and a reserved beat code marks an abort.
+ * The ordinary nic_pkg beat code is {last, bytes - 1}. Each domain's reset comes from nic_domain_reset
  * under the core-side controller's generation handshake; the FIFO half in
  * a domain resets with that domain, the core-side half with
  * i_core_rst_dom. The raw loopback (MAC_LOOPBACK: raw TX into raw RX with
@@ -62,8 +63,8 @@ module nic_mac_wrap #(
     output logic [1:0] o_applied_valid,
     input logic [1:0] i_core_rst_dom,
     input logic i_mac_loopback,
-    // Station address (quasi-static) and the 802.3x configuration, which crosses with the FIFO
-    // limit in one mailbox: {interval, low_water, high_water, tx_en, rx_en}.
+    // Station address and pause interval cross to their consumers through mailboxes.
+    // The RX configuration mailbox carries {low_water, high_water, tx_en, rx_en, limit}.
     input logic [47:0] i_station_mac,
     input logic [1:0] i_pause_ctrl,
     input logic [$clog2(RX_FIFO_DEPTH):0] i_pause_high_water,
@@ -139,26 +140,84 @@ module nic_mac_wrap #(
 
   // ---- TX: core beats to the MAC ------------------------------------------------------
   // t_word = {abort[83], checksum request[82:68], code[67:64], data[63:0]}
+  //
+  // The data FIFO carries 68-bit beats {code, data}. The two per-frame fields travel apart:
+  // the checksum request (constant across a frame, used from its first beat) crosses in a
+  // small side FIFO, one entry per frame pushed with the first beat, and an abort is the
+  // closing beat's code TxAbortCode (a non-final beat of one byte, which a frame never
+  // contains), decoded back to {last, one byte} plus the abort flag after the crossing. The
+  // first beat of a frame leaves the data FIFO together with its side entry.
+  localparam logic [3:0] TxAbortCode = 4'b0000;
+  localparam int unsigned TxCsumDepth = 32;
   logic [83:0] t_word, f_word;
   logic t_valid, t_ready, f_valid, f_ready;
+  // The write half of both TX FIFOs clears for either reset source, as the RX FIFO's core
+  // half does, so one term feeds the data and side FIFOs.
+  logic tx_wr_rst;
+  assign tx_wr_rst = i_rst || i_core_rst_dom[0];
+
+  // Write side: the side entry is pushed with the first beat; both FIFOs must have room for it.
+  logic tx_wr_first_q, tx_data_ready, tx_csum_ready, tx_beat_ok, tx_beat_fire;
+  assign tx_beat_ok   = !tx_wr_first_q || tx_csum_ready;
+  assign o_tx_ready   = tx_data_ready && tx_beat_ok;
+  assign tx_beat_fire = i_tx_valid && o_tx_ready;
+  always_ff @(posedge i_clk) begin
+    if (tx_wr_rst) tx_wr_first_q <= 1'b1;
+    else if (tx_beat_fire) tx_wr_first_q <= i_tx_code[3] || i_tx_abort;
+  end
+
+  logic [67:0] f_beat;
+  logic [14:0] f_csum;
+  logic f_beat_valid, f_beat_ready, f_csum_valid, f_csum_pop;
   async_fifo #(
-      .DATA_WIDTH(84),
+      .DATA_WIDTH(68),
       .DEPTH(FIFO_DEPTH)
   ) u_tx_fifo (
       .i_limit('0),
       .o_occupancy(),
       .i_clk(i_clk),
       // A soft reset of this domain clears the FIFO at run time.
-      .i_rst(i_rst || i_core_rst_dom[0]),
-      .i_data({i_tx_abort, i_tx_csum, i_tx_code, i_tx_data}),
-      .i_valid(i_tx_valid),
-      .o_ready(o_tx_ready),
+      .i_rst(tx_wr_rst),
+      .i_data({i_tx_abort ? TxAbortCode : i_tx_code, i_tx_data}),
+      .i_valid(i_tx_valid && tx_beat_ok),
+      .o_ready(tx_data_ready),
       .o_clk(i_tx_clk),
       .o_rst(tx_rst),
-      .o_data(f_word),
-      .o_valid(f_valid),
-      .i_ready(f_ready)
+      .o_data(f_beat),
+      .o_valid(f_beat_valid),
+      .i_ready(f_beat_ready)
   );
+  async_fifo #(
+      .DATA_WIDTH(15),
+      .DEPTH(TxCsumDepth)
+  ) u_tx_csum_fifo (
+      .i_limit('0),
+      .o_occupancy(),
+      .i_clk(i_clk),
+      .i_rst(tx_wr_rst),
+      .i_data(i_tx_csum),
+      .i_valid(i_tx_valid && tx_wr_first_q && tx_data_ready),
+      .o_ready(tx_csum_ready),
+      .o_clk(i_tx_clk),
+      .o_rst(tx_rst),
+      .o_data(f_csum),
+      .o_valid(f_csum_valid),
+      .i_ready(f_csum_pop)
+  );
+
+  // Read side: a frame's first beat waits for its side entry, which pops with that beat.
+  logic tx_rd_first_q, f_abort;
+  logic [3:0] f_code;
+  assign f_abort      = (f_beat[67:64] == TxAbortCode);
+  assign f_code       = f_abort ? 4'b1000 : f_beat[67:64];
+  assign f_valid      = f_beat_valid && (!tx_rd_first_q || f_csum_valid);
+  assign f_beat_ready = f_ready && (!tx_rd_first_q || f_csum_valid);
+  assign f_csum_pop   = f_valid && f_ready && tx_rd_first_q;
+  assign f_word       = {f_abort, f_csum, f_code, f_beat[63:0]};
+  always_ff @(posedge i_tx_clk) begin
+    if (tx_rst) tx_rd_first_q <= 1'b1;
+    else if (f_valid && f_ready) tx_rd_first_q <= f_code[3];
+  end
   logic [7:0] t_keep;
   assign t_keep = 8'hFF >> (3'd7 - t_word[66:64]);
 
@@ -176,11 +235,10 @@ module nic_mac_wrap #(
   localparam logic [LimitBits-1:0] LimitDefault =
       LimitBits'((nic_pkg::RxFifoLimitDefault < RX_FIFO_DEPTH) ?
       nic_pkg::RxFifoLimitDefault : RX_FIFO_DEPTH);
-  // The configuration word: {interval[15:0], low_water, high_water, tx_en, rx_en, limit}.
-  localparam int unsigned CfgBits = 16 + 3 * LimitBits + 2;
-  localparam logic [CfgBits-1:0] CfgDefault = {
-    nic_pkg::PauseIntervalDefault, {2 * LimitBits{1'b0}}, 2'b00, LimitDefault
-  };
+  // The configuration word: {low_water, high_water, tx_en, rx_en, limit}. The pause interval
+  // goes to TX in its own mailbox (below).
+  localparam int unsigned CfgBits = 3 * LimitBits + 2;
+  localparam logic [CfgBits-1:0] CfgDefault = {{2 * LimitBits{1'b0}}, 2'b00, LimitDefault};
   logic [CfgBits-1:0] rx_cfg_msg, rx_cfg_q;
   logic rx_limit_msg_valid, rx_limit_ready;
   /* verilator lint_off UNUSEDSIGNAL */
@@ -189,18 +247,16 @@ module nic_mac_wrap #(
   cdc_mailbox #(
       .WIDTH(CfgBits)
   ) u_rx_limit (
-      .i_src_clk(i_clk),
+      .i_src_clk  (i_clk),
       // Match the RX FIFO's core half: this receiver must clear for either reset source.
-      .i_src_rst(i_rst || i_core_rst_dom[1]),
-      .i_src_data({
-        i_pause_interval, i_pause_low_water, i_pause_high_water, i_pause_ctrl, i_rx_fifo_limit
-      }),
+      .i_src_rst  (i_rst || i_core_rst_dom[1]),
+      .i_src_data ({i_pause_low_water, i_pause_high_water, i_pause_ctrl, i_rx_fifo_limit}),
       .i_src_valid(i_rx_fifo_limit_wr),
       .o_src_ready(rx_limit_ready),
-      .o_src_idle(rx_limit_idle),
-      .i_dst_clk(i_rx_clk),
-      .i_dst_rst(rx_rst),
-      .o_dst_data(rx_cfg_msg),
+      .o_src_idle (rx_limit_idle),
+      .i_dst_clk  (i_rx_clk),
+      .i_dst_rst  (rx_rst),
+      .o_dst_data (rx_cfg_msg),
       .o_dst_valid(rx_limit_msg_valid),
       .i_dst_ready(1'b1)
   );
@@ -210,9 +266,8 @@ module nic_mac_wrap #(
     else if (rx_limit_msg_valid) rx_cfg_q <= rx_cfg_msg;
   end
   logic [LimitBits-1:0] rx_limit_q, cfg_high_water, cfg_low_water;
-  logic [ 1:0] cfg_ctrl;
-  logic [15:0] cfg_interval;
-  assign {cfg_interval, cfg_low_water, cfg_high_water, cfg_ctrl, rx_limit_q} = rx_cfg_q;
+  logic [1:0] cfg_ctrl;
+  assign {cfg_low_water, cfg_high_water, cfg_ctrl, rx_limit_q} = rx_cfg_q;
 
   // Effective thresholds: 0 selects three quarters / one quarter of the limit; high-water stays below
   // the limit (the FIFO stops accepting at limit - 2) and low-water below high-water.
@@ -230,27 +285,74 @@ module nic_mac_wrap #(
     low_water_eff_q  <= low_water_next;
   end
 
-  // Station address into the two MAC domains.
+  // Station address into the two MAC domains, and the configured pause interval into TX. Each
+  // domain has a mailbox from the core: the core side sends the whole value again whenever it
+  // differs from the last value sent (after a reset that is the reset default), so the MAC
+  // domain always sees one complete value, never a mix of old and new bits. A domain restart
+  // resets its mailbox's core side too (i_core_rst_dom), so the value is sent again.
   logic [47:0] mac_rx_s, mac_tx_s;
-  cdc_sync #(
+  logic [15:0] interval_cfg_s;
+  localparam logic [47:0] MacDefault = '0;
+  logic [47:0] mac_rx_sent_q;
+  logic [63:0] txc_sent_q;
+  logic mac_rx_ready, mac_rx_msg_valid, txc_ready, txc_msg_valid;
+  logic [47:0] mac_rx_msg;
+  logic [63:0] txc_msg;
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic mac_rx_idle, txc_idle;
+  /* verilator lint_on UNUSEDSIGNAL */
+  logic mac_rx_send, txc_send;
+  assign mac_rx_send = (i_station_mac != mac_rx_sent_q);
+  assign txc_send = ({i_pause_interval, i_station_mac} != txc_sent_q);
+  cdc_mailbox #(
       .WIDTH(48)
-  ) u_mac_rx_sync (
-      .i_clk  (i_rx_clk),
-      .i_rst  (1'b0),
-      .i_async(i_station_mac),
-      .o_sync (mac_rx_s)
+  ) u_mac_rx_mbx (
+      .i_src_clk  (i_clk),
+      // As u_rx_limit: the core half clears for either reset source.
+      .i_src_rst  (i_rst || i_core_rst_dom[1]),
+      .i_src_data (i_station_mac),
+      .i_src_valid(mac_rx_send),
+      .o_src_ready(mac_rx_ready),
+      .o_src_idle (mac_rx_idle),
+      .i_dst_clk  (i_rx_clk),
+      .i_dst_rst  (rx_rst),
+      .o_dst_data (mac_rx_msg),
+      .o_dst_valid(mac_rx_msg_valid),
+      .i_dst_ready(1'b1)
   );
-  cdc_sync #(
-      .WIDTH(48)
-  ) u_mac_tx_sync (
-      .i_clk  (i_tx_clk),
-      .i_rst  (1'b0),
-      .i_async(i_station_mac),
-      .o_sync (mac_tx_s)
+  cdc_mailbox #(
+      .WIDTH(64)
+  ) u_tx_cfg_mbx (
+      .i_src_clk  (i_clk),
+      // As the TX FIFO's write side: the core half clears for either reset source.
+      .i_src_rst  (i_rst || i_core_rst_dom[0]),
+      .i_src_data ({i_pause_interval, i_station_mac}),
+      .i_src_valid(txc_send),
+      .o_src_ready(txc_ready),
+      .o_src_idle (txc_idle),
+      .i_dst_clk  (i_tx_clk),
+      .i_dst_rst  (tx_rst),
+      .o_dst_data (txc_msg),
+      .o_dst_valid(txc_msg_valid),
+      .i_dst_ready(1'b1)
   );
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_core_rst_dom[1]) mac_rx_sent_q <= MacDefault;
+    else if (mac_rx_send && mac_rx_ready) mac_rx_sent_q <= i_station_mac;
+    if (i_rst || i_core_rst_dom[0]) txc_sent_q <= {nic_pkg::PauseIntervalDefault, MacDefault};
+    else if (txc_send && txc_ready) txc_sent_q <= {i_pause_interval, i_station_mac};
+  end
+  always_ff @(posedge i_rx_clk) begin
+    if (rx_rst) mac_rx_s <= MacDefault;
+    else if (mac_rx_msg_valid) mac_rx_s <= mac_rx_msg;
+  end
+  always_ff @(posedge i_tx_clk) begin
+    if (tx_rst) {interval_cfg_s, mac_tx_s} <= {nic_pkg::PauseIntervalDefault, MacDefault};
+    else if (txc_msg_valid) {interval_cfg_s, mac_tx_s} <= txc_msg;
+  end
 
   logic [$clog2(RX_FIFO_DEPTH):0] rx_occupancy;
-  logic pf_valid, pf_ready, pause_rx_ev, pause_rx_tog, want_pause;
+  logic pf_valid, pf_ready, pause_rx_ev, want_pause;
   logic [67:0] pf_word;
   logic [15:0] pause_rx_interval;
   logic [63:0] rx_wire_data;
@@ -266,7 +368,7 @@ module nic_mac_wrap #(
       .i_xgmii_ctrl(rx_wire_ctrl),
       .i_mac(mac_rx_s),
       .o_pause_ev(pause_rx_ev),
-      .o_pause_tog(pause_rx_tog),
+      .o_pause_tog(),
       .o_pause_interval(pause_rx_interval)
   );
   nic_pause_rx #(
@@ -620,8 +722,7 @@ module nic_mac_wrap #(
   assign m_user_unused = m_user;
 
   // ---- 802.3x transmit side -------------------------------------------------------------------
-  logic tx_en_s, rx_en_s, want_pause_s, pause_tog_s;
-  logic [15:0] interval_cfg_s, pause_interval_s;
+  logic tx_en_s, rx_en_s, want_pause_s;
   logic tx_paused, tx_pause_ev;
   cdc_sync #(
       .WIDTH(3)
@@ -631,13 +732,56 @@ module nic_mac_wrap #(
       .i_async({want_pause, cfg_ctrl}),
       .o_sync ({want_pause_s, tx_en_s, rx_en_s})
   );
-  cdc_sync #(
-      .WIDTH(33)
-  ) u_pause_bus_sync (
+
+  // A received pause interval reaches TX through a mailbox from the RX domain. An event that
+  // arrives while the mailbox is busy is held (the newest wins) and sent when it is free. Each
+  // side of this mailbox resets with either MAC domain, so a reset of one domain leaves
+  // neither half mid-handshake, and no event from before a TX reset restarts the timer after it.
+  logic rx_rst_in_tx, tx_rst_in_rx, pause_rst_rx, pause_rst_tx;
+  cdc_sync u_rx_rst_to_tx (
       .i_clk  (i_tx_clk),
       .i_rst  (1'b0),
-      .i_async({pause_rx_tog, pause_rx_interval, cfg_interval}),
-      .o_sync ({pause_tog_s, pause_interval_s, interval_cfg_s})
+      .i_async(rx_rst),
+      .o_sync (rx_rst_in_tx)
+  );
+  cdc_sync u_tx_rst_to_rx (
+      .i_clk  (i_rx_clk),
+      .i_rst  (1'b0),
+      .i_async(tx_rst),
+      .o_sync (tx_rst_in_rx)
+  );
+  // Either domain's reset clears both halves of the pause-event mailbox.
+  assign pause_rst_rx = rx_rst || tx_rst_in_rx;
+  assign pause_rst_tx = tx_rst || rx_rst_in_tx;
+  logic pend_q, pe_ready, pause_ev_tx;
+  logic [15:0] pend_interval_q, pause_interval_tx;
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic pe_idle;
+  /* verilator lint_on UNUSEDSIGNAL */
+  always_ff @(posedge i_rx_clk) begin
+    if (pause_rst_rx) pend_q <= 1'b0;
+    else begin
+      if (pend_q && pe_ready) pend_q <= 1'b0;
+      if (pause_rx_ev) begin
+        pend_q          <= 1'b1;
+        pend_interval_q <= pause_rx_interval;
+      end
+    end
+  end
+  cdc_mailbox #(
+      .WIDTH(16)
+  ) u_pause_ev_mbx (
+      .i_src_clk  (i_rx_clk),
+      .i_src_rst  (pause_rst_rx),
+      .i_src_data (pend_interval_q),
+      .i_src_valid(pend_q),
+      .o_src_ready(pe_ready),
+      .o_src_idle (pe_idle),
+      .i_dst_clk  (i_tx_clk),
+      .i_dst_rst  (pause_rst_tx),
+      .o_dst_data (pause_interval_tx),
+      .o_dst_valid(pause_ev_tx),
+      .i_dst_ready(1'b1)
   );
   nic_pause_tx #(
       .GMII_MODE(GMII_MODE)
@@ -650,8 +794,8 @@ module nic_mac_wrap #(
       .i_tx_en         (tx_en_s),
       .i_interval_cfg  (interval_cfg_s),
       .i_want_pause    (want_pause_s),
-      .i_pause_tog     (pause_tog_s),
-      .i_pause_interval(pause_interval_s),
+      .i_pause_ev      (pause_ev_tx),
+      .i_pause_interval(pause_interval_tx),
       .i_f_word        (f_word),
       .i_f_valid       (f_valid),
       .o_f_ready       (f_ready),

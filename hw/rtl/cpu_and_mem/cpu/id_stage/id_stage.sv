@@ -266,8 +266,12 @@ module id_stage #(
                              (instruction.funct3 == 3'b000) &&
                              ({instruction.funct7, instruction.source_reg_2} == 12'h00D);
   logic is_illegal_instruction;
+  // VS=Off makes vector instructions illegal: OP-V and the vector loads and
+  // stores (LOAD-FP and STORE-FP with a vector width).
   logic is_vector_direct;
-  assign is_vector_direct = instruction.opcode == riscv_pkg::OPC_OP_V;
+  assign is_vector_direct = (instruction.opcode == riscv_pkg::OPC_OP_V) || riscv_pkg::is_vector_mem(
+      instruction.opcode, instruction.funct3
+  );
   assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction |
                                   (i_mstatus_fs_off & is_fp_instruction_direct) |
                                   (i_mstatus_vs_off & is_vector_direct) |
@@ -764,7 +768,10 @@ module id_stage #(
                                ({instruction_2.funct7, instruction_2.source_reg_2} == 12'h00D);
   logic is_illegal_instruction_2;
   logic is_vector_direct_2;
-  assign is_vector_direct_2 = instruction_2.opcode == riscv_pkg::OPC_OP_V;
+  assign is_vector_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_OP_V) ||
+                              riscv_pkg::is_vector_mem(
+      instruction_2.opcode, instruction_2.funct3
+  );
   assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction |
                                     (i_mstatus_fs_off & is_fp_instruction_direct_2) |
                                     (i_mstatus_vs_off & is_vector_direct_2) |
