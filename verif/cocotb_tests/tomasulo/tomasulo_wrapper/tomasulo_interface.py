@@ -477,6 +477,10 @@ class TomasuloInterface:
         self.dut.i_trap_misaligned_accesses.value = 0
         self.dut.i_widen_commit_ok.value = 0
         self.dut.i_commit_hold.value = 0
+        # No vector memory instruction is in flight (Verilator does not apply
+        # the port default at the top level).
+        if hasattr(self.dut, "i_vmem_quiet"):
+            self.dut.i_vmem_quiet.value = 1
 
         # Flush
         self.dut.i_flush_en.value = 0
