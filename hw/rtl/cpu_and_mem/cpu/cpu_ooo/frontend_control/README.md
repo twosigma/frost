@@ -70,9 +70,10 @@ instead: ID's target compare sets it late in the cycle, and dispatch only
 stores it in the branch's RS entry. `cpu_ooo` keeps further copies of the shadow's
 source-register fields (from `o_shadow_next`) for the INT and FP RAT lookups
 and the register files' commit-bypass compares. The shadow also carries
-slot 1's vector legality classes (`vec_lmul_legality`), formed in `cpu_ooo` from
-each copy of ID's output; a simulation assertion checks that they match the
-shadow's instruction.
+slot 1's four vector legality classes and its vector-memory rejection bit
+(`vec_lmul_legality`), formed in `cpu_ooo` from each copy of ID's output. A
+simulation assertion checks all five bits against the shadow's instruction
+and decode outcome.
 When ID supplies separate next values for advancing and holding, the primitive
 implementation combines early and late stall terms once per late-stall group.
 Each shadow bit then selects head data, producer hold data, or producer advance

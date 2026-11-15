@@ -9,7 +9,7 @@ depth 2
 smtbmc boolector
 
 [script]
-read -sv riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rob_serializer.sv rob_alloc_lvt_reference.sv
+read -sv riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rob_serializer.sv sfence_operand_store.sv rob_alloc_lvt_reference.sv
 read -formal -D SYNTHESIS -D ROB_ALLOC_LVT_LOCAL_PROOF -sv reorder_buffer.sv
 hierarchy -top reorder_buffer
 proc
@@ -31,5 +31,6 @@ select -assert-count 2 t:$check r:FLAVOR=assert %i
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/sfence_operand_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
 rob_alloc_lvt_reference.sv
