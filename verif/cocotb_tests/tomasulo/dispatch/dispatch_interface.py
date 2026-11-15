@@ -1267,6 +1267,9 @@ class DispatchInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_from_id_to_ex.value = 0
+        self.dut.i_vtype_spec.value = 0
+        self.dut.i_vec_lmul_illegal.value = 0
+        self.dut.i_vec_mem_illegal.value = 0
         self.dut.i_valid.value = 0
         self.dut.i_from_id_to_ex_2.value = 0
         self.dut.i_valid_2.value = 0

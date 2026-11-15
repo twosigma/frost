@@ -103,3 +103,4 @@
 - Split attributed net declarations that carried an initialiser into a declaration and a separate `assign`, so front ends that reject an attribute on an initialised net accept them
 - Fixed interrupt starvation by closely spaced device accesses, holding the next device access while an interrupt take is armed, with a program that measures interrupt-take latency across device, atomic, fence and memory-bound loops
 - Added page-pool RX fragments, tunable copying of short frames, and conditional DMA synchronization to the Linux NIC driver
+- Implemented registered receive packet lengths, compact transmit FIFOs with per-frame metadata, mailbox transfers for NIC configuration and pause events, and a bare-metal NIC throughput benchmark.

@@ -399,6 +399,24 @@ applies the uncached-store completion in the final valid-bit selection.
 Packet payloads still come from the shared merge's registered-lane selection.
 No additional state or cycle is introduced; the generic path is unchanged.
 
+## Bus-fault trap values
+
+A load, LR or AMO whose bus response fails, and a precise uncached store, SC
+or `cbo.zero` whose write response fails, complete with an access fault and a
+zero value: the LQ and SQ entries hold only the physical address. Sstvala
+requires the virtual address in `mtval` or `stval`, so the wrapper keeps it
+by ROB tag. A 32-entry distributed RAM records each MEM_RS issue's address
+(`rs1` plus the offset), written from registered copies one cycle after issue;
+a response comes back later than that. A register names the oldest live
+instruction whose LQ or SQ result is such a fault (the LQ marks it with
+`o_fu_complete_bus_error`; every SQ uncached-store fault is one). It is set
+while the result is presented to the MEM adapter, so no later than the ROB
+records the exception, and a full flush, or a partial flush that kills that
+instruction, clears it. When it names the ROB head, `o_head_bus_fault` is set
+and `o_head_bus_fault_va` is the RAM's entry for it, which cpu_ooo writes to
+`mtval` or `stval` for cause 5 or 7. Nothing on the issue, result or retire
+path waits for either.
+
 ## Early load wakeup
 
 With `EARLY_LOAD_WAKEUP=1` (the default), a staged load result can wake its
