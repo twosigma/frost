@@ -15,26 +15,10 @@
  */
 
 /*
- * SYSRESET directed test: SBI system reset.
- *
- * A 32-bit store of 0x7777 to 0x4002_F000 resets the core domain exactly as
- * the debug module's ndmreset does: the hart restarts at the boot address
- * (crt0, the boot ROM's entry), the SoC registers return to their reset
- * values, and BRAM keeps its contents. OpenSBI reaches this register through
- * syscon-reboot to serve SBI SRST, so Linux `reboot` restarts the board.
- *
- * Run 1 (the memory word at BOOT_MARK is not the magic):
- *   - sets BOOT_MARK to the magic, mscratch and mtimecmp to known values;
- *   - stores wrong keys (0x1234, 0x7776, a byte store of 0x77, a store to
- *     the neighbouring word) and checks nothing resets, which shows by the
- *     hart still running;
- *   - stores the key, then spins. The reset ends the spin.
- * Run 2 (BOOT_MARK holds the magic, so the program started again):
- *   - mscratch is zero and mtimecmp holds its reset value, the reset reached
- *     the hart and the timer registers;
- *   - clears BOOT_MARK and prints <<PASS>>.
- * The marker word sits below the stack, outside .data and .bss, which crt0
- * would rewrite.
+ * SYSRESET register test. The marker is outside .data, .bss and the stack,
+ * in uncached BRAM that survives CPU reset. Set the next-boot marker only
+ * after invalid writes have completed, so an unintended reset fails.
+ * Word and halfword requests each restart the program at its reset entry.
  */
 
 #include <stdint.h>
@@ -42,16 +26,17 @@
 #define SYSRESET (*(volatile uint32_t *) 0x4002F000u)
 #define SYSRESET_NEXT (*(volatile uint32_t *) 0x4002F004u)
 #define SYSRESET_H (*(volatile uint16_t *) 0x4002F000u)
+#define SYSRESET_HIGH_H (*(volatile uint16_t *) 0x4002F002u)
 #define SYSRESET_B (*(volatile uint8_t *) 0x4002F000u)
-
+#define SYSRESET_HIGH_B (*(volatile uint8_t *) 0x4002F001u)
 #define NAT_MTIMECMP_LO (*(volatile uint32_t *) 0x40000018u)
 #define NAT_MTIMECMP_HI (*(volatile uint32_t *) 0x4000001Cu)
-
 #define UTX (*(volatile uint32_t *) 0x40000000u)
 #define UTX_ST (*(volatile uint32_t *) 0x40000028u)
-
 #define BOOT_MARK (*(volatile uint32_t *) 0x00030000u)
-#define MAGIC 0x5E5E7777u
+#define CHECKING 0x5E5E0001u
+#define WORD_RESET 0x5E5E0002u
+#define HALF_RESET 0x5E5E0003u
 
 static void putc_(char c)
 {
@@ -64,50 +49,69 @@ static void puts_(const char *s)
     while (*s)
         putc_(*s++);
 }
+static void fail(const char *s)
+{
+    puts_("\r\n<<FAIL>> ");
+    puts_(s);
+    puts_("\r\n");
+    for (;;) {
+    }
+}
+static void poison_state(void)
+{
+    __asm__ volatile("csrw mscratch, %0" ::"r"(0x1234u));
+    NAT_MTIMECMP_HI = 1u;
+    NAT_MTIMECMP_LO = 2u;
+}
+static void reset_must_arrive(void)
+{
+    for (volatile int i = 0; i < 1000000; i++) {
+    }
+    fail("no reset");
+}
 
 int main(void)
 {
-    if (BOOT_MARK != MAGIC) {
-        /* Run 1. */
-        BOOT_MARK = MAGIC;
-        __asm__ volatile("csrw mscratch, %0" ::"r"(0x1234u));
-        NAT_MTIMECMP_HI = 0x1u;
-        NAT_MTIMECMP_LO = 0x2u;
-
-        /* Writes that are not the key leave the system running. */
-        SYSRESET = 0x1234u;
-        SYSRESET = 0x7776u;
-        SYSRESET = 0x00010000u; /* upper half only */
-        SYSRESET_B = 0x77u;
-        SYSRESET_NEXT = 0x7777u; /* the neighbouring word */
-        for (volatile int i = 0; i < 2000; i++) {
+    uint32_t phase = BOOT_MARK;
+    if (phase == CHECKING)
+        fail("reset from an invalid write");
+    if (phase == WORD_RESET || phase == HALF_RESET) {
+        unsigned long scratch;
+        __asm__ volatile("csrr %0, mscratch" : "=r"(scratch));
+        if (scratch != 0 || NAT_MTIMECMP_HI != 0xFFFFFFFFu || NAT_MTIMECMP_LO != 0xFFFFFFFFu)
+            fail("state not reset");
+        if (SYSRESET != 0)
+            fail("reset register read");
+        if (phase == HALF_RESET) {
+            BOOT_MARK = 0;
+            puts_("\r\nword and halfword resets completed\r\n<<PASS>>\r\n");
+            for (;;) {
+            }
         }
-        puts_("\r\nrun1: no reset from wrong writes\r\n");
-
-        /* A 16-bit store of the key resets as well as the 32-bit store. The
-         * test uses the 32-bit form, which is what syscon-reboot issues. */
-        SYSRESET = 0x7777u;
-        for (volatile int i = 0; i < 1000000; i++) {
-        }
-        /* Reached only if the reset did not happen. */
-        puts_("\r\n<<FAIL>> no reset\r\n");
-        for (;;) {
-        }
+        poison_state();
+        BOOT_MARK = HALF_RESET;
+        __asm__ volatile("fence iorw, iorw" ::: "memory");
+        SYSRESET_H = 0x7777u;
+        reset_must_arrive();
     }
 
-    /* Run 2: the hart restarted. */
-    unsigned long scratch;
-    __asm__ volatile("csrr %0, mscratch" : "=r"(scratch));
-    unsigned bad = 0;
-    bad |= (scratch == 0u) ? 0u : 1u;
-    bad |= (NAT_MTIMECMP_HI == 0xFFFFFFFFu) ? 0u : 2u;
-    BOOT_MARK = 0u;
-    if (bad == 0u) {
-        puts_("\r\nrun2: restarted\r\n<<PASS>>\r\n");
-    } else {
-        puts_("\r\n<<FAIL>> state not reset\r\n");
+    BOOT_MARK = CHECKING;
+    poison_state();
+    SYSRESET = 0x1234u;
+    SYSRESET = 0x7776u;
+    SYSRESET = 0x00010000u;
+    SYSRESET_B = 0x77u;
+    SYSRESET_HIGH_B = 0x77u;
+    SYSRESET_HIGH_H = 0x7777u;
+    SYSRESET_NEXT = 0x7777u;
+    for (volatile int i = 0; i < 2000; i++) {
     }
-    for (;;) {
-    }
+    if (SYSRESET != 0)
+        fail("reset register read");
+    puts_("\r\nno reset from invalid writes\r\n");
+    BOOT_MARK = WORD_RESET;
+    __asm__ volatile("fence iorw, iorw" ::: "memory");
+    SYSRESET = 0x7777u;
+    reset_must_arrive();
     return 0;
 }

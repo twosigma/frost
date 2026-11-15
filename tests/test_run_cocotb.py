@@ -936,8 +936,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="sysreset_test",
         nic_mac_clocks=False,
         description=(
-            "SYSRESET register: a 32-bit store of 0x7777 resets the core and "
-            "restarts the program from the boot address; other writes do not"
+            "SYSRESET word and halfword requests restart the program and reset "
+            "hart/timer state; invalid writes and reads have no side effects"
         ),
     ),
     "vec_state_test_v512": CocotbRunConfig(
@@ -1688,6 +1688,30 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "OpenSBI boot, SBI services and delegated APLIC interrupts (fixed memory layout)"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
+    ),
+    "opensbi_reset_cold": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sbi_reset",
+        hdl_toplevel_module="frost",
+        app_name="opensbi_smoke",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description="S-mode SBI cold reboot reaches SYSRESET and the boot entry",
+        extra_env=(
+            ("PAYLOAD_SRC", "reset.c"),
+            ("EXTRA_CFLAGS", "-DFROST_SBI_RESET_TYPE=1"),
+        ),
+    ),
+    "opensbi_reset_warm": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sbi_reset",
+        hdl_toplevel_module="frost",
+        app_name="opensbi_smoke",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description="S-mode SBI warm reboot reaches SYSRESET and the boot entry",
+        extra_env=(
+            ("PAYLOAD_SRC", "reset.c"),
+            ("EXTRA_CFLAGS", "-DFROST_SBI_RESET_TYPE=2"),
+        ),
     ),
     # Without the misaligned-access engine, OpenSBI emulates the payload's
     # misaligned loads and stores in DDR (phase F); with it, the hardware

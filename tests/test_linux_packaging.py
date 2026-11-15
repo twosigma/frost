@@ -431,6 +431,7 @@ def test_both_trees_describe_the_sysreset_syscon_reboot() -> None:
         assert int(node[1], 16) == packer.SYSRESET_BASE
         body = node[2]
         assert 'compatible = "frost,sysreset", "syscon";' in body
+        assert "reg-io-width = <4>;" in body
         assert f"reg = <0x{packer.SYSRESET_BASE:08x} 0x1000>;" in body or (
             f"reg = <0x{packer.SYSRESET_BASE:x} 0x1000>;" in body
         )

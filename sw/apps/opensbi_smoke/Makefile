@@ -23,6 +23,7 @@ FROST_ROOT := $(abspath $(CURDIR)/../../..)
 BOARD_DIR  := $(FROST_ROOT)/linux/buildroot-external/board/frost
 RISCV_PREFIX ?= riscv64-linux-
 FPGA_CPU_CLK_FREQ ?= 322265625
+PAYLOAD_SRC ?= main.c
 
 CC      := $(RISCV_PREFIX)gcc
 OBJCOPY := $(RISCV_PREFIX)objcopy
@@ -34,7 +35,7 @@ FW_BIN      := $(OPENSBI_OUT)/platform/generic/firmware/fw_jump.bin
 CFLAGS := -march=rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause \
           -mabi=lp64d -mcmodel=medany -O2 -Wall -Wextra -I../../lib/include \
           -nostdlib -nostartfiles -static -fno-pie -no-pie -fno-stack-protector -ffreestanding -fno-builtin \
-          -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-strict-aliasing
+          -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-strict-aliasing $(EXTRA_CFLAGS)
 
 .PHONY: all clean distclean
 
@@ -43,8 +44,8 @@ all: sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt payload.S
 $(FW_BIN): $(FROST_ROOT)/linux/opensbi_frost_defconfig $(FROST_ROOT)/linux/opensbi_build.py
 	python3 $(FROST_ROOT)/linux/opensbi_build.py --out $(OPENSBI_OUT)
 
-payload.elf: start.S main.c link.ld ../../lib/include/aplic.h
-	$(CC) $(CFLAGS) -T link.ld -Wl,--gc-sections -o $@ start.S main.c
+payload.elf: start.S $(PAYLOAD_SRC) link.ld ../../lib/include/aplic.h
+	$(CC) $(CFLAGS) -T link.ld -Wl,--gc-sections -o $@ start.S $(PAYLOAD_SRC)
 
 payload.bin: payload.elf
 	$(OBJCOPY) -O binary $< $@

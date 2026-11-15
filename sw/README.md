@@ -144,6 +144,7 @@ these instruction-copy writes before completing.
 | CLINT | `0x40010000` | SiFive CLINT-compatible alias of MSIP, `mtimecmp`, and `mtime`, for Linux |
 | DMA test engine | `0x40020000` | Coherent DMA copy and fill engine |
 | Memory error unit | `0x40021000` | Counts and addresses of DDR ECC errors and DDR error responses |
+| SYSRESET | `0x4002F000` | Word or halfword stores with low 16 bits `0x7777` request CPU reset; reads return zero |
 | NIC | `0x40030000` | 10G Ethernet control, descriptor rings, and counters |
 | IMSIC | `0x48000000` | 2 MiB device window; M/S pages at +0/+0x100000 with 4 KiB hart stride and 63 identities |
 | APLIC | `0x44000000` | AIA direct and MSI delivery: 4 MiB window, M domain at +0 and S domain at +0x8000, one IDC each for hart 0 |
@@ -331,7 +332,7 @@ can be debugged and where each one first stops.
 | `nic_loopback/` | NIC loopback, descriptor rings, interrupts, filtering, and reset during traffic |
 | `ns16550_irq_console_test/` | Console output written one byte per THRE interrupt, each claimed through the APLIC |
 | `ns16550_test/` | The 16550 UART registers: Linux 8250 initialization, register file, LSR.THRE and LSR.TEMT around a write, and transmit |
-| `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls, APLIC delegation and supervisor interrupt delivery; fixed layout, ignores `MEM_CONFIG` |
+| `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls, APLIC delegation and supervisor interrupt delivery; `reset.c` tests cold/warm SRST through the simulation harness; fixed layout, ignores `MEM_CONFIG` |
 | `packet_parser/` | FIX message parser demo fed through the MMIO FIFOs; reports parse time in cycles |
 | `pause_test/` | `pause` (`0x0100000F`) retires without draining committed stores, while `fence r,0` and the other FENCE encodings next to it wait for the drain |
 | `pde_return_hazard/` | A return value computed from `s1` just before the epilogue restores `s1` (Linux `pde_subdir_find` shape) |
@@ -369,7 +370,7 @@ can be debugged and where each one first stops.
 | `sstvala_fault_test/` | Sstvala for access faults from failed bus responses (the registry makes one DDR line answer SLVERR): doubleword, word and byte loads, LR and AMOs, misaligned loads the misaligned-access engine splits, a fetch from the line and an instruction whose second halfword starts it, in M, S and U, delegated and not, bare and through Sv39 where the virtual address differs from the physical one, each with exact cause, `xepc` and `mtval` or `stval` |
 | `sstvala_test/` | Sstvala: every illegal-instruction source in M, S and U, delegated and not, writes the faulting instruction's bits to `mtval` or `stval` (a compressed instruction's 16 bits zero-extended), including an instruction second in its fetch pair, one across a line or page boundary, and one reached after a mispredicted branch |
 | `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions |
-| `sysreset_test/` | SYSRESET register: wrong keys and neighbouring writes do not reset; a 32-bit store of `0x7777` to `0x4002_F000` resets the core (mscratch and `mtimecmp` return to their reset values) and the program starts again from crt0 |
+| `sysreset_test/` | Invalid keys, byte writes and neighbouring writes leave the core running; word and halfword reset requests each restart the program, reset `mscratch` and both halves of `mtimecmp`, and preserve its uncached BRAM marker |
 | `tick_torture/` | CLINT timer re-arming, lost-tick detection, and `wfi` wakeup under DDR traffic |
 | `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run unless the head-load counter split adds up and the reserved counters read 0. Simulation allows 750,000 cycles for all 14 benchmarks and reports |
 | `tomasulo_test/` | RAW/WAR/WAW hazards, register renaming, and out-of-order execution, with order-independent results |

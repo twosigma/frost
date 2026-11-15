@@ -75,11 +75,18 @@ MSI writes that execute while `soc_cpu_rst` is asserted complete without
 posting an interrupt. Presented AXI transactions can execute after reset
 release and have device side effects, as specified by the CPU's reset-drain
 contract.
-The Debug Module survives `ndmreset` and resets with the external reset.
-The SYSRESET register at `0x4002_F000` raises the same core reset: a store whose low 16 bits are
-`0x7777` (the sifive_test reset code) holds a request for 64 `i_clk` cycles, cleared only by the external
-reset so the core reset it causes cannot cancel it. BRAM and DDR keep their contents and the CPU restarts at
-the boot address. OpenSBI serves SBI system reset from it through `syscon-reboot`.
+The Debug Module survives `ndmreset` and SYSRESET and resets with the external reset.
+The SYSRESET register at `0x4002_F000` raises the same core reset. A write
+with both low byte strobes set and low 16 data bits `0x7777` holds a request
+for 64 `i_clk` cycles; the upper data bits are ignored. Reads return zero.
+Byte writes, other low-halfword values and neighbouring addresses do nothing.
+A qualifying write reloads the counter. External reset cancels the request;
+the core reset it causes does not, so the pulse expires on its own.
+The request crosses through the existing reset pairs in asynchronous mode.
+BRAM and DDR storage survive, but dirty cache lines are discarded, just as
+with `ndmreset`. The CPU restarts at its boot address; software must arrange
+any writeback and image restoration needed to boot again. OpenSBI uses the
+register through `syscon-reboot` for cold and warm SBI reset requests.
 The separate power-on request clears debug transport ownership and the
 pending DMI request. Its CPU side uses `i_cpu_clk` in this configuration;
 its TCK side asserts asynchronously and can release independently. The

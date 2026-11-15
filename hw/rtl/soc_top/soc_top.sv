@@ -274,9 +274,9 @@ module soc_top #(
     output logic                  [          AXI_USER_BITS-1:0] o_axi_ruser
 );
   logic local_fire, local_ok, local_bram, local_device, local_instruction;
-  // Registered core reset combines external reset and ndmreset, for fanout.
-  // Debug logic uses external reset alone so it survives debugger-requested
-  // resets. Cache tags are swept on core reset.
+  // Registered core reset combines external reset, ndmreset and SYSRESET.
+  // Debug logic uses external reset alone so it survives both core-reset
+  // requests. Cache tags are swept on core reset; dirty lines are discarded.
   wire  core_clk = ASYNC_CPU_CLOCK ? i_cpu_clk : i_clk;
   logic dbg_ndmreset;
   // System-reset request from the SYSRESET register (sysreset_q below).
@@ -412,7 +412,7 @@ module soc_top #(
   // System reset register @ 0x4002_F000 (a 4 KiB page). A 16-bit store of
   // SysResetKey, the sifive_test FINISHER_RESET code, resets the core domain
   // like the debug module's ndmreset: the CPU restarts at the boot address
-  // (the boot ROM) and BRAM and DDR keep their contents.
+  // while BRAM and DDR storage survive; dirty cache lines are discarded.
   localparam int unsigned SysResetAddr = 32'h4002_F000;
   localparam logic [15:0] SysResetKey = 16'h7777;
   localparam int unsigned BootSramDataReg = 32'h4002_3014;
@@ -3100,7 +3100,7 @@ AxilPorts
   end
 
   // SYSRESET: a store of SysResetKey to SysResetAddr raises sysreset_q for
-  // SysResetCycles clocks. Only the external reset clears it, because the
+  // SysResetCycles clocks. Only the external reset can cancel it, because the
   // core reset it causes must not cancel its own pulse; the stretch lets the
   // asynchronous reset chains of both clock domains observe it.
   localparam int unsigned SysResetCycles = 64;
