@@ -3294,7 +3294,7 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
         assert dict(line.split(maxsplit=1) for line in task["[options]"]) == {
             "mode": "cover",
             "depth": "80",
-            "timeout": "2400",
+            "timeout": "14400",
             "vcd_sim": "on",
             "skip": "48",
         }
@@ -3417,16 +3417,16 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
     commands = {
         "hold": common
         + [
-            "select -assert-count 326 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
             f"select -assert-count 4 {holds}",
             f"chformal -assert -remove t:$check r:FLAVOR=assert %i {holds} %u %u %u %d",
             "select -assert-count 4 t:$check r:FLAVOR=assert %i",
         ],
         "bmc": common
         + [
-            "select -assert-count 326 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
             f"chformal -assert -remove {holds}",
-            "select -assert-count 322 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
         ],
     }
 
@@ -3741,7 +3741,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",
     ]
-    script += ["select -assert-count 326 t:$check r:FLAVOR=assert %i"]
+    script += ["select -assert-count 328 t:$check r:FLAVOR=assert %i"]
     if outlier or hold:
         if hold:
             script += [
@@ -3758,7 +3758,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         script += [
             "chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable "
             "c:p_load_payload_held c:p_reply_hold",
-            "select -assert-count 322 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
         ]
     if task.startswith("coh_l1d_stream_free_nostore_"):
         script += ["connect -set i_write_mask 8'h00"]
