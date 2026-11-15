@@ -256,12 +256,20 @@ When IF serves that window the next cycle, the registered tags are compared
 with the packet's PC, so a packet whose set was not read gets no backing hit,
 and neither does a slot 2 in the word after the last set. The hit, size and
 type come from the registered tags, and the target from the target array
-read on the same edge. IF passes PD each slot's hit, size, type and target,
-kept across stall replay like the packet. Slot 2's type and target also come
-for each size of slot 1, formed from the tags and the packet's PC alone; PD
-picks between them by slot 1's size where it forms the backing target, so
-the redirect target registers select between finished values (see
-`pd_redirect_next`). PD registers a candidate for a
+read on the same edge. The backing BTB also holds the last read whose set
+was the served packet's (its tags, targets and set index). When the newest
+read is for another set and the held one is for the packet's set, the held
+read answers, compared with the packet's PC in the same way. The first packet
+after a redirect often waits in the holdoff while `o_pc` has already moved on
+to the next window, so without the held read a jump or return in that packet
+lost the hit it had in its first cycle and mispredicted (from cached DDR,
+every such return did). A held read can predate training writes made since;
+an entry it still shows costs at most a misprediction. IF passes PD each
+slot's hit, size, type and target, kept across stall replay like the packet.
+Slot 2's type and target also come for each size of slot 1, formed from the
+answering read's tags and the packet's PC alone; PD picks between them by slot
+1's size where it forms the backing target, so the redirect target registers
+select between finished values (see `pd_redirect_next`). PD registers a candidate for a
 slot-1 or slot-2 JAL or JALR whose backing entry has the instruction's size.
 When the slot's BTB prediction was not taken, the candidate fires the PD
 redirect, which costs the PD redirect's two bubbles instead of a

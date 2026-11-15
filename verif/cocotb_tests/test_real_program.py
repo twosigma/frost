@@ -1077,6 +1077,88 @@ async def ddr_write_watch(dut: Any) -> None:
                     return
 
 
+async def bp_trace(dut: Any) -> None:
+    """Log the front end each cycle from the first packet IF serves in a PC window.
+
+    FROST_BP_TRACE_LO/FROST_BP_TRACE_HI (hex) bound the window; after
+    FROST_BP_TRACE_SKIP (default 0) packets in the window the watcher logs
+    FROST_BP_TRACE_CYCLES (default 300) consecutive cycles.
+    """
+    lo_env = os.environ.get("FROST_BP_TRACE_LO", "")
+    hi_env = os.environ.get("FROST_BP_TRACE_HI", "")
+    if not lo_env or not hi_env:
+        return
+    lo, hi = int(lo_env, 16), int(hi_env, 16)
+    limit = int(os.environ.get("FROST_BP_TRACE_CYCLES", "300"))
+    skip = int(os.environ.get("FROST_BP_TRACE_SKIP", "0"))
+    cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
+    ifs = f"{cpu}.if_stage_inst"
+    pds = f"{cpu}.pd_stage_inst"
+    bpc = f"{ifs}.branch_prediction_controller_inst"
+    flags = {
+        "phold": f"{ifs}.prediction_holdoff",
+        "ahold": f"{ifs}.any_holdoff_safe",
+        "cfhold": f"{ifs}.control_flow_holdoff",
+        "nop": f"{ifs}.sel_nop",
+        "nop2": f"{ifs}.sel_nop_2",
+        "used": f"{bpc}.o_prediction_used",
+        "used2": f"{bpc}.o_slot2_prediction_used",
+        "pdcand": f"{pds}.pd_backing_candidate_r",
+        "pdcand2": f"{pds}.pd_backing_candidate_2_r",
+        "pdbr": f"{pds}.pd_backing_redirect_r",
+        "pdbr2": f"{pds}.pd_backing_redirect_2_r",
+        "pdr": f"{pds}.pd_redirect_r",
+        "j1": f"{pds}.pd_slot1_jump",
+        "j2": f"{pds}.pd_slot2_jump",
+    }
+    vals = {
+        "pc": f"{ifs}.pc_reg",
+        "opc": f"{ifs}.o_pc",
+        "tw": f"{ifs}.pc_tage_lookup",
+        "bhl": f"{ifs}.backing_hit_live",
+        "bh": f"{pds}.i_backing_hit",
+        "bc": f"{pds}.i_backing_compressed",
+    }
+    fsig = {}
+    vsig = {}
+    for k, path in flags.items():
+        sig = _get_signal(dut, path)
+        if sig is None:
+            cocotb.log.warning(f"bp_trace: {path} not resolvable")
+        else:
+            fsig[k] = sig
+    for k, path in vals.items():
+        sig = _get_signal(dut, path)
+        if sig is None:
+            cocotb.log.warning(f"bp_trace: {path} not resolvable")
+        else:
+            vsig[k] = sig
+    pc_sig = vsig.get("pc")
+    if pc_sig is None:
+        return
+    cocotb.log.info(f"bp_trace: armed for [{lo:#x}, {hi:#x}]")
+    cycle = 0
+    seen = 0
+    logged = 0
+    while logged < limit:
+        await RisingEdge(cpu_clock(dut))
+        cycle += 1
+        pc = _read_int(pc_sig)
+        if logged == 0:
+            if pc is None or not (lo <= pc <= hi):
+                continue
+            seen += 1
+            if seen <= skip:
+                continue
+        logged += 1
+        on = " ".join(k for k, sig in fsig.items() if _read_bool(sig))
+        vv = " ".join(
+            f"{k}={(_read_int(sig) if _read_int(sig) is None else hex(_read_int(sig) or 0))}"
+            for k, sig in vsig.items()
+        )
+        cocotb.log.info(f"BPTRACE c={cycle} {vv} | {on}")
+
+
 async def l0_hit_watch(dut: Any) -> None:
     """Log every L0 fast-path hit served inside a watched absolute window.
 
@@ -4999,6 +5081,7 @@ async def test_real_program(dut: Any) -> None:
         cocotb.start_soon(hang_probe(dut, cpu_clock(dut)))
     cocotb.start_soon(ddr_write_watch(dut))
     cocotb.start_soon(l0_hit_watch(dut))
+    cocotb.start_soon(bp_trace(dut))
 
     uart_driver = None
     debug_monitor = None

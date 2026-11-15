@@ -606,6 +606,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Random code mutation under trained predictors, self-checking",
         extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),
     ),
+    "bpred_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="bpred_probe",
+        nic_mac_clocks=False,
+        description=(
+            "Mispredictions for first-packet returns and jumps, slot-2 branches, "
+            "jump tables and history-correlated branches"
+        ),
+    ),
     "smc_predict_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
