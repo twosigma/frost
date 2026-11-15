@@ -1930,13 +1930,25 @@ module coherence_home #(
       // The reply wins simultaneous captures, including when array data is
       // present. The reset hold remains only at the flop.
 `ifdef FROST_XILINX_PRIMS
+      // One copy of the reply select per 64-bit slice, so each select net
+      // drives 64 of the sector's 256 reply_last LUTs.
+      wire [3:0] take_reply_slice;
+      for (genvar slice = 0; slice < 4; slice++) begin : gen_reply_select
+        (* DONT_TOUCH = "yes" *) LUT2 #(
+            .INIT(4'h8)
+        ) reply_select (
+            .I0(run),
+            .I1(wb_take_reply[wb][sector]),
+            .O (take_reply_slice[slice])
+        );
+      end
       for (genvar bit_idx = 0; bit_idx < 256; bit_idx++) begin : gen_bit
         (* DONT_TOUCH = "yes" *) LUT3 #(
             .INIT(8'hca)
         ) reply_last (
             .I0(array_or_held[bit_idx]),
             .I1(reply.data[bit_idx]),
-            .I2(take_reply),
+            .I2(take_reply_slice[bit_idx/64]),
             .O (captured[bit_idx])
         );
       end
