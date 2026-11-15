@@ -89,8 +89,11 @@ intervening-load boundary BMC each have a 330-minute job of their own.
 
 The L1D control job runs `coh_l1d_bmc` alone with a 200-minute limit, and
 the L1D multi-endpoint job runs `coh_l1d_multi_bmc` alone with a 330-minute
-limit. The L1D zero multi-endpoint job runs `coh_l1d_zero_multi_bmc` alone
-with a 330-minute limit. Three Coherence L1D data jobs run the four single-endpoint word tasks
+limit. The L1D zero control job runs `coh_l1d_zero_bmc` alone with a
+200-minute limit, the L1D zero multi-endpoint job runs
+`coh_l1d_zero_multi_bmc` alone with a 330-minute limit, and the L1D zero
+cover job runs `coh_l1d_zero_cover` alone with a 260-minute limit. Three
+Coherence L1D data jobs run the four single-endpoint word tasks
 (330 minutes), the four multi-endpoint word tasks (330 minutes), and the
 payload, grant and four-way data tasks (270 minutes). Their task allowances
 sum to 260, 280 and 210 minutes, respectively, at most 85% of each job.
