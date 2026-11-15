@@ -106,3 +106,4 @@
 - Implemented registered receive packet lengths, compact transmit FIFOs with per-frame metadata, mailbox transfers for NIC configuration and pause events, and a bare-metal NIC throughput benchmark.
 - Added nine-bit ASIDs with global pages, the four selective forms of SFENCE.VMA, and a 512-entry second-level TLB in block RAM with a 32-entry superpage side array, with a directed test, a unit bench and formal checks
 - Implemented Zfhmin and Zfa floating-point extensions, with architecture-test references, FP engine checks and TestRIG differential coverage
+- Limited the fanout of the L1D's phase and selection registers, registered the L2's zero-fill image clear, and matched DMA ingress grants and releases by queue identity
