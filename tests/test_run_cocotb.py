@@ -2248,6 +2248,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=(str(RVFI_DII_HARNESS), "-GMaxInsns=16", "-GMaxEvents=32"),
     ),
     # Unit benches (no application), starting with the Tomasulo back end
+    **{
+        name: CocotbRunConfig(
+            python_test_module=(
+                "cocotb_tests.tomasulo.reorder_buffer.test_rob_link_value_ram"
+            ),
+            hdl_toplevel_module="rob_link_value_ram",
+            description="Shared-link reads across allocation, staged drain and CDB collisions",
+            verilator_extra_args=(f"-GONEHOT_READ={onehot}",),
+        )
+        for name, onehot in (
+            ("rob_link_value_ram", 0),
+            ("rob_link_value_ram_onehot", 1),
+        )
+    },
     "reorder_buffer": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",
         hdl_toplevel_module="reorder_buffer",
