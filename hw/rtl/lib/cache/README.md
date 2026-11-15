@@ -638,7 +638,12 @@ first permission lookup; a read that the hit path answers counts as an access
 and a hit when it is answered, and its shadow lookup adds nothing. A merged
 load without an earlier lookup counts as an access at its merge: a hit when
 the row answers it, a miss when it attaches. Its events wait for a cycle
-without another access event. The first store in a record counts at its first
+without another access event. Merge identities, lookup arbitration and miss
+context pass through one observation stage before the event serializer. A
+captured identity is independent of later slot reuse; slot history is updated
+at capture, and reset clears both captured and owed events. The stage delays
+the whole event stream together, including hit-under-miss classification.
+The first store in a record counts at its first
 permission lookup; each additional scalar that combines counts as an access
 and a buffer hit on acceptance, even before permission arrives. A combined
 store and a tag lookup can contribute two accesses in one cycle. Cached SC

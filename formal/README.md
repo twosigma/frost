@@ -53,6 +53,14 @@ of its four eight-endpoint witnesses.
 hit-port allowances match in the SBY configurations and the runner.
 Individual SBY tasks can set shorter limits.
 
+`coh_l1d_perf_prove` uses depth 4 and a 120-second limit to prove that the
+L1D performance event stream equals the direct serializer delayed by one
+cycle, including reset, miss context and both pre-debit credit sums. Its
+cutpoints admit arbitrary raw event bundles and newly captured slot masks;
+the controller and data paths are outside this serializer proof. Equality
+of the pre-debit sums preserves the direct serializer's credit bound. The
+L1D and bridges job runs this task.
+
 The following data and store BMC allowances round twice the measured
 runtime up to five-minute increments. Measurements ran beside one other
 formal job. Word variants share their word-0 representative's allowance;

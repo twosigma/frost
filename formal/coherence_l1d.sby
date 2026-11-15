@@ -1,4 +1,5 @@
 [tasks]
+coh_l1d_perf_prove stream multi perfretime
 coh_l1d_conflict_prove single conflict
 coh_l1d_conflict_multi_prove multi conflict padded
 coh_l1d_conflict_stream_prove stream multi conflict padded
@@ -139,7 +140,12 @@ answer: depth 20
 answer: timeout 3600
 streamanswer: depth 16
 
+perfretime: mode prove
+perfretime: depth 4
+perfretime: timeout 120
+
 [engines]
+perfretime: smtbmc boolector
 control_single: abc bmc3
 pdr: abc pdr
 control_multi: abc bmc3 -c
@@ -172,6 +178,7 @@ read -sv coherence_pkg.sv
 epphase: read -formal -sv coherence_request_endpoint.sv
 ~epphase: read -sv coherence_request_endpoint.sv
 read -sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv
+perfretime: read -formal -sv -D PERF_EVENT_PROOF coherence_read_payload.sv coherence_l1d.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamread: read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv
 zcontrol: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
@@ -349,6 +356,13 @@ zsingle: connect -set i_w_ready 1'b1
 zsingle: connect -set i_cut_admit_ready 1'b1
 zsingle: connect -set i_cut_admit_clean 1'b1
 zsingle: connect -set i_cut_inval_done 1'b1
+# Only the event serializer is observed; its input vectors are unconstrained.
+perfretime: select -assert-count 4 c:p_perf_retime_* t:$check %i r:FLAVOR=assert %i
+perfretime: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_perf_retime_* %d
+perfretime: chformal -assume -remove t:$check r:FLAVOR=assume %i c:p_perf_retime_reset %d
+perfretime: chformal -cover -remove
+perfretime: cutpoint w:perf_raw w:perf_merge_hit_new w:perf_merge_miss_new
+perfretime: delete -output w:*
 memory_map
 conflict: select -assert-min 1 t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
 conflict: cutpoint t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
