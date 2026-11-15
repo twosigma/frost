@@ -1005,8 +1005,8 @@ module instruction_aligner #(
   //   1. native slot 1 is control flow or serializing (split by its
   //      NativeSerialize bit)
   //   2. compressed slot 1 is control flow
-  //   3. slot 2 cannot start a pair (Slot2StartValid = 0: a native SYSTEM,
-  //      MISC-MEM, AMO, or FP-compute instruction)
+  //   3. slot 2 cannot start a pair (Slot2StartValid = 0: a native SYSTEM
+  //      except Zimop, MISC-MEM, AMO, FP-compute, or vector instruction)
   //   4. a start-valid native slot 2 at NEXT_HI, which never pairs (a fixed
   //      limit, not a transient)
   //   5. transient: slot2_bram_unsafe
