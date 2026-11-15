@@ -635,7 +635,6 @@ _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
         EBREAK,
         FENCE,
         FENCE_I,
-        SFENCE_VMA,
         WFI,
         MRET,
         SRET,
@@ -652,6 +651,8 @@ _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
 
 _USES_INT_RS2_OPS: frozenset[int] = frozenset(
     {
+        # SFENCE.VMA reads rs1 (page) and rs2 (ASID).
+        SFENCE_VMA,
         BEQ,
         BNE,
         BLT,
