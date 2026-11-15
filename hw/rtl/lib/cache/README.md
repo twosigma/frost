@@ -447,7 +447,10 @@ admission. Contending eligible load misses and lookahead acquisitions alternate
 successful allocations. Permission lookups precede endpoint-allocation arbitration.
 A lookahead miss that yields its allocation remains eligible for another lookup.
 Read hits do not clear the allocation turn. They permit
-store borrowing when no eligible load miss waits. A read miss can finish a lookup
+store borrowing when no eligible load miss waits. Miss demand qualifies ordinary
+loads separately from AMO selection, so it is independent of the atomic guard.
+It applies the same ownership, waiting, retry and address-blocking conditions.
+A read miss can finish a lookup
 before yielding endpoint allocation to lookahead. A lookahead Modified hit
 consumes no endpoint and yields its allocation turn. A yielded read miss reserves
 lookahead service ahead of head-store hits. The reservation ends after lookahead

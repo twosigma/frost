@@ -73,7 +73,8 @@ module immu_test_harness #(
     input logic i_walk_resp_perm_x,
     input logic i_walk_resp_perm_u,
     input logic i_walk_resp_perm_d,
-    input logic i_walk_resp_perm_g
+    input logic i_walk_resp_perm_g,
+    input logic [1:0] i_walk_resp_pbmt
 );
 
   logic [XLEN-1:0] pc_q;
@@ -98,6 +99,7 @@ module immu_test_harness #(
     walk_resp.perm_u = i_walk_resp_perm_u;
     walk_resp.perm_d = i_walk_resp_perm_d;
     walk_resp.perm_g = i_walk_resp_perm_g;
+    walk_resp.pbmt = i_walk_resp_pbmt;
   end
 
   riscv_pkg::tlb_flush_t tlb_flush;

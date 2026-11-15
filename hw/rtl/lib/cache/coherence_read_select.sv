@@ -55,7 +55,7 @@ module coherence_read_select #(
   // Blocking compares 18 sector index bits. An alias with a held sector waits
   // for the holder like a match, and the holders do not wait for reads.
   localparam int unsigned BlockBits = 18;
-  logic [7:0] reference_eligible, missed_load;
+  logic [7:0] reference_eligible;
   (* keep = "true" *) wire [7:0] slot_ready;
   localparam logic [63:0] Dot3Init = 64'hfefcfaf0eeccaa00;
   function automatic logic [7:0] predecessor_init(
@@ -67,6 +67,7 @@ module coherence_read_select #(
   endfunction
 
   (* keep = "true" *) logic [7:0] stored_candidate, write_candidate;
+  (* keep = "true" *) logic [7:0] stored_miss_candidate, write_miss_candidate;
   (* keep = "true" *) logic write_found;
   (* keep = "true" *) logic [2:0] stored_found, stored_load_miss;
   (* keep = "true" *) logic write_load_miss;
@@ -134,6 +135,10 @@ module coherence_read_select #(
     wire qualified = i_valid[index] && !i_ready[index] &&
         (i_kind[2*index+:2] != 2'd2 || i_atomic_protected) &&
         !i_owned[index] && !i_waiting[index] && (!i_miss[index] || i_miss_retry[index]);
+    // Only ordinary loads contribute a missed-load request. Their eligibility
+    // is independent of the guard that qualifies AMO selection.
+    wire load_miss_ready = i_valid[index] && !i_ready[index] &&
+        i_miss[index] && i_miss_retry[index] && i_kind[2*index+:2] == 2'd0;
     assign reference_eligible[index] = qualified && !reference_blocked;
     assign slot_ready[index] = i_valid[index] && !i_ready[index] &&
         (i_kind[2*index+:2] != 2'd2 || i_atomic_protected) &&
@@ -148,23 +153,34 @@ module coherence_read_select #(
         .I0(slot_ready[index]), .I1(i_write_mask[index]),
         .I2(i_waiting[index]), .I3(i_owned[index]), .O(write_candidate[index])
     );
+    (* dont_touch = "true" *) LUT6 #(.INIT(64'h0000000000000002)) u_stored_miss (
+        .I0(load_miss_ready), .I1(i_write_mask[index]), .I2(i_waiting[index]),
+        .I3(blocked_parts[index][0]), .I4(blocked_parts[index][1]), .I5(i_owned[index]),
+        .O(stored_miss_candidate[index])
+    );
+    (* dont_touch = "true" *) LUT4 #(.INIT(16'h0008)) u_write_miss (
+        .I0(load_miss_ready), .I1(i_write_mask[index]),
+        .I2(i_waiting[index]), .I3(i_owned[index]), .O(write_miss_candidate[index])
+    );
 `else
     assign stored_candidate[index] = slot_ready[index] && !i_owned[index] &&
         !i_waiting[index] && !i_write_mask[index] && !(|blocked_parts[index]);
     assign write_candidate[index] = slot_ready[index] && !i_owned[index] &&
         !i_waiting[index] && i_write_mask[index];
+    assign stored_miss_candidate[index] = load_miss_ready && !i_owned[index] &&
+        !i_waiting[index] && !i_write_mask[index] && !(|blocked_parts[index]);
+    assign write_miss_candidate[index] = load_miss_ready && !i_owned[index] &&
+        !i_waiting[index] && i_write_mask[index];
 `endif
-    assign missed_load[index] = i_miss[index] && i_kind[2*index+:2] == 2'd0;
   end
   // Status and retry qualification precede the address decision. Each stored
-  // presence group is an OR of three candidates; each miss group is an OR of
-  // three candidate/missed-load pairs.
+  // presence group and each missed-load group reduce three qualified slots.
   for (genvar group_index = 0; group_index < 3; group_index++) begin : gen_presence
     wire [2:0] candidate, missed;
     for (genvar offset = 0; offset < 3; offset++) begin : gen_slot
       if (3*group_index+offset < 8) begin : gen_live
         assign candidate[offset] = stored_candidate[3*group_index+offset];
-        assign missed[offset] = missed_load[3*group_index+offset];
+        assign missed[offset] = stored_miss_candidate[3*group_index+offset];
       end else begin : gen_unused
         assign candidate[offset] = 1'b0;
         assign missed[offset] = 1'b0;
@@ -172,17 +188,15 @@ module coherence_read_select #(
     end
     assign stored_found[group_index] = |candidate;
 `ifdef FROST_XILINX_PRIMS
-    (* dont_touch = "true" *) LUT6 #(.INIT(Dot3Init)) u_miss (
-        .I0(missed[0]), .I1(missed[1]), .I2(missed[2]),
-        .I3(candidate[0]), .I4(candidate[1]), .I5(candidate[2]),
-        .O(stored_load_miss[group_index])
+    (* dont_touch = "true" *) LUT3 #(.INIT(8'hfe)) u_miss (
+        .I0(missed[0]), .I1(missed[1]), .I2(missed[2]), .O(stored_load_miss[group_index])
     );
 `else
-    assign stored_load_miss[group_index] = |(candidate & missed);
+    assign stored_load_miss[group_index] = |missed;
 `endif
   end
   assign write_found = |write_candidate;
-  assign write_load_miss = |(write_candidate & missed_load);
+  assign write_load_miss = |write_miss_candidate;
 `ifdef FROST_XILINX_PRIMS
   (* dont_touch = "true" *) LUT5 #(.INIT(32'hfefefffe)) u_found (
       .I0(stored_found[0]), .I1(stored_found[1]), .I2(stored_found[2]),
