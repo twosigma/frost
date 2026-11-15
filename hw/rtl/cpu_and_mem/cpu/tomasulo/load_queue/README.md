@@ -170,11 +170,12 @@ select between them. Cached-AMO protection qualifies issue and SQ-probe permissi
 after this selection.
 Forwarding
 requires an ordinary load and has no head-match dependency.
-Each coherent address slot stores PMA permission, Normal-memory classification
-and cache-region classification with its address. Stored and arriving payloads
-compute PMA permission before address-source selection. Staging selects the
-permission, Normal-memory class and cache-region class from the stored or arriving
-address. The arriving address's permission is formed from its uncached,
+Each coherent address slot stores PMA permission, PBMT-alias membership,
+Normal-memory classification and cache-region classification with its address.
+Stored and arriving payloads compute these classes before address-source
+selection. Staging selects the classes from the stored or arriving address.
+Alias membership permits only MMIO loads without AMO or LR semantics.
+The arriving address's permission is formed from its uncached,
 cached-DDR and device range checks, which meet the source select and the
 atomic flag in one final term. The captured Normal-memory class supplies
 L0-hit eligibility.
@@ -674,16 +675,17 @@ without faulting a newer instruction.
 ## Storage
 
 What the parallel scans and flushes read at once is in flip-flops: control
-bits, ROB tag, size, and a 4-bit AMO operation code (the 18 AMO opcodes reduce
-to nine operations). The code is written one cycle after allocation, always
+bits, ROB tag, size, and a 4-bit AMO operation code (encoding the nine AMO
+operations one-to-one). The code is written one cycle after allocation, always
 before the AMO can launch (checked in simulation). The address and the AMO
 `rs2` operand are in LUTRAM, read only after `lq_addr_valid` is set; the
 address CAM matches ROB tags, not addresses. Results are in one 64-bit LUTRAM
 with two write ports (memory responses on port 0; L0 hits, forwarded values
 and AMO completions on port 1), so a response for one load and a hit for the
 next can land in the same cycle. A dword load stores the whole beat, other
-loads the value `load_unit` extracted and sign- or zero-extended (FLW its raw
-word); FLW results are NaN-boxed at the CDB.
+loads the value `load_unit` extracted and sign- or zero-extended (FLH/FLW
+their raw halfword/word). FLH and FLW results are NaN-boxed at every CDB
+path, including store forwarding and the L0 and memory response bypasses.
 
 ## Performance counters
 

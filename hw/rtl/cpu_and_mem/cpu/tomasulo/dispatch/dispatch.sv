@@ -303,7 +303,7 @@ module dispatch #(
   assign uses_int_rs1     = i_from_id_to_ex.uses_int_rs1;
   assign uses_int_rs2     = i_from_id_to_ex.uses_int_rs2;
 
-  // An illegal FSW or FSD (FS=Off) keeps its decoded is_fp_store; the mask
+  // An illegal FSH, FSW or FSD (FS=Off) keeps its decoded is_fp_store; the mask
   // keeps it from reaching the ROB and the reservation station as a store.
   assign is_store_flag    = i_from_id_to_ex.is_int_store;
   assign is_fp_store_flag = i_from_id_to_ex.is_fp_store && !i_from_id_to_ex.is_illegal_instruction;
@@ -331,25 +331,16 @@ module dispatch #(
       // cbo.zero and the Zicbom ops take the byte size, so rs1 never
       // misaligns (cmo.adoc, norm:no_addr_misaligned_excep); the SQ
       // entry's zero-block flag widens the write to the whole block.
-      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN,
-      riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
+      riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN, riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       mem_size = riscv_pkg::MEM_SIZE_BYTE;
-      riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size = riscv_pkg::MEM_SIZE_HALF;
-      riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
-      riscv_pkg::LR_W, riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
-      riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
-      mem_size = riscv_pkg::MEM_SIZE_WORD;
-      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD,
-      riscv_pkg::LR_D, riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
-      mem_size = riscv_pkg::MEM_SIZE_DOUBLE;
+      // Scalar integer/FP loads, stores, LR/SC, and AMOs encode log2(bytes)
+      // directly in funct3[1:0] (00=B, 01=H, 10=W, 11=D).
+      riscv_pkg::LOAD, riscv_pkg::STORE, riscv_pkg::LOAD_FP, riscv_pkg::STORE_FP,
+      riscv_pkg::LR, riscv_pkg::SC,
+      riscv_pkg::AMOSWAP, riscv_pkg::AMOADD, riscv_pkg::AMOXOR, riscv_pkg::AMOAND,
+      riscv_pkg::AMOOR, riscv_pkg::AMOMIN, riscv_pkg::AMOMAX, riscv_pkg::AMOMINU,
+      riscv_pkg::AMOMAXU:
+      mem_size = riscv_pkg::mem_size_e'(i_from_id_to_ex.instruction.funct3[1:0]);
       default: begin
         mem_size = riscv_pkg::MEM_SIZE_WORD;
         mem_size_defaulted = 1'b1;
@@ -384,9 +375,7 @@ module dispatch #(
       riscv_pkg::XORI, riscv_pkg::SLTI,
       riscv_pkg::SLTIU, riscv_pkg::SLLI,
       riscv_pkg::SRLI, riscv_pkg::SRAI,
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::FLW, riscv_pkg::FLD,
-      riscv_pkg::LWU, riscv_pkg::LD,
+      riscv_pkg::LOAD, riscv_pkg::LOAD_FP,
       riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
       // B-ext immediate forms
       riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI,
@@ -396,8 +385,7 @@ module dispatch #(
       end
 
       // S-type immediate (stores)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::FSW, riscv_pkg::FSD: begin
+      riscv_pkg::STORE, riscv_pkg::STORE_FP: begin
         use_imm = 1'b1;
         imm     = i_from_id_to_ex.immediate_s_type;
       end
@@ -406,6 +394,12 @@ module dispatch #(
       riscv_pkg::LUI: begin
         use_imm = 1'b1;
         imm     = i_from_id_to_ex.immediate_u_type;
+      end
+
+      // Zfa FLI: the rs1 field indexes the engine's constant table.
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D: begin
+        use_imm = 1'b0;
+        imm     = {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex.instruction.source_reg_1};
       end
 
       // AUIPC: ID precomputed PC + imm_u, so the ALU materializes it like LUI
@@ -564,25 +558,14 @@ module dispatch #(
   always_comb begin
     mem_size_2_defaulted = 1'b0;
     case (op_2)
-      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN,
-      riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
+      riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN, riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       mem_size_2 = riscv_pkg::MEM_SIZE_BYTE;
-      riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size_2 = riscv_pkg::MEM_SIZE_HALF;
-      riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
-      riscv_pkg::LR_W, riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
-      riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
-      mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
-      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD,
-      riscv_pkg::LR_D, riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
-      mem_size_2 = riscv_pkg::MEM_SIZE_DOUBLE;
+      riscv_pkg::LOAD, riscv_pkg::STORE, riscv_pkg::LOAD_FP, riscv_pkg::STORE_FP,
+      riscv_pkg::LR, riscv_pkg::SC,
+      riscv_pkg::AMOSWAP, riscv_pkg::AMOADD, riscv_pkg::AMOXOR, riscv_pkg::AMOAND,
+      riscv_pkg::AMOOR, riscv_pkg::AMOMIN, riscv_pkg::AMOMAX, riscv_pkg::AMOMINU,
+      riscv_pkg::AMOMAXU:
+      mem_size_2 = riscv_pkg::mem_size_e'(i_from_id_to_ex_2.instruction.funct3[1:0]);
       default: begin
         mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
         mem_size_2_defaulted = 1'b1;
@@ -614,9 +597,7 @@ module dispatch #(
       riscv_pkg::XORI, riscv_pkg::SLTI,
       riscv_pkg::SLTIU, riscv_pkg::SLLI,
       riscv_pkg::SRLI, riscv_pkg::SRAI,
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::FLW, riscv_pkg::FLD,
-      riscv_pkg::LWU, riscv_pkg::LD,
+      riscv_pkg::LOAD, riscv_pkg::LOAD_FP,
       riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
       riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI,
       riscv_pkg::SLLI_UW, riscv_pkg::RORIW: begin
@@ -624,8 +605,7 @@ module dispatch #(
         imm_2     = i_from_id_to_ex_2.immediate_i_type;
       end
 
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::FSW, riscv_pkg::FSD: begin
+      riscv_pkg::STORE, riscv_pkg::STORE_FP: begin
         use_imm_2 = 1'b1;
         imm_2     = i_from_id_to_ex_2.immediate_s_type;
       end
@@ -633,6 +613,12 @@ module dispatch #(
       riscv_pkg::LUI: begin
         use_imm_2 = 1'b1;
         imm_2     = i_from_id_to_ex_2.immediate_u_type;
+      end
+
+      // Zfa FLI: constant index (see slot 1).
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D: begin
+        use_imm_2 = 1'b0;
+        imm_2     = {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex_2.instruction.source_reg_1};
       end
 
       // AUIPC: precomputed PC + imm_u (see slot 1).
@@ -1434,7 +1420,7 @@ module dispatch #(
     o_rob_alloc_req.is_fp_instruction = i_from_id_to_ex.is_fp_instruction;
 
     // The ROB rejects dynamic rounding with frm in 5-7. Legal F/D ops without
-    // an rm field have funct3 <= 011, so funct3 == DYN identifies rm users.
+    // an rm field have funct3 <= 101, so funct3 == DYN identifies rm users.
     o_rob_alloc_req.fp_dyn_rm = i_from_id_to_ex.is_fp_instruction &&
         (i_from_id_to_ex.instruction.funct3 == riscv_pkg::FRM_DYN);
   end

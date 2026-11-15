@@ -21,14 +21,16 @@ from cocotb.clock import Clock
 
 from .dispatch_interface import (
     DispatchInterface,
+    _INSTR_OPS,
+    pack_rat_lookup,
+    unpack_rs_dispatch,
     pack_instr_t,
     # Op codes
     ADD,
+    SLT,
     MUL,
-    LW,
-    LB,
-    LBU,
-    SW,
+    LOAD,
+    STORE,
     BEQ,
     JAL,
     WFI,
@@ -39,36 +41,32 @@ from .dispatch_interface import (
     AUIPC,
     JALR,
     FADD_S,
-    FLW,
+    LOAD_FP,
+    STORE_FP,
     FMUL_S,
     FDIV_S,
     FMADD_S,
     FSQRT_S,
-    LD,
-    LWU,
-    SD,
     ADDW,
     ADDIW,
     MULW,
-    LR_D,
-    SC_D,
-    AMOADD_D,
+    LR,
+    SC,
+    AMOADD,
     FCVT_S_W,
     ANDI,
-    CSRRS,
-    CSRRC,
-    CSRRWI,
-    CSRRSI,
-    CSRRCI,
-    CSRRW,
+    CSR_REG,
+    CSR_IMM,
     RS_INT,
     RS_MUL,
     RS_MEM,
     RS_FP,
     RS_NONE,
     MEM_SIZE_BYTE,
+    MEM_SIZE_HALF,
     MEM_SIZE_WORD,
     MEM_SIZE_DOUBLE,
+    FLI_S,
 )
 
 # Major opcodes (instruction bits [6:0]), values from opc_e in riscv_pkg.
@@ -173,9 +171,9 @@ async def test_stall_when_rs_full(dut: Any) -> None:
     dut_if.set_mem_rs_full(True)
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=LW,
+        instruction_operation=LOAD,
         is_load_instruction=1,
-        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b010),
     )
     await dut_if.step()
     assert dut_if.stall, "Expected stall when MEM RS is full for LW"
@@ -189,9 +187,9 @@ async def test_stall_when_lq_full(dut: Any) -> None:
     dut_if.set_lq_full(True)
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=LW,
+        instruction_operation=LOAD,
         is_load_instruction=1,
-        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b010),
     )
     await dut_if.step()
     assert dut_if.stall, "Expected stall when LQ is full for load"
@@ -208,15 +206,15 @@ async def test_illegal_memory_ops_take_no_queue_entry(dut: Any) -> None:
     dut_if.set_lq_full(True)
     dut_if.set_sq_full(True)
     for name, operation, flag in (
-        ("FS=Off flw", FLW, "is_illegal_instruction"),
-        ("illegal lw", LW, "is_illegal_instruction"),
-        ("faulting sc.d", SC_D, "is_fetch_fault"),
-        ("faulting amoadd.d", AMOADD_D, "is_fetch_fault"),
+        ("FS=Off flw", LOAD_FP, "is_illegal_instruction"),
+        ("illegal lw", LOAD, "is_illegal_instruction"),
+        ("faulting sc.d", SC, "is_fetch_fault"),
+        ("faulting amoadd.d", AMOADD, "is_fetch_fault"),
     ):
         dut_if.drive_instruction(
             valid=True,
             instruction_operation=operation,
-            instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+            instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b010),
             **{flag: 1},
         )
         await dut_if.step()
@@ -225,8 +223,8 @@ async def test_illegal_memory_ops_take_no_queue_entry(dut: Any) -> None:
 
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=LW,
-        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+        instruction_operation=LOAD,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b010),
     )
     await dut_if.step()
     assert dut_if.stall, "a legal load must wait for a full load queue"
@@ -240,8 +238,8 @@ async def test_stall_when_sq_full(dut: Any) -> None:
     dut_if.set_sq_full(True)
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=SW,
-        instruction=_make_instr(opcode=OPC_STORE),
+        instruction_operation=STORE,
+        instruction=_make_instr(opcode=OPC_STORE, funct3=0b010),
     )
     await dut_if.step()
     assert dut_if.stall, "Expected stall when SQ is full for store"
@@ -324,9 +322,9 @@ async def test_load_dispatches_to_mem_rs(dut: Any) -> None:
 
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=LW,
+        instruction_operation=LOAD,
         is_load_instruction=1,
-        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b010),
     )
     await dut_if.step()
 
@@ -870,9 +868,11 @@ async def test_slot2_memory_routes_to_mem_rs(dut: Any) -> None:
     dut_if.drive_instruction_2(
         valid=True,
         rs1_addr=2,
-        instruction_operation=LW,
+        instruction_operation=LOAD,
         immediate_i_type=16,
-        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, source_reg_1=2),
+        instruction=_make_instr(
+            dest_reg=5, opcode=OPC_LOAD, funct3=0b010, source_reg_1=2
+        ),
     )
     await dut_if.step()
 
@@ -899,10 +899,11 @@ async def test_slot2_memory_routes_to_mem_rs(dut: Any) -> None:
         valid=True,
         rs1_addr=4,
         rs2_addr=5,
-        instruction_operation=SW,
+        instruction_operation=STORE,
         immediate_s_type=32,
         instruction=_make_instr(
             opcode=OPC_STORE,
+            funct3=0b010,
             source_reg_1=4,
             source_reg_2=5,
         ),
@@ -973,8 +974,8 @@ async def test_store_no_dest_rename(dut: Any) -> None:
 
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=SW,
-        instruction=_make_instr(dest_reg=0, opcode=OPC_STORE),
+        instruction_operation=STORE,
+        instruction=_make_instr(dest_reg=0, opcode=OPC_STORE, funct3=0b010),
     )
     await dut_if.step()
 
@@ -1077,15 +1078,108 @@ async def test_immediate_s_type(dut: Any) -> None:
 
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=SW,
+        instruction_operation=STORE,
         immediate_s_type=100,
-        instruction=_make_instr(opcode=OPC_STORE),
+        instruction=_make_instr(opcode=OPC_STORE, funct3=0b010),
     )
     await dut_if.step()
 
     rs = dut_if.read_rs_dispatch()
     assert rs["use_imm"] == 1, "SW should use immediate"
     assert rs["imm"] == 100, f"Expected imm=100, got {rs['imm']}"
+
+
+@cocotb.test()
+async def test_zfhmin_half_memory_ops(dut: Any) -> None:
+    """FLH and FSH dispatch via LOAD_FP and STORE_FP as halfword accesses in both slots."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=LOAD_FP,
+        immediate_i_type=6,
+        is_fp_load=1,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD_FP, funct3=1),
+    )
+    await dut_if.step()
+    rs = dut_if.read_rs_dispatch()
+    assert rs["rs_type"] == RS_MEM, f"FLH rs_type {rs['rs_type']}"
+    assert rs["mem_size"] == MEM_SIZE_HALF, f"FLH mem_size {rs['mem_size']}"
+    assert rs["use_imm"] == 1, "FLH use_imm"
+    assert rs["imm"] == 6, f"FLH imm {rs['imm']}"
+    assert rs["mem_signed"] == 0, "FLH is not a sign-extending load"
+    assert rs["is_fp_mem"] == 1 and rs["mem_needs_lq"] == 1, "FLH flags"
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=STORE_FP,
+        immediate_s_type=10,
+        is_fp_store=1,
+        instruction=_make_instr(opcode=OPC_STORE_FP, funct3=1, source_reg_2=4),
+    )
+    await dut_if.step()
+    rs = dut_if.read_rs_dispatch()
+    assert rs["rs_type"] == RS_MEM, f"FSH rs_type {rs['rs_type']}"
+    assert rs["mem_size"] == MEM_SIZE_HALF, f"FSH mem_size {rs['mem_size']}"
+    assert rs["use_imm"] == 1, "FSH use_imm"
+    assert rs["imm"] == 10, f"FSH imm {rs['imm']}"
+    assert rs["mem_signed"] == 0, "FSH mem_signed"
+    assert rs["is_fp_mem"] == 1 and rs["mem_needs_sq"] == 1, "FSH flags"
+
+    # Slot-2 half-precision load and store beside a word-funct3 slot-1 op.
+    dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=2, full=0)
+    dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=3, full=0)
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=SLT,
+        instruction=_make_instr(dest_reg=2, opcode=OPC_OP, funct3=0b010),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        instruction_operation=LOAD_FP,
+        immediate_i_type=14,
+        is_fp_load=1,
+        instruction=_make_instr(dest_reg=6, opcode=OPC_LOAD_FP, funct3=1),
+    )
+    await dut_if.step()
+    rs2 = dut_if.read_mem_rs_dispatch_2()
+    assert rs2["valid"] == 1 and rs2["mem_size"] == MEM_SIZE_HALF
+    assert rs2["use_imm"] == 1 and rs2["imm"] == 14 and rs2["mem_signed"] == 0
+
+    dut_if.drive_instruction_2(
+        valid=True,
+        instruction_operation=STORE_FP,
+        immediate_s_type=18,
+        is_fp_store=1,
+        instruction=_make_instr(opcode=OPC_STORE_FP, funct3=1, source_reg_2=4),
+    )
+    await dut_if.step()
+    rs2 = dut_if.read_mem_rs_dispatch_2()
+    assert rs2["valid"] == 1 and rs2["mem_size"] == MEM_SIZE_HALF
+    assert rs2["use_imm"] == 1 and rs2["imm"] == 18 and rs2["mem_signed"] == 0
+
+
+@cocotb.test()
+async def test_zfa_fli_index_in_imm(dut: Any) -> None:
+    """FLI.S reads no register and carries its rs1-field index in imm."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=FLI_S,
+        instruction=_make_instr(
+            dest_reg=3,
+            opcode=OPC_OP_FP,
+            funct7=0b1111000,
+            source_reg_1=29,
+            source_reg_2=1,
+        ),
+    )
+    await dut_if.step()
+    rs = dut_if.read_rs_dispatch()
+    assert rs["rs_type"] == RS_FP, f"FLI.S rs_type {rs['rs_type']}"
+    assert rs["imm"] == 29, f"FLI.S imm {rs['imm']}"
+    assert rs["src1_ready"] == 1, "FLI.S has no register source"
 
 
 # =============================================================================
@@ -1100,9 +1194,9 @@ async def test_memory_size_byte(dut: Any) -> None:
 
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=LB,
+        instruction_operation=LOAD,
         is_load_instruction=1,
-        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b000),
     )
     await dut_if.step()
 
@@ -1119,9 +1213,9 @@ async def test_memory_signed(dut: Any) -> None:
 
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=LB,
+        instruction_operation=LOAD,
         is_load_instruction=1,
-        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b000),
     )
     await dut_if.step()
 
@@ -1130,9 +1224,9 @@ async def test_memory_signed(dut: Any) -> None:
 
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=LBU,
+        instruction_operation=LOAD,
         is_load_instruction=1,
-        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b100),
     )
     await dut_if.step()
 
@@ -1150,15 +1244,15 @@ async def test_rv64_ops_dispatch_with_decoded_flags(dut: Any) -> None:
 
     # name, op, opcode, funct3, station, writes rd, reads rs2, memory size
     cases = (
-        ("LD", LD, OPC_LOAD, 0b011, RS_MEM, True, False, MEM_SIZE_DOUBLE),
-        ("LWU", LWU, OPC_LOAD, 0b110, RS_MEM, True, False, MEM_SIZE_WORD),
-        ("SD", SD, OPC_STORE, 0b011, RS_MEM, False, True, MEM_SIZE_DOUBLE),
+        ("LD", LOAD, OPC_LOAD, 0b011, RS_MEM, True, False, MEM_SIZE_DOUBLE),
+        ("LWU", LOAD, OPC_LOAD, 0b110, RS_MEM, True, False, MEM_SIZE_WORD),
+        ("SD", STORE, OPC_STORE, 0b011, RS_MEM, False, True, MEM_SIZE_DOUBLE),
         ("ADDW", ADDW, OPC_OP_32, 0b000, RS_INT, True, True, None),
         ("ADDIW", ADDIW, OPC_OP_IMM_32, 0b000, RS_INT, True, False, None),
         ("MULW", MULW, OPC_OP_32, 0b000, RS_MUL, True, True, None),
-        ("LR_D", LR_D, OPC_AMO, 0b011, RS_MEM, True, False, MEM_SIZE_DOUBLE),
-        ("SC_D", SC_D, OPC_AMO, 0b011, RS_MEM, True, True, MEM_SIZE_DOUBLE),
-        ("AMOADD_D", AMOADD_D, OPC_AMO, 0b011, RS_MEM, True, True, MEM_SIZE_DOUBLE),
+        ("LR_D", LR, OPC_AMO, 0b011, RS_MEM, True, False, MEM_SIZE_DOUBLE),
+        ("SC_D", SC, OPC_AMO, 0b011, RS_MEM, True, True, MEM_SIZE_DOUBLE),
+        ("AMOADD_D", AMOADD, OPC_AMO, 0b011, RS_MEM, True, True, MEM_SIZE_DOUBLE),
     )
     for name, op, opcode, funct3, station, writes_rd, reads_rs2, size in cases:
         dut_if.drive_instruction(
@@ -1184,7 +1278,7 @@ async def test_rv64_ops_dispatch_with_decoded_flags(dut: Any) -> None:
     # LWU zero-extends; LD needs no extension.
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=LWU,
+        instruction_operation=LOAD,
         instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b110),
     )
     await dut_if.step()
@@ -1263,7 +1357,7 @@ async def test_csr_info_in_rob_alloc(dut: Any) -> None:
 
     dut_if.drive_instruction(
         valid=True,
-        instruction_operation=CSRRW,
+        instruction_operation=CSR_REG,
         is_csr_instruction=1,
         csr_address=csr_addr_val,
         instruction=_make_instr(dest_reg=5, opcode=0b1110011, funct3=funct3_val),
@@ -1288,12 +1382,12 @@ async def test_csr_write_intent_from_encoding(dut: Any) -> None:
     dut_if = await _setup(dut)
 
     forms = [
-        (CSRRW, 0b001),
-        (CSRRS, 0b010),
-        (CSRRC, 0b011),
-        (CSRRWI, 0b101),
-        (CSRRSI, 0b110),
-        (CSRRCI, 0b111),
+        (CSR_REG, 0b001),
+        (CSR_REG, 0b010),
+        (CSR_REG, 0b011),
+        (CSR_IMM, 0b101),
+        (CSR_IMM, 0b110),
+        (CSR_IMM, 0b111),
     ]
     for slot in (1, 2):
         for op, funct3 in forms:
@@ -1687,3 +1781,375 @@ async def test_slot2_precomputed_immediates(dut: Any) -> None:
     )
     assert slot2_rs["predicted_target_ok"] == 1
     assert slot2_rs["is_compressed"] == 1
+
+
+@cocotb.test()
+async def test_folded_mem_sizes_and_signs_slot1(dut: Any) -> None:
+    """LOAD_FP/STORE_FP, halfword accesses, and .w atomics take size/sign from funct3."""
+    dut_if = await _setup(dut)
+
+    # Choose register/funct7 fields whose [1:0] bits differ from funct3[1:0], and
+    # drive a conflicting funct3 on inactive slot 2 so any wrong width source fails.
+    cases = (
+        ("FLH", LOAD_FP, OPC_LOAD_FP, 0b001, 0, 3, 3, 0, MEM_SIZE_HALF, 0, 16, 0, True),
+        ("FLW", LOAD_FP, OPC_LOAD_FP, 0b010, 0, 3, 3, 0, MEM_SIZE_WORD, 0, 24, 0, True),
+        (
+            "FLD",
+            LOAD_FP,
+            OPC_LOAD_FP,
+            0b011,
+            0,
+            1,
+            1,
+            0,
+            MEM_SIZE_DOUBLE,
+            0,
+            32,
+            0,
+            True,
+        ),
+        (
+            "FSH",
+            STORE_FP,
+            OPC_STORE_FP,
+            0b001,
+            0,
+            3,
+            3,
+            3,
+            MEM_SIZE_HALF,
+            0,
+            0,
+            20,
+            True,
+        ),
+        (
+            "FSW",
+            STORE_FP,
+            OPC_STORE_FP,
+            0b010,
+            0,
+            3,
+            3,
+            3,
+            MEM_SIZE_WORD,
+            0,
+            0,
+            28,
+            True,
+        ),
+        (
+            "FSD",
+            STORE_FP,
+            OPC_STORE_FP,
+            0b011,
+            0,
+            1,
+            1,
+            1,
+            MEM_SIZE_DOUBLE,
+            0,
+            0,
+            40,
+            True,
+        ),
+        ("LH", LOAD, OPC_LOAD, 0b001, 0, 3, 3, 0, MEM_SIZE_HALF, 1, 12, 0, True),
+        ("LHU", LOAD, OPC_LOAD, 0b101, 0, 3, 3, 0, MEM_SIZE_HALF, 0, 14, 0, True),
+        ("SH", STORE, OPC_STORE, 0b001, 0, 3, 3, 3, MEM_SIZE_HALF, 0, 0, 18, True),
+        (
+            "LR_W",
+            LR,
+            OPC_AMO,
+            0b010,
+            0b00010_00,
+            3,
+            3,
+            0,
+            MEM_SIZE_WORD,
+            1,
+            0,
+            0,
+            False,
+        ),
+        (
+            "SC_W",
+            SC,
+            OPC_AMO,
+            0b010,
+            0b00011_00,
+            3,
+            3,
+            3,
+            MEM_SIZE_WORD,
+            0,
+            0,
+            0,
+            False,
+        ),
+        (
+            "AMOADD_W",
+            AMOADD,
+            OPC_AMO,
+            0b010,
+            0b00000_00,
+            3,
+            3,
+            3,
+            MEM_SIZE_WORD,
+            0,
+            0,
+            0,
+            False,
+        ),
+    )
+    for (
+        name,
+        op,
+        opcode,
+        funct3,
+        funct7,
+        rd,
+        rs1,
+        rs2,
+        exp_size,
+        exp_signed,
+        imm_i,
+        imm_s,
+        exp_use_imm,
+    ) in cases:
+        other_funct3 = (funct3 ^ 0b011) & 0x7
+        dut_if.drive_instruction_2(
+            valid=False,
+            instruction_operation=ADD,
+            instruction=_make_instr(dest_reg=2, opcode=OPC_OP, funct3=other_funct3),
+        )
+        dut_if.drive_instruction(
+            valid=True,
+            rs1_addr=rs1,
+            rs2_addr=rs2,
+            instruction_operation=op,
+            immediate_i_type=imm_i,
+            immediate_s_type=imm_s,
+            instruction=_make_instr(
+                dest_reg=rd,
+                opcode=opcode,
+                funct3=funct3,
+                funct7=funct7,
+                source_reg_1=rs1,
+                source_reg_2=rs2,
+            ),
+        )
+        await dut_if.step()
+
+        rs = dut_if.read_rs_dispatch()
+        assert rs["valid"] == 1, name
+        assert rs["rs_type"] == RS_MEM, name
+        assert rs["mem_size"] == exp_size, (
+            f"{name}: expected mem_size={exp_size}, got {rs['mem_size']}"
+        )
+        assert rs["mem_signed"] == exp_signed, (
+            f"{name}: expected mem_signed={exp_signed}, got {rs['mem_signed']}"
+        )
+        assert rs["use_imm"] == int(exp_use_imm), f"{name}: use_imm"
+        if exp_use_imm:
+            exp_imm = imm_s if op in (STORE, STORE_FP) else imm_i
+            assert rs["imm"] == exp_imm, f"{name}: imm {rs['imm']} != {exp_imm}"
+
+
+@cocotb.test()
+async def test_slot2_non_word_loads_and_stores(dut: Any) -> None:
+    """Slot-2 non-word loads and stores read slot 2's own funct3 size and sign."""
+    dut_if = await _setup(dut)
+
+    # Slot 1 carries SLT (funct3 = 0b010 -> 2'b10 = WORD) so reading slot 1's
+    # funct3 or defaulting to MEM_SIZE_WORD fails every slot-2 case below.
+    load_cases = (
+        ("LB", 0b000, 3, 3, MEM_SIZE_BYTE, 1, 10),
+        ("LBU", 0b100, 3, 3, MEM_SIZE_BYTE, 0, 12),
+        ("LH", 0b001, 3, 3, MEM_SIZE_HALF, 1, 20),
+        ("LHU", 0b101, 3, 3, MEM_SIZE_HALF, 0, 22),
+        ("LD", 0b011, 5, 1, MEM_SIZE_DOUBLE, 1, 24),
+    )
+    for name, funct3, rd, rs1, exp_size, exp_signed, imm_i in load_cases:
+        dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=2, full=0)
+        dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=3, full=0)
+        dut_if.drive_instruction(
+            valid=True,
+            instruction_operation=SLT,
+            instruction=_make_instr(dest_reg=2, opcode=OPC_OP, funct3=0b010),
+        )
+        dut_if.drive_instruction_2(
+            valid=True,
+            rs1_addr=rs1,
+            instruction_operation=LOAD,
+            immediate_i_type=imm_i,
+            instruction=_make_instr(
+                dest_reg=rd,
+                opcode=OPC_LOAD,
+                funct3=funct3,
+                source_reg_1=rs1,
+            ),
+        )
+        await dut_if.step()
+
+        rs2_pkt = dut_if.read_mem_rs_dispatch_2()
+        assert rs2_pkt["valid"] == 1, name
+        assert rs2_pkt["mem_size"] == exp_size, (
+            f"slot2 {name}: expected mem_size={exp_size}, got {rs2_pkt['mem_size']}"
+        )
+        assert rs2_pkt["mem_signed"] == exp_signed, (
+            f"slot2 {name}: expected mem_signed={exp_signed}, got {rs2_pkt['mem_signed']}"
+        )
+        assert rs2_pkt["use_imm"] == 1 and rs2_pkt["imm"] == imm_i, name
+
+    store_cases = (
+        ("SB", 0b000, 3, 3, MEM_SIZE_BYTE, 11),
+        ("SH", 0b001, 3, 3, MEM_SIZE_HALF, 18),
+        ("SD", 0b011, 1, 1, MEM_SIZE_DOUBLE, 32),
+    )
+    for name, funct3, rs1, rs2, exp_size, imm_s in store_cases:
+        dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=4, full=0)
+        dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=5, full=0)
+        dut_if.drive_instruction(
+            valid=True,
+            instruction_operation=SLT,
+            instruction=_make_instr(dest_reg=2, opcode=OPC_OP, funct3=0b010),
+        )
+        dut_if.drive_instruction_2(
+            valid=True,
+            rs1_addr=rs1,
+            rs2_addr=rs2,
+            instruction_operation=STORE,
+            immediate_s_type=imm_s,
+            instruction=_make_instr(
+                dest_reg=3,
+                opcode=OPC_STORE,
+                funct3=funct3,
+                source_reg_1=rs1,
+                source_reg_2=rs2,
+            ),
+        )
+        await dut_if.step()
+
+        rs2_pkt = dut_if.read_mem_rs_dispatch_2()
+        assert rs2_pkt["valid"] == 1, name
+        assert rs2_pkt["mem_size"] == exp_size, (
+            f"slot2 {name}: expected mem_size={exp_size}, got {rs2_pkt['mem_size']}"
+        )
+        assert rs2_pkt["mem_signed"] == 0, f"slot2 {name}: mem_signed"
+        assert rs2_pkt["use_imm"] == 1 and rs2_pkt["imm"] == imm_s, name
+
+
+@cocotb.test()
+async def test_extension_unused_sources_are_ready(dut: Any) -> None:
+    """Both slots ignore stale RAT tags on every unused Zfhmin/Zfa/Zimop source."""
+    dut_if = await _setup(dut)
+    cases = [
+        ("FLH", "i", False, RS_MEM),
+        ("FSH", "i", True, RS_MEM),
+        ("FMV_H_X", "i", False, RS_FP),
+        ("FMV_X_H", "f", False, RS_FP),
+        *[
+            (name, "f", False, RS_FP)
+            for name in (
+                "FCVT_S_H",
+                "FCVT_D_H",
+                "FCVT_H_S",
+                "FCVT_H_D",
+                "FROUND_S",
+                "FROUND_D",
+                "FROUNDNX_S",
+                "FROUNDNX_D",
+                "FCVTMOD_W_D",
+            )
+        ],
+        *[
+            (name, "f", True, RS_FP)
+            for name in (
+                "FMINM_S",
+                "FMINM_D",
+                "FMAXM_S",
+                "FMAXM_D",
+                "FLEQ_S",
+                "FLEQ_D",
+                "FLTQ_S",
+                "FLTQ_D",
+            )
+        ],
+        ("FLI_S", "", False, RS_FP),
+        ("FLI_D", "", False, RS_FP),
+        ("MOP", "", False, RS_INT),
+    ]
+    for slot2 in (False, True):
+        suffix = "_2" if slot2 else ""
+        for src in ("int_src1", "int_src2", "fp_src1", "fp_src2", "fp_src3"):
+            signal = getattr(dut, "i_" + src + suffix, None)
+            if signal is not None:
+                signal.value = pack_rat_lookup(1, 17, 0xDEAD)
+        for name, first, second, station in cases:
+            # Slot 1's harmless integer operation supplies no sibling rename.
+            dut_if.drive_instruction(
+                valid=True,
+                instruction_operation=ADDI,
+                instruction=_make_instr(opcode=OPC_OP_IMM),
+            )
+            dut_if.drive_instruction_2(valid=False)
+            drive = dut_if.drive_instruction_2 if slot2 else dut_if.drive_instruction
+            op_val = (
+                LOAD_FP
+                if name == "FLH"
+                else (STORE_FP if name == "FSH" else _INSTR_OPS[name])
+            )
+            opcode = (
+                OPC_LOAD_FP
+                if name == "FLH"
+                else (
+                    OPC_STORE_FP
+                    if name == "FSH"
+                    else (0b1110011 if name == "MOP" else OPC_OP_FP)
+                )
+            )
+            funct3 = (
+                0b001 if name in ("FLH", "FSH") else (0b100 if name == "MOP" else 0)
+            )
+            drive(
+                valid=True,
+                instruction_operation=op_val,
+                rs1_addr=8,
+                rs2_addr=9,
+                immediate_i_type=6 if name == "FLH" else 0,
+                immediate_s_type=10 if name == "FSH" else 0,
+                is_fp_instruction=int(name != "MOP"),
+                is_fp_load=int(name == "FLH"),
+                is_fp_store=int(name == "FSH"),
+                instruction=_make_instr(
+                    dest_reg=3,
+                    source_reg_1=8,
+                    source_reg_2=9,
+                    funct3=funct3,
+                    opcode=opcode,
+                ),
+            )
+            await dut_if.step()
+            port_name = (
+                "o_fp_rs_dispatch"
+                if station == RS_FP
+                else ("o_mem_rs_dispatch" if station == RS_MEM else "o_int_rs_dispatch")
+            )
+            signal = getattr(dut, port_name + suffix)
+            packet = unpack_rs_dispatch(int(signal.value))
+            # FP compute in slot 2 waits to become slot 1 before allocation.
+            assert bool(packet["valid"]) == (not slot2 or station != RS_FP), (
+                name,
+                slot2,
+            )
+            if name in ("FLH", "FSH"):
+                assert packet["mem_size"] == MEM_SIZE_HALF, (name, slot2)
+                assert packet["use_imm"] == 1, (name, slot2)
+                assert packet["imm"] == (6 if name == "FLH" else 10), (name, slot2)
+            expected = (int(not first), int(not second), 1)
+            actual = tuple(packet[f"src{n}_ready"] for n in (1, 2, 3))
+            assert actual == expected, (name, slot2, actual, expected)
+            for n, ready in enumerate(expected, 1):
+                if not ready:
+                    assert packet[f"src{n}_tag"] == 17, (name, slot2, n)

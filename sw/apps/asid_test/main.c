@@ -40,7 +40,16 @@
  *     one ASID, with neither flushes everything;
  *   - a changed PTE is seen after the page's SFENCE.VMA;
  *   - ASID 0x1FF (the top of the range) works and satp reads it back;
- *   - the ITLB follows the same rules (a per-ASID code page).
+ *   - the ITLB follows the same rules (a per-ASID code page);
+ *   - Svvptc immediate retry: with a leaf PTE invalid (V=0) and never cached,
+ *     storing a valid leaf PTE and accessing the page in the very next
+ *     instruction (both for a data load and for an instruction fetch), with a
+ *     trap handler that changes nothing and returns to retry, succeeds after at
+ *     most 1 page fault. Neither the TLBs, the L2 TLB, nor the upper-level walk
+ *     cache install invalid entries, the instruction MMU clears its 1-entry
+ *     fault memo on every trap and xRET pipeline flush, mret waits for
+ *     committed stores to drain into L1D, and page-table walks probe dirty L1D
+ *     lines.
  * Faults trap to M, which records the cause and returns to the M continuation.
  * The test's S code is uncompressed.
  */
@@ -61,13 +70,22 @@
 #define PA_G 0x81214000ul
 #define PA_CA 0x81215000ul
 #define PA_CB 0x81216000ul
+#define PA_SD 0x81217000ul
+#define PA_SI 0x81218000ul
 
 #define VA_X 0xC0000000ul
 #define VA_G 0xC0001000ul
 #define VA_CODE 0xC0002000ul
+#define VA_SVVPTC_D 0xC0003000ul
+#define VA_SVVPTC_I 0xC0004000ul
 #define VA_BIG 0xC0008000ul /* 32 pages per space, for the context-switch timing */
 #define PA_BIG_A 0x81220000ul
 #define PA_BIG_B 0x81240000ul
+
+#define SVVPTC_MAX_FAULTS 1ul
+#define SVVPTC_RETRY_CAP 8
+#define SVVPTC_STR_(x) #x
+#define SVVPTC_STR(x) SVVPTC_STR_(x)
 
 #define PTE_V 0x001ul
 #define PTE_R 0x002ul
@@ -86,10 +104,15 @@ volatile unsigned long g_res[NRES];
 volatile unsigned long g_bad_cause;
 volatile unsigned long g_msave[14];
 volatile unsigned long g_satp[6];
+volatile unsigned long g_svvptc_pte[2];
+volatile unsigned long g_svvptc[12];
 
 void asid_trap_handler(void);
 void asid_s_body(void);
 void run_s_body(void);
+void svvptc_trap_handler(void);
+void svvptc_s_body(void);
+void run_svvptc_body(void);
 
 /* M-mode handler. The body's closing ecall (cause 9) returns to the M
  * continuation in mscratch; any other cause is recorded and does the same. */
@@ -320,10 +343,146 @@ __asm__(".section .text\n"
         ".option pop\n");
 /* clang-format on */
 
+/* M-mode handler for the Svvptc immediate-retry check. On the closing S-mode
+ * ecall (cause 9), or if faults reach the safety cap in s11, return to the M
+ * continuation in mscratch. Otherwise count the fault in dedicated registers,
+ * leave memory and page tables untouched, and mret to retry mepc. */
+__asm__(".section .text\n"
+        ".balign 4\n"
+        ".global svvptc_trap_handler\n"
+        "svvptc_trap_handler:\n"
+        "    csrr t0, mcause\n"
+        "    li   t1, 9\n"
+        "    beq  t0, t1, 2f\n"
+        "    addi s7, s7, 1\n"
+        "    mv   s8, t0\n"
+        "    csrr s10, mtval\n"
+        "    bgeu s7, s11, 2f\n"
+        "    mret\n"
+        "2:  csrr t0, mscratch\n"
+        "    csrw mepc, t0\n"
+        "    li   t0, 0x1800\n"
+        "    csrs mstatus, t0\n"
+        "    mret\n");
+
+/* clang-format off */
+__asm__(".section .text\n"
+        ".balign 4\n"
+        ".global run_svvptc_body\n"
+        "run_svvptc_body:\n"
+        "    la   t0, g_msave\n"
+        "    sd   ra, 0(t0)\n"
+        "    sd   sp, 8(t0)\n"
+        "    sd   s0, 16(t0)\n"
+        "    sd   s1, 24(t0)\n"
+        "    sd   s2, 32(t0)\n"
+        "    sd   s3, 40(t0)\n"
+        "    sd   s4, 48(t0)\n"
+        "    sd   s5, 56(t0)\n"
+        "    sd   s6, 64(t0)\n"
+        "    sd   s7, 72(t0)\n"
+        "    sd   s8, 80(t0)\n"
+        "    sd   s9, 88(t0)\n"
+        "    sd   s10, 96(t0)\n"
+        "    sd   s11, 104(t0)\n"
+        "    la   t0, 9f\n"
+        "    csrw mscratch, t0\n"
+        "    la   t0, svvptc_s_body\n"
+        "    csrw mepc, t0\n"
+        "    li   t0, 0x1800\n"
+        "    csrc mstatus, t0\n"
+        "    li   t0, 0x0800\n"
+        "    csrs mstatus, t0\n"
+        "    la   s1, g_svvptc\n"
+        "    li   s2, 0xC0003000\n"
+        "    li   s3, 0xC0004000\n"
+        "    la   t0, g_satp\n"
+        "    ld   s4, 0(t0)\n"
+        "    ld   s9, 40(t0)\n"
+        "    la   t0, g_svvptc_pte\n"
+        "    ld   s5, 0(t0)\n"
+        "    ld   s6, 8(t0)\n"
+        "    li   s0, 0\n"
+        "    li   s7, 0\n"
+        "    li   s8, 0\n"
+        "    li   s10, 0\n"
+        "    li   s11, " SVVPTC_STR(SVVPTC_RETRY_CAP) "\n"
+        "    mret\n"
+        "9:  sd   s0, 8*8(s1)\n"
+        "    sd   s7, 9*8(s1)\n"
+        "    sd   s8, 10*8(s1)\n"
+        "    sd   s10, 11*8(s1)\n"
+        "    la   t0, g_msave\n"
+        "    ld   ra, 0(t0)\n"
+        "    ld   sp, 8(t0)\n"
+        "    ld   s0, 16(t0)\n"
+        "    ld   s1, 24(t0)\n"
+        "    ld   s2, 32(t0)\n"
+        "    ld   s3, 40(t0)\n"
+        "    ld   s4, 48(t0)\n"
+        "    ld   s5, 56(t0)\n"
+        "    ld   s6, 64(t0)\n"
+        "    ld   s7, 72(t0)\n"
+        "    ld   s8, 80(t0)\n"
+        "    ld   s9, 88(t0)\n"
+        "    ld   s10, 96(t0)\n"
+        "    ld   s11, 104(t0)\n"
+        "    ret\n");
+/* clang-format on */
+
+/* S-mode Svvptc immediate-retry sequence: l0[3] and l0[4] start at 0 (V=0) and
+ * have never been accessed or cached. Store the valid leaf PTE and access the
+ * page in the very next instruction, first for a data load and then for an
+ * instruction fetch. */
+/* clang-format off */
+__asm__(".section .text\n"
+        ".balign 4\n"
+        ".global svvptc_s_body\n"
+        ".option push\n"
+        ".option norvc\n"
+        "svvptc_s_body:\n"
+        "    csrw satp, s4\n"
+        "    sfence.vma\n"
+        "    li   t2, 0xC0000000\n"
+        "    ld   t3, 0(t2)\n"
+        "    li   s0, 1\n"
+        "    li   s7, 0\n"
+        "    li   s8, 0\n"
+        "    li   s10, 0\n"
+        "    li   a0, 0\n"
+        "    sd   s5, 3*8(s9)\n"
+        "    ld   a0, 0(s2)\n"
+        "    sd   a0, 0*8(s1)\n"
+        "    sd   s7, 1*8(s1)\n"
+        "    sd   s8, 2*8(s1)\n"
+        "    sd   s10, 3*8(s1)\n"
+        "    li   s0, 2\n"
+        "    li   s7, 0\n"
+        "    li   s8, 0\n"
+        "    li   s10, 0\n"
+        "    li   a0, 0\n"
+        "    sd   s6, 4*8(s9)\n"
+        "    jalr t6, 0(s3)\n"
+        "    sd   a0, 4*8(s1)\n"
+        "    sd   s7, 5*8(s1)\n"
+        "    sd   s8, 6*8(s1)\n"
+        "    sd   s10, 7*8(s1)\n"
+        "    li   s0, 0\n"
+        "    ecall\n"
+        ".option pop\n");
+/* clang-format on */
+
 static int check(const char *name, unsigned long got, unsigned long want)
 {
     int ok = got == want;
     uart_printf("%s %s got=0x%lx want=0x%lx\n", ok ? "[PASS]" : "[FAIL]", name, got, want);
+    return ok;
+}
+
+static int bounded(const char *name, unsigned long got, unsigned long limit)
+{
+    int ok = got <= limit;
+    uart_printf("%s %s faults=%lu max=%lu\n", ok ? "[PASS]" : "[FAIL]", name, got, limit);
     return ok;
 }
 
@@ -391,11 +550,16 @@ int main(void)
     *(volatile unsigned long *) PA_XC = 0xC4;
     *(volatile unsigned long *) PA_XA2 = 0xA3;
     *(volatile unsigned long *) PA_G = 0x6C;
-    /* li a0, 0x11 ; jr t6   and   li a0, 0x22 ; jr t6 */
+    *(volatile unsigned long *) PA_SD = 0x5D;
+    /* li a0, 0x11 ; jr t6, li a0, 0x22 ; jr t6, and li a0, 0x33 ; jr t6 */
     ((volatile uint32_t *) PA_CA)[0] = 0x01100513;
     ((volatile uint32_t *) PA_CA)[1] = 0x000F8067;
     ((volatile uint32_t *) PA_CB)[0] = 0x02200513;
     ((volatile uint32_t *) PA_CB)[1] = 0x000F8067;
+    ((volatile uint32_t *) PA_SI)[0] = 0x03300513;
+    ((volatile uint32_t *) PA_SI)[1] = 0x000F8067;
+    g_svvptc_pte[0] = PTE_PPN(PA_SD) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    g_svvptc_pte[1] = PTE_PPN(PA_SI) | PTE_V | PTE_R | PTE_X | PTE_A;
     __asm__ volatile("fence rw, rw\n fence.i\n" ::: "memory");
 
     /* ITLB walks, DTLB walks and walker busy cycles; all modes may read them. */
@@ -410,6 +574,13 @@ int main(void)
 
     run_s_body();
     csr_write(satp, 0);
+
+    for (int i = 0; i < 12; i++)
+        g_svvptc[i] = 0;
+    set_trap_handler(&svvptc_trap_handler);
+    run_svvptc_body();
+    csr_write(satp, 0);
+    set_trap_handler(&asid_trap_handler);
 
     ok &= check("unexpected-trap", g_bad_cause, 0);
     ok &= check("asidlen", asidlen, 9);
@@ -467,7 +638,25 @@ int main(void)
     ok &= walked("50 A-code-kept-across-B", g_res[50], 0);
     ok &= check("51 A-code-after-sfence", g_res[51], 0x11);
     ok &= walked("52 A-code-sfence-asid1-flushes", g_res[52], 1);
+    ok &= check("svvptc-completed", g_svvptc[8], 0);
+    ok &= bounded("svvptc-cap-margin", g_svvptc[9], (unsigned long) (SVVPTC_RETRY_CAP - 1));
+    ok &= check("svvptc-data-val", g_svvptc[0], 0x5D);
+    ok &= bounded("svvptc-data-faults", g_svvptc[1], SVVPTC_MAX_FAULTS);
+    if (g_svvptc[1] > 0) {
+        ok &= check("svvptc-data-cause", g_svvptc[2], 13);
+        ok &= check("svvptc-data-tval", g_svvptc[3], VA_SVVPTC_D);
+    }
+    ok &= check("svvptc-fetch-val", g_svvptc[4], 0x33);
+    ok &= bounded("svvptc-fetch-faults", g_svvptc[5], SVVPTC_MAX_FAULTS);
+    if (g_svvptc[5] > 0) {
+        ok &= check("svvptc-fetch-cause", g_svvptc[6], 12);
+        ok &= check("svvptc-fetch-tval", g_svvptc[7], VA_SVVPTC_I);
+    }
     uart_printf("ASIDTEST asidlen=%lu satp_probe=0x%lx\n", asidlen, probe);
+    uart_printf("ASIDTEST svvptc data_faults=%lu fetch_faults=%lu max_faults=%lu\n",
+                g_svvptc[1],
+                g_svvptc[5],
+                SVVPTC_MAX_FAULTS);
     uart_printf("ASIDTEST ctxswitch switches=32 pages_per_switch=32 asid_cycles=%lu "
                 "sfence_cycles=%lu per_switch_asid=%lu per_switch_sfence=%lu\n",
                 g_res[58],

@@ -1876,21 +1876,45 @@ module store_queue #(
       // Dispatch must be idle during deferred pullback: allocating at stale tail
       // would place a valid entry outside the rebuilt window.
       if ((i_alloc.valid || i_alloc_2.valid) && flush_pullback_pending)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: allocation attempted during flush tail-pullback cycle");
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
       if (slot2_alloc_en != slot2_alloc_en_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: expanded slot-2 allocation enable differs from the reference");
       if (slot2_alloc_oh != slot2_alloc_oh_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: expanded slot-2 allocation pulses differ from the reference");
       if ((|slot1_alloc_oh) != slot1_alloc_en || !$onehot0(slot1_alloc_oh))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: slot-1 allocation pulse lost or invented an accepted request");
       if (alloc_oh != (slot1_alloc_oh | slot2_alloc_oh) || (|(slot1_alloc_oh & slot2_alloc_oh)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: merged allocation pulses differ from the slot pulses");
       if (live_count_next != live_count_next_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: selected live-count candidate differs from the adder form");
       if (dispatch_full_next != dispatch_full_next_reference ||
           dispatch_full_for_2_next != dispatch_full_for_2_next_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: selected dispatch back-pressure differs from the adder form");
     end
   end

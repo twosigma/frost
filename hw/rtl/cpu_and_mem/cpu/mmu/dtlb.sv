@@ -32,14 +32,15 @@
  * the configured physical width.
  *
  * Svpbmt. Each entry keeps the leaf's PBMT field and returns it on a hit
- * (o_pbmt). NC and IO leaves over DDR arrive with the uncached alias's PPN;
+ * (o_pbmt). NC and IO leaves over DDR covered by an alias use that alias's PPN;
  * the alias window is outside the PMA map, so the entry's field and stored
  * PPN mark it an NC or IO alias page, and the per-entry checks make it a
  * device page (the MMIO path, no L0 or L1D) without AMOs; fetch fails the PMA
  * check of the alias. A PMA leaf over the window stays an access fault. Over
  * low BRAM (memory without an alias) the checks apply the field the same way:
  * a device page, no AMOs, LR or SC, no instruction fetch. Over a device
- * window it changes nothing.
+ * window it changes nothing. The instruction side can also keep a no-alias
+ * NC/IO leaf with its original PPN; PBMT refuses fetch after permission checks.
  *
  * Lookups are combinational. Walks install on misses using the echoed VPN;
  * installs do not remove overlapping entries. Software that changes mappings
@@ -68,8 +69,9 @@ module dtlb #(
     // The ASID that lookups and installs use (satp.ASID).
     input logic [riscv_pkg::AsidBits-1:0] i_asid,
 
-    // Install a walked leaf (fault-free ptw response), tagged with i_asid
-    // unless the leaf is global.
+    // Install a walked leaf, tagged with i_asid unless it is global.
+    // Data callers require DFAULT_NONE. An instruction caller may also supply
+    // an ACCESS NC/IO leaf, whose permissions take priority over its PMA fault.
     input logic                 i_install_valid,
     input riscv_pkg::ptw_resp_t i_install,
 
@@ -89,11 +91,11 @@ module dtlb #(
     output logic [NUM_PORTS-1:0][1:0] o_level,
     // The hit entry's PBMT field (zero on a miss).
     output logic [NUM_PORTS-1:0][1:0] o_pbmt,
-    // o_ppn is a device-window page (riscv_pkg::pma_device_page_ok).
+    // Effective device page, including NC/IO mappings of memory and the uncached alias.
     output logic [NUM_PORTS-1:0] o_device_page,
     // Data permissions: stores require W and D; loads require R or X with
     // MXR. U pages require U mode or SUM; S pages reject U mode.
-    // o_atomic_page checks pma_atomic_ok on the zero-extended PA. Both
+    // o_atomic_page checks PBMT and pma_atomic_ok on the zero-extended PA. Both
     // PMA outputs and o_perm_ok are clear on a miss or with DATA_VERDICTS
     // disabled. The ITLB disables these unused data checks.
     input logic [NUM_PORTS-1:0] i_perm_store,

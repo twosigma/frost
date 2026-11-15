@@ -582,6 +582,9 @@ module axi_behavioral_memory #(
             aw_q_valid[s],
             w_q_valid[s]
         );
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_behavioral_memory: AR stalled for 1024 cycles");
       end
     end
@@ -593,20 +596,32 @@ module axi_behavioral_memory #(
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (i_axi_awvalid && o_axi_awready && i_axi_awlen != 8'd0)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_behavioral_memory: only single-beat write bursts supported");
       if (i_axi_arvalid && o_axi_arready && i_axi_arlen != 8'd0)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_behavioral_memory: only single-beat read bursts supported");
       // AXI forbids reordering two in-flight transactions that share an id.
       // The bridge never issues a duplicate id, and these checks confirm it.
       if (i_axi_arvalid && o_axi_arready) begin
         for (int s = 0; s < int'(NUM_SLOTS); s++) begin
           if (rd_valid_q[s] && rd_id_q[s] == i_axi_arid)
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error("axi_behavioral_memory: duplicate read id %0d in flight", i_axi_arid);
         end
       end
       if (pair_ready) begin
         for (int s = 0; s < int'(NUM_SLOTS); s++) begin
           if (wr_valid_q[s] && wr_id_q[s] == aw_head_id)
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error("axi_behavioral_memory: duplicate write id %0d in flight", aw_head_id);
         end
       end

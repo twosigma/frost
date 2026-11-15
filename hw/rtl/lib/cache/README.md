@@ -30,7 +30,7 @@ benches compose these modules independently of the CPU hierarchy.
 | `coherence_prefetch_pause.sv` | Holds new prefetch requests while DMA is offered or outstanding and for seven idle cycles after |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP. The NIC's DMA master is one |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
-| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, the L1D hit path's hits, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
+| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, writeback, refill and identified-prefetch pulses, the L1D hit path's hits, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
 | `*_test_harness.sv` | cocotb tops: hierarchy + bridge + memory (with a bench-paced hold on the bridge), and arbiter + bridge + memory |
 
 ## Line protocol
@@ -419,9 +419,11 @@ WA. A store error stops the hart without read completion or error disposal.
 A demand grant on a load endpoint answers its load from the captured grant in
 the grant's first lookup cycle, before installation, so the answered read slot
 can hold a later read while the line installs; that read becomes selectable
-when the installation completes. Endpoint 0 answers its reads after
-installation. A load endpoint's Done, and the loads waiting on it, follow
-installation.
+when the installation completes. The same cycle answers every ordinary load
+attached to the endpoint, each from its own dword of the grant; a speculative
+grant answers its attached loads the same way. Endpoint 0 answers its reads
+after installation. A load endpoint's Done, and the waits of LR and other
+loads on it, follow installation.
 
 With stream look-ahead enabled, a successful demand installation
 with a reader waiting on that endpoint gives an eligible ordinary read one
@@ -436,14 +438,19 @@ selectable, a credited read may hit or attach to a live endpoint; its miss
 waits to start an acquisition.
 
 No two live endpoints hold the same sector. A load miss on a sector held by
-an endpoint waits for installation, or for release if the installed sector
-has been replaced, then looks up again. Load and lookahead acquisitions stop
+an endpoint attaches to it. The endpoint's grant answers an attached ordinary
+load; an attached LR waits for installation, and a read that attaches after
+installation, when the installed sector has been replaced, waits for release;
+each then looks up again. Load and lookahead acquisitions stop
 while an atomic is active or an AMO, SC or maintenance operation waits for
 admission. Contending eligible load misses and lookahead acquisitions alternate
 successful allocations. Permission lookups precede endpoint-allocation arbitration.
 A lookahead miss that yields its allocation remains eligible for another lookup.
 Read hits do not clear the allocation turn. They permit
-store borrowing when no eligible load miss waits. A read miss can finish a lookup
+store borrowing when no eligible load miss waits. Miss demand qualifies ordinary
+loads separately from AMO selection, so it is independent of the atomic guard.
+It applies the same ownership, waiting, retry and address-blocking conditions.
+A read miss can finish a lookup
 before yielding endpoint allocation to lookahead. A lookahead Modified hit
 consumes no endpoint and yields its allocation turn. A yielded read miss reserves
 lookahead service ahead of head-store hits. The reservation ends after lookahead
@@ -462,6 +469,22 @@ SC acceptance and local atomic admission do not read the SQ's write decode:
 the CPU presents an atomic only after its committed stores drain, so no store
 arrives beside them.
 
+An ordinary load's lookup also serves the other ordinary loads of its sector
+that are unanswered, unowned and not waiting, and that held their reads on
+the cycle before the response: a hit answers each from its own dword of the
+row, and an attachment attaches each to the same endpoint. The sector and
+hold comparisons register on that cycle, while the lookup's address holds. A
+store record, the atomic or a frozen write-back that holds the sector index,
+as in read selection, excludes every merge. A store that arrives on the
+sampled cycle or later reaches only reads allocated before it, which need not
+see it. A merge takes no slot that the hit path holds in stages 2 to 4: the
+sampled comparison leaves out the slots it will hold on the response cycle,
+so the hit path answers those slots itself. A shadow lookup's row answers
+nothing; its attachment, when both lookups miss, attaches the merged loads as
+any lookup's does. A grant answers only attached loads, which attached on a
+lookup at least three cycles after allocation, so the hit path has finished
+with them.
+
 A fatal stop reaches the L1D controller through one flop and takes effect on
 the cycle after it rises, so no selection or capture enable starts at the
 fatal logic. The CPU's retirement stop takes effect on the cycle after the
@@ -473,8 +496,16 @@ address joins that selection last. The priority conditions above a read are
 prepared separately, so read eligibility controls the final address selection
 without passing through the non-read address priority chain.
 
+Ready read slots share one response register in circular slot order. Each
+selection advances the pointer past that slot. A continuously ready slot has
+at most seven other responses ahead of it among the eight read IDs, including
+an occupied response register. A consumed ID reused for another read cannot
+pass that slot again. Consumer backpressure holds the response register and
+can extend the wait in cycles; it does not extend this bound on transfers.
+Grant answers, merged answers and read-hit answers use this same order.
+
 Read status uses per-slot masks for allocation, response transfer, lookup
-results and grant completion. Completion and miss sets dominate allocation
+results, merges and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
 read completes on the cycle after its grant, from registers that hold its slot
 and error bit, and its waiters' waits end on the same cycle. Status outcomes
@@ -523,10 +554,11 @@ state unchanged. Accepted speculative identity lasts through U, including
 when a CPU load attaches to the endpoint.
 
 Speculative grants install Shared data through the ordinary victim and
-probe service. They do not own a read ID, modify demand response data or
-complete a CPU load. An attached load repeats permission lookup after
-installation. A clean speculative read error is disposed through C and U;
-an attached demand then retries and determines its own result. Dirty
+probe service. They own no read ID. In its first lookup cycle a speculative
+grant answers the ordinary loads attached to its endpoint; an attached LR
+repeats permission lookup after installation. A clean speculative read error
+is disposed through C and U; an attached demand then retries and determines
+its own result. Dirty
 writeback errors are fatal. Registered admitted LR or AMO work, selected
 atomics, SC, local maintenance, reset and fatal stop cancel unaccepted hints.
 A hint offered to its endpoint on the cycle a fatal stop rises is accepted,
@@ -606,10 +638,17 @@ prefetcher (see The home's prefetcher).
 
 L1D performance events count scalar CPU requests. CPU reads count at their
 first permission lookup; a read that the hit path answers counts as an access
-and a hit when it is answered, and its shadow lookup adds nothing. The first
-store in a record counts at its first permission lookup; each additional
-scalar that combines counts as an access and a buffer hit on acceptance, even
-before permission arrives. A combined
+and a hit when it is answered, and its shadow lookup adds nothing. A merged
+load without an earlier lookup counts as an access at its merge: a hit when
+the row answers it, a miss when it attaches. Its events wait for a cycle
+without another access event. Merge identities, lookup arbitration and miss
+context pass through one observation stage before the event serializer. A
+captured identity is independent of later slot reuse; slot history is updated
+at capture, and reset clears both captured and owed events. The stage delays
+the whole event stream together, including hit-under-miss classification.
+The first store in a record counts at its first
+permission lookup; each additional scalar that combines counts as an access
+and a buffer hit on acceptance, even before permission arrives. A combined
 store and a tag lookup can contribute two accesses in one cycle. Cached SC
 counts its first definitive classification: a Modified hit, including a failed
 reservation, is a hit; a home acquisition is a permission miss. A first store
@@ -626,6 +665,22 @@ a slot-full stall; a blocked one is a conflict stall. A DMA write miss
 contributes a write-fill event; probe data
 merges do not contribute another demand. Events are registered at their
 source and use the cache-counter ABI.
+
+The refill pulses count line reads rather than lookup misses. The L1I
+counts allocations that fetch data from below, including the fetch
+provider's next-line requests. The home counts each memory read at its
+acceptance handshake, even if the read later fails or service stops before
+acceptance. It classifies the read by the request that allocated the fill;
+a demand joining a prefetch fill does not change its class. Zero fills send
+no read. The coherent L1D leaves both refill fields zero. These events feed
+the alternate HPM selectors described in the
+[counter guide](../../cpu_and_mem/cpu/cpu_ooo/perf/README.md).
+
+The generic `frost_cache` interface has no prefetch tag. Every allocation
+that fetches a line contributes to `fill`, including stream-prefetch reads
+in the generic cluster's L2 with `L2_PREFETCH`; `fill_prefetch` stays zero.
+The SoC's L2 HPM events come from the coherence home, which distinguishes
+prefetch requests from demand.
 
 The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
 requests. The data class has one request identity per L1D endpoint, IDs 0
@@ -645,8 +700,10 @@ DMA, whose four-bit ingress ID occupies q.id. `coherence_dma_ingress` has
 `SLOTS` admission credits, eight in the cluster, and holds each opaque ID
 until its slot frees. It presents requests in acceptance order without waiting for earlier
 grants or releases. Each slot independently owns its request, grant, completion,
-release and external response. G matches the full q and address; U also matches
-the granted tid. A slot offers C from the cycle after its G, and a fair
+release and external response. G matches a slot by q alone: every live slot's q holds the
+ingress's source, class and epoch 0 with a distinct ID. U also matches the
+granted tid. An assertion checks that a matched G or U carries its slot's
+address and a G its grant opcode. A slot offers C from the cycle after its G, and a fair
 arbiter captures the selected slot's C metadata and holds its presentation. A read's G carries its
 final data, so the read responds from the cycle after its G; a write responds
 on the cycle after its U. One response goes out per cycle, the U's slot first,
@@ -745,14 +802,16 @@ prefix network counts up to three eligible entries before each candidate. Each f
 stores its occupied seat count beside the seat mask. Allocation, joining
 readers, handoff, a forward and error cleanup update both on the same edge.
 Seat joins, retirements and error cleanup keep their priority over allocation. The mask prepares the
-allocation and non-allocation outcomes before selecting between them; zero
-fill images likewise clear through their data input. Whether a decision is a
+allocation and non-allocation outcomes before selecting between them. Whether a decision is a
 reader that can join a fill is the decision's last term to settle, so each
 fill's added seats and their count, its mask and the parked set are formed for both
 values of that term (a fill that is ready to join reserves the joining seat in
 one selection and not in the other), and the term selects last.
-A fill's image takes the memory response or the zero fill's clear, and the
-clear, which follows the allocation decision, enters each image bit last.
+A fill's image takes the memory response or the zero fill's clear, through
+its data input. The clear is registered: it takes effect on the edge after the
+zero fill's allocation, while the fill waits in FillMemory or FillRecall and
+neither installs nor forwards, so the allocation decision reaches one flop per
+fill rather than the image bits.
 A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently
@@ -1048,8 +1107,9 @@ representative byte values, bounded controller transitions and CPU ownership.
 The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
 live beside a granted home atomic, that the hit path holds valid unanswered
-load slots and answers each at most once, that a lookup of a slot whose hit
-it holds is a shadow that agrees with it, that a local atomic excludes its sector and endpoint
+load slots and answers each at most once, also against grant answers and
+merges, that a lookup of a slot whose hit it holds is a shadow that agrees
+with it, that a local atomic excludes its sector and endpoint
 0 while blocking service, and that a load grant installs with a free WB
 slot. Its eight-endpoint stream tasks check speculative ownership and
 separation from demand response masks, and cover two accepted hints, demand
@@ -1135,8 +1195,8 @@ waits for every earlier request to either sector, and every later request to
 either sector waits for its U. PutM is not ordered behind it, so a PutM of the
 upper sector that the L1D froze earlier still completes. Otherwise a
 `GetMZero` is a `GetM` for every rule of the home except the miss decision: a
-`GetMZero` whose decision allocates a fill starts that fill with a zero image
-and its memory read done, so no read is sent. The fill recalls and writes back
+`GetMZero` whose decision allocates a fill starts that fill with its memory read
+done and clears its image on the next edge, so no read is sent. The fill recalls and writes back
 a valid victim as any fill does, installs the line Modified, because only the
 L2 holds the zeros of the upper sector, and forwards the lower sector to its
 primary. Its grant, and a hit's, is `GrantMZero` with 64-byte lines and
@@ -1354,9 +1414,14 @@ pipeline stage is empty:
   marks them clean; the lines stay valid. `o_maint_busy` falls once those
   writebacks are acknowledged. The walk covers only the set span dirtied
   since the previous writeback-all.
-- Invalidate-all reruns the reset sweep, which clears one set's tags and
-  replacement state per cycle (128 cycles in the L1I). It discards dirty
-  data, so only the read-only L1I uses it.
+- Invalidate-all clears every line. The L1I keeps its valid bits in
+  flip-flops beside the tag RAM (`FLASH_INVALIDATE`), so invalidate-all
+  clears them all in one cycle. Reset clears the valid flip-flops and their
+  read register at the clock edge. Invalid lines' tag and replacement
+  fields do not affect lookup results. Without
+  `FLASH_INVALIDATE` it reruns the reset sweep, which clears one set's tags
+  and replacement state per cycle. It discards dirty data, so only the
+  read-only L1I uses it.
 
 `frost_hart_cache` runs them in order: the L1D writes back first, then the
 L1I invalidates, so an instruction fill racing the sequence cannot leave
@@ -1374,8 +1439,8 @@ Maintenance and probes never overlap. Maintenance waits for the probe slots
 to empty like any other in-flight work, and a probe waits for maintenance
 like any other request, parked in the hierarchy's probe injection register.
 
-Reset runs the sweep too, so every reset, including an image load, discards
-stale lines instead of writing them back. `SIM_FAST_MAINT=1` (simulation
+Reset runs the per-set sweep in every cache, so every reset, including an
+image load, discards stale lines instead of writing them back. `SIM_FAST_MAINT=1` (simulation
 only) makes the sweep a one-cycle clear and makes writeback-all visit only
 sets with dirty lines, with the same functional effect.
 
@@ -1714,7 +1779,8 @@ to answer.
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
 | `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
-| `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
+| `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, dirty-L1D walker coherence, and one refill event per allocation that reads a line |
+| `coherence_home*` | Home service and ownership, with each accepted memory line read producing exactly one demand or prefetch refill pulse, including a held read accepted after fatal stop |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a reader past the waiter seats waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat. The write-cost events count each write miss that fetches its line once, and no hit, merge, or read miss, and each write held behind a read of its line once, with the cycles from its first decision to the one that completes it, and no merge or waiting read |
@@ -1747,7 +1813,11 @@ arbiter grant (`line_arbiter_grant`), the miss-slot byte merge
 allocation takes a way outside the tag stage's ownership mask, the
 timing-factored decision equals its reference, a touched way is never the
 next pseudo-LRU victim, and the restricted walk picks the pseudo-LRU way
-whenever it is unowned); see the [formal guide](../../../../formal/README.md).
+whenever it is unowned), and the L1I's flash invalidate (`cache_flash_valid`:
+reset and sweep clear all valid flip-flops, the registered read returns the
+pre-write value, valid reads agree with the bulk-cleared tag RAM after a
+sweep, and invalidate-all lasts one cycle); see the
+[formal guide](../../../../formal/README.md).
 In simulation, assertions check that no two miss slots own one way and that
 an allocation never takes a way a miss slot owns. In coverage builds,
 [cover points](../../../../tests/README.md#cover-points) count corner cases

@@ -273,12 +273,14 @@ IF pairs two instructions only when all of these hold:
 - Slot 1 is not control flow (a branch, JAL, JALR, or a compressed form of
   one) and not a native SYSTEM, MISC-MEM, or AMO instruction (CSR accesses,
   ECALL, EBREAK, xRET, WFI, SFENCE.VMA, FENCE, FENCE.I, and atomics including
-  LR/SC).
-- Slot 2 is not a native SYSTEM, MISC-MEM, AMO, FP-compute (OP-FP or fused
-  multiply-add) or vector instruction (OP-V, or LOAD-FP and STORE-FP with a
-  vector width). It may be a branch or jump, but only the slot-2
-  BTB lookup or the backing BTB can predict it; the PD redirect's direction
-  change covers slot 1 only.
+  LR/SC). The Zimop may-be-operations (SYSTEM with funct3 100) are the
+  exception: they write zero to rd and touch no other state, so they pair
+  like an integer instruction, in either slot.
+- Slot 2 is not a native SYSTEM (other than a may-be-operation), MISC-MEM,
+  AMO, FP-compute (OP-FP or fused multiply-add) or vector instruction (OP-V,
+  or LOAD-FP and STORE-FP with a vector width). It may be a branch or jump,
+  but only the slot-2 BTB lookup or the backing BTB can predict it; the PD
+  redirect's direction change covers slot 1 only.
 - Slot 2 fits in the window. A 32-bit slot 2 that would start in the upper
   half of the second word does not.
 - No transient condition intervenes, such as an unsafe window read, an
@@ -290,7 +292,8 @@ A CSR instruction reads and writes its CSR at commit, and its CDB broadcast
 carries only its write operand, so dispatch holds everything younger until the
 CSR's result is written back. A slot-2 partner would slip past that hold. The
 predecode puts CSR accesses in one serializing class with the other native
-SYSTEM, MISC-MEM, and AMO instructions, and that class never leads a pair.
+SYSTEM instructions (all but the may-be-operations), MISC-MEM, and AMO
+instructions, and that class never leads a pair.
 These instructions also retire alone at the ROB head, which keeps them out of
 slot 2. FP-compute instructions stay out of slot 2 to keep FP
 reservation-station back-pressure off the slot-1 dispatch path, and vector
@@ -340,6 +343,39 @@ instruction's register fields from them. CPU fetch fills compute the metadata wi
 `riscv_pkg::imem_make_sideband`, and
 `sw/common/generate_imem_predecode_init.py` mirrors it for the
 instruction-memory metadata arrays that component tests use.
+
+### Operation encoding
+
+`id_stage/instr_decoder.sv` maps each instruction to an eight-bit
+`riscv_pkg::instr_op_e` value, while `id_stage/instr_operand_classifier.sv`
+extracts its reservation station, register-operand flags and serialization
+flags directly from the 32-bit instruction word in parallel. Explicit anchors
+in `instr_op_e` (`ROL = 8'd76` and `ADDIW = 8'd170`) hold `ROL..RORI` and
+`SLLIW..RORIW` at the ordinals `riscv_pkg::projected_shift_controls` decodes by
+bit position, while `SLL..SRAI` precede any folded member. New members are
+appended after the last member so an insertion or deletion never disturbs the
+shift ordinals (an insertion among the word shifts or a deletion ahead of
+`SRAI` compiles and is caught only by `alu.sv`'s simulation assertions and the
+`alu_shift_hint` formal check).
+
+Operations use one `instr_op_e` value per operation across widths and CSR
+source forms when width, sign or CSR operation travels in fields already
+carried to the consumer (`mem_size`, `mem_signed`, `rm`, `imm`, the ROB's
+`csr_op` field, or `vec_unit`'s per-tag instruction copy). Scalar integer and
+floating-point loads and stores, load-reserved, store-conditional and each
+atomic read-modify-write function share one operation across widths and
+signedness, taking width from `mem_size` (`funct3[1:0]`) and, for integer loads
+and `LR`, load sign from `mem_signed` (`!funct3[2]`, zero for floating-point
+loads and AMOs). Register and immediate CSR accesses use two operations
+(`CSR_REG` and `CSR_IMM`); dispatch writes `funct3` into the ROB entry's
+`csr_op` field (clearing `csr_op[1:0]` when a set or clear form has `rs1` or
+`uimm` equal to zero), and `csr_file` reads `rob_commit.csr_op` at commit.
+Vector instructions use class operations (`VARITH`, `VARITH_X`, `VTOX`,
+`VLOAD`, `VSTORE`), with `vec_unit` keeping its own per-tag instruction copy
+written at allocation from `from_id_to_ex.instruction`. Scalar floating-point
+compute operations are the next candidates for folding, as they differ by
+`funct7` and `rs2`, which the floating-point reservation station can carry in
+its unused immediate.
 
 ## Address translation
 
@@ -445,15 +481,21 @@ bit 30 for DDR up to 1 GiB, bit c for a 2^c-byte window of c >= 32, which
 leaves its top 2 GiB without an alias and makes an NC or IO leaf there an
 access fault). A 2 GiB DDR window has no alias in the current 32-bit physical
 map, so NC and IO leaves over DDR raise an access fault in that configuration,
-including the VCU118's 2 GiB map. Device mappings are unaffected. The alias
+including the VCU118's 2 GiB map. Page-permission faults take precedence over
+this PMA refusal. Device mappings are unaffected. The alias
 window is not in the PMA map (an untranslated
 access or a PMA leaf there faults as before); an NC or IO leaf over it is a
 device page in the DTLB's per-entry checks and the walk-response checks, so
 the DMMU classifies the op MMIO, the load queue's PMA check accepts the window
-for MMIO entries, and the load queue, store queue and uncached adapter treat
-it exactly as a device access: no L0 or L1D, at the ROB head after older
-stores drain, stores retired after their bus response. NC executes as IO,
-which is stronger than RVWMO. soc_top sends an
+for MMIO entries. NC/IO loads over the DDR alias or low BRAM issue at the
+ROB head and bypass L0, L1D and store forwarding. The router selects
+parking, committed-store draining and interrupt shielding by the physical
+device quadrant, so these memory loads do not wait for committed stores to
+drain. An interrupt or debug halt can flush an accepted load and cause it
+to perform another read after resumption. All such targets are idempotent
+memory. Alias stores retire after their bus response; NC/IO low-BRAM stores
+are buffered and can retire before their response. Device registers retain
+the full device mechanism regardless of PBMT. soc_top sends an
 alias access as one single-beat transfer of the real DDR address through the
 coherent DMA port, so the home probes the L1D and merges dirty data first:
 the transfer observes the cacheable copy of the same frame. Switching
@@ -467,6 +509,15 @@ and the walk-response checks apply the field: the page is MMIO and refuses
 AMOs. AMO, LR, SC and `cbo.zero` on an NC or IO page are access faults, and so
 is an instruction fetch (PMA overrides the Svpbmt chapter permits). The walk
 cache holds only pointers, whose PBMT field must be zero.
+
+On the X3, a misaligned NC/IO load or store to a DDR alias raises a load or
+store access fault (cause 5 or 7); one to low BRAM or device registers raises
+an address-misaligned exception (cause 4 or 6). The VCU118 has no hardware
+misaligned-access engine:
+misaligned loads and stores raise cause 4 or 6 before translation, including
+NC/IO accesses, for firmware to handle. Aligned NC/IO DDR accesses on its
+2 GiB map raise cause 5 or 7 because the map has no alias.
+
 The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
 (the level-0 table of a 2 MiB region) and 4 root pointers (the level-1 table
 of a 1 GiB region). A walk looks both up in two registered cycles (tag
@@ -509,8 +560,9 @@ AMO. The engine reads a store's data through an extra read port on each
 register file, translates through the page-table walker when translation is
 on, and makes its sector requests on the hart's line client. A load's result
 is written through commit port 0, one cycle after completion, and the access
-counts as one retired instruction (`minstret` and a single step). If a part
-faults, the engine's exception is taken as the instruction's own, with its
+counts as one retired instruction (`minstret` and a single step). Half- and
+single-precision FP loads are NaN-boxed to 64 bits; FP stores transfer the
+low bits for their access size. If a part faults, the engine's exception is taken as the instruction's own, with its
 cause and trap value, and `mepc` or `sepc` holds the access's PC.
 
 An access is split at the first sector boundary it crosses. `ma_pkg` checks

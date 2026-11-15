@@ -28,6 +28,8 @@ from cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper import (
     OP_LR_W,
     OP_LW,
     RS_MEM,
+    _INSTR_OPS,
+    make_branch_req,
     make_int_req,
 )
 from cocotb_tests.tomasulo.tomasulo_wrapper.tomasulo_interface import (
@@ -45,12 +47,16 @@ class StreamInterface(TomasuloInterface):
         self.requests: list[tuple[int, tuple[int, ...]]] = []
         self.values: dict[int, int] = {}
         self.commits: list[dict[str, Any]] = []
+        self.merged_attaches = 0
+        self.grant_answers = 0
 
     async def step(self) -> None:
         """Sample offers before the edge and advance one CPU cycle."""
         await Timer(1, unit="ps")
         d = self.dut
         if int(d.i_rst_n.value):
+            self.merged_attaches |= int(d.cache.merge_attach_slots.value)
+            self.grant_answers |= int(d.cache.grant_answer_slots.value)
             valid = int(d.o_cache_d_valid.value) & int(d.i_cache_d_ready.value)
             for ep in range(len(d.o_cache_d_valid)):
                 if valid >> ep & 1:
@@ -260,3 +266,196 @@ async def attached_lr_response_cut_suppresses_reservation(dut: Any) -> None:
         await b.step()
         assert not int(dut.o_coherent_reservation_valid.value)
     assert int(dut.core.u_rob.rob_replay.value) & (1 << tag)
+
+
+async def prepare_loads(dut: Any) -> StreamInterface:
+    """Reset the real LQ and cache without training a speculative stream."""
+    for signal in dut:
+        if signal._name.startswith(("i_cache_", "i_probe_", "i_seed_", "i_reply_")):
+            signal.value = 0
+    b = StreamInterface(dut)
+    await b.reset_dut()
+    b.set_fu_ready(RS_MEM, True)
+    b.set_commit_hold(True)
+    dut.i_coherent_store_ready.value = 1
+    dut.i_cache_d_ready.value = 255
+    for _ in range(25):
+        await b.step()
+    return b
+
+
+@cocotb.test()
+async def attached_loads_extract_signed_and_unsigned_values(dut: Any) -> None:
+    """Extract signed and unsigned values from attached loads of every aligned offset."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    image = bytes((0x80 + 13 * lane) & 255 for lane in range(32))
+    load_op = _INSTR_OPS["LOAD"]
+    cases = [
+        (size, signed, offset)
+        for size, signed in (
+            (0, True),
+            (0, False),
+            (1, True),
+            (1, False),
+            (2, True),
+            (2, False),
+            (3, False),
+        )
+        for offset in range(0, 32, 1 << size)
+    ]
+    for first in range(0, len(cases), 7):
+        b = await prepare_loads(dut)
+        address = 0x80008000
+        owner = await b.dispatch(make_int_req(pc=0x6000, rd=5))
+        await issue(b, owner, OP_LW, address)
+        request = await b.wait_request(address)
+        expected = {}
+        batch = cases[first : first + 7]
+        tags = [
+            await b.dispatch(make_int_req(pc=0x6004 + 4 * n, rd=6 + n))
+            for n in range(len(batch))
+        ]
+        for tag, (size, signed, offset) in zip(tags, batch, strict=True):
+            b.drive_rs_dispatch(
+                rs_type=RS_MEM,
+                rob_tag=tag,
+                op=load_op,
+                src1_ready=True,
+                src1_value=address + offset,
+                src2_ready=True,
+                src2_value=0,
+                src3_ready=True,
+                imm=0,
+                use_imm=True,
+                mem_size=size,
+                mem_signed=signed,
+            )
+            await b.step()
+            b.clear_rs_dispatch()
+            raw = int.from_bytes(
+                image[offset : offset + (1 << size)], "little", signed=signed
+            )
+            expected[tag] = raw & ((1 << 64) - 1)
+        for _ in range(100):
+            if int(dut.cache.rd_wait_q.value).bit_count() == len(expected):
+                break
+            await b.step()
+        else:
+            raise AssertionError("The same-sector loads did not attach")
+        assert len(b.requests) == 1
+        assert b.merged_attaches, "No same-sector lookup merged another load"
+        await b.complete(request, int.from_bytes(image, "little"))
+        for tag, value in expected.items():
+            await b.wait_value(tag, value)
+        assert b.grant_answers.bit_count() == len(expected) + 1
+        assert len(b.requests) == 1
+
+
+@cocotb.test()
+async def flush_attached_loads_before_the_grant(dut: Any) -> None:
+    """Drain attached answers after full flush or branch recovery without a killed CDB result."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    for partial in (False, True):
+        for held_answer in (False, True):
+            b = await prepare_loads(dut)
+            address = 0x80009000
+            owner = await b.dispatch(make_int_req(pc=0x7000, rd=5))
+            await issue(b, owner, OP_LW, address)
+            request = await b.wait_request(address)
+            checkpoint = b.checkpoint_alloc_id
+            branch = await b.dispatch(make_branch_req(pc=0x7004), checkpoint_save=True)
+            killed = await b.dispatch(make_int_req(pc=0x7008, rd=6))
+            await issue(b, killed, OP_LW, address + 8)
+            for _ in range(80):
+                if int(dut.cache.rd_wait_q.value):
+                    break
+                await b.step()
+            else:
+                raise AssertionError("The younger load did not attach")
+            assert killed not in b.values
+            dut.i_cache_read_hold.value = 1
+            if held_answer:
+                await b.complete(request, 0x88776655 << 64 | 0x11223344)
+            if partial:
+                b.drive_flush_en(branch)
+                b.drive_checkpoint_restore(checkpoint)
+            else:
+                b.drive_flush_all()
+            await b.step()
+            b.clear_flush_en()
+            b.clear_flush_all()
+            if partial:
+                b.clear_checkpoint_restore()
+            await b.step()
+            if not held_answer:
+                await b.complete(request, 0x88776655 << 64 | 0x11223344)
+            dut.i_cache_read_hold.value = 0
+            for _ in range(50):
+                await b.step()
+                assert killed not in b.values
+                assert not int(dut.o_coherent_reservation_valid.value)
+            if partial:
+                await b.wait_value(owner, 0x11223344)
+            else:
+                assert owner not in b.values
+            assert int(dut.core.u_lq.cs_valid.value) == 0
+
+
+@cocotb.test()
+async def vector_hold_delays_same_sector_loads(dut: Any) -> None:
+    """Release vector-held loads before or after a grant without answering them early."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    address = 0x8000A000
+    tag_width = len(dut.o_head_tag)
+    entry_width = len(dut.i_vmt) // 4
+    segment_width = (entry_width - 3 - tag_width) // 2
+    ppn_width = segment_width - 15
+    for range_known in (False, True):
+        for release_before_grant in (False, True):
+            b = await prepare_loads(dut)
+            owner = await b.dispatch(make_int_req(pc=0x8000, rd=5))
+            await issue(b, owner, OP_LW, address)
+            request = await b.wait_request(address)
+            vector = await b.dispatch(make_int_req(pc=0x8004, rd=6))
+            sector = (address >> 5) & 127
+            segment = (
+                (1 << (14 + ppn_width))
+                | ((address >> 12) << 14)
+                | (sector << 7)
+                | sector
+            )
+            dut.i_vmt.value = (
+                (1 << (entry_width - 1))
+                | (vector << (1 + 2 * segment_width))
+                | (int(range_known) << (2 * segment_width))
+                | segment
+            )
+            younger = []
+            for n in range(2):
+                tag = await b.dispatch(make_int_req(pc=0x8008 + 4 * n, rd=7 + n))
+                younger.append(tag)
+                await issue(b, tag, OP_LW, address + 8 * (n + 1))
+            for _ in range(40):
+                await b.step()
+                assert all(tag not in b.values for tag in younger)
+                assert int(dut.cache.rd_wait_q.value) == 0
+            assert len(b.requests) == 1
+            data = 0x55667788 << 128 | 0x33445566 << 64 | 0x11223344
+            if release_before_grant:
+                dut.i_vmt.value = 0
+                for _ in range(100):
+                    if int(dut.cache.rd_wait_q.value).bit_count() == 2:
+                        break
+                    await b.step()
+                else:
+                    raise AssertionError("Released vector-held loads did not attach")
+            await b.complete(request, data)
+            await b.wait_value(owner, 0x11223344)
+            if not release_before_grant:
+                for _ in range(20):
+                    await b.step()
+                    assert all(tag not in b.values for tag in younger)
+                dut.i_vmt.value = 0
+            for tag, value in zip(younger, (0x33445566, 0x55667788), strict=True):
+                await b.wait_value(tag, value)
+            assert len(b.requests) == 1

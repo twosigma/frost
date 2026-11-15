@@ -78,16 +78,17 @@ LINUX_IMAGE_MAGIC = b"RISCV\x00\x00\x00"  # header offset 0x30
 LINUX_IMAGE_SIZE_OFFSET = 0x10  # u64 image_size (text + bss)
 
 # What the DT advertises: the ISA the core implements, in the spelling both
-# OpenSBI and Linux parse. The unprivileged subset matches
-# FROST_MARCH_EXTENSIONS in sw/common/common.mk and misa in csr_file.sv.
+# OpenSBI and Linux parse. FROST_MARCH_EXTENSIONS in sw/common/common.mk
+# selects a subset for bare-metal applications; misa lists single-letter
+# extensions in csr_file.sv.
 # linux/README.md documents the privileged extensions too.
 ISA_BASE = "rv64i"
 ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
-    "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
+    "zfa", "zfhmin", "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
     "zicclsm", "ziccrse", "zicntr", "zicond", "zicsr", "zifencei",
-    "zihintpause", "zihpm", "za64rs", "zawrs", "zba", "zbb",
-    "zbc", "zbkb", "zbkc", "zbs", "zkt", "smaia",
+    "zihintntl", "zihintpause", "zihpm", "zimop", "za64rs", "zawrs", "zba", "zbb",
+    "zbc", "zbkb", "zbkc", "zbs", "zcb", "zcmop", "zkt", "smaia",
     "ssaia", "ssccptr", "sscofpmf", "sscounterenw", "ssnpm", "sstc", "sstvala",
     "sstvecd", "svade", "svpbmt", "svvptc",
 )  # fmt: skip
@@ -100,7 +101,7 @@ CBOZ_BLOCK_BYTES = 64
 # Zicbop block size: the prefetch hints name the same 64-byte block (they
 # execute as no-ops).
 CBOP_BLOCK_BYTES = 64
-ISA_STRING = "rv64imafdc_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintpause_zihpm_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_svade_svpbmt_svvptc"
+ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_svade_svpbmt_svvptc"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
@@ -365,20 +366,30 @@ def gen_dts(
 \t\t * filter by privilege; the fixed counters 0 and 2 do neither.
 \t\t * Raw translation events: 16 = page-walker busy cycles (counter 8),
 \t\t * 17 = SFENCE.VMA TLB invalidates (counter 7), 18 = CSR-requested TLB
-\t\t * invalidates (counter 4). They sit above the counter numbers, so no
-\t\t * raw selector names two events. */
+\t\t * invalidates (counter 4). Raw cache refill events: 19 = L1I refills
+\t\t * (counter 3), 20 = L2 demand misses, the home's demand line reads
+\t\t * from memory (counter 6), 21 = L2 prefetch misses (counter 5); the
+\t\t * generic L1-icache-load-misses, LLC-load-misses and
+\t\t * LLC-prefetch-misses map to them. They sit above the counter
+\t\t * numbers, so no raw selector names two events. */
 \t\triscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000200>,
 \t\t\t\t      <0x00000002 0x00000002 0x00000400>,
 \t\t\t\t      <0x00000004 0x00000004 0x00000080>,
 \t\t\t\t      <0x00000005 0x00000005 0x00000008>,
 \t\t\t\t      <0x00000006 0x00000006 0x00000010>,
-\t\t\t\t      <0x00010021 0x00010021 0x00000020>;
+\t\t\t\t      <0x00010021 0x00010021 0x00000020>,
+\t\t\t\t      <0x00010009 0x00010009 0x00000008>,
+\t\t\t\t      <0x00010011 0x00010011 0x00000040>,
+\t\t\t\t      <0x00010015 0x00010015 0x00000020>;
 \t\triscv,event-to-mhpmevent = <0x00000001 0x00000000 0x00000009>,
 \t\t\t\t    <0x00000002 0x00000000 0x0000000a>,
 \t\t\t\t    <0x00000004 0x00000000 0x00000007>,
 \t\t\t\t    <0x00000005 0x00000000 0x00000003>,
 \t\t\t\t    <0x00000006 0x00000000 0x00000004>,
-\t\t\t\t    <0x00010021 0x00000000 0x00000005>;
+\t\t\t\t    <0x00010021 0x00000000 0x00000005>,
+\t\t\t\t    <0x00010009 0x00000000 0x00000013>,
+\t\t\t\t    <0x00010011 0x00000000 0x00000014>,
+\t\t\t\t    <0x00010015 0x00000000 0x00000015>;
 \t\triscv,raw-event-to-mhpmcounters = <0x0 0x3 0xffffffff 0xffffffff 0x08>,
 \t\t\t\t        <0x0 0x4 0xffffffff 0xffffffff 0x10>,
 \t\t\t\t        <0x0 0x5 0xffffffff 0xffffffff 0x20>,
@@ -389,7 +400,10 @@ def gen_dts(
 \t\t\t\t        <0x0 0xa 0xffffffff 0xffffffff 0x400>,
 \t\t\t\t        <0x0 0x10 0xffffffff 0xffffffff 0x100>,
 \t\t\t\t        <0x0 0x11 0xffffffff 0xffffffff 0x80>,
-\t\t\t\t        <0x0 0x12 0xffffffff 0xffffffff 0x10>;
+\t\t\t\t        <0x0 0x12 0xffffffff 0xffffffff 0x10>,
+\t\t\t\t        <0x0 0x13 0xffffffff 0xffffffff 0x08>,
+\t\t\t\t        <0x0 0x14 0xffffffff 0xffffffff 0x40>,
+\t\t\t\t        <0x0 0x15 0xffffffff 0xffffffff 0x20>;
 \t}};
 
 \tsoc@0 {{

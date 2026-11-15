@@ -60,6 +60,10 @@ class PrefetchHome(Home):
         self.max_fills = 0
         self.drops = 0
         self.dirty_prefetch_recalls: list[int] = []
+        # The home's registered refill events: cache_instance_perf_events_t
+        # leads with fill, then fill_prefetch.
+        self.perf_width = len(dut.o_perf_events)
+        self.refills = {"fill": 0, "fill_prefetch": 0}
 
     def get(self, name: str) -> int:
         """Expose home internals used by the shared memory responder."""
@@ -79,6 +83,9 @@ class PrefetchHome(Home):
     async def set(self, **values: int) -> None:
         """Sample protocol transfers immediately before each rising edge."""
         if values.get("i_clk") == 1 and not self.get("i_rst"):
+            perf = self.get("o_perf_events")
+            self.refills["fill"] += (perf >> (self.perf_width - 1)) & 1
+            self.refills["fill_prefetch"] += (perf >> (self.perf_width - 2)) & 1
             engines = len(self.dut.engine_idle)
             if self.get("array_updated"):
                 slot = self.get("array_updated_token") - engines
@@ -557,3 +564,34 @@ async def instruction_and_data_streams_share_no_line(dut: Any) -> None:
     assert len(set(held.values())) == len(held)
     await b.set(i_hold_pf_c=0)
     await b.drain()
+
+
+@cocotb.test()
+async def refill_events_split_demand_and_prefetch_reads(dut: Any) -> None:
+    """Count each memory line read once, as a demand or a prefetch refill.
+
+    A trained stream's prefetches read their lines, a demand joins one of
+    those fills without a read of its own, and the misses outside the
+    stream read on demand.
+    """
+    b = PrefetchHome(dut)
+    await b.reset()
+    base = 0x80018000
+    await b.prime(base, 150)
+    await b.until(lambda: b.get("fill_live_q").bit_count() >= DATA_IDS)
+    joined = base + 2 * b.line
+    addresses = (joined, base + 0x1000)
+    for slot, address in enumerate(addresses):
+        await b.submit(0, address, slot=slot)
+    for _ in addresses:
+        await b.complete(await b.take_grant())
+    await b.drain()
+    await b.tick(4)
+    reads = [t[2] for t in b.transactions if not t[1]]
+    prefetched = set(b.lines("D"))
+    demand = [address for address in reads if address not in prefetched]
+    # The two primed lines and the unrelated line miss on demand.
+    assert sorted(demand) == sorted([base, base + b.line, base + 0x1000])
+    assert b.reads_of(joined) == 1 and joined in prefetched
+    assert b.refills["fill"] == len(demand)
+    assert b.refills["fill_prefetch"] == len(reads) - len(demand) > 0

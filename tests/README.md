@@ -35,6 +35,12 @@ register banks, ignored partial wide stores, error responses, CPU
 backpressure, and subsystem reset during reads and writes. Both `soc_axil`
 and `soc_axil_no_cached_tier` check the NIC-access guard.
 
+The `mops` bench executes every Zimop and Zcmop variant in M, S and U modes,
+checks dependent consumers and unchanged register, CSR and memory state, and
+checks the original compressed encoding in `mtval` for reserved neighbours.
+The decompressor bench compares all 65,536 inputs with a specification oracle
+and the Python predecode mirror.
+
 ## Fast checks
 
 ```bash
@@ -145,8 +151,9 @@ All CPU configurations use the coherent interfaces and their ordinary source
 filelists.
 
 `imem_predecode_line` compares generated metadata with RTL for every 16-bit
-parcel in both halfword positions. Its slot-2 checks exclude native SYSTEM,
-MISC-MEM, AMO, FP-compute and OP-V instructions. `imem_predecode_fast_replica`
+parcel in both halfword positions. Its slot-2 checks exclude native SYSTEM
+except funct3=100, MISC-MEM, AMO, FP-compute and OP-V instructions. Zimop
+instructions can lead a pair or start slot 2. `imem_predecode_fast_replica`
 and `imem_predecode_capacity` apply that rule to the stored sideband and its
 scalar copies through programming writes, bank swaps and overlay boundaries.
 
@@ -250,10 +257,11 @@ mirroring. The debugger executes both words of an aligned doubleword patch.
 It steps over a misaligned `ld` and `sd` to DDR, each retiring as one
 instruction through the misaligned-access engine, and checks that the same
 load from the program buffer, in Debug Mode, reports an exception.
-`debug_fence_test` warms BRAM instructions, patches both executed words,
-executes FENCE.I and calls the patch in one command. It stalls the mirror
-through programming-port backpressure and checks fence completion ordering.
-With asynchronous clocks, it checks the store response held before fence entry.
+`debug_fence_test` warms BRAM and cached DDR instructions, patches both
+executed words, executes FENCE.I and calls the patch in one command. The BRAM
+case stalls the mirror through programming-port backpressure and checks fence
+completion ordering. With asynchronous clocks, it checks the store response
+held before fence entry.
 `debug_progbuf_btb_test` runs a program buffer whose taken branches train the
 BTB, rewrites those words as `addi`s, and checks that no old entry redirects
 them.
@@ -327,7 +335,9 @@ configuration in `riscv_pkg`. The `tomasulo_wrapper_no_early_load` and
 `load_queue_no_prepare_busy` targets cover early load wakeup and busy-port
 load preparation turned off, `load_queue_sq_forward` runs the load-queue bench
 with store-to-load forwarding on, as the core builds it, and `coremark_profile`
-runs CoreMark with the profiling counters.
+runs CoreMark with the profiling counters. The `rob_link_value_ram` and
+`rob_link_value_ram_onehot` benches compare shared-link reads with four
+reference banks across allocation, staged-drain and CDB collisions.
 
 Applications run from low BRAM by default. To run them from cached DDR:
 
@@ -358,6 +368,14 @@ tables trained, which the reset does not clear. The DDR tier runs each
 application once, because its first run changes its image in DDR. Entries
 with `rerun_after_reset=False` run once in both tiers; a new entry keeps the
 two runs.
+
+`fencei_jit_bench` has its own regular-CI shard and runs once in the BRAM
+tier, with `SIM_FAST_MAINT=0` and an eleven-million-cycle budget (about twice
+its measured 5.38 million cycles). The driver runs in BRAM, but all generated
+code runs in cached DDR and exercises the L1I's one-cycle valid clear. Moving
+the driver to DDR adds no invalidation case, so the DDR tier skips it. The
+benchmark retains its full default sections and iteration count. The cycle
+budget ends a hung run before the CI job's six-hour limit.
 
 `vm_test` and its aperture configurations use a three-million-cycle
 budget. `ptw_recovery_test` uses twelve million cycles for its complete
@@ -395,7 +413,7 @@ of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `irq_take_latency`, `lq_stale_slot_probe` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `irq_take_latency`, `lq_stale_slot_probe`, `fencei_jit_bench` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
 
@@ -490,8 +508,17 @@ packing functions in `sw/common/generate_imem_predecode_init.py`, including
 the scalar metadata copies and the SRAM tiles. The image load does not repeat
 on warm reset.
 
+System simulations start with Verilator runtime assertions disabled before
+the first HDL evaluation. The shared bench enables them after eighteen SoC
+clock edges and the driven cold-reset pulse's four CPU edges. The CPU wait
+also covers a slow or delayed CPU clock. A local reset register's random
+initial value cannot enable the checks. Runtime `$error` diagnostics are
+immediate assertion actions, so they obey the same simulator control.
+Static parameter checks remain active from time zero. The control and the
+diagnostic wrappers are absent from synthesis and formal verification.
+
 Consistency checks that depend on reset state and functional cover points
-arm after their local reset has been sampled. Coherent cache, load-queue, L0
+also require their local reset history. Coherent cache, load-queue, L0
 and CPU memory-interface checks use local reset history for combinational and
 clocked assertions. AXI response checks require both CPU and transport reset
 histories. NIC engine, descriptor and DMA-front checks require both the
@@ -506,11 +533,81 @@ reset tied inactive uses configuration initializers and does not arm the DTM own
 assertions. Transport verification requires a power-on reset pulse.
 
 The whole-SoC program bench holds clocks low through the initial HDL
-evaluation. Before starting clocks, it clears NIC response-checker history
-that a synthetic startup event can arm from arbitrary reset state. System
-reset must be asserted at that boundary, and the checker must observe a
-driven reset before the program starts. Production registers keep their
-seeded state. Warm resets do not clear the checker's history.
+evaluation. Production registers keep their seeded state until the driven
+reset reaches them. Runtime assertions stay enabled across warm resets;
+their local reset conditions apply during those resets. Unit benches start
+with assertions enabled and drive reset at their module boundaries.
+The system bench requires the reset request at startup and verifies after
+cold reset that every NIC response checker has observed reset, including
+the optional second NIC and the trace-injection platform.
+After the initial 1 ps settle, while clocks are low, the bench clears each
+NIC front's simulation-only reset history. The cold-reset postcondition
+therefore requires evidence from the driven reset, not an initial scheduling edge.
+
+The Cocotb, physical-address and TestRIG CI jobs set
+`FROST_STARTUP_SWEEP=1`. After a successful simulation, the runner reuses
+each compiled system model for short startup checks. Programs sharing a
+binary share its completed check. The selected builds divide a 180-second
+estimated job budget; the seed count is fixed before the checks run.
+SRAM and large-cache models use their own per-seed cost estimates.
+The allocation reserves three starts per cached-tier model: two assertion
+controls that must fail after reset with their original diagnostics, and
+one that must complete with arming deliberately withheld. BRAM-tier models
+reserve no control starts. The cumulative startup time across a job's models
+has a 300-second hard limit; exceeding it fails the check.
+
+Each seed comes from `random.Random(f"{base}:startup:{index}")`, with a draw
+from 1 through 2**31 - 1. The base is `FROST_RANDOM_START_SEED`, or
+`frost-startup` when that variable is absent. CI preserves the job's base in
+`FROST_STARTUP_SEED_BASE`, including for registry tests that pin their own
+program seed. CI runs therefore rotate their seed sets, and local runs
+repeat them. Logs print the base, index and
+Verilator seed, and a failing run prints its exact command for the image.
+`FROST_STARTUP_SEEDS=201` selects the full sweep in the same CI check.
+Explicit counts are limited to 1–201. Full-sweep allocations include the
+controls and must fit a 1,800-second estimate and cumulative hard limit.
+A selected set that cannot fit one seed and its controls, or the requested
+full sweep, fails before starting its samples. Restrict the selected builds
+or run one compiled model directly for a full sweep that exceeds the job allocation.
+
+After building with `FROST_RANDOM_START_SEED` set, run the same check directly:
+
+```bash
+./scripts/frost.py run python3 tests/random_start_sweep.py \
+    --test hello_world --count 201
+```
+
+Use the registry entry and environment that produced the model. `--seed N`
+selects one explicit Verilator seed. The check writes self-loop images with consistent instruction metadata.
+Each process drives idle external inputs, starts the CPU and NIC clocks,
+applies reset, installs the loop entry, and runs 300 system cycles. Seeds are runtime arguments; the check does not rebuild. A pass
+requires assertion arming, a completion marker, and a fresh passing cocotb
+report. Per-seed logs, XML reports, executable digest, failures and elapsed
+time go to `tests/startup_sweep/` (override with `--output`). `--baseline`
+measures a model with checks enabled from its first evaluation.
+
+After the seeded starts, the cached-tier check deliberately violates the
+NIC AXI single-beat response check and the NIC reset identity assertion in
+separate processes. Each control requires a matching
+`+frost_startup_assertion_control=bridge` or
+`+frost_startup_assertion_control=nic_reset` plusarg, the matching
+`FROST_STARTUP_ASSERTION_CONTROL` environment value, and a bench write to
+the simulation-only probe after assertion arming and reset. Ordinary starts
+omit these controls. A passing process, a timeout, or a different diagnostic
+fails the control. `--baseline` skips them.
+The third process uses the bridge violation with the additional
+`+frost_startup_withhold_assertions=1` plusarg and matching
+`FROST_STARTUP_WITHHOLD_ASSERTIONS=1` environment value. The bench withholds
+arming and reads back the disabled simulator switch after reset and after
+the injected violation. This process must complete with a passing cocotb
+report and no assertion diagnostic. Both directions run in the simulator;
+the Python unit tests also use mocked outcomes to check failure classification.
+
+TestRIG shard 3 requires a summary of both assertion failures and the
+withheld-arming completion for its seed base and current fixture. Its final
+CI step fails if any control is absent, even when no startup sample ran.
+The summary is printed and included in the job summary. This requirement
+uses the shard's compiled model and adds no build or CI job.
 
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.
@@ -966,7 +1063,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
 | `MEMORY_LINK_STAGES` | Register stages between the hart and the cluster memory in `frost` builds (default 0). The `*_link1` registry entries run the memory-system programs with one stage |
 | `MISALIGNED_HW` | Builds `frost` with the misaligned-access engine, as the X3 has it: plain misaligned loads and stores to cached DDR are performed in hardware (default 1, and 0 when `ENABLE_CACHED_TIER=0`). The registry entries that disable the cached tier also set it to 0 |
-| `SIM_FAST_MAINT` | Clears coherent-array tags, coherence states and replacement bits in one simulation cycle and enables fast L1I invalidation (default 1). Data RAM is not cleared. Hardware uses 0. Coherent fences leave dirty L1D data available to home probes. The Physical address aperture (1 GiB / Bare access) CI job uses 0 with randomized start values to cover the real reset sweep |
+| `SIM_FAST_MAINT` | Clears coherent-array tags, coherence states and replacement bits in one simulation cycle and bulk-clears the L1I tag and replacement RAMs on reset and every invalidate-all (default 1). L1I invalidate-all clears valid flip-flops in one cycle in either mode. Data RAM is not cleared. Hardware uses 0. Coherent fences leave dirty L1D data available to home probes. The Physical address aperture (1 GiB / Bare access) CI job uses 0 with randomized start values to cover the real reset sweep |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
 `tests/results.xml`. A `test_run_cocotb.py` run passes only if the simulator
@@ -1193,7 +1290,7 @@ Lint and Fast Python Tests jobs locally.
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the two full-chip synthesis targets [reuse](#reusing-formal-and-synthesis-results) earlier passes |
-| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
+| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D zero (control, multi-endpoint, and cover jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the 20 jobs that contribute to it into a report |

@@ -1,0 +1,28 @@
+[tasks]
+bmc
+cover
+
+[options]
+multiclock on
+bmc: mode bmc
+bmc: depth 36
+cover: mode cover
+cover: depth 42
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv cdc_sync.sv cdc_reset_sync.sv cdc_reset_pair.sv cdc_mailbox.sv
+read -formal -sv cdc_mailbox_formal.sv
+prep -top cdc_mailbox_formal -flatten
+~cover: chformal -cover -remove
+opt -fast
+opt_clean -purge
+
+[files]
+../hw/rtl/lib/cdc/cdc_sync.sv
+../hw/rtl/lib/cdc/cdc_reset_sync.sv
+../hw/rtl/lib/cdc/cdc_reset_pair.sv
+../hw/rtl/lib/cdc/cdc_mailbox.sv
+cdc_mailbox_formal.sv

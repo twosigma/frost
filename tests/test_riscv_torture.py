@@ -16,6 +16,8 @@
 
 """Run riscv-torture cases and compare UART signatures with Spike.
 
+The output includes cocotb's pass/fail summary and the signature result.
+
 Run in the frost image from the repository root, cleaning tests/ before
 each invocation:
 
@@ -284,6 +286,9 @@ def run_single_test(
         return TestResult(test_name, "FAIL", "Simulation timed out")
 
     combined_output = (result.stdout or "") + (result.stderr or "")
+    for line in combined_output.splitlines():
+        if "TESTS=" in line and "PASS=" in line and "FAIL=" in line:
+            print(line)
 
     # A signature cannot override a simulator failure, including a NIC access
     # while its MAC clocks are absent.

@@ -28,6 +28,8 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
+from cocotb_tests.cpu_structs import PTW_RESP_FIELDS
+from utils.packed_structs import assert_port_width, pack_struct
 
 SECTOR = 32
 MASK64 = (1 << 64) - 1
@@ -206,14 +208,23 @@ class Env:
 
 
 def pack_walk_resp(vpn: int, leaf: Leaf) -> int:
-    """Pack ptw_resp_t: PBMT, fault, VPN, PPN, level and RWXUDG permissions."""
-    value = (leaf.pbmt << 2) | leaf.fault
-    value = (value << 27) | vpn
-    value = (value << 44) | leaf.ppn
-    value = (value << 2) | leaf.level
-    for bit in (leaf.r, leaf.w, leaf.x, leaf.u, leaf.d, leaf.g):
-        value = (value << 1) | bit
-    return value
+    """Pack riscv_pkg::ptw_resp_t from PTW_RESP_FIELDS."""
+    return pack_struct(
+        PTW_RESP_FIELDS,
+        {
+            "pbmt": leaf.pbmt,
+            "fault_kind": leaf.fault,
+            "vpn": vpn,
+            "ppn": leaf.ppn,
+            "level": leaf.level,
+            "perm_r": leaf.r,
+            "perm_w": leaf.w,
+            "perm_x": leaf.x,
+            "perm_u": leaf.u,
+            "perm_d": leaf.d,
+            "perm_g": leaf.g,
+        },
+    )
 
 
 def canonical(va: int) -> bool:
@@ -232,7 +243,7 @@ def translate_part(a: Access, va: int) -> tuple[str, int]:
     leaf = a.leaves.get(vpn, Leaf(fault=DFAULT_PAGE))
     if leaf.fault == DFAULT_PAGE:
         return "page", 0
-    if leaf.fault == DFAULT_ACCESS:
+    if leaf.fault == DFAULT_ACCESS and not leaf.pbmt:
         return "access", 0
     priv_ok = (a.priv_u or a.sum_) if leaf.u else not a.priv_u
     perm = (
@@ -242,6 +253,8 @@ def translate_part(a: Access, va: int) -> tuple[str, int]:
     )
     if not perm:
         return "page", 0
+    if leaf.fault == DFAULT_ACCESS:
+        return "access", 0
     if leaf.ppn >> 20:
         return "access", 0
     if leaf.level == 2:
@@ -296,8 +309,8 @@ def expected_load(env: Env, a: Access, parts: list[tuple[int, int]]) -> int:
             pa = parts[0][1] + ((byte_va - parts[0][0]) & MASK64)
         raw |= env.byte(pa) << (8 * k)
     bits = 8 * a.nbytes
-    if a.fp and a.nbytes == 4:
-        return (0xFFFF_FFFF << 32) | raw
+    if a.fp and a.nbytes < 8:
+        return (MASK64 ^ ((1 << bits) - 1)) | raw
     if a.nbytes == 8 or a.unsigned:
         return raw
     if raw >> (bits - 1):
@@ -307,6 +320,7 @@ def expected_load(env: Env, a: Access, parts: list[tuple[int, int]]) -> int:
 
 async def setup(dut: Any, seed: int) -> Env:
     """Start the clock and models, and reset the engine."""
+    assert_port_width(dut.i_walk_resp, PTW_RESP_FIELDS)
     rng = random.Random(seed)
     Clock(dut.i_clk, 10, unit="ns").start()
     env = Env(dut, rng)
@@ -496,7 +510,7 @@ def random_leaf(rng: random.Random, store: bool) -> Leaf:
     choice = rng.random()
     ppn = (DDR_BASE >> 12) + rng.randrange(0, 4096)
     if choice < 0.70:
-        return Leaf(ppn=ppn)
+        return Leaf(ppn=ppn, g=ppn & 1)
     if choice < 0.76:
         return Leaf(fault=DFAULT_PAGE)
     if choice < 0.80:
@@ -542,7 +556,7 @@ async def random_accesses(dut: Any, seed: int, count: int, translate: bool) -> N
             va = misaligned_va(rng, base, nbytes)
             a = Access(va=va, nbytes=nbytes, store=store)
         a.unsigned = rng.random() < 0.5 and nbytes != 8
-        a.fp = nbytes >= 4 and rng.random() < 0.3
+        a.fp = rng.random() < 0.3
         a.unsigned = a.unsigned and not a.fp
         a.rd = rng.randrange(32)
         a.rd_valid = rng.random() < 0.9
@@ -584,6 +598,21 @@ async def random_accesses(dut: Any, seed: int, count: int, translate: bool) -> N
         assert seen.get(key, 0) >= 10, (key, seen)
     if translate:
         assert seen.get("upper fault", 0) >= 5, seen
+
+
+@cocotb.test()
+async def test_half_fp_transfers(dut: Any) -> None:
+    """FLH boxes every payload and FSH preserves bytes across sector and page splits."""
+    env = await setup(dut, seed=272)
+    for offset in (1, 7, 31, 63, 4095):
+        for payload in (0x0000, 0x3C00, 0x7C01, 0x8000, 0xFE55):
+            va = DDR_BASE + offset
+            env.regs[(1, 7)] = 0x1234_5678_9ABC_0000 | payload
+            for store in (True, False):
+                a = Access(va=va, nbytes=2, store=store, fp=True)
+                before = dict(env.mem)
+                result = await run_access(env, a)
+                check(env, a, before, result)
 
 
 @cocotb.test()
@@ -782,3 +811,31 @@ async def test_pbmt_page_boundaries(dut: Any) -> None:
             assert result["cause"] == (STORE_MISALIGN if store else LOAD_MISALIGN)
             assert result["tval"] == a.va
             assert not env.requests
+
+
+@cocotb.test()
+async def test_no_alias_permission_precedence(dut: Any) -> None:
+    """A refused NC/IO leaf checks permissions for either part before data issue."""
+    env = await setup(dut, seed=19)
+    for store in (False, True):
+        for pbmt in (1, 2):
+            for upper in (False, True):
+                for denied in (False, True):
+                    va = 0x100FFD
+                    a = Access(va=va, nbytes=8, store=store, translate=True)
+                    a.leaves[va >> 12] = Leaf(ppn=DDR_BASE >> 12)
+                    refused_vpn = (va >> 12) + int(upper)
+                    a.leaves[refused_vpn] = Leaf(
+                        fault=DFAULT_ACCESS,
+                        ppn=DDR_BASE >> 12,
+                        pbmt=pbmt,
+                        u=int(denied),
+                    )
+                    before = dict(env.mem)
+                    result = await run_access(env, a)
+                    check(env, a, before, result)
+                    assert result["cause"] == cause_of(
+                        "page" if denied else "access", store
+                    )
+                    assert result["tval"] == (0x101000 if upper else va)
+                    assert not env.requests

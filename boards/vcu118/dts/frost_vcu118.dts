@@ -31,12 +31,12 @@
 			compatible = "riscv";
 			mmu-type = "riscv,sv39";
 			riscv,isa-base = "rv64i";
-			riscv,isa = "rv64imafdc_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintpause_zihpm_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_svade_svpbmt_svvptc";
+			riscv,isa = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_svade_svpbmt_svvptc";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
-				"zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
+				"zfa", "zfhmin", "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
 				"zicclsm", "ziccrse", "zicntr", "zicond", "zicsr", "zifencei",
-				"zihintpause", "zihpm", "za64rs", "zawrs", "zba", "zbb",
-				"zbc", "zbkb", "zbkc", "zbs", "zkt", "smaia",
+				"zihintntl", "zihintpause", "zihpm", "zimop", "za64rs", "zawrs", "zba", "zbb",
+				"zbc", "zbkb", "zbkc", "zbs", "zcb", "zcmop", "zkt", "smaia",
 				"ssaia", "ssccptr", "sscofpmf", "sscounterenw", "ssnpm", "sstc", "sstvala",
 				"sstvecd", "svade", "svpbmt", "svvptc";
 			/* cbo.clean/flush/inval act on one 64-byte L2 line; every bus master is coherent. */
@@ -71,19 +71,30 @@
 		 * privilege; the fixed counters 0 and 2 do neither. Raw translation
 		 * events sit above the counter numbers: 16 = page-walker busy
 		 * cycles (counter 8), 17 = SFENCE.VMA TLB invalidates (counter 7),
-		 * 18 = CSR-requested TLB invalidates (counter 4). */
+		 * 18 = CSR-requested TLB invalidates (counter 4). Raw cache refill
+		 * events follow: 19 = L1I refills (counter 3), 20 = L2 demand
+		 * misses, the home's demand line reads from memory (counter 6),
+		 * 21 = L2 prefetch misses, its prefetch line reads (counter 5).
+		 * The generic L1-icache-load-misses, LLC-load-misses and
+		 * LLC-prefetch-misses events map to them. */
 		riscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000200>,
 				      <0x00000002 0x00000002 0x00000400>,
 				      <0x00000004 0x00000004 0x00000080>,
 				      <0x00000005 0x00000005 0x00000008>,
 				      <0x00000006 0x00000006 0x00000010>,
-				      <0x00010021 0x00010021 0x00000020>;
+				      <0x00010021 0x00010021 0x00000020>,
+				      <0x00010009 0x00010009 0x00000008>,
+				      <0x00010011 0x00010011 0x00000040>,
+				      <0x00010015 0x00010015 0x00000020>;
 		riscv,event-to-mhpmevent = <0x00000001 0x00000000 0x00000009>,
 				   <0x00000002 0x00000000 0x0000000a>,
 				   <0x00000004 0x00000000 0x00000007>,
 				   <0x00000005 0x00000000 0x00000003>,
 				   <0x00000006 0x00000000 0x00000004>,
-				   <0x00010021 0x00000000 0x00000005>;
+				   <0x00010021 0x00000000 0x00000005>,
+				   <0x00010009 0x00000000 0x00000013>,
+				   <0x00010011 0x00000000 0x00000014>,
+				   <0x00010015 0x00000000 0x00000015>;
 		riscv,raw-event-to-mhpmcounters = <0x0 0x3 0xffffffff 0xffffffff 0x08>,
 				       <0x0 0x4 0xffffffff 0xffffffff 0x10>,
 				       <0x0 0x5 0xffffffff 0xffffffff 0x20>,
@@ -94,7 +105,10 @@
 				       <0x0 0xa 0xffffffff 0xffffffff 0x400>,
 				       <0x0 0x10 0xffffffff 0xffffffff 0x100>,
 				       <0x0 0x11 0xffffffff 0xffffffff 0x80>,
-				       <0x0 0x12 0xffffffff 0xffffffff 0x10>;
+				       <0x0 0x12 0xffffffff 0xffffffff 0x10>,
+				       <0x0 0x13 0xffffffff 0xffffffff 0x08>,
+				       <0x0 0x14 0xffffffff 0xffffffff 0x40>,
+				       <0x0 0x15 0xffffffff 0xffffffff 0x20>;
 	};
 
 	soc@0 {

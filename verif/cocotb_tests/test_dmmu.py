@@ -28,13 +28,14 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
+from cocotb_tests.cpu_structs import PTW_RESP_FIELDS, TLB_FLUSH_FIELDS
+from utils.packed_structs import assert_port_width, pack_struct
 
 
 NONE, MISALIGN, PAGE, ACCESS = range(4)
 VPN_MASK = (1 << 27) - 1
 XLEN_MASK = (1 << 64) - 1
-# riscv_pkg::tlb_flush_t {en, use_va, vpn[26:0], use_asid, asid[8:0]}, 39 bits.
-FLUSH_ALL = 1 << 38
+FLUSH_ALL = pack_struct(TLB_FLUSH_FIELDS, {"en": 1})
 DDR_CAPACITY_LOG2_BYTES = int(os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES", "30"))
 DDR_LIMIT = 0x8000_0000 + (1 << DDR_CAPACITY_LOG2_BYTES)
 # riscv_pkg "Svpbmt": the uncached alias of DDR sets one bit above it.
@@ -63,23 +64,22 @@ class Leaf:
 
     def packed(self) -> int:
         """Pack the leaf as a riscv_pkg::ptw_resp_t."""
-        fields = (
-            (self.pbmt, 2),
-            (self.fault, 2),
-            (self.vpn, 27),
-            (self.ppn, 44),
-            (self.level, 2),
-            (self.r, 1),
-            (self.w, 1),
-            (self.x, 1),
-            (self.u, 1),
-            (self.d, 1),
-            (self.g, 1),
+        return pack_struct(
+            PTW_RESP_FIELDS,
+            {
+                "pbmt": self.pbmt,
+                "fault_kind": self.fault,
+                "vpn": self.vpn,
+                "ppn": self.ppn,
+                "level": self.level,
+                "perm_r": self.r,
+                "perm_w": self.w,
+                "perm_x": self.x,
+                "perm_u": self.u,
+                "perm_d": self.d,
+                "perm_g": self.g,
+            },
         )
-        value = 0
-        for field, width in fields:
-            value = (value << width) | field
-        return value
 
 
 @dataclass(frozen=True)
@@ -125,7 +125,7 @@ def _expected(op: Op, leaf: Leaf) -> tuple[int, int, int]:
     canonical = va < (1 << 38) or va >= (1 << 64) - (1 << 38)
     if not canonical:
         return va, PAGE, 0
-    if leaf.fault:
+    if leaf.fault and not (leaf.fault == ACCESS and leaf.pbmt):
         return va, leaf.fault, 0
     priv_ok = bool(op.priv_u or op.sum_) if leaf.u else not op.priv_u
     access_ok = (
@@ -133,6 +133,8 @@ def _expected(op: Op, leaf: Leaf) -> tuple[int, int, int]:
     )
     if not priv_ok or not access_ok:
         return va, PAGE, 0
+    if leaf.fault:
+        return va, leaf.fault, 0
     offset_bits = 12 + 9 * leaf.level
     pa = ((leaf.ppn << 12) & ~((1 << offset_bits) - 1)) | (
         va & ((1 << offset_bits) - 1)
@@ -154,6 +156,8 @@ async def _cycle(dut: Any) -> None:
 
 
 async def _setup(dut: Any) -> None:
+    assert_port_width(dut.i_walk_resp, PTW_RESP_FIELDS)
+    assert_port_width(dut.i_tlb_flush, TLB_FLUSH_FIELDS)
     Clock(dut.i_clk, 10, unit="ns").start()
     for name in (
         "i_rst_n",
@@ -481,6 +485,38 @@ async def test_pbmt_pages_take_the_mmio_path(dut: Any) -> None:
                     break
                 await _cycle(dut)
             _check(dut, op, page)
+            await _cycle(dut)
+
+
+@cocotb.test()
+async def test_no_alias_refusal_checks_live_page_permissions(dut: Any) -> None:
+    """A no-alias leaf keeps page faults ahead of its physical-access refusal."""
+    await _setup(dut)
+    load = Op()
+    store = replace(load, needs_sq=1, store=1)
+    for pbmt in (1, 2):
+        leaf = Leaf(vpn=load.va >> 12, pbmt=pbmt, fault=ACCESS)
+        cases = (
+            (load, leaf),
+            (store, leaf),
+            (load, replace(leaf, u=1)),
+            (store, replace(leaf, u=1)),
+            (replace(load, sum_=1), replace(leaf, u=1)),
+            (replace(load, priv_u=1), leaf),
+            (store, replace(leaf, w=0)),
+            (store, replace(leaf, d=0)),
+            (load, replace(leaf, r=0, x=1)),
+            (replace(load, mxr=1), replace(leaf, r=0, x=1)),
+        )
+        for op, response in cases:
+            await _clear(dut)
+            _issue(dut, op)
+            await _cycle(dut)
+            dut.i_iss_valid.value = 0
+            _response(dut, response)
+            await _cycle(dut)
+            _check(dut, op, response)
+            dut.i_walk_resp_valid.value = 0
             await _cycle(dut)
 
 
@@ -1097,12 +1133,15 @@ async def test_last_page_bypass_backpressure_and_issue_kill(dut: Any) -> None:
 
 def _flush_cmd(vpn: int | None = None, asid: int | None = None) -> int:
     """Pack a riscv_pkg::tlb_flush_t that clears entries by page and/or ASID."""
-    return (
-        (1 << 38)
-        | (int(vpn is not None) << 37)
-        | (((vpn or 0) & VPN_MASK) << 10)
-        | (int(asid is not None) << 9)
-        | ((asid or 0) & 0x1FF)
+    return pack_struct(
+        TLB_FLUSH_FIELDS,
+        {
+            "en": 1,
+            "use_va": vpn is not None,
+            "vpn": vpn or 0,
+            "use_asid": asid is not None,
+            "asid": asid or 0,
+        },
     )
 
 

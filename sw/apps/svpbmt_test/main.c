@@ -22,17 +22,22 @@
  *   - any nonzero PBMT while PBMTE is clear,
  *   - PBMT = 3 in a leaf,
  *   - nonzero PBMT in a non-leaf PTE.
- * NC and IO pages are uncached: FROST sends their loads and stores, at the ROB
- * head and in program order, through the uncached alias of DDR into the
- * coherent DMA port, so they read and write the bytes a cacheable mapping of
- * the same frame sees after device completion. Adjacent mixed-view accesses
+ * NC and IO pages are uncached. Over DDR, FROST sends them through an alias
+ * into the coherent DMA port; loads issue at the ROB head and stores retire
+ * after the bus response. The router's parking, committed-store drain and
+ * interrupt shield apply only to physical device addresses, so an accepted
+ * memory load can be flushed and read again after an interrupt or debug halt.
+ * These targets are idempotent memory. Adjacent mixed-view accesses
  * also run with and without the Svpbmt fence/flush/fence sequence. PMA overrides
  * on NC and IO pages (norm:Svpbmt_impl_may_override_pmas): AMOs and SC take a
  * store access fault (7), LR a load access fault (5), cbo.zero a store access
  * fault (7), instruction fetch an instruction access fault (1). The TLBs keep
  * the field, so a second access (a DTLB hit) and an access after the DTLB has
  * been refilled (a second-level TLB hit) behave the same. A 2 MiB IO superpage
- * over DDR and an NC page over low BRAM behave the same way. The alias itself
+ * over DDR is covered too. U-mode NC/IO data accesses check the U permission
+ * and return through ECALL. NC/IO 1 GiB leaves check loads, stores and TLB hits
+ * at two offsets above the 2 MiB boundary. NC low-BRAM loads bypass caches and forwarding;
+ * NC low-BRAM stores are buffered. The alias itself
  * is outside the PMA map: untranslated accesses and PMA leaves there fault.
  * After PBMTE is cleared and sfence.vma executes, the same NC page faults.
  *
@@ -49,6 +54,10 @@
 #ifndef FROST_DDR_CAPACITY_LOG2_BYTES
 #define FROST_DDR_CAPACITY_LOG2_BYTES 30
 #endif
+#ifndef SVPBMT_USER_SUPERPAGES_ONLY
+#define SVPBMT_USER_SUPERPAGES_ONLY 0
+#endif
+
 #ifndef SVPBMT_BUS_ERRORS
 #define SVPBMT_BUS_ERRORS 0
 #endif
@@ -70,6 +79,7 @@
 #define CAUSE_FETCH_ACCESS 1ul
 #define CAUSE_LOAD_ACCESS 5ul
 #define CAUSE_STORE_ACCESS 7ul
+#define CAUSE_FETCH_PAGE 12ul
 #define CAUSE_LOAD_PAGE 13ul
 #define CAUSE_STORE_PAGE 15ul
 #define NO_TRAP (~0ul)
@@ -80,6 +90,7 @@
 #define PTE_R (1ul << 1)
 #define PTE_W (1ul << 2)
 #define PTE_X (1ul << 3)
+#define PTE_U (1ul << 4)
 #define PTE_A (1ul << 6)
 #define PTE_D (1ul << 7)
 #define PTE_PPN(pa) ((((unsigned long) (pa)) >> 12) << 10)
@@ -108,6 +119,7 @@ enum {
     PG_RES = 3,
     PG_NC_EXEC = 4,
     PG_BRAM_NC = 5,
+    PG_U_CODE = 6,
     PG_FILL0 = 8, /* PG_FILL0 .. PG_FILL0 + 23: plain pages that refill the DTLB */
     PG_FILLS = 24
 };
@@ -363,6 +375,80 @@ static unsigned long byte_mask(unsigned int bytes)
     return bytes == 8 ? ~0ul : (1ul << (bytes * 8)) - 1;
 }
 
+/* Execute an actual U-mode load/store pair from a normal executable page.
+ * ECALL must return cause 8, distinguishing U execution from MPRV=S accesses. */
+static unsigned long user_pair(unsigned long va, unsigned long value)
+{
+    register unsigned long a0 __asm__("a0") = va;
+    register unsigned long a1 __asm__("a1") = value;
+    register unsigned long a2 __asm__("a2") = 0;
+    g_cause = NO_TRAP;
+    g_tval = NO_TRAP;
+    __asm__ volatile("la t0, 1f\n"
+                     "csrw mscratch, t0\n"
+                     "li t0, 0x21800\n"
+                     "csrc mstatus, t0\n"
+                     "csrw mepc, %[entry]\n"
+                     "mret\n"
+                     "1:\n"
+                     : "+r"(a0), "+r"(a1), "+&r"(a2)
+                     : [entry] "r"(VA_4K(PG_U_CODE))
+                     : "t0", "t1", "t2", "t3", "memory");
+    return a2;
+}
+
+static int user_and_gigapages(void)
+{
+    int ok = 1;
+    volatile uint32_t *code = (volatile uint32_t *) FRAME(PG_U_CODE);
+    code[0] = 0x00053603; /* ld a2, 0(a0) */
+    code[1] = 0x00b53023; /* sd a1, 0(a0) */
+    code[2] = 0x00000073; /* ecall */
+    l0[PG_U_CODE] = PTE_PPN(FRAME(PG_U_CODE)) | RWAD | PTE_X | PTE_U;
+    __asm__ volatile("fence rw, rw\n fence.i" ::: "memory");
+    for (unsigned long pbmt = PBMT_NC; pbmt <= PBMT_IO; pbmt++) {
+        unsigned long va = VA_4K(pbmt) + 0x18;
+        volatile unsigned long *pa = (volatile unsigned long *) (FRAME(pbmt) + 0x18);
+        unsigned long value = 0x5a12345678000000ul | pbmt;
+        l0[pbmt] = PTE_PPN(FRAME(pbmt)) | RWAD | PTE_U | PTE_PBMT(pbmt);
+        sfence_all();
+        *pa = value;
+        __asm__ volatile("fence iorw, iorw" ::: "memory");
+        unsigned long got = user_pair(va, ~value);
+        __asm__ volatile("fence iorw, iorw" ::: "memory");
+        int good = g_cause == 8 && g_tval == 0 && got == value && *pa == ~value;
+        report(good, pbmt == PBMT_NC ? "U nc load-store" : "U io load-store", 0);
+        ok &= good;
+        l0[pbmt] = PTE_PPN(FRAME(pbmt)) | RWAD | PTE_PBMT(pbmt);
+        sfence_all();
+        user_pair(va, value);
+        ok &= expect_trap("U supervisor-page", K_LD, CAUSE_LOAD_PAGE, va);
+    }
+    /* The two offsets differ above the 2 MiB boundary. Both must splice
+     * VPN[1:0] into the real DDR frame before its alias bit is added. */
+    static const unsigned long offsets[] = {0x01107018ul, 0x03107018ul};
+    for (unsigned long pbmt = PBMT_NC; pbmt <= PBMT_IO; pbmt++) {
+        root[1] = PTE_PPN(0x80000000ul) | RWAD | PTE_PBMT(pbmt);
+        sfence_all();
+        for (unsigned int n = 0; n < sizeof(offsets) / sizeof(offsets[0]); n++) {
+            unsigned long va = 0x40000000ul + offsets[n];
+            volatile unsigned long *pa = (volatile unsigned long *) (0x80000000ul + offsets[n]);
+            unsigned long value = 0x1a00000012345600ul | (pbmt << 4) | n;
+            *pa = value;
+            __asm__ volatile("fence iorw, iorw" ::: "memory");
+            ok &= expect_value("1g nc/io load", access_s(K_LD, va, 0), value);
+            access_s(K_SD, va, ~value);
+            ok &= expect_trap("1g nc/io store", K_SD, NO_TRAP, 0);
+            __asm__ volatile("fence iorw, iorw" ::: "memory");
+            ok &= expect_value("1g cached view", *pa, ~value);
+            ok &= expect_value("1g nc/io hit", access_s(K_LD, va, 0), ~value);
+        }
+    }
+    root[1] = 0;
+    sfence_all();
+    return ok;
+}
+
 /* Both CBO addresses name the same frame. The sequence must work with either
  * address, in either direction, including when the accesses differ in size.
  * Without it, a load may see the old value, but the store must persist. */
@@ -454,6 +540,25 @@ static int no_alias_map(void)
         ok &= expect_trap("2g ddr-load", K_LD, CAUSE_LOAD_ACCESS, va);
         access_s(K_SD, va, 7);
         ok &= expect_trap("2g ddr-store", K_SD, CAUSE_STORE_ACCESS, va);
+        /* Page permissions take precedence over the missing-alias PMA. */
+        l0[pg] = PTE_PPN(FRAME(pg)) | RWAD | PTE_PBMT(pg) | PTE_U;
+        sfence_all();
+        access_s(K_LD, va, 0);
+        ok &= expect_trap("2g user-load", K_LD, CAUSE_LOAD_PAGE, va);
+        access_s(K_SD, va, 7);
+        ok &= expect_trap("2g user-store", K_SD, CAUSE_STORE_PAGE, va);
+        l0[pg] = PTE_PPN(FRAME(pg)) | (RWAD & ~PTE_W) | PTE_PBMT(pg);
+        sfence_all();
+        access_s(K_SD, va, 7);
+        ok &= expect_trap("2g readonly-store", K_SD, CAUSE_STORE_PAGE, va);
+        l0[pg] = PTE_PPN(FRAME(pg)) | (RWAD & ~PTE_D) | PTE_PBMT(pg);
+        sfence_all();
+        access_s(K_SD, va, 7);
+        ok &= expect_trap("2g dirty-clear", K_SD, CAUSE_STORE_PAGE, va);
+        fetch_s(VA_4K(pg));
+        ok &= expect_trap("2g nonexec-fetch", -1, CAUSE_FETCH_PAGE, VA_4K(pg));
+        l0[pg] = PTE_PPN(FRAME(pg)) | RWAD | PTE_PBMT(pg);
+        sfence_all();
         l0[PG_FILL0] = PTE_PPN(0x40010000ul) | RWAD | PTE_PBMT(pg);
         sfence_all();
         unsigned long device_va = VA_4K(PG_FILL0);
@@ -517,6 +622,13 @@ int main(void)
     }
     if (SVPBMT_BUS_ERRORS) {
         ok = alias_bus_errors();
+        goto done;
+    }
+    if (SVPBMT_USER_SUPERPAGES_ONLY) {
+        uart_puts("U-mode and 1 GiB cases only\r\n");
+        csr_write(0x30A, MENVCFG_PBMTE | ENVCFG_CBZE);
+        __asm__ volatile("csrw satp, %0\n sfence.vma" : : "r"(SATP_SV39 | (PT_ROOT >> 12)));
+        ok = user_and_gigapages();
         goto done;
     }
     for (int p = 0; p < PG_FILL0 + PG_FILLS; p++)
@@ -596,6 +708,7 @@ int main(void)
     ok &= no_atomics("E io-2m-l2tlb", VA_MEGA + 0x5000);
     ok &= coherent_pair("E nc-l2tlb", VA_4K(PG_NC), (volatile uint64_t *) FRAME(PG_NC), 0xE0E0ul);
 
+    ok &= user_and_gigapages();
     ok &= alias_orders();
 
     /* F: an NC page over low BRAM: uncached loads and stores, no AMOs, no

@@ -15,9 +15,9 @@
  */
 
 /*
- * F/D instructions while mstatus.FS is Off.
+ * F/D, Zfhmin and Zfa instructions while mstatus.FS is Off.
  *
- * With FS Off every F/D instruction raises illegal-instruction (mcause 2,
+ * With FS Off every scalar FP instruction raises illegal-instruction (mcause 2,
  * mtval the instruction's bits) before it touches memory: an FP load reads
  * no device register, and no address fault takes the place of the
  * illegal-instruction cause. A write to mstatus.FS applies to the next
@@ -46,6 +46,7 @@ static int g_ok = 1;
 static volatile unsigned long g_cause;
 static volatile unsigned long g_epc;
 static volatile unsigned long g_tval;
+volatile unsigned long g_extension_pc;
 static volatile uint64_t g_data[2] __attribute__((aligned(16)));
 
 /* Trigger instructions, labeled inside the asm blocks below. */
@@ -98,7 +99,7 @@ static void reset_records(void)
                          "csrs mstatus, t0\n"                                                      \
                          :                                                                         \
                          : __VA_ARGS__                                                             \
-                         : "t0", "t1", "t2", "t3", "ft0", "memory");                               \
+                         : "t0", "t1", "t2", "t3", "t4", "ft0", "memory");                         \
     } while (0)
 
 static void report(const char *name, int ok)
@@ -128,6 +129,72 @@ static int illegal_at(const char *trigger)
 {
     return g_cause == 2u && g_epc == (unsigned long) trigger &&
            g_tval == insn_bits_at((unsigned long) trigger);
+}
+
+/* Every extension instruction traps with FS Off, including integer results. */
+#define EXTENSION_OFF(name, insn)                                                                  \
+    do {                                                                                           \
+        RUN_FS_OFF_CASE("la t0, 2f\n la t1, g_extension_pc\n sd t0, 0(t1)\n 2:\n" insn,            \
+                        "r"((unsigned long) &g_data[0]));                                          \
+        report(name, illegal_at((const char *) g_extension_pc));                                   \
+    } while (0)
+
+/* Observe FS before any result readback can change it. */
+#define EXTENSION_STATE(name, insn, a, b, dirty)                                                   \
+    do {                                                                                           \
+        unsigned long state;                                                                       \
+        __asm__ volatile("fmv.d.x ft1, %1\n fmv.d.x ft2, %2\n fsflags zero\n"                      \
+                         "li t0, 0x6000\n csrc mstatus, t0\n"                                      \
+                         "li t0, 0x4000\n csrs mstatus, t0\n" insn "\n"                            \
+                         "csrr %0, mstatus\n"                                                      \
+                         : "=&r"(state)                                                            \
+                         : "r"(a), "r"(b), "r"((unsigned long) &g_data[0])                         \
+                         : "t0", "t4", "ft0", "ft1", "ft2", "memory");                             \
+        report(name, ((state >> 13) & 3u) == ((dirty) ? 3u : 2u));                                 \
+    } while (0)
+
+static void check_half_forwarding(void)
+{
+    static const uint64_t values[] = {0x0000, 0x3c00, 0x7c01, 0x8000, 0xfe55};
+    int ok = 1;
+    for (unsigned int i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        for (unsigned int offset = 0; offset < sizeof(g_data); offset += 2) {
+            volatile uint8_t *p = (volatile uint8_t *) g_data + offset;
+            uint64_t fp, ui, back;
+            int64_t si;
+            uint64_t value = 0x123456789abc0000ull | values[i];
+            /* The older divide holds retirement while the younger loads read
+             * the queued half store, including its unboxed NaN payload. */
+            __asm__ volatile("fmv.d.x ft1, %4\n divu t4, %6, %7\n"
+                             "fsh ft1, 0(%5)\n flh ft0, 0(%5)\n"
+                             "lh %1, 0(%5)\n lhu %2, 0(%5)\n fmv.x.d %0, ft0\n"
+                             "divu t4, %6, %7\n sh %4, 0(%5)\n"
+                             "flh ft0, 0(%5)\n fmv.x.d %3, ft0"
+                             : "=&r"(fp), "=&r"(si), "=&r"(ui), "=&r"(back)
+                             : "r"(value), "r"(p), "r"(~0ul), "r"(3ul)
+                             : "t4", "ft0", "ft1", "memory");
+            uint64_t boxed = 0xffffffffffff0000ull | values[i];
+            ok &= fp == boxed && back == boxed && ui == values[i] && si == (int16_t) values[i];
+        }
+    }
+    /* Nonzero positive and negative offsets verify halfword width and I/S
+     * immediates end-to-end without disturbing neighbouring halfwords. */
+    {
+        uint64_t pos_fp = 0, neg_fp = 0;
+        g_data[0] = 0xa5a5a5a5a5a5a5a5ull;
+        g_data[1] = 0x5a5a5a5a5a5a5a5aull;
+        __asm__ volatile("fmv.d.x ft1, %2\n fsh ft1, 6(%3)\n flh ft0, 6(%3)\n fmv.x.d %0, ft0\n"
+                         "fmv.d.x ft1, %4\n fsh ft1, -2(%5)\n flh ft0, -2(%5)\n fmv.x.d %1, ft0"
+                         : "=&r"(pos_fp), "=&r"(neg_fp)
+                         : "r"(0xdeadbeef00003c00ull),
+                           "r"((unsigned long) &g_data[0]),
+                           "r"(0xcafebabe0000fe55ull),
+                           "r"((unsigned long) &g_data[1] + 4ul)
+                         : "ft0", "ft1", "memory");
+        ok &= pos_fp == 0xffffffffffff3c00ull && neg_fp == 0xfffffffffffffe55ull &&
+              g_data[0] == 0x3c00a5a5a5a5a5a5ull && g_data[1] == 0x5a5a5a5afe555a5aull;
+    }
+    report("half store forwarding to FP and integer loads", ok);
 }
 
 int main(void)
@@ -182,7 +249,7 @@ int main(void)
                      "fmv.x.d %0, ft0\n"
                      : "=r"(loaded)
                      : "r"((unsigned long) &g_data[0])
-                     : "t0", "t1", "t2", "t3", "ft0", "memory");
+                     : "t0", "t1", "t2", "t3", "t4", "ft0", "memory");
     report("F csrs FS then FLD", g_cause == 11u && loaded == 0x4045000000000000ull);
 
     /* G: clearing FS takes effect for the very next instruction. */
@@ -201,7 +268,7 @@ int main(void)
                      "csrs mstatus, t0\n"
                      :
                      : "r"((unsigned long) &g_data[0])
-                     : "t0", "t1", "t2", "t3", "ft0", "memory");
+                     : "t0", "t1", "t2", "t3", "t4", "ft0", "memory");
     report("G csrc FS then FLW", illegal_at(trig_g));
 
     /* H: a trapping FLW must not consume a waiting UART RX byte. A bounded
@@ -237,7 +304,7 @@ int main(void)
                      "fmv.x.d %0, ft0\n"
                      : "=r"(loaded)
                      : "r"((unsigned long) &g_data[0])
-                     : "t0", "t1", "t2", "t3", "ft0", "memory");
+                     : "t0", "t1", "t2", "t3", "t4", "ft0", "memory");
     report("I csrs sstatus FS then FLD", g_cause == 11u && loaded == 0x4059000000000000ull);
 
     reset_records();
@@ -255,8 +322,69 @@ int main(void)
                      "csrs mstatus, t0\n"
                      :
                      : "r"((unsigned long) &g_data[0])
-                     : "t0", "t1", "t2", "t3", "ft0", "memory");
+                     : "t0", "t1", "t2", "t3", "t4", "ft0", "memory");
     report("J csrc sstatus FS then FLW", illegal_at(trig_j));
+
+    /* Zfhmin and Zfa use the same FS legality and retirement rules. */
+    EXTENSION_OFF("FS Off FLH", "flh ft0, 0(%0)");
+    EXTENSION_OFF("FS Off FSH", "fsh ft0, 1(%0)");
+    EXTENSION_OFF("FS Off FMV.X.H", "fmv.x.h t4, ft1");
+    EXTENSION_OFF("FS Off FMV.H.X", "fmv.h.x ft0, zero");
+    EXTENSION_OFF("FS Off FCVT.S.H", "fcvt.s.h ft0, ft1");
+    EXTENSION_OFF("FS Off FCVT.H.S", "fcvt.h.s ft0, ft1");
+    EXTENSION_OFF("FS Off FCVT.D.H", "fcvt.d.h ft0, ft1");
+    EXTENSION_OFF("FS Off FCVT.H.D", "fcvt.h.d ft0, ft1");
+    EXTENSION_OFF("FS Off FLI.S", "fli.s ft0, 1.0");
+    EXTENSION_OFF("FS Off FMINM.S", "fminm.s ft0, ft1, ft2");
+    EXTENSION_OFF("FS Off FMAXM.S", "fmaxm.s ft0, ft1, ft2");
+    EXTENSION_OFF("FS Off FROUND.S", "fround.s ft0, ft1");
+    EXTENSION_OFF("FS Off FROUNDNX.S", "froundnx.s ft0, ft1");
+    EXTENSION_OFF("FS Off FLEQ.S", "fleq.s t4, ft1, ft2");
+    EXTENSION_OFF("FS Off FLTQ.S", "fltq.s t4, ft1, ft2");
+    EXTENSION_OFF("FS Off FLI.D", "fli.d ft0, 1.0");
+    EXTENSION_OFF("FS Off FMINM.D", "fminm.d ft0, ft1, ft2");
+    EXTENSION_OFF("FS Off FMAXM.D", "fmaxm.d ft0, ft1, ft2");
+    EXTENSION_OFF("FS Off FROUND.D", "fround.d ft0, ft1");
+    EXTENSION_OFF("FS Off FROUNDNX.D", "froundnx.d ft0, ft1");
+    EXTENSION_OFF("FS Off FLEQ.D", "fleq.d t4, ft1, ft2");
+    EXTENSION_OFF("FS Off FLTQ.D", "fltq.d t4, ft1, ft2");
+    EXTENSION_OFF("FS Off FCVTMOD.W.D", "fcvtmod.w.d t4, ft1, rtz");
+
+    EXTENSION_STATE("FS state FLH", "flh ft0, 0(%3)", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FSH", "fsh ft1, 0(%3)", 0xFFFFFFFFFFFF3C00ul, 0ul, 0);
+    EXTENSION_STATE("FS state FMV.X.H", "fmv.x.h t4, ft1", 0xFFFFFFFFFFFF3C00ul, 0ul, 0);
+    EXTENSION_STATE("FS state FMV.H.X", "fmv.h.x ft0, zero", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FCVT.S.H", "fcvt.s.h ft0, ft1", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FCVT.H.S", "fcvt.h.s ft0, ft1", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FCVT.D.H", "fcvt.d.h ft0, ft1", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FCVT.H.D", "fcvt.h.d ft0, ft1", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FLI.S", "fli.s ft0, 1.0", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FMINM.S", "fminm.s ft0, ft1, ft2", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FMAXM.S", "fmaxm.s ft0, ft1, ft2", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FROUND.S", "fround.s ft0, ft1", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FROUNDNX.S", "froundnx.s ft0, ft1", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FLEQ.S", "fleq.s t4, ft1, ft2", 0xFFFFFFFF7F800001ul, 0ul, 1);
+    EXTENSION_STATE("FS state FLTQ.S", "fltq.s t4, ft1, ft2", 0xFFFFFFFF7F800001ul, 0ul, 1);
+    EXTENSION_STATE("FS state FLI.D", "fli.d ft0, 1.0", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FMINM.D", "fminm.d ft0, ft1, ft2", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FMAXM.D", "fmaxm.d ft0, ft1, ft2", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FROUND.D", "fround.d ft0, ft1", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FROUNDNX.D", "froundnx.d ft0, ft1", 0xFFFFFFFFFFFF3C00ul, 0ul, 1);
+    EXTENSION_STATE("FS state FLEQ.D", "fleq.d t4, ft1, ft2", 0x7FF0000000000001ul, 0ul, 1);
+    EXTENSION_STATE("FS state FLTQ.D", "fltq.d t4, ft1, ft2", 0x7FF0000000000001ul, 0ul, 1);
+    EXTENSION_STATE(
+        "FS state FCVTMOD.W.D", "fcvtmod.w.d t4, ft1, rtz", 0x7FF0000000000001ul, 0ul, 1);
+    EXTENSION_STATE(
+        "FS clean fleq.s", "fleq.s t4, ft1, ft2", 0xFFFFFFFF3F800000ul, 0xFFFFFFFF3F800000ul, 0);
+    EXTENSION_STATE(
+        "FS clean fltq.s", "fltq.s t4, ft1, ft2", 0xFFFFFFFF3F800000ul, 0xFFFFFFFF3F800000ul, 0);
+    EXTENSION_STATE(
+        "FS clean fleq.d", "fleq.d t4, ft1, ft2", 0x3FF0000000000000ul, 0x3FF0000000000000ul, 0);
+    EXTENSION_STATE(
+        "FS clean fltq.d", "fltq.d t4, ft1, ft2", 0x3FF0000000000000ul, 0x3FF0000000000000ul, 0);
+    EXTENSION_STATE(
+        "FS clean FCVTMOD.W.D", "fcvtmod.w.d t4, ft1, rtz", 0x3FF0000000000000ul, 0ul, 0);
+    check_half_forwarding();
 
     uart_printf(g_ok ? "<<PASS>>\n" : "<<FAIL>>\n");
     for (;;) {

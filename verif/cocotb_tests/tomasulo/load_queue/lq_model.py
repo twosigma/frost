@@ -22,11 +22,7 @@ from config import MASK32, MASK64, MASK_XLEN, XLEN
 from ..fu_shims.fp_shim_interface import _parse_instr_op_enum
 
 _INSTR_OPS = _parse_instr_op_enum()
-_MINMAX_OPS = {
-    _INSTR_OPS[f"AMO{kind}_{width}"]
-    for kind in ("MIN", "MAX", "MINU", "MAXU")
-    for width in ("W", "D")
-}
+_MINMAX_OPS = {_INSTR_OPS[f"AMO{kind}"] for kind in ("MIN", "MAX", "MINU", "MAXU")}
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
@@ -433,6 +429,8 @@ class LQModel:
         if e.is_fp:
             if e.size == MEM_SIZE_DOUBLE:
                 value = e.data & MASK64
+            elif e.size == MEM_SIZE_HALF:
+                value = (MASK64 ^ 0xFFFF) | (e.data & 0xFFFF)
             else:
                 value = (0xFFFFFFFF << 32) | (e.data & MASK32)
         else:

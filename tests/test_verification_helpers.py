@@ -16,6 +16,7 @@
 
 import importlib
 import asyncio
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,12 +45,36 @@ rob_interface = importlib.import_module(
 config = importlib.import_module("config")
 
 
+@pytest.mark.parametrize("top", ("frost", "soc_top"))
+def test_simulation_assertions_require_system_control(
+    monkeypatch: pytest.MonkeyPatch, top: str
+) -> None:
+    """A missing control fails the system bench; standalone checks stay active."""
+    control = importlib.import_module("cocotb_tests.sim_assertions")
+    monkeypatch.setattr(
+        control.cocotb, "top", SimpleNamespace(_name=top), raising=False
+    )
+    monkeypatch.setattr(control.ctypes, "CDLL", lambda _: SimpleNamespace())
+    monkeypatch.delenv("FROST_STARTUP_BASELINE", raising=False)
+    if top == "frost":
+        with pytest.raises(AttributeError, match="frost_sim_assertions_enable"):
+            control.enable_simulation_assertions()
+    else:
+        control.enable_simulation_assertions()
+
+
 @pytest.mark.parametrize("nics", (0, 1, 2))
 @pytest.mark.parametrize("reset_asserted", (False, True))
-def test_program_start_initializes_only_checker_history(
-    monkeypatch: pytest.MonkeyPatch, nics: int, reset_asserted: bool
+@pytest.mark.parametrize("direct_platform", (False, True))
+@pytest.mark.parametrize("reset_arrives", (False, True))
+def test_program_start_clears_checker_history_before_driven_reset(
+    monkeypatch: pytest.MonkeyPatch,
+    nics: int,
+    reset_asserted: bool,
+    direct_platform: bool,
+    reset_arrives: bool,
 ) -> None:
-    """Startup settles without clocks and preserves arbitrary production state."""
+    """Discard initial-edge history, then require a driven reset before checking."""
     real_program = importlib.import_module("cocotb_tests.test_real_program")
 
     class Signal:
@@ -80,6 +105,9 @@ def test_program_start_initializes_only_checker_history(
         rst_core=Signal(0),
         production_state=Signal(0xA5),
     )
+    if direct_platform:
+        soc.rst_core_next = soc.reset_request_soc
+        del soc.reset_request_soc
     if nics:
         soc.gen_cached_tier = SimpleNamespace(nic=SimpleNamespace(u_front=fronts[0]))
         if nics == 2:
@@ -94,7 +122,7 @@ def test_program_start_initializes_only_checker_history(
         reset_synchronizer_shift_register=Signal(0, 3),
         reset_synchronized=Signal(0),
         reset_div4_synchronizer_shift_register=Signal(0, 3),
-        cpu_and_memory_subsystem=SimpleNamespace(soc=soc),
+        cpu_and_memory_subsystem=soc if direct_platform else SimpleNamespace(soc=soc),
     )
     settled = False
 
@@ -111,16 +139,94 @@ def test_program_start_initializes_only_checker_history(
 
     monkeypatch.setattr(real_program, "Timer", initial_evaluation)
     if nics and not reset_asserted:
-        with pytest.raises(AssertionError, match="requires system reset"):
+        with pytest.raises(AssertionError, match="NIC startup requires system reset"):
             asyncio.run(real_program.prepare_program_start(dut))
-        assert all(front.reset_seen_q.value == 1 for front in fronts)
     else:
-        history = asyncio.run(real_program.prepare_program_start(dut))
-        assert history == tuple(front.reset_seen_q for front in fronts)
-        assert all(seen.value == 0 for seen in history)
+        asyncio.run(real_program.prepare_program_start(dut))
+    assert all(front.reset_seen_q.value == 0 for front in fronts)
     assert settled
     assert soc.rst_core.value == 0
     assert soc.production_state.value == 0xA5
+    if nics and not reset_asserted:
+        return
+    dut.i_power_on_rst.value = 1
+    events = ["settled", "cleared"]
+
+    async def driven_reset(clock: Any) -> None:
+        assert clock is dut.i_clk
+        assert events == ["settled", "cleared"]
+        assert all(front.reset_seen_q.value == 0 for front in fronts)
+        assert all(signal.value == 0 for signal in clocks.values())
+        events.append("reset")
+        for front in fronts:
+            front.reset_seen_q.value = int(reset_arrives)
+        dut.i_power_on_rst.value = 0
+
+    monkeypatch.setattr(real_program, "RisingEdge", driven_reset)
+    if nics and not reset_arrives:
+        with pytest.raises(
+            AssertionError, match="NIC response checker did not observe reset"
+        ):
+            asyncio.run(real_program.wait_for_power_on_reset(dut))
+    else:
+        asyncio.run(real_program.wait_for_power_on_reset(dut))
+    events.append("checked")
+    assert events == ["settled", "cleared", "reset", "checked"]
+
+
+@pytest.mark.parametrize("direct_platform", (False, True))
+@pytest.mark.parametrize(
+    "nics, missing", [(0, None), (1, None), (1, 0), (2, None), (2, 0), (2, 1)]
+)
+def test_cold_reset_requires_each_nic_checker_history(
+    monkeypatch: pytest.MonkeyPatch,
+    direct_platform: bool,
+    nics: int,
+    missing: int | None,
+) -> None:
+    """Cold reset must reach each NIC on both system hierarchy layouts."""
+    program = importlib.import_module("cocotb_tests.test_real_program")
+    history = [SimpleNamespace(value=0) for _ in range(nics)]
+    soc = SimpleNamespace()
+    if nics:
+        soc.gen_cached_tier = SimpleNamespace(
+            nic=SimpleNamespace(u_front=SimpleNamespace(reset_seen_q=history[0]))
+        )
+        if nics == 2:
+            soc.gen_cached_tier.gen_nic_1g = SimpleNamespace(
+                nic_1g=SimpleNamespace(u_front=SimpleNamespace(reset_seen_q=history[1]))
+            )
+    dut = SimpleNamespace(
+        i_power_on_rst=SimpleNamespace(value=1),
+        i_clk=object(),
+        cpu_and_memory_subsystem=soc if direct_platform else SimpleNamespace(soc=soc),
+    )
+
+    async def reset_edge(clock: Any) -> None:
+        assert clock is dut.i_clk
+        dut.i_power_on_rst.value = 0
+        for index, seen in enumerate(history):
+            seen.value = int(index != missing)
+
+    monkeypatch.setattr(program, "RisingEdge", reset_edge)
+    if missing is None:
+        asyncio.run(program.wait_for_power_on_reset(dut))
+    else:
+        with pytest.raises(
+            AssertionError, match="NIC response checker did not observe reset"
+        ):
+            asyncio.run(program.wait_for_power_on_reset(dut))
+        assert history[missing].value == 0
+
+
+def test_cold_reset_postcondition_allows_standalone_top() -> None:
+    """A standalone boundary bench has no system NIC history to check."""
+    program = importlib.import_module("cocotb_tests.test_real_program")
+    asyncio.run(
+        program.wait_for_power_on_reset(
+            SimpleNamespace(i_power_on_rst=SimpleNamespace(value=0))
+        )
+    )
 
 
 def test_pack_struct_keeps_declaration_order_and_wide_values() -> None:
@@ -408,3 +514,102 @@ def test_low_bram_words_take_the_upper_half_of_odd_words() -> None:
     )
 
     assert real_program.read_low_bram_words(dut, 4, 5) == [1, 2, 3, 4, 5]
+
+
+def test_tomasulo_rs_mem_dispatch_requires_explicit_size_and_load_sign() -> None:
+    """Folded RS_MEM operations reject omitted mem_size or LOAD mem_signed."""
+    iface = tomasulo_interface.TomasuloInterface(SimpleNamespace())
+    ops = tomasulo_interface._INSTR_OPS
+
+    for name in (
+        "LOAD",
+        "STORE",
+        "LOAD_FP",
+        "STORE_FP",
+        "LR",
+        "SC",
+        "AMOSWAP",
+        "AMOADD",
+    ):
+        with pytest.raises(ValueError, match="mem_size"):
+            iface._rs_dispatch_kwargs(
+                tomasulo_interface.RS_MEM, True, {"op": ops[name]}
+            )
+
+    with pytest.raises(ValueError, match="mem_signed"):
+        iface._rs_dispatch_kwargs(
+            tomasulo_interface.RS_MEM, True, {"op": ops["LOAD"], "mem_size": 2}
+        )
+
+    load_pkt = iface._rs_dispatch_kwargs(
+        tomasulo_interface.RS_MEM,
+        True,
+        {"op": ops["LOAD"], "mem_size": 1, "mem_signed": True},
+    )
+    assert load_pkt["mem_size"] == 1
+    assert load_pkt["mem_signed"] is True
+
+    lr_pkt = iface._rs_dispatch_kwargs(
+        tomasulo_interface.RS_MEM, True, {"op": ops["LR"], "mem_size": 2}
+    )
+    assert lr_pkt["mem_size"] == 2
+    assert lr_pkt["mem_signed"] is True
+
+
+def _parse_riscv_pkg_packed_struct(struct_name: str) -> list[tuple[str, int]]:
+    """Extract (field_name, bit_width) pairs in declaration order from riscv_pkg.sv."""
+    pkg_path = (
+        Path(__file__).resolve().parents[1] / "hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv"
+    )
+    text = re.sub(r"//.*", "", pkg_path.read_text(encoding="utf-8"))
+    params: dict[str, int] = {}
+    for m in re.finditer(r"localparam\s+int\s+unsigned\s+(\w+)\s*=\s*([^;]+);", text):
+        expr = m.group(2).strip()
+        if re.fullmatch(r"[0-9A-Za-z_+\-*/ ()]+", expr):
+            try:
+                params[m.group(1)] = int(eval(expr, {"__builtins__": {}}, params))
+            except Exception:
+                pass
+    enum_widths = {
+        m.group(3): int(m.group(1)) - int(m.group(2)) + 1
+        for m in re.finditer(
+            r"typedef\s+enum\s+logic\s*\[(\d+):(\d+)\]\s*\{[^}]*\}\s*(\w+)\s*;",
+            text,
+        )
+    }
+    block = re.search(
+        rf"typedef\s+struct\s+packed\s*\{{([^}}]*)\}}\s*{re.escape(struct_name)}\s*;",
+        text,
+    )
+    assert block is not None, f"{struct_name} not found in riscv_pkg.sv"
+    fields: list[tuple[str, int]] = []
+    for raw_member in block.group(1).split(";"):
+        member = raw_member.strip()
+        if not member:
+            continue
+        vec = re.fullmatch(r"logic\s*\[([^:\]]+):([^:\]]+)\]\s*(\w+)", member)
+        if vec:
+            hi = int(eval(vec.group(1), {"__builtins__": {}}, params))
+            lo = int(eval(vec.group(2), {"__builtins__": {}}, params))
+            fields.append((vec.group(3), hi - lo + 1))
+            continue
+        scalar = re.fullmatch(r"(\w+)\s+(\w+)", member)
+        assert scalar is not None, f"unparsed struct member: {member}"
+        typ, name = scalar.groups()
+        width = 1 if typ == "logic" else enum_widths[typ]
+        fields.append((name, width))
+    return fields
+
+
+def test_assert_port_width_and_mmu_schemas_match_riscv_pkg() -> None:
+    """PTW_RESP_FIELDS and TLB_FLUSH_FIELDS match riscv_pkg.sv and enforce port widths."""
+    for schema, sv_name in (
+        (cpu_structs.PTW_RESP_FIELDS, "ptw_resp_t"),
+        (cpu_structs.TLB_FLUSH_FIELDS, "tlb_flush_t"),
+    ):
+        assert schema == _parse_riscv_pkg_packed_struct(sv_name)
+        width = packed_structs.struct_width(schema)
+        packed_structs.assert_port_width(_VectorHandle(width, 0), schema)
+        for bad_width in (width - 1, width + 1):
+            with pytest.raises(AssertionError, match="schema width"):
+                packed_structs.assert_port_width(_VectorHandle(bad_width, 0), schema)
