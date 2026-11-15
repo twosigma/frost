@@ -840,7 +840,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="fs_off_test",
         nic_mac_clocks=False,
         description=(
-            "F/D instructions trap without memory effects when mstatus.FS is Off"
+            "F/D, Zfhmin and Zfa FS legality, dirty state and halfword forwarding"
         ),
     ),
     "zicbop_test": CocotbRunConfig(
@@ -1283,6 +1283,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "S-mode SUM and MXR toggles keep TLB entries and apply the live bits"
+        ),
+    ),
+    "asid_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="asid_test",
+        nic_mac_clocks=False,
+        description=(
+            "satp.ASID, global pages and the SFENCE.VMA forms against live TLB entries"
         ),
     ),
     "imsic_csr_test": CocotbRunConfig(
@@ -2651,7 +2660,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.ex_stage.test_fp_engine",
         hdl_toplevel_module="fp_engine_equiv_harness",
         description=(
-            "F/D compute results and flags match Berkeley SoftFloat, including "
+            "F/D, Zfhmin and Zfa results and flags match their references, including "
             "cancellation"
         ),
     ),
@@ -4193,6 +4202,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "against a reference Sv39 walk"
         ),
     ),
+    "l2tlb": CocotbRunConfig(
+        python_test_module="cocotb_tests.mmu.test_l2tlb",
+        hdl_toplevel_module="l2tlb",
+        description=(
+            "Second-level TLB: ASID and global entries, superpages, every SFENCE.VMA "
+            "form, 512-page and 32-superpage residency and a random run against a reference"
+        ),
+    ),
     "soc_vcu118": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_soc_vcu118",
         hdl_toplevel_module="soc_top",
@@ -5540,6 +5557,13 @@ class CocotbRunner:
             str((Path(cocotb.__file__).resolve().parent / "libs").resolve())
         )
         verilator_extra_args_marker.write_text(self._verilator_build_signature())
+        if (
+            self.hdl_toplevel_module == "frost"
+            and os.environ.get("FROST_STARTUP_SWEEP") == "1"
+        ):
+            from random_start_sweep import check_built_model
+
+            check_built_model(sim_build_dir / "Vtop", self.setup_environment())
 
     def _verilator_build_dir_writable(self, sim_build_dir: Path) -> bool:
         """Return True when the existing Verilator build dir can be rebuilt in place."""

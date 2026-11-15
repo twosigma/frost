@@ -41,3 +41,26 @@ def pytest_configure(config: Any) -> None:
 def setup_cocotb_env() -> None:
     """Select Verilator as the cocotb simulator."""
     os.environ["SIM"] = "verilator"
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(items: list[Any]) -> None:
+    """Allocate startup seeds across the selected system configurations."""
+    if os.environ.get("FROST_STARTUP_SWEEP") != "1":
+        return
+    from random_start_sweep import plan_startup_sweeps
+    from test_run_cocotb import DDR_TIER_EXCLUDE, TEST_REGISTRY
+
+    names = []
+    for item in items:
+        callspec = getattr(item, "callspec", None)
+        name = callspec.params.get("test_name") if callspec else None
+        if name not in TEST_REGISTRY:
+            continue
+        if (
+            os.environ.get("FROST_COCOTB_MEM_CONFIG") == "ddr"
+            and name in DDR_TIER_EXCLUDE
+        ):
+            continue
+        names.append(name)
+    plan_startup_sweeps(names)

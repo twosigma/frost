@@ -110,6 +110,10 @@ module coherence_request_endpoint #(
   end
   assign o_g_ready = wait_g_phase && grant_in.q == demand_q.q &&
       (&grant_addr_equal) && grant_in.opcode <= coherence_pkg::GrantMZero;
+  // The accepted grant enables the whole grant register, a few hundred flops
+  // that sit far from the compare, so the enable replicates.
+  (* max_fanout = 50 *) logic grant_accept;
+  assign grant_accept = i_g_valid && o_g_ready;
   assign o_grant_valid = grant_phase;
   assign o_done_ready = done_phase && i_done_status <= coherence_pkg::Error &&
       ((i_done_status != coherence_pkg::Error && !grant_q.error) || i_error_disposed) &&
@@ -146,7 +150,7 @@ module coherence_request_endpoint #(
           send_d_phase <= 1'b0;
           wait_g_phase <= 1'b1;
         end
-        if (i_g_valid && o_g_ready) begin
+        if (grant_accept) begin
           wait_g_phase <= 1'b0;
           grant_phase <= 1'b1;
           grant_q <= grant_in;
@@ -193,7 +197,7 @@ module coherence_request_endpoint #(
           end
           SendD:   if (i_d_ready) phase_q <= WaitG;
           WaitG:
-          if (i_g_valid && o_g_ready) begin
+          if (grant_accept) begin
             grant_q <= grant_in;
             phase_q <= Grant;
           end

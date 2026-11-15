@@ -409,12 +409,18 @@ module nic_dma_front #(
     if (i_rst) reset_seen_q <= 1'b1;
     if (!i_sim_hold) begin
       if (reset_seen_q && !i_rst && i_dma_resp_valid && (32'(i_dma_resp_id) >= NUM_ENTRIES))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "nic_dma_front: response for id %0d, outside the %0d entries",
             i_dma_resp_id,
             NUM_ENTRIES
         );
       else if (reset_seen_q && !i_rst && i_dma_resp_valid && !ent_valid_q[i_dma_resp_id])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("nic_dma_front: response for a free entry %0d", i_dma_resp_id);
     end
   end
