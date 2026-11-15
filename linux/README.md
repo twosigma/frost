@@ -318,7 +318,12 @@ A replacement kernel selected with `FROST_LINUX_KERNEL` must provide:
 
 The test image boots with `ipv6.disable=1`: Debian's kernel builds IPv6 in,
 and its autoconfiguration frames would loop back through the NIC and fail
-`frost_nettest`'s idle checks.
+`frost_nettest`'s idle checks. IPv4 cannot be turned off on an NFS root, and
+the kernel may send ARP requests for the server while the interface is
+looped back. `frost_nettest` captures every frame of the interface and
+accepts such a frame only when the packet counters, the frames the kernel sent
+and their looped copies all agree; see
+[the package README](buildroot-external/README.md) for the rules.
 
 ## Driver modules
 
