@@ -830,8 +830,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "Misaligned loads and stores of every size and form across a doubleword, "
-            "sector, line and page in cached DDR, under timer interrupts, and the "
-            "exception low BRAM keeps"
+            "sector, line and page in cached DDR, under Sv39 through MPRV and in S and "
+            "U modes (with non-adjacent physical frames in S/U and lower/upper/both-page "
+            "faults), under timer interrupts, and the exception low BRAM keeps"
         ),
     ),
     "fs_off_test": CocotbRunConfig(
@@ -3077,7 +3078,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherent_stream_order": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_stream_order",
         hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
-        description="Speculative fills, same-address load replay and attached LR reservation suppression across a coherent cut",
+        description="Speculative fills, load replay, attached signed and unsigned extraction, vector holds, flush recovery and LR cuts",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
     ),
     "hitpath_probe_order": CocotbRunConfig(
@@ -3163,7 +3164,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
         hdl_toplevel_module="coherence_l1d",
-        description="Speculative ownership, atomic admission, demand attachment and bounded grant deferral with 8 endpoints",
+        description="Speculative ownership, attached data and response fairness, store/probe races and grant deferral with 8 endpoints",
     ),
     "coherence_stream_dirty": CocotbRunConfig(
         verilator_extra_args=(
@@ -3236,6 +3237,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="The cluster with three L1D request endpoints: loads in flight beside "
         "stores, probes and DMA",
+    ),
+    "coherence_stale_line_prefetch_l2": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GL1D_MISSES=8",
+            "-GL1D_STREAM_PREFETCH=1",
+            "-GHOME_CACHE_BYTES=65536",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_stale_line",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="cbo.zero twin beside an L1D stream, with a 64 KiB home",
+        include_in_pytest=False,
     ),
     "coherence_cbo_zero": CocotbRunConfig(
         verilator_extra_args=("--assert",),
@@ -4825,8 +4838,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
         hdl_toplevel_module="rvc_decompressor",
         description=(
-            "RV64C expansion, illegal flags, and source metadata match the predecode "
-            "model"
+            "RV64C/Zcb/Zcmop expansion and illegal flags match the specification "
+            "oracle and predecode mirror for every parcel"
         ),
     ),
     "c_ext_state": CocotbRunConfig(
@@ -4943,6 +4956,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="cpu_tb",
         description="Directed and random compressed-instruction checks in cpu_tb",
         include_in_pytest=False,
+    ),
+    "mops": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_mops",
+        hdl_toplevel_module="cpu_tb",
+        description="MOP and NTL state in M/S/U modes, dependent consumers, and reserved mtval",
     ),
 }
 

@@ -14,11 +14,24 @@
 
 """Pack and unpack declaration-ordered SystemVerilog struct fields."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+
+def struct_width(fields: Sequence[tuple[str, int]]) -> int:
+    """Return the total width in bits of a struct field schema."""
+    return sum(width for _, width in fields)
+
+
+def assert_port_width(port: Any, fields: Sequence[tuple[str, int]]) -> None:
+    """Check that a simulator port's bit width matches a struct field schema."""
+    expected = struct_width(fields)
+    actual = len(port)
+    assert actual == expected, f"{port}: width {actual} != schema width {expected}"
 
 
 def pack_struct(
-    fields: list[tuple[str, int]],
+    fields: Sequence[tuple[str, int]],
     values: Mapping[str, int | bool],
 ) -> int:
     """Pack MSB-first fields, masking each value to its declared width.
@@ -27,7 +40,7 @@ def pack_struct(
     are masked as integers, so a value of 2 contributes zero rather than True.
     """
     packed = 0
-    offset = sum(width for _, width in fields)
+    offset = struct_width(fields)
     for name, width in fields:
         offset -= width
         raw = int(values.get(name, 0))
@@ -35,10 +48,12 @@ def pack_struct(
     return packed
 
 
-def unpack_struct(fields: list[tuple[str, int]], packed: int) -> dict[str, int | bool]:
+def unpack_struct(
+    fields: Sequence[tuple[str, int]], packed: int
+) -> dict[str, int | bool]:
     """Unpack MSB-first fields, returning one-bit fields as booleans."""
     result: dict[str, int | bool] = {}
-    offset = sum(width for _, width in fields)
+    offset = struct_width(fields)
     for name, width in fields:
         offset -= width
         raw = (packed >> offset) & ((1 << width) - 1)
