@@ -165,8 +165,12 @@ then maps `ioremap` regions with PBMT = IO and write-combining or
 non-coherent-DMA remaps with PBMT = NC (`_PAGE_IO_SVPBMT`,
 `_PAGE_NOCACHE_SVPBMT`, patched in by the kernel's alternatives). Device pages
 are uncached by their PMA already, so every MMIO driver behaves as before; an
-NC or IO page over DDR uses the configured uncached alias, at the ROB head and
-in program order, through the coherent DMA port. A 2 GiB DDR aperture has no
+NC or IO page over DDR uses the configured uncached alias through the coherent
+DMA port. Loads issue at the ROB head, and alias stores retire after their bus
+response. Memory loads can be flushed and repeated after an interrupt or debug
+halt; the [CPU memory-type description](../hw/rtl/cpu_and_mem/cpu/README.md)
+details the ordering and retry behavior for each physical address range.
+A 2 GiB DDR aperture has no
 alias in the current physical map and rejects those DDR mappings. For wider
 apertures, the top 2 GiB also has no alias. Switching between cacheable and
 uncached views requires `fence iorw, iorw; cbo.flush; fence iorw, iorw` for the

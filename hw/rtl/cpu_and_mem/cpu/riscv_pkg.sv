@@ -1929,8 +1929,9 @@ package riscv_pkg;
   localparam int unsigned PtePbmtLsb = 61;
   // PBMT encodings (Svpbmt): 0 PMA, 1 NC (non-cacheable, idempotent, weakly
   // ordered main memory), 2 IO (non-cacheable, non-idempotent, strongly
-  // ordered I/O), 3 reserved. FROST executes NC exactly as IO: at the ROB
-  // head, in order, after older stores drain, which is stronger than RVWMO.
+  // ordered I/O), 3 reserved. FROST uses the same uncached classification
+  // for NC and IO. The ordering and retry behavior for each physical address
+  // range are described above with the alias map.
   localparam bit [1:0] PbmtPma = 2'd0;
   localparam bit [1:0] PbmtNc = 2'd1;
   localparam bit [1:0] PbmtIo = 2'd2;

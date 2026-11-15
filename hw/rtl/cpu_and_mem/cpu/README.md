@@ -478,8 +478,9 @@ is an instruction fetch (PMA overrides the Svpbmt chapter permits). The walk
 cache holds only pointers, whose PBMT field must be zero.
 
 On the X3, a misaligned NC/IO load or store to a DDR alias raises a load or
-store access fault (cause 5 or 7); one to low BRAM raises an address-misaligned
-exception (cause 4 or 6). The VCU118 has no hardware misaligned-access engine:
+store access fault (cause 5 or 7); one to low BRAM or device registers raises
+an address-misaligned exception (cause 4 or 6). The VCU118 has no hardware
+misaligned-access engine:
 misaligned loads and stores raise cause 4 or 6 before translation, including
 NC/IO accesses, for firmware to handle. Aligned NC/IO DDR accesses on its
 2 GiB map raise cause 5 or 7 because the map has no alias.

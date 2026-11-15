@@ -22,17 +22,20 @@
  *   - any nonzero PBMT while PBMTE is clear,
  *   - PBMT = 3 in a leaf,
  *   - nonzero PBMT in a non-leaf PTE.
- * NC and IO pages are uncached: FROST sends their loads and stores, at the ROB
- * head and in program order, through the uncached alias of DDR into the
- * coherent DMA port, so they read and write the bytes a cacheable mapping of
- * the same frame sees after device completion. Adjacent mixed-view accesses
+ * NC and IO pages are uncached. Over DDR, FROST sends them through an alias
+ * into the coherent DMA port; loads issue at the ROB head and stores retire
+ * after the bus response. The router's parking, committed-store drain and
+ * interrupt shield apply only to physical device addresses, so an accepted
+ * memory load can be flushed and read again after an interrupt or debug halt.
+ * These targets are idempotent memory. Adjacent mixed-view accesses
  * also run with and without the Svpbmt fence/flush/fence sequence. PMA overrides
  * on NC and IO pages (norm:Svpbmt_impl_may_override_pmas): AMOs and SC take a
  * store access fault (7), LR a load access fault (5), cbo.zero a store access
  * fault (7), instruction fetch an instruction access fault (1). The TLBs keep
  * the field, so a second access (a DTLB hit) and an access after the DTLB has
  * been refilled (a second-level TLB hit) behave the same. A 2 MiB IO superpage
- * over DDR and an NC page over low BRAM behave the same way. The alias itself
+ * over DDR is covered too. NC low-BRAM loads bypass caches and forwarding;
+ * NC low-BRAM stores are buffered. The alias itself
  * is outside the PMA map: untranslated accesses and PMA leaves there fault.
  * After PBMTE is cleared and sfence.vma executes, the same NC page faults.
  *
