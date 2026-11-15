@@ -782,6 +782,19 @@ FORMAL_TARGETS = [
         tasks=("bmc", "bmc_ways1", "bmc_delayed"),
     ),
     FormalTarget(
+        "cache_flash_valid.sby",
+        "Flash-valid assignment checks and independent watched-line hit exclusion "
+        "after invalidation, with install/invalidate/refill covers in each mode",
+        tasks=(
+            "bmc_fast",
+            "bmc_fast_ways1",
+            "bmc_hw",
+            "cover_fast",
+            "cover_fast_ways1",
+            "cover_hw",
+        ),
+    ),
+    FormalTarget(
         "lq_alloc_mask.sby",
         "Load-queue allocation masks and capacity checks match the reference search",
         tasks=("bmc4", "bmc8", "bmc16"),
@@ -2497,6 +2510,15 @@ SBY_TASKS = [
     ("bmc_mshr8", "Bounded check with eight miss-status slots"),
     ("bmc_ways1", "Bounded check of a direct-mapped cache"),
     ("bmc_delayed", "Bounded check with delayed (UltraRAM) tags"),
+    ("bmc_fast", "Bounded check with the simulation bulk clear"),
+    (
+        "bmc_fast_ways1",
+        "Bounded check of a direct-mapped cache with the simulation bulk clear",
+    ),
+    ("bmc_hw", "Bounded check of the hardware maintenance path"),
+    ("cover_fast", "Reachability covers with the simulation bulk clear"),
+    ("cover_fast_ways1", "Watched-line covers for the direct-mapped flash cache"),
+    ("cover_hw", "Watched-line covers for the hardware flash-invalidate path"),
     ("bmc_free_bin", "Bounded shared-link memory equivalence with free binary reads"),
     ("bmc_free_oh", "Bounded shared-link memory equivalence with free one-hot reads"),
     (
