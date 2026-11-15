@@ -461,25 +461,16 @@ module load_queue #(
 
   function automatic amo_kind_e encode_amo_kind(input riscv_pkg::instr_op_e op);
     case (op)
-      riscv_pkg::AMOSWAP_W: encode_amo_kind = AMO_KIND_SWAP;
-      riscv_pkg::AMOADD_W:  encode_amo_kind = AMO_KIND_ADD;
-      riscv_pkg::AMOXOR_W:  encode_amo_kind = AMO_KIND_XOR;
-      riscv_pkg::AMOAND_W:  encode_amo_kind = AMO_KIND_AND;
-      riscv_pkg::AMOOR_W:   encode_amo_kind = AMO_KIND_OR;
-      riscv_pkg::AMOMIN_W:  encode_amo_kind = AMO_KIND_MIN;
-      riscv_pkg::AMOMAX_W:  encode_amo_kind = AMO_KIND_MAX;
-      riscv_pkg::AMOMINU_W: encode_amo_kind = AMO_KIND_MINU;
-      riscv_pkg::AMOMAXU_W: encode_amo_kind = AMO_KIND_MAXU;
-      riscv_pkg::AMOSWAP_D: encode_amo_kind = AMO_KIND_SWAP;
-      riscv_pkg::AMOADD_D:  encode_amo_kind = AMO_KIND_ADD;
-      riscv_pkg::AMOXOR_D:  encode_amo_kind = AMO_KIND_XOR;
-      riscv_pkg::AMOAND_D:  encode_amo_kind = AMO_KIND_AND;
-      riscv_pkg::AMOOR_D:   encode_amo_kind = AMO_KIND_OR;
-      riscv_pkg::AMOMIN_D:  encode_amo_kind = AMO_KIND_MIN;
-      riscv_pkg::AMOMAX_D:  encode_amo_kind = AMO_KIND_MAX;
-      riscv_pkg::AMOMINU_D: encode_amo_kind = AMO_KIND_MINU;
-      riscv_pkg::AMOMAXU_D: encode_amo_kind = AMO_KIND_MAXU;
-      default:              encode_amo_kind = AMO_KIND_INVALID;
+      riscv_pkg::AMOSWAP: encode_amo_kind = AMO_KIND_SWAP;
+      riscv_pkg::AMOADD:  encode_amo_kind = AMO_KIND_ADD;
+      riscv_pkg::AMOXOR:  encode_amo_kind = AMO_KIND_XOR;
+      riscv_pkg::AMOAND:  encode_amo_kind = AMO_KIND_AND;
+      riscv_pkg::AMOOR:   encode_amo_kind = AMO_KIND_OR;
+      riscv_pkg::AMOMIN:  encode_amo_kind = AMO_KIND_MIN;
+      riscv_pkg::AMOMAX:  encode_amo_kind = AMO_KIND_MAX;
+      riscv_pkg::AMOMINU: encode_amo_kind = AMO_KIND_MINU;
+      riscv_pkg::AMOMAXU: encode_amo_kind = AMO_KIND_MAXU;
+      default:            encode_amo_kind = AMO_KIND_INVALID;
     endcase
   endfunction
 
