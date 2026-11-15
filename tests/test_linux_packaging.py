@@ -347,6 +347,8 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         "zawrs",
         "zicbop",
         "zicboz",
+        "zfa",
+        "zfhmin",
         "zicbom",
         "zic64b",
         "ziccif",
@@ -463,6 +465,30 @@ def test_sbi_pmu_maps_match_flash_tree(property_name: str) -> None:
             tuple(int(cell, 16) for cell in re.findall(r"0x[\da-f]+", match[1]))
         )
     assert tables[0] == tables[1]
+
+
+@pytest.mark.parametrize("board", ["x3", "vcu118"])
+def test_fp_extensions_advertise_only_implemented_half_subset(board: str) -> None:
+    """Boot descriptions and Sail enable Zfa/Zfhmin without full Zfh."""
+    from test_testrig import load_sail_json
+
+    packer = _load_module(SBI_PACKER)
+    dts = (
+        (REPO_ROOT / "boards/vcu118/dts/frost_vcu118.dts").read_text()
+        if board == "vcu118"
+        else (packer.gen_dts(clk_hz=1, initrd_range=None, bootargs="", model="t"))
+    )
+    isa = re.search(r'riscv,isa = "([^"]+)";', dts)
+    extensions = re.search(r"riscv,isa-extensions = (.*?);", dts, re.S)
+    assert isa is not None and extensions is not None
+    named = set(re.findall(r'"([^"]+)"', extensions[1]))
+    assert {"zfa", "zfhmin"} <= named and "zfh" not in named
+    assert {"zfa", "zfhmin"} <= set(isa[1].split("_"))
+    assert "zfh" not in isa[1].split("_")
+    sail = load_sail_json(REPO_ROOT / "verif/testrig/sail_frost.json")
+    assert sail["extensions"]["Zfa"]["supported"]
+    assert sail["extensions"]["Zfhmin"]["supported"]
+    assert not sail["extensions"]["Zfh"]["supported"]
 
 
 def test_sbi_packer_recognizes_linux_image_header() -> None:
