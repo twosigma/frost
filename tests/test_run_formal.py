@@ -905,7 +905,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rvc_predecode.sby",
-        "RV64C predecode expansion matches the reference decoder for every parcel",
+        "RV64C/Zcb/Zcmop expansion and source metadata match every parcel; MOPs permit pairing",
         tasks=("bmc",),
     ),
     FormalTarget(

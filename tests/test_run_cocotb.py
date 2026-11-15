@@ -4825,8 +4825,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
         hdl_toplevel_module="rvc_decompressor",
         description=(
-            "RV64C expansion, illegal flags, and source metadata match the predecode "
-            "model"
+            "RV64C/Zcb/Zcmop expansion and illegal flags match the specification "
+            "oracle and predecode mirror for every parcel"
         ),
     ),
     "c_ext_state": CocotbRunConfig(
@@ -4943,6 +4943,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="cpu_tb",
         description="Directed and random compressed-instruction checks in cpu_tb",
         include_in_pytest=False,
+    ),
+    "mops": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_mops",
+        hdl_toplevel_module="cpu_tb",
+        description="MOP and NTL state in M/S/U modes, dependent consumers, and reserved mtval",
     ),
 }
 
