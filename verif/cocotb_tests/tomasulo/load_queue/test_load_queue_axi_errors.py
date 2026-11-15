@@ -66,14 +66,16 @@ async def expect_fault(dut_if: Any, tag: int, cause: int) -> None:
     result = await wait_for_fu_complete(dut_if, max_cycles=12)
     assert result.valid and result.tag == tag
     assert result.exception and result.exc_cause == cause
-    assert result.value == 0, (
-        "Bus faults report xtval=0, not data or a physical address"
-    )
+    # The value is zero, never data or a physical address; the flag tells the
+    # wrapper to supply the virtual address for xtval.
+    assert result.value == 0, "Bus fault carries data or a physical address"
+    assert int(dut_if.dut.o_fu_complete_bus_error.value) == 1
     for _ in range(4):
         await dut_if.step()
         assert dut_if.read_fu_complete() == result, (
             "Fault changed under CDB backpressure"
         )
+        assert int(dut_if.dut.o_fu_complete_bus_error.value) == 1
     await accept_fu_complete(dut_if)
 
 
@@ -100,6 +102,7 @@ async def test_read_errors_do_not_fill_cache(dut: Any) -> None:
         dut_if.clear_mem_response()
         result = await wait_for_fu_complete(dut_if)
         assert result.valid and not result.exception and result.value == 0x12345678
+        assert int(dut_if.dut.o_fu_complete_bus_error.value) == 0
         await accept_fu_complete(dut_if)
 
 

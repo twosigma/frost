@@ -414,11 +414,37 @@ set nic_s9 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of
 set_max_delay -datapath_only 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
 set_bus_skew 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
 
+# The checksum side FIFO has a separate Gray pointer in each direction.
+set nic_csum_rd [get_pins -hierarchical -filter {NAME =~ "*/u_tx_csum_fifo/sync_rptr/stage_q_reg[0]*/D"}]
+set nic_csum_rs [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_csum_rd]]]
+set_max_delay -datapath_only 3.0 -from $nic_csum_rs -to [get_cells -of_objects $nic_csum_rd]
+set_bus_skew 3.0 -from $nic_csum_rs -to [get_cells -of_objects $nic_csum_rd]
+set nic_csum_wd [get_pins -hierarchical -filter {NAME =~ "*/u_tx_csum_fifo/sync_wptr/stage_q_reg[0]*/D"}]
+set nic_csum_ws [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_csum_wd]]]
+set_max_delay -datapath_only 3.0 -from $nic_csum_ws -to [get_cells -of_objects $nic_csum_wd]
+set_bus_skew 3.0 -from $nic_csum_ws -to [get_cells -of_objects $nic_csum_wd]
+
+# A mailbox holds its payload until acknowledgement. Bound that payload
+# before the synchronized request can cause the destination to sample it.
+set nic_limit_payload [get_cells -hierarchical -filter {NAME =~ "*/u_rx_limit/payload_q_reg*" && IS_SEQUENTIAL}]
+set nic_limit_capture [get_cells -hierarchical -filter {NAME =~ "*/u_rx_limit/o_dst_data_reg*" && IS_SEQUENTIAL}]
+set_max_delay -datapath_only 3.0 -from $nic_limit_payload -to $nic_limit_capture
+set nic_mac_payload [get_cells -hierarchical -filter {NAME =~ "*/u_mac_rx_mbx/payload_q_reg*" && IS_SEQUENTIAL}]
+set nic_mac_capture [get_cells -hierarchical -filter {NAME =~ "*/u_mac_rx_mbx/o_dst_data_reg*" && IS_SEQUENTIAL}]
+set_max_delay -datapath_only 3.0 -from $nic_mac_payload -to $nic_mac_capture
+set nic_txc_payload [get_cells -hierarchical -filter {NAME =~ "*/u_tx_cfg_mbx/payload_q_reg*" && IS_SEQUENTIAL}]
+set nic_txc_capture [get_cells -hierarchical -filter {NAME =~ "*/u_tx_cfg_mbx/o_dst_data_reg*" && IS_SEQUENTIAL}]
+set_max_delay -datapath_only 3.0 -from $nic_txc_payload -to $nic_txc_capture
+set nic_pause_payload [get_cells -hierarchical -filter {NAME =~ "*/u_pause_ev_mbx/payload_q_reg*" && IS_SEQUENTIAL}]
+set nic_pause_capture [get_cells -hierarchical -filter {NAME =~ "*/u_pause_ev_mbx/o_dst_data_reg*" && IS_SEQUENTIAL}]
+set_max_delay -datapath_only 3.0 -from $nic_pause_payload -to $nic_pause_capture
+
 # Bound single-bit status, reset-handshake, and PHY-control crossings to the
 # first cdc_sync stage, from each launch clock. RXRESETDONE uses RX USRCLK2;
 # PLL lock and power good have no launch clock. No bus-skew bound is needed.
 # CPU boundary synchronizers use cpu_clock_boundary.tcl.
 set nic_sync_d [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D" &&
+  NAME !~ "*/u_tx_csum_fifo/sync_*/*" &&
   NAME !~ "*gen_memory_cdc*" && NAME !~ "*gen_dma_cdc*" &&
   NAME !~ "*gen_msi_cdc*" && NAME !~ "*gen_cpu_controls*" &&
   NAME !~ "*gen_diagnostic_cdc*" && NAME !~ "*gen_debug_slice_cdc*"}]
