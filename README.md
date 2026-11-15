@@ -105,12 +105,12 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 ## Try it without an FPGA
 
 A standalone C++ Verilator runner simulates the `frost` SystemVerilog RTL with
-live UART output and no Python in the clock loop. It matched the cocotb bench
-cycle for cycle on `hello_world` and CoreMark in both memory tiers (unseeded
-behavioral AXI memory model); CI checks BRAM and DDR `hello_world` and BRAM
-CoreMark against
-[`hw/sim/native/exactness_baseline.json`](hw/sim/native/exactness_baseline.json)
-alongside a live cocotb BRAM `hello_world` run:
+live UART output and no Python in the clock loop. On every CI run, `test-native`
+compares live unseeded cocotb runs of BRAM and DDR `hello_world` and BRAM
+CoreMark with the native runner on cycles, CoreMark ticks, and UART bytes
+alongside each program's pass, CRC, and summary conditions; the full comparison
+mode (`tests/test_native_sim.py --all`) adds DDR CoreMark and checkpoint save
+and restore against live unseeded cocotb runs:
 
 ```bash
 ./scripts/frost.py native hello_world
@@ -120,9 +120,10 @@ alongside a live cocotb BRAM `hello_world` run:
 
 With the `frost` development image built first (`docker build -t frost .`, see
 [Quick Start](#quick-start)) and the CoreMark submodule initialized,
-`demo/Dockerfile` packages baseline x86-64 simulator binaries and prebuilt
-`hello_world` and CoreMark images into a small standalone runtime container
-(`frost-demo:local`):
+`demo/Dockerfile` packages baseline x86-64 simulator binaries (`1`, `4`, and `8`
+threads) and prebuilt `hello_world` and CoreMark images into a small standalone
+runtime container (`frost-demo:local`), which CI builds and runs in
+`test-demo-image`:
 
 ```bash
 git submodule update --init --recursive sw/apps/coremark/coremark
@@ -259,7 +260,7 @@ part works.
 | Board | FPGA | Ethernet | Cache hierarchy → main memory |
 |---|---|---|---|
 | Alveo X3522PV | UltraScale+ (xcux35) | 10GBASE-R | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
-| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 1 Gb/s RJ-45 and 10GBASE-R on QSFP1 lane 0 | 128 KiB L1D + 16 KiB L1I → 4 MiB URAM L2 → 2 GiB DDR4 |
+| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 1 Gb/s RJ-45 and 10GBASE-R on QSFP1 lane 0 | 128 KiB L1D + 32 KiB L1I → 4 MiB URAM L2 → 2 GiB DDR4 |
 
 See the [board guide](boards/README.md) for pinouts, clocking, and adding a board.
 

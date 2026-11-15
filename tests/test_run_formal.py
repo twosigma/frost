@@ -52,6 +52,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home", "coh_home_wb_prove"): 180,
     ("coherence_home", "coh_home_victim_cover"): 180,
     ("coherence_home", "coh_home_error_cover"): 180,
+    ("coherence_l1d", "coh_l1d_perf_prove"): 120,
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
@@ -349,6 +350,7 @@ FORMAL_TARGETS = [
         "coherence_l1d.sby",
         "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
         tasks=(
+            "coh_l1d_perf_prove",
             "coh_l1d_conflict_prove",
             "coh_l1d_conflict_multi_prove",
             "coh_l1d_conflict_stream_prove",
@@ -790,6 +792,19 @@ FORMAL_TARGETS = [
         tasks=("bmc", "bmc_ways1", "bmc_delayed"),
     ),
     FormalTarget(
+        "cache_flash_valid.sby",
+        "Flash-valid assignment checks and independent watched-line hit exclusion "
+        "after invalidation, with install/invalidate/refill covers in each mode",
+        tasks=(
+            "bmc_fast",
+            "bmc_fast_ways1",
+            "bmc_hw",
+            "cover_fast",
+            "cover_fast_ways1",
+            "cover_hw",
+        ),
+    ),
+    FormalTarget(
         "lq_alloc_mask.sby",
         "Load-queue allocation masks and capacity checks match the reference search",
         tasks=("bmc4", "bmc8", "bmc16"),
@@ -942,6 +957,12 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_depth2", "cover"),
     ),
     FormalTarget(
+        "id_stage_kill_equiv.sby",
+        "ID post-classifier kill masking equals in-classifier legality and fault "
+        "overrides across both slots and all stage outputs",
+        tasks=("id_kill_equiv",),
+    ),
+    FormalTarget(
         "vec_lmul_legality_equiv.sby",
         "Queued LMUL classes and vector-memory rejection equal the arithmetic, VTOX "
         "and VLOAD/VSTORE legality rules for every vtype, instruction and operation",
@@ -1050,6 +1071,22 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "home_capture_equiv.sby",
+        "Consumed home payloads match handshake-only captures, and registered "
+        "fill flags match their phase decodes across arbitrary reset and stalls.",
+        tasks=(
+            "home_small",
+            "home_four",
+            "home_default",
+            "array_bram",
+            "array_uram",
+            "endpoint32",
+            "endpoint56",
+            "arbiter_default",
+            "arbiter_idle",
+        ),
+    ),
+    FormalTarget(
         "home_forward_next_equiv.sby",
         "The home's forward-turn next state, formed for both outcomes of the memory "
         "response and selected last, equals the single-ready-set form at eight and "
@@ -1131,6 +1168,7 @@ FORMAL_TARGETS = [
             "bmc_free_small_oh",
             "cover_bin",
             "cover_oh",
+            "prove_copy",
         ),
     ),
     FormalTarget(
@@ -1143,6 +1181,12 @@ FORMAL_TARGETS = [
         "sq_live_result_select.sby",
         "Store addresses and MMIO flags match reference CDB priority selection",
         tasks=("prove",),
+    ),
+    FormalTarget(
+        "sq_early_sq_copy.sby",
+        "Store-address copies and the instantiated wrapper's consumed packets equal "
+        "the translation select, with reset, flush and translation-change covers",
+        tasks=("prove", "prove_integrated", "cover"),
     ),
     FormalTarget(
         "served_window_coverage.sby",
@@ -1527,7 +1571,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "immu_twin.sby",
         "Instruction MMU: primitive and portable forms are equivalent.",
-        tasks=("immu_twin",),
+        tasks=("immu_twin", "immu_twin_hold"),
     ),
     FormalTarget(
         "cached_tier_adapter_twin.sby",
@@ -1585,6 +1629,59 @@ FORMAL_TARGETS = [
         "Reservation station: primitive and portable forms are equivalent.",
         tasks=("rs_twin_indexed",),
     ),
+    FormalTarget(
+        "sq_forwarding_unit.sby",
+        "Store-queue forwarding: byte merge, CMO/MMIO/SC blocks, ring-order priority and tree equivalence.",
+        tasks=("prove", "cover", "tree_equiv"),
+    ),
+    FormalTarget(
+        "axi_cdc.sby",
+        "AXI4 clock-domain crossing: staggered resets, ordering and payload preservation.",
+        tasks=("prove_aw", "prove_w", "prove_b", "prove_ar", "prove_r", "cover"),
+    ),
+    FormalTarget(
+        "cdc_mailbox.sby",
+        "Toggle-handshake CDC mailbox: single in-flight transfer and stable payload capture.",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "dc_fifo.sby",
+        "Dual-clock BRAM FIFO: free-clock occupancy, ready margin and payload delivery.",
+        tasks=("prove", "prove_margin2", "cover"),
+    ),
+    FormalTarget(
+        "sync_dist_ram_fifo.sby",
+        "Synchronous distributed-RAM FIFO: flags, pointer wrap and ordered word delivery.",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "mwp_dist_ram.sby",
+        "Multi-write-port LVT distributed RAM: staged write forwarding and port priority.",
+        tasks=("bmc", "bmc_addr1", "bmc_unstaged", "cover"),
+    ),
+    FormalTarget(
+        "nic_irq.sby",
+        "NIC interrupt controller: W1C priority, count/timer coalescing and mask control.",
+        tasks=("prove", "bmc", "cover"),
+    ),
+    FormalTarget(
+        "nic_dma_front.sby",
+        "NIC DMA front-end: aperture filter, unique IDs, side caps and same-line RW exclusion.",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "rat_checkpoint_restore.sby",
+        "Register alias table: unbounded circular ROB and sequence oracle across save, restore and commit.",
+        tasks=(
+            "prove_int_active",
+            "prove_int_ckpt_lo",
+            "prove_int_ckpt_hi",
+            "prove_fp_active",
+            "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_hi",
+            "cover",
+        ),
+    ),
 ]
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
@@ -1632,6 +1729,10 @@ SBY_TASKS = [
     ("link_cover_pressure", "The pressure schedule completes through one-stage links."),
     ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
     ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
+    (
+        "coh_l1d_perf_prove",
+        "The L1D counter stream equals the direct serializer delayed once.",
+    ),
     ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),
     ("coh_l1d_conflict_multi_prove", "Guarded conflict identity with three endpoints."),
     (
@@ -2419,6 +2520,15 @@ SBY_TASKS = [
     ("bmc_mshr8", "Bounded check with eight miss-status slots"),
     ("bmc_ways1", "Bounded check of a direct-mapped cache"),
     ("bmc_delayed", "Bounded check with delayed (UltraRAM) tags"),
+    ("bmc_fast", "Bounded check with the simulation bulk clear"),
+    (
+        "bmc_fast_ways1",
+        "Bounded check of a direct-mapped cache with the simulation bulk clear",
+    ),
+    ("bmc_hw", "Bounded check of the hardware maintenance path"),
+    ("cover_fast", "Reachability covers with the simulation bulk clear"),
+    ("cover_fast_ways1", "Watched-line covers for the direct-mapped flash cache"),
+    ("cover_hw", "Watched-line covers for the hardware flash-invalidate path"),
     ("bmc_free_bin", "Bounded shared-link memory equivalence with free binary reads"),
     ("bmc_free_oh", "Bounded shared-link memory equivalence with free one-hot reads"),
     (
@@ -2488,6 +2598,7 @@ SBY_TASKS = [
     ("cover_direct", "Direct-fetch responses coincident with clears and errors"),
     ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
+    ("prove_copy", "Staged address copies sample identical inputs on every edge"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
     ("bmc_raw", "Bounded equivalence with eight raw-wakeup candidates"),
     ("prove_raw", "Unbounded equivalence with eight raw-wakeup candidates"),
@@ -2574,6 +2685,18 @@ SBY_TASKS = [
     ),
     ("bmc", "Check assertions up to the configured depth"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
+    ("home_small", "Consumed packets and fill phase flags with two fills."),
+    (
+        "home_four",
+        "Consumed packets and fill phase flags with three fills and four ways.",
+    ),
+    ("home_default", "Consumed packets and fill phase flags with eight fills."),
+    ("array_bram", "Reset-qualified response and row-read captures in the BRAM array."),
+    ("array_uram", "Reset-qualified response and row-read captures in the URAM array."),
+    ("endpoint32", "Demand and grant captures with 32-bit addresses."),
+    ("endpoint56", "Demand and grant captures with 56-bit addresses."),
+    ("arbiter_default", "Selected payloads with handshake-only loading."),
+    ("arbiter_idle", "Selected payloads with loading on every idle cycle."),
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_seat2", "Seat next-state equivalence with two fills."),
     ("bmc_seat3", "Seat next-state equivalence with three fills and four ways."),
@@ -2743,6 +2866,14 @@ SBY_TASKS = [
         "Instruction MMU primitive form equals its portable form.",
     ),
     (
+        "immu_twin_hold",
+        "Instruction MMU primitive form equals its portable form with four hold-polarity copies.",
+    ),
+    (
+        "id_kill_equiv",
+        "ID post-classifier kill masking equals in-classifier legality and fault overrides.",
+    ),
+    (
         "cached_tier_twin",
         "Cached tier adapter primitive form equals its portable form with split read requests.",
     ),
@@ -2789,6 +2920,66 @@ SBY_TASKS = [
     (
         "rs_twin_indexed",
         "Indexed-write reservation station primitive form equals its portable form.",
+    ),
+    (
+        "prove_aw",
+        "Unbounded AXI4 CDC proof on the write-address channel.",
+    ),
+    (
+        "prove_w",
+        "Unbounded AXI4 CDC proof on the write-data channel.",
+    ),
+    (
+        "prove_b",
+        "Unbounded AXI4 CDC proof on the write-response channel.",
+    ),
+    (
+        "prove_ar",
+        "Unbounded AXI4 CDC proof on the read-address channel.",
+    ),
+    (
+        "prove_r",
+        "Unbounded AXI4 CDC proof on the read-data channel.",
+    ),
+    (
+        "prove_margin2",
+        "Unbounded dual-clock FIFO proof with almost-full margin 2.",
+    ),
+    (
+        "prove_int_active",
+        "Unbounded RAT proof for active integer rename, checkpoint pool and RAS outputs.",
+    ),
+    (
+        "prove_int_ckpt_lo",
+        "Unbounded RAT proof for integer snapshot invariants in checkpoints 0 through 3.",
+    ),
+    (
+        "prove_int_ckpt_hi",
+        "Unbounded RAT proof for integer snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "prove_fp_active",
+        "Unbounded RAT proof for active floating-point rename state.",
+    ),
+    (
+        "prove_fp_ckpt_lo",
+        "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 0 through 3.",
+    ),
+    (
+        "prove_fp_ckpt_hi",
+        "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "bmc_addr1",
+        "Bounded multi-write RAM equivalence with two entries.",
+    ),
+    (
+        "bmc_unstaged",
+        "Bounded multi-write RAM equivalence without write staging.",
+    ),
+    (
+        "tree_equiv",
+        "Store-queue forwarding balanced winner tree equals the linear formal selector.",
     ),
 ]
 
@@ -2855,6 +3046,14 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "prove_soc",
             "prove_soc_held",
             *(f"prove_soc8_{index}" for index in range(9)),
+        ],
+        "rat_checkpoint_restore": [
+            "prove_int_active",
+            "prove_int_ckpt_lo",
+            "prove_int_ckpt_hi",
+            "prove_fp_active",
+            "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_hi",
         ],
         "coherent_hart_cache": [
             "coh_hart_maint_owned_prove",
@@ -3435,16 +3634,16 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
     commands = {
         "hold": common
         + [
-            "select -assert-count 326 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
             f"select -assert-count 4 {holds}",
             f"chformal -assert -remove t:$check r:FLAVOR=assert %i {holds} %u %u %u %d",
             "select -assert-count 4 t:$check r:FLAVOR=assert %i",
         ],
         "bmc": common
         + [
-            "select -assert-count 326 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
             f"chformal -assert -remove {holds}",
-            "select -assert-count 322 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
         ],
     }
 
@@ -3759,7 +3958,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",
     ]
-    script += ["select -assert-count 326 t:$check r:FLAVOR=assert %i"]
+    script += ["select -assert-count 328 t:$check r:FLAVOR=assert %i"]
     if outlier or hold:
         if hold:
             script += [
@@ -3776,7 +3975,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         script += [
             "chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable "
             "c:p_load_payload_held c:p_reply_hold",
-            "select -assert-count 322 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
         ]
     if task.startswith("coh_l1d_stream_free_nostore_"):
         script += ["connect -set i_write_mask 8'h00"]

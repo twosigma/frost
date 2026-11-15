@@ -230,7 +230,10 @@ sends four identical copies of the check address (`i_sq_check_addr` and
 The `store_queue` cocotb target covers two-wide allocation, updates,
 forwarding, pipelined drain, flushes, and SC discard. Inline formal properties
 check live-count consistency, write prerequisites, in-flight bounds,
-forwarding, and that committed stores survive a partial flush.
+forwarding, and that committed stores survive a partial flush; `sq_forwarding_unit`
+proves the standalone forwarding unit unbounded at eight entries and checks
+`tree_equiv` between the synthesized balanced `fwd_node` reduction tree and
+the linear formal selector.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

@@ -16,6 +16,7 @@
 
 import importlib
 import asyncio
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -513,3 +514,102 @@ def test_low_bram_words_take_the_upper_half_of_odd_words() -> None:
     )
 
     assert real_program.read_low_bram_words(dut, 4, 5) == [1, 2, 3, 4, 5]
+
+
+def test_tomasulo_rs_mem_dispatch_requires_explicit_size_and_load_sign() -> None:
+    """Folded RS_MEM operations reject omitted mem_size or LOAD mem_signed."""
+    iface = tomasulo_interface.TomasuloInterface(SimpleNamespace())
+    ops = tomasulo_interface._INSTR_OPS
+
+    for name in (
+        "LOAD",
+        "STORE",
+        "LOAD_FP",
+        "STORE_FP",
+        "LR",
+        "SC",
+        "AMOSWAP",
+        "AMOADD",
+    ):
+        with pytest.raises(ValueError, match="mem_size"):
+            iface._rs_dispatch_kwargs(
+                tomasulo_interface.RS_MEM, True, {"op": ops[name]}
+            )
+
+    with pytest.raises(ValueError, match="mem_signed"):
+        iface._rs_dispatch_kwargs(
+            tomasulo_interface.RS_MEM, True, {"op": ops["LOAD"], "mem_size": 2}
+        )
+
+    load_pkt = iface._rs_dispatch_kwargs(
+        tomasulo_interface.RS_MEM,
+        True,
+        {"op": ops["LOAD"], "mem_size": 1, "mem_signed": True},
+    )
+    assert load_pkt["mem_size"] == 1
+    assert load_pkt["mem_signed"] is True
+
+    lr_pkt = iface._rs_dispatch_kwargs(
+        tomasulo_interface.RS_MEM, True, {"op": ops["LR"], "mem_size": 2}
+    )
+    assert lr_pkt["mem_size"] == 2
+    assert lr_pkt["mem_signed"] is True
+
+
+def _parse_riscv_pkg_packed_struct(struct_name: str) -> list[tuple[str, int]]:
+    """Extract (field_name, bit_width) pairs in declaration order from riscv_pkg.sv."""
+    pkg_path = (
+        Path(__file__).resolve().parents[1] / "hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv"
+    )
+    text = re.sub(r"//.*", "", pkg_path.read_text(encoding="utf-8"))
+    params: dict[str, int] = {}
+    for m in re.finditer(r"localparam\s+int\s+unsigned\s+(\w+)\s*=\s*([^;]+);", text):
+        expr = m.group(2).strip()
+        if re.fullmatch(r"[0-9A-Za-z_+\-*/ ()]+", expr):
+            try:
+                params[m.group(1)] = int(eval(expr, {"__builtins__": {}}, params))
+            except Exception:
+                pass
+    enum_widths = {
+        m.group(3): int(m.group(1)) - int(m.group(2)) + 1
+        for m in re.finditer(
+            r"typedef\s+enum\s+logic\s*\[(\d+):(\d+)\]\s*\{[^}]*\}\s*(\w+)\s*;",
+            text,
+        )
+    }
+    block = re.search(
+        rf"typedef\s+struct\s+packed\s*\{{([^}}]*)\}}\s*{re.escape(struct_name)}\s*;",
+        text,
+    )
+    assert block is not None, f"{struct_name} not found in riscv_pkg.sv"
+    fields: list[tuple[str, int]] = []
+    for raw_member in block.group(1).split(";"):
+        member = raw_member.strip()
+        if not member:
+            continue
+        vec = re.fullmatch(r"logic\s*\[([^:\]]+):([^:\]]+)\]\s*(\w+)", member)
+        if vec:
+            hi = int(eval(vec.group(1), {"__builtins__": {}}, params))
+            lo = int(eval(vec.group(2), {"__builtins__": {}}, params))
+            fields.append((vec.group(3), hi - lo + 1))
+            continue
+        scalar = re.fullmatch(r"(\w+)\s+(\w+)", member)
+        assert scalar is not None, f"unparsed struct member: {member}"
+        typ, name = scalar.groups()
+        width = 1 if typ == "logic" else enum_widths[typ]
+        fields.append((name, width))
+    return fields
+
+
+def test_assert_port_width_and_mmu_schemas_match_riscv_pkg() -> None:
+    """PTW_RESP_FIELDS and TLB_FLUSH_FIELDS match riscv_pkg.sv and enforce port widths."""
+    for schema, sv_name in (
+        (cpu_structs.PTW_RESP_FIELDS, "ptw_resp_t"),
+        (cpu_structs.TLB_FLUSH_FIELDS, "tlb_flush_t"),
+    ):
+        assert schema == _parse_riscv_pkg_packed_struct(sv_name)
+        width = packed_structs.struct_width(schema)
+        packed_structs.assert_port_width(_VectorHandle(width, 0), schema)
+        for bad_width in (width - 1, width + 1):
+            with pytest.raises(AssertionError, match="schema width"):
+                packed_structs.assert_port_width(_VectorHandle(bad_width, 0), schema)

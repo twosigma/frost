@@ -177,6 +177,23 @@ static void check_half_forwarding(void)
             ok &= fp == boxed && back == boxed && ui == values[i] && si == (int16_t) values[i];
         }
     }
+    /* Nonzero positive and negative offsets verify halfword width and I/S
+     * immediates end-to-end without disturbing neighbouring halfwords. */
+    {
+        uint64_t pos_fp = 0, neg_fp = 0;
+        g_data[0] = 0xa5a5a5a5a5a5a5a5ull;
+        g_data[1] = 0x5a5a5a5a5a5a5a5aull;
+        __asm__ volatile("fmv.d.x ft1, %2\n fsh ft1, 6(%3)\n flh ft0, 6(%3)\n fmv.x.d %0, ft0\n"
+                         "fmv.d.x ft1, %4\n fsh ft1, -2(%5)\n flh ft0, -2(%5)\n fmv.x.d %1, ft0"
+                         : "=&r"(pos_fp), "=&r"(neg_fp)
+                         : "r"(0xdeadbeef00003c00ull),
+                           "r"((unsigned long) &g_data[0]),
+                           "r"(0xcafebabe0000fe55ull),
+                           "r"((unsigned long) &g_data[1] + 4ul)
+                         : "ft0", "ft1", "memory");
+        ok &= pos_fp == 0xffffffffffff3c00ull && neg_fp == 0xfffffffffffffe55ull &&
+              g_data[0] == 0x3c00a5a5a5a5a5a5ull && g_data[1] == 0x5a5a5a5afe555a5aull;
+    }
     report("half store forwarding to FP and integer loads", ok);
 }
 

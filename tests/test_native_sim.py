@@ -13,7 +13,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Verify the C++ Verilator RTL runner against cocotb program runs."""
+"""Verify the C++ Verilator RTL runner against live cocotb runs and workload invariants."""
 
 import argparse
 import hashlib
@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,17 +41,13 @@ NATIVE_MAIN_CPP = NATIVE_DIR / "main.cpp"
 NATIVE_MAKEFILE = NATIVE_DIR / "Makefile"
 NATIVE_VLT = NATIVE_DIR / "frost_native.vlt"
 SIM_ASSERTIONS_CPP = REPO_ROOT / "hw" / "sim" / "sim_assertions.cpp"
-BASELINE_PATH = NATIVE_DIR / "exactness_baseline.json"
+REMOVED_BASELINE_PATH = NATIVE_DIR / "exactness_baseline.json"
 TESTS_DIR = REPO_ROOT / "tests"
 TESTS_MAKEFILE = TESTS_DIR / "Makefile"
 DEMO_DOCKERFILE = REPO_ROOT / "demo" / "Dockerfile"
 DEMO_SCRIPT = REPO_ROOT / "demo" / "run_demo.sh"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 COREMARK_MAIN_C = REPO_ROOT / "sw" / "apps" / "coremark" / "coremark" / "core_main.c"
-
-REGENERATE_BASELINE_CMD = (
-    "./scripts/frost.py run python3 tests/test_native_sim.py --update-baseline"
-)
 
 EXPECTED_TOP_PARAM_DEFAULTS = {
     "SIM_MEM_SIZE_BYTES": "262144",
@@ -147,58 +144,99 @@ UNSEEDED_COCOTB_STRIP_ENV = (
     "COCOTB_TEST_FILTER",
 )
 
-HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+COREMARK_REQUIRED_UART_LINES: tuple[bytes, ...] = (
+    b"2K performance run parameters for coremark.",
+    b"CoreMark Size    : 666",
+    b"seedcrc          : 0xe9f5",
+    b"[0]crclist       : 0xe714",
+    b"[0]crcmatrix     : 0x1fd7",
+    b"[0]crcstate      : 0x8e3a",
+    b"[0]crcfinal      : 0xe714",
+    b"Correct operation validated.",
+    b"<<PASS>>",
+)
+
+EXPECTED_SUMMARY_KEYS = {
+    "cycles",
+    "advanced_cycles",
+    "marker_cycle",
+    "drain_cycles",
+    "uart_bytes",
+    "coremark_ticks",
+    "wall_seconds",
+    "cycles_per_second",
+    "threads",
+    "assertions_compiled",
+    "assertions_armed",
+    "passed",
+    "failed",
+}
+
+# Forbid grouped or plain 5- to 6-digit cycle or tick counts in the two READMEs
+# while permitting non-workload constants like 10,000 drain cycles or 5,000,000.
+README_HARDCODED_CYCLE_OR_TICK_RE = re.compile(
+    r"(?<![,\d])(?:\d{2,3},\d{3}|\d{5,6})(?![,\d])\s+(?:simulated\s+)?(?:cycles|ticks)\b"
+    r"|\b(?:Simulated\s+cycles|CoreMark\s+ticks|Total(?:\s+64-bit)?\s+ticks)\s*:\s*(?:\d{2,3},\d{3}|\d{5,6})(?![,\d])",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
-class ExactnessCase:
-    """Reference values for one application and memory configuration."""
+class NativeCase:
+    """Workload and stop-condition specification for one simulator configuration."""
 
     name: str
     app: str
     mem_config: str
     stop_marker: str
     drain_cycles: int
-    cycles: int
-    coremark_ticks: int | None
-    uart_bytes: int
-    uart_sha256: str
     ci: bool
+
+
+NATIVE_CASES: dict[str, NativeCase] = {
+    "hello_world_bram": NativeCase(
+        name="hello_world_bram",
+        app="hello_world",
+        mem_config="bram",
+        stop_marker="Hello, world!",
+        drain_cycles=10000,
+        ci=True,
+    ),
+    "hello_world_ddr": NativeCase(
+        name="hello_world_ddr",
+        app="hello_world",
+        mem_config="ddr",
+        stop_marker="Hello, world!",
+        drain_cycles=10000,
+        ci=True,
+    ),
+    "coremark_bram": NativeCase(
+        name="coremark_bram",
+        app="coremark",
+        mem_config="bram",
+        stop_marker="<<PASS>>",
+        drain_cycles=0,
+        ci=True,
+    ),
+    "coremark_ddr": NativeCase(
+        name="coremark_ddr",
+        app="coremark",
+        mem_config="ddr",
+        stop_marker="<<PASS>>",
+        drain_cycles=0,
+        ci=False,
+    ),
+}
 
 
 @dataclass(frozen=True)
 class ParsedRunResult:
-    """Cycle count, tick count, and UART digest from a simulation run."""
+    """Cycle count, tick count, and UART digest from a live cocotb run."""
 
     cycles: int
     coremark_ticks: int | None
     uart_bytes: int
     uart_sha256: str
-
-
-def load_exactness_cases(path: Path = BASELINE_PATH) -> dict[str, ExactnessCase]:
-    """Load the exactness reference records from JSON."""
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    raw_cases = payload["cases"]
-    cases: dict[str, ExactnessCase] = {}
-    for name, item in raw_cases.items():
-        cases[name] = ExactnessCase(
-            name=name,
-            app=str(item["app"]),
-            mem_config=str(item["mem_config"]),
-            stop_marker=str(item["stop_marker"]),
-            drain_cycles=int(item["drain_cycles"]),
-            cycles=int(item["cycles"]),
-            coremark_ticks=(
-                int(item["coremark_ticks"])
-                if item["coremark_ticks"] is not None
-                else None
-            ),
-            uart_bytes=int(item["uart_bytes"]),
-            uart_sha256=str(item["uart_sha256"]),
-            ci=bool(item["ci"]),
-        )
-    return cases
 
 
 def parse_makefile_default_vars(text: str) -> dict[str, str]:
@@ -430,91 +468,205 @@ def _run_checked(
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
-def _format_baseline_mismatch(
-    case_name: str,
-    source: str,
-    field: str,
-    actual: object,
-    expected: object,
-) -> str:
-    """Format an actionable baseline mismatch naming the moved field and update command."""
-    return (
-        f"{case_name}: {source} {field} moved (got {actual!r}, "
-        f"baseline {expected!r} in hw/sim/native/exactness_baseline.json). "
-        f"If an RTL or software change intentionally altered execution, "
-        f"regenerate the baseline with:\n  {REGENERATE_BASELINE_CMD}"
-    )
+def _is_strict_int(value: object) -> bool:
+    """Return True when value is an integer and not a boolean."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _assert_matches_case(
-    case: ExactnessCase,
+def _is_strict_number(value: object) -> bool:
+    """Return True when value is an int or float and not a boolean."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def assert_program_and_summary_invariants(
+    case: NativeCase,
     summary: dict[str, Any],
     uart_bytes: bytes,
     *,
+    expected_threads: int,
     expected_advanced_cycles: int | None = None,
 ) -> None:
-    """Verify one native simulation summary and UART capture against baseline."""
+    """Check workload pass conditions and summary invariants independent of cycle count."""
+    assert set(summary.keys()) == EXPECTED_SUMMARY_KEYS, (
+        f"{case.name}: unexpected summary keys {sorted(summary.keys())}"
+    )
     assert summary["passed"] is True, f"{case.name}: simulation did not report pass"
     assert summary["failed"] is False, f"{case.name}: simulation reported failure"
     assert summary["assertions_compiled"] is True, (
         f"{case.name}: checked native run did not record assertions_compiled=true"
     )
     assert summary["assertions_armed"] is True, (
-        f"{case.name}: checked native run did not arm assertions after reset"
+        f"{case.name}: checked native run did not arm assertions after reset "
+        "(assertions_armed=false)"
     )
-    actual_cycles = int(summary["cycles"])
-    assert actual_cycles == case.cycles, _format_baseline_mismatch(
-        case.name, "native", "cycles", actual_cycles, case.cycles
+
+    cycles = summary["cycles"]
+    assert _is_strict_int(cycles) and cycles > 20 + case.drain_cycles, (
+        f"{case.name}: invalid cycles={cycles!r} for drain_cycles={case.drain_cycles}"
     )
-    if expected_advanced_cycles is not None:
-        assert int(summary["advanced_cycles"]) == expected_advanced_cycles, (
-            f"{case.name}: advanced_cycles {summary['advanced_cycles']} "
-            f"!= {expected_advanced_cycles}"
+
+    advanced_cycles = summary["advanced_cycles"]
+    target_advanced = (
+        expected_advanced_cycles if expected_advanced_cycles is not None else cycles
+    )
+    assert _is_strict_int(advanced_cycles) and advanced_cycles > 0, (
+        f"{case.name}: invalid advanced_cycles={advanced_cycles!r}"
+    )
+    assert advanced_cycles == target_advanced, (
+        f"{case.name}: advanced_cycles ({advanced_cycles}) != expected ({target_advanced})"
+    )
+
+    drain_cycles = summary["drain_cycles"]
+    assert _is_strict_int(drain_cycles) and drain_cycles == case.drain_cycles, (
+        f"{case.name}: drain_cycles ({drain_cycles!r}) != {case.drain_cycles}"
+    )
+
+    marker_cycle = summary["marker_cycle"]
+    assert _is_strict_int(marker_cycle) and marker_cycle > 20, (
+        f"{case.name}: invalid marker_cycle={marker_cycle!r}"
+    )
+    assert cycles == marker_cycle + case.drain_cycles, (
+        f"{case.name}: cycles ({cycles}) != marker_cycle ({marker_cycle}) + "
+        f"drain_cycles ({case.drain_cycles})"
+    )
+
+    threads = summary["threads"]
+    assert _is_strict_int(threads) and threads == expected_threads, (
+        f"{case.name}: summary threads ({threads!r}) != {expected_threads}"
+    )
+
+    wall_seconds = summary["wall_seconds"]
+    assert _is_strict_number(wall_seconds) and wall_seconds > 0.0, (
+        f"{case.name}: invalid wall_seconds={wall_seconds!r}"
+    )
+    cycles_per_second = summary["cycles_per_second"]
+    assert _is_strict_number(cycles_per_second) and cycles_per_second > 0.0, (
+        f"{case.name}: invalid cycles_per_second={cycles_per_second!r}"
+    )
+
+    summary_uart_bytes = summary["uart_bytes"]
+    assert _is_strict_int(summary_uart_bytes) and summary_uart_bytes > 0, (
+        f"{case.name}: invalid summary uart_bytes={summary_uart_bytes!r}"
+    )
+    assert summary_uart_bytes == len(uart_bytes), (
+        f"{case.name}: summary uart_bytes ({summary_uart_bytes}) != "
+        f"captured UART byte length ({len(uart_bytes)})"
+    )
+
+    assert b"<<FAIL>>" not in uart_bytes, f"{case.name}: UART output contained <<FAIL>>"
+    assert b"ERROR!" not in uart_bytes, f"{case.name}: UART output contained ERROR!"
+    assert case.stop_marker.encode("utf-8") in uart_bytes, (
+        f"{case.name}: UART output missing stop marker {case.stop_marker!r}"
+    )
+
+    if case.app == "hello_world":
+        assert b"Frost: Hello, world!" in uart_bytes, (
+            f"{case.name}: UART output missing hello banner 'Frost: Hello, world!'"
         )
-    assert summary["coremark_ticks"] == case.coremark_ticks, _format_baseline_mismatch(
-        case.name,
-        "native",
-        "coremark_ticks",
-        summary["coremark_ticks"],
-        case.coremark_ticks,
+        assert summary["coremark_ticks"] is None, (
+            f"{case.name}: expected coremark_ticks=None, got {summary['coremark_ticks']!r}"
+        )
+    elif case.app == "coremark":
+        for required_line in COREMARK_REQUIRED_UART_LINES:
+            assert required_line in uart_bytes, (
+                f"{case.name}: CoreMark UART output missing {required_line.decode('ascii')!r}"
+            )
+        ticks_32_match = re.search(rb"Total ticks\s*:\s*(\d+)\r?\n", uart_bytes)
+        ticks_64_match = re.search(rb"Total 64-bit ticks\s*:\s*(\d+)\r?\n", uart_bytes)
+        assert ticks_32_match is not None, (
+            f"{case.name}: CoreMark UART output missing 'Total ticks' line"
+        )
+        assert ticks_64_match is not None, (
+            f"{case.name}: CoreMark UART output missing 'Total 64-bit ticks' line"
+        )
+        uart_ticks_32 = int(ticks_32_match.group(1))
+        uart_ticks_64 = int(ticks_64_match.group(1))
+        assert uart_ticks_32 == uart_ticks_64, (
+            f"{case.name}: CoreMark Total ticks ({uart_ticks_32}) != "
+            f"Total 64-bit ticks ({uart_ticks_64})"
+        )
+        cm_ticks = summary["coremark_ticks"]
+        assert _is_strict_int(cm_ticks), (
+            f"{case.name}: summary coremark_ticks must be an int, got {cm_ticks!r}"
+        )
+        assert cm_ticks == uart_ticks_64, (
+            f"{case.name}: summary coremark_ticks ({cm_ticks}) != "
+            f"UART Total 64-bit ticks ({uart_ticks_64})"
+        )
+        assert 0 < cm_ticks < cycles, (
+            f"{case.name}: CoreMark ticks ({cm_ticks}) must satisfy 0 < ticks < cycles ({cycles})"
+        )
+    else:
+        raise ValueError(f"unsupported app {case.app!r}")
+
+
+def assert_native_matches_cocotb(
+    case_name: str,
+    summary: dict[str, Any],
+    uart_bytes: bytes,
+    live_cocotb: ParsedRunResult,
+) -> None:
+    """Verify exact cycle, tick, and UART byte agreement with a live cocotb run."""
+    actual_cycles = int(summary["cycles"])
+    assert actual_cycles == live_cocotb.cycles, (
+        f"{case_name}: native cycles ({actual_cycles}) != "
+        f"live cocotb cycles ({live_cocotb.cycles})"
     )
-    assert int(summary["uart_bytes"]) == case.uart_bytes, _format_baseline_mismatch(
-        case.name,
-        "native",
-        "uart_bytes",
-        int(summary["uart_bytes"]),
-        case.uart_bytes,
+    assert summary["coremark_ticks"] == live_cocotb.coremark_ticks, (
+        f"{case_name}: native coremark_ticks ({summary['coremark_ticks']!r}) != "
+        f"live cocotb coremark_ticks ({live_cocotb.coremark_ticks!r})"
     )
-    assert len(uart_bytes) == case.uart_bytes, _format_baseline_mismatch(
-        case.name,
-        "native",
-        "captured_uart_bytes",
-        len(uart_bytes),
-        case.uart_bytes,
+    actual_uart_len = len(uart_bytes)
+    assert int(summary["uart_bytes"]) == actual_uart_len, (
+        f"{case_name}: summary uart_bytes ({summary['uart_bytes']}) != "
+        f"captured UART byte length ({actual_uart_len})"
     )
-    digest = hashlib.sha256(uart_bytes).hexdigest()
-    assert digest == case.uart_sha256, _format_baseline_mismatch(
-        case.name, "native", "uart_sha256", digest, case.uart_sha256
+    assert actual_uart_len == live_cocotb.uart_bytes, (
+        f"{case_name}: native uart_bytes ({actual_uart_len}) != "
+        f"live cocotb uart_bytes ({live_cocotb.uart_bytes})"
+    )
+    actual_sha256 = hashlib.sha256(uart_bytes).hexdigest()
+    assert actual_sha256 == live_cocotb.uart_sha256, (
+        f"{case_name}: native uart_sha256 ({actual_sha256}) != "
+        f"live cocotb uart_sha256 ({live_cocotb.uart_sha256})"
     )
 
 
-def _assert_cocotb_matches_case(case: ExactnessCase, parsed: ParsedRunResult) -> None:
-    """Verify one parsed cocotb program run against baseline."""
-    assert parsed.cycles == case.cycles, _format_baseline_mismatch(
-        case.name, "cocotb", "cycles", parsed.cycles, case.cycles
+def check_case_and_record_comparison(
+    case: NativeCase,
+    summary: dict[str, Any],
+    uart_bytes: bytes,
+    live_cocotb: Mapping[str, ParsedRunResult],
+    compared: set[str],
+    *,
+    expected_threads: int,
+) -> None:
+    """Verify one native case's invariants and record live cocotb parity if present."""
+    assert_program_and_summary_invariants(
+        case,
+        summary,
+        uart_bytes,
+        expected_threads=expected_threads,
     )
-    assert parsed.coremark_ticks == case.coremark_ticks, _format_baseline_mismatch(
-        case.name,
-        "cocotb",
-        "coremark_ticks",
-        parsed.coremark_ticks,
-        case.coremark_ticks,
-    )
-    assert parsed.uart_bytes == case.uart_bytes, _format_baseline_mismatch(
-        case.name, "cocotb", "uart_bytes", parsed.uart_bytes, case.uart_bytes
-    )
-    assert parsed.uart_sha256 == case.uart_sha256, _format_baseline_mismatch(
-        case.name, "cocotb", "uart_sha256", parsed.uart_sha256, case.uart_sha256
+    if case.name in live_cocotb:
+        assert_native_matches_cocotb(
+            case.name,
+            summary,
+            uart_bytes,
+            live_cocotb[case.name],
+        )
+        compared.add(case.name)
+
+
+def assert_all_live_cocotb_cases_compared(
+    compared: set[str],
+    live_cocotb: Mapping[str, ParsedRunResult],
+) -> None:
+    """Fail if any live cocotb run was not matched and compared against a native run."""
+    expected = set(live_cocotb)
+    assert compared == expected, (
+        "live cocotb parity comparison set mismatch: "
+        f"compared={sorted(compared)}, live_cocotb={sorted(expected)}"
     )
 
 
@@ -548,66 +700,14 @@ def run_live_cocotb_case(
         sys.stderr.buffer.write(proc.stdout)
         sys.stderr.flush()
         raise subprocess.CalledProcessError(proc.returncode, proc.args)
+    parsed = parse_cocotb_program_log(proc.stdout)
     print(
-        f"[cocotb] {app} ({mem_config}) completed in {elapsed:.2f}s",
+        f"[cocotb] {app} ({mem_config}) completed in {elapsed:.2f}s "
+        f"(cycles={parsed.cycles}, ticks={parsed.coremark_ticks}, "
+        f"uart_bytes={parsed.uart_bytes})",
         flush=True,
     )
-    return parse_cocotb_program_log(proc.stdout)
-
-
-def update_exactness_baseline(path: Path = BASELINE_PATH) -> None:
-    """Regenerate exactness_baseline.json from unseeded cocotb program runs."""
-    if shutil.which("verilator") is None:
-        raise RuntimeError(
-            f"verilator not found; run inside the frost container:\n  {REGENERATE_BASELINE_CMD}"
-        )
-    if not COREMARK_MAIN_C.is_file():
-        raise RuntimeError(
-            "coremark submodule is not initialized; run:\n"
-            "  git submodule update --init --recursive sw/apps/coremark/coremark"
-        )
-
-    existing = load_exactness_cases(path)
-    ordered_names = (
-        "hello_world_bram",
-        "hello_world_ddr",
-        "coremark_bram",
-        "coremark_ddr",
-    )
-    updated_cases: dict[str, dict[str, Any]] = {}
-
-    for index, name in enumerate(ordered_names):
-        spec = existing[name]
-        parsed = run_live_cocotb_case(
-            spec.app,
-            spec.mem_config,
-            clean_first=(index == 0),
-        )
-        if spec.app == "coremark" and parsed.coremark_ticks is None:
-            raise RuntimeError(f"{name}: cocotb run did not report CoreMark ticks")
-        updated_cases[name] = {
-            "app": spec.app,
-            "mem_config": spec.mem_config,
-            "stop_marker": spec.stop_marker,
-            "drain_cycles": spec.drain_cycles,
-            "cycles": parsed.cycles,
-            "coremark_ticks": parsed.coremark_ticks,
-            "uart_bytes": parsed.uart_bytes,
-            "uart_sha256": parsed.uart_sha256,
-            "ci": spec.ci,
-        }
-        print(
-            f"[baseline] {name}: cycles={parsed.cycles} "
-            f"ticks={parsed.coremark_ticks} uart_bytes={parsed.uart_bytes} "
-            f"sha256={parsed.uart_sha256[:16]}...",
-            flush=True,
-        )
-
-    path.write_text(
-        json.dumps({"cases": updated_cases}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(f"Wrote updated baseline to {path}", flush=True)
+    return parsed
 
 
 def _verify_static_runtime_linkage(binary: Path) -> None:
@@ -717,19 +817,34 @@ def run_exactness_suite(
     check_checkpoints: bool,
     work_dir: Path,
 ) -> None:
-    """Build the checked native runner and verify selected exactness cases."""
-    cases = load_exactness_cases()
-    selected = [case for case in cases.values() if (case.ci if ci_only else True)]
+    """Build the checked native runner and verify live cocotb parity and invariants."""
+    if shutil.which("verilator") is None:
+        raise RuntimeError(
+            "verilator not found; run inside the frost container:\n"
+            "  ./scripts/frost.py run python3 tests/test_native_sim.py --all"
+        )
+    if not COREMARK_MAIN_C.is_file():
+        raise RuntimeError(
+            "coremark submodule is not initialized; run:\n"
+            "  git submodule update --init --recursive sw/apps/coremark/coremark"
+        )
+
+    selected = [
+        case for case in NATIVE_CASES.values() if (case.ci if ci_only else True)
+    ]
     threads = _default_threads()
     cores = _effective_cpu_count()
     sim_build = NATIVE_DIR / "sim_build"
+    live_cocotb: dict[str, ParsedRunResult] = {}
+
+    for index, case in enumerate(selected):
+        live_cocotb[case.name] = run_live_cocotb_case(
+            case.app,
+            case.mem_config,
+            clean_first=(index == 0),
+        )
 
     if ci_only:
-        # Compare one live unseeded cocotb run directly against the baseline so
-        # cocotb and the native runner cannot drift apart unnoticed.
-        live_hello = run_live_cocotb_case("hello_world", "bram", clean_first=True)
-        _assert_cocotb_matches_case(cases["hello_world_bram"], live_hello)
-
         checked_bin = (
             sim_build / f"model_t{threads}_a1_s0_x86_64_static" / "frost-native"
         )
@@ -769,6 +884,7 @@ def run_exactness_suite(
         _verify_static_runtime_linkage(checked_bin)
 
     retire_log = work_dir / "retire_trace.log"
+    compared: set[str] = set()
     for case in selected:
         _run_checked(
             [
@@ -803,15 +919,27 @@ def run_exactness_suite(
             ],
             cwd=work_dir,
         )
-        print(
-            f"[native] {case.name} completed in {time.monotonic() - t_run:.2f}s",
-            flush=True,
-        )
+        run_elapsed = time.monotonic() - t_run
         assert not retire_log.exists(), (
             f"{case.name}: unexpected retire_trace.log written in working directory"
         )
         summary = json.loads(json_path.read_text(encoding="utf-8"))
-        _assert_matches_case(case, summary, uart_path.read_bytes())
+        uart_bytes = uart_path.read_bytes()
+        print(
+            f"\n[native] {case.name} completed in {run_elapsed:.2f}s "
+            f"(cycles={summary['cycles']}, ticks={summary['coremark_ticks']}, "
+            f"uart_bytes={summary['uart_bytes']})",
+            flush=True,
+        )
+        check_case_and_record_comparison(
+            case,
+            summary,
+            uart_bytes,
+            live_cocotb,
+            compared,
+            expected_threads=threads,
+        )
+    assert_all_live_cocotb_cases_compared(compared, live_cocotb)
 
     hello_stage_dir = sim_build / "apps" / "hello_world_bram"
     _verify_thread_cli_bounds(checked_bin, threads, hello_stage_dir, work_dir)
@@ -832,7 +960,8 @@ def run_exactness_suite(
                 "SAVABLE=1",
             ]
         )
-        hello_case = cases["hello_world_bram"]
+        hello_case = NATIVE_CASES["hello_world_bram"]
+        live_hello = live_cocotb["hello_world_bram"]
         _run_checked(
             [
                 "make",
@@ -847,11 +976,12 @@ def run_exactness_suite(
         empty_run_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. Mid-execution checkpoint before stop marker is printed (--stop ""),
-        # restored both without --retire-trace and with --retire-trace.
-        ckpt_1k = work_dir / "hello_1k.ckpt"
-        restored_1k_uart = work_dir / "hello_1k_restored.uart"
-        restored_1k_json = work_dir / "hello_1k_restored.json"
-        restored_1k_retire = work_dir / "hello_1k_restored.retire.log"
+        # restored with --retire-trace and checked against the live cocotb run.
+        mid_exec_cycle = max(100, (live_hello.cycles - hello_case.drain_cycles) // 2)
+        ckpt_exec = work_dir / "hello_exec.ckpt"
+        restored_exec_uart = work_dir / "hello_exec_restored.uart"
+        restored_exec_json = work_dir / "hello_exec_restored.json"
+        restored_exec_retire = work_dir / "hello_exec_restored.retire.log"
         _run_checked(
             [
                 str(savable_bin),
@@ -860,24 +990,24 @@ def run_exactness_suite(
                 "--threads",
                 str(threads),
                 "--max-cycles",
-                "1000",
+                str(mid_exec_cycle),
                 "--stop",
                 "",
                 "--save",
-                str(ckpt_1k),
+                str(ckpt_exec),
                 "--save-at",
-                "1000",
+                str(mid_exec_cycle),
                 "--quiet-summary",
             ],
             cwd=work_dir,
         )
-        assert ckpt_1k.is_file(), "mid-execution checkpoint file was not created"
+        assert ckpt_exec.is_file(), "mid-execution checkpoint file was not created"
 
         _run_checked(
             [
                 str(savable_bin),
                 "--restore",
-                str(ckpt_1k),
+                str(ckpt_exec),
                 "--threads",
                 str(threads),
                 "--stop",
@@ -885,32 +1015,43 @@ def run_exactness_suite(
                 "--drain",
                 str(hello_case.drain_cycles),
                 "--uart-out",
-                str(restored_1k_uart),
+                str(restored_exec_uart),
                 "--summary-json",
-                str(restored_1k_json),
+                str(restored_exec_json),
                 "--retire-trace",
-                str(restored_1k_retire),
+                str(restored_exec_retire),
                 "--quiet-summary",
             ],
             cwd=empty_run_dir,
         )
         assert not (empty_run_dir / "retire_trace.log").exists()
-        assert restored_1k_retire.is_file()
-        assert restored_1k_retire.stat().st_size > 0, (
+        assert restored_exec_retire.is_file()
+        assert restored_exec_retire.stat().st_size > 0, (
             "--restore with --retire-trace produced an empty retirement trace"
         )
-        restored_1k_summary = json.loads(restored_1k_json.read_text(encoding="utf-8"))
-        _assert_matches_case(
+        restored_exec_summary = json.loads(
+            restored_exec_json.read_text(encoding="utf-8")
+        )
+        restored_exec_bytes = restored_exec_uart.read_bytes()
+        assert_program_and_summary_invariants(
             hello_case,
-            restored_1k_summary,
-            restored_1k_uart.read_bytes(),
-            expected_advanced_cycles=hello_case.cycles - 1000,
+            restored_exec_summary,
+            restored_exec_bytes,
+            expected_threads=threads,
+            expected_advanced_cycles=live_hello.cycles - mid_exec_cycle,
+        )
+        assert_native_matches_cocotb(
+            "hello_world_bram (restored mid-exec)",
+            restored_exec_summary,
+            restored_exec_bytes,
+            live_hello,
         )
 
         # 2. Mid-drain checkpoint after stop marker has already matched.
-        ckpt_5k = work_dir / "hello_5k.ckpt"
-        restored_5k_uart = work_dir / "hello_5k_restored.uart"
-        restored_5k_json = work_dir / "hello_5k_restored.json"
+        mid_drain_cycle = live_hello.cycles - (hello_case.drain_cycles // 2)
+        ckpt_drain = work_dir / "hello_drain.ckpt"
+        restored_drain_uart = work_dir / "hello_drain_restored.uart"
+        restored_drain_json = work_dir / "hello_drain_restored.json"
         _run_checked(
             [
                 str(savable_bin),
@@ -919,26 +1060,26 @@ def run_exactness_suite(
                 "--threads",
                 str(threads),
                 "--max-cycles",
-                "5000",
+                str(mid_drain_cycle),
                 "--stop",
                 hello_case.stop_marker,
                 "--drain",
                 str(hello_case.drain_cycles),
                 "--save",
-                str(ckpt_5k),
+                str(ckpt_drain),
                 "--save-at",
-                "5000",
+                str(mid_drain_cycle),
                 "--quiet-summary",
             ],
             cwd=work_dir,
         )
-        assert ckpt_5k.is_file(), "mid-drain checkpoint file was not created"
+        assert ckpt_drain.is_file(), "mid-drain checkpoint file was not created"
 
         _run_checked(
             [
                 str(savable_bin),
                 "--restore",
-                str(ckpt_5k),
+                str(ckpt_drain),
                 "--threads",
                 str(threads),
                 "--stop",
@@ -946,20 +1087,30 @@ def run_exactness_suite(
                 "--drain",
                 str(hello_case.drain_cycles),
                 "--uart-out",
-                str(restored_5k_uart),
+                str(restored_drain_uart),
                 "--summary-json",
-                str(restored_5k_json),
+                str(restored_drain_json),
                 "--quiet-summary",
             ],
             cwd=empty_run_dir,
         )
         assert not (empty_run_dir / "retire_trace.log").exists()
-        restored_5k_summary = json.loads(restored_5k_json.read_text(encoding="utf-8"))
-        _assert_matches_case(
+        restored_drain_summary = json.loads(
+            restored_drain_json.read_text(encoding="utf-8")
+        )
+        restored_drain_bytes = restored_drain_uart.read_bytes()
+        assert_program_and_summary_invariants(
             hello_case,
-            restored_5k_summary,
-            restored_5k_uart.read_bytes(),
-            expected_advanced_cycles=hello_case.cycles - 5000,
+            restored_drain_summary,
+            restored_drain_bytes,
+            expected_threads=threads,
+            expected_advanced_cycles=live_hello.cycles - mid_drain_cycle,
+        )
+        assert_native_matches_cocotb(
+            "hello_world_bram (restored mid-drain)",
+            restored_drain_summary,
+            restored_drain_bytes,
+            live_hello,
         )
 
         # 3. --save-at beyond the stop cycle fails nonzero rather than succeeding
@@ -980,7 +1131,7 @@ def run_exactness_suite(
                 "--save",
                 str(unreached_ckpt),
                 "--save-at",
-                str(hello_case.cycles + 10000),
+                str(live_hello.cycles + 10000),
                 "--summary-json",
                 str(unreached_json),
                 "--quiet-summary",
@@ -1508,17 +1659,6 @@ def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
     assert split_summary["assertions_armed"] is True
 
 
-def compare_baseline_against_cocotb_logs(log_dir: Path) -> None:
-    """Verify every baseline entry against captured cocotb program logs."""
-    cases = load_exactness_cases()
-    for name, case in cases.items():
-        log_path = log_dir / f"cocotb_{name}.log"
-        if not log_path.is_file():
-            raise FileNotFoundError(f"missing cocotb log: {log_path}")
-        parsed = parse_cocotb_program_log(log_path.read_bytes())
-        _assert_cocotb_matches_case(case, parsed)
-
-
 def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> None:
     """Native Makefile matches tests/Makefile parameters and documented flag diffs."""
     native_text = NATIVE_MAKEFILE.read_text(encoding="utf-8")
@@ -1527,6 +1667,8 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
     root_readme = ROOT_README.read_text(encoding="utf-8")
     demo_script_text = DEMO_SCRIPT.read_text(encoding="utf-8")
     main_cpp_text = NATIVE_MAIN_CPP.read_text(encoding="utf-8")
+
+    assert not REMOVED_BASELINE_PATH.exists()
 
     native_defaults = parse_makefile_default_vars(native_text)
     cocotb_defaults = parse_makefile_default_vars(cocotb_text)
@@ -1635,13 +1777,16 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
     assert "CXX_OPT_FAST" not in cflags_lines[0]
 
     # Native README must document every remaining difference, the reset arming
-    # point, and the bare-metal scope, and avoid stale claims.
+    # point, both CI and full modes, and the bare-metal scope, and avoid stale claims.
     for token in EXPECTED_DOCUMENTED_DIFF_TOKENS:
         assert token in native_readme, f"native README omits diff token {token!r}"
     assert "18th rising edge" in native_readme
     assert "bare-metal programs only" in native_readme
     assert "tens of millions of simulated cycles" in native_readme
     assert "minutes" in native_readme
+    assert "test-native" in native_readme
+    assert "test-demo-image" in native_readme
+    assert "--all" in native_readme
     assert "default Verilator options" not in native_readme
     assert "is not defined in" not in native_readme
     assert "not referenced in `hw/rtl`" not in native_readme
@@ -1649,21 +1794,30 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
         assert "thousands of times faster" not in doc_text
         assert "hardware cycle count" not in doc_text
 
-    # Neither README may hard-code baseline cycle or tick figures.
-    for case in load_exactness_cases().values():
-        figures = [case.cycles]
-        if case.drain_cycles > 0:
-            figures.append(case.cycles - case.drain_cycles)
-        if case.coremark_ticks is not None:
-            figures.append(case.coremark_ticks)
-        for value in figures:
-            for rendered in (str(value), f"{value:,}"):
-                assert rendered not in root_readme, (
-                    f"README.md hard-codes baseline figure {rendered}"
-                )
-                assert rendered not in native_readme, (
-                    f"hw/sim/native/README.md hard-codes baseline figure {rendered}"
-                )
+    # Neither README may reference a stored baseline file or hard-code cycle/tick counts.
+    for sample in (
+        "completes in 12,345 cycles",
+        "takes 345,678 simulated cycles",
+        "prints 234,567 ticks",
+        "Simulated cycles : 12,345",
+        "CoreMark ticks   : 234,567",
+        "Total 64-bit ticks : 234567",
+    ):
+        assert README_HARDCODED_CYCLE_OR_TICK_RE.search(sample) is not None
+    for doc_name, doc_text in (
+        ("README.md", root_readme),
+        ("hw/sim/native/README.md", native_readme),
+    ):
+        assert "exactness_baseline" not in doc_text, (
+            f"{doc_name} references removed exactness_baseline.json"
+        )
+        assert "--update-baseline" not in doc_text, (
+            f"{doc_name} references removed --update-baseline"
+        )
+        match = README_HARDCODED_CYCLE_OR_TICK_RE.search(doc_text)
+        assert match is None, (
+            f"{doc_name} hard-codes cycle or tick figure: {match.group(0)!r}"
+        )
 
     assert "frost_sim_assertions_enable();" in main_cpp_text
     assert "frost_sim_assertions_enabled()" in main_cpp_text
@@ -1694,78 +1848,269 @@ def test_frost_native_vlt_exposes_only_harness_signals() -> None:
     assert exposed == EXPECTED_EXPOSED_SIGNALS
 
 
-def test_exactness_baseline_schema_and_invariants() -> None:
-    """Exactness baseline covers hello_world and coremark in BRAM and DDR."""
-    cases = load_exactness_cases()
-    assert set(cases) == {
+def _sample_coremark_uart(ticks: int, *, flags: str = "-O2 -march=rv64gcb") -> bytes:
+    """Build representative CoreMark 2K UART output for invariant unit tests."""
+    return (
+        b"\r\nBaremetal Coremark 1 iterations, assuming 20000 Hz FPGA clock.\r\n"
+        b"2K performance run parameters for coremark.\r\n"
+        b"CoreMark Size    : 666\r\n"
+        + f"Total ticks      : {ticks}\r\n".encode("ascii")
+        + b"Total time (secs): 11.177800\r\n"
+        b"Iterations/Sec   : 0.089463\r\n"
+        b"Iterations       : 1\r\n"
+        b"Compiler version : GCC16.2.0\r\n"
+        + f"Compiler flags   : {flags}\r\n".encode("ascii")
+        + b"Memory location  : STACK\r\n"
+        b"seedcrc          : 0xe9f5\r\n"
+        b"[0]crclist       : 0xe714\r\n"
+        b"[0]crcmatrix     : 0x1fd7\r\n"
+        b"[0]crcstate      : 0x8e3a\r\n"
+        b"[0]crcfinal      : 0xe714\r\n"
+        b"Correct operation validated. See README.md for run and reporting rules.\r\n"
+        b"CoreMark 1.0 : 0.089463 / GCC16.2.0 / STACK\r\n"
+        + f"Total 64-bit ticks : {ticks}\r\n".encode("ascii")
+        + b"<<PASS>>"
+    )
+
+
+def test_program_and_summary_invariants_are_cycle_independent() -> None:
+    """Invariants accept cycle/flag/print drift and reject bad output or summaries."""
+    assert set(NATIVE_CASES) == {
         "hello_world_bram",
         "hello_world_ddr",
         "coremark_bram",
         "coremark_ddr",
     }
-    assert cases["coremark_bram"].coremark_ticks is not None
-    assert 0 < cases["coremark_bram"].coremark_ticks < cases["coremark_bram"].cycles
-    assert cases["coremark_ddr"].coremark_ticks is not None
-    assert 0 < cases["coremark_ddr"].coremark_ticks < cases["coremark_ddr"].cycles
-    assert cases["coremark_ddr"].coremark_ticks > cases["coremark_bram"].coremark_ticks
-    assert cases["hello_world_bram"].coremark_ticks is None
-    assert cases["hello_world_ddr"].coremark_ticks is None
-
-    ci_cases = {name for name, case in cases.items() if case.ci}
+    ci_cases = {name for name, case in NATIVE_CASES.items() if case.ci}
     assert ci_cases == {"hello_world_bram", "hello_world_ddr", "coremark_bram"}
-
-    for case in cases.values():
+    for case in NATIVE_CASES.values():
         assert case.mem_config in {"bram", "ddr"}
-        assert case.cycles > 20
-        assert case.uart_bytes > 0
-        assert HEX_SHA256_RE.match(case.uart_sha256)
+
+    hello_case = NATIVE_CASES["hello_world_ddr"]
+    for marker_cycle, extra_prefix in (
+        (1792, b""),
+        (1824, b""),
+        (2410, b"Extra boot line before banner\r\n"),
+    ):
+        hello_uart = extra_prefix + b"[     0 s] Frost: Hello, world!\r\n"
+        total_cycles = marker_cycle + hello_case.drain_cycles
+        hello_summary: dict[str, Any] = {
+            "cycles": total_cycles,
+            "advanced_cycles": total_cycles,
+            "marker_cycle": marker_cycle,
+            "drain_cycles": hello_case.drain_cycles,
+            "uart_bytes": len(hello_uart),
+            "coremark_ticks": None,
+            "wall_seconds": 0.125,
+            "cycles_per_second": float(total_cycles) / 0.125,
+            "threads": 4,
+            "assertions_compiled": True,
+            "assertions_armed": True,
+            "passed": True,
+            "failed": False,
+        }
+        assert_program_and_summary_invariants(
+            hello_case,
+            hello_summary,
+            hello_uart,
+            expected_threads=4,
+        )
+
+    bad_hello_uart = b"Greeting without expected prefix: Hello, world!\r\n"
+    with pytest.raises(AssertionError, match="Frost: Hello, world!"):
+        assert_program_and_summary_invariants(
+            hello_case,
+            {**hello_summary, "uart_bytes": len(bad_hello_uart)},
+            bad_hello_uart,
+            expected_threads=4,
+        )
+
+    with pytest.raises(AssertionError, match="assertions_armed"):
+        assert_program_and_summary_invariants(
+            hello_case,
+            {**hello_summary, "assertions_armed": False},
+            hello_uart,
+            expected_threads=4,
+        )
+
+    cm_case = NATIVE_CASES["coremark_bram"]
+    for cycles, ticks, flags in (
+        (333130, 223556, "-O2 -march=rv64gcb"),
+        (295000, 194321, "-O3 -march=rv64gcb_zcb"),
+    ):
+        cm_uart = _sample_coremark_uart(ticks, flags=flags)
+        cm_summary: dict[str, Any] = {
+            "cycles": cycles,
+            "advanced_cycles": cycles,
+            "marker_cycle": cycles,
+            "drain_cycles": 0,
+            "uart_bytes": len(cm_uart),
+            "coremark_ticks": ticks,
+            "wall_seconds": 1.5,
+            "cycles_per_second": float(cycles) / 1.5,
+            "threads": 4,
+            "assertions_compiled": True,
+            "assertions_armed": True,
+            "passed": True,
+            "failed": False,
+        }
+        assert_program_and_summary_invariants(
+            cm_case,
+            cm_summary,
+            cm_uart,
+            expected_threads=4,
+        )
+
+    for bad_token, replacement in (
+        (b"Correct operation validated.", b"Operation not validated."),
+        (b"seedcrc          : 0xe9f5", b"seedcrc          : 0xdead"),
+        (b"[0]crclist       : 0xe714", b"[0]crclist       : 0x0000"),
+        (b"[0]crcmatrix     : 0x1fd7", b"[0]crcmatrix     : 0x0000"),
+        (b"[0]crcstate      : 0x8e3a", b"[0]crcstate      : 0x0000"),
+        (b"[0]crcfinal      : 0xe714", b"[0]crcfinal      : 0x0000"),
+        (b"<<PASS>>", b"DONE"),
+    ):
+        corrupted_uart = cm_uart.replace(bad_token, replacement)
+        with pytest.raises(AssertionError):
+            assert_program_and_summary_invariants(
+                cm_case,
+                {**cm_summary, "uart_bytes": len(corrupted_uart)},
+                corrupted_uart,
+                expected_threads=4,
+            )
+
+    zero_tick_uart = _sample_coremark_uart(0)
+    with pytest.raises(AssertionError, match="0 < ticks < cycles"):
+        assert_program_and_summary_invariants(
+            cm_case,
+            {
+                **cm_summary,
+                "uart_bytes": len(zero_tick_uart),
+                "coremark_ticks": 0,
+            },
+            zero_tick_uart,
+            expected_threads=4,
+        )
+
+    with pytest.raises(AssertionError, match="coremark_ticks"):
+        assert_program_and_summary_invariants(
+            cm_case,
+            {**cm_summary, "coremark_ticks": None},
+            cm_uart,
+            expected_threads=4,
+        )
+
+    fail_uart = cm_uart + b"\r\n<<FAIL>>"
+    with pytest.raises(AssertionError, match="<<FAIL>>"):
+        assert_program_and_summary_invariants(
+            cm_case,
+            {**cm_summary, "uart_bytes": len(fail_uart)},
+            fail_uart,
+            expected_threads=4,
+        )
 
 
-def test_mismatch_messages_name_field_and_regeneration_command() -> None:
-    """Baseline mismatches identify the moved metric and --update-baseline."""
-    case = load_exactness_cases()["coremark_bram"]
-    assert case.coremark_ticks is not None
-    uart = b"x" * case.uart_bytes
-    base_summary: dict[str, Any] = {
-        "passed": True,
-        "failed": False,
-        "assertions_compiled": True,
-        "assertions_armed": True,
-        "cycles": case.cycles,
-        "advanced_cycles": case.cycles,
-        "coremark_ticks": case.coremark_ticks,
-        "uart_bytes": case.uart_bytes,
+def test_live_cocotb_mismatch_messages_name_differing_figure() -> None:
+    """Mismatches between native and live cocotb fail naming the differing figure."""
+    uart = _sample_coremark_uart(223556)
+    live = ParsedRunResult(
+        cycles=333130,
+        coremark_ticks=223556,
+        uart_bytes=len(uart),
+        uart_sha256=hashlib.sha256(uart).hexdigest(),
+    )
+    summary: dict[str, Any] = {
+        "cycles": live.cycles,
+        "coremark_ticks": live.coremark_ticks,
+        "uart_bytes": len(uart),
     }
 
+    assert_native_matches_cocotb("coremark_bram", summary, uart, live)
+
     with pytest.raises(AssertionError) as cyc_err:
-        _assert_matches_case(case, {**base_summary, "cycles": case.cycles + 1}, uart)
-    assert "native cycles moved" in str(cyc_err.value)
-    assert REGENERATE_BASELINE_CMD in str(cyc_err.value)
+        assert_native_matches_cocotb(
+            "coremark_bram",
+            {**summary, "cycles": live.cycles + 32},
+            uart,
+            live,
+        )
+    assert "coremark_bram" in str(cyc_err.value)
+    assert "cycles" in str(cyc_err.value)
+    assert str(live.cycles + 32) in str(cyc_err.value)
+    assert str(live.cycles) in str(cyc_err.value)
 
     with pytest.raises(AssertionError) as tick_err:
-        _assert_matches_case(
-            case,
-            {**base_summary, "coremark_ticks": case.coremark_ticks + 5},
+        assert_native_matches_cocotb(
+            "coremark_bram",
+            {**summary, "coremark_ticks": 223560},
             uart,
+            live,
         )
-    assert "native coremark_ticks moved" in str(tick_err.value)
-    assert REGENERATE_BASELINE_CMD in str(tick_err.value)
+    assert "coremark_ticks" in str(tick_err.value)
+    assert "223560" in str(tick_err.value)
 
+    extra_uart = uart + b"\n"
+    with pytest.raises(AssertionError) as bytes_err:
+        assert_native_matches_cocotb(
+            "coremark_bram",
+            {**summary, "uart_bytes": len(extra_uart)},
+            extra_uart,
+            live,
+        )
+    assert "uart_bytes" in str(bytes_err.value)
+
+    altered_same_len = uart[:-1] + b"?"
     with pytest.raises(AssertionError) as sha_err:
-        _assert_matches_case(case, base_summary, uart)
-    assert "native uart_sha256 moved" in str(sha_err.value)
-    assert REGENERATE_BASELINE_CMD in str(sha_err.value)
+        assert_native_matches_cocotb(
+            "coremark_bram",
+            summary,
+            altered_same_len,
+            live,
+        )
+    assert "uart_sha256" in str(sha_err.value)
 
-    parsed_bad = ParsedRunResult(
-        cycles=case.cycles + 2,
-        coremark_ticks=case.coremark_ticks,
-        uart_bytes=case.uart_bytes,
-        uart_sha256=case.uart_sha256,
+    # Key-name drift in live_cocotb must never silently skip parity comparison.
+    cm_case = NATIVE_CASES["coremark_bram"]
+    full_summary: dict[str, Any] = {
+        "cycles": live.cycles,
+        "advanced_cycles": live.cycles,
+        "marker_cycle": live.cycles,
+        "drain_cycles": 0,
+        "uart_bytes": len(uart),
+        "coremark_ticks": live.coremark_ticks,
+        "wall_seconds": 1.0,
+        "cycles_per_second": float(live.cycles),
+        "threads": 4,
+        "assertions_compiled": True,
+        "assertions_armed": True,
+        "passed": True,
+        "failed": False,
+    }
+    compared_ok: set[str] = set()
+    live_ok = {"coremark_bram": live}
+    check_case_and_record_comparison(
+        cm_case,
+        full_summary,
+        uart,
+        live_ok,
+        compared_ok,
+        expected_threads=4,
     )
-    with pytest.raises(AssertionError) as cocotb_err:
-        _assert_cocotb_matches_case(case, parsed_bad)
-    assert "cocotb cycles moved" in str(cocotb_err.value)
-    assert REGENERATE_BASELINE_CMD in str(cocotb_err.value)
+    assert_all_live_cocotb_cases_compared(compared_ok, live_ok)
+    assert compared_ok == {"coremark_bram"}
+
+    compared_drifted: set[str] = set()
+    live_drifted = {"coremark_brm": live}
+    check_case_and_record_comparison(
+        cm_case,
+        full_summary,
+        uart,
+        live_drifted,
+        compared_drifted,
+        expected_threads=4,
+    )
+    with pytest.raises(AssertionError, match="coremark_brm"):
+        assert_all_live_cocotb_cases_compared(compared_drifted, live_drifted)
 
 
 def test_effective_cpu_count_and_demo_script_respect_cgroup_quotas(
@@ -1837,28 +2182,26 @@ def test_effective_cpu_count_and_demo_script_respect_cgroup_quotas(
 
 def test_parse_cocotb_program_log_extracts_cycles_ticks_and_uart() -> None:
     """Log parser strips cocotb status lines and preserves exact UART bytes."""
-    cases = load_exactness_cases()
-    hello_case = cases["hello_world_bram"]
-    cm_case = cases["coremark_bram"]
-    assert cm_case.coremark_ticks is not None
-
+    hello_cycles = 11824
     hello_uart = b"[     0 s] Frost: Hello, world!\r\n"
-    hello_ns = f"{hello_case.cycles * 3:.2f}".encode("ascii")
+    hello_ns = f"{hello_cycles * 3:.2f}".encode("ascii")
     hello_log = (
         b"    57.00ns INFO     test   === Starting run 1 of 1 ===\n"
         b"[     0 s] Frost: Hello, world!"
-        b"  5376.00ns INFO     test   Run 1 PASSED: Found expected text 'Hello, world!'\n"
+        b"  5472.00ns INFO     test   Run 1 PASSED: Found expected text 'Hello, world!'\n"
         b"\r\n\n\n"
-        b" " + hello_ns + b"ns INFO     test   Run 1 completed after 1773 cycles\n"
+        b" " + hello_ns + b"ns INFO     test   Run 1 completed after 1805 cycles\n"
     )
     parsed_hello = parse_cocotb_program_log(hello_log)
-    assert parsed_hello.cycles == hello_case.cycles
+    assert parsed_hello.cycles == hello_cycles
     assert parsed_hello.coremark_ticks is None
     assert parsed_hello.uart_bytes == len(hello_uart)
     assert parsed_hello.uart_sha256 == hashlib.sha256(hello_uart).hexdigest()
 
-    cm_ticks_bytes = str(cm_case.coremark_ticks).encode("ascii")
-    cm_ns = f"{cm_case.cycles * 3:.2f}".encode("ascii")
+    cm_cycles = 333130
+    cm_ticks = 223556
+    cm_ticks_bytes = str(cm_ticks).encode("ascii")
+    cm_ns = f"{cm_cycles * 3:.2f}".encode("ascii")
     cm_uart = (
         b"CoreMark Size : 666\r\nTotal 64-bit ticks : "
         + cm_ticks_bytes
@@ -1876,8 +2219,8 @@ def test_parse_cocotb_program_log_extracts_cycles_ticks_and_uart() -> None:
         b"1050000.00ns INFO     cocotb.regression   passed\n"
     )
     parsed_cm = parse_cocotb_program_log(cm_log)
-    assert parsed_cm.cycles == cm_case.cycles
-    assert parsed_cm.coremark_ticks == cm_case.coremark_ticks
+    assert parsed_cm.cycles == cm_cycles
+    assert parsed_cm.coremark_ticks == cm_ticks
     assert parsed_cm.uart_bytes == len(cm_uart)
     assert parsed_cm.uart_sha256 == hashlib.sha256(cm_uart).hexdigest()
 
@@ -1896,6 +2239,7 @@ def test_demo_dockerfile_uses_checked_portable_baseline_build() -> None:
     assert "SAVABLE=0" in dockerfile
     assert "STATIC_RUNTIME=1" in dockerfile
     assert "-march=native" not in dockerfile
+    assert "/sys/fs/cgroup/cpu.max" in dockerfile
     assert "FROM ubuntu:26.04" in dockerfile
     assert "USER ubuntu" in dockerfile
     assert "COPY hw/sim/sim_assertions.cpp /src/hw/sim/sim_assertions.cpp" in dockerfile
@@ -1907,20 +2251,71 @@ def test_demo_dockerfile_uses_checked_portable_baseline_build() -> None:
     assert 'exec "$MODEL_BIN"' in script_text
     assert "not meaningful at" in script_text
 
+    # Execute the actual BUILD_JOBS shell sanitiser from demo/Dockerfile.
+    joined_dockerfile = dockerfile.replace("\\\n", "\n")
+    start_marker = 'jobs="${BUILD_JOBS}";'
+    end_marker = "make -C /src/hw/sim/native stage-app"
+    assert start_marker in joined_dockerfile and end_marker in joined_dockerfile
+    jobs_snippet = joined_dockerfile.split(start_marker, 1)[1].split(end_marker, 1)[0]
+    sh_script = f'{start_marker}\n{jobs_snippet}\nprintf "%s\\n" "$jobs"\n'
 
-def test_ci_workflow_runs_native_exactness_job() -> None:
-    """Regular CI workflow runs one bounded test-native exactness job."""
+    def _eval_build_jobs(raw_val: str) -> str:
+        proc = subprocess.run(
+            ["/bin/sh", "-eu", "-c", sh_script],
+            env={
+                "BUILD_JOBS": raw_val,
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            },
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return proc.stdout.strip()
+
+    auto_jobs = int(_eval_build_jobs(""))
+    assert 1 <= auto_jobs <= 8
+    for bad_jobs in ("0", "000", "abc", "-2", "2.5", " 4"):
+        assert _eval_build_jobs(bad_jobs) == "1"
+    assert _eval_build_jobs("08") == "8"
+    assert _eval_build_jobs("4") == "4"
+    assert _eval_build_jobs("16") == "16"
+
+
+def test_ci_workflow_runs_native_and_demo_image_jobs() -> None:
+    """CI workflow runs both test-native and test-demo-image without pushing."""
     workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
-    assert "test-native" in jobs
-    job = jobs["test-native"]
-    assert set(job["needs"]) == {"build-docker", "gate"}
-    assert "needs.gate.outputs.full == 'true'" in job["if"]
-    assert int(job["timeout-minutes"]) == 25
 
-    commands = "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
-    assert "sw/apps/coremark/coremark" in commands
-    assert "python3 tests/test_native_sim.py --ci" in commands
+    assert "test-native" in jobs
+    native_job = jobs["test-native"]
+    assert set(native_job["needs"]) == {"build-docker", "gate"}
+    assert "needs.gate.outputs.full == 'true'" in native_job["if"]
+    assert int(native_job["timeout-minutes"]) >= 35
+    native_cmds = "\n".join(
+        str(step.get("run", "")) for step in native_job.get("steps", [])
+    )
+    assert "sw/apps/coremark/coremark" in native_cmds
+    assert "python3 tests/test_native_sim.py --ci" in native_cmds
+
+    assert "test-demo-image" in jobs
+    demo_job = jobs["test-demo-image"]
+    assert set(demo_job["needs"]) == {"build-docker", "gate"}
+    assert "needs.gate.outputs.full == 'true'" in demo_job["if"]
+    assert int(demo_job["timeout-minutes"]) >= 25
+    demo_cmds = "\n".join(
+        str(step.get("run", "")) for step in demo_job.get("steps", [])
+    )
+    assert "sw/apps/coremark/coremark" in demo_cmds
+    assert "docker load --input /tmp/frost-dev.tar" in demo_cmds
+    assert "docker tag frost-dev:latest frost:latest" in demo_cmds
+    assert "docker build -f demo/Dockerfile -t frost-demo:local ." in demo_cmds
+    assert "docker run --rm frost-demo:local " in demo_cmds
+    assert "docker run --rm frost-demo:local --threads 1 --app hello_world" in demo_cmds
+    assert "Frost: Hello, world!" in demo_cmds
+    assert "Correct operation validated." in demo_cmds
+    assert "<<PASS>>" in demo_cmds
+    assert "Demonstration finished:" in demo_cmds
+    assert "docker push" not in demo_cmds
 
 
 def test_native_runner_rtl_assertion_finish_and_split_fail(tmp_path: Path) -> None:
@@ -1932,7 +2327,7 @@ def test_native_runner_rtl_assertion_finish_and_split_fail(tmp_path: Path) -> No
 
 @pytest.mark.slow
 def test_native_exactness_and_checkpoints(tmp_path: Path) -> None:
-    """Checked native simulation matches baseline across BRAM, DDR, and restore."""
+    """Checked native simulation matches live cocotb runs across BRAM, DDR, and restore."""
     if shutil.which("verilator") is None:
         pytest.skip("verilator is not installed in this environment")
     if not COREMARK_MAIN_C.is_file():
@@ -1941,48 +2336,27 @@ def test_native_exactness_and_checkpoints(tmp_path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the native simulation exactness checks from the command line."""
+    """Run the native simulation checks from the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--ci",
         action="store_true",
         help=(
-            "compare one live cocotb hello_world run against exactness_baseline.json, "
-            "then build the shipped portable checked native binary once and check "
-            "hello_world (bram/ddr) and BRAM coremark"
+            "compare live unseeded cocotb runs of BRAM and DDR hello_world and BRAM "
+            "coremark with the shipped portable checked native binary and check "
+            "demo/run_demo.sh"
         ),
     )
     mode.add_argument(
         "--all",
         action="store_true",
-        help="check all four BRAM/DDR cases plus checkpoint save and restore",
-    )
-    mode.add_argument(
-        "--update-baseline",
-        action="store_true",
         help=(
-            "run unseeded cocotb simulations for hello_world and coremark in bram and "
-            "ddr and rewrite hw/sim/native/exactness_baseline.json"
+            "compare all four BRAM/DDR hello_world and coremark runs against live "
+            "unseeded cocotb runs plus SAVABLE=1 checkpoint save and restore"
         ),
     )
-    parser.add_argument(
-        "--compare-cocotb-dir",
-        type=Path,
-        default=None,
-        help="verify exactness_baseline.json against cocotb_<case>.log files in DIR",
-    )
     args = parser.parse_args(argv)
-
-    if args.update_baseline:
-        update_exactness_baseline()
-        return 0
-
-    if args.compare_cocotb_dir is not None:
-        compare_baseline_against_cocotb_logs(args.compare_cocotb_dir)
-        print("All cocotb logs match exactness_baseline.json.")
-        if not args.ci and not args.all:
-            return 0
 
     with tempfile.TemporaryDirectory(prefix="frost-native-test-") as tmp:
         run_exactness_suite(
@@ -1990,7 +2364,7 @@ def main(argv: list[str] | None = None) -> int:
             check_checkpoints=not bool(args.ci),
             work_dir=Path(tmp),
         )
-    print("Native RTL exactness checks passed.")
+    print("Native RTL simulation checks passed.")
     return 0
 
 
