@@ -4245,6 +4245,10 @@ module tomasulo_wrapper #(
   riscv_pkg::sq_addr_update_t sq_early_addr_update_2;
   logic sq_early_addr_capture_valid;
   logic sq_early_addr_capture_valid_2;
+  // The store queue's copies of the packets' address and MMIO flag (zero
+  // under translation); see sq_early_addr_update_final.
+  logic [1:0][riscv_pkg::XLEN-1:0] sq_early_sq_address;
+  logic [1:0] sq_early_sq_is_mmio;
   sq_early_addr_pipeline sq_early_addr_pipeline_inst (
       .i_clk                          (i_clk),
       .i_rst_n                        (i_rst_n),
@@ -4280,10 +4284,13 @@ module tomasulo_wrapper #(
       .i_sq_alloc_req_2               (sq_alloc_req_2),
       .i_sq_full                      (o_sq_full),
       .i_sq_full_for_2                (o_sq_full_for_2),
+      .i_translation_active           (i_translation_active),
       .o_sq_early_addr_update         (sq_early_addr_update),
       .o_sq_early_addr_update_2       (sq_early_addr_update_2),
       .o_sq_early_addr_capture_valid  (sq_early_addr_capture_valid),
-      .o_sq_early_addr_capture_valid_2(sq_early_addr_capture_valid_2)
+      .o_sq_early_addr_capture_valid_2(sq_early_addr_capture_valid_2),
+      .o_sq_early_sq_address          (sq_early_sq_address),
+      .o_sq_early_sq_is_mmio          (sq_early_sq_is_mmio)
   );
 
   // ===========================================================================
@@ -4445,6 +4452,18 @@ module tomasulo_wrapper #(
       sq_early_addr_capture_valid_final = sq_early_addr_capture_valid;
       sq_early_addr_capture_valid_2_final = sq_early_addr_capture_valid_2;
     end
+    // Address and MMIO flag: the pipeline's SQ copies, zero under
+    // translation, OR the MMU's, masked off without it. The SQ's address
+    // net is then apart from the MMU's VA input, and the translation select
+    // joins the final AND-OR instead of following it.
+    sq_early_addr_update_final.address = sq_early_sq_address[0] |
+        (dmmu_early_pa & {riscv_pkg::XLEN{i_translation_active}});
+    sq_early_addr_update_final.is_mmio = sq_early_sq_is_mmio[0] |
+        (dmmu_early_is_mmio & i_translation_active);
+    sq_early_addr_update_2_final.address = sq_early_sq_address[1] |
+        (dmmu_early2_pa & {riscv_pkg::XLEN{i_translation_active}});
+    sq_early_addr_update_2_final.is_mmio = sq_early_sq_is_mmio[1] |
+        (dmmu_early2_is_mmio & i_translation_active);
   end
 
   // The translated LQ packet carries the S2 PA, or VA and fault kind. Its
