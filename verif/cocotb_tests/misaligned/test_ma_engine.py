@@ -80,6 +80,7 @@ class Leaf:
     x: int = 0
     u: int = 0
     d: int = 1
+    g: int = 0
 
 
 @dataclass
@@ -203,13 +204,16 @@ class Env:
                 pending.append([self.rng.randint(1, 8), *req])
 
 
+PTW_RESP_WIDTH = 81
+
+
 def pack_walk_resp(vpn: int, leaf: Leaf) -> int:
-    """Pack riscv_pkg::ptw_resp_t (fault, vpn, ppn, level, r, w, x, u, d)."""
+    """Pack riscv_pkg::ptw_resp_t (fault, vpn, ppn, level, r, w, x, u, d, g)."""
     value = leaf.fault
     value = (value << 27) | vpn
     value = (value << 44) | leaf.ppn
     value = (value << 2) | leaf.level
-    for bit in (leaf.r, leaf.w, leaf.x, leaf.u, leaf.d):
+    for bit in (leaf.r, leaf.w, leaf.x, leaf.u, leaf.d, leaf.g):
         value = (value << 1) | bit
     return value
 
@@ -305,6 +309,7 @@ def expected_load(env: Env, a: Access, parts: list[tuple[int, int]]) -> int:
 
 async def setup(dut: Any, seed: int) -> Env:
     """Start the clock and models, and reset the engine."""
+    assert len(dut.i_walk_resp) == PTW_RESP_WIDTH, len(dut.i_walk_resp)
     rng = random.Random(seed)
     Clock(dut.i_clk, 10, unit="ns").start()
     env = Env(dut, rng)
@@ -494,7 +499,7 @@ def random_leaf(rng: random.Random, store: bool) -> Leaf:
     choice = rng.random()
     ppn = (DDR_BASE >> 12) + rng.randrange(0, 4096)
     if choice < 0.70:
-        return Leaf(ppn=ppn)
+        return Leaf(ppn=ppn, g=ppn & 1)
     if choice < 0.76:
         return Leaf(fault=DFAULT_PAGE)
     if choice < 0.80:
