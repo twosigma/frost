@@ -760,6 +760,62 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
         extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
     ),
+    # The VCU118's 32 KiB L1I (four ways of 256 sets): fence.i over the
+    # deeper flash-cleared valid bits and the instruction reader protocol.
+    "smc_fencei_test_l1i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="smc_fencei_test",
+        nic_mac_clocks=False,
+        description="Self-modifying DDR code across fence.i, with the VCU118's 32 KiB L1I",
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
+        extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
+    ),
+    "ifread_test_l1i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_ifread_program",
+        hdl_toplevel_module="frost",
+        app_name="ifread_test",
+        nic_mac_clocks=False,
+        description="Instruction reader protocol with the VCU118's 32 KiB L1I",
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
+    ),
+    # Every L1I set filled, hit, patched and cleared, PA[12] pairs, an
+    # over-subscribed upper set, and an Sv39 page crossing whose PA[12]
+    # differs from its VA[12]; the default L1I, the VCU118's 32 KiB L1I, and
+    # 32 KiB with the hardware reset sweep (256 sets) before the first fetch.
+    "l1i_set_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l1i_set_test",
+        nic_mac_clocks=False,
+        description="L1I sets, PA[12] pairs and an Sv39 PA[12] != VA[12] page crossing",
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
+    ),
+    "l1i_set_test_l1i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l1i_set_test",
+        nic_mac_clocks=False,
+        description="L1I set coverage with the VCU118's 32 KiB L1I",
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
+        extra_env=(("L1I_TEST_BYTES", "32768"), ("COCOTB_MAX_CYCLES", "4000000")),
+    ),
+    "l1i_set_test_l1i32_hw_sweep": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l1i_set_test",
+        nic_mac_clocks=False,
+        description=(
+            "L1I set coverage with the 32 KiB L1I and the hardware reset sweep "
+            "(SIM_FAST_MAINT=0) before the first cached fetch"
+        ),
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
+        extra_env=(
+            ("L1I_TEST_BYTES", "32768"),
+            ("SIM_FAST_MAINT", "0"),
+            ("COCOTB_MAX_CYCLES", "4000000"),
+        ),
+    ),
     "csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3556,6 +3612,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost_cache_test_harness",
         description="L1/L2/DDR data integrity with fast fence.i maintenance",
         verilator_extra_args=("-GSIM_FAST_MAINT=1",),
+    ),
+    "frost_cache_l1i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="L1/L2/DDR data integrity and hardware sweep with a 32 KiB L1I",
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
     ),
     # Same suites with the memory model completing transactions of different
     # ids out of issue order, which the tagged fabric must tolerate.
