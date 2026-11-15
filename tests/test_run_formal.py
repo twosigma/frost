@@ -1043,9 +1043,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "home_seat_next_equiv.sby",
-        "The home's fill waiter masks, seat counts, parking and fill images, formed "
-        "for both values of the decision's late term and selected last, equal the "
-        "original form for any state and input, at two, three and eight fills, "
+        "The home's fill waiter masks, seat counts and parking, formed for both "
+        "values of the decision's late term and selected last, equal the original "
+        "form, and the fill images' next state equals the response load and "
+        "registered zero clear, for any state and input, at two, three and eight fills, "
         "portable and primitive",
         tasks=("bmc_seat2", "bmc_seat3", "bmc", "bmc_xilinx"),
     ),

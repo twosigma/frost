@@ -60,6 +60,48 @@ def test_cocotb_workflow_always_cleans_before_running() -> None:
     assert command[4:] == ["hello_world", "--random-seed=7"]
 
 
+def test_native_workflow_builds_make_invocation() -> None:
+    """The native shortcut maps app, memory tier, and thread count to Make."""
+    assert workflow_command("native", ["hello_world"]) == [
+        "make",
+        "-C",
+        "hw/sim/native",
+        "run",
+        "APP=hello_world",
+        "MEM_CONFIG=bram",
+        "THREADS=1",
+    ]
+    assert workflow_command(
+        "native",
+        ["coremark", "--mem-config", "ddr", "--threads", "4", "--max-cycles", "500000"],
+    ) == [
+        "make",
+        "-C",
+        "hw/sim/native",
+        "run",
+        "APP=coremark",
+        "MEM_CONFIG=ddr",
+        "THREADS=4",
+        "MAX_CYCLES=500000",
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad_args",
+    (
+        [],
+        ["../outside"],
+        ["hello_world", "--mem-config", "sram"],
+        ["hello_world", "--threads", "0"],
+        ["hello_world", "--unknown"],
+    ),
+)
+def test_native_workflow_rejects_invalid_arguments(bad_args: list[str]) -> None:
+    """Invalid native workflow options fail before launching a container."""
+    with pytest.raises(ValueError, match="invalid native workflow arguments"):
+        workflow_command("native", bad_args)
+
+
 def test_pytest_workflow_always_cleans_before_running() -> None:
     """The pytest shortcut must clean before entering the cocotb runner."""
     command = workflow_command("pytest", ["-m", "cocotb and cocotb_unit"])

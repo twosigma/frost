@@ -173,7 +173,12 @@ module fu_cdb_adapter #(
       assign result_pending = 1'b0;
 `ifndef SYNTHESIS
       initial begin
+`ifdef FROST_SIM_ASSERTIONS
+        if (!(!REGISTER_OUTPUT && !ALLOW_GRANT_REFILL))
+          $fatal(1, "fu_cdb_adapter: invalid static configuration");
+`else
         assert (!REGISTER_OUTPUT && !ALLOW_GRANT_REFILL);
+`endif
       end
       always_ff @(posedge i_clk) begin
         if (reset_seen_q && i_rst_n && o_fu_complete.valid && !i_flush) begin
