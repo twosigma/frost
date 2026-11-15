@@ -4851,8 +4851,8 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = MEM_DIVERGENCE_PROBE_MAX_CYCLES
     elif app_name == "misaligned_test":
         # Several hundred engine accesses, translated S/U-mode crossings and
-        # faults, and the timer-interrupt section take ~1.20M cycles (1,204,902
-        # in DDR at DDR_MODEL_LATENCY=160); 2M leaves ~66% headroom.
+        # faults, and the timer-interrupt section take ~1.28M cycles (1,275,934
+        # in DDR at DDR_MODEL_LATENCY=160); 2M leaves ~57% headroom.
         max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
     elif app_name == "linux_irq_active_ddr_test":
         # Allow for timer ticks and sentinel spin-waits.
