@@ -456,7 +456,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_engine.sby",
-        "Resident image merges, independent probe/data arrival, and held service payloads.",
+        "Resident image merges, independent probe/data arrival, quick result offers, "
+        "and held service payloads.",
         tasks=(
             "coh_home_engine_prove",
             "coh_home_engine64_prove",
@@ -465,7 +466,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_array.sby",
-        "Independent L2 ports preserve byte values, tokens and physical-row exclusions.",
+        "Independent L2 ports and parallel way reads preserve byte values, tokens "
+        "and physical-row exclusions.",
         tasks=(
             "coh_home_array_prove",
             *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),

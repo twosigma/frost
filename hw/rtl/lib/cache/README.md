@@ -691,6 +691,15 @@ Channel arbiters capture the payload with the selected input and hold both
 through a stalled presentation.
 The home's probe, tag, update, result and PutAck arbiters use their captured
 selection for validity. Each selected source holds its offer through acceptance.
+An idle engine that receives `i_work_valid` without an error offers its tag
+lookup on that dispatch cycle and holds the offer in `Lookup` until the tag
+arbiter accepts it. With `PARALLEL_READ`, a demand engine's lookup requests a
+parallel read of its set's ways (`i_req_spec`), while a prefetch lookup reads
+tags alone; a resident decision that needs data takes the parallel read
+(`o_take_spec` / `i_resp_keep`) and skips the row-read port. A hit service with
+no probe (`GetS`, `LoadReserved`, `GetM`, `GetMZero`) offers a quick result to
+the result arbiter in the cycle its row data arrives and enters `Result`
+holding the same payload when the arbiter does not accept it on that cycle.
 A stop reaches the home through one flop. A home failure stops the home on
 the edge that sets its fatal indication, and the fatal stop input takes effect
 on the cycle after it rises. The stop suppresses probe and PutAck validity and
@@ -721,14 +730,24 @@ prefetch changes nothing a client sees, so it neither waits for nor orders
 other requests.
 
 `coherence_home_array` has separate tag-decision, data-read and masked-update
-ports. Each request carries a response token. Replacement state changes when
-the consumer claims a tag decision. An available miss response selects an
-unpinned way. Way claims enter through the tag response port. Put and writeback address
-hazards are checked at response acceptance. Tag updates exclude an unresolved lookup
-of the same physical packed row. A pending tag update blocks further lookups
-to that row until the update is accepted. Data hazards cover the read sample and the
-write input registers through completion. Contending reads and writes alternate
-service while prior operations drain. Masked updates preserve sibling sectors.
+ports. Each request carries a response token. With `ULTRA` and without
+`FROST_SRAM_MACROS`, the data array has a bank per way, indexed by set, and a
+lookup with `i_req_spec` reads every way of its set on its first tag-read
+cycle while no data write of that set is in the write pipeline or on offer; an
+unresolved parallel-read stage blocks data writes to its set until the
+response keeps the selected way (`i_resp_keep`) or drops it. In `ULTRA` builds
+without `FROST_SRAM_MACROS`, way selection reads the tag RAM's fabric output
+register on the final tag-read cycle and presents the response on the
+following cycle; block-RAM and SRAM-macro builds use a single `{way, set}`
+data array read after the decision and a registered `Select` cycle.
+Replacement state changes when the consumer claims a tag decision. An
+available miss response selects an unpinned way. Way claims enter through the
+tag response port. Put and writeback address hazards are checked at response
+acceptance. Tag updates exclude an unresolved lookup of the same physical
+packed row. A pending tag update blocks further lookups to that row until the
+update is accepted. Data hazards cover the read sample and the write input
+registers through completion. Contending reads and writes alternate service
+while prior operations drain. Masked updates preserve sibling sectors.
 
 The D channel's `non_alloc` hint restricts miss replacement to way 0.
 A streaming request that needs a replacement waits while way 0 is pinned.
@@ -1029,9 +1048,11 @@ or absorbed. A prefetch fill of another line can take the line as its
 victim; replacement then holds the victim through its recall, which absorbs
 the pending PutM before the row is reused.
 
-The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
+The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_rowread`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
-probe service and the DMA sector handoff, and a primary granted from its
+probe service and the DMA sector handoff, parallel way reads beside set writes
+and back-to-back lookups, UltraRAM row reads after the decision
+(`PARALLEL_READ=0`), and a primary granted from its
 fill's line before the install completes. Their prefetch cases cover the slot
 partition, the no-fill flag, prefetch fills that install, take a demand seat
 or fail, the fill reserve, the last available way and the last write-back

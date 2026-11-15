@@ -3420,7 +3420,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_home_array": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home_array",
         hdl_toplevel_module="coherence_home_array",
-        description="Independent tag and data ports with physical-row hazards",
+        description=(
+            "Independent tag and data ports, per-way banks, parallel way reads "
+            "and physical-row hazards"
+        ),
         verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
     ),
     "coherence_home_array_bram": CocotbRunConfig(
@@ -3476,8 +3479,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_coherence_home",
         hdl_toplevel_module="coherence_home",
         description=(
-            "Independent completions, dirty recalls, way pins, victim locks, "
-            "prefetches, grants forwarded from fills, and streaming placement"
+            "Independent completions, parallel way reads, dispatch-cycle lookup "
+            "offers, dirty recalls, way pins, victim locks, prefetches, grants "
+            "forwarded from fills, and streaming placement"
         ),
         verilator_extra_args=(
             "--assert",

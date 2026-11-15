@@ -164,7 +164,8 @@ independent home peers. They hold four results behind C, reorder line replies,
 and check AXI burst order, byte masks, allocation hints, errors and reset on both bus widths.
 
 `coherence_home_array` and its BRAM and packed-tag variants check concurrent
-tag decisions, data reads and masked updates. They exercise physical-row
+tag decisions, parallel way reads in the banked UltraRAM form, data reads and
+masked updates. They exercise physical-row
 aliases, live victim exclusions, continuous read/write contention and reset
 with responses in flight. The `coherence_array_reset_*` and
 `coherence_home_array_reset_*` benches exercise both reset modes in block RAM
@@ -199,9 +200,9 @@ The `coherence_prefetch_contention*` benches report demand service for competing
 streams, dirty replacement, DMA and combined dirty/DMA pressure with
 prefetch enabled or disabled.
 
-`coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
+`coherence_home_completions`, `coherence_home`, `coherence_home_rowread`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
-and CPU observation cuts; `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
+and CPU observation cuts; `coherence_home_rowread` runs the UltraRAM home with `PARALLEL_READ=0` so row reads after the decision and probe replies ahead of row data are exercised, and `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
 requests execute, preserve waiter order across an older writer, and check
 current data on waiter reentry. Streaming cases check way-0 miss placement,
 CPU line residency, dirty hits in other ways and progress after a pinned
