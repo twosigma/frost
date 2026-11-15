@@ -159,8 +159,16 @@ receive packet deltas must equal the test frames plus the kernel frames the
 capture saw sent; every kernel frame must come back exactly once with the
 bytes it was sent with, up to the MAC's padding; no frame may arrive that was
 not sent; no test frame of another window may appear; and the capture may
-drop nothing. Idle intervals send no test frame and must not move the error
-counters. If the capture socket cannot be opened, the test says so and an
+drop nothing. A kernel frame is expected back only if the NIC's receive
+filter accepts it (broadcast, multicast or the interface's own address); a
+frame for another station, such as a TCP segment to the server, counts as
+sent and must not come back. In the idle interval that takes the link down,
+a kernel frame that does not come back is accounted for only if the driver
+counted it in `tx_dropped`. Idle intervals send no test frame and must not
+move the error counters. Two cases cannot be accounted and fail with their
+own reason: a segmentation offload packet, which the capture sees once but
+the NIC sends as several frames, and a looped frame whose checksum the NIC
+inserted, whose outgoing copy holds only a partial sum. If the capture socket cannot be opened, the test says so and an
 idle interval may count no frame at all.
 
 Before each window's verdict the test prints two `foreign frame` lines for

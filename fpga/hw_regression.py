@@ -1240,7 +1240,8 @@ def nettest_command(interface: str, repeat: int = 1, poke_s: int = 0) -> str:
     block on the root while loopback takes the link down. Disable IPv6 during
     the test: autoconfiguration traffic returning through loopback fails idle
     checks. IPv4 ARP requests for the NFS server can still go out while the
-    interface is looped; the test captures them and accounts for them. Require a successful dentry and inode cache drop before the test.
+    interface is looped; the test captures them and accounts for them.
+    Require a successful dentry and inode cache drop before the test.
     The test opens its sysfs descriptors before taking the interface down.
     Hold it down for 65 seconds to expire NFS's default directory attribute
     cache: dropping caches alone allows pathname lookups before interface-down

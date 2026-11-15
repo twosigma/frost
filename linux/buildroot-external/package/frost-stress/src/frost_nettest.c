@@ -47,10 +47,17 @@
  * like test frames. A second packet socket therefore captures every frame of
  * the interface for the whole run, and each window's counters are judged
  * against it: the packet deltas must equal the test frames plus the kernel
- * frames the capture saw sent, every kernel frame must come back exactly once
- * unchanged (up to the MAC's padding), and no frame may arrive that was not
- * sent, no test frame of another window may appear, and the capture may drop
- * nothing. Idle windows send no test frame and must not move error counters.
+ * frames the capture saw sent, every kernel frame the receive filter accepts
+ * (broadcast, multicast, the interface's own address) must come back exactly
+ * once unchanged (up to the MAC's padding), a kernel frame for another
+ * station must not come back, no frame may arrive that was not sent, no test
+ * frame of another window may appear, and the capture may drop nothing. Idle
+ * windows send no test frame and must not move error counters. In the idle
+ * window that takes the link down, a kernel frame that never comes back is
+ * accounted for only if tx_dropped counts it (dropped with the transmit
+ * ring). Known limits, which fail with their own reason: a segmentation
+ * offload packet counts as several frames but is captured once, and a frame
+ * whose checksum the NIC inserts cannot be compared with its looped copy.
  * Without the capture the test judges as before: idle windows may count
  * nothing. Before each window's verdict the test lists the frames that are not
  * its own ("foreign frame" lines), a "kernel frames" line when it accounted
@@ -124,6 +131,9 @@ static int g_ctl = -1;  /* ioctl socket */
 static int g_sock = -1; /* the bound test socket */
 static int g_sysfs = -1;
 static int g_expire_nfs_cache;
+/* The MTU set last: a longer outgoing frame is a segmentation offload packet,
+ * which the NIC sends as several frames. */
+static int g_mtu;
 enum { RX_PACKETS, TX_PACKETS, RX_ERRORS, TX_ERRORS, TX_DROPPED, CARRIER };
 static struct {
     const char *leaf;
@@ -253,6 +263,7 @@ static int set_mtu(int mtu)
         return fail("%s: SIOCGIFMTU: %s", g_ifname, strerror(errno));
     if (ifr.ifr_mtu != mtu)
         return fail("%s: mtu reads %d after setting %d", g_ifname, ifr.ifr_mtu, mtu);
+    g_mtu = mtu;
     return 0;
 }
 
@@ -543,7 +554,7 @@ static uint32_t get_le32(const uint8_t *p)
            ((uint32_t) p[3] << 24);
 }
 
-/* ---- the capture socket: every frame of the interface, for diagnosis ---- */
+/* ---- the capture socket: every frame of the interface ---- */
 
 /* A second packet socket for all protocols, bound to the interface once it is
  * known and kept open for the whole run. A down unhooks it and leaves ENETDOWN
@@ -560,7 +571,8 @@ static uint32_t get_le32(const uint8_t *p)
  * second copy of one, a test frame of another run, or any other frame. Each
  * listed frame takes two lines (Ethernet header, then the decoded payload) so
  * every line stays under about 150 characters. A summary line per window
- * gives the counts and the socket's drops. Nothing here changes a verdict. */
+ * gives the counts and the socket's drops. The counts decide the window's
+ * verdict (see window_verdict). */
 
 #define CAPTURE_RCVBUF_BYTES (32 << 20) /* a window's own frames, both copies */
 #define CAPTURE_BYTES (MAX_FRAME + 18)  /* a jumbo frame with two VLAN tags */
@@ -879,11 +891,16 @@ static struct {
     unsigned own_out, own_in, stale, foreign, listed, netdown, other_if;
     unsigned drops, recv_errno, cut;
     unsigned kernel_out, kernel_in, in_only, bad_test, kernel_over;
+    unsigned expect_back; /* kernel frames the receive filter accepts */
+    unsigned not_back;    /* unicast to another station: never comes back */
+    unsigned leaked;      /* a copy of one of those came back */
+    unsigned csum_partial, oversized;
+    size_t first_oversized;
     char first_bad_test[96];
     char first_in_only[48];
     struct {
         size_t len;
-        int looped;
+        int looped, back, csum_partial;
         uint8_t bytes[CAPTURE_BYTES];
     } sent[KERNEL_FRAMES];
 } g_w;
@@ -956,15 +973,30 @@ static int match_looped(const uint8_t *f, size_t cap, size_t len)
         if (g_w.sent[i].looped || len != want || cap < n || memcmp(f, g_w.sent[i].bytes, n) != 0)
             continue;
         g_w.sent[i].looped = 1;
+        if (!g_w.sent[i].back)
+            g_w.leaked++;
         return 1;
     }
     return 0;
 }
 
+/* Whether the NIC's receive filter accepts a frame for this destination
+ * without promiscuous mode: broadcast, multicast, or the interface's own
+ * address. A kernel frame for another station is sent but never comes back. */
+static int comes_back(const uint8_t *dst)
+{
+    return (dst[0] & 1) || memcmp(dst, g_mac, 6) == 0;
+}
+
 /* Account one captured frame of len bytes (the first cap in f) to the
  * window, and list it unless it is one of the test's own. */
-static void
-capture_frame(const uint8_t *f, size_t cap, size_t len, int pkttype, int vlan, long long t_ms)
+static void capture_frame(const uint8_t *f,
+                          size_t cap,
+                          size_t len,
+                          int pkttype,
+                          int vlan,
+                          unsigned status,
+                          long long t_ms)
 {
     int out = pkttype == PACKET_OUTGOING;
     uint32_t seq;
@@ -983,14 +1015,28 @@ capture_frame(const uint8_t *f, size_t cap, size_t len, int pkttype, int vlan, l
         if (g_w.bad_test++ == 0)
             describe_frame(g_w.first_bad_test, sizeof(g_w.first_bad_test), c, seq, f, cap, len);
     } else if (out) {
+        int back = cap >= HDR_BYTES && comes_back(f);
+        /* The stack leaves the checksum to the NIC: the looped copy holds the
+         * final sum, this one a partial sum. */
+        int partial = (status & TP_STATUS_CSUMNOTREADY) != 0;
+        if (g_mtu && len > (size_t) g_mtu + HDR_BYTES + 4 && g_w.oversized++ == 0)
+            g_w.first_oversized = len;
         if (g_w.kernel_out < KERNEL_FRAMES) {
             g_w.sent[g_w.kernel_out].len = len;
             g_w.sent[g_w.kernel_out].looped = 0;
+            g_w.sent[g_w.kernel_out].back = back;
+            g_w.sent[g_w.kernel_out].csum_partial = partial;
             memcpy(g_w.sent[g_w.kernel_out].bytes, f, cap);
         } else {
             g_w.kernel_over++;
         }
         g_w.kernel_out++;
+        if (back) {
+            g_w.expect_back++;
+            g_w.csum_partial += (unsigned) partial;
+        } else {
+            g_w.not_back++;
+        }
     } else if (match_looped(f, cap, len)) {
         g_w.kernel_in++;
     } else if (g_w.in_only++ == 0) {
@@ -1061,6 +1107,7 @@ static void capture_drain(void)
         size_t cap = len < sizeof(buf) ? len : sizeof(buf);
         long long t_ms = -1;
         int vlan = -1;
+        unsigned status = 0;
         for (struct cmsghdr *m = CMSG_FIRSTHDR(&msg); m; m = CMSG_NXTHDR(&msg, m)) {
             if (m->cmsg_level == SOL_SOCKET && m->cmsg_type == SCM_TIMESTAMPNS) {
                 struct timespec ts;
@@ -1070,11 +1117,12 @@ static void capture_drain(void)
             if (m->cmsg_level == SOL_PACKET && m->cmsg_type == PACKET_AUXDATA) {
                 struct tpacket_auxdata aux;
                 memcpy(&aux, CMSG_DATA(m), sizeof(aux));
+                status = aux.tp_status;
                 if (aux.tp_status & TP_STATUS_VLAN_VALID)
                     vlan = aux.tp_vlan_tci & 0xfff;
             }
         }
-        capture_frame(buf, cap, len, from.sll_pkttype, vlan, t_ms);
+        capture_frame(buf, cap, len, from.sll_pkttype, vlan, status, t_ms);
     }
     if (frames >= CAPTURE_MAX_FRAMES)
         g_w.cut = 1;
@@ -1365,30 +1413,54 @@ static int check_idle(const char *what, const struct net_stats *start, const str
  * frame passes through the NIC like a test frame and counts once in each
  * direction. A window is judged on what the capture saw: the transmit delta
  * must be the test frames plus the kernel frames sent, the receive delta the
- * test frames plus their looped copies, every kernel frame must come back
- * exactly once with the bytes it was sent with (up to the MAC's padding),
- * nothing may arrive that was not sent, no test frame of another window may
- * appear, and the capture may drop nothing. Idle windows send no test frame,
- * and their error counters must not move. */
+ * test frames plus their looped copies, every kernel frame the receive filter
+ * accepts (broadcast, multicast, the interface's own address) must come back
+ * exactly once with the bytes it was sent with (up to the MAC's padding), a
+ * kernel frame for another station must not come back, nothing may arrive
+ * that was not sent, no test frame of another window may appear, and the
+ * capture may drop nothing. Idle windows send no test frame, and their error
+ * counters must not move.
+ *
+ * In a window that takes the link down, a kernel frame handed to the driver
+ * just before the down may be dropped with the transmit ring: it then counts
+ * in tx_dropped instead of tx_packets and never comes back. Such frames are
+ * accounted for only when tx_dropped moved by their number (or by up to the
+ * kernel frames for other stations in addition, which may be dropped the same
+ * way).
+ *
+ * Known limits, which fail with their own reason: a segmentation offload
+ * packet appears once in the capture but counts as several frames, and a
+ * frame whose checksum the NIC inserts leaves with a partial sum in its
+ * outgoing copy, so its looped copy cannot be compared. */
 #define ACCOUNT_SETTLE_MS 500 /* for counters and capture to agree */
 #define ACCOUNT_POLL_MS 20
 
 static unsigned g_kernel_traffic; /* kernel frames in the traffic windows */
 
-/* Whether the counters and the capture agree, so nothing is still in flight. */
-static int
-window_agrees(const struct net_stats *start, const struct net_stats *end, unsigned frames, int idle)
+/* Frames the driver dropped in this window: only a window that takes the
+ * link down may drop a kernel frame. */
+static uint64_t window_dropped(const struct net_stats *start, const struct net_stats *end, int down)
 {
-    return end->tx_packets - start->tx_packets == (uint64_t) frames + g_w.kernel_out &&
+    return down ? end->tx_dropped - start->tx_dropped : 0;
+}
+
+/* Whether the counters and the capture agree, so nothing is still in flight. */
+static int window_agrees(
+    const struct net_stats *start, const struct net_stats *end, unsigned frames, int idle, int down)
+{
+    uint64_t dropped = window_dropped(start, end, down);
+    uint64_t unreturned = g_w.expect_back - (g_w.kernel_in - g_w.leaked);
+    return end->tx_packets - start->tx_packets + dropped == (uint64_t) frames + g_w.kernel_out &&
            end->rx_packets - start->rx_packets == (uint64_t) frames + g_w.kernel_in &&
-           g_w.kernel_in == g_w.kernel_out &&
+           !g_w.leaked && unreturned <= dropped && dropped <= unreturned + g_w.not_back &&
            (!idle || (end->rx_errors == start->rx_errors && end->tx_errors == start->tx_errors));
 }
 
 /* Whether waiting cannot help: the capture already shows a failure. */
 static int window_broken(void)
 {
-    return g_w.drops || g_w.recv_errno || g_w.cut || g_w.kernel_over || g_w.bad_test || g_w.in_only;
+    return g_w.drops || g_w.recv_errno || g_w.cut || g_w.kernel_over || g_w.bad_test ||
+           g_w.in_only || g_w.leaked || g_w.oversized;
 }
 
 /* The verdict on the window that ends now, from the capture's accounting. */
@@ -1396,10 +1468,13 @@ static int window_verdict(const char *what,
                           const struct net_stats *start,
                           const struct net_stats *end,
                           unsigned frames,
-                          int idle)
+                          int idle,
+                          int down)
 {
     long long tx = (long long) (end->tx_packets - start->tx_packets);
     long long rx = (long long) (end->rx_packets - start->rx_packets);
+    uint64_t dropped = window_dropped(start, end, down);
+    unsigned unreturned = g_w.expect_back - (g_w.kernel_in - g_w.leaked);
     if (g_w.drops || g_w.recv_errno || g_w.cut)
         return fail("capture %s: %u frames dropped%s, so frames cannot be accounted",
                     what,
@@ -1409,18 +1484,36 @@ static int window_verdict(const char *what,
         return fail("capture %s: more than %d kernel frames", what, KERNEL_FRAMES);
     if (g_w.bad_test)
         return fail("capture %s: %s", what, g_w.first_bad_test);
+    if (g_w.oversized)
+        return fail("capture %s: kernel frame of %zu bytes sent with segmentation offload "
+                    "cannot be accounted",
+                    what,
+                    g_w.first_oversized);
+    if (g_w.leaked)
+        return fail("capture %s: %u kernel frames for another station came back through the "
+                    "receive filter",
+                    what,
+                    g_w.leaked);
+    if (g_w.in_only && g_w.csum_partial)
+        return fail("capture %s: kernel frame with offloaded checksum cannot be compared", what);
     if (g_w.in_only)
         return fail("capture %s: %u received frames match no frame sent (first %s)",
                     what,
                     g_w.in_only,
                     g_w.first_in_only);
-    if (g_w.kernel_in != g_w.kernel_out)
-        return fail("capture %s: %u of %u kernel frames not looped back",
+    if (unreturned > dropped)
+        return fail("capture %s: %u of %u kernel frames not looped back (tx_dropped %+lld)",
                     what,
-                    g_w.kernel_out - g_w.kernel_in,
-                    g_w.kernel_out);
+                    unreturned,
+                    g_w.expect_back,
+                    (long long) (end->tx_dropped - start->tx_dropped));
+    if (dropped > unreturned + g_w.not_back)
+        return fail("statistics %s: tx_dropped %+lld for %u kernel frames sent before the down",
+                    what,
+                    (long long) dropped,
+                    unreturned + g_w.not_back);
     if (idle) {
-        if (window_agrees(start, end, 0, 1))
+        if (window_agrees(start, end, 0, 1, down))
             return 0;
         if (g_w.kernel_out == 0)
             return check_idle(what, start, end);
@@ -1433,7 +1526,7 @@ static int window_verdict(const char *what,
                     (long long) (end->tx_errors - start->tx_errors),
                     g_w.kernel_out);
     }
-    if (!window_agrees(start, end, frames, 0))
+    if (!window_agrees(start, end, frames, 0, down))
         return fail("statistics: %s: tx_packets %+lld rx_packets %+lld for %u frames and %u "
                     "kernel frames",
                     what,
@@ -1444,18 +1537,40 @@ static int window_verdict(const char *what,
     return 0;
 }
 
+/* Report the kernel frames a passing window accounted for. */
+static void window_report(const struct net_stats *start, const struct net_stats *end, int down)
+{
+    unsigned dropped = (unsigned) window_dropped(start, end, down);
+    unsigned unreturned = g_w.expect_back - g_w.kernel_in;
+    unsigned elsewhere = g_w.not_back - (dropped - unreturned);
+    if (g_w.kernel_in)
+        progress("kernel frames %s: %u sent, each looped back unchanged and counted once each way",
+                 g_window,
+                 g_w.kernel_in);
+    if (dropped)
+        progress("kernel frames %s: %u sent just before the link went down and dropped by the "
+                 "driver",
+                 g_window,
+                 dropped);
+    if (elsewhere)
+        progress("kernel frames %s: %u sent to another station, counted as sent, not expected back",
+                 g_window,
+                 elsewhere);
+}
+
 /* Judge the window that ends now (frames test frames sent, 0 for an idle
- * one), then move the capture on to the window named next. Until the
- * counters and the capture agree, for ACCOUNT_SETTLE_MS at most, drain again
- * and re-read the end counters: the window is idle or finished, so a later
- * end only takes in frames still in flight. Without the capture, judge as
- * strictly as before: an idle window may count nothing, a traffic window at
- * least its frames. */
+ * one; down when it takes the link down), then move the capture on to the
+ * window named next. Until the counters and the capture agree, for
+ * ACCOUNT_SETTLE_MS at most, drain again and re-read the end counters: the
+ * window is idle or finished, so a later end only takes in frames still in
+ * flight. Without the capture, judge as strictly as before: an idle window
+ * may count nothing, a traffic window at least its frames. */
 static int capture_judge(const char *what,
                          const struct net_stats *start,
                          struct net_stats *end,
                          unsigned frames,
                          int idle,
+                         int down,
                          const char *next)
 {
     if (g_cap < 0) {
@@ -1466,7 +1581,8 @@ static int capture_judge(const char *what,
     int rc = 0;
     for (;;) {
         capture_drain();
-        if (window_agrees(start, end, frames, idle) || window_broken() || now_ms() >= deadline)
+        if (window_agrees(start, end, frames, idle, down) || window_broken() ||
+            now_ms() >= deadline)
             break;
         sleep_ms(ACCOUNT_POLL_MS);
         if (read_stats(end) != 0) {
@@ -1476,11 +1592,9 @@ static int capture_judge(const char *what,
     }
     int64_t end_us = realtime_us();
     if (rc == 0)
-        rc = window_verdict(what, start, end, frames, idle);
-    if (rc == 0 && g_w.kernel_out)
-        progress("kernel frames %s: %u sent, each looped back unchanged and counted once each way",
-                 g_window,
-                 g_w.kernel_out);
+        rc = window_verdict(what, start, end, frames, idle, down);
+    if (rc == 0)
+        window_report(start, end, down);
     if (rc == 0 && !idle)
         g_kernel_traffic += g_w.kernel_out;
     capture_summary(next, end_us);
@@ -1526,10 +1640,10 @@ static int run(void)
     if (set_mtu(NORMAL_MTU) != 0 || set_loopback(1) != 0 || set_up(1) != 0 ||
         wait_carrier(&carrier_ms) != 0 || open_socket() != 0 || read_stats(&normal0) != 0)
         return -1;
-    if (capture_judge("before normal MTU traffic", &start, &normal0, 0, 1, "normal") != 0 ||
+    if (capture_judge("before normal MTU traffic", &start, &normal0, 0, 1, 0, "normal") != 0 ||
         burst(NORMAL_FRAMES, "normal MTU", normal_length) != 0 ||
         settle(&normal0, NORMAL_FRAMES, &normal1, "normal MTU") != 0 ||
-        capture_judge("normal MTU", &normal0, &normal1, NORMAL_FRAMES, 0, "idle-jumbo") != 0)
+        capture_judge("normal MTU", &normal0, &normal1, NORMAL_FRAMES, 0, 0, "idle-jumbo") != 0)
         return -1;
     progress("mtu %d: %d queued frames at 60, 255, 256, 257, 1023, 1024, 1025 and 1514 "
              "bytes verified, no socket drops",
@@ -1550,7 +1664,7 @@ static int run(void)
     /* ---- Step 4: lengths, one frame at a time ---- */
     if (read_stats(&a0) != 0)
         return -1;
-    if (capture_judge("before jumbo traffic", &normal1, &a0, 0, 1, "jumbo") != 0 ||
+    if (capture_judge("before jumbo traffic", &normal1, &a0, 0, 1, 1, "jumbo") != 0 ||
         lengths_step() != 0)
         return -1;
     progress("lengths %d..%d, 1514, 4096, %d: %d frames verified",
@@ -1562,7 +1676,7 @@ static int run(void)
     /* ---- Step 5: queued traffic at jumbo MTU ---- */
     if (burst(BURST_FRAMES, "burst", burst_length) != 0 ||
         settle(&a0, window_a, &a1, "burst") != 0 ||
-        capture_judge("steps 4-5", &a0, &a1, window_a, 0, "drain") != 0)
+        capture_judge("steps 4-5", &a0, &a1, window_a, 0, 0, "drain") != 0)
         return -1;
     progress("burst of %d sent before receiving: in order, no socket drops", BURST_FRAMES);
 
@@ -1589,11 +1703,11 @@ static int run(void)
     if (set_loopback(1) != 0 || set_up(1) != 0 || wait_carrier(&carrier_ms) != 0 ||
         open_socket() != 0 || read_stats(&b0) != 0)
         return -1;
-    if (capture_judge("between loopback on and the last burst", &e1, &b0, 0, 1, "final") != 0)
+    if (capture_judge("between loopback on and the last burst", &e1, &b0, 0, 1, 0, "final") != 0)
         return -1;
     if (burst(FINAL_FRAMES, "after the drain", burst_length) != 0 ||
         settle(&b0, FINAL_FRAMES, &b1, "after the drain") != 0 ||
-        capture_judge("step 6", &b0, &b1, FINAL_FRAMES, 0, "end") != 0)
+        capture_judge("step 6", &b0, &b1, FINAL_FRAMES, 0, 0, "end") != 0)
         return -1;
     if (off_carrier_ms == UINT64_MAX)
         snprintf(off_carrier, sizeof(off_carrier), "no carrier");
@@ -1741,6 +1855,10 @@ static int selftest_case(const char *name,
 /* Judge a synthetic window: its frames were fed to capture_frame, and the
  * counters moved by tx and rx. want is NULL for a pass, else a part of the
  * expected failure reason. */
+/* A window that takes the link down, and the drops it counts. */
+static int g_selftest_down;
+static long long g_selftest_tx_dropped;
+
 static int selftest_window(
     const char *name, unsigned frames, int idle, long long tx, long long rx, const char *want)
 {
@@ -1750,8 +1868,9 @@ static int selftest_window(
     end = start;
     end.tx_packets = (uint64_t) (1000 + tx);
     end.rx_packets = (uint64_t) (1000 + rx);
+    end.tx_dropped = (uint64_t) g_selftest_tx_dropped;
     g_reason[0] = '\0';
-    int rc = window_verdict(name, &start, &end, frames, idle);
+    int rc = window_verdict(name, &start, &end, frames, idle, g_selftest_down);
     if (want ? (rc == 0 || !strstr(g_reason, want)) : rc != 0) {
         printf("FROST_NET_SELFTEST_FAIL %s: %s, expected %s\n",
                name,
@@ -1987,12 +2106,12 @@ static int selftest(void)
     g_seq = 3000;
 
     capture_start("idle-jumbo", 0);
-    capture_frame(arp, 42, 42, PACKET_OUTGOING, -1, 70123);
-    capture_frame(looped, MIN_FRAME, MIN_FRAME, PACKET_BROADCAST, -1, 70123);
+    capture_frame(arp, 42, 42, PACKET_OUTGOING, -1, 0, 70123);
+    capture_frame(looped, MIN_FRAME, MIN_FRAME, PACKET_BROADCAST, -1, 0, 70123);
     bad |= selftest_window("idle-arp-looped", 0, 1, 1, 1, NULL);
     bad |= selftest_window("idle-arp-miscounted", 0, 1, 2, 2, "with 1 kernel frames sent");
-    capture_frame(arp, 42, 42, PACKET_OUTGOING, -1, 71143);
-    capture_frame(looped, MIN_FRAME, MIN_FRAME, PACKET_BROADCAST, -1, 71143);
+    capture_frame(arp, 42, 42, PACKET_OUTGOING, -1, 0, 71143);
+    capture_frame(looped, MIN_FRAME, MIN_FRAME, PACKET_BROADCAST, -1, 0, 71143);
     bad |= selftest_window("idle-arp-twice", 0, 1, 2, 2, NULL);
     /* The same frames in a traffic window: counted exactly. */
     bad |= selftest_window("traffic-arp-exact", 600, 0, 602, 602, NULL);
@@ -2009,21 +2128,91 @@ static int selftest(void)
                            "tx +1 rx +1 rxerr +0 txerr +0 with "
                            "nothing sent");
     bad |= selftest_window("idle-quiet", 0, 1, 0, 0, NULL);
-    capture_frame(looped, MIN_FRAME, MIN_FRAME, PACKET_BROADCAST, -1, 70123);
+    capture_frame(looped, MIN_FRAME, MIN_FRAME, PACKET_BROADCAST, -1, 0, 70123);
     bad |= selftest_window("idle-in-only", 0, 1, 0, 1, "1 received frames match no frame sent");
 
     capture_start("idle-jumbo", 0);
-    capture_frame(arp, 42, 42, PACKET_OUTGOING, -1, 70123);
+    capture_frame(arp, 42, 42, PACKET_OUTGOING, -1, 0, 70123);
     bad |= selftest_window("idle-not-looped", 0, 1, 1, 0, "1 of 1 kernel frames not looped back");
     looped[30] ^= 1;
-    capture_frame(looped, MIN_FRAME, MIN_FRAME, PACKET_BROADCAST, -1, 70123);
+    capture_frame(looped, MIN_FRAME, MIN_FRAME, PACKET_BROADCAST, -1, 0, 70123);
     looped[30] ^= 1;
     bad |= selftest_window("idle-changed-copy", 0, 1, 1, 1, "match no frame sent");
 
     capture_start("idle-jumbo", 0);
     build_frame(f, 2990, 1514);
-    capture_frame(f, 1514, 1514, PACKET_HOST, -1, 70123);
+    capture_frame(f, 1514, 1514, PACKET_HOST, -1, 0, 70123);
     bad |= selftest_window("idle-stale-test-frame", 0, 1, 0, 1, "stale test frame seq=2990");
+
+
+    /* A window that takes the link down: a kernel frame sent just before the
+     * down and dropped with the transmit ring is accounted for only when
+     * tx_dropped counts it. */
+    capture_start("idle-jumbo", 0);
+    capture_frame(arp, 42, 42, PACKET_OUTGOING, -1, 0, 70123);
+    g_selftest_down = 1;
+    g_selftest_tx_dropped = 1;
+    bad |= selftest_window("idle-down-dropped", 0, 1, 0, 0, NULL);
+    g_selftest_tx_dropped = 0;
+    bad |= selftest_window("idle-down-not-dropped",
+                           0,
+                           1,
+                           0,
+                           0,
+                           "1 of 1 kernel frames not looped back (tx_dropped +0)");
+    g_selftest_down = 0;
+    g_selftest_tx_dropped = 1;
+    bad |= selftest_window("idle-dropped-without-down", 0, 1, 0, 0, "not looped back");
+    g_selftest_tx_dropped = 0;
+
+    /* A kernel frame for another station (the server) is sent and not
+     * expected back; a copy that comes back is a failure of the filter. */
+    static uint8_t tcp[MIN_FRAME + 6];
+    memset(tcp, 0, sizeof(tcp));
+    n = put_eth(tcp, server, g_mac, 0x0800);
+    n += put_ipv4(tcp + n, 6, 40, board_ip, server_ip);
+    tcp[n + 12] = 5 << 4;
+    tcp[n + 13] = 0x10; /* ACK */
+    capture_start("idle-jumbo", 0);
+    capture_frame(tcp, 54, 54, PACKET_OUTGOING, -1, 0, 70123);
+    bad |= selftest_window("idle-unicast-not-back", 0, 1, 1, 0, NULL);
+    capture_frame(tcp, MIN_FRAME, MIN_FRAME, PACKET_OTHERHOST, -1, 0, 70123);
+    bad |= selftest_window("idle-unicast-came-back",
+                           0,
+                           1,
+                           1,
+                           1,
+                           "came back through the receive "
+                           "filter");
+
+    /* Known limits: a frame whose checksum the NIC inserts, and a
+     * segmentation offload packet, fail with their own reasons. */
+    static uint8_t udp[MIN_FRAME];
+    memset(udp, 0, sizeof(udp));
+    n = put_eth(udp, bcast, g_mac, 0x0800);
+    n += put_ipv4(udp + n, 17, 28, board_ip, (const uint8_t[4]){255, 255, 255, 255});
+    udp[n + 1] = 68, udp[n + 3] = 67, udp[n + 5] = 8;
+    capture_start("idle-jumbo", 0);
+    capture_frame(udp, 42, 42, PACKET_OUTGOING, -1, TP_STATUS_CSUMNOTREADY, 70123);
+    udp[n + 6] = 0x5a; /* the sum the NIC inserted */
+    capture_frame(udp, MIN_FRAME, MIN_FRAME, PACKET_BROADCAST, -1, 0, 70123);
+    bad |= selftest_window("idle-offloaded-checksum",
+                           0,
+                           1,
+                           1,
+                           1,
+                           "kernel frame with offloaded checksum cannot be compared");
+    g_mtu = NORMAL_MTU;
+    capture_start("idle-jumbo", 0);
+    capture_frame(tcp, MIN_FRAME + 6, 2974, PACKET_OUTGOING, -1, 0, 70123);
+    bad |= selftest_window("idle-segmentation-offload",
+                           0,
+                           1,
+                           2,
+                           0,
+                           "2974 bytes sent with "
+                           "segmentation offload");
+    g_mtu = 0;
 
     printf(bad ? "FROST_NET_SELFTEST_FAIL\n" : "FROST_NET_SELFTEST_PASS\n");
     return bad ? 1 : 0;

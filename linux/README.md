@@ -320,10 +320,10 @@ The test image boots with `ipv6.disable=1`: Debian's kernel builds IPv6 in,
 and its autoconfiguration frames would loop back through the NIC and fail
 `frost_nettest`'s idle checks. IPv4 cannot be turned off on an NFS root, and
 the kernel may send ARP requests for the server while the interface is
-looped back. `frost_nettest` captures every frame of the interface and counts
-such a frame as accounted for only when it was sent by the kernel, came back
-once and unchanged, and moved each packet counter by exactly one; see
-[the package README](buildroot-external/README.md).
+looped back. `frost_nettest` captures every frame of the interface and
+accepts such a frame only when the packet counters, the frames the kernel sent
+and their looped copies all agree; see
+[the package README](buildroot-external/README.md) for the rules.
 
 ## Driver modules
 

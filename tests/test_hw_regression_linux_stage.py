@@ -2588,6 +2588,13 @@ def test_frost_nettest_decoder_self_test_and_markers(tmp_path: Path) -> None:
         ("idle-capture-dropped", "1 frames dropped"),
         ("idle-unexplained", "tx +1 rx +1 rxerr +0 txerr +0 with nothing sent"),
         ("traffic-one-extra", "for 600 frames and 2 kernel frames"),
+        ("idle-down-dropped", "pass"),
+        ("idle-down-not-dropped", "not looped back (tx_dropped +0)"),
+        ("idle-dropped-without-down", "not looped back (tx_dropped +1)"),
+        ("idle-unicast-not-back", "pass"),
+        ("idle-unicast-came-back", "came back through the receive filter"),
+        ("idle-offloaded-checksum", "offloaded checksum cannot be compared"),
+        ("idle-segmentation-offload", "segmentation offload cannot be accounted"),
     ):
         line = next(
             line
