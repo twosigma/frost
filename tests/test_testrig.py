@@ -65,6 +65,7 @@ crypto = importlib.import_module("testrig.crypto")
 vector = importlib.import_module("testrig.vector")
 compressed_mops = importlib.import_module("testrig.compressed_mops")
 fp_ext = importlib.import_module("testrig.fp_ext")
+svinval = importlib.import_module("testrig.svinval")
 SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 DEFAULT_VECTOR_LENGTH = 128
 SAVED_TRACES_DIR = REPO_ROOT / "verif" / "testrig" / "traces"
@@ -428,6 +429,22 @@ def run(arguments: argparse.Namespace) -> int:
                 flush=True,
             )
             command += ["-d", str(trace_dir)]
+        elif arguments.svinval:
+            seed = (
+                arguments.seed
+                if arguments.seed is not None
+                else random.randrange(1 << 32)
+            )
+            trace_dir = work_dir / "svinval"
+            shutil.rmtree(trace_dir, ignore_errors=True)
+            svinval.write_tests(
+                trace_dir, arguments.svinval, seed, arguments.test_length
+            )
+            print(
+                f"Wrote {arguments.svinval} Svinval tests from seed {seed}",
+                flush=True,
+            )
+            command += ["-d", str(trace_dir)]
         elif arguments.atomics:
             seed = arguments.seed
             if seed is None:
@@ -568,6 +585,12 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="replay this many Zfhmin/Zfa tests from verif/testrig/fp_ext.py",
     )
     parser.add_argument(
+        "--svinval",
+        type=int,
+        default=0,
+        help="replay this many random Svinval tests from verif/testrig/svinval.py",
+    )
+    parser.add_argument(
         "--atomics",
         type=int,
         default=0,
@@ -599,7 +622,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--seed",
         type=int,
-        help="seed for --atomics, --crypto, --vector, --zcb or --fp-ext (default: random, printed)",
+        help=(
+            "seed for --atomics, --crypto, --vector, --zcb, --fp-ext or --svinval "
+            "(default: random, printed)"
+        ),
     )
     parser.add_argument(
         "--save-dir",
@@ -646,10 +672,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         or arguments.vector
         or arguments.zcb
         or arguments.fp_ext
+        or arguments.svinval
     ):
         parser.error(
             "--sscofpmf cannot be combined with --trace-dir, --atomics, --crypto, "
-            "--vector, --zcb or --fp-ext"
+            "--vector, --zcb, --fp-ext or --svinval"
         )
     if arguments.vector and (
         arguments.atomics
@@ -658,10 +685,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         or arguments.trace_dir
         or arguments.zcb
         or arguments.fp_ext
+        or arguments.svinval
     ):
         parser.error(
             "--vector cannot be combined with --atomics, --crypto, --trace, "
-            "--trace-dir, --zcb or --fp-ext"
+            "--trace-dir, --zcb, --fp-ext or --svinval"
         )
     return arguments
 

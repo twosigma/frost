@@ -67,13 +67,13 @@ static void uart_hex(unsigned long v)
 #define COUNTEREN_TM (1ul << 1)
 
 /* Exact 32-bit encodings used in the S/U bodies so Sstvala checks mtval. */
-#define INSN_CSRR_T0_STIMECMP 0x14d022f3ul     /* csrrs  t0, 0x14D, x0   */
-#define INSN_CSRW_STIMECMP_T0 0x14d29073ul     /* csrrw  x0, 0x14D, t0   */
-#define INSN_CSRRSI0_T0_STIMECMP 0x14d062f3ul  /* csrrsi t0, 0x14D, 0    */
-#define INSN_CSRRCI0_T0_STIMECMP 0x14d072f3ul  /* csrrci t0, 0x14D, 0    */
-#define INSN_CSRRWI_T0_STIMECMP 0x14dad2f3ul   /* csrrwi t0, 0x14D, 0x15 */
-#define INSN_CSRRSI_T0_STIMECMP 0x14d562f3ul   /* csrrsi t0, 0x14D, 0x0A */
-#define INSN_CSRRCI_T0_STIMECMP 0x14d2f2f3ul   /* csrrci t0, 0x14D, 0x05 */
+#define INSN_CSRR_T0_STIMECMP 0x14d022f3ul    /* csrrs  t0, 0x14D, x0   */
+#define INSN_CSRW_STIMECMP_T0 0x14d29073ul    /* csrrw  x0, 0x14D, t0   */
+#define INSN_CSRRSI0_T0_STIMECMP 0x14d062f3ul /* csrrsi t0, 0x14D, 0    */
+#define INSN_CSRRCI0_T0_STIMECMP 0x14d072f3ul /* csrrci t0, 0x14D, 0    */
+#define INSN_CSRRWI_T0_STIMECMP 0x14dad2f3ul  /* csrrwi t0, 0x14D, 0x15 */
+#define INSN_CSRRSI_T0_STIMECMP 0x14d562f3ul  /* csrrsi t0, 0x14D, 0x0A */
+#define INSN_CSRRCI_T0_STIMECMP 0x14d2f2f3ul  /* csrrci t0, 0x14D, 0x05 */
 
 #define csr_read_num(num)                                                                          \
     ({                                                                                             \
@@ -448,33 +448,18 @@ int main(void)
         csr_write_num(0x30A, 0);
         csr_write(mcounteren, 0);
         csr_write_num(0x14D, sentinel);
-        __asm__ volatile("mv t0, zero\n .4byte 0x14dad2f3\n mv %0, t0"
-                         : "=r"(old_v)
-                         :
-                         : "t0");
+        __asm__ volatile("mv t0, zero\n .4byte 0x14dad2f3\n mv %0, t0" : "=r"(old_v) : : "t0");
         imm_ok &= check_quiet("D6 m-csrrwi-old", old_v, sentinel);
         imm_ok &= check_quiet("D6 m-csrrwi-new", csr_read_num(0x14D), 0x15ul);
-        __asm__ volatile("mv t0, zero\n .4byte 0x14d562f3\n mv %0, t0"
-                         : "=r"(old_v)
-                         :
-                         : "t0");
+        __asm__ volatile("mv t0, zero\n .4byte 0x14d562f3\n mv %0, t0" : "=r"(old_v) : : "t0");
         imm_ok &= check_quiet("D6 m-csrrsi-old", old_v, 0x15ul);
         imm_ok &= check_quiet("D6 m-csrrsi-new", csr_read_num(0x14D), 0x1Ful);
-        __asm__ volatile("mv t0, zero\n .4byte 0x14d2f2f3\n mv %0, t0"
-                         : "=r"(old_v)
-                         :
-                         : "t0");
+        __asm__ volatile("mv t0, zero\n .4byte 0x14d2f2f3\n mv %0, t0" : "=r"(old_v) : : "t0");
         imm_ok &= check_quiet("D6 m-csrrci-old", old_v, 0x1Ful);
         imm_ok &= check_quiet("D6 m-csrrci-new", csr_read_num(0x14D), 0x1Aul);
-        __asm__ volatile("mv t0, zero\n .4byte 0x14d062f3\n mv %0, t0"
-                         : "=r"(old_v)
-                         :
-                         : "t0");
+        __asm__ volatile("mv t0, zero\n .4byte 0x14d062f3\n mv %0, t0" : "=r"(old_v) : : "t0");
         imm_ok &= check_quiet("D6 m-csrrsi0", old_v, 0x1Aul);
-        __asm__ volatile("mv t0, zero\n .4byte 0x14d072f3\n mv %0, t0"
-                         : "=r"(old_v)
-                         :
-                         : "t0");
+        __asm__ volatile("mv t0, zero\n .4byte 0x14d072f3\n mv %0, t0" : "=r"(old_v) : : "t0");
         imm_ok &= check_quiet("D6 m-csrrci0", old_v, 0x1Aul);
 
         static void (*const imm_fns[5])(void) = {

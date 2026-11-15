@@ -360,3 +360,35 @@ def test_sail_config_validates(tmp_path: Path, sscofpmf: bool) -> None:
         isa,
     )
     assert {"zihpm", "svinval", "sscofpmf"} <= set(isa.strip().split("_"))
+
+
+def test_svinval_generator_reproducibility_and_coverage(tmp_path: Path) -> None:
+    """verif/testrig/svinval.py writes deterministic traces covering Svinval forms."""
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    paths_a = test_testrig.svinval.write_tests(
+        dir_a, count=8, seed=20261115, length=120
+    )
+    paths_b = test_testrig.svinval.write_tests(
+        dir_b, count=8, seed=20261115, length=120
+    )
+    assert len(paths_a) == 8
+    texts_a = [p.read_text(encoding="utf-8") for p in paths_a]
+    texts_b = [p.read_text(encoding="utf-8") for p in paths_b]
+    assert texts_a == texts_b
+
+    joined = "\n".join(texts_a)
+    assert ".noshrink" in joined and ".shrink" in joined
+    assert "0x18000073" in joined  # sfence.w.inval
+    assert "0x18100073" in joined  # sfence.inval.ir
+    assert "0x16000073" in joined  # sinval.vma x0, x0
+    assert "remap" in joined
+    assert "first insn after U->" in joined
+    assert "mop ->" in joined
+
+    args = test_testrig.parse_arguments(["--svinval", "50", "--seed", "7"])
+    assert args.svinval == 50 and args.seed == 7
+    with pytest.raises(SystemExit):
+        test_testrig.parse_arguments(["--sscofpmf", "--svinval", "5"])
+    with pytest.raises(SystemExit):
+        test_testrig.parse_arguments(["--vector", "2", "--svinval", "5"])

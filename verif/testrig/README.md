@@ -96,10 +96,11 @@ its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--tests` | 50 | Tests per template |
 | `--ddr-capacity-log2-bytes` | 30 (1 GiB) | Set the DDR aperture for both FROST and Sail; accepted values 30–37 (1–128 GiB) |
 | `--atomics` | 0 | Replay this many random A-extension tests instead of the templates |
+| `--svinval` | 0 | Replay this many random Svinval tests (`verif/testrig/svinval.py`) instead of the templates |
 | `--sscofpmf` | off | Replay the deterministic counter-control trace (`verif/testrig/sscofpmf/controls.S`); `--trace` overrides the trace path |
 | `--vector` | 0 | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
 | `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
-| `--seed` | random | Seed for `--atomics`, `--crypto` and `--vector`; the runner prints the one it used |
+| `--seed` | random | Seed for `--atomics`, `--crypto`, `--vector`, `--zcb`, `--fp-ext` and `--svinval`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
 | `--include`, `--exclude` | see the runner | Template name regexes |
 | `--csr-include` | see the runner | CSRs the templates may access |
@@ -232,7 +233,7 @@ assigns local counter overflow interrupt number 13 and specifies that
 
 Replay a saved counterexample directly with `--trace <file>` (or
 `--sscofpmf --trace <file>`); `--sscofpmf` cannot be combined with
-`--trace-dir`, `--atomics`, `--crypto` or `--zcb`.
+`--trace-dir`, `--atomics`, `--crypto`, `--zcb`, `--fp-ext` or `--svinval`.
 
 ## What the comparison leaves out
 

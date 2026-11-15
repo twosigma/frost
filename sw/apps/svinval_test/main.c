@@ -430,75 +430,83 @@ void u_to_m_entry_inval_ir(void);
 /* 30 8-byte stubs for funct7 = 0001100 with rs2 = 2..31, plus U-mode trap-entry
  * handlers whose very first instruction at stvec/mtvec is sfence.w.inval or
  * sfence.inval.ir (exercising the U -> S and U -> M transitions of id_priv_is_u_q). */
-__asm__(".section .text\n"
-        ".balign 4\n"
-        ".global svinval_f7_0c_stubs\n"
-        ".option push\n"
-        ".option norvc\n"
-        "svinval_f7_0c_stubs:\n"
-        ".irp rs2,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31\n"
-        "    .4byte (0x18000073 | (\\rs2 << 20))\n"
-        "    ecall\n"
-        ".endr\n"
+__asm__(
+    ".section .text\n"
+    ".balign 4\n"
+    ".global svinval_f7_0c_stubs\n"
+    ".option push\n"
+    ".option norvc\n"
+    "svinval_f7_0c_stubs:\n"
+    ".irp rs2,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31\n"
+    "    .4byte (0x18000073 | (\\rs2 << 20))\n"
+    "    ecall\n"
+    ".endr\n"
 
-        ".balign 4\n"
-        ".global u_ecall_body\n"
-        "u_ecall_body:\n"
-        "    nop\n"
-        "    nop\n"
-        "    ecall\n"
-        "    j .\n"
+    ".balign 4\n"
+    ".global u_ecall_body\n"
+    "u_ecall_body:\n"
+    "    nop\n"
+    "    nop\n"
+    "    ecall\n"
+    "    j .\n"
 
-        ".balign 4\n"
-        ".global u_to_s_entry_w_inval\n"
-        "u_to_s_entry_w_inval:\n"
-        WORD_INSN(SFENCE_W_INVAL_BITS)
-        "    csrr t0, scause\n"
-        "    la   t1, g_trap_cause\n"
-        "    sd   t0, 0(t1)\n"
-        "    li   t0, 1\n"
-        "    la   t1, g_trap_from_s\n"
-        "    sd   t0, 0(t1)\n"
-        "    ecall\n"
+    ".balign 4\n"
+    ".global u_to_s_entry_w_inval\n"
+    "u_to_s_entry_w_inval:\n" WORD_INSN(
+        SFENCE_W_INVAL_BITS) "    csrr t0, scause\n"
+                             "    la   t1, g_trap_cause\n"
+                             "    sd   t0, 0(t1)\n"
+                             "    li   t0, 1\n"
+                             "    la   t1, g_trap_from_s\n"
+                             "    sd   t0, 0(t1)\n"
+                             "    ecall\n"
 
-        ".balign 4\n"
-        ".global u_to_s_entry_inval_ir\n"
-        "u_to_s_entry_inval_ir:\n"
-        WORD_INSN(SFENCE_INVAL_IR_BITS)
-        "    csrr t0, scause\n"
-        "    la   t1, g_trap_cause\n"
-        "    sd   t0, 0(t1)\n"
-        "    li   t0, 1\n"
-        "    la   t1, g_trap_from_s\n"
-        "    sd   t0, 0(t1)\n"
-        "    ecall\n"
+                             ".balign 4\n"
+                             ".global u_to_s_entry_inval_ir\n"
+                             "u_to_s_entry_inval_ir:\n" WORD_INSN(
+                                 SFENCE_INVAL_IR_BITS) "    csrr t0, scause\n"
+                                                       "    la   t1, g_trap_cause\n"
+                                                       "    sd   t0, 0(t1)\n"
+                                                       "    li   t0, 1\n"
+                                                       "    la   t1, g_trap_from_s\n"
+                                                       "    sd   t0, 0(t1)\n"
+                                                       "    ecall\n"
 
-        ".balign 4\n"
-        ".global u_to_m_entry_w_inval\n"
-        "u_to_m_entry_w_inval:\n"
-        WORD_INSN(SFENCE_W_INVAL_BITS)
-        "    csrr t0, mcause\n"
-        "    la   t1, g_trap_cause\n"
-        "    sd   t0, 0(t1)\n"
-        "    csrr t0, mscratch\n"
-        "    csrw mepc, t0\n"
-        "    li   t0, 0x1800\n"
-        "    csrs mstatus, t0\n"
-        "    mret\n"
+                                                       ".balign 4\n"
+                                                       ".global u_to_m_entry_w_inval\n"
+                                                       "u_to_m_entry_w_inval:\n" WORD_INSN(
+                                                           SFENCE_W_INVAL_BITS) "    csrr t0, "
+                                                                                "mcause\n"
+                                                                                "    la   t1, "
+                                                                                "g_trap_cause\n"
+                                                                                "    sd   t0, "
+                                                                                "0(t1)\n"
+                                                                                "    csrr t0, "
+                                                                                "mscratch\n"
+                                                                                "    csrw mepc, "
+                                                                                "t0\n"
+                                                                                "    li   t0, "
+                                                                                "0x1800\n"
+                                                                                "    csrs mstatus, "
+                                                                                "t0\n"
+                                                                                "    mret\n"
 
-        ".balign 4\n"
-        ".global u_to_m_entry_inval_ir\n"
-        "u_to_m_entry_inval_ir:\n"
-        WORD_INSN(SFENCE_INVAL_IR_BITS)
-        "    csrr t0, mcause\n"
-        "    la   t1, g_trap_cause\n"
-        "    sd   t0, 0(t1)\n"
-        "    csrr t0, mscratch\n"
-        "    csrw mepc, t0\n"
-        "    li   t0, 0x1800\n"
-        "    csrs mstatus, t0\n"
-        "    mret\n"
-        ".option pop\n");
+                                                                                ".balign 4\n"
+                                                                                ".global "
+                                                                                "u_to_m_entry_"
+                                                                                "inval_ir\n"
+                                                                                "u_to_m_entry_"
+                                                                                "inval_ir:"
+                                                                                "\n" WORD_INSN(
+                                                                                    SFENCE_INVAL_IR_BITS) "    csrr t0, mcause\n"
+                                                                                                          "    la   t1, g_trap_cause\n"
+                                                                                                          "    sd   t0, 0(t1)\n"
+                                                                                                          "    csrr t0, mscratch\n"
+                                                                                                          "    csrw mepc, t0\n"
+                                                                                                          "    li   t0, 0x1800\n"
+                                                                                                          "    csrs mstatus, t0\n"
+                                                                                                          "    mret\n"
+                                                                                                          ".option pop\n");
 
 /* In S-mode with satp active and VA_X already resident: run probe under TVM = 1
  * (delegated to S-mode, where stvec skips the trapping 4-byte instruction) or
@@ -629,10 +637,7 @@ static int check_probe(const char *name,
     return ok;
 }
 
-static int check_u_trap_entry_bracket(const char *name,
-                                      int to_s,
-                                      int tvm,
-                                      void (*handler)(void))
+static int check_u_trap_entry_bracket(const char *name, int to_s, int tvm, void (*handler)(void))
 {
     g_trap_cause = ~0ul;
     g_trap_tval = ~0ul;
@@ -1072,33 +1077,33 @@ int main(void)
     for (unsigned long rs2 = 2; rs2 <= 31; rs2++) {
         unsigned long word = 0x18000073ul | (rs2 << 20);
         void (*stub)(void) =
-            (void (*)(void)) ((uintptr_t) &svinval_f7_0c_stubs + (uintptr_t) ((rs2 - 2ul) * 8ul));
+            (void (*)(void))((uintptr_t) &svinval_f7_0c_stubs + (uintptr_t) ((rs2 - 2ul) * 8ul));
         ok &= check_probe("funct7-0c-rs2-m", 3, 0, 0, stub, CAUSE_ILLEGAL, word, 0);
         ok &= check_probe("funct7-0c-rs2-s", 1, 0, 0, stub, CAUSE_ILLEGAL, word, 0);
     }
 
     /* First instruction at stvec / mtvec on trap entry from U-mode into S-mode and M-mode. */
     for (int tvm = 0; tvm <= 1; tvm++) {
-        ok &= check_u_trap_entry_bracket(
-            tvm ? "U-to-S-tvm1-first-sfence-w-inval" : "U-to-S-tvm0-first-sfence-w-inval",
-            1,
-            tvm,
-            &u_to_s_entry_w_inval);
-        ok &= check_u_trap_entry_bracket(
-            tvm ? "U-to-S-tvm1-first-sfence-inval-ir" : "U-to-S-tvm0-first-sfence-inval-ir",
-            1,
-            tvm,
-            &u_to_s_entry_inval_ir);
-        ok &= check_u_trap_entry_bracket(
-            tvm ? "U-to-M-tvm1-first-sfence-w-inval" : "U-to-M-tvm0-first-sfence-w-inval",
-            0,
-            tvm,
-            &u_to_m_entry_w_inval);
-        ok &= check_u_trap_entry_bracket(
-            tvm ? "U-to-M-tvm1-first-sfence-inval-ir" : "U-to-M-tvm0-first-sfence-inval-ir",
-            0,
-            tvm,
-            &u_to_m_entry_inval_ir);
+        ok &= check_u_trap_entry_bracket(tvm ? "U-to-S-tvm1-first-sfence-w-inval"
+                                             : "U-to-S-tvm0-first-sfence-w-inval",
+                                         1,
+                                         tvm,
+                                         &u_to_s_entry_w_inval);
+        ok &= check_u_trap_entry_bracket(tvm ? "U-to-S-tvm1-first-sfence-inval-ir"
+                                             : "U-to-S-tvm0-first-sfence-inval-ir",
+                                         1,
+                                         tvm,
+                                         &u_to_s_entry_inval_ir);
+        ok &= check_u_trap_entry_bracket(tvm ? "U-to-M-tvm1-first-sfence-w-inval"
+                                             : "U-to-M-tvm0-first-sfence-w-inval",
+                                         0,
+                                         tvm,
+                                         &u_to_m_entry_w_inval);
+        ok &= check_u_trap_entry_bracket(tvm ? "U-to-M-tvm1-first-sfence-inval-ir"
+                                             : "U-to-M-tvm0-first-sfence-inval-ir",
+                                         0,
+                                         tvm,
+                                         &u_to_m_entry_inval_ir);
     }
 
     uart_printf("SVINVAL checks=%lu\n", g_checks_run);

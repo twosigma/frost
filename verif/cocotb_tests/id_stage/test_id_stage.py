@@ -1460,9 +1460,9 @@ async def test_svinval_decode_and_u_mode_fence_gate(dut: Any) -> None:
                 where = f"{bad:#010x} u={priv_is_u} slot2={slot2}"
                 assert packet["is_illegal_instruction"] is True, where
                 assert packet["rs_type"] == RS_INT, where
-                assert (
-                    packet["is_fence"] is False and packet["is_fence_i"] is False
-                ), where
+                assert packet["is_fence"] is False and packet["is_fence_i"] is False, (
+                    where
+                )
                 assert packet["is_sfence_vma"] is False, where
     dut.i_priv_is_u.value = 0
 
@@ -1507,7 +1507,9 @@ async def test_mop_r_and_sinval_vma_back_to_back(dut: Any) -> None:
             )
             _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
             await _advance_cycle(dut)
-            check_first(_read_id_packet(dut, slot2=slot2), f"{label} first slot2={slot2}")
+            check_first(
+                _read_id_packet(dut, slot2=slot2), f"{label} first slot2={slot2}"
+            )
 
             _drive_pd_packet(
                 dut,
