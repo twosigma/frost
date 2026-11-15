@@ -260,13 +260,13 @@ module id_stage #(
     cbo_illegal_for = funct12_low[2] ? i_cbo_zero_illegal :
         (|funct12_low[1:0]) ? i_cbo_cf_illegal : i_cbo_inval_illegal;
   endfunction
-  // The legality terms beside the decoder's (FS off, VS off, CBO, WRS.NTO),
-  // on an instruction as fetched. An injected NOP (OP-IMM) matches none of
-  // them, so with !inject_nop they equal the same terms on the substituted
-  // instruction that is_illegal_instruction reads.
+  // The legality terms beside the decoder's (FS off, VS off, CBO, WRS.NTO,
+  // U-mode Svinval fence), on an instruction as fetched. An injected NOP
+  // (OP-IMM) matches none of them, so with !inject_nop they equal the same
+  // terms on the substituted instruction that is_illegal_instruction reads.
   /* verilator lint_off UNUSEDSIGNAL */  // the compares read four fields of r
   function automatic logic csr_gated_illegal(input riscv_pkg::instr_t r);
-    logic fp, vec, cbo, wrs;
+    logic fp, vec, cbo, wrs, svinval_fence;
     fp = (((r.opcode == riscv_pkg::OPC_LOAD_FP) || (r.opcode == riscv_pkg::OPC_STORE_FP)) &&
           ((r.funct3 == 3'b001) || (r.funct3 == 3'b010) || (r.funct3 == 3'b011))) ||
         (r.opcode == riscv_pkg::OPC_OP_FP) || (r.opcode == riscv_pkg::OPC_FMADD) ||
@@ -276,8 +276,11 @@ module id_stage #(
     cbo = (r.opcode == riscv_pkg::OPC_MISC_MEM) && (r.funct3 == 3'b010);
     wrs = (r.opcode == riscv_pkg::OPC_CSR) && (r.funct3 == 3'b000) &&
         ({r.funct7, r.source_reg_2} == 12'h00D);
+    svinval_fence = (r.opcode == riscv_pkg::OPC_CSR) && (r.funct3 == 3'b000) &&
+        (r.funct7 == 7'b0001100);
     csr_gated_illegal = (i_mstatus_fs_off & fp) | (i_mstatus_vs_off & vec) |
-        (cbo_illegal_for(r.source_reg_2[2:0]) & cbo) | (i_wrs_nto_illegal & wrs);
+        (cbo_illegal_for(r.source_reg_2[2:0]) & cbo) | (i_wrs_nto_illegal & wrs) |
+        (i_priv_is_u & svinval_fence);
   endfunction
   /* verilator lint_on UNUSEDSIGNAL */
   logic is_cbo_direct;
@@ -408,7 +411,8 @@ module id_stage #(
               i_cbo_zero_illegal,
               i_cbo_cf_illegal,
               i_cbo_inval_illegal,
-              i_wrs_nto_illegal
+              i_wrs_nto_illegal,
+              i_priv_is_u
             }
         )) begin
       p_kill_matches_legality : assert (id_kill == (is_illegal_instruction || is_fetch_fault));
@@ -969,7 +973,8 @@ module id_stage #(
               i_cbo_zero_illegal,
               i_cbo_cf_illegal,
               i_cbo_inval_illegal,
-              i_wrs_nto_illegal
+              i_wrs_nto_illegal,
+              i_priv_is_u
             }
         )) begin
       p_kill_2_matches_legality :
