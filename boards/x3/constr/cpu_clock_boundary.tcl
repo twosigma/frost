@@ -33,6 +33,16 @@ if {[llength $cpu_boundary_cells]} {
   # The transport clock uses the same constraint as the ASIC flow.
   set boundary_tck_pins [get_pins -quiet -hierarchical -filter {NAME =~ "*/u_dtm/req_toggle_q_reg/C"}]
   if {[llength $boundary_tck_pins]} {
+    # The debug transport's clock is the JTAG TCK that each BSCANE2 primitive drives. The clock goes on
+    # the primitives' INTERNAL_TCK pins (a 10 MHz bound; the JTAG adapter runs it far slower): without it
+    # those pins have no clock and the primitives' TDO pins have no maximum-delay constraint
+    # (check_timing no_clock and unconstrained_internal_endpoints). The TDO paths are then timed against
+    # the falling TCK edge.
+    set boundary_bscan_cells [get_cells -quiet -hierarchical -filter {REF_NAME == BSCANE2}]
+    set boundary_bscan_tck_pins [get_pins -quiet -of_objects $boundary_bscan_cells -filter {REF_PIN_NAME == INTERNAL_TCK}]
+    if {[llength $boundary_bscan_tck_pins] && ![llength [get_clocks -quiet -of_objects $boundary_bscan_tck_pins]]} {
+      create_clock -name cpu_dtm_tck -period 100.0 $boundary_bscan_tck_pins
+    }
     set boundary_dtm_clocks [get_clocks -quiet -of_objects $boundary_tck_pins]
     if {![llength $boundary_dtm_clocks]} {
       set boundary_tck_nets [get_nets -segments -of_objects $boundary_tck_pins]
