@@ -1040,6 +1040,22 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "home_capture_equiv.sby",
+        "Consumed home payloads match handshake-only captures, and registered "
+        "fill flags match their phase decodes across arbitrary reset and stalls.",
+        tasks=(
+            "home_small",
+            "home_four",
+            "home_default",
+            "array_bram",
+            "array_uram",
+            "endpoint32",
+            "endpoint56",
+            "arbiter_default",
+            "arbiter_idle",
+        ),
+    ),
+    FormalTarget(
         "home_forward_next_equiv.sby",
         "The home's forward-turn next state, formed for both outcomes of the memory "
         "response and selected last, equals the single-ready-set form at eight and "
@@ -1121,6 +1137,7 @@ FORMAL_TARGETS = [
             "bmc_free_small_oh",
             "cover_bin",
             "cover_oh",
+            "prove_copy",
         ),
     ),
     FormalTarget(
@@ -1133,6 +1150,12 @@ FORMAL_TARGETS = [
         "sq_live_result_select.sby",
         "Store addresses and MMIO flags match reference CDB priority selection",
         tasks=("prove",),
+    ),
+    FormalTarget(
+        "sq_early_sq_copy.sby",
+        "Store-address copies and the instantiated wrapper's consumed packets equal "
+        "the translation select, with reset, flush and translation-change covers",
+        tasks=("prove", "prove_integrated", "cover"),
     ),
     FormalTarget(
         "served_window_coverage.sby",
@@ -2531,6 +2554,7 @@ SBY_TASKS = [
     ("cover_direct", "Direct-fetch responses coincident with clears and errors"),
     ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
+    ("prove_copy", "Staged address copies sample identical inputs on every edge"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
     ("bmc_raw", "Bounded equivalence with eight raw-wakeup candidates"),
     ("prove_raw", "Unbounded equivalence with eight raw-wakeup candidates"),
@@ -2617,6 +2641,18 @@ SBY_TASKS = [
     ),
     ("bmc", "Check assertions up to the configured depth"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
+    ("home_small", "Consumed packets and fill phase flags with two fills."),
+    (
+        "home_four",
+        "Consumed packets and fill phase flags with three fills and four ways.",
+    ),
+    ("home_default", "Consumed packets and fill phase flags with eight fills."),
+    ("array_bram", "Reset-qualified response and row-read captures in the BRAM array."),
+    ("array_uram", "Reset-qualified response and row-read captures in the URAM array."),
+    ("endpoint32", "Demand and grant captures with 32-bit addresses."),
+    ("endpoint56", "Demand and grant captures with 56-bit addresses."),
+    ("arbiter_default", "Selected payloads with handshake-only loading."),
+    ("arbiter_idle", "Selected payloads with loading on every idle cycle."),
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_seat2", "Seat next-state equivalence with two fills."),
     ("bmc_seat3", "Seat next-state equivalence with three fills and four ways."),

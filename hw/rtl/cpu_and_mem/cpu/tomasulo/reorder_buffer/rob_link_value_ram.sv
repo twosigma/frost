@@ -151,14 +151,40 @@ module rob_link_value_ram #(
 
   logic [1:0] staged_lvt_we_q = RandomStart ? 'x : '0;
   logic [1:0] staged_lvt_link_q;
-  // Limit address fanout to the read-port compares.
+  // The LVT write decode reads this copy.
   (* max_fanout = 48 *) logic [1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
+  // The read overrides use a separate copy of the staged addresses from
+  // the LVT write decode. Both copies sample the allocation address on
+  // every edge, including cycles when the caller resets or flushes.
+  (* keep = "true", equivalent_register_removal = "no" *)
+  logic [1:0][ADDR_WIDTH-1:0] staged_lvt_read_addr_q;
 
   always_ff @(posedge i_clk) begin
-    staged_lvt_we_q   <= i_alloc_enable;
-    staged_lvt_addr_q <= i_alloc_address;
-    staged_lvt_link_q <= i_alloc_branch;
+    staged_lvt_we_q        <= i_alloc_enable;
+    staged_lvt_addr_q      <= i_alloc_address;
+    staged_lvt_read_addr_q <= i_alloc_address;
+    staged_lvt_link_q      <= i_alloc_branch;
   end
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  logic staged_copy_armed_q = 1'b0;
+  always_ff @(posedge i_clk) staged_copy_armed_q <= 1'b1;
+  always_comb begin
+    if (i_check_enable && staged_copy_armed_q) begin
+      p_staged_read_addr_copy : assert (staged_lvt_read_addr_q == staged_lvt_addr_q);
+    end
+  end
+`endif
+`endif
+
+`ifdef ROB_LINK_COPY_PROOF
+  always @(posedge i_clk) begin
+    if (!$initstate) begin
+      assert (staged_lvt_read_addr_q == staged_lvt_addr_q);
+      assert (staged_lvt_read_addr_q == $past(i_alloc_address));
+    end
+  end
+`endif
 
   always_ff @(posedge i_clk) begin
     // Staged drains first, slot 2 last; a live same-address write overrides.
@@ -182,7 +208,7 @@ module rob_link_value_ram #(
       for (int i = 0; i < RamDepth; i++) begin
         lvt_eff[i] = lvt[i];
         for (int s = 0; s < 2; s++) begin
-          if (staged_lvt_we_q[s] && (staged_lvt_addr_q[s] == ADDR_WIDTH'(i))) begin
+          if (staged_lvt_we_q[s] && (staged_lvt_read_addr_q[s] == ADDR_WIDTH'(i))) begin
             lvt_eff[i] = {1'b0, staged_lvt_link_q[s]};
           end
         end
@@ -212,7 +238,7 @@ module rob_link_value_ram #(
 
     always_comb begin
       for (int s = 0; s < 2; s++) begin
-        staged_read_hit[s] = staged_lvt_we_q[s] && (staged_lvt_addr_q[s] == i_read_address);
+        staged_read_hit[s] = staged_lvt_we_q[s] && (staged_lvt_read_addr_q[s] == i_read_address);
       end
     end
 
