@@ -124,8 +124,8 @@ both stream variants and reject extra assumptions, cutpoints and input ties.
 The independent `coh_l1d_stream_outlier_prove` also proves all four shared
 payload assertions without a depth bound. Its free-input, stores-enabled
 model includes the scripted and no-store specializations; none of the BMCs
-assumes its facts. Each stream control BMC retains 322 assertions, and the
-payload tasks retain the complementary four. Count guards require all 326
+assumes its facts. Each stream control BMC retains 324 assertions, and the
+payload tasks retain the complementary four. Count guards require all 328
 checks before selection. Fast tests pin the complete contracts, source
 specialization, registration, shard membership and allowances.
 
