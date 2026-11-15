@@ -289,16 +289,17 @@ async def attached_loads_extract_signed_and_unsigned_values(dut: Any) -> None:
     """Extract signed and unsigned values from attached loads of every aligned offset."""
     Clock(dut.i_clk, 10, unit="ns").start()
     image = bytes((0x80 + 13 * lane) & 255 for lane in range(32))
+    load_op = _INSTR_OPS["LOAD"]
     cases = [
-        (op, size, signed, offset)
-        for op, size, signed in (
-            ("LB", 0, True),
-            ("LBU", 0, False),
-            ("LH", 1, True),
-            ("LHU", 1, False),
-            ("LW", 2, True),
-            ("LWU", 2, False),
-            ("LD", 3, False),
+        (size, signed, offset)
+        for size, signed in (
+            (0, True),
+            (0, False),
+            (1, True),
+            (1, False),
+            (2, True),
+            (2, False),
+            (3, False),
         )
         for offset in range(0, 32, 1 << size)
     ]
@@ -314,11 +315,11 @@ async def attached_loads_extract_signed_and_unsigned_values(dut: Any) -> None:
             await b.dispatch(make_int_req(pc=0x6004 + 4 * n, rd=6 + n))
             for n in range(len(batch))
         ]
-        for tag, (op, size, signed, offset) in zip(tags, batch, strict=True):
+        for tag, (size, signed, offset) in zip(tags, batch, strict=True):
             b.drive_rs_dispatch(
                 rs_type=RS_MEM,
                 rob_tag=tag,
-                op=_INSTR_OPS[op],
+                op=load_op,
                 src1_ready=True,
                 src1_value=address + offset,
                 src2_ready=True,

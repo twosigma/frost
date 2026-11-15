@@ -42,6 +42,7 @@ atomics = importlib.import_module("testrig.atomics")
 GOLDEN = [
     (atomics.lr(5, 20, 4), 0x100A22AF),
     (atomics.lr(13, 26, 8, aq=1, rl=1), 0x160D36AF),
+    (atomics.lr_reserved_rs2(1, 1, 2, 4), 0x101120AF),
     (atomics.sc(2, 12, 29, 4, rl=1), 0x1ACEA12F),
     (atomics.sc(11, 15, 25, 8, aq=1), 0x1CFCB5AF),
     (atomics.amo("amoadd", 6, 7, 20, 4), 0x007A232F),

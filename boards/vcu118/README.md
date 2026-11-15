@@ -19,11 +19,15 @@
 The VCU118 target uses `xcvu9p-flga2104-2L-e`, the shared FROST subsystem,
 a USB-UART console, status LEDs, one DDR4 controller, and two Ethernet
 interfaces: RJ-45 and QSFP1 lane 0. It has 256 KiB of
-BRAM, a 16 KiB instruction cache, a 128 KiB data cache, and a 4 MiB L2 cache.
-The L2 uses four ways, 16,384 sets and 64-byte lines. The board top passes
-`L2_CACHE_BYTES` through the shared subsystem; its default remains 2 MiB
-for other boards. The software loader sets `FROST_L2_CACHE_BYTES=4194304`
-for VCU118 applications so conflicting-set eviction uses the same geometry.
+BRAM, a 32 KiB instruction cache, a 128 KiB data cache, and a 4 MiB L2 cache.
+The L1I uses four ways, 256 sets and 32-byte lines; it is indexed by the
+translated line address, so its 8 KiB ways create no virtual aliases, and its
+256-deep banks occupy the same block RAMs as the 16 KiB default's 128-deep
+ones. The L2 uses four ways, 16,384 sets and 64-byte lines. The board top
+passes `L1I_CACHE_BYTES` and `L2_CACHE_BYTES` through the shared subsystem;
+their defaults remain 16 KiB and 2 MiB for other boards. The software loader sets
+`L1I_TEST_BYTES=32768` and `FROST_L2_CACHE_BYTES=4194304` for VCU118
+applications so cache-geometry and conflicting-set tests use the same geometry.
 
 ## Board integration
 
@@ -49,9 +53,17 @@ The loader's serial default prefers its `/dev/serial/by-id/` entry;
 `--serial` on the hardware runner overrides it. The LED bits report clock
 lock, DDR initialization completion, heartbeat, and the reset button.
 
-`pblock_slr2` contains the FROST subsystem, clock generator, DDR subsystem,
-and DDR initializer. Peripheral pins span multiple SLRs; top-level reset
-and status logic is outside that hierarchy selection.
+`pblock_slr2` contains movable logic from the FROST subsystem, DDR subsystem
+and DDR initializer. The XDC creates the region directly and assigns that
+logic to SLR2. The clock generator's dedicated primitives are excluded from the
+region. Configuration primitives remain at their fixed device sites. Peripheral
+pins span multiple SLRs; top-level reset and status logic is outside that
+hierarchy selection.
+
+The PCS/PMA IP supplies the SGMII reference clock constraint. The reset
+button and UART receive input are asynchronous inputs; the UART receiver
+uses a two-register synchronizer. MDC and MDIO form a write-only PHY
+bootstrap interface, with MDIO data updated while MDC is low.
 
 ## Memory and reset
 
@@ -63,8 +75,11 @@ controller through SmartConnect. The JTAG master can also access ECC
 control registers at region offset `0x80000000`; the CPU port cannot.
 
 After calibration, `vcu118_ddr_init` writes zeros across the mapped region
-using full controller words. It waits for write responses before releasing
-the CPU and DDR loader from reset. An error response prevents completion.
+using full controller words. The address and data valid signals are
+registered independently and hold their payloads until accepted. Each
+channel inserts an idle cycle after an accepted transfer. The initializer
+waits for write responses before releasing the CPU and DDR loader from reset.
+An error response prevents completion.
 The controller provides ECC, but this wrapper does not forward its error
 telemetry to the CPU memory error unit.
 

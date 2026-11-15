@@ -1,8 +1,9 @@
 # FPGA Board Support
 
 The supported boards are Alveo X3522PV (X3) and VCU118. Both have 256 KiB
-BRAM, 16 KiB L1I and 128 KiB L1D. X3 has a 2 MiB URAM L2 and exposes 1 GiB
-of DDR4; VCU118 has a 4 MiB URAM L2 and exposes 2 GiB of DDR4. Both L2s are
+BRAM and 128 KiB L1D. X3 has a 16 KiB L1I and a 2 MiB URAM L2 and exposes
+1 GiB of DDR4; VCU118 has a 32 KiB L1I and a 4 MiB URAM L2 and exposes 2 GiB
+of DDR4. Both L2s are
 four-way with 64-byte lines. X3 has 10GBASE-R Ethernet; VCU118 has a 1 Gb/s
 RJ-45 interface and 10GBASE-R on QSFP1 lane 0. Both NIC interfaces use
 coherent DMA. X3 performs plain misaligned loads and stores to cached DDR in
