@@ -144,7 +144,7 @@ async def amo_refill_fault_releases_selected_owner(dut: Any) -> None:
         assert protected
         assert effects[0x40000010] == 7
         assert effects[0x40000018] == fault_pc
-        assert effects[0x40000020] == 0
+        assert effects[0x40000020] == address
         assert 0x40000008 not in effects
         assert system.memory[address] == 123
         assert not int(dut.hart.coherent_atomic_live.value)
