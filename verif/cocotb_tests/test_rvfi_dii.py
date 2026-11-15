@@ -42,6 +42,7 @@ from cocotb_tests.test_real_program import (
     generate_divided_clock,
     hold_nic_without_mac_clocks,
     start_nic_mac_clocks,
+    wait_for_power_on_reset,
 )
 from testrig.preamble import reset_preamble
 from testrig.rvfi_dii import (
@@ -140,6 +141,7 @@ class FrostRvfiDii:
         harness.event_target.value = len(stream) + 1
         harness.hang_limit.value = HANG_CYCLES
         await ClockCycles(dut.i_clk, RESET_CYCLES)
+        await wait_for_power_on_reset(dut)
         dut.i_rst_n.value = 1
         await RisingEdge(harness.done)
         await RisingEdge(dut.i_clk)
