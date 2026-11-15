@@ -249,7 +249,6 @@ result depends on timing, out of the default run:
 | `cycle`, `time`, `mcycle` | FROST counts clock cycles; Sail counts instructions |
 | `mie`, `mip`, `sie`, `sip` | Sail takes an interrupt in place of an instruction, which the trace cannot express |
 | `mideleg` | Sail requires Zihpm for LCOFI bit 13; the dedicated `--sscofpmf` replay checks the full register |
-| `stimecmp` | The Sstc timer compare depends on time |
 | `mtvec`, `stvec` | Reserved MODE values: FROST keeps the low bit, Sail keeps the old MODE |
 | `mcause`, `scause` | The cause code is WLRL: FROST keeps any value written, Sail keeps the old value when the code is one it does not support |
 | `hpmcounter3..10`, `mhpmevent3..10` | Sail cannot represent the partial user-alias set or the fixed-event WARL selectors; CSR and privilege benches check these addresses |

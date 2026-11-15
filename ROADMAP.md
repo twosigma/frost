@@ -86,7 +86,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Svpbmt | In progress | - |
 | Svinval | Not yet implemented | - |
 | Svnapot | In progress | - |
-| Sstc | Implemented (S-mode `mcounteren.TM` check missing) | `sstc_test`, `irq_take_latency`, `csr_file.sby` |
+| Sstc | Implemented | `sstc_test`, `irq_take_latency`, TestRIG (`stimecmp`), `csr_file.sby` |
 | Sscofpmf | Implemented | `sscofpmf_test`, TestRIG (`--sscofpmf`), `csr_sscofpmf.sby` |
 | Ssnpm | In progress | - |
 | Ssu64xl | Implemented; advertisement in progress | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`), `csr_file.sby` |

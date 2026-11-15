@@ -240,7 +240,7 @@ module reorder_buffer #(
     // allocation, and privilege/Debug-Mode changes interpose a flushing
     // trap/xRET, so the snapshot remains exact for every surviving entry.
     input logic [riscv_pkg::CounterMaskBits-1:0] i_counter_blocked,
-    // Sstc: S-mode stimecmp access with menvcfg.STCE=0 is illegal.
+    // Sstc: S-mode stimecmp access with menvcfg.STCE=0 or mcounteren.TM=0 is illegal.
     input logic i_stimecmp_blocked,
     input logic i_mireg_illegal = 1'b0,
     input logic i_sireg_illegal = 1'b0,

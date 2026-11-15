@@ -226,6 +226,7 @@ def test_default_csr_view_keeps_absent_hpm_aliases() -> None:
     for counter in range(11, 32):
         assert include.fullmatch(f"hpmcounter{counter}")
     assert include.fullmatch("medeleg")
+    assert include.fullmatch("stimecmp")
     assert not include.fullmatch("mideleg")
     assert not include.fullmatch("scountovf")
 
