@@ -47,6 +47,7 @@ async def normal_load_error_is_precise_and_does_not_fill_l0(dut: Any) -> None:
     await s.until_write(0x40000020)
     values = {a: v for _, a, v in s.effects}
     assert values[0x40000010] == 5 and values[0x40000018] == pc
+    assert values[0x40000020] == 0x5003
     assert not int(dut.o_fatal_error.value)
     assert 0x40000008 not in values
 
@@ -66,6 +67,7 @@ async def normal_sc_and_amo_b_errors_remain_precise(dut: Any) -> None:
         await s.until_write(0x40000020)
         values = {a: v for _, a, v in s.effects}
         assert values[0x40000010] == 7 and values[0x40000018] == pc
+        assert values[0x40000020] == 0x5000
         assert not int(dut.o_fatal_error.value)
         assert 0x40000008 not in values
         assert sum(a == 0x5000 for _, a, _ in s.effects) == 1

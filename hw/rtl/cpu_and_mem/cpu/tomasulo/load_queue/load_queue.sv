@@ -178,6 +178,11 @@ module load_queue #(
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
     // =========================================================================
     output riscv_pkg::fu_complete_t o_fu_complete,
+    // The staged result is a bus-response access fault (cause 5, or 7 for an
+    // AMO). Its value is zero: the entry holds only the physical address, and
+    // the wrapper supplies the virtual address for xtval. Meaningful with
+    // o_fu_complete.valid.
+    output logic o_fu_complete_bus_error,
     // Registered CDB-stage occupancy without o_fu_complete's partial-flush
     // qualification. It observes a final staged result (tag/value/exception
     // in o_fu_complete) that recovery may still discard this cycle.
@@ -686,6 +691,8 @@ module load_queue #(
   logic cdb_stage_valid;
   // Keep zero causes on D rather than inferring synchronous reset, for timing.
   (* extract_reset = "no" *) riscv_pkg::fu_complete_t cdb_stage_data;
+  // The staged result is a bus-response fault (o_fu_complete_bus_error).
+  logic cdb_stage_bus_error_q;
   // Hold a candidate stable while the SQ resolves it. Stage the next load
   // while a read is outstanding so it can launch when memory becomes available.
   logic sq_check_pending;
@@ -3283,8 +3290,7 @@ module load_queue #(
       issue_cdb_result.exc_cause = riscv_pkg::exc_cause_t'(
           lq_is_amo[issue_cdb_idx] ? riscv_pkg::ExcStoreAccessFault :
                                    riscv_pkg::ExcLoadAccessFault);
-      // External response faults report xtval=0. The physical response
-      // address is not a valid substitute for the original virtual address.
+      // The value stays zero; see o_fu_complete_bus_error.
       issue_cdb_result.value = '0;
     end else if (riscv_pkg::mem_size_e'(lq_size_issue_cdb_rd) == riscv_pkg::MEM_SIZE_DOUBLE) begin
       // FLD/RV64 LD: raw 64-bit beat from the LUTRAM
@@ -3312,6 +3318,7 @@ module load_queue #(
     o_fu_complete.valid = cdb_stage_valid && !i_flush_en;
   end
   assign o_fu_complete_staged = cdb_stage_valid;
+  assign o_fu_complete_bus_error = cdb_stage_bus_error_q;
 
   // ===========================================================================
   // Completion Fast-Path Bypass
@@ -4930,7 +4937,9 @@ module load_queue #(
         cdb_stage_data.tag       <= issue_cdb_result.tag;
         cdb_stage_data.exception <= issue_cdb_result.exception;
         cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
+        cdb_stage_bus_error_q    <= MEM_RESPONSE_ERRORS && lq_response_error[issue_cdb_idx];
       end else begin
+        cdb_stage_bus_error_q <= 1'b0;
         cdb_stage_data.tag <= bypass_tag;
         cdb_stage_data.exception <= misalign_bypass_data_sel;
         // Parked MISALIGN/PAGE/ACCESS select load causes 4/13/5 or AMO causes 6/15/7
