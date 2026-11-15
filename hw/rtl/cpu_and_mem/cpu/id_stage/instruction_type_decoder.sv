@@ -58,10 +58,11 @@ module instruction_type_decoder #(
   // Load funct3: 000=LB, 001=LH, 010=LW, 011=LD, 100=LBU, 101=LHU, 110=LWU
   assign o_is_load_unsigned = o_is_load_instruction && i_instruction.funct3[2];
 
-  // Zicsr: funct3 != 000 distinguishes CSR operations from privileged
-  // instructions sharing the SYSTEM opcode.
+  // Zicsr: funct3[1:0] != 00 distinguishes CSR operations from privileged
+  // instructions (funct3 000) and Zimop MOPs (funct3 100) sharing the SYSTEM
+  // opcode.
   assign o_is_csr_instruction = (i_instruction.opcode == riscv_pkg::OPC_CSR) &&
-                                (i_instruction.funct3 != 3'b000);
+                                (i_instruction.funct3[1:0] != 2'b00);
   assign o_csr_address = {
     i_instruction.funct7, i_instruction.source_reg_2
   };  // CSR address in bits [31:20]

@@ -35,6 +35,12 @@ register banks, ignored partial wide stores, error responses, CPU
 backpressure, and subsystem reset during reads and writes. Both `soc_axil`
 and `soc_axil_no_cached_tier` check the NIC-access guard.
 
+The `mops` bench executes every Zimop and Zcmop variant in M, S and U modes,
+checks dependent consumers and unchanged register, CSR and memory state, and
+checks the original compressed encoding in `mtval` for reserved neighbours.
+The decompressor bench compares all 65,536 inputs with a specification oracle
+and the Python predecode mirror.
+
 ## Fast checks
 
 ```bash
@@ -145,8 +151,9 @@ All CPU configurations use the coherent interfaces and their ordinary source
 filelists.
 
 `imem_predecode_line` compares generated metadata with RTL for every 16-bit
-parcel in both halfword positions. Its slot-2 checks exclude native SYSTEM,
-MISC-MEM, AMO, FP-compute and OP-V instructions. `imem_predecode_fast_replica`
+parcel in both halfword positions. Its slot-2 checks exclude native SYSTEM
+except funct3=100, MISC-MEM, AMO, FP-compute and OP-V instructions. Zimop
+instructions can lead a pair or start slot 2. `imem_predecode_fast_replica`
 and `imem_predecode_capacity` apply that rule to the stored sideband and its
 scalar copies through programming writes, bank swaps and overlay boundaries.
 

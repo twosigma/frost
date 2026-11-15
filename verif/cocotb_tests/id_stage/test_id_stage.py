@@ -1081,6 +1081,137 @@ async def test_btb_target_check_for_direct_branches(dut: Any) -> None:
     assert packet["btb_correct_non_jalr"] is False
 
 
+def _mop_r(n: int, rd: int, rs1: int) -> int:
+    """Encode Zimop MOP.R.n: 1 n[4] 00 n[3:2] 0111 n[1:0] rs1 100 rd 1110011."""
+    funct12 = (
+        (1 << 11)
+        | (((n >> 4) & 1) << 10)
+        | (((n >> 2) & 3) << 6)
+        | (0b0111 << 2)
+        | (n & 3)
+    )
+    return _pack_i(imm=funct12, rs1=rs1, funct3=0b100, rd=rd, opcode=0b1110011)
+
+
+def _mop_rr(n: int, rd: int, rs1: int, rs2: int) -> int:
+    """Encode Zimop MOP.RR.n: 1 n[2] 00 n[1:0] 1 rs2 rs1 100 rd 1110011."""
+    funct7 = (1 << 6) | (((n >> 2) & 1) << 5) | ((n & 3) << 1) | 1
+    return _pack_r(
+        funct7=funct7, rs2=rs2, rs1=rs1, funct3=0b100, rd=rd, opcode=0b1110011
+    )
+
+
+@cocotb.test()
+async def test_zimop_and_zihintntl_decode(dut: Any) -> None:
+    """MOP.R.n and MOP.RR.n write zero to rd from INT_RS without operands or CSR access.
+
+    Their funct3=100 SYSTEM neighbours (the hypervisor loads and near misses of
+    the MOP masks) stay illegal, and the Zihintntl hints are ADD x0 writes.
+    """
+    await _setup_test(dut)
+    mops = [(f"mop.r.{n}", _mop_r(n, 10, 11)) for n in range(32)]
+    mops += [(f"mop.rr.{n}", _mop_rr(n, 12, 13, 14)) for n in range(8)]
+    for name, instruction in mops:
+        for slot2 in (False, True):
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC, "instruction": instruction},
+                slot2=slot2,
+            )
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+            await _advance_cycle(dut)
+            packet = _read_id_packet(dut, slot2=slot2)
+            where = f"{name} slot2={slot2}"
+            assert packet["is_illegal_instruction"] is False, where
+            assert packet["instruction_operation"] == _INSTR_OPS["MOP"], where
+            assert packet["is_csr_instruction"] is False, where
+            assert packet["rs_type"] == RS_INT, where
+            assert packet["has_int_dest"] is True, where
+            assert packet["uses_int_rs1"] is False, where
+            assert packet["uses_int_rs2"] is False, where
+            assert packet["needs_sq"] is False and packet["needs_lq"] is False, where
+
+    for name, bad in (
+        ("hlv.b", 0x6005C573),
+        ("mop.r with bit 28", _mop_r(0, 10, 11) | (1 << 28)),
+        ("mop.r with bits 25:22 = 0110", _mop_r(0, 10, 11) & ~(1 << 22)),
+        ("mop.rr with bit 31 clear", _mop_rr(0, 10, 11, 12) & ~(1 << 31)),
+    ):
+        _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": bad})
+        _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=True)
+        await _advance_cycle(dut)
+        packet = _read_id_packet(dut)
+        assert packet["is_illegal_instruction"] is True, name
+        assert packet["is_csr_instruction"] is False, name
+
+    for rs2, name in ((2, "ntl.p1"), (3, "ntl.pall"), (4, "ntl.s1"), (5, "ntl.all")):
+        instruction = _pack_r(
+            funct7=0, rs2=rs2, rs1=0, funct3=0, rd=0, opcode=0b0110011
+        )
+        _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": instruction})
+        _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=True)
+        await _advance_cycle(dut)
+        packet = _read_id_packet(dut)
+        assert packet["is_illegal_instruction"] is False, name
+        assert packet["instruction_operation"] == _INSTR_OPS["ADD"], name
+
+
+@cocotb.test()
+async def test_extension_encodings_and_operands(dut: Any) -> None:
+    """Zfhmin/Zfa and their adjacent F/D encodings select the right registers."""
+    await _setup_test(dut)
+    # name, funct7, rs2, funct3, first source (f/i/none), second source, FP dest
+    cases = [
+        ("FMV_X_H", 0x72, 0, 0, "f", False, False),
+        ("FMV_H_X", 0x7A, 0, 0, "i", False, True),
+        ("FCVT_S_H", 0x20, 2, 0, "f", False, True),
+        ("FCVT_D_H", 0x21, 2, 0, "f", False, True),
+        ("FCVT_H_S", 0x22, 0, 0, "f", False, True),
+        ("FCVT_H_D", 0x22, 1, 0, "f", False, True),
+        ("FLI_S", 0x78, 1, 0, "", False, True),
+        ("FLI_D", 0x79, 1, 0, "", False, True),
+        ("FCVTMOD_W_D", 0x61, 8, 1, "f", False, False),
+        ("FMV_X_W", 0x70, 0, 0, "f", False, False),
+        ("FMV_X_D", 0x71, 0, 0, "f", False, False),
+        ("FMV_W_X", 0x78, 0, 0, "i", False, True),
+        ("FMV_D_X", 0x79, 0, 0, "i", False, True),
+        ("FCVT_S_D", 0x20, 1, 0, "f", False, True),
+        ("FCVT_D_S", 0x21, 0, 0, "f", False, True),
+        ("FCVT_W_D", 0x61, 0, 1, "f", False, False),
+    ]
+    for fmt, bit in (("S", 0), ("D", 1)):
+        for op, sub in (("FMIN", 0), ("FMAX", 1), ("FMINM", 2), ("FMAXM", 3)):
+            cases.append((f"{op}_{fmt}", 0x14 | bit, 2, sub, "f", True, True))
+        for op, sub in (("FLE", 0), ("FLT", 1), ("FEQ", 2), ("FLEQ", 4), ("FLTQ", 5)):
+            cases.append((f"{op}_{fmt}", 0x50 | bit, 2, sub, "f", True, False))
+        for op, rs2 in (("FROUND", 4), ("FROUNDNX", 5)):
+            cases.append((f"{op}_{fmt}", 0x20 | bit, rs2, 0, "f", False, True))
+    for slot2 in (False, True):
+        for name, funct7, rs2, funct3, first, second, fp_dest in cases:
+            word = _pack_r(
+                funct7=funct7, rs2=rs2, rs1=8, funct3=funct3, rd=3, opcode=OPC_OP_FP
+            )
+            for fs_off in (False, True):
+                dut.i_mstatus_fs_off.value = fs_off
+                _drive_pd_packet(dut, {}, slot2=not slot2)
+                _drive_pd_packet(
+                    dut, {"program_counter": BASE_PC, "instruction": word}, slot2=slot2
+                )
+                await _advance_cycle(dut)
+                packet = _read_id_packet(dut, slot2=slot2)
+                assert packet["is_illegal_instruction"] == fs_off, (name, slot2)
+                assert packet["has_fp_dest"] == (fp_dest and not fs_off), name
+                assert packet["has_int_dest"] == (not fp_dest and not fs_off), name
+                assert packet["uses_fp_rs1"] == (first == "f" and not fs_off), name
+                assert packet["uses_int_rs1"] == (first == "i" and not fs_off), name
+                assert packet["uses_fp_rs2"] == (second and not fs_off), name
+                assert not packet["uses_int_rs2"] and not packet["uses_fp_rs3"], name
+                if not fs_off:
+                    assert packet["instruction_operation"] == _INSTR_OPS[name], name
+                    assert packet["rs_type"] == RS_FP, name
+    dut.i_mstatus_fs_off.value = 0
+
+
 @cocotb.test()
 async def test_cbo_mgmt_class_and_gates(dut: Any) -> None:
     """cbo.clean/flush/inval decode as store-queue entries of rs1, gated in ID.
