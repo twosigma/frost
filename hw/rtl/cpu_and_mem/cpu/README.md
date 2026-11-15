@@ -72,7 +72,8 @@ in `frost_hart.sv`.
 - the registered write enables and addresses for the register-file bypass;
 - commit and trap glue: the commit hold while a trap or xRET waits, the
   interrupt shields that stop an interrupt from re-executing an AMO or device
-  read that has already started, the quiet window around
+  read that has already started, the hold that keeps a new device access from
+  starting while an interrupt take is armed, the quiet window around
   [translation-changing CSR writes](#csr-writes), and the interrupt resume PC
   (the PC an interrupt saves, which trap entry and xRET preset to their target
   because an interrupt can arrive before the first instruction there retires);

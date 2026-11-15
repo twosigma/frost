@@ -58,6 +58,8 @@ module cpu_ooo #(
     // misaligned-access engine instead of trapping (misaligned/ma_engine.sv).
     // Its sector requests leave through the o_ma_line_* port.
     parameter bit MISALIGNED_HW = 1'b0,
+    // Zicbom: execute cbo.inval as cbo.flush at every privilege (csr_file).
+    parameter bit CBO_INVAL_AS_FLUSH = 1'b0,
     // The walker's line port carries the L1s' 32-byte lines.
     localparam int unsigned WalkLineBytes = 32
 ) (
@@ -1109,6 +1111,29 @@ module cpu_ooo #(
     if (i_rst) id_cbo_zero_illegal_q <= 1'b0;
     else id_cbo_zero_illegal_q <= csr_cbo_zero_illegal;
   end
+  // The Zicbom gates (CBCFE, CBIE) take it too, with the same change rule.
+  logic csr_cbo_cf_illegal, csr_cbo_inval_illegal, csr_cbo_inval_flush;
+  logic id_cbo_cf_illegal_q, id_cbo_inval_illegal_q, id_cbo_inval_flush_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      id_cbo_cf_illegal_q    <= 1'b0;
+      id_cbo_inval_illegal_q <= 1'b0;
+      id_cbo_inval_flush_q   <= 1'b0;
+    end else begin
+      id_cbo_cf_illegal_q    <= csr_cbo_cf_illegal;
+      id_cbo_inval_illegal_q <= csr_cbo_inval_illegal;
+      id_cbo_inval_flush_q   <= csr_cbo_inval_flush;
+    end
+  end
+  // Zawrs: wrs.nto is illegal below M while mstatus.TW is set. TW changes only
+  // through an mstatus write (translation class), the privilege only on a trap
+  // or xRET; each is a full flush.
+  logic csr_wrs_nto_illegal;
+  logic id_wrs_nto_illegal_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) id_wrs_nto_illegal_q <= 1'b0;
+    else id_wrs_nto_illegal_q <= csr_wrs_nto_illegal;
+  end
 
   id_stage #(
       .XLEN(XLEN)
@@ -1123,6 +1148,10 @@ module cpu_ooo #(
       .i_mstatus_fs_off(id_mstatus_fs_off_q),
       .i_mstatus_vs_off(id_mstatus_vs_off_q),
       .i_cbo_zero_illegal(id_cbo_zero_illegal_q),
+      .i_wrs_nto_illegal(id_wrs_nto_illegal_q),
+      .i_cbo_cf_illegal(id_cbo_cf_illegal_q),
+      .i_cbo_inval_illegal(id_cbo_inval_illegal_q),
+      .i_cbo_inval_flush(id_cbo_inval_flush_q),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
       .o_from_id_to_ex_next_go(decoded_packet_next_go),
@@ -2066,6 +2095,18 @@ module cpu_ooo #(
   // router uses device_request_pending_q to check staging; only trap_unit
   // consumes this shield.
   logic device_read_shield_q;
+  // An armed interrupt take holds the next device access while the shield is
+  // down. Without it, a device access a few instructions behind a store (two
+  // device stores, or a cached store and then a device read) re-raises the
+  // shield in the cycle the previous access releases it, while the store's
+  // commit still clears the SQ's registered committed-empty status. The take
+  // then never finds both open, and every interrupt (D, M or S) starves for
+  // as long as the loop runs. The hold applies only while the AMO-class
+  // shield is down: under that shield the take waits for the head anyway, and
+  // an SC at the head may be a precise uncached store that needs the shield
+  // to complete. See trap_amo_shield below.
+  logic int_take_armed;
+  logic device_start_hold;
   // Precomputed next PCs from ungated ROB fields, for timing. Each equals
   // retired_next_pc of its commit packet whenever that commit is valid.
   logic [XLEN-1:0] rob_head_retired_next_pc;
@@ -3739,6 +3780,7 @@ module cpu_ooo #(
       .o_amo_mem_write_error(amo_mem_write_error),
       .o_lq_mem_request_valid(lq_mem_request_valid),
       .o_device_request_pending(lq_device_request_pending),
+      .i_device_start_hold(device_start_hold),
       .o_lq_mem_read_data(lq_mem_read_data),
       .o_lq_mem_read_valid(lq_mem_read_valid),
       .o_lq_mem_read_error(lq_mem_read_error),
@@ -3956,6 +3998,7 @@ module cpu_ooo #(
   csr_file #(
       .XLEN(XLEN),
       .COMMIT_EXCLUDES_CONTROL_TAKE(1'b1),
+      .CBO_INVAL_AS_FLUSH(CBO_INVAL_AS_FLUSH),
       .UsePerfCsrHalf(1'b1),
       .PERF_COUNTERS(PERF_COUNTERS),
       .VECTOR(VECTOR),
@@ -4063,6 +4106,10 @@ module cpu_ooo #(
       .o_vec_vtype(csr_vec_vtype),
       .o_vec_vstart(csr_vec_vstart),
       .o_cbo_zero_illegal(csr_cbo_zero_illegal),
+      .o_wrs_nto_illegal(csr_wrs_nto_illegal),
+      .o_cbo_cf_illegal(csr_cbo_cf_illegal),
+      .o_cbo_inval_illegal(csr_cbo_inval_illegal),
+      .o_cbo_inval_flush(csr_cbo_inval_flush),
       .o_debug_mode(csr_debug_mode),
       .o_dcsr_step(csr_dcsr_step),
       .o_dcsr_ebreak(csr_dcsr_ebreak),
@@ -4101,6 +4148,15 @@ module cpu_ooo #(
     if (reset_seen_q && fs_off_checks_armed && !i_rst &&
         (csr_cbo_zero_illegal != id_cbo_zero_illegal_q)) begin
       p_cbo_zero_gate_change_flushes_decode : assert (flush_all);
+    end
+    if (reset_seen_q && fs_off_checks_armed && !i_rst &&
+        ({csr_cbo_cf_illegal, csr_cbo_inval_illegal, csr_cbo_inval_flush} !=
+         {id_cbo_cf_illegal_q, id_cbo_inval_illegal_q, id_cbo_inval_flush_q})) begin
+      p_cbo_mgmt_gates_change_flushes_decode : assert (flush_all);
+    end
+    if (reset_seen_q && fs_off_checks_armed && !i_rst &&
+        (csr_wrs_nto_illegal != id_wrs_nto_illegal_q)) begin
+      p_wrs_nto_gate_change_flushes_decode : assert (flush_all);
     end
   end
 `endif
@@ -4685,6 +4741,17 @@ module cpu_ooo #(
     else amo_at_head_shield_q <= rob_head_is_amo && head_valid;
   end
 
+  // The trap unit's AMO-class shield: an AMO, LR or SC at the head, a coherent
+  // atomic, or the misaligned-access engine.
+  logic trap_amo_shield;
+  assign trap_amo_shield = (amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active ||
+      ma_shield;
+  // The shield counts as down in the cycle a commit clears it. The commit is
+  // the shielded access's own, so nothing launched still needs the shield,
+  // and a device store right behind it would otherwise keep it up.
+  assign device_start_hold = int_take_armed && !trap_amo_shield &&
+      (!device_read_shield_q || rob_commit_valid);
+
   // Hold interrupts from before a device read or uncached store is accepted
   // through its commit. Uncached stores arm their shield in the SQ;
   // (see trap_unit.i_device_read_at_head). The router stages the request before
@@ -4694,7 +4761,8 @@ module cpu_ooo #(
   // interrupt flush after arming.
   always_ff @(posedge i_clk) begin
     if (i_rst || lq_router_flush_all) device_read_shield_q <= 1'b0;
-    else if ((lq_device_request_pending || uncached_store_pending) && !(step_done_q))
+    else if ((lq_device_request_pending || (uncached_store_pending && !device_start_hold)) &&
+             !(step_done_q))
       device_read_shield_q <= 1'b1;
     else if (rob_commit_valid) device_read_shield_q <= 1'b0;
   end
@@ -4715,9 +4783,9 @@ module cpu_ooo #(
       .i_csr_irq_update(csr_irq_update_q),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
-      .i_amo_at_head((amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active ||
-                     ma_shield),
+      .i_amo_at_head(trap_amo_shield),
       .i_device_read_at_head(device_read_shield_q),
+      .o_int_take_armed(int_take_armed),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
       .i_mtvec(csr_mtvec),
