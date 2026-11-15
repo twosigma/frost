@@ -5,7 +5,7 @@ end fetches and decodes up to two instructions per cycle. The back end renames
 them, parks them in reservation stations (RS) until their operands are ready,
 executes them out of order, and retires them in program order from a 32-entry
 reorder buffer (ROB), so exceptions stay precise. The core implements RV64GCB
-plus Zicntr, Zihpm, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zawrs, Zicboz, Zicbom
+plus Zicntr, Zihpm, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zihintntl, Zimop, Zcb, Zcmop, Zawrs, Zicboz, Zicbom
 and Zicbop (see the
 [ISA table](../../../../../README.md#supported-risc-v-extensions)).
 

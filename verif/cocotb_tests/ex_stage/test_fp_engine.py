@@ -58,6 +58,42 @@ def box(bits32: int) -> int:
     return 0xFFFF_FFFF_0000_0000 | (bits32 & 0xFFFF_FFFF)
 
 
+def box16(bits16: int) -> int:
+    """NaN-box a half-precision pattern into a 64-bit register value."""
+    return 0xFFFF_FFFF_FFFF_0000 | (bits16 & 0xFFFF)
+
+
+def hp(value: float) -> int:
+    """Return the half-precision bit pattern of *value*."""
+    return int(struct.unpack("<H", struct.pack("<e", value))[0])
+
+
+HP_CORNERS = [
+    0x0000,  # +0
+    0x8000,  # -0
+    0x0001,  # smallest subnormal
+    0x8001,
+    0x03FF,  # largest subnormal
+    0x0200,
+    0x0400,  # smallest normal
+    0x0401,
+    0x7BFF,  # largest normal (65504)
+    0xFBFF,
+    0x3C00,  # 1.0
+    0xBC00,  # -1.0
+    0x3C01,  # 1 + ulp
+    0x3BFF,  # 1 - ulp/2
+    0x7C00,  # +inf
+    0xFC00,  # -inf
+    0x7E00,  # canonical NaN
+    0x7C01,  # signalling NaN
+    0x7D55,  # signalling NaN with payload
+    0xFE01,  # negative quiet NaN with payload
+    0x5555,
+    0xAAAA,
+]
+
+
 SP_CORNERS = [
     0x0000_0000,  # +0
     0x8000_0000,  # -0
@@ -310,6 +346,139 @@ async def test_directed_corners(dut: Any) -> None:
 
 
 # ============================================================================
+# Zfhmin: half-precision conversions and moves
+# ============================================================================
+def _half_boundary_singles() -> list[int]:
+    """Single-precision patterns at the half range limits and rounding ties."""
+    values = []
+    # Around the largest half (65504), the overflow threshold (65520) and the
+    # next binade; around the smallest normal, the subnormal steps and half
+    # the smallest subnormal (2^-25), the underflow-to-zero tie.
+    for centre in (
+        65504.0, 65520.0, 65536.0, 2.0**-14, 2.0**-15, 2.0**-24, 2.0**-25,
+        3 * 2.0**-25, 2.0**-26, 1.0, 1.0 + 2.0**-11, 1.0 + 3 * 2.0**-11,
+        2.0**-14 - 2.0**-25, 2.0**-14 - 2.0**-26, 1.5 * 2.0**-24,
+    ):  # fmt: skip
+        bits = sp(centre)
+        for k in (-2, -1, 0, 1, 2):
+            values.append(bits + k)
+            values.append((bits + k) | 0x8000_0000)
+    return values
+
+
+@cocotb.test()
+async def test_half_precision(dut: Any) -> None:
+    """FCVT.{S,D}.H, FCVT.H.{S,D}, FMV.X.H and FMV.H.X against SoftFloat."""
+    await setup(dut)
+    inj = Injector(dut)
+
+    # Every half pattern widens exactly to single and double.
+    for h in range(1 << 16):
+        await inj.run("FCVT_S_H", 0, box16(h))
+        if h % 7 == 0:
+            await inj.run("FCVT_D_H", 4, box16(h))
+    for h in HP_CORNERS:
+        for rm in ROUNDING_MODES:
+            await inj.run("FCVT_D_H", rm, box16(h))
+        await inj.run("FMV_X_H", 0, box16(h))
+        await inj.run("FMV_H_X", 0, h | 0x1234_5678_9ABC_0000)
+
+    # Narrowing in every rounding mode: the half range limits, ties and the
+    # single and double corners.
+    singles = _half_boundary_singles() + SP_CORNERS
+    for h in HP_CORNERS:
+        singles.append(sp(struct.unpack("<e", struct.pack("<H", h))[0]))
+    for rm in ROUNDING_MODES:
+        for s in singles:
+            await inj.run("FCVT_H_S", rm, box(s))
+            fs = struct.unpack("<f", struct.pack("<I", s & 0xFFFF_FFFF))[0]
+            await inj.run("FCVT_H_D", rm, dp(fs))
+        for d in DP_CORNERS:
+            await inj.run("FCVT_H_D", rm, d)
+            # Double-only bits below the single precision: sticky for half.
+            if ((d >> 52) & 0x7FF) != 0x7FF:
+                await inj.run("FCVT_H_D", rm, d | 1)
+
+    # NaN boxing: an improperly boxed half reads as the canonical NaN (no NV);
+    # FMV.X.H moves the raw low half; FMV.H.X boxes; an improperly boxed single
+    # source of FCVT.H.S is the canonical NaN.
+    for raw in (
+        0x0000_0000_0000_3C00,
+        0xFFFF_FFFF_FFFE_3C00,
+        0x7FFF_FFFF_FFFF_3C00,
+        0xFFFF_FFFF_0000_7C01,
+        0xFFFF_0000_FFFF_3C00,
+    ):
+        for op in ("FCVT_S_H", "FCVT_D_H", "FMV_X_H", "FMV_H_X", "FCVT_H_S"):
+            await inj.run(op, 0, raw)
+
+    _check_counters(dut, inj.count)
+    dut._log.info("half-precision vectors: %d", inj.count)
+
+
+# ============================================================================
+# Zfa: FLI, FMINM/FMAXM, FLEQ/FLTQ, FROUND/FROUNDNX, FCVTMOD.W.D
+# ============================================================================
+ROUNDING_VALUES = [
+    0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.5, 3.5, -0.5, -1.5, -2.5, -0.25, 7.49,
+    1e-300, -1e-300, 1e-40, 123456.5, -123456.5, 4503599627370495.5,
+    4503599627370496.0, 9007199254740993.0, 8388607.5, 8388608.0, 16777215.0,
+    2147483647.0, 2147483647.75, 2147483648.0, -2147483648.0, -2147483648.5,
+    -2147483649.0, 4294967296.0 + 7.25, 2.0**63, 2.0**64 + 2.0**12,
+    2.0**83 + 2.0**31, 2.0**83, 2.0**84, 2.0**100, -(2.0**70 + 2.0**20),
+]  # fmt: skip
+
+
+@cocotb.test()
+async def test_zfa(dut: Any) -> None:
+    """Zfa operations against SoftFloat (FCVTMOD.W.D against the Sail algorithm)."""
+    await setup(dut)
+    inj = Injector(dut)
+
+    for index in range(32):
+        await inj.run("FLI_S", 0, index)
+        await inj.run("FLI_D", 0, index | 0xABCD_EF00)
+
+    sp_ops = [box(v) for v in SP_CORNERS]
+    for suffix, corners in (("S", sp_ops), ("D", DP_CORNERS)):
+        for a in corners:
+            for b in corners:
+                for op in ("FMINM", "FMAXM", "FLEQ", "FLTQ"):
+                    await inj.run(f"{op}_{suffix}", 0, a, b)
+        for rm in ROUNDING_MODES:
+            for a in corners:
+                await inj.run(f"FROUND_{suffix}", rm, a)
+                await inj.run(f"FROUNDNX_{suffix}", rm, a)
+    for rm in ROUNDING_MODES:
+        for value in ROUNDING_VALUES:
+            for k in (-1, 0, 1):
+                await inj.run("FROUND_D", rm, dp(value) + k)
+                await inj.run("FROUNDNX_D", rm, dp(value) + k)
+                await inj.run("FROUND_S", rm, box(sp(value) + k))
+                await inj.run("FROUNDNX_S", rm, box(sp(value) + k))
+    for value in ROUNDING_VALUES:
+        for sign in (0, 1 << 63):
+            for k in (-1, 0, 1):
+                await inj.run("FCVTMOD_W_D", 1, (dp(value) ^ sign) + k)
+    for a in DP_CORNERS:
+        await inj.run("FCVTMOD_W_D", 1, a)
+    for exponent in range(1023 - 2, 1023 + 90):
+        await inj.run("FCVTMOD_W_D", 1, (exponent << 52) | 0x000F_EDCB_A987_6543)
+        await inj.run("FCVTMOD_W_D", 1, (1 << 63) | (exponent << 52) | 0x8_0000_0001)
+
+    # Improperly boxed single operands read as the canonical NaN.
+    for raw in (0x0000_0000_3F80_0000, 0x7FFF_FFFF_3F80_0000):
+        for op in ("FMINM_S", "FMAXM_S", "FLEQ_S", "FLTQ_S"):
+            await inj.run(op, 0, raw, box(sp(2.0)))
+            await inj.run(op, 0, box(sp(2.0)), raw)
+        await inj.run("FROUND_S", 0, raw)
+        await inj.run("FROUNDNX_S", 0, raw)
+
+    _check_counters(dut, inj.count)
+    dut._log.info("Zfa vectors: %d", inj.count)
+
+
+# ============================================================================
 # Cancellation in add and fused multiply-add
 # ============================================================================
 @cocotb.test()
@@ -436,6 +605,11 @@ async def test_kill_leaves_no_residue(dut: Any) -> None:
         ("FCVT_S_L", 0x0000_0000_0000_0005, 0, 0),
         ("FCVT_S_D", DP_CORNERS[23], 0, 0),
         ("FLT_D", dp(1.0), dp(2.0), 0),
+        ("FCVT_H_D", dp(65519.0), 0, 0),
+        ("FCVT_H_S", box(0x3380_0001), 0, 0),
+        ("FCVT_S_H", box16(0x0001), 0, 0),
+        ("FROUNDNX_D", dp(-2.5), 0, 0),
+        ("FCVTMOD_W_D", dp(2.0**70 + 2.0**40), 0, 0),
     ]
     for delay in (0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144):
         dut.i_kill_delay.value = delay

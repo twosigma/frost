@@ -618,6 +618,9 @@ module data_mem_request_router #(
   // never receives a second request while it holds one. Check that contract.
   always @(posedge i_clk) begin
     if (reset_seen_q && !i_rst && lq_mem_request_valid && lq_mem_read_en)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("data_mem_request_router: live LQ read overlapped held request");
   end
 `endif

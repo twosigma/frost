@@ -543,6 +543,9 @@ module ptw #(
   // delivered something this walker never asked for.
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst && i_line_resp_valid && (state_q != PTW_WAIT))
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("ptw: line response in state %0d (id=%0d)", state_q, i_line_resp_id);
   end
 `endif

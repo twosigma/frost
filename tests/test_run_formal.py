@@ -51,6 +51,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
     ("coherence_l1d", "coh_l1d_stream_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_hold_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_cover"): 1200,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
@@ -83,6 +84,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_withdraw_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_withdraw_full_payload_bmc"): 5400,
     ("coherence_l1d", "coh_l1d_withdraw_zero_payload_bmc"): 5400,
+    ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
     ("coherence_store_boundary", "cover_four"): 7200,
     ("coherence_store_boundary", "bmc_intervening"): 14400,
@@ -405,6 +408,8 @@ FORMAL_TARGETS = [
             "coh_l1d_withdraw_zero_bmc",
             "coh_l1d_withdraw_full_payload_bmc",
             "coh_l1d_withdraw_zero_payload_bmc",
+            "coh_l1d_answer_bmc",
+            "coh_l1d_stream_answer_bmc",
         ),
     ),
     FormalTarget(
@@ -925,7 +930,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rvc_predecode.sby",
-        "RV64C predecode expansion matches the reference decoder for every parcel",
+        "RV64C/Zcb/Zcmop expansion and source metadata match every parcel; MOPs permit pairing",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -1063,9 +1068,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "home_seat_next_equiv.sby",
-        "The home's fill waiter masks, seat counts, parking and fill images, formed "
-        "for both values of the decision's late term and selected last, equal the "
-        "original form for any state and input, at two, three and eight fills, "
+        "The home's fill waiter masks, seat counts and parking, formed for both "
+        "values of the decision's late term and selected last, equal the original "
+        "form, and the fill images' next state equals the response load and "
+        "registered zero clear, for any state and input, at two, three and eight fills, "
         "portable and primitive",
         tasks=("bmc_seat2", "bmc_seat3", "bmc", "bmc_xilinx"),
     ),
@@ -1952,6 +1958,15 @@ SBY_TASKS = [
     (
         "coh_l1d_store_multi_grant_bmc",
         "Concurrent store grants merge only the head record.",
+    ),
+    (
+        "coh_l1d_answer_bmc",
+        "Grant answers and same-sector merges complete each read once, in order "
+        "with stores and probes.",
+    ),
+    (
+        "coh_l1d_stream_answer_bmc",
+        "Speculative grants answer attached loads; merges keep store and probe order.",
     ),
     (
         "coh_l1d_data_bmc",

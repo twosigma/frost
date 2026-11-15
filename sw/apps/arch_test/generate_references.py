@@ -90,6 +90,8 @@ EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
     "F": ("rv64i_m", "rv32i_m"),
     "D": ("rv64i_m", "rv32i_m"),
     "Zvk": ("rv32i_m",),
+    # The Zfh tests live in rv32i_m and declare RV64 too.
+    "Zfh": ("rv32i_m",),
 }
 
 # The submodule's riscof env for the rv64 Spike reference build.
@@ -140,15 +142,17 @@ def spike_env() -> Path:
     return SPIKE_ENV_DIR
 
 
-# gcc -march: must match what FROST's software builds may emit, including
-# compressed code, except for the tests in NO_COMPRESS_TESTS below.
-FROST_MARCH = "rv64imafdc_zicsr_zifencei_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
+# Base ISA for signature references. test_march adds each test's extensions
+# and removes C for the tests in NO_COMPRESS_TESTS below.
+FROST_MARCH = (
+    "rv64imafdc_zicsr_zifencei_zicboz_zfa_zfhmin_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
+)
 
 # arch_test.h resumes at (mepc & ~3) + 8, requiring a 4-byte test op
 # plus two c.nops. Compression makes it resume mid-instruction and makes
 # signatures depend on the link map. Keep this set equal to the Makefile.
-# lh, lhu, sh, and lwu have no compressed forms. Branch and jump misalignment
-# tests retain C because it changes target alignment requirements.
+# The base test ISA excludes Zcb, so lh, lhu, sh, and lwu are not compressed.
+# Branch and jump tests retain C because it changes target alignment requirements.
 NO_COMPRESS_TESTS = {
     "misalign-ld-01",
     "misalign-lw-01",
@@ -171,6 +175,19 @@ FROST_VECTOR_MARCH = (
 )
 SPIKE_VECTOR_ISA = f"{FROST_VECTOR_MARCH}_zvl128b"
 
+# Zcb, Zimop and Zcmop tests (by filename prefix) build and run with these
+# extensions added, so the other tests keep their code layout and
+# references. Keep ZC_MOP_TESTS in the Makefile equal.
+ZC_MOP_TEST_PREFIXES = (
+    "clbu", "clh", "cmul", "cnot", "csb", "csext", "csh", "czext", "mop.", "c.mop.",
+)  # fmt: skip
+ZC_MOP_EXTENSIONS = "_zcb_zimop_zcmop"
+
+
+def is_zc_mop_test(test_name: str) -> bool:
+    """Return whether a test needs the Zcb/Zimop/Zcmop march and Spike ISA."""
+    return test_name.startswith(ZC_MOP_TEST_PREFIXES)
+
 
 def test_march(test_name: str, extension: str = "") -> str:
     """Return the gcc -march for one test (drops C for NO_COMPRESS_TESTS)."""
@@ -179,6 +196,8 @@ def test_march(test_name: str, extension: str = "") -> str:
     march = FROST_MARCH
     if test_name in NO_COMPRESS_TESTS:
         march = march.replace("imafdc", "imafd")
+    if is_zc_mop_test(test_name):
+        march += ZC_MOP_EXTENSIONS
     return march
 
 
@@ -187,7 +206,9 @@ def test_march(test_name: str, extension: str = "") -> str:
 # execute (.option rvc; .align; .option norvc in arch_test.h) regardless
 # of the march, and a no-C Spike also changes misaligned-jump legality
 # (the privilege misalign references).
-SPIKE_ISA = "rv64imafdc_zicsr_zifencei_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
+SPIKE_ISA = (
+    "rv64imafdc_zicsr_zifencei_zicboz_zfa_zfhmin_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
+)
 
 FROST_ABI = "lp64"
 
@@ -210,6 +231,16 @@ SUPPORTED_EXTENSIONS = [
     "hints",
     # Zicboz's cbo.zero; the pinned suite has no RV64 Zicbom tests.
     "CMO",
+    # Zfa (F and D forms), and the Zfhmin subset of Zfh.
+    "F_Zfa",
+    "D_Zfa",
+    "Zfh",
+    "Zimop",
+    # No Zcmop: each c.mop.n case copies the signature pointer into x[n]
+    # (TEST_CMOP_OP: mv destreg, swreg) and stores it, so its signature holds
+    # link-map addresses that differ between the Spike and FROST builds.
+    # c.mop.1-15 are compared with Sail in verif/testrig/traces and checked
+    # by the full-core mops and exhaustive rvc_decompressor tests.
 ]
 
 # Allowed filename prefixes for extensions where only a subset of tests
@@ -222,17 +253,28 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "privilege": {"ebreak", "ecall", "misalign"},
     "K": {"pack", "packh", "packw", "brev8"},
     "CMO": {"cbo.zero"},
+    # Zfh supplies the Zfhmin tests (FLH/FSH, FMV.X.H/FMV.H.X, FCVT between H and
+    # S/D); FROST has no other Zfh instruction.
+    "Zfh": {
+        "flh",
+        "fsh",
+        "fmv.x.h",
+        "fmv.h.x",
+        "fcvt.s.h",
+        "fcvt.h.s",
+        "fcvt.d.h",
+        "fcvt.h.d",
+    },
 }
 
-# Excluded by filename prefix: the C directory includes Zcb tests FROST
-# does not implement.
+# Excluded by filename prefix. The C directory's Zcb tests run: FROST
+# implements Zcb.
 # Zvk: five of the 37 tests in the pinned suite trap on Spike at RV64 and then
 # loop at address 0. vandn.vx, vrol.vx and vror.vx load their scalar operand into
 # the register that holds the test's data pointer, and vsha2ch-e32 and
 # vsha2cl-e32 give the vector SHA-2 instructions overlapping operands, which are
 # illegal. The other 32 run.
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
-    "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
     "Zvk": {"vandn.vx", "vrol.vx", "vror.vx", "vsha2ch-e32", "vsha2cl-e32"},
 }
 
@@ -419,9 +461,14 @@ def generate_one_reference(
             ]
         else:
             label = "Spike"
+            spike_isa = (
+                SPIKE_VECTOR_ISA
+                if extension in VECTOR_EXTENSIONS
+                else f"{SPIKE_ISA}{ZC_MOP_EXTENSIONS if is_zc_mop_test(test_name) else ''}"
+            )
             run_cmd = [
                 os.environ.get("FROST_SPIKE", "spike"),
-                f"--isa={SPIKE_VECTOR_ISA if extension in VECTOR_EXTENSIONS else SPIKE_ISA}",
+                f"--isa={spike_isa}",
                 f"+signature={sig_path}",
                 "+signature-granularity=4",
                 str(elf_path),

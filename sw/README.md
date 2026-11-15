@@ -53,7 +53,7 @@ any of them rebuilds.
 | `GENERATE_IMEM_INIT` | `0` | `1` also writes the split instruction-BRAM init files for Vivado |
 
 `-march` is `rv64` followed by `FROST_MARCH_EXTENSIONS`, which defaults to
-`imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs`. An app
+`imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zfa_zfhmin_zimop_zcb_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs`. An app
 sets it, or `APP_TUNE_FLAGS`, before including `common.mk`. The `FROST_DEBUG=1`
 flags come after the tuning flags, so debug builds stay debuggable. Backends
 that build their own flags take the names from `common/arch.mk`:
@@ -287,7 +287,7 @@ can be debugged and where each one first stops.
 | `fencei_bench/` | `fence.i` and refetch cost for JIT-style code generation in cached DDR |
 | `fetch_lead_repro/` | A call into a cold cached line whose first bundle advances 6 bytes, followed by a 32-bit instruction split across fetch words |
 | `fetch_stall_repro/` | 32-bit instructions near cache-line boundaries, fetched cold from DDR; a PC+2 mis-step traps |
-| `fp_dyn_rm_test/` | FP instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |
+| `fp_dyn_rm_test/` | F/D and Zfhmin/Zfa instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |
 | `fpu_assembly_test/` | FP hazards: squashed FP loads and load-use stalls |
 | `exec_latency_probe/` | Straight-line dependent and independent MUL, MULW, FADD.D, FMUL.D and FMADD.D sequences with arithmetic checks and named ranges for cycle tracing; the explicit `exec_latency_probe` target runs finite normal inputs, and `exec_latency_short` selects zero, infinity, NaN and cancellation chains |
 | `fpu_test/` | Subnormals, fused multiply-add, rounding, and conversions |
@@ -301,7 +301,7 @@ can be debugged and where each one first stops.
 | `vec_dot_fp/` | float32 and float64 dot products bit-exact against a scalar model, and float16 with Zvfh or, with `-DVT_NO_ZVFH`, through conversions only |
 | `vec_crypto/` | AES-128 and AES-256 key schedule, encryption and decryption, AES-GCM, and a SHA-256 block, against published answers and a scalar implementation |
 | `vec_zvbb/` | Zvbb and Zvbc: `vandn`, rotates, bit and byte reversal, count leading and trailing zeros, population count, `vwsll`, and carry-less multiply |
-| `fs_off_test/` | F/D instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes, through `mstatus` or `sstatus`, that apply from the next instruction |
+| `fs_off_test/` | F/D, Zfhmin and Zfa instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes, through `mstatus` or `sstatus`, that apply from the next instruction; FP dirty state and halfword store forwarding |
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
 | `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a timer-ended `wfi`, and timer takes across a device load; 96 WFI deadlines and 48 device-load deadlines at four padding phases cover AXI latency, with each take's count equal to the instructions before `mepc` |
 | `irq_mie_window/` | A pending timer interrupt must be taken when a `csrsi`/`csrci` pair opens `mstatus.MIE` for one instruction |
@@ -322,7 +322,7 @@ can be debugged and where each one first stops.
 | `memerr_readback/` | The memory error unit on the X3: the ECC reader is active and polling, and a DDR write and readback twice the L2's size reports no error |
 | `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and APLIC interrupt; dependent conflict reads after FENCE.I evict the fatal-writeback line |
 | `memory_test/` | Arena allocator and `malloc`/`free`/`calloc`/`realloc`, including coalescing and overflow rejection |
-| `misaligned_test/` | Misaligned loads and stores in cached DDR checked byte by byte (all sizes, FP and compressed forms, across doubleword, sector, line and page boundaries), a load to and a store of `x0`, the `minstret` count, the address-misaligned trap in low BRAM, and accesses under timer interrupts at varying phases; needs `MISALIGNED_HW` |
+| `misaligned_test/` | Misaligned loads and stores in cached DDR checked byte by byte (all sizes, FP and compressed forms, across doubleword, sector, line and page boundaries), a load to and a store of `x0`, the `minstret` count, the address-misaligned trap in low BRAM, Sv39 page crossings and lower-, upper- and both-page faults through MPRV and in S and U modes (with non-adjacent physical frames, direct and delegated traps, `SUM`, `MXR` and global leaves in S and U modes), and accesses under timer interrupts at varying phases; needs `MISALIGNED_HW` |
 | `mret_drain_deadlock/` | `mret` right after cached-DDR stores must wait for them to drain, then continue |
 | `mret_timer_resume_test/` | A timer pending as `mret` drops to U-mode must save the U-mode entry point in `mepc` |
 | `mtimer_stress/` | Frequent timer interrupts swept across 20,000 memory/ALU loop iterations and `mret`; a deadlock times out within the default 500,000-cycle simulation budget |

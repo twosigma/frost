@@ -1138,7 +1138,7 @@ async def test_slot2_expansion_and_illegal_flag_cover_all_candidate_positions(
     # catch either bit stuck at 0 or 1 at each position.
     vectors = (
         (0x1385, 0xFE138393, False),  # c.addi x7,-31
-        (0x8000, 0x00000000, True),  # reserved quadrant-0 funct3=100
+        (0x9000, 0x00000000, True),  # reserved quadrant-0 funct3=100, bit 12 set
     )
 
     for raw, expanded, illegal in vectors:

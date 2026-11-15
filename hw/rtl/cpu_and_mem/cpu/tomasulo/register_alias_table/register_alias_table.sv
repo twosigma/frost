@@ -712,6 +712,9 @@ module register_alias_table (
   // No rename during flush_all
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_alloc_valid && i_flush_all) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("RAT: Rename attempted during flush_all!");
     end
   end
@@ -719,6 +722,9 @@ module register_alias_table (
   // No rename during checkpoint_restore
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_alloc_valid && i_checkpoint_restore) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("RAT: Rename attempted during checkpoint restore!");
     end
   end
@@ -726,6 +732,9 @@ module register_alias_table (
   // No slot-2 rename during flush_all
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_alloc_valid_2 && i_flush_all) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("RAT: Slot-2 rename attempted during flush_all!");
     end
   end
@@ -733,6 +742,9 @@ module register_alias_table (
   // No slot-2 rename during checkpoint_restore
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_alloc_valid_2 && i_checkpoint_restore) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("RAT: Slot-2 rename attempted during checkpoint restore!");
     end
   end
@@ -740,6 +752,9 @@ module register_alias_table (
   // Checkpoint save should target a free slot
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_checkpoint_save && checkpoint_valid[i_checkpoint_id]) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("RAT: Checkpoint save to already-valid slot %0d!", i_checkpoint_id);
     end
   end
@@ -748,6 +763,9 @@ module register_alias_table (
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_checkpoint_restore &&
         !checkpoint_valid[i_checkpoint_restore_id]) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("RAT: Checkpoint restore from invalid slot %0d!", i_checkpoint_restore_id);
     end
   end
@@ -756,6 +774,9 @@ module register_alias_table (
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_alloc_valid && !i_alloc_dest_rf &&
         i_alloc_dest_reg == '0) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("RAT: Rename write to INT x0 attempted (slot 1)!");
     end
   end
@@ -764,6 +785,9 @@ module register_alias_table (
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_alloc_valid_2 && !i_alloc_dest_rf_2 &&
         i_alloc_dest_reg_2 == '0) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("RAT: Rename write to INT x0 attempted (slot 2)!");
     end
   end
@@ -771,12 +795,18 @@ module register_alias_table (
   // Checkpoint save and restore should not happen simultaneously
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_checkpoint_save && i_checkpoint_restore) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("RAT: Simultaneous checkpoint save and restore!");
     end
   end
 
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_checkpoint_restore_reclaim_all && !i_checkpoint_restore) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("RAT: reclaim_all asserted without checkpoint restore!");
     end
   end

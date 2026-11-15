@@ -3207,8 +3207,14 @@ module cpu_ooo #(
   always @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
       if (lq_mem_request_valid && lq_mem_read_en)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: LQ read handoff overlapped held router request");
       // A full flush already on its way (trap, xRET, FENCE-class) may overlap
       // the held request's staging cycle; that is where the router cancels
@@ -3217,31 +3223,49 @@ module cpu_ooo #(
       // a commit-time recovery cannot overtake an older device read at the
       // ROB head.
       if (lq_mem_request_valid && commit_recovery_flush_after_head)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: commit recovery overlapped a held LQ router request");
       if (lq_mem_request_valid && lq_router_flush_all &&
           (o_data_mem_read_enable || o_data_mem_cached_read_enable ||
            o_mmio_read_pulse || o_mmio_load_valid))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: owner flush did not suppress held LQ read effects");
       // Once sq_committed_empty is high, no older SQ or cached store can
       // still hold the write port, and device reads launch only at the ROB
       // head, so no AMO can be writing either.
       if (lq_mem_request_valid && sq_committed_empty &&
           (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: drained held LQ request remained write-blocked");
       // Device-read interrupt shield (trap_unit.i_device_read_at_head): the
       // device read must never happen before the shield is up.
       if (o_mmio_read_pulse && !device_read_shield_q)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: MMIO read pulse fired without the device interrupt shield");
       // The hold must not lapse while the request is still parked. The first
       // pending cycle is exempt: that cycle is what raises the shield, and
       // the router cannot arm until the cycle after it is visible.
       if (lq_device_request_pending && device_request_pending_q && !device_read_shield_q &&
           !lq_router_flush_all && !router_flush_all_q)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: device request pending without the interrupt shield");
       // An interrupt must never be taken inside the shielded window.
       // (trap_pending is the trap unit's exception input; exceptions stay
       // ungated by both shields, so only an interrupt take is a violation.)
       if (device_read_shield_q && trap_taken && !trap_pending)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: interrupt taken inside the device-read shield window");
     end
   end
@@ -3260,6 +3284,9 @@ module cpu_ooo #(
     end else if (!(lq_device_request_pending && !sq_committed_empty)) begin
       device_shield_stuck_cnt <= device_shield_stuck_cnt + 1;
       if (device_shield_stuck_cnt == DeviceShieldWatchdogCycles)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "cpu_ooo: device-read interrupt shield held for %0d cycles (forward progress lost)",
             DeviceShieldWatchdogCycles
@@ -3272,6 +3299,9 @@ module cpu_ooo #(
     end else if (lq_device_request_pending && !sq_committed_empty) begin
       device_shield_drain_cnt <= device_shield_drain_cnt + 1;
       if (device_shield_drain_cnt == DeviceShieldDrainWatchdogCycles)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "cpu_ooo: device-read interrupt shield waited for older writes for %0d cycles",
             DeviceShieldDrainWatchdogCycles
@@ -4702,6 +4732,9 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) begin
     if (i_rst) resume_pc_reference_armed_q <= 1'b1;
     if (resume_pc_reference_armed_q && !i_rst && interrupt_resume_pc != resume_pc_reference_q) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("cpu_ooo: interrupt_resume_pc %08x != reference %08x", interrupt_resume_pc,
              resume_pc_reference_q);
     end
@@ -4716,11 +4749,10 @@ module cpu_ooo #(
   // fails here, whatever the front end did to reach it: a stale prediction,
   // a lost redirect, or a fetch that skipped or repeated code.
   //
-  // Every check in this block waits for the first reset: a random-start
-  // simulation begins with arbitrary registers, the registered resets
-  // included, so i_rst can be low before any reset while the state these
-  // checks read is arbitrary. The next-PC check then arms at the first
-  // retirement; WFI seeding does not move it.
+  // These checks require local reset history. System assertions arm after
+  // the testbench's driven reset reaches the active clock domains. The
+  // next-PC check then arms at the first retirement; WFI seeding does not
+  // move it.
   logic next_pc_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) next_pc_reset_seen_q <= 1'b1;
   logic next_pc_check_armed_q;
@@ -4744,12 +4776,18 @@ module cpu_ooo #(
       if (next_pc_check_armed_q && rob_commit_valid_raw &&
           rob_commit_comb.pc != next_pc_expected_q) begin
         next_pc_dump();
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: retired pc %016x, architectural next pc %016x", rob_commit_comb.pc,
                next_pc_expected_q);
       end
       if (rob_commit_valid_raw && rob_commit_2_valid_raw &&
           rob_commit_comb_2.pc != rob_head_retired_next_pc) begin
         next_pc_dump();
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: slot-2 retired pc %016x, slot-1 next pc %016x", rob_commit_comb_2.pc,
                rob_head_retired_next_pc);
       end
@@ -4853,31 +4891,49 @@ module cpu_ooo #(
   always @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (trap_or_xret_taken != (trap_taken || xret_taken)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: combined trap/xRET take differs from individual takes");
       end
       if (xret_taken &&
           (mret_start_is_dret ? csr_dpc : mret_start_is_sret ? csr_sepc : csr_mepc) !=
           (dret_taken ? csr_dpc : sret_taken ? csr_sepc : csr_mepc)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: ROB head return flavor differs from the taken xRET");
       end
       if (trap_taken && trap_entry_target != trap_target) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: trap-entry target differs from its redirect");
       end
       if (rob_commit_valid_raw && rob_head_retired_next_pc != retired_next_pc(
               rob_commit_comb
           )) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: rob_head_retired_next_pc %08x != retired_next_pc(commit) %08x",
                rob_head_retired_next_pc, retired_next_pc(rob_commit_comb));
       end
       if (rob_commit_2_valid_raw && rob_head_next_retired_next_pc != retired_next_pc(
               rob_commit_comb_2
           )) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: rob_head_next_retired_next_pc %08x != retired_next_pc(commit_2) %08x",
                rob_head_next_retired_next_pc, retired_next_pc(rob_commit_comb_2));
       end
       // An xRET retires through the full flush that follows it, never on the
       // raw commit path, so the ROB's retired next-PC outputs need no xRET arm.
       if (rob_commit_valid_raw && rob_commit_comb.is_mret) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: an xRET retired on the raw commit path");
       end
     end

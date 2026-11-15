@@ -32,6 +32,8 @@ coh_l1d_multi_data1_bmc multi data arraydata word1 multidata
 coh_l1d_multi_data2_bmc multi data arraydata word2 multidata
 coh_l1d_multi_data3_bmc multi cadical arraydata word3 multidata
 coh_l1d_ways_data_bmc ways data arraydata word0 multidata
+coh_l1d_answer_bmc multi answer padded
+coh_l1d_stream_answer_bmc stream multi answer padded streamanswer
 
 coh_l1d_local_prove single local owner
 coh_l1d_local_multi_prove multi local owner padded
@@ -84,6 +86,9 @@ localschedule: depth 80
 covermode: mode cover
 covermode: depth 80
 covermode: timeout 600
+# The stream witnesses include the eight-endpoint state and need time to
+# serialize after the cover queries complete.
+streamcovers: timeout 1200
 # The hit-path covers use free inputs, so they need longer than the scripted
 # covers.
 pathcovers: depth 40
@@ -153,6 +158,13 @@ coh_l1d_ways_data_bmc: timeout 5100
 # The zero-write BMC with three endpoints stops short of the control BMC's
 # depth to stay inside its allowance with the extra write kind.
 zmulti: depth 30
+# The answer BMCs check only the read-answer properties: grant answers of
+# attached loads and same-sector merges, against stores, probes, the hit path
+# and duplicate answers. The eight-endpoint task is shallower, as the free
+# stream BMCs are.
+answer: depth 20
+answer: timeout 3600
+streamanswer: depth 16
 
 [engines]
 control_single: abc bmc3
@@ -179,6 +191,7 @@ localdata: abc bmc3 -c
 localhold: abc bmc3 -c
 localcontrol: abc bmc3
 localcovers: smtbmc boolector
+answer: abc bmc3 -c
 
 [script]
 read -sv coherence_read_stream.sv
@@ -212,6 +225,7 @@ grantdata: read -formal -sv -D STORE_DATA_PROOF coherence_read_payload.sv cohere
 local: read -formal -sv -D LOCAL_ATOMIC_PROOF coherence_read_payload.sv coherence_l1d.sv
 owned: read -formal -sv -D LOCAL_ATOMIC_PROOF -D READ_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv
 localscheduled: read -formal -sv -D LOCAL_ATOMIC_PROOF -D LOCAL_ATOMIC_COVER coherence_read_payload.sv coherence_l1d.sv
+answer: read -formal -sv -D READ_ANSWER_PROOF coherence_read_payload.sv coherence_l1d.sv
 read -sv coherence_store_buffer.sv
 read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
 single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
@@ -314,6 +328,8 @@ arraydata: select -assert-count 4 c:p_store_data_6 c:p_store_data_7 c:p_store_da
 arraydata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known %u %u %u %d
 grantdata: select -assert-count 3 c:p_store_data_8 c:p_store_data_9 c:p_store_data_10
 grantdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_8 c:p_store_data_9 c:p_store_data_10 %u %u %d
+answer: select -assert-count 11 c:p_answer_* t:$check %i r:FLAVOR=assert %i
+answer: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_answer_* %d
 turncovers: select -assert-count 4 c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn c:p_stream_cancel_turn
 turncovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn c:p_stream_cancel_turn %u %u %u %d
 local: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* c:p_atomic_context_identity c:p_atomic_read_identity c:p_selected_kind %u %u %u %d
