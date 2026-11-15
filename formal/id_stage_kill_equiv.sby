@@ -26,8 +26,8 @@ connect -port operand_classifier \i_illegal \is_illegal_instruction
 connect -port operand_classifier \i_fetch_fault \is_fetch_fault
 connect -port operand_classifier_2 \i_illegal \is_illegal_instruction_2
 connect -port operand_classifier_2 \i_fetch_fault \is_fetch_fault_2
-delete w:\id_kill %ci t:* %i
-delete w:\id_kill_2 %ci t:* %i
+delete w:\id_kill %ci t:$* %i
+delete w:\id_kill_2 %ci t:$* %i
 connect -set \id_kill 1'b0
 connect -set \id_kill_2 1'b0
 select -clear
