@@ -431,12 +431,24 @@ module dma_test_engine #(
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst && i_dma_resp_valid) begin
       if (!((state_q == S_READ_WAIT) || (state_q == S_WRITE_WAIT) || (state_q == S_STATUS_WAIT)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dma_test_engine: response with nothing outstanding");
       if ((state_q == S_READ_WAIT) && (i_dma_resp_id != ID_BITS'(1)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dma_test_engine: read response carries id %0d", i_dma_resp_id);
       if ((state_q == S_WRITE_WAIT) && (i_dma_resp_id != ID_BITS'(2)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dma_test_engine: write response carries id %0d", i_dma_resp_id);
       if ((state_q == S_STATUS_WAIT) && (i_dma_resp_id != ID_BITS'(3)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dma_test_engine: status response carries id %0d", i_dma_resp_id);
     end
   end
