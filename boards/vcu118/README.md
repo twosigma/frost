@@ -62,6 +62,10 @@ interface in banks 71–73 with 64 data bits and eight ECC bits, exposing
 controller through SmartConnect. The JTAG master can also access ECC
 control registers at region offset `0x80000000`; the CPU port cannot.
 
+Svpbmt NC and IO mappings of DDR raise an access fault on this 2 GiB map:
+its 32-bit physical address space has no room for an uncached DDR alias.
+Device mappings are unaffected and support NC and IO attributes.
+
 After calibration, `vcu118_ddr_init` writes zeros across the mapped region
 using full controller words. It waits for write responses before releasing
 the CPU and DDR loader from reset. An error response prevents completion.

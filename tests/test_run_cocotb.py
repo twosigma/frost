@@ -892,6 +892,28 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
         verilator_extra_args=("--assert",),
     ),
+    "svpbmt_test_2g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt at 2 GiB: NC/IO DDR access faults and working device mappings",
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "31"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=31", "--assert"),
+    ),
+    "svpbmt_bus_error": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        include_in_pytest=False,
+        description="Svpbmt alias read/write response faults, xtval and port recovery",
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DSVPBMT_BUS_ERRORS=1"),
+            ("COCOTB_PLUSARGS", "+axi_error_check=0 +axi_rd_error_addr=3000000"),
+        ),
+        verilator_extra_args=("--assert",),
+    ),
     "vec_state_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
