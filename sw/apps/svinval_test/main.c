@@ -32,8 +32,15 @@
  *   - In U-mode, all three raise illegal-instruction (taken in M-mode or
  *     delegated to S-mode) with the faulting instruction word in xtval;
  *   - Nonzero rd on sinval.vma, nonzero rs1 or rd on sfence.w.inval or
- *     sfence.inval.ir, and unallocated rs2 values in funct7 = 0x0C raise
- *     illegal-instruction in every privilege mode.
+ *     sfence.inval.ir, unallocated rs2 = 2..31 values in funct7 = 0x0C, and
+ *     the four hypervisor fence encodings (hfence.vvma, hfence.gvma,
+ *     hinval.vvma, hinval.gvma) raise illegal-instruction in every privilege
+ *     mode;
+ *   - sfence.w.inval and sfence.inval.ir execute legally as the very first
+ *     instruction at stvec/mtvec on trap entry from U-mode into S-mode and
+ *     M-mode;
+ *   - mop.r.0 and sinval.vma back to back in both orders write zero to mop.r's
+ *     destination while performing selective TLB invalidation.
  */
 
 #include <stdint.h>
@@ -100,13 +107,17 @@
 #define SFENCE_W_BAD_RD_BITS 0x180000F3ul
 #define SFENCE_IR_BAD_RS1_BITS 0x18108073ul
 #define SFENCE_IR_BAD_RD_BITS 0x181000F3ul
-#define SFENCE_INVAL_RS2_2_BITS 0x18200073ul
+#define HFENCE_VVMA_BITS 0x22000073ul
+#define HFENCE_GVMA_BITS 0x62000073ul
+#define HINVAL_VVMA_BITS 0x26000073ul
+#define HINVAL_GVMA_BITS 0x66000073ul
+#define MOP_R_0_T2_S0_BITS 0x81C443F3ul
 
 #define STR1(x) #x
 #define STR(x) STR1(x)
 #define WORD_INSN(bits) "    .word " STR(bits) "\n"
 
-#define NRES 80
+#define NRES 90
 
 volatile unsigned long g_res[NRES];
 volatile unsigned long g_bad_cause;
@@ -330,6 +341,21 @@ __asm__(".section .text\n"
         WORD_INSN(SINVAL_ALL_BITS)
         LD("s0", 76, 77)
         LD("s2", 78, 79)
+        /* 10. Zimop mop.r.0 and sinval.vma back to back in each order (both
+         *     share OPC_CSR in instr_decoder/instr_operand_classifier). */
+        "    ld   t0, 0(s10)\n"
+        "    li   t2, -1\n"
+        WORD_INSN(MOP_R_0_T2_S0_BITS)
+        WORD_INSN(SINVAL_S0_A6_BITS)
+        "    sd   t2, 80*8(s1)\n"
+        LD("s10", 81, 82)
+        LD("s0", 83, 84)
+        "    li   t2, -1\n"
+        WORD_INSN(SINVAL_S0_A6_BITS)
+        WORD_INSN(MOP_R_0_T2_S0_BITS)
+        "    sd   t2, 85*8(s1)\n"
+        LD("s10", 86, 87)
+        LD("s0", 88, 89)
         "    ecall\n"
         ".option pop\n");
 /* clang-format on */
@@ -389,7 +415,90 @@ PROBE_BODY(probe_sfence_w_bad_rs1, SFENCE_W_BAD_RS1_BITS)
 PROBE_BODY(probe_sfence_w_bad_rd, SFENCE_W_BAD_RD_BITS)
 PROBE_BODY(probe_sfence_ir_bad_rs1, SFENCE_IR_BAD_RS1_BITS)
 PROBE_BODY(probe_sfence_ir_bad_rd, SFENCE_IR_BAD_RD_BITS)
-PROBE_BODY(probe_sfence_inval_rs2_2, SFENCE_INVAL_RS2_2_BITS)
+PROBE_BODY(probe_hfence_vvma, HFENCE_VVMA_BITS)
+PROBE_BODY(probe_hfence_gvma, HFENCE_GVMA_BITS)
+PROBE_BODY(probe_hinval_vvma, HINVAL_VVMA_BITS)
+PROBE_BODY(probe_hinval_gvma, HINVAL_GVMA_BITS)
+
+void svinval_f7_0c_stubs(void);
+void u_ecall_body(void);
+void u_to_s_entry_w_inval(void);
+void u_to_s_entry_inval_ir(void);
+void u_to_m_entry_w_inval(void);
+void u_to_m_entry_inval_ir(void);
+
+/* 30 8-byte stubs for funct7 = 0001100 with rs2 = 2..31, plus U-mode trap-entry
+ * handlers whose very first instruction at stvec/mtvec is sfence.w.inval or
+ * sfence.inval.ir (exercising the U -> S and U -> M transitions of id_priv_is_u_q). */
+__asm__(".section .text\n"
+        ".balign 4\n"
+        ".global svinval_f7_0c_stubs\n"
+        ".option push\n"
+        ".option norvc\n"
+        "svinval_f7_0c_stubs:\n"
+        ".irp rs2,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31\n"
+        "    .4byte (0x18000073 | (\\rs2 << 20))\n"
+        "    ecall\n"
+        ".endr\n"
+
+        ".balign 4\n"
+        ".global u_ecall_body\n"
+        "u_ecall_body:\n"
+        "    nop\n"
+        "    nop\n"
+        "    ecall\n"
+        "    j .\n"
+
+        ".balign 4\n"
+        ".global u_to_s_entry_w_inval\n"
+        "u_to_s_entry_w_inval:\n"
+        WORD_INSN(SFENCE_W_INVAL_BITS)
+        "    csrr t0, scause\n"
+        "    la   t1, g_trap_cause\n"
+        "    sd   t0, 0(t1)\n"
+        "    li   t0, 1\n"
+        "    la   t1, g_trap_from_s\n"
+        "    sd   t0, 0(t1)\n"
+        "    ecall\n"
+
+        ".balign 4\n"
+        ".global u_to_s_entry_inval_ir\n"
+        "u_to_s_entry_inval_ir:\n"
+        WORD_INSN(SFENCE_INVAL_IR_BITS)
+        "    csrr t0, scause\n"
+        "    la   t1, g_trap_cause\n"
+        "    sd   t0, 0(t1)\n"
+        "    li   t0, 1\n"
+        "    la   t1, g_trap_from_s\n"
+        "    sd   t0, 0(t1)\n"
+        "    ecall\n"
+
+        ".balign 4\n"
+        ".global u_to_m_entry_w_inval\n"
+        "u_to_m_entry_w_inval:\n"
+        WORD_INSN(SFENCE_W_INVAL_BITS)
+        "    csrr t0, mcause\n"
+        "    la   t1, g_trap_cause\n"
+        "    sd   t0, 0(t1)\n"
+        "    csrr t0, mscratch\n"
+        "    csrw mepc, t0\n"
+        "    li   t0, 0x1800\n"
+        "    csrs mstatus, t0\n"
+        "    mret\n"
+
+        ".balign 4\n"
+        ".global u_to_m_entry_inval_ir\n"
+        "u_to_m_entry_inval_ir:\n"
+        WORD_INSN(SFENCE_INVAL_IR_BITS)
+        "    csrr t0, mcause\n"
+        "    la   t1, g_trap_cause\n"
+        "    sd   t0, 0(t1)\n"
+        "    csrr t0, mscratch\n"
+        "    csrw mepc, t0\n"
+        "    li   t0, 0x1800\n"
+        "    csrs mstatus, t0\n"
+        "    mret\n"
+        ".option pop\n");
 
 /* In S-mode with satp active and VA_X already resident: run probe under TVM = 1
  * (delegated to S-mode, where stvec skips the trapping 4-byte instruction) or
@@ -517,6 +626,55 @@ static int check_probe(const char *name,
             want_tval,
             g_trap_from_s,
             want_from_s);
+    return ok;
+}
+
+static int check_u_trap_entry_bracket(const char *name,
+                                      int to_s,
+                                      int tvm,
+                                      void (*handler)(void))
+{
+    g_trap_cause = ~0ul;
+    g_trap_tval = ~0ul;
+    g_trap_from_s = 0;
+
+    if (to_s) {
+        set_trap_handler(&svinval_priv_m_handler);
+        csr_write(medeleg, 1ul << CAUSE_ECALL_U);
+        csr_write(stvec, (unsigned long) handler);
+    } else {
+        set_trap_handler(handler);
+        csr_write(medeleg, 0ul);
+    }
+    if (tvm)
+        csr_set(mstatus, MSTATUS_TVM);
+    else
+        csr_clear(mstatus, MSTATUS_TVM);
+
+    __asm__ volatile("la   t0, 1f\n"
+                     "csrw mscratch, t0\n"
+                     "li   t0, 0x1800\n"
+                     "csrc mstatus, t0\n"
+                     "la   t0, u_ecall_body\n"
+                     "csrw mepc, t0\n"
+                     "mret\n"
+                     "1:\n" ::
+                         : "t0", "t1", "t2", "t3", "memory");
+
+    csr_clear(mstatus, MSTATUS_TVM);
+    csr_write(medeleg, 0ul);
+    set_trap_handler(&svinval_priv_m_handler);
+
+    unsigned long want_s = to_s ? 1ul : 0ul;
+    int ok = (g_trap_cause == CAUSE_ECALL_U) && (g_trap_from_s == want_s);
+    g_checks_run++;
+    if (!ok)
+        uart_printf("[FAIL] %s cause=%lu(want %lu) s_handler=%lu(want %lu)\n",
+                    name,
+                    g_trap_cause,
+                    CAUSE_ECALL_U,
+                    g_trap_from_s,
+                    want_s);
     return ok;
 }
 
@@ -689,6 +847,18 @@ int main(void)
     ok &= walked("77 post-all-A-x-walk", g_res[77], 1);
     ok &= check("78 post-all-g", g_res[78], 0x6C);
     ok &= walked("79 post-all-g-walk", g_res[79], 1);
+
+    /* 10a. Back-to-back mop.r.0 and sinval.vma in each order. */
+    ok &= check("80 mop-then-sinval-rd-zero", g_res[80], 0);
+    ok &= check("81 mop-then-sinval-spares-A-y-val", g_res[81], 0xD9);
+    ok &= walked("82 mop-then-sinval-spares-A-y", g_res[82], 0);
+    ok &= check("83 mop-then-sinval-A-x-val", g_res[83], 0xA3);
+    ok &= walked("84 mop-then-sinval-flushes-A-x", g_res[84], 1);
+    ok &= check("85 sinval-then-mop-rd-zero", g_res[85], 0);
+    ok &= check("86 sinval-then-mop-spares-A-y-val", g_res[86], 0xD9);
+    ok &= walked("87 sinval-then-mop-spares-A-y", g_res[87], 0);
+    ok &= check("88 sinval-then-mop-A-x-val", g_res[88], 0xA3);
+    ok &= walked("89 sinval-then-mop-flushes-A-x", g_res[89], 1);
 
     /* 10. TVM = 1 in S-mode with live Sv39 translation: sinval.vma traps
      *     without flushing resident TLB entries, while sfence.w.inval and
@@ -864,14 +1034,71 @@ int main(void)
                           CAUSE_ILLEGAL,
                           SFENCE_IR_BAD_RD_BITS,
                           0);
-        ok &= check_probe("reserved-funct7-0c-rs2-2",
+        ok &= check_probe("hypervisor-hfence-vvma",
                           mpp,
                           0,
                           0,
-                          probe_sfence_inval_rs2_2,
+                          probe_hfence_vvma,
                           CAUSE_ILLEGAL,
-                          SFENCE_INVAL_RS2_2_BITS,
+                          HFENCE_VVMA_BITS,
                           0);
+        ok &= check_probe("hypervisor-hfence-gvma",
+                          mpp,
+                          0,
+                          0,
+                          probe_hfence_gvma,
+                          CAUSE_ILLEGAL,
+                          HFENCE_GVMA_BITS,
+                          0);
+        ok &= check_probe("hypervisor-hinval-vvma",
+                          mpp,
+                          0,
+                          0,
+                          probe_hinval_vvma,
+                          CAUSE_ILLEGAL,
+                          HINVAL_VVMA_BITS,
+                          0);
+        ok &= check_probe("hypervisor-hinval-gvma",
+                          mpp,
+                          0,
+                          0,
+                          probe_hinval_gvma,
+                          CAUSE_ILLEGAL,
+                          HINVAL_GVMA_BITS,
+                          0);
+    }
+
+    /* All 30 unallocated rs2 = 2..31 encodings under funct7 = 0001100 trap in M and S. */
+    for (unsigned long rs2 = 2; rs2 <= 31; rs2++) {
+        unsigned long word = 0x18000073ul | (rs2 << 20);
+        void (*stub)(void) =
+            (void (*)(void)) ((uintptr_t) &svinval_f7_0c_stubs + (uintptr_t) ((rs2 - 2ul) * 8ul));
+        ok &= check_probe("funct7-0c-rs2-m", 3, 0, 0, stub, CAUSE_ILLEGAL, word, 0);
+        ok &= check_probe("funct7-0c-rs2-s", 1, 0, 0, stub, CAUSE_ILLEGAL, word, 0);
+    }
+
+    /* First instruction at stvec / mtvec on trap entry from U-mode into S-mode and M-mode. */
+    for (int tvm = 0; tvm <= 1; tvm++) {
+        ok &= check_u_trap_entry_bracket(
+            tvm ? "U-to-S-tvm1-first-sfence-w-inval" : "U-to-S-tvm0-first-sfence-w-inval",
+            1,
+            tvm,
+            &u_to_s_entry_w_inval);
+        ok &= check_u_trap_entry_bracket(
+            tvm ? "U-to-S-tvm1-first-sfence-inval-ir" : "U-to-S-tvm0-first-sfence-inval-ir",
+            1,
+            tvm,
+            &u_to_s_entry_inval_ir);
+        ok &= check_u_trap_entry_bracket(
+            tvm ? "U-to-M-tvm1-first-sfence-w-inval" : "U-to-M-tvm0-first-sfence-w-inval",
+            0,
+            tvm,
+            &u_to_m_entry_w_inval);
+        ok &= check_u_trap_entry_bracket(
+            tvm ? "U-to-M-tvm1-first-sfence-inval-ir" : "U-to-M-tvm0-first-sfence-inval-ir",
+            0,
+            tvm,
+            &u_to_m_entry_inval_ir);
     }
 
     uart_printf("SVINVAL checks=%lu\n", g_checks_run);

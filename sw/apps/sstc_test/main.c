@@ -67,8 +67,13 @@ static void uart_hex(unsigned long v)
 #define COUNTEREN_TM (1ul << 1)
 
 /* Exact 32-bit encodings used in the S/U bodies so Sstvala checks mtval. */
-#define INSN_CSRR_T0_STIMECMP 0x14d022f3ul /* csrrs t0, 0x14D, x0 */
-#define INSN_CSRW_STIMECMP_T0 0x14d29073ul /* csrrw x0, 0x14D, t0 */
+#define INSN_CSRR_T0_STIMECMP 0x14d022f3ul     /* csrrs  t0, 0x14D, x0   */
+#define INSN_CSRW_STIMECMP_T0 0x14d29073ul     /* csrrw  x0, 0x14D, t0   */
+#define INSN_CSRRSI0_T0_STIMECMP 0x14d062f3ul  /* csrrsi t0, 0x14D, 0    */
+#define INSN_CSRRCI0_T0_STIMECMP 0x14d072f3ul  /* csrrci t0, 0x14D, 0    */
+#define INSN_CSRRWI_T0_STIMECMP 0x14dad2f3ul   /* csrrwi t0, 0x14D, 0x15 */
+#define INSN_CSRRSI_T0_STIMECMP 0x14d562f3ul   /* csrrsi t0, 0x14D, 0x0A */
+#define INSN_CSRRCI_T0_STIMECMP 0x14d2f2f3ul   /* csrrci t0, 0x14D, 0x05 */
 
 #define csr_read_num(num)                                                                          \
     ({                                                                                             \
@@ -92,6 +97,13 @@ static int report(const char *name, unsigned long got, unsigned long want)
     uart_hex(want);
     uart_puts("\r\n");
     return got == want;
+}
+
+static int check_quiet(const char *name, unsigned long got, unsigned long want)
+{
+    if (got != want)
+        return report(name, got, want);
+    return 1;
 }
 
 static unsigned long poll_mip(unsigned long mask, unsigned long want)
@@ -204,10 +216,75 @@ __attribute__((naked)) static void su_write_stimecmp(void)
                      "j    .\n");
 }
 
+__attribute__((naked)) static void su_csrrsi0_stimecmp(void)
+{
+    __asm__ volatile(".4byte 0x14d062f3\n" /* csrrsi t0, 0x14D, 0 */
+                     "la   t1, g_s_read\n"
+                     "sd   t0, 0(t1)\n"
+                     "ecall\n"
+                     "j    .\n");
+}
+
+__attribute__((naked)) static void su_csrrci0_stimecmp(void)
+{
+    __asm__ volatile(".4byte 0x14d072f3\n" /* csrrci t0, 0x14D, 0 */
+                     "la   t1, g_s_read\n"
+                     "sd   t0, 0(t1)\n"
+                     "ecall\n"
+                     "j    .\n");
+}
+
+__attribute__((naked)) static void su_csrrwi_stimecmp(void)
+{
+    __asm__ volatile(".4byte 0x14dad2f3\n" /* csrrwi t0, 0x14D, 0x15 */
+                     "la   t1, g_s_read\n"
+                     "sd   t0, 0(t1)\n"
+                     "ecall\n"
+                     "j    .\n");
+}
+
+__attribute__((naked)) static void su_csrrsi_stimecmp(void)
+{
+    __asm__ volatile(".4byte 0x14d562f3\n" /* csrrsi t0, 0x14D, 0x0A */
+                     "la   t1, g_s_read\n"
+                     "sd   t0, 0(t1)\n"
+                     "ecall\n"
+                     "j    .\n");
+}
+
+__attribute__((naked)) static void su_csrrci_stimecmp(void)
+{
+    __asm__ volatile(".4byte 0x14d2f2f3\n" /* csrrci t0, 0x14D, 0x05 */
+                     "la   t1, g_s_read\n"
+                     "sd   t0, 0(t1)\n"
+                     "ecall\n"
+                     "j    .\n");
+}
+
 __attribute__((naked)) static void s_set_sip_stip(void)
 {
     __asm__ volatile("li   t0, 0x20\n"
                      "csrs sip, t0\n"
+                     "ecall\n"
+                     "j    .\n");
+}
+
+__attribute__((naked)) static void s_clear_sip_stip(void)
+{
+    __asm__ volatile("li   t0, 0x20\n"
+                     "csrc sip, t0\n"
+                     "csrr t0, sip\n"
+                     "la   t1, g_s_read\n"
+                     "sd   t0, 0(t1)\n"
+                     "ecall\n"
+                     "j    .\n");
+}
+
+__attribute__((naked)) static void s_read_sip(void)
+{
+    __asm__ volatile("csrr t0, sip\n"
+                     "la   t1, g_s_read\n"
+                     "sd   t0, 0(t1)\n"
                      "ecall\n"
                      "j    .\n");
 }
@@ -360,6 +437,116 @@ int main(void)
     ok &= report("D5 u-wr-illegal", cause, 2);
     ok &= report("D5 u-wr-tval", g_tval, INSN_CSRW_STIMECMP_T0);
     ok &= report("D5 u-unchanged", csr_read_num(0x14D), sentinel);
+
+    /* D6: Immediate CSR forms (csrrwi, csrrsi uimm=0/!=0, csrrci uimm=0/!=0)
+     * obey the exact same legality rule across M, S, and U. */
+    {
+        int imm_ok = 1;
+        unsigned long old_v = 0;
+
+        /* M-mode with STCE=0, TM=0: all immediate forms succeed. */
+        csr_write_num(0x30A, 0);
+        csr_write(mcounteren, 0);
+        csr_write_num(0x14D, sentinel);
+        __asm__ volatile("mv t0, zero\n .4byte 0x14dad2f3\n mv %0, t0"
+                         : "=r"(old_v)
+                         :
+                         : "t0");
+        imm_ok &= check_quiet("D6 m-csrrwi-old", old_v, sentinel);
+        imm_ok &= check_quiet("D6 m-csrrwi-new", csr_read_num(0x14D), 0x15ul);
+        __asm__ volatile("mv t0, zero\n .4byte 0x14d562f3\n mv %0, t0"
+                         : "=r"(old_v)
+                         :
+                         : "t0");
+        imm_ok &= check_quiet("D6 m-csrrsi-old", old_v, 0x15ul);
+        imm_ok &= check_quiet("D6 m-csrrsi-new", csr_read_num(0x14D), 0x1Ful);
+        __asm__ volatile("mv t0, zero\n .4byte 0x14d2f2f3\n mv %0, t0"
+                         : "=r"(old_v)
+                         :
+                         : "t0");
+        imm_ok &= check_quiet("D6 m-csrrci-old", old_v, 0x1Ful);
+        imm_ok &= check_quiet("D6 m-csrrci-new", csr_read_num(0x14D), 0x1Aul);
+        __asm__ volatile("mv t0, zero\n .4byte 0x14d062f3\n mv %0, t0"
+                         : "=r"(old_v)
+                         :
+                         : "t0");
+        imm_ok &= check_quiet("D6 m-csrrsi0", old_v, 0x1Aul);
+        __asm__ volatile("mv t0, zero\n .4byte 0x14d072f3\n mv %0, t0"
+                         : "=r"(old_v)
+                         :
+                         : "t0");
+        imm_ok &= check_quiet("D6 m-csrrci0", old_v, 0x1Aul);
+
+        static void (*const imm_fns[5])(void) = {
+            &su_csrrsi0_stimecmp,
+            &su_csrrci0_stimecmp,
+            &su_csrrwi_stimecmp,
+            &su_csrrsi_stimecmp,
+            &su_csrrci_stimecmp,
+        };
+        static const unsigned long imm_words[5] = {
+            INSN_CSRRSI0_T0_STIMECMP,
+            INSN_CSRRCI0_T0_STIMECMP,
+            INSN_CSRRWI_T0_STIMECMP,
+            INSN_CSRRSI_T0_STIMECMP,
+            INSN_CSRRCI_T0_STIMECMP,
+        };
+
+        /* S-mode illegal pairs: (STCE=0,TM=1), (STCE=1,TM=0), (STCE=0,TM=0). */
+        static const unsigned long s_bad_menvcfg[3] = {0, MENVCFG_STCE, 0};
+        static const unsigned long s_bad_mcounteren[3] = {
+            COUNTEREN_ALL, COUNTEREN_ALL & ~COUNTEREN_TM, COUNTEREN_ALL & ~COUNTEREN_TM};
+        csr_write_num(0x14D, sentinel);
+        csr_write_num(0x106, COUNTEREN_ALL);
+        for (int p = 0; p < 3; p++) {
+            csr_write_num(0x30A, s_bad_menvcfg[p]);
+            csr_write(mcounteren, s_bad_mcounteren[p]);
+            for (int k = 0; k < 5; k++) {
+                cause = run_in_s(imm_fns[k]);
+                imm_ok &= check_quiet("D6 s-imm-bad-cause", cause, 2);
+                imm_ok &= check_quiet("D6 s-imm-bad-tval", g_tval, imm_words[k]);
+                imm_ok &= check_quiet("D6 s-imm-bad-unchanged", csr_read_num(0x14D), sentinel);
+            }
+        }
+
+        /* S-mode legal pair: STCE=1, TM=1, scounteren=0 (sie=0 so small compare
+         * values do not take an interrupt). */
+        csr_write(sie, 0);
+        csr_write_num(0x30A, MENVCFG_STCE);
+        csr_write(mcounteren, COUNTEREN_ALL);
+        csr_write_num(0x106, 0);
+        csr_write_num(0x14D, sentinel);
+        cause = run_in_s(&su_csrrwi_stimecmp);
+        imm_ok &= check_quiet("D6 s-csrrwi-cause", cause, 9);
+        imm_ok &= check_quiet("D6 s-csrrwi-old", g_s_read, sentinel);
+        imm_ok &= check_quiet("D6 s-csrrwi-new", csr_read_num(0x14D), 0x15ul);
+        cause = run_in_s(&su_csrrsi_stimecmp);
+        imm_ok &= check_quiet("D6 s-csrrsi-cause", cause, 9);
+        imm_ok &= check_quiet("D6 s-csrrsi-old", g_s_read, 0x15ul);
+        imm_ok &= check_quiet("D6 s-csrrsi-new", csr_read_num(0x14D), 0x1Ful);
+        cause = run_in_s(&su_csrrci_stimecmp);
+        imm_ok &= check_quiet("D6 s-csrrci-cause", cause, 9);
+        imm_ok &= check_quiet("D6 s-csrrci-old", g_s_read, 0x1Ful);
+        imm_ok &= check_quiet("D6 s-csrrci-new", csr_read_num(0x14D), 0x1Aul);
+        cause = run_in_s(&su_csrrsi0_stimecmp);
+        imm_ok &= check_quiet("D6 s-csrrsi0-cause", cause, 9);
+        imm_ok &= check_quiet("D6 s-csrrsi0-val", g_s_read, 0x1Aul);
+        cause = run_in_s(&su_csrrci0_stimecmp);
+        imm_ok &= check_quiet("D6 s-csrrci0-cause", cause, 9);
+        imm_ok &= check_quiet("D6 s-csrrci0-val", g_s_read, 0x1Aul);
+
+        /* U-mode with STCE=1, mcounteren=all, scounteren=all: all trap illegal. */
+        csr_write_num(0x14D, sentinel);
+        csr_write_num(0x106, COUNTEREN_ALL);
+        for (int k = 0; k < 5; k++) {
+            cause = run_in_u(imm_fns[k]);
+            imm_ok &= check_quiet("D6 u-imm-cause", cause, 2);
+            imm_ok &= check_quiet("D6 u-imm-tval", g_tval, imm_words[k]);
+            imm_ok &= check_quiet("D6 u-imm-unchanged", csr_read_num(0x14D), sentinel);
+        }
+
+        ok &= report("D6 imm-forms-all", (unsigned long) imm_ok, 1ul);
+    }
     csr_write_num(0x14D, ~0ul);
 
     /* E: STCE=1 makes mip.STIP and mvip.STIP read-only in M-mode without
@@ -390,6 +577,38 @@ int main(void)
     ok &= report("E2 sw-latch-preserved-1", csr_read(mip) & MIP_STIP, MIP_STIP);
     csr_clear(mip, MIP_STIP);
     ok &= report("E2 sw-latch-cleared", csr_read(mip) & MIP_STIP, 0);
+
+    /* F: S-mode sip read of compare-driven STIP with menvcfg.STCE = 1 (SIE = 0
+     * and sie = 0 so S-mode reads sip directly without taking an interrupt). */
+    csr_clear(mstatus, 1ul << 1);
+    csr_write(sie, 0);
+    csr_write_num(0x30A, MENVCFG_STCE);
+    csr_write(mcounteren, COUNTEREN_ALL);
+    csr_write(mideleg, MIP_STIP);
+    csr_write_num(0x14D, 0ul);
+    ok &= report("F cmp-active-mip", poll_mip(MIP_STIP, MIP_STIP), MIP_STIP);
+    g_s_read = 0;
+    cause = run_in_s(&s_read_sip);
+    ok &= report("F s-sip-deleg-stip-1-ecall", cause, 9);
+    ok &= report("F s-sip-deleg-stip-1", g_s_read & MIP_STIP, MIP_STIP);
+    g_s_read = 0;
+    cause = run_in_s(&s_clear_sip_stip);
+    ok &= report("F s-sip-ro-clear-ignored", g_s_read & MIP_STIP, MIP_STIP);
+
+    csr_write_num(0x14D, ~0ul);
+    ok &= report("F cmp-cleared-mip", poll_mip(MIP_STIP, 0), 0);
+    g_s_read = ~0ul;
+    cause = run_in_s(&s_read_sip);
+    ok &= report("F s-sip-deleg-stip-0", g_s_read & MIP_STIP, 0);
+
+    csr_write(mideleg, 0);
+    csr_write_num(0x14D, 0ul);
+    ok &= report("F cmp-undeleg-mip-1", poll_mip(MIP_STIP, MIP_STIP), MIP_STIP);
+    g_s_read = ~0ul;
+    cause = run_in_s(&s_read_sip);
+    ok &= report("F s-sip-undeleg-masked", g_s_read & MIP_STIP, 0);
+    csr_write_num(0x14D, ~0ul);
+    csr_write_num(0x30A, 0);
 
     /* G: delegated S timer interrupt through stimecmp: the S handler sees
      * scause = S-timer, silences stimecmp, and ecalls out (cause 9). */

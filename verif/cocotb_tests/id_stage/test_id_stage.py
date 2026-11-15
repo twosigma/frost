@@ -1435,22 +1435,107 @@ async def test_svinval_decode_and_u_mode_fence_gate(dut: Any) -> None:
                 assert packet["uses_int_rs2"] is False, where
                 assert packet["has_int_dest"] is False, where
 
-    for priv_is_u in (0, 1):
-        dut.i_priv_is_u.value = priv_is_u
-        for bad in (
-            SINVAL_VMA_S0_A6 | (1 << 7),  # sinval.vma with rd != 0
-            SFENCE_W_INVAL | (1 << 15),  # sfence.w.inval with rs1 != 0
-            SFENCE_INVAL_IR | (3 << 7),  # sfence.inval.ir with rd != 0
-            0x18200073,  # funct7 = 0x0C, rs2 = 2
-        ):
-            _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": bad})
-            _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=True)
-            await _advance_cycle(dut)
-            packet = _read_id_packet(dut)
-            assert packet["is_illegal_instruction"] is True, hex(bad)
-            assert packet["rs_type"] == RS_INT, hex(bad)
-            assert packet["is_fence"] is False and packet["is_fence_i"] is False
+    bad_encodings = [
+        SINVAL_VMA_S0_A6 | (1 << 7),  # sinval.vma with rd != 0
+        SFENCE_W_INVAL | (1 << 15),  # sfence.w.inval with rs1 != 0
+        SFENCE_INVAL_IR | (3 << 7),  # sfence.inval.ir with rd != 0
+        0x22000073,  # hfence.vvma x0, x0
+        0x62000073,  # hfence.gvma x0, x0
+        0x26000073,  # hinval.vvma x0, x0
+        0x66000073,  # hinval.gvma x0, x0
+        0x22A40073,  # hfence.vvma s0, a0
+        0x66A40073,  # hinval.gvma s0, a0
+    ] + [(0x0C << 25) | (rs2 << 20) | 0x73 for rs2 in range(2, 32)]
+
+    for slot2 in (False, True):
+        for priv_is_u in (0, 1):
+            dut.i_priv_is_u.value = priv_is_u
+            for bad in bad_encodings:
+                _drive_pd_packet(
+                    dut, {"program_counter": BASE_PC, "instruction": bad}, slot2=slot2
+                )
+                _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+                await _advance_cycle(dut)
+                packet = _read_id_packet(dut, slot2=slot2)
+                where = f"{bad:#010x} u={priv_is_u} slot2={slot2}"
+                assert packet["is_illegal_instruction"] is True, where
+                assert packet["rs_type"] == RS_INT, where
+                assert (
+                    packet["is_fence"] is False and packet["is_fence_i"] is False
+                ), where
+                assert packet["is_sfence_vma"] is False, where
     dut.i_priv_is_u.value = 0
+
+
+@cocotb.test()
+async def test_mop_r_and_sinval_vma_back_to_back(dut: Any) -> None:
+    """mop.r and sinval.vma share OPC_CSR and decode cleanly back to back in each order."""
+    await _setup_test(dut)
+    mop_word = _mop_r(0, rd=10, rs1=8)
+    sinval_word = SINVAL_VMA_S0_A6
+
+    def _check_mop(packet: dict[str, Any], where: str) -> None:
+        assert packet["is_illegal_instruction"] is False, where
+        assert packet["instruction_operation"] == _INSTR_OPS["MOP"], where
+        assert packet["is_csr_instruction"] is False, where
+        assert packet["rs_type"] == RS_INT, where
+        assert packet["has_int_dest"] is True, where
+        assert packet["uses_int_rs1"] is False, where
+        assert packet["uses_int_rs2"] is False, where
+        assert packet["is_fence"] is False and packet["is_fence_i"] is False, where
+        assert packet["is_sfence_vma"] is False, where
+
+    def _check_sinval(packet: dict[str, Any], where: str) -> None:
+        assert packet["is_illegal_instruction"] is False, where
+        assert packet["instruction_operation"] == SFENCE_VMA, where
+        assert packet["is_csr_instruction"] is False, where
+        assert packet["rs_type"] == RS_MEM, where
+        assert packet["has_int_dest"] is False, where
+        assert packet["uses_int_rs1"] is True, where
+        assert packet["uses_int_rs2"] is True, where
+        assert packet["is_fence"] is False and packet["is_fence_i"] is True, where
+        assert packet["is_sfence_vma"] is True, where
+
+    # Back-to-back across consecutive cycles in both orders and both slots.
+    for slot2 in (False, True):
+        for first, check_first, second, check_second, label in (
+            (mop_word, _check_mop, sinval_word, _check_sinval, "mop->sinval"),
+            (sinval_word, _check_sinval, mop_word, _check_mop, "sinval->mop"),
+        ):
+            _drive_pd_packet(
+                dut, {"program_counter": BASE_PC, "instruction": first}, slot2=slot2
+            )
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+            await _advance_cycle(dut)
+            check_first(_read_id_packet(dut, slot2=slot2), f"{label} first slot2={slot2}")
+
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC + 8, "instruction": second},
+                slot2=slot2,
+            )
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 12}, slot2=not slot2)
+            await _advance_cycle(dut)
+            check_second(
+                _read_id_packet(dut, slot2=slot2), f"{label} second slot2={slot2}"
+            )
+
+    # Same-cycle dual-slot presentation in both orders.
+    _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": mop_word})
+    _drive_pd_packet(
+        dut, {"program_counter": BASE_PC + 4, "instruction": sinval_word}, slot2=True
+    )
+    await _advance_cycle(dut)
+    _check_mop(_read_id_packet(dut, slot2=False), "bundle mop->sinval slot1")
+    _check_sinval(_read_id_packet(dut, slot2=True), "bundle mop->sinval slot2")
+
+    _drive_pd_packet(dut, {"program_counter": BASE_PC + 8, "instruction": sinval_word})
+    _drive_pd_packet(
+        dut, {"program_counter": BASE_PC + 12, "instruction": mop_word}, slot2=True
+    )
+    await _advance_cycle(dut)
+    _check_sinval(_read_id_packet(dut, slot2=False), "bundle sinval->mop slot1")
+    _check_mop(_read_id_packet(dut, slot2=True), "bundle sinval->mop slot2")
 
 
 @cocotb.test()
