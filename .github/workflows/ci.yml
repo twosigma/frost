@@ -945,12 +945,13 @@ jobs:
 
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
   # model and on the simulated SoC and compares every retired instruction
-  # (tests/test_testrig.py). The first shard replays saved counterexamples and
-  # deterministic counter controls.
+  # (tests/test_testrig.py). The first shard replays saved counterexamples,
+  # scalar cryptography sequences, and deterministic counter controls.
   # Every shard then draws its own random sequences, 100 per template, from the
-  # engine's templates, and its own 200 A-extension tests from
-  # verif/testrig/atomics.py, whose seed the log prints. A mismatch is shrunk
-  # to a short counterexample in the uploaded artifact, which --trace replays.
+  # engine's templates, and its own random A-extension (verif/testrig/atomics.py),
+  # Sv39 MMU (verif/testrig/mmu.py), and CMO/Sstvala (verif/testrig/cmo.py)
+  # sequences, whose seeds the log prints. A mismatch is shrunk to a short
+  # counterexample in the uploaded artifact, which --trace replays.
   test-testrig:
     name: TestRIG (FROST vs Sail / ${{ matrix.shard }}/4)
     runs-on: ubuntu-26.04
@@ -1008,6 +1009,18 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --atomics 200 --continue-on-fail
+
+      - name: Compare FROST with Sail on random Sv39 MMU sequences
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --mmu 40 --continue-on-fail
+
+      - name: Compare FROST with Sail on random CMO and Sstvala sequences
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --cmo 80 --continue-on-fail
 
       - name: Require startup assertion controls
         if: ${{ always() && matrix.shard == 3 }}

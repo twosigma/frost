@@ -50,6 +50,7 @@ from software_registry import (  # noqa: E402
 VALID_APPS = [
     "bootrom",
     "amo_irq_torture",
+    "asid_test",
     "branch_pred_test",
     "c_ext_test",
     "call_stress",
