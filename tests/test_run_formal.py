@@ -645,7 +645,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pc_pending_capture.sby",
-        "Pending-prediction capture matches reference clear/set/hold priority",
+        "Pending-prediction capture matches reference clear/set/hold priority, including "
+        "walked-past entries",
         tasks=("bmc", "bmc_integrated"),
     ),
     FormalTarget(
@@ -1459,8 +1460,15 @@ FORMAL_TARGETS = [
     FormalTarget(
         "prediction_release.sby",
         "Pending-prediction release preserves state masking, fetch holdoffs, and the "
-        "registered PC relations, and the instruction buffer takes only pc_reg's word",
+        "registered PC relations, including walked-past entries, and the instruction "
+        "buffer takes only pc_reg's word",
         tasks=("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
+        "if_prediction_walk_past.sby",
+        "Fetch stage emits no real packet while post-prediction holdoff holds pc_reg, "
+        "including walked-past pending predictions",
+        tasks=("bmc", "cover"),
     ),
     FormalTarget(
         "prediction_metadata_tracker.sby",

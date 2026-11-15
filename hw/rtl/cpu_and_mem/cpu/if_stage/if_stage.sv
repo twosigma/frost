@@ -3124,4 +3124,40 @@ module if_stage #(
 `endif
 
 
+`ifdef IF_WALK_PAST_PROOF
+  logic f_wp_past_valid = 1'b0;
+  logic f_wp_held_pc_check_q = 1'b0;
+  logic f_wp_held_pc_sel_nop_q;
+  logic [XLEN-1:0] f_wp_held_pc_reg_q;
+  always_ff @(posedge i_clk) begin
+    f_wp_past_valid <= 1'b1;
+    f_wp_held_pc_check_q <= !i_pipeline_ctrl.reset && !if_stage_stall && fetch_progress &&
+        control_flow_holdoff && prediction_holdoff && !i_from_ex_comb.branch_taken &&
+        !i_pd_redirect && !i_trap_ctrl.trap_taken && !i_trap_ctrl.mret_taken &&
+        !i_fence_i_flush && !pending_prediction_target_handoff &&
+        !(sel_prediction_r && !pending_prediction_active && !pending_prediction_walk_past &&
+          !pending_prediction_redirect_kill && !slot2_redirect_q &&
+          btb_predicted_target_r == pc_reg);
+    f_wp_held_pc_sel_nop_q <= sel_nop_effective;
+    f_wp_held_pc_reg_q <= pc_reg;
+    if (f_wp_past_valid && !i_pipeline_ctrl.reset) begin
+      if (f_wp_held_pc_check_q && pc_reg == f_wp_held_pc_reg_q) begin
+        p_formal_held_post_prediction_pc_emits_no_real_packet : assert (f_wp_held_pc_sel_nop_q);
+      end
+      if (control_flow_holdoff && prediction_holdoff && pending_prediction_walk_past &&
+          !if_stage_stall && fetch_progress) begin
+        p_formal_held_walk_past_packet_is_not_real :
+        assert (sel_nop_effective && !slot2_valid && o_from_if_to_pd.sel_nop &&
+                o_from_if_to_pd_2.sel_nop);
+      end
+      cover_if_walk_past_odd : cover (pending_prediction_walk_past && pending_prediction_pc[1]);
+      cover_if_walk_past_even : cover (pending_prediction_walk_past && !pending_prediction_pc[1]);
+      cover_if_walk_past_post_prediction_holdoff_squashed :
+      cover (control_flow_holdoff && prediction_holdoff && pending_prediction_walk_past &&
+             !if_stage_stall && fetch_progress && sel_nop_effective);
+      cover_if_walk_past_stalled : cover (pending_prediction_walk_past && if_stage_stall);
+    end
+  end
+`endif
+
 endmodule : if_stage

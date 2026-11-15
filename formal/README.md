@@ -283,16 +283,17 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `pc_redirect_catchup_producer` | In the PC controller, the catch-up and default arms are both sequential, and catch-up never coincides with a pending-hold request; unbounded at XLEN 32, 64, and 66 |
 | `pc_redirect_catchup_consumer` | Given those producer properties, leaving the catch-up request out of the registered redirect detector does not change its output; unbounded |
 | `if_direction_payload` | Dropping the NOP term from the branch-direction payload select changes no non-NOP packet, including stall replay through the real `stall_capture_reg`. Assumes a flush on the first cycle |
+| `if_prediction_walk_past` | Bounded (depth 12) and cover (depth 10) on the integrated `if_stage` with arbitrary instruction windows, lookup hits and pipeline controls after an initial reset: the fetch stage emits no real packet while the post-prediction holdoff holds `pc_reg` (self-targeting handoffs aside), and emits bubbles in both slots whenever `pc_reg` has walked past a pending prediction under post-prediction holdoff; covers reach odd, even, squashed, and stalled walk-past cycles |
 | `pc_holdoff_cofactor` | The three fetch-holdoff outputs equal their reference equations |
 | `pc_holdoff_tag` | A pending prediction's predecessor-PC tag equals its PC minus 2, and outside reset the prediction holdoffs equal their reference equations; unbounded at XLEN 32, 64, and 72, including wraparound. Assumes the pending bit starts clear |
 | `pc_increment_relation` | The local carry relations behind the PC +2/+4/+6/+8 compares, and the relations of `pc_reg` and of the sequential next `pc_reg` to the pending and fetch PCs, equal full-width arithmetic at XLEN 32 and 64, including wraparound. The next `pc_reg`'s relations come in two versions: as selected without the served-window check, and as a NOP |
 | `pc_increment_holdoff` | Both sequential next PCs equal the reference per-size candidates with holdoff and NOP selection, and the sequential next `pc_reg`, its miss and pending relations, and their pinned selects equal their portable form, for portable and Xilinx-primitive builds |
-| `pc_pending_capture` | The pending-prediction valid bit's next state equals the reference clear/set/hold priority, for both `PENDING_HANDOFF_EXCLUDES_SLOT2` settings |
+| `pc_pending_capture` | The pending-prediction valid bit's next state equals the reference clear/set/hold priority, for both `PENDING_HANDOFF_EXCLUDES_SLOT2` settings. An entry `pc_reg` has walked past stays valid through a stall and clears when fetch advances, unless a new prediction replaces it on that edge |
 | `pc_register_mux` | The architectural-PC mux equals the reference priority, and the parallel advance select and pinned selects of the registered `pc_reg` relations equal their portable form, in the same configurations as `fetch_pc_mux` |
 | `prediction_handoff` | `prediction_release` with `PENDING_HANDOFF_EXCLUDES_SLOT2=1`, the fetch stage's setting |
 | `prediction_metadata_output` | Each packet's BTB-taken bit equals the reference priority, and a packet that a saved or pending prediction does not belong to never reports taken |
-| `prediction_metadata_tracker` | A pending prediction's saved PC and target hold until their packet consumes them or a reset or redirect kills them, and call and return types always leave with their target. See below |
-| `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoffs, predecessor-PC tags, and lower-parcel lookup match their reference relations. Whenever a prediction will be pending, the registered `pc_reg` relations load next cycle's wide-compare values. In `bmc`, the instruction buffer takes only `pc_reg`'s word. See below |
+| `prediction_metadata_tracker` | A pending prediction's saved PC and target hold until their packet consumes them or a reset or redirect kills them, and call and return types always leave with their target. In a cycle in which `pc_reg` has walked past the pending PC, a packet's own collapsed-lead prediction reaches it with its target. See below |
+| `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoffs, predecessor-PC tags, and lower-parcel lookup match their reference relations. Whenever a prediction will be pending, the registered `pc_reg` relations load next cycle's wide-compare values, and the valid bit follows the `pc_pending_capture` reference. A prediction `pc_reg` has walked past drives no pending consumer and masks the registered redirect, stalled or not, and a new prediction replaces it with validity and payload together; covers reach odd, even, stalled, and replaced walk-past entries. In `bmc`, the instruction buffer takes only `pc_reg`'s word. See below |
 | `ras_checkpoint` | The return-address stack's outputs, next pointer, and count equal the reference equations, and so does every entry write: a push or swap writes its link address, a restore writes the saved top entry back, and nothing else changes |
 | `rvc_predecode` | The fill-time RV64C/Zcb/Zcmop expansion, illegal flag and source metadata equal the reference decompressor for all 65,536 parcels; SYSTEM funct3=100 permits pairing |
 | `branch_predictor_twin` | The branch predictor's slot-2 payload and relation selects (LUT6 per bit) equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
@@ -303,7 +304,8 @@ Grouped by area; `--list-targets` shows each target's tasks.
 `prediction_release` runs the real `pc_controller`, `c_ext_state`, and
 `slot2_prediction_capture` together. The harness replaces the PC-increment calculator with one whose PC
 outputs are unconstrained, which admits every real PC movement and more, and
-makes predictor requests arbitrary. The stand-in's next `pc_reg` is one of two
+makes predictor requests arbitrary, except that, as in the fetch stage, no
+slot-1 request is made while the window cannot serve `pc_reg`. The stand-in's next `pc_reg` is one of two
 unconstrained values, the NOP one when the NOP select is set, and its
 pending-PC relations are full-width compares of those values, which
 `pc_increment_relation` proves the real calculator matches. The harness likewise relates both slot-2 targets to
@@ -330,10 +332,12 @@ setting. Both have `bmc`, `cover`, and SMT k-induction `prove` tasks.
 may change while fetch runs and holds during a stall, and leaves the pending
 and output PCs arbitrary (8 bits wide), so the proof covers both the packet a
 prediction belongs to and an older packet at another PC. It assumes a reset
-on the first cycle and three rules the fetch stage guarantees: saved values
+on the first cycle and four rules the fetch stage guarantees: saved values
 are replayed only during a registered stall; the live target is used only
 when it is aligned with the output packet and no stall, registered
-prediction, or pending prediction exists; and a reset cycle inserts a NOP and
+prediction, or pending prediction exists, a saved copy that `pc_reg` has
+walked past aside; a walk-past cycle has no active pending prediction and
+kills the saved copy; and a reset cycle inserts a NOP and
 uses no metadata. Each call and return type is tied to its target's low two
 bits, so a type taken from a different source than its target would show.
 

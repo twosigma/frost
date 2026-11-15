@@ -32,6 +32,7 @@ module prediction_metadata_tracker_formal (
   (* anyseq *) logic i_stall;
   (* anyseq *) logic i_flush;
   (* anyseq *) logic i_pending_prediction_kill;
+  (* anyseq *) logic i_pending_prediction_walk_past;
   (* anyseq *) logic i_prediction_used_r;
   (* anyseq *) logic i_pending_prediction_active;
   (* anyseq *) logic [XLEN-1:0] i_pending_prediction_pc;
@@ -97,7 +98,11 @@ module prediction_metadata_tracker_formal (
     assume (!i_live_prediction_for_output ||
             (i_live_target_aligned_with_output && !i_stall_registered &&
              !i_prediction_used_r &&
-             !formal_pending_valid));
+             (!formal_pending_valid || i_pending_prediction_walk_past)));
+
+    // A walk-past masks active state and kills its saved metadata at the edge.
+    assume (!i_pending_prediction_walk_past ||
+            (i_pending_prediction_kill && !i_pending_prediction_active));
 
     // A reset cycle inserts a NOP and uses neither saved nor live metadata.
     assume (!i_reset || (i_sel_nop && !i_use_saved_values && !i_live_prediction_for_output));
@@ -111,6 +116,7 @@ module prediction_metadata_tracker_formal (
       .i_stall,
       .i_flush,
       .i_pending_prediction_kill,
+      .i_pending_prediction_walk_past,
       .i_stall_registered,
       .i_prediction_used_r,
       .i_predicted_target_r,
@@ -162,6 +168,26 @@ module prediction_metadata_tracker_formal (
       assert (formal_pending_pc == $past(formal_pending_pc));
       assert (formal_pending_target == $past(formal_pending_target));
     end
+
+    if (f_past_valid && i_pending_prediction_walk_past &&
+        i_live_prediction_for_output && !i_sel_nop && !i_use_saved_values &&
+        !i_pending_prediction_fetch_holdoff) begin
+      assert (o_btb_predicted_taken);
+      assert (o_btb_predicted_target == i_live_predicted_target);
+    end
+    if (f_past_valid && i_pending_prediction_walk_past &&
+        !i_live_prediction_for_output && !i_use_saved_values &&
+        !i_prediction_used_r) begin
+      assert (!o_btb_predicted_taken);
+    end
+    if (f_past_valid && $past(i_pending_prediction_walk_past)) begin
+      assert (!formal_pending_valid);
+    end
+    cover (f_past_valid && formal_pending_valid && i_pending_prediction_walk_past &&
+           i_live_prediction_for_output && o_btb_predicted_taken);
+    cover (f_past_valid && formal_pending_valid && i_pending_prediction_walk_past &&
+           !i_live_prediction_for_output && (i_output_pc == formal_pending_pc) &&
+           !o_btb_predicted_taken);
 
     // Reach each payload source, including a nonzero target masked by the
     // taken bit on an invalid prediction.
