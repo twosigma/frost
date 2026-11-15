@@ -15,7 +15,7 @@
 """nic_top with the GMII MAC: every diagnostic counter (21..35) reads back at its register.
 
 The NIC is built with GMII_MODE = 1 and RX_PREAMBLE_ER_TOLERANT = 1. GMII symbols, the PCS
-status_vector and the PHY management bus (i_phy_diag, toggle-qualified) are driven; counters 21..30
+status_vector and the acknowledged PHY management bus (i_phy_diag/o_phy_diag_ack) are driven; counters 21..30
 are the MAC-domain totals, 31..35 the PHY counters, all read at 0x140 + 8 * (n - 21). A RESET clears
 the PHY counters and a toggle that does not change afterwards is not a poll.
 """
@@ -25,7 +25,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
+from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge, Timer
 
 from cocotb_tests.axi.axil_model import AxilMaster
 from cocotb_tests.nic.test_nic_mac_gmii import _wire_frame
@@ -60,6 +60,7 @@ class _Bench:
         self.regs = AxilMaster(dut, "reg_axil")
         self.symbols: deque[int] = deque()
         self.status = 0
+        self.core_clock: Clock | None = None
 
     async def rd64(self, off: int) -> int:
         return await self.regs.read(off)
@@ -87,15 +88,15 @@ class _Bench:
         await ClockCycles(self.dut.i_clk, 4)
         self.dut.i_phy_diag.value = toggle << 32 | fcs << 16 | recr
         await ClockCycles(self.dut.i_clk, 20)
+        assert int(self.dut.o_phy_diag_ack.value) == toggle
 
 
-@cocotb.test()
-async def every_diagnostic_counter_reads_back(dut: Any) -> None:
-    """Make each of counters 21..35 non-zero and read it at 0x140 + 8 * (n - 21)."""
-    Clock(dut.i_clk, 3334, unit="ps").start()
+async def _start(dut: Any, core_ps: int = 3334) -> _Bench:
     Clock(dut.i_tx_clk, 8000, unit="ps").start()
     Clock(dut.i_rx_clk, 8000, unit="ps").start()
     bench = _Bench(dut)
+    bench.core_clock = Clock(dut.i_clk, core_ps, unit="ps")
+    bench.core_clock.start()
     bench.regs.idle()
     for sig in (
         dut.i_dma_axi_awready,
@@ -118,6 +119,13 @@ async def every_diagnostic_counter_reads_back(dut: Any) -> None:
     dut.i_rst.value = 0
     await ClockCycles(dut.i_clk, 200)
     cocotb.start_soon(bench.drive())
+    return bench
+
+
+@cocotb.test()
+async def every_diagnostic_counter_reads_back(dut: Any) -> None:
+    """Make each of counters 21..35 non-zero and read it at 0x140 + 8 * (n - 21)."""
+    bench = await _start(dut)
     # An empty RX ring: enabled, so frames queue in the FIFO with no descriptor to take them.
     await bench.wr(RX_BASE, RX_RING)
     await bench.wr(RX_SIZE, RX_SIZE_LOG2)
@@ -192,3 +200,36 @@ async def every_diagnostic_counter_reads_back(dut: Any) -> None:
     await bench.poll(9, 1, 1)
     assert await bench.count(PHY_POLLS) == 1
     assert await bench.count(PHY_RXERR_SUM) == 9
+
+
+@cocotb.test()
+async def phy_transfer_survives_slow_clock_and_reset(dut: Any) -> None:
+    """Capture each held sample once, discard transfers during reset, and resume after a stop."""
+    bench = await _start(dut, core_ps=31000)
+    await FallingEdge(dut.i_clk)
+    dut.i_rst.value = 1
+    dut.i_phy_diag.value = (1 << 32) | (3 << 16) | 7
+    await ClockCycles(dut.i_clk, 20)
+    assert int(dut.o_phy_diag_ack.value) == 1
+    await FallingEdge(dut.i_clk)
+    dut.i_rst.value = 0
+    await ClockCycles(dut.i_clk, 200)
+    assert await bench.count(PHY_POLLS) == 0
+    assert await bench.count(PHY_RXERR_SUM) == 0
+    await bench.poll(9, 2, 0)
+    assert await bench.count(PHY_POLLS) == 1
+    assert await bench.count(PHY_RXERR_SUM) == 9
+    assert bench.core_clock is not None
+    await FallingEdge(dut.i_clk)
+    bench.core_clock.stop()
+    dut.i_phy_diag.value = (1 << 32) | (5 << 16) | 13
+    await Timer(17000, unit="ns")
+    assert int(dut.o_phy_diag_ack.value) == 0
+    bench.core_clock.start()
+    await ClockCycles(dut.i_clk, 30)
+    assert int(dut.o_phy_diag_ack.value) == 1
+    assert await bench.count(PHY_POLLS) == 2
+    assert await bench.count(PHY_RXERR_SUM) == 22
+    assert await bench.count(PHY_FCS_SUM) == 7
+    await ClockCycles(dut.i_clk, 30)
+    assert await bench.count(PHY_POLLS) == 2

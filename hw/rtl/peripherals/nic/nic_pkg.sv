@@ -140,13 +140,13 @@ package nic_pkg;
   localparam int unsigned CntRxPauseFrames = 18;
   localparam int unsigned CntTxPauseFrames = 19;
   localparam int unsigned CntTxPausedCycles = 20;
-  // Receive diagnostics (sync #18). Zero on the 10GBASE-R port except RxMacOverflowNoDesc.
+  // Receive diagnostics. Zero on the 10GBASE-R port except RxMacOverflowNoDesc.
   // GMII rx_er by position: the preamble (before a valid SFD), and the carrier-extend/false-carrier
   // cycles outside a frame (rx_dv = 0); CntRxGmiiRxEr above counts rx_er inside a frame. Short IFG:
   // a frame that began fewer than 12 byte times after the previous frame's data enable fell.
-  // PreambleErAccepted: frames kept although a lone rx_er hit their preamble (the
-  // RX_PREAMBLE_ER_TOLERANT parameter). RxMacOverflowNoDesc: MAC overflows that happened while the RX
-  // engine held a frame with no descriptor available. The Pcs* counters count the Xilinx 1G PCS/PMA
+  // PreambleErAccepted: delimiters recognized after one errored 0x55 preamble byte (the
+  // RX_PREAMBLE_ER_TOLERANT parameter). RxMacOverflowNoDesc: MAC overflows qualified by the
+  // synchronized indication that the RX engine holds a frame with no descriptor available. The Pcs* counters count the Xilinx 1G PCS/PMA
   // status_vector bits that carry events: link synchronisation lost (bit 1 falling), RUDI(/C/) (bit 2
   // rising), RUDI(INVALID) (bit 4 rising), RXDISPERR (bit 5) and RXNOTINTABLE (bit 6) cycles.
   localparam int unsigned CntRxGmiiErPreamble = 21;
@@ -160,7 +160,7 @@ package nic_pkg;
   localparam int unsigned CntPcsRxdisperr = 29;
   localparam int unsigned CntPcsRxnotintable = 30;
   // DP83867 receive-error and FCS counters, read over MDIO by the PHY bootstrap sequencer (1G port
-  // only): the last value read, the sum of all values read (the PHY counters may clear on read),
+  // only): the last value read, the sum of all samples delivered,
   // and the number of completed polls.
   localparam int unsigned CntPhyRxErrLast = 31;
   localparam int unsigned CntPhyRxErrSum = 32;

@@ -142,6 +142,7 @@ module xilinx_frost_subsystem #(
     input  logic        i_nic_1g_rx_signal_ok = 1'b0,
     input  logic [ 4:0] i_nic_1g_phy_status = '0,
     input  logic [32:0] i_nic_1g_phy_diag = '0,
+    output logic        o_nic_1g_phy_diag_ack,
     output logic [ 3:1] o_nic_1g_phy_ctrl,
     output logic        o_nic_1g_rx_block_lock,
 
@@ -455,6 +456,7 @@ module xilinx_frost_subsystem #(
       .i_nic_1g_rx_signal_ok(i_nic_1g_rx_signal_ok),
       .i_nic_1g_phy_status(i_nic_1g_phy_status),
       .i_nic_1g_phy_diag(i_nic_1g_phy_diag),
+      .o_nic_1g_phy_diag_ack(o_nic_1g_phy_diag_ack),
       .o_nic_1g_phy_ctrl(o_nic_1g_phy_ctrl),
       .o_nic_1g_rx_block_lock(o_nic_1g_rx_block_lock),
       .o_spi_cs_n(o_spi_cs_n),

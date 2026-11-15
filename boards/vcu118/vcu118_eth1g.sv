@@ -73,6 +73,7 @@ module vcu118_eth1g (
     // DP83867 receive-error (RECR) and FCS counter values read over MDIO, with a toggle that changes
     // after both have been updated: {toggle, FCS[15:0], RECR[15:0]} (nic_pkg PhyDiagBits).
     output logic [32:0] o_phy_diag,
+    input  logic        i_phy_diag_ack,
     input  logic        i_rx_block_lock
 );
   /* verilator lint_off UNUSEDSIGNAL */
@@ -110,7 +111,8 @@ module vcu118_eth1g (
       .o_mdio_t       (mdio_t_w),
       .i_mdio_i       (mdio_i_raw),
       .o_phy_init_done(phy_init_done_q),
-      .o_phy_diag     (o_phy_diag)
+      .o_phy_diag     (o_phy_diag),
+      .i_phy_diag_ack (i_phy_diag_ack)
   );
 
   IOBUF u_mdio_iobuf (
@@ -280,7 +282,8 @@ module vcu118_phy_mdio #(
     output logic        o_mdio_t,
     input  logic        i_mdio_i,
     output logic        o_phy_init_done,
-    output logic [32:0] o_phy_diag
+    output logic [32:0] o_phy_diag,
+    input  logic        i_phy_diag_ack
 );
   localparam int unsigned RstBit = RST_BIT;
   localparam int unsigned SettleBit = SETTLE_BIT;
@@ -297,7 +300,7 @@ module vcu118_phy_mdio #(
   localparam int unsigned NumInitWrites = 14;
   // Poll sequence after the init writes: RECR read, then an extended read of the FCS counter.
   localparam int unsigned PollRecrIdx = NumInitWrites;
-  localparam int unsigned PollFcsIdx = NumInitWrites + 4;
+  localparam int unsigned PollFcsIdx = NumInitWrites + 5;
 
   // {read, register, data}
   function automatic logic [21:0] get_init_cmd(input logic [4:0] idx);
@@ -323,11 +326,13 @@ module vcu118_phy_mdio #(
       5'd13: return {1'b0, RegBmcr, 16'h1340};
       // 14: Direct read of RECR (receive error counter)
       5'd14: return {1'b1, RegRecr, 16'h0000};
-      // 15..17: extended address select for the FCS counter
-      5'd15: return {1'b0, RegRegcr, 16'h001F};
-      5'd16: return {1'b0, RegAddar, ExtRegRxFcsCnt};
-      5'd17: return {1'b0, RegRegcr, 16'h401F};
-      // 18: read the FCS counter through ADDAR
+      // A dummy write clears the saturating RECR after its acknowledged read.
+      5'd15: return {1'b0, RegRecr, 16'h0000};
+      // 16..18: extended address select for the FCS counter
+      5'd16: return {1'b0, RegRegcr, 16'h001F};
+      5'd17: return {1'b0, RegAddar, ExtRegRxFcsCnt};
+      5'd18: return {1'b0, RegRegcr, 16'h401F};
+      // 19: read the FCS counter through ADDAR
       default: return {1'b1, RegAddar, 16'h0000};
     endcase
   endfunction
@@ -357,15 +362,24 @@ module vcu118_phy_mdio #(
   assign init_cmd = get_init_cmd(cmd_idx_q);
 
   // MDIO read path: the pad level is synchronised, shifted in at the rising MDC edge of each
-  // data bit, and the finished value is kept per counter. The toggle flips (once per poll) after
-  // both values have been stable for 16 clocks. None of these registers are reset: a reset of the
-  // sequencer must not look like a poll to the NIC.
-  logic mdio_i_s1_q, mdio_i_s_q;
+  // data bit. Publish the complete sample atomically and hold it until acknowledged.
+  // The published payload and toggle survive sequencer reset, so an in-flight transfer
+  // stays coherent and reset cannot impersonate a completed poll. Partial reads are discarded.
+  (* ASYNC_REG = "TRUE" *) logic mdio_i_s1_q, mdio_i_s_q;
+  logic rd_ok_q;
   logic [15:0] rd_shift_q = '0;
   logic [15:0] diag_recr_q = '0;
   logic [15:0] diag_fcs_q = '0;
   logic diag_tog_q = 1'b0;
   logic polled_q = 1'b0;
+  logic [15:0] sample_recr_q, sample_fcs_q;
+  logic diag_ack_s;
+  cdc_sync u_diag_ack_sync (
+      .i_clk  (i_clk),
+      .i_rst  (1'b0),
+      .i_async(i_phy_diag_ack),
+      .o_sync (diag_ack_s)
+  );
   always_ff @(posedge i_clk) begin
     mdio_i_s1_q <= i_mdio_i;
     mdio_i_s_q  <= mdio_i_s1_q;
@@ -385,6 +399,9 @@ module vcu118_phy_mdio #(
       mdio_t_q        <= 1'b1;
       phy_init_done_q <= 1'b0;
       polled_q        <= 1'b0;
+      rd_ok_q         <= 1'b0;
+      sample_recr_q   <= '0;
+      sample_fcs_q    <= '0;
     end else begin
       unique case (state_q)
         ST_RST_ASSERT: begin
@@ -424,6 +441,7 @@ module vcu118_phy_mdio #(
             2'b10,
             init_cmd[15:0]
           };
+          rd_ok_q <= 1'b0;
           bit_cnt_q <= 7'd64;
           clk_div_q <= '0;
           mdc_q <= 1'b0;
@@ -436,6 +454,8 @@ module vcu118_phy_mdio #(
           clk_div_q <= clk_div_q + 1'b1;
           if (clk_div_q == 5'd15) begin
             mdc_q <= 1'b1;
+            // The PHY drives zero in the second turnaround slot. A released line is no reply.
+            if (init_cmd[21] && bit_cnt_q == 7'd16) rd_ok_q <= !mdio_i_s_q;
             // A read's 16 data bits are the last 16 slots (bit_cnt 15..0): sample before MDC rises.
             if (init_cmd[21] && bit_cnt_q <= 7'd15) rd_shift_q <= {rd_shift_q[14:0], mdio_i_s_q};
           end else if (clk_div_q == 5'd31) begin
@@ -443,16 +463,20 @@ module vcu118_phy_mdio #(
             if (bit_cnt_q == 7'd0) begin
               mdio_t_q <= 1'b1;
               mdio_o_q <= 1'b1;
-              if (cmd_idx_q == 5'(NumInitWrites - 1)) begin
+              if (init_cmd[21] && !rd_ok_q) begin
+                polled_q <= 1'b0;
+                wait_cnt_q <= '0;
+                state_q <= ST_DONE;
+              end else if (cmd_idx_q == 5'(NumInitWrites - 1)) begin
                 wait_cnt_q <= '0;
                 state_q    <= ST_CLK_SETTLE;
               end else if (cmd_idx_q == 5'(PollFcsIdx)) begin
-                diag_fcs_q <= rd_shift_q;
+                sample_fcs_q <= rd_shift_q;
                 polled_q   <= 1'b1;
                 wait_cnt_q <= '0;
                 state_q    <= ST_DONE;
               end else begin
-                if (cmd_idx_q == 5'(PollRecrIdx)) diag_recr_q <= rd_shift_q;
+                if (cmd_idx_q == 5'(PollRecrIdx)) sample_recr_q <= rd_shift_q;
                 cmd_idx_q <= cmd_idx_q + 1'b1;
                 state_q   <= ST_MDIO_LOAD;
               end
@@ -482,13 +506,19 @@ module vcu118_phy_mdio #(
           phy_init_done_q <= 1'b1;
           mdio_t_q        <= 1'b1;
           mdc_q           <= 1'b0;
-          // The PHY counters are polled about every 21 ms (2^20 clocks of i_clk); the
-          // toggle follows the values by 16 clocks.
-          if (polled_q && wait_cnt_q == 21'd16) diag_tog_q <= !diag_tog_q;
+          if (polled_q && diag_ack_s == diag_tog_q) begin
+            diag_recr_q <= sample_recr_q;
+            diag_fcs_q <= sample_fcs_q;
+            diag_tog_q <= !diag_tog_q;
+            polled_q <= 1'b0;
+          end
+          // A stopped destination holds the published sample and delays the next poll.
           if (wait_cnt_q[PollBit]) begin
-            wait_cnt_q <= '0;
-            cmd_idx_q  <= 5'(PollRecrIdx);
-            state_q    <= ST_MDIO_LOAD;
+            if (!polled_q && diag_ack_s == diag_tog_q) begin
+              wait_cnt_q <= '0;
+              cmd_idx_q  <= 5'(PollRecrIdx);
+              state_q    <= ST_MDIO_LOAD;
+            end
           end else begin
             wait_cnt_q <= wait_cnt_q + 1'b1;
           end

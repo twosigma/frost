@@ -535,7 +535,9 @@ module x3_frost #(
       .i_nic_rx_signal_ok(nic_rx_signal_ok),
       .i_nic_phy_status(nic_phy_status),
       .o_nic_phy_ctrl(nic_phy_ctrl),
-      .o_nic_rx_block_lock(nic_rx_block_lock)
+      .o_nic_rx_block_lock(nic_rx_block_lock),
+      .i_nic_1g_phy_diag('0),
+      .o_nic_1g_phy_diag_ack()
   );
 
 endmodule : x3_frost

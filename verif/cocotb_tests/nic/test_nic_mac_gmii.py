@@ -192,3 +192,11 @@ async def gmii_frames_and_errors(dut: Any) -> None:
     # preamble breaks off at its second byte) and the rx_er burst inside a frame.
     assert (totals >> (64 * 6)) & ((1 << 64) - 1) == 1
     assert (totals >> (64 * 7)) & ((1 << 64) - 1) == 1
+
+
+@cocotb.test()
+async def strict_pre_delimiter_matrix(dut: Any) -> None:
+    """Strict receive rejects errored preamble symbols and accepts clean shortened preambles."""
+    from cocotb_tests.nic.test_nic_rx_preamble_er import _check_preamble_matrix
+
+    await _check_preamble_matrix(dut, tolerant=False)

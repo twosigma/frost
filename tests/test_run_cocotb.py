@@ -3985,7 +3985,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GRX_FIFO_DEPTH=8192",
             "-GRX_PREAMBLE_ER_TOLERANT=1",
         ),
-        description="GMII receive keeps a frame whose preamble holds one lone rx_er",
+        description="GMII receive tolerates one errored 0x55 preamble byte and rejects errored SFDs",
     ),
     "vcu118_phy_mdio": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_vcu118_phy_mdio",

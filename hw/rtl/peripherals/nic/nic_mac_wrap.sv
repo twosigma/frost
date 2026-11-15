@@ -98,8 +98,8 @@ module nic_mac_wrap #(
     output logic o_rx_remote_fault,
     output logic o_tx_link_ready,
     output logic o_rx_signal_ok,
-    // Core-domain level: the RX engine holds a frame and has no descriptor (counts MAC overflows
-    // that happen meanwhile as dropped for "descriptor not available").
+    // Registered core-domain level: the RX engine holds a frame and has no descriptor.
+    // Its synchronized value qualifies the MAC overflow diagnostic.
     input logic i_rx_desc_starved,
     // Totals in counter order: rx_overflow, rx_bad_frame, rx_bad_fcs,
     // rx_bad_block, tx_drop, tx_bad_block, gmii_preamble_drop, gmii_rx_er,
@@ -460,7 +460,7 @@ module nic_mac_wrap #(
   // the first rx_er of a burst inside a frame.
   logic gmii_preamble_drop, gmii_rx_er_event;
   // Further GMII diagnostics: rx_er in the preamble, rx_er with the data enable low (carrier extend,
-  // false carrier), a short inter-frame gap, a frame kept despite a lone preamble rx_er, and the PCS
+  // false carrier), a short inter-frame gap, an SFD accepted after one errored 0x55, and the PCS
   // status_vector events (sync lost, RUDI /C/, RUDI INVALID, RXDISPERR, RXNOTINTABLE).
   logic gmii_er_preamble_event, gmii_er_ext_event, gmii_short_ifg_event, gmii_pre_accept_event;
   logic [4:0] pcs_event;
@@ -968,10 +968,18 @@ module nic_mac_wrap #(
   };
   // Each counter takes its event's domain reset, and a soft reset rebases or
   // clears the totals at run time.
+  logic rx_rebase, tx_rebase;
+  assign {rx_rebase, tx_rebase} = i_core_rst_dom;
   for (genvar e = 0; e < NumEv; e++) begin : g_events
-    assign ev_clk[e]    = EvIsRx[e] ? i_rx_clk : i_tx_clk;
-    assign ev_rst[e]    = EvIsRx[e] ? rx_rst : tx_rst;
-    assign ev_rebase[e] = EvIsRx[e] ? i_core_rst_dom[1] : i_core_rst_dom[0];
+    if (EvIsRx[e]) begin : g_rx
+      assign ev_clk[e] = i_rx_clk;
+      assign ev_rst[e] = rx_rst;
+      assign ev_rebase[e] = rx_rebase;
+    end else begin : g_tx
+      assign ev_clk[e] = i_tx_clk;
+      assign ev_rst[e] = tx_rst;
+      assign ev_rebase[e] = tx_rebase;
+    end
     cdc_gray_count u_count (
         .i_src_clk   (ev_clk[e]),
         .i_src_rst   (ev_rst[e]),

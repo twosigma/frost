@@ -134,9 +134,10 @@ module nic_top #(
     input logic i_rx_raw_valid,
     input logic i_rx_signal_ok,
     input logic [4:0] i_phy_status,  // asynchronous levels, nic_pkg PhyStatusBit*
-    // PHY management counters {toggle, FCS, RECR}: the values hold still while the toggle changes,
+    // PHY management counters {toggle, FCS, RECR}: the source holds the payload and toggle until acknowledged,
     // so nic_csr samples them after synchronising the toggle (all zero where there is no MDIO poll).
     input logic [nic_pkg::PhyDiagBits-1:0] i_phy_diag = '0,
+    output logic o_phy_diag_ack,
     output logic [3:1] o_phy_ctrl,  // PHY_RESET, PMA_LOOPBACK, TX_DISABLE
     output logic o_rx_block_lock  // PCS block lock, synchronized to i_clk (a flop)
 );
@@ -414,6 +415,7 @@ module nic_top #(
       }),
       .i_phy_status(phy_status),
       .i_phy_diag(i_phy_diag),
+      .o_phy_diag_ack(o_phy_diag_ack),
       .i_rx_complete(rx_complete),
       .i_rx_complete_flags(rx_complete_flags),
       .i_rx_complete_bytes(rx_complete_bytes),

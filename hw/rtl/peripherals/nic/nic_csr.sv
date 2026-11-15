@@ -90,22 +90,23 @@ module nic_csr #(
     output logic [                   15:0] o_pause_interval,
 
     // Status.
-    input logic [                    15:0] i_rx_head,
-    input logic [                    15:0] i_tx_head,
-    input logic                            i_rx_idle,
-    input logic                            i_tx_idle,
-    input logic                            i_reset_busy,
-    input logic                            i_rx_fifo_empty,
-    input logic                            i_rx_fifo_limit_busy,
-    input logic                            i_rx_ready,
-    input logic                            i_tx_ready,
+    input  logic [                    15:0] i_rx_head,
+    input  logic [                    15:0] i_tx_head,
+    input  logic                            i_rx_idle,
+    input  logic                            i_tx_idle,
+    input  logic                            i_reset_busy,
+    input  logic                            i_rx_fifo_empty,
+    input  logic                            i_rx_fifo_limit_busy,
+    input  logic                            i_rx_ready,
+    input  logic                            i_tx_ready,
     // {rx_clk_ok, tx_clk_ok, rx_signal_ok, tx_link_ready, rx_remote_fault,
     //  rx_local_fault, rx_high_ber, rx_locked}
-    input logic [                     7:0] i_link,
-    input logic [                     4:0] i_phy_status,
+    input  logic [                     7:0] i_link,
+    input  logic [                     4:0] i_phy_status,
     // PHY management counters {toggle, FCS, RECR} from the board's MDIO poll (asynchronous to
-    // i_clk: the values hold still while the toggle changes).
-    input logic [nic_pkg::PhyDiagBits-1:0] i_phy_diag,
+    // i_clk: the source holds the payload and toggle until acknowledged).
+    input  logic [nic_pkg::PhyDiagBits-1:0] i_phy_diag,
+    output logic                            o_phy_diag_ack,
 
     // Completions and drops from the engines.
     input logic i_rx_complete,
@@ -461,9 +462,13 @@ module nic_csr #(
   endfunction
 
   // ---- the PHY's own receive-error and FCS counters, as polled over MDIO ----------------------
-  // The board toggles diag[32] after it has updated diag[31:0]; the values are stable for the
-  // whole poll interval, so they are taken one synchronised toggle later.
+  // The source holds the payload and toggle until the acknowledgement returns.
+  // Capture the payload after the two-stage toggle synchronizer, then accumulate locally.
+  // During reset the toggle is followed and acknowledged without counting the sample.
   logic diag_tog_s, diag_tog_q;
+  logic [31:0] phy_diag_sample_q;
+  logic phy_diag_valid_q;
+  assign o_phy_diag_ack = diag_tog_q;
   logic [63:0] phy_rxerr_last_q, phy_rxerr_sum_q, phy_fcs_last_q, phy_fcs_sum_q, phy_polls_q;
   cdc_sync u_diag_tog_sync (
       .i_clk  (i_clk),
@@ -473,17 +478,21 @@ module nic_csr #(
   );
   always_ff @(posedge i_clk) begin
     diag_tog_q <= diag_tog_s;
+    phy_diag_valid_q <= diag_tog_s != diag_tog_q;
+    if (diag_tog_s != diag_tog_q) phy_diag_sample_q <= i_phy_diag[31:0];
     if (i_rst || i_soft_rst) begin
-      phy_rxerr_last_q <= '0;
-      phy_rxerr_sum_q  <= '0;
-      phy_fcs_last_q   <= '0;
-      phy_fcs_sum_q    <= '0;
-      phy_polls_q      <= '0;
-    end else if (diag_tog_s != diag_tog_q) begin
-      phy_rxerr_last_q <= 64'(i_phy_diag[15:0]);
-      phy_rxerr_sum_q  <= phy_rxerr_sum_q + 64'(i_phy_diag[15:0]);
-      phy_fcs_last_q   <= 64'(i_phy_diag[31:16]);
-      phy_fcs_sum_q    <= phy_fcs_sum_q + 64'(i_phy_diag[31:16]);
+      phy_diag_valid_q  <= 1'b0;
+      phy_diag_sample_q <= '0;
+      phy_rxerr_last_q  <= '0;
+      phy_rxerr_sum_q   <= '0;
+      phy_fcs_last_q    <= '0;
+      phy_fcs_sum_q     <= '0;
+      phy_polls_q       <= '0;
+    end else if (phy_diag_valid_q) begin
+      phy_rxerr_last_q <= 64'(phy_diag_sample_q[15:0]);
+      phy_rxerr_sum_q  <= phy_rxerr_sum_q + 64'(phy_diag_sample_q[15:0]);
+      phy_fcs_last_q   <= 64'(phy_diag_sample_q[31:16]);
+      phy_fcs_sum_q    <= phy_fcs_sum_q + 64'(phy_diag_sample_q[31:16]);
       phy_polls_q      <= phy_polls_q + 64'd1;
     end
   end

@@ -37,6 +37,7 @@ class Dp83867:
     def __init__(self, dut: Any) -> None:
         """Bind the sequencer's MDC/MDIO pins and set the counters the model reports."""
         self.dut = dut
+        self.ack = True
         self.recr = 0
         self.fcs = 0
         self.direct: dict[int, int] = {}
@@ -51,6 +52,8 @@ class Dp83867:
         self._read_slot = -1
         self._read_data = 0
         self._mdc = 0
+        self._cycle = 0
+        self._edge_cycle = 0
 
     def _line(self) -> int:
         if not int(self.dut.o_mdio_t.value):
@@ -68,7 +71,9 @@ class Dp83867:
         return self.direct.get(reg, 0)
 
     def _write(self, reg: int, data: int) -> None:
-        if reg == REG_REGCR:
+        if reg == REG_RECR:
+            self.recr = 0
+        elif reg == REG_REGCR:
             self.regcr_mode = data & 0xC000
         elif reg == REG_ADDAR:
             if self.regcr_mode == 0x4000:
@@ -130,7 +135,27 @@ class Dp83867:
         """Sample the pins once per clock and feed the line level back."""
         while True:
             await FallingEdge(self.dut.i_clk)
+            if self.ack:
+                self.dut.i_phy_diag_ack.value = int(self.dut.o_phy_diag.value) >> 32
+            if not int(self.dut.o_phy_rst_n.value):
+                self._bits = []
+                self._ones = 0
+                self._read_slot = -1
+                self.phy_drives = False
+                self.phy_out = 1
+            self._cycle += 1
             mdc = int(self.dut.o_phy_mdc.value)
+            if mdc != self._mdc:
+                if int(self.dut.o_phy_rst_n.value):
+                    width = self._cycle - self._edge_cycle
+                    assert width >= 16, f"short MDC half-period: {width} clocks"
+                    if not mdc:
+                        assert width == 16, f"MDC high period: {width} clocks"
+                self._edge_cycle = self._cycle
+            if self.phy_drives:
+                assert int(self.dut.o_mdio_t.value), (
+                    "master drove during PHY turnaround/data"
+                )
             if mdc and not self._mdc:
                 self.rising()
             self._mdc = mdc
@@ -151,6 +176,7 @@ async def bootstrap_writes_and_counter_polls(dut: Any) -> None:
     Clock(dut.i_clk, 20, unit="ns").start()
     dut.i_rst.value = 1
     dut.i_mdio_i.value = 1
+    dut.i_phy_diag_ack.value = int(dut.o_phy_diag.value) >> 32
     phy = Dp83867(dut)
     phy.recr, phy.fcs = 0x1234, 0x00AB
     cocotb.start_soon(phy.run())
@@ -175,3 +201,73 @@ async def bootstrap_writes_and_counter_polls(dut: Any) -> None:
     diag = int(dut.o_phy_diag.value)
     assert (diag & 0xFFFF, (diag >> 16) & 0xFFFF) == (0x0007, 0xFFFE)
     assert len(phy.reads) == 4
+
+
+@cocotb.test()
+async def receive_counter_is_cleared_after_read(dut: Any) -> None:
+    """Clear an acknowledged RECR so unchanged errors are counted once."""
+    Clock(dut.i_clk, 20, unit="ns").start()
+    dut.i_rst.value = 1
+    dut.i_mdio_i.value = 1
+    dut.i_phy_diag_ack.value = int(dut.o_phy_diag.value) >> 32
+    phy = Dp83867(dut)
+    phy.recr = 0xFFFF
+    cocotb.start_soon(phy.run())
+    await ClockCycles(dut.i_clk, 10)
+    dut.i_rst.value = 0
+    toggle = int(dut.o_phy_diag.value) >> 32
+    await _wait_poll(dut, toggle)
+    assert phy.recr == 0, "RECR requires a dummy write; reading does not clear it"
+    assert int(dut.o_phy_diag.value) & 0xFFFF == 0xFFFF, (
+        "an acknowledged saturated value is valid"
+    )
+    toggle = int(dut.o_phy_diag.value) >> 32
+    await _wait_poll(dut, toggle)
+    assert int(dut.o_phy_diag.value) & 0xFFFF == 0, (
+        "unchanged errors were sampled again"
+    )
+
+
+@cocotb.test()
+async def missing_phy_does_not_publish(dut: Any) -> None:
+    """Reject a released MDIO line without a turnaround response."""
+    Clock(dut.i_clk, 20, unit="ns").start()
+    dut.i_rst.value = 1
+    dut.i_mdio_i.value = 1
+    dut.i_phy_diag_ack.value = int(dut.o_phy_diag.value) >> 32
+    await ClockCycles(dut.i_clk, 10)
+    dut.i_rst.value = 0
+    before = int(dut.o_phy_diag.value)
+    for _ in range(800):
+        await ClockCycles(dut.i_clk, 100)
+        assert int(dut.o_phy_diag.value) == before, "unanswered MDIO poll was published"
+    assert int(dut.o_phy_init_done.value)
+
+
+@cocotb.test()
+async def published_sample_waits_for_acknowledgement(dut: Any) -> None:
+    """Preserve a pending sample across a stopped consumer and source reset."""
+    Clock(dut.i_clk, 20, unit="ns").start()
+    dut.i_rst.value = 1
+    dut.i_mdio_i.value = 1
+    dut.i_phy_diag_ack.value = int(dut.o_phy_diag.value) >> 32
+    phy = Dp83867(dut)
+    phy.ack = False
+    phy.recr, phy.fcs = 9, 3
+    cocotb.start_soon(phy.run())
+    await ClockCycles(dut.i_clk, 10)
+    dut.i_rst.value = 0
+    toggle = int(dut.o_phy_diag.value) >> 32
+    await _wait_poll(dut, toggle)
+    published = int(dut.o_phy_diag.value)
+    phy.recr, phy.fcs = 17, 5
+    await ClockCycles(dut.i_clk, 50000)
+    assert int(dut.o_phy_diag.value) == published
+    dut.i_rst.value = 1
+    await ClockCycles(dut.i_clk, 10)
+    dut.i_rst.value = 0
+    await ClockCycles(dut.i_clk, 50000)
+    assert int(dut.o_phy_diag.value) == published
+    phy.ack = True
+    await _wait_poll(dut, published >> 32)
+    assert int(dut.o_phy_diag.value) & 0xFFFF == 17

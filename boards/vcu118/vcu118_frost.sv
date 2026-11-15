@@ -202,6 +202,7 @@ module vcu118_frost #(
   logic nic_1g_tx_raw_valid, nic_1g_rx_raw_valid, nic_1g_rx_signal_ok;
   logic [ 4:0] nic_1g_phy_status;
   logic [32:0] nic_1g_phy_diag;
+  logic        nic_1g_phy_diag_ack;
   logic [ 3:1] nic_1g_phy_ctrl;
   logic        nic_1g_rx_block_lock;
 
@@ -229,6 +230,7 @@ module vcu118_frost #(
       .i_phy_ctrl     (nic_1g_phy_ctrl),
       .o_phy_status   (nic_1g_phy_status),
       .o_phy_diag     (nic_1g_phy_diag),
+      .i_phy_diag_ack (nic_1g_phy_diag_ack),
       .i_rx_block_lock(nic_1g_rx_block_lock)
   );
 
@@ -350,6 +352,7 @@ module vcu118_frost #(
       .i_nic_1g_rx_signal_ok (nic_1g_rx_signal_ok),
       .i_nic_1g_phy_status   (nic_1g_phy_status),
       .i_nic_1g_phy_diag     (nic_1g_phy_diag),
+      .o_nic_1g_phy_diag_ack (nic_1g_phy_diag_ack),
       .o_nic_1g_phy_ctrl     (nic_1g_phy_ctrl),
       .o_nic_1g_rx_block_lock(nic_1g_rx_block_lock),
 
