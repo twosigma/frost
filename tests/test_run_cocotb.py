@@ -1011,7 +1011,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Ssnpm: senvcfg.PMM WARL; U-mode and MPRV loads, stores, AMOs, LR/SC and "
             "cbo.zero through tagged pointers for PMLEN 7 and 16 under Sv39 and Bare, over "
             "DDR and BRAM; forwarding and ordering across tags; xtval of masked faults; "
-            "base-offset wrap, split accesses, SRET and mode changes under timer interrupts; "
+            "base-offset wrap, split accesses, tagged Svpbmt NC/IO pages, SRET and "
+            "mode changes under timer interrupts; "
             "no masking in S, M, with MXR or for fetch"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),

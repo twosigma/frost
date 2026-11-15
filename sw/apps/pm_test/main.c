@@ -42,6 +42,8 @@
  *      tagged cache-block management operations.
  *   G  Consecutive PMM, MPRV, MXR and SUM changes around loads and stores
  *      while timer interrupts arrive; SRET into U applies its masking mode.
+ *   H  Tagged Svpbmt NC/IO loads, stores, cache-block operations and atomic
+ *      faults use the transformed VA and preserve the cached backing data.
  */
 
 #include <stdint.h>
@@ -52,6 +54,7 @@
 
 #define CSR_SENVCFG 0x10A
 #define CSR_MENVCFG 0x30A
+#define ENVCFG_PBMTE (1ul << 62)
 #define ENVCFG_CBZE (1ul << 7)
 #define ENVCFG_CBO (ENVCFG_CBZE | (1ul << 6) | (3ul << 4))
 #define PMM_SHIFT 32
@@ -93,10 +96,13 @@
 #define FRAME(n) (0x81100000ul + ((unsigned long) (n) << 12))
 /* Low VA window 0x400000 (root[0] -> l1[2] -> l0) and its upper-half twin
  * 0xFFFFFFFFC0400000 (root[511] -> l1_up[2] -> l0). l0[0..3] map DDR frames
- * 0..3, l0[4] the BRAM page, and l0[6] frame 2 with l0[7] unmapped. */
+ * 0..3, l0[4] the BRAM page, l0[6] frame 2 with l0[7] unmapped, and
+ * l0[8..9] NC/IO aliases of frame 0. */
 #define VA_LO 0x00400000ul
 #define VA_UP 0xFFFFFFFFC0400000ul
 #define PG_BRAM 4
+#define PG_NC 8
+#define PG_IO 9
 
 enum kind {
     K_LD,
@@ -488,6 +494,8 @@ static void build_tables(void)
     l0[PG_BRAM] = PTE_PPN(g_bram_page) | URWAD;
     /* A cached lower page followed by an unmapped page for split faults. */
     l0[6] = PTE_PPN(FRAME(2)) | URWAD;
+    l0[PG_NC] = PTE_PPN(FRAME(0)) | URWAD | (1ul << 61);
+    l0[PG_IO] = PTE_PPN(FRAME(0)) | URWAD | (2ul << 61);
     __asm__ volatile("fence rw, rw" ::: "memory");
 }
 
@@ -857,6 +865,48 @@ static void sret_accesses(void)
     }
 }
 
+/* NC/IO aliases are selected after the tagged VA reaches translation. */
+static void pbmt_accesses(int pmlen)
+{
+    volatile uint64_t *word = (volatile uint64_t *) (FRAME(0) + 64);
+    const int faults[] = {K_LR, K_SC, K_AMO, K_CBOZ};
+    const int cmos[] = {K_CLEAN, K_FLUSH, K_INVAL};
+    for (int page = PG_NC; page <= PG_IO; page++) {
+        for (int how = H_U; how <= H_MPRV_U; how++) {
+            unsigned long base = VA_LO + ((unsigned long) page << 12) + 64;
+            unsigned long va = tag(base, pmlen, 0x5Aul);
+            unsigned long other = tag(base, pmlen, 0x2Cul);
+            unsigned long seed = 0x123456789ABCDEF0ul ^ (unsigned long) page;
+            *word = seed;
+            __asm__ volatile("fence rw, rw" ::: "memory");
+            expect_value("H pbmt-load", how, K_LD, va, access(how, K_LD, va, 0), seed);
+            access(how, K_SD, other, ~seed);
+            expect_trap("H pbmt-store", how, K_SD, other, NO_TRAP, 0);
+            __asm__ volatile("fence rw, rw" ::: "memory");
+            expect_value("H pbmt-backing", how, K_SD, other, *word, ~seed);
+            expect_value("H pbmt-cross-tag",
+                         how,
+                         K_LD,
+                         other,
+                         store_load(how, va, other, seed + 1, 1),
+                         seed + 1);
+            for (unsigned i = 0; i < sizeof(faults) / sizeof(faults[0]); i++) {
+                access(how, faults[i], va, 1);
+                expect_trap("H pbmt-atomic-fault",
+                            how,
+                            faults[i],
+                            va,
+                            faults[i] == K_LR ? CAUSE_LOAD_ACCESS : CAUSE_STORE_ACCESS,
+                            base);
+            }
+            for (unsigned i = 0; i < sizeof(cmos) / sizeof(cmos[0]); i++) {
+                access(how, cmos[i], va, 0);
+                expect_trap("H pbmt-cmo", how, cmos[i], va, NO_TRAP, 0);
+            }
+        }
+    }
+}
+
 int main(void)
 {
     volatile uint64_t bram_page[512] __attribute__((aligned(4096)));
@@ -868,7 +918,7 @@ int main(void)
     for (int p = 0; p < 4; p++)
         for (int i = 0; i < 512; i++)
             ((volatile uint64_t *) FRAME(p))[i] = 0;
-    csr_write(0x30A, ENVCFG_CBO);
+    csr_write(0x30A, ENVCFG_CBO | ENVCFG_PBMTE);
 
     /* A: WARL. */
     {
@@ -913,6 +963,7 @@ int main(void)
             boundary_accesses(pmlen, virt);
             split_accesses(pmlen, virt);
             if (virt) {
+                pbmt_accesses(pmlen);
                 tagged_accesses(pmlen == 7 ? "B sv39-ddr-7" : "B sv39-ddr-16",
                                 pmlen,
                                 1,
