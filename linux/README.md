@@ -146,7 +146,7 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 The generated DTB declares the
 [implemented extensions and profile properties](../README.md#supported-risc-v-extensions),
-including Sstc, Smaia, Ssaia, Sscofpmf, Sstvala, Svade and Svvptc, 64-byte
+including Sstc, Smaia, Ssaia, Sscofpmf, Sstvala, Svade, Svpbmt and Svvptc, 64-byte
 `riscv,cbom-block-size`, `riscv,cboz-block-size` and `riscv,cbop-block-size`,
 and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
 ABI. The ISA list includes Zihintntl, Zimop, Zcb and Zcmop. Svvptc tells Linux that a PTE changed from invalid to valid becomes
@@ -159,6 +159,24 @@ probe, and the instruction MMU expires both its fault memo and completed
 registered refusals every 64 clocks. Even a refusal copied from the memo on its expiry
 edge is dropped within 128 clocks. Trap, xRET and FENCE-class full flushes
 also drop memo entries and verdicts, including a response on the flush edge.
+
+Svpbmt: OpenSBI sets `menvcfg.PBMTE` when the DTB lists `svpbmt`, and Linux
+then maps `ioremap` regions with PBMT = IO and write-combining or
+non-coherent-DMA remaps with PBMT = NC (`_PAGE_IO_SVPBMT`,
+`_PAGE_NOCACHE_SVPBMT`, patched in by the kernel's alternatives). Device pages
+are uncached by their PMA already, so every MMIO driver behaves as before; an
+NC or IO page over DDR uses the configured uncached alias through the coherent
+DMA port. Loads issue at the ROB head, and alias stores retire after their bus
+response. Memory loads can be flushed and repeated after an interrupt or debug
+halt; the [CPU memory-type description](../hw/rtl/cpu_and_mem/cpu/README.md)
+details the ordering and retry behavior for each physical address range.
+A 2 GiB DDR aperture has no
+alias in the current physical map and rejects those DDR mappings. For wider
+apertures, the top 2 GiB also has no alias. Switching between cacheable and
+uncached views requires `fence iorw, iorw; cbo.flush; fence iorw, iorw` for the
+location. The NIC's `dma-coherent` property keeps its normal DMA buffers
+cacheable; its IO register mappings exercise PBMT without using the DDR alias.
+`/proc/cpuinfo` lists `svpbmt` in its `isa` line.
 
 ## Counters and mcounteren
 

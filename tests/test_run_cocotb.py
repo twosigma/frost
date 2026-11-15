@@ -958,6 +958,49 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Without the vector unit, mstatus.VS reads zero and vector CSRs trap",
     ),
+    "svpbmt_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description=(
+            "Svpbmt: PBMTE and reserved-encoding page faults, NC and IO pages over DDR "
+            "(4 KiB and 2 MiB) and low BRAM coherent with cacheable views, AMO/LR/SC/"
+            "cbo.zero/fetch access faults, the field kept in both TLB levels, and "
+            "adjacent mixed-view accesses with and without the fence/flush sequence"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+    ),
+    "svpbmt_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt with the cache, load-queue and store-queue assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "svpbmt_test_2g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt at 2 GiB: DDR access faults, page-permission precedence and device mappings",
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "31"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=31", "--assert"),
+    ),
+    "svpbmt_bus_error": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt alias read/write response faults, xtval and port recovery",
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DSVPBMT_BUS_ERRORS=1"),
+            ("COCOTB_PLUSARGS", "+axi_error_check=0 +axi_rd_error_addr=3000000"),
+        ),
+        verilator_extra_args=("--assert",),
+    ),
     "vec_state_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

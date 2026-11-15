@@ -24,14 +24,14 @@
   delegated supervisor bits at every privilege; sip permits writes to
   delegated SSIP and LCOFIP. medeleg/mideleg use the package WARL masks:
   M-mode ECALL and the machine software, timer and external interrupt classes
-  cannot delegate. menvcfg implements FIOM, CBIE, CBCFE, CBZE and STCE;
+  cannot delegate. menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE;
   senvcfg, required for S/U support, implements FIOM, CBIE, CBCFE and CBZE.
   FIOM is stored only (see riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero
   below M, and CBCFE and CBIE gate cbo.clean/cbo.flush and cbo.inval. CBIE is
   WARL {00, 01, 11}: a write of the reserved 10 stores 00. With
   CBO_INVAL_AS_FLUSH, 11 also stores 01 and cbo.inval executes as cbo.flush at
-  every privilege. PBMTE is read-only zero: the page-table walker has no
-  Svpbmt.
+  every privilege. PBMTE goes to the page-table walker (o_menvcfg_pbmte),
+  which accepts Svpbmt PTE encodings only while it is set.
 
   mstatus.MPRV makes data accesses use MPP. MPP and dcsr.prv fold reserved
   2'b10 to U. FS resets to Initial and becomes Dirty on FP state writes;
@@ -327,6 +327,10 @@ module csr_file #(
     // also raises o_csr_translation_flush_req, which discards any walk in
     // flight.
     output logic [43:0] o_satp_root_ppn,
+    // menvcfg.PBMTE for the walker (registered storage). Software executes
+    // sfence.vma after changing it (Svpbmt), which discards the walk in
+    // flight and the translations the TLBs hold.
+    output logic o_menvcfg_pbmte,
 
     // mstatus.FS == Off. id_stage decodes every F/D instruction as illegal
     // while it is set, and the reorder buffer's allocation check traps them
@@ -676,8 +680,10 @@ module csr_file #(
   logic menvcfg_cbze, senvcfg_cbze;
   logic menvcfg_cbcfe, senvcfg_cbcfe;
   logic [1:0] menvcfg_cbie, senvcfg_cbie;
+  logic menvcfg_pbmte;
   logic [XLEN-1:0] menvcfg, senvcfg;  // Readback views of the stored fields
   assign menvcfg = (XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit) |
+      (XLEN'(menvcfg_pbmte) << riscv_pkg::MenvcfgPbmteBit) |
       (XLEN'(menvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
       (XLEN'(menvcfg_cbcfe) << riscv_pkg::EnvcfgCbcfeBit) |
       (XLEN'(menvcfg_cbie) << riscv_pkg::EnvcfgCbieLsb) |
@@ -1812,6 +1818,7 @@ module csr_file #(
       menvcfg_cbze               <= 1'b0;
       menvcfg_cbcfe              <= 1'b0;
       menvcfg_cbie               <= 2'b00;
+      menvcfg_pbmte              <= 1'b0;
       menvcfg_fiom               <= 1'b0;
       senvcfg_cbze               <= 1'b0;
       senvcfg_cbcfe              <= 1'b0;
@@ -1891,7 +1898,7 @@ module csr_file #(
             satp_ppn <= satp_new_value[SatpPpnBits-1:0];
           end
         end
-        // menvcfg implements FIOM, CBIE, CBCFE, CBZE and STCE, senvcfg
+        // menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE, senvcfg
         // FIOM, CBIE, CBCFE and CBZE (the rest stays WARL-0); stimecmp is the
         // full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
@@ -1899,6 +1906,7 @@ module csr_file #(
           menvcfg_cbze  <= menvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
           menvcfg_cbcfe <= menvcfg_new_value[riscv_pkg::EnvcfgCbcfeBit];
           menvcfg_cbie  <= cbie_warl(menvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
+          menvcfg_pbmte <= menvcfg_new_value[riscv_pkg::MenvcfgPbmteBit];
           menvcfg_fiom  <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
@@ -2180,6 +2188,7 @@ module csr_file #(
 `endif
   assign o_fetch_priv_u  = (fetch_priv_q == riscv_pkg::PrivU);
   assign o_satp_root_ppn = satp_ppn;
+  assign o_menvcfg_pbmte = menvcfg_pbmte;
 
   // ==========================================================================
   // CSR Read Multiplexer
@@ -3412,6 +3421,7 @@ module csr_file #(
   logic [$bits(menvcfg_cbze)-1:0] f_old_menvcfg_cbze;
   logic [$bits(menvcfg_cbcfe)-1:0] f_old_menvcfg_cbcfe;
   logic [$bits(menvcfg_cbie)-1:0] f_old_menvcfg_cbie;
+  logic [$bits(menvcfg_pbmte)-1:0] f_old_menvcfg_pbmte;
   logic [$bits(menvcfg_fiom)-1:0] f_old_menvcfg_fiom;
   logic [$bits(menvcfg_stce)-1:0] f_old_menvcfg_stce;
   logic [$bits(mepc)-1:0] f_old_mepc;
@@ -3487,6 +3497,7 @@ module csr_file #(
     f_old_menvcfg_cbze <= menvcfg_cbze;
     f_old_menvcfg_cbcfe <= menvcfg_cbcfe;
     f_old_menvcfg_cbie <= menvcfg_cbie;
+    f_old_menvcfg_pbmte <= menvcfg_pbmte;
     f_old_menvcfg_fiom <= menvcfg_fiom;
     f_old_menvcfg_stce <= menvcfg_stce;
     f_old_mepc <= mepc;
@@ -3549,6 +3560,7 @@ module csr_file #(
       f_old_menvcfg_cbze               <= 1'b0;
       f_old_menvcfg_cbcfe              <= 1'b0;
       f_old_menvcfg_cbie               <= 2'b00;
+      f_old_menvcfg_pbmte              <= 1'b0;
       f_old_menvcfg_fiom               <= 1'b0;
       f_old_senvcfg_cbze               <= 1'b0;
       f_old_senvcfg_cbcfe              <= 1'b0;
@@ -3634,7 +3646,7 @@ module csr_file #(
             f_old_satp_ppn <= csr_new_value[SatpPpnBits-1:0];
           end
         end
-        // menvcfg implements FIOM, CBIE, CBCFE, CBZE and STCE, senvcfg
+        // menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE, senvcfg
         // FIOM, CBIE, CBCFE and CBZE (the rest stays WARL-0); stimecmp is the
         // full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
@@ -3642,6 +3654,7 @@ module csr_file #(
           f_old_menvcfg_cbze  <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
           f_old_menvcfg_cbcfe <= csr_new_value[6];
           f_old_menvcfg_cbie  <= f_cbie_ref(csr_new_value[5:4]);
+          f_old_menvcfg_pbmte <= csr_new_value[riscv_pkg::MenvcfgPbmteBit];
           f_old_menvcfg_fiom  <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
@@ -3768,6 +3781,7 @@ module csr_file #(
       assert (medeleg_q == f_old_medeleg_q);
       assert (menvcfg_cbze == f_old_menvcfg_cbze);
       assert ({menvcfg_cbcfe, menvcfg_cbie} == {f_old_menvcfg_cbcfe, f_old_menvcfg_cbie});
+      assert (menvcfg_pbmte == f_old_menvcfg_pbmte);
       assert (menvcfg_fiom == f_old_menvcfg_fiom);
       assert (menvcfg_stce == f_old_menvcfg_stce);
       assert (mepc == f_old_mepc);

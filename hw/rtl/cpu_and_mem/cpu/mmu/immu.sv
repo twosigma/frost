@@ -227,11 +227,20 @@ module immu #(
   logic [1:0][PpnBits-1:0] tlb_ppn_own;
   logic [1:0] tlb_giga, tlb_mega;
   logic tlb_install;
+  logic walk_resp_leaf;
 
+  // The hit's Svpbmt field: a nonzero one makes the page unfetchable (the
+  // ITLB's per-entry fetch checks apply it; the walk response is checked
+  // below).
+  logic [1:0][1:0] tlb_pbmt;
   assign tlb_vpn[0] = pc_vpn;
   assign tlb_vpn[1] = VpnBits'({{VpnBits{1'bx}}, np_va_q});
-  assign tlb_install = walk_resp_matches &&
-      (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
+  // An NC/IO no-alias refusal carries leaf permissions. Keep that leaf in
+  // the ITLB: PBMT refuses fetch after the live privilege and execute checks.
+  assign walk_resp_leaf = ((i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) ||
+        ((i_walk_resp.fault_kind == riscv_pkg::DFAULT_ACCESS) &&
+         (i_walk_resp.pbmt != riscv_pkg::PbmtPma)));
+  assign tlb_install = walk_resp_matches && walk_resp_leaf && !i_tlb_invalidate;
 
   dtlb #(
       .NUM_ENTRIES    (NUM_ENTRIES),
@@ -256,6 +265,7 @@ module immu #(
       .o_perm_u(tlb_u),
       .o_perm_d(tlb_d),
       .o_level(tlb_level),
+      .o_pbmt(tlb_pbmt),
       .o_device_page(),  // fetch never reaches a device window
       // The data MMU's leaf checks; fetch uses its own.
       .i_perm_store('0),
@@ -278,8 +288,8 @@ module immu #(
   );
 
   // ---------------------------------------------------------------------------
-  // One-entry memo of the last faulting walk (resp_refused). A walk fault
-  // depends on the page tables, not on privilege, so the memo carries no
+  // One-entry memo of the last faulting walk without a leaf (resp_refused).
+  // Its fault depends on the page tables, not on privilege, so the memo carries no
   // privilege tag. It holds a fault only until the next epoch expiry,
   // invalidate or full pipeline flush (Svvptc). Expiry also bounds the
   // lifetime of a wrong-path refusal that never causes a trap. A fetch that
@@ -296,8 +306,7 @@ module immu #(
   logic memo_page_q;
   logic resp_refused;
   logic walk_memo_ok_q;  // the walk in flight was accepted after the last full flush
-  assign resp_refused = walk_resp_matches && walk_memo_ok_q &&
-      (i_walk_resp.fault_kind != riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
+  assign resp_refused = walk_resp_matches && walk_memo_ok_q && !walk_resp_leaf && !i_tlb_invalidate;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_full_flush) walk_memo_ok_q <= 1'b0;
@@ -372,13 +381,15 @@ module immu #(
     begin
       r = '0;
       resp_match = resp_valid && !invalidate && (resp.vpn == vpn);
-      use_resp_leaf = resp_match && (resp.fault_kind == riscv_pkg::DFAULT_NONE);
+      use_resp_leaf = resp_match && ((resp.fault_kind == riscv_pkg::DFAULT_NONE) ||
+          ((resp.fault_kind == riscv_pkg::DFAULT_ACCESS) && (resp.pbmt != riscv_pkg::PbmtPma)));
       hit_valid = hit && !invalidate;
       memo_match = memo_valid && !invalidate && (memo_vpn == vpn);
       resp_hi_nonzero = |resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits];
       resp_page_ppn = ppn_from_resp(resp, vpn);
       resp_perm_ok = resp.perm_x && (resp.perm_u == priv_u);
-      resp_pma_bad = resp_hi_nonzero ||
+      // Instruction fetch from an NC or IO page (Svpbmt) is an access fault.
+      resp_pma_bad = resp_hi_nonzero || (resp.pbmt != riscv_pkg::PbmtPma) ||
           !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({resp_page_ppn, 12'h000}));
 
       // Form the response/memo candidate independently of the ITLB hit.
@@ -465,12 +476,12 @@ module immu #(
     for (int p = 0; p < 2; p++) begin
       if (tlb_hit[p] && !$isunknown(
               {tlb_x[p], tlb_u[p], tlb_hi_nonzero[p], tlb_ppn[p], i_priv_u,
-               tlb_fetch_perm_fault[p], tlb_fetch_pma_bad[p]}
+               tlb_fetch_perm_fault[p], tlb_fetch_pma_bad[p], tlb_pbmt[p]}
           )) begin
         p_itlb_fetch_verdicts_exact :
         assert (tlb_fetch_perm_fault[p] == !(tlb_x[p] && (tlb_u[p] == i_priv_u)) &&
                 tlb_fetch_pma_bad[p] ==
-                (tlb_hi_nonzero[p] || !riscv_pkg::pma_fetch_ok(
+                (tlb_hi_nonzero[p] || (tlb_pbmt[p] != 2'd0) || !riscv_pkg::pma_fetch_ok(
             riscv_pkg::XLEN'({tlb_ppn[p], 12'h000})
         )));
       end
@@ -510,7 +521,7 @@ module immu #(
   assign resp_super_ok = resp_for_live_key && (i_walk_resp.vpn == pc_vpn) &&
       (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && i_walk_resp.perm_x &&
       (i_walk_resp.perm_u == i_priv_u) && !(|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits]) &&
-      riscv_pkg::pma_fetch_ok(
+      (i_walk_resp.pbmt == riscv_pkg::PbmtPma) && riscv_pkg::pma_fetch_ok(
       riscv_pkg::XLEN'({resp_ppn, 12'h000})
   ) && !resp_super_end;
   assign super_next_ok = !pc_noncanon && !i_tlb_invalidate &&

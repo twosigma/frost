@@ -1227,12 +1227,13 @@ async def test_misaligned_mmio_completes_without_device_read_during_drain(
 async def test_device_atomics_and_unserved_device_loads_fault_without_a_read(
     dut: Any,
 ) -> None:
-    """AMO and LR to a device window, and loads outside the windows, fault with no read.
+    """Device or alias atomics, and loads outside the windows, fault with no read.
 
     The device windows take loads but no atomics (AMO cause 7, LR cause 5), and
     a device-quadrant address outside them is unmapped (load cause 5). Each
     fault completes at the ROB head with its address as the trap value; a load
-    inside a window still reads the device.
+    inside a window reads the device. A PBMT alias permits an MMIO load but
+    rejects AMO and LR, and high address bits cannot alias the physical map.
     """
     from .lq_interface import AMOSWAP_W, LR_W
 
@@ -1240,6 +1241,10 @@ async def test_device_atomics_and_unserved_device_loads_fault_without_a_read(
     cases: list[tuple[str, int, bool, bool, int, int | None]] = [
         ("amo-mmio-window", 0x4000_101C, True, False, AMOSWAP_W, 7),
         ("lr-mmio-window", 0x4000_101C, False, True, LR_W, 5),
+        ("amo-pbmt-alias", 0xC000_101C, True, False, AMOSWAP_W, 7),
+        ("lr-pbmt-alias", 0xC000_101C, False, True, LR_W, 5),
+        ("load-pbmt-alias", 0xC000_101C, False, False, 0, None),
+        ("load-above-pbmt-alias", 0x1_C000_101C, False, False, 0, 5),
         ("amo-aplic-window", 0x4400_0004, True, False, AMOSWAP_W, 7),
         ("amo-unserved", 0x4011_8000, True, False, AMOSWAP_W, 7),
         ("load-unserved", 0x4011_8000, False, False, 0, 5),

@@ -322,7 +322,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherent_cpu.sby",
-        "Coherent SC ownership, load selection, parking, and reservation cuts.",
+        "Coherent SC ownership, load selection, address/PBMT classification, parking, and reservation cuts.",
         tasks=(
             "coh_sc_selected_prove",
             "coh_sc_class_small_prove",
@@ -1035,10 +1035,27 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover", "walk_select_prove", "walk_select_cover"),
     ),
     FormalTarget(
+        "ptw_pbmt_alias.sby",
+        "Svpbmt alias bit predicates equal the full-address range check for every address",
+        tasks=(
+            "bmc_small",
+            "bmc_1g",
+            "bmc_2g",
+            "bmc_4g",
+            "bmc_8g",
+            "bmc_16g",
+            "bmc_32g",
+            "bmc_64g",
+            "bmc_128g",
+            "bmc_external",
+        ),
+    ),
+    FormalTarget(
         "ptw.sby",
-        "Page-table walk state matches reference PTE classification, and the walk "
+        "Page-table walk state matches reference PTE classification, including the "
+        "Svpbmt reserved encodings, PBMTE and the uncached alias, and the walk "
         "cache holds only valid pointers that memory holds, cleared by every discard",
-        tasks=("bmc", "cover", "bmc_nopwc", "bmc_replace"),
+        tasks=("bmc", "cover", "bmc_nopwc", "bmc_replace", "bmc_wide", "cover_wide"),
     ),
     FormalTarget(
         "reorder_buffer.sby",
@@ -1319,7 +1336,7 @@ FORMAL_TARGETS = [
         "axi_mux.sby",
         "AXI4 rules on every port, W in AW-grant order, and B and R steered by port, "
         "unbounded",
-        tasks=("prove", "prove_soc", "cover"),
+        tasks=("prove", "prove_soc", "prove_soc4", "cover"),
     ),
     FormalTarget(
         "line_size_adapter.sby",
@@ -2611,6 +2628,13 @@ SBY_TASKS = [
     ("bmc16", "Bounded local equivalence at depth 16"),
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
+    ("bmc_small", "Svpbmt alias range equivalence at a 256 MiB DDR capacity"),
+    ("bmc_2g", "Svpbmt alias range equivalence at a 2 GiB DDR capacity"),
+    ("bmc_4g", "Svpbmt alias range equivalence at a 4 GiB DDR capacity"),
+    ("bmc_8g", "Svpbmt alias range equivalence at an 8 GiB DDR capacity"),
+    ("bmc_16g", "Svpbmt alias range equivalence at a 16 GiB DDR capacity"),
+    ("bmc_32g", "Svpbmt alias range equivalence at a 32 GiB DDR capacity"),
+    ("bmc_external", "Svpbmt alias is disabled outside the FROST physical map"),
     ("prove_full_width", "Unbounded proof with a bus as wide as a line"),
     (
         "prove_soc",
@@ -2619,6 +2643,7 @@ SBY_TASKS = [
     ),
     ("prove_soc_held", "Four-burst AXI bridge B-channel stability partition"),
     ("bmc_soc", "Bounded check with SoC burst and line-ID capacities"),
+    ("prove_soc4", "Unbounded proof of the four-port SoC AXI mux"),
     (
         "prove_soc8_0",
         "Eight-burst AXI bridge safety, explicit assertion partition 0 of nine",
@@ -2765,6 +2790,11 @@ SBY_TASKS = [
     ),
     ("bmc_nopwc", "Bounded checking of the page-table walker without its walk cache"),
     ("bmc_replace", "Bounded checking through replacement in one-entry walk caches"),
+    (
+        "bmc_wide",
+        "Bounded walker checking with the 64 GiB DDR map and its Svpbmt alias gap",
+    ),
+    ("cover_wide", "Svpbmt alias and no-alias reachability with the 64 GiB DDR map"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
     (
         "bmc_small_btb",
