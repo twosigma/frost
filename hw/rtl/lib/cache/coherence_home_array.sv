@@ -368,7 +368,6 @@ module coherence_home_array #(
         read_token_q[stage] <= read_token_q[stage-1];
         read_row_q[stage]   <= read_row_q[stage-1];
       end
-      if (read_valid_q[DATA_READ_LATENCY-1]) o_read_data <= data_rdata;
       write_valid_q[0] <= update_fire;
       write_data_q[0]  <= i_update_has_data;
       write_token_q[0] <= i_update_token;
@@ -407,9 +406,6 @@ module coherence_home_array #(
       o_resp_hit <= 1'b0;
       o_resp_available <= 1'b0;
       o_resp_two_available <= 1'b0;
-      o_resp_way <= '0;
-      o_resp_addr <= '0;
-      o_resp_state <= '0;
     end else begin
       case (phase_q)
         Init: begin
@@ -434,9 +430,6 @@ module coherence_home_array #(
           o_resp_hit <= hit;
           o_resp_available <= hit || !(&i_exclude);
           o_resp_two_available <= $countones(~i_exclude) >= 2;
-          o_resp_way <= selected;
-          o_resp_addr <= {tags_q[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
-          o_resp_state <= tags_q[selected][TagBits+:2];
           phase_q <= Reply;
         end
         Reply: if (i_resp_ready) phase_q <= Idle;
@@ -452,6 +445,18 @@ module coherence_home_array #(
         phase_q <= Tags;
       end
     end
+  end
+  // The response's way, address and state and the read data have no reset:
+  // each is read only in Reply (o_resp_valid) or with o_read_valid, both
+  // after their own load, and the reset clears those phases and valids.
+  // The core reset then leaves these registers' enables.
+  always_ff @(posedge i_clk) begin
+    if (phase_q == Select) begin
+      o_resp_way <= selected;
+      o_resp_addr <= {tags_q[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
+      o_resp_state <= tags_q[selected][TagBits+:2];
+    end
+    if (read_valid_q[DATA_READ_LATENCY-1]) o_read_data <= data_rdata;
   end
   if (ADDR_WIDTH < 32 || ADDR_WIDTH > 56 || (LINE_BYTES != 32 && LINE_BYTES != 64) ||
       Sets < 2 || (Sets & (Sets - 1)) != 0 || (WAYS != 1 && WAYS != 4) ||
