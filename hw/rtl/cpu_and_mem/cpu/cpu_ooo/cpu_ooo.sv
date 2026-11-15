@@ -1095,6 +1095,8 @@ module cpu_ooo #(
   // ROB's vector-config-in-flight bit, the architectural vector state, the
   // retirement of vector arithmetic, the unit's commit hold and idle state.
   logic [8:0] vec_vtype_spec;
+  // vec_lmul_legality's classes of the dispatch slot-1 instruction
+  logic [3:0] dispatch_vec_lmul_illegal;
   logic vec_vtype_valid;
   logic vec_vcfg_in_flight;
   logic [15:0] csr_vec_vl, csr_vec_vstart;
@@ -1244,6 +1246,26 @@ module cpu_ooo #(
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next, producer_ctrl_next_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_go, producer_ctrl_next_go_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_hold, producer_ctrl_next_hold_2;
+      // Slot 1's vector legality classes (vec_lmul_legality) beside the shadow
+      // slice: one per producer copy, each from that copy's own instruction
+      logic [3:0] producer_vlc, producer_vlc_next, producer_vlc_next_go, producer_vlc_next_hold;
+      logic [3:0] queue_vlc, queue_vlc_next;
+      vec_lmul_legality u_vlc (
+          .i_insn(32'(decoded_packet.instruction)),
+          .o_illegal(producer_vlc)
+      );
+      vec_lmul_legality u_vlc_next (
+          .i_insn(32'(decoded_packet_next.instruction)),
+          .o_illegal(producer_vlc_next)
+      );
+      vec_lmul_legality u_vlc_next_go (
+          .i_insn(32'(decoded_packet_next_go.instruction)),
+          .o_illegal(producer_vlc_next_go)
+      );
+      vec_lmul_legality u_vlc_next_hold (
+          .i_insn(32'(decoded_packet_next_hold.instruction)),
+          .o_illegal(producer_vlc_next_hold)
+      );
       // The shadow slice of an ID packet: the same field copy as
       // producer_ctrl_next, for the go and hold outcomes.
       function automatic riscv_pkg::id_dispatch_ctrl_t id_ctrl_of(
@@ -1494,7 +1516,7 @@ module cpu_ooo #(
       decoded_bundle_queue #(
           .DEPTH(DECODED_QUEUE_DEPTH),
           .WIDTH(2 * $bits(decoded_packet)),
-          .SHADOW_WIDTH(2 * $bits(producer_ctrl)),
+          .SHADOW_WIDTH(2 * $bits(producer_ctrl) + $bits(producer_vlc)),
           .SPLIT_SHADOW_STALL(1'b1),
           .STALL_LATE_COPIES(riscv_pkg::FetchPaHoldCopies)
       ) u_queue (
@@ -1504,10 +1526,12 @@ module cpu_ooo #(
           .i_advance(!pipeline_ctrl.stall),
           .i_valid(pd_valid_q && (decoded_packet.is_real || decoded_packet_2.is_real)),
           .i_packet({decoded_packet_2, decoded_packet}),
-          .i_shadow({producer_ctrl_2, producer_ctrl}),
-          .i_shadow_next({producer_ctrl_next_2, producer_ctrl_next}),
-          .i_shadow_next_go({producer_ctrl_next_go_2, producer_ctrl_next_go}),
-          .i_shadow_next_hold({producer_ctrl_next_hold_2, producer_ctrl_next_hold}),
+          .i_shadow({producer_vlc, producer_ctrl_2, producer_ctrl}),
+          .i_shadow_next({producer_vlc_next, producer_ctrl_next_2, producer_ctrl_next}),
+          .i_shadow_next_go({producer_vlc_next_go, producer_ctrl_next_go_2, producer_ctrl_next_go}),
+          .i_shadow_next_hold({
+            producer_vlc_next_hold, producer_ctrl_next_hold_2, producer_ctrl_next_hold
+          }),
           .i_stall_early(frontend_stall_without_pa_hold),
           .i_stall_late(fetch_pa_hold_copy),
           .i_stall_flush(flush_pipeline),
@@ -1516,8 +1540,8 @@ module cpu_ooo #(
           .o_full(decoded_queue_full),
           .o_valid(queue_valid),
           .o_packet({queue_packet_2, queue_packet}),
-          .o_shadow({queue_ctrl_2, queue_ctrl}),
-          .o_shadow_next({queue_ctrl_next_2, queue_ctrl_next}),
+          .o_shadow({queue_vlc, queue_ctrl_2, queue_ctrl}),
+          .o_shadow_next({queue_vlc_next, queue_ctrl_next_2, queue_ctrl_next}),
           .o_indirect_pending(decoded_queue_indirect_pending)
       );
 `ifndef SYNTHESIS
@@ -1553,6 +1577,21 @@ module cpu_ooo #(
           assert ({producer_ctrl_next_2, producer_ctrl_next} == (pipeline_ctrl.stall ?
                   {producer_ctrl_next_hold_2, producer_ctrl_next_hold} :
                   {producer_ctrl_next_go_2, producer_ctrl_next_go}));
+        end
+      end
+`endif
+      assign dispatch_vec_lmul_illegal = queue_vlc;
+`ifndef SYNTHESIS
+      // The shadow moves whole words, so its classes stay those of its own
+      // instruction once reset has loaded it.
+      logic [3:0] queue_vlc_check;
+      vec_lmul_legality u_vlc_check (
+          .i_insn(32'(queue_ctrl.instruction)),
+          .o_illegal(queue_vlc_check)
+      );
+      always_ff @(posedge i_clk) begin
+        if (reset_seen_q && !i_rst && !$isunknown(queue_ctrl.instruction)) begin
+          p_queue_vlc_matches_instruction : assert (queue_vlc == queue_vlc_check);
         end
       end
 `endif
@@ -1726,6 +1765,10 @@ module cpu_ooo #(
       assign decoded_queue_indirect_pending = 1'b0;
       assign from_id_to_ex = decoded_packet;
       assign from_id_to_ex_2 = decoded_packet_2;
+      vec_lmul_legality u_vlc (
+          .i_insn(32'(decoded_packet.instruction)),
+          .o_illegal(dispatch_vec_lmul_illegal)
+      );
       assign rf_bypass_src_addr = {
         from_id_to_ex_2.instruction.funct7[6:2],
         from_id_to_ex_2.instruction.source_reg_2,
@@ -2897,6 +2940,7 @@ module cpu_ooo #(
       .RAW_INT_RF_VALUES(1'b1)
   ) u_dispatch (
       .i_vtype_spec(vec_vtype_spec),
+      .i_vec_lmul_illegal(dispatch_vec_lmul_illegal),
       .i_clk,
       .i_rst_n(rst_n),
 

@@ -438,14 +438,17 @@ def test_driver_splits_tx_segments_only_for_old_hardware() -> None:
 
 
 def _run_driver_function(
-    tmp_path: Path, declarations: str, function: str, main: str
+    tmp_path: Path, declarations: str, function: str | tuple[str, ...], main: str
 ) -> None:
     """Execute an actual driver helper with DMA and skb inputs supplied by a small C harness."""
     source = DRIVER_SOURCE.read_text()
-    body = re.search(rf"static [^\n]* {function}\(.*?\n\}}\n", source, re.S)
-    assert body is not None, function
+    bodies = []
+    for name in (function,) if isinstance(function, str) else function:
+        body = re.search(rf"static [^\n]* {name}\(.*?\n\}}\n", source, re.S)
+        assert body is not None, name
+        bodies.append(body.group(0))
     program = tmp_path / "driver_test.c"
-    program.write_text(declarations + "\n" + body.group(0) + "\n" + main)
+    program.write_text(declarations + "\n" + "\n".join(bodies) + "\n" + main)
     executable = tmp_path / "driver_test"
     built = subprocess.run(
         ["cc", "-std=c11", "-Wall", "-Werror", str(program), "-o", str(executable)],
@@ -453,7 +456,8 @@ def _run_driver_function(
         text=True,
     )
     assert built.returncode == 0, built.stderr
-    subprocess.run([str(executable)], check=True, capture_output=True, text=True)
+    ran = subprocess.run([str(executable)], capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
 
 
 def test_tx_unmap_matches_mapping_kind_and_skips_unmapped_descriptors(
@@ -625,3 +629,269 @@ def test_reset_timeout_detaches_the_page_pool_from_napi() -> None:
     detach = text.index("page_pool_disable_direct_recycling(priv->rx_pool);", timeout)
     assert timeout < detach < text.index("netif_device_detach(ndev)", timeout)
     assert detach < text.index("return;", timeout)
+
+
+def test_rx_buffers_share_pages_and_sync_only_where_needed() -> None:
+    """RX uses page-pool fragments, a copybreak tunable, and DMA syncs gated by dma_dev_need_sync()."""
+    source = DRIVER_SOURCE.read_text()
+    fill = re.search(r"static unsigned int frost_rx_fill\(.*?\n\}\n", source, re.S)
+    reap = re.search(r"static int frost_rx_reap\(.*?\n\}\n", source, re.S)
+    assert fill is not None and reap is not None
+    # a buffer that fits in half a page comes from a fragment; the offset lands in the descriptor address
+    assert "page_pool_alloc(priv->rx_pool, &off, &size," in fill.group(0)
+    assert "page_pool_get_dma_addr(page) + off + FROST_RX_HEADROOM" in fill.group(0)
+    # the CPU-side sync runs only when the DMA API needs it, with the fragment offset and headroom
+    sync = reap.group(0).index("if (dma_dev_need_sync(priv->dev))")
+    assert (
+        "page_pool_dma_sync_for_cpu(priv->rx_pool, page, buf->off + FROST_RX_HEADROOM, len)"
+        in reap.group(0)[sync:]
+    )
+    assert "dma_sync_single_for_cpu" not in source
+    # copybreak copies short frames and returns the fragment at once; the tunable is bounded
+    assert "len <= READ_ONCE(priv->rx_copybreak)" in reap.group(0)
+    assert "ETHTOOL_RX_COPYBREAK" in source
+    assert "page_pool_recycle_direct" not in source
+    # the pool's device-side sync spans the whole page so the last fragment syncs both frames
+    assert ".offset = 0," in source
+    assert "pp.max_len = PAGE_SIZE << pp.order;" in source
+
+
+def test_rx_uses_allocated_fragment_size_and_returns_each_buffer_once(
+    tmp_path: Path,
+) -> None:
+    """Exercise RX allocation, copybreak boundaries, sync ordering and skb failures.
+
+    The pool stub returns unequal fragments as page_pool_alloc() permits.
+    Kernel reference counting and cache maintenance require kernel testing.
+    """
+    _run_driver_function(
+        tmp_path,
+        r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+typedef uint32_t u32;
+typedef unsigned int gfp_t;
+typedef uintptr_t dma_addr_t;
+typedef unsigned int __wsum;
+#define __force
+#define __GFP_NOWARN 0
+#define FROST_RX_HEADROOM 66
+#define NET10G_RX_TAIL 0
+#define NET10G_DESC_LEN 0xffff
+#define NET10G_DESC_DD (1u << 16)
+#define NET10G_DESC_TRUNC (1u << 17)
+#define NET10G_DESC_ERR (1u << 18)
+#define NET10G_DESC_ABORT (1u << 19)
+#define NET10G_DESC_CSUM_VALID (1u << 20)
+#define NETIF_F_RXCSUM 1
+#define CHECKSUM_COMPLETE 2
+#define ETH_HLEN 14
+#define READ_ONCE(x) (x)
+#define likely(x) (x)
+#define unlikely(x) (x)
+#define le32_to_cpu(x) (x)
+#define page_address(p) ((p)->data)
+#define u64_stats_update_begin(p) ((void)(p))
+#define u64_stats_update_end(p) ((void)(p))
+#define u64_stats_add(p, n) (*(p) += (n))
+struct page { unsigned char data[4096]; };
+struct net_device { unsigned int features; };
+struct sk_buff {
+    unsigned char *data;
+    unsigned int len, csum, ip_summed, protocol;
+    bool recycle;
+};
+struct frost_desc { u32 status, word2, word3; };
+struct frost_buf { struct page *page; unsigned int off, len, truesize; dma_addr_t dma; };
+struct frost_priv {
+    struct net_device *ndev;
+    void *dev, *rx_pool, *base;
+    int napi, rx_syncp;
+    struct frost_desc *rx_ring;
+    struct frost_buf *rx_bufs;
+    unsigned int rx_tail, rx_clean, rx_mask, rx_truesize, rx_buf_len, rx_copybreak;
+    unsigned int rx_packets, rx_bytes, rx_errors;
+    bool wide_abi;
+};
+static struct page page;
+static struct sk_buff skbs[2], *delivered[2];
+static unsigned char copied[2][1518];
+static unsigned int allocations, alloc_limit, skb_count, got, returned, built, copied_count;
+static unsigned int syncs, wanted_len, expected_size;
+static bool needs_sync, synced, fail_skb, ordered;
+static struct page *page_pool_alloc(void *pool, unsigned int *off,
+                                    unsigned int *size, gfp_t gfp)
+{
+    assert(*size == 1920);
+    if (allocations == alloc_limit)
+        return NULL;
+    *off = allocations++ ? 1920 : 0;
+    *size = *off ? 2176 : 1920;
+    return &page;
+}
+static dma_addr_t page_pool_get_dma_addr(struct page *p) { return 0x10000; }
+static void frost_desc_post(struct frost_priv *p, struct frost_desc *d,
+                            dma_addr_t dma, unsigned int len)
+{
+    assert(dma == 0x10000 + p->rx_bufs[p->rx_tail].off + FROST_RX_HEADROOM);
+    assert(len == 1518);
+    d->status = 0;
+}
+static void dma_wmb(void) { ordered = true; }
+static void writel(unsigned int value, void *addr) { assert(ordered && value == allocations); }
+static u32 frost_desc_status(struct frost_priv *p, struct frost_desc *d) { return d->status; }
+static void dma_rmb(void) { ordered = true; }
+static bool dma_dev_need_sync(void *dev) { return needs_sync; }
+static void page_pool_dma_sync_for_cpu(void *pool, struct page *p,
+                                       unsigned int off, unsigned int len)
+{
+    assert(ordered && p == &page && len == wanted_len);
+    assert(off == (syncs ? 1920 : 0) + FROST_RX_HEADROOM);
+    syncs++;
+    synced = true;
+}
+static void page_pool_put_full_page(void *pool, struct page *p, bool direct)
+{
+    assert(p == &page && direct);
+    returned++;
+}
+static struct sk_buff *napi_alloc_skb(void *napi, unsigned int len)
+{
+    assert(ordered && (!needs_sync || synced) && len == wanted_len);
+    if (fail_skb)
+        return NULL;
+    struct sk_buff *s = &skbs[skb_count];
+    s->data = copied[skb_count++];
+    copied_count++;
+    return s;
+}
+static struct sk_buff *napi_build_skb(void *va, unsigned int size)
+{
+    assert(ordered && (!needs_sync || synced));
+    assert(size == expected_size);
+    if (fail_skb)
+        return NULL;
+    struct sk_buff *s = &skbs[skb_count++];
+    s->data = va;
+    built++;
+    return s;
+}
+static void skb_mark_for_recycle(struct sk_buff *s) { s->recycle = true; }
+static void skb_reserve(struct sk_buff *s, unsigned int len) { s->data += len; }
+static void skb_put(struct sk_buff *s, unsigned int len) { s->len = len; }
+static void skb_put_data(struct sk_buff *s, const void *data, unsigned int len)
+{
+    assert(!needs_sync || synced);
+    memcpy(s->data, data, len);
+    s->len = len;
+}
+static unsigned int eth_type_trans(struct sk_buff *s, struct net_device *dev) { return 1; }
+static void napi_gro_receive(void *napi, struct sk_buff *s) { delivered[got++] = s; }
+""",
+        ("frost_rx_fill", "frost_rx_reap"),
+        r"""
+int main(void)
+{
+    unsigned int lengths[] = {60, 255, 256, 257, 1023, 1024, 1025, 1518};
+    unsigned int thresholds[] = {0, 256, 1024};
+    for (unsigned int t = 0; t < 3; t++)
+    for (unsigned int l = 0; l < 8; l++)
+    for (unsigned int mode = 0; mode < 16; mode++) {
+        struct net_device ndev = {.features = (mode & 8) ? 0 : NETIF_F_RXCSUM};
+        struct frost_desc ring[4] = {0};
+        struct frost_buf bufs[4] = {0};
+        struct frost_priv p = {.ndev = &ndev, .rx_ring = ring, .rx_bufs = bufs,
+            .rx_mask = 3, .rx_truesize = 1920, .rx_buf_len = 1518,
+            .rx_copybreak = thresholds[t], .wide_abi = !!(mode & 4)};
+        memset(skbs, 0, sizeof(skbs));
+        allocations = skb_count = got = returned = built = copied_count = syncs = 0;
+        needs_sync = mode & 1;
+        fail_skb = mode & 2;
+        wanted_len = lengths[l];
+        /* A partial refill publishes only the one allocated descriptor. */
+        alloc_limit = 1;
+        ordered = false;
+        assert(frost_rx_fill(&p, 0) == 1 && p.rx_tail == 1);
+        alloc_limit = 2;
+        assert(frost_rx_fill(&p, 0) == 1 && p.rx_tail == 2);
+        assert(frost_rx_fill(&p, 0) == 0 && p.rx_tail == 2);
+        for (unsigned int i = 0; i < 2; i++) {
+            unsigned int off = i ? 1920 : 0;
+            memset(page.data + off + FROST_RX_HEADROOM, 0x31 + i, wanted_len);
+            ring[i].status = NET10G_DESC_DD | NET10G_DESC_CSUM_VALID | wanted_len;
+            ring[i].word2 = 0x12340000;
+            ring[i].word3 = 0x1234;
+            synced = ordered = false;
+            expected_size = i ? 2176 : 1920;
+            assert(frost_rx_reap(&p, 1) == 1);
+            assert(bufs[i].page == NULL && p.rx_clean == i + 1);
+        }
+        bool copy = wanted_len <= thresholds[t];
+        assert(syncs == (needs_sync ? 2 : 0));
+        assert(returned == ((copy || fail_skb) ? 2 : 0));
+        assert(got == (fail_skb ? 0 : 2));
+        assert(p.rx_errors == (fail_skb ? 2 : 0));
+        assert(p.rx_packets == got && p.rx_bytes == got * wanted_len);
+        assert(built == ((!copy && !fail_skb) ? 2 : 0));
+        assert(copied_count == ((copy && !fail_skb) ? 2 : 0));
+        for (unsigned int i = 0; i < got; i++) {
+            struct sk_buff *s = delivered[i];
+            assert(s->len == wanted_len && s->recycle == !copy);
+            assert(s->ip_summed == (ndev.features ? CHECKSUM_COMPLETE : 0));
+            assert(s->csum == (ndev.features ? 0x1234 : 0));
+            for (unsigned int j = 0; j < wanted_len; j++)
+                assert(s->data[j] == 0x31 + i);
+        }
+        assert(frost_rx_reap(&p, 1) == 0);
+    }
+    return 0;
+}
+""",
+    )
+
+
+def test_rx_copybreak_tunable_bounds(tmp_path: Path) -> None:
+    """Accept both bounds and leave the threshold intact on rejected updates."""
+    _run_driver_function(
+        tmp_path,
+        r"""
+#include <assert.h>
+#include <errno.h>
+#include <stdint.h>
+typedef uint32_t u32;
+#define ETHTOOL_RX_COPYBREAK 1
+#define FROST_RX_COPYBREAK_MAX 1024
+#define WRITE_ONCE(x, v) ((x) = (v))
+struct frost_priv { unsigned int rx_copybreak; };
+struct net_device { struct frost_priv priv; };
+struct ethtool_tunable { unsigned int id; };
+#define netdev_priv(dev) (&(dev)->priv)
+""",
+        ("frost_get_tunable", "frost_set_tunable"),
+        r"""
+int main(void)
+{
+    struct net_device dev = {{256}};
+    struct ethtool_tunable tuna = {ETHTOOL_RX_COPYBREAK};
+    u32 values[] = {0, 256, 1024, 1025, UINT32_MAX};
+    u32 saved = 256, got = 0;
+    for (unsigned int i = 0; i < 5; i++) {
+        int ret = frost_set_tunable(&dev, &tuna, &values[i]);
+        if (values[i] <= 1024) {
+            assert(ret == 0);
+            saved = values[i];
+        } else {
+            assert(ret == -EINVAL);
+        }
+        assert(frost_get_tunable(&dev, &tuna, &got) == 0 && got == saved);
+    }
+    tuna.id++;
+    assert(frost_set_tunable(&dev, &tuna, &saved) == -EOPNOTSUPP);
+    assert(frost_get_tunable(&dev, &tuna, &got) == -EOPNOTSUPP);
+    assert(dev.priv.rx_copybreak == saved);
+    return 0;
+}
+""",
+    )
