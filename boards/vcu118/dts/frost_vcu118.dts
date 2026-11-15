@@ -31,12 +31,12 @@
 			compatible = "riscv";
 			mmu-type = "riscv,sv39";
 			riscv,isa-base = "rv64i";
-			riscv,isa = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintpause_zihpm_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_sstc_sstvala_sstvecd_svade_svvptc";
+			riscv,isa = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_sstc_sstvala_sstvecd_svade_svvptc";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
 				"zfa", "zfhmin", "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
 				"zicclsm", "ziccrse", "zicntr", "zicond", "zicsr", "zifencei",
-				"zihintpause", "zihpm", "za64rs", "zawrs", "zba", "zbb",
-				"zbc", "zbkb", "zbkc", "zbs", "zkt", "smaia",
+				"zihintntl", "zihintpause", "zihpm", "zimop", "za64rs", "zawrs", "zba", "zbb",
+				"zbc", "zbkb", "zbkc", "zbs", "zcb", "zcmop", "zkt", "smaia",
 				"ssaia", "ssccptr", "sscofpmf", "sscounterenw", "sstc", "sstvala",
 				"sstvecd", "svade", "svvptc";
 			/* cbo.clean/flush/inval act on one 64-byte L2 line; every bus master is coherent. */

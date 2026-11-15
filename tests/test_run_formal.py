@@ -61,6 +61,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
     ("coherence_l1d", "coh_l1d_stream_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_hold_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_cover"): 1200,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
@@ -82,6 +83,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_ways_data_bmc"): 5100,
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
+    ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
     ("coherence_store_boundary", "cover_four"): 7200,
     ("coherence_store_boundary", "bmc_intervening"): 14400,
@@ -395,6 +398,8 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_payload_bmc",
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
+            "coh_l1d_answer_bmc",
+            "coh_l1d_stream_answer_bmc",
         ),
     ),
     FormalTarget(
@@ -915,7 +920,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rvc_predecode.sby",
-        "RV64C predecode expansion matches the reference decoder for every parcel",
+        "RV64C/Zcb/Zcmop expansion and source metadata match every parcel; MOPs permit pairing",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -1913,6 +1918,15 @@ SBY_TASKS = [
     (
         "coh_l1d_store_multi_grant_bmc",
         "Concurrent store grants merge only the head record.",
+    ),
+    (
+        "coh_l1d_answer_bmc",
+        "Grant answers and same-sector merges complete each read once, in order "
+        "with stores and probes.",
+    ),
+    (
+        "coh_l1d_stream_answer_bmc",
+        "Speculative grants answer attached loads; merges keep store and probe order.",
     ),
     (
         "coh_l1d_data_bmc",

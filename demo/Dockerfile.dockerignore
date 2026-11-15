@@ -1,0 +1,23 @@
+# Ignore everything except the RTL, native runner, software libraries, and
+# the two applications packaged into the standalone RTL demonstration image.
+**
+!demo/
+!demo/**
+!hw/rtl/
+!hw/rtl/**
+!hw/sim/sim_assertions.cpp
+!hw/sim/native/
+!hw/sim/native/**
+hw/sim/native/sim_build/
+hw/sim/native/sim_build/**
+!sw/common/
+!sw/common/**
+!sw/lib/
+!sw/lib/**
+!sw/apps/compile_app.py
+!sw/apps/riscv_toolchain.py
+!sw/apps/software_registry.py
+!sw/apps/hello_world/
+!sw/apps/hello_world/**
+!sw/apps/coremark/
+!sw/apps/coremark/**
