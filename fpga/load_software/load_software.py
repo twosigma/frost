@@ -83,6 +83,7 @@ VALID_APPS = [
     "memerr_readback",
     "memory_test",
     "misaligned_test",
+    "nic_bench",
     "nic_echo",
     "nic_loopback",
     "opensbi_smoke",
@@ -114,6 +115,7 @@ VALID_APPS = [
 BOARD_SPECIFIC_APPS = {
     "bootrom": frozenset({"vcu118"}),
     "misaligned_test": frozenset({"x3"}),
+    "nic_bench": frozenset({"vcu118"}),
     "vec_arith_test": frozenset({"x3"}),
     "vec_vsetvl_test": frozenset({"x3"}),
 }
