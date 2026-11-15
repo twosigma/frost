@@ -1714,11 +1714,11 @@ package riscv_pkg;
     if (!PbmtAliasEnabled) pma_pbmt_alias_ok = 1'b0;
     else if (DdrCapacityLog2Bytes <= 30) begin
       // The whole alias is one aligned DDR-sized window.
-      pma_pbmt_alias_ok = (addr & ~XLEN'(DdrCapacityBytes - 1)) == XLEN'(DdrBase | PbmtAliasOffset);
+      pma_pbmt_alias_ok = (addr & XLEN'(~(DdrCapacityBytes - 1))) == (DdrBase | PbmtAliasOffset);
     end else begin
       // Only the alias bit may be set above the covered range. At least one
       // bit between the DDR base and that bit must be set to exclude the gap.
-      pma_pbmt_alias_ok = ((addr & ~XLEN'(PbmtAliasOffset - 1)) == XLEN'(PbmtAliasOffset)) &&
+      pma_pbmt_alias_ok = ((addr & XLEN'(~(PbmtAliasOffset - 1))) == XLEN'(PbmtAliasOffset)) &&
           ((addr & XLEN'(PbmtAliasOffset - DdrBase)) != '0);
     end
   endfunction
