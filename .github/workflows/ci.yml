@@ -1321,9 +1321,13 @@ jobs:
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
               coherence_store_home or coherence_link or coherent_local_atomic or coh_hart_maint_prove or
               coh_hart_maint_owned_prove or coherence_array_equiv or
-              coh_array4_port_bmc or _twin or (coh_read_select and xilinx))) or
+              coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
             timeout_minutes: 300
+          # Home task limits total 189 minutes; image setup has twenty more.
+          - shard: Coherence home
+            pytest_filter: coherence_home_coh_home_
+            timeout_minutes: 240
           # The coherent array's equivalence with its reference array: the
           # one-way, UltraRAM and hit-port tasks with the cover, and the
           # four-way tasks, each about an hour of BMC tasks.

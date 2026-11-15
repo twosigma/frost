@@ -143,6 +143,8 @@ IF_WIDTH_EVENTS_FIELDS = [
 ]
 
 CACHE_PERF_EVENTS_FIELDS = [
+    ("l1i_fill", 1),
+    ("l1i_fill_prefetch", 1),
     ("l1i_store_combined", 1),
     ("l1i_store_combined_under_miss", 1),
     ("l1i_path_hit", 1),
@@ -155,6 +157,8 @@ CACHE_PERF_EVENTS_FIELDS = [
     ("l1i_hit_under_miss", 1),
     ("l1i_slot_full_stall", 1),
     ("l1i_conflict_stall", 1),
+    ("l1d_fill", 1),
+    ("l1d_fill_prefetch", 1),
     ("l1d_store_combined", 1),
     ("l1d_store_combined_under_miss", 1),
     ("l1d_path_hit", 1),
@@ -167,6 +171,8 @@ CACHE_PERF_EVENTS_FIELDS = [
     ("l1d_hit_under_miss", 1),
     ("l1d_slot_full_stall", 1),
     ("l1d_conflict_stall", 1),
+    ("l2_fill", 1),
+    ("l2_fill_prefetch", 1),
     ("l2_store_combined", 1),
     ("l2_store_combined_under_miss", 1),
     ("l2_path_hit", 1),
