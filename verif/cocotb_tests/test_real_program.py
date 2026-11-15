@@ -271,13 +271,20 @@ async def _release_power_on_reset(dut: Any, cpu_reset: Any) -> None:
     dut.i_power_on_rst.value = 0
 
 
-async def _arm_simulation_assertions(cpu_reset: Any) -> None:
+async def _arm_simulation_assertions(cpu_reset: Any, enabled: bool = True) -> None:
     """Wait for the driven CPU reset as well as the system reset interval."""
-    from cocotb_tests.sim_assertions import enable_simulation_assertions
+    from cocotb_tests.sim_assertions import (
+        enable_simulation_assertions,
+        simulation_assertions_enabled,
+    )
 
     await cpu_reset
     await Timer(1, unit="ps")
-    enable_simulation_assertions()
+    if enabled:
+        enable_simulation_assertions()
+    else:
+        assert not simulation_assertions_enabled()
+        cocotb.log.info("Simulation assertions deliberately withheld after reset")
 
 
 async def wait_for_power_on_reset(dut: Any) -> None:
@@ -426,7 +433,10 @@ async def prepare_program_start(dut: Any) -> None:
         dut.i_power_on_rst.value = Immediate(0)
     initialize_wrapper_resets(dut)
     await Timer(1, unit="ps")
-    if _nic_reset_history(dut):
+    history = _nic_reset_history(dut)
+    for seen in history:
+        seen.value = Immediate(0)
+    if history:
         soc = _program_soc(dut)
         request = (
             soc.reset_request_soc
@@ -441,6 +451,7 @@ async def generate_divided_clock(
     *,
     core_clock: Any | None = None,
     image_loader: Callable[[Any], None] = load_program_images,
+    arm_assertions: bool = True,
 ) -> None:
     """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
 
@@ -476,7 +487,7 @@ async def generate_divided_clock(
         divided.value = level
     await ReadWrite()
     image_loader(dut)
-    cocotb.start_soon(_arm_simulation_assertions(cpu_reset))
+    cocotb.start_soon(_arm_simulation_assertions(cpu_reset, arm_assertions))
     while True:
         await clock_edge
         await clock_edge

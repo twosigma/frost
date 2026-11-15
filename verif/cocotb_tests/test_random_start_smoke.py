@@ -76,6 +76,14 @@ def load_startup_loop(dut: Any) -> None:
 @cocotb.test()
 async def startup_smoke(dut: Any) -> None:
     """Apply the program bench's reset, then run 300 system clock cycles."""
+    control = os.environ.get("FROST_STARTUP_ASSERTION_CONTROL")
+    withheld = os.environ.get("FROST_STARTUP_WITHHOLD_ASSERTIONS") == "1"
+    if control:
+        assert control in ("bridge", "nic_reset"), "unknown assertion control"
+        assert cocotb.plusargs.get("frost_startup_assertion_control") == control
+    if withheld:
+        assert control == "bridge"
+        assert cocotb.plusargs.get("frost_startup_withhold_assertions") == "1"
     for signal in dut:
         if signal._name.startswith("i_"):
             signal.value = Immediate(0)
@@ -90,7 +98,11 @@ async def startup_smoke(dut: Any) -> None:
     dut.i_external_interrupt.value = 0
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     start_cpu_clock(dut)
-    cocotb.start_soon(generate_divided_clock(dut, image_loader=load_startup_loop))
+    cocotb.start_soon(
+        generate_divided_clock(
+            dut, image_loader=load_startup_loop, arm_assertions=not withheld
+        )
+    )
     start_nic_mac_clocks(dut, edges_without_delay=True)
     for _ in range(RESET_CYCLES):
         await RisingEdge(dut.i_clk)
@@ -98,10 +110,7 @@ async def startup_smoke(dut: Any) -> None:
     dut.i_rst_n.value = 1
     if hasattr(dut, "i_ddr_axi_rst_n"):
         dut.i_ddr_axi_rst_n.value = 1
-    control = os.environ.get("FROST_STARTUP_ASSERTION_CONTROL")
     if control:
-        assert control in ("bridge", "nic_reset"), "unknown assertion control"
-        assert cocotb.plusargs.get("frost_startup_assertion_control") == control
         await ClockCycles(dut.i_clk, 8)
         await ReadWrite()
         soc = platform.soc if hasattr(platform, "soc") else platform
@@ -111,4 +120,9 @@ async def startup_smoke(dut: Any) -> None:
         target.sim_assertion_probe.value = 1
     await ClockCycles(dut.i_clk, 300)
     await ReadOnly()
+    if withheld:
+        from cocotb_tests.sim_assertions import simulation_assertions_enabled
+
+        assert not simulation_assertions_enabled()
+        cocotb.log.info("STARTUP_WITHHELD_ASSERTIONS_PASS")
     cocotb.log.info("STARTUP_SMOKE_PASS")

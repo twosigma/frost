@@ -999,6 +999,15 @@ jobs:
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --atomics 200 --continue-on-fail
 
+      - name: Require startup assertion controls
+        if: ${{ always() && matrix.shard == 3 }}
+        run: |
+          status=0
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/random_start_sweep.py --require-controls || status=$?
+          cat tests/startup_sweep/control_summary.txt >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
       - name: Upload TestRIG counterexamples and logs
         if: always()
         uses: actions/upload-artifact@v7.0.2

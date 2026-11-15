@@ -36,6 +36,9 @@ from cocotb_tools import config
 
 DEFAULT_BASE = "frost-startup"
 STARTUP_BUDGET_SECONDS = 180
+STARTUP_TIMEOUT_SECONDS = 300
+FULL_SWEEP_TIMEOUT_SECONDS = 1800
+CONTROL_STARTS = 3
 ASSERTION_CONTROLS = {
     "bridge": "line_port_axi_bridge: multi-beat read response (expected single beat)",
     "nic_reset": "nic_rst_q is not the registered reset OR the RESET pulse",
@@ -75,18 +78,34 @@ def startup_seed_cost(environment: dict[str, str]) -> float:
     return 2.5
 
 
-def startup_count(cost: float) -> int:
+def has_assertion_controls(arguments: str) -> bool:
+    """Only cached-tier models contain the two controlled NIC checks."""
+    values = re.findall(r"-GENABLE_CACHED_TIER=(\d+)", arguments)
+    return not values or int(values[-1]) != 0
+
+
+def startup_limits() -> tuple[int, int]:
+    """Return the estimated allocation and hard cumulative job limit."""
+    if os.environ.get("FROST_STARTUP_SEEDS", "").strip():
+        return FULL_SWEEP_TIMEOUT_SECONDS, FULL_SWEEP_TIMEOUT_SECONDS
+    return STARTUP_BUDGET_SECONDS, STARTUP_TIMEOUT_SECONDS
+
+
+def startup_count(cost: float, control_cost: float | None = None) -> int:
     """Allocate a fixed seed count within the job's estimated startup budget."""
     override = os.environ.get("FROST_STARTUP_SEEDS", "").strip()
+    if control_cost is None:
+        control_cost = CONTROL_STARTS * cost
+    allocation, _ = startup_limits()
     count = (
-        int(override)
-        if override
-        else min(
-            200, max(1, int(STARTUP_BUDGET_SECONDS / cost) - len(ASSERTION_CONTROLS))
-        )
+        int(override) if override else min(200, int((allocation - control_cost) / cost))
     )
-    if count < 1:
-        raise ValueError("FROST_STARTUP_SEEDS must be positive")
+    if not 1 <= count <= 201 or count * cost + control_cost > allocation:
+        raise ValueError(
+            f"startup budget cannot fit {count} seeds plus controls: "
+            f"{count * cost + control_cost:g}s exceeds {allocation}s, "
+            "or seed count is outside 1..201"
+        )
     return count
 
 
@@ -107,14 +126,26 @@ def plan_startup_sweeps(test_names: list[str]) -> None:
                 environment.get("FROST_COVERAGE", "0"),
                 environment.get("SIM_FAST_MAINT", "1"),
             )
-            costs[key] = startup_seed_cost(environment)
+            cost = startup_seed_cost(environment)
+            costs[key] = (
+                cost,
+                CONTROL_STARTS * cost if has_assertion_controls(key[0]) else 0,
+            )
         finally:
             runner.restore_environment()
     if costs:
+        seed_cost = sum(value[0] for value in costs.values())
+        control_cost = sum(value[1] for value in costs.values())
+        count = startup_count(seed_cost, control_cost)
         plan = {
             "base": startup_base(dict(os.environ)),
-            "count": startup_count(sum(costs.values())),
+            "count": count,
             "builds": len(costs),
+            "control_builds": sum(value[1] > 0 for value in costs.values()),
+            "estimated_seconds": count * seed_cost + control_cost,
+            "limit_seconds": startup_limits()[1],
+            "used_seconds": 0,
+            "requested_seeds": os.environ.get("FROST_STARTUP_SEEDS", "").strip(),
         }
         directory = Path(__file__).resolve().parent / "startup_sweep"
         directory.mkdir(exist_ok=True)
@@ -122,18 +153,8 @@ def plan_startup_sweeps(test_names: list[str]) -> None:
         print(f"Startup plan: {plan}", flush=True)
 
 
-def check_built_model(binary: Path, environment: dict[str, str]) -> None:
-    """Check each compiled model once per seed base and count, without rebuilding."""
-    base = startup_base(environment)
-    directory = Path(__file__).resolve().parent / "startup_sweep"
-    count = startup_count(startup_seed_cost(environment))
-    plan_path = directory / "plan.json"
-    if plan_path.exists() and not environment.get("FROST_STARTUP_SEEDS"):
-        plan = json.loads(plan_path.read_text())
-        if plan["base"] == base:
-            count = plan["count"]
-    with binary.open("rb") as executable:
-        digest = hashlib.file_digest(executable, "sha256").hexdigest()
+def startup_fixture_digest() -> str:
+    """Identify the runner and all Python code that controls the reset sample."""
     fixture = hashlib.sha256()
     fixture.update(Path(__file__).read_bytes())
     for name in (
@@ -143,16 +164,90 @@ def check_built_model(binary: Path, environment: dict[str, str]) -> None:
     ):
         path = Path(__file__).resolve().parents[1] / "verif/cocotb_tests" / name
         fixture.update(path.read_bytes())
+    return fixture.hexdigest()
+
+
+def check_built_model(binary: Path, environment: dict[str, str]) -> None:
+    """Check each model once and charge its elapsed time to the shared job limit."""
+    base = startup_base(environment)
+    directory = Path(__file__).resolve().parent / "startup_sweep"
+    cost = startup_seed_cost(environment)
+    controls = has_assertion_controls(
+        (binary.parent / "Vtop__verFiles.dat").read_text()
+    )
+    plan_path = directory / "plan.json"
+    plan = json.loads(plan_path.read_text()) if plan_path.exists() else {}
+    requested = environment.get("FROST_STARTUP_SEEDS", "").strip()
+    if (
+        plan.get("base") != base
+        or "limit_seconds" not in plan
+        or plan.get("requested_seeds", "") != requested
+    ):
+        plan = {
+            "base": base,
+            "count": startup_count(cost, CONTROL_STARTS * cost if controls else 0),
+            "limit_seconds": startup_limits()[1],
+            "used_seconds": 0,
+            "requested_seeds": requested,
+        }
+    count = plan["count"]
+    with binary.open("rb") as executable:
+        digest = hashlib.file_digest(executable, "sha256").hexdigest()
     identity = hashlib.sha256(
-        f"{digest}:{fixture.hexdigest()}:{base}:{count}".encode()
+        f"{digest}:{startup_fixture_digest()}:{base}:{count}".encode()
     ).hexdigest()
     output = directory / identity
     marker = output / "passed"
     if marker.exists():
         return
-    if not run_startup_sweep(binary, environment, output, count=count, workers=1):
+    started = time.monotonic()
+    try:
+        passed = run_startup_sweep(
+            binary,
+            environment,
+            output,
+            count=count,
+            workers=1,
+            budget_seconds=plan["limit_seconds"] - plan["used_seconds"],
+        )
+    finally:
+        plan["used_seconds"] += time.monotonic() - started
+        directory.mkdir(exist_ok=True)
+        plan_path.write_text(json.dumps(plan) + "\n")
+    if not passed or plan["used_seconds"] > plan["limit_seconds"]:
         raise RuntimeError(f"Random-start startup check failed; logs: {output}")
     marker.touch()
+
+
+def require_assertion_controls(directory: Path, base: str) -> bool:
+    """Fail the designated CI job unless both controls and the reverse case ran."""
+    counts = {**dict.fromkeys(ASSERTION_CONTROLS, 0), "bridge_withheld": 0}
+    fixture = startup_fixture_digest()
+    for path in directory.glob("*/results.json"):
+        result = json.loads(path.read_text())
+        if (
+            result.get("base") != base
+            or result.get("fixture") != fixture
+            or not (path.parent / "passed").exists()
+        ):
+            continue
+        for row in result["controls"]:
+            if row["passed"]:
+                counts[row["control"]] += 1
+        for row in result.get("withheld_controls", []):
+            if row["passed"]:
+                counts["bridge_withheld"] += 1
+    passed = all(counts.values())
+    summary = "Startup assertion controls REQUIRED: " + ("PASS" if passed else "FAIL")
+    summary += (
+        "\n"
+        + "\n".join(f"{name}: {count} confirmed runs" for name, count in counts.items())
+        + "\n"
+    )
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "control_summary.txt").write_text(summary)
+    print(summary, flush=True)
+    return passed
 
 
 def write_startup_images(directory: Path, build_record: str) -> None:
@@ -197,8 +292,14 @@ def run_startup_sweep(
     baseline: bool = False,
     seeds: list[int] | None = None,
     controls: bool = True,
+    budget_seconds: float | None = None,
 ) -> bool:
     """Check seeded startups and require two deliberate post-reset failures."""
+    started = time.monotonic()
+    budget_seconds = startup_limits()[1] if budget_seconds is None else budget_seconds
+    if budget_seconds <= 0:
+        raise ValueError("startup job time budget exhausted")
+    deadline = started + budget_seconds
     binary = binary.resolve()
     output = output.resolve()
     if not binary.is_file():
@@ -216,6 +317,7 @@ def run_startup_sweep(
     write_startup_images(working_directory, build_record.read_text())
     environment = environment.copy()
     environment.pop("FROST_STARTUP_ASSERTION_CONTROL", None)
+    environment.pop("FROST_STARTUP_WITHHOLD_ASSERTIONS", None)
     environment.update(
         COCOTB_TEST_MODULES="cocotb_tests.test_random_start_smoke",
         COCOTB_TOPLEVEL="frost",
@@ -242,12 +344,23 @@ def run_startup_sweep(
     if not seeds or any(seed < 1 or seed >= 2**31 for seed in seeds):
         raise ValueError("Verilator seeds must be between 1 and 2**31 - 1")
     print(f"Startup base={base!r}, seeds={len(seeds)}, binary={binary}", flush=True)
-    if "-GENABLE_CACHED_TIER=0" in build_record.read_text():
+    if not has_assertion_controls(build_record.read_text()):
         controls = False
+    estimate = (len(seeds) + (CONTROL_STARTS if controls else 0)) * startup_seed_cost(
+        environment
+    )
+    if len(seeds) > 201 or estimate > startup_limits()[0]:
+        raise ValueError(
+            f"startup seeds and controls need {estimate:g}s, outside the allocation"
+        )
 
-    def run_one(index: int, seed: int, control: str | None = None) -> dict[str, Any]:
+    def run_one(
+        index: int, seed: int, control: str | None = None, withheld: bool = False
+    ) -> dict[str, Any]:
         env = environment.copy()
         label = f"control_{control}" if control else f"seed_{seed}"
+        if withheld:
+            label += "_withheld"
         report = output / f"{label}.xml"
         report.unlink(missing_ok=True)
         env["COCOTB_RESULTS_FILE"] = str(report)
@@ -264,8 +377,11 @@ def run_startup_sweep(
         if control:
             env["FROST_STARTUP_ASSERTION_CONTROL"] = control
             arguments.append(f"+frost_startup_assertion_control={control}")
+        if withheld:
+            env["FROST_STARTUP_WITHHOLD_ASSERTIONS"] = "1"
+            arguments.append("+frost_startup_withhold_assertions=1")
         print(
-            f"Startup {'control=' + control if control else 'index=' + str(index)} Verilator seed={seed}",
+            f"Startup {'control=' + control if control else 'index=' + str(index)} Verilator seed={seed} withheld={withheld}",
             flush=True,
         )
         replay_environment = {
@@ -295,6 +411,13 @@ def run_startup_sweep(
         )
         started = time.monotonic()
         try:
+            remaining = deadline - started
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(
+                    arguments,
+                    budget_seconds,
+                    output="startup job time budget exhausted",
+                )
             result = subprocess.run(
                 arguments,
                 cwd=working_directory,
@@ -302,16 +425,19 @@ def run_startup_sweep(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=120,
+                timeout=min(120, remaining),
             )
             returncode, transcript = result.returncode, result.stdout
         except subprocess.TimeoutExpired as exc:
             captured = exc.stdout or b""
             transcript = (
-                captured.decode(errors="replace")
-                if isinstance(captured, bytes)
-                else captured
-            ) + "\nAssertionError: startup simulation exceeded 120 seconds\n"
+                (
+                    captured.decode(errors="replace")
+                    if isinstance(captured, bytes)
+                    else captured
+                )
+                + "\nAssertionError: startup simulation exceeded its process or job time limit\n"
+            )
             returncode = 124
         (output / f"{label}.log").write_text(transcript)
         try:
@@ -328,7 +454,7 @@ def run_startup_sweep(
             )
             and (baseline or "Simulation assertions armed after reset" in transcript)
         )
-        if control:
+        if control and not withheld:
             armed_at = transcript.find("Simulation assertions armed after reset")
             injected_at = transcript.find(f"STARTUP_ASSERTION_CONTROL {control}")
             diagnostic_at = transcript.find(ASSERTION_CONTROLS[control], injected_at)
@@ -338,10 +464,29 @@ def run_startup_sweep(
                 and "%Error" in transcript[injected_at:]
                 and "STARTUP_SMOKE_PASS" not in transcript
             )
+        if withheld:
+            held_at = transcript.find(
+                "Simulation assertions deliberately withheld after reset"
+            )
+            injected_at = transcript.find("STARTUP_ASSERTION_CONTROL bridge")
+            completed_at = transcript.find("STARTUP_WITHHELD_ASSERTIONS_PASS")
+            passed = (
+                returncode == 0
+                and bool(cases)
+                and not any(
+                    case.find("failure") is not None or case.find("error") is not None
+                    for case in cases
+                )
+                and 0 <= held_at < injected_at < completed_at
+                and "STARTUP_SMOKE_PASS" in transcript
+                and "Simulation assertions armed after reset" not in transcript
+                and "%Error" not in transcript
+            )
         return {
             "index": index,
             "seed": seed,
             "control": control,
+            "withheld": withheld,
             "command": command,
             "passed": passed,
             "returncode": returncode,
@@ -353,7 +498,6 @@ def run_startup_sweep(
             ],
         }
 
-    started = time.monotonic()
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         pending = {
@@ -369,6 +513,7 @@ def run_startup_sweep(
                 )
                 print(f"Rerun this seed in the image: {result['command']}", flush=True)
     control_results = []
+    withheld_results = []
     if controls:
         for control in ASSERTION_CONTROLS:
             result = run_one(len(results), seeds[0], control)
@@ -385,6 +530,15 @@ def run_startup_sweep(
                 print(
                     f"Rerun this control in the image: {result['command']}", flush=True
                 )
+        result = run_one(len(results), seeds[0], "bridge", withheld=True)
+        withheld_results.append(result)
+        print(
+            "Startup withheld-arming control: "
+            + ("PASS" if result["passed"] else "FAIL"),
+            flush=True,
+        )
+        if not result["passed"]:
+            print(f"Rerun this control in the image: {result['command']}", flush=True)
     elapsed = time.monotonic() - started
     with binary.open("rb") as executable:
         digest = hashlib.file_digest(executable, "sha256").hexdigest()
@@ -392,21 +546,34 @@ def run_startup_sweep(
         "base": base,
         "binary": str(binary),
         "sha256": digest,
+        "fixture": startup_fixture_digest(),
         "baseline": baseline,
         "workers": workers,
         "seconds": round(elapsed, 3),
         "results": sorted(results, key=lambda row: row["index"]),
         "controls": control_results,
+        "withheld_controls": withheld_results,
+        "budget_seconds": budget_seconds,
     }
     (output / "results.json").write_text(json.dumps(summary, indent=2) + "\n")
     passed = sum(result["passed"] for result in results)
+    control_summary = (
+        f"controls {sum(row['passed'] for row in control_results)}/{len(control_results)}, "
+        f"withheld {sum(row['passed'] for row in withheld_results)}/{len(withheld_results)}"
+        if controls
+        else "controls not applicable (baseline or BRAM-tier model; no starts reserved)"
+    )
     print(
         f"Startup sweep: {passed}/{len(results)} passed; "
-        f"controls {sum(row['passed'] for row in control_results)}/{len(control_results)} "
+        f"{control_summary} "
         f"in {elapsed:.1f}s",
         flush=True,
     )
-    return passed == len(results) and all(row["passed"] for row in control_results)
+    return (
+        passed == len(results)
+        and all(row["passed"] for row in control_results + withheld_results)
+        and elapsed <= budget_seconds
+    )
 
 
 def main() -> int:
@@ -418,6 +585,11 @@ def main() -> int:
     )
     parser.add_argument("--binary", type=Path, default=Path("tests/sim_build/Vtop"))
     parser.add_argument("--output", type=Path, default=Path("tests/startup_sweep"))
+    parser.add_argument(
+        "--require-controls",
+        action="store_true",
+        help="fail unless the job ran both controls and the withheld-arming case",
+    )
     parser.add_argument(
         "--count",
         type=int,
@@ -434,6 +606,14 @@ def main() -> int:
         help="observe a model with checks active at time zero",
     )
     args = parser.parse_args()
+    if args.require_controls:
+        return (
+            0
+            if require_assertion_controls(args.output, startup_base(dict(os.environ)))
+            else 1
+        )
+    if args.count is not None:
+        os.environ["FROST_STARTUP_SEEDS"] = str(args.count)
     if args.plan:
         plan_startup_sweeps(args.plan)
         return 0
@@ -445,15 +625,20 @@ def main() -> int:
     try:
         if runner.hdl_toplevel_module != "frost":
             parser.error("startup sweeps require a frost system build")
+        environment = runner.setup_environment()
+        controls = not args.baseline and has_assertion_controls(
+            (args.binary.parent / "Vtop__verFiles.dat").read_text()
+        )
+        cost = startup_seed_cost(environment)
         return (
             0
             if run_startup_sweep(
                 args.binary,
-                runner.setup_environment(),
+                environment,
                 args.output,
                 count=args.count
                 if args.count is not None
-                else startup_count(startup_seed_cost(runner.setup_environment())),
+                else startup_count(cost, CONTROL_STARTS * cost if controls else 0),
                 seeds=args.seed,
                 workers=args.workers,
                 baseline=args.baseline,

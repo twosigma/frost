@@ -20,6 +20,14 @@ import os
 import cocotb
 
 
+def simulation_assertions_enabled() -> bool:
+    """Read the simulator's assertion switch without changing it."""
+    simulator = ctypes.CDLL(None)
+    simulator.frost_sim_assertions_enabled.argtypes = []
+    simulator.frost_sim_assertions_enabled.restype = ctypes.c_bool
+    return bool(simulator.frost_sim_assertions_enabled())
+
+
 def enable_simulation_assertions() -> None:
     """Enable runtime checks after the bench has applied a complete reset."""
     if cocotb.top._name != "frost":
@@ -31,8 +39,6 @@ def enable_simulation_assertions() -> None:
         return
     simulator.frost_sim_assertions_enable.argtypes = []
     simulator.frost_sim_assertions_enable.restype = None
-    simulator.frost_sim_assertions_enabled.argtypes = []
-    simulator.frost_sim_assertions_enabled.restype = ctypes.c_bool
     simulator.frost_sim_assertions_enable()
-    assert simulator.frost_sim_assertions_enabled(), "simulation checks did not arm"
+    assert simulation_assertions_enabled(), "simulation checks did not arm"
     cocotb.log.info("Simulation assertions armed after reset")

@@ -65,13 +65,15 @@ def test_simulation_assertions_require_system_control(
 @pytest.mark.parametrize("nics", (0, 1, 2))
 @pytest.mark.parametrize("reset_asserted", (False, True))
 @pytest.mark.parametrize("direct_platform", (False, True))
-def test_program_start_preserves_checker_and_production_history(
+@pytest.mark.parametrize("reset_arrives", (False, True))
+def test_program_start_clears_checker_history_before_driven_reset(
     monkeypatch: pytest.MonkeyPatch,
     nics: int,
     reset_asserted: bool,
     direct_platform: bool,
+    reset_arrives: bool,
 ) -> None:
-    """Startup settles without clocks and preserves arbitrary production state."""
+    """Discard initial-edge history, then require a driven reset before checking."""
     real_program = importlib.import_module("cocotb_tests.test_real_program")
 
     class Signal:
@@ -140,10 +142,35 @@ def test_program_start_preserves_checker_and_production_history(
             asyncio.run(real_program.prepare_program_start(dut))
     else:
         asyncio.run(real_program.prepare_program_start(dut))
-    assert all(front.reset_seen_q.value == 1 for front in fronts)
+    assert all(front.reset_seen_q.value == 0 for front in fronts)
     assert settled
     assert soc.rst_core.value == 0
     assert soc.production_state.value == 0xA5
+    if nics and not reset_asserted:
+        return
+    dut.i_power_on_rst.value = 1
+    events = ["settled", "cleared"]
+
+    async def driven_reset(clock: Any) -> None:
+        assert clock is dut.i_clk
+        assert events == ["settled", "cleared"]
+        assert all(front.reset_seen_q.value == 0 for front in fronts)
+        assert all(signal.value == 0 for signal in clocks.values())
+        events.append("reset")
+        for front in fronts:
+            front.reset_seen_q.value = int(reset_arrives)
+        dut.i_power_on_rst.value = 0
+
+    monkeypatch.setattr(real_program, "RisingEdge", driven_reset)
+    if nics and not reset_arrives:
+        with pytest.raises(
+            AssertionError, match="NIC response checker did not observe reset"
+        ):
+            asyncio.run(real_program.wait_for_power_on_reset(dut))
+    else:
+        asyncio.run(real_program.wait_for_power_on_reset(dut))
+    events.append("checked")
+    assert events == ["settled", "cleared", "reset", "checked"]
 
 
 @pytest.mark.parametrize("direct_platform", (False, True))

@@ -522,6 +522,9 @@ with assertions enabled and drive reset at their module boundaries.
 The system bench requires the reset request at startup and verifies after
 cold reset that every NIC response checker has observed reset, including
 the optional second NIC and the trace-injection platform.
+After the initial 1 ps settle, while clocks are low, the bench clears each
+NIC front's simulation-only reset history. The cold-reset postcondition
+therefore requires evidence from the driven reset, not an initial scheduling edge.
 
 The Cocotb, physical-address and TestRIG CI jobs set
 `FROST_STARTUP_SWEEP=1`. After a successful simulation, the runner reuses
@@ -529,8 +532,11 @@ each compiled system model for short startup checks. Programs sharing a
 binary share its completed check. The selected builds divide a 180-second
 estimated job budget; the seed count is fixed before the checks run.
 SRAM and large-cache models use their own per-seed cost estimates.
-The allocation reserves two starts per cached-tier model for assertion
-controls that must fail after reset with their original diagnostics.
+The allocation reserves three starts per cached-tier model: two assertion
+controls that must fail after reset with their original diagnostics, and
+one that must complete with arming deliberately withheld. BRAM-tier models
+reserve no control starts. The cumulative startup time across a job's models
+has a 300-second hard limit; exceeding it fails the check.
 
 Each seed comes from `random.Random(f"{base}:startup:{index}")`, with a draw
 from 1 through 2**31 - 1. The base is `FROST_RANDOM_START_SEED`, or
@@ -540,6 +546,11 @@ program seed. CI runs therefore rotate their seed sets, and local runs
 repeat them. Logs print the base, index and
 Verilator seed, and a failing run prints its exact command for the image.
 `FROST_STARTUP_SEEDS=201` selects the full sweep in the same CI check.
+Explicit counts are limited to 1–201. Full-sweep allocations include the
+controls and must fit a 1,800-second estimate and cumulative hard limit.
+A selected set that cannot fit one seed and its controls, or the requested
+full sweep, fails before starting its samples. Restrict the selected builds
+or run one compiled model directly for a full sweep that exceeds the job allocation.
 
 After building with `FROST_RANDOM_START_SEED` set, run the same check directly:
 
@@ -566,6 +577,19 @@ separate processes. Each control requires a matching
 the simulation-only probe after assertion arming and reset. Ordinary starts
 omit these controls. A passing process, a timeout, or a different diagnostic
 fails the control. `--baseline` skips them.
+The third process uses the bridge violation with the additional
+`+frost_startup_withhold_assertions=1` plusarg and matching
+`FROST_STARTUP_WITHHOLD_ASSERTIONS=1` environment value. The bench withholds
+arming and reads back the disabled simulator switch after reset and after
+the injected violation. This process must complete with a passing cocotb
+report and no assertion diagnostic. Both directions run in the simulator;
+the Python unit tests also use mocked outcomes to check failure classification.
+
+TestRIG shard 3 requires a summary of both assertion failures and the
+withheld-arming completion for its seed base and current fixture. Its final
+CI step fails if any control is absent, even when no startup sample ran.
+The summary is printed and included in the job summary. This requirement
+uses the shard's compiled model and adds no build or CI job.
 
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.
