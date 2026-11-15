@@ -552,5 +552,8 @@ counts; displayed Gb/s values use the fixed reference frequency printed in the o
 Run with `./scripts/frost.py cocotb <target>`. The
 [NIC benches](../../../../verif/cocotb_tests/nic/) contain the detailed cases.
 The `async_fifo` formal target checks bounded ordering and occupancy under
-unrelated clocks. Linux driver testing uses `frost_nettest`; see the
+unrelated clocks; `nic_dma_front`, `nic_irq`, and `cdc_mailbox` check the DMA
+front end, interrupt moderation and mask non-interference, and the two-phase
+CDC mailbox (see the [formal guide](../../../../formal/README.md) for proof
+scope and reset-model limits). Linux driver testing uses `frost_nettest`; see the
 [driver guide](../../../../linux/frost-net10g/README.md).
