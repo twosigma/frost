@@ -216,13 +216,13 @@ zcontrol: chformal -assert2assume c:p_prefetch_conflict_split
 zcontrol: select -assert-min 1 c:p_zero_* t:$check %i r:FLAVOR=assert %i
 streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
-# Preserve the complete 326-check stream scope before selecting a partition.
+# Preserve the complete 328-check stream scope before selecting a partition.
 # The independent outlier proof assumes no BMC or ownership assertions.
-streambounded: select -assert-count 326 t:$check r:FLAVOR=assert %i
-payloadhold: select -assert-count 326 t:$check r:FLAVOR=assert %i
-outlier: select -assert-count 326 t:$check r:FLAVOR=assert %i
+streambounded: select -assert-count 328 t:$check r:FLAVOR=assert %i
+payloadhold: select -assert-count 328 t:$check r:FLAVOR=assert %i
+outlier: select -assert-count 328 t:$check r:FLAVOR=assert %i
 streambounded: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
-streambounded: select -assert-count 322 t:$check r:FLAVOR=assert %i
+streambounded: select -assert-count 324 t:$check r:FLAVOR=assert %i
 payloadhold: select -assert-count 4 c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
 payloadhold: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
 payloadhold: select -assert-count 4 t:$check r:FLAVOR=assert %i
@@ -240,11 +240,12 @@ outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
 # outlier task proves, and the assertions that PDR does not close: the pairwise
 # distinctness of live endpoint lines, the store record address and acquisition
 # checks, the prefetch window, prefetch acquisition window and atomic exclusion
-# checks, the hit path's slot and answer checks, the pending-probe bound and a
+# checks, the hit path's slot and answer checks, the pending-probe bound, the
+# Modified-sector and prefetch-record checks that the stream BMCs prove, and a
 # few others. Its read defines STREAM_UNBOUNDED_PROOF, which drops the
 # loop-generated ones; the others carry the p_bounded_ label prefix.
 unbounded: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
-unbounded: chformal -assert -remove c:*p_bounded_* c:p_acquire_read_payload c:p_acquire_read_role c:p_atomic_no_load_endpoint c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_block_zero_exact c:p_grant_live c:p_grant_prefetch_flag c:p_prefetch_hint_conflict c:p_prefetch_owner_conflict c:p_read_owned_exact c:p_request_payload c:p_store_acquire_once c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_read_service_bound c:p_store_yields_read
+unbounded: chformal -assert -remove c:*p_bounded_* c:p_acquire_read_payload c:p_acquire_read_role c:p_atomic_no_load_endpoint c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_block_zero_exact c:p_grant_live c:p_grant_prefetch_flag c:p_prefetch_hint_conflict c:p_prefetch_owner_conflict c:p_grant_keeps_modified c:p_prefetch_not_record c:p_read_owned_exact c:p_request_payload c:p_store_acquire_once c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_read_service_bound c:p_store_yields_read
 unbounded: select -assert-count 165 t:$check r:FLAVOR=assert %i
 conflict: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 conflict: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_conflict_split %d
