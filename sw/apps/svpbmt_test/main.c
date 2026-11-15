@@ -52,10 +52,10 @@
 #ifndef SVPBMT_BUS_ERRORS
 #define SVPBMT_BUS_ERRORS 0
 #endif
-/* With bus-fault VA retention, build the injected-error case with this set
- * to 1: xtval must be the program's VA, not the real or encoded alias PA. */
+/* Bus-fault VA retention reports the program's VA, not the real or encoded
+ * alias PA. Set this to zero only when testing an older core without it. */
 #ifndef SVPBMT_EXPECT_BUS_FAULT_VA
-#define SVPBMT_EXPECT_BUS_FAULT_VA 0
+#define SVPBMT_EXPECT_BUS_FAULT_VA 1
 #endif
 /* riscv_pkg::PbmtAliasBit: bit 30 for DDR of at most 1 GiB, else the DDR size bit. */
 #if FROST_DDR_CAPACITY_LOG2_BYTES <= 30
