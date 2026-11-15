@@ -3157,7 +3157,9 @@ def run_step(
     return True, wns, report_prefix
 
 
-def explain_silent_vivado_exit(log_path: Path, returncode: int) -> None:
+def explain_silent_vivado_exit(
+    log_path: Path, returncode: int, stale_log: str | None = None
+) -> None:
     """Say so when a failed Vivado step left no ERROR line and no ``Exiting Vivado``.
 
     That log ends mid-run: the process was killed from outside (another session
@@ -3165,15 +3167,22 @@ def explain_silent_vivado_exit(log_path: Path, returncode: int) -> None:
     otherwise look like an unexplained tool failure.
     """
     try:
-        lines = log_path.read_text(errors="replace").splitlines()
+        text = log_path.read_text(errors="replace")
     except OSError:
         print(
             f"  Vivado exited with code {returncode} and its log {log_path} cannot be read"
         )
         return
+    if stale_log is not None and text == stale_log:
+        print(
+            f"  Vivado exited with code {returncode} before rewriting {log_path}: "
+            "the process ended abnormally before start-up completed"
+        )
+        return
+    lines = text.splitlines()
     if any(line.startswith("ERROR:") for line in lines):
         return
-    if any("Exiting Vivado at" in line for line in lines):
+    if vivado_log_ends_with_exit(text):
         return
     last = next((line for line in reversed(lines) if line.strip()), "")
     print(
@@ -3192,6 +3201,113 @@ def vivado_log_ends_with_exit(text: str) -> bool:
     """
     lines = text.rstrip().splitlines()
     return bool(lines) and "Exiting Vivado at" in lines[-1]
+
+
+def vivado_log_succeeded(text: str) -> bool:
+    """Return True when the parent session logged ``** DONE`` and exited cleanly.
+
+    Exploratory placement and phys-opt commands run inside Tcl ``catch`` blocks
+    may still emit ``ERROR:`` lines before the step completes and prints
+    ``** DONE``, so only ``ERROR:`` lines after the last ``** DONE`` fail here.
+    """
+    if not vivado_log_ends_with_exit(text):
+        return False
+    lines = text.rstrip().splitlines()
+    body = lines[:-1]
+    last_child_exit = max(
+        (index for index, line in enumerate(body) if "Exiting Vivado at" in line),
+        default=-1,
+    )
+    parent_tail = body[last_child_exit + 1 :]
+    done_indices = [
+        index for index, line in enumerate(parent_tail) if line.startswith("** DONE")
+    ]
+    if not done_indices:
+        return False
+    after_done = parent_tail[done_indices[-1] + 1 :]
+    return not any(line.startswith("ERROR:") for line in after_done)
+
+
+def _proc_state_and_ppid(pid: int) -> tuple[str, int] | None:
+    """Return ``(state, ppid)`` from ``/proc/<pid>/stat``, or ``None``."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    rparen = stat.rfind(")")
+    if rparen < 0:
+        return None
+    fields = stat[rparen + 2 :].split()
+    return (fields[0], int(fields[1])) if len(fields) >= 2 else None
+
+
+def _vivado_session_is_alive(
+    process: subprocess.Popen[bytes], log_path: Path
+) -> bool | None:
+    """Return whether the parent Vivado session under ``process`` is still running.
+
+    Returns ``None`` when ``process`` is not a live ``/proc`` child of this
+    Python process (for example on Windows or in unit tests with fake
+    launchers), so ``_wait_for_vivado`` falls back to the log exit marker.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or not Path("/proc").is_dir():
+        return None
+    root_info = _proc_state_and_ppid(pid)
+    if root_info is None or root_info[1] != os.getpid():
+        return None
+    if root_info[0] == "Z":
+        return False
+
+    target_log = log_path.resolve()
+    step_cwd = log_path.parent.resolve()
+    seen: set[int] = set()
+    queue = [pid]
+    while queue:
+        current = queue.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        info = _proc_state_and_ppid(current)
+        if info is None or info[0] == "Z":
+            continue
+        try:
+            for task_dir in Path(f"/proc/{current}/task").iterdir():
+                children_text = (task_dir / "children").read_text()
+                queue.extend(int(tok) for tok in children_text.split())
+        except OSError:
+            pass
+        try:
+            if (
+                Path(f"/proc/{current}/exe").resolve().name == "vivado"
+                and Path(f"/proc/{current}/cwd").resolve() == step_cwd
+            ):
+                return True
+        except OSError:
+            pass
+        try:
+            fd_dir = Path(f"/proc/{current}/fd")
+            fdinfo_dir = Path(f"/proc/{current}/fdinfo")
+            for fd_entry in fd_dir.iterdir():
+                try:
+                    if fd_entry.resolve() != target_log:
+                        continue
+                    fdinfo = (fdinfo_dir / fd_entry.name).read_text()
+                except OSError:
+                    continue
+                flags = next(
+                    (
+                        int(line.split()[1], 8)
+                        for line in fdinfo.splitlines()
+                        if line.startswith("flags:")
+                    ),
+                    0,
+                )
+                if (flags & os.O_ACCMODE) in (os.O_WRONLY, os.O_RDWR):
+                    return True
+        except OSError:
+            pass
+    return False
 
 
 def _has_process_groups() -> bool:
@@ -3260,7 +3376,7 @@ def run_vivado_step(
         for sig, handler in previous.items():
             signal.signal(sig, handler)
     if returncode != 0:
-        explain_silent_vivado_exit(log_path, returncode)
+        explain_silent_vivado_exit(log_path, returncode, stale_log)
     return returncode
 
 
@@ -3287,12 +3403,13 @@ def _signal_launcher(process: subprocess.Popen[bytes], kill: bool) -> None:
 def _wait_for_vivado(
     process: subprocess.Popen[bytes], log_path: Path, stale_log: str | None = None
 ) -> int:
-    """Wait for a Vivado launcher, ending it once Vivado has long since exited.
+    """Wait for a Vivado launcher, ending it once the parent session has exited.
 
     ``stale_log`` is the text of an earlier step's log that could not be removed;
     the log is ignored while it still reads the same.
     """
     exited_since: float | None = None
+    saw_session_alive = False
     while True:
         try:
             returncode = process.wait(timeout=VIVADO_POLL_S)
@@ -3300,11 +3417,22 @@ def _wait_for_vivado(
             pass
         else:
             return returncode
+        session_alive = _vivado_session_is_alive(process, log_path)
+        if session_alive is True:
+            saw_session_alive = True
+            exited_since = None
+            continue
+        text = ""
         try:
             text = log_path.read_text(errors="replace")
         except OSError:
-            continue
-        if not vivado_log_ends_with_exit(text) or text == stale_log:
+            if not (saw_session_alive and session_alive is False):
+                continue
+        parent_exited = saw_session_alive and session_alive is False
+        log_exited = (
+            bool(text) and text != stale_log and vivado_log_ends_with_exit(text)
+        )
+        if not parent_exited and not log_exited:
             # Vivado rewrites the log at start-up, so a marker left by an earlier
             # step must not count towards this step's grace period.
             exited_since = None
@@ -3328,7 +3456,7 @@ def _wait_for_vivado(
                 except subprocess.TimeoutExpired:
                     _signal_launcher(process, kill=True)
             process.wait()
-            return 0 if re.search(r"^\*\* DONE", text, re.MULTILINE) else 1
+            return 0 if text != stale_log and vivado_log_succeeded(text) else 1
 
 
 def generate_bitstream(

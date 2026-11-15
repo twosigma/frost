@@ -5694,3 +5694,185 @@ def test_child_run_exit_line_does_not_end_the_vivado_step(tmp_path: Path) -> Non
     finally:
         fpga_build.VIVADO_EXIT_GRACE_S = original_grace
         fpga_build.VIVADO_POLL_S = original_poll
+
+
+def test_caught_error_before_done_succeeds_under_stuck_launcher(
+    platform: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caught placement ERROR lines before ``** DONE`` do not fail a stuck launcher."""
+    log = (
+        "Phase 4.1 Post Commit Optimization\n"
+        "ERROR: [Vivado 12-1409] Cannot set LOC and BEL property of instance(s)\n"
+        "FROST_LOCAL_PLACE pair=9 attempts=21 legal=5 no qualifying move\n"
+        "** DONE - place_design complete with directive: ExtraTimingOpt\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:10:00 2026...\n"
+    )
+    launcher = _StuckLauncher()
+    assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, log) == 0
+    assert launcher.terminated or launcher.killed
+
+
+def test_live_parent_session_with_trailing_child_exit_line_is_not_killed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live parent session is not killed when a child exit line sits at EOF."""
+    if not Path("/proc").is_dir():
+        pytest.skip("requires /proc process inspection")
+    script = tmp_path / "parent_session.py"
+    script.write_text(
+        "import sys, time\n"
+        "with open('vivado.log', 'w') as log:\n"
+        "    log.write('INFO: [Common 17-206] Exiting Vivado at child end...\\n')\n"
+        "    log.flush()\n"
+        "    time.sleep(0.25)\n"
+        "    log.write('** DONE\\nINFO: [Common 17-206] Exiting Vivado at parent end...\\n')\n"
+        "    log.flush()\n"
+        "sys.exit(7)\n"
+    )
+    monkeypatch.setattr(fpga_build, "VIVADO_EXIT_GRACE_S", 0.05)
+    monkeypatch.setattr(fpga_build, "VIVADO_POLL_S", 0.02)
+    assert fpga_build.run_vivado_step([sys.executable, str(script)], tmp_path) == 7
+
+
+def test_crashed_parent_session_under_stuck_launcher_terminates_and_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the parent session exits without an exit marker, a stuck wrapper is ended."""
+    if not Path("/proc").is_dir():
+        pytest.skip("requires /proc process inspection")
+    child = tmp_path / "session.py"
+    child.write_text(
+        "import time\n"
+        "with open('vivado.log', 'w') as log:\n"
+        "    log.write('Running synth\\n')\n"
+        "    log.flush()\n"
+        "    time.sleep(0.08)\n"
+    )
+    wrapper = tmp_path / "wrapper.sh"
+    wrapper.write_text(
+        f"#!/bin/bash\n{sys.executable} {child}\nsleep 300 &\nwait\n"
+    )
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(fpga_build, "VIVADO_EXIT_GRACE_S", 0.05)
+    monkeypatch.setattr(fpga_build, "VIVADO_POLL_S", 0.02)
+    assert fpga_build.run_vivado_step([str(wrapper)], tmp_path) == 1
+
+
+@pytest.mark.parametrize("exit_code", (1, 2))
+def test_non_zero_process_exit_is_preserved_even_with_done_and_exit_markers(
+    platform: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
+) -> None:
+    """A launcher that exits non-zero is never turned into success by log markers."""
+    assert _fail_vivado(tmp_path, monkeypatch, _DONE_LOG, returncode=exit_code) == (
+        exit_code
+    )
+
+
+@pytest.mark.parametrize(
+    "failure_log",
+    (
+        "Running synth\nERROR: [Synth 8-605] undriven pin\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:00 2026...\n",
+        "** DONE\nERROR: [DRC 23-20] Rule violation\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:00 2026...\n",
+        "** DONE\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:00 2026...\n"
+        "[Sun Nov 15 08:00:01 2026] jtag_axi_0_synth_1 finished\n"
+        "Command: synth_design -top x3_frost\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:05:00 2026...\n",
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:00 2026...\n"
+        "[Sun Nov 15 08:00:01 2026] jtag_axi_0_synth_1 finished\n"
+        "ERROR: [Common 17-69] Command failed: IP synthesis run x3_nic_gty_wiz_synth_1 "
+        "did not complete: synth_design ERROR!\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:02 2026...\n",
+        "Command: synth_design -top x3_frost\n"
+        "ERROR: [Common 17-345] A valid license was not found for feature 'Synthesis'\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:03 2026...\n",
+    ),
+)
+def test_error_tcl_and_license_failures_fail_under_normal_and_stuck_launchers(
+    platform: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure_log: str,
+) -> None:
+    """Post-DONE ERROR lines, Tcl errors, license failures and child DONEs fail."""
+    assert _fail_vivado(tmp_path, monkeypatch, failure_log, returncode=1) == 1
+    assert "ended abnormally" not in capsys.readouterr().out
+
+    launcher = _StuckLauncher()
+    assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, failure_log) == 1
+    assert launcher.terminated or launcher.killed
+    assert "ended abnormally" not in capsys.readouterr().out
+
+
+def test_killed_process_after_child_ip_exit_reports_abnormal_end(
+    platform: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A SIGKILL mid-synthesis after child IP runs still reports an abnormal end."""
+    log = (
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:00 2026...\n"
+        "[Sun Nov 15 08:00:01 2026] jtag_axi_0_synth_1 finished\n"
+        "Start Technology Mapping\n"
+    )
+    assert _fail_vivado(tmp_path, monkeypatch, log, returncode=-9) == -9
+    output = capsys.readouterr().out
+    assert "ended abnormally" in output
+    assert "exited with code -9" in output
+    assert "Start Technology Mapping" in output
+
+
+def test_killed_process_before_rewriting_stale_log_reports_abnormal_end(
+    platform: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An unrewritten stale log does not suppress the abnormal-end note."""
+    log = tmp_path / "vivado.log"
+    log.write_text(_DONE_LOG)
+    _keep_log_in_place(monkeypatch, log)
+    launcher = SimpleNamespace(wait=lambda timeout=None: -9)
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+    assert fpga_build.run_vivado_step(["vivado"], tmp_path) == -9
+    output = capsys.readouterr().out
+    assert "before rewriting" in output
+    assert "ended abnormally" in output
+
+
+@pytest.mark.parametrize("sig_name", ("SIGTERM", "SIGHUP"))
+def test_step_timeout_signal_kills_launcher_group_and_exits_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sig_name: str
+) -> None:
+    """SIGTERM and SIGHUP timeouts kill the step's process group and raise SystemExit."""
+    sig = getattr(fpga_build.signal, sig_name)
+    original_handler = fpga_build.signal.getsignal(sig)
+    killpg_calls: list[tuple[int, int, int | None]] = []
+
+    class TimedOut(_StuckLauncher):
+        def wait(self, timeout: float | None = None) -> int:
+            if not self.killed:
+                os.kill(os.getpid(), sig)
+            return -9
+
+    launcher = TimedOut(pid=5150)
+
+    def killpg(pid: int, sent_sig: int) -> None:
+        killpg_calls.append((pid, sent_sig, launcher.returncode))
+        launcher.killed = True
+
+    monkeypatch.setattr(fpga_build.os, "killpg", killpg, raising=False)
+    with pytest.raises(SystemExit) as stopped:
+        _launch_stuck_vivado(tmp_path, monkeypatch, launcher, "Running synth\n")
+    assert stopped.value.code == 128 + int(sig)
+    assert killpg_calls == [(5150, fpga_build.signal.SIGKILL, None)]
+    assert fpga_build.signal.getsignal(sig) == original_handler
