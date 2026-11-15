@@ -1609,15 +1609,15 @@ jobs:
             pytest tests \
               -m "not cocotb and not synthesis and not formal and not slow" -v
 
-  # Compare one live cocotb BRAM hello_world run with the native runner on
-  # cycles and UART bytes, build the checked 4-thread portable static native
-  # binary once, and verify DDR hello_world, BRAM CoreMark, and demo/run_demo.sh.
+  # Compare live unseeded cocotb runs of BRAM and DDR hello_world and BRAM
+  # CoreMark with the checked 4-thread portable static native runner on cycles,
+  # ticks, and UART bytes, and verify demo/run_demo.sh.
   test-native:
     name: Native Simulator (hello_world and BRAM CoreMark)
     runs-on: ubuntu-26.04
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1

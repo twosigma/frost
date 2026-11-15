@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -171,14 +172,12 @@ EXPECTED_SUMMARY_KEYS = {
     "failed",
 }
 
-FORBIDDEN_README_CYCLE_FIGURES = (
-    11792,
-    11824,
-    12821,
-    333130,
-    223556,
-    410310,
-    285889,
+# Forbid grouped or plain 5- to 6-digit cycle or tick counts in the two READMEs
+# while permitting non-workload constants like 10,000 drain cycles or 5,000,000.
+README_HARDCODED_CYCLE_OR_TICK_RE = re.compile(
+    r"(?<![,\d])(?:\d{2,3},\d{3}|\d{5,6})(?![,\d])\s+(?:simulated\s+)?(?:cycles|ticks)\b"
+    r"|\b(?:Simulated\s+cycles|CoreMark\s+ticks|Total(?:\s+64-bit)?\s+ticks)\s*:\s*(?:\d{2,3},\d{3}|\d{5,6})(?![,\d])",
+    re.IGNORECASE,
 )
 
 
@@ -633,6 +632,44 @@ def assert_native_matches_cocotb(
     )
 
 
+def check_case_and_record_comparison(
+    case: NativeCase,
+    summary: dict[str, Any],
+    uart_bytes: bytes,
+    live_cocotb: Mapping[str, ParsedRunResult],
+    compared: set[str],
+    *,
+    expected_threads: int,
+) -> None:
+    """Verify one native case's invariants and record live cocotb parity if present."""
+    assert_program_and_summary_invariants(
+        case,
+        summary,
+        uart_bytes,
+        expected_threads=expected_threads,
+    )
+    if case.name in live_cocotb:
+        assert_native_matches_cocotb(
+            case.name,
+            summary,
+            uart_bytes,
+            live_cocotb[case.name],
+        )
+        compared.add(case.name)
+
+
+def assert_all_live_cocotb_cases_compared(
+    compared: set[str],
+    live_cocotb: Mapping[str, ParsedRunResult],
+) -> None:
+    """Fail if any live cocotb run was not matched and compared against a native run."""
+    expected = set(live_cocotb)
+    assert compared == expected, (
+        "live cocotb parity comparison set mismatch: "
+        f"compared={sorted(compared)}, live_cocotb={sorted(expected)}"
+    )
+
+
 def run_live_cocotb_case(
     app: str,
     mem_config: str,
@@ -800,13 +837,14 @@ def run_exactness_suite(
     sim_build = NATIVE_DIR / "sim_build"
     live_cocotb: dict[str, ParsedRunResult] = {}
 
-    if ci_only:
-        # Compare one live unseeded cocotb run directly with the native run of
-        # the same tree so cocotb and the native runner cannot drift apart.
-        live_cocotb["hello_world_bram"] = run_live_cocotb_case(
-            "hello_world", "bram", clean_first=True
+    for index, case in enumerate(selected):
+        live_cocotb[case.name] = run_live_cocotb_case(
+            case.app,
+            case.mem_config,
+            clean_first=(index == 0),
         )
 
+    if ci_only:
         checked_bin = (
             sim_build / f"model_t{threads}_a1_s0_x86_64_static" / "frost-native"
         )
@@ -823,13 +861,6 @@ def run_exactness_suite(
             "STATIC_RUNTIME=1",
         ]
     else:
-        for index, case in enumerate(selected):
-            live_cocotb[case.name] = run_live_cocotb_case(
-                case.app,
-                case.mem_config,
-                clean_first=(index == 0),
-            )
-
         checked_bin = sim_build / f"model_t{threads}_a1_s0_host" / "frost-native"
         build_args = [
             "make",
@@ -853,6 +884,7 @@ def run_exactness_suite(
         _verify_static_runtime_linkage(checked_bin)
 
     retire_log = work_dir / "retire_trace.log"
+    compared: set[str] = set()
     for case in selected:
         _run_checked(
             [
@@ -899,19 +931,15 @@ def run_exactness_suite(
             f"uart_bytes={summary['uart_bytes']})",
             flush=True,
         )
-        assert_program_and_summary_invariants(
+        check_case_and_record_comparison(
             case,
             summary,
             uart_bytes,
+            live_cocotb,
+            compared,
             expected_threads=threads,
         )
-        if case.name in live_cocotb:
-            assert_native_matches_cocotb(
-                case.name,
-                summary,
-                uart_bytes,
-                live_cocotb[case.name],
-            )
+    assert_all_live_cocotb_cases_compared(compared, live_cocotb)
 
     hello_stage_dir = sim_build / "apps" / "hello_world_bram"
     _verify_thread_cli_bounds(checked_bin, threads, hello_stage_dir, work_dir)
@@ -1767,6 +1795,15 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
         assert "hardware cycle count" not in doc_text
 
     # Neither README may reference a stored baseline file or hard-code cycle/tick counts.
+    for sample in (
+        "completes in 12,345 cycles",
+        "takes 345,678 simulated cycles",
+        "prints 234,567 ticks",
+        "Simulated cycles : 12,345",
+        "CoreMark ticks   : 234,567",
+        "Total 64-bit ticks : 234567",
+    ):
+        assert README_HARDCODED_CYCLE_OR_TICK_RE.search(sample) is not None
     for doc_name, doc_text in (
         ("README.md", root_readme),
         ("hw/sim/native/README.md", native_readme),
@@ -1777,11 +1814,10 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
         assert "--update-baseline" not in doc_text, (
             f"{doc_name} references removed --update-baseline"
         )
-        for value in FORBIDDEN_README_CYCLE_FIGURES:
-            for rendered in (str(value), f"{value:,}"):
-                assert rendered not in doc_text, (
-                    f"{doc_name} hard-codes cycle or tick figure {rendered}"
-                )
+        match = README_HARDCODED_CYCLE_OR_TICK_RE.search(doc_text)
+        assert match is None, (
+            f"{doc_name} hard-codes cycle or tick figure: {match.group(0)!r}"
+        )
 
     assert "frost_sim_assertions_enable();" in main_cpp_text
     assert "frost_sim_assertions_enabled()" in main_cpp_text
@@ -2033,6 +2069,49 @@ def test_live_cocotb_mismatch_messages_name_differing_figure() -> None:
         )
     assert "uart_sha256" in str(sha_err.value)
 
+    # Key-name drift in live_cocotb must never silently skip parity comparison.
+    cm_case = NATIVE_CASES["coremark_bram"]
+    full_summary: dict[str, Any] = {
+        "cycles": live.cycles,
+        "advanced_cycles": live.cycles,
+        "marker_cycle": live.cycles,
+        "drain_cycles": 0,
+        "uart_bytes": len(uart),
+        "coremark_ticks": live.coremark_ticks,
+        "wall_seconds": 1.0,
+        "cycles_per_second": float(live.cycles),
+        "threads": 4,
+        "assertions_compiled": True,
+        "assertions_armed": True,
+        "passed": True,
+        "failed": False,
+    }
+    compared_ok: set[str] = set()
+    live_ok = {"coremark_bram": live}
+    check_case_and_record_comparison(
+        cm_case,
+        full_summary,
+        uart,
+        live_ok,
+        compared_ok,
+        expected_threads=4,
+    )
+    assert_all_live_cocotb_cases_compared(compared_ok, live_ok)
+    assert compared_ok == {"coremark_bram"}
+
+    compared_drifted: set[str] = set()
+    live_drifted = {"coremark_brm": live}
+    check_case_and_record_comparison(
+        cm_case,
+        full_summary,
+        uart,
+        live_drifted,
+        compared_drifted,
+        expected_threads=4,
+    )
+    with pytest.raises(AssertionError, match="coremark_brm"):
+        assert_all_live_cocotb_cases_compared(compared_drifted, live_drifted)
+
 
 def test_effective_cpu_count_and_demo_script_respect_cgroup_quotas(
     tmp_path: Path,
@@ -2172,6 +2251,35 @@ def test_demo_dockerfile_uses_checked_portable_baseline_build() -> None:
     assert 'exec "$MODEL_BIN"' in script_text
     assert "not meaningful at" in script_text
 
+    # Execute the actual BUILD_JOBS shell sanitiser from demo/Dockerfile.
+    joined_dockerfile = dockerfile.replace("\\\n", "\n")
+    start_marker = 'jobs="${BUILD_JOBS}";'
+    end_marker = "make -C /src/hw/sim/native stage-app"
+    assert start_marker in joined_dockerfile and end_marker in joined_dockerfile
+    jobs_snippet = joined_dockerfile.split(start_marker, 1)[1].split(end_marker, 1)[0]
+    sh_script = f'{start_marker}\n{jobs_snippet}\nprintf "%s\\n" "$jobs"\n'
+
+    def _eval_build_jobs(raw_val: str) -> str:
+        proc = subprocess.run(
+            ["/bin/sh", "-eu", "-c", sh_script],
+            env={
+                "BUILD_JOBS": raw_val,
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            },
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return proc.stdout.strip()
+
+    auto_jobs = int(_eval_build_jobs(""))
+    assert 1 <= auto_jobs <= 8
+    for bad_jobs in ("0", "000", "abc", "-2", "2.5", " 4"):
+        assert _eval_build_jobs(bad_jobs) == "1"
+    assert _eval_build_jobs("08") == "8"
+    assert _eval_build_jobs("4") == "4"
+    assert _eval_build_jobs("16") == "16"
+
 
 def test_ci_workflow_runs_native_and_demo_image_jobs() -> None:
     """CI workflow runs both test-native and test-demo-image without pushing."""
@@ -2182,7 +2290,7 @@ def test_ci_workflow_runs_native_and_demo_image_jobs() -> None:
     native_job = jobs["test-native"]
     assert set(native_job["needs"]) == {"build-docker", "gate"}
     assert "needs.gate.outputs.full == 'true'" in native_job["if"]
-    assert int(native_job["timeout-minutes"]) == 25
+    assert int(native_job["timeout-minutes"]) >= 35
     native_cmds = "\n".join(
         str(step.get("run", "")) for step in native_job.get("steps", [])
     )
@@ -2235,9 +2343,9 @@ def main(argv: list[str] | None = None) -> int:
         "--ci",
         action="store_true",
         help=(
-            "compare one live cocotb BRAM hello_world run with the native runner, "
-            "then build the shipped portable checked native binary once and check "
-            "DDR hello_world, BRAM coremark, and demo/run_demo.sh"
+            "compare live unseeded cocotb runs of BRAM and DDR hello_world and BRAM "
+            "coremark with the shipped portable checked native binary and check "
+            "demo/run_demo.sh"
         ),
     )
     mode.add_argument(

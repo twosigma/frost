@@ -106,11 +106,11 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 
 A standalone C++ Verilator runner simulates the `frost` SystemVerilog RTL with
 live UART output and no Python in the clock loop. On every CI run, `test-native`
-checks that a live cocotb BRAM `hello_world` run and the native run of the same
-tree agree in cycles and UART bytes, and checks DDR `hello_world` and BRAM
-CoreMark pass, CRC, tick, and summary conditions; the full comparison mode
-(`tests/test_native_sim.py --all`) compares `hello_world` and CoreMark in both
-memory tiers cycle for cycle against live unseeded cocotb runs:
+compares live unseeded cocotb runs of BRAM and DDR `hello_world` and BRAM
+CoreMark with the native runner on cycles, CoreMark ticks, and UART bytes
+alongside each program's pass, CRC, and summary conditions; the full comparison
+mode (`tests/test_native_sim.py --all`) adds DDR CoreMark and checkpoint save
+and restore against live unseeded cocotb runs:
 
 ```bash
 ./scripts/frost.py native hello_world

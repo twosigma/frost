@@ -36,7 +36,7 @@ RUN set -eux; \
     jobs="${BUILD_JOBS}"; \
     if [ -z "$jobs" ]; then \
         jobs="$(nproc 2>/dev/null || echo 1)"; \
-        case "$jobs" in ''|*[!0-9]*|0) jobs=1 ;; esac; \
+        case "$jobs" in ''|*[!0-9]*) jobs=1 ;; *) jobs="${jobs#"${jobs%%[!0]*}"}"; [ -n "$jobs" ] || jobs=1 ;; esac; \
         if [ -r /sys/fs/cgroup/cpu.max ]; then \
             read -r quota period _rest < /sys/fs/cgroup/cpu.max || true; \
             case "${quota:-}:${period:-}" in \
@@ -60,6 +60,8 @@ RUN set -eux; \
             esac; \
         fi; \
         if [ "$jobs" -gt 8 ]; then jobs=8; fi; \
+    else \
+        case "$jobs" in ''|*[!0-9]*) jobs=1 ;; *) jobs="${jobs#"${jobs%%[!0]*}"}"; [ -n "$jobs" ] || jobs=1 ;; esac; \
     fi; \
     make -C /src/hw/sim/native stage-app APP=hello_world MEM_CONFIG=bram; \
     make -C /src/hw/sim/native stage-app APP=hello_world MEM_CONFIG=ddr; \

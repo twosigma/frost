@@ -260,16 +260,16 @@ documented native runner options, exercises RTL assertion, reset-arming, HDL
 with no stored cycle counts, tick counts, or output hashes:
 
 - **CI mode (`--ci`, run by `test-native` in
-  [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml)):** runs one
-  live unseeded cocotb BRAM `hello_world` simulation, builds the checked
-  4-thread portable static binary (`ASSERTIONS=1 SAVABLE=0 PORTABLE=1
-  STATIC_RUNTIME=1`, or 1 thread when fewer than 4 CPUs are available), checks
-  `readelf -d`, verifies that native BRAM `hello_world` matches the live cocotb
-  run in cycle count and raw UART bytes, and checks DDR `hello_world`, BRAM
-  `coremark`, and `demo/run_demo.sh` (`--app hello_world`) against each
-  program's own pass conditions (`Frost: Hello, world!`; CoreMark's `2K
-  performance run` banner, all five CRC lines, `"Correct operation validated."`,
-  `<<PASS>>`, and a present non-zero tick count) and summary invariants.
+  [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml)):** runs live
+  unseeded cocotb simulations of BRAM and DDR `hello_world` and BRAM `coremark`,
+  builds the checked 4-thread portable static binary (`ASSERTIONS=1 SAVABLE=0
+  PORTABLE=1 STATIC_RUNTIME=1`, or 1 thread when fewer than 4 CPUs are
+  available), checks `readelf -d`, verifies cycle-for-cycle, tick-for-tick, and
+  byte-for-byte UART equality between the native runner and those three live
+  cocotb runs alongside each program's own pass conditions (`Frost: Hello,
+  world!`; CoreMark's `2K performance run` banner, all five CRC lines, `"Correct
+  operation validated."`, `<<PASS>>`, and a present non-zero tick count) and
+  summary invariants, and exercises `demo/run_demo.sh` (`--app hello_world`).
   Alongside `test-native`, `test-demo-image` builds `demo/Dockerfile` into
   `frost-demo:local` and runs both the default two-program demo (`hello_world`
   and `coremark`) and a single-application invocation (`--threads 1 --app
