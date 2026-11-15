@@ -90,7 +90,11 @@ module trap_unit #(
     // Arming requires drained stores. The deferred take is already armed, so
     // neither term of o_trap_drain_wait holds commit; the interrupt follows the
     // load's commit. Misalignment faults remain enabled and access no device.
-    input logic i_device_read_at_head,
+    input  logic i_device_read_at_head,
+    // A D, M or S take is armed (registered). cpu_ooo holds back the next
+    // device access while the shield is down, so closely spaced device
+    // accesses cannot keep re-raising it and starve the take.
+    output logic o_int_take_armed,
 
     // CSR values from csr_file
     input logic [XLEN-1:0] i_mstatus,
@@ -618,6 +622,7 @@ module trap_unit #(
       s_take_armed_q <= s_int_eligible && !o_trap_taken;
     end
   end
+  assign o_int_take_armed = d_take_armed_q || m_take_armed_q || s_take_armed_q;
 
   // Takes require an unstalled pipeline and drained committed stores.
   // WFI stall does not count. AMO and device-read shields defer interrupts.

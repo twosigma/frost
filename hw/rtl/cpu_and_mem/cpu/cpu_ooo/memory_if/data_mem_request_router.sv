@@ -193,6 +193,10 @@ module data_mem_request_router #(
     // High while a device-quadrant request is held. cpu_ooo raises its
     // device-read interrupt shield from it.
     output logic                                     o_device_request_pending,
+    // cpu_ooo: an interrupt take is armed and the shield is down. The held
+    // device request stays parked and unpending, so it neither raises the
+    // shield nor arms, and the interrupt's flush cancels it.
+    input  logic                                     i_device_start_hold = 1'b0,
     output logic [       riscv_pkg::MemDataBits-1:0] o_lq_mem_read_data,
     output logic                                     o_lq_mem_read_valid,
     output logic                                     o_lq_mem_read_error,
@@ -525,8 +529,10 @@ module data_mem_request_router #(
     end
   end
 
-  // The pending indication uses only the held valid bit and address.
-  assign o_device_request_pending = lq_mem_request_valid && lq_pending_request_requires_drain;
+  // The pending indication uses only the held valid bit and address, and the
+  // registered interrupt hold from cpu_ooo.
+  assign o_device_request_pending = lq_mem_request_valid && lq_pending_request_requires_drain &&
+      !i_device_start_hold;
 
   // Delay o_device_request_pending by one cycle. cpu_ooo's interrupt shield
   // sets from the same signal and shares reset/flush, so it is already set
@@ -693,6 +699,17 @@ module data_mem_request_router #(
     end
   end
 
+  // A parked device request held back by an armed interrupt take.
+  logic f_device_hold_seen;
+  always @(posedge i_clk) begin
+    if (i_rst || i_flush_all) begin
+      f_device_hold_seen <= 1'b0;
+    end else if (lq_mem_request_valid && lq_pending_request_requires_drain &&
+                 i_device_start_hold) begin
+      f_device_hold_seen <= 1'b1;
+    end
+  end
+
   // The LQ must not launch a second read while the request register is valid;
   // its bus-busy gate includes this bit and all write-port terms.
   always_comb begin
@@ -830,6 +847,10 @@ module data_mem_request_router #(
       )));
       if (device_accept_armed_q) begin
         p_arm_implies_two_cycle_pending : assert ($past(device_request_pending_q));
+        // A request held for an armed interrupt take neither reports pending
+        // nor arms; the hold must lift for two cycles first.
+        p_arm_follows_two_unheld_cycles :
+        assert (!$past(i_device_start_hold) && !$past(i_device_start_hold, 2));
       end
       if (o_mmio_read_pulse) begin
         p_device_effect_had_two_cycle_pending : assert ($past(device_request_pending_q));
@@ -899,6 +920,10 @@ module data_mem_request_router #(
       cover (lq_mem_request_valid && lq_pending_request_requires_drain &&
              i_sq_committed_empty && !write_port_busy && !device_request_pending_q &&
              !lq_pending_read_accepted);
+      // A request held for an armed interrupt take is accepted once the hold
+      // lifts.
+      cover_device_hold_then_accept :
+      cover (f_device_hold_seen && lq_pending_read_accepted && lq_pending_request_requires_drain);
       cover_write_and_drain_park :
       cover (lq_mem_request_valid && lq_pending_request_requires_drain &&
              !i_sq_committed_empty && write_port_busy);

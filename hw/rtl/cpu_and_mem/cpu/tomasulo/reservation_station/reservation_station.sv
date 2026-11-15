@@ -430,7 +430,8 @@ module reservation_station #(
   // stored ready bit is still clear. A dispatch repair bypass already supplies
   // the value and ready bit, so it needs no deferred capture.
   (* keep = "true" *)
-  wire dispatch_src1_cdb_defer_if_unready =
+  wire dispatch_src1_cdb_defer_if_unready;
+  assign dispatch_src1_cdb_defer_if_unready =
       ((i_cdb.valid && dispatch_src1_tag == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src1_tag == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -438,7 +439,8 @@ module reservation_station #(
   ));
   wire dispatch_src1_cdb_defer = !dispatch_src1_ready && dispatch_src1_cdb_defer_if_unready;
   (* keep = "true" *)
-  wire dispatch_src2_cdb_defer_if_unready =
+  wire dispatch_src2_cdb_defer_if_unready;
+  assign dispatch_src2_cdb_defer_if_unready =
       ((i_cdb.valid && dispatch_src2_tag == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src2_tag == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -446,7 +448,8 @@ module reservation_station #(
   ));
   wire dispatch_src2_cdb_defer = !dispatch_src2_ready && dispatch_src2_cdb_defer_if_unready;
   (* keep = "true" *)
-  wire dispatch_src3_cdb_defer_if_unready =
+  wire dispatch_src3_cdb_defer_if_unready;
+  assign dispatch_src3_cdb_defer_if_unready =
       ((i_cdb.valid && dispatch_src3_tag == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src3_tag == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -528,7 +531,8 @@ module reservation_station #(
 
   // Slot-2 deferred CDB capture.
   (* keep = "true" *)
-  wire dispatch_src1_cdb_defer_if_unready_2 =
+  wire dispatch_src1_cdb_defer_if_unready_2;
+  assign dispatch_src1_cdb_defer_if_unready_2 =
       ((i_cdb.valid && dispatch_src1_tag_2 == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src1_tag_2 == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -536,7 +540,8 @@ module reservation_station #(
   ));
   wire dispatch_src1_cdb_defer_2 = !dispatch_src1_ready_2 && dispatch_src1_cdb_defer_if_unready_2;
   (* keep = "true" *)
-  wire dispatch_src2_cdb_defer_if_unready_2 =
+  wire dispatch_src2_cdb_defer_if_unready_2;
+  assign dispatch_src2_cdb_defer_if_unready_2 =
       ((i_cdb.valid && dispatch_src2_tag_2 == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src2_tag_2 == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -544,7 +549,8 @@ module reservation_station #(
   ));
   wire dispatch_src2_cdb_defer_2 = !dispatch_src2_ready_2 && dispatch_src2_cdb_defer_if_unready_2;
   (* keep = "true" *)
-  wire dispatch_src3_cdb_defer_if_unready_2 =
+  wire dispatch_src3_cdb_defer_if_unready_2;
+  assign dispatch_src3_cdb_defer_if_unready_2 =
       ((i_cdb.valid && dispatch_src3_tag_2 == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src3_tag_2 == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -3287,20 +3293,30 @@ module reservation_station #(
         wire [5:0] selected;
         wire live0 = i_cdb.valid && tag == i_cdb.tag;
         wire live1 = i_cdb_2.valid && tag == i_cdb_2.tag;
-        (* keep = "true" *) wire resident_wait = rs_valid[entry] && !ready;
-        (* keep = "true" *) wire resident_live = resident_wait && (live0 || live1);
-        (* keep = "true" *) wire dispatch1_possible = !pending && !resident_live &&
+        (* keep = "true" *) wire resident_wait;
+        assign resident_wait = rs_valid[entry] && !ready;
+        (* keep = "true" *) wire resident_live;
+        assign resident_live = resident_wait && (live0 || live1);
+        (* keep = "true" *) wire dispatch1_possible;
+        assign dispatch1_possible = !pending && !resident_live &&
             !indexed_dispatch2_write[entry] && indexed_dispatch1_write[entry];
-        (* keep = "true" *) wire dispatch2_possible = !pending && !resident_live &&
+        (* keep = "true" *) wire dispatch2_possible;
+        assign dispatch2_possible = !pending && !resident_live &&
             indexed_dispatch2_write[entry];
-        (* keep = "true" *) wire repair1_blocks = resident_wait && repair_slot1_target_q[entry];
-        (* keep = "true" *) wire repair2_blocks = resident_wait && repair_slot2_target_q[entry];
-        (* keep = "true" *) wire repair1_possible = !pending && resident_wait &&
+        (* keep = "true" *) wire repair1_blocks;
+        assign repair1_blocks = resident_wait && repair_slot1_target_q[entry];
+        (* keep = "true" *) wire repair2_blocks;
+        assign repair2_blocks = resident_wait && repair_slot2_target_q[entry];
+        (* keep = "true" *) wire repair1_possible;
+        assign repair1_possible = !pending && resident_wait &&
             !live0 && !live1 && repair_slot1_target_q[entry];
-        (* keep = "true" *) wire repair2_possible = !pending && resident_wait &&
+        (* keep = "true" *) wire repair2_possible;
+        assign repair2_possible = !pending && resident_wait &&
             !live0 && !live1 && repair_slot2_target_q[entry];
-        (* keep = "true" *) wire pending1 = pending && repair_slot1_target_q[entry];
-        (* keep = "true" *) wire pending2 = pending && !repair_slot1_target_q[entry];
+        (* keep = "true" *) wire pending1;
+        assign pending1 = pending && repair_slot1_target_q[entry];
+        (* keep = "true" *) wire pending2;
+        assign pending2 = pending && !repair_slot1_target_q[entry];
         if (source_index == 0) begin : gen_source1
           assign ready = rs_src1_ready[entry];
           assign pending = src1_cdb_pend[entry];

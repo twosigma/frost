@@ -2029,26 +2029,34 @@ module load_queue #(
   if (1'b1) begin : gen_coherent_staged_class
     logic pma_ok_q, cached_q, misaligned_q, normal_q;
     wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
-    (* keep = "true" *) wire update_atomic =
+    (* keep = "true" *) wire update_atomic;
+    assign update_atomic =
         lq_is_amo[update_issue_payload_idx] || lq_is_lr[update_issue_payload_idx];
-    (* keep = "true" *) wire stored_permission =
+    (* keep = "true" *) wire stored_permission;
+    assign stored_permission =
         stored_atomic ? coherent_stored_class[2] : coherent_stored_class[1];
     // The arriving address's range checks come last. Atomic permission is
     // memory permission, the uncached or cached-DDR range, and data permission
     // adds the device range (pma_atomic_ok, pma_data_ok), so the three kept
     // checks meet the early source select and atomic flag in one term.
-    (* keep = "true" *) wire update_uncached_ok = (riscv_pkg::PmaUncachedBytes != 0) &&
+    (* keep = "true" *) wire update_uncached_ok;
+    assign update_uncached_ok = (riscv_pkg::PmaUncachedBytes != 0) &&
         ((i_addr_update.address - riscv_pkg::PmaUncachedBase) <= riscv_pkg::PmaUncachedBytes - 1);
-    (* keep = "true" *) wire update_cached_ok = riscv_pkg::pma_cached_ok(i_addr_update.address);
-    (* keep = "true" *) wire update_device_ok = riscv_pkg::pma_device_ok(i_addr_update.address);
-    (* keep = "true" *) wire selected_permission = issue_mem_uses_addr_update ?
+    (* keep = "true" *) wire update_cached_ok;
+    assign update_cached_ok = riscv_pkg::pma_cached_ok(i_addr_update.address);
+    (* keep = "true" *) wire update_device_ok;
+    assign update_device_ok = riscv_pkg::pma_device_ok(i_addr_update.address);
+    (* keep = "true" *) wire selected_permission;
+    assign selected_permission = issue_mem_uses_addr_update ?
         (update_uncached_ok || update_cached_ok || (!update_atomic && update_device_ok)) :
         stored_permission;
     wire [3:0] selected_class = issue_mem_uses_addr_update ?
         coherent_update_class : coherent_stored_class;
-    (* keep = "true" *) wire stored_misaligned = is_load_misaligned(
+    (* keep = "true" *) wire stored_misaligned;
+    assign stored_misaligned = is_load_misaligned(
         riscv_pkg::mem_size_e'(lq_size[issue_mem_stored_idx]), lq_address_issue_mem_rd);
-    (* keep = "true" *) wire update_misaligned = is_load_misaligned(
+    (* keep = "true" *) wire update_misaligned;
+    assign update_misaligned = is_load_misaligned(
         riscv_pkg::mem_size_e'(lq_size[update_issue_payload_idx]), i_addr_update.address);
     wire selected_misaligned = issue_mem_uses_addr_update ?
         update_misaligned : stored_misaligned;
@@ -2181,7 +2189,8 @@ module load_queue #(
   // the four terms and the head term meet in one more: the groups pass two
   // gates before the final take instead of four.
   if (1'b1) begin : gen_coherent_replace_gate
-    (* keep = "true" *) wire replace_allowed = sq_check_pending && sq_check_gate_early;
+    (* keep = "true" *) wire replace_allowed;
+    assign replace_allowed = sq_check_pending && sq_check_gate_early;
     (* keep = "true" *) wire [1:0] scan_with_en, scan_without_en;
     (* keep = "true" *) wire [1:0] scan_with_term, scan_without_term;
     (* keep = "true" *) wire head_term;
@@ -2198,7 +2207,8 @@ module load_queue #(
     assign head_term = replace_allowed && staged_younger_than_head && (i_addr_update.valid ?
         coherent_head_found[i_sq_committed_empty] :
         coherent_head_stored_found[i_sq_committed_empty]);
-    (* keep = "true" *) wire stage_replace =
+    (* keep = "true" *) wire stage_replace;
+    assign stage_replace =
         (|scan_with_term) || (|scan_without_term) || head_term;
     assign coherent_stage_replace = stage_replace;
   end
@@ -2403,33 +2413,40 @@ module load_queue #(
     (* keep = "true" *) logic probe_ok, issue_ok;
     wire ordinary_eligible =
         !sq_check_is_lr_q && !sq_check_is_amo_q && !coh_launch_hold_q;
-    (* keep = "true" *) wire ordinary_issue = ordinary_eligible && sq_check_phase2 &&
+    (* keep = "true" *) wire ordinary_issue;
+    assign ordinary_issue = ordinary_eligible && sq_check_phase2 &&
         !coherent_address_fault &&
         (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
-    (* keep = "true" *) wire head_drained_eligible = !coh_launch_hold_q &&
+    (* keep = "true" *) wire head_drained_eligible;
+    assign head_drained_eligible = !coh_launch_hold_q &&
         !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q));
-    (* keep = "true" *) wire head_drained_issue = head_drained_eligible && sq_check_phase2 &&
+    (* keep = "true" *) wire head_drained_issue;
+    assign head_drained_issue = head_drained_eligible && sq_check_phase2 &&
         !coherent_address_fault &&
         (sq_no_older_store || sq_check_is_amo_q ||
          (i_sq_all_older_addrs_known && !i_sq_forward.match));
     assign coherent_release_protected =
         !sq_check_is_amo_q || !sq_check_is_cached_region || i_coherent_atomic_protected;
 `ifndef SYNTHESIS
-    (* keep = "true" *) wire head_release_eligible = !coh_launch_hold_q &&
+    (* keep = "true" *) wire head_release_eligible;
+    assign head_release_eligible = !coh_launch_hold_q &&
         !((sq_check_is_amo_q || sq_check_is_lr_q) && (i_coh_admit_pulse || !coh_hold_valid_q));
     assign coherent_release_eligible = coherent_staged_at_head ?
         (i_sq_committed_empty ? head_release_eligible : ordinary_eligible) :
         (ordinary_eligible && !sq_check_is_mmio_q);
     for (genvar empty_case = 0; empty_case < 2; empty_case++) begin : gen_empty_issue
       localparam bit Empty = empty_case != 0;
-      (* keep = "true" *) wire ordinary = ordinary_eligible &&
+      (* keep = "true" *) wire ordinary;
+      assign ordinary = ordinary_eligible &&
           (sq_check_no_older_store_q || Empty ||
            (i_sq_all_older_addrs_known && !i_sq_forward.match));
-      (* keep = "true" *) wire head_drained = head_release_eligible &&
+      (* keep = "true" *) wire head_drained;
+      assign head_drained = head_release_eligible &&
           (sq_check_no_older_store_q || Empty || sq_check_is_amo_q ||
            (i_sq_all_older_addrs_known && !i_sq_forward.match));
       for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_drain
-        (* keep = "true" *) wire [1:0] by_head = {
+        (* keep = "true" *) wire [1:0] by_head;
+        assign by_head = {
           (drain_case != 0 ? head_drained : ordinary), ordinary && !sq_check_is_mmio_q
         };
         assign coherent_release_by_drain_empty[empty_case][drain_case] =
@@ -2980,8 +2997,10 @@ module load_queue #(
 
   // Apply the L0 hit after the other write permissions. Reset clears every
   // valid bit, so a write in a reset cycle reaches no live entry.
-  (* keep = "true" *) wire ram_hit_write_eligible = cache_hit_eligible;
-  (* keep = "true" *) wire ram_non_hit_write = !i_flush_all &&
+  (* keep = "true" *) wire ram_hit_write_eligible;
+  assign ram_hit_write_eligible = cache_hit_eligible;
+  (* keep = "true" *) wire ram_non_hit_write;
+  assign ram_non_hit_write = !i_flush_all &&
       (sq_do_forward || (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done));
 
   always_comb begin
@@ -4564,8 +4583,10 @@ module load_queue #(
   // Ring masks select at most one entry; an empty ring encodes index zero.
   // The shared update match and capture take then select the result. They equal
   // entry_holder_match_q and entry_push_match_q at sq_check_idx.
-  (* keep = "true" *) wire staged_held_write_index = lq_addr_update_idx == sq_check_idx;
-  (* keep = "true" *) wire staged_held_write = lq_addr_update_we && staged_held_write_index;
+  (* keep = "true" *) wire staged_held_write_index;
+  assign staged_held_write_index = lq_addr_update_idx == sq_check_idx;
+  (* keep = "true" *) wire staged_held_write;
+  assign staged_held_write = lq_addr_update_we && staged_held_write_index;
   wire staged_head_write = lq_addr_update_priority_match[head_mem_stored_idx];
   wire staged_ring_write;
   lq_match_gather #(
@@ -6594,7 +6615,8 @@ module lq_match_gather #(
     output logic o_match
 );
   (* keep = "true" *) wire [Groups-1:0] groups;
-  (* keep = "true" *) wire found = |i_select;
+  (* keep = "true" *) wire found;
+  assign found = |i_select;
   for (genvar group = 0; group < Groups; group++) begin : gen_group
     localparam int unsigned Base = 3 * group;
     localparam int unsigned Width = (DEPTH - Base >= 3) ? 3 : DEPTH - Base;
