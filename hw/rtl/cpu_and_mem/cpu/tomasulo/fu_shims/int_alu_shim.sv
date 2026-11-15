@@ -77,17 +77,13 @@ module int_alu_shim #(
   // Operation classes the ALU has no result group for
   // ---------------------------------------------------------------------------
   logic is_csr_imm_op;
-  assign is_csr_imm_op = (i_rs_issue.op == riscv_pkg::CSRRWI) ||
-                          (i_rs_issue.op == riscv_pkg::CSRRSI) ||
-                          (i_rs_issue.op == riscv_pkg::CSRRCI);
+  assign is_csr_imm_op = (i_rs_issue.op == riscv_pkg::CSR_IMM);
 
   // CSR register ops, vector arithmetic with a scalar operand, and vector
   // loads and stores hand rs1 to the ROB (a CSR's write operand; the vector
   // engine's scalar; the vector access's base address).
   logic is_csr_reg_op;
-  assign is_csr_reg_op = (i_rs_issue.op == riscv_pkg::CSRRW) ||
-                          (i_rs_issue.op == riscv_pkg::CSRRS) ||
-                          (i_rs_issue.op == riscv_pkg::CSRRC) ||
+  assign is_csr_reg_op = (i_rs_issue.op == riscv_pkg::CSR_REG) ||
                           (i_rs_issue.op == riscv_pkg::VARITH_X) ||
                           (i_rs_issue.op == riscv_pkg::VLOAD) ||
                           (i_rs_issue.op == riscv_pkg::VSTORE);

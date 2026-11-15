@@ -58,6 +58,14 @@ of its four eight-endpoint witnesses.
 hit-port allowances match in the SBY configurations and the runner.
 Individual SBY tasks can set shorter limits.
 
+`coh_l1d_perf_prove` uses depth 4 and a 120-second limit to prove that the
+L1D performance event stream equals the direct serializer delayed by one
+cycle, including reset, miss context and both pre-debit credit sums. Its
+cutpoints admit arbitrary raw event bundles and newly captured slot masks;
+the controller and data paths are outside this serializer proof. Equality
+of the pre-debit sums preserves the direct serializer's credit bound. The
+L1D and bridges job runs this task.
+
 The following data and store BMC allowances round twice the measured
 runtime up to five-minute increments. Measurements ran beside one other
 formal job. Word variants share their word-0 representative's allowance;
@@ -543,6 +551,7 @@ the least populated ordinary partition, and keeps B-channel stability alone.
 | `coherent_cpu` | Local SC ownership and LQ control invariants, including selected memory identity, staging permission and next state, launch, forwarding, SQ probes, cut holds, captured completion payloads and reservation clearing. The LQ tasks use eight entries and default preissue settings, with forwarding and Normal-cache variants. Combined forwarding and Normal-cache tasks cover both settings of preparation while memory is busy. Standalone selector equality covers four, eight and sixteen entries. SC classification also uses aligned, unaligned, non-power-of-two, empty and wrapping region configurations. These are local invariants, not whole-CPU transaction proofs |
 | `coherent_l0` | Unrestricted valid-state equality at 128 and 256 entries, plus eight-step cache checks and twelve-step hit and invalidation covers. The cache tasks assume an initial reset without reassertion and agreement between the fill and RAM-write controls. Explicit collision coverpoints are not enabled by these tasks |
 | `cache_way_choice` | In any register state of a 256-byte, 4-way cache with 8-byte lines: an allocation that completes takes a way outside the tag stage's ownership mask (built from its registered set matches; simulation checks allocations against the miss slots themselves), the completion that one-cycle tags factor by the compare's outcome equals its reference form, a lone hit names its way, the way an access touches is never the next pseudo-LRU victim, and the victim walk restricted to the unowned ways picks one of them, the pseudo-LRU way whenever that one is unowned. Also runs direct-mapped and with delayed UltraRAM tags. The checks are combinational, so the depth is one cycle |
+| `cache_flash_valid` | A 256-byte flash-valid cache with 8-byte lines, two miss slots and two writeback slots, free inputs and arbitrary functional initial state. A free watched set/tag has an independent installation/invalidation history: after an accepted invalidate-all it cannot hit until installed again. Separate assignment checks restate valid-flop reset/clear, registered read and last-set sweep entry; fast-mode RAM-valid agreement checks the duplicate representation. BMC runs 16 cycles; 24-cycle covers witness installation/hit, invalidation/miss and reinstallation/hit in four-way fast, direct-mapped fast and four-way hardware modes |
 | `coherence_observation` | The load queue's coherence port tracks one arbitrary ROB tag's observations through retirement, flush, and tag reuse, and replays it when DMA invalidates its line. See below |
 | `coherence_replay_compare` | DMA-invalidation replay masks built from chunked compares equal full-width line equality at XLEN 32, 64, and 66. Assumes one initial reset |
 | `data_mem_request_router` | Device reads are staged and accepted only after committed stores drain, a device read held for an armed interrupt take does not arm until the hold has been off for two cycles, a flush cancels an unaccepted device read, read enables match acceptances, and a blocked request keeps its address. Assumes the load queue presents no new read while one is held |

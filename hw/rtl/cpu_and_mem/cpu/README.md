@@ -344,6 +344,39 @@ instruction's register fields from them. CPU fetch fills compute the metadata wi
 `sw/common/generate_imem_predecode_init.py` mirrors it for the
 instruction-memory metadata arrays that component tests use.
 
+### Operation encoding
+
+`id_stage/instr_decoder.sv` maps each instruction to an eight-bit
+`riscv_pkg::instr_op_e` value, while `id_stage/instr_operand_classifier.sv`
+extracts its reservation station, register-operand flags and serialization
+flags directly from the 32-bit instruction word in parallel. Explicit anchors
+in `instr_op_e` (`ROL = 8'd76` and `ADDIW = 8'd170`) hold `ROL..RORI` and
+`SLLIW..RORIW` at the ordinals `riscv_pkg::projected_shift_controls` decodes by
+bit position, while `SLL..SRAI` precede any folded member. New members are
+appended after the last member so an insertion or deletion never disturbs the
+shift ordinals (an insertion among the word shifts or a deletion ahead of
+`SRAI` compiles and is caught only by `alu.sv`'s simulation assertions and the
+`alu_shift_hint` formal check).
+
+Operations use one `instr_op_e` value per operation across widths and CSR
+source forms when width, sign or CSR operation travels in fields already
+carried to the consumer (`mem_size`, `mem_signed`, `rm`, `imm`, the ROB's
+`csr_op` field, or `vec_unit`'s per-tag instruction copy). Scalar integer and
+floating-point loads and stores, load-reserved, store-conditional and each
+atomic read-modify-write function share one operation across widths and
+signedness, taking width from `mem_size` (`funct3[1:0]`) and, for integer loads
+and `LR`, load sign from `mem_signed` (`!funct3[2]`, zero for floating-point
+loads and AMOs). Register and immediate CSR accesses use two operations
+(`CSR_REG` and `CSR_IMM`); dispatch writes `funct3` into the ROB entry's
+`csr_op` field (clearing `csr_op[1:0]` when a set or clear form has `rs1` or
+`uimm` equal to zero), and `csr_file` reads `rob_commit.csr_op` at commit.
+Vector instructions use class operations (`VARITH`, `VARITH_X`, `VTOX`,
+`VLOAD`, `VSTORE`), with `vec_unit` keeping its own per-tag instruction copy
+written at allocation from `from_id_to_ex.instruction`. Scalar floating-point
+compute operations are the next candidates for folding, as they differ by
+`funct7` and `rs2`, which the floating-point reservation station can carry in
+its unused immediate.
+
 ## Address translation
 
 `if_stage` uses `mmu/immu` to translate the fetch PC into the physical

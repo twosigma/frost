@@ -24,12 +24,15 @@ descriptor. Keeping the rest of the hierarchy internal lets Verilator inline
 and partition combinational and sequential logic across C++ translation units
 without VPI signal tables.
 
-`frost-native` matched the cocotb bench cycle for cycle on `hello_world` and
-CoreMark in both tiers (unseeded behavioral AXI memory model). Current recorded
-cycle counts, CoreMark tick counts, and UART digests live in
-[`exactness_baseline.json`](exactness_baseline.json), which `--update-baseline`
-regenerates from unseeded cocotb runs; CI checks BRAM and DDR `hello_world` and
-BRAM CoreMark against that file alongside a live cocotb BRAM `hello_world` run.
+`frost-native` matches unseeded cocotb runs of the same tree cycle for cycle and
+byte for byte on `hello_world` and CoreMark in both memory tiers. On every CI
+run, `test-native` checks that a live cocotb BRAM `hello_world` run and the
+native run agree in cycles and UART bytes, and checks DDR `hello_world` and
+BRAM CoreMark pass, CRC, tick, and summary conditions without stored cycle or
+tick counts; `test-demo-image` builds `demo/Dockerfile` and runs the packaged
+demo container. Running `python3 tests/test_native_sim.py --all` locally
+compares all four `hello_world` and CoreMark cases (`bram` and `ddr`) directly
+against live unseeded cocotb runs of the same tree.
 
 Both [`tests/Makefile`](../../../tests/Makefile) (`TOPLEVEL=frost`) and
 `hw/sim/native/Makefile` (`ASSERTIONS=1`, the default) compile
@@ -165,9 +168,7 @@ Simulation speed : <rate> cycles/s (threads: <N>)
 
 For runs with a post-marker drain such as `hello_world`, `Simulated cycles`
 breaks out the active cycles before the stop marker and the drain window
-(`<total> (<active> to stop marker + 10,000 drain)`). Current baseline cycle
-and tick counts for `hello_world` and `coremark` in both memory tiers are
-stored in [`exactness_baseline.json`](exactness_baseline.json).
+(`<total> (<active> to stop marker + 10,000 drain)`).
 
 | Summary field | Meaning |
 | --- | --- |
@@ -249,36 +250,40 @@ Example checkpoint save and restore run inside the `frost` image:
     --restore /tmp/coremark_150k.ckpt --threads 4 --stop "<<PASS>>"
 ```
 
-## Verification, Baseline Regeneration, and Portability
+## Verification and Portability
 
 [`tests/test_native_sim.py`](../../../tests/test_native_sim.py) checks that
 `hw/sim/native/Makefile` matches `tests/Makefile`'s `frost` top-level
 parameters and differs from `tests/Makefile`'s Verilator flags only by the
-documented native runner options, checks the baseline records in
-[`exactness_baseline.json`](exactness_baseline.json), exercises RTL assertion,
-HDL `$finish`, and split-marker failure paths, builds the checked native model,
-and verifies that `hello_world` and `coremark` in both `bram` and `ddr` match
-the recorded cocotb values in UART byte count, UART SHA-256 digest, simulated
-cycle count, and CoreMark ticks, as well as checkpoint save/restore
-equivalence.
+documented native runner options, exercises RTL assertion, reset-arming, HDL
+`$finish`, and split-marker failure paths, and provides two simulation modes
+with no stored cycle counts, tick counts, or output hashes:
 
-In CI, the `test-native` job in
-[`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) runs one live
-unseeded cocotb BRAM `hello_world` simulation against
-`exactness_baseline.json`, builds the checked 4-thread portable static binary
-(`ASSERTIONS=1 SAVABLE=0 PORTABLE=1 STATIC_RUNTIME=1`, or 1 thread when fewer
-than 4 CPUs are available), checks `readelf -d`, and runs BRAM and DDR
-`hello_world`, BRAM `coremark`, and `demo/run_demo.sh` (`--app hello_world`).
-CI does not build `demo/Dockerfile` or the runtime image itself, the 1- and
-8-thread demo binaries, DDR `coremark`, or `SAVABLE=1` checkpoints; `--all`
-(and the `slow` pytest target) covers DDR `coremark` and checkpoints locally.
-
-When an intentional RTL or software change alters cycle counts, tick counts, or
-UART output, regenerate `exactness_baseline.json` from unseeded cocotb runs
-with:
+- **CI mode (`--ci`, run by `test-native` in
+  [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml)):** runs live
+  unseeded cocotb simulations of BRAM and DDR `hello_world` and BRAM `coremark`,
+  builds the checked 4-thread portable static binary (`ASSERTIONS=1 SAVABLE=0
+  PORTABLE=1 STATIC_RUNTIME=1`, or 1 thread when fewer than 4 CPUs are
+  available), checks `readelf -d`, verifies cycle-for-cycle, tick-for-tick, and
+  byte-for-byte UART equality between the native runner and those three live
+  cocotb runs alongside each program's own pass conditions (`Frost: Hello,
+  world!`; CoreMark's `2K performance run` banner, all five CRC lines, `"Correct
+  operation validated."`, `<<PASS>>`, and a present non-zero tick count) and
+  summary invariants, and exercises `demo/run_demo.sh` (`--app hello_world`).
+  Alongside `test-native`, `test-demo-image` builds `demo/Dockerfile` into
+  `frost-demo:local` and runs both the default two-program demo (`hello_world`
+  and `coremark`) and a single-application invocation (`--threads 1 --app
+  hello_world`). Neither CI job runs DDR `coremark` or `SAVABLE=1` checkpoints.
+- **Full comparison mode (`--all`, the CLI default and the `slow` pytest
+  target):** runs live unseeded cocotb simulations of `hello_world` and
+  `coremark` in both `bram` and `ddr`, builds the checked native runner,
+  verifies cycle-for-cycle, tick-for-tick, and byte-for-byte UART equality
+  against those four live cocotb runs alongside the program and summary
+  invariants, and verifies `SAVABLE=1` mid-execution and mid-drain checkpoint
+  save and restore against the live BRAM `hello_world` run:
 
 ```bash
-./scripts/frost.py run python3 tests/test_native_sim.py --update-baseline
+./scripts/frost.py run python3 tests/test_native_sim.py --all
 ```
 
 Portability scope:

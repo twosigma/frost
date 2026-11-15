@@ -259,23 +259,14 @@ module instr_decoder (
       // Load instructions (I-type) - read from memory to register
       riscv_pkg::OPC_LOAD:
       unique case (i_instr.funct3)
-        3'b000:  o_instr_op = riscv_pkg::LB;  // Load byte (sign-extended)
-        3'b001:  o_instr_op = riscv_pkg::LH;  // Load halfword (sign-extended)
-        3'b010:  o_instr_op = riscv_pkg::LW;  // Load word
-        3'b100:  o_instr_op = riscv_pkg::LBU;  // Load byte unsigned (zero-extended)
-        3'b101:  o_instr_op = riscv_pkg::LHU;  // Load halfword unsigned (zero-extended)
-        3'b011:  o_instr_op = riscv_pkg::LD;  // Load doubleword
-        3'b110:  o_instr_op = riscv_pkg::LWU;  // Load word unsigned
+        3'b000, 3'b001, 3'b010, 3'b011, 3'b100, 3'b101, 3'b110: o_instr_op = riscv_pkg::LOAD;
         default: o_illegal = 1'b1;
       endcase
 
       // Store instructions (S-type) - write from register to memory
       riscv_pkg::OPC_STORE:
       unique case (i_instr.funct3)
-        3'b000:  o_instr_op = riscv_pkg::SB;  // Store byte (8 bits)
-        3'b001:  o_instr_op = riscv_pkg::SH;  // Store halfword (16 bits)
-        3'b010:  o_instr_op = riscv_pkg::SW;  // Store word (32 bits)
-        3'b011:  o_instr_op = riscv_pkg::SD;  // Store doubleword (64 bits)
+        3'b000, 3'b001, 3'b010, 3'b011: o_instr_op = riscv_pkg::STORE;
         default: o_illegal = 1'b1;
       endcase
 
@@ -418,47 +409,32 @@ module instr_decoder (
             (i_instr.funct7[0] || i_instr.source_reg_2[4:2] == 3'b111))
           o_instr_op = riscv_pkg::MOP;
         else o_illegal = 1'b1;
-        riscv_pkg::CSR_RW: o_instr_op = riscv_pkg::CSRRW;  // Atomic read/write
-        riscv_pkg::CSR_RS: o_instr_op = riscv_pkg::CSRRS;  // Atomic read and set bits
-        riscv_pkg::CSR_RC: o_instr_op = riscv_pkg::CSRRC;  // Atomic read and clear bits
-        riscv_pkg::CSR_RWI: o_instr_op = riscv_pkg::CSRRWI;  // Atomic read/write immediate
-        riscv_pkg::CSR_RSI: o_instr_op = riscv_pkg::CSRRSI;  // Atomic read and set bits immediate
-        riscv_pkg::CSR_RCI: o_instr_op = riscv_pkg::CSRRCI;  // Atomic read and clear bits immediate
+        riscv_pkg::CSR_RW, riscv_pkg::CSR_RS, riscv_pkg::CSR_RC:
+        o_instr_op = riscv_pkg::CSR_REG;  // Register-source CSR read/modify/write
+        riscv_pkg::CSR_RWI, riscv_pkg::CSR_RSI, riscv_pkg::CSR_RCI:
+        o_instr_op = riscv_pkg::CSR_IMM;  // Immediate-source CSR read/modify/write
         default: o_illegal = 1'b1;
       endcase
 
       // A extension (atomics): funct3=010 selects the .W forms, 011 the RV64 .D
-      // forms. funct5 is in funct7[6:2] (instruction bits 31:27).
+      // forms (dispatch reads funct3[1:0] for mem_size). funct5 is in funct7[6:2].
       riscv_pkg::OPC_AMO:
-      if (i_instr.funct3 == 3'b011)  // RV64A .D (doubleword)
+      if (i_instr.funct3 == 3'b010 || i_instr.funct3 == 3'b011)
         unique case (i_instr.funct7[6:2])  // funct5
-          5'b00010: o_instr_op = riscv_pkg::LR_D;
-          5'b00011: o_instr_op = riscv_pkg::SC_D;
-          5'b00001: o_instr_op = riscv_pkg::AMOSWAP_D;
-          5'b00000: o_instr_op = riscv_pkg::AMOADD_D;
-          5'b00100: o_instr_op = riscv_pkg::AMOXOR_D;
-          5'b01100: o_instr_op = riscv_pkg::AMOAND_D;
-          5'b01000: o_instr_op = riscv_pkg::AMOOR_D;
-          5'b10000: o_instr_op = riscv_pkg::AMOMIN_D;
-          5'b10100: o_instr_op = riscv_pkg::AMOMAX_D;
-          5'b11000: o_instr_op = riscv_pkg::AMOMINU_D;
-          5'b11100: o_instr_op = riscv_pkg::AMOMAXU_D;
-          default:  o_illegal = 1'b1;
-        endcase
-      else if (i_instr.funct3 == 3'b010)  // .W (word) operations
-        unique case (i_instr.funct7[6:2])  // funct5
-          5'b00010: o_instr_op = riscv_pkg::LR_W;  // Load-reserved
-          5'b00011: o_instr_op = riscv_pkg::SC_W;  // Store-conditional
-          5'b00001: o_instr_op = riscv_pkg::AMOSWAP_W;  // Atomic swap
-          5'b00000: o_instr_op = riscv_pkg::AMOADD_W;  // Atomic add
-          5'b00100: o_instr_op = riscv_pkg::AMOXOR_W;  // Atomic XOR
-          5'b01100: o_instr_op = riscv_pkg::AMOAND_W;  // Atomic AND
-          5'b01000: o_instr_op = riscv_pkg::AMOOR_W;  // Atomic OR
-          5'b10000: o_instr_op = riscv_pkg::AMOMIN_W;  // Atomic minimum (signed)
-          5'b10100: o_instr_op = riscv_pkg::AMOMAX_W;  // Atomic maximum (signed)
-          5'b11000: o_instr_op = riscv_pkg::AMOMINU_W;  // Atomic minimum (unsigned)
-          5'b11100: o_instr_op = riscv_pkg::AMOMAXU_W;  // Atomic maximum (unsigned)
-          default:  o_illegal = 1'b1;
+          5'b00010:
+          if (i_instr.source_reg_2 == 5'b0) o_instr_op = riscv_pkg::LR;
+          else o_illegal = 1'b1;
+          5'b00011: o_instr_op = riscv_pkg::SC;
+          5'b00001: o_instr_op = riscv_pkg::AMOSWAP;
+          5'b00000: o_instr_op = riscv_pkg::AMOADD;
+          5'b00100: o_instr_op = riscv_pkg::AMOXOR;
+          5'b01100: o_instr_op = riscv_pkg::AMOAND;
+          5'b01000: o_instr_op = riscv_pkg::AMOOR;
+          5'b10000: o_instr_op = riscv_pkg::AMOMIN;
+          5'b10100: o_instr_op = riscv_pkg::AMOMAX;
+          5'b11000: o_instr_op = riscv_pkg::AMOMINU;
+          5'b11100: o_instr_op = riscv_pkg::AMOMAXU;
+          default: o_illegal = 1'b1;
         endcase
       else o_illegal = 1'b1;
 
@@ -466,16 +442,12 @@ module instr_decoder (
       // F/D extensions (single- and double-precision floating-point)
       // =========================================================================
 
-      // FLH/FLW/FLD - Load floating-point half/word/double (I-type format)
+      // FLH/FLW/FLD - Load floating-point half/word/double (I-type format; width from funct3[1:0])
       // Uses integer rs1 for address, writes to FP rd
       // Vector loads share the opcode, with a vector width (VLOAD).
       riscv_pkg::OPC_LOAD_FP:
-      if (i_instr.funct3 == 3'b001) begin  // width=H (16-bit, Zfhmin)
-        o_instr_op = riscv_pkg::FLH;
-      end else if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
-        o_instr_op = riscv_pkg::FLW;
-      end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
-        o_instr_op = riscv_pkg::FLD;
+      if (i_instr.funct3 == 3'b001 || i_instr.funct3 == 3'b010 || i_instr.funct3 == 3'b011) begin
+        o_instr_op = riscv_pkg::LOAD_FP;
       end else if (riscv_pkg::is_vector_mem(
               i_instr.opcode, i_instr.funct3
           ) && vector_mem_ok(
@@ -484,16 +456,12 @@ module instr_decoder (
         o_instr_op = riscv_pkg::VLOAD;
       end else o_illegal = 1'b1;
 
-      // FSH/FSW/FSD - Store floating-point half/word/double (S-type format)
+      // FSH/FSW/FSD - Store floating-point half/word/double (S-type format; width from funct3[1:0])
       // Uses integer rs1 for address, FP rs2 for data
       // Vector stores share the opcode, with a vector width (VSTORE).
       riscv_pkg::OPC_STORE_FP:
-      if (i_instr.funct3 == 3'b001) begin  // width=H (16-bit, Zfhmin)
-        o_instr_op = riscv_pkg::FSH;
-      end else if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
-        o_instr_op = riscv_pkg::FSW;
-      end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
-        o_instr_op = riscv_pkg::FSD;
+      if (i_instr.funct3 == 3'b001 || i_instr.funct3 == 3'b010 || i_instr.funct3 == 3'b011) begin
+        o_instr_op = riscv_pkg::STORE_FP;
       end else if (riscv_pkg::is_vector_mem(
               i_instr.opcode, i_instr.funct3
           ) && vector_mem_ok(

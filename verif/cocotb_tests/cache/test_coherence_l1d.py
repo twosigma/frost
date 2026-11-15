@@ -33,6 +33,8 @@ class Private:
         self.acknowledged = 0
         self.installed = 0
         self.cycles = 0
+        self.perf_owed = [0, 0]
+        self.perf_previous = 0
 
     def get(self, name: str) -> int:
         """Read a packed signal."""
@@ -44,14 +46,52 @@ class Private:
             getattr(self.dut, name).value = value
         await Timer(1, unit="ns")
 
+    def perf_reference(self) -> int:
+        """Model the original direct serializer, then delay its complete output.
+
+        Mask with the current slot generation's seen flags only at capture.
+        The Python credits have no slot identity and survive slot reuse; reset
+        discards both those credits and the delayed output.
+        """
+        if self.get("i_rst"):
+            self.perf_owed = [0, 0]
+            self.perf_previous = 0
+            return 0
+        raw = self.get("perf_raw")
+        access, hit = (raw >> 11) & 1, (raw >> 10) & 1
+        outstanding = (raw >> 3) & 31
+        emit = [0, 0]
+        if not access:
+            if self.perf_owed[1]:
+                emit[1] = 1
+            elif self.perf_owed[0]:
+                emit[0] = 1
+        unseen = ~self.get("perf_read_seen_q") & 255
+        for index, slots in enumerate(("merge_hit_slots", "merge_attach_slots")):
+            self.perf_owed[index] += (self.get(slots) & unseen).bit_count()
+            assert self.perf_owed[index] <= 15, "Original pre-debit credit bound"
+            self.perf_owed[index] -= emit[index]
+        result = raw & ~((1 << 11) | (1 << 10) | (1 << 9) | (1 << 2))
+        result |= (access | emit[0] | emit[1]) << 11
+        result |= (hit | emit[0]) << 10
+        result |= (((raw >> 9) & 1) | emit[1]) << 9
+        result |= int(bool(hit | emit[0]) and bool(outstanding)) << 2
+        expected, self.perf_previous = self.perf_previous, result
+        return expected
+
     async def tick(self, count: int = 1) -> None:
         """Advance the requested clock edges."""
         for _ in range(count):
             self.acknowledged += self.get("o_write_done")
             self.installed += self.get("store_pop")
             self.cycles += 1
+            expected_perf = self.perf_reference()
             await self.set(i_clk=1)
             await self.set(i_clk=0)
+            assert self.get("o_perf_events") == expected_perf, (
+                f"Performance stream at cycle {self.cycles}: "
+                f"{self.get('o_perf_events'):#06x} != {expected_perf:#06x}"
+            )
 
     async def wait(self, name: str, value: int = 1) -> None:
         """Bound a protocol wait."""
@@ -63,9 +103,53 @@ class Private:
 
     async def reset(self) -> None:
         """Clear ownership and finish tag initialization."""
-        for signal in self.dut:
-            if signal._name.startswith("i_"):
-                signal.value = 0
+        for name in (
+            "i_clk",
+            "i_rst",
+            "i_fatal_stop",
+            "i_read_valid",
+            "i_read_id",
+            "i_read_kind",
+            "i_read_size",
+            "i_read_tag",
+            "i_address",
+            "i_read_ready",
+            "i_write_mask",
+            "i_write_data",
+            "i_write_atomic",
+            "i_write_sc",
+            "i_write_zero",
+            "i_write_tag",
+            "i_atomic_protected",
+            "i_sc_valid",
+            "i_sc_address",
+            "i_sc_size",
+            "i_sc_tag",
+            "i_sc_commit",
+            "i_sc_result_ready",
+            "i_reservation_valid",
+            "i_reservation_addr",
+            "i_reservation_size",
+            "i_maint_valid",
+            "i_maint_line",
+            "i_maint_address",
+            "i_cut_admit_ready",
+            "i_cut_admit_clean",
+            "i_cut_inval_done",
+            "i_d_ready",
+            "i_p_valid",
+            "i_p",
+            "i_r_ready",
+            "i_w_ready",
+            "i_wa_valid",
+            "i_wa",
+            "i_g_valid",
+            "i_g",
+            "i_c_ready",
+            "i_u_valid",
+            "i_u",
+        ):
+            getattr(self.dut, name).value = 0
         await self.set(i_rst=1)
         await self.tick(2)
         await self.set(i_rst=0)

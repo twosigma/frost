@@ -285,6 +285,7 @@ can be debugged and where each one first stops.
 | `drain_trapframe_test/` | Trap-frame stores to DDR must survive the L1D evicting their line during a timer interrupt |
 | `ecc_scrub_test/` | In simulation, eight atomic no-op writes preserve a patterned line and cause exactly one DDR writeback after eviction; a clean read causes none |
 | `fencei_bench/` | `fence.i` and refetch cost for JIT-style code generation in cached DDR |
+| `fencei_jit_bench/` | `fence.i` and refetch cost in a JIT-style write, `fence.i` and call loop: patch size sweep, straight-line and one-line-per-hop layouts, and a small patch inside a hot unmodified region |
 | `fetch_lead_repro/` | A call into a cold cached line whose first bundle advances 6 bytes, followed by a 32-bit instruction split across fetch words |
 | `fetch_stall_repro/` | 32-bit instructions near cache-line boundaries, fetched cold from DDR; a PC+2 mis-step traps |
 | `fp_dyn_rm_test/` | F/D and Zfhmin/Zfa instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |
@@ -363,7 +364,7 @@ can be debugged and where each one first stops.
 | `smc_predict_test/` | A `ret`, a `j` and an always-taken `beq`, each trained and then rewritten as an `addi`, must not follow their old predictions after `fence.i` |
 | `smc_stale_test/` | Rewritten code that is dirty in the L1D over an older L2 copy runs after `fence.i` |
 | `smc_torture/` | Random code mutation under trained predictors: leaf functions in DDR are trained, then patched in place or regenerated in a new layout, and after each `fence.i` an interpreter checks them; `-DSMC_SEED=<n>` varies the stream |
-| `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |
+| `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, `fence.i` in S and U, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
 | `sprintf_test/` | All 344 `sprintf`/`snprintf` checks against constant expected strings; the 2M-cycle simulation budget covers the measured 1.23M cycles in BRAM and DDR |
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp`; also the writable `menvcfg` and `senvcfg` bits |
