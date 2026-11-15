@@ -80,6 +80,7 @@ class Leaf:
     x: int = 0
     u: int = 0
     d: int = 1
+    g: int = 0
 
 
 @dataclass
@@ -203,13 +204,16 @@ class Env:
                 pending.append([self.rng.randint(1, 8), *req])
 
 
+PTW_RESP_WIDTH = 81
+
+
 def pack_walk_resp(vpn: int, leaf: Leaf) -> int:
-    """Pack riscv_pkg::ptw_resp_t (fault, vpn, ppn, level, r, w, x, u, d)."""
+    """Pack riscv_pkg::ptw_resp_t (fault, vpn, ppn, level, r, w, x, u, d, g)."""
     value = leaf.fault
     value = (value << 27) | vpn
     value = (value << 44) | leaf.ppn
     value = (value << 2) | leaf.level
-    for bit in (leaf.r, leaf.w, leaf.x, leaf.u, leaf.d):
+    for bit in (leaf.r, leaf.w, leaf.x, leaf.u, leaf.d, leaf.g):
         value = (value << 1) | bit
     return value
 
@@ -294,8 +298,8 @@ def expected_load(env: Env, a: Access, parts: list[tuple[int, int]]) -> int:
             pa = parts[0][1] + ((byte_va - parts[0][0]) & MASK64)
         raw |= env.byte(pa) << (8 * k)
     bits = 8 * a.nbytes
-    if a.fp and a.nbytes == 4:
-        return (0xFFFF_FFFF << 32) | raw
+    if a.fp and a.nbytes < 8:
+        return (MASK64 ^ ((1 << bits) - 1)) | raw
     if a.nbytes == 8 or a.unsigned:
         return raw
     if raw >> (bits - 1):
@@ -305,6 +309,7 @@ def expected_load(env: Env, a: Access, parts: list[tuple[int, int]]) -> int:
 
 async def setup(dut: Any, seed: int) -> Env:
     """Start the clock and models, and reset the engine."""
+    assert len(dut.i_walk_resp) == PTW_RESP_WIDTH, len(dut.i_walk_resp)
     rng = random.Random(seed)
     Clock(dut.i_clk, 10, unit="ns").start()
     env = Env(dut, rng)
@@ -494,7 +499,7 @@ def random_leaf(rng: random.Random, store: bool) -> Leaf:
     choice = rng.random()
     ppn = (DDR_BASE >> 12) + rng.randrange(0, 4096)
     if choice < 0.70:
-        return Leaf(ppn=ppn)
+        return Leaf(ppn=ppn, g=ppn & 1)
     if choice < 0.76:
         return Leaf(fault=DFAULT_PAGE)
     if choice < 0.80:
@@ -540,7 +545,7 @@ async def random_accesses(dut: Any, seed: int, count: int, translate: bool) -> N
             va = misaligned_va(rng, base, nbytes)
             a = Access(va=va, nbytes=nbytes, store=store)
         a.unsigned = rng.random() < 0.5 and nbytes != 8
-        a.fp = nbytes >= 4 and rng.random() < 0.3
+        a.fp = rng.random() < 0.3
         a.unsigned = a.unsigned and not a.fp
         a.rd = rng.randrange(32)
         a.rd_valid = rng.random() < 0.9
@@ -582,6 +587,21 @@ async def random_accesses(dut: Any, seed: int, count: int, translate: bool) -> N
         assert seen.get(key, 0) >= 10, (key, seen)
     if translate:
         assert seen.get("upper fault", 0) >= 5, seen
+
+
+@cocotb.test()
+async def test_half_fp_transfers(dut: Any) -> None:
+    """FLH boxes every payload and FSH preserves bytes across sector and page splits."""
+    env = await setup(dut, seed=272)
+    for offset in (1, 7, 31, 63, 4095):
+        for payload in (0x0000, 0x3C00, 0x7C01, 0x8000, 0xFE55):
+            va = DDR_BASE + offset
+            env.regs[(1, 7)] = 0x1234_5678_9ABC_0000 | payload
+            for store in (True, False):
+                a = Access(va=va, nbytes=2, store=store, fp=True)
+                before = dict(env.mem)
+                result = await run_access(env, a)
+                check(env, a, before, result)
 
 
 @cocotb.test()

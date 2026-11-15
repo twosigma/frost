@@ -3268,6 +3268,13 @@ module load_queue #(
   // ===========================================================================
   // CDB Broadcast Logic
   // ===========================================================================
+  // Bits 31:16 of a NaN-boxed FP load below double width: the loaded bits for
+  // FLW, all ones for FLH (Zfhmin), whose halfword the load unit zero-extends.
+  function automatic logic [15:0] fp_box_upper16(input logic [1:0] size,
+                                                 input logic [15:0] loaded);
+    fp_box_upper16 = (riscv_pkg::mem_size_e'(size) == riscv_pkg::MEM_SIZE_HALF) ? 16'hFFFF : loaded;
+  endfunction
+
   // Register the Phase A result before the MEM adapter for timing.
 
   // Qualify valid and capture enable, leaving invalid payloads unspecified.
@@ -3287,8 +3294,12 @@ module load_queue #(
       // FLD/RV64 LD: raw 64-bit beat from the LUTRAM
       issue_cdb_result.value = lq_data_rd;
     end else if (lq_is_fp[issue_cdb_idx]) begin
-      // FLW: NaN-box the stored 32-bit word
-      issue_cdb_result.value = {32'hFFFF_FFFF, lq_data_rd[31:0]};
+      // FLW: NaN-box the stored 32-bit word; FLH: the stored halfword
+      issue_cdb_result.value = {
+        32'hFFFF_FFFF,
+        fp_box_upper16(lq_size_issue_cdb_rd, lq_data_rd[31:16]),
+        lq_data_rd[15:0]
+      };
     end else begin
       // INT load: stored value is already zero-extended into FLEN
       issue_cdb_result.value = lq_data_rd;
@@ -3399,8 +3410,11 @@ module load_queue #(
       // LD / FLD / LR.D: preserve all 64 response bits, including FP payloads.
       resp_bypass_value = i_mem_read_data;
     end else if (issued_is_fp) begin
-      // FLW: NaN-box the addressed raw word (lu_data_out's word arm)
-      resp_bypass_value = {32'hFFFF_FFFF, lu_data_out[31:0]};
+      // FLW: NaN-box the addressed raw word (lu_data_out's word arm); FLH:
+      // the addressed halfword
+      resp_bypass_value = {
+        32'hFFFF_FFFF, fp_box_upper16(issued_size, lu_data_out[31:16]), lu_data_out[15:0]
+      };
     end else begin
       // INT / LR: zero-extend byte/half/word extracted value
       resp_bypass_value = FLEN'(lu_data_out);
@@ -3412,8 +3426,10 @@ module load_queue #(
       // FLD from L0: the full cached dword line
       cache_hit_bypass_value = cache_lookup_data;
     end else if (sq_check_is_fp_q) begin
-      // FLW from L0: NaN-box the addressed word of the cached beat
-      cache_hit_bypass_value = {32'hFFFF_FFFF, lu_cache_out[31:0]};
+      // FLW/FLH from L0: NaN-box the addressed word or half of the cached beat
+      cache_hit_bypass_value = {
+        32'hFFFF_FFFF, fp_box_upper16(sq_check_size_q, lu_cache_out[31:16]), lu_cache_out[15:0]
+      };
     end else begin
       // INT from L0: cache-path load_unit already did byte/half extract
       cache_hit_bypass_value = FLEN'(lu_cache_out);
@@ -3427,8 +3443,10 @@ module load_queue #(
       // FLD from FSD: full 64-bit image straight from the SQ
       fwd_bypass_value = i_sq_forward.data;
     end else if (sq_check_is_fp_q) begin
-      // FLW: NaN-box the addressed word of the forwarded image
-      fwd_bypass_value = {32'hFFFF_FFFF, lu_fwd_out[31:0]};
+      // FLW/FLH: NaN-box the addressed word or half of the forwarded image
+      fwd_bypass_value = {
+        32'hFFFF_FFFF, fp_box_upper16(sq_check_size_q, lu_fwd_out[31:16]), lu_fwd_out[15:0]
+      };
     end else begin
       // INT: fwd-path load_unit already did byte/half extract + extension
       fwd_bypass_value = FLEN'(lu_fwd_out);

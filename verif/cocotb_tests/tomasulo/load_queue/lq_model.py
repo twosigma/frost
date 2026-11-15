@@ -429,6 +429,8 @@ class LQModel:
         if e.is_fp:
             if e.size == MEM_SIZE_DOUBLE:
                 value = e.data & MASK64
+            elif e.size == MEM_SIZE_HALF:
+                value = (MASK64 ^ 0xFFFF) | (e.data & 0xFFFF)
             else:
                 value = (0xFFFFFFFF << 32) | (e.data & MASK32)
         else:

@@ -53,7 +53,7 @@ any of them rebuilds.
 | `GENERATE_IMEM_INIT` | `0` | `1` also writes the split instruction-BRAM init files for Vivado |
 
 `-march` is `rv64` followed by `FROST_MARCH_EXTENSIONS`, which defaults to
-`imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs`. An app
+`imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zfa_zfhmin_zimop_zcb_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs`. An app
 sets it, or `APP_TUNE_FLAGS`, before including `common.mk`. The `FROST_DEBUG=1`
 flags come after the tuning flags, so debug builds stay debuggable. Backends
 that build their own flags take the names from `common/arch.mk`:
@@ -287,7 +287,7 @@ can be debugged and where each one first stops.
 | `fencei_bench/` | `fence.i` and refetch cost for JIT-style code generation in cached DDR |
 | `fetch_lead_repro/` | A call into a cold cached line whose first bundle advances 6 bytes, followed by a 32-bit instruction split across fetch words |
 | `fetch_stall_repro/` | 32-bit instructions near cache-line boundaries, fetched cold from DDR; a PC+2 mis-step traps |
-| `fp_dyn_rm_test/` | FP instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |
+| `fp_dyn_rm_test/` | F/D and Zfhmin/Zfa instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |
 | `fpu_assembly_test/` | FP hazards: squashed FP loads and load-use stalls |
 | `exec_latency_probe/` | Straight-line dependent and independent MUL, MULW, FADD.D, FMUL.D and FMADD.D sequences with arithmetic checks and named ranges for cycle tracing; the explicit `exec_latency_probe` target runs finite normal inputs, and `exec_latency_short` selects zero, infinity, NaN and cancellation chains |
 | `fpu_test/` | Subnormals, fused multiply-add, rounding, and conversions |
@@ -301,7 +301,7 @@ can be debugged and where each one first stops.
 | `vec_dot_fp/` | float32 and float64 dot products bit-exact against a scalar model, and float16 with Zvfh or, with `-DVT_NO_ZVFH`, through conversions only |
 | `vec_crypto/` | AES-128 and AES-256 key schedule, encryption and decryption, AES-GCM, and a SHA-256 block, against published answers and a scalar implementation |
 | `vec_zvbb/` | Zvbb and Zvbc: `vandn`, rotates, bit and byte reversal, count leading and trailing zeros, population count, `vwsll`, and carry-less multiply |
-| `fs_off_test/` | F/D instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes, through `mstatus` or `sstatus`, that apply from the next instruction |
+| `fs_off_test/` | F/D, Zfhmin and Zfa instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes, through `mstatus` or `sstatus`, that apply from the next instruction; FP dirty state and halfword store forwarding |
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
 | `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a timer-ended `wfi`, and timer takes across a device load; 96 WFI deadlines and 48 device-load deadlines at four padding phases cover AXI latency, with each take's count equal to the instructions before `mepc` |
 | `irq_mie_window/` | A pending timer interrupt must be taken when a `csrsi`/`csrci` pair opens `mstatus.MIE` for one instruction |
@@ -354,6 +354,7 @@ can be debugged and where each one first stops.
 | `rv64_smoke/` | The smallest RV64I program: W-form operations, 6-bit shift amounts, and 64-bit loads and stores |
 | `satp_drain_test/` | A store committed just before a `satp` or `mstatus` write must drain before that write retires and flushes the pipeline |
 | `sum_toggle_test/` | S-mode SUM and MXR toggles against resident TLB entries: the live bits decide every access, no toggle walks a page table, and the toggle cost is reported |
+| `asid_test/` | S-mode `satp.ASID`, global pages and the SFENCE.VMA forms against resident TLB entries: two address spaces keep separate entries for one VA, a context switch walks nothing when both are resident, the global page serves every ASID, and each SFENCE.VMA form flushes exactly what the privileged spec names; reports ASIDLEN the way Linux probes it |
 | `served_window_resteer/` | A BTB-predicted loop branch to an upper-half target; `served_window_resteer_fetch_fuzz` uses uncached Normal fetches and requires AXI fuzz delays and predicted-target waits on each reset run, with count/sum checks across 2,000 iterations. The IF-stage unit bench explicitly checks stale-window rejection and retry |
 | `slot2_fault_test/` | A fetch fault on the second instruction of a fetch pair, one whose bytes encode a NOP included, must trap at that instruction with exact `mepc` and `mtval` |
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |

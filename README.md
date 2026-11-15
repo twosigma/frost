@@ -143,7 +143,11 @@ every supported extension and privilege mode.
 | **A**            | Atomic memory operations (LR/SC, AMO; word and doubleword) |
 | **F**            | Single-precision floating-point (32-bit)       |
 | **D**            | Double-precision floating-point (64-bit)       |
+| **Zfhmin**       | Half-precision loads, stores, moves and conversions to and from single and double precision |
+| **Zfa**          | Additional floating-point instructions: `fli`, `fminm`/`fmaxm`, `fround`/`froundnx`, `fcvtmod.w.d`, `fleq`/`fltq` |
 | **C**            | Compressed instructions (16-bit encodings) |
+| **Zcb**          | Compressed byte/halfword loads and stores, `c.zext.*`, `c.sext.*`, `c.not`, `c.mul`, expanded at instruction fill |
+| **Zcmop**        | Compressed may-be-operations `c.mop.n`, which write no register |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
@@ -154,6 +158,8 @@ every supported extension and privilege mode.
 | **Zbc**          | Carry-less multiplication (clmul, clmulh, clmulr) |
 | **Zbkc**         | Carry-less multiplication for crypto (clmul, clmulh) |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
+| **Zihintntl**    | Non-temporal locality hints (`ntl.*`, `c.ntl.*`), retired as no-ops |
+| **Zimop**        | May-be-operations `mop.r.n`/`mop.rr.n`, which write zero to rd |
 | **Zawrs**        | `wrs.nto`/`wrs.sto` retire at once; `wrs.nto` traps below M with `mstatus.TW` set |
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
 | **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks), ordered no-ops while every bus master is coherent; the device tree lists it with `riscv,cbom-block-size = <64>` |
@@ -186,8 +192,10 @@ every supported extension and privilege mode.
   bimodal and a tagged path-history direction predictor, and an 8-entry
   return stack. A mispredicted conditional branch redirects fetch and
   restores the rename tables the cycle after it resolves.
-- Sv39 virtual memory with hardware page-table walks and separate 16-entry
-  instruction and data TLBs. Intra-page instruction translation uses the
+- Sv39 virtual memory with hardware page-table walks, separate 16-entry
+  instruction and data TLBs backed by a 512-entry second-level TLB and a
+  32-entry superpage array, and nine-bit ASIDs with global pages and
+  selective `sfence.vma`. Intra-page instruction translation uses the
   live page offset without a fetch bubble; eligible data accesses use a
   last-page translation bypass.
 - Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB

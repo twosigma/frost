@@ -303,7 +303,7 @@ module dispatch #(
   assign uses_int_rs1     = i_from_id_to_ex.uses_int_rs1;
   assign uses_int_rs2     = i_from_id_to_ex.uses_int_rs2;
 
-  // An illegal FSW or FSD (FS=Off) keeps its decoded is_fp_store; the mask
+  // An illegal FSH, FSW or FSD (FS=Off) keeps its decoded is_fp_store; the mask
   // keeps it from reaching the ROB and the reservation station as a store.
   assign is_store_flag    = i_from_id_to_ex.is_int_store;
   assign is_fp_store_flag = i_from_id_to_ex.is_fp_store && !i_from_id_to_ex.is_illegal_instruction;
@@ -396,6 +396,12 @@ module dispatch #(
         imm     = i_from_id_to_ex.immediate_u_type;
       end
 
+      // Zfa FLI: the rs1 field indexes the engine's constant table.
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D: begin
+        use_imm = 1'b0;
+        imm     = {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex.instruction.source_reg_1};
+      end
+
       // AUIPC: ID precomputed PC + imm_u, so the ALU materializes it like LUI
       // and the station carries no PC.
       riscv_pkg::AUIPC: begin
@@ -432,6 +438,14 @@ module dispatch #(
       riscv_pkg::FETCH_FAULT, riscv_pkg::FETCH_PAGE_FAULT: begin
         use_imm = 1'b0;
         imm     = i_from_id_to_ex.pc_relative_precomputed;
+      end
+
+      // SFENCE.VMA: the entry's immediate says which filters are in use, so the
+      // ROB can tell x0 ("all") from a register that holds zero.
+      //   imm[0]: rs1 is not x0 (address filter), imm[1]: rs2 is not x0 (ASID).
+      riscv_pkg::SFENCE_VMA: begin
+        use_imm = 1'b0;
+        imm     = {{(riscv_pkg::XLEN - 2) {1'b0}}, (|i_rs2_addr), (|i_rs1_addr)};
       end
 
       default: begin
@@ -599,6 +613,12 @@ module dispatch #(
       riscv_pkg::LUI: begin
         use_imm_2 = 1'b1;
         imm_2     = i_from_id_to_ex_2.immediate_u_type;
+      end
+
+      // Zfa FLI: constant index (see slot 1).
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D: begin
+        use_imm_2 = 1'b0;
+        imm_2     = {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex_2.instruction.source_reg_1};
       end
 
       // AUIPC: precomputed PC + imm_u (see slot 1).
@@ -1400,7 +1420,7 @@ module dispatch #(
     o_rob_alloc_req.is_fp_instruction = i_from_id_to_ex.is_fp_instruction;
 
     // The ROB rejects dynamic rounding with frm in 5-7. Legal F/D ops without
-    // an rm field have funct3 <= 011, so funct3 == DYN identifies rm users.
+    // an rm field have funct3 <= 101, so funct3 == DYN identifies rm users.
     o_rob_alloc_req.fp_dyn_rm = i_from_id_to_ex.is_fp_instruction &&
         (i_from_id_to_ex.instruction.funct3 == riscv_pkg::FRM_DYN);
   end
