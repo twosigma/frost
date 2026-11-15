@@ -513,8 +513,8 @@ and targeted microbenchmarks give these items:
    the entry count. Measured against eight entries, it leaves
    the DDR memory kernels unchanged, slows one memory-bound workload by about
    2%, in part from L0 fill collisions (see Single-core performance, item
-   3), and lengthens paths among the hardest at the target clock, so it
-   waits for the streaming-load work in item 8.
+   3), and lengthens paths among the hardest at the target clock, so the
+   station stays at eight entries.
 8. Streaming loads. The load queue and the L1D track eight cached loads, so
    their demand requests for a sequential stream of 8-byte loads cover only
    two 32-byte lines at a time. The home's prefetch agent reads ahead into the
