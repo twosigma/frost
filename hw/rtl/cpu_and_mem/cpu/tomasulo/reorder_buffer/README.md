@@ -330,7 +330,9 @@ full flush removes it. `o_trap_value` is the entry's value field, where the
 producer parks the faulting virtual address for instruction access and page
 faults (the INT ALU shim) and for misaligned, access, and page faults on
 data (the load and store paths). cpu_ooo writes it to `mtval` or `stval` for
-those causes. `o_trap_insn` is the head entry's instruction bits, which
+those causes, except for a data access fault from a failed bus response: that
+entry's value is zero, and cpu_ooo takes the virtual address from the
+wrapper's table of issue addresses instead. `o_trap_insn` is the head entry's instruction bits, which
 dispatch stores in the head-only allocation memory (a compressed
 instruction's 16 bits zero-extended). cpu_ooo writes them to `mtval` or
 `stval` for an illegal-instruction exception, whichever stage raised it.

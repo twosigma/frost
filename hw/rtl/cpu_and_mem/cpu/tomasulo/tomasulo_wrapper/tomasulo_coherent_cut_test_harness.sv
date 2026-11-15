@@ -112,6 +112,8 @@ module tomasulo_coherent_cut_test_harness #(
     output riscv_pkg::exc_cause_t o_trap_cause,
     output logic [riscv_pkg::XLEN-1:0] o_trap_value,
     output logic [31:0] o_trap_insn,
+    output logic o_head_bus_fault,
+    output logic [riscv_pkg::XLEN-1:0] o_head_bus_fault_va,
     input logic i_trap_taken,
     output logic o_mret_start,
     output logic o_mret_start_is_sret,
