@@ -200,6 +200,9 @@ module mwp_dist_ram_ohread #(
             ) && i_write_enable[wp] && !$isunknown(
                 i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH]
             ) && (i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH] != '0)) begin
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("mwp_dist_ram_ohread: narrow write port %0d carries nonzero upper bits (0x%0h)",
                  wp, i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH]);
         end
@@ -218,6 +221,9 @@ module mwp_dist_ram_ohread #(
         ) && !$isunknown(
             i_read_onehot
         ) && (i_read_onehot != '0) && (i_read_onehot != (RamDepth'(1) << i_read_address))) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("mwp_dist_ram_ohread: i_read_onehot (0x%0h) != 1 << i_read_address (%0d)",
              i_read_onehot, i_read_address);
     end
