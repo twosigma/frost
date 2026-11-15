@@ -355,7 +355,11 @@ int main(void)
     base += STORE_BENCH_EVICT_BYTES;
 
     uart_puts("\r\n=== store-stream benchmark ===\r\n");
-    __asm__ volatile("csrw mcountinhibit, zero");
+    __asm__ volatile("csrw 0x327, %0\n"
+                     "csrw 0x328, %1\n"
+                     "csrw mcountinhibit, zero"
+                     :
+                     : "r"(7ul), "r"(8ul));
     for (unsigned long i = 0; i < SRC_BYTES / 8; i++)
         src_buf[i] = pattern((unsigned long) &src_buf[i], 0x5151515151515151ul);
     evict_l1d(evict);
