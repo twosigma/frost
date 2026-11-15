@@ -4355,14 +4355,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "soc_axil": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_soc_axil",
         hdl_toplevel_module="soc_top",
-        description="SoC register mapping, empty FIFO reads, CPU backpressure and reset recovery",
+        description="SoC register mapping, empty FIFO reads, CPU backpressure and alias recovery after an accepted-transfer reset",
         verilator_extra_args=("-GENABLE_CACHED_TIER=1", "-GUSE_BEHAVIORAL_DDR=0"),
     ),
     **{
         f"soc_axil_async_{period}": CocotbRunConfig(
             python_test_module="cocotb_tests.axi.test_soc_axil",
             hdl_toplevel_module="soc_top",
-            description="AXI4-Lite registers behind the asynchronous CPU memory boundary",
+            description="AXI4-Lite registers and accepted alias-transfer reset recovery across the asynchronous CPU memory boundary",
             verilator_extra_args=(
                 "-GENABLE_CACHED_TIER=1",
                 "-GUSE_BEHAVIORAL_DDR=0",
