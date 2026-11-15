@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Keep the Zicboz configurations and NIC benchmark reachable from CI."""
+"""Keep Zicboz configurations and dedicated benchmarks reachable from CI."""
 
 import subprocess
 import sys
@@ -24,7 +24,7 @@ from _pytest.mark.expression import Expression
 from test_run_cocotb import TEST_REGISTRY
 
 
-def test_zero_and_nic_programs_have_one_ci_shard() -> None:
+def test_named_programs_have_one_ci_shard() -> None:
     """Require collection and one CI selection for each supported program tier."""
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
@@ -50,7 +50,7 @@ def test_zero_and_nic_programs_have_one_ci_shard() -> None:
     programs = {
         name
         for name in TEST_REGISTRY
-        if name.startswith("cbo_zero_") or name == "nic_bench"
+        if name.startswith("cbo_zero_") or name in {"nic_bench", "fencei_jit_bench"}
     }
     assert programs
     missing = [
@@ -65,6 +65,7 @@ def test_zero_and_nic_programs_have_one_ci_shard() -> None:
     ] + [(job["mem_config"], job["shard"]) for job in matrix["include"]]
     bram_axis_only = {
         "cbo_zero_bench",
+        "fencei_jit_bench",
         "cbo_zero_pages_board",
         # This registry entry selects its own DDR program layout.
         "cbo_zero_pages_board_ddr",
