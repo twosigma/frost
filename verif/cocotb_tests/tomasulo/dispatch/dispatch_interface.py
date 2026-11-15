@@ -955,8 +955,46 @@ _AMO_OPS: frozenset[int] = frozenset(
         AMOMAXU_D,
     }
 )
-_FP_LOAD_OPS: frozenset[int] = frozenset({FLW, FLD})
-_FP_STORE_OPS: frozenset[int] = frozenset({FSW, FSD})
+# Zfhmin and Zfa (RV64 with F and D).
+FLH = _INSTR_OPS["FLH"]
+FSH = _INSTR_OPS["FSH"]
+FLI_S = _INSTR_OPS["FLI_S"]
+_ZFHMIN_FP_DEST = frozenset(
+    _INSTR_OPS[name]
+    for name in ("FCVT_S_H", "FCVT_H_S", "FCVT_D_H", "FCVT_H_D", "FMV_H_X")
+)
+_ZFA_FP_DEST = frozenset(
+    _INSTR_OPS[name]
+    for name in (
+        "FLI_S", "FLI_D", "FMINM_S", "FMAXM_S", "FMINM_D", "FMAXM_D",
+        "FROUND_S", "FROUNDNX_S", "FROUND_D", "FROUNDNX_D",
+    )
+)  # fmt: skip
+_ZFA_INT_DEST = frozenset(
+    _INSTR_OPS[name] for name in ("FCVTMOD_W_D", "FLEQ_S", "FLTQ_S", "FLEQ_D", "FLTQ_D")
+)
+_FLI_OPS = frozenset({_INSTR_OPS["FLI_S"], _INSTR_OPS["FLI_D"]})
+_FP_EXT_COMPUTE = (
+    _ZFHMIN_FP_DEST | _ZFA_FP_DEST | _ZFA_INT_DEST | {_INSTR_OPS["FMV_X_H"]}
+)
+_FP_EXT_TWO_SOURCES = frozenset(
+    _INSTR_OPS[name]
+    for name in (
+        "FMINM_S", "FMAXM_S", "FMINM_D", "FMAXM_D", "FLEQ_S", "FLTQ_S", "FLEQ_D", "FLTQ_D",
+    )
+)  # fmt: skip
+_HAS_FP_DEST_OPS = _HAS_FP_DEST_OPS | _ZFHMIN_FP_DEST | _ZFA_FP_DEST | {FLH}
+_HAS_INT_DEST_OPS = _HAS_INT_DEST_OPS | _ZFA_INT_DEST | {_INSTR_OPS["FMV_X_H"]}
+_USES_FP_RS1_OPS = _USES_FP_RS1_OPS | (
+    _FP_EXT_COMPUTE - _FLI_OPS - {_INSTR_OPS["FMV_H_X"]}
+)
+_USES_FP_RS2_OPS = _USES_FP_RS2_OPS | _FP_EXT_TWO_SOURCES | {FSH}
+_NOT_USES_INT_RS1_OPS = _NOT_USES_INT_RS1_OPS | _FLI_OPS
+_RS_MEM_OPS = _RS_MEM_OPS | {FLH, FSH}
+_RS_FP_OPS = _RS_FP_OPS | _FP_EXT_COMPUTE
+_HAS_FP_FLAGS_OPS = _HAS_FP_FLAGS_OPS | _FP_EXT_COMPUTE
+_FP_LOAD_OPS: frozenset[int] = frozenset({FLW, FLD, FLH})
+_FP_STORE_OPS: frozenset[int] = frozenset({FSW, FSD, FSH})
 # The operand classifier's needs_lq and needs_sq: SC takes a store-queue entry,
 # LR and every other AMO a load-queue one.
 _NEEDS_LQ_OPS: frozenset[int] = _LOAD_OPS | _FP_LOAD_OPS | (_AMO_OPS - {SC_W, SC_D})

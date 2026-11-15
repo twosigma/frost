@@ -19,7 +19,7 @@
  *
  * In cached DDR every size and offset is performed: each load is checked
  * against a byte-by-byte reference (sign and zero extension, NaN boxing for
- * FLW), each store against the bytes it must change and the neighbours it
+ * FLH/FLW), each store against the bytes it must change and the neighbours it
  * must keep, across a doubleword, a 32-byte sector, a 64-byte line and a 4 KiB
  * page, and with compressed and FP forms. A misaligned load to x0 writes
  * nothing, a store of x0 writes zeros, and an access retires as exactly one
@@ -103,6 +103,8 @@ static void check_loads(unsigned long offset)
         check(r == sext(v, 16), "lh", offset, (uint64_t) r, (uint64_t) sext(v, 16));
         __asm__ volatile("lhu %0, 0(%1)" : "=r"(u) : "r"(p) : "memory");
         check(u == v, "lhu", offset, u, v);
+        __asm__ volatile("flh ft0, 0(%1)\n fmv.x.d %0, ft0" : "=r"(u) : "r"(p) : "ft0", "memory");
+        check(u == (v | 0xFFFFFFFFFFFF0000ull), "flh", offset, u, v | 0xFFFFFFFFFFFF0000ull);
     }
     v = ref_bytes(offset, 4);
     {
@@ -150,7 +152,13 @@ static void check_store(unsigned long offset, unsigned int count, int fp, uint64
 {
     volatile uint8_t *p = area + offset;
     if (count == 2) {
-        __asm__ volatile("sh %0, 0(%1)" : : "r"(value), "r"(p) : "memory");
+        if (fp)
+            __asm__ volatile("fmv.d.x ft1, %0\n fsh ft1, 0(%1)"
+                             :
+                             : "r"(value), "r"(p)
+                             : "ft1", "memory");
+        else
+            __asm__ volatile("sh %0, 0(%1)" : : "r"(value), "r"(p) : "memory");
     } else if (count == 4) {
         if (fp)
             __asm__ volatile("fmv.d.x ft1, %0\n fsw ft1, 0(%1)"
@@ -277,6 +285,28 @@ static void s_sd(unsigned long va, uint64_t value)
                      : "t0", "t1", "memory");
 }
 
+static uint64_t s_flh(unsigned long va)
+{
+    uint64_t value = 0xBAD0BAD0BAD0BAD0ull;
+    g_cause = ~0ul;
+    __asm__ volatile("fmv.d.x ft0, %0\n la t0, 1f\n csrw mscratch, t0\n" MPRV_ON
+                     "flh ft0, 0(%1)\n" MPRV_OFF "fmv.x.d %0, ft0"
+                     : "+r"(value)
+                     : "r"(va)
+                     : "t0", "t1", "ft0", "memory");
+    return value;
+}
+
+static void s_fsh(unsigned long va, uint64_t value)
+{
+    g_cause = ~0ul;
+    __asm__ volatile("fmv.d.x ft0, %0\n la t0, 1f\n csrw mscratch, t0\n" MPRV_ON
+                     "fsh ft0, 0(%1)\n" MPRV_OFF
+                     :
+                     : "r"(value), "r"(va)
+                     : "t0", "t1", "ft0", "memory");
+}
+
 static void check_fault(const char *what, unsigned long cause, unsigned long tval)
 {
     check(g_cause == cause && g_tval == tval, what, g_tval, g_cause, tval);
@@ -311,6 +341,29 @@ static void check_sv39(void)
 
     const unsigned long page = 4096u;
     uint64_t got;
+
+    got = s_flh(VA_BASE + page - 1u);
+    check(g_cause == ~0ul && got == (0xFFFFFFFFFFFF0000ull | frame_bytes(page - 1u, 2)),
+          "sv39 flh across pages",
+          page - 1u,
+          got,
+          0xFFFFFFFFFFFF0000ull | frame_bytes(page - 1u, 2));
+    s_fsh(VA_BASE + page - 1u, 0x7c01u);
+    check_fault("sv39 fsh into read-only page", CAUSE_STORE_PAGE_FAULT, VA_BASE + page);
+    check(frames[page - 1u] == frame_byte(page - 1u) && frames[page] == frame_byte(page),
+          "faulting fsh preserves both bytes",
+          page - 1u,
+          frames[page - 1u],
+          frame_byte(page - 1u));
+    got = s_flh(VA_BASE + 2u * page - 1u);
+    check_fault("sv39 flh into unmapped page", CAUSE_LOAD_PAGE_FAULT, VA_BASE + 2u * page);
+    check(got == 0xBAD0BAD0BAD0BAD0ull,
+          "faulting flh leaves destination",
+          0,
+          got,
+          0xBAD0BAD0BAD0BAD0ull);
+    (void) s_flh(VA_BASE + 3u * page - 1u);
+    check_fault("sv39 flh from unmapped page", CAUSE_LOAD_PAGE_FAULT, VA_BASE + 3u * page - 1u);
 
     /* Read-write into read-only: the load is performed. */
     got = s_ld(VA_BASE + page - 3u);
@@ -441,7 +494,7 @@ int main(void)
             unsigned long base = g_bases[b];
             unsigned long offset = (base & 0x3f) == 0 || (base & 0xfff) == 0 ? base - d : base + d;
             uint64_t value = 0x0102030405060708ull * (d + 3u) ^ (uint64_t) offset << 17;
-            check_store(offset, 2, 0, value);
+            check_store(offset, 2, (int) (d & 1u), value);
             check_store(offset, 4, (int) (d & 1u), value >> 3);
             check_store(offset, 8, (int) (d & 2u) != 0, value ^ 0x5555AAAA5555AAAAull);
             check_loads(offset);
