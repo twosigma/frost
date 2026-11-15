@@ -226,7 +226,8 @@ HALT messages, validation failures and trap diagnostics fail the stage.
 Its timeout is at least 600 seconds, including compilation, loading, DDR
 preparation and flash reads. A larger `--timeout` extends that budget.
 
-The interactive `debug_target` and `nic_echo` applications are not run.
+The interactive `debug_target` and external-link `nic_echo` and `nic_bench`
+applications are excluded from the default sequence.
 `perf_off_test` checks that the profiling counters are absent, so it fails
 against a bitstream built with `--perf-counters`. `--timeout` covers build,
 load, and untimed input preparation as well as benchmark execution. A
