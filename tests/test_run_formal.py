@@ -1511,7 +1511,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "immu_twin.sby",
         "Instruction MMU: primitive and portable forms are equivalent.",
-        tasks=("immu_twin",),
+        tasks=("immu_twin", "immu_twin_hold"),
     ),
     FormalTarget(
         "cached_tier_adapter_twin.sby",
@@ -2716,6 +2716,10 @@ SBY_TASKS = [
     (
         "immu_twin",
         "Instruction MMU primitive form equals its portable form.",
+    ),
+    (
+        "immu_twin_hold",
+        "Instruction MMU primitive form equals its portable form with hold-polarity copies.",
     ),
     (
         "cached_tier_twin",

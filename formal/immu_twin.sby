@@ -1,5 +1,6 @@
 [tasks]
 immu_twin immu
+immu_twin_hold immu hold
 
 [options]
 mode bmc
@@ -16,6 +17,7 @@ smtbmc boolector
 # registers and signals by name. equiv_simple then proves each equivalence point
 # whose cone holds a primitive cell, for any register state and input.
 read -sv -D SYNTHESIS riscv_pkg.sv dtlb.sv immu.sv
+hold: chparam -set PA_COPY_HOLD 1 immu
 hierarchy -check -top immu
 proc
 setattr -mod -unset keep_hierarchy *
@@ -32,6 +34,7 @@ design -stash gold
 design -reset
 read_verilog -formal +/xilinx/cells_sim.v
 read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv dtlb.sv immu.sv
+hold: chparam -set PA_COPY_HOLD 1 immu
 hierarchy -check -top immu
 proc
 setattr -mod -unset keep_hierarchy *
@@ -56,7 +59,7 @@ hierarchy -top equiv
 select -set prim t:* a:from_prim %i
 select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
 # A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
-immu_twin: select -assert-min 2 @blk
+immu: select -assert-min 2 @blk
 equiv_simple @blk
 equiv_status -assert @blk
 design -reset

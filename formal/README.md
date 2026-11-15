@@ -553,6 +553,7 @@ the least populated ordinary partition, and keeps B-channel stability alone.
 | `data_mem_request_router_twin` | The MMIO drain-accept gate (LUT4) equals its portable form |
 | `dmmu_twin` | The last-capture select (LUT4) and the lookup-stage and result-stage VA selects (LUT3 per bit) equal their portable form |
 | `immu_twin` | The physical-address-valid select (LUT5) and the next-state LUTs of word 1's fault, its cause, its VA-placeholder select and the neighbor-miss flag equal their portable form |
+| `immu_twin_hold` | The same with PA_COPY_HOLD, where each copy LUT forms the fetch hold |
 
 `coherence_observation` follows an arbitrary ROB tag, so it covers all 32 at
 XLEN 64: the pending observation, its table entry and line, cleanup on
