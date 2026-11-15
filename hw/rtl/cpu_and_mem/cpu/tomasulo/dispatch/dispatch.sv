@@ -52,6 +52,11 @@ module dispatch #(
     // for vector arithmetic legality; cpu_ooo holds vector arithmetic while
     // it is unknown
     input logic                      [8:0] i_vtype_spec = 9'd0,
+    // vec_lmul_legality's classes of slot 1's instruction bits, formed before
+    // the decoded queue; the default suits benches without vector arithmetic
+    input logic                      [3:0] i_vec_lmul_illegal = 4'd0,
+    // Instruction-only vector load/store rejection, carried beside the classes
+    input logic                            i_vec_mem_illegal = 1'b0,
     // Bundle-valid candidate, not yet qualified by flush. Dispatch applies
     // i_flush (below) as the only recovery qualification.
     input logic                            i_valid,
@@ -439,6 +444,14 @@ module dispatch #(
       riscv_pkg::FETCH_FAULT, riscv_pkg::FETCH_PAGE_FAULT: begin
         use_imm = 1'b0;
         imm     = i_from_id_to_ex.pc_relative_precomputed;
+      end
+
+      // SFENCE.VMA: the entry's immediate says which filters are in use, so the
+      // ROB can tell x0 ("all") from a register that holds zero.
+      //   imm[0]: rs1 is not x0 (address filter), imm[1]: rs2 is not x0 (ASID).
+      riscv_pkg::SFENCE_VMA: begin
+        use_imm = 1'b0;
+        imm     = {{(riscv_pkg::XLEN - 2) {1'b0}}, (|i_rs2_addr), (|i_rs1_addr)};
       end
 
       default: begin
@@ -887,6 +900,31 @@ module dispatch #(
     end
   end
 `endif
+`ifdef VEC_LMUL_LEGALITY_LOCAL_PROOF
+  // With both queued legality inputs from slot 1's own decoded instruction,
+  // dispatch equals the arithmetic, VTOX and vector-memory reference for
+  // every vtype, instruction and operation.
+  logic [3:0] f_vec_lmul_illegal;
+  logic f_vec_mem_illegal;
+  logic f_vec_illegal_ref;
+  vec_lmul_legality u_f_vec_lmul_legality (
+      .i_insn(32'(i_from_id_to_ex.instruction)),
+      .i_op(i_from_id_to_ex.instruction_operation),
+      .i_is_illegal(i_from_id_to_ex.is_illegal_instruction),
+      .i_is_fetch_fault(i_from_id_to_ex.is_fetch_fault),
+      .o_illegal(f_vec_lmul_illegal),
+      .o_mem_illegal(f_vec_mem_illegal)
+  );
+  assign f_vec_illegal_ref = (o_rob_alloc_req.is_varith && riscv_pkg::vector_arith_illegal(
+      i_vtype_spec, 32'(i_from_id_to_ex.instruction)
+  )) || ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) || (op == riscv_pkg::VLOAD) ||
+      (op == riscv_pkg::VSTORE);
+  always_comb begin
+    assume ({i_vec_mem_illegal, i_vec_lmul_illegal} == {f_vec_mem_illegal, f_vec_lmul_illegal});
+    p_vec_illegal_exact : assert (o_rob_alloc_req.vec_illegal == f_vec_illegal_ref);
+  end
+`endif
+
 `ifdef DISPATCH_ADMISSION_LOCAL_PROOF
   logic f_admit_common;
   logic f_admit_slot1;
@@ -1081,14 +1119,16 @@ module dispatch #(
       assert (!(slot2_can_fire && uses_fp_rs3_flag_2))
       else $error("dispatch: slot 2 fired with an FP source 3");
   end
-  // Predecode never pairs a vector instruction as slot 2 (OP-V is in its
-  // slot-1-only class), so a vector-config op never fires there.
+  // Predecode never pairs a vector instruction as slot 2 (OP-V and the
+  // vector loads and stores are in its slot-1-only class), so a vector-config
+  // op or a vector load or store never fires there.
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n)
       assert (!(slot2_can_fire &&
                 ((op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
-                 (op_2 == riscv_pkg::VSETVL))))
-      else $error("dispatch: a vector-config instruction fired in slot 2");
+                 (op_2 == riscv_pkg::VSETVL) || (op_2 == riscv_pkg::VLOAD) ||
+                 (op_2 == riscv_pkg::VSTORE))))
+      else $error("dispatch: a vector-config, load or store instruction fired in slot 2");
   end
 `endif
 
@@ -1379,10 +1419,13 @@ module dispatch #(
     o_rob_alloc_req.is_vcfg = (op == riscv_pkg::VSETVLI) || (op == riscv_pkg::VSETIVLI) ||
         (op == riscv_pkg::VSETVL);
     o_rob_alloc_req.is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X);
-    // A vector-to-scalar op (VTOX) is illegal only under vill.
-    o_rob_alloc_req.vec_illegal = (o_rob_alloc_req.is_varith && riscv_pkg::vector_arith_illegal(
-                                   i_vtype_spec, 32'(i_from_id_to_ex.instruction))) ||
-        ((op == riscv_pkg::VTOX) && i_vtype_spec[8]);
+    // Vector arithmetic uses its queued LMUL class and vill; VTOX uses vill.
+    // Vector loads and stores carry their instruction-only rejection from
+    // before the queue. The vtype selects last.
+    o_rob_alloc_req.vec_illegal = ((o_rob_alloc_req.is_varith || (op == riscv_pkg::VTOX)) &&
+                                   i_vtype_spec[8]) ||
+        (o_rob_alloc_req.is_varith &&
+         i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]]) || i_vec_mem_illegal;
     // Sstvala: raw instruction bits, the illegal-instruction xtval.
     o_rob_alloc_req.insn_bits = i_from_id_to_ex.insn_bits;
 

@@ -157,8 +157,11 @@ module tomasulo_wrapper #(
     // Some ROB entry is a vector-config instruction (registered)
     output logic                              o_vcfg_in_flight,
     // The vector memory table, for the load and store queues' range-ordering
-    // holds (all entries dead while the vector unit has no memory accesses)
+    // holds (all entries dead in a core without the vector unit)
     input  riscv_pkg::vmt_view_t              i_vmt = '0,
+    // No retired vector memory instruction is still accessing memory
+    // (registered); FENCE, FENCE.I, SFENCE.VMA and SC wait for it (V-O4)
+    input  logic                              i_vmem_quiet = 1'b1,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb,
     output logic                              o_commit_valid_raw,
     output logic                              o_commit_misprediction_raw,
@@ -210,6 +213,11 @@ module tomasulo_wrapper #(
     output riscv_pkg::exc_cause_t                               o_trap_cause,
     output logic                  [        riscv_pkg::XLEN-1:0] o_trap_value,
     output logic                  [                       31:0] o_trap_insn,
+    // The ROB head's exception is a bus-response access fault from the LQ or
+    // SQ, and o_head_bus_fault_va is its virtual address (cause 5 or 7 xtval
+    // in place of o_trap_value, which is zero for these faults).
+    output logic                                                o_head_bus_fault,
+    output logic                  [        riscv_pkg::XLEN-1:0] o_head_bus_fault_va,
     input  logic                                                i_trap_taken,
     output logic                                                o_mret_start,
     output logic                                                o_mret_start_is_sret,
@@ -251,23 +259,32 @@ module tomasulo_wrapper #(
     // change only with a full flush (translation CSR write, trap, or xRET).
     // The page-table walker is in cpu_ooo, reached through the walk ports.
     // =========================================================================
-    input  logic                                              i_translation_active,
-    input  logic                                              i_mmu_sum,
-    input  logic                                              i_mmu_mxr,
-    input  logic                                              i_mmu_eff_priv_u,
+    input  logic                                               i_translation_active,
+    input  logic                                               i_mmu_sum,
+    input  logic                                               i_mmu_mxr,
+    input  logic                                               i_mmu_eff_priv_u,
     // The CSR file's registered translation-invalidate pulse. With the ROB's
     // SFENCE.VMA window it invalidates the DTLB and walker. Pipeline recovery
     // for the CSR write is separate: the ROB serializer classifies the CSR at
     // allocation and drains committed stores before it retires.
-    input  logic                                              i_csr_translation_flush_req,
+    input  logic                                               i_csr_translation_flush_req,
     // The DTLB flash-invalidate, exported for the walker's discard input:
     // the SFENCE.VMA window OR i_csr_translation_flush_req.
-    output logic                                              o_tlb_invalidate,
-    output logic                                              o_walk_req_valid,
-    input  logic                                              i_walk_req_ready,
-    output logic                 [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
-    input  logic                                              i_walk_resp_valid,
-    input  riscv_pkg::ptw_resp_t                              i_walk_resp,
+    output logic                                               o_tlb_invalidate,
+    // Satp root switch or MPRV change: flush every TLB entry (with no filter).
+    input  logic                                               i_csr_tlb_flush_all_req,
+    // The TLB flush command: the retiring SFENCE.VMA's filter, or flush-all
+    // for i_csr_tlb_flush_all_req.
+    output riscv_pkg::tlb_flush_t                              o_tlb_flush,
+    // satp.ASID that translations are tagged with (registered with the rest
+    // of the translation bundle).
+    input  logic                  [   riscv_pkg::AsidBits-1:0] i_mmu_asid,
+    output logic                                               o_walk_req_valid,
+    input  logic                                               i_walk_req_ready,
+    output logic                  [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
+    output logic                                               o_walk_hold,
+    input  logic                                               i_walk_resp_valid,
+    input  riscv_pkg::ptw_resp_t                               i_walk_resp,
 
     // Widen-commit back-pressure: asserted when the downstream slot-2
     // retire path can accept a second commit this cycle.  cpu_ooo holds it
@@ -1574,6 +1591,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
   riscv_pkg::fu_complete_t lq_fu_complete;  // LQ -> adapter
   logic lq_fu_complete_staged;  // registered LQ CDB-stage occupancy, flush-free
+  logic lq_fu_complete_bus_error;  // lq_fu_complete is a bus-response fault
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_fu_complete_tag_next;
   logic lq_fu_complete_tag_fire;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_fu_complete_tag_fired;
@@ -2311,7 +2329,7 @@ module tomasulo_wrapper #(
       .i_flush_en                      (i_flush_en),
       .i_flush_tag                     (i_flush_tag),
       .i_head_tag                      (head_tag),
-      .i_sq_committed_empty            (sq_committed_empty),
+      .i_sq_committed_empty            (sq_committed_empty && i_vmem_quiet),
       .i_lq_reservation_valid          (lq_reservation_valid),
       .i_lq_reservation_addr           (lq_reservation_addr),
       .i_mem_adapter_result_pending    (mem_adapter_result_pending),
@@ -2467,9 +2485,30 @@ module tomasulo_wrapper #(
   assign rob_head_next_result_held = alu_adapter_result_pending &&
       (alu_adapter_to_arbiter.tag == riscv_pkg::ReorderBufferTagWidth'(head_tag + 1'b1));
 
+  // SFENCE.VMA operands reach the ROB when the MEM_RS issues the operation:
+  // rs1 gives the page, rs2 the ASID, and the dispatch immediate says whether
+  // each register is other than x0.
+  riscv_pkg::tlb_flush_t rob_sfence_flush;
+  logic sfence_cap_valid;
+  assign sfence_cap_valid = o_mem_rs_issue.valid && (o_mem_rs_issue.op == riscv_pkg::SFENCE_VMA);
+  logic [riscv_pkg::Sv39VpnBits+riscv_pkg::AsidBits+1:0] sfence_cap_data;
+  assign sfence_cap_data = {
+    o_mem_rs_issue.src2_value[riscv_pkg::AsidBits-1:0],
+    o_mem_rs_issue.src1_value[12+:riscv_pkg::Sv39VpnBits],
+    o_mem_rs_issue.imm[1:0]
+  };
+  always_comb begin
+    o_tlb_flush = rob_sfence_flush;
+    if (i_csr_tlb_flush_all_req) begin
+      o_tlb_flush = '0;
+      o_tlb_flush.en = 1'b1;
+    end
+  end
+
   reorder_buffer #(
       .SharedLinkBank(ROB_SHARED_LINK_BANK),
-      .VECTOR(VECTOR)
+      .VECTOR(VECTOR),
+      .SfenceOperands(1'b1)
   ) u_rob (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
@@ -2526,10 +2565,15 @@ module tomasulo_wrapper #(
       .i_widen_commit_ok        (i_widen_commit_ok && !rob_head_next_result_held),
 
       // External coordination
-      .i_sq_committed_empty           (sq_committed_empty_rob),
+      // The serializer's drain also waits for retired vector memory accesses.
+      .i_sq_committed_empty           (sq_committed_empty_rob && i_vmem_quiet),
       .i_fence_i_sync_done            (i_fence_i_sync_done),
       .o_fence_i_sync_req             (o_fence_i_sync_req),
       .o_sfence_window                (rob_sfence_window),
+      .o_sfence_flush                 (rob_sfence_flush),
+      .i_sfence_cap_valid             (sfence_cap_valid),
+      .i_sfence_cap_tag               (o_mem_rs_issue.rob_tag),
+      .i_sfence_cap_data              (sfence_cap_data),
       .o_csr_start                    (o_csr_start),
       .i_csr_done                     (i_csr_done),
       .o_trap_pending                 (o_trap_pending),
@@ -4080,6 +4124,7 @@ module tomasulo_wrapper #(
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
+      .o_fu_complete_bus_error(lq_fu_complete_bus_error),
       .o_fu_complete_staged(lq_fu_complete_staged),
       .o_fu_complete_tag_next(lq_fu_complete_tag_next),
       .o_fu_complete_tag_fire(lq_fu_complete_tag_fire),
@@ -4353,6 +4398,8 @@ module tomasulo_wrapper #(
       .i_flush_tag(i_flush_tag),
       .i_head_tag(head_tag),
       .i_tlb_invalidate(o_tlb_invalidate),
+      .i_tlb_flush(o_tlb_flush),
+      .i_asid(i_mmu_asid),
       .i_iss_valid(dmmu_iss_valid),
       .i_iss_rob_tag(o_mem_rs_issue.rob_tag),
       .i_iss_va(lq_effective_addr),
@@ -4395,6 +4442,7 @@ module tomasulo_wrapper #(
       .o_walk_req_valid(o_walk_req_valid),
       .i_walk_req_ready(i_walk_req_ready),
       .o_walk_vpn(o_walk_vpn),
+      .o_walk_hold(o_walk_hold),
       .i_walk_resp_valid(i_walk_resp_valid),
       .i_walk_resp(i_walk_resp)
   );
@@ -4493,7 +4541,75 @@ module tomasulo_wrapper #(
   assign mem_rs_pre_issue_needs_lq_final =
       i_translation_active ? dmmu_pre_needs_lq : mem_rs_pre_issue_needs_lq;
 
+  // ===========================================================================
+  // Bus-fault virtual addresses (xtval for Sstvala)
+  // ===========================================================================
+  // LQ and SQ entries keep only the physical address, so a bus-response
+  // access fault cannot take its virtual address from there. Every memory
+  // instruction issues from MEM_RS with its virtual address (rs1 + imm; the
+  // immediate is zero for AMO, LR, SC and cbo.zero), and this table records
+  // it by ROB tag, written from registered copies one cycle after issue. A
+  // response, and so a bus fault, comes back later than that. A tag is reused
+  // only after its instruction has left the ROB, and the next owner issues
+  // before it can fault.
+  //
+  // bus_fault_tag_q names the oldest live instruction whose LQ or SQ result is
+  // a bus-response fault. It is set while that result is presented to the MEM
+  // adapter, so no later than the edge on which the ROB records the exception;
+  // the trap unit latches xtval on a later edge. Such an instruction leaves
+  // the ROB only by its trap or by a flush, so a full flush clears the
+  // register and a partial flush clears it when it kills that instruction.
+  logic issue_va_we_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] issue_va_tag_q;
+  logic [riscv_pkg::XLEN-1:0] issue_va_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) issue_va_we_q <= 1'b0;
+    else issue_va_we_q <= o_mem_rs_issue.valid;
+  end
+  always_ff @(posedge i_clk) begin
+    issue_va_tag_q <= o_mem_rs_issue.rob_tag;
+    issue_va_q <= lq_effective_addr;
+  end
 
+  logic bus_fault_valid_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] bus_fault_tag_q;
+  sdp_dist_ram #(
+      .ADDR_WIDTH(riscv_pkg::ReorderBufferTagWidth),
+      .DATA_WIDTH(riscv_pkg::XLEN)
+  ) u_issue_va (
+      .i_clk,
+      .i_write_enable (issue_va_we_q),
+      .i_write_address(issue_va_tag_q),
+      .i_read_address (bus_fault_tag_q),
+      .i_write_data   (issue_va_q),
+      .o_read_data    (o_head_bus_fault_va)
+  );
+
+  // A presented bus fault that this cycle's flush does not kill. An SQ fault
+  // is a precise uncached store at the ROB head, so it is the older of two.
+  logic lq_bus_fault_live, sq_bus_fault_live, bus_fault_in_valid, bus_fault_keep, bus_fault_take;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] bus_fault_in_tag;
+  assign lq_bus_fault_live = lq_fu_complete.valid && lq_fu_complete_bus_error &&
+      !speculative_flush_all && !(speculative_flush_en && mem_lq_younger);
+  assign sq_bus_fault_live = uncached_store_complete.valid && uncached_store_complete.exception &&
+      !speculative_flush_all && !(speculative_flush_en && mem_uncached_store_younger);
+  assign bus_fault_in_valid = lq_bus_fault_live || sq_bus_fault_live;
+  assign bus_fault_in_tag = sq_bus_fault_live ? uncached_store_complete.tag : lq_fu_complete.tag;
+  assign bus_fault_keep = bus_fault_valid_q && !speculative_flush_all &&
+      !(speculative_flush_en && is_younger(
+      bus_fault_tag_q, i_flush_tag, head_tag
+  ));
+  assign bus_fault_take = bus_fault_in_valid && (!bus_fault_keep || is_younger(
+      bus_fault_tag_q, bus_fault_in_tag, head_tag
+  ));
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) bus_fault_valid_q <= 1'b0;
+    else bus_fault_valid_q <= bus_fault_keep || bus_fault_in_valid;
+  end
+  always_ff @(posedge i_clk) begin
+    if (bus_fault_take) bus_fault_tag_q <= bus_fault_in_tag;
+  end
+  assign o_head_bus_fault  = bus_fault_valid_q && (bus_fault_tag_q == head_tag);
 
   // ===========================================================================
   // Store Queue: Address + Data Update from MEM_RS Issue

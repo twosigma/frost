@@ -299,8 +299,8 @@ async def walk_errors_discard_and_retry_with_release_held(dut: Any) -> None:
             if discarded:
                 assert not b.walks
             else:
-                assert len(b.walks) == 1 and b.walks[0] >> 78 == 3
-                assert (b.walks[0] >> 51) & ((1 << 27) - 1) == 7
+                assert len(b.walks) == 1 and b.walks[0] >> 79 == 3
+                assert (b.walks[0] >> 52) & ((1 << 27) - 1) == 7
             # The next walk's read takes the other slot while the failed
             # read's slot waits for U.
             before = len(b.demands)
@@ -310,8 +310,8 @@ async def walk_errors_discard_and_retry_with_release_held(dut: Any) -> None:
             assert retry != failed and failed in b.live
             await b.grant(retry, line((0x80000 << 10) | 0xCF))
             await b.wait(lambda s: bool(s["walk_ready"]))
-            assert b.walks[-1] >> 78 == 0
-            assert (b.walks[-1] >> 51) & ((1 << 27) - 1) == 11
+            assert b.walks[-1] >> 79 == 0
+            assert (b.walks[-1] >> 52) & ((1 << 27) - 1) == 11
             await b.release(failed)
             await b.release(retry)
 
@@ -340,8 +340,8 @@ async def walk_reads_leave_before_the_previous_release(dut: Any) -> None:
     assert b.demands[-1][1] == first
     await b.grant(first, line((0x80000 << 10) | 0xCF))
     await b.wait(lambda s: bool(s["walk_ready"]))
-    assert len(b.walks) == 1 and b.walks[0] >> 78 == 0
-    assert (b.walks[0] >> 51) & ((1 << 27) - 1) == 5
+    assert len(b.walks) == 1 and b.walks[0] >> 79 == 0
+    assert (b.walks[0] >> 52) & ((1 << 27) - 1) == 5
     await b.release(second)
     await b.release(first)
     assert not b.live
@@ -355,8 +355,8 @@ async def walk_reads_leave_before_the_previous_release(dut: Any) -> None:
     assert b.demands[-1][1] == 0x42 and 0x40 in b.live
     await b.grant(0x42, line((0x80000 << 10) | 0xCF), error=1)
     await b.wait(lambda s: bool(s["walk_ready"]))
-    assert len(b.walks) == 1 and b.walks[0] >> 78 == 3
-    assert (b.walks[0] >> 51) & ((1 << 27) - 1) == 9
+    assert len(b.walks) == 1 and b.walks[0] >> 79 == 3
+    assert (b.walks[0] >> 52) & ((1 << 27) - 1) == 9
     await b.release(0x42)
     await b.release(0x40)
     assert not b.live
