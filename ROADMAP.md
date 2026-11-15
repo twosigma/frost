@@ -66,11 +66,11 @@ extensions implemented on `main` or planned with the vector unit:
 | Zvfhmin | Partial (FP16 convert datapath block in place; core execution not connected) | `test_vec_fcvt.py` |
 | Zvbb | Partial (single-width lane instructions in place; `vwsll` and vector advertisement not in place) | `test_vec_int_lane.py`, `test_vec_engine.py` |
 | Zvkt | Partial (fixed-latency integer and bitmanip lanes in place; vector unit unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py` |
-| Zihintntl | Implemented (hints execute as no-ops); advertisement in progress | `riscv-arch-test` (`hints`), `rvc_predecode.sby`, TestRIG |
+| Zihintntl | Implemented (hints execute as no-ops) | `riscv-arch-test` (`hints`), `rvc_predecode.sby`, TestRIG (`--zcb`) |
 | Zicond | Implemented | `riscv-arch-test` (`Zicond`), `isa_test`, TestRIG |
-| Zimop | In progress | - |
-| Zcmop | In progress | - |
-| Zcb | In progress | - |
+| Zimop | Implemented | `riscv-arch-test` (`Zimop`), `mops`, `test_id_stage.py`, TestRIG (`--zcb`), `instr_operand_classifier.sby` |
+| Zcmop | Implemented | `mops`, `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
+| Zcb | Implemented | `riscv-arch-test` (`C`), `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
 | Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
 | Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
 | Supm | In progress | - |
@@ -104,8 +104,10 @@ Supervisor and user modes decode no non-standard instructions or CSRs
 
 ## SMP
 
-Two harts on the X3, sharing one L2, with RVWMO litmus tests and Debian
-running on both. `cpu_top` holds one hart with its L0, L1D, L1I, and L2, and
+Two harts on the X3 first, sharing one L2, with RVWMO litmus tests and Debian
+running on both. The coherence design is to scale to four harts, so nothing
+in it may assume exactly two.
+`cpu_top` holds one hart with its L0, L1D, L1I, and L2, and
 its outgoing AXI4 master is not coherent, so two `cpu_top` instances on
 shared memory do not form an SMP system. Its coherent ingress gives DMA and
 the NIC access to one tile's caches; it is not a protocol between tiles (see
@@ -124,8 +126,8 @@ It probes the L1D for instruction reads, page-table walks, DMA, atomic and SC
 operations, and replacement victims; the L1D's own reads, store upgrades and
 LRs need no probe while it is the only L1D. The L1D holds sectors in I, S or
 M states and has up to eight requests in flight to the home, seven of them
-for loads. With a second hart, the
-home would probe both L1Ds, and dirty data would still pass through the L2
+for loads. With more than one hart, the
+home would probe the other L1Ds, and dirty data would still pass through the L2
 rather than directly between the L1Ds. A coherence unit at the L1 level can
 follow if measurements show that the probes or the trip through the L2 limit
 performance: it would keep a copy of each L1D's tags, so that a request probes

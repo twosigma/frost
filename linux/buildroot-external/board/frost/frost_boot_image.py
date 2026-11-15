@@ -78,18 +78,17 @@ LINUX_IMAGE_MAGIC = b"RISCV\x00\x00\x00"  # header offset 0x30
 LINUX_IMAGE_SIZE_OFFSET = 0x10  # u64 image_size (text + bss)
 
 # What the DT advertises: the ISA the core implements, in the spelling both
-# OpenSBI and Linux parse. Single-letter imafdc and zba/zbb/zbs match misa in
-# csr_file.sv; beyond FROST_MARCH_EXTENSIONS in sw/common/common.mk, the
-# unprivileged entries include zicbom, zkt, and the memory and block-size
-# capability names (zic64b, ziccamoa, ziccif, zicclsm, ziccrse, za64rs).
+# OpenSBI and Linux parse. FROST_MARCH_EXTENSIONS in sw/common/common.mk
+# selects a subset for bare-metal applications; misa lists single-letter
+# extensions in csr_file.sv.
 # linux/README.md documents the privileged extensions too.
 ISA_BASE = "rv64i"
 ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
     "zfa", "zfhmin", "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
     "zicclsm", "ziccrse", "zicntr", "zicond", "zicsr", "zifencei",
-    "zihintpause", "zihpm", "za64rs", "zawrs", "zba", "zbb",
-    "zbc", "zbkb", "zbkc", "zbs", "zkt", "smaia",
+    "zihintntl", "zihintpause", "zihpm", "zimop", "za64rs", "zawrs", "zba", "zbb",
+    "zbc", "zbkb", "zbkc", "zbs", "zcb", "zcmop", "zkt", "smaia",
     "ssaia", "ssccptr", "sscofpmf", "sscounterenw", "sstc", "sstvala",
     "sstvecd", "svade", "svvptc",
 )  # fmt: skip
@@ -102,7 +101,7 @@ CBOZ_BLOCK_BYTES = 64
 # Zicbop block size: the prefetch hints name the same 64-byte block (they
 # execute as no-ops).
 CBOP_BLOCK_BYTES = 64
-ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintpause_zihpm_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_sstc_sstvala_sstvecd_svade_svvptc"
+ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_sstc_sstvala_sstvecd_svade_svvptc"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
