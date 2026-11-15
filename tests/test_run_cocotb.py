@@ -958,6 +958,50 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Without the vector unit, mstatus.VS reads zero and vector CSRs trap",
     ),
+    "svpbmt_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description=(
+            "Svpbmt: PBMTE and reserved-encoding page faults, NC and IO pages over DDR "
+            "(4 KiB, 2 MiB and 1 GiB), U-mode data accesses and low BRAM coherent "
+            "with cacheable views, AMO/LR/SC/"
+            "cbo.zero/fetch access faults, the field kept in both TLB levels, and "
+            "adjacent mixed-view accesses with and without the fence/flush sequence"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+    ),
+    "svpbmt_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt with the cache, load-queue and store-queue assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "svpbmt_test_2g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt at 2 GiB: DDR access faults, page-permission precedence and device mappings",
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "31"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=31", "--assert"),
+    ),
+    "svpbmt_bus_error": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt alias read/write response faults, xtval and port recovery",
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DSVPBMT_BUS_ERRORS=1"),
+            ("COCOTB_PLUSARGS", "+axi_error_check=0 +axi_rd_error_addr=3000000"),
+        ),
+        verilator_extra_args=("--assert",),
+    ),
     "vec_state_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3175,7 +3219,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherent_cpu_faults": CocotbRunConfig(
         python_test_module="cocotb_tests.integration.test_coherent_cpu_faults",
         hdl_toplevel_module="cpu_top",
-        description="Coherent atomic faults, parked-hart DMA service and reset preserve ownership.",
+        description="Coherent atomic faults, NC/IO alias-load replay on IRQ/debug entry, parked-hart DMA service and reset.",
         verilator_extra_args=(
             "--assert",
             "-GENABLE_COHERENCE=1",
@@ -4355,14 +4399,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "soc_axil": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_soc_axil",
         hdl_toplevel_module="soc_top",
-        description="SoC register mapping, empty FIFO reads, CPU backpressure and reset recovery",
+        description="SoC register mapping, empty FIFO reads, CPU backpressure and alias recovery after an accepted-transfer reset",
         verilator_extra_args=("-GENABLE_CACHED_TIER=1", "-GUSE_BEHAVIORAL_DDR=0"),
     ),
     **{
         f"soc_axil_async_{period}": CocotbRunConfig(
             python_test_module="cocotb_tests.axi.test_soc_axil",
             hdl_toplevel_module="soc_top",
-            description="AXI4-Lite registers behind the asynchronous CPU memory boundary",
+            description="AXI4-Lite registers and accepted alias-transfer reset recovery across the asynchronous CPU memory boundary",
             verilator_extra_args=(
                 "-GENABLE_CACHED_TIER=1",
                 "-GUSE_BEHAVIORAL_DDR=0",

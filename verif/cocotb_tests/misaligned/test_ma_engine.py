@@ -83,6 +83,7 @@ class Leaf:
     u: int = 0
     d: int = 1
     g: int = 0
+    pbmt: int = 0
 
 
 @dataclass
@@ -211,6 +212,7 @@ def pack_walk_resp(vpn: int, leaf: Leaf) -> int:
     return pack_struct(
         PTW_RESP_FIELDS,
         {
+            "pbmt": leaf.pbmt,
             "fault_kind": leaf.fault,
             "vpn": vpn,
             "ppn": leaf.ppn,
@@ -241,7 +243,7 @@ def translate_part(a: Access, va: int) -> tuple[str, int]:
     leaf = a.leaves.get(vpn, Leaf(fault=DFAULT_PAGE))
     if leaf.fault == DFAULT_PAGE:
         return "page", 0
-    if leaf.fault == DFAULT_ACCESS:
+    if leaf.fault == DFAULT_ACCESS and not leaf.pbmt:
         return "access", 0
     priv_ok = (a.priv_u or a.sum_) if leaf.u else not a.priv_u
     perm = (
@@ -251,6 +253,8 @@ def translate_part(a: Access, va: int) -> tuple[str, int]:
     )
     if not perm:
         return "page", 0
+    if leaf.fault == DFAULT_ACCESS:
+        return "access", 0
     if leaf.ppn >> 20:
         return "access", 0
     if leaf.level == 2:
@@ -766,3 +770,72 @@ async def test_stop_while_request_offered(dut: Any) -> None:
         assert int(dut.o_busy.value) == 1
         assert not int(dut.o_lc_req_valid.value) and not int(dut.o_done.value)
         await FallingEdge(dut.i_clk)
+
+
+@cocotb.test()
+async def test_pbmt_page_boundaries(dut: Any) -> None:
+    """Reject split NC/IO aliases before data issue and preserve faulting VAs."""
+    env = await setup(dut, seed=17)
+    for store in (False, True):
+        for pbmt in (1, 2):
+            for offset in (1, 29, 4093):
+                va = 0x100000 + offset
+                for lower_uncached, upper_uncached in (
+                    (True, False),
+                    (False, True),
+                    (True, True),
+                ):
+                    if offset != 4093 and not lower_uncached:
+                        continue
+                    a = Access(va=va, nbytes=8, store=store, translate=True)
+                    lower = DDR_BASE | (0x40000000 if lower_uncached else 0)
+                    upper = DDR_BASE + 4096 | (0x40000000 if upper_uncached else 0)
+                    a.leaves[va >> 12] = Leaf(
+                        ppn=lower >> 12, pbmt=pbmt if lower_uncached else 0
+                    )
+                    a.leaves[(va >> 12) + 1] = Leaf(
+                        ppn=upper >> 12, pbmt=pbmt if upper_uncached else 0
+                    )
+                    before = dict(env.mem)
+                    result = await run_access(env, a)
+                    check(env, a, before, result)
+                    assert result["cause"] == (STORE_ACCESS if store else LOAD_ACCESS)
+                    assert result["tval"] == (va if lower_uncached else 0x101000)
+                    assert not env.requests
+            # BRAM has no encoded alias; it keeps the misaligned exception.
+            a = Access(va=0x200001, nbytes=8, store=store, translate=True)
+            a.leaves[a.va >> 12] = Leaf(ppn=0x10, pbmt=pbmt)
+            before = dict(env.mem)
+            result = await run_access(env, a)
+            check(env, a, before, result)
+            assert result["cause"] == (STORE_MISALIGN if store else LOAD_MISALIGN)
+            assert result["tval"] == a.va
+            assert not env.requests
+
+
+@cocotb.test()
+async def test_no_alias_permission_precedence(dut: Any) -> None:
+    """A refused NC/IO leaf checks permissions for either part before data issue."""
+    env = await setup(dut, seed=19)
+    for store in (False, True):
+        for pbmt in (1, 2):
+            for upper in (False, True):
+                for denied in (False, True):
+                    va = 0x100FFD
+                    a = Access(va=va, nbytes=8, store=store, translate=True)
+                    a.leaves[va >> 12] = Leaf(ppn=DDR_BASE >> 12)
+                    refused_vpn = (va >> 12) + int(upper)
+                    a.leaves[refused_vpn] = Leaf(
+                        fault=DFAULT_ACCESS,
+                        ppn=DDR_BASE >> 12,
+                        pbmt=pbmt,
+                        u=int(denied),
+                    )
+                    before = dict(env.mem)
+                    result = await run_access(env, a)
+                    check(env, a, before, result)
+                    assert result["cause"] == cause_of(
+                        "page" if denied else "access", store
+                    )
+                    assert result["tval"] == (0x101000 if upper else va)
+                    assert not env.requests
