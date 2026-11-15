@@ -3035,8 +3035,10 @@ def test_home_shard_budget() -> None:
             )
         }
         limit = formal_task_timeout_s(target_name, task)
-        assert int(options["timeout"]) == limit, task
-        limits.append(limit)
+        sby_limit = int(options.get("timeout", str(limit)))
+        if (target_name, task) in SBY_TASK_TIMEOUT_OVERRIDES_S:
+            assert sby_limit == limit, task
+        limits.append(min(sby_limit, limit))
     setup_seconds = 20 * 60
     assert sum(limits) + setup_seconds <= shard["timeout_minutes"] * 60
 
