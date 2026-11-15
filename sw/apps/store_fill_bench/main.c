@@ -43,7 +43,7 @@
 #include "uart.h"
 
 #ifndef STORE_BENCH_BASE
-#define STORE_BENCH_BASE 0x84000000ul
+#define STORE_BENCH_BASE 0x82000000ul
 #endif
 #ifndef STORE_BENCH_BYTES
 #define STORE_BENCH_BYTES (64ul << 10)
