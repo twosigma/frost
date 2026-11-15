@@ -2597,10 +2597,19 @@ SBY_TASKS = [
     ),
     ("home_default", "Consumed packets and fill phase flags with eight fills."),
     ("array_bram", "Separate selection and row-read captures with one BRAM way."),
-    ("array_bram_four", "Separate selection and row-read captures with four BRAM ways."),
+    (
+        "array_bram_four",
+        "Separate selection and row-read captures with four BRAM ways.",
+    ),
     ("array_uram", "Folded selection and banked captures with four 64-byte URAM ways."),
-    ("array_uram32", "Folded selection and banked captures with four 32-byte URAM ways."),
-    ("array_uram_row", "Folded selection and single-array captures with short read latency."),
+    (
+        "array_uram32",
+        "Folded selection and banked captures with four 32-byte URAM ways.",
+    ),
+    (
+        "array_uram_row",
+        "Folded selection and single-array captures with short read latency.",
+    ),
     ("endpoint32", "Demand and grant captures with 32-bit addresses."),
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),
