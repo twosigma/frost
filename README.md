@@ -105,12 +105,12 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 ## Try it without an FPGA
 
 A standalone C++ Verilator runner simulates the `frost` SystemVerilog RTL with
-live UART output and no Python in the clock loop. It matched the cocotb bench
-cycle for cycle on `hello_world` and CoreMark in both memory tiers (unseeded
-behavioral AXI memory model); CI checks BRAM and DDR `hello_world` and BRAM
-CoreMark against
-[`hw/sim/native/exactness_baseline.json`](hw/sim/native/exactness_baseline.json)
-alongside a live cocotb BRAM `hello_world` run:
+live UART output and no Python in the clock loop. On every CI run, `test-native`
+checks that a live cocotb BRAM `hello_world` run and the native run of the same
+tree agree in cycles and UART bytes, and checks DDR `hello_world` and BRAM
+CoreMark pass, CRC, tick, and summary conditions; the full comparison mode
+(`tests/test_native_sim.py --all`) compares `hello_world` and CoreMark in both
+memory tiers cycle for cycle against live unseeded cocotb runs:
 
 ```bash
 ./scripts/frost.py native hello_world
@@ -120,9 +120,10 @@ alongside a live cocotb BRAM `hello_world` run:
 
 With the `frost` development image built first (`docker build -t frost .`, see
 [Quick Start](#quick-start)) and the CoreMark submodule initialized,
-`demo/Dockerfile` packages baseline x86-64 simulator binaries and prebuilt
-`hello_world` and CoreMark images into a small standalone runtime container
-(`frost-demo:local`):
+`demo/Dockerfile` packages baseline x86-64 simulator binaries (`1`, `4`, and `8`
+threads) and prebuilt `hello_world` and CoreMark images into a small standalone
+runtime container (`frost-demo:local`), which CI builds and runs in
+`test-demo-image`:
 
 ```bash
 git submodule update --init --recursive sw/apps/coremark/coremark

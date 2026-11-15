@@ -19,7 +19,7 @@
 ARG BUILD_IMAGE=frost:latest
 FROM ${BUILD_IMAGE} AS build
 
-ARG BUILD_JOBS=8
+ARG BUILD_JOBS=""
 
 WORKDIR /src
 COPY hw/rtl /src/hw/rtl
@@ -33,6 +33,34 @@ COPY sw/apps/coremark /src/sw/apps/coremark
 COPY demo/run_demo.sh /src/demo/run_demo.sh
 
 RUN set -eux; \
+    jobs="${BUILD_JOBS}"; \
+    if [ -z "$jobs" ]; then \
+        jobs="$(nproc 2>/dev/null || echo 1)"; \
+        case "$jobs" in ''|*[!0-9]*|0) jobs=1 ;; esac; \
+        if [ -r /sys/fs/cgroup/cpu.max ]; then \
+            read -r quota period _rest < /sys/fs/cgroup/cpu.max || true; \
+            case "${quota:-}:${period:-}" in \
+                ''|:*|*:|*[!0-9]*:*|*:*[!0-9]*) ;; \
+                *) if [ "$quota" -gt 0 ] && [ "$period" -gt 0 ]; then \
+                    cg=$(( quota / period )); \
+                    if [ "$cg" -lt 1 ]; then cg=1; fi; \
+                    if [ "$cg" -lt "$jobs" ]; then jobs="$cg"; fi; \
+                fi ;; \
+            esac; \
+        elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -r /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then \
+            read -r quota _rest < /sys/fs/cgroup/cpu/cpu.cfs_quota_us || true; \
+            read -r period _rest < /sys/fs/cgroup/cpu/cpu.cfs_period_us || true; \
+            case "${quota:-}:${period:-}" in \
+                ''|:*|*:|*[!0-9]*:*|*:*[!0-9]*) ;; \
+                *) if [ "$quota" -gt 0 ] && [ "$period" -gt 0 ]; then \
+                    cg=$(( quota / period )); \
+                    if [ "$cg" -lt 1 ]; then cg=1; fi; \
+                    if [ "$cg" -lt "$jobs" ]; then jobs="$cg"; fi; \
+                fi ;; \
+            esac; \
+        fi; \
+        if [ "$jobs" -gt 8 ]; then jobs=8; fi; \
+    fi; \
     make -C /src/hw/sim/native stage-app APP=hello_world MEM_CONFIG=bram; \
     make -C /src/hw/sim/native stage-app APP=hello_world MEM_CONFIG=ddr; \
     make -C /src/hw/sim/native stage-app APP=coremark MEM_CONFIG=bram; \
@@ -44,12 +72,16 @@ RUN set -eux; \
             SAVABLE=0 \
             PORTABLE=1 \
             STATIC_RUNTIME=1 \
-            NUMBER_OF_CPU_CORES="${BUILD_JOBS}"; \
+            NUMBER_OF_CPU_CORES="$jobs"; \
         install -D -m 0755 \
             "/src/hw/sim/native/sim_build/model_t${t}_a1_s0_x86_64_static/frost-native" \
             "/out/opt/frost-demo/bin/frost-native-t${t}"; \
         strip --strip-unneeded "/out/opt/frost-demo/bin/frost-native-t${t}"; \
-        ! readelf -d "/out/opt/frost-demo/bin/frost-native-t${t}" | grep -E 'lib(stdc\+\+|gcc_s|atomic)'; \
+        if readelf -d "/out/opt/frost-demo/bin/frost-native-t${t}" | grep -E 'lib(stdc\+\+|gcc_s|atomic)'; then \
+            echo "Unexpected dynamic C++/atomic runtime linkage in frost-native-t${t}" >&2; \
+            exit 1; \
+        fi; \
+        rm -rf "/src/hw/sim/native/sim_build/model_t${t}_a1_s0_x86_64_static"; \
     done; \
     mkdir -p /out/opt/frost-demo/apps; \
     cp -r /src/hw/sim/native/sim_build/apps/* /out/opt/frost-demo/apps/; \
