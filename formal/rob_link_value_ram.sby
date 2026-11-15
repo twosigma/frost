@@ -33,8 +33,8 @@ small: abc bmc3
 
 [script]
 read -formal -sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv
-read -formal -sv rob_link_value_ram.sv rob_link_value_equiv.sv
-copy: read -formal -overwrite -D SYNTHESIS -D ROB_LINK_COPY_PROOF -sv rob_link_value_ram.sv
+~copy: read -formal -sv rob_link_value_ram.sv rob_link_value_equiv.sv
+copy: read -formal -D SYNTHESIS -D ROB_LINK_COPY_PROOF -sv rob_link_value_ram.sv
 oh: chparam -set ONEHOT_READ 1 rob_link_value_equiv
 narrow: chparam -set LINK_WIDTH 32 rob_link_value_equiv
 small: chparam -set DATA_WIDTH 8 -set LINK_WIDTH 4 rob_link_value_equiv
