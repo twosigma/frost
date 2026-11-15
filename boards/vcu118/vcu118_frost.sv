@@ -22,6 +22,11 @@ module vcu118_frost #(
     parameter int unsigned PERF_COUNTERS = 0,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned USE_BEHAVIORAL_DDR = 0,
+    // The VCU118 L1I is 32 KiB: four ways of 256 sets of 32-byte lines. The
+    // L1I is indexed by the translated (physical) line address, so ways larger
+    // than a page create no aliases, and the deeper sets fit the same block
+    // RAMs as the 16 KiB default.
+    parameter int unsigned L1I_CACHE_BYTES = 32 * 1024,
     // The VCU118 L2 is 4 MiB, with the shared four-way geometry.
     parameter int unsigned L2_CACHE_BYTES = 4 * 1024 * 1024
 ) (
@@ -274,6 +279,7 @@ module vcu118_frost #(
       .CLK_FREQ_HZ       (CPU_CLK_HZ),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
+      .L1I_CACHE_BYTES   (L1I_CACHE_BYTES),
       .L2_CACHE_BYTES    (L2_CACHE_BYTES),
       .PERF_COUNTERS     (PERF_COUNTERS),
       .RAW_LOOPBACK      (0),

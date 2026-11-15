@@ -51,7 +51,9 @@ async def accept_request(dut: Any, pc: int) -> int:
     raise AssertionError("fill request never issued")
 
 
-async def response_during_clear(dut: Any, *, reset: bool) -> None:
+async def response_during_clear(
+    dut: Any, *, reset: bool, stalled: bool = False
+) -> None:
     """Check that a coincident clear hides payload until a fresh fill completes."""
     await _setup(dut)
     dut.i_line_after_ok.value = 0
@@ -61,6 +63,7 @@ async def response_during_clear(dut: Any, *, reset: bool) -> None:
     dut.i_line_resp_id.value = request_id
     dut.i_line_resp_rdata.value = (1 << 256) - 1
     dut.i_line_resp_valid.value = 1
+    dut.i_pipeline_stall.value = int(stalled)
     clear = dut.i_rst if reset else dut.i_invalidate
     clear.value = 1
     await FallingEdge(dut.i_clk)
@@ -69,6 +72,7 @@ async def response_during_clear(dut: Any, *, reset: bool) -> None:
     for _ in range(10):
         await FallingEdge(dut.i_clk)
         assert not int(dut.o_instr_valid.value), "cleared response became visible"
+    dut.i_pipeline_stall.value = 0
     log: list[int] = []
     cocotb.start_soon(_line_slave(dut, 5, log))
     await _wait_window(dut, pc)
@@ -76,9 +80,10 @@ async def response_during_clear(dut: Any, *, reset: bool) -> None:
 
 
 @cocotb.test()
-async def invalidate_wins_over_coincident_response(dut: Any) -> None:
-    """Discard a response on the invalidation edge, including its predecode."""
-    await response_during_clear(dut, reset=False)
+@cocotb.parametrize(stalled=[False, True])
+async def invalidate_wins_over_coincident_response(dut: Any, stalled: bool) -> None:
+    """Discard a coincident response, including while fetch is stalled."""
+    await response_during_clear(dut, reset=False, stalled=stalled)
 
 
 @cocotb.test()

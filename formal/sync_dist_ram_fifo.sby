@@ -1,0 +1,25 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 20
+cover: mode cover
+cover: depth 20
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv sdp_dist_ram.sv
+read -sv sync_dist_ram_fifo.sv
+read -formal -sv sync_dist_ram_fifo_formal.sv
+prep -top sync_dist_ram_fifo_formal
+memory_map
+opt -fast
+
+[files]
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/fifo/sync_dist_ram_fifo.sv
+sync_dist_ram_fifo_formal.sv

@@ -409,6 +409,8 @@ module frost_hart_cache #(
       .TAG_READ_LATENCY(1),
       .DATA_MEMORY_PRIMITIVE("block"),
       .DATA_READ_LATENCY(L1I_DATA_READ_LATENCY),
+      // fence.i clears the L1I in one cycle.
+      .FLASH_INVALIDATE(1'b1),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1i_cache (
       .o_fatal_error(cache_fatal[1]),

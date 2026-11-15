@@ -26,7 +26,7 @@ set_property IOSTANDARD DIFF_HSTL_I_12 [get_ports sysclk1_300_n]
 
 create_clock -period 3.333 -name sysclk1_300 [get_ports sysclk1_300_p]
 
-# Center the CPU clock distribution buffer in SLR2 to minimize clock skew
+# Keep the CPU clock distribution roots in SLR2.
 set_property USER_CLOCK_ROOT X2Y12 [get_nets -quiet {main_clock divided_clock_by_4}]
 
 # CPU Reset Pushbutton (SW5, active-high, Bank 73 in SLR2)
@@ -226,9 +226,8 @@ set_property PACKAGE_PIN AT22 [get_ports i_sgmii_clk_p]
 set_property PACKAGE_PIN AU22 [get_ports i_sgmii_clk_n]
 set_property IOSTANDARD LVDS [get_ports {i_sgmii_clk_p i_sgmii_clk_n}]
 set_property DIFF_TERM_ADV TERM_100 [get_ports {i_sgmii_clk_p i_sgmii_clk_n}]
-if {[llength [get_clocks -quiet -of_objects [get_ports i_sgmii_clk_p]]] == 0} {
-    create_clock -period 1.600 -name sgmii_clk625 [get_ports i_sgmii_clk_p]
-}
+# The 625 MHz clock is created by the PCS/PMA IP's own constraints (vcu118_pcs_pma_1g_clocks.xdc:
+# create_clock -period 1.600 on refclk625_p, which becomes the clock named i_sgmii_clk_p on this port).
 
 # SGMII Differential RX (DIFF_PAIR_0 in Bank 64 Lower Nibble)
 set_property PACKAGE_PIN AU24 [get_ports i_sgmii_rx_p]
@@ -262,14 +261,7 @@ set_property BITSTREAM.CONFIG.CONFIGRATE 51.0 [current_design]
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 
 # -----------------------------------------------------------------------------
-# 8. Timing Optimizations (BRAM Cascade Height)
-# -----------------------------------------------------------------------------
-# Limit BRAM cascade depth to 1 to avoid multi-cycle deep RAMB36E2 cascades
-# in the low-BRAM tier that constrain core clock paths.
-set_property CASCADE_HEIGHT 1 [get_cells -quiet -hierarchical -filter {PRIMITIVE_TYPE =~ BMEM.*.*}]
-
-# -----------------------------------------------------------------------------
-# 9. Asynchronous Clock Domain Crossings
+# 8. Asynchronous Clock Domain Crossings
 # -----------------------------------------------------------------------------
 # Cut paths between independent clock trees (CPU/div4 MMCM, freerun,
 # DDR4, QSFP1 GTY, and SGMII).
@@ -284,8 +276,6 @@ set_clock_groups -asynchronous \
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D"}]
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"}]
-set_false_path -to [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
-set_false_path -from [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
 
 # Clock-group and first-stage exceptions do not bound Gray-bus skew.
 # The 10G event sources are MAC/PCS errors, PAUSE and descriptor-starved overflow.
@@ -382,11 +372,20 @@ set_bus_skew 3.0 -from $nic_1g_event20_s -to [get_cells -of_objects $nic_1g_even
 set_false_path -to [get_pins -quiet -hierarchical -filter {NAME =~ "*/u_mdio/mdio_i_s1_q_reg/D"}]
 
 # -----------------------------------------------------------------------------
-# 10. Floorplanning
+# 9. Floorplanning
 # -----------------------------------------------------------------------------
-# The subsystem, clock generator, DDR controller and initializer use SLR2.
-if {[get_pblocks -quiet pblock_slr2] eq ""} {
-    create_pblock pblock_slr2
-}
+# Movable logic in the subsystem, DDR controller and initializer uses SLR2.
+# Clock-generator placement follows the dedicated clock-routing rules.
+create_pblock pblock_slr2
 resize_pblock pblock_slr2 -add {SLR2}
-add_cells_to_pblock [get_pblocks pblock_slr2] [get_cells -quiet {u_frost_subsystem u_clock_gen gen_real_ddr.ddr_subsystem gen_real_ddr.u_ddr_init}]
+add_cells_to_pblock [get_pblocks pblock_slr2] [get_cells -quiet {u_frost_subsystem gen_real_ddr.ddr_subsystem gen_real_ddr.u_ddr_init}]
+# Configuration primitives use their fixed device sites.
+remove_cells_from_pblock [get_pblocks pblock_slr2] [get_cells -quiet -hierarchical -filter {
+    NAME =~ "u_frost_subsystem/*" && PRIMITIVE_GROUP == CONFIGURATION && PRIMITIVE_LEVEL != INTERNAL
+}]
+
+# The reset button and UART receive input are asynchronous to the receiving logic.
+# Output exceptions cover status LEDs, UART transmit and PHY bootstrap/reset signals.
+# The PHY bootstrap is write-only; its MDIO data is sampled against MDC.
+set_false_path -from [get_ports {cpu_reset i_uart_rx}]
+set_false_path -to [get_ports {gpio_led[*] o_uart_tx o_phy_mdc o_phy_rst_n io_phy_mdio}]
