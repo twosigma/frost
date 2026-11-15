@@ -77,6 +77,9 @@ module sq_early_addr_pipeline (
     input riscv_pkg::sq_alloc_req_t i_sq_alloc_req_2,
     input logic i_sq_full,
     input logic i_sq_full_for_2,
+    // Data translation: the store queue's address copies below are zero
+    // while it is active, when the SQ takes the MMU's physical address.
+    input logic i_translation_active,
 
     // Early-address update packets to the store queue
     output riscv_pkg::sq_addr_update_t o_sq_early_addr_update,
@@ -85,7 +88,12 @@ module sq_early_addr_pipeline (
     // still-hidden SQ address before its source matches; packet.valid alone
     // sets sq_addr_valid.
     output logic o_sq_early_addr_capture_valid,
-    output logic o_sq_early_addr_capture_valid_2
+    output logic o_sq_early_addr_capture_valid_2,
+    // The store queue's copies of the two packets' address and MMIO flag,
+    // from their own take terms: the packets' fields without translation,
+    // zero with it. The packets themselves feed the MMU and its delay line.
+    output logic [1:0][riscv_pkg::XLEN-1:0] o_sq_early_sq_address,
+    output logic [1:0] o_sq_early_sq_is_mmio
 );
 
   // ---------------------------------------------------------------------------
@@ -638,7 +646,72 @@ module sq_early_addr_pipeline (
         (repair_sums[slot][6] & {riscv_pkg::XLEN{address_source_take[slot][0]}}) |
         (repair_sums[slot][7] & {riscv_pkg::XLEN{address_source_take[slot][1]}}) |
         (address_nonlive[slot] & {riscv_pkg::XLEN{address_source_take[slot][2]}});
+    // The store queue's copy: the same select with translation folded into
+    // its own kept take terms, so the SQ's and the MMU's address nets are
+    // separate and the SQ needs no translation mux after the select.
+    (* keep = "true" *) logic [2:0] sq_take;
+    assign sq_take = address_source_take[slot] & {3{!i_translation_active}};
+    assign o_sq_early_sq_is_mmio[slot] =
+        (repair_mmio_candidates[slot][6] && sq_take[0]) ||
+        (repair_mmio_candidates[slot][7] && sq_take[1]) || (mmio_nonlive[slot] && sq_take[2]);
+    assign o_sq_early_sq_address[slot] =
+        (repair_sums[slot][6] & {riscv_pkg::XLEN{sq_take[0]}}) |
+        (repair_sums[slot][7] & {riscv_pkg::XLEN{sq_take[1]}}) |
+        (address_nonlive[slot] & {riscv_pkg::XLEN{sq_take[2]}});
+`ifndef SYNTHESIS
+    always_comb begin
+      if (reset_seen_q && !$isunknown(
+              {i_translation_active, address_final[slot], mmio_final[slot]}
+          )) begin
+        p_sq_copy_exact :
+        assert ({o_sq_early_sq_address[slot], o_sq_early_sq_is_mmio[slot]} ==
+            (i_translation_active ? '0 : {address_final[slot], mmio_final[slot]}));
+      end
+    end
+`endif
   end
+`ifdef SQ_EARLY_SQ_COPY_PROOF
+  // The store queue's copies, for any register state: each equals the packet's
+  // field without translation and zero with it, and the store queue's packet as
+  // tomasulo_wrapper forms it (copy OR the MMU's, masked by translation) equals
+  // the translation select of the MMU's and the pipeline's packets.
+  (* anyseq *) logic [1:0][riscv_pkg::XLEN-1:0] f_mmu_pa;
+  (* anyseq *) logic [1:0] f_mmu_is_mmio;
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_sq_copy_proof
+    wire riscv_pkg::sq_addr_update_t packet =
+        slot == 0 ? o_sq_early_addr_update : o_sq_early_addr_update_2;
+    always_comb begin
+      assert ({o_sq_early_sq_address[slot], o_sq_early_sq_is_mmio[slot]} ==
+          (i_translation_active ? '0 : {packet.address, packet.is_mmio}));
+      assert ((o_sq_early_sq_address[slot] |
+          (f_mmu_pa[slot] & {riscv_pkg::XLEN{i_translation_active}})) ==
+          (i_translation_active ? f_mmu_pa[slot] : packet.address));
+      assert ((o_sq_early_sq_is_mmio[slot] | (f_mmu_is_mmio[slot] & i_translation_active)) ==
+          (i_translation_active ? f_mmu_is_mmio[slot] : packet.is_mmio));
+    end
+  end
+`endif
+`ifdef SQ_EARLY_SQ_COPY_COVER
+  logic f_reset_seen_q = 1'b0;
+  logic f_translation_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) f_reset_seen_q <= 1'b1;
+    f_translation_q <= i_translation_active;
+  end
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_sq_copy_cover
+    always @(posedge i_clk) begin
+      if (f_reset_seen_q) begin
+        cover (i_rst_n && address_fresh[slot] && !f_translation_q && i_translation_active);
+        cover (i_rst_n && address_fresh[slot] && f_translation_q && !i_translation_active);
+        cover (i_rst_n && address_waiting[slot] && (|repair_conditions[slot]) && i_flush_all);
+        cover (i_rst_n && address_waiting[slot] && (|repair_conditions[slot]) && i_flush_en);
+        cover (i_rst_n && address_held[slot] && (f_translation_q != i_translation_active));
+        cover (i_rst_n && mmio_final[slot] && !i_translation_active);
+        cover (!i_rst_n && (f_translation_q != i_translation_active));
+      end
+    end
+  end
+`endif
   always_comb begin
     o_sq_early_addr_update = sq_early_addr_update;
     o_sq_early_addr_update.address = address_final[0];
