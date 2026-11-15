@@ -237,6 +237,11 @@ module ptw #(
   logic [8:0] pwc_root_tag_q[PwcRootN];  // VPN[26:18]
   logic [PwcPpnBits-1:0] pwc_root_ppn_q[PwcRootN];  // the level-1 table
   logic [PwcRootIdxBits-1:0] pwc_root_repl_q;
+  // G accumulated from the pointers above (a G on a non-leaf PTE makes every
+  // mapping below it global); a hit resumes the walk with it.
+  logic [PwcL1N-1:0] pwc_l1_g_q;
+  logic [PwcRootN-1:0] pwc_root_g_q;
+  logic g_acc_q;
 
   // Lookup in two registered steps, for timing: PTW_PWC compares the tags
   // with the registered VPN and registers the one-hot match; PTW_PWC_SEL
@@ -247,6 +252,7 @@ module ptw #(
   logic [PwcRootN-1:0] pwc_root_match_c, pwc_root_match_q;
   logic pwc_l1_hit, pwc_root_hit;
   logic [PwcPpnBits-1:0] pwc_l1_ppn, pwc_root_ppn;
+  logic pwc_l1_g, pwc_root_g;
   always_comb begin
     for (int e = 0; e < PwcL1N; e++) begin
       pwc_l1_match_c[e] = (PWC_L1_ENTRIES != 0) && pwc_l1_valid_q[e] &&
@@ -264,11 +270,15 @@ module ptw #(
   always_comb begin
     pwc_l1_ppn   = '0;
     pwc_root_ppn = '0;
+    pwc_l1_g     = 1'b0;
+    pwc_root_g   = 1'b0;
     for (int e = 0; e < PwcL1N; e++) begin
       pwc_l1_ppn |= {PwcPpnBits{pwc_l1_match_q[e]}} & pwc_l1_ppn_q[e];
+      pwc_l1_g |= pwc_l1_match_q[e] & pwc_l1_g_q[e];
     end
     for (int e = 0; e < PwcRootN; e++) begin
       pwc_root_ppn |= {PwcPpnBits{pwc_root_match_q[e]}} & pwc_root_ppn_q[e];
+      pwc_root_g |= pwc_root_match_q[e] & pwc_root_g_q[e];
     end
   end
   assign pwc_l1_hit   = |pwc_l1_match_q;
@@ -307,12 +317,14 @@ module ptw #(
       if (pwc_l1_sel_q[e]) begin
         pwc_l1_tag_q[e] <= vpn_q[26:9];
         pwc_l1_ppn_q[e] <= ptr_ppn_q[PwcPpnBits-1:0];
+        pwc_l1_g_q[e]   <= g_acc_q;
       end
     end
     for (int e = 0; e < PwcRootN; e++) begin
       if (pwc_root_sel_q[e]) begin
         pwc_root_tag_q[e] <= vpn_q[26:18];
         pwc_root_ppn_q[e] <= ptr_ppn_q[PwcPpnBits-1:0];
+        pwc_root_g_q[e]   <= g_acc_q;
       end
     end
     if (i_rst) begin
@@ -381,6 +393,7 @@ module ptw #(
           // whose accepting edge captures the requested VPN and root.
           vpn_q         <= i_req_vpn;
           level_q       <= 2'd2;
+          g_acc_q       <= 1'b0;
           ptr_ppn_q     <= i_root_ppn;
           ptr_addr_ok_q <= ppn_addr_ok(i_root_ppn);
           if (i_req_valid && !i_discard) begin
@@ -411,11 +424,13 @@ module ptw #(
               ptr_ppn_q        <= riscv_pkg::PtePpnBits'(pwc_l1_ppn);
               ptr_addr_ok_q    <= 1'b1;
               level_q          <= 2'd0;
+              g_acc_q          <= pwc_l1_g;
               line_req_valid_q <= 1'b1;
             end else if (pwc_root_hit) begin
               ptr_ppn_q        <= riscv_pkg::PtePpnBits'(pwc_root_ppn);
               ptr_addr_ok_q    <= 1'b1;
               level_q          <= 2'd1;
+              g_acc_q          <= pwc_root_g;
               line_req_valid_q <= 1'b1;
             end else begin
               line_req_valid_q <= ptr_addr_ok_q;
@@ -476,6 +491,7 @@ module ptw #(
                 resp_q.perm_x     <= pte_x;
                 resp_q.perm_u     <= pte_u;
                 resp_q.perm_d     <= pte_d;
+                resp_q.perm_g     <= g_acc_q || pte[riscv_pkg::PteFlagG];
               end
               state_q <= PTW_RESP;
             end else if (level_q == 2'd0) begin
@@ -485,6 +501,7 @@ module ptw #(
             end else begin
               ptr_ppn_q <= pte_ppn;
               ptr_addr_ok_q <= ppn_addr_ok(pte_ppn);
+              g_acc_q <= g_acc_q || pte[riscv_pkg::PteFlagG];
               level_q <= level_q - 2'd1;
               state_q <= PTW_ISSUE;
               line_req_valid_q <= ppn_addr_ok(pte_ppn) && !discard_q && !i_discard;

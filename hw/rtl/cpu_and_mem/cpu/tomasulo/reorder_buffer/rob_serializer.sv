@@ -54,6 +54,10 @@ module rob_serializer (
     input logic head_is_lr,
     input logic head_is_sfence,
     input logic head_csr_may_change_translation,
+    // The head SFENCE.VMA's rs1/rs2 values have reached the ROB. The serializer
+    // holds an SFENCE.VMA in IDLE until they have, so the TLB window opens
+    // with the filters readable.
+    input logic i_sfence_ops_ready,
 
     output riscv_pkg::serial_state_e o_serial_state,
     output logic o_fence_i_sync_req,
@@ -157,7 +161,8 @@ module rob_serializer (
         end
 
         if (head_ready && !i_commit_hold && !i_early_recovery_en &&
-                          !i_flush_en    && !i_flush_all) begin
+                          !i_flush_en    && !i_flush_all &&
+                          (!head_is_sfence || i_sfence_ops_ready || head_exception)) begin
           if (head_exception) begin
             serial_state_next = riscv_pkg::SERIAL_TRAP_WAIT;
           end else if (head_is_wfi) begin
