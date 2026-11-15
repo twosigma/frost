@@ -15,7 +15,7 @@
  */
 
 /**
- * Misaligned loads and stores in M-mode.
+ * Misaligned loads and stores across M, S and U modes.
  *
  * In cached DDR every size and offset is performed: each load is checked
  * against a byte-by-byte reference (sign and zero extension, NaN boxing for
@@ -23,12 +23,12 @@
  * must keep, across a doubleword, a 32-byte sector, a 64-byte line and a 4 KiB
  * page, and with compressed and FP forms. A misaligned load to x0 writes
  * nothing, a store of x0 writes zeros, and an access retires as exactly one
- * instruction. In low BRAM a misaligned access still raises the
- * address-misaligned exception with the access's address as the trap value.
- * Under Sv39 (S-mode data accesses through MPRV), accesses cross into
- * read-only, unmapped and user pages, with the trap value and the unchanged
- * memory of a faulting store checked. Last, misaligned accesses run while
- * timer interrupts arrive at varying phases.
+ * instruction. In low BRAM a misaligned access raises the address-misaligned
+ * exception with the access's address as the trap value. Under Sv39 (through
+ * MPRV and in S and U modes, with direct and delegated traps), accesses cross
+ * into read-only, unmapped, execute-only, supervisor and user pages, with the
+ * trap value and the unchanged memory of a faulting store checked. Last,
+ * misaligned accesses run while timer interrupts arrive at varying phases.
  */
 
 #include <stdint.h>
@@ -180,7 +180,7 @@ static void check_store(unsigned long offset, unsigned int count, int fp, uint64
  * a line and a page boundary. */
 static const unsigned long g_bases[] = {0x10, 0x18, 0x40, 0x7c0, 0x1000, 0x1fe0};
 
-/* M-mode bounce handler: record the trap and resume at mscratch. */
+/* M-mode bounce handler: record the trap and resume in M-mode at mscratch. */
 __attribute__((naked, aligned(4))) static void bounce_handler(void)
 {
     __asm__ volatile("csrr t0, mcause\n"
@@ -194,6 +194,8 @@ __attribute__((naked, aligned(4))) static void bounce_handler(void)
                      "sd   t0, 0(t1)\n"
                      "csrr t0, mscratch\n"
                      "csrw mepc, t0\n"
+                     "li   t0, 0x1800\n"
+                     "csrs mstatus, t0\n"
                      "mret\n");
 }
 
@@ -204,12 +206,23 @@ extern char trig_bram_load[], trig_bram_store[];
 #define PT_ROOT 0x83010000ul
 #define PT_L1 0x83011000ul
 #define PT_L0 0x83012000ul
+#define PT_ROOT_U 0x83013000ul
+#define PT_L1_U 0x83014000ul
+#define PT_L0_U 0x83015000ul
 #define FRAMES 0x83020000ul
 #define VA_BASE 0x00400000ul
+#define GIGA 0x40000000ul
+#define S_HANDLER_ALIAS (4ul * GIGA)
+#define MODE_U 0ul
+#define MODE_S 1ul
+#define MSTATUS_SUM (1ul << 18)
+#define MSTATUS_MXR (1ul << 19)
 #define PTE_V (1ul << 0)
 #define PTE_R (1ul << 1)
 #define PTE_W (1ul << 2)
+#define PTE_X (1ul << 3)
 #define PTE_U (1ul << 4)
+#define PTE_G (1ul << 5)
 #define PTE_A (1ul << 6)
 #define PTE_D (1ul << 7)
 #define PTE_PPN(pa) ((((unsigned long) (pa)) >> 12) << 10)
@@ -353,6 +366,329 @@ static void check_sv39(void)
     }
 
     __asm__ volatile("csrw satp, zero\n sfence.vma" ::: "memory");
+}
+
+/* S-mode bounce handler: ecall to M-mode, keeping scause/sepc/stval intact. */
+__attribute__((naked, aligned(4))) static void s_bounce_handler(void)
+{
+    __asm__ volatile(".option push\n .option norvc\n ecall\n j .\n .option pop");
+}
+
+#define MA_BODY(name, insn)                                                                        \
+    __attribute__((naked, aligned(4))) static void name(void)                                      \
+    {                                                                                              \
+        __asm__ volatile(".option push\n .option norvc\n " insn "\n ecall\n j .\n .option pop");   \
+    }
+MA_BODY(b_ma_ld, "ld a1, 0(a0)")
+MA_BODY(b_ma_lwu, "lwu a1, 0(a0)")
+MA_BODY(b_ma_sd, "sd a1, 0(a0)")
+
+/* Enter S or U mode (mpp = MODE_S or MODE_U) with MPRV=0, execute the body at
+ * pc with a0=va and a1=in_val, and return a1 after the body or trap handler
+ * returns to M-mode. */
+__attribute__((noinline)) static uint64_t
+run_ma_mode(unsigned long mpp, const void *pc, unsigned long va, uint64_t in_val)
+{
+    register unsigned long a0 __asm__("a0") = va;
+    register uint64_t a1 __asm__("a1") = in_val;
+    unsigned long mpp_bits = (mpp & 3ul) << 11;
+    g_cause = ~0ul;
+    g_epc = 0;
+    g_tval = ~0ul;
+    __asm__ volatile("csrw scause, %[ones]\n"
+                     "csrw sepc, zero\n"
+                     "csrw stval, zero\n"
+                     "la   t0, 1f\n"
+                     "csrw mscratch, t0\n"
+                     "li   t0, 0x21800\n"
+                     "csrc mstatus, t0\n"
+                     "csrs mstatus, %[mpp]\n"
+                     "csrw mepc, %[pc]\n"
+                     "mret\n"
+                     "1:\n"
+                     : [a0] "+r"(a0), [a1] "+r"(a1)
+                     : [pc] "r"(pc), [mpp] "r"(mpp_bits), [ones] "r"(~0ul)
+                     : "t0", "t1", "memory");
+    return a1;
+}
+
+static void check_deleg_fault(const char *what,
+                              unsigned long mpp,
+                              unsigned long stvec_va,
+                              const void *pc,
+                              unsigned long cause,
+                              unsigned long tval)
+{
+    unsigned long scause, sepc, stval, sstatus;
+    __asm__ volatile("csrr %0, scause\n"
+                     "csrr %1, sepc\n"
+                     "csrr %2, stval\n"
+                     "csrr %3, sstatus"
+                     : "=r"(scause), "=r"(sepc), "=r"(stval), "=r"(sstatus));
+    unsigned long spp = (sstatus >> 8) & 1ul;
+    int ok = g_cause == 9ul && g_epc == stvec_va && scause == cause && sepc == (unsigned long) pc &&
+             stval == tval && spp == mpp;
+    check(ok, what, stval, scause, cause);
+}
+
+/* Sv39 misaligned accesses executed directly in S-mode and U-mode (instruction
+ * fetch and data translation active together, with ASIDs, global leaves, SUM,
+ * MXR, non-contiguous frames, and direct and medeleg-delegated page faults). */
+static void check_sv39_modes(void)
+{
+    volatile unsigned long *root = (volatile unsigned long *) PT_ROOT;
+    volatile unsigned long *l1 = (volatile unsigned long *) PT_L1;
+    volatile unsigned long *l0 = (volatile unsigned long *) PT_L0;
+    volatile unsigned long *root_u = (volatile unsigned long *) PT_ROOT_U;
+    volatile unsigned long *l1_u = (volatile unsigned long *) PT_L1_U;
+    volatile unsigned long *l0_u = (volatile unsigned long *) PT_L0_U;
+    volatile uint8_t *frames = (volatile uint8_t *) FRAMES;
+    const unsigned long page = 4096u;
+    const unsigned long deleg_pf = (1ul << CAUSE_LOAD_PAGE_FAULT) | (1ul << CAUSE_STORE_PAGE_FAULT);
+
+    for (int i = 0; i < 512; i++) {
+        root[i] = 0;
+        l1[i] = 0;
+        l0[i] = 0;
+        root_u[i] = 0;
+        l1_u[i] = 0;
+        l0_u[i] = 0;
+    }
+
+    /* S-mode page table: identity superpages over low BRAM (2 MiB at PA 0) and
+     * DDR (1 GiB at PA 0x8000_0000), plus 4 KiB leaves at VA_BASE. */
+    root[0] = PTE_PPN(PT_L1) | PTE_V;
+    root[2] = PTE_PPN(2ul * GIGA) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
+    l1[0] = PTE_PPN(0) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
+    l1[2] = PTE_PPN(PT_L0) | PTE_V;
+    l0[0] = PTE_PPN(FRAMES + 0u * page) | PTE_V | PTE_R | PTE_W | PTE_G | PTE_A | PTE_D;
+    l0[1] = PTE_PPN(FRAMES + 1u * page) | PTE_V | PTE_R | PTE_A;
+    l0[2] = 0;
+    l0[3] = PTE_PPN(FRAMES + 3u * page) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    l0[4] = PTE_PPN(FRAMES + 4u * page) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
+    l0[5] = PTE_PPN(FRAMES + 5u * page) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    l0[6] = PTE_PPN(FRAMES + 6u * page) | PTE_V | PTE_X | PTE_A;
+
+    for (unsigned long i = 0; i < 7u * page; i++)
+        frames[i] = frame_byte(i);
+
+    unsigned long s_stvec = (unsigned long) &s_bounce_handler;
+    __asm__ volatile("csrw medeleg, zero\n"
+                     "csrw stvec, %0\n"
+                     "csrc mstatus, %1\n"
+                     "fence rw, rw\n"
+                     "csrw satp, %2\n"
+                     "sfence.vma"
+                     :
+                     : "r"(s_stvec),
+                       "r"(MSTATUS_SUM | MSTATUS_MXR),
+                       "r"(SATP_SV39 | (1ul << 44) | (PT_ROOT >> 12))
+                     : "memory");
+
+    uint64_t got;
+    const uint64_t sentinel = 0xBAD0BAD0BAD0BAD0ull;
+
+    /* S-mode: load across global RW leaf into RO upper page. */
+    got = run_ma_mode(MODE_S, &b_ma_ld, VA_BASE + page - 3u, sentinel);
+    check(g_cause == 9ul && g_epc == (unsigned long) &b_ma_ld + 4u &&
+              got == frame_bytes(page - 3u, 8),
+          "s-mode ld across pages",
+          page - 3u,
+          got,
+          frame_bytes(page - 3u, 8));
+
+    /* S-mode, direct trap to M: store faults on RO upper page and writes nothing. */
+    run_ma_mode(MODE_S, &b_ma_sd, VA_BASE + page - 5u, 0x1122334455667788ull);
+    check(g_cause == CAUSE_STORE_PAGE_FAULT && g_epc == (unsigned long) &b_ma_sd &&
+              g_tval == VA_BASE + page,
+          "s-mode direct sd ro fault",
+          g_tval,
+          g_cause,
+          CAUSE_STORE_PAGE_FAULT);
+    for (unsigned long i = page - 8u; i < page + 8u; i++)
+        check(frames[i] == frame_byte(i), "s-mode direct sd byte", i, frames[i], frame_byte(i));
+
+    /* Delegate load/store page faults to S-mode. */
+    __asm__ volatile("csrw medeleg, %0" : : "r"(deleg_pf));
+
+    run_ma_mode(MODE_S, &b_ma_sd, VA_BASE + page - 5u, 0x99AABBCCDDEEFF00ull);
+    check_deleg_fault("s-mode deleg sd ro fault",
+                      MODE_S,
+                      s_stvec,
+                      &b_ma_sd,
+                      CAUSE_STORE_PAGE_FAULT,
+                      VA_BASE + page);
+    for (unsigned long i = page - 8u; i < page + 8u; i++)
+        check(frames[i] == frame_byte(i), "s-mode deleg sd byte", i, frames[i], frame_byte(i));
+
+    got = run_ma_mode(MODE_S, &b_ma_ld, VA_BASE + 2u * page - 2u, sentinel);
+    check_deleg_fault("s-mode deleg ld unmapped",
+                      MODE_S,
+                      s_stvec,
+                      &b_ma_ld,
+                      CAUSE_LOAD_PAGE_FAULT,
+                      VA_BASE + 2u * page);
+    check(got == sentinel, "s-mode deleg ld dest", 0, got, sentinel);
+
+    /* S-mode crossing into a U page: faults with SUM=0, succeeds with SUM=1. */
+    run_ma_mode(MODE_S, &b_ma_sd, VA_BASE + 4u * page - 6u, 0xA5A5A5A55A5A5A5Aull);
+    check_deleg_fault("s-mode sd user sum=0",
+                      MODE_S,
+                      s_stvec,
+                      &b_ma_sd,
+                      CAUSE_STORE_PAGE_FAULT,
+                      VA_BASE + 4u * page);
+    for (unsigned long i = 4u * page - 8u; i < 4u * page + 8u; i++)
+        check(frames[i] == frame_byte(i), "s-mode sum=0 byte", i, frames[i], frame_byte(i));
+
+    __asm__ volatile("csrs mstatus, %0" : : "r"(MSTATUS_SUM));
+    run_ma_mode(MODE_S, &b_ma_sd, VA_BASE + 4u * page - 6u, 0xA5A5A5A55A5A5A5Aull);
+    check(g_cause == 9ul && g_epc == (unsigned long) &b_ma_sd + 4u,
+          "s-mode sd user sum=1",
+          0,
+          g_cause,
+          9ul);
+    got = run_ma_mode(MODE_S, &b_ma_ld, VA_BASE + 4u * page - 6u, sentinel);
+    check(g_cause == 9ul && got == 0xA5A5A5A55A5A5A5Aull,
+          "s-mode ld user sum=1",
+          0,
+          got,
+          0xA5A5A5A55A5A5A5Aull);
+    __asm__ volatile("csrc mstatus, %0" : : "r"(MSTATUS_SUM));
+    for (unsigned long i = 4u * page - 8u; i < 4u * page + 8u; i++)
+        frames[i] = frame_byte(i);
+
+    /* S-mode crossing into an execute-only page: faults with MXR=0, loads with MXR=1. */
+    got = run_ma_mode(MODE_S, &b_ma_lwu, VA_BASE + 6u * page - 1u, sentinel);
+    check_deleg_fault("s-mode lwu xo mxr=0",
+                      MODE_S,
+                      s_stvec,
+                      &b_ma_lwu,
+                      CAUSE_LOAD_PAGE_FAULT,
+                      VA_BASE + 6u * page);
+    check(got == sentinel, "s-mode mxr=0 dest", 0, got, sentinel);
+
+    __asm__ volatile("csrs mstatus, %0" : : "r"(MSTATUS_MXR));
+    got = run_ma_mode(MODE_S, &b_ma_lwu, VA_BASE + 6u * page - 1u, sentinel);
+    check(g_cause == 9ul && got == frame_bytes(6u * page - 1u, 4),
+          "s-mode lwu xo mxr=1",
+          0,
+          got,
+          frame_bytes(6u * page - 1u, 4));
+    __asm__ volatile("csrc mstatus, %0" : : "r"(MSTATUS_MXR));
+
+    /* U-mode page table: user identity superpages for code fetch, supervisor
+     * alias superpages (+S_HANDLER_ALIAS) for s_bounce_handler, and 4 KiB
+     * leaves at VA_BASE with non-contiguous frames and mixed permissions. */
+    root_u[0] = PTE_PPN(PT_L1_U) | PTE_V;
+    root_u[2] = PTE_PPN(2ul * GIGA) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_U | PTE_A | PTE_D;
+    root_u[4] = PTE_PPN(0) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
+    root_u[6] = PTE_PPN(2ul * GIGA) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
+    l1_u[0] = PTE_PPN(0) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_U | PTE_A | PTE_D;
+    l1_u[2] = PTE_PPN(PT_L0_U) | PTE_V;
+    l0_u[0] = PTE_PPN(FRAMES + 5u * page) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
+    l0_u[1] = PTE_PPN(FRAMES + 0u * page) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
+    l0_u[2] = PTE_PPN(FRAMES + 1u * page) | PTE_V | PTE_R | PTE_U | PTE_A;
+    l0_u[3] = 0;
+    l0_u[4] = PTE_PPN(FRAMES + 2u * page) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
+    l0_u[5] = PTE_PPN(FRAMES + 3u * page) | PTE_V | PTE_R | PTE_W | PTE_G | PTE_A | PTE_D;
+
+    unsigned long u_stvec = (unsigned long) &s_bounce_handler + S_HANDLER_ALIAS;
+    __asm__ volatile("csrw stvec, %0\n"
+                     "fence rw, rw\n"
+                     "csrw satp, %1\n"
+                     "sfence.vma"
+                     :
+                     : "r"(u_stvec), "r"(SATP_SV39 | (2ul << 44) | (PT_ROOT_U >> 12))
+                     : "memory");
+
+    /* U-mode: store and load across two U RW pages backed by non-contiguous frames (5 and 0). */
+    const uint64_t u_val = 0xCAFEBABE12345678ull;
+    run_ma_mode(MODE_U, &b_ma_sd, VA_BASE + page - 5u, u_val);
+    check(g_cause == 8ul && g_epc == (unsigned long) &b_ma_sd + 4u,
+          "u-mode sd across non-contig pages",
+          0,
+          g_cause,
+          8ul);
+    got = run_ma_mode(MODE_U, &b_ma_ld, VA_BASE + page - 5u, sentinel);
+    check(g_cause == 8ul && got == u_val, "u-mode ld across non-contig pages", 0, got, u_val);
+    for (unsigned int k = 0; k < 8; k++) {
+        unsigned long pa_off = k < 5u ? (6u * page - 5u + k) : (k - 5u);
+        uint8_t want = (uint8_t) (u_val >> (8u * k));
+        check(frames[pa_off] == want, "u-mode non-contig sd byte", pa_off, frames[pa_off], want);
+        frames[pa_off] = frame_byte(pa_off);
+    }
+
+    /* U-mode: load across U RW (frame 0) into U RO (frame 1). */
+    got = run_ma_mode(MODE_U, &b_ma_ld, VA_BASE + 2u * page - 3u, sentinel);
+    check(g_cause == 8ul && got == frame_bytes(page - 3u, 8),
+          "u-mode ld into ro page",
+          page - 3u,
+          got,
+          frame_bytes(page - 3u, 8));
+
+    /* U-mode: store into U RO upper page, direct to M and delegated to S. */
+    __asm__ volatile("csrw medeleg, zero");
+    run_ma_mode(MODE_U, &b_ma_sd, VA_BASE + 2u * page - 5u, 0xDEADBEEFCAFE0000ull);
+    check(g_cause == CAUSE_STORE_PAGE_FAULT && g_epc == (unsigned long) &b_ma_sd &&
+              g_tval == VA_BASE + 2u * page,
+          "u-mode direct sd ro fault",
+          g_tval,
+          g_cause,
+          CAUSE_STORE_PAGE_FAULT);
+    for (unsigned long i = page - 8u; i < page + 8u; i++)
+        check(frames[i] == frame_byte(i), "u-mode direct sd byte", i, frames[i], frame_byte(i));
+
+    __asm__ volatile("csrw medeleg, %0" : : "r"(deleg_pf));
+    run_ma_mode(MODE_U, &b_ma_sd, VA_BASE + 2u * page - 5u, 0xDEADBEEFCAFE0000ull);
+    check_deleg_fault("u-mode deleg sd ro fault",
+                      MODE_U,
+                      u_stvec,
+                      &b_ma_sd,
+                      CAUSE_STORE_PAGE_FAULT,
+                      VA_BASE + 2u * page);
+    for (unsigned long i = page - 8u; i < page + 8u; i++)
+        check(frames[i] == frame_byte(i), "u-mode deleg sd byte", i, frames[i], frame_byte(i));
+
+    /* U-mode: load into unmapped upper page. */
+    got = run_ma_mode(MODE_U, &b_ma_ld, VA_BASE + 3u * page - 2u, sentinel);
+    check_deleg_fault("u-mode deleg ld unmapped",
+                      MODE_U,
+                      u_stvec,
+                      &b_ma_ld,
+                      CAUSE_LOAD_PAGE_FAULT,
+                      VA_BASE + 3u * page);
+    check(got == sentinel, "u-mode deleg ld dest", 0, got, sentinel);
+
+    /* U-mode: store and load into supervisor upper page (PTE_U=0) fault even with SUM=1. */
+    __asm__ volatile("csrs mstatus, %0" : : "r"(MSTATUS_SUM));
+    run_ma_mode(MODE_U, &b_ma_sd, VA_BASE + 5u * page - 3u, 0x0F0E0D0C0B0A0908ull);
+    check_deleg_fault("u-mode sd supervisor upper",
+                      MODE_U,
+                      u_stvec,
+                      &b_ma_sd,
+                      CAUSE_STORE_PAGE_FAULT,
+                      VA_BASE + 5u * page);
+    for (unsigned long i = 3u * page - 8u; i < 3u * page + 8u; i++)
+        check(frames[i] == frame_byte(i), "u-mode sd sup byte", i, frames[i], frame_byte(i));
+
+    got = run_ma_mode(MODE_U, &b_ma_lwu, VA_BASE + 5u * page - 1u, sentinel);
+    check_deleg_fault("u-mode lwu supervisor upper",
+                      MODE_U,
+                      u_stvec,
+                      &b_ma_lwu,
+                      CAUSE_LOAD_PAGE_FAULT,
+                      VA_BASE + 5u * page);
+    check(got == sentinel, "u-mode lwu sup dest", 0, got, sentinel);
+
+    __asm__ volatile("csrw medeleg, zero\n"
+                     "csrw stvec, zero\n"
+                     "csrc mstatus, %0\n"
+                     "csrw satp, zero\n"
+                     "sfence.vma"
+                     :
+                     : "r"(MSTATUS_SUM | MSTATUS_MXR)
+                     : "memory");
 }
 
 static volatile uint32_t g_irq;
@@ -512,6 +848,7 @@ int main(void)
     }
 
     check_sv39();
+    check_sv39_modes();
     check_under_interrupts();
 
     uart_printf("%d checks\n", g_checks);
