@@ -369,7 +369,8 @@ async def device_read_error_is_precise_access_fault(dut: Any) -> None:
     fault_pc = trap_program(s, [load(3, 1, 4, 4)])
     s.error_reads.add(0x40000004)
     await s.reset()
-    assert await s.until_write(0x40000020) == 0
+    # mtval holds the load's virtual address.
+    assert await s.until_write(0x40000020) == 0x40000004
     values = {addr: value for _, addr, value in s.effects}
     assert values[0x40000010] == 5
     assert values[0x40000018] == fault_pc
@@ -384,7 +385,7 @@ async def device_write_error_is_precise_access_fault(dut: Any) -> None:
     fault_pc = trap_program(s, [store(0, 1, 0, 0)])
     s.error_writes.add(0x40000000)
     await s.reset()
-    assert await s.until_write(0x40000020) == 0
+    assert await s.until_write(0x40000020) == 0x40000000
     values = {addr: value for _, addr, value in s.effects}
     assert values[0x40000010] == 7
     assert values[0x40000018] == fault_pc
@@ -405,7 +406,7 @@ async def cached_read_error_reaches_the_pipeline(dut: Any) -> None:
     fault_pc = trap_program(s, body) + 12
     s.error_reads.add(0x80000000)
     await s.reset()
-    assert await s.until_write(0x40000020) == 0
+    assert await s.until_write(0x40000020) == 0x80000000
     values = {addr: value for _, addr, value in s.effects}
     assert values[0x40000010] == 5
     assert values[0x40000018] == fault_pc

@@ -98,11 +98,12 @@ int main(void)
     set_trap_handler(fault_entry);
     csr_write(mie, 0);
 
-    /* Two L1D sectors share one failed L2 fill. The older load traps and
-     * the younger response drains without faulting another instruction.
+    /* Two L1D sectors share one failed L2 fill. The older load traps with
+     * its own address and the younger response drains without faulting
+     * another instruction.
      */
     PROBE_AT("ld t3, 0(%0)\n ld t3, 32(%0)\n", ERROR_TABLE);
-    ok &= cause == 5 && tval == 0 && epc == expected_pc && faults == 1;
+    ok &= cause == 5 && tval == ERROR_TABLE && epc == expected_pc && faults == 1;
     csr_write(satp, (8ul << 60) | (ROOT >> 12));
 
     for (int level = 1; level >= 0; level--) {
