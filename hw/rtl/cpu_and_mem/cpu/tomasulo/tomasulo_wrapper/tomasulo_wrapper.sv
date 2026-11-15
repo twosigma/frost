@@ -4993,6 +4993,9 @@ module tomasulo_wrapper #(
   // one whose stale response is still due.
   always @(posedge i_clk) begin
     if (i_rst_n && sc_check_armed && i_lq_mem_request_pending && !lq_mem_outstanding)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("tomasulo_wrapper: router pending request has no LQ response owner");
   end
 `endif

@@ -278,6 +278,9 @@ module rob_link_value_ram #(
     if (i_check_enable && !$isunknown(
             {i_alloc_enable[1], i_alloc_branch[0]}
         ) && i_alloc_enable[1] && i_alloc_branch[0]) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("rob_link_value_ram: slot 2 allocates behind a slot-1 branch");
     end
   end

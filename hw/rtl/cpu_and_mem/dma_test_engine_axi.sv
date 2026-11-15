@@ -307,10 +307,19 @@ module dma_test_engine_axi #(
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (i_dma_axi_bvalid && !(busy_q && write_q && !aw_valid_q && !w_valid_q))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dma_test_engine_axi: B with no write awaiting one");
       if (i_dma_axi_rvalid && !(busy_q && !write_q && !ar_valid_q))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dma_test_engine_axi: R with no read awaiting one");
       if (r_fire && (i_dma_axi_rlast != (!burst_q || (beat_q == 2'd3))))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dma_test_engine_axi: RLAST on the wrong beat");
     end
   end
