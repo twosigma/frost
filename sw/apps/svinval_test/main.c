@@ -321,7 +321,10 @@ __asm__(".section .text\n"
         CALL(68, 69)
         "    csrw satp, s4\n"
         CALL(70, 71)
-        /* 9. sinval.vma x0, x0 flushes all resident entries (A, B, global). */
+        /* 9. sinval.vma x0, x0 flushes all resident entries (A, B, global).
+         *    Warm VA_X and VA_G first (step 8 started with sinval.vma x0, x0). */
+        "    ld   t0, 0(s0)\n"
+        "    ld   t0, 0(s2)\n"
         LD("s0", 72, 73)
         LD("s2", 74, 75)
         WORD_INSN(SINVAL_ALL_BITS)
