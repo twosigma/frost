@@ -327,7 +327,9 @@ configuration in `riscv_pkg`. The `tomasulo_wrapper_no_early_load` and
 `load_queue_no_prepare_busy` targets cover early load wakeup and busy-port
 load preparation turned off, `load_queue_sq_forward` runs the load-queue bench
 with store-to-load forwarding on, as the core builds it, and `coremark_profile`
-runs CoreMark with the profiling counters.
+runs CoreMark with the profiling counters. The `rob_link_value_ram` and
+`rob_link_value_ram_onehot` benches compare shared-link reads with four
+reference banks across allocation, staged-drain and CDB collisions.
 
 Applications run from low BRAM by default. To run them from cached DDR:
 

@@ -4514,6 +4514,37 @@ module tomasulo_wrapper #(
         (dmmu_early2_is_mmio & i_translation_active);
   end
 
+`ifdef SQ_EARLY_SQ_COPY_PROOF
+  // Check the consumed packets and capture enables against the translation
+  // select, including the delayed tag and valid bits.
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_sq_copy_consumer_proof
+    wire riscv_pkg::sq_addr_update_t raw_packet =
+        slot == 0 ? sq_early_addr_update : sq_early_addr_update_2;
+    wire riscv_pkg::sq_addr_update_t delayed_packet =
+        slot == 0 ? sq_early_addr_update_q2 : sq_early_addr_update_2_q2;
+    wire riscv_pkg::sq_addr_update_t final_packet =
+        slot == 0 ? sq_early_addr_update_final : sq_early_addr_update_2_final;
+    wire [riscv_pkg::XLEN-1:0] pa = slot == 0 ? dmmu_early_pa : dmmu_early2_pa;
+    wire mmio = slot == 0 ? dmmu_early_is_mmio : dmmu_early2_is_mmio;
+    wire hit = slot == 0 ? dmmu_early_ok : dmmu_early2_ok;
+    wire raw_capture = slot == 0 ? sq_early_addr_capture_valid : sq_early_addr_capture_valid_2;
+    wire final_capture =
+        slot == 0 ? sq_early_addr_capture_valid_final : sq_early_addr_capture_valid_2_final;
+    riscv_pkg::sq_addr_update_t reference_packet;
+    always_comb begin
+      reference_packet = raw_packet;
+      if (i_translation_active) begin
+        reference_packet.valid   = delayed_packet.valid && hit;
+        reference_packet.rob_tag = delayed_packet.rob_tag;
+        reference_packet.address = pa;
+        reference_packet.is_mmio = mmio;
+      end
+      assert (final_packet == reference_packet);
+      assert (final_capture == (i_translation_active ? reference_packet.valid : raw_capture));
+    end
+  end
+`endif
+
   // The translated LQ packet carries the S2 PA, or VA and fault kind. Its
   // valid omits recovery kills for timing: killed updates may write payload,
   // but LQ visibility and SQ-check control clear or block on that edge. Only

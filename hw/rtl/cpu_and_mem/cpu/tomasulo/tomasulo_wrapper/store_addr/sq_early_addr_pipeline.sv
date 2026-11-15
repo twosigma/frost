@@ -660,7 +660,9 @@ module sq_early_addr_pipeline (
         (address_nonlive[slot] & {riscv_pkg::XLEN{sq_take[2]}});
 `ifndef SYNTHESIS
     always_comb begin
-      if (!$isunknown({i_translation_active, address_final[slot], mmio_final[slot]})) begin
+      if (reset_seen_q && !$isunknown(
+              {i_translation_active, address_final[slot], mmio_final[slot]}
+          )) begin
         p_sq_copy_exact :
         assert ({o_sq_early_sq_address[slot], o_sq_early_sq_is_mmio[slot]} ==
             (i_translation_active ? '0 : {address_final[slot], mmio_final[slot]}));
@@ -686,6 +688,27 @@ module sq_early_addr_pipeline (
           (i_translation_active ? f_mmu_pa[slot] : packet.address));
       assert ((o_sq_early_sq_is_mmio[slot] | (f_mmu_is_mmio[slot] & i_translation_active)) ==
           (i_translation_active ? f_mmu_is_mmio[slot] : packet.is_mmio));
+    end
+  end
+`endif
+`ifdef SQ_EARLY_SQ_COPY_COVER
+  logic f_reset_seen_q = 1'b0;
+  logic f_translation_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) f_reset_seen_q <= 1'b1;
+    f_translation_q <= i_translation_active;
+  end
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_sq_copy_cover
+    always @(posedge i_clk) begin
+      if (f_reset_seen_q) begin
+        cover (i_rst_n && address_fresh[slot] && !f_translation_q && i_translation_active);
+        cover (i_rst_n && address_fresh[slot] && f_translation_q && !i_translation_active);
+        cover (i_rst_n && address_waiting[slot] && (|repair_conditions[slot]) && i_flush_all);
+        cover (i_rst_n && address_waiting[slot] && (|repair_conditions[slot]) && i_flush_en);
+        cover (i_rst_n && address_held[slot] && (f_translation_q != i_translation_active));
+        cover (i_rst_n && mmio_final[slot] && !i_translation_active);
+        cover (!i_rst_n && (f_translation_q != i_translation_active));
+      end
     end
   end
 `endif

@@ -1,9 +1,13 @@
 [tasks]
 prove
+prove_integrated
+cover
 
 [options]
-mode prove
-depth 1
+~cover: mode prove
+~cover: depth 1
+cover: mode cover
+cover: depth 6
 
 [engines]
 smtbmc boolector
@@ -13,14 +17,30 @@ smtbmc boolector
 # register state and input: the packet's field without translation, zero with
 # it, and, with tomasulo_wrapper's final OR, the translation select.
 read -sv -D SYNTHESIS -D SQ_EARLY_SQ_COPY_PROOF riscv_pkg.sv sq_early_addr_pipeline.sv
-hierarchy -top sq_early_addr_pipeline
+cover: read -sv -overwrite -D SYNTHESIS -D SQ_EARLY_SQ_COPY_PROOF -D SQ_EARLY_SQ_COPY_COVER sq_early_addr_pipeline.sv
+prove_integrated: read -sv -D SYNTHESIS -D SQ_EARLY_SQ_COPY_PROOF tomasulo_wrapper.sv
+prove_integrated: hierarchy -top tomasulo_wrapper
+# Keep the instantiated pipeline and the wrapper's actual packet selection.
+# Other submodules have arbitrary outputs; their contracts are not assumed.
+prove_integrated: select -set abstract_cells tomasulo_wrapper/c:* tomasulo_wrapper/t:$* %d tomasulo_wrapper/t:sq_early_addr_pipeline %d
+prove_integrated: delete @abstract_cells
+prove_integrated: delete -output tomasulo_wrapper/o_*
+prove_integrated: hierarchy -top tomasulo_wrapper
+~prove_integrated: hierarchy -top sq_early_addr_pipeline
 proc
+flatten
+prove_integrated: setundef -undriven -anyseq
 opt
-prep -top sq_early_addr_pipeline -flatten
-select -assert-none t:$assume a:init
-select -assert-count 6 t:$check r:FLAVOR=assert %i
+prove_integrated: prep -top tomasulo_wrapper
+~prove_integrated: prep -top sq_early_addr_pipeline
+~cover: select -assert-none a:init
+~prove_integrated: select -assert-count 6 t:$check r:FLAVOR=assert %i
+prove_integrated: select -assert-count 10 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 14 t:$check r:FLAVOR=cover %i
+select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv

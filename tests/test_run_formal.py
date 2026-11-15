@@ -1115,6 +1115,7 @@ FORMAL_TARGETS = [
             "bmc_free_small_oh",
             "cover_bin",
             "cover_oh",
+            "prove_copy",
         ),
     ),
     FormalTarget(
@@ -1130,9 +1131,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "sq_early_sq_copy.sby",
-        "The store queue's early-address copy equals the packet's field without translation "
-        "and the translation select with tomasulo_wrapper's final OR",
-        tasks=("prove",),
+        "Store-address copies and the instantiated wrapper's consumed packets equal "
+        "the translation select, with reset, flush and translation-change covers",
+        tasks=("prove", "prove_integrated", "cover"),
     ),
     FormalTarget(
         "served_window_coverage.sby",
@@ -2469,6 +2470,7 @@ SBY_TASKS = [
     ("cover_direct", "Direct-fetch responses coincident with clears and errors"),
     ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
+    ("prove_copy", "Staged address copies sample identical inputs on every edge"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
     ("bmc_raw", "Bounded equivalence with eight raw-wakeup candidates"),
     ("prove_raw", "Unbounded equivalence with eight raw-wakeup candidates"),

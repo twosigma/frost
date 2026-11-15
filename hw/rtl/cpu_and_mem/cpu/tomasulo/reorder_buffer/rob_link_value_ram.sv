@@ -153,10 +153,9 @@ module rob_link_value_ram #(
   logic [1:0] staged_lvt_link_q;
   // The LVT write decode reads this copy.
   (* max_fanout = 48 *) logic [1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
-  // The read overrides take their own copy of the staged addresses, so the
-  // LVT write decode and the read compares (the head read reaches the trap
-  // value) load separate registers. In timing checkpoints the single copy
-  // drove 291 loads without a synthesis replica.
+  // The read overrides use a separate copy of the staged addresses from
+  // the LVT write decode. Both copies sample the allocation address on
+  // every edge, including cycles when the caller resets or flushes.
   (* keep = "true", equivalent_register_removal = "no" *)
   logic [1:0][ADDR_WIDTH-1:0] staged_lvt_read_addr_q;
 
@@ -168,16 +167,23 @@ module rob_link_value_ram #(
   end
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Simulation only: rob_link_value_ram.sby counts this module's assertions
-  // and proves the read against its reference, which covers the copy.
   logic staged_copy_armed_q = 1'b0;
   always_ff @(posedge i_clk) staged_copy_armed_q <= 1'b1;
   always_comb begin
-    if (staged_copy_armed_q) begin
+    if (i_check_enable && staged_copy_armed_q) begin
       p_staged_read_addr_copy : assert (staged_lvt_read_addr_q == staged_lvt_addr_q);
     end
   end
 `endif
+`endif
+
+`ifdef ROB_LINK_COPY_PROOF
+  always @(posedge i_clk) begin
+    if (!$initstate) begin
+      assert (staged_lvt_read_addr_q == staged_lvt_addr_q);
+      assert (staged_lvt_read_addr_q == $past(i_alloc_address));
+    end
+  end
 `endif
 
   always_ff @(posedge i_clk) begin
