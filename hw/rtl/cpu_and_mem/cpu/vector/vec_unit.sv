@@ -280,6 +280,9 @@ module vec_unit #(
   always @(posedge i_clk) begin
     if (i_rst) x_reset_seen_q <= 1'b1;
     if (x_reset_seen_q && !i_rst && xs == X_OUT && (i_rob_empty || i_head_tag != vtox_tag_q))
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error(
           "vec_unit: vector-to-scalar result presented for tag %0d, head %0d, empty %0b",
           vtox_tag_q,

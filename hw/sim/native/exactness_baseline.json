@@ -1,0 +1,48 @@
+{
+  "cases": {
+    "hello_world_bram": {
+      "app": "hello_world",
+      "mem_config": "bram",
+      "stop_marker": "Hello, world!",
+      "drain_cycles": 10000,
+      "cycles": 11824,
+      "coremark_ticks": null,
+      "uart_bytes": 33,
+      "uart_sha256": "99ac75a9ea57fcae269de9bdbc7bd00a3cedbde23c0e7ace2d7a0ebdfc7cbad3",
+      "ci": true
+    },
+    "hello_world_ddr": {
+      "app": "hello_world",
+      "mem_config": "ddr",
+      "stop_marker": "Hello, world!",
+      "drain_cycles": 10000,
+      "cycles": 12908,
+      "coremark_ticks": null,
+      "uart_bytes": 33,
+      "uart_sha256": "99ac75a9ea57fcae269de9bdbc7bd00a3cedbde23c0e7ace2d7a0ebdfc7cbad3",
+      "ci": true
+    },
+    "coremark_bram": {
+      "app": "coremark",
+      "mem_config": "bram",
+      "stop_marker": "<<PASS>>",
+      "drain_cycles": 0,
+      "cycles": 333133,
+      "coremark_ticks": 223556,
+      "uart_bytes": 2053,
+      "uart_sha256": "1a0c392dee70d2db18898a37aa4abda66caf61ffd83bbfb89fb5785ecbf30b60",
+      "ci": true
+    },
+    "coremark_ddr": {
+      "app": "coremark",
+      "mem_config": "ddr",
+      "stop_marker": "<<PASS>>",
+      "drain_cycles": 0,
+      "cycles": 410247,
+      "coremark_ticks": 285889,
+      "uart_bytes": 2053,
+      "uart_sha256": "04d36f440202563ca41f616ce2fdc1802ad972c50fcf7b324866ecf58cfd19a8",
+      "ci": false
+    }
+  }
+}

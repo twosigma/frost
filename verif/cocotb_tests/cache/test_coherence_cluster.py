@@ -885,6 +885,113 @@ async def speculative_fill_then_dma_write(dut: Any) -> None:
 
 
 @cocotb.test()
+async def dma_preserves_held_attached_grant_answers(dut: Any) -> None:
+    """Keep attached grant snapshots through a DMA cut and reacquire its new bytes."""
+    if len(dut.hart_d_valid) < 2:
+        return
+
+    class CheckedCluster(Cluster):
+        """Check every accepted load against an independently ordered memory image."""
+
+        def __init__(self, dut: Any) -> None:
+            super().__init__(dut)
+            self.expected: dict[int, int] = {}
+            self.seen: list[int] = []
+            self.demands: list[int] = []
+            self.merged = self.answered = 0
+
+        async def tick(self, count: int = 1) -> None:
+            for _ in range(count):
+                if not self.get("i_rst"):
+                    if self.get("o_read_valid") and self.get("i_read_ready"):
+                        slot = self.get("o_read_id")
+                        assert slot in self.expected, (
+                            f"Unexpected or duplicate load {slot}"
+                        )
+                        assert not self.get("o_read_error")
+                        assert self.get("o_read_data") == self.expected.pop(slot)
+                        self.seen.append(slot)
+                    self.merged |= int(dut.hart.merge_attach_slots.value)
+                    self.answered |= int(dut.hart.grant_answer_slots.value)
+                    accepted = int(dut.hart_d_valid.value) & int(dut.hart_d_ready.value)
+                    width = self.p + 312
+                    for ep in range(len(dut.hart_d_valid)):
+                        if accepted >> ep & 1:
+                            bits = (int(dut.hart_d.value) >> (width * ep)) & (
+                                (1 << width) - 1
+                            )
+                            request = unpack(
+                                bits, (4, 9, self.p, 5, 3, 32, 1, 1, 1, 256)
+                            )
+                            self.demands.append(request[2])
+                await super().tick()
+
+    b = CheckedCluster(dut)
+    await b.reset()
+    base = 0x8000F000
+    model = bytearray(range(64))
+    b.memory[base] = int.from_bytes(model, "little")
+
+    async def issue(slot: int, offset: int) -> None:
+        assert slot not in b.expected
+        b.expected[slot] = int.from_bytes(model[offset : offset + 8], "little")
+        await b.set(
+            i_read_valid=1,
+            i_read_id=slot,
+            i_read_kind=0,
+            i_read_size=3,
+            i_address=base + offset,
+        )
+        await b.tick()
+        await b.set(i_read_valid=0)
+
+    await b.set(i_hold_grant=1)
+    await issue(0, 0)
+    for _ in range(200):
+        if b.demands:
+            break
+        await b.tick()
+    assert b.demands == [base]
+    for slot in range(1, 4):
+        await issue(slot, slot * 8)
+    for _ in range(200):
+        if int(dut.hart.rd_wait_q.value) & 14 == 14:
+            break
+        await b.tick()
+    assert int(dut.hart.rd_wait_q.value) & 14 == 14 and b.merged & 14
+    await b.set(i_hold_grant=0)
+    for _ in range(500):
+        if b.answered & 15 == 15 and not int(dut.hart.live.value):
+            break
+        await b.tick()
+    assert b.answered & 15 == 15 and not int(dut.hart.live.value)
+    assert b.get("o_read_valid") and not b.seen
+    held = (b.get("o_read_id"), b.get("o_read_data"))
+    replacement = bytes(range(64, 96))
+    mask = 0xF0FF0F3C
+    await b.dma(base, int.from_bytes(replacement, "little"), mask=mask)
+    for offset, value in enumerate(replacement):
+        if mask >> offset & 1:
+            model[offset] = value
+    assert base in b.cuts and not b.seen
+    assert b.get("o_read_valid") and held == (b.get("o_read_id"), b.get("o_read_data"))
+    await issue(4, 8)
+    for _ in range(200):
+        if len(b.demands) == 2:
+            break
+        await b.tick()
+    assert b.demands == [base, base]
+    await b.set(i_read_ready=1)
+    for _ in range(500):
+        if not b.expected:
+            break
+        await b.tick()
+    assert not b.expected and sorted(b.seen) == list(range(5))
+    await b.tick(40)
+    assert not b.get("o_read_valid") and not int(dut.hart.rd_wait_q.value)
+
+
+@cocotb.test()
 async def single_cycle_reset_during_traffic(dut: Any) -> None:
     """Reset for one cycle at each stage of a miss and a store, then run cleanly."""
     b = Cluster(dut)

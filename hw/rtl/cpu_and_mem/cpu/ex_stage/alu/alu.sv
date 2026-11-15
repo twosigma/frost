@@ -508,25 +508,119 @@ module alu #(
   localparam logic [6:0] ControlsRORW  = riscv_pkg::projected_shift_controls(riscv_pkg::RORW);
   localparam logic [6:0] ControlsRORIW = riscv_pkg::projected_shift_controls(riscv_pkg::RORIW);
   always_comb begin
+`ifdef FROST_SIM_ASSERTIONS
+    if (!(riscv_pkg::InstrOpWidth == 8)) $fatal(1, "alu: invalid static configuration");
+`else
     assert (riscv_pkg::InstrOpWidth == 8);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSLL[5:4], ControlsSLL[0]} == 3'b000))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSLL[5:4], ControlsSLL[0]} == 3'b000);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSRL[5:4], ControlsSRL[0]} == 3'b000))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSRL[5:4], ControlsSRL[0]} == 3'b000);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSRA[5:4], ControlsSRA[0]} == 3'b010))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSRA[5:4], ControlsSRA[0]} == 3'b010);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSLLI[5:4], ControlsSLLI[0]} == 3'b001))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSLLI[5:4], ControlsSLLI[0]} == 3'b001);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSRLI[5:4], ControlsSRLI[0]} == 3'b001))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSRLI[5:4], ControlsSRLI[0]} == 3'b001);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSRAI[5:4], ControlsSRAI[0]} == 3'b011))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSRAI[5:4], ControlsSRAI[0]} == 3'b011);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsROL[5:4], ControlsROL[0]} == 3'b100))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsROL[5:4], ControlsROL[0]} == 3'b100);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsROR[5:4], ControlsROR[0]} == 3'b100))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsROR[5:4], ControlsROR[0]} == 3'b100);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsRORI[5:4], ControlsRORI[0]} == 3'b101))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsRORI[5:4], ControlsRORI[0]} == 3'b101);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSLLW[2:1], ControlsSLLW[0]} == 3'b000))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSLLW[2:1], ControlsSLLW[0]} == 3'b000);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSRLW[2:1], ControlsSRLW[0]} == 3'b000))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSRLW[2:1], ControlsSRLW[0]} == 3'b000);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSRAW[2:1], ControlsSRAW[0]} == 3'b010))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSRAW[2:1], ControlsSRAW[0]} == 3'b010);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSLLIW[2:1], ControlsSLLIW[0]} == 3'b001))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSLLIW[2:1], ControlsSLLIW[0]} == 3'b001);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSRLIW[2:1], ControlsSRLIW[0]} == 3'b001))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSRLIW[2:1], ControlsSRLIW[0]} == 3'b001);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsSRAIW[2:1], ControlsSRAIW[0]} == 3'b011))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsSRAIW[2:1], ControlsSRAIW[0]} == 3'b011);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsROLW[2:1], ControlsROLW[0]} == 3'b100))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsROLW[2:1], ControlsROLW[0]} == 3'b100);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsRORW[2:1], ControlsRORW[0]} == 3'b100))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsRORW[2:1], ControlsRORW[0]} == 3'b100);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!({ControlsRORIW[2:1], ControlsRORIW[0]} == 3'b101))
+      $fatal(1, "alu: invalid static configuration");
+`else
     assert ({ControlsRORIW[2:1], ControlsRORIW[0]} == 3'b101);
+`endif
   end
   always_comb begin
     case (i_instruction_operation)
