@@ -239,7 +239,8 @@ module misprediction_flush_controller #(
 
   // The ROB qualifies this strobe with a checkpointed head that neither
   // mispredicted nor recovered early. Keep the qualified capture enable.
-  (* keep = "true" *) wire commit_is_correct_branch = rob_commit_correct_branch_raw;
+  (* keep = "true" *) wire commit_is_correct_branch;
+  assign commit_is_correct_branch = rob_commit_correct_branch_raw;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) correct_branch_commit_pending <= 1'b0;
@@ -270,7 +271,8 @@ module misprediction_flush_controller #(
   (* max_fanout = 48 *) logic correct_branch_commit_pending_2;
   (* max_fanout = 64, extract_reset = "no" *)
   riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
-  (* keep = "true" *) wire commit_is_correct_branch_2 = rob_commit_correct_branch_2_raw;
+  (* keep = "true" *) wire commit_is_correct_branch_2;
+  assign commit_is_correct_branch_2 = rob_commit_correct_branch_2_raw;
   logic correct_branch_2_served;
   // Set after a held capture's first cycle, the only cycle its free may pulse.
   logic correct_branch_2_free_done_q;
