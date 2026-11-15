@@ -67,10 +67,11 @@ of the pre-debit sums preserves the direct serializer's credit bound. The
 L1D and bridges job runs this task.
 
 The home's three control proofs and fill cover have 1,800-second SBY and
-runner limits. Its two four-way BMCs and prefetch cover have 1,200 seconds;
-the writeback proof, victim cover and error cover have 180 seconds. These
-ten tasks run in the Coherence home job. Their limits total 189 minutes;
-twenty minutes for image setup brings the allowance to 209 minutes within
+runner limits. Its dispatch cover also has a 1,800-second SBY limit. Its two
+four-way BMCs and prefetch cover have 1,200 seconds; the writeback proof,
+victim cover and error cover have 180 seconds. These eleven tasks run in the
+Coherence home job. Their limits total 219 minutes; twenty minutes for image
+setup brings the allowance to 239 minutes within
 the job's 240-minute limit. A fast test checks task membership, matching
 SBY and runner limits, and the sum against the workflow limit.
 

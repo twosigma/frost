@@ -1324,7 +1324,7 @@ jobs:
               coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
             timeout_minutes: 300
-          # Home task limits total 189 minutes; image setup has twenty more.
+          # Home task limits total 219 minutes; image setup has twenty more.
           - shard: Coherence home
             pytest_filter: coherence_home_coh_home_
             timeout_minutes: 240
