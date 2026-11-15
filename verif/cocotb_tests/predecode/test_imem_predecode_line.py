@@ -28,6 +28,8 @@ from typing import Any
 import cocotb
 from cocotb.triggers import Timer
 
+from cocotb_tests.predecode import test_imem_predecode_fast_replica as replica_reference
+
 LINE_BYTES = 32
 WORDS_PER_LINE = LINE_BYTES // 4
 
@@ -83,7 +85,7 @@ SIDEBAND_WIDTH = _GENERATOR.SIDEBAND_WIDTH
 
 
 def _assert_pc_bundle_bits(word: int, sideband: int) -> None:
-    """Independently check the four write/init-time PC qualifier fields."""
+    """Check write/init-time pairing and slot-2 eligibility fields."""
     lo = word & 0xFFFF
     hi = (word >> 16) & 0xFFFF
     compressed_lo = (lo & 0x3) != 0b11
@@ -100,6 +102,10 @@ def _assert_pc_bundle_bits(word: int, sideband: int) -> None:
         and not _GENERATOR.native_control(hi & 0x7F)
         and not serialize_hi
     )
+    assert allows_lo == bool(
+        replica_reference._expected_allows_slot2_after_hi(lo << 16)
+    )
+    assert allows_hi == bool(replica_reference._expected_allows_slot2_after_hi(word))
     start_valid_hi = compressed_hi or not (
         serialize_hi or _GENERATOR.native_fp_compute(hi & 0x7F)
     )
@@ -110,6 +116,12 @@ def _assert_pc_bundle_bits(word: int, sideband: int) -> None:
         _GENERATOR.SB_PAIRABLE_NATIVE_LO: not compressed_lo and allows_lo,
         _GENERATOR.SB_PAIRABLE_COMPRESSED_HI: compressed_hi and allows_hi,
         _GENERATOR.SB_PAIRABLE_NATIVE_HI: not compressed_hi and allows_hi,
+        _GENERATOR.SB_SLOT2_START_VALID_LO: bool(
+            replica_reference._expected_slot2_start_valid_lo(word)
+        ),
+        _GENERATOR.SB_SLOT2_START_VALID_HI: bool(
+            replica_reference._expected_slot2_start_valid_lo(word >> 16)
+        ),
     }
     for bit, want in expected.items():
         assert bool(sideband & (1 << bit)) is want, (
@@ -204,12 +216,18 @@ async def test_directed_encodings(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_all_parcels_match_python_sideband(dut: Any) -> None:
-    """All 65,536 parcels match the Python sideband in both word positions."""
-    words: list[int] = []
-    for parcel in range(1 << 16):
-        words.extend((parcel | 0x45010000, (parcel << 16) | 0x4501))
-    await _check_words(dut, words)
+async def test_exhaustive_parcels(dut: Any) -> None:
+    """Every halfword encoding in both positions matches the generated metadata."""
+    # Each parcel's expansion and eligibility depend on that parcel alone.
+    # Complementing the other half visits all encodings in both positions.
+    for base in range(0, 1 << 16, WORDS_PER_LINE):
+        await _check_line(
+            dut,
+            [
+                parcel | ((parcel ^ 0xFFFF) << 16)
+                for parcel in range(base, base + WORDS_PER_LINE)
+            ],
+        )
 
 
 @cocotb.test()
