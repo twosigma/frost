@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Keep the Zicboz, 32 KiB L1I, and NIC benchmark configurations reachable from CI."""
+"""Keep the Zicboz, full-line store, 32 KiB L1I, and NIC benchmark configurations reachable from CI."""
 
 import subprocess
 import sys
@@ -51,8 +51,11 @@ def test_zero_and_nic_programs_have_one_ci_shard() -> None:
         name
         for name, config in TEST_REGISTRY.items()
         if config.app_name is not None
+        and config.include_in_pytest
         and (
             name.startswith("cbo_zero_")
+            or name.startswith("full_line_test")
+            or name == "store_fill_bench"
             or name == "nic_bench"
             or name == "l1i_set_test"
             or "_l1i32" in name
