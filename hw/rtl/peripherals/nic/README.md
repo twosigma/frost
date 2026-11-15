@@ -403,8 +403,8 @@ bits:
 | 30 | `0x188` | `pcs_rxnotintable` | RX clock cycles with PCS status bit 6 high |
 | 31 | `0x190` | `phy_rx_err_last` | Most recent receive-error sample from PHY management |
 | 32 | `0x198` | `phy_rx_err_sum` | Sum of receive-error samples |
-| 33 | `0x1A0` | `phy_fcs_last` | Most recent FCS field from PHY management |
-| 34 | `0x1A8` | `phy_fcs_sum` | Sum of FCS fields from PHY management |
+| 33 | `0x1A0` | `phy_fcs_last` | Reserved, reads zero; DP83867 exposes no FCS error count |
+| 34 | `0x1A8` | `phy_fcs_sum` | Reserved, reads zero; DP83867 exposes no FCS error count |
 | 35 | `0x1B0` | `phy_polls` | Completed PHY management samples accepted by the NIC |
 
 Counters are unsigned 64-bit values and wrap modulo 2^64. Reads do not clear them.
@@ -424,6 +424,17 @@ Source reset preserves the published payload and toggle and discards unfinished 
 Destination reset acknowledges observed transfers while discarding their data; a transfer
 first observed after reset is counted once. A stopped destination delays subsequent polls.
 The payload route must settle before the synchronized toggle permits capture.
+
+DP83867 management polls RECR (`0x0015`) and clears it with a dummy write after
+an acknowledged read. RECR saturates at 65535. Errors arriving between the read
+and clear, or while saturated, can be lost; `phy_rx_err_sum` is a sum of sampled
+intervals. An unanswered read preserves the last sample and does not increment
+`phy_polls`. The DP83867 exposes no FCS error count: `phy_fcs_last` and
+`phy_fcs_sum` retain their names and indices as reserved slots and read zero.
+Use the MAC's `rx_mac_bad_fcs` (counter 12, `0x0E0`) for received FCS errors.
+The 33-bit management bus keeps its layout and drives its FCS field to zero;
+`0x0139` is the SecureOn password low word and is not polled. See the
+[DP83867IS register map](https://www.ti.com/lit/ds/symlink/dp83867is.pdf).
 
 The TX engine counters track descriptor completions and their buffer bytes, including parameter
 descriptors in `tx_frames`. A scatter-gather frame uses several descriptors, and a segmented frame

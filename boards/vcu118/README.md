@@ -77,6 +77,13 @@ SGMII. QSFP1 lane 0 uses a GTY channel and the shared 10GBASE-R MAC/PCS. Its NIC
 registers occupy `0x40030000` and use APLIC source 4. Both NICs use coherent
 DMA through the shared memory hierarchy.
 
+The PHY management sequencer completes the existing bootstrap before polling
+DP83867 RECR. Each acknowledged read is followed by a dummy write to clear the
+saturating counter; polling does not rewrite link configuration. Samples remain
+stable until the NIC acknowledges them. Missing PHY responses leave the last
+sample unchanged. The FCS diagnostic slots are reserved and read zero because
+this PHY exposes no FCS error count; use the MAC's `rx_mac_bad_fcs` instead. See the [NIC counter map](../../hw/rtl/peripherals/nic/README.md).
+
 The boot controller at `0x40023000` provides SPI transfers through STARTUPE3,
 DDR status and an instruction-SRAM programming port. The initial BRAM
 application loads an FSBL from flash into executable SRAM. The FSBL loads

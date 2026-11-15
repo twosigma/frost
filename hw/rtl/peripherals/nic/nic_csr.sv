@@ -103,8 +103,8 @@ module nic_csr #(
     //  rx_local_fault, rx_high_ber, rx_locked}
     input  logic [                     7:0] i_link,
     input  logic [                     4:0] i_phy_status,
-    // PHY management counters {toggle, FCS, RECR} from the board's MDIO poll (asynchronous to
-    // i_clk: the source holds the payload and toggle until acknowledged).
+    // PHY management payload {toggle, reserved FCS field, RECR}, asynchronous to i_clk.
+    // The DP83867 source zeros FCS and holds the payload and toggle until acknowledged.
     input  logic [nic_pkg::PhyDiagBits-1:0] i_phy_diag,
     output logic                            o_phy_diag_ack,
 
@@ -461,7 +461,7 @@ module nic_csr #(
     endcase
   endfunction
 
-  // ---- the PHY's own receive-error and FCS counters, as polled over MDIO ----------------------
+  // ---- PHY receive-error samples and the reserved FCS slots --------------------------------
   // The source holds the payload and toggle until the acknowledgement returns.
   // Capture the payload after the two-stage toggle synchronizer, then accumulate locally.
   // During reset the toggle is followed and acknowledged without counting the sample.

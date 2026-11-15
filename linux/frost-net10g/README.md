@@ -50,6 +50,11 @@ Offloads, reported by `ethtool -k <interface>`:
 | Hardware statistics | `ethtool -S` | The NIC's 64-bit counters (frames, bytes, filtered, truncated, descriptor errors, aborts, MAC overflow, bad frame, bad FCS, PCS bad blocks, TX drops, descriptor-starved overflows, GMII preamble and error diagnostics, PCS status events, and PHY management samples); see the hardware reference for names and offsets. Unsupported counters read zero. The RESET at each open clears them |
 | Loopback | `loopback: off` | MAC or PMA loopback, changed only while the interface is down |
 
+The DP83867 PHY exposes no FCS error count. The `phy_fcs_last` and
+`phy_fcs_sum` statistics are reserved and read zero, preserving their names
+and positions in `ethtool -S`. Use `rx_mac_bad_fcs`, the MAC's own received
+FCS-error counter, to diagnose frame-check failures.
+
 Scatter-gather is offered only when `ABI_CTRL` bit 6 identifies hardware that accepts descriptor
 chains; older hardware receives linear packets. TX completion and reset release each mapping
 at its final descriptor piece, using the matching single-buffer or page DMA unmap operation.

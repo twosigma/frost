@@ -16,8 +16,9 @@
 """The VCU118 PHY management sequencer against a model of the DP83867's Clause-22 interface.
 
 The model checks the PHY address, accepts the bootstrap writes (including the REGCR/ADDAR extended
-register access) and answers the two counter reads of the poll: RECR directly and the FCS counter
-through ADDAR. Waits are shortened by parameters (RST_BIT, SETTLE_BIT, POLL_BIT).
+register access) and answers RECR reads. A dummy write clears RECR; reading does not.
+The reserved FCS diagnostic field stays zero, and polling leaves extended registers alone.
+Waits are shortened by parameters (RST_BIT, SETTLE_BIT, POLL_BIT).
 """
 
 from typing import Any
@@ -28,7 +29,7 @@ from cocotb.triggers import ClockCycles, FallingEdge
 
 PHY_ADDR = 3
 REG_BMCR, REG_REGCR, REG_ADDAR, REG_PHYCR, REG_RECR = 0x00, 0x0D, 0x0E, 0x10, 0x15
-EXT_FCS_COUNTER = 0x0139
+EXT_SECUREON_LOW = 0x0139
 
 
 class Dp83867:
@@ -39,9 +40,8 @@ class Dp83867:
         self.dut = dut
         self.ack = True
         self.recr = 0
-        self.fcs = 0
         self.direct: dict[int, int] = {}
-        self.ext: dict[int, int] = {}
+        self.ext: dict[int, int] = {EXT_SECUREON_LOW: 0xBEEF}
         self.regcr_mode = 0
         self.addar = 0
         self.reads: list[tuple[str, int]] = []
@@ -65,7 +65,7 @@ class Dp83867:
             self.reads.append(("recr", self.recr))
             return self.recr
         if reg == REG_ADDAR and self.regcr_mode == 0x4000:
-            value = self.fcs if self.addar == EXT_FCS_COUNTER else 0
+            value = self.ext.get(self.addar, 0)
             self.reads.append((f"ext{self.addar:04x}", value))
             return value
         return self.direct.get(reg, 0)
@@ -171,14 +171,14 @@ async def _wait_poll(dut: Any, toggle: int) -> None:
 
 
 @cocotb.test()
-async def bootstrap_writes_and_counter_polls(dut: Any) -> None:
-    """Land the init writes, raise init_done, and deliver both counters and a toggle per poll."""
+async def bootstrap_and_reserved_fcs_field(dut: Any) -> None:
+    """Poll RECR with zero FCS despite a nonzero SecureOn password; preserve link configuration."""
     Clock(dut.i_clk, 20, unit="ns").start()
     dut.i_rst.value = 1
     dut.i_mdio_i.value = 1
     dut.i_phy_diag_ack.value = int(dut.o_phy_diag.value) >> 32
     phy = Dp83867(dut)
-    phy.recr, phy.fcs = 0x1234, 0x00AB
+    phy.recr = 0x1234
     cocotb.start_soon(phy.run())
     await ClockCycles(dut.i_clk, 10)
     dut.i_rst.value = 0
@@ -188,19 +188,21 @@ async def bootstrap_writes_and_counter_polls(dut: Any) -> None:
     await _wait_poll(dut, toggle)
     assert int(dut.o_phy_init_done.value) == 1
     assert int(dut.o_phy_rst_n.value) == 1
-    assert phy.ext == {0x31: 0x70, 0xD3: 0x4000, 0x16F: 0x15}
+    assert phy.ext == {EXT_SECUREON_LOW: 0xBEEF, 0x31: 0x70, 0xD3: 0x4000, 0x16F: 0x15}
     assert phy.direct[REG_PHYCR] == 0x5848
     assert phy.direct[REG_BMCR] == 0x1340
     diag = int(dut.o_phy_diag.value)
-    assert (diag & 0xFFFF, (diag >> 16) & 0xFFFF) == (0x1234, 0x00AB)
-    assert phy.reads[:2] == [("recr", 0x1234), (f"ext{EXT_FCS_COUNTER:04x}", 0x00AB)]
-    # A later poll picks up new counter values and flips the toggle again
-    phy.recr, phy.fcs = 0x0007, 0xFFFE
+    assert (diag & 0xFFFF, (diag >> 16) & 0xFFFF) == (0x1234, 0)
+    assert phy.reads == [("recr", 0x1234)]
+    # A later poll picks up new errors without disturbing link configuration or extended registers.
+    phy.recr = 0x0007
     toggle = int(dut.o_phy_diag.value) >> 32
     await _wait_poll(dut, toggle)
     diag = int(dut.o_phy_diag.value)
-    assert (diag & 0xFFFF, (diag >> 16) & 0xFFFF) == (0x0007, 0xFFFE)
-    assert len(phy.reads) == 4
+    assert (diag & 0xFFFF, (diag >> 16) & 0xFFFF) == (0x0007, 0)
+    assert phy.reads == [("recr", 0x1234), ("recr", 7)]
+    assert phy.direct == {REG_PHYCR: 0x5848, REG_BMCR: 0x1340}
+    assert phy.ext == {EXT_SECUREON_LOW: 0xBEEF, 0x31: 0x70, 0xD3: 0x4000, 0x16F: 0x15}
 
 
 @cocotb.test()
@@ -253,14 +255,14 @@ async def published_sample_waits_for_acknowledgement(dut: Any) -> None:
     dut.i_phy_diag_ack.value = int(dut.o_phy_diag.value) >> 32
     phy = Dp83867(dut)
     phy.ack = False
-    phy.recr, phy.fcs = 9, 3
+    phy.recr = 9
     cocotb.start_soon(phy.run())
     await ClockCycles(dut.i_clk, 10)
     dut.i_rst.value = 0
     toggle = int(dut.o_phy_diag.value) >> 32
     await _wait_poll(dut, toggle)
     published = int(dut.o_phy_diag.value)
-    phy.recr, phy.fcs = 17, 5
+    phy.recr = 17
     await ClockCycles(dut.i_clk, 50000)
     assert int(dut.o_phy_diag.value) == published
     dut.i_rst.value = 1

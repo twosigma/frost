@@ -123,8 +123,8 @@ async def _start(dut: Any, core_ps: int = 3334) -> _Bench:
 
 
 @cocotb.test()
-async def every_diagnostic_counter_reads_back(dut: Any) -> None:
-    """Make each of counters 21..35 non-zero and read it at 0x140 + 8 * (n - 21)."""
+async def supported_diagnostics_and_reserved_fcs_slots_read_back(dut: Any) -> None:
+    """Read supported diagnostics at their offsets while both reserved FCS slots stay zero."""
     bench = await _start(dut)
     # An empty RX ring: enabled, so frames queue in the FIFO with no descriptor to take them.
     await bench.wr(RX_BASE, RX_RING)
@@ -165,12 +165,15 @@ async def every_diagnostic_counter_reads_back(dut: Any) -> None:
         bench.symbols.extend(b | 0x100 for b in wire)
         bench.symbols.extend([0] * 12)
     await bench.drain()
-    # PHY counters over the toggle-qualified bus.
-    await bench.poll(5, 3, 1)
-    await bench.poll(7, 0xFFFE, 0)
+    # The DP83867 publisher preserves the bus layout and zeros its reserved FCS field.
+    await bench.poll(5, 0, 1)
+    await bench.poll(7, 0, 0)
 
     for index in range(ER_PREAMBLE, PHY_POLLS + 1):
-        assert await bench.count(index) != 0, f"counter {index} at {_offset(index):#x}"
+        if index not in (PHY_FCS_LAST, PHY_FCS_SUM):
+            assert await bench.count(index) != 0, (
+                f"counter {index} at {_offset(index):#x}"
+            )
     assert await bench.count(ER_PREAMBLE) == 1
     assert await bench.count(PRE_ACCEPT) == 1
     assert await bench.count(ER_EXT) == 2
@@ -184,8 +187,8 @@ async def every_diagnostic_counter_reads_back(dut: Any) -> None:
     assert await bench.count(PREAMBLE_DROP) == 0
     assert await bench.count(PHY_RXERR_LAST) == 7
     assert await bench.count(PHY_RXERR_SUM) == 12
-    assert await bench.count(PHY_FCS_LAST) == 0xFFFE
-    assert await bench.count(PHY_FCS_SUM) == 0xFFFE + 3
+    assert await bench.count(PHY_FCS_LAST) == 0
+    assert await bench.count(PHY_FCS_SUM) == 0
     assert await bench.count(PHY_POLLS) == 2
 
     # RESET clears the PHY counters; the held toggle is not a new poll.
@@ -197,7 +200,7 @@ async def every_diagnostic_counter_reads_back(dut: Any) -> None:
     await ClockCycles(dut.i_clk, 100)
     for index in (PHY_RXERR_LAST, PHY_RXERR_SUM, PHY_FCS_LAST, PHY_FCS_SUM, PHY_POLLS):
         assert await bench.count(index) == 0, index
-    await bench.poll(9, 1, 1)
+    await bench.poll(9, 0, 1)
     assert await bench.count(PHY_POLLS) == 1
     assert await bench.count(PHY_RXERR_SUM) == 9
 
@@ -208,7 +211,7 @@ async def phy_transfer_survives_slow_clock_and_reset(dut: Any) -> None:
     bench = await _start(dut, core_ps=31000)
     await FallingEdge(dut.i_clk)
     dut.i_rst.value = 1
-    dut.i_phy_diag.value = (1 << 32) | (3 << 16) | 7
+    dut.i_phy_diag.value = (1 << 32) | 7
     await ClockCycles(dut.i_clk, 20)
     assert int(dut.o_phy_diag_ack.value) == 1
     await FallingEdge(dut.i_clk)
@@ -216,13 +219,13 @@ async def phy_transfer_survives_slow_clock_and_reset(dut: Any) -> None:
     await ClockCycles(dut.i_clk, 200)
     assert await bench.count(PHY_POLLS) == 0
     assert await bench.count(PHY_RXERR_SUM) == 0
-    await bench.poll(9, 2, 0)
+    await bench.poll(9, 0, 0)
     assert await bench.count(PHY_POLLS) == 1
     assert await bench.count(PHY_RXERR_SUM) == 9
     assert bench.core_clock is not None
     await FallingEdge(dut.i_clk)
     bench.core_clock.stop()
-    dut.i_phy_diag.value = (1 << 32) | (5 << 16) | 13
+    dut.i_phy_diag.value = (1 << 32) | 13
     await Timer(17000, unit="ns")
     assert int(dut.o_phy_diag_ack.value) == 0
     bench.core_clock.start()
@@ -230,6 +233,6 @@ async def phy_transfer_survives_slow_clock_and_reset(dut: Any) -> None:
     assert int(dut.o_phy_diag_ack.value) == 1
     assert await bench.count(PHY_POLLS) == 2
     assert await bench.count(PHY_RXERR_SUM) == 22
-    assert await bench.count(PHY_FCS_SUM) == 7
+    assert await bench.count(PHY_FCS_SUM) == 0
     await ClockCycles(dut.i_clk, 30)
     assert await bench.count(PHY_POLLS) == 2

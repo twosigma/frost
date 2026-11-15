@@ -159,9 +159,9 @@ package nic_pkg;
   localparam int unsigned CntPcsRudiInvalid = 28;
   localparam int unsigned CntPcsRxdisperr = 29;
   localparam int unsigned CntPcsRxnotintable = 30;
-  // DP83867 receive-error and FCS counters, read over MDIO by the PHY bootstrap sequencer (1G port
-  // only): the last value read, the sum of all samples delivered,
-  // and the number of completed polls.
+  // PHY management samples: the last value, sum of delivered samples and completed-poll count.
+  // DP83867 RECR saturates and is cleared by a dummy write after each read. Its FCS slots are
+  // reserved and read zero: this PHY exposes no FCS error count. Use CntRxMacBadFcs instead.
   localparam int unsigned CntPhyRxErrLast = 31;
   localparam int unsigned CntPhyRxErrSum = 32;
   localparam int unsigned CntPhyFcsLast = 33;
@@ -175,7 +175,7 @@ package nic_pkg;
   localparam logic [11:0] CounterExtBaseOffset = 12'h140;
   // MAC-domain totals (nic_mac_wrap o_totals) are counters CntRxMacOverflow .. CntPcsRxnotintable in order.
   localparam int unsigned NumMacTotals = 21;
-  // Width of the PHY management diagnostic bus into the NIC: {toggle, FCS counter, RECR counter}.
+  // Width of the PHY management diagnostic bus into the NIC: {toggle, FCS field, RECR sample}.
   localparam int unsigned PhyDiagBits = 33;
 
   // Interrupt block registers.

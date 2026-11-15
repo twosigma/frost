@@ -33,10 +33,10 @@
  *      - BMCR (0x0000) <= 0x1340 (1000M full-duplex, enable & restart AN)
  *   4. Clock stabilization wait (~2.6 ms) before releasing vcu118_pcs_pma_1g
  *      out of reset.
- *   5. About every 21 ms afterwards, Clause-22 MDIO reads of the PHY receive-error counter
- *      (RECR, 0x0015) and the FCS counter (extended register RXFCSCNT through REGCR/ADDAR).
- *      The two 16-bit values and a toggle go to the NIC (o_phy_diag), which exposes them in
- *      ethtool -S. The status_vector of the PCS/PMA core rides in o_rx_raw_data[25:10] for the
+ *   5. Poll the PHY receive-error counter (RECR, 0x0015), then dummy-write it to clear it.
+ *      Publish the sample with an acknowledged toggle through o_phy_diag. The unused FCS
+ *      field is reserved and zero: DP83867 exposes no FCS error count. Use rx_mac_bad_fcs for
+ *      MAC-detected FCS errors. The status_vector rides in o_rx_raw_data[25:10] for the
  *      NIC's PCS event counters (its bits: 0 link, 1 sync, 2 RUDI /C/, 3 RUDI /I/, 4 RUDI INVALID,
  *      5 RXDISPERR, 6 RXNOTINTABLE, 7 PHY link, 9:8 remote fault code, 11:10 speed, 12 duplex,
  *      13 remote fault, 15:14 pause).
@@ -70,8 +70,8 @@ module vcu118_eth1g (
     output logic        o_rx_signal_ok,
     input  logic [ 3:1] i_phy_ctrl,
     output logic [ 4:0] o_phy_status,
-    // DP83867 receive-error (RECR) and FCS counter values read over MDIO, with a toggle that changes
-    // after both have been updated: {toggle, FCS[15:0], RECR[15:0]} (nic_pkg PhyDiagBits).
+    // Hold {toggle, 16'b0, RECR[15:0]} until i_phy_diag_ack matches the toggle.
+    // The FCS field is reserved and zero on DP83867 (nic_pkg PhyDiagBits).
     output logic [32:0] o_phy_diag,
     input  logic        i_phy_diag_ack,
     input  logic        i_rx_block_lock
@@ -294,16 +294,13 @@ module vcu118_phy_mdio #(
   localparam logic [4:0] RegAddar = 5'h0E;
   localparam logic [4:0] RegPhycr = 5'h10;
   localparam logic [4:0] RegRecr = 5'h15;
-  // DP83867 extended register of the receive FCS error counter, reached through REGCR/ADDAR. The
-  // address follows the TI register map (RXFCSCNT); an address the PHY does not implement reads zero.
-  localparam logic [15:0] ExtRegRxFcsCnt = 16'h0139;
   localparam int unsigned NumInitWrites = 14;
-  // Poll sequence after the init writes: RECR read, then an extended read of the FCS counter.
+  // Poll sequence after the init writes: an acknowledged RECR read, then a dummy write to clear.
   localparam int unsigned PollRecrIdx = NumInitWrites;
-  localparam int unsigned PollFcsIdx = NumInitWrites + 5;
+  localparam int unsigned PollRecrClearIdx = NumInitWrites + 1;
 
   // {read, register, data}
-  function automatic logic [21:0] get_init_cmd(input logic [4:0] idx);
+  function automatic logic [21:0] get_cmd(input logic [4:0] idx);
     unique case (idx)
       // 0..3: Extended write 0x0031 (CFG4) <= 0x0070 (SGMII AN timer = 11 ms)
       5'd0: return {1'b0, RegRegcr, 16'h001F};
@@ -327,13 +324,7 @@ module vcu118_phy_mdio #(
       // 14: Direct read of RECR (receive error counter)
       5'd14: return {1'b1, RegRecr, 16'h0000};
       // A dummy write clears the saturating RECR after its acknowledged read.
-      5'd15: return {1'b0, RegRecr, 16'h0000};
-      // 16..18: extended address select for the FCS counter
-      5'd16: return {1'b0, RegRegcr, 16'h001F};
-      5'd17: return {1'b0, RegAddar, ExtRegRxFcsCnt};
-      5'd18: return {1'b0, RegRegcr, 16'h401F};
-      // 19: read the FCS counter through ADDAR
-      default: return {1'b1, RegAddar, 16'h0000};
+      default: return {1'b0, RegRecr, 16'h0000};
     endcase
   endfunction
 
@@ -359,7 +350,7 @@ module vcu118_phy_mdio #(
   logic               phy_init_done_q = 1'b0;
 
   logic        [21:0] init_cmd;
-  assign init_cmd = get_init_cmd(cmd_idx_q);
+  assign init_cmd = get_cmd(cmd_idx_q);
 
   // MDIO read path: the pad level is synchronised, shifted in at the rising MDC edge of each
   // data bit. Publish the complete sample atomically and hold it until acknowledged.
@@ -369,10 +360,9 @@ module vcu118_phy_mdio #(
   logic rd_ok_q;
   logic [15:0] rd_shift_q = '0;
   logic [15:0] diag_recr_q = '0;
-  logic [15:0] diag_fcs_q = '0;
   logic diag_tog_q = 1'b0;
   logic polled_q = 1'b0;
-  logic [15:0] sample_recr_q, sample_fcs_q;
+  logic [15:0] sample_recr_q;
   logic diag_ack_s;
   cdc_sync u_diag_ack_sync (
       .i_clk  (i_clk),
@@ -401,7 +391,6 @@ module vcu118_phy_mdio #(
       polled_q        <= 1'b0;
       rd_ok_q         <= 1'b0;
       sample_recr_q   <= '0;
-      sample_fcs_q    <= '0;
     end else begin
       unique case (state_q)
         ST_RST_ASSERT: begin
@@ -470,8 +459,7 @@ module vcu118_phy_mdio #(
               end else if (cmd_idx_q == 5'(NumInitWrites - 1)) begin
                 wait_cnt_q <= '0;
                 state_q    <= ST_CLK_SETTLE;
-              end else if (cmd_idx_q == 5'(PollFcsIdx)) begin
-                sample_fcs_q <= rd_shift_q;
+              end else if (cmd_idx_q == 5'(PollRecrClearIdx)) begin
                 polled_q   <= 1'b1;
                 wait_cnt_q <= '0;
                 state_q    <= ST_DONE;
@@ -508,7 +496,6 @@ module vcu118_phy_mdio #(
           mdc_q           <= 1'b0;
           if (polled_q && diag_ack_s == diag_tog_q) begin
             diag_recr_q <= sample_recr_q;
-            diag_fcs_q <= sample_fcs_q;
             diag_tog_q <= !diag_tog_q;
             polled_q <= 1'b0;
           end
@@ -529,7 +516,7 @@ module vcu118_phy_mdio #(
     end
   end
 
-  assign o_phy_diag = {diag_tog_q, diag_fcs_q, diag_recr_q};
+  assign o_phy_diag = {diag_tog_q, 16'b0, diag_recr_q};
   assign o_phy_rst_n = phy_rst_n_q;
   assign o_phy_mdc = mdc_q;
   assign o_phy_init_done = phy_init_done_q;

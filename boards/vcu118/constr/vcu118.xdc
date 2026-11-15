@@ -300,7 +300,7 @@ foreach nic_instance {nic nic_1g} {
 }
 # The diagnostic payload is held until acknowledged. Bound its route before
 # the two-stage request synchronizer permits capture.
-set phy_diag_payload [get_cells -quiet -hierarchical -filter {IS_SEQUENTIAL && (NAME =~ "*/u_mdio/diag_recr_q_reg*" || NAME =~ "*/u_mdio/diag_fcs_q_reg*")}]
+set phy_diag_payload [get_cells -quiet -hierarchical -filter {IS_SEQUENTIAL && NAME =~ "*/u_mdio/diag_recr_q_reg*"}]
 set phy_diag_capture [get_cells -quiet -hierarchical -filter {IS_SEQUENTIAL && NAME =~ "*/nic_1g/u_csr/phy_diag_sample_q_reg*"}]
 if {[llength $phy_diag_payload] && [llength $phy_diag_capture]} {
     set_max_delay -datapath_only 3.0 -from $phy_diag_payload -to $phy_diag_capture

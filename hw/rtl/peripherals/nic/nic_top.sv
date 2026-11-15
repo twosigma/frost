@@ -134,8 +134,8 @@ module nic_top #(
     input logic i_rx_raw_valid,
     input logic i_rx_signal_ok,
     input logic [4:0] i_phy_status,  // asynchronous levels, nic_pkg PhyStatusBit*
-    // PHY management counters {toggle, FCS, RECR}: the source holds the payload and toggle until acknowledged,
-    // so nic_csr samples them after synchronising the toggle (all zero where there is no MDIO poll).
+    // PHY management payload {toggle, reserved FCS field, RECR}: held until acknowledged.
+    // DP83867 drives FCS to zero; all fields are zero where there is no MDIO poll.
     input logic [nic_pkg::PhyDiagBits-1:0] i_phy_diag = '0,
     output logic o_phy_diag_ack,
     output logic [3:1] o_phy_ctrl,  // PHY_RESET, PMA_LOOPBACK, TX_DISABLE
