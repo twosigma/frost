@@ -880,12 +880,16 @@ package riscv_pkg;
   // Every instruction operation, grouped by extension. The decoder passes one
   // of these to the ALU and the other execution units.
 
-  // Keep ordinals fixed; append new members and leave 86/87 unused.
-  // The guided X3 placement flow in fpga/build/build_step.tcl depends on
-  // these encodings. projected_shift_controls also decodes operation bits
-  // directly: any enum edit must preserve or revalidate alu.sv's assertions.
-  // The unsigned 8-bit base bounds payload width and keeps values >=128
-  // nonnegative.
+  // Explicit anchors (ROL = 8'd76, ADDIW = 8'd170) hold ROL..RORI and
+  // SLLIW..RORIW at the ordinals projected_shift_controls decodes by bit
+  // position (SLL..SRAI sit ahead of any folded member); alu.sv checks the
+  // table in simulation and formal verification (alu_shift_hint). Append
+  // new members after the last member so none of the shift ordinals move.
+  // Operations carry one enum member per operation across widths and CSR
+  // source forms when width, sign or CSR operation travels in other fields
+  // (scalar integer and FP loads and stores, LR/SC, AMO W/D pairs, CSR
+  // reg/imm forms). The unsigned 8-bit base bounds payload width and keeps
+  // values >=128 nonnegative.
   localparam int unsigned InstrOpWidth = 8;
   typedef enum bit [InstrOpWidth-1:0] {
     // base-ISA integer ops
@@ -920,15 +924,9 @@ package riscv_pkg;
     BGE,
     BLTU,
     BGEU,
-    // base-ISA loads/stores
-    LB,
-    LH,
-    LW,
-    LBU,
-    LHU,
-    SB,
-    SH,
-    SW,
+    // Scalar integer loads and stores (width/sign carried in funct3)
+    LOAD,
+    STORE,
     // M-extension for multiply/divide
     MUL,
     MULH,
@@ -941,13 +939,9 @@ package riscv_pkg;
     // Fences (base ISA and Zifencei)
     FENCE,
     FENCE_I,
-    // Zicsr extension
-    CSRRW,
-    CSRRS,
-    CSRRC,
-    CSRRWI,
-    CSRRSI,
-    CSRRCI,
+    // Zicsr extension (CSR op carried in funct3)
+    CSR_REG,
+    CSR_IMM,
     // Zba extension (address generation)
     SH1ADD,
     SH2ADD,
@@ -974,7 +968,19 @@ package riscv_pkg;
     MINU,
     SEXT_B,
     SEXT_H,
-    ROL,
+    // Non-shift operations placed before ROL = 8'd76 to preserve shift ordinals
+    CLZW,                       // Zbb: count leading zeros in word
+    CTZW,                       // Zbb: count trailing zeros in word
+    CPOPW,                      // Zbb: population count of word
+    PACKW,                      // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
+    MULW,                       // Multiply word (sext32 of low-32 product)
+    DIVW,                       // Divide word signed (sext32 result)
+    DIVUW,                      // Divide word unsigned (sext32 result)
+    REMW,                       // Remainder word signed (sext32 result)
+    REMUW,                      // Remainder word unsigned (sext32 result)
+    ILLEGAL,                    // Illegal instruction trap marker
+    // Zbb shifts/rotates (pinned at 8'd76..8'd78 for projected_shift_controls)
+    ROL              = 8'd76,
     ROR,
     RORI,
     ORC_B,
@@ -986,192 +992,156 @@ package riscv_pkg;
     PACK,
     PACKH,
     BREV8,
-    // 8'd86 and 8'd87 are unused. Do not compact: see the ordinal note above.
+    SRET,                       // Return from supervisor-mode trap
+    SFENCE_VMA,                 // Supervisor fence.vma with address and ASID filters
     // Zihintpause extension
-    PAUSE            = 8'd88,
+    PAUSE,
     // Privileged instructions (trap handling)
-    MRET,                      // Return from machine-mode trap
-    WFI,                       // Wait for interrupt
-    ECALL,                     // Environment call (system call)
-    EBREAK,                    // Breakpoint exception
-    // A extension (atomics)
-    LR_W,                      // Load-reserved word
-    SC_W,                      // Store-conditional word
-    AMOSWAP_W,                 // Atomic swap
-    AMOADD_W,                  // Atomic add
-    AMOXOR_W,                  // Atomic XOR
-    AMOAND_W,                  // Atomic AND
-    AMOOR_W,                   // Atomic OR
-    AMOMIN_W,                  // Atomic minimum (signed)
-    AMOMAX_W,                  // Atomic maximum (signed)
-    AMOMINU_W,                 // Atomic minimum (unsigned)
-    AMOMAXU_W,                 // Atomic maximum (unsigned)
-    // RV64A doubleword forms.
-    LR_D,                      // Load-reserved doubleword
-    SC_D,                      // Store-conditional doubleword
-    AMOSWAP_D,                 // Atomic swap doubleword
-    AMOADD_D,                  // Atomic add doubleword
-    AMOXOR_D,                  // Atomic XOR doubleword
-    AMOAND_D,                  // Atomic AND doubleword
-    AMOOR_D,                   // Atomic OR doubleword
-    AMOMIN_D,                  // Atomic minimum doubleword (signed)
-    AMOMAX_D,                  // Atomic maximum doubleword (signed)
-    AMOMINU_D,                 // Atomic minimum doubleword (unsigned)
-    AMOMAXU_D,                 // Atomic maximum doubleword (unsigned)
+    MRET,                       // Return from machine-mode trap
+    WFI,                        // Wait for interrupt
+    ECALL,                      // Environment call (system call)
+    EBREAK,                     // Breakpoint exception
+    // A extension atomics (W/D width carried in funct3 / mem_size)
+    LR,                         // Load-reserved (word or doubleword)
+    SC,                         // Store-conditional (word or doubleword)
+    AMOSWAP,                    // Atomic swap
+    AMOADD,                     // Atomic add
+    AMOXOR,                     // Atomic XOR
+    AMOAND,                     // Atomic AND
+    AMOOR,                      // Atomic OR
+    AMOMIN,                     // Atomic minimum (signed)
+    AMOMAX,                     // Atomic maximum (signed)
+    AMOMINU,                    // Atomic minimum (unsigned)
+    AMOMAXU,                    // Atomic maximum (unsigned)
+    // Scalar FP loads and stores (width carried in funct3)
+    LOAD_FP,                    // Load floating-point scalar
+    STORE_FP,                   // Store floating-point scalar
     // F extension (single-precision floating-point)
-    FLW,                       // Load float
-    FSW,                       // Store float
-    FADD_S,                    // FP add
-    FSUB_S,                    // FP subtract
-    FMUL_S,                    // FP multiply
-    FDIV_S,                    // FP divide
-    FSQRT_S,                   // FP square root
-    FMADD_S,                   // FP fused multiply-add
-    FMSUB_S,                   // FP fused multiply-subtract
-    FNMADD_S,                  // FP negated fused multiply-add
-    FNMSUB_S,                  // FP negated fused multiply-subtract
-    FSGNJ_S,                   // FP sign inject
-    FSGNJN_S,                  // FP sign inject negated
-    FSGNJX_S,                  // FP sign inject XOR
-    FMIN_S,                    // FP minimum
-    FMAX_S,                    // FP maximum
-    FCVT_W_S,                  // FP to signed int
-    FCVT_WU_S,                 // FP to unsigned int
-    FCVT_S_W,                  // Signed int to FP
-    FCVT_S_WU,                 // Unsigned int to FP
-    FMV_X_W,                   // Move FP bits to int reg
-    FMV_W_X,                   // Move int bits to FP reg
-    FEQ_S,                     // FP equal
-    FLT_S,                     // FP less than
-    FLE_S,                     // FP less than or equal
-    FCLASS_S,                  // FP classify
+    FADD_S,                     // FP add
+    FSUB_S,                     // FP subtract
+    FMUL_S,                     // FP multiply
+    FDIV_S,                     // FP divide
+    FSQRT_S,                    // FP square root
+    FMADD_S,                    // FP fused multiply-add
+    FMSUB_S,                    // FP fused multiply-subtract
+    FNMADD_S,                   // FP negated fused multiply-add
+    FNMSUB_S,                   // FP negated fused multiply-subtract
+    FSGNJ_S,                    // FP sign inject
+    FSGNJN_S,                   // FP sign inject negated
+    FSGNJX_S,                   // FP sign inject XOR
+    FMIN_S,                     // FP minimum
+    FMAX_S,                     // FP maximum
+    FCVT_W_S,                   // FP to signed int
+    FCVT_WU_S,                  // FP to unsigned int
+    FCVT_S_W,                   // Signed int to FP
+    FCVT_S_WU,                  // Unsigned int to FP
+    FMV_X_W,                    // Move FP bits to int reg
+    FMV_W_X,                    // Move int bits to FP reg
+    FEQ_S,                      // FP equal
+    FLT_S,                      // FP less than
+    FLE_S,                      // FP less than or equal
+    FCLASS_S,                   // FP classify
     // D extension (double-precision floating-point)
-    FLD,                       // Load double
-    FSD,                       // Store double
-    FADD_D,                    // FP add (double)
-    FSUB_D,                    // FP subtract (double)
-    FMUL_D,                    // FP multiply (double)
-    FDIV_D,                    // FP divide (double)
-    FSQRT_D,                   // FP square root (double)
-    FMADD_D,                   // FP fused multiply-add (double)
-    FMSUB_D,                   // FP fused multiply-subtract (double)
-    FNMADD_D,                  // FP negated fused multiply-add (double)
-    FNMSUB_D,                  // FP negated fused multiply-subtract (double)
-    FSGNJ_D,                   // FP sign inject (double)
-    FSGNJN_D,                  // FP sign inject negated (double)
-    FSGNJX_D,                  // FP sign inject XOR (double)
-    FMIN_D,                    // FP minimum (double)
-    FMAX_D,                    // FP maximum (double)
-    FCVT_W_D,                  // FP to signed int (double)
-    FCVT_WU_D,                 // FP to unsigned int (double)
-    FCVT_D_W,                  // Signed int to FP (double)
-    FCVT_D_WU,                 // Unsigned int to FP (double)
-    FCVT_S_D,                  // Convert double to single
-    FCVT_D_S,                  // Convert single to double
-    FEQ_D,                     // FP equal (double)
-    FLT_D,                     // FP less than (double)
-    FLE_D,                     // FP less than or equal (double)
-    FCLASS_D,                  // FP classify (double)
-    // RV64I base.
-    LWU,                       // Load word unsigned (zero-extended)
-    LD,                        // Load doubleword
-    SD,                        // Store doubleword
-    ADDIW,                     // Add immediate word (sext32 result)
-    SLLIW,                     // Shift left logical immediate word
-    SRLIW,                     // Shift right logical immediate word
-    SRAIW,                     // Shift right arithmetic immediate word
-    ADDW,                      // Add word
-    SUBW,                      // Subtract word
-    SLLW,                      // Shift left logical word
-    SRLW,                      // Shift right logical word
-    SRAW,                      // Shift right arithmetic word
-    // RV64 B-extension W/UW forms.
-    ADD_UW,                    // Zba: add unsigned word (zext32(rs1) + rs2)
-    SH1ADD_UW,                 // Zba: shift-add unsigned word
-    SH2ADD_UW,                 // Zba: shift-add unsigned word
-    SH3ADD_UW,                 // Zba: shift-add unsigned word
-    SLLI_UW,                   // Zba: shift-left immediate unsigned word (6-bit shamt)
-    ROLW,                      // Zbb: rotate left word (sext32 result)
-    RORW,                      // Zbb: rotate right word (sext32 result)
-    RORIW,                     // Zbb: rotate right immediate word (5-bit shamt)
-    CLZW,                      // Zbb: count leading zeros in word
-    CTZW,                      // Zbb: count trailing zeros in word
-    CPOPW,                     // Zbb: population count of word
-    PACKW,                     // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
-    // RV64 M-extension word forms.
-    MULW,                      // Multiply word (sext32 of low-32 product)
-    DIVW,                      // Divide word signed (sext32 result)
-    DIVUW,                     // Divide word unsigned (sext32 result)
-    REMW,                      // Remainder word signed (sext32 result)
-    REMUW,                     // Remainder word unsigned (sext32 result)
-    // RV64 F/D conversions and moves.
-    FCVT_L_S,                  // FP to signed 64-bit int (single)
-    FCVT_LU_S,                 // FP to unsigned 64-bit int (single)
-    FCVT_S_L,                  // Signed 64-bit int to FP (single)
-    FCVT_S_LU,                 // Unsigned 64-bit int to FP (single)
-    FCVT_L_D,                  // FP to signed 64-bit int (double)
-    FCVT_LU_D,                 // FP to unsigned 64-bit int (double)
-    FCVT_D_L,                  // Signed 64-bit int to FP (double)
-    FCVT_D_LU,                 // Unsigned 64-bit int to FP (double)
-    FMV_X_D,                   // Move double bits to int reg
-    FMV_D_X,                   // Move int bits to double reg
-    ILLEGAL,                   // Illegal instruction trap marker
-    // Supervisor, fetch-fault, and Debug ops retain their fixed ordinals.
-    SRET,                      // Return from supervisor-mode trap
-    SFENCE_VMA,                // Supervisor fence.vma with address and ASID filters
-    FETCH_FAULT,               // Fetch access-fault pseudo-op: injected
-                               // by decode for a fault-tagged fetch bundle; raises the
-                               // precise instruction access fault (cause 1) through
-                               // the ILLEGAL/ECALL completion path
-    FETCH_PAGE_FAULT,          // Fetch page-fault pseudo-op: the
-                               // translated-fetch twin of FETCH_FAULT (cause 12)
-    DRET,                      // Return from Debug Mode: rides the
-                               // MRET serial path; illegal outside Debug Mode
-    CLMUL,                     // Zbc/Zbkc: low polynomial product
-    CLMULH,                    // Zbc/Zbkc: high polynomial product
-    CLMULR,                    // Zbc: reversed polynomial product
-    CBO_ZERO,                  // Zicboz: zero the 64-byte block containing rs1
-    VSETVLI,                   // V: set vl and vtype; AVL in rs1, vtype immediate
-    VSETIVLI,                  // V: set vl and vtype; AVL and vtype immediates
-    VSETVL,                    // V: set vl and vtype; AVL in rs1, vtype in rs2
-    VARITH,                    // V: vector arithmetic with no scalar operand; the engine
-                               // executes it after commit, INT_RS only completes it
-    VARITH_X,                  // V: vector arithmetic with rs1 as its scalar operand, which
-                               // INT_RS passes to the ROB for the engine
-    VTOX,                      // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
-                               // once the engine is idle; no reservation station
+    FADD_D,                     // FP add (double)
+    FSUB_D,                     // FP subtract (double)
+    FMUL_D,                     // FP multiply (double)
+    FDIV_D,                     // FP divide (double)
+    FSQRT_D,                    // FP square root (double)
+    FMADD_D,                    // FP fused multiply-add (double)
+    FMSUB_D,                    // FP fused multiply-subtract (double)
+    FNMADD_D,                   // FP negated fused multiply-add (double)
+    FNMSUB_D,                   // FP negated fused multiply-subtract (double)
+    FSGNJ_D,                    // FP sign inject (double)
+    FSGNJN_D,                   // FP sign inject negated (double)
+    FSGNJX_D,                   // FP sign inject XOR (double)
+    FMIN_D,                     // FP minimum (double)
+    FMAX_D,                     // FP maximum (double)
+    FCVT_W_D,                   // FP to signed int (double)
+    FCVT_WU_D,                  // FP to unsigned int (double)
+    FCVT_D_W,                   // Signed int to FP (double)
+    FCVT_D_WU,                  // Unsigned int to FP (double)
+    FCVT_S_D,                   // Convert double to single
+    FCVT_D_S,                   // Convert single to double
+    FEQ_D,                      // FP equal (double)
+    FLT_D,                      // FP less than (double)
+    FLE_D,                      // FP less than or equal (double)
+    FCLASS_D,                   // FP classify (double)
+    // Fault, debug, carry-less multiply, CMO, and vector control/arith ops
+    FETCH_FAULT,                // Fetch access-fault pseudo-op (cause 1)
+    FETCH_PAGE_FAULT,           // Fetch page-fault pseudo-op (cause 12)
+    DRET,                       // Return from Debug Mode
+    CLMUL,                      // Zbc/Zbkc: low polynomial product
+    CLMULH,                     // Zbc/Zbkc: high polynomial product
+    CLMULR,                     // Zbc: reversed polynomial product
+    CBO_ZERO,                   // Zicboz: zero the 64-byte block containing rs1
     // Zicbom: clean, flush or invalidate the 64-byte block containing rs1.
     // id_stage decodes cbo.inval as CBO_FLUSH while CBIE selects a flush, so
     // CBO_INVAL always means an invalidate.
     CBO_CLEAN,
     CBO_FLUSH,
     CBO_INVAL,
-    VLOAD,                     // V: unit-stride, whole-register and mask loads; INT_RS
-                               // passes the rs1 base to the ROB
-    VSTORE,                    // V: unit-stride, whole-register and mask stores; as VLOAD
-    // Zfhmin: half-precision loads, stores, moves and conversions.
-    FLH,                       // Load half (NaN-boxed into the FP register)
-    FSH,                       // Store half (low 16 bits)
-    FMV_X_H,                   // Move half bits to int reg (sign-extended)
-    FMV_H_X,                   // Move int bits to half reg (NaN-boxed)
-    FCVT_S_H,                  // Convert half to single
-    FCVT_H_S,                  // Convert single to half
-    FCVT_D_H,                  // Convert half to double
-    FCVT_H_D,                  // Convert double to half
+    VSETVLI,                    // V: set vl and vtype; AVL in rs1, vtype immediate
+    VSETIVLI,                   // V: set vl and vtype; AVL and vtype immediates
+    VSETVL,                     // V: set vl and vtype; AVL in rs1, vtype in rs2
+    VARITH,                     // V: vector arithmetic with no scalar operand; the engine
+                                // executes it after commit, INT_RS only completes it
+    VARITH_X,                   // V: vector arithmetic with rs1 as its scalar operand, which
+                                // INT_RS passes to the ROB for the engine
+    VTOX,                       // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
+                                // once the engine is idle; no reservation station
+    // RV64I and B-extension word shifts/ops (pinned at 8'd170 for projected_shift_controls)
+    ADDIW            = 8'd170,  // Add immediate word (sext32 result)
+    SLLIW,                      // Shift left logical immediate word
+    SRLIW,                      // Shift right logical immediate word
+    SRAIW,                      // Shift right arithmetic immediate word
+    ADDW,                       // Add word
+    SUBW,                       // Subtract word
+    SLLW,                       // Shift left logical word
+    SRLW,                       // Shift right logical word
+    SRAW,                       // Shift right arithmetic word
+    ADD_UW,                     // Zba: add unsigned word (zext32(rs1) + rs2)
+    SH1ADD_UW,                  // Zba: shift-add unsigned word
+    SH2ADD_UW,                  // Zba: shift-add unsigned word
+    SH3ADD_UW,                  // Zba: shift-add unsigned word
+    SLLI_UW,                    // Zba: shift-left immediate unsigned word (6-bit shamt)
+    ROLW,                       // Zbb: rotate left word (sext32 result)
+    RORW,                       // Zbb: rotate right word (sext32 result)
+    RORIW,                      // Zbb: rotate right immediate word (5-bit shamt)
+    // RV64 F/D conversions and moves.
+    FCVT_L_S,                   // FP to signed 64-bit int (single)
+    FCVT_LU_S,                  // FP to unsigned 64-bit int (single)
+    FCVT_S_L,                   // Signed 64-bit int to FP (single)
+    FCVT_S_LU,                  // Unsigned 64-bit int to FP (single)
+    FCVT_L_D,                   // FP to signed 64-bit int (double)
+    FCVT_LU_D,                  // FP to unsigned 64-bit int (double)
+    FCVT_D_L,                   // Signed 64-bit int to FP (double)
+    FCVT_D_LU,                  // Unsigned 64-bit int to FP (double)
+    FMV_X_D,                    // Move double bits to int reg
+    FMV_D_X,                    // Move int bits to double reg
+    VLOAD,                      // V: unit-stride, whole-register and mask loads; INT_RS
+                                // passes the rs1 base to the ROB
+    VSTORE,                     // V: unit-stride, whole-register and mask stores; as VLOAD
+    // Zfhmin: half-precision moves and conversions (loads/stores use LOAD_FP/STORE_FP).
+    FMV_X_H,                    // Move half bits to int reg (sign-extended)
+    FMV_H_X,                    // Move int bits to half reg (NaN-boxed)
+    FCVT_S_H,                   // Convert half to single
+    FCVT_H_S,                   // Convert single to half
+    FCVT_D_H,                   // Convert half to double
+    FCVT_H_D,                   // Convert double to half
     // Zfa with F and D. FLI.H needs Zfh or Zvfh; D high-half moves need RV32.
-    FLI_S,                     // Load one of 32 single-precision constants
-    FLI_D,                     // Load one of 32 double-precision constants
-    FMINM_S,                   // Minimum, NaN if either operand is NaN
-    FMAXM_S,                   // Maximum, NaN if either operand is NaN
+    FLI_S,                      // Load one of 32 single-precision constants
+    FLI_D,                      // Load one of 32 double-precision constants
+    FMINM_S,                    // Minimum, NaN if either operand is NaN
+    FMAXM_S,                    // Maximum, NaN if either operand is NaN
     FMINM_D,
     FMAXM_D,
-    FROUND_S,                  // Round to integral value, no NX
-    FROUNDNX_S,                // Round to integral value, NX when inexact
+    FROUND_S,                   // Round to integral value, no NX
+    FROUNDNX_S,                 // Round to integral value, NX when inexact
     FROUND_D,
     FROUNDNX_D,
-    FCVTMOD_W_D,               // Double to 32-bit int, modular (RTZ)
-    FLEQ_S,                    // Quiet less than or equal
-    FLTQ_S,                    // Quiet less than
+    FCVTMOD_W_D,                // Double to 32-bit int, modular (RTZ)
+    FLEQ_S,                     // Quiet less than or equal
+    FLTQ_S,                     // Quiet less than
     FLEQ_D,
     FLTQ_D,
     // Zimop MOP.R.n / MOP.RR.n: no extension redefines them, so each writes
@@ -3290,7 +3260,7 @@ package riscv_pkg;
       ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
       ROLW, RORW, RORIW, CLZW, CTZW, CPOPW, PACKW,
       // CSR instructions -> INT_RS (execute at Reorder Buffer head)
-      CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
+      CSR_REG, CSR_IMM,
       // Privileged (exceptions) -> INT_RS
       ECALL, EBREAK, FETCH_FAULT, FETCH_PAGE_FAULT,
       // Zihintpause: a no-operand NOP that completes through INT_RS
@@ -3304,15 +3274,11 @@ package riscv_pkg;
       get_rs_type = RS_MUL;
 
       // Memory operations -> MEM_RS (both INT and FP)
-      LB, LH, LW, LBU, LHU, SB, SH, SW,
-      LWU, LD, SD,
-      FLW, FSW, FLD, FSD, FLH, FSH,
-      LR_W, SC_W,
-      AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
-      AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
-      LR_D, SC_D,
-      AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
-      AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
+      LOAD, STORE,
+      LOAD_FP, STORE_FP,
+      LR, SC,
+      AMOSWAP, AMOADD, AMOXOR, AMOAND, AMOOR,
+      AMOMIN, AMOMAX, AMOMINU, AMOMAXU,
       FENCE, FENCE_I, SFENCE_VMA,
       // Zicboz: a store-queue entry that writes a whole block. Zicbom: a
       // store-queue entry that names a block
@@ -3373,16 +3339,11 @@ package riscv_pkg;
       // write their result
       VSETVLI, VSETIVLI, VSETVL, VTOX,
       // Integer loads
-      LB, LH, LW, LBU, LHU, LWU, LD,
+      LOAD,
       // LR/AMO return memory data; SC returns success/failure status.
-      LR_W, SC_W,
-      AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
-      AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
-      LR_D, SC_D,
-      AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
-      AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
+      LR, SC, AMOSWAP, AMOADD, AMOXOR, AMOAND, AMOOR, AMOMIN, AMOMAX, AMOMINU, AMOMAXU,
       // CSR (return old CSR value to rd)
-      CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
+      CSR_REG, CSR_IMM,
       // FP compare -> INT rd
       FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
       // FP classify -> INT rd
@@ -3405,7 +3366,7 @@ package riscv_pkg;
   function automatic logic has_fp_dest(instr_op_e op);
     case (op)
       // FP loads
-      FLW, FLD, FLH,
+      LOAD_FP,
       // FP compute ops
       FADD_S, FSUB_S, FMUL_S, FDIV_S, FSQRT_S,
       FADD_D, FSUB_D, FMUL_D, FDIV_D, FSQRT_D,
@@ -3472,7 +3433,7 @@ package riscv_pkg;
       // FP compare (fs1, fs2)
       FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
       // FP stores (base=INT rs1, data=FP rs2)
-      FSW, FSD, FSH,
+      STORE_FP,
       // Zfa
       FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D:
       uses_fp_rs2 = 1'b1;
@@ -3499,12 +3460,7 @@ package riscv_pkg;
       uses_int_rs1 = 1'b0;
     end else begin
       case (op)
-        LUI, AUIPC, JAL,
-        ECALL, EBREAK,
-        FENCE, FENCE_I,
-        WFI, MRET, SRET, DRET, PAUSE,
-        CSRRWI, CSRRSI, CSRRCI,
-        MOP,
+        LUI, AUIPC, JAL, ECALL, EBREAK, FENCE, FENCE_I, WFI, MRET, SRET, DRET, PAUSE, CSR_IMM, MOP,
         // Zfa FLI: rs1 is the constant index, not a register
         FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX:
         uses_int_rs1 = 1'b0;
@@ -3514,7 +3470,7 @@ package riscv_pkg;
   endfunction
 
   // Instructions that read integer rs2: branches, R-type integer ALU,
-  // integer stores, AMO/SC. FP stores (FSH/FSW/FSD) read FP rs2 for their data
+  // integer stores, AMO/SC. FP stores (STORE_FP) read FP rs2 for their data
   // instead.
   function automatic logic uses_int_rs2(instr_op_e op);
     if (uses_fp_rs2(op)) begin
@@ -3543,14 +3499,9 @@ package riscv_pkg;
         // RV64 W-form R-type ops
         ADDW, SUBW, SLLW, SRLW, SRAW, ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, ROLW, RORW, PACKW,
         // Integer stores
-        SB, SH, SW, SD,
+        STORE,
         // Atomics (rs2 is source value for AMO/SC)
-        SC_W,
-        AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
-        AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
-        SC_D,
-        AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
-        AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D:
+        SC, AMOSWAP, AMOADD, AMOXOR, AMOAND, AMOOR, AMOMIN, AMOMAX, AMOMINU, AMOMAXU:
         uses_int_rs2 = 1'b1;
         default: uses_int_rs2 = 1'b0;
       endcase
