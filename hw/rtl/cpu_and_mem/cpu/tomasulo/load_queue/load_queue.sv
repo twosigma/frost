@@ -845,7 +845,7 @@ module load_queue #(
 
   // lq_address and lq_amo_rs2 are only written once the address CAM resolves.
   // Valid bits stay in FFs; stale RAM contents are don't-care until addr_valid.
-  logic [3:0] coherent_stored_class, coherent_update_class;
+  logic [4:0] coherent_stored_class, coherent_update_class;
   if (1'b1) begin : gen_coherent_address_store
     coherent_lq_address_store #(
         .ADDR_WIDTH(IdxWidth),
@@ -2057,7 +2057,7 @@ module load_queue #(
     assign selected_permission = issue_mem_uses_addr_update ?
         (update_uncached_ok || update_cached_ok || (!update_atomic && update_device_ok)) :
         stored_permission;
-    wire [3:0] selected_class = issue_mem_uses_addr_update ?
+    wire [4:0] selected_class = issue_mem_uses_addr_update ?
         coherent_update_class : coherent_stored_class;
     (* keep = "true" *) wire stored_misaligned;
     assign stored_misaligned = is_load_misaligned(
@@ -2073,7 +2073,7 @@ module load_queue #(
         cached_q <= selected_class[0];
         normal_q <= selected_class[3];
         misaligned_q <= selected_misaligned;
-        pbmt_alias_q <= riscv_pkg::pma_pbmt_alias_ok(sq_check_addr_next);
+        pbmt_alias_q <= selected_class[4];
       end
     end
     // Svpbmt: the uncached alias of DDR is outside the PMA map, so an

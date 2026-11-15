@@ -307,7 +307,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherent_cpu.sby",
-        "Coherent SC ownership, load selection, parking, and reservation cuts.",
+        "Coherent SC ownership, load selection, address/PBMT classification, parking, and reservation cuts.",
         tasks=(
             "coh_sc_selected_prove",
             "coh_sc_class_small_prove",
