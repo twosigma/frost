@@ -83,7 +83,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Sstvecd | Implemented | `smode_test`, `csr_test`, `csr_file.sby`, `trap_unit.sby` |
 | Sstvala | Implemented | `sstvala_test`, `sstvala_fault_test`, `ad_fault_test`, `misaligned_test`, TestRIG (`sstvala_illegal.S`, `access_fault_tval.S`), `trap_unit.sby` |
 | Sscounterenw | Implemented | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`scounteren`), `csr_file.sby` |
-| Svpbmt | In progress | - |
+| Svpbmt | Implemented (NC/IO DDR mappings require an uncached alias) | `svpbmt_test`, `svpbmt_test_2g`, `svpbmt_bus_error`, TestRIG (`svpbmt_pbmte.S`), `ptw.sby`, `dmmu_mmio.sby`, `tlb.sby`, `l2tlb.sby` |
 | Svinval | Not yet implemented | - |
 | Svnapot | In progress | - |
 | Sstc | Implemented (S-mode `mcounteren.TM` check missing) | `sstc_test`, `irq_take_latency`, `csr_file.sby` |
