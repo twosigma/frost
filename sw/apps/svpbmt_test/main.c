@@ -70,6 +70,7 @@
 #define CAUSE_FETCH_ACCESS 1ul
 #define CAUSE_LOAD_ACCESS 5ul
 #define CAUSE_STORE_ACCESS 7ul
+#define CAUSE_FETCH_PAGE 12ul
 #define CAUSE_LOAD_PAGE 13ul
 #define CAUSE_STORE_PAGE 15ul
 #define NO_TRAP (~0ul)
@@ -80,6 +81,7 @@
 #define PTE_R (1ul << 1)
 #define PTE_W (1ul << 2)
 #define PTE_X (1ul << 3)
+#define PTE_U (1ul << 4)
 #define PTE_A (1ul << 6)
 #define PTE_D (1ul << 7)
 #define PTE_PPN(pa) ((((unsigned long) (pa)) >> 12) << 10)
@@ -454,6 +456,25 @@ static int no_alias_map(void)
         ok &= expect_trap("2g ddr-load", K_LD, CAUSE_LOAD_ACCESS, va);
         access_s(K_SD, va, 7);
         ok &= expect_trap("2g ddr-store", K_SD, CAUSE_STORE_ACCESS, va);
+        /* Page permissions take precedence over the missing-alias PMA. */
+        l0[pg] = PTE_PPN(FRAME(pg)) | RWAD | PTE_PBMT(pg) | PTE_U;
+        sfence_all();
+        access_s(K_LD, va, 0);
+        ok &= expect_trap("2g user-load", K_LD, CAUSE_LOAD_PAGE, va);
+        access_s(K_SD, va, 7);
+        ok &= expect_trap("2g user-store", K_SD, CAUSE_STORE_PAGE, va);
+        l0[pg] = PTE_PPN(FRAME(pg)) | (RWAD & ~PTE_W) | PTE_PBMT(pg);
+        sfence_all();
+        access_s(K_SD, va, 7);
+        ok &= expect_trap("2g readonly-store", K_SD, CAUSE_STORE_PAGE, va);
+        l0[pg] = PTE_PPN(FRAME(pg)) | (RWAD & ~PTE_D) | PTE_PBMT(pg);
+        sfence_all();
+        access_s(K_SD, va, 7);
+        ok &= expect_trap("2g dirty-clear", K_SD, CAUSE_STORE_PAGE, va);
+        fetch_s(VA_4K(pg));
+        ok &= expect_trap("2g nonexec-fetch", -1, CAUSE_FETCH_PAGE, VA_4K(pg));
+        l0[pg] = PTE_PPN(FRAME(pg)) | RWAD | PTE_PBMT(pg);
+        sfence_all();
         l0[PG_FILL0] = PTE_PPN(0x40010000ul) | RWAD | PTE_PBMT(pg);
         sfence_all();
         unsigned long device_va = VA_4K(PG_FILL0);

@@ -40,7 +40,8 @@
  *     PBMT = 3 in a leaf, and a nonzero PBMT in a leaf while menvcfg.PBMTE,
  *     sampled when the walk starts, is clear (Svpbmt).
  *   - a leaf with PBMT = NC or IO over cached DDR that has no uncached alias
- *     (riscv_pkg "Svpbmt") => DFAULT_ACCESS.
+ *     (riscv_pkg "Svpbmt") => DFAULT_ACCESS with the leaf payload, so the
+ *     requester checks page permissions before applying this PMA refusal.
  * A clean leaf answers DFAULT_NONE with {pbmt, ppn, level, RWXUDG} and echoes
  * the VPN. For NC or IO over cached DDR the PPN is the alias's, which the TLBs
  * store with the field; the MMUs make such a page MMIO. The requesting MMU checks
@@ -502,20 +503,21 @@ module ptw #(
             end else if (pte_is_leaf) begin
               if (superpage_misaligned || !pte_a) begin
                 resp_q.fault_kind <= riscv_pkg::DFAULT_PAGE;
-              end else if (riscv_pkg::pbmt_leaf_access_fault(pte_ppn, pte_pbmt)) begin
-                // NC or IO over DDR without an uncached alias.
-                resp_q.fault_kind <= riscv_pkg::DFAULT_ACCESS;
               end else begin
-                resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
-                resp_q.pbmt       <= pte_pbmt;
-                resp_q.ppn        <= riscv_pkg::pbmt_leaf_ppn(pte_ppn, pte_pbmt);
-                resp_q.level      <= level_q;
-                resp_q.perm_r     <= pte_r;
-                resp_q.perm_w     <= pte_w;
-                resp_q.perm_x     <= pte_x;
-                resp_q.perm_u     <= pte_u;
-                resp_q.perm_d     <= pte_d;
-                resp_q.perm_g     <= g_acc_q || pte[riscv_pkg::PteFlagG];
+                // Keep permissions on a no-alias leaf: a page-permission
+                // fault has priority over its physical-access refusal.
+                resp_q.fault_kind <= riscv_pkg::pbmt_leaf_access_fault(
+                    pte_ppn, pte_pbmt
+                ) ? riscv_pkg::DFAULT_ACCESS : riscv_pkg::DFAULT_NONE;
+                resp_q.pbmt <= pte_pbmt;
+                resp_q.ppn <= riscv_pkg::pbmt_leaf_ppn(pte_ppn, pte_pbmt);
+                resp_q.level <= level_q;
+                resp_q.perm_r <= pte_r;
+                resp_q.perm_w <= pte_w;
+                resp_q.perm_x <= pte_x;
+                resp_q.perm_u <= pte_u;
+                resp_q.perm_d <= pte_d;
+                resp_q.perm_g <= g_acc_q || pte[riscv_pkg::PteFlagG];
               end
               state_q <= PTW_RESP;
             end else if (level_q == 2'd0) begin
@@ -697,7 +699,15 @@ module ptw #(
           p_access_pbmt_reason :
           assert (!f_g_reserved && !f_g_invalid && f_g_leaf && !f_g_misaligned && !f_g_a0 &&
                   f_g_pbmt_no_alias);
+          p_access_pbmt_payload :
+          assert (o_resp.pbmt == f_g_pbmt && o_resp.ppn == f_pte[53:10] &&
+                  o_resp.level == f_level && o_resp.perm_r == f_pte[1] &&
+                  o_resp.perm_w == f_pte[2] && o_resp.perm_x == f_pte[3] &&
+                  o_resp.perm_u == f_pte[4] && o_resp.perm_d == f_pte[7]);
         end
+        if (o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS && o_resp.pbmt != 0)
+          p_access_leaf_marker :
+          assert (f_pte_seen && f_g_pbmt_no_alias && ($past(state_q) == PTW_DECODE));
         // A reserved PBMT, or any PBMT while PBMTE was clear, never answers
         // a translation.
         if (f_pte_seen && f_g_pbmt_reserved && ($past(state_q) == PTW_DECODE))

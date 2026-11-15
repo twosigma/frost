@@ -235,7 +235,7 @@ def translate_part(a: Access, va: int) -> tuple[str, int]:
     leaf = a.leaves.get(vpn, Leaf(fault=DFAULT_PAGE))
     if leaf.fault == DFAULT_PAGE:
         return "page", 0
-    if leaf.fault == DFAULT_ACCESS:
+    if leaf.fault == DFAULT_ACCESS and not leaf.pbmt:
         return "access", 0
     priv_ok = (a.priv_u or a.sum_) if leaf.u else not a.priv_u
     perm = (
@@ -245,6 +245,8 @@ def translate_part(a: Access, va: int) -> tuple[str, int]:
     )
     if not perm:
         return "page", 0
+    if leaf.fault == DFAULT_ACCESS:
+        return "access", 0
     if leaf.ppn >> 20:
         return "access", 0
     if leaf.level == 2:
@@ -786,3 +788,31 @@ async def test_pbmt_page_boundaries(dut: Any) -> None:
             assert result["cause"] == (STORE_MISALIGN if store else LOAD_MISALIGN)
             assert result["tval"] == a.va
             assert not env.requests
+
+
+@cocotb.test()
+async def test_no_alias_permission_precedence(dut: Any) -> None:
+    """A refused NC/IO leaf checks permissions for either part before data issue."""
+    env = await setup(dut, seed=19)
+    for store in (False, True):
+        for pbmt in (1, 2):
+            for upper in (False, True):
+                for denied in (False, True):
+                    va = 0x100FFD
+                    a = Access(va=va, nbytes=8, store=store, translate=True)
+                    a.leaves[va >> 12] = Leaf(ppn=DDR_BASE >> 12)
+                    refused_vpn = (va >> 12) + int(upper)
+                    a.leaves[refused_vpn] = Leaf(
+                        fault=DFAULT_ACCESS,
+                        ppn=DDR_BASE >> 12,
+                        pbmt=pbmt,
+                        u=int(denied),
+                    )
+                    before = dict(env.mem)
+                    result = await run_access(env, a)
+                    check(env, a, before, result)
+                    assert result["cause"] == cause_of(
+                        "page" if denied else "access", store
+                    )
+                    assert result["tval"] == (0x101000 if upper else va)
+                    assert not env.requests

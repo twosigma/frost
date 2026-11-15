@@ -125,7 +125,7 @@ def _expected(op: Op, leaf: Leaf) -> tuple[int, int, int]:
     canonical = va < (1 << 38) or va >= (1 << 64) - (1 << 38)
     if not canonical:
         return va, PAGE, 0
-    if leaf.fault:
+    if leaf.fault and not (leaf.fault == ACCESS and leaf.pbmt):
         return va, leaf.fault, 0
     priv_ok = bool(op.priv_u or op.sum_) if leaf.u else not op.priv_u
     access_ok = (
@@ -133,6 +133,8 @@ def _expected(op: Op, leaf: Leaf) -> tuple[int, int, int]:
     )
     if not priv_ok or not access_ok:
         return va, PAGE, 0
+    if leaf.fault:
+        return va, leaf.fault, 0
     offset_bits = 12 + 9 * leaf.level
     pa = ((leaf.ppn << 12) & ~((1 << offset_bits) - 1)) | (
         va & ((1 << offset_bits) - 1)
@@ -481,6 +483,38 @@ async def test_pbmt_pages_take_the_mmio_path(dut: Any) -> None:
                     break
                 await _cycle(dut)
             _check(dut, op, page)
+            await _cycle(dut)
+
+
+@cocotb.test()
+async def test_no_alias_refusal_checks_live_page_permissions(dut: Any) -> None:
+    """A no-alias leaf keeps page faults ahead of its physical-access refusal."""
+    await _setup(dut)
+    load = Op()
+    store = replace(load, needs_sq=1, store=1)
+    for pbmt in (1, 2):
+        leaf = Leaf(vpn=load.va >> 12, pbmt=pbmt, fault=ACCESS)
+        cases = (
+            (load, leaf),
+            (store, leaf),
+            (load, replace(leaf, u=1)),
+            (store, replace(leaf, u=1)),
+            (replace(load, sum_=1), replace(leaf, u=1)),
+            (replace(load, priv_u=1), leaf),
+            (store, replace(leaf, w=0)),
+            (store, replace(leaf, d=0)),
+            (load, replace(leaf, r=0, x=1)),
+            (replace(load, mxr=1), replace(leaf, r=0, x=1)),
+        )
+        for op, response in cases:
+            await _clear(dut)
+            _issue(dut, op)
+            await _cycle(dut)
+            dut.i_iss_valid.value = 0
+            _response(dut, response)
+            await _cycle(dut)
+            _check(dut, op, response)
+            dut.i_walk_resp_valid.value = 0
             await _cycle(dut)
 
 

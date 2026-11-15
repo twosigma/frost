@@ -1851,12 +1851,14 @@ package riscv_pkg;
   // leaf PTE with A=1 was found: install {ppn, level, flags} for the echoed
   // vpn. PAGE/ACCESS deliver the walk's refusal to the op that asked
   // (matched by the vpn echo: the requester may have been flushed and
-  // replaced since it asked). DFAULT_MISALIGN never occurs here.
+  // replaced since it asked). ACCESS with nonzero PBMT carries a valid
+  // no-alias leaf: its page permissions take priority over the PMA refusal.
+  // Other refused walks have PBMT zero. DFAULT_MISALIGN never occurs here.
   //
-  // pbmt is the leaf's PBMT field (never 3). For NC or IO over cached DDR,
-  // ppn is the alias's (pbmt_leaf_ppn); every TLB stores the alias PPN and
-  // the field, so a TLB hit returns both. The field sits first so that the
-  // positions of the older fields are unchanged.
+  // pbmt is the leaf's PBMT field (never 3). A successful NC/IO DDR
+  // translation uses the alias PPN (pbmt_leaf_ppn); a no-alias refusal keeps
+  // the original PPN. TLB fills store the PPN and field together. PBMT
+  // occupies the most significant bits of the packed response.
   typedef struct packed {
     logic [1:0] pbmt;
     data_fault_kind_e fault_kind;

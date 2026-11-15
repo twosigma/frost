@@ -907,7 +907,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="svpbmt_test",
         nic_mac_clocks=False,
-        description="Svpbmt at 2 GiB: NC/IO DDR access faults and working device mappings",
+        description="Svpbmt at 2 GiB: DDR access faults, page-permission precedence and device mappings",
         extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "31"),),
         verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=31", "--assert"),
     ),
