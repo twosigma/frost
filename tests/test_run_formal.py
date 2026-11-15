@@ -932,6 +932,12 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_depth2", "cover"),
     ),
     FormalTarget(
+        "id_stage_kill_equiv.sby",
+        "ID post-classifier kill masking equals in-classifier legality and fault "
+        "overrides across both slots and all stage outputs",
+        tasks=("id_kill_equiv",),
+    ),
+    FormalTarget(
         "vec_lmul_legality_equiv.sby",
         "Queued LMUL classes and vector-memory rejection equal the arithmetic, VTOX "
         "and VLOAD/VSTORE legality rules for every vtype, instruction and operation",
@@ -1040,6 +1046,22 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "home_capture_equiv.sby",
+        "Consumed home payloads match handshake-only captures, and registered "
+        "fill flags match their phase decodes across arbitrary reset and stalls.",
+        tasks=(
+            "home_small",
+            "home_four",
+            "home_default",
+            "array_bram",
+            "array_uram",
+            "endpoint32",
+            "endpoint56",
+            "arbiter_default",
+            "arbiter_idle",
+        ),
+    ),
+    FormalTarget(
         "home_forward_next_equiv.sby",
         "The home's forward-turn next state, formed for both outcomes of the memory "
         "response and selected last, equals the single-ready-set form at eight and "
@@ -1121,6 +1143,7 @@ FORMAL_TARGETS = [
             "bmc_free_small_oh",
             "cover_bin",
             "cover_oh",
+            "prove_copy",
         ),
     ),
     FormalTarget(
@@ -1133,6 +1156,12 @@ FORMAL_TARGETS = [
         "sq_live_result_select.sby",
         "Store addresses and MMIO flags match reference CDB priority selection",
         tasks=("prove",),
+    ),
+    FormalTarget(
+        "sq_early_sq_copy.sby",
+        "Store-address copies and the instantiated wrapper's consumed packets equal "
+        "the translation select, with reset, flush and translation-change covers",
+        tasks=("prove", "prove_integrated", "cover"),
     ),
     FormalTarget(
         "served_window_coverage.sby",
@@ -1517,7 +1546,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "immu_twin.sby",
         "Instruction MMU: primitive and portable forms are equivalent.",
-        tasks=("immu_twin",),
+        tasks=("immu_twin", "immu_twin_hold"),
     ),
     FormalTarget(
         "cached_tier_adapter_twin.sby",
@@ -1574,6 +1603,59 @@ FORMAL_TARGETS = [
         "reservation_station_twin.sby",
         "Reservation station: primitive and portable forms are equivalent.",
         tasks=("rs_twin_indexed",),
+    ),
+    FormalTarget(
+        "sq_forwarding_unit.sby",
+        "Store-queue forwarding: byte merge, CMO/MMIO/SC blocks, ring-order priority and tree equivalence.",
+        tasks=("prove", "cover", "tree_equiv"),
+    ),
+    FormalTarget(
+        "axi_cdc.sby",
+        "AXI4 clock-domain crossing: staggered resets, ordering and payload preservation.",
+        tasks=("prove_aw", "prove_w", "prove_b", "prove_ar", "prove_r", "cover"),
+    ),
+    FormalTarget(
+        "cdc_mailbox.sby",
+        "Toggle-handshake CDC mailbox: single in-flight transfer and stable payload capture.",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "dc_fifo.sby",
+        "Dual-clock BRAM FIFO: free-clock occupancy, ready margin and payload delivery.",
+        tasks=("prove", "prove_margin2", "cover"),
+    ),
+    FormalTarget(
+        "sync_dist_ram_fifo.sby",
+        "Synchronous distributed-RAM FIFO: flags, pointer wrap and ordered word delivery.",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "mwp_dist_ram.sby",
+        "Multi-write-port LVT distributed RAM: staged write forwarding and port priority.",
+        tasks=("bmc", "bmc_addr1", "bmc_unstaged", "cover"),
+    ),
+    FormalTarget(
+        "nic_irq.sby",
+        "NIC interrupt controller: W1C priority, count/timer coalescing and mask control.",
+        tasks=("prove", "bmc", "cover"),
+    ),
+    FormalTarget(
+        "nic_dma_front.sby",
+        "NIC DMA front-end: aperture filter, unique IDs, side caps and same-line RW exclusion.",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "rat_checkpoint_restore.sby",
+        "Register alias table: unbounded circular ROB and sequence oracle across save, restore and commit.",
+        tasks=(
+            "prove_int_active",
+            "prove_int_ckpt_lo",
+            "prove_int_ckpt_hi",
+            "prove_fp_active",
+            "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_hi",
+            "cover",
+        ),
     ),
 ]
 
@@ -2478,6 +2560,7 @@ SBY_TASKS = [
     ("cover_direct", "Direct-fetch responses coincident with clears and errors"),
     ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
+    ("prove_copy", "Staged address copies sample identical inputs on every edge"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
     ("bmc_raw", "Bounded equivalence with eight raw-wakeup candidates"),
     ("prove_raw", "Unbounded equivalence with eight raw-wakeup candidates"),
@@ -2564,6 +2647,18 @@ SBY_TASKS = [
     ),
     ("bmc", "Check assertions up to the configured depth"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
+    ("home_small", "Consumed packets and fill phase flags with two fills."),
+    (
+        "home_four",
+        "Consumed packets and fill phase flags with three fills and four ways.",
+    ),
+    ("home_default", "Consumed packets and fill phase flags with eight fills."),
+    ("array_bram", "Reset-qualified response and row-read captures in the BRAM array."),
+    ("array_uram", "Reset-qualified response and row-read captures in the URAM array."),
+    ("endpoint32", "Demand and grant captures with 32-bit addresses."),
+    ("endpoint56", "Demand and grant captures with 56-bit addresses."),
+    ("arbiter_default", "Selected payloads with handshake-only loading."),
+    ("arbiter_idle", "Selected payloads with loading on every idle cycle."),
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_seat2", "Seat next-state equivalence with two fills."),
     ("bmc_seat3", "Seat next-state equivalence with three fills and four ways."),
@@ -2733,6 +2828,14 @@ SBY_TASKS = [
         "Instruction MMU primitive form equals its portable form.",
     ),
     (
+        "immu_twin_hold",
+        "Instruction MMU primitive form equals its portable form with four hold-polarity copies.",
+    ),
+    (
+        "id_kill_equiv",
+        "ID post-classifier kill masking equals in-classifier legality and fault overrides.",
+    ),
+    (
         "cached_tier_twin",
         "Cached tier adapter primitive form equals its portable form with split read requests.",
     ),
@@ -2779,6 +2882,66 @@ SBY_TASKS = [
     (
         "rs_twin_indexed",
         "Indexed-write reservation station primitive form equals its portable form.",
+    ),
+    (
+        "prove_aw",
+        "Unbounded AXI4 CDC proof on the write-address channel.",
+    ),
+    (
+        "prove_w",
+        "Unbounded AXI4 CDC proof on the write-data channel.",
+    ),
+    (
+        "prove_b",
+        "Unbounded AXI4 CDC proof on the write-response channel.",
+    ),
+    (
+        "prove_ar",
+        "Unbounded AXI4 CDC proof on the read-address channel.",
+    ),
+    (
+        "prove_r",
+        "Unbounded AXI4 CDC proof on the read-data channel.",
+    ),
+    (
+        "prove_margin2",
+        "Unbounded dual-clock FIFO proof with almost-full margin 2.",
+    ),
+    (
+        "prove_int_active",
+        "Unbounded RAT proof for active integer rename, checkpoint pool and RAS outputs.",
+    ),
+    (
+        "prove_int_ckpt_lo",
+        "Unbounded RAT proof for integer snapshot invariants in checkpoints 0 through 3.",
+    ),
+    (
+        "prove_int_ckpt_hi",
+        "Unbounded RAT proof for integer snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "prove_fp_active",
+        "Unbounded RAT proof for active floating-point rename state.",
+    ),
+    (
+        "prove_fp_ckpt_lo",
+        "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 0 through 3.",
+    ),
+    (
+        "prove_fp_ckpt_hi",
+        "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "bmc_addr1",
+        "Bounded multi-write RAM equivalence with two entries.",
+    ),
+    (
+        "bmc_unstaged",
+        "Bounded multi-write RAM equivalence without write staging.",
+    ),
+    (
+        "tree_equiv",
+        "Store-queue forwarding balanced winner tree equals the linear formal selector.",
     ),
 ]
 
@@ -2845,6 +3008,14 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "prove_soc",
             "prove_soc_held",
             *(f"prove_soc8_{index}" for index in range(9)),
+        ],
+        "rat_checkpoint_restore": [
+            "prove_int_active",
+            "prove_int_ckpt_lo",
+            "prove_int_ckpt_hi",
+            "prove_fp_active",
+            "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_hi",
         ],
         "coherent_hart_cache": [
             "coh_hart_maint_owned_prove",
