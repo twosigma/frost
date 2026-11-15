@@ -81,7 +81,7 @@ module fp_launch_squash_miter (
   logic [5:0] b_state, c_state;  // u_*.u_engine.state_q
   logic c_squash;  // u_cand.squash_q
   logic [TagW-1:0] b_tag, c_tag;  // u_*.tag_q
-  logic [207:0] b_payload, c_payload;  // dec_q rm_q opa_q opb_q opc_q
+  logic [274:0] b_payload, c_payload;  // fli_q dec_q rm_q opa_q opb_q opc_q
   logic [65:0] b_dec1, c_dec1;  // ca/cb/cc ea/eb/ec f2i_over f2i_edge int_zero
   logic [410:0] b_dp, c_dp;  // shared arithmetic and result registers
   logic [133:0] b_i2f, c_i2f;  // integer magnitude, leading zeros, normalized bits
