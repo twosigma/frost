@@ -53,6 +53,11 @@ ROB. The
 head and head+1 copies of this memory also need the ROB's one-hot head masks
 to match their binary read addresses.
 
+The shared-link memory has separate staged allocation-address registers for
+the LVT write decode and read overrides. Both sample the same input on every
+edge, without a reset, flush or write-enable condition. Their initial values
+are unspecified; allocation establishes the staged address before a live read.
+
 Both value implementations update their LVT one cycle after an allocation,
 which imposes one rule: no CDB write may target an entry in the cycle after
 its allocation, or the live write would win the LVT over the staged
