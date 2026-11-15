@@ -108,3 +108,4 @@
 - Implemented Zfhmin and Zfa floating-point extensions, with architecture-test references, FP engine checks and TestRIG differential coverage
 - Limited the fanout of the L1D's phase and selection registers, registered the L2's zero-fill image clear, and matched DMA ingress grants and releases by queue identity
 - Implemented Zcb, Zcmop, Zimop, and Zihintntl, with decoder, formal, architecture-test and TestRIG coverage and ISA advertisement.
+- Implemented grant responses for attached L1D loads and same-sector load merging beside the read-hit pipeline, with formal checks and directed tests
