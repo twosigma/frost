@@ -320,6 +320,7 @@ bits, so a type taken from a different source than its target would show.
 | `instr_operand_classifier` | Decode's operand-class fields equal classification through the decoder's operation enum for every instruction bit pattern, injected NOPs, illegal flags, and fetch faults; only FP_RS ops read FP source 3 |
 | `register_alias_table` | x0 is never renamed; a rename records its ROB tag; an INT commit clears a mapping only if the mapping still holds the committing tag; reset clears mappings and checkpoints; a full flush clears the checkpoints and, unless a checkpoint restore coincides, the mappings; a reclaim-all restore frees every checkpoint |
 | `decoded_bundle_queue_twin` | The producer stall select and the shadow-next select (LUT3, LUT5 per bit) equal their portable form with the split shadow stall and four late copies |
+| `id_stage_kill_equiv` | `id_stage` with early CSR-gated legality and post-classifier masking equals `id_stage` with `is_illegal_instruction` and `is_fetch_fault` applied inside `instr_operand_classifier`, across all 38 operand-class bits, register next states, and all eight stage outputs for both slots, for every instruction word, CSR legality input, and `inject_nop` state |
 
 `decoded_bundle_queue` uses an 8-bit symbolic payload, so the check does not
 depend on decode fields. It also covers the registered head copy and a 3-bit
@@ -553,7 +554,7 @@ the least populated ordinary partition, and keeps B-channel stability alone.
 | `data_mem_request_router_twin` | The MMIO drain-accept gate (LUT4) equals its portable form |
 | `dmmu_twin` | The last-capture select (LUT4) and the lookup-stage and result-stage VA selects (LUT3 per bit) equal their portable form |
 | `immu_twin` | The physical-address-valid select (LUT5) and the next-state LUTs of word 1's fault, its cause, its VA-placeholder select and the neighbor-miss flag equal their portable form |
-| `immu_twin_hold` | The same with PA_COPY_HOLD, where each copy LUT forms the fetch hold |
+| `immu_twin_hold` | The same at the fetch stage's four hold-polarity copies (`PA_VALID_COPIES=4`, `PA_COPY_HOLD=1`), where each copy LUT forms the fetch hold |
 
 `coherence_observation` follows an arbitrary ROB tag, so it covers all 32 at
 XLEN 64: the pending observation, its table entry and line, cleanup on
