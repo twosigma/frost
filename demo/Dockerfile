@@ -23,6 +23,7 @@ ARG BUILD_JOBS=8
 
 WORKDIR /src
 COPY hw/rtl /src/hw/rtl
+COPY hw/sim/sim_assertions.cpp /src/hw/sim/sim_assertions.cpp
 COPY hw/sim/native /src/hw/sim/native
 COPY sw/common /src/sw/common
 COPY sw/lib /src/sw/lib

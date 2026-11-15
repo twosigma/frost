@@ -39,6 +39,7 @@ NATIVE_README = NATIVE_DIR / "README.md"
 NATIVE_MAIN_CPP = NATIVE_DIR / "main.cpp"
 NATIVE_MAKEFILE = NATIVE_DIR / "Makefile"
 NATIVE_VLT = NATIVE_DIR / "frost_native.vlt"
+SIM_ASSERTIONS_CPP = REPO_ROOT / "hw" / "sim" / "sim_assertions.cpp"
 BASELINE_PATH = NATIVE_DIR / "exactness_baseline.json"
 TESTS_DIR = REPO_ROOT / "tests"
 TESTS_MAKEFILE = TESTS_DIR / "Makefile"
@@ -73,6 +74,8 @@ EXPECTED_VERILATOR_G_ARGS = {
 
 EXPECTED_SHARED_VERILATOR_FLAGS = {
     "-f $(ROOT)/hw/rtl/frost.f",
+    "--assert",
+    "+define+FROST_SIM_ASSERTIONS",
     "-Wno-UNOPTFLAT",
     "-Wno-MODDUP",
     "-GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES)",
@@ -98,8 +101,6 @@ EXPECTED_NATIVE_ONLY_VERILATOR_FLAGS = {
     "-O3",
     "--threads $(THREADS)",
     "-Wno-UNOPTTHREADS",
-    "--assert",
-    "+define+FROST_SIM_ASSERTIONS",
     "--savable",
     '-LDFLAGS "$(EFFECTIVE_LDFLAGS)"',
     '-CFLAGS "$(NATIVE_CFLAGS)"',
@@ -112,8 +113,9 @@ EXPECTED_DOCUMENTED_DIFF_TOKENS = (
     "-O3",
     "--threads",
     "-Wno-UNOPTTHREADS",
-    "--assert",
-    "FROST_SIM_ASSERTIONS",
+    "ASSERTIONS=0",
+    "sim_assertions.cpp",
+    "frost_sim_assertions_enable",
     "--savable",
     "-GCLK_FREQ_HZ=3686400",
     "OPT_FAST=-O3",
@@ -135,6 +137,9 @@ UNSEEDED_COCOTB_STRIP_ENV = (
     "FROST_RANDOM_START",
     "FROST_RANDOM_START_SEED",
     "FROST_RANDOM_START_VERILATOR_SEED",
+    "FROST_STARTUP_SWEEP",
+    "FROST_STARTUP_SEED_BASE",
+    "FROST_STARTUP_BASELINE",
     "FROST_COVERAGE",
     "FROST_COVERAGE_TOGGLE",
     "FROST_COVERAGE_FILE",
@@ -300,7 +305,9 @@ def parse_cocotb_frost_verilator_flags(makefile_text: str) -> set[str]:
                 elif sub_s == "endif":
                     break
                 elif not skip_async:
-                    match = re.match(r"^EXTRA_ARGS\s*\+=\s*(.*)$", sub_s)
+                    match = re.match(
+                        r"^(?:EXTRA_ARGS|COMPILE_ARGS)\s*\+=\s*(.*)$", sub_s
+                    )
                     if match:
                         flags.update(_group_verilator_tokens(match.group(1)))
         elif stripped == "ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)":
@@ -449,6 +456,12 @@ def _assert_matches_case(
     """Verify one native simulation summary and UART capture against baseline."""
     assert summary["passed"] is True, f"{case.name}: simulation did not report pass"
     assert summary["failed"] is False, f"{case.name}: simulation reported failure"
+    assert summary["assertions_compiled"] is True, (
+        f"{case.name}: checked native run did not record assertions_compiled=true"
+    )
+    assert summary["assertions_armed"] is True, (
+        f"{case.name}: checked native run did not arm assertions after reset"
+    )
     actual_cycles = int(summary["cycles"])
     assert actual_cycles == case.cycles, _format_baseline_mismatch(
         case.name, "native", "cycles", actual_cycles, case.cycles
@@ -647,6 +660,7 @@ def _verify_demo_script_on_binary(
     )
     assert "Frost: Hello, world!" in proc.stdout
     assert "to stop marker + 10,000 drain" in proc.stderr
+    assert "RTL assertions   : enabled after reset" in proc.stderr
 
 
 def _verify_thread_cli_bounds(
@@ -674,6 +688,8 @@ def _verify_thread_cli_bounds(
     )
     summary = json.loads(default_json.read_text(encoding="utf-8"))
     assert int(summary["threads"]) == threads
+    assert summary["assertions_compiled"] is True
+    assert summary["assertions_armed"] is True
 
     too_high = subprocess.run(
         [str(binary), "--mem-dir", str(hello_stage_dir), "--threads", "257"],
@@ -1057,9 +1073,19 @@ module frost (
 
   sub_subsystem cpu_and_memory_subsystem (.i_clk(i_clk));
 
+  int unsigned clk_edge_count = 0;
   int unsigned post_rst_step;
 
   always_ff @(posedge i_clk) begin
+    clk_edge_count <= clk_edge_count + 1;
+    if ($test$plusargs("CHECK_ARMING_BOUNDARY")) begin
+      assert (clk_edge_count >= 18)
+      else $error("tripped_before_arming");
+    end
+    if ($test$plusargs("FORCE_EARLY_ARMED_FAIL") && clk_edge_count == 18) begin
+      assert (clk_edge_count != 18)
+      else $error("tripped_at_edge_18");
+    end
     if (!i_rst_n) begin
       post_rst_step <= 0;
       uart_write_enable_from_cpu <= 1'b0;
@@ -1084,6 +1110,22 @@ module frost (
           3: begin
             assert (post_rst_step != 3)
             else $error("forced_rtl_assertion");
+          end
+          default: ;
+        endcase
+      end else if ($test$plusargs("CHECK_ARMING_BOUNDARY")) begin
+        case (post_rst_step)
+          0: begin
+            uart_write_enable_from_cpu <= 1'b1;
+            uart_write_data_from_cpu <= "O";
+          end
+          1: begin
+            uart_write_enable_from_cpu <= 1'b1;
+            uart_write_data_from_cpu <= "K";
+          end
+          2: begin
+            uart_write_enable_from_cpu <= 1'b1;
+            uart_write_data_from_cpu <= 8'h0a;
           end
           default: ;
         endcase
@@ -1148,7 +1190,7 @@ endmodule
 
 
 def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
-    """Compile main.cpp + frost_native.vlt on a test top to check failure paths."""
+    """Compile main.cpp + sim_assertions.cpp on a test top to check arming and faults."""
     work_dir.mkdir(parents=True, exist_ok=True)
     harness_sv = work_dir / "frost_fault_harness.sv"
     harness_sv.write_text(_SYNTHETIC_FROST_HARNESS_SV, encoding="utf-8")
@@ -1176,16 +1218,51 @@ def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
             "-Wno-UNUSED",
             "-Wno-UNDRIVEN",
             "--assert",
+            "+define+FROST_SIM_ASSERTIONS",
             "--savable",
             "-CFLAGS",
             "-std=c++17 -Wall -Wextra -DFROST_COMPILED_THREADS=1 "
             "-DFROST_NATIVE_ASSERTIONS -DFROST_NATIVE_SAVABLE",
             str(NATIVE_MAIN_CPP),
+            str(SIM_ASSERTIONS_CPP),
         ],
         cwd=work_dir,
     )
     _run_checked(
         ["make", "-C", str(mdir), "-f", "Vtop.mk", f"-j{cores}"],
+        cwd=work_dir,
+    )
+
+    mdir_a0 = work_dir / "obj_dir_a0"
+    bin_a0_path = mdir_a0 / "frost-native-fault-test-a0"
+    _run_checked(
+        [
+            "verilator",
+            "--cc",
+            "--exe",
+            "--top-module",
+            "frost",
+            "--prefix",
+            "Vtop",
+            "-o",
+            "frost-native-fault-test-a0",
+            "--Mdir",
+            str(mdir_a0),
+            str(NATIVE_VLT),
+            str(harness_sv),
+            "--timescale",
+            "1ns/1ps",
+            "-Wno-UNUSED",
+            "-Wno-UNDRIVEN",
+            "-CFLAGS",
+            "-std=c++17 -Wall -Wextra -DFROST_COMPILED_THREADS=1",
+            str(NATIVE_MAIN_CPP),
+            str(SIM_ASSERTIONS_CPP),
+        ],
+        cwd=work_dir,
+    )
+    _run_checked(
+        ["make", "-C", str(mdir_a0), "-f", "Vtop.mk", f"-j{cores}"],
         cwd=work_dir,
     )
 
@@ -1195,7 +1272,64 @@ def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
     (mem_dir / "sw64.mem").write_text("0000000000000000\n", encoding="utf-8")
     (mem_dir / "sw_ddr.mem").write_text("00000000\n", encoding="utf-8")
 
-    # 1. Forced RTL assertion failure writes --uart-out and --summary-json and exits 1.
+    # 1. Checked build (ASSERTIONS=1): assertions stay off across the first 18
+    # reset rising edges (0..17), arm via frost_sim_assertions_enable() after
+    # edge 17, and are recorded as enabled after reset in both summaries.
+    boundary_json = work_dir / "arming_boundary.json"
+    boundary_proc = subprocess.run(
+        [
+            str(bin_path),
+            "--mem-dir",
+            str(mem_dir),
+            "--stop",
+            "OK\n",
+            "--summary-json",
+            str(boundary_json),
+            "+CHECK_ARMING_BOUNDARY",
+        ],
+        cwd=work_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "tripped_before_arming" not in (boundary_proc.stderr + boundary_proc.stdout)
+    assert "RTL assertions   : enabled after reset" in boundary_proc.stderr
+    boundary_summary = json.loads(boundary_json.read_text(encoding="utf-8"))
+    assert boundary_summary["passed"] is True
+    assert boundary_summary["failed"] is False
+    assert boundary_summary["assertions_compiled"] is True
+    assert boundary_summary["assertions_armed"] is True
+
+    # Right after edge 17 arms checks, an assertion on edge 18 (still in reset
+    # before i_rst_n releases on edge 19) trips immediately.
+    early_json = work_dir / "early_armed_fail.json"
+    early_proc = subprocess.run(
+        [
+            str(bin_path),
+            "--mem-dir",
+            str(mem_dir),
+            "--max-cycles",
+            "100",
+            "--summary-json",
+            str(early_json),
+            "--quiet-summary",
+            "+FORCE_EARLY_ARMED_FAIL",
+        ],
+        cwd=work_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert early_proc.returncode == 1
+    assert "tripped_at_edge_18" in (early_proc.stderr + early_proc.stdout)
+    early_summary = json.loads(early_json.read_text(encoding="utf-8"))
+    assert early_summary["passed"] is False
+    assert early_summary["failed"] is True
+    assert early_summary["assertions_compiled"] is True
+    assert early_summary["assertions_armed"] is True
+
+    # Forced RTL assertion failure after reset writes --uart-out and
+    # --summary-json, records assertions_armed=true, and exits 1.
     assert_uart = work_dir / "assert_fail.uart"
     assert_json = work_dir / "assert_fail.json"
     assert_proc = subprocess.run(
@@ -1209,7 +1343,6 @@ def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
             str(assert_uart),
             "--summary-json",
             str(assert_json),
-            "--quiet-summary",
             "+FORCE_ASSERT_FAIL",
         ],
         cwd=work_dir,
@@ -1219,34 +1352,73 @@ def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
     )
     assert assert_proc.returncode == 1
     assert "forced_rtl_assertion" in (assert_proc.stderr + assert_proc.stdout)
+    assert "RTL assertions   : enabled after reset" in assert_proc.stderr
     assert assert_uart.is_file()
     assert assert_uart.read_bytes() == b"OK\n"
     assert assert_json.is_file()
     assert_summary = json.loads(assert_json.read_text(encoding="utf-8"))
     assert assert_summary["passed"] is False
     assert assert_summary["failed"] is True
+    assert assert_summary["assertions_compiled"] is True
+    assert assert_summary["assertions_armed"] is True
     assert assert_summary["uart_bytes"] == 3
 
-    # 2. +verilator+noassert keeps the assertion disarmed past reset release.
-    noassert_json = work_dir / "noassert.json"
-    _run_checked(
+    # 2. +verilator+noassert and --no-assert keep assertions off for the whole run,
+    # and ASSERTIONS=0 builds never compile or enable assertions.
+    for idx, disable_flag in enumerate(("+verilator+noassert", "--no-assert")):
+        noassert_json = work_dir / f"noassert_{idx}.json"
+        noassert_proc = subprocess.run(
+            [
+                str(bin_path),
+                "--mem-dir",
+                str(mem_dir),
+                "--stop",
+                "OK\n",
+                "--drain",
+                "5",
+                "--summary-json",
+                str(noassert_json),
+                "+FORCE_ASSERT_FAIL",
+                disable_flag,
+            ],
+            cwd=work_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "RTL assertions   : disabled\n" in noassert_proc.stderr
+        noassert_summary = json.loads(noassert_json.read_text(encoding="utf-8"))
+        assert noassert_summary["passed"] is True
+        assert noassert_summary["failed"] is False
+        assert noassert_summary["assertions_compiled"] is True
+        assert noassert_summary["assertions_armed"] is False
+
+    a0_json = work_dir / "assertions_zero.json"
+    a0_proc = subprocess.run(
         [
-            str(bin_path),
+            str(bin_a0_path),
             "--mem-dir",
             str(mem_dir),
             "--stop",
             "OK\n",
+            "--drain",
+            "5",
             "--summary-json",
-            str(noassert_json),
-            "--quiet-summary",
+            str(a0_json),
             "+FORCE_ASSERT_FAIL",
-            "+verilator+noassert",
+            "+CHECK_ARMING_BOUNDARY",
         ],
         cwd=work_dir,
+        capture_output=True,
+        text=True,
+        check=True,
     )
-    noassert_summary = json.loads(noassert_json.read_text(encoding="utf-8"))
-    assert noassert_summary["passed"] is True
-    assert noassert_summary["failed"] is False
+    assert "RTL assertions   : disabled (not compiled)" in a0_proc.stderr
+    a0_summary = json.loads(a0_json.read_text(encoding="utf-8"))
+    assert a0_summary["passed"] is True
+    assert a0_summary["failed"] is False
+    assert a0_summary["assertions_compiled"] is False
+    assert a0_summary["assertions_armed"] is False
 
     # 3. --stop "" combined with an HDL $finish exits 1 with passed=false.
     finish_uart = work_dir / "finish.uart"
@@ -1278,8 +1450,10 @@ def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
     finish_summary = json.loads(finish_json.read_text(encoding="utf-8"))
     assert finish_summary["passed"] is False
     assert finish_summary["failed"] is True
+    assert finish_summary["assertions_armed"] is True
 
-    # 4. <<FAIL>> split across a checkpoint --save-at / --restore exits 1.
+    # 4. <<FAIL>> split across a checkpoint --save-at / --restore exits 1, and
+    # restoring at cycle 25 (>= 18) re-arms assertions via frost_sim_assertions_enable().
     split_ckpt = work_dir / "split_fail.ckpt"
     _run_checked(
         [
@@ -1331,6 +1505,7 @@ def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
     split_summary = json.loads(split_json.read_text(encoding="utf-8"))
     assert split_summary["passed"] is False
     assert split_summary["failed"] is True
+    assert split_summary["assertions_armed"] is True
 
 
 def compare_baseline_against_cocotb_logs(log_dir: Path) -> None:
@@ -1379,6 +1554,10 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
     )
 
     assert 'verilator -j "$(NUMBER_OF_CPU_CORES)" $(VERILATOR_FLAGS)' in native_text
+    assert SIM_ASSERTIONS_CPP.is_file()
+    assert "$(ROOT)/hw/sim/sim_assertions.cpp" in cocotb_text
+    assert "$(ROOT)/hw/sim/sim_assertions.cpp" in native_text
+    assert "COCOTB_PLUSARGS += +verilator+noassert" in cocotb_text
     for flag in native_verilator_flags:
         assert "NUMBER_OF_CPU_CORES" not in flag
         assert not flag.startswith("-j ")
@@ -1392,7 +1571,8 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
     assert "NUMBER_OF_CPU_CORES" not in config_lines[0]
     assert "VERILATOR=$(VERILATOR_VERSION)" in config_lines[0]
 
-    # Changing NUMBER_OF_CPU_CORES must not rewrite .build-config or force re-verilation.
+    # Changing NUMBER_OF_CPU_CORES must not rewrite .build-config or force re-verilation,
+    # and ASSERTIONS=1 vs ASSERTIONS=0 must toggle --assert and FROST_SIM_ASSERTIONS.
     if shutil.which("make") is not None:
         stamp = tmp_path / "sim_build" / "model_t1_a1_s0_host" / ".build-config"
         _run_checked(
@@ -1406,6 +1586,9 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
             ]
         )
         stamp_first = stamp.read_text(encoding="utf-8")
+        assert "--assert" in stamp_first
+        assert "+define+FROST_SIM_ASSERTIONS" in stamp_first
+        assert "-DFROST_NATIVE_ASSERTIONS" in stamp_first
         _run_checked(
             [
                 "make",
@@ -1417,6 +1600,22 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
             ]
         )
         assert stamp.read_text(encoding="utf-8") == stamp_first
+
+        stamp_a0 = tmp_path / "sim_build" / "model_t1_a0_s0_host" / ".build-config"
+        _run_checked(
+            [
+                "make",
+                "-C",
+                str(NATIVE_DIR),
+                f"SIM_BUILD={tmp_path / 'sim_build'}",
+                "ASSERTIONS=0",
+                str(stamp_a0),
+            ]
+        )
+        stamp_a0_text = stamp_a0.read_text(encoding="utf-8")
+        assert "--assert" not in stamp_a0_text
+        assert "+define+FROST_SIM_ASSERTIONS" not in stamp_a0_text
+        assert "-DFROST_NATIVE_ASSERTIONS" not in stamp_a0_text
 
     assert native_defaults.get("CXX_OPT_SLOW") == "-O0"
     assert "--public-flat-rw" not in native_text
@@ -1435,10 +1634,17 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
     assert "-O3" not in cflags_lines[0]
     assert "CXX_OPT_FAST" not in cflags_lines[0]
 
-    # Native README must document every remaining difference and avoid stale claims.
+    # Native README must document every remaining difference, the reset arming
+    # point, and the bare-metal scope, and avoid stale claims.
     for token in EXPECTED_DOCUMENTED_DIFF_TOKENS:
         assert token in native_readme, f"native README omits diff token {token!r}"
+    assert "18th rising edge" in native_readme
+    assert "bare-metal programs only" in native_readme
+    assert "tens of millions of simulated cycles" in native_readme
+    assert "minutes" in native_readme
     assert "default Verilator options" not in native_readme
+    assert "is not defined in" not in native_readme
+    assert "not referenced in `hw/rtl`" not in native_readme
     for doc_text in (root_readme, native_readme, demo_script_text):
         assert "thousands of times faster" not in doc_text
         assert "hardware cycle count" not in doc_text
@@ -1459,6 +1665,9 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
                     f"hw/sim/native/README.md hard-codes baseline figure {rendered}"
                 )
 
+    assert "frost_sim_assertions_enable();" in main_cpp_text
+    assert "frost_sim_assertions_enabled()" in main_cpp_text
+    assert "threadContextp" not in main_cpp_text
     assert "addExitCb" not in main_cpp_text
     assert "on_verilator_exit_cb" not in main_cpp_text
 
@@ -1520,6 +1729,8 @@ def test_mismatch_messages_name_field_and_regeneration_command() -> None:
     base_summary: dict[str, Any] = {
         "passed": True,
         "failed": False,
+        "assertions_compiled": True,
+        "assertions_armed": True,
         "cycles": case.cycles,
         "advanced_cycles": case.cycles,
         "coremark_ticks": case.coremark_ticks,
@@ -1687,6 +1898,8 @@ def test_demo_dockerfile_uses_checked_portable_baseline_build() -> None:
     assert "-march=native" not in dockerfile
     assert "FROM ubuntu:26.04" in dockerfile
     assert "USER ubuntu" in dockerfile
+    assert "COPY hw/sim/sim_assertions.cpp /src/hw/sim/sim_assertions.cpp" in dockerfile
+    assert "!hw/sim/sim_assertions.cpp" in dockerignore
     assert "hw/sim/native/**" in dockerignore
     assert "frost-native-t" in script_text
     assert "trap 'forward_signal INT 130' INT" in script_text

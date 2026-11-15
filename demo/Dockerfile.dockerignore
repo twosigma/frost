@@ -5,6 +5,7 @@
 !demo/**
 !hw/rtl/
 !hw/rtl/**
+!hw/sim/sim_assertions.cpp
 !hw/sim/native/
 !hw/sim/native/**
 hw/sim/native/sim_build/

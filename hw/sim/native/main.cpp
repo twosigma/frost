@@ -41,11 +41,20 @@
 
 namespace fs = std::filesystem;
 
+extern "C" void frost_sim_assertions_enable();
+extern "C" bool frost_sim_assertions_enabled();
+
 namespace
 {
 
 #ifndef FROST_COMPILED_THREADS
 #define FROST_COMPILED_THREADS 1
+#endif
+
+#ifdef FROST_NATIVE_ASSERTIONS
+constexpr bool kAssertionsCompiled = true;
+#else
+constexpr bool kAssertionsCompiled = false;
 #endif
 
 constexpr uint64_t kCompiledThreads = FROST_COMPILED_THREADS;
@@ -234,6 +243,8 @@ bool write_run_outputs(const fs::path &uart_out_path,
                        uint64_t drain_cycles,
                        double wall_seconds,
                        uint64_t threads_u64,
+                       bool assertions_compiled,
+                       bool assertions_armed,
                        bool passed,
                        bool failed)
 {
@@ -279,6 +290,9 @@ bool write_run_outputs(const fs::path &uart_out_path,
                  << ",\n"
                  << "  \"cycles_per_second\": " << cycles_per_second << ",\n"
                  << "  \"threads\": " << threads_u64 << ",\n"
+                 << "  \"assertions_compiled\": " << (assertions_compiled ? "true" : "false")
+                 << ",\n"
+                 << "  \"assertions_armed\": " << (assertions_armed ? "true" : "false") << ",\n"
                  << "  \"passed\": " << (passed ? "true" : "false") << ",\n"
                  << "  \"failed\": " << (failed ? "true" : "false") << "\n"
                  << "}\n";
@@ -441,15 +455,21 @@ int main(int argc, char **argv)
     }
     ctx->commandArgs(static_cast<int>(verilator_args.size()), verilator_args.data());
 
-#ifdef FROST_NATIVE_ASSERTIONS
-    // Start with HDL assertions disabled before time-zero evaluation and cold
-    // reset, then enable them once reset has propagated through every domain.
+    // Start every run with runtime assertions off before model construction and
+    // time-zero evaluation, matching COCOTB_PLUSARGS += +verilator+noassert in
+    // tests/Makefile. Checked builds arm them after cold reset through
+    // frost_sim_assertions_enable() (hw/sim/sim_assertions.cpp).
     ctx->assertOn(false);
-#endif
+    if (frost_sim_assertions_enabled()) {
+        std::cerr << "Error: simulation assertions remained enabled before reset\n";
+        return 2;
+    }
 
     uint64_t cycles = 0;
     bool marker_seen = false;
     uint64_t marker_cycle = 0;
+    bool assertions_armed_after_reset = false;
+    bool assertions_ever_enabled = false;
     std::string uart_output;
 
     auto top = std::make_unique<Vtop>(ctx.get());
@@ -490,6 +510,7 @@ int main(int argc, char **argv)
     root->frost__DOT__reset_div4_synchronizer_shift_register = 7;
 
     top->eval();
+    assertions_ever_enabled = assertions_ever_enabled || frost_sim_assertions_enabled();
 
     auto &retire_fd =
         root->frost__DOT__cpu_and_memory_subsystem__DOT__cpu__DOT__hart__DOT__cpu_inst__DOT__u_tomasulo__DOT__u_rob__DOT__retire_trace_fd;
@@ -540,9 +561,15 @@ int main(int argc, char **argv)
         retire_fd = 0;
 #ifdef FROST_NATIVE_ASSERTIONS
         if (cycles >= 18 && arm_assertions_after_reset) {
-            ctx->assertOn(true);
+            frost_sim_assertions_enable();
+            if (!frost_sim_assertions_enabled()) {
+                std::cerr << "Error: simulation assertions failed to arm after restore\n";
+                return 2;
+            }
+            assertions_armed_after_reset = true;
         }
 #endif
+        assertions_ever_enabled = assertions_ever_enabled || frost_sim_assertions_enabled();
     }
 #endif
 
@@ -623,9 +650,15 @@ int main(int argc, char **argv)
 
 #ifdef FROST_NATIVE_ASSERTIONS
         if (n == 17 && arm_assertions_after_reset) {
-            ctx->assertOn(true);
+            frost_sim_assertions_enable();
+            if (!frost_sim_assertions_enabled()) {
+                std::cerr << "Error: simulation assertions failed to arm after reset\n";
+                return 2;
+            }
+            assertions_armed_after_reset = true;
         }
 #endif
+        assertions_ever_enabled = assertions_ever_enabled || frost_sim_assertions_enabled();
 
         ctx->time(1501 + n * 3000);
         top->i_clk = 0;
@@ -701,6 +734,14 @@ int main(int argc, char **argv)
         wall_seconds > 0.0 ? static_cast<double>(advanced_cycles) / wall_seconds : 0.0;
     const std::optional<uint64_t> coremark_ticks = parse_coremark_ticks(uart_output);
 
+    assertions_ever_enabled = assertions_ever_enabled || frost_sim_assertions_enabled();
+    if ((!kAssertionsCompiled || !arm_assertions_after_reset) && assertions_ever_enabled) {
+        std::cerr << "Error: simulation assertions were unexpectedly enabled\n";
+        return 2;
+    }
+    const bool assertions_armed =
+        kAssertionsCompiled && assertions_armed_after_reset && frost_sim_assertions_enabled();
+
     const bool summary_passed = passed && !missed_save_target;
     const bool summary_failed = failed || missed_save_target;
 
@@ -714,6 +755,8 @@ int main(int argc, char **argv)
                            drain_cycles,
                            wall_seconds,
                            threads_u64,
+                           kAssertionsCompiled,
+                           assertions_armed,
                            summary_passed,
                            summary_failed)) {
         return 2;
@@ -722,6 +765,16 @@ int main(int argc, char **argv)
     if (!quiet_summary) {
         if (!uart_output.empty() && uart_output.back() != '\n') {
             std::cerr << "\n";
+        }
+        const char *assertions_status = "disabled (not compiled)";
+        if (kAssertionsCompiled) {
+            if (assertions_armed) {
+                assertions_status = "enabled after reset";
+            } else if (!arm_assertions_after_reset) {
+                assertions_status = "disabled";
+            } else {
+                assertions_status = "not yet armed (stopped in reset)";
+            }
         }
         std::ostringstream rate_text;
         rate_text << format_with_commas(static_cast<uint64_t>(cycles_per_second + 0.5));
@@ -741,6 +794,7 @@ int main(int argc, char **argv)
         if (coremark_ticks.has_value()) {
             std::cerr << "CoreMark ticks   : " << format_with_commas(*coremark_ticks) << "\n";
         }
+        std::cerr << "RTL assertions   : " << assertions_status << "\n";
         std::cerr << std::fixed << std::setprecision(3) << "Wall time        : " << wall_seconds
                   << " s\n"
                   << "Simulation speed : " << rate_text.str()

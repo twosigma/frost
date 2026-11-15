@@ -203,9 +203,9 @@ $(CONFIG_STAMP): FORCE
 
 $(MODEL_DIR)/Vtop.mk: $(ROOT)/hw/sim/native/frost_native.vlt $(ROOT)/hw/rtl/frost.f $(CONFIG_STAMP)
 	@mkdir -p "$(MODEL_DIR)"
-	verilator -j "$(NUMBER_OF_CPU_CORES)" $(VERILATOR_FLAGS) "$(ROOT)/hw/sim/native/main.cpp"
+	verilator -j "$(NUMBER_OF_CPU_CORES)" $(VERILATOR_FLAGS) "$(ROOT)/hw/sim/native/main.cpp" "$(ROOT)/hw/sim/sim_assertions.cpp"
 
-$(MODEL_BIN): $(MODEL_DIR)/Vtop.mk $(ROOT)/hw/sim/native/main.cpp
+$(MODEL_BIN): $(MODEL_DIR)/Vtop.mk $(ROOT)/hw/sim/native/main.cpp $(ROOT)/hw/sim/sim_assertions.cpp
 	$(MAKE) -C "$(MODEL_DIR)" -f Vtop.mk -j"$(NUMBER_OF_CPU_CORES)" \
 		OPT_FAST="$(CXX_OPT_FAST)" \
 		OPT_SLOW="$(CXX_OPT_SLOW)" \
