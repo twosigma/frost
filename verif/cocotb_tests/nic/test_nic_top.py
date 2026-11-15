@@ -939,7 +939,7 @@ async def test_rx_domain_restart_replays_fifo_and_pause_configuration(dut: Any) 
                 "cfg_ctrl",
                 "cfg_high_water",
                 "cfg_low_water",
-                "cfg_interval",
+                "interval_cfg_s",
             )
         )
 
