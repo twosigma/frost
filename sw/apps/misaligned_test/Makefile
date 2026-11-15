@@ -13,7 +13,9 @@
 #    limitations under the License.
 
 # Directed test: misaligned loads and stores of every size, crossing a
-# doubleword, a 32-byte sector, a 64-byte line and a page in cached DDR, and
-# the address-misaligned exception that low BRAM keeps.
+# doubleword, a 32-byte sector, a 64-byte line and a page in cached DDR,
+# translated Sv39 page crossings and lower/upper/both-page faults through MPRV
+# and in S and U modes, accesses under timer interrupts, and the
+# address-misaligned exception that low BRAM keeps.
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk
