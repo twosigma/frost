@@ -419,7 +419,8 @@ async def test_rvc_fields_come_from_predecode_through_packet_lifecycle(
         (0x7181, 0xFFFE01B7, False),  # C.LUI x3, -32
         (0x7101, 0xE0010113, False),  # C.ADDI16SP -512 (rd == x2)
         (0x9002, 0x00100073, False),  # C.EBREAK
-        (0x9C41, 0x00000000, True),  # Reserved RV64 arithmetic sub-op
+        (0x9C41, 0x02840433, False),  # Zcb C.MUL x8, x8, x8
+        (0x9C79, 0x00000000, True),  # Reserved Zcb unary selector 110
         (0xC004, 0x00942023, False),  # C.SW x9, 0(x8)
         (0x8182, 0x00018067, False),  # C.JR x3
         (0x9182, 0x000180E7, False),  # C.JALR x3
@@ -639,7 +640,7 @@ async def test_rvc_illegal_flag_comes_from_predecode_through_packet_lifecycle(
     cases = (
         (0x0004, 0x00010493, True),  # C.ADDI4SPN with reserved zero immediate.
         (0x0185, 0x00118193, False),  # Legal C.ADDI x3, 1.
-        (0x9C41, 0x00000000, True),  # Reserved RV64 arithmetic sub-op.
+        (0x9C79, 0x00000000, True),  # Reserved Zcb unary selector 110.
         (0x9002, 0x00100073, False),  # C.EBREAK remains legal here.
         (0x0013, NOP_INSTR, False),  # Native ADDI; ignore compressed sidebands.
     )
@@ -652,7 +653,7 @@ async def test_rvc_illegal_flag_comes_from_predecode_through_packet_lifecycle(
         assert packet["is_compressed"] is (raw & 3 != 3)
         assert packet["inject_nop"] is False
 
-    drive(0x9C41, 0)
+    drive(0x9C79, 0)
     await _advance_cycle(dut)
     held = _read_pd_packet(dut)
     assert held["illegal_instruction"] is True
@@ -665,7 +666,7 @@ async def test_rvc_illegal_flag_comes_from_predecode_through_packet_lifecycle(
     assert _read_pd_packet(dut) == held
 
     # Releasing the stall with flush suppresses even a currently illegal parcel.
-    drive(0x9C41, 0)
+    drive(0x9C79, 0)
     _drive_pipeline_ctrl(dut, {"flush": True})
     await _advance_cycle(dut)
     packet = _read_pd_packet(dut)
@@ -680,7 +681,7 @@ async def test_rvc_illegal_flag_comes_from_predecode_through_packet_lifecycle(
     assert packet["inject_nop"] is True
     assert packet["illegal_instruction"] is False
 
-    drive(0x9C41, 0)
+    drive(0x9C79, 0)
     await _advance_cycle(dut)
     assert _read_pd_packet(dut)["illegal_instruction"] is True
     _drive_pipeline_ctrl(dut, {"reset": True, "stall": True})
