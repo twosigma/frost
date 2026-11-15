@@ -547,25 +547,33 @@ async def cancellation_before_absorption_notification(dut: Any) -> None:
 
 @cocotb.test()
 async def complete_request_identity_space(dut: Any) -> None:
-    """Check all source, class, slot and epoch encodings at home admission."""
+    """Check every request identity and opcode in both cluster epochs."""
     b = Bench(dut)
     await b.reset()
     harts = 1 if (b.get("o_layout") >> 21) == 24 else 2
     allowed: set[int] = set()
     for hart in range(harts):
-        for port_class, count in ((0, 8), (1, 2), (2, 2)):
+        # The cache protocol assigns each hart eight data, two fetch, two
+        # walk and HartLineIds (two) line-client identities. Line clients
+        # use DMARead/DMAWrite under the hart's source and class 3.
+        for port_class, count in ((0, 8), (1, 2), (2, 2), (3, 2)):
             allowed.update(
                 pack((2, hart), (2, port_class), (4, slot), (1, 0))
                 for slot in range(count)
             )
     allowed.update(pack((2, 2), (2, 3), (4, slot), (1, 0)) for slot in range(16))
     allowed.update(pack((2, 3), (2, 3), (4, slot), (1, 0)) for slot in range(4))
-    for q in range(512):
-        source, port_class = q >> 7, (q >> 5) & 3
-        op = (0, 5, 6, 9 if source == 3 else 7)[port_class]
-        await b.set(i_home_d=b.d(q=q, op=op))
-        assert b.get("o_home_d_ready") == int(q in allowed), q
-        await b.set(i_home_d=b.d(q=q, op=15))
-        assert b.get("o_home_d_ready") == 0
+    for epoch in (0, 1):
+        await b.set(i_epoch=epoch)
+        for q in range(512):
+            source, port_class = q >> 7, (q >> 5) & 3
+            opcodes = ((0, 1, 2, 3, 4, 10), (5,), (6,), (7, 8))[port_class]
+            if source == 3:
+                opcodes = (9,)
+            for op in range(16):
+                await b.set(i_home_d=b.d(q=q, op=op))
+                expected = (q ^ epoch) in allowed and op in opcodes
+                assert b.get("o_home_d_ready") == int(expected), (epoch, q, op)
+    await b.set(i_epoch=0)
     await b.set(i_home_d=b.d())
     assert b.get("o_home_d_ready") == 1

@@ -64,6 +64,8 @@
 
 #define DRIVER_NAME "frost_net10g"
 #define ETHERTYPE_TEST 0x88B5 /* IEEE 802 local experimental ethertype 1 */
+#define NORMAL_MTU 1500
+#define NORMAL_FRAMES 600
 #define TEST_MTU 9000
 #define HDR_BYTES 14
 #define TAG_BYTES 10 /* sequence (4), run (4), length (2), little-endian */
@@ -617,7 +619,7 @@ static int receive_frame(uint32_t seq, uint32_t len, uint64_t deadline, const ch
     return describe_mismatch(seq, len, n, what);
 }
 
-/* Step 3's lengths: every length from the bare header to 160 bytes, then
+/* Jumbo lengths: every length from the bare header to 160 bytes, then
  * three large frames up to the MTU. */
 static uint32_t length_at(unsigned i)
 {
@@ -633,6 +635,14 @@ static uint32_t burst_length(unsigned i)
     return MIN_FRAME + (i * 389u) % (1514u - MIN_FRAME + 1u);
 }
 
+/* Include both sides of the default and maximum RX copybreak thresholds. */
+static uint32_t normal_length(unsigned i)
+{
+    static const uint32_t lengths[] = {60, 255, 256, 257, 1023, 1024, 1025, 1514};
+
+    return lengths[i % (sizeof(lengths) / sizeof(lengths[0]))];
+}
+
 static int lengths_step(void)
 {
     uint64_t deadline = now_ms() + STEP_MS;
@@ -646,24 +656,24 @@ static int lengths_step(void)
 }
 
 /* Send count frames, then receive them in order. */
-static int burst(unsigned count, const char *what)
+static int burst(unsigned count, const char *what, uint32_t (*frame_length)(unsigned))
 {
     uint32_t first = g_seq;
     uint64_t deadline = now_ms() + STEP_MS;
     for (unsigned i = 0; i < count; i++) {
         if (now_ms() >= deadline)
             return fail("%s: %u of %u frames sent in %d ms", what, i, count, STEP_MS);
-        if (send_frame(g_seq++, burst_length(i), what) != 0)
+        if (send_frame(g_seq++, frame_length(i), what) != 0)
             return -1;
     }
     for (unsigned i = 0; i < count; i++)
-        if (receive_frame(first + i, burst_length(i), deadline, what) != 0)
+        if (receive_frame(first + i, frame_length(i), deadline, what) != 0)
             return -1;
     return check_socket_drops(what);
 }
 
 /* Wait for counters to cover the step: reaped TX completions may trail RX.
- * Then reject duplicates for QUIET_MS. Step 6 judges the counters. */
+ * Then reject duplicates for QUIET_MS. */
 static int
 settle(const struct net_stats *start, unsigned frames, struct net_stats *end, const char *what)
 {
@@ -726,7 +736,7 @@ static int check_idle(const char *what, const struct net_stats *start, const str
 
 static int run(void)
 {
-    struct net_stats start, a0, a1, d0, d1, e1, b0, b1;
+    struct net_stats start, normal0, normal1, a0, a1, d0, d1, e1, b0, b1;
     uint64_t carrier_ms = 0;
     uint64_t off_carrier_ms = UINT64_MAX;
     char off_carrier[48];
@@ -755,7 +765,23 @@ static int run(void)
              g_loopback_bit,
              g_run);
 
-    /* ---- Step 2: MTU and loopback while down, then up ---- */
+    /* ---- Step 2: normal MTU with queued short and full-size frames ---- */
+    if (set_mtu(NORMAL_MTU) != 0 || set_loopback(1) != 0 || set_up(1) != 0 ||
+        wait_carrier(&carrier_ms) != 0 || open_socket() != 0 || read_stats(&normal0) != 0 ||
+        check_idle("before normal MTU traffic", &start, &normal0) != 0 ||
+        burst(NORMAL_FRAMES, "normal MTU", normal_length) != 0 ||
+        settle(&normal0, NORMAL_FRAMES, &normal1, "normal MTU") != 0 ||
+        check_window("normal MTU", &normal0, &normal1, NORMAL_FRAMES) != 0)
+        return -1;
+    progress("mtu %d: %d queued frames at 60, 255, 256, 257, 1023, 1024, 1025 and 1514 "
+             "bytes verified, no socket drops",
+             NORMAL_MTU,
+             NORMAL_FRAMES);
+    if (set_up(0) != 0)
+        return -1;
+    close_socket();
+
+    /* ---- Step 3: jumbo MTU and loopback while down, then up ---- */
     if (set_mtu(TEST_MTU) != 0 || set_loopback(1) != 0 || set_up(1) != 0 ||
         wait_carrier(&carrier_ms) != 0 || open_socket() != 0)
         return -1;
@@ -763,8 +789,8 @@ static int run(void)
              TEST_MTU,
              (unsigned long long) carrier_ms);
 
-    /* ---- Step 3: lengths, one frame at a time ---- */
-    if (read_stats(&a0) != 0 || check_idle("before the first frame", &start, &a0) != 0 ||
+    /* ---- Step 4: lengths, one frame at a time ---- */
+    if (read_stats(&a0) != 0 || check_idle("before jumbo traffic", &normal1, &a0) != 0 ||
         lengths_step() != 0)
         return -1;
     progress("lengths %d..%d, 1514, 4096, %d: %d frames verified",
@@ -773,12 +799,12 @@ static int run(void)
              MAX_FRAME,
              LENGTH_FRAMES);
 
-    /* ---- Step 4: a burst larger than both rings ---- */
-    if (burst(BURST_FRAMES, "burst") != 0 || settle(&a0, window_a, &a1, "burst") != 0)
+    /* ---- Step 5: queued traffic at jumbo MTU ---- */
+    if (burst(BURST_FRAMES, "burst", burst_length) != 0 || settle(&a0, window_a, &a1, "burst") != 0)
         return -1;
     progress("burst of %d sent before receiving: in order, no socket drops", BURST_FRAMES);
 
-    /* ---- Step 5: down during a burst; loopback off; loopback on again ---- */
+    /* ---- Step 6: down during a burst; loopback off; loopback on again ---- */
     if (read_stats(&d0) != 0)
         return -1;
     uint64_t drain_deadline = now_ms() + STEP_MS;
@@ -800,7 +826,7 @@ static int run(void)
         open_socket() != 0 || read_stats(&b0) != 0 ||
         check_idle("between loopback on and the last burst", &e1, &b0) != 0)
         return -1;
-    if (burst(FINAL_FRAMES, "after the drain") != 0 ||
+    if (burst(FINAL_FRAMES, "after the drain", burst_length) != 0 ||
         settle(&b0, FINAL_FRAMES, &b1, "after the drain") != 0)
         return -1;
     if (off_carrier_ms == UINT64_MAX)
@@ -819,9 +845,9 @@ static int run(void)
              off_carrier,
              FINAL_FRAMES);
 
-    /* ---- Step 6: the driver's statistics, loopback-off interval excluded ---- */
-    if (check_window("steps 3-4", &a0, &a1, window_a) != 0 ||
-        check_window("step 5", &b0, &b1, FINAL_FRAMES) != 0)
+    /* ---- Step 7: the driver's statistics, loopback-off interval excluded ---- */
+    if (check_window("steps 4-5", &a0, &a1, window_a) != 0 ||
+        check_window("step 6", &b0, &b1, FINAL_FRAMES) != 0)
         return -1;
     uint64_t rx_errors = (d1.rx_errors - start.rx_errors) + (b1.rx_errors - e1.rx_errors);
     uint64_t tx_errors = (d1.tx_errors - start.tx_errors) + (b1.tx_errors - e1.tx_errors);
@@ -831,11 +857,13 @@ static int run(void)
                     (long long) tx_errors);
     progress("statistics: tx_packets %+lld rx_packets %+lld for %d verified frames; "
              "rx_errors and tx_errors unchanged with loopback on",
-             (long long) ((a1.tx_packets - a0.tx_packets) + (b1.tx_packets - b0.tx_packets)),
-             (long long) ((a1.rx_packets - a0.rx_packets) + (b1.rx_packets - b0.rx_packets)),
-             LENGTH_FRAMES + BURST_FRAMES + FINAL_FRAMES);
+             (long long) ((normal1.tx_packets - normal0.tx_packets) +
+                          (a1.tx_packets - a0.tx_packets) + (b1.tx_packets - b0.tx_packets)),
+             (long long) ((normal1.rx_packets - normal0.rx_packets) +
+                          (a1.rx_packets - a0.rx_packets) + (b1.rx_packets - b0.rx_packets)),
+             NORMAL_FRAMES + LENGTH_FRAMES + BURST_FRAMES + FINAL_FRAMES);
 
-    /* ---- Step 7: leave the interface down with loopback off ---- */
+    /* ---- Step 8: leave the interface down with loopback off ---- */
     close_socket();
     if (set_up(0) != 0 || set_loopback(0) != 0)
         return -1;

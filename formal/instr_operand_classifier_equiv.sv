@@ -29,6 +29,10 @@ module instr_operand_classifier_equiv (
   riscv_pkg::instr_t instruction;
   riscv_pkg::instr_op_e instruction_operation;
   logic decoder_illegal, is_illegal_instruction, is_fetch_fault;
+  logic spec_mop;
+  // Fixed bits from the Zimop MOP.R and MOP.RR encoding diagrams.
+  assign spec_mop = ((instruction & 32'hb3c0_707f) == 32'h81c0_4073) ||
+                   ((instruction & 32'hb200_707f) == 32'h8200_4073);
   assign instruction = i_inject_nop ? riscv_pkg::NOP : i_instr;
   assign is_illegal_instruction = decoder_illegal || i_pd_illegal;
   assign is_fetch_fault = i_fetch_fault;
@@ -102,7 +106,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
       riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
       riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL,
-      riscv_pkg::PAUSE:
+      riscv_pkg::PAUSE, riscv_pkg::MOP:
       rs_type_pre = riscv_pkg::RS_INT;
 
       riscv_pkg::CLMUL, riscv_pkg::CLMULH, riscv_pkg::CLMULR,
@@ -122,6 +126,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::SD,
       riscv_pkg::FLW, riscv_pkg::FSW,
       riscv_pkg::FLD, riscv_pkg::FSD,
+      riscv_pkg::FLH, riscv_pkg::FSH,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
@@ -150,7 +155,13 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S, riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU,
       riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
+      riscv_pkg::FCVT_S_H, riscv_pkg::FCVT_H_S, riscv_pkg::FCVT_D_H, riscv_pkg::FCVT_H_D,
       riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X, riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X,
+      riscv_pkg::FMV_X_H, riscv_pkg::FMV_H_X,
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D, riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S,
+      riscv_pkg::FMINM_D, riscv_pkg::FMAXM_D, riscv_pkg::FROUND_S, riscv_pkg::FROUNDNX_S,
+      riscv_pkg::FROUND_D, riscv_pkg::FROUNDNX_D, riscv_pkg::FCVTMOD_W_D,
+      riscv_pkg::FLEQ_S, riscv_pkg::FLTQ_S, riscv_pkg::FLEQ_D, riscv_pkg::FLTQ_D,
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
       riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
       riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
@@ -178,7 +189,7 @@ module instr_operand_classifier_equiv (
 
     case (op_for_pre_decode)
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::LWU, riscv_pkg::LD, riscv_pkg::FLW, riscv_pkg::FLD,
+      riscv_pkg::LWU, riscv_pkg::LD, riscv_pkg::FLW, riscv_pkg::FLD, riscv_pkg::FLH,
       riscv_pkg::LR_W, riscv_pkg::LR_D,
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W, riscv_pkg::AMOXOR_W,
       riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W, riscv_pkg::AMOMIN_W,
@@ -192,7 +203,8 @@ module instr_operand_classifier_equiv (
 
     case (op_for_pre_decode)
       riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W, riscv_pkg::SC_D, riscv_pkg::CBO_ZERO,
+      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::FSH,
+      riscv_pkg::SC_W, riscv_pkg::SC_D, riscv_pkg::CBO_ZERO,
       riscv_pkg::CBO_CLEAN, riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       needs_sq_pre = 1'b1;
       default: needs_sq_pre = 1'b0;
@@ -237,13 +249,19 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
       riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
       riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
-      riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X:
+      riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X,
+      riscv_pkg::FCVT_S_H, riscv_pkg::FCVT_H_S, riscv_pkg::FCVT_D_H, riscv_pkg::FCVT_H_D,
+      riscv_pkg::FMV_X_H, riscv_pkg::FMV_H_X,
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D, riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S,
+      riscv_pkg::FMINM_D, riscv_pkg::FMAXM_D, riscv_pkg::FROUND_S, riscv_pkg::FROUNDNX_S,
+      riscv_pkg::FROUND_D, riscv_pkg::FROUNDNX_D, riscv_pkg::FCVTMOD_W_D,
+      riscv_pkg::FLEQ_S, riscv_pkg::FLTQ_S, riscv_pkg::FLEQ_D, riscv_pkg::FLTQ_D:
       has_fp_flags_pre = 1'b1;
       default: has_fp_flags_pre = 1'b0;
     endcase
 
     case (op_for_pre_decode)
-      riscv_pkg::FLW, riscv_pkg::FLD,
+      riscv_pkg::FLW, riscv_pkg::FLD, riscv_pkg::FLH,
       riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
       riscv_pkg::FMUL_S, riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S,
       riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
@@ -256,7 +274,11 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
       riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X:
+      riscv_pkg::FCVT_S_H, riscv_pkg::FCVT_H_S, riscv_pkg::FCVT_D_H, riscv_pkg::FCVT_H_D,
+      riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X, riscv_pkg::FMV_H_X,
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D, riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S,
+      riscv_pkg::FMINM_D, riscv_pkg::FMAXM_D, riscv_pkg::FROUND_S, riscv_pkg::FROUNDNX_S,
+      riscv_pkg::FROUND_D, riscv_pkg::FROUNDNX_D:
       has_fp_dest_pre = 1'b1;
       default: has_fp_dest_pre = 1'b0;
     endcase
@@ -318,7 +340,10 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
       riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
       riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D,
+      riscv_pkg::MOP,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D, riscv_pkg::FMV_X_H,
+      riscv_pkg::FCVTMOD_W_D, riscv_pkg::FLEQ_S, riscv_pkg::FLTQ_S,
+      riscv_pkg::FLEQ_D, riscv_pkg::FLTQ_D,
       riscv_pkg::VSETVLI, riscv_pkg::VSETIVLI, riscv_pkg::VSETVL, riscv_pkg::VTOX:
       has_int_dest_pre = 1'b1;
       default: has_int_dest_pre = 1'b0;
@@ -341,8 +366,13 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
       riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
       riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S:
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D, riscv_pkg::FMV_X_H,
+      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
+      riscv_pkg::FCVT_S_H, riscv_pkg::FCVT_H_S, riscv_pkg::FCVT_D_H, riscv_pkg::FCVT_H_D,
+      riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S, riscv_pkg::FMINM_D, riscv_pkg::FMAXM_D,
+      riscv_pkg::FROUND_S, riscv_pkg::FROUNDNX_S, riscv_pkg::FROUND_D, riscv_pkg::FROUNDNX_D,
+      riscv_pkg::FCVTMOD_W_D, riscv_pkg::FLEQ_S, riscv_pkg::FLTQ_S,
+      riscv_pkg::FLEQ_D, riscv_pkg::FLTQ_D:
       uses_fp_rs1_pre = 1'b1;
       default: uses_fp_rs1_pre = 1'b0;
     endcase
@@ -357,7 +387,9 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
       riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
       riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FSW, riscv_pkg::FSD:
+      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::FSH,
+      riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S, riscv_pkg::FMINM_D, riscv_pkg::FMAXM_D,
+      riscv_pkg::FLEQ_S, riscv_pkg::FLTQ_S, riscv_pkg::FLEQ_D, riscv_pkg::FLTQ_D:
       uses_fp_rs2_pre = 1'b1;
       default: uses_fp_rs2_pre = 1'b0;
     endcase
@@ -383,11 +415,13 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::MRET &&
       op_for_pre_decode != riscv_pkg::SRET &&
       op_for_pre_decode != riscv_pkg::DRET &&
-      op_for_pre_decode != riscv_pkg::SFENCE_VMA &&
       op_for_pre_decode != riscv_pkg::PAUSE &&
+      op_for_pre_decode != riscv_pkg::MOP &&
       op_for_pre_decode != riscv_pkg::CSRRWI &&
       op_for_pre_decode != riscv_pkg::CSRRSI &&
       op_for_pre_decode != riscv_pkg::CSRRCI &&
+      op_for_pre_decode != riscv_pkg::FLI_S &&
+      op_for_pre_decode != riscv_pkg::FLI_D &&
       op_for_pre_decode != riscv_pkg::ILLEGAL &&
       op_for_pre_decode != riscv_pkg::FETCH_FAULT &&
       op_for_pre_decode != riscv_pkg::VSETIVLI &&
@@ -413,6 +447,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::ROL, riscv_pkg::ROR,
       riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
       riscv_pkg::PACK, riscv_pkg::PACKH,
+      riscv_pkg::SFENCE_VMA,
       riscv_pkg::ADDW, riscv_pkg::SUBW,
       riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
       riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,
@@ -476,6 +511,10 @@ module instr_operand_classifier_equiv (
       .o_needs_sq(needs_sq_direct)
   );
   always_comb begin
+    p_mop_encoding : assert ((instruction_operation == riscv_pkg::MOP) == spec_mop);
+    if (spec_mop) begin
+      p_mop_legal : assert (!decoder_illegal);
+    end
     p_has_int_dest : assert (has_int_dest_direct == has_int_dest_pre);
     p_has_fp_dest : assert (has_fp_dest_direct == has_fp_dest_pre);
     p_uses_int_rs1 : assert (uses_int_rs1_direct == uses_int_rs1_pre);

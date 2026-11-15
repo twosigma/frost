@@ -53,14 +53,22 @@ module instr_operand_classifier (
   } operand_class_t;
 
   operand_class_t raw_class, selected_class;
-  logic fp_int_input, fp_int_output, fp_two_sources;
-  assign fp_int_input = (i_instr.funct7[6:1] == 6'b110100) || (i_instr.funct7[6:1] == 6'b111100);
+  logic fp_int_input, fp_int_output, fp_two_sources, fp_no_source;
+  // FMV.H.X (1111010) and FMV.X.H (1110010) are the half-precision moves.
+  assign fp_int_input = (i_instr.funct7[6:1] == 6'b110100) ||
+      (i_instr.funct7[6:1] == 6'b111100) || (i_instr.funct7[6:1] == 6'b111101);
   assign fp_int_output = (i_instr.funct7[6:1] == 6'b110000) ||
-      (i_instr.funct7[6:1] == 6'b111000) || (i_instr.funct7[6:1] == 6'b101000);
+      (i_instr.funct7[6:1] == 6'b111000) || (i_instr.funct7[6:1] == 6'b101000) ||
+      (i_instr.funct7[6:1] == 6'b111001);
+  // Zfa FLI.S/FLI.D (funct7 1111000/1111001, rs2 00001): rs1 indexes a constant.
+  assign fp_no_source = (i_instr.funct7[6:1] == 6'b111100) && i_instr.source_reg_2[0];
   assign fp_two_sources = (i_instr.funct7[6:1] == 6'b000000) ||
       (i_instr.funct7[6:1] == 6'b000010) || (i_instr.funct7[6:1] == 6'b000100) ||
       (i_instr.funct7[6:1] == 6'b000110) || (i_instr.funct7[6:1] == 6'b001000) ||
       (i_instr.funct7[6:1] == 6'b001010) || (i_instr.funct7[6:1] == 6'b101000);
+
+  logic vector_mem;
+  assign vector_mem = riscv_pkg::is_vector_mem(i_instr.opcode, i_instr.funct3);
 
   always_comb begin
     raw_class = '0;
@@ -95,20 +103,26 @@ module instr_operand_classifier (
         raw_class.uses_int_rs2 = 1'b1;
         raw_class.is_branch_or_jump = 1'b1;
       end
+      // A vector load or store (a vector width) reads only its rs1 base, in
+      // INT_RS, which hands it to the ROB; it takes no queue entry.
       riscv_pkg::OPC_LOAD, riscv_pkg::OPC_LOAD_FP: begin
-        raw_class.has_int_dest = i_instr.opcode == riscv_pkg::OPC_LOAD;
-        raw_class.has_fp_dest = i_instr.opcode == riscv_pkg::OPC_LOAD_FP;
         raw_class.uses_int_rs1 = 1'b1;
-        raw_class.rs_type = riscv_pkg::RS_MEM;
-        raw_class.needs_lq = 1'b1;
+        if (!vector_mem) begin
+          raw_class.has_int_dest = i_instr.opcode == riscv_pkg::OPC_LOAD;
+          raw_class.has_fp_dest = i_instr.opcode == riscv_pkg::OPC_LOAD_FP;
+          raw_class.rs_type = riscv_pkg::RS_MEM;
+          raw_class.needs_lq = 1'b1;
+        end
       end
       riscv_pkg::OPC_STORE, riscv_pkg::OPC_STORE_FP: begin
         raw_class.uses_int_rs1 = 1'b1;
-        raw_class.uses_int_rs2 = i_instr.opcode == riscv_pkg::OPC_STORE;
-        raw_class.uses_fp_rs2 = i_instr.opcode == riscv_pkg::OPC_STORE_FP;
-        raw_class.is_int_store = i_instr.opcode == riscv_pkg::OPC_STORE;
-        raw_class.rs_type = riscv_pkg::RS_MEM;
-        raw_class.needs_sq = 1'b1;
+        if (!vector_mem) begin
+          raw_class.uses_int_rs2 = i_instr.opcode == riscv_pkg::OPC_STORE;
+          raw_class.uses_fp_rs2 = i_instr.opcode == riscv_pkg::OPC_STORE_FP;
+          raw_class.is_int_store = i_instr.opcode == riscv_pkg::OPC_STORE;
+          raw_class.rs_type = riscv_pkg::RS_MEM;
+          raw_class.needs_sq = 1'b1;
+        end
       end
       riscv_pkg::OPC_AMO: begin
         raw_class.has_int_dest = 1'b1;
@@ -131,7 +145,7 @@ module instr_operand_classifier (
       riscv_pkg::OPC_OP_FP: begin
         raw_class.has_int_dest = fp_int_output;
         raw_class.has_fp_dest = !fp_int_output;
-        raw_class.uses_int_rs1 = fp_int_input;
+        raw_class.uses_int_rs1 = fp_int_input && !fp_no_source;
         raw_class.uses_fp_rs1 = !fp_int_input;
         raw_class.uses_fp_rs2 = fp_two_sources;
         raw_class.has_fp_flags = 1'b1;
@@ -158,14 +172,23 @@ module instr_operand_classifier (
         end
       end
       riscv_pkg::OPC_CSR: begin
-        if (i_instr.funct3 != 3'b000) begin
+        if (i_instr.funct3[1:0] != 2'b00) begin
           raw_class.has_int_dest = 1'b1;
           raw_class.uses_int_rs1 = !i_instr.funct3[2];
           raw_class.is_csr_imm   = i_instr.funct3[2];
+        end else if (i_instr.funct3[2]) begin
+          // Zimop MOP.R / MOP.RR: INT_RS, no operands, writes zero to rd.
+          // i_illegal covers the funct3=100 encodings that are not MOPs.
+          raw_class.has_int_dest = 1'b1;
         end else if (i_instr.funct7 == 7'b0001001) begin
           raw_class.rs_type = riscv_pkg::RS_MEM;
           raw_class.is_fence_i = 1'b1;
           raw_class.is_sfence_vma = 1'b1;
+          // rs1 is the address filter and rs2 the ASID filter. The MEM_RS
+          // entry waits for both and hands them to the ROB when it issues
+          // (x0 reads as ready zero; dispatch records which are nonzero).
+          raw_class.uses_int_rs1 = 1'b1;
+          raw_class.uses_int_rs2 = 1'b1;
         end else if ({i_instr.funct7, i_instr.source_reg_2} != 12'h000 &&
                      {i_instr.funct7, i_instr.source_reg_2} != 12'h001 &&
                      {i_instr.funct7, i_instr.source_reg_2[3:0]} != 11'b0000000_1101) begin

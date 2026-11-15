@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Keep every registered Zicboz program configuration reachable from CI."""
+"""Keep the Zicboz configurations and NIC benchmark reachable from CI."""
 
 import subprocess
 import sys
@@ -24,7 +24,7 @@ from _pytest.mark.expression import Expression
 from test_run_cocotb import TEST_REGISTRY
 
 
-def test_zero_programs_have_one_ci_shard() -> None:
+def test_zero_and_nic_programs_have_one_ci_shard() -> None:
     """Require collection and one CI selection for each supported program tier."""
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
@@ -47,12 +47,16 @@ def test_zero_programs_have_one_ci_shard() -> None:
         timeout=120,
     )
     nodes = [line for line in result.stdout.splitlines() if line.startswith("tests/")]
-    programs = {name for name in TEST_REGISTRY if name.startswith("cbo_zero_")}
+    programs = {
+        name
+        for name in TEST_REGISTRY
+        if name.startswith("cbo_zero_") or name == "nic_bench"
+    }
     assert programs
     missing = [
         name for name in sorted(programs) if not any(f"[{name}]" in n for n in nodes)
     ]
-    assert not missing, f"Zicboz configurations omitted from pytest: {missing}"
+    assert not missing, f"Program configurations omitted from pytest: {missing}"
 
     workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
     matrix = workflow["jobs"]["test-verilator"]["strategy"]["matrix"]

@@ -30,6 +30,7 @@ module tomasulo_coherent_cut_test_harness #(
     parameter bit DIRECT_CACHE_READS = 1'b0,
     parameter int unsigned CACHE_MISSES = 1
 ) (
+    input riscv_pkg::vmt_view_t i_vmt = '0,
     input logic i_coherent_store_pending = 1'b0,
     input logic i_coherent_store_ready = 1'b1,
     input logic i_coherent_sc_pending = 1'b0,
@@ -112,6 +113,8 @@ module tomasulo_coherent_cut_test_harness #(
     output riscv_pkg::exc_cause_t o_trap_cause,
     output logic [riscv_pkg::XLEN-1:0] o_trap_value,
     output logic [31:0] o_trap_insn,
+    output logic o_head_bus_fault,
+    output logic [riscv_pkg::XLEN-1:0] o_head_bus_fault_va,
     input logic i_trap_taken,
     output logic o_mret_start,
     output logic o_mret_start_is_sret,
@@ -141,9 +144,13 @@ module tomasulo_coherent_cut_test_harness #(
     input logic i_mmu_eff_priv_u,
     input logic i_csr_translation_flush_req,
     output logic o_tlb_invalidate,
+    input logic i_csr_tlb_flush_all_req,
+    output riscv_pkg::tlb_flush_t o_tlb_flush,
+    input logic [riscv_pkg::AsidBits-1:0] i_mmu_asid,
     output logic o_walk_req_valid,
     input logic i_walk_req_ready,
     output logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
+    output logic o_walk_hold,
     input logic i_walk_resp_valid,
     input riscv_pkg::ptw_resp_t i_walk_resp,
     input logic i_widen_commit_ok,
@@ -406,10 +413,11 @@ module tomasulo_coherent_cut_test_harness #(
       .i_lq_mem_read_error(DIRECT_CACHE_READS ? cache_read_error : i_lq_mem_read_error),
       .i_lq_mem_read_id(DIRECT_CACHE_READS ? cache_read_id : i_lq_mem_read_id),
       .i_lq_mem_read_is_cached(DIRECT_CACHE_READS || i_lq_mem_read_is_cached),
-      // No vector unit here: nothing reads the vector-config in-flight flag,
-      // and the vector memory table is empty.
+      // The fixture supplies the vector memory table independently and does
+      // not consume the vector-config in-flight flag.
       .o_vcfg_in_flight(),
-      .i_vmt('0),
+      .i_vmt(i_vmt),
+      .i_vmem_quiet(1'b1),
       .i_coherent_cut_hold(cut_hold),
       .i_coh_admit_valid(cut_admit && !i_probe_delay_admit),
       .i_coh_admit_slot('0),

@@ -474,6 +474,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("nic_loopback", "NIC frame loopback through DDR rings", True),
         )
     },
+    "nic_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_bench",
+        description="NIC benchmark ring replenishment and jumbo frames through loopback",
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DNIC_BENCH_QUICK"),
+            ("COCOTB_MAX_CYCLES", "4000000"),
+        ),
+    ),
     "nic_loopback": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -830,7 +840,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="fs_off_test",
         nic_mac_clocks=False,
         description=(
-            "F/D instructions trap without memory effects when mstatus.FS is Off"
+            "F/D, Zfhmin and Zfa FS legality, dirty state and halfword forwarding"
         ),
     ),
     "zicbop_test": CocotbRunConfig(
@@ -900,6 +910,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sstvala: mtval/stval hold the faulting instruction bits for every "
             "illegal-instruction source in M, S and U, delegated and not"
+        ),
+    ),
+    "sstvala_fault_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sstvala_fault_test",
+        nic_mac_clocks=False,
+        description=(
+            "Sstvala: access faults from failed bus responses (loads, LR, AMOs, "
+            "misaligned loads, fetches) report the virtual address in mtval/stval, "
+            "bare and Sv39, in M, S and U, delegated and not"
+        ),
+        extra_env=(
+            (
+                "COCOTB_PLUSARGS",
+                "+axi_error_check=0 +axi_rd_error_addr=3000000",
+            ),
         ),
     ),
     "vec_state_test_v512": CocotbRunConfig(
@@ -1256,6 +1283,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "S-mode SUM and MXR toggles keep TLB entries and apply the live bits"
+        ),
+    ),
+    "asid_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="asid_test",
+        nic_mac_clocks=False,
+        description=(
+            "satp.ASID, global pages and the SFENCE.VMA forms against live TLB entries"
         ),
     ),
     "imsic_csr_test": CocotbRunConfig(
@@ -2546,6 +2582,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
         verilator_extra_args=("-GVLEN=256",),
     ),
+    "vec_vmt": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vmt",
+        hdl_toplevel_module="vec_vmt",
+        description=(
+            "Vector memory table allocation, retirement, flushes, completion and ranges "
+            "against a model of its lifecycle"
+        ),
+    ),
     "vec_hold_rows": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_hold_rows",
         hdl_toplevel_module="vec_hold_rows",
@@ -2616,7 +2660,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.ex_stage.test_fp_engine",
         hdl_toplevel_module="fp_engine_equiv_harness",
         description=(
-            "F/D compute results and flags match Berkeley SoftFloat, including "
+            "F/D, Zfhmin and Zfa results and flags match their references, including "
             "cancellation"
         ),
     ),
@@ -3033,7 +3077,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherent_stream_order": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_stream_order",
         hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
-        description="Speculative fills, same-address load replay and attached LR reservation suppression across a coherent cut",
+        description="Speculative fills, load replay, attached signed and unsigned extraction, vector holds, flush recovery and LR cuts",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
     ),
     "hitpath_probe_order": CocotbRunConfig(
@@ -3119,7 +3163,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
         hdl_toplevel_module="coherence_l1d",
-        description="Speculative ownership, atomic admission, demand attachment and bounded grant deferral with 8 endpoints",
+        description="Speculative ownership, attached data and response fairness, store/probe races and grant deferral with 8 endpoints",
     ),
     "coherence_stream_dirty": CocotbRunConfig(
         verilator_extra_args=(
@@ -4158,6 +4202,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "against a reference Sv39 walk"
         ),
     ),
+    "l2tlb": CocotbRunConfig(
+        python_test_module="cocotb_tests.mmu.test_l2tlb",
+        hdl_toplevel_module="l2tlb",
+        description=(
+            "Second-level TLB: ASID and global entries, superpages, every SFENCE.VMA "
+            "form, 512-page and 32-superpage residency and a random run against a reference"
+        ),
+    ),
     "soc_vcu118": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_soc_vcu118",
         hdl_toplevel_module="soc_top",
@@ -4773,8 +4825,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
         hdl_toplevel_module="rvc_decompressor",
         description=(
-            "RV64C expansion, illegal flags, and source metadata match the predecode "
-            "model"
+            "RV64C/Zcb/Zcmop expansion and illegal flags match the specification "
+            "oracle and predecode mirror for every parcel"
         ),
     ),
     "c_ext_state": CocotbRunConfig(
@@ -4891,6 +4943,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="cpu_tb",
         description="Directed and random compressed-instruction checks in cpu_tb",
         include_in_pytest=False,
+    ),
+    "mops": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_mops",
+        hdl_toplevel_module="cpu_tb",
+        description="MOP and NTL state in M/S/U modes, dependent consumers, and reserved mtval",
     ),
 }
 
@@ -5505,6 +5562,13 @@ class CocotbRunner:
             str((Path(cocotb.__file__).resolve().parent / "libs").resolve())
         )
         verilator_extra_args_marker.write_text(self._verilator_build_signature())
+        if (
+            self.hdl_toplevel_module == "frost"
+            and os.environ.get("FROST_STARTUP_SWEEP") == "1"
+        ):
+            from random_start_sweep import check_built_model
+
+            check_built_model(sim_build_dir / "Vtop", self.setup_environment())
 
     def _verilator_build_dir_writable(self, sim_build_dir: Path) -> bool:
         """Return True when the existing Verilator build dir can be rebuilt in place."""

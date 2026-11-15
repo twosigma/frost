@@ -64,6 +64,8 @@ EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
     "F": ("rv64i_m", "rv32i_m"),
     "D": ("rv64i_m", "rv32i_m"),
     "Zvk": ("rv32i_m",),
+    # The Zfh tests live in rv32i_m and declare RV64 too.
+    "Zfh": ("rv32i_m",),
 }
 
 # Extensions whose tests need the vector unit: the vector crypto tests. They
@@ -100,6 +102,16 @@ SUPPORTED_EXTENSIONS = [
     "hints",
     # Zicboz's cbo.zero; the pinned suite has no RV64 Zicbom tests.
     "CMO",
+    # Zfa (F and D forms), and the Zfhmin subset of Zfh.
+    "F_Zfa",
+    "D_Zfa",
+    "Zfh",
+    "Zimop",
+    # No Zcmop: each c.mop.n case copies the signature pointer into x[n]
+    # (TEST_CMOP_OP: mv destreg, swreg) and stores it, so its signature holds
+    # link-map addresses that differ between the Spike and FROST builds.
+    # c.mop.1-15 are compared with Sail in verif/testrig/traces and checked
+    # by the full-core mops and exhaustive rvc_decompressor tests.
 ]
 
 # Extensions FROST implements only in part: extension -> test-name prefixes to
@@ -113,17 +125,28 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "K": {"pack", "packh", "packw", "brev8"},
     "privilege": {"ebreak", "ecall", "misalign"},
     "CMO": {"cbo.zero"},
+    # Zfh supplies the Zfhmin tests (FLH/FSH, FMV.X.H/FMV.H.X, FCVT between H and
+    # S/D); FROST has no other Zfh instruction.
+    "Zfh": {
+        "flh",
+        "fsh",
+        "fmv.x.h",
+        "fmv.h.x",
+        "fcvt.s.h",
+        "fcvt.h.s",
+        "fcvt.d.h",
+        "fcvt.h.d",
+    },
 }
 
-# Tests excluded by filename prefix. The C directory holds Zcb tests
-# (clbu/clh/csb/cmul/...), which FROST does not implement.
+# Tests excluded by filename prefix. The C directory's Zcb tests
+# (clbu/clh/csb/cmul/...) run: FROST implements Zcb.
 # Zvk: five of the 37 tests in the pinned suite trap on Spike at RV64 and then
 # loop at address 0. vandn.vx, vrol.vx and vror.vx load their scalar operand into
 # the register that holds the test's data pointer, and vsha2ch-e32 and
 # vsha2cl-e32 give the vector SHA-2 instructions overlapping operands, which are
 # illegal. The other 32 run.
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
-    "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
     "Zvk": {"vandn.vx", "vrol.vx", "vror.vx", "vsha2ch-e32", "vsha2cl-e32"},
 }
 

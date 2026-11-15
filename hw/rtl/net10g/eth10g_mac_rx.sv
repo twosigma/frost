@@ -393,13 +393,13 @@ module eth10g_mac_rx #(
   // with the stored length, and only that beat keeps fewer than eight bytes.
   logic [DescriptorAddrWidth-1:0] descriptor_read;
   logic [CountWidth-4:0] read_beat, read_beat_next;
-  logic [CountWidth-1:0] read_length;
+  logic [DescriptorAddrWidth-1:0] next_descriptor_read;
+  logic [CountWidth-1:0] read_length, next_read_length;
   logic reader_capture, reader_last, reader_extra;
   logic [63:0] reader_data;
   logic [7:0] reader_keep, final_keep;
   logic [1:0] skid_valid;  // [0] drives m_axis_*; [1] holds a second beat
   always_comb begin
-    read_length = packet_length[descriptor_read];
     reader_capture = descriptor_avail != 0 && !skid_valid[1];
     read_beat_next = read_beat + 1'b1;
     if (read_length[2:0] == 3'd0) begin
@@ -427,6 +427,22 @@ module eth10g_mac_rx #(
       next_descriptor_avail = descriptor_avail - 1'b1;
     end
   end
+
+  // The length memory has a registered read port, sampling the next descriptor's
+  // slot on every clock, so the memory maps to a register file or flops with a
+  // registered output. A length written on the edge that samples it is passed
+  // through, so every available descriptor presents the same length as an
+  // asynchronous read. Reset clears descriptor_avail; the read register
+  // refreshes before the reader can capture another descriptor.
+  always_comb begin
+    next_descriptor_read = descriptor_read;
+    if (reader_capture && reader_last) next_descriptor_read = descriptor_read + 1'b1;
+    next_read_length = packet_length[next_descriptor_read];
+    if (descriptor_write_enable && descriptor_write == next_descriptor_read) begin
+      next_read_length = descriptor_write_length;
+    end
+  end
+  always_ff @(posedge i_clk) read_length <= next_read_length;
 
   // ---- Output register ---------------------------------------------------------------------
   // Two entries: the first drives the AXI Stream output and changes only when
@@ -569,6 +585,9 @@ module eth10g_mac_rx #(
 
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst && reader_capture && fetched_word_was_written)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("eth10g_mac_rx: word %0d was written on the edge that fetched it", read_word);
   end
 
@@ -580,6 +599,9 @@ module eth10g_mac_rx #(
       stalled <= 1'b0;
     end else if (reset_seen_q) begin
       if (stalled && !(m_axis_tvalid && {m_axis_tlast, m_axis_tkeep, m_axis_tdata} == stalled_beat))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("eth10g_mac_rx: AXI Stream output changed while stalled");
       stalled <= m_axis_tvalid && !m_axis_tready;
       stalled_beat <= {m_axis_tlast, m_axis_tkeep, m_axis_tdata};

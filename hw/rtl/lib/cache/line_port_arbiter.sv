@@ -291,9 +291,15 @@ module line_port_arbiter #(
     end else if (reset_seen_q) begin
       p_grant_is_priority : assert ((sel == chk_sel) && (grant == (NUM_PORTS'(1) << chk_sel)));
       if (i_down_resp_valid && (32'(resp_port) >= NUM_PORTS))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("line_port_arbiter: response for nonexistent port %0d", resp_port);
       for (int p = 0; p < int'(NUM_PORTS); p++) begin
         if (chk_done[p] && inflight_q[p] == 8'd0)
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("line_port_arbiter: response on port %0d with nothing in flight", p);
         inflight_q[p] <= inflight_q[p] + 8'(chk_fire[p]) - 8'(chk_done[p]);
       end

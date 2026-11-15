@@ -15,8 +15,8 @@
  */
 
 /*
-  Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbc, Zbkb, Zbkc, Zicsr,
-  Zicboz, Zicbom, and M/S/U-mode privileged instructions. Compressed instructions arrive
+  Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zfhmin, Zfa, Zicond, Zbc, Zbkb, Zbkc,
+  Zicsr, Zicboz, Zicbom, Zimop, and M/S/U-mode privileged instructions. Compressed instructions arrive
   already expanded. o_instr_op selects the operation; o_illegal flags any
   encoding not decoded here, including reserved FP rounding modes.
  */
@@ -28,6 +28,36 @@ module instr_decoder (
     output riscv_pkg::instr_op_e o_instr_op,
     output logic                 o_illegal
 );
+
+  // The vector load and store forms decoded as VLOAD and VSTORE, for an instruction with a
+  // vector width (riscv_pkg::is_vector_mem): mew 0 and unit-stride
+  // addressing (mop 00), then by lumop/sumop (bits 24:20):
+  //   00000 unit-stride, one field (nf 0);
+  //   01000 whole-register, nf 0, 1, 3 or 7 (1, 2, 4 or 8 registers),
+  //         unmasked; a store only with width 000;
+  //   01011 mask (vlm.v, vsm.v), nf 0, unmasked, width 000.
+  // Strided, indexed, segment and fault-only-first forms are illegal. Rules
+  // that depend on the register numbers or vtype are not checked here.
+  function automatic logic vector_mem_ok(input logic [31:0] insn, input logic is_store);
+    logic [2:0] nf, width;
+    logic [4:0] umop;
+    logic vm;
+    nf = insn[31:29];
+    vm = insn[25];
+    umop = insn[24:20];
+    width = insn[14:12];
+    vector_mem_ok = 1'b0;
+    if (!insn[28] && (insn[27:26] == 2'b00)) begin
+      unique case (umop)
+        5'b00000: vector_mem_ok = nf == 3'd0;
+        5'b01000:
+        vector_mem_ok = vm && ((nf == 3'd0) || (nf == 3'd1) || (nf == 3'd3) || (nf == 3'd7)) &&
+            (!is_store || (width == 3'b000));
+        5'b01011: vector_mem_ok = vm && (nf == 3'd0) && (width == 3'b000);
+        default: vector_mem_ok = 1'b0;
+      endcase
+    end
+  endfunction
 
   // The vector arithmetic encodings implemented so far (see vec_engine).
   function automatic logic vector_arith_ok(input logic [5:0] funct6, input logic [2:0] funct3,
@@ -340,13 +370,12 @@ module instr_decoder (
       endcase
 
       // CSR and SYSTEM instructions (Zicsr extension + privileged)
-      // funct3=0 is PRIV (privileged system instructions), others are CSR operations
+      // funct3=000 is privileged, 100 is Zimop, and the others are CSR operations.
       riscv_pkg::OPC_CSR:
       unique case (i_instr.funct3)
         3'b000:  // PRIV - privileged system instructions
         // SFENCE.VMA (funct7 0x09) uses rs1 and rs2 as its address and ASID
-        // filters, so it is matched on funct7 alone. FROST ignores the filters:
-        // flushing everything is a legal implementation of every form.
+        // filters, so the privileged case matches it on funct7.
         if (i_instr.funct7 == 7'b0001001)
           o_instr_op = riscv_pkg::SFENCE_VMA;
         else
@@ -375,6 +404,15 @@ module instr_decoder (
             else o_illegal = 1'b1;
             default: o_illegal = 1'b1;
           endcase
+        // Zimop: MOP.R.n is 1 n[4] 00 n[3:2] 0111 n[1:0] rs1 100 rd and
+        // MOP.RR.n is 1 n[2] 00 n[1:0] 1 rs2 rs1 100 rd. FROST implements no
+        // extension that redefines them, so each writes zero to rd. Other
+        // funct3=100 encodings (the hypervisor loads and stores) are illegal.
+        3'b100:
+        if (i_instr.funct7[6] && i_instr.funct7[4:3] == 2'b00 &&
+            (i_instr.funct7[0] || i_instr.source_reg_2[4:2] == 3'b111))
+          o_instr_op = riscv_pkg::MOP;
+        else o_illegal = 1'b1;
         riscv_pkg::CSR_RW: o_instr_op = riscv_pkg::CSRRW;  // Atomic read/write
         riscv_pkg::CSR_RS: o_instr_op = riscv_pkg::CSRRS;  // Atomic read and set bits
         riscv_pkg::CSR_RC: o_instr_op = riscv_pkg::CSRRC;  // Atomic read and clear bits
@@ -423,22 +461,40 @@ module instr_decoder (
       // F/D extensions (single- and double-precision floating-point)
       // =========================================================================
 
-      // FLW/FLD - Load floating-point word/double (I-type format)
+      // FLH/FLW/FLD - Load floating-point half/word/double (I-type format)
       // Uses integer rs1 for address, writes to FP rd
+      // Vector loads share the opcode, with a vector width (VLOAD).
       riscv_pkg::OPC_LOAD_FP:
-      if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
+      if (i_instr.funct3 == 3'b001) begin  // width=H (16-bit, Zfhmin)
+        o_instr_op = riscv_pkg::FLH;
+      end else if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
         o_instr_op = riscv_pkg::FLW;
       end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
         o_instr_op = riscv_pkg::FLD;
+      end else if (riscv_pkg::is_vector_mem(
+              i_instr.opcode, i_instr.funct3
+          ) && vector_mem_ok(
+              32'(i_instr), 1'b0
+          )) begin
+        o_instr_op = riscv_pkg::VLOAD;
       end else o_illegal = 1'b1;
 
-      // FSW/FSD - Store floating-point word/double (S-type format)
+      // FSH/FSW/FSD - Store floating-point half/word/double (S-type format)
       // Uses integer rs1 for address, FP rs2 for data
+      // Vector stores share the opcode, with a vector width (VSTORE).
       riscv_pkg::OPC_STORE_FP:
-      if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
+      if (i_instr.funct3 == 3'b001) begin  // width=H (16-bit, Zfhmin)
+        o_instr_op = riscv_pkg::FSH;
+      end else if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
         o_instr_op = riscv_pkg::FSW;
       end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
         o_instr_op = riscv_pkg::FSD;
+      end else if (riscv_pkg::is_vector_mem(
+              i_instr.opcode, i_instr.funct3
+          ) && vector_mem_ok(
+              32'(i_instr), 1'b1
+          )) begin
+        o_instr_op = riscv_pkg::VSTORE;
       end else o_illegal = 1'b1;
 
       // Fused multiply-add variants (R4-type format)
@@ -541,12 +597,16 @@ module instr_decoder (
         unique case (i_instr.funct3)
           3'b000:  o_instr_op = riscv_pkg::FMIN_S;  // Floating-point minimum
           3'b001:  o_instr_op = riscv_pkg::FMAX_S;  // Floating-point maximum
+          3'b010:  o_instr_op = riscv_pkg::FMINM_S;  // Zfa: NaN-propagating minimum
+          3'b011:  o_instr_op = riscv_pkg::FMAXM_S;  // Zfa: NaN-propagating maximum
           default: o_illegal = 1'b1;
         endcase
         7'b0010101:
         unique case (i_instr.funct3)
           3'b000:  o_instr_op = riscv_pkg::FMIN_D;
           3'b001:  o_instr_op = riscv_pkg::FMAX_D;
+          3'b010:  o_instr_op = riscv_pkg::FMINM_D;
+          3'b011:  o_instr_op = riscv_pkg::FMAXM_D;
           default: o_illegal = 1'b1;
         endcase
 
@@ -566,7 +626,11 @@ module instr_decoder (
           5'b00001: o_instr_op = riscv_pkg::FCVT_WU_D;
           5'b00010: o_instr_op = riscv_pkg::FCVT_L_D;
           5'b00011: o_instr_op = riscv_pkg::FCVT_LU_D;
-          default:  o_illegal = 1'b1;
+          // Zfa FCVTMOD.W.D: only rm = RTZ is legal
+          5'b01000:
+          if (i_instr.funct3 == 3'b001) o_instr_op = riscv_pkg::FCVTMOD_W_D;
+          else o_illegal = 1'b1;
+          default: o_illegal = 1'b1;
         endcase
 
         // Convert signed/unsigned integer to FP (fd = float(rs1)). rs2 selects
@@ -588,12 +652,24 @@ module instr_decoder (
           default:  o_illegal = 1'b1;
         endcase
 
-        // Convert between single and double precision
+        // Convert between half (Zfhmin), single and double precision. rs2
+        // names the source format: 00000 S, 00001 D, 00010 H.
+        // Zfa FROUND (rs2 00100) and FROUNDNX (rs2 00101) share these funct7s.
         7'b0100000:
         if (i_instr.source_reg_2 == 5'b00001) o_instr_op = riscv_pkg::FCVT_S_D;
+        else if (i_instr.source_reg_2 == 5'b00010) o_instr_op = riscv_pkg::FCVT_S_H;
+        else if (i_instr.source_reg_2 == 5'b00100) o_instr_op = riscv_pkg::FROUND_S;
+        else if (i_instr.source_reg_2 == 5'b00101) o_instr_op = riscv_pkg::FROUNDNX_S;
         else o_illegal = 1'b1;
         7'b0100001:
         if (i_instr.source_reg_2 == 5'b00000) o_instr_op = riscv_pkg::FCVT_D_S;
+        else if (i_instr.source_reg_2 == 5'b00010) o_instr_op = riscv_pkg::FCVT_D_H;
+        else if (i_instr.source_reg_2 == 5'b00100) o_instr_op = riscv_pkg::FROUND_D;
+        else if (i_instr.source_reg_2 == 5'b00101) o_instr_op = riscv_pkg::FROUNDNX_D;
+        else o_illegal = 1'b1;
+        7'b0100010:
+        if (i_instr.source_reg_2 == 5'b00000) o_instr_op = riscv_pkg::FCVT_H_S;
+        else if (i_instr.source_reg_2 == 5'b00001) o_instr_op = riscv_pkg::FCVT_H_D;
         else o_illegal = 1'b1;
 
         // Move FP bits to integer register, or classify (rd = bits(fs1) or class(fs1))
@@ -615,15 +691,32 @@ module instr_decoder (
           endcase
         else o_illegal = 1'b1;
 
+        // Zfhmin: move half bits to integer register (rd = sext16(fs1[15:0])).
+        // FCLASS.H (funct3 001) belongs to Zfh and stays illegal.
+        7'b1110010:
+        if (i_instr.source_reg_2 == 5'b00000 && i_instr.funct3 == 3'b000)
+          o_instr_op = riscv_pkg::FMV_X_H;
+        else o_illegal = 1'b1;
+
         // Move integer bits to FP register (fd = bits(rs1))
+        // Zfa FLI.S (rs2 00001): rs1 indexes the constant table
         7'b1111000:
         if (i_instr.source_reg_2 == 5'b00000 && i_instr.funct3 == 3'b000)
           o_instr_op = riscv_pkg::FMV_W_X;
+        else if (i_instr.source_reg_2 == 5'b00001 && i_instr.funct3 == 3'b000)
+          o_instr_op = riscv_pkg::FLI_S;
         else o_illegal = 1'b1;
         // RV64: move integer bits to double register (fd = bits(rs1))
         7'b1111001:
         if (i_instr.source_reg_2 == 5'b00000 && i_instr.funct3 == 3'b000)
           o_instr_op = riscv_pkg::FMV_D_X;
+        else if (i_instr.source_reg_2 == 5'b00001 && i_instr.funct3 == 3'b000)
+          o_instr_op = riscv_pkg::FLI_D;
+        else o_illegal = 1'b1;
+        // Zfhmin: move integer bits to half register (fd = NaN-boxed rs1[15:0])
+        7'b1111010:
+        if (i_instr.source_reg_2 == 5'b00000 && i_instr.funct3 == 3'b000)
+          o_instr_op = riscv_pkg::FMV_H_X;
         else o_illegal = 1'b1;
 
         // Comparison (rd = compare(fs1, fs2), result is 0 or 1 in integer register)
@@ -632,6 +725,8 @@ module instr_decoder (
           3'b010:  o_instr_op = riscv_pkg::FEQ_S;  // Floating-point equal
           3'b001:  o_instr_op = riscv_pkg::FLT_S;  // Floating-point less than
           3'b000:  o_instr_op = riscv_pkg::FLE_S;  // Floating-point less than or equal
+          3'b100:  o_instr_op = riscv_pkg::FLEQ_S;  // Zfa: quiet less than or equal
+          3'b101:  o_instr_op = riscv_pkg::FLTQ_S;  // Zfa: quiet less than
           default: o_illegal = 1'b1;
         endcase
         7'b1010001:
@@ -639,6 +734,8 @@ module instr_decoder (
           3'b010:  o_instr_op = riscv_pkg::FEQ_D;
           3'b001:  o_instr_op = riscv_pkg::FLT_D;
           3'b000:  o_instr_op = riscv_pkg::FLE_D;
+          3'b100:  o_instr_op = riscv_pkg::FLEQ_D;
+          3'b101:  o_instr_op = riscv_pkg::FLTQ_D;
           default: o_illegal = 1'b1;
         endcase
 
@@ -667,7 +764,8 @@ module instr_decoder (
           7'b0101100, 7'b0101101,  // FSQRT.S/D
           7'b1100000, 7'b1100001,  // FCVT.{W,WU,L,LU}.S/D
           7'b1101000, 7'b1101001,  // FCVT.S/D.{W,WU,L,LU}
-          7'b0100000, 7'b0100001:  // FCVT.S.D / FCVT.D.S
+          7'b0100000, 7'b0100001,  // FCVT.S.D/S.H, FCVT.D.S/D.H
+          7'b0100010:  // FCVT.H.S / FCVT.H.D
           o_illegal = 1'b1;
           default: ;  // Other OPC_OP_FP ops use funct3 for sub-op, already checked
         endcase

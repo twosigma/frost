@@ -51,6 +51,8 @@ OPC_FNMSUB = 0b1001011
 OPC_FNMADD = 0b1001111
 OPC_OP_FP = 0b1010011
 OPC_OP_V = 0b1010111
+OPC_LOAD_FP = 0b0000111
+OPC_STORE_FP = 0b0100111
 OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
@@ -139,9 +141,12 @@ def indirect_parcel(parcel: int) -> bool:
     )
 
 
-def native_serialize(opcode: int) -> bool:
-    """Return whether a native instruction opcode must serialize dispatch."""
-    return opcode in {OPC_CSR, OPC_MISC_MEM, OPC_AMO}
+def native_serialize(parcel: int) -> bool:
+    """Return whether a native instruction's first parcel prevents pairing."""
+    opcode = parcel & 0x7F
+    return opcode in {OPC_MISC_MEM, OPC_AMO} or (
+        opcode == OPC_CSR and ((parcel >> 12) & 7) != 4
+    )
 
 
 def native_fp_compute(opcode: int) -> bool:
@@ -149,13 +154,37 @@ def native_fp_compute(opcode: int) -> bool:
     return opcode in {OPC_OP_FP, OPC_FMADD, OPC_FMSUB, OPC_FNMSUB, OPC_FNMADD, OPC_OP_V}
 
 
+def vector_mem(parcel: int) -> bool:
+    """Return whether a native parcel is a vector load or store.
+
+    These are LOAD-FP and STORE-FP with a vector width (funct3 000, 101, 110 or
+    111) and, like OP-V, never pair as slot 2.
+    """
+    return (parcel & 0x7F) in {OPC_LOAD_FP, OPC_STORE_FP} and ((parcel >> 12) & 7) in {
+        0b000,
+        0b101,
+        0b110,
+        0b111,
+    }
+
+
 def native_control(opcode: int) -> bool:
     """Return whether a native instruction opcode is control flow."""
     return opcode in {OPC_BRANCH, OPC_JAL, OPC_JALR}
 
 
+def zcb_unary_bits24_20(sel: int) -> int:
+    """Return bits [24:20] of a Zcb unary expansion selected by bits [4:2].
+
+    C.ZEXT.B and C.NOT carry the immediates 0xff and -1, C.SEXT.B and C.SEXT.H
+    the funct12 low bits, C.ZEXT.H and C.ZEXT.W x0; the reserved selectors 110
+    and 111 expand to zero. Mirrors ``riscv_pkg::imem_rvc_zcb_unary_bits24_20``.
+    """
+    return {0b000: 0b11111, 0b101: 0b11111, 0b001: 0b00100, 0b011: 0b00101}.get(sel, 0)
+
+
 def rvc_expand(raw: int) -> tuple[int, bool]:
-    """Return the complete RV64C expansion and reserved-encoding flag."""
+    """Return the complete RV64C expansion (with Zcb and Zcmop) and reserved flag."""
     q, f = raw & 3, raw >> 13
 
     def bit(n: int) -> int:
@@ -198,6 +227,20 @@ def rvc_expand(raw: int) -> tuple[int, bool]:
                 2 if f == 6 else 3,
                 0x27 if f == 5 else 0x23,
             ), False
+        if f == 4 and not sign:
+            # Zcb: C.LBU, C.LHU / C.LH, C.SB, C.SH; uimm[1] is bit 5, and
+            # uimm[0] is bit 6 for the byte forms.
+            sub = (raw >> 10) & 3
+            byte_imm = (bit(5) << 1) | bit(6)
+            half_imm = bit(5) << 1
+            if sub == 0:
+                return i(byte_imm, sp, 4, rp, 0x03), False
+            if sub == 1:
+                return i(half_imm, sp, 1 if bit(6) else 5, rp, 0x03), False
+            if sub == 2:
+                return store(byte_imm, rp, sp, 0, 0x23), False
+            if not bit(6):
+                return store(half_imm, rp, sp, 1, 0x23), False
         return 0, True
     if q == 1:
         if f in (0, 1, 2):
@@ -214,6 +257,8 @@ def rvc_expand(raw: int) -> tuple[int, bool]:
                     | (bit(6) << 4)
                 )
                 return i(imm, 2, 0, 2, 0x13), imm == 0
+            if ci == 0 and rd < 16 and rd & 1:
+                return 0x00000013, False  # Zcmop C.MOP.n: writes no register
             return ((ci & 0xFFFFF) << 12) | (rd << 7) | 0x37, ci == 0
         if f == 4:
             sub = (raw >> 10) & 3
@@ -222,7 +267,22 @@ def rvc_expand(raw: int) -> tuple[int, bool]:
             if sub == 2:
                 return i(ci, sp, 7, sp, 0x13), False
             op = (raw >> 5) & 3
-            if sign and op >= 2:
+            if sign and op == 2:  # Zcb C.MUL
+                return r(1, rp, sp, 0, sp, 0x33), False
+            if sign and op == 3:  # Zcb unary forms
+                sel = (raw >> 2) & 7
+                if sel == 0:  # C.ZEXT.B = andi rd', rd', 0xff
+                    return i(0xFF, sp, 7, sp, 0x13), False
+                if sel == 1:  # C.SEXT.B
+                    return i(0x604, sp, 1, sp, 0x13), False
+                if sel == 2:  # C.ZEXT.H = zext.h (RV64 encoding)
+                    return i(0x080, sp, 4, sp, 0x3B), False
+                if sel == 3:  # C.SEXT.H
+                    return i(0x605, sp, 1, sp, 0x13), False
+                if sel == 4:  # C.ZEXT.W = add.uw rd', rd', x0
+                    return i(0x080, sp, 0, sp, 0x3B), False
+                if sel == 5:  # C.NOT = xori rd', rd', -1
+                    return i(0xFFF, sp, 4, sp, 0x13), False
                 return 0, True
             return r(
                 0x20 if op == 0 else 0,
@@ -316,6 +376,11 @@ def rvc_bits24_20(parcel: int) -> int:
             return (bits(11, 10) << 3) | (bit(6) << 2)
         if funct3 in (0b101, 0b110, 0b111):
             return 0b01000 | bits(4, 2)
+        if funct3 == 0b100 and not bit(12):  # Zcb loads and stores
+            if not bit(11):
+                return (bit(5) << 1) | (bit(6) & (1 - bit(10)))
+            if not bit(10) or not bit(6):
+                return 0b01000 | bits(4, 2)
         return 0
     if quadrant == 1:
         if funct3 in (0b000, 0b001, 0b010):
@@ -325,8 +390,8 @@ def rvc_bits24_20(parcel: int) -> int:
                 return bit(6) << 4
             return 0b11111 if bit(12) else 0
         if funct3 == 0b100:
-            if bit(12) and bits(11, 10) == 0b11 and bit(6):
-                return 0
+            if bit(12) and bits(11, 10) == 0b11 and bits(6, 5) == 0b11:
+                return zcb_unary_bits24_20(bits(4, 2))
             if bits(11, 10) == 0b11:
                 return 0b01000 | bits(4, 2)
             return bits(6, 2)
@@ -420,6 +485,14 @@ def rvc_source_fields(parcel: int) -> tuple[int, int]:
             rs1, rs2 = rs1_prime, imm_ld_sd & 0x1F
         elif funct3 in {0b101, 0b110, 0b111}:  # C.FSD / C.SW / C.SD
             rs1, rs2 = rs1_prime, rs2_prime
+        elif funct3 == 0b100 and not sign:  # Zcb; reserved forms stay zero
+            if not (parcel >> 11) & 1:  # C.LBU / C.LHU / C.LH
+                rs1 = rs1_prime
+                rs2 = (((parcel >> 5) & 1) << 1) | (
+                    ((parcel >> 6) & 1) & (1 - ((parcel >> 10) & 1))
+                )
+            elif not (parcel >> 10) & 1 or not (parcel >> 6) & 1:  # C.SB / C.SH
+                rs1, rs2 = rs1_prime, rs2_prime
     elif quadrant == 0b01:
         if funct3 == 0b000:  # C.ADDI / C.NOP
             rs1, rs2 = rd_full, imm_ci & 0x1F
@@ -439,10 +512,13 @@ def rvc_source_fields(parcel: int) -> tuple[int, int]:
             subop = (parcel >> 10) & 0x3
             if subop != 0b11:  # C.SRLI / C.SRAI / C.ANDI
                 rs1, rs2 = rs1_prime, shamt
-            elif not sign or not ((parcel >> 6) & 1):
-                # C.SUB family; with bit12=1, C.SUBW/C.ADDW at [6:5]=00/01
-                # while [6:5]=10/11 stay reserved (zero expansion/metadata).
+            elif not sign or ((parcel >> 5) & 3) != 0b11:
+                # C.SUB family; with bit12=1, C.SUBW/C.ADDW/C.MUL at
+                # [6:5]=00/01/10 share the register shape.
                 rs1, rs2 = rs1_prime, rs2_prime
+            elif ((parcel >> 3) & 3) != 0b11:
+                # Zcb unary forms; [4:2]=110/111 stay reserved (zero).
+                rs1, rs2 = rs1_prime, zcb_unary_bits24_20((parcel >> 2) & 7)
         elif funct3 in {0b110, 0b111}:  # C.BEQZ / C.BNEZ
             rs1, rs2 = rs1_prime, 0
     elif quadrant == 0b10:
@@ -495,10 +571,10 @@ def make_sideband(word: int) -> int:
     compressed_hi = (hi & 0x3) != 0b11
     compressed_control_lo = compressed_control(lo)
     compressed_control_hi = compressed_control(hi)
-    native_serialize_lo = native_serialize(opcode_lo)
-    native_serialize_hi = native_serialize(opcode_hi)
-    native_fp_compute_lo = native_fp_compute(opcode_lo)
-    native_fp_compute_hi = native_fp_compute(opcode_hi)
+    native_serialize_lo = native_serialize(lo)
+    native_serialize_hi = native_serialize(hi)
+    native_fp_compute_lo = native_fp_compute(opcode_lo) or vector_mem(lo)
+    native_fp_compute_hi = native_fp_compute(opcode_hi) or vector_mem(hi)
 
     allows_slot2_after_lo = (compressed_lo and not compressed_control_lo) or (
         not compressed_lo and not native_control(opcode_lo) and not native_serialize_lo

@@ -35,6 +35,12 @@ register banks, ignored partial wide stores, error responses, CPU
 backpressure, and subsystem reset during reads and writes. Both `soc_axil`
 and `soc_axil_no_cached_tier` check the NIC-access guard.
 
+The `mops` bench executes every Zimop and Zcmop variant in M, S and U modes,
+checks dependent consumers and unchanged register, CSR and memory state, and
+checks the original compressed encoding in `mtval` for reserved neighbours.
+The decompressor bench compares all 65,536 inputs with a specification oracle
+and the Python predecode mirror.
+
 ## Fast checks
 
 ```bash
@@ -134,13 +140,22 @@ The `coherence_endpoints`, `coherence_endpoints_single`, and
 `coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
 identity reuse, independent probe queues, keyed PutAck cancellation, errors,
 and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
-identities. The `coherence_endpoints_local` and
+identities. Admission checks cover every request identity and opcode in both
+epochs, including each hart's two class-3 line-client identities.
+The `coherence_endpoints_local` and
 `coherence_endpoints_local_wide` benches apply the same checks to request
 endpoints with separate phase occupancy registers.
 `test_coherence_endpoint_build.py` elaborates and synthesizes these geometries, checks the six-bit home-ID capacity boundary, rejects invalid
 parameters, and checks cached, cache-disabled and DMA-disabled CPU builds.
 All CPU configurations use the coherent interfaces and their ordinary source
 filelists.
+
+`imem_predecode_line` compares generated metadata with RTL for every 16-bit
+parcel in both halfword positions. Its slot-2 checks exclude native SYSTEM
+except funct3=100, MISC-MEM, AMO, FP-compute and OP-V instructions. Zimop
+instructions can lead a pair or start slot 2. `imem_predecode_fast_replica`
+and `imem_predecode_capacity` apply that rule to the stored sideband and its
+scalar copies through programming writes, bank swaps and overlay boundaries.
 
 `coherence_dma_ingress` and `coherence_dma_ingress_8` issue all four or eight credits before G and check reordered
 G/C/U, full identities, streaming hints and reset at response presentation. The
@@ -482,8 +497,17 @@ packing functions in `sw/common/generate_imem_predecode_init.py`, including
 the scalar metadata copies and the SRAM tiles. The image load does not repeat
 on warm reset.
 
+System simulations start with Verilator runtime assertions disabled before
+the first HDL evaluation. The shared bench enables them after eighteen SoC
+clock edges and the driven cold-reset pulse's four CPU edges. The CPU wait
+also covers a slow or delayed CPU clock. A local reset register's random
+initial value cannot enable the checks. Runtime `$error` diagnostics are
+immediate assertion actions, so they obey the same simulator control.
+Static parameter checks remain active from time zero. The control and the
+diagnostic wrappers are absent from synthesis and formal verification.
+
 Consistency checks that depend on reset state and functional cover points
-arm after their local reset has been sampled. Coherent cache, load-queue, L0
+also require their local reset history. Coherent cache, load-queue, L0
 and CPU memory-interface checks use local reset history for combinational and
 clocked assertions. AXI response checks require both CPU and transport reset
 histories. NIC engine, descriptor and DMA-front checks require both the
@@ -498,11 +522,81 @@ reset tied inactive uses configuration initializers and does not arm the DTM own
 assertions. Transport verification requires a power-on reset pulse.
 
 The whole-SoC program bench holds clocks low through the initial HDL
-evaluation. Before starting clocks, it clears NIC response-checker history
-that a synthetic startup event can arm from arbitrary reset state. System
-reset must be asserted at that boundary, and the checker must observe a
-driven reset before the program starts. Production registers keep their
-seeded state. Warm resets do not clear the checker's history.
+evaluation. Production registers keep their seeded state until the driven
+reset reaches them. Runtime assertions stay enabled across warm resets;
+their local reset conditions apply during those resets. Unit benches start
+with assertions enabled and drive reset at their module boundaries.
+The system bench requires the reset request at startup and verifies after
+cold reset that every NIC response checker has observed reset, including
+the optional second NIC and the trace-injection platform.
+After the initial 1 ps settle, while clocks are low, the bench clears each
+NIC front's simulation-only reset history. The cold-reset postcondition
+therefore requires evidence from the driven reset, not an initial scheduling edge.
+
+The Cocotb, physical-address and TestRIG CI jobs set
+`FROST_STARTUP_SWEEP=1`. After a successful simulation, the runner reuses
+each compiled system model for short startup checks. Programs sharing a
+binary share its completed check. The selected builds divide a 180-second
+estimated job budget; the seed count is fixed before the checks run.
+SRAM and large-cache models use their own per-seed cost estimates.
+The allocation reserves three starts per cached-tier model: two assertion
+controls that must fail after reset with their original diagnostics, and
+one that must complete with arming deliberately withheld. BRAM-tier models
+reserve no control starts. The cumulative startup time across a job's models
+has a 300-second hard limit; exceeding it fails the check.
+
+Each seed comes from `random.Random(f"{base}:startup:{index}")`, with a draw
+from 1 through 2**31 - 1. The base is `FROST_RANDOM_START_SEED`, or
+`frost-startup` when that variable is absent. CI preserves the job's base in
+`FROST_STARTUP_SEED_BASE`, including for registry tests that pin their own
+program seed. CI runs therefore rotate their seed sets, and local runs
+repeat them. Logs print the base, index and
+Verilator seed, and a failing run prints its exact command for the image.
+`FROST_STARTUP_SEEDS=201` selects the full sweep in the same CI check.
+Explicit counts are limited to 1–201. Full-sweep allocations include the
+controls and must fit a 1,800-second estimate and cumulative hard limit.
+A selected set that cannot fit one seed and its controls, or the requested
+full sweep, fails before starting its samples. Restrict the selected builds
+or run one compiled model directly for a full sweep that exceeds the job allocation.
+
+After building with `FROST_RANDOM_START_SEED` set, run the same check directly:
+
+```bash
+./scripts/frost.py run python3 tests/random_start_sweep.py \
+    --test hello_world --count 201
+```
+
+Use the registry entry and environment that produced the model. `--seed N`
+selects one explicit Verilator seed. The check writes self-loop images with consistent instruction metadata.
+Each process drives idle external inputs, starts the CPU and NIC clocks,
+applies reset, installs the loop entry, and runs 300 system cycles. Seeds are runtime arguments; the check does not rebuild. A pass
+requires assertion arming, a completion marker, and a fresh passing cocotb
+report. Per-seed logs, XML reports, executable digest, failures and elapsed
+time go to `tests/startup_sweep/` (override with `--output`). `--baseline`
+measures a model with checks enabled from its first evaluation.
+
+After the seeded starts, the cached-tier check deliberately violates the
+NIC AXI single-beat response check and the NIC reset identity assertion in
+separate processes. Each control requires a matching
+`+frost_startup_assertion_control=bridge` or
+`+frost_startup_assertion_control=nic_reset` plusarg, the matching
+`FROST_STARTUP_ASSERTION_CONTROL` environment value, and a bench write to
+the simulation-only probe after assertion arming and reset. Ordinary starts
+omit these controls. A passing process, a timeout, or a different diagnostic
+fails the control. `--baseline` skips them.
+The third process uses the bridge violation with the additional
+`+frost_startup_withhold_assertions=1` plusarg and matching
+`FROST_STARTUP_WITHHOLD_ASSERTIONS=1` environment value. The bench withholds
+arming and reads back the disabled simulator switch after reset and after
+the injected violation. This process must complete with a passing cocotb
+report and no assertion diagnostic. Both directions run in the simulator;
+the Python unit tests also use mocked outcomes to check failure classification.
+
+TestRIG shard 3 requires a summary of both assertion failures and the
+withheld-arming completion for its seed base and current fixture. Its final
+CI step fails if any control is absent, even when no startup sample ran.
+The summary is printed and included in the job summary. This requirement
+uses the shard's compiled model and adds no build or CI job.
 
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.
@@ -530,9 +624,14 @@ domain restarts, wire-side PAUSE validation during congestion, and cancellation 
 `nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
+`nic_bench` also runs in both tiers with `NIC_BENCH_QUICK`: eight-entry rings,
+repeated producer wraparound, short and jumbo frames, and raw MAC loopback.
+This mode checks descriptor replenishment and error reporting; its printed rates
+are not performance measurements. CI selects it in the runtime-and-other shard.
 `test_frost_net10g_driver.py` checks packaging and the descriptor ABI, and compiles selected
-driver helpers against C fixtures for DMA teardown, reconfiguration and GSO fallback. It does
-not replace executing the kernel driver.
+driver helpers against C fixtures for DMA teardown, reconfiguration, GSO fallback,
+RX fragment sizes, copybreak boundaries and sync ordering. It does not replace executing
+the kernel driver or checking the kernel's page-pool reference counting.
 
 ### Compliance and torture runners
 

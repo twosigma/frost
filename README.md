@@ -102,6 +102,39 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 ./scripts/frost.py shell
 ```
 
+## Try it without an FPGA
+
+A standalone C++ Verilator runner simulates the `frost` SystemVerilog RTL with
+live UART output and no Python in the clock loop. It matched the cocotb bench
+cycle for cycle on `hello_world` and CoreMark in both memory tiers (unseeded
+behavioral AXI memory model); CI checks BRAM and DDR `hello_world` and BRAM
+CoreMark against
+[`hw/sim/native/exactness_baseline.json`](hw/sim/native/exactness_baseline.json)
+alongside a live cocotb BRAM `hello_world` run:
+
+```bash
+./scripts/frost.py native hello_world
+./scripts/frost.py native coremark --threads 4
+./scripts/frost.py native coremark --mem-config ddr --threads 4
+```
+
+With the `frost` development image built first (`docker build -t frost .`, see
+[Quick Start](#quick-start)) and the CoreMark submodule initialized,
+`demo/Dockerfile` packages baseline x86-64 simulator binaries and prebuilt
+`hello_world` and CoreMark images into a small standalone runtime container
+(`frost-demo:local`):
+
+```bash
+git submodule update --init --recursive sw/apps/coremark/coremark
+docker build -f demo/Dockerfile -t frost-demo:local .
+docker run --rm -it frost-demo:local
+```
+
+Every clock cycle evaluates the hardware model in software; RTL simulation is
+far slower than hardware. See [hw/sim/native/README.md](hw/sim/native/README.md)
+for what runs, how it compares with the cocotb flow, what the summary figures
+mean, and how to run other applications.
+
 ## Running on the FPGA
 
 FPGA builds and board tools run natively on a host with Vivado 2025.2 and the
@@ -143,7 +176,11 @@ every supported extension and privilege mode.
 | **A**            | Atomic memory operations (LR/SC, AMO; word and doubleword) |
 | **F**            | Single-precision floating-point (32-bit)       |
 | **D**            | Double-precision floating-point (64-bit)       |
+| **Zfhmin**       | Half-precision loads, stores, moves and conversions to and from single and double precision |
+| **Zfa**          | Additional floating-point instructions: `fli`, `fminm`/`fmaxm`, `fround`/`froundnx`, `fcvtmod.w.d`, `fleq`/`fltq` |
 | **C**            | Compressed instructions (16-bit encodings) |
+| **Zcb**          | Compressed byte/halfword loads and stores, `c.zext.*`, `c.sext.*`, `c.not`, `c.mul`, expanded at instruction fill |
+| **Zcmop**        | Compressed may-be-operations `c.mop.n`, which write no register |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
@@ -154,6 +191,8 @@ every supported extension and privilege mode.
 | **Zbc**          | Carry-less multiplication (clmul, clmulh, clmulr) |
 | **Zbkc**         | Carry-less multiplication for crypto (clmul, clmulh) |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
+| **Zihintntl**    | Non-temporal locality hints (`ntl.*`, `c.ntl.*`), retired as no-ops |
+| **Zimop**        | May-be-operations `mop.r.n`/`mop.rr.n`, which write zero to rd |
 | **Zawrs**        | `wrs.nto`/`wrs.sto` retire at once; `wrs.nto` traps below M with `mstatus.TW` set |
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
 | **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks), ordered no-ops while every bus master is coherent; the device tree lists it with `riscv,cbom-block-size = <64>` |
@@ -162,7 +201,7 @@ every supported extension and privilege mode.
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
-| **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended |
+| **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended; an instruction or data access, misaligned or page fault, a failed bus response included, writes the faulting virtual address |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
 | **Svvptc**       | A PTE changed from invalid to valid becomes visible to the walker without `sfence.vma` |
 | **Zic64b, Ziccif, Ziccrse, Ziccamoa, Zicclsm, Za64rs, Zkt, Ssccptr, Sstvecd, Sscounterenw** | RVA22 profile properties: 64-byte cache blocks, instruction fetch, LR/SC, AMOs and misaligned loads and stores in cached memory (in hardware on the X3, emulated by OpenSBI on the VCU118), reservation sets of at most 64 bytes, data-independent latency for the Zkt instructions, page-table walks of cached memory, direct-mode `stvec`, and a writable `scounteren` bit for each counter that is not read-only zero |
@@ -186,8 +225,10 @@ every supported extension and privilege mode.
   bimodal and a tagged path-history direction predictor, and an 8-entry
   return stack. A mispredicted conditional branch redirects fetch and
   restores the rename tables the cycle after it resolves.
-- Sv39 virtual memory with hardware page-table walks and separate 16-entry
-  instruction and data TLBs. Intra-page instruction translation uses the
+- Sv39 virtual memory with hardware page-table walks, separate 16-entry
+  instruction and data TLBs backed by a 512-entry second-level TLB and a
+  32-entry superpage array, and nine-bit ASIDs with global pages and
+  selective `sfence.vma`. Intra-page instruction translation uses the
   live page offset without a fetch bubble; eligible data accesses use a
   last-page translation bypass.
 - Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB
@@ -296,6 +337,8 @@ For native builds outside the container, initialize the submodules first with
 | Directory | Contents |
 |-----------|----------|
 | [hw/rtl/](hw/rtl/README.md) | CPU, caches, peripherals, and reusable hardware blocks |
+| [hw/sim/native/](hw/sim/native/README.md) | Standalone C++ Verilator runner for the SoC RTL |
+| [demo/](demo/Dockerfile) | Runtime Docker image for running `hello_world` and CoreMark on the RTL |
 | [sw/](sw/README.md) | Bare-metal libraries, applications, and benchmarks |
 | [linux/](linux/README.md) | Linux boot images, firmware, and NIC driver |
 | [fpga/](fpga/README.md) | FPGA build, programming, and software-loading tools |

@@ -40,8 +40,9 @@
  *   6. writes a load's value through the write-back port and pulses o_done.
  *
  * A load response with an error ends the access, once every response is in,
- * with a load access fault whose trap value is zero, as the load queue reports
- * bus errors. A store response with an error, and i_fatal_stop at any time,
+ * with a load access fault whose trap value is the virtual address of the
+ * first byte of the lowest failed part: the access's own address for the lower
+ * part, the upper sector's base for the upper part. A store response with an error, and i_fatal_stop at any time,
  * are terminal at once: the engine issues no further request, raises
  * o_fatal_error for a failed write, stays busy, and never reports completion
  * or a fault again until reset. Nothing completes, faults or requests on the
@@ -66,7 +67,7 @@ module ma_engine #(
     input riscv_pkg::mem_size_e            i_size,
     input logic                            i_unsigned,
     input logic                            i_store,
-    // FP destination (FLW/FLD) or FP data source (FSW/FSD).
+    // FP destination (FLH/FLW/FLD) or FP data source (FSH/FSW/FSD).
     input logic                            i_fp,
     input logic                 [     4:0] i_rd,
     input logic                            i_rd_valid,
@@ -158,6 +159,8 @@ module ma_engine #(
   // Memory phase.
   logic [1:0] resp_seen_q;
   logic resp_error_q;
+  // The lower part's response (identity 0) was an error.
+  logic resp_error_lo_q;
   logic [SectorBits-1:0] lo_line_q, hi_line_q;
   logic fatal_error_q;
 
@@ -351,13 +354,15 @@ module ma_engine #(
       end
     end
     if (state_q == S_DECIDE) begin
-      resp_seen_q  <= 2'b00;
+      resp_seen_q <= 2'b00;
       resp_error_q <= 1'b0;
+      resp_error_lo_q <= 1'b0;
     end
     if (in_memory_phase) begin
       resp_seen_q <= resp_seen_next;
       if (i_lc_resp_valid) begin
         if (i_lc_resp_error) resp_error_q <= 1'b1;
+        if (i_lc_resp_error && !i_lc_resp_id[0]) resp_error_lo_q <= 1'b1;
         if (i_lc_resp_id[0]) hi_line_q <= i_lc_resp_data;
         else lo_line_q <= i_lc_resp_data;
       end
@@ -375,7 +380,9 @@ module ma_engine #(
   assign o_fault_cause = (state_q == S_FINISH) ? ma_pkg::part_cause(
       ma_pkg::MaPartAccess, 1'b0
   ) : outcome.cause;
-  assign o_fault_tval = (state_q == S_FINISH) ? '0 : outcome.tval;
+  // A response error reports the first byte of the lowest failed part: va
+  // for the lower part, the upper sector's base for the upper one.
+  assign o_fault_tval = (state_q != S_FINISH) ? outcome.tval : resp_error_lo_q ? va_q : upper_va;
   assign o_done = !i_fatal_stop && (state_q == S_FINISH) && (store_q || !resp_error_q);
 
   assign o_rf_read_en = (state_q == S_RF_READ) || (state_q == S_RF_CAPTURE);
@@ -516,11 +523,10 @@ module ma_engine #(
       // Done only once every issued request has answered.
       if (o_done) p_done_after_resp : assert (resp_seen_q == resp_expected && issued_q[0]);
       // A fault after the memory phase is a load's response error, reported
-      // as a load access fault with a zero trap value once every response is in.
+      // as a load access fault once every response is in.
       if (o_fault && state_q == S_FINISH) begin
         p_late_fault_load :
-        assert (!store_q && resp_error_q && resp_seen_q == resp_expected &&
-                                    o_fault_cause == 5'd5 && o_fault_tval == '0);
+        assert (!store_q && resp_error_q && resp_seen_q == resp_expected && o_fault_cause == 5'd5);
       end
       // A fault before the memory phase follows a check and precedes any request.
       if (o_fault && state_q == S_DECIDE) begin
