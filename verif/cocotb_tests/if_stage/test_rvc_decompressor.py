@@ -21,6 +21,7 @@ from typing import Any
 
 import cocotb
 from cocotb.triggers import Timer
+from cocotb_tests.if_stage.rvc_spec import expand as spec_expand
 
 
 OPC_LUI = 0b0110111
@@ -226,6 +227,22 @@ def _assert_decode(
     assert int(dut.o_instr_expanded.value) == expanded
     assert bool(dut.o_is_compressed.value) is compressed
     assert bool(dut.o_illegal.value) is illegal
+
+
+@cocotb.test()
+async def test_all_parcels_against_specification(dut: Any) -> None:
+    """Every 16-bit input agrees with the independent RV64C/Zcb/Zcmop oracle."""
+    for raw in range(1 << 16):
+        _drive(dut, raw)
+        await _settle()
+        expected = spec_expand(raw)
+        assert bool(dut.o_illegal.value) == (expected is None), f"0x{raw:04x}"
+        assert bool(dut.o_is_compressed.value) == (raw & 3 != 3), f"0x{raw:04x}"
+        if expected is not None:
+            assert int(dut.o_instr_expanded.value) == expected, f"0x{raw:04x}"
+        assert (int(dut.o_instr_expanded.value), bool(dut.o_illegal.value)) == (
+            _PREDECODE.rvc_expand(raw)
+        ), f"Python mirror 0x{raw:04x}"
 
 
 @cocotb.test()
@@ -751,7 +768,7 @@ async def test_rv64_c_ldsp_and_c_sdsp_expand_and_ldsp_rd0_reserved(dut: Any) -> 
 
 @cocotb.test()
 async def test_rv64_c_addw_expands_and_upper_subops_stay_reserved(dut: Any) -> None:
-    """bit12=1 [6:5]=01 is C.ADDW; [6:5]=10/11 remain reserved on RV64."""
+    """bit12=1 [6:5]=01 is C.ADDW; Zcb takes [6:5]=10 (C.MUL) and 11 ([4:2]<=101)."""
     addw_raw = _pack_compressed(
         funct3=0b100,
         quadrant=0b01,
@@ -771,15 +788,96 @@ async def test_rv64_c_addw_expands_and_upper_subops_stay_reserved(dut: Any) -> N
         ),
     )
 
-    for subop in (0b10, 0b11):
+    for sel in (0b110, 0b111):
         reserved_raw = _pack_compressed(
             funct3=0b100,
             quadrant=0b01,
-            bits12_2=(1 << 10) | (0b11 << 8) | (3 << 5) | (subop << 3) | 4,
+            bits12_2=(1 << 10) | (0b11 << 8) | (3 << 5) | (0b11 << 3) | sel,
         )
         _drive(dut, reserved_raw)
         await _settle()
+        assert int(dut.o_instr_expanded.value) == 0
         assert bool(dut.o_illegal.value) is True
+
+
+# Zcb vectors: parcels and expansions assembled by GNU as 2.42
+# (-march=rv64gc_zba_zbb_zcb), independent of the predecode model.
+_ZCB_VECTORS = (
+    # (raw parcel, expansion, name)
+    (0x8000, 0x00044403, "c.lbu s0, 0(s0)"),
+    (0x80E4, 0x0034C483, "c.lbu s1, 3(s1)"),
+    (0x8484, 0x0004D483, "c.lhu s1, 0(s1)"),
+    (0x84E4, 0x00249483, "c.lh s1, 2(s1)"),
+    (0x88C4, 0x009480A3, "c.sb s1, 1(s1)"),
+    (0x8C84, 0x00949023, "c.sh s1, 0(s1)"),
+    (0x8CA4, 0x00949123, "c.sh s1, 2(s1)"),
+    (0x9C61, 0x0FF47413, "c.zext.b s0"),
+    (0x9CE5, 0x60449493, "c.sext.b s1"),
+    (0x9FE9, 0x0807C7BB, "c.zext.h a5"),
+    (0x9FED, 0x60579793, "c.sext.h a5"),
+    (0x9FF1, 0x080787BB, "c.zext.w a5"),
+    (0x9FF5, 0xFFF7C793, "c.not a5"),
+    (0x9CC5, 0x029484B3, "c.mul s1, s1, s1"),
+)
+
+# C.MOP.n (n odd, 1-15) is C.LUI xn, 0 and writes no register.
+_ZCMOP_VECTORS = tuple((0x6001 | (n << 7), f"c.mop.{n}") for n in range(1, 16, 2))
+
+# Reserved neighbours of the new encodings, which stay illegal.
+_ZCB_RESERVED = (
+    (0x8CC4, "c.sh slot with bit 6 set"),
+    (0x9000, "quadrant-0 funct3=100 bit 12"),
+    (0x9C00, "quadrant-0 funct3=100 [12:10]=111"),
+    (0x6001, "c.lui x0, 0"),
+    (0x6201, "c.lui x4, 0"),
+    (0x6801, "c.lui x16, 0"),
+    (0x6881, "c.lui x17, 0"),
+    (0x9C79, "zcb unary selector 110"),
+    (0x9C7D, "zcb unary selector 111"),
+)
+
+
+@cocotb.test()
+async def test_zcb_forms_expand_to_their_base_equivalents(dut: Any) -> None:
+    """Every Zcb form expands to the base or Zba/Zbb/M instruction the spec names."""
+    for raw, expanded, name in _ZCB_VECTORS:
+        _drive(dut, raw)
+        await _settle()
+        got = int(dut.o_instr_expanded.value)
+        assert got == expanded, f"{name} ({raw:#06x}): {got:#010x} != {expanded:#010x}"
+        assert bool(dut.o_illegal.value) is False, name
+        assert _PREDECODE.rvc_expand(raw) == (expanded, False), name
+
+
+@cocotb.test()
+async def test_zcmop_forms_expand_to_nop_and_neighbours_stay_reserved(dut: Any) -> None:
+    """C.MOP.n expands to the canonical NOP; reserved neighbours stay illegal."""
+    for raw, name in _ZCMOP_VECTORS:
+        _drive(dut, raw)
+        await _settle()
+        assert int(dut.o_instr_expanded.value) == 0x00000013, name
+        assert bool(dut.o_illegal.value) is False, name
+    for raw, name in _ZCB_RESERVED:
+        _drive(dut, raw)
+        await _settle()
+        assert bool(dut.o_illegal.value) is True, f"{name} ({raw:#06x})"
+        assert _PREDECODE.rvc_expand(raw)[1] is True, name
+
+
+@cocotb.test()
+async def test_zihintntl_c_ntl_forms_are_legal_add_x0_hints(dut: Any) -> None:
+    """C.NTL.P1/PALL/S1/ALL are c.add x0, x2..x5: legal hints writing x0."""
+    for rs2, name in (
+        (2, "c.ntl.p1"),
+        (3, "c.ntl.pall"),
+        (4, "c.ntl.s1"),
+        (5, "c.ntl.all"),
+    ):
+        raw = 0x9002 | (rs2 << 2)
+        _drive(dut, raw)
+        await _settle()
+        assert int(dut.o_instr_expanded.value) == (rs2 << 20) | 0x33, name
+        assert bool(dut.o_illegal.value) is False, name
 
 
 @cocotb.test()

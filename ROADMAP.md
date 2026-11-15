@@ -66,11 +66,11 @@ extensions implemented on `main` or planned with the vector unit:
 | Zvfhmin | Partial (FP16 convert datapath block in place; core execution not connected) | `test_vec_fcvt.py` |
 | Zvbb | Partial (single-width lane instructions in place; `vwsll` and vector advertisement not in place) | `test_vec_int_lane.py`, `test_vec_engine.py` |
 | Zvkt | Partial (fixed-latency integer and bitmanip lanes in place; vector unit unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py` |
-| Zihintntl | Implemented (hints execute as no-ops); advertisement in progress | `riscv-arch-test` (`hints`), `rvc_predecode.sby`, TestRIG |
+| Zihintntl | Implemented (hints execute as no-ops) | `riscv-arch-test` (`hints`), `rvc_predecode.sby`, TestRIG (`--zcb`) |
 | Zicond | Implemented | `riscv-arch-test` (`Zicond`), `isa_test`, TestRIG |
-| Zimop | In progress | - |
-| Zcmop | In progress | - |
-| Zcb | In progress | - |
+| Zimop | Implemented | `riscv-arch-test` (`Zimop`), `mops`, `test_id_stage.py`, TestRIG (`--zcb`), `instr_operand_classifier.sby` |
+| Zcmop | Implemented | `mops`, `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
+| Zcb | Implemented | `riscv-arch-test` (`C`), `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
 | Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
 | Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
 | Supm | In progress | - |

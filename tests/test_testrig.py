@@ -63,6 +63,7 @@ if str(VERIF_DIR) not in sys.path:
 atomics = importlib.import_module("testrig.atomics")
 crypto = importlib.import_module("testrig.crypto")
 vector = importlib.import_module("testrig.vector")
+compressed_mops = importlib.import_module("testrig.compressed_mops")
 fp_ext = importlib.import_module("testrig.fp_ext")
 SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 DEFAULT_VECTOR_LENGTH = 128
@@ -369,6 +370,22 @@ def run(arguments: argparse.Namespace) -> int:
             command += ["-t", str(SSCOFPMF_TRACE)]
         elif arguments.trace_dir:
             command += ["-d", str(Path(arguments.trace_dir).resolve())]
+        elif arguments.zcb:
+            seed = (
+                arguments.seed
+                if arguments.seed is not None
+                else random.randrange(1 << 32)
+            )
+            trace_dir = work_dir / "compressed_mops"
+            shutil.rmtree(trace_dir, ignore_errors=True)
+            compressed_mops.write_tests(
+                trace_dir, arguments.zcb, seed, arguments.test_length
+            )
+            print(
+                f"Wrote {arguments.zcb} Zcb/Zcmop/Zimop/Zihintntl tests from seed {seed}",
+                flush=True,
+            )
+            command += ["-d", str(trace_dir)]
         elif arguments.crypto:
             seed = (
                 arguments.seed
@@ -544,6 +561,15 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="replay this many scalar cryptography tests from verif/testrig/crypto.py",
     )
     parser.add_argument(
+        "--zcb",
+        type=int,
+        default=0,
+        help=(
+            "replay this many random Zcb/Zcmop/Zimop/Zihintntl tests from "
+            "verif/testrig/compressed_mops.py"
+        ),
+    )
+    parser.add_argument(
         "--fp-ext",
         type=int,
         default=0,
@@ -581,7 +607,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--seed",
         type=int,
-        help="seed for --atomics, --crypto, --vector or --fp-ext (default: random, printed)",
+        help="seed for --atomics, --crypto, --vector, --zcb or --fp-ext (default: random, printed)",
     )
     parser.add_argument(
         "--save-dir",
@@ -626,22 +652,24 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         or arguments.atomics
         or arguments.crypto
         or arguments.vector
+        or arguments.zcb
         or arguments.fp_ext
     ):
         parser.error(
             "--sscofpmf cannot be combined with --trace-dir, --atomics, --crypto, "
-            "--vector or --fp-ext"
+            "--vector, --zcb or --fp-ext"
         )
     if arguments.vector and (
         arguments.atomics
         or arguments.crypto
         or arguments.trace
         or arguments.trace_dir
+        or arguments.zcb
         or arguments.fp_ext
     ):
         parser.error(
             "--vector cannot be combined with --atomics, --crypto, --trace, "
-            "--trace-dir or --fp-ext"
+            "--trace-dir, --zcb or --fp-ext"
         )
     return arguments
 

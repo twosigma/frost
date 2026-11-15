@@ -273,12 +273,14 @@ IF pairs two instructions only when all of these hold:
 - Slot 1 is not control flow (a branch, JAL, JALR, or a compressed form of
   one) and not a native SYSTEM, MISC-MEM, or AMO instruction (CSR accesses,
   ECALL, EBREAK, xRET, WFI, SFENCE.VMA, FENCE, FENCE.I, and atomics including
-  LR/SC).
-- Slot 2 is not a native SYSTEM, MISC-MEM, AMO, FP-compute (OP-FP or fused
-  multiply-add) or vector instruction (OP-V, or LOAD-FP and STORE-FP with a
-  vector width). It may be a branch or jump, but only the slot-2
-  BTB lookup or the backing BTB can predict it; the PD redirect's direction
-  change covers slot 1 only.
+  LR/SC). The Zimop may-be-operations (SYSTEM with funct3 100) are the
+  exception: they write zero to rd and touch no other state, so they pair
+  like an integer instruction, in either slot.
+- Slot 2 is not a native SYSTEM (other than a may-be-operation), MISC-MEM,
+  AMO, FP-compute (OP-FP or fused multiply-add) or vector instruction (OP-V,
+  or LOAD-FP and STORE-FP with a vector width). It may be a branch or jump,
+  but only the slot-2 BTB lookup or the backing BTB can predict it; the PD
+  redirect's direction change covers slot 1 only.
 - Slot 2 fits in the window. A 32-bit slot 2 that would start in the upper
   half of the second word does not.
 - No transient condition intervenes, such as an unsafe window read, an
@@ -290,7 +292,8 @@ A CSR instruction reads and writes its CSR at commit, and its CDB broadcast
 carries only its write operand, so dispatch holds everything younger until the
 CSR's result is written back. A slot-2 partner would slip past that hold. The
 predecode puts CSR accesses in one serializing class with the other native
-SYSTEM, MISC-MEM, and AMO instructions, and that class never leads a pair.
+SYSTEM instructions (all but the may-be-operations), MISC-MEM, and AMO
+instructions, and that class never leads a pair.
 These instructions also retire alone at the ROB head, which keeps them out of
 slot 2. FP-compute instructions stay out of slot 2 to keep FP
 reservation-station back-pressure off the slot-1 dispatch path, and vector
