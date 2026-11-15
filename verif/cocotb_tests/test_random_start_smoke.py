@@ -14,7 +14,6 @@
 
 """Exercise system startup and a short execution interval with seeded state."""
 
-import os
 from typing import Any
 
 import cocotb
@@ -26,7 +25,6 @@ from cocotb_tests.test_real_program import (
     RESET_CYCLES,
     _load_imem_predecode_model,
     generate_divided_clock,
-    hold_nic_without_mac_clocks,
     prepare_program_start,
     start_clocks,
     start_cpu_clock,
@@ -36,7 +34,7 @@ from cocotb_tests.test_real_program import (
 
 
 def load_startup_loop(dut: Any) -> None:
-    """Install a two-word self loop without initializing unused image storage."""
+    """Install the entry self loop after reset; the sweep preloads its banks."""
     platform = dut.cpu_and_memory_subsystem
     soc = platform.soc if hasattr(platform, "soc") else platform
     assert int(soc.rst_core.value), "startup loop load requires system reset"
@@ -77,8 +75,10 @@ def load_startup_loop(dut: Any) -> None:
 @cocotb.test()
 async def startup_smoke(dut: Any) -> None:
     """Apply the program bench's reset, then run 300 system clock cycles."""
+    for signal in dut:
+        if signal._name.startswith("i_"):
+            signal.value = Immediate(0)
     platform = dut.cpu_and_memory_subsystem
-    soc = platform.soc if hasattr(platform, "soc") else platform
     if hasattr(platform, "u_rvfi_dii"):
         harness = platform.u_rvfi_dii
         harness.dii_count.value = Immediate(0)
@@ -90,15 +90,13 @@ async def startup_smoke(dut: Any) -> None:
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     start_cpu_clock(dut)
     cocotb.start_soon(generate_divided_clock(dut, image_loader=load_startup_loop))
-    if os.environ.get("FROST_NIC_MAC_CLOCKS", "1") == "0":
-        accesses = (soc.nic_access_q,) if hasattr(soc, "nic_access_q") else ()
-        hold_nic_without_mac_clocks(dut, accesses)
-    else:
-        start_nic_mac_clocks(dut, edges_without_delay=True)
+    start_nic_mac_clocks(dut, edges_without_delay=True)
     for _ in range(RESET_CYCLES):
         await RisingEdge(dut.i_clk)
     await wait_for_power_on_reset(dut)
     dut.i_rst_n.value = 1
+    if hasattr(dut, "i_ddr_axi_rst_n"):
+        dut.i_ddr_axi_rst_n.value = 1
     await ClockCycles(dut.i_clk, 300)
     await ReadOnly()
     cocotb.log.info("STARTUP_SMOKE_PASS")

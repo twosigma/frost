@@ -512,22 +512,35 @@ reset reaches them. Runtime assertions stay enabled across warm resets;
 their local reset conditions apply during those resets. Unit benches start
 with assertions enabled and drive reset at their module boundaries.
 
-After building a system test with `FROST_RANDOM_START_SEED` set, reuse its
-model for a short startup sweep:
+The Cocotb, physical-address and TestRIG CI jobs set
+`FROST_STARTUP_SWEEP=1`. After a successful simulation, the runner reuses
+each compiled system model for short startup checks. Programs sharing a
+binary share its completed check. The selected builds divide a 180-second
+estimated job budget; the seed count is fixed before the checks run.
+SRAM and large-cache models use their own per-seed cost estimates.
+
+Each seed comes from `random.Random(f"{base}:startup:{index}")`, with a draw
+from 1 through 2**31 - 1. The base is `FROST_RANDOM_START_SEED`, or
+`frost-startup` when that variable is absent. CI runs therefore rotate their
+seed sets, and local runs repeat them. Logs print the base, index and
+Verilator seed, and a failing run prints its exact command for the image.
+`FROST_STARTUP_SEEDS=201` selects the full sweep in the same CI check.
+
+After building with `FROST_RANDOM_START_SEED` set, run the same check directly:
 
 ```bash
 ./scripts/frost.py run python3 tests/random_start_sweep.py \
-    --test hello_world --count 200 --workers 2
+    --test hello_world --count 201
 ```
 
-Use the registry entry and environment that produced the model. Each process
-applies reset, installs a small instruction loop, and runs 300 system cycles.
-The sweep passes seeds 1 through 200 and a fixed regression seed as runtime
-arguments; it does not rebuild. It requires successful assertion arming, a
-completion marker, and a fresh passing cocotb report. Per-seed logs and XML
-reports, executable digest, failures, and elapsed time go to
-`tests/startup_sweep/` (override with `--output`). `--baseline` measures an
-older model with checks enabled from its first evaluation.
+Use the registry entry and environment that produced the model. `--seed N`
+selects one explicit Verilator seed. The check writes self-loop images with consistent instruction metadata.
+Each process drives idle external inputs, starts the CPU and NIC clocks,
+applies reset, installs the loop entry, and runs 300 system cycles. Seeds are runtime arguments; the check does not rebuild. A pass
+requires assertion arming, a completion marker, and a fresh passing cocotb
+report. Per-seed logs, XML reports, executable digest, failures and elapsed
+time go to `tests/startup_sweep/` (override with `--output`). `--baseline`
+measures a model with checks enabled from its first evaluation.
 
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.
