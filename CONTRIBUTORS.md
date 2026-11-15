@@ -117,3 +117,4 @@
 - Implemented one-cycle L1I invalidation with valid bits in flip-flops and added a JIT-style fence.i and refetch benchmark
 - Added L1I refill and L2 demand and prefetch miss events to the HPM counters, with Linux PMU mappings and directed verification.
 - Registered the VCU118 DDR initializer's AXI valid signals, applied its SLR floorplan and updated its external I/O constraints.
+- Switched out-of-context IP synthesis to project-mode runs, clocked the BSCAN debug transport at its primitives, adapted Vivado exit detection to child IP logs, and extended the L1D zero-cover budget
