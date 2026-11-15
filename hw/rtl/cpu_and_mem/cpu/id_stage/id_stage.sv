@@ -55,6 +55,8 @@ module id_stage #(
     input logic i_cbo_inval_flush,
     // Zawrs: wrs.nto is illegal below M while mstatus.TW is set.
     input logic i_wrs_nto_illegal,
+    // Svinval: sfence.w.inval and sfence.inval.ir are illegal in U-mode.
+    input logic i_priv_is_u = 1'b0,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
     // Next-edge value of o_from_id_to_ex (its register D), for a consumer
     // that keeps a registered copy of fields it selects against this output.
@@ -265,6 +267,10 @@ module id_stage #(
   assign is_wrs_nto_direct = (instruction.opcode == riscv_pkg::OPC_CSR) &&
                              (instruction.funct3 == 3'b000) &&
                              ({instruction.funct7, instruction.source_reg_2} == 12'h00D);
+  logic is_svinval_fence_direct;
+  assign is_svinval_fence_direct = (instruction.opcode == riscv_pkg::OPC_CSR) &&
+                                   (instruction.funct3 == 3'b000) &&
+                                   (instruction.funct7 == 7'b0001100);
   logic is_illegal_instruction;
   // VS=Off makes vector instructions illegal: OP-V and the vector loads and
   // stores (LOAD-FP and STORE-FP with a vector width).
@@ -276,7 +282,8 @@ module id_stage #(
                                   (i_mstatus_fs_off & is_fp_instruction_direct) |
                                   (i_mstatus_vs_off & is_vector_direct) |
                                   (cbo_gate_illegal & is_cbo_direct) |
-                                  (i_wrs_nto_illegal & is_wrs_nto_direct);
+                                  (i_wrs_nto_illegal & is_wrs_nto_direct) |
+                                  (i_priv_is_u & is_svinval_fence_direct);
 
   // Rounding mode: for FP operations funct3 (bits [14:12]) encodes rm.
   logic [2:0] fp_rm_direct;
@@ -766,6 +773,10 @@ module id_stage #(
   assign is_wrs_nto_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_CSR) &&
                                (instruction_2.funct3 == 3'b000) &&
                                ({instruction_2.funct7, instruction_2.source_reg_2} == 12'h00D);
+  logic is_svinval_fence_direct_2;
+  assign is_svinval_fence_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_CSR) &&
+                                     (instruction_2.funct3 == 3'b000) &&
+                                     (instruction_2.funct7 == 7'b0001100);
   logic is_illegal_instruction_2;
   logic is_vector_direct_2;
   assign is_vector_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_OP_V) ||
@@ -776,7 +787,8 @@ module id_stage #(
                                     (i_mstatus_fs_off & is_fp_instruction_direct_2) |
                                     (i_mstatus_vs_off & is_vector_direct_2) |
                                     (cbo_gate_illegal_2 & is_cbo_direct_2) |
-                                    (i_wrs_nto_illegal & is_wrs_nto_direct_2);
+                                    (i_wrs_nto_illegal & is_wrs_nto_direct_2) |
+                                    (i_priv_is_u & is_svinval_fence_direct_2);
 
   logic [2:0] fp_rm_direct_2;
   assign fp_rm_direct_2 = instruction_2.funct3;

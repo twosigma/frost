@@ -529,7 +529,7 @@
     "Sstvala": {"supported": true},
     "Sstvecd": {"supported": false},
     "Svadu": {"supported": false},
-    "Svinval": {"supported": false},
+    "Svinval": {"supported": true},
     "Svrsw60t59b": {"supported": false},
     "Svnapot": {"supported": false},
     "Svukte": {"supported": false},

@@ -7,8 +7,7 @@ set the direction of this roadmap. The sections are in priority order.
 
 FROST is working toward the RVA23 profile without the hypervisor extension:
 the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
-The remaining scalar extensions are in progress, as are the remaining
-supervisor extensions apart from Svinval.
+The remaining scalar and supervisor extensions are in progress.
 `hpmcounter11`-`31` raise illegal-instruction in every privilege mode; making
 them read zero in M-mode, as the reference models do, would let the TestRIG
 comparison run with Zihpm enabled. Two larger pieces come before the second
@@ -84,7 +83,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Sstvala | Implemented | `sstvala_test`, `sstvala_fault_test`, `ad_fault_test`, `misaligned_test`, TestRIG (`sstvala_illegal.S`, `access_fault_tval.S`), `trap_unit.sby` |
 | Sscounterenw | Implemented | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`scounteren`), `csr_file.sby` |
 | Svpbmt | In progress | - |
-| Svinval | Not yet implemented | - |
+| Svinval | Implemented | `svinval_test`, TestRIG, `instr_operand_classifier.sby` |
 | Svnapot | In progress | - |
 | Sstc | Implemented | `sstc_test`, `irq_take_latency`, TestRIG (`stimecmp`), `csr_file.sby` |
 | Sscofpmf | Implemented | `sscofpmf_test`, TestRIG (`--sscofpmf`), `csr_sscofpmf.sby` |
