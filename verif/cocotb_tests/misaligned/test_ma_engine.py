@@ -205,6 +205,9 @@ class Env:
                 pending.append([self.rng.randint(1, 8), *req])
 
 
+PTW_RESP_WIDTH = 83
+
+
 def pack_walk_resp(vpn: int, leaf: Leaf) -> int:
     """Pack ptw_resp_t: PBMT, fault, VPN, PPN, level and RWXUDG permissions."""
     value = (leaf.pbmt << 2) | leaf.fault
@@ -307,6 +310,7 @@ def expected_load(env: Env, a: Access, parts: list[tuple[int, int]]) -> int:
 
 async def setup(dut: Any, seed: int) -> Env:
     """Start the clock and models, and reset the engine."""
+    assert len(dut.i_walk_resp) == PTW_RESP_WIDTH, len(dut.i_walk_resp)
     rng = random.Random(seed)
     Clock(dut.i_clk, 10, unit="ns").start()
     env = Env(dut, rng)
@@ -496,7 +500,7 @@ def random_leaf(rng: random.Random, store: bool) -> Leaf:
     choice = rng.random()
     ppn = (DDR_BASE >> 12) + rng.randrange(0, 4096)
     if choice < 0.70:
-        return Leaf(ppn=ppn)
+        return Leaf(ppn=ppn, g=ppn & 1)
     if choice < 0.76:
         return Leaf(fault=DFAULT_PAGE)
     if choice < 0.80:
