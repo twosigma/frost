@@ -674,8 +674,8 @@ without faulting a newer instruction.
 ## Storage
 
 What the parallel scans and flushes read at once is in flip-flops: control
-bits, ROB tag, size, and a 4-bit AMO operation code (the 18 AMO opcodes reduce
-to nine operations). The code is written one cycle after allocation, always
+bits, ROB tag, size, and a 4-bit AMO operation code (encoding the nine AMO
+operations one-to-one). The code is written one cycle after allocation, always
 before the AMO can launch (checked in simulation). The address and the AMO
 `rs2` operand are in LUTRAM, read only after `lq_addr_valid` is set; the
 address CAM matches ROB tags, not addresses. Results are in one 64-bit LUTRAM

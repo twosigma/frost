@@ -22,11 +22,7 @@ from config import MASK32, MASK64, MASK_XLEN, XLEN
 from ..fu_shims.fp_shim_interface import _parse_instr_op_enum
 
 _INSTR_OPS = _parse_instr_op_enum()
-_MINMAX_OPS = {
-    _INSTR_OPS[f"AMO{kind}_{width}"]
-    for kind in ("MIN", "MAX", "MINU", "MAXU")
-    for width in ("W", "D")
-}
+_MINMAX_OPS = {_INSTR_OPS[f"AMO{kind}"] for kind in ("MIN", "MAX", "MINU", "MAXU")}
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5

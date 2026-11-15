@@ -53,8 +53,8 @@ RS_NAMES = {
     RS_MEM: "MEM_RS",
     RS_FP: "FP_RS",
 }
-OP_SW = instr_op_value("SW")
-OP_LW = instr_op_value("LW")
+OP_SW = instr_op_value("STORE")
+OP_LW = instr_op_value("LOAD")
 OP_FMADD_D = instr_op_value("FMADD_D")
 OP_JALR = instr_op_value("JALR")
 
@@ -282,6 +282,8 @@ async def test_lq_partial_flush_timing_companion_is_full_flush_dominated(
             RS_MEM,
             rob_tag=tag,
             op=OP_LW,
+            mem_size=2,
+            mem_signed=True,
             src1_ready=False,
             src1_tag=31,
             src2_ready=True,

@@ -98,9 +98,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,
       riscv_pkg::SH2ADD_UW, riscv_pkg::SH3ADD_UW,
       riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
-      riscv_pkg::CSRRW, riscv_pkg::CSRRS,
-      riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
-      riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
+      riscv_pkg::CSR_REG, riscv_pkg::CSR_IMM,
       riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL,
       riscv_pkg::PAUSE:
       rs_type_pre = riscv_pkg::RS_INT;
@@ -115,25 +113,14 @@ module instr_operand_classifier_equiv (
       riscv_pkg::VSETVLI, riscv_pkg::VSETIVLI, riscv_pkg::VSETVL:
       rs_type_pre = riscv_pkg::RS_MUL;
 
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
-      riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::LWU, riscv_pkg::LD,
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
-      riscv_pkg::SD,
-      riscv_pkg::FLW, riscv_pkg::FSW,
-      riscv_pkg::FLD, riscv_pkg::FSD,
-      riscv_pkg::LR_W, riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
-      riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::LR_D, riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D,
-      riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
+      riscv_pkg::LOAD, riscv_pkg::STORE,
+      riscv_pkg::LOAD_FP, riscv_pkg::STORE_FP,
+      riscv_pkg::LR, riscv_pkg::SC,
+      riscv_pkg::AMOSWAP, riscv_pkg::AMOADD,
+      riscv_pkg::AMOXOR, riscv_pkg::AMOAND,
+      riscv_pkg::AMOOR,
+      riscv_pkg::AMOMIN, riscv_pkg::AMOMAX,
+      riscv_pkg::AMOMINU, riscv_pkg::AMOMAXU,
       riscv_pkg::FENCE, riscv_pkg::FENCE_I, riscv_pkg::SFENCE_VMA,
       riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN, riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       rs_type_pre = riscv_pkg::RS_MEM;
@@ -170,29 +157,24 @@ module instr_operand_classifier_equiv (
     endcase
 
     case (op_for_pre_decode)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD, riscv_pkg::CBO_ZERO,
+      riscv_pkg::STORE, riscv_pkg::CBO_ZERO,
       riscv_pkg::CBO_CLEAN, riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       is_int_store_pre = 1'b1;
       default: is_int_store_pre = 1'b0;
     endcase
 
     case (op_for_pre_decode)
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::LWU, riscv_pkg::LD, riscv_pkg::FLW, riscv_pkg::FLD,
-      riscv_pkg::LR_W, riscv_pkg::LR_D,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W, riscv_pkg::AMOXOR_W,
-      riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W, riscv_pkg::AMOMIN_W,
-      riscv_pkg::AMOMAX_W, riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D, riscv_pkg::AMOXOR_D,
-      riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D, riscv_pkg::AMOMIN_D,
-      riscv_pkg::AMOMAX_D, riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
+      riscv_pkg::LOAD, riscv_pkg::LOAD_FP,
+      riscv_pkg::LR,
+      riscv_pkg::AMOSWAP, riscv_pkg::AMOADD, riscv_pkg::AMOXOR,
+      riscv_pkg::AMOAND, riscv_pkg::AMOOR, riscv_pkg::AMOMIN,
+      riscv_pkg::AMOMAX, riscv_pkg::AMOMINU, riscv_pkg::AMOMAXU:
       needs_lq_pre = 1'b1;
       default: needs_lq_pre = 1'b0;
     endcase
 
     case (op_for_pre_decode)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W, riscv_pkg::SC_D, riscv_pkg::CBO_ZERO,
+      riscv_pkg::STORE, riscv_pkg::STORE_FP, riscv_pkg::SC, riscv_pkg::CBO_ZERO,
       riscv_pkg::CBO_CLEAN, riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       needs_sq_pre = 1'b1;
       default: needs_sq_pre = 1'b0;
@@ -212,9 +194,7 @@ module instr_operand_classifier_equiv (
     is_fence_i_pre = (op_for_pre_decode == riscv_pkg::FENCE_I) ||
                      (op_for_pre_decode == riscv_pkg::SFENCE_VMA);
     is_sfence_vma_pre = op_for_pre_decode == riscv_pkg::SFENCE_VMA;
-    is_csr_imm_pre = op_for_pre_decode == riscv_pkg::CSRRWI ||
-                     op_for_pre_decode == riscv_pkg::CSRRSI ||
-                     op_for_pre_decode == riscv_pkg::CSRRCI;
+    is_csr_imm_pre = op_for_pre_decode == riscv_pkg::CSR_IMM;
 
     case (op_for_pre_decode)
       riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FDIV_S,
@@ -243,7 +223,7 @@ module instr_operand_classifier_equiv (
     endcase
 
     case (op_for_pre_decode)
-      riscv_pkg::FLW, riscv_pkg::FLD,
+      riscv_pkg::LOAD_FP,
       riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
       riscv_pkg::FMUL_S, riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S,
       riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
@@ -297,20 +277,13 @@ module instr_operand_classifier_equiv (
       riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
       riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
       riscv_pkg::REMW, riscv_pkg::REMUW,
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::LWU, riscv_pkg::LD,
-      riscv_pkg::LR_W, riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::LR_D, riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
-      riscv_pkg::CSRRW, riscv_pkg::CSRRS, riscv_pkg::CSRRC,
-      riscv_pkg::CSRRWI, riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
+      riscv_pkg::LOAD,
+      riscv_pkg::LR, riscv_pkg::SC,
+      riscv_pkg::AMOSWAP, riscv_pkg::AMOADD,
+      riscv_pkg::AMOXOR, riscv_pkg::AMOAND, riscv_pkg::AMOOR,
+      riscv_pkg::AMOMIN, riscv_pkg::AMOMAX,
+      riscv_pkg::AMOMINU, riscv_pkg::AMOMAXU,
+      riscv_pkg::CSR_REG, riscv_pkg::CSR_IMM,
       riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
       riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
@@ -357,7 +330,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
       riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
       riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FSW, riscv_pkg::FSD:
+      riscv_pkg::STORE_FP:
       uses_fp_rs2_pre = 1'b1;
       default: uses_fp_rs2_pre = 1'b0;
     endcase
@@ -385,9 +358,7 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::DRET &&
       op_for_pre_decode != riscv_pkg::SFENCE_VMA &&
       op_for_pre_decode != riscv_pkg::PAUSE &&
-      op_for_pre_decode != riscv_pkg::CSRRWI &&
-      op_for_pre_decode != riscv_pkg::CSRRSI &&
-      op_for_pre_decode != riscv_pkg::CSRRCI &&
+      op_for_pre_decode != riscv_pkg::CSR_IMM &&
       op_for_pre_decode != riscv_pkg::ILLEGAL &&
       op_for_pre_decode != riscv_pkg::FETCH_FAULT &&
       op_for_pre_decode != riscv_pkg::VSETIVLI &&
@@ -418,17 +389,12 @@ module instr_operand_classifier_equiv (
       riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,
       riscv_pkg::SH2ADD_UW, riscv_pkg::SH3ADD_UW,
       riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
+      riscv_pkg::STORE,
+      riscv_pkg::SC,
+      riscv_pkg::AMOSWAP, riscv_pkg::AMOADD,
+      riscv_pkg::AMOXOR, riscv_pkg::AMOAND, riscv_pkg::AMOOR,
+      riscv_pkg::AMOMIN, riscv_pkg::AMOMAX,
+      riscv_pkg::AMOMINU, riscv_pkg::AMOMAXU,
       riscv_pkg::VSETVL:
       uses_int_rs2_pre = !uses_fp_rs2_pre;
       default: uses_int_rs2_pre = 1'b0;
