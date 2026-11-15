@@ -470,21 +470,23 @@ static unsigned long run_probe(unsigned long mpp, int tvm, int deleg_illegal, vo
     return g_trap_cause;
 }
 
+static unsigned long g_checks_run;
+
 static int check(const char *name, unsigned long got, unsigned long want)
 {
     int ok = got == want;
-    uart_printf("%s %s got=0x%lx want=0x%lx\n", ok ? "[PASS]" : "[FAIL]", name, got, want);
+    g_checks_run++;
+    if (!ok)
+        uart_printf("[FAIL] %s got=0x%lx want=0x%lx\n", name, got, want);
     return ok;
 }
 
 static int walked(const char *name, unsigned long walks, int expect_walk)
 {
     int ok = expect_walk ? walks >= 1 : walks == 0;
-    uart_printf("%s %s walks=%lu expected %s\n",
-                ok ? "[PASS]" : "[FAIL]",
-                name,
-                walks,
-                expect_walk ? ">= 1" : "0");
+    g_checks_run++;
+    if (!ok)
+        uart_printf("[FAIL] %s walks=%lu expected %s\n", name, walks, expect_walk ? ">= 1" : "0");
     return ok;
 }
 
@@ -501,15 +503,17 @@ static int check_probe(const char *name,
     int ok = (cause == want_cause) && (g_trap_from_s == want_from_s);
     if (want_cause == CAUSE_ILLEGAL)
         ok = ok && (g_trap_tval == want_tval);
-    uart_printf("%s %s cause=%lu(want %lu) tval=0x%lx(want 0x%lx) s_handler=%lu(want %lu)\n",
-                ok ? "[PASS]" : "[FAIL]",
-                name,
-                cause,
-                want_cause,
-                g_trap_tval,
-                want_tval,
-                g_trap_from_s,
-                want_from_s);
+    g_checks_run++;
+    if (!ok)
+        uart_printf(
+            "[FAIL] %s cause=%lu(want %lu) tval=0x%lx(want 0x%lx) s_handler=%lu(want %lu)\n",
+            name,
+            cause,
+            want_cause,
+            g_trap_tval,
+            want_tval,
+            g_trap_from_s,
+            want_from_s);
     return ok;
 }
 
@@ -544,6 +548,7 @@ build_space(unsigned long root, unsigned long x_pa, unsigned long y_pa, unsigned
 int main(void)
 {
     int ok = 1;
+    g_checks_run = 0;
 
     g_satp[0] = SATP(1, PT_RA);
     g_satp[1] = SATP(2, PT_RB);
@@ -866,6 +871,7 @@ int main(void)
                           0);
     }
 
+    uart_printf("SVINVAL checks=%lu\n", g_checks_run);
     uart_puts(ok ? "<<PASS>>\n" : "<<FAIL>>\n");
     return ok ? 0 : 1;
 }
