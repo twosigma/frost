@@ -1011,7 +1011,9 @@ async def test_walk_past_even_owner_never_lands_inside_predecessor(dut: Any) -> 
     """A word-aligned overlapping entry cannot move pc_reg into a native instruction."""
     owner = await _capture_walk_past(dut, odd=False)
     await _advance_cycle(dut)
-    dut._log.info("even walk-past: owner=%#x pc_reg=%#x", owner, int(dut.o_pc_reg.value))
+    dut._log.info(
+        "even walk-past: owner=%#x pc_reg=%#x", owner, int(dut.o_pc_reg.value)
+    )
     assert int(dut.o_pc_reg.value) == owner + 2
 
 
@@ -1062,8 +1064,10 @@ async def test_walk_past_can_capture_the_next_prediction(dut: Any) -> None:
     await _advance_cycle(dut)
     dut._log.info(
         "walk-past replacement: lookup=%#x valid=%d saved_pc=%#x target=%#x",
-        next_owner, int(dut.pending_prediction_valid.value),
-        int(dut.pending_prediction_pc.value), int(dut.pending_prediction_target.value),
+        next_owner,
+        int(dut.pending_prediction_valid.value),
+        int(dut.pending_prediction_pc.value),
+        int(dut.pending_prediction_target.value),
     )
     assert dut.pending_prediction_valid.value
     assert int(dut.pending_prediction_pc.value) == next_owner

@@ -1759,14 +1759,14 @@ module pc_controller #(
       else if (rel_lands_on_pending) rel_advance_wcs = 5'b10000;
       else rel_advance_wcs = pc_reg_rel_pending;
       seq_reaches_advance_wcs0 = !seq_next_pc_reg_rel_pending_wcs0.below;
-      seq_reaches_advance_wcs = !seq_next_pc_reg_rel_pending_nop.below;
+      seq_reaches_advance_wcs  = !seq_next_pc_reg_rel_pending_nop.below;
     end else begin
       if (rel_seq_candidate_wcs0) rel_advance_wcs0_select = seq_next_pc_reg_rel_fetch_wcs0;
       else rel_advance_wcs0_select = pc_reg_rel_fetch;
       if (rel_seq_candidate_wcs) rel_advance_wcs = seq_next_pc_reg_rel_fetch_nop;
       else rel_advance_wcs = pc_reg_rel_fetch;
       seq_reaches_advance_wcs0 = !seq_next_pc_reg_rel_fetch_wcs0.below;
-      seq_reaches_advance_wcs = !seq_next_pc_reg_rel_fetch_nop.below;
+      seq_reaches_advance_wcs  = !seq_next_pc_reg_rel_fetch_nop.below;
     end
     if (fetch_advances) begin
       if (i_window_cannot_serve_raw) begin

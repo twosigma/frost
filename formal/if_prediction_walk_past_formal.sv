@@ -85,12 +85,12 @@ module if_prediction_walk_past_formal (
   riscv_pkg::from_if_to_pd_t from_if_to_pd;
   riscv_pkg::from_if_to_pd_t from_if_to_pd_2;
 
-  assign fence_i_flush = raw_fence_i_flush && !i_reset;
+  assign fence_i_flush  = raw_fence_i_flush && !i_reset;
   assign fence_i_target = {raw_fence_i_target_hw, 1'b0};
 
   // Cached fetch_provider (fetch_provider.sv:482) gates o_instr_valid with
   // !pipeline_stall_q, which if_stage.sv:1466-1470 relies on during replay.
-  assign i_instr_valid = raw_instr_valid && !(provider_q && stall_q);
+  assign i_instr_valid  = raw_instr_valid && !(provider_q && stall_q);
 
   always_comb begin
     trap_ctrl = '0;
@@ -423,19 +423,19 @@ module return_address_stack #(
     parameter int unsigned RAS_DEPTH = 8,
     parameter int unsigned RAS_PTR_BITS = $clog2(RAS_DEPTH)
 ) (
-    input  logic                      i_clk,
-    input  logic                      i_rst,
-    input  logic                      i_push,
-    input  logic                      i_pop,
+    input  logic                       i_clk,
+    input  logic                       i_rst,
+    input  logic                       i_push,
+    input  logic                       i_pop,
     input  logic [riscv_pkg::XLEN-1:0] i_push_address,
-    input  logic                      i_misprediction,
+    input  logic                       i_misprediction,
     input  logic [   RAS_PTR_BITS-1:0] i_restore_tos,
     input  logic [     RAS_PTR_BITS:0] i_restore_valid_count,
     input  logic [riscv_pkg::XLEN-1:0] i_restore_top,
-    input  logic                      i_pop_after_restore,
-    input  logic                      i_push_after_restore,
+    input  logic                       i_pop_after_restore,
+    input  logic                       i_push_after_restore,
     input  logic [riscv_pkg::XLEN-1:0] i_push_address_after_restore,
-    output logic                      o_nonempty,
+    output logic                       o_nonempty,
     output logic [riscv_pkg::XLEN-1:0] o_top,
     output logic [   RAS_PTR_BITS-1:0] o_tos,
     output logic [     RAS_PTR_BITS:0] o_valid_count
@@ -457,22 +457,22 @@ module backing_btb #(
     parameter int unsigned WAYS = riscv_pkg::BackingBtbWays,
     parameter int unsigned TARGET_BITS = riscv_pkg::PhysAddrBits
 ) (
-    input  logic                          i_clk,
-    input  logic                          i_reset,
-    input  logic [$clog2(ENTRIES/WAYS)-1:0] i_lookup_index,
-    input  logic [              XLEN-1:0] i_packet_pc,
-    input  logic                          i_packet_compressed,
-    output logic [                   1:0] o_hit,
-    output logic [                   1:0] o_compressed,
-    output logic [                   1:0] o_return,
-    output logic [                   1:0][TARGET_BITS-2:0] o_target,
-    input  logic                          i_update,
-    input  logic [              XLEN-1:0] i_update_pc,
-    input  logic [              XLEN-1:0] i_update_target,
-    input  logic                          i_update_compressed,
-    input  logic                          i_update_return,
-    input  logic                          i_refresh,
-    input  logic [              XLEN-1:0] i_refresh_pc
+    input  logic                                             i_clk,
+    input  logic                                             i_reset,
+    input  logic [$clog2(ENTRIES/WAYS)-1:0]                  i_lookup_index,
+    input  logic [                XLEN-1:0]                  i_packet_pc,
+    input  logic                                             i_packet_compressed,
+    output logic [                     1:0]                  o_hit,
+    output logic [                     1:0]                  o_compressed,
+    output logic [                     1:0]                  o_return,
+    output logic [                     1:0][TARGET_BITS-2:0] o_target,
+    input  logic                                             i_update,
+    input  logic [                XLEN-1:0]                  i_update_pc,
+    input  logic [                XLEN-1:0]                  i_update_target,
+    input  logic                                             i_update_compressed,
+    input  logic                                             i_update_return,
+    input  logic                                             i_refresh,
+    input  logic [                XLEN-1:0]                  i_refresh_pc
 );
   (* anyseq *) logic [1:0] f_hit, f_comp, f_ret;
   (* anyseq *) logic [1:0][TARGET_BITS-2:0] f_target;
@@ -490,24 +490,24 @@ module tage_predictor #(
     parameter int unsigned TAG_BITS = riscv_pkg::TageTagBits,
     parameter int unsigned LOOKUP_HI = 2 + 2 * INDEX_BITS
 ) (
-    input  logic                    i_clk,
-    input  logic [     LOOKUP_HI:2] i_lookup_word,
-    input  logic [   HIST_BITS-1:0] i_lookup_hist,
-    input  logic                    i_lookup_capture,
-    output logic [     LOOKUP_HI:2] o_lookup_word,
-    output logic [     LOOKUP_HI:2] o_lookup_word_next,
-    output logic [   HIST_BITS-1:0] o_lookup_hist,
-    output riscv_pkg::tage_lookup_t o_bank0,
-    output riscv_pkg::tage_lookup_t o_bank1,
-    input  logic                    i_train_valid,
-    input  riscv_pkg::tage_lookup_t i_train_lookup,
-    input  logic                    i_train_bank,
-    input  logic                    i_train_alt_taken,
-    input  logic                    i_train_taken,
-    input  logic                    i_train_mispredicted
+    input  logic                                    i_clk,
+    input  logic                    [  LOOKUP_HI:2] i_lookup_word,
+    input  logic                    [HIST_BITS-1:0] i_lookup_hist,
+    input  logic                                    i_lookup_capture,
+    output logic                    [  LOOKUP_HI:2] o_lookup_word,
+    output logic                    [  LOOKUP_HI:2] o_lookup_word_next,
+    output logic                    [HIST_BITS-1:0] o_lookup_hist,
+    output riscv_pkg::tage_lookup_t                 o_bank0,
+    output riscv_pkg::tage_lookup_t                 o_bank1,
+    input  logic                                    i_train_valid,
+    input  riscv_pkg::tage_lookup_t                 i_train_lookup,
+    input  logic                                    i_train_bank,
+    input  logic                                    i_train_alt_taken,
+    input  logic                                    i_train_taken,
+    input  logic                                    i_train_mispredicted
 );
-  (* anyseq *) logic [LOOKUP_HI:2] f_word;
-  (* anyseq *) logic [HIST_BITS-1:0] f_hist;
+  (* anyseq *)logic [  LOOKUP_HI:2] f_word;
+  (* anyseq *)logic [HIST_BITS-1:0] f_hist;
   (* anyseq *) riscv_pkg::tage_lookup_t f_b0, f_b1;
   assign o_lookup_word = f_word;
   assign o_lookup_word_next = f_word + 1'b1;
@@ -523,29 +523,29 @@ module immu #(
     parameter int unsigned PA_VALID_COPIES = 1,
     parameter bit PA_COPY_HOLD = 1'b0
 ) (
-    input  logic                                 i_clk,
-    input  logic                                 i_rst,
-    input  logic                                 i_active,
-    input  logic                                 i_priv_u,
-    input  logic                                 i_tlb_invalidate,
-    input  riscv_pkg::tlb_flush_t                i_tlb_flush,
-    input  logic [      riscv_pkg::AsidBits-1:0] i_asid,
-    input  logic                                 i_full_flush = 1'b0,
-    input  logic [                     XLEN-1:0] i_pc,
-    output logic [  riscv_pkg::PhysAddrBits-1:0] o_pa0,
-    output logic [  riscv_pkg::PhysAddrBits-1:0] o_pa1,
-    output logic                                 o_pa_valid,
-    output logic [          PA_VALID_COPIES-1:0] o_pa_valid_copy,
-    output logic                                 o_fault0,
-    output logic                                 o_fault0_page,
-    output logic                                 o_fault1,
-    output logic                                 o_fault1_page,
-    output logic                                 o_line_after_ok,
-    output logic                                 o_walk_req_valid,
-    input  logic                                 i_walk_req_ready,
-    output logic [   riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
-    input  logic                                 i_walk_resp_valid,
-    input  riscv_pkg::ptw_resp_t                 i_walk_resp
+    input  logic                                                i_clk,
+    input  logic                                                i_rst,
+    input  logic                                                i_active,
+    input  logic                                                i_priv_u,
+    input  logic                                                i_tlb_invalidate,
+    input  riscv_pkg::tlb_flush_t                               i_tlb_flush,
+    input  logic                  [    riscv_pkg::AsidBits-1:0] i_asid,
+    input  logic                                                i_full_flush = 1'b0,
+    input  logic                  [                   XLEN-1:0] i_pc,
+    output logic                  [riscv_pkg::PhysAddrBits-1:0] o_pa0,
+    output logic                  [riscv_pkg::PhysAddrBits-1:0] o_pa1,
+    output logic                                                o_pa_valid,
+    output logic                  [        PA_VALID_COPIES-1:0] o_pa_valid_copy,
+    output logic                                                o_fault0,
+    output logic                                                o_fault0_page,
+    output logic                                                o_fault1,
+    output logic                                                o_fault1_page,
+    output logic                                                o_line_after_ok,
+    output logic                                                o_walk_req_valid,
+    input  logic                                                i_walk_req_ready,
+    output logic                  [ riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
+    input  logic                                                i_walk_resp_valid,
+    input  riscv_pkg::ptw_resp_t                                i_walk_resp
 );
   (* anyseq *) logic [riscv_pkg::PhysAddrBits-1:0] f_pa0, f_pa1;
   (* anyseq *) logic f_pa_valid, f_fault0, f_fault0_page, f_fault1, f_fault1_page, f_line_ok;

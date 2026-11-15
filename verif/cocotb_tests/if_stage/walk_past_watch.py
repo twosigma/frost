@@ -29,8 +29,11 @@ async def watch(dut: Any, clock: Any, start: int, end: int) -> None:
     while True:
         await FallingEdge(clock)
         pc_reg = int(stage.pc_reg.value)
-        if (int(cpu.next_pc_check_armed_q.value) and
-                int(cpu.rob_commit_valid_raw.value) and retirement_errors < 32):
+        if (
+            int(cpu.next_pc_check_armed_q.value)
+            and int(cpu.rob_commit_valid_raw.value)
+            and retirement_errors < 32
+        ):
             actual = int(cpu.dbg_commit_pc.value)
             expected = int(cpu.next_pc_expected_q.value)
             if actual != expected:
@@ -40,13 +43,18 @@ async def watch(dut: Any, clock: Any, start: int, end: int) -> None:
             dut._log.info(
                 "WALK pc=%#x reg=%#x next=%#x pending=%d owner=%#x after=%d "
                 "stall=%d progress=%d holdoff=%d nop=%d wcs=%d pred=%d selr=%d",
-                int(stage.pc.value), pc_reg, int(pc_control.next_pc_reg.value),
+                int(stage.pc.value),
+                pc_reg,
+                int(pc_control.next_pc_reg.value),
                 int(pc_control.pending_prediction_valid.value),
                 int(stage.pending_prediction_pc.value),
                 int(pc_control.pc_reg_after_pending.value),
-                int(stage.if_stage_stall.value), int(stage.fetch_progress.value),
-                int(stage.prediction_holdoff.value), int(stage.sel_nop.value),
+                int(stage.if_stage_stall.value),
+                int(stage.fetch_progress.value),
+                int(stage.prediction_holdoff.value),
+                int(stage.sel_nop.value),
                 int(stage.window_cannot_serve_pc_reg.value),
-                int(stage.prediction_used.value), int(pc_control.sel_prediction_r.value),
+                int(stage.prediction_used.value),
+                int(pc_control.sel_prediction_r.value),
             )
             lines += 1

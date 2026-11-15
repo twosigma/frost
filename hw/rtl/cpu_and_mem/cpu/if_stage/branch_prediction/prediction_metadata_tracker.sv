@@ -135,8 +135,7 @@ module prediction_metadata_tracker #(
   logic pending_saved_active;
   assign pending_prediction_owner_matches_output = i_output_pc == prediction_pc_pending_saved;
   assign pending_prediction_live_owner_matches_output = i_output_pc == i_pending_prediction_pc;
-  assign pending_saved_active =
-      prediction_pending_saved_valid && !i_pending_prediction_walk_past;
+  assign pending_saved_active = prediction_pending_saved_valid && !i_pending_prediction_walk_past;
   assign effective_pending_prediction_replay =
       pending_saved_active &&
       !effective_sel_nop &&

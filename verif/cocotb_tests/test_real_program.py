@@ -4878,9 +4878,14 @@ async def test_real_program(dut: Any) -> None:
         from cocotb_tests.if_stage.walk_past_watch import watch
 
         ranges = _load_symbol_ranges(["wp_odd_overlap", "wp_even_stale"], app_name)
-        cocotb.start_soon(watch(
-            dut, cpu_clock(dut), ranges["wp_odd_overlap"][0], ranges["wp_even_stale"][1]
-        ))
+        cocotb.start_soon(
+            watch(
+                dut,
+                cpu_clock(dut),
+                ranges["wp_odd_overlap"][0],
+                ranges["wp_even_stale"][1],
+            )
+        )
 
     # Optional trap and MRET hang diagnostics.
     if os.environ.get("FROST_WEDGE_MONITOR") == "1":

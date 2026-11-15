@@ -2557,8 +2557,9 @@ module if_stage #(
         !(sel_prediction_r && btb_predicted_target_r == pc_reg);
     held_pc_sel_nop_q <= sel_nop_effective;
     held_pc_reg_q <= pc_reg;
-    if (held_pc_check_q && !i_pipeline_ctrl.reset && pc_reg == held_pc_reg_q &&
-        !$isunknown(held_pc_sel_nop_q)) begin
+    if (held_pc_check_q && !i_pipeline_ctrl.reset && pc_reg == held_pc_reg_q && !$isunknown(
+            held_pc_sel_nop_q
+        )) begin
       p_held_post_prediction_pc_emits_no_real_packet : assert (held_pc_sel_nop_q);
     end
     if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && control_flow_holdoff &&
