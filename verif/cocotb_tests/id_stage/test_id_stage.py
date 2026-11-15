@@ -59,11 +59,11 @@ JAL = _INSTR_OPS["JAL"]
 JALR = _INSTR_OPS["JALR"]
 BEQ = _INSTR_OPS["BEQ"]
 AUIPC = _INSTR_OPS["AUIPC"]
-LW = _INSTR_OPS["LW"]
-SW = _INSTR_OPS["SW"]
+LW = _INSTR_OPS["LOAD"]
+SW = _INSTR_OPS["STORE"]
 FMADD_S = _INSTR_OPS["FMADD_S"]
 FENCE = _INSTR_OPS["FENCE"]
-FLW = _INSTR_OPS["FLW"]
+FLW = _INSTR_OPS["LOAD_FP"]
 FADD_S = _INSTR_OPS["FADD_S"]
 PAUSE = _INSTR_OPS["PAUSE"]
 
@@ -1366,3 +1366,115 @@ async def test_zicbop_prefetches_decode_as_ori_to_x0(dut: Any) -> None:
                 assert packet["rs_type"] == RS_INT, name
                 assert packet["needs_lq"] is False and packet["needs_sq"] is False, name
                 assert packet["is_load_instruction"] is False, name
+
+
+@cocotb.test()
+async def test_flh_fsh_decode_as_load_store_fp(dut: Any) -> None:
+    """Flh and fsh decode to LOAD_FP and STORE_FP with halfword funct3 and immediates."""
+    await _setup_test(dut)
+    load_fp = _INSTR_OPS["LOAD_FP"]
+    store_fp = _INSTR_OPS["STORE_FP"]
+    opc_store_fp = 0b0100111
+
+    for offset in (0, 6, -6, 2046, -2048):
+        flh_word = _pack_i(imm=offset, rs1=2, funct3=0b001, rd=1, opcode=OPC_LOAD_FP)
+        if offset == 0:
+            assert flh_word == 0x00011087
+        fsh_word = _pack_s(imm=offset, rs2=4, rs1=2, funct3=0b001, opcode=opc_store_fp)
+        exp_imm = _sign_extend(offset, 12)
+        for slot2 in (False, True):
+            for fs_off in (False, True):
+                dut.i_mstatus_fs_off.value = fs_off
+                _drive_pd_packet(
+                    dut,
+                    {"program_counter": BASE_PC, "instruction": flh_word},
+                    slot2=slot2,
+                )
+                _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+                await _advance_cycle(dut)
+                pkt = _read_id_packet(dut, slot2=slot2)
+                assert pkt["is_illegal_instruction"] is fs_off
+                if not fs_off:
+                    assert pkt["instruction_operation"] == load_fp
+                    assert pkt["rs_type"] == RS_MEM
+                    assert ((int(pkt["instruction"]) >> 12) & 0x3) == 0b01
+                    assert pkt["immediate_i_type"] == exp_imm
+                    assert pkt["is_fp_load"] is True and pkt["is_fp_store"] is False
+                    assert pkt["has_fp_dest"] is True and pkt["has_int_dest"] is False
+                    assert pkt["uses_int_rs1"] is True and pkt["uses_fp_rs2"] is False
+                    assert pkt["needs_lq"] is True and pkt["needs_sq"] is False
+
+                _drive_pd_packet(
+                    dut,
+                    {"program_counter": BASE_PC, "instruction": fsh_word},
+                    slot2=slot2,
+                )
+                _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+                await _advance_cycle(dut)
+                pkt = _read_id_packet(dut, slot2=slot2)
+                assert pkt["is_illegal_instruction"] is fs_off
+                if not fs_off:
+                    assert pkt["instruction_operation"] == store_fp
+                    assert pkt["rs_type"] == RS_MEM
+                    assert ((int(pkt["instruction"]) >> 12) & 0x3) == 0b01
+                    assert pkt["immediate_s_type"] == exp_imm
+                    assert pkt["is_fp_store"] is True and pkt["is_fp_load"] is False
+                    assert pkt["has_fp_dest"] is False and pkt["has_int_dest"] is False
+                    assert pkt["uses_int_rs1"] is True and pkt["uses_fp_rs2"] is True
+                    assert pkt["needs_sq"] is True and pkt["needs_lq"] is False
+    dut.i_mstatus_fs_off.value = 0
+
+
+@cocotb.test()
+async def test_lr_nonzero_rs2_is_illegal(dut: Any) -> None:
+    """LR.W and LR.D require rs2 == 0; nonzero rs2 encodings are illegal."""
+    await _setup_test(dut)
+    lr_op = _INSTR_OPS["LR"]
+    opc_amo = 0b0101111
+
+    for funct3 in (0b010, 0b011):
+        for aqrl in (0b00, 0b01, 0b10, 0b11):
+            funct7 = (0b00010 << 2) | aqrl
+            for rs2 in (0, 1, 2, 16, 31):
+                word = _pack_r(
+                    funct7=funct7, rs2=rs2, rs1=2, funct3=funct3, rd=1, opcode=opc_amo
+                )
+                if funct3 == 0b010 and aqrl == 0 and rs2 == 1:
+                    assert word == 0x101120AF
+                for slot2 in (False, True):
+                    _drive_pd_packet(
+                        dut,
+                        {"program_counter": BASE_PC, "instruction": word},
+                        slot2=slot2,
+                    )
+                    _drive_pd_packet(
+                        dut, {"program_counter": BASE_PC + 4}, slot2=not slot2
+                    )
+                    await _advance_cycle(dut)
+                    pkt = _read_id_packet(dut, slot2=slot2)
+                    name = f"{word:#010x} rs2={rs2} slot2={slot2}"
+                    if rs2 == 0:
+                        assert pkt["is_illegal_instruction"] is False, name
+                        assert pkt["instruction_operation"] == lr_op, name
+                        assert pkt["is_lr"] is True, name
+                        assert pkt["is_amo_instruction"] is True, name
+                        assert pkt["rs_type"] == RS_MEM, name
+                        assert pkt["needs_lq"] is True and pkt["needs_sq"] is False, (
+                            name
+                        )
+                        assert pkt["has_int_dest"] is True, name
+                        assert (
+                            pkt["uses_int_rs1"] is True and pkt["uses_int_rs2"] is False
+                        ), name
+                    else:
+                        assert pkt["is_illegal_instruction"] is True, name
+                        assert pkt["is_lr"] is False, name
+                        assert pkt["rs_type"] == RS_INT, name
+                        assert pkt["needs_lq"] is False and pkt["needs_sq"] is False, (
+                            name
+                        )
+                        assert pkt["has_int_dest"] is False, name
+                        assert (
+                            pkt["uses_int_rs1"] is False
+                            and pkt["uses_int_rs2"] is False
+                        ), name
