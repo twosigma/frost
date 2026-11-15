@@ -64,6 +64,7 @@ class FullCluster(ZeroCluster):
         self.pushes = 0
         # (cycle, endpoint, opcode, address, mask) of each accepted request.
         self.requests: list[tuple[int, int, int, int, int]] = []
+        self.agent_grants: list[tuple[Any, ...]] = []
 
     async def tick(self, count: int = 1) -> None:
         """Advance, counting write completions."""
@@ -71,6 +72,10 @@ class FullCluster(ZeroCluster):
             if self.get("o_write_done"):
                 self.dones += 1
             if not self.get("i_rst"):
+                if self.get("o_agent_g_valid"):
+                    self.agent_grants.append(
+                        unpack(self.get("o_agent_g"), (3, 9, 6, self.p, 256, 1))
+                    )
                 accepted = int(self.dut.hart_d_valid.value) & int(
                     self.dut.hart_d_ready.value
                 )
@@ -732,12 +737,253 @@ async def zero_push_during_prefetch_lookup(dut: Any) -> None:
         await c.tick()
     assert pushed, "stream prefetch never entered LookupWait for block + 32"
     for _ in range(200):
-        if int(dut.hart.rd_valid_q.value) == 0:
+        if int(dut.hart.rd_valid_q.value) == 0 and not c.get("o_read_valid"):
             break
         await c.tick()
-    assert int(dut.hart.rd_valid_q.value) == 0
+    assert int(dut.hart.rd_valid_q.value) == 0 and not c.get("o_read_valid")
     await c.set(i_read_ready=0)
     await c.drain()
-    assert block + 32 not in c.speculative_requests
     await c.check_block(block)
+    assert block + 32 not in c.speculative_requests
 
+
+@cocotb.test()
+async def zero_pending_twin_lookahead_beside_stream(dut: Any) -> None:
+    """Keep stream prefetches off a pending twin whose GetMZero already issued.
+
+    When an older cbo.zero's upper twin holds the store-buffer head on endpoint
+    0, two same-home-set scalar stores sit behind it, and a younger cbo.zero
+    fills the fourth record, 2'(slot + 1) wraps to the head twin: LookaheadOp
+    issues GetMZero for the younger block while its own upper twin still waits
+    in store_twin_pending. An ascending load stream trained in that window must
+    not prefetch the pending twin's sector.
+    """
+    c = FullCluster(dut)
+    await c.reset()
+    page = 0x80960000
+    block = page + 0x80
+    head_block = 0x80F01040
+    s1_addr = head_block + 0x4000
+    s2_addr = head_block + 0x8000
+    for offset in range(0, 0x140, 64):
+        c.preload(page + offset, 0xA100 + offset)
+    c.preload(head_block, 0xA200)
+    c.preload(s1_addr, 0xA300)
+    c.preload(s2_addr, 0xA400)
+
+    # Warm the three preceding stream sectors into the 64 KiB L2 and evict them
+    # from the 1 KiB L1D, leaving block itself cold in DDR with nonzero bytes.
+    for addr in (page + 0x60, page + 0x40, page + 0x20):
+        await c.read(addr)
+    for way in range(8):
+        for s in (0, 2, 1, 3):
+            await c.read(0x80E00000 + way * 0x100 + s * 32)
+    await c.drain()
+
+    # Put head_block + 0 Modified in L1D set 2, then fill all four ways of L1D
+    # set 3 with dirty lines and occupy both L1D writeback slots under i_hold_wa:
+    # cbo.zero(head_block) pops its lower record immediately while its upper twin
+    # stalls at store_head_index in L1D set 3. Source-3 L2 prefetches then evict
+    # head_block from the 4-way home so releasing i_hold_wa sends the head twin's
+    # GetM(head_block + 32) to DDR on endpoint 0 for 600 cycles.
+    await c.store(head_block, 0xCAFE)
+    c.pushes += 1
+    await c.drain()
+    await c.set(i_hold_wa=1)
+    for way in range(6):
+        if int(dut.hart.wb_live.value) == 3:
+            break
+        c.preload(0x80E20040 + way * 0x200, 0xA600 + way)
+        await c.store(0x80E20060 + way * 0x200, 0x3000 + way)
+        c.pushes += 1
+        for _ in range(120):
+            if int(dut.hart.store_count.value) == 0:
+                break
+            await c.tick()
+        assert int(dut.hart.store_count.value) == 0
+    assert int(dut.hart.wb_live.value) == 3
+
+    assert c.get("o_store_ready") == 1
+    await c.set(
+        i_address=head_block,
+        i_write_data=0,
+        i_write_mask=0xFF,
+        i_write_zero=1,
+        i_write_tag=5,
+    )
+    c.pushes += 1
+    await c.tick()
+    await c.set(i_write_mask=0, i_write_zero=0)
+
+    for _ in range(80):
+        if (
+            int(dut.hart.store_count.value) == 1
+            and int(dut.hart.store_twin_pending.value) == 0
+        ):
+            break
+        await c.tick()
+    head_idx = int(dut.hart.store_head_index.value)
+    assert int(dut.hart.store_count.value) == 1
+    assert (int(dut.hart.store_twin.value) >> head_idx) & 1 == 1
+
+    for way in range(1, 8):
+        evict_addr = head_block + way * 0x4000
+        c.preload(evict_addr, 0xA700 + way)
+        agent_q = pack((2, 3), (2, 3), (4, 1), (1, 0))
+        agent_req = pack(
+            (4, 9),
+            (9, agent_q),
+            (c.p, evict_addr),
+            (5, 0),
+            (3, 5),
+            (32, 0),
+            (1, 0),
+            (1, 0),
+            (1, 0),
+            (256, 0),
+        )
+        await c.set(i_agent_valid=1, i_agent_d=agent_req)
+        await c.wait("o_agent_ready")
+        await c.tick()
+        await c.set(i_agent_valid=0)
+        await c.wait("o_agent_g_valid")
+        ag = unpack(c.get("o_agent_g"), (3, 9, 6, c.p, 256, 1))
+        await c.tick()
+        await c.set(
+            i_agent_c_valid=1,
+            i_agent_c=pack((9, ag[1]), (6, ag[2]), (c.p, evict_addr), (2, 0), (1, 0)),
+        )
+        await c.wait("o_agent_c_ready")
+        await c.tick()
+        await c.set(i_agent_c_valid=0)
+        await c.wait("o_agent_u_valid")
+        await c.set(i_agent_u_ready=1)
+        await c.tick()
+        await c.set(i_agent_u_ready=0)
+
+    reads_before = c.reads_of(head_block)
+    c.read_delay = 600
+    await c.set(i_hold_wa=0)
+    for _ in range(120):
+        if (int(dut.hart.live.value) & 1) and c.reads_of(head_block) > reads_before:
+            break
+        await c.tick()
+    c.read_delay = 7
+    assert c.reads_of(head_block) == reads_before + 1
+    assert int(dut.hart.store_count.value) == 1
+    assert (int(dut.hart.store_twin.value) >> head_idx) & 1 == 1
+
+    # Give L1D set 3 a clean way for page + 0x60, then launch a 220-cycle L2
+    # prefetch fill on block so LookaheadOp's GetMZero(block) parks behind that
+    # fill while the stream trains on L2-resident page + 0x20, +0x40, +0x60.
+    c.preload(0x80E40040, 0xA500)
+    await c.read(0x80E40060)
+
+    for addr, val in ((s1_addr, 0x1111), (s2_addr, 0x2222)):
+        assert c.get("o_store_ready") == 1
+        await c.set(
+            i_address=addr,
+            i_write_data=val,
+            i_write_mask=0xFF,
+            i_write_zero=0,
+            i_write_tag=7,
+        )
+        c.pushes += 1
+        await c.tick()
+        await c.set(i_write_mask=0)
+
+    grants_before = len(c.agent_grants)
+    c.read_delay = 220
+    pf_q = pack((2, 3), (2, 3), (4, 1), (1, 0))
+    pf_req = pack(
+        (4, 9),
+        (9, pf_q),
+        (c.p, block),
+        (5, 0),
+        (3, 5),
+        (32, 0),
+        (1, 0),
+        (1, 0),
+        (1, 0),
+        (256, 0),
+    )
+    await c.set(i_agent_valid=1, i_agent_d=pf_req)
+    await c.wait("o_agent_ready")
+    await c.tick()
+    await c.set(i_agent_valid=0)
+    for _ in range(200):
+        if c.reads_of(block) > 0:
+            break
+        await c.tick()
+    assert c.reads_of(block) == 1
+    c.read_delay = 7
+
+    assert c.get("o_store_ready") == 1
+    req_before = len(c.requests)
+    await c.set(
+        i_address=block,
+        i_write_data=0,
+        i_write_mask=0xFF,
+        i_write_zero=1,
+        i_write_tag=5,
+    )
+    c.pushes += 1
+    await c.tick()
+    await c.set(i_write_mask=0, i_write_zero=0)
+
+    row1_reached = False
+    for _ in range(80):
+        if any(
+            op == 10 and addr == block for _, _, op, addr, _ in c.requests[req_before:]
+        ):
+            assert int(dut.hart.store_count.value) == 4
+            assert int(dut.hart.store_twin_pending.value) == 1
+            assert int(dut.hart.store_twin_addr.value) == block + 32
+            row1_reached = True
+            break
+        await c.tick()
+    assert row1_reached, "LookaheadOp never issued GetMZero while its twin waited"
+
+    # Train and confirm an ascending stream on page + 0x20, +0x40, +0x60 while
+    # GetMZero(block) is still parked behind the L2 fill of block (so block + 32
+    # is still Invalid in L1D and store_twin_pending is the sole guard).
+    for addr in (page + 0x20, page + 0x40, page + 0x60):
+        await c.read(addr)
+    for _ in range(60):
+        if len(c.agent_grants) > grants_before or block + 32 in c.speculative_requests:
+            break
+        await c.tick()
+    assert int(dut.hart.store_twin_pending.value) == 1
+
+    # Complete the source-3 L2 prefetch of block so GetMZero(block) wakes first
+    # (installing Modified zeros via twin_fill_q) followed by any speculative
+    # GetS(block + 32) returning stale nonzero L2 bytes.
+    for _ in range(1200):
+        if len(c.agent_grants) > grants_before:
+            break
+        await c.tick()
+    assert len(c.agent_grants) > grants_before
+    pf_g = c.agent_grants[-1]
+    await c.set(
+        i_agent_c_valid=1,
+        i_agent_c=pack((9, pf_g[1]), (6, pf_g[2]), (c.p, block), (2, 0), (1, 0)),
+    )
+    await c.wait("o_agent_c_ready")
+    await c.tick()
+    await c.set(i_agent_c_valid=0)
+    await c.wait("o_agent_u_valid")
+    await c.set(i_agent_u_ready=1)
+    await c.tick()
+    await c.set(i_agent_u_ready=0)
+
+    for _ in range(700):
+        if (
+            int(dut.hart.store_count.value) == 0
+            and int(dut.hart.store_twin_pending.value) == 0
+        ):
+            break
+        await c.tick()
+
+    await c.drain()
+    await c.check_block(block)
+    assert block + 32 not in c.speculative_requests
