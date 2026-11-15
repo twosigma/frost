@@ -1604,6 +1604,74 @@ def test_board_gty_generation_is_capability_gated() -> None:
     )
 
 
+def test_synth_step_clears_project_dir_and_requires_ip_runs(tmp_path: Path) -> None:
+    """Clear leftover vivado_proj state and fail if an IP synthesis run is missing."""
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    delete_proj = tcl.index("file delete -force $work_directory/vivado_proj")
+    create_proj = tcl.index(
+        "create_project -part $fpga_part_number -force tmp_proj $work_directory/vivado_proj"
+    )
+    assert delete_proj < create_proj
+    assert "this flow never creates OOC IP runs" not in tcl
+
+    start = tcl.index("    set ip_synth_runs [list]")
+    end = tcl.index("\n    if {$board_has_ddr}", start)
+    snippet = tcl[start:end]
+
+    for mode, expected_code, expected_text in (
+        ("normal", 0, "LAUNCHED jtag_axi_0_synth_1 axi_bram_ctrl_0_synth_1"),
+        ("missing", 1, "IP synthesis run axi_bram_ctrl_0_synth_1 was not created"),
+        ("failed", 1, "jtag_axi_0_synth_1 did not complete: synth_design ERROR"),
+    ):
+        harness = tmp_path / f"ip_runs_{mode}.tcl"
+        harness.write_text(
+            f"""set mode {mode}
+set number_of_parallel_jobs 4
+proc get_ips {{}} {{return {{jtag_axi_0 axi_bram_ctrl_0}}}}
+proc get_property {{prop obj}} {{
+    global mode
+    if {{$prop eq "NAME"}} {{return $obj}}
+    if {{$prop eq "PROGRESS"}} {{return "100%"}}
+    if {{$prop eq "STATUS"}} {{
+        if {{$mode eq "failed"}} {{return "synth_design ERROR"}}
+        return "synth_design Complete!"
+    }}
+    error "unexpected property $prop"
+}}
+proc get_files {{args}} {{
+    set target [lindex $args end]
+    if {{[string match *.xci $target]}} {{return $target}}
+    return {{}}
+}}
+set created_runs [list]
+proc get_runs {{args}} {{
+    global created_runs
+    set name [lindex $args end]
+    if {{[lsearch -exact $created_runs $name] >= 0}} {{return [list $name]}}
+    return {{}}
+}}
+proc create_ip_run {{xci}} {{
+    global created_runs mode
+    set base [file rootname $xci]
+    if {{$base eq "axi_bram_ctrl_0" && $mode eq "missing"}} {{
+        return
+    }}
+    lappend created_runs ${{base}}_synth_1
+}}
+proc launch_runs {{runs args}} {{puts "LAUNCHED $runs"}}
+proc wait_on_run {{run}} {{}}
+"""
+            + snippet
+            + "\n"
+        )
+        result = subprocess.run(
+            ["tclsh", str(harness)], capture_output=True, text=True, timeout=10
+        )
+        assert result.returncode == expected_code, (mode, result.stdout, result.stderr)
+        combined = result.stdout + result.stderr
+        assert expected_text in combined
+
+
 def test_synthesis_rejects_implicit_nets() -> None:
     """Vivado's implicit-net message is an error in top-level synthesis."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()

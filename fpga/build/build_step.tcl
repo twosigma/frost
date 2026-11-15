@@ -830,6 +830,9 @@ puts "=========================================="
 if {$step eq "synth"} {
     # Synthesis
     set_param general.maxThreads $number_of_parallel_jobs
+    # Remove any project directory left by an interrupted or preserved synthesis
+    # step so create_ip_run starts from a clean project without cached IP outputs.
+    file delete -force $work_directory/vivado_proj
     create_project -part $fpga_part_number -force tmp_proj $work_directory/vivado_proj
     set_property IP_OUTPUT_REPO $work_directory/vivado_proj/ip_cache [current_project]
 
@@ -866,10 +869,14 @@ if {$step eq "synth"} {
     foreach ip_core [get_ips] {
         set ip_core_name [get_property NAME $ip_core]
         set ip_core_xci [get_files -all ${ip_core_name}.xci]
-        if {[llength [get_runs -quiet ${ip_core_name}_synth_1]] == 0} {
+        set ip_synth_run ${ip_core_name}_synth_1
+        if {[llength [get_runs -quiet $ip_synth_run]] == 0} {
             create_ip_run $ip_core_xci
         }
-        lappend ip_synth_runs ${ip_core_name}_synth_1
+        if {[llength [get_runs -quiet $ip_synth_run]] != 1} {
+            error "IP synthesis run $ip_synth_run was not created"
+        }
+        lappend ip_synth_runs $ip_synth_run
     }
     if {[llength $ip_synth_runs]} {
         launch_runs $ip_synth_runs -jobs $number_of_parallel_jobs
@@ -888,7 +895,7 @@ if {$step eq "synth"} {
         source [file join [file dirname [info script]] ${board_name}_ddr_bd.tcl]
         set create_ddr_bd_proc create_${board_name}_ddr_bd
         $create_ddr_bd_proc
-        # Synthesize BD children globally; this flow never creates OOC IP runs.
+        # Synthesize BD children globally without out-of-context runs for the block design.
         set_property synth_checkpoint_mode None [get_files ddr_subsys.bd]
         generate_target all [get_files ddr_subsys.bd]
         set ddr_subsys_wrapper [make_wrapper -files [get_files ddr_subsys.bd] -top]
