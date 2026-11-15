@@ -1799,8 +1799,7 @@ module tomasulo_wrapper #(
   logic store_addr_pma_ok;
   logic store_addr_misaligned;
   logic mem_rs_issue_is_sc;
-  logic mem_rs_issue_is_cbo_zero;
-  logic mem_rs_issue_atomic_pma;
+  (* keep = "true" *) logic mem_rs_issue_atomic_pma;
   logic mem_rs_issue_is_cmo;
 
   assign store_page_offset_sum =
@@ -1808,8 +1807,9 @@ module tomasulo_wrapper #(
   assign mem_rs_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
       (o_mem_rs_issue.op == riscv_pkg::SC_D);
   // SC and cbo.zero use the atomic PMA map, excluding all device pages.
-  assign mem_rs_issue_is_cbo_zero = o_mem_rs_issue.op == riscv_pkg::CBO_ZERO;
-  assign mem_rs_issue_atomic_pma = mem_rs_issue_is_sc || mem_rs_issue_is_cbo_zero;
+  assign mem_rs_issue_atomic_pma = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
+      (o_mem_rs_issue.op == riscv_pkg::SC_D) ||
+      (o_mem_rs_issue.op == riscv_pkg::CBO_ZERO);
   // Zicbom ops take the ordinary store PMA map: a block in BRAM, DDR or a
   // device window is permitted (as a load or a store to it would be) and
   // executes as an ordered no-op (store_queue); outside the map is a store
@@ -2505,6 +2505,38 @@ module tomasulo_wrapper #(
     end
   end
 
+  // Prepare translated and untranslated store-completion cofactors ahead of
+  // the store PMA check. A Zicbom op completes at issue wherever its block
+  // lies: it writes nothing, so no precise bus response can fault it.
+  (* keep = "true" *) logic store_complete_translated;
+  (* keep = "true" *) logic store_complete_untranslated_without_pma;
+  logic store_complete_valid;
+  assign store_complete_translated = store_issue_translated &&
+      (!MEM_RESPONSE_ERRORS || dmmu_out_is_cmo ||
+       (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(dmmu_out_addr)) ||
+       ((dmmu_out_addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
+        (dmmu_out_addr < riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))));
+  assign store_complete_untranslated_without_pma = store_issue_untranslated_without_pma &&
+      (!MEM_RESPONSE_ERRORS || mem_rs_issue_is_cmo ||
+       (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_effective_addr)) ||
+       ((sq_effective_addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
+        (sq_effective_addr <
+         riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))));
+  assign store_complete_valid = i_translation_active ? store_complete_translated :
+      (store_complete_untranslated_without_pma && store_addr_pma_ok);
+`ifndef SYNTHESIS
+  always_comb
+    assert (store_complete_valid == (store_issue_fire &&
+        (!MEM_RESPONSE_ERRORS ||
+         (i_translation_active ? dmmu_out_is_cmo : mem_rs_issue_is_cmo) ||
+         (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+             i_translation_active ? dmmu_out_addr : sq_effective_addr
+         )) || (((i_translation_active ? dmmu_out_addr : sq_effective_addr) >=
+                 riscv_pkg::XLEN'(CACHED_BASE)) &&
+                ((i_translation_active ? dmmu_out_addr : sq_effective_addr) <
+                 riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))))));
+`endif
+
   reorder_buffer #(
       .SharedLinkBank(ROB_SHARED_LINK_BANK),
       .VECTOR(VECTOR),
@@ -2524,17 +2556,7 @@ module tomasulo_wrapper #(
       .i_cdb_write_2(cdb_write_from_arbiter_2),
       .i_cdb_match_tag(cdb_rob_match_tag),
       .i_cdb_match_tag_2(cdb_rob_match_tag_2),
-      // A Zicbom op completes at issue wherever its block lies: it writes
-      // nothing, so no precise bus response can fault it.
-      .i_store_complete_valid(store_issue_fire &&
-          (!MEM_RESPONSE_ERRORS ||
-           (i_translation_active ? dmmu_out_is_cmo : mem_rs_issue_is_cmo) ||
-           (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
-          i_translation_active ? dmmu_out_addr : sq_effective_addr
-      )) || (((i_translation_active ? dmmu_out_addr : sq_effective_addr) >=
-              riscv_pkg::XLEN'(CACHED_BASE)) &&
-             ((i_translation_active ? dmmu_out_addr : sq_effective_addr) <
-              riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))))),
+      .i_store_complete_valid(store_complete_valid),
       .i_store_complete_tag(store_complete_tag),
 
       // Branch
