@@ -69,6 +69,7 @@ partitioned: design -stash unpartitioned
 partitioned: read_verilog -formal -sv axi_coherent_bridge_assert.sv
 partitioned: design -stash assertion_map
 partitioned: design -load unpartitioned
+soc8proof: log -stderr If the AXI bridge assertion roster check fails, it is stale. Run: ./scripts/frost.py run python3 formal/update_axi_bridge_groups.py
 soc8proof: script axi_coherent_bridge_groups.ys
 soc4proof: select -set held t:$assert c:p_b_held %i
 soc4proof: select -assert-count 1 @held
