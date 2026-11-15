@@ -859,8 +859,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_hpm_refill_test",
         nic_mac_clocks=False,
         description=(
-            "HPM cache refill events: cold L1I loops, L2-missing scattered reads "
-            "and streams (demand and prefetch), MINH and counter overflow"
+            "HPM refill workloads: bounded cold and zero warm L1I counts, "
+            "event-source separation, exact L2 data reads, MINH and overflow; "
+            "exact request accounting is in the cache/home benches"
         ),
     ),
     "zawrs_test": CocotbRunConfig(

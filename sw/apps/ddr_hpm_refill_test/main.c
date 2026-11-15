@@ -22,12 +22,13 @@
  *   L  Cold L1I loops. Two straight-line bodies in cached DDR span 8 and 24
  *      32-byte lines, each in its own page and followed by eight stub lines
  *      that hold a ret. After fence.i the other body and both bodies' stubs
- *      run first, so the lines the fetch path reads on a wrong path (past a
- *      ret, the fetch provider's next-line prefetch, a stale jump target)
- *      are resident, and a run of the measured body refills exactly its own
- *      lines. Four alternating runs each refill exactly 8 and 24 lines,
- *      three runs after one fence.i refill the 24 once, and MINH stops the
- *      count in M.
+ *      run first. Allocation requests can precede the opening counter read,
+ *      so cold windows have bounds, not an exact body-size count. Four
+ *      alternating pairs check the long/short difference, a separate warm
+ *      second pass refills nothing, and MINH stops the count in M. The code
+ *      pages are already in L2; L1D misses and both L2 refill counters must
+ *      stay zero in these instruction-only windows. The cache/home benches
+ *      and formal properties check exact request-to-pulse accounting.
  *   D  L2-missing scattered reads: one load in each of 32 untouched 4 KiB
  *      pages reads exactly 32 lines from memory on demand, with no prefetch
  *      (the prefetchers stay within a page and need a stream). Reading the
@@ -76,6 +77,18 @@
 #define STREAM_LINES 128ul /* two 4 KiB pages of 64-byte lines */
 
 #define STUB_LINES 8ul
+
+/* Before the opening sample, a predicted entry can request the body's
+ * leading line and the fetch provider's next-line partner. This fixture
+ * primes the other body and all return stubs, but deliberately permits
+ * those two leading allocations to precede the sample. The body itself
+ * must finish before the closing sample; settle() drains its registered
+ * events. A trailing next-line request can finish after the return or
+ * closing sample, but targets an already primed stub, so adds no refill.
+ * Thus a cold N-line body contributes [N - 2, N] and a warm pass zero.
+ * These are allocation-window bounds, not expected counts inferred from
+ * one run. Exact allocation/read accounting belongs in the cache benches. */
+#define LEADING_LINES 2ul
 
 /* Straight-line bodies, each at the start of its own 4 KiB page, without
  * compressed instructions: a body of N 32-byte lines holds 8N - 1 addi and a
@@ -132,6 +145,14 @@ static void expect_eq(const char *name, unsigned long got, unsigned long want)
     report(name, got, want, got == want);
 }
 
+static void expect_range(const char *name, unsigned long got, unsigned long low, unsigned long high)
+{
+    int pass = low <= got && got <= high;
+    uart_printf(
+        "%s %s got=%lu range=[%lu,%lu]\r\n", pass ? "[PASS]" : "[FAIL]", name, got, low, high);
+    ok &= pass;
+}
+
 /* Let late events reach the counters (two registered stages) and the
  * prefetches still in flight complete. */
 static void settle(int n)
@@ -175,22 +196,56 @@ static void run_stubs(int which, unsigned long *sum)
     }
 }
 
-/* L1I refills over `runs` runs of one body after fence.i. The other body and
- * both bodies' stub lines run first, so a wrong-path fetch into the other
- * body or past a ret finds its line resident, and the window counts exactly
- * the measured body's lines. */
-static unsigned long l1i_refills(int which, int runs, unsigned long *sum)
+struct refill_counts {
+    unsigned long l1i, l1d, demand, prefetch;
+};
+
+/* The BRAM driver and stack do not access the cached data path. Warming
+ * both complete code pages also covers next-line and speculative requests
+ * within them, so instruction execution cannot require an L2 memory read. */
+static void warm_code_pages(unsigned long *sum)
+{
+    for (int which = 0; which < 2; which++) {
+        uintptr_t page = body_addr[which] & ~4095ul;
+        for (unsigned long offset = 0; offset < 4096; offset += 64)
+            *sum += *(volatile uint64_t *) (page + offset);
+    }
+    settle(2000);
+}
+
+static struct refill_counts measure_body(int which, unsigned long *sum)
+{
+    unsigned long l1d = csr_read_num(0xB07);
+    unsigned long demand = csr_read_num(0xB06);
+    unsigned long prefetch = csr_read_num(0xB05);
+    unsigned long l1i = csr_read_num(0xB03);
+    *sum += bodies[which].call(*sum);
+    settle(64);
+    struct refill_counts counts;
+    counts.l1i = csr_read_num(0xB03) - l1i;
+    counts.l1d = csr_read_num(0xB07) - l1d;
+    counts.demand = csr_read_num(0xB06) - demand;
+    counts.prefetch = csr_read_num(0xB05) - prefetch;
+    return counts;
+}
+
+/* Prime wrong-path targets without executing the measured body. The
+ * LEADING_LINES allowance covers an early request to its predicted entry. */
+static struct refill_counts l1i_refills(int which, unsigned long *sum)
 {
     fence_i();
     *sum += bodies[!which].call(*sum);
     run_stubs(!which, sum);
     run_stubs(which, sum);
     settle(256);
-    unsigned long before = csr_read_num(0xB03);
-    for (int r = 0; r < runs; r++)
-        *sum += bodies[which].call(*sum);
-    settle(64);
-    return csr_read_num(0xB03) - before;
+    return measure_body(which, sum);
+}
+
+static void expect_instruction_only(struct refill_counts counts)
+{
+    expect_eq("L no-data-misses", counts.l1d, 0);
+    expect_eq("L no-L2-demand", counts.demand, 0);
+    expect_eq("L no-L2-prefetch", counts.prefetch, 0);
 }
 
 /* Untouched cached memory: 16 MiB into DDR, above the program's .ddr_*
@@ -225,27 +280,48 @@ int main(void)
     csr_write_num(0x323, SEL_L1I_REFILL);
     csr_write_num(0x326, SEL_L2_DEMAND);
     csr_write_num(0x325, SEL_L2_PREFETCH);
+    csr_write_num(0x327, 7); /* fixed L1D permission misses */
     expect_eq("selector-3", csr_read_num(0x323), SEL_L1I_REFILL);
     expect_eq("selector-6", csr_read_num(0x326), SEL_L2_DEMAND);
     expect_eq("selector-5", csr_read_num(0x325), SEL_L2_PREFETCH);
 
-    /* L: cold L1I loops. A first pass brings both bodies into the L2. */
+    /* L: bounded cold windows, a zero warm window, and distinct sources. */
     const volatile uint32_t *ws = (const volatile uint32_t *) BODY_SHORT;
     const volatile uint32_t *wl = (const volatile uint32_t *) BODY_LONG;
     expect_eq("L short-body-placed", ws[0] == INSN_ADDI && ws[8 * SHORT_LINES - 1] == INSN_RET, 1);
     expect_eq("L long-body-placed", wl[0] == INSN_ADDI && wl[8 * LONG_LINES - 1] == INSN_RET, 1);
-    (void) l1i_refills(0, 1, &sum);
-    (void) l1i_refills(1, 1, &sum);
+    warm_code_pages(&sum);
+    (void) l1i_refills(0, &sum);
+    (void) l1i_refills(1, &sum);
     for (int k = 0; k < 4; k++) {
-        unsigned long r_short = l1i_refills(0, 1, &sum);
-        unsigned long r_long = l1i_refills(1, 1, &sum);
-        uart_printf("L1I refills %d: short=%lu long=%lu\r\n", k, r_short, r_long);
-        expect_eq("L short-refills-its-lines", r_short, SHORT_LINES);
-        expect_eq("L long-refills-its-lines", r_long, LONG_LINES);
+        struct refill_counts cold_short = l1i_refills(0, &sum);
+        struct refill_counts warm_short = measure_body(0, &sum);
+        struct refill_counts cold_long = l1i_refills(1, &sum);
+        struct refill_counts warm_long = measure_body(1, &sum);
+        uart_printf("L1I refills %d: short=%lu long=%lu warm-short=%lu warm-long=%lu\r\n",
+                    k,
+                    cold_short.l1i,
+                    cold_long.l1i,
+                    warm_short.l1i,
+                    warm_long.l1i);
+        expect_range("L short-window", cold_short.l1i, SHORT_LINES - LEADING_LINES, SHORT_LINES);
+        expect_range("L long-window", cold_long.l1i, LONG_LINES - LEADING_LINES, LONG_LINES);
+        /* Each window can independently lose zero to LEADING_LINES early
+         * requests. Subtracting them gives a difference allowance of +/-
+         * LEADING_LINES, not twice that, around the body-size difference. */
+        expect_range("L long-minus-short",
+                     cold_long.l1i - cold_short.l1i,
+                     LONG_LINES - SHORT_LINES - LEADING_LINES,
+                     LONG_LINES - SHORT_LINES + LEADING_LINES);
+        expect_eq("L warm-short", warm_short.l1i, 0);
+        expect_eq("L warm-long", warm_long.l1i, 0);
+        expect_instruction_only(cold_short);
+        expect_instruction_only(cold_long);
+        expect_instruction_only(warm_short);
+        expect_instruction_only(warm_long);
     }
-    expect_eq("L warm-reruns-refill-nothing", l1i_refills(1, 3, &sum), LONG_LINES);
     csr_write_num(0x323, MINH | SEL_L1I_REFILL);
-    expect_eq("L minh-stops-m", l1i_refills(1, 1, &sum), 0);
+    expect_eq("L minh-stops-m", l1i_refills(1, &sum).l1i, 0);
     csr_write_num(0x323, SEL_L1I_REFILL);
 
     /* D: one demand read per untouched page, then none for the same lines. */
@@ -291,6 +367,7 @@ int main(void)
     csr_write_num(0x344, csr_read_num(0x344) & ~LCOF);
     csr_write_num(0x323, 0);
     csr_write_num(0x325, 0);
+    csr_write_num(0x327, 0);
 
     uart_printf("sum=%lu\r\n", sum);
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");

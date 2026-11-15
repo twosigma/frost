@@ -1625,6 +1625,10 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
                     and not int(cache.o_down_req_maintenance.value)
                 ):
                     down_reads[level] += 1
+                # Allocation precedes downstream acceptance. Consume its
+                # event credit for each accepted read on every clock; the
+                # equality after draining below rejects unused credits.
+                assert down_reads[level] <= counts[level]["fill"], level
 
     reads_monitor = cocotb.start_soon(_count_down_reads())
 
