@@ -466,7 +466,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_array.sby",
-        "Independent L2 ports and parallel way reads preserve byte values, tokens "
+        "Independent L2 ports and one-way parallel reads preserve byte values, tokens "
         "and physical-row exclusions.",
         tasks=(
             "coh_home_array_prove",

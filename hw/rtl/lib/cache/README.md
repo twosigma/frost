@@ -699,7 +699,9 @@ tags alone; a resident decision that needs data takes the parallel read
 (`o_take_spec` / `i_resp_keep`) and skips the row-read port. A hit service with
 no probe (`GetS`, `LoadReserved`, `GetM`, `GetMZero`) offers a quick result to
 the result arbiter in the cycle its row data arrives and enters `Result`
-holding the same payload when the arbiter does not accept it on that cycle.
+holding the same payload. The result arbiter captures its selection before
+acceptance, so the quick offer advances selection by one cycle; acceptance
+follows from Result.
 A stop reaches the home through one flop. A home failure stops the home on
 the edge that sets its fatal indication, and the fatal stop input takes effect
 on the cycle after it rises. The stop suppresses probe and PutAck validity and
@@ -731,7 +733,8 @@ other requests.
 
 `coherence_home_array` has separate tag-decision, data-read and masked-update
 ports. Each request carries a response token. With `ULTRA` and without
-`FROST_SRAM_MACROS`, the data array has a bank per way, indexed by set, and a
+`FROST_SRAM_MACROS`, and with `TAG_READ_LATENCY + 2 <= DATA_READ_LATENCY`,
+the data array has a bank per way, indexed by set, and a
 lookup with `i_req_spec` reads every way of its set on its first tag-read
 cycle while no data write of that set is in the write pipeline or on offer; an
 unresolved parallel-read stage blocks data writes to its set until the

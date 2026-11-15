@@ -164,8 +164,8 @@ independent home peers. They hold four results behind C, reorder line replies,
 and check AXI burst order, byte masks, allocation hints, errors and reset on both bus widths.
 
 `coherence_home_array` and its BRAM and packed-tag variants check concurrent
-tag decisions, parallel way reads in the banked UltraRAM form, data reads and
-masked updates. They exercise physical-row
+tag decisions, explicit row reads and masked updates, including the banked
+UltraRAM form. They do not request parallel way reads. They exercise physical-row
 aliases, live victim exclusions, continuous read/write contention and reset
 with responses in flight. The `coherence_array_reset_*` and
 `coherence_home_array_reset_*` benches exercise both reset modes in block RAM

@@ -3434,7 +3434,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_coherence_home_array",
         hdl_toplevel_module="coherence_home_array",
         description=(
-            "Independent tag and data ports, per-way banks, parallel way reads "
+            "Independent tag and data ports, explicit row reads, per-way banks "
             "and physical-row hazards"
         ),
         verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
