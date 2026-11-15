@@ -50,6 +50,7 @@ from software_registry import (  # noqa: E402
 VALID_APPS = [
     "bootrom",
     "amo_irq_torture",
+    "asid_test",
     "branch_pred_test",
     "c_ext_test",
     "call_stress",
@@ -74,6 +75,7 @@ VALID_APPS = [
     "hello_world",
     "isa_test",
     "itlb_test",
+    "l1i_set_test",
     "l2_capacity_chase",
     "linux_irq_active_ddr_test",
     "linux_boot",
@@ -128,12 +130,14 @@ BOARD_CONFIG = {
         "clock_freq": 322265625,
         "coremark_iterations": 20000,
         "has_ddr": True,
+        "l1i_cache_bytes": 16 * 1024,
         "l2_cache_bytes": 2 * 1024 * 1024,
     },
     "vcu118": {
         "clock_freq": 200000000,
         "coremark_iterations": 10800,
         "has_ddr": True,
+        "l1i_cache_bytes": 32 * 1024,
         "l2_cache_bytes": 4 * 1024 * 1024,
     },
 }
@@ -204,6 +208,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "ddr_heap_test",
     "ddr_smc_test",
     "ddr_test",
+    "l1i_set_test",
     "linux_irq_active_ddr_test",
     "linux_boot",
     "linux_irq_ddr_test",
@@ -295,14 +300,16 @@ def compile_app_for_board(
 
     ddr_bytes sets the application's physical aperture from board_ddr_bytes.
     linux_boot advertises that size or a smaller FROST_LINUX_MEM_SIZE override.
-    Cache-eviction programs use the board's L2 capacity unless explicitly
-    overridden by FROST_L2_CACHE_BYTES for a custom cache configuration.
+    Cache-geometry programs use the board's L1I and L2 capacities unless
+    explicitly overridden by L1I_TEST_BYTES or FROST_L2_CACHE_BYTES for a
+    custom cache configuration.
     """
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
         env["RISCV_PREFIX"] = default_riscv_prefix(PROJECT_ROOT)
 
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
+    env.setdefault("L1I_TEST_BYTES", str(BOARD_CONFIG[board]["l1i_cache_bytes"]))
     env.setdefault("FROST_L2_CACHE_BYTES", str(BOARD_CONFIG[board]["l2_cache_bytes"]))
     if app_name == "linux_boot":
         env["FROST_LINUX_BOARD"] = board

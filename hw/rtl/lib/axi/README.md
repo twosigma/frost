@@ -163,9 +163,12 @@ rules, B and R order and codes, each line write carrying exactly the bytes
 of its segment, R data for an arbitrary byte, and the ingress's request
 rules, with 8-byte lines on a 16-bit and a 64-bit bus, and with `soc_top`'s
 256-bit bus and 32-byte lines at four and eight bursts and line IDs per
-direction; addresses are reduced to 16 bits) and the mux (`axi_mux`: AXI4
+direction; addresses are reduced to 16 bits), the mux (`axi_mux`: AXI4
 rules on every port, W in AW-grant order, and B and R reaching the port their
-id names); see the [formal guide](../../../../formal/README.md). The assertions cover response
+id names), and the clock-domain crossing (`axi_cdc`: per-channel AXI4 hold
+rules, in-flight bounds, FIFO ordering across RAM-entry reuse, and reset
+gating under `cdc_reset_pair` and `soc_top`'s 1-source-clock `dma_cdc` skew at
+reduced widths); see the [formal guide](../../../../formal/README.md). The assertions cover response
 ordering, no duplicate responses and conservation of outstanding requests;
 they do not establish eventual completion or starvation freedom. The three
 bridge cocotb benches and the mux bench check completion with timeouts,
