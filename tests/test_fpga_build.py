@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import time
 import sys
@@ -5751,9 +5752,7 @@ def test_crashed_parent_session_under_stuck_launcher_terminates_and_fails(
         "    time.sleep(0.08)\n"
     )
     wrapper = tmp_path / "wrapper.sh"
-    wrapper.write_text(
-        f"#!/bin/bash\n{sys.executable} {child}\nsleep 300 &\nwait\n"
-    )
+    wrapper.write_text(f"#!/bin/bash\n{sys.executable} {child}\nsleep 300 &\nwait\n")
     wrapper.chmod(0o755)
     monkeypatch.setattr(fpga_build, "VIVADO_EXIT_GRACE_S", 0.05)
     monkeypatch.setattr(fpga_build, "VIVADO_POLL_S", 0.02)
@@ -5876,3 +5875,258 @@ def test_step_timeout_signal_kills_launcher_group_and_exits_nonzero(
     assert stopped.value.code == 128 + int(sig)
     assert killpg_calls == [(5150, fpga_build.signal.SIGKILL, None)]
     assert fpga_build.signal.getsignal(sig) == original_handler
+
+
+@pytest.mark.parametrize(
+    "case, ok, expected_substr",
+    (
+        ("common_clock", True, "MAX_DELAY 4.6545"),
+        ("common_clock_with_resp_op", True, "RESP_PAYLOAD_COUNT=34"),
+        (
+            "async_cpu_boundary",
+            True,
+            "MAX_DELAY 2.4824 FROM_N=1 TO_N=1 FROM=cpu_clk TO=soc_clk",
+        ),
+        ("zero_req_toggle_pin", False, "req_toggle_q_reg/C"),
+        ("many_req_toggle_pin", False, "req_toggle_q_reg/C"),
+        ("zero_req_seen_pin", False, "req_seen_q_reg/C"),
+        ("many_req_seen_pin", False, "req_seen_q_reg/C"),
+        ("zero_bscan", False, "two BSCANE2 cells"),
+        ("one_bscan", False, "two BSCANE2 cells"),
+        ("many_bscan", False, "two BSCANE2 cells"),
+        ("zero_internal_tck", False, "two BSCANE2 INTERNAL_TCK pins"),
+        ("many_internal_tck", False, "two BSCANE2 INTERNAL_TCK pins"),
+        ("zero_req_sync1", False, "one toggle flop and one sync1/D pin"),
+        ("many_ack_sync1", False, "one toggle flop and one sync1/D pin"),
+        ("missing_req_payload", False, "2 req_op_q, 7 req_addr_q, and 32 req_data_q"),
+        ("extra_req_payload", False, "2 req_op_q, 7 req_addr_q, and 32 req_data_q"),
+        ("missing_resp_payload", False, "32 resp_data_q cells"),
+        ("many_resp_op", False, "at most 2 resp_op_q"),
+        ("zero_async_ar_valid", False, "ar_valid_q_reg/C"),
+        ("many_async_ar_valid", False, "ar_valid_q_reg/C"),
+    ),
+)
+def test_x3_cpu_clock_boundary_tcl_constraints_and_loud_lookup_failures(
+    tmp_path: Path, case: str, ok: bool, expected_substr: str
+) -> None:
+    """X3 cpu_clock_boundary.tcl bounds toggles vs payloads and fails on bad lookups."""
+    if shutil.which("tclsh") is None:
+        pytest.skip("requires tclsh")
+    boundary_tcl = REPO_ROOT / "boards/x3/constr/cpu_clock_boundary.tcl"
+    harness = tmp_path / "run_boundary.tcl"
+    harness.write_text(
+        r"""
+set case_name [lindex $argv 0]
+set target_tcl [lindex $argv 1]
+
+array set cell_ref {}
+array set pin_cell {}
+array set pin_ref {}
+array set pin_clk {}
+array set clk_period {cpu_clk 3.103 soc_clk 6.206 dbg_hub_tck 33.333}
+
+proc add_cell {name {ref FDRE}} {
+    global cell_ref
+    set cell_ref($name) $ref
+}
+proc add_pin {name cell ref {clk ""}} {
+    global pin_cell pin_ref pin_clk
+    set pin_cell($name) $cell
+    set pin_ref($name) $ref
+    if {$clk ne ""} { set pin_clk($name) $clk }
+}
+proc add_flop {name clk} {
+    add_cell $name FDRE
+    add_pin "$name/C" $name C $clk
+    add_pin "$name/D" $name D ""
+}
+
+# Unrelated debug-hub BSCANE2 must never be matched by the DTM clock lookup.
+add_cell "dbg_hub/inst/bscan_inst" BSCANE2
+add_pin "dbg_hub/inst/bscan_inst/INTERNAL_TCK" "dbg_hub/inst/bscan_inst" INTERNAL_TCK dbg_hub_tck
+
+if {$case_name ne "zero_bscan"} {
+    add_cell "sub/bscan_dtmcs" BSCANE2
+    if {$case_name ne "zero_internal_tck"} {
+        add_pin "sub/bscan_dtmcs/INTERNAL_TCK" "sub/bscan_dtmcs" INTERNAL_TCK ""
+    }
+    if {$case_name ne "one_bscan"} {
+        add_cell "sub/bscan_dmi" BSCANE2
+        if {$case_name ne "zero_internal_tck"} {
+            add_pin "sub/bscan_dmi/INTERNAL_TCK" "sub/bscan_dmi" INTERNAL_TCK ""
+        }
+    }
+}
+if {$case_name eq "many_bscan"} {
+    add_cell "dup/bscan_dmi" BSCANE2
+    add_pin "dup/bscan_dmi/INTERNAL_TCK" "dup/bscan_dmi" INTERNAL_TCK ""
+}
+if {$case_name eq "many_internal_tck"} {
+    add_pin "sub/bscan_dmi/INTERNAL_TCK_2" "sub/bscan_dmi" INTERNAL_TCK ""
+}
+
+set dtm "sub/frost/soc/u_dtm"
+if {$case_name ne "zero_req_toggle_pin"} {
+    add_flop "$dtm/req_toggle_q_reg" ""
+}
+if {$case_name eq "many_req_toggle_pin"} {
+    add_flop "dup/u_dtm/req_toggle_q_reg" ""
+}
+if {$case_name ne "zero_req_seen_pin"} {
+    add_flop "$dtm/req_seen_q_reg" cpu_clk
+}
+if {$case_name eq "many_req_seen_pin"} {
+    add_flop "dup/u_dtm/req_seen_q_reg" cpu_clk
+}
+if {$case_name ne "zero_req_sync1"} {
+    add_flop "$dtm/req_sync1_reg" cpu_clk
+}
+add_flop "$dtm/ack_toggle_q_reg" cpu_clk
+add_flop "$dtm/ack_sync1_reg" ""
+if {$case_name eq "many_ack_sync1"} {
+    add_flop "dup/u_dtm/ack_sync1_reg" ""
+}
+
+for {set i 0} {$i < 2} {incr i} { add_flop "$dtm/req_op_q_reg\[$i\]" "" }
+for {set i 0} {$i < 7} {incr i} { add_flop "$dtm/req_addr_q_reg\[$i\]" "" }
+set req_data_n [expr {$case_name eq "missing_req_payload" ? 31 : ($case_name eq "extra_req_payload" ? 33 : 32)}]
+for {set i 0} {$i < $req_data_n} {incr i} { add_flop "$dtm/req_data_q_reg\[$i\]" "" }
+
+set resp_data_n [expr {$case_name eq "missing_resp_payload" ? 31 : 32}]
+for {set i 0} {$i < $resp_data_n} {incr i} { add_flop "$dtm/resp_data_q_reg\[$i\]" cpu_clk }
+set resp_op_n [expr {$case_name eq "common_clock_with_resp_op" ? 2 : ($case_name eq "many_resp_op" ? 3 : 0)}]
+for {set i 0} {$i < $resp_op_n} {incr i} { add_flop "$dtm/resp_op_q_reg\[$i\]" cpu_clk }
+
+if {$case_name in {async_cpu_boundary zero_async_ar_valid many_async_ar_valid}} {
+    add_cell "sub/frost/soc/gen_memory_cdc/u_fifo" LUT6
+    add_flop "sub/frost/soc/rst_core_reg" soc_clk
+    add_flop "sub/frost/soc/rst_core_reg_replica" soc_clk
+    if {$case_name ne "zero_async_ar_valid"} {
+        add_flop "sub/frost/cpu/cluster_memory/memory_fabric/master/ar_valid_q_reg" cpu_clk
+    }
+    if {$case_name eq "many_async_ar_valid"} {
+        add_flop "dup/cpu/cluster_memory/memory_fabric/master/ar_valid_q_reg" cpu_clk
+    }
+}
+
+proc eval_filter {props expr_text} {
+    dict with props {
+        set rewritten $expr_text
+        regsub -all {([A-Z_]+)\s*=~\s*"([^"]*)"} $rewritten {[string match "\2" $\1]} rewritten
+        regsub -all {([A-Z_]+)\s*==\s*"([^"]*)"} $rewritten {($\1 eq "\2")} rewritten
+        regsub -all {([A-Z_]+)\s*==\s*([A-Za-z0-9_]+)} $rewritten {($\1 eq "\2")} rewritten
+        return [expr $rewritten]
+    }
+}
+
+proc get_cells {args} {
+    global cell_ref
+    set filt ""
+    for {set i 0} {$i < [llength $args]} {incr i} {
+        if {[lindex $args $i] eq "-filter"} { incr i; set filt [lindex $args $i] }
+    }
+    set out [list]
+    foreach name [lsort [array names cell_ref]] {
+        set props [dict create NAME $name REF_NAME $cell_ref($name)]
+        if {$filt eq "" || [eval_filter $props $filt]} { lappend out $name }
+    }
+    return $out
+}
+
+proc get_pins {args} {
+    global pin_cell pin_ref
+    set filt ""
+    set objs ""
+    set has_objs 0
+    for {set i 0} {$i < [llength $args]} {incr i} {
+        set a [lindex $args $i]
+        if {$a eq "-filter"} { incr i; set filt [lindex $args $i] }
+        if {$a eq "-of_objects"} { incr i; set objs [lindex $args $i]; set has_objs 1 }
+    }
+    set out [list]
+    foreach name [lsort [array names pin_cell]] {
+        if {$has_objs && [lsearch -exact $objs $pin_cell($name)] < 0} { continue }
+        set props [dict create NAME $name REF_PIN_NAME $pin_ref($name)]
+        if {$filt eq "" || [eval_filter $props $filt]} { lappend out $name }
+    }
+    return $out
+}
+
+proc get_clocks {args} {
+    global pin_clk
+    set objs [lindex $args end]
+    set out [list]
+    foreach p $objs {
+        if {[info exists pin_clk($p)] && $pin_clk($p) ne ""} {
+            if {[lsearch -exact $out $pin_clk($p)] < 0} { lappend out $pin_clk($p) }
+        }
+    }
+    return $out
+}
+
+proc create_clock {args} {
+    global pin_cell pin_clk clk_period
+    set idx_n [lsearch -exact $args -name]
+    set name [lindex $args [expr {$idx_n + 1}]]
+    set idx_p [lsearch -exact $args -period]
+    set period [lindex $args [expr {$idx_p + 1}]]
+    set pins [lindex $args end]
+    set clk_period($name) $period
+    foreach p $pins { set pin_clk($p) $name }
+    foreach p [array names pin_cell] {
+        if {[string match "*/u_dtm/*" $p] && [string match "*/C" $p] && ![info exists pin_clk($p)]} {
+            set pin_clk($p) $name
+        }
+    }
+    puts "CREATE_CLOCK $name $period PINS=[lsort $pins]"
+}
+
+proc get_property {prop obj} {
+    global clk_period
+    if {$prop eq "PERIOD"} { return $clk_period($obj) }
+    error "unsupported property $prop"
+}
+
+proc set_max_delay {args} {
+    set idx_f [lsearch -exact $args -from]
+    set from_v [lindex $args [expr {$idx_f + 1}]]
+    set idx_t [lsearch -exact $args -to]
+    set to_v [lindex $args [expr {$idx_t + 1}]]
+    set val [lindex $args [expr {[lsearch -exact $args -datapath_only] + 1}]]
+    puts [format "MAX_DELAY %.4f FROM_N=%d TO_N=%d FROM=%s TO=%s" $val [llength $from_v] [llength $to_v] $from_v $to_v]
+    if {$to_v eq "cpu_dtm_tck" && [llength $from_v] > 1} {
+        puts "RESP_PAYLOAD_COUNT=[llength $from_v]"
+    }
+}
+
+proc set_false_path {args} {
+    puts "FALSE_PATH $args"
+}
+
+source $target_tcl
+"""
+    )
+    result = subprocess.run(
+        ["tclsh", str(harness), case, str(boundary_tcl)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if ok:
+        assert result.returncode == 0, (case, result.stdout, result.stderr)
+        assert expected_substr in result.stdout
+        assert (
+            "CREATE_CLOCK cpu_dtm_tck 100.0 "
+            "PINS={sub/bscan_dmi/INTERNAL_TCK sub/bscan_dtmcs/INTERNAL_TCK}"
+            in result.stdout
+            or "CREATE_CLOCK cpu_dtm_tck 100.0 "
+            "PINS=sub/bscan_dmi/INTERNAL_TCK sub/bscan_dtmcs/INTERNAL_TCK"
+            in result.stdout
+        )
+        assert "MAX_DELAY 2.4824 FROM_N=1 TO_N=1" in result.stdout
+        assert "MAX_DELAY 4.6545 FROM_N=41 TO_N=1" in result.stdout
+        assert "FALSE_PATH -hold -from cpu_dtm_tck -to cpu_clk" in result.stdout
+        assert "FALSE_PATH -hold -from cpu_clk -to cpu_dtm_tck" in result.stdout
+    else:
+        assert result.returncode != 0, (case, result.stdout, result.stderr)
+        assert expected_substr in (result.stdout + result.stderr)
