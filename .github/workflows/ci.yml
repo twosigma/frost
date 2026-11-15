@@ -249,7 +249,8 @@ jobs:
               [sscofpmf_test] or
               [ns16550_irq_console_test] or [wfi_mepc_test] or
               [wfi_drain_mepc_test] or [mret_timer_resume_test] or [mtimer_stress] or
-              [wfi_lost_tick] or [irq_mie_window] or [ns16550_test] or [clint_test] or
+              [wfi_lost_tick] or [irq_mie_window] or [irq_take_hold_test] or [ns16550_test] or
+              [clint_test] or
               [linux_irq_ddr_test] or [linux_irq_active_ddr_test] or [linux_irq_stack_slot_test] or
               [linux_irq_find_next_slot_test]
           - name: Real Programs (CPU and fetch)
@@ -1409,7 +1410,7 @@ jobs:
           # The vector CSR state: the vector BMC alone is about forty minutes,
           # and new vector proofs join it.
           - shard: Vector
-            pytest_filter: csr_file_vector
+            pytest_filter: csr_file_vector or vec_lmul_legality
             timeout_minutes: 75
           # The line client link BMCs and cover.
           - shard: Line client links
@@ -1432,8 +1433,8 @@ jobs:
             pytest_filter: >-
               not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or
               coherence_ or coherent_ or _twin or csr_file_vector or
-              line_client_link or ptw or tlb or imsic or aplic or immu or dmmu or
-              load_queue or lq_)
+              vec_lmul_legality or line_client_link or ptw or tlb or imsic or aplic or
+              immu or dmmu or load_queue or lq_)
             timeout_minutes: 120
     # A task whose key has a pass marker is skipped; one in twenty of those
     # is proved again as a canary. The markers are cached per job: a main run

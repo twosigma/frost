@@ -305,6 +305,8 @@ can be debugged and where each one first stops.
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
 | `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a timer-ended `wfi`, and timer takes across a device load; 96 WFI deadlines and 48 device-load deadlines at four padding phases cover AXI latency, with each take's count equal to the instructions before `mepc` |
 | `irq_mie_window/` | A pending timer interrupt must be taken when a `csrsi`/`csrci` pair opens `mstatus.MIE` for one instruction |
+| `irq_take_hold_test/` | Machine timer interrupts taken within 500 cycles in loops of back-to-back device stores, and during an LR/SC increment loop on uncached BRAM (bram) or cached DDR (ddr) with every increment landing once |
+| `irq_take_latency/` | Delegated STI, LCOFI and SEI take latency in S-mode across device, atomic, fence, SIE-toggle, DDR-miss and WFI loops; every interrupt is taken, including between back-to-back device stores and after a cached store before a device read |
 | `isa_test/` | Self-checks for RV64IMAFDCB, Zicsr, Zicntr, Zifencei, Zicond, Zbc, Zbkb, Zbkc, and Zihintpause, plus M-mode CSRs and traps |
 | `itlb_test/` | Sv39 instruction translation in S- and U-mode: superpages, page-crossing instructions, fetch faults, `sfence.vma` and `satp` changes |
 | `jal_target_seam/` | A 4-byte `jal` entered as a taken-branch target at dword offset 4; needs the cached fetch path (`FROST_COCOTB_MEM_CONFIG=ddr`) |
