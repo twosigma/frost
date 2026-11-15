@@ -663,11 +663,14 @@ def run_live_cocotb_case(
         sys.stderr.buffer.write(proc.stdout)
         sys.stderr.flush()
         raise subprocess.CalledProcessError(proc.returncode, proc.args)
+    parsed = parse_cocotb_program_log(proc.stdout)
     print(
-        f"[cocotb] {app} ({mem_config}) completed in {elapsed:.2f}s",
+        f"[cocotb] {app} ({mem_config}) completed in {elapsed:.2f}s "
+        f"(cycles={parsed.cycles}, ticks={parsed.coremark_ticks}, "
+        f"uart_bytes={parsed.uart_bytes})",
         flush=True,
     )
-    return parse_cocotb_program_log(proc.stdout)
+    return parsed
 
 
 def _verify_static_runtime_linkage(binary: Path) -> None:
@@ -884,15 +887,18 @@ def run_exactness_suite(
             ],
             cwd=work_dir,
         )
-        print(
-            f"[native] {case.name} completed in {time.monotonic() - t_run:.2f}s",
-            flush=True,
-        )
+        run_elapsed = time.monotonic() - t_run
         assert not retire_log.exists(), (
             f"{case.name}: unexpected retire_trace.log written in working directory"
         )
         summary = json.loads(json_path.read_text(encoding="utf-8"))
         uart_bytes = uart_path.read_bytes()
+        print(
+            f"\n[native] {case.name} completed in {run_elapsed:.2f}s "
+            f"(cycles={summary['cycles']}, ticks={summary['coremark_ticks']}, "
+            f"uart_bytes={summary['uart_bytes']})",
+            flush=True,
+        )
         assert_program_and_summary_invariants(
             case,
             summary,
