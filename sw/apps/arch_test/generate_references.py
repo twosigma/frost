@@ -140,15 +140,15 @@ def spike_env() -> Path:
     return SPIKE_ENV_DIR
 
 
-# gcc -march: must match what FROST's software builds may emit, including
-# compressed code, except for the tests in NO_COMPRESS_TESTS below.
+# Base ISA for signature references. test_march adds each test's extensions
+# and removes C for the tests in NO_COMPRESS_TESTS below.
 FROST_MARCH = "rv64imafdc_zicsr_zifencei_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
 
 # arch_test.h resumes at (mepc & ~3) + 8, requiring a 4-byte test op
 # plus two c.nops. Compression makes it resume mid-instruction and makes
 # signatures depend on the link map. Keep this set equal to the Makefile.
-# lh, lhu, sh, and lwu have no compressed forms. Branch and jump misalignment
-# tests retain C because it changes target alignment requirements.
+# The base test ISA excludes Zcb, so lh, lhu, sh, and lwu are not compressed.
+# Branch and jump tests retain C because it changes target alignment requirements.
 NO_COMPRESS_TESTS = {
     "misalign-ld-01",
     "misalign-lw-01",

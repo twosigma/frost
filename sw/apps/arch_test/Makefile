@@ -21,9 +21,10 @@
 
 TEST_SRC ?=
 
-# ARCH matches the -march value in common.mk RISCV_FLAGS (see arch.mk).
+# arch.mk supplies the RV64 architecture and ABI settings.
 include ../../common/arch.mk
-# ARCH includes C except for the tests in NO_COMPRESS_TESTS below.
+# This base ISA fixes the code layout used by the signature references.
+# Tests append their required extensions below; NO_COMPRESS_TESTS removes C.
 # XLEN_DEFINE feeds the framework's arch_test.h/model_test.h register-width
 # macros and must track the march.
 ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs
