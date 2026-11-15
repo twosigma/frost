@@ -2305,7 +2305,7 @@ FAKE_NETTEST = r"""#!/bin/sh
 rep=${FROST_NETTEST_REPETITION%/*}
 reps=${FROST_NETTEST_REPETITION#*/}
 echo "FROST_NET_LOOPBACK: repetition $rep of $reps"
-echo "FROST_NET_LOOPBACK: capture idle-jumbo t=70100..70300: own out 0 in 0, stale 0, foreign 0, enetdown 1, drops 0"
+echo "FROST_NET_LOOPBACK: capture idle-jumbo t=70100..70300: own out 0 in 0, kernel out 1 in 1, foreign 2, enetdown 1, drops 0"
 if [ "$rep" -lt "$reps" ]; then marker=FROST_NET_DIAG; tag=" rep=$rep"; else marker=FROST_NET_LOOPBACK; tag=; fi
 if [ "$rep" = "${FAKE_FAIL_REP:-0}" ]; then
   echo "${marker}_FAIL$tag statistics before jumbo traffic: tx +1 rx +1 rxerr +0 txerr +0 with nothing sent"
@@ -2574,6 +2574,27 @@ def test_frost_nettest_decoder_self_test_and_markers(tmp_path: Path) -> None:
         "other-run",
     ):
         assert f"FROST_NET_SELFTEST {case} " in done.stdout
+    # The window accounting: a looped kernel ARP request in an idle window
+    # passes; an in-only frame, a stale test frame, a dropped capture and
+    # unexplained counts each fail with their own reason.
+    for case, verdict in (
+        ("idle-arp-looped", "pass"),
+        ("idle-arp-twice", "pass"),
+        ("traffic-arp-exact", "pass"),
+        ("idle-in-only", "1 received frames match no frame sent"),
+        ("idle-changed-copy", "match no frame sent"),
+        ("idle-not-looped", "1 of 1 kernel frames not looped back"),
+        ("idle-stale-test-frame", "stale test frame seq=2990"),
+        ("idle-capture-dropped", "1 frames dropped"),
+        ("idle-unexplained", "tx +1 rx +1 rxerr +0 txerr +0 with nothing sent"),
+        ("traffic-one-extra", "for 600 frames and 2 kernel frames"),
+    ):
+        line = next(
+            line
+            for line in done.stdout.splitlines()
+            if line.startswith(f"FROST_NET_SELFTEST {case}: ")
+        )
+        assert verdict in line, line
     # No such interface here: the run fails at once, under the DIAG marker.
     diag = hw.subprocess.run(
         [str(binary), "frost-no-such-if"],

@@ -315,7 +315,7 @@ Beyond a root that boots by hand, the stage needs:
 | The pinned kernel release on the root | The stage requires that release's boot banner, and the preflight reads the release out of the packed `Image` first. Install that version on the root, with `frost_net10g` in its initramfs (step 3). |
 | The pinned kernel in the checkout's cache | Unless `FROST_LINUX_KERNEL` names a kernel, the stage packs the one in `linux/debian-kernel` (or `FROST_DEBIAN_KERNEL_CACHE`), and the preflight fails if it is not there yet. Run `python3 linux/debian_kernel.py fetch` once to fill the cache. |
 | NFSv3 over TCP | Step 4. The preflight sends the server an NFSv3 NULL call. |
-| A server on the board's own subnet | `frost_nettest` takes the root's interface down. When the interface comes back, the kernel restores its connected route but not a route through a gateway, so a server behind a gateway can leave the root stranded. The preflight reports which case applies. |
+| A server on the board's own subnet | `frost_nettest` takes the root's interface down and loops it back. The kernel may send ARP requests for the server meanwhile; the test captures them and accounts for them in its counter checks. When the interface comes back, the kernel restores its connected route but not a route through a gateway, so a server behind a gateway can leave the root stranded. The preflight reports which case applies. |
 | An executable `/dev/shm` | `frost_nettest` runs from a copy in `/dev/shm` while the root's link is down, so that tmpfs must not be mounted `noexec`. |
 | A fresh initramfs after driver changes | The initramfs carries the DKMS build from step 3. After editing `linux/frost-net10g`, repeat step 3, or the run tests the old module. |
 
