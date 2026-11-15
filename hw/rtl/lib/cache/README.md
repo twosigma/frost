@@ -1395,9 +1395,14 @@ pipeline stage is empty:
   marks them clean; the lines stay valid. `o_maint_busy` falls once those
   writebacks are acknowledged. The walk covers only the set span dirtied
   since the previous writeback-all.
-- Invalidate-all reruns the reset sweep, which clears one set's tags and
-  replacement state per cycle (128 cycles in the L1I). It discards dirty
-  data, so only the read-only L1I uses it.
+- Invalidate-all clears every line. The L1I keeps its valid bits in
+  flip-flops beside the tag RAM (`FLASH_INVALIDATE`), so invalidate-all
+  clears them all in one cycle. Reset clears the valid flip-flops and their
+  read register at the clock edge. Invalid lines' tag and replacement
+  fields do not affect lookup results. Without
+  `FLASH_INVALIDATE` it reruns the reset sweep, which clears one set's tags
+  and replacement state per cycle. It discards dirty data, so only the
+  read-only L1I uses it.
 
 `frost_hart_cache` runs them in order: the L1D writes back first, then the
 L1I invalidates, so an instruction fill racing the sequence cannot leave
@@ -1415,8 +1420,8 @@ Maintenance and probes never overlap. Maintenance waits for the probe slots
 to empty like any other in-flight work, and a probe waits for maintenance
 like any other request, parked in the hierarchy's probe injection register.
 
-Reset runs the sweep too, so every reset, including an image load, discards
-stale lines instead of writing them back. `SIM_FAST_MAINT=1` (simulation
+Reset runs the per-set sweep in every cache, so every reset, including an
+image load, discards stale lines instead of writing them back. `SIM_FAST_MAINT=1` (simulation
 only) makes the sweep a one-cycle clear and makes writeback-all visit only
 sets with dirty lines, with the same functional effect.
 
@@ -1788,7 +1793,11 @@ arbiter grant (`line_arbiter_grant`), the miss-slot byte merge
 allocation takes a way outside the tag stage's ownership mask, the
 timing-factored decision equals its reference, a touched way is never the
 next pseudo-LRU victim, and the restricted walk picks the pseudo-LRU way
-whenever it is unowned); see the [formal guide](../../../../formal/README.md).
+whenever it is unowned), and the L1I's flash invalidate (`cache_flash_valid`:
+reset and sweep clear all valid flip-flops, the registered read returns the
+pre-write value, valid reads agree with the bulk-cleared tag RAM after a
+sweep, and invalidate-all lasts one cycle); see the
+[formal guide](../../../../formal/README.md).
 In simulation, assertions check that no two miss slots own one way and that
 an allocation never takes a way a miss slot owns. In coverage builds,
 [cover points](../../../../tests/README.md#cover-points) count corner cases

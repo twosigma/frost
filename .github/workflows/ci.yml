@@ -360,6 +360,7 @@ jobs:
               or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
               or [cbo_zero_pages] or [cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]
               or [cbo_zero_pages_board] or [cbo_zero_pages_board_ddr] or [cbo_zero_bench]
+              or [fencei_jit_bench]
               or [ddr_bench_link1] or [ddr_atomic_test_link1] or [ddr_mlp_test_link1]
               or [coremark_link1] or [csr_test_link1] or [dma_torture_link1]
               or [ptw_coherence_test_link1] or [cached_store_burst_test_link1]
@@ -399,6 +400,12 @@ jobs:
               coverage: []
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[cbo_zero_bench]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (Fence.i JIT benchmark)
+              coverage: []
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[fencei_jit_bench]"
           - mem_config: bram
             shard:
               name: Real Programs (DDR probes and fetch fuzz)
