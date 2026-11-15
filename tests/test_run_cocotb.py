@@ -1363,7 +1363,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="asid_test",
         nic_mac_clocks=False,
         description=(
-            "satp.ASID, global pages and the SFENCE.VMA forms against live TLB entries"
+            "satp.ASID, global pages, SFENCE.VMA forms, and immediate Svvptc PTE-store retry"
         ),
     ),
     "imsic_csr_test": CocotbRunConfig(
