@@ -1,0 +1,48 @@
+[tasks]
+prove
+cover
+tree_equiv
+
+[options]
+prove: mode prove
+prove: depth 4
+cover: mode cover
+cover: depth 6
+tree_equiv: mode prove
+tree_equiv: depth 3
+
+[engines]
+smtbmc boolector
+
+[script]
+~tree_equiv: read -formal -sv riscv_pkg.sv sq_forwarding_unit.sv sq_forwarding_unit_formal.sv
+~tree_equiv: chparam -set DEPTH 8 sq_forwarding_unit_formal
+~tree_equiv: prep -top sq_forwarding_unit_formal
+
+tree_equiv: read_slang --top sq_forwarding_unit --single-unit -DSYNTHESIS riscv_pkg.sv sq_forwarding_unit.sv
+tree_equiv: hierarchy -check -top sq_forwarding_unit
+tree_equiv: proc
+tree_equiv: opt_clean
+tree_equiv: rename -top sq_forwarding_unit_shipped
+tree_equiv: design -stash shipped
+tree_equiv: design -reset
+tree_equiv: read -sv -D SYNTHESIS -D FORMAL riscv_pkg.sv sq_forwarding_unit.sv
+tree_equiv: hierarchy -check -top sq_forwarding_unit
+tree_equiv: proc
+tree_equiv: chformal -remove
+tree_equiv: opt_clean -purge
+tree_equiv: rename -top sq_forwarding_unit_formal_sel
+tree_equiv: design -stash formal_sel
+tree_equiv: design -reset
+tree_equiv: read -formal -sv riscv_pkg.sv sq_forwarding_unit_tree_equiv.sv
+tree_equiv: delete sq_forwarding_unit_shipped sq_forwarding_unit_formal_sel
+tree_equiv: design -copy-from shipped -as sq_forwarding_unit_shipped sq_forwarding_unit_shipped
+tree_equiv: design -copy-from formal_sel -as sq_forwarding_unit_formal_sel sq_forwarding_unit_formal_sel
+tree_equiv: prep -top sq_forwarding_unit_tree_equiv -flatten
+tree_equiv: opt -fast
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv
+sq_forwarding_unit_formal.sv
+sq_forwarding_unit_tree_equiv.sv

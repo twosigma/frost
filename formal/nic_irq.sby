@@ -1,0 +1,27 @@
+[tasks]
+prove
+bmc
+cover
+
+[options]
+prove: mode prove
+prove: depth 4
+bmc: mode bmc
+bmc: depth 14
+cover: mode cover
+cover: depth 14
+
+[engines]
+smtbmc boolector
+
+[script]
+prove: read_slang --top nic_irq_formal --single-unit --no-synthesis-define -DFORMAL -GBOUNDED_SPEC=0 nic_pkg.sv nic_irq.sv nic_irq_formal.sv
+bmc: read_slang --top nic_irq_formal --single-unit --no-synthesis-define -DFORMAL -GBOUNDED_SPEC=1 nic_pkg.sv nic_irq.sv nic_irq_formal.sv
+cover: read_slang --top nic_irq_formal --single-unit --no-synthesis-define -DFORMAL -GBOUNDED_SPEC=1 nic_pkg.sv nic_irq.sv nic_irq_formal.sv
+prep -top nic_irq_formal -flatten
+opt_clean
+
+[files]
+../hw/rtl/peripherals/nic/nic_pkg.sv
+../hw/rtl/peripherals/nic/nic_irq.sv
+nic_irq_formal.sv
