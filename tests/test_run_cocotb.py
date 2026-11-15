@@ -580,6 +580,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "12000000"),),
         verilator_extra_args=("--assert",),
     ),
+    "node_reuse_dup_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="node_reuse_test",
+        nic_mac_clocks=False,
+        description=(
+            "node_reuse_test with __mt_dup's node copy: two zero memsets, memcpy "
+            "from the node below in the page, slot stores; pages share L1D sets"
+        ),
+        include_in_pytest=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "12000000"), ("EXTRA_CFLAGS", "-DNODE_DUP")),
+        verilator_extra_args=("--assert",),
+    ),
     "node_reuse_test_board": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

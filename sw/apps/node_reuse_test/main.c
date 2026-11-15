@@ -50,10 +50,20 @@ static uint64_t rnd(void)
     return g_rng;
 }
 
+#ifdef NODE_DUP
+/* Eight nodes per 4 KiB slab page, and the second page 32 KiB above the
+ * first, so the pages share L1D sets (PA[14:5]); a node's parent is often the
+ * node 256 bytes below it, as in the board's corrupted tree. */
+static volatile uint64_t *node(uint32_t n)
+{
+    return (volatile uint64_t *) (NODE_BASE + NODE_BYTES * (n % 8) + 0x8000ul * (n / 8));
+}
+#else
 static volatile uint64_t *node(uint32_t n)
 {
     return (volatile uint64_t *) (NODE_BASE + NODE_STRIDE * n);
 }
+#endif
 
 static volatile uint64_t *shadow(uint32_t n)
 {
@@ -127,6 +137,60 @@ static void op_pop_copy(uint32_t dst, uint32_t src)
     uint32_t reads = (uint32_t) (rnd() % 12);
     for (uint32_t i = 0; i < reads; i++)
         check_word("pop", dst, (uint32_t) (rnd() % (NODE_BYTES / 8)));
+}
+
+/* __mt_dup's node copy: init_on_alloc's memset, mas_pop_node's memset,
+ * memcpy from the parent (sixteen loads, then sixteen stores), then the parent
+ * pointer, some slots and the metadata byte. */
+static void op_dup(uint32_t dst, uint32_t src)
+{
+    uint64_t r = rnd();
+    if ((r & 7) == 0)
+        for (uint32_t b = 0; b < NODE_BYTES / 64; b++)
+            CBO_ZERO((uint64_t) node(dst) + 64 * b);
+    zero_node(node(dst));
+    if (r & 8)
+        zero_node(node(dst));
+    zero_node(shadow(dst));
+    for (uint32_t h = 0; h < NODE_BYTES / 8; h += 16) {
+        volatile uint64_t *s = node(src) + h, *d = node(dst) + h;
+        uint64_t a0 = s[0], a1 = s[1], a2 = s[2], a3 = s[3], a4 = s[4], a5 = s[5], a6 = s[6],
+                 a7 = s[7], a8 = s[8], a9 = s[9], a10 = s[10], a11 = s[11], a12 = s[12],
+                 a13 = s[13], a14 = s[14], a15 = s[15];
+        d[0] = a0;
+        d[1] = a1;
+        d[2] = a2;
+        d[3] = a3;
+        d[4] = a4;
+        d[5] = a5;
+        d[6] = a6;
+        d[7] = a7;
+        d[8] = a8;
+        d[9] = a9;
+        d[10] = a10;
+        d[11] = a11;
+        d[12] = a12;
+        d[13] = a13;
+        d[14] = a14;
+        d[15] = a15;
+    }
+    for (uint32_t i = 0; i < NODE_BYTES / 8; i++)
+        shadow(dst)[i] = shadow(src)[i];
+    uint64_t v = rnd();
+    node(dst)[0] = v;
+    shadow(dst)[0] = v;
+    for (uint32_t i = 0; i < (uint32_t) ((r >> 4) & 3); i++) {
+        uint32_t w = 10 + (uint32_t) (rnd() % 10);
+        v = rnd();
+        node(dst)[w] = v;
+        shadow(dst)[w] = v;
+    }
+    if (r & 64) {
+        ((volatile uint8_t *) node(dst))[0xF8] = (uint8_t) r;
+        ((volatile uint8_t *) shadow(dst))[0xF8] = (uint8_t) r;
+    }
+    for (uint32_t i = 0; i < NODE_BYTES / 8; i++)
+        check_word("dup", dst, i);
 }
 
 static void op_free(uint32_t n)
@@ -204,6 +268,12 @@ int main(void)
         uint32_t dst = (uint32_t) (r % NODES);
         uint32_t src = (dst + 1 + (uint32_t) ((r >> 8) % (NODES - 1))) % NODES;
         uint32_t kind = (uint32_t) ((r >> 16) % 20);
+#ifdef NODE_DUP
+        if (kind < 10) {
+            op_dup(dst, dst % 8 ? dst - 1 : src);
+            continue;
+        }
+#endif
         if (kind < 7)
             op_pop_copy(dst, src);
         else if (kind < 9)
