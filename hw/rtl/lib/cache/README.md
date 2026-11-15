@@ -30,7 +30,7 @@ benches compose these modules independently of the CPU hierarchy.
 | `coherence_prefetch_pause.sv` | Holds new prefetch requests while DMA is offered or outstanding and for seven idle cycles after |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP. The NIC's DMA master is one |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
-| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, the L1D hit path's hits, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
+| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, writeback, refill and identified-prefetch pulses, the L1D hit path's hits, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
 | `*_test_harness.sv` | cocotb tops: hierarchy + bridge + memory (with a bench-paced hold on the bridge), and arbiter + bridge + memory |
 
 ## Line protocol
@@ -662,6 +662,22 @@ a slot-full stall; a blocked one is a conflict stall. A DMA write miss
 contributes a write-fill event; probe data
 merges do not contribute another demand. Events are registered at their
 source and use the cache-counter ABI.
+
+The refill pulses count line reads rather than lookup misses. The L1I
+counts allocations that fetch data from below, including the fetch
+provider's next-line requests. The home counts each memory read at its
+acceptance handshake, even if the read later fails or service stops before
+acceptance. It classifies the read by the request that allocated the fill;
+a demand joining a prefetch fill does not change its class. Zero fills send
+no read. The coherent L1D leaves both refill fields zero. These events feed
+the alternate HPM selectors described in the
+[counter guide](../../cpu_and_mem/cpu/cpu_ooo/perf/README.md).
+
+The generic `frost_cache` interface has no prefetch tag. Every allocation
+that fetches a line contributes to `fill`, including stream-prefetch reads
+in the generic cluster's L2 with `L2_PREFETCH`; `fill_prefetch` stays zero.
+The SoC's L2 HPM events come from the coherence home, which distinguishes
+prefetch requests from demand.
 
 The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
 requests. The data class has one request identity per L1D endpoint, IDs 0
@@ -1760,7 +1776,8 @@ to answer.
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
 | `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
-| `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
+| `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, dirty-L1D walker coherence, and one refill event per allocation that reads a line |
+| `coherence_home*` | Home service and ownership, with each accepted memory line read producing exactly one demand or prefetch refill pulse, including a held read accepted after fatal stop |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a reader past the waiter seats waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat. The write-cost events count each write miss that fetches its line once, and no hit, merge, or read miss, and each write held behind a read of its line once, with the cycles from its first decision to the one that completes it, and no merge or waiting read |
