@@ -45,6 +45,8 @@ depths 20 and 16.
 `coh_l1d_stream_free_bmc` has 180 minutes; `coh_l1d_stream_bmc`,
 `coh_l1d_stream_hold_bmc`, `coh_l1d_stream_free_nostore_bmc` and
 `coh_l1d_stream_free_nostore_hold_bmc` have 60 minutes each.
+`coh_l1d_stream_cover` has 20 minutes at depth 80, including serialization
+of its four eight-endpoint witnesses.
 `line_client_link`'s three BMC tasks have 70 minutes.
 `coherence_array:coh_array_port_bmc` has 40 minutes and
 `coh_array4_port_bmc` has 100 minutes at depth 24. The L1D, store and

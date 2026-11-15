@@ -71,6 +71,9 @@ localschedule: depth 80
 covermode: mode cover
 covermode: depth 80
 covermode: timeout 600
+# The stream witnesses include the eight-endpoint state and need time to
+# serialize after the cover queries complete.
+streamcovers: timeout 1200
 # The hit-path covers use free inputs, so they need longer than the scripted
 # covers.
 pathcovers: depth 40

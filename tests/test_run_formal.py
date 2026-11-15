@@ -51,6 +51,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
     ("coherence_l1d", "coh_l1d_stream_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_hold_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_cover"): 1200,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
