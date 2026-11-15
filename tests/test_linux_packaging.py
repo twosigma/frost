@@ -444,6 +444,27 @@ def test_vcu118_device_tree_isa_matches_the_boot_packer() -> None:
     assert int(block[1]) == packer.CBOZ_BLOCK_BYTES == int(rtl_block[1])
 
 
+@pytest.mark.parametrize(
+    "property_name",
+    ("event-to-mhpmcounters", "event-to-mhpmevent", "raw-event-to-mhpmcounters"),
+)
+def test_sbi_pmu_maps_match_flash_tree(property_name: str) -> None:
+    """Keep firmware and Linux event selectors and counter maps consistent."""
+    packer = _load_module(SBI_PACKER)
+    generated = packer.gen_dts(
+        clk_hz=300_000_000, initrd_range=None, bootargs="", model="t"
+    )
+    flash = (REPO_ROOT / "boards/vcu118/dts/frost_vcu118.dts").read_text()
+    tables = []
+    for source in (generated, flash):
+        match = re.search(rf"riscv,{property_name}\s*=\s*(.*?);", source, re.S)
+        assert match is not None
+        tables.append(
+            tuple(int(cell, 16) for cell in re.findall(r"0x[\da-f]+", match[1]))
+        )
+    assert tables[0] == tables[1]
+
+
 def test_sbi_packer_recognizes_linux_image_header() -> None:
     """A Linux Image is sized by its header; a raw payload by its length."""
     packer = _load_module(SBI_PACKER)

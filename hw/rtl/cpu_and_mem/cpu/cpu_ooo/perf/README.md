@@ -21,7 +21,11 @@ invalidates (counter 7) and CSR-requested TLB invalidates (counter 4); selectors
 prefetch misses (counter 5), where an L2 miss is a line the coherence home reads
 from memory. The refill events take the `fill` and `fill_prefetch` fields of
 `cache_perf_pkg::cache_instance_perf_events_t`, registered once more in
-`cpu_ooo`. Linux `perf` accesses
+`cpu_ooo`. Each instance has 18 packed bits, with `fill` at bit 17 and
+`fill_prefetch` at bit 16. The three instances and the eight write-event
+bits form a 62-bit hierarchy; the fetch-stall bit makes the CPU bus 63 bits.
+Privilege filtering uses the mode when the CSR logic samples these pulses.
+Linux `perf` accesses
 them through the OpenSBI PMU mapping; the [Linux counter guide](../../../../../../linux/README.md#counters-and-mcounteren)
 describes their event selectors, enables and user aliases. The custom
 snapshot protocol below applies to the optional profiling counters.

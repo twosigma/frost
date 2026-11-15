@@ -87,7 +87,9 @@
   Retirement events (3 branches, 4 mispredictions, 10 instructions) take the
   privilege the instruction retired in; the others (5 ITLB walks, 6 DTLB
   walks, 7 L1D misses, 8 SQ-full cycles, 9 cycles, and the refill events
-  19, 20 and 21) take the hart's privilege in the cycle the event occurs.
+  19, 20 and 21) take the hart's privilege when csr_file samples the event.
+  A refill passes through the cache's observer and cpu_ooo's register before
+  this sample, so a privilege transition can attribute it to the later mode.
   The registered CSR-requested translation event uses its committing
   instruction's saved privilege. Debug Mode counts as M. A carry out of bit
   63 sets OF on the wrapping edge; when OF was clear it also raises a count
@@ -1275,7 +1277,7 @@ module csr_file #(
   // retirement. retire_priv_q holds the privilege of that retirement cycle.
   // Privilege changes only on a trap or xRET take, which flushes younger
   // instructions, so every instruction retires in the privilege it executed
-  // in. The other events take the privilege of the cycle they occur in,
+  // in. The other events take the privilege when this module samples them,
   // including counter 3's L1I refill event; counter 4's registered
   // CSR-requested invalidate keeps the retirement timing.
   localparam logic [NumHpm-1:0] HpmRetireEvent = 8'b1000_0011;

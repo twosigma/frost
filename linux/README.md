@@ -234,8 +234,21 @@ the L2 prefetcher reads from memory) on counter 5. The generic
 map to them; `perf stat -e r13,r14,r15` names them as raw events. A counter
 counts either its fixed event or its alternate selector, so selector 19
 replaces branches on counter 3, and 20 and 21 replace the DTLB and ITLB walks.
-HPM
-storage and event counting are independent of the optional profiling
+The L1I event counts allocations that fetch a line, including speculative
+fetches that are later discarded. L2 events count accepted memory line reads,
+including reads that return an error. A prefetch fill stays a prefetch event
+when a demand joins it. A zero fill sends no read and contributes no event.
+`LLC-load-misses` includes instruction reads, page-table walks, data ownership
+fills and coherent DMA or NIC traffic. Multiple requests sharing a fill
+contribute one memory read. The coherent L1D leaves its refill taps zero;
+its permission-miss event remains separate from these L2 line reads.
+
+The cache observer and `cpu_ooo` each register the refill pulse before the
+CSR logic samples it. Privilege filtering uses the hart's mode at that
+sample, including for DMA traffic. A refill caused before a privilege
+transition can therefore count in the mode after the transition.
+
+HPM storage and event counting are independent of the optional profiling
 counters. `frost_stress --counters` counts a child process
 running a fixed workload, from its exec to its exit, and the boot stress
 payload reports cycle, instruction, time, and IPC deltas for its own workload.

@@ -554,18 +554,21 @@ async def test_hpm_privilege_enable_masks(dut: Any) -> None:
 async def test_hpm_event_identity_and_pending_writes(dut: Any) -> None:
     """Distinct events, RMW writes and inhibit/selector edges preserve exact counts."""
     s = await setup(dut)
-    off = dict(hpm_branches=0, hpm_mispredicts=0, hpm_events=0)
-    for n in range(3, 9):
-        await s.access(0x320 + n, n, 1)
-    for n in range(3, 9):
+    off = dict(hpm_branches=0, hpm_mispredicts=0, hpm_events=0, hpm_refill_events=0)
+    cases = [(n, n) for n in range(3, 9)] + [(3, 19), (6, 20), (5, 21)]
+    for n, selector in cases:
+        for counter in range(3, 9):
+            await s.access(0x320 + counter, selector if counter == n else counter, 1)
         on = dict(off)
-        if n == 3:
+        if selector >= 19:
+            on["hpm_refill_events"] = 1 << (selector - 19)
+        elif n == 3:
             on["hpm_branches"] = 2
         elif n == 4:
             on["hpm_mispredicts"] = 1
         else:
             on["hpm_events"] = 1 << (n - 5)
-        increment = 2 if n == 3 else 1
+        increment = 2 if selector == 3 else 1
         for counter in range(3, 9):
             await s.access(0xB00 + counter, 0, 1)
         await s.idle(n, **on)
@@ -587,7 +590,7 @@ async def test_hpm_event_identity_and_pending_writes(dut: Any) -> None:
 
         for control, stop_value, stop_op, start_value, start_op in (
             (0x320, 1 << n, 2, 1 << n, 3),
-            (0x320 + n, 0, 1, n, 1),
+            (0x320 + n, 0, 1, selector, 1),
         ):
             await s.access(0xB00 + n, 0, 1)
             await s.idle(2, **on)
