@@ -86,6 +86,10 @@ zsingle: vcd_sim on
 # Keep every transition from reset, but query only the later cover window.
 # Reaching a dirty twin victim requires several completed transactions.
 zsingle: skip 48
+# The single-endpoint zero cover reaches its last cover in 53 to 109 minutes
+# running beside one other formal job and needs about three hours on the
+# build host with the trial tree's cbo.zero changes.
+coh_l1d_zero_cover: timeout 14400
 ~covermode: aigsmt boolector
 conflict: mode prove
 conflict: depth 2
