@@ -17,6 +17,8 @@
 from typing import Any
 import cocotb
 from cocotb.triggers import Timer
+from cocotb_tests.cpu_structs import PTW_RESP_FIELDS
+from utils.packed_structs import assert_port_width, unpack_struct
 
 
 class Bench:
@@ -24,6 +26,7 @@ class Bench:
 
     def __init__(self, dut: Any) -> None:
         """Initialize the interface and scoreboard."""
+        assert_port_width(dut.o_resp, PTW_RESP_FIELDS)
         self.dut = dut
 
     async def step(self, **inputs: int) -> dict[str, int]:
@@ -109,7 +112,10 @@ async def access_fault_at_each_level_and_successful_retry(dut: Any) -> None:
                 error=depth == fail_at,
             )
         s = await b.step()
-        assert s["resp_valid"] and (s["resp"] >> 79) == 3
+        assert (
+            s["resp_valid"]
+            and unpack_struct(PTW_RESP_FIELDS, s["resp"])["fault_kind"] == 3
+        )
         await b.step()
         # The retry rewrites the root slot, so empty the walk cache first, as
         # software's sfence.vma does after changing a valid pointer.
@@ -120,7 +126,10 @@ async def access_fault_at_each_level_and_successful_retry(dut: Any) -> None:
         await b.line(0x80000000, (0x80000 << 10) | 0xCF)
         await b.step()
         s = await b.step()
-        assert s["resp_valid"] and (s["resp"] >> 79) == 0
+        assert (
+            s["resp_valid"]
+            and unpack_struct(PTW_RESP_FIELDS, s["resp"])["fault_kind"] == 0
+        )
         await b.step()
 
 
@@ -137,7 +146,9 @@ async def discarded_error_drains_without_faulting_the_next_request(dut: Any) -> 
     await b.line(0x80000000, (0x80000 << 10) | 0xCF)
     await b.step()
     s = await b.step()
-    assert s["resp_valid"] and (s["resp"] >> 79) == 0
+    assert (
+        s["resp_valid"] and unpack_struct(PTW_RESP_FIELDS, s["resp"])["fault_kind"] == 0
+    )
 
 
 @cocotb.test()
@@ -174,5 +185,6 @@ async def discard_on_accept_drains_once_before_retry(dut: Any) -> None:
         await b.line(0x80000000, (0x80000 << 10) | 0xCF)
         await b.step()
         s = await b.step()
-        assert s["resp_valid"] and (s["resp"] >> 79) == 0
-        assert (s["resp"] >> 8) & ((1 << 44) - 1) == 0x80000
+        resp = unpack_struct(PTW_RESP_FIELDS, s["resp"])
+        assert s["resp_valid"] and resp["fault_kind"] == 0
+        assert resp["ppn"] == 0x80000

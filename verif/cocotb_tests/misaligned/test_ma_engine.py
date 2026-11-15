@@ -28,6 +28,8 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
+from cocotb_tests.cpu_structs import PTW_RESP_FIELDS
+from utils.packed_structs import assert_port_width, pack_struct
 
 SECTOR = 32
 MASK64 = (1 << 64) - 1
@@ -205,18 +207,24 @@ class Env:
                 pending.append([self.rng.randint(1, 8), *req])
 
 
-PTW_RESP_WIDTH = 83
-
-
 def pack_walk_resp(vpn: int, leaf: Leaf) -> int:
-    """Pack ptw_resp_t: PBMT, fault, VPN, PPN, level and RWXUDG permissions."""
-    value = (leaf.pbmt << 2) | leaf.fault
-    value = (value << 27) | vpn
-    value = (value << 44) | leaf.ppn
-    value = (value << 2) | leaf.level
-    for bit in (leaf.r, leaf.w, leaf.x, leaf.u, leaf.d, leaf.g):
-        value = (value << 1) | bit
-    return value
+    """Pack riscv_pkg::ptw_resp_t from PTW_RESP_FIELDS."""
+    return pack_struct(
+        PTW_RESP_FIELDS,
+        {
+            "pbmt": leaf.pbmt,
+            "fault_kind": leaf.fault,
+            "vpn": vpn,
+            "ppn": leaf.ppn,
+            "level": leaf.level,
+            "perm_r": leaf.r,
+            "perm_w": leaf.w,
+            "perm_x": leaf.x,
+            "perm_u": leaf.u,
+            "perm_d": leaf.d,
+            "perm_g": leaf.g,
+        },
+    )
 
 
 def canonical(va: int) -> bool:
@@ -312,7 +320,7 @@ def expected_load(env: Env, a: Access, parts: list[tuple[int, int]]) -> int:
 
 async def setup(dut: Any, seed: int) -> Env:
     """Start the clock and models, and reset the engine."""
-    assert len(dut.i_walk_resp) == PTW_RESP_WIDTH, len(dut.i_walk_resp)
+    assert_port_width(dut.i_walk_resp, PTW_RESP_FIELDS)
     rng = random.Random(seed)
     Clock(dut.i_clk, 10, unit="ns").start()
     env = Env(dut, rng)
