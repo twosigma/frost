@@ -25,12 +25,14 @@ package cache_perf_pkg;
   localparam int unsigned MissOutstandingBits = 5;
 
   typedef struct packed {
-    // Refills (pulses): fill, a line read requested from the level below
-    // for a demand miss; fill_prefetch, one requested for a prefetch. miss
+    // Refills (pulses): fill, a demand or unclassified line read requested
+    // from below; fill_prefetch, one identified as a prefetch. miss
     // also counts the misses that merge into or wait on a refill in flight,
     // so a refill count is the number of lines fetched. frost_cache counts
-    // its miss-status allocations that fetch; the coherence home counts the
-    // line reads memory accepts. coherence_l1d leaves both zero.
+    // every allocation that fetches as fill, including generic L2 stream
+    // prefetches, whose requests carry no prefetch tag. The coherence home
+    // classifies accepted memory reads by their saved prefetch flag.
+    // coherence_l1d leaves both zero.
     logic fill;
     logic fill_prefetch;
     // A scalar store accepted into a combining record contributes an access

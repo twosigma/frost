@@ -30,7 +30,7 @@ benches compose these modules independently of the CPU hierarchy.
 | `coherence_prefetch_pause.sv` | Holds new prefetch requests while DMA is offered or outstanding and for seven idle cycles after |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP. The NIC's DMA master is one |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
-| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, writeback, demand-refill and prefetch-refill pulses, the L1D hit path's hits, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
+| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, writeback, refill and identified-prefetch pulses, the L1D hit path's hits, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
 | `*_test_harness.sv` | cocotb tops: hierarchy + bridge + memory (with a bench-paced hold on the bridge), and arbiter + bridge + memory |
 
 ## Line protocol
@@ -636,6 +636,12 @@ a demand joining a prefetch fill does not change its class. Zero fills send
 no read. The coherent L1D leaves both refill fields zero. These events feed
 the alternate HPM selectors described in the
 [counter guide](../../cpu_and_mem/cpu/cpu_ooo/perf/README.md).
+
+The generic `frost_cache` interface has no prefetch tag. Every allocation
+that fetches a line contributes to `fill`, including stream-prefetch reads
+in the generic cluster's L2 with `L2_PREFETCH`; `fill_prefetch` stays zero.
+The SoC's L2 HPM events come from the coherence home, which distinguishes
+prefetch requests from demand.
 
 The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
 requests. The data class has one request identity per L1D endpoint, IDs 0
