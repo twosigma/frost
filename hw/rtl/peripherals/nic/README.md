@@ -261,6 +261,13 @@ DONE|ERR|ABORT (counted in TX_ABORTED), and never joins the frame's bytes to the
 The segments before it keep their clean DONE; the remaining segments of the frame arrive with
 no frame open and complete with DONE|ERR.
 
+The TX FIFO stores 68 bits per beat: data and the four-bit beat code. A 32-entry
+side FIFO holds one checksum request per frame. A first beat is accepted only
+when both FIFOs have room, and leaves only with its checksum entry. Ordinary
+non-final beats contain eight bytes (code `0111`); final codes are `1000` through
+`1111`. The reserved code `0000` carries an abort and decodes as a one-byte final
+beat with the abort flag set. The checksum request is consumed at frame start.
+
 Packet data requests carry AxCACHE `0011`. Descriptor and status requests
 carry `1111`. The coherent home restricts packet data miss allocations to
 way 0; descriptor and status misses may use any unpinned way. All requests
@@ -403,6 +410,12 @@ cap from moving while the engine drains the FIFO. A software RESET returns the l
 sides together. An RX-only restart retains the core registers and replays the FIFO and pause
 configuration after READY returns; RX enable waits for that replay.
 
+The station address crosses to each MAC domain through a held-payload mailbox.
+The TX mailbox also carries PAUSE_INTERVAL. An accepted value stays stable until
+acknowledgement; if the source changes during that transfer, the latest value is
+sent after it completes. A domain restart resets both halves of its mailbox and
+replays the surviving configuration.
+
 **802.3x flow control.** Both ports (10GBASE-R and GMII/SGMII) share the logic:
 `nic_pause_rx_wire` observes decoded XGMII, `nic_pause_rx` filters the receive MAC's host-facing
 stream before the ingress FIFO, and `nic_pause_tx` sits between the TX FIFO and transmit MAC.
@@ -418,8 +431,10 @@ stream before the ingress FIFO, and `nic_pause_tx` sits between the TX FIFO and 
   PMA clock. While it runs no new frame leaves the TX FIFO. A frame already started finishes, and
   the transmit MAC may still send up to two complete frames it took earlier. Frames the NIC
   generates itself are exempt. The interval is published with the completed frame's event and
-  held until the next event. A TX-only restart rebases event detection so an expired interval
-  from the surviving RX domain is not applied again.
+  held until the next event. A mailbox transfers the interval to TX while holding its payload
+  until acknowledgement. While that transfer is busy, the newest pending interval replaces
+  earlier pending intervals. Either MAC domain's reset clears both mailbox halves and pending
+  events, so a TX restart cannot replay an expired interval.
 - *Transmit.* With PAUSE_CTRL bit 1 set, a pause request frame (pause_time PAUSE_INTERVAL, DA
   01-80-C2-00-00-01, SA the station address) goes out between frames when the FIFO occupancy
   reaches PAUSE_HIGH_WATER; while it stays above PAUSE_LOW_WATER the pause request is repeated every PAUSE_INTERVAL / 2;

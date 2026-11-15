@@ -348,6 +348,7 @@ CI's TestRIG jobs replays all of them before its random run.
 
 | Trace | Checks |
 |-------|--------|
+| [`access_fault_tval.S`](traces/access_fault_tval.S) | Access faults outside the physical map (load, store, AMO, LR, a misaligned load) write the faulting virtual address to `mtval` |
 | [`clint_window_load.S`](traces/clint_window_load.S) | A load just below 2^35 faults at the 1 GiB default and reaches DDR with a 64 GiB configuration; Sail disables its CLINT in both configurations |
 | [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM`, `senvcfg.FIOM` and both CBZE bits are writable |
 | [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires |

@@ -221,6 +221,24 @@ your public key by appending a second newc cpio archive that holds
 linux -T ramdisk -C none` and copy it to the TFTP directory. Keep the keys
 outside the repository.
 
+### 10G throughput benchmark
+
+`nic_bench` measures what the 10G NIC and its DMA engine move with the port's
+TX looped back to its RX, for example by a QSFP28 loopback module in QSFP1. It
+uses both 256-entry rings with one unused slot each from bare metal (polled,
+no Linux), checks every frame's length and outcome, compares one frame in 32 byte for byte, and prints
+frame-byte and wire-byte rates for frame sizes from 64 to 9000 bytes, with the
+NIC's error counters. The 10GBASE-R MAC rate is 10 Gb/s on the wire.
+
+```bash
+export RISCV_PREFIX=riscv64-unknown-elf-
+python3 fpga/load_software/load_software.py vcu118 nic_bench
+```
+
+The full benchmark requires an external loopback and is excluded from unattended
+test sequences. The `NIC_BENCH_QUICK` build uses raw MAC loopback
+and a short frame plan for functional simulation.
+
 ## Debian over NFS
 
 Both Ethernet interfaces support the shared Linux NIC driver and NFS boot.

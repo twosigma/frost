@@ -24,7 +24,9 @@
  *     retires in a later cycle, once committed stores have drained, and ends
  *     in a full flush. The CSR file reads and writes the register the cycle
  *     after retirement, from the registered commit bus.
- *   - FENCE: waits for committed stores to drain (i_sq_committed_empty).
+ *   - FENCE: waits for committed stores to drain (i_sq_committed_empty, which
+ *     the wrapper also holds low while a retired vector memory instruction
+ *     is still accessing memory).
  *   - FENCE.I, SFENCE.VMA: drain, cache sync (SFENCE.VMA also invalidates the
  *     TLBs), then a full flush and refetch.
  *   - MRET/SRET/DRET: once committed stores drain, o_mret_start; the trap

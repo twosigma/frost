@@ -1732,9 +1732,9 @@ def run_sweep_stage(
 # Keep it loadable through VALID_APPS, but exclude it from regression.
 DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
 
-# nic_echo requires a 10G link partner. Keep it loadable through VALID_APPS;
+# These applications require an external link. Keep them loadable through VALID_APPS;
 # use nic_loopback for unattended regression.
-EXTERNAL_LINK_APPS = frozenset({"nic_echo"})
+EXTERNAL_LINK_APPS = frozenset({"nic_bench", "nic_echo"})
 
 
 def regression_stages(board: str) -> list[str]:
@@ -1855,7 +1855,8 @@ def main() -> int:
             parser.error(
                 f"not a regression stage: {', '.join(excluded)} (debug_target needs "
                 "a debugger; nic_echo needs a link partner sending the cocotb wire "
-                "peer's frames; load_software.py can still run them)"
+                "peer's frames; nic_bench needs an external loopback; "
+                "load_software.py can still run them)"
             )
         unknown = sorted(requested - set(all_stages))
         if unknown:
