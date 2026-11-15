@@ -176,12 +176,20 @@ same flush and does not keep a squashed result.
 
 ## NaN boxing
 
-FP registers are 64 bits wide. `fp_engine` returns single-precision results
-NaN-boxed, with the upper 32 bits all ones. Integer results (compares,
-FCLASS, conversions to integer, FMV.X.W and FMV.X.D) are not boxed. On input,
-the engine unboxes single-precision operands: an operand whose upper 32 bits
-are not all ones reads as the canonical NaN, except that FMV.X.W takes the
-raw low bits.
+FP registers are 64 bits wide. `fp_engine` returns single- and half-precision
+results NaN-boxed, with the upper 32 or 48 bits all ones. Integer results
+(compares, FCLASS, conversions to integer and FMV.X.H/W/D) are not boxed.
+An improperly boxed single- or half-precision operand reads as the canonical
+NaN. FMV.X.H and FMV.X.W transfer the raw low bits with sign extension.
+
+Zfhmin supplies half-precision moves and conversions between H and S/D.
+Zfa supplies FLI.S/D, FMINM/FMAXM.S/D, FROUND/FROUNDNX.S/D, FLEQ/FLTQ.S/D
+and FCVTMOD.W.D. FLI reads its constant index from the RS immediate and
+captures the constant with its operands. FROUND suppresses inexact;
+FROUNDNX reports it. FCVTMOD.W.D truncates, returns the sign-extended low
+32 integer bits, and reports the flags of FCVT.W.D with RTZ. FLI.H and
+half-precision arithmetic are not implemented. FLI.H requires Zfh or Zvfh;
+the other scalar half arithmetic forms require Zfh.
 
 ## Result FIFO pops
 
