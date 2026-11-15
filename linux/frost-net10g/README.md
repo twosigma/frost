@@ -40,6 +40,7 @@ Offloads, reported by `ethtool -k <interface>`:
 | Scatter-gather | `scatter-gather: on`, `tx-scatter-gather: on` | A frame is a chain of descriptors, one per skb segment, so the stack hands over fragments without copying them |
 | TX checksum | `tx-checksum-ip-generic: on` (`NETIF_F_HW_CSUM`) | The MAC inserts the checksum a `CHECKSUM_PARTIAL` skb asks for; the driver puts the start and offset in the first descriptor and falls back to `skb_checksum_help()` for an odd or distant field |
 | RX checksum | `rx-checksumming: on` | The NIC reports the sum of the frame after the Ethernet header and the driver sets `CHECKSUM_COMPLETE` |
+| RX copybreak | `ethtool --get-tunable <interface> rx-copybreak`, `ethtool --set-tunable <interface> rx-copybreak N` | Frames of at most N bytes, including the Ethernet header, are copied into a small skb so their RX fragment can return to the pool immediately. The default is 256, the range is 0 to 1024, and 0 disables copying. Changes take effect while the interface is up |
 | TCP segmentation | `tcp-segmentation-offload: on`, `tx-tcp-segmentation: on`, `tx-tcp6-segmentation: on` | One parameter descriptor and one frame of up to 64 KB become MSS-sized segments with exact headers; the driver seeds the checksum with the pseudo-header sum without the length and sends skbs the stage cannot take (tunnels, headers over 160 bytes) to software GSO |
 | Interrupt moderation | `ethtool -c`, `ethtool -C rx-usecs N rx-frames N tx-usecs N tx-frames N` | The NIC's per-direction delay and completion count; 0 interrupts on the first completion |
 | 64-bit DMA | `highdma: on` | Extended descriptor layout (when the hardware offers it) |
@@ -59,6 +60,18 @@ The checksum features appear when `ABI_CTRL` bit 3 (checksum offload supported) 
 and the driver sets bit 2 at each open so the NIC reports the RX checksum. `ethtool -K
 <interface> rx off tx off sg off` turns each off for comparison; `rx` and `tx` take effect
 on the next packet without reopening.
+
+RX buffers come from a DMA-mapped page pool. At MTU 1500, two buffers share
+one page; smaller MTUs can fit more. Buffers too large to share use a whole
+allocation of one or more pages. Each skb accounts for its allocated
+fragment, including padding returned by the pool, and the page is recycled
+after all its fragments return. MTU changes require the interface to be
+down. Skbs held across a close return to their original pool.
+
+The driver syncs received data before reading it when `dma_dev_need_sync()`
+requires it. The pool syncs the whole allocation for the device after the
+last fragment returns. The coherent NIC's direct DMA mappings need no cache
+maintenance; descriptor ordering uses DMA barriers on every platform.
 
 | File | Contents |
 |---|---|
