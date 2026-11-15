@@ -351,6 +351,15 @@ module line_port_axi_bridge #(
   // Simulation-only protocol checks (Yosys cannot elaborate $error).
   int axi_error_check;
   initial if (!$value$plusargs("axi_error_check=%d", axi_error_check)) axi_error_check = 1;
+`ifdef FROST_SIM_ASSERTIONS
+  // Both the named plusarg and a post-reset bench write enable this control.
+  bit sim_assertion_probe = 1'b0;
+  string sim_assertion_control;
+  initial begin
+    if (!$value$plusargs("frost_startup_assertion_control=%s", sim_assertion_control))
+      sim_assertion_control = "";
+  end
+`endif
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && axi_reset_seen_q && !i_rst) begin
       if (req_fire && inflight_q[i_req_id])
@@ -376,7 +385,12 @@ module line_port_axi_bridge #(
         assert (1'b0) else
 `endif
         $error("line_port_axi_bridge: read response error (rresp=%0d)", i_axi_rresp);
+`ifdef FROST_SIM_ASSERTIONS
+      if ((i_axi_rvalid && o_axi_rready && !i_axi_rlast) ||
+          (sim_assertion_probe && sim_assertion_control == "bridge"))
+`else
       if (i_axi_rvalid && o_axi_rready && !i_axi_rlast)
+`endif
 `ifdef FROST_SIM_ASSERTIONS
         assert (1'b0) else
 `endif

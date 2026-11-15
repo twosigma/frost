@@ -519,6 +519,9 @@ evaluation. Production registers keep their seeded state until the driven
 reset reaches them. Runtime assertions stay enabled across warm resets;
 their local reset conditions apply during those resets. Unit benches start
 with assertions enabled and drive reset at their module boundaries.
+The system bench requires the reset request at startup and verifies after
+cold reset that every NIC response checker has observed reset, including
+the optional second NIC and the trace-injection platform.
 
 The Cocotb, physical-address and TestRIG CI jobs set
 `FROST_STARTUP_SWEEP=1`. After a successful simulation, the runner reuses
@@ -526,6 +529,8 @@ each compiled system model for short startup checks. Programs sharing a
 binary share its completed check. The selected builds divide a 180-second
 estimated job budget; the seed count is fixed before the checks run.
 SRAM and large-cache models use their own per-seed cost estimates.
+The allocation reserves two starts per cached-tier model for assertion
+controls that must fail after reset with their original diagnostics.
 
 Each seed comes from `random.Random(f"{base}:startup:{index}")`, with a draw
 from 1 through 2**31 - 1. The base is `FROST_RANDOM_START_SEED`, or
@@ -551,6 +556,16 @@ requires assertion arming, a completion marker, and a fresh passing cocotb
 report. Per-seed logs, XML reports, executable digest, failures and elapsed
 time go to `tests/startup_sweep/` (override with `--output`). `--baseline`
 measures a model with checks enabled from its first evaluation.
+
+After the seeded starts, the cached-tier check deliberately violates the
+NIC AXI single-beat response check and the NIC reset identity assertion in
+separate processes. Each control requires a matching
+`+frost_startup_assertion_control=bridge` or
+`+frost_startup_assertion_control=nic_reset` plusarg, the matching
+`FROST_STARTUP_ASSERTION_CONTROL` environment value, and a bench write to
+the simulation-only probe after assertion arming and reset. Ordinary starts
+omit these controls. A passing process, a timeout, or a different diagnostic
+fails the control. `--baseline` skips them.
 
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.

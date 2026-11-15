@@ -82,6 +82,7 @@ def test_startup_requires_fresh_report_and_arming(
         assert "+verilator+noassert" in command
         assert kwargs["env"]["FROST_RANDOM_START_VERILATOR_SEED"] == "7"
         assert "COCOTB_TEST_FILTER" not in kwargs["env"]
+        assert "FROST_STARTUP_ASSERTION_CONTROL" not in kwargs["env"]
         if xml is not None:
             Path(kwargs["env"]["COCOTB_RESULTS_FILE"]).write_text(xml)
         return subprocess.CompletedProcess(command, returncode, transcript)
@@ -89,7 +90,14 @@ def test_startup_requires_fresh_report_and_arming(
     monkeypatch.setattr(sweep.subprocess, "run", simulate)
     assert (
         sweep.run_startup_sweep(
-            binary, {"COCOTB_TEST_FILTER": "ordinary"}, output, seeds=[7]
+            binary,
+            {
+                "COCOTB_TEST_FILTER": "ordinary",
+                "FROST_STARTUP_ASSERTION_CONTROL": "bridge",
+            },
+            output,
+            seeds=[7],
+            controls=False,
         )
         is expected
     )
@@ -107,6 +115,7 @@ def test_failed_checks_are_not_cached_and_binary_changes_invalidate_success(
 ) -> None:
     """Retry failures and changed models while reusing an identical success."""
     monkeypatch.setattr(sweep, "__file__", str(tmp_path / "random_start_sweep.py"))
+    Path(sweep.__file__).write_text("runner")
     monkeypatch.setenv("FROST_STARTUP_SEEDS", "2")
     binary = tmp_path / "Vtop"
     binary.write_bytes(b"first model")
@@ -143,7 +152,7 @@ def test_failed_checks_are_not_cached_and_binary_changes_invalidate_success(
 def test_full_sweep_overrides_job_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """A requested full sweep takes precedence over the CI allocation."""
     monkeypatch.delenv("FROST_STARTUP_SEEDS", raising=False)
-    assert sweep.startup_count(12) == 15
+    assert sweep.startup_count(12) == 13
     monkeypatch.setenv("FROST_STARTUP_SEEDS", "201")
     assert sweep.startup_count(12) == 201
     monkeypatch.setenv("FROST_STARTUP_SEEDS", "0")
@@ -157,6 +166,7 @@ def test_pinned_program_seed_uses_the_ci_job_base_and_budget(
 ) -> None:
     """A registry seed override must not replace the job's rotating sample."""
     monkeypatch.setattr(sweep, "__file__", str(tmp_path / "random_start_sweep.py"))
+    Path(sweep.__file__).write_text("runner")
     monkeypatch.delenv("FROST_STARTUP_SEEDS", raising=False)
     binary = tmp_path / "Vtop"
     binary.write_bytes(b"model")
@@ -226,3 +236,60 @@ def test_startup_images_respect_code_region_capacity(tmp_path: Path) -> None:
             len((tmp_path / f"sw_imem_{parity}_sideband.mem").read_text().splitlines())
             == 16384
         )
+
+
+@pytest.mark.parametrize(
+    "outcome", ("fires", "disabled", "wrong_check", "pre_reset", "timeout")
+)
+def test_assertion_controls_require_original_post_reset_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    """An arming marker alone cannot substitute for working system assertions."""
+    binary = tmp_path / "Vtop"
+    binary.write_bytes(b"model")
+    (tmp_path / "Vtop__verFiles.dat").write_text("+define+FROST_RANDOM_START")
+    monkeypatch.setattr(
+        sweep.subprocess, "check_output", lambda *a, **kw: "/lib/libpython.so"
+    )
+    calls = []
+
+    def simulate(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        env = kwargs["env"]
+        control = env.get("FROST_STARTUP_ASSERTION_CONTROL")
+        calls.append(control)
+        armed = "Simulation assertions armed after reset\n"
+        if control is None:
+            assert not any(
+                arg.startswith("+frost_startup_assertion_control=") for arg in command
+            )
+            Path(env["COCOTB_RESULTS_FILE"]).write_text(
+                "<testsuite><testcase/></testsuite>"
+            )
+            return subprocess.CompletedProcess(command, 0, armed + "STARTUP_SMOKE_PASS")
+        assert command[-1] == f"+frost_startup_assertion_control={control}"
+        injected = f"STARTUP_ASSERTION_CONTROL {control}\n"
+        diagnostic = "%Error: " + sweep.ASSERTION_CONTROLS[control]
+        if outcome == "disabled":
+            return subprocess.CompletedProcess(
+                command, 0, armed + injected + "STARTUP_SMOKE_PASS"
+            )
+        if outcome == "pre_reset":
+            return subprocess.CompletedProcess(
+                command, -6, diagnostic + "\n" + armed + injected
+            )
+        if outcome == "wrong_check":
+            diagnostic = "%Error: unrelated failure"
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(command, 120, output=armed + injected)
+        return subprocess.CompletedProcess(command, -6, armed + injected + diagnostic)
+
+    monkeypatch.setattr(sweep.subprocess, "run", simulate)
+    output = tmp_path / "output"
+    assert sweep.run_startup_sweep(binary, {}, output, seeds=[7]) is (
+        outcome == "fires"
+    )
+    assert calls == [None, "bridge", "nic_reset"]
+    results = json.loads((output / "results.json").read_text())
+    assert all(row["passed"] is (outcome == "fires") for row in results["controls"])

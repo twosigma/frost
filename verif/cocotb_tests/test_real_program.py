@@ -281,9 +281,29 @@ async def _arm_simulation_assertions(cpu_reset: Any) -> None:
 
 
 async def wait_for_power_on_reset(dut: Any) -> None:
-    """Keep system reset held through a slow or delayed CPU's cold reset."""
+    """Wait for cold reset and require every NIC response checker to see it."""
     while int(dut.i_power_on_rst.value):
         await RisingEdge(dut.i_clk)
+    for seen in _nic_reset_history(dut):
+        assert int(seen.value), "NIC response checker did not observe reset"
+
+
+def _program_soc(dut: Any) -> Any:
+    """Locate the production SoC or the direct trace-injection platform."""
+    platform = getattr(dut, "cpu_and_memory_subsystem", None)
+    return getattr(platform, "soc", platform)
+
+
+def _nic_reset_history(dut: Any) -> tuple[Any, ...]:
+    """Return checker history without changing its reset evidence."""
+    soc = _program_soc(dut)
+    if not hasattr(soc, "gen_cached_tier"):
+        return ()
+    tier = soc.gen_cached_tier
+    fronts = [tier.nic.u_front]
+    if hasattr(tier, "gen_nic_1g"):
+        fronts.append(tier.gen_nic_1g.nic_1g.u_front)
+    return tuple(front.reset_seen_q for front in fronts)
 
 
 def _write_instruction_bank(bank: Any, words: list[int]) -> None:
@@ -406,6 +426,14 @@ async def prepare_program_start(dut: Any) -> None:
         dut.i_power_on_rst.value = Immediate(0)
     initialize_wrapper_resets(dut)
     await Timer(1, unit="ps")
+    if _nic_reset_history(dut):
+        soc = _program_soc(dut)
+        request = (
+            soc.reset_request_soc
+            if hasattr(soc, "reset_request_soc")
+            else soc.rst_core_next
+        )
+        assert int(request.value), "NIC startup requires system reset"
 
 
 async def generate_divided_clock(

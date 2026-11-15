@@ -36,6 +36,10 @@ from cocotb_tools import config
 
 DEFAULT_BASE = "frost-startup"
 STARTUP_BUDGET_SECONDS = 180
+ASSERTION_CONTROLS = {
+    "bridge": "line_port_axi_bridge: multi-beat read response (expected single beat)",
+    "nic_reset": "nic_rst_q is not the registered reset OR the RESET pulse",
+}
 
 
 def startup_base(environment: dict[str, str]) -> str:
@@ -77,7 +81,9 @@ def startup_count(cost: float) -> int:
     count = (
         int(override)
         if override
-        else min(200, max(1, int(STARTUP_BUDGET_SECONDS / cost)))
+        else min(
+            200, max(1, int(STARTUP_BUDGET_SECONDS / cost) - len(ASSERTION_CONTROLS))
+        )
     )
     if count < 1:
         raise ValueError("FROST_STARTUP_SEEDS must be positive")
@@ -129,6 +135,7 @@ def check_built_model(binary: Path, environment: dict[str, str]) -> None:
     with binary.open("rb") as executable:
         digest = hashlib.file_digest(executable, "sha256").hexdigest()
     fixture = hashlib.sha256()
+    fixture.update(Path(__file__).read_bytes())
     for name in (
         "test_random_start_smoke.py",
         "test_real_program.py",
@@ -189,8 +196,9 @@ def run_startup_sweep(
     workers: int = 1,
     baseline: bool = False,
     seeds: list[int] | None = None,
+    controls: bool = True,
 ) -> bool:
-    """Reuse a random-start model for reset and 300 cycles under each seed."""
+    """Check seeded startups and require two deliberate post-reset failures."""
     binary = binary.resolve()
     output = output.resolve()
     if not binary.is_file():
@@ -207,6 +215,7 @@ def run_startup_sweep(
     working_directory = output / "images"
     write_startup_images(working_directory, build_record.read_text())
     environment = environment.copy()
+    environment.pop("FROST_STARTUP_ASSERTION_CONTROL", None)
     environment.update(
         COCOTB_TEST_MODULES="cocotb_tests.test_random_start_smoke",
         COCOTB_TOPLEVEL="frost",
@@ -225,6 +234,7 @@ def run_startup_sweep(
         environment.pop(key, None)
     if baseline:
         environment["FROST_STARTUP_BASELINE"] = "1"
+        controls = False
     else:
         environment.pop("FROST_STARTUP_BASELINE", None)
     base = startup_base(environment)
@@ -232,10 +242,13 @@ def run_startup_sweep(
     if not seeds or any(seed < 1 or seed >= 2**31 for seed in seeds):
         raise ValueError("Verilator seeds must be between 1 and 2**31 - 1")
     print(f"Startup base={base!r}, seeds={len(seeds)}, binary={binary}", flush=True)
+    if "-GENABLE_CACHED_TIER=0" in build_record.read_text():
+        controls = False
 
-    def run_one(index: int, seed: int) -> dict[str, Any]:
+    def run_one(index: int, seed: int, control: str | None = None) -> dict[str, Any]:
         env = environment.copy()
-        report = output / f"seed_{seed}.xml"
+        label = f"control_{control}" if control else f"seed_{seed}"
+        report = output / f"{label}.xml"
         report.unlink(missing_ok=True)
         env["COCOTB_RESULTS_FILE"] = str(report)
         env["FROST_RANDOM_START_SEED"] = base
@@ -248,7 +261,13 @@ def run_startup_sweep(
         ]
         if not baseline:
             arguments.append("+verilator+noassert")
-        print(f"Startup index={index} Verilator seed={seed}", flush=True)
+        if control:
+            env["FROST_STARTUP_ASSERTION_CONTROL"] = control
+            arguments.append(f"+frost_startup_assertion_control={control}")
+        print(
+            f"Startup {'control=' + control if control else 'index=' + str(index)} Verilator seed={seed}",
+            flush=True,
+        )
         replay_environment = {
             key: value
             for key, value in env.items()
@@ -294,7 +313,7 @@ def run_startup_sweep(
                 else captured
             ) + "\nAssertionError: startup simulation exceeded 120 seconds\n"
             returncode = 124
-        (output / f"seed_{seed}.log").write_text(transcript)
+        (output / f"{label}.log").write_text(transcript)
         try:
             cases = ElementTree.parse(report).findall(".//testcase")
         except (OSError, ElementTree.ParseError):
@@ -309,9 +328,20 @@ def run_startup_sweep(
             )
             and (baseline or "Simulation assertions armed after reset" in transcript)
         )
+        if control:
+            armed_at = transcript.find("Simulation assertions armed after reset")
+            injected_at = transcript.find(f"STARTUP_ASSERTION_CONTROL {control}")
+            diagnostic_at = transcript.find(ASSERTION_CONTROLS[control], injected_at)
+            passed = (
+                returncode not in (0, 124)
+                and 0 <= armed_at < injected_at < diagnostic_at
+                and "%Error" in transcript[injected_at:]
+                and "STARTUP_SMOKE_PASS" not in transcript
+            )
         return {
             "index": index,
             "seed": seed,
+            "control": control,
             "command": command,
             "passed": passed,
             "returncode": returncode,
@@ -338,6 +368,23 @@ def run_startup_sweep(
                     flush=True,
                 )
                 print(f"Rerun this seed in the image: {result['command']}", flush=True)
+    control_results = []
+    if controls:
+        for control in ASSERTION_CONTROLS:
+            result = run_one(len(results), seeds[0], control)
+            control_results.append(result)
+            if result["passed"]:
+                print(
+                    f"Startup control {control}: expected failure confirmed", flush=True
+                )
+            else:
+                print(
+                    f"Startup control {control} FAILED: expected the original post-reset diagnostic; got {result['errors']}",
+                    flush=True,
+                )
+                print(
+                    f"Rerun this control in the image: {result['command']}", flush=True
+                )
     elapsed = time.monotonic() - started
     with binary.open("rb") as executable:
         digest = hashlib.file_digest(executable, "sha256").hexdigest()
@@ -349,13 +396,17 @@ def run_startup_sweep(
         "workers": workers,
         "seconds": round(elapsed, 3),
         "results": sorted(results, key=lambda row: row["index"]),
+        "controls": control_results,
     }
     (output / "results.json").write_text(json.dumps(summary, indent=2) + "\n")
     passed = sum(result["passed"] for result in results)
     print(
-        f"Startup sweep: {passed}/{len(results)} passed in {elapsed:.1f}s", flush=True
+        f"Startup sweep: {passed}/{len(results)} passed; "
+        f"controls {sum(row['passed'] for row in control_results)}/{len(control_results)} "
+        f"in {elapsed:.1f}s",
+        flush=True,
     )
-    return passed == len(results)
+    return passed == len(results) and all(row["passed"] for row in control_results)
 
 
 def main() -> int:

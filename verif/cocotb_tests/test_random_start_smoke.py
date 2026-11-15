@@ -15,10 +15,11 @@
 """Exercise system startup and a short execution interval with seeded state."""
 
 from typing import Any
+import os
 
 import cocotb
 from cocotb.handle import Immediate
-from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
+from cocotb.triggers import ClockCycles, ReadOnly, ReadWrite, RisingEdge
 
 from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
@@ -97,6 +98,17 @@ async def startup_smoke(dut: Any) -> None:
     dut.i_rst_n.value = 1
     if hasattr(dut, "i_ddr_axi_rst_n"):
         dut.i_ddr_axi_rst_n.value = 1
+    control = os.environ.get("FROST_STARTUP_ASSERTION_CONTROL")
+    if control:
+        assert control in ("bridge", "nic_reset"), "unknown assertion control"
+        assert cocotb.plusargs.get("frost_startup_assertion_control") == control
+        await ClockCycles(dut.i_clk, 8)
+        await ReadWrite()
+        soc = platform.soc if hasattr(platform, "soc") else platform
+        nic = soc.gen_cached_tier.nic
+        target = nic.u_dma_axi if control == "bridge" else nic
+        cocotb.log.info("STARTUP_ASSERTION_CONTROL %s", control)
+        target.sim_assertion_probe.value = 1
     await ClockCycles(dut.i_clk, 300)
     await ReadOnly()
     cocotb.log.info("STARTUP_SMOKE_PASS")
