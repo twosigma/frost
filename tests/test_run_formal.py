@@ -84,6 +84,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_ways_data_bmc"): 5100,
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
+    ("coherence_l1d", "coh_l1d_zero_cover"): 14400,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
@@ -3064,6 +3065,76 @@ def formal_task_timeout_s(target: str, task: str) -> int:
     return SBY_TASK_TIMEOUT_OVERRIDES_S.get((target, task), SBY_TASK_TIMEOUT_S)
 
 
+# Measured CI setup budget (checkout, image download and docker load, collection).
+FORMAL_SHARD_SETUP_S = 600
+
+
+def _sby_task_timeouts_s(sby_path: Path) -> dict[str, int]:
+    """Return explicit ``timeout`` options (seconds) by task for an SBY file."""
+    section = ""
+    tasks: dict[str, set[str]] = {}
+    option_lines: list[str] = []
+    for raw in sby_path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("--"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line.split()[0]
+            continue
+        if section == "[tasks]":
+            parts = line.split()
+            tasks[parts[0]] = set(parts)
+        elif section == "[options]":
+            option_lines.append(line)
+    if not tasks:
+        tasks[""] = {""}
+    timeouts: dict[str, int] = {}
+    for task_name, tags in tasks.items():
+        value: int | None = None
+        for line in option_lines:
+            if ":" in line:
+                selector, rest = (part.strip() for part in line.split(":", 1))
+                if selector.startswith("~"):
+                    pat = selector[1:]
+                    matched = pat not in tags and not re.fullmatch(pat, task_name)
+                else:
+                    matched = selector in tags or bool(
+                        re.fullmatch(selector, task_name)
+                    )
+                if not matched:
+                    continue
+            else:
+                rest = line
+            parts = rest.split()
+            if len(parts) == 2 and parts[0] == "timeout":
+                value = int(parts[1])
+        if value is not None:
+            timeouts[task_name] = value
+    return timeouts
+
+
+def check_formal_shard_budgets(
+    shard_timeouts_s: dict[str, int],
+    selected_limits_s: dict[str, list[int]],
+    allowance_shards: set[str],
+    setup_s: int = FORMAL_SHARD_SETUP_S,
+) -> None:
+    """Check per-shard task limit sums and multi-hour task isolation."""
+    for shard_name, limits_s in selected_limits_s.items():
+        budget_s = shard_timeouts_s[shard_name]
+        for limit_s in limits_s:
+            assert limit_s + setup_s <= budget_s, (shard_name, limit_s, budget_s)
+            if limit_s > 7200:
+                assert shard_name in allowance_shards, (shard_name, limit_s)
+        if shard_name in allowance_shards:
+            assert sum(limits_s) + setup_s <= budget_s, (
+                shard_name,
+                sum(limits_s),
+                setup_s,
+                budget_s,
+            )
+
+
 def test_atomic_proof_pairs_and_formal_shards() -> None:
     """Require proof dependencies and one CI shard for every formal case."""
     import yaml  # type: ignore[import-untyped]
@@ -3141,6 +3212,9 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_stream_free_nostore_hold_bmc": "Coherence L1D no-store holds",
         "coherence_l1d_coh_l1d_bmc": "Coherence L1D control",
         "coherence_l1d_coh_l1d_multi_bmc": "Coherence L1D multi-endpoint",
+        "coherence_l1d_coh_l1d_zero_bmc": "Coherence L1D zero control",
+        "coherence_l1d_coh_l1d_zero_multi_bmc": "Coherence L1D zero multi-endpoint",
+        "coherence_l1d_coh_l1d_zero_cover": "Coherence L1D zero cover",
         "coherence_l1d_coh_l1d_local_data_bmc": "Coherence L1D local data",
         "coherence_l1d_coh_l1d_local_hold_bmc": "Coherence L1D local holds",
         "coherence_l1d_coh_l1d_local_control_bmc": "Coherence L1D local control",
@@ -3149,6 +3223,16 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_store_boundary_bmc_amo_same": "Store boundary AMO flow",
         "coherence_store_boundary_bmc_amo_other": "Store boundary AMO flow",
         "coherence_store_boundary_bmc_sc": "Store boundary",
+    }
+    # Shards sized directly from their tasks' allowances plus CI setup; the
+    # remaining catch-all shards group short partitions under hang backstops
+    # and may not hold any multi-hour (> 120 minute) task.
+    allowance_shards = (set(dedicated_shards.values()) - {"Store boundary"}) | {
+        "Coherence links pressure",
+        "Coherence L1D data single-endpoint",
+        "Coherence L1D data multi-endpoint",
+        "Coherence L1D data stores and ways",
+        "Reorder buffer",
     }
     data_prefixes = (
         "coh_l1d_data",
@@ -3185,6 +3269,20 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     for target_name, names in required.items():
         for name in names:
             assert sum(f"[{target_name}_{name}]" in node for node in nodes) == 1
+    sby_timeouts = {
+        target.name: _sby_task_timeouts_s(root / "formal" / target.sby_file)
+        for target in FORMAL_TARGETS
+    }
+    target_by_id = {
+        f"{target.name}_{task}": (target.name, task)
+        for target in FORMAL_TARGETS
+        for task in target.tasks
+    }
+    shard_timeouts_s = {
+        shard["shard"]: shard["timeout_minutes"] * 60 for shard in shards
+    }
+    selected_by_shard: dict[str, list[str]] = {name: [] for name in filters}
+    selected_limits_s: dict[str, list[int]] = {name: [] for name in filters}
     for node in nodes:
 
         def matches_keyword(keyword: str, /, **kwargs: str | int | bool | None) -> bool:
@@ -3198,11 +3296,47 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             if expression.evaluate(matches_keyword)
         ]
         assert len(matches) == 1, (node, matches)
+        shard_name = matches[0]
+        selected_by_shard[shard_name].append(node)
+        if node.startswith("tests/test_run_formal.py::") and "[" in node:
+            test_id = node.split("[", 1)[1].rstrip("]")
+            if test_id in target_by_id:
+                tgt, tsk = target_by_id[test_id]
+                limit_s = sby_timeouts[tgt].get(tsk)
+                if limit_s is None and shard_name in allowance_shards:
+                    limit_s = formal_task_timeout_s(tgt, tsk)
+                if limit_s is not None:
+                    selected_limits_s[shard_name].append(limit_s)
         for test_id, shard in dedicated_shards.items():
             if node.endswith(f"[{test_id}]"):
                 assert matches == [shard], (node, matches)
         if any(f"[coherence_l1d_{prefix}" in node for prefix in data_prefixes):
-            assert matches[0].startswith("Coherence L1D data"), (node, matches)
+            assert shard_name.startswith("Coherence L1D data"), (node, matches)
+    assert len(selected_by_shard["Coherence L1D zero control"]) == 1
+    assert len(selected_by_shard["Coherence L1D zero cover"]) == 1
+    assert len(selected_by_shard["Coherence L1D local holds"]) == 1
+    check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
+
+
+def test_formal_shard_budget_sum_rejects_overcommitted_shard() -> None:
+    """Reject a shard whose summed task allowances plus setup exceed its limit."""
+    check_formal_shard_budgets(
+        {"Dedicated": 260 * 60, "Shared": 330 * 60},
+        {"Dedicated": [240 * 60], "Shared": [20 * 60, 40 * 60]},
+        {"Dedicated"},
+    )
+    with pytest.raises(AssertionError):
+        check_formal_shard_budgets(
+            {"Dedicated": 330 * 60},
+            {"Dedicated": [120 * 60, 240 * 60]},
+            {"Dedicated"},
+        )
+    with pytest.raises(AssertionError):
+        check_formal_shard_budgets(
+            {"Shared": 330 * 60},
+            {"Shared": [240 * 60]},
+            set(),
+        )
 
 
 def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
@@ -3541,7 +3675,7 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
         assert dict(line.split(maxsplit=1) for line in task["[options]"]) == {
             "mode": "cover",
             "depth": "80",
-            "timeout": "2400",
+            "timeout": "14400",
             "vcd_sim": "on",
             "skip": "48",
         }
