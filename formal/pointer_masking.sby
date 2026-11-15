@@ -6,19 +6,27 @@
 # Combinational, so one BMC step covers every input.
 [tasks]
 bmc
+bmc_ddr31
+bmc_ddr36
+bmc_ddr37
 
 [options]
-bmc: mode bmc
-bmc: depth 1
+mode bmc
+depth 1
 
 [engines]
 smtbmc boolector
 
 [script]
+bmc_ddr31: verilog_defines -D FROST_DDR_CAPACITY_LOG2_BYTES=31
+bmc_ddr36: verilog_defines -D FROST_DDR_CAPACITY_LOG2_BYTES=36
+bmc_ddr37: verilog_defines -D FROST_DDR_CAPACITY_LOG2_BYTES=37
 read -formal -sv riscv_pkg.sv
+read -formal -sv ma_pkg.sv
 read -formal -sv pointer_masking.sv
 prep -top pointer_masking
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/misaligned/ma_pkg.sv
 pointer_masking.sv

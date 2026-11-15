@@ -49,6 +49,14 @@
 #ifndef FROST_DDR_CAPACITY_LOG2_BYTES
 #define FROST_DDR_CAPACITY_LOG2_BYTES 30
 #endif
+#ifndef SVPBMT_BUS_ERRORS
+#define SVPBMT_BUS_ERRORS 0
+#endif
+/* Bus-fault VA retention reports the program's VA, not the real or encoded
+ * alias PA. Set this to zero only when testing an older core without it. */
+#ifndef SVPBMT_EXPECT_BUS_FAULT_VA
+#define SVPBMT_EXPECT_BUS_FAULT_VA 1
+#endif
 /* riscv_pkg::PbmtAliasBit: bit 30 for DDR of at most 1 GiB, else the DDR size bit. */
 #if FROST_DDR_CAPACITY_LOG2_BYTES <= 30
 #define PBMT_ALIAS_OFFSET (1ul << 30)
@@ -433,6 +441,68 @@ static int alias_orders(void)
     return failed == 0;
 }
 
+/* A 2 GiB DDR aperture has no encoded alias. Device mappings keep their
+ * ordinary register path with either NC or IO; MSIP is safe with MIE clear. */
+static int no_alias_map(void)
+{
+    int ok = 1;
+    csr_write(0x30A, ENVCFG_CBZE | MENVCFG_PBMTE);
+    __asm__ volatile("csrw satp, %0\n sfence.vma" : : "r"(SATP_SV39 | (PT_ROOT >> 12)));
+    for (unsigned long pg = PG_NC; pg <= PG_IO; pg++) {
+        unsigned long va = VA_4K(pg) + 0x18;
+        access_s(K_LD, va, 0);
+        ok &= expect_trap("2g ddr-load", K_LD, CAUSE_LOAD_ACCESS, va);
+        access_s(K_SD, va, 7);
+        ok &= expect_trap("2g ddr-store", K_SD, CAUSE_STORE_ACCESS, va);
+        l0[PG_FILL0] = PTE_PPN(0x40010000ul) | RWAD | PTE_PBMT(pg);
+        sfence_all();
+        unsigned long device_va = VA_4K(PG_FILL0);
+        access_s(K_SD, device_va, 1);
+        ok &= expect_trap("2g device-set", K_SD, NO_TRAP, NO_TRAP);
+        ok &= expect_value("2g device-read-one", access_s(K_LD, device_va, 0), 1);
+        access_s(K_SD, device_va, 0);
+        ok &= expect_trap("2g device-clear", K_SD, NO_TRAP, NO_TRAP);
+        ok &= expect_value("2g device-read-zero", access_s(K_LD, device_va, 0), 0);
+    }
+    unsigned long va = VA_MEGA + 0x1230;
+    access_s(K_LD, va, 0);
+    ok &= expect_trap("2g superpage-load", K_LD, CAUSE_LOAD_ACCESS, va);
+    access_s(K_SD, va, 9);
+    ok &= expect_trap("2g superpage-store", K_SD, CAUSE_STORE_ACCESS, va);
+    fetch_s(VA_4K(PG_NC_EXEC));
+    ok &= expect_trap("2g fetch", -1, CAUSE_FETCH_ACCESS, VA_4K(PG_NC_EXEC));
+    return ok;
+}
+
+/* +axi_rd_error_addr=3000000 fails the DDR fill behind each alias request.
+ * Both a load's R error and a partial store's B error must reach retirement.
+ * Without bus-fault VA retention, xtval is zero; with it, xtval is the VA. */
+static int alias_bus_errors(void)
+{
+    int ok = 1;
+    csr_write(0x30A, ENVCFG_CBZE | MENVCFG_PBMTE);
+    __asm__ volatile("csrw satp, %0\n sfence.vma" : : "r"(SATP_SV39 | (PT_ROOT >> 12)));
+    for (unsigned long pbmt = PBMT_NC; pbmt <= PBMT_IO; pbmt++) {
+        l0[PG_FILL0] = PTE_PPN(0x83000000ul) | RWAD | PTE_PBMT(pbmt);
+        sfence_all();
+        unsigned long va = VA_4K(PG_FILL0) + 0x18;
+        access_s(K_LD, va, 0);
+        ok &= expect_trap(
+            "alias-bus-load", K_LD, CAUSE_LOAD_ACCESS, SVPBMT_EXPECT_BUS_FAULT_VA ? va : 0);
+        va += 8;
+        access_s(K_SD, va, 0x12345678);
+        ok &= expect_trap(
+            "alias-bus-store", K_SD, CAUSE_STORE_ACCESS, SVPBMT_EXPECT_BUS_FAULT_VA ? va : 0);
+    }
+    /* A successful transfer after the errors checks that the port recovered. */
+    *(volatile unsigned long *) 0x83100000ul = 0x5678;
+    __asm__ volatile("fence iorw, iorw" ::: "memory");
+    l0[PG_FILL0] = PTE_PPN(0x83100000ul) | RWAD | PTE_PBMT(PBMT_IO);
+    sfence_all();
+    ok &= expect_value("alias-bus-recovery", access_s(K_LD, VA_4K(PG_FILL0), 0), 0x5678);
+    return ok;
+}
+
 int main(void)
 {
     int ok = 1;
@@ -441,6 +511,14 @@ int main(void)
     set_trap_handler(&pbmt_trap_handler);
     csr_write(medeleg, 0);
     build_tables();
+    if (FROST_DDR_CAPACITY_LOG2_BYTES == 31) {
+        ok = no_alias_map();
+        goto done;
+    }
+    if (SVPBMT_BUS_ERRORS) {
+        ok = alias_bus_errors();
+        goto done;
+    }
     for (int p = 0; p < PG_FILL0 + PG_FILLS; p++)
         for (int i = 0; i < 512; i++)
             ((volatile uint64_t *) FRAME(p))[i] = 0;
@@ -589,6 +667,7 @@ int main(void)
         ok &= expect_trap("H pbmte-off-sfence-2m", K_SD, CAUSE_STORE_PAGE, va);
     }
 
+done:
     __asm__ volatile("csrw satp, zero\n sfence.vma");
     csr_write(0x30A, 0);
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");

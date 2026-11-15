@@ -303,9 +303,10 @@ module csr_file #(
     output logic o_mmu_eff_priv_u,  // effective data privilege == U
     // Ssnpm: the pointer-masking mode of data accesses (riscv_pkg "Pointer
     // masking"): senvcfg.PMM at effective data privilege U with mstatus.MXR
-    // clear, else off. A senvcfg write holds ID until it commits, so younger
-    // memory operations issue after this register has updated; MXR, MPRV
-    // and privilege changes end in a full flush.
+    // clear, else off. A senvcfg write forwards its legalized PMM on the
+    // commit edge, before a younger store can allocate an early address.
+    // The write holds ID until it commits. MXR, MPRV and privilege changes
+    // end in a full flush.
     output riscv_pkg::pm_mode_t o_mmu_pm_mode,
     output logic [riscv_pkg::AsidBits-1:0] o_mmu_asid,  // satp.ASID
     // Fetch uses current privilege; MPRV affects data only. These outputs
@@ -1893,10 +1894,10 @@ module csr_file #(
           menvcfg_fiom  <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
-          senvcfg_cbze  <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
+          senvcfg_cbze <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
           senvcfg_cbcfe <= senvcfg_new_value[riscv_pkg::EnvcfgCbcfeBit];
-          senvcfg_cbie  <= cbie_warl(senvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
-          senvcfg_fiom  <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+          senvcfg_cbie <= cbie_warl(senvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
+          senvcfg_fiom <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
           senvcfg_pmm <= riscv_pkg::pmm_warl(
               senvcfg_new_value[riscv_pkg::EnvcfgPmmLsb+:2], senvcfg_pmm
           );
@@ -2090,8 +2091,13 @@ module csr_file #(
       mmu_sum_q <= mstatus_sum;
       mmu_mxr_q <= mstatus_mxr;
       mmu_eff_priv_u_q <= (eff_data_priv == riscv_pkg::PrivU);
-      mmu_pm_mode_q <= ((eff_data_priv == riscv_pkg::PrivU) && !mstatus_mxr) ? senvcfg_pmm :
-          riscv_pkg::EnvcfgPmmOff;
+      // Ordinary CSR serialization can release store allocation on this
+      // edge. Capture a written PMM together with its architectural field.
+      mmu_pm_mode_q <= ((eff_data_priv == riscv_pkg::PrivU) && !mstatus_mxr) ?
+          ((storage_csr_write && (i_csr_address == riscv_pkg::CsrSenvcfg)) ?
+            riscv_pkg::pmm_warl(
+          senvcfg_new_value[riscv_pkg::EnvcfgPmmLsb+:2], senvcfg_pmm
+      ) : senvcfg_pmm) : riscv_pkg::EnvcfgPmmOff;
       mmu_asid_q <= satp_asid;
     end
   end
@@ -2650,17 +2656,14 @@ module csr_file #(
       p_priv_valid : assert (priv_q != 2'b10);
       // The fetch duplicate must equal architectural privilege.
       p_fetch_priv_replica_exact : assert (fetch_priv_q == priv_q);
-      // Ssnpm: the data pointer-masking mode is the previous cycle's
-      // senvcfg.PMM at effective data privilege U with MXR clear, else off,
-      // and never the reserved 01.
+      // Ssnpm: PMM includes the preceding edge's CSR write. Privilege and
+      // MXR follow the data-state pipeline, whose transitions flush issue.
       p_pm_mode_exact :
       assert (o_mmu_pm_mode == ((($past(
           mstatus_mprv ? mstatus_mpp : priv_q
       ) == riscv_pkg::PrivU) && !$past(
           mstatus_mxr
-      )) ? $past(
-          senvcfg_pmm
-      ) : 2'b00));
+      )) ? senvcfg_pmm : 2'b00));
       p_pm_mode_not_reserved : assert (o_mmu_pm_mode != 2'b01);
       p_pmm_not_reserved : assert (senvcfg_pmm != 2'b01);
 
@@ -3451,6 +3454,13 @@ module csr_file #(
   logic [$bits(senvcfg_cbie)-1:0] f_old_senvcfg_cbie;
   logic [$bits(senvcfg_fiom)-1:0] f_old_senvcfg_fiom;
   logic [1:0] f_old_senvcfg_pmm;
+  logic f_old_pm_enable;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_old_pm_enable <= 1'b0;
+    else
+      f_old_pm_enable <= !mstatus_mxr &&
+        (mstatus_mprv ? (mstatus_mpp == 2'b00) : (priv_q == 2'b00));
+  end
   // Reference CBIE WARL: reserved 10 stores 00; 11 stores 01 when inval
   // always executes as flush.
   function automatic logic [1:0] f_cbie_ref(input logic [1:0] written);
@@ -3819,6 +3829,7 @@ module csr_file #(
       assert ({senvcfg_cbcfe, senvcfg_cbie} == {f_old_senvcfg_cbcfe, f_old_senvcfg_cbie});
       assert (senvcfg_fiom == f_old_senvcfg_fiom);
       assert (senvcfg_pmm == f_old_senvcfg_pmm);
+      assert (o_mmu_pm_mode == (f_old_pm_enable ? f_old_senvcfg_pmm : 2'b00));
       assert (sepc == f_old_sepc);
       assert (sscratch == f_old_sscratch);
       assert (stimecmp == f_old_stimecmp);

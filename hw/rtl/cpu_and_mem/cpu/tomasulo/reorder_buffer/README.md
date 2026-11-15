@@ -248,7 +248,10 @@ stateDiagram-v2
 ```
 
 State names omit the RTL's `SERIAL_` prefix. `SQ empty` means committed
-stores have drained (`i_sq_committed_empty`). `sync fence` is FENCE.I or
+stores have drained (`i_sq_committed_empty`); the wrapper also holds it low
+while a retired vector memory instruction is still accessing memory, so the
+serializer's FENCE, FENCE.I, SFENCE.VMA, CSR-translation and xRET drains wait
+for those accesses too (`i_vmem_quiet`). `sync fence` is FENCE.I or
 SFENCE.VMA (the ROB treats SFENCE.VMA as a subtype of FENCE.I). `permit`
 means retirement is allowed: no commit hold, early-recovery pulse, or flush.
 `xRET` covers MRET, SRET, and DRET. A comma joins conditions that must all
@@ -341,7 +344,9 @@ full flush removes it. `o_trap_value` is the entry's value field, where the
 producer parks the faulting virtual address for instruction access and page
 faults (the INT ALU shim) and for misaligned, access, and page faults on
 data (the load and store paths). cpu_ooo writes it to `mtval` or `stval` for
-those causes. `o_trap_insn` is the head entry's instruction bits, which
+those causes, except for a data access fault from a failed bus response: that
+entry's value is zero, and cpu_ooo takes the virtual address from the
+wrapper's table of issue addresses instead. `o_trap_insn` is the head entry's instruction bits, which
 dispatch stores in the head-only allocation memory (a compressed
 instruction's 16 bits zero-extended). cpu_ooo writes them to `mtval` or
 `stval` for an illegal-instruction exception, whichever stage raised it.

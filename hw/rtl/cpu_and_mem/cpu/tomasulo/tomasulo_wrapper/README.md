@@ -276,13 +276,24 @@ packet arrives in E1, marked by `*_pending_repair_capture_q`:
 
 ## Store address pipeline
 
-A store's address can reach the SQ before MEM_RS issues the store. When a store
-dispatches with its base register ready, `sq_early_addr_pipeline` registers the
+A store's address can reach the SQ before MEM_RS issues the store while
+pointer masking is off. When a store dispatches with its base register ready,
+`sq_early_addr_pipeline` registers the
 base and immediate, adds them in the next cycle, and writes the address into
 the store's SQ entry, matched by ROB tag. Each dispatch slot has its own
 registers, adders, and SQ update port. Each sum's device-region flag is formed
 beside its adder: the test that the upper half is zero reads the operands bit by
 bit and waits only for the low half's carry.
+
+With Ssnpm masking enabled, stores receive their addresses at MEM_RS issue.
+The issue base is sign-extended from bit 56 or 47 before addition. For the
+supported physical maps and Sv39, every accepted address equals the ignore
+transformation of the effective address; rejected sums can differ in the
+ignored bits. Data fault values use the exact transformation, and the
+misaligned-access engine starts from that value. A senvcfg write updates the
+registered PMM on the CSR write edge, before a younger store can allocate.
+CSR serialization and full flushes prevent an early-address candidate from
+surviving a mode change.
 
 A store whose base is not ready becomes the slot's repair candidate. It waits
 for its base tag on the done-repair channels or either CDB lane, then writes
@@ -387,6 +398,24 @@ The Xilinx INT issue path prepares the other load-eligibility conditions and
 applies the uncached-store completion in the final valid-bit selection.
 Packet payloads still come from the shared merge's registered-lane selection.
 No additional state or cycle is introduced; the generic path is unchanged.
+
+## Bus-fault trap values
+
+A load, LR or AMO whose bus response fails, and a precise uncached store, SC
+or `cbo.zero` whose write response fails, complete with an access fault and a
+zero value: the LQ and SQ entries hold only the physical address. Sstvala
+requires the virtual address in `mtval` or `stval`, so the wrapper keeps it
+by ROB tag. A 32-entry distributed RAM records each MEM_RS issue's address
+(`rs1` plus the offset), written from registered copies one cycle after issue;
+a response comes back later than that. A register names the oldest live
+instruction whose LQ or SQ result is such a fault (the LQ marks it with
+`o_fu_complete_bus_error`; every SQ uncached-store fault is one). It is set
+while the result is presented to the MEM adapter, so no later than the ROB
+records the exception, and a full flush, or a partial flush that kills that
+instruction, clears it. When it names the ROB head, `o_head_bus_fault` is set
+and `o_head_bus_fault_va` is the RAM's entry for it, which cpu_ooo writes to
+`mtval` or `stval` for cause 5 or 7. Nothing on the issue, result or retire
+path waits for either.
 
 ## Early load wakeup
 

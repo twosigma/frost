@@ -24,7 +24,9 @@
  *     retires in a later cycle, once committed stores have drained, and ends
  *     in a full flush. The CSR file reads and writes the register the cycle
  *     after retirement, from the registered commit bus.
- *   - FENCE: waits for committed stores to drain (i_sq_committed_empty).
+ *   - FENCE: waits for committed stores to drain (i_sq_committed_empty, which
+ *     the wrapper also holds low while a retired vector memory instruction
+ *     is still accessing memory).
  *   - FENCE.I, SFENCE.VMA: drain, cache sync (SFENCE.VMA also invalidates the
  *     TLBs), then a full flush and refetch.
  *   - MRET/SRET/DRET: once committed stores drain, o_mret_start; the trap
@@ -448,7 +450,7 @@ module reorder_buffer #(
   // illegal-instruction at every privilege, as the privileged spec requires.
   // OpenSBI probes optional CSRs by catching that trap, so reading
   // unimplemented CSRs as zero would advertise missing features.
-  // senvcfg exists (S/U make it mandatory) with FIOM and CBZE as its fields, and the
+  // senvcfg implements FIOM, CBIE, CBCFE, CBZE and PMM, and the
   // read-only id registers mvendorid/marchid/mimpid/mconfigptr exist and
   // read 0. Machine HPM counters and selectors exist across 3..31, with
   // storage for 3..10 and zero-only pairs for 11..31. Sscofpmf adds
@@ -646,8 +648,9 @@ module reorder_buffer #(
   // architectural write intent. id_stage's mstatus.FS=Off check also relies
   // on this class: the full flush that ends every such write discards whatever
   // ID decoded under the old FS value. Legal menvcfg/senvcfg writes affect
-  // cbo.zero permission and senvcfg.PMM pointer masking only at lower
-  // privilege, so they use ordinary CSR serialization. The privilege transition itself flushes the old decode.
+  // CBO permission at lower privilege and PMM for effective U accesses,
+  // including MPRV. Ordinary CSR serialization holds younger instructions
+  // through the write; privilege transitions flush the old decode.
   logic [ReorderBufferDepth-1:0] rob_f_csr_may_change_translation;
 
 

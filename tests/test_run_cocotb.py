@@ -474,6 +474,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("nic_loopback", "NIC frame loopback through DDR rings", True),
         )
     },
+    "nic_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_bench",
+        description="NIC benchmark ring replenishment and jumbo frames through loopback",
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DNIC_BENCH_QUICK"),
+            ("COCOTB_MAX_CYCLES", "4000000"),
+        ),
+    ),
     "nic_loopback": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -913,6 +923,28 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
         verilator_extra_args=("--assert",),
     ),
+    "svpbmt_test_2g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt at 2 GiB: NC/IO DDR access faults and working device mappings",
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "31"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=31", "--assert"),
+    ),
+    "svpbmt_bus_error": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        include_in_pytest=False,
+        description="Svpbmt alias read/write response faults, xtval and port recovery",
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DSVPBMT_BUS_ERRORS=1"),
+            ("COCOTB_PLUSARGS", "+axi_error_check=0 +axi_rd_error_addr=3000000"),
+        ),
+        verilator_extra_args=("--assert",),
+    ),
     "pm_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -922,6 +954,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Ssnpm: senvcfg.PMM WARL; U-mode and MPRV loads, stores, AMOs, LR/SC and "
             "cbo.zero through tagged pointers for PMLEN 7 and 16 under Sv39 and Bare, over "
             "DDR and BRAM; forwarding and ordering across tags; xtval of masked faults; "
+            "base-offset wrap, split accesses, SRET and mode changes under timer interrupts; "
             "no masking in S, M, with MXR or for fetch"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),
@@ -965,6 +998,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sstvala: mtval/stval hold the faulting instruction bits for every "
             "illegal-instruction source in M, S and U, delegated and not"
+        ),
+    ),
+    "sstvala_fault_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sstvala_fault_test",
+        nic_mac_clocks=False,
+        description=(
+            "Sstvala: access faults from failed bus responses (loads, LR, AMOs, "
+            "misaligned loads, fetches) report the virtual address in mtval/stval, "
+            "bare and Sv39, in M, S and U, delegated and not"
+        ),
+        extra_env=(
+            (
+                "COCOTB_PLUSARGS",
+                "+axi_error_check=0 +axi_rd_error_addr=3000000",
+            ),
         ),
     ),
     "vec_state_test_v512": CocotbRunConfig(
@@ -1266,7 +1316,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="debug_target",
         description=(
             "JTAG debug control, register and memory access, stepping (including "
-            "misaligned accesses), and reset"
+            "misaligned accesses and U pointer masking), and reset"
         ),
     ),
     "debug_fence_test": CocotbRunConfig(
@@ -2619,6 +2669,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="vec_engine",
         description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
         verilator_extra_args=("-GVLEN=256",),
+    ),
+    "vec_vmt": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vmt",
+        hdl_toplevel_module="vec_vmt",
+        description=(
+            "Vector memory table allocation, retirement, flushes, completion and ranges "
+            "against a model of its lifecycle"
+        ),
     ),
     "vec_hold_rows": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_hold_rows",

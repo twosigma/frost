@@ -101,3 +101,7 @@
 - Implemented Zicbom, decoding cbo.clean, cbo.flush and cbo.inval with their CBCFE and CBIE gates, load-permission translation with store faults, and ordered completion in the store queue, with a directed test, bench cases, formal checks and a TestRIG trace
 - Advertised Zicbop, Zawrs, Zihpm, Zicbom and the RVA22 profile properties in the device tree and boot image, with prefetch hints as no-ops, the Zawrs wait instructions and their `mstatus.TW` rule, and directed tests for each
 - Split attributed net declarations that carried an initialiser into a declaration and a separate `assign`, so front ends that reject an attribute on an initialised net accept them
+- Fixed interrupt starvation by closely spaced device accesses, holding the next device access while an interrupt take is armed, with a program that measures interrupt-take latency across device, atomic, fence and memory-bound loops
+- Added page-pool RX fragments, tunable copying of short frames, and conditional DMA synchronization to the Linux NIC driver
+- Implemented registered receive packet lengths, compact transmit FIFOs with per-frame metadata, mailbox transfers for NIC configuration and pause events, and a bare-metal NIC throughput benchmark.
+- Added nine-bit ASIDs with global pages, the four selective forms of SFENCE.VMA, and a 512-entry second-level TLB in block RAM with a 32-entry superpage side array, with a directed test, a unit bench and formal checks

@@ -30,22 +30,30 @@
  *      and with the store's base late behind a divide); LR through one tag
  *      and SC through another.
  *   C  Faults after masking: a pointer non-canonical in the unmasked bits is
- *      a page fault (Sv39) or access fault (Bare), and a misaligned access a
- *      misaligned fault; xtval is the transformed address. PMLEN 7 leaves
+ *      a page fault (Sv39) or access fault (Bare), and a misaligned BRAM
+ *      access a misaligned fault; xtval is the transformed address. PMLEN 7 leaves
  *      bits 56:48 unmasked.
  *   D  No masking for S (MPRV, MPP = S) and M (Bare), with MXR set, with
  *      PMM = 00, or for instruction fetch: the tagged pointer faults and
  *      xtval is the untransformed address.
+ *   E  Instruction offsets cross the kept-field sign boundary and wrap to
+ *      low BRAM, including compressed and FP accesses.
+ *   F  Split page accesses, upper-part faults, distinct kept addresses and
+ *      tagged cache-block management operations.
+ *   G  Consecutive PMM, MPRV, MXR and SUM changes around loads and stores
+ *      while timer interrupts arrive; SRET into U applies its masking mode.
  */
 
 #include <stdint.h>
 
+#include "csr.h"
 #include "trap.h"
 #include "uart.h"
 
 #define CSR_SENVCFG 0x10A
 #define CSR_MENVCFG 0x30A
 #define ENVCFG_CBZE (1ul << 7)
+#define ENVCFG_CBO (ENVCFG_CBZE | (1ul << 6) | (3ul << 4))
 #define PMM_SHIFT 32
 #define PMM_MASK (3ul << PMM_SHIFT)
 #define PMM_OFF 0ul
@@ -85,13 +93,51 @@
 #define FRAME(n) (0x81100000ul + ((unsigned long) (n) << 12))
 /* Low VA window 0x400000 (root[0] -> l1[2] -> l0) and its upper-half twin
  * 0xFFFFFFFFC0400000 (root[511] -> l1_up[2] -> l0). l0[0..3] map DDR frames
- * 0..3, l0[4] the BRAM page. */
+ * 0..3, l0[4] the BRAM page, and l0[6] frame 2 with l0[7] unmapped. */
 #define VA_LO 0x00400000ul
 #define VA_UP 0xFFFFFFFFC0400000ul
 #define PG_BRAM 4
 
-enum kind { K_LD = 0, K_SD = 1, K_AMO = 2, K_LR = 3, K_SC = 4, K_CBOZ = 5, K_LW = 6, K_SW = 7 };
-static const char *const kind_name[8] = {"ld", "sd", "amoadd", "lr", "sc", "cbo.zero", "lw", "sw"};
+enum kind {
+    K_LD,
+    K_SD,
+    K_AMO,
+    K_LR,
+    K_SC,
+    K_CBOZ,
+    K_LW,
+    K_SW,
+    K_LD_POS,
+    K_LD_NEG,
+    K_SD_POS,
+    K_SD_NEG,
+    K_CLD,
+    K_CSD,
+    K_FLD,
+    K_FSD,
+    K_CLEAN,
+    K_FLUSH,
+    K_INVAL
+};
+static const char *const kind_name[] = {"ld",
+                                        "sd",
+                                        "amoadd",
+                                        "lr",
+                                        "sc",
+                                        "cbo.zero",
+                                        "lw",
+                                        "sw",
+                                        "ld+16",
+                                        "ld-16",
+                                        "sd+16",
+                                        "sd-16",
+                                        "c.ld",
+                                        "c.sd",
+                                        "fld",
+                                        "fsd",
+                                        "cbo.clean",
+                                        "cbo.flush",
+                                        "cbo.inval"};
 
 /* How the access runs: in U, in M with MPRV and MPP = U or S, or in M plain. */
 enum how { H_U = 0, H_MPRV_U = 1, H_MPRV_S = 2, H_M = 3 };
@@ -100,8 +146,8 @@ static const char *const how_name[4] = {"U", "mprv-U", "mprv-S", "M"};
 static volatile unsigned long g_cause;
 static volatile unsigned long g_tval;
 
-/* One page of low BRAM. */
-static volatile uint64_t g_bram_page[512] __attribute__((aligned(4096)));
+/* The stack stays in low BRAM in both link configurations. */
+static volatile uint64_t *g_bram_page;
 
 __attribute__((naked, aligned(4))) static void pm_trap_handler(void)
 {
@@ -161,6 +207,28 @@ static unsigned long access(int how, int kind, unsigned long va, unsigned long v
                      "beq  %[k], t2, 16f\n"
                      "li   t2, 7\n"
                      "beq  %[k], t2, 17f\n"
+                     "li   t2, 8\n"
+                     "beq  %[k], t2, 18f\n"
+                     "li   t2, 9\n"
+                     "beq  %[k], t2, 19f\n"
+                     "li   t2, 10\n"
+                     "beq  %[k], t2, 20f\n"
+                     "li   t2, 11\n"
+                     "beq  %[k], t2, 21f\n"
+                     "li   t2, 12\n"
+                     "beq  %[k], t2, 22f\n"
+                     "li   t2, 13\n"
+                     "beq  %[k], t2, 23f\n"
+                     "li   t2, 14\n"
+                     "beq  %[k], t2, 24f\n"
+                     "li   t2, 15\n"
+                     "beq  %[k], t2, 25f\n"
+                     "li   t2, 16\n"
+                     "beq  %[k], t2, 26f\n"
+                     "li   t2, 17\n"
+                     "beq  %[k], t2, 27f\n"
+                     "li   t2, 18\n"
+                     "beq  %[k], t2, 28f\n"
                      "ld   %[out], 0(%[va])\n"
                      "j    4f\n"
                      "11: sd %[val], 0(%[va])\n"
@@ -176,6 +244,34 @@ static unsigned long access(int how, int kind, unsigned long va, unsigned long v
                      "16: lw %[out], 0(%[va])\n"
                      "j    4f\n"
                      "17: sw %[val], 0(%[va])\n"
+                     "j    4f\n"
+                     "18: ld %[out], 16(%[va])\n"
+                     "j    4f\n"
+                     "19: ld %[out], -16(%[va])\n"
+                     "j    4f\n"
+                     "20: sd %[val], 16(%[va])\n"
+                     "j    4f\n"
+                     "21: sd %[val], -16(%[va])\n"
+                     "j    4f\n"
+                     "22: mv a4, %[va]\n"
+                     ".option push\n .option rvc\n c.ld a5, 16(a4)\n .option pop\n"
+                     "mv %[out], a5\n"
+                     "j    4f\n"
+                     "23: mv a4, %[va]\n"
+                     "mv a5, %[val]\n"
+                     ".option push\n .option rvc\n c.sd a5, 16(a4)\n .option pop\n"
+                     "j    4f\n"
+                     "24: fld ft0, 16(%[va])\n"
+                     "fmv.x.d %[out], ft0\n"
+                     "j    4f\n"
+                     "25: fmv.d.x ft0, %[val]\n"
+                     "fsd ft0, 16(%[va])\n"
+                     "j    4f\n"
+                     "26: .insn i 0x0F, 2, x0, %[va], 1\n"
+                     "j    4f\n"
+                     "27: .insn i 0x0F, 2, x0, %[va], 2\n"
+                     "j    4f\n"
+                     "28: .insn i 0x0F, 2, x0, %[va], 0\n"
                      "4:\n"
                      "bnez %[to_u], 6f\n"
                      "1:\n"
@@ -190,7 +286,7 @@ static unsigned long access(int how, int kind, unsigned long va, unsigned long v
                        [mpp] "r"(mpp),
                        [mprv] "r"(mprv),
                        [to_u] "r"(to_u)
-                     : "t0", "t1", "t2", "t3", "memory");
+                     : "t0", "t1", "t2", "t3", "a4", "a5", "ft0", "memory");
     if (to_u && g_cause == CAUSE_ECALL_U) {
         g_cause = NO_TRAP;
         g_tval = NO_TRAP;
@@ -363,7 +459,7 @@ static void senvcfg_write(unsigned long v)
 
 static void set_pmm(unsigned long pmm)
 {
-    senvcfg_write(ENVCFG_CBZE | (pmm << PMM_SHIFT));
+    senvcfg_write(ENVCFG_CBO | (pmm << PMM_SHIFT));
 }
 
 static volatile unsigned long *const root = (volatile unsigned long *) PT_ROOT;
@@ -380,6 +476,8 @@ static void build_tables(void)
         l0[i] = 0;
     }
     root[0] = PTE_PPN(PT_L1) | PTE_V;
+    /* Identity-map the DDR program for MEM_CONFIG=ddr. */
+    root[2] = PTE_PPN(0x80000000ul) | URWAD | PTE_X;
     root[511] = PTE_PPN(PT_L1_UP) | PTE_V;
     /* Low 2 MiB: identity, U, RWX, so U-mode runs the program from BRAM. */
     l1[0] = PTE_PPN(0) | URWAD | PTE_X;
@@ -388,6 +486,8 @@ static void build_tables(void)
     for (int i = 0; i < 4; i++)
         l0[i] = PTE_PPN(FRAME(i)) | URWAD;
     l0[PG_BRAM] = PTE_PPN(g_bram_page) | URWAD;
+    /* A cached lower page followed by an unmapped page for split faults. */
+    l0[6] = PTE_PPN(FRAME(2)) | URWAD;
     __asm__ volatile("fence rw, rw" ::: "memory");
 }
 
@@ -539,8 +639,228 @@ static void unmasked(const char *name, int virt, unsigned long base, unsigned lo
     __asm__ volatile("csrc mstatus, %0" ::"r"(MSTATUS_MXR));
 }
 
+/* The offset is in the instruction, so the retained-field carry occurs in
+ * the AGU rather than in a preceding integer add. */
+static void boundary_accesses(int pmlen, int virt)
+{
+    unsigned long sign = 1ul << (63 - pmlen);
+    unsigned long keep = ~0ul >> pmlen;
+    for (int how = H_U; how <= H_MPRV_U; how++) {
+        for (int negative = 0; negative < 2; negative++) {
+            for (int mis = 0; mis < 2; mis++) {
+                unsigned long b =
+                    tag(negative ? sign + 8 + 5 * mis : sign - 8 - 5 * mis, pmlen, 0x35);
+                unsigned long ea = negative ? b - 16 : b + 16;
+                int ld = negative ? K_LD_NEG : K_LD_POS;
+                int sd = negative ? K_SD_NEG : K_SD_POS;
+                access(how, ld, b, 0);
+                expect_trap("E sign-cross",
+                            how,
+                            ld,
+                            b,
+                            virt ? CAUSE_LOAD_PAGE : CAUSE_LOAD_ACCESS,
+                            xform(ea, pmlen, virt));
+                access(how, sd, b, 0);
+                expect_trap("E sign-cross",
+                            how,
+                            sd,
+                            b,
+                            virt ? CAUSE_STORE_PAGE : CAUSE_STORE_ACCESS,
+                            xform(ea, pmlen, virt));
+            }
+        }
+        /* Carry through every retained bit reaches low BRAM, including
+         * address zero. Restore the instruction bytes by writing their
+         * original value through each store form. */
+        for (unsigned long result = 0; result <= 8; result += 8) {
+            unsigned long original;
+            __asm__ volatile("ld %0, 0(%1)" : "=r"(original) : "r"(result) : "memory");
+            unsigned long b = tag((result - 16) & keep, pmlen, 0x23);
+            const int loads[] = {K_LD_POS, K_CLD, K_FLD};
+            const int stores[] = {K_SD_POS, K_CSD, K_FSD};
+            for (int k = 0; k < 3; k++) {
+                expect_value("E wrap-low", how, loads[k], b, access(how, loads[k], b, 0), original);
+                access(how, stores[k], b, original);
+                expect_trap("E wrap-low", how, stores[k], b, NO_TRAP, 0);
+            }
+        }
+        unsigned long b = tag((3ul - 16) & keep, pmlen, 0x23);
+        access(how, K_LD_POS, b, 0);
+        expect_trap("E wrap-low-misaligned", how, K_LD_POS, b, CAUSE_LOAD_MISALIGN, 3);
+        access(how, K_SD_POS, b, 0);
+        expect_trap("E wrap-low-misaligned", how, K_SD_POS, b, CAUSE_STORE_MISALIGN, 3);
+        b = tag(8, pmlen, 0x23);
+        access(how, K_LD_NEG, b, 0);
+        expect_trap("E wrap-high",
+                    how,
+                    K_LD_NEG,
+                    b,
+                    virt ? CAUSE_LOAD_PAGE : CAUSE_LOAD_ACCESS,
+                    xform(b - 16, pmlen, virt));
+        access(how, K_SD_NEG, b, 0);
+        expect_trap("E wrap-high",
+                    how,
+                    K_SD_NEG,
+                    b,
+                    virt ? CAUSE_STORE_PAGE : CAUSE_STORE_ACCESS,
+                    xform(b - 16, pmlen, virt));
+    }
+}
+
+static void split_accesses(int pmlen, int virt)
+{
+    volatile uint8_t *mem = (volatile uint8_t *) (FRAME(0) + 0xff8);
+    unsigned long expected = 0;
+    for (int i = 0; i < 16; i++)
+        mem[i] = (uint8_t) (0x20 + i);
+    for (int i = 0; i < 8; i++)
+        expected |= (unsigned long) mem[i + 3] << (8 * i);
+    unsigned long b = tag((virt ? VA_LO : FRAME(0)) + 0xffb, pmlen, 0x51);
+    for (int how = H_U; how <= H_MPRV_U; how++) {
+        expect_value("F split-page", how, K_LD, b, access(how, K_LD, b, 0), expected);
+        access(how, K_SD, b, expected);
+        expect_trap("F split-page", how, K_SD, b, NO_TRAP, 0);
+        if (virt) {
+            unsigned long fault = tag(VA_LO + 0x6ffb, pmlen, 0x51);
+            access(how, K_LD, fault, 0);
+            expect_trap("F upper-page-fault", how, K_LD, fault, CAUSE_LOAD_PAGE, VA_LO + 0x7000);
+            access(how, K_SD, fault, 0);
+            expect_trap("F upper-page-fault", how, K_SD, fault, CAUSE_STORE_PAGE, VA_LO + 0x7000);
+        }
+        unsigned long a = tag(virt ? VA_LO : FRAME(0), pmlen, 0x12);
+        unsigned long other = tag((virt ? VA_LO : FRAME(0)) + 64, pmlen, 0x34);
+        volatile uint64_t *words = (volatile uint64_t *) FRAME(0);
+        words[8] = 0x12345678;
+        expect_value("F distinct-kept-forward",
+                     how,
+                     K_LD,
+                     other,
+                     store_load(how, a, other, 0x55, 1),
+                     0x12345678);
+        unsigned long loaded;
+        unsigned long sc = lr_sc(how, a, other, 0x66, &loaded);
+        expect_value("F distinct-kept-reservation", how, K_SC, other, sc, 1);
+        for (int kind = K_CLEAN; kind <= K_INVAL; kind++) {
+            access(how, kind, a, 0);
+            expect_trap("F tagged-cmo", how, kind, a, NO_TRAP, 0);
+        }
+    }
+}
+
+static volatile unsigned long g_irq;
+
+/* Preserve interrupted operands; synchronous exceptions use the access
+ * helper's recovery point. MPRV windows use MPP=U, as MRET restores it. */
+__attribute__((naked, aligned(4))) static void mode_timer_handler(void)
+{
+    __asm__ volatile("addi sp, sp, -32\n"
+                     "sd t0, 0(sp)\n sd t1, 8(sp)\n sd t2, 16(sp)\n"
+                     "csrr t0, mcause\n bgez t0, 2f\n"
+                     "la t0, g_irq\n ld t1, 0(t0)\n addi t1, t1, 1\n sd t1, 0(t0)\n"
+                     "andi t2, t1, 127\n addi t2, t2, 700\n"
+                     "li t0, 0x40000010\n lw t1, 0(t0)\n add t1, t1, t2\n"
+                     "li t0, 0x40000018\n sw t1, 0(t0)\n"
+                     "ld t0, 0(sp)\n ld t1, 8(sp)\n ld t2, 16(sp)\n"
+                     "addi sp, sp, 32\n mret\n"
+                     "2: ld t0, 0(sp)\n ld t1, 8(sp)\n ld t2, 16(sp)\n"
+                     "addi sp, sp, 32\n j pm_trap_handler\n");
+}
+
+static void mode_toggles(void)
+{
+    __asm__ volatile("csrw satp, zero\n sfence.vma" ::: "memory");
+    set_trap_handler(&mode_timer_handler);
+    g_irq = 0;
+    MTIMECMP_HI = 0;
+    MTIMECMP_LO = (uint32_t) rdmtime() + 100;
+    enable_timer_interrupt();
+    enable_interrupts();
+    unsigned long raw = FRAME(0) + 0x800;
+    unsigned long t7 = tag(raw, 7, 0x15);
+    unsigned long t16 = tag(raw, 16, 0x1234);
+    for (unsigned long i = 1; i <= 48; i++) {
+        unsigned long got7 = 0, got16 = 0, got0 = 0, got_delayed = 0;
+        g_cause = NO_TRAP;
+        g_tval = NO_TRAP;
+        __asm__ volatile(
+            "la t0, 1f\n csrw mscratch, t0\n"
+            "li t0, 0x1800\n csrc mstatus, t0\n"
+            "csrs mstatus, %[mprv]\n"
+            "csrw 0x10a, zero\n"
+            /* Pair the divide and store after the PMM write.
+             * The store's base is ready while its data waits. */
+            ".option push\n .option norvc\n .balign 8\n nop\n"
+            "csrw 0x10a, %[p7]\n"
+            "divu t3, %[dividend], %[divisor]\n"
+            "sd t3, 24(%[t7])\n ld %[rd], 24(%[t7])\n .option pop\n"
+            "sd %[val], 0(%[t7])\n ld %[r7], 0(%[t7])\n"
+            "csrw 0x10a, %[p16]\n"
+            "sd %[val], 8(%[t16])\n ld %[r16], 8(%[t16])\n"
+            "csrw 0x10a, zero\n"
+            "sd %[val], 16(%[raw])\n ld %[r0], 16(%[raw])\n"
+            "csrw 0x10a, %[p7]\n"
+            "csrs mstatus, %[sum]\n"
+            "sd %[val], 0(%[t7])\n ld %[r7], 0(%[t7])\n"
+            "csrc mstatus, %[sum]\n"
+            "csrs mstatus, %[mxr]\n"
+            "sd %[val], 16(%[raw])\n ld %[r0], 16(%[raw])\n"
+            "csrc mstatus, %[mxr]\n"
+            "sd %[val], 0(%[t7])\n ld %[r7], 0(%[t7])\n"
+            "1: csrc mstatus, %[mprv]\n"
+            : [r7] "+&r"(got7), [r16] "+&r"(got16), [r0] "+&r"(got0), [rd] "+&r"(got_delayed)
+            : [raw] "r"(raw),
+              [t7] "r"(t7),
+              [t16] "r"(t16),
+              [val] "r"(i),
+              [dividend] "r"((i + 0x11223344ul) * 7),
+              [divisor] "r"(7ul),
+              [p7] "r"(PMM_7 << PMM_SHIFT),
+              [p16] "r"(PMM_16 << PMM_SHIFT),
+              [mprv] "r"(MSTATUS_MPRV),
+              [mxr] "r"(MSTATUS_MXR),
+              [sum] "r"(1ul << 18)
+            : "t0", "t1", "t2", "t3", "memory");
+        expect_value("G mode-7", H_MPRV_U, K_LD, t7, got7, i);
+        expect_value("G delayed-store", H_MPRV_U, K_LD, t7 + 24, got_delayed, i + 0x11223344ul);
+        expect_value("G mode-16", H_MPRV_U, K_LD, t16, got16, i);
+        expect_value("G mode-off", H_MPRV_U, K_LD, raw, got0, i);
+    }
+    disable_interrupts();
+    disable_timer_interrupt();
+    MTIMECMP_HI = ~0u;
+    report(g_irq > 0, "G interrupts", -1, -1, g_irq);
+    set_trap_handler(&pm_trap_handler);
+}
+
+static void sret_accesses(void)
+{
+    for (int pmlen = 7; pmlen <= 16; pmlen += 9) {
+        unsigned long va = tag(FRAME(0) + 0x900, pmlen, 0x35);
+        unsigned long out = 0;
+        set_pmm(pmlen == 7 ? PMM_7 : PMM_16);
+        g_cause = NO_TRAP;
+        g_tval = NO_TRAP;
+        __asm__ volatile("la t0, 1f\n csrw mscratch, t0\n"
+                         "li t0, 0xa1900\n csrc mstatus, t0\n"
+                         "li t0, 0x800\n csrs mstatus, t0\n"
+                         "la t0, 3f\n csrw sepc, t0\n"
+                         "la t0, 2f\n csrw mepc, t0\n mret\n"
+                         "2: sret\n"
+                         "3: sd %[value], 0(%[va])\n ld %[out], 0(%[va])\n ecall\n"
+                         "1:\n"
+                         : [out] "+&r"(out)
+                         : [va] "r"(va), [value] "r"(0x9876ul)
+                         : "t0", "t1", "t2", "t3", "memory");
+        if (g_cause == CAUSE_ECALL_U)
+            g_cause = NO_TRAP;
+        expect_value("G sret-U", H_U, K_LD, va, out, 0x9876ul);
+    }
+}
+
 int main(void)
 {
+    volatile uint64_t bram_page[512] __attribute__((aligned(4096)));
+    g_bram_page = bram_page;
     uart_puts("\r\n=== Ssnpm pointer masking test ===\r\n");
     set_trap_handler(&pm_trap_handler);
     csr_write(medeleg, 0);
@@ -548,10 +868,14 @@ int main(void)
     for (int p = 0; p < 4; p++)
         for (int i = 0; i < 512; i++)
             ((volatile uint64_t *) FRAME(p))[i] = 0;
-    csr_write(0x30A, ENVCFG_CBZE);
+    csr_write(0x30A, ENVCFG_CBO);
 
     /* A: WARL. */
     {
+        g_cause = NO_TRAP;
+        expect_value("A reset", -1, -1, 0, senvcfg_read() & PMM_MASK, 0);
+        senvcfg_write(1ul << PMM_SHIFT);
+        expect_value("A pmm-01-keeps-00", -1, -1, 0, senvcfg_read() & PMM_MASK, 0);
         senvcfg_write(PMM_7 << PMM_SHIFT);
         unsigned long r7 = senvcfg_read() & PMM_MASK;
         senvcfg_write(1ul << PMM_SHIFT); /* reserved 01: keeps 10 */
@@ -570,6 +894,9 @@ int main(void)
         expect_value("A pmm-00", -1, -1, 0, r0, 0);
     }
 
+    mode_toggles();
+    sret_accesses();
+
     for (int virt = 1; virt >= 0; virt--) {
         if (virt)
             __asm__ volatile("csrw satp, %0\n sfence.vma" : : "r"(SATP_SV39 | (PT_ROOT >> 12)));
@@ -583,6 +910,8 @@ int main(void)
 
         for (int pmlen = 7; pmlen <= 16; pmlen += 9) {
             set_pmm(pmlen == 7 ? PMM_7 : PMM_16);
+            boundary_accesses(pmlen, virt);
+            split_accesses(pmlen, virt);
             if (virt) {
                 tagged_accesses(pmlen == 7 ? "B sv39-ddr-7" : "B sv39-ddr-16",
                                 pmlen,

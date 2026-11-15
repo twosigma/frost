@@ -1,0 +1,25 @@
+[tasks]
+vmt_bmc
+cover
+
+[options]
+vmt_bmc: mode bmc
+vmt_bmc: depth 14
+cover: mode cover
+cover: depth 14
+timeout 1800
+
+[engines]
+cover: smtbmc boolector
+vmt_bmc: abc bmc3
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv vec_vmt.sv
+read -formal -sv vec_vmt_formal.sv
+prep -top vec_vmt_formal
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_vmt.sv
+vec_vmt_formal.sv

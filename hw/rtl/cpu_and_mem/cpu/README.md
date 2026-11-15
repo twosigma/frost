@@ -275,7 +275,8 @@ IF pairs two instructions only when all of these hold:
   ECALL, EBREAK, xRET, WFI, SFENCE.VMA, FENCE, FENCE.I, and atomics including
   LR/SC).
 - Slot 2 is not a native SYSTEM, MISC-MEM, AMO, FP-compute (OP-FP or fused
-  multiply-add) or vector (OP-V) instruction. It may be a branch or jump, but only the slot-2
+  multiply-add) or vector instruction (OP-V, or LOAD-FP and STORE-FP with a
+  vector width). It may be a branch or jump, but only the slot-2
   BTB lookup or the backing BTB can predict it; the PD redirect's direction
   change covers slot 1 only.
 - Slot 2 fits in the window. A 32-bit slot 2 that would start in the upper
@@ -455,7 +456,8 @@ PPN substitution (riscv_pkg "Svpbmt":
 bit 30 for DDR up to 1 GiB, bit c for a 2^c-byte window of c >= 32, which
 leaves its top 2 GiB without an alias and makes an NC or IO leaf there an
 access fault). A 2 GiB DDR window has no alias in the current 32-bit physical
-map, so NC and IO leaves over DDR fault in that configuration. The alias
+map, so NC and IO leaves over DDR raise an access fault in that configuration,
+including the VCU118's 2 GiB map. Device mappings are unaffected. The alias
 window is not in the PMA map (an untranslated
 access or a PMA leaf there faults as before); an NC or IO leaf over it is a
 device page in the DTLB's per-entry checks and the walk-response checks, so
@@ -533,9 +535,14 @@ part's first byte (the page base when the access crosses a page). The engine
 issues no memory request until both parts have passed, so a faulting store
 writes nothing. It then issues the lower sector's request before the upper
 one and waits for both responses. A load response error gives a load access
-fault with trap value zero; a store response error and a hart stop are
-terminal at once, with no further request. `lib/line_align.sv` moves the
-access between register order and the two sectors.
+fault whose trap value is the first byte of the lowest failed part: the
+original virtual address when the lower part failed, otherwise the upper
+part's first byte. A store response error and a hart stop are terminal at
+once, with no further request. A hart stop also makes an idle engine busy
+until reset. The registered dispatch hold samples the stop on the same edge
+as the engine, so neither dispatch slot allocates in that terminal state.
+`lib/line_align.sv` moves the access between register order and the two
+sectors.
 
 ## Debug Mode
 
@@ -618,6 +625,16 @@ privilege, so the full flush alone retires the old permission state. Linux
 toggles SUM around every user copy, so this keeps both TLBs warm across
 syscalls.
 
+Ssnpm uses `senvcfg.PMM` for effective U-mode data accesses, including MPRV
+with MPP=U, unless MXR is set. The field supports PMLEN 0, 7 and 16, resets to
+zero, and preserves its value on a reserved encoding. SUM does not select the
+masking mode. A `senvcfg` write captures the legalized PMM in the registered
+mode on the write edge, before a younger store can allocate an early address.
+Writes to mstatus or sstatus, traps, xRETs and debug transitions flush the
+pipeline while the mode updates. An assisted misaligned access receives the
+exact transformed address so that its faults and split parts use the same
+address interpretation.
+
 ## Vector state
 
 With `VECTOR=1`, `csr_file` holds the vector state: `mstatus.VS` (bits 10:9,
@@ -651,12 +668,34 @@ that depends on `vtype` (vill, register-group alignment, mask-destination
 overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
 (vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
-unknown). When one retires, `vec_unit` queues it with its scalar and the
+unknown). The register-number rules depend on `vtype` only through LMUL, so
+`vector/vec_lmul_legality.sv` evaluates them from the instruction bits for
+each LMUL class (1 or fractional, 2, 4, 8) before the decoded queue, which
+carries the four results beside slot 1; dispatch selects the class of the
+tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with its scalar and the
 architectural `vl`, `vtype` and `vstart`, and the engine executes it after
 commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
-result on CDB slot 6. The other vector instructions, and every vector load and
-store, are still illegal.
+result on CDB slot 6.
+
+ID decodes the unit-stride (one field), whole-register and mask loads and
+stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1
+only and go to INT_RS, which hands the rs1 base to the ROB. Each takes an
+entry in the vector memory table (`vector/vec_vmt.sv`) at dispatch, and
+dispatch holds the next one while all four entries are live. The table lists
+the vector memory instructions in flight in program order for the load and
+store queues' range holds, marks an entry retired on the edge the ROB head
+passes it, and frees entries that a flush removes. Its registered "no live
+retired entry" output holds the serializer's FENCE, FENCE.I and SFENCE.VMA
+drain, the store-conditional unit's firing and arming, and the
+misaligned-access engine before its first access. The unit does not perform
+vector loads and stores: each raises illegal-instruction when it reaches the
+ROB head, and the trap's flush frees its entry. `vec_lmul_legality` decides
+this rejection from the decoded operation before the queue, excluding decode
+illegality and fetch faults. A separate bit travels beside the four LMUL
+classes, and dispatch includes it without consulting `vtype`. The other vector
+instructions, and the strided, indexed, segment and fault-only-first loads
+and stores, are illegal.
 
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector instructions are not implemented, and bare-metal
@@ -906,7 +945,10 @@ pending source with no interrupt latched.
 checks the load and store access faults that result, their trap values
 and PCs, and that access succeeds once the mapping is repaired. Two loads
 of adjacent L1D sectors then share one failed L2 fill, and the test checks
-the older load's access fault. Its registry entry injects the bus errors in
+the older load's access fault and its address in `mtval`. `sstvala_fault_test`
+checks the address of every bus-response access fault software can provoke
+in simulation, in each privilege mode, delegated and not, bare and through
+Sv39. Its registry entry injects the bus errors in
 the simulated DDR model.
 
 `ptw_recovery_test` sweeps the cycle in which a branch resolves while a

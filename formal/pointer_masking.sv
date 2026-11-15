@@ -12,8 +12,9 @@
 //     every PMA predicate the load and store paths use, and the same
 //     address whenever the data map accepts it.
 //   - xtval: riscv_pkg::pm_tval of the result is the transformed address.
-// pmm_warl stores exactly the offered encodings and keeps the old value
-// otherwise.
+// The assist receives pm_tval(sum_t). If its lower part is an accepted
+// address, its upper sector address is also the exact ignore transformation
+// of that constituent access. pmm_warl keeps unsupported writes unchanged.
 module pointer_masking (
     input logic [63:0] base,
     input logic [11:0] imm12,
@@ -36,6 +37,12 @@ module pointer_masking (
 
   logic offered;
   assign offered = pmlen16 ? riscv_pkg::SsnpmPmlen16 : riscv_pkg::SsnpmPmlen7;
+
+  logic [XLEN-1:0] upper_ea, upper_virt, upper_bare;
+  assign upper_ea = ma_pkg::upper_va(ea);
+  assign upper_virt = pmlen16 ? {{16{upper_ea[47]}}, upper_ea[47:0]} :
+      {{7{upper_ea[56]}}, upper_ea[56:0]};
+  assign upper_bare = pmlen16 ? {16'b0, upper_ea[47:0]} : {7'b0, upper_ea[56:0]};
 
   always_comb begin
     // The FROST map offers both values.
@@ -72,6 +79,21 @@ module pointer_masking (
     p_tval_virt : assert (riscv_pkg::pm_tval(sum_t, mode, 1'b1) == ref_virt);
     p_tval_bare : assert (riscv_pkg::pm_tval(sum_t, mode, 1'b0) == ref_bare);
     p_tval_off : assert (riscv_pkg::pm_tval(ea, riscv_pkg::EnvcfgPmmOff, pmlen16) == ea);
+
+    // cpu_ooo supplies the transformed trap value to the assist. The engine
+    // decides the lower part first and performs no access if it faults.
+    p_assist_upper_virt :
+    assert (!riscv_pkg::sv39_va_canonical(
+        ref_virt
+    ) || ma_pkg::upper_va(
+        riscv_pkg::pm_tval(sum_t, mode, 1'b1)
+    ) == upper_virt);
+    p_assist_upper_bare :
+    assert (!riscv_pkg::pma_cached_ok(
+        ref_bare
+    ) || ma_pkg::upper_va(
+        riscv_pkg::pm_tval(sum_t, mode, 1'b0)
+    ) == upper_bare);
 
     // senvcfg.PMM WARL.
     p_warl :
