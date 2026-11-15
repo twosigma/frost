@@ -928,8 +928,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Vector arithmetic legality selected by LMUL class from instruction-bit classes "
-        "equals the whole legality function for every vtype, instruction and operation",
+        "Queued LMUL classes and vector-memory rejection equal the arithmetic, VTOX "
+        "and VLOAD/VSTORE legality rules for every vtype, instruction and operation",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -937,6 +937,13 @@ FORMAL_TARGETS = [
         "Vector range holds: a scalar entry is held exactly while an older live "
         "vector memory table entry overlaps it or has an unknown range",
         tasks=("vhold_lq_bmc", "vhold_sq_bmc", "cover"),
+    ),
+    FormalTarget(
+        "vec_vmt.sby",
+        "Vector memory table lifecycle: allocation into free entries, retirement "
+        "exactly as the head passes, flushes, fixed ranges and the exact "
+        "no-live-retired-entry output",
+        tasks=("vmt_bmc", "cover"),
     ),
     FormalTarget(
         "cl_multiplier.sby",
@@ -2527,6 +2534,10 @@ SBY_TASKS = [
     (
         "vhold_sq_bmc",
         "Vector range holds with the store queue's per-entry addresses, 8 frames.",
+    ),
+    (
+        "vmt_bmc",
+        "Vector memory table lifecycle against a ghost reorder buffer, 14 frames.",
     ),
     ("bmc", "Check assertions up to the configured depth"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
