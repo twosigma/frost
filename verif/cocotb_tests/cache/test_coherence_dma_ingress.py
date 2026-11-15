@@ -139,7 +139,9 @@ class Ingress:
             (256, (1 << (ident * 16)) | 0xA55A),
             (1, error),
         )
-        for bit in (self.p + 257 + 6 + 1, 257 + 5):
+        # A wrong ID or epoch names no slot. G and U match by identity; the
+        # address is the home's contract, checked by the RTL's assertion.
+        for bit in (self.p + 257 + 6 + 1, self.p + 257 + 6):
             await self.set(i_g_valid=1, i_g=grant ^ (1 << bit))
             assert not self.get("o_g_ready")
             await self.tick()
@@ -183,7 +185,7 @@ class Ingress:
         release = pack(
             (9, self.q(ident)), (6, ident + 19), (self.p, self.address(ident))
         )
-        for bit in (self.p, self.p + 6 + 1, 5):
+        for bit in (self.p, self.p + 6 + 1, self.p + 6):
             await self.set(i_u_valid=1, i_u=release ^ (1 << bit))
             assert not self.get("o_u_ready")
             await self.tick()
