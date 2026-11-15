@@ -150,6 +150,13 @@ before the first counter read, exceeding NFS's default directory attribute
 cache lifetime. The stage checks a root write, sync and removal after
 restoring MTU, flags and IPv6.
 
+At MTU 1500 the test queues 600 frames before receiving them, with lengths
+of 60, 255, 256, 257, 1023, 1024, 1025 and 1514 bytes. It checks their contents
+and order across RX ring refills, including both sides of the driver's default
+copybreak threshold. It then selects MTU 9000 for short, full-size and jumbo
+frames, queued bursts, and a close with traffic outstanding. Socket drops,
+duplicate frames and increases in driver error counters fail the test.
+
 `fpga/linux_boot_soak.py` fails a boot that passes the stress test but
 reports `counters=unavailable`; see
 [counter access](../README.md#counters-and-mcounteren).
