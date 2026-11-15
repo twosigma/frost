@@ -474,6 +474,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("nic_loopback", "NIC frame loopback through DDR rings", True),
         )
     },
+    "nic_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_bench",
+        description="NIC benchmark ring replenishment and jumbo frames through loopback",
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DNIC_BENCH_QUICK"),
+            ("COCOTB_MAX_CYCLES", "4000000"),
+        ),
+    ),
     "nic_loopback": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -830,7 +840,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="fs_off_test",
         nic_mac_clocks=False,
         description=(
-            "F/D instructions trap without memory effects when mstatus.FS is Off"
+            "F/D, Zfhmin and Zfa FS legality, dirty state and halfword forwarding"
         ),
     ),
     "zicbop_test": CocotbRunConfig(
@@ -900,6 +910,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sstvala: mtval/stval hold the faulting instruction bits for every "
             "illegal-instruction source in M, S and U, delegated and not"
+        ),
+    ),
+    "sstvala_fault_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sstvala_fault_test",
+        nic_mac_clocks=False,
+        description=(
+            "Sstvala: access faults from failed bus responses (loads, LR, AMOs, "
+            "misaligned loads, fetches) report the virtual address in mtval/stval, "
+            "bare and Sv39, in M, S and U, delegated and not"
+        ),
+        extra_env=(
+            (
+                "COCOTB_PLUSARGS",
+                "+axi_error_check=0 +axi_rd_error_addr=3000000",
+            ),
         ),
     ),
     "vec_state_test_v512": CocotbRunConfig(
@@ -1256,6 +1283,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "S-mode SUM and MXR toggles keep TLB entries and apply the live bits"
+        ),
+    ),
+    "asid_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="asid_test",
+        nic_mac_clocks=False,
+        description=(
+            "satp.ASID, global pages and the SFENCE.VMA forms against live TLB entries"
         ),
     ),
     "imsic_csr_test": CocotbRunConfig(
@@ -2546,6 +2582,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
         verilator_extra_args=("-GVLEN=256",),
     ),
+    "vec_vmt": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vmt",
+        hdl_toplevel_module="vec_vmt",
+        description=(
+            "Vector memory table allocation, retirement, flushes, completion and ranges "
+            "against a model of its lifecycle"
+        ),
+    ),
     "vec_hold_rows": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_hold_rows",
         hdl_toplevel_module="vec_hold_rows",
@@ -2616,7 +2660,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.ex_stage.test_fp_engine",
         hdl_toplevel_module="fp_engine_equiv_harness",
         description=(
-            "F/D compute results and flags match Berkeley SoftFloat, including "
+            "F/D, Zfhmin and Zfa results and flags match their references, including "
             "cancellation"
         ),
     ),
@@ -4156,6 +4200,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Walk-cache hits, discards and Svvptc-permitted page-table changes "
             "against a reference Sv39 walk"
+        ),
+    ),
+    "l2tlb": CocotbRunConfig(
+        python_test_module="cocotb_tests.mmu.test_l2tlb",
+        hdl_toplevel_module="l2tlb",
+        description=(
+            "Second-level TLB: ASID and global entries, superpages, every SFENCE.VMA "
+            "form, 512-page and 32-superpage residency and a random run against a reference"
         ),
     ),
     "soc_vcu118": CocotbRunConfig(

@@ -178,6 +178,11 @@ module load_queue #(
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
     // =========================================================================
     output riscv_pkg::fu_complete_t o_fu_complete,
+    // The staged result is a bus-response access fault (cause 5, or 7 for an
+    // AMO). Its value is zero: the entry holds only the physical address, and
+    // the wrapper supplies the virtual address for xtval. Meaningful with
+    // o_fu_complete.valid.
+    output logic o_fu_complete_bus_error,
     // Registered CDB-stage occupancy without o_fu_complete's partial-flush
     // qualification. It observes a final staged result (tag/value/exception
     // in o_fu_complete) that recovery may still discard this cycle.
@@ -686,6 +691,8 @@ module load_queue #(
   logic cdb_stage_valid;
   // Keep zero causes on D rather than inferring synchronous reset, for timing.
   (* extract_reset = "no" *) riscv_pkg::fu_complete_t cdb_stage_data;
+  // The staged result is a bus-response fault (o_fu_complete_bus_error).
+  logic cdb_stage_bus_error_q;
   // Hold a candidate stable while the SQ resolves it. Stage the next load
   // while a read is outstanding so it can launch when memory becomes available.
   logic sq_check_pending;
@@ -3270,6 +3277,13 @@ module load_queue #(
   // ===========================================================================
   // CDB Broadcast Logic
   // ===========================================================================
+  // Bits 31:16 of a NaN-boxed FP load below double width: the loaded bits for
+  // FLW, all ones for FLH (Zfhmin), whose halfword the load unit zero-extends.
+  function automatic logic [15:0] fp_box_upper16(input logic [1:0] size,
+                                                 input logic [15:0] loaded);
+    fp_box_upper16 = (riscv_pkg::mem_size_e'(size) == riscv_pkg::MEM_SIZE_HALF) ? 16'hFFFF : loaded;
+  endfunction
+
   // Register the Phase A result before the MEM adapter for timing.
 
   // Qualify valid and capture enable, leaving invalid payloads unspecified.
@@ -3283,15 +3297,18 @@ module load_queue #(
       issue_cdb_result.exc_cause = riscv_pkg::exc_cause_t'(
           lq_is_amo[issue_cdb_idx] ? riscv_pkg::ExcStoreAccessFault :
                                    riscv_pkg::ExcLoadAccessFault);
-      // External response faults report xtval=0. The physical response
-      // address is not a valid substitute for the original virtual address.
+      // The value stays zero; see o_fu_complete_bus_error.
       issue_cdb_result.value = '0;
     end else if (riscv_pkg::mem_size_e'(lq_size_issue_cdb_rd) == riscv_pkg::MEM_SIZE_DOUBLE) begin
       // FLD/RV64 LD: raw 64-bit beat from the LUTRAM
       issue_cdb_result.value = lq_data_rd;
     end else if (lq_is_fp[issue_cdb_idx]) begin
-      // FLW: NaN-box the stored 32-bit word
-      issue_cdb_result.value = {32'hFFFF_FFFF, lq_data_rd[31:0]};
+      // FLW: NaN-box the stored 32-bit word; FLH: the stored halfword
+      issue_cdb_result.value = {
+        32'hFFFF_FFFF,
+        fp_box_upper16(lq_size_issue_cdb_rd, lq_data_rd[31:16]),
+        lq_data_rd[15:0]
+      };
     end else begin
       // INT load: stored value is already zero-extended into FLEN
       issue_cdb_result.value = lq_data_rd;
@@ -3312,6 +3329,7 @@ module load_queue #(
     o_fu_complete.valid = cdb_stage_valid && !i_flush_en;
   end
   assign o_fu_complete_staged = cdb_stage_valid;
+  assign o_fu_complete_bus_error = cdb_stage_bus_error_q;
 
   // ===========================================================================
   // Completion Fast-Path Bypass
@@ -3401,8 +3419,11 @@ module load_queue #(
       // LD / FLD / LR.D: preserve all 64 response bits, including FP payloads.
       resp_bypass_value = i_mem_read_data;
     end else if (issued_is_fp) begin
-      // FLW: NaN-box the addressed raw word (lu_data_out's word arm)
-      resp_bypass_value = {32'hFFFF_FFFF, lu_data_out[31:0]};
+      // FLW: NaN-box the addressed raw word (lu_data_out's word arm); FLH:
+      // the addressed halfword
+      resp_bypass_value = {
+        32'hFFFF_FFFF, fp_box_upper16(issued_size, lu_data_out[31:16]), lu_data_out[15:0]
+      };
     end else begin
       // INT / LR: zero-extend byte/half/word extracted value
       resp_bypass_value = FLEN'(lu_data_out);
@@ -3414,8 +3435,10 @@ module load_queue #(
       // FLD from L0: the full cached dword line
       cache_hit_bypass_value = cache_lookup_data;
     end else if (sq_check_is_fp_q) begin
-      // FLW from L0: NaN-box the addressed word of the cached beat
-      cache_hit_bypass_value = {32'hFFFF_FFFF, lu_cache_out[31:0]};
+      // FLW/FLH from L0: NaN-box the addressed word or half of the cached beat
+      cache_hit_bypass_value = {
+        32'hFFFF_FFFF, fp_box_upper16(sq_check_size_q, lu_cache_out[31:16]), lu_cache_out[15:0]
+      };
     end else begin
       // INT from L0: cache-path load_unit already did byte/half extract
       cache_hit_bypass_value = FLEN'(lu_cache_out);
@@ -3429,8 +3452,10 @@ module load_queue #(
       // FLD from FSD: full 64-bit image straight from the SQ
       fwd_bypass_value = i_sq_forward.data;
     end else if (sq_check_is_fp_q) begin
-      // FLW: NaN-box the addressed word of the forwarded image
-      fwd_bypass_value = {32'hFFFF_FFFF, lu_fwd_out[31:0]};
+      // FLW/FLH: NaN-box the addressed word or half of the forwarded image
+      fwd_bypass_value = {
+        32'hFFFF_FFFF, fp_box_upper16(sq_check_size_q, lu_fwd_out[31:16]), lu_fwd_out[15:0]
+      };
     end else begin
       // INT: fwd-path load_unit already did byte/half extract + extension
       fwd_bypass_value = FLEN'(lu_fwd_out);
@@ -4930,7 +4955,9 @@ module load_queue #(
         cdb_stage_data.tag       <= issue_cdb_result.tag;
         cdb_stage_data.exception <= issue_cdb_result.exception;
         cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
+        cdb_stage_bus_error_q    <= MEM_RESPONSE_ERRORS && lq_response_error[issue_cdb_idx];
       end else begin
+        cdb_stage_bus_error_q <= 1'b0;
         cdb_stage_data.tag <= bypass_tag;
         cdb_stage_data.exception <= misalign_bypass_data_sel;
         // Parked MISALIGN/PAGE/ACCESS select load causes 4/13/5 or AMO causes 6/15/7

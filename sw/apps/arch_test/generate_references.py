@@ -90,6 +90,8 @@ EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
     "F": ("rv64i_m", "rv32i_m"),
     "D": ("rv64i_m", "rv32i_m"),
     "Zvk": ("rv32i_m",),
+    # The Zfh tests live in rv32i_m and declare RV64 too.
+    "Zfh": ("rv32i_m",),
 }
 
 # The submodule's riscof env for the rv64 Spike reference build.
@@ -142,7 +144,9 @@ def spike_env() -> Path:
 
 # Base ISA for signature references. test_march adds each test's extensions
 # and removes C for the tests in NO_COMPRESS_TESTS below.
-FROST_MARCH = "rv64imafdc_zicsr_zifencei_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
+FROST_MARCH = (
+    "rv64imafdc_zicsr_zifencei_zicboz_zfa_zfhmin_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
+)
 
 # arch_test.h resumes at (mepc & ~3) + 8, requiring a 4-byte test op
 # plus two c.nops. Compression makes it resume mid-instruction and makes
@@ -202,7 +206,9 @@ def test_march(test_name: str, extension: str = "") -> str:
 # execute (.option rvc; .align; .option norvc in arch_test.h) regardless
 # of the march, and a no-C Spike also changes misaligned-jump legality
 # (the privilege misalign references).
-SPIKE_ISA = "rv64imafdc_zicsr_zifencei_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
+SPIKE_ISA = (
+    "rv64imafdc_zicsr_zifencei_zicboz_zfa_zfhmin_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
+)
 
 FROST_ABI = "lp64"
 
@@ -225,6 +231,10 @@ SUPPORTED_EXTENSIONS = [
     "hints",
     # Zicboz's cbo.zero; the pinned suite has no RV64 Zicbom tests.
     "CMO",
+    # Zfa (F and D forms), and the Zfhmin subset of Zfh.
+    "F_Zfa",
+    "D_Zfa",
+    "Zfh",
     "Zimop",
     # No Zcmop: each c.mop.n case copies the signature pointer into x[n]
     # (TEST_CMOP_OP: mv destreg, swreg) and stores it, so its signature holds
@@ -243,6 +253,18 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "privilege": {"ebreak", "ecall", "misalign"},
     "K": {"pack", "packh", "packw", "brev8"},
     "CMO": {"cbo.zero"},
+    # Zfh supplies the Zfhmin tests (FLH/FSH, FMV.X.H/FMV.H.X, FCVT between H and
+    # S/D); FROST has no other Zfh instruction.
+    "Zfh": {
+        "flh",
+        "fsh",
+        "fmv.x.h",
+        "fmv.h.x",
+        "fcvt.s.h",
+        "fcvt.h.s",
+        "fcvt.d.h",
+        "fcvt.h.d",
+    },
 }
 
 # Excluded by filename prefix. The C directory's Zcb tests run: FROST

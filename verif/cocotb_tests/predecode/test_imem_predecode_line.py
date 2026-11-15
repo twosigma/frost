@@ -107,7 +107,9 @@ def _assert_pc_bundle_bits(word: int, sideband: int) -> None:
     )
     assert allows_hi == bool(replica_reference._expected_allows_slot2_after_hi(word))
     start_valid_hi = compressed_hi or not (
-        serialize_hi or _GENERATOR.native_fp_compute(hi & 0x7F)
+        serialize_hi
+        or _GENERATOR.native_fp_compute(hi & 0x7F)
+        or _GENERATOR.vector_mem(hi)
     )
     expected = {
         _GENERATOR.SB_EVEN_LOCAL_PAIR_VALID: (

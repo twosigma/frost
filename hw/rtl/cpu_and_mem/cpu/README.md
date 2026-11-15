@@ -22,7 +22,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `if_stage/` | Fetch PC control, branch prediction, instruction alignment |
 | `pd_stage/` | Slot-1 instruction from the native word or its predecoded RVC expansion, early source fields, the PD branch redirect |
 | `id_stage/` | Decode for both slots |
-| `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), shared page-table walker |
+| `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), 512-entry second-level TLB with a 32-entry superpage side array, shared page-table walker |
 | `misaligned/` | Misaligned-access engine (`ma_engine`) and its checks (`ma_pkg`) |
 | `csr/` | CSR file; CSR instructions execute at commit |
 | `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry, and the no-CSR take that starts the misaligned-access engine |
@@ -77,7 +77,8 @@ in `frost_hart.sv`.
   [translation-changing CSR writes](#csr-writes), and the interrupt resume PC
   (the PC an interrupt saves, which trap entry and xRET preset to their target
   because an interrupt can arrive before the first instruction there retires);
-- the page-table walker's request mux, where the data side wins;
+- the page-table walker's request select (`walk_request_select.sv` and the
+  misaligned-access engine's turn);
 - the Debug Mode single-step engine and the status bits the debug module
   reads;
 - a reset-done counter, and the `dbg_*` signals that cocotb tests read.
@@ -274,7 +275,8 @@ IF pairs two instructions only when all of these hold:
   ECALL, EBREAK, xRET, WFI, SFENCE.VMA, FENCE, FENCE.I, and atomics including
   LR/SC).
 - Slot 2 is not a native SYSTEM, MISC-MEM, AMO, FP-compute (OP-FP or fused
-  multiply-add) or vector (OP-V) instruction. It may be a branch or jump, but only the slot-2
+  multiply-add) or vector instruction (OP-V, or LOAD-FP and STORE-FP with a
+  vector width). It may be a branch or jump, but only the slot-2
   BTB lookup or the backing BTB can predict it; the PD redirect's direction
   change covers slot 1 only.
 - Slot 2 fits in the window. A 32-bit slot 2 that would start in the upper
@@ -373,11 +375,66 @@ between a held VA and that sum in one LUT per bit after the full sum, so
 neither enters the adder's operands.
 
 The 16-entry ITLB and the data side's 16-entry DTLB share one read-only
-page-table walker in `cpu_ooo`; the data side wins when both ask. The walker
+page-table walker in `cpu_ooo`. `walk_request_select` picks the requester from
+registered state: the data side while its S1 holds an op without a walk, the
+instruction side otherwise. An instruction request that the data side turned
+away, in a cycle where the port was ready and the data op did not ask, goes
+first in the next cycle.
+The misaligned-access engine, which runs at the ROB head with the data MMU
+empty, takes the port while it asks. The walker
 never writes PTEs (Svade): a leaf with A=0, or a store to a leaf with D=0,
 raises a page fault for software to handle. SFENCE.VMA, `satp` accesses, and
-`mstatus` writes that change MPRV (or MPP under MPRV) flush both TLBs and
-discard any walk in flight.
+`mstatus` writes that change MPRV (or MPP under MPRV) discard any walk in
+flight and clear the walker's pointer cache; which TLB entries they remove
+is described under "Address-space IDs and SFENCE.VMA" below.
+
+A 4-way, 128-set second-level TLB (`l2tlb.sv`, 512 entries, 2 MiB of 4 KiB
+pages, block RAM) sits between the two MMUs and the walker. An L1 TLB miss
+that hits there is answered two cycles after the request fires, in place of
+a walk of one to three dependent line reads; a miss reaches the walker one
+cycle later than it would without the array. It stores the clean 4 KiB
+translations that the walker returns. Clean 2 MiB and 1 GiB leaves go to a
+32-entry fully associative superpage side array beside it (`SP_ENTRIES`):
+tags, ASIDs, global bits and levels in flops, compared level-masked in the
+same cycle as the block RAM ways, and PPNs and permissions in distributed RAM,
+read in the next cycle, so a superpage hit answers three cycles after the
+request fires for any page of its region. Neither array holds negative
+entries, so a PTE that changes from invalid to valid is seen without
+SFENCE.VMA (Svvptc). SUM and MXR stay out of the entries, so toggling them
+needs no flush. `cpu_ooo` takes `L2TLB_SETS` (0 removes both arrays; any
+other value must be a power of two, as must the way count).
+
+### Address-space IDs and SFENCE.VMA
+
+`satp.ASID` is nine bits wide (ASIDLEN = 9): writing all ones to the field and
+reading it back, the way Linux probes it, returns `0x1FF`. Every L1 and L2 TLB
+entry carries the ASID it was installed under and the leaf's global bit (the
+walker ORs the bit over the levels it descended). A lookup matches an entry of
+its own ASID, or a global entry under any ASID.
+
+- A `satp` write that changes the ASID leaves every entry in place, so a
+  context switch between two address spaces whose pages are resident walks
+  nothing. The walker's pointer cache is untagged and still empties.
+- A `satp` write that changes the root under the same ASID flushes every
+  entry, for software that never assigns ASIDs. An `mstatus` write that
+  changes MPRV (or MPP under MPRV) flushes every entry.
+- SFENCE.VMA reads rs1 (the virtual address) and rs2 (the ASID) exactly as the
+  privileged spec defines. rs1 = x0 and rs2 = x0 flush everything; rs1 only
+  flushes the entries covering that page in every ASID, global included;
+  rs2 only flushes the entries of that ASID that are not global; both flush
+  the non-global entries of that ASID covering that page. A superpage entry
+  covers every page it maps.
+- The operands travel with the SFENCE.VMA: dispatch tags the instruction with
+  which registers are not x0, the MEM_RS holds it for rs1 and rs2 and hands
+  both to the ROB when it issues, and the ROB serializer keeps the instruction
+  at the head until they have arrived. The ROB exports the head's filter for
+  the length of the SFENCE window.
+- In the second-level TLB, a page flush (with or without an ASID) reads one
+  set, an ASID flush without a page scans all 128 sets, and flush-all clears
+  the valid bits in one cycle. The superpage
+  side array applies the flush's filter to all its entries in the flush's
+  first cycle; a page flush removes the superpage whose region holds the page.
+  While a flush runs the arrays accept no request.
 
 The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
 (the level-0 table of a 2 MiB region) and 4 root pointers (the level-1 table
@@ -421,8 +478,9 @@ AMO. The engine reads a store's data through an extra read port on each
 register file, translates through the page-table walker when translation is
 on, and makes its sector requests on the hart's line client. A load's result
 is written through commit port 0, one cycle after completion, and the access
-counts as one retired instruction (`minstret` and a single step). If a part
-faults, the engine's exception is taken as the instruction's own, with its
+counts as one retired instruction (`minstret` and a single step). Half- and
+single-precision FP loads are NaN-boxed to 64 bits; FP stores transfer the
+low bits for their access size. If a part faults, the engine's exception is taken as the instruction's own, with its
 cause and trap value, and `mepc` or `sepc` holds the access's PC.
 
 An access is split at the first sector boundary it crosses. `ma_pkg` checks
@@ -435,9 +493,14 @@ part's first byte (the page base when the access crosses a page). The engine
 issues no memory request until both parts have passed, so a faulting store
 writes nothing. It then issues the lower sector's request before the upper
 one and waits for both responses. A load response error gives a load access
-fault with trap value zero; a store response error and a hart stop are
-terminal at once, with no further request. `lib/line_align.sv` moves the
-access between register order and the two sectors.
+fault whose trap value is the first byte of the lowest failed part: the
+original virtual address when the lower part failed, otherwise the upper
+part's first byte. A store response error and a hart stop are terminal at
+once, with no further request. A hart stop also makes an idle engine busy
+until reset. The registered dispatch hold samples the stop on the same edge
+as the engine, so neither dispatch slot allocates in that terminal state.
+`lib/line_align.sv` moves the access between register order and the two
+sectors.
 
 ## Debug Mode
 
@@ -510,9 +573,11 @@ pipeline flush follows one cycle after that. It is the same FENCE-class flush
 that FENCE.I uses, so it also drops the fetch provider's buffered lines. Across those two cycles `cpu_ooo` blocks trap,
 Debug Mode, and xRET takes and ignores exceptions, so no younger instruction
 can overwrite the CSR write or act on the old translation. Separately,
-`csr_file` raises a one-cycle TLB and walker invalidate for every `satp`
-access, and for an `mstatus` write only when MPRV changes (or MPP while MPRV
-is set). SUM and MXR changes keep the TLBs: entries hold the raw leaf
+`csr_file` raises a one-cycle translation-changed pulse (it drops the MMUs'
+registered results and discards the walker's walk) for every `satp` access, and
+for an `mstatus` write only when MPRV changes (or MPP while MPRV is set). A
+second pulse asks the TLBs to drop every entry when the `satp` root changes
+under the same ASID, or MPRV changes. SUM and MXR changes keep the TLBs: entries hold the raw leaf
 permissions, and every lookup applies the live SUM, MXR and effective
 privilege, so the full flush alone retires the old permission state. Linux
 toggles SUM around every user copy, so this keeps both TLBs warm across
@@ -559,8 +624,26 @@ tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with its s
 architectural `vl`, `vtype` and `vstart`, and the engine executes it after
 commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
-result on CDB slot 6. The other vector instructions, and every vector load and
-store, are still illegal.
+result on CDB slot 6.
+
+ID decodes the unit-stride (one field), whole-register and mask loads and
+stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1
+only and go to INT_RS, which hands the rs1 base to the ROB. Each takes an
+entry in the vector memory table (`vector/vec_vmt.sv`) at dispatch, and
+dispatch holds the next one while all four entries are live. The table lists
+the vector memory instructions in flight in program order for the load and
+store queues' range holds, marks an entry retired on the edge the ROB head
+passes it, and frees entries that a flush removes. Its registered "no live
+retired entry" output holds the serializer's FENCE, FENCE.I and SFENCE.VMA
+drain, the store-conditional unit's firing and arming, and the
+misaligned-access engine before its first access. The unit does not perform
+vector loads and stores: each raises illegal-instruction when it reaches the
+ROB head, and the trap's flush frees its entry. `vec_lmul_legality` decides
+this rejection from the decoded operation before the queue, excluding decode
+illegality and fetch faults. A separate bit travels beside the four LMUL
+classes, and dispatch includes it without consulting `vtype`. The other vector
+instructions, and the strided, indexed, segment and fault-only-first loads
+and stores, are illegal.
 
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector instructions are not implemented, and bare-metal
@@ -810,7 +893,10 @@ pending source with no interrupt latched.
 checks the load and store access faults that result, their trap values
 and PCs, and that access succeeds once the mapping is repaired. Two loads
 of adjacent L1D sectors then share one failed L2 fill, and the test checks
-the older load's access fault. Its registry entry injects the bus errors in
+the older load's access fault and its address in `mtval`. `sstvala_fault_test`
+checks the address of every bus-response access fault software can provoke
+in simulation, in each privilege mode, delegated and not, bare and through
+Sv39. Its registry entry injects the bus errors in
 the simulated DDR model.
 
 `ptw_recovery_test` sweeps the cycle in which a branch resolves while a

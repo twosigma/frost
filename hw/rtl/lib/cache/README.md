@@ -645,8 +645,10 @@ DMA, whose four-bit ingress ID occupies q.id. `coherence_dma_ingress` has
 `SLOTS` admission credits, eight in the cluster, and holds each opaque ID
 until its slot frees. It presents requests in acceptance order without waiting for earlier
 grants or releases. Each slot independently owns its request, grant, completion,
-release and external response. G matches the full q and address; U also matches
-the granted tid. A slot offers C from the cycle after its G, and a fair
+release and external response. G matches a slot by q alone: every live slot's q holds the
+ingress's source, class and epoch 0 with a distinct ID. U also matches the
+granted tid. An assertion checks that a matched G or U carries its slot's
+address and a G its grant opcode. A slot offers C from the cycle after its G, and a fair
 arbiter captures the selected slot's C metadata and holds its presentation. A read's G carries its
 final data, so the read responds from the cycle after its G; a write responds
 on the cycle after its U. One response goes out per cycle, the U's slot first,
@@ -745,14 +747,16 @@ prefix network counts up to three eligible entries before each candidate. Each f
 stores its occupied seat count beside the seat mask. Allocation, joining
 readers, handoff, a forward and error cleanup update both on the same edge.
 Seat joins, retirements and error cleanup keep their priority over allocation. The mask prepares the
-allocation and non-allocation outcomes before selecting between them; zero
-fill images likewise clear through their data input. Whether a decision is a
+allocation and non-allocation outcomes before selecting between them. Whether a decision is a
 reader that can join a fill is the decision's last term to settle, so each
 fill's added seats and their count, its mask and the parked set are formed for both
 values of that term (a fill that is ready to join reserves the joining seat in
 one selection and not in the other), and the term selects last.
-A fill's image takes the memory response or the zero fill's clear, and the
-clear, which follows the allocation decision, enters each image bit last.
+A fill's image takes the memory response or the zero fill's clear, through
+its data input. The clear is registered: it takes effect on the edge after the
+zero fill's allocation, while the fill waits in FillMemory or FillRecall and
+neither installs nor forwards, so the allocation decision reaches one flop per
+fill rather than the image bits.
 A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently
@@ -1135,8 +1139,8 @@ waits for every earlier request to either sector, and every later request to
 either sector waits for its U. PutM is not ordered behind it, so a PutM of the
 upper sector that the L1D froze earlier still completes. Otherwise a
 `GetMZero` is a `GetM` for every rule of the home except the miss decision: a
-`GetMZero` whose decision allocates a fill starts that fill with a zero image
-and its memory read done, so no read is sent. The fill recalls and writes back
+`GetMZero` whose decision allocates a fill starts that fill with its memory read
+done and clears its image on the next edge, so no read is sent. The fill recalls and writes back
 a valid victim as any fill does, installs the line Modified, because only the
 L2 holds the zeros of the upper sector, and forwards the lower sector to its
 primary. Its grant, and a hit's, is `GrantMZero` with 64-byte lines and

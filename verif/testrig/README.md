@@ -204,7 +204,7 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zcb, Zcmop, Zihintntl, Zimop, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svvptc, Sstc; Sscofpmf is enabled in the dedicated replay; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zfa, Zfhmin, Zcb, Zcmop, Zihintntl, Zimop, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svvptc, Sstc; Sscofpmf is enabled in the dedicated replay; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
@@ -352,6 +352,7 @@ CI's TestRIG jobs replays all of them before its random run.
 
 | Trace | Checks |
 |-------|--------|
+| [`access_fault_tval.S`](traces/access_fault_tval.S) | Access faults outside the physical map (load, store, AMO, LR, a misaligned load) write the faulting virtual address to `mtval` |
 | [`clint_window_load.S`](traces/clint_window_load.S) | A load just below 2^35 faults at the 1 GiB default and reaches DDR with a 64 GiB configuration; Sail disables its CLINT in both configurations |
 | [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM`, `senvcfg.FIOM` and both CBZE bits are writable |
 | [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires |

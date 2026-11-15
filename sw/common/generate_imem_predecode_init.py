@@ -51,6 +51,8 @@ OPC_FNMSUB = 0b1001011
 OPC_FNMADD = 0b1001111
 OPC_OP_FP = 0b1010011
 OPC_OP_V = 0b1010111
+OPC_LOAD_FP = 0b0000111
+OPC_STORE_FP = 0b0100111
 OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
@@ -150,6 +152,20 @@ def native_serialize(parcel: int) -> bool:
 def native_fp_compute(opcode: int) -> bool:
     """Return whether a native instruction never pairs as slot 2 (FP compute or vector)."""
     return opcode in {OPC_OP_FP, OPC_FMADD, OPC_FMSUB, OPC_FNMSUB, OPC_FNMADD, OPC_OP_V}
+
+
+def vector_mem(parcel: int) -> bool:
+    """Return whether a native parcel is a vector load or store.
+
+    These are LOAD-FP and STORE-FP with a vector width (funct3 000, 101, 110 or
+    111) and, like OP-V, never pair as slot 2.
+    """
+    return (parcel & 0x7F) in {OPC_LOAD_FP, OPC_STORE_FP} and ((parcel >> 12) & 7) in {
+        0b000,
+        0b101,
+        0b110,
+        0b111,
+    }
 
 
 def native_control(opcode: int) -> bool:
@@ -557,8 +573,8 @@ def make_sideband(word: int) -> int:
     compressed_control_hi = compressed_control(hi)
     native_serialize_lo = native_serialize(lo)
     native_serialize_hi = native_serialize(hi)
-    native_fp_compute_lo = native_fp_compute(opcode_lo)
-    native_fp_compute_hi = native_fp_compute(opcode_hi)
+    native_fp_compute_lo = native_fp_compute(opcode_lo) or vector_mem(lo)
+    native_fp_compute_hi = native_fp_compute(opcode_hi) or vector_mem(hi)
 
     allows_slot2_after_lo = (compressed_lo and not compressed_control_lo) or (
         not compressed_lo and not native_control(opcode_lo) and not native_serialize_lo

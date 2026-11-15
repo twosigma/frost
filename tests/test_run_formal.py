@@ -928,8 +928,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Vector arithmetic legality selected by LMUL class from instruction-bit classes "
-        "equals the whole legality function for every vtype, instruction and operation",
+        "Queued LMUL classes and vector-memory rejection equal the arithmetic, VTOX "
+        "and VLOAD/VSTORE legality rules for every vtype, instruction and operation",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -937,6 +937,13 @@ FORMAL_TARGETS = [
         "Vector range holds: a scalar entry is held exactly while an older live "
         "vector memory table entry overlaps it or has an unknown range",
         tasks=("vhold_lq_bmc", "vhold_sq_bmc", "cover"),
+    ),
+    FormalTarget(
+        "vec_vmt.sby",
+        "Vector memory table lifecycle: allocation into free entries, retirement "
+        "exactly as the head passes, flushes, fixed ranges and the exact "
+        "no-live-retired-entry output",
+        tasks=("vmt_bmc", "cover"),
     ),
     FormalTarget(
         "cl_multiplier.sby",
@@ -981,6 +988,14 @@ FORMAL_TARGETS = [
         "tlb.sby",
         "TLB entry tracking and lookup selection in DTLB and ITLB configurations",
         tasks=("bmc", "cover", "bmc_itlb", "cover_itlb"),
+    ),
+    FormalTarget(
+        "l2tlb.sby",
+        "Second-level TLB hits are backed by a fill no flush has removed, return the "
+        "filled data, and never run during a flush; the shared walk port selects "
+        "its VPN from registered state and delays an instruction walk one cycle "
+        "at most",
+        tasks=("bmc", "cover", "walk_select_prove", "walk_select_cover"),
     ),
     FormalTarget(
         "ptw.sby",
@@ -1028,9 +1043,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "home_seat_next_equiv.sby",
-        "The home's fill waiter masks, seat counts, parking and fill images, formed "
-        "for both values of the decision's late term and selected last, equal the "
-        "original form for any state and input, at two, three and eight fills, "
+        "The home's fill waiter masks, seat counts and parking, formed for both "
+        "values of the decision's late term and selected last, equal the original "
+        "form, and the fill images' next state equals the response load and "
+        "registered zero clear, for any state and input, at two, three and eight fills, "
         "portable and primitive",
         tasks=("bmc_seat2", "bmc_seat3", "bmc", "bmc_xilinx"),
     ),
@@ -2499,6 +2515,10 @@ SBY_TASKS = [
         "vhold_sq_bmc",
         "Vector range holds with the store queue's per-entry addresses, 8 frames.",
     ),
+    (
+        "vmt_bmc",
+        "Vector memory table lifecycle against a ghost reorder buffer, 14 frames.",
+    ),
     ("bmc", "Check assertions up to the configured depth"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
@@ -2561,6 +2581,11 @@ SBY_TASKS = [
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
     ("bmc_itlb", "Bounded checking of 16-entry 2-port ITLB fetch verdicts"),
     ("cover_itlb", "Cover checking in the 16-entry 2-port ITLB shape"),
+    ("walk_select_prove", "Induction proof of the shared walk port's VPN select"),
+    (
+        "walk_select_cover",
+        "Cover a select refusal and the instruction priority after it",
+    ),
     ("bmc_nopwc", "Bounded checking of the page-table walker without its walk cache"),
     ("bmc_replace", "Bounded checking through replacement in one-entry walk caches"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),

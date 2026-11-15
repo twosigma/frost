@@ -34,10 +34,10 @@
     "dtb_address": {"len": 64, "value": "0x0"},
     // FROST compares whole 64-bit physical addresses, so a page-table PPN
     // or an untranslated address beyond the configured DDR aperture
-    // faults instead of aliasing, and mtval holds the full address. No ASID
-    // bits; no PMP entries.
+    // faults instead of aliasing, and mtval holds the full address. satp.ASID
+    // is nine bits wide; no PMP entries.
     "physaddr_bits": 64,
-    "asidlen": 0,
+    "asidlen": 9,
     "pmp": {"grain": 0, "count": 0, "usable_count": 0, "tor_supported": true, "na4_supported": true, "napot_supported": true},
     // Misaligned accesses trap after translation and the region check: an
     // untranslated access outside every region is an access fault first, as
@@ -486,10 +486,13 @@
     // waits (platform.max_time_to_wait) and then traps below M with TW set,
     // as FROST does; wrs.sto never traps.
     "Zawrs": {"supported": true, "nto": {"is_nop": false}, "sto": {"is_nop": true}},
-    "Zfa": {"supported": false},
+    // Zfa (FLI, FMINM/FMAXM, FROUND/FROUNDNX, FCVTMOD.W.D, FLEQ/FLTQ; D-format
+    // high-half moves require RV32) and Zfhmin (FLH/FSH, FMV.X.H/FMV.H.X, FCVT between H and
+    // S/D) are implemented; full Zfh is not.
+    "Zfa": {"supported": true},
     "Zfbfmin": {"supported": false},
     "Zfh": {"supported": false},
-    "Zfhmin": {"supported": false},
+    "Zfhmin": {"supported": true},
     // c.lbu/lhu/lh/sb/sh, c.zext.b/h/w, c.sext.b/h, c.not and c.mul expand in predecode.
     "Zcb": {"supported": true},
     // c.mop.n (n odd, 1-15) writes no register.

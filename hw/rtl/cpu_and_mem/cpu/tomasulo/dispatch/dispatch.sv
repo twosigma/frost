@@ -55,6 +55,8 @@ module dispatch #(
     // vec_lmul_legality's classes of slot 1's instruction bits, formed before
     // the decoded queue; the default suits benches without vector arithmetic
     input logic                      [3:0] i_vec_lmul_illegal = 4'd0,
+    // Instruction-only vector load/store rejection, carried beside the classes
+    input logic                            i_vec_mem_illegal = 1'b0,
     // Bundle-valid candidate, not yet qualified by flush. Dispatch applies
     // i_flush (below) as the only recovery qualification.
     input logic                            i_valid,
@@ -301,7 +303,7 @@ module dispatch #(
   assign uses_int_rs1     = i_from_id_to_ex.uses_int_rs1;
   assign uses_int_rs2     = i_from_id_to_ex.uses_int_rs2;
 
-  // An illegal FSW or FSD (FS=Off) keeps its decoded is_fp_store; the mask
+  // An illegal FSH, FSW or FSD (FS=Off) keeps its decoded is_fp_store; the mask
   // keeps it from reaching the ROB and the reservation station as a store.
   assign is_store_flag    = i_from_id_to_ex.is_int_store;
   assign is_fp_store_flag = i_from_id_to_ex.is_fp_store && !i_from_id_to_ex.is_illegal_instruction;
@@ -332,7 +334,8 @@ module dispatch #(
       riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN,
       riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       mem_size = riscv_pkg::MEM_SIZE_BYTE;
-      riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size = riscv_pkg::MEM_SIZE_HALF;
+      riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH, riscv_pkg::FLH, riscv_pkg::FSH:
+      mem_size = riscv_pkg::MEM_SIZE_HALF;
       riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
@@ -383,7 +386,7 @@ module dispatch #(
       riscv_pkg::SLTIU, riscv_pkg::SLLI,
       riscv_pkg::SRLI, riscv_pkg::SRAI,
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::FLW, riscv_pkg::FLD,
+      riscv_pkg::FLW, riscv_pkg::FLD, riscv_pkg::FLH,
       riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
       // B-ext immediate forms
@@ -395,7 +398,7 @@ module dispatch #(
 
       // S-type immediate (stores)
       riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::FSW, riscv_pkg::FSD: begin
+      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::FSH: begin
         use_imm = 1'b1;
         imm     = i_from_id_to_ex.immediate_s_type;
       end
@@ -404,6 +407,12 @@ module dispatch #(
       riscv_pkg::LUI: begin
         use_imm = 1'b1;
         imm     = i_from_id_to_ex.immediate_u_type;
+      end
+
+      // Zfa FLI: the rs1 field indexes the engine's constant table.
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D: begin
+        use_imm = 1'b0;
+        imm     = {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex.instruction.source_reg_1};
       end
 
       // AUIPC: ID precomputed PC + imm_u, so the ALU materializes it like LUI
@@ -442,6 +451,14 @@ module dispatch #(
       riscv_pkg::FETCH_FAULT, riscv_pkg::FETCH_PAGE_FAULT: begin
         use_imm = 1'b0;
         imm     = i_from_id_to_ex.pc_relative_precomputed;
+      end
+
+      // SFENCE.VMA: the entry's immediate says which filters are in use, so the
+      // ROB can tell x0 ("all") from a register that holds zero.
+      //   imm[0]: rs1 is not x0 (address filter), imm[1]: rs2 is not x0 (ASID).
+      riscv_pkg::SFENCE_VMA: begin
+        use_imm = 1'b0;
+        imm     = {{(riscv_pkg::XLEN - 2) {1'b0}}, (|i_rs2_addr), (|i_rs1_addr)};
       end
 
       default: begin
@@ -557,7 +574,8 @@ module dispatch #(
       riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN,
       riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       mem_size_2 = riscv_pkg::MEM_SIZE_BYTE;
-      riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size_2 = riscv_pkg::MEM_SIZE_HALF;
+      riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH, riscv_pkg::FLH, riscv_pkg::FSH:
+      mem_size_2 = riscv_pkg::MEM_SIZE_HALF;
       riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
@@ -605,7 +623,7 @@ module dispatch #(
       riscv_pkg::SLTIU, riscv_pkg::SLLI,
       riscv_pkg::SRLI, riscv_pkg::SRAI,
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::FLW, riscv_pkg::FLD,
+      riscv_pkg::FLW, riscv_pkg::FLD, riscv_pkg::FLH,
       riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
       riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI,
@@ -615,7 +633,7 @@ module dispatch #(
       end
 
       riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::FSW, riscv_pkg::FSD: begin
+      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::FSH: begin
         use_imm_2 = 1'b1;
         imm_2     = i_from_id_to_ex_2.immediate_s_type;
       end
@@ -623,6 +641,12 @@ module dispatch #(
       riscv_pkg::LUI: begin
         use_imm_2 = 1'b1;
         imm_2     = i_from_id_to_ex_2.immediate_u_type;
+      end
+
+      // Zfa FLI: constant index (see slot 1).
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D: begin
+        use_imm_2 = 1'b0;
+        imm_2     = {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex_2.instruction.source_reg_1};
       end
 
       // AUIPC: precomputed PC + imm_u (see slot 1).
@@ -891,20 +915,26 @@ module dispatch #(
   end
 `endif
 `ifdef VEC_LMUL_LEGALITY_LOCAL_PROOF
-  // With i_vec_lmul_illegal the classes of slot 1's own instruction, the
-  // class select equals the whole legality function for every vtype,
-  // instruction and operation.
+  // With both queued legality inputs from slot 1's own decoded instruction,
+  // dispatch equals the arithmetic, VTOX and vector-memory reference for
+  // every vtype, instruction and operation.
   logic [3:0] f_vec_lmul_illegal;
+  logic f_vec_mem_illegal;
   logic f_vec_illegal_ref;
   vec_lmul_legality u_f_vec_lmul_legality (
       .i_insn(32'(i_from_id_to_ex.instruction)),
-      .o_illegal(f_vec_lmul_illegal)
+      .i_op(i_from_id_to_ex.instruction_operation),
+      .i_is_illegal(i_from_id_to_ex.is_illegal_instruction),
+      .i_is_fetch_fault(i_from_id_to_ex.is_fetch_fault),
+      .o_illegal(f_vec_lmul_illegal),
+      .o_mem_illegal(f_vec_mem_illegal)
   );
   assign f_vec_illegal_ref = (o_rob_alloc_req.is_varith && riscv_pkg::vector_arith_illegal(
       i_vtype_spec, 32'(i_from_id_to_ex.instruction)
-  )) || ((op == riscv_pkg::VTOX) && i_vtype_spec[8]);
+  )) || ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) || (op == riscv_pkg::VLOAD) ||
+      (op == riscv_pkg::VSTORE);
   always_comb begin
-    assume (i_vec_lmul_illegal == f_vec_lmul_illegal);
+    assume ({i_vec_mem_illegal, i_vec_lmul_illegal} == {f_vec_mem_illegal, f_vec_lmul_illegal});
     p_vec_illegal_exact : assert (o_rob_alloc_req.vec_illegal == f_vec_illegal_ref);
   end
 `endif
@@ -1103,14 +1133,16 @@ module dispatch #(
       assert (!(slot2_can_fire && uses_fp_rs3_flag_2))
       else $error("dispatch: slot 2 fired with an FP source 3");
   end
-  // Predecode never pairs a vector instruction as slot 2 (OP-V is in its
-  // slot-1-only class), so a vector-config op never fires there.
+  // Predecode never pairs a vector instruction as slot 2 (OP-V and the
+  // vector loads and stores are in its slot-1-only class), so a vector-config
+  // op or a vector load or store never fires there.
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n)
       assert (!(slot2_can_fire &&
                 ((op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
-                 (op_2 == riscv_pkg::VSETVL))))
-      else $error("dispatch: a vector-config instruction fired in slot 2");
+                 (op_2 == riscv_pkg::VSETVL) || (op_2 == riscv_pkg::VLOAD) ||
+                 (op_2 == riscv_pkg::VSTORE))))
+      else $error("dispatch: a vector-config, load or store instruction fired in slot 2");
   end
 `endif
 
@@ -1401,14 +1433,13 @@ module dispatch #(
     o_rob_alloc_req.is_vcfg = (op == riscv_pkg::VSETVLI) || (op == riscv_pkg::VSETIVLI) ||
         (op == riscv_pkg::VSETVL);
     o_rob_alloc_req.is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X);
-    // Vector arithmetic is illegal under vill or under its LMUL class's
-    // register-number rules (riscv_pkg::vector_arith_illegal, decided from the
-    // instruction bits ahead of the queue); a vector-to-scalar op (VTOX) only
-    // under vill. The vtype selects last.
+    // Vector arithmetic uses its queued LMUL class and vill; VTOX uses vill.
+    // Vector loads and stores carry their instruction-only rejection from
+    // before the queue. The vtype selects last.
     o_rob_alloc_req.vec_illegal = ((o_rob_alloc_req.is_varith || (op == riscv_pkg::VTOX)) &&
                                    i_vtype_spec[8]) ||
         (o_rob_alloc_req.is_varith &&
-         i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]]);
+         i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]]) || i_vec_mem_illegal;
     // Sstvala: raw instruction bits, the illegal-instruction xtval.
     o_rob_alloc_req.insn_bits = i_from_id_to_ex.insn_bits;
 
@@ -1417,7 +1448,7 @@ module dispatch #(
     o_rob_alloc_req.is_fp_instruction = i_from_id_to_ex.is_fp_instruction;
 
     // The ROB rejects dynamic rounding with frm in 5-7. Legal F/D ops without
-    // an rm field have funct3 <= 011, so funct3 == DYN identifies rm users.
+    // an rm field have funct3 <= 101, so funct3 == DYN identifies rm users.
     o_rob_alloc_req.fp_dyn_rm = i_from_id_to_ex.is_fp_instruction &&
         (i_from_id_to_ex.instruction.funct3 == riscv_pkg::FRM_DYN);
   end

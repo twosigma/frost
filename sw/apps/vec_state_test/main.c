@@ -25,9 +25,14 @@
  *     vstart keeps log2(VLEN) bits; vxrm, vxsat and vcsr alias each other;
  *   - a vector CSR write sets VS to Dirty, and SD follows Dirty;
  *   - sstatus.VS is a view of mstatus.VS;
- *   - writes to vl, vtype and vlenb raise illegal-instruction.
+ *   - writes to vl, vtype and vlenb raise illegal-instruction;
+ *   - vector loads and stores (unit-stride, whole-register and mask) raise
+ *     illegal-instruction with VS Off and, since the unit does not execute
+ *     them, with VS on, and a store writes nothing.
  * Without the unit, VS reads zero and ignores writes, and every vector CSR
- * access raises illegal-instruction.
+ * access and vector load or store raises illegal-instruction. In both
+ * builds, a vector load on a mispredicted path, or a run of them ending in a
+ * trap, leaves later scalar loads, stores and fences unaffected.
  *
  * The mtvec handler records mcause, mepc and mtval for the first trap and
  * returns to the continuation in mscratch. An ecall follows each trigger, so
@@ -133,6 +138,139 @@ static void check_illegal(const char *name, unsigned long pc)
     check(name, ok, g_cause, 2u);
 }
 
+/* Vector loads and stores, base register t5 (x30). */
+#define VLE32_V1 ".word 0x020f6087"       /* vle32.v v1, (t5) */
+#define VSE32_V1 ".word 0x020f60a7"       /* vse32.v v1, (t5) */
+#define VLE8_V2_MASKED ".word 0x000f0107" /* vle8.v v2, (t5), v0.t */
+#define VL1RE8_V1 ".word 0x028f0087"      /* vl1re8.v v1, (t5) */
+#define VL2RE64_V2 ".word 0x228f7107"     /* vl2re64.v v2, (t5) */
+#define VS1R_V1 ".word 0x028f00a7"        /* vs1r.v v1, (t5) */
+#define VLM_V1 ".word 0x02bf0087"         /* vlm.v v1, (t5) */
+#define VSM_V1 ".word 0x02bf00a7"         /* vsm.v v1, (t5) */
+
+#define VBUF_WORDS 8
+static volatile unsigned long g_vbuf[VBUF_WORDS] __attribute__((aligned(64)));
+
+/* RUN_TRIGGER with t5 pointing at g_vbuf. */
+#define RUN_VMEM(insn)                                                                             \
+    ({                                                                                             \
+        unsigned long trig__;                                                                      \
+        reset_records();                                                                           \
+        __asm__ volatile("la   t0, 1f\n"                                                           \
+                         "csrw mscratch, t0\n"                                                     \
+                         "mv   t5, %1\n"                                                           \
+                         "la   %0, 9f\n"                                                           \
+                         "9: " insn "\n"                                                           \
+                         "ecall\n"                                                                 \
+                         "1:\n"                                                                    \
+                         : "=&r"(trig__)                                                           \
+                         : "r"(g_vbuf)                                                             \
+                         : "t0", "t1", "t2", "t3", "t4", "t5", "t6", "memory");                    \
+        trig__;                                                                                    \
+    })
+
+static void fill_vbuf(void)
+{
+    for (int i = 0; i < VBUF_WORDS; i++)
+        g_vbuf[i] = 0x0101010101010101ul * (unsigned long) (i + 1);
+}
+
+static int vbuf_intact(void)
+{
+    for (int i = 0; i < VBUF_WORDS; i++)
+        if (g_vbuf[i] != 0x0101010101010101ul * (unsigned long) (i + 1))
+            return 0;
+    return 1;
+}
+
+/* Every vector load and store form raises illegal-instruction, and no store
+ * writes memory. */
+static void check_vmem_illegal(const char *when)
+{
+    uart_printf("vector loads and stores illegal %s\n", when);
+    fill_vbuf();
+    check_illegal("vle32.v", RUN_VMEM(VLE32_V1));
+    check_illegal("vse32.v", RUN_VMEM(VSE32_V1));
+    check_illegal("vle8.v masked", RUN_VMEM(VLE8_V2_MASKED));
+    check_illegal("vl1re8.v", RUN_VMEM(VL1RE8_V1));
+    check_illegal("vl2re64.v", RUN_VMEM(VL2RE64_V2));
+    check_illegal("vs1r.v", RUN_VMEM(VS1R_V1));
+    check_illegal("vlm.v", RUN_VMEM(VLM_V1));
+    check_illegal("vsm.v", RUN_VMEM(VSM_V1));
+    /* A run of loads and stores: the first traps, the rest are discarded. */
+    check_illegal(
+        "vector run",
+        RUN_VMEM(VLE32_V1 "\n" VSE32_V1 "\n" VLE32_V1 "\n" VS1R_V1 "\n" VLE32_V1 "\n" VSM_V1));
+    check_eq("vector stores write nothing", vbuf_intact(), 1);
+}
+
+/* A vector load behind a branch that resolves late (it waits for a load) and
+ * is taken: the load is fetched on the wrong path and discarded. The scalar
+ * loads, stores and fence after the branch must still complete. Returns the
+ * sum of the values loaded. */
+static unsigned long vmem_wrong_path(void)
+{
+    unsigned long sum = 0;
+    g_vbuf[0] = 1;
+    for (int i = 0; i < 16; i++) {
+        unsigned long v;
+        __asm__ volatile("mv   t5, %1\n"
+                         "ld   t0, 0(t5)\n"
+                         "bnez t0, 2f\n" VLE32_V1 "\n" VSE32_V1 "\n"
+                         "2:\n"
+                         "ld   %0, 8(t5)\n"
+                         "sd   %0, 16(t5)\n"
+                         "fence\n"
+                         "ld   %0, 16(t5)\n"
+                         : "=&r"(v)
+                         : "r"(g_vbuf)
+                         : "t0", "t5", "memory");
+        sum += v;
+    }
+    return sum;
+}
+
+/* An indirect jump alternates between a vector load, which traps, and scalar
+ * code with fences. Each time it goes to the scalar code its prediction is the
+ * vector load, which is fetched on the wrong path and discarded by the jump's
+ * recovery at commit. Returns the sum of the values the scalar code loads;
+ * every fence must complete. */
+static unsigned long vmem_jump_wrong_path(void)
+{
+    unsigned long sum;
+    reset_records();
+    __asm__ volatile("la   t0, 6f\n"
+                     "csrw mscratch, t0\n"
+                     "mv   t5, %1\n"
+                     "li   %0, 0\n"
+                     "la   a1, 8f\n"
+                     "la   a2, 7f\n"
+                     "li   a3, 12\n"
+                     "2:\n"
+                     "andi a4, a3, 1\n"
+                     "mv   a5, a2\n"
+                     "beqz a4, 3f\n"
+                     "mv   a5, a1\n"
+                     "3:\n"
+                     "jalr x0, 0(a5)\n"
+                     "8:\n" VLE32_V1 "\n"
+                     "j    6f\n"
+                     "7:\n"
+                     "fence\n"
+                     "ld   a4, 8(t5)\n"
+                     "sd   a4, 16(t5)\n"
+                     "fence\n"
+                     "ld   a4, 16(t5)\n"
+                     "add  %0, %0, a4\n"
+                     "6:\n"
+                     "addi a3, a3, -1\n"
+                     "bnez a3, 2b\n"
+                     : "=&r"(sum)
+                     : "r"(g_vbuf)
+                     : "t0", "t1", "t2", "t3", "t5", "a1", "a2", "a3", "a4", "a5", "memory");
+    return sum;
+}
+
 static void set_vs(unsigned long vs)
 {
     csr_clear(mstatus, MSTATUS_VS);
@@ -177,9 +315,15 @@ int main(void)
     check_eq("VS reads zero", vs_field(), 0);
     check_eq("SD clear", csr_read(mstatus) & MSTATUS_SD, 0);
     check_all_illegal("without the unit");
+    check_vmem_illegal("without the unit");
+    fill_vbuf();
+    check_eq("wrong-path vector load", vmem_wrong_path(), 16 * 0x0202020202020202ul);
+    fill_vbuf();
+    check_eq("jump-target vector load", vmem_jump_wrong_path(), 6 * 0x0202020202020202ul);
 #else
     check_eq("VS resets Off", vs_field(), VS_OFF);
     check_all_illegal("with VS Off");
+    check_vmem_illegal("with VS Off");
     /* An OP-V instruction and vsetvli are illegal in this build. */
     check_illegal("vsetvli", RUN_TRIGGER(".word 0x000372d7"));
     set_vs(VS_INITIAL);
@@ -232,6 +376,14 @@ int main(void)
     check_illegal("csrw vtype", RUN_TRIGGER("csrw 0xC21, zero"));
     check_illegal("csrw vlenb", RUN_TRIGGER("csrw 0xC22, zero"));
     check_eq("rejected writes leave VS", vs_field(), VS_CLEAN);
+
+    /* The vector unit does not perform loads and stores. */
+    check_vmem_illegal("with VS on");
+    fill_vbuf();
+    check_eq("wrong-path vector load", vmem_wrong_path(), 16 * 0x0202020202020202ul);
+    fill_vbuf();
+    check_eq("jump-target vector load", vmem_jump_wrong_path(), 6 * 0x0202020202020202ul);
+    check_eq("vector loads and stores leave VS", vs_field(), VS_CLEAN);
 
     set_vs(VS_OFF);
     check_all_illegal("with VS Off again");

@@ -20,9 +20,10 @@
   One operation runs at a time.
 
   Directed vectors use i_ext_valid/o_ext_ready and take priority over the
-  xorshift generator enabled by i_gen_enable. The generator chooses F/D compute
-  operations, rounding modes, and operand classes; correlated operands exercise
-  cancellation.
+  xorshift generator enabled by i_gen_enable. The generator chooses F/D and
+  Zfhmin compute operations, rounding modes, and operand classes; correlated
+  operands exercise cancellation, and conversions to half precision draw
+  operands around the half range and its rounding ties.
 
   With i_kill_enable, run each vector once for cancellation, then replay it for
   comparison to detect leftover state. i_kill_delay selects the kill-wait count,
@@ -155,6 +156,45 @@ module fp_engine_equiv_harness #(
     endcase
   endfunction
 
+  // Zfhmin and Zfa operations, one vector in eight. The rounding operations
+  // appear more than once.
+  function automatic riscv_pkg::instr_op_e ext_op_at(input logic [4:0] idx);
+    case (idx)
+      5'd0: ext_op_at = riscv_pkg::FCVT_S_H;
+      5'd1: ext_op_at = riscv_pkg::FCVT_D_H;
+      5'd2: ext_op_at = riscv_pkg::FCVT_H_S;
+      5'd3: ext_op_at = riscv_pkg::FCVT_H_D;
+      5'd4: ext_op_at = riscv_pkg::FMV_X_H;
+      5'd5: ext_op_at = riscv_pkg::FMV_H_X;
+      5'd6: ext_op_at = riscv_pkg::FCVT_H_S;
+      5'd7: ext_op_at = riscv_pkg::FCVT_H_D;
+      5'd8: ext_op_at = riscv_pkg::FLI_S;
+      5'd9: ext_op_at = riscv_pkg::FLI_D;
+      5'd10: ext_op_at = riscv_pkg::FMINM_S;
+      5'd11: ext_op_at = riscv_pkg::FMAXM_S;
+      5'd12: ext_op_at = riscv_pkg::FMINM_D;
+      5'd13: ext_op_at = riscv_pkg::FMAXM_D;
+      5'd14: ext_op_at = riscv_pkg::FROUND_S;
+      5'd15: ext_op_at = riscv_pkg::FROUNDNX_S;
+      5'd16: ext_op_at = riscv_pkg::FROUND_D;
+      5'd17: ext_op_at = riscv_pkg::FROUNDNX_D;
+      5'd18: ext_op_at = riscv_pkg::FCVTMOD_W_D;
+      5'd19: ext_op_at = riscv_pkg::FLEQ_S;
+      5'd20: ext_op_at = riscv_pkg::FLTQ_S;
+      5'd21: ext_op_at = riscv_pkg::FLEQ_D;
+      5'd22: ext_op_at = riscv_pkg::FLTQ_D;
+      5'd23: ext_op_at = riscv_pkg::FCVTMOD_W_D;
+      5'd24: ext_op_at = riscv_pkg::FROUND_D;
+      5'd25: ext_op_at = riscv_pkg::FROUNDNX_S;
+      5'd26: ext_op_at = riscv_pkg::FROUND_S;
+      5'd27: ext_op_at = riscv_pkg::FROUNDNX_D;
+      5'd28: ext_op_at = riscv_pkg::FMINM_S;
+      5'd29: ext_op_at = riscv_pkg::FMAXM_D;
+      5'd30: ext_op_at = riscv_pkg::FLTQ_S;
+      default: ext_op_at = riscv_pkg::FCVTMOD_W_D;
+    endcase
+  endfunction
+
   import "DPI-C" function int fp_softfloat_ref(
     input string op,
     input int rm,
@@ -173,7 +213,9 @@ module fp_engine_equiv_harness #(
       riscv_pkg::FNMSUB_D, riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
       riscv_pkg::FMIN_D, riscv_pkg::FMAX_D, riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
       riscv_pkg::FCVT_S_D, riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCLASS_D, riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D, riscv_pkg::FMV_X_D:
+      riscv_pkg::FCLASS_D, riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D, riscv_pkg::FMV_X_D,
+      riscv_pkg::FCVT_H_D, riscv_pkg::FMINM_D, riscv_pkg::FMAXM_D, riscv_pkg::FROUND_D,
+      riscv_pkg::FROUNDNX_D, riscv_pkg::FCVTMOD_W_D, riscv_pkg::FLEQ_D, riscv_pkg::FLTQ_D:
       op_is_double_src = 1'b1;
       default: op_is_double_src = 1'b0;
     endcase
@@ -183,10 +225,20 @@ module fp_engine_equiv_harness #(
     case (op)
       riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU,
       riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
-      riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X:
+      riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X, riscv_pkg::FMV_H_X,
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D:
       op_has_int_src = 1'b1;
       default: op_has_int_src = 1'b0;
     endcase
+  endfunction
+
+  function automatic logic op_is_half_src(input riscv_pkg::instr_op_e op);
+    op_is_half_src = (op == riscv_pkg::FCVT_S_H) || (op == riscv_pkg::FCVT_D_H) ||
+        (op == riscv_pkg::FMV_X_H);
+  endfunction
+
+  function automatic logic op_is_half_dst(input riscv_pkg::instr_op_e op);
+    op_is_half_dst = (op == riscv_pkg::FCVT_H_S) || (op == riscv_pkg::FCVT_H_D);
   endfunction
 
   function automatic logic op_is_fma(input riscv_pkg::instr_op_e op);
@@ -201,7 +253,9 @@ module fp_engine_equiv_harness #(
   function automatic logic op_is_f2i(input riscv_pkg::instr_op_e op);
     case (op)
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D:
+      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
+      riscv_pkg::FCVTMOD_W_D, riscv_pkg::FROUND_S, riscv_pkg::FROUNDNX_S, riscv_pkg::FROUND_D,
+      riscv_pkg::FROUNDNX_D:
       op_is_f2i = 1'b1;
       default: op_is_f2i = 1'b0;
     endcase
@@ -330,6 +384,46 @@ module fp_engine_equiv_harness #(
     end
   endfunction
 
+  // Half-precision operand: raw bits, or a forced zero/subnormal, inf/NaN or
+  // extreme-exponent field. box_raw leaves the upper 48 bits random (an
+  // improperly boxed register).
+  function automatic logic [63:0] shape_h(input logic [63:0] raw, input logic [3:0] class_sel,
+                                          input logic box_raw);
+    logic [15:0] h;
+    begin
+      h = raw[15:0];
+      case (class_sel)
+        4'd12:   h[14:10] = 5'd0;  // zero or subnormal
+        4'd13:   h[14:10] = 5'd31;  // infinity or NaN
+        4'd14:   h[14:10] = raw[20] ? 5'd30 : 5'd1;  // largest or smallest normal binade
+        default: ;
+      endcase
+      shape_h = {box_raw ? raw[63:16] ^ 48'h1234_5678_9ABC : 48'hFFFF_FFFF_FFFF, h};
+    end
+  endfunction
+
+  // Move a single or double operand near the half range: an unbiased exponent
+  // in -28..+19 (overflow, the subnormal range and below it), and with raw[41]
+  // a tie or near-tie at the half-precision guard bit (fraction bit 41 of the
+  // double layout, bit 12 of a single).
+  function automatic logic [63:0] near_half(input logic [63:0] value, input logic is_double,
+                                            input logic [63:0] raw);
+    logic [63:0] v;
+    logic signed [7:0] ue;
+    begin
+      v  = value;
+      ue = $signed({2'b0, 6'(raw[37:32] % 6'd48)}) - 8'sd28;
+      if (is_double) begin
+        v[62:52] = 11'(12'sd1023 + 12'(ue));
+        if (raw[41]) v[41:0] = {1'b1, raw[42] ? 41'b0 : {41{raw[43]}}} ^ {41'b0, raw[44]};
+      end else begin
+        v[30:23] = 8'(9'sd127 + 9'(ue));
+        if (raw[41]) v[12:0] = {1'b1, raw[42] ? 12'b0 : {12{raw[43]}}} ^ {12'b0, raw[44]};
+      end
+      near_half = v;
+    end
+  endfunction
+
   // Integer operand shapes for conversions to FP and the FMV moves.
   function automatic logic [63:0] shape_int(input logic [63:0] raw, input logic [3:0] class_sel);
     begin
@@ -404,10 +498,12 @@ module fp_engine_equiv_harness #(
   logic [63:0] gen_a, gen_b, gen_c;
   logic [11:0] gen_prod_exp;
   always_comb begin
-    gen_op = op_at(rnd_e[5:0]);
+    gen_op = (rnd_e[63:61] == 3'b111) ? ext_op_at(rnd_e[60:56]) : op_at(rnd_e[5:0]);
     gen_d  = op_is_double_src(gen_op);
     if (op_has_int_src(gen_op)) begin
       gen_a = shape_int(rnd_a, rnd_e[11:8]);
+    end else if (op_is_half_src(gen_op)) begin
+      gen_a = shape_h(rnd_a, rnd_e[11:8], rnd_e[30] && rnd_e[31] && rnd_e[32]);
     end else begin
       gen_a = shape_fp(
         rnd_a,
@@ -420,6 +516,11 @@ module fp_engine_equiv_harness #(
         rnd_e[30] && rnd_e[31] && rnd_e[32]
       );
     end
+    if (op_is_half_dst(gen_op) && rnd_e[40]) gen_a = near_half(gen_a, gen_d, rnd_d);
+    // FCVTMOD.W.D: exponents 0..127, across the 32-bit range, the left
+    // shifts (64..83) and the all-zero low bits beyond.
+    if ((gen_op == riscv_pkg::FCVTMOD_W_D) && rnd_e[41])
+      gen_a[62:52] = 11'd1023 + {4'b0, rnd_d[38:32]};
     gen_b = shape_fp(
       rnd_b,
       rnd_e[15:12],
@@ -587,19 +688,20 @@ module fp_engine_equiv_harness #(
   // Units
   // ===========================================================================
   fp_engine u_engine (
-      .i_clk   (i_clk),
-      .i_rst_n (i_rst_n),
-      .i_start (eng_start),
-      .i_op    (cur_op),
-      .i_rm    (cur_rm),
-      .i_src1  (cur_a),
-      .i_src2  (cur_b),
-      .i_src3  (cur_c),
-      .i_kill  (eng_kill),
-      .o_idle  (eng_idle),
-      .o_done  (eng_done),
-      .o_result(eng_result),
-      .o_flags (eng_flags)
+      .i_clk      (i_clk),
+      .i_rst_n    (i_rst_n),
+      .i_start    (eng_start),
+      .i_op       (cur_op),
+      .i_rm       (cur_rm),
+      .i_src1     (cur_a),
+      .i_src2     (cur_b),
+      .i_src3     (cur_c),
+      .i_fli_index(cur_a[4:0]),
+      .i_kill     (eng_kill),
+      .o_idle     (eng_idle),
+      .o_done     (eng_done),
+      .o_result   (eng_result),
+      .o_flags    (eng_flags)
   );
 
 endmodule : fp_engine_equiv_harness

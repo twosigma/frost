@@ -7,14 +7,11 @@ set the direction of this roadmap. The sections are in priority order.
 
 FROST is working toward the RVA23 profile without the hypervisor extension:
 the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
-The remaining scalar and supervisor extensions are in progress. Sstvala's
-illegal-instruction values are implemented: `mtval` and `stval` hold the
-faulting instruction's bits. Its access-fault values remain: a failed bus
-response on a load, a store or a misaligned access reports zero in `mtval`
-or `stval`, where Sstvala requires the faulting address. `hpmcounter11`-`31`
-raise illegal-instruction in every privilege mode; making them read zero in
-M-mode, as the reference models do, would let the TestRIG comparison run with
-Zihpm enabled. Two larger pieces come before the second hart:
+The remaining scalar and supervisor extensions are in progress.
+`hpmcounter11`-`31` raise illegal-instruction in every privilege mode; making
+them read zero in M-mode, as the reference models do, would let the TestRIG
+comparison run with Zihpm enabled. Two larger pieces come before the second
+hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; Zvbc,
   Zvfh and vector cryptography follow. The vector length
@@ -392,16 +389,19 @@ and targeted microbenchmarks give these items:
 2. Data translation. A last-page bypass sends eligible translated accesses
    directly to DMMU stage S2. Other translated accesses use S1 and S2.
    Reducing that path would improve cross-page translation latency.
-3. TLB reach. The DTLB and ITLB have 16 entries each. The walker keeps a
-   cache of upper-level page-table pointers, 16 for 2 MiB regions and 4 for
-   1 GiB regions, so a walk that hits it makes one or two dependent reads
-   instead of three. In simulation a dependent load that misses the DTLB
-   takes about 35 cycles against 5 on a hit, and an instruction page visit
-   that misses the ITLB about 51 against 20. Without ASIDs, every context
-   switch flushes both TLBs. A larger DTLB and ASID support would each help.
-   A design is ready: a 32-entry fully associative DTLB, which in simulation
-   takes chains of up to 32 pages to 5 cycles, and ASIDs with global pages
-   and selective `sfence.vma`.
+3. TLB reach. The DTLB and ITLB have 16 entries each, backed by a 512-entry
+   second-level TLB, ASIDs with global pages, selective `sfence.vma`, and a
+   walker cache of upper-level page-table pointers. In simulation a
+   dependent load that misses the DTLB and hits the second-level TLB takes 7
+   cycles against 5 on a DTLB hit, and an instruction page visit that misses
+   the ITLB and hits it takes 23 against 20. A miss in both walks, and the
+   walker cache takes the walk to one dependent read; the second-level lookup
+   comes first, so a dependent load that walks takes 36 cycles, one more than
+   without the array. Starting the walk in parallel with the second-level
+   lookup and cancelling it on a hit would remove that cycle. A 32-entry
+   superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
+   Reach beyond 2 MiB of 4 KiB pages, and Svnapot 64 KiB pages, would be the
+   next steps.
 4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
    predicts the jumps, calls and returns it misses through a PD redirect, at

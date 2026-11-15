@@ -27,7 +27,7 @@ include ../../common/arch.mk
 # Tests append their required extensions below; NO_COMPRESS_TESTS removes C.
 # XLEN_DEFINE feeds the framework's arch_test.h/model_test.h register-width
 # macros and must track the march.
-ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs
+ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zfa_zfhmin_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs
 XLEN_DEFINE = -DXLEN=64
 # lp64 needs PC-relative addressing for the DDR-resident test body: medlow's
 # absolute lui cannot form 0x8xxx_xxxx addresses at XLEN=64 (sign-extension), so
