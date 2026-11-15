@@ -610,6 +610,9 @@ module int_muldiv_shim #(
     always @(posedge i_clk) begin
       if (!i_rst_n) vcfg_reset_seen_q <= 1'b1;
       if (vcfg_reset_seen_q && i_rst_n && is_vcfg && i_rs_issue.valid && held_q.valid)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("int_muldiv_shim: vector-config op presented while a result is held");
     end
 `endif
@@ -637,11 +640,20 @@ module int_muldiv_shim #(
           SHORT_WORD_OPS &&
           mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W ?
           word_mul_valid : multiplier_valid_output))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("int_muldiv_shim: MUL tracker/data pipeline mismatch");
       if (DIRECT_MUL && mul_completing && !i_flush && !mul_push_entry_flush_young &&
           !i_mul_accepted)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("int_muldiv_shim: direct MUL result was not accepted");
       if (is_div && i_rs_issue.valid && !div_idle)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "int_muldiv_shim: divide issue of tag %0d while the divider is busy", i_rs_issue.rob_tag
         );

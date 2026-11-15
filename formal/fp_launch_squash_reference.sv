@@ -81,19 +81,20 @@ module fp_launch_squash_reference (
   end
 
   fp_engine u_engine (
-      .i_clk   (i_clk),
-      .i_rst_n (i_rst_n),
-      .i_start (start),
-      .i_op    (i_rs_issue.op),
-      .i_rm    (i_rs_issue.rm),
-      .i_src1  (i_rs_issue.src1_value),
-      .i_src2  (i_rs_issue.src2_value),
-      .i_src3  (i_rs_issue.src3_value),
-      .i_kill  (kill),
-      .o_idle  (eng_idle),
-      .o_done  (eng_done),
-      .o_result(eng_result),
-      .o_flags (eng_flags)
+      .i_clk      (i_clk),
+      .i_rst_n    (i_rst_n),
+      .i_start    (start),
+      .i_op       (i_rs_issue.op),
+      .i_rm       (i_rs_issue.rm),
+      .i_src1     (i_rs_issue.src1_value),
+      .i_src2     (i_rs_issue.src2_value),
+      .i_src3     (i_rs_issue.src3_value),
+      .i_fli_index(i_rs_issue.imm[4:0]),
+      .i_kill     (kill),
+      .o_idle     (eng_idle),
+      .o_done     (eng_done),
+      .o_result   (eng_result),
+      .o_flags    (eng_flags)
   );
 
   assign o_fu_busy = !eng_idle;

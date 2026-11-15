@@ -728,6 +728,9 @@ module pc_increment_calculator #(
   // The 1-bit precompute must track the wide compare exactly.
   always_comb begin
     if (o_seq_next_pc_reg_neq_pc !== (o_seq_next_pc_reg != i_pc)) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("pc_increment_calculator: o_seq_next_pc_reg_neq_pc mismatch");
     end
     if (!$isunknown(
@@ -751,11 +754,17 @@ module pc_increment_calculator #(
         )) || (o_pc_reg_rel_fetch !== pending_rel_reference(
             i_pc_reg, i_pc
         )))) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("pc_increment_calculator: pending-PC relation mismatch");
     end
     // i_sel_nop is i_sel_nop_wcs0 or the served-window failure, so it is
     // set whenever i_sel_nop_wcs0 is.
     if (i_advance_check_valid && i_sel_nop_wcs0 === 1'b1 && i_sel_nop !== 1'b1) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("pc_increment_calculator: i_sel_nop_wcs0 set without i_sel_nop");
     end
   end
