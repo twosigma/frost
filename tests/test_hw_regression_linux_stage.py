@@ -2049,6 +2049,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "hello_world",
         *board_apps,
         "amo_irq_torture",
+        "asid_test",
         "branch_pred_test",
         "c_ext_test",
         "call_stress",
