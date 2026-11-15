@@ -728,24 +728,39 @@ module ptw #(
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE && o_resp.level == 2'd0);
       c_page : cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE);
       c_access : cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS);
-      // Svpbmt: an NC and an IO leaf over DDR answer the alias, a PBMT 3 leaf
-      // and a PBMT leaf under PBMTE = 0 fault, and so does a non-leaf PBMT.
-      c_pbmt_nc_alias :
+      // Alias-return covers apply only to maps that have an alias.
+      if (riscv_pkg::PbmtAliasEnabled) begin
+        c_pbmt_nc_alias :
+        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
+               o_resp.pbmt == riscv_pkg::PbmtNc && f_g_pbmt_ddr);
+        c_pbmt_io_alias :
+        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
+               o_resp.pbmt == riscv_pkg::PbmtIo && f_g_pbmt_ddr && o_resp.level == 2'd1);
+      end
+      c_pbmt_nc_device :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
-             o_resp.pbmt == riscv_pkg::PbmtNc && f_g_pbmt_ddr);
-      c_pbmt_io_alias :
+             o_resp.pbmt == riscv_pkg::PbmtNc &&
+             riscv_pkg::pma_device_ok({8'b0, o_resp.ppn, 12'h000}));
+      c_pbmt_io_device :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
-             o_resp.pbmt == riscv_pkg::PbmtIo && f_g_pbmt_ddr && o_resp.level == 2'd1);
+             o_resp.pbmt == riscv_pkg::PbmtIo &&
+             riscv_pkg::pma_device_ok({8'b0, o_resp.ppn, 12'h000}));
       c_pbmt_reserved_fault :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE && f_g_leaf &&
              f_g_pbmt == 2'd3 && f_pbmte);
       c_pbmte_off_fault :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE && f_g_leaf &&
              f_g_pbmt == riscv_pkg::PbmtNc && !f_pbmte && !f_g_invalid && !f_g_a0);
-      // Only a DDR window wider than 2 GiB has addresses without an alias.
-      if (riscv_pkg::DdrCapacityLog2Bytes >= 32)
-        c_pbmt_no_alias_fault :
-        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS && f_g_pbmt_no_alias);
+      // Disabled-alias maps refuse every NC/IO DDR leaf; wide maps also
+      // refuse the uncovered tail. Reach both types with their leaf payload.
+      if (!riscv_pkg::PbmtAliasEnabled || riscv_pkg::DdrCapacityLog2Bytes >= 32) begin
+        c_pbmt_nc_no_alias_fault :
+        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS &&
+               o_resp.pbmt == riscv_pkg::PbmtNc && f_g_pbmt_no_alias);
+        c_pbmt_io_no_alias_fault :
+        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS &&
+               o_resp.pbmt == riscv_pkg::PbmtIo && f_g_pbmt_no_alias);
+      end
       c_pbmt_nonleaf_fault :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE && !f_g_leaf &&
              f_g_pbmt != 2'd0 && !f_g_invalid);

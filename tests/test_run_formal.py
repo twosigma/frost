@@ -1029,7 +1029,16 @@ FORMAL_TARGETS = [
         "Page-table walk state matches reference PTE classification, including the "
         "Svpbmt reserved encodings, PBMTE and the uncached alias, and the walk "
         "cache holds only valid pointers that memory holds, cleared by every discard",
-        tasks=("bmc", "cover", "bmc_nopwc", "bmc_replace", "bmc_wide", "cover_wide"),
+        tasks=(
+            "bmc",
+            "cover",
+            "bmc_nopwc",
+            "bmc_replace",
+            "bmc_wide",
+            "cover_wide",
+            "bmc_2g",
+            "cover_2g",
+        ),
     ),
     FormalTarget(
         "reorder_buffer.sby",
@@ -2590,7 +2599,8 @@ SBY_TASKS = [
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
     ("bmc_small", "Svpbmt alias range equivalence at a 256 MiB DDR capacity"),
-    ("bmc_2g", "Svpbmt alias range equivalence at a 2 GiB DDR capacity"),
+    ("bmc_2g", "Svpbmt translation and alias refusal at a 2 GiB DDR capacity"),
+    ("cover_2g", "Svpbmt no-alias faults and device-page translations at 2 GiB"),
     ("bmc_4g", "Svpbmt alias range equivalence at a 4 GiB DDR capacity"),
     ("bmc_8g", "Svpbmt alias range equivalence at an 8 GiB DDR capacity"),
     ("bmc_16g", "Svpbmt alias range equivalence at a 16 GiB DDR capacity"),

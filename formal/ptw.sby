@@ -1,10 +1,12 @@
 [tasks]
-bmc
-cover
-bmc_nopwc
-bmc_replace
+bmc base
+cover base
+bmc_nopwc base
+bmc_replace base
 bmc_wide wide
 cover_wide wide
+bmc_2g noalias
+cover_2g noalias
 
 [options]
 bmc: mode bmc
@@ -19,16 +21,22 @@ bmc_wide: mode bmc
 bmc_wide: depth 24
 cover_wide: mode cover
 cover_wide: depth 64
+bmc_2g: mode bmc
+bmc_2g: depth 24
+cover_2g: mode cover
+cover_2g: depth 64
 
 [engines]
 smtbmc boolector
 
 [script]
 # The wide tasks use a 64 GiB DDR window, whose top 2 GiB has no Svpbmt alias.
-~wide: read -formal -sv riscv_pkg.sv
-~wide: read -formal -sv ptw.sv
+base: read -formal -sv riscv_pkg.sv
+base: read -formal -sv ptw.sv
 wide: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=36 riscv_pkg.sv
 wide: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=36 ptw.sv
+noalias: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=31 riscv_pkg.sv
+noalias: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=31 ptw.sv
 # A small walk cache (two level-1 and two root entries) reaches fills, hits,
 # replacement and discards within the depth; bmc_nopwc checks the walker
 # without it.
@@ -37,6 +45,7 @@ cover: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
 bmc_nopwc: chparam -set PWC_L1_ENTRIES 0 -set PWC_ROOT_ENTRIES 0 ptw
 bmc_replace: chparam -set PWC_L1_ENTRIES 1 -set PWC_ROOT_ENTRIES 1 ptw
 wide: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
+noalias: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
 prep -top ptw
 
 [files]
