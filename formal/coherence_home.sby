@@ -24,6 +24,7 @@ covers: mode cover
 covers: depth 180
 timeout 180
 control: timeout 600
+wide: timeout 1200
 bmc4: timeout 1200
 pfcover: timeout 1200
 fill_covers: mode cover
