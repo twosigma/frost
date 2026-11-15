@@ -325,6 +325,9 @@ module sdp_ram_byte_en #(
   always @(posedge i_clk) begin
     if (i_check_enable && check_history_ready && check_re && row_write_en &&
         (check_raddr == waddr_q)) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("sdp_ram_byte_en: row %0d read and written at the same edge", check_raddr);
     end
   end

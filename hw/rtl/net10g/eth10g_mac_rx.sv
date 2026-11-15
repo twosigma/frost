@@ -585,6 +585,9 @@ module eth10g_mac_rx #(
 
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst && reader_capture && fetched_word_was_written)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("eth10g_mac_rx: word %0d was written on the edge that fetched it", read_word);
   end
 
@@ -596,6 +599,9 @@ module eth10g_mac_rx #(
       stalled <= 1'b0;
     end else if (reset_seen_q) begin
       if (stalled && !(m_axis_tvalid && {m_axis_tlast, m_axis_tkeep, m_axis_tdata} == stalled_beat))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("eth10g_mac_rx: AXI Stream output changed while stalled");
       stalled <= m_axis_tvalid && !m_axis_tready;
       stalled_beat <= {m_axis_tlast, m_axis_tkeep, m_axis_tdata};

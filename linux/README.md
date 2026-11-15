@@ -150,7 +150,7 @@ The generated DTB declares the
 including Sstc, Smaia, Ssaia, Sscofpmf, Sstvala, Svade and Svvptc, 64-byte
 `riscv,cbom-block-size`, `riscv,cboz-block-size` and `riscv,cbop-block-size`,
 and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
-ABI. Svvptc tells Linux that a PTE changed from invalid to valid becomes
+ABI. The ISA list includes Zihintntl, Zimop, Zcb and Zcmop. Svvptc tells Linux that a PTE changed from invalid to valid becomes
 visible to the walker without `sfence.vma`, so the kernel can omit that
 synchronization for those mapping updates. Other PTE changes retain their
 existing address-translation synchronization requirements. No FROST translation
