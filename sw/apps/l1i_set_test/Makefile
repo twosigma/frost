@@ -15,7 +15,7 @@
 # L1I set coverage: every set of the L1I filled, hit, patched and cleared,
 # PA[12] pairs, an over-subscribed upper set, and an Sv39 page crossing whose
 # PA[12] differs from its VA[12]. L1I_TEST_BYTES (default 16384) is the
-# simulated L1I size; at 32768 or more the warm-pass refill bound is checked.
+# target L1I size in bytes (16384 or 32768) for the warm-miss and residence checks.
 L1I_TEST_BYTES ?= 16384
 EXTRA_CFLAGS += -DL1I_TEST_BYTES=$(L1I_TEST_BYTES)
 

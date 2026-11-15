@@ -23,17 +23,23 @@
  *      (one set at 16 KiB, two at 32 KiB); line i of each region shares a
  *      set at both sizes (8 KiB apart). Each round patches every line's
  *      immediate, executes fence.i, calls every line cold and then warm, and
- *      checks that each call returns the round's value. A warm pass over the
- *      24 KiB is counted with the L1I refill event (mhpmevent3 = 19); with
- *      L1I_TEST_BYTES >= 32768 it must refill almost nothing (three lines
- *      per set fit four ways), while a 16 KiB L1I holds six lines per set
- *      and refills on every call.
+ *      checks that each call returns the round's value. Cold and warm L1I
+ *      refills/misses over the 24 KiB are checked via mhpmevent3 = 19 when
+ *      supported or profiling counter 108 (L1I_MISS) when present, and an
+ *      unfenced D-side overwrite checks directly that all 768 lines remain
+ *      resident in a 32 KiB L1I (three lines per set in four ways) while a
+ *      16 KiB L1I evicts and refetches at least a third of them.
  *   W  Set 133 (an upper set, PA[12] = 1): line 133 of regions 0..4, five
  *      lines in four ways, patched and called twice per round.
  *   V  Sv39 from S-mode: VA page 0x400000 (VA[12] = 0) maps to a code page
  *      with PA[12] = 1 and VA page 0x401000 (VA[12] = 1) to one with
  *      PA[12] = 0. Code at VA 0x400FF8 runs across the page boundary to an
- *      ecall; the patched immediates on both pages must arrive.
+ *      ecall; the patched immediates on both pages must arrive. A second
+ *      Sv39 check primes VA 0x400540 (VA[12:5] = 42, PA[12:5] = 170),
+ *      patches memory without fence.i, flushes the fetch provider with an
+ *      unrelated set to confirm L1I residence, then evicts physical set 170
+ *      from M-mode and verifies S-mode refetches the patched line rather
+ *      than hitting a virtual-set alias at set 42.
  *
  * The first statement of main calls a .ddr_text function, so the first
  * cached fetch after reset follows the L1I reset sweep (256 sets with
@@ -45,6 +51,8 @@
 
 #include <stdint.h>
 
+#include "csr.h"
+#include "tomasulo_profile.h"
 #include "trap.h"
 #include "uart.h"
 
@@ -64,7 +72,7 @@
         __asm__ volatile("csrw " #num ", %0" : : "r"(v_) : "memory");                              \
     } while (0)
 
-#define CODE_BASE 0x81200000ul /* five 8 KiB regions, 8 KiB aligned */
+#define CODE_BASE 0x81200000ul /* seven 8 KiB regions (0..6) below SV_PAGES */
 #define REGION_BYTES 0x2000ul
 #define LINES 256ul
 #define SV_PAGES 0x81210000ul /* three 4 KiB pages: PA[12] = 0, 1, 0 */
@@ -73,8 +81,15 @@
 #define PT_L0 0x81222000ul
 #define VA_P0 0x00400000ul /* VA[12] = 0 */
 #define UPPER_LINE 133ul
+#define VA_ALIAS_OFF 0x540ul /* line 42: VA[12:5] = 42, q1 PA[12:5] = 170 */
+#define FLUSH_LINE_A 6ul     /* PA[5] = 0, disjoint from sets 42 and 170 */
+#define FLUSH_LINE_B 8ul     /* PA[5] = 0, disjoint from sets 42 and 170 */
+#define ALIAS_PHYS_LINE 170ul
 
 #define SEL_L1I_REFILL 19ul
+#define L1I_COUNT_NONE 0
+#define L1I_COUNT_HPM3 1
+#define L1I_COUNT_MPERF 2
 #define INSN_RET 0x00008067u
 #define INSN_ECALL 0x00000073u
 #define SATP_SV39 (8ul << 60)
@@ -104,6 +119,29 @@ static void expect(const char *name, unsigned long got, unsigned long want)
         uart_printf("[FAIL] %s got=%lu want=%lu\r\n", name, got, want);
         ok = 0;
     }
+}
+
+static int detect_l1i_counter(void)
+{
+    csr_write_num(0x320, 0); /* mcountinhibit: count everything */
+    csr_write_num(0x323, SEL_L1I_REFILL);
+    if ((csr_read_num(0x323) & 0xFFul) == SEL_L1I_REFILL)
+        return L1I_COUNT_HPM3;
+    if (csr_read_imm(CSR_MPERFCOUNT) > TOMASULO_PERF_L1I_MISS)
+        return L1I_COUNT_MPERF;
+    return L1I_COUNT_NONE;
+}
+
+static unsigned long read_l1i_counter(int mode)
+{
+    if (mode == L1I_COUNT_HPM3)
+        return csr_read_num(0xB03);
+    if (mode == L1I_COUNT_MPERF) {
+        csr_write_imm(CSR_MPERFCTL, 1U);
+        csr_write_imm(CSR_MPERFSEL, TOMASULO_PERF_L1I_MISS);
+        return (unsigned long) tomasulo_profile_read_selected_counter64();
+    }
+    return 0;
 }
 
 /* The first cached fetch after reset. Low BRAM text reaches it through an
@@ -166,7 +204,46 @@ static unsigned long pass(unsigned long round, const char *name)
     return bad;
 }
 
-/* --- V: Sv39 page crossing with PA[12] != VA[12] ------------------------ */
+/* Overwrite all 768 warm lines in L1D without fence.i and call them again.
+ * A 32 KiB L1I keeps all 768 cached (three ways of 256 sets); a 16 KiB L1I
+ * plus the 8-line fetch buffer holds at most 520 lines and refetches >= 248. */
+static void check_residence(unsigned long round, unsigned long target_bytes)
+{
+    unsigned long refetched = 0;
+    unsigned long bad = 0;
+
+    for (unsigned long r = 0; r < 3; r++)
+        for (unsigned long i = 0; i < LINES; i++) {
+            volatile uint32_t *w = line_at(r, i);
+            w[0] = addi(10, value(round, r, i) ^ 0x400ul);
+        }
+    __asm__ volatile("fence rw, rw" ::: "memory");
+
+    for (unsigned long r = 0; r < 3; r++)
+        for (unsigned long i = 0; i < LINES; i++) {
+            unsigned long cached = value(round, r, i);
+            unsigned long patched = cached ^ 0x400ul;
+            unsigned long got = call_line(r, i);
+            if (got == patched)
+                refetched++;
+            else if (got != cached)
+                bad++;
+        }
+    expect("R unfenced overwrite unexpected values", bad, 0);
+    uart_printf(
+        "R round %lu: unfenced 24 KiB re-call refetched %lu/768 lines\r\n", round, refetched);
+    if (target_bytes >= 32768ul) {
+        if (refetched > 16) {
+            uart_printf("[FAIL] R unfenced refetched %lu > 16 with a 32 KiB L1I\r\n", refetched);
+            ok = 0;
+        }
+    } else if (refetched < 248) {
+        uart_printf("[FAIL] R unfenced refetched %lu < 248 with a 16 KiB L1I\r\n", refetched);
+        ok = 0;
+    }
+}
+
+/* --- V: Sv39 page crossing and PA[12] != VA[12] set indexing ------------ */
 
 volatile unsigned long g_v_cause, g_v_a0, g_v_a1;
 
@@ -216,6 +293,7 @@ static void v_case(void)
     volatile unsigned long *l0 = (volatile unsigned long *) PT_L0;
     unsigned long q1 = SV_PAGES + 0x1000; /* PA[12] = 1 */
     unsigned long q2 = SV_PAGES + 0x2000; /* PA[12] = 0 */
+    volatile uint32_t *pa_alias = (volatile uint32_t *) (q1 + VA_ALIAS_OFF);
 
     for (int i = 0; i < 512; i++) {
         root[i] = 0;
@@ -249,6 +327,42 @@ static void v_case(void)
         }
         uart_printf("V round %lu: a0=%lu a1=%lu cause=%lu\r\n", round, g_v_a0, g_v_a1, g_v_cause);
     }
+
+    /* Prime VA 0x400540 (VA[12:5] = 42 -> PA[12:5] = 170), patch memory without
+     * fence.i, displace the fetch provider via sets 6 and 8 to prove L1I
+     * residence, then evict physical set 170 from M-mode and confirm refetch. */
+    for (unsigned long r = 0; r < 5; r++) {
+        write_line(0, r, FLUSH_LINE_A);
+        write_line(0, r, FLUSH_LINE_B);
+    }
+    for (unsigned long r = 0; r < 7; r++)
+        write_line(0, r, ALIAS_PHYS_LINE);
+    pa_alias[0] = addi(10, 0x155);
+    pa_alias[1] = INSN_ECALL;
+    fence_i();
+    __asm__ volatile("sfence.vma" ::: "memory");
+
+    run_s(VA_P0 + VA_ALIAS_OFF);
+    expect("V alias prime cause", g_v_cause, 9);
+    expect("V alias prime a0", g_v_a0, 0x155);
+
+    pa_alias[0] = addi(10, 0x2AA);
+    __asm__ volatile("fence rw, rw" ::: "memory");
+    for (unsigned long r = 0; r < 5; r++) {
+        (void) call_line(r, FLUSH_LINE_A);
+        (void) call_line(r, FLUSH_LINE_B);
+    }
+    run_s(VA_P0 + VA_ALIAS_OFF);
+    expect("V alias L1I hit cause", g_v_cause, 9);
+    expect("V alias hits L1I before set-170 eviction", g_v_a0, 0x155);
+
+    for (int k = 0; k < 2; k++)
+        for (unsigned long r = 0; r < 7; r++)
+            (void) call_line(r, ALIAS_PHYS_LINE);
+    run_s(VA_P0 + VA_ALIAS_OFF);
+    expect("V alias post-evict cause", g_v_cause, 9);
+    expect("V alias refetches after PA[12:5] eviction", g_v_a0, 0x2AA);
+
     csr_write_num(satp, 0);
     __asm__ volatile("sfence.vma" ::: "memory");
 }
@@ -256,34 +370,53 @@ static void v_case(void)
 int main(void)
 {
     unsigned long first = ((line_fn) first_fetch_addr)();
+    unsigned long target_bytes = L1I_TEST_BYTES;
+    int counter_mode = detect_l1i_counter();
 
-    uart_printf("L1I set test (L1I_TEST_BYTES=%lu)\r\n", (unsigned long) L1I_TEST_BYTES);
+    uart_printf(
+        "L1I set test (L1I_TEST_BYTES=%lu, counter_mode=%d)\r\n", target_bytes, counter_mode);
     expect("first cached fetch after reset", first, 0x5A);
-    csr_write_num(0x320, 0); /* mcountinhibit: count everything */
-    csr_write_num(0x323, SEL_L1I_REFILL);
 
     for (unsigned long round = 0; round < 3; round++) {
         for (unsigned long r = 0; r < 3; r++)
             for (unsigned long i = 0; i < LINES; i++)
                 write_line(round, r, i);
-        for (unsigned long r = 3; r < 5; r++)
-            write_line(round, r, UPPER_LINE);
         fence_i();
 
+        unsigned long before_cold = read_l1i_counter(counter_mode);
         unsigned long bad_cold = pass(round, "R cold");
-        unsigned long before = csr_read_num(0xB03);
+        unsigned long after_cold = read_l1i_counter(counter_mode);
         unsigned long bad_warm = pass(round, "R warm");
-        unsigned long refills = csr_read_num(0xB03) - before;
+        unsigned long after_warm = read_l1i_counter(counter_mode);
+        unsigned long cold_misses = after_cold - before_cold;
+        unsigned long warm_misses = after_warm - after_cold;
         expect("R cold wrong values", bad_cold, 0);
         expect("R warm wrong values", bad_warm, 0);
-        uart_printf(
-            "R round %lu: warm pass over 768 lines refilled %lu L1I lines\r\n", round, refills);
-#if L1I_TEST_BYTES >= 32768
-        if (refills > 16) {
-            uart_printf("[FAIL] R warm refills %lu > 16 with a 32 KiB L1I\r\n", refills);
-            ok = 0;
+        if (counter_mode != L1I_COUNT_NONE) {
+            uart_printf("R round %lu: cold=%lu warm=%lu L1I misses/refills\r\n",
+                        round,
+                        cold_misses,
+                        warm_misses);
+            if (cold_misses < 3 * LINES) {
+                uart_printf(
+                    "[FAIL] R cold misses %lu < %lu\r\n", cold_misses, (unsigned long) (3 * LINES));
+                ok = 0;
+            }
+            if (target_bytes >= 32768ul) {
+                if (warm_misses > 16) {
+                    uart_printf("[FAIL] R warm misses %lu > 16 with a 32 KiB L1I\r\n", warm_misses);
+                    ok = 0;
+                }
+            } else if (warm_misses < 248) {
+                uart_printf("[FAIL] R warm misses %lu < 248 with a 16 KiB L1I\r\n", warm_misses);
+                ok = 0;
+            }
         }
-#endif
+        check_residence(round, target_bytes);
+
+        for (unsigned long r = 0; r < 5; r++)
+            write_line(round, r, UPPER_LINE);
+        fence_i();
         for (int k = 0; k < 2; k++)
             for (unsigned long r = 0; r < 5; r++)
                 expect("W set-133 line", call_line(r, UPPER_LINE), value(round, r, UPPER_LINE));
