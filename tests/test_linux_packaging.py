@@ -570,22 +570,17 @@ def test_advertised_isa_lists_agree() -> None:
     assert not (roadmap_unadvertised & sail_enabled)
     # Sail enables B/S/U/Sv39/Svbare alongside individual subset flags, models
     # RV64C as Zca + Zcd, and takes RV64I as the base ISA (not an extensions
-    # entry); memory-model, AIA/IMSIC, trap-mode and Zkt properties have no Sail
-    # insn toggle.
+    # entry); AIA/IMSIC, Za64rs, misaligned hardware and multi-region PMA flags
+    # are either absent from Sail or kept off for the TestRIG device-RAM map.
     sail_umbrella_only = {"b", "s", "sv39", "svbare", "u", "zca", "zcd"}
     sail_not_toggled = {
         "smaia",
         "ssaia",
         "ssccptr",
-        "sscounterenw",
-        "sstvecd",
         "za64rs",
-        "zic64b",
         "ziccamoa",
-        "ziccif",
         "zicclsm",
         "ziccrse",
-        "zkt",
     }
     assert sail_umbrella_only <= sail_enabled
     assert not (sail_not_toggled & sail_enabled)

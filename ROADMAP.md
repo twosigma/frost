@@ -100,8 +100,10 @@ Supervisor and user modes decode no non-standard instructions or CSRs
 
 ## SMP
 
-Two harts on the X3, sharing one L2, with RVWMO litmus tests and Debian
-running on both. `cpu_top` holds one hart with its L0, L1D, L1I, and L2, and
+Two harts on the X3 first, sharing one L2, with RVWMO litmus tests and Debian
+running on both. The coherence design is to scale to four harts, so nothing
+in it may assume exactly two.
+`cpu_top` holds one hart with its L0, L1D, L1I, and L2, and
 its outgoing AXI4 master is not coherent, so two `cpu_top` instances on
 shared memory do not form an SMP system. Its coherent ingress gives DMA and
 the NIC access to one tile's caches; it is not a protocol between tiles (see
@@ -120,8 +122,8 @@ It probes the L1D for instruction reads, page-table walks, DMA, atomic and SC
 operations, and replacement victims; the L1D's own reads, store upgrades and
 LRs need no probe while it is the only L1D. The L1D holds sectors in I, S or
 M states and has up to eight requests in flight to the home, seven of them
-for loads. With a second hart, the
-home would probe both L1Ds, and dirty data would still pass through the L2
+for loads. With more than one hart, the
+home would probe the other L1Ds, and dirty data would still pass through the L2
 rather than directly between the L1Ds. A coherence unit at the L1 level can
 follow if measurements show that the probes or the trip through the L2 limit
 performance: it would keep a copy of each L1D's tags, so that a request probes

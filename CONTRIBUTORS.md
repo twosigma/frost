@@ -109,3 +109,8 @@
 - Limited the fanout of the L1D's phase and selection registers, registered the L2's zero-fill image clear, and matched DMA ingress grants and releases by queue identity
 - Implemented Zcb, Zcmop, Zimop, and Zihintntl, with decoder, formal, architecture-test and TestRIG coverage and ISA advertisement.
 - Implemented grant responses for attached L1D loads and same-sector load merging beside the read-hit pipeline, with formal checks and directed tests
+- Kept L1D stream prefetches off sectors held by pending store records and waiting `cbo.zero` twins, closing a stale-line install that lost the upper half of a zeroed block, with a cluster reproduction test and an invariant check
+- Configured the VCU118 32 KiB L1I cache and added a directed set, eviction, `fence.i` and Sv39 `PA[12]`-crossing test across 16 KiB and 32 KiB geometries
+- Gave the store queue separate early-address and MMIO copies and the ROB link-value read comparators separate staged allocation addresses, with formal equivalence checks.
+- Simplified L2 home payload captures, registered fill update phase flags and replicated writeback reply selects while preserving qualified request and response behavior
+- Limited the fanout of the L1I's miss-slot selection registers, formed the fetch-hold polarity directly in the IMMU's copy LUTs, and applied the ID stage's illegal-instruction and fetch-fault kill after operand classification, with formal equivalence checks

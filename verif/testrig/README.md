@@ -27,6 +27,8 @@ conformance bugs fixed for
 | [`rvfi_dii.py`](rvfi_dii.py) | RVFI-DII packet formats |
 | [`preamble.py`](preamble.py) | Instructions FROST runs after each reset, before a test |
 | [`atomics.py`](atomics.py) | Random A-extension tests (see [The A extension](#the-a-extension)) |
+| [`mmu.py`](mmu.py) | Random Sv39 MMU, ASID, SFENCE.VMA, and Sstvala tests (see [Sv39 MMU, cache-block operations, and Sstvala](#sv39-mmu-cache-block-operations-and-sstvala)) |
+| [`cmo.py`](cmo.py) | Random Zicbom, Zicboz, Zicbop, Zawrs, device-window, and Sstvala tests (see [Sv39 MMU, cache-block operations, and Sstvala](#sv39-mmu-cache-block-operations-and-sstvala)) |
 | [`vector.py`](vector.py) | Random vector-instruction tests (see [The vector extension](#the-vector-extension)) |
 | [`sail_frost.json`](sail_frost.json) | Sail settings that describe FROST |
 | `sail_frost_vlen128.json`, `sail_frost_vlen256.json`, `sail_frost_vlen512.json` | Overlays on `sail_frost.json` that turn on the vector unit at one vector length; they differ only in `V.vlen_exp` |
@@ -54,6 +56,8 @@ repository root:
 ./scripts/frost.py run python3 tests/test_testrig.py --trace tests/testrig_failures/failure-<time>.S
 ./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200         # A-extension tests
+./scripts/frost.py run python3 tests/test_testrig.py --mmu 40              # Sv39 MMU, ASID, and SFENCE.VMA tests
+./scripts/frost.py run python3 tests/test_testrig.py --cmo 80              # CMO, prefetch, Zawrs, and Sstvala tests
 ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf           # deterministic counter controls
 ./scripts/frost.py run python3 tests/test_testrig.py --ddr-capacity-log2-bytes 37 --trace-dir verif/testrig/traces
 ```
@@ -86,21 +90,24 @@ The fixture uses `i_clk` for the CPU and SoC and requires
 `platform_top` integration.
 
 CI runs four TestRIG jobs in parallel. Each draws its own 100 sequences per
-template and its own 200 A-extension tests, and each simulates the SoC with
+template, 200 A-extension tests, 40 Sv39 MMU tests, and 80 CMO and Sstvala
+tests, and each simulates the SoC with
 its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 [tests/README.md](../../tests/README.md#environment-and-output)).
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `--arch` | `rv64imfdcs_zicsr_zifencei` | Architecture the templates target |
+| `--arch` | `rv64imfdcs_zicsr_zifencei` | Architecture the templates target (`rv64imafdcs_zicsr_zifencei` with `--atomics`, `--mmu` or `--cmo`) |
 | `--tests` | 50 | Tests per template |
 | `--ddr-capacity-log2-bytes` | 30 (1 GiB) | Set the DDR aperture for both FROST and Sail; accepted values 30–37 (1–128 GiB) |
 | `--atomics` | 0 | Replay this many random A-extension tests instead of the templates |
+| `--mmu` | 0 | Replay this many random Sv39 MMU, ASID, SFENCE.VMA, and Sstvala tests instead of the templates |
+| `--cmo` | 0 | Replay this many random Zicbom, Zicboz, Zicbop, Zawrs, device-window, and Sstvala tests instead of the templates |
 | `--svinval` | 0 | Replay this many random Svinval tests (`verif/testrig/svinval.py`) instead of the templates |
 | `--sscofpmf` | off | Replay the deterministic counter-control trace (`verif/testrig/sscofpmf/controls.S`); `--trace` overrides the trace path |
 | `--vector` | 0 | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
 | `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
-| `--seed` | random | Seed for `--atomics`, `--crypto`, `--vector`, `--zcb`, `--fp-ext` and `--svinval`; the runner prints the one it used |
+| `--seed` | random | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval`, `--crypto` and `--vector`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
 | `--include`, `--exclude` | see the runner | Template name regexes |
 | `--csr-include` | see the runner | CSRs the templates may access |
@@ -205,10 +212,10 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zfa, Zfhmin, Zcb, Zcmop, Zihintntl, Zimop, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, Zihpm, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svinval, Svvptc, Sstc, Sscofpmf; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zfa, Zfhmin, Zcb, Zcmop, Zihintntl, Zimop, Zicond, Zbc, Zbkb, Zbkc, Zkt, Zihintpause, Zicntr, Zihpm, Zic64b, Ziccif, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svinval, Svvptc, Sstc, Sscofpmf, Sscounterenw, Sstvala, Sstvecd; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
-| Misaligned accesses | Address-misaligned trap, after the PMA check |
+| Misaligned accesses | Address-misaligned trap, after the PMA check; `Zicclsm` is left off because TestRIG builds omit the misaligned-access engine |
 | `mtval` | The faulting instruction's bits for illegal instructions (Sstvala) |
 | `mstatus.FS` | Dirty when an FP instruction raises a flag, even one already set |
 | `mstatus.VS` | Read-only zero: FROST has no V extension |
@@ -217,8 +224,8 @@ different implementation choice:
 | Delegation | `medeleg` mask 0xB3FF; `mideleg` mask 0x2222 |
 | PMP | None |
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
-| WFI | Completes at once |
-| Zawrs | `wrs.nto` and `wrs.sto` complete at once; `wrs.nto` below M with `mstatus.TW` set raises illegal-instruction. Sail traps it only while a reservation is valid, after waiting `platform.max_time_to_wait`, and otherwise retires it |
+| WFI | Completes at once; FROST traps `wfi` in S-mode when `mstatus.TW` is set and always in U-mode, whereas Sail's `wfi_is_nop` skips the S-mode `TW` check while keeping U-mode `wfi` illegal |
+| Zawrs | `wrs.nto` and `wrs.sto` complete at once; `wrs.nto` below M with `mstatus.TW` set raises illegal-instruction. Sail 0.16's non-nop wait loop enters `Step_Waiting` in RVFI-DII mode with `pc_wdata = 0` and consumes an extra packet, so `sail_frost.json` sets `nto.is_nop` true; `zawrs_test` and `sstvala_test` cover the `mstatus.TW` traps on `wrs.nto` and `wfi` |
 | Sail's CLINT | At 0x2B6D_93F1_0000, outside FROST's map at an address random sequences do not form; Sail requires one for Zicntr |
 
 The `--sscofpmf` replay checks `mideleg`'s full WARL mask and register and
@@ -233,7 +240,7 @@ assigns local counter overflow interrupt number 13 and specifies that
 
 Replay a saved counterexample directly with `--trace <file>` (or
 `--sscofpmf --trace <file>`); `--sscofpmf` cannot be combined with
-`--trace-dir`, `--atomics`, `--crypto`, `--zcb`, `--fp-ext` or `--svinval`.
+`--trace-dir`, `--atomics`, `--crypto`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval` or `--vector`.
 
 ## What the comparison leaves out
 
@@ -336,6 +343,69 @@ two. No CI job replays `--vector` until the core has a vector unit; to turn
 one on, add a TestRIG shard that runs `test_testrig.py --vector 100 --vlen 128`
 (and 256 and 512).
 
+## Sv39 MMU, cache-block operations, and Sstvala
+
+QuickCheckVEngine's default `pte` and `csr` templates run in M-mode, write only
+zero to `satp.ASID`, emit only the global `sfence.vma x0, x0` form, and do not
+emit Zicbom, Zicboz, `prefetch.w`, or Zawrs encodings. `--mmu N` replays N
+tests from [`mmu.py`](mmu.py), and `--cmo N` replays N tests from
+[`cmo.py`](cmo.py).
+
+Each MMU test builds two Sv39 page-table hierarchies in cached DDR with 4 KiB
+pages, 2 MiB megapages, 1 GiB gigapages, global leaves, non-leaf global
+pointers, negative canonical upper-half virtual addresses, mapped device pages,
+faulting PTEs (`V=0`, `A=0`, `D=0`, `U=1` under `SUM=0`/`1`, `X`-only under
+`MXR=0`/`1`, reserved `W=1,R=0` and bit-54 PTEs, misaligned superpages,
+non-leaf `D/A/U`, non-leaf pointers outside cached DDR, and unmapped or
+out-of-range leaf PPNs), non-canonical virtual addresses, and the `mstatus.TVM`
+and `mstatus.TSR` trap-intercept bits. Strands run across M (`MPRV=1`), S, and
+U modes, delegate traps selectively to S-mode, read `mtval`/`stval`,
+`mepc`/`sepc`, and `mcause`/`scause` into integer registers, switch ASIDs
+without `SFENCE.VMA` while spilling the 16-entry L1 DTLB into the 512-entry L2
+TLB and wrapping the 32-entry superpage side array, and mutate cached PTEs
+followed by all four `SFENCE.VMA` forms (`(x0, x0)`, `(va, x0)`, `(x0, asid)`,
+`(va, asid)`).
+
+Each CMO test configures `menvcfg` and `senvcfg` (`FIOM`, `CBIE` including
+reserved `10` legalization to `00`, `CBCFE`, and `CBZE`), interleaves cached
+DDR, low-BRAM, and device-window stores with `cbo.clean`, `cbo.flush`,
+`cbo.inval`, `prefetch.i`, `prefetch.r`, `prefetch.w`, `wfi` (with `TW` clear
+in M and S, and clear or set in U), `wrs.sto`, and `wrs.nto`, and checks
+`mtval`/`stval` across Bare and Sv39 permission, alignment,
+illegal-instruction, and breakpoint traps.
+
+Every strand in `mmu.py` and `cmo.py` is marked `.noshrink`, so
+QuickCheckVEngine does not shrink counterexamples below whole strands. At the
+end of a `--mmu` or `--cmo` run, the runner checks each strand's RVFI record
+slice for the expected privilege mode, predicted trap or retirement, exception
+cause, and fault-value CSR readback, prints the per-strand-kind table, and
+fails the run when a predicted trap misses or a strand kind never reaches its
+target behavior across the sample.
+
+Several architectural and harness rules keep the comparison deterministic:
+
+- Sail walks page tables in memory on every access, whereas FROST caches
+  translations across its L1 ITLB, L1 DTLB, L2 TLB, superpage array, and walk
+  cache. Each non-zero ASID binds to one root table, valid-PTE edits pair with
+  a matching `SFENCE.VMA`, and `Svvptc` invalid-to-valid upgrades install the
+  leaf in the fault handler and drain committed stores via `mret` or `sret`
+  without a fence.
+- When a 32-bit instruction straddles a page boundary onto an unmapped second
+  page, FROST writes `PC + 2` to `xtval` while Sail 0.16's `rvfi_fetch` passes
+  `PC` in `F_Error(e, PC)`. Those strands compare `xepc` and `xcause` and clear
+  `xtval`; 16-bit parcels at `0xFFE` followed by a fault at `0x1000` compare
+  `xtval` directly.
+- Sail 0.16's RVFI-DII write recorder asserts a 16-byte maximum write width
+  (`core/rvfi_dii.sail`), so retiring a 64-byte `cbo.zero` aborts Sail.
+  `cmo.py` exercises `cbo.zero` across `CBZE` privilege gates and Bare and Sv39
+  access and page faults; retiring 64-byte zeroing is checked by the Zicboz
+  cocotb benches.
+- Under Sv39, FROST rejects mappings to the store-only gaps of the device
+  quadrant (`StoreAccessFault`) and checks alignment before the page-table
+  walk, whereas Sail permits stores to those gaps and walks page tables before
+  alignment checks. Translated strands keep device mappings inside the MMIO,
+  APLIC, and IMSIC windows and place misaligned checks on valid pages.
+
 ## Saved counterexamples
 
 `traces/` holds directed regression sequences, one per file. The first of
@@ -354,3 +424,6 @@ CI's TestRIG jobs replays all of them before its random run.
 | [`lrsc_jump.S`](traces/lrsc_jump.S) | A JAL, JALR, or taken branch between LR and SC keeps the reservation |
 | [`lrsc_older_store.S`](traces/lrsc_older_store.S) | An older store to the other word of the reserved doubleword drains before LR and permits the following SC |
 | [`pte_nonleaf_dau.S`](traces/pte_nonleaf_dau.S) | A non-leaf PTE with D, A, or U set raises a page fault |
+| [`sstvala_illegal.S`](traces/sstvala_illegal.S) | Illegal 32-bit and 16-bit instructions write their instruction bits to `mtval` and `stval` |
+| [`zawrs_ops.S`](traces/zawrs_ops.S) | `wrs.sto` and `wrs.nto` retire in M, S, and U modes and preserve an active `LR.D` reservation |
+| [`zicbom_ops.S`](traces/zicbom_ops.S) | `cbo.clean`, `cbo.flush`, and `cbo.inval` across cached DDR, low BRAM, device windows, and unmapped addresses, with `CBIE`/`CBCFE` WARL checks |

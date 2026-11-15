@@ -356,10 +356,24 @@ def test_sail_config_validates(tmp_path: Path, sscofpmf: bool) -> None:
         check=True,
     ).stdout
     assert re.match(
-        r"rv64imafdcb_zicbom_zicbop_zicboz_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm",
+        r"rv64imafdcb_zic64b_zicbom_zicbop_zicboz_ziccif_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm",
         isa,
     )
-    assert {"zihpm", "svinval", "sscofpmf"} <= set(isa.strip().split("_"))
+    tokens = set(isa.strip().split("_"))
+    for ext in (
+        "zkt",
+        "sscounterenw",
+        "sstvecd",
+        "zcb",
+        "zcmop",
+        "zimop",
+        "zihintntl",
+        "zihpm",
+        "svinval",
+        "sscofpmf",
+    ):
+        assert ext in tokens
+    assert "zicclsm" not in tokens
 
 
 def test_svinval_generator_reproducibility_and_coverage(tmp_path: Path) -> None:

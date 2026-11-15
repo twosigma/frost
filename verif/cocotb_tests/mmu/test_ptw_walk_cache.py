@@ -32,6 +32,8 @@ from collections.abc import Callable
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
+from cocotb_tests.cpu_structs import PTW_RESP_FIELDS
+from utils.packed_structs import assert_port_width, unpack_struct
 
 DDR_BASE = 0x8000_0000
 DDR_LIMIT = DDR_BASE + (1 << 30)
@@ -48,12 +50,16 @@ def pte(ppn: int, flags: int) -> int:
 
 def unpack(resp: int) -> dict[str, int]:
     """Split a ptw_resp_t: {fault, vpn, ppn, level, r, w, x, u, d, g}."""
+    u = unpack_struct(PTW_RESP_FIELDS, resp)
+    perms = 0
+    for name in ("perm_r", "perm_w", "perm_x", "perm_u", "perm_d", "perm_g"):
+        perms = (perms << 1) | int(u[name])
     return {
-        "fault": (resp >> 79) & 3,
-        "vpn": (resp >> 52) & ((1 << 27) - 1),
-        "ppn": (resp >> 8) & ((1 << 44) - 1),
-        "level": (resp >> 6) & 3,
-        "perms": resp & 0x3F,
+        "fault": int(u["fault_kind"]),
+        "vpn": int(u["vpn"]),
+        "ppn": int(u["ppn"]),
+        "level": int(u["level"]),
+        "perms": perms,
     }
 
 
@@ -126,6 +132,7 @@ class Bench:
 
     def __init__(self, dut: Any, seed: int) -> None:
         """Start the clock and the line responder."""
+        assert_port_width(dut.o_resp, PTW_RESP_FIELDS)
         self.dut = dut
         self.mem = Memory()
         self.rng = random.Random(seed)
