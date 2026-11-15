@@ -1367,3 +1367,185 @@ async def test_rs1_metadata_follows_parcel_and_bank_selection(dut: Any) -> None:
                 hex(pc),
                 hex(current),
             )
+
+
+@cocotb.test()
+async def test_slot2_is_cond_branch_covers_all_positions_and_encodings(
+    dut: Any,
+) -> None:
+    """o_slot2_is_cond_branch matches slot-2 branch decode across every parcel position."""
+    await _setup_test(dut)
+    c_beqz = (0b110 << 13) | (1 << 7) | 0b01
+    c_bnez = (0b111 << 13) | (1 << 7) | 0b01
+    native_beq = 0x00208463  # beq x1, x2, +8
+    native_jal = 0x0080006F  # jal x0, +8
+    native_addi = 0x00108093  # addi x1, x1, 1
+    slot1_addi = 0x00B50533  # add x10, x10, x11
+
+    # (pc, current_word, next_word, current_sb, next_sb, expect_branch_unswapped)
+    cases = [
+        # SLOT2_CURRENT_HI: compressed branch / non-branch after compressed slot 1
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=c_beqz),
+            0,
+            _sideband(compressed_lo=True, compressed_hi=True),
+            _sideband(),
+            True,
+        ),
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=c_bnez),
+            0,
+            _sideband(compressed_lo=True, compressed_hi=True),
+            _sideband(),
+            True,
+        ),
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=COMPRESSED_J),
+            0,
+            _sideband(compressed_lo=True, compressed_hi=True),
+            _sideband(),
+            False,
+        ),
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=COMPRESSED_NOP),
+            0,
+            _sideband(compressed_lo=True, compressed_hi=True),
+            _sideband(),
+            False,
+        ),
+        # SLOT2_CURRENT_HI: spanning native branch / JAL / ALU
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=native_beq & 0xFFFF),
+            native_beq >> 16,
+            _sideband(compressed_lo=True),
+            _sideband(),
+            True,
+        ),
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=native_jal & 0xFFFF),
+            native_jal >> 16,
+            _sideband(compressed_lo=True),
+            _sideband(),
+            False,
+        ),
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=native_addi & 0xFFFF),
+            native_addi >> 16,
+            _sideband(compressed_lo=True),
+            _sideband(),
+            False,
+        ),
+        # SLOT2_NEXT_LO after native slot 1 at PC_LO
+        (
+            PC_LO,
+            slot1_addi,
+            c_beqz,
+            _sideband(native_pairable_lo=True),
+            _sideband(compressed_lo=True),
+            True,
+        ),
+        (
+            PC_LO,
+            slot1_addi,
+            native_beq,
+            _sideband(native_pairable_lo=True),
+            _sideband(),
+            True,
+        ),
+        (
+            PC_LO,
+            slot1_addi,
+            native_jal,
+            _sideband(native_pairable_lo=True),
+            _sideband(),
+            False,
+        ),
+        # SLOT2_NEXT_LO after compressed slot 1 at PC_HI
+        (
+            PC_HI,
+            _word(lo=0, hi=COMPRESSED_NOP),
+            c_bnez,
+            _sideband(compressed_hi=True),
+            _sideband(compressed_lo=True),
+            True,
+        ),
+        (
+            PC_HI,
+            _word(lo=0, hi=COMPRESSED_NOP),
+            native_beq,
+            _sideband(compressed_hi=True),
+            _sideband(),
+            True,
+        ),
+        # SLOT2_NEXT_HI after spanning native slot 1 at PC_HI
+        (
+            PC_HI,
+            _word(lo=0, hi=slot1_addi & 0xFFFF),
+            _word(lo=slot1_addi >> 16, hi=c_beqz),
+            _sideband(native_pairable_hi=True),
+            _sideband(compressed_hi=True),
+            True,
+        ),
+        (
+            PC_HI,
+            _word(lo=0, hi=slot1_addi & 0xFFFF),
+            _word(lo=slot1_addi >> 16, hi=COMPRESSED_J),
+            _sideband(native_pairable_hi=True),
+            _sideband(compressed_hi=True),
+            False,
+        ),
+        # SLOT2_NEXT_HI with native branch in upper half: 32-bit cannot fit at NEXT_HI -> False
+        (
+            PC_HI,
+            _word(lo=0, hi=slot1_addi & 0xFFFF),
+            _word(lo=slot1_addi >> 16, hi=native_beq & 0xFFFF),
+            _sideband(native_pairable_hi=True),
+            _sideband(compressed_hi=False),
+            False,
+            True,
+        ),
+        # Slot-1 control flow sets o_sel_nop_2 while unqualified candidate decode follows slot2_pos
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_J, hi=c_beqz),
+            0,
+            _sideband(
+                compressed_lo=True, compressed_control_lo=True, compressed_hi=True
+            ),
+            _sideband(),
+            True,
+            True,
+        ),
+    ]
+
+    for swapped in (False, True):
+        for item in cases:
+            pc, current, next_word, current_sb, next_sb, expect_branch = item[:6]
+            expect_sel_nop_unswapped = item[6] if len(item) > 6 else False
+            _clear_inputs(dut)
+            dut.i_pc_reg.value = pc
+            dut.i_instr_bank_sel_r.value = int(swapped)
+            dut.i_instr.value = dut.i_instr_high.value = _fetch(
+                current_word=next_word if swapped else current,
+                next_word=current if swapped else next_word,
+            )
+            dut.i_instr_sideband.value = _fetch_sideband(
+                current_sb=next_sb if swapped else current_sb,
+                next_sb=current_sb if swapped else next_sb,
+            )
+            await _settle(dut)
+            sel_nop_2 = bool(dut.o_sel_nop_2.value)
+            eff_2 = int(dut.o_effective_instr_2.value)
+            observed = bool(dut.o_slot2_is_cond_branch.value)
+            expected = (eff_2 & 0x7F) == OPC_BRANCH
+            assert observed is expected, (swapped, hex(pc), hex(current), hex(eff_2))
+            assert observed is expect_branch, (swapped, hex(pc), hex(current))
+            if not swapped:
+                assert sel_nop_2 is expect_sel_nop_unswapped, (hex(pc), hex(current))

@@ -1374,10 +1374,24 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
-        "Backing BTB redirects fire for their slot's jump with its vetoes clear, "
-        "stack operations and refreshes follow them, and the redirect targets "
-        "match PD's reference models",
+        "PD backing-BTB jump redirects and slot-1/slot-2 TAGE conditional-branch "
+        "overrides fire only with their vetoes clear, stack operations and "
+        "refreshes follow them, and redirect directions and targets match PD's "
+        "reference models",
         tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "pd_id_slot2_redirect.sby",
+        "Composed PD and ID stages dispatch slot 2's effective prediction and "
+        "target equal to PD's slot-2 redirect while leaving slot 1 untouched",
+        tasks=("pd_id_slot2_bmc", "pd_id_slot2_cover"),
+    ),
+    FormalTarget(
+        "if_slot2_precompute.sby",
+        "IF precomputed slot-2 TAGE coverage, lookup select, branch flag, target "
+        "candidates, PC step, and bubble/fault pairing match direct references "
+        "across live and stall-replayed packets",
+        tasks=("if_slot2_precompute_bmc", "if_slot2_precompute_cover"),
     ),
     FormalTarget(
         "slot2_prediction_capture.sby",
@@ -2128,6 +2142,22 @@ SBY_TASKS = [
     ),
     ("pc_tage_events_prove", "Unbounded history event equivalence"),
     ("pc_tage_events_cover", "History event and suppression reachability"),
+    (
+        "pd_id_slot2_bmc",
+        "Bounded PD and ID composition check for slot-2 prediction overrides",
+    ),
+    (
+        "pd_id_slot2_cover",
+        "Reachability of slot-2 taken overrides, not-taken vetoes, and stall holds",
+    ),
+    (
+        "if_slot2_precompute_bmc",
+        "Bounded IF slot-2 TAGE coverage, decode, and target-candidate check",
+    ),
+    (
+        "if_slot2_precompute_cover",
+        "Reachability of live and stall-replayed slot-2 TAGE-covered packets",
+    ),
     ("coh_rs_payload4_prove", "Coherent payload storage equality at four entries."),
     ("coh_rs_payload8_prove", "Coherent payload storage equality at eight entries."),
     ("coh_rs_payload16_prove", "Coherent payload storage equality at sixteen entries."),

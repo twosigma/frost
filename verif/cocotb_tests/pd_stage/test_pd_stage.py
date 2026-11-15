@@ -124,7 +124,7 @@ def _drive_if_packet(
 ) -> None:
     """Drive one packed IF-to-PD input packet with idle-safe defaults."""
     packet = {
-        "program_counter": 0,
+        "program_counter": 4 if slot2 else 0,
         "raw_parcel": NOP_INSTR & 0xFFFF,
         "sel_nop": True,
         "sel_compressed": False,
@@ -153,21 +153,24 @@ def _drive_if_packet(
             if parcel & 3 != 3 and not slot2
             else ((instr >> 17) & 0x6) | ((instr >> 15) & 1)
         )
-    # IF carries the PD redirect's target candidates for slot 1 (0 for slot 2).
-    if not slot2:
-        pc = int(packet["program_counter"])
-        if "pd_target_native_low" not in fields:
-            low, select = _target_candidate(
-                pc, _native_branch_imm_low(int(packet["effective_instr"]))
-            )
-            packet["pd_target_native_low"] = low
-            packet["pd_target_native_high_select"] = select
-        if "pd_target_compressed_low" not in fields:
-            low, select = _target_candidate(
-                pc, _compressed_branch_imm_low(int(packet["raw_parcel"]))
-            )
-            packet["pd_target_compressed_low"] = low
-            packet["pd_target_compressed_high_select"] = select
+    if "is_cond_branch" not in fields:
+        packet["is_cond_branch"] = (
+            (int(packet["effective_instr"]) & 0x7F) == OPC_BRANCH if slot2 else False
+        )
+    # IF carries the PD redirect's target candidates for both slots.
+    pc = int(packet["program_counter"])
+    if "pd_target_native_low" not in fields:
+        low, select = _target_candidate(
+            pc, _native_branch_imm_low(int(packet["effective_instr"]))
+        )
+        packet["pd_target_native_low"] = low
+        packet["pd_target_native_high_select"] = select
+    if "pd_target_compressed_low" not in fields:
+        low, select = _target_candidate(
+            pc, _compressed_branch_imm_low(int(packet["raw_parcel"]))
+        )
+        packet["pd_target_compressed_low"] = low
+        packet["pd_target_compressed_high_select"] = select
     value = _pack_if_to_pd(packet)
     if slot2:
         dut.i_from_if_to_pd_2.value = value
@@ -1633,3 +1636,395 @@ async def test_backing_btb_redirect_refreshes_its_entry(dut: Any) -> None:
         _clear_inputs(dut)
         await _advance_cycle(dut)
         assert not bool(dut.o_pd_backing_refresh.value)
+
+
+@cocotb.test()
+async def test_slot2_tage_redirect_taken_and_veto_native_and_compressed(
+    dut: Any,
+) -> None:
+    """Slot-2 tagged direction predictions upgrade not-taken and veto taken branches."""
+    await _setup_test(dut)
+    pc = 0x8000_0400
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    native_br = _pack_b(imm=48, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    c_beqz = _pack_compressed_branch(imm=-32, funct3=0b110)
+    c_beqz_exp = _pack_b(imm=-32, rs2=0, rs1=8, funct3=0, opcode=OPC_BRANCH)
+
+    cases = [
+        # (slot2_pc, raw, eff, compressed, btb_taken, tage_valid, tage_taken, bp_dir, exp_redir, exp_taken, exp_target)
+        # Native taken upgrade
+        (
+            pc + 4,
+            native_br & 0xFFFF,
+            native_br,
+            False,
+            False,
+            True,
+            True,
+            False,
+            True,
+            True,
+            pc + 4 + 48,
+        ),
+        # Native not-taken veto (fall-through = pc2 + 4)
+        (
+            pc + 4,
+            native_br & 0xFFFF,
+            native_br,
+            False,
+            True,
+            True,
+            False,
+            True,
+            True,
+            False,
+            pc + 4 + 4,
+        ),
+        # Compressed taken upgrade
+        (
+            pc + 4,
+            c_beqz,
+            c_beqz_exp,
+            True,
+            False,
+            True,
+            True,
+            False,
+            True,
+            True,
+            pc + 4 - 32,
+        ),
+        # Compressed not-taken veto (halfword fall-through = pc2 + 2)
+        (
+            pc + 4,
+            c_beqz,
+            c_beqz_exp,
+            True,
+            True,
+            True,
+            False,
+            True,
+            True,
+            False,
+            pc + 4 + 2,
+        ),
+        # Agreement with BTB (both taken or both not-taken): no redirect
+        (
+            pc + 4,
+            native_br & 0xFFFF,
+            native_br,
+            False,
+            True,
+            True,
+            True,
+            False,
+            False,
+            False,
+            0,
+        ),
+        (
+            pc + 4,
+            c_beqz,
+            c_beqz_exp,
+            True,
+            False,
+            True,
+            False,
+            True,
+            False,
+            False,
+            0,
+        ),
+        # No TAGE hit (tage_valid=False): bimodal bp_dir_taken=True must NOT redirect slot 2
+        (
+            pc + 4,
+            native_br & 0xFFFF,
+            native_br,
+            False,
+            False,
+            False,
+            True,
+            True,
+            False,
+            False,
+            0,
+        ),
+    ]
+
+    for (
+        pc2,
+        raw,
+        eff,
+        compressed,
+        btb_taken,
+        tage_valid,
+        tage_taken,
+        bp_dir,
+        exp_redir,
+        exp_taken,
+        exp_target,
+    ) in cases:
+        _drive_if_packet(dut, _packet(pc, addi))
+        _drive_if_packet(
+            dut,
+            {
+                "program_counter": pc2,
+                "raw_parcel": raw,
+                "sel_nop": False,
+                "sel_compressed": compressed,
+                "effective_instr": eff,
+                "btb_predicted_taken": btb_taken,
+                "btb_predicted_target": (pc2 + 64) if btb_taken else 0,
+                "bp_dir_taken": bp_dir,
+                "tage_valid": tage_valid,
+                "tage_taken": tage_taken,
+            },
+            slot2=True,
+        )
+        await _settle()
+        assert int(dut.o_cond_branch.value) == 0b10
+        redirect, taken, target, slot2 = await _backing_redirect(dut)
+        assert redirect is exp_redir
+        if exp_redir:
+            assert slot2 is True
+            assert taken is exp_taken
+            assert target == (exp_target & MASK_XLEN)
+            assert not bool(dut.o_pd_redirect_ras_push.value)
+            assert not bool(dut.o_pd_redirect_ras_pop.value)
+            assert not bool(dut.o_pd_backing_refresh.value)
+
+
+@cocotb.test()
+async def test_slot2_tage_target_and_fallthrough_carry_and_borrow_across_bit13(
+    dut: Any,
+) -> None:
+    """Slot-2 taken targets and veto fall-throughs carry and borrow across bit 13."""
+    await _setup_test(dut)
+    chunk_boundary = 0x8000_2000
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    c_nop = 0x0001
+
+    # (pc1, slot1_comp, pc2, slot2_comp, imm, is_veto)
+    cases = [
+        # Same chunk, +imm carry across bit 13
+        (chunk_boundary - 8, False, chunk_boundary - 4, False, +64, False),
+        # Same chunk, -imm borrow across bit 13
+        (chunk_boundary, False, chunk_boundary + 4, False, -64, False),
+        # pc2 itself crosses bit 13 from pc1 + 4 (native slot 1 at 0x1FFC -> pc2 = 0x2000)
+        (chunk_boundary - 4, False, chunk_boundary, False, +32, False),
+        (chunk_boundary - 4, False, chunk_boundary, False, -32, False),
+        (chunk_boundary - 4, False, chunk_boundary, True, -4, False),
+        (chunk_boundary - 4, False, chunk_boundary, True, +4, True),  # veto -> 0x2002
+        # pc2 crosses bit 13 from pc1 + 2 (compressed slot 1 at 0x1FFE -> pc2 = 0x2000)
+        (chunk_boundary - 2, True, chunk_boundary, True, -16, False),
+        (chunk_boundary - 2, True, chunk_boundary, False, +16, True),  # veto -> 0x2004
+        # Spanning native branch at 0x1FFE: veto halfword fall-through crosses bit 13 to 0x2002
+        (chunk_boundary - 4, True, chunk_boundary - 2, False, +12, True),
+        # Compressed branch at 0x1FFE: veto fall-through crosses bit 13 to 0x2000
+        (chunk_boundary - 4, True, chunk_boundary - 2, True, -12, True),
+    ]
+
+    for pc1, s1_comp, pc2, s2_comp, imm, is_veto in cases:
+        _drive_if_packet(
+            dut,
+            {
+                "program_counter": pc1,
+                "raw_parcel": c_nop if s1_comp else (addi & 0xFFFF),
+                "sel_nop": False,
+                "sel_compressed": s1_comp,
+                "effective_instr": NOP_INSTR if s1_comp else addi,
+            },
+        )
+        if s2_comp:
+            raw2 = _pack_compressed_branch(imm=imm, funct3=0b110)
+            eff2 = _pack_b(imm=imm, rs2=0, rs1=8, funct3=0, opcode=OPC_BRANCH)
+            fallthrough = pc2 + 2
+        else:
+            eff2 = _pack_b(imm=imm, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+            raw2 = eff2 & 0xFFFF
+            fallthrough = pc2 + 4
+        expected_target = (fallthrough if is_veto else (pc2 + imm)) & MASK_XLEN
+
+        _drive_if_packet(
+            dut,
+            {
+                "program_counter": pc2,
+                "raw_parcel": raw2,
+                "sel_nop": False,
+                "sel_compressed": s2_comp,
+                "effective_instr": eff2,
+                "btb_predicted_taken": is_veto,
+                "btb_predicted_target": (pc2 + imm) & MASK_XLEN if is_veto else 0,
+                "tage_valid": True,
+                "tage_taken": not is_veto,
+            },
+            slot2=True,
+        )
+        redirect, taken, target, slot2 = await _backing_redirect(dut)
+        assert redirect and slot2, (hex(pc1), hex(pc2), imm, is_veto)
+        assert taken is (not is_veto)
+        assert target == expected_target, (hex(target), hex(expected_target))
+
+
+@cocotb.test()
+async def test_slot2_tage_redirect_multi_cycle_stall_and_flush(dut: Any) -> None:
+    """Slot-2 redirect holds across a multi-cycle stall and clears on flush."""
+    await _setup_test(dut)
+    pc = 0x8000_0800
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    br_taken = _pack_b(imm=40, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    br_other = _pack_b(imm=-20, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+
+    # Register a slot-2 taken redirect, then hold PD stalled for 3 cycles while
+    # IF presents a different packet; the redirect must stay steady and clear
+    # once unstalled, suppressing the younger packet behind it.
+    _drive_if_packet(dut, _packet(pc, addi))
+    _drive_if_packet(
+        dut,
+        _packet(
+            pc + 4,
+            br_taken,
+            btb_predicted_taken=False,
+            tage_valid=True,
+            tage_taken=True,
+        ),
+        slot2=True,
+    )
+    await _advance_cycle(dut)
+    expected_target = (pc + 4 + 40) & MASK_XLEN
+    assert bool(dut.o_pd_redirect.value) and bool(dut.o_pd_redirect_slot2.value)
+    assert bool(dut.o_pd_redirect_taken.value)
+    assert int(dut.o_pd_redirect_target.value) == expected_target
+
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    _drive_if_packet(dut, _packet(pc + 8, addi))
+    _drive_if_packet(
+        dut,
+        _packet(
+            pc + 12,
+            br_other,
+            btb_predicted_taken=True,
+            tage_valid=True,
+            tage_taken=False,
+        ),
+        slot2=True,
+    )
+    for _ in range(3):
+        await _advance_cycle(dut)
+        assert bool(dut.o_pd_redirect.value) and bool(dut.o_pd_redirect_slot2.value)
+        assert bool(dut.o_pd_redirect_taken.value)
+        assert int(dut.o_pd_redirect_target.value) == expected_target
+
+    # Release the stall: the redirect suppresses the younger IF packet into
+    # bubbles and does NOT chain a second redirect on the next cycle.
+    _drive_pipeline_ctrl(dut, {})
+    await _advance_cycle(dut)
+    assert not bool(dut.o_pd_redirect.value)
+    _assert_nop_slot(_read_pd_packet(dut))
+    _assert_nop_slot(_read_pd_packet(dut, slot2=True))
+
+    # A flush on the capture edge clears the slot-2 candidate so no redirect
+    # fires on the following cycle.
+    _drive_pipeline_ctrl(dut, {"flush": True})
+    _drive_if_packet(dut, _packet(pc, addi))
+    _drive_if_packet(
+        dut,
+        _packet(
+            pc + 4,
+            br_taken,
+            btb_predicted_taken=False,
+            tage_valid=True,
+            tage_taken=True,
+        ),
+        slot2=True,
+    )
+    await _advance_cycle(dut)
+    assert not bool(dut.o_pd_redirect.value)
+    _drive_pipeline_ctrl(dut, {})
+    _clear_inputs(dut)
+    await _advance_cycle(dut)
+    assert not bool(dut.o_pd_redirect.value)
+
+
+@cocotb.test()
+async def test_slot2_tage_bubble_fault_and_slot1_jal_priority(dut: Any) -> None:
+    """Bubble and fault veto slot-2 TAGE redirects, and slot-1 redirects take priority."""
+    await _setup_test(dut)
+    pc = 0x8000_0C00
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    jal = _pack_jal(imm=0x80, rd=1)
+    slot1_br = _pack_b(imm=24, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    slot2_br = _pack_b(imm=64, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+
+    # Slot-2 bubble (sel_nop) and fetch_fault each veto a slot-2 TAGE override.
+    for sel_nop, fault in ((True, False), (False, True)):
+        _drive_if_packet(dut, _packet(pc, addi))
+        _drive_if_packet(
+            dut,
+            _packet(
+                pc + 4,
+                slot2_br,
+                sel_nop=sel_nop,
+                fetch_fault=fault,
+                btb_predicted_taken=False,
+                tage_valid=True,
+                tage_taken=True,
+            ),
+            slot2=True,
+        )
+        redirect, _, _, _ = await _backing_redirect(dut)
+        assert not redirect, (sel_nop, fault)
+
+    # Slot-1 JAL with a backing hit paired with a slot-2 TAGE branch: slot 1
+    # wins, o_pd_redirect_slot2 stays low, and slot 1's link/refresh fire.
+    backing_target = 0x8000_0C80
+    _drive_if_packet(dut, _packet(pc, jal))
+    _drive_if_packet(
+        dut,
+        _packet(
+            pc + 4,
+            slot2_br,
+            btb_predicted_taken=False,
+            tage_valid=True,
+            tage_taken=True,
+        ),
+        slot2=True,
+    )
+    _drive_backing(dut, 0, target=backing_target)
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value)
+    assert not bool(dut.o_pd_redirect_slot2.value)
+    assert bool(dut.o_pd_redirect_taken.value)
+    assert int(dut.o_pd_redirect_target.value) == backing_target
+    assert bool(dut.o_pd_redirect_ras_push.value)
+    assert int(dut.o_pd_redirect_ras_link.value) == pc + 4
+    assert bool(dut.o_pd_backing_refresh.value)
+    assert int(dut.o_pd_backing_refresh_pc.value) == pc
+    _clear_inputs(dut)
+    await _advance_cycle(dut)
+
+    # Slot-1 direction redirect paired with a slot-2 TAGE veto: slot 1 wins.
+    _drive_if_packet(
+        dut,
+        _packet(
+            pc,
+            slot1_br,
+            btb_predicted_taken=False,
+            tage_valid=True,
+            tage_taken=True,
+        ),
+    )
+    _drive_if_packet(
+        dut,
+        _packet(
+            pc + 4,
+            slot2_br,
+            btb_predicted_taken=True,
+            tage_valid=True,
+            tage_taken=False,
+        ),
+        slot2=True,
+    )
+    redirect, taken, target, slot2 = await _backing_redirect(dut)
+    assert redirect and not slot2 and taken
+    assert target == (pc + 24) & MASK_XLEN
