@@ -1883,13 +1883,11 @@ module coherence_home #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       memory_out_valid <= 1'b0;
-      memory_out <= '0;
       memory_next_q <= '0;
     end else begin
       if (o_mem_req_valid && i_mem_req_ready) memory_out_valid <= 1'b0;
       if (!memory_out_valid && run && memory_found) begin
         memory_out_valid <= 1'b1;
-        memory_out <= memory_payload[memory_pick];
         if (memory_pick == MemorySelectBits'(MemorySources - 1)) memory_next_q <= '0;
         else memory_next_q <= memory_pick + 1'b1;
       end
@@ -1912,6 +1910,15 @@ module coherence_home #(
           wb_take_reply[wb][sector] = 1'b1;
       end
     end
+  end
+  // The request payload has no reset and loads on every cycle without a
+  // held request, so its enable is memory_out_valid alone rather than the
+  // sources' reduction; the last such load is the presenting edge's. Every
+  // reader takes it with o_mem_req_valid: the home's own sent and ready
+  // terms, and downstream the memory fabric, which captures a cache
+  // request only at its handshake.
+  always_ff @(posedge i_clk) begin
+    if (!memory_out_valid) memory_out <= memory_payload[memory_pick];
   end
   for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_wb_capture
     for (genvar sector = 0; sector < LINE_BYTES / 32; sector++) begin : gen_sector
