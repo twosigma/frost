@@ -80,6 +80,7 @@ def test_startup_requires_fresh_report_and_arming(
         assert not report.exists(), "a stale passing report must be removed"
         assert "+verilator+seed+7" in command
         assert "+verilator+noassert" in command
+        assert kwargs["env"]["FROST_RANDOM_START_VERILATOR_SEED"] == "7"
         assert "COCOTB_TEST_FILTER" not in kwargs["env"]
         if xml is not None:
             Path(kwargs["env"]["COCOTB_RESULTS_FILE"]).write_text(xml)
@@ -150,6 +151,46 @@ def test_full_sweep_overrides_job_budget(monkeypatch: pytest.MonkeyPatch) -> Non
         sweep.startup_count(12)
 
 
+def test_pinned_program_seed_uses_the_ci_job_base_and_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registry seed override must not replace the job's rotating sample."""
+    monkeypatch.setattr(sweep, "__file__", str(tmp_path / "random_start_sweep.py"))
+    monkeypatch.delenv("FROST_STARTUP_SEEDS", raising=False)
+    binary = tmp_path / "Vtop"
+    binary.write_bytes(b"model")
+    fixture = tmp_path.parent / "verif/cocotb_tests"
+    fixture.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "test_random_start_smoke.py",
+        "test_real_program.py",
+        "sim_assertions.py",
+    ):
+        (fixture / name).write_text("fixture")
+    output = tmp_path / "startup_sweep"
+    output.mkdir()
+    (output / "plan.json").write_text(json.dumps({"base": "run-job", "count": 3}))
+    calls = []
+
+    def run(
+        binary: Path, environment: dict[str, str], output: Path, **kwargs: Any
+    ) -> bool:
+        calls.append((sweep.startup_base(environment), kwargs["count"]))
+        output.mkdir(parents=True, exist_ok=True)
+        return True
+
+    monkeypatch.setattr(sweep, "run_startup_sweep", run)
+    sweep.check_built_model(
+        binary,
+        {
+            "FROST_RANDOM_START_SEED": "pinned-program",
+            "FROST_STARTUP_SEED_BASE": "run-job",
+        },
+    )
+    assert calls == [("run-job", 3)]
+
+
 def test_job_budget_deduplicates_programs_sharing_clock_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -158,6 +199,7 @@ def test_job_budget_deduplicates_programs_sharing_clock_mode(
     monkeypatch.setattr(sweep, "__file__", str(tmp_path / "random_start_sweep.py"))
     for name in (
         "FROST_STARTUP_SEEDS",
+        "FROST_STARTUP_SEED_BASE",
         "FROST_CPU_PERIOD_PS",
         "FROST_DDR_MODEL_SEED",
         "FROST_VERILATOR_EXTRA_ARGS",

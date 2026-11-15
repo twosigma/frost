@@ -38,6 +38,15 @@ DEFAULT_BASE = "frost-startup"
 STARTUP_BUDGET_SECONDS = 180
 
 
+def startup_base(environment: dict[str, str]) -> str:
+    """Keep the CI job's base independent of a registry test's pinned seed."""
+    return (
+        environment.get("FROST_STARTUP_SEED_BASE", "").strip()
+        or environment.get("FROST_RANDOM_START_SEED", "").strip()
+        or DEFAULT_BASE
+    )
+
+
 def startup_seeds(base: str, count: int) -> list[int]:
     """Derive each simulator seed from the job base and its zero-based index."""
     return [
@@ -52,7 +61,7 @@ def startup_seed_cost(environment: dict[str, str]) -> float:
     if "FROST_SRAM_MACROS" in arguments:
         return 6.5
     if "FROST_RVFI_DII" in arguments:
-        return 1.3
+        return 2.6 if environment.get("FROST_COVERAGE") == "1" else 1.3
     if "-GL2_CACHE_BYTES=4194304" in arguments:
         return 4.25
     if environment.get("FROST_COVERAGE") == "1":
@@ -97,8 +106,7 @@ def plan_startup_sweeps(test_names: list[str]) -> None:
             runner.restore_environment()
     if costs:
         plan = {
-            "base": os.environ.get("FROST_RANDOM_START_SEED", "").strip()
-            or DEFAULT_BASE,
+            "base": startup_base(dict(os.environ)),
             "count": startup_count(sum(costs.values())),
             "builds": len(costs),
         }
@@ -110,7 +118,7 @@ def plan_startup_sweeps(test_names: list[str]) -> None:
 
 def check_built_model(binary: Path, environment: dict[str, str]) -> None:
     """Check each compiled model once per seed base and count, without rebuilding."""
-    base = environment.get("FROST_RANDOM_START_SEED", "").strip() or DEFAULT_BASE
+    base = startup_base(environment)
     directory = Path(__file__).resolve().parent / "startup_sweep"
     count = startup_count(startup_seed_cost(environment))
     plan_path = directory / "plan.json"
@@ -219,7 +227,7 @@ def run_startup_sweep(
         environment["FROST_STARTUP_BASELINE"] = "1"
     else:
         environment.pop("FROST_STARTUP_BASELINE", None)
-    base = environment.get("FROST_RANDOM_START_SEED", "").strip() or DEFAULT_BASE
+    base = startup_base(environment)
     seeds = startup_seeds(base, count) if seeds is None else seeds
     if not seeds or any(seed < 1 or seed >= 2**31 for seed in seeds):
         raise ValueError("Verilator seeds must be between 1 and 2**31 - 1")
@@ -230,6 +238,8 @@ def run_startup_sweep(
         report = output / f"seed_{seed}.xml"
         report.unlink(missing_ok=True)
         env["COCOTB_RESULTS_FILE"] = str(report)
+        env["FROST_RANDOM_START_SEED"] = base
+        env["FROST_RANDOM_START_VERILATOR_SEED"] = str(seed)
         arguments = [
             str(binary),
             "+verilator+rand+reset+2",

@@ -529,8 +529,10 @@ SRAM and large-cache models use their own per-seed cost estimates.
 
 Each seed comes from `random.Random(f"{base}:startup:{index}")`, with a draw
 from 1 through 2**31 - 1. The base is `FROST_RANDOM_START_SEED`, or
-`frost-startup` when that variable is absent. CI runs therefore rotate their
-seed sets, and local runs repeat them. Logs print the base, index and
+`frost-startup` when that variable is absent. CI preserves the job's base in
+`FROST_STARTUP_SEED_BASE`, including for registry tests that pin their own
+program seed. CI runs therefore rotate their seed sets, and local runs
+repeat them. Logs print the base, index and
 Verilator seed, and a failing run prints its exact command for the image.
 `FROST_STARTUP_SEEDS=201` selects the full sweep in the same CI check.
 
