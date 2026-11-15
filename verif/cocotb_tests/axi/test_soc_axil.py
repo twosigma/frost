@@ -481,7 +481,8 @@ async def pbmt_alias_transfers(dut: Any) -> None:
         pending: list[tuple[int, int, int, int]] = []
         cycle = 0
         while True:
-            await FallingEdge(dut.i_clk)
+            # The coherent port is on the CPU side of the DMA clock crossing.
+            await FallingEdge(b.clock)
             cycle += 1
             dut.i_coherent_req_ready.value = int(cycle % 5 != 0)
             dut.i_coherent_resp_valid.value = 0
@@ -491,7 +492,7 @@ async def pbmt_alias_transfers(dut: Any) -> None:
                 dut.i_coherent_resp_rdata.value = data
                 dut.i_coherent_resp_error.value = error
                 dut.i_coherent_resp_valid.value = 1
-            await RisingEdge(dut.i_clk)
+            await RisingEdge(b.clock)
             if int(dut.o_coherent_req_valid.value) and int(
                 dut.i_coherent_req_ready.value
             ):
