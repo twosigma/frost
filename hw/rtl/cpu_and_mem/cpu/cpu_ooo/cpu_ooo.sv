@@ -2184,6 +2184,18 @@ module cpu_ooo #(
   // router uses device_request_pending_q to check staging; only trap_unit
   // consumes this shield.
   logic device_read_shield_q;
+  // An armed interrupt take holds the next device access while the shield is
+  // down. Without it, a device access a few instructions behind a store (two
+  // device stores, or a cached store and then a device read) re-raises the
+  // shield in the cycle the previous access releases it, while the store's
+  // commit still clears the SQ's registered committed-empty status. The take
+  // then never finds both open, and every interrupt (D, M or S) starves for
+  // as long as the loop runs. The hold applies only while the AMO-class
+  // shield is down: under that shield the take waits for the head anyway, and
+  // an SC at the head may be a precise uncached store that needs the shield
+  // to complete. See trap_amo_shield below.
+  logic int_take_armed;
+  logic device_start_hold;
   // Precomputed next PCs from ungated ROB fields, for timing. Each equals
   // retired_next_pc of its commit packet whenever that commit is valid.
   logic [XLEN-1:0] rob_head_retired_next_pc;
@@ -3861,6 +3873,7 @@ module cpu_ooo #(
       .o_amo_mem_write_error(amo_mem_write_error),
       .o_lq_mem_request_valid(lq_mem_request_valid),
       .o_device_request_pending(lq_device_request_pending),
+      .i_device_start_hold(device_start_hold),
       .o_lq_mem_read_data(lq_mem_read_data),
       .o_lq_mem_read_valid(lq_mem_read_valid),
       .o_lq_mem_read_error(lq_mem_read_error),
@@ -4821,6 +4834,17 @@ module cpu_ooo #(
     else amo_at_head_shield_q <= rob_head_is_amo && head_valid;
   end
 
+  // The trap unit's AMO-class shield: an AMO, LR or SC at the head, a coherent
+  // atomic, or the misaligned-access engine.
+  logic trap_amo_shield;
+  assign trap_amo_shield = (amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active ||
+      ma_shield;
+  // The shield counts as down in the cycle a commit clears it. The commit is
+  // the shielded access's own, so nothing launched still needs the shield,
+  // and a device store right behind it would otherwise keep it up.
+  assign device_start_hold = int_take_armed && !trap_amo_shield &&
+      (!device_read_shield_q || rob_commit_valid);
+
   // Hold interrupts from before a device read or uncached store is accepted
   // through its commit. Uncached stores arm their shield in the SQ;
   // (see trap_unit.i_device_read_at_head). The router stages the request before
@@ -4830,7 +4854,8 @@ module cpu_ooo #(
   // interrupt flush after arming.
   always_ff @(posedge i_clk) begin
     if (i_rst || lq_router_flush_all) device_read_shield_q <= 1'b0;
-    else if ((lq_device_request_pending || uncached_store_pending) && !(step_done_q))
+    else if ((lq_device_request_pending || (uncached_store_pending && !device_start_hold)) &&
+             !(step_done_q))
       device_read_shield_q <= 1'b1;
     else if (rob_commit_valid) device_read_shield_q <= 1'b0;
   end
@@ -4851,9 +4876,9 @@ module cpu_ooo #(
       .i_csr_irq_update(csr_irq_update_q),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
-      .i_amo_at_head((amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active ||
-                     ma_shield),
+      .i_amo_at_head(trap_amo_shield),
       .i_device_read_at_head(device_read_shield_q),
+      .o_int_take_armed(int_take_armed),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
       .i_mtvec(csr_mtvec),

@@ -249,7 +249,8 @@ jobs:
               [sscofpmf_test] or
               [ns16550_irq_console_test] or [wfi_mepc_test] or
               [wfi_drain_mepc_test] or [mret_timer_resume_test] or [mtimer_stress] or
-              [wfi_lost_tick] or [irq_mie_window] or [ns16550_test] or [clint_test] or
+              [wfi_lost_tick] or [irq_mie_window] or [irq_take_hold_test] or [ns16550_test] or
+              [clint_test] or
               [linux_irq_ddr_test] or [linux_irq_active_ddr_test] or [linux_irq_stack_slot_test] or
               [linux_irq_find_next_slot_test]
           - name: Real Programs (CPU and fetch)
