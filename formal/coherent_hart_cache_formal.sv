@@ -540,6 +540,11 @@ module coherent_hart_cache_formal #(
     end
     if (u_valid && (|u_ready)) released[release_slot] = 1;
   end
+  // The home array's parallel read and the home's result arbiter: in the
+  // unbounded proofs any decision may report a parallel read in flight and the
+  // result arbiter may take or stall a result on any cycle; the cover and
+  // four-record bounded schedules drive both deterministically.
+  logic decision_spec, result_take;
   if (COVER_MODE) begin : gen_home_schedule
     logic [1:0] next_work, next_grant, next_release;
     always_comb begin
@@ -555,17 +560,23 @@ module coherent_hart_cache_formal #(
       grant_slot   = next_grant;
       release_slot = next_release;
     end
+`ifdef COH_MAINT_FOUR
+    assign decision_spec = 1'b1;
+    assign result_take   = 1'b1;
+`else
+    assign decision_spec = cover_cycle_q[1];
+    assign result_take   = cover_cycle_q[0];
+`endif
   end else begin : gen_arbitrary_schedule
     (* anyseq *) logic [5:0] choices;
+    (* anyseq *) logic spec_choice, result_choice;
     assign {service_slot, grant_slot, release_slot} = choices;
+    assign decision_spec = spec_choice;
+    assign result_take = result_choice;
   end
   assign work_valid = !rst && service_slot < Slots && engine_idle &&
       state_q[service_slot] == Queued && predecessors_q[service_slot] == 0;
   logic lookup, decision_q, read_valid, read_pending_q, update_valid, update_pending_q;
-  // The home array's parallel read: any decision may report one in flight;
-  // a decision that takes it receives the row as a row read would, with no
-  // read request.
-  (* anyseq *)logic decision_spec;
   logic take_spec;
   logic result_valid, result_ready;
   wire updated = update_pending_q && permit_update;
@@ -603,14 +614,6 @@ module coherent_hart_cache_formal #(
   assign home_d_ready = !rst && free_valid && !duplicate && !put_pending_q &&
       !put_ack_q && !(put_valid && put_ready);
   assign g_valid = !rst && grant_slot < Slots && state_q[grant_slot] == Result && permit_g;
-  // The home's result arbiter may take a result on any cycle or stall it: an
-  // early offer may be taken in its data cycle or fall back to Result.
-`ifdef COH_MAINT_FOUR
-  // The four-record bounded tasks permit every handshake (see permit_*).
-  wire result_take = 1'b1;
-`else
-  (* anyseq *) logic result_take;
-`endif
   assign result_ready = result_take;
   assign home_c_ready = !rst && completion_found && state_q[completion_slot] == Granted && permit_c;
   assign u_valid = !rst && release_slot < Slots && state_q[release_slot] == Completed && permit_u;
