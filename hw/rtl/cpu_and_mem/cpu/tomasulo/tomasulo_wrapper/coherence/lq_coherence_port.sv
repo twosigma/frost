@@ -625,10 +625,19 @@ module lq_coherence_port #(
       ) == adm_req_line_q)))
       else $error("lq_coherence_port: preselected SC query comparison differs");
       if (admit_fire && adm_valid_q[admit_ready_slot_q])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("lq_coherence_port: slot %0d admitted while held", admit_ready_slot_q);
       if (i_inval_valid && (inval_phase_q == 2'd0) && !adm_valid_q[i_inval_slot])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("lq_coherence_port: invalidation for slot %0d never admitted", i_inval_slot);
       if (i_release_valid && !adm_valid_q[i_release_slot])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("lq_coherence_port: release of slot %0d never admitted", i_release_slot);
     end
   end

@@ -185,9 +185,9 @@ same-cycle alignment with other counters shifts.
 | 23 | `IF_DELIVER1` | event | IF handed PD a real slot-1 instruction (once per accepted handoff) |
 | 24 | `IF_DELIVER2` | event | That handoff also carried a real slot-2 instruction (a subset of 23) |
 | 25 | `IF_S2KILL_S1_NATIVE_CTRL` | event | 1-wide handoff: slot 1 is native 32-bit control flow (branch, JAL, JALR), which ends the bundle |
-| 26 | `IF_S2KILL_S1_NATIVE_SERIALIZE` | event | 1-wide handoff: slot 1 is a native serializing instruction (SYSTEM, MISC-MEM, or AMO), which never leads a pair |
+| 26 | `IF_S2KILL_S1_NATIVE_SERIALIZE` | event | 1-wide handoff: slot 1 is a native serializing instruction (SYSTEM except Zimop, MISC-MEM, or AMO), which never leads a pair |
 | 27 | `IF_S2KILL_S1_CTRL` | event | 1-wide handoff: slot 1 is compressed control flow, which ends the bundle |
-| 28 | `IF_S2KILL_S2_CLASS` | event | 1-wide handoff: the slot-2 candidate is a class excluded from slot 2 (native SYSTEM, MISC-MEM, AMO, FP compute or vector) |
+| 28 | `IF_S2KILL_S2_CLASS` | event | 1-wide handoff: the slot-2 candidate is a class excluded from slot 2 (native SYSTEM except Zimop, MISC-MEM, AMO, FP compute or vector) |
 | 29 | `IF_S2KILL_WINDOW_LIMIT` | event | 1-wide handoff: the slot-2 candidate is a 32-bit instruction starting in the upper half of the second word, which cannot fit the 64-bit window |
 | 30 | `IF_S2KILL_TRANSIENT` | event | 1-wide handoff: transient aligner-buffer or window state, such as a parity-unsafe window read, kept slot 2 out |
 | 31 | `IF_SLOT2_PRED_TAKEN` | event | A slot-2 BTB taken prediction was accepted. Each costs one fetch bubble, because fetch has already requested the next sequential window |

@@ -17,8 +17,8 @@
 /*
  * DPI-C reference for F/D compute instructions using Spike's Berkeley
  * SoftFloat build (canonical NaN, tininess after rounding). Register values
- * are 64 bits: single-precision operands are unboxed, results are NaN-boxed,
- * and W-form integer results are sign-extended. Non-arithmetic operations
+ * are 64 bits: single- and half-precision operands are unboxed, results are
+ * NaN-boxed, and W-form integer results are sign-extended. Non-arithmetic operations
  * follow Spike, including raw FMV bit transfers.
  */
 
@@ -50,6 +50,28 @@ static float64_t f64v(uint64_t v)
     float64_t r;
     r.v = v;
     return r;
+}
+
+static float16_t f16v(uint16_t v)
+{
+    float16_t r;
+    r.v = v;
+    return r;
+}
+
+static uint16_t unbox16(uint64_t v)
+{
+    return ((v >> 16) == 0xFFFFFFFFFFFFULL) ? (uint16_t) v : 0x7E00U;
+}
+
+static uint64_t box16(uint16_t v)
+{
+    return 0xFFFFFFFFFFFF0000ULL | v;
+}
+
+static uint64_t sext16(uint16_t v)
+{
+    return (uint64_t) (int64_t) (int16_t) v;
 }
 
 static uint32_t unbox32(uint64_t v)
@@ -113,6 +135,66 @@ static uint64_t minmax64(uint64_t a, uint64_t b, bool is_max)
     return (pick_a || is_nan64(b)) ? a : b;
 }
 
+/* Zfa FLI constants, single precision; the double table widens them except
+ * for the minimum normal (index 1), whose value differs by precision. */
+static const uint32_t fli_s[32] = {
+    0xBF800000U, 0x00800000U, 0x37800000U, 0x38000000U, 0x3B800000U, 0x3C000000U, 0x3D800000U,
+    0x3E000000U, 0x3E800000U, 0x3EA00000U, 0x3EC00000U, 0x3EE00000U, 0x3F000000U, 0x3F200000U,
+    0x3F400000U, 0x3F600000U, 0x3F800000U, 0x3FA00000U, 0x3FC00000U, 0x3FE00000U, 0x40000000U,
+    0x40200000U, 0x40400000U, 0x40800000U, 0x41000000U, 0x41800000U, 0x43000000U, 0x43800000U,
+    0x47000000U, 0x47800000U, 0x7F800000U, 0x7FC00000U};
+
+static uint64_t fli_d(unsigned idx)
+{
+    if (idx == 1)
+        return 0x0010000000000000ULL;
+    if (idx == 31)
+        return 0x7FF8000000000000ULL;
+    return f32_to_f64(f32v(fli_s[idx])).v;
+}
+
+/* FCVTMOD.W.D as the Zfa specification and Sail define it: the low 32 bits of
+ * the integer part, NV when the integer is outside the signed 32-bit range (or
+ * for NaN and infinity), otherwise NX when the fraction is nonzero. */
+static uint64_t fcvtmod_w_d(uint64_t a, int *flags)
+{
+    int sign = (int) (a >> 63);
+    int exp = (int) ((a >> 52) & 0x7FF);
+    uint64_t mant = a & 0xFFFFFFFFFFFFFULL;
+    *flags = 0;
+    if (exp == 0) {
+        *flags = mant ? 0x01 : 0;
+        return 0;
+    }
+    if (exp == 0x7FF) {
+        *flags = 0x10;
+        return 0;
+    }
+    int te = exp - 1023;
+    if (te < 0) {
+        *flags = 0x01;
+        return 0;
+    }
+    if (te > 83) {
+        *flags = 0x10;
+        return 0;
+    }
+    unsigned __int128 sig = ((unsigned __int128) 1 << 52) | mant;
+    unsigned __int128 integer;
+    bool fraction = false;
+    if (te >= 52) {
+        integer = sig << (te - 52);
+    } else {
+        integer = sig >> (52 - te);
+        fraction = (sig & ((((unsigned __int128) 1) << (52 - te)) - 1)) != 0;
+    }
+    unsigned __int128 limit = sign ? 0x80000000U : 0x7FFFFFFFU;
+    bool invalid = te > 31 || integer > limit;
+    *flags = invalid ? 0x10 : (fraction ? 0x01 : 0);
+    uint32_t low = (uint32_t) integer;
+    return sext32(sign ? (uint32_t) (0U - low) : low);
+}
+
 /* DPI-C entry point, imported by fp_engine_equiv_harness.sv. Returns 0 for an
  * operation this model does not know. */
 int fp_softfloat_ref(
@@ -124,6 +206,7 @@ int fp_softfloat_ref(
     uint32_t as = unbox32(a);
     uint32_t bs = unbox32(b);
     uint32_t cs = unbox32(c);
+    uint16_t ah = unbox16(a);
     uint64_t r;
 
     softfloat_roundingMode = (uint_fast8_t) rm;
@@ -245,6 +328,51 @@ int fp_softfloat_ref(
         r = f32_to_f64(f32v(as)).v;
     else if (OP("FMV_X_D") || OP("FMV_D_X"))
         r = a;
+    /* Zfhmin */
+    else if (OP("FCVT_S_H"))
+        r = box32(f16_to_f32(f16v(ah)).v);
+    else if (OP("FCVT_D_H"))
+        r = f16_to_f64(f16v(ah)).v;
+    else if (OP("FCVT_H_S"))
+        r = box16(f32_to_f16(f32v(as)).v);
+    else if (OP("FCVT_H_D"))
+        r = box16(f64_to_f16(f64v(a)).v);
+    else if (OP("FMV_X_H"))
+        r = sext16((uint16_t) a);
+    else if (OP("FMV_H_X"))
+        r = box16((uint16_t) a);
+    /* Zfa: a carries FLI's index in its low five bits */
+    else if (OP("FLI_S"))
+        r = box32(fli_s[a & 31U]);
+    else if (OP("FLI_D"))
+        r = fli_d((unsigned) (a & 31U));
+    /* FMINM/FMAXM: FMIN/FMAX (and their NV), but any NaN gives the canonical NaN */
+    else if (OP("FMINM_S") || OP("FMAXM_S")) {
+        uint32_t m = minmax32(as, bs, OP("FMAXM_S"));
+        r = box32((is_nan32(as) || is_nan32(bs)) ? 0x7FC00000U : m);
+    } else if (OP("FMINM_D") || OP("FMAXM_D")) {
+        uint64_t m = minmax64(a, b, OP("FMAXM_D"));
+        r = (is_nan64(a) || is_nan64(b)) ? 0x7FF8000000000000ULL : m;
+    } else if (OP("FROUND_S"))
+        r = box32(f32_roundToInt(f32v(as), (uint_fast8_t) rm, false).v);
+    else if (OP("FROUNDNX_S"))
+        r = box32(f32_roundToInt(f32v(as), (uint_fast8_t) rm, true).v);
+    else if (OP("FROUND_D"))
+        r = f64_roundToInt(f64v(a), (uint_fast8_t) rm, false).v;
+    else if (OP("FROUNDNX_D"))
+        r = f64_roundToInt(f64v(a), (uint_fast8_t) rm, true).v;
+    else if (OP("FCVTMOD_W_D")) {
+        int mod_flags;
+        r = fcvtmod_w_d(a, &mod_flags);
+        softfloat_exceptionFlags = (uint_fast8_t) mod_flags;
+    } else if (OP("FLEQ_S"))
+        r = f32_le_quiet(f32v(as), f32v(bs));
+    else if (OP("FLTQ_S"))
+        r = f32_lt_quiet(f32v(as), f32v(bs));
+    else if (OP("FLEQ_D"))
+        r = f64_le_quiet(f64v(a), f64v(b));
+    else if (OP("FLTQ_D"))
+        r = f64_lt_quiet(f64v(a), f64v(b));
     else
         return 0;
 #undef OP

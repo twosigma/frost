@@ -581,8 +581,15 @@ module debug_module #(
     if (dm_rst) reset_seen_q <= 1'b1;
     if (reset_seen_q && !dm_rst) begin
       if ((cmd_state_q == CmdGo) && (res_state_q == ResGo))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("debug_module: command and resume go requests overlap");
-      if (o_go && !i_debug_mode) $error("debug_module: go requested outside Debug Mode");
+      if (o_go && !i_debug_mode)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("debug_module: go requested outside Debug Mode");
     end
   end
 `endif

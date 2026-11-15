@@ -102,6 +102,39 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 ./scripts/frost.py shell
 ```
 
+## Try it without an FPGA
+
+A standalone C++ Verilator runner simulates the `frost` SystemVerilog RTL with
+live UART output and no Python in the clock loop. It matched the cocotb bench
+cycle for cycle on `hello_world` and CoreMark in both memory tiers (unseeded
+behavioral AXI memory model); CI checks BRAM and DDR `hello_world` and BRAM
+CoreMark against
+[`hw/sim/native/exactness_baseline.json`](hw/sim/native/exactness_baseline.json)
+alongside a live cocotb BRAM `hello_world` run:
+
+```bash
+./scripts/frost.py native hello_world
+./scripts/frost.py native coremark --threads 4
+./scripts/frost.py native coremark --mem-config ddr --threads 4
+```
+
+With the `frost` development image built first (`docker build -t frost .`, see
+[Quick Start](#quick-start)) and the CoreMark submodule initialized,
+`demo/Dockerfile` packages baseline x86-64 simulator binaries and prebuilt
+`hello_world` and CoreMark images into a small standalone runtime container
+(`frost-demo:local`):
+
+```bash
+git submodule update --init --recursive sw/apps/coremark/coremark
+docker build -f demo/Dockerfile -t frost-demo:local .
+docker run --rm -it frost-demo:local
+```
+
+Every clock cycle evaluates the hardware model in software; RTL simulation is
+far slower than hardware. See [hw/sim/native/README.md](hw/sim/native/README.md)
+for what runs, how it compares with the cocotb flow, what the summary figures
+mean, and how to run other applications.
+
 ## Running on the FPGA
 
 FPGA builds and board tools run natively on a host with Vivado 2025.2 and the
@@ -143,7 +176,11 @@ every supported extension and privilege mode.
 | **A**            | Atomic memory operations (LR/SC, AMO; word and doubleword) |
 | **F**            | Single-precision floating-point (32-bit)       |
 | **D**            | Double-precision floating-point (64-bit)       |
+| **Zfhmin**       | Half-precision loads, stores, moves and conversions to and from single and double precision |
+| **Zfa**          | Additional floating-point instructions: `fli`, `fminm`/`fmaxm`, `fround`/`froundnx`, `fcvtmod.w.d`, `fleq`/`fltq` |
 | **C**            | Compressed instructions (16-bit encodings) |
+| **Zcb**          | Compressed byte/halfword loads and stores, `c.zext.*`, `c.sext.*`, `c.not`, `c.mul`, expanded at instruction fill |
+| **Zcmop**        | Compressed may-be-operations `c.mop.n`, which write no register |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
@@ -154,6 +191,8 @@ every supported extension and privilege mode.
 | **Zbc**          | Carry-less multiplication (clmul, clmulh, clmulr) |
 | **Zbkc**         | Carry-less multiplication for crypto (clmul, clmulh) |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
+| **Zihintntl**    | Non-temporal locality hints (`ntl.*`, `c.ntl.*`), retired as no-ops |
+| **Zimop**        | May-be-operations `mop.r.n`/`mop.rr.n`, which write zero to rd |
 | **Zawrs**        | `wrs.nto`/`wrs.sto` retire at once; `wrs.nto` traps below M with `mstatus.TW` set |
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
 | **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks), ordered no-ops while every bus master is coherent; the device tree lists it with `riscv,cbom-block-size = <64>` |
@@ -298,6 +337,8 @@ For native builds outside the container, initialize the submodules first with
 | Directory | Contents |
 |-----------|----------|
 | [hw/rtl/](hw/rtl/README.md) | CPU, caches, peripherals, and reusable hardware blocks |
+| [hw/sim/native/](hw/sim/native/README.md) | Standalone C++ Verilator runner for the SoC RTL |
+| [demo/](demo/Dockerfile) | Runtime Docker image for running `hello_world` and CoreMark on the RTL |
 | [sw/](sw/README.md) | Bare-metal libraries, applications, and benchmarks |
 | [linux/](linux/README.md) | Linux boot images, firmware, and NIC driver |
 | [fpga/](fpga/README.md) | FPGA build, programming, and software-loading tools |

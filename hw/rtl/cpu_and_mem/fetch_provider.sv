@@ -1008,8 +1008,14 @@ module fetch_provider #(
   always_ff @(posedge i_clk) begin
     if (ask_line_next_armed_q && !i_rst) begin
       if (i_line_resp_valid && (i_line_resp_id >> 1) != '0)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("fetch_provider: line response id %0d (expected 0 or 1)", i_line_resp_id);
       if (i_line_resp_valid && !(fill_busy_q[resp_slot] && fill_sent_q[resp_slot]))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("fetch_provider: line response for slot %0d with no fill in flight", resp_slot);
       if (!i_invalidate) begin
         for (int p = 0; p < 2; p++) begin
