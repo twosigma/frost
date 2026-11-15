@@ -46,6 +46,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
+    ("rs_payload_twin", "bmc"): 18000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
@@ -1127,6 +1128,12 @@ FORMAL_TARGETS = [
         "sq_live_result_select.sby",
         "Store addresses and MMIO flags match reference CDB priority selection",
         tasks=("prove",),
+    ),
+    FormalTarget(
+        "rs_payload_twin.sby",
+        "Two tomasulo_wrapper copies whose reservation stations hold arbitrary stage2 payloads while "
+        "empty have equal outputs",
+        tasks=("bmc",),
     ),
     FormalTarget(
         "served_window_coverage.sby",

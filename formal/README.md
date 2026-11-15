@@ -343,6 +343,7 @@ cycle; simulation asserts the last three. The split shadow select that
 | `rob_link_value_ram` | The three-bank ROB value memory equals the four-bank one under the one-branch-allocation rule and, for head ports, one-hot read addresses; unbounded at 32 x 64 |
 | `rob_link_dispatch` | Dispatch never allocates slot 2 behind a slot-1 branch, the rule the shared link bank needs, in all four bundle-valid and register-value configurations |
 | `sq_live_result_select` | The early store address and MMIO flag equal the reference priority with the live CDB sums selected last |
+| `rs_payload_twin` | Two tomasulo_wrapper copies from one zero state, each reservation station's stage2/stage2b payload arbitrary and independent while the stage holds no packet: every output is equal, payload outputs (issue packets, CDB, commit, memory and walk requests, trap value) while their valid is set. smtbmc, depth 6, runner budget 5 h |
 | `rs_primary_payload` | INT_RS's grouped port-0 payload read, address, and entry clear equal indexed selection at depths 4, 8, and 16; an unbounded proof compares grouped payload RAMs and opcode registers with a single RAM |
 | `rs_issue_clear` | The second issue port's one-hot entry clear equals the indexed clear, for single and dual issue at several depths and with the INT station's window |
 | `rs_pretag_cofactor` | The pre-issue ROB tag, computed for each combination of the two CDB valid bits, equals the reference priority select in two station configurations; the export tasks also check the candidate ready vectors |
