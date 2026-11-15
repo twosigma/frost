@@ -1592,6 +1592,40 @@ jobs:
             pytest tests \
               -m "not cocotb and not synthesis and not formal and not slow" -v
 
+  # Build the checked native C++ Verilator model once and verify cycle-exact
+  # agreement on hello_world and BRAM CoreMark.
+  test-native:
+    name: Native Simulator (hello_world and BRAM CoreMark)
+    runs-on: ubuntu-26.04
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Fetch CoreMark submodule
+        run: |
+          git submodule update --init --recursive sw/apps/coremark/coremark
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
+
+      - name: Build native model once and verify hello_world and BRAM CoreMark
+        env:
+          FROST_SKIP_SUBMODULE_INIT: "1"
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_native_sim.py --ci
+
   # ---------------------------------------------------------------------------
   # Build OpenSBI and musl userspace through the FROST BR2_EXTERNAL tree.
   # The post-image hook supplies Debian's pinned kernel and NIC module via
