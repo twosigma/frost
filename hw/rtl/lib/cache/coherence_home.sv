@@ -697,7 +697,10 @@ module coherence_home #(
   coherence_d_arbiter #(
       .WIDTH(UpdatePacketBits),
       .PORTS(Clients),
-      .HOLD_VALID(1)
+      .HOLD_VALID(1),
+      // The array reads the update packet only under i_update_valid, or in
+      // terms of o_update_ready, which matters only while it is set.
+      .IDLE_PAYLOAD_LOAD(1)
   ) update_arbiter (
       .i_clk,
       .i_rst,

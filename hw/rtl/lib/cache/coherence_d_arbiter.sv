@@ -18,6 +18,11 @@ module coherence_d_arbiter #(
     parameter int unsigned WIDTH = 344,
     parameter int unsigned PORTS = 2,
     parameter bit HOLD_VALID = 0,
+    // The payload register loads on every cycle without a held selection,
+    // so its enable is the selection flop alone rather than the offers'
+    // reduction. For consumers that read o_payload only while o_valid (or
+    // o_selected) is set: the value then equals the default's.
+    parameter bit IDLE_PAYLOAD_LOAD = 0,
     localparam int unsigned PortBits = PORTS > 1 ? $clog2(PORTS) : 1
 ) (
     input logic i_clk,
@@ -108,7 +113,6 @@ module coherence_d_arbiter #(
         selected_q <= 1'b1;
         selected_port_q <= pick;
         selected_ports_q <= pick_ports;
-        payload_q <= pick_payload;
       end
     end else if (o_valid && i_ready) begin
       selected_q <= 1'b0;
@@ -118,6 +122,13 @@ module coherence_d_arbiter #(
       later_q[port_idx] <= selected_port_q == PortBits'(PORTS - 1) ||
           port_idx > int'(selected_port_q);
     end
+  end
+  // The payload follows the selection: it loads with it, or, with
+  // IDLE_PAYLOAD_LOAD, on every cycle without a held selection, and the last
+  // such load is the one on the selecting edge.
+  always_ff @(posedge i_clk) begin
+    if (IDLE_PAYLOAD_LOAD ? !selected_q : (!i_rst && !selected_q && found))
+      payload_q <= pick_payload;
   end
   if (PORTS < 1 || WIDTH < 1) begin : gen_invalid
     initial $fatal(1, "coherence_d_arbiter: invalid parameters");
