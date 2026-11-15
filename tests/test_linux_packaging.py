@@ -398,7 +398,7 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert "<0x0 0x9 0xffffffff 0xffffffff 0x200>" in dts
     assert "<0x0 0xa 0xffffffff 0xffffffff 0x400>" in dts
     # Translation selectors sit above the counter numbers: walker busy cycles on
-    # counter 8, SFENCE.VMA invalidates on counter 7, CSR-requested invalidates on
+    # counter 8, SFENCE.VMA and SINVAL.VMA invalidates on counter 7, CSR-requested invalidates on
     # counter 4.
     assert "<0x0 0x10 0xffffffff 0xffffffff 0x100>" in dts
     assert "<0x0 0x11 0xffffffff 0xffffffff 0x80>" in dts

@@ -891,8 +891,8 @@ int main(void)
     all_ok &= report("R hpmcounter31-zero", hpm_val, 0);
     M_CSR_PROBE("csrw 0xC1F, t1", hpm_val); /* Read-only user alias traps on write. */
     all_ok &= report("R hpmcounter31-write-from-M", g_cause, 2u);
-    M_CSR_PROBE("csrr %0, 0xC20", hpm_val); /* above hpmcounter31 */
-    all_ok &= report("R unimpl-0xC20-from-M", g_cause, 2u);
+    M_CSR_PROBE("csrr %0, 0xC9F", hpm_val); /* hpmcounter31h: absent on RV64 */
+    all_ok &= report("R unimpl-0xC9F-from-M", g_cause, 2u);
     cause = run_at_priv(&b_read_hpm31, PRIV_S);
     all_ok &= report("R hpmcounter31-from-S", cause, 2u);
     cause = run_at_priv(&b_read_hpm3, PRIV_S);

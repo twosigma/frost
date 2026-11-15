@@ -365,7 +365,8 @@ def gen_dts(
 \t\t * cycles and instructions on counters 9 and 10, which overflow and
 \t\t * filter by privilege; the fixed counters 0 and 2 do neither.
 \t\t * Raw translation events: 16 = page-walker busy cycles (counter 8),
-\t\t * 17 = SFENCE.VMA TLB invalidates (counter 7), 18 = CSR-requested TLB
+\t\t * 17 = SFENCE.VMA and SINVAL.VMA TLB invalidates (counter 7),
+\t\t * 18 = CSR-requested TLB
 \t\t * invalidates (counter 4). They sit above the counter numbers, so no
 \t\t * raw selector names two events. */
 \t\triscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000200>,

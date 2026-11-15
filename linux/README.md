@@ -222,7 +222,8 @@ respectively. DTLB walks include
 loads and stores; SQ stalls cover one source of backend stalls. These two
 events are exposed only through `riscv,raw-event-to-mhpmcounters`. Three raw
 translation selectors share those counters: 16 counts page-walker busy
-cycles on counter 8, 17 counts SFENCE.VMA TLB invalidates on counter 7, and
+cycles on counter 8, 17 counts SFENCE.VMA and SINVAL.VMA TLB invalidates on
+counter 7, and
 18 counts CSR-requested TLB invalidates (any `satp` access, or an `mstatus`
 write that changes MPRV, or MPP while MPRV is set) on counter 4. Walker busy
 cycles divided by ITLB plus DTLB walks give the mean walk latency. HPM

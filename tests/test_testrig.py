@@ -168,17 +168,15 @@ def write_sail_config(
 ) -> Path:
     """Match DDR capacity, and enable the vector unit when asked.
 
-    `sscofpmf` selects the dedicated Sscofpmf control trace suffix; the vector
-    unit at `vlen` is for the --vector traces, which FROST must be built for
-    with -GVECTOR=1 -GVLEN.
+    `sscofpmf` selects the dedicated Sscofpmf control config filename suffix;
+    the vector unit at `vlen` is for the --vector traces, which FROST must be
+    built for with -GVECTOR=1 -GVLEN.
     """
     if capacity_log2_bytes not in range(30, 38):
         raise ValueError("DDR capacity must be 1, 2, 4, 8, 16, 32, 64 or 128 GiB")
     config = load_sail_json(SAIL_CONFIG)
     if vlen is not None:
         merge_settings(config, load_sail_json(sail_vector_overlay(vlen)))
-    if sscofpmf:
-        config["extensions"]["Zihpm"]["supported"] = True
     ddr_regions = [
         region
         for region in config["memory"]["regions"]
@@ -546,8 +544,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--sscofpmf",
         action="store_true",
         help="replay deterministic Sscofpmf controls and implemented counters "
-        "with Sail's required Zihpm support enabled; use --trace to replay "
-        "a counterexample in this view",
+        "(verif/testrig/sscofpmf/controls.S); --trace overrides the trace path",
     )
     parser.add_argument(
         "--crypto",

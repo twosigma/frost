@@ -96,7 +96,7 @@ its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--tests` | 50 | Tests per template |
 | `--ddr-capacity-log2-bytes` | 30 (1 GiB) | Set the DDR aperture for both FROST and Sail; accepted values 30–37 (1–128 GiB) |
 | `--atomics` | 0 | Replay this many random A-extension tests instead of the templates |
-| `--sscofpmf` | off | Replay the deterministic counter-control trace with Sail Zihpm enabled; `--trace` selects a counterexample in this view |
+| `--sscofpmf` | off | Replay the deterministic counter-control trace (`verif/testrig/sscofpmf/controls.S`); `--trace` overrides the trace path |
 | `--vector` | 0 | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
 | `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
 | `--seed` | random | Seed for `--atomics`, `--crypto` and `--vector`; the runner prints the one it used |
@@ -230,8 +230,9 @@ disabled. The [Sscofpmf specification](https://docs.riscv.org/reference/isa/v202
 assigns local counter overflow interrupt number 13 and specifies that
 `mideleg` controls its delegation to S-mode versus M-mode.
 
-Replay a counterexample from this view with `--sscofpmf --trace <file>`;
-the option cannot be combined with `--trace-dir`, `--atomics`, `--crypto` or `--zcb`.
+Replay a saved counterexample directly with `--trace <file>` (or
+`--sscofpmf --trace <file>`); `--sscofpmf` cannot be combined with
+`--trace-dir`, `--atomics`, `--crypto` or `--zcb`.
 
 ## What the comparison leaves out
 

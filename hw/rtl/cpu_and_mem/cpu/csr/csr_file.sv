@@ -72,7 +72,8 @@
   Three counters also accept a translation event, selected by a value above
   the counter numbers so that "event N selects counter N" stays unambiguous
   for the DT's raw-event map: mhpmevent8=16 counts page-walker busy cycles,
-  mhpmevent7=17 counts SFENCE.VMA TLB invalidates, and mhpmevent4=18 counts
+  mhpmevent7=17 counts SFENCE.VMA and SINVAL.VMA TLB invalidates, and
+  mhpmevent4=18 counts
   CSR-requested TLB invalidates (a satp access, or an MPRV/MPP change).
 
   Sscofpmf: mhpmevent3..10 implement OF (63), MINH (62), SINH (61) and
@@ -153,7 +154,7 @@ module csr_file #(
     input logic       i_l1d_miss = '0,
     input logic       i_sq_full_stall = '0,
     // Translation events: the page walker is busy this cycle, and an
-    // SFENCE.VMA TLB invalidate begins (one pulse per invalidate window).
+    // SFENCE.VMA or SINVAL.VMA TLB invalidate begins (one pulse per invalidate window).
     // CSR-requested invalidates are counted from o_csr_translation_flush_req.
     input logic       i_walk_busy = '0,
     input logic       i_sfence_tlb_flush = '0,
