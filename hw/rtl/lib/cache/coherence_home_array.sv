@@ -200,8 +200,8 @@ module coherence_home_array #(
   logic [TOKEN_BITS-1:0] read_token_q[DATA_READ_LATENCY+1];
   logic [SetBits-1:0] read_set_q[DATA_READ_LATENCY+1];
   logic [WayBits-1:0] read_way_q[DATA_READ_LATENCY+1];
-  // Parallel reads, with UltraRAM on the FPGA. The response reaches the open
-  // stage while it is at index TAG_READ_LATENCY, which must leave a cycle to
+  // Parallel reads, with UltraRAM on the FPGA. The first response cycle meets
+  // the open stage at index TAG_READ_LATENCY-1, which must leave a cycle to
   // register the bank selection before the stage loads o_read_data. With
   // SRAM macros (FROST_SRAM_MACROS) the array keeps one bank and reads only
   // the hit way, a quarter of the read energy.
