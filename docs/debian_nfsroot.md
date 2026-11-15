@@ -328,6 +328,14 @@ reports a problem as `ENV_FAIL`, not as a board failure. Without
 boot, and the tests. Raise it for a divided-clock bitstream, or for a first
 build that must download the Buildroot toolchain or the kernel.
 
+To diagnose an intermittent `frost_nettest` failure, set
+`FROST_HW_NETTEST_REPEAT=<n>` (1 to 20) to run the test n times in one boot.
+Each repetition restores the interface and checks the root before the next.
+Repetitions before the last report `FROST_NET_DIAG_PASS rep=<r>` or
+`FROST_NET_DIAG_FAIL rep=<r> <reason>`, which do not end the capture, and any
+failed repetition fails the stage. A repetition holds the link down for 65
+seconds and takes about 80 in all, so raise `--linux-timeout` to match.
+
 The stage checks the NFS mount and systemd and runs the stress and counter
 tests. Systemd must report `running`, or `degraded` with only failed
 `session-N.scope` units whose `Result` is `resources`. These logind session

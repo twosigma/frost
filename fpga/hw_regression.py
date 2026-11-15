@@ -374,6 +374,14 @@ LINUX_MEMERR_RE = re.compile(
 LINUX_NET_COMMAND = "frost_nettest"
 LINUX_NET_TOKEN = "FROST_NET_LOOPBACK_PASS"
 LINUX_NET_TOKEN_FAIL = "FROST_NET_LOOPBACK_FAIL"
+# For diagnosis, FROST_HW_NETTEST_REPEAT=<n> runs the test n times in one
+# boot. Every repetition but the last prints its verdict under this marker,
+# which ends no capture, so the log keeps every repetition's output.
+NETTEST_REPEAT_ENV = "FROST_HW_NETTEST_REPEAT"
+NETTEST_REPEAT_MAX = 20
+LINUX_NET_DIAG_RE = re.compile(
+    r"^\r*FROST_NET_DIAG_(PASS|FAIL) rep=(\d+)([^\r\n]*)[\r]*\n", re.MULTILINE
+)
 # A tmpfs on the root, mounted by systemd before any login.
 LINUX_TMPFS = "/dev/shm"
 # The interface the initramfs configures when ``ip=`` names none, and the name
@@ -388,6 +396,8 @@ LINUX_ROOT_ALIVE_RE = re.compile(
     r"^\r*" + LINUX_ROOT_ALIVE_TOKEN + r"=(\d+)[ \t\r]*\n", re.MULTILINE
 )
 LINUX_ROOT_SYNC_S = 120
+# A failure line arrives in pieces; read up to this long for its end.
+LINUX_FAILURE_LINE_GRACE_S = 2.0
 
 # Covers a warm rebuild, the JTAG load of the DDR image (Debian's kernel and
 # initramfs, several minutes), boot through the NFS mount to a login, systemd's
@@ -472,6 +482,9 @@ class UartStage:
     judge: Callable[[str], tuple[bool, str]]
     stimuli: tuple[tuple[str, str], ...] = ()
     success_quiet_s: float = 0.0
+    # After a failure ends capture, keep reading this long at most for the
+    # rest of the line, so a failure reason is not cut where a read ended.
+    failure_line_grace_s: float = 0.0
 
 
 def next_stimulus(
@@ -1166,7 +1179,20 @@ def linux_root_preflight(
     return notes
 
 
-def nettest_command(interface: str) -> str:
+def nettest_repeat(environment: Mapping[str, str] = os.environ) -> int:
+    """Return the number of network test repetitions ``NETTEST_REPEAT_ENV`` asks for."""
+    text = environment.get(NETTEST_REPEAT_ENV, "").strip()
+    if not text:
+        return 1
+    if not text.isdigit() or not 1 <= int(text) <= NETTEST_REPEAT_MAX:
+        raise ValueError(
+            f"{NETTEST_REPEAT_ENV}={text!r}: give a whole number from 1 to "
+            f"{NETTEST_REPEAT_MAX}"
+        )
+    return int(text)
+
+
+def nettest_command(interface: str, repeat: int = 1) -> str:
     """Return a shell command that runs frost_nettest and restores the root's link.
 
     Copy the static binary to tmpfs so instruction or library faults cannot
@@ -1188,9 +1214,34 @@ def nettest_command(interface: str) -> str:
 
     Create a file on the root, sync, and remove it under a timeout. The printed
     status checks that the link, route, server access, and writes recovered.
+
+    With ``repeat`` above 1, run all of that ``repeat`` times in one loop:
+    each repetition restores the link and checks the root before the next.
+    The test learns its repetition from ``FROST_NETTEST_REPETITION`` and
+    prints the verdicts of all but the last under ``FROST_NET_DIAG``. A root
+    that does not come back ends the loop.
     """
     sysfs = f"/sys/class/net/{interface}"
     ipv6 = f"/proc/sys/net/ipv6/conf/{interface}/disable_ipv6"
+    if repeat > 1:
+        return (
+            f"r=1; while [ $r -le {repeat} ]; do "
+            f'if [ $r -lt {repeat} ]; then t=FROST_NET_DIAG; d=" rep=$r"; '
+            "else t=FROST_NET_LOOPBACK; d=; fi; "
+            f"m=$(cat {sysfs}/mtu); f=$(cat {sysfs}/flags); echo 1 > {ipv6}; "
+            f"cp {LINUX_ROOT_BIN}/{LINUX_NET_COMMAND} {LINUX_TMPFS}/; "
+            "{ if echo 2 > /proc/sys/vm/drop_caches; then "
+            f"FROST_NETTEST_REPETITION=$r/{repeat} "
+            f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {LINUX_TMPFS}/{LINUX_NET_COMMAND}; "
+            'else echo "$t"_FAIL"$d" drop_caches; fi; '
+            "echo $m >&3; echo $f >&4; echo 0 >&5; "
+            f"}} 3> {sysfs}/mtu 4> {sysfs}/flags 5> {ipv6}; "
+            f"timeout -k 5 {LINUX_ROOT_SYNC_S} sh -c "
+            f'"echo frost > {LINUX_ROOT_ALIVE_FILE} && sync && '
+            f'rm -f {LINUX_ROOT_ALIVE_FILE}"; '
+            f"s=$?; echo {LINUX_ROOT_ALIVE_TOKEN}=$s; [ $s = 0 ] || break; "
+            "r=$((r+1)); done"
+        )
     return (
         f"m=$(cat {sysfs}/mtu); f=$(cat {sysfs}/flags); echo 1 > {ipv6}; "
         f"cp {LINUX_ROOT_BIN}/{LINUX_NET_COMMAND} {LINUX_TMPFS}/; "
@@ -1294,7 +1345,28 @@ def root_mount_verdict(serial_buf: str, nfsroot: str) -> tuple[bool, str]:
     return True, f"/ on {source} ({fstype},{options})"
 
 
-def linux_stage(root: LinuxRoot) -> UartStage:
+def nettest_diag_verdicts(serial_buf: str) -> dict[int, tuple[str, str]]:
+    """Return each diagnostic repetition's verdict and reason, by repetition."""
+    return {
+        int(rep): (verdict, reason.strip())
+        for verdict, rep, reason in LINUX_NET_DIAG_RE.findall(serial_buf)
+    }
+
+
+def nettest_diag_problems(serial_buf: str, repeat: int) -> list[str]:
+    """Name the diagnostic repetitions that failed or printed no verdict."""
+    verdicts = nettest_diag_verdicts(serial_buf)
+    problems = []
+    for rep in range(1, repeat):
+        verdict, reason = verdicts.get(rep, ("", ""))
+        if not verdict:
+            problems.append(f"repetition {rep}: no verdict")
+        elif verdict == "FAIL":
+            problems.append(f"repetition {rep}: {reason}")
+    return problems
+
+
+def linux_stage(root: LinuxRoot, net_repeat: int = 1) -> UartStage:
     """Build UART checks for Debian booting from the NFS root.
 
     Require the pinned kernel and driver before login. After login, check the
@@ -1302,6 +1374,9 @@ def linux_stage(root: LinuxRoot) -> UartStage:
     stress result, nonzero counters, the memory error readback, scrub self-test,
     RAM patrol, and loopback with root access
     restored. Explicit failures end capture immediately.
+
+    ``net_repeat`` above 1 runs the network test that many times (see
+    ``nettest_command``); a failed earlier repetition fails the stage too.
     """
     failure_markers = LINUX_FAILURE_MARKERS + (
         LINUX_TOKEN_FAIL,
@@ -1349,8 +1424,10 @@ def linux_stage(root: LinuxRoot) -> UartStage:
             return False
         # The capture ends after the link is back, not at the pass token: the
         # test leaves the root's interface down, and the line that follows it
-        # brings the link back and flushes.
-        return root_alive_status(serial_buf) == 0
+        # brings the link back and flushes. Only a status after the token
+        # counts: an earlier repetition's does not cover the last one.
+        after = serial_buf[serial_buf.rindex(LINUX_NET_TOKEN) :]
+        return root_alive_status(after) == 0
 
     def lx_failure(raw_buf: str) -> bool:
         """Return True once ``lx_reasons`` finds any terminal failure."""
@@ -1361,7 +1438,15 @@ def linux_stage(root: LinuxRoot) -> UartStage:
         serial_buf = console_text(raw_buf)
         hit = lx_reasons(serial_buf)
         if hit:
-            return False, f"failure marker: {', '.join(hit)}"
+            note = f"failure marker: {', '.join(hit)}"
+            if net_repeat > 1:
+                verdicts = nettest_diag_verdicts(serial_buf)
+                done = ", ".join(
+                    f"{rep} {verdicts[rep][0]}" for rep in sorted(verdicts)
+                )
+                note += f"; {LINUX_NET_COMMAND} repetitions before the last: "
+                note += done or "none finished"
+            return False, note
         missing = [m for m in LINUX_SUCCESS_MARKERS if m not in serial_buf]
         if missing:
             return False, f"missing: {', '.join(repr(m) for m in missing)}"
@@ -1406,6 +1491,15 @@ def linux_stage(root: LinuxRoot) -> UartStage:
                 f"{LINUX_NET_COMMAND}: no {LINUX_ROOT_ALIVE_TOKEN}= status, so "
                 "nothing says the root came back with its link"
             )
+        net_note = LINUX_NET_COMMAND
+        if net_repeat > 1:
+            problems = nettest_diag_problems(serial_buf, net_repeat)
+            if problems:
+                return False, (
+                    f"{LINUX_NET_COMMAND} passed its last repetition of "
+                    f"{net_repeat}, but " + "; ".join(problems)
+                )
+            net_note = f"{LINUX_NET_COMMAND} {net_repeat} times"
         summary = " ".join(f"{event}={counts[event]}" for event in LINUX_COUNTER_EVENTS)
         polls = memerr["polls_after"] - memerr["polls_before"]
         patrol = memerr["patrol_after"] - memerr["patrol_before"]
@@ -1418,7 +1512,7 @@ def linux_stage(root: LinuxRoot) -> UartStage:
             f"{systemd_note}, login, stress token, counters "
             f"{summary}, no memory errors ({polls} ECC polls), scrub self-test, "
             f"RAM patrol ({patrol} lines, a full pass), "
-            f"{LINUX_NET_COMMAND}, root alive"
+            f"{net_note}, root alive"
         )
 
     return UartStage(
@@ -1433,8 +1527,9 @@ def linux_stage(root: LinuxRoot) -> UartStage:
             (LINUX_SHELL_PROMPT, LINUX_STRESS_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, LINUX_COUNTER_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, LINUX_MEMERR_COMMAND + "\r"),
-            (LINUX_SHELL_PROMPT, nettest_command(root.interface) + "\r"),
+            (LINUX_SHELL_PROMPT, nettest_command(root.interface, net_repeat) + "\r"),
         ),
+        failure_line_grace_s=LINUX_FAILURE_LINE_GRACE_S,
     )
 
 
@@ -1490,6 +1585,28 @@ def run_ecc_stage(
         "elapsed": time.monotonic() - started,
         "note": note,
     }
+
+
+def finish_line(serial_fd: int, serial_buf: str, grace_s: float) -> str:
+    """Read the rest of the buffer's last line, for ``grace_s`` at most.
+
+    Return the text read (echoed like the rest of the capture).
+    """
+    deadline = time.monotonic() + grace_s
+    text = ""
+    while not (serial_buf + text).endswith("\n"):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if not select.select([serial_fd], [], [], min(remaining, 0.1))[0]:
+            continue
+        data = read_available(serial_fd)
+        if data:
+            chunk = data.decode("utf-8", errors="replace")
+            text += chunk
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+    return text
 
 
 def run_uart_stage(
@@ -1619,6 +1736,10 @@ def run_uart_stage(
             and program_started
             and (success_ready() or stage.failure_done(serial_buf))
         ):
+            if not success_ready() and stage.failure_line_grace_s:
+                serial_buf += finish_line(
+                    serial_fd, serial_buf, stage.failure_line_grace_s
+                )
             break
 
     killed_loader = False
@@ -1845,6 +1966,10 @@ def main() -> int:
     target = args.target if args.target else DEFAULT_TARGETS[board]
     serial = args.serial if args.serial else DEFAULT_SERIALS[board]
     timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[board]
+    try:
+        net_repeat = nettest_repeat()
+    except ValueError as error:
+        parser.error(str(error))
 
     all_stages = regression_stages(board)
 
@@ -1937,7 +2062,7 @@ def main() -> int:
                 loader_env = None
                 if stage_name == LINUX_STAGE:
                     assert linux_root is not None
-                    stage = linux_stage(linux_root)
+                    stage = linux_stage(linux_root, net_repeat)
                     stage_timeout = args.linux_timeout
                     loader_env = linux_loader_env(linux_root)
                 else:

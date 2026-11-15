@@ -150,6 +150,15 @@ before the first counter read, exceeding NFS's default directory attribute
 cache lifetime. The stage checks a root write, sync and removal after
 restoring MTU, flags and IPv6.
 
+For diagnosis the test also captures every frame of the interface. Before
+the verdict of each window it judges (each idle interval and each traffic
+step) it prints two `foreign frame` lines for each frame that is not one of
+its own frames of that window, up to 12 per window. The first gives the
+direction, length, addresses and ethertype; the second decodes ARP, IPv4
+with TCP, UDP or ICMP, or names a stale, duplicate or other-run test frame.
+A `capture` line gives the window's counts and the socket's drops.
+`frost_nettest --selftest` checks the decoder on synthetic frames.
+
 At MTU 1500 the test queues 600 frames before receiving them, with lengths
 of 60, 255, 256, 257, 1023, 1024, 1025 and 1514 bytes. It checks their contents
 and order across RX ring refills, including both sides of the driver's default
