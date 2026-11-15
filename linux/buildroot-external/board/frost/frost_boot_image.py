@@ -78,8 +78,9 @@ LINUX_IMAGE_MAGIC = b"RISCV\x00\x00\x00"  # header offset 0x30
 LINUX_IMAGE_SIZE_OFFSET = 0x10  # u64 image_size (text + bss)
 
 # What the DT advertises: the ISA the core implements, in the spelling both
-# OpenSBI and Linux parse. The unprivileged subset matches
-# FROST_MARCH_EXTENSIONS in sw/common/common.mk and misa in csr_file.sv.
+# OpenSBI and Linux parse. FROST_MARCH_EXTENSIONS in sw/common/common.mk
+# selects a subset for bare-metal applications; misa lists single-letter
+# extensions in csr_file.sv.
 # linux/README.md documents the privileged extensions too.
 ISA_BASE = "rv64i"
 ISA_EXTENSIONS = (
