@@ -213,6 +213,8 @@ async def test_mem_rs_capacity_and_flush_reuse(dut: Any) -> None:
                 RS_MEM,
                 rob_tag=tag,
                 op=OP_LW if tag % 2 == 0 else OP_SW,
+                mem_size=2,
+                mem_signed=tag % 2 == 0,
                 src1_ready=False,
                 src1_tag=30,
                 src2_ready=False,
