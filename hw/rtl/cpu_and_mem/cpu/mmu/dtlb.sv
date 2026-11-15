@@ -89,11 +89,11 @@ module dtlb #(
     output logic [NUM_PORTS-1:0][1:0] o_level,
     // The hit entry's PBMT field (zero on a miss).
     output logic [NUM_PORTS-1:0][1:0] o_pbmt,
-    // o_ppn is a device-window page (riscv_pkg::pma_device_page_ok).
+    // Effective device page, including NC/IO mappings of memory and the uncached alias.
     output logic [NUM_PORTS-1:0] o_device_page,
     // Data permissions: stores require W and D; loads require R or X with
     // MXR. U pages require U mode or SUM; S pages reject U mode.
-    // o_atomic_page checks pma_atomic_ok on the zero-extended PA. Both
+    // o_atomic_page checks PBMT and pma_atomic_ok on the zero-extended PA. Both
     // PMA outputs and o_perm_ok are clear on a miss or with DATA_VERDICTS
     // disabled. The ITLB disables these unused data checks.
     input logic [NUM_PORTS-1:0] i_perm_store,
