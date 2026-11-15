@@ -44,7 +44,7 @@ have 90 minutes.
 has 240 minutes. `coherence_l1d:coh_l1d_bmc` has 180 minutes at depth 40;
 `coh_l1d_multi_bmc` has 300 minutes at depth 40.
 `coh_l1d_zero_bmc` has 180 minutes at depth 40 and `coh_l1d_zero_multi_bmc` has
-300 minutes at depth 30.
+300 minutes at depth 30; `coh_l1d_zero_cover` has 240 minutes.
 `coh_l1d_answer_bmc` and `coh_l1d_stream_answer_bmc` have 60 minutes each at
 depths 20 and 16.
 `coh_l1d_stream_free_bmc` has 180 minutes; `coh_l1d_stream_bmc`,
@@ -110,8 +110,11 @@ intervening-load boundary BMC each have a 330-minute job of their own.
 
 The L1D control job runs `coh_l1d_bmc` alone with a 200-minute limit, and
 the L1D multi-endpoint job runs `coh_l1d_multi_bmc` alone with a 330-minute
-limit. The L1D zero multi-endpoint job runs `coh_l1d_zero_multi_bmc` alone
-with a 330-minute limit. Three Coherence L1D data jobs run the four single-endpoint word tasks
+limit. The L1D zero control job runs `coh_l1d_zero_bmc` alone with a
+200-minute limit, the L1D zero multi-endpoint job runs
+`coh_l1d_zero_multi_bmc` alone with a 330-minute limit, and the L1D zero
+cover job runs `coh_l1d_zero_cover` alone with a 260-minute limit. Three
+Coherence L1D data jobs run the four single-endpoint word tasks
 (330 minutes), the four multi-endpoint word tasks (330 minutes), and the
 payload, grant and four-way data tasks (270 minutes). Their task allowances
 sum to 260, 280 and 210 minutes, respectively, at most 85% of each job.
