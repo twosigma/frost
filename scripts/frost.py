@@ -41,6 +41,7 @@ FAST_TEST_MARKERS = "not cocotb and not synthesis and not formal and not slow"
 IMAGE_INPUT_FILES = ("Dockerfile", "docker_entrypoint.py")
 DOCTOR_TIMEOUT_SECONDS = 30
 IMAGE_REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$")
+APP_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 FORWARDED_ENV_PREFIXES = ("COCOTB_", "FROST_")
 FORWARDED_ENV_NAMES = {
     "DDR_MODEL_BYTES",
@@ -268,11 +269,90 @@ class OwnershipScan:
     errors: tuple[str, ...]
 
 
+def _positive_int(raw: str) -> int:
+    """Parse a strictly positive integer argument."""
+    try:
+        value = int(raw, 10)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"invalid integer value: {raw!r}") from error
+    if value < 1:
+        raise argparse.ArgumentTypeError("value must be >= 1")
+    return value
+
+
+def _non_negative_int(raw: str) -> int:
+    """Parse a non-negative integer argument."""
+    try:
+        value = int(raw, 10)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"invalid integer value: {raw!r}") from error
+    if value < 0:
+        raise argparse.ArgumentTypeError("value must be >= 0")
+    return value
+
+
+def _app_name(raw: str) -> str:
+    """Validate an application directory or registry name."""
+    if not APP_NAME_PATTERN.fullmatch(raw):
+        raise argparse.ArgumentTypeError(f"invalid application name: {raw!r}")
+    return raw
+
+
+def _native_argument_parser(*, exit_on_error: bool = True) -> argparse.ArgumentParser:
+    """Create the parser for the native Verilator runner workflow."""
+    parser = argparse.ArgumentParser(
+        prog=f"{Path(sys.argv[0]).name} native",
+        description="Build and run an application on the native C++ Verilator model.",
+        exit_on_error=exit_on_error,
+    )
+    parser.add_argument(
+        "app",
+        type=_app_name,
+        help="application name under sw/apps (for example hello_world or coremark)",
+    )
+    parser.add_argument(
+        "--mem-config",
+        choices=("bram", "ddr"),
+        default="bram",
+        help="memory tier: bram (default) or ddr",
+    )
+    parser.add_argument(
+        "--threads",
+        type=_positive_int,
+        default=1,
+        help="Verilator simulation thread count (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=_non_negative_int,
+        default=None,
+        help="optional cycle limit (0 disables the limit)",
+    )
+    return parser
+
+
 def workflow_command(workflow: str, arguments: Sequence[str]) -> list[str]:
     """Return the in-container command for a named workflow."""
     args = list(arguments)
     if workflow == "cocotb":
         return [*COCOTB_COMMAND, *args]
+    if workflow == "native":
+        try:
+            parsed = _native_argument_parser(exit_on_error=False).parse_args(args)
+        except (argparse.ArgumentError, SystemExit) as error:
+            raise ValueError(f"invalid native workflow arguments: {error}") from error
+        command = [
+            "make",
+            "-C",
+            "hw/sim/native",
+            "run",
+            f"APP={parsed.app}",
+            f"MEM_CONFIG={parsed.mem_config}",
+            f"THREADS={parsed.threads}",
+        ]
+        if parsed.max_cycles is not None:
+            command.append(f"MAX_CYCLES={parsed.max_cycles}")
+        return command
     if workflow == "pytest":
         return [*PYTEST_COMMAND, *args]
     if workflow == "formal":
@@ -1130,6 +1210,8 @@ def _argument_parser() -> argparse.ArgumentParser:
         epilog="""examples:
   %(prog)s doctor
   %(prog)s check
+  %(prog)s native hello_world
+  %(prog)s native coremark --mem-config ddr --threads 4
   %(prog)s cocotb hello_world
   FROST_COCOTB_MEM_CONFIG=ddr %(prog)s cocotb hello_world
   %(prog)s pytest -m 'cocotb and cocotb_unit' -v
@@ -1152,6 +1234,7 @@ def _argument_parser() -> argparse.ArgumentParser:
         choices=(
             "doctor",
             "check",
+            "native",
             "cocotb",
             "pytest",
             "formal",
@@ -1214,6 +1297,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     check_arguments = None
     if args.workflow == "check":
         check_arguments = _check_argument_parser().parse_args(args.arguments)
+    elif args.workflow == "native":
+        _native_argument_parser().parse_args(args.arguments)
 
     cache_directory = default_cache_directory(os.environ)
     try:

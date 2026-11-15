@@ -190,16 +190,34 @@ module walker_coherence_sequencer #(
     if (reset_seen_q && !i_rst) begin
       // Registered outputs must agree with the state.
       if (busy_q != (state_q != S_IDLE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("walker_coherence_sequencer: busy flop disagrees with the state");
       if (probe_valid_q != (state_q == S_PROBE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("walker_coherence_sequencer: probe-valid flop disagrees with the state");
       if (down_valid_q != (state_q == S_ISSUE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("walker_coherence_sequencer: down-valid flop disagrees with the state");
       if (i_probe_ack_valid && (state_q != S_PROBE_WAIT))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("walker_coherence_sequencer: probe acknowledgement with no probe in flight");
       if (i_down_resp_valid && (state_q != S_RESP))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("walker_coherence_sequencer: downstream response with no read outstanding");
       if (i_down_resp_valid && (i_down_resp_id != id_q))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "walker_coherence_sequencer: downstream response id %0d, read carried %0d",
             i_down_resp_id,

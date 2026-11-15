@@ -466,6 +466,9 @@ module sc_pending_unit #(
 `ifndef FORMAL
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && sct_alloc && !sct_has_free)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error(
           "sc_pending_unit: SC tag %0d issued with the table full; it would never fire",
           o_mem_rs_issue.rob_tag

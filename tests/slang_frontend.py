@@ -273,22 +273,42 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
                                 f"{sby}:{name}: unsupported define: {line}"
                             )
                     continue
-                if words[0] in ("read", "read_verilog"):
+                if words[0] in ("read", "read_verilog", "read_slang"):
+                    is_slang = words[0] == "read_slang"
                     options = [
                         "-DYOSYS",
                         *(["-DFORMAL"] if "-formal" in words else []),
                         *(
                             []
-                            if "-formal" in words or "-nosynthesis" in words
+                            if (
+                                "--no-synthesis-define" in words
+                                if is_slang
+                                else ("-formal" in words or "-nosynthesis" in words)
+                            )
                             else ["-DSYNTHESIS"]
                         ),
                         *persistent,
                         *includes,
                     ]
                     sources = []
+                    slang_params: dict[str, str] = {}
                     i = 1
                     while i < len(words):
                         word = words[i]
+                        if is_slang and word in ("--top", "-top"):
+                            top = words[i + 1]
+                            i += 2
+                            continue
+                        if is_slang and word == "-G":
+                            pname, pval = words[i + 1].split("=", 1)
+                            slang_params[pname] = pval
+                            i += 2
+                            continue
+                        if is_slang and word.startswith("-G"):
+                            pname, pval = word[2:].split("=", 1)
+                            slang_params[pname] = pval
+                            i += 1
+                            continue
                         if word in ("-D", "-I"):
                             options.append(word + words[i + 1])
                             i += 2
@@ -300,19 +320,31 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
                         elif word in filemap:
                             sources.append(str(filemap[word]))
                         elif word not in (
-                            "-formal",
-                            "-sv",
-                            "-noautowire",
-                            "-noblackbox",
-                            "-lib",
-                            "-nosynthesis",
+                            (
+                                "--single-unit",
+                                "--no-synthesis-define",
+                                "--ignore-assertions",
+                            )
+                            if is_slang
+                            else (
+                                "-formal",
+                                "-sv",
+                                "-noautowire",
+                                "-noblackbox",
+                                "-lib",
+                                "-nosynthesis",
+                            )
                         ):
                             raise ValueError(
                                 f"{sby}:{name}: unsupported read argument: {word}"
                             )
                         i += 1
+                    if slang_params and top:
+                        parameters[top].update(slang_params)
                     if sources:
-                        units.append(ReadUnit(tuple(options), tuple(sources)))
+                        units.append(
+                            ReadUnit(tuple(dict.fromkeys(options)), tuple(sources))
+                        )
                 elif words[0] == "chparam":
                     for i, word in enumerate(words):
                         if word == "-set":

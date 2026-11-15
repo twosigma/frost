@@ -332,15 +332,34 @@ module l2_stream_prefetcher #(
     if (i_rst) reset_seen_q <= 1'b1;
     if (reset_seen_q && !i_rst) begin
       if (i_resp_valid && !id_busy_q[i_resp_id])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("l2_stream_prefetcher: response for id %0d with no read out", i_resp_id);
-      if (load && id_busy_q[free_id]) $error("l2_stream_prefetcher: no free id for a load");
+      if (load && id_busy_q[free_id])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("l2_stream_prefetcher: no free id for a load");
       if (inflight_q != InflightBits'($countones(id_busy_q)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("l2_stream_prefetcher: in-flight count %0d disagrees with ids", inflight_q);
       if (free_any != (inflight_q < InflightBits'(MAX_INFLIGHT)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("l2_stream_prefetcher: free ids disagree with the in-flight cap");
       if (obs_valid_q && obs_line_m1_q + LineBits'(1) != obs_line_q)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("l2_stream_prefetcher: observed line predecessor is stale");
       if (load && next_line != st_line_q[cand_sel] + LineBits'(st_ahead_q[cand_sel]) + LineBits'(1))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("l2_stream_prefetcher: page-offset prediction differs from full-line addition");
     end
   end

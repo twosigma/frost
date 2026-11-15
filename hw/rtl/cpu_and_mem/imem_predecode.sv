@@ -285,11 +285,26 @@ module imem_predecode #(
 `ifndef SYNTHESIS
   initial begin
     p_pc_metadata_overlay_width_valid :
+`ifdef FROST_SIM_ASSERTIONS
+    if (!(PC_METADATA_OVERLAY_ADDR_WIDTH > 0 && PC_METADATA_OVERLAY_ADDR_WIDTH <= ADDR_WIDTH - 1))
+      $fatal(1, "imem_predecode: invalid static configuration");
+`else
     assert (PC_METADATA_OVERLAY_ADDR_WIDTH > 0 && PC_METADATA_OVERLAY_ADDR_WIDTH <= ADDR_WIDTH - 1);
-    p_init_image_covers_memory : assert (INIT_ADDR_WIDTH >= ADDR_WIDTH);
+`endif
+    p_init_image_covers_memory :
+`ifdef FROST_SIM_ASSERTIONS
+    if (!(INIT_ADDR_WIDTH >= ADDR_WIDTH)) $fatal(1, "imem_predecode: invalid static configuration");
+`else
+    assert (INIT_ADDR_WIDTH >= ADDR_WIDTH);
+`endif
 `ifdef FROST_SRAM_MACROS
     // The macros start only from the banks' images.
-    p_macro_banks_start_from_images : assert (USE_INIT_FILE);
+    p_macro_banks_start_from_images :
+`ifdef FROST_SIM_ASSERTIONS
+    if (!(USE_INIT_FILE)) $fatal(1, "imem_predecode: invalid static configuration");
+`else
+    assert (USE_INIT_FILE);
+`endif
 `endif
   end
 `endif

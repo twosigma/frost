@@ -144,6 +144,9 @@ module line_size_adapter #(
     end else if (reset_seen_q) begin
       if (i_down_resp_valid) begin
         if (!outstanding_q[i_down_resp_id])
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "line_size_adapter: response for id %0d, which is not outstanding", i_down_resp_id
           );
@@ -151,6 +154,9 @@ module line_size_adapter #(
       end
       if (up_fire) begin
         if (outstanding_q[i_up_req_id] && !(i_down_resp_valid && (i_down_resp_id == i_up_req_id)))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("line_size_adapter: request reuses id %0d while it is outstanding", i_up_req_id);
         outstanding_q[i_up_req_id] <= 1'b1;
         write_q[i_up_req_id] <= i_up_req_write;

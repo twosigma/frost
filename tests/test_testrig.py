@@ -29,6 +29,8 @@ repository root:
     ./scripts/frost.py run python3 tests/test_testrig.py --tests 200 --include 'arith|mem'
     ./scripts/frost.py run python3 tests/test_testrig.py --trace counterexample.S
     ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
+    ./scripts/frost.py run python3 tests/test_testrig.py --mmu 100
+    ./scripts/frost.py run python3 tests/test_testrig.py --cmo 100
     ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf
 
 The image provides sail_riscv_sim and QCVEngine. Counterexamples go to
@@ -61,7 +63,10 @@ VERIF_DIR = REPO_ROOT / "verif"
 if str(VERIF_DIR) not in sys.path:
     sys.path.insert(0, str(VERIF_DIR))
 atomics = importlib.import_module("testrig.atomics")
+cmo = importlib.import_module("testrig.cmo")
 crypto = importlib.import_module("testrig.crypto")
+mmu = importlib.import_module("testrig.mmu")
+rvfi_dii = importlib.import_module("testrig.rvfi_dii")
 vector = importlib.import_module("testrig.vector")
 compressed_mops = importlib.import_module("testrig.compressed_mops")
 fp_ext = importlib.import_module("testrig.fp_ext")
@@ -215,12 +220,31 @@ def write_empty_images() -> list[Path]:
     return images
 
 
+def load_rvfi_records_log(path: Path) -> dict[str, list[Any]]:
+    """Read compact per-trace RVFI summaries written by test_rvfi_dii."""
+    records_by_digest: dict[str, list[Any]] = {}
+    if not path.exists():
+        return records_by_digest
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        records_by_digest[entry["digest"]] = [
+            rvfi_dii.RvfiRecord(
+                mode=mode, trap=trap, rd_addr=rd_addr, rd_wdata=rd_wdata
+            )
+            for mode, trap, rd_addr, rd_wdata in entry["records"]
+        ]
+    return records_by_digest
+
+
 def start_frost(
     port: int,
     ready_file: Path,
     log_path: Path,
     capacity_log2_bytes: int,
     vlen: int | None = None,
+    records_log: Path | None = None,
 ) -> tuple[subprocess.Popen, Callable[[], None]]:
     """Build (if needed) and start the frost RVFI-DII simulation.
 
@@ -244,6 +268,8 @@ def start_frost(
     environment["SIM_BUILD"] = str(sim_build_dir)
     environment["FROST_RVFI_DII_PORT"] = str(port)
     environment["FROST_RVFI_DII_READY_FILE"] = str(ready_file)
+    if records_log is not None:
+        environment["FROST_RVFI_DII_RECORDS_LOG"] = str(records_log)
     if runner._verilator_needs_rebuild(sim_build_dir):
         subprocess.run(["make", "clean"], cwd=TESTS_DIR, check=False)
     command = (
@@ -297,10 +323,16 @@ def run(arguments: argparse.Namespace) -> int:
     ready_file.unlink(missing_ok=True)
     frost_log = work_dir / "frost.log"
     sail_log = work_dir / "sail.log"
+    records_log = (
+        work_dir / "rvfi_records.jsonl" if (arguments.mmu or arguments.cmo) else None
+    )
+    if records_log is not None:
+        records_log.unlink(missing_ok=True)
+    mode_check: tuple[str, tuple[str, ...], int, list[list[Any]]] | None = None
     images = write_empty_images()
     architecture = arguments.arch or (
         ATOMICS_ARCHITECTURE
-        if arguments.atomics
+        if (arguments.atomics or arguments.mmu or arguments.cmo)
         else vector.ARCHITECTURE
         if arguments.vector
         else DEFAULT_ARCHITECTURE
@@ -328,6 +360,7 @@ def run(arguments: argparse.Namespace) -> int:
             frost_log,
             arguments.ddr_capacity_log2_bytes,
             arguments.vlen,
+            records_log=records_log,
         )
         print(f"Building and starting the frost RVFI-DII simulation (log: {frost_log})")
         deadline = time.monotonic() + arguments.startup_timeout
@@ -435,6 +468,42 @@ def run(arguments: argparse.Namespace) -> int:
                 flush=True,
             )
             command += ["-d", str(trace_dir)]
+        elif arguments.mmu:
+            seed = (
+                arguments.seed
+                if arguments.seed is not None
+                else random.randrange(1 << 32)
+            )
+            trace_dir = work_dir / "mmu"
+            shutil.rmtree(trace_dir, ignore_errors=True)
+            _, strands = mmu.write_tests_with_strands(
+                trace_dir, arguments.mmu, seed, arguments.test_length
+            )
+            mode_check = ("mmu", mmu.STRAND_KINDS, mmu.MIN_FULL_SAMPLE, strands)
+            print(
+                f"Wrote {arguments.mmu} Sv39 MMU tests from seed {seed} "
+                f"to {trace_dir} (--seed {seed} regenerates them)",
+                flush=True,
+            )
+            command += ["-d", str(trace_dir)]
+        elif arguments.cmo:
+            seed = (
+                arguments.seed
+                if arguments.seed is not None
+                else random.randrange(1 << 32)
+            )
+            trace_dir = work_dir / "cmo"
+            shutil.rmtree(trace_dir, ignore_errors=True)
+            _, strands = cmo.write_tests_with_strands(
+                trace_dir, arguments.cmo, seed, arguments.test_length
+            )
+            mode_check = ("cmo", cmo.STRAND_KINDS, cmo.MIN_FULL_SAMPLE, strands)
+            print(
+                f"Wrote {arguments.cmo} CMO and Sstvala tests from seed {seed} "
+                f"to {trace_dir} (--seed {seed} regenerates them)",
+                flush=True,
+            )
+            command += ["-d", str(trace_dir)]
         elif arguments.atomics:
             seed = arguments.seed
             if seed is None:
@@ -501,6 +570,20 @@ def run(arguments: argparse.Namespace) -> int:
             print(frost_text[-8000:])
             print("The frost RVFI-DII simulation reported an error")
             status = status or 1
+        if mode_check is not None and records_log is not None:
+            mode_name, catalog, min_sample, strands = mode_check
+            summary = mmu.verify_mode_rvfi(
+                mode_name,
+                catalog,
+                strands,
+                load_rvfi_records_log(records_log),
+                require_all_kinds=(len(strands) >= min_sample),
+            )
+            print(mmu.format_behavior_summary(summary), flush=True)
+            if summary.errors and status == 0:
+                for err in summary.errors[:20]:
+                    print(f"RVFI strand check failed: {err}")
+                status = 1
         print(f"QuickCheckVEngine exit status {status}; logs in {work_dir}")
         return status
     finally:
@@ -534,7 +617,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--arch",
         help="architecture the templates target (default "
-        f"{DEFAULT_ARCHITECTURE}, or {ATOMICS_ARCHITECTURE} with --atomics)",
+        f"{DEFAULT_ARCHITECTURE}, or {ATOMICS_ARCHITECTURE} with --atomics, "
+        "--mmu or --cmo)",
     )
     parser.add_argument(
         "--include", default=DEFAULT_TEST_INCLUDE, help="template name regex"
@@ -576,6 +660,20 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="replay this many Zfhmin/Zfa tests from verif/testrig/fp_ext.py",
     )
     parser.add_argument(
+        "--mmu",
+        type=int,
+        default=0,
+        help="instead of the templates, replay this many random Sv39 MMU, "
+        "ASID, SFENCE.VMA, and Sstvala tests from verif/testrig/mmu.py",
+    )
+    parser.add_argument(
+        "--cmo",
+        type=int,
+        default=0,
+        help="instead of the templates, replay this many random Zicbom, "
+        "Zicbop, Zicboz, Zawrs, and Sstvala tests from verif/testrig/cmo.py",
+    )
+    parser.add_argument(
         "--atomics",
         type=int,
         default=0,
@@ -607,7 +705,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--seed",
         type=int,
-        help="seed for --atomics, --crypto, --vector, --zcb or --fp-ext (default: random, printed)",
+        help="seed for --atomics, --crypto, --zcb, --fp-ext, --mmu, --cmo or --vector "
+        "(default: random, printed)",
     )
     parser.add_argument(
         "--save-dir",
@@ -641,35 +740,41 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="seconds the engine waits for one test's trace (default 600)",
     )
     arguments = parser.parse_args(argv)
-    if arguments.vector < 0 or arguments.vector_length < 1:
+    if (
+        arguments.vector < 0
+        or arguments.atomics < 0
+        or arguments.crypto < 0
+        or arguments.zcb < 0
+        or arguments.fp_ext < 0
+        or arguments.mmu < 0
+        or arguments.cmo < 0
+        or arguments.vector_length < 1
+    ):
         parser.error(
-            "--vector must not be negative and --vector-length must be positive"
+            "generator counts must not be negative and --vector-length must be positive"
         )
     if arguments.vector and arguments.vlen is None:
         arguments.vlen = DEFAULT_VECTOR_LENGTH
-    if arguments.sscofpmf and (
-        arguments.trace_dir
-        or arguments.atomics
-        or arguments.crypto
-        or arguments.vector
-        or arguments.zcb
-        or arguments.fp_ext
-    ):
-        parser.error(
-            "--sscofpmf cannot be combined with --trace-dir, --atomics, --crypto, "
-            "--vector, --zcb or --fp-ext"
+    active_modes = sum(
+        bool(mode)
+        for mode in (
+            arguments.trace,
+            arguments.trace_dir,
+            arguments.sscofpmf,
+            arguments.atomics,
+            arguments.crypto,
+            arguments.zcb,
+            arguments.fp_ext,
+            arguments.mmu,
+            arguments.cmo,
+            arguments.vector,
         )
-    if arguments.vector and (
-        arguments.atomics
-        or arguments.crypto
-        or arguments.trace
-        or arguments.trace_dir
-        or arguments.zcb
-        or arguments.fp_ext
-    ):
+    )
+    if active_modes > 1 and not (arguments.sscofpmf and arguments.trace):
         parser.error(
-            "--vector cannot be combined with --atomics, --crypto, --trace, "
-            "--trace-dir, --zcb or --fp-ext"
+            "--trace, --trace-dir, --sscofpmf, --atomics, --crypto, --zcb, "
+            "--fp-ext, --mmu, --cmo and --vector are mutually exclusive "
+            "(except --sscofpmf --trace)"
         )
     return arguments
 
