@@ -667,3 +667,77 @@ async def zero_twin_beside_stream(dut: Any) -> None:
         len(c.failures),
     )
     assert not c.failures, "\n".join(c.failures[:8])
+
+
+@cocotb.test()
+async def zero_push_during_prefetch_lookup(dut: Any) -> None:
+    """Refuse a stream prefetch whose block receives a cbo.zero before array_valid.
+
+    Three ascending demand misses confirm a stream. On the cycle before the tag
+    array replies to the stream prefetcher's LookupWait for the upper sector of
+    a 64-byte block, a cbo.zero of that block pushes: on the array_valid cycle
+    lookup_conflict_q is still low so the controller steps to Acquire while
+    lookup_conflict latches the pending twin and the twin allocates its record.
+    Acquire drops the prefetch under !prefetch_acquire_ok without sending a
+    speculative GetS.
+    """
+    c = FullCluster(dut)
+    await c.reset()
+    page = 0x80940000
+    block = page + 0x80
+    for offset in range(0, 0x100, 64):
+        c.preload(page + offset, 0x9100 + offset)
+    await c.read(page + 0x00)
+    await c.read(page + 0x20)
+    await c.set(
+        i_address=page + 0x40,
+        i_read_id=0,
+        i_read_kind=0,
+        i_read_size=3,
+        i_read_valid=1,
+        i_read_ready=1,
+    )
+    await c.tick()
+    await c.set(i_read_valid=0)
+    pushed = False
+    for _ in range(200):
+        if (
+            int(dut.hart.phase_q.value) == 2
+            and int(dut.hart.array.phase_q.value) == 3
+            and int(dut.hart.array.count_q.value) == 1
+            and int(dut.hart.operation_q.value) == 7
+            and int(dut.hart.lookup_addr_q.value) == block + 32
+        ):
+            assert c.get("o_store_ready") == 1
+            await c.set(
+                i_address=block,
+                i_write_data=0,
+                i_write_mask=0xFF,
+                i_write_zero=1,
+                i_write_tag=5,
+            )
+            c.pushes += 1
+            await c.tick()
+            await c.set(i_write_mask=0, i_write_zero=0)
+            assert int(dut.hart.phase_q.value) == 2
+            assert int(dut.hart.array_valid.value) == 1
+            assert int(dut.hart.store_twin_pending.value) == 1
+            await c.tick()
+            assert int(dut.hart.phase_q.value) == 3
+            assert int(dut.hart.operation_q.value) == 7
+            assert int(dut.hart.prefetch_acquire_ok.value) == 0
+            assert int(dut.hart.acquire_ready.value) == 1
+            pushed = True
+            break
+        await c.tick()
+    assert pushed, "stream prefetch never entered LookupWait for block + 32"
+    for _ in range(200):
+        if int(dut.hart.rd_valid_q.value) == 0:
+            break
+        await c.tick()
+    assert int(dut.hart.rd_valid_q.value) == 0
+    await c.set(i_read_ready=0)
+    await c.drain()
+    assert block + 32 not in c.speculative_requests
+    await c.check_block(block)
+

@@ -1027,7 +1027,7 @@ module coherence_l1d #(
       // A prefetch never acquires a sector that a twin or an acquired record
       // holds (a record that arrives after the lookup orders after the
       // prefetch, which its own acquisition then waits for).
-      if (phase_q == Acquire && operation_q == PrefetchOp && acquire_ready)
+      if (phase_q == Acquire && operation_q == PrefetchOp && prefetch_acquire_ok && acquire_ready)
         p_prefetch_not_record : assert (f_prefetch_record == '0);
     end
 `endif
