@@ -1956,9 +1956,8 @@ package riscv_pkg;
   // Instruction fetch, page-table walks and SFENCE.VMA are never masked.
   typedef logic [1:0] pm_mode_t;  // EnvcfgPmm* encoding; 01 is never produced
 
-  // Every physical region lies below 2**(XLEN-PMLEN-2) (see above). Each
-  // PMLEN is offered only where this holds; the FROST maps need at most 37
-  // bits.
+  // Offer each PMLEN only when every configured physical region lies below
+  // 2**(XLEN-PMLEN-2), as required by the equivalence argument above.
   localparam bit SsnpmPmlen7  = PmaAddressLimit <= (64'(1) << (XLEN - 7 - 2));
   localparam bit SsnpmPmlen16 = PmaAddressLimit <= (64'(1) << (XLEN - 16 - 2));
 
