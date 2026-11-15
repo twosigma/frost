@@ -676,7 +676,7 @@ module coherence_store_boundary_formal #(
   end
 
   logic sq_coherent_write_sc;
-  logic sq_coherent_write_zero;
+  logic sq_coherent_write_zero, sq_coherent_write_more, sq_coherent_next_same;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_coherent_write_tag;
   logic sq_full;
   logic sq_full_for_2;
@@ -706,6 +706,8 @@ module coherence_store_boundary_formal #(
       .i_coherent_sc_tag(l1_sc_write_tag),
       .o_coherent_write_sc(sq_coherent_write_sc),
       .o_coherent_write_zero(sq_coherent_write_zero),
+      .o_coherent_write_more(sq_coherent_write_more),
+      .o_coherent_next_same(sq_coherent_next_same),
       .o_coherent_write_tag(sq_coherent_write_tag),
       .i_clk(i_clk),
       .i_rst_n(!rst),
@@ -967,7 +969,7 @@ module coherence_store_boundary_formal #(
   logic [2:0] rt_coherent_read_size;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rt_coherent_read_tag;
   logic rt_coherent_write_sc;
-  logic rt_coherent_write_zero;
+  logic rt_coherent_write_zero, rt_coherent_write_more, rt_coherent_next_same;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rt_coherent_write_tag;
   logic rt_cached_read_ready;
   logic rt_uncached_read_enable;
@@ -1002,6 +1004,8 @@ module coherence_store_boundary_formal #(
       .i_coherent_read_tag(lq_coherent_read_tag),
       .i_coherent_sq_sc(sq_coherent_write_sc),
       .i_coherent_sq_zero(sq_coherent_write_zero),
+      .i_coherent_sq_more(sq_coherent_write_more),
+      .i_coherent_sq_next_same(sq_coherent_next_same),
       .i_coherent_sq_tag(sq_coherent_write_tag),
       .i_coherent_amo_tag(lq_coherent_write_tag),
       .o_coherent_read_kind(rt_coherent_read_kind),
@@ -1010,6 +1014,8 @@ module coherence_store_boundary_formal #(
       .o_coherent_write_atomic(rt_coherent_write_atomic),
       .o_coherent_write_sc(rt_coherent_write_sc),
       .o_coherent_write_zero(rt_coherent_write_zero),
+      .o_coherent_write_more(rt_coherent_write_more),
+      .o_coherent_next_same(rt_coherent_next_same),
       .o_coherent_write_tag(rt_coherent_write_tag),
       .i_clk(i_clk),
       .i_rst(rst),
@@ -1128,6 +1134,8 @@ module coherence_store_boundary_formal #(
       .i_write_atomic(rt_coherent_write_atomic),
       .i_write_sc(rt_coherent_write_sc),
       .i_write_zero(rt_coherent_write_zero),
+      .i_write_more(rt_coherent_write_more),
+      .i_next_same(rt_coherent_next_same),
       .i_write_tag(rt_coherent_write_tag),
       .o_write_done(l1_write_done),
       .o_write_inflight(l1_write_inflight),

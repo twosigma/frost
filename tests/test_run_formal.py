@@ -72,6 +72,17 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_ways_data_bmc"): 5100,
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
+    ("coherence_l1d", "coh_l1d_zero_cover"): 14400,
+    ("coherence_l1d", "coh_l1d_full_bmc"): 10800,
+    ("coherence_l1d", "coh_l1d_full_multi_bmc"): 18000,
+    ("coherence_l1d", "coh_l1d_zero_payload_bmc"): 5400,
+    ("coherence_l1d", "coh_l1d_full_payload_bmc"): 5400,
+    ("coherence_l1d", "coh_l1d_full_cover"): 7200,
+    ("coherence_l1d", "coh_l1d_full_lookahead_cover"): 7200,
+    ("coherence_l1d", "coh_l1d_withdraw_full_bmc"): 10800,
+    ("coherence_l1d", "coh_l1d_withdraw_zero_bmc"): 10800,
+    ("coherence_l1d", "coh_l1d_withdraw_full_payload_bmc"): 5400,
+    ("coherence_l1d", "coh_l1d_withdraw_zero_payload_bmc"): 5400,
     ("coherence_store_boundary", "bmc_four"): 18000,
     ("coherence_store_boundary", "cover_four"): 7200,
     ("coherence_store_boundary", "bmc_intervening"): 14400,
@@ -385,6 +396,15 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_payload_bmc",
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
+            "coh_l1d_full_bmc",
+            "coh_l1d_full_multi_bmc",
+            "coh_l1d_full_payload_bmc",
+            "coh_l1d_full_cover",
+            "coh_l1d_full_lookahead_cover",
+            "coh_l1d_withdraw_full_bmc",
+            "coh_l1d_withdraw_zero_bmc",
+            "coh_l1d_withdraw_full_payload_bmc",
+            "coh_l1d_withdraw_zero_payload_bmc",
         ),
     ),
     FormalTarget(
@@ -1847,6 +1867,36 @@ SBY_TASKS = [
         "cbo.zero twin installation, victim, wait and fallback covers.",
     ),
     ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
+    (
+        "coh_l1d_full_bmc",
+        "Full-line stores: full-pair GetMZero, data twin installation and control checks.",
+    ),
+    (
+        "coh_l1d_full_multi_bmc",
+        "Full-line stores with three endpoints and look-ahead full pairs.",
+    ),
+    ("coh_l1d_full_payload_bmc", "Store byte values with full-line stores."),
+    (
+        "coh_l1d_full_cover",
+        "Full pair acquisition, data twin installation and partial-pair fallback covers.",
+    ),
+    ("coh_l1d_full_lookahead_cover", "A look-ahead full pair with three endpoints."),
+    (
+        "coh_l1d_withdraw_full_bmc",
+        "Full-line control checks with absorbed puts withdrawn, as link stages need.",
+    ),
+    (
+        "coh_l1d_withdraw_zero_bmc",
+        "cbo.zero and full-line control checks with absorbed puts withdrawn.",
+    ),
+    (
+        "coh_l1d_withdraw_full_payload_bmc",
+        "Full-line store byte values with absorbed puts withdrawn.",
+    ),
+    (
+        "coh_l1d_withdraw_zero_payload_bmc",
+        "cbo.zero store byte values with absorbed puts withdrawn.",
+    ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
@@ -3061,7 +3111,7 @@ def test_zero_payload_partition_models_match() -> None:
         control_options = dict(line.split(maxsplit=1) for line in control["[options]"])
         payload_options = dict(line.split(maxsplit=1) for line in part["[options]"])
         assert control_options["mode"] == "bmc" and control_options["depth"] == "40"
-        assert payload_options == control_options | {"timeout": "1200"}
+        assert payload_options == control_options | {"timeout": "5400"}
         assert part["[engines]"] == ["abc bmc3 -c"]
 
     validate(payload)
@@ -3129,7 +3179,7 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
     for suffix, depth, timeout, engine in (
         ("bmc", "40", "10800", "abc bmc3"),
         ("multi_bmc", "30", "18000", "abc bmc3 -c"),
-        ("payload_bmc", "40", "1200", "abc bmc3 -c"),
+        ("payload_bmc", "40", "5400", "abc bmc3 -c"),
     ):
         payload = suffix == "payload_bmc"
         define = " -D STORE_DATA_PROOF" if payload else ""
@@ -3686,7 +3736,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "coherence_array.sv",
         "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d",
         "chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d",
-        "chparam -set ZERO_LINE 0 coherence_l1d",
+        "chparam -set ZERO_LINE 0 -set FULL_LINE 0 coherence_l1d",
         "prep -flatten -top coherence_l1d",
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",

@@ -346,6 +346,7 @@ async def old_word_response_crosses_two_store_handoff(dut: Any) -> None:
         accepted = 0
         age = 0
         returned = False
+        credit_turn = False
         saw_two = False
         saw_removal = False
         old_done = False
@@ -394,7 +395,12 @@ async def old_word_response_crosses_two_store_handoff(dut: Any) -> None:
             dut.i_coherent_block_addr.value = sum(
                 addr << (64 * i) for i, addr in enumerate(owned)
             )
-            dut.i_coherent_store_ready.value = int(len(owned) < 2)
+            # Grant credit on alternate cycles, so the two captures are at
+            # least two cycles apart and each response edge falls where it
+            # targets; the store queue may otherwise launch the second store
+            # on the cycle after the first.
+            credit_turn = not credit_turn
+            dut.i_coherent_store_ready.value = int(len(owned) < 2 and credit_turn)
             saw_two |= len(owned) == 2
             saw_removal |= (
                 accepted == 2 and int(dut.o_sq_count.value) == 0 and bool(owned)

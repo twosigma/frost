@@ -313,7 +313,7 @@ jobs:
             pytest_filter: >-
               [coremark_link1] or [csr_test_link1] or [dma_torture_link1] or
               [ptw_coherence_test_link1] or [cached_store_burst_test_link1] or
-              [cbo_zero_test_link1] or [cbo_zero_pages_link1]
+              [cbo_zero_test_link1] or [cbo_zero_pages_link1] or [full_line_test_link1]
           # The complement keeps new non-CoreMark-PRO programs in CI.
           # Keep it in sync when moving a test into a named shard.
           - name: Real Programs (Runtime and other)
@@ -357,7 +357,7 @@ jobs:
               or [ddr_bench_link1] or [ddr_atomic_test_link1] or [ddr_mlp_test_link1]
               or [coremark_link1] or [csr_test_link1] or [dma_torture_link1]
               or [ptw_coherence_test_link1] or [cached_store_burst_test_link1]
-              or [cbo_zero_test_link1] or [cbo_zero_pages_link1])
+              or [cbo_zero_test_link1] or [cbo_zero_pages_link1] or [full_line_test_link1])
           - name: Real Programs (CoreMark-PRO / core)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
@@ -1333,6 +1333,27 @@ jobs:
           - shard: Coherence L1D zero multi-endpoint
             pytest_filter: coh_l1d_zero_multi_bmc
             timeout_minutes: 330
+          # Full-line stores: the three-endpoint control BMC has the zero
+          # task's five-hour budget; the single-endpoint control BMC, the
+          # payload BMC and both covers share a second job.
+          - shard: Coherence L1D full multi-endpoint
+            pytest_filter: coh_l1d_full_multi_bmc
+            timeout_minutes: 330
+          - shard: Coherence L1D full-line
+            pytest_filter: coh_l1d_full and not coh_l1d_full_multi_bmc
+            timeout_minutes: 330
+          # The same control and payload checks with absorbed puts withdrawn
+          # (WITHDRAW_ABSORBED_W, as MEMORY_LINK_STAGES sets it): each control
+          # BMC has a job of its own; both payload BMCs share a third.
+          - shard: Coherence L1D withdrawn puts, full-line control
+            pytest_filter: coh_l1d_withdraw_full_bmc
+            timeout_minutes: 270
+          - shard: Coherence L1D withdrawn puts, zero-line control
+            pytest_filter: coh_l1d_withdraw_zero_bmc
+            timeout_minutes: 270
+          - shard: Coherence L1D withdrawn puts, payloads
+            pytest_filter: coh_l1d_withdraw and payload
+            timeout_minutes: 270
           # The scheduled real-array checks keep all 80 frames, with disjoint
           # property groups and no assumptions between them. Run them in
           # parallel so their combined work does not delay the bridges.
@@ -1359,7 +1380,8 @@ jobs:
               axi_coherent_bridge or
               (coherence_l1d and not (_twin or coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
               coh_l1d_stream_outlier_prove or
-              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_multi_bmc or coh_l1d_data or
+              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_multi_bmc or coh_l1d_full or coh_l1d_data or
+              coh_l1d_withdraw or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))
             timeout_minutes: 330
