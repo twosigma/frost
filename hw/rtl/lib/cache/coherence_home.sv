@@ -2149,6 +2149,11 @@ module coherence_home #(
           write_filling
       ));
       o_perf_events.writeback <= |(memory_valid[FILLS+:NUM_WB] & memory_ready[FILLS+:NUM_WB]);
+      // memory_ready decodes the buffered request's acceptance, including
+      // a held read accepted after service stops. The fill keeps its kind
+      // until completion; zero fills send no read.
+      o_perf_events.fill <= |(memory_ready[0+:FILLS] & ~fill_prefetch_q);
+      o_perf_events.fill_prefetch <= |(memory_ready[0+:FILLS] & fill_prefetch_q);
       o_perf_events.slot_full_stall <= run && array_response && decision_retry && !retry_park;
       o_perf_events.conflict_stall <= run && array_response && decision_blocked;
       o_write_perf_events.write_fill <= run && array_response && decision_fill &&
@@ -2628,6 +2633,13 @@ module coherence_home #(
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
     if (f_past_valid && !$past(i_rst) && $past(i_fatal_stop)) assume (i_fatal_stop || i_rst);
+    if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      p_refill_read_count :
+      assert ((o_perf_events.fill || o_perf_events.fill_prefetch) == $past(
+          o_mem_req_valid && i_mem_req_ready && !o_mem_req_write
+      ));
+      p_refill_read_kind : assert (!(o_perf_events.fill && o_perf_events.fill_prefetch));
+    end
     if (!i_rst) begin
       p_stop_held : assert (run || i_fatal_stop || o_fatal);
       p_fatal_stops : assert (!(run && o_fatal));

@@ -432,8 +432,9 @@ async def test_accepted_leading_prediction_keeps_branch_ask_until_served(
 
 
 @cocotb.test()
-async def test_invalidate_discards_inflight_fill(dut: Any) -> None:
-    """i_invalidate mid-fill: the completing line must not validate a slot."""
+@cocotb.parametrize(stalled=[False, True])
+async def test_invalidate_discards_inflight_fill(dut: Any, stalled: bool) -> None:
+    """A clear discards an in-flight fill, including while fetch is stalled."""
     await _setup(dut)
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=12, log=reqs))
@@ -444,9 +445,15 @@ async def test_invalidate_discards_inflight_fill(dut: Any) -> None:
     for _ in range(4):
         await FallingEdge(dut.i_clk)
     assert len(reqs) >= 1
+    dut.i_pipeline_stall.value = int(stalled)
     dut.i_invalidate.value = 1
     await FallingEdge(dut.i_clk)
     dut.i_invalidate.value = 0
+    if stalled:
+        for _ in range(16):
+            await FallingEdge(dut.i_clk)
+            assert not int(dut.o_instr_valid.value)
+        dut.i_pipeline_stall.value = 0
 
     # The discarded fill completes; valid may only come from a fresh fill of
     # the line, so a second request for DDR_BASE must be observed by the time

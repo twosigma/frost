@@ -574,6 +574,41 @@ async def same_sector_loads_share_a_lookup(dut: Any) -> None:
 
 
 @cocotb.test()
+async def reset_discards_captured_merge_credits(dut: Any) -> None:
+    """Reset between event capture and accumulation, then reuse the read IDs."""
+    b = MergeCount(dut)
+    if b.endpoints < 2:
+        return
+    await b.reset()
+    base = 0x80006000
+    await b.issue(0, base)
+    await b.requests_at_least(1)
+    for slot in range(1, 8):
+        await b.issue(slot, base + 8 * (slot % 4))
+        if b.get("perf_merge_miss_q"):
+            break
+    for _ in range(40):
+        if b.get("perf_merge_miss_q"):
+            break
+        await b.tick()
+    else:
+        raise AssertionError("No merged event reached the capture stage")
+    assert b.get("perf_merge_miss_q") & b.get("perf_read_seen_q")
+    await b.reset()
+    assert not b.get("perf_merge_hit_q") and not b.get("perf_merge_miss_q")
+    assert not b.get("perf_owed_hit_q") and not b.get("perf_owed_miss_q")
+    b.clear_counts()
+    for slot in range(3):
+        await b.issue(slot, base + 8 * slot)
+    await b.drain(3)
+    await b.tick(20)
+    assert sorted(b.responses) == [
+        (slot, b.word(base + 8 * slot), 0) for slot in range(3)
+    ]
+    assert b.events == [3, 0, 3], b.events
+
+
+@cocotb.test()
 async def demand_payloads_in_every_load_endpoint(dut: Any) -> None:
     """Preserve size and offset while ordinary reads occupy every load endpoint."""
     b = StreamPrivate(dut)

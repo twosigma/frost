@@ -552,6 +552,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="fence.i cost for JIT-style code generation in cached DDR",
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
+    "fencei_jit_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fencei_jit_bench",
+        nic_mac_clocks=False,
+        description="fence.i and refetch cost for a JIT-style patch, fence.i and call loop",
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "11000000"),),
+        verilator_extra_args=("-GSIM_FAST_MAINT=0",),
+    ),
     "smc_torture": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -908,6 +918,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Zicbop: prefetch.i/r/w retire with no exception in M, S and U, "
             "on faulting, unmapped and supervisor-only addresses"
+        ),
+    ),
+    "ddr_hpm_refill_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_hpm_refill_test",
+        nic_mac_clocks=False,
+        description=(
+            "HPM refill workloads: guarded cold and zero warm L1I counts, "
+            "event-source separation, exact L2 data reads, MINH and overflow; "
+            "exact request accounting is in the cache/home benches"
         ),
     ),
     "zawrs_test": CocotbRunConfig(
@@ -1292,7 +1313,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.debug.test_debug_fence",
         hdl_toplevel_module="frost",
         app_name="debug_target",
-        description="Program-buffer BRAM patch with delayed mirror and fence completion",
+        description=(
+            "Program-buffer BRAM and cached patches, delayed mirror and fence completion"
+        ),
     ),
     "debug_progbuf_btb_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug_progbuf_btb",
@@ -1518,7 +1541,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="smode_test",
         nic_mac_clocks=False,
-        description=("Supervisor-mode traps, returns, delegation, and CSR permissions"),
+        description=(
+            "Supervisor-mode traps, returns, delegation, CSR permissions, "
+            "and fence.i in S and U"
+        ),
     ),
     "csr_rmw_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -5261,6 +5287,8 @@ UNIT_TEST_PARAMS = [
 #     clobber their fixed-address writes, so they run in the bram-tier job only.
 #   - ecc_scrub_test: the patterned line must be at CACHED_BASE, with the
 #     program in BRAM, so the write-error plusarg counts only its writebacks.
+#   - fencei_jit_bench: the BRAM driver already executes its generated code
+#     in cached DDR; moving the driver does not add an invalidation case.
 #   - cache_counters_openocd: its program runs from low BRAM in either tier,
 #     so a ddr-tier run would repeat the bram-tier one.
 DDR_TIER_EXCLUDE = {
@@ -5268,7 +5296,7 @@ DDR_TIER_EXCLUDE = {
     for name in REAL_PROGRAM_TESTS
     if name.endswith("_fetch_fuzz")
     or name.startswith("ddr_")
-    or name in {"ecc_scrub_test", "cache_counters_openocd"}
+    or name in {"ecc_scrub_test", "cache_counters_openocd", "fencei_jit_bench"}
 }
 
 

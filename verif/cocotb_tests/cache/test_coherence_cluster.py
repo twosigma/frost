@@ -51,6 +51,8 @@ class Cluster:
             "l2_write": [0] * 4,
             "l1d_combined": [0] * 2,
             "l2_combined": [0] * 2,
+            "l1d_refills": [0] * 2,
+            "l2_refills": [0] * 2,
         }
 
     def get(self, name: str) -> int:
@@ -137,13 +139,22 @@ class Cluster:
                     if name == "l2_write":
                         events = list(unpack(self.get("o_l2_write_perf"), (1, 5, 1, 1)))
                     else:
-                        # The two combining fields and the L1D hit path's two
-                        # fields precede the tag-stage fields. A hit-path hit
-                        # is an access and a hit, as the counters count it.
-                        fields = unpack(
+                        # The two refill fields, the two combining fields and
+                        # the L1D hit path's two fields precede the tag-stage
+                        # fields. A hit-path hit is an access and a hit, as
+                        # the counters count it.
+                        all_fields = unpack(
                             self.get(f"o_{name}_perf"),
-                            (1, 1, 1, 1, 1, 1, 1, 1, 5, 1, 1, 1),
+                            (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 5, 1, 1, 1),
                         )
+                        refills = f"{name}_refills"
+                        self.perf[refills] = [
+                            a + b
+                            for a, b in zip(
+                                self.perf[refills], all_fields[:2], strict=True
+                            )
+                        ]
+                        fields = all_fields[2:]
                         combined = f"{name}_combined"
                         self.perf[combined] = [
                             a + b
@@ -714,6 +725,10 @@ async def test_demand_counters_exclude_probe_and_maintenance(dut: Any) -> None:
     assert cluster.perf["l1d"][:3] == [1, 0, 1]
     assert cluster.perf["l2"][:3] == [1, 0, 1]
     assert cluster.perf["l1d"][4] > 0 and cluster.perf["l2"][4] > 0
+    # The L2's demand refill is the one line read memory accepted; the L1D
+    # leaves its refill fields zero and this harness does not prefetch.
+    assert cluster.perf["l2_refills"] == [1, 0] and len(cluster.memory_reads) == 1
+    assert cluster.perf["l1d_refills"] == [0, 0]
     assert await cluster.read(0x8000) == 0
     await cluster.tick(10)
     assert cluster.perf["l1d"][:3] == [2, 1, 1]
@@ -733,6 +748,8 @@ async def test_demand_counters_exclude_probe_and_maintenance(dut: Any) -> None:
     assert cluster.perf["l2_write"][0] == 1
     assert cluster.perf["l2_write"][1] > 0
     assert cluster.perf["l1d"][:4] == before
+    # The partial DMA write's fill reads its line: a second demand refill.
+    assert cluster.perf["l2_refills"] == [2, 0] and len(cluster.memory_reads) == 2
     await cluster.store(0x8000, 0x98765432)
     await cluster.wait("o_pending_store", 0)
     await cluster.tick(10)
@@ -744,6 +761,8 @@ async def test_demand_counters_exclude_probe_and_maintenance(dut: Any) -> None:
     await cluster.tick(10)
     assert cluster.perf["l1d"][:4] == before_l1d
     assert cluster.perf["l2"][:4] == before_l2
+    assert cluster.perf["l2_refills"] == [len(cluster.memory_reads), 0]
+    assert cluster.perf["l1d_refills"] == [0, 0]
 
 
 @cocotb.test()

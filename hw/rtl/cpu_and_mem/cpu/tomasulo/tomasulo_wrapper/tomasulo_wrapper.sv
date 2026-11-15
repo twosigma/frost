@@ -1805,8 +1805,7 @@ module tomasulo_wrapper #(
 
   assign store_page_offset_sum =
       {1'b0, o_mem_rs_issue.src1_value[11:0]} + {1'b0, o_mem_rs_issue.imm[11:0]};
-  assign mem_rs_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::SC_D);
+  assign mem_rs_issue_is_sc = o_mem_rs_issue.op == riscv_pkg::SC;
   // SC and cbo.zero use the atomic PMA map, excluding all device pages.
   assign mem_rs_issue_is_cbo_zero = o_mem_rs_issue.op == riscv_pkg::CBO_ZERO;
   assign mem_rs_issue_atomic_pma = mem_rs_issue_is_sc || mem_rs_issue_is_cbo_zero;
@@ -1869,8 +1868,7 @@ module tomasulo_wrapper #(
   logic store_addr_misaligned_full_ref;
   logic store_misalign_issue_full_ref;
   logic store_issue_fire_full_ref;
-  assign store_addr_pma_ok_full_ref = ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
-                                       (o_mem_rs_issue.op == riscv_pkg::SC_D) ||
+  assign store_addr_pma_ok_full_ref = ((o_mem_rs_issue.op == riscv_pkg::SC) ||
                                        (o_mem_rs_issue.op == riscv_pkg::CBO_ZERO)) ?
       riscv_pkg::pma_atomic_ok(
       sq_effective_addr
@@ -1887,8 +1885,7 @@ module tomasulo_wrapper #(
   assign store_issue_fire_full_ref = i_translation_active ?
       (dmmu_store_ok && !dmmu_out_is_sc) :
       (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-       (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
-       (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
+       (o_mem_rs_issue.op != riscv_pkg::SC) &&
        store_addr_pma_ok_full_ref &&
        (!i_trap_misaligned_accesses || !store_addr_misaligned_full_ref));
   always_comb begin
@@ -3952,25 +3949,16 @@ module tomasulo_wrapper #(
       r.is_fp = dispatch.is_fp_mem;
       r.size = dispatch.mem_size;
       r.sign_ext = dispatch.mem_signed;
-      r.is_lr = (dispatch.op == riscv_pkg::LR_W) || (dispatch.op == riscv_pkg::LR_D);
-      r.is_amo   = (dispatch.op == riscv_pkg::AMOSWAP_W)
-                || (dispatch.op == riscv_pkg::AMOADD_W)
-                || (dispatch.op == riscv_pkg::AMOXOR_W)
-                || (dispatch.op == riscv_pkg::AMOAND_W)
-                || (dispatch.op == riscv_pkg::AMOOR_W)
-                || (dispatch.op == riscv_pkg::AMOMIN_W)
-                || (dispatch.op == riscv_pkg::AMOMAX_W)
-                || (dispatch.op == riscv_pkg::AMOMINU_W)
-                || (dispatch.op == riscv_pkg::AMOMAXU_W)
-                || (dispatch.op == riscv_pkg::AMOSWAP_D)
-                || (dispatch.op == riscv_pkg::AMOADD_D)
-                || (dispatch.op == riscv_pkg::AMOXOR_D)
-                || (dispatch.op == riscv_pkg::AMOAND_D)
-                || (dispatch.op == riscv_pkg::AMOOR_D)
-                || (dispatch.op == riscv_pkg::AMOMIN_D)
-                || (dispatch.op == riscv_pkg::AMOMAX_D)
-                || (dispatch.op == riscv_pkg::AMOMINU_D)
-                || (dispatch.op == riscv_pkg::AMOMAXU_D);
+      r.is_lr = dispatch.op == riscv_pkg::LR;
+      r.is_amo   = (dispatch.op == riscv_pkg::AMOSWAP)
+                || (dispatch.op == riscv_pkg::AMOADD)
+                || (dispatch.op == riscv_pkg::AMOXOR)
+                || (dispatch.op == riscv_pkg::AMOAND)
+                || (dispatch.op == riscv_pkg::AMOOR)
+                || (dispatch.op == riscv_pkg::AMOMIN)
+                || (dispatch.op == riscv_pkg::AMOMAX)
+                || (dispatch.op == riscv_pkg::AMOMINU)
+                || (dispatch.op == riscv_pkg::AMOMAXU);
       r.amo_op = dispatch.op;
       make_lq_alloc = r;
     end
@@ -4261,7 +4249,7 @@ module tomasulo_wrapper #(
       r.rob_tag = dispatch.rob_tag;
       r.is_fp = dispatch.is_fp_mem;
       r.size = dispatch.mem_size;
-      r.is_sc = (dispatch.op == riscv_pkg::SC_W) || (dispatch.op == riscv_pkg::SC_D);
+      r.is_sc = dispatch.op == riscv_pkg::SC;
       r.is_zero = dispatch.op == riscv_pkg::CBO_ZERO;
       r.is_cmo = is_cmo;
       r.cmo_kind = cmo_kind_of(dispatch.op);
@@ -4356,20 +4344,14 @@ module tomasulo_wrapper #(
   // Inline enum comparisons work around Yosys package-function elaboration.
   logic dmmu_iss_is_amo;
   assign dmmu_iss_is_amo =
-      (o_mem_rs_issue.op == riscv_pkg::AMOSWAP_W) || (o_mem_rs_issue.op == riscv_pkg::AMOADD_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOXOR_W) || (o_mem_rs_issue.op == riscv_pkg::AMOAND_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOOR_W) || (o_mem_rs_issue.op == riscv_pkg::AMOMIN_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOMAX_W) || (o_mem_rs_issue.op == riscv_pkg::AMOMINU_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOMAXU_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOSWAP_D) || (o_mem_rs_issue.op == riscv_pkg::AMOADD_D) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOXOR_D) || (o_mem_rs_issue.op == riscv_pkg::AMOAND_D) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOOR_D) || (o_mem_rs_issue.op == riscv_pkg::AMOMIN_D) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOMAX_D) || (o_mem_rs_issue.op == riscv_pkg::AMOMINU_D) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOMAXU_D);
+      (o_mem_rs_issue.op == riscv_pkg::AMOSWAP) || (o_mem_rs_issue.op == riscv_pkg::AMOADD) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOXOR) || (o_mem_rs_issue.op == riscv_pkg::AMOAND) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOOR) || (o_mem_rs_issue.op == riscv_pkg::AMOMIN) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOMAX) || (o_mem_rs_issue.op == riscv_pkg::AMOMINU) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOMAXU);
   // LR joins AMOs and SC in the MMU's atomic class (no device access).
   logic dmmu_iss_is_lr;
-  assign dmmu_iss_is_lr = (o_mem_rs_issue.op == riscv_pkg::LR_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::LR_D);
+  assign dmmu_iss_is_lr = o_mem_rs_issue.op == riscv_pkg::LR;
 
   logic dmmu_out_valid;
   logic dmmu_out_lq_capture_valid;
