@@ -1,0 +1,314 @@
+# Explicit membership of every lowered assertion in the eight-burst design.
+# The count, disjointness and coverage checks reject stale or incomplete lists.
+select -set remaining t:$assert
+
+# Partition 0, including h_w_open_count[6].
+select -set group0 \
+  c:h_i_index \
+  c:$assert$axi_coherent_bridge.sv:1668$17299 \
+  c:$assert$axi_coherent_bridge.sv:1541$14754 \
+  c:$assert$axi_coherent_bridge.sv:1521$14276 \
+  c:$assert$axi_coherent_bridge.sv:1663$17306 \
+  c:$assert$axi_coherent_bridge.sv:1525$14234 \
+  c:$assert$axi_coherent_bridge.sv:1665$17308 \
+  c:h_r_idle \
+  c:$assert$axi_coherent_bridge.sv:1531$14395 \
+  c:h_r_req_in_region \
+  c:$assert$axi_coherent_bridge.sv:1642$16646 \
+  c:$assert$axi_coherent_bridge.sv:1647$16445 \
+  c:$assert$axi_coherent_bridge.sv:1654$16635 \
+  c:$assert$axi_coherent_bridge.sv:1654$16692 \
+  c:$assert$axi_coherent_bridge.sv:1654$16742 \
+  c:$assert$axi_coherent_bridge.sv:1654$16896 \
+  c:$assert$axi_coherent_bridge.sv:1654$17003 \
+  c:$assert$axi_coherent_bridge.sv:1654$17053 \
+  c:$assert$axi_coherent_bridge.sv:1654$17100 \
+  c:$assert$axi_coherent_bridge.sv:1654$17257 \
+  c:$assert$axi_coherent_bridge.sv:1659$16640 \
+  c:h_w_beat_closed \
+  c:$assert$axi_coherent_bridge.sv:1383$13308 \
+  c:$assert$axi_coherent_bridge.sv:1398$13597 \
+  c:$assert$axi_coherent_bridge.sv:1374$12869 \
+  c:$assert$axi_coherent_bridge.sv:1471$13911 \
+  c:$assert$axi_coherent_bridge.sv:1468$13945 \
+  c:$assert$axi_coherent_bridge.sv:1385$13314 \
+  c:$assert$axi_coherent_bridge.sv:1387$13293 \
+  c:p_line_id_free \
+  c:p_write_line
+select -assert-count 31 @group0
+select -assert-none @group0 @remaining %d
+select -set remaining @remaining @group0 %d
+
+# Partition 1, including h_w_open_count[0].
+select -set group1 \
+  c:h_i_beat \
+  c:h_queues \
+  c:$assert$axi_coherent_bridge.sv:1668$17339 \
+  c:$assert$axi_coherent_bridge.sv:1541$14729 \
+  c:$assert$axi_coherent_bridge.sv:1521$14252 \
+  c:$assert$axi_coherent_bridge.sv:1663$17346 \
+  c:$assert$axi_coherent_bridge.sv:1525$14270 \
+  c:$assert$axi_coherent_bridge.sv:1665$17388 \
+  c:h_r_in_segment \
+  c:h_r_input \
+  c:$assert$axi_coherent_bridge.sv:1531$14615 \
+  c:$assert$axi_coherent_bridge.sv:1642$17074 \
+  c:$assert$axi_coherent_bridge.sv:1647$17194 \
+  c:$assert$axi_coherent_bridge.sv:1654$16468 \
+  c:$assert$axi_coherent_bridge.sv:1654$16682 \
+  c:$assert$axi_coherent_bridge.sv:1654$16732 \
+  c:$assert$axi_coherent_bridge.sv:1654$16799 \
+  c:$assert$axi_coherent_bridge.sv:1654$16906 \
+  c:$assert$axi_coherent_bridge.sv:1654$17033 \
+  c:$assert$axi_coherent_bridge.sv:1654$17063 \
+  c:$assert$axi_coherent_bridge.sv:1654$17237 \
+  c:$assert$axi_coherent_bridge.sv:1659$16854 \
+  c:h_w_beat \
+  c:$assert$axi_coherent_bridge.sv:1383$13113 \
+  c:h_w_due_line \
+  c:$assert$axi_coherent_bridge.sv:1398$13720 \
+  c:$assert$axi_coherent_bridge.sv:1374$12887 \
+  c:$assert$axi_coherent_bridge.sv:1471$13921 \
+  c:$assert$axi_coherent_bridge.sv:1468$13935 \
+  c:h_w_no_open_segment \
+  c:$assert$axi_coherent_bridge.sv:1385$12924 \
+  c:$assert$axi_coherent_bridge.sv:1387$13033 \
+  c:p_b_after_lines
+select -assert-count 33 @group1
+select -assert-none @group1 @remaining %d
+select -set remaining @remaining @group1 %d
+
+# Partition 2, including h_w_open_count[5].
+select -set group2 \
+  c:h_i_entry \
+  c:h_r_beat \
+  c:$assert$axi_coherent_bridge.sv:1668$17319 \
+  c:h_r_count \
+  c:$assert$axi_coherent_bridge.sv:1541$14804 \
+  c:$assert$axi_coherent_bridge.sv:1521$14228 \
+  c:$assert$axi_coherent_bridge.sv:1663$17406 \
+  c:$assert$axi_coherent_bridge.sv:1525$14222 \
+  c:$assert$axi_coherent_bridge.sv:1665$17328 \
+  c:$assert$axi_coherent_bridge.sv:1531$14450 \
+  c:h_r_req_line \
+  c:$assert$axi_coherent_bridge.sv:1642$16967 \
+  c:$assert$axi_coherent_bridge.sv:1647$16873 \
+  c:$assert$axi_coherent_bridge.sv:1654$16615 \
+  c:$assert$axi_coherent_bridge.sv:1654$16625 \
+  c:$assert$axi_coherent_bridge.sv:1654$16672 \
+  c:$assert$axi_coherent_bridge.sv:1654$16839 \
+  c:$assert$axi_coherent_bridge.sv:1654$16916 \
+  c:$assert$axi_coherent_bridge.sv:1654$17013 \
+  c:$assert$axi_coherent_bridge.sv:1654$17150 \
+  c:$assert$axi_coherent_bridge.sv:1654$17217 \
+  c:$assert$axi_coherent_bridge.sv:1659$16533 \
+  c:h_w_count \
+  c:$assert$axi_coherent_bridge.sv:1383$13373 \
+  c:$assert$axi_coherent_bridge.sv:1398$13433 \
+  c:$assert$axi_coherent_bridge.sv:1374$12857 \
+  c:$assert$axi_coherent_bridge.sv:1471$13981 \
+  c:$assert$axi_coherent_bridge.sv:1468$13975 \
+  c:$assert$axi_coherent_bridge.sv:1385$13249 \
+  c:$assert$axi_coherent_bridge.sv:1387$13228 \
+  c:p_one_segment_waits \
+  c:p_r_order
+select -assert-count 32 @group2
+select -assert-none @group2 @remaining %d
+select -set remaining @remaining @group2 %d
+
+# Partition 3, including h_w_open_count[4].
+select -set group3 \
+  c:h_r_behind_walker \
+  c:$assert$axi_coherent_bridge.sv:1668$17379 \
+  c:$assert$axi_coherent_bridge.sv:1541$14879 \
+  c:$assert$axi_coherent_bridge.sv:1521$14192 \
+  c:$assert$axi_coherent_bridge.sv:1663$17286 \
+  c:$assert$axi_coherent_bridge.sv:1525$14210 \
+  c:$assert$axi_coherent_bridge.sv:1665$17368 \
+  c:h_r_path \
+  c:$assert$axi_coherent_bridge.sv:1531$14560 \
+  c:$assert$axi_coherent_bridge.sv:1642$16539 \
+  c:h_seg_head \
+  c:$assert$axi_coherent_bridge.sv:1647$16766 \
+  c:$assert$axi_coherent_bridge.sv:1654$16458 \
+  c:$assert$axi_coherent_bridge.sv:1654$16518 \
+  c:$assert$axi_coherent_bridge.sv:1654$16575 \
+  c:$assert$axi_coherent_bridge.sv:1654$16605 \
+  c:$assert$axi_coherent_bridge.sv:1654$16779 \
+  c:$assert$axi_coherent_bridge.sv:1654$16819 \
+  c:$assert$axi_coherent_bridge.sv:1654$16993 \
+  c:$assert$axi_coherent_bridge.sv:1654$17140 \
+  c:$assert$axi_coherent_bridge.sv:1659$16961 \
+  c:$assert$axi_coherent_bridge.sv:1383$12918 \
+  c:$assert$axi_coherent_bridge.sv:1398$13515 \
+  c:$assert$axi_coherent_bridge.sv:1374$12863 \
+  c:$assert$axi_coherent_bridge.sv:1471$13971 \
+  c:$assert$axi_coherent_bridge.sv:1468$13955 \
+  c:$assert$axi_coherent_bridge.sv:1385$13184 \
+  c:$assert$axi_coherent_bridge.sv:1387$13423 \
+  c:p_line_aligned \
+  c:p_quiet_after_reset \
+  c:p_r_line_code \
+  c:p_w_after_aw \
+  c:p_write_is_due
+select -assert-count 33 @group3
+select -assert-none @group3 @remaining %d
+select -set remaining @remaining @group3 %d
+
+# Partition 4, including h_w_open_count[1].
+select -set group4 \
+  c:$assert$axi_coherent_bridge.sv:1668$17439 \
+  c:$assert$axi_coherent_bridge.sv:1541$14779 \
+  c:$assert$axi_coherent_bridge.sv:1521$14264 \
+  c:$assert$axi_coherent_bridge.sv:1663$17386 \
+  c:$assert$axi_coherent_bridge.sv:1525$14198 \
+  c:$assert$axi_coherent_bridge.sv:1665$17428 \
+  c:$assert$axi_coherent_bridge.sv:1531$14670 \
+  c:$assert$axi_coherent_bridge.sv:1642$16860 \
+  c:$assert$axi_coherent_bridge.sv:1647$16980 \
+  c:$assert$axi_coherent_bridge.sv:1654$16702 \
+  c:$assert$axi_coherent_bridge.sv:1654$16722 \
+  c:$assert$axi_coherent_bridge.sv:1654$16886 \
+  c:$assert$axi_coherent_bridge.sv:1654$16946 \
+  c:$assert$axi_coherent_bridge.sv:1654$16956 \
+  c:$assert$axi_coherent_bridge.sv:1654$17043 \
+  c:$assert$axi_coherent_bridge.sv:1654$17120 \
+  c:$assert$axi_coherent_bridge.sv:1654$17160 \
+  c:$assert$axi_coherent_bridge.sv:1659$16747 \
+  c:$assert$axi_coherent_bridge.sv:1383$13048 \
+  c:$assert$axi_coherent_bridge.sv:1398$13638 \
+  c:$assert$axi_coherent_bridge.sv:1374$12875 \
+  c:$assert$axi_coherent_bridge.sv:1471$13941 \
+  c:$assert$axi_coherent_bridge.sv:1468$13905 \
+  c:h_w_idle \
+  c:$assert$axi_coherent_bridge.sv:1385$12989 \
+  c:$assert$axi_coherent_bridge.sv:1387$12968 \
+  c:p_b_code \
+  c:p_r_error_code \
+  c:p_r_held \
+  c:p_r_last \
+  c:p_tables_bounded
+select -assert-count 31 @group4
+select -assert-none @group4 @remaining %d
+select -set remaining @remaining @group4 %d
+
+# Partition 5, including h_w_open_count[3].
+select -set group5 \
+  c:h_r_beat_closed \
+  c:$assert$axi_coherent_bridge.sv:1668$17419 \
+  c:$assert$axi_coherent_bridge.sv:1541$14829 \
+  c:$assert$axi_coherent_bridge.sv:1521$14204 \
+  c:$assert$axi_coherent_bridge.sv:1663$17426 \
+  c:$assert$axi_coherent_bridge.sv:1525$14258 \
+  c:$assert$axi_coherent_bridge.sv:1665$17348 \
+  c:h_r_in_segment_err \
+  c:$assert$axi_coherent_bridge.sv:1531$14340 \
+  c:$assert$axi_coherent_bridge.sv:1642$16753 \
+  c:$assert$axi_coherent_bridge.sv:1647$17087 \
+  c:$assert$axi_coherent_bridge.sv:1654$16528 \
+  c:$assert$axi_coherent_bridge.sv:1654$16565 \
+  c:$assert$axi_coherent_bridge.sv:1654$16712 \
+  c:$assert$axi_coherent_bridge.sv:1654$16849 \
+  c:$assert$axi_coherent_bridge.sv:1654$17170 \
+  c:$assert$axi_coherent_bridge.sv:1654$17207 \
+  c:$assert$axi_coherent_bridge.sv:1654$17227 \
+  c:$assert$axi_coherent_bridge.sv:1654$17267 \
+  c:$assert$axi_coherent_bridge.sv:1659$17068 \
+  c:$assert$axi_coherent_bridge.sv:1383$12983 \
+  c:$assert$axi_coherent_bridge.sv:1398$13679 \
+  c:$assert$axi_coherent_bridge.sv:1374$12881 \
+  c:$assert$axi_coherent_bridge.sv:1471$13961 \
+  c:$assert$axi_coherent_bridge.sv:1468$13965 \
+  c:h_w_index \
+  c:h_w_input \
+  c:$assert$axi_coherent_bridge.sv:1385$13119 \
+  c:$assert$axi_coherent_bridge.sv:1387$13163 \
+  c:p_b_after_w \
+  c:p_line_in_region \
+  c:p_r_memory_code
+select -assert-count 32 @group5
+select -assert-none @group5 @remaining %d
+select -set remaining @remaining @group5 %d
+
+# Partition 6, including h_w_open_count[2].
+select -set group6 \
+  c:$assert$axi_coherent_bridge.sv:1668$17399 \
+  c:$assert$axi_coherent_bridge.sv:1541$14904 \
+  c:$assert$axi_coherent_bridge.sv:1521$14240 \
+  c:$assert$axi_coherent_bridge.sv:1663$17366 \
+  c:$assert$axi_coherent_bridge.sv:1525$14246 \
+  c:$assert$axi_coherent_bridge.sv:1665$17288 \
+  c:$assert$axi_coherent_bridge.sv:1531$14725 \
+  c:$assert$axi_coherent_bridge.sv:1642$16432 \
+  c:$assert$axi_coherent_bridge.sv:1647$16659 \
+  c:$assert$axi_coherent_bridge.sv:1654$16478 \
+  c:$assert$axi_coherent_bridge.sv:1654$16508 \
+  c:$assert$axi_coherent_bridge.sv:1654$16789 \
+  c:$assert$axi_coherent_bridge.sv:1654$16829 \
+  c:$assert$axi_coherent_bridge.sv:1654$16936 \
+  c:$assert$axi_coherent_bridge.sv:1654$17023 \
+  c:$assert$axi_coherent_bridge.sv:1654$17110 \
+  c:$assert$axi_coherent_bridge.sv:1654$17277 \
+  c:$assert$axi_coherent_bridge.sv:1659$17282 \
+  c:$assert$axi_coherent_bridge.sv:1383$13178 \
+  c:h_w_due \
+  c:h_w_due_in_region \
+  c:h_w_engine \
+  c:$assert$axi_coherent_bridge.sv:1398$13556 \
+  c:$assert$axi_coherent_bridge.sv:1374$12893 \
+  c:$assert$axi_coherent_bridge.sv:1471$13951 \
+  c:$assert$axi_coherent_bridge.sv:1468$13925 \
+  c:$assert$axi_coherent_bridge.sv:1385$13054 \
+  c:h_w_pend \
+  c:$assert$axi_coherent_bridge.sv:1387$13358 \
+  c:h_walker_at_r \
+  c:h_walker_next \
+  c:p_b_order
+select -assert-count 32 @group6
+select -assert-none @group6 @remaining %d
+select -set remaining @remaining @group6 %d
+
+# Partition 7, including h_w_open_count[7].
+select -set group7 \
+  c:h_r_at_walker \
+  c:$assert$axi_coherent_bridge.sv:1668$17359 \
+  c:$assert$axi_coherent_bridge.sv:1541$14854 \
+  c:$assert$axi_coherent_bridge.sv:1521$14216 \
+  c:$assert$axi_coherent_bridge.sv:1663$17326 \
+  c:$assert$axi_coherent_bridge.sv:1525$14282 \
+  c:$assert$axi_coherent_bridge.sv:1665$17408 \
+  c:$assert$axi_coherent_bridge.sv:1531$14505 \
+  c:$assert$axi_coherent_bridge.sv:1642$17181 \
+  c:$assert$axi_coherent_bridge.sv:1647$16552 \
+  c:$assert$axi_coherent_bridge.sv:1654$16488 \
+  c:$assert$axi_coherent_bridge.sv:1654$16498 \
+  c:$assert$axi_coherent_bridge.sv:1654$16585 \
+  c:$assert$axi_coherent_bridge.sv:1654$16595 \
+  c:$assert$axi_coherent_bridge.sv:1654$16809 \
+  c:$assert$axi_coherent_bridge.sv:1654$16926 \
+  c:$assert$axi_coherent_bridge.sv:1654$17130 \
+  c:$assert$axi_coherent_bridge.sv:1654$17247 \
+  c:$assert$axi_coherent_bridge.sv:1659$17175 \
+  c:$assert$axi_coherent_bridge.sv:1383$13243 \
+  c:$assert$axi_coherent_bridge.sv:1398$13474 \
+  c:$assert$axi_coherent_bridge.sv:1374$12899 \
+  c:$assert$axi_coherent_bridge.sv:1471$13931 \
+  c:$assert$axi_coherent_bridge.sv:1468$13915 \
+  c:$assert$axi_coherent_bridge.sv:1385$13379 \
+  c:h_w_pend_bound \
+  c:$assert$axi_coherent_bridge.sv:1387$13098 \
+  c:h_walker_mid \
+  c:p_line_held \
+  c:p_r_data
+select -assert-count 30 @group7
+select -assert-none @group7 @remaining %d
+select -set remaining @remaining @group7 %d
+
+# Partition 8 checks B-channel stability.
+select -set group8 c:p_b_held
+select -assert-count 1 @group8
+select -assert-none @group8 @remaining %d
+select -set remaining @remaining @group8 %d
+
+select -assert-none @remaining
+select -clear

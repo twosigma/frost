@@ -12,9 +12,10 @@ depth 1
 smtbmc boolector
 
 [script]
-# The fill waiter masks', parking's and fill images' next state, with the decision's late
-# reader or allocation term selected last, equal the reference form (one seat selection
-# given whether each fill joins) for any register state and input.
+# The fill waiter masks' and parking's next state, with the decision's late reader or
+# allocation term selected last, equal the reference form (one seat selection given
+# whether each fill joins), and the fill images' next state equals the response load
+# and registered zero clear, for any register state and input.
 read -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv
 read -sv -D SYNTHESIS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
 read -sv -D SYNTHESIS coherence_seat_select.sv coherence_work_select.sv coherence_home_endpoint.sv coherence_d_arbiter.sv coherence_home_completions.sv coherence_home_array.sv coherence_home_engine.sv

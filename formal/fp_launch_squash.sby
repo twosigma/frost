@@ -31,7 +31,8 @@ proc -norom
 flatten
 connect -nounset -set b_state u_base.u_engine.state_q
 connect -nounset -set b_tag u_base.tag_q
-connect -nounset -set b_payload[207:195] u_base.u_engine.dec_q
+connect -nounset -set b_payload[274:211] u_base.u_engine.fli_q
+connect -nounset -set b_payload[210:195] u_base.u_engine.dec_q
 connect -nounset -set b_payload[194:192] u_base.u_engine.rm_q
 connect -nounset -set b_payload[191:128] u_base.u_engine.opa_q
 connect -nounset -set b_payload[127:64] u_base.u_engine.opb_q
@@ -78,7 +79,8 @@ connect -nounset -set b_i2f[63:0] u_base.u_engine.fast_i2f_norm_q
 connect -nounset -set c_state u_cand.u_engine.state_q
 connect -nounset -set c_tag u_cand.tag_q
 connect -nounset -set c_squash u_cand.squash_q
-connect -nounset -set c_payload[207:195] u_cand.u_engine.dec_q
+connect -nounset -set c_payload[274:211] u_cand.u_engine.fli_q
+connect -nounset -set c_payload[210:195] u_cand.u_engine.dec_q
 connect -nounset -set c_payload[194:192] u_cand.u_engine.rm_q
 connect -nounset -set c_payload[191:128] u_cand.u_engine.opa_q
 connect -nounset -set c_payload[127:64] u_cand.u_engine.opb_q

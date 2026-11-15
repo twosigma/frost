@@ -21,12 +21,13 @@
 
 TEST_SRC ?=
 
-# ARCH matches the -march value in common.mk RISCV_FLAGS (see arch.mk).
+# arch.mk supplies the RV64 architecture and ABI settings.
 include ../../common/arch.mk
-# ARCH includes C except for the tests in NO_COMPRESS_TESTS below.
+# This base ISA fixes the code layout used by the signature references.
+# Tests append their required extensions below; NO_COMPRESS_TESTS removes C.
 # XLEN_DEFINE feeds the framework's arch_test.h/model_test.h register-width
 # macros and must track the march.
-ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs
+ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zfa_zfhmin_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs
 XLEN_DEFINE = -DXLEN=64
 # lp64 needs PC-relative addressing for the DDR-resident test body: medlow's
 # absolute lui cannot form 0x8xxx_xxxx addresses at XLEN=64 (sign-extension), so
@@ -43,6 +44,12 @@ NO_COMPRESS_TESTS = misalign-ld-01 misalign-lw-01 misalign-sw-01 misalign-sd-01
 TEST_NAME = $(basename $(notdir $(TEST_SRC)))
 ifneq ($(filter $(TEST_NAME),$(NO_COMPRESS_TESTS)),)
 ARCH := $(subst imafdc,imafd,$(ARCH))
+endif
+# Zcb, Zimop and Zcmop tests add those extensions; the other tests keep their
+# code layout. Keep equal to ZC_MOP_TEST_PREFIXES in generate_references.py.
+ZC_MOP_TESTS = clbu% clh% cmul% cnot% csb% csext% csh% czext% mop.% c.mop.%
+ifneq ($(filter $(ZC_MOP_TESTS),$(TEST_NAME)),)
+ARCH := $(ARCH)_zcb_zimop_zcmop
 endif
 
 # Same toolchain prefix as common.mk.

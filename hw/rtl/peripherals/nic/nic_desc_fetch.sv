@@ -212,12 +212,24 @@ module nic_desc_fetch #(
     if (!i_sim_hold) begin
       if (reset_seen_q && !i_rst && i_resp_valid && pending_q &&
           (i_resp_tag != TAG_BITS'(pend_slot_q)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("nic_desc_fetch: response tag %0d, expected %0d", i_resp_tag, pend_slot_q);
       if (reset_seen_q && !i_rst && i_resp_valid && !pending_q)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("nic_desc_fetch: response with no read in flight");
       if (reset_seen_q && !i_rst && i_desc_take && (i_invalidate || i_restart))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("nic_desc_fetch: descriptor take during an invalidation or restart is lost");
       if (reset_seen_q && !i_rst && i_desc_take && !head_hit)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("nic_desc_fetch: descriptor take with no head descriptor cached");
     end
   end
