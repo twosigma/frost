@@ -113,7 +113,8 @@ instructions decoded under the old FS or TW value. Legal `menvcfg` and `senvcfg`
 writes use ordinary CSR serialization: their CBZE, CBCFE and CBIE bits affect
 only lower privilege. `senvcfg.PMM` selects U-mode pointer masking, including
 MPRV accesses with MPP = U. ID holds younger instructions until the write
-commits, so those accesses issue with the updated PMM. The trap, xRET or debug
+commits, and the CSR file captures the legalized PMM on that edge before a
+younger store can allocate an early address. The trap, xRET or debug
 transition flushes decode when the executing mode's `cbo.zero`, Zicbom or
 `wrs.nto` permission changes (ID reads them as registered gates). The CSR file
 invalidates the TLBs and walker on its own: on every `satp` access, and on an

@@ -1065,8 +1065,9 @@ FORMAL_TARGETS = [
     FormalTarget(
         "pointer_masking.sby",
         "Ssnpm: the MEM_RS base transform gives the Sv39 canonical check, the Bare PMA "
-        "decodes and xtval the ignore transformation's result, and senvcfg.PMM is WARL",
-        tasks=("bmc",),
+        "decodes, xtval and misaligned assist the ignore transformation's result "
+        "across DDR apertures, and senvcfg.PMM is WARL",
+        tasks=("bmc", "bmc_ddr31", "bmc_ddr36", "bmc_ddr37"),
     ),
     FormalTarget(
         "divider.sby",
@@ -2584,6 +2585,9 @@ SBY_TASKS = [
     ),
     ("cover_wide", "Svpbmt alias and no-alias reachability with the 64 GiB DDR map"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
+    ("bmc_ddr31", "Pointer masking with a 2 GiB DDR aperture"),
+    ("bmc_ddr36", "Pointer masking with a 64 GiB DDR aperture"),
+    ("bmc_ddr37", "Pointer masking with a 128 GiB DDR aperture"),
     (
         "bmc_small_btb",
         "Bounded tag comparison with a 16-entry BTB and partial final group",

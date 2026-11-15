@@ -182,6 +182,8 @@ request (HWASAN's 8 tag bits get 16). U-mode loads, stores, AMOs, LR/SC and
 CBOs then ignore the top PMLEN address bits; instruction fetch and the kernel's
 own accesses are never masked. `riscv_hwprobe` reports `RISCV_HWPROBE_EXT_SUPM`
 and `/proc/cpuinfo` lists `ssnpm`.
+The pinned Debian 6.12 kernel predates this interface; the supplied Linux
+workloads do not request tagged addresses.
 
 ## Counters and mcounteren
 

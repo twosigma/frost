@@ -276,13 +276,24 @@ packet arrives in E1, marked by `*_pending_repair_capture_q`:
 
 ## Store address pipeline
 
-A store's address can reach the SQ before MEM_RS issues the store. When a store
-dispatches with its base register ready, `sq_early_addr_pipeline` registers the
+A store's address can reach the SQ before MEM_RS issues the store while
+pointer masking is off. When a store dispatches with its base register ready,
+`sq_early_addr_pipeline` registers the
 base and immediate, adds them in the next cycle, and writes the address into
 the store's SQ entry, matched by ROB tag. Each dispatch slot has its own
 registers, adders, and SQ update port. Each sum's device-region flag is formed
 beside its adder: the test that the upper half is zero reads the operands bit by
 bit and waits only for the low half's carry.
+
+With Ssnpm masking enabled, stores receive their addresses at MEM_RS issue.
+The issue base is sign-extended from bit 56 or 47 before addition. For the
+supported physical maps and Sv39, every accepted address equals the ignore
+transformation of the effective address; rejected sums can differ in the
+ignored bits. Data fault values use the exact transformation, and the
+misaligned-access engine starts from that value. A senvcfg write updates the
+registered PMM on the CSR write edge, before a younger store can allocate.
+CSR serialization and full flushes prevent an early-address candidate from
+surviving a mode change.
 
 A store whose base is not ready becomes the slot's repair candidate. It waits
 for its base tag on the done-repair channels or either CDB lane, then writes

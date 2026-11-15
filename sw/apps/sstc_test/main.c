@@ -186,7 +186,8 @@ int main(void)
     csr_write_num(0x30A, ~0ul);
     ok &= report("A menvcfg-warl",
                  csr_read_num(0x30A),
-                 MENVCFG_STCE | MENVCFG_PBMTE | ENVCFG_CBZE | ENVCFG_CBCFE | ENVCFG_CBIE | ENVCFG_FIOM);
+                 MENVCFG_STCE | MENVCFG_PBMTE | ENVCFG_CBZE | ENVCFG_CBCFE | ENVCFG_CBIE |
+                     ENVCFG_FIOM);
     csr_write_num(0x30A, 0);
     ok &= report("A menvcfg-clear", csr_read_num(0x30A), 0);
     csr_write_num(0x10A, ~0ul);

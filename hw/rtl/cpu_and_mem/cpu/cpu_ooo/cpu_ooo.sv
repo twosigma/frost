@@ -4005,6 +4005,24 @@ module cpu_ooo #(
   end
 `endif
 
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Store allocation and memory issue must use the current pointer mode.
+  // RS stage 2 can present a packet during full flush; its consumers discard it.
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && !i_rst && !flush_all &&
+        ((rs_issue_mem.valid && (rs_issue_mem.mem_needs_lq || rs_issue_mem.mem_needs_sq)) ||
+         u_tomasulo.sq_alloc_req.valid || u_tomasulo.sq_alloc_req_2.valid)) begin
+      p_memory_pointer_mode_current :
+      assert (csr_mmu_pm_mode ==
+          (((csr_file_inst.mstatus_mprv ? csr_file_inst.mstatus_mpp : csr_priv) ==
+             riscv_pkg::PrivU && !csr_file_inst.mstatus_mxr) ?
+            csr_file_inst.senvcfg_pmm : riscv_pkg::EnvcfgPmmOff));
+    end
+  end
+`endif
+`endif
+
   logic [1:0] commit_branch_retired_count;
   logic [1:0] commit_branch_mispredict_count;
   always_comb begin
@@ -4352,7 +4370,9 @@ module cpu_ooo #(
         .i_clk(i_clk),
         .i_rst(i_rst),
         .i_start(ma_assist_start),
-        .i_va(rob_trap_value),
+        // An assist uses the exact transformed address, including faults
+        // whose MEM_RS sum crossed the pointer mask's sign boundary.
+        .i_va(csr_trap_value),
         .i_size(riscv_pkg::mem_size_e'(rob_head_mem_funct3[1:0])),
         .i_unsigned(rob_head_mem_funct3[2]),
         // The ROB marks integer and FP stores with separate flags.
