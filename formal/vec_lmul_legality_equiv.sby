@@ -1,0 +1,23 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read -sv vec_lmul_legality.sv
+read_verilog -formal -D SYNTHESIS -D VEC_LMUL_LEGALITY_LOCAL_PROOF -sv dispatch.sv
+prep -top dispatch
+select -assert-none t:$assume a:init
+select -assert-count 1 t:$check r:FLAVOR=assume %i
+select -assert-count 1 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_lmul_legality.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv

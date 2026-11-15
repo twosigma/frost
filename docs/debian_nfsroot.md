@@ -339,6 +339,8 @@ NIC loopback test from `/dev/shm`, with dentry and inode caches dropped before
 the test. Sysfs counters and carrier are opened before the link goes down.
 The test holds the interface down for 65 seconds before reading counters,
 exceeding NFS's default directory attribute cache lifetime.
+It verifies a queued burst at MTU 1500, including frame lengths around the
+RX copybreak threshold, before checking jumbo frames and teardown at MTU 9000.
 The shell opens MTU, flags and IPv6 restoration files before the test and
 writes through those descriptors, since absolute sysfs or proc lookups can
 revalidate the NFS root. It writes, syncs and removes a file on the root to

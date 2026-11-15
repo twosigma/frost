@@ -102,3 +102,4 @@
 - Advertised Zicbop, Zawrs, Zihpm, Zicbom and the RVA22 profile properties in the device tree and boot image, with prefetch hints as no-ops, the Zawrs wait instructions and their `mstatus.TW` rule, and directed tests for each
 - Split attributed net declarations that carried an initialiser into a declaration and a separate `assign`, so front ends that reject an attribute on an initialised net accept them
 - Fixed interrupt starvation by closely spaced device accesses, holding the next device access while an interrupt take is armed, with a program that measures interrupt-take latency across device, atomic, fence and memory-bound loops
+- Added page-pool RX fragments, tunable copying of short frames, and conditional DMA synchronization to the Linux NIC driver
