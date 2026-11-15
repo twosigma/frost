@@ -124,3 +124,6 @@ fpga/site.env
 # Formal and synthesis pass markers and reports of CI reuse (tests/ci_reuse.py)
 .ci-reuse/
 ci-reuse-*
+
+# Reused-model startup check logs and completion records.
+/tests/startup_sweep/

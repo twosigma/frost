@@ -682,8 +682,9 @@ address CAM matches ROB tags, not addresses. Results are in one 64-bit LUTRAM
 with two write ports (memory responses on port 0; L0 hits, forwarded values
 and AMO completions on port 1), so a response for one load and a hit for the
 next can land in the same cycle. A dword load stores the whole beat, other
-loads the value `load_unit` extracted and sign- or zero-extended (FLW its raw
-word); FLW results are NaN-boxed at the CDB.
+loads the value `load_unit` extracted and sign- or zero-extended (FLH/FLW
+their raw halfword/word). FLH and FLW results are NaN-boxed at every CDB
+path, including store forwarding and the L0 and memory response bypasses.
 
 ## Performance counters
 

@@ -60,7 +60,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicbom | Implemented | `cbo_mgmt_test`, TestRIG (`zicbom_ops.S`), `csr_file.sby`, `reorder_buffer.sby` |
 | Zicbop | Implemented | `zicbop_test`, TestRIG |
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
-| Zfhmin | In progress | - |
+| Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
 | V | Partial (state, `vsetvl*`, integer ALU, mask-scalar; memory and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vmt.sby` |
 | Zvfhmin | Partial (FP16 convert datapath block in place; core execution not connected) | `test_vec_fcvt.py` |
@@ -71,7 +71,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zimop | In progress | - |
 | Zcmop | In progress | - |
 | Zcb | In progress | - |
-| Zfa | In progress | - |
+| Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
 | Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
 | Supm | In progress | - |
 | Zifencei | Implemented | `riscv-arch-test` (`Zifencei`), `smc_fencei_test`, `ddr_smc_test`, TestRIG, `coherent_hart_cache.sby` |

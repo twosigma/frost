@@ -480,11 +480,34 @@ module backing_btb #(
   tag_t check_tag;
   payload_t check_payload;
   initial begin
+`ifdef FROST_SIM_ASSERTIONS
+    if (!(WAYS == 2 || WAYS == 4)) $fatal(1, "backing_btb: invalid static configuration");
+`else
     assert (WAYS == 2 || WAYS == 4);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!(ENTRIES % WAYS == 0 && (1 << IndexBits) == Sets))
+      $fatal(1, "backing_btb: invalid static configuration");
+`else
     assert (ENTRIES % WAYS == 0 && (1 << IndexBits) == Sets);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!(TARGET_BITS > 1 && TARGET_BITS < XLEN))
+      $fatal(1, "backing_btb: invalid static configuration");
+`else
     assert (TARGET_BITS > 1 && TARGET_BITS < XLEN);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!($bits(check_tag) == TagEntryBits)) $fatal(1, "backing_btb: invalid static configuration");
+`else
     assert ($bits(check_tag) == TagEntryBits);
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+    if (!($bits(check_payload) == PayloadEntryBits))
+      $fatal(1, "backing_btb: invalid static configuration");
+`else
     assert ($bits(check_payload) == PayloadEntryBits);
+`endif
   end
 
   // A set never holds one tag in two ways. The registers and arrays power up

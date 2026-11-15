@@ -131,15 +131,30 @@ module axi_checker #(
     end else if (reset_seen_q) begin
       if (aw_wait_q && !(i_awvalid && (aw_q == {i_awid, i_awaddr, i_awlen, i_awsize, i_awburst,
                                                   i_awlock})))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_checker %0d: AW withdrawn or changed before AWREADY", PORT);
       if (w_wait_q && !(i_wvalid && (w_q == {i_wdata, i_wstrb, i_wlast})))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_checker %0d: W withdrawn or changed before WREADY", PORT);
       if (b_wait_q && !(i_bvalid && (b_q == {i_bid, i_bresp})))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_checker %0d: B withdrawn or changed before BREADY", PORT);
       if (ar_wait_q && !(i_arvalid && (ar_q == {i_arid, i_araddr, i_arlen, i_arsize, i_arburst,
                                                   i_arlock})))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_checker %0d: AR withdrawn or changed before ARREADY", PORT);
       if (r_wait_q && !(i_rvalid && (r_q == {i_rid, i_rdata, i_rresp, i_rlast})))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_checker %0d: R withdrawn or changed before RREADY", PORT);
       aw_wait_q <= i_awvalid && !i_awready;
       w_wait_q  <= i_wvalid && !i_wready;
@@ -154,6 +169,9 @@ module axi_checker #(
 
       if (i_awvalid && i_awready) begin
         if (!legal_burst(i_awaddr[11:0], i_awlen, i_awsize, i_awburst))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "axi_checker %0d: illegal AW addr %h len %0d size %0d burst %0d",
               PORT,
@@ -166,6 +184,9 @@ module axi_checker #(
       end
       if (i_arvalid && i_arready) begin
         if (!legal_burst(i_araddr[11:0], i_arlen, i_arsize, i_arburst))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "axi_checker %0d: illegal AR addr %h len %0d size %0d burst %0d",
               PORT,
@@ -183,11 +204,17 @@ module axi_checker #(
       if (!w_led_q) begin
         if (aw_push) begin
           if (aw_count == AwQueue)
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error("axi_checker %0d: more than %0d AWs await W", PORT, AwQueue);
           else aw_len_q[(aw_head+aw_count)%AwQueue] <= i_awlen;
         end
         if (w_counted) begin
           if (i_wlast != w_ends)
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error(
                 "axi_checker %0d: WLAST %0d on beat %0d of %0d",
                 PORT,

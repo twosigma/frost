@@ -510,8 +510,9 @@ AMO. The engine reads a store's data through an extra read port on each
 register file, translates through the page-table walker when translation is
 on, and makes its sector requests on the hart's line client. A load's result
 is written through commit port 0, one cycle after completion, and the access
-counts as one retired instruction (`minstret` and a single step). If a part
-faults, the engine's exception is taken as the instruction's own, with its
+counts as one retired instruction (`minstret` and a single step). Half- and
+single-precision FP loads are NaN-boxed to 64 bits; FP stores transfer the
+low bits for their access size. If a part faults, the engine's exception is taken as the instruction's own, with its
 cause and trap value, and `mepc` or `sepc` holds the access's PC.
 
 An access is split at the first sector boundary it crosses. `ma_pkg` checks

@@ -647,6 +647,14 @@ VERILOG_SOURCES :=
 endif
 endif
 
+# The system bench enables runtime assertions after driving its cold reset.
+# The runtime switch is parsed before the first HDL evaluation.
+ifeq ($(TOPLEVEL),frost)
+VERILOG_SOURCES += $(ROOT)/hw/sim/sim_assertions.cpp
+COMPILE_ARGS += --assert +define+FROST_SIM_ASSERTIONS
+COCOTB_PLUSARGS += +verilator+noassert
+endif
+
 # A test that defines FROST_SRAM_MACROS builds the RAM wrappers from the ASIC
 # flow's SRAM macros (asic/sram). Their OpenRAM models use delays, so
 # Verilator schedules timing. An X that the design assigns, such as a macro's
