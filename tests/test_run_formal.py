@@ -51,6 +51,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
     ("coherence_l1d", "coh_l1d_stream_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_hold_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_cover"): 1200,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
@@ -72,6 +73,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_ways_data_bmc"): 5100,
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
+    ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
     ("coherence_store_boundary", "cover_four"): 7200,
     ("coherence_store_boundary", "bmc_intervening"): 14400,
@@ -385,6 +388,8 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_payload_bmc",
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
+            "coh_l1d_answer_bmc",
+            "coh_l1d_stream_answer_bmc",
         ),
     ),
     FormalTarget(
@@ -905,7 +910,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rvc_predecode.sby",
-        "RV64C predecode expansion matches the reference decoder for every parcel",
+        "RV64C/Zcb/Zcmop expansion and source metadata match every parcel; MOPs permit pairing",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -1909,6 +1914,15 @@ SBY_TASKS = [
     (
         "coh_l1d_store_multi_grant_bmc",
         "Concurrent store grants merge only the head record.",
+    ),
+    (
+        "coh_l1d_answer_bmc",
+        "Grant answers and same-sector merges complete each read once, in order "
+        "with stores and probes.",
+    ),
+    (
+        "coh_l1d_stream_answer_bmc",
+        "Speculative grants answer attached loads; merges keep store and probe order.",
     ),
     (
         "coh_l1d_data_bmc",
@@ -3382,16 +3396,16 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
     commands = {
         "hold": common
         + [
-            "select -assert-count 326 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
             f"select -assert-count 4 {holds}",
             f"chformal -assert -remove t:$check r:FLAVOR=assert %i {holds} %u %u %u %d",
             "select -assert-count 4 t:$check r:FLAVOR=assert %i",
         ],
         "bmc": common
         + [
-            "select -assert-count 326 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
             f"chformal -assert -remove {holds}",
-            "select -assert-count 322 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
         ],
     }
 
@@ -3706,7 +3720,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",
     ]
-    script += ["select -assert-count 326 t:$check r:FLAVOR=assert %i"]
+    script += ["select -assert-count 328 t:$check r:FLAVOR=assert %i"]
     if outlier or hold:
         if hold:
             script += [
@@ -3723,7 +3737,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         script += [
             "chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable "
             "c:p_load_payload_held c:p_reply_hold",
-            "select -assert-count 322 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
         ]
     if task.startswith("coh_l1d_stream_free_nostore_"):
         script += ["connect -set i_write_mask 8'h00"]

@@ -16,7 +16,7 @@
 
 /*
   Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zfhmin, Zfa, Zicond, Zbc, Zbkb, Zbkc,
-  Zicsr, Zicboz, Zicbom, and M/S/U-mode privileged instructions. Compressed instructions arrive
+  Zicsr, Zicboz, Zicbom, Zimop, and M/S/U-mode privileged instructions. Compressed instructions arrive
   already expanded. o_instr_op selects the operation; o_illegal flags any
   encoding not decoded here, including reserved FP rounding modes.
  */
@@ -370,13 +370,12 @@ module instr_decoder (
       endcase
 
       // CSR and SYSTEM instructions (Zicsr extension + privileged)
-      // funct3=0 is PRIV (privileged system instructions), others are CSR operations
+      // funct3=000 is privileged, 100 is Zimop, and the others are CSR operations.
       riscv_pkg::OPC_CSR:
       unique case (i_instr.funct3)
         3'b000:  // PRIV - privileged system instructions
         // SFENCE.VMA (funct7 0x09) uses rs1 and rs2 as its address and ASID
-        // filters, so it is matched on funct7 alone. FROST ignores the filters:
-        // flushing everything is a legal implementation of every form.
+        // filters, so the privileged case matches it on funct7.
         if (i_instr.funct7 == 7'b0001001)
           o_instr_op = riscv_pkg::SFENCE_VMA;
         else
@@ -405,6 +404,15 @@ module instr_decoder (
             else o_illegal = 1'b1;
             default: o_illegal = 1'b1;
           endcase
+        // Zimop: MOP.R.n is 1 n[4] 00 n[3:2] 0111 n[1:0] rs1 100 rd and
+        // MOP.RR.n is 1 n[2] 00 n[1:0] 1 rs2 rs1 100 rd. FROST implements no
+        // extension that redefines them, so each writes zero to rd. Other
+        // funct3=100 encodings (the hypervisor loads and stores) are illegal.
+        3'b100:
+        if (i_instr.funct7[6] && i_instr.funct7[4:3] == 2'b00 &&
+            (i_instr.funct7[0] || i_instr.source_reg_2[4:2] == 3'b111))
+          o_instr_op = riscv_pkg::MOP;
+        else o_illegal = 1'b1;
         riscv_pkg::CSR_RW: o_instr_op = riscv_pkg::CSRRW;  // Atomic read/write
         riscv_pkg::CSR_RS: o_instr_op = riscv_pkg::CSRRS;  // Atomic read and set bits
         riscv_pkg::CSR_RC: o_instr_op = riscv_pkg::CSRRC;  // Atomic read and clear bits

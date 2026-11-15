@@ -40,9 +40,13 @@ has 240 minutes. `coherence_l1d:coh_l1d_bmc` has 180 minutes at depth 40;
 `coh_l1d_multi_bmc` has 300 minutes at depth 40.
 `coh_l1d_zero_bmc` has 180 minutes at depth 40 and `coh_l1d_zero_multi_bmc` has
 300 minutes at depth 30.
+`coh_l1d_answer_bmc` and `coh_l1d_stream_answer_bmc` have 60 minutes each at
+depths 20 and 16.
 `coh_l1d_stream_free_bmc` has 180 minutes; `coh_l1d_stream_bmc`,
 `coh_l1d_stream_hold_bmc`, `coh_l1d_stream_free_nostore_bmc` and
 `coh_l1d_stream_free_nostore_hold_bmc` have 60 minutes each.
+`coh_l1d_stream_cover` has 20 minutes at depth 80, including serialization
+of its four eight-endpoint witnesses.
 `line_client_link`'s three BMC tasks have 70 minutes.
 `coherence_array:coh_array_port_bmc` has 40 minutes and
 `coh_array4_port_bmc` has 100 minutes at depth 24. The L1D, store and
@@ -120,8 +124,8 @@ both stream variants and reject extra assumptions, cutpoints and input ties.
 The independent `coh_l1d_stream_outlier_prove` also proves all four shared
 payload assertions without a depth bound. Its free-input, stores-enabled
 model includes the scripted and no-store specializations; none of the BMCs
-assumes its facts. Each stream control BMC retains 322 assertions, and the
-payload tasks retain the complementary four. Count guards require all 326
+assumes its facts. Each stream control BMC retains 324 assertions, and the
+payload tasks retain the complementary four. Count guards require all 328
 checks before selection. Fast tests pin the complete contracts, source
 specialization, registration, shard membership and allowances.
 
@@ -268,7 +272,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `prediction_metadata_tracker` | A pending prediction's saved PC and target hold until their packet consumes them or a reset or redirect kills them, and call and return types always leave with their target. See below |
 | `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoffs, predecessor-PC tags, and lower-parcel lookup match their reference relations. Whenever a prediction will be pending, the registered `pc_reg` relations load next cycle's wide-compare values. In `bmc`, the instruction buffer takes only `pc_reg`'s word. See below |
 | `ras_checkpoint` | The return-address stack's outputs, next pointer, and count equal the reference equations, and so does every entry write: a push or swap writes its link address, a restore writes the saved top entry back, and nothing else changes |
-| `rvc_predecode` | The fill-time RV64C expansion and illegal flag equal the reference decompressor (`rvc_decompressor`) for all 65,536 16-bit parcels |
+| `rvc_predecode` | The fill-time RV64C/Zcb/Zcmop expansion, illegal flag and source metadata equal the reference decompressor for all 65,536 parcels; SYSTEM funct3=100 permits pairing |
 | `branch_predictor_twin` | The branch predictor's slot-2 payload and relation selects (LUT6 per bit) equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 | `pc_controller_twin` | The fetch-PC mux, architectural next-PC mux, pending-relation selects, the sequential-PC calculator's selects and relations, and the control-flow tracker's halfword step equal their portable forms, with and without the slot-2 pending-handoff exclusion. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 | `control_flow_tracker_twin` | The tracker's halfword-next LUT6 equals its portable form |
@@ -317,7 +321,7 @@ bits, so a type taken from a different source than its target would show.
 | --- | --- |
 | `decoded_bundle_queue` | FIFO order and payload against an independent queue model, unbounded, at depths 4 and 2 (`prove_depth2`), with covers for bypass, full, wraparound, simultaneous push and pop, and flush of a nonempty queue. See below |
 | `dispatch_admission` | Bundle, slot-2, station and checkpoint admission equal the reference equations, and a firing slot 2 never reads FP source 3 (so done-repair channel 6 stays idle). Assumes only FP_RS ops read FP source 3, which `instr_operand_classifier` checks. `bmc_queued` uses the CPU's `SLOT2_VALID_FROM_BUNDLE=1` and assumes the queue's slot-2 valid rule |
-| `instr_operand_classifier` | Decode's operand-class fields equal classification through the decoder's operation enum for every instruction bit pattern, injected NOPs, illegal flags, and fetch faults; only FP_RS ops read FP source 3 |
+| `instr_operand_classifier` | Decode's operand-class fields equal classification through the decoder's operation enum for every instruction bit pattern, injected NOPs, illegal flags, and fetch faults; only FP_RS ops read FP source 3; MOP decode matches the Zimop masks |
 | `register_alias_table` | x0 is never renamed; a rename records its ROB tag; an INT commit clears a mapping only if the mapping still holds the committing tag; reset clears mappings and checkpoints; a full flush clears the checkpoints and, unless a checkpoint restore coincides, the mappings; a reclaim-all restore frees every checkpoint |
 | `decoded_bundle_queue_twin` | The producer stall select and the shadow-next select (LUT3, LUT5 per bit) equal their portable form with the split shadow stall and four late copies |
 | `id_stage_kill_equiv` | `id_stage` with early CSR-gated legality and post-classifier masking equals `id_stage` with `is_illegal_instruction` and `is_fetch_fault` applied inside `instr_operand_classifier`, across all 38 operand-class bits, register next states, and all eight stage outputs for both slots, for every instruction word, CSR legality input, and `inject_nop` state |

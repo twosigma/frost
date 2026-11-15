@@ -172,10 +172,14 @@ module instr_operand_classifier (
         end
       end
       riscv_pkg::OPC_CSR: begin
-        if (i_instr.funct3 != 3'b000) begin
+        if (i_instr.funct3[1:0] != 2'b00) begin
           raw_class.has_int_dest = 1'b1;
           raw_class.uses_int_rs1 = !i_instr.funct3[2];
           raw_class.is_csr_imm   = i_instr.funct3[2];
+        end else if (i_instr.funct3[2]) begin
+          // Zimop MOP.R / MOP.RR: INT_RS, no operands, writes zero to rd.
+          // i_illegal covers the funct3=100 encodings that are not MOPs.
+          raw_class.has_int_dest = 1'b1;
         end else if (i_instr.funct7 == 7'b0001001) begin
           raw_class.rs_type = riscv_pkg::RS_MEM;
           raw_class.is_fence_i = 1'b1;
