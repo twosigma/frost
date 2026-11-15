@@ -60,6 +60,8 @@ module tomasulo_coherent_cut_test_harness #(
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
     output logic o_coherent_write_sc,
     output logic o_coherent_write_zero,
+    output logic o_coherent_write_more,
+    output logic o_coherent_next_same,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_sq_write_tag,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_amo_write_tag,
     input logic i_clk,

@@ -99,6 +99,8 @@ module cpu_ooo #(
     output logic o_coherent_write_sc,
     // A cached cbo.zero write (see coherence_l1d).
     output logic o_coherent_write_zero,
+    output logic o_coherent_write_more,
+    output logic o_coherent_next_same,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
     output logic o_coherent_atomic_protected,
     output logic o_coherent_sc_commit,
@@ -2376,7 +2378,7 @@ module cpu_ooo #(
   logic [1:0] coherent_lq_kind;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_lq_tag;
   logic coherent_sq_sc;
-  logic coherent_sq_zero;
+  logic coherent_sq_zero, coherent_sq_more, coherent_sq_next_same;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_sq_tag, coherent_amo_tag;
   // An active, unretired context identifies the valid ROB head.
   assign coherent_head_protected = coherent_atomic_active && !coherent_atomic_retired;
@@ -2495,6 +2497,8 @@ module cpu_ooo #(
       .o_coherent_read_tag(coherent_lq_tag),
       .o_coherent_write_sc(coherent_sq_sc),
       .o_coherent_write_zero(coherent_sq_zero),
+      .o_coherent_write_more(coherent_sq_more),
+      .o_coherent_next_same(coherent_sq_next_same),
       .o_coherent_sq_write_tag(coherent_sq_tag),
       .o_coherent_amo_write_tag(coherent_amo_tag),
       .i_clk,
@@ -3816,6 +3820,8 @@ module cpu_ooo #(
       .i_coherent_read_tag(coherent_lq_tag),
       .i_coherent_sq_sc(coherent_sq_sc),
       .i_coherent_sq_zero(coherent_sq_zero),
+      .i_coherent_sq_more(coherent_sq_more),
+      .i_coherent_sq_next_same(coherent_sq_next_same),
       .i_coherent_sq_tag(coherent_sq_tag),
       .i_coherent_amo_tag(coherent_amo_tag),
       .o_coherent_read_kind(o_coherent_read_kind),
@@ -3824,6 +3830,8 @@ module cpu_ooo #(
       .o_coherent_write_atomic(o_coherent_write_atomic),
       .o_coherent_write_sc(o_coherent_write_sc),
       .o_coherent_write_zero(o_coherent_write_zero),
+      .o_coherent_write_more(o_coherent_write_more),
+      .o_coherent_next_same(o_coherent_next_same),
       .o_coherent_write_tag(o_coherent_write_tag),
       .i_clk,
       .i_rst,

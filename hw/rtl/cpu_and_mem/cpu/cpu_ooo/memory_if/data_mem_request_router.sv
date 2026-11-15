@@ -65,6 +65,8 @@ module data_mem_request_router #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_read_tag = '0,
     input logic i_coherent_sq_sc = 1'b0,
     input logic i_coherent_sq_zero = 1'b0,
+    input logic i_coherent_sq_more = 1'b0,
+    input logic i_coherent_sq_next_same = 1'b0,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_sq_tag = '0,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_amo_tag = '0,
     output logic [1:0] o_coherent_read_kind,
@@ -74,6 +76,10 @@ module data_mem_request_router #(
     output logic o_coherent_write_sc,
     // A cached cbo.zero write: the L1D zeroes the 64-byte block.
     output logic o_coherent_write_zero,
+    // Another committed cached store follows this cached SQ write.
+    output logic o_coherent_write_more,
+    // The SQ's next cached write combines into its last one's 32-byte sector.
+    output logic o_coherent_next_same,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
     input logic i_clk,
     input logic i_rst,
@@ -311,6 +317,8 @@ module data_mem_request_router #(
     );
     assign o_coherent_write_sc = sq_mem_write_en && sq_mem_write_is_cached && i_coherent_sq_sc;
     assign o_coherent_write_zero = sq_mem_write_en && sq_mem_write_is_cached && i_coherent_sq_zero;
+    assign o_coherent_write_more = sq_mem_write_en && sq_mem_write_is_cached && i_coherent_sq_more;
+    assign o_coherent_next_same = i_coherent_sq_next_same;
     assign o_coherent_write_atomic = o_coherent_write_sc || amo_cached_write_launch;
     assign o_coherent_write_tag = sq_mem_write_en ? i_coherent_sq_tag : i_coherent_amo_tag;
   end

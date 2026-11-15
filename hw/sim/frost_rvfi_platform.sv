@@ -539,7 +539,7 @@ module frost_rvfi_platform #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_read_tag;
   logic coherent_write_atomic;
   logic coherent_write_sc;
-  logic coherent_write_zero;
+  logic coherent_write_zero, coherent_write_more, coherent_next_same;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_write_tag;
   logic coherent_atomic_protected;
   logic coherent_sc_commit;
@@ -840,6 +840,8 @@ module frost_rvfi_platform #(
       .o_coherent_write_atomic(coherent_write_atomic),
       .o_coherent_write_sc(coherent_write_sc),
       .o_coherent_write_zero(coherent_write_zero),
+      .o_coherent_write_more(coherent_write_more),
+      .o_coherent_next_same(coherent_next_same),
       .o_coherent_write_tag(coherent_write_tag),
       .o_coherent_atomic_protected(coherent_atomic_protected),
       .o_coherent_sc_commit(coherent_sc_commit),
@@ -2036,6 +2038,8 @@ module frost_rvfi_platform #(
         .i_write_atomic(coherent_write_atomic),
         .i_write_sc(coherent_write_sc),
         .i_write_zero(coherent_write_zero),
+        .i_write_more(coherent_write_more),
+        .i_next_same(coherent_next_same),
         .i_write_tag(coherent_write_tag),
         .o_write_done(data_memory_cached_write_done),
         .o_write_inflight(data_memory_cached_write_inflight),
