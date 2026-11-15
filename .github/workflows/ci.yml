@@ -261,7 +261,13 @@ jobs:
               [fpu_assembly_test] or [isa_test] or [rv64_smoke] or [rv64_amo_test] or
               [spanning_test] or [ras_test] or [ras_stress_test] or [tomasulo_test] or
               [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
-              [window_skip_repro]
+              [window_skip_repro] or [l1i_set_test]
+          - name: Real Programs (32 KiB L1I)
+            coverage: []
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [smc_fencei_test_l1i32] or [ifread_test_l1i32] or [l1i_set_test_l1i32] or
+              [l1i_set_test_l1i32_hw_sweep]
           - name: Real Programs (Load queue slots)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
@@ -357,7 +363,9 @@ jobs:
               or [ddr_bench_link1] or [ddr_atomic_test_link1] or [ddr_mlp_test_link1]
               or [coremark_link1] or [csr_test_link1] or [dma_torture_link1]
               or [ptw_coherence_test_link1] or [cached_store_burst_test_link1]
-              or [cbo_zero_test_link1] or [cbo_zero_pages_link1])
+              or [cbo_zero_test_link1] or [cbo_zero_pages_link1]
+              or [l1i_set_test] or [smc_fencei_test_l1i32] or [ifread_test_l1i32]
+              or [l1i_set_test_l1i32] or [l1i_set_test_l1i32_hw_sweep])
           - name: Real Programs (CoreMark-PRO / core)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
@@ -699,8 +707,8 @@ jobs:
         # (tests/README.md#coverage).
         include:
           - {extensions: I B C, mem_config: bram, coverage: 1}
-          - {extensions: M A K Zicond privilege D_Zcd hints CMO, mem_config: bram, coverage: 0}
-          - {extensions: I M hints CMO, mem_config: ddr, coverage: 0}
+          - {extensions: M A K Zicond privilege D_Zcd hints CMO Zimop, mem_config: bram, coverage: 0}
+          - {extensions: I M hints CMO Zimop, mem_config: ddr, coverage: 0}
           - {extensions: B C A K Zicond Zifencei privilege D_Zcd, mem_config: ddr, coverage: 0}
           - {extensions: F D, mem_config: bram, shard: 1/3, coverage: 0}
           - {extensions: F D, mem_config: bram, shard: 2/3, coverage: 0}
@@ -937,12 +945,13 @@ jobs:
 
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
   # model and on the simulated SoC and compares every retired instruction
-  # (tests/test_testrig.py). The first shard replays saved counterexamples and
-  # deterministic counter controls.
+  # (tests/test_testrig.py). The first shard replays saved counterexamples,
+  # scalar cryptography sequences, and deterministic counter controls.
   # Every shard then draws its own random sequences, 100 per template, from the
-  # engine's templates, and its own 200 A-extension tests from
-  # verif/testrig/atomics.py, whose seed the log prints. A mismatch is shrunk
-  # to a short counterexample in the uploaded artifact, which --trace replays.
+  # engine's templates, and its own random A-extension (verif/testrig/atomics.py),
+  # Sv39 MMU (verif/testrig/mmu.py), and CMO/Sstvala (verif/testrig/cmo.py)
+  # sequences, whose seeds the log prints. A mismatch is shrunk to a short
+  # counterexample in the uploaded artifact, which --trace replays.
   test-testrig:
     name: TestRIG (FROST vs Sail / ${{ matrix.shard }}/4)
     runs-on: ubuntu-26.04
@@ -1000,6 +1009,18 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --atomics 200 --continue-on-fail
+
+      - name: Compare FROST with Sail on random Sv39 MMU sequences
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --mmu 40 --continue-on-fail
+
+      - name: Compare FROST with Sail on random CMO and Sstvala sequences
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --cmo 80 --continue-on-fail
 
       - name: Require startup assertion controls
         if: ${{ always() && matrix.shard == 3 }}

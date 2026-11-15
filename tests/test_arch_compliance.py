@@ -106,6 +106,12 @@ SUPPORTED_EXTENSIONS = [
     "F_Zfa",
     "D_Zfa",
     "Zfh",
+    "Zimop",
+    # No Zcmop: each c.mop.n case copies the signature pointer into x[n]
+    # (TEST_CMOP_OP: mv destreg, swreg) and stores it, so its signature holds
+    # link-map addresses that differ between the Spike and FROST builds.
+    # c.mop.1-15 are compared with Sail in verif/testrig/traces and checked
+    # by the full-core mops and exhaustive rvc_decompressor tests.
 ]
 
 # Extensions FROST implements only in part: extension -> test-name prefixes to
@@ -133,15 +139,14 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     },
 }
 
-# Tests excluded by filename prefix. The C directory holds Zcb tests
-# (clbu/clh/csb/cmul/...), which FROST does not implement.
+# Tests excluded by filename prefix. The C directory's Zcb tests
+# (clbu/clh/csb/cmul/...) run: FROST implements Zcb.
 # Zvk: five of the 37 tests in the pinned suite trap on Spike at RV64 and then
 # loop at address 0. vandn.vx, vrol.vx and vror.vx load their scalar operand into
 # the register that holds the test's data pointer, and vsha2ch-e32 and
 # vsha2cl-e32 give the vector SHA-2 instructions overlapping operands, which are
 # illegal. The other 32 run.
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
-    "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
     "Zvk": {"vandn.vx", "vrol.vx", "vror.vx", "vsha2ch-e32", "vsha2cl-e32"},
 }
 

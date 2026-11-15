@@ -34,6 +34,8 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
+from cocotb_tests.cpu_structs import PTW_RESP_FIELDS, TLB_FLUSH_FIELDS
+from utils.packed_structs import assert_port_width, pack_struct, unpack_struct
 
 SETS = 128
 WAYS = 4
@@ -59,47 +61,50 @@ class Entry:
 
 def pack_resp(vpn: int, e: Entry) -> int:
     """Pack a riscv_pkg::ptw_resp_t."""
-    fields = (
-        (e.fault, 2),
-        (vpn, 27),
-        (e.ppn, 44),
-        (e.level, 2),
-        (e.r, 1),
-        (e.w, 1),
-        (e.x, 1),
-        (e.u, 1),
-        (e.d, 1),
-        (e.g, 1),
+    return pack_struct(
+        PTW_RESP_FIELDS,
+        {
+            "fault_kind": e.fault,
+            "vpn": vpn,
+            "ppn": e.ppn,
+            "level": e.level,
+            "perm_r": e.r,
+            "perm_w": e.w,
+            "perm_x": e.x,
+            "perm_u": e.u,
+            "perm_d": e.d,
+            "perm_g": e.g,
+        },
     )
-    value = 0
-    for field, width in fields:
-        value = (value << width) | field
-    return value
 
 
 def unpack_resp(resp: int) -> tuple[int, Entry]:
     """Split a riscv_pkg::ptw_resp_t into (vpn, Entry)."""
-    g = resp & 1
-    d = (resp >> 1) & 1
-    u = (resp >> 2) & 1
-    x = (resp >> 3) & 1
-    w = (resp >> 4) & 1
-    r = (resp >> 5) & 1
-    level = (resp >> 6) & 3
-    ppn = (resp >> 8) & ((1 << 44) - 1)
-    vpn = (resp >> 52) & ((1 << 27) - 1)
-    fault = (resp >> 79) & 3
-    return vpn, Entry(ppn, r, w, x, u, d, g, level, fault)
+    u = unpack_struct(PTW_RESP_FIELDS, resp)
+    return int(u["vpn"]), Entry(
+        ppn=int(u["ppn"]),
+        r=int(u["perm_r"]),
+        w=int(u["perm_w"]),
+        x=int(u["perm_x"]),
+        u=int(u["perm_u"]),
+        d=int(u["perm_d"]),
+        g=int(u["perm_g"]),
+        level=int(u["level"]),
+        fault=int(u["fault_kind"]),
+    )
 
 
 def flush_cmd(vpn: int | None = None, asid: int | None = None) -> int:
     """Pack a riscv_pkg::tlb_flush_t: {en, use_va, vpn, use_asid, asid}."""
-    return (
-        (1 << 38)
-        | (int(vpn is not None) << 37)
-        | (((vpn or 0) & ((1 << 27) - 1)) << 10)
-        | (int(asid is not None) << 9)
-        | ((asid or 0) & ASID_MASK)
+    return pack_struct(
+        TLB_FLUSH_FIELDS,
+        {
+            "en": 1,
+            "use_va": vpn is not None,
+            "vpn": vpn or 0,
+            "use_asid": asid is not None,
+            "asid": asid or 0,
+        },
     )
 
 
@@ -108,6 +113,9 @@ class Bench:
 
     def __init__(self, dut: Any, latency: int = 6) -> None:
         """Start the clock and the model walker."""
+        assert_port_width(dut.i_ptw_resp, PTW_RESP_FIELDS)
+        assert_port_width(dut.o_resp, PTW_RESP_FIELDS)
+        assert_port_width(dut.i_flush, TLB_FLUSH_FIELDS)
         self.dut = dut
         self.latency = latency
         self.table: dict[tuple[int | None, int], Entry] = {}
