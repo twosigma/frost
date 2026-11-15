@@ -899,7 +899,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "Svnapot: a 64 KiB NAPOT range in S and U (loads, stores, AMOs, fetch), the "
-            "second-level TLB, reserved N encodings, remap after per-page sfence.vma, Svade"
+            "second-level TLB residency, reserved N encodings, per-page remap, Svade, "
+            "split accesses and upper-page fault values, and NC/IO aliases"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
     ),
@@ -4228,7 +4229,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="ptw",
         description=(
             "Walk-cache hits, discards and Svvptc-permitted page-table changes "
-            "against a reference Sv39 walk"
+            "against a reference Sv39 walk, including Svnapot and Svpbmt encodings"
         ),
     ),
     "l2tlb": CocotbRunConfig(
