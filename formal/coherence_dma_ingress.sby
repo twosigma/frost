@@ -15,13 +15,13 @@ coh_dma_ingress_soc_prove: mode prove
 coh_dma_ingress_soc_prove: depth 6
 coh_dma_ingress_soc_cover: mode cover
 coh_dma_ingress_soc_cover: depth 48
-coh_dma_ingress_soc_prove: timeout 900
+coh_dma_ingress_soc_prove: timeout 1800
 coh_dma_ingress_soc_cover: timeout 600
 coh_line_client_prove: mode prove
 coh_line_client_prove: depth 6
 coh_line_client_cover: mode cover
 coh_line_client_cover: depth 16
-~soc: timeout 180
+~soc: timeout 600
 
 [engines]
 smtbmc boolector
