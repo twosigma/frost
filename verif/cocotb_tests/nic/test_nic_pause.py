@@ -56,7 +56,8 @@ CTRL_RX, CTRL_TX = 1, 2
 
 
 def _gmii() -> bool:
-    return bool(int(getattr(cocotb.top, "GMII_MODE").value))
+    mode = getattr(cocotb.top, "GMII_MODE", None)
+    return mode is not None and bool(int(mode.value))
 
 
 def pause_frame(
@@ -184,9 +185,9 @@ class Bench:
         self.received: list[bytes] = []
         self.depth = int(dut.RX_FIFO_DEPTH.value)
         self.link: Link
-        self.tx_queue: deque[tuple[bytes, bool]] = deque()
+        self.tx_queue: deque[tuple[bytes, bool, int]] = deque()
 
-    async def start(self) -> None:
+    async def start(self, tx_ps: int | None = None, rx_ps: int | None = None) -> None:
         """Start."""
         dut = self.dut
         for name, value in {
@@ -217,8 +218,8 @@ class Bench:
         # The raw PMA clock carries encoded bits; the PCS advances 32 of every 33 cycles.
         mac_ps = 8000 if _gmii() else 6206
         Clock(dut.i_clk, 6000, unit="ps").start()
-        Clock(dut.i_tx_clk, mac_ps, unit="ps").start()
-        Clock(dut.i_rx_clk, mac_ps, unit="ps").start()
+        Clock(dut.i_tx_clk, tx_ps or mac_ps, unit="ps").start()
+        Clock(dut.i_rx_clk, rx_ps or mac_ps, unit="ps").start()
         await ClockCycles(dut.i_clk, 20)
         await FallingEdge(dut.i_clk)
         dut.i_rst.value = 0
@@ -226,7 +227,7 @@ class Bench:
         dut.i_core_rst_dom.value = 0
         self.link = Link(dut)
         cocotb.start_soon(self._reader())
-        cocotb.start_soon(self._tx_feeder())
+        self.tx_task = cocotb.start_soon(self._tx_feeder())
         # Block lock and link-ready take a while on the 64b/66b path.
         for _ in range(4000):
             if int(dut.o_rx_locked.value) and int(dut.o_tx_link_ready.value):
@@ -278,9 +279,9 @@ class Bench:
             raise AssertionError("the configuration crossing never completed")
         await ClockCycles(dut.i_clk, 20)
 
-    def send_tx(self, body: bytes, abort: bool = False) -> None:
+    def send_tx(self, body: bytes, abort: bool = False, csum: int = 0) -> None:
         """Queue a frame for the TX FIFO."""
-        self.tx_queue.append((body, abort))
+        self.tx_queue.append((body, abort, csum))
 
     async def _tx_feeder(self) -> None:
         """Feed queued frames to the TX FIFO, one beat per accepted cycle."""
@@ -290,13 +291,14 @@ class Bench:
                 await FallingEdge(dut.i_clk)
                 dut.i_tx_valid.value = 0
                 continue
-            body, abort = self.tx_queue.popleft()
+            body, abort, csum = self.tx_queue.popleft()
             for offset in range(0, len(body), 8):
                 word = body[offset : offset + 8]
                 while True:
                     await FallingEdge(dut.i_clk)
                     dut.i_tx_valid.value = 1
                     dut.i_tx_data.value = int.from_bytes(word, "little")
+                    dut.i_tx_csum.value = csum
                     dut.i_tx_abort.value = int(abort and offset + 8 >= len(body))
                     dut.i_tx_code.value = (
                         len(word) - 1 + (8 if offset + 8 >= len(body) else 0)
@@ -401,7 +403,7 @@ async def pause_timer_counts_wire_word_enables(dut: Any) -> None:
 
 @cocotb.test()
 async def tx_restart_does_not_replay_an_expired_pause(dut: Any) -> None:
-    """Rebase the surviving RX event toggle after TX reset without inventing a frame."""
+    """Check that a TX restart discards a received pause event without replaying it."""
     bench = Bench(dut)
     await bench.start()
     await bench.configure(CTRL_RX)
@@ -662,3 +664,187 @@ async def abandoned_frame_is_dropped_at_the_mac(dut: Any) -> None:
     await Timer(5_000, unit="ns")
     assert [b for _, b in bench.link.tx_log] == [data_frame(120, 2), data_frame(90, 4)]
     assert bench.total(4) == 2  # tx_mac_drop counts the two dropped frames
+
+
+@cocotb.test()
+@cocotb.parametrize(clock_ps=[(31000, 17000), (4200, 5100)])
+async def configuration_mailboxes_hold_and_replay(
+    dut: Any, clock_ps: tuple[int, int]
+) -> None:
+    """Busy configuration updates coalesce, and either destination can restart."""
+    bench = Bench(dut)
+    await bench.start(tx_ps=clock_ps[0], rx_ps=clock_ps[1])
+    mailboxes = (dut.u_mac_rx_mbx, dut.u_tx_cfg_mbx)
+
+    async def check_hold(mailbox: Any) -> None:
+        held = None
+        while True:
+            await FallingEdge(dut.i_clk)
+            busy = not int(mailbox.o_src_idle.value)
+            payload = int(mailbox.payload_q.value)
+            if held is not None and busy:
+                assert payload == held, "mailbox payload changed before acknowledgement"
+            held = payload if busy else None
+
+    for mailbox in mailboxes:
+        cocotb.start_soon(check_hold(mailbox))
+    values = (0x123456789ABC, 0xFEDCBA987654, 0x010203040506)
+
+    async def check_values() -> None:
+        allowed = {0, int.from_bytes(STATION, "little"), *values}
+        while True:
+            await Timer(1, unit="ns")
+            assert int(dut.mac_rx_s.value) in allowed
+            assert int(dut.mac_tx_s.value) in allowed
+            if int(dut.mac_tx_s.value) in values:
+                assert int(dut.interval_cfg_s.value) == (
+                    int(dut.mac_tx_s.value) & 0xFFFF
+                )
+
+    cocotb.start_soon(check_values())
+    for value in values:
+        await FallingEdge(dut.i_clk)
+        dut.i_station_mac.value = value
+        dut.i_pause_interval.value = value & 0xFFFF
+        await ClockCycles(dut.i_clk, 2)
+    await ClockCycles(dut.i_clk, 200)
+    assert int(dut.mac_rx_s.value) == values[-1]
+    assert int(dut.mac_tx_s.value) == values[-1]
+    assert int(dut.interval_cfg_s.value) == (values[-1] & 0xFFFF)
+    for domain in (1, 2):
+        # Launch an update immediately before the destination's reset request.
+        await FallingEdge(dut.i_clk)
+        dut.i_station_mac.value = values[0]
+        dut.i_pause_interval.value = values[0] & 0xFFFF
+        await FallingEdge(dut.i_clk)
+        dut.i_gen.value = int(dut.i_gen.value) ^ domain
+        dut.i_req.value = domain
+        dut.i_core_rst_dom.value = domain
+        await ClockCycles(dut.i_clk, 80)
+        assert int(dut.mac_tx_s.value if domain == 1 else dut.mac_rx_s.value) == 0
+        await FallingEdge(dut.i_clk)
+        dut.i_station_mac.value = values[-1]
+        dut.i_pause_interval.value = values[-1] & 0xFFFF
+        dut.i_req.value = 0
+        await ClockCycles(dut.i_clk, 80)
+        dut.i_core_rst_dom.value = 0
+        await ClockCycles(dut.i_clk, 200)
+        assert int(dut.mac_rx_s.value) == values[-1]
+        assert int(dut.mac_tx_s.value) == values[-1]
+        assert int(dut.interval_cfg_s.value) == (values[-1] & 0xFFFF)
+
+
+@cocotb.skipif(_gmii(), reason="requires independent 10G receive stream")
+@cocotb.test()
+async def received_pause_mailbox_keeps_latest_pending_interval(dut: Any) -> None:
+    """Check that a busy mailbox holds its payload, then sends the newest event."""
+    bench = Bench(dut)
+    await bench.start(tx_ps=140000, rx_ps=6206)
+    await bench.configure(CTRL_RX)
+    delivered: list[int] = []
+
+    async def observe() -> None:
+        while True:
+            await RisingEdge(dut.i_tx_clk)
+            if int(dut.pause_ev_tx.value):
+                delivered.append(int(dut.pause_interval_tx.value))
+
+    cocotb.start_soon(observe())
+    for quanta in (0x1234, 0xABCD, 0):
+        bench.link.send(pause_frame(quanta))
+    await bench.drain_link()
+    await ClockCycles(dut.i_tx_clk, 30)
+    assert delivered == [0x1234, 0], delivered
+    assert not int(dut.tx_paused.value)
+
+
+@cocotb.test()
+async def tx_side_fifo_stays_with_frames_at_capacity(dut: Any) -> None:
+    """Side entries stall at capacity and stay paired through abort and data stalls."""
+    bench = Bench(dut)
+    await bench.start()
+    await bench.configure(CTRL_RX)
+    expected: deque[tuple[int, int, int, int | None]] = deque()
+    observed = 0
+
+    async def observe() -> None:
+        nonlocal observed
+        while True:
+            await RisingEdge(dut.i_tx_clk)
+            if int(dut.f_valid.value) and int(dut.f_ready.value):
+                assert expected, "extra FIFO beat"
+                data, code, abort, csum = expected.popleft()
+                word = int(dut.f_word.value)
+                assert word & ((1 << 64) - 1) == data
+                assert (word >> 64) & 15 == code
+                assert word >> 83 == abort
+                if csum is not None:
+                    assert (word >> 68) & 0x7FFF == csum
+                observed += 1
+
+    def queue(body: bytes, csum: int, abort: bool = False) -> None:
+        for offset in range(0, len(body), 8):
+            part = body[offset : offset + 8]
+            last = offset + 8 >= len(body)
+            dropped = abort and last
+            code = 8 if dropped else len(part) - 1 + 8 * last
+            expected.append(
+                (
+                    int.from_bytes(part, "little"),
+                    code,
+                    int(dropped),
+                    csum if offset == 0 else None,
+                )
+            )
+        bench.send_tx(body, abort=abort, csum=csum)
+
+    async def pause() -> None:
+        bench.link.send(pause_frame(0xFFFF))
+        await bench.drain_link()
+        assert int(dut.tx_paused.value)
+
+    async def release_and_drain() -> None:
+        bench.link.send(pause_frame(0))
+        for _ in range(10000):
+            await ClockCycles(dut.i_clk, 20)
+            if not expected:
+                return
+        raise AssertionError(f"{len(expected)} FIFO beats did not drain")
+
+    cocotb.start_soon(observe())
+    await pause()
+    for index in range(40):
+        body = bytes([index]) if index % 4 == 0 else data_frame(60, index)
+        queue(body, (index * 997) & 0x7FFF, abort=index == 17)
+    await ClockCycles(dut.i_clk, 700)
+    assert not int(dut.tx_csum_ready.value), "side FIFO did not reach capacity"
+    assert int(dut.tx_data_ready.value), "data FIFO hid the side FIFO limit"
+    assert not int(dut.o_tx_ready.value)
+    await release_and_drain()
+    await pause()
+    queue(data_frame(9000, 99), 0x6543)
+    await ClockCycles(dut.i_clk, 1000)
+    assert not int(dut.tx_data_ready.value), "jumbo frame did not fill the data FIFO"
+    await release_and_drain()
+    assert observed > 1100
+    await bench.wait_wire(40, 300_000)
+
+    # Discard a partial frame at both FIFO halves, then accept a fresh first beat.
+    await pause()
+    queue(data_frame(9000, 100), 0x1234)
+    await ClockCycles(dut.i_clk, 200)
+    bench.tx_task.cancel()
+    await FallingEdge(dut.i_clk)
+    dut.i_tx_valid.value = 0
+    dut.i_gen.value = 1
+    dut.i_req.value = 1
+    dut.i_core_rst_dom.value = 1
+    expected.clear()
+    await ClockCycles(dut.i_clk, 80)
+    dut.i_req.value = 0
+    await ClockCycles(dut.i_clk, 80)
+    dut.i_core_rst_dom.value = 0
+    await ClockCycles(dut.i_clk, 100)
+    bench.tx_task = cocotb.start_soon(bench._tx_feeder())
+    queue(data_frame(61, 101), 0x4566)
+    await release_and_drain()

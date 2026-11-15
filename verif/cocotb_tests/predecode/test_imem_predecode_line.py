@@ -103,7 +103,9 @@ def _assert_pc_bundle_bits(word: int, sideband: int) -> None:
         and not serialize_hi
     )
     start_valid_hi = compressed_hi or not (
-        serialize_hi or _GENERATOR.native_fp_compute(hi & 0x7F)
+        serialize_hi
+        or _GENERATOR.native_fp_compute(hi & 0x7F)
+        or _GENERATOR.vector_mem(hi)
     )
     expected = {
         _GENERATOR.SB_EVEN_LOCAL_PAIR_VALID: (

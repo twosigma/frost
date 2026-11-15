@@ -593,6 +593,10 @@ domain restarts, wire-side PAUSE validation during congestion, and cancellation 
 `nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
+`nic_bench` also runs in both tiers with `NIC_BENCH_QUICK`: eight-entry rings,
+repeated producer wraparound, short and jumbo frames, and raw MAC loopback.
+This mode checks descriptor replenishment and error reporting; its printed rates
+are not performance measurements. CI selects it in the runtime-and-other shard.
 `test_frost_net10g_driver.py` checks packaging and the descriptor ABI, and compiles selected
 driver helpers against C fixtures for DMA teardown, reconfiguration, GSO fallback,
 RX fragment sizes, copybreak boundaries and sync ordering. It does not replace executing

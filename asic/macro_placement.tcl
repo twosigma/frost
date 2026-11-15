@@ -169,10 +169,12 @@ set frost_l1d_data [frost_macros {l1d\.array\.gen_data_bank}]
 set frost_l1d_tags [concat [frost_macros {l1d\.array\.gen_tag_block\.}] \
   [frost_macros {l1d\.array\.gen_hit_port\.}]]
 set frost_l1i_data [frost_macros {l1i\.gen_data_banks\.}]
-set frost_nic [frost_macros {u_[rt]x_fifo\.storage\.}]
+set frost_nic [frost_macros {u_rx_fifo\.storage\.}]
 set frost_nic_rx [frost_macros {mac_rx\.g_memory_lane}]
 set frost_nic_tx [frost_macros {mac_tx\.u_frame_memory\.}]
-set frost_btb [frost_macros {btb_payload_ram}]
+# The transmit FIFO fits beside the smaller payload macros.
+set frost_btb_tx [concat [frost_macros {btb_payload_ram}] \
+  [frost_macros {u_tx_fifo\.storage\.}]]
 # Each parity's instruction memory banks, two macros a bank: the cold bank's,
 # then the frontend-hot bank's, then the compressed bank's.
 proc frost_imem_parity { parity } {
@@ -222,7 +224,7 @@ set frost_bottom_top [expr { $frost_imem_y + max([frost_row_height $frost_imem_e
 
 # The top band: the L1D data in the middle, a row of four 64-bit slices for
 # each way's bank; at the left the L1I data, four banks of four slices, then the
-# NIC's receive FIFO, the BTB's payload tables and the MAC's
+# NIC's receive FIFO, the BTB's payload tables beside the transmit FIFO, and the MAC's
 # receive lanes; at the right the L1D tags, a row of four ways above a row of
 # their copy, the L2 tags and the MAC's transmit frame buffer.
 set frost_l1d_width [frost_grid_width $frost_l1d_data 4]
@@ -236,12 +238,12 @@ set frost_left_y [expr { $frost_core_height - $frost_edge - \
 frost_place_grid $frost_l1i_data $frost_edge $frost_left_y 4
 set frost_left_y [expr { $frost_left_y - $frost_gap - [frost_grid_height $frost_nic 2] }]
 frost_place_grid $frost_nic $frost_edge $frost_left_y 2
-set frost_left_y [expr { $frost_left_y - $frost_gap - [frost_grid_height $frost_btb 3] }]
-frost_place_grid $frost_btb $frost_edge $frost_left_y 3
+set frost_left_y [expr { $frost_left_y - $frost_gap - [frost_row_height $frost_btb_tx] }]
+frost_place_row $frost_btb_tx $frost_edge $frost_left_y
 set frost_left_y [expr { $frost_left_y - $frost_gap - [frost_grid_height $frost_nic_rx 4] }]
 frost_place_grid $frost_nic_rx $frost_edge $frost_left_y 4
 set frost_left_width [expr { max([frost_grid_width $frost_l1i_data 4], \
-  [frost_grid_width $frost_nic 2], [frost_grid_width $frost_btb 3], \
+  [frost_grid_width $frost_nic 2], [frost_row_width $frost_btb_tx], \
   [frost_grid_width $frost_nic_rx 4]) }]
 
 set frost_right_width [expr { max([frost_grid_width $frost_l1d_tags 4], \
