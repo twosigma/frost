@@ -84,7 +84,7 @@ LINUX_IMAGE_SIZE_OFFSET = 0x10  # u64 image_size (text + bss)
 ISA_BASE = "rv64i"
 ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
-    "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
+    "zfa", "zfhmin", "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
     "zicclsm", "ziccrse", "zicntr", "zicond", "zicsr", "zifencei",
     "zihintpause", "zihpm", "za64rs", "zawrs", "zba", "zbb",
     "zbc", "zbkb", "zbkc", "zbs", "zkt", "smaia",
@@ -100,7 +100,7 @@ CBOZ_BLOCK_BYTES = 64
 # Zicbop block size: the prefetch hints name the same 64-byte block (they
 # execute as no-ops).
 CBOP_BLOCK_BYTES = 64
-ISA_STRING = "rv64imafdc_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintpause_zihpm_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_sstc_sstvala_sstvecd_svade_svvptc"
+ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintpause_zihpm_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_sstc_sstvala_sstvecd_svade_svvptc"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
