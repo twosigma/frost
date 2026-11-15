@@ -3183,6 +3183,17 @@ def explain_silent_vivado_exit(log_path: Path, returncode: int) -> None:
     )
 
 
+def vivado_log_ends_with_exit(text: str) -> bool:
+    """Return True when the log's last line is the session's own ``Exiting Vivado``.
+
+    In project mode ``wait_on_runs`` copies each child run's log into the parent
+    log, child ``Exiting Vivado`` line included, and the parent keeps running and
+    writing after it. The parent's own exit line is always the last one it writes.
+    """
+    lines = text.rstrip().splitlines()
+    return bool(lines) and "Exiting Vivado at" in lines[-1]
+
+
 def _has_process_groups() -> bool:
     """Return whether a step can run in its own session and be signalled as a group."""
     return hasattr(os, "killpg")
@@ -3198,7 +3209,8 @@ def run_vivado_step(
     step is judged by a ``** DONE`` output line (Vivado also echoes the script's
     own ``puts`` commands behind a ``#``, which do not count) and the launcher
     (with its process group, where the platform has groups) is terminated, so a
-    stuck launcher cannot stall the whole build.
+    stuck launcher cannot stall the whole build. Only the session's own exit line
+    counts: it must be the last line of the log (see ``vivado_log_ends_with_exit``).
     """
     log_path = cwd / "vivado.log"
     if "-log" in command:
@@ -3292,7 +3304,7 @@ def _wait_for_vivado(
             text = log_path.read_text(errors="replace")
         except OSError:
             continue
-        if "Exiting Vivado at" not in text or text == stale_log:
+        if not vivado_log_ends_with_exit(text) or text == stale_log:
             # Vivado rewrites the log at start-up, so a marker left by an earlier
             # step must not count towards this step's grace period.
             exited_since = None

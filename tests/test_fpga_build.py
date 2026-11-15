@@ -5589,3 +5589,40 @@ def test_failed_step_with_unreadable_log_says_so(
     monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
     assert fpga_build.run_vivado_step(["vivado"], tmp_path) == 1
     assert "cannot be read" in capsys.readouterr().out
+
+
+def test_child_run_exit_line_does_not_end_the_vivado_step(tmp_path: Path) -> None:
+    """A child run's ``Exiting Vivado`` copied into the parent log is not the parent's exit."""
+    fpga_build = _load_fpga_build()
+    child_echo = (
+        "INFO: [Common 17-206] Exiting Vivado at Fri Nov 13 15:07:46 2026...\n"
+        "[Fri Nov 13 15:07:47 2026] axi_bram_ctrl_0_synth_1 finished\n"
+        "[Fri Nov 13 15:07:47 2026] Waiting for ddr4_c2_synth_1 to finish...\n"
+    )
+    assert not fpga_build.vivado_log_ends_with_exit(child_echo)
+    assert fpga_build.vivado_log_ends_with_exit(
+        child_echo
+        + "** DONE\nINFO: [Common 17-206] Exiting Vivado at Fri Nov 13 16:00:00 2026...\n\n"
+    )
+    assert not fpga_build.vivado_log_ends_with_exit("")
+
+    # A session that echoes a child exit line, keeps running past the grace period and
+    # then exits by itself is waited for, not terminated.
+    script = tmp_path / "fake_vivado.py"
+    script.write_text(
+        "import sys, time\n"
+        "log = open('vivado.log', 'w')\n"
+        f"log.write({child_echo!r}); log.flush()\n"
+        "time.sleep(0.3)\n"
+        "log.write('** DONE\\nINFO: [Common 17-206] Exiting Vivado at end...\\n'); log.flush()\n"
+        "sys.exit(7)\n"
+    )
+    original_grace = fpga_build.VIVADO_EXIT_GRACE_S
+    original_poll = fpga_build.VIVADO_POLL_S
+    fpga_build.VIVADO_EXIT_GRACE_S = 0.1
+    fpga_build.VIVADO_POLL_S = 0.05
+    try:
+        assert fpga_build.run_vivado_step([sys.executable, str(script)], tmp_path) == 7
+    finally:
+        fpga_build.VIVADO_EXIT_GRACE_S = original_grace
+        fpga_build.VIVADO_POLL_S = original_poll
