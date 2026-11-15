@@ -1871,6 +1871,18 @@ module coherence_l1d #(
           p_grant_answer_slot : assert (!(ld_prefetch_q[grant_ep_q] && !grant_attached[slot]) &&
               grant_q.addr[ADDR_WIDTH-1:5] == ld_line_q[grant_ep_q]);
     end
+    // Read selection and the hit path see only the four valid store records,
+    // not a cbo.zero twin still waiting for a record: the store queue holds
+    // younger loads of a cbo.zero block until o_write_done at twin allocation.
+    if (sim_reset_seen_q && !i_rst && active && store_twin_pending) begin
+      if (phase_q == Lookup && operation_q == ReadOp &&
+          rd_kind_q[selected_read_q] != ReadAMO)
+        p_zero_pending_twin_no_read :
+        assert (lookup_addr_q[ADDR_WIDTH-1:6] != store_twin_addr[ADDR_WIDTH-1:6]);
+      if (path_take)
+        p_zero_pending_twin_no_path :
+        assert (path_addr_q[ADDR_WIDTH-1:6] != store_twin_addr[ADDR_WIDTH-1:6]);
+    end
   end
 `endif
   // Live endpoints hold distinct lines. Home atomics drain load endpoints.
