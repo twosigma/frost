@@ -1014,14 +1014,12 @@ FORMAL_TARGETS = [
         tasks=(
             "bmc_small",
             "bmc_1g",
-            "bmc_2g",
             "bmc_4g",
             "bmc_8g",
             "bmc_16g",
             "bmc_32g",
             "bmc_64g",
             "bmc_128g",
-            "bmc_external",
         ),
     ),
     FormalTarget(
@@ -1038,6 +1036,8 @@ FORMAL_TARGETS = [
             "cover_wide",
             "bmc_2g",
             "cover_2g",
+            "bmc_external",
+            "cover_external",
         ),
     ),
     FormalTarget(
@@ -2605,7 +2605,14 @@ SBY_TASKS = [
     ("bmc_8g", "Svpbmt alias range equivalence at an 8 GiB DDR capacity"),
     ("bmc_16g", "Svpbmt alias range equivalence at a 16 GiB DDR capacity"),
     ("bmc_32g", "Svpbmt alias range equivalence at a 32 GiB DDR capacity"),
-    ("bmc_external", "Svpbmt alias is disabled outside the FROST physical map"),
+    (
+        "bmc_external",
+        "Svpbmt walker response and leaf payload outside the FROST physical map",
+    ),
+    (
+        "cover_external",
+        "Svpbmt no-alias faults and device translations outside the FROST map",
+    ),
     ("prove_full_width", "Unbounded proof with a bus as wide as a line"),
     (
         "prove_soc",
