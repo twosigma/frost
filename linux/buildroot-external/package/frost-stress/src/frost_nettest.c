@@ -611,6 +611,13 @@ static uint32_t get_be32(const uint8_t *p)
     return ((uint32_t) p[0] << 24) | ((uint32_t) p[1] << 16) | ((uint32_t) p[2] << 8) | p[3];
 }
 
+/* Whether a copy of this window's frame seq was already seen this way. */
+static int seen(int out, uint32_t seq)
+{
+    uint32_t k = seq - g_window_seq;
+    return seq >= g_window_seq && k < CAPTURE_SEEN && (g_seen[out][k / 8] & (1u << (k % 8)));
+}
+
 enum frame_class {
     FRAME_OWN,       /* a test frame sent in this window, first copy this way */
     FRAME_DUPLICATE, /* a second copy of one, the same way */
@@ -641,21 +648,28 @@ static enum frame_class classify(const uint8_t *f, size_t cap, size_t len, int o
     } else {
         /* No whole tag: one of this window's short frames, its bytes at the
          * length sent (the outgoing copy) or padded to the minimum (the
-         * received one). A 14-byte frame carries no tag, so it matches any. */
-        int matched = 0;
-        for (unsigned i = 0; i < g_nshorts && !matched; i++) {
+         * received one). A padded copy also matches every shorter frame (a
+         * 14-byte frame carries no tag and matches any), so take the longest
+         * match not yet seen this way; only when every match has been seen
+         * is the frame a duplicate. */
+        int best = -1, best_unseen = -1;
+        for (unsigned i = 0; i < g_nshorts; i++) {
             uint8_t want[HDR_BYTES + TAG_BYTES];
             uint32_t slen = g_shorts[i].len;
             if (len != slen && !(len == MIN_FRAME && !out))
                 continue;
             build_frame(want, g_shorts[i].seq, slen);
-            if (cap >= slen && memcmp(f, want, slen) == 0) {
-                *seq = g_shorts[i].seq;
-                matched = 1;
-            }
+            if (cap < slen || memcmp(f, want, slen) != 0)
+                continue;
+            if (best < 0 || slen > g_shorts[best].len)
+                best = (int) i;
+            if (!seen(out, g_shorts[i].seq) &&
+                (best_unseen < 0 || slen > g_shorts[best_unseen].len))
+                best_unseen = (int) i;
         }
-        if (!matched)
+        if (best < 0)
             return FRAME_PARTIAL;
+        *seq = g_shorts[best_unseen >= 0 ? best_unseen : best].seq;
     }
     if (*seq < g_window_seq)
         return FRAME_STALE;
@@ -1650,6 +1664,32 @@ static int selftest(void)
     build_frame(f, 1004, 14);
     memset(f + 14, 0xa5, MIN_FRAME - 14); /* padding is not checked */
     bad |= selftest_case("own-14-padded-in", f, MIN_FRAME, 0, FRAME_OWN, NULL);
+
+    /* The lengths step as the board runs it: 14 to 23 bytes in turn, each
+     * received padded before the next is sent. Every padded copy also
+     * matches the 14-byte frame; none may count as its duplicate. */
+    g_seq = 2000;
+    capture_start("jumbo", 0);
+    for (uint32_t slen = HDR_BYTES; slen < HDR_BYTES + TAG_BYTES; slen++) {
+        uint32_t seq = g_seq++;
+        capture_note_sent(seq, slen);
+        build_frame(f, seq, slen);
+        bad |= selftest_case("lengths-short-out", f, slen, 1, FRAME_OWN, NULL);
+        memset(f + slen, slen & 1 ? 0 : 0x5a, MIN_FRAME - slen);
+        bad |= selftest_case("lengths-short-padded-in", f, MIN_FRAME, 0, FRAME_OWN, NULL);
+    }
+    /* A second padded copy of the 20-byte frame is a duplicate. */
+    build_frame(f, 2006, 20);
+    memset(f + 20, 0, MIN_FRAME - 20);
+    bad |= selftest_case("lengths-short-duplicate",
+                         f,
+                         MIN_FRAME,
+                         0,
+                         FRAME_DUPLICATE,
+                         "foreign frame idle-jumbo #1 duplicate test frame seq=2006");
+    g_seq = 1010;
+    capture_start("idle-jumbo", 0);
+    g_window_seq = 1000;
 
     /* A test frame of an earlier window, of this run: listed with its number. */
     build_frame(f, 998, 1514);

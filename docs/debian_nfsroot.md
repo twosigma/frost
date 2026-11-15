@@ -335,6 +335,11 @@ Repetitions before the last report `FROST_NET_DIAG_PASS rep=<r>` or
 `FROST_NET_DIAG_FAIL rep=<r> <reason>`, which do not end the capture, and any
 failed repetition fails the stage. A repetition holds the link down for 65
 seconds and takes about 80 in all, so raise `--linux-timeout` to match.
+`FROST_HW_NETTEST_POKE_NFS=<s>` (1 to 300) also starts, just before each run
+of the test, a background lookup of a name that has never existed under
+`/root`, `s` seconds later. No cache can answer it, so the NFS client sends a
+request while the link is held down; the request completes once the link is
+restored. The stage prints `FROST_NET_DIAG: nfs poke scheduled at +<s> s`.
 
 The stage checks the NFS mount and systemd and runs the stress and counter
 tests. Systemd must report `running`, or `degraded` with only failed

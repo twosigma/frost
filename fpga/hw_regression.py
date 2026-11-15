@@ -379,6 +379,14 @@ LINUX_NET_TOKEN_FAIL = "FROST_NET_LOOPBACK_FAIL"
 # which ends no capture, so the log keeps every repetition's output.
 NETTEST_REPEAT_ENV = "FROST_HW_NETTEST_REPEAT"
 NETTEST_REPEAT_MAX = 20
+# For diagnosis, FROST_HW_NETTEST_POKE_NFS=<seconds> makes the root's NFS
+# client send a request that many seconds into each run of the test, while
+# the test holds the link down.
+NETTEST_POKE_ENV = "FROST_HW_NETTEST_POKE_NFS"
+NETTEST_POKE_MAX_S = 300
+# The poke gives up this long after it fires; the request it sent finishes
+# once the link is restored, normally long before.
+NETTEST_POKE_GRACE_S = 300
 LINUX_NET_DIAG_RE = re.compile(
     r"^\r*FROST_NET_DIAG_(PASS|FAIL) rep=(\d+)([^\r\n]*)[\r]*\n", re.MULTILINE
 )
@@ -1192,7 +1200,40 @@ def nettest_repeat(environment: Mapping[str, str] = os.environ) -> int:
     return int(text)
 
 
-def nettest_command(interface: str, repeat: int = 1) -> str:
+def nettest_poke(environment: Mapping[str, str] = os.environ) -> int:
+    """Return the seconds into the test ``NETTEST_POKE_ENV`` asks for, or 0."""
+    text = environment.get(NETTEST_POKE_ENV, "").strip()
+    if not text:
+        return 0
+    if not text.isdigit() or not 1 <= int(text) <= NETTEST_POKE_MAX_S:
+        raise ValueError(
+            f"{NETTEST_POKE_ENV}={text!r}: give a whole number of seconds from 1 "
+            f"to {NETTEST_POKE_MAX_S}"
+        )
+    return int(text)
+
+
+def nettest_poke_command(poke_s: int, tag: str) -> str:
+    """Return the shell text that schedules one NFS request ``poke_s`` seconds on.
+
+    A subshell starts ``timeout`` and ``sleep`` while the root is reachable,
+    detached so the test starts at once and the interactive shell neither
+    waits for it nor reports it; init reaps it. When the sleep ends, the shell
+    builtin ``[ -e ]`` looks up a name in the root's ``/root`` that has never
+    existed (``tag`` makes it unique), so no dentry, positive or negative, can
+    answer it: the client must send a LOOKUP to the server. On the ``hard``
+    mount that request waits until the link is back. Its output is discarded
+    and the descriptors that restore the link are closed in it.
+    """
+    probe = LINUX_ROOT_ALIVE_FILE.rsplit("/", 1)[0] + f"/.frost_poke.{tag}"
+    return (
+        f"( timeout -k 5 {poke_s + NETTEST_POKE_GRACE_S} sh -c "
+        f'"sleep {poke_s}; [ -e {probe} ]" > /dev/null 2>&1 3>&- 4>&- 5>&- & ); '
+        f"echo FROST_NET_DIAG: nfs poke scheduled at +{poke_s} s; "
+    )
+
+
+def nettest_command(interface: str, repeat: int = 1, poke_s: int = 0) -> str:
     """Return a shell command that runs frost_nettest and restores the root's link.
 
     Copy the static binary to tmpfs so instruction or library faults cannot
@@ -1220,10 +1261,15 @@ def nettest_command(interface: str, repeat: int = 1) -> str:
     The test learns its repetition from ``FROST_NETTEST_REPETITION`` and
     prints the verdicts of all but the last under ``FROST_NET_DIAG``. A root
     that does not come back ends the loop.
+
+    With ``poke_s`` above 0, each run of the test is preceded, after the cache
+    drop, by ``nettest_poke_command``: an NFS request ``poke_s`` seconds into
+    the test, inside its link hold-down.
     """
     sysfs = f"/sys/class/net/{interface}"
     ipv6 = f"/proc/sys/net/ipv6/conf/{interface}/disable_ipv6"
     if repeat > 1:
+        poke = nettest_poke_command(poke_s, "$$.$r") if poke_s else ""
         return (
             f"r=1; while [ $r -le {repeat} ]; do "
             f'if [ $r -lt {repeat} ]; then t=FROST_NET_DIAG; d=" rep=$r"; '
@@ -1231,6 +1277,7 @@ def nettest_command(interface: str, repeat: int = 1) -> str:
             f"m=$(cat {sysfs}/mtu); f=$(cat {sysfs}/flags); echo 1 > {ipv6}; "
             f"cp {LINUX_ROOT_BIN}/{LINUX_NET_COMMAND} {LINUX_TMPFS}/; "
             "{ if echo 2 > /proc/sys/vm/drop_caches; then "
+            f"{poke}"
             f"FROST_NETTEST_REPETITION=$r/{repeat} "
             f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {LINUX_TMPFS}/{LINUX_NET_COMMAND}; "
             'else echo "$t"_FAIL"$d" drop_caches; fi; '
@@ -1242,10 +1289,12 @@ def nettest_command(interface: str, repeat: int = 1) -> str:
             f"s=$?; echo {LINUX_ROOT_ALIVE_TOKEN}=$s; [ $s = 0 ] || break; "
             "r=$((r+1)); done"
         )
+    poke = nettest_poke_command(poke_s, "$$") if poke_s else ""
     return (
         f"m=$(cat {sysfs}/mtu); f=$(cat {sysfs}/flags); echo 1 > {ipv6}; "
         f"cp {LINUX_ROOT_BIN}/{LINUX_NET_COMMAND} {LINUX_TMPFS}/; "
         "{ if echo 2 > /proc/sys/vm/drop_caches; then "
+        f"{poke}"
         f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {LINUX_TMPFS}/{LINUX_NET_COMMAND}; "
         "else echo FROST_NET_LOOPBACK'_'FAIL drop_caches; fi; "
         "echo $m >&3; echo $f >&4; echo 0 >&5; "
@@ -1366,7 +1415,7 @@ def nettest_diag_problems(serial_buf: str, repeat: int) -> list[str]:
     return problems
 
 
-def linux_stage(root: LinuxRoot, net_repeat: int = 1) -> UartStage:
+def linux_stage(root: LinuxRoot, net_repeat: int = 1, net_poke_s: int = 0) -> UartStage:
     """Build UART checks for Debian booting from the NFS root.
 
     Require the pinned kernel and driver before login. After login, check the
@@ -1377,6 +1426,8 @@ def linux_stage(root: LinuxRoot, net_repeat: int = 1) -> UartStage:
 
     ``net_repeat`` above 1 runs the network test that many times (see
     ``nettest_command``); a failed earlier repetition fails the stage too.
+    ``net_poke_s`` above 0 schedules an NFS request inside each run's link
+    hold-down (see ``nettest_poke_command``).
     """
     failure_markers = LINUX_FAILURE_MARKERS + (
         LINUX_TOKEN_FAIL,
@@ -1527,7 +1578,10 @@ def linux_stage(root: LinuxRoot, net_repeat: int = 1) -> UartStage:
             (LINUX_SHELL_PROMPT, LINUX_STRESS_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, LINUX_COUNTER_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, LINUX_MEMERR_COMMAND + "\r"),
-            (LINUX_SHELL_PROMPT, nettest_command(root.interface, net_repeat) + "\r"),
+            (
+                LINUX_SHELL_PROMPT,
+                nettest_command(root.interface, net_repeat, net_poke_s) + "\r",
+            ),
         ),
         failure_line_grace_s=LINUX_FAILURE_LINE_GRACE_S,
     )
@@ -1968,6 +2022,7 @@ def main() -> int:
     timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[board]
     try:
         net_repeat = nettest_repeat()
+        net_poke_s = nettest_poke()
     except ValueError as error:
         parser.error(str(error))
 
@@ -2062,7 +2117,7 @@ def main() -> int:
                 loader_env = None
                 if stage_name == LINUX_STAGE:
                     assert linux_root is not None
-                    stage = linux_stage(linux_root, net_repeat)
+                    stage = linux_stage(linux_root, net_repeat, net_poke_s)
                     stage_timeout = args.linux_timeout
                     loader_env = linux_loader_env(linux_root)
                 else:

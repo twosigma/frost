@@ -32,6 +32,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -2356,6 +2357,7 @@ def _run_repeated(
     fail_rep: int = 0,
     drop_caches_fails: bool = False,
     alive_status: int = 0,
+    poke_s: int = 0,
 ) -> tuple[str, Path, Path]:
     """Run the repeated command in sh against stand-in files and programs."""
     sysfs = tmp_path / "sysfs"
@@ -2375,14 +2377,20 @@ def _run_repeated(
     program.write_text(FAKE_NETTEST)
     program.chmod(0o755)
     timeout = source / "timeout"
-    timeout.write_text(f"#!/bin/sh\nexit {alive_status}\n")
+    # The poke's timeout runs long in the background; the root check's exits
+    # with the status asked for.
+    timeout.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in *frost_poke*) exec sleep 5;; esac\n'
+        f"exit {alive_status}\n"
+    )
     timeout.chmod(0o755)
     monkeypatch.setenv("PATH", f"{source}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_FAIL_REP", str(fail_rep))
     monkeypatch.setattr(hw, "LINUX_ROOT_BIN", str(source))
     monkeypatch.setattr(hw, "LINUX_TMPFS", str(target))
     command = (
-        hw.nettest_command("eth0", repeat)
+        hw.nettest_command("eth0", repeat, poke_s)
         .replace("/sys/class/net/eth0", str(sysfs))
         .replace("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", str(ipv6))
         .replace("/proc/sys/vm/drop_caches", str(drop))
@@ -2580,3 +2588,58 @@ def test_frost_nettest_decoder_self_test_and_markers(tmp_path: Path) -> None:
     verdicts = hw.nettest_diag_verdicts(output)
     assert list(verdicts) == [1] and verdicts[1][0] == "FAIL"
     assert hw.LINUX_NET_TOKEN_FAIL not in output
+
+
+def test_without_the_poke_variable_the_command_is_unchanged() -> None:
+    """No poke unless asked: both command forms stay as they were."""
+    assert hw.nettest_poke({}) == 0
+    assert hw.nettest_poke({hw.NETTEST_POKE_ENV: " "}) == 0
+    assert hw.nettest_command("eth0", 1, 0) == NETTEST_COMMAND_ETH0
+    assert hw.nettest_command("eth0", 3, 0) == hw.nettest_command("eth0", 3)
+    assert "frost_poke" not in hw.nettest_command("eth0", 3)
+    assert hw.linux_stage(ROOT, 1, 0).stimuli == stage().stimuli
+
+
+@pytest.mark.parametrize("text", ["0", "-5", "x", "1.5", "301"])
+def test_a_bad_poke_delay_is_refused(text: str) -> None:
+    """Only whole seconds from 1 to the maximum are accepted."""
+    with pytest.raises(ValueError, match=hw.NETTEST_POKE_ENV):
+        hw.nettest_poke({hw.NETTEST_POKE_ENV: text})
+    assert hw.nettest_poke({hw.NETTEST_POKE_ENV: "30"}) == 30
+
+
+def test_the_poke_is_scheduled_before_each_test_run_and_does_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One poke per repetition, after the cache drop, detached from the test."""
+    single = hw.nettest_command("eth0", 1, 30)
+    head, _, rest = single.partition("then ")
+    assert NETTEST_COMMAND_ETH0.startswith(head + "then ")
+    assert rest.startswith(
+        '( timeout -k 5 330 sh -c "sleep 30; [ -e /root/.frost_poke.$$ ]" '
+        "> /dev/null 2>&1 3>&- 4>&- 5>&- & ); "
+        "echo FROST_NET_DIAG: nfs poke scheduled at +30 s; "
+        "FROST_NETTEST_EXPIRE_NFS_CACHE=1 "
+    )
+    assert single.replace(rest[: rest.index("FROST_NETTEST_EXPIRE")], "") == (
+        NETTEST_COMMAND_ETH0
+    )
+    repeated = hw.nettest_command("eth0", 3, 30)
+    assert repeated.count("frost_poke") == 1 and "/root/.frost_poke.$$.$r" in repeated
+    assert not hw.LINUX_NET_DIAG_RE.search(repeated + "\r\n")
+    linux = hw.linux_stage(ROOT, 3, 30)
+    assert linux.stimuli[-1][1] == repeated.replace("eth0", ROOT.interface) + "\r"
+
+    started = time.monotonic()
+    output, _, _ = _run_repeated(tmp_path, monkeypatch, 3, poke_s=30)
+    # Each poke's stand-in sleeps 5 s in the background; nothing waits for it.
+    assert time.monotonic() - started < 4
+    lines = output.split("\r\r\n")
+    scheduled = "FROST_NET_DIAG: nfs poke scheduled at +30 s"
+    assert lines.count(scheduled) == 3
+    for rep in (1, 2, 3):
+        at = lines.index(f"FROST_NET_LOOPBACK: repetition {rep} of 3")
+        assert lines[at - 1] == scheduled
+    transcript = MEMERR_TRANSCRIPT + repeated + "\r\r\n" + output
+    ok, note = linux.judge(transcript + PROMPT)
+    assert ok, note
