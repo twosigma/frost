@@ -347,6 +347,9 @@ for an ASIC, the RTL also needs:
    reset, as an ASIC with an independent CPU clock or a multi-die FPGA with
    the cluster on its own die needs. The X3 keeps one clock, which spares its
    cache misses the crossing's latency.
+   Open: align `asic/constraint.sdc`'s JTAG debug-transport bounds with the X3
+   constraints (`0.8` on toggle synchronizer inputs and `1.5` on held DMI
+   payloads across `jtag_tck` and `core_clk` in both clock modes).
 
 ## Single-core performance
 
@@ -568,6 +571,9 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   Ethernet and 10GBASE-R on QSFP1 lane 0, using the NIC's registers,
   descriptors, driver, and coherent DMA. It uses one DDR4 interface; the
   other could have its own memory controller.
+- Clocking the `BSCANE2` debug transport and bounding its toggle and held DMI
+  payload crossings on the VCU118, where the debug transport remains without
+  those bounds, to match `boards/x3/constr/cpu_clock_boundary.tcl`.
 - A PCIe Gen3 x4 root complex between `soc_top` and PIPE, the PHY interface
   that ASIC PCIe PHYs also use, with a small wrapper for the FPGA's
   transceivers, so that Linux finds NVMe drives and other devices with its
