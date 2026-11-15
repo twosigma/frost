@@ -1422,7 +1422,7 @@ jobs:
           # Every comparison of a block's hand-instantiated primitives with its
           # portable form: the twin targets and the read select's primitive tasks.
           - shard: Primitive forms
-            pytest_filter: _twin or (coh_read_select and xilinx)
+            pytest_filter: (_twin and not rs_payload_twin) or (coh_read_select and xilinx)
             timeout_minutes: 90
           # The vector CSR state: the vector BMC alone is about forty minutes,
           # and new vector proofs join it.
@@ -1449,7 +1449,7 @@ jobs:
           - shard: Other tasks
             pytest_filter: >-
               not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or
-              coherence_ or coherent_ or _twin or csr_file_vector or
+              coherence_ or coherent_ or (_twin and not rs_payload_twin) or csr_file_vector or
               vec_lmul_legality or line_client_link or ptw or tlb or imsic or aplic or
               immu or dmmu or load_queue or lq_)
             timeout_minutes: 120

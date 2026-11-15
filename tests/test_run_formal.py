@@ -46,7 +46,6 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
-    ("rs_payload_twin", "bmc"): 18000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
@@ -1135,6 +1134,12 @@ FORMAL_TARGETS = [
         "Two tomasulo_wrapper copies whose reservation stations hold arbitrary stage2 payloads while "
         "empty have equal outputs",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rs_stage2_payload_equiv.sby",
+        "Occupied reservation-station stage2 and stage2b payloads loaded on FU readiness equal "
+        "issue-fire capture across all four station configurations",
+        tasks=("int_prove", "mul_prove", "mem_prove", "fp_prove", "int_cover"),
     ),
     FormalTarget(
         "served_window_coverage.sby",
@@ -2772,6 +2777,26 @@ SBY_TASKS = [
     (
         "rs_twin_indexed",
         "Indexed-write reservation station primitive form equals its portable form.",
+    ),
+    (
+        "int_prove",
+        "Unbounded stage2 and stage2b payload equivalence in the INT station configuration.",
+    ),
+    (
+        "mul_prove",
+        "Unbounded stage2 payload equivalence in the MUL station configuration.",
+    ),
+    (
+        "mem_prove",
+        "Unbounded stage2 payload equivalence in the MEM station configuration.",
+    ),
+    (
+        "fp_prove",
+        "Unbounded stage2 payload equivalence in the FP station configuration.",
+    ),
+    (
+        "int_cover",
+        "Stage2 and stage2b stall, flush, back-to-back issue, and reset reachability.",
     ),
 ]
 

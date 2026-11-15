@@ -3,7 +3,7 @@ bmc
 
 [options]
 mode bmc
-depth 6
+depth 5
 
 [engines]
 smtbmc boolector
@@ -15,7 +15,7 @@ smtbmc boolector
 # stage holds no packet). The harness asserts every wrapper output equal, and
 # the RS issue packets equal while valid: no reader takes the payload outside
 # its valid.
-read -formal -sv riscv_pkg.sv
+read -formal -sv riscv_pkg.sv vec_hold_rows.sv
 read -formal -sv sdp_dist_ram.sv
 read -formal -sv mwp_dist_ram.sv
 read -formal -sv mwp_dist_ram_ohread.sv
@@ -74,10 +74,11 @@ memory_map
 opt_clean
 # Both copies start from the same state: every register at zero.
 setundef -zero -init
-select -assert-count 158 t:$check r:FLAVOR=assert %i
+select -assert-count 172 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv

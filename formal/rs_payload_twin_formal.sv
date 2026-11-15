@@ -16,6 +16,7 @@ module rs_payload_twin_formal #(
     parameter bit ROB_SHARED_LINK_BANK = 1'b0,
     parameter int unsigned PERF_COUNTERS = 1,
     parameter bit VECTOR = 1'b0,
+    parameter int unsigned VLEN = 256,
     parameter bit REGISTERED_SECTOR_MATCH = 1'b0
 ) (
     input logic i_coherent_store_pending,
@@ -50,6 +51,8 @@ module rs_payload_twin_formal #(
     input riscv_pkg::reorder_buffer_branch_update_t i_branch_update,
     input logic i_rob_checkpoint_valid,
     input logic [riscv_pkg::CheckpointIdWidth-1:0] i_rob_checkpoint_id,
+    input riscv_pkg::vmt_view_t i_vmt,
+    input logic i_vmem_quiet,
     input logic i_csr_done,
     input logic i_trap_taken,
     input logic i_mret_done,
@@ -76,7 +79,6 @@ module rs_payload_twin_formal #(
     input logic i_mmu_sum,
     input logic i_mmu_mxr,
     input logic i_mmu_eff_priv_u,
-    input riscv_pkg::pm_mode_t i_mmu_pm_mode,
     input logic i_csr_translation_flush_req,
     input logic i_csr_tlb_flush_all_req,
     input logic [riscv_pkg::AsidBits-1:0] i_mmu_asid,
@@ -235,6 +237,10 @@ module rs_payload_twin_formal #(
   riscv_pkg::cdb_broadcast_t o_cdb_2_b;
   riscv_pkg::reorder_buffer_commit_t o_commit_a;
   riscv_pkg::reorder_buffer_commit_t o_commit_b;
+  riscv_pkg::vcfg_commit_t o_vcfg_commit_a;
+  riscv_pkg::vcfg_commit_t o_vcfg_commit_b;
+  logic o_vcfg_in_flight_a;
+  logic o_vcfg_in_flight_b;
   riscv_pkg::reorder_buffer_commit_t o_commit_comb_a;
   riscv_pkg::reorder_buffer_commit_t o_commit_comb_b;
   logic o_commit_valid_raw_a;
@@ -263,6 +269,24 @@ module rs_payload_twin_formal #(
   logic o_head_is_wfi_b;
   logic o_head_is_amo_a;
   logic o_head_is_amo_b;
+  logic [2:0] o_head_mem_funct3_a;
+  logic [2:0] o_head_mem_funct3_b;
+  logic [4:0] o_head_mem_rs2_a;
+  logic [4:0] o_head_mem_rs2_b;
+  logic [riscv_pkg::RegAddrWidth-1:0] o_head_dest_reg_a;
+  logic [riscv_pkg::RegAddrWidth-1:0] o_head_dest_reg_b;
+  logic o_head_dest_rf_a;
+  logic o_head_dest_rf_b;
+  logic o_head_dest_valid_a;
+  logic o_head_dest_valid_b;
+  logic o_head_mem_store_a;
+  logic o_head_mem_store_b;
+  logic o_head_mem_fp_store_a;
+  logic o_head_mem_fp_store_b;
+  logic o_head_mem_atomic_a;
+  logic o_head_mem_atomic_b;
+  logic [riscv_pkg::XLEN-1:0] o_head_fallthrough_pc_a;
+  logic [riscv_pkg::XLEN-1:0] o_head_fallthrough_pc_b;
   logic o_head_bypass_int_we_early_a;
   logic o_head_bypass_int_we_early_b;
   logic o_head_bypass_fp_we_early_a;
@@ -289,6 +313,10 @@ module rs_payload_twin_formal #(
   logic [riscv_pkg::XLEN-1:0] o_trap_value_b;
   logic [31:0] o_trap_insn_a;
   logic [31:0] o_trap_insn_b;
+  logic o_head_bus_fault_a;
+  logic o_head_bus_fault_b;
+  logic [riscv_pkg::XLEN-1:0] o_head_bus_fault_va_a;
+  logic [riscv_pkg::XLEN-1:0] o_head_bus_fault_va_b;
   logic o_mret_start_a;
   logic o_mret_start_b;
   logic o_mret_start_is_sret_a;
@@ -501,6 +529,7 @@ module rs_payload_twin_formal #(
       .ROB_SHARED_LINK_BANK(ROB_SHARED_LINK_BANK),
       .PERF_COUNTERS(PERF_COUNTERS),
       .VECTOR(VECTOR),
+      .VLEN(VLEN),
       .REGISTERED_SECTOR_MATCH(REGISTERED_SECTOR_MATCH)
   ) u_a (
       .i_coherent_store_pending(i_coherent_store_pending),
@@ -557,6 +586,10 @@ module rs_payload_twin_formal #(
       .i_rob_checkpoint_valid(i_rob_checkpoint_valid),
       .i_rob_checkpoint_id(i_rob_checkpoint_id),
       .o_commit(o_commit_a),
+      .o_vcfg_commit(o_vcfg_commit_a),
+      .o_vcfg_in_flight(o_vcfg_in_flight_a),
+      .i_vmt(i_vmt),
+      .i_vmem_quiet(i_vmem_quiet),
       .o_commit_comb(o_commit_comb_a),
       .o_commit_valid_raw(o_commit_valid_raw_a),
       .o_commit_misprediction_raw(o_commit_misprediction_raw_a),
@@ -572,6 +605,15 @@ module rs_payload_twin_formal #(
       .o_trap_pc(o_trap_pc_a),
       .o_head_is_wfi(o_head_is_wfi_a),
       .o_head_is_amo(o_head_is_amo_a),
+      .o_head_mem_funct3(o_head_mem_funct3_a),
+      .o_head_mem_rs2(o_head_mem_rs2_a),
+      .o_head_dest_reg(o_head_dest_reg_a),
+      .o_head_dest_rf(o_head_dest_rf_a),
+      .o_head_dest_valid(o_head_dest_valid_a),
+      .o_head_mem_store(o_head_mem_store_a),
+      .o_head_mem_fp_store(o_head_mem_fp_store_a),
+      .o_head_mem_atomic(o_head_mem_atomic_a),
+      .o_head_fallthrough_pc(o_head_fallthrough_pc_a),
       .o_head_bypass_int_we_early(o_head_bypass_int_we_early_a),
       .o_head_bypass_fp_we_early(o_head_bypass_fp_we_early_a),
       .o_head_next_bypass_int_we_early(o_head_next_bypass_int_we_early_a),
@@ -585,6 +627,8 @@ module rs_payload_twin_formal #(
       .o_trap_cause(o_trap_cause_a),
       .o_trap_value(o_trap_value_a),
       .o_trap_insn(o_trap_insn_a),
+      .o_head_bus_fault(o_head_bus_fault_a),
+      .o_head_bus_fault_va(o_head_bus_fault_va_a),
       .i_trap_taken(i_trap_taken),
       .o_mret_start(o_mret_start_a),
       .o_mret_start_is_sret(o_mret_start_is_sret_a),
@@ -613,7 +657,6 @@ module rs_payload_twin_formal #(
       .i_mmu_sum(i_mmu_sum),
       .i_mmu_mxr(i_mmu_mxr),
       .i_mmu_eff_priv_u(i_mmu_eff_priv_u),
-      .i_mmu_pm_mode(i_mmu_pm_mode),
       .i_csr_translation_flush_req(i_csr_translation_flush_req),
       .o_tlb_invalidate(o_tlb_invalidate_a),
       .i_csr_tlb_flush_all_req(i_csr_tlb_flush_all_req),
@@ -838,6 +881,7 @@ module rs_payload_twin_formal #(
       .ROB_SHARED_LINK_BANK(ROB_SHARED_LINK_BANK),
       .PERF_COUNTERS(PERF_COUNTERS),
       .VECTOR(VECTOR),
+      .VLEN(VLEN),
       .REGISTERED_SECTOR_MATCH(REGISTERED_SECTOR_MATCH)
   ) u_b (
       .i_coherent_store_pending(i_coherent_store_pending),
@@ -894,6 +938,10 @@ module rs_payload_twin_formal #(
       .i_rob_checkpoint_valid(i_rob_checkpoint_valid),
       .i_rob_checkpoint_id(i_rob_checkpoint_id),
       .o_commit(o_commit_b),
+      .o_vcfg_commit(o_vcfg_commit_b),
+      .o_vcfg_in_flight(o_vcfg_in_flight_b),
+      .i_vmt(i_vmt),
+      .i_vmem_quiet(i_vmem_quiet),
       .o_commit_comb(o_commit_comb_b),
       .o_commit_valid_raw(o_commit_valid_raw_b),
       .o_commit_misprediction_raw(o_commit_misprediction_raw_b),
@@ -909,6 +957,15 @@ module rs_payload_twin_formal #(
       .o_trap_pc(o_trap_pc_b),
       .o_head_is_wfi(o_head_is_wfi_b),
       .o_head_is_amo(o_head_is_amo_b),
+      .o_head_mem_funct3(o_head_mem_funct3_b),
+      .o_head_mem_rs2(o_head_mem_rs2_b),
+      .o_head_dest_reg(o_head_dest_reg_b),
+      .o_head_dest_rf(o_head_dest_rf_b),
+      .o_head_dest_valid(o_head_dest_valid_b),
+      .o_head_mem_store(o_head_mem_store_b),
+      .o_head_mem_fp_store(o_head_mem_fp_store_b),
+      .o_head_mem_atomic(o_head_mem_atomic_b),
+      .o_head_fallthrough_pc(o_head_fallthrough_pc_b),
       .o_head_bypass_int_we_early(o_head_bypass_int_we_early_b),
       .o_head_bypass_fp_we_early(o_head_bypass_fp_we_early_b),
       .o_head_next_bypass_int_we_early(o_head_next_bypass_int_we_early_b),
@@ -922,6 +979,8 @@ module rs_payload_twin_formal #(
       .o_trap_cause(o_trap_cause_b),
       .o_trap_value(o_trap_value_b),
       .o_trap_insn(o_trap_insn_b),
+      .o_head_bus_fault(o_head_bus_fault_b),
+      .o_head_bus_fault_va(o_head_bus_fault_va_b),
       .i_trap_taken(i_trap_taken),
       .o_mret_start(o_mret_start_b),
       .o_mret_start_is_sret(o_mret_start_is_sret_b),
@@ -950,7 +1009,6 @@ module rs_payload_twin_formal #(
       .i_mmu_sum(i_mmu_sum),
       .i_mmu_mxr(i_mmu_mxr),
       .i_mmu_eff_priv_u(i_mmu_eff_priv_u),
-      .i_mmu_pm_mode(i_mmu_pm_mode),
       .i_csr_translation_flush_req(i_csr_translation_flush_req),
       .o_tlb_invalidate(o_tlb_invalidate_b),
       .i_csr_tlb_flush_all_req(i_csr_tlb_flush_all_req),
@@ -1189,6 +1247,9 @@ module rs_payload_twin_formal #(
     if (o_cdb_2_a.valid) assert (o_cdb_2_a == o_cdb_2_b);
     assert (o_commit_a.valid == o_commit_b.valid);
     if (o_commit_a.valid) assert (o_commit_a == o_commit_b);
+    assert (o_vcfg_commit_a.valid == o_vcfg_commit_b.valid);
+    if (o_vcfg_commit_a.valid) assert (o_vcfg_commit_a == o_vcfg_commit_b);
+    assert (o_vcfg_in_flight_a == o_vcfg_in_flight_b);
     assert (o_commit_comb_a.valid == o_commit_comb_b.valid);
     if (o_commit_comb_a.valid) assert (o_commit_comb_a == o_commit_comb_b);
     assert (o_commit_valid_raw_a == o_commit_valid_raw_b);
@@ -1206,6 +1267,15 @@ module rs_payload_twin_formal #(
     if (o_trap_pending_a) assert (o_trap_pc_a == o_trap_pc_b);
     assert (o_head_is_wfi_a == o_head_is_wfi_b);
     assert (o_head_is_amo_a == o_head_is_amo_b);
+    assert (o_head_mem_funct3_a == o_head_mem_funct3_b);
+    assert (o_head_mem_rs2_a == o_head_mem_rs2_b);
+    assert (o_head_dest_reg_a == o_head_dest_reg_b);
+    assert (o_head_dest_rf_a == o_head_dest_rf_b);
+    assert (o_head_dest_valid_a == o_head_dest_valid_b);
+    assert (o_head_mem_store_a == o_head_mem_store_b);
+    assert (o_head_mem_fp_store_a == o_head_mem_fp_store_b);
+    assert (o_head_mem_atomic_a == o_head_mem_atomic_b);
+    assert (o_head_fallthrough_pc_a == o_head_fallthrough_pc_b);
     assert (o_head_bypass_int_we_early_a == o_head_bypass_int_we_early_b);
     assert (o_head_bypass_fp_we_early_a == o_head_bypass_fp_we_early_b);
     assert (o_head_next_bypass_int_we_early_a == o_head_next_bypass_int_we_early_b);
@@ -1219,6 +1289,8 @@ module rs_payload_twin_formal #(
     if (o_trap_pending_a) assert (o_trap_cause_a == o_trap_cause_b);
     if (o_trap_pending_a) assert (o_trap_value_a == o_trap_value_b);
     if (o_trap_pending_a) assert (o_trap_insn_a == o_trap_insn_b);
+    assert (o_head_bus_fault_a == o_head_bus_fault_b);
+    if (o_head_bus_fault_a) assert (o_head_bus_fault_va_a == o_head_bus_fault_va_b);
     assert (o_mret_start_a == o_mret_start_b);
     assert (o_mret_start_is_sret_a == o_mret_start_is_sret_b);
     assert (o_mret_start_is_dret_a == o_mret_start_is_dret_b);
