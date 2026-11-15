@@ -292,6 +292,18 @@ def lr(rd: int, rs1: int, width: int, aq: int = 0, rl: int = 0) -> Instruction:
     )
 
 
+def lr_reserved_rs2(
+    rd: int, rs2: int, rs1: int, width: int, aq: int = 0, rl: int = 0
+) -> Instruction:
+    """Encode a reserved LR.W or LR.D with a nonzero rs2 field."""
+    assert 1 <= rs2 < 32
+    suffix = "d" if width == 8 else "w"
+    return Instruction(
+        _atomic(LR, aq, rl, rd, rs1, rs2, width),
+        f"lr.{suffix}.rs2=x{rs2}{_ordering(aq, rl)} x{rd}, (x{rs1})",
+    )
+
+
 def sc(
     rd: int, rs2: int, rs1: int, width: int, aq: int = 0, rl: int = 0
 ) -> Instruction:
@@ -541,9 +553,13 @@ class Generator:
             base = self._pick_base(width, "sc", safe_only=False)
             return [sc(self._rd(), self._data(), base, width, *self._aqrl())]
         if roll < 0.86:
-            # An LR outside a window only where it faults, so no reservation
-            # stays open.
+            # An LR outside a window only where it faults or is a reserved
+            # nonzero-rs2 encoding, so no reservation stays open.
             width = self._width()
+            if rng.random() < 0.4:
+                base = self._pick_base(width, "lr", safe_only=True)
+                rs2 = rng.randrange(1, 32)
+                return [lr_reserved_rs2(self._rd(), rs2, base, width, *self._aqrl())]
             faulting = self._base_choices(width, "lr", False)
             if faulting:
                 return [lr(self._rd(), rng.choice(faulting), width, *self._aqrl())]

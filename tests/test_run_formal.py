@@ -42,6 +42,7 @@ SBY_TASK_TIMEOUT_S = 2400
 # SBY files and separate CI jobs. Keep the runner's backstops in sync with
 # those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("coherence_l1d", "coh_l1d_perf_prove"): 120,
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
@@ -339,6 +340,7 @@ FORMAL_TARGETS = [
         "coherence_l1d.sby",
         "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
         tasks=(
+            "coh_l1d_perf_prove",
             "coh_l1d_conflict_prove",
             "coh_l1d_conflict_multi_prove",
             "coh_l1d_conflict_stream_prove",
@@ -1716,6 +1718,10 @@ SBY_TASKS = [
     ("link_cover_pressure", "The pressure schedule completes through one-stage links."),
     ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
     ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
+    (
+        "coh_l1d_perf_prove",
+        "The L1D counter stream equals the direct serializer delayed once.",
+    ),
     ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),
     ("coh_l1d_conflict_multi_prove", "Guarded conflict identity with three endpoints."),
     (
