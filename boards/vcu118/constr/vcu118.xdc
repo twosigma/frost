@@ -287,24 +287,98 @@ set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"
 set_false_path -to [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
 set_false_path -from [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
 
-# Clock-group exceptions do not bound the skew within a Gray-coded event count.
-foreach nic_instance {nic nic_1g} {
-    for {set event 0} {$event < 21} {incr event} {
-        set event_filter [format {NAME =~ "*/%s/u_mac/g_events[%d].u_count/sync_gray/stage_q_reg[0]*/D"} $nic_instance $event]
-        set event_d [get_pins -quiet -hierarchical -filter $event_filter]
-        if {[llength $event_d]} {
-            set event_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $event_d]]]
-            set_bus_skew 3.0 -from $event_s -to [get_cells -of_objects $event_d]
-        }
-    }
-}
-# The diagnostic payload is held until acknowledged. Bound its route before
-# the two-stage request synchronizer permits capture.
-set phy_diag_payload [get_cells -quiet -hierarchical -filter {IS_SEQUENTIAL && NAME =~ "*/u_mdio/diag_recr_q_reg*"}]
-set phy_diag_capture [get_cells -quiet -hierarchical -filter {IS_SEQUENTIAL && NAME =~ "*/nic_1g/u_csr/phy_diag_sample_q_reg*"}]
-if {[llength $phy_diag_payload] && [llength $phy_diag_capture]} {
-    set_max_delay -datapath_only 3.0 -from $phy_diag_payload -to $phy_diag_capture
-}
+# Clock-group and first-stage exceptions do not bound Gray-bus skew.
+# The 10G event sources are MAC/PCS errors, PAUSE and descriptor-starved overflow.
+set nic_event0_d [get_pins -hierarchical -filter {NAME =~ "*nic/u_mac/g_events[0].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event0_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event0_d]]]
+set_bus_skew 3.0 -from $nic_event0_s -to [get_cells -of_objects $nic_event0_d]
+set nic_event1_d [get_pins -hierarchical -filter {NAME =~ "*nic/u_mac/g_events[1].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event1_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event1_d]]]
+set_bus_skew 3.0 -from $nic_event1_s -to [get_cells -of_objects $nic_event1_d]
+set nic_event2_d [get_pins -hierarchical -filter {NAME =~ "*nic/u_mac/g_events[2].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event2_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event2_d]]]
+set_bus_skew 3.0 -from $nic_event2_s -to [get_cells -of_objects $nic_event2_d]
+set nic_event3_d [get_pins -hierarchical -filter {NAME =~ "*nic/u_mac/g_events[3].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event3_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event3_d]]]
+set_bus_skew 3.0 -from $nic_event3_s -to [get_cells -of_objects $nic_event3_d]
+set nic_event4_d [get_pins -hierarchical -filter {NAME =~ "*nic/u_mac/g_events[4].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event4_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event4_d]]]
+set_bus_skew 3.0 -from $nic_event4_s -to [get_cells -of_objects $nic_event4_d]
+set nic_event5_d [get_pins -hierarchical -filter {NAME =~ "*nic/u_mac/g_events[5].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event5_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event5_d]]]
+set_bus_skew 3.0 -from $nic_event5_s -to [get_cells -of_objects $nic_event5_d]
+set nic_event8_d [get_pins -hierarchical -filter {NAME =~ "*nic/u_mac/g_events[8].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event8_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event8_d]]]
+set_bus_skew 3.0 -from $nic_event8_s -to [get_cells -of_objects $nic_event8_d]
+set nic_event9_d [get_pins -hierarchical -filter {NAME =~ "*nic/u_mac/g_events[9].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event9_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event9_d]]]
+set_bus_skew 3.0 -from $nic_event9_s -to [get_cells -of_objects $nic_event9_d]
+set nic_event10_d [get_pins -hierarchical -filter {NAME =~ "*nic/u_mac/g_events[10].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event10_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event10_d]]]
+set_bus_skew 3.0 -from $nic_event10_s -to [get_cells -of_objects $nic_event10_d]
+set nic_event15_d [get_pins -hierarchical -filter {NAME =~ "*nic/u_mac/g_events[15].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event15_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event15_d]]]
+set_bus_skew 3.0 -from $nic_event15_s -to [get_cells -of_objects $nic_event15_d]
+
+# GMII has no 64b/66b bad-block events (3, 5). Strict preamble mode also
+# makes the tolerated-preamble event (14) constant. Constrain the live sources.
+set nic_1g_event0_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[0].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event0_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event0_d]]]
+set_bus_skew 3.0 -from $nic_1g_event0_s -to [get_cells -of_objects $nic_1g_event0_d]
+set nic_1g_event1_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[1].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event1_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event1_d]]]
+set_bus_skew 3.0 -from $nic_1g_event1_s -to [get_cells -of_objects $nic_1g_event1_d]
+set nic_1g_event2_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[2].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event2_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event2_d]]]
+set_bus_skew 3.0 -from $nic_1g_event2_s -to [get_cells -of_objects $nic_1g_event2_d]
+set nic_1g_event4_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[4].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event4_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event4_d]]]
+set_bus_skew 3.0 -from $nic_1g_event4_s -to [get_cells -of_objects $nic_1g_event4_d]
+set nic_1g_event6_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[6].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event6_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event6_d]]]
+set_bus_skew 3.0 -from $nic_1g_event6_s -to [get_cells -of_objects $nic_1g_event6_d]
+set nic_1g_event7_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[7].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event7_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event7_d]]]
+set_bus_skew 3.0 -from $nic_1g_event7_s -to [get_cells -of_objects $nic_1g_event7_d]
+set nic_1g_event8_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[8].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event8_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event8_d]]]
+set_bus_skew 3.0 -from $nic_1g_event8_s -to [get_cells -of_objects $nic_1g_event8_d]
+set nic_1g_event9_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[9].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event9_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event9_d]]]
+set_bus_skew 3.0 -from $nic_1g_event9_s -to [get_cells -of_objects $nic_1g_event9_d]
+set nic_1g_event10_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[10].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event10_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event10_d]]]
+set_bus_skew 3.0 -from $nic_1g_event10_s -to [get_cells -of_objects $nic_1g_event10_d]
+set nic_1g_event11_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[11].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event11_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event11_d]]]
+set_bus_skew 3.0 -from $nic_1g_event11_s -to [get_cells -of_objects $nic_1g_event11_d]
+set nic_1g_event12_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[12].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event12_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event12_d]]]
+set_bus_skew 3.0 -from $nic_1g_event12_s -to [get_cells -of_objects $nic_1g_event12_d]
+set nic_1g_event13_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[13].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event13_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event13_d]]]
+set_bus_skew 3.0 -from $nic_1g_event13_s -to [get_cells -of_objects $nic_1g_event13_d]
+set nic_1g_event15_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[15].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event15_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event15_d]]]
+set_bus_skew 3.0 -from $nic_1g_event15_s -to [get_cells -of_objects $nic_1g_event15_d]
+set nic_1g_event16_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[16].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event16_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event16_d]]]
+set_bus_skew 3.0 -from $nic_1g_event16_s -to [get_cells -of_objects $nic_1g_event16_d]
+set nic_1g_event17_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[17].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event17_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event17_d]]]
+set_bus_skew 3.0 -from $nic_1g_event17_s -to [get_cells -of_objects $nic_1g_event17_d]
+set nic_1g_event18_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[18].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event18_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event18_d]]]
+set_bus_skew 3.0 -from $nic_1g_event18_s -to [get_cells -of_objects $nic_1g_event18_d]
+set nic_1g_event19_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[19].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event19_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event19_d]]]
+set_bus_skew 3.0 -from $nic_1g_event19_s -to [get_cells -of_objects $nic_1g_event19_d]
+set nic_1g_event20_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g/u_mac/g_events[20].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_1g_event20_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event20_d]]]
+set_bus_skew 3.0 -from $nic_1g_event20_s -to [get_cells -of_objects $nic_1g_event20_d]
+
+# The PHY sample payload uses related CPU/4 and CPU clocks from the same MMCM.
+# Keep normal setup/hold analysis on that path; only the MDIO pad is asynchronous.
 set_false_path -to [get_pins -quiet -hierarchical -filter {NAME =~ "*/u_mdio/mdio_i_s1_q_reg/D"}]
 
 # -----------------------------------------------------------------------------

@@ -391,10 +391,15 @@ bits:
 
 | Index | Offset | `ethtool -S` name | Meaning |
 | --- | --- | --- | --- |
-| 21 | `0x140` | `rx_gmii_er_preamble` | RX_ER bursts while seeking a valid SFD |
+| 16 | `0x100` | `rx_gmii_preamble_drop` | Frames rejected while seeking the SFD, counted once on entering WAIT_END |
+| 17 | `0x108` | `rx_gmii_rx_er` | RX_ER bursts with RX_DV high while in DATA, after accepting the SFD |
+| 18 | `0x110` | `rx_pause_frames` | Received PAUSE frames |
+| 19 | `0x118` | `tx_pause_frames` | Transmitted PAUSE requests, refreshes and releases |
+| 20 | `0x120` | `tx_paused_cycles` | TX MAC clock cycles spent paused |
+| 21 | `0x140` | `rx_gmii_er_preamble` | RX_ER bursts with RX_DV high while seeking the SFD in IDLE or PREAMBLE |
 | 22 | `0x148` | `rx_gmii_er_carrier_ext` | RX_ER bursts with RX_DV low, including carrier extension and false carrier |
-| 23 | `0x150` | `rx_gmii_short_ifg` | Frames starting with fewer than 12 idle byte times since the preceding RX_DV fall |
-| 24 | `0x158` | `rx_gmii_preamble_er_accepted` | Delimiters accepted after tolerating one errored 0x55 preamble byte |
+| 23 | `0x150` | `rx_gmii_short_ifg` | RX_DV rising edges after fewer than 12 idle byte times since its preceding fall; includes gaps shortened legitimately by the receive path |
+| 24 | `0x158` | `rx_gmii_preamble_er_accepted` | Delimiters accepted after tolerating one errored 0x55 preamble byte; zero in production strict mode |
 | 25 | `0x160` | `rx_mac_overflow_no_desc` | MAC overflows while the synchronized RX descriptor-starved indication is high |
 | 26 | `0x168` | `pcs_sync_loss` | Falling edges of PCS status bit 1 |
 | 27 | `0x170` | `pcs_rudi_c` | Rising edges of PCS status bit 2 |
@@ -406,6 +411,12 @@ bits:
 | 33 | `0x1A0` | `phy_fcs_last` | Reserved, reads zero; DP83867 exposes no FCS error count |
 | 34 | `0x1A8` | `phy_fcs_sum` | Reserved, reads zero; DP83867 exposes no FCS error count |
 | 35 | `0x1B0` | `phy_polls` | Completed PHY management samples accepted by the NIC |
+
+Counters 17 and 21 do not count RX_ER bursts while WAIT_END discards the rest of a
+frame rejected before its SFD. Counter 22 still counts RX_ER bursts with RX_DV low,
+including carrier extension and false carrier. A burst means a rising edge of the
+qualified RX_ER condition, sampled on enabled GMII byte cycles. These diagnostics
+describe received symbols; a short observed gap alone does not prove a sender fault.
 
 Counters are unsigned 64-bit values and wrap modulo 2^64. Reads do not clear them.
 MAC events cross as eight-bit Gray counts; fewer than 256 events must occur

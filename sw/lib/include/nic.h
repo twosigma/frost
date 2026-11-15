@@ -182,6 +182,7 @@
 #define NIC_CNT_PCS_RXNOTINTABLE 30u
 #define NIC_CNT_PHY_RX_ERR_LAST 31u
 #define NIC_CNT_PHY_RX_ERR_SUM 32u
+/* Reserved, reads zero; see rx_mac_bad_fcs. */
 #define NIC_CNT_PHY_FCS_LAST 33u
 #define NIC_CNT_PHY_FCS_SUM 34u
 #define NIC_CNT_PHY_POLLS 35u

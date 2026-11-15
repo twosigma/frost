@@ -341,8 +341,12 @@ def test_driver_exposes_every_hardware_counter_in_order() -> None:
     assert [
         (int(index), int(offset, 16), name) for index, offset, name in documented
     ] == [
-        (index, ext + 8 * (index - num_base), names[index])
-        for index in range(num_base, len(names))
+        (
+            index,
+            base + 8 * index if index < num_base else ext + 8 * (index - num_base),
+            names[index],
+        )
+        for index in range(16, len(names))
     ]
     ops = _ethtool_ops(source)
     for hook in (".get_sset_count", ".get_strings", ".get_ethtool_stats"):

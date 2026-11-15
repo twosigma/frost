@@ -370,9 +370,9 @@ set nic_rx_clk      [get_clocks -quiet -of_objects [get_pins -quiet -of_objects 
 set nic_freerun_clk [get_clocks -of_objects [get_pins freerun_clock_buffer/O]]
 
 # Gray-coded buses: the FIFO pointers (one bus per FIFO and direction) and the
-# event counters. Each gets a datapath-only delay bound and a bus-skew bound
-# below the fastest source period, so a receiver sees at most one bit of the
-# bus changing at a time.
+# nonconstant event counters listed below. Each listed bus gets a datapath-only
+# delay bound and a bus-skew bound below the fastest source period, so a receiver
+# sees at most one bit of the bus changing at a time.
 set nic_d0 [get_pins -hierarchical -filter {NAME =~ "*/u_tx_fifo/sync_rptr/stage_q_reg[0]*/D"}]
 set nic_s0 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d0]]]
 set_max_delay -datapath_only 3.0 -from $nic_s0 -to [get_cells -of_objects $nic_d0]
@@ -389,17 +389,48 @@ set nic_d3 [get_pins -hierarchical -filter {NAME =~ "*/u_rx_fifo/sync_wptr/stage
 set nic_s3 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d3]]]
 set_max_delay -datapath_only 3.0 -from $nic_s3 -to [get_cells -of_objects $nic_d3]
 set_bus_skew 3.0 -from $nic_s3 -to [get_cells -of_objects $nic_d3]
-# Each surviving event counter is a separate Gray bus. Constant event sources
-# can disappear during synthesis.
-for {set event 0} {$event < 21} {incr event} {
-    set event_filter [format {NAME =~ "*/g_events[%d].u_count/sync_gray/stage_q_reg[0]*/D"} $event]
-    set event_d [get_pins -quiet -hierarchical -filter $event_filter]
-    if {[llength $event_d]} {
-        set event_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $event_d]]]
-        set_max_delay -datapath_only 3.0 -from $event_s -to [get_cells -of_objects $event_d]
-        set_bus_skew 3.0 -from $event_s -to [get_cells -of_objects $event_d]
-    }
-}
+# Nonconstant event sources: MAC/PCS errors (0-5), PAUSE (8-10), and
+# descriptor-starved overflow (15). GMII-only sources are constant here.
+set nic_d4 [get_pins -hierarchical -filter {NAME =~ "*/g_events[0].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s4 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d4]]]
+set_max_delay -datapath_only 3.0 -from $nic_s4 -to [get_cells -of_objects $nic_d4]
+set_bus_skew 3.0 -from $nic_s4 -to [get_cells -of_objects $nic_d4]
+set nic_d5 [get_pins -hierarchical -filter {NAME =~ "*/g_events[1].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s5 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d5]]]
+set_max_delay -datapath_only 3.0 -from $nic_s5 -to [get_cells -of_objects $nic_d5]
+set_bus_skew 3.0 -from $nic_s5 -to [get_cells -of_objects $nic_d5]
+set nic_d6 [get_pins -hierarchical -filter {NAME =~ "*/g_events[2].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s6 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d6]]]
+set_max_delay -datapath_only 3.0 -from $nic_s6 -to [get_cells -of_objects $nic_d6]
+set_bus_skew 3.0 -from $nic_s6 -to [get_cells -of_objects $nic_d6]
+set nic_d7 [get_pins -hierarchical -filter {NAME =~ "*/g_events[3].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s7 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d7]]]
+set_max_delay -datapath_only 3.0 -from $nic_s7 -to [get_cells -of_objects $nic_d7]
+set_bus_skew 3.0 -from $nic_s7 -to [get_cells -of_objects $nic_d7]
+set nic_d8 [get_pins -hierarchical -filter {NAME =~ "*/g_events[4].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s8 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d8]]]
+set_max_delay -datapath_only 3.0 -from $nic_s8 -to [get_cells -of_objects $nic_d8]
+set_bus_skew 3.0 -from $nic_s8 -to [get_cells -of_objects $nic_d8]
+set nic_d9 [get_pins -hierarchical -filter {NAME =~ "*/g_events[5].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s9 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d9]]]
+set_max_delay -datapath_only 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
+set_bus_skew 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
+set nic_event8_d [get_pins -hierarchical -filter {NAME =~ "*/g_events[8].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event8_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event8_d]]]
+set_max_delay -datapath_only 3.0 -from $nic_event8_s -to [get_cells -of_objects $nic_event8_d]
+set_bus_skew 3.0 -from $nic_event8_s -to [get_cells -of_objects $nic_event8_d]
+set nic_event9_d [get_pins -hierarchical -filter {NAME =~ "*/g_events[9].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event9_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event9_d]]]
+set_max_delay -datapath_only 3.0 -from $nic_event9_s -to [get_cells -of_objects $nic_event9_d]
+set_bus_skew 3.0 -from $nic_event9_s -to [get_cells -of_objects $nic_event9_d]
+set nic_event10_d [get_pins -hierarchical -filter {NAME =~ "*/g_events[10].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event10_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event10_d]]]
+set_max_delay -datapath_only 3.0 -from $nic_event10_s -to [get_cells -of_objects $nic_event10_d]
+set_bus_skew 3.0 -from $nic_event10_s -to [get_cells -of_objects $nic_event10_d]
+set nic_event15_d [get_pins -hierarchical -filter {NAME =~ "*/g_events[15].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_event15_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_event15_d]]]
+set_max_delay -datapath_only 3.0 -from $nic_event15_s -to [get_cells -of_objects $nic_event15_d]
+set_bus_skew 3.0 -from $nic_event15_s -to [get_cells -of_objects $nic_event15_d]
 
 # The checksum side FIFO has a separate Gray pointer in each direction.
 set nic_csum_rd [get_pins -hierarchical -filter {NAME =~ "*/u_tx_csum_fifo/sync_rptr/stage_q_reg[0]*/D"}]

@@ -1556,6 +1556,7 @@ static const char frost_stat_names[][ETH_GSTRING_LEN] = {
 	"pcs_rxnotintable",
 	"phy_rx_err_last",
 	"phy_rx_err_sum",
+	/* Reserved, reads zero; see rx_mac_bad_fcs. */
 	"phy_fcs_last",
 	"phy_fcs_sum",
 	"phy_polls",

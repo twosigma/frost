@@ -50,6 +50,21 @@ Offloads, reported by `ethtool -k <interface>`:
 | Hardware statistics | `ethtool -S` | The NIC's 64-bit counters (frames, bytes, filtered, truncated, descriptor errors, aborts, MAC overflow, bad frame, bad FCS, PCS bad blocks, TX drops, descriptor-starved overflows, GMII preamble and error diagnostics, PCS status events, and PHY management samples); see the hardware reference for names and offsets. Unsupported counters read zero. The RESET at each open clears them |
 | Loopback | `loopback: off` | MAC or PMA loopback, changed only while the interface is down |
 
+GMII error statistics describe the receiver state at each enabled byte cycle:
+
+| Counter | Name | Meaning |
+| --- | --- | --- |
+| 16 | `rx_gmii_preamble_drop` | Frames rejected before the SFD, once when entering WAIT_END |
+| 17 | `rx_gmii_rx_er` | RX_ER bursts with RX_DV high in DATA, after accepting the SFD |
+| 21 | `rx_gmii_er_preamble` | RX_ER bursts with RX_DV high while seeking the SFD in IDLE or PREAMBLE |
+| 22 | `rx_gmii_er_carrier_ext` | RX_ER bursts with RX_DV low, including carrier extension and false carrier |
+| 23 | `rx_gmii_short_ifg` | RX_DV rises after fewer than 12 idle byte times; legitimate receive-path gap shrinkage also counts |
+| 24 | `rx_gmii_preamble_er_accepted` | SFDs accepted after tolerating one errored 0x55; zero in production strict mode |
+
+Counters 17 and 21 omit bursts while WAIT_END discards a frame already rejected
+before its SFD. A burst is a rising edge of the qualified RX_ER condition, not
+a count of errored bytes. All these GMII statistics are zero on the 10G port.
+
 The DP83867 PHY exposes no FCS error count. The `phy_fcs_last` and
 `phy_fcs_sum` statistics are reserved and read zero, preserving their names
 and positions in `ethtool -S`. Use `rx_mac_bad_fcs`, the MAC's own received
