@@ -5509,6 +5509,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="tage_predictor",
         description="Tagged branch-direction prediction, allocation, and training",
     ),
+    "ittage_predictor": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.branch_prediction.test_ittage_predictor",
+        hdl_toplevel_module="ittage_predictor",
+        description="Indirect target prediction, allocation, confidence and replacement",
+    ),
     "branch_prediction_controller": CocotbRunConfig(
         python_test_module=(
             "cocotb_tests.if_stage.branch_prediction.test_branch_prediction_controller"

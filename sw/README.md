@@ -358,7 +358,7 @@ can be debugged and where each one first stops.
 | `print_clock_speed/` | Prints the `FPGA_CPU_CLK_FREQ` it was built with |
 | `ptw_coherence_test/` | Sv39 walks must see page tables still dirty in the L1D, without `sfence.vma` |
 | `ras_repair_bench/` | Return address stack repair: a mispredicted branch whose wrong path returns and then calls, overwriting the entry the correct path's return needs; the flush-recovery cycles must match a control phase's (`PERF_COUNTERS=1`) |
-| `bpred_probe/` | Front-end prediction probe: mispredictions (`mhpmcounter4`) and cycles for a return or jump in the first fetch packet after a call's redirect, a slot-2 conditional branch, a jump through a table and a branch correlated with the one before it; reports only (`BPRED_LIMITS` set in the source turns the counts into limits) |
+| `bpred_probe/` | Front-end prediction probe: mispredictions (`mhpmcounter4`) and cycles for a return or jump in the first fetch packet after a call's redirect, a slot-2 conditional branch, a jump through a table (indirect target predictor) and a branch correlated with the one before it; reports only (`BPRED_LIMITS` set in the source turns the counts into limits) |
 | `ras_slot_bench/` | Return prediction with the call and the return in either slot of their fetch bundle: per-phase cycles and flush-recovery cycles from the profiling counters (`PERF_COUNTERS=1`) |
 | `ras_stress_test/` | Return-address-stack stress: calls mixed with branches, data-dependent calls, and function pointers |
 | `ras_test/` | Return-address stack: deep nesting, overflow and underflow, coroutine swaps, compressed returns, and calls at halfword offsets |

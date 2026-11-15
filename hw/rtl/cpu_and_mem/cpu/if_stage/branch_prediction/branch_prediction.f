@@ -8,6 +8,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
 
 # Tagged, history-based conditional direction for PD redirects
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/tage_predictor.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ittage_predictor.sv
 
 # Second-level targets for PD redirects
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/backing_btb.sv

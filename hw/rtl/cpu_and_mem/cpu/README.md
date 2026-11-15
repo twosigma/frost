@@ -132,12 +132,15 @@ cases, then the sequential PC.
 | Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`), and of a backing BTB redirect for one | IF, when it hands PD a packet predicted from a typed entry, and for a backing BTB redirect: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
 | Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of conditional branches in either slot whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
+| Indirect target predictor | Three tables of 256 entries, hashed with 8, 24 and 64 bits of path history; 11-bit tags, 2-bit confidence | Target of a JALR that is not a return, in either slot, through a PD redirect when it differs from the BTB's | Each JALR at commit, at the entries its lookup read |
 
 A return is predicted like any BTB hit, from the lookup at its fetch PC, but
 its entry is typed, so its target is the top of the return address stack
 while the stack holds an entry (the BTB target, the return's last target,
 otherwise). Any other JALR, such as an indirect call through a function
-pointer, predicts the target it had when it last trained the BTB. A JALR that
+pointer or a `switch` jump table, predicts the target it had when it last
+trained the BTB, unless the indirect target predictor has an entry for it
+(see below). A JALR that
 is not predicted resolves as mispredicted, because a JALR is always taken, and
 recovers when it commits, as does a JALR predicted with the wrong target. While an unpredicted JALR is in the front end (slot 1 of IF, PD, or
 ID, or the decoded queue) and a conditional branch or JALR is unresolved,
@@ -213,9 +216,27 @@ leaves the history unchanged, so when one returns fetch to a branch already
 predicted taken, the branch is looked up again with its own target in the
 history. That costs accuracy, not correctness.
 
-When PD passes a conditional branch to ID, its lookup (indices, tags, which
-tables matched, the alternate direction, and the history) goes to a 64-entry
-circular buffer. Dispatch sees the branches in the same order, so it gives the
+The indirect target predictor (`ittage_predictor`) follows ITTAGE. Three
+tables hash a JALR's word address with the newest 8, 24 and 64 bits of the
+tagged predictor's lookup history; each table is two 128-entry banks split by
+PC[2] and is looked up, registered and checked together with the tagged
+predictor, so the same coverage check applies. An entry holds a tag, the
+target's low bits (the upper bits come from the JALR's PC, as in the BTB), a
+2-bit confidence and a usefulness bit, and the longest-history match
+provides the target. PD redirects a JALR that is not a return to that target
+when its lookup matched and the BTB did not already predict the same target,
+like a backing BTB redirect: two bubbles, a push for an indirect call the
+BTB did not predict, and ID gives the JALR the target to check. At commit a
+correct target raises the provider's confidence; a wrong one lowers it or,
+at zero, replaces the target; and a mispredicted JALR allocates in the
+shortest table above its provider whose entry is not useful. Before this, a
+`switch` on a state variable (CoreMark-PRO core's state machine) mispredicted
+nearly every time, since the BTB keeps only the last target.
+
+When PD passes a conditional branch or a JALR to ID, its lookup (for a branch
+the indices, tags, which tables matched, the alternate direction, and the
+history; for a JALR that is not a return the indirect target lookup) goes to
+a 64-entry circular buffer. Dispatch sees the branches in the same order, so it gives the
 branch the same index from a pointer of its own and records it by ROB tag;
 every flush that drops branches in between rewinds both pointers to the same
 entry. Commit trains from that entry, one branch per cycle with the same

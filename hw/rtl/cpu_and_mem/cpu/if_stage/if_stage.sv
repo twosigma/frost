@@ -239,7 +239,19 @@ module if_stage #(
     output logic [1:0] o_tage_slot_valid,  // bit s: slot s + 1
     output riscv_pkg::tage_lookup_t o_tage_slot_lookup,
     output riscv_pkg::tage_lookup_t o_tage_slot_lookup_2,
-    output logic [riscv_pkg::TageHistBits-1:0] o_tage_lookup_hist
+    output logic [riscv_pkg::TageHistBits-1:0] o_tage_lookup_hist,
+    // Indirect target predictor: training (commit); each slot's saved lookup
+    // and PD prediction (a hit and target bits [PhysAddrBits-1:1]). A slot's
+    // lookup covers it when o_tage_slot_valid says so (the same lookup).
+    input logic i_itt_train_valid,
+    input riscv_pkg::itt_lookup_t i_itt_train_lookup,
+    input logic i_itt_train_bank,
+    input logic [riscv_pkg::PhysAddrBits-2:0] i_itt_train_target,
+    input logic i_itt_train_mispredicted,
+    output riscv_pkg::itt_lookup_t o_itt_slot_lookup,
+    output riscv_pkg::itt_lookup_t o_itt_slot_lookup_2,
+    output logic [1:0] o_itt_hit,
+    output logic [1:0][riscv_pkg::PhysAddrBits-2:0] o_itt_target
 );
 
   // ===========================================================================
@@ -2579,6 +2591,40 @@ module if_stage #(
   assign o_from_if_to_pd.tage_valid = o_tage_slot_valid[0] &&
       (o_tage_slot_lookup.hit1 || o_tage_slot_lookup.hit2) && !o_from_if_to_pd.fetch_fault;
   assign o_from_if_to_pd.tage_taken = o_tage_slot_lookup.taken;
+
+  // ===========================================================================
+  // Indirect Target Predictor
+  // ===========================================================================
+  // Looked up with the tagged predictor's word and history and captured under
+  // the same condition, so the tagged predictor's coverage check applies to
+  // it. Each slot takes its word's bank. A fetch fault's bytes carry no JALR.
+  riscv_pkg::itt_lookup_t itt_bank0;
+  riscv_pkg::itt_lookup_t itt_bank1;
+  logic [1:0] itt_bank_hit;
+  logic [1:0][riscv_pkg::PhysAddrBits-2:0] itt_bank_target;
+  ittage_predictor u_ittage_predictor (
+      .i_clk,
+      .i_lookup_word(pc_tage_lookup),
+      .i_lookup_hist(i_tage_hist),
+      .i_lookup_capture(!if_stage_stall && fetch_progress),
+      .o_bank0(itt_bank0),
+      .o_bank1(itt_bank1),
+      .o_hit(itt_bank_hit),
+      .o_target(itt_bank_target),
+      .i_train_valid(i_itt_train_valid),
+      .i_train_lookup(i_itt_train_lookup),
+      .i_train_bank(i_itt_train_bank),
+      .i_train_target(i_itt_train_target),
+      .i_train_mispredicted(i_itt_train_mispredicted)
+  );
+  assign o_itt_slot_lookup = tage_slot_word[2] ? itt_bank1 : itt_bank0;
+  assign o_itt_slot_lookup_2 = tage_slot2_bank_sel ? itt_bank1 : itt_bank0;
+  assign o_itt_hit[0] = o_tage_slot_valid[0] && itt_bank_hit[tage_slot_word[2]] &&
+      !o_from_if_to_pd.fetch_fault;
+  assign o_itt_hit[1] = o_tage_slot_valid[1] && itt_bank_hit[tage_slot2_bank_sel] &&
+      !o_from_if_to_pd_2.fetch_fault;
+  assign o_itt_target[0] = itt_bank_target[tage_slot_word[2]];
+  assign o_itt_target[1] = itt_bank_target[tage_slot2_bank_sel];
 
   // ===========================================================================
   // Prediction Metadata Tracker

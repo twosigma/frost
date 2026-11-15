@@ -2155,6 +2155,14 @@ package riscv_pkg;
   // tage_history.sv). Its entries outnumber the conditional branches the
   // front end and ROB can hold.
   localparam int unsigned TageFtqIdxBits = 6;
+  // Indirect target predictor (ittage_predictor): per-bank index and tag
+  // widths, and each table's history length in bits of the tagged
+  // predictor's lookup history.
+  localparam int unsigned IttIndexBits = 7;
+  localparam int unsigned IttTagBits = 11;
+  localparam int unsigned IttHist1Bits = 8;
+  localparam int unsigned IttHist2Bits = 24;
+  localparam int unsigned IttHist3Bits = 64;
 
   // One bank's registered tagged lookup: both tables' indices and tags, which
   // matched, the provider's direction (meaningful when hit1 or hit2), and T1
@@ -2173,12 +2181,22 @@ package riscv_pkg;
   } tage_lookup_t;
   localparam int unsigned TageLookupBits = 2 * TageIndexBits + 2 * TageTagBits + 5;
 
+  // One bank's registered indirect-target lookup: each table's index and tag
+  // and whether it matched. Saved with a JALR to train the same entries at
+  // commit.
+  typedef struct packed {
+    logic [2:0][IttIndexBits-1:0] index;
+    logic [2:0][IttTagBits-1:0] tag;
+    logic [2:0] hit;
+  } itt_lookup_t;
+  localparam int unsigned IttLookupBits = 3 * IttIndexBits + 3 * IttTagBits + 3;
+
   // IF-to-PD payload. IF assembles spanning instructions in one cycle.
   // PD expands compressed slot 1 from its selected sideband fields;
   // IF's aligner expands slot 2 (see decomp_illegal).
   // PdTargetSplit divides the redirect addition: add low PC/offset bits,
   // then select PC-high, PC-high+1, or PC-high-1. Both branch offsets fit.
-  localparam int unsigned PdTargetSplit  = 13;
+  localparam int unsigned PdTargetSplit = 13;
 
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
