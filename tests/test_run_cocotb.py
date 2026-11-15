@@ -3237,6 +3237,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="The cluster with three L1D request endpoints: loads in flight beside "
         "stores, probes and DMA",
     ),
+    "coherence_stale_line_prefetch_l2": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GL1D_MISSES=8",
+            "-GL1D_STREAM_PREFETCH=1",
+            "-GHOME_CACHE_BYTES=65536",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_stale_line",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="cbo.zero twin beside an L1D stream, with a 64 KiB home",
+        include_in_pytest=False,
+    ),
     "coherence_cbo_zero": CocotbRunConfig(
         verilator_extra_args=("--assert",),
         python_test_module="cocotb_tests.cache.test_coherence_cbo_zero",
