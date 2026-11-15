@@ -53,10 +53,10 @@ The loader's serial default prefers its `/dev/serial/by-id/` entry;
 `--serial` on the hardware runner overrides it. The LED bits report clock
 lock, DDR initialization completion, heartbeat, and the reset button.
 
-`pblock_slr2` contains movable logic from the FROST subsystem, clock generator,
-DDR subsystem and DDR initializer. The XDC creates the region directly and
-assigns that logic to SLR2. Configuration primitives and system-clock input
-buffers remain outside the region at their fixed device sites. Peripheral
+`pblock_slr2` contains movable logic from the FROST subsystem, DDR subsystem
+and DDR initializer. The XDC creates the region directly and assigns that
+logic to SLR2. The clock generator's dedicated primitives are excluded from the
+region. Configuration primitives remain at their fixed device sites. Peripheral
 pins span multiple SLRs; top-level reset and status logic is outside that
 hierarchy selection.
 

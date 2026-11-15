@@ -280,15 +280,14 @@ set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"
 # -----------------------------------------------------------------------------
 # 9. Floorplanning
 # -----------------------------------------------------------------------------
-# Movable logic in the subsystem, clock generator, DDR controller and initializer uses SLR2.
+# Movable logic in the subsystem, DDR controller and initializer uses SLR2.
+# Clock-generator placement follows the dedicated clock-routing rules.
 create_pblock pblock_slr2
 resize_pblock pblock_slr2 -add {SLR2}
-add_cells_to_pblock [get_pblocks pblock_slr2] [get_cells -quiet {u_frost_subsystem u_clock_gen gen_real_ddr.ddr_subsystem gen_real_ddr.u_ddr_init}]
-# Configuration primitives and clock input buffers use their fixed device sites.
-# Remove input-buffer primitives as a whole, including their internal cells.
+add_cells_to_pblock [get_pblocks pblock_slr2] [get_cells -quiet {u_frost_subsystem gen_real_ddr.ddr_subsystem gen_real_ddr.u_ddr_init}]
+# Configuration primitives use their fixed device sites.
 remove_cells_from_pblock [get_pblocks pblock_slr2] [get_cells -quiet -hierarchical -filter {
-    (NAME =~ "u_frost_subsystem/*" && PRIMITIVE_GROUP == CONFIGURATION && PRIMITIVE_LEVEL != INTERNAL) ||
-    (NAME =~ "u_clock_gen/*" && PRIMITIVE_SUBGROUP == INPUT_BUFFER && PRIMITIVE_LEVEL != INTERNAL)
+    NAME =~ "u_frost_subsystem/*" && PRIMITIVE_GROUP == CONFIGURATION && PRIMITIVE_LEVEL != INTERNAL
 }]
 
 # The reset button and UART receive input are asynchronous to the receiving logic.
