@@ -63,7 +63,10 @@ module ma_pkg_check (
   logic [63:0] ref_value;
   always_comb begin
     unique case (size)
-      riscv_pkg::MEM_SIZE_HALF: ref_value = is_unsigned ? 64'(raw[15:0]) : 64'($signed(raw[15:0]));
+      riscv_pkg::MEM_SIZE_HALF:
+      ref_value = is_fp ?
+          {48'hFFFF_FFFF_FFFF, raw[15:0]} : (is_unsigned ? 64'(raw[15:0]) : 64'($signed(raw[15:0])))
+          ;
       riscv_pkg::MEM_SIZE_WORD:
       ref_value = is_fp ?
           {32'hFFFF_FFFF, raw[31:0]} : (is_unsigned ? 64'(raw[31:0]) : 64'($signed(raw[31:0])));

@@ -37,6 +37,8 @@
 
 static void uart_putc(char c)
 {
+    while ((UART_TX_STATUS & 1u) == 0) {
+    }
     UART_TX = (uint8_t) c;
 }
 
@@ -172,7 +174,10 @@ static int expect_illegal(const char *name)
              (g_ft0 == SENTINEL) && (g_t4 == SENTINEL) && (g_fflags == 0u);
     uart_puts(ok ? "[PASS] " : "[FAIL] ");
     uart_puts(name);
-    report_values();
+    if (!ok)
+        report_values();
+    else
+        uart_puts("\r\n");
     return ok;
 }
 
@@ -186,9 +191,31 @@ static int expect_ran(const char *name,
         (g_cause == 11u) && (g_ft0 == want_ft0) && (g_t4 == want_t4) && (g_fflags == want_fflags);
     uart_puts(ok ? "[PASS] " : "[FAIL] ");
     uart_puts(name);
-    report_values();
+    if (!ok)
+        report_values();
+    else
+        uart_puts("\r\n");
     return ok;
 }
+
+/* Exact conversions also decode their rm field. Static modes ignore frm. */
+#define EXTENSION_RM(name, funct7, rs2, source, result)                                            \
+    do {                                                                                           \
+        for (unsigned long mode = 5; mode <= 7; mode++) {                                          \
+            RUN_FP(mode, ".insn r 0x53, 7, " #funct7 ", ft0, ft1, " #rs2, source, ONE_S);          \
+            all_ok &= expect_illegal(name " reserved dynamic mode");                               \
+        }                                                                                          \
+        RUN_FP(0ul, ".insn r 0x53, 5, " #funct7 ", ft0, ft1, " #rs2, source, ONE_S);               \
+        all_ok &= expect_illegal(name " reserved static mode 5");                                  \
+        RUN_FP(0ul, ".insn r 0x53, 6, " #funct7 ", ft0, ft1, " #rs2, source, ONE_S);               \
+        all_ok &= expect_illegal(name " reserved static mode 6");                                  \
+        RUN_FP(7ul, ".insn r 0x53, 0, " #funct7 ", ft0, ft1, " #rs2, source, ONE_S);               \
+        all_ok &= expect_ran(name " static mode ignores frm", result, SENTINEL, 0ul);              \
+        for (unsigned long mode = 0; mode <= 4; mode++) {                                          \
+            RUN_FP(mode, ".insn r 0x53, 7, " #funct7 ", ft0, ft1, " #rs2, source, ONE_S);          \
+            all_ok &= expect_ran(name " legal dynamic mode", result, SENTINEL, 0ul);               \
+        }                                                                                          \
+    } while (0)
 
 int main(void)
 {
@@ -257,6 +284,78 @@ int main(void)
 
     RUN_FP(FRM_RUP, "fcvt.w.s t4, ft1, dyn", TWO_HALF_S, ONE_S);
     all_ok &= expect_ran("M frm=RUP fcvt.w.s dyn", SENTINEL, 3u, FFLAGS_NX);
+
+    /* Zfhmin conversions and Zfa integral rounding all carry rm. */
+    EXTENSION_RM("FCVT.S.H", 0x20, f2, 0xFFFFFFFFFFFF3C00ul, ONE_S);
+    EXTENSION_RM("FCVT.D.H", 0x21, f2, 0xFFFFFFFFFFFF3C00ul, ONE_D);
+    EXTENSION_RM("FCVT.H.S", 0x22, f0, ONE_S, 0xFFFFFFFFFFFF3C00ul);
+    EXTENSION_RM("FCVT.H.D", 0x22, f1, ONE_D, 0xFFFFFFFFFFFF3C00ul);
+    EXTENSION_RM("FROUND.S", 0x20, f4, ONE_S, ONE_S);
+    EXTENSION_RM("FROUNDNX.S", 0x20, f5, ONE_S, ONE_S);
+    EXTENSION_RM("FROUND.D", 0x21, f4, ONE_D, ONE_D);
+    EXTENSION_RM("FROUNDNX.D", 0x21, f5, ONE_D, ONE_D);
+
+    /* FCVTMOD accepts only RTZ, regardless of frm. */
+    RUN_FP(0ul, ".insn r 0x53, 0, 0x61, t4, ft1, f8", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FCVTMOD reserved rm 0");
+    RUN_FP(0ul, ".insn r 0x53, 2, 0x61, t4, ft1, f8", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FCVTMOD reserved rm 2");
+    RUN_FP(0ul, ".insn r 0x53, 3, 0x61, t4, ft1, f8", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FCVTMOD reserved rm 3");
+    RUN_FP(0ul, ".insn r 0x53, 4, 0x61, t4, ft1, f8", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FCVTMOD reserved rm 4");
+    RUN_FP(0ul, ".insn r 0x53, 5, 0x61, t4, ft1, f8", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FCVTMOD reserved rm 5");
+    RUN_FP(0ul, ".insn r 0x53, 6, 0x61, t4, ft1, f8", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FCVTMOD reserved rm 6");
+    RUN_FP(0ul, ".insn r 0x53, 7, 0x61, t4, ft1, f8", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FCVTMOD reserved rm 7");
+    RUN_FP(7ul, "fcvtmod.w.d t4, ft1, rtz", ONE_D, ONE_D);
+    all_ok &= expect_ran("FCVTMOD ignores frm", SENTINEL, 1ul, 0ul);
+    RUN_FP(7ul, "fli.s ft0, 1.0", ONE_S, ONE_S);
+    all_ok &= expect_ran("fli.s ignores frm", ONE_S, SENTINEL, 0ul);
+    RUN_FP(7ul, "fminm.s ft0, ft1, ft2", ONE_S, ONE_S);
+    all_ok &= expect_ran("fminm.s ignores frm", ONE_S, SENTINEL, 0ul);
+    RUN_FP(7ul, "fmaxm.s ft0, ft1, ft2", ONE_S, ONE_S);
+    all_ok &= expect_ran("fmaxm.s ignores frm", ONE_S, SENTINEL, 0ul);
+    RUN_FP(7ul, "fleq.s t4, ft1, ft2", ONE_S, ONE_S);
+    all_ok &= expect_ran("fleq.s ignores frm", SENTINEL, 1ul, 0ul);
+    RUN_FP(7ul, "fltq.s t4, ft1, ft2", ONE_S, ONE_S);
+    all_ok &= expect_ran("fltq.s ignores frm", SENTINEL, 0ul, 0ul);
+    RUN_FP(7ul, "fli.d ft0, 1.0", ONE_D, ONE_D);
+    all_ok &= expect_ran("fli.d ignores frm", ONE_D, SENTINEL, 0ul);
+    RUN_FP(7ul, "fminm.d ft0, ft1, ft2", ONE_D, ONE_D);
+    all_ok &= expect_ran("fminm.d ignores frm", ONE_D, SENTINEL, 0ul);
+    RUN_FP(7ul, "fmaxm.d ft0, ft1, ft2", ONE_D, ONE_D);
+    all_ok &= expect_ran("fmaxm.d ignores frm", ONE_D, SENTINEL, 0ul);
+    RUN_FP(7ul, "fleq.d t4, ft1, ft2", ONE_D, ONE_D);
+    all_ok &= expect_ran("fleq.d ignores frm", SENTINEL, 1ul, 0ul);
+    RUN_FP(7ul, "fltq.d t4, ft1, ft2", ONE_D, ONE_D);
+    all_ok &= expect_ran("fltq.d ignores frm", SENTINEL, 0ul, 0ul);
+
+    /* Full Zfh, RV32 double moves and Q forms are not implemented. */
+    RUN_FP(0ul, ".4byte 0xf4108053", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FLI.H unsupported");
+    RUN_FP(0ul, ".4byte 0x04208053", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FADD.H unsupported");
+    RUN_FP(0ul, ".4byte 0xe4009ed3", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FCLASS.H unsupported");
+    RUN_FP(0ul, ".4byte 0x2c20a053", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FMINM.H unsupported");
+    RUN_FP(0ul, ".4byte 0x44408053", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FROUND.H unsupported");
+    RUN_FP(0ul, ".4byte 0x44508053", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FROUNDNX.H unsupported");
+    RUN_FP(0ul, ".4byte 0xa420ced3", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FLEQ.H unsupported");
+    RUN_FP(0ul, ".4byte 0xe2108ed3", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FMVH.X.D unsupported");
+    RUN_FP(0ul, ".4byte 0xb2208053", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FMVP.D.X unsupported");
+    RUN_FP(0ul, ".4byte 0xe6108ed3", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FMVH.X.Q unsupported");
+    RUN_FP(0ul, ".4byte 0xb6208053", ONE_D, ONE_D);
+    all_ok &= expect_illegal("FMVP.Q.X unsupported");
 
     uart_puts(all_ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {

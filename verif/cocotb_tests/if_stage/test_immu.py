@@ -59,6 +59,7 @@ class Leaf:
     perm_r: int = 1
     perm_w: int = 0
     perm_d: int = 1
+    perm_g: int = 0
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,13 @@ def _drive_idle(dut: Any) -> None:
     dut.i_active.value = 0
     dut.i_priv_u.value = 0
     dut.i_tlb_invalidate.value = 0
+    dut.i_keep_entries.value = 0
+    dut.i_flush_use_va.value = 0
+    dut.i_flush_vpn.value = 0
+    dut.i_flush_use_asid.value = 0
+    dut.i_flush_asid.value = 0
+    dut.i_asid.value = 0
+    dut.i_walk_resp_perm_g.value = 0
     dut.i_full_flush.value = 0
     dut.i_pc_update_en.value = 0
     dut.i_pc_d.value = 0
@@ -261,7 +269,9 @@ def _drive_response(
     perm_r: int = 1,
     perm_w: int = 0,
     perm_d: int = 1,
+    perm_g: int = 0,
 ) -> None:
+    dut.i_walk_resp_perm_g.value = perm_g
     dut.i_walk_resp_fault_kind.value = fault_kind
     dut.i_walk_resp_vpn.value = vpn & VPN_MASK
     dut.i_walk_resp_ppn.value = ppn & PPN_MASK
@@ -310,6 +320,7 @@ async def _return_leaf(dut: Any, leaf: Leaf) -> None:
         perm_r=leaf.perm_r,
         perm_w=leaf.perm_w,
         perm_d=leaf.perm_d,
+        perm_g=leaf.perm_g,
     )
 
 
@@ -1453,3 +1464,63 @@ async def test_crossing_page_fault_completes_on_expiry_edge(dut: Any) -> None:
 async def test_crossing_access_fault_completes_on_expiry_edge(dut: Any) -> None:
     """An access-fault response survives expiry beside a warm permission fault."""
     await _crossing_refusal_on_expiry(dut, DFAULT_ACCESS)
+
+
+async def _asid_switch(dut: Any, asid: int, *, flush_asid: int | None = None) -> None:
+    """Change satp.ASID the way the CSR file does: the value plus a changed pulse.
+
+    With flush_asid the pulse also flushes that ASID's non-global entries.
+    """
+    dut.i_asid.value = asid
+    dut.i_tlb_invalidate.value = 1
+    dut.i_keep_entries.value = int(flush_asid is None)
+    if flush_asid is not None:
+        dut.i_flush_use_asid.value = 1
+        dut.i_flush_asid.value = flush_asid
+    await _cycle(dut)
+    dut.i_tlb_invalidate.value = 0
+    dut.i_keep_entries.value = 0
+    dut.i_flush_use_asid.value = 0
+    dut.i_flush_asid.value = 0
+    await _settle()
+
+
+async def _fetch_page(dut: Any, pc: int, leaf: Leaf) -> bool:
+    """Fetch pc; return True when the ITLB held the page (no walk requested)."""
+    await _move_pc(dut, pc)
+    await _cycle(dut)
+    if int(dut.o_walk_req_valid.value):
+        await _accept_request(dut, leaf.vpn)
+        await _return_leaf(dut, leaf)
+        _assert_window(dut, _translated_window(pc, leaf))
+        return False
+    _assert_window(dut, _translated_window(pc, leaf))
+    return True
+
+
+@cocotb.test()
+async def test_asid_switch_keeps_address_spaces_apart(dut: Any) -> None:
+    """Two ASIDs map one VA to two pages; each keeps its entry across a switch."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    leaf_one = Leaf(vpn=0x40, ppn=0x80050)
+    leaf_two = Leaf(vpn=0x40, ppn=0x80060)
+    leaf_glob = Leaf(vpn=0x41, ppn=0x80070, perm_g=1)
+    pc, pc_glob = 0x0004_0100, 0x0004_1100
+    await _asid_switch(dut, 1)
+    assert not await _fetch_page(dut, pc, leaf_one)
+    assert not await _fetch_page(dut, pc_glob, leaf_glob)
+    await _asid_switch(dut, 2)
+    # The same VA under the other ASID walks; the global page does not.
+    assert not await _fetch_page(dut, pc + 4, leaf_two)
+    assert await _fetch_page(dut, pc_glob + 4, leaf_glob)
+    await _asid_switch(dut, 1)
+    assert await _fetch_page(dut, pc + 8, leaf_one)
+    await _asid_switch(dut, 2)
+    assert await _fetch_page(dut, pc + 12, leaf_two)
+    # Flush ASID 2: its entry goes, ASID 1's and the global page stay.
+    await _asid_switch(dut, 2, flush_asid=2)
+    assert not await _fetch_page(dut, pc + 16, leaf_two)
+    assert await _fetch_page(dut, pc_glob + 8, leaf_glob)
+    await _asid_switch(dut, 1)
+    assert await _fetch_page(dut, pc + 20, leaf_one)

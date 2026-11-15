@@ -990,6 +990,14 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover", "bmc_itlb", "cover_itlb"),
     ),
     FormalTarget(
+        "l2tlb.sby",
+        "Second-level TLB hits are backed by a fill no flush has removed, return the "
+        "filled data, and never run during a flush; the shared walk port selects "
+        "its VPN from registered state and delays an instruction walk one cycle "
+        "at most",
+        tasks=("bmc", "cover", "walk_select_prove", "walk_select_cover"),
+    ),
+    FormalTarget(
         "ptw.sby",
         "Page-table walk state matches reference PTE classification, and the walk "
         "cache holds only valid pointers that memory holds, cleared by every discard",
@@ -1035,9 +1043,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "home_seat_next_equiv.sby",
-        "The home's fill waiter masks, seat counts, parking and fill images, formed "
-        "for both values of the decision's late term and selected last, equal the "
-        "original form for any state and input, at two, three and eight fills, "
+        "The home's fill waiter masks, seat counts and parking, formed for both "
+        "values of the decision's late term and selected last, equal the original "
+        "form, and the fill images' next state equals the response load and "
+        "registered zero clear, for any state and input, at two, three and eight fills, "
         "portable and primitive",
         tasks=("bmc_seat2", "bmc_seat3", "bmc", "bmc_xilinx"),
     ),
@@ -1220,15 +1229,22 @@ FORMAL_TARGETS = [
         "AXI4 safety: response ordering and conservation, burst bytes to line "
         "requests and back, error bursts, and "
         "the coherent ingress's request rules, unbounded on narrow and line-wide "
-        "buses with up to eight bursts and eight line IDs per direction",
+        "buses with up to eight bursts and eight line IDs per direction; "
+        "a four-burst proof pair and nine explicit eight-burst partitions",
         tasks=(
             "prove",
             "prove_full_width",
             "prove_soc",
+            "prove_soc_held",
             "prove_soc8_0",
             "prove_soc8_1",
             "prove_soc8_2",
             "prove_soc8_3",
+            "prove_soc8_4",
+            "prove_soc8_5",
+            "prove_soc8_6",
+            "prove_soc8_7",
+            "prove_soc8_8",
             "bmc_soc",
             "cover",
             "cover_soc",
@@ -2462,24 +2478,46 @@ SBY_TASKS = [
     ("prove_full_width", "Unbounded proof with a bus as wide as a line"),
     (
         "prove_soc",
-        "Unbounded proof at SoC bus widths; AXI bridge uses four bursts and IDs per direction",
+        "Unbounded proof at SoC bus widths; AXI bridge uses four bursts and IDs "
+        "per direction, paired with prove_soc_held",
     ),
+    ("prove_soc_held", "Four-burst AXI bridge B-channel stability partition"),
     ("bmc_soc", "Bounded check with SoC burst and line-ID capacities"),
     (
         "prove_soc8_0",
-        "Eight-burst AXI bridge safety, assertion partition 0 of four",
+        "Eight-burst AXI bridge safety, explicit assertion partition 0 of nine",
     ),
     (
         "prove_soc8_1",
-        "Eight-burst AXI bridge safety, assertion partition 1 of four",
+        "Eight-burst AXI bridge safety, explicit assertion partition 1 of nine",
     ),
     (
         "prove_soc8_2",
-        "Eight-burst AXI bridge safety, assertion partition 2 of four",
+        "Eight-burst AXI bridge safety, explicit assertion partition 2 of nine",
     ),
     (
         "prove_soc8_3",
-        "Eight-burst AXI bridge safety, assertion partition 3 of four",
+        "Eight-burst AXI bridge safety, explicit assertion partition 3 of nine",
+    ),
+    (
+        "prove_soc8_4",
+        "Eight-burst AXI bridge safety, explicit assertion partition 4 of nine",
+    ),
+    (
+        "prove_soc8_5",
+        "Eight-burst AXI bridge safety, explicit assertion partition 5 of nine",
+    ),
+    (
+        "prove_soc8_6",
+        "Eight-burst AXI bridge safety, explicit assertion partition 6 of nine",
+    ),
+    (
+        "prove_soc8_7",
+        "Eight-burst AXI bridge safety, explicit assertion partition 7 of nine",
+    ),
+    (
+        "prove_soc8_8",
+        "Eight-burst AXI bridge safety, explicit assertion partition 8 of nine",
     ),
     (
         "cover_soc",
@@ -2572,6 +2610,11 @@ SBY_TASKS = [
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
     ("bmc_itlb", "Bounded checking of 16-entry 2-port ITLB fetch verdicts"),
     ("cover_itlb", "Cover checking in the 16-entry 2-port ITLB shape"),
+    ("walk_select_prove", "Induction proof of the shared walk port's VPN select"),
+    (
+        "walk_select_cover",
+        "Cover a select refusal and the instruction priority after it",
+    ),
     ("bmc_nopwc", "Bounded checking of the page-table walker without its walk cache"),
     ("bmc_replace", "Bounded checking through replacement in one-entry walk caches"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
@@ -2784,6 +2827,11 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     root = Path(__file__).resolve().parents[1]
     registered = [name for name, _ in SBY_TASKS]
     required = {
+        "axi_coherent_bridge": [
+            "prove_soc",
+            "prove_soc_held",
+            *(f"prove_soc8_{index}" for index in range(9)),
+        ],
         "coherent_hart_cache": [
             "coh_hart_maint_owned_prove",
             "coh_hart_maint_prove",
@@ -2931,6 +2979,48 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
 def l1d_task_config(task: str) -> dict[str, list[str]]:
     """Return a coherence_l1d.sby task's resolved sections, without comments."""
     return formal_task_config("coherence_l1d", task)
+
+
+def test_axi_bridge_partitions_share_model_and_history() -> None:
+    """Partitions of each configuration share one model and history contract."""
+    families = [
+        (
+            ["prove_soc", "prove_soc_held"],
+            ["other", "held"],
+            "select -assert-count 1 @held",
+            {},
+        ),
+        (
+            [f"prove_soc8_{index}" for index in range(9)],
+            [f"group{index}" for index in range(9)],
+            "script axi_coherent_bridge_groups.ys",
+            {"timeout": "1800"},
+        ),
+    ]
+    for tasks, groups, guard, options in families:
+        reference = formal_task_config("axi_coherent_bridge", tasks[0])
+        for task, group in zip(tasks, groups, strict=True):
+            config = formal_task_config("axi_coherent_bridge", task)
+            assert dict(line.split(maxsplit=1) for line in config["[options]"]) == {
+                "mode": "prove",
+                "depth": "3",
+                **options,
+            }
+            commands = config["[script]"]
+            choose = f"chtype -set axi_coherent_bridge_checked_assert @{group}"
+            assert commands.count(choose) == 1
+            assert (
+                commands.index(guard)
+                < commands.index(choose)
+                < commands.index("techmap -max_iter 1 -map %assertion_map")
+            )
+            config["[script]"] = [
+                f"chtype -set axi_coherent_bridge_checked_assert @{groups[0]}"
+                if line == choose
+                else line
+                for line in commands
+            ]
+            assert config == reference
 
 
 def assertion_command(line: str) -> bool:

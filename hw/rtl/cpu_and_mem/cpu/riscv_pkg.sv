@@ -50,8 +50,8 @@ package riscv_pkg;
     OPC_CSR       = 7'b1110011,
     OPC_AMO       = 7'b0101111,  // A extension (atomics)
     // Shared F/D opcodes
-    OPC_LOAD_FP   = 7'b0000111,  // FLW, FLD, vector loads
-    OPC_STORE_FP  = 7'b0100111,  // FSW, FSD, vector stores
+    OPC_LOAD_FP   = 7'b0000111,  // FLW, FLD, FLH, vector loads
+    OPC_STORE_FP  = 7'b0100111,  // FSW, FSD, FSH, vector stores
     OPC_FMADD     = 7'b1000011,  // FMADD.S/D
     OPC_FMSUB     = 7'b1000111,  // FMSUB.S/D
     OPC_FNMSUB    = 7'b1001011,  // FNMSUB.S/D
@@ -1069,7 +1069,32 @@ package riscv_pkg;
     CBO_INVAL,
     VLOAD,                     // V: unit-stride, whole-register and mask loads; INT_RS
                                // passes the rs1 base to the ROB
-    VSTORE                     // V: unit-stride, whole-register and mask stores; as VLOAD
+    VSTORE,                    // V: unit-stride, whole-register and mask stores; as VLOAD
+    // Zfhmin: half-precision loads, stores, moves and conversions.
+    FLH,                       // Load half (NaN-boxed into the FP register)
+    FSH,                       // Store half (low 16 bits)
+    FMV_X_H,                   // Move half bits to int reg (sign-extended)
+    FMV_H_X,                   // Move int bits to half reg (NaN-boxed)
+    FCVT_S_H,                  // Convert half to single
+    FCVT_H_S,                  // Convert single to half
+    FCVT_D_H,                  // Convert half to double
+    FCVT_H_D,                  // Convert double to half
+    // Zfa with F and D. FLI.H needs Zfh or Zvfh; D high-half moves need RV32.
+    FLI_S,                     // Load one of 32 single-precision constants
+    FLI_D,                     // Load one of 32 double-precision constants
+    FMINM_S,                   // Minimum, NaN if either operand is NaN
+    FMAXM_S,                   // Maximum, NaN if either operand is NaN
+    FMINM_D,
+    FMAXM_D,
+    FROUND_S,                  // Round to integral value, no NX
+    FROUNDNX_S,                // Round to integral value, NX when inexact
+    FROUND_D,
+    FROUNDNX_D,
+    FCVTMOD_W_D,               // Double to 32-bit int, modular (RTZ)
+    FLEQ_S,                    // Quiet less than or equal
+    FLTQ_S,                    // Quiet less than
+    FLEQ_D,
+    FLTQ_D
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -1791,7 +1816,30 @@ package riscv_pkg;
     logic perm_x;
     logic perm_u;
     logic perm_d;  // D=0 install is legal; a store to it faults at lookup
+    // Global mapping: the leaf's G bit, or G on any non-leaf PTE above it
+    // (which makes every mapping below it global). Not matched by ASID.
+    logic perm_g;
   } ptw_resp_t;
+
+  // satp.ASID is 9 bits (ASIDLEN = 9). Linux discovers it by writing all ones
+  // to satp.ASID and reading back; satp[59:53] stay zero.
+  localparam int unsigned AsidBits = 9;
+
+  // SFENCE.VMA, as the TLBs see it, for the cycles of its serialized window,
+  // or one cycle for a CSR-requested flush (use_va = use_asid = 0: everything).
+  //   use_va = 0, use_asid = 0: every entry.
+  //   use_va = 0, use_asid = 1: every non-global entry of that ASID.
+  //   use_va = 1, use_asid = 0: every entry (any ASID, global too) whose page
+  //                             covers vpn, of any size.
+  //   use_va = 1, use_asid = 1: every non-global entry of that ASID whose
+  //                             page covers vpn.
+  typedef struct packed {
+    logic en;
+    logic use_va;
+    logic [Sv39VpnBits-1:0] vpn;
+    logic use_asid;
+    logic [AsidBits-1:0] asid;
+  } tlb_flush_t;
   // FP register width: 64-bit to support the D extension.
   localparam int unsigned FpWidth = 64;
   localparam int unsigned FpSingleWidth = 32;
@@ -2050,8 +2098,8 @@ package riscv_pkg;
     logic is_fetch_fault_page;  // ...FETCH_PAGE_FAULT (cause 12) instead of FETCH_FAULT
     // F extension fields
     logic is_fp_instruction;  // Any FP instruction
-    logic is_fp_load;  // FLW or FLD: data goes to the FP regfile
-    logic is_fp_store;  // FSW or FSD
+    logic is_fp_load;  // FLW, FLD or FLH: data goes to the FP regfile
+    logic is_fp_store;  // FSW, FSD or FSH
     logic [2:0] fp_rm;  // Rounding mode from instruction (funct3)
     // Pre-computed link address, PC+2 or PC+4 by compression: rd for
     // JAL/JALR, and the ROB's fall-through PC for every instruction
@@ -3069,7 +3117,7 @@ package riscv_pkg;
       // Memory operations -> MEM_RS (both INT and FP)
       LB, LH, LW, LBU, LHU, SB, SH, SW,
       LWU, LD, SD,
-      FLW, FSW, FLD, FSD,
+      FLW, FSW, FLD, FSD, FLH, FSH,
       LR_W, SC_W,
       AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
       AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
@@ -3093,7 +3141,11 @@ package riscv_pkg;
       FCVT_L_S, FCVT_LU_S, FCVT_S_L, FCVT_S_LU,
       FCVT_L_D, FCVT_LU_D, FCVT_D_L, FCVT_D_LU,
       FCVT_S_D, FCVT_D_S,
-      FMV_X_W, FMV_W_X, FMV_X_D, FMV_D_X,
+      FCVT_S_H, FCVT_H_S, FCVT_D_H, FCVT_H_D,
+      FMV_X_W, FMV_W_X, FMV_X_D, FMV_D_X, FMV_X_H, FMV_H_X,
+      FLI_S, FLI_D, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D,
+      FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D,
+      FCVTMOD_W_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D,
       FCLASS_S, FCLASS_D,
       FSGNJ_S, FSGNJN_S, FSGNJX_S,
       FSGNJ_D, FSGNJN_D, FSGNJX_D:
@@ -3149,7 +3201,9 @@ package riscv_pkg;
       // FP to INT conversion -> INT rd
       FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
       // FP to INT bit move -> INT rd
-      FMV_X_W, FMV_X_D:
+      FMV_X_W, FMV_X_D, FMV_X_H,
+      // Zfa
+      FCVTMOD_W_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D:
       has_int_dest = 1'b1;
 
       default: has_int_dest = 1'b0;
@@ -3160,7 +3214,7 @@ package riscv_pkg;
   function automatic logic has_fp_dest(instr_op_e op);
     case (op)
       // FP loads
-      FLW, FLD,
+      FLW, FLD, FLH,
       // FP compute ops
       FADD_S, FSUB_S, FMUL_S, FDIV_S, FSQRT_S,
       FADD_D, FSUB_D, FMUL_D, FDIV_D, FSQRT_D,
@@ -3172,9 +3226,11 @@ package riscv_pkg;
       // INT to FP conversion -> FP fd
       FCVT_S_W, FCVT_S_WU, FCVT_D_W, FCVT_D_WU, FCVT_S_L, FCVT_S_LU, FCVT_D_L, FCVT_D_LU,
       // FP format conversion
-      FCVT_S_D, FCVT_D_S,
+      FCVT_S_D, FCVT_D_S, FCVT_S_H, FCVT_H_S, FCVT_D_H, FCVT_H_D,
       // INT to FP bit move -> FP fd
-      FMV_W_X, FMV_D_X:
+      FMV_W_X, FMV_D_X, FMV_H_X,
+      // Zfa
+      FLI_S, FLI_D, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D:
       has_fp_dest = 1'b1;
 
       default: has_fp_dest = 1'b0;
@@ -3199,9 +3255,12 @@ package riscv_pkg;
       // FP to INT conversion (fs1) -> INT rd
       FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
       // FP to INT bit move (fs1) -> INT rd
-      FMV_X_W, FMV_X_D,
+      FMV_X_W, FMV_X_D, FMV_X_H,
       // FP format conversion
-      FCVT_S_D, FCVT_D_S:
+      FCVT_S_D, FCVT_D_S, FCVT_S_H, FCVT_H_S, FCVT_D_H, FCVT_H_D,
+      // Zfa (FLI reads no register)
+      FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D,
+      FCVTMOD_W_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D:
       uses_fp_rs1 = 1'b1;
 
       default: uses_fp_rs1 = 1'b0;
@@ -3222,7 +3281,9 @@ package riscv_pkg;
       // FP compare (fs1, fs2)
       FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
       // FP stores (base=INT rs1, data=FP rs2)
-      FSW, FSD:
+      FSW, FSD, FSH,
+      // Zfa
+      FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D:
       uses_fp_rs2 = 1'b1;
 
       default: uses_fp_rs2 = 1'b0;
@@ -3240,8 +3301,8 @@ package riscv_pkg;
   endfunction
 
   // Integer rs1 use, excluding FP sources, immediate-only fields, and
-  // operations with no source. SFENCE.VMA ignores its operands (flush-all).
-
+  // operations with no source. SFENCE.VMA reads rs1 (address filter) and rs2
+  // (ASID filter); x0 reads as zero and selects "all".
   function automatic logic uses_int_rs1(instr_op_e op);
     if (uses_fp_rs1(op)) begin
       uses_int_rs1 = 1'b0;
@@ -3250,10 +3311,10 @@ package riscv_pkg;
         LUI, AUIPC, JAL,
         ECALL, EBREAK,
         FENCE, FENCE_I,
-        WFI, MRET, SRET, DRET, SFENCE_VMA, PAUSE,
+        WFI, MRET, SRET, DRET, PAUSE,
         CSRRWI, CSRRSI, CSRRCI,
-        ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT,
-        VSETIVLI, VARITH, VTOX:
+        // Zfa FLI: rs1 is the constant index, not a register
+        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase
@@ -3261,7 +3322,7 @@ package riscv_pkg;
   endfunction
 
   // Instructions that read integer rs2: branches, R-type integer ALU,
-  // integer stores, AMO/SC. FP stores (FSW/FSD) read FP rs2 for their data
+  // integer stores, AMO/SC. FP stores (FSH/FSW/FSD) read FP rs2 for their data
   // instead.
   function automatic logic uses_int_rs2(instr_op_e op);
     if (uses_fp_rs2(op)) begin
@@ -3285,6 +3346,8 @@ package riscv_pkg;
         ROL, ROR,
         CZERO_EQZ, CZERO_NEZ,
         PACK, PACKH,
+        // SFENCE.VMA: rs2 is the ASID filter
+        SFENCE_VMA,
         // RV64 W-form R-type ops
         ADDW, SUBW, SLLW, SRLW, SRAW, ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, ROLW, RORW, PACKW,
         // Integer stores

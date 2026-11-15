@@ -49,6 +49,10 @@ module cpu_ooo #(
     // mperf* CSRs read zero. Architectural HPM3..10 consume their events
     // independently of this profiling option.
     parameter int unsigned PERF_COUNTERS = 0,
+    // Sets of the second-level TLB in front of the walker (four ways each:
+    // 128 sets are 512 entries). Zero removes it and sends every L1 miss to
+    // the walker.
+    parameter int unsigned L2TLB_SETS = 128,
     // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
     // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
     parameter bit VECTOR = 1'b0,
@@ -791,9 +795,17 @@ module cpu_ooo #(
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
   // Registered translation-invalidate pulse from csr_file: every satp access,
   // and an mstatus write only when it changes MPRV, or MPP under MPRV. Through
-  // tlb_invalidate it clears both TLBs and discards the walk in flight; the
-  // ROB serializer handles pipeline recovery separately.
+  // tlb_invalidate it drops the IMMU's registered result and the DMMU's
+  // last-page buffer and discards the walk in flight; TLB entries leave
+  // through tlb_flush. The ROB serializer handles
+  // pipeline recovery separately.
   logic csr_translation_flush_req;
+  // Registered pulse beside it for a satp root switch or MPRV change: the
+  // TLBs drop every entry. A satp write that keeps the root (an ASID change)
+  // leaves the entries in place; the ASID tag separates the address spaces.
+  logic csr_tlb_flush_all_req;
+  logic [riscv_pkg::AsidBits-1:0] csr_mmu_asid, csr_fetch_asid;
+  riscv_pkg::tlb_flush_t tlb_flush;
   // Registered translation state from csr_file, and the data MMU's walker
   // port between the wrapper and the ptw below.
   logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
@@ -810,7 +822,7 @@ module cpu_ooo #(
     if (i_rst) sfence_tlb_flush_active_q <= 1'b0;
     else sfence_tlb_flush_active_q <= sfence_tlb_flush_active;
   end
-  logic walk_req_valid, walk_req_ready;
+  logic walk_req_valid, walk_req_ready, walk_hold;
   logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn;
   logic walk_resp_valid;
   riscv_pkg::ptw_resp_t walk_resp;
@@ -874,6 +886,8 @@ module cpu_ooo #(
       .i_fetch_translation_active(csr_fetch_translation_active),
       .i_fetch_priv_u(csr_fetch_priv_u),
       .i_tlb_invalidate(tlb_invalidate),
+      .i_tlb_flush(tlb_flush),
+      .i_fetch_asid(csr_fetch_asid),
       .o_walk_req_valid(iwalk_req_valid),
       .i_walk_req_ready(iwalk_req_ready),
       .o_walk_vpn(iwalk_vpn),
@@ -2660,9 +2674,13 @@ module cpu_ooo #(
       .i_mmu_eff_priv_u(csr_mmu_eff_priv_u),
       .i_csr_translation_flush_req(csr_translation_flush_req),
       .o_tlb_invalidate(tlb_invalidate),
+      .i_csr_tlb_flush_all_req(csr_tlb_flush_all_req),
+      .o_tlb_flush(tlb_flush),
+      .i_mmu_asid(csr_mmu_asid),
       .o_walk_req_valid(walk_req_valid),
       .i_walk_req_ready(walk_req_ready),
       .o_walk_vpn(walk_vpn),
+      .o_walk_hold(walk_hold),
       .i_walk_resp_valid(walk_resp_valid),
       .i_walk_resp(walk_resp),
       .o_rob_full(rob_full),
@@ -3185,8 +3203,14 @@ module cpu_ooo #(
   always @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
       if (lq_mem_request_valid && lq_mem_read_en)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: LQ read handoff overlapped held router request");
       // A full flush already on its way (trap, xRET, FENCE-class) may overlap
       // the held request's staging cycle; that is where the router cancels
@@ -3195,31 +3219,49 @@ module cpu_ooo #(
       // a commit-time recovery cannot overtake an older device read at the
       // ROB head.
       if (lq_mem_request_valid && commit_recovery_flush_after_head)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: commit recovery overlapped a held LQ router request");
       if (lq_mem_request_valid && lq_router_flush_all &&
           (o_data_mem_read_enable || o_data_mem_cached_read_enable ||
            o_mmio_read_pulse || o_mmio_load_valid))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: owner flush did not suppress held LQ read effects");
       // Once sq_committed_empty is high, no older SQ or cached store can
       // still hold the write port, and device reads launch only at the ROB
       // head, so no AMO can be writing either.
       if (lq_mem_request_valid && sq_committed_empty &&
           (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: drained held LQ request remained write-blocked");
       // Device-read interrupt shield (trap_unit.i_device_read_at_head): the
       // device read must never happen before the shield is up.
       if (o_mmio_read_pulse && !device_read_shield_q)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: MMIO read pulse fired without the device interrupt shield");
       // The hold must not lapse while the request is still parked. The first
       // pending cycle is exempt: that cycle is what raises the shield, and
       // the router cannot arm until the cycle after it is visible.
       if (lq_device_request_pending && device_request_pending_q && !device_read_shield_q &&
           !lq_router_flush_all && !router_flush_all_q)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: device request pending without the interrupt shield");
       // An interrupt must never be taken inside the shielded window.
       // (trap_pending is the trap unit's exception input; exceptions stay
       // ungated by both shields, so only an interrupt take is a violation.)
       if (device_read_shield_q && trap_taken && !trap_pending)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: interrupt taken inside the device-read shield window");
     end
   end
@@ -3238,6 +3280,9 @@ module cpu_ooo #(
     end else if (!(lq_device_request_pending && !sq_committed_empty)) begin
       device_shield_stuck_cnt <= device_shield_stuck_cnt + 1;
       if (device_shield_stuck_cnt == DeviceShieldWatchdogCycles)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "cpu_ooo: device-read interrupt shield held for %0d cycles (forward progress lost)",
             DeviceShieldWatchdogCycles
@@ -3250,6 +3295,9 @@ module cpu_ooo #(
     end else if (lq_device_request_pending && !sq_committed_empty) begin
       device_shield_drain_cnt <= device_shield_drain_cnt + 1;
       if (device_shield_drain_cnt == DeviceShieldDrainWatchdogCycles)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "cpu_ooo: device-read interrupt shield waited for older writes for %0d cycles",
             DeviceShieldDrainWatchdogCycles
@@ -4197,6 +4245,9 @@ module cpu_ooo #(
       .o_wfi_illegal(csr_wfi_illegal),
       .o_priv_is_u(csr_priv_is_u),
       .o_csr_translation_flush_req(csr_translation_flush_req),
+      .o_csr_tlb_flush_all_req(csr_tlb_flush_all_req),
+      .o_mmu_asid(csr_mmu_asid),
+      .o_fetch_asid(csr_fetch_asid),
       .o_translation_active(csr_translation_active),
       .o_mmu_sum(csr_mmu_sum),
       .o_mmu_mxr(csr_mmu_mxr),
@@ -4270,36 +4321,97 @@ module cpu_ooo #(
   // ===========================================================================
   // Page-Table Walker
   // ===========================================================================
-  // Data MMU requests take priority over instruction MMU requests. Record the
-  // requesting side in walk_owner_i_q so only it receives the response; VPN
-  // alone cannot distinguish requesters. TLB invalidate also discards the
-  // walk and clears this routing bit. The line port goes to cache wup.
+  // Data MMU requests take priority over instruction MMU requests. The VPN
+  // select comes from registered state (walk_hold: the data MMU's S1 holds an
+  // op without an accepted walk), so the ROB-dependent data request valid
+  // stays off the L2 TLB read address; see walk_request_select. The select
+  // records the requesting side (core_walk_owner_i) so only it receives the
+  // response; VPN alone cannot distinguish requesters. TLB invalidate also
+  // discards the walk and clears the routing bits. The line port goes to
+  // cache wup.
   logic ptw_req_valid, ptw_req_ready, ptw_resp_valid;
   logic [riscv_pkg::Sv39VpnBits-1:0] ptw_req_vpn;
-  // The misaligned-access engine is a third requester at the lowest
-  // priority; walk_owner_ma_q records it at acceptance in the same way, so a
-  // walk accepted for a flushed instruction still answers its own requester.
-  logic walk_owner_i_q;  // the walk in flight belongs to the instruction side
-  logic walk_owner_ma_q;  // the walk in flight belongs to the misaligned engine
-  assign ptw_req_valid = walk_req_valid || iwalk_req_valid || ma_walk_req_valid;
-  assign ptw_req_vpn = walk_req_valid ? walk_vpn : iwalk_req_valid ? iwalk_vpn : ma_walk_vpn;
-  assign walk_req_ready = ptw_req_ready;
-  assign iwalk_req_ready = ptw_req_ready && !walk_req_valid;
-  assign ma_walk_req_ready = ptw_req_ready && !walk_req_valid && !iwalk_req_valid;
+  // The misaligned-access engine is a third requester. It takes the port
+  // while it asks and no data op waits in S1 (walk_hold), ahead of the
+  // instruction side. Both terms come from flops, so the VPN select reads
+  // neither MMU's request valid, and the ROB head and S1 kill stay off the
+  // L2 TLB read address. The engine runs at the ROB head with the data MMU empty, and it
+  // asks once per page of one access, so the instruction side waits at most
+  // that long. walk_owner_ma_q records the engine at acceptance, so a walk
+  // accepted for a flushed instruction still answers its own requester.
+  logic core_ptw_req_valid, core_ptw_req_ready;
+  logic [riscv_pkg::Sv39VpnBits-1:0] core_ptw_req_vpn;
+  logic core_walk_owner_i;
+  walk_request_select u_walk_select (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_invalidate(tlb_invalidate),
+      .i_d_hold(walk_hold),
+      .i_d_valid(walk_req_valid),
+      .o_d_ready(walk_req_ready),
+      .i_d_vpn(walk_vpn),
+      .i_i_valid(iwalk_req_valid),
+      .o_i_ready(iwalk_req_ready),
+      .i_i_vpn(iwalk_vpn),
+      .o_valid(core_ptw_req_valid),
+      .i_ready(core_ptw_req_ready),
+      .o_vpn(core_ptw_req_vpn),
+      .o_owner_i(core_walk_owner_i)
+  );
+
+  logic ma_walk_select;
+  assign ma_walk_select = MISALIGNED_HW && ma_walk_req_valid && !walk_hold;
+  assign ptw_req_valid = ma_walk_select || core_ptw_req_valid;
+  assign ptw_req_vpn = ma_walk_select ? ma_walk_vpn : core_ptw_req_vpn;
+  assign core_ptw_req_ready = ptw_req_ready && !ma_walk_select;
+  assign ma_walk_req_ready = ptw_req_ready && ma_walk_select;
+
+  logic walk_owner_ma_q;
   always_ff @(posedge i_clk) begin
     if (i_rst || tlb_invalidate) begin
-      walk_owner_i_q  <= 1'b0;
       walk_owner_ma_q <= 1'b0;
     end else if (ptw_req_valid && ptw_req_ready) begin
-      walk_owner_i_q  <= !walk_req_valid && iwalk_req_valid;
-      // Constant without the engine, so the D and I response valids are
-      // exactly as they are without it.
-      walk_owner_ma_q <= MISALIGNED_HW && !walk_req_valid && !iwalk_req_valid;
+      walk_owner_ma_q <= ma_walk_select;
     end
   end
-  assign walk_resp_valid = ptw_resp_valid && !walk_owner_i_q && !walk_owner_ma_q;
-  assign iwalk_resp_valid = ptw_resp_valid && walk_owner_i_q;
+
+  assign walk_resp_valid    = ptw_resp_valid && !core_walk_owner_i && !walk_owner_ma_q;
+  assign iwalk_resp_valid   = ptw_resp_valid && core_walk_owner_i && !walk_owner_ma_q;
   assign ma_walk_resp_valid = ptw_resp_valid && walk_owner_ma_q;
+
+  // The second-level TLB answers repeat translations before the walker sees
+  // them and stores the clean 4 KiB translations the walker returns. With
+  // L2TLB_SETS = 0 the requests pass to the walker unchanged.
+  logic l2_ptw_req_valid, l2_ptw_req_ready, l2_ptw_resp_valid;
+  logic [riscv_pkg::Sv39VpnBits-1:0] l2_ptw_req_vpn;
+  riscv_pkg::ptw_resp_t l2_ptw_resp;
+  if (L2TLB_SETS > 0) begin : g_l2tlb
+    l2tlb #(
+        .SETS(L2TLB_SETS)
+    ) u_l2tlb (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_asid(csr_mmu_asid),
+        .i_flush(tlb_flush),
+        .i_discard(tlb_invalidate),
+        .i_req_valid(ptw_req_valid),
+        .o_req_ready(ptw_req_ready),
+        .i_req_vpn(ptw_req_vpn),
+        .o_resp_valid(ptw_resp_valid),
+        .o_resp(walk_resp),
+        .o_ptw_req_valid(l2_ptw_req_valid),
+        .i_ptw_req_ready(l2_ptw_req_ready),
+        .o_ptw_req_vpn(l2_ptw_req_vpn),
+        .i_ptw_resp_valid(l2_ptw_resp_valid),
+        .i_ptw_resp(l2_ptw_resp)
+    );
+  end else begin : g_no_l2tlb
+    assign l2_ptw_req_valid = ptw_req_valid;
+    assign ptw_req_ready    = l2_ptw_req_ready;
+    assign l2_ptw_req_vpn   = ptw_req_vpn;
+    assign ptw_resp_valid   = l2_ptw_resp_valid;
+    assign walk_resp        = l2_ptw_resp;
+  end
 
   ptw #(
       .ENABLE_RESPONSE_ERRORS(VARIABLE_UNCACHED),
@@ -4308,13 +4420,13 @@ module cpu_ooo #(
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_root_ppn(csr_satp_root_ppn),
-      .i_req_valid(ptw_req_valid),
-      .o_req_ready(ptw_req_ready),
-      .i_req_vpn(ptw_req_vpn),
+      .i_req_valid(l2_ptw_req_valid),
+      .o_req_ready(l2_ptw_req_ready),
+      .i_req_vpn(l2_ptw_req_vpn),
       .i_discard(tlb_invalidate),
       .o_busy(ptw_busy),
-      .o_resp_valid(ptw_resp_valid),
-      .o_resp(walk_resp),
+      .o_resp_valid(l2_ptw_resp_valid),
+      .o_resp(l2_ptw_resp),
       .o_line_req_valid(o_walk_line_req_valid),
       .i_line_req_ready(i_walk_line_req_ready),
       .o_line_req_addr(o_walk_line_req_addr),
@@ -4612,6 +4724,9 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) begin
     if (i_rst) resume_pc_reference_armed_q <= 1'b1;
     if (resume_pc_reference_armed_q && !i_rst && interrupt_resume_pc != resume_pc_reference_q) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("cpu_ooo: interrupt_resume_pc %08x != reference %08x", interrupt_resume_pc,
              resume_pc_reference_q);
     end
@@ -4626,11 +4741,10 @@ module cpu_ooo #(
   // fails here, whatever the front end did to reach it: a stale prediction,
   // a lost redirect, or a fetch that skipped or repeated code.
   //
-  // Every check in this block waits for the first reset: a random-start
-  // simulation begins with arbitrary registers, the registered resets
-  // included, so i_rst can be low before any reset while the state these
-  // checks read is arbitrary. The next-PC check then arms at the first
-  // retirement; WFI seeding does not move it.
+  // These checks require local reset history. System assertions arm after
+  // the testbench's driven reset reaches the active clock domains. The
+  // next-PC check then arms at the first retirement; WFI seeding does not
+  // move it.
   logic next_pc_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) next_pc_reset_seen_q <= 1'b1;
   logic next_pc_check_armed_q;
@@ -4654,12 +4768,18 @@ module cpu_ooo #(
       if (next_pc_check_armed_q && rob_commit_valid_raw &&
           rob_commit_comb.pc != next_pc_expected_q) begin
         next_pc_dump();
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: retired pc %016x, architectural next pc %016x", rob_commit_comb.pc,
                next_pc_expected_q);
       end
       if (rob_commit_valid_raw && rob_commit_2_valid_raw &&
           rob_commit_comb_2.pc != rob_head_retired_next_pc) begin
         next_pc_dump();
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: slot-2 retired pc %016x, slot-1 next pc %016x", rob_commit_comb_2.pc,
                rob_head_retired_next_pc);
       end
@@ -4763,31 +4883,49 @@ module cpu_ooo #(
   always @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (trap_or_xret_taken != (trap_taken || xret_taken)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: combined trap/xRET take differs from individual takes");
       end
       if (xret_taken &&
           (mret_start_is_dret ? csr_dpc : mret_start_is_sret ? csr_sepc : csr_mepc) !=
           (dret_taken ? csr_dpc : sret_taken ? csr_sepc : csr_mepc)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: ROB head return flavor differs from the taken xRET");
       end
       if (trap_taken && trap_entry_target != trap_target) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: trap-entry target differs from its redirect");
       end
       if (rob_commit_valid_raw && rob_head_retired_next_pc != retired_next_pc(
               rob_commit_comb
           )) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: rob_head_retired_next_pc %08x != retired_next_pc(commit) %08x",
                rob_head_retired_next_pc, retired_next_pc(rob_commit_comb));
       end
       if (rob_commit_2_valid_raw && rob_head_next_retired_next_pc != retired_next_pc(
               rob_commit_comb_2
           )) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: rob_head_next_retired_next_pc %08x != retired_next_pc(commit_2) %08x",
                rob_head_next_retired_next_pc, retired_next_pc(rob_commit_comb_2));
       end
       // An xRET retires through the full flush that follows it, never on the
       // raw commit path, so the ROB's retired next-PC outputs need no xRET arm.
       if (rob_commit_valid_raw && rob_commit_comb.is_mret) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cpu_ooo: an xRET retired on the raw commit path");
       end
     end
