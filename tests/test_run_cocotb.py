@@ -3333,7 +3333,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_coherence_stale_line",
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="cbo.zero twin beside an L1D stream, with a 64 KiB home",
-        include_in_pytest=False,
     ),
     "coherence_cbo_zero": CocotbRunConfig(
         verilator_extra_args=("--assert",),
