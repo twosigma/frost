@@ -26,6 +26,10 @@ The reference applies Svpbmt too: with PBMTE clear any nonzero PBMT field faults
 it set, PBMT 3 and a nonzero non-leaf PBMT fault, and an NC or IO leaf over DDR answers
 the uncached alias's PPN (riscv_pkg "Svpbmt": bit 30 for the 1 GiB DDR the
 default build uses) and the field.
+
+And Svnapot: N (bit 63) is legal only in a level-0 leaf with PPN[3:0] = 1000
+(a 64 KiB range), which answers PPN[3:0] = VPN[3:0]; any other PTE with N set
+faults.
 """
 
 from __future__ import annotations
@@ -102,11 +106,15 @@ class Memory:
             r, w, x = (e >> 1) & 1, (e >> 2) & 1, (e >> 3) & 1
             leaf = r or x
             pbmt = (e >> 61) & 3
-            # Bit 63 (N) and bits 60:54 are reserved; so is PBMT in a
-            # non-leaf, PBMT 3, and any nonzero PBMT while PBMTE is clear.
+            ppn = (e >> 10) & ((1 << 44) - 1)
+            # Bits 60:54 are reserved; so is nonzero PBMT in a non-leaf, PBMT 3, and
+            # any nonzero PBMT while PBMTE is clear; and N (bit 63) outside a level-0
+            # leaf with PPN[3:0] = 1000 (Svnapot's 64 KiB encoding).
             pbmt_bad = pbmt != 0 and (not leaf or not pbmte or pbmt == PBMT_RES)
+            napot = (e >> 63) & 1
+            napot_bad = napot and not (leaf and level == 0 and (ppn & 0xF) == 0x8)
             if (
-                (e >> 63)
+                napot_bad
                 or (e >> 54) & 0x7F
                 or pbmt_bad
                 or not e & V
@@ -114,7 +122,6 @@ class Memory:
                 or (not leaf and e & (U | A | D))
             ):
                 return {"fault": DFAULT_PAGE, "vpn": vpn}
-            ppn = (e >> 10) & ((1 << 44) - 1)
             if leaf:
                 misaligned = ppn & ((1 << (9 * level)) - 1)
                 if misaligned or not e & A:
@@ -122,6 +129,8 @@ class Memory:
                 perms = (r << 4) | (w << 3) | (x << 2) | (((e >> 4) & 1) << 1)
                 perms |= (e >> 7) & 1
                 perms = (perms << 1) | glob | ((e >> 5) & 1)
+                if napot:
+                    ppn = (ppn & ~0xF) | (vpn & 0xF)
                 if pbmt and DDR_BASE <= (ppn << 12) < DDR_LIMIT:
                     ppn |= ALIAS_PPN_BIT
                 return {
@@ -581,7 +590,7 @@ async def pbmt_encodings_faults_and_alias(dut: Any) -> None:
         3: pte(0x90103, flags, PBMT_RES),
         4: pte(0x00010, flags | X, PBMT_NC),  # low BRAM: no alias
         5: pte(0x40000, flags, PBMT_IO),  # MMIO page: no alias
-        6: pte(0x90106, flags, PBMT_NC) | (1 << 63),  # N (no Svnapot)
+        6: pte(0x90106, flags, PBMT_NC) | (1 << 63),  # N, PPN[3:0] = 0110: reserved
         7: pte(0x90107, flags, PBMT_IO) | (1 << 58),  # reserved bit
     }
     for i, e in leaves.items():
@@ -631,3 +640,78 @@ async def pbmt_encodings_faults_and_alias(dut: Any) -> None:
         # The PBMT pointer was not cached: a cached one would let this walk
         # start below it and find the valid leaf there.
         assert (await b.walk((40 << 18) | (10 << 9)))["fault"] == DFAULT_PAGE
+
+
+@cocotb.test()
+async def napot_leaves_and_reserved_n(dut: Any) -> None:
+    """Svnapot in the walker: 64 KiB NAPOT leaves and every reserved N encoding.
+
+    A level-0 leaf with N = 1 and PPN[3:0] = 1000 answers the walked 4 KiB page
+    of its 64 KiB range: PPN[3:0] = VPN[3:0], whichever of the range's 16 PTE
+    slots the walk read (the slots may hold different NAPOT PTEs; each answers
+    its own PPN[43:4]). Under PBMTE an NC NAPOT leaf over DDR answers that
+    page's alias. N with PPN[3:0] = 0xx1, 0x1x, 01xx or 0000, N in a 2 MiB or
+    1 GiB leaf, and N in a pointer are page faults; a pointer with N set never
+    fills the walk cache.
+    """
+    b = Bench(dut, 91)
+    await b.reset()
+    m = b.mem
+    flags = V | R | W | A | D
+    n = 1 << 63
+    m.write(ROOT + 8 * 50, pte(table(70) >> 12, V))
+    m.write(table(70), pte(table(71) >> 12, V))
+    # VPN[3:0] 0..15 of range 0 (slots 0..15): one NAPOT PTE over 0x90310.
+    for i in range(16):
+        m.write(table(71) + 8 * i, pte(0x90318, flags) | n)
+    # Range 1 (slots 16..31): an NC NAPOT leaf over 0x90420.
+    for i in range(16, 32):
+        m.write(table(71) + 8 * i, pte(0x90428, flags | X, PBMT_NC) | n)
+    # Reserved N encodings at level 0.
+    bad = {32: 0x90501, 33: 0x90502, 34: 0x90504, 35: 0x90500, 36: 0x9050C, 37: 0x9050F}
+    for i, ppn in bad.items():
+        m.write(table(71) + 8 * i, pte(ppn, flags) | n)
+    # N in a 2 MiB leaf, a 1 GiB leaf and a pointer.
+    m.write(table(70) + 8 * 2, pte(0x80400, flags) | n)
+    m.write(ROOT + 8 * 51, pte(0x80000, flags) | n)
+    m.write(table(70) + 8 * 3, pte(table(72) >> 12, V) | n)
+    m.write(table(72), pte(0x90600, flags))
+
+    for pbmte in (0, 1):
+        dut.i_pbmte.value = pbmte
+        b.pbmte = pbmte
+        await b.discard()
+        for page in range(16):
+            vpn = (50 << 18) | page
+            got = await b.walk(vpn)
+            b.check(got, vpn)
+            assert got["fault"] == DFAULT_NONE and got["level"] == 0, (hex(vpn), got)
+            assert got["ppn"] == 0x90310 | page, (hex(vpn), got)
+        for page in range(16):
+            vpn = (50 << 18) | 16 | page
+            got = await b.walk(vpn)
+            b.check(got, vpn)
+            if pbmte:
+                assert got["fault"] == DFAULT_NONE and got["pbmt"] == PBMT_NC
+                assert got["ppn"] == (0x90420 | page) | ALIAS_PPN_BIT, (hex(vpn), got)
+            else:
+                assert got["fault"] == DFAULT_PAGE
+        for i in bad:
+            vpn = (50 << 18) | i
+            got = await b.walk(vpn)
+            b.check(got, vpn)
+            assert got["fault"] == DFAULT_PAGE, (hex(vpn), got)
+        for vpn in (
+            (50 << 18) | (2 << 9) | 0x40,
+            (51 << 18) | 0x1234,
+            (50 << 18) | (3 << 9),
+        ):
+            got = await b.walk(vpn)
+            b.check(got, vpn)
+            assert got["fault"] == DFAULT_PAGE, (hex(vpn), got)
+        # The N pointer was not cached.
+        assert (await b.walk((50 << 18) | (3 << 9)))["fault"] == DFAULT_PAGE
+    # Slots of one range may differ: each NAPOT PTE answers its own frame.
+    m.write(table(71) + 8 * 5, pte(0x91238, flags) | n)
+    got = await b.walk((50 << 18) | 5)
+    assert got["fault"] == DFAULT_NONE and got["ppn"] == 0x91235, got

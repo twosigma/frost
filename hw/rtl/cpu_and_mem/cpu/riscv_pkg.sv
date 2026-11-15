@@ -1796,12 +1796,14 @@ package riscv_pkg;
   localparam int unsigned Sv39VpnBits = Sv39Levels * Sv39VpnFieldBits;  // 27
 
   // PTE layout (RV64): PPN in [53:10], flags in [7:0], Svpbmt's PBMT in
-  // [62:61]. Bit 63 (N, Svnapot, not implemented) and bits [60:54] are
-  // reserved: set, they raise a page fault. PBMT must be zero in a non-leaf
+  // [62:61], Svnapot's N in 63. N is legal only in a level-0 leaf whose
+  // PPN[3:0] is 1000 (a 64 KiB range, see ptw.sv); set anywhere else, and
+  // bits [60:54] set anywhere, raise a page fault. PBMT must be zero in a non-leaf
   // PTE, must not be 3 in a leaf, and must be zero in a leaf while
   // menvcfg.PBMTE is clear; each of these raises a page fault too.
   localparam int unsigned PtePpnBits = 44;
   localparam int unsigned PtePbmtLsb = 61;
+  localparam int unsigned PteNapotBit = 63;
   // PBMT encodings (Svpbmt): 0 PMA, 1 NC (non-cacheable, idempotent, weakly
   // ordered main memory), 2 IO (non-cacheable, non-idempotent, strongly
   // ordered I/O), 3 reserved. FROST executes NC exactly as IO: at the ROB

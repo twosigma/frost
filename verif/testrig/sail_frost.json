@@ -531,7 +531,9 @@
     "Svadu": {"supported": false},
     "Svinval": {"supported": false},
     "Svrsw60t59b": {"supported": false},
-    "Svnapot": {"supported": false},
+    // Svnapot: 64 KiB NAPOT leaves and the reserved N encodings
+    // (traces/svnapot_leaf.S).
+    "Svnapot": {"supported": true},
     "Svukte": {"supported": false},
     // Ssnpm: senvcfg.PMM with PMLEN 7 and 16; a reserved or unsupported
     // write keeps the old value on both (traces/ssnpm_pmm.S).
