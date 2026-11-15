@@ -279,6 +279,7 @@ can be debugged and where each one first stops.
 | `ddr_heap_test/` | Multi-MiB `malloc` from the DDR heap, checked for address aliasing |
 | `ddr_mlp_test/` | Independent cold DDR loads must overlap their L1D misses, measured with the profiling counters; a pointer chase is the control. The default eviction window targets 4 KiB caches. `DDR_MLP_FULL_CACHE=1` uses conflicting sets for the 128 KiB L1D and configured L2 (`FROST_L2_CACHE_BYTES`, 2 MiB by default); the CLI-only `ddr_mlp_test_full_cache` bench selects this mode |
 | `ddr_smc_test/` | Self-modifying code in DDR: store, `fence.i`, then execute cold and warm |
+| `l1i_set_test/` | Every L1I set filled, hit, patched and cleared: lines differing only in PA[12], 8 KiB-apart lines sharing a set, an over-subscribed upper set, and an Sv39 page crossing whose PA[12] differs from its VA[12]; `L1I_TEST_BYTES=32768` adds the warm-pass refill bound |
 | `ddr_test/` | Cached-DDR loads and stores, byte strobes, evictions, the preloaded `.ddr_rodata` image, and AMOs |
 | `debug_target/` | Debuggee with known symbols for the JTAG debug tests; waits for a debugger to write its flags |
 | `dma_torture/` | DMA test engine against the CPU caches: visibility, ordering, atomics and evictions racing engine writes, the completion interrupt, abort and reuse |
