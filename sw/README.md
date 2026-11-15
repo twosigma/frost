@@ -54,7 +54,7 @@ any of them rebuilds.
 | `GENERATE_IMEM_INIT` | `0` | `1` also writes the split instruction-BRAM init files for Vivado |
 
 `-march` is `rv64` followed by `FROST_MARCH_EXTENSIONS`, which defaults to
-`imafdc_zicsr_zicntr_zifencei_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause`. An app
+`imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs`. An app
 sets it, or `APP_TUNE_FLAGS`, before including `common.mk`. The `FROST_DEBUG=1`
 flags come after the tuning flags, so debug builds stay debuggable. Backends
 that build their own flags take the names from `common/arch.mk`:
@@ -265,6 +265,7 @@ can be debugged and where each one first stops.
 | `c_ext_test/` | Calls and returns through mixed 16- and 32-bit code, plus value checks of the RV64C-only encodings |
 | `cache_counter_target/` | Makes L2 write fills with DMA, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
+| `cbo_mgmt_test/` | Zicbom `cbo.clean`, `cbo.flush` and `cbo.inval` as ordered no-ops: data unchanged in cached DDR and low BRAM, device windows a no-op, the CBCFE and CBIE gates in S and U, CBIE's WARL readback, load-permission translation (read-only, D-clear and X-with-MXR pages execute), store page and access faults with `mtval` = `rs1`, and program order with loads, stores and the DMA engine |
 | `cbo_zero_bench/` | Cycles to clear 64 KiB and 1 MiB of cold and warm cached DDR with an `sd` loop and with `cbo.zero`; prints one `FROST_CBO_BENCH` line per run |
 | `cbo_zero_test/` | Zicboz `cbo.zero`: the 64-byte block containing an unaligned `rs1` in cached DDR and low BRAM, neighbours untouched, younger loads and stores in program order, LR/SC reservation invalidation in both cached sectors with successful no-zero controls, the CBZE gate across adjacent environment-CSR writes and privilege returns, forbidden lower-privilege CSR accesses with exact fault PCs, and store access and page faults with `mtval` = `rs1` |
 | `cf_ext_test/` | Compressed double-precision FP loads and stores (Zcd) |
@@ -305,6 +306,8 @@ can be debugged and where each one first stops.
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
 | `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a timer-ended `wfi`, and timer takes across a device load; 96 WFI deadlines and 48 device-load deadlines at four padding phases cover AXI latency, with each take's count equal to the instructions before `mepc` |
 | `irq_mie_window/` | A pending timer interrupt must be taken when a `csrsi`/`csrci` pair opens `mstatus.MIE` for one instruction |
+| `irq_take_hold_test/` | Machine timer interrupts taken within 500 cycles in loops of back-to-back device stores, and during an LR/SC increment loop on uncached BRAM (bram) or cached DDR (ddr) with every increment landing once |
+| `irq_take_latency/` | Delegated STI, LCOFI and SEI take latency in S-mode across device, atomic, fence, SIE-toggle, DDR-miss and WFI loops; every interrupt is taken, including between back-to-back device stores and after a cached store before a device read |
 | `isa_test/` | Self-checks for RV64IMAFDCB, Zicsr, Zicntr, Zifencei, Zicond, Zbc, Zbkb, Zbkc, and Zihintpause, plus M-mode CSRs and traps |
 | `itlb_test/` | Sv39 instruction translation in S- and U-mode: superpages, page-crossing instructions, fetch faults, `sfence.vma` and `satp` changes |
 | `jal_target_seam/` | A 4-byte `jal` entered as a taken-branch target at dword offset 4; needs the cached fetch path (`FROST_COCOTB_MEM_CONFIG=ddr`) |
@@ -352,6 +355,7 @@ can be debugged and where each one first stops.
 | `rv64_smoke/` | The smallest RV64I program: W-form operations, 6-bit shift amounts, and 64-bit loads and stores |
 | `satp_drain_test/` | A store committed just before a `satp` or `mstatus` write must drain before that write retires and flushes the pipeline |
 | `sum_toggle_test/` | S-mode SUM and MXR toggles against resident TLB entries: the live bits decide every access, no toggle walks a page table, and the toggle cost is reported |
+| `asid_test/` | S-mode `satp.ASID`, global pages and the SFENCE.VMA forms against resident TLB entries: two address spaces keep separate entries for one VA, a context switch walks nothing when both are resident, the global page serves every ASID, and each SFENCE.VMA form flushes exactly what the privileged spec names; reports ASIDLEN the way Linux probes it |
 | `served_window_resteer/` | A BTB-predicted loop branch to an upper-half target; `served_window_resteer_fetch_fuzz` uses uncached Normal fetches and requires AXI fuzz delays and predicted-target waits on each reset run, with count/sum checks across 2,000 iterations. The IF-stage unit bench explicitly checks stale-window rejection and retry |
 | `slot2_fault_test/` | A fetch fault on the second instruction of a fetch pair, one whose bytes encode a NOP included, must trap at that instruction with exact `mepc` and `mtval` |
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |
@@ -363,6 +367,7 @@ can be debugged and where each one first stops.
 | `sprintf_test/` | All 344 `sprintf`/`snprintf` checks against constant expected strings; the 2M-cycle simulation budget covers the measured 1.23M cycles in BRAM and DDR |
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp`; also the writable `menvcfg` and `senvcfg` bits |
 | `sscofpmf_test/` | Sscofpmf: `mhpmevent` OF/MINH/SINH/UINH fields, OF and `mip.LCOFIP` on a counter wrap, LCOFI taken in M and delegated to S, `scountovf` filtering by `mcounteren`, per-privilege counting of instructions and cycles, pending-clear races through `mip` and delegated `sip`, and interrupt priority after enabling a pending SSI through `mie`/`sie` |
+| `sstvala_fault_test/` | Sstvala for access faults from failed bus responses (the registry makes one DDR line answer SLVERR): doubleword, word and byte loads, LR and AMOs, misaligned loads the misaligned-access engine splits, a fetch from the line and an instruction whose second halfword starts it, in M, S and U, delegated and not, bare and through Sv39 where the virtual address differs from the physical one, each with exact cause, `xepc` and `mtval` or `stval` |
 | `sstvala_test/` | Sstvala: every illegal-instruction source in M, S and U, delegated and not, writes the faulting instruction's bits to `mtval` or `stval` (a compressed instruction's 16 bits zero-extended), including an instruction second in its fetch pair, one across a line or page boundary, and one reached after a mispredicted branch |
 | `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions |
 | `tick_torture/` | CLINT timer re-arming, lost-tick detection, and `wfi` wakeup under DDR traffic |
@@ -379,3 +384,6 @@ can be debugged and where each one first stops.
 | `wfi_seed_recovery/` | Mispredicted `jr` jumps with `wfi` on the wrong path; the bench checks that a wrong-path `wfi` at the ROB head during recovery does not set the interrupt resume PC |
 | `window_skip_repro/` | After a branch trained taken resolves not-taken, fetch must not skip the fall-through window; all 6,000 calls run with a 4M-cycle simulation budget (8M with fetch-latency fuzzing) |
 | `writecount_probe/` | `lr.w` sign extension on both dword halves in the Linux `i_writecount` sequence, with `sc.w` and `amoadd.w` |
+| `zawrs_test/` | Zawrs: `wrs.nto`/`wrs.sto` in M, S and U with `mstatus.TW`, LR/SC around `wrs.nto`, and the Linux `__cmpwait` loop |
+| `zicbop_test/` | Zicbop: `prefetch.i/r/w` (ORI with `rd` = x0) retire with no exception and no state change in M, S and U, on null, device, beyond-DDR, non-canonical, unmapped and supervisor-only addresses |
+| `zihpm_test/` | Zihpm: `hpmcounter3`..`31` privilege gating by `mcounteren`/`scounteren` in M, S and U, shadows of `mhpmcounter`, M-only and zero-only counters |

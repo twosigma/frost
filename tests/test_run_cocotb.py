@@ -474,6 +474,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("nic_loopback", "NIC frame loopback through DDR rings", True),
         )
     },
+    "nic_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_bench",
+        description="NIC benchmark ring replenishment and jumbo frames through loopback",
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DNIC_BENCH_QUICK"),
+            ("COCOTB_MAX_CYCLES", "4000000"),
+        ),
+    ),
     "nic_loopback": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -841,6 +851,36 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "F/D instructions trap without memory effects when mstatus.FS is Off"
         ),
     ),
+    "zicbop_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="zicbop_test",
+        nic_mac_clocks=False,
+        description=(
+            "Zicbop: prefetch.i/r/w retire with no exception in M, S and U, "
+            "on faulting, unmapped and supervisor-only addresses"
+        ),
+    ),
+    "zawrs_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="zawrs_test",
+        nic_mac_clocks=False,
+        description=(
+            "Zawrs: wrs.nto/wrs.sto in M, S and U with mstatus.TW, LR/SC "
+            "around wrs.nto, and the Linux __cmpwait loop"
+        ),
+    ),
+    "zihpm_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="zihpm_test",
+        nic_mac_clocks=False,
+        description=(
+            "Zihpm: hpmcounter3-31 gating by mcounteren/scounteren in M, S and U, "
+            "shadows of mhpmcounter, M-only and zero-only counters"
+        ),
+    ),
     "vec_state_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -878,6 +918,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sstvala: mtval/stval hold the faulting instruction bits for every "
             "illegal-instruction source in M, S and U, delegated and not"
+        ),
+    ),
+    "sstvala_fault_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sstvala_fault_test",
+        nic_mac_clocks=False,
+        description=(
+            "Sstvala: access faults from failed bus responses (loads, LR, AMOs, "
+            "misaligned loads, fetches) report the virtual address in mtval/stval, "
+            "bare and Sv39, in M, S and U, delegated and not"
+        ),
+        extra_env=(
+            (
+                "COCOTB_PLUSARGS",
+                "+axi_error_check=0 +axi_rd_error_addr=3000000",
+            ),
         ),
     ),
     "vec_state_test_v512": CocotbRunConfig(
@@ -969,6 +1026,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="cbo.zero with 32-byte L2 lines and assertions enabled",
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
         verilator_extra_args=("--assert", "-GL2_LINE_BYTES=32"),
+    ),
+    "cbo_mgmt_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_mgmt_test",
+        nic_mac_clocks=False,
+        description=(
+            "Zicbom cbo.clean/flush/inval as ordered no-ops: CBCFE and CBIE gates in S and U, "
+            "CBIE WARL, load-permission translation, store faults with mtval = rs1, device no-op"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+    ),
+    "cbo_mgmt_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_mgmt_test",
+        nic_mac_clocks=False,
+        description="Zicbom with the cache, load-queue and store-queue assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+        verilator_extra_args=("--assert",),
     ),
     "cbo_zero_bench": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1218,6 +1295,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "S-mode SUM and MXR toggles keep TLB entries and apply the live bits"
         ),
     ),
+    "asid_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="asid_test",
+        nic_mac_clocks=False,
+        description=(
+            "satp.ASID, global pages and the SFENCE.VMA forms against live TLB entries"
+        ),
+    ),
     "imsic_csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1339,6 +1425,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sstc timer access controls and delegated supervisor timer interrupts"
         ),
+    ),
+    "irq_take_latency": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="irq_take_latency",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        description=(
+            "Delegated STI, LCOFI and SEI take latency in S-mode across device, "
+            "atomic, fence, SIE-toggle, DDR-miss and WFI instruction mixes, including "
+            "back-to-back device stores and a cached store before a device read"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "1500000"),),
     ),
     "sscofpmf_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1503,6 +1602,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="A pending timer interrupt is taken in a one-instruction MIE "
         "window",
+    ),
+    "irq_take_hold_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="irq_take_hold_test",
+        nic_mac_clocks=False,
+        description="Machine timer interrupts are taken promptly in device store "
+        "loops and during an LR/SC increment loop, and every increment lands once",
+        extra_env=(("COCOTB_MAX_CYCLES", "400000"),),
     ),
     "ns16550_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -2486,6 +2594,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="vec_engine",
         description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
         verilator_extra_args=("-GVLEN=256",),
+    ),
+    "vec_vmt": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vmt",
+        hdl_toplevel_module="vec_vmt",
+        description=(
+            "Vector memory table allocation, retirement, flushes, completion and ranges "
+            "against a model of its lifecycle"
+        ),
     ),
     "vec_hold_rows": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_hold_rows",
@@ -4097,6 +4213,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Walk-cache hits, discards and Svvptc-permitted page-table changes "
             "against a reference Sv39 walk"
+        ),
+    ),
+    "l2tlb": CocotbRunConfig(
+        python_test_module="cocotb_tests.mmu.test_l2tlb",
+        hdl_toplevel_module="l2tlb",
+        description=(
+            "Second-level TLB: ASID and global entries, superpages, every SFENCE.VMA "
+            "form, 512-page and 32-superpage residency and a random run against a reference"
         ),
     ),
     "soc_vcu118": CocotbRunConfig(

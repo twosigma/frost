@@ -78,20 +78,31 @@ LINUX_IMAGE_MAGIC = b"RISCV\x00\x00\x00"  # header offset 0x30
 LINUX_IMAGE_SIZE_OFFSET = 0x10  # u64 image_size (text + bss)
 
 # What the DT advertises: the ISA the core implements, in the spelling both
-# OpenSBI and Linux parse. The unprivileged subset matches
-# FROST_MARCH_EXTENSIONS in sw/common/common.mk and misa in csr_file.sv.
+# OpenSBI and Linux parse. Single-letter imafdc and zba/zbb/zbs match misa in
+# csr_file.sv; beyond FROST_MARCH_EXTENSIONS in sw/common/common.mk, the
+# unprivileged entries include zicbom, zkt, and the memory and block-size
+# capability names (zic64b, ziccamoa, ziccif, zicclsm, ziccrse, za64rs).
 # linux/README.md documents the privileged extensions too.
 ISA_BASE = "rv64i"
 ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
-    "zicsr", "zifencei", "zicntr", "zicboz",
-    "zba", "zbb", "zbc", "zbs", "zbkb", "zbkc", "zicond", "zihintpause",
-    "smaia", "ssaia", "sscofpmf", "sstc", "sstvala", "svade", "svvptc",
+    "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
+    "zicclsm", "ziccrse", "zicntr", "zicond", "zicsr", "zifencei",
+    "zihintpause", "zihpm", "za64rs", "zawrs", "zba", "zbb",
+    "zbc", "zbkb", "zbkc", "zbs", "zkt", "smaia",
+    "ssaia", "ssccptr", "sscofpmf", "sscounterenw", "sstc", "sstvala",
+    "sstvecd", "svade", "svvptc",
 )  # fmt: skip
+# Zicbom block size: cbo.clean, cbo.flush and cbo.inval act on the same
+# 64-byte L2 line (riscv_pkg::CboMgmtBlockBytes).
+CBOM_BLOCK_BYTES = 64
 # Zicboz block size: cbo.zero zeroes one 64-byte L2 line
 # (riscv_pkg::CboZeroBlockBytes).
 CBOZ_BLOCK_BYTES = 64
-ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sscofpmf_sstc_sstvala_svade_svvptc"
+# Zicbop block size: the prefetch hints name the same 64-byte block (they
+# execute as no-ops).
+CBOP_BLOCK_BYTES = 64
+ISA_STRING = "rv64imafdc_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintpause_zihpm_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_sstc_sstvala_sstvecd_svade_svvptc"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
@@ -327,7 +338,9 @@ def gen_dts(
 \t\t\triscv,isa-base = "{ISA_BASE}";
 \t\t\triscv,isa = "{ISA_STRING}";
 \t\t\triscv,isa-extensions = {ext_list};
+\t\t\triscv,cbom-block-size = <{CBOM_BLOCK_BYTES}>;
 \t\t\triscv,cboz-block-size = <{CBOZ_BLOCK_BYTES}>;
+\t\t\triscv,cbop-block-size = <{CBOP_BLOCK_BYTES}>;
 
 \t\t\tcpu0_intc: interrupt-controller {{
 \t\t\t\t#interrupt-cells = <0x01>;

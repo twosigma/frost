@@ -147,20 +147,25 @@ every supported extension and privilege mode.
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
+| **Zihpm**        | Performance counters `hpmcounter3`-`10`, gated by `mcounteren`/`scounteren` |
 | **Zifencei**     | Instruction fence                              |
 | **Zicond**       | Conditional zero                               |
 | **Zbkb**         | Bit manipulation for crypto                    |
 | **Zbc**          | Carry-less multiplication (clmul, clmulh, clmulr) |
 | **Zbkc**         | Carry-less multiplication for crypto (clmul, clmulh) |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
+| **Zawrs**        | `wrs.nto`/`wrs.sto` retire at once; `wrs.nto` traps below M with `mstatus.TW` set |
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
+| **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks), ordered no-ops while every bus master is coherent; the device tree lists it with `riscv,cbom-block-size = <64>` |
+| **Zicbop**       | Cache-block prefetch hints (`prefetch.i/r/w`), executed as no-ops |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
-| **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended |
+| **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended; an instruction or data access, misaligned or page fault, a failed bus response included, writes the faulting virtual address |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
 | **Svvptc**       | A PTE changed from invalid to valid becomes visible to the walker without `sfence.vma` |
+| **Zic64b, Ziccif, Ziccrse, Ziccamoa, Zicclsm, Za64rs, Zkt, Ssccptr, Sstvecd, Sscounterenw** | RVA22 profile properties: 64-byte cache blocks, instruction fetch, LR/SC, AMOs and misaligned loads and stores in cached memory (in hardware on the X3, emulated by OpenSBI on the VCU118), reservation sets of at most 64 bytes, data-independent latency for the Zkt instructions, page-table walks of cached memory, direct-mode `stvec`, and a writable `scounteren` bit for each counter that is not read-only zero |
 | **User Mode**    | U-mode privilege and system calls |
 
 ### Microarchitecture
@@ -181,8 +186,10 @@ every supported extension and privilege mode.
   bimodal and a tagged path-history direction predictor, and an 8-entry
   return stack. A mispredicted conditional branch redirects fetch and
   restores the rename tables the cycle after it resolves.
-- Sv39 virtual memory with hardware page-table walks and separate 16-entry
-  instruction and data TLBs. Intra-page instruction translation uses the
+- Sv39 virtual memory with hardware page-table walks, separate 16-entry
+  instruction and data TLBs backed by a 512-entry second-level TLB and a
+  32-entry superpage array, and nine-bit ASIDs with global pages and
+  selective `sfence.vma`. Intra-page instruction translation uses the
   live page offset without a fetch bubble; eligible data accesses use a
   last-page translation bypass.
 - Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB
@@ -259,10 +266,9 @@ The lint hooks in `check` can modify files, so review the diff afterwards.
 Use `./scripts/frost.py lint` for lint alone, or add `--fail-fast` to `check`
 to stop at the first failing phase.
 
-CI runs on pushes and pull requests to `main`. On a pull request, Lint and the
-fast Python tests run by default and the rest runs when the pull request has
-the `run-ci` label. The OpenROAD flow runs on a pull request with the
-`run-asic` label. Pushes to `main` run everything. The full run covers the RISC-V
+CI runs on pushes to `main`. A pull request starts no CI by itself: adding the
+`run-ci` label runs the CI workflow on it, and `run-asic` runs the OpenROAD
+flow. The full run covers the RISC-V
 architecture tests and riscv-torture programs against Spike reference
 results, the riscv-tests suites, TestRIG's instruction-by-instruction
 comparison with the Sail RISC-V model, unit benches for the CPU and SoC

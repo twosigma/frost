@@ -156,7 +156,7 @@ def _expected_pairable_native_hi(word: int) -> int:
 
 
 def _expected_slot2_start_valid_lo(word: int) -> int:
-    """Independently model Slot2StartValidLo (sideband bit 10)."""
+    """Slot 2 excludes native serializing, FP-compute and vector instructions."""
     lo = word & 0xFFFF
     opcode = lo & 0x7F
     compressed = (lo & 0x3) != 0b11
@@ -171,7 +171,11 @@ def _expected_slot2_start_valid_lo(word: int) -> int:
         _GENERATOR.OPC_FMSUB,
         _GENERATOR.OPC_FNMSUB,
         _GENERATOR.OPC_FNMADD,
+        _GENERATOR.OPC_OP_V,
     }
+    # Vector loads and stores: LOAD-FP or STORE-FP with a vector width.
+    vector_mem = opcode in {0b0000111, 0b0100111} and ((lo >> 12) & 7) in {0, 5, 6, 7}
+    native_fp_compute = native_fp_compute or vector_mem
     return int(compressed or not (native_serialize or native_fp_compute))
 
 

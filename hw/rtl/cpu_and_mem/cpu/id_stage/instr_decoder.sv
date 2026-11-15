@@ -16,15 +16,48 @@
 
 /*
   Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbc, Zbkb, Zbkc, Zicsr,
-  Zicboz, and M/S/U-mode privileged instructions. Compressed instructions arrive
+  Zicboz, Zicbom, and M/S/U-mode privileged instructions. Compressed instructions arrive
   already expanded. o_instr_op selects the operation; o_illegal flags any
   encoding not decoded here, including reserved FP rounding modes.
  */
 module instr_decoder (
     input  riscv_pkg::instr_t    i_instr,
+    // cbo.inval executes as cbo.flush (CBIE = 01 at a less privileged level,
+    // see csr_file), so it decodes as CBO_FLUSH.
+    input  logic                 i_cbo_inval_flush = 1'b0,
     output riscv_pkg::instr_op_e o_instr_op,
     output logic                 o_illegal
 );
+
+  // The vector load and store forms decoded as VLOAD and VSTORE, for an instruction with a
+  // vector width (riscv_pkg::is_vector_mem): mew 0 and unit-stride
+  // addressing (mop 00), then by lumop/sumop (bits 24:20):
+  //   00000 unit-stride, one field (nf 0);
+  //   01000 whole-register, nf 0, 1, 3 or 7 (1, 2, 4 or 8 registers),
+  //         unmasked; a store only with width 000;
+  //   01011 mask (vlm.v, vsm.v), nf 0, unmasked, width 000.
+  // Strided, indexed, segment and fault-only-first forms are illegal. Rules
+  // that depend on the register numbers or vtype are not checked here.
+  function automatic logic vector_mem_ok(input logic [31:0] insn, input logic is_store);
+    logic [2:0] nf, width;
+    logic [4:0] umop;
+    logic vm;
+    nf = insn[31:29];
+    vm = insn[25];
+    umop = insn[24:20];
+    width = insn[14:12];
+    vector_mem_ok = 1'b0;
+    if (!insn[28] && (insn[27:26] == 2'b00)) begin
+      unique case (umop)
+        5'b00000: vector_mem_ok = nf == 3'd0;
+        5'b01000:
+        vector_mem_ok = vm && ((nf == 3'd0) || (nf == 3'd1) || (nf == 3'd3) || (nf == 3'd7)) &&
+            (!is_store || (width == 3'b000));
+        5'b01011: vector_mem_ok = vm && (nf == 3'd0) && (width == 3'b000);
+        default: vector_mem_ok = 1'b0;
+      endcase
+    end
+  endfunction
 
   // The vector arithmetic encodings implemented so far (see vec_engine).
   function automatic logic vector_arith_ok(input logic [5:0] funct6, input logic [2:0] funct3,
@@ -321,12 +354,18 @@ module instr_decoder (
         else o_instr_op = riscv_pkg::FENCE;  // FENCE (memory ordering)
         3'b001: o_instr_op = riscv_pkg::FENCE_I;  // FENCE.I (instruction fetch ordering)
         // CBO.ZERO (Zicboz) is 0x0040A00F with any rs1: funct12 0x004, rd x0.
-        // The Zicbom encodings (cbo.clean/flush/inval) stay illegal.
+        // Zicbom: CBO.INVAL funct12 0x000, CBO.CLEAN 0x001, CBO.FLUSH 0x002,
+        // each with rd x0 and any rs1. Other funct12 values are illegal.
         3'b010:
-        if (i_instr.funct7 == 7'b0000000 && i_instr.source_reg_2 == 5'b00100 &&
-            i_instr.dest_reg == 5'b0)
-          o_instr_op = riscv_pkg::CBO_ZERO;
-        else o_illegal = 1'b1;
+        if (i_instr.funct7 != 7'b0000000 || i_instr.dest_reg != 5'b0) o_illegal = 1'b1;
+        else
+          unique case (i_instr.source_reg_2)
+            5'b00100: o_instr_op = riscv_pkg::CBO_ZERO;
+            5'b00000: o_instr_op = i_cbo_inval_flush ? riscv_pkg::CBO_FLUSH : riscv_pkg::CBO_INVAL;
+            5'b00001: o_instr_op = riscv_pkg::CBO_CLEAN;
+            5'b00010: o_instr_op = riscv_pkg::CBO_FLUSH;
+            default:  o_illegal = 1'b1;
+          endcase
         default: o_illegal = 1'b1;
       endcase
 
@@ -356,6 +395,14 @@ module instr_decoder (
             12'b0001000_00101: o_instr_op = riscv_pkg::WFI;
             // DRET: return from Debug Mode - encoding 0x7B200073
             12'b0111101_10010: o_instr_op = riscv_pkg::DRET;
+            // Zawrs WRS.NTO (0x00D00073) and WRS.STO (0x01D00073), rs1 = rd = 0.
+            // FROST never stalls (the stall is optional), so both retire as
+            // the no-operand PAUSE hint. id_stage makes WRS.NTO illegal below
+            // M while mstatus.TW is set.
+            12'b0000000_01101, 12'b0000000_11101:
+            if (i_instr.source_reg_1 == 5'b0 && i_instr.dest_reg == 5'b0)
+              o_instr_op = riscv_pkg::PAUSE;
+            else o_illegal = 1'b1;
             default: o_illegal = 1'b1;
           endcase
         riscv_pkg::CSR_RW: o_instr_op = riscv_pkg::CSRRW;  // Atomic read/write
@@ -408,20 +455,34 @@ module instr_decoder (
 
       // FLW/FLD - Load floating-point word/double (I-type format)
       // Uses integer rs1 for address, writes to FP rd
+      // Vector loads share the opcode, with a vector width (VLOAD).
       riscv_pkg::OPC_LOAD_FP:
       if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
         o_instr_op = riscv_pkg::FLW;
       end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
         o_instr_op = riscv_pkg::FLD;
+      end else if (riscv_pkg::is_vector_mem(
+              i_instr.opcode, i_instr.funct3
+          ) && vector_mem_ok(
+              32'(i_instr), 1'b0
+          )) begin
+        o_instr_op = riscv_pkg::VLOAD;
       end else o_illegal = 1'b1;
 
       // FSW/FSD - Store floating-point word/double (S-type format)
       // Uses integer rs1 for address, FP rs2 for data
+      // Vector stores share the opcode, with a vector width (VSTORE).
       riscv_pkg::OPC_STORE_FP:
       if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
         o_instr_op = riscv_pkg::FSW;
       end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
         o_instr_op = riscv_pkg::FSD;
+      end else if (riscv_pkg::is_vector_mem(
+              i_instr.opcode, i_instr.funct3
+          ) && vector_mem_ok(
+              32'(i_instr), 1'b1
+          )) begin
+        o_instr_op = riscv_pkg::VSTORE;
       end else o_illegal = 1'b1;
 
       // Fused multiply-add variants (R4-type format)

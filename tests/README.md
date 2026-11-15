@@ -134,13 +134,21 @@ The `coherence_endpoints`, `coherence_endpoints_single`, and
 `coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
 identity reuse, independent probe queues, keyed PutAck cancellation, errors,
 and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
-identities. The `coherence_endpoints_local` and
+identities. Admission checks cover every request identity and opcode in both
+epochs, including each hart's two class-3 line-client identities.
+The `coherence_endpoints_local` and
 `coherence_endpoints_local_wide` benches apply the same checks to request
 endpoints with separate phase occupancy registers.
 `test_coherence_endpoint_build.py` elaborates and synthesizes these geometries, checks the six-bit home-ID capacity boundary, rejects invalid
 parameters, and checks cached, cache-disabled and DMA-disabled CPU builds.
 All CPU configurations use the coherent interfaces and their ordinary source
 filelists.
+
+`imem_predecode_line` compares generated metadata with RTL for every 16-bit
+parcel in both halfword positions. Its slot-2 checks exclude native SYSTEM,
+MISC-MEM, AMO, FP-compute and OP-V instructions. `imem_predecode_fast_replica`
+and `imem_predecode_capacity` apply that rule to the stored sideband and its
+scalar copies through programming writes, bank swaps and overlay boundaries.
 
 `coherence_dma_ingress` and `coherence_dma_ingress_8` issue all four or eight credits before G and check reordered
 G/C/U, full identities, streaming hints and reset at response presentation. The
@@ -388,7 +396,7 @@ of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `lq_stale_slot_probe` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `irq_take_latency`, `lq_stale_slot_probe` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
 
@@ -531,9 +539,14 @@ domain restarts, wire-side PAUSE validation during congestion, and cancellation 
 `nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
+`nic_bench` also runs in both tiers with `NIC_BENCH_QUICK`: eight-entry rings,
+repeated producer wraparound, short and jumbo frames, and raw MAC loopback.
+This mode checks descriptor replenishment and error reporting; its printed rates
+are not performance measurements. CI selects it in the runtime-and-other shard.
 `test_frost_net10g_driver.py` checks packaging and the descriptor ABI, and compiles selected
-driver helpers against C fixtures for DMA teardown, reconfiguration and GSO fallback. It does
-not replace executing the kernel driver.
+driver helpers against C fixtures for DMA teardown, reconfiguration, GSO fallback,
+RX fragment sizes, copybreak boundaries and sync ordering. It does not replace executing
+the kernel driver or checking the kernel's page-pool reference counting.
 
 ### Compliance and torture runners
 
@@ -1161,11 +1174,12 @@ The [CI workflow](../.github/workflows/ci.yml) runs these checks in the
 pinned Docker image. The ASIC flow runs in its own
 [workflow](../.github/workflows/asic.yml) and its own image:
 
-On a pull request, only Lint and the fast Python tests run by default. The
-remaining jobs of the CI workflow run when the pull request has the `run-ci`
-label, and the ASIC flow runs when it has the `run-asic` label. Adding a label
-starts the corresponding run, and later pushes to the pull request run it
-again; adding any other label starts nothing. Pushes to `main` run every job.
+A pull request starts no run by itself. Adding the `run-ci` label runs the CI
+workflow on the pull request's current head, and `run-asic` runs the ASIC
+flow; adding any other label starts nothing. To run again after a later push,
+remove the label and add it again, or start a manual run of the workflow on
+the branch. Pushes to `main` run every job. `./scripts/frost.py check` runs the
+Lint and Fast Python Tests jobs locally.
 
 | Suite | Configurations |
 | --- | --- |

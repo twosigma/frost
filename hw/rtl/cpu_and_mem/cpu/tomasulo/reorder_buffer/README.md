@@ -248,7 +248,10 @@ stateDiagram-v2
 ```
 
 State names omit the RTL's `SERIAL_` prefix. `SQ empty` means committed
-stores have drained (`i_sq_committed_empty`). `sync fence` is FENCE.I or
+stores have drained (`i_sq_committed_empty`); the wrapper also holds it low
+while a retired vector memory instruction is still accessing memory, so the
+serializer's FENCE, FENCE.I, SFENCE.VMA, CSR-translation and xRET drains wait
+for those accesses too (`i_vmem_quiet`). `sync fence` is FENCE.I or
 SFENCE.VMA (the ROB treats SFENCE.VMA as a subtype of FENCE.I). `permit`
 means retirement is allowed: no commit hold, early-recovery pulse, or flush.
 `xRET` covers MRET, SRET, and DRET. A comma joins conditions that must all
@@ -292,6 +295,17 @@ so code fetched after the fence sees the stores before it. For SFENCE.VMA,
 `o_sfence_window` is high for exactly the same cycles, and the wrapper turns
 it into the TLB and page-table-walker invalidate.
 
+An SFENCE.VMA also carries its rs1 and rs2 values. With `SfenceOperands` set
+(`tomasulo_wrapper` does), the MEM_RS holds the instruction until both
+registers are ready and, when it issues, hands the page number (rs1[38:12]),
+the ASID (rs2[8:0]) and two flags (rs1 and rs2 are not x0) to
+`sfence_operand_store` under its ROB tag. The store clears an entry's ready bit
+when the ROB allocates the tag, so a flushed SFENCE.VMA leaves nothing behind.
+The serializer leaves IDLE for an SFENCE.VMA only when its entry is ready, and
+the head entry is registered into `o_sfence_flush`, a `tlb_flush_t` whose `en`
+is `o_sfence_window`. The head is pinned throughout FENCE_I_SYNC, so the
+filter is stable for the whole window.
+
 FENCE.I, SFENCE.VMA, and translation CSRs end in a full flush and refetch.
 `o_fence_class_flush_event` marks the event, and `o_fence_i_flush`, the same
 signal a cycle later, requests the flush:
@@ -330,7 +344,9 @@ full flush removes it. `o_trap_value` is the entry's value field, where the
 producer parks the faulting virtual address for instruction access and page
 faults (the INT ALU shim) and for misaligned, access, and page faults on
 data (the load and store paths). cpu_ooo writes it to `mtval` or `stval` for
-those causes. `o_trap_insn` is the head entry's instruction bits, which
+those causes, except for a data access fault from a failed bus response: that
+entry's value is zero, and cpu_ooo takes the virtual address from the
+wrapper's table of issue addresses instead. `o_trap_insn` is the head entry's instruction bits, which
 dispatch stores in the head-only allocation memory (a compressed
 instruction's 16 bits zero-extended). cpu_ooo writes them to `mtval` or
 `stval` for an illegal-instruction exception, whichever stage raised it.

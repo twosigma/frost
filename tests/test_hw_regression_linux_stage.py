@@ -2111,6 +2111,8 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
     # nic_echo needs a link partner sending the cocotb wire peer's frames.
     assert "nic_echo" in hw.valid_apps_for_board(board)
     assert "nic_echo" not in stages
+    assert ("nic_bench" in hw.valid_apps_for_board(board)) == (board == "vcu118")
+    assert "nic_bench" not in stages
     assert "fsbl" not in hw.valid_apps_for_board(board)
     assert not set(hw.COREMARK_PRO_APP_NAMES) & set(stages)
     assert len(stages) == len(set(stages))

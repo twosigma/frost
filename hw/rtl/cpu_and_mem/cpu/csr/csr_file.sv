@@ -24,9 +24,14 @@
   delegated supervisor bits at every privilege; sip permits writes to
   delegated SSIP and LCOFIP. medeleg/mideleg use the package WARL masks:
   M-mode ECALL and the machine software, timer and external interrupt classes
-  cannot delegate. menvcfg implements FIOM, CBZE and STCE; senvcfg, required
-  for S/U support, implements FIOM and CBZE. FIOM is stored only (see
-  riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero below M.
+  cannot delegate. menvcfg implements FIOM, CBIE, CBCFE, CBZE and STCE;
+  senvcfg, required for S/U support, implements FIOM, CBIE, CBCFE and CBZE.
+  FIOM is stored only (see riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero
+  below M, and CBCFE and CBIE gate cbo.clean/cbo.flush and cbo.inval. CBIE is
+  WARL {00, 01, 11}: a write of the reserved 10 stores 00. With
+  CBO_INVAL_AS_FLUSH, 11 also stores 01 and cbo.inval executes as cbo.flush at
+  every privilege. PBMTE is read-only zero: the page-table walker has no
+  Svpbmt.
 
   mstatus.MPRV makes data accesses use MPP. MPP and dcsr.prv fold reserved
   2'b10 to U. FS resets to Initial and becomes Dirty on FP state writes;
@@ -104,6 +109,10 @@ module csr_file #(
     // This removes redundant trap priority from write paths. The default
     // retains trap-over-write priority.
     parameter bit COMMIT_EXCLUDES_CONTROL_TAKE = 1'b0,
+    // Zicbom: execute cbo.inval as cbo.flush at every privilege, so it never
+    // discards dirty data (the CHERI recommendation). CBIE then stores 01
+    // for a write of 11.
+    parameter bit CBO_INVAL_AS_FLUSH = 1'b0,
     // 1: i_perf_counter_csr_half already holds the counter half that the
     // current i_csr_address reads (cpu_ooo's aggregator selects it on the
     // edge that registers the address), and mperfdata/mperfdatah return it.
@@ -137,6 +146,8 @@ module csr_file #(
     input logic [1:0] i_instruction_retired_count,
     input logic [1:0] i_branch_retired_count = '0,
     input logic [1:0] i_branch_mispredict_count = '0,
+    // L1 TLB misses: a walk request accepted by the second-level TLB, whether
+    // that array answers it or the walker does.
     input logic       i_itlb_miss = '0,
     input logic       i_dtlb_miss = '0,
     input logic       i_l1d_miss = '0,
@@ -269,12 +280,18 @@ module csr_file #(
     output logic o_wfi_illegal,
     output logic o_priv_is_u,
 
-    // One-cycle TLB/PTW invalidate pulse for any enabled committed satp
+    // One-cycle translation-change pulse for any enabled committed satp
     // access, or an mstatus commit whose computed result changes MPRV (or
-    // MPP while MPRV=1). SUM and MXR changes do not invalidate: lookups apply
-    // them live. The ROB serializer separately drains committed stores and
-    // flushes the pipeline.
+    // MPP while MPRV=1). It discards the walk in flight and the walk cache and
+    // drops the MMUs' transient results (last-page buffer, fetch result, fault
+    // memo); it leaves TLB entries alone, since they are ASID-tagged. SUM and
+    // MXR changes do not raise it: lookups apply them live. The ROB serializer
+    // separately drains committed stores and flushes the pipeline.
     output logic o_csr_translation_flush_req,
+    // One-cycle pulse, the cycle after o_csr_translation_flush_req's cause,
+    // that also empties every TLB entry: an MPRV or MPP-under-MPRV change, or
+    // a satp write that names another root under the same ASID.
+    output logic o_csr_tlb_flush_all_req,
 
     // Data-translation state, delayed one cycle. Every input change (satp,
     // status, privilege) is followed by a full flush whose refetch outlasts
@@ -283,6 +300,7 @@ module csr_file #(
     output logic o_mmu_sum,
     output logic o_mmu_mxr,
     output logic o_mmu_eff_priv_u,  // effective data privilege == U
+    output logic [riscv_pkg::AsidBits-1:0] o_mmu_asid,  // satp.ASID
     // Fetch uses current privilege; MPRV affects data only. These outputs
     // decode from fetch_priv_q, which equals priv_q on every cycle. There
     // is no extra delay: a privilege or mode change immediately hides old
@@ -290,6 +308,7 @@ module csr_file #(
     // With translation off, the IMMU is combinational.
     output logic o_fetch_translation_active,  // satp Sv39 && priv != M
     output logic o_fetch_priv_u,  // current privilege == U
+    output logic [riscv_pkg::AsidBits-1:0] o_fetch_asid,  // satp.ASID, no delay
     // Root PPN for the walker (satp.PPN, registered storage). A satp write
     // also raises o_csr_translation_flush_req, which discards any walk in
     // flight.
@@ -319,6 +338,20 @@ module csr_file #(
     // set. A legal envcfg write affects only lower privilege. Traps, xRETs
     // and debug transitions change the executing privilege and flush decode.
     output logic o_cbo_zero_illegal,
+    // Zicbom, with the same change rule: cbo.clean and cbo.flush are illegal
+    // in S without menvcfg.CBCFE and in U without both CBCFE bits; cbo.inval
+    // is illegal in S with menvcfg.CBIE = 00 and in U with either CBIE = 00;
+    // o_cbo_inval_flush selects a flush for cbo.inval below M when a CBIE
+    // that applies is 01 (always, with CBO_INVAL_AS_FLUSH).
+    output logic o_cbo_cf_illegal,
+    output logic o_cbo_inval_illegal,
+    output logic o_cbo_inval_flush,
+
+    // Zawrs: wrs.nto is illegal below M while mstatus.TW is set (FROST's
+    // bounded time limit is zero, as for WFI). id_stage decodes it as
+    // illegal while set. Changes only on an mstatus write (a translation-class
+    // CSR), a trap or an xRET, each followed by a full flush.
+    output logic o_wrs_nto_illegal,
 
     // Debug Mode state for allocation legality, trap routing, halt reporting,
     // and single stepping. Changes require a flushing trap/DRET or a
@@ -623,12 +656,26 @@ module csr_file #(
 
   logic menvcfg_stce, menvcfg_fiom, senvcfg_fiom;
   logic menvcfg_cbze, senvcfg_cbze;
+  logic menvcfg_cbcfe, senvcfg_cbcfe;
+  logic [1:0] menvcfg_cbie, senvcfg_cbie;
   logic [XLEN-1:0] menvcfg, senvcfg;  // Readback views of the stored fields
   assign menvcfg = (XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit) |
       (XLEN'(menvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
+      (XLEN'(menvcfg_cbcfe) << riscv_pkg::EnvcfgCbcfeBit) |
+      (XLEN'(menvcfg_cbie) << riscv_pkg::EnvcfgCbieLsb) |
       (XLEN'(menvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
   assign senvcfg = (XLEN'(senvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
+      (XLEN'(senvcfg_cbcfe) << riscv_pkg::EnvcfgCbcfeBit) |
+      (XLEN'(senvcfg_cbie) << riscv_pkg::EnvcfgCbieLsb) |
       (XLEN'(senvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
+  // CBIE WARL: the reserved 10 stores 00; with CBO_INVAL_AS_FLUSH, 11 stores
+  // 01, so the field never selects an invalidate.
+  function automatic logic [1:0] cbie_warl(input logic [1:0] written);
+    if (written == 2'b10) cbie_warl = riscv_pkg::EnvcfgCbieIllegal;
+    else if (CBO_INVAL_AS_FLUSH && written == riscv_pkg::EnvcfgCbieInval)
+      cbie_warl = riscv_pkg::EnvcfgCbieFlush;
+    else cbie_warl = written;
+  endfunction
 
   // Supervisor trap CSRs.
   logic [XLEN-1:0] stvec;  // Supervisor trap vector (MODE bit 1 forced 0, like mtvec)
@@ -639,23 +686,43 @@ module csr_file #(
   assign o_stimecmp_blocked = gate_priv_is_s && !menvcfg_stce;
   assign o_cbo_zero_illegal = (gate_priv_is_s && !menvcfg_cbze) ||
       (gate_priv_is_u && !(menvcfg_cbze && senvcfg_cbze));
+  assign o_cbo_cf_illegal = (gate_priv_is_s && !menvcfg_cbcfe) ||
+      (gate_priv_is_u && !(menvcfg_cbcfe && senvcfg_cbcfe));
+  assign o_cbo_inval_illegal =
+      (gate_priv_is_s && (menvcfg_cbie == riscv_pkg::EnvcfgCbieIllegal)) ||
+      (gate_priv_is_u && ((menvcfg_cbie == riscv_pkg::EnvcfgCbieIllegal) ||
+                          (senvcfg_cbie == riscv_pkg::EnvcfgCbieIllegal)));
+  // An illegal cbo.inval never reaches the decode that reads this, so 00 and
+  // 01 need not be told apart: below M, an inval executes as a flush unless
+  // every CBIE that applies is 11.
+  assign o_cbo_inval_flush = CBO_INVAL_AS_FLUSH ||
+      (gate_priv_is_s && (menvcfg_cbie != riscv_pkg::EnvcfgCbieInval)) ||
+      (gate_priv_is_u && ((menvcfg_cbie != riscv_pkg::EnvcfgCbieInval) ||
+                          (senvcfg_cbie != riscv_pkg::EnvcfgCbieInval)));
+  assign o_wrs_nto_illegal = (gate_priv_is_s || gate_priv_is_u) && mstatus_tw;
   logic [XLEN-1:0] sscratch;
   logic [XLEN-1:0] sepc;  // bit 0 forced 0, like mepc
   logic [XLEN-1:0] scause;
   logic [XLEN-1:0] stval;
   // satp supports Bare and Sv39; an unsupported MODE leaves the whole
-  // register unchanged (privileged spec). ASID is WARL-0. All 44 PPN bits
-  // are stored so the walker can fault on roots outside cached DDR.
+  // register unchanged (privileged spec). ASID is WARL with ASIDLEN = 9: bits
+  // [52:44] store what is written and [59:53] read zero, in Bare mode too (Linux
+  // sizes its allocator by writing all ones to the ASID field of a Bare satp
+  // and reading back). All 44 PPN bits are stored so the walker can fault on
+  // roots outside cached DDR.
   localparam bit SatpSv39Supported = 1'b1;
   localparam logic [3:0] SatpModeBare = 4'd0;
   localparam logic [3:0] SatpModeSv39 = 4'd8;
   localparam int unsigned SatpPpnBits = 44;
+  localparam int unsigned SatpAsidBits = riscv_pkg::AsidBits;
   logic satp_mode_sv39;  // 0 = Bare, 1 = Sv39
+  logic [SatpAsidBits-1:0] satp_asid;
   logic [SatpPpnBits-1:0] satp_ppn;
   logic [XLEN-1:0] satp;
   assign satp = {
     satp_mode_sv39 ? SatpModeSv39 : SatpModeBare,  // MODE [63:60]
-    16'b0,  // ASID [59:44] (WARL-0)
+    7'b0,  // ASID [59:53] (above ASIDLEN)
+    satp_asid,  // ASID [52:44]
     satp_ppn  // PPN [43:0]
   };
 
@@ -1712,11 +1779,16 @@ module csr_file #(
       mip_stip                   <= 1'b0;
       mip_seip                   <= 1'b0;
       satp_mode_sv39             <= 1'b0;
+      satp_asid                  <= '0;
       satp_ppn                   <= '0;
       menvcfg_stce               <= 1'b0;
       menvcfg_cbze               <= 1'b0;
+      menvcfg_cbcfe              <= 1'b0;
+      menvcfg_cbie               <= 2'b00;
       menvcfg_fiom               <= 1'b0;
       senvcfg_cbze               <= 1'b0;
+      senvcfg_cbcfe              <= 1'b0;
+      senvcfg_cbie               <= 2'b00;
       senvcfg_fiom               <= 1'b0;
       stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       perf_counter_select        <= '0;
@@ -1779,27 +1851,34 @@ module csr_file #(
         riscv_pkg::CsrScause: scause <= scause_new_value;
         riscv_pkg::CsrStval: stval <= stval_new_value;
         // satp: a write carrying an unsupported MODE leaves the whole
-        // register unchanged (privileged-spec rule). ASID is WARL-0; the
-        // PPN field stores all written bits.
+        // register unchanged (privileged-spec rule). The ASID field keeps its
+        // low 9 bits; the PPN field stores all written bits.
         riscv_pkg::CsrSatp: begin
           if (satp_new_value[63:60] == SatpModeBare) begin
             satp_mode_sv39 <= 1'b0;
+            satp_asid <= satp_new_value[SatpPpnBits+:SatpAsidBits];
             satp_ppn <= satp_new_value[SatpPpnBits-1:0];
           end else if (SatpSv39Supported && (satp_new_value[63:60] == SatpModeSv39)) begin
             satp_mode_sv39 <= 1'b1;
+            satp_asid <= satp_new_value[SatpPpnBits+:SatpAsidBits];
             satp_ppn <= satp_new_value[SatpPpnBits-1:0];
           end
         end
-        // menvcfg implements FIOM, CBZE and STCE, senvcfg FIOM and CBZE (the
-        // rest stays WARL-0); stimecmp is the full 64-bit compare value.
+        // menvcfg implements FIOM, CBIE, CBCFE, CBZE and STCE, senvcfg
+        // FIOM, CBIE, CBCFE and CBZE (the rest stays WARL-0); stimecmp is the
+        // full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
-          menvcfg_stce <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
-          menvcfg_cbze <= menvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
-          menvcfg_fiom <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+          menvcfg_stce  <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
+          menvcfg_cbze  <= menvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
+          menvcfg_cbcfe <= menvcfg_new_value[riscv_pkg::EnvcfgCbcfeBit];
+          menvcfg_cbie  <= cbie_warl(menvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
+          menvcfg_fiom  <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
-          senvcfg_cbze <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
-          senvcfg_fiom <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+          senvcfg_cbze  <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
+          senvcfg_cbcfe <= senvcfg_new_value[riscv_pkg::EnvcfgCbcfeBit];
+          senvcfg_cbie  <= cbie_warl(senvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
+          senvcfg_fiom  <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrStimecmp: stimecmp <= stimecmp_new_value;
         // Without counters the profiling state keeps its reset value.
@@ -1940,29 +2019,65 @@ module csr_file #(
   end
   assign o_csr_translation_flush_req = csr_translation_flush_req_q;
 
+  // Entries are tagged with the ASID that installed them, so a satp write
+  // that changes the ASID, or keeps address space and root, leaves the TLBs
+  // alone: the new ASID simply hits different entries. Two events clear every
+  // entry (o_csr_tlb_flush_all_req):
+  //   - an MPRV change, or an MPP change under MPRV (as before), and
+  //   - a satp write that names a different root under the same ASID. Software
+  //     that reuses an ASID for another root owes an SFENCE.VMA; flushing here
+  //     keeps software that never uses ASIDs (every ASID zero) working, since
+  //     it switches roots without one.
+  logic csr_satp_root_switch;
+  assign csr_satp_root_switch = storage_csr_write && (i_csr_address == riscv_pkg::CsrSatp) &&
+      ((satp_new_value[63:60] == SatpModeBare) ||
+       (SatpSv39Supported && (satp_new_value[63:60] == SatpModeSv39))) &&
+      (satp_new_value[SatpPpnBits-1:0] != satp_ppn) &&
+      (satp_new_value[SatpPpnBits+:SatpAsidBits] == satp_asid);
+  logic csr_tlb_flush_all_req_d, csr_tlb_flush_all_req_q;
+  assign csr_tlb_flush_all_req_d = i_csr_write_enable && i_csr_read_enable &&
+      (csr_satp_root_switch ||
+       (((i_csr_address == riscv_pkg::CsrMstatus) ||
+         (i_csr_address == riscv_pkg::CsrSstatus)) &&
+        (COMMIT_EXCLUDES_CONTROL_TAKE ? csr_status_write_changes_translation :
+         ((next_mstatus_mprv != mstatus_mprv) ||
+          (mstatus_mprv && (next_mstatus_mpp != mstatus_mpp))))));
+  always_ff @(posedge i_clk) begin
+    if (i_rst) csr_tlb_flush_all_req_q <= 1'b0;
+    else csr_tlb_flush_all_req_q <= csr_tlb_flush_all_req_d;
+  end
+  assign o_csr_tlb_flush_all_req = csr_tlb_flush_all_req_q;
+
   // The data-translation state bundle (see the port comment for why its
   // one-cycle delay is safe). Effective data privilege honors MPRV.
   logic [1:0] eff_data_priv;
   assign eff_data_priv = mstatus_mprv ? mstatus_mpp : priv_q;
 
   logic translation_active_q, mmu_sum_q, mmu_mxr_q, mmu_eff_priv_u_q;
+  logic [SatpAsidBits-1:0] mmu_asid_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       translation_active_q <= 1'b0;
       mmu_sum_q <= 1'b0;
       mmu_mxr_q <= 1'b0;
       mmu_eff_priv_u_q <= 1'b0;
+      mmu_asid_q <= '0;
     end else begin
       translation_active_q <= satp_mode_sv39 && (eff_data_priv != riscv_pkg::PrivM);
       mmu_sum_q <= mstatus_sum;
       mmu_mxr_q <= mstatus_mxr;
       mmu_eff_priv_u_q <= (eff_data_priv == riscv_pkg::PrivU);
+      mmu_asid_q <= satp_asid;
     end
   end
   assign o_translation_active = translation_active_q;
   assign o_mmu_sum = mmu_sum_q;
   assign o_mmu_mxr = mmu_mxr_q;
   assign o_mmu_eff_priv_u = mmu_eff_priv_u_q;
+  assign o_mmu_asid = mmu_asid_q;
+  // Fetch uses the ASID register itself: the refetch after a satp write
+  // starts after the register has updated, like fetch_translation_active_q.
+  assign o_fetch_asid = satp_asid;
   // Fetch reads translation from a register written with the next satp
   // mode and privilege, so it always equals satp_mode_sv39 && fetch_priv_q
   // != M without a decode after the registers. satp's mode changes only
@@ -1985,9 +2100,11 @@ module csr_file #(
   wire fetch_dcsr_not_m = dcsr_prv != riscv_pkg::PrivM;
   wire fetch_write_holds_priv = COMMIT_EXCLUDES_CONTROL_TAKE &&
       i_csr_write_enable && i_csr_read_enable;
-  (* keep = "true" *) wire fetch_returns_enabled =
+  (* keep = "true" *) wire fetch_returns_enabled;
+  assign fetch_returns_enabled =
       !(fetch_write_holds_priv || i_trap_enter_d || i_trap_save_s || i_trap_save_m);
-  (* keep = "true" *) wire fetch_override_not_m = fetch_write_holds_priv ?
+  (* keep = "true" *) wire fetch_override_not_m;
+  assign fetch_override_not_m = fetch_write_holds_priv ?
       fetch_priv_not_m : (!i_trap_enter_d && i_trap_save_s);
   wire fetch_return_not_m;
   wire fetch_translation_next;
@@ -2509,10 +2626,14 @@ module csr_file #(
 
       // Access privilege is enforced by the ROB, not by this standalone file.
       // A legal envcfg write cannot change permission in the executing mode:
-      // menvcfg is M-only; senvcfg is M/S-only and gates only U.
+      // menvcfg is M-only; senvcfg is M/S-only and gates only U. The same
+      // holds for the Zicbom gates (CBCFE, CBIE) beside CBZE.
       if ($past(f_envcfg_legal_write) && priv_q == $past(priv_q)) begin
         p_envcfg_write_preserves_current_cbo_gate :
-        assert (o_cbo_zero_illegal == $past(o_cbo_zero_illegal));
+        assert ({o_cbo_zero_illegal, o_cbo_cf_illegal, o_cbo_inval_illegal, o_cbo_inval_flush} ==
+                $past(
+            {o_cbo_zero_illegal, o_cbo_cf_illegal, o_cbo_inval_illegal, o_cbo_inval_flush}
+        ));
       end
 
       // Debug Mode entry: dpc/dcsr record the resume state, priv
@@ -2861,6 +2982,33 @@ module csr_file #(
       assert (o_cbo_zero_illegal == ((priv_q == riscv_pkg::PrivS) ? !menvcfg[7] :
                                      (priv_q == riscv_pkg::PrivU) ? !(menvcfg[7] && senvcfg[7]) :
                                      1'b0));
+      // Zicbom legality and the inval-as-flush selection, from the readback
+      // views: CBCFE bit 6, CBIE bits 5:4 (cmo.adoc, norm:menvcfg_cbie_*).
+      p_cbo_cf_gate_export :
+      assert (o_cbo_cf_illegal == ((priv_q == riscv_pkg::PrivS) ? !menvcfg[6] :
+                                   (priv_q == riscv_pkg::PrivU) ? !(menvcfg[6] && senvcfg[6]) :
+                                   1'b0));
+      p_cbo_inval_gate_export :
+      assert (o_cbo_inval_illegal ==
+              ((priv_q == riscv_pkg::PrivS) ? (menvcfg[5:4] == 2'b00) :
+               (priv_q == riscv_pkg::PrivU) ? (menvcfg[5:4] == 2'b00 || senvcfg[5:4] == 2'b00) :
+               1'b0));
+      if (!o_cbo_inval_illegal) begin
+        p_cbo_inval_flush_export :
+        assert (o_cbo_inval_flush ==
+                (CBO_INVAL_AS_FLUSH ||
+                 ((priv_q == riscv_pkg::PrivS) ? (menvcfg[5:4] == 2'b01) :
+                  (priv_q == riscv_pkg::PrivU) ? (menvcfg[5:4] == 2'b01 || senvcfg[5:4] == 2'b01) :
+                  1'b0)));
+      end
+      // CBIE never holds the reserved 10, nor 11 when inval executes as flush.
+      p_cbie_warl :
+      assert (menvcfg[5:4] != 2'b10 && senvcfg[5:4] != 2'b10 &&
+              !(CBO_INVAL_AS_FLUSH && (menvcfg[5:4] == 2'b11 || senvcfg[5:4] == 2'b11)));
+      // wrs.nto legality: M always; S and U only with mstatus.TW clear.
+      p_wrs_nto_gate_export :
+      assert (o_wrs_nto_illegal == ((priv_q != riscv_pkg::PrivM) &&
+                                    mstatus[riscv_pkg::MstatusTwBit]));
 
       // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);
@@ -2885,9 +3033,9 @@ module csr_file #(
       // sepc/stvec keep the same alignment invariants as mepc/mtvec.
       p_sepc_aligned : assert (sepc[0] == 1'b0);
       p_stvec_aligned : assert (stvec[1] == 1'b0);
-      // satp invariants: ASID reads zero; the Bare-only check applies only
-      // while SatpSv39Supported is 0.
-      p_satp_asid_zero : assert (satp[59:44] == '0);
+      // satp invariants: ASID bits above ASIDLEN read zero; the Bare-only
+      // check applies only while SatpSv39Supported is 0.
+      p_satp_asid_zero : assert (satp[59:44+SatpAsidBits] == '0);
       if (!SatpSv39Supported) begin
         p_satp_bare_only : assert (!satp_mode_sv39);
       end
@@ -3049,6 +3197,19 @@ module csr_file #(
       csr_write_intent && !(i_trap_taken && !i_trap_to_d);
   assign f_old_mcycle_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
   assign f_old_minstret_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
+  // The all-entries flush: an MPRV change (or MPP under MPRV), or a satp write
+  // of a valid MODE that names another root under the same ASID.
+  logic f_old_tlb_flush_all_req;
+  assign f_old_tlb_flush_all_req = i_csr_write_enable && i_csr_read_enable &&
+      ((i_csr_address == riscv_pkg::CsrSatp) && !(i_trap_taken && !i_trap_to_d) &&
+       ((csr_new_value[63:60] == SatpModeBare) ||
+        (SatpSv39Supported && (csr_new_value[63:60] == SatpModeSv39))) &&
+       (csr_new_value[SatpPpnBits-1:0] != satp_ppn) &&
+       (csr_new_value[SatpPpnBits+:SatpAsidBits] == satp_asid) ||
+       (((i_csr_address == riscv_pkg::CsrMstatus) ||
+         (i_csr_address == riscv_pkg::CsrSstatus)) &&
+        ((f_old_next_mstatus_mprv != mstatus_mprv) ||
+         (mstatus_mprv && (f_old_next_mstatus_mpp != mstatus_mpp)))));
   // SUM and MXR are permission inputs applied at lookup, so only satp and the
   // effective-privilege fields (MPRV, and MPP under MPRV) invalidate.
   assign f_old_translation_req = i_csr_write_enable && i_csr_read_enable &&
@@ -3222,6 +3383,8 @@ module csr_file #(
   logic [$bits(mcountinhibit_ir)-1:0] f_old_mcountinhibit_ir;
   logic [$bits(medeleg_q)-1:0] f_old_medeleg_q;
   logic [$bits(menvcfg_cbze)-1:0] f_old_menvcfg_cbze;
+  logic [$bits(menvcfg_cbcfe)-1:0] f_old_menvcfg_cbcfe;
+  logic [$bits(menvcfg_cbie)-1:0] f_old_menvcfg_cbie;
   logic [$bits(menvcfg_fiom)-1:0] f_old_menvcfg_fiom;
   logic [$bits(menvcfg_stce)-1:0] f_old_menvcfg_stce;
   logic [$bits(mepc)-1:0] f_old_mepc;
@@ -3238,11 +3401,20 @@ module csr_file #(
   logic [$bits(perf_cache_previous_select)-1:0] f_old_perf_cache_previous_select;
   logic [$bits(perf_counter_select)-1:0] f_old_perf_counter_select;
   logic [$bits(satp_mode_sv39)-1:0] f_old_satp_mode_sv39;
+  logic [$bits(satp_asid)-1:0] f_old_satp_asid;
   logic [$bits(satp_ppn)-1:0] f_old_satp_ppn;
   logic [$bits(scause)-1:0] f_old_scause;
   logic [$bits(scounteren_q)-1:0] f_old_scounteren_q;
   logic [$bits(senvcfg_cbze)-1:0] f_old_senvcfg_cbze;
+  logic [$bits(senvcfg_cbcfe)-1:0] f_old_senvcfg_cbcfe;
+  logic [$bits(senvcfg_cbie)-1:0] f_old_senvcfg_cbie;
   logic [$bits(senvcfg_fiom)-1:0] f_old_senvcfg_fiom;
+  // Reference CBIE WARL: reserved 10 stores 00; 11 stores 01 when inval
+  // always executes as flush.
+  function automatic logic [1:0] f_cbie_ref(input logic [1:0] written);
+    f_cbie_ref = (written == 2'b10) ? 2'b00 :
+        (CBO_INVAL_AS_FLUSH && written == 2'b11) ? 2'b01 : written;
+  endfunction
   logic [$bits(sepc)-1:0] f_old_sepc;
   logic [$bits(sscratch)-1:0] f_old_sscratch;
   logic [$bits(stimecmp)-1:0] f_old_stimecmp;
@@ -3286,6 +3458,8 @@ module csr_file #(
     f_old_mcountinhibit_ir <= mcountinhibit_ir;
     f_old_medeleg_q <= medeleg_q;
     f_old_menvcfg_cbze <= menvcfg_cbze;
+    f_old_menvcfg_cbcfe <= menvcfg_cbcfe;
+    f_old_menvcfg_cbie <= menvcfg_cbie;
     f_old_menvcfg_fiom <= menvcfg_fiom;
     f_old_menvcfg_stce <= menvcfg_stce;
     f_old_mepc <= mepc;
@@ -3302,10 +3476,13 @@ module csr_file #(
     f_old_perf_cache_previous_select <= perf_cache_previous_select;
     f_old_perf_counter_select <= perf_counter_select;
     f_old_satp_mode_sv39 <= satp_mode_sv39;
+    f_old_satp_asid <= satp_asid;
     f_old_satp_ppn <= satp_ppn;
     f_old_scause <= scause;
     f_old_scounteren_q <= scounteren_q;
     f_old_senvcfg_cbze <= senvcfg_cbze;
+    f_old_senvcfg_cbcfe <= senvcfg_cbcfe;
+    f_old_senvcfg_cbie <= senvcfg_cbie;
     f_old_senvcfg_fiom <= senvcfg_fiom;
     f_old_sepc <= sepc;
     f_old_sscratch <= sscratch;
@@ -3339,11 +3516,16 @@ module csr_file #(
       f_old_mip_stip                   <= 1'b0;
       f_old_mip_seip                   <= 1'b0;
       f_old_satp_mode_sv39             <= 1'b0;
+      f_old_satp_asid                  <= '0;
       f_old_satp_ppn                   <= '0;
       f_old_menvcfg_stce               <= 1'b0;
       f_old_menvcfg_cbze               <= 1'b0;
+      f_old_menvcfg_cbcfe              <= 1'b0;
+      f_old_menvcfg_cbie               <= 2'b00;
       f_old_menvcfg_fiom               <= 1'b0;
       f_old_senvcfg_cbze               <= 1'b0;
+      f_old_senvcfg_cbcfe              <= 1'b0;
+      f_old_senvcfg_cbie               <= 2'b00;
       f_old_senvcfg_fiom               <= 1'b0;
       f_old_stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       f_old_perf_counter_select        <= '0;
@@ -3412,27 +3594,34 @@ module csr_file #(
         riscv_pkg::CsrScause: f_old_scause <= csr_new_value;
         riscv_pkg::CsrStval: f_old_stval <= csr_new_value;
         // satp: a write carrying an unsupported MODE leaves the whole
-        // register unchanged (privileged-spec rule). ASID is WARL-0; the
-        // PPN field stores all written bits.
+        // register unchanged (privileged-spec rule). The ASID field keeps its
+        // low 9 bits; the PPN field stores all written bits.
         riscv_pkg::CsrSatp: begin
           if (csr_new_value[63:60] == SatpModeBare) begin
             f_old_satp_mode_sv39 <= 1'b0;
+            f_old_satp_asid <= csr_new_value[SatpPpnBits+:SatpAsidBits];
             f_old_satp_ppn <= csr_new_value[SatpPpnBits-1:0];
           end else if (SatpSv39Supported && (csr_new_value[63:60] == SatpModeSv39)) begin
             f_old_satp_mode_sv39 <= 1'b1;
+            f_old_satp_asid <= csr_new_value[SatpPpnBits+:SatpAsidBits];
             f_old_satp_ppn <= csr_new_value[SatpPpnBits-1:0];
           end
         end
-        // menvcfg implements FIOM, CBZE and STCE, senvcfg FIOM and CBZE (the
-        // rest stays WARL-0); stimecmp is the full 64-bit compare value.
+        // menvcfg implements FIOM, CBIE, CBCFE, CBZE and STCE, senvcfg
+        // FIOM, CBIE, CBCFE and CBZE (the rest stays WARL-0); stimecmp is the
+        // full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
-          f_old_menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
-          f_old_menvcfg_cbze <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
-          f_old_menvcfg_fiom <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
+          f_old_menvcfg_stce  <= csr_new_value[riscv_pkg::MenvcfgStceBit];
+          f_old_menvcfg_cbze  <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
+          f_old_menvcfg_cbcfe <= csr_new_value[6];
+          f_old_menvcfg_cbie  <= f_cbie_ref(csr_new_value[5:4]);
+          f_old_menvcfg_fiom  <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
-          f_old_senvcfg_cbze <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
-          f_old_senvcfg_fiom <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
+          f_old_senvcfg_cbze  <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
+          f_old_senvcfg_cbcfe <= csr_new_value[6];
+          f_old_senvcfg_cbie  <= f_cbie_ref(csr_new_value[5:4]);
+          f_old_senvcfg_fiom  <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrStimecmp: f_old_stimecmp <= csr_new_value;
         // Without counters the profiling state keeps its reset value.
@@ -3508,6 +3697,7 @@ module csr_file #(
   always_comb begin
     if (f_csr_legal) begin
       assert (csr_translation_flush_req_d == f_old_translation_req);
+      assert (csr_tlb_flush_all_req_d == f_old_tlb_flush_all_req);
       assert ({next_mstatus_mie, next_mstatus_mpie, next_mstatus_mpp, next_mstatus_mprv,
                next_mstatus_fs, next_mstatus_sie, next_mstatus_spie, next_mstatus_spp,
                next_mstatus_sum, next_mstatus_mxr, next_mstatus_tvm, next_mstatus_tw,
@@ -3550,6 +3740,7 @@ module csr_file #(
                f_old_hpm_uinh});
       assert (medeleg_q == f_old_medeleg_q);
       assert (menvcfg_cbze == f_old_menvcfg_cbze);
+      assert ({menvcfg_cbcfe, menvcfg_cbie} == {f_old_menvcfg_cbcfe, f_old_menvcfg_cbie});
       assert (menvcfg_fiom == f_old_menvcfg_fiom);
       assert (menvcfg_stce == f_old_menvcfg_stce);
       assert (mepc == f_old_mepc);
@@ -3566,10 +3757,12 @@ module csr_file #(
       assert (perf_cache_previous_select == f_old_perf_cache_previous_select);
       assert (perf_counter_select == f_old_perf_counter_select);
       assert (satp_mode_sv39 == f_old_satp_mode_sv39);
+      assert (satp_asid == f_old_satp_asid);
       assert (satp_ppn == f_old_satp_ppn);
       assert (scause == f_old_scause);
       assert (scounteren_q == f_old_scounteren_q);
       assert (senvcfg_cbze == f_old_senvcfg_cbze);
+      assert ({senvcfg_cbcfe, senvcfg_cbie} == {f_old_senvcfg_cbcfe, f_old_senvcfg_cbie});
       assert (senvcfg_fiom == f_old_senvcfg_fiom);
       assert (sepc == f_old_sepc);
       assert (sscratch == f_old_sscratch);

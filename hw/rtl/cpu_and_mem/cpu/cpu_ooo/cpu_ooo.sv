@@ -49,6 +49,10 @@ module cpu_ooo #(
     // mperf* CSRs read zero. Architectural HPM3..10 consume their events
     // independently of this profiling option.
     parameter int unsigned PERF_COUNTERS = 0,
+    // Sets of the second-level TLB in front of the walker (four ways each:
+    // 128 sets are 512 entries). Zero removes it and sends every L1 miss to
+    // the walker.
+    parameter int unsigned L2TLB_SETS = 128,
     // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
     // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
     parameter bit VECTOR = 1'b0,
@@ -58,6 +62,8 @@ module cpu_ooo #(
     // misaligned-access engine instead of trapping (misaligned/ma_engine.sv).
     // Its sector requests leave through the o_ma_line_* port.
     parameter bit MISALIGNED_HW = 1'b0,
+    // Zicbom: execute cbo.inval as cbo.flush at every privilege (csr_file).
+    parameter bit CBO_INVAL_AS_FLUSH = 1'b0,
     // The walker's line port carries the L1s' 32-byte lines.
     localparam int unsigned WalkLineBytes = 32
 ) (
@@ -789,9 +795,17 @@ module cpu_ooo #(
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
   // Registered translation-invalidate pulse from csr_file: every satp access,
   // and an mstatus write only when it changes MPRV, or MPP under MPRV. Through
-  // tlb_invalidate it clears both TLBs and discards the walk in flight; the
-  // ROB serializer handles pipeline recovery separately.
+  // tlb_invalidate it drops the IMMU's registered result and the DMMU's
+  // last-page buffer and discards the walk in flight; TLB entries leave
+  // through tlb_flush. The ROB serializer handles
+  // pipeline recovery separately.
   logic csr_translation_flush_req;
+  // Registered pulse beside it for a satp root switch or MPRV change: the
+  // TLBs drop every entry. A satp write that keeps the root (an ASID change)
+  // leaves the entries in place; the ASID tag separates the address spaces.
+  logic csr_tlb_flush_all_req;
+  logic [riscv_pkg::AsidBits-1:0] csr_mmu_asid, csr_fetch_asid;
+  riscv_pkg::tlb_flush_t tlb_flush;
   // Registered translation state from csr_file, and the data MMU's walker
   // port between the wrapper and the ptw below.
   logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
@@ -808,7 +822,7 @@ module cpu_ooo #(
     if (i_rst) sfence_tlb_flush_active_q <= 1'b0;
     else sfence_tlb_flush_active_q <= sfence_tlb_flush_active;
   end
-  logic walk_req_valid, walk_req_ready;
+  logic walk_req_valid, walk_req_ready, walk_hold;
   logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn;
   logic walk_resp_valid;
   riscv_pkg::ptw_resp_t walk_resp;
@@ -872,6 +886,8 @@ module cpu_ooo #(
       .i_fetch_translation_active(csr_fetch_translation_active),
       .i_fetch_priv_u(csr_fetch_priv_u),
       .i_tlb_invalidate(tlb_invalidate),
+      .i_tlb_flush(tlb_flush),
+      .i_fetch_asid(csr_fetch_asid),
       .o_walk_req_valid(iwalk_req_valid),
       .i_walk_req_ready(iwalk_req_ready),
       .o_walk_vpn(iwalk_vpn),
@@ -1077,6 +1093,9 @@ module cpu_ooo #(
   // ROB's vector-config-in-flight bit, the architectural vector state, the
   // retirement of vector arithmetic, the unit's commit hold and idle state.
   logic [8:0] vec_vtype_spec;
+  // vec_lmul_legality's classes of the dispatch slot-1 instruction
+  logic [3:0] dispatch_vec_lmul_illegal;
+  logic dispatch_vec_mem_illegal;
   logic vec_vtype_valid;
   logic vec_vcfg_in_flight;
   logic [15:0] csr_vec_vl, csr_vec_vstart;
@@ -1085,6 +1104,14 @@ module cpu_ooo #(
   logic vec_commit_hold;
   logic vec_idle;
   riscv_pkg::fu_complete_t vec_vtox_complete;  // CDB slot 6
+  // The vector memory table as the load and store queues see it, and its
+  // registered "no live retired entry" (rule V-O4: FENCE, FENCE.I,
+  // SFENCE.VMA, SC and the misaligned-access engine wait for it).
+  riscv_pkg::vmt_view_t vec_vmt_view;
+  logic vec_vmem_quiet;
+  // Every vector memory table entry is live (registered): a vector load or
+  // store waits at dispatch.
+  logic vec_vmt_full;
   // Register FS-Off for decode timing. It differs from CSR state only when
   // FS enters or leaves Off, whose full flush discards that cycle's decode.
   logic id_mstatus_fs_off_q;
@@ -1109,6 +1136,29 @@ module cpu_ooo #(
     if (i_rst) id_cbo_zero_illegal_q <= 1'b0;
     else id_cbo_zero_illegal_q <= csr_cbo_zero_illegal;
   end
+  // The Zicbom gates (CBCFE, CBIE) take it too, with the same change rule.
+  logic csr_cbo_cf_illegal, csr_cbo_inval_illegal, csr_cbo_inval_flush;
+  logic id_cbo_cf_illegal_q, id_cbo_inval_illegal_q, id_cbo_inval_flush_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      id_cbo_cf_illegal_q    <= 1'b0;
+      id_cbo_inval_illegal_q <= 1'b0;
+      id_cbo_inval_flush_q   <= 1'b0;
+    end else begin
+      id_cbo_cf_illegal_q    <= csr_cbo_cf_illegal;
+      id_cbo_inval_illegal_q <= csr_cbo_inval_illegal;
+      id_cbo_inval_flush_q   <= csr_cbo_inval_flush;
+    end
+  end
+  // Zawrs: wrs.nto is illegal below M while mstatus.TW is set. TW changes only
+  // through an mstatus write (translation class), the privilege only on a trap
+  // or xRET; each is a full flush.
+  logic csr_wrs_nto_illegal;
+  logic id_wrs_nto_illegal_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) id_wrs_nto_illegal_q <= 1'b0;
+    else id_wrs_nto_illegal_q <= csr_wrs_nto_illegal;
+  end
 
   id_stage #(
       .XLEN(XLEN)
@@ -1123,6 +1173,10 @@ module cpu_ooo #(
       .i_mstatus_fs_off(id_mstatus_fs_off_q),
       .i_mstatus_vs_off(id_mstatus_vs_off_q),
       .i_cbo_zero_illegal(id_cbo_zero_illegal_q),
+      .i_wrs_nto_illegal(id_wrs_nto_illegal_q),
+      .i_cbo_cf_illegal(id_cbo_cf_illegal_q),
+      .i_cbo_inval_illegal(id_cbo_inval_illegal_q),
+      .i_cbo_inval_flush(id_cbo_inval_flush_q),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
       .o_from_id_to_ex_next_go(decoded_packet_next_go),
@@ -1199,6 +1253,42 @@ module cpu_ooo #(
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next, producer_ctrl_next_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_go, producer_ctrl_next_go_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_hold, producer_ctrl_next_hold_2;
+      // Slot 1's vector legality (memory rejection and four LMUL classes)
+      // beside the shadow slice, from each producer copy's own instruction
+      logic [4:0] producer_vlc, producer_vlc_next, producer_vlc_next_go, producer_vlc_next_hold;
+      logic [4:0] queue_vlc, queue_vlc_next;
+      vec_lmul_legality u_vlc (
+          .i_insn(32'(decoded_packet.instruction)),
+          .i_op(decoded_packet.instruction_operation),
+          .i_is_illegal(decoded_packet.is_illegal_instruction),
+          .i_is_fetch_fault(decoded_packet.is_fetch_fault),
+          .o_illegal(producer_vlc[3:0]),
+          .o_mem_illegal(producer_vlc[4])
+      );
+      vec_lmul_legality u_vlc_next (
+          .i_insn(32'(decoded_packet_next.instruction)),
+          .i_op(decoded_packet_next.instruction_operation),
+          .i_is_illegal(decoded_packet_next.is_illegal_instruction),
+          .i_is_fetch_fault(decoded_packet_next.is_fetch_fault),
+          .o_illegal(producer_vlc_next[3:0]),
+          .o_mem_illegal(producer_vlc_next[4])
+      );
+      vec_lmul_legality u_vlc_next_go (
+          .i_insn(32'(decoded_packet_next_go.instruction)),
+          .i_op(decoded_packet_next_go.instruction_operation),
+          .i_is_illegal(decoded_packet_next_go.is_illegal_instruction),
+          .i_is_fetch_fault(decoded_packet_next_go.is_fetch_fault),
+          .o_illegal(producer_vlc_next_go[3:0]),
+          .o_mem_illegal(producer_vlc_next_go[4])
+      );
+      vec_lmul_legality u_vlc_next_hold (
+          .i_insn(32'(decoded_packet_next_hold.instruction)),
+          .i_op(decoded_packet_next_hold.instruction_operation),
+          .i_is_illegal(decoded_packet_next_hold.is_illegal_instruction),
+          .i_is_fetch_fault(decoded_packet_next_hold.is_fetch_fault),
+          .o_illegal(producer_vlc_next_hold[3:0]),
+          .o_mem_illegal(producer_vlc_next_hold[4])
+      );
       // The shadow slice of an ID packet: the same field copy as
       // producer_ctrl_next, for the go and hold outcomes.
       function automatic riscv_pkg::id_dispatch_ctrl_t id_ctrl_of(
@@ -1249,6 +1339,7 @@ module cpu_ooo #(
         c.is_real = d.is_real;
         c.is_varith = (d.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (d.instruction.funct3 != 3'b111);
+        c.is_vmem = riscv_pkg::is_vector_mem(d.instruction.opcode, d.instruction.funct3);
         id_ctrl_of = c;
       endfunction
       assign producer_ctrl_next_go = id_ctrl_of(decoded_packet_next_go);
@@ -1303,6 +1394,8 @@ module cpu_ooo #(
         producer_ctrl.is_real = decoded_packet.is_real;
         producer_ctrl.is_varith = (decoded_packet.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet.instruction.funct3 != 3'b111);
+        producer_ctrl.is_vmem = riscv_pkg::is_vector_mem(decoded_packet.instruction.opcode,
+                                                         decoded_packet.instruction.funct3);
         producer_ctrl_2.is_load_instruction = decoded_packet_2.is_load_instruction;
         producer_ctrl_2.is_load_unsigned = decoded_packet_2.is_load_unsigned;
         producer_ctrl_2.instruction_operation = decoded_packet_2.instruction_operation;
@@ -1347,6 +1440,8 @@ module cpu_ooo #(
         producer_ctrl_2.is_real = decoded_packet_2.is_real;
         producer_ctrl_2.is_varith = (decoded_packet_2.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet_2.instruction.funct3 != 3'b111);
+        producer_ctrl_2.is_vmem = riscv_pkg::is_vector_mem(decoded_packet_2.instruction.opcode,
+                                                           decoded_packet_2.instruction.funct3);
         producer_ctrl_next.is_load_instruction = decoded_packet_next.is_load_instruction;
         producer_ctrl_next.is_load_unsigned = decoded_packet_next.is_load_unsigned;
         producer_ctrl_next.instruction_operation = decoded_packet_next.instruction_operation;
@@ -1393,6 +1488,8 @@ module cpu_ooo #(
         producer_ctrl_next.is_varith =
             (decoded_packet_next.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet_next.instruction.funct3 != 3'b111);
+        producer_ctrl_next.is_vmem = riscv_pkg::is_vector_mem(
+            decoded_packet_next.instruction.opcode, decoded_packet_next.instruction.funct3);
         producer_ctrl_next_2.is_load_instruction = decoded_packet_next_2.is_load_instruction;
         producer_ctrl_next_2.is_load_unsigned = decoded_packet_next_2.is_load_unsigned;
         producer_ctrl_next_2.instruction_operation = decoded_packet_next_2.instruction_operation;
@@ -1439,6 +1536,8 @@ module cpu_ooo #(
         producer_ctrl_next_2.is_varith =
             (decoded_packet_next_2.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet_next_2.instruction.funct3 != 3'b111);
+        producer_ctrl_next_2.is_vmem = riscv_pkg::is_vector_mem(
+            decoded_packet_next_2.instruction.opcode, decoded_packet_next_2.instruction.funct3);
       end
       // An unpredicted JALR in either slot. While it is queued it counts as
       // pending for the control-flow serialization stall.
@@ -1449,7 +1548,7 @@ module cpu_ooo #(
       decoded_bundle_queue #(
           .DEPTH(DECODED_QUEUE_DEPTH),
           .WIDTH(2 * $bits(decoded_packet)),
-          .SHADOW_WIDTH(2 * $bits(producer_ctrl)),
+          .SHADOW_WIDTH(2 * $bits(producer_ctrl) + $bits(producer_vlc)),
           .SPLIT_SHADOW_STALL(1'b1),
           .STALL_LATE_COPIES(riscv_pkg::FetchPaHoldCopies)
       ) u_queue (
@@ -1459,10 +1558,12 @@ module cpu_ooo #(
           .i_advance(!pipeline_ctrl.stall),
           .i_valid(pd_valid_q && (decoded_packet.is_real || decoded_packet_2.is_real)),
           .i_packet({decoded_packet_2, decoded_packet}),
-          .i_shadow({producer_ctrl_2, producer_ctrl}),
-          .i_shadow_next({producer_ctrl_next_2, producer_ctrl_next}),
-          .i_shadow_next_go({producer_ctrl_next_go_2, producer_ctrl_next_go}),
-          .i_shadow_next_hold({producer_ctrl_next_hold_2, producer_ctrl_next_hold}),
+          .i_shadow({producer_vlc, producer_ctrl_2, producer_ctrl}),
+          .i_shadow_next({producer_vlc_next, producer_ctrl_next_2, producer_ctrl_next}),
+          .i_shadow_next_go({producer_vlc_next_go, producer_ctrl_next_go_2, producer_ctrl_next_go}),
+          .i_shadow_next_hold({
+            producer_vlc_next_hold, producer_ctrl_next_hold_2, producer_ctrl_next_hold
+          }),
           .i_stall_early(frontend_stall_without_pa_hold),
           .i_stall_late(fetch_pa_hold_copy),
           .i_stall_flush(flush_pipeline),
@@ -1471,8 +1572,8 @@ module cpu_ooo #(
           .o_full(decoded_queue_full),
           .o_valid(queue_valid),
           .o_packet({queue_packet_2, queue_packet}),
-          .o_shadow({queue_ctrl_2, queue_ctrl}),
-          .o_shadow_next({queue_ctrl_next_2, queue_ctrl_next}),
+          .o_shadow({queue_vlc, queue_ctrl_2, queue_ctrl}),
+          .o_shadow_next({queue_vlc_next, queue_ctrl_next_2, queue_ctrl_next}),
           .o_indirect_pending(decoded_queue_indirect_pending)
       );
 `ifndef SYNTHESIS
@@ -1508,6 +1609,28 @@ module cpu_ooo #(
           assert ({producer_ctrl_next_2, producer_ctrl_next} == (pipeline_ctrl.stall ?
                   {producer_ctrl_next_hold_2, producer_ctrl_next_hold} :
                   {producer_ctrl_next_go_2, producer_ctrl_next_go}));
+        end
+      end
+`endif
+      assign {dispatch_vec_mem_illegal, dispatch_vec_lmul_illegal} = queue_vlc;
+`ifndef SYNTHESIS
+      // The shadow moves whole words, so its legality bits stay those of its
+      // own instruction and decode outcome once reset has loaded it.
+      logic [4:0] queue_vlc_check;
+      vec_lmul_legality u_vlc_check (
+          .i_insn(32'(queue_ctrl.instruction)),
+          .i_op(queue_ctrl.instruction_operation),
+          .i_is_illegal(queue_ctrl.is_illegal_instruction),
+          .i_is_fetch_fault(queue_ctrl.is_fetch_fault),
+          .o_illegal(queue_vlc_check[3:0]),
+          .o_mem_illegal(queue_vlc_check[4])
+      );
+      always_ff @(posedge i_clk) begin
+        if (reset_seen_q && !i_rst && !$isunknown(
+                {queue_ctrl.instruction, queue_ctrl.instruction_operation,
+                queue_ctrl.is_illegal_instruction, queue_ctrl.is_fetch_fault}
+            )) begin
+          p_queue_vlc_matches_instruction : assert (queue_vlc == queue_vlc_check);
         end
       end
 `endif
@@ -1647,10 +1770,11 @@ module cpu_ooo #(
         from_id_to_ex_2.uses_fp_rs3 = queue_ctrl_2.uses_fp_rs3;
         from_id_to_ex_2.is_real = queue_ctrl_2.is_real;
       end
-      // Vector arithmetic also waits while the vtype at dispatch is unknown.
+      // Vector arithmetic also waits while the vtype at dispatch is unknown,
+      // and a vector load or store while the vector memory table is full.
       assign id_valid_preflush = queue_valid &&
           !(csr_in_flight || csr_wb_pending || serializing_alloc_fire) &&
-          !(queue_ctrl.is_varith && !vec_vtype_valid);
+          !(queue_ctrl.is_varith && !vec_vtype_valid) && !(queue_ctrl.is_vmem && vec_vmt_full);
       assign id_valid_2_preflush = id_valid_preflush && from_id_to_ex_2.is_real;
       assign id_valid = id_valid_preflush && !dispatch_flush;
       assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;
@@ -1681,6 +1805,14 @@ module cpu_ooo #(
       assign decoded_queue_indirect_pending = 1'b0;
       assign from_id_to_ex = decoded_packet;
       assign from_id_to_ex_2 = decoded_packet_2;
+      vec_lmul_legality u_vlc (
+          .i_insn(32'(decoded_packet.instruction)),
+          .i_op(decoded_packet.instruction_operation),
+          .i_is_illegal(decoded_packet.is_illegal_instruction),
+          .i_is_fetch_fault(decoded_packet.is_fetch_fault),
+          .o_illegal(dispatch_vec_lmul_illegal),
+          .o_mem_illegal(dispatch_vec_mem_illegal)
+      );
       assign rf_bypass_src_addr = {
         from_id_to_ex_2.instruction.funct7[6:2],
         from_id_to_ex_2.instruction.source_reg_2,
@@ -2066,6 +2198,18 @@ module cpu_ooo #(
   // router uses device_request_pending_q to check staging; only trap_unit
   // consumes this shield.
   logic device_read_shield_q;
+  // An armed interrupt take holds the next device access while the shield is
+  // down. Without it, a device access a few instructions behind a store (two
+  // device stores, or a cached store and then a device read) re-raises the
+  // shield in the cycle the previous access releases it, while the store's
+  // commit still clears the SQ's registered committed-empty status. The take
+  // then never finds both open, and every interrupt (D, M or S) starves for
+  // as long as the loop runs. The hold applies only while the AMO-class
+  // shield is down: under that shield the take waits for the head anyway, and
+  // an SC at the head may be a precise uncached store that needs the shield
+  // to complete. See trap_amo_shield below.
+  logic int_take_armed;
+  logic device_start_hold;
   // Precomputed next PCs from ungated ROB fields, for timing. Each equals
   // retired_next_pc of its commit packet whenever that commit is valid.
   logic [XLEN-1:0] rob_head_retired_next_pc;
@@ -2080,6 +2224,10 @@ module cpu_ooo #(
   logic [XLEN-1:0] trap_cause_internal;
   logic [XLEN-1:0] rob_trap_value;
   logic [31:0] rob_trap_insn;
+  // The head's exception is a bus-response access fault, and its virtual
+  // address (tomasulo_wrapper).
+  logic rob_head_bus_fault;
+  logic [XLEN-1:0] rob_head_bus_fault_va;
   logic rob_trap_taken_ack;
   logic mret_start, mret_done_ack;
   logic [XLEN-1:0] mepc_value;
@@ -2407,6 +2555,8 @@ module cpu_ooo #(
       .o_commit(rob_commit),
       .o_vcfg_commit(vcfg_commit),
       .o_vcfg_in_flight(vec_vcfg_in_flight),
+      .i_vmt(vec_vmt_view),
+      .i_vmem_quiet(vec_vmem_quiet),
       .o_commit_comb(rob_commit_comb),
       .o_commit_valid_raw(rob_commit_valid_raw),
       .o_commit_misprediction_raw(rob_commit_misprediction_raw),
@@ -2457,6 +2607,8 @@ module cpu_ooo #(
       .o_trap_cause(rob_trap_cause),
       .o_trap_value(rob_trap_value),
       .o_trap_insn(rob_trap_insn),
+      .o_head_bus_fault(rob_head_bus_fault),
+      .o_head_bus_fault_va(rob_head_bus_fault_va),
       .i_trap_taken(rob_trap_taken_ack),
       .o_mret_start(mret_start),
       .o_mret_start_is_sret(mret_start_is_sret),
@@ -2522,9 +2674,13 @@ module cpu_ooo #(
       .i_mmu_eff_priv_u(csr_mmu_eff_priv_u),
       .i_csr_translation_flush_req(csr_translation_flush_req),
       .o_tlb_invalidate(tlb_invalidate),
+      .i_csr_tlb_flush_all_req(csr_tlb_flush_all_req),
+      .o_tlb_flush(tlb_flush),
+      .i_mmu_asid(csr_mmu_asid),
       .o_walk_req_valid(walk_req_valid),
       .i_walk_req_ready(walk_req_ready),
       .o_walk_vpn(walk_vpn),
+      .o_walk_hold(walk_hold),
       .i_walk_resp_valid(walk_resp_valid),
       .i_walk_resp(walk_resp),
       .o_rob_full(rob_full),
@@ -2835,6 +2991,8 @@ module cpu_ooo #(
       .RAW_INT_RF_VALUES(1'b1)
   ) u_dispatch (
       .i_vtype_spec(vec_vtype_spec),
+      .i_vec_lmul_illegal(dispatch_vec_lmul_illegal),
+      .i_vec_mem_illegal(dispatch_vec_mem_illegal),
       .i_clk,
       .i_rst_n(rst_n),
 
@@ -3739,6 +3897,7 @@ module cpu_ooo #(
       .o_amo_mem_write_error(amo_mem_write_error),
       .o_lq_mem_request_valid(lq_mem_request_valid),
       .o_device_request_pending(lq_device_request_pending),
+      .i_device_start_hold(device_start_hold),
       .o_lq_mem_read_data(lq_mem_read_data),
       .o_lq_mem_read_valid(lq_mem_read_valid),
       .o_lq_mem_read_error(lq_mem_read_error),
@@ -3808,7 +3967,9 @@ module cpu_ooo #(
   //   - Instruction access/page faults and data misaligned/access/page
   //     faults: the faulting virtual address, parked in the head entry's CDB
   //     value slot (unused for an exception) and exposed as rob_trap_value.
-  //     The per-cause comments below say who parks it.
+  //     The per-cause comments below say who parks it. A data access fault
+  //     from a bus response takes the address from the wrapper instead
+  //     (rob_head_bus_fault).
   //   - Illegal instruction (Sstvala), from any source: decode, PD's RVC
   //     check, ID's FS/CBO/Svinval/Zawrs gates, and the privilege, CSR and
   //     rounding-mode faults the ROB raises at allocation: the faulting
@@ -3838,16 +3999,21 @@ module cpu_ooo #(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
           rob_trap_cause
-      )-1:0], riscv_pkg::ExcLoadAccessFault[$bits(
-          rob_trap_cause
-      )-1:0], riscv_pkg::ExcStoreAccessFault[$bits(
-          rob_trap_cause
       )-1:0], riscv_pkg::ExcLoadPageFault[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStorePageFault[$bits(
           rob_trap_cause
       )-1:0]:
       csr_trap_value = rob_trap_value;
+      // A bus-response access fault (a failed fill, or an SLVERR or DECERR
+      // response) leaves zero in the value slot; the wrapper's table of
+      // issue addresses gives its virtual address.
+      riscv_pkg::ExcLoadAccessFault[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcStoreAccessFault[$bits(
+          rob_trap_cause
+      )-1:0]:
+      csr_trap_value = rob_head_bus_fault ? rob_head_bus_fault_va : rob_trap_value;
       riscv_pkg::ExcIllegalInstr[$bits(rob_trap_cause)-1:0]: csr_trap_value = XLEN'(rob_trap_insn);
       default: csr_trap_value = '0;
     endcase
@@ -3956,6 +4122,7 @@ module cpu_ooo #(
   csr_file #(
       .XLEN(XLEN),
       .COMMIT_EXCLUDES_CONTROL_TAKE(1'b1),
+      .CBO_INVAL_AS_FLUSH(CBO_INVAL_AS_FLUSH),
       .UsePerfCsrHalf(1'b1),
       .PERF_COUNTERS(PERF_COUNTERS),
       .VECTOR(VECTOR),
@@ -4048,6 +4215,9 @@ module cpu_ooo #(
       .o_wfi_illegal(csr_wfi_illegal),
       .o_priv_is_u(csr_priv_is_u),
       .o_csr_translation_flush_req(csr_translation_flush_req),
+      .o_csr_tlb_flush_all_req(csr_tlb_flush_all_req),
+      .o_mmu_asid(csr_mmu_asid),
+      .o_fetch_asid(csr_fetch_asid),
       .o_translation_active(csr_translation_active),
       .o_mmu_sum(csr_mmu_sum),
       .o_mmu_mxr(csr_mmu_mxr),
@@ -4063,6 +4233,10 @@ module cpu_ooo #(
       .o_vec_vtype(csr_vec_vtype),
       .o_vec_vstart(csr_vec_vstart),
       .o_cbo_zero_illegal(csr_cbo_zero_illegal),
+      .o_wrs_nto_illegal(csr_wrs_nto_illegal),
+      .o_cbo_cf_illegal(csr_cbo_cf_illegal),
+      .o_cbo_inval_illegal(csr_cbo_inval_illegal),
+      .o_cbo_inval_flush(csr_cbo_inval_flush),
       .o_debug_mode(csr_debug_mode),
       .o_dcsr_step(csr_dcsr_step),
       .o_dcsr_ebreak(csr_dcsr_ebreak),
@@ -4102,42 +4276,112 @@ module cpu_ooo #(
         (csr_cbo_zero_illegal != id_cbo_zero_illegal_q)) begin
       p_cbo_zero_gate_change_flushes_decode : assert (flush_all);
     end
+    if (reset_seen_q && fs_off_checks_armed && !i_rst &&
+        ({csr_cbo_cf_illegal, csr_cbo_inval_illegal, csr_cbo_inval_flush} !=
+         {id_cbo_cf_illegal_q, id_cbo_inval_illegal_q, id_cbo_inval_flush_q})) begin
+      p_cbo_mgmt_gates_change_flushes_decode : assert (flush_all);
+    end
+    if (reset_seen_q && fs_off_checks_armed && !i_rst &&
+        (csr_wrs_nto_illegal != id_wrs_nto_illegal_q)) begin
+      p_wrs_nto_gate_change_flushes_decode : assert (flush_all);
+    end
   end
 `endif
 
   // ===========================================================================
   // Page-Table Walker
   // ===========================================================================
-  // Data MMU requests take priority over instruction MMU requests. Record the
-  // requesting side in walk_owner_i_q so only it receives the response; VPN
-  // alone cannot distinguish requesters. TLB invalidate also discards the
-  // walk and clears this routing bit. The line port goes to cache wup.
+  // Data MMU requests take priority over instruction MMU requests. The VPN
+  // select comes from registered state (walk_hold: the data MMU's S1 holds an
+  // op without an accepted walk), so the ROB-dependent data request valid
+  // stays off the L2 TLB read address; see walk_request_select. The select
+  // records the requesting side (core_walk_owner_i) so only it receives the
+  // response; VPN alone cannot distinguish requesters. TLB invalidate also
+  // discards the walk and clears the routing bits. The line port goes to
+  // cache wup.
   logic ptw_req_valid, ptw_req_ready, ptw_resp_valid;
   logic [riscv_pkg::Sv39VpnBits-1:0] ptw_req_vpn;
-  // The misaligned-access engine is a third requester at the lowest
-  // priority; walk_owner_ma_q records it at acceptance in the same way, so a
-  // walk accepted for a flushed instruction still answers its own requester.
-  logic walk_owner_i_q;  // the walk in flight belongs to the instruction side
-  logic walk_owner_ma_q;  // the walk in flight belongs to the misaligned engine
-  assign ptw_req_valid = walk_req_valid || iwalk_req_valid || ma_walk_req_valid;
-  assign ptw_req_vpn = walk_req_valid ? walk_vpn : iwalk_req_valid ? iwalk_vpn : ma_walk_vpn;
-  assign walk_req_ready = ptw_req_ready;
-  assign iwalk_req_ready = ptw_req_ready && !walk_req_valid;
-  assign ma_walk_req_ready = ptw_req_ready && !walk_req_valid && !iwalk_req_valid;
+  // The misaligned-access engine is a third requester. It takes the port
+  // while it asks and no data op waits in S1 (walk_hold), ahead of the
+  // instruction side. Both terms come from flops, so the VPN select reads
+  // neither MMU's request valid, and the ROB head and S1 kill stay off the
+  // L2 TLB read address. The engine runs at the ROB head with the data MMU empty, and it
+  // asks once per page of one access, so the instruction side waits at most
+  // that long. walk_owner_ma_q records the engine at acceptance, so a walk
+  // accepted for a flushed instruction still answers its own requester.
+  logic core_ptw_req_valid, core_ptw_req_ready;
+  logic [riscv_pkg::Sv39VpnBits-1:0] core_ptw_req_vpn;
+  logic core_walk_owner_i;
+  walk_request_select u_walk_select (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_invalidate(tlb_invalidate),
+      .i_d_hold(walk_hold),
+      .i_d_valid(walk_req_valid),
+      .o_d_ready(walk_req_ready),
+      .i_d_vpn(walk_vpn),
+      .i_i_valid(iwalk_req_valid),
+      .o_i_ready(iwalk_req_ready),
+      .i_i_vpn(iwalk_vpn),
+      .o_valid(core_ptw_req_valid),
+      .i_ready(core_ptw_req_ready),
+      .o_vpn(core_ptw_req_vpn),
+      .o_owner_i(core_walk_owner_i)
+  );
+
+  logic ma_walk_select;
+  assign ma_walk_select = MISALIGNED_HW && ma_walk_req_valid && !walk_hold;
+  assign ptw_req_valid = ma_walk_select || core_ptw_req_valid;
+  assign ptw_req_vpn = ma_walk_select ? ma_walk_vpn : core_ptw_req_vpn;
+  assign core_ptw_req_ready = ptw_req_ready && !ma_walk_select;
+  assign ma_walk_req_ready = ptw_req_ready && ma_walk_select;
+
+  logic walk_owner_ma_q;
   always_ff @(posedge i_clk) begin
     if (i_rst || tlb_invalidate) begin
-      walk_owner_i_q  <= 1'b0;
       walk_owner_ma_q <= 1'b0;
     end else if (ptw_req_valid && ptw_req_ready) begin
-      walk_owner_i_q  <= !walk_req_valid && iwalk_req_valid;
-      // Constant without the engine, so the D and I response valids are
-      // exactly as they are without it.
-      walk_owner_ma_q <= MISALIGNED_HW && !walk_req_valid && !iwalk_req_valid;
+      walk_owner_ma_q <= ma_walk_select;
     end
   end
-  assign walk_resp_valid = ptw_resp_valid && !walk_owner_i_q && !walk_owner_ma_q;
-  assign iwalk_resp_valid = ptw_resp_valid && walk_owner_i_q;
+
+  assign walk_resp_valid    = ptw_resp_valid && !core_walk_owner_i && !walk_owner_ma_q;
+  assign iwalk_resp_valid   = ptw_resp_valid && core_walk_owner_i && !walk_owner_ma_q;
   assign ma_walk_resp_valid = ptw_resp_valid && walk_owner_ma_q;
+
+  // The second-level TLB answers repeat translations before the walker sees
+  // them and stores the clean 4 KiB translations the walker returns. With
+  // L2TLB_SETS = 0 the requests pass to the walker unchanged.
+  logic l2_ptw_req_valid, l2_ptw_req_ready, l2_ptw_resp_valid;
+  logic [riscv_pkg::Sv39VpnBits-1:0] l2_ptw_req_vpn;
+  riscv_pkg::ptw_resp_t l2_ptw_resp;
+  if (L2TLB_SETS > 0) begin : g_l2tlb
+    l2tlb #(
+        .SETS(L2TLB_SETS)
+    ) u_l2tlb (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_asid(csr_mmu_asid),
+        .i_flush(tlb_flush),
+        .i_discard(tlb_invalidate),
+        .i_req_valid(ptw_req_valid),
+        .o_req_ready(ptw_req_ready),
+        .i_req_vpn(ptw_req_vpn),
+        .o_resp_valid(ptw_resp_valid),
+        .o_resp(walk_resp),
+        .o_ptw_req_valid(l2_ptw_req_valid),
+        .i_ptw_req_ready(l2_ptw_req_ready),
+        .o_ptw_req_vpn(l2_ptw_req_vpn),
+        .i_ptw_resp_valid(l2_ptw_resp_valid),
+        .i_ptw_resp(l2_ptw_resp)
+    );
+  end else begin : g_no_l2tlb
+    assign l2_ptw_req_valid = ptw_req_valid;
+    assign ptw_req_ready    = l2_ptw_req_ready;
+    assign l2_ptw_req_vpn   = ptw_req_vpn;
+    assign ptw_resp_valid   = l2_ptw_resp_valid;
+    assign walk_resp        = l2_ptw_resp;
+  end
 
   ptw #(
       .ENABLE_RESPONSE_ERRORS(VARIABLE_UNCACHED),
@@ -4146,13 +4390,13 @@ module cpu_ooo #(
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_root_ppn(csr_satp_root_ppn),
-      .i_req_valid(ptw_req_valid),
-      .o_req_ready(ptw_req_ready),
-      .i_req_vpn(ptw_req_vpn),
+      .i_req_valid(l2_ptw_req_valid),
+      .o_req_ready(l2_ptw_req_ready),
+      .i_req_vpn(l2_ptw_req_vpn),
       .i_discard(tlb_invalidate),
       .o_busy(ptw_busy),
-      .o_resp_valid(ptw_resp_valid),
-      .o_resp(walk_resp),
+      .o_resp_valid(l2_ptw_resp_valid),
+      .o_resp(l2_ptw_resp),
       .o_line_req_valid(o_walk_line_req_valid),
       .i_line_req_ready(i_walk_line_req_ready),
       .o_line_req_addr(o_walk_line_req_addr),
@@ -4212,7 +4456,7 @@ module cpu_ooo #(
         .i_rd(rob_head_dest_reg),
         .i_rd_valid(rob_head_dest_valid),
         .i_rs2(rob_head_mem_rs2),
-        .i_older_vector_mem_done(1'b1),
+        .i_older_vector_mem_done(vec_vmem_quiet),
         .i_translate(csr_translation_active),
         .i_eff_priv_u(csr_mmu_eff_priv_u),
         .i_sum(csr_mmu_sum),
@@ -4269,7 +4513,7 @@ module cpu_ooo #(
         else if (trap_taken) ma_fault_pending_q <= 1'b0;
         ma_wb_valid_q <= ma_wb_arm;
         ma_done_q <= ma_done;
-        ma_hold_q <= ma_assist_start || ma_hold;
+        ma_hold_q <= ma_assist_start || ma_hold || i_fatal_stop;
       end
     end
     // Payloads: no reset; each is read only with its valid.
@@ -4292,8 +4536,9 @@ module cpu_ooo #(
     // Dispatch waits from the take until the register write has landed;
     // interrupts and halts wait while the engine runs or its fault is
     // pending. Dispatch sees ma_hold_q, a flop that covers ma_hold from the
-    // cycle after the take and holds one cycle longer, so no decode reaches
-    // the allocation enables.
+    // cycle after the take and holds one cycle longer. It also samples a
+    // fatal stop on the same edge as the engine, which enters its terminal
+    // busy state even from idle, so no decode reaches the allocation enables.
     assign ma_hold = ma_busy || ma_fault_pending_q || ma_wb_valid_q || ma_done_q;
     assign ma_shield = ma_busy || ma_fault_pending_q;
 `ifndef SYNTHESIS
@@ -4685,6 +4930,17 @@ module cpu_ooo #(
     else amo_at_head_shield_q <= rob_head_is_amo && head_valid;
   end
 
+  // The trap unit's AMO-class shield: an AMO, LR or SC at the head, a coherent
+  // atomic, or the misaligned-access engine.
+  logic trap_amo_shield;
+  assign trap_amo_shield = (amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active ||
+      ma_shield;
+  // The shield counts as down in the cycle a commit clears it. The commit is
+  // the shielded access's own, so nothing launched still needs the shield,
+  // and a device store right behind it would otherwise keep it up.
+  assign device_start_hold = int_take_armed && !trap_amo_shield &&
+      (!device_read_shield_q || rob_commit_valid);
+
   // Hold interrupts from before a device read or uncached store is accepted
   // through its commit. Uncached stores arm their shield in the SQ;
   // (see trap_unit.i_device_read_at_head). The router stages the request before
@@ -4694,7 +4950,8 @@ module cpu_ooo #(
   // interrupt flush after arming.
   always_ff @(posedge i_clk) begin
     if (i_rst || lq_router_flush_all) device_read_shield_q <= 1'b0;
-    else if ((lq_device_request_pending || uncached_store_pending) && !(step_done_q))
+    else if ((lq_device_request_pending || (uncached_store_pending && !device_start_hold)) &&
+             !(step_done_q))
       device_read_shield_q <= 1'b1;
     else if (rob_commit_valid) device_read_shield_q <= 1'b0;
   end
@@ -4715,9 +4972,9 @@ module cpu_ooo #(
       .i_csr_irq_update(csr_irq_update_q),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
-      .i_amo_at_head((amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active ||
-                     ma_shield),
+      .i_amo_at_head(trap_amo_shield),
       .i_device_read_at_head(device_read_shield_q),
+      .o_int_take_armed(int_take_armed),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
       .i_mtvec(csr_mtvec),
@@ -5012,7 +5269,42 @@ module cpu_ooo #(
         .o_commit_hold(vec_commit_hold),
         .o_idle(vec_idle)
     );
+    // A vector load or store takes an entry when it dispatches (slot 1 only)
+    // and retires on the edge the ROB head passes it. No memory unit drives
+    // the range and completion ports, so an entry is freed by the flush that
+    // follows its illegal-instruction trap or that removes it from a wrong
+    // path.
+    vec_vmt u_vmt (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_alloc_valid (vec_alloc && ((from_id_to_ex.instruction_operation == riscv_pkg::VLOAD) ||
+                                      (from_id_to_ex.instruction_operation == riscv_pkg::VSTORE))),
+        .i_alloc_tag(rob_alloc_resp.alloc_tag),
+        .o_full(vec_vmt_full),
+        .o_alloc_idx(),
+        .i_commit_valid(rob_commit_comb.valid),
+        .i_commit_tag(rob_commit_comb.tag),
+        // Commit-time recovery flushes behind a branch that has already
+        // retired, so its tag is not a live instruction: it removes every
+        // unretired entry, as in the wrapper's speculative full flush.
+        .i_flush_all(flush_all || commit_recovery_flush_after_head),
+        .i_flush_en(flush_en && !commit_recovery_flush_after_head),
+        .i_flush_tag(flush_tag),
+        .i_head_tag(head_tag),
+        .i_range_valid(1'b0),
+        .i_range_idx('0),
+        .i_range_seg0('0),
+        .i_range_seg1('0),
+        .i_done_valid(1'b0),
+        .i_done_idx('0),
+        .o_view(vec_vmt_view),
+        .o_gen(),
+        .o_quiet_q(vec_vmem_quiet)
+    );
   end else begin : gen_no_vector_unit
+    assign vec_vmt_view = '0;
+    assign vec_vmem_quiet = 1'b1;
+    assign vec_vmt_full = 1'b0;
     assign vec_vtype_spec = '0;
     assign vec_vtype_valid = 1'b1;
     assign vec_varith_commit = 1'b0;

@@ -50,8 +50,8 @@ package riscv_pkg;
     OPC_CSR       = 7'b1110011,
     OPC_AMO       = 7'b0101111,  // A extension (atomics)
     // Shared F/D opcodes
-    OPC_LOAD_FP   = 7'b0000111,  // FLW, FLD
-    OPC_STORE_FP  = 7'b0100111,  // FSW, FSD
+    OPC_LOAD_FP   = 7'b0000111,  // FLW, FLD, vector loads
+    OPC_STORE_FP  = 7'b0100111,  // FSW, FSD, vector stores
     OPC_FMADD     = 7'b1000011,  // FMADD.S/D
     OPC_FMSUB     = 7'b1000111,  // FMSUB.S/D
     OPC_FNMSUB    = 7'b1001011,  // FNMSUB.S/D
@@ -163,8 +163,19 @@ package riscv_pkg;
     end
   endfunction
 
+  // A vector load or store: LOAD-FP or STORE-FP with a vector width (funct3
+  // 000, 101, 110 or 111; the scalar FP widths are 001 to 100).
+  function automatic logic is_vector_mem(input logic [6:0] opcode, input logic [2:0] funct3);
+    begin
+      is_vector_mem = ((opcode == 7'b0000111) || (opcode == 7'b0100111)) &&
+          ((funct3 == 3'b000) || (funct3[2] && (funct3[1:0] != 2'b00)));
+    end
+  endfunction
+
   // Native instructions that never pair as slot 2: those that use an FP
   // compute unit (OP-FP and the four FMAs) and vector instructions (OP-V).
+  // Vector loads and stores are excluded by their width as well
+  // (is_vector_mem, in imem_make_sideband).
   function automatic logic imem_native_fp_compute(input logic [6:0] opcode);
     begin
       imem_native_fp_compute = (opcode == 7'b1010011) ||  // OPC_OP_FP
@@ -732,8 +743,10 @@ package riscv_pkg;
       compressed_control_hi = imem_compressed_control(word[31:16]);
       sb[ImemSbNativeSerializeLo] = imem_native_serialize(word[6:0]);
       sb[ImemSbNativeSerializeHi] = imem_native_serialize(word[22:16]);
-      native_fp_compute_lo = imem_native_fp_compute(word[6:0]);
-      native_fp_compute_hi = imem_native_fp_compute(word[22:16]);
+      native_fp_compute_lo = imem_native_fp_compute(word[6:0]) ||
+          is_vector_mem(word[6:0], word[14:12]);
+      native_fp_compute_hi = imem_native_fp_compute(word[22:16]) ||
+          is_vector_mem(word[22:16], word[30:28]);
       // Control flow terminates the bundle; serializing instructions cannot
       // pair. CSR results are read at commit, while the CDB carries only the
       // write operand, so a slot-2 partner could bypass the CSR dispatch hold.
@@ -1046,8 +1059,17 @@ package riscv_pkg;
                                // executes it after commit, INT_RS only completes it
     VARITH_X,                  // V: vector arithmetic with rs1 as its scalar operand, which
                                // INT_RS passes to the ROB for the engine
-    VTOX                       // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
+    VTOX,                      // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
                                // once the engine is idle; no reservation station
+    // Zicbom: clean, flush or invalidate the 64-byte block containing rs1.
+    // id_stage decodes cbo.inval as CBO_FLUSH while CBIE selects a flush, so
+    // CBO_INVAL always means an invalidate.
+    CBO_CLEAN,
+    CBO_FLUSH,
+    CBO_INVAL,
+    VLOAD,                     // V: unit-stride, whole-register and mask loads; INT_RS
+                               // passes the rs1 base to the ROB
+    VSTORE                     // V: unit-stride, whole-register and mask stores; as VLOAD
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -1159,6 +1181,23 @@ package riscv_pkg;
   localparam int unsigned EnvcfgCbzeBit = 7;
   // Zicboz cache-block size in bytes: one L2 line, two L1D sectors.
   localparam int unsigned CboZeroBlockBytes = 64;
+  // Zicbom (menvcfg and senvcfg). CBIE (bits 5:4) is WARL {00, 01, 11}: 00
+  // makes cbo.inval illegal below the CSR's level, 01 executes it as a flush
+  // and 11 as an invalidate. A write of the reserved 10 stores 00, as Spike
+  // does. CBCFE (bit 6) enables cbo.clean and cbo.flush below M.
+  localparam int unsigned EnvcfgCbieLsb = 4;
+  localparam int unsigned EnvcfgCbcfeBit = 6;
+  localparam bit [1:0] EnvcfgCbieIllegal = 2'b00;
+  localparam bit [1:0] EnvcfgCbieFlush = 2'b01;
+  localparam bit [1:0] EnvcfgCbieInval = 2'b11;
+  // Zicbom cache-block size in bytes: the Zicboz block, one L2 line.
+  localparam int unsigned CboMgmtBlockBytes = CboZeroBlockBytes;
+  // A Zicbom operation's kind: the low bits of its funct12.
+  typedef enum logic [1:0] {
+    CMO_INVAL = 2'b00,
+    CMO_CLEAN = 2'b01,
+    CMO_FLUSH = 2'b10
+  } cmo_kind_e;
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
@@ -1752,7 +1791,30 @@ package riscv_pkg;
     logic perm_x;
     logic perm_u;
     logic perm_d;  // D=0 install is legal; a store to it faults at lookup
+    // Global mapping: the leaf's G bit, or G on any non-leaf PTE above it
+    // (which makes every mapping below it global). Not matched by ASID.
+    logic perm_g;
   } ptw_resp_t;
+
+  // satp.ASID is 9 bits (ASIDLEN = 9). Linux discovers it by writing all ones
+  // to satp.ASID and reading back; satp[59:53] stay zero.
+  localparam int unsigned AsidBits = 9;
+
+  // SFENCE.VMA, as the TLBs see it, for the cycles of its serialized window,
+  // or one cycle for a CSR-requested flush (use_va = use_asid = 0: everything).
+  //   use_va = 0, use_asid = 0: every entry.
+  //   use_va = 0, use_asid = 1: every non-global entry of that ASID.
+  //   use_va = 1, use_asid = 0: every entry (any ASID, global too) whose page
+  //                             covers vpn, of any size.
+  //   use_va = 1, use_asid = 1: every non-global entry of that ASID whose
+  //                             page covers vpn.
+  typedef struct packed {
+    logic en;
+    logic use_va;
+    logic [Sv39VpnBits-1:0] vpn;
+    logic use_asid;
+    logic [AsidBits-1:0] asid;
+  } tlb_flush_t;
   // FP register width: 64-bit to support the D extension.
   localparam int unsigned FpWidth = 64;
   localparam int unsigned FpSingleWidth = 32;
@@ -2117,6 +2179,9 @@ package riscv_pkg;
     // Vector arithmetic (OP-V other than vsetvl*), for the hold while the
     // vtype at dispatch is unknown
     logic is_varith;
+    // A vector load or store encoding (is_vector_mem), for the hold while the
+    // vector memory table is full
+    logic is_vmem;
   } id_dispatch_ctrl_t;
 
   // Control-flow feedback consumed by the front-end.
@@ -2797,6 +2862,10 @@ package riscv_pkg;
     logic                             is_sc;       // Store-conditional
     // cbo.zero: the entry keeps rs1 and writes the 64-byte block containing it
     logic                             is_zero;
+    // cbo.clean/flush/inval: the entry keeps rs1, names the 64-byte block
+    // containing it and writes no data (see store_queue)
+    logic                             is_cmo;
+    cmo_kind_e                        cmo_kind;
     logic                             addr_valid;  // Address already known at dispatch
     logic [XLEN-1:0]                  address;
     logic                             is_mmio;
@@ -3031,8 +3100,9 @@ package riscv_pkg;
       AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
       AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
       FENCE, FENCE_I, SFENCE_VMA,
-      // Zicboz: a store-queue entry that writes a whole block
-      CBO_ZERO:
+      // Zicboz: a store-queue entry that writes a whole block. Zicbom: a
+      // store-queue entry that names a block
+      CBO_ZERO, CBO_CLEAN, CBO_FLUSH, CBO_INVAL:
       get_rs_type = RS_MEM;
 
       // Every FP compute operation -> FP_RS
@@ -3193,8 +3263,8 @@ package riscv_pkg;
   endfunction
 
   // Integer rs1 use, excluding FP sources, immediate-only fields, and
-  // operations with no source. SFENCE.VMA ignores its operands (flush-all).
-
+  // operations with no source. SFENCE.VMA reads rs1 (address filter) and rs2
+  // (ASID filter); x0 reads as zero and selects "all".
   function automatic logic uses_int_rs1(instr_op_e op);
     if (uses_fp_rs1(op)) begin
       uses_int_rs1 = 1'b0;
@@ -3203,7 +3273,7 @@ package riscv_pkg;
         LUI, AUIPC, JAL,
         ECALL, EBREAK,
         FENCE, FENCE_I,
-        WFI, MRET, SRET, DRET, SFENCE_VMA, PAUSE,
+        WFI, MRET, SRET, DRET, PAUSE,
         CSRRWI, CSRRSI, CSRRCI,
         ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT,
         VSETIVLI, VARITH, VTOX:
@@ -3238,6 +3308,8 @@ package riscv_pkg;
         ROL, ROR,
         CZERO_EQZ, CZERO_NEZ,
         PACK, PACKH,
+        // SFENCE.VMA: rs2 is the ASID filter
+        SFENCE_VMA,
         // RV64 W-form R-type ops
         ADDW, SUBW, SLLW, SRLW, SRAW, ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, ROLW, RORW, PACKW,
         // Integer stores

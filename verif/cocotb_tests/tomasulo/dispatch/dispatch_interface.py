@@ -635,7 +635,6 @@ _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
         EBREAK,
         FENCE,
         FENCE_I,
-        SFENCE_VMA,
         WFI,
         MRET,
         SRET,
@@ -652,6 +651,8 @@ _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
 
 _USES_INT_RS2_OPS: frozenset[int] = frozenset(
     {
+        # SFENCE.VMA reads rs1 (page) and rs2 (ASID).
+        SFENCE_VMA,
         BEQ,
         BNE,
         BLT,
@@ -1266,6 +1267,9 @@ class DispatchInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_from_id_to_ex.value = 0
+        self.dut.i_vtype_spec.value = 0
+        self.dut.i_vec_lmul_illegal.value = 0
+        self.dut.i_vec_mem_illegal.value = 0
         self.dut.i_valid.value = 0
         self.dut.i_from_id_to_ex_2.value = 0
         self.dut.i_valid_2.value = 0

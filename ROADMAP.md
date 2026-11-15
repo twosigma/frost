@@ -7,12 +7,12 @@ set the direction of this roadmap. The sections are in priority order.
 
 FROST is working toward the RVA23 profile without the hypervisor extension:
 the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
-The remaining scalar and supervisor extensions are in progress. Sstvala's
-illegal-instruction values are implemented: `mtval` and `stval` hold the
-faulting instruction's bits. Its access-fault values remain: a failed bus
-response on a load, a store or a misaligned access reports zero in `mtval`
-or `stval`, where Sstvala requires the faulting address. Two larger pieces
-come before the second hart:
+The remaining scalar extensions are in progress, as are the remaining
+supervisor extensions apart from Svinval.
+`hpmcounter11`-`31` raise illegal-instruction in every privilege mode; making
+them read zero in M-mode, as the reference models do, would let the TestRIG
+comparison run with Zihpm enabled. Two larger pieces come before the second
+hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; Zvbc,
   Zvfh and vector cryptography follow. The vector length
@@ -33,6 +33,74 @@ come before the second hart:
   address-misaligned exception. TestRIG does not check the engine yet: its
   build leaves the engine out until its RVFI-DII recorder reports the
   engine's retirements and writes.
+
+The table below lists the mandatory extensions of RVA23U64 and RVA23S64
+(excluding Sha, the hypervisor profile extension) and the RVA23 optional
+extensions implemented on `main` or planned with the vector unit:
+
+| Extension | Status | Where it is tested |
+| --- | --- | --- |
+| RV64I | Implemented | `riscv-arch-test` (`I`), `riscv-tests` (`rv64ui`), `riscv-torture`, TestRIG, `reorder_buffer.sby` |
+| M | Implemented | `riscv-arch-test` (`M`), `riscv-tests` (`rv64um`), TestRIG, `divider.sby`, `int_muldiv_shim.sby` |
+| A | Implemented | `riscv-arch-test` (`A`), `riscv-tests` (`rv64ua`), `rv64_amo_test`, `ddr_atomic_test`, TestRIG (`--atomics`), `load_queue_amo_compute.sby`, `coherence_l1d.sby` |
+| F | Implemented | `riscv-arch-test` (`F`), `riscv-tests` (`rv64uf`), `fpu_test`, `fp_dyn_rm_test`, TestRIG, `fp_engine_twin.sby`, `fp_shim.sby` |
+| D | Implemented | `riscv-arch-test` (`D`), `riscv-tests` (`rv64ud`), `fpu_test`, `fpu_assembly_test`, TestRIG, `fp_engine_twin.sby`, `fp_shim.sby` |
+| C | Implemented | `riscv-arch-test` (`C`, `D_Zcd`), `riscv-tests` (`rv64uc`), `c_ext_test`, `cf_ext_test`, TestRIG, `rvc_predecode.sby`, `c_ext_state_cofactor.sby` |
+| B | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzba`, `rv64uzbb`, `rv64uzbs`), `isa_test`, TestRIG, `alu_shift_hint.sby` |
+| Zicsr | Implemented | `riscv-tests` (`rv64mi`, `rv64si`), `csr_test`, `csr_rmw_test`, TestRIG, `csr_file.sby` |
+| Zicntr | Implemented | `csr_test`, `instret_test`, `zihpm_test`, TestRIG (`instret_nops.S`), `csr_file.sby` |
+| Zihpm | Implemented (`hpmcounter11`-`31` trap in every privilege mode; off in default TestRIG) | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`hpm_counters.S`, `--sscofpmf`), `csr_sscofpmf.sby` |
+| Ziccif | Implemented | `ifread_test`, `ddr_exec_test`, `smc_fencei_test`, `coherent_hart_cache.sby`, `immu_twin.sby` |
+| Ziccrse | Implemented | `rv64_amo_test`, `ddr_atomic_test`, TestRIG (`--atomics`), `coherence_l1d.sby`, `coherence_home.sby` |
+| Ziccamoa | Implemented | `riscv-arch-test` (`A`), `riscv-tests` (`rv64ua`), `rv64_amo_test`, TestRIG (`--atomics`), `load_queue_amo_compute.sby`, `coherence_l1d.sby` |
+| Zicclsm | Implemented (in hardware on the X3 and in simulation; emulated by firmware on the VCU118; TestRIG builds leave the engine out) | `misaligned_test`, `riscv-tests` (`ma_data`), `test_ma_engine.py`, `ma_engine.sby`, `ma_pkg.sby` |
+| Za64rs | Implemented | Verified by construction (32-byte sector and 64-byte line reservations); LR/SC functional tests in `rv64_amo_test`, `ddr_atomic_test`, `coherence_l1d.sby`, `coherence_home.sby` |
+| Zihintpause | Implemented | `riscv-arch-test` (`hints`), `pause_test`, TestRIG |
+| Zic64b | Implemented | `cbo_zero_test`, `cbo_mgmt_test`, `riscv-arch-test` (`CMO`), TestRIG (`Zicboz`, `Zicbom`), `store_queue.sby` |
+| Zicbom | Implemented | `cbo_mgmt_test`, TestRIG (`zicbom_ops.S`), `csr_file.sby`, `reorder_buffer.sby` |
+| Zicbop | Implemented | `zicbop_test`, TestRIG |
+| Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
+| Zfhmin | In progress | - |
+| Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
+| V | Partial (state, `vsetvl*`, integer ALU, mask-scalar; memory and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vmt.sby` |
+| Zvfhmin | Partial (FP16 convert datapath block in place; core execution not connected) | `test_vec_fcvt.py` |
+| Zvbb | Partial (single-width lane instructions in place; `vwsll` and vector advertisement not in place) | `test_vec_int_lane.py`, `test_vec_engine.py` |
+| Zvkt | Partial (fixed-latency integer and bitmanip lanes in place; vector unit unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py` |
+| Zihintntl | Implemented (hints execute as no-ops); advertisement in progress | `riscv-arch-test` (`hints`), `rvc_predecode.sby`, TestRIG |
+| Zicond | Implemented | `riscv-arch-test` (`Zicond`), `isa_test`, TestRIG |
+| Zimop | In progress | - |
+| Zcmop | In progress | - |
+| Zcb | In progress | - |
+| Zfa | In progress | - |
+| Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
+| Supm | In progress | - |
+| Zifencei | Implemented | `riscv-arch-test` (`Zifencei`), `smc_fencei_test`, `ddr_smc_test`, TestRIG, `coherent_hart_cache.sby` |
+| Ss1p13 | Implemented | `riscv-tests` (`rv64si`), `smode_test`, `umode_test`, `vm_test`, TestRIG, `csr_file.sby`, `trap_unit.sby` |
+| Svbare | Implemented | `pa_width_test`, `pma_fault_test`, TestRIG, `immu_bare.sby`, `dmmu_twin.sby` |
+| Sv39 | Implemented | `vm_test`, `asid_test`, `mmu_reach`, `riscv-tests` (`-v`), TestRIG, `ptw.sby`, `immu_memo.sby`, `dmmu_twin.sby`, `l2tlb.sby` |
+| Svade | Implemented | `ad_fault_test`, `vm_test`, `riscv-tests` (`-v`), TestRIG, `ptw.sby`, `dmmu_twin.sby` |
+| Ssccptr | Implemented | `vm_test`, `ptw_coherence_test`, `asid_test`, `coherent_cpu.sby`, `coherence_home.sby` |
+| Sstvecd | Implemented | `smode_test`, `csr_test`, `csr_file.sby`, `trap_unit.sby` |
+| Sstvala | Implemented | `sstvala_test`, `sstvala_fault_test`, `ad_fault_test`, `misaligned_test`, TestRIG (`sstvala_illegal.S`, `access_fault_tval.S`), `trap_unit.sby` |
+| Sscounterenw | Implemented | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`scounteren`), `csr_file.sby` |
+| Svpbmt | In progress | - |
+| Svinval | Not yet implemented | - |
+| Svnapot | In progress | - |
+| Sstc | Implemented (S-mode `mcounteren.TM` check missing) | `sstc_test`, `irq_take_latency`, `csr_file.sby` |
+| Sscofpmf | Implemented | `sscofpmf_test`, TestRIG (`--sscofpmf`), `csr_sscofpmf.sby` |
+| Ssnpm | In progress | - |
+| Ssu64xl | Implemented; advertisement in progress | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`), `csr_file.sby` |
+| Zbc (optional) | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzbc`), TestRIG, `cl_multiplier.sby` |
+| Svvptc (optional) | Implemented | `vm_test`, `asid_test`, TestRIG, `ptw.sby`, `immu_memo.sby`, `dmmu_twin.sby` |
+| Zvfh (optional) | Partial (FP16 lane datapath blocks in place; core execution not connected) | `test_vec_fma.py`, `test_vec_fcvt.py`, `test_vec_fdivsqrt.py`, `test_vec_fp_misc.py` |
+| Zvbc (optional) | Partial (carry-less multiply lane block in place; core execution not connected) | `test_vec_clmul_lane.py` |
+| Zvkng (optional) | Partial (AES, SHA-2 and GHASH group blocks in place; core execution not connected) | `test_vec_aes_group.py`, `test_vec_sha2_group.py`, `test_vec_ghash_group.py` |
+
+Supervisor and user modes decode no non-standard instructions or CSRs
+(`Ssstrict`, optional, unadvertised). The other RVA23 optional extensions
+(`Zvksg`, `Zabha`, `Zacas`, `Ziccamoc`, `Zama16b`, `Zfh`, `Zicfilp`,
+`Zicfiss`, `Zfbfmin`, `Zvfbfmin`, `Zvfbfwma`, `Sv48`, `Sv57`, `Zkr`,
+`Svadu`, `Sdtrig`, and `Sspm`) are not implemented.
 
 ## SMP
 
@@ -390,16 +458,19 @@ and targeted microbenchmarks give these items:
 2. Data translation. A last-page bypass sends eligible translated accesses
    directly to DMMU stage S2. Other translated accesses use S1 and S2.
    Reducing that path would improve cross-page translation latency.
-3. TLB reach. The DTLB and ITLB have 16 entries each. The walker keeps a
-   cache of upper-level page-table pointers, 16 for 2 MiB regions and 4 for
-   1 GiB regions, so a walk that hits it makes one or two dependent reads
-   instead of three. In simulation a dependent load that misses the DTLB
-   takes about 35 cycles against 5 on a hit, and an instruction page visit
-   that misses the ITLB about 51 against 20. Without ASIDs, every context
-   switch flushes both TLBs. A larger DTLB and ASID support would each help.
-   A design is ready: a 32-entry fully associative DTLB, which in simulation
-   takes chains of up to 32 pages to 5 cycles, and ASIDs with global pages
-   and selective `sfence.vma`.
+3. TLB reach. The DTLB and ITLB have 16 entries each, backed by a 512-entry
+   second-level TLB, ASIDs with global pages, selective `sfence.vma`, and a
+   walker cache of upper-level page-table pointers. In simulation a
+   dependent load that misses the DTLB and hits the second-level TLB takes 7
+   cycles against 5 on a DTLB hit, and an instruction page visit that misses
+   the ITLB and hits it takes 23 against 20. A miss in both walks, and the
+   walker cache takes the walk to one dependent read; the second-level lookup
+   comes first, so a dependent load that walks takes 36 cycles, one more than
+   without the array. Starting the walk in parallel with the second-level
+   lookup and cancelling it on a hit would remove that cycle. A 32-entry
+   superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
+   Reach beyond 2 MiB of 4 KiB pages, and Svnapot 64 KiB pages, would be the
+   next steps.
 4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
    predicts the jumps, calls and returns it misses through a PD redirect, at
@@ -464,6 +535,13 @@ and targeted microbenchmarks give these items:
    selects while the hit path holds it, which starting misses from the hit
    path's tag result would avoid, and tags-only lookups would keep stores,
    look-ahead stores and prefetch hints out of the data banks.
+10. Compressed code. Linux and its user space are built with the C
+    extension. CoreMark's score uses a build without compressed instructions;
+    built with them (`COREMARK_COMPRESSED=1`) it takes about 10% more cycles
+    in simulation. How much of that comes from fetch and prediction on 16-bit
+    instructions and how much from different code generation has not been
+    separated. Measuring fetch coverage, packet formation and prediction on
+    compressed code, then improving them, is open.
 
 ## Core area
 

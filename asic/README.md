@@ -13,16 +13,16 @@ The memories behind the RAM wrappers in
 [`hw/rtl/lib/ram`](../hw/rtl/lib/ram) are dual-port SRAM macros that
 [OpenRAM](https://github.com/VLSIDA/OpenRAM) generates for FreePDK45: the
 caches' data, the L1D's and the L2's tags, the data memory, the instruction
-memory, the NIC's ingress FIFO and MAC frame and packet buffers, and the BTB's
+memory, the NIC's packet FIFOs and MAC frame and packet buffers, and the BTB's
 slot-2 payload tables ([SRAM macros](#sram-macros)). The L2 holds 256 KiB,
 where the X3's holds 2 MiB, so that the flow fits CI's runners ([CI](#ci)).
 Arrays of 4,096 bits or less, such as the L1I's tags and the caches'
 replacement state, become flip-flops. Memories larger than 4,096 bits
 without a matching macro are mocked: each keeps a single row, built from
-flip-flops. These include the 84-bit NIC transmit FIFO and arrays read
-without a clock, such as the BTB tags, the TAGE tables, the instruction
-memory's PC-metadata overlays, the MAC's packet
-descriptors, and banks of the ROB and the INT RS. An ASIC would build
+flip-flops. These include arrays read without a clock, such as the BTB tags,
+the TAGE tables, the instruction memory's PC-metadata overlays, and banks of
+the ROB and the INT RS. The MAC's registered packet-length memory also lacks
+a matching macro. An ASIC would build
 those asynchronous arrays from flip-flops or latches rather than SRAM.
 Their area and the paths through them are therefore missing. The summary
 lists the macros and every mocked memory with its dimensions.
@@ -136,7 +136,7 @@ these modules.
 | `sram_1w1r_1024x64_m8` | 1,024 x 64 | Bytes | 416.5 x 436.5 | 0.378 to 0.445 | 1.65 | 16 | L1D data, 1 row of 4 in each way's bank |
 | `sram_1w1r_1024x19` | 1,024 x 19 | | 263.4 x 261.0 | 0.306 to 0.373 | 1.38 | 8 | L1D tags and the hit path's copy of them, one each for each way |
 | `sram_1w1r_1024x18` | 1,024 x 18 | | 253.5 x 260.7 | 0.302 to 0.369 | 1.37 | 4 | L2 tags, 1 row of 4 ways |
-| `sram_1w1r_512x68` | 512 x 68 | | 436.7 x 245.7 | 0.384 to 0.451 | 1.67 | 16 | The NIC's 8,192-word receive FIFO |
+| `sram_1w1r_512x68` | 512 x 68 | | 436.7 x 245.7 | 0.384 to 0.451 | 1.67 | 17 | The NIC's 8,192-word receive FIFO and 512-word transmit FIFO |
 | `sram_1w1r_256x36` | 256 x 36 | | 167.6 x 237.2 | 0.266 to 0.334 | 1.24 | 3 | The BTB's slot-2 payload tables |
 | `sram_1w1r_128x64_m8` | 128 x 64 | Bytes | 248.6 x 143.5 | 0.308 to 0.376 | 1.39 | 16 | L1I data, 1 row of 4 in each way's bank |
 | `sram_1w1r_8192x28` | 8,192 x 28 | | 665.7 x 877.4 | 0.466 to 0.533 | 1.97 | 4 | Instruction memory's cold banks, 2 rows in each parity's |
@@ -298,13 +298,13 @@ parity's cold, frontend-hot, and compressed banks side by side, two macros a
 bank, the even parity at the left and the odd parity, in mirror order, at
 the right. The top band holds the L1D data in the middle, a row of four
 macros for each way; at its left the L1I data, arranged the same way, then
-eight rows of two receive FIFO tiles, the BTB's payload tables, and two rows
+eight rows of two receive FIFO tiles, the BTB's payload tables beside the transmit FIFO, and two rows
 of four receive packet macros; and at its right the L1D tags, a row of four
 with the hit path's copy in a second row, the L2 tags, and the transmit frame
 macro. The 5.1 mm by 8.075 mm core retains an approximately 800 um logic band with
 the larger ingress FIFO, and the script stops the flow if the core leaves
-less than 600 um for it. The 84-bit transmit FIFO has no matching SRAM
-macro and is reported among the mocked memories.
+less than 600 um for it. The transmit FIFO uses one macro; its checksum side
+FIFO is small enough to use flip-flops.
 Macros above one another stand 40 um apart and groups of macros 80 um.
 Macros side by side stand 62 um apart, because the cell rows between them
 take their power from the metal4 straps that cross the gap: the platform's
@@ -343,7 +343,8 @@ to 3, one for each way.
 | `soc.data_memory` | `tdp_bram_dc_byte_en` | 16,384 x 64, byte lanes, two ports | 4 rows of 1 `sram_2rw_4096x64_m8` |
 | `soc.instruction_memory.u_even_cold` and `u_odd_cold` | `sdp_block_ram_dc_init` | 16,384 x 28 | 2 rows of 1 `sram_1w1r_8192x28` each |
 | `soc.instruction_memory.u_even_frontend_hot`, `u_odd_frontend_hot`, `u_even_compressed`, and `u_odd_compressed` | `sdp_block_ram_dc_init` | 16,384 x 4 | 2 rows of 1 `sram_1w1r_8192x4` each |
-| `soc.gen_cached_tier.nic.u_mac.u_rx_fifo.storage` and `u_tx_fifo.storage` | `sdp_block_ram_dc` | 512 x 68 | 1 `sram_1w1r_512x68` each |
+| `soc.gen_cached_tier.nic.u_mac.u_rx_fifo.storage` | `sdp_block_ram_dc` | 8,192 x 68 | 16 `sram_1w1r_512x68` |
+| `soc.gen_cached_tier.nic.u_mac.u_tx_fifo.storage` | `sdp_block_ram_dc` | 512 x 68 | 1 `sram_1w1r_512x68` |
 | `soc.gen_cached_tier.nic.u_mac.u_mac.mac_tx.u_frame_memory` | `sdp_block_ram_dc_init` | 4,096 x 64 | 1 `sram_1w1r_4096x64_m8` |
 | `soc.gen_cached_tier.nic.u_mac.u_mac.mac_rx.g_memory_lane[0..7].u_packet_memory` | `sdp_block_ram_dc_init` | 4,096 x 8 each | 1 `sram_1w1r_4096x8` each |
 
@@ -705,9 +706,9 @@ every pull request and every push to `main`, each resuming from the database
 of the one before. The flow takes about fifteen hours, so a push to `main`
 does not cancel a run in progress: the run finishes and the most recently
 queued run waits behind it (GitHub keeps one pending run, so an older pending
-run is cancelled). A new push to a pull request cancels that pull request's
-earlier run. Adding the label starts the flow, and adding any other label
-starts nothing.
+run is cancelled). A pull request runs the flow only when the `run-asic`
+label is added to it; to run it again after a later push, remove the label
+and add it again, or start a manual run on the branch.
 
 | Job | Runs | Extra swap |
 | --- | --- | ---: |

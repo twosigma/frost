@@ -14,30 +14,21 @@
  *    limitations under the License.
  */
 
-// Every assertion belongs to one of four partitions. All partitions must pass.
-// The history assumption records only the preceding cycle, with an initially
-// true value. A first assertion failure therefore satisfies every history
-// assumption and is checked by the partition that owns that assertion.
-// Cell names come from the same frozen DUT in every partition.
-(* techmap_celltype = "$assert" *)
+// The selected partition checks each original predicate and enable. Every
+// partition assumes the preceding cycle's result for every assertion. History
+// starts true, so a first failure satisfies all history assumptions and reaches
+// its owning partition. All partitions must pass.
+(* techmap_celltype = "$assert axi_coherent_bridge_checked_assert" *)
 module axi_coherent_bridge_assert (
     input logic A,
     input logic EN
 );
-  parameter logic [1023:0] _TECHMAP_CELLNAME_ = "";
-  function automatic integer unsigned group_number;
-    integer unsigned hash_value;
-    hash_value = 0;
-    for (integer k = 0; k < $bits(_TECHMAP_CELLNAME_) / 8; k = k + 1)
-      hash_value = (hash_value * 33) ^ _TECHMAP_CELLNAME_[8*k+:8];
-    group_number = hash_value % 4;
-  endfunction
-  localparam integer unsigned Group = group_number();
+  parameter logic [8*64-1:0] _TECHMAP_CELLTYPE_ = "";
   wire [8*32-1:0] _TECHMAP_DO_ = "proc; chformal -lower;";
   logic prior_ok = 1'b1;
   always @($global_clock) prior_ok <= !EN || A;
   always_comb assume (prior_ok);
-  if (Group == `AXI_COHERENT_PARTITION) begin : g_check
+  if (_TECHMAP_CELLTYPE_ == "axi_coherent_bridge_checked_assert") begin : g_check
     always_comb if (EN) assert (A);
   end
 endmodule

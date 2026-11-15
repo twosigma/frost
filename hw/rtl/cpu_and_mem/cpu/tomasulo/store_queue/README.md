@@ -5,7 +5,9 @@ eight entries (`riscv_pkg::SqDepth`) and two allocation ports. Stores write
 cached memory after commit, in program order. With `PRECISE_UNCACHED=1`
 (as in `cpu_top`), Device and strict uncached stores execute at the ROB head
 with the interrupt and debug shield armed, and retire only after the AXI B
-response. `CACHE_NORMAL_MEMORY=1` permits ordinary stores to the configured
+response. While an interrupt take is armed, cpu_ooo keeps that shield from
+rising for a new precise store other than an SC, so the store starts only
+after the take. `CACHE_NORMAL_MEMORY=1` permits ordinary stores to the configured
 Normal read-cache region to commit before draining as narrow write-through
 transactions. SC and debug-page stores remain precise. The SQ also answers
 the load queue's store-to-load forwarding checks.
@@ -46,7 +48,10 @@ nothing, so a load behind it waits for the SC to drain and then reads memory.
 A cbo.zero entry conflicts with every load in its 64-byte block, whatever
 the load's bytes, and never forwards: the load waits until the block's write
 frees the entry, then reads the zeros from memory. A younger store
-covering the load still forwards over the older block.
+covering the load still forwards over the older block. A Zicbom entry
+(`cbo.clean`, `cbo.flush`, `cbo.inval`) takes the same block conflict, so a
+younger load of its block waits until the entry frees, even where a store
+between them covers the load.
 
 On a full-flush cycle the scan can treat a squashed store's commit as visible.
 This is harmless because the LQ discards any forwarding result captured on a
@@ -122,7 +127,18 @@ entry. The beat counter prepares its local next value before coherent credit
 selects advance or hold. Its fixed-width increment wraps after the eighth
 uncached beat; a cached zero write restarts it immediately.
 A precise uncached block reports its completion, and any beat's error,
-with the eighth response. The write outputs are registered,
+with the eighth response. A Zicbom entry keeps `rs1` and its kind and has no
+data: it never becomes data-valid, so the write launch never selects it.
+Every bus master in FROST reaches DDR through the coherent home, so the
+operations have no data effect, and the entry completes as an ordered no-op:
+committed, at the drain cursor, with no write in flight or on the bus and no
+L1D store record pending, it is marked sent without a write and frees on the
+next cycle from registered state, as a completed write does. Every older
+store has then completed, and the next entry drains behind it; a second
+Zicbom entry waits until the first has freed. A flush or inval pulses the
+block-wide L0 invalidation at `rs1` on the cycle it frees.
+The ROB marks a Zicbom op done at issue wherever its block lies: cached DDR,
+low BRAM or a device window. The write outputs are registered,
 including `is_mmio` and `is_cached` flags that let the memory router steer the
 write without decoding the address again. `o_mem_write_buffered` identifies
 an ordinary Normal store that has already retired; this distinguishes its
@@ -133,7 +149,8 @@ Normal read-cache policy applies.
 With `PRECISE_UNCACHED=0`, plain BRAM stores complete one
 cycle after launch with up to two writes in flight. In `cpu_top`, every
 Normal/Device store keeps its SQ entry until B. A precise store's
-SLVERR/DECERR becomes cause 7; successful SC completion is likewise delayed
+SLVERR/DECERR becomes cause 7, whose trap value, the store's virtual
+address, the wrapper supplies; successful SC completion is likewise delayed
 until B. A failed buffered Normal store retains ownership and raises the
 tile's fatal indication. Completions carry no tag,
 so the memory side must return them in launch order: each one frees the
