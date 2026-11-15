@@ -454,10 +454,15 @@ window is not in the PMA map (an untranslated
 access or a PMA leaf there faults as before); an NC or IO leaf over it is a
 device page in the DTLB's per-entry checks and the walk-response checks, so
 the DMMU classifies the op MMIO, the load queue's PMA check accepts the window
-for MMIO entries, and the load queue, store queue and uncached adapter treat
-it exactly as a device access: no L0 or L1D, at the ROB head after older
-stores drain, stores retired after their bus response. NC executes as IO,
-which is stronger than RVWMO. soc_top sends an
+for MMIO entries. NC/IO loads over the DDR alias or low BRAM issue at the
+ROB head and bypass L0, L1D and store forwarding. The router selects
+parking, committed-store draining and interrupt shielding by the physical
+device quadrant, so these memory loads do not wait for committed stores to
+drain. An interrupt or debug halt can flush an accepted load and cause it
+to perform another read after resumption. All such targets are idempotent
+memory. Alias stores retire after their bus response; NC/IO low-BRAM stores
+are buffered and can retire before their response. Device registers retain
+the full device mechanism regardless of PBMT. soc_top sends an
 alias access as one single-beat transfer of the real DDR address through the
 coherent DMA port, so the home probes the L1D and merges dirty data first:
 the transfer observes the cacheable copy of the same frame. Switching
@@ -471,6 +476,14 @@ and the walk-response checks apply the field: the page is MMIO and refuses
 AMOs. AMO, LR, SC and `cbo.zero` on an NC or IO page are access faults, and so
 is an instruction fetch (PMA overrides the Svpbmt chapter permits). The walk
 cache holds only pointers, whose PBMT field must be zero.
+
+On the X3, a misaligned NC/IO load or store to a DDR alias raises a load or
+store access fault (cause 5 or 7); one to low BRAM raises an address-misaligned
+exception (cause 4 or 6). The VCU118 has no hardware misaligned-access engine:
+misaligned loads and stores raise cause 4 or 6 before translation, including
+NC/IO accesses, for firmware to handle. Aligned NC/IO DDR accesses on its
+2 GiB map raise cause 5 or 7 because the map has no alias.
+
 The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
 (the level-0 table of a 2 MiB region) and 4 root pointers (the level-1 table
 of a 1 GiB region). A walk looks both up in two registered cycles (tag

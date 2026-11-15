@@ -65,6 +65,8 @@ control registers at region offset `0x80000000`; the CPU port cannot.
 Svpbmt NC and IO mappings of DDR raise an access fault on this 2 GiB map:
 its 32-bit physical address space has no room for an uncached DDR alias.
 Device mappings are unaffected and support NC and IO attributes.
+Misaligned loads and stores raise address-misaligned exceptions (cause 4 or
+6) before translation for firmware to handle, including NC and IO accesses.
 
 After calibration, `vcu118_ddr_init` writes zeros across the mapped region
 using full controller words. It waits for write responses before releasing

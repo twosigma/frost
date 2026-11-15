@@ -917,7 +917,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="svpbmt_test",
         nic_mac_clocks=False,
-        include_in_pytest=False,
         description="Svpbmt alias read/write response faults, xtval and port recovery",
         extra_env=(
             ("EXTRA_CFLAGS", "-DSVPBMT_BUS_ERRORS=1"),

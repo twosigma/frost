@@ -1788,11 +1788,16 @@ package riscv_pkg;
   // physical space. The window is not part of the PMA map: an untranslated
   // access to it, or a PMA leaf over it, is an access fault as before (none of
   // the pma_* decodes below contain it). Only an NC or IO leaf reaches it, and
-  // the MMUs classify that access as a device access (MMIO), so the load and
-  // store queues and the uncached data adapter treat it exactly as one: no L0,
-  // no L1D, at the ROB head after older stores drain, stores retired after
-  // their bus response; the load queue's PMA check accepts the window for its
-  // MMIO entries. soc_top turns an alias access into one single-beat transfer
+  // the MMUs classify that access as MMIO. NC/IO loads over the alias or low
+  // BRAM issue at the ROB head and bypass caches and store forwarding. The
+  // router uses the physical device quadrant for parking, committed-store
+  // draining and interrupt shielding. Memory loads do not get those three
+  // protections: an interrupt or debug halt can flush an accepted load and
+  // cause a second read after resumption. These targets are idempotent memory.
+  // Alias stores retire after their bus response; NC/IO low-BRAM stores are
+  // buffered and can retire before it. Device registers use the full device
+  // mechanism regardless of PBMT. The load queue's PMA check accepts the alias
+  // for MMIO entries. soc_top turns an alias access into one single-beat transfer
   // of the real DDR address through the coherent DMA port, so it is coherent
   // with cacheable copies of the same bytes (the L1D is probed, dirty data
   // merged) and leaves nothing in the hart's caches.
