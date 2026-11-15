@@ -443,7 +443,8 @@ cached DDR answers the PPN of the uncached alias of DDR (riscv_pkg "Svpbmt":
 bit 30 for DDR up to 1 GiB, bit c for a 2^c-byte window of c >= 32, which
 leaves its top 2 GiB without an alias and makes an NC or IO leaf there an
 access fault). A 2 GiB DDR window has no alias in the current 32-bit physical
-map, so NC and IO leaves over DDR fault in that configuration. The alias
+map, so NC and IO leaves over DDR raise an access fault in that configuration,
+including the VCU118's 2 GiB map. Device mappings are unaffected. The alias
 window is not in the PMA map (an untranslated
 access or a PMA leaf there faults as before); an NC or IO leaf over it is a
 device page in the DTLB's per-entry checks and the walk-response checks, so
