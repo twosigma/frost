@@ -279,7 +279,6 @@ can be debugged and where each one first stops.
 | `ddr_heap_test/` | Multi-MiB `malloc` from the DDR heap, checked for address aliasing |
 | `ddr_mlp_test/` | Independent cold DDR loads must overlap their L1D misses, measured with the profiling counters; a pointer chase is the control. The default eviction window targets 4 KiB caches. `DDR_MLP_FULL_CACHE=1` uses conflicting sets for the 128 KiB L1D and configured L2 (`FROST_L2_CACHE_BYTES`, 2 MiB by default); the CLI-only `ddr_mlp_test_full_cache` bench selects this mode |
 | `ddr_smc_test/` | Self-modifying code in DDR: store, `fence.i`, then execute cold and warm |
-| `l1i_set_test/` | Every L1I set filled, hit, patched and cleared: lines differing only in PA[12], 8 KiB-apart lines sharing a set, an over-subscribed upper set, and an Sv39 page crossing whose PA[12] differs from its VA[12]; `L1I_TEST_BYTES=32768` adds the warm-pass refill bound |
 | `ddr_test/` | Cached-DDR loads and stores, byte strobes, evictions, the preloaded `.ddr_rodata` image, and AMOs |
 | `debug_target/` | Debuggee with known symbols for the JTAG debug tests; waits for a debugger to write its flags |
 | `dma_torture/` | DMA test engine against the CPU caches: visibility, ordering, atomics and evictions racing engine writes, the completion interrupt, abort and reuse |
@@ -317,6 +316,7 @@ can be debugged and where each one first stops.
 | `linux_irq_ddr_test/` | Linux-style timer interrupt path from `wfi` idle, with code, data, and stack in DDR |
 | `linux_irq_find_next_slot_test/` | Timer interrupts swept across a `_find_next_bit`-shaped loop whose saved-`ra` slot is poisoned |
 | `linux_irq_stack_slot_test/` | A timer interrupt inside a callee whose saved-`ra` stack slot was poisoned beforehand |
+| `l1i_set_test/` | Every L1I set filled, hit, patched and cleared: lines differing only in PA[12], 8 KiB-apart lines sharing a set, an over-subscribed upper set, and an Sv39 page crossing whose PA[12] differs from its VA[12]; `L1I_TEST_BYTES` (16384 or 32768) selects the residence and refill bounds |
 | `l2_capacity_chase/` | Dependent-load cycles over checked random cycles of 64-byte lines; `L2CC_SIZES_KIB` selects 1 to 16384 KiB working sets (default 1024, 3072, 4096, 5120). CI checks short rings with a 4 MiB L2 and DDR read counts below and above a reduced L2 capacity |
 | `lq_stale_slot_probe/` | Cached-load results must reach the right load across two partial flushes and ROB-tag reuse, with slow, reordered DDR responses; eviction aliases follow `FROST_L2_CACHE_BYTES` (2 MiB by default, 4 MiB on VCU118) |
 | `mem_divergence_probe/` | Cold versus warm reads of cached DDR (both dword halves, 64-bit reads, store forwarding) |
