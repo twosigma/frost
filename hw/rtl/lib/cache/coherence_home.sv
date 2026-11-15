@@ -1587,14 +1587,37 @@ module coherence_home #(
     end
     assign fill_phase_updated = fill_phase_q[fill] == FillInvalidate ? FillInvalidateWait :
         FillInstallWait;
+    // Registered decodes of the two update phases, written beside the phase
+    // from the same next state: the update packet's address, state, mask
+    // and offer read one flop each instead of a phase compare. Neither the
+    // update write nor allocation enters either phase.
+    (* max_fanout = 32 *) logic fill_install_q, fill_invalidate_q;
     assign fill_update_armed = run && update_selected[Client] &&
-        (fill_phase_q[fill] == FillInvalidate || fill_phase_q[fill] == FillInstall);
+        (fill_invalidate_q || fill_install_q);
     always_ff @(posedge i_clk) begin
       if (i_rst) fill_phase_q[fill] <= FillFree;
       else if (update_request_ready && fill_update_armed) fill_phase_q[fill] <= fill_phase_updated;
       else if (allocate) fill_phase_q[fill] <= fill_phase_allocated;
       else fill_phase_q[fill] <= fill_phase_hold;
     end
+    always_ff @(posedge i_clk) begin
+      if (i_rst || (update_request_ready && fill_update_armed) || allocate) begin
+        fill_install_q    <= 1'b0;
+        fill_invalidate_q <= 1'b0;
+      end else begin
+        fill_install_q    <= fill_phase_hold == FillInstall;
+        fill_invalidate_q <= fill_phase_hold == FillInvalidate;
+      end
+    end
+`ifndef SYNTHESIS
+    always_ff @(posedge i_clk) begin
+      if (sim_reset_seen_q && !i_rst) begin
+        // The flags equal their phase decodes.
+        assert (fill_install_q == (fill_phase_q[fill] == FillInstall));
+        assert (fill_invalidate_q == (fill_phase_q[fill] == FillInvalidate));
+      end
+    end
+`endif
     assign tag_valid[Client] = 1'b0;
     assign tag_payload[Client] = '0;
     assign read_valid[Client] = fill_phase_q[fill] == FillRecall && !fill_read_sent_q[fill];
@@ -1608,18 +1631,19 @@ module coherence_home #(
     assign ack_valid[Client] = run && fill_phase_q[fill] == FillRecall &&
         recall_phase_q[fill] == RecallAck;
     assign ack_payload[Client] = fill_ack_q[fill];
-    assign update_valid[Client] = run &&
-        (fill_phase_q[fill] == FillInvalidate || fill_phase_q[fill] == FillInstall);
+    assign update_valid[Client] = run && (fill_invalidate_q || fill_install_q);
+    // The image is gated by the install flag, so the packet holds steady
+    // while the arbiter presents it (an invalidate's image may still load).
     assign update_payload[Client] = {
       TokenBits'(Client),
       fill_way_q[fill],
-      fill_phase_q[fill] == FillInvalidate ? fill_old_addr_q[fill] : fill_addr_q[fill],
+      fill_invalidate_q ? fill_old_addr_q[fill] : fill_addr_q[fill],
       1'b1,
-      fill_phase_q[fill] == FillInvalidate ? 2'(coherence_pkg::Invalid) :
+      fill_invalidate_q ? 2'(coherence_pkg::Invalid) :
           fill_zero_q[fill] ? 2'(coherence_pkg::Modified) : 2'(coherence_pkg::Shared),
-      fill_phase_q[fill] == FillInstall,
-      {LINE_BYTES{fill_phase_q[fill] == FillInstall}},
-      fill_phase_q[fill] == FillInstall ? fill_image_q[fill] : {(8 * LINE_BYTES) {1'b0}}
+      fill_install_q,
+      {LINE_BYTES{fill_install_q}},
+      fill_image_q[fill] & {(8 * LINE_BYTES) {fill_install_q}}
     };
     // A successful fill wakes its waiters once, on the first cycle after the
     // array accepts its install update. Seat admission is closed from then
