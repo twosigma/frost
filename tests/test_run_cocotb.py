@@ -3175,7 +3175,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherent_cpu_faults": CocotbRunConfig(
         python_test_module="cocotb_tests.integration.test_coherent_cpu_faults",
         hdl_toplevel_module="cpu_top",
-        description="Coherent atomic faults, parked-hart DMA service and reset preserve ownership.",
+        description="Coherent atomic faults, NC/IO alias-load replay on IRQ/debug entry, parked-hart DMA service and reset.",
         verilator_extra_args=(
             "--assert",
             "-GENABLE_COHERENCE=1",
