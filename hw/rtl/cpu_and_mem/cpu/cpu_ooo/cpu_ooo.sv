@@ -1081,6 +1081,7 @@ module cpu_ooo #(
   logic [8:0] vec_vtype_spec;
   // vec_lmul_legality's classes of the dispatch slot-1 instruction
   logic [3:0] dispatch_vec_lmul_illegal;
+  logic dispatch_vec_mem_illegal;
   logic vec_vtype_valid;
   logic vec_vcfg_in_flight;
   logic [15:0] csr_vec_vl, csr_vec_vstart;
@@ -1089,6 +1090,14 @@ module cpu_ooo #(
   logic vec_commit_hold;
   logic vec_idle;
   riscv_pkg::fu_complete_t vec_vtox_complete;  // CDB slot 6
+  // The vector memory table as the load and store queues see it, and its
+  // registered "no live retired entry" (rule V-O4: FENCE, FENCE.I,
+  // SFENCE.VMA, SC and the misaligned-access engine wait for it).
+  riscv_pkg::vmt_view_t vec_vmt_view;
+  logic vec_vmem_quiet;
+  // Every vector memory table entry is live (registered): a vector load or
+  // store waits at dispatch.
+  logic vec_vmt_full;
   // Register FS-Off for decode timing. It differs from CSR state only when
   // FS enters or leaves Off, whose full flush discards that cycle's decode.
   logic id_mstatus_fs_off_q;
@@ -1230,25 +1239,41 @@ module cpu_ooo #(
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next, producer_ctrl_next_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_go, producer_ctrl_next_go_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_hold, producer_ctrl_next_hold_2;
-      // Slot 1's vector legality classes (vec_lmul_legality) beside the shadow
-      // slice: one per producer copy, each from that copy's own instruction
-      logic [3:0] producer_vlc, producer_vlc_next, producer_vlc_next_go, producer_vlc_next_hold;
-      logic [3:0] queue_vlc, queue_vlc_next;
+      // Slot 1's vector legality (memory rejection and four LMUL classes)
+      // beside the shadow slice, from each producer copy's own instruction
+      logic [4:0] producer_vlc, producer_vlc_next, producer_vlc_next_go, producer_vlc_next_hold;
+      logic [4:0] queue_vlc, queue_vlc_next;
       vec_lmul_legality u_vlc (
           .i_insn(32'(decoded_packet.instruction)),
-          .o_illegal(producer_vlc)
+          .i_op(decoded_packet.instruction_operation),
+          .i_is_illegal(decoded_packet.is_illegal_instruction),
+          .i_is_fetch_fault(decoded_packet.is_fetch_fault),
+          .o_illegal(producer_vlc[3:0]),
+          .o_mem_illegal(producer_vlc[4])
       );
       vec_lmul_legality u_vlc_next (
           .i_insn(32'(decoded_packet_next.instruction)),
-          .o_illegal(producer_vlc_next)
+          .i_op(decoded_packet_next.instruction_operation),
+          .i_is_illegal(decoded_packet_next.is_illegal_instruction),
+          .i_is_fetch_fault(decoded_packet_next.is_fetch_fault),
+          .o_illegal(producer_vlc_next[3:0]),
+          .o_mem_illegal(producer_vlc_next[4])
       );
       vec_lmul_legality u_vlc_next_go (
           .i_insn(32'(decoded_packet_next_go.instruction)),
-          .o_illegal(producer_vlc_next_go)
+          .i_op(decoded_packet_next_go.instruction_operation),
+          .i_is_illegal(decoded_packet_next_go.is_illegal_instruction),
+          .i_is_fetch_fault(decoded_packet_next_go.is_fetch_fault),
+          .o_illegal(producer_vlc_next_go[3:0]),
+          .o_mem_illegal(producer_vlc_next_go[4])
       );
       vec_lmul_legality u_vlc_next_hold (
           .i_insn(32'(decoded_packet_next_hold.instruction)),
-          .o_illegal(producer_vlc_next_hold)
+          .i_op(decoded_packet_next_hold.instruction_operation),
+          .i_is_illegal(decoded_packet_next_hold.is_illegal_instruction),
+          .i_is_fetch_fault(decoded_packet_next_hold.is_fetch_fault),
+          .o_illegal(producer_vlc_next_hold[3:0]),
+          .o_mem_illegal(producer_vlc_next_hold[4])
       );
       // The shadow slice of an ID packet: the same field copy as
       // producer_ctrl_next, for the go and hold outcomes.
@@ -1300,6 +1325,7 @@ module cpu_ooo #(
         c.is_real = d.is_real;
         c.is_varith = (d.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (d.instruction.funct3 != 3'b111);
+        c.is_vmem = riscv_pkg::is_vector_mem(d.instruction.opcode, d.instruction.funct3);
         id_ctrl_of = c;
       endfunction
       assign producer_ctrl_next_go = id_ctrl_of(decoded_packet_next_go);
@@ -1354,6 +1380,8 @@ module cpu_ooo #(
         producer_ctrl.is_real = decoded_packet.is_real;
         producer_ctrl.is_varith = (decoded_packet.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet.instruction.funct3 != 3'b111);
+        producer_ctrl.is_vmem = riscv_pkg::is_vector_mem(decoded_packet.instruction.opcode,
+                                                         decoded_packet.instruction.funct3);
         producer_ctrl_2.is_load_instruction = decoded_packet_2.is_load_instruction;
         producer_ctrl_2.is_load_unsigned = decoded_packet_2.is_load_unsigned;
         producer_ctrl_2.instruction_operation = decoded_packet_2.instruction_operation;
@@ -1398,6 +1426,8 @@ module cpu_ooo #(
         producer_ctrl_2.is_real = decoded_packet_2.is_real;
         producer_ctrl_2.is_varith = (decoded_packet_2.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet_2.instruction.funct3 != 3'b111);
+        producer_ctrl_2.is_vmem = riscv_pkg::is_vector_mem(decoded_packet_2.instruction.opcode,
+                                                           decoded_packet_2.instruction.funct3);
         producer_ctrl_next.is_load_instruction = decoded_packet_next.is_load_instruction;
         producer_ctrl_next.is_load_unsigned = decoded_packet_next.is_load_unsigned;
         producer_ctrl_next.instruction_operation = decoded_packet_next.instruction_operation;
@@ -1444,6 +1474,8 @@ module cpu_ooo #(
         producer_ctrl_next.is_varith =
             (decoded_packet_next.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet_next.instruction.funct3 != 3'b111);
+        producer_ctrl_next.is_vmem = riscv_pkg::is_vector_mem(
+            decoded_packet_next.instruction.opcode, decoded_packet_next.instruction.funct3);
         producer_ctrl_next_2.is_load_instruction = decoded_packet_next_2.is_load_instruction;
         producer_ctrl_next_2.is_load_unsigned = decoded_packet_next_2.is_load_unsigned;
         producer_ctrl_next_2.instruction_operation = decoded_packet_next_2.instruction_operation;
@@ -1490,6 +1522,8 @@ module cpu_ooo #(
         producer_ctrl_next_2.is_varith =
             (decoded_packet_next_2.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet_next_2.instruction.funct3 != 3'b111);
+        producer_ctrl_next_2.is_vmem = riscv_pkg::is_vector_mem(
+            decoded_packet_next_2.instruction.opcode, decoded_packet_next_2.instruction.funct3);
       end
       // An unpredicted JALR in either slot. While it is queued it counts as
       // pending for the control-flow serialization stall.
@@ -1564,17 +1598,24 @@ module cpu_ooo #(
         end
       end
 `endif
-      assign dispatch_vec_lmul_illegal = queue_vlc;
+      assign {dispatch_vec_mem_illegal, dispatch_vec_lmul_illegal} = queue_vlc;
 `ifndef SYNTHESIS
-      // The shadow moves whole words, so its classes stay those of its own
-      // instruction once reset has loaded it.
-      logic [3:0] queue_vlc_check;
+      // The shadow moves whole words, so its legality bits stay those of its
+      // own instruction and decode outcome once reset has loaded it.
+      logic [4:0] queue_vlc_check;
       vec_lmul_legality u_vlc_check (
           .i_insn(32'(queue_ctrl.instruction)),
-          .o_illegal(queue_vlc_check)
+          .i_op(queue_ctrl.instruction_operation),
+          .i_is_illegal(queue_ctrl.is_illegal_instruction),
+          .i_is_fetch_fault(queue_ctrl.is_fetch_fault),
+          .o_illegal(queue_vlc_check[3:0]),
+          .o_mem_illegal(queue_vlc_check[4])
       );
       always_ff @(posedge i_clk) begin
-        if (reset_seen_q && !i_rst && !$isunknown(queue_ctrl.instruction)) begin
+        if (reset_seen_q && !i_rst && !$isunknown(
+                {queue_ctrl.instruction, queue_ctrl.instruction_operation,
+                queue_ctrl.is_illegal_instruction, queue_ctrl.is_fetch_fault}
+            )) begin
           p_queue_vlc_matches_instruction : assert (queue_vlc == queue_vlc_check);
         end
       end
@@ -1715,10 +1756,11 @@ module cpu_ooo #(
         from_id_to_ex_2.uses_fp_rs3 = queue_ctrl_2.uses_fp_rs3;
         from_id_to_ex_2.is_real = queue_ctrl_2.is_real;
       end
-      // Vector arithmetic also waits while the vtype at dispatch is unknown.
+      // Vector arithmetic also waits while the vtype at dispatch is unknown,
+      // and a vector load or store while the vector memory table is full.
       assign id_valid_preflush = queue_valid &&
           !(csr_in_flight || csr_wb_pending || serializing_alloc_fire) &&
-          !(queue_ctrl.is_varith && !vec_vtype_valid);
+          !(queue_ctrl.is_varith && !vec_vtype_valid) && !(queue_ctrl.is_vmem && vec_vmt_full);
       assign id_valid_2_preflush = id_valid_preflush && from_id_to_ex_2.is_real;
       assign id_valid = id_valid_preflush && !dispatch_flush;
       assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;
@@ -1751,7 +1793,11 @@ module cpu_ooo #(
       assign from_id_to_ex_2 = decoded_packet_2;
       vec_lmul_legality u_vlc (
           .i_insn(32'(decoded_packet.instruction)),
-          .o_illegal(dispatch_vec_lmul_illegal)
+          .i_op(decoded_packet.instruction_operation),
+          .i_is_illegal(decoded_packet.is_illegal_instruction),
+          .i_is_fetch_fault(decoded_packet.is_fetch_fault),
+          .o_illegal(dispatch_vec_lmul_illegal),
+          .o_mem_illegal(dispatch_vec_mem_illegal)
       );
       assign rf_bypass_src_addr = {
         from_id_to_ex_2.instruction.funct7[6:2],
@@ -2495,6 +2541,8 @@ module cpu_ooo #(
       .o_commit(rob_commit),
       .o_vcfg_commit(vcfg_commit),
       .o_vcfg_in_flight(vec_vcfg_in_flight),
+      .i_vmt(vec_vmt_view),
+      .i_vmem_quiet(vec_vmem_quiet),
       .o_commit_comb(rob_commit_comb),
       .o_commit_valid_raw(rob_commit_valid_raw),
       .o_commit_misprediction_raw(rob_commit_misprediction_raw),
@@ -2926,6 +2974,7 @@ module cpu_ooo #(
   ) u_dispatch (
       .i_vtype_spec(vec_vtype_spec),
       .i_vec_lmul_illegal(dispatch_vec_lmul_illegal),
+      .i_vec_mem_illegal(dispatch_vec_mem_illegal),
       .i_clk,
       .i_rst_n(rst_n),
 
@@ -4325,7 +4374,7 @@ module cpu_ooo #(
         .i_rd(rob_head_dest_reg),
         .i_rd_valid(rob_head_dest_valid),
         .i_rs2(rob_head_mem_rs2),
-        .i_older_vector_mem_done(1'b1),
+        .i_older_vector_mem_done(vec_vmem_quiet),
         .i_translate(csr_translation_active),
         .i_eff_priv_u(csr_mmu_eff_priv_u),
         .i_sum(csr_mmu_sum),
@@ -5138,7 +5187,42 @@ module cpu_ooo #(
         .o_commit_hold(vec_commit_hold),
         .o_idle(vec_idle)
     );
+    // A vector load or store takes an entry when it dispatches (slot 1 only)
+    // and retires on the edge the ROB head passes it. No memory unit drives
+    // the range and completion ports, so an entry is freed by the flush that
+    // follows its illegal-instruction trap or that removes it from a wrong
+    // path.
+    vec_vmt u_vmt (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_alloc_valid (vec_alloc && ((from_id_to_ex.instruction_operation == riscv_pkg::VLOAD) ||
+                                      (from_id_to_ex.instruction_operation == riscv_pkg::VSTORE))),
+        .i_alloc_tag(rob_alloc_resp.alloc_tag),
+        .o_full(vec_vmt_full),
+        .o_alloc_idx(),
+        .i_commit_valid(rob_commit_comb.valid),
+        .i_commit_tag(rob_commit_comb.tag),
+        // Commit-time recovery flushes behind a branch that has already
+        // retired, so its tag is not a live instruction: it removes every
+        // unretired entry, as in the wrapper's speculative full flush.
+        .i_flush_all(flush_all || commit_recovery_flush_after_head),
+        .i_flush_en(flush_en && !commit_recovery_flush_after_head),
+        .i_flush_tag(flush_tag),
+        .i_head_tag(head_tag),
+        .i_range_valid(1'b0),
+        .i_range_idx('0),
+        .i_range_seg0('0),
+        .i_range_seg1('0),
+        .i_done_valid(1'b0),
+        .i_done_idx('0),
+        .o_view(vec_vmt_view),
+        .o_gen(),
+        .o_quiet_q(vec_vmem_quiet)
+    );
   end else begin : gen_no_vector_unit
+    assign vec_vmt_view = '0;
+    assign vec_vmem_quiet = 1'b1;
+    assign vec_vmt_full = 1'b0;
     assign vec_vtype_spec = '0;
     assign vec_vtype_valid = 1'b1;
     assign vec_varith_commit = 1'b0;

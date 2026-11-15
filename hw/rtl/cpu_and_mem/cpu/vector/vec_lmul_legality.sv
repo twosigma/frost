@@ -28,9 +28,19 @@
   (formal/vec_lmul_legality_equiv.sby).
 */
 module vec_lmul_legality (
-    input  logic [31:0] i_insn,
-    output logic [ 3:0] o_illegal
+    input logic [31:0] i_insn,
+    input riscv_pkg::instr_op_e i_op,
+    input logic i_is_illegal,
+    input logic i_is_fetch_fault,
+    output logic [3:0] o_illegal,
+    output logic o_mem_illegal
 );
+
+  // Vector loads and stores trap at the ROB head. This instruction-only
+  // rejection travels beside the LMUL classes; it does not depend on vtype.
+  // Decode illegality (including VS Off) and fetch faults keep their own cause.
+  assign o_mem_illegal = !i_is_illegal && !i_is_fetch_fault &&
+      ((i_op == riscv_pkg::VLOAD) || (i_op == riscv_pkg::VSTORE));
 
   logic [2:0] funct3;
   logic [5:0] funct6;
