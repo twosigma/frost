@@ -200,37 +200,29 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svinval, Svvptc, Sstc; Sscofpmf is enabled in the dedicated replay; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, Zihpm, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svinval, Svvptc, Sstc, Sscofpmf; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
 | `mtval` | The faulting instruction's bits for illegal instructions (Sstvala) |
 | `mstatus.FS` | Dirty when an FP instruction raises a flag, even one already set |
 | `mstatus.VS` | Read-only zero: FROST has no V extension |
-| HPM counters | Machine counters 3..10 have storage; saved traces keep their selectors disabled. User aliases 3..10 are checked by the CSR and privilege benches; aliases 11..31 are absent |
+| HPM counters | Machine counters 3..10 have storage; random and saved traces keep their selectors disabled. User aliases 3..10 mirror machine storage; aliases 11..31 read zero in M-mode and trap below M-mode |
 | Counter enables | `mcounteren`, `scounteren`: CY, TM, IR and HPM3..10; `mcountinhibit`: CY, IR and HPM3..10 |
-| Delegation | `medeleg` mask 0xB3FF; `mideleg` mask 0x2222, checked in the Sscofpmf replay |
+| Delegation | `medeleg` mask 0xB3FF; `mideleg` mask 0x2222 |
 | PMP | None |
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
 | WFI | Completes at once |
 | Zawrs | `wrs.nto` and `wrs.sto` complete at once; `wrs.nto` below M with `mstatus.TW` set raises illegal-instruction. Sail traps it only while a reservation is valid, after waiting `platform.max_time_to_wait`, and otherwise retires it |
 | Sail's CLINT | At 0x2B6D_93F1_0000, outside FROST's map at an address random sequences do not form; Sail requires one for Zicntr |
 
-The `--sscofpmf` replay compares `mideleg`'s full WARL mask and register and
-immediate read-modify-write operations, OF and inhibit fields, `scountovf`,
-machine counter storage and user aliases 9/10 with event selectors disabled.
-Sail 0.16 enables Sscofpmf only when Zihpm is enabled, which also exposes
-user aliases 11..31 that FROST omits. This replay therefore enables Zihpm in
-its generated configuration and accesses only implemented counters. Default
-random and saved-counterexample runs keep Zihpm disabled and continue to
-compare absent aliases. The CSR and privilege benches cover the full set
-of implemented aliases, event selection and counting.
-
-The default Sail view [forces `mideleg.LCOFI` to zero](https://github.com/riscv/sail-riscv/blob/0.16/model/core/interrupt_regs.sail#L122-L146) even with bit 13 in
-the configured delegation mask, so random generation excludes `mideleg`.
-The dedicated replay includes the minimized counterexample that sets bit 13
-and reads it back through CSRRSI. No destination-register bits are masked.
-The [Sscofpmf specification](https://docs.riscv.org/reference/isa/v20260120/priv/sscofpmf.html)
+The `--sscofpmf` replay checks `mideleg`'s full WARL mask and register and
+immediate read-modify-write operations, `mhpmevent3..10` OF and inhibit fields
+(keeping event selectors disabled), `scountovf`, machine counter storage and
+user aliases 9/10. With `Zihpm` and `Sscofpmf` enabled in `sail_frost.json`,
+default random and saved-trace runs also include `mideleg`, `scountovf` and
+`hpmcounter3..31` while leaving `mhpmevent3..10` out so event selectors stay
+disabled. The [Sscofpmf specification](https://docs.riscv.org/reference/isa/v20260120/priv/sscofpmf.html)
 assigns local counter overflow interrupt number 13 and specifies that
 `mideleg` controls its delegation to S-mode versus M-mode.
 
@@ -248,11 +240,9 @@ result depends on timing, out of the default run:
 |----------|-----|
 | `cycle`, `time`, `mcycle` | FROST counts clock cycles; Sail counts instructions |
 | `mie`, `mip`, `sie`, `sip` | Sail takes an interrupt in place of an instruction, which the trace cannot express |
-| `mideleg` | Sail requires Zihpm for LCOFI bit 13; the dedicated `--sscofpmf` replay checks the full register |
 | `mtvec`, `stvec` | Reserved MODE values: FROST keeps the low bit, Sail keeps the old MODE |
 | `mcause`, `scause` | The cause code is WLRL: FROST keeps any value written, Sail keeps the old value when the code is one it does not support |
-| `hpmcounter3..10`, `mhpmevent3..10` | Sail cannot represent the partial user-alias set or the fixed-event WARL selectors; CSR and privilege benches check these addresses |
-| `scountovf` | The dedicated `--sscofpmf` replay checks OF shadows; Sail requires Zihpm for this register |
+| `mhpmevent3..10` | Implementation-defined fixed-event WARL selectors; leaving them untouched keeps counters disabled so `mhpmcounter3..31`, `hpmcounter3..31` and `scountovf` compare directly |
 | Unnamed CSR addresses | Include FROST's custom profiling CSRs |
 | The `atomic` and `memAmo` templates | They put traps between LR and SC (see [The A extension](#the-a-extension)); `--atomics` covers the A extension instead |
 | `unstructured` template | Random 32-bit words reach custom CSRs and other implementation-defined encodings |

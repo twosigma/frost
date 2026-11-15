@@ -7,11 +7,8 @@ set the direction of this roadmap. The sections are in priority order.
 
 FROST is working toward the RVA23 profile without the hypervisor extension:
 the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
-The remaining scalar and supervisor extensions are in progress.
-`hpmcounter11`-`31` raise illegal-instruction in every privilege mode; making
-them read zero in M-mode, as the reference models do, would let the TestRIG
-comparison run with Zihpm enabled. Two larger pieces come before the second
-hart:
+The remaining scalar and supervisor extensions are in progress. Two larger
+pieces come before the second hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; Zvbc,
   Zvfh and vector cryptography follow. The vector length
@@ -48,7 +45,7 @@ extensions implemented on `main` or planned with the vector unit:
 | B | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzba`, `rv64uzbb`, `rv64uzbs`), `isa_test`, TestRIG, `alu_shift_hint.sby` |
 | Zicsr | Implemented | `riscv-tests` (`rv64mi`, `rv64si`), `csr_test`, `csr_rmw_test`, TestRIG, `csr_file.sby` |
 | Zicntr | Implemented | `csr_test`, `instret_test`, `zihpm_test`, TestRIG (`instret_nops.S`), `csr_file.sby` |
-| Zihpm | Implemented (`hpmcounter11`-`31` trap in every privilege mode; off in default TestRIG) | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`hpm_counters.S`, `--sscofpmf`), `csr_sscofpmf.sby` |
+| Zihpm | Implemented | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`hpm_counters.S`, `--sscofpmf`), `csr_sscofpmf.sby` |
 | Ziccif | Implemented | `ifread_test`, `ddr_exec_test`, `smc_fencei_test`, `coherent_hart_cache.sby`, `immu_twin.sby` |
 | Ziccrse | Implemented | `rv64_amo_test`, `ddr_atomic_test`, TestRIG (`--atomics`), `coherence_l1d.sby`, `coherence_home.sby` |
 | Ziccamoa | Implemented | `riscv-arch-test` (`A`), `riscv-tests` (`rv64ua`), `rv64_amo_test`, TestRIG (`--atomics`), `load_queue_amo_compute.sby`, `coherence_l1d.sby` |

@@ -65,9 +65,9 @@
   Selected, uninhibited event inputs are sampled and added on the following
   cycle. Counter writes replace the count and discard the pending increment.
   Machine counters and selectors 11..31 read zero and ignore writes; their
-  user aliases are absent. RV32 high-half counter addresses are illegal at
-  every privilege. mcounteren/scounteren implement CY/TM/IR/HPM3..10 and
-  reset to 0x7ff.
+  user aliases read zero in M-mode and trap below M-mode. RV32 high-half
+  counter addresses are illegal at every privilege. mcounteren/scounteren
+  implement CY/TM/IR/HPM3..10 and reset to 0x7ff.
 
   Three counters also accept a translation event, selected by a value above
   the counter numbers so that "event N selects counter N" stays unambiguous

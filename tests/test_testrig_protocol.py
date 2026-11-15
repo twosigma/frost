@@ -211,8 +211,9 @@ def test_sail_ddr_capacity_matches_frost(
     assert len(ddr) == 1
     assert int(ddr[0]["size"]["value"], 16) == 1 << capacity_log2_bytes
     assert len(regions) == len(test_testrig.atomics.load_regions())
-    assert config["extensions"]["Zihpm"]["supported"] == sscofpmf
+    assert config["extensions"]["Zihpm"]["supported"]
     assert config["extensions"]["Sscofpmf"]["supported"]
+    assert config["extensions"]["Svinval"]["supported"]
     assert config["platform"]["reservation"] == {
         "reservation_set_size_exp": 5,
         "require_exact_reservation_addr": False,
@@ -221,14 +222,16 @@ def test_sail_ddr_capacity_matches_frost(
 
 
 def test_default_csr_view_keeps_absent_hpm_aliases() -> None:
-    """Default generation checks absent aliases; Sscofpmf needs its own view."""
+    """Default generation includes Zihpm user aliases, stimecmp, scountovf and mideleg."""
     include = re.compile(test_testrig.DEFAULT_CSR_INCLUDE)
-    for counter in range(11, 32):
+    for counter in range(3, 32):
         assert include.fullmatch(f"hpmcounter{counter}")
+    for counter in range(3, 11):
+        assert not include.fullmatch(f"mhpmevent{counter}")
     assert include.fullmatch("medeleg")
+    assert include.fullmatch("mideleg")
     assert include.fullmatch("stimecmp")
-    assert not include.fullmatch("mideleg")
-    assert not include.fullmatch("scountovf")
+    assert include.fullmatch("scountovf")
 
 
 def test_dii_packet_wire_layout() -> None:
@@ -353,7 +356,7 @@ def test_sail_config_validates(tmp_path: Path, sscofpmf: bool) -> None:
         check=True,
     ).stdout
     assert re.match(
-        r"rv64imafdcb_zicbom_zicbop_zicboz_zicntr_zicond_zicsr_zifencei_zihintpause",
+        r"rv64imafdcb_zicbom_zicbop_zicboz_zicntr_zicond_zicsr_zifencei_zihintpause_zihpm",
         isa,
     )
-    assert ("zihpm" in isa.strip().split("_")) == sscofpmf
+    assert {"zihpm", "svinval", "sscofpmf"} <= set(isa.strip().split("_"))

@@ -565,7 +565,7 @@ def test_advertised_isa_lists_agree() -> None:
     # Sail enables B/S/U/Sv39/Svbare alongside individual subset flags, models
     # RV64C as Zca + Zcd, and takes RV64I as the base ISA (not an extensions
     # entry); memory-model, AIA/IMSIC, trap-mode and Zkt properties have no Sail
-    # insn toggle (and Zihpm stays off while hpmcounter11..31 trap in M-mode).
+    # insn toggle.
     sail_umbrella_only = {"b", "s", "sv39", "svbare", "u", "zca", "zcd"}
     sail_not_toggled = {
         "smaia",
@@ -579,7 +579,6 @@ def test_advertised_isa_lists_agree() -> None:
         "ziccif",
         "zicclsm",
         "ziccrse",
-        "zihpm",
         "zkt",
     }
     assert sail_umbrella_only <= sail_enabled
