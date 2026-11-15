@@ -42,6 +42,16 @@ SBY_TASK_TIMEOUT_S = 2400
 # SBY files and separate CI jobs. Keep the runner's backstops in sync with
 # those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("coherence_home", "coh_home_control_prove"): 1800,
+    ("coherence_home", "coh_home_control64_prove"): 1800,
+    ("coherence_home", "coh_home_control_partition_prove"): 1800,
+    ("coherence_home", "coh_home_fill_cover"): 1800,
+    ("coherence_home", "coh_home_control4_bmc"): 1200,
+    ("coherence_home", "coh_home_control4_ultra_bmc"): 1200,
+    ("coherence_home", "coh_home_prefetch_cover"): 1200,
+    ("coherence_home", "coh_home_wb_prove"): 180,
+    ("coherence_home", "coh_home_victim_cover"): 180,
+    ("coherence_home", "coh_home_error_cover"): 180,
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
@@ -2974,6 +2984,47 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
         else:
             sections[section].append(line)
     return sections
+
+
+def test_home_shard_budget() -> None:
+    """The complete home task limits and image setup fit their CI job."""
+    import yaml
+    from _pytest.mark.expression import Expression
+
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    shards = workflow["jobs"]["test-formal"]["strategy"]["matrix"]["include"]
+    shard = next(row for row in shards if row["shard"] == "Coherence home")
+    expression = Expression.compile(shard["pytest_filter"])
+    selected = []
+    for target in FORMAL_TARGETS:
+        for task in target.tasks:
+            node = f"{target.name}_{task}"
+
+            def matches_keyword(
+                keyword: str, /, **kwargs: str | int | bool | None
+            ) -> bool:
+                assert not kwargs
+                return keyword.casefold() in node.casefold()
+
+            if expression.evaluate(matches_keyword):
+                selected.append((target.name, task))
+    home = next(target for target in FORMAL_TARGETS if target.name == "coherence_home")
+    assert selected == [(home.name, task) for task in home.tasks]
+    limits = []
+    for target_name, task in selected:
+        options = {
+            key: value
+            for key, value in (
+                line.split(None, 1)
+                for line in formal_task_config(target_name, task)["[options]"]
+            )
+        }
+        limit = formal_task_timeout_s(target_name, task)
+        assert int(options["timeout"]) == limit, task
+        limits.append(limit)
+    setup_seconds = 20 * 60
+    assert sum(limits) + setup_seconds <= shard["timeout_minutes"] * 60
 
 
 def l1d_task_config(task: str) -> dict[str, list[str]]:

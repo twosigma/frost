@@ -49,6 +49,14 @@ has 240 minutes. `coherence_l1d:coh_l1d_bmc` has 180 minutes at depth 40;
 hit-port allowances match in the SBY configurations and the runner.
 Individual SBY tasks can set shorter limits.
 
+The home's three control proofs and fill cover have 1,800-second SBY and
+runner limits. Its two four-way BMCs and prefetch cover have 1,200 seconds;
+the writeback proof, victim cover and error cover have 180 seconds. These
+ten tasks run in the Coherence home job. Their limits total 189 minutes;
+twenty minutes for image setup brings the allowance to 209 minutes within
+the job's 240-minute limit. A fast test checks task membership, matching
+SBY and runner limits, and the sum against the workflow limit.
+
 The following data and store BMC allowances round twice the measured
 runtime up to five-minute increments. Measurements ran beside one other
 formal job. Word variants share their word-0 representative's allowance;
@@ -134,7 +142,8 @@ allowances plus twice main's remaining case times use about 75%, 74% and
 the `coherence_array_equiv` tasks, the five four-way tasks in one and the
 other eight in the other, each with a 120-minute limit. The Coherence job
 runs the other coherence tasks, including the hart maintenance covers,
-with a 240-minute limit. Five jobs split the rest: Vector (the vector CSR
+with a 300-minute limit. The home tasks have their separate 240-minute job.
+Five jobs split the rest: Vector (the vector CSR
 tasks and `vec_lmul_legality_equiv`, 75 minutes), Line client links (90), Memory management (the page table
 walker, TLBs, instruction and data MMUs and interrupt controllers, 75), Load
 queue (60) and Other tasks (120). Other tasks takes every task that no
