@@ -224,10 +224,18 @@
 
 /*
  * RX buffers come from a page pool and are recycled: the NIC writes a frame FROST_RX_HEADROOM
- * bytes into a page, and the poll builds the skb around it. NET_IP_ALIGN keeps the IP header
- * aligned, as __netdev_alloc_skb_ip_align() did.
+ * bytes into a fragment, and the poll copies the frame or builds the skb around it.
+ * NET_IP_ALIGN keeps the IP header aligned.
  */
 #define FROST_RX_HEADROOM		(NET_SKB_PAD + NET_IP_ALIGN)
+
+/*
+ * A frame of at most this many bytes is copied into a small skb and its page fragment goes straight
+ * back to the pool: pure ACKs and short requests then never pin a receive buffer in a socket queue.
+ * ethtool --set-tunable <dev> rx-copybreak N changes it at run time.
+ */
+#define FROST_RX_COPYBREAK_DEFAULT	256
+#define FROST_RX_COPYBREAK_MAX		1024
 
 /*
  * Older NICs accept at most 9216 bytes in one TX descriptor (nic_pkg::MaxFrameBytes, checked per
@@ -253,6 +261,8 @@ struct frost_desc {
 struct frost_buf {
 	struct sk_buff *skb;	/* TX */
 	struct page *page;	/* RX */
+	unsigned int off;	/* RX: the buffer's offset in its page */
+	unsigned int truesize;	/* RX: the allocated fragment size, including pool padding */
 	dma_addr_t dma;
 	unsigned int len;	/* the mapped length */
 	bool page_mapping;	/* TX: pair skb_frag_dma_map with dma_unmap_page */
@@ -292,7 +302,8 @@ struct frost_priv {
 	bool hw_up;		/* the rings are published: frost_up() completed */
 
 	unsigned int rx_buf_len;
-	unsigned int rx_truesize;	/* the page-pool allocation each RX buffer occupies */
+	unsigned int rx_truesize;	/* the requested page-pool fragment size */
+	unsigned int rx_copybreak;	/* frames up to this length are copied and the fragment recycled */
 	struct page_pool *rx_pool;
 	struct frost_desc *rx_ring;
 	dma_addr_t rx_ring_dma;
@@ -412,7 +423,8 @@ static void frost_refill_timer(struct timer_list *t)
  * Fill RX to rx_mask outstanding buffers; stop on allocation failure
  * and return the number posted. Write only rx_tail, never a descriptor the
  * NIC may hold. The page pool maps each page once, when it first allocates
- * it, and keeps the mapping while the page is recycled.
+ * it, and keeps the mapping while the page is recycled. Buffers share a
+ * page when a buffer fits in half of one (page_pool fragments).
  * The NIC uses reads accepted after TAIL covers the descriptor; dma_wmb()
  * orders its four words before the doorbell so those reads see the new data.
  */
@@ -423,14 +435,18 @@ static unsigned int frost_rx_fill(struct frost_priv *priv, gfp_t gfp)
 	while (((priv->rx_tail + 1) & priv->rx_mask) != priv->rx_clean) {
 		struct frost_desc *desc = &priv->rx_ring[priv->rx_tail];
 		struct frost_buf *buf = &priv->rx_bufs[priv->rx_tail];
+		unsigned int off, size = priv->rx_truesize;
 		struct page *page;
 		dma_addr_t dma;
 
-		page = page_pool_alloc_pages(priv->rx_pool, gfp | __GFP_NOWARN);
+		/* The pool can append unused space to the final fragment. */
+		page = page_pool_alloc(priv->rx_pool, &off, &size, gfp | __GFP_NOWARN);
 		if (!page)
 			break;
-		dma = page_pool_get_dma_addr(page) + FROST_RX_HEADROOM;
+		dma = page_pool_get_dma_addr(page) + off + FROST_RX_HEADROOM;
 		buf->page = page;
+		buf->off = off;
+		buf->truesize = size;
 		buf->dma = dma;
 		buf->len = priv->rx_buf_len;
 
@@ -528,6 +544,7 @@ static int frost_rx_reap(struct frost_priv *priv, int budget)
 		u32 len = status & NET10G_DESC_LEN;
 		struct page *page = buf->page;
 		struct sk_buff *skb;
+		void *va;
 
 		if (!(status & NET10G_DESC_DD))
 			break;
@@ -546,20 +563,33 @@ static int frost_rx_reap(struct frost_priv *priv, int budget)
 			       NET10G_DESC_ABORT)) ||
 		    len < ETH_HLEN || len > buf->len) {
 			errors++;
-			page_pool_recycle_direct(priv->rx_pool, page);
+			page_pool_put_full_page(priv->rx_pool, page, true);
 			continue;
 		}
-		dma_sync_single_for_cpu(priv->dev, buf->dma, len, DMA_FROM_DEVICE);
-		/* The skb takes the page; freeing the skb returns the page to the pool */
-		skb = napi_build_skb(page_address(page), priv->rx_truesize);
+		/* A coherent device needs no sync; the helper runs it only where the DMA API does */
+		if (dma_dev_need_sync(priv->dev))
+			page_pool_dma_sync_for_cpu(priv->rx_pool, page, buf->off + FROST_RX_HEADROOM, len);
+		va = page_address(page) + buf->off;
+		if (len <= READ_ONCE(priv->rx_copybreak)) {
+			skb = napi_alloc_skb(&priv->napi, len);
+			if (likely(skb)) {
+				skb_put_data(skb, va + FROST_RX_HEADROOM, len);
+				page_pool_put_full_page(priv->rx_pool, page, true);
+			}
+		} else {
+			/* The skb takes the fragment; freeing the skb returns it to the pool */
+			skb = napi_build_skb(va, buf->truesize);
+			if (likely(skb)) {
+				skb_mark_for_recycle(skb);
+				skb_reserve(skb, FROST_RX_HEADROOM);
+				skb_put(skb, len);
+			}
+		}
 		if (unlikely(!skb)) {
 			errors++;
-			page_pool_recycle_direct(priv->rx_pool, page);
+			page_pool_put_full_page(priv->rx_pool, page, true);
 			continue;
 		}
-		skb_mark_for_recycle(skb);
-		skb_reserve(skb, FROST_RX_HEADROOM);
-		skb_put(skb, len);
 		if ((ndev->features & NETIF_F_RXCSUM) &&
 		    (status & NET10G_DESC_CSUM_VALID)) {
 			/*
@@ -723,8 +753,13 @@ static void frost_free_rings(struct frost_priv *priv)
 static int frost_alloc_rings(struct frost_priv *priv)
 {
 	/*
-	 * One RX buffer per page-pool allocation: headroom, the frame, and the
-	 * skb_shared_info that napi_build_skb() places at the end.
+	 * One RX buffer: headroom, the frame, and the skb_shared_info that napi_build_skb()
+	 * places at the end. At 1500 MTU two buffers share a page; smaller MTUs can fit
+	 * more fragments. A buffer larger than half a page takes
+	 * 2^order pages. The pool syncs a split page for the device as a whole when its last
+	 * fragment returns, so the sync range is the page, from offset 0, and the CPU-side
+	 * sync in the poll adds the fragment offset and headroom. Both syncs run only where
+	 * the DMA API needs them (dma_dev_need_sync), so a coherent SoC pays nothing.
 	 */
 	unsigned int truesize = SKB_DATA_ALIGN(FROST_RX_HEADROOM + priv->rx_buf_len) +
 				SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
@@ -736,11 +771,12 @@ static int frost_alloc_rings(struct frost_priv *priv)
 		.dev = priv->dev,
 		.napi = &priv->napi,
 		.dma_dir = DMA_FROM_DEVICE,
-		.offset = FROST_RX_HEADROOM,
-		.max_len = priv->rx_buf_len,
+		.offset = 0,
 	};
 
-	priv->rx_truesize = PAGE_SIZE << pp.order;
+	pp.max_len = PAGE_SIZE << pp.order;
+	priv->rx_truesize = (truesize << 1) > pp.max_len ? pp.max_len :
+			    ALIGN(truesize, dma_get_cache_alignment());
 	priv->rx_pool = page_pool_create(&pp);
 	if (IS_ERR(priv->rx_pool)) {
 		priv->rx_pool = NULL;
@@ -1576,6 +1612,30 @@ static int frost_set_pauseparam(struct net_device *ndev, struct ethtool_pausepar
 				 (pause->tx_pause ? NET10G_PAUSE_TX : 0));
 }
 
+static int frost_get_tunable(struct net_device *ndev, const struct ethtool_tunable *tuna, void *data)
+{
+	struct frost_priv *priv = netdev_priv(ndev);
+
+	if (tuna->id != ETHTOOL_RX_COPYBREAK)
+		return -EOPNOTSUPP;
+	*(u32 *)data = priv->rx_copybreak;
+	return 0;
+}
+
+static int frost_set_tunable(struct net_device *ndev, const struct ethtool_tunable *tuna, const void *data)
+{
+	struct frost_priv *priv = netdev_priv(ndev);
+	u32 val;
+
+	if (tuna->id != ETHTOOL_RX_COPYBREAK)
+		return -EOPNOTSUPP;
+	val = *(const u32 *)data;
+	if (val > FROST_RX_COPYBREAK_MAX)
+		return -EINVAL;
+	WRITE_ONCE(priv->rx_copybreak, val);
+	return 0;
+}
+
 static const struct ethtool_ops frost_ethtool_ops = {
 	.supported_coalesce_params = ETHTOOL_COALESCE_RX_USECS |
 				     ETHTOOL_COALESCE_RX_MAX_FRAMES |
@@ -1588,6 +1648,8 @@ static const struct ethtool_ops frost_ethtool_ops = {
 	.get_ringparam	= frost_get_ringparam,
 	.set_ringparam	= frost_set_ringparam,
 	.get_pauseparam	= frost_get_pauseparam,
+	.get_tunable	= frost_get_tunable,
+	.set_tunable	= frost_set_tunable,
 	.set_pauseparam	= frost_set_pauseparam,
 	.get_sset_count	= frost_get_sset_count,
 	.get_strings	= frost_get_strings,
@@ -1749,6 +1811,7 @@ static int frost_probe(struct platform_device *pdev)
 	priv->tx_desc_max = (readl(base + NET10G_ABI_CTRL) & NET10G_ABI_TX_LONG_SEGMENTS) ?
 			    FIELD_MAX(NET10G_DESC_LEN) : FROST_TX_DESC_MAX;
 	priv->rx_fifo_limit = min_t(u32, priv->rx_fifo_depth, FROST_FIFO_LIMIT_DEFAULT);
+	priv->rx_copybreak = FROST_RX_COPYBREAK_DEFAULT;
 	priv->rx_entries = FROST_RING_DEFAULT;
 	priv->tx_entries = FROST_RING_DEFAULT;
 	spin_lock_init(&priv->ctrl_lock);
@@ -1832,5 +1895,5 @@ module_platform_driver(frost_driver);
 
 MODULE_DESCRIPTION("FROST net10g 10GBASE-R Ethernet driver");
 /* The DKMS package version: PACKAGE_VERSION in dkms.conf matches it */
-MODULE_VERSION("1.1");
+MODULE_VERSION("1.2");
 MODULE_LICENSE("Dual BSD/GPL");
