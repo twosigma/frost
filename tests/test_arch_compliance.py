@@ -64,6 +64,8 @@ EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
     "F": ("rv64i_m", "rv32i_m"),
     "D": ("rv64i_m", "rv32i_m"),
     "Zvk": ("rv32i_m",),
+    # The Zfh tests live in rv32i_m and declare RV64 too.
+    "Zfh": ("rv32i_m",),
 }
 
 # Extensions whose tests need the vector unit: the vector crypto tests. They
@@ -100,6 +102,10 @@ SUPPORTED_EXTENSIONS = [
     "hints",
     # Zicboz's cbo.zero; the pinned suite has no RV64 Zicbom tests.
     "CMO",
+    # Zfa (F and D forms), and the Zfhmin subset of Zfh.
+    "F_Zfa",
+    "D_Zfa",
+    "Zfh",
 ]
 
 # Extensions FROST implements only in part: extension -> test-name prefixes to
@@ -113,6 +119,18 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "K": {"pack", "packh", "packw", "brev8"},
     "privilege": {"ebreak", "ecall", "misalign"},
     "CMO": {"cbo.zero"},
+    # Zfh supplies the Zfhmin tests (FLH/FSH, FMV.X.H/FMV.H.X, FCVT between H and
+    # S/D); FROST has no other Zfh instruction.
+    "Zfh": {
+        "flh",
+        "fsh",
+        "fmv.x.h",
+        "fmv.h.x",
+        "fcvt.s.h",
+        "fcvt.h.s",
+        "fcvt.d.h",
+        "fcvt.h.d",
+    },
 }
 
 # Tests excluded by filename prefix. The C directory holds Zcb tests
