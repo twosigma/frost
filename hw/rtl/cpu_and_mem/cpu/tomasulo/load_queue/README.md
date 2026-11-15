@@ -665,9 +665,11 @@ outranks misalignment.
 With `MEM_RESPONSE_ERRORS=1`, a failed R response completes its matching load
 with cause 5, or cause 7 for an AMO. It neither installs L0 data, establishes
 an LR reservation nor launches an AMO write. Failed AMO writes also report
-cause 7. These bus faults report zero as the trap value because the response
-owner stores a physical address. Responses for flushed owners drain without
-faulting a newer instruction.
+cause 7. The entry stores only the physical address, so the completion's value
+is zero and `o_fu_complete_bus_error` marks it; the wrapper supplies the
+virtual address for the trap value (see the
+[wrapper](../tomasulo_wrapper/README.md)). Responses for flushed owners drain
+without faulting a newer instruction.
 
 ## Storage
 

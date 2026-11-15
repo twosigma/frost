@@ -134,13 +134,21 @@ The `coherence_endpoints`, `coherence_endpoints_single`, and
 `coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
 identity reuse, independent probe queues, keyed PutAck cancellation, errors,
 and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
-identities. The `coherence_endpoints_local` and
+identities. Admission checks cover every request identity and opcode in both
+epochs, including each hart's two class-3 line-client identities.
+The `coherence_endpoints_local` and
 `coherence_endpoints_local_wide` benches apply the same checks to request
 endpoints with separate phase occupancy registers.
 `test_coherence_endpoint_build.py` elaborates and synthesizes these geometries, checks the six-bit home-ID capacity boundary, rejects invalid
 parameters, and checks cached, cache-disabled and DMA-disabled CPU builds.
 All CPU configurations use the coherent interfaces and their ordinary source
 filelists.
+
+`imem_predecode_line` compares generated metadata with RTL for every 16-bit
+parcel in both halfword positions. Its slot-2 checks exclude native SYSTEM,
+MISC-MEM, AMO, FP-compute and OP-V instructions. `imem_predecode_fast_replica`
+and `imem_predecode_capacity` apply that rule to the stored sideband and its
+scalar copies through programming writes, bank swaps and overlay boundaries.
 
 `coherence_dma_ingress` and `coherence_dma_ingress_8` issue all four or eight credits before G and check reordered
 G/C/U, full identities, streaming hints and reset at response presentation. The
@@ -530,6 +538,10 @@ domain restarts, wire-side PAUSE validation during congestion, and cancellation 
 `nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
+`nic_bench` also runs in both tiers with `NIC_BENCH_QUICK`: eight-entry rings,
+repeated producer wraparound, short and jumbo frames, and raw MAC loopback.
+This mode checks descriptor replenishment and error reporting; its printed rates
+are not performance measurements. CI selects it in the runtime-and-other shard.
 `test_frost_net10g_driver.py` checks packaging and the descriptor ABI, and compiles selected
 driver helpers against C fixtures for DMA teardown, reconfiguration, GSO fallback,
 RX fragment sizes, copybreak boundaries and sync ordering. It does not replace executing

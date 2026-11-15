@@ -89,8 +89,10 @@ package coherence_pkg;
     Check = 3
   } reason_t;
 
-  // Twelve identities per hart, eight DMA credits and the prefetch
-  // identities, each with a completion slot of its own.
+  // The main completion partition has twelve slots per hart and eight more,
+  // shared by the harts' identities, their line-client identities and the
+  // DMA identities; a request waits while it is full. The prefetch
+  // identities use a separate partition of PrefetchIds slots.
   function automatic integer completion_count(input integer harts);
     completion_count = harts * 12 + 8 + coherence_pkg::PrefetchIds;
   endfunction
