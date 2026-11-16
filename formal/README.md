@@ -164,8 +164,9 @@ the `coherence_array_equiv` tasks, the five four-way tasks in one and the
 other eight in the other, each with a 120-minute limit. The Coherence job
 runs the other coherence tasks, including the hart maintenance covers,
 with a 300-minute limit. The home tasks have their separate 240-minute job.
-Five jobs split the rest: Vector (the vector CSR
-tasks and `vec_lmul_legality_equiv`, 75 minutes), Line client links (90), Memory management (the page table
+Six jobs split the rest: Vector (the vector CSR
+tasks and `vec_lmul_legality_equiv`, 75 minutes), two Line client links jobs
+(95 and 80 minutes), Memory management (the page table
 walker, TLBs, instruction and data MMUs and interrupt controllers, 75), Load
 queue (60) and Other tasks (120). Other tasks takes every task that no
 other job selects, so new small equivalence proofs and block proofs go there
