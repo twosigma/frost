@@ -664,8 +664,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "sq_live_count.sby",
-        "Store-queue live counts match reference allocation arithmetic",
-        tasks=("bmc",),
+        "Store-queue live count and its staged removal mask match the reference arithmetic",
+        tasks=("bmc", "bmc_cpu"),
     ),
     FormalTarget(
         "sq_committed_empty.sby",
@@ -2338,6 +2338,7 @@ SBY_TASKS = [
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("bmc_core", "Load-result selection with the CPU feature configuration."),
+    ("bmc_cpu", "Store-queue live count with the CPU's store-queue parameters."),
     ("coh_lq_capture4_prove", "Coherent capture equality at four entries."),
     ("coh_lq_capture8_prove", "Coherent capture equality at eight entries."),
     ("coh_lq_capture16_prove", "Coherent capture equality at sixteen entries."),
