@@ -85,6 +85,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
     ("coherence_l1d", "coh_l1d_zero_cover"): 14400,
+    ("coherence_l1d", "coh_l1d_zero_stream_free_bmc"): 6000,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
@@ -402,7 +403,10 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_payload_bmc",
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
+            "coh_l1d_zero_stream_free_bmc",
+            "coh_l1d_zero_progress_cover",
             "coh_l1d_zero_stream_bmc",
+            "coh_l1d_zero_request_cover",
             "coh_l1d_answer_bmc",
             "coh_l1d_stream_answer_bmc",
         ),
@@ -1647,6 +1651,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_l1d_zero_index.sby",
+        "Conditional equivalence of zero look-ahead blocking, with buffer invariants proved under its interface contract.",
+        tasks=("zero_index_prove", "zero_index_invariants"),
+    ),
+    FormalTarget(
         "coherence_l1d_twin.sby",
         "L1D: primitive and portable forms are equivalent.",
         tasks=(
@@ -2062,8 +2071,28 @@ SBY_TASKS = [
     ),
     ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
     (
+        "coh_l1d_zero_stream_free_bmc",
+        "Stream prefetching, GetMZero twin ownership and upper-sector request exclusion through Done, and Modified-sector grants with cbo.zero writes and three endpoints.",
+    ),
+    (
+        "coh_l1d_zero_progress_cover",
+        "Full-buffer zero wrap with a different-block or same-block head twin resolves through both sector installations and Done.",
+    ),
+    (
         "coh_l1d_zero_stream_bmc",
-        "Stream prefetching and Modified-sector grants with cbo.zero writes and three endpoints.",
+        "A dropped load retries beside a full-buffer zero wrap without accepting an upper-sector request during GetMZero.",
+    ),
+    (
+        "coh_l1d_zero_request_cover",
+        "The dropped-load schedule reaches its final checked frame after retry and zero completion.",
+    ),
+    (
+        "zero_index_prove",
+        "Index-based zero look-ahead blocking equals the address form under the buffer shape and sampled-conflict invariants.",
+    ),
+    (
+        "zero_index_invariants",
+        "Store-buffer shape and the sampled same-block head conflict under the buffer interface contract.",
     ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
@@ -3371,6 +3400,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_zero_bmc": "Coherence L1D zero control",
         "coherence_l1d_coh_l1d_zero_multi_bmc": "Coherence L1D zero multi-endpoint",
         "coherence_l1d_coh_l1d_zero_cover": "Coherence L1D zero cover",
+        "coherence_l1d_coh_l1d_zero_stream_free_bmc": "Coherence L1D zero stream",
         "coherence_l1d_coh_l1d_local_data_bmc": "Coherence L1D local data",
         "coherence_l1d_coh_l1d_local_hold_bmc": "Coherence L1D local holds",
         "coherence_l1d_coh_l1d_local_control_bmc": "Coherence L1D local control",
@@ -3472,6 +3502,21 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     assert len(selected_by_shard["Coherence L1D zero cover"]) == 1
     assert len(selected_by_shard["Coherence L1D local holds"]) == 1
     check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
+
+
+def test_runner_limits_cover_sby_limits() -> None:
+    """Give every task at least its SBY limit, so the runner never stops a task SBY still allows."""
+    root = Path(__file__).resolve().parents[1]
+    for target in FORMAL_TARGETS:
+        limits = _sby_task_timeouts_s(root / "formal" / target.sby_file)
+        for task in target.tasks:
+            sby_limit = limits.get(task, limits.get(""))
+            if sby_limit is not None:
+                assert sby_limit <= formal_task_timeout_s(target.name, task), (
+                    target.name,
+                    task,
+                    sby_limit,
+                )
 
 
 def test_formal_shard_budget_sum_rejects_overcommitted_shard() -> None:
@@ -3713,14 +3758,30 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {data} %u %u %u %u %d",
         "select -assert-count 5 t:$check r:FLAVOR=assert %i",
     ]
+    stream_checks = (
+        "c:p_prefetch_not_record c:p_grant_keeps_modified "
+        "c:p_zero_acquire_line c:p_zero_no_upper_request"
+    )
+    stream_properties = [
+        f"select -assert-count 4 {stream_checks}",
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+        f"{stream_checks} %u %u %u %d",
+        "select -assert-count 4 t:$check r:FLAVOR=assert %i",
+        "check -assert",
+    ]
     for suffix, depth, timeout, engine in (
         ("bmc", "40", "10800", "abc bmc3"),
         ("multi_bmc", "30", "18000", "abc bmc3 -c"),
         ("payload_bmc", "40", "1200", "abc bmc3 -c"),
+        ("stream_free_bmc", "31", "6000", "abc bmc3 -g"),
     ):
         payload = suffix == "payload_bmc"
+        stream = suffix == "stream_free_bmc"
         define = " -D STORE_DATA_PROOF" if payload else ""
-        endpoints = " -set MISSES 3" if suffix == "multi_bmc" else ""
+        endpoints = " -set MISSES 3" if stream or suffix == "multi_bmc" else ""
+        properties = stream_properties if stream else control_properties
+        if payload:
+            properties = payload_properties
         script = (
             reads
             + [
@@ -3728,9 +3789,10 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
                 "read -sv coherence_store_buffer.sv",
                 "read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv",
                 f"chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2{endpoints} coherence_l1d",
-                "prep -flatten -top coherence_l1d",
             ]
-            + (payload_properties if payload else control_properties)
+            + (["chparam -set STREAM_PREFETCH 1 coherence_l1d"] if stream else [])
+            + ["prep -flatten -top coherence_l1d"]
+            + properties
             + [
                 "memory_map",
                 "opt",
@@ -3762,6 +3824,8 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
             ("[script]", "cutpoint w:phase_q"),
             ("[script]", "chformal -assume -remove"),
             ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
+            ("[script]", "chformal -assert -remove c:p_zero_no_upper_request"),
+            ("[options]", f"depth {int(depth) - 1}"),
             ("[options]", "skip 48"),
             ("[options]", "smtc hidden.smtc"),
             ("[engines]", "smtbmc boolector --smtc hidden.smtc"),
