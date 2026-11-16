@@ -732,12 +732,11 @@ vector loads and stores: each raises illegal-instruction when it reaches the
 ROB head, and the trap's flush frees its entry. `vec_lmul_legality` decides
 this rejection from the decoded operation before the queue, excluding decode
 illegality and fetch faults. A separate bit travels beside the arithmetic legality
-lookup, and dispatch includes it without consulting `vtype`. The other vector
-instructions, and the strided, indexed, segment and fault-only-first loads
-and stores, are illegal.
+lookup, and dispatch includes it without consulting `vtype`. Strided, indexed,
+segment and fault-only-first loads and stores are illegal.
 
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
-elaboration while the vector instructions are not implemented, and bare-metal
+elaboration while the vector implementation is incomplete, and bare-metal
 software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
 not exist and VS reads zero.
 
@@ -816,7 +815,7 @@ the other blocks. It takes one operation at a time, signals when it is free,
 and returns each result a fixed P + 10 cycles later (P is the format's
 precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
 
-`vec_engine` combines the register file with the integer execution blocks.
+`vec_engine` combines the register file with registered execution blocks.
 Single-width ALU operations execute a register group at a time.
 `vec_int_exec` executes one element at a time for multiply/divide, carry and
 borrow, widening and narrowing arithmetic, extension, fixed point, masks,

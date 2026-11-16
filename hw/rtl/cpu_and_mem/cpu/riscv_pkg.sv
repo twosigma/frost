@@ -2739,7 +2739,7 @@ package riscv_pkg;
     // vsetvli/vsetivli/vsetvl: retires alone (never beside a second entry)
     // and updates vl and vtype at commit
     logic is_vcfg;
-    // Vector arithmetic (VARITH, VARITH_X): retires alone and goes to the
+    // Vector arithmetic: retires alone and goes to the
     // vector engine at commit; vec_illegal: illegal under the vtype in
     // effect at its place in program order (decided at dispatch)
     logic is_varith;
