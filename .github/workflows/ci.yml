@@ -1426,6 +1426,11 @@ jobs:
           - shard: Coherence L1D zero cover
             pytest_filter: coh_l1d_zero_cover
             timeout_minutes: 260
+          # The unrestricted zero-stream request check has a 100-minute
+          # allowance; keep image setup outside that solver budget.
+          - shard: Coherence L1D zero stream
+            pytest_filter: coh_l1d_zero_stream_free_bmc
+            timeout_minutes: 120
           # The scheduled real-array checks keep all 80 frames, with disjoint
           # property groups and no assumptions between them. Run them in
           # parallel so their combined work does not delay the bridges.
@@ -1453,7 +1458,7 @@ jobs:
               (coherence_l1d and not (_twin or coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
               coh_l1d_stream_outlier_prove or
               coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_bmc or coh_l1d_zero_multi_bmc or
-              coh_l1d_zero_cover or coh_l1d_data or
+              coh_l1d_zero_cover or coh_l1d_zero_stream_free_bmc or coh_l1d_data or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))
             timeout_minutes: 330
