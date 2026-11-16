@@ -463,6 +463,7 @@ CI's TestRIG jobs replays all of them before its random run.
 | [`lrsc_older_store.S`](traces/lrsc_older_store.S) | An older store to the other word of the reserved doubleword drains before LR and permits the following SC |
 | [`pte_nonleaf_dau.S`](traces/pte_nonleaf_dau.S) | A non-leaf PTE with D, A, or U set raises a page fault |
 | [`svpbmt_pbmte.S`](traces/svpbmt_pbmte.S) | PBMTE readback and PBMT page faults; Sail does not check the uncached alias transport or cache coherence |
+| [`ssnpm_pmm.S`](traces/ssnpm_pmm.S) | `senvcfg.PMM` WARL (01 keeps the old value); with MPRV and MPP = U, tagged loads, stores and AMOs under Bare (PMLEN 16 and 7) and Sv39, masked faults with the transformed `mtval`, and no masking with MXR set or PMM = 00 |
 | [`sstvala_illegal.S`](traces/sstvala_illegal.S) | Illegal 32-bit and 16-bit instructions write their instruction bits to `mtval` and `stval` |
 | [`zawrs_ops.S`](traces/zawrs_ops.S) | `wrs.sto` and `wrs.nto` retire in M, S, and U modes and preserve an active `LR.D` reservation |
 | [`zicbom_ops.S`](traces/zicbom_ops.S) | `cbo.clean`, `cbo.flush`, and `cbo.inval` across cached DDR, low BRAM, device windows, and unmapped addresses, with `CBIE`/`CBCFE` WARL checks |
