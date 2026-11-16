@@ -805,6 +805,7 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
         opcode=OPC_OP,
     )
 
+    _drive_if_packet(dut, _packet(BASE_PC, NOP_INSTR))
     _drive_if_packet(
         dut,
         {
@@ -972,6 +973,7 @@ async def test_direction_predicted_branch_masks_wrong_path_candidate_across_stal
     _assert_nop_slot(_read_pd_packet(dut, slot2=True))
     assert bool(dut.o_pd_redirect.value) is False
 
+    _drive_if_packet(dut, {}, slot2=True)
     target_pc = BASE_PC - 4
     target_offset = -2
     target_instr = _pack_compressed_branch(imm=target_offset)
@@ -1875,75 +1877,75 @@ async def test_slot2_tage_redirect_multi_cycle_stall_and_flush(dut: Any) -> None
     br_taken = _pack_b(imm=40, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
     br_other = _pack_b(imm=-20, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
 
-    # Register a slot-2 taken redirect, then hold PD stalled for 3 cycles while
-    # IF presents a different packet; the redirect must stay steady and clear
-    # once unstalled, suppressing the younger packet behind it.
-    _drive_if_packet(dut, _packet(pc, addi))
-    _drive_if_packet(
-        dut,
-        _packet(
-            pc + 4,
-            br_taken,
-            btb_predicted_taken=False,
-            tage_valid=True,
-            tage_taken=True,
-        ),
-        slot2=True,
-    )
-    await _advance_cycle(dut)
-    expected_target = (pc + 4 + 40) & MASK_XLEN
-    assert bool(dut.o_pd_redirect.value) and bool(dut.o_pd_redirect_slot2.value)
-    assert bool(dut.o_pd_redirect_taken.value)
-    assert int(dut.o_pd_redirect_target.value) == expected_target
-
-    _drive_pipeline_ctrl(dut, {"stall": True})
-    _drive_if_packet(dut, _packet(pc + 8, addi))
-    _drive_if_packet(
-        dut,
-        _packet(
-            pc + 12,
-            br_other,
-            btb_predicted_taken=True,
-            tage_valid=True,
-            tage_taken=False,
-        ),
-        slot2=True,
-    )
-    for _ in range(3):
+    for taken in (True, False):
+        # Hold each direction across three stalled cycles while IF presents an
+        # opposite-direction packet. Release consumes the redirect once.
+        _drive_if_packet(dut, _packet(pc, addi))
+        _drive_if_packet(
+            dut,
+            _packet(
+                pc + 4,
+                br_taken,
+                btb_predicted_taken=not taken,
+                tage_valid=True,
+                tage_taken=taken,
+            ),
+            slot2=True,
+        )
         await _advance_cycle(dut)
+        expected_target = (pc + 4 + (40 if taken else 4)) & MASK_XLEN
         assert bool(dut.o_pd_redirect.value) and bool(dut.o_pd_redirect_slot2.value)
-        assert bool(dut.o_pd_redirect_taken.value)
+        assert bool(dut.o_pd_redirect_taken.value) is taken
         assert int(dut.o_pd_redirect_target.value) == expected_target
 
-    # Release the stall: the redirect suppresses the younger IF packet into
-    # bubbles and does NOT chain a second redirect on the next cycle.
-    _drive_pipeline_ctrl(dut, {})
-    await _advance_cycle(dut)
-    assert not bool(dut.o_pd_redirect.value)
-    _assert_nop_slot(_read_pd_packet(dut))
-    _assert_nop_slot(_read_pd_packet(dut, slot2=True))
+        _drive_pipeline_ctrl(dut, {"stall": True})
+        _drive_if_packet(dut, _packet(pc + 8, addi))
+        _drive_if_packet(
+            dut,
+            _packet(
+                pc + 12,
+                br_other,
+                btb_predicted_taken=taken,
+                tage_valid=True,
+                tage_taken=not taken,
+            ),
+            slot2=True,
+        )
+        for _ in range(3):
+            await _advance_cycle(dut)
+            assert bool(dut.o_pd_redirect.value) and bool(dut.o_pd_redirect_slot2.value)
+            assert bool(dut.o_pd_redirect_taken.value) is taken
+            assert int(dut.o_pd_redirect_target.value) == expected_target
 
-    # A flush on the capture edge clears the slot-2 candidate so no redirect
-    # fires on the following cycle.
-    _drive_pipeline_ctrl(dut, {"flush": True})
-    _drive_if_packet(dut, _packet(pc, addi))
-    _drive_if_packet(
-        dut,
-        _packet(
-            pc + 4,
-            br_taken,
-            btb_predicted_taken=False,
-            tage_valid=True,
-            tage_taken=True,
-        ),
-        slot2=True,
-    )
-    await _advance_cycle(dut)
-    assert not bool(dut.o_pd_redirect.value)
-    _drive_pipeline_ctrl(dut, {})
-    _clear_inputs(dut)
-    await _advance_cycle(dut)
-    assert not bool(dut.o_pd_redirect.value)
+        # Release the stall: the redirect suppresses the younger IF packet into
+        # bubbles and does NOT chain a second redirect on the next cycle.
+        _drive_pipeline_ctrl(dut, {})
+        await _advance_cycle(dut)
+        assert not bool(dut.o_pd_redirect.value)
+        _assert_nop_slot(_read_pd_packet(dut))
+        _assert_nop_slot(_read_pd_packet(dut, slot2=True))
+
+        # A flush on the capture edge clears the slot-2 candidate so no redirect
+        # fires on the following cycle.
+        _drive_pipeline_ctrl(dut, {"flush": True})
+        _drive_if_packet(dut, _packet(pc, addi))
+        _drive_if_packet(
+            dut,
+            _packet(
+                pc + 4,
+                br_taken,
+                btb_predicted_taken=not taken,
+                tage_valid=True,
+                tage_taken=taken,
+            ),
+            slot2=True,
+        )
+        await _advance_cycle(dut)
+        assert not bool(dut.o_pd_redirect.value)
+        _drive_pipeline_ctrl(dut, {})
+        _clear_inputs(dut)
+        await _advance_cycle(dut)
+        assert not bool(dut.o_pd_redirect.value)
 
 
 @cocotb.test()

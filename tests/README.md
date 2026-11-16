@@ -1250,7 +1250,7 @@ all of them.
 | `imsic_file` | `cover_msi_over_eip_clear` | An MSI sets a pending bit that a same-cycle CSR write clears |
 | `pd_stage` | `cover_pd_slot2_taken_redirect` | A slot-2 tagged conditional-branch match overrides a not-taken BTB prediction to taken |
 | `pd_stage` | `cover_pd_slot2_not_taken_veto` | A slot-2 tagged conditional-branch match vetoes a taken BTB prediction to the fall-through |
-| `pd_stage` | `cover_pd_slot2_redirect_held_through_stall` | A slot-2 tagged conditional-branch redirect holds across a front-end stall and fires once on release |
+| `pd_stage` | `cover_pd_slot2_redirect_held_through_stall` | A slot-2 tagged conditional-branch redirect is asserted during a front-end stall |
 | `pd_stage` | `cover_pd_slot2_candidate_lost_to_flush` | A registered slot-2 tagged conditional-branch candidate is cleared by a pipeline flush |
 
 Only the load queue's unit bench reaches two of them, because the whole SoC

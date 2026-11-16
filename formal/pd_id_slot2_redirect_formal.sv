@@ -21,14 +21,15 @@
  * Instantiates pd_stage and id_stage with every slot-1 and slot-2 packet field,
  * backing BTB result, privilege gate, and pipeline control input left free.
  * pd_stage's own FORMAL block supplies only the initial reset and the IF -> PD
- * predecode/candidate alignment assumptions proved by rvc_predecode and
- * if_slot2_precompute.
+ * predecode/candidate alignment assumptions. rvc_predecode and
+ * if_slot2_precompute prove the expansion and candidate relations; IF and PD
+ * simulation assertions check raw-parcel size and non-control pairing.
  *
  * Proves that slot 2's dispatched prediction (btb_predicted_taken,
  * btb_predicted_target, and btb_correct_non_jalr) equals PD's slot-2 redirect
  * when one fires, keeps IF's metadata otherwise, leaves slot 1 untouched, and
  * holds across pipeline stalls. Covers taken overrides (native and compressed),
- * not-taken vetoes, backing-BTB jump redirects, and stall holds.
+ * not-taken vetoes, backing-BTB jump redirects, and stalled veto release.
  */
 module pd_id_slot2_redirect_formal #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -284,6 +285,10 @@ module pd_id_slot2_redirect_formal #(
       // Slot-2 direction redirect held across a stall before dispatching.
       cover (!i_pipeline_ctrl.stall && !i_pipeline_ctrl.flush &&
              f_stalled_slot2_redirect_seen_q && slot2_dir_redirect_now);
+      // A not-taken veto survives a stall and reaches its release edge.
+      cover_slot2_veto_after_stall :
+      cover (!i_pipeline_ctrl.stall && !i_pipeline_ctrl.flush &&
+             f_stalled_slot2_redirect_seen_q && slot2_dir_redirect_now && !pd_redirect_taken);
     end
   end
 

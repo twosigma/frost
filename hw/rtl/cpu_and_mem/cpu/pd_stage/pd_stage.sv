@@ -559,7 +559,8 @@ module pd_stage #(
       assert (pd_target_compressed_split == pd_target_compressed_reference);
       p_pd_target_split_exact : assert (pd_target_selected_split == pd_backward_target_reference);
     end
-    if (pd_reset_seen_q && !i_pipeline_ctrl.reset && pd_slot2_pc_matches_slot1_step && !$isunknown(
+    if (pd_reset_seen_q && !i_pipeline_ctrl.reset &&
+        !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault && !$isunknown(
             {
               i_from_if_to_pd_2.program_counter,
               pd_sel_compressed_2,
@@ -577,6 +578,13 @@ module pd_stage #(
       p_pd_slot2_compressed_target_candidate_exact :
       assert (pd_slot2_target_compressed_split == pd_slot2_target_compressed_reference);
       p_pd_slot2_target_split_exact : assert (pd_slot2_target_split == pd_slot2_target_reference);
+    end
+    if (pd_reset_seen_q && !i_pipeline_ctrl.reset &&
+        !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault && !$isunknown(
+            {i_from_if_to_pd.program_counter, i_from_if_to_pd_2.program_counter,
+             i_from_if_to_pd.raw_parcel[1:0]}
+        )) begin
+      p_pd_slot2_pc_matches_raw_slot1_step : assert (pd_slot2_pc_matches_slot1_step);
     end
     if (pd_reset_seen_q && !i_pipeline_ctrl.reset &&
         !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault && !$isunknown(
@@ -1075,7 +1083,7 @@ module pd_stage #(
   logic [XLEN-1:0] pd_slot1_redirect_target_reference_q;
   logic [XLEN-1:0] pd_slot2_redirect_target_reference_q;
   logic [XLEN-1:0] pd_selected_redirect_target_reference_q;
-  logic pd_slot2_pc_step_reference_q;
+  logic pd_slot2_packet_valid_reference_q;
   logic [XLEN-1:0] pd_slot1_redirect_target_next_reference;
   logic [XLEN-1:0] pd_slot2_redirect_target_next_reference;
   logic [XLEN-1:0] pd_redirect_target_reference;
@@ -1101,7 +1109,7 @@ module pd_stage #(
                 pd_redirect_r,
                 pd_dir_redirect_2_r,
                 pd_slot2_target_select_reference_q,
-                pd_slot2_pc_step_reference_q,
+                pd_slot2_packet_valid_reference_q,
                 pd_redirect_target_high,
                 pd_redirect_target_low,
                 pd_selected_redirect_target_reference_q,
@@ -1110,20 +1118,19 @@ module pd_stage #(
               }
           )) begin
         p_pd_selected_target_datapath_exact :
-        assert ((pd_slot2_target_select_reference_q && !pd_slot2_pc_step_reference_q) ||
+        assert ((pd_slot2_target_select_reference_q && !pd_slot2_packet_valid_reference_q) ||
                 ({pd_redirect_target_high, pd_redirect_target_low} ==
                  pd_selected_redirect_target_reference_q));
         p_pd_redirect_target_boundary_exact :
-        assert (!pd_redirect_r ||
-                (pd_dir_redirect_2_r && !pd_slot2_pc_step_reference_q) ||
-                (o_pd_redirect_target == pd_redirect_target_reference));
+        assert (!pd_redirect_r || (o_pd_redirect_target == pd_redirect_target_reference));
       end
       if (!i_pipeline_ctrl.stall) begin
         pd_slot1_redirect_target_reference_q <= pd_slot1_redirect_target_next_reference;
         pd_slot2_redirect_target_reference_q <= pd_slot2_redirect_target_next_reference;
         pd_selected_redirect_target_reference_q <= pd_slot2_target_select ?
             pd_slot2_redirect_target_next_reference : pd_slot1_redirect_target_next_reference;
-        pd_slot2_pc_step_reference_q <= pd_slot2_pc_matches_slot1_step;
+        pd_slot2_packet_valid_reference_q <=
+            !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault;
         pd_redirect_target_reference_armed <= 1'b1;
       end
     end

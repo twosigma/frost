@@ -3115,6 +3115,22 @@ module if_stage #(
   // Sampled at the clock so the check sees settled values on kept nets.
   always_ff @(posedge i_clk) begin
     if (coverage_reset_seen_q && !i_pipeline_ctrl.reset) begin
+      // PD derives slot 1's size from its raw parcel and shares its high PC
+      // with slot 2. Check the memory-sideband contracts on the final packet,
+      // including stall replay, before PD consumes it.
+      if (!o_from_if_to_pd_2.sel_nop && !o_from_if_to_pd_2.fetch_fault && !$isunknown(
+              {o_from_if_to_pd.sel_compressed, o_from_if_to_pd.raw_parcel,
+               o_from_if_to_pd.effective_instr[6:0]}
+          )) begin
+        p_if_slot1_size_matches_raw_parcel :
+        assert (o_from_if_to_pd.sel_compressed == (o_from_if_to_pd.raw_parcel[1:0] != 2'b11));
+        p_if_slot2_follows_non_control_slot1 :
+        assert ((o_from_if_to_pd.raw_parcel[1:0] != 2'b11) ? !riscv_pkg::imem_compressed_control(
+            o_from_if_to_pd.raw_parcel
+        ) : !riscv_pkg::imem_native_control(
+            o_from_if_to_pd.effective_instr[6:0]
+        ));
+      end
       if (!$isunknown({o_tage_slot_valid[1], tage_slot2_cov_ref})) begin
         p_if_slot2_tage_cov_exact : assert (o_tage_slot_valid[1] == tage_slot2_cov_ref);
       end

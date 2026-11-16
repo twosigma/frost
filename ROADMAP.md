@@ -400,11 +400,9 @@ of the load-latency cut.
 
 Priorities, guided by the performance counters and timing reports:
 
-1. Branch prediction. PD now overrides conditional-branch directions in both
+1. Branch prediction. PD overrides conditional-branch directions in both
    slots when the tagged predictor matches (slot 1 also keeps the bimodal
-   fallback). Next is covering the fetch window's second word in the backing
-   BTB when a one-instruction packet lands there; an indirect-target predictor
-   and longer tagged-history tables remain possible later work.
+   fallback).
 2. Pairing across fetch windows. The front end pairs two instructions only
    when both fit in one 64-bit fetch window, and after a redirect the fetch
    address advances four and eight bytes in turn, so straight-line code
@@ -497,9 +495,10 @@ and targeted microbenchmarks give these items:
    BTB's direction and recovers from execution if wrong. Using the backing
    BTB's second lookup image when a one-instruction packet lands in the word
    after the looked-up one is next; an indirect-target predictor and longer
-   tagged-history tables remain possible later work. A backing hit served from IF would save a
-   bubble, but its correction would sit on the fetch loop, one of the hardest
-   paths at the target clock. In bare-metal microbenchmarks a taken branch
+   tagged-history tables remain possible later work. A backing hit served
+   from IF would save a bubble, but its correction would sit on the fetch
+   loop, one of the hardest paths at the target clock. In bare-metal
+   microbenchmarks a taken branch
    costs about 5 cycles, and a loop of four additions runs at 0.6 IPC with
    translation off; those small-loop costs come from fetch coverage and
    packet formation, not BTB capacity.

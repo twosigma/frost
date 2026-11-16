@@ -189,10 +189,10 @@ taken BTB prediction to taken, or veto a taken slot-2 BTB prediction after
 its fetch bubble. When the chosen direction differs from fetch's, PD
 redirects fetch to PC + offset, or for not-taken to the next instruction, at
 a cost of two bubbles, and ID gives the branch the new prediction so the
-branch unit checks the path fetch now follows. Commit trains the bimodal entry at the
-carried index, not at the branch's own PC, because the fetch PC that read the
-predictor can differ from the branch PC after a stall replay or at a halfword
-boundary. A slot-2 branch's training waits, one deep, for a cycle in which
+branch unit checks the path fetch follows. Commit trains the bimodal entry
+at the carried index, not at the branch's own PC, because the fetch PC that
+read the predictor can differ from the branch PC after a stall replay or at
+a halfword boundary. A slot-2 branch's training waits, one deep, for a cycle in which
 slot 1 does not train; a newer one replaces it.
 
 The tagged predictor (`tage_predictor`) follows TAGE. T1 hashes the branch's
