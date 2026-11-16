@@ -1284,9 +1284,12 @@ module coherence_l1d #(
       !(store_twin_pending && store_count == 3'd1) && !twin_owed &&
       (!pending_miss_q || (!request_live && ep0_wb_ok && !store_same_line_q));
   assign store_head_ready = store_head_ready_early && !pending_blocked;
-  assign o_sc_ready = active && !atomic_q && !pending_q && !request_live &&
-      !o_sc_result_valid && i_atomic_protected && phase_q == Idle && !grant_valid &&
+  // SC readiness from everything but the grant selection, which applies last.
+  (* keep = "true" *) logic sc_ready_early;
+  assign sc_ready_early = active && !atomic_q && !pending_q && !request_live &&
+      !o_sc_result_valid && i_atomic_protected && phase_q == Idle &&
       !probe_valid_q && !probe_priority;
+  assign o_sc_ready = sc_ready_early && !grant_valid;
   assign o_sc_write_tag = atomic_tag_q;
   assign local_ready = grant_valid || atomic_write_q || twin_ready ||
       (atomic_q && atomic_sc_q && !request_live && (!sc_home_q || (!any_live && wb_free))) ||
@@ -2921,18 +2924,22 @@ module coherence_l1d #(
   // A ready store head takes the lookup ahead of every source below it in
   // the Idle priority and of a read without the credited turn, so the lookup
   // address is prepared for both values of store_head_ready, which selects
-  // last. The read's eligibility below is the one without a ready head.
-  (* keep = "true" *) wire lookup_read_enable;
-  assign lookup_read_enable =
-      !probe_valid_q && !probe_priority && !twin_owed && !grant_valid &&
-      !(i_sc_valid && o_sc_ready) && !atomic_write_q && !atomic_sc_selected &&
+  // last. The read's eligibility below is the one without a ready head; the
+  // grant selection, which also gates o_sc_ready, applies last.
+  (* keep = "true" *) wire lookup_read_enable_early;
+  assign lookup_read_enable_early =
+      !probe_valid_q && !probe_priority && !twin_owed &&
+      !(i_sc_valid && sc_ready_early) && !atomic_write_q && !atomic_sc_selected &&
       !look_ready && !(maint_eligible && maint_turn_q);
+  (* keep = "true" *) wire lookup_read_enable;
+  assign lookup_read_enable = lookup_read_enable_early && !grant_valid;
   assign lookup_other_valid = !(lookup_read_turn || (lookup_read_enable && rd_candidate));
   // The non-read address follows the controller's Idle priority. When a read
   // wins, its address replaces this value at the selection below, so its
   // eligibility need not feed this priority chain as well. The credited read
   // turn also overrides this value, so its unused branch is omitted. Both
-  // values share the sources above the store head.
+  // values share the sources above the store head. The SC source follows the
+  // grant, so it needs only the rest of its readiness.
   logic lookup_upper_valid;
   logic [ADDR_WIDTH-1:0] lookup_upper_addr;
   always_comb begin
@@ -2942,7 +2949,7 @@ module coherence_l1d #(
     else if (probe_priority) lookup_upper_addr = probe_in.addr;
     else if (twin_owed) lookup_upper_addr = pending_addr_q;
     else if (grant_valid) lookup_upper_addr = grant.addr;
-    else if (i_sc_valid && o_sc_ready) lookup_upper_addr = i_sc_address;
+    else if (i_sc_valid && sc_ready_early) lookup_upper_addr = i_sc_address;
     else if (!(atomic_write_q || atomic_sc_selected)) lookup_upper_valid = 1'b0;
     lookup_prepared_addr = hint_addr_q;
     if (lookup_upper_valid) lookup_prepared_addr = lookup_upper_addr;
@@ -2976,19 +2983,22 @@ module coherence_l1d #(
 `endif
 `endif
 `ifdef FROST_L1D_LOOKUP_SELECT_CHECK
-  // Reference: the head's readiness as one conjunction, and the Idle lookup
-  // address from one priority chain that holds the head in its place. The
-  // formal check runs in its own task, for any register state and input, so
-  // the other tasks keep their assertion counts.
-  logic f_lookup_head_ready, f_lookup_read_enable, f_lookup_other_valid;
+  // Reference: the head's and the SC's readiness each as one conjunction, and
+  // the Idle lookup address from one priority chain that holds the head in its
+  // place. The formal check runs in its own task, for any register state and
+  // input, so the other tasks keep their assertion counts.
+  logic f_lookup_head_ready, f_lookup_sc_ready, f_lookup_read_enable, f_lookup_other_valid;
   logic [ADDR_WIDTH-1:0] f_lookup_prepared_addr, f_lookup_addr, f_lookup_split_addr;
   always_comb begin
     f_lookup_head_ready = pending_q && !look_priority_q && !store_acquired[store_head_index] &&
         !gather_hold_head && !pending_blocked && !(store_read_turn_q && read_waiting_q) &&
         !(store_twin_pending && store_count == 3'd1) && !twin_owed &&
         (!pending_miss_q || (!request_live && ep0_wb_ok && !store_same_line_q));
+    f_lookup_sc_ready = active && !atomic_q && !pending_q && !request_live &&
+        !o_sc_result_valid && i_atomic_protected && phase_q == Idle && !grant_valid &&
+        !probe_valid_q && !probe_priority;
     f_lookup_read_enable = !probe_valid_q && !probe_priority && !twin_owed && !grant_valid &&
-        !(i_sc_valid && o_sc_ready) && !atomic_write_q && !atomic_sc_selected &&
+        !(i_sc_valid && f_lookup_sc_ready) && !atomic_write_q && !atomic_sc_selected &&
         !f_lookup_head_ready && !look_ready && !(maint_eligible && maint_turn_q);
     f_lookup_other_valid = !(lookup_read_turn || (f_lookup_read_enable && rd_candidate));
     f_lookup_prepared_addr = hint_addr_q;
@@ -2996,7 +3006,7 @@ module coherence_l1d #(
     else if (probe_priority) f_lookup_prepared_addr = probe_in.addr;
     else if (twin_owed) f_lookup_prepared_addr = pending_addr_q;
     else if (grant_valid) f_lookup_prepared_addr = grant.addr;
-    else if (i_sc_valid && o_sc_ready) f_lookup_prepared_addr = i_sc_address;
+    else if (i_sc_valid && f_lookup_sc_ready) f_lookup_prepared_addr = i_sc_address;
     else if (atomic_write_q || atomic_sc_selected) f_lookup_prepared_addr = atomic_addr_q;
     else if (f_lookup_head_ready) f_lookup_prepared_addr = pending_addr_q;
     else if (look_ready) f_lookup_prepared_addr = look_addr_q;
@@ -3008,12 +3018,14 @@ module coherence_l1d #(
 `ifdef FORMAL
   always_comb begin
     p_lookup_select_head : assert (store_head_ready == f_lookup_head_ready);
+    p_lookup_select_sc : assert (o_sc_ready == f_lookup_sc_ready);
     p_lookup_select_addr : assert (f_lookup_split_addr == f_lookup_addr);
   end
 `else
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst) begin
       p_lookup_select_head : assert (store_head_ready == f_lookup_head_ready);
+      p_lookup_select_sc : assert (o_sc_ready == f_lookup_sc_ready);
       p_lookup_select_addr : assert (f_lookup_split_addr == f_lookup_addr);
     end
 `endif

@@ -28,12 +28,12 @@ stream: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 8 -s
 # selection, the miss credit, the read stream and the array.
 delete t:coherence_read_flags t:coherence_read_payload t:coherence_read_stream t:coherence_store_buffer t:coherence_request_endpoint t:coherence_grant_select t:coherence_read_owners t:coherence_miss_credit t:coherence_put_endpoint t:coherence_read_select t:coherence_array
 prep -flatten -top coherence_l1d
-# Keep only the two lookup-selection checks, with no assumptions.
-select -assert-count 2 c:p_lookup_select_* t:$check %i r:FLAVOR=assert %i
+# Keep only the three lookup-selection checks, with no assumptions.
+select -assert-count 3 c:p_lookup_select_* t:$check %i r:FLAVOR=assert %i
 chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_lookup_select_* %d
 chformal -assume -remove
 chformal -cover -remove
-select -assert-count 2 t:$check r:FLAVOR=assert %i
+select -assert-count 3 t:$check r:FLAVOR=assert %i
 select -assert-none t:$check r:FLAVOR=assume %i
 setundef -undriven -anyseq
 # Leave only the checks' cone, and make every register in it a free input.
