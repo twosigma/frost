@@ -205,6 +205,7 @@ every supported extension and privilege mode.
 | **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit scalar U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare). Vector memory execution is unadvertised and does not yet apply pointer masking after element-address addition. |
 | **Supm**         | Scalar U-mode pointer masking supplied by Ssnpm when the execution environment enables it; the supplied Linux image does not expose the tagged-address ABI |
 | **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended; an instruction or data access, misaligned or page fault, a failed bus response included, writes the faulting virtual address |
+| **Ssu64xl**      | UXLEN is 64: `mstatus.UXL` and `sstatus.UXL` read 2 and cannot change |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
 | **Svinval**      | Fine-grained address-translation cache invalidation (`sinval.vma`, `sfence.w.inval`, `sfence.inval.ir`) |
 | **Svnapot**      | 64 KiB NAPOT leaf PTEs (N = 1, PPN[3:0] = 1000 at level 0): each page translates with PPN[3:0] = VA[15:12] and fills the TLBs as a 4 KiB entry; every other N encoding is a page fault |

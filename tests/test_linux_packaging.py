@@ -342,6 +342,7 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         "ssnpm",
         "sstc",
         "sstvala",
+        "ssu64xl",
         "svade",
         "svinval",
         "svnapot",
@@ -664,11 +665,14 @@ def test_advertised_isa_lists_agree() -> None:
     # RV64C as Zca + Zcd, and takes RV64I as the base ISA (not an extensions
     # entry); AIA/IMSIC, Za64rs, misaligned hardware and multi-region PMA flags
     # are either absent from Sail or kept off for the TestRIG device-RAM map.
+    # Sail has no Ssu64xl option: its RV64 model keeps UXL at 64 bits, which
+    # traces/ssu64xl_uxl.S compares.
     sail_umbrella_only = {"b", "s", "sv39", "svbare", "u", "zca", "zcd"}
     sail_not_toggled = {
         "smaia",
         "ssaia",
         "ssccptr",
+        "ssu64xl",
         "za64rs",
         "ziccamoa",
         "zicclsm",
