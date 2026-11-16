@@ -1871,16 +1871,19 @@ module coherence_l1d #(
           p_grant_answer_slot : assert (!(ld_prefetch_q[grant_ep_q] && !grant_attached[slot]) &&
               grant_q.addr[ADDR_WIDTH-1:5] == ld_line_q[grant_ep_q]);
     end
-    // The hit path's block check sees only the four valid store records, not
-    // a cbo.zero twin still waiting for a record. While a twin waits, the hit
-    // path takes no load of either sector of its 64-byte block: the store
-    // queue holds younger loads of the block until o_write_done at twin
-    // allocation, and the hit path takes only loads arriving on the request
-    // port. Read selection is not checked: the L1D has no read cancel, so a
-    // load flushed from the load queue stays live here until answered and can
-    // be re-selected as a lookup of the block while a younger cbo.zero's twin
+    // Read selection and the hit path's block check see only the four valid
+    // store records, not a cbo.zero twin still waiting for a record. While a
+    // twin waits, no load or LR of either sector of its 64-byte block arrives
+    // on the request port or enters the hit path: the store queue holds
+    // younger reads of the block until o_write_done at twin allocation. Read
+    // selection itself is not checked: the L1D has no read cancel, so a load
+    // flushed from the load queue stays live here until answered and can be
+    // re-selected as a lookup of the block while a younger cbo.zero's twin
     // waits.
     if (sim_reset_seen_q && !i_rst && active && store_twin_pending) begin
+      if (i_read_valid && i_read_kind != ReadAMO)
+        p_zero_pending_twin_no_read_req :
+        assert (i_address[ADDR_WIDTH-1:6] != store_twin_addr[ADDR_WIDTH-1:6]);
       if (path_take)
         p_zero_pending_twin_no_path :
         assert (path_addr_q[ADDR_WIDTH-1:6] != store_twin_addr[ADDR_WIDTH-1:6]);
@@ -2204,12 +2207,14 @@ module coherence_l1d #(
     else zero_sibling_conflict_q <= zero_sibling_conflict;
   end
   // With 64-byte home lines, a lower zero record acquires with GetMZero when
-  // its twin follows it and its upper sector is free; with 32-byte lines, every
-  // zero record does, since each sector is a whole home line.
+  // its own twin follows it and its upper sector is free; with 32-byte lines,
+  // every zero record does, since each sector is a whole home line.
   assign zero_acquire = store_zero[store_selected_q] &&
       (HOME_LINE_BYTES == 32 ||
        (HOME_LINE_BYTES == 64 && !store_twin[store_selected_q] &&
         store_valid[2'(store_selected_q + 2'd1)] && store_twin[2'(store_selected_q + 2'd1)] &&
+        store_addr[2'(store_selected_q + 2'd1)][ADDR_WIDTH-1:6] ==
+            store_addr[store_selected_q][ADDR_WIDTH-1:6] &&
         !zero_sibling_conflict_q[store_selected_q]));
   always_ff @(posedge i_clk) begin
     if (i_rst) zero_acquire_q <= 1'b0;
@@ -2243,12 +2248,14 @@ module coherence_l1d #(
     borrowed_live = |(live[EpSlots-1:1] & ep_store[EpSlots-1:1]);
     look_blocked = store_acquired | store_checked_q | ~store_valid | look_owner_conflict_q;
     // With 64-byte home lines, a twin installs at the head, and a
-    // lower zero record looks ahead only with GetMZero: with its twin and its
-    // upper sector free.
+    // lower zero record looks ahead only with GetMZero: with its own twin and
+    // its upper sector free.
     if (HOME_LINE_BYTES == 64)
       for (int slot = 0; slot < 4; slot++)
       if (store_twin[slot] || (store_zero[slot] && (zero_sibling_conflict_q[slot] ||
-          !(store_valid[2'(2'(slot) + 2'd1)] && store_twin[2'(2'(slot) + 2'd1)]))))
+          !(store_valid[2'(2'(slot) + 2'd1)] && store_twin[2'(2'(slot) + 2'd1)] &&
+            store_addr[2'(2'(slot) + 2'd1)][ADDR_WIDTH-1:6] ==
+                store_addr[slot][ADDR_WIDTH-1:6]))))
         look_blocked[slot] = 1'b1;
     if (!look_snapshot_valid_q) look_blocked = '1;
     for (int slot = 0; slot < 4; slot++) begin
@@ -3705,8 +3712,11 @@ module coherence_l1d #(
             store_valid[store_selected_q] && store_zero[store_selected_q]);
         if (HOME_LINE_BYTES == 64)
           p_zero_acquire_line : assert (!store_twin[store_selected_q] &&
+              2'(store_selected_q + 2'd1) != store_head_index &&
               store_valid[2'(store_selected_q + 2'd1)] &&
               store_twin[2'(store_selected_q + 2'd1)] &&
+              store_addr[2'(store_selected_q + 2'd1)][ADDR_WIDTH-1:6] ==
+                  store_addr[store_selected_q][ADDR_WIDTH-1:6] &&
               !zero_sibling_conflict[store_selected_q]);
       end
       // A twin installs at the head, never through look-ahead.
