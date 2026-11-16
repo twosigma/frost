@@ -447,11 +447,12 @@ unit tests retain the three measured chain spans and exercise shadows,
 port refusals, read-slot credit, fill visibility and replays, replacement-write
 ordering, and stream-report ordering.
 
-BRAM CoreMark remains exactly 223,556 ticks with matching CRCs. Its newly
-captured timed window is 223,549 cycles and 226,801 retired micro-ops. The
-CI model workload remains 3,219 cycles and 3,128 retired micro-ops (IPC
-0.9717), within 4.22% of that RTL IPC; `calibration/ci_baseline.json` is
-unchanged.
+The L1D calibration capture of BRAM CoreMark contains 223,556 ticks with
+matching CRCs; its timed window is 223,549 cycles and 226,801 retired
+micro-ops. This capture predates slot-2 tagged direction overrides in PD.
+The CI model workload contains 3,219 cycles and 3,128 retired micro-ops (IPC
+0.9717), within 4.22% of that capture's RTL IPC; these figures describe
+`calibration/ci_baseline.json`.
 
 ## 13. Board calibration data sets
 
