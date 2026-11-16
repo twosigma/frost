@@ -699,13 +699,16 @@ overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
 (vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
 unknown). Masked operations reject v0 as a SEW data source because the
-implicit mask has element width 1. Allocation restarts the quiet interval before the registered ROB
-in-flight indication arrives. The register-number rules depend on `vtype` only through LMUL, so
+implicit mask has element width 1. A configuration allocation restarts the
+three-cycle wait for an empty configuration pipeline before the registered
+ROB in-flight indication arrives. The tracker reloads the architectural
+`vtype` only after that wait, allowing its retiring CSR update to arrive.
+The register-number rules depend on `vtype` only through LMUL, so
 `vector/vec_lmul_legality.sv` evaluates them from the instruction bits for
 each LMUL class (1 or fractional, 2, 4, 8) before the decoded queue, which
 carries the four results beside slot 1; dispatch selects the class of the
-tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with its scalar and the
-architectural `vl`, `vtype` and `vstart`, and the engine executes it after
+tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with
+its scalar and the architectural `vl`, `vtype` and `vstart`, and the engine executes it after
 commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
 result on CDB slot 6.

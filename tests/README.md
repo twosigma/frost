@@ -136,6 +136,18 @@ execution; it does not use standalone `slang --lint-only`.
 blocks, directed CPU tests, and applications from `sw/apps/`, which the
 runner compiles first. A failing RTL assertion fails the simulation.
 
+`vec_vtype_tracker` checks register and immediate configuration allocation,
+the delayed ROB in-flight indication, architectural reload, full flushes
+and checkpoint restore. `vec_vtype_handoff_test_v128/v256/v512` execute a
+register-form `vsetvl` immediately followed by `vadd.vv` from the reset
+`vill` state and check that no spurious trap occurs.
+
+`vec_source_eew` rejects v0 data operands in masked instructions and checks
+legal scalar-zero operands, unmasked v0 sources and mask destinations.
+`vec_source_eew_test_v128/v256/v512` check illegal-instruction cause and
+trap value, unchanged destination registers, `vstart` and `mstatus.VS` for
+masked instructions that use v0 as data.
+
 The `coherence_endpoints`, `coherence_endpoints_single`, and
 `coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
 identity reuse, independent probe queues, keyed PutAck cancellation, errors,
@@ -1448,9 +1460,3 @@ and says when the run proves everything again.
 
 The formal and synthesis jobs check out the repository without submodules and
 set `FROST_SKIP_SUBMODULE_INIT=1`; none of their inputs is in a submodule.
-
-`vec_vtype_tracker` checks the allocation-to-commit configuration handoff,
-including the delayed ROB in-flight indication and architectural reload.
-
-`vec_source_eew` rejects v0 data operands in masked instructions and checks
-legal scalar-zero operands, unmasked v0 sources and mask destinations.

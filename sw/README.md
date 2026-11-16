@@ -295,6 +295,8 @@ can be debugged and where each one first stops.
 | `fpu_test/` | Subnormals, fused multiply-add, rounding, and conversions |
 | `freertos_demo/` | FreeRTOS V11.3.2 tasks passing data through a queue and sharing the UART under a mutex, while worker tasks increment one counter with `amoadd.w` and the 1 ms tick time-slices them; a tick inside a critical section must defer its task switch |
 | `vec_state_test/` | Vector state: with `VEC_VLEN` set, `mstatus.VS` reset to Off, vector CSR accesses illegal while it is Off, `vlenb`, `vl` and `vtype` reset values, `vstart` width, `vxrm`/`vxsat`/`vcsr` aliasing, VS Dirty and SD on writes but not on reads, the `sstatus.VS` view, and illegal writes to `vl`, `vtype` and `vlenb`; with `VEC_VLEN=0`, a core without the vector unit |
+| `vec_vtype_handoff_test/` | Register-form `vsetvl` immediately followed by `vadd.vv` from reset `vill`, checked at VLEN 128, 256 and 512 |
+| `vec_source_eew_test/` | Precise traps for masked v0 data sources, with destination, `vstart` and `mstatus.VS` preservation |
 | `vec_common/` | Shared by the vector bring-up programs below: the check and trap-recording helpers in `vec_test.h` (UART output on FROST, HTIF console on Spike with `-DVT_SPIKE`), and the Spike start-up, linker script and makefile in `spike/` |
 | `vec_smoke/` | `vsetvli`, `vsetivli` and `vsetvl` for every SEW and LMUL, reserved `vtype` setting `vill`, `vstart`, `vxrm`, `vxsat` and `vcsr`, `mstatus.VS` states, and read-only vector CSRs trapping |
 | `vec_ldst/` | Unit-stride, mask, whole-register, strided, indexed and segment loads and stores, fault-only-first, masked forms, and precise faults reporting `vstart` and `mtval` |
