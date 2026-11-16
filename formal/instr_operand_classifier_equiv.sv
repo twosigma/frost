@@ -164,7 +164,7 @@ module instr_operand_classifier_equiv (
       rs_type_pre = riscv_pkg::RS_FP;
 
       riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET,
-      riscv_pkg::VTOX:
+      riscv_pkg::VTOX, riscv_pkg::VLOAD, riscv_pkg::VSTORE:
       rs_type_pre = riscv_pkg::RS_NONE;
 
       default: rs_type_pre = riscv_pkg::RS_INT;
@@ -399,7 +399,9 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::FETCH_FAULT &&
       op_for_pre_decode != riscv_pkg::VSETIVLI &&
       op_for_pre_decode != riscv_pkg::VARITH &&
-      op_for_pre_decode != riscv_pkg::VTOX);
+      op_for_pre_decode != riscv_pkg::VTOX &&
+      op_for_pre_decode != riscv_pkg::VLOAD &&
+      op_for_pre_decode != riscv_pkg::VSTORE);
 
     case (op_for_pre_decode)
       riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,

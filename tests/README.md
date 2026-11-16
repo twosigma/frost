@@ -831,6 +831,24 @@ and low BRAM raises the address-misaligned exception. In DDR, `ma_data` runs
 in both environments; under `--env v` its accesses cross demand-paged Sv39
 pages.
 
+The `vec_order_test_v128`, `vec_order_test_v256`, and `vec_order_test_v512`
+programs check vector stores before instruction fetch, page walks, and the
+SoC DMA START register. Their observer counts fence waits, overlapping
+vector/DMA requests on shared and separate lines, and balanced completions.
+It distinguishes each pairing of vector loads/stores with DMA reads/writes.
+DMA writes racing vector loads must return a complete old or new sector image;
+the observer requires concurrent requests to a shared sector for this case.
+The reverse race checks the DMA's sector images while a vector store runs.
+The VLEN 256 memory and ordering programs run in the vector program CI shard.
+`FROST_VEC_ORDER_CHECK_WAITS=0` disables only the observer's wait assertions
+for negative tests; the program still checks all three architectural results.
+The `vec_vmu_v*` and `vec_head_mmu_v*` unit benches check sector byte masks,
+response reordering, backpressure, fatal errors, two-page translation, and
+partial-fault descriptors, including an enabled suffix whose first element
+straddles the faulting page. `vec_debug_partial` preserves an expected
+failure: a partial vector load in Debug Mode changes vector registers but
+leaves `mstatus.VS` Clean when the exception re-parks the hart.
+
 ### `test_riscv_vector_tests.py`
 
 Runs [riscv-vector-tests](https://github.com/chipsalliance/riscv-vector-tests),

@@ -39,7 +39,10 @@ module dispatch #(
     // Use bypassed integer register-file reads directly for packet values.
     // i_int_rf_* must also feed the RAT value inputs. Packet masks handle x0
     // and source use. With the default 0, i_int_rf_* is unused.
-    parameter bit RAW_INT_RF_VALUES = 1'b0
+    parameter bit RAW_INT_RF_VALUES = 1'b0,
+    // Enable vector slot-2 hardware serialization. Off by default so VECTOR=0
+    // builds add zero gates to dispatch admission.
+    parameter bit VECTOR = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -55,8 +58,8 @@ module dispatch #(
     // vec_lmul_legality's classes of slot 1's instruction bits, formed before
     // the decoded queue; the default suits benches without vector arithmetic
     input logic                      [3:0] i_vec_lmul_illegal = 4'd0,
-    // Instruction-only vector load/store rejection, carried beside the classes
-    input logic                            i_vec_mem_illegal = 1'b0,
+    // Registered slot-2 vector marker carried beside the decoded queue shadow
+    input logic                            i_slot2_is_vector = 1'b0,
     // Bundle-valid candidate, not yet qualified by flush. Dispatch applies
     // i_flush (below) as the only recovery qualification.
     input logic                            i_valid,
@@ -723,8 +726,19 @@ module dispatch #(
 
   logic dispatch_valid_2;
   logic slot2_fp_compute_serialized;
+  logic slot2_op_is_vector;
+  logic slot2_vector_serialized;
+  logic slot1_is_varith;
+  assign slot1_is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X);
   assign slot2_fp_compute_serialized = (rs_type_2 == riscv_pkg::RS_FP);
-  assign dispatch_valid_2 = i_valid_2 && !i_flush && !slot2_fp_compute_serialized;
+  assign slot2_op_is_vector = (op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
+      (op_2 == riscv_pkg::VSETVL) || (op_2 == riscv_pkg::VARITH) ||
+      (op_2 == riscv_pkg::VARITH_X) || (op_2 == riscv_pkg::VTOX) ||
+      (op_2 == riscv_pkg::VLOAD) || (op_2 == riscv_pkg::VSTORE);
+  assign slot2_vector_serialized = VECTOR &&
+      (SLOT2_VALID_FROM_BUNDLE ? i_slot2_is_vector : (i_slot2_is_vector || slot2_op_is_vector));
+  assign dispatch_valid_2 = i_valid_2 && !i_flush &&
+      !slot2_fp_compute_serialized && !slot2_vector_serialized;
 
   // Two slots targeting the same RS need two free entries; otherwise one suffices.
   logic rs_full_for_slot2;
@@ -834,7 +848,8 @@ module dispatch #(
       !(need_checkpoint_2 && !i_checkpoint_available);
   logic slot2_present_for_admission;
   assign slot2_present_for_admission = SLOT2_VALID_FROM_BUNDLE ?
-      (i_from_id_to_ex_2.is_real && !slot2_fp_compute_serialized) : dispatch_valid_2;
+      (i_from_id_to_ex_2.is_real && !slot2_fp_compute_serialized && !slot2_vector_serialized) :
+      dispatch_valid_2;
   // Decode resource ownership independently of the late RS-full flags.
   // Each three-product reduction fits a LUT6, so a full flag reaches bundle
   // admission through two LUTs rather than two RS muxes and serial gates.
@@ -887,26 +902,21 @@ module dispatch #(
   end
 `endif
 `ifdef VEC_LMUL_LEGALITY_LOCAL_PROOF
-  // With both queued legality inputs from slot 1's own decoded instruction,
-  // dispatch equals the arithmetic, VTOX and vector-memory reference for
-  // every vtype, instruction and operation.
+  // With the queued LMUL legality classes from slot 1's own decoded
+  // instruction, dispatch equals the arithmetic and VTOX reference for every
+  // vtype, instruction and operation. Vector load/store legality runs at the
+  // ROB head against architectural vtype.
   logic [3:0] f_vec_lmul_illegal;
-  logic f_vec_mem_illegal;
   logic f_vec_illegal_ref;
   vec_lmul_legality u_f_vec_lmul_legality (
       .i_insn(32'(i_from_id_to_ex.instruction)),
-      .i_op(i_from_id_to_ex.instruction_operation),
-      .i_is_illegal(i_from_id_to_ex.is_illegal_instruction),
-      .i_is_fetch_fault(i_from_id_to_ex.is_fetch_fault),
-      .o_illegal(f_vec_lmul_illegal),
-      .o_mem_illegal(f_vec_mem_illegal)
+      .o_illegal(f_vec_lmul_illegal)
   );
-  assign f_vec_illegal_ref = (o_rob_alloc_req.is_varith && riscv_pkg::vector_arith_illegal(
+  assign f_vec_illegal_ref = (slot1_is_varith && riscv_pkg::vector_arith_illegal(
       i_vtype_spec, 32'(i_from_id_to_ex.instruction)
-  )) || ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) || (op == riscv_pkg::VLOAD) ||
-      (op == riscv_pkg::VSTORE);
+  )) || ((op == riscv_pkg::VTOX) && i_vtype_spec[8]);
   always_comb begin
-    assume ({i_vec_mem_illegal, i_vec_lmul_illegal} == {f_vec_mem_illegal, f_vec_lmul_illegal});
+    assume (i_vec_lmul_illegal == f_vec_lmul_illegal);
     p_vec_illegal_exact : assert (o_rob_alloc_req.vec_illegal == f_vec_illegal_ref);
   end
 `endif
@@ -1404,14 +1414,17 @@ module dispatch #(
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
     o_rob_alloc_req.is_vcfg = (op == riscv_pkg::VSETVLI) || (op == riscv_pkg::VSETIVLI) ||
         (op == riscv_pkg::VSETVL);
-    o_rob_alloc_req.is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X);
+    // ROB's is_varith flag excludes vector arithmetic and vector loads/stores
+    // from two-wide commit (rob_f_ok_2wide_static); slot1_is_varith gates
+    // dispatch-time arithmetic legality, while VLOAD/VSTORE check legality at
+    // the ROB head.
+    o_rob_alloc_req.is_varith = slot1_is_varith || (op == riscv_pkg::VLOAD) ||
+        (op == riscv_pkg::VSTORE);
     // Vector arithmetic uses its queued LMUL class and vill; VTOX uses vill.
-    // Vector loads and stores carry their instruction-only rejection from
-    // before the queue. The vtype selects last.
-    o_rob_alloc_req.vec_illegal = ((o_rob_alloc_req.is_varith || (op == riscv_pkg::VTOX)) &&
+    o_rob_alloc_req.vec_illegal = ((slot1_is_varith || (op == riscv_pkg::VTOX)) &&
                                    i_vtype_spec[8]) ||
-        (o_rob_alloc_req.is_varith &&
-         i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]]) || i_vec_mem_illegal;
+        (slot1_is_varith &&
+         i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]]);
     // Sstvala: raw instruction bits, the illegal-instruction xtval.
     o_rob_alloc_req.insn_bits = i_from_id_to_ex.insn_bits;
 
