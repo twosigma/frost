@@ -293,9 +293,9 @@ zsingle: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_twin 
 zsingle: select -assert-count 4 t:$check r:FLAVOR=cover %i
 zlook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_lookahead %d
 zcovers: chformal -assert -remove
-zstream: select -assert-count 2 c:p_prefetch_not_record c:p_grant_keeps_modified
-zstream: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified %u %d
-zstream: select -assert-count 2 t:$check r:FLAVOR=assert %i
+zstream: select -assert-count 3 c:p_prefetch_not_record c:p_grant_keeps_modified c:p_zero_acquire_line
+zstream: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified c:p_zero_acquire_line %u %u %d
+zstream: select -assert-count 3 t:$check r:FLAVOR=assert %i
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
 arraydata: select -assert-count 4 c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known

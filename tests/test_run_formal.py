@@ -1994,7 +1994,7 @@ SBY_TASKS = [
     ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
     (
         "coh_l1d_zero_stream_bmc",
-        "Stream prefetching and Modified-sector grants with cbo.zero writes and three endpoints.",
+        "Stream prefetching, GetMZero twin ownership and Modified-sector grants with cbo.zero writes and three endpoints.",
     ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
