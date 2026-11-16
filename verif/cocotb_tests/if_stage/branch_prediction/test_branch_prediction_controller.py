@@ -81,6 +81,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_disable_branch_prediction_wcs.value = 0
     dut.i_window_cannot_serve_raw.value = 0
     dut.i_fetch_lookup_is_lower_parcel.value = 0
+    dut.i_pending_prediction_blocks_slot1.value = 0
     dut.i_btb_update.value = 0
     dut.i_btb_update_pc.value = 0
     dut.i_btb_update_target.value = 0
@@ -509,6 +510,7 @@ async def test_slot1_btb_prediction_blockers_suppress_effective_use(dut: Any) ->
         ("i_mret_taken", 1),
         ("i_stall_registered", 1),
         ("i_fetch_lookup_is_lower_parcel", 1),
+        ("i_pending_prediction_blocks_slot1", 1),
     )
 
     for signal_name, value in blockers:

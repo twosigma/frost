@@ -677,7 +677,7 @@ privilege, so the full flush alone retires the old permission state. Linux
 toggles SUM around every user copy, so this keeps both TLBs warm across
 syscalls.
 
-Ssnpm uses `senvcfg.PMM` for effective U-mode data accesses, including MPRV
+Ssnpm uses `senvcfg.PMM` for effective scalar U-mode data accesses, including MPRV
 with MPP=U, unless MXR is set. The field supports PMLEN 0, 7 and 16, resets to
 zero, and preserves its value on a reserved encoding. SUM does not select the
 masking mode. A `senvcfg` write captures the legalized PMM in the registered
@@ -685,7 +685,8 @@ mode on the write edge, before a younger store can allocate an early address.
 Writes to mstatus or sstatus, traps, xRETs and debug transitions flush the
 pipeline while the mode updates. An assisted misaligned access receives the
 exact transformed address so that its faults and split parts use the same
-address interpretation.
+address interpretation. The unadvertised vector memory path does not yet mask
+its element addresses.
 
 ## Vector state
 
@@ -879,6 +880,32 @@ metadata. Only the packet at the saved PC consumes them; it is emitted
 one-wide, and its bimodal index is recomputed from that PC. A prediction made
 while the branch's own packet is already being emitted, which happens when
 variable latency closes the gap between the two PCs, never pends.
+
+Instruction streams can overlap: a 32-bit instruction at `P-2` contains the
+halfword at `P`, which another path through the same bytes can execute as an
+instruction and train into the BTB. While an unkilled prediction is pending,
+`pc_controller` blocks new slot-1 BTB predictions in only two cases: the entry
+is one `pc_reg` has walked past, or it is a crossing entry and `pc_reg` is at
+its predecessor `P-2`, even when a released predecessor drops the shared
+pending prediction disable. Every other pending entry no longer blocks slot 1.
+If a 32-bit instruction at `P-2` is released there and slot 2 at `P+2`
+predicts taken, that
+slot-2 redirect retires the pending entry and kills its saved metadata on the
+same edge. Otherwise a lookup at `P` that hit while IF emitted the 32-bit
+instruction leaves `pc_reg` past `P` instead of stopping there. From that cycle
+the pending prediction is inactive: it hands nothing off, holds nothing back,
+never moves `pc_reg` back onto `P`, and its saved metadata attaches to no
+packet. Its valid bit stays set through stalls and fetch gaps, so the
+registered redirect the predictor still holds cannot move `pc_reg` to the old
+target, and clears on the first cycle with neither a stall nor a fetch gap,
+including a served-window resteer cycle in which `pc_reg` holds. Because the
+lookup at `P` already moved `o_pc` to the phantom target, IF treats an active
+walk-past cycle as a served-window rejection, squashing the packet while
+`pc_reg` holds and resteering `o_pc` back to `pc_reg`'s word even if the
+phantom target's window would otherwise cover `pc_reg` through the instruction
+buffer. Within `pc_controller`, a prediction accepted on the unstalled edge an
+entry clears replaces it atomically, though IF suppresses new slot-1 lookups
+until the walked-past entry has cleared and `o_pc` has resteered.
 
 `pc_controller` registers how `pc_reg` relates to the saved PC one edge early,
 which keeps the wide compares out of the PC loop. For a slot-2 redirect,

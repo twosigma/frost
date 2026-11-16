@@ -1444,6 +1444,11 @@ jobs:
           - shard: Coherence L1D zero cover
             pytest_filter: coh_l1d_zero_cover
             timeout_minutes: 260
+          # The unrestricted zero-stream request check has a 100-minute
+          # allowance; keep image setup outside that solver budget.
+          - shard: Coherence L1D zero stream
+            pytest_filter: coh_l1d_zero_stream_free_bmc
+            timeout_minutes: 120
           # The scheduled real-array checks keep all 80 frames, with disjoint
           # property groups and no assumptions between them. Run them in
           # parallel so their combined work does not delay the bridges.
@@ -1471,7 +1476,7 @@ jobs:
               (coherence_l1d and not (_twin or coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
               coh_l1d_stream_outlier_prove or
               coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_bmc or coh_l1d_zero_multi_bmc or
-              coh_l1d_zero_cover or coh_l1d_data or
+              coh_l1d_zero_cover or coh_l1d_zero_stream_free_bmc or coh_l1d_data or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))
             timeout_minutes: 330
@@ -1524,10 +1529,15 @@ jobs:
           - shard: Vector
             pytest_filter: csr_file_vector or vec_lmul_legality
             timeout_minutes: 75
-          # The line client link BMCs and cover.
-          - shard: Line client links
-            pytest_filter: line_client_link
-            timeout_minutes: 90
+          # The line client link proofs, in two jobs: the zero-stage BMC, the
+          # two-identity one-stage BMC and the cover take about an hour; the
+          # four- and eight-identity BMCs about forty minutes.
+          - shard: Line client links (zero and two)
+            pytest_filter: line_link0_bmc or line_link1_bmc or line_link1_cover
+            timeout_minutes: 95
+          - shard: Line client links (four and eight)
+            pytest_filter: line_link1_four_bmc or line_link1_eight_bmc
+            timeout_minutes: 80
           # Page table walker, TLBs, instruction and data MMUs, and the
           # interrupt controllers.
           - shard: Memory management
