@@ -342,9 +342,10 @@ module coherence_store_buffer #(
         assume (o_valid[i_seal_index] && i_seal_index == (i_pop ? 2'(o_head + 2'd1) : o_head));
       if (i_acquire) assume (o_valid[i_acquire_index] && !o_acquired[i_acquire_index]);
       // A pair acquisition names a full lower record followed by its full,
-      // unacquired upper record.
-      if (i_acquire_pair) begin
-        assume (i_acquire && i_acquire_index != youngest && !o_zero[i_acquire_index] &&
+      // unacquired upper record. i_acquire_pair qualifies an acquisition and
+      // means nothing without one (the controller holds it after the edge).
+      if (i_acquire && i_acquire_pair) begin
+        assume (i_acquire_index != youngest && !o_zero[i_acquire_index] &&
             !o_twin[i_acquire_index] && o_full[i_acquire_index]);
         assume (o_upper[2'(i_acquire_index + 2'd1)] && o_full[2'(i_acquire_index + 2'd1)] &&
             !o_acquired[2'(i_acquire_index + 2'd1)] && !o_zero[2'(i_acquire_index + 2'd1)]);
@@ -436,6 +437,49 @@ module coherence_store_buffer #(
       cover (o_valid[o_head] && o_twin[o_head] && !o_zero[o_head]);
       // A claimed write combines into the youngest of four records.
       cover (i_push && $past(o_count == 4) && o_count == 4 && merge);
+    end
+  end
+`endif
+`ifdef BUFFER_CONTRACT
+  // The controller's side of the interface contract that the proofs above
+  // assume: one assertion for each assumption on the inputs, in the same
+  // order. A composed proof reads this block (not FORMAL, whose assumptions
+  // would constrain its controller) to check that its controller drives the
+  // buffer within the contract.
+  logic c_past_valid = 1'b0;
+  logic c_last_scalar_q;
+  logic [ADDR_WIDTH-6:0] c_claim_sector_q;
+  always_ff @(posedge i_clk) begin
+    c_past_valid <= 1'b1;
+    if (i_push) c_claim_sector_q <= i_addr[ADDR_WIDTH-1:5];
+    if (i_rst) c_last_scalar_q <= 1'b0;
+    else if (i_push) c_last_scalar_q <= !i_zero;
+    else if (o_twin_alloc) c_last_scalar_q <= 1'b0;
+    if (c_past_valid && !i_rst) begin
+      if (i_push) p_buffer_contract_push : assert (!$past(i_rst) && $past(o_ready));
+      if (i_merge_claim) p_buffer_contract_claim : assert (i_push ? !i_zero : c_last_scalar_q);
+      if (i_push && $past(i_merge_claim))
+        p_buffer_contract_claim_sector :
+        assert (i_addr[ADDR_WIDTH-1:5] == c_claim_sector_q && !i_zero);
+      if (i_zero) p_buffer_contract_zero : assert (i_push);
+      if (i_pop) p_buffer_contract_pop : assert (o_valid[o_head] && o_sealed[o_head]);
+      if (i_pop && twin_pending_q) p_buffer_contract_pop_lower : assert (o_head != youngest);
+      if (i_seal)
+        p_buffer_contract_seal :
+        assert (o_valid[i_seal_index] && i_seal_index == (i_pop ? 2'(o_head + 2'd1) : o_head));
+      if (i_acquire)
+        p_buffer_contract_acquire :
+        assert (o_valid[i_acquire_index] && !o_acquired[i_acquire_index]);
+      if (i_acquire && i_acquire_pair) begin
+        p_buffer_contract_pair_lower :
+        assert (i_acquire_index != youngest && !o_zero[i_acquire_index] &&
+            !o_twin[i_acquire_index] && o_full[i_acquire_index]);
+        p_buffer_contract_pair_upper :
+        assert (o_upper[2'(i_acquire_index + 2'd1)] && o_full[2'(i_acquire_index + 2'd1)] &&
+            !o_acquired[2'(i_acquire_index + 2'd1)] && !o_zero[2'(i_acquire_index + 2'd1)]);
+      end
+      p_buffer_contract_pop_acquire : assert (!(i_pop && i_acquire && i_acquire_index == o_head));
+      p_buffer_contract_pop_seal : assert (!(i_pop && i_seal && i_seal_index == o_head));
     end
   end
 `endif

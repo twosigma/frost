@@ -1462,18 +1462,31 @@ jobs:
               coh_l1d_zero_payload_bmc or coh_l1d_zero_lookahead_cover or
               coh_l1d_zero_stream_bmc
             timeout_minutes: 180
-          # The unrestricted zero-stream request check has a 165-minute
-          # allowance; keep image setup outside that solver budget.
+          # The four-property zero stream check, with the store queue's hints
+          # held low, has a 165-minute allowance; keep image setup outside that
+          # solver budget.
           - shard: Coherence L1D zero stream
             pytest_filter: coh_l1d_zero_stream_free_bmc
             timeout_minutes: 185
-          # The hinted zero stream BMC and the two scheduled full-buffer zero
-          # covers: 80 minutes of allowances.
+          # The two hinted zero stream BMCs that finish within an hour (the
+          # original stream properties and the same-block twin rule) and the two
+          # scheduled full-buffer zero covers: 135 minutes of allowances.
           - shard: Coherence L1D zero schedules
             pytest_filter: >-
-              coh_l1d_zero_stream_hint_bmc or coh_l1d_zero_progress_cover or
-              coh_l1d_zero_request_cover
-            timeout_minutes: 90
+              coh_l1d_zero_stream_hint_bmc or coh_l1d_zero_stream_line_bmc or
+              coh_l1d_zero_progress_cover or coh_l1d_zero_request_cover
+            timeout_minutes: 150
+          # Upper-sector request exclusion with the store queue's hints free, by
+          # holding endpoint: endpoints 0 and 2 share a job (110 minutes of
+          # allowances); endpoint 1, whose last frame dominates, has its own
+          # (310 minutes).
+          - shard: Coherence L1D zero stream, hinted endpoints 0 and 2
+            pytest_filter: >-
+              coh_l1d_zero_stream_upper_ep0_bmc or coh_l1d_zero_stream_upper_ep2_bmc
+            timeout_minutes: 125
+          - shard: Coherence L1D zero stream, hinted endpoint 1
+            pytest_filter: coh_l1d_zero_stream_upper_ep1_bmc
+            timeout_minutes: 325
           - shard: Coherence L1D full control
             pytest_filter: coh_l1d_full_bmc
             timeout_minutes: 200
@@ -1488,10 +1501,11 @@ jobs:
               coh_l1d_full_cover or coh_l1d_full_lookahead_cover or
               coh_l1d_withdraw_full_cover
             timeout_minutes: 330
-          # The full-line hold and credit covers: a 20-minute allowance.
+          # The full-line hold and credit covers and the store buffer contract
+          # check: 35 minutes of allowances.
           - shard: Coherence L1D full-line holds
-            pytest_filter: coh_l1d_full_hold_cover
-            timeout_minutes: 30
+            pytest_filter: coh_l1d_full_hold_cover or coh_l1d_buffer_contract_bmc
+            timeout_minutes: 50
           # The same control and payload checks with absorbed puts withdrawn
           # (WITHDRAW_ABSORBED_W, as MEMORY_LINK_STAGES sets it): each control
           # BMC has a job of its own; both payload BMCs share a third.
@@ -1531,7 +1545,7 @@ jobs:
               (coherence_l1d and not (_twin or coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
               coh_l1d_stream_outlier_prove or
               coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero or coh_l1d_full or coh_l1d_data or
-              coh_l1d_withdraw or
+              coh_l1d_withdraw or coh_l1d_buffer_contract or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))
             timeout_minutes: 330

@@ -98,6 +98,11 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_withdraw_zero_payload_bmc"): 5400,
     ("coherence_l1d", "coh_l1d_withdraw_full_cover"): 4800,
     ("coherence_l1d", "coh_l1d_full_hold_cover"): 1200,
+    ("coherence_l1d", "coh_l1d_buffer_contract_bmc"): 900,
+    ("coherence_l1d", "coh_l1d_zero_stream_line_bmc"): 3300,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep0_bmc"): 5400,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_bmc"): 18600,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep2_bmc"): 1200,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
@@ -434,6 +439,10 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_lookahead_cover",
             "coh_l1d_zero_stream_free_bmc",
             "coh_l1d_zero_stream_hint_bmc",
+            "coh_l1d_zero_stream_line_bmc",
+            "coh_l1d_zero_stream_upper_ep0_bmc",
+            "coh_l1d_zero_stream_upper_ep1_bmc",
+            "coh_l1d_zero_stream_upper_ep2_bmc",
             "coh_l1d_zero_progress_cover",
             "coh_l1d_zero_stream_bmc",
             "coh_l1d_zero_request_cover",
@@ -448,6 +457,7 @@ FORMAL_TARGETS = [
             "coh_l1d_withdraw_zero_payload_bmc",
             "coh_l1d_withdraw_full_cover",
             "coh_l1d_full_hold_cover",
+            "coh_l1d_buffer_contract_bmc",
             "coh_l1d_answer_bmc",
             "coh_l1d_stream_answer_bmc",
         ),
@@ -1693,7 +1703,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_l1d_zero_index.sby",
-        "Conditional equivalence of zero look-ahead blocking and the GetMZero choice, with buffer invariants proved under its interface contract.",
+        "Zero look-ahead blocking equals its address and index forms and the GetMZero choice implies both, under buffer invariants proved under the buffer's interface contract.",
         tasks=("zero_index_prove", "zero_index_invariants"),
     ),
     FormalTarget(
@@ -2120,6 +2130,22 @@ SBY_TASKS = [
         "Stream prefetching and Modified-sector grants with cbo.zero writes, full-line stores and the store queue's hints free.",
     ),
     (
+        "coh_l1d_zero_stream_line_bmc",
+        "GetMZero starts only with its own same-block twin or full upper record next, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
+    ),
+    (
+        "coh_l1d_zero_stream_upper_ep0_bmc",
+        "No upper-sector request is accepted while endpoint 0 holds GetMZero through Done, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
+    ),
+    (
+        "coh_l1d_zero_stream_upper_ep1_bmc",
+        "No upper-sector request is accepted while endpoint 1 holds GetMZero through Done, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
+    ),
+    (
+        "coh_l1d_zero_stream_upper_ep2_bmc",
+        "No upper-sector request is accepted while endpoint 2 holds GetMZero through Done, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
+    ),
+    (
         "coh_l1d_zero_progress_cover",
         "Full-buffer zero wrap with a different-block or same-block head twin resolves through both sector installations and Done.",
     ),
@@ -2176,6 +2202,10 @@ SBY_TASKS = [
     (
         "coh_l1d_full_hold_cover",
         "Gather and pair holds and claimed credit at three and four records.",
+    ),
+    (
+        "coh_l1d_buffer_contract_bmc",
+        "The L1D drives the store buffer within the interface contract the buffer's proofs assume, with cbo.zero writes, full-line stores, free hints and three endpoints.",
     ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
@@ -3507,6 +3537,15 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_zero_multi_bmc": "Coherence L1D zero multi-endpoint",
         "coherence_l1d_coh_l1d_zero_cover": "Coherence L1D zero cover",
         "coherence_l1d_coh_l1d_zero_stream_free_bmc": "Coherence L1D zero stream",
+        "coherence_l1d_coh_l1d_zero_stream_upper_ep0_bmc": (
+            "Coherence L1D zero stream, hinted endpoints 0 and 2"
+        ),
+        "coherence_l1d_coh_l1d_zero_stream_upper_ep2_bmc": (
+            "Coherence L1D zero stream, hinted endpoints 0 and 2"
+        ),
+        "coherence_l1d_coh_l1d_zero_stream_upper_ep1_bmc": (
+            "Coherence L1D zero stream, hinted endpoint 1"
+        ),
         "coherence_l1d_coh_l1d_full_bmc": "Coherence L1D full control",
         "coherence_l1d_coh_l1d_full_multi_bmc": "Coherence L1D full multi-endpoint",
         "coherence_l1d_coh_l1d_full_payload_bmc": "Coherence L1D full payload",
@@ -3889,19 +3928,46 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         "select -assert-count 4 t:$check r:FLAVOR=assert %i",
         "check -assert",
     ]
+    # The hinted single-property stream tasks: the same-block twin rule, and
+    # upper-sector request exclusion one holding endpoint at a time.
+    hinted = {
+        "stream_line_bmc": ("c:p_zero_acquire_line", ""),
+        **{
+            f"stream_upper_ep{ep}_bmc": (
+                "c:p_zero_no_upper_request_ep",
+                f" -D ZERO_UPPER_EP={ep}",
+            )
+            for ep in range(3)
+        },
+    }
     for suffix, depth, timeout, engine in (
-        ("bmc", "40", "10800", "abc bmc3"),
+        ("bmc", "40", "10800", "abc bmc3 -g"),
         ("multi_bmc", "30", "18000", "abc bmc3 -c"),
         ("payload_bmc", "40", "5400", "abc bmc3 -c"),
         ("stream_free_bmc", "31", "9900", "abc bmc3 -g"),
+        ("stream_line_bmc", "31", "3300", "abc bmc3 -g"),
+        ("stream_upper_ep0_bmc", "31", "5400", "abc bmc3 -g"),
+        ("stream_upper_ep1_bmc", "31", "18600", "abc bmc3 -g"),
+        ("stream_upper_ep2_bmc", "31", "1200", "abc bmc3 -g"),
     ):
         payload = suffix == "payload_bmc"
         stream = suffix == "stream_free_bmc"
+        turn = stream or suffix in hinted
         define = " -D STORE_DATA_PROOF" if payload else ""
-        endpoints = " -set MISSES 3" if stream or suffix == "multi_bmc" else ""
+        if suffix in hinted:
+            define = hinted[suffix][1]
+        endpoints = " -set MISSES 3" if turn or suffix == "multi_bmc" else ""
         properties = stream_properties if stream else control_properties
         if payload:
             properties = payload_properties
+        if suffix in hinted:
+            check = hinted[suffix][0]
+            properties = [
+                f"select -assert-count 1 {check}",
+                f"chformal -assert -remove t:$check r:FLAVOR=assert %i {check} %d",
+                "select -assert-count 1 t:$check r:FLAVOR=assert %i",
+                "check -assert",
+            ]
         script = (
             reads
             + [
@@ -3910,10 +3976,11 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
                 "read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv",
                 f"chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2{endpoints} coherence_l1d",
             ]
-            + (["chparam -set STREAM_PREFETCH 1 coherence_l1d"] if stream else [])
+            + (["chparam -set STREAM_PREFETCH 1 coherence_l1d"] if turn else [])
             + ["prep -flatten -top coherence_l1d"]
             + properties
-            # The four-property stream model holds the store queue's hints low.
+            # The four-property stream model holds the store queue's hints
+            # low; the hinted tasks leave them free.
             + (
                 ["connect -set i_write_more 1'b0", "connect -set i_next_same 1'b0"]
                 if stream
@@ -4006,11 +4073,11 @@ def test_full_line_safety_models_pinned() -> None:
         "select -assert-count 5 t:$check r:FLAVOR=assert %i",
     ]
     for task, depth, timeout, engine in (
-        ("coh_l1d_full_bmc", "40", "10800", "abc bmc3"),
+        ("coh_l1d_full_bmc", "40", "10800", "abc bmc3 -g"),
         ("coh_l1d_full_multi_bmc", "30", "18000", "abc bmc3 -c"),
         ("coh_l1d_full_payload_bmc", "40", "5400", "abc bmc3 -c"),
-        ("coh_l1d_withdraw_full_bmc", "40", "10800", "abc bmc3"),
-        ("coh_l1d_withdraw_zero_bmc", "40", "10800", "abc bmc3"),
+        ("coh_l1d_withdraw_full_bmc", "40", "10800", "abc bmc3 -g"),
+        ("coh_l1d_withdraw_zero_bmc", "40", "10800", "abc bmc3 -g"),
         ("coh_l1d_withdraw_full_payload_bmc", "40", "5400", "abc bmc3 -c"),
         ("coh_l1d_withdraw_zero_payload_bmc", "40", "5400", "abc bmc3 -c"),
     ):
@@ -4086,6 +4153,100 @@ def test_full_line_safety_models_pinned() -> None:
             altered.setdefault(section, []).append(line)
             with pytest.raises(AssertionError):
                 validate(altered)
+
+
+def _guarded_checks(text: str, keyword: str) -> list[tuple[str, str]]:
+    """Return (guard, condition) for each immediate ``keyword`` in ``text``.
+
+    The guard is the condition of an ``if`` directly before the check, or of
+    the ``if (...) begin`` block that holds it; whitespace is removed.
+    """
+    checks: list[tuple[str, str]] = []
+    block_guard = ""
+    position = 0
+    pattern = re.compile(r"\bif\s*\(|\bend\b|\b" + keyword + r"\s*\(")
+    pending_guard = ""
+    while True:
+        match = pattern.search(text, position)
+        if match is None:
+            return checks
+        start = match.end()
+        if match.group(0) == "end":
+            block_guard = ""
+            position = start
+            continue
+        depth = 1
+        index = start
+        while depth:
+            depth += {"(": 1, ")": -1}.get(text[index], 0)
+            index += 1
+        body = re.sub(r"\s+", "", text[start : index - 1])
+        if match.group(0).startswith("if"):
+            following = text[index:].lstrip()
+            if following.startswith("begin"):
+                block_guard = body
+                pending_guard = ""
+                position = index + text[index:].index("begin") + len("begin")
+            else:
+                pending_guard = body
+                position = index
+            continue
+        checks.append((pending_guard or block_guard, body))
+        pending_guard = ""
+        position = index
+
+
+def test_store_buffer_contract_assertions_mirror_its_assumptions() -> None:
+    """The controller-side contract asserts exactly what the buffer's proofs assume.
+
+    ``coherence_l1d:coh_l1d_buffer_contract_bmc`` reads the buffer with
+    ``BUFFER_CONTRACT``; its assertions must stay the same conditions, under the
+    same guards and in the same order, as the interface assumptions that the
+    buffer's own proofs make about their inputs.
+    """
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "hw/rtl/lib/cache/coherence_store_buffer.sv"
+    ).read_text()
+    formal = source.split("`ifdef FORMAL", 1)[1].split("`ifdef BUFFER_CONTRACT", 1)[0]
+    first = formal.index("if (i_push) assume")
+    last = formal.index("f_outstanding_q <= f_outstanding_q")
+    assumptions = _guarded_checks(formal[first:last], "assume")
+    contract = source.split("`ifdef BUFFER_CONTRACT", 1)[1].split("`endif", 1)[0]
+    body = contract.split("if (c_past_valid && !i_rst) begin", 1)[1]
+    assertions = [
+        (guard, condition) for guard, condition in _guarded_checks(body, "assert")
+    ]
+    renamed = [
+        (
+            guard,
+            condition.replace("c_last_scalar_q", "f_last_scalar_q").replace(
+                "c_claim_sector_q", "f_claim_sector_q"
+            ),
+        )
+        for guard, condition in assertions
+    ]
+    # The proofs also assume the cycle after reset; the contract asserts from
+    # that cycle on, so its push condition omits the past-valid term.
+    expected = [
+        (
+            guard,
+            condition.replace("f_past_valid&&", "", 1)
+            if guard == "i_push"
+            else condition,
+        )
+        for guard, condition in assumptions
+    ]
+    assert len(expected) == 12
+    assert renamed == expected
+    labels = re.findall(r"\b(p_buffer_contract_\w+)\s*:", contract)
+    assert len(labels) == len(set(labels)) == len(expected)
+    sby = (Path(__file__).resolve().parents[1] / "formal/coherence_l1d.sby").read_text()
+    assert (
+        f"contract: select -assert-count {len(expected)} c:*p_buffer_contract_*" in sby
+    )
+    assert "contract: read -sv -D BUFFER_CONTRACT coherence_store_buffer.sv" in sby
+    assert "contract: read -formal" not in sby
 
 
 def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:

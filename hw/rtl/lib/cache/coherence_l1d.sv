@@ -1141,8 +1141,9 @@ module coherence_l1d #(
       (operation_q == StoreOp || operation_q == TwinOp ||
        (operation_q == GrantOp && selected_grant_store));
   // The granted lower record's twin follows it in the buffer (the home grants
-  // GrantMZero only to a GetMZero, which requires that twin), so a build that
-  // issues no cbo.zero writes has no twin to install.
+  // GrantMZero only to a GetMZero, which requires that twin: a cbo.zero
+  // block's zero twin or a full pair's data twin), so a build with neither
+  // has no twin to install.
   assign grant_twin = TwinLine && operation_q == GrantOp && selected_grant_store &&
       grant_q.opcode == coherence_pkg::GrantMZero && store_twin[store_next_index];
   assign store_seal = active && ((phase_q == Idle && !probe_valid_q && !probe_priority &&
@@ -4181,6 +4182,13 @@ module coherence_l1d #(
     end
     if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready))
       p_zero_no_upper_request : assert (!(|f_zero_upper_request));
+`ifdef ZERO_UPPER_EP
+    // One holding endpoint's case of the request exclusion, for proofs that
+    // check it endpoint by endpoint: together the cases are the assertion
+    // above.
+    if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready))
+      p_zero_no_upper_request_ep : assert (!f_zero_upper_request[`ZERO_UPPER_EP]);
+`endif
   end
   // An upper flag names the record before it as the lower sector of the same
   // 64-byte block: both are valid and the flagged record is not the head. The

@@ -57,9 +57,16 @@ coh_l1d_zero_payload_bmc single data zpayload zero
 coh_l1d_zero_cover single zcovers zsingle covermode zero
 coh_l1d_zero_lookahead_cover multi zcovers zlook covermode zero padded
 coh_l1d_zero_stream_free_bmc turnstream multi padded zero zstream
-# The same unrestricted stream model with the store queue's hints free, for
-# the two stream properties that predate the request checks.
+# The same stream model with the store queue's hints free, for the two stream
+# properties that predate the request checks.
 coh_l1d_zero_stream_hint_bmc turnstream multi cadical padded zero zstreamhint
+# The two zero request properties on the same model with the hints free: the
+# same-block twin rule in one task, and upper-sector request exclusion in one
+# task per holding endpoint, whose three cases together are the property.
+coh_l1d_zero_stream_line_bmc turnstream multi padded zero zstreamline
+coh_l1d_zero_stream_upper_ep0_bmc turnstream multi padded zero zstreamupper upperep0
+coh_l1d_zero_stream_upper_ep1_bmc turnstream multi padded zero zstreamupper upperep1
+coh_l1d_zero_stream_upper_ep2_bmc turnstream multi padded zero zstreamupper upperep2
 coh_l1d_zero_progress_cover multi zprogress covermode zero padded wordcover
 coh_l1d_zero_stream_bmc turnstream multi zrequest zero padded
 coh_l1d_zero_request_cover turnstream multi zrequest zrequestcover covermode zero padded wordcover
@@ -82,6 +89,11 @@ coh_l1d_withdraw_full_cover single fwcover covermode zero fullonly withdraw
 # Full-line holds: the gather and pair holds and claimed credit at three and
 # four records with one endpoint.
 coh_l1d_full_hold_cover single fhcover covermode zero fullonly
+# The store buffer's interface contract, which its own proofs assume, checked
+# as assertions on the L1D that drives it: zero and full-line writes with the
+# store queue's hints free and three endpoints, so pair and look-ahead
+# acquisitions both occur.
+coh_l1d_buffer_contract_bmc multi fcontrol control_multi padded zero zmulti contract
 
 [options]
 ~covermode: mode bmc
@@ -177,17 +189,25 @@ coh_l1d_ways_data_bmc: timeout 5100
 # enabled on the same three-endpoint geometry, a prefetch into a cbo.zero twin
 # is first reachable at step 29.
 zmulti: depth 30
+contract: timeout 900
 zstream: depth 31
-# Upper-sector request exclusion adds a hold interval to the free-input
-# stream check. With full-line stores in the model Glucose closes all four
-# properties in about 80 minutes once the store queue's write-more hint and
-# same-sector claim are held low (with them free it did not finish in two
-# hours). The hints only time scalar records' selection and grant credit at
-# four records; no cbo.zero record is held or claimed, and the zero control
-# BMCs and the hinted stream task below keep them free. Allow about twice
-# the measured time.
+# Upper-sector request exclusion adds a hold interval to the stream check.
+# With full-line stores in the model Glucose closes all four properties in
+# about 80 minutes once the store queue's write-more hint and same-sector
+# claim are held low (with them free it did not finish in two hours). Holding
+# them low narrows the model: the hints change scalar gathering, credit and
+# pairing, and so which records and endpoints are busy around a zero record.
+# The hinted tasks below check each of the four properties with them free.
+# Allow about twice the measured time.
 zstream: timeout 9900
 zstreamhint: depth 31
+zstreamline: depth 31
+zstreamline: timeout 3300
+zstreamupper: depth 31
+# Measured: the endpoint 0, 1 and 2 cases take about 44, 155 and 10 minutes.
+coh_l1d_zero_stream_upper_ep0_bmc: timeout 5400
+coh_l1d_zero_stream_upper_ep1_bmc: timeout 18600
+coh_l1d_zero_stream_upper_ep2_bmc: timeout 1200
 zprogress: depth 160
 zprogress: timeout 1200
 zprogress: vcd_sim on
@@ -212,7 +232,13 @@ perfretime: timeout 120
 
 [engines]
 perfretime: smtbmc boolector
-control_single: abc bmc3
+coh_l1d_bmc: abc bmc3
+# With zero writes and full-line stores in the model, Glucose finishes the
+# single-endpoint control BMCs in about half the default engine's time.
+coh_l1d_zero_bmc: abc bmc3 -g
+coh_l1d_full_bmc: abc bmc3 -g
+coh_l1d_withdraw_full_bmc: abc bmc3 -g
+coh_l1d_withdraw_zero_bmc: abc bmc3 -g
 pdr: abc pdr
 control_multi: abc bmc3 -c
 control_stream: abc bmc3
@@ -224,6 +250,8 @@ pathcovers: smtbmc boolector
 zsingle: smtbmc boolector
 zlook: smtbmc boolector
 zstream: abc bmc3 -g
+zstreamline: abc bmc3 -g
+zstreamupper: abc bmc3 -g
 zprogress: smtbmc boolector
 coh_l1d_zero_stream_bmc: abc bmc3 -c
 zrequestcover: smtbmc boolector
@@ -260,6 +288,10 @@ zcovers: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d
 zpayload: read -formal -sv -D ZERO_WRITES -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 zstream: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zstreamhint: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
+zstreamline: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
+upperep0: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=0 coherence_read_payload.sv coherence_l1d.sv
+upperep1: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=1 coherence_read_payload.sv coherence_l1d.sv
+upperep2: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=2 coherence_read_payload.sv coherence_l1d.sv
 zprogress: read -formal -sv -D ZERO_WRITES -D ZERO_PROGRESS_COVER coherence_read_payload.sv coherence_l1d.sv
 zrequest: read -formal -sv -D ZERO_WRITES -D ZERO_REQUEST_PROOF coherence_read_payload.sv coherence_l1d.sv
 fcontrol: read -formal -sv -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.sv coherence_l1d.sv
@@ -284,7 +316,10 @@ local: read -formal -sv -D LOCAL_ATOMIC_PROOF coherence_read_payload.sv coherenc
 owned: read -formal -sv -D LOCAL_ATOMIC_PROOF -D READ_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv
 localscheduled: read -formal -sv -D LOCAL_ATOMIC_PROOF -D LOCAL_ATOMIC_COVER coherence_read_payload.sv coherence_l1d.sv
 answer: read -formal -sv -D READ_ANSWER_PROOF coherence_read_payload.sv coherence_l1d.sv
-read -sv coherence_store_buffer.sv
+# The contract task reads the buffer's controller-side assertions, never its
+# FORMAL assumptions.
+~contract: read -sv coherence_store_buffer.sv
+contract: read -sv -D BUFFER_CONTRACT coherence_store_buffer.sv
 read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
 single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
 withdraw: chparam -set WITHDRAW_ABSORBED_W 1 coherence_l1d
@@ -383,6 +418,18 @@ zstreamhint: select -assert-count 2 c:p_prefetch_not_record c:p_grant_keeps_modi
 zstreamhint: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified %u %d
 zstreamhint: select -assert-count 2 t:$check r:FLAVOR=assert %i
 zstreamhint: check -assert
+zstreamline: select -assert-count 1 c:p_zero_acquire_line
+zstreamline: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_zero_acquire_line %d
+zstreamline: select -assert-count 1 t:$check r:FLAVOR=assert %i
+zstreamline: check -assert
+zstreamupper: select -assert-count 1 c:p_zero_no_upper_request_ep
+zstreamupper: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_zero_no_upper_request_ep %d
+zstreamupper: select -assert-count 1 t:$check r:FLAVOR=assert %i
+zstreamupper: check -assert
+contract: select -assert-count 12 c:*p_buffer_contract_* t:$check %i r:FLAVOR=assert %i
+contract: chformal -assert -remove t:$check r:FLAVOR=assert %i c:*p_buffer_contract_* %d
+contract: select -assert-count 12 t:$check r:FLAVOR=assert %i
+contract: check -assert
 zprogress: select -assert-count 2 c:p_zero_progress_* t:$check %i r:FLAVOR=cover %i
 zprogress: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_progress_* %d
 zprogress: chformal -assert -remove
