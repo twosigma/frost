@@ -2905,6 +2905,89 @@ module coherence_l1d #(
     if (i_rst) operation_q <= ReadOp;
     else operation_q <= operation_t'(operation_next);
   end
+`ifdef IDLE_SELECT_PROOF
+  // The reference follows the controller's procedural assignment order: the
+  // operation register's assignments, and the phase that the Idle branch
+  // assigns, holding its value when no source wins.
+  logic [3:0] reference_operation, reference_idle_phase;
+  always_comb begin
+    reference_operation  = operation_q;
+    reference_idle_phase = phase_q;
+    if (active) begin
+      case (phase_q)
+        Idle: begin
+          if (probe_capture && probe_in.opcode != coherence_pkg::CheckSC) begin
+            reference_operation = ProbeOp;
+            reference_idle_phase = probe_launch ? LookupWait : Lookup;
+          end else if (probe_valid_q && !o_r_valid) begin
+            reference_operation = ProbeOp;
+            if (probe_q.opcode == coherence_pkg::CheckSC) begin
+              reference_idle_phase = ProbeReply;
+            end else reference_idle_phase = Lookup;
+          end else if (probe_priority || probe_valid_q) begin
+          end else if (twin_owed) begin
+            if (twin_ready) begin
+              reference_operation = TwinOp;
+              reference_idle_phase = Lookup;
+            end
+          end else if (grant_read_hold) begin
+            if (grant_read_yield) begin
+              reference_operation = ReadOp;
+              reference_idle_phase = Lookup;
+            end
+          end else if (grant_valid && grant_ready) begin
+            reference_operation = GrantOp;
+            if (grant_failure) begin
+            end else reference_idle_phase = Lookup;
+          end else if (i_sc_valid && o_sc_ready) begin
+            reference_operation = SCOp;
+            reference_idle_phase = Lookup;
+          end else if (atomic_write_q) begin
+            reference_operation = AtomicWriteOp;
+            reference_idle_phase = Lookup;
+          end else if (atomic_sc_selected) begin
+            reference_operation = SCOp;
+            reference_idle_phase = sc_home_q ? Acquire : Lookup;
+          end else if (store_head_ready) begin
+            reference_operation = StoreOp;
+            reference_idle_phase = Lookup;
+          end else if (look_ready) begin
+            reference_operation = LookaheadOp;
+            reference_idle_phase = Lookup;
+          end else if (read_selected) begin
+            reference_operation = ReadOp;
+            reference_idle_phase = Lookup;
+          end else if (maint_eligible) begin
+            if (maint_last_q) begin
+            end else begin
+              reference_operation = MaintOp;
+              reference_idle_phase = Lookup;
+            end
+          end else if (hint_valid_q && hint_checked_q && hint_eligible_q &&
+              prefetch_ep_free && !prefetch_cancel && hint_in_window) begin
+            reference_operation = PrefetchOp;
+            reference_idle_phase = Lookup;
+          end
+        end
+        LocalMerge: begin
+          if (atomic_sc_q && !local_sc_match) begin
+          end else begin
+            reference_operation = AtomicWriteOp;
+          end
+        end
+        default: begin
+        end
+      endcase
+    end
+    if (i_rst) reference_operation = ReadOp;
+  end
+  // The controller takes the prepared phase only on an active Idle cycle
+  // without reset.
+  always_comb
+    p_idle_select_exact :
+    assert ((i_rst ? ReadOp : operation_t'(operation_next)) == reference_operation &&
+        (i_rst || !active || phase_q != Idle || idle_phase_next == reference_idle_phase));
+`endif
   // The non-read address follows the controller's Idle priority. When a read
   // wins, its address replaces this value at the final selection, so its
   // eligibility need not feed this priority chain as well. The credited read

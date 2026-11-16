@@ -309,10 +309,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_read_capture.sby",
-        "Read-slot capture, per-slot kinds and registered array responses equal their references.",
+        "Read-slot capture, the Idle phase and operation selection, per-slot kinds and registered array responses equal their references.",
         tasks=(
             "coh_read_capture_prove",
             "coh_read_capture_stream_prove",
+            "coh_idle_select_prove",
+            "coh_idle_select_stream_prove",
             "coh_read_kind_prove",
             "coh_array_reply_prove",
             "coh_array_reply4_prove",
@@ -2244,6 +2246,11 @@ SBY_TASKS = [
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
     ("coh_read_capture_prove", "Read data capture with arbitrary controller state."),
     ("coh_read_capture_stream_prove", "Read data capture with stream endpoints."),
+    ("coh_idle_select_prove", "Idle phase and operation selection with one endpoint."),
+    (
+        "coh_idle_select_stream_prove",
+        "Idle phase and operation selection with stream endpoints.",
+    ),
     ("coh_read_kind_prove", "Per-slot read kinds equal buffered allocation payloads."),
     ("coh_array_reply_prove", "Registered response indication with block RAM."),
     (
