@@ -401,6 +401,7 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_payload_bmc",
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
+            "coh_l1d_zero_stream_bmc",
             "coh_l1d_answer_bmc",
             "coh_l1d_stream_answer_bmc",
         ),
@@ -1991,6 +1992,10 @@ SBY_TASKS = [
         "cbo.zero twin installation, victim, wait and fallback covers.",
     ),
     ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
+    (
+        "coh_l1d_zero_stream_bmc",
+        "Stream prefetching and Modified-sector grants with cbo.zero writes and three endpoints.",
+    ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
