@@ -1816,6 +1816,40 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
+    "opensbi_reset_cold": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sbi_reset",
+        hdl_toplevel_module="frost",
+        app_name="opensbi_smoke",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        include_in_pytest=False,
+        description="Manual S-mode SBI cold reboot through syscon and the boot entry",
+        extra_env=(
+            ("PAYLOAD_SRC", "reset.c"),
+            ("PACKER", "reset_pack_image.py"),
+            ("EXTRA_CFLAGS", "-DFROST_SBI_RESET_TYPE=1"),
+            ("OPENSBI_OUT", "build/opensbi-reset"),
+            ("FW_OPTIONS", "1"),
+        ),
+        verilator_extra_args=("-GDDR_MODEL_LATENCY=1",),
+    ),
+    "opensbi_reset_warm": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sbi_reset",
+        hdl_toplevel_module="frost",
+        app_name="opensbi_smoke",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        include_in_pytest=False,
+        description="Manual S-mode SBI warm reboot through syscon and the boot entry",
+        extra_env=(
+            ("PAYLOAD_SRC", "reset.c"),
+            ("PACKER", "reset_pack_image.py"),
+            ("EXTRA_CFLAGS", "-DFROST_SBI_RESET_TYPE=2"),
+            ("OPENSBI_OUT", "build/opensbi-reset"),
+            ("FW_OPTIONS", "1"),
+        ),
+        verilator_extra_args=("-GDDR_MODEL_LATENCY=1",),
+    ),
     # Without the misaligned-access engine, OpenSBI emulates the payload's
     # misaligned loads and stores in DDR (phase F); with it, the hardware
     # performs them.

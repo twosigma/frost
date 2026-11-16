@@ -392,6 +392,23 @@ its S-mode payload. Its misaligned loads and stores to DDR (phase F) run on
 the misaligned-access engine; `opensbi_smoke_no_misaligned_hw` builds without
 the engine, so OpenSBI emulates them, as it does for low BRAM.
 
+`opensbi_reset_cold` and `opensbi_reset_warm` are manual tests, excluded from
+pytest and the regular CI shards. Run them with
+`./scripts/frost.py cocotb opensbi_reset_cold` and
+`./scripts/frost.py cocotb opensbi_reset_warm`. A 665-byte supervisor payload
+checks SRST probing, rejected shutdown/type/reason requests, and a real reboot
+through OpenSBI. The bench checks the 64-cycle request, surviving debug and
+memory transport, and the first retired boot instruction. It returns directly
+from its final ReadOnly phase without the ordinary application's final-edge
+wrapper.
+
+These tests shorten firmware setup with a minimal device tree, OpenSBI's
+`FW_OPTIONS=1` (no boot prints) in the separate `build/opensbi-reset` cache, and
+DDR model latency 1. The production OpenSBI configuration and syscon driver are
+unchanged. They cover the reset call and boot entry, not the complete platform
+device tree or a second Linux boot; `opensbi_smoke` retains that full device
+setup and its usual firmware cache.
+
 `mmu_reach` is a manual benchmark, excluded from the pytest application
 matrix. It runs dependent data and instruction chains at 1, 4, 16, 20, 32,
 and 64 pages after warmup traversals, plus a data control at fixed offsets.
