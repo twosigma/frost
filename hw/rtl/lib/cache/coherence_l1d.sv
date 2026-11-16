@@ -1027,7 +1027,7 @@ module coherence_l1d #(
       // A prefetch never acquires a sector that a twin or an acquired record
       // holds (a record that arrives after the lookup orders after the
       // prefetch, which its own acquisition then waits for).
-      if (phase_q == Acquire && operation_q == PrefetchOp && acquire_ready)
+      if (phase_q == Acquire && operation_q == PrefetchOp && prefetch_acquire_ok && acquire_ready)
         p_prefetch_not_record : assert (f_prefetch_record == '0);
     end
 `endif
@@ -1870,6 +1870,20 @@ module coherence_l1d #(
         if (grant_answer_slots[slot])
           p_grant_answer_slot : assert (!(ld_prefetch_q[grant_ep_q] && !grant_attached[slot]) &&
               grant_q.addr[ADDR_WIDTH-1:5] == ld_line_q[grant_ep_q]);
+    end
+    // The hit path's block check sees only the four valid store records, not
+    // a cbo.zero twin still waiting for a record. While a twin waits, the hit
+    // path takes no load of either sector of its 64-byte block: the store
+    // queue holds younger loads of the block until o_write_done at twin
+    // allocation, and the hit path takes only loads arriving on the request
+    // port. Read selection is not checked: the L1D has no read cancel, so a
+    // load flushed from the load queue stays live here until answered and can
+    // be re-selected as a lookup of the block while a younger cbo.zero's twin
+    // waits.
+    if (sim_reset_seen_q && !i_rst && active && store_twin_pending) begin
+      if (path_take)
+        p_zero_pending_twin_no_path :
+        assert (path_addr_q[ADDR_WIDTH-1:6] != store_twin_addr[ADDR_WIDTH-1:6]);
     end
   end
 `endif

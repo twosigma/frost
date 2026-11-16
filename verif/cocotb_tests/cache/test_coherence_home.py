@@ -14,6 +14,7 @@
 
 """Exercise the home with independent hart and memory responders."""
 
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -27,6 +28,15 @@ from cocotb_tests.cache.test_coherence_endpoints import pack
 FILL_TID_BASE = 24
 PREFETCH = 9
 GRANT_ACK = 4
+
+
+def parallel_reads(dut: Any) -> bool:
+    """Report whether the home reads a demand lookup's ways beside its tags."""
+    try:
+        dut.array.gen_banked
+    except AttributeError:
+        return False
+    return os.environ.get("FROST_TEST_HOME_PARALLEL", "1") != "0"
 
 
 def unpack(value: int, widths: tuple[int, ...]) -> tuple[int, ...]:
@@ -235,6 +245,11 @@ class Home:
                         write,
                     )
                 )
+            accepted_read = (
+                self.get("o_mem_req_valid")
+                and self.get("i_mem_req_ready")
+                and not self.get("o_mem_req_write")
+            )
             grant = unpack(self.get("o_g"), (3, 9, 6, self.p, 256, 1))
             prefetch_grant = bool(self.get("o_g_valid")) and grant[1] >> 7 == 3
             held_ready = self.get("i_g_ready")
@@ -247,6 +262,8 @@ class Home:
                 await self.set(i_g_ready=held_ready)
             if not self.get("i_rst"):
                 self.write_fills += (self.get("o_write_perf_events") >> 7) & 1
+                refill = self.get("o_perf_events") >> (len(self.dut.o_perf_events) - 2)
+                assert refill.bit_count() == int(accepted_read)
             for observer in self.observers:
                 observer()
             if next_put is not None:
@@ -1079,6 +1096,35 @@ async def fatal_and_single_cycle_reset(dut: Any) -> None:
 
 
 @cocotb.test()
+async def refill_events_count_held_reads_after_fatal_stop(dut: Any) -> None:
+    """Count a buffered read once when accepted after service stops."""
+    for opcode in (0, PREFETCH):
+        b = Home(dut)
+        await b.reset()
+        counts = [0, 0]
+        width = len(dut.o_perf_events)
+
+        def sample() -> None:
+            events = b.get("o_perf_events")
+            counts[0] += (events >> (width - 1)) & 1
+            counts[1] += (events >> (width - 2)) & 1
+
+        b.observers.append(sample)
+        await b.set(i_mem_req_ready=0)
+        await b.submit(opcode, 0x80018000)
+        await b.wait("o_mem_req_valid")
+        await b.tick(5)
+        assert counts == [0, 0] and not b.transactions
+        await b.set(i_fatal_stop=1)
+        await b.tick(3)
+        assert not b.get("run") and b.get("o_mem_req_valid")
+        await b.set(i_mem_req_ready=1)
+        await b.tick(8)
+        assert b.reads_of(0x80018000) == 1
+        assert counts == ([0, 1] if opcode == PREFETCH else [1, 0])
+
+
+@cocotb.test()
 async def parked_fills_release_engines_and_reenter_under_miss_pressure(
     dut: Any,
 ) -> None:
@@ -1190,7 +1236,13 @@ async def dirty_reply_overrides_each_baseline_arrival_order(dut: Any) -> None:
             (events["reply"] > events["data"]) - (events["reply"] < events["data"])
         )
         await b.finish(grant)
-    assert observed == {-1, 0, 1}
+    # A parallel read delivers the row within a few cycles of the decision, so
+    # a reply may be unable to precede it; with the row read after the
+    # decision every order occurs.
+    if parallel_reads(dut):
+        assert {0, 1} <= observed
+    else:
+        assert observed == {-1, 0, 1}
 
 
 @cocotb.test()
@@ -1299,13 +1351,13 @@ async def victim_claim_and_ordinary_put_are_exclusive(dut: Any) -> None:
         target = base + 16 * b.line
         await b.submit(0, target)
         for _ in range(100):
-            if int(dut.array.phase_q.value) == 4:
+            if int(dut.array.selecting.value):
                 break
             await b.tick()
         else:
             raise AssertionError("no pre-claim victim decision")
         way = int(dut.array.selected.value)
-        entry = int(dut.array.tags_q[way].value)
+        entry = int(dut.array.select_tags[way].value)
         low_bits = (b.line.bit_length() - 1) + len(dut.array.set_q)
         address = ((entry & ((1 << (b.p - low_bits)) - 1)) << low_bits) + 32 * sector
         changed = (1 << 255) | 0x13579
@@ -1903,3 +1955,194 @@ async def two_fills_install_in_one_set(dut: Any) -> None:
     )
     for address in addresses:
         assert await b.read(address, 7) == b.expected(address)
+
+
+class SpecMonitor:
+    """Record the array's parallel-read and data-update events each cycle."""
+
+    def __init__(self, b: Home) -> None:
+        """Sample after every edge."""
+        self.b = b
+        self.rows: list[dict[str, int]] = []
+        b.observers.append(self.sample)
+
+    def sample(self) -> None:
+        """Keep the signals that relate an update to a parallel read."""
+        a = self.b.dut.array
+        line_bits = self.b.line.bit_length() - 1
+        sets = len(a.set_q)
+        self.rows.append(
+            {
+                "cycle": self.b.cycle,
+                "spec_cycle": int(a.spec_cycle.value),
+                "spec_fire": int(a.spec_fire.value),
+                "query": int(a.o_query_addr.value) >> line_bits,
+                "set": int(a.set_q.value),
+                "open": int(int(a.read_open_q.value) & int(a.read_valid_q.value) != 0),
+                "update": int(a.i_update_valid.value) & int(a.i_update_has_data.value),
+                "update_fire": int(a.i_update_valid.value)
+                & int(a.o_update_ready.value)
+                & int(a.i_update_has_data.value),
+                "update_set": (int(a.i_update_addr.value) >> line_bits)
+                & ((1 << sets) - 1),
+                "request_fire": int(a.i_req_valid.value) & int(a.o_req_ready.value),
+                "request_set": (int(a.i_req_addr.value) >> line_bits)
+                & ((1 << sets) - 1),
+                "phase": int(a.phase_q.value),
+                "tag_valid": int(a.i_req_valid.value),
+            }
+        )
+
+    def relations(self, block: int, start: int) -> set[str]:
+        """Classify same-set data updates against the block's first parallel-read cycle after start."""
+        found = set()
+        rows = self.rows[start:]
+        for i, row in enumerate(rows):
+            if not (row["spec_cycle"] and row["query"] == block):
+                continue
+            target = row["set"]
+            if not row["spec_fire"]:
+                found.add("read_yields_to_update")
+            same = [r for r in rows if r["update"] and r["update_set"] == target]
+            for r in same:
+                delta = r["cycle"] - row["cycle"]
+                # A write still in the array's write pipeline (fired one to
+                # three cycles before) holds the parallel read back.
+                if r["update_fire"] and -3 <= delta <= -1 and not row["spec_fire"]:
+                    found.add("read_yields_to_write_pipeline")
+                # These updates carry tag writes, which the array refuses from
+                # the lookup's acceptance through its response.
+                if r["update_fire"] and 0 <= delta:
+                    assert not any(
+                        x["cycle"] == r["cycle"]
+                        and x["phase"] in (3, 4, 5)
+                        and x["set"] == target
+                        for x in rows
+                    ), r
+            # The open stage holds back same-set data updates.
+            for r in rows[i + 1 :]:
+                if not r["open"]:
+                    break
+                assert not (r["update_fire"] and r["update_set"] == target), r
+                if r["update"] and r["update_set"] == target:
+                    found.add("update_waits_for_open_stage")
+            break
+        return found
+
+
+@cocotb.test()
+async def data_updates_meet_parallel_reads_of_their_set(dut: Any) -> None:
+    """Place fills, puts and dirty probe updates of a set beside its parallel reads.
+
+    The update starts from one to sixteen cycles before to sixteen after the
+    lookup's request. Each of these updates writes its tag, which the array
+    refuses for a same-set lookup from its acceptance through its response, so
+    the parallel read meets them as an update on offer in its cycle, a write
+    still in the write pipeline, or an update held while its stage is open.
+    The cbo.zero path (a GetMZero fill installing zeros) writes the array as a
+    fill install does; the cluster cbo_zero benches cover it end to end.
+    """
+    base = 0x80000000
+    stride = 4 * len(dut.i_mem_resp_data) // 8
+    observed: set[str] = set()
+    for source in ("probe", "put", "fill"):
+        for delay in range(-16, 17):
+            b = Home(dut)
+            await b.reset()
+            monitor = SpecMonitor(b)
+            target, other = base, base + stride
+            for address in (target, other):
+                await b.read(address)
+            start = len(monitor.rows)
+            changed = int.from_bytes(
+                bytes((i * 7 + delay) & 255 for i in range(32)), "little"
+            )
+            b.read_delay = 6
+            if source == "probe":
+                b.private[other] = (3, changed)
+            fresh = base + (2 + (delay % 2)) * stride
+
+            async def launch() -> None:
+                if source == "probe":
+                    await b.submit(7, other, slot=1)
+                elif source == "fill":
+                    await b.submit(0, fresh, slot=1)
+                else:
+                    put = pack(
+                        (1, 0), (1, 0), (1, 0), (b.p, other), (256, changed), (1, 0)
+                    )
+                    b.frozen[0] = (other, changed)
+                    await b.set(i_w_valid=1, i_w=put)
+
+            if delay < 0:
+                await launch()
+                await b.tick(-delay)
+                await b.submit(0, target)
+            else:
+                await b.submit(0, target)
+                await b.tick(delay)
+                await launch()
+            grants = []
+            for _ in range(2 if source != "put" else 1):
+                grant = await b.take_grant()
+                grants.append(grant)
+                await b.complete(grant)
+            for _ in range(200):
+                if not b.frozen:
+                    break
+                await b.tick()
+            await b.set(i_w_valid=0)
+            target_grant = next(g for g in grants if g[3] == target)
+            assert target_grant[4] == b.expected(target)
+            if source in ("probe", "put"):
+                assert await b.read(other) == changed
+            observed |= monitor.relations(target >> (b.line.bit_length() - 1), start)
+    dut._log.info(f"parallel-read relations: {sorted(observed)}")
+    if parallel_reads(dut):
+        assert {
+            "update_waits_for_open_stage",
+            "read_yields_to_update",
+            "read_yields_to_write_pipeline",
+        } <= observed
+
+
+@cocotb.test()
+async def hits_follow_each_other_through_the_reply(dut: Any) -> None:
+    """Run hit lookups back to back through the previous hit's response.
+
+    A hit's response claims its set (the replacement write), so a lookup of the
+    same set is refused in that cycle and accepted on the next; a lookup of
+    another set is accepted in the response cycle.
+    """
+    base = 0x80000000
+    line = len(dut.i_mem_resp_data) // 8
+    reply = 5
+    seen = set()
+    for kind, stride in (("same_set", 4 * line), ("other_set", line)):
+        b = Home(dut)
+        await b.reset()
+        monitor = SpecMonitor(b)
+        first, second = base, base + stride
+        for address in (first, second):
+            await b.read(address)
+        start = len(monitor.rows)
+        await b.submit(0, first)
+        await b.submit(0, second, slot=1)
+        grants = {}
+        for _ in range(2):
+            grant = await b.take_grant()
+            grants[grant[3]] = grant
+            await b.complete(grant)
+        assert grants[first][4] == b.expected(first)
+        assert grants[second][4] == b.expected(second)
+        rows = monitor.rows[start:]
+        for row, after in zip(rows, rows[1:]):
+            if row["phase"] != reply or not row["tag_valid"]:
+                continue
+            same = row["request_set"] == row["set"]
+            if row["request_fire"]:
+                assert not same
+                seen.add("accepted_in_reply")
+            elif same and after["request_fire"]:
+                seen.add("same_set_waits_one_cycle")
+    assert seen == {"accepted_in_reply", "same_set_waits_one_cycle"}

@@ -164,7 +164,8 @@ independent home peers. They hold four results behind C, reorder line replies,
 and check AXI burst order, byte masks, allocation hints, errors and reset on both bus widths.
 
 `coherence_home_array` and its BRAM and packed-tag variants check concurrent
-tag decisions, data reads and masked updates. They exercise physical-row
+tag decisions, explicit row reads and masked updates, including the banked
+UltraRAM form. They do not request parallel way reads. They exercise physical-row
 aliases, live victim exclusions, continuous read/write contention and reset
 with responses in flight. The `coherence_array_reset_*` and
 `coherence_home_array_reset_*` benches exercise both reset modes in block RAM
@@ -199,9 +200,9 @@ The `coherence_prefetch_contention*` benches report demand service for competing
 streams, dirty replacement, DMA and combined dirty/DMA pressure with
 prefetch enabled or disabled.
 
-`coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
+`coherence_home_completions`, `coherence_home`, `coherence_home_rowread`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
-and CPU observation cuts; `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
+and CPU observation cuts; `coherence_home_rowread` runs the UltraRAM home with `PARALLEL_READ=0` so row reads after the decision and probe replies ahead of row data are exercised, and `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
 requests execute, preserve waiter order across an older writer, and check
 current data on waiter reentry. Streaming cases check way-0 miss placement,
 CPU line residency, dirty hits in other ways and progress after a pinned
@@ -1290,7 +1291,7 @@ Lint and Fast Python Tests jobs locally.
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the two full-chip synthesis targets [reuse](#reusing-formal-and-synthesis-results) earlier passes |
-| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
+| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D zero (control, multi-endpoint, and cover jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the 20 jobs that contribute to it into a report |

@@ -49,12 +49,12 @@ prep -flatten -top coherent_hart_cache_formal
 check -assert
 # The induction task assumes nothing and proves all facts consumed by PDR.
 unbounded: select -assert-none t:$check r:FLAVOR=assume %i
-unbounded: select -assert-count 372 t:$check r:FLAVOR=assert %i
+unbounded: select -assert-count 373 t:$check r:FLAVOR=assert %i
 owned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_* %u %u %u %u %u %u %u %d
-owned: select -assert-count 284 t:$check r:FLAVOR=assert %i
-proof: select -assert-count 284 t:$check r:FLAVOR=assert %i c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_* %u %u %u %u %u %u %u %i
+owned: select -assert-count 285 t:$check r:FLAVOR=assert %i
+proof: select -assert-count 285 t:$check r:FLAVOR=assert %i c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_* %u %u %u %u %u %u %u %i
 proof: chformal -assert2assume c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_*
-proof: select -assert-count 284 t:$check r:FLAVOR=assume %i
+proof: select -assert-count 285 t:$check r:FLAVOR=assume %i
 proof: select -assert-count 88 t:$check r:FLAVOR=assert %i
 unbounded: chformal -cover -remove
 base: chformal -cover -remove c:*flatten_home* c:*flatten_walker* c:walker.* c:*bridge* c:*endpoint* c:*arbiter*
