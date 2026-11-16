@@ -2918,10 +2918,10 @@ module coherence_l1d #(
   (* keep = "true" *) wire lookup_read_turn;
   assign lookup_read_turn =
       !probe_valid_q && !probe_priority && !twin_owed && grant_read_hold;
-  // A ready store head takes the lookup ahead of a read and of every source
-  // below it in the Idle priority, so the lookup address is prepared for
-  // both values of store_head_ready, which selects last. The read's
-  // eligibility below is the one without a ready head.
+  // A ready store head takes the lookup ahead of every source below it in
+  // the Idle priority and of a read without the credited turn, so the lookup
+  // address is prepared for both values of store_head_ready, which selects
+  // last. The read's eligibility below is the one without a ready head.
   (* keep = "true" *) wire lookup_read_enable;
   assign lookup_read_enable =
       !probe_valid_q && !probe_priority && !twin_owed && !grant_valid &&

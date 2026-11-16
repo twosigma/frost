@@ -1350,9 +1350,9 @@ module store_queue #(
   // so the cursor takes the post-fire choice. Without a launch the cursor
   // takes the post-fire choice past a Zicbom entry (cmo_drain_fire) and the
   // base choice otherwise; the base choice is the cursor entry itself or the
-  // same entry as the post-fire choice. Each outcome's claim is formed from
-  // registered state, the allocation's dispatch valids apply next, and the
-  // launch selects last.
+  // same entry as the post-fire choice. Each outcome's claim is formed
+  // without the launch decision and the allocation's dispatch valids; the
+  // valids apply next, and the launch selects last.
   logic [XLEN-6:0] last_write_sector_q;
   logic last_write_plain_q, next_same_d;
   wire [XLEN-6:0] last_write_sector_d = mem_write_fire_next ?
