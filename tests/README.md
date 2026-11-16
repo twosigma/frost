@@ -1300,7 +1300,7 @@ Lint and Fast Python Tests jobs locally.
 | Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D zero (control, multi-endpoint, and cover jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
-| Coverage | One job merges the coverage of the 22 jobs that contribute to it into a report |
+| Coverage | One job merges the coverage of the 23 jobs that contribute to it into a report |
 
 The software aperture tests also have registry entries for 2, 4, 8, 16,
 and 32 GiB, available through `./scripts/frost.py cocotb <test_name>`.
@@ -1326,11 +1326,11 @@ differs from the model's by more than the tolerance in
 `perf-modeling/calibration/ci_baseline.json`, and it prints the figures and
 deltas either way.
 
-The report covers 22 of the simulating jobs, chosen so that it keeps 99.9% of
+The report covers 23 of the simulating jobs, chosen so that it keeps 99.9% of
 the line, branch and cover points that every job together would reach, with no
 cover point lost. They are Arch Tests (I B C / bram); the Real Programs jobs
 Debug and UART, both OpenSBI smoke configurations, Memory and NIC stress,
-Runtime and other, and SRAM macros in BRAM and
+Runtime benchmarks and vector, Runtime and other, and SRAM macros in BRAM and
 C library and RTOS, DMA NIC and coherence, Interrupts, Memory link stage (other
 programs) and Privilege and MMU in DDR; four Physical address aperture jobs
 (1 GiB / Bare access, 1 GiB / Unit boundaries, 128 GiB / DMA, 128 GiB / NIC);
@@ -1354,8 +1354,10 @@ The workflow has the exact job filters. The named real-program shards select
 applications by name, and the "Runtime and other" shard runs every
 application they don't list. Memory and NIC stress groups the NIC benchmarks,
 L2 capacity checks, cache management, misaligned accesses, memory faults and
-DDR reset checks. Real-program shards target at most about three hours per
-job and have a four-hour timeout, including setup and coverage uploads.
+DDR reset checks. Runtime benchmarks and vector groups PAUSE, RAS benchmarks
+and VLEN 256 configurations by their shared builds. Real-program shards
+target at most about three hours per job and have a four-hour timeout,
+including setup and coverage uploads.
 
 Give each program that boots OpenSBI its own BRAM-only shard with coverage,
 including variants that disable a hardware feature or exercise reset through

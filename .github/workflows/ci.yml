@@ -323,6 +323,13 @@ jobs:
               [coremark_link1] or [csr_test_link1] or [dma_torture_link1] or
               [ptw_coherence_test_link1] or [cached_store_burst_test_link1] or
               [cbo_zero_test_link1] or [cbo_zero_pages_link1]
+          # Profiling and VLEN 256 configurations share their respective builds.
+          - name: Real Programs (Runtime benchmarks and vector)
+            coverage: [bram]
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [pause_test] or [ras_slot_bench] or [ras_repair_bench] or
+              [vec_state_test_v256] or [vec_vsetvl_test_v256] or [vec_arith_test_v256]
           - name: Real Programs (Memory and NIC stress)
             coverage: [bram]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
@@ -389,7 +396,9 @@ jobs:
               or [l2_capacity_chase_capacity] or [l2_capacity_chase_smoke]
               or [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [misaligned_test]
               or [memerr_test] or [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
-              or [sstvala_fault_test] or [ddr_reset_distribution] or [ddr_reset_distribution_async] or [ddr_hpm_refill_test])
+              or [sstvala_fault_test] or [ddr_reset_distribution] or [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
+              or [pause_test] or [ras_slot_bench] or [ras_repair_bench]
+              or [vec_state_test_v256] or [vec_vsetvl_test_v256] or [vec_arith_test_v256])
           - name: Real Programs (CoreMark-PRO / core)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
