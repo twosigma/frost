@@ -731,8 +731,9 @@ module ptw #(
           p_access_pbmt_reason :
           assert (!f_g_reserved && !f_g_invalid && f_g_leaf && !f_g_misaligned && !f_g_a0 &&
                   f_g_pbmt_no_alias);
+          // The leaf payload, with the PPN after any NAPOT substitution.
           p_access_pbmt_payload :
-          assert (o_resp.pbmt == f_g_pbmt && o_resp.ppn == f_pte[53:10] &&
+          assert (o_resp.pbmt == f_g_pbmt && o_resp.ppn == f_g_ppn &&
                   o_resp.level == f_level && o_resp.perm_r == f_pte[1] &&
                   o_resp.perm_w == f_pte[2] && o_resp.perm_x == f_pte[3] &&
                   o_resp.perm_u == f_pte[4] && o_resp.perm_d == f_pte[7]);
