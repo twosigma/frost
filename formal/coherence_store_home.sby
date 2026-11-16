@@ -72,6 +72,7 @@ bmc: peepopt
 bmc: techmap
 bmc: opt -fast
 bmc: select -assert-none t:$check r:FLAVOR=assume %i
+bmc: select -assert-none t:$assume
 bmc: select -clear
 # Optimize the cover and its assumptions before undefined bits become inputs.
 compact_covers: chformal -assert -remove

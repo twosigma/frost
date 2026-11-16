@@ -1394,7 +1394,7 @@ jobs:
             pytest_filter: coh_array_equiv4
             timeout_minutes: 120
           # Each bounded store-home schedule checks both watched-byte choices
-          # at its original depth, with 15 minutes allowed for each case.
+          # at its full depth, with 15 minutes allowed for each case.
           - shard: Coherence store home
             pytest_filter: coherence_store_home and not coherence_store_home_link
             timeout_minutes: 240

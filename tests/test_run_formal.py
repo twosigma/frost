@@ -1897,7 +1897,7 @@ SBY_TASKS = [
     ),
     (
         "link_cover_pressure",
-        "The pressure schedule completes through one-stage links; cover depth 250.",
+        "The pressure schedule completes through one-stage links.",
     ),
     ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
     ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
@@ -2101,7 +2101,7 @@ SBY_TASKS = [
     ),
     (
         "cover_conflict",
-        "A same-set conflict serializes and supplies DMA data; cover depth 233.",
+        "A same-set conflict serializes and supplies DMA data.",
     ),
     (
         "bmc_pressure",
@@ -2113,7 +2113,7 @@ SBY_TASKS = [
     ),
     (
         "cover_pressure",
-        "Two held dirty victims yield to a probing DMA request and a waiting load; cover depth 235.",
+        "Two held dirty victims yield to a probing DMA request and a waiting load.",
     ),
     (
         "bmc_four",
@@ -3702,10 +3702,12 @@ def test_store_home_cover_budgets() -> None:
     ):
         config = formal_task_config(target.name, task)
         options = dict(line.split(None, 1) for line in config["[options]"])
-        assert options["mode"] == "cover"
-        assert options["depth"] == str(depth)
-        assert options["timeout"] == str(timeout)
-        assert "skip" not in options
+        assert options == {
+            "mode": "cover",
+            "vcd_sim": "on",
+            "depth": str(depth),
+            "timeout": str(timeout),
+        }
         assert formal_task_timeout_s(target.name, task) == timeout
         assert config["[engines]"] == ["btor btormc"]
         script = config["[script]"]
@@ -3758,11 +3760,13 @@ def test_store_home_cover_budgets() -> None:
             task = base + suffix
             bounded = formal_task_config(target.name, task)
             options = dict(line.split(None, 1) for line in bounded["[options]"])
-            assert options["mode"] == "bmc"
-            assert options["depth"] == str(depth)
-            assert options["timeout"] == "900"
+            assert options == {
+                "mode": "bmc",
+                "depth": str(depth),
+                "timeout": "900",
+                "aigsmt": "boolector",
+            }
             assert formal_task_timeout_s(target.name, task) == 900
-            assert "skip" not in options
             engine = "abc bmc3 -c" if base.startswith("link_") else "abc bmc3"
             assert bounded["[engines]"] == [engine]
             script = bounded["[script]"]
@@ -3794,6 +3798,7 @@ def test_store_home_cover_budgets() -> None:
             assert script.index("peepopt") < script.index("techmap")
             assert script.index("techmap") < script.index("setundef -anyseq")
             assert "select -assert-none t:$check r:FLAVOR=assume %i" in script
+            assert "select -assert-none t:$assume" in script
             # The complete configurations differ only by the exhaustive watch value.
             bounded["[script]"] = [line for line in script if line != bind]
             pair.append(bounded)
