@@ -1205,7 +1205,9 @@ load queue's registered same-sector matches see the twin as they see every
 record, one cycle after its push.
 
 **Acquisition.** With 64-byte L2 lines the lower record acquires with
-`GetMZero` when its twin follows it and no live request endpoint, frozen PutM
+`GetMZero` when its own twin follows it (same 64-byte block, so a younger lower
+record in a full four-record buffer does not mistake an older head twin for its
+waiting twin) and no live request endpoint, frozen PutM
 or older record holds the upper sector; otherwise it acquires with `GetM` and
 the twin is an ordinary store record. Each condition is a registered sample,
 and none can appear while the controller serves the record, because only the
@@ -1244,6 +1246,11 @@ that also starts its `GrantOp`. A twin whose lower record received
 zeros are performed at the lower record's installation and the upper
 sector's at the twin's, both inside the `GetMZero`'s hold on the line:
 
+- With 64-byte home lines, from endpoint acceptance of `GetMZero(X)` through
+  its Done handshake, the L1D accepts no request for `X + 32`. This includes
+  retries of flushed loads
+  that remain live in the L1D. Its own same-block twin holds the upper sector
+  until installation; an older head twin in a full buffer supplies no such hold.
 - From the `GetMZero`'s dispatch to its U, the home serves no other request
   to either sector and pins the line's way, so no DMA access, PTW or IF read,
   probe or replacement observes the L2's zero image or the L1D's sectors
@@ -1804,7 +1811,7 @@ to answer.
 | `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with every hart and DMA completion slot, every engine's result buffer and both PutM controls full, and instruction and data streams on one line |
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
-| `coherence_stale_line_prefetch_l2` | `cbo.zero` twin beside an L1D stream on the cluster with eight L1D request endpoints, stream prefetching and a 64 KiB home: no stream prefetch acquires a sector held by a pending store record or waiting twin, including a `cbo.zero` pushed during the prefetch lookup and a look-ahead `GetMZero` issued while its twin still waits |
+| `coherence_stale_line_prefetch_l2` | `cbo.zero` twin beside an L1D stream or flushed load retry on the cluster with eight L1D request endpoints, stream prefetching and a 64 KiB home: no stream prefetch acquires a sector held by a pending store record or waiting twin (including a `cbo.zero` pushed during the prefetch lookup), and look-ahead holds off `GetMZero` while the block's twin still waits behind an older head twin so a dropped wrong-path load retry cannot overwrite the zeroed twin sector |
 | `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, dirty-L1D walker coherence, and one refill event per allocation that reads a line |
 | `coherence_home*` | Home service and ownership, with each accepted memory line read producing exactly one demand or prefetch refill pulse, including a held read accepted after fatal stop |

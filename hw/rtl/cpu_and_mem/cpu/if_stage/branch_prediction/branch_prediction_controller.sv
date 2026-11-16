@@ -121,6 +121,10 @@ module branch_prediction_controller #(
     // ("Served-window check and retries" in the CPU README).  It blocks the
     // BTB prediction.
     input logic i_fetch_lookup_is_lower_parcel,
+    // Registered in pc_controller: suppresses new slot-1 BTB predictions while
+    // a walked-past entry retires its phantom target stream or while a crossing
+    // entry's predecessor at P - 2 drops the shared pending prediction disable.
+    input logic i_pending_prediction_blocks_slot1 = 1'b0,
 
     // BTB update interface (from ex_comb_synthesizer)
     input logic                       i_btb_update,
@@ -646,6 +650,7 @@ module branch_prediction_controller #(
   assign prediction_allowed_stable = prediction_common &&
                                      !slot1_prediction_owned_by_slot2 &&
                                      !i_fetch_lookup_is_lower_parcel &&
+                                     !i_pending_prediction_blocks_slot1 &&
                                      (!i_pc[1] || btb_compressed);
 
   logic prediction_allowed;
@@ -799,6 +804,7 @@ module branch_prediction_controller #(
   // from slot1_prediction_owned_by_slot2.
   assign prediction_candidate_for_pc =
       !slot1_aliases_slot2_candidate && !i_fetch_lookup_is_lower_parcel &&
+      !i_pending_prediction_blocks_slot1 &&
       (!i_pc[1] || btb_compressed) && dir_predicted_taken;
   // Mark a prediction used only when IF can consume it. A prediction that
   // fires on the first stall cycle is a hazard for halfword target handoff:
@@ -818,7 +824,8 @@ module branch_prediction_controller #(
   // A PC cannot also equal pc_reg+2 or pc_reg+4, so that case excludes aliases.
   (* keep = "true" *) logic prediction_live_candidate;
   assign prediction_live_candidate =
-      !i_fetch_lookup_is_lower_parcel && (!i_pc[1] || btb_compressed) && dir_predicted_taken;
+      !i_fetch_lookup_is_lower_parcel && !i_pending_prediction_blocks_slot1 &&
+      (!i_pc[1] || btb_compressed) && dir_predicted_taken;
   assign o_prediction_used_live_cofactor =
       prediction_common && !i_stall && !i_branch_taken && !i_is_32bit_spanning &&
       prediction_live_candidate;
@@ -1398,6 +1405,8 @@ module branch_prediction_controller #(
       end
       p_lower_parcel_lookup_never_owns_btb_prediction :
       assert (!i_fetch_lookup_is_lower_parcel || !sel_btb_prediction);
+      p_pending_block_suppresses_slot1_btb_prediction :
+      assert (!i_pending_prediction_blocks_slot1 || !sel_btb_prediction);
       // A recovery restore follows the flush that squashed every packet in
       // flight, and IF hands PD no packet in the redirect bubble. IF's
       // operations arrive a cycle after PD takes their packets, so none
@@ -1495,8 +1504,8 @@ module branch_prediction_controller #(
     p_slot1_live_candidate_matches_original :
     assert (o_prediction_used_live_cofactor ==
             (prediction_common && !i_stall && !i_branch_taken && !i_is_32bit_spanning &&
-             !i_fetch_lookup_is_lower_parcel && (!i_pc[1] || btb_compressed) &&
-             dir_predicted_taken));
+             !i_fetch_lookup_is_lower_parcel && !i_pending_prediction_blocks_slot1 &&
+             (!i_pc[1] || btb_compressed) && dir_predicted_taken));
     p_slot2_common_cofactor_matches_original :
     assert (o_slot2_prediction_used_for_pc ==
             (slot2_sel_btb_prediction && !i_branch_taken && !i_is_32bit_spanning));
