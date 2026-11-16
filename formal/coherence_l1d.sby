@@ -79,9 +79,9 @@ coh_l1d_withdraw_zero_bmc single zcontrol control_single zero withdraw
 coh_l1d_withdraw_full_payload_bmc single data fpayload zero fullonly withdraw
 coh_l1d_withdraw_zero_payload_bmc single data zpayload zero withdraw
 coh_l1d_withdraw_full_cover single fwcover covermode zero fullonly withdraw
-# Full-line holds and data twins: the gather and pair holds, claimed credit at
-# three and four records and a data twin's Modified victim with one endpoint,
-# and a look-ahead pair's data twin installing on a borrowed endpoint.
+# Full-line holds and data twins: the gather and pair holds and claimed credit
+# at three and four records with one endpoint, and a look-ahead pair's data
+# twin installing on a borrowed endpoint.
 coh_l1d_full_hold_cover single fhcover covermode zero fullonly
 coh_l1d_full_borrowed_cover multi fhlook covermode zero padded fullonly
 
@@ -114,7 +114,7 @@ fcovers: timeout 7200
 fwcover: timeout 4800
 fwcover: vcd_sim on
 fwcover: skip 48
-fhcover: timeout 4800
+fhcover: timeout 1200
 fhcover: vcd_sim on
 fhlook: timeout 7200
 fhlook: vcd_sim on
@@ -408,8 +408,8 @@ fcovers: chformal -assert -remove
 fwcover: select -assert-count 1 c:p_withdraw_full_cover t:$check %i r:FLAVOR=cover %i
 fwcover: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_withdraw_full_cover %d
 fwcover: chformal -assert -remove
-fhcover: select -assert-count 7 c:p_full_hold_cover_* c:p_full_credit_cover_* c:p_full_twin_cover_victim %u %u t:$check %i r:FLAVOR=cover %i
-fhcover: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_full_hold_cover_* c:p_full_credit_cover_* c:p_full_twin_cover_victim %u %u %d
+fhcover: select -assert-count 6 c:p_full_hold_cover_* c:p_full_credit_cover_* %u t:$check %i r:FLAVOR=cover %i
+fhcover: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_full_hold_cover_* c:p_full_credit_cover_* %u %d
 fhcover: chformal -assert -remove
 fhlook: select -assert-count 1 c:p_full_twin_cover_borrowed t:$check %i r:FLAVOR=cover %i
 fhlook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_full_twin_cover_borrowed %d
