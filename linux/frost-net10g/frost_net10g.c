@@ -182,10 +182,10 @@
 /*
  * Each ring holds a power-of-two number of entries, so at most one fewer is posted (TAIL == HEAD is
  * empty). ethtool -G sets them from FROST_RING_MIN to FROST_RING_MAX (the NIC takes 4 to 65536).
- * The default RX depth absorbs bursts that arrive while the CPU is busy elsewhere; at 128 the NIC
- * dropped frames under load.
+ * The RX default absorbs receive bursts while the CPU is busy elsewhere. TX uses 512 entries.
  */
-#define FROST_RING_DEFAULT		512
+#define FROST_RX_RING_DEFAULT		4096
+#define FROST_TX_RING_DEFAULT		512
 #define FROST_RING_MIN			64
 #define FROST_RING_MAX			4096
 #define FROST_RING_BYTES(entries) \
@@ -195,7 +195,8 @@
 /*
  * RX ingress FIFO: 8-byte words. RX_FIFO_DEPTH reads the built depth (0 on hardware without the
  * limit register); RX_FIFO_LIMIT, which RESET returns to FROST_FIFO_LIMIT_DEFAULT, is the
- * occupancy at which the FIFO reports full to the MAC.
+ * occupancy at which the FIFO reports full to the MAC. The driver programs the built depth
+ * (64 KiB in the SoC), so the MAC's store-and-forward buffer absorbs a burst before the ring does.
  */
 #define FROST_FIFO_WORD_BYTES		8
 #define FROST_FIFO_LIMIT_MIN		8
@@ -1517,6 +1518,9 @@ static int frost_set_ringparam(struct net_device *ndev, struct ethtool_ringparam
 
 /* The NIC's 64-bit event counters (nic_pkg CntRxFrames ...), plain reads at 8-byte offsets */
 #define NET10G_COUNTERS			0x080
+/* The pause registers follow the first 21 counters, so counter 21 on starts at NET10G_COUNTERS_EXT */
+#define FROST_NUM_BASE_COUNTERS		21
+#define NET10G_COUNTERS_EXT		0x140
 
 static const char frost_stat_names[][ETH_GSTRING_LEN] = {
 	"rx_frames",
@@ -1540,6 +1544,22 @@ static const char frost_stat_names[][ETH_GSTRING_LEN] = {
 	"rx_pause_frames",
 	"tx_pause_frames",
 	"tx_paused_cycles",
+	"rx_gmii_er_preamble",
+	"rx_gmii_er_carrier_ext",
+	"rx_gmii_short_ifg",
+	"rx_gmii_preamble_er_accepted",
+	"rx_mac_overflow_no_desc",
+	"pcs_sync_loss",
+	"pcs_rudi_c",
+	"pcs_rudi_invalid",
+	"pcs_rxdisperr",
+	"pcs_rxnotintable",
+	"phy_rx_err_last",
+	"phy_rx_err_sum",
+	/* Reserved, reads zero; see rx_mac_bad_fcs. */
+	"phy_fcs_last",
+	"phy_fcs_sum",
+	"phy_polls",
 };
 #define FROST_NUM_STATS			ARRAY_SIZE(frost_stat_names)
 
@@ -1562,7 +1582,9 @@ static void frost_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
  */
 static u64 frost_read_counter(const struct frost_priv *priv, unsigned int index)
 {
-	void __iomem *reg = priv->base + NET10G_COUNTERS + 8 * index;
+	void __iomem *reg = index < FROST_NUM_BASE_COUNTERS ?
+			    priv->base + NET10G_COUNTERS + 8 * index :
+			    priv->base + NET10G_COUNTERS_EXT + 8 * (index - FROST_NUM_BASE_COUNTERS);
 	u32 hi, lo;
 
 	if (priv->wide_abi)
@@ -1810,10 +1832,11 @@ static int frost_probe(struct platform_device *pdev)
 	priv->pause_abi = !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_PAUSE_SUPPORTED);
 	priv->tx_desc_max = (readl(base + NET10G_ABI_CTRL) & NET10G_ABI_TX_LONG_SEGMENTS) ?
 			    FIELD_MAX(NET10G_DESC_LEN) : FROST_TX_DESC_MAX;
-	priv->rx_fifo_limit = min_t(u32, priv->rx_fifo_depth, FROST_FIFO_LIMIT_DEFAULT);
+	/* The whole built FIFO; hardware without the limit register keeps the reset value */
+	priv->rx_fifo_limit = priv->rx_fifo_depth ? priv->rx_fifo_depth : FROST_FIFO_LIMIT_DEFAULT;
 	priv->rx_copybreak = FROST_RX_COPYBREAK_DEFAULT;
-	priv->rx_entries = FROST_RING_DEFAULT;
-	priv->tx_entries = FROST_RING_DEFAULT;
+	priv->rx_entries = FROST_RX_RING_DEFAULT;
+	priv->tx_entries = FROST_TX_RING_DEFAULT;
 	spin_lock_init(&priv->ctrl_lock);
 	u64_stats_init(&priv->rx_syncp);
 	u64_stats_init(&priv->tx_syncp);
@@ -1895,5 +1918,5 @@ module_platform_driver(frost_driver);
 
 MODULE_DESCRIPTION("FROST net10g 10GBASE-R Ethernet driver");
 /* The DKMS package version: PACKAGE_VERSION in dkms.conf matches it */
-MODULE_VERSION("1.2");
+MODULE_VERSION("1.3");
 MODULE_LICENSE("Dual BSD/GPL");
