@@ -79,14 +79,11 @@ module int_alu_shim #(
   logic is_csr_imm_op;
   assign is_csr_imm_op = (i_rs_issue.op == riscv_pkg::CSR_IMM);
 
-  // CSR register ops, vector arithmetic with a scalar operand, and vector
-  // loads and stores hand rs1 to the ROB (a CSR's write operand; the vector
-  // engine's scalar; the vector access's base address).
+  // CSR register ops and vector arithmetic with a scalar operand hand rs1 to
+  // the ROB (a CSR's write operand; the vector engine's scalar).
   logic is_csr_reg_op;
   assign is_csr_reg_op = (i_rs_issue.op == riscv_pkg::CSR_REG) ||
-                          (i_rs_issue.op == riscv_pkg::VARITH_X) ||
-                          (i_rs_issue.op == riscv_pkg::VLOAD) ||
-                          (i_rs_issue.op == riscv_pkg::VSTORE);
+                          (i_rs_issue.op == riscv_pkg::VARITH_X);
 
   logic is_ecall_op;
   logic is_ebreak_op;

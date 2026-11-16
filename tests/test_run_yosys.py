@@ -732,6 +732,548 @@ def test_xilinx_pc_hierarchy_keeps_parameterized_dependencies(
     assert not has_error, errors
 
 
+# Element selects of packed arrays as read_verilog elaborates them, against
+# the yosys-slang elaboration of the same text. Each case is (expected
+# result, dut): "equivalent" cases must prove equal under a SAT miter. The
+# others are forms read_verilog gets wrong: an element select of a
+# multidimensional packed array declared in a generate block can stop with
+# an error, or, when the array's type is a typedef, can become a bit select
+# without one. test_rtl_generate_blocks_have_no_multidimensional_packed_arrays
+# flags these declarations in hw/rtl.
+PACKED_SELECT_CHILD = """\
+module child #(parameter int unsigned W = 4) (
+    input  logic [W-1:0] i_a,
+    input  logic [  3:0] i_extra,
+    output logic [W-1:0] o_y
+);
+  assign o_y = i_a ^ W'(i_extra);
+endmodule
+"""
+_GENERATE_PORTS = """\
+module dut (
+    input  logic [ 3:0] i_a0, i_a1, i_k,
+    output logic [11:0] o_arr,
+    output logic [ 3:0] o_last, o_child
+);
+  {module_items}
+  if (1) begin : gen_ports
+    localparam int unsigned Last = 2;
+    {declaration}
+    child c0 (.i_a(i_a0), .i_extra('0), .o_y(arr[{port0}]));
+    child c1 (.i_a(i_a1), .i_extra(4'd1), .o_y(arr[{port1}]));
+    child c2 (.i_a(arr[{port0}]), .i_extra(4'd2), .o_y(o_child));
+    assign arr[{last}] = i_k;
+    assign o_arr = arr;
+    assign o_last = arr[{last}];
+  end
+endmodule
+"""
+PACKED_SELECT_CASES = {
+    # Module-scope arrays: assigned, connected, read and written by element.
+    "module_scope": (
+        "equivalent",
+        """\
+module dut (
+    input  logic [ 3:0] i_a0, i_a1, i_k,
+    input  logic [ 1:0] i_sel,
+    output logic [15:0] o_arr,
+    output logic [ 3:0] o_pick, o_child,
+    output logic [ 7:0] o_proc
+);
+  logic [3:0][3:0] arr;
+  logic [1:0][3:0] proc_arr;
+  child c0 (.i_a(i_a0), .i_extra('0), .o_y(arr[0]));
+  child c1 (.i_a(arr[0]), .i_extra(4'd3), .o_y(o_child));
+  assign arr[1] = i_a1;
+  assign arr[2] = i_k;
+  assign arr[3] = ~i_k;
+  assign o_arr = arr;
+  assign o_pick = arr[i_sel];
+  always_comb begin
+    proc_arr = '0;
+    proc_arr[1] = arr[2];
+    proc_arr[0] = arr[1] & i_k;
+  end
+  assign o_proc = proc_arr;
+endmodule
+""",
+    ),
+    # A flat vector in a generate block, one part-select per port (soc_top).
+    "generate_flat": (
+        "equivalent",
+        _GENERATE_PORTS.format(
+            module_items="",
+            declaration="logic [3*4-1:0] arr;",
+            port0="0*4+:4",
+            port1="1*4+:4",
+            last="Last*4+:4",
+        ),
+    ),
+    # A multidimensional array in a generate block, used only in connections.
+    "generate_connections": (
+        "equivalent",
+        """\
+module dut (
+    input  logic [ 3:0] i_a0, i_a1, i_a2,
+    output logic [11:0] o_arr,
+    output logic [ 3:0] o_child
+);
+  if (1) begin : gen_ports
+    logic [2:0][3:0] arr;
+    child c0 (.i_a(i_a0), .i_extra('0), .o_y(arr[0]));
+    child c1 (.i_a(i_a1), .i_extra(4'd1), .o_y(arr[1]));
+    child c2 (.i_a(i_a2), .i_extra(4'd2), .o_y(arr[2]));
+    child c3 (.i_a(arr[1]), .i_extra(4'd3), .o_y(o_child));
+    child #(.W(12)) c4 (.i_a(arr), .i_extra(4'd0), .o_y(o_arr));
+  end
+endmodule
+""",
+    ),
+    # A function's local multidimensional array.
+    "function_local": (
+        "equivalent",
+        """\
+module dut (
+    input  logic [15:0] i_a,
+    output logic [ 7:0] o_y
+);
+  function automatic logic [7:0] fold(input logic [15:0] a);
+    logic [3:0][3:0] c;
+    for (int b = 0; b < 4; b++) c[b] = a[4*b+:4] ^ 4'(b);
+    fold = {c[3] ^ c[1], c[2] ^ c[0]};
+  endfunction
+  assign o_y = fold(i_a);
+endmodule
+""",
+    ),
+    "generate_multidimensional": (
+        "rejected",
+        _GENERATE_PORTS.format(
+            module_items="",
+            declaration="logic [2:0][3:0] arr;",
+            port0="0",
+            port1="1",
+            last="Last",
+        ),
+    ),
+    # A named element type with packed dimensions at the declaration.
+    "generate_named_type": (
+        "not equivalent",
+        _GENERATE_PORTS.format(
+            module_items="",
+            declaration="typedef logic port_bit_t;\n    port_bit_t [2:0][3:0] arr;",
+            port0="0",
+            port1="1",
+            last="Last",
+        ),
+    ),
+    # The same with a type name that has no _t suffix.
+    "generate_named_type_unsuffixed": (
+        "not equivalent",
+        _GENERATE_PORTS.format(
+            module_items="",
+            declaration="typedef logic port_bit;\n    port_bit [2:0][3:0] arr;",
+            port0="0",
+            port1="1",
+            last="Last",
+        ),
+    ),
+    # A module-scope typedef that holds both dimensions, declared in the block
+    # without dimensions of its own.
+    "generate_typedef_dimensions": (
+        "not equivalent",
+        _GENERATE_PORTS.format(
+            module_items="typedef logic [2:0][3:0] ports_t;",
+            declaration="ports_t arr;",
+            port0="0",
+            port1="1",
+            last="Last",
+        ),
+    ),
+}
+
+
+def _packed_select_verdict(directory: Path, dut: str) -> tuple[str, str]:
+    """Compare read_verilog's netlist of dut with yosys-slang's.
+
+    Inputs are held to defined values; an x from yosys-slang's side is a
+    don't-care. Return the verdict and the output of the last Yosys run.
+    """
+    (directory / "child.sv").write_text(PACKED_SELECT_CHILD)
+    (directory / "dut.sv").write_text(dut)
+    sources = f"{directory / 'child.sv'} {directory / 'dut.sv'}"
+    gate, gold = directory / "gate.il", directory / "gold.il"
+    scripts = [
+        f"read_verilog -sv {sources}; hierarchy -top dut; proc; flatten; "
+        f"rename dut gate; write_rtlil {gate}",
+        f"read_slang --top dut {sources}; proc; flatten; "
+        f"rename dut gold; write_rtlil {gold}",
+        f"read_rtlil {gold}; read_rtlil {gate}; "
+        "miter -equiv -flatten -make_assert -ignore_gold_x gold gate miter; "
+        "hierarchy -top miter; "
+        "sat -verify -prove-asserts -enable_undef -set-def-inputs miter",
+    ]
+    output = ""
+    for step, script in enumerate(scripts):
+        result = subprocess.run(
+            ["yosys", "-q", "-p", script], capture_output=True, text=True, timeout=120
+        )
+        output = result.stdout + result.stderr
+        if result.returncode == 0:
+            continue
+        if step < 2:
+            return "rejected", output
+        if "proof did fail" in output:
+            return "not equivalent", output
+        return "error", output
+    return "equivalent", output
+
+
+@pytest.mark.synthesis
+@pytest.mark.parametrize("case", PACKED_SELECT_CASES)
+def test_read_verilog_element_selects(case: str, tmp_path: Path) -> None:
+    """read_verilog matches yosys-slang, or fails in the listed way."""
+    expected, dut = PACKED_SELECT_CASES[case]
+    verdict, output = _packed_select_verdict(tmp_path, dut)
+    assert verdict == expected, (
+        f"{case}: read_verilog gives {verdict!r}, expected {expected!r}. A change "
+        "in a failing form means Yosys reads it differently now; review "
+        "test_rtl_generate_blocks_have_no_multidimensional_packed_arrays.\n"
+        + output[-3000:]
+    )
+
+
+_DIM = r"\[[^\[\];]*\]"
+_SCALAR_TYPES = {"logic", "bit", "reg", "wire"}
+_VECTOR_TYPES = {"int", "integer", "byte", "shortint", "longint", "time"}
+# Words that can stand where a declaration's type does but are not types.
+_NOT_TYPES = {
+    "and",
+    "assign",
+    "automatic",
+    "begin",
+    "case",
+    "const",
+    "default",
+    "disable",
+    "do",
+    "else",
+    "end",
+    "enum",
+    "export",
+    "for",
+    "foreach",
+    "force",
+    "forever",
+    "function",
+    "genvar",
+    "if",
+    "import",
+    "inout",
+    "input",
+    "interface",
+    "localparam",
+    "modport",
+    "module",
+    "negedge",
+    "new",
+    "not",
+    "or",
+    "output",
+    "package",
+    "packed",
+    "parameter",
+    "posedge",
+    "ref",
+    "release",
+    "repeat",
+    "return",
+    "signed",
+    "static",
+    "struct",
+    "task",
+    "typedef",
+    "union",
+    "unsigned",
+    "var",
+    "virtual",
+    "wait",
+    "while",
+}
+_TYPE_NAME = r"(?:[A-Za-z_]\w*\s*::\s*)?[A-Za-z_]\w*"
+_DECLARATION = re.compile(
+    rf"\b(?P<type>{_TYPE_NAME})\s*(?:\b(?:signed|unsigned)\b\s*)?"
+    rf"(?P<dims>(?:{_DIM}\s*)*)(?P<name>[A-Za-z_]\w*)\s*(?:{_DIM}\s*)*(?=[;,=)])"
+)
+_TYPEDEF_SIMPLE = re.compile(
+    rf"\s*(?P<base>{_TYPE_NAME})\s*(?:\b(?:signed|unsigned)\b\s*)?"
+    rf"(?P<dims>(?:{_DIM}\s*)*)(?P<name>[A-Za-z_]\w*)\s*(?:{_DIM}\s*)*;"
+)
+_SCOPE_TOKEN = re.compile(
+    r"\b(?P<word>begin|end|function|endfunction|task|endtask|case|casez|casex|"
+    r"endcase|always_comb|always_ff|always_latch|always|initial|final|else|"
+    r"endmodule)\b|(?P<punct>[;()])"
+)
+
+
+def _blank_strings_and_comments(source: str) -> str:
+    """Blank strings and comments, keeping line numbers."""
+    return re.sub(
+        r'"(?:[^"\\\n]|\\.)*"|/\*.*?\*/|//[^\n]*',
+        lambda m: re.sub(r"[^\n]", " ", m.group(0)),
+        source,
+        flags=re.S,
+    )
+
+
+def _imported_packages(text: str) -> list[str]:
+    """Return the packages that the import statements in text name."""
+    return [
+        name
+        for statement in re.findall(r"\bimport\s+([^;]+);", text)
+        for name in re.findall(r"(\w+)\s*::", statement)
+    ]
+
+
+def _type_dimensions(
+    type_name: str,
+    typedefs: dict[str, int],
+    packages: dict[str, dict[str, int]],
+    imports: list[str],
+) -> int:
+    """Packed dimensions of a type: a typedef's own count, 0 if unknown."""
+    type_name = re.sub(r"\s+", "", type_name)
+    if type_name in _SCALAR_TYPES:
+        return 0
+    if type_name in _VECTOR_TYPES:
+        return 1
+    if "::" in type_name:
+        package, name = type_name.split("::", 1)
+        return packages.get(package, {}).get(name, 0)
+    if type_name in typedefs:
+        return typedefs[type_name]
+    for package in imports:
+        if type_name in packages.get(package, {}):
+            return packages[package][type_name]
+    return 0
+
+
+def _typedef_dimensions(
+    text: str, packages: dict[str, dict[str, int]], imports: list[str]
+) -> dict[str, int]:
+    """Packed dimensions of every typedef in text, its base type's included.
+
+    A struct, union or enum counts as one dimension.
+    """
+    typedefs: dict[str, int] = {}
+    for match in re.finditer(r"\btypedef\b", text):
+        start = match.end()
+        if re.match(r"\s*(?:struct|union|enum)\b", text[start:]):
+            brace = text.find("{", start)
+            if brace < 0:
+                continue
+            depth, end = 0, brace
+            while end < len(text):
+                depth += {"{": 1, "}": -1}.get(text[end], 0)
+                if depth == 0:
+                    break
+                end += 1
+            tail = re.match(rf"\s*(?P<dims>(?:{_DIM}\s*)*)(\w+)", text[end + 1 :])
+            if tail:
+                dims = len(re.findall(_DIM, tail.group("dims")))
+                typedefs[tail.group(2)] = 1 + dims
+            continue
+        simple = _TYPEDEF_SIMPLE.match(text, start)
+        if simple:
+            dims = len(re.findall(_DIM, simple.group("dims")))
+            base = _type_dimensions(simple.group("base"), typedefs, packages, imports)
+            name = simple.group("name")
+            typedefs[name] = max(typedefs.get(name, 0), dims + base)
+    return typedefs
+
+
+def package_typedefs(sources: list[str]) -> dict[str, dict[str, int]]:
+    """Packed dimensions of the typedefs of every package in the sources."""
+    bodies = {}
+    for source in sources:
+        text = _blank_strings_and_comments(source)
+        for match in re.finditer(
+            r"\bpackage\s+(\w+)\s*;(.*?)\bendpackage\b", text, flags=re.S
+        ):
+            bodies[match.group(1)] = match.group(2)
+    packages: dict[str, dict[str, int]] = {}
+    for _ in range(4):  # a package's typedefs can build on another's
+        for name, body in bodies.items():
+            packages[name] = _typedef_dimensions(
+                body, packages, _imported_packages(body)
+            )
+    return packages
+
+
+def multidimensional_generate_arrays(
+    source: str, packages: dict[str, dict[str, int]] | None = None
+) -> list[tuple[int, str]]:
+    """Return (line, name) of each multidimensional packed array in a generate block.
+
+    A declaration counts with two or more packed dimensions, those of its
+    type included (a typedef in the file, or in a package that the file
+    imports or names), or with a named type and packed dimensions of its
+    own. A begin-end or case block is procedural inside an always,
+    initial or final statement (up to the semicolon or end that closes it,
+    an else continuing it) or inside a function or task; any other is a
+    generate block. The check reads source text; it is not a SystemVerilog
+    parser.
+    """
+    packages = packages or {}
+    text = _blank_strings_and_comments(source)
+    imports = _imported_packages(text)
+    typedefs = _typedef_dimensions(text, packages, imports)
+    tokens = list(_SCOPE_TOKEN.finditer(text))
+    stack: list[tuple[str, int, bool]] = []  # kind, start, opens the statement
+    spans: list[tuple[int, int, str]] = []
+    pending_depth = -1  # stack depth of an open always/initial/final statement
+    parens = 0
+
+    def next_word(i: int) -> str:
+        return tokens[i + 1].group(0) if i + 1 < len(tokens) else ""
+
+    for i, token in enumerate(tokens):
+        word, punct = token.group("word"), token.group("punct")
+        procedural = pending_depth >= 0 or any(k == "proc" for k, _, _ in stack)
+        if punct == "(":
+            parens += 1
+        elif punct == ")":
+            parens = max(parens - 1, 0)
+        elif punct == ";":
+            if parens == 0 and len(stack) == pending_depth and next_word(i) != "else":
+                pending_depth = -1
+        elif word in ("always_comb", "always_ff", "always_latch", "always"):
+            if not procedural:
+                pending_depth = len(stack)
+        elif word in ("initial", "final"):
+            if not procedural:
+                pending_depth = len(stack)
+        elif word in ("function", "task"):
+            stack.append(("proc", token.start(), False))
+        elif word in ("begin", "case", "casez", "casex"):
+            kind = "proc" if procedural else "gen"
+            stack.append((kind, token.start(), len(stack) == pending_depth))
+        elif word in ("end", "endcase", "endfunction", "endtask") and stack:
+            kind, start, opens = stack.pop()
+            spans.append((start, token.end(), kind))
+            if opens and next_word(i) != "else":
+                pending_depth = -1
+        elif word == "endmodule":
+            stack.clear()
+            pending_depth = -1
+    found = []
+    for match in _DECLARATION.finditer(text):
+        type_name = re.sub(r"\s+", "", match.group("type"))
+        if type_name in _NOT_TYPES:
+            continue
+        dims = len(re.findall(_DIM, match.group("dims")))
+        if type_name in _SCALAR_TYPES | _VECTOR_TYPES or not dims:
+            dims += _type_dimensions(type_name, typedefs, packages, imports)
+        else:
+            dims = 2  # a named type with packed dimensions of its own
+        if dims < 2:
+            continue
+        inner = [s for s in spans if s[0] < match.start() < s[1]]
+        if inner and max(inner)[2] == "gen":
+            found.append((text.count("\n", 0, match.start()) + 1, match.group("name")))
+    return found
+
+
+def _rtl_sources() -> list[Path]:
+    return sorted((Path(__file__).resolve().parents[1] / "hw/rtl").rglob("*.sv"))
+
+
+def test_rtl_generate_blocks_have_no_multidimensional_packed_arrays() -> None:
+    """Keep packed arrays read_verilog mis-reads (see PACKED_SELECT_CASES) out."""
+    root = Path(__file__).resolve().parents[1]
+    sources = {path: path.read_text() for path in _rtl_sources()}
+    packages = package_typedefs(list(sources.values()))
+    found = [
+        f"{path.relative_to(root)}:{line}: {name}"
+        for path, source in sources.items()
+        for line, name in multidimensional_generate_arrays(source, packages)
+    ]
+    assert not found, (
+        "Declare these at module scope, or as flat vectors with an explicit "
+        "part-select for each element:\n" + "\n".join(found)
+    )
+
+
+def test_generate_array_check_flags_failing_select_cases() -> None:
+    """Every form that read_verilog reads wrongly above is flagged."""
+    for case, (expected, dut) in PACKED_SELECT_CASES.items():
+        if expected != "equivalent":
+            assert multidimensional_generate_arrays(dut), case
+
+
+def test_generate_array_check_flags_only_generate_blocks() -> None:
+    """The check flags generate blocks and leaves procedural and module scope."""
+    package = """\
+package demo_pkg;
+  typedef logic [31:0] word_t;
+  typedef word_t [3:0] quad_t;
+endpackage
+"""
+    source = """\
+module m #(parameter int N = 2) (input logic clk, input logic [7:0] d);
+  import demo_pkg::*;
+  typedef logic port_bit;
+  typedef logic [1:0][3:0] pair_t;
+  typedef logic [3:0] nibble_t;
+  typedef struct packed { logic [3:0] a; logic b; } fields_s;
+  typedef fields_s [1:0] fields_pair_t;
+  logic [1:0][3:0] module_scope;  // no
+  pair_t module_typedef;  // no
+  if (N > 1) begin : gen_a
+    logic [N-1:0][3:0] gen_if;  // yes
+    logic [N*4-1:0] gen_flat;  // no
+    ports_t [N-1:0] gen_named;  // yes
+    port_bit [N-1:0][3:0] gen_unsuffixed;  // yes
+    pair_t gen_typedef;  // yes
+    nibble_t gen_nibble;  // no
+    fields_s gen_struct;  // no
+    fields_pair_t gen_struct_pair;  // yes
+    demo_pkg::quad_t gen_scoped;  // yes
+    quad_t gen_imported;  // yes
+    word_t gen_word;  // no
+    always_comb begin
+      logic [1:0][3:0] always_local;  // no
+      always_local = '0;
+    end
+  end
+  always_ff @(posedge clk) if (d[0]) begin
+    logic [1:0][1:0] if_local;  // no
+  end else begin
+    logic [1:0][1:0] else_local;  // no
+  end
+  always_comb for (int i = 0; i < 2; i++) begin
+    logic [1:0][1:0] loop_local;  // no
+  end
+  initial $display("(begin;");
+  for (genvar g = 0; g < N; g++) begin : gen_b
+    logic [1:0][3:0] gen_for;  // yes
+  end
+  function automatic logic [7:0] f(input logic [7:0] x);
+    logic [1:0][3:0] function_local;  // no
+    f = x;
+  endfunction
+endmodule
+"""
+    expected = [
+        (i + 1, line.split()[-3].rstrip(";"))
+        for i, line in enumerate(source.splitlines())
+        if line.endswith("// yes")
+    ]
+    packages = package_typedefs([package])
+    assert packages == {"demo_pkg": {"word_t": 1, "quad_t": 2}}
+    assert multidimensional_generate_arrays(source, packages) == expected
+
+
 # Command-line interface for standalone execution
 def main() -> int:
     """Run Yosys synthesis from command line."""

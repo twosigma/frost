@@ -1,0 +1,32 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: aigsmt boolector
+bmc: mode bmc
+bmc: depth 40
+cover: mode cover
+cover: depth 90
+timeout 180
+
+[engines]
+bmc: abc bmc3
+cover: smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+bmc: read -formal -D VEC_VMU_PROOF -sv vec_vmu.sv
+cover: read -formal -D VEC_VMU_PROOF -D VEC_VMU_COVER_PROOF -sv vec_vmu.sv
+read -formal -sv vec_vmu_formal.sv
+prep -top vec_vmu_formal -flatten
+bmc: memory_map
+bmc: opt
+bmc: techmap
+bmc: opt
+bmc: setundef -undriven -anyseq
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_vmu.sv
+vec_vmu_formal.sv

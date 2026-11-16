@@ -1,4 +1,5 @@
 [tasks]
+pm_mode_bmc
 bmc
 cover
 bmc_perf_off
@@ -6,6 +7,8 @@ vector_bmc
 vector_cover
 
 [options]
+pm_mode_bmc: mode bmc
+pm_mode_bmc: depth 20
 bmc: mode bmc
 bmc: depth 20
 cover: mode cover
@@ -29,6 +32,9 @@ bmc_perf_off: chparam -set PERF_COUNTERS 0 csr_file
 vector_bmc: chparam -set PERF_COUNTERS 0 -set VECTOR 1 -set VLEN 256 csr_file
 vector_cover: chparam -set PERF_COUNTERS 0 -set VECTOR 1 -set VLEN 256 csr_file
 prep -top csr_file
+# Keep the original standalone assumptions and isolate the PMM assertions.
+pm_mode_bmc: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_pm_mode_exact c:p_pm_mode_not_reserved c:p_pmm_not_reserved %u %u %d
+pm_mode_bmc: select -assert-count 3 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
