@@ -56,6 +56,15 @@ or else in Buildroot's output, `linux/build-mmu/host/bin`. Another toolchain,
 selected with `FROST_LINUX_CROSS_COMPILE` or `--cross`, must be Linux-targeted
 with a PIE-capable linker: OpenSBI links position-independent.
 
+Every invocation checks a content stamp for the configuration, OpenSBI revision
+and local source edits, build options, and toolchain prefix and versions. A
+missing or different stamp causes a build in an empty output directory; matching
+firmware is reused without running make.
+If Git cannot identify the source directory, every invocation builds from scratch
+without recording a reusable stamp. Only empty directories, directories with a
+helper stamp, and recognised OpenSBI output directories can be replaced. The last
+component of `--out` must not be a symlink; links in its parent path are resolved.
+
 OpenSBI enters the payload in S-mode with `satp` Bare and `sstatus.SIE=0`. It
 delegates the SSI, STI, SEI, and local counter-overflow (LCOFI) interrupts and
 the misaligned-fetch, breakpoint, U-mode ecall, and page-fault exceptions. It
