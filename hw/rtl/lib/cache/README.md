@@ -1330,9 +1330,12 @@ unsealed and not yet full. A store continuation stops before such a record,
 and look-ahead skips it while its upper record can still take writes (a record
 is free or the store queue claims a combining write), and skips the upper
 record of an unacquired full lower record. A hold needs a recent write into a record that can still grow,
-and at most two records exist while one lasts, so store credit stays
-available and the hold ends when the stream moves to another block, a record
-seals at 32 contributors, or the writes stop.
+and it ends when the stream moves to another block, a record seals at 32
+contributors, or the writes stop. A hold of the head lasts only while at most
+two records exist, so store credit stays available; a continuation that stops
+before a growing next record holds with up to three, and look-ahead's pair
+wait can hold with four while the store queue claims a combining write, which
+the combining credit below serves.
 
 **Combining credit.** Two blocks fill all four records, so the second
 block's upper record could otherwise take only its first write. The SQ

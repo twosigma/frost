@@ -305,6 +305,17 @@ Open: restore `coherence_store_boundary:bmc_four` to depth 120 with the
 L1D hit path, using additional lemmas or splitting the checks into smaller
 cones so the task fits its CI budget.
 
+Open: two directed L1D schedules for full-line paths that the bounded control
+checks do not reach. One forms a full pair behind an older pending head from
+eight scalar writes, grants it on a borrowed load endpoint, and retires the
+head and the pair, covering the data twin's `TwinOp` and the endpoint's Done
+with the safety properties checked through that completion. The other
+installs a Modified upper sector through ordinary requests, then forms a
+different full pair in the same set, covering the twin's victim freeze and
+checking a watched byte through installation and write-back. No free-input
+trace of 40 cycles or fewer reaches the first, and a store-only search found
+none for the second.
+
 The FPGA build's hand-instantiated primitives are compared with their
 portable forms by [equivalence checks](formal/README.md#primitive-twins).
 Open: a few primitive blocks in the load queue, the Tomasulo wrapper, the
@@ -469,9 +480,9 @@ and targeted microbenchmarks give these items:
    acquire a 64-byte block with `GetMZero`, allocating on an L2 miss without
    reading DRAM and installing both sectors before release; stores to Modified
    sectors use masked writes, and waiting reads share array service with
-   buffered hits. In simulation (`store_fill_bench`, 64 KiB) a sequential
-   `sd` stream takes about 28 cycles per 64 bytes cold and 15.3 cycles
-   L2-resident. Taking ownership of a single 32-byte sector without fetching
+   buffered hits. In simulation (`store_fill_bench`, 64 KiB, with the DDR
+   model's fixed 80-cycle latency) a sequential `sd` stream takes about 28
+   cycles per 64 bytes cold and 15.3 cycles L2-resident. Taking ownership of a single 32-byte sector without fetching
    its 64-byte home line would still need per-sector L2 validity tracking.
 2. Data translation. A last-page bypass sends eligible translated accesses
    directly to DMMU stage S2. Other translated accesses use S1 and S2.
