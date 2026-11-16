@@ -4877,13 +4877,13 @@ async def test_real_program(dut: Any) -> None:
     if app_name == "walk_past_test":
         from cocotb_tests.if_stage.walk_past_watch import watch
 
-        ranges = _load_symbol_ranges(["wp_odd_overlap", "wp_even_stale"], app_name)
+        ranges = _load_symbol_ranges(["wp_odd_overlap", "wp_slot2_at_stale"], app_name)
         cocotb.start_soon(
             watch(
                 dut,
                 cpu_clock(dut),
                 ranges["wp_odd_overlap"][0],
-                ranges["wp_even_stale"][1],
+                ranges["wp_slot2_at_stale"][1],
             )
         )
 

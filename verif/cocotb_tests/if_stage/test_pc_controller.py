@@ -1075,6 +1075,138 @@ async def test_walk_past_can_capture_the_next_prediction(dut: Any) -> None:
     _assert_pending_predecessor_relation(dut)
 
 
+async def _arm_carve_out_at_predecessor(dut: Any, *, odd: bool) -> int:
+    """Capture pending P with pc_reg at P-2, then engage carve_out_engaged_q via WCS."""
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+    if odd:
+        _clear_inputs(dut)
+        for name in (
+            "i_pc_fetch_advance_sel",
+            "i_pc_fetch_advance_sel_one",
+            "i_pc_fetch_advance_sel_two",
+            "i_pc_reg_advance_sel",
+            "i_pc_reg_advance_sel_one",
+            "i_pc_reg_advance_sel_two",
+            "i_pc_reg_advance_sel_nop",
+        ):
+            getattr(dut, name).value = PC_ADV_PLUS2
+        await _advance_cycle(dut)
+    owner = BASE_PC + (6 if odd else 4)
+    _assert_pc(dut, pc=owner, pc_reg=owner - 4)
+
+    _clear_inputs(dut)
+    dut.i_is_compressed.value = 1
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_prediction_requires_pc_reg_handoff.value = 1
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=owner - 2)
+    assert dut.pending_prediction_valid.value
+    assert dut.pim_base.value
+
+    # First post-prediction cycle misses the served window, latching carve_out_engaged_q
+    # while draining prediction_holdoff and control_flow_holdoff.
+    _clear_inputs(dut)
+    dut.i_prediction_holdoff.value = 1
+    dut.i_window_cannot_serve.value = 1
+    dut.i_window_cannot_serve_raw.value = 1
+    await _advance_cycle(dut)
+    assert int(dut.o_pc_reg.value) == owner - 2
+    assert dut.carve_out_engaged_q.value
+    assert not dut.o_control_flow_holdoff.value
+    return owner
+
+
+@cocotb.test()
+async def test_walk_past_native_predecessor_slot2_redirect_below_pending(
+    dut: Any,
+) -> None:
+    """A slot-2 redirect from P+2 behind a 32-bit P-2 retires pending P even when T2 < P."""
+    for odd in (False, True):
+        owner = await _arm_carve_out_at_predecessor(dut, odd=odd)
+        slot2_target = BASE_PC  # strictly below owner (BASE_PC + 4 or + 6)
+
+        _clear_inputs(dut)
+        dut.i_slot2_valid.value = 1
+        dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
+        dut.i_pc_fetch_advance_sel_two.value = PC_ADV_PLUS6
+        dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS6
+        dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS6
+        _drive_staged_slot2_prediction(dut, target=slot2_target)
+        await _settle()
+        kill_on_redirect = int(dut.o_pending_prediction_redirect_kill.value)
+
+        await _advance_cycle(dut)
+        _assert_pc(dut, pc=slot2_target, pc_reg=slot2_target)
+        assert dut.o_slot2_redirect_q.value
+        valid_after_redirect = int(dut.pending_prediction_valid.value)
+
+        # Slot-2 redirect bubble cycle: pc_reg must hold at T2 rather than landing
+        # on or crossing the stale pending P.
+        _clear_inputs(dut)
+        dut.i_sel_nop_wcs0.value = 1
+        await _advance_cycle(dut)
+        pc_reg_after_bubble = int(dut.o_pc_reg.value)
+        dut._log.info(
+            "slot2-below odd=%d owner=%#x t2=%#x kill=%d valid=%d pc_reg_after_bubble=%#x",
+            int(odd),
+            owner,
+            slot2_target,
+            kill_on_redirect,
+            valid_after_redirect,
+            pc_reg_after_bubble,
+        )
+        assert kill_on_redirect == 1
+        assert valid_after_redirect == 0
+        assert pc_reg_after_bubble == slot2_target
+
+
+@cocotb.test()
+async def test_walk_past_native_predecessor_slot2_redirect_at_pending(
+    dut: Any,
+) -> None:
+    """A slot-2 redirect with T2 == P retires pending P so the bubble cannot hand off."""
+    owner = await _arm_carve_out_at_predecessor(dut, odd=True)
+    slot2_target = owner
+
+    _clear_inputs(dut)
+    dut.i_slot2_valid.value = 1
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
+    dut.i_pc_fetch_advance_sel_two.value = PC_ADV_PLUS6
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS6
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS6
+    _drive_staged_slot2_prediction(dut, target=slot2_target)
+    await _settle()
+    kill_on_redirect = int(dut.o_pending_prediction_redirect_kill.value)
+
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=slot2_target, pc_reg=slot2_target)
+    assert dut.o_slot2_redirect_q.value
+    valid_after_redirect = int(dut.pending_prediction_valid.value)
+
+    # On the slot-2 redirect bubble (sel_nop=1), T2 == P must hold at P instead
+    # of firing pending_mux_target to HALFWORD_PRED_TARGET.
+    _clear_inputs(dut)
+    dut.i_sel_nop_wcs0.value = 1
+    await _advance_cycle(dut)
+    pc_reg_after_bubble = int(dut.o_pc_reg.value)
+    dut._log.info(
+        "slot2-at owner=%#x kill=%d valid=%d pc_reg_after_bubble=%#x",
+        owner,
+        kill_on_redirect,
+        valid_after_redirect,
+        pc_reg_after_bubble,
+    )
+    assert kill_on_redirect == 1
+    assert valid_after_redirect == 0
+    assert pc_reg_after_bubble == slot2_target
+
+
 @cocotb.test()
 async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
     dut: Any,

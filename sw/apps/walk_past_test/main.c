@@ -22,6 +22,12 @@ extern unsigned long wp_odd_train(unsigned long value);
 extern unsigned long wp_odd_overlap(unsigned long value);
 extern unsigned long wp_even_train(unsigned long value);
 extern unsigned long wp_even_overlap(unsigned long value);
+extern unsigned long wp_slot2_below_train(unsigned long value);
+extern unsigned long wp_slot2_below_b2_train(unsigned long value);
+extern unsigned long wp_slot2_below_overlap(unsigned long value);
+extern unsigned long wp_slot2_at_train(unsigned long value);
+extern unsigned long wp_slot2_at_b2_train(unsigned long value);
+extern unsigned long wp_slot2_at_overlap(unsigned long value);
 
 static void puts_uart(const char *text)
 {
@@ -38,7 +44,13 @@ static void hex_uart(unsigned long value)
 
 int main(void)
 {
-    unsigned long results[2][8];
+    static const char *const labels[4] = {
+        "odd RESULT ",
+        "even RESULT ",
+        "slot2_below RESULT ",
+        "slot2_at RESULT ",
+    };
+    unsigned long results[4][8];
     for (int pass = 0; pass < 8; ++pass) {
         for (int train = 0; train < 4; ++train)
             wp_odd_train(0);
@@ -46,14 +58,24 @@ int main(void)
         for (int train = 0; train < 4; ++train)
             wp_even_train(0);
         results[1][pass] = wp_even_overlap(0);
+        for (int train = 0; train < 4; ++train) {
+            wp_slot2_below_train(0);
+            wp_slot2_below_b2_train(0);
+        }
+        results[2][pass] = wp_slot2_below_overlap(0);
+        for (int train = 0; train < 4; ++train) {
+            wp_slot2_at_train(0);
+            wp_slot2_at_b2_train(0);
+        }
+        results[3][pass] = wp_slot2_at_overlap(0);
     }
     int ok = 1;
-    for (int parity = 0; parity < 2; ++parity) {
+    for (int kind = 0; kind < 4; ++kind) {
         for (int pass = 0; pass < 8; ++pass) {
-            puts_uart(parity ? "even RESULT " : "odd RESULT ");
-            hex_uart(results[parity][pass]);
+            puts_uart(labels[kind]);
+            hex_uart(results[kind][pass]);
             puts_uart(" expected 0000000000000011\r\n");
-            ok &= results[parity][pass] == 17;
+            ok &= results[kind][pass] == 17;
         }
     }
     puts_uart(ok ? "<<PASS>>\r\n" : "<<FAIL>>\r\n");
