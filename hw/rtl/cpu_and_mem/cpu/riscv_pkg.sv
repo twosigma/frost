@@ -2144,9 +2144,15 @@ package riscv_pkg;
   // the history its short table hashes, per-bank index and tag widths, and
   // the history bits each taken control-flow instruction shifts in.
   localparam int unsigned TageHistBits = 64;
-  localparam int unsigned TageT1HistBits = 16;
+  // Tables and each table's history length, a geometric series over the
+  // direction history.
+  localparam int unsigned TageTables = 4;
+  localparam int unsigned TageHist1Bits = 12;
+  localparam int unsigned TageHist2Bits = 24;
+  localparam int unsigned TageHist3Bits = 64;
+  localparam int unsigned TageHist4Bits = 128;
   localparam int unsigned TageIndexBits = 9;
-  localparam int unsigned TageTagBits = 9;
+  localparam int unsigned TageTagBits = 10;
   localparam int unsigned TagePathBits = 2;
   // The predictor hashes word-address bits [TageLookupHiBit:2] of the lookup
   // PC: the index's two slices end there and the tag's begins at bit 2.
@@ -2157,7 +2163,7 @@ package riscv_pkg;
   localparam int unsigned TageFtqIdxBits = 6;
   // Direction history the tagged predictor hashes (tage_history): one bit per
   // conditional branch and per jump, pushed as PD passes the packet to ID.
-  localparam int unsigned TageDirHistBits = 64;
+  localparam int unsigned TageDirHistBits = 128;
   // Indirect target predictor (ittage_predictor): per-bank index and tag
   // widths, and each table's history length in bits of the tagged
   // predictor's lookup history.
@@ -2167,22 +2173,19 @@ package riscv_pkg;
   localparam int unsigned IttHist2Bits = 24;
   localparam int unsigned IttHist3Bits = 64;
 
-  // One bank's registered tagged lookup: both tables' indices and tags, which
-  // matched, the provider's direction (meaningful when hit1 or hit2), and T1
-  // as the alternate behind a T2 provider. Saved with a conditional branch to
-  // train the same entries at commit.
+  // One bank's registered tagged lookup: each table's index and tag, which
+  // tables matched, the provider's direction (meaningful when any matched),
+  // and the next shorter match as the alternate behind it. Saved with a
+  // conditional branch to train the same entries at commit.
   typedef struct packed {
-    logic [TageIndexBits-1:0] index1;
-    logic [TageIndexBits-1:0] index2;
-    logic [TageTagBits-1:0] tag1;
-    logic [TageTagBits-1:0] tag2;
-    logic hit1;
-    logic hit2;
+    logic [TageTables-1:0][TageIndexBits-1:0] index;
+    logic [TageTables-1:0][TageTagBits-1:0] tag;
+    logic [TageTables-1:0] hit;
     logic taken;
     logic alt_tagged;
     logic alt_tagged_taken;
   } tage_lookup_t;
-  localparam int unsigned TageLookupBits = 2 * TageIndexBits + 2 * TageTagBits + 5;
+  localparam int unsigned TageLookupBits = TageTables * (TageIndexBits + TageTagBits + 1) + 3;
 
   // One bank's registered indirect-target lookup: each table's index and tag
   // and whether it matched. Saved with a JALR to train the same entries at

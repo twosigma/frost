@@ -2577,8 +2577,8 @@ module if_stage #(
       ((tage_lookup_word[2] == tage_slot2_word_saved_q[2]) ?
        tage_lookup_word : tage_lookup_word_next) == tage_slot2_word_saved_q;
 
-  assign tage_bank0_hit = tage_bank0.hit1 || tage_bank0.hit2;
-  assign tage_bank1_hit = tage_bank1.hit1 || tage_bank1.hit2;
+  assign tage_bank0_hit = |tage_bank0.hit;
+  assign tage_bank1_hit = |tage_bank1.hit;
   assign tage_slot2_hit_cur_live = tage_cov_cur_live &&
       (pc_reg[2] ? tage_bank1_hit : tage_bank0_hit);
   assign tage_slot2_hit_next_live = tage_cov_next_live &&
@@ -2594,7 +2594,7 @@ module if_stage #(
 
   // Slot-1 tagged-predictor direction. A fetch fault's bytes carry no branch.
   assign o_from_if_to_pd.tage_valid = o_tage_slot_valid[0] &&
-      (o_tage_slot_lookup.hit1 || o_tage_slot_lookup.hit2) && !o_from_if_to_pd.fetch_fault;
+      (|o_tage_slot_lookup.hit) && !o_from_if_to_pd.fetch_fault;
   assign o_from_if_to_pd.tage_taken = o_tage_slot_lookup.taken;
 
   // ===========================================================================
@@ -3285,15 +3285,14 @@ module if_stage #(
               {
                 o_from_if_to_pd_2.tage_valid,
                 tage_slot2_cov_ref,
-                tage_slot_lookup_2_ref.hit1,
-                tage_slot_lookup_2_ref.hit2,
+                tage_slot_lookup_2_ref.hit,
                 o_from_if_to_pd_2.fetch_fault
               }
           )) begin
         p_if_slot2_tage_valid_exact :
         assert (o_from_if_to_pd_2.tage_valid ==
                 (tage_slot2_cov_ref &&
-                 (tage_slot_lookup_2_ref.hit1 || tage_slot_lookup_2_ref.hit2) &&
+                 (|tage_slot_lookup_2_ref.hit) &&
                  !o_from_if_to_pd_2.fetch_fault));
       end
       if (!$isunknown({o_from_if_to_pd_2.tage_taken, tage_slot_lookup_2_ref.taken})) begin
@@ -3379,7 +3378,7 @@ module if_stage #(
       f_if_slot2_tage_valid_exact :
       assert (o_from_if_to_pd_2.tage_valid ==
               (f_tage_slot2_cov_ref &&
-               (f_tage_slot_lookup_2_ref.hit1 || f_tage_slot_lookup_2_ref.hit2) &&
+               (|f_tage_slot_lookup_2_ref.hit) &&
                !o_from_if_to_pd_2.fetch_fault));
       f_if_slot2_tage_taken_exact :
       assert (o_from_if_to_pd_2.tage_taken == f_tage_slot_lookup_2_ref.taken);

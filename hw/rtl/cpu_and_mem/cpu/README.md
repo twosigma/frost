@@ -131,7 +131,7 @@ cases, then the sequential PC.
 | Backing BTB | 1024 entries, two-way set-associative | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | Mispredicted JALs and JALRs at commit; each PD redirect it serves refreshes its entry's replacement state |
 | Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`), and of a backing BTB redirect for one | IF, when it hands PD a packet predicted from a typed entry, and for a backing BTB redirect: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
-| Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of direction history; 9-bit tags, 3-bit counters | Direction of conditional branches in either slot whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
+| Tagged direction predictor | Four tables of 1024 entries, hashed with 12, 24, 64 and 128 bits of direction history; 10-bit tags, 3-bit counters, 2-bit usefulness | Direction of conditional branches in either slot whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
 | Indirect target predictor | Three tables of 256 entries, hashed with 8, 24 and 64 bits of path history; 11-bit tags, 2-bit confidence | Target of a JALR that is not a return, in either slot, through a PD redirect when it differs from the BTB's | Each JALR at commit, at the entries its lookup read |
 
 A return is predicted like any BTB hit, from the lookup at its fetch PC, but
@@ -198,13 +198,21 @@ read the predictor can differ from the branch PC after a stall replay or at
 a halfword boundary. A slot-2 branch's training waits, one deep, for a cycle
 in which slot 1 does not train; a newer one replaces it.
 
-The tagged predictor (`tage_predictor`) follows TAGE. T1 hashes the branch's
-word address with the newest 16 bits of the global path history, T2 with all
-64. Each table is two 512-entry banks split by PC[2], so one lookup reads both
-words of the fetch window; the lookup registers and is compared with the tags
-the next cycle. The longer-history table whose tag matches provides the
-direction. Every taken control-flow instruction shifts bits [3:2] of its
-target into the history. The lookup history follows fetch: `tage_history`
+The tagged predictor (`tage_predictor`) follows TAGE. Four tables hash the
+branch's word address with the newest 12, 24, 64 and 128 bits of the global
+direction history (described below). Each table is two 512-entry banks split
+by PC[2], so one lookup reads both words of the fetch window; the lookup
+registers and is compared with the tags the next cycle. The longest-history
+table whose tag matches provides the direction, and the next shorter match
+is the alternate. An entry has a 10-bit tag, a 3-bit counter and a 2-bit
+usefulness counter; a mispredicted branch allocates in the shortest table
+above its provider whose entry is not useful, and when every candidate is
+useful each counts down, which ages out entries that stop being useful (a
+periodic halving of every counter changed no workload by more than 0.04
+mispredictions per 1,000 instructions in the trace model, so there is none).
+The path history: every taken control-flow instruction shifts bits [3:2] of
+its target into a 64-bit history, which the indirect target predictor
+hashes. Its lookup history follows fetch: `tage_history`
 pushes the target the cycle after `pc_controller` loads a predicted one, and
 each redirect restores the history to its point in the program. The
 controller captures push and restore events with the PC load and captures
@@ -232,7 +240,7 @@ The path history above stays for the indirect target predictor and its
 saved-lookup restores. In the trace model this takes CoreMark-PRO loops from
 9.96 to 0.18 mispredictions per 1,000 instructions, nnet from 3.18 to 0.54
 and radix2 from 1.08 to 0.59; core rises from 2.10 to 2.87 with two tables,
-which the four-table predictor recovers.
+which the four tables recover (0.92).
 
 The indirect target predictor (`ittage_predictor`) follows ITTAGE. Three
 tables hash a JALR's word address with the newest 8, 24 and 64 bits of the
