@@ -14,8 +14,7 @@
     "scounteren_writable_bits": {"len": 32, "value": "0x0000_07FF"},
     "mcountinhibit": {"supported": true, "writable_bits": {"len": 32, "value": "0x0000_07FD"}},
     // riscv_pkg::MedelegMask and FROST's delegable interrupts: SSI, STI, SEI
-    // and the Sscofpmf counter-overflow interrupt (13). Sail enables bit 13
-    // only in the --sscofpmf view; default generation excludes mideleg.
+    // and the Sscofpmf counter-overflow interrupt (13).
     "medeleg": {"delegatable_bits": {"len": 64, "value": "0x0000_0000_0000_B3FF"}},
     "mideleg": {"delegatable_bits": {"len": "xlen", "value": "0x0000_0000_0000_2222"}},
     // Without the vector unit, mstatus.VS is read-only zero; FS takes all four
@@ -470,12 +469,9 @@
     "Zicfiss": {"supported": false},
     // ntl.* and c.ntl.* are add/c.add x0 hints and retire as no-ops.
     "Zihintntl": {"supported": true},
-    // FROST implements and advertises Zihpm with hpmcounter3..10; it traps
-    // hpmcounter11..31 at every privilege, which Zihpm permits for an
-    // unimplemented counter, while Sail with Zihpm reads them as zero in M.
-    // This configuration keeps Zihpm off, as before the extension was
-    // advertised.
-    "Zihpm": {"supported": false},
+    // FROST implements Zihpm with storage on counters 3..10; user aliases
+    // 11..31 read zero in M-mode and trap below M-mode, matching Sail.
+    "Zihpm": {"supported": true},
     "Zilx": {"supported": false},
     // No implemented extension redefines them: mop.r.n and mop.rr.n write zero to rd.
     "Zimop": {"supported": true},
@@ -539,7 +535,7 @@
     "Sstvala": {"supported": true},
     "Sstvecd": {"supported": true},
     "Svadu": {"supported": false},
-    "Svinval": {"supported": false},
+    "Svinval": {"supported": true},
     "Svrsw60t59b": {"supported": false},
     // Svnapot: 64 KiB NAPOT leaves and the reserved N encodings
     // (traces/svnapot_leaf.S).

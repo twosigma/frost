@@ -63,6 +63,7 @@ LW = _INSTR_OPS["LOAD"]
 SW = _INSTR_OPS["STORE"]
 FMADD_S = _INSTR_OPS["FMADD_S"]
 FENCE = _INSTR_OPS["FENCE"]
+SFENCE_VMA = _INSTR_OPS["SFENCE_VMA"]
 FLW = _INSTR_OPS["LOAD_FP"]
 FADD_S = _INSTR_OPS["FADD_S"]
 PAUSE = _INSTR_OPS["PAUSE"]
@@ -252,6 +253,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_cbo_inval_illegal.value = 0
     dut.i_cbo_inval_flush.value = 0
     dut.i_wrs_nto_illegal.value = 0
+    dut.i_priv_is_u.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -1456,6 +1458,214 @@ async def test_zicbop_prefetches_decode_as_ori_to_x0(dut: Any) -> None:
                 assert packet["rs_type"] == RS_INT, name
                 assert packet["needs_lq"] is False and packet["needs_sq"] is False, name
                 assert packet["is_load_instruction"] is False, name
+
+
+SINVAL_VMA_X0_X0 = 0x16000073
+SINVAL_VMA_S0_A6 = (0b0001011 << 25) | (16 << 20) | (8 << 15) | 0x73
+SFENCE_W_INVAL = 0x18000073
+SFENCE_INVAL_IR = 0x18100073
+
+
+@cocotb.test()
+async def test_svinval_decode_and_u_mode_fence_gate(dut: Any) -> None:
+    """sinval.vma uses SFENCE_VMA; sfence.w.inval and sfence.inval.ir gate on U-mode.
+
+    sinval.vma (funct7 = 0x0B, rd = 0) decodes as SFENCE_VMA with rs1/rs2 read
+    and RS_MEM + is_fence_i + is_sfence_vma (the ROB applies U-mode and TVM).
+    sfence.w.inval and sfence.inval.ir decode as FENCE in M/S modes (i_priv_is_u
+    clear) and become neutral RS_INT illegal instructions in U-mode (i_priv_is_u
+    set) in either slot. Reserved register fields are illegal regardless of mode.
+    """
+    await _setup_test(dut)
+    for slot2 in (False, True):
+        for raw in (SINVAL_VMA_X0_X0, SINVAL_VMA_S0_A6):
+            for priv_is_u in (0, 1):
+                _drive_pd_packet(
+                    dut, {"program_counter": BASE_PC, "instruction": raw}, slot2=slot2
+                )
+                _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+                dut.i_priv_is_u.value = priv_is_u
+                await _advance_cycle(dut)
+                packet = _read_id_packet(dut, slot2=slot2)
+                where = f"{raw:#010x} u={priv_is_u} slot2={slot2}"
+                assert packet["is_illegal_instruction"] is False, where
+                assert packet["instruction_operation"] == SFENCE_VMA, where
+                assert packet["rs_type"] == RS_MEM, where
+                assert packet["is_fence"] is False, where
+                assert packet["is_fence_i"] is True, where
+                assert packet["is_sfence_vma"] is True, where
+                assert packet["uses_int_rs1"] is True, where
+                assert packet["uses_int_rs2"] is True, where
+                assert packet["has_int_dest"] is False, where
+
+        for raw in (SFENCE_W_INVAL, SFENCE_INVAL_IR):
+            for priv_is_u in (0, 1):
+                _drive_pd_packet(
+                    dut, {"program_counter": BASE_PC, "instruction": raw}, slot2=slot2
+                )
+                _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+                dut.i_priv_is_u.value = priv_is_u
+                await _advance_cycle(dut)
+                packet = _read_id_packet(dut, slot2=slot2)
+                where = f"{raw:#010x} u={priv_is_u} slot2={slot2}"
+                if priv_is_u:
+                    assert packet["is_illegal_instruction"] is True, where
+                    assert packet["rs_type"] == RS_INT, where
+                    assert packet["is_fence"] is False, where
+                    assert packet["is_fence_i"] is False, where
+                    assert packet["is_sfence_vma"] is False, where
+                else:
+                    assert packet["is_illegal_instruction"] is False, where
+                    assert packet["instruction_operation"] == FENCE, where
+                    assert packet["rs_type"] == RS_MEM, where
+                    assert packet["is_fence"] is True, where
+                    assert packet["is_fence_i"] is False, where
+                    assert packet["is_sfence_vma"] is False, where
+                assert packet["uses_int_rs1"] is False, where
+                assert packet["uses_int_rs2"] is False, where
+                assert packet["has_int_dest"] is False, where
+
+    bad_encodings = [
+        SINVAL_VMA_S0_A6 | (1 << 7),  # sinval.vma with rd != 0
+        SFENCE_W_INVAL | (1 << 15),  # sfence.w.inval with rs1 != 0
+        SFENCE_INVAL_IR | (3 << 7),  # sfence.inval.ir with rd != 0
+        0x22000073,  # hfence.vvma x0, x0
+        0x62000073,  # hfence.gvma x0, x0
+        0x26000073,  # hinval.vvma x0, x0
+        0x66000073,  # hinval.gvma x0, x0
+        0x22A40073,  # hfence.vvma s0, a0
+        0x66A40073,  # hinval.gvma s0, a0
+    ] + [(0x0C << 25) | (rs2 << 20) | 0x73 for rs2 in range(2, 32)]
+
+    for slot2 in (False, True):
+        for priv_is_u in (0, 1):
+            dut.i_priv_is_u.value = priv_is_u
+            for bad in bad_encodings:
+                _drive_pd_packet(
+                    dut, {"program_counter": BASE_PC, "instruction": bad}, slot2=slot2
+                )
+                _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+                await _advance_cycle(dut)
+                packet = _read_id_packet(dut, slot2=slot2)
+                where = f"{bad:#010x} u={priv_is_u} slot2={slot2}"
+                assert packet["is_illegal_instruction"] is True, where
+                assert packet["rs_type"] == RS_INT, where
+                assert packet["is_fence"] is False and packet["is_fence_i"] is False, (
+                    where
+                )
+                assert packet["is_sfence_vma"] is False, where
+    dut.i_priv_is_u.value = 0
+
+
+@cocotb.test()
+async def test_mop_r_and_sinval_vma_back_to_back(dut: Any) -> None:
+    """mop.r and sinval.vma share OPC_CSR and decode cleanly back to back in each order."""
+    await _setup_test(dut)
+    mop_word = _mop_r(0, rd=10, rs1=8)
+    sinval_word = SINVAL_VMA_S0_A6
+
+    def _check_mop(packet: dict[str, Any], where: str) -> None:
+        assert packet["is_illegal_instruction"] is False, where
+        assert packet["instruction_operation"] == _INSTR_OPS["MOP"], where
+        assert packet["is_csr_instruction"] is False, where
+        assert packet["rs_type"] == RS_INT, where
+        assert packet["has_int_dest"] is True, where
+        assert packet["uses_int_rs1"] is False, where
+        assert packet["uses_int_rs2"] is False, where
+        assert packet["is_fence"] is False and packet["is_fence_i"] is False, where
+        assert packet["is_sfence_vma"] is False, where
+
+    def _check_sinval(packet: dict[str, Any], where: str) -> None:
+        assert packet["is_illegal_instruction"] is False, where
+        assert packet["instruction_operation"] == SFENCE_VMA, where
+        assert packet["is_csr_instruction"] is False, where
+        assert packet["rs_type"] == RS_MEM, where
+        assert packet["has_int_dest"] is False, where
+        assert packet["uses_int_rs1"] is True, where
+        assert packet["uses_int_rs2"] is True, where
+        assert packet["is_fence"] is False and packet["is_fence_i"] is True, where
+        assert packet["is_sfence_vma"] is True, where
+
+    # Back-to-back across consecutive cycles in both orders and both slots.
+    for slot2 in (False, True):
+        for first, check_first, second, check_second, label in (
+            (mop_word, _check_mop, sinval_word, _check_sinval, "mop->sinval"),
+            (sinval_word, _check_sinval, mop_word, _check_mop, "sinval->mop"),
+        ):
+            _drive_pd_packet(
+                dut, {"program_counter": BASE_PC, "instruction": first}, slot2=slot2
+            )
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+            await _advance_cycle(dut)
+            check_first(
+                _read_id_packet(dut, slot2=slot2), f"{label} first slot2={slot2}"
+            )
+
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC + 8, "instruction": second},
+                slot2=slot2,
+            )
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 12}, slot2=not slot2)
+            await _advance_cycle(dut)
+            check_second(
+                _read_id_packet(dut, slot2=slot2), f"{label} second slot2={slot2}"
+            )
+
+    # Same-cycle dual-slot presentation in both orders.
+    _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": mop_word})
+    _drive_pd_packet(
+        dut, {"program_counter": BASE_PC + 4, "instruction": sinval_word}, slot2=True
+    )
+    await _advance_cycle(dut)
+    _check_mop(_read_id_packet(dut, slot2=False), "bundle mop->sinval slot1")
+    _check_sinval(_read_id_packet(dut, slot2=True), "bundle mop->sinval slot2")
+
+    _drive_pd_packet(dut, {"program_counter": BASE_PC + 8, "instruction": sinval_word})
+    _drive_pd_packet(
+        dut, {"program_counter": BASE_PC + 12, "instruction": mop_word}, slot2=True
+    )
+    await _advance_cycle(dut)
+    _check_sinval(_read_id_packet(dut, slot2=False), "bundle sinval->mop slot1")
+    _check_mop(_read_id_packet(dut, slot2=True), "bundle sinval->mop slot2")
+
+
+@cocotb.test()
+async def test_system_priv_reserved_register_fields_are_illegal(dut: Any) -> None:
+    """SYSTEM funct3=000 reserved rd/rs1 fields trap without raising xRET/WFI flags."""
+    await _setup_test(dut)
+    malformed = (
+        0x120000F3,  # sfence.vma with rd = x1
+        0x00008073,  # ecall with rs1 = x1
+        0x000000F3,  # ecall with rd = x1
+        0x00108073,  # ebreak with rs1 = x1
+        0x001000F3,  # ebreak with rd = x1
+        0x30208073,  # mret with rs1 = x1
+        0x302000F3,  # mret with rd = x1
+        0x10208073,  # sret with rs1 = x1
+        0x102000F3,  # sret with rd = x1
+        0x10508073,  # wfi with rs1 = x1
+        0x105000F3,  # wfi with rd = x1
+        0x7B208073,  # dret with rs1 = x1
+        0x7B2000F3,  # dret with rd = x1
+    )
+    for slot2 in (False, True):
+        for raw in malformed:
+            _drive_pd_packet(
+                dut, {"program_counter": BASE_PC, "instruction": raw}, slot2=slot2
+            )
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+            await _advance_cycle(dut)
+            packet = _read_id_packet(dut, slot2=slot2)
+            where = f"{raw:#010x} slot2={slot2}"
+            assert packet["is_illegal_instruction"] is True, where
+            assert packet["rs_type"] == RS_INT, where
+            assert packet["is_mret"] is False, where
+            assert packet["is_sret"] is False, where
+            assert packet["is_dret"] is False, where
+            assert packet["is_wfi"] is False, where
+            assert packet["is_sfence_vma"] is False, where
+            assert packet["is_fence_i"] is False, where
 
 
 @cocotb.test()

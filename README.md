@@ -206,6 +206,7 @@ every supported extension and privilege mode.
 | **Supm**         | Scalar U-mode pointer masking supplied by Ssnpm when the execution environment enables it; the supplied Linux image does not expose the tagged-address ABI |
 | **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended; an instruction or data access, misaligned or page fault, a failed bus response included, writes the faulting virtual address |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
+| **Svinval**      | Fine-grained address-translation cache invalidation (`sinval.vma`, `sfence.w.inval`, `sfence.inval.ir`) |
 | **Svnapot**      | 64 KiB NAPOT leaf PTEs (N = 1, PPN[3:0] = 1000 at level 0): each page translates with PPN[3:0] = VA[15:12] and fills the TLBs as a 4 KiB entry; every other N encoding is a page fault |
 | **Svpbmt**       | PTE bits 62:61 under `menvcfg.PBMTE`: NC and IO loads use the uncached path at the ROB head; DDR mappings require a configured alias into the coherent DMA port. The VCU118's 2 GiB map has no alias, so NC/IO DDR mappings raise access faults; device mappings are unaffected. AMO/LR/SC, `cbo.zero` and fetch on NC or IO pages are access faults |
 | **Svvptc**       | A PTE changed from invalid to valid becomes visible to the walker without `sfence.vma` |

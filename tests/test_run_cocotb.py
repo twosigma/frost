@@ -1618,6 +1618,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "satp.ASID, global pages, SFENCE.VMA forms, and immediate Svvptc PTE-store retry"
         ),
     ),
+    "svinval_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svinval_test",
+        nic_mac_clocks=False,
+        description=(
+            "Svinval selective sinval.vma forms, batched PTE updates, TVM and U-mode rules"
+        ),
+    ),
     "imsic_csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
