@@ -3931,6 +3931,20 @@ module coherence_l1d #(
     if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready))
       p_zero_no_upper_request : assert (!(|f_zero_upper_request));
   end
+  // An upper flag names the record before it as the lower sector of the same
+  // 64-byte block: both are valid and the flagged record is not the head. The
+  // GetMZero and look-ahead twin tests rely on it in place of an address
+  // comparison; the store buffer's own proof shows it under its interface.
+  logic [3:0] f_upper_record_ok;
+  always_comb
+    for (int holder = 0; holder < 4; holder++)
+      f_upper_record_ok[holder] = !store_upper[holder] ||
+          (store_valid[holder] && 2'(holder) != store_head_index &&
+           store_valid[2'(2'(holder) - 2'd1)] && !store_addr[2'(2'(holder) - 2'd1)][5] &&
+           store_addr[holder][5] && store_addr[2'(2'(holder) - 2'd1)][ADDR_WIDTH-1:6] ==
+               store_addr[holder][ADDR_WIDTH-1:6]);
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst) p_zero_upper_record : assert (f_upper_record_ok == '1);
 `endif
   // A sector that a cbo.zero record holds, the lower record or its twin, or
   // that a full pair holds once its lower record acquired both sectors.
@@ -3950,18 +3964,6 @@ module coherence_l1d #(
       f_twin_record_ok[holder] = !(store_valid[holder] && store_twin[holder]) ||
           (store_sealed[holder] && store_mask[holder] == '1 &&
            (store_upper[holder] || 2'(holder) == store_head_index));
-  // An upper flag names the record before it as the lower sector of the same
-  // 64-byte block: both are valid and the flagged record is not the head. The
-  // GetMZero and look-ahead twin tests rely on it in place of an address
-  // comparison; the store buffer's own proof shows it under its interface.
-  logic [3:0] f_upper_record_ok;
-  always_comb
-    for (int holder = 0; holder < 4; holder++)
-      f_upper_record_ok[holder] = !store_upper[holder] ||
-          (store_valid[holder] && 2'(holder) != store_head_index &&
-           store_valid[2'(2'(holder) - 2'd1)] && !store_addr[2'(2'(holder) - 2'd1)][5] &&
-           store_addr[holder][5] && store_addr[2'(2'(holder) - 2'd1)][ADDR_WIDTH-1:6] ==
-               store_addr[holder][ADDR_WIDTH-1:6]);
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst) begin
       // The hit path takes no load to a sector whose zeros a cbo.zero record or
@@ -3969,7 +3971,6 @@ module coherence_l1d #(
       if (path_take) p_zero_path_blocked : assert (f_zero_path_sector == '0);
       if (store_push && i_write_zero)
         p_zero_write_block : assert (i_address[5:0] == 0 && i_write_mask == 8'hff);
-      p_zero_upper_record : assert (f_upper_record_ok == '1);
       // A GetMZero starts from a zero record or a fully masked record: no
       // byte of its sector is left for a fill. With 64-byte home lines it is a
       // lower record followed by its own same-block twin, a zero twin or the
