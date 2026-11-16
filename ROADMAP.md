@@ -576,6 +576,8 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   when the tagged predictor overrides a taken prediction, with a separate
   case for slot 2, or at retirement, retiring the instruction alone and
   restarting after a full flush.
+- Synchronize the PHY management reset into the MDIO sequencer clock domain.
+- Extend the network receive test beyond the default ring size so it checks descriptor wrap.
 - The second DDR4 interface on the VCU118. The target has RJ-45 SGMII
   Ethernet and 10GBASE-R on QSFP1 lane 0, using the NIC's registers,
   descriptors, driver, and coherent DMA. It uses one DDR4 interface; the

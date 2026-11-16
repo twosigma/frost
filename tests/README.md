@@ -389,7 +389,8 @@ part of both load images, so loading the program clears state from an
 earlier invocation without clearing it on the resets under test.
 
 `opensbi_smoke` uses a twenty-million-cycle budget for firmware boot and
-its S-mode payload. Its misaligned loads and stores to DDR (phase F) run on
+its S-mode payload. It requires the SRST extension and checks that shutdown
+returns `SBI_ERR_NOT_SUPPORTED`. Its misaligned loads and stores to DDR (phase F) run on
 the misaligned-access engine; `opensbi_smoke_no_misaligned_hw` builds without
 the engine, so OpenSBI emulates them, as it does for low BRAM.
 
