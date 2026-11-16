@@ -183,7 +183,8 @@ module coherence_home_completions #(
   logic [ResultBits-1:0] free_buffer_index;
   logic work_selected_q, work_found;
   // The selected slot's one-hot form is captured on the selection edge.
-  // Waiter eligibility reads it without decoding the slot index.
+  // Waiter eligibility, the prefetch offer and a held selection's parking
+  // capture read it without decoding the slot index.
   logic [SLOTS-1:0] work_selected_slots_q;
   // Each pair captures the selected slot's parked state, including a park
   // on the selecting edge. Dispatch reduces these registered groups.
