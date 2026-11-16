@@ -1098,7 +1098,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "ptw.sby",
         "Page-table walk state matches reference PTE classification, including the "
-        "Svpbmt reserved encodings, PBMTE and the uncached alias, and the walk "
+        "Svnapot PPN substitution, Svpbmt reserved encodings, PBMTE and the uncached "
+        "alias, and the walk "
         "cache holds only valid pointers that memory holds, cleared by every discard",
         tasks=(
             "bmc",
