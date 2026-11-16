@@ -24,7 +24,11 @@
   the window from the head to the newest tag stays inside the tag space, a
   table entry's range is set once and then fixed, and a scalar entry's address
   is written once. Frees are unconstrained (completion, flush), and a flush
-  may roll the next tag back to just after the surviving entries. Addresses and
+  may roll the next tag back to just after the surviving entries, with no
+  allocation in its cycle. A table entry younger than that point may stay
+  live and unretired for the cycle after the flush and is then freed, as
+  the table frees a flushed entry (formal/vec_vmt_formal.sv proves that
+  lifecycle, with the entry keeping its tag). Addresses and
   ranges are confined to four pages. Each scalar index keeps one address,
   while a vector range can change until published and after index reuse. The sequence starts anywhere, so tags wrap within a few
   frames. Two scalar and two table entries (D, V) keep the bounded check
@@ -108,6 +112,8 @@ module vec_hold_rows_formal #(
   logic [D-1:0] s_valid, s_atomic, s_block, s_ak, s_valid_p, s_ak_p, s_ak_pp;
   logic [D-1:0][7:0] s_seq;
   logic [V-1:0] v_live, v_ret, v_known, v_known_p;
+  // A table entry the last flush removed, live for its cleanup cycle.
+  logic [V-1:0] v_pend;
   logic [V-1:0][7:0] v_seq;
 
   wire a2_go = a1_en && a2_en;
@@ -129,8 +135,9 @@ module vec_hold_rows_formal #(
         assume (!a1_en);
         assume (rb_to <= gseq && rb_to >= 8'(gh + head_step));
         for (int i = 0; i < D; i++) if (s_valid[i] && !s_free[i]) assume (s_seq[i] < rb_to);
-        for (int t = 0; t < V; t++) if (v_live[t] && !v_free[t]) assume (v_seq[t] < rb_to);
       end
+      // A table entry the flush removes is freed on that edge or the next.
+      for (int t = 0; t < V; t++) if (v_pend[t]) assume (v_free[t]);
       for (int i = 0; i < D; i++) if (s_free[i]) assume (s_valid[i]);
       for (int t = 0; t < V; t++) begin
         if (v_free[t]) assume (v_live[t]);
@@ -160,6 +167,7 @@ module vec_hold_rows_formal #(
       v_ret <= '0;
       v_known <= '0;
       v_known_p <= '0;
+      v_pend <= '0;
     end else begin
       gseq <= rb_en ? rb_to : gseq + 8'(n_alloc);
       gh <= gh + 8'(head_step);
@@ -176,6 +184,7 @@ module vec_hold_rows_formal #(
         end
       end
       for (int t = 0; t < V; t++) begin
+        v_pend[t] <= rb_en && v_live[t] && !v_free[t] && v_seq[t] >= rb_to;
         if (v_free[t]) begin
           v_live[t]  <= 1'b0;
           v_ret[t]   <= 1'b0;
@@ -382,6 +391,17 @@ module vec_hold_rows_formal #(
       cover (hold[0] && older[0][0] && !v_ret[0] && v_seq[0][TW-1:0] > s_seq[0][TW-1:0]);
       // A retired table entry holds an entry allocated after it retired.
       c_retired : cover (hold[1] && older[1][1] && v_ret[1] && !s_valid_p[1] && s_valid[1]);
+      // A flushed table entry in its cleanup cycle overlaps a scalar entry
+      // whose address has settled, and does not hold it.
+      c_late_free :
+      cover (v_pend[0] && v_known_p[0] && s_valid[0] && ak_settled[0] && !s_atomic[0] &&
+             !hold[0] && (seg_hit(
+          addr_c[0], size_c[0], s_block[0], rng_v0[0], rng_p0[0], rng_lo0[0], rng_hi0[0]
+      ) || seg_hit(
+          addr_c[0], size_c[0], s_block[0], rng_v1[0], rng_p1[0], rng_lo1[0], rng_hi1[0]
+      )));
+      // A scalar entry is allocated in the cleanup cycle.
+      c_cleanup_alloc : cover (|v_pend && a1_en && !a1_vec);
     end
   end
 
