@@ -1,0 +1,74 @@
+[tasks]
+lookup_prove single
+lookup_multi_prove multi
+lookup_stream_prove stream
+
+[options]
+mode bmc
+depth 1
+timeout 600
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv coherence_read_stream.sv
+read -sv cache_perf_pkg.sv
+read -sv coherence_pkg.sv
+read -sv coherence_request_endpoint.sv
+read -sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv
+read -formal -sv -D LOOKUP_SELECT_PROOF coherence_read_payload.sv coherence_l1d.sv
+read -sv coherence_store_buffer.sv
+read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
+single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
+multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
+stream: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d
+# The reads defer elaboration, so the submodule instances exist only after
+# hierarchy. Their outputs then become free inputs: the store buffer, the
+# request and put endpoints, the read selection, flags, owners and payload,
+# the grant selection, the miss credit, the read stream and the array. No
+# other module instance may remain.
+hierarchy -top coherence_l1d
+delete t:*coherence_read_flags* t:*coherence_read_payload* t:*coherence_read_stream* t:*coherence_store_buffer* t:*coherence_request_endpoint* t:*coherence_grant_select* t:*coherence_read_owners* t:*coherence_miss_credit* t:*coherence_put_endpoint* t:*coherence_read_select* t:*coherence_array*
+select -assert-none coherence_l1d/t:$paramod* coherence_l1d/t:\\*
+prep -flatten -top coherence_l1d
+# Keep only the three lookup-selection checks, with no assumptions.
+select -assert-count 3 c:p_lookup_select_* t:$check %i r:FLAVOR=assert %i
+chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_lookup_select_* %d
+chformal -assume -remove
+chformal -cover -remove
+select -assert-count 3 t:$check r:FLAVOR=assert %i
+select -assert-none t:$check r:FLAVOR=assume %i
+setundef -undriven -anyseq
+# Leave only the checks' cone, and make every register in it a free input,
+# with no flip-flop simplification first: a register that this configuration
+# never writes after reset keeps a free value too.
+delete -output w:*
+opt_clean
+memory_map
+opt -fast -noff
+select -assert-min 1 t:$*ff*
+cutpoint t:$*ff* t:$*latch*
+select -assert-none t:*ff* t:*FF* t:*latch*
+setundef -anyseq
+opt_clean
+
+[files]
+../hw/rtl/lib/cache/coherence_read_stream.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_array.sv
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_put_endpoint.sv
+../hw/rtl/lib/cache/coherence_l1d.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
+../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
+../hw/rtl/lib/cache/coherence_read_select.sv
+../hw/rtl/lib/cache/coherence_read_payload.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_store_buffer.sv

@@ -453,6 +453,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_l1d_lookup.sby",
+        "The L1D lookup address and head readiness match the one-chain reference.",
+        tasks=("lookup_prove", "lookup_multi_prove", "lookup_stream_prove"),
+    ),
+    FormalTarget(
         "coherence_home_select.sby",
         "Seat admission and circular work selection match serial priority.",
         tasks=("coh_seat_select_prove", "coh_work_select_prove"),
@@ -695,6 +700,11 @@ FORMAL_TARGETS = [
         "sq_committed_empty.sby",
         "Store-queue committed-empty state matches the reference through flush and commit",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "sq_next_same.sby",
+        "Store-queue same-sector claim matches the reference after launch and allocation",
+        tasks=("bmc", "bmc_cpu"),
     ),
     FormalTarget(
         "pc_pending_capture.sby",
@@ -2255,6 +2265,18 @@ SBY_TASKS = [
         "coh_l1d_put_select_prove",
         "The W selection releases a slot without a put on the next edge.",
     ),
+    (
+        "lookup_prove",
+        "L1D lookup address selected last by head readiness equals the reference, one miss slot.",
+    ),
+    (
+        "lookup_multi_prove",
+        "L1D lookup address selected last by head readiness equals the reference, three miss slots.",
+    ),
+    (
+        "lookup_stream_prove",
+        "L1D lookup address selected last by head readiness equals the reference, eight slots, streaming.",
+    ),
     ("coh_array_select_prove", "Conditional data selection with one way."),
     ("coh_array_select4_prove", "Conditional data selection with four ways."),
     ("coh_array_select56_prove", "Conditional data selection at 56 address bits."),
@@ -2404,6 +2426,10 @@ SBY_TASKS = [
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("bmc_core", "Load-result selection with the CPU feature configuration."),
+    (
+        "bmc_cpu",
+        "Store-queue claim equivalence with the CPU's dispatch, precise and Normal-memory settings.",
+    ),
     ("coh_lq_capture4_prove", "Coherent capture equality at four entries."),
     ("coh_lq_capture8_prove", "Coherent capture equality at eight entries."),
     ("coh_lq_capture16_prove", "Coherent capture equality at sixteen entries."),

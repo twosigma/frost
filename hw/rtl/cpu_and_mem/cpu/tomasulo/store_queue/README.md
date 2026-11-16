@@ -176,6 +176,13 @@ record open to collect a 64-byte block. Every cycle the SQ also registers
 32-byte sector of its last write, also a cached plain store, so the L1D may
 give it credit as a combining write when all four sector records are in use
 (see the [cache library](../../../../lib/cache/README.md#full-line-stores)).
+Each entry's claim is formed from registered state and the room-qualified
+allocation targets, and the cursor choices select one entry for each launch
+outcome: after a cached plain launch the cursor's post-fire choice; without a
+launch the post-fire choice past a Zicbom entry and the base choice
+otherwise, where the base choice is the cursor entry itself or the same entry
+as the post-fire choice. The allocation's dispatch valids apply next and the
+launch selects last.
 
 Cached ordinary stores complete when captured in one of the L1D's four ordered
 sector records. Each scalar receives an acknowledgement, including scalars
