@@ -36,7 +36,21 @@
  * branch.
  *
  * The retirement history applies the same pushes for retired taken
- * control-flow instructions, from the registered commit bus.
+ * control-flow instructions, from the registered commit bus. The indirect
+ * target predictor hashes this path history.
+ *
+ * Direction history (the tagged direction predictor's). Each conditional
+ * branch shifts in its final predicted direction and each jump its predicted
+ * target's bit 2, when PD
+ * passes its packet to ID; the push is applied to the lookup the cycle after
+ * (registered), so a lookup sees every packet PD passed up to two fetches
+ * before it. Early recovery restores the branch's saved PD-time direction
+ * history and shifts in its outcome; a trap, xRET, FENCE-class flush, or a
+ * misprediction recovered at commit takes the retired direction history
+ * (each retired branch's outcome and each jump's target bit 2), with the
+ * same registered arms as the path history. A PD redirect needs no restore:
+ * the redirecting branch was pushed with its new direction, and nothing
+ * younger was passed.
  *
  * Saved lookups. When PD passes a packet with a conditional branch or a JALR
  * to ID, the instruction's lookup goes to the next entry of a circular
@@ -58,7 +72,8 @@
 module tage_history #(
     parameter int unsigned HIST_BITS = riscv_pkg::TageHistBits,
     parameter int unsigned PATH_BITS = riscv_pkg::TagePathBits,
-    parameter int unsigned FTQ_IDX_BITS = riscv_pkg::TageFtqIdxBits
+    parameter int unsigned FTQ_IDX_BITS = riscv_pkg::TageFtqIdxBits,
+    parameter int unsigned DIR_BITS = riscv_pkg::TageDirHistBits
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -73,22 +88,28 @@ module tage_history #(
     // PD passes a packet to ID (the PD-to-ID register loads a real packet).
     // Bit s of each per-slot vector is slot s + 1. A slot's flag marks a real
     // conditional branch; at most one is set.
-    input logic                                    i_pd_accept,
-    input logic                    [          1:0] i_pd_cond_branch,
-    input logic                    [          1:0] i_tage_slot_valid,
-    input riscv_pkg::tage_lookup_t                 i_tage_slot_lookup,
-    input riscv_pkg::tage_lookup_t                 i_tage_slot_lookup_2,
-    input logic                    [          1:0] i_tage_slot_bank,
+    input  logic                                    i_pd_accept,
+    input  logic                    [          1:0] i_pd_cond_branch,
+    input  logic                    [          1:0] i_tage_slot_valid,
+    input  riscv_pkg::tage_lookup_t                 i_tage_slot_lookup,
+    input  riscv_pkg::tage_lookup_t                 i_tage_slot_lookup_2,
+    input  logic                    [          1:0] i_tage_slot_bank,
     // The BTB and bimodal direction each slot's branch had before PD.
-    input logic                    [          1:0] i_base_taken,
-    input logic                    [HIST_BITS-1:0] i_tage_lookup_hist,
+    input  logic                    [          1:0] i_base_taken,
+    input  logic                    [HIST_BITS-1:0] i_tage_lookup_hist,
     // A slot's flag marks a real JALR (at most one per packet, never with a
     // conditional branch), and its lookup is saved when the indirect target
     // lookup covered it and it is not a return.
-    input logic                    [          1:0] i_pd_jalr,
-    input logic                    [          1:0] i_itt_slot_valid,
-    input riscv_pkg::itt_lookup_t                  i_itt_slot_lookup,
-    input riscv_pkg::itt_lookup_t                  i_itt_slot_lookup_2,
+    input  logic                    [          1:0] i_pd_jalr,
+    // A slot's flag marks a real conditional branch or jump (at most one per
+    // packet), with the conditional branch's final predicted direction.
+    input  logic                    [          1:0] i_pd_cf,
+    input  logic                    [          1:0] i_pd_pred_taken,
+    // The direction history for the tagged predictor's lookup.
+    output logic                    [ DIR_BITS-1:0] o_lookup_dir_hist,
+    input  logic                    [          1:0] i_itt_slot_valid,
+    input  riscv_pkg::itt_lookup_t                  i_itt_slot_lookup,
+    input  riscv_pkg::itt_lookup_t                  i_itt_slot_lookup_2,
 
     // The PD redirect's direction, sampled in its redirect cycle.
     input logic i_pd_redirect_taken,
@@ -118,6 +139,7 @@ module tage_history #(
     input logic [1:0]                                       i_commit_mispredicted,
     input logic [1:0][                       PATH_BITS-1:0] i_commit_target_bits,
     input logic [1:0]                                       i_commit_jalr,
+    input logic [1:0]                                       i_commit_cf,
     input logic [1:0][         riscv_pkg::PhysAddrBits-2:0] i_commit_target,
 
     // Training port (tage_predictor).
@@ -152,9 +174,15 @@ module tage_history #(
     logic                    is_jalr;
     logic                    itt_valid;
     riscv_pkg::itt_lookup_t  itt_lookup;
+    logic [DIR_BITS-1:0]     dir_hist;
   } ftq_entry_t;
   localparam int unsigned FtqEntryBits = 5 + riscv_pkg::TageLookupBits + HIST_BITS +
-      riscv_pkg::IttLookupBits;
+      riscv_pkg::IttLookupBits + DIR_BITS;
+
+  function automatic logic [DIR_BITS-1:0] push_dir(input logic [DIR_BITS-1:0] hist,
+                                                   input logic bit_in);
+    push_dir = {hist[DIR_BITS-2:0], bit_in};
+  endfunction
 
   function automatic logic [HIST_BITS-1:0] push(input logic [HIST_BITS-1:0] hist,
                                                 input logic [PATH_BITS-1:0] bits);
@@ -196,6 +224,9 @@ module tage_history #(
   riscv_pkg::tage_lookup_t pd_lookup_2_q;
   logic [HIST_BITS-1:0] pd_lookup_hist_q;
   logic [1:0] pd_jalr_q;
+  logic [DIR_BITS-1:0] dir_hist_q;  // speculative direction history (below)
+  logic [1:0] pd_cf_q;
+  logic [1:0] pd_pred_taken_q;
   logic [1:0] pd_itt_valid_q;
   riscv_pkg::itt_lookup_t pd_itt_lookup_q;
   riscv_pkg::itt_lookup_t pd_itt_lookup_2_q;
@@ -204,6 +235,8 @@ module tage_history #(
     else pd_accept_q <= i_pd_accept;
     if (i_pd_accept) begin
       pd_jalr_q         <= i_pd_jalr;
+      pd_cf_q           <= i_pd_cf;
+      pd_pred_taken_q   <= i_pd_pred_taken;
       pd_itt_valid_q    <= i_itt_slot_valid;
       pd_itt_lookup_q   <= i_itt_slot_lookup;
       pd_itt_lookup_2_q <= i_itt_slot_lookup_2;
@@ -236,6 +269,7 @@ module tage_history #(
     pd_entry.is_jalr = pd_jalr_q[pd_branch_slot];
     pd_entry.itt_valid = pd_itt_valid_q[pd_branch_slot];
     pd_entry.itt_lookup = pd_branch_slot ? pd_itt_lookup_2_q : pd_itt_lookup_q;
+    pd_entry.dir_hist = dir_hist_q;
   end
 
   logic [FtqEntryBits-1:0] ftq_read_early_raw;
@@ -339,16 +373,18 @@ module tage_history #(
   logic [HIST_BITS-1:0] pd_hist_q;
   logic pd_taken_q;
   logic [HIST_BITS-1:0] early_hist_q;
+  logic [DIR_BITS-1:0] early_dir_hist_q;
   logic early_q;
   logic early_taken_q;
   ftq_entry_t ftq_read_early;
   assign ftq_read_early = ftq_read_early_raw;
   always_ff @(posedge i_clk) begin
-    pd_hist_q     <= pd_lookup_hist_q;
-    pd_taken_q    <= i_pd_redirect_taken;
-    early_hist_q  <= ftq_read_early.hist;
-    early_q       <= i_early_active;
-    early_taken_q <= i_early_taken;
+    pd_hist_q        <= pd_lookup_hist_q;
+    pd_taken_q       <= i_pd_redirect_taken;
+    early_hist_q     <= ftq_read_early.hist;
+    early_dir_hist_q <= ftq_read_early.dir_hist;
+    early_q          <= i_early_active;
+    early_taken_q    <= i_early_taken;
   end
 
   // Arms, highest priority first: 1 trap or xRET, 2 FENCE-class flush,
@@ -373,6 +409,53 @@ module tage_history #(
   always_ff @(posedge i_clk) begin
     if (i_rst) hist_q <= '0;
     else hist_q <= o_lookup_hist;
+  end
+
+  // ===========================================================================
+  // Direction history
+  // ===========================================================================
+  // Retired: each retired conditional branch's outcome and each jump's
+  // target bit 2, slot 1 then slot 2.
+  logic [DIR_BITS-1:0] retired_dir_hist;
+  logic [DIR_BITS-1:0] retired_dir_after_slot1;
+  logic [1:0] retired_dir_bit;
+  assign retired_dir_bit[0] = i_commit_cond_branch[0] ? i_commit_taken[0] :
+                                                         i_commit_target_bits[0][0];
+  assign retired_dir_bit[1] = i_commit_cond_branch[1] ? i_commit_taken[1] :
+                                                         i_commit_target_bits[1][0];
+  assign retired_dir_after_slot1 = (i_commit_valid[0] && i_commit_cf[0]) ? push_dir(
+      retired_dir_hist, retired_dir_bit[0]
+  ) : retired_dir_hist;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) retired_dir_hist <= '0;
+    else if (i_commit_valid[1] && i_commit_cf[1])
+      retired_dir_hist <= push_dir(retired_dir_after_slot1, retired_dir_bit[1]);
+    else retired_dir_hist <= retired_dir_after_slot1;
+  end
+
+  // Speculative: the packet PD passed, registered (pd_*_q), pushes its
+  // control-flow instruction's bit; the restore arms override it.
+  logic pd_dir_push;
+  logic pd_dir_bit;
+  logic [DIR_BITS-1:0] dir_base;
+  logic dir_push;
+  assign pd_dir_push = pd_accept_q && (pd_cf_q[0] || pd_cf_q[1]);
+  assign pd_dir_bit  = pd_cf_q[0] ? pd_pred_taken_q[0] : pd_pred_taken_q[1];
+  always_comb begin
+    dir_base = dir_hist_q;
+    dir_push = pd_dir_push;
+    if (i_hist_restore_arm[1] || i_hist_restore_arm[2]) begin
+      dir_base = retired_dir_hist;
+      dir_push = 1'b0;
+    end else if (i_hist_restore_arm[3]) begin
+      dir_base = early_q ? push_dir(early_dir_hist_q, early_taken_q) : retired_dir_hist;
+      dir_push = 1'b0;
+    end
+  end
+  assign o_lookup_dir_hist = dir_push ? push_dir(dir_base, pd_dir_bit) : dir_base;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) dir_hist_q <= '0;
+    else dir_hist_q <= o_lookup_dir_hist;
   end
 
   // ===========================================================================

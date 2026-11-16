@@ -2155,6 +2155,9 @@ package riscv_pkg;
   // tage_history.sv). Its entries outnumber the conditional branches the
   // front end and ROB can hold.
   localparam int unsigned TageFtqIdxBits = 6;
+  // Direction history the tagged predictor hashes (tage_history): one bit per
+  // conditional branch and per jump, pushed as PD passes the packet to ID.
+  localparam int unsigned TageDirHistBits = 64;
   // Indirect target predictor (ittage_predictor): per-bank index and tag
   // widths, and each table's history length in bits of the tagged
   // predictor's lookup history.

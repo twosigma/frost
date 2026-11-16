@@ -225,7 +225,10 @@ module if_stage #(
     // the lookup history in. Each slot's lookup is valid when the registered
     // lookup covered that slot's word; cpu_ooo saves the branch's lookup and
     // the history it used, to train the same entries at commit.
-    input logic [riscv_pkg::TageHistBits-1:0] i_tage_hist,
+    // The tagged predictor's direction history and the indirect target
+    // predictor's path history (tage_history).
+    input logic [riscv_pkg::TageDirHistBits-1:0] i_tage_hist,
+    input logic [riscv_pkg::TageHistBits-1:0] i_itt_hist,
     input logic i_tage_train_valid,
     input riscv_pkg::tage_lookup_t i_tage_train_lookup,
     input logic i_tage_train_bank,
@@ -2501,14 +2504,16 @@ module if_stage #(
   assign o_tage_fetch_path_bits = pc_tage_lookup[3:2];
   riscv_pkg::tage_lookup_t tage_bank0;
   riscv_pkg::tage_lookup_t tage_bank1;
-  tage_predictor u_tage_predictor (
+  tage_predictor #(
+      .HIST_BITS(riscv_pkg::TageDirHistBits)
+  ) u_tage_predictor (
       .i_clk,
       .i_lookup_word(pc_tage_lookup),
       .i_lookup_hist(i_tage_hist),
       .i_lookup_capture(!if_stage_stall && fetch_progress),
       .o_lookup_word(tage_lookup_word),
       .o_lookup_word_next(tage_lookup_word_next),
-      .o_lookup_hist(o_tage_lookup_hist),
+      .o_lookup_hist(),
       .o_bank0(tage_bank0),
       .o_bank1(tage_bank1),
       .i_train_valid(i_tage_train_valid),
@@ -2595,9 +2600,10 @@ module if_stage #(
   // ===========================================================================
   // Indirect Target Predictor
   // ===========================================================================
-  // Looked up with the tagged predictor's word and history and captured under
-  // the same condition, so the tagged predictor's coverage check applies to
-  // it. Each slot takes its word's bank. A fetch fault's bytes carry no JALR.
+  // Looked up with the tagged predictor's word, on the path history, and
+  // captured under the same condition, so the tagged predictor's coverage
+  // check applies to it. Its registered path history is the packet's, saved
+  // with each branch for path-history restores. Each slot takes its word's bank. A fetch fault's bytes carry no JALR.
   riscv_pkg::itt_lookup_t itt_bank0;
   riscv_pkg::itt_lookup_t itt_bank1;
   logic [1:0] itt_bank_hit;
@@ -2605,8 +2611,9 @@ module if_stage #(
   ittage_predictor u_ittage_predictor (
       .i_clk,
       .i_lookup_word(pc_tage_lookup),
-      .i_lookup_hist(i_tage_hist),
+      .i_lookup_hist(i_itt_hist),
       .i_lookup_capture(!if_stage_stall && fetch_progress),
+      .o_lookup_hist(o_tage_lookup_hist),
       .o_bank0(itt_bank0),
       .o_bank1(itt_bank1),
       .o_hit(itt_bank_hit),

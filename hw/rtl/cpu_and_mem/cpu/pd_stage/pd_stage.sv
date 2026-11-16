@@ -91,7 +91,12 @@ module pd_stage #(
     // Each slot's JALR decode, and whether it is one the indirect target
     // predictor covers (not a return), for the saved lookups.
     output logic [1:0] o_jalr,
-    output logic [1:0] o_itt_eligible
+    output logic [1:0] o_itt_eligible,
+    // Each slot's JAL or JALR decode and its direction-history bit: a
+    // conditional branch's final predicted direction (the direction ID
+    // applies), or a jump's predicted target bit 2.
+    output logic [1:0] o_jump,
+    output logic [1:0] o_pred_taken
 );
 
   // ===========================================================================
@@ -732,6 +737,32 @@ module pd_stage #(
   assign pd_itt_eligible[1] = pd_jalr[1] && !is_return(i_from_if_to_pd_2.effective_instr);
   assign o_jalr = pd_jalr;
   assign o_itt_eligible = pd_itt_eligible;
+  assign o_jump = {pd_slot2_jump, pd_slot1_jump};
+  // A jump's target bit: the indirect target's, else the BTB's when it
+  // predicted taken, else the backing BTB's (a jump with no prediction
+  // mispredicts and the history is restored).
+  logic [1:0] pd_jump_target_bit;
+  // Bit 2 of the backing BTB target that the backing redirect would take: the
+  // stack's top for a return while the stack holds an entry, else the hit
+  // slot's entry (slot 1's first). It equals the simulation-only
+  // pd_backing_target's bit 2, formed from the fields synthesis keeps.
+  logic pd_backing_target_bit2;
+  assign pd_backing_target_bit2 =
+      ((i_backing_hit[0] ? i_backing_return[0] : i_backing_return[1]) &&
+       (i_from_if_to_pd.ras_checkpoint_valid_count != '0)) ?
+      i_from_if_to_pd.ras_checkpoint_top[2] :
+      (i_backing_hit[0] ? i_backing_target[0][1] : i_backing_target[1][1]);
+  assign pd_jump_target_bit[0] = pd_itt_candidate ? i_itt_target[0][1] :
+      i_from_if_to_pd.btb_predicted_taken ? i_from_if_to_pd.btb_predicted_target[2] :
+                                            pd_backing_target_bit2;
+  assign pd_jump_target_bit[1] = pd_itt_candidate_2 ? i_itt_target[1][1] :
+      i_from_if_to_pd_2.btb_predicted_taken ? i_from_if_to_pd_2.btb_predicted_target[2] :
+                                              pd_backing_target_bit2;
+  assign o_pred_taken[0] = pd_slot1_jump ? pd_jump_target_bit[0] :
+      (pd_taken_candidate || (!pd_not_taken_candidate && i_from_if_to_pd.btb_predicted_taken));
+  assign o_pred_taken[1] = pd_slot2_jump ? pd_jump_target_bit[1] :
+      (pd_taken_candidate_2 ||
+       (!pd_not_taken_candidate_2 && i_from_if_to_pd_2.btb_predicted_taken));
   assign pd_itt_candidate = pd_itt_eligible[0] && i_itt_hit[0] &&
       !(i_from_if_to_pd.btb_predicted_taken &&
         (i_from_if_to_pd.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] == i_itt_target[0]));

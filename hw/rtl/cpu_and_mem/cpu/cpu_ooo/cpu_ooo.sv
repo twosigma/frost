@@ -859,6 +859,9 @@ module cpu_ooo #(
   riscv_pkg::itt_lookup_t itt_slot_lookup;
   riscv_pkg::itt_lookup_t itt_slot_lookup_2;
   logic [1:0] pd_jalr;
+  logic [1:0] pd_jump;
+  logic [1:0] pd_pred_taken;
+  logic [riscv_pkg::TageDirHistBits-1:0] tage_dir_hist;
   logic [1:0] pd_itt_eligible;
   logic itt_train_valid;
   riscv_pkg::itt_lookup_t itt_train_lookup;
@@ -964,7 +967,8 @@ module cpu_ooo #(
       .o_slot1_has_control_flow(if_slot1_has_control_flow),
       .o_slot1_is_indirect(if_slot1_is_indirect),
       .o_width_events(if_width_events),
-      .i_tage_hist(tage_lookup_hist),
+      .i_tage_hist(tage_dir_hist),
+      .i_itt_hist(tage_lookup_hist),
       .i_tage_train_valid(tage_train_valid),
       .i_tage_train_lookup(tage_train_lookup),
       .i_tage_train_bank(tage_train_bank),
@@ -1023,7 +1027,9 @@ module cpu_ooo #(
       .o_pd_backing_refresh_pc(pd_backing_refresh_pc),
       .o_cond_branch(pd_cond_branch),
       .o_jalr(pd_jalr),
-      .o_itt_eligible(pd_itt_eligible)
+      .o_itt_eligible(pd_itt_eligible),
+      .o_jump(pd_jump),
+      .o_pred_taken(pd_pred_taken)
   );
 
   // ===========================================================================
@@ -3769,6 +3775,16 @@ module cpu_ooo #(
   assign tage_pd_jalr[0] = pd_jalr[0] && !from_if_to_pd.sel_nop && !from_if_to_pd.fetch_fault;
   assign tage_pd_jalr[1] = pd_jalr[1] && !from_if_to_pd_2.sel_nop && !from_if_to_pd_2.fetch_fault;
   assign tage_itt_slot_valid = tage_slot_valid & pd_itt_eligible;
+  // Direction history: each slot's real conditional branch or jump, and the
+  // bit it pushes (a branch's final predicted direction, a jump's predicted
+  // target bit 2).
+  logic [1:0] tage_pd_cf;
+  logic [1:0] tage_pd_pred_taken;
+  assign tage_pd_cf[0] = tage_pd_cond_branch[0] ||
+      (pd_jump[0] && !from_if_to_pd.sel_nop && !from_if_to_pd.fetch_fault);
+  assign tage_pd_cf[1] = tage_pd_cond_branch[1] ||
+      (pd_jump[1] && !from_if_to_pd_2.sel_nop && !from_if_to_pd_2.fetch_fault);
+  assign tage_pd_pred_taken = pd_pred_taken;
 
   // Dispatch's tags and branch types, and its allocations registered.
   always_ff @(posedge i_clk) begin
@@ -3817,6 +3833,9 @@ module cpu_ooo #(
   assign tage_commit_target_bits[0] = rob_commit.branch_target[3:2];
   assign tage_commit_target_bits[1] = rob_commit_2.branch_target[3:2];
   logic [1:0] tage_commit_jalr;
+  logic [1:0] tage_commit_cf;
+  assign tage_commit_cf[0] = rob_commit.is_branch;
+  assign tage_commit_cf[1] = rob_commit_2.is_branch;
   logic [1:0][riscv_pkg::PhysAddrBits-2:0] tage_commit_target;
   assign tage_commit_jalr[0]   = rob_commit.is_branch && rob_commit.is_jalr;
   assign tage_commit_jalr[1]   = rob_commit_2.is_branch && rob_commit_2.is_jalr;
@@ -3839,6 +3858,9 @@ module cpu_ooo #(
       .i_base_taken(tage_base_taken),
       .i_tage_lookup_hist(tage_packet_hist),
       .i_pd_jalr(tage_pd_jalr),
+      .i_pd_cf(tage_pd_cf),
+      .i_pd_pred_taken(tage_pd_pred_taken),
+      .o_lookup_dir_hist(tage_dir_hist),
       .i_itt_slot_valid(tage_itt_slot_valid),
       .i_itt_slot_lookup(itt_slot_lookup),
       .i_itt_slot_lookup_2(itt_slot_lookup_2),
@@ -3859,6 +3881,7 @@ module cpu_ooo #(
       .i_commit_mispredicted(tage_commit_mispredicted),
       .i_commit_target_bits(tage_commit_target_bits),
       .i_commit_jalr(tage_commit_jalr),
+      .i_commit_cf(tage_commit_cf),
       .i_commit_target(tage_commit_target),
       .o_train_valid(tage_train_valid),
       .o_train_lookup(tage_train_lookup),

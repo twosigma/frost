@@ -131,7 +131,7 @@ cases, then the sequential PC.
 | Backing BTB | 1024 entries, two-way set-associative | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | Mispredicted JALs and JALRs at commit; each PD redirect it serves refreshes its entry's replacement state |
 | Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`), and of a backing BTB redirect for one | IF, when it hands PD a packet predicted from a typed entry, and for a backing BTB redirect: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
-| Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of conditional branches in either slot whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
+| Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of direction history; 9-bit tags, 3-bit counters | Direction of conditional branches in either slot whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
 | Indirect target predictor | Three tables of 256 entries, hashed with 8, 24 and 64 bits of path history; 11-bit tags, 2-bit confidence | Target of a JALR that is not a return, in either slot, through a PD redirect when it differs from the BTB's | Each JALR at commit, at the entries its lookup read |
 
 A return is predicted like any BTB hit, from the lookup at its fetch PC, but
@@ -215,6 +215,24 @@ A served-window resteer, which only variable-latency fetch produces,
 leaves the history unchanged, so when one returns fetch to a branch already
 predicted taken, the branch is looked up again with its own target in the
 history. That costs accuracy, not correctness.
+
+The tagged predictor hashes a global direction history rather than the path
+history: each conditional branch shifts in one bit, its final predicted
+direction, taken or not, and each jump its predicted target's bit 2.
+`tage_history` pushes a packet's bit when PD passes the packet to ID, from a
+register, so a lookup sees every packet PD passed up to two fetches before
+it. A not-taken branch now reaches the history, which is what loop exits and
+correlated branches need. Early recovery restores the branch's saved PD-time
+history and shifts in its outcome; a trap, xRET, FENCE-class flush or
+commit-time recovery takes the retired direction history (each retired
+branch's outcome and each jump's target bit 2), with the same registered
+arms as the path history. A PD redirect needs no restore: the redirecting
+branch was pushed with its new direction, and nothing younger was passed.
+The path history above stays for the indirect target predictor and its
+saved-lookup restores. In the trace model this takes CoreMark-PRO loops from
+9.96 to 0.18 mispredictions per 1,000 instructions, nnet from 3.18 to 0.54
+and radix2 from 1.08 to 0.59; core rises from 2.10 to 2.87 with two tables,
+which the four-table predictor recovers.
 
 The indirect target predictor (`ittage_predictor`) follows ITTAGE. Three
 tables hash a JALR's word address with the newest 8, 24 and 64 bits of the

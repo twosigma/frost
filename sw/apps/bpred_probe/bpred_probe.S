@@ -25,6 +25,7 @@
 #   S2  a slot-2 conditional branch that alternates taken and not taken
 #   IJ  a switch-style jump through a table with a period-4 index sequence
 #   HC  a branch that repeats the outcome of the branch before it
+#   HD  as HC with twelve instructions between the two branches
 # With BPRED_LIMITS set the phases' misprediction counts are checked against
 # the LIMIT_* values below; otherwise the probe only reports.
 
@@ -201,6 +202,33 @@ hc_b:
     bnez    s1, hc_loop
     PHASE_REPORT msg_hc, LIMIT_HC
 
+    # HD: as HC with twelve ALU instructions between the two branches, past
+    # the direction history's two-fetch lag.
+    li      s1, ITERATIONS
+    li      s2, 0x2545F491
+    READ_COUNTERS s7, s4
+    .balign 8
+hd_loop:
+    slli    t0, s2, 13
+    xor     s2, s2, t0
+    srli    t0, s2, 7
+    xor     s2, s2, t0
+    slli    t0, s2, 17
+    xor     s2, s2, t0
+    andi    t2, s2, 1
+    beqz    t2, hd_a
+    addi    t1, t1, 1
+hd_a:
+    .rept 12
+    addi    t3, t3, 1
+    .endr
+    beqz    t2, hd_b
+    addi    t1, t1, 1
+hd_b:
+    addi    s1, s1, -1
+    bnez    s1, hd_loop
+    PHASE_REPORT msg_hd, LIMIT_HC
+
 finish:
     la      a0, msg_pass_marker
     beqz    s9, finish_print
@@ -335,6 +363,8 @@ msg_ij:
     .string "IJ jump table, period 4:"
 msg_hc:
     .string "HC history-correlated branch:"
+msg_hd:
+    .string "HD history-correlated branch, 12 apart:"
 msg_mp:
     .string " mispredicts="
 msg_cycles:
