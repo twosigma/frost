@@ -489,27 +489,93 @@ def test_unrecognised_output_preserves_its_files(
     assert not (tmp_path / "make-calls").exists()
 
 
-@pytest.mark.parametrize("kind", ["directory", "dangling", "parent"])
+@pytest.mark.parametrize("kind", ["directory", "dangling"])
 def test_output_symlinks_are_refused(
     builder: ModuleType,
     tmp_path: Path,
     kind: str,
 ) -> None:
-    """Output links and paths through a linked parent never authorize deletion."""
+    """A linked final output component never authorizes deletion."""
     target = tmp_path / "target"
     if kind != "dangling":
         target.mkdir()
         (target / "important.txt").write_text("keep this")
     link = tmp_path / "link"
     link.symlink_to(target)
-    out = link / "child" if kind == "parent" else link
     with pytest.raises(SystemExit, match="symlink output path"):
-        builder.build(out, "riscv64-linux-", 1)
+        builder.build(link, "riscv64-linux-", 1)
     assert link.is_symlink()
     if kind != "dangling":
         assert (target / "important.txt").read_text() == "keep this"
     else:
         assert not target.exists()
+
+
+def test_checkout_under_a_linked_parent_builds_and_reuses(
+    builder: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parent aliases resolve to a reusable output with readable firmware and stamp."""
+    alias = tmp_path / "linked"
+    alias.symlink_to(tmp_path)
+    monkeypatch.setattr(builder, "OPENSBI_DIR", alias / "source")
+    monkeypatch.setattr(
+        builder, "GENERIC_CONFIGS_DIR", alias / "source/platform/generic/configs"
+    )
+    monkeypatch.setattr(builder, "FROST_DEFCONFIG", alias / "defconfig")
+    monkeypatch.setattr(builder, "__file__", str(alias / "builder.py"))
+    out = alias / "out"
+    firmware = builder.build(out, "riscv64-linux-", 1)
+    assert firmware == tmp_path / "out/platform/generic/firmware/fw_jump.bin"
+    before = firmware.stat().st_mtime_ns
+    assert builder.read_stamp(out / builder.BUILD_STAMP) is not None
+    assert builder.firmware_identity(out) is not None
+    builder.build(out, "riscv64-linux-", 1)
+    assert firmware.stat().st_mtime_ns == before
+    assert (tmp_path / "make-calls").read_text().splitlines() == ["make"]
+
+
+def test_replacing_output_does_not_follow_internal_links(
+    builder: ModuleType,
+    tmp_path: Path,
+) -> None:
+    """Removing a recognised output tree unlinks internal links and preserves targets."""
+    out = tmp_path / "out"
+    builder.build(out, "riscv64-linux-", 1)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    important = outside / "important.txt"
+    important.write_text("keep this")
+    (out / "external").symlink_to(outside)
+    builder.FROST_DEFCONFIG.write_text("CONFIG_OTHER_DRIVER=y\n")
+    builder.build(out, "riscv64-linux-", 1)
+    assert important.read_text() == "keep this"
+    assert not (out / "external").exists()
+    assert (tmp_path / "make-calls").read_text().splitlines() == ["make", "make"]
+
+
+def test_linked_markers_do_not_identify_an_output_directory(
+    builder: ModuleType,
+    tmp_path: Path,
+) -> None:
+    """Marker files outside the output tree cannot authorize its removal."""
+    outside = tmp_path / "outside"
+    for name in ("fw_jump.bin", "fw_jump.elf"):
+        path = outside / "platform/generic/firmware" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("keep this")
+    out = tmp_path / "unrelated"
+    out.mkdir()
+    (out / "platform").symlink_to(outside / "platform")
+    important = out / "important.txt"
+    important.write_text("keep this too")
+    with pytest.raises(SystemExit, match="unrecognised non-empty"):
+        builder.build(out, "riscv64-linux-", 1)
+    assert important.read_text() == "keep this too"
+    assert (out / "platform").is_symlink()
+    for name in ("fw_jump.bin", "fw_jump.elf"):
+        assert (outside / "platform/generic/firmware" / name).read_text() == "keep this"
 
 
 def test_output_file_is_refused(builder: ModuleType, tmp_path: Path) -> None:

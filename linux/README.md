@@ -62,8 +62,8 @@ missing or different stamp causes a build in an empty output directory; matching
 firmware is reused without running make.
 If Git cannot identify the source directory, every invocation builds from scratch
 without recording a reusable stamp. Only empty directories, directories with a
-helper stamp, and recognised OpenSBI output directories can be replaced; output
-symlinks are refused.
+helper stamp, and recognised OpenSBI output directories can be replaced. The last
+component of `--out` must not be a symlink; links in its parent path are resolved.
 
 OpenSBI enters the payload in S-mode with `satp` Bare and `sstatus.SIE=0`. It
 delegates the SSI, STI, SEI, and local counter-overflow (LCOFI) interrupts and
