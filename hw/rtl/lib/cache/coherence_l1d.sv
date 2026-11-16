@@ -2806,6 +2806,105 @@ module coherence_l1d #(
       !(i_sc_valid && o_sc_ready) && !atomic_write_q && !atomic_sc_selected &&
       !store_head_ready && !look_ready && !(maint_eligible && maint_turn_q);
   assign lookup_other_valid = !(lookup_read_turn || (lookup_read_enable && rd_candidate));
+  // The Idle selection's phase and the operation register's next value,
+  // prepared from every source except the read selector's found output, which
+  // settles last. idle_read_turn is the Idle turn that a found read takes: no
+  // probe, twin, grant, SC, atomic, store or look-ahead record takes it first,
+  // maintenance does not hold the turn, and a credited read turn is not
+  // cancelled. The found output then selects at the registers, after the
+  // priority, as it does for the lookup address.
+  (* keep = "true" *) wire idle_read_turn;
+  assign idle_read_turn = active && phase_q == Idle &&
+      ((lookup_read_turn && !prefetch_cancel) || lookup_read_enable);
+  logic [3:0] idle_phase_rest, operation_rest;
+  always_comb begin
+    idle_phase_rest = Idle;
+    operation_rest  = operation_q;
+    if (active) begin
+      case (phase_q)
+        Idle: begin
+          if (probe_capture && probe_in.opcode != coherence_pkg::CheckSC) begin
+            operation_rest  = ProbeOp;
+            idle_phase_rest = probe_launch ? LookupWait : Lookup;
+          end else if (probe_valid_q && !o_r_valid) begin
+            operation_rest  = ProbeOp;
+            idle_phase_rest = probe_q.opcode == coherence_pkg::CheckSC ? ProbeReply : Lookup;
+          end else if (probe_priority || probe_valid_q) begin
+            // Probe ownership excludes local selection through R acceptance.
+          end else if (twin_owed) begin
+            if (twin_ready) begin
+              operation_rest  = TwinOp;
+              idle_phase_rest = Lookup;
+            end
+          end else if (grant_read_hold) begin
+            // Only a found read takes the credited turn.
+          end else if (grant_valid && grant_ready) begin
+            // A failed read completes from fail_clear_q a cycle later.
+            operation_rest = GrantOp;
+            if (!grant_failure) idle_phase_rest = Lookup;
+          end else if (i_sc_valid && o_sc_ready) begin
+            operation_rest  = SCOp;
+            idle_phase_rest = Lookup;
+          end else if (atomic_write_q) begin
+            operation_rest  = AtomicWriteOp;
+            idle_phase_rest = Lookup;
+          end else if (atomic_sc_selected) begin
+            operation_rest  = SCOp;
+            idle_phase_rest = sc_home_q ? Acquire : Lookup;
+          end else if (store_head_ready) begin
+            operation_rest  = StoreOp;
+            idle_phase_rest = Lookup;
+          end else if (look_ready) begin
+            operation_rest  = LookaheadOp;
+            idle_phase_rest = Lookup;
+          end else if (maint_eligible) begin
+            if (!maint_last_q) begin
+              operation_rest  = MaintOp;
+              idle_phase_rest = Lookup;
+            end
+          end else if (hint_valid_q && hint_checked_q && hint_eligible_q &&
+              prefetch_ep_free && !prefetch_cancel && hint_in_window) begin
+            operation_rest  = PrefetchOp;
+            idle_phase_rest = Lookup;
+          end
+        end
+        LocalMerge: if (!(atomic_sc_q && !local_sc_match)) operation_rest = AtomicWriteOp;
+        default: begin
+        end
+      endcase
+    end
+  end
+  // A found read takes ReadOp, whose encoding is zero, and Lookup, whose only
+  // set bit is bit 0: the found output reaches no other phase bit.
+  wire [3:0] operation_next, idle_phase_next;
+  for (genvar bit_index = 0; bit_index < 4; bit_index++) begin : gen_operation_select
+`ifdef FROST_XILINX_PRIMS
+    (* dont_touch = "true" *) LUT3 #(.INIT(8'h2a)) u_select (
+        .I0(operation_rest[bit_index]),
+        .I1(idle_read_turn),
+        .I2(rd_candidate),
+        .O(operation_next[bit_index])
+    );
+`else
+    assign operation_next[bit_index] =
+        operation_rest[bit_index] && !(idle_read_turn && rd_candidate);
+`endif
+  end
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT3 #(.INIT(8'hea)) u_idle_phase_select (
+      .I0(idle_phase_rest[0]),
+      .I1(idle_read_turn),
+      .I2(rd_candidate),
+      .O(idle_phase_next[0])
+  );
+`else
+  assign idle_phase_next[0] = idle_phase_rest[0] || (idle_read_turn && rd_candidate);
+`endif
+  assign idle_phase_next[3:1] = idle_phase_rest[3:1];
+  always_ff @(posedge i_clk) begin
+    if (i_rst) operation_q <= ReadOp;
+    else operation_q <= operation_t'(operation_next);
+  end
   // The non-read address follows the controller's Idle priority. When a read
   // wins, its address replaces this value at the final selection, so its
   // eligibility need not feed this priority chain as well. The credited read
@@ -2838,7 +2937,6 @@ module coherence_l1d #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       phase_q <= Idle;
-      operation_q <= ReadOp;
       twin_fill_q <= 1'b0;
       twin_ep_q <= '0;
       rd_valid_q <= '0;
@@ -3031,6 +3129,9 @@ module coherence_l1d #(
       if (active) begin
         case (phase_q)
           Idle: begin
+            // The phase and the operation come from the prepared Idle
+            // selection above; the same priority sets the rest here.
+            phase_q <= phase_t'(idle_phase_next);
             if (probe_capture && probe_in.opcode != coherence_pkg::CheckSC) begin
               reply_q <= '0;
               reply_q.tid <= probe_in.tid;
@@ -3038,8 +3139,6 @@ module coherence_l1d #(
               reply_q.addr <= probe_in.addr;
               probe_absorbed_q <= wb_match;
               probe_put_q <= wb_match_slot;
-              operation_q <= ProbeOp;
-              phase_q <= probe_launch ? LookupWait : Lookup;
             end else if (probe_valid_q && !o_r_valid) begin
               reply_q <= '0;
               reply_q.tid <= probe_q.tid;
@@ -3047,7 +3146,6 @@ module coherence_l1d #(
               reply_q.addr <= probe_q.addr;
               probe_absorbed_q <= wb_match;
               probe_put_q <= wb_match_slot;
-              operation_q <= ProbeOp;
               if (probe_q.opcode == coherence_pkg::CheckSC) begin
                 reply_q.opcode <= coherence_pkg::CheckAck;
                 reply_q.sc_valid <= atomic_q && atomic_sc_q && request_live &&
@@ -3056,57 +3154,36 @@ module coherence_l1d #(
                     i_reservation_addr == atomic_addr_q && i_reservation_size == atomic_size_q;
                 sc_checked_q <= 1'b1;
                 sc_tid_q <= probe_q.tid;
-                phase_q <= ProbeReply;
-              end else phase_q <= Lookup;
+              end
             end else if (probe_priority || probe_valid_q) begin
               // Probe ownership excludes local selection through R acceptance.
             end else if (twin_owed) begin
               // A GrantMZero's twin installs before other local work, once a
               // write-back slot is free for its victim and no frozen PutM holds
               // its sector, as for any store.
-              if (twin_ready) begin
-                operation_q <= TwinOp;
-                phase_q <= Lookup;
-              end
             end else if (grant_read_hold) begin
               // The credited turn leaves the circular pointer in place, so a
               // read that misses and cannot acquire keeps its next turn.
-              if (grant_read_yield) begin
-                maint_turn_q <= 1'b1;
-                operation_q <= ReadOp;
-                phase_q <= Lookup;
-              end
+              if (grant_read_yield) maint_turn_q <= 1'b1;
             end else if (grant_valid && grant_ready) begin
-              operation_q <= GrantOp;
-              // A failed read completes from fail_clear_q a cycle later.
               if (grant_failure) begin
                 if (grant_is_store) begin
                   o_fatal <= 1'b1;
                   o_fatal_addr <= grant.addr;
                 end
-              end else phase_q <= Lookup;
+              end
             end else if (i_sc_valid && o_sc_ready) begin
-              operation_q <= SCOp;
-              phase_q <= Lookup;
+              // This selection and the next two set only the phase and the
+              // operation.
             end else if (atomic_write_q) begin
-              operation_q <= AtomicWriteOp;
-              phase_q <= Lookup;
             end else if (atomic_sc_selected) begin
-              operation_q <= SCOp;
-              phase_q <= sc_home_q ? Acquire : Lookup;
             end else if (store_head_ready) begin
-              operation_q <= StoreOp;
               store_selected_q <= store_head_index;
-              phase_q <= Lookup;
             end else if (look_ready) begin
-              operation_q <= LookaheadOp;
               store_selected_q <= look_index_q;
-              phase_q <= Lookup;
             end else if (read_selected) begin
               maint_turn_q <= 1'b1;
-              operation_q <= ReadOp;
               rd_rr_q <= rd_pick + 1'b1;
-              phase_q <= Lookup;
             end else if (maint_eligible) begin
               maint_turn_q <= 1'b0;
               if (maint_last_q) begin
@@ -3114,14 +3191,7 @@ module coherence_l1d #(
                   maint_q <= 1'b0;
                   o_maint_done <= 1'b1;
                 end
-              end else begin
-                operation_q <= MaintOp;
-                phase_q <= Lookup;
               end
-            end else if (hint_valid_q && hint_checked_q && hint_eligible_q &&
-                prefetch_ep_free && !prefetch_cancel && hint_in_window) begin
-              operation_q <= PrefetchOp;
-              phase_q <= Lookup;
             end
           end
           Lookup: begin
@@ -3312,7 +3382,6 @@ module coherence_l1d #(
             end else begin
               for (int index = 0; index < 32; index++)
               if (atomic_mask_q[index]) image_q[8*index+:8] <= atomic_data_q[8*index+:8];
-              operation_q <= AtomicWriteOp;
               phase_q <= Update;
             end
           end

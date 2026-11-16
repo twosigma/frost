@@ -496,7 +496,13 @@ selected read slot and grant payload have no reset and capture on every Idle
 cycle, because nothing reads them until a selection leaves Idle. The read
 address joins that selection last. The priority conditions above a read are
 prepared separately, so read eligibility controls the final address selection
-without passing through the non-read address priority chain.
+without passing through the non-read address priority chain. The phase and
+the operation that the Idle selection assigns are prepared the same way, from
+every source except the read selector's found output, which selects last at
+the registers. A found read takes the read operation and Lookup, and the
+outcomes it displaces (staying in Idle, or maintenance or a prefetch entering
+Lookup) differ from these only in the operation and the phase's lowest bit, so
+the found output reaches no other phase bit.
 
 Each read slot's kind registers on its allocation edge, so selection reads the
 slot's kind without selecting from the buffered payload. Each slot has a local
