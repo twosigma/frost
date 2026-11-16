@@ -115,15 +115,14 @@ its measured time.
 These three cover depths leave twenty frames beyond the first depths
 that reach the cover, 213, 215 and 230. The bounded checks canonicalize
 packed word selections before bit mapping. They use ABC BMC3's default
-solver for direct connections and CaDiCaL for one-stage links, at the
-depths listed above. Each bounded schedule checks the two values of the
-one-bit watched-byte choice in two tasks: the task without a suffix
-checks the first byte, and its `_second` task checks the second.
-Together they cover every watch value. The byte values are arbitrary,
-and reset and the initial state are those of the other tasks. The
-preparation script checks that both eight-bit byte constants remain and
-that the bounded models have no assumptions. No case assumes a result
-from another case.
+solver for direct connections and CaDiCaL for one-stage links. Each
+bounded schedule checks the two values of the one-bit watched-byte
+choice in two tasks: the task without a suffix checks the first byte,
+and its `_second` task checks the second. Together they cover every
+watch value. The byte values are arbitrary, and reset and the initial
+state are those of the other tasks. The preparation script checks that
+both eight-bit byte constants remain and that the bounded models have
+no assumptions. No case assumes a result from another case.
 
 CI assigns the CSR profiling-on, CSR profiling-off and reorder-buffer tasks
 to separate jobs with 120-minute limits. These jobs also run selected
