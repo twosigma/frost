@@ -1,0 +1,61 @@
+[tasks]
+zero_index_prove compare
+zero_index_invariants shape
+
+[options]
+mode prove
+compare: depth 2
+shape: depth 4
+timeout 600
+
+[engines]
+smtbmc boolector
+
+[script]
+compare: read -sv coherence_read_stream.sv cache_perf_pkg.sv coherence_pkg.sv
+compare: read -sv coherence_request_endpoint.sv coherence_put_endpoint.sv
+compare: read -sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv
+compare: read -sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv
+compare: read -sv coherence_store_buffer.sv
+compare: read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
+compare: read -formal -sv -D ZERO_INDEX_PROOF coherence_l1d.sv
+compare: chparam -set ADDR_WIDTH 56 -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
+compare: prep -flatten -top coherence_l1d
+# Abstract all selector inputs. The shape task proves twin pairing, twin
+# sector identity and the sampled older-record conflict under the buffer's
+# push/pop/seal/acquire contract. That controller-to-buffer contract is
+# assumed here, not proved by this equivalence task.
+compare: cutpoint w:store_valid w:store_zero w:store_twin w:store_addr w:store_head_index w:store_acquired w:store_checked_q w:look_owner_conflict_q w:look_pair_conflict_q w:look_snapshot_valid_q w:zero_sibling_conflict_q
+compare: chformal -assume -remove
+compare: select -assert-count 4 c:p_zero_index_* t:$check %i r:FLAVOR=assert %i
+compare: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_zero_index_* %d
+compare: chformal -assert2assume c:p_zero_index_twin_sector c:p_zero_index_twin_pair c:p_zero_index_head_conflict
+compare: select -assert-count 1 t:$check r:FLAVOR=assert %i
+shape: read -formal -sv -D ZERO_INDEX_PROOF coherence_store_buffer.sv
+shape: chparam -set ADDR_WIDTH 56 -set TAG_BITS 2 -set EP_BITS 2 coherence_store_buffer
+shape: prep -top coherence_store_buffer
+# Keep all of the buffer's assertions and interface assumptions.
+shape: select -assert-count 1 c:p_index_head_conflict t:$check %i r:FLAVOR=assert %i
+chformal -cover -remove
+memory_map
+opt
+
+[files]
+../hw/rtl/lib/cache/coherence_read_stream.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_array.sv
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_put_endpoint.sv
+../hw/rtl/lib/cache/coherence_l1d.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
+../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
+../hw/rtl/lib/cache/coherence_read_select.sv
+../hw/rtl/lib/cache/coherence_read_payload.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_store_buffer.sv
