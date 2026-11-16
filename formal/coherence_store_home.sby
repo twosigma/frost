@@ -4,12 +4,12 @@ bmc_rows bmc rows ordinary
 bmc_conflict bmc conflict deep
 cover_siblings covers siblings ordinary
 cover_rows covers rows ordinary
-cover_conflict covers conflict deep
+cover_conflict covers conflict deep compact_covers
 bmc_pressure bmc pressure deep
-cover_pressure covers pressure deep
+cover_pressure covers pressure deep compact_covers
 link_bmc_siblings bmc siblings linked ordinary_link
 link_bmc_pressure bmc pressure deep_link linked
-link_cover_pressure covers pressure deep_link linked
+link_cover_pressure covers pressure deep_link linked compact_covers
 
 [options]
 bmc: mode bmc
@@ -19,7 +19,11 @@ ordinary: depth 240
 deep: depth 360
 ordinary_link: depth 300
 deep_link: depth 420
+cover_conflict: depth 233
+cover_pressure: depth 235
+link_cover_pressure: depth 250
 timeout 2400
+compact_covers: timeout 900
 bmc_siblings: timeout 1800
 bmc_rows: timeout 2100
 bmc_conflict: timeout 2400
@@ -51,6 +55,17 @@ memory_map
 opt
 bmc: techmap
 bmc: opt -fast
+# Optimize the cover and its assumptions before undefined bits become inputs.
+compact_covers: chformal -assert -remove
+compact_covers: setattr -unset keep
+compact_covers: techmap
+compact_covers: opt -fast
+compact_covers: abc
+compact_covers: opt -full
+compact_covers: setundef -undriven -anyseq
+compact_covers: select -assert-count 1 t:$check r:FLAVOR=cover %i
+compact_covers: select -assert-count 1 t:$check r:FLAVOR=assume %i
+compact_covers: select -clear
 setundef -anyseq
 opt_clean
 check -assert

@@ -42,6 +42,9 @@ SBY_TASK_TIMEOUT_S = 2400
 # SBY files and separate CI jobs. Keep the runner's backstops in sync with
 # those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("coherence_home_twin", "home_twin_small"): 600,
+    ("coherence_home_twin", "home_twin_four"): 600,
+    ("coherence_home_twin", "home_twin_addr40"): 600,
     ("coherence_home", "coh_home_control_prove"): 1800,
     ("coherence_home", "coh_home_control64_prove"): 1800,
     ("coherence_home", "coh_home_control_partition_prove"): 1800,
@@ -97,7 +100,10 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_home", "bmc_rows"): 2100,
     ("coherence_store_home", "bmc_conflict"): 2400,
     ("coherence_store_home", "bmc_pressure"): 2700,
+    ("coherence_store_home", "cover_conflict"): 900,
+    ("coherence_store_home", "cover_pressure"): 900,
     ("coherence_store_home", "link_bmc_siblings"): 7200,
+    ("coherence_store_home", "link_cover_pressure"): 900,
     ("line_client_link", "line_link0_bmc"): 4200,
     ("line_client_link", "line_link1_bmc"): 4200,
     ("line_client_link", "line_link1_four_bmc"): 4200,
@@ -1786,7 +1792,10 @@ SBY_TASKS = [
         "link_bmc_pressure",
         "One-stage links under two dirty victims, delayed releases and a probing DMA read.",
     ),
-    ("link_cover_pressure", "The pressure schedule completes through one-stage links."),
+    (
+        "link_cover_pressure",
+        "The pressure schedule completes through one-stage links; cover depth 250.",
+    ),
     ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
     ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
     (
@@ -1972,14 +1981,17 @@ SBY_TASKS = [
         "cover_rows",
         "Distinct-row concurrent acquisitions complete and supply DMA data.",
     ),
-    ("cover_conflict", "A same-set conflict serializes and supplies DMA data."),
+    (
+        "cover_conflict",
+        "A same-set conflict serializes and supplies DMA data; cover depth 233.",
+    ),
     (
         "bmc_pressure",
         "Real-home stores and load data survive held writebacks and releases.",
     ),
     (
         "cover_pressure",
-        "Two held dirty victims yield to a probing DMA request and a waiting load.",
+        "Two held dirty victims yield to a probing DMA request and a waiting load; cover depth 235.",
     ),
     (
         "bmc_four",
@@ -3469,6 +3481,101 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
     return sections
 
 
+def test_store_home_cover_budgets() -> None:
+    """Pin cover bounds, engines and the complete task selection."""
+    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_store_home")
+    assert tuple(task for task in target.tasks if "cover" in task) == (
+        "cover_siblings",
+        "cover_rows",
+        "cover_conflict",
+        "cover_pressure",
+        "link_cover_pressure",
+    )
+    for task, depth in (
+        ("cover_conflict", 233),
+        ("cover_pressure", 235),
+        ("link_cover_pressure", 250),
+    ):
+        config = formal_task_config(target.name, task)
+        options = dict(line.split(None, 1) for line in config["[options]"])
+        assert options["mode"] == "cover"
+        assert options["depth"] == str(depth)
+        assert options["timeout"] == "900"
+        assert "skip" not in options
+        assert formal_task_timeout_s(target.name, task) == 900
+        assert config["[engines]"] == ["btor btormc"]
+        script = config["[script]"]
+        assert "chparam -set COVER_MODE 1 coherence_store_home_formal" in script
+        if "pressure" in task:
+            assert "chparam -set PRESSURE 1 coherence_store_home_formal" in script
+        else:
+            assert "chparam -set SECTOR_CASE 2 coherence_store_home_formal" in script
+        if task == "link_cover_pressure":
+            assert "chparam -set LINK_STAGES 1 coherence_store_home_formal" in script
+        assert [line for line in script if line.startswith("chformal")] == [
+            "chformal -assert -remove"
+        ]
+        pipeline = (
+            "chformal -assert -remove",
+            "setattr -unset keep",
+            "techmap",
+            "opt -fast",
+            "abc",
+            "opt -full",
+            "setundef -undriven -anyseq",
+            "select -assert-count 1 t:$check r:FLAVOR=cover %i",
+            "select -assert-count 1 t:$check r:FLAVOR=assume %i",
+            "select -clear",
+        )
+        positions = [script.index(command) for command in pipeline]
+        assert positions == sorted(positions)
+        assert positions[-1] < script.index("setundef -anyseq")
+    for task, depth in (
+        ("bmc_siblings", 240),
+        ("bmc_rows", 240),
+        ("bmc_conflict", 360),
+        ("bmc_pressure", 360),
+        ("link_bmc_siblings", 300),
+        ("link_bmc_pressure", 420),
+    ):
+        bounded = formal_task_config(target.name, task)
+        bounded_options = dict(line.split(None, 1) for line in bounded["[options]"])
+        assert bounded_options["mode"] == "bmc"
+        assert bounded_options["depth"] == str(depth)
+        assert bounded["[engines]"] == ["abc bmc3"]
+        assert "abc" not in bounded["[script]"]
+        assert not any("chformal" in line for line in bounded["[script]"])
+
+
+def test_home_twin_snapshot_budget() -> None:
+    """Equivalence construction releases saved copies without changing geometry."""
+    for task, floor in (
+        ("home_twin_small", 4296),
+        ("home_twin_four", 4870),
+        ("home_twin_addr40", 4328),
+    ):
+        config = formal_task_config("coherence_home_twin", task)
+        options = dict(line.split(None, 1) for line in config["[options]"])
+        assert options == {"mode": "bmc", "depth": "1", "timeout": "600"}
+        assert formal_task_timeout_s("coherence_home_twin", task) == 600
+        script = config["[script]"]
+        make = script.index("equiv_make gold gate equiv")
+        for variant in ("gold", "gate"):
+            copy = f"design -copy-from {variant} -as {variant} {variant}"
+            release = f"design -delete {variant}"
+            assert script.index(copy) < script.index(release) < make
+        assert f"select -assert-min {floor} @blk" in script
+        assert "equiv_simple @blk" in script
+        assert "equiv_status -assert @blk" in script
+        if task == "home_twin_four":
+            geometry = (
+                "chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 "
+                "-set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 "
+                "-set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home"
+            )
+            assert script.count(geometry) == 2
+
+
 def test_home_shard_budget() -> None:
     """The complete home task limits and image setup fit their CI job."""
     import yaml
@@ -4721,6 +4828,12 @@ def test_fatal_frame_validation(
         ("coherence_store_home", "bmc_conflict", 2400),
         ("coherence_store_home", "bmc_pressure", 2700),
         ("coherence_store_home", "cover_siblings", 2400),
+        ("coherence_store_home", "cover_conflict", 900),
+        ("coherence_store_home", "cover_pressure", 900),
+        ("coherence_store_home", "link_cover_pressure", 900),
+        ("coherence_home_twin", "home_twin_small", 600),
+        ("coherence_home_twin", "home_twin_four", 600),
+        ("coherence_home_twin", "home_twin_addr40", 600),
         ("coherence_l1d", "coh_l1d_stream_free_bmc", 10800),
         ("coherence_l1d", "coh_l1d_multi_bmc", 18000),
         ("coherence_l1d", "coh_l1d_data_bmc", 3900),
