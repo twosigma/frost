@@ -15,7 +15,7 @@
  */
 /*
   The vector memory table: one entry per vector memory instruction in flight,
-  in program order (design section 5.3).
+  in program order.
 
   An entry is allocated at dispatch (slot 1 only, at most one a cycle) into the
   lowest index that is free in the pre-edge state, so an index freed on one
@@ -23,10 +23,12 @@
   set on the edge its instruction commits (from the ROB's combinational commit
   bus, so on the edge the head passes it); a retired entry is older than every
   instruction still in the ROB and is never flushed. An unretired entry is
-  freed by a full flush, or by a partial flush when it is younger than the
-  flush tag. Any entry is freed when the memory unit reports it complete. The
-  range is written once, when it is known, and stays fixed while the entry is
-  live. `gen` advances on every allocation of an index.
+  freed one cycle after a full flush, or after a partial flush when it is
+  younger than the flush tag. The pending per-entry removal is sampled with
+  the flush-cycle head and tag; it cannot remove a reused index. Any entry is
+  freed when the memory unit reports it complete. The range is written once,
+  when it is known, and stays fixed while the entry is live. `gen` advances on
+  every allocation of an index.
 
   o_quiet_q is 1 when no retired entry is live. It is registered from the
   next-state bits, so on the edge an instruction retires the term already
@@ -44,7 +46,7 @@ module vec_vmt #(
     input  logic                                 i_clk,
     input  logic                                 i_rst,
     // Dispatch: allocate an entry for the instruction with this ROB tag.
-    // Only while !o_full.
+    // Only while !o_full and no full flush is being taken.
     input  logic                                 i_alloc_valid,
     input  logic                 [TagW-1:0]      i_alloc_tag,
     output logic                                 o_full,
@@ -95,18 +97,24 @@ module vec_vmt #(
   end
   assign o_full = &live_q;
 
-  logic [VMT-1:0] live_d, retired_d;
+  logic [VMT-1:0] live_d, retired_d, flush_pending_q, flush_pending_d;
+  logic [VMT-1:0] retiring;
+  for (genvar t = 0; t < VMT; t++) begin : gen_retiring
+    assign retiring[t] = i_commit_valid && live_q[t] && !retired_q[t] &&
+                         !flush_pending_q[t] && tag_q[t] == i_commit_tag;
+  end
   always_comb begin
     for (int t = 0; t < VMT; t++) begin
-      logic flushed, retiring;
-      retiring = i_commit_valid && live_q[t] && !retired_q[t] && tag_q[t] == i_commit_tag;
-      flushed = live_q[t] && !retired_q[t] && !retiring &&
+      flush_pending_d[t] = live_q[t] && !retired_q[t] && !flush_pending_q[t] &&
           (i_flush_all || (i_flush_en && is_younger(tag_q[t], i_flush_tag, i_head_tag)));
-      live_d[t] = live_q[t] && !flushed && !(i_done_valid && i_done_idx == IdxW'(t));
-      retired_d[t] = live_d[t] && (retired_q[t] || retiring);
-      if (i_alloc_valid && !o_full && o_alloc_idx == IdxW'(t) && !i_flush_all) begin
+      // Retirement on the flush-sampling edge wins over its pending removal.
+      live_d[t] = live_q[t] && !(flush_pending_q[t] && !retired_q[t]) &&
+                  !(i_done_valid && i_done_idx == IdxW'(t));
+      // Retired entries cannot be flushed. Quiet depends only on retirement
+      // and completion, including a retirement on this edge.
+      retired_d[t] = (retired_q[t] || retiring[t]) && !(i_done_valid && i_done_idx == IdxW'(t));
+      if (i_alloc_valid && !o_full && o_alloc_idx == IdxW'(t)) begin
         live_d[t] = 1'b1;
-        retired_d[t] = 1'b0;
       end
     end
   end
@@ -114,16 +122,18 @@ module vec_vmt #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       live_q <= '0;
+      flush_pending_q <= '0;
       retired_q <= '0;
       known_q <= '0;
       gen_q <= '0;
       o_quiet_q <= 1'b1;
     end else begin
       live_q <= live_d;
+      flush_pending_q <= flush_pending_d;
       retired_q <= retired_d;
-      o_quiet_q <= !(|(live_d & retired_d));
+      o_quiet_q <= !(|retired_d);
       for (int t = 0; t < VMT; t++) begin
-        if (i_alloc_valid && !o_full && o_alloc_idx == IdxW'(t) && !i_flush_all) begin
+        if (i_alloc_valid && !o_full && o_alloc_idx == IdxW'(t)) begin
           tag_q[t]   <= i_alloc_tag;
           gen_q[t]   <= gen_q[t] + 2'd1;
           known_q[t] <= 1'b0;
@@ -143,6 +153,7 @@ module vec_vmt #(
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       p_vmt_alloc_not_full : assert (!(i_alloc_valid && o_full));
+      p_vmt_alloc_not_flushed : assert (!(i_alloc_valid && i_flush_all));
     end
   end
 `endif

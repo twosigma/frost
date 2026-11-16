@@ -33,12 +33,12 @@
   (formal/vec_hold_rows_formal.sv assumes them of its table):
     p_alloc_free     an index is allocated only when it was free before the
                      edge, so a freed index has an invalid cycle before reuse;
-    p_live           an entry is live exactly from its allocation until its
-                     completion or a flush that removes its instruction;
+    p_live           an entry is live from allocation through completion,
+                     or through the cycle after its instruction is flushed;
   and, per entry (gen_entry_props), a live entry carries its instruction's tag
   (program order), is retired exactly when the head has passed its
-  instruction (so an unretired live entry is never behind the head), and has
-  its range written once while live and then fixed;
+  instruction (a flushed entry awaiting cleanup can remain behind the head),
+  and has its range written once while live and then fixed;
     p_quiet          the registered "no live retired entry" output is exact
                      on every cycle (V-O4);
     p_full           the dispatch stall term is exact.
@@ -70,7 +70,7 @@ module vec_vmt_formal (
 
   // Ghost program state
   logic [7:0] gseq, gh;
-  logic [V-1:0] g_live, g_ret, g_known;
+  logic [V-1:0] g_live, g_ret, g_known, g_pending;
   logic [V-1:0][7:0] g_seq;
   logic [V-1:0][SW-1:0] g_seg0, g_seg1;
 
@@ -131,6 +131,7 @@ module vec_vmt_formal (
       gseq <= seq_start;
       gh <= seq_start;
       g_live <= '0;
+      g_pending <= '0;
       g_ret <= '0;
       g_known <= '0;
     end else begin
@@ -139,6 +140,7 @@ module vec_vmt_formal (
       else if (flush_en) gseq <= flush_seq + 8'd1;
       else gseq <= gseq + 8'(alloc_en) + 8'(n_other);
       for (int t = 0; t < V; t++) begin
+        g_pending[t] <= g_live[t] && !g_ret[t] && (flush_all || (flush_en && g_seq[t] > flush_seq));
         if (passing[t]) g_ret[t] <= 1'b1;
         if (g_live[t] && !g_ret[t] && (flush_all || (flush_en && g_seq[t] > flush_seq))) begin
           g_live[t]  <= 1'b0;
@@ -179,10 +181,11 @@ module vec_vmt_formal (
 
   always_comb begin
     if (!rst) begin
-      if (alloc_en) p_alloc_free : assert (!g_live[alloc_idx]);
-      p_live : assert (live == g_live);
-      p_full : assert (full == &g_live);
+      if (alloc_en) p_alloc_free : assert (!g_live[alloc_idx] && !g_pending[alloc_idx]);
+      p_live : assert (live == (g_live | g_pending));
+      p_full : assert (full == &(g_live | g_pending));
       p_quiet : assert (quiet == !(|(g_live & g_ret)));
+      p_pending_not_retired : assert ((retired & g_pending) == '0);
     end
   end
   for (genvar t = 0; t < V; t++) begin : gen_entry_props

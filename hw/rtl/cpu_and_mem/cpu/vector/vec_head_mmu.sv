@@ -483,10 +483,46 @@ module vec_head_mmu #(
   // --------------------------------------------------------------------------
   // Control & datapath state machine
   // --------------------------------------------------------------------------
-  logic head_matches_still_safe;
-  logic commit_hit;
+  // Head metadata and cancellation are sampled locally. The first HM_WAIT
+  // cycle lets the tag comparison catch up with the captured instruction.
+  logic head_matches_q;
+  logic head_vmem_q, flush_q, fatal_q;
+  logic [TagW-1:0] head_tag_q;
+  logic [31:0] head_insn_q;
+  logic [VmtIdxW-1:0] head_vmt_idx_q;
+  logic cancel_outputs;
 
-  assign head_matches_still_safe = !i_rob_empty && (i_head_tag == tag_q) && i_head_safe;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      head_vmem_q <= 1'b0;
+      head_matches_q <= 1'b0;
+      flush_q <= 1'b0;
+      fatal_q <= 1'b0;
+    end else begin
+      head_vmem_q <= !i_rob_empty && i_head_is_vmem && i_head_safe;
+      head_matches_q <= !i_rob_empty && (i_head_tag == tag_q) && i_head_safe;
+      flush_q <= i_flush_all;
+      fatal_q <= i_fatal_stop || i_vmu_fatal;
+    end
+    head_tag_q <= i_head_tag;
+    head_insn_q <= i_head_insn;
+    head_vmt_idx_q <= i_head_vmt_idx;
+  end
+
+  // Suppress requests and publications immediately and throughout cleanup.
+  // The fault-vstart sideband remains available on the trap-taking edge.
+  assign cancel_outputs = i_flush_all || flush_q || i_fatal_stop || i_vmu_fatal || fatal_q;
+  logic commit_hit;
+  logic cdb_accepted_q;
+
+  // A granted packet enters the registered CDB on this edge. Suppress its
+  // valid while the state machine consumes the local acknowledgement;
+  // the registered retirement bus cannot arrive before HM_WAIT_RETIRE.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) cdb_accepted_q <= 1'b0;
+    else cdb_accepted_q <= o_cdb_done;
+  end
+
   assign commit_hit = (state_q == HM_WAIT_RETIRE) && i_commit_valid &&
                       (i_commit_tag == tag_q) && !i_commit_exception;
 
@@ -502,15 +538,13 @@ module vec_head_mmu #(
     end else begin
       zero_vmt_done_valid_q <= 1'b0;
 
-      if (i_fatal_stop || i_vmu_fatal) begin
+      if (fatal_q) begin
         state_q           <= HM_FATAL;
         shield_q          <= 1'b1;
         fault_vstart_en_q <= 1'b0;
-      end else if (i_flush_all) begin
-        // A full flush never occurs between HM_COMMIT_SETTLE and HM_WAIT_RETIRE
-        // because shield_q holds off asynchronous interrupts and VLOAD/VSTORE
-        // retire alone in slot 1. In every pre-shield, settle, or HM_WAIT_TRAP
-        // state, i_flush_all cleanly returns the head unit to HM_IDLE.
+      end else if (flush_q) begin
+        // Outputs are inhibited from the flush cycle through this cleanup
+        // edge. Retired memory work is owned by the VMU and is not cancelled.
         state_q           <= HM_IDLE;
         wait_q            <= 1'b0;
         walk_reissue_q    <= 1'b0;
@@ -526,22 +560,21 @@ module vec_head_mmu #(
           HM_IDLE: begin
             shield_q          <= 1'b0;
             fault_vstart_en_q <= 1'b0;
-            if (!i_rob_empty && i_head_is_vmem && i_head_safe && i_vec_idle &&
-                !i_csr_wb_pending && !i_int_take_armed) begin
-              tag_q     <= i_head_tag;
-              insn_q    <= i_head_insn;
-              vmt_idx_q <= i_head_vmt_idx;
+            if (head_vmem_q && i_vec_idle && !i_csr_wb_pending && !i_int_take_armed) begin
+              tag_q     <= head_tag_q;
+              insn_q    <= head_insn_q;
+              vmt_idx_q <= head_vmt_idx_q;
               wait_q    <= 1'b0;
               state_q   <= HM_WAIT;
             end
           end
 
           HM_WAIT: begin
-            if (!head_matches_still_safe || i_int_take_armed) begin
+            if (!wait_q) begin
+              wait_q <= 1'b1;
+            end else if (!head_matches_q || i_int_take_armed) begin
               state_q <= HM_IDLE;
               wait_q  <= 1'b0;
-            end else if (!wait_q) begin
-              wait_q <= 1'b1;
             end else if (i_vec_idle && !i_csr_wb_pending) begin
               // Older registered commits have landed in csr_file, VIQ, VRF,
               // and integer RF; o_rf_read_en and o_vrf_read_en sample rs1 and v0
@@ -558,7 +591,7 @@ module vec_head_mmu #(
           end
 
           HM_DECODE: begin
-            if (!head_matches_still_safe || i_int_take_armed) begin
+            if (!head_matches_q || i_int_take_armed) begin
               state_q <= HM_IDLE;
             end else begin
               rs1_q         <= (dec_rs1 == 5'd0) ? '0 : i_rf_read_data;
@@ -757,7 +790,7 @@ module vec_head_mmu #(
 
           // Case C: Page 0 valid with Page-0-only elements, Page 1 faults.
           HM_PARTIAL_ARM: begin
-            if (!head_matches_still_safe || i_int_take_armed) begin
+            if (!head_matches_q || i_int_take_armed) begin
               state_q           <= HM_IDLE;
               fault_vstart_en_q <= 1'b0;
             end else if (i_sq_committed_empty) begin
@@ -769,9 +802,9 @@ module vec_head_mmu #(
           end
 
           HM_PARTIAL_SETTLE: begin
-            // shield_q has now been registered for a full cycle with !i_flush_all,
-            // so no asynchronous interrupt can preempt the partial Page-0 run.
-            state_q <= HM_PARTIAL_RUN;
+            // The shield and head check have settled before the launch.
+            state_q <= head_matches_q ? HM_PARTIAL_RUN : HM_IDLE;
+            if (!head_matches_q) shield_q <= 1'b0;
           end
 
           HM_PARTIAL_RUN: begin
@@ -782,7 +815,7 @@ module vec_head_mmu #(
 
           // Pure head fault (zero memory bytes accessed).
           HM_FAULT_ARM: begin
-            if (!head_matches_still_safe || i_int_take_armed) begin
+            if (!head_matches_q || i_int_take_armed) begin
               state_q           <= HM_IDLE;
               fault_vstart_en_q <= 1'b0;
             end else begin
@@ -792,11 +825,12 @@ module vec_head_mmu #(
           end
 
           HM_FAULT_SETTLE: begin
-            state_q <= HM_CDB_FAULT;
+            state_q <= head_matches_q ? HM_CDB_FAULT : HM_IDLE;
+            if (!head_matches_q) shield_q <= 1'b0;
           end
 
           HM_CDB_FAULT: begin
-            if (i_grant) begin
+            if (cdb_accepted_q) begin
               state_q <= HM_WAIT_TRAP;
             end
           end
@@ -808,7 +842,7 @@ module vec_head_mmu #(
 
           // Non-faulting completion & retirement.
           HM_COMMIT_ARM: begin
-            if (!head_matches_still_safe || i_int_take_armed) begin
+            if (!head_matches_q || i_int_take_armed) begin
               state_q <= HM_IDLE;
             end else if (i_sq_committed_empty) begin
               seg0_q   <= full_seg0_d;
@@ -819,11 +853,12 @@ module vec_head_mmu #(
           end
 
           HM_COMMIT_SETTLE: begin
-            state_q <= HM_CDB_OK;
+            state_q <= head_matches_q ? HM_CDB_OK : HM_IDLE;
+            if (!head_matches_q) shield_q <= 1'b0;
           end
 
           HM_CDB_OK: begin
-            if (i_grant) begin
+            if (cdb_accepted_q) begin
               state_q <= HM_WAIT_RETIRE;
             end
           end
@@ -849,19 +884,20 @@ module vec_head_mmu #(
   // Outputs
   // --------------------------------------------------------------------------
   logic read_regs_now;
-  assign read_regs_now = (state_q == HM_WAIT) && wait_q && head_matches_still_safe &&
-                         !i_int_take_armed && i_vec_idle && !i_csr_wb_pending;
+  assign read_regs_now = !cancel_outputs && (state_q == HM_WAIT) && wait_q &&
+                         head_matches_q && !i_int_take_armed &&
+                         i_vec_idle && !i_csr_wb_pending;
 
   assign o_rf_read_en = read_regs_now;
   assign o_rf_read_addr = dec_rs1;
   assign o_vrf_read_en = read_regs_now;
   assign o_vrf_read_addr = 5'd0;
 
-  assign o_walk_req_valid = !i_fatal_stop &&
+  assign o_walk_req_valid = !cancel_outputs && head_matches_q &&
                             ((state_q == HM_WALK_REQ_P0) || (state_q == HM_WALK_REQ_P1));
   assign o_walk_vpn = walk_vpn_q;
 
-  assign o_vmt_range_valid = !i_fatal_stop && !i_flush_all &&
+  assign o_vmt_range_valid = !cancel_outputs && head_matches_q &&
                              ((state_q == HM_COMMIT_SETTLE) || (state_q == HM_PARTIAL_SETTLE));
   assign o_vmt_range_idx = vmt_idx_q;
   assign o_vmt_range_seg0 = seg0_q;
@@ -872,7 +908,7 @@ module vec_head_mmu #(
 
   always_comb begin
     o_vhead_complete = '0;
-    if (!i_fatal_stop && !i_flush_all) begin
+    if (!cancel_outputs && head_matches_q && !cdb_accepted_q) begin
       if (state_q == HM_CDB_OK) begin
         o_vhead_complete.valid = 1'b1;
         o_vhead_complete.tag   = tag_q;
@@ -898,23 +934,23 @@ module vec_head_mmu #(
   assign o_retire_vstore = commit_hit && is_store_q;
 
   logic partial_launch, retire_launch;
-  assign partial_launch          = !i_fatal_stop && !i_flush_all && (state_q == HM_PARTIAL_SETTLE);
-  assign retire_launch           = !i_fatal_stop && commit_hit && !zero_active_q;
+  assign partial_launch = !cancel_outputs && head_matches_q && (state_q == HM_PARTIAL_SETTLE);
+  assign retire_launch = !cancel_outputs && commit_hit && !zero_active_q;
 
-  assign o_desc_valid            = partial_launch || retire_launch;
-  assign o_desc_ppn0             = ppn0_q;
-  assign o_desc_ppn1             = ppn1_q;
-  assign o_desc_page_offset      = va_first_q[11:0];
-  assign o_desc_first_elem       = first_p0_elem_q;
-  assign o_desc_last_elem        = partial_launch ? last_p0_only_elem_q : last_active_elem_q;
-  assign o_desc_eew_log2         = eew_log2_q;
-  assign o_desc_active_mask      = active_mask_q;
-  assign o_desc_is_store         = is_store_q;
-  assign o_desc_vd_vs3           = vd_vs3_q;
-  assign o_desc_vmt_idx          = vmt_idx_q;
+  assign o_desc_valid = partial_launch || retire_launch;
+  assign o_desc_ppn0 = ppn0_q;
+  assign o_desc_ppn1 = ppn1_q;
+  assign o_desc_page_offset = va_first_q[11:0];
+  assign o_desc_first_elem = first_p0_elem_q;
+  assign o_desc_last_elem = partial_launch ? last_p0_only_elem_q : last_active_elem_q;
+  assign o_desc_eew_log2 = eew_log2_q;
+  assign o_desc_active_mask = active_mask_q;
+  assign o_desc_is_store = is_store_q;
+  assign o_desc_vd_vs3 = vd_vs3_q;
+  assign o_desc_vmt_idx = vmt_idx_q;
   assign o_desc_free_vmt_on_done = !partial_launch;
-  assign o_desc_seg0             = seg0_q;
-  assign o_desc_seg1             = seg1_q;
+  assign o_desc_seg0 = seg0_q;
+  assign o_desc_seg1 = seg1_q;
 
 `ifndef SYNTHESIS
 `ifndef FORMAL

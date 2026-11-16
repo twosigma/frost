@@ -23,8 +23,11 @@ and applies the byte mask. It has its own D, G, C and U channels. In
 so while it is idle the other ports' rotation is unchanged, and the home's G
 and U of source 0 class 3 go to it rather than to the L1D. With `MISALIGNED_HW`
 or `VECTOR` set, the misaligned-access engine and the vector memory unit issue
-their sector reads and writes on it (never concurrently); otherwise nothing in
-the hart uses it.
+their sector reads and writes on it (never concurrently). A registered owner
+selects the requester after older vector memory drains and before the
+misaligned engine finishes translation. Registered request controls track the
+engine's issue transitions without delaying a sector request. If both options
+are disabled, nothing in the hart uses it.
 
 The D/P/R/W/WA/G/C/U channels carry requests, probes, dirty data, grants
 and completion ownership. Dirty data merges through L2. `cpu_top` latches

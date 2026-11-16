@@ -995,7 +995,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "vec_vmt.sby",
         "Vector memory table lifecycle: allocation into free entries, retirement "
-        "exactly as the head passes, flushes, fixed ranges and the exact "
+        "exactly as the head passes, registered flush cleanup, fixed ranges and the exact "
         "no-live-retired-entry output",
         tasks=("vmt_bmc", "cover"),
     ),
@@ -1164,7 +1164,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ma_engine.sby",
-        "Misaligned-access engine: no memory request before both parts pass their "
+        "Misaligned-access engine: request controls match the issue states, no memory request before both parts pass their "
         "checks, lower sector first, one request and response per identity, one "
         "completion, fault or write-back per access, and terminal fatal stops",
         tasks=("bmc", "cover"),

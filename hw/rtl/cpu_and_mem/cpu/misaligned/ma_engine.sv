@@ -141,6 +141,7 @@ module ma_engine #(
   } state_e;
 
   state_e state_q;
+  logic lc_req_q, lc_hi_q;
 
   // Captured access.
   logic [XLEN-1:0] va_q;
@@ -322,6 +323,24 @@ module ma_engine #(
     end
   end
 
+  // Request controls follow the issue-state transitions on the same edge.
+  // A stalled request holds both controls until the client accepts it.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      lc_req_q <= 1'b0;
+      lc_hi_q  <= 1'b0;
+    end else if (i_fatal_stop || store_write_failed) begin
+      lc_req_q <= 1'b0;
+      lc_hi_q  <= 1'b0;
+    end else begin
+      lc_req_q <= (state_q == S_DECIDE && outcome.ok) ||
+                  (state_q == S_ISSUE_LO && (!i_lc_req_ready || split)) ||
+                  (state_q == S_ISSUE_HI && !i_lc_req_ready);
+      lc_hi_q <= (state_q == S_ISSUE_LO && i_lc_req_ready && split) ||
+                 (state_q == S_ISSUE_HI && !i_lc_req_ready);
+    end
+  end
+
   // Datapath registers (no reset: each is written before it is read).
   always_ff @(posedge i_clk) begin
     if (state_q == S_IDLE && i_start) begin
@@ -403,9 +422,9 @@ module ma_engine #(
   assign o_walk_vpn = walk_vpn_q;
 
   logic issue_hi;
-  assign issue_hi = (state_q == S_ISSUE_HI);
-  assign o_lc_req_valid = !i_fatal_stop && !store_write_failed &&
-      ((state_q == S_ISSUE_LO) || issue_hi);
+  assign issue_hi = lc_hi_q;
+  assign o_lc_req_valid = lc_req_q && !i_fatal_stop &&
+                        !(store_q && i_lc_resp_valid && i_lc_resp_error);
   assign o_lc_req_write = store_q;
   assign o_lc_req_addr = {
     (issue_hi ? upper_pa_q[XLEN-1:ma_pkg::SectorOffsetBits] :
@@ -490,6 +509,8 @@ module ma_engine #(
 
   always_ff @(posedge i_clk) begin
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      p_lc_req_state : assert (lc_req_q == ((state_q == S_ISSUE_LO) || (state_q == S_ISSUE_HI)));
+      p_lc_hi_state : assert (lc_hi_q == (state_q == S_ISSUE_HI));
       // No memory request before both parts have passed every check, and the
       // lower sector is always issued before the upper one.
       if (o_lc_req_valid) begin

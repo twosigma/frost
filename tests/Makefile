@@ -539,6 +539,12 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),vec_head_mmu)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/misaligned/ma_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_head_mmu.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),ma_engine)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/misaligned/misaligned.f
