@@ -83,7 +83,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Sstvecd | Implemented | `smode_test`, `csr_test`, `csr_file.sby`, `trap_unit.sby` |
 | Sstvala | Implemented | `sstvala_test`, `sstvala_fault_test`, `ad_fault_test`, `misaligned_test`, TestRIG (`sstvala_illegal.S`, `access_fault_tval.S`), `trap_unit.sby` |
 | Sscounterenw | Implemented | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`scounteren`), `csr_file.sby` |
-| Svpbmt | In progress | - |
+| Svpbmt | Implemented (NC/IO DDR mappings require an uncached alias; the VCU118's 2 GiB map has none and raises access faults, with device mappings unaffected) | `svpbmt_test`, `svpbmt_test_2g`, `svpbmt_bus_error`, TestRIG (`svpbmt_pbmte.S`), `ptw.sby`, `dmmu_mmio.sby`, `tlb.sby`, `l2tlb.sby` |
 | Svinval | Not yet implemented | - |
 | Svnapot | In progress | - |
 | Sstc | Implemented (S-mode `mcounteren.TM` check missing) | `sstc_test`, `irq_take_latency`, `csr_file.sby` |
@@ -101,6 +101,8 @@ Supervisor and user modes decode no non-standard instructions or CSRs
 (`Zvksg`, `Zabha`, `Zacas`, `Ziccamoc`, `Zama16b`, `Zfh`, `Zicfilp`,
 `Zicfiss`, `Zfbfmin`, `Zvfbfmin`, `Zvfbfwma`, `Sv48`, `Sv57`, `Zkr`,
 `Svadu`, `Sdtrig`, and `Sspm`) are not implemented.
+
+Svpbmt: a platform with devices that have read side effects outside the physical device quadrant would need the page type to control request parking, committed-store draining and interrupt shielding.
 
 ## SMP
 
@@ -352,6 +354,9 @@ for an ASIC, the RTL also needs:
    reset, as an ASIC with an independent CPU clock or a multi-die FPGA with
    the cluster on its own die needs. The X3 keeps one clock, which spares its
    cache misses the crossing's latency.
+   Open: align `asic/constraint.sdc`'s JTAG debug-transport bounds with the X3
+   constraints (`0.8` on toggle synchronizer inputs and `1.5` on held DMI
+   payloads across `jtag_tck` and `core_clk` in both clock modes).
 
 ## Single-core performance
 
@@ -513,8 +518,8 @@ and targeted microbenchmarks give these items:
    the entry count. Measured against eight entries, it leaves
    the DDR memory kernels unchanged, slows one memory-bound workload by about
    2%, in part from L0 fill collisions (see Single-core performance, item
-   3), and lengthens paths among the hardest at the target clock, so it
-   waits for the streaming-load work in item 8.
+   3), and lengthens paths among the hardest at the target clock, so the
+   station stays at eight entries.
 8. Streaming loads. The load queue and the L1D track eight cached loads, so
    their demand requests for a sequential stream of 8-byte loads cover only
    two 32-byte lines at a time. The home's prefetch agent reads ahead into the
@@ -573,6 +578,9 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   Ethernet and 10GBASE-R on QSFP1 lane 0, using the NIC's registers,
   descriptors, driver, and coherent DMA. It uses one DDR4 interface; the
   other could have its own memory controller.
+- Clocking the `BSCANE2` debug transport and bounding its toggle and held DMI
+  payload crossings on the VCU118, where the debug transport remains without
+  those bounds, to match `boards/x3/constr/cpu_clock_boundary.tcl`.
 - A PCIe Gen3 x4 root complex between `soc_top` and PIPE, the PHY interface
   that ASIC PCIe PHYs also use, with a small wrapper for the FPGA's
   transceivers, so that Linux finds NVMe drives and other devices with its

@@ -116,3 +116,6 @@
 - Limited the fanout of the L1I's miss-slot selection registers, formed the fetch-hold polarity directly in the IMMU's copy LUTs, and applied the ID stage's illegal-instruction and fetch-fault kill after operand classification, with formal equivalence checks
 - Implemented one-cycle L1I invalidation with valid bits in flip-flops and added a JIT-style fence.i and refetch benchmark
 - Added L1I refill and L2 demand and prefetch miss events to the HPM counters, with Linux PMU mappings and directed verification.
+- Registered the VCU118 DDR initializer's AXI valid signals, applied its SLR floorplan and updated its external I/O constraints.
+- Switched out-of-context IP synthesis to project-mode runs, clocked the BSCAN debug transport at its primitives, adapted Vivado exit detection to child IP logs, and extended the L1D zero-cover budget
+- Implemented Svpbmt with PBMTE and PTE validation, PBMT in both TLB levels, coherent uncached DDR aliases, uncached memory access and PMA overrides, with directed programs, benches, formal checks and a TestRIG trace

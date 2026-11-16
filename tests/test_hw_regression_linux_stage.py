@@ -32,6 +32,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -2277,3 +2278,396 @@ def test_counters_absent_stage_runs_at_every_clock(
     err = capsys.readouterr().err
     assert "unknown stage(s): no_such_stage\n" in err
     assert "perf_off_test" in err.split("valid stages:", 1)[1]
+
+
+# --- The network test's diagnostic repetitions ---------------------------------
+
+# The single-run command as the stage typed it before the repetition option
+# existed. Without FROST_HW_NETTEST_REPEAT the stage must type exactly this.
+NETTEST_COMMAND_ETH0 = (
+    "m=$(cat /sys/class/net/eth0/mtu); f=$(cat /sys/class/net/eth0/flags); "
+    "echo 1 > /proc/sys/net/ipv6/conf/eth0/disable_ipv6; "
+    "cp /usr/local/bin/frost_nettest /dev/shm/; "
+    "{ if echo 2 > /proc/sys/vm/drop_caches; then "
+    "FROST_NETTEST_EXPIRE_NFS_CACHE=1 /dev/shm/frost_nettest; "
+    "else echo FROST_NET_LOOPBACK'_'FAIL drop_caches; fi; "
+    "echo $m >&3; echo $f >&4; echo 0 >&5; } "
+    "3> /sys/class/net/eth0/mtu 4> /sys/class/net/eth0/flags "
+    "5> /proc/sys/net/ipv6/conf/eth0/disable_ipv6; "
+    'timeout -k 5 120 sh -c "echo frost > /root/.frost_alive && sync && '
+    'rm -f /root/.frost_alive"; echo FROST_ROOT_ALIVE=$?'
+)
+
+# A stand-in for frost_nettest that prints what the real one prints for a
+# repetition: the repetition line, then its verdict under the marker the
+# repetition gets. FAKE_FAIL_REP names a repetition that fails.
+FAKE_NETTEST = r"""#!/bin/sh
+rep=${FROST_NETTEST_REPETITION%/*}
+reps=${FROST_NETTEST_REPETITION#*/}
+echo "FROST_NET_LOOPBACK: repetition $rep of $reps"
+echo "FROST_NET_LOOPBACK: capture idle-jumbo t=70100..70300: own out 0 in 0, kernel out 1 in 1, foreign 2, enetdown 1, drops 0"
+if [ "$rep" -lt "$reps" ]; then marker=FROST_NET_DIAG; tag=" rep=$rep"; else marker=FROST_NET_LOOPBACK; tag=; fi
+if [ "$rep" = "${FAKE_FAIL_REP:-0}" ]; then
+  echo "${marker}_FAIL$tag statistics before jumbo traffic: tx +1 rx +1 rxerr +0 txerr +0 with nothing sent"
+else
+  echo "${marker}_PASS$tag"
+fi
+"""
+
+
+def test_without_the_repeat_variable_the_command_is_unchanged() -> None:
+    """The stage types today's single-run command byte for byte."""
+    assert hw.nettest_command("eth0") == NETTEST_COMMAND_ETH0
+    assert hw.nettest_command("eth0", 1) == NETTEST_COMMAND_ETH0
+    assert hw.nettest_repeat({}) == 1
+    assert hw.nettest_repeat({hw.NETTEST_REPEAT_ENV: ""}) == 1
+    assert stage().stimuli[-1][1] == NETTEST_COMMAND_ETH0 + "\r"
+
+
+@pytest.mark.parametrize("text", ["0", "-1", "two", "2.5", "21"])
+def test_a_bad_repeat_count_is_refused(text: str) -> None:
+    """Only a whole number from 1 to the maximum is accepted."""
+    with pytest.raises(ValueError, match=hw.NETTEST_REPEAT_ENV):
+        hw.nettest_repeat({hw.NETTEST_REPEAT_ENV: text})
+    assert hw.nettest_repeat({hw.NETTEST_REPEAT_ENV: " 4 "}) == 4
+
+
+def test_the_repeated_command_carries_no_marker_and_types_once() -> None:
+    """The repeated command is one typed line holding no marker itself."""
+    command = hw.nettest_command("eth0", 3)
+    for marker in (
+        hw.LINUX_NET_TOKEN,
+        hw.LINUX_NET_TOKEN_FAIL,
+        "FROST_NET_DIAG_PASS",
+        "FROST_NET_DIAG_FAIL",
+    ):
+        assert marker not in command
+    assert not hw.LINUX_NET_DIAG_RE.search(command + "\r\n")
+    assert hw.root_alive_status(command + "\r\n") is None
+    assert "FROST_NETTEST_REPETITION=$r/3 FROST_NETTEST_EXPIRE_NFS_CACHE=1" in command
+    linux = hw.linux_stage(ROOT, 3)
+    assert linux.stimuli[-1][1] == hw.nettest_command(ROOT.interface, 3) + "\r"
+    assert linux.stimuli[:-1] == stage().stimuli[:-1]
+
+
+def _run_repeated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repeat: int,
+    fail_rep: int = 0,
+    drop_caches_fails: bool = False,
+    alive_status: int = 0,
+    poke_s: int = 0,
+) -> tuple[str, Path, Path]:
+    """Run the repeated command in sh against stand-in files and programs."""
+    sysfs = tmp_path / "sysfs"
+    sysfs.mkdir()
+    (sysfs / "mtu").write_text("1500\n")
+    (sysfs / "flags").write_text("0x1003\n")
+    ipv6 = tmp_path / "disable_ipv6"
+    ipv6.write_text("0\n")
+    drop = tmp_path / "drop_caches"
+    if drop_caches_fails:
+        drop.mkdir()
+    source = tmp_path / "bin"
+    target = tmp_path / "shm"
+    source.mkdir()
+    target.mkdir()
+    program = source / "frost_nettest"
+    program.write_text(FAKE_NETTEST)
+    program.chmod(0o755)
+    timeout = source / "timeout"
+    # The poke's timeout runs long in the background; the root check's exits
+    # with the status asked for.
+    timeout.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in *frost_poke*) exec sleep 5;; esac\n'
+        f"exit {alive_status}\n"
+    )
+    timeout.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{source}:{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_FAIL_REP", str(fail_rep))
+    monkeypatch.setattr(hw, "LINUX_ROOT_BIN", str(source))
+    monkeypatch.setattr(hw, "LINUX_TMPFS", str(target))
+    command = (
+        hw.nettest_command("eth0", repeat, poke_s)
+        .replace("/sys/class/net/eth0", str(sysfs))
+        .replace("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", str(ipv6))
+        .replace("/proc/sys/vm/drop_caches", str(drop))
+    )
+    done = hw.subprocess.run(
+        ["sh", "-c", command], check=True, capture_output=True, text=True, timeout=20
+    )
+    # The restore ran after every repetition.
+    assert (sysfs / "mtu").read_text() == "1500\n"
+    assert (sysfs / "flags").read_text() == "0x1003\n"
+    assert ipv6.read_text() == "0\n"
+    return done.stdout.replace("\n", "\r\r\n"), sysfs, ipv6
+
+
+def test_every_repetition_is_logged_and_only_the_last_ends_the_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Earlier repetitions report under FROST_NET_DIAG; a failed one fails the stage."""
+    output, _, _ = _run_repeated(tmp_path, monkeypatch, 3, fail_rep=2)
+    lines = output.split("\r\r\n")
+    assert [line for line in lines if "repetition" in line] == [
+        f"FROST_NET_LOOPBACK: repetition {rep} of 3" for rep in (1, 2, 3)
+    ]
+    assert "FROST_NET_DIAG_PASS rep=1" in lines
+    assert lines.count("FROST_ROOT_ALIVE=0") == 3
+    assert hw.nettest_diag_verdicts(output) == {
+        1: ("PASS", ""),
+        2: (
+            "FAIL",
+            "statistics before jumbo traffic: tx +1 rx +1 rxerr +0 txerr +0 "
+            "with nothing sent",
+        ),
+    }
+    linux = hw.linux_stage(ROOT, 3)
+    echo = hw.nettest_command(ROOT.interface, 3) + "\r\r\n"
+    # Nothing before the last repetition's lines ends the capture.
+    last = output.index("FROST_NET_LOOPBACK: repetition 3 of 3")
+    early = MEMERR_TRANSCRIPT + echo + output[:last]
+    assert not linux.failure_done(early) and not linux.success_done(early)
+    transcript = MEMERR_TRANSCRIPT + echo + output + PROMPT
+    assert linux.success_done(transcript) and not linux.failure_done(transcript)
+    ok, note = linux.judge(transcript)
+    assert not ok
+    assert "repetition 2: statistics before jumbo traffic: tx +1 rx +1" in note
+
+
+def test_all_repetitions_passing_pass_the_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The note says how many times the test ran."""
+    output, _, _ = _run_repeated(tmp_path, monkeypatch, 3)
+    linux = hw.linux_stage(ROOT, 3)
+    transcript = (
+        MEMERR_TRANSCRIPT + hw.nettest_command(ROOT.interface, 3) + "\r\r\n" + output
+    )
+    ok, note = linux.judge(transcript + PROMPT)
+    assert ok, note
+    assert "frost_nettest 3 times, root alive" in note
+    # The last pass does not end the capture before its own root check: an
+    # earlier repetition's status does not stand in for it.
+    cut = transcript[: transcript.rindex("FROST_ROOT_ALIVE=0")]
+    assert cut.endswith(hw.LINUX_NET_TOKEN + "\r\r\n")
+    assert not linux.success_done(cut) and not linux.failure_done(cut)
+    # A repetition that printed no verdict is not passed over.
+    missing = transcript.replace("FROST_NET_DIAG_PASS rep=2\r\r\n", "")
+    ok, note = linux.judge(missing + PROMPT)
+    assert not ok and "repetition 2: no verdict" in note
+
+
+def test_a_failing_last_repetition_reports_the_earlier_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last repetition's FAIL ends the capture; the note lists the others."""
+    output, _, _ = _run_repeated(tmp_path, monkeypatch, 2, fail_rep=2)
+    linux = hw.linux_stage(ROOT, 2)
+    transcript = (
+        MEMERR_TRANSCRIPT + hw.nettest_command(ROOT.interface, 2) + "\r\r\n" + output
+    )
+    assert linux.failure_done(transcript)
+    ok, note = linux.judge(transcript)
+    assert not ok and hw.LINUX_NET_TOKEN_FAIL in note
+    assert "repetitions before the last: 1 PASS" in note
+
+
+def test_a_failed_cache_drop_is_reported_per_repetition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Earlier repetitions report a failed cache drop under FROST_NET_DIAG."""
+    output, _, _ = _run_repeated(tmp_path, monkeypatch, 2, drop_caches_fails=True)
+    assert "FROST_NET_DIAG_FAIL rep=1 drop_caches\r\r\n" in output
+    assert output.endswith(
+        f"{hw.LINUX_NET_TOKEN_FAIL} drop_caches\r\r\nFROST_ROOT_ALIVE=0\r\r\n"
+    )
+    assert "repetition" not in output  # the program never ran
+
+
+def test_a_root_that_does_not_come_back_ends_the_repetitions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No later repetition runs on a root that is not back."""
+    output, _, _ = _run_repeated(tmp_path, monkeypatch, 3, alive_status=124)
+    assert output.count("repetition") == 1
+    assert output.endswith("FROST_ROOT_ALIVE=124\r\r\n")
+    transcript = MEMERR_TRANSCRIPT + hw.nettest_command(ROOT.interface, 3) + output
+    assert hw.linux_stage(ROOT, 3).failure_done(transcript)
+
+
+def test_the_rest_of_a_failure_line_is_read() -> None:
+    """A failure that ends the capture mid-line still gets its whole line."""
+    read_end, write_end = os.pipe()
+    try:
+        os.set_blocking(read_end, False)
+        head = f"{hw.LINUX_NET_TOKEN_FAIL} statistics before jumbo traffic: tx +1 r"
+        rest = "x +1 rxerr +0 txerr +0 with nothing sent\r\r\nFROST_ROOT_ALIVE=0\r\r\n"
+
+        def write_later() -> None:
+            os.write(write_end, rest[:20].encode())
+            threading.Event().wait(0.2)
+            os.write(write_end, rest[20:].encode())
+
+        writer = threading.Thread(target=write_later)
+        writer.start()
+        text = hw.finish_line(read_end, head, 5.0)
+        writer.join()
+        assert (head + text).startswith(
+            head + "x +1 rxerr +0 txerr +0 with nothing sent"
+        )
+        assert (head + text).endswith("\n")
+        # A complete line needs nothing more; a silent line gives up in time.
+        assert hw.finish_line(read_end, "done\r\n", 5.0) == ""
+        assert hw.finish_line(read_end, "cut", 0.3) == ""
+    finally:
+        os.close(read_end)
+        os.close(write_end)
+    assert hw.linux_stage(ROOT).failure_line_grace_s == hw.LINUX_FAILURE_LINE_GRACE_S
+
+
+NETTEST_SOURCE = (
+    REPO_ROOT / "linux/buildroot-external/package/frost-stress/src/frost_nettest.c"
+)
+
+
+def test_frost_nettest_decoder_self_test_and_markers(tmp_path: Path) -> None:
+    """Build frost_nettest natively and run its frame decoder's self-test.
+
+    Then run it as repetition 1 of 2 on a host without the driver: its
+    verdict comes out under the diagnostic marker the stage reads.
+    """
+    compiler = next(
+        (hw.shutil.which(name) for name in ("cc", "gcc") if hw.shutil.which(name)), None
+    )
+    if compiler is None:
+        pytest.skip("no native C compiler")
+    binary = tmp_path / "frost_nettest"
+    built = hw.subprocess.run(
+        [compiler, "-O2", "-Wall", "-Wextra", "-o", str(binary), str(NETTEST_SOURCE)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if (
+        built.returncode != 0
+        and "linux/" in built.stderr
+        and "No such file" in built.stderr
+    ):
+        pytest.skip("no Linux kernel headers for a native build")
+    assert built.returncode == 0, built.stderr
+    assert "warning" not in built.stderr, built.stderr
+    done = hw.subprocess.run(
+        [str(binary), "--selftest"], capture_output=True, text=True, timeout=30
+    )
+    assert done.returncode == 0, done.stdout
+    assert done.stdout.endswith("FROST_NET_SELFTEST_PASS\n")
+    for case in (
+        "arp-request",
+        "vlan-arp",
+        "tcp-psh-ack",
+        "udp",
+        "duplicate-1514-in",
+        "stale-test-frame",
+        "other-run",
+    ):
+        assert f"FROST_NET_SELFTEST {case} " in done.stdout
+    # The window accounting: a looped kernel ARP request in an idle window
+    # passes; an in-only frame, a stale test frame, a dropped capture and
+    # unexplained counts each fail with their own reason.
+    for case, verdict in (
+        ("idle-arp-looped", "pass"),
+        ("idle-arp-twice", "pass"),
+        ("traffic-arp-exact", "pass"),
+        ("idle-in-only", "1 received frames match no frame sent"),
+        ("idle-changed-copy", "match no frame sent"),
+        ("idle-not-looped", "1 of 1 kernel frames not looped back"),
+        ("idle-stale-test-frame", "stale test frame seq=2990"),
+        ("idle-capture-dropped", "1 frames dropped"),
+        ("idle-unexplained", "tx +1 rx +1 rxerr +0 txerr +0 with nothing sent"),
+        ("traffic-one-extra", "for 600 frames and 2 kernel frames"),
+        ("idle-down-dropped", "pass"),
+        ("idle-down-not-dropped", "not looped back (tx_dropped +0)"),
+        ("idle-dropped-without-down", "not looped back (tx_dropped +1)"),
+        ("idle-unicast-not-back", "pass"),
+        ("idle-unicast-came-back", "came back through the receive filter"),
+        ("idle-offloaded-checksum", "offloaded checksum cannot be compared"),
+        ("idle-segmentation-offload", "segmentation offload cannot be accounted"),
+    ):
+        line = next(
+            line
+            for line in done.stdout.splitlines()
+            if line.startswith(f"FROST_NET_SELFTEST {case}: ")
+        )
+        assert verdict in line, line
+    # No such interface here: the run fails at once, under the DIAG marker.
+    diag = hw.subprocess.run(
+        [str(binary), "frost-no-such-if"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "FROST_NETTEST_REPETITION": "1/2"},
+    )
+    assert diag.returncode == 1
+    output = diag.stdout.replace("\n", "\r\r\n")
+    assert "FROST_NET_LOOPBACK: repetition 1 of 2\r\r\n" in output
+    verdicts = hw.nettest_diag_verdicts(output)
+    assert list(verdicts) == [1] and verdicts[1][0] == "FAIL"
+    assert hw.LINUX_NET_TOKEN_FAIL not in output
+
+
+def test_without_the_poke_variable_the_command_is_unchanged() -> None:
+    """No poke unless asked: both command forms stay as they were."""
+    assert hw.nettest_poke({}) == 0
+    assert hw.nettest_poke({hw.NETTEST_POKE_ENV: " "}) == 0
+    assert hw.nettest_command("eth0", 1, 0) == NETTEST_COMMAND_ETH0
+    assert hw.nettest_command("eth0", 3, 0) == hw.nettest_command("eth0", 3)
+    assert "frost_poke" not in hw.nettest_command("eth0", 3)
+    assert hw.linux_stage(ROOT, 1, 0).stimuli == stage().stimuli
+
+
+@pytest.mark.parametrize("text", ["0", "-5", "x", "1.5", "301"])
+def test_a_bad_poke_delay_is_refused(text: str) -> None:
+    """Only whole seconds from 1 to the maximum are accepted."""
+    with pytest.raises(ValueError, match=hw.NETTEST_POKE_ENV):
+        hw.nettest_poke({hw.NETTEST_POKE_ENV: text})
+    assert hw.nettest_poke({hw.NETTEST_POKE_ENV: "30"}) == 30
+
+
+def test_the_poke_is_scheduled_before_each_test_run_and_does_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One poke per repetition, after the cache drop, detached from the test."""
+    single = hw.nettest_command("eth0", 1, 30)
+    head, _, rest = single.partition("then ")
+    assert NETTEST_COMMAND_ETH0.startswith(head + "then ")
+    assert rest.startswith(
+        '( timeout -k 5 330 sh -c "sleep 30; [ -e /root/.frost_poke.$$ ]" '
+        "> /dev/null 2>&1 3>&- 4>&- 5>&- & ); "
+        "echo FROST_NET_DIAG: nfs poke scheduled at +30 s; "
+        "FROST_NETTEST_EXPIRE_NFS_CACHE=1 "
+    )
+    assert single.replace(rest[: rest.index("FROST_NETTEST_EXPIRE")], "") == (
+        NETTEST_COMMAND_ETH0
+    )
+    repeated = hw.nettest_command("eth0", 3, 30)
+    assert repeated.count("frost_poke") == 1 and "/root/.frost_poke.$$.$r" in repeated
+    assert not hw.LINUX_NET_DIAG_RE.search(repeated + "\r\n")
+    linux = hw.linux_stage(ROOT, 3, 30)
+    assert linux.stimuli[-1][1] == repeated.replace("eth0", ROOT.interface) + "\r"
+
+    started = time.monotonic()
+    output, _, _ = _run_repeated(tmp_path, monkeypatch, 3, poke_s=30)
+    # Each poke's stand-in sleeps 5 s in the background; nothing waits for it.
+    assert time.monotonic() - started < 4
+    lines = output.split("\r\r\n")
+    scheduled = "FROST_NET_DIAG: nfs poke scheduled at +30 s"
+    assert lines.count(scheduled) == 3
+    for rep in (1, 2, 3):
+        at = lines.index(f"FROST_NET_LOOPBACK: repetition {rep} of 3")
+        assert lines[at - 1] == scheduled
+    transcript = MEMERR_TRANSCRIPT + repeated + "\r\r\n" + output
+    ok, note = linux.judge(transcript + PROMPT)
+    assert ok, note

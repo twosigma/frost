@@ -1275,6 +1275,10 @@ package riscv_pkg;
     CMO_CLEAN = 2'b01,
     CMO_FLUSH = 2'b10
   } cmo_kind_e;
+  // menvcfg.PBMTE (bit 62, Svpbmt): WARL {0,1}. csr_file exports it to the
+  // page-table walker, which accepts a nonzero PTE PBMT field only while it
+  // is set (see ptw.sv and "Svpbmt" below).
+  localparam int unsigned MenvcfgPbmteBit = 62;
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
@@ -1745,6 +1749,67 @@ package riscv_pkg;
                          (page[19:9] == 11'h240);
   endfunction
 
+  // ---------------------------------------------------------------------------
+  // Svpbmt: the uncached alias of DDR
+  // ---------------------------------------------------------------------------
+  // A page whose leaf PTE has PBMT = NC or IO over cached DDR must not be
+  // cached. The walker gives such a leaf the PPN of its alias: the same DDR
+  // byte with bit PbmtAliasBit set, in an otherwise unused part of the
+  // physical space. The window is not part of the PMA map: an untranslated
+  // access to it, or a PMA leaf over it, is an access fault as before (none of
+  // the pma_* decodes below contain it). Only an NC or IO leaf reaches it, and
+  // the MMUs classify that access as MMIO. NC/IO loads over the alias or low
+  // BRAM issue at the ROB head and bypass caches and store forwarding. The
+  // router uses the physical device quadrant for parking, committed-store
+  // draining and interrupt shielding. Memory loads do not get those three
+  // protections: an interrupt or debug halt can flush an accepted load and
+  // cause a second read after resumption. These targets are idempotent memory.
+  // Alias stores retire after their bus response; NC/IO low-BRAM stores are
+  // buffered and can retire before it. Device registers use the full device
+  // mechanism regardless of PBMT. The load queue's PMA check accepts the alias
+  // for MMIO entries. soc_top turns an alias access into one single-beat transfer
+  // of the real DDR address through the coherent DMA port, so it is coherent
+  // with cacheable copies of the same bytes (the L1D is probed, dirty data
+  // merged) and leaves nothing in the hart's caches.
+  // The window sits in the unused top of the physical space, so the physical
+  // width does not grow:
+  //   DDR of 2**c bytes, c <= 30: bit 30; DDR [2**31, 2**31 + 2**c) aliases
+  //     to [0xC000_0000, 0xC000_0000 + 2**c), all of DDR.
+  //   c >= 32 (PhysAddrBits = c + 1): bit c; DDR below 2**c aliases to
+  //     [2**c + 2**31, 2**(c+1)). The top 2 GiB of the DDR window,
+  //     [2**c, 2**c + 2**31), has no alias: the walker answers an NC or IO
+  //     leaf there with an access fault (an implementation PMA override,
+  //     norm:Svpbmt_impl_may_override_pmas). For example, a 64 GiB window
+  //     (c = 36) aliases its first 62 GiB.
+  //   c = 31, or a map other than FROST's: no alias; every NC or IO leaf
+  //     over DDR is an access fault.
+  localparam bit PbmtAliasEnabled = PmaUsesFrostMap && (DdrCapacityLog2Bytes != 31);
+  localparam int unsigned PbmtAliasBit = (DdrCapacityLog2Bytes <= 30) ? 30 : DdrCapacityLog2Bytes;
+  // DDR addresses in [DdrBase, PbmtAliasCoverLimit) have an alias.
+  localparam longint unsigned PbmtAliasCoverLimit = !PbmtAliasEnabled ? DdrBase :
+      (DdrCapacityLog2Bytes <= 30) ? DdrLimit : (64'(1) << DdrCapacityLog2Bytes);
+  localparam longint unsigned PbmtAliasOffset = 64'(1) << PbmtAliasBit;
+
+  // The alias window: bit PbmtAliasBit set and the address without it inside
+  // the covered DDR range (which also bounds every higher bit).
+  function automatic logic pma_pbmt_alias_ok(input logic [XLEN-1:0] addr);
+    if (!PbmtAliasEnabled) pma_pbmt_alias_ok = 1'b0;
+    else if (DdrCapacityLog2Bytes <= 30) begin
+      // The whole alias is one aligned DDR-sized window.
+      pma_pbmt_alias_ok = (addr & XLEN'(~(DdrCapacityBytes - 1))) == (DdrBase | PbmtAliasOffset);
+    end else begin
+      // Only the alias bit may be set above the covered range. At least one
+      // bit between the DDR base and that bit must be set to exclude the gap.
+      pma_pbmt_alias_ok = ((addr & XLEN'(~(PbmtAliasOffset - 1))) == XLEN'(PbmtAliasOffset)) &&
+          ((addr & XLEN'(PbmtAliasOffset - DdrBase)) != '0);
+    end
+  endfunction
+  // The DDR address an alias names.
+  function automatic logic [XLEN-1:0] pbmt_alias_real(input logic [XLEN-1:0] addr);
+    pbmt_alias_real = addr;
+    pbmt_alias_real[PbmtAliasBit] = 1'b0;
+  endfunction
+
   function automatic logic pma_device_ok(input logic [XLEN-1:0] addr);
     pma_device_ok = PmaUsesFrostMap ? (addr[XLEN-1:32] == '0) && pma_device_page_ok(addr[31:12]) :
         ((PmaDevice0Bytes != 0) && ((addr - PmaDevice0Base) <= PmaDevice0Bytes - 1)) ||
@@ -1825,10 +1890,22 @@ package riscv_pkg;
   localparam int unsigned Sv39Levels = 3;
   localparam int unsigned Sv39VpnBits = Sv39Levels * Sv39VpnFieldBits;  // 27
 
-  // PTE layout (RV64): PPN in [53:10], flags in [7:0], bits [63:54] reserved
-  // (must be zero, else page fault: Svpbmt/Svnapot are out of scope and
-  // their bits fault per spec).
+  // PTE layout (RV64): PPN in [53:10], flags in [7:0], Svpbmt's PBMT in
+  // [62:61]. Bit 63 (N, Svnapot, not implemented) and bits [60:54] are
+  // reserved: set, they raise a page fault. PBMT must be zero in a non-leaf
+  // PTE, must not be 3 in a leaf, and must be zero in a leaf while
+  // menvcfg.PBMTE is clear; each of these raises a page fault too.
   localparam int unsigned PtePpnBits = 44;
+  localparam int unsigned PtePbmtLsb = 61;
+  // PBMT encodings (Svpbmt): 0 PMA, 1 NC (non-cacheable, idempotent, weakly
+  // ordered main memory), 2 IO (non-cacheable, non-idempotent, strongly
+  // ordered I/O), 3 reserved. FROST uses the same uncached classification
+  // for NC and IO. The ordering and retry behavior for each physical address
+  // range are described above with the alias map.
+  localparam bit [1:0] PbmtPma = 2'd0;
+  localparam bit [1:0] PbmtNc = 2'd1;
+  localparam bit [1:0] PbmtIo = 2'd2;
+  localparam bit [1:0] PbmtReserved = 2'd3;
   localparam int unsigned PteFlagV = 0;
   localparam int unsigned PteFlagR = 1;
   localparam int unsigned PteFlagW = 2;
@@ -1857,8 +1934,16 @@ package riscv_pkg;
   // leaf PTE with A=1 was found: install {ppn, level, flags} for the echoed
   // vpn. PAGE/ACCESS deliver the walk's refusal to the op that asked
   // (matched by the vpn echo: the requester may have been flushed and
-  // replaced since it asked). DFAULT_MISALIGN never occurs here.
+  // replaced since it asked). ACCESS with nonzero PBMT carries a valid
+  // no-alias leaf: its page permissions take priority over the PMA refusal.
+  // Other refused walks have PBMT zero. DFAULT_MISALIGN never occurs here.
+  //
+  // pbmt is the leaf's PBMT field (never 3). A successful NC/IO DDR
+  // translation uses the alias PPN (pbmt_leaf_ppn); a no-alias refusal keeps
+  // the original PPN. TLB fills store the PPN and field together. PBMT
+  // occupies the most significant bits of the packed response.
   typedef struct packed {
+    logic [1:0] pbmt;
     data_fault_kind_e fault_kind;
     logic [Sv39VpnBits-1:0] vpn;  // echo of the request
     logic [PtePpnBits-1:0] ppn;
@@ -1872,6 +1957,28 @@ package riscv_pkg;
     // (which makes every mapping below it global). Not matched by ASID.
     logic perm_g;
   } ptw_resp_t;
+
+  // Svpbmt leaf classification of a clean leaf's PPN (the base of its page:
+  // DDR and its alias boundaries are 1 GiB aligned, so a superpage is wholly
+  // inside or outside each range). A nonzero PBMT over cached DDR takes the
+  // alias PPN when the alias exists; without one the leaf is an access fault.
+  function automatic logic pbmt_ddr_leaf(input logic [PtePpnBits-1:0] ppn);
+    pbmt_ddr_leaf = ({ppn, 12'h000} >= (PtePpnBits + 12)'(DdrBase)) &&
+        ({ppn, 12'h000} < (PtePpnBits + 12)'(DdrLimit));
+  endfunction
+  function automatic logic pbmt_alias_covered(input logic [PtePpnBits-1:0] ppn);
+    pbmt_alias_covered = PbmtAliasEnabled &&
+        ({ppn, 12'h000} < (PtePpnBits + 12)'(PbmtAliasCoverLimit));
+  endfunction
+  function automatic logic [PtePpnBits-1:0] pbmt_leaf_ppn(input logic [PtePpnBits-1:0] ppn,
+                                                          input logic [1:0] pbmt);
+    pbmt_leaf_ppn = ((pbmt != PbmtPma) && pbmt_ddr_leaf(ppn) && pbmt_alias_covered(ppn)) ?
+        (ppn | PtePpnBits'(PbmtAliasOffset >> 12)) : ppn;
+  endfunction
+  function automatic logic pbmt_leaf_access_fault(input logic [PtePpnBits-1:0] ppn,
+                                                  input logic [1:0] pbmt);
+    pbmt_leaf_access_fault = (pbmt != PbmtPma) && pbmt_ddr_leaf(ppn) && !pbmt_alias_covered(ppn);
+  endfunction
 
   // satp.ASID is 9 bits (ASIDLEN = 9). Linux discovers it by writing all ones
   // to satp.ASID and reading back; satp[59:53] stay zero.

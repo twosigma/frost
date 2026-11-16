@@ -447,7 +447,10 @@ admission. Contending eligible load misses and lookahead acquisitions alternate
 successful allocations. Permission lookups precede endpoint-allocation arbitration.
 A lookahead miss that yields its allocation remains eligible for another lookup.
 Read hits do not clear the allocation turn. They permit
-store borrowing when no eligible load miss waits. A read miss can finish a lookup
+store borrowing when no eligible load miss waits. Miss demand qualifies ordinary
+loads separately from AMO selection, so it is independent of the atomic guard.
+It applies the same ownership, waiting, retry and address-blocking conditions.
+A read miss can finish a lookup
 before yielding endpoint allocation to lookahead. A lookahead Modified hit
 consumes no endpoint and yields its allocation turn. A yielded read miss reserves
 lookahead service ahead of head-store hits. The reservation ends after lookahead
@@ -528,7 +531,8 @@ both ends of that window are page aligned.
 At most two of the highest-numbered load endpoints carry speculative GetS
 requests. Three-endpoint caches allow one; smaller caches disable look-ahead.
 Demand may use every load endpoint. Eligible foreground work precedes hint
-selection. Registered hints check live acquisitions, buffered stores and
+selection. Registered hints check live acquisitions, every valid store record,
+a waiting `cbo.zero` twin and
 frozen dirty writebacks, with conflicts rechecked before acquisition.
 The recheck reads a registered comparison, and any offered probe excludes the
 hint. A store that arrives on the acquisition edge or the edge before it is
@@ -1799,6 +1803,7 @@ to answer.
 | `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with every hart and DMA completion slot, every engine's result buffer and both PutM controls full, and instruction and data streams on one line |
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
+| `coherence_stale_line_prefetch_l2` | `cbo.zero` twin beside an L1D stream on the cluster with eight L1D request endpoints, stream prefetching and a 64 KiB home: no stream prefetch acquires a sector held by a pending store record or waiting twin, including a `cbo.zero` pushed during the prefetch lookup and a look-ahead `GetMZero` issued while its twin still waits |
 | `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, dirty-L1D walker coherence, and one refill event per allocation that reads a line |
 | `coherence_home*` | Home service and ownership, with each accepted memory line read producing exactly one demand or prefetch refill pulse, including a held read accepted after fatal stop |
