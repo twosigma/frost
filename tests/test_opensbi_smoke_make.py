@@ -41,6 +41,8 @@ def test_parallel_image_targets_share_one_packer(tmp_path: Path) -> None:
         "-j8",
         "-o",
         "payload.bin",
+        "-o",
+        str(tmp_path / "firmware.bin"),
         f"FROST_ROOT={root}",
         f"FW_BIN={tmp_path / 'firmware.bin'}",
         f"BOARD_DIR={tmp_path}",
@@ -61,10 +63,10 @@ def test_parallel_image_targets_share_one_packer(tmp_path: Path) -> None:
         (tmp_path / "sw.txt").unlink()
 
 
-def test_firmware_rebuilds_after_configuration_or_builder_changes(
+def test_firmware_checks_inputs_on_every_make(
     tmp_path: Path,
 ) -> None:
-    """A cached firmware must use the selected interrupt driver on the next build."""
+    """Run the helper even when changed inputs have an older timestamp."""
     root = Path(__file__).resolve().parents[1]
     linux = tmp_path / "linux"
     linux.mkdir()
@@ -77,8 +79,10 @@ def test_firmware_rebuilds_after_configuration_or_builder_changes(
         "out = Path(sys.argv[sys.argv.index('--out') + 1])\n"
         "out.mkdir(parents=True, exist_ok=True)\n"
         "config = Path(__file__).with_name('opensbi_frost_defconfig')\n"
-        "(out / 'firmware.bin').write_text(config.read_text())\n"
-        "with (out / 'builds').open('a') as log: log.write('build\\n')\n"
+        "firmware = out / 'firmware.bin'\n"
+        "if not firmware.exists() or firmware.read_text() != config.read_text():\n"
+        "    firmware.write_text(config.read_text())\n"
+        "with (out / 'checks').open('a') as log: log.write('check\\n')\n"
     )
     output = tmp_path / "out"
     firmware = output / "firmware.bin"
@@ -92,18 +96,22 @@ def test_firmware_rebuilds_after_configuration_or_builder_changes(
         f"FW_BIN={firmware}",
         str(firmware),
     ]
-    for build_count, changed in ((1, None), (1, None), (2, config), (3, builder)):
+    previous_mtime = None
+    for check_count, changed in enumerate((None, None, config, builder), start=1):
         if changed is not None:
-            # Only the chosen dependency is newer than the cached output.
-            cached_ns = firmware.stat().st_mtime_ns
             for dependency in (config, builder):
                 os.utime(dependency, ns=(1, 1))
             if changed == config:
                 config.write_text(config.read_text() + "CONFIG_FDT_IRQCHIP=y\n")
-            os.utime(changed, ns=(cached_ns + 1, cached_ns + 1))
+            else:
+                builder.write_text(builder.read_text() + "# helper changed\n")
+            os.utime(changed, ns=(1, 1))
         result = subprocess.run(
             command, cwd=tmp_path, capture_output=True, text=True, timeout=30
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        assert (output / "builds").read_text().splitlines() == ["build"] * build_count
+        assert (output / "checks").read_text().splitlines() == ["check"] * check_count
         assert firmware.read_text() == config.read_text()
+        if check_count == 2:
+            assert firmware.stat().st_mtime_ns == previous_mtime
+        previous_mtime = firmware.stat().st_mtime_ns
