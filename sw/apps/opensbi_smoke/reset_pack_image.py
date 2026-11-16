@@ -27,8 +27,8 @@ import sys
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
-PACKER = ROOT / "linux/buildroot-external/board/frost/frost_boot_image.py"
-spec = importlib.util.spec_from_file_location("frost_reset_packer", PACKER)
+BOOT_IMAGE_PACKER = ROOT / "linux/buildroot-external/board/frost/frost_boot_image.py"
+spec = importlib.util.spec_from_file_location("frost_reset_packer", BOOT_IMAGE_PACKER)
 assert spec is not None and spec.loader is not None
 packer = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = packer

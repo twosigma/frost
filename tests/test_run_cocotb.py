@@ -1835,8 +1835,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         rerun_after_reset=False,
         description="S-mode SBI cold reboot through syscon and the boot entry",
         extra_env=(
-            ("PAYLOAD_SRC", "reset.c"),
-            ("PACKER", "reset_pack_image.py"),
+            ("OPENSBI_SMOKE_PAYLOAD_SRC", "reset.c"),
+            ("OPENSBI_SMOKE_PACKER", "reset_pack_image.py"),
             ("EXTRA_CFLAGS", "-DFROST_SBI_RESET_TYPE=1"),
         ),
         verilator_extra_args=("-GDDR_MODEL_LATENCY=1",),
@@ -1847,10 +1847,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="opensbi_smoke",
         nic_mac_clocks=False,
         rerun_after_reset=False,
-        description="S-mode SBI warm reboot through syscon and the boot entry",
+        description=(
+            "S-mode SBI warm reboot through syscon and the boot entry; OpenSBI "
+            "routes cold and warm reboot to the same SYSRESET register here, so "
+            "this differs from opensbi_reset_cold only in the SBI reset type"
+        ),
         extra_env=(
-            ("PAYLOAD_SRC", "reset.c"),
-            ("PACKER", "reset_pack_image.py"),
+            ("OPENSBI_SMOKE_PAYLOAD_SRC", "reset.c"),
+            ("OPENSBI_SMOKE_PACKER", "reset_pack_image.py"),
             ("EXTRA_CFLAGS", "-DFROST_SBI_RESET_TYPE=2"),
         ),
         verilator_extra_args=("-GDDR_MODEL_LATENCY=1",),

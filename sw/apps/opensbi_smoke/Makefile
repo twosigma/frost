@@ -24,8 +24,8 @@ FROST_ROOT := $(abspath $(CURDIR)/../../..)
 BOARD_DIR  := $(FROST_ROOT)/linux/buildroot-external/board/frost
 RISCV_PREFIX ?= riscv64-linux-
 FPGA_CPU_CLK_FREQ ?= 322265625
-PAYLOAD_SRC ?= main.c
-PACKER ?= $(BOARD_DIR)/frost_boot_image.py
+OPENSBI_SMOKE_PAYLOAD_SRC ?= main.c
+OPENSBI_SMOKE_PACKER ?= $(BOARD_DIR)/frost_boot_image.py
 
 CC      := $(RISCV_PREFIX)gcc
 OBJCOPY := $(RISCV_PREFIX)objcopy
@@ -39,17 +39,28 @@ CFLAGS := -march=rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zb
           -nostdlib -nostartfiles -static -fno-pie -no-pie -fno-stack-protector -ffreestanding -fno-builtin \
           -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-strict-aliasing $(EXTRA_CFLAGS)
 
-.PHONY: all clean distclean FORCE_OPENSBI
+.PHONY: all clean distclean FORCE_OPENSBI FORCE_CONFIG
 
 all: sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt payload.S
 
 FORCE_OPENSBI:
 
+FORCE_CONFIG:
+
+# Records the payload source, packer and extra C flags of the last build. The
+# file is rewritten only when its content changes, so the payload and packed
+# images are rebuilt exactly when one of them changes between invocations.
+CONFIG_STAMP := .config.stamp
+CONFIG_TEXT  := payload=$(OPENSBI_SMOKE_PAYLOAD_SRC) packer=$(OPENSBI_SMOKE_PACKER) cflags=$(EXTRA_CFLAGS)
+
+$(CONFIG_STAMP): FORCE_CONFIG
+	@printf '%s\n' '$(CONFIG_TEXT)' | cmp -s - $@ || printf '%s\n' '$(CONFIG_TEXT)' > $@
+
 $(FW_BIN): FORCE_OPENSBI
 	python3 $(FROST_ROOT)/linux/opensbi_build.py --out $(OPENSBI_OUT)
 
-payload.elf: start.S $(PAYLOAD_SRC) link.ld ../../lib/include/aplic.h
-	$(CC) $(CFLAGS) -T link.ld -Wl,--gc-sections -o $@ start.S $(PAYLOAD_SRC)
+payload.elf: start.S $(OPENSBI_SMOKE_PAYLOAD_SRC) link.ld ../../lib/include/aplic.h $(CONFIG_STAMP)
+	$(CC) $(CFLAGS) -T link.ld -Wl,--gc-sections -o $@ start.S $(OPENSBI_SMOKE_PAYLOAD_SRC)
 
 payload.bin: payload.elf
 	$(OBJCOPY) -O binary $< $@
@@ -59,8 +70,8 @@ payload.S: payload.elf
 
 # One packer run writes every image. Group the outputs so parallel make cannot
 # launch competing packers that overwrite the shared DTS/DTB and shim files.
-sw.mem sw.txt sw_ddr.mem sw_ddr.txt &: payload.bin $(FW_BIN) $(PACKER) $(BOARD_DIR)/frost_boot_image.py
-	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) python3 $(PACKER) \
+sw.mem sw.txt sw_ddr.mem sw_ddr.txt &: payload.bin $(FW_BIN) $(OPENSBI_SMOKE_PACKER) $(BOARD_DIR)/frost_boot_image.py $(CONFIG_STAMP)
+	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) python3 $(OPENSBI_SMOKE_PACKER) \
 	    --firmware $(FW_BIN) --payload payload.bin --out . --cross $(RISCV_PREFIX) \
 	    --bootargs "" --model "FROST OpenSBI smoke"
 
@@ -69,7 +80,7 @@ sw64.mem: sw.mem ../../common/make_dword_mem.py
 
 clean:
 	rm -f payload.elf payload.bin payload.S sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt \
-	      frost.dts frost.dtb frost_boot_shim.S shim.elf shim.bin
+	      frost.dts frost.dtb frost_boot_shim.S shim.elf shim.bin $(CONFIG_STAMP)
 
 distclean: clean
 	rm -rf build

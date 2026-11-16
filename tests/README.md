@@ -404,7 +404,7 @@ the engine, so OpenSBI emulates them, as it does for low BRAM.
 `opensbi_reset_cold` and `opensbi_reset_warm` each have a covered BRAM-only
 CI shard. Run them locally with
 `./scripts/frost.py cocotb opensbi_reset_cold` and
-`./scripts/frost.py cocotb opensbi_reset_warm`. A 665-byte supervisor payload
+`./scripts/frost.py cocotb opensbi_reset_warm`. A small supervisor payload
 checks SRST probing, rejected shutdown/type/reason requests, and a real reboot
 through OpenSBI. The bench checks the 64-cycle request, surviving debug and
 memory transport, and the first retired boot instruction. It returns directly
@@ -416,6 +416,9 @@ console and SYSRESET, and DDR model latency 1. They use the same firmware
 cache, guarded build rule and boot messages as `opensbi_smoke`; changing the
 payload or packer does not bypass the firmware input checks. The reset request
 has a ten-millisecond simulated-time budget.
+In this design OpenSBI routes both the cold and the warm reboot request to the
+same SYSRESET register, so the two tests exercise the same hardware reset and
+differ only in the SBI reset type the firmware must accept.
 They cover the reset call and boot entry, not the complete platform
 device tree or a second Linux boot; `opensbi_smoke` retains that full device
 setup.
@@ -1382,9 +1385,9 @@ The report covers 25 of the simulating jobs, chosen so that it keeps 99.9% of
 the line, branch and cover points that every job together would reach, with no
 cover point lost. They are Arch Tests (I B C / bram); the Real Programs jobs
 Debug and UART, both OpenSBI smoke configurations, cold and warm OpenSBI reset,
-Memory and NIC stress, Runtime benchmarks and vector, Runtime and other, and SRAM macros in BRAM and
-C library and RTOS, DMA NIC and coherence, Interrupts, Memory link stage (other
-programs) and Privilege and MMU in DDR; four Physical address aperture jobs
+Memory and NIC stress, Runtime benchmarks and vector, Runtime and other, and
+SRAM macros in BRAM and C library and RTOS, DMA NIC and coherence, Interrupts,
+Memory link stage (other programs) and Privilege and MMU in DDR; four Physical address aperture jobs
 (1 GiB / Bare access, 1 GiB / Unit boundaries, 128 GiB / DMA, 128 GiB / NIC);
 riscv-tests (all suites / bram / p); riscv-torture (ddr / paged); TestRIG
 shards 1, 2 and 4; and the unit-bench job. A model build with coverage takes

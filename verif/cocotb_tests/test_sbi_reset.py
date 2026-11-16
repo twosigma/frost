@@ -24,11 +24,19 @@ can be booted again without reloading it.
 from typing import Any
 
 import cocotb
-from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge, with_timeout
+from cocotb.triggers import (
+    ClockCycles,
+    FallingEdge,
+    First,
+    ReadOnly,
+    RisingEdge,
+    with_timeout,
+)
 from cocotb.utils import get_sim_time
 
 from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
+    FAIL_MARKER,
     UartMonitor,
     generate_divided_clock,
     hold_nic_without_mac_clocks,
@@ -37,6 +45,12 @@ from cocotb_tests.test_real_program import (
     start_cpu_clock,
     wait_for_power_on_reset,
 )
+
+
+async def _wait_for_fail_marker(dut: Any, uart: UartMonitor) -> None:
+    """Return as soon as the payload prints the failure marker."""
+    while not uart.contains(FAIL_MARKER):
+        await RisingEdge(dut.i_clk)
 
 
 @cocotb.test()
@@ -57,7 +71,10 @@ async def test_sbi_reset(dut: Any) -> None:
     uart.clear()
     dut.i_rst_n.value = 1
 
-    await with_timeout(RisingEdge(soc.sysreset_q), 10_000_000, "ns")
+    # End the wait early, with the UART output, if the payload reports failure.
+    failed = cocotb.start_soon(_wait_for_fail_marker(dut, uart))
+    await with_timeout(First(RisingEdge(soc.sysreset_q), failed), 10_000_000, "ns")
+    failed.cancel()
     started = get_sim_time(unit="ps")
     assert "SBI reset: requesting reboot" in uart.get_output(), uart.get_output()
     assert "<<FAIL>>" not in uart.get_output(), uart.get_output()
