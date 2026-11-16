@@ -4269,6 +4269,28 @@ module coherence_l1d #(
       p_withdraw_full_cover : cover (WITHDRAW_ABSORBED_W && active && wb_selected_q &&
           wb_valid[wb_select_q] && wb_absorbed[wb_select_q] && !o_w_valid &&
           store_pop && operation_q == TwinOp && !store_zero[store_head_index]);
+      // The gather and pair windows hold a record: Idle keeps a growing sole
+      // head, or a full lower head whose upper record grows; a store pop
+      // stops its continuation before such a next record.
+      p_full_hold_cover_gather_head : cover (active && phase_q == Idle && gather_open &&
+          store_count == 3'd1 && gather_grow[store_head_index]);
+      p_full_hold_cover_pair_head : cover (active && phase_q == Idle && pair_open &&
+          store_count == 3'd2 && gather_pair_wait[store_head_index]);
+      p_full_hold_cover_gather_next : cover (store_pop && operation_q == StoreOp && tail_q &&
+          gather_open && store_count == 3'd2 && gather_grow[store_next_index]);
+      p_full_hold_cover_pair_next : cover (store_pop && operation_q == StoreOp && tail_q &&
+          pair_open && store_count == 3'd3 && gather_pair_wait[store_next_index]);
+      // The claim grants credit beside an allocating push at three records,
+      // and a claimed write combines into the youngest of four records.
+      p_full_credit_cover_three : cover (store_push && !store_combined && merge_claim &&
+          store_count == 3'd3 && store_credit);
+      p_full_credit_cover_four : cover (store_push && store_combined && store_count == 3'd4);
+      // A data twin freezes a Modified victim, and a look-ahead pair's data
+      // twin installs on a borrowed endpoint before its Done.
+      p_full_twin_cover_victim : cover (active && phase_q == Freeze && operation_q == TwinOp &&
+          !store_zero[store_head_index]);
+      p_full_twin_cover_borrowed : cover (store_pop && operation_q == TwinOp &&
+          !store_zero[store_head_index] && twin_ep_q != '0);
 `endif
     end
 `endif
