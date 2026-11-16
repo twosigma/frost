@@ -1614,6 +1614,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_l1d_zero_index.sby",
+        "Conditional equivalence of zero look-ahead blocking, with buffer invariants proved under its interface contract.",
+        tasks=("zero_index_prove", "zero_index_invariants"),
+    ),
+    FormalTarget(
         "coherence_l1d_twin.sby",
         "L1D: primitive and portable forms are equivalent.",
         tasks=(
@@ -2042,6 +2047,14 @@ SBY_TASKS = [
     (
         "coh_l1d_zero_request_cover",
         "The dropped-load schedule reaches its final checked frame after retry and zero completion.",
+    ),
+    (
+        "zero_index_prove",
+        "Index-based zero look-ahead blocking equals the address form under the buffer shape and sampled-conflict invariants.",
+    ),
+    (
+        "zero_index_invariants",
+        "Store-buffer shape and the sampled same-block head conflict under the buffer interface contract.",
     ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),

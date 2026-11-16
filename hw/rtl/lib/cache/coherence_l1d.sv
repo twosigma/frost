@@ -2282,6 +2282,52 @@ module coherence_l1d #(
       !load_block && !i_sc_valid && !i_maint_valid && !amo_waiting &&
       store_valid[look_index_q] && !store_acquired[look_index_q] &&
       !store_checked_q[look_index_q] && look_index_q != store_head_index;
+`ifdef ZERO_INDEX_PROOF
+  // Compare the complete blocking decision with an index-based twin test.
+  // The same-block head case also needs the registered sibling conflict;
+  // the two twin tests alone are not equivalent.
+  logic [3:0] f_index_blocked;
+  always_comb begin
+    f_index_blocked = store_acquired | store_checked_q | ~store_valid | look_owner_conflict_q;
+    if (HOME_LINE_BYTES == 64)
+      for (int slot = 0; slot < 4; slot++)
+      if (store_twin[slot] || (store_zero[slot] && (zero_sibling_conflict_q[slot] ||
+          !(store_valid[2'(2'(slot) + 2'd1)] && store_twin[2'(2'(slot) + 2'd1)] &&
+            2'(2'(slot) + 2'd1) != store_head_index))))
+        f_index_blocked[slot] = 1'b1;
+    if (!look_snapshot_valid_q) f_index_blocked = '1;
+    for (int slot = 0; slot < 4; slot++)
+      for (int older = 0; older < 4; older++)
+      if (store_valid[older] && 2'(2'(older) - store_head_index) <
+          2'(2'(slot) - store_head_index) && look_pair_conflict_q[slot][older])
+        f_index_blocked[slot] = 1'b1;
+  end
+  // The comparison task assumes these lemmas; the buffer task proves them
+  // under its interface contract, with the sampled older-record conflict.
+  logic [3:0] f_index_twin_sector, f_index_twin_pair, f_index_head_conflict;
+  always_comb
+    for (int slot = 0; slot < 4; slot++) begin
+      f_index_twin_sector[slot] = !(store_valid[slot] && store_twin[slot]) ||
+          (store_zero[slot] && store_addr[slot][5]);
+      f_index_twin_pair[slot] = !(store_valid[slot] && store_twin[slot] &&
+          2'(slot) != store_head_index) ||
+          (store_valid[2'(2'(slot) - 2'd1)] && store_zero[2'(2'(slot) - 2'd1)] &&
+           !store_twin[2'(2'(slot) - 2'd1)] &&
+           store_addr[2'(2'(slot) - 2'd1)][ADDR_WIDTH-1:6] == store_addr[slot][ADDR_WIDTH-1:6]);
+      f_index_head_conflict[slot] = !(look_snapshot_valid_q && store_valid[slot] &&
+          store_zero[slot] && !store_twin[slot] && 2'(2'(slot) + 2'd1) == store_head_index &&
+          store_valid[store_head_index] && store_twin[store_head_index] &&
+          store_addr[store_head_index][ADDR_WIDTH-1:6] == store_addr[slot][ADDR_WIDTH-1:6]) ||
+          zero_sibling_conflict_q[slot];
+    end
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst) begin
+      p_zero_index_equal : assert (look_blocked == f_index_blocked);
+      p_zero_index_twin_sector : assert (&f_index_twin_sector);
+      p_zero_index_twin_pair : assert (&f_index_twin_pair);
+      p_zero_index_head_conflict : assert (&f_index_head_conflict);
+    end
+`endif
   assign look_ready = look_available && !(read_waiting_q && store_read_turn_q);
   assign look_retry = look_read_turn_q && rd_load_miss &&
       (!array_hit || array_state != coherence_pkg::Modified);
