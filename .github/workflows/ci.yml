@@ -242,6 +242,7 @@ jobs:
               [csr_test] or [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or
               [satp_drain_test] or [ad_fault_test] or [smode_test] or [csr_rmw_test] or
               [ptw_bus_fault_test] or [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or
+              [svinval_test] or
               [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error]
           - name: Real Programs (Interrupts)
             coverage: [ddr]
@@ -353,7 +354,7 @@ jobs:
               or [csr_test] or
               [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or [satp_drain_test] or
               [ad_fault_test] or [smode_test] or [csr_rmw_test] or [ptw_bus_fault_test] or
-              [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or
+              [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or [svinval_test] or
               [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error] or
               [imsic_csr_test] or [imsic_msi_test] or
               [imsic_collision_test] or [timer_replay_test] or [imsic_aplic_coexist_test] or
@@ -1042,6 +1043,8 @@ jobs:
             python3 tests/test_testrig.py --trace-dir verif/testrig/traces --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --crypto 50 --continue-on-fail
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --svinval 50 --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --sscofpmf
 

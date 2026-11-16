@@ -95,7 +95,8 @@ slot 2 only with slot 1 and never while `full_for_2` is set.
 The ROB decides at allocation whether an instruction is illegal and records
 it as an exception with cause `ExcIllegalInstr`. The check covers privilege
 level, counter enables, `mstatus` TVM, TW, and TSR, S-mode `stimecmp` access
-without `menvcfg.STCE`, Debug-only instructions and CSRs, unimplemented CSRs,
+without `menvcfg.STCE` or `mcounteren.TM`, Debug-only instructions and CSRs,
+unimplemented CSRs,
 writes to read-only CSRs, FP use while `mstatus.FS` is Off, vector CSR
 accesses while `mstatus.VS` is Off (with `VECTOR=1`; without it the vector
 CSRs do not exist), and an FP

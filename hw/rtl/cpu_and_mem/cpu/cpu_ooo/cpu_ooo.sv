@@ -1161,6 +1161,13 @@ module cpu_ooo #(
     if (i_rst) id_wrs_nto_illegal_q <= 1'b0;
     else id_wrs_nto_illegal_q <= csr_wrs_nto_illegal;
   end
+  // Svinval: sfence.w.inval and sfence.inval.ir trap in U-mode and ignore
+  // mstatus.TVM; privilege changes only on a full-flush trap or xRET.
+  logic id_priv_is_u_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) id_priv_is_u_q <= 1'b0;
+    else id_priv_is_u_q <= csr_priv_is_u;
+  end
 
   id_stage #(
       .XLEN(XLEN)
@@ -1176,6 +1183,7 @@ module cpu_ooo #(
       .i_mstatus_vs_off(id_mstatus_vs_off_q),
       .i_cbo_zero_illegal(id_cbo_zero_illegal_q),
       .i_wrs_nto_illegal(id_wrs_nto_illegal_q),
+      .i_priv_is_u(id_priv_is_u_q),
       .i_cbo_cf_illegal(id_cbo_cf_illegal_q),
       .i_cbo_inval_illegal(id_cbo_inval_illegal_q),
       .i_cbo_inval_flush(id_cbo_inval_flush_q),
@@ -4357,6 +4365,9 @@ module cpu_ooo #(
     if (reset_seen_q && fs_off_checks_armed && !i_rst &&
         (csr_wrs_nto_illegal != id_wrs_nto_illegal_q)) begin
       p_wrs_nto_gate_change_flushes_decode : assert (flush_all);
+    end
+    if (reset_seen_q && fs_off_checks_armed && !i_rst && (csr_priv_is_u != id_priv_is_u_q)) begin
+      p_priv_is_u_gate_change_flushes_decode : assert (flush_all);
     end
   end
 `endif

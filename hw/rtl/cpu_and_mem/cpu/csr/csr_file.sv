@@ -66,14 +66,15 @@
   Selected, uninhibited event inputs are sampled and added on the following
   cycle. Counter writes replace the count and discard the pending increment.
   Machine counters and selectors 11..31 read zero and ignore writes; their
-  user aliases are absent. RV32 high-half counter addresses are illegal at
-  every privilege. mcounteren/scounteren implement CY/TM/IR/HPM3..10 and
-  reset to 0x7ff.
+  user aliases read zero in M-mode and trap below M-mode. RV32 high-half
+  counter addresses are illegal at every privilege. mcounteren/scounteren
+  implement CY/TM/IR/HPM3..10 and reset to 0x7ff.
 
   Three counters also accept a translation event, selected by a value above
   the counter numbers so that "event N selects counter N" stays unambiguous
   for the DT's raw-event map: mhpmevent8=16 counts page-walker busy cycles,
-  mhpmevent7=17 counts SFENCE.VMA TLB invalidates, and mhpmevent4=18 counts
+  mhpmevent7=17 counts SFENCE.VMA and SINVAL.VMA TLB invalidates, and
+  mhpmevent4=18 counts
   CSR-requested translation-state flushes (a satp access, or an MPRV/MPP
   change), including those that preserve ASID-tagged TLB entries.
   Three more count cache refills: mhpmevent3=19 counts L1I refills (one per
@@ -163,7 +164,7 @@ module csr_file #(
     input logic       i_l1d_miss = '0,
     input logic       i_sq_full_stall = '0,
     // Translation events: the page walker is busy this cycle, and an
-    // SFENCE.VMA TLB invalidate begins (one pulse per invalidate window).
+    // SFENCE.VMA or SINVAL.VMA TLB invalidate begins (one pulse per invalidate window).
     // CSR-requested invalidates are counted from o_csr_translation_flush_req.
     input logic       i_walk_busy = '0,
     input logic       i_sfence_tlb_flush = '0,
@@ -287,8 +288,8 @@ module csr_file #(
     //   o_wfi_illegal: U, or S with TW set.
     //   o_priv_is_u: current privilege is U, for CSRs requiring S.
     output logic [riscv_pkg::CounterMaskBits-1:0] o_counter_blocked,
-    // Sstc: stimecmp access in S requires menvcfg.STCE. M is never blocked;
-    // U fails the generic needs-S check. Sampled at allocation as above.
+    // Sstc: stimecmp access in S requires menvcfg.STCE and mcounteren.TM. M is
+    // never blocked; U fails the generic needs-S check. Sampled at allocation.
     output logic o_stimecmp_blocked,
     output logic o_sret_illegal,
     output logic o_sfence_illegal,
@@ -717,7 +718,7 @@ module csr_file #(
   assign o_scounteren = scounteren_q;
   assign o_counter_blocked = gate_priv_is_u ? ~(mcounteren_q & scounteren_q) :
       gate_priv_is_s ? ~mcounteren_q : '0;
-  assign o_stimecmp_blocked = gate_priv_is_s && !menvcfg_stce;
+  assign o_stimecmp_blocked = gate_priv_is_s && (!menvcfg_stce || !mcounteren_q[1]);
   assign o_cbo_zero_illegal = (gate_priv_is_s && !menvcfg_cbze) ||
       (gate_priv_is_u && !(menvcfg_cbze && senvcfg_cbze));
   assign o_cbo_cf_illegal = (gate_priv_is_s && !menvcfg_cbcfe) ||
@@ -1876,10 +1877,11 @@ module csr_file #(
           mideleg_lcofi <= mideleg_new_value[riscv_pkg::MieLcofBit];
         end
         // mip: the machine bits are read-only (input reflections); the
-        // supervisor pending bits are the M-mode software-injection state.
+        // supervisor pending bits are the M-mode software-injection state,
+        // except STIP is read-only while menvcfg.STCE selects stimecmp.
         riscv_pkg::CsrMip: begin
           mip_ssip <= mip_new_value[riscv_pkg::MieSsiBit];
-          mip_stip <= mip_new_value[riscv_pkg::MieStiBit];
+          if (!menvcfg_stce) mip_stip <= mip_new_value[riscv_pkg::MieStiBit];
           mip_seip <= mip_new_value[riscv_pkg::MieSeiBit];
         end
         // sip: SSIP is the only S-writable pending bit, and only where
@@ -2622,6 +2624,11 @@ module csr_file #(
           assert (mip_seip == $past(csr_new_value[9]));
           assert (mip_stip == ($past(menvcfg_stce) ? $past(mip_stip) : $past(csr_new_value[5])));
         end
+        if ($past(storage_csr_write && i_csr_address == riscv_pkg::CsrMip)) begin
+          assert (mip_ssip == $past(csr_new_value[1]));
+          assert (mip_seip == $past(csr_new_value[9]));
+          assert (mip_stip == ($past(menvcfg_stce) ? $past(mip_stip) : $past(csr_new_value[5])));
+        end
       end
       cover (o_m_topei_claim);
       cover (o_s_topei_claim && priv_q == riscv_pkg::PrivS);
@@ -3079,6 +3086,11 @@ module csr_file #(
       p_wrs_nto_gate_export :
       assert (o_wrs_nto_illegal == ((priv_q != riscv_pkg::PrivM) &&
                                     mstatus[riscv_pkg::MstatusTwBit]));
+      // Sstc stimecmp legality in S: requires both menvcfg.STCE and mcounteren.TM.
+      p_stimecmp_gate_export :
+      assert (o_stimecmp_blocked ==
+              ((priv_q == riscv_pkg::PrivS) &&
+               (!menvcfg[riscv_pkg::MenvcfgStceBit] || !o_mcounteren[1])));
 
       // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);
@@ -3652,10 +3664,11 @@ module csr_file #(
           f_old_mideleg_lcofi <= csr_new_value[riscv_pkg::MieLcofBit];
         end
         // mip: the machine bits are read-only (input reflections); the
-        // supervisor pending bits are the M-mode software-injection state.
+        // supervisor pending bits are the M-mode software-injection state,
+        // except STIP is read-only while menvcfg.STCE selects stimecmp.
         riscv_pkg::CsrMip: begin
           f_old_mip_ssip <= csr_new_value[riscv_pkg::MieSsiBit];
-          f_old_mip_stip <= csr_new_value[riscv_pkg::MieStiBit];
+          if (!menvcfg_stce) f_old_mip_stip <= csr_new_value[riscv_pkg::MieStiBit];
           f_old_mip_seip <= csr_new_value[riscv_pkg::MieSeiBit];
         end
         // sip: SSIP is the only S-writable pending bit, and only where
