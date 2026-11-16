@@ -2492,6 +2492,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "element width against a Python model, with a fixed latency"
         ),
     ),
+    "vec_vtype_tracker": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vtype_tracker",
+        hdl_toplevel_module="vec_vtype_tracker",
+        description="Configuration allocation and delayed ROB indication cannot reload stale vtype",
+    ),
     "vec_mul_lane": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_mul_lane",
         hdl_toplevel_module="vec_mul_lane",

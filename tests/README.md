@@ -1448,3 +1448,6 @@ and says when the run proves everything again.
 
 The formal and synthesis jobs check out the repository without submodules and
 set `FROST_SKIP_SUBMODULE_INIT=1`; none of their inputs is in a submodule.
+
+`vec_vtype_tracker` checks the allocation-to-commit configuration handoff,
+including the delayed ROB in-flight indication and architectural reload.
