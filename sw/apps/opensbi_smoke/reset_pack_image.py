@@ -16,8 +16,8 @@
 
 """Pack the manual SRST payload with a small, reset-focused device tree.
 
-Use the production firmware, reset binding and image layout. The reduced
-platform describes only the boot hart, console and SYSRESET;
+Use the production firmware configuration, reset binding and image layout.
+The reduced platform describes only the boot hart, console and SYSRESET;
 it does not exercise Linux's full tree or interrupt-controller setup.
 """
 
