@@ -104,6 +104,9 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("line_client_link", "line_link1_four_bmc"): 4200,
     ("line_client_link", "line_link1_eight_bmc"): 4200,
     ("coherence_store_home", "link_bmc_pressure"): 8700,
+    ("rs_issue_tag_banks", "int_equiv"): 600,
+    ("rs_issue_tag_banks", "int_equiv_prims"): 600,
+    ("rs_issue_tag_copies", "prove"): 600,
 }
 
 
@@ -1272,6 +1275,12 @@ FORMAL_TARGETS = [
         "INT_RS with four issue-tag copies equal to the tags equals INT_RS with the single "
         "tags, in portable and primitive builds",
         tasks=("int_equiv", "int_equiv_prims"),
+    ),
+    FormalTarget(
+        "rs_issue_tag_copies.sby",
+        "Each INT_RS issue-tag copy in tomasulo_wrapper equals its tag after one clock edge, "
+        "from any initial state, by induction",
+        tasks=("prove",),
     ),
     FormalTarget(
         "served_window_coverage.sby",

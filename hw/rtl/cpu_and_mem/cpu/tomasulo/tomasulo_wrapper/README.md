@@ -443,11 +443,12 @@ CDB valids and the LQ's next staged tag, so the issue compares start at a
 flop. Each tag register has four copies loaded from the same next value (two
 in a two-entry INT_RS), and each copy serves the compares of an equal group of
 entries (`ISSUE_CDB_TAG_BANKS`). A simulation assertion in INT_RS and the
-wrapper's formal target check that every copy equals its tag. Both issue ports
-capture the final operands in stage 2, including the early load value. A
-stalled packet holds those operands. An assertion checks
-that issue and resident wakeup see matching valid bits, and matching tags on a
-valid lane.
+wrapper's formal target check that every copy equals its tag, and
+`rs_issue_tag_copies` proves by induction that each copy equals its tag after
+one clock edge, from any initial state. Both issue ports capture the final
+operands in stage 2, including the early load value. A stalled packet holds
+those operands. An assertion checks that issue and resident wakeup see
+matching valid bits, and matching tags on a valid lane.
 
 The merged lanes also decide MEM_RS's next issue. MEM_RS exports one
 look-ahead candidate per combination of lane valids, and the LQ selects among

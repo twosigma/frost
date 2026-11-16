@@ -1520,9 +1520,11 @@ jobs:
               coh_l1d_stream_outlier_prove
             timeout_minutes: 330
           # Every comparison of a block's hand-instantiated primitives with its
-          # portable form: the twin targets and the read select's primitive tasks.
+          # portable form: the twin targets and the read select's primitive tasks;
+          # also the INT_RS issue-tag copy proofs (rs_issue_tag_banks, with its
+          # primitive build, and rs_issue_tag_copies).
           - shard: Primitive forms
-            pytest_filter: (_twin and not rs_payload_twin) or (coh_read_select and xilinx)
+            pytest_filter: (_twin and not rs_payload_twin) or (coh_read_select and xilinx) or rs_issue_tag_
             timeout_minutes: 90
           # The vector CSR state: the vector BMC alone is about forty minutes,
           # and new vector proofs join it.
@@ -1556,7 +1558,7 @@ jobs:
               not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or
               coherence_ or coherent_ or (_twin and not rs_payload_twin) or csr_file_vector or
               vec_lmul_legality or line_client_link or ptw or tlb or imsic or aplic or
-              immu or dmmu or load_queue or lq_)
+              immu or dmmu or load_queue or lq_ or rs_issue_tag_)
             timeout_minutes: 120
     # A task whose key has a pass marker is skipped; one in twenty of those
     # is proved again as a canary. The markers are cached per job: a main run

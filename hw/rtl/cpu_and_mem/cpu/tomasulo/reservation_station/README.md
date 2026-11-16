@@ -380,7 +380,9 @@ station does:
   copies, each driven by its lane's tag, has the same outputs and next state
   as INT_RS with the single tags, for any state and input, in the portable
   and the Xilinx-primitive builds. The `tomasulo_wrapper` target asserts that
-  the wrapper's copies equal the tags.
+  the wrapper's copies equal the tags, and `rs_issue_tag_copies` proves by
+  induction that each copy equals its tag after one clock edge, from any
+  initial state.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

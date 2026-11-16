@@ -5,6 +5,7 @@ int_equiv_prims
 [options]
 mode bmc
 depth 1
+timeout 600
 
 [engines]
 smtbmc boolector

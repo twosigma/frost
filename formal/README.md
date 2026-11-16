@@ -258,7 +258,8 @@ comparison, because the comparison itself runs in the Yosys script and ends in
 fails on one that no registered check covers.
 
 CI runs these comparisons in a formal shard of their own, `Primitive forms`,
-which takes the `*_twin` targets and the read select's `xilinx` tasks.
+which takes the `*_twin` targets and the read select's `xilinx` tasks, and also
+the INT_RS issue-tag copy proofs `rs_issue_tag_banks` and `rs_issue_tag_copies`.
 
 ## Targets
 
@@ -392,7 +393,8 @@ cycle; simulation asserts the last three. The split shadow select that
 | `rs_pretag_cofactor` | The pre-issue ROB tag, computed for each combination of the two CDB valid bits, equals the reference priority select in two station configurations; the export tasks also check the candidate ready vectors |
 | `rs_raw_pretag` | With the real early-wakeup merger, the MEM station's look-ahead candidates and ready vectors agree with its issue winner |
 | `rs_lq_prematch` | MEM_RS and the LQ connected through the real merger and translation select: every candidate match and the registered selected match equal a direct tag CAM; bounded and unbounded |
-| `rs_issue_tag_banks` | INT_RS with four issue-tag copies (`ISSUE_CDB_TAG_BANKS=4`), each bank input driven by its lane's tag, equals INT_RS with the single tags: every output and every next state are the same for any register state and input. `int_equiv` compares the portable builds and `int_equiv_prims` the Xilinx-primitive builds. Both are flattened as in the primitive twins, and every flop is then cut: its readers take a free input in its place (the state) and its output is compared (the next state). `equiv_make` pairs ports and nets by name, `equiv_struct` adds a point for each pair of matching cells, and `equiv_simple` must prove every point. A sat check in each build confirms that one entry of each quarter compares against its lane's tag. Each copy equals its tag after one clock edge, which the `tomasulo_wrapper` target asserts, and a station whose state equals the single-tag station's, with bank inputs equal to the tags, has the same outputs and next state; INT_RS's behaviour is therefore unchanged from reset, or from any corresponding initial state |
+| `rs_issue_tag_banks` | INT_RS with four issue-tag copies (`ISSUE_CDB_TAG_BANKS=4`), each bank input driven by its lane's tag, equals INT_RS with the single tags: every output and every next state are the same for any register state and input. `int_equiv` compares the portable builds and `int_equiv_prims` the Xilinx-primitive builds. Both are flattened as in the primitive twins, and every flop is then cut: its readers take a free input in its place (the state) and its output is compared (the next state). `equiv_make` pairs ports and nets by name, `equiv_struct` adds a point for each pair of matching cells, and `equiv_simple` must prove every point. A sat check in each build confirms that one entry of each quarter compares against its lane's tag. Each copy equals its tag after one clock edge, which `rs_issue_tag_copies` proves, and a station whose state equals the single-tag station's, with bank inputs equal to the tags, has the same outputs and next state; INT_RS's behaviour is therefore unchanged from reset, or from any corresponding initial state. Each task has a 600-second limit in Primitive forms |
+| `rs_issue_tag_copies` | Each of `tomasulo_wrapper`'s INT_RS issue-tag copies equals its tag after one clock edge, from any initial state: the wrapper is read as `tomasulo_wrapper` reads it, the eight copy assertions (the wrapper's only checks gated by `$initstate`) are kept, every other assertion, every assumption and every cover is removed, the outputs are deleted and the two next-tag nets are cut to free values; induction of depth 2. The task has a 600-second limit in Primitive forms |
 | `tomasulo_wrapper` | The back end together (ROB, RAT, four stations, CDB arbiter, and memory queues): commit clears a rename only if no newer write renamed the register, a full flush or reset empties every structure, each station's copy of the CDB matches the bus, and the stations' ROB-tag rule holds with the real ROB allocator. See below |
 | `reservation_station_twin` | The indexed source-write selects (LUT5 and LUT3) in the INT-station configuration equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 
@@ -419,7 +421,8 @@ assumes that dispatch comes with an allocation and uses that cycle's ROB tag,
 that a partial flush names a live ROB entry, and that address translation is
 off (the `tlb` and `ptw` targets and `vm_test` cover translation). INT_RS's
 issue-tag copies and the tags they copy have no reset: their initial values
-are assumed equal, and every later cycle asserts the equality. At depth 4
+are assumed equal, and every later cycle asserts the equality (to depth 4;
+`rs_issue_tag_copies` proves it by induction from any initial state). At depth 4
 the proof does not reach ROB tag wraparound; simulation covers tag reuse.
 `fp_repair_bmc` enables the FP dispatch done repair, as the CPU does, and
 assumes the repair channels carry the pending FP instruction's source
