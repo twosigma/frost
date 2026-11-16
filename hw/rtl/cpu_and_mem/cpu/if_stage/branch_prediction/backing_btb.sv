@@ -42,8 +42,13 @@
  * neither does a slot 2 in the word after the last set, which belongs to
  * the next block of sets.
  *
+ * Shifted read. When the read's set is the one before the packet's word (the
+ * fetch PC at a halfword of the word before the window IF then serves, common
+ * in compressed code), the second image holds the packet word's set: slot 1,
+ * and a slot 2 in the same word, are served from it.
+ *
  * Held read. The response also keeps the last read whose set was the one of
- * the packet IF served in its response cycle: its tags and targets, and its
+ * the packet IF served in its response cycle, or the one before it: its tags and targets, and its
  * set index. When the newest read is for another set and the held one is for
  * the packet's set, the held read answers, compared with the packet's PC like
  * the newest. A packet that IF serves only after a holdoff, while the fetch
@@ -410,19 +415,26 @@ module backing_btb #(
   // the payload arrays' outputs, or the held targets, supply the targets.
   logic aligned;
   logic held_aligned;
+  logic shifted;  // the read's set is the one before the packet's word
+  logic held_shifted;
   logic last_set;
   logic held_last_set;
   assign aligned = request_valid_q && (request_index_q == i_packet_pc[IndexBits+1:2]);
   assign held_aligned = held_valid_q && (held_index_q == i_packet_pc[IndexBits+1:2]);
+  assign shifted = request_valid_q &&
+      ((request_index_q + IndexBits'(1)) == i_packet_pc[IndexBits+1:2]);
+  assign held_shifted = held_valid_q &&
+      ((held_index_q + IndexBits'(1)) == i_packet_pc[IndexBits+1:2]);
   assign last_set = &request_index_q;
   assign held_last_set = &held_index_q;
 
-  // The newest read is held whenever it is aligned. Reset and the sweep
-  // drop the held read, like the reads they make.
+  // The newest read is held whenever it covers the packet, aligned or
+  // shifted. Reset and the sweep drop the held read, like the reads they
+  // make.
   always_ff @(posedge i_clk) begin
     if (i_reset || sweep_active) begin
       held_valid_q <= 1'b0;
-    end else if (aligned) begin
+    end else if (aligned || shifted) begin
       held_valid_q   <= 1'b1;
       held_index_q   <= request_index_q;
       held_tags_q    <= tags_q;
@@ -455,6 +467,11 @@ module backing_btb #(
   assign src_tags = {held_tags_q, tags_q};
   assign src_payloads = {held_payload_q, payload_rows};
   assign src_last_set = {held_last_set, last_set};
+  logic [1:0] shift_hit, shift_compressed, shift_return;
+  logic [1:0][TARGET_BITS-2:0] shift_target;
+  logic [1:0][1:0] shift_slot2_hit_by_size, shift_slot2_compressed_by_size;
+  logic [1:0][1:0] shift_slot2_return_by_size;
+  logic [1:0][1:0][TARGET_BITS-2:0] shift_slot2_target_by_size;
   // [read][image][way]
   logic [1:0][1:0][WAYS-1:0] upper_match;
   logic [1:0][1:0][WAYS-1:0] entry_halfword;
@@ -464,6 +481,10 @@ module backing_btb #(
   logic [1:0][WAYS-1:0] slot1_way_match;
   // [read][slot-1 size][image][way]
   logic [1:0][1:0][1:0][WAYS-1:0] slot2_way_match_by_size;
+  // Shifted: both slots from image 1, slot 2 only in the packet's word
+  // ([read][way], slot 2 [read][slot-1 size][way]).
+  logic [1:0][WAYS-1:0] slot1_way_match_shifted;
+  logic [1:0][1:0][WAYS-1:0] slot2_way_match_shifted_by_size;
   for (genvar src = 0; src < 2; src++) begin : gen_src
     for (genvar image = 0; image < 2; image++) begin : gen_entry
       for (genvar way = 0; way < WAYS; way++) begin : gen_way
@@ -489,6 +510,17 @@ module backing_btb #(
               (entry_halfword[src][image][way] == slot2_halfword_by_size[size]) &&
               !(image == 1 && src_last_set[src]);
         end
+        // Image 1 of a shifted read is the packet word's own set, also after
+        // the last set, since the packet's PC names its block.
+        if (image == 1) begin : gen_shifted
+          assign slot1_way_match_shifted[src][way] = upper_match[src][1][way] &&
+              (entry_halfword[src][1][way] == slot1_halfword);
+          for (genvar size = 0; size < 2; size++) begin : gen_shifted_size
+            assign slot2_way_match_shifted_by_size[src][size][way] = upper_match[src][1][way] &&
+                !slot2_image_by_size[size] &&
+                (entry_halfword[src][1][way] == slot2_halfword_by_size[size]);
+          end
+        end
       end
     end
   end
@@ -500,7 +532,11 @@ module backing_btb #(
   logic [1:0][1:0] src_slot2_hit_by_size, src_slot2_compressed_by_size, src_slot2_return_by_size;
   logic [1:0][1:0][TARGET_BITS-2:0] src_slot2_target_by_size;
   logic held_select;
-  assign held_select = !aligned && held_aligned;
+  logic shift_select;  // the held read's shifted form answers
+  logic shift_answer;  // a shifted read answers
+  assign held_select  = !aligned && held_aligned;
+  assign shift_select = !shifted;
+  assign shift_answer = !(aligned || held_aligned) && (shifted || held_shifted);
   always_comb begin
     src_hit = '0;
     src_compressed = '0;
@@ -535,9 +571,42 @@ module backing_btb #(
     end
   end
 
-  // The newest read answers when it is aligned, else an aligned held read.
-  // Slot 2's fields for each slot-1 size come from the answering read, and
-  // the packet's size selects between them last.
+  always_comb begin
+    shift_hit = '0;
+    shift_compressed = '0;
+    shift_return = '0;
+    shift_target = '0;
+    shift_slot2_hit_by_size = '0;
+    shift_slot2_compressed_by_size = '0;
+    shift_slot2_return_by_size = '0;
+    shift_slot2_target_by_size = '0;
+    for (int src = 0; src < 2; src++) begin
+      for (int way = 0; way < WAYS; way++) begin
+        if (slot1_way_match_shifted[src][way]) begin
+          shift_hit[src] = 1'b1;
+          shift_compressed[src] = shift_compressed[src] || entry_compressed[src][1][way];
+          shift_return[src] = shift_return[src] || entry_return[src][1][way];
+          shift_target[src] = shift_target[src] | entry_target[src][1][way];
+        end
+        for (int size = 0; size < 2; size++) begin
+          if (slot2_way_match_shifted_by_size[src][size][way]) begin
+            shift_slot2_hit_by_size[src][size] = 1'b1;
+            shift_slot2_compressed_by_size[src][size] =
+                shift_slot2_compressed_by_size[src][size] || entry_compressed[src][1][way];
+            shift_slot2_return_by_size[src][size] =
+                shift_slot2_return_by_size[src][size] || entry_return[src][1][way];
+            shift_slot2_target_by_size[src][size] =
+                shift_slot2_target_by_size[src][size] | entry_target[src][1][way];
+          end
+        end
+      end
+    end
+  end
+
+  // The newest read answers when it is aligned, else an aligned held read,
+  // else a shifted newest read, else a shifted held read. Slot 2's fields
+  // for each slot-1 size come from the answering read, and the packet's size
+  // selects between them last.
   always_comb begin
     o_hit = '0;
     o_compressed[0] = src_compressed[held_select];
@@ -551,6 +620,17 @@ module backing_btb #(
     if (aligned || held_aligned) begin
       o_hit[0] = src_hit[held_select];
       o_hit[1] = src_slot2_hit_by_size[held_select][i_packet_compressed];
+    end else if (shift_answer) begin
+      o_hit[0] = shift_hit[shift_select];
+      o_compressed[0] = shift_compressed[shift_select];
+      o_return[0] = shift_return[shift_select];
+      o_target[0] = shift_target[shift_select];
+      o_slot2_return_by_size = shift_slot2_return_by_size[shift_select];
+      o_slot2_target_by_size = shift_slot2_target_by_size[shift_select];
+      o_compressed[1] = shift_slot2_compressed_by_size[shift_select][i_packet_compressed];
+      o_return[1] = o_slot2_return_by_size[i_packet_compressed];
+      o_target[1] = o_slot2_target_by_size[i_packet_compressed];
+      o_hit[1] = shift_slot2_hit_by_size[shift_select][i_packet_compressed];
     end
   end
 
@@ -630,7 +710,7 @@ module backing_btb #(
   // The mirror's sets as of the held read's request edge.
   logic [1:0][SetBits-1:0] formal_held_q;
   always_ff @(posedge i_clk) begin
-    if (!(i_reset || sweep_active) && aligned) formal_held_q <= formal_lookup_q;
+    if (!(i_reset || sweep_active) && (aligned || shifted)) formal_held_q <= formal_lookup_q;
   end
   initial for (int set = 0; set < Sets; set++) formal_sets[set] = '0;
   always_ff @(posedge i_clk) begin
@@ -672,9 +752,11 @@ module backing_btb #(
         i_packet_pc + (i_packet_compressed ? XLEN'(2) : XLEN'(4));
     assign same_word = pc[XLEN-1:2] == i_packet_pc[XLEN-1:2];
     assign crosses_block = !same_word && (&i_packet_pc[IndexBits+1:2]);
-    // The newest read when it is aligned, else the held read.
+    // The newest read when it is aligned, else the held read; a shifted
+    // read serves only the packet's word, from the set after the read one.
     assign set = aligned ? (same_word ? formal_lookup_q[0] : formal_lookup_q[1]) :
-        (same_word ? formal_held_q[0] : formal_held_q[1]);
+        held_aligned ? (same_word ? formal_held_q[0] : formal_held_q[1]) :
+        shifted ? formal_lookup_q[1] : formal_held_q[1];
     for (genvar way = 0; way < WAYS; way++) begin : gen_way
       tag_t tag;
       assign tag = set[PayloadRowBits+way*TagEntryBits+:TagEntryBits];
@@ -687,7 +769,8 @@ module backing_btb #(
           (match[way] ? set[way*PayloadEntryBits+:PayloadEntryBits] : '0);
     end
     assign target_or[TARGET_BITS-2:0] = '0;
-    assign formal_hit[slot] = (aligned || held_aligned) && !crosses_block && |match;
+    assign formal_hit[slot] = (aligned || held_aligned) ? (!crosses_block && |match) :
+        ((shifted || held_shifted) && same_word && |match);
     assign formal_compressed[slot] = |way_compressed;
     assign formal_return[slot] = |way_return;
     assign formal_target[slot] = target_or[WAYS*(TARGET_BITS-1)+:TARGET_BITS-1];
@@ -714,6 +797,8 @@ module backing_btb #(
     assign size = (k == 2) ? i_packet_compressed : 1'(k);
     assign image_select = i_packet_pc[1] || !size;
     assign halfword_select = i_packet_pc[1] ^ size;
+    logic ref_src;
+    assign ref_src = shift_answer ? shift_select : held_select;
     assign hit_or[0] = 1'b0;
     assign compressed_or[0] = 1'b0;
     assign return_or[0] = 1'b0;
@@ -721,22 +806,25 @@ module backing_btb #(
     for (genvar image = 0; image < 2; image++) begin : gen_image
       for (genvar way = 0; way < WAYS; way++) begin : gen_way
         localparam int unsigned Step = image * WAYS + way;
-        assign match[Step] = upper_match[held_select][image][way] &&
-            (image_select == 1'(image)) &&
-            (entry_halfword[held_select][image][way] == halfword_select) &&
-            !(image == 1 && src_last_set[held_select]);
+        // The answering read: a shifted one matches image 1 only, for a
+        // slot 2 in the packet's word.
+        assign match[Step] = upper_match[ref_src][image][way] &&
+            (entry_halfword[ref_src][image][way] == halfword_select) &&
+            (shift_answer ? (image == 1 && !image_select) :
+                            ((image_select == 1'(image)) &&
+                             !(image == 1 && src_last_set[ref_src])));
         assign hit_or[Step+1] = hit_or[Step] || match[Step];
         assign compressed_or[Step+1] = compressed_or[Step] ||
-            (match[Step] && entry_compressed[held_select][image][way]);
+            (match[Step] && entry_compressed[ref_src][image][way]);
         assign return_or[Step+1] = return_or[Step] ||
-            (match[Step] && entry_return[held_select][image][way]);
+            (match[Step] && entry_return[ref_src][image][way]);
         assign target_or[(Step+1)*(TARGET_BITS-1)+:TARGET_BITS-1] =
             target_or[Step*(TARGET_BITS-1)+:TARGET_BITS-1] |
-            (match[Step] ? entry_target[held_select][image][way] : '0);
+            (match[Step] ? entry_target[ref_src][image][way] : '0);
       end
     end
     assign formal_slot2_ref[k*FormalSlot2RefBits+:FormalSlot2RefBits] = {
-      (aligned || held_aligned) && hit_or[2*WAYS],
+      (aligned || held_aligned || shifted || held_shifted) && hit_or[2*WAYS],
       compressed_or[2*WAYS],
       return_or[2*WAYS],
       target_or[2*WAYS*(TARGET_BITS-1)+:TARGET_BITS-1]
@@ -789,8 +877,7 @@ module backing_btb #(
       // comes from the word after the last set.
       if (o_hit != 2'b00) begin
         p_formal_hit_needs_aligned_request :
-        assert ((request_valid_q && (request_index_q == i_packet_pc[IndexBits+1:2])) ||
-                (held_valid_q && (held_index_q == i_packet_pc[IndexBits+1:2])));
+        assert (aligned || held_aligned || shifted || held_shifted);
       end
       if (&i_packet_pc[IndexBits+1:2] && slot2_image) begin
         p_formal_no_slot2_hit_past_last_set : assert (!o_hit[1]);
@@ -830,6 +917,9 @@ module backing_btb #(
       cover (o_hit[1] && slot2_image);
       cover (o_hit[0] && !aligned && held_aligned);
       cover (o_hit[1] && !aligned && held_aligned);
+      cover (o_hit[0] && !aligned && !held_aligned && shifted);
+      cover (o_hit[1] && !aligned && !held_aligned && shifted);
+      cover (o_hit[0] && !aligned && !held_aligned && !shifted && held_shifted);
       cover (c_valid && c_refresh);
       cover (b_valid && b_refresh && !b_hit);
       cover (b_valid && !b_accepted && c_valid && !c_refresh);

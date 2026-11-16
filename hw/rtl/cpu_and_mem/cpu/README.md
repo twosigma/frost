@@ -264,7 +264,14 @@ after a redirect often waits in the holdoff while `o_pc` has already moved on
 to the next window, so without the held read a jump or return in that packet
 lost the hit it had in its first cycle and mispredicted (from cached DDR,
 every such return did). A held read can predate training writes made since;
-an entry it still shows costs at most a misprediction. IF passes PD each
+an entry it still shows costs at most a misprediction. The fetch PC also often
+sits at a halfword of the word before the window IF then serves (in compressed
+code, `o_pc` 0x902 and then `pc_reg` 0x904), so the read is for the set before
+the packet's word. The second image holds the set after the read one, which is
+the packet word's set, so slot 1 and a slot 2 in the same word are served
+from it; before this the backing BTB never hit in that case, and in
+CoreMark-PRO core the JALs it should have caught were a third of the
+mispredictions left after the indirect target predictor. IF passes PD each
 slot's hit, size, type and target, kept across stall replay like the packet.
 Slot 2's type and target also come for each size of slot 1, formed from the
 answering read's tags and the packet's PC alone; PD picks between them by slot
