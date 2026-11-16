@@ -120,3 +120,4 @@
 - Switched out-of-context IP synthesis to project-mode runs, clocked the BSCAN debug transport at its primitives, adapted Vivado exit detection to child IP logs, and extended the L1D zero-cover budget
 - Implemented Svpbmt with PBMTE and PTE validation, PBMT in both TLB levels, coherent uncached DDR aliases, uncached memory access and PMA overrides, with directed programs, benches, formal checks and a TestRIG trace
 - Shortened the L2 home's hit path with banked UltraRAM parallel way reads, final-tag-cycle way selection, quick result offers, and dispatch-cycle lookup offers, with formal checks and home bench coverage
+- Loaded reservation-station stage-2 issue payloads on functional-unit readiness while keeping validity on the flush-qualified issue path, with a two-copy wrapper payload-twin formal check
