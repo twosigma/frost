@@ -224,7 +224,7 @@ module coherence_store_boundary_formal #(
     load_alloc.sign_ext = 0;
     load_alloc.is_amo = Mode == 1;
     load_alloc.is_lr = LocalLR;
-    load_alloc.amo_op = riscv_pkg::AMOADD_D;
+    load_alloc.amo_op = riscv_pkg::AMOADD;
     load_addr = '0;
     load_addr.valid = load_update_q;
     load_addr.rob_tag = load_second_update_q ? 3 : 2;
@@ -233,7 +233,8 @@ module coherence_store_boundary_formal #(
     sc_issue = '0;
     sc_issue.valid = step_q >= 2 && offer_load && !addressed_q && Mode == 2;
     sc_issue.rob_tag = AtomicTag;
-    sc_issue.op = riscv_pkg::SC_D;
+    sc_issue.op = riscv_pkg::SC;
+    sc_issue.mem_size = riscv_pkg::MEM_SIZE_DOUBLE;
     sc_issue.src1_value = address1;
     if (Mode == 4) begin
       alloc0.valid = step_q == 1 || step_q == 2;

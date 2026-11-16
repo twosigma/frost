@@ -239,7 +239,8 @@ jobs:
             pytest_filter: >-
               [csr_test] or [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or
               [satp_drain_test] or [ad_fault_test] or [smode_test] or [csr_rmw_test] or
-              [ptw_bus_fault_test] or [ptw_recovery_test] or [sum_toggle_test] or [asid_test]
+              [ptw_bus_fault_test] or [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or
+              [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error]
           - name: Real Programs (Interrupts)
             coverage: [ddr]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
@@ -292,7 +293,7 @@ jobs:
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
               [debug_test] or [debug_fence_test] or [debug_openocd_test] or [bram_reload] or [instret_test] or
-              [hello_world] or [uart_burst] or [uart_echo] or [print_clock_speed]
+              [hello_world] or [uart_burst] or [uart_echo] or [print_clock_speed] or [sysreset_test]
           - name: Real Programs (Zicboz)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
@@ -344,7 +345,9 @@ jobs:
               or [csr_test] or
               [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or [satp_drain_test] or
               [ad_fault_test] or [smode_test] or [csr_rmw_test] or [ptw_bus_fault_test] or
-              [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or [imsic_csr_test] or [imsic_msi_test] or
+              [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or
+              [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error] or
+              [imsic_csr_test] or [imsic_msi_test] or
               [imsic_collision_test] or [timer_replay_test] or [imsic_aplic_coexist_test] or
               [aplic_test] or [sstc_test] or [sscofpmf_test] or
               [ns16550_irq_console_test] or [wfi_mepc_test] or [wfi_drain_mepc_test] or
@@ -362,7 +365,7 @@ jobs:
               or [ddr_test_equal_lines] or [ddr_exec_test_equal_lines] or
               [ddr_atomic_test_equal_lines] or [debug_test] or [debug_fence_test] or [debug_openocd_test] or [bram_reload]
               or [instret_test] or [hello_world] or [uart_burst] or [uart_echo] or
-              [print_clock_speed] or [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or
+              [print_clock_speed] or [sysreset_test] or [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or
               [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [ddr_bench] or
               [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz]
               or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
@@ -372,7 +375,7 @@ jobs:
               or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
               or [cbo_zero_pages] or [cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]
               or [cbo_zero_pages_board] or [cbo_zero_pages_board_ddr] or [cbo_zero_bench]
-              or [full_line_test] or [store_fill_bench]
+              or [full_line_test] or [store_fill_bench] or [fencei_jit_bench]
               or [ddr_bench_link1] or [ddr_atomic_test_link1] or [ddr_mlp_test_link1]
               or [coremark_link1] or [csr_test_link1] or [dma_torture_link1]
               or [ptw_coherence_test_link1] or [cached_store_burst_test_link1]
@@ -412,6 +415,12 @@ jobs:
               coverage: []
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[cbo_zero_bench]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (Fence.i JIT benchmark)
+              coverage: []
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[fencei_jit_bench]"
           - mem_config: bram
             shard:
               name: Real Programs (DDR probes and fetch fuzz)
@@ -1327,9 +1336,13 @@ jobs:
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
               coherence_store_home or coherence_link or coherent_local_atomic or coh_hart_maint_prove or
               coh_hart_maint_owned_prove or coherence_array_equiv or
-              coh_array4_port_bmc or _twin or (coh_read_select and xilinx))) or
+              coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
             timeout_minutes: 300
+          # Home task limits total 219 minutes; image setup has twenty more.
+          - shard: Coherence home
+            pytest_filter: coherence_home_coh_home_
+            timeout_minutes: 240
           # The coherent array's equivalence with its reference array: the
           # one-way, UltraRAM and hit-port tasks with the cover, and the
           # four-way tasks, each about an hour of BMC tasks.
@@ -1379,25 +1392,32 @@ jobs:
           - shard: Coherence L1D data stores and ways
             pytest_filter: coh_l1d_store_ or coh_l1d_ways_data
             timeout_minutes: 270
-          # Zero-line and full-line stores: each three-endpoint control BMC has
-          # a five-hour budget, the single-endpoint control BMC and payload BMC
-          # share a 300-minute job (270 minutes of allowances), and the two
-          # covers share a separate job (280 and 240 minutes of allowances).
+          # The L1D control BMCs and single-endpoint cover with cbo.zero writes,
+          # and the matching full-line and withdrawn-put control BMCs, each run
+          # in dedicated jobs sized from their task allowances.
+          - shard: Coherence L1D zero control
+            pytest_filter: coh_l1d_zero_bmc
+            timeout_minutes: 200
           - shard: Coherence L1D zero multi-endpoint
             pytest_filter: coh_l1d_zero_multi_bmc
             timeout_minutes: 330
-          - shard: Coherence L1D zero-line
-            pytest_filter: coh_l1d_zero_bmc or coh_l1d_zero_payload_bmc
-            timeout_minutes: 300
-          - shard: Coherence L1D zero-line covers
-            pytest_filter: coh_l1d_zero_cover or coh_l1d_zero_lookahead_cover
-            timeout_minutes: 300
+          - shard: Coherence L1D zero cover
+            pytest_filter: coh_l1d_zero_cover
+            timeout_minutes: 260
+          - shard: Coherence L1D zero payload and stream
+            pytest_filter: >-
+              coh_l1d_zero_payload_bmc or coh_l1d_zero_lookahead_cover or
+              coh_l1d_zero_stream_bmc
+            timeout_minutes: 180
+          - shard: Coherence L1D full control
+            pytest_filter: coh_l1d_full_bmc
+            timeout_minutes: 200
           - shard: Coherence L1D full multi-endpoint
             pytest_filter: coh_l1d_full_multi_bmc
             timeout_minutes: 330
-          - shard: Coherence L1D full-line
-            pytest_filter: coh_l1d_full_bmc or coh_l1d_full_payload_bmc
-            timeout_minutes: 300
+          - shard: Coherence L1D full payload
+            pytest_filter: coh_l1d_full_payload_bmc
+            timeout_minutes: 120
           - shard: Coherence L1D full-line covers
             pytest_filter: coh_l1d_full_cover or coh_l1d_full_lookahead_cover
             timeout_minutes: 270
@@ -1406,13 +1426,13 @@ jobs:
           # BMC has a job of its own; both payload BMCs share a third.
           - shard: Coherence L1D withdrawn puts, full-line control
             pytest_filter: coh_l1d_withdraw_full_bmc
-            timeout_minutes: 270
+            timeout_minutes: 200
           - shard: Coherence L1D withdrawn puts, zero-line control
             pytest_filter: coh_l1d_withdraw_zero_bmc
-            timeout_minutes: 270
+            timeout_minutes: 200
           - shard: Coherence L1D withdrawn puts, payloads
             pytest_filter: coh_l1d_withdraw and payload
-            timeout_minutes: 270
+            timeout_minutes: 210
           # The scheduled real-array checks keep all 80 frames, with disjoint
           # property groups and no assumptions between them. Run them in
           # parallel so their combined work does not delay the bridges.
@@ -1486,7 +1506,7 @@ jobs:
           # Every comparison of a block's hand-instantiated primitives with its
           # portable form: the twin targets and the read select's primitive tasks.
           - shard: Primitive forms
-            pytest_filter: _twin or (coh_read_select and xilinx)
+            pytest_filter: (_twin and not rs_payload_twin) or (coh_read_select and xilinx)
             timeout_minutes: 90
           # The vector CSR state: the vector BMC alone is about forty minutes,
           # and new vector proofs join it.
@@ -1513,7 +1533,7 @@ jobs:
           - shard: Other tasks
             pytest_filter: >-
               not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or
-              coherence_ or coherent_ or _twin or csr_file_vector or
+              coherence_ or coherent_ or (_twin and not rs_payload_twin) or csr_file_vector or
               vec_lmul_legality or line_client_link or ptw or tlb or imsic or aplic or
               immu or dmmu or load_queue or lq_)
             timeout_minutes: 120

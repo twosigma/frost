@@ -85,7 +85,7 @@ def _parse_op_value(name: str) -> int:
     raise RuntimeError(f"{name} not found in instr_op_e")
 
 
-OP_SC_W = _parse_op_value("SC_W")
+OP_SC_W = _parse_op_value("SC")
 
 
 # =============================================================================

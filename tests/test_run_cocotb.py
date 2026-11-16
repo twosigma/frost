@@ -588,6 +588,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="fence.i cost for JIT-style code generation in cached DDR",
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
+    "fencei_jit_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fencei_jit_bench",
+        nic_mac_clocks=False,
+        description="fence.i and refetch cost for a JIT-style patch, fence.i and call loop",
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "11000000"),),
+        verilator_extra_args=("-GSIM_FAST_MAINT=0",),
+    ),
     "smc_torture": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -946,6 +956,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "on faulting, unmapped and supervisor-only addresses"
         ),
     ),
+    "ddr_hpm_refill_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_hpm_refill_test",
+        nic_mac_clocks=False,
+        description=(
+            "HPM refill workloads: guarded cold and zero warm L1I counts, "
+            "event-source separation, exact L2 data reads, MINH and overflow; "
+            "exact request accounting is in the cache/home benches"
+        ),
+    ),
     "zawrs_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -972,6 +993,50 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="vec_state_test",
         nic_mac_clocks=False,
         description="Without the vector unit, mstatus.VS reads zero and vector CSRs trap",
+    ),
+    "svpbmt_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description=(
+            "Svpbmt: PBMTE and reserved-encoding page faults, NC and IO pages over DDR "
+            "(4 KiB, 2 MiB and 1 GiB), U-mode data accesses and low BRAM coherent "
+            "with cacheable views, AMO/LR/SC/"
+            "cbo.zero/fetch access faults, the field kept in both TLB levels, and "
+            "adjacent mixed-view accesses with and without the fence/flush sequence"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+    ),
+    "svpbmt_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt with the cache, load-queue and store-queue assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "svpbmt_test_2g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt at 2 GiB: DDR access faults, page-permission precedence and device mappings",
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "31"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=31", "--assert"),
+    ),
+    "svpbmt_bus_error": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt alias read/write response faults, xtval and port recovery",
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DSVPBMT_BUS_ERRORS=1"),
+            ("COCOTB_PLUSARGS", "+axi_error_check=0 +axi_rd_error_addr=3000000"),
+        ),
+        verilator_extra_args=("--assert",),
     ),
     "vec_state_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1020,6 +1085,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "COCOTB_PLUSARGS",
                 "+axi_error_check=0 +axi_rd_error_addr=3000000",
             ),
+        ),
+    ),
+    "sysreset_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sysreset",
+        hdl_toplevel_module="frost",
+        app_name="sysreset_test",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description=(
+            "SYSRESET word and halfword requests restart the program and reset "
+            "hart/timer state after reloads over stale markers; invalid writes do nothing"
         ),
     ),
     "vec_state_test_v512": CocotbRunConfig(
@@ -1363,7 +1439,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.debug.test_debug_fence",
         hdl_toplevel_module="frost",
         app_name="debug_target",
-        description="Program-buffer BRAM patch with delayed mirror and fence completion",
+        description=(
+            "Program-buffer BRAM and cached patches, delayed mirror and fence completion"
+        ),
     ),
     "debug_progbuf_btb_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug_progbuf_btb",
@@ -1589,7 +1667,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="smode_test",
         nic_mac_clocks=False,
-        description=("Supervisor-mode traps, returns, delegation, and CSR permissions"),
+        description=(
+            "Supervisor-mode traps, returns, delegation, CSR permissions, "
+            "and fence.i in S and U"
+        ),
     ),
     "csr_rmw_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -3203,7 +3284,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherent_cpu_faults": CocotbRunConfig(
         python_test_module="cocotb_tests.integration.test_coherent_cpu_faults",
         hdl_toplevel_module="cpu_top",
-        description="Coherent atomic faults, parked-hart DMA service and reset preserve ownership.",
+        description="Coherent atomic faults, NC/IO alias-load replay on IRQ/debug entry, parked-hart DMA service and reset.",
         verilator_extra_args=(
             "--assert",
             "-GENABLE_COHERENCE=1",
@@ -3389,7 +3470,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_coherence_stale_line",
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="cbo.zero twin beside an L1D stream, with a 64 KiB home",
-        include_in_pytest=False,
     ),
     "coherence_cbo_zero": CocotbRunConfig(
         verilator_extra_args=("--assert",),
@@ -3620,7 +3700,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_home_array": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home_array",
         hdl_toplevel_module="coherence_home_array",
-        description="Independent tag and data ports with physical-row hazards",
+        description=(
+            "Independent tag and data ports, explicit row reads, per-way banks "
+            "and physical-row hazards"
+        ),
         verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
     ),
     "coherence_home_array_bram": CocotbRunConfig(
@@ -3676,13 +3759,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_coherence_home",
         hdl_toplevel_module="coherence_home",
         description=(
-            "Independent completions, dirty recalls, way pins, victim locks, "
-            "prefetches, grants forwarded from fills, and streaming placement"
+            "Independent completions, parallel way reads, dispatch-cycle lookup "
+            "offers, dirty recalls, way pins, victim locks, prefetches, grants "
+            "forwarded from fills, and streaming placement"
         ),
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=1024",
         ),
+    ),
+    "coherence_home_rowread": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home",
+        hdl_toplevel_module="coherence_home",
+        description="The home with UltraRAM and the hit row read after the decision",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=1024",
+            "-GPARALLEL_READ=0",
+        ),
+        extra_env=(("FROST_TEST_HOME_PARALLEL", "0"),),
     ),
     "coherence_home_equal": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",
@@ -4429,14 +4524,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "soc_axil": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_soc_axil",
         hdl_toplevel_module="soc_top",
-        description="SoC register mapping, empty FIFO reads, CPU backpressure and reset recovery",
+        description="SoC register mapping, empty FIFO reads, CPU backpressure and alias recovery after an accepted-transfer reset",
         verilator_extra_args=("-GENABLE_CACHED_TIER=1", "-GUSE_BEHAVIORAL_DDR=0"),
     ),
     **{
         f"soc_axil_async_{period}": CocotbRunConfig(
             python_test_module="cocotb_tests.axi.test_soc_axil",
             hdl_toplevel_module="soc_top",
-            description="AXI4-Lite registers behind the asynchronous CPU memory boundary",
+            description="AXI4-Lite registers and accepted alias-transfer reset recovery across the asynchronous CPU memory boundary",
             verilator_extra_args=(
                 "-GENABLE_CACHED_TIER=1",
                 "-GUSE_BEHAVIORAL_DDR=0",
@@ -5366,6 +5461,8 @@ UNIT_TEST_PARAMS = [
 #     clobber their fixed-address writes, so they run in the bram-tier job only.
 #   - ecc_scrub_test: the patterned line must be at CACHED_BASE, with the
 #     program in BRAM, so the write-error plusarg counts only its writebacks.
+#   - fencei_jit_bench: the BRAM driver already executes its generated code
+#     in cached DDR; moving the driver does not add an invalidation case.
 #   - cache_counters_openocd: its program runs from low BRAM in either tier,
 #     so a ddr-tier run would repeat the bram-tier one.
 DDR_TIER_EXCLUDE = {
@@ -5373,7 +5470,7 @@ DDR_TIER_EXCLUDE = {
     for name in REAL_PROGRAM_TESTS
     if name.endswith("_fetch_fuzz")
     or name.startswith("ddr_")
-    or name in {"ecc_scrub_test", "cache_counters_openocd"}
+    or name in {"ecc_scrub_test", "cache_counters_openocd", "fencei_jit_bench"}
 }
 
 

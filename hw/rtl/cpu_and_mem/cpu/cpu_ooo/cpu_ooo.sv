@@ -812,6 +812,7 @@ module cpu_ooo #(
   // port between the wrapper and the ptw below.
   logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
   logic [43:0] csr_satp_root_ppn;
+  logic csr_menvcfg_pbmte;
   logic tlb_invalidate;
   // HPM translation events: the walker is busy, and an SFENCE.VMA invalidate
   // window begins. The CSR request and the SFENCE window never overlap: each
@@ -4157,6 +4158,16 @@ module cpu_ooo #(
     end
   end
 
+  // Cache refill events for the HPM counters, registered here so that the
+  // route from the L1I and the home to the counters ends at a flop. csr_file
+  // inhibits counting until a selector write, so the flops need no reset.
+  logic hpm_l1i_refill_q, hpm_l2_demand_miss_q, hpm_l2_prefetch_miss_q;
+  always_ff @(posedge i_clk) begin
+    hpm_l1i_refill_q <= i_cache_perf_events.hierarchy.l1i.fill;
+    hpm_l2_demand_miss_q <= i_cache_perf_events.hierarchy.l2.fill;
+    hpm_l2_prefetch_miss_q <= i_cache_perf_events.hierarchy.l2.fill_prefetch;
+  end
+
   csr_file #(
       .XLEN(XLEN),
       .COMMIT_EXCLUDES_CONTROL_TAKE(1'b1),
@@ -4183,6 +4194,9 @@ module cpu_ooo #(
       .i_dtlb_miss(walk_req_valid && walk_req_ready),
       .i_walk_busy(ptw_busy),
       .i_sfence_tlb_flush(sfence_tlb_flush_start),
+      .i_l1i_refill(hpm_l1i_refill_q),
+      .i_l2_demand_miss(hpm_l2_demand_miss_q),
+      .i_l2_prefetch_miss(hpm_l2_prefetch_miss_q),
       .i_l1d_miss(i_cache_perf_events.hierarchy.l1d.miss),
       .i_sq_full_stall(dispatch_status.sq_full ||
           (dispatch_status.slot2_block_lsq_full2 && from_id_to_ex_2.needs_sq &&
@@ -4263,6 +4277,7 @@ module cpu_ooo #(
       .o_fetch_translation_active(csr_fetch_translation_active),
       .o_fetch_priv_u(csr_fetch_priv_u),
       .o_satp_root_ppn(csr_satp_root_ppn),
+      .o_menvcfg_pbmte(csr_menvcfg_pbmte),
       .o_mstatus_fs_off(csr_mstatus_fs_off),
       .o_mstatus_vs_off(csr_mstatus_vs_off),
       .i_vcfg_commit(vcfg_commit),
@@ -4428,6 +4443,7 @@ module cpu_ooo #(
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_root_ppn(csr_satp_root_ppn),
+      .i_pbmte(csr_menvcfg_pbmte),
       .i_req_valid(l2_ptw_req_valid),
       .o_req_ready(l2_ptw_req_ready),
       .i_req_vpn(l2_ptw_req_vpn),

@@ -34,6 +34,10 @@ module coherence_home #(
     // PREFETCH_SLOTS); zero shares every slot.
     parameter int unsigned PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
     parameter bit ULTRA = 1'b1,
+    // An engine's demand lookup reads its set's ways beside the tag read
+    // (coherence_home_array, UltraRAM only); 0 reads the hit row after the
+    // decision.
+    parameter bit PARALLEL_READ = 1'b1,
     parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned WbBits = NUM_WB > 1 ? $clog2(NUM_WB) : 1
@@ -205,7 +209,7 @@ module coherence_home #(
   logic [RESULTS-1:0] engine_r_ready;
   logic [RESULTS-1:0] engine_update;
   logic [RESULTS-1:0] engine_result, engine_result_ready, engine_fatal;
-  logic [RESULTS-1:0][ADDR_WIDTH-1:0] engine_addr;
+  logic [RESULTS-1:0][ADDR_WIDTH-1:0] engine_addr, engine_lookup_addr;
   logic [RESULTS-1:0][5:0] engine_tid;
   logic [RESULTS-1:0][3:0] engine_opcode;
   logic [RESULTS-1:0] engine_maintenance, engine_counted_q;
@@ -217,6 +221,8 @@ module coherence_home #(
   logic [RESULTS-1:0][LINE_BYTES-1:0] engine_update_mask;
   logic [RESULTS-1:0][8*LINE_BYTES-1:0] engine_update_data;
   logic [Clients-1:0] tag_valid, tag_ready, read_valid, read_ready;
+  // The tag arbiter's held selection.
+  logic [Clients-1:0] tag_selected;
   logic [Clients-1:0] update_valid, update_ready, probe_valid, probe_ready;
   // The update arbiter's selected client, whose acceptance waits only on the
   // array's readiness.
@@ -237,6 +243,11 @@ module coherence_home #(
   logic [ADDR_WIDTH+10:0] ack_out;
   coh_g_t result;
   logic array_response, array_hit, array_available, array_claim;
+  // Parallel reads: an engine's demand lookup asks for one (lookup_spec), the
+  // response reports it in flight (array_spec), and the engine whose resident
+  // decision needs data takes it (engine_take_spec).
+  logic lookup_spec, array_spec;
+  logic [RESULTS-1:0] engine_take_spec;
   logic [TokenBits-1:0] array_token, array_data_token, array_updated_token, array_query_token;
   logic [(1 << TokenBits)-1:0] array_token_onehot;
   logic [ADDR_WIDTH-1:0] array_query, array_addr;
@@ -578,6 +589,7 @@ module coherence_home #(
         .o_idle(engine_idle[engine]),
         .o_lookup_valid(engine_lookup[engine]),
         .i_lookup_ready(tag_ready[engine]),
+        .o_lookup_addr(engine_lookup_addr[engine]),
         .o_addr(engine_addr[engine]),
         .o_tid(engine_tid[engine]),
         .o_opcode(engine_opcode[engine]),
@@ -587,6 +599,8 @@ module coherence_home #(
         .i_decision_resident(decision_hit),
         .i_decision_way(array_way),
         .i_decision_state(array_state),
+        .i_decision_spec(array_spec),
+        .o_take_spec(engine_take_spec[engine]),
         .o_read_valid(engine_read[engine]),
         .o_read_offer(read_valid[engine]),
         .i_read_ready(read_ready[engine]),
@@ -636,7 +650,7 @@ module coherence_home #(
       end
     end
     assign tag_valid[engine] = engine_lookup[engine];
-    assign tag_payload[engine] = {TokenBits'(engine), engine_addr[engine]};
+    assign tag_payload[engine] = {TokenBits'(engine), engine_lookup_addr[engine]};
     assign read_payload[engine] = {TokenBits'(engine), engine_way[engine], engine_addr[engine]};
     assign update_valid[engine] = engine_update[engine];
     assign update_payload[engine] = {
@@ -679,7 +693,7 @@ module coherence_home #(
       .o_ready(tag_ready),
       .i_payload(tag_payload),
       .o_valid(tag_request_valid),
-      .o_selected(),
+      .o_selected(tag_selected),
       .i_ready(tag_request_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!run),
@@ -783,6 +797,7 @@ module coherence_home #(
       .o_req_ready(tag_request_ready),
       .i_req_addr(tag_request.addr),
       .i_req_token(tag_request.token),
+      .i_req_spec(lookup_spec),
       .o_query_addr(array_query),
       .o_query_token(array_query_token),
       .i_exclude(array_exclude),
@@ -798,6 +813,8 @@ module coherence_home #(
       .o_resp_addr(array_addr),
       .o_resp_state(array_state),
       .o_resp_tags(array_tags),
+      .o_resp_spec(array_spec),
+      .i_resp_keep(|engine_take_spec),
       .i_read_valid(row_request_valid && run),
       .i_read_offer(row_request_valid),
       .o_read_ready(row_request_ready),
@@ -849,6 +866,10 @@ module coherence_home #(
     end
   end
   assign o_prefetch_room = prefetch_room_q;
+  // A demand engine's lookup reads its set's ways in parallel; a prefetch
+  // reads no data.
+  assign lookup_spec = PARALLEL_READ && int'(tag_request.token) < RESULTS &&
+      !engine_prefetch_q[ResultBits'(tag_request.token)];
   // Way exclusion uses the registered set comparisons below. The array reads
   // it in selection and response cycles, when the query has held since the
   // edge before, and no fill is allocated and no put accepted on that edge
@@ -1005,6 +1026,34 @@ module coherence_home #(
       (array_state == coherence_pkg::Invalid || wb_two_free_q));
   assign fill_pre = decision_from_engine && !array_hit && array_available && fill_free_any &&
       state_allows_fill && prefetch_fill_ok;
+`ifndef SYNTHESIS
+  // An engine whose offer the tag arbiter holds is in Lookup with its lookup
+  // unsent (the control invariant, checked in simulation too).
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst)
+      for (int engine = 0; engine < RESULTS; engine++)
+        if (tag_selected[engine]) assert (!engine_idle[engine] && (engine_lookup[engine] || !run));
+`endif
+`ifdef COHERENCE_HOME_DISPATCH_COVER
+  // A dispatch-cycle offer that loses the tag arbiter to another client is
+  // offered again from Lookup and wins while another client's lookup waits.
+  logic [RESULTS-1:0] f_dispatch_q, f_lost_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_dispatch_q <= '0;
+      f_lost_q <= '0;
+    end else begin
+      for (int engine = 0; engine < RESULTS; engine++) begin
+        f_dispatch_q[engine] <= engine_idle[engine] && tag_valid[engine];
+        if (f_dispatch_q[engine] && !tag_selected[engine] && |tag_selected)
+          f_lost_q[engine] <= 1'b1;
+        if (tag_valid[engine] && tag_ready[engine]) f_lost_q[engine] <= 1'b0;
+        cover (tag_valid[engine] && tag_ready[engine] && f_lost_q[engine] &&
+            |(tag_valid & ~(Clients'(1) << engine)));
+      end
+    end
+  end
+`endif
   // The registered phase flags and the one-hot response token match their
   // encodings outside reset. Composed formal tasks check this even with
   // SYNTHESIS defined; simulation checks it once a reset has been seen.
@@ -2100,6 +2149,11 @@ module coherence_home #(
           write_filling
       ));
       o_perf_events.writeback <= |(memory_valid[FILLS+:NUM_WB] & memory_ready[FILLS+:NUM_WB]);
+      // memory_ready decodes the buffered request's acceptance, including
+      // a held read accepted after service stops. The fill keeps its kind
+      // until completion; zero fills send no read.
+      o_perf_events.fill <= |(memory_ready[0+:FILLS] & ~fill_prefetch_q);
+      o_perf_events.fill_prefetch <= |(memory_ready[0+:FILLS] & fill_prefetch_q);
       o_perf_events.slot_full_stall <= run && array_response && decision_retry && !retry_park;
       o_perf_events.conflict_stall <= run && array_response && decision_blocked;
       o_write_perf_events.write_fill <= run && array_response && decision_fill &&
@@ -2251,10 +2305,40 @@ module coherence_home #(
       reference_exclude[put_way_q[put]] = 1'b1;
   end
 `ifdef COHERENCE_HOME_CONTROL
+  // A parallel read that an engine takes (o_take_spec: Service with its read
+  // sent and no row read) delivers the engine's data within SpecBound cycles,
+  // beside the array's row-read service bounds (f_read_wait_q). Only the
+  // UltraRAM array reads in parallel.
+  localparam int unsigned SpecBound = 8;
+  logic [RESULTS-1:0] f_spec_wait_valid_q;
+  logic [3:0] f_spec_wait_q[RESULTS];
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_spec_wait_valid_q <= '0;
+    else
+      for (int engine = 0; engine < RESULTS; engine++) begin
+        if (f_spec_wait_valid_q[engine]) begin
+          f_spec_wait_q[engine] <= f_spec_wait_q[engine] + 1'b1;
+          assert (int'(f_spec_wait_q[engine]) < SpecBound);
+          assert (f_read_owner[engine]);
+        end
+        if (array_data_valid && array_data_token == TokenBits'(engine))
+          f_spec_wait_valid_q[engine] <= 1'b0;
+        if (engine_take_spec[engine]) begin
+          f_spec_wait_valid_q[engine] <= 1'b1;
+          f_spec_wait_q[engine] <= '0;
+        end
+      end
+    if (!i_rst && !ULTRA) assert (f_spec_wait_valid_q == '0);
+  end
   // The prefetch flags of the lookup belong to its owner from the tag port's
-  // acceptance through the decision.
+  // acceptance through the decision. An engine whose offer the tag arbiter
+  // holds is in Lookup with its lookup not yet sent: a dispatch-cycle offer
+  // is held from the cycle the engine enters Lookup.
   always_ff @(posedge i_clk)
     if (!i_rst) begin
+      for (int engine = 0; engine < RESULTS; engine++)
+      if (tag_selected[engine])
+        assert (!engine_idle[engine] && !f_tag_owner[engine] && (engine_lookup[engine] || !run));
       for (int engine = 0; engine < RESULTS; engine++)
       if (f_tag_owner[engine])
         assert (lookup_prefetch_q == engine_prefetch_q[engine] &&
@@ -2549,6 +2633,13 @@ module coherence_home #(
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
     if (f_past_valid && !$past(i_rst) && $past(i_fatal_stop)) assume (i_fatal_stop || i_rst);
+    if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      p_refill_read_count :
+      assert ((o_perf_events.fill || o_perf_events.fill_prefetch) == $past(
+          o_mem_req_valid && i_mem_req_ready && !o_mem_req_write
+      ));
+      p_refill_read_kind : assert (!(o_perf_events.fill && o_perf_events.fill_prefetch));
+    end
     if (!i_rst) begin
       p_stop_held : assert (run || i_fatal_stop || o_fatal);
       p_fatal_stops : assert (!(run && o_fatal));

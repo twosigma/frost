@@ -30,7 +30,7 @@ benches compose these modules independently of the CPU hierarchy.
 | `coherence_prefetch_pause.sv` | Holds new prefetch requests while DMA is offered or outstanding and for seven idle cycles after |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP. The NIC's DMA master is one |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
-| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, the L1D hit path's hits, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
+| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, writeback, refill and identified-prefetch pulses, the L1D hit path's hits, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
 | `*_test_harness.sv` | cocotb tops: hierarchy + bridge + memory (with a bench-paced hold on the bridge), and arbiter + bridge + memory |
 
 ## Line protocol
@@ -449,7 +449,10 @@ admission. Contending eligible load misses and lookahead acquisitions alternate
 successful allocations. Permission lookups precede endpoint-allocation arbitration.
 A lookahead miss that yields its allocation remains eligible for another lookup.
 Read hits do not clear the allocation turn. They permit
-store borrowing when no eligible load miss waits. A read miss can finish a lookup
+store borrowing when no eligible load miss waits. Miss demand qualifies ordinary
+loads separately from AMO selection, so it is independent of the atomic guard.
+It applies the same ownership, waiting, retry and address-blocking conditions.
+A read miss can finish a lookup
 before yielding endpoint allocation to lookahead. A lookahead Modified hit
 consumes no endpoint and yields its allocation turn. A yielded read miss reserves
 lookahead service ahead of head-store hits. The reservation ends after lookahead
@@ -530,7 +533,8 @@ both ends of that window are page aligned.
 At most two of the highest-numbered load endpoints carry speculative GetS
 requests. Three-endpoint caches allow one; smaller caches disable look-ahead.
 Demand may use every load endpoint. Eligible foreground work precedes hint
-selection. Registered hints check live acquisitions, buffered stores and
+selection. Registered hints check live acquisitions, every valid store record,
+a waiting `cbo.zero` twin and
 frozen dirty writebacks, with conflicts rechecked before acquisition.
 The recheck reads a registered comparison, and any offered probe excludes the
 hint. A store that arrives on the acquisition edge or the edge before it is
@@ -640,7 +644,12 @@ first permission lookup; a read that the hit path answers counts as an access
 and a hit when it is answered, and its shadow lookup adds nothing. A merged
 load without an earlier lookup counts as an access at its merge: a hit when
 the row answers it, a miss when it attaches. Its events wait for a cycle
-without another access event. The first store in a record counts at its first
+without another access event. Merge identities, lookup arbitration and miss
+context pass through one observation stage before the event serializer. A
+captured identity is independent of later slot reuse; slot history is updated
+at capture, and reset clears both captured and owed events. The stage delays
+the whole event stream together, including hit-under-miss classification.
+The first store in a record counts at its first
 permission lookup; each additional scalar that combines counts as an access
 and a buffer hit on acceptance, even before permission arrives. A combined
 store and a tag lookup can contribute two accesses in one cycle. Cached SC
@@ -659,6 +668,22 @@ a slot-full stall; a blocked one is a conflict stall. A DMA write miss
 contributes a write-fill event; probe data
 merges do not contribute another demand. Events are registered at their
 source and use the cache-counter ABI.
+
+The refill pulses count line reads rather than lookup misses. The L1I
+counts allocations that fetch data from below, including the fetch
+provider's next-line requests. The home counts each memory read at its
+acceptance handshake, even if the read later fails or service stops before
+acceptance. It classifies the read by the request that allocated the fill;
+a demand joining a prefetch fill does not change its class. Zero fills send
+no read. The coherent L1D leaves both refill fields zero. These events feed
+the alternate HPM selectors described in the
+[counter guide](../../cpu_and_mem/cpu/cpu_ooo/perf/README.md).
+
+The generic `frost_cache` interface has no prefetch tag. Every allocation
+that fetches a line contributes to `fill`, including stream-prefetch reads
+in the generic cluster's L2 with `L2_PREFETCH`; `fill_prefetch` stays zero.
+The SoC's L2 HPM events come from the coherence home, which distinguishes
+prefetch requests from demand.
 
 The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
 requests. The data class has one request identity per L1D endpoint, IDs 0
@@ -693,6 +718,17 @@ Channel arbiters capture the payload with the selected input and hold both
 through a stalled presentation.
 The home's probe, tag, update, result and PutAck arbiters use their captured
 selection for validity. Each selected source holds its offer through acceptance.
+An idle engine that receives `i_work_valid` without an error offers its tag
+lookup on that dispatch cycle and holds the offer in `Lookup` until the tag
+arbiter accepts it. With `PARALLEL_READ`, a demand engine's lookup requests a
+parallel read of its set's ways (`i_req_spec`), while a prefetch lookup reads
+tags alone; a resident decision that needs data takes the parallel read
+(`o_take_spec` / `i_resp_keep`) and skips the row-read port. A hit service with
+no probe (`GetS`, `LoadReserved`, `GetM`, `GetMZero`) offers a quick result to
+the result arbiter in the cycle its row data arrives and enters `Result`
+holding the same payload. The result arbiter captures its selection before
+acceptance, so the quick offer advances selection by one cycle; acceptance
+follows from Result.
 A stop reaches the home through one flop. A home failure stops the home on
 the edge that sets its fatal indication, and the fatal stop input takes effect
 on the cycle after it rises. The stop suppresses probe and PutAck validity and
@@ -723,14 +759,25 @@ prefetch changes nothing a client sees, so it neither waits for nor orders
 other requests.
 
 `coherence_home_array` has separate tag-decision, data-read and masked-update
-ports. Each request carries a response token. Replacement state changes when
-the consumer claims a tag decision. An available miss response selects an
-unpinned way. Way claims enter through the tag response port. Put and writeback address
-hazards are checked at response acceptance. Tag updates exclude an unresolved lookup
-of the same physical packed row. A pending tag update blocks further lookups
-to that row until the update is accepted. Data hazards cover the read sample and the
-write input registers through completion. Contending reads and writes alternate
-service while prior operations drain. Masked updates preserve sibling sectors.
+ports. Each request carries a response token. With `ULTRA` and without
+`FROST_SRAM_MACROS`, and with `TAG_READ_LATENCY + 2 <= DATA_READ_LATENCY`,
+the data array has a bank per way, indexed by set, and a
+lookup with `i_req_spec` reads every way of its set on its first tag-read
+cycle while no data write of that set is in the write pipeline or on offer; an
+unresolved parallel-read stage blocks data writes to its set until the
+response keeps the selected way (`i_resp_keep`) or drops it. In `ULTRA` builds
+without `FROST_SRAM_MACROS`, way selection reads the tag RAM's fabric output
+register on the final tag-read cycle and presents the response on the
+following cycle; block-RAM and SRAM-macro builds use a single `{way, set}`
+data array read after the decision and a registered `Select` cycle.
+Replacement state changes when the consumer claims a tag decision. An
+available miss response selects an unpinned way. Way claims enter through the
+tag response port. Put and writeback address hazards are checked at response
+acceptance. Tag updates exclude an unresolved lookup of the same physical
+packed row. A pending tag update blocks further lookups to that row until the
+update is accepted. Data hazards cover the read sample and the write input
+registers through completion. Contending reads and writes alternate service
+while prior operations drain. Masked updates preserve sibling sectors.
 
 The D channel's `non_alloc` hint restricts miss replacement to way 0.
 A streaming request that needs a replacement waits while way 0 is pinned.
@@ -1031,9 +1078,11 @@ or absorbed. A prefetch fill of another line can take the line as its
 victim; replacement then holds the victim through its recall, which absorbs
 the pending PutM before the row is reused.
 
-The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
+The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_rowread`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
-probe service and the DMA sector handoff, and a primary granted from its
+probe service and the DMA sector handoff, parallel way reads beside set writes
+and back-to-back lookups, UltraRAM row reads after the decision
+(`PARALLEL_READ=0`), and a primary granted from its
 fill's line before the install completes. Their prefetch cases cover the slot
 partition, the no-fill flag, prefetch fills that install, take a demand seat
 or fail, the fill reserve, the last available way and the last write-back
@@ -1456,9 +1505,14 @@ pipeline stage is empty:
   marks them clean; the lines stay valid. `o_maint_busy` falls once those
   writebacks are acknowledged. The walk covers only the set span dirtied
   since the previous writeback-all.
-- Invalidate-all reruns the reset sweep, which clears one set's tags and
-  replacement state per cycle (128 cycles in the L1I). It discards dirty
-  data, so only the read-only L1I uses it.
+- Invalidate-all clears every line. The L1I keeps its valid bits in
+  flip-flops beside the tag RAM (`FLASH_INVALIDATE`), so invalidate-all
+  clears them all in one cycle. Reset clears the valid flip-flops and their
+  read register at the clock edge. Invalid lines' tag and replacement
+  fields do not affect lookup results. Without
+  `FLASH_INVALIDATE` it reruns the reset sweep, which clears one set's tags
+  and replacement state per cycle. It discards dirty data, so only the
+  read-only L1I uses it.
 
 `frost_hart_cache` runs them in order: the L1D writes back first, then the
 L1I invalidates, so an instruction fill racing the sequence cannot leave
@@ -1476,8 +1530,8 @@ Maintenance and probes never overlap. Maintenance waits for the probe slots
 to empty like any other in-flight work, and a probe waits for maintenance
 like any other request, parked in the hierarchy's probe injection register.
 
-Reset runs the sweep too, so every reset, including an image load, discards
-stale lines instead of writing them back. `SIM_FAST_MAINT=1` (simulation
+Reset runs the per-set sweep in every cache, so every reset, including an
+image load, discards stale lines instead of writing them back. `SIM_FAST_MAINT=1` (simulation
 only) makes the sweep a one-cycle clear and makes writeback-all visit only
 sets with dirty lines, with the same functional effect.
 
@@ -1815,10 +1869,12 @@ to answer.
 | `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with every hart and DMA completion slot, every engine's result buffer and both PutM controls full, and instruction and data streams on one line |
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
+| `coherence_stale_line_prefetch_l2` | `cbo.zero` twin beside an L1D stream on the cluster with eight L1D request endpoints, stream prefetching and a 64 KiB home: no stream prefetch acquires a sector held by a pending store record or waiting twin, including a `cbo.zero` pushed during the prefetch lookup and a look-ahead `GetMZero` issued while its twin still waits |
 | `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
 | `coherence_full_line*` | Full-line stores on the hart-and-home cluster with one and three L1D endpoints, 64- and 32-byte home lines and a two-set L1D: stores at the SQ cadence and back to back fill blocks without memory reads; the same stores without the SQ hint, partial, reversed and byte-written blocks fill; loads between the stores, DMA reads and writes of the block at every delay, stale Shared and dirty copies, and streams through evictions keep every byte; streams with irregular gaps keep the store queue's claim standing between writes and combine claimed writes at four records; a hint whose stores the store queue flushes holds a record only for its window; a reset with a gathering head, a pair hold or a held look-ahead leaves the cluster clean |
 | `full_line_test` (program) | Full-line stores from the production store queue into the L1D on the whole system: gapped, unaligned and partial memset and copy streams, stores squashed by a mispredicted branch or a faulting load inside a gathered line, ordering after two overlapped cached stores (forwarding, fence, fence.i, cbo.clean/flush/inval/zero, LR/SC), and DMA copies and fills of lines the CPU writes whole; `FullLineWatch` requires the store-queue hints, claims at three and four records, overlap, gather and pair holds, head and look-ahead pairs, data twins, flushes in a window and DMA requests that waited for a pair's window |
-| `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
+| `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, dirty-L1D walker coherence, and one refill event per allocation that reads a line |
+| `coherence_home*` | Home service and ownership, with each accepted memory line read producing exactly one demand or prefetch refill pulse, including a held read accepted after fatal stop |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a reader past the waiter seats waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat. The write-cost events count each write miss that fetches its line once, and no hit, merge, or read miss, and each write held behind a read of its line once, with the cycles from its first decision to the one that completes it, and no merge or waiting read |
@@ -1851,7 +1907,11 @@ arbiter grant (`line_arbiter_grant`), the miss-slot byte merge
 allocation takes a way outside the tag stage's ownership mask, the
 timing-factored decision equals its reference, a touched way is never the
 next pseudo-LRU victim, and the restricted walk picks the pseudo-LRU way
-whenever it is unowned); see the [formal guide](../../../../formal/README.md).
+whenever it is unowned), and the L1I's flash invalidate (`cache_flash_valid`:
+reset and sweep clear all valid flip-flops, the registered read returns the
+pre-write value, valid reads agree with the bulk-cleared tag RAM after a
+sweep, and invalidate-all lasts one cycle); see the
+[formal guide](../../../../formal/README.md).
 In simulation, assertions check that no two miss slots own one way and that
 an allocation never takes a way a miss slot owns. In coverage builds,
 [cover points](../../../../tests/README.md#cover-points) count corner cases

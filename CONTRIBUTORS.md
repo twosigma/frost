@@ -114,3 +114,11 @@
 - Gave the store queue separate early-address and MMIO copies and the ROB link-value read comparators separate staged allocation addresses, with formal equivalence checks.
 - Simplified L2 home payload captures, registered fill update phase flags and replicated writeback reply selects while preserving qualified request and response behavior
 - Limited the fanout of the L1I's miss-slot selection registers, formed the fetch-hold polarity directly in the IMMU's copy LUTs, and applied the ID stage's illegal-instruction and fetch-fault kill after operand classification, with formal equivalence checks
+- Implemented one-cycle L1I invalidation with valid bits in flip-flops and added a JIT-style fence.i and refetch benchmark
+- Added L1I refill and L2 demand and prefetch miss events to the HPM counters, with Linux PMU mappings and directed verification.
+- Registered the VCU118 DDR initializer's AXI valid signals, applied its SLR floorplan and updated its external I/O constraints.
+- Switched out-of-context IP synthesis to project-mode runs, clocked the BSCAN debug transport at its primitives, adapted Vivado exit detection to child IP logs, and extended the L1D zero-cover budget
+- Implemented Svpbmt with PBMTE and PTE validation, PBMT in both TLB levels, coherent uncached DDR aliases, uncached memory access and PMA overrides, with directed programs, benches, formal checks and a TestRIG trace
+- Shortened the L2 home's hit path with banked UltraRAM parallel way reads, final-tag-cycle way selection, quick result offers, and dispatch-cycle lookup offers, with formal checks and home bench coverage
+- Loaded reservation-station stage-2 issue payloads on functional-unit readiness while keeping validity on the flush-qualified issue path, with a two-copy wrapper payload-twin formal check
+- Added the SYSRESET register and OpenSBI syscon-reboot support for SBI system reset, with register and device-tree tests

@@ -516,6 +516,46 @@ def test_low_bram_words_take_the_upper_half_of_odd_words() -> None:
     assert real_program.read_low_bram_words(dut, 4, 5) == [1, 2, 3, 4, 5]
 
 
+def test_tomasulo_rs_mem_dispatch_requires_explicit_size_and_load_sign() -> None:
+    """Folded RS_MEM operations reject omitted mem_size or LOAD mem_signed."""
+    iface = tomasulo_interface.TomasuloInterface(SimpleNamespace())
+    ops = tomasulo_interface._INSTR_OPS
+
+    for name in (
+        "LOAD",
+        "STORE",
+        "LOAD_FP",
+        "STORE_FP",
+        "LR",
+        "SC",
+        "AMOSWAP",
+        "AMOADD",
+    ):
+        with pytest.raises(ValueError, match="mem_size"):
+            iface._rs_dispatch_kwargs(
+                tomasulo_interface.RS_MEM, True, {"op": ops[name]}
+            )
+
+    with pytest.raises(ValueError, match="mem_signed"):
+        iface._rs_dispatch_kwargs(
+            tomasulo_interface.RS_MEM, True, {"op": ops["LOAD"], "mem_size": 2}
+        )
+
+    load_pkt = iface._rs_dispatch_kwargs(
+        tomasulo_interface.RS_MEM,
+        True,
+        {"op": ops["LOAD"], "mem_size": 1, "mem_signed": True},
+    )
+    assert load_pkt["mem_size"] == 1
+    assert load_pkt["mem_signed"] is True
+
+    lr_pkt = iface._rs_dispatch_kwargs(
+        tomasulo_interface.RS_MEM, True, {"op": ops["LR"], "mem_size": 2}
+    )
+    assert lr_pkt["mem_size"] == 2
+    assert lr_pkt["mem_signed"] is True
+
+
 def _parse_riscv_pkg_packed_struct(struct_name: str) -> list[tuple[str, int]]:
     """Extract (field_name, bit_width) pairs in declaration order from riscv_pkg.sv."""
     pkg_path = (

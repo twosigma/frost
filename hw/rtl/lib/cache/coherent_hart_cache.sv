@@ -393,6 +393,8 @@ module coherent_hart_cache #(
       .TAG_READ_LATENCY(1),
       .DATA_MEMORY_PRIMITIVE("block"),
       .DATA_READ_LATENCY(2),
+      // fence.i clears the L1I in one cycle.
+      .FLASH_INVALIDATE(1'b1),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1i (
       .i_clk(i_clk),

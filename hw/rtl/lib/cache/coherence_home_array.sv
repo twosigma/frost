@@ -15,6 +15,11 @@
  */
 
 // Tag decisions, row reads and masked updates have independent service ports.
+// The data array is banked by way. With ULTRA, a lookup that asks for it
+// (i_req_spec) reads every way of its set on the cycle after its acceptance,
+// beside the tag read, and the response keeps (i_resp_keep) the hit way's row
+// for the requester's token: the row arrives a fixed few cycles after the
+// response, without a row read through the read port's arbiter.
 module coherence_home_array #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 64,
@@ -40,6 +45,8 @@ module coherence_home_array #(
     output logic o_req_ready,
     input logic [ADDR_WIDTH-1:0] i_req_addr,
     input logic [TOKEN_BITS-1:0] i_req_token,
+    // The request may read its set's ways in parallel with its tag read.
+    input logic i_req_spec,
     output logic [ADDR_WIDTH-1:0] o_query_addr,
     output logic [TOKEN_BITS-1:0] o_query_token,
     input logic [WAYS-1:0] i_exclude,
@@ -59,6 +66,12 @@ module coherence_home_array #(
     // The selection's tag fields for every way, held from selection through
     // the response; o_resp_addr's tag is o_resp_tags[o_resp_way].
     output logic [WAYS-1:0][ADDR_WIDTH-SetBits-OffsetBits-1:0] o_resp_tags,
+    // The response's parallel read is in flight. Kept, its row (the
+    // response's way) arrives on the read output with the response's token.
+    output logic o_resp_spec,
+    // With the response's handshake: keep the parallel read for o_resp_way.
+    // A read that is not kept is dropped.
+    input logic i_resp_keep,
     input logic i_read_valid,
     // i_read_valid before the consumer's stop qualification. It decides the
     // update side of row contention, which matters only while an update is
@@ -135,6 +148,19 @@ module coherence_home_array #(
   logic [SetBits-1:0] tag_raddr, tag_waddr;
   logic [TagEntryBits-1:0] tag_wdata;
   logic [TagEntryBits-1:0] tag_rdata[WAYS], tags_q[WAYS];
+  // With ULTRA the tag RAM's output is a fabric register that holds a read
+  // until the next lookup's data, so the selection reads it on the last
+  // tag-read cycle and the response follows on the next: no Select cycle.
+  // A block-RAM tag read follows its address and is copied to tags_q.
+  // SRAM macros (FROST_SRAM_MACROS) keep the Select cycle.
+`ifdef FROST_SRAM_MACROS
+  localparam bit FoldSelect = 1'b0;
+`else
+  localparam bit FoldSelect = ULTRA;
+`endif
+  logic [TagEntryBits-1:0] select_tags[WAYS];
+  // The selection cycle: the response's fields register on its edge.
+  logic selecting;
 `ifdef SYNTHESIS
   localparam int unsigned SimFastInit = 0;
   wire init_bulk_clear = 1'b0;
@@ -160,13 +186,32 @@ module coherence_home_array #(
   logic hit;
   logic [WayBits-1:0] selected;
   logic request_fire, read_fire, update_fire;
-  logic tag_hazard, read_hazard, write_hazard;
+  logic tag_set_match, tag_hazard, read_hazard, write_hazard;
   logic read_turn_q, row_contended;
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+  logic [8*LINE_BYTES-1:0] f_capture_read_source;
+`endif
   logic [RowBits-1:0] read_row, write_row;
-  logic [8*LINE_BYTES-1:0] data_rdata;
-  logic [DATA_READ_LATENCY:0] read_valid_q;
+  logic [SetBits-1:0] read_set, write_set;
+  // The read pipeline. A stage holds its row as a set and a way; an open
+  // stage is a parallel read of every way of its set, not yet resolved to
+  // one way by its lookup's response.
+  logic [DATA_READ_LATENCY:0] read_valid_q, read_open_q;
   logic [TOKEN_BITS-1:0] read_token_q[DATA_READ_LATENCY+1];
-  logic [RowBits-1:0] read_row_q[DATA_READ_LATENCY+1];
+  logic [SetBits-1:0] read_set_q[DATA_READ_LATENCY+1];
+  logic [WayBits-1:0] read_way_q[DATA_READ_LATENCY+1];
+  // Parallel reads, with UltraRAM on the FPGA. The first response cycle meets
+  // the open stage at index TAG_READ_LATENCY-1, which must leave a cycle to
+  // register the bank selection before the stage loads o_read_data. With
+  // SRAM macros (FROST_SRAM_MACROS) the array keeps one bank and reads only
+  // the hit way, a quarter of the read energy.
+`ifdef FROST_SRAM_MACROS
+  localparam bit SramMacros = 1'b1;
+`else
+  localparam bit SramMacros = 1'b0;
+`endif
+  localparam bit SpecRead = ULTRA && !SramMacros && TAG_READ_LATENCY + 2 <= DATA_READ_LATENCY;
+  logic spec_want_q, spec_cycle, spec_hazard, spec_fire, resolve;
   logic [DATA_WRITE_LATENCY:0] write_valid_q, write_data_q;
   logic [TOKEN_BITS-1:0] write_token_q[DATA_WRITE_LATENCY+1];
   logic [RowBits-1:0] write_row_q[DATA_WRITE_LATENCY+1];
@@ -214,8 +259,8 @@ module coherence_home_array #(
   assign tag_waddr = phase_q == Init ? init_set_q : i_update_addr[OffsetBits+:SetBits];
   assign tag_wdata = phase_q == Init ? '0 :
       {i_update_state, i_update_addr[ADDR_WIDTH-1:OffsetBits+SetBits]};
-  assign tag_hazard = (phase_q == Tags || phase_q == Select || phase_q == Reply) &&
-      (set_q >> TagGroupBits) == (tag_waddr >> TagGroupBits);
+  assign tag_set_match = (set_q >> TagGroupBits) == (tag_waddr >> TagGroupBits);
+  assign tag_hazard = (phase_q == Tags || phase_q == Select || phase_q == Reply) && tag_set_match;
   assign row_contended = i_read_valid && i_update_valid && i_update_has_data &&
       read_row == write_row;
   wire update_contended = i_read_offer && i_update_has_data && read_row == write_row;
@@ -234,10 +279,11 @@ module coherence_home_array #(
   assign request_fire = i_req_valid && o_req_ready;
   assign o_resp_valid = phase_q == Reply;
   for (genvar way = 0; way < WAYS; way++) begin : gen_resp_tags
-    assign o_resp_tags[way] = tags_q[way][TagBits-1:0];
+    assign o_resp_tags[way] = select_tags[way][TagBits-1:0];
   end
   assign o_resp_token = token_q;
   assign o_resp_token_onehot = token_onehot_q;
+  assign o_resp_spec = |(read_valid_q & read_open_q);
 `ifndef SYNTHESIS
   // Reset and every request capture write both, so they agree after reset.
 `ifdef FORMAL
@@ -308,14 +354,34 @@ module coherence_home_array #(
     end
   end
 
-  assign read_row = (RowBits'(i_read_way) << SetBits) | RowBits'(i_read_addr[OffsetBits+:SetBits]);
-  assign write_row = (RowBits'(i_update_way) << SetBits) |
-      RowBits'(i_update_addr[OffsetBits+:SetBits]);
+  assign read_set = i_read_addr[OffsetBits+:SetBits];
+  assign write_set = i_update_addr[OffsetBits+:SetBits];
+  assign read_row = (RowBits'(i_read_way) << SetBits) | RowBits'(read_set);
+  assign write_row = (RowBits'(i_update_way) << SetBits) | RowBits'(write_set);
+  // The parallel read takes the first tag-read cycle of a lookup that asks
+  // for it, when no data write to its set is in the write pipeline or on
+  // offer (by the tag comparison's set group): a waiting write goes first,
+  // and no bank row is read and written on one edge. Every term is a
+  // register or a comparison of registers.
+  assign spec_cycle = SpecRead && phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY) &&
+      spec_want_q;
+  always_comb begin
+    spec_hazard = i_update_valid && i_update_has_data && tag_set_match;
+    for (int stage = 0; stage <= DATA_WRITE_LATENCY; stage++)
+    if (write_valid_q[stage] && write_data_q[stage] &&
+        write_row_q[stage][SetBits-1:0] == set_q)
+      spec_hazard = 1'b1;
+  end
+  assign spec_fire = spec_cycle && !spec_hazard;
+  // The lookup's response resolves its open stage on the response handshake.
+  assign resolve = phase_q == Reply && i_resp_ready;
   always_comb begin
     write_hazard = 1'b0;
     read_hazard  = 1'b0;
+    // An open stage holds every way of its set.
     for (int stage = 0; stage <= DATA_READ_LATENCY; stage++)
-    if (read_valid_q[stage] && read_row_q[stage] == write_row && i_update_has_data)
+    if (read_valid_q[stage] && read_set_q[stage] == write_set &&
+        (read_open_q[stage] || read_way_q[stage] == i_update_way) && i_update_has_data)
       write_hazard = 1'b1;
     for (int stage = 0; stage <= DATA_WRITE_LATENCY; stage++) begin
       if (write_valid_q[stage] && write_data_q[stage]) begin
@@ -324,49 +390,117 @@ module coherence_home_array #(
       end
     end
   end
-  assign o_read_ready = o_init_done && !read_hazard && !(row_contended && !read_turn_q);
+  // The parallel read's cycle holds the read port.
+  assign o_read_ready = o_init_done && !read_hazard && !(row_contended && !read_turn_q) &&
+      !spec_cycle;
   assign read_fire = i_read_valid && o_read_ready;
-  assign o_read_valid = read_valid_q[DATA_READ_LATENCY];
+  // An open stage that reaches the output was never resolved (the response
+  // stalled behind a stop): it is dropped.
+  assign o_read_valid = read_valid_q[DATA_READ_LATENCY] && !read_open_q[DATA_READ_LATENCY];
   assign o_read_token = read_token_q[DATA_READ_LATENCY];
   assign o_updated = write_valid_q[DATA_WRITE_LATENCY];
   assign o_updated_token = write_token_q[DATA_WRITE_LATENCY];
-  sdp_ram_byte_en #(
-      .DATA_WIDTH(8 * LINE_BYTES),
-      .ADDR_WIDTH(RowBits),
-      .READ_LATENCY(DATA_READ_LATENCY),
-      .WRITE_LATENCY(DATA_WRITE_LATENCY),
-      .MEMORY_PRIMITIVE(ULTRA ? "ultra" : "block"),
-      .REGISTER_READ_INPUT(ULTRA),
-      .REGISTER_READ_OUTPUT(ULTRA)
-  ) data_array (
+  if (SpecRead) begin : gen_banked
+    // One bank per way, each a set deep. A row read reads its way's bank; a
+    // parallel read reads every bank at its set, and no row read shares its
+    // cycle, so the read address selects on a register.
+    logic [8*LINE_BYTES-1:0] bank_rdata[WAYS];
+    // The bank that the stage loading o_read_data next reads, one-hot.
+    logic [WAYS-1:0] load_ways_q;
+    logic [WayBits-1:0] load_way_next;
+    for (genvar way = 0; way < WAYS; way++) begin : gen_bank
+      sdp_ram_byte_en #(
+          .DATA_WIDTH(8 * LINE_BYTES),
+          .ADDR_WIDTH(SetBits),
+          .READ_LATENCY(DATA_READ_LATENCY),
+          .WRITE_LATENCY(DATA_WRITE_LATENCY),
+          .MEMORY_PRIMITIVE("ultra"),
+          .REGISTER_READ_INPUT(1'b1),
+          .REGISTER_READ_OUTPUT(1'b1)
+      ) data_bank (
 `ifndef SYNTHESIS
 `ifndef FORMAL
-      .i_check_enable(sim_reset_seen_q && !i_rst),
+          .i_check_enable(sim_reset_seen_q && !i_rst),
 `endif
 `endif
-      .i_clk,
-      .i_waddr(write_row),
-      .i_wdata(i_update_data),
-      .i_wbyte_en(i_update_mask & {LINE_BYTES{update_fire}}),
-      .i_re(read_fire),
-      .i_raddr(read_row),
-      .o_rdata(data_rdata)
-  );
+          .i_clk,
+          .i_waddr(write_set),
+          .i_wdata(i_update_data),
+          .i_wbyte_en(i_update_mask & {LINE_BYTES{update_fire && i_update_way == WayBits'(way)}}),
+          .i_re(spec_fire || (read_fire && i_read_way == WayBits'(way))),
+          .i_raddr(spec_cycle ? set_q : read_set),
+          .o_rdata(bank_rdata[way])
+      );
+    end
+    // The bank of the stage that loads o_read_data next. An open stage takes
+    // its response's way in the response cycle.
+    assign load_way_next = read_open_q[DATA_READ_LATENCY-2] && phase_q == Reply ? o_resp_way :
+        read_way_q[DATA_READ_LATENCY-2];
+    logic [8*LINE_BYTES-1:0] load_data;
+    always_comb begin
+      load_data = '0;
+      for (int way = 0; way < WAYS; way++)
+      load_data |= {8 * LINE_BYTES{load_ways_q[way]}} & bank_rdata[way];
+    end
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+    assign f_capture_read_source = load_data;
+`endif
+    always_ff @(posedge i_clk) begin
+      for (int way = 0; way < WAYS; way++) load_ways_q[way] <= load_way_next == WayBits'(way);
+      if (read_valid_q[DATA_READ_LATENCY-1]) o_read_data <= load_data;
+    end
+  end else begin : gen_single
+    // One array of {way, set} rows, read one row at a time.
+    logic [8*LINE_BYTES-1:0] data_rdata;
+    sdp_ram_byte_en #(
+        .DATA_WIDTH(8 * LINE_BYTES),
+        .ADDR_WIDTH(RowBits),
+        .READ_LATENCY(DATA_READ_LATENCY),
+        .WRITE_LATENCY(DATA_WRITE_LATENCY),
+        .MEMORY_PRIMITIVE(ULTRA ? "ultra" : "block"),
+        .REGISTER_READ_INPUT(ULTRA),
+        .REGISTER_READ_OUTPUT(ULTRA)
+    ) data_array (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable(sim_reset_seen_q && !i_rst),
+`endif
+`endif
+        .i_clk,
+        .i_waddr(write_row),
+        .i_wdata(i_update_data),
+        .i_wbyte_en(i_update_mask & {LINE_BYTES{update_fire}}),
+        .i_re(read_fire),
+        .i_raddr(read_row),
+        .o_rdata(data_rdata)
+    );
+    always_ff @(posedge i_clk) if (read_valid_q[DATA_READ_LATENCY-1]) o_read_data <= data_rdata;
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+    assign f_capture_read_source = data_rdata;
+`endif
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       read_valid_q  <= '0;
+      read_open_q   <= '0;
       write_valid_q <= '0;
       write_data_q  <= '0;
       read_turn_q   <= 1'b0;
     end else begin
       if (read_fire || (update_fire && i_update_has_data)) read_turn_q <= !read_fire;
-      read_valid_q[0] <= read_fire;
-      read_token_q[0] <= i_read_token;
-      read_row_q[0]   <= read_row;
+      read_valid_q[0] <= read_fire || spec_fire;
+      read_open_q[0]  <= spec_fire;
+      read_token_q[0] <= spec_cycle ? token_q : i_read_token;
+      read_set_q[0]   <= spec_cycle ? set_q : read_set;
+      read_way_q[0]   <= i_read_way;
+      // The response keeps its open stage for its way or drops it.
       for (int stage = 1; stage <= DATA_READ_LATENCY; stage++) begin
-        read_valid_q[stage] <= read_valid_q[stage-1];
+        read_valid_q[stage] <= read_valid_q[stage-1] &&
+            !(read_open_q[stage-1] && resolve && !i_resp_keep);
+        read_open_q[stage] <= read_open_q[stage-1] && !resolve;
         read_token_q[stage] <= read_token_q[stage-1];
-        read_row_q[stage]   <= read_row_q[stage-1];
+        read_set_q[stage] <= read_set_q[stage-1];
+        read_way_q[stage] <= read_open_q[stage-1] && resolve ? o_resp_way : read_way_q[stage-1];
       end
       write_valid_q[0] <= update_fire;
       write_data_q[0]  <= i_update_has_data;
@@ -381,13 +515,17 @@ module coherence_home_array #(
     end
   end
 
+  for (genvar way = 0; way < WAYS; way++) begin : gen_select_tags
+    assign select_tags[way] = FoldSelect ? tag_rdata[way] : tags_q[way];
+  end
+  assign selecting = FoldSelect ? phase_q == Tags && count_q == 1 : phase_q == Select;
   always_comb begin
     selected = victim(plru_q, ~i_exclude);
     hit = 1'b0;
     for (int way = WAYS - 1; way >= 0; way--)
-    if (tags_q[way][TagBits+:2] == 0 && !i_exclude[way]) selected = WayBits'(way);
+    if (select_tags[way][TagBits+:2] == 0 && !i_exclude[way]) selected = WayBits'(way);
     for (int way = 0; way < WAYS; way++) begin
-      if (tags_q[way][TagBits+:2] != 0 && tags_q[way][TagBits-1:0] == tag_q) begin
+      if (select_tags[way][TagBits+:2] != 0 && select_tags[way][TagBits-1:0] == tag_q) begin
         hit = 1'b1;
         selected = WayBits'(way);
       end
@@ -403,6 +541,7 @@ module coherence_home_array #(
       token_onehot_q <= (1 << TOKEN_BITS)'(1);
       count_q <= '0;
       plru_q <= '0;
+      spec_want_q <= 1'b0;
       o_resp_hit <= 1'b0;
       o_resp_available <= 1'b0;
       o_resp_two_available <= 1'b0;
@@ -423,40 +562,38 @@ module coherence_home_array #(
           count_q <= count_q - 1'b1;
           if (count_q == 1) begin
             for (int way = 0; way < WAYS; way++) tags_q[way] <= tag_rdata[way];
-            phase_q <= Select;
+            phase_q <= FoldSelect ? Reply : Select;
           end
         end
-        Select: begin
-          o_resp_hit <= hit;
-          o_resp_available <= hit || !(&i_exclude);
-          o_resp_two_available <= $countones(~i_exclude) >= 2;
-          phase_q <= Reply;
-        end
+        Select: phase_q <= Reply;
         Reply: if (i_resp_ready) phase_q <= Idle;
         default: begin
         end
       endcase
+      if (selecting) begin
+        o_resp_hit <= hit;
+        o_resp_available <= hit || !(&i_exclude);
+        o_resp_two_available <= $countones(~i_exclude) >= 2;
+      end
       if (request_fire) begin
         set_q <= i_req_addr[OffsetBits+:SetBits];
         tag_q <= i_req_addr[ADDR_WIDTH-1:OffsetBits+SetBits];
         token_q <= i_req_token;
         token_onehot_q <= (1 << TOKEN_BITS)'(1) << i_req_token;
+        spec_want_q <= i_req_spec;
         count_q <= CountBits'(TAG_READ_LATENCY);
         phase_q <= Tags;
       end
     end
   end
-  // The response's way, address and state and the read data have no reset:
-  // each is read only in Reply (o_resp_valid) or with o_read_valid, both
-  // after their own load, and the reset clears those phases and valids.
-  // The core reset then leaves these registers' enables.
+  // Response payloads load on the selection edge without reset. Reply
+  // qualifies their consumers after either folded or separate selection.
   always_ff @(posedge i_clk) begin
-    if (phase_q == Select) begin
+    if (selecting) begin
       o_resp_way <= selected;
-      o_resp_addr <= {tags_q[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
-      o_resp_state <= tags_q[selected][TagBits+:2];
+      o_resp_addr <= {select_tags[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
+      o_resp_state <= select_tags[selected][TagBits+:2];
     end
-    if (read_valid_q[DATA_READ_LATENCY-1]) o_read_data <= data_rdata;
   end
   if (ADDR_WIDTH < 32 || ADDR_WIDTH > 56 || (LINE_BYTES != 32 && LINE_BYTES != 64) ||
       Sets < 2 || (Sets & (Sets - 1)) != 0 || (WAYS != 1 && WAYS != 4) ||
@@ -468,6 +605,9 @@ module coherence_home_array #(
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst) begin
+      // The held tag register still holds the selection's tags in the response.
+      if (FoldSelect && phase_q == Reply)
+        for (int way = 0; way < WAYS; way++) assert (tag_rdata[way] == tags_q[way]);
       if (read_fire) assert (int'(i_read_way) < WAYS);
       if (update_fire) assert (int'(i_update_way) < WAYS);
       if (o_resp_valid && i_resp_ready && i_resp_claim) assert (o_resp_available);
@@ -476,14 +616,21 @@ module coherence_home_array #(
       assert (!(read_fire && update_fire && |i_update_mask && read_row == write_row));
       if (update_fire && i_update_tag) assert (!tag_hazard);
       if (i_update_valid) assert (i_read_offer == i_read_valid);
+      // A parallel read shares its cycle with no row read and no data write
+      // of its set, and it is the only open stage.
+      if (spec_cycle) assert (!read_fire);
+      if (spec_fire) assert (!(update_fire && i_update_has_data && write_set == set_q));
+      assert ($countones(read_open_q) <= 1);
+      assert ((read_open_q & ~read_valid_q) == '0);
     end
   end
 `endif
 `ifdef COHERENCE_HOME_CONTROL
-  assign o_query_held = !i_rst && (phase_q == Select || phase_q == Reply);
+  assign o_query_held = !i_rst && (selecting || phase_q == Reply);
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       if (phase_q == Reply && !o_resp_hit && o_resp_available) assert (!i_exclude[o_resp_way]);
+      if (FoldSelect) assert (phase_q != Select);
       if (phase_q == Reply && o_resp_two_available) assert (o_resp_available);
       if (phase_q == Tags || phase_q == Select || phase_q == Reply) begin
         assert (i_tag_owner[token_q]);
@@ -497,12 +644,24 @@ module coherence_home_array #(
       if (request_fire) assert (!i_tag_owner[i_req_token]);
       if (read_fire) assert (!i_read_owner[i_read_token]);
       if (update_fire) assert (!i_update_owner[i_update_token]);
+      // A resolved stage belongs to its token's read owner. An open stage
+      // is the lookup in service's parallel read, at the index its tag-read
+      // cycles give (later only while the response waits).
+      assert ($countones(read_open_q) <= 1);
+      assert ((read_open_q & ~read_valid_q) == '0);
+      if (!SpecRead) assert (read_open_q == '0);
       for (int stage = 0; stage <= DATA_READ_LATENCY; stage++) begin
-        if (read_valid_q[stage]) begin
-          assert (i_read_owner[read_token_q[stage]]);
+        if (read_valid_q[stage] && !read_open_q[stage]) assert (i_read_owner[read_token_q[stage]]);
+        if (read_open_q[stage]) begin
+          assert (read_token_q[stage] == token_q && read_set_q[stage] == set_q);
+          assert ((phase_q == Tags && int'(count_q) < TAG_READ_LATENCY &&
+                   stage == TAG_READ_LATENCY - 1 - int'(count_q)) ||
+              (phase_q == Select && stage == TAG_READ_LATENCY - 1) ||
+              (phase_q == Reply && stage >= TAG_READ_LATENCY - 1));
+        end
+        if (read_valid_q[stage])
           for (int other = stage + 1; other <= DATA_READ_LATENCY; other++)
           if (read_valid_q[other]) assert (read_token_q[stage] != read_token_q[other]);
-        end
       end
       for (int stage = 0; stage <= DATA_WRITE_LATENCY; stage++) begin
         if (write_valid_q[stage]) begin
@@ -524,8 +683,12 @@ module coherence_home_array #(
 `endif
   logic f_known_q = 1'b0;
   logic [7:0] f_value_q;
-  logic [DATA_READ_LATENCY:0] f_check_q;
+  logic [DATA_READ_LATENCY:0] f_check_q, f_open_q;
   logic [7:0] f_expected_q[DATA_READ_LATENCY+1];
+  // f_row's set and way: a parallel read of the set checks f_row's byte if
+  // its response keeps f_row's way.
+  wire [SetBits-1:0] f_set = f_row[SetBits-1:0];
+  wire [WayBits-1:0] f_way = WayBits'(f_row >> SetBits);
   localparam int unsigned ServiceBound = DATA_READ_LATENCY + DATA_WRITE_LATENCY + 5;
   logic [$clog2(ServiceBound+1)-1:0] f_read_wait_q, f_write_wait_q;
   localparam int unsigned TagServiceBound = TAG_READ_LATENCY + 4;
@@ -541,18 +704,23 @@ module coherence_home_array #(
     if (i_rst) begin
       f_known_q <= 1'b0;
       f_check_q <= '0;
+      f_open_q  <= '0;
     end else begin
       if (update_fire && write_row == f_row && i_update_mask[f_byte]) begin
         f_known_q <= 1'b1;
         f_value_q <= i_update_data[8*f_byte+:8];
       end
-      f_check_q[0] <= read_fire && read_row == f_row && f_known_q;
+      f_check_q[0] <= f_known_q &&
+          ((read_fire && read_row == f_row) || (spec_fire && set_q == f_set));
+      f_open_q[0] <= spec_fire;
       f_expected_q[0] <= f_value_q;
       for (int stage = 1; stage <= DATA_READ_LATENCY; stage++) begin
-        f_check_q[stage] <= f_check_q[stage-1];
+        f_check_q[stage] <= f_check_q[stage-1] && !(f_open_q[stage-1] && resolve &&
+            !(i_resp_keep && o_resp_way == f_way));
+        f_open_q[stage] <= f_open_q[stage-1] && !resolve;
         f_expected_q[stage] <= f_expected_q[stage-1];
       end
-      if (f_check_q[DATA_READ_LATENCY]) begin
+      if (f_check_q[DATA_READ_LATENCY] && !f_open_q[DATA_READ_LATENCY]) begin
         assert (o_read_valid);
         assert (o_read_data[8*f_byte+:8] == f_expected_q[DATA_READ_LATENCY]);
       end
@@ -587,17 +755,22 @@ module coherence_home_array #(
       end
       cover (request_fire && read_fire && update_fire);
       cover (o_read_valid && o_updated && o_resp_valid);
+      // A response keeps a parallel read of f_row.
+      if (SpecRead)
+        cover (resolve && i_resp_keep && |(f_check_q & f_open_q) && o_resp_way == f_way);
     end
   end
 `endif
 `endif
 `ifdef HOME_CAPTURE_LOCAL_PROOF
-  // Response and read payloads agree with the reset-qualified captures
-  // whenever their valid signals permit a consumer to read them.
+  // The reference captures a response under reset-qualified selecting,
+  // including the last tag-read cycle when selection is folded. Its read
+  // data follows the banked or single-array capture without reset.
   logic f_capture_reset_seen_q = 1'b0;
   logic [WayBits-1:0] f_capture_way_q;
   logic [ADDR_WIDTH-1:0] f_capture_addr_q;
   logic [1:0] f_capture_state_q;
+  logic [2:0] f_capture_flags_q;
   logic [8*LINE_BYTES-1:0] f_capture_data_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -605,19 +778,21 @@ module coherence_home_array #(
       f_capture_way_q <= '0;
       f_capture_addr_q <= '0;
       f_capture_state_q <= '0;
-    end else begin
-      if (phase_q == Select) begin
-        f_capture_way_q <= selected;
-        f_capture_addr_q <= {tags_q[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
-        f_capture_state_q <= tags_q[selected][TagBits+:2];
-      end
-      if (read_valid_q[DATA_READ_LATENCY-1]) f_capture_data_q <= data_rdata;
+      f_capture_flags_q <= '0;
+    end else if (selecting) begin
+      f_capture_way_q <= selected;
+      f_capture_addr_q <= {select_tags[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
+      f_capture_state_q <= select_tags[selected][TagBits+:2];
+      f_capture_flags_q <= {hit, hit || !(&i_exclude), $countones(~i_exclude) >= 2};
     end
+    if (read_valid_q[DATA_READ_LATENCY-1]) f_capture_data_q <= f_capture_read_source;
     if (f_capture_reset_seen_q && !i_rst) begin
       if (o_resp_valid) begin
         p_capture_way : assert (o_resp_way == f_capture_way_q);
         p_capture_addr : assert (o_resp_addr == f_capture_addr_q);
         p_capture_state : assert (o_resp_state == f_capture_state_q);
+        p_capture_flags : assert ({o_resp_hit, o_resp_available, o_resp_two_available} ==
+            f_capture_flags_q);
       end
       if (o_read_valid) p_capture_data : assert (o_read_data == f_capture_data_q);
     end

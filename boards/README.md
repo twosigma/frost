@@ -33,7 +33,7 @@ and instruction miss streams.
 | `x3/x3_nic_gty.sv` | Ethernet transceiver, MAC clocks, transceiver reset supervisor |
 | `x3/x3_cpu_clock_gty.sv` | CPU clock from a dedicated GTY transmitter |
 | `x3/constr/x3.xdc` | Pin and timing constraints |
-| `x3/constr/cpu_clock_boundary.tcl` | Conditional CPU clock constraints, applied after synthesis |
+| `x3/constr/cpu_clock_boundary.tcl` | Debug transport clock/CDC and optional CPU clock-boundary constraints, applied after synthesis |
 
 `x3/x3_frost.f` lists the board RTL. The Vivado flow generates the loader,
 DDR, and transceiver IP from `fpga/build/build_step.tcl`, `x3_ddr_bd.tcl`, and
@@ -105,6 +105,10 @@ channel still runs. Load software with the matching clock. The
 The X3 build includes the vector unit (`VECTOR`, at a `VLEN` of 256 bits); the
 loader's board list for each vector test program names the boards whose builds
 include it.
+
+On X3, Linux `reboot` requests SYSRESET and re-enters the retained DDR images;
+they can be stale or hang in OpenSBI, so reload them for a fresh boot.
+`poweroff` halts with power still applied.
 
 ## JTAG-based software loading
 

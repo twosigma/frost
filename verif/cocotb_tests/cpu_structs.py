@@ -360,6 +360,7 @@ RS_ISSUE_FIELDS = [
 
 # ptw_resp_t
 PTW_RESP_FIELDS = [
+    ("pbmt", 2),
     ("fault_kind", DATA_FAULT_KIND_BITS),
     ("vpn", SV39_VPN_BITS),
     ("ppn", PTE_PPN_BITS),

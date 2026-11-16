@@ -144,24 +144,25 @@ _INSTR_OPS = _parse_instr_op_enum()
 OP_ADD = _INSTR_OPS["ADD"]
 OP_SUB = _INSTR_OPS["SUB"]
 OP_MUL = _INSTR_OPS["MUL"]
+OP_CLMUL = _INSTR_OPS["CLMUL"]
 OP_DIVU = _INSTR_OPS["DIVU"]
-OP_LW = _INSTR_OPS["LW"]
-OP_SH = _INSTR_OPS["SH"]
-OP_SW = _INSTR_OPS["SW"]
-OP_SD = _INSTR_OPS["SD"]
-OP_LR_W = _INSTR_OPS["LR_W"]
-OP_SC_W = _INSTR_OPS["SC_W"]
+OP_LW = _INSTR_OPS["LOAD"]
+OP_SH = _INSTR_OPS["STORE"]
+OP_SW = _INSTR_OPS["STORE"]
+OP_SD = _INSTR_OPS["STORE"]
+OP_LR_W = _INSTR_OPS["LR"]
+OP_SC_W = _INSTR_OPS["SC"]
 OP_FADD_D = _INSTR_OPS["FADD_D"]
 OP_FMADD_D = _INSTR_OPS["FMADD_D"]
-OP_AMOSWAP_W = _INSTR_OPS["AMOSWAP_W"]
-OP_AMOADD_W = _INSTR_OPS["AMOADD_W"]
-OP_AMOXOR_W = _INSTR_OPS["AMOXOR_W"]
-OP_AMOAND_W = _INSTR_OPS["AMOAND_W"]
-OP_AMOOR_W = _INSTR_OPS["AMOOR_W"]
-OP_AMOMIN_W = _INSTR_OPS["AMOMIN_W"]
-OP_AMOMAX_W = _INSTR_OPS["AMOMAX_W"]
-OP_AMOMINU_W = _INSTR_OPS["AMOMINU_W"]
-OP_AMOMAXU_W = _INSTR_OPS["AMOMAXU_W"]
+OP_AMOSWAP_W = _INSTR_OPS["AMOSWAP"]
+OP_AMOADD_W = _INSTR_OPS["AMOADD"]
+OP_AMOXOR_W = _INSTR_OPS["AMOXOR"]
+OP_AMOAND_W = _INSTR_OPS["AMOAND"]
+OP_AMOOR_W = _INSTR_OPS["AMOOR"]
+OP_AMOMIN_W = _INSTR_OPS["AMOMIN"]
+OP_AMOMAX_W = _INSTR_OPS["AMOMAX"]
+OP_AMOMINU_W = _INSTR_OPS["AMOMINU"]
+OP_AMOMAXU_W = _INSTR_OPS["AMOMAXU"]
 OP_FDIV_S = _INSTR_OPS["FDIV_S"]
 OP_FMUL_S = _INSTR_OPS["FMUL_S"]
 OP_FMADD_S = _INSTR_OPS["FMADD_S"]
@@ -8054,3 +8055,111 @@ async def test_older_store_fault_survives_flush_of_held_younger_fault(dut: Any) 
         "the sweep never aligned the older fault with the flush cycle"
     )
     cocotb.log.info(f"=== Test Passed ({collisions} colliding iterations) ===")
+
+
+@cocotb.test()
+async def test_unready_short_mul_does_not_backpressure_full_mul(dut: Any) -> None:
+    """An unready short multiply in MUL_RS entry 0 must not stall a ready full-width MUL.
+
+    Sweep the idle gap between two full-width MULs while an unready CLMUL holds
+    entry 0 of MUL_RS. Neither the short-multiply insertion slot check nor the
+    MUL_RS issue pipe may delay the second full-width MUL.
+    """
+    cocotb.log.info(
+        "=== Test: Unready Short MUL Does Not Backpressure Full-Width MUL ==="
+    )
+    for delay in range(0, 5):
+        dut_if, _model = await setup_test(dut)
+        dut_if.set_fu_ready(RS_MUL, True)
+
+        producer_tag = await dut_if.dispatch(make_int_req(pc=0x4000, rd=1))
+        short_tag = await dut_if.dispatch(make_int_req(pc=0x4004, rd=2))
+        mul1_tag = await dut_if.dispatch(make_int_req(pc=0x4008, rd=3))
+        mul2_tag = await dut_if.dispatch(make_int_req(pc=0x400C, rd=4))
+
+        # Place an unready CLMUL in MUL_RS entry 0.
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MUL,
+            rob_tag=short_tag,
+            op=OP_CLMUL,
+            src1_ready=False,
+            src1_tag=producer_tag,
+            src2_ready=True,
+            src2_value=5,
+            src3_ready=True,
+        )
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+
+        # Issue the first full-width MUL from entry 1.
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MUL,
+            rob_tag=mul1_tag,
+            op=OP_MUL,
+            src1_ready=True,
+            src1_value=6,
+            src2_ready=True,
+            src2_value=7,
+            src3_ready=True,
+        )
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+
+        await dut_if.step()
+        issue1 = dut_if.read_rs_issue_for(RS_MUL)
+        assert issue1["valid"] and issue1["rob_tag"] == mul1_tag
+
+        seen_cdb: dict[int, int] = {}
+
+        def record_cdb() -> None:
+            for cdb in _read_cdb_lanes(dut_if.dut):
+                if cdb.valid and cdb.tag in (short_tag, mul1_tag, mul2_tag):
+                    seen_cdb[cdb.tag] = cdb.value
+
+        for _ in range(delay):
+            await dut_if.step()
+            record_cdb()
+            assert int(dut.muldiv_busy.value) == 0, (
+                f"delay={delay}: empty stage2 asserted muldiv_busy from unready CLMUL"
+            )
+
+        # Dispatch a second ready full-width MUL and verify immediate issue.
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MUL,
+            rob_tag=mul2_tag,
+            op=OP_MUL,
+            src1_ready=True,
+            src1_value=8,
+            src2_ready=True,
+            src2_value=9,
+            src3_ready=True,
+        )
+        await dut_if.step()
+        record_cdb()
+        dut_if.clear_rs_dispatch()
+        assert int(dut.muldiv_busy.value) == 0, (
+            f"delay={delay}: muldiv_busy blocked ready full-width MUL"
+        )
+
+        await dut_if.step()
+        record_cdb()
+        issue2 = dut_if.read_rs_issue_for(RS_MUL)
+        assert issue2["valid"] and issue2["rob_tag"] == mul2_tag, (
+            f"delay={delay}: second full-width MUL did not issue immediately: {issue2}"
+        )
+
+        # Wake the CLMUL and drain all three results on CDB.
+        dut_if.drive_fu_complete(FU_FP_ADD, tag=producer_tag, value=3)
+        await dut_if.step()
+        record_cdb()
+        dut_if.clear_fu_complete(FU_FP_ADD)
+
+        for _ in range(24):
+            record_cdb()
+            if len(seen_cdb) == 3:
+                break
+            await dut_if.step()
+        assert seen_cdb.get(mul1_tag) == 42
+        assert seen_cdb.get(mul2_tag) == 72
+        assert seen_cdb.get(short_tag) == 15
+    cocotb.log.info("=== Test Passed ===")

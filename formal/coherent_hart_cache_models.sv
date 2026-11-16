@@ -563,6 +563,7 @@ module frost_cache #(
     // verilog_lint: waive explicit-parameter-storage-type
     parameter TAG_MEMORY_PRIMITIVE = "block",
     parameter int unsigned TAG_READ_LATENCY = 1,
+    parameter bit FLASH_INVALIDATE = 1'b0,
     parameter int unsigned SIM_FAST_MAINT = 0
 ) (
     input logic i_clk,

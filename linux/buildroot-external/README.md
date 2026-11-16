@@ -150,6 +150,36 @@ before the first counter read, exceeding NFS's default directory attribute
 cache lifetime. The stage checks a root write, sync and removal after
 restoring MTU, flags and IPv6.
 
+On an NFS root the kernel may send frames of its own while the interface is
+looped back, typically ARP requests for the server about once a second. They
+pass through the NIC like test frames, so the test captures every frame of
+the interface on a second packet socket and judges each window (each idle
+interval and each traffic step) against that capture. The transmit and
+receive packet deltas must equal the test frames plus the kernel frames the
+capture saw sent; every kernel frame must come back exactly once with the
+bytes it was sent with, up to the MAC's padding; no frame may arrive that was
+not sent; no test frame of another window may appear; and the capture may
+drop nothing. A kernel frame is expected back only if the NIC's receive
+filter accepts it (broadcast, multicast or the interface's own address); a
+frame for another station, such as a TCP segment to the server, counts as
+sent and must not come back. In the idle interval that takes the link down,
+a kernel frame that does not come back is accounted for only if the driver
+counted it in `tx_dropped`. Idle intervals send no test frame and must not
+move the error counters. Two cases cannot be accounted and fail with their
+own reason: a segmentation offload packet, which the capture sees once but
+the NIC sends as several frames, and a looped frame whose checksum the NIC
+inserted, whose outgoing copy holds only a partial sum. If the capture socket cannot be opened, the test says so and an
+idle interval may count no frame at all.
+
+Before each window's verdict the test prints two `foreign frame` lines for
+each frame that is not one of its own frames of that window, up to 12 per
+window. The first gives the direction, length, addresses and ethertype; the
+second decodes ARP, IPv4 with TCP, UDP or ICMP, or names a stale, duplicate or
+other-run test frame. A `kernel frames` line reports kernel frames it
+accounted for, and a `capture` line gives the window's counts and the
+socket's drops. `frost_nettest --selftest` checks the decoder and the
+accounting on synthetic frames.
+
 At MTU 1500 the test queues 600 frames before receiving them, with lengths
 of 60, 255, 256, 257, 1023, 1024, 1025 and 1514 bytes. It checks their contents
 and order across RX ring refills, including both sides of the driver's default

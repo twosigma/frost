@@ -103,6 +103,7 @@ entry.
 | APLIC | `0x4400_0000` | 4 MiB | AIA direct and MSI delivery, M and S domains of 32 KiB each |
 | IMSIC | `0x4800_0000` | 2 MiB | 4 KiB M and S pages at `0x4800_0000` and `0x4810_0000`, with `0x1000` hart stride |
 | DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
+| DDR uncached alias | DDR address with bit 30 set (`0xC000_0000`, DDR up to 1 GiB) or bit c set (a 2^c-byte DDR window, c >= 32: `[2^c + 2^31, 2^(c+1))`) | The aliased DDR | Not in the PMA map. Svpbmt: the walker gives NC and IO leaves over DDR this alias; the MMUs make such an access MMIO (at the ROB head, no AMOs, no fetch) and the SoC turns it into a single-beat coherent DMA transfer of the real DDR address. An untranslated access, or a PMA leaf, there is an access fault |
 
 Addresses outside the defined regions, including the rest of the device
 quadrant `[0x4000_0000, 0x8000_0000)` and addresses at or beyond the
@@ -110,7 +111,8 @@ configured DDR end (`0x8000_0000 + 2^FROST_DDR_CAPACITY_LOG2_BYTES`), are
 unmapped: a fetch, load, store, or AMO there raises a precise access fault
 (cause 1, 5, or 7) and never aliases onto the map. DDR addresses above 4 GiB
 remain valid when they are inside the configured aperture. At the default
-1 GiB capacity, `0xc000_0000` and higher addresses fault. Fetch also faults
+1 GiB capacity, `0xc000_0000` and higher addresses fault (the Svpbmt alias
+above DDR is reached only through an NC or IO page). Fetch also faults
 in the low BRAM above its 128 KiB code region `[0, 0x2_0000)`. The one
 exception is a store to the rest of the device quadrant with translation off: the
 store-issue check covers the whole quadrant, so the store issues and the
@@ -181,6 +183,7 @@ MMIO registers:
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
 | `0x4002_0000`–`0057` | DMA test engine | Legacy CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES plus versioned ABI_CTRL and SRC64/DST64/STATUS_ADDR64 (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
 | `0x4002_1000`–`1038` | Memory error unit | CAPS/STATUS/IRQ_EN/CE_COUNT/UE_COUNT/AXI_RD_ERRS/AXI_WR_ERRS/CE_ADDR/UE_ADDR/AXI_ERR/ECC_POLLS (`memory_error_unit.sv`, `sw/lib/include/memory_error.h`) |
+| `0x4002_F000` | SYSRESET | Stores at this address with both low byte strobes set and low 16 bits `0x7777` reset the core domain like `ndmreset`, including doubleword stores; upper data bits are ignored and reads return zero. The CPU restarts at the boot address. BRAM and DDR storage survive, but dirty cache lines are discarded. OpenSBI uses it through `syscon-reboot` (see [reset contract](soc_top/README.md)). |
 | `0x4003_0000`–`0FFF` | NIC | 4 KiB window: control and status, station address, rings, link and PHY, 64-bit counters (`peripherals/nic/nic_pkg.sv`, `sw/lib/include/nic.h`) |
 
 The UART console runs at 115200 baud, 8N1. For Linux, the same UART also
@@ -341,9 +344,13 @@ The system reset (the board-level reset, which on X3 follows the clock lock
 and DDR readiness, and the image-load reset) also resets the debug module, so
 `dmactive`, a pending halt request, and the program buffer do not survive it.
 Debug Spec 0.13.2 (section 3.2) resets the module only at power-up and while
-`dmactive` is 0; FROST treats these resets as power-up. `ndmreset` resets only
+`dmactive` is 0; FROST treats these resets as power-up. `ndmreset` and SYSRESET reset only
 the core. A DMI access that arrives while the system reset is held waits, with
 the DTM reporting busy, and is handled when the reset ends, with `dmactive` 0.
+
+A debugger write of the SYSRESET key executes through the program buffer and
+can leave its abstract command busy across the reset; halt the hart so it
+parks again and completes the command.
 
 `debug_slice_writer` writes the module's words into the slice through the
 BRAM programming port. It also mirrors Debug-Mode stores to the low BRAM's
@@ -467,7 +474,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `80` | DDR model size and access latency in cycles (simulation) |
 | `frost.sv` | `DDR_MODEL_LATENCY_JITTER` / `DDR_MODEL_REORDER` | `0` / `0` | DDR model per-transaction latency jitter, and out-of-order completion across ids (simulation); `FROST_DDR_MODEL_SEED` draws these and the latency for a test run ([tests/README.md](../../tests/README.md#environment-and-output)) |
-| `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 clears coherent-array tags, states and replacement bits in one cycle and accelerates L1I maintenance; 0 keeps the per-set reset sweep |
+| `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 clears coherent-array tags, states and replacement bits in one cycle and bulk-clears the L1I tag and replacement RAMs on reset and every invalidate-all; 0 keeps the per-set reset sweep. L1I invalidate-all clears valid flip-flops in one cycle in either mode |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation only: 1 delays local instruction AXI responses to exercise variable fetch latency |
 | `frost.sv` | `L1D_NUM_MSHR` | `8` | L1D request endpoints, 1 to 8: one for stores, LR and atomics, the rest for load misses in flight |
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |

@@ -123,6 +123,25 @@ from what stage 2 holds, and `o_issue_staged` (`o_issue_2_staged` for port
 1) gives the stage-2 valid bit alone, for logic that applies `i_fu_ready`
 last.
 
+The stage-2 valid bits (`stage2_valid`, and `stage2b_valid` for port 1) set on
+an issue and clear on reset, on a flush that covers the packet, and when the
+functional unit accepts the packet without a refill. The payload registers
+behind them have no reset and load on every cycle with `i_fu_ready`
+(`i_fu_ready_2` for port 1), not only on an issue. While a packet is held
+(`i_fu_ready` low) they do not change, so a valid packet always carries the
+values captured when it issued. A few registers keep the issue-only load:
+`stage2_is_jalr` (`o_issue_is_jalr`), `stage2_op` on the station built with
+`DIVIDE_ISSUE_GATE` (see [Divide gate](#divide-gate-mul_rs)), `stage2_is_sc`,
+and the copies of the stage-2 ROB tag used by the branch side RAM and by
+`o_branch_predicate_tag`.
+
+The contract for readers: every stage-2 payload output other than
+`o_issue_is_jalr` (and `o_issue.op` on the station built with
+`DIVIDE_ISSUE_GATE`) may change in any cycle in which stage 2 holds no
+packet. A reader must qualify those outputs with the valid (`o_issue.valid`,
+`o_issue_staged`, or the port-1 equivalents) before using them, including
+for busy, stall or ready logic.
+
 For indexed operand repair, the Xilinx implementation prepares resident,
 CDB and pending-delivery priority before applying the two ROB repair-valid
 inputs in the final write-select LUTs. Deferred CDB delivery still takes
@@ -146,6 +165,13 @@ the divider leaves idle only by starting the divide that stage 2 presents. The
 stage-2 term covers the cycle a divide leaves stage 2, when the busy input is
 still low. The gate requires `DUAL_ISSUE=0`. Waiting divides still hold
 entries, so a station full of divides stops dispatch.
+
+`DIVIDE_ISSUE_GATE` also marks the station that feeds the multiply/divide shim
+(`int_muldiv_shim`), which decodes `o_issue.op` into its busy output without
+`o_issue.valid`. On that station `stage2_op` keeps the issue-only load, so
+`o_issue.op` stays at the last issued operation while stage 2 is empty and an
+unready entry cannot raise the shim's busy output. Any station that feeds that
+shim must set the parameter.
 
 ## Dual issue (INT_RS)
 
@@ -304,7 +330,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |
 | `LANE1_ISSUE_BYPASS` | 1 | Default everywhere | CDB lane 1 feeds the same-cycle issue bypass; off, a lane-1 result wakes consumers a cycle later |
 | `TAG_INDEXED_BRANCH_PAYLOAD` | 0 | 1 on INT | Branch side RAM; off, port 0 drives `pc`, `link_addr`, and `predicted_target` to zero |
-| `DIVIDE_ISSUE_GATE` | 0 | 1 on MUL | A divide entry is not ready while `i_divider_busy` is high or stage 2 holds a divide; requires `DUAL_ISSUE=0` |
+| `DIVIDE_ISSUE_GATE` | 0 | 1 on MUL | A divide entry is not ready while `i_divider_busy` is high or stage 2 holds a divide; `stage2_op` loads only on issue, for `int_muldiv_shim`; requires `DUAL_ISSUE=0` |
 | `TRACK_INT_WRITEBACK_HINT` | 0 | 1 on INT | Drives `o_issue_writes_cdb_hint`, set for every op except conditional branches; `int_alu_shim` raises a completion only when it is set |
 | `ALLOC_INDEXED_REPAIR` | 0 | 1 on INT, MUL, MEM | Done repair by allocation instead of tag match |
 | `DISPATCH_REPAIR_BYPASS` | 1 | 0 on INT, MUL, MEM | Tag-matched repair applies as the entry is written |
@@ -344,6 +370,11 @@ station does:
   station against the real allocator; `rs_divide_gate` checks MUL_RS's divide
   gate against a divider model. Smaller targets check the restructured
   select, repair, and look-ahead logic against plain references.
+- `rs_stage2_payload_equiv` proves, without a bound and for each station's
+  configuration, that a valid stage-2 or stage-2b packet's payload equals a
+  copy loaded only on issue. `rs_payload_twin` checks two wrappers whose idle
+  stage-2 payloads differ freely for a few cycles after reset; the formal
+  guide gives its scope.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

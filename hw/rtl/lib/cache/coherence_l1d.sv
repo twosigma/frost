@@ -588,27 +588,43 @@ module coherence_l1d #(
         atomic_q && atomic_sc_q && sc_home_q && !atomic_granted_q && !o_sc_result_valid);
   end
   // A merged load counts as its own access: a hit when the lookup's row
-  // answers it, a miss when it attaches. Its events wait in these counts for
-  // cycles without a lookup event, so each cycle carries at most one access.
-  logic [7:0] perf_merge_new;
+  // answers it, a miss when it attaches. Each event is captured with its
+  // slot's seen update. Allocation may then clear seen for another read;
+  // the captured event belongs to the earlier read and is never masked again.
+  // CPU recovery drains cache reads rather than cancelling their events.
+  // Reset clears the capture and the owed counts together.
+  logic [7:0] perf_merge_new, perf_merge_hit_new, perf_merge_miss_new;
+  logic [7:0] perf_merge_hit_q, perf_merge_miss_q;
   logic [3:0] perf_owed_hit_q, perf_owed_miss_q, perf_merge_hits, perf_merge_misses;
+  cache_perf_pkg::cache_instance_perf_events_t perf_raw, perf_sample_q;
   logic perf_emit_hit, perf_emit_miss;
+  assign perf_merge_new = (merge_hit_slots | merge_attach_slots) & ~perf_read_seen_q;
+  assign perf_merge_hit_new = merge_hit_slots & ~perf_read_seen_q;
+  assign perf_merge_miss_new = merge_attach_slots & ~perf_read_seen_q;
   always_comb begin
-    perf_merge_new = (merge_hit_slots | merge_attach_slots) & ~perf_read_seen_q;
     perf_merge_hits = '0;
     perf_merge_misses = '0;
     for (int slot = 0; slot < 8; slot++) begin
-      perf_merge_hits += 4'(merge_hit_slots[slot] && !perf_read_seen_q[slot]);
-      perf_merge_misses += 4'(merge_attach_slots[slot] && !perf_read_seen_q[slot]);
+      perf_merge_hits += 4'(perf_merge_hit_q[slot]);
+      perf_merge_misses += 4'(perf_merge_miss_q[slot]);
     end
   end
-  assign perf_emit_miss = !perf_access && perf_owed_miss_q != 0;
-  assign perf_emit_hit = !perf_access && perf_owed_miss_q == 0 && perf_owed_hit_q != 0;
+  // Arbitration and outstanding-miss context share the capture stage with
+  // merged events. The whole event stream is delayed by one cycle, including
+  // hit-under-miss classification. A lookup takes the single access output;
+  // otherwise an owed miss, then an owed hit, takes it.
+  assign perf_emit_miss = !perf_sample_q.access && perf_owed_miss_q != 0;
+  assign perf_emit_hit = !perf_sample_q.access && perf_owed_miss_q == 0 &&
+      perf_owed_hit_q != 0;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
+      perf_merge_hit_q <= '0;
+      perf_merge_miss_q <= '0;
       perf_owed_hit_q <= '0;
       perf_owed_miss_q <= '0;
     end else begin
+      perf_merge_hit_q <= perf_merge_hit_new;
+      perf_merge_miss_q <= perf_merge_miss_new;
       perf_owed_hit_q <= perf_owed_hit_q + perf_merge_hits - 4'(perf_emit_hit);
       perf_owed_miss_q <= perf_owed_miss_q + perf_merge_misses - 4'(perf_emit_miss);
     end
@@ -617,6 +633,10 @@ module coherence_l1d #(
 `ifndef FORMAL
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst) begin
+      // Owed and captured arrivals are the unstaged recurrence one cycle
+      // later: owed' = owed + captured - emitted. Its pre-debit bound remains
+      // 15 for each class; arrivals being captured at this edge belong to
+      // the next recurrence, not this sum.
       p_perf_owed_bound : assert (5'(perf_owed_hit_q) + 5'(perf_merge_hits) <= 5'd15 &&
           5'(perf_owed_miss_q) + 5'(perf_merge_misses) <= 5'd15);
     end
@@ -644,29 +664,20 @@ module coherence_l1d #(
       end
     end
   end
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      perf_store_seen_q <= '0;
-      o_perf_events <= '0;
-    end else begin
-      for (int slot = 0; slot < 4; slot++)
-        if (!store_valid[slot] || (store_pop && store_head_index == 2'(slot)))
-          perf_store_seen_q[slot] <= 1'b0;
-      if (perf_lookup && (operation_q == StoreOp || operation_q == LookaheadOp))
-        perf_store_seen_q[store_selected_q] <= 1'b1;
-      o_perf_events <= '0;
-      o_perf_events.store_combined <= store_combined;
-      o_perf_events.store_combined_under_miss <= store_combined && perf_outstanding != 0;
-      o_perf_events.access <= perf_access || perf_emit_hit || perf_emit_miss;
-      o_perf_events.hit <= perf_hit || perf_emit_hit;
-      o_perf_events.miss <= (perf_access && !perf_hit) || perf_emit_miss;
-      o_perf_events.miss_outstanding <= perf_outstanding;
-      o_perf_events.hit_under_miss <= (perf_hit || perf_emit_hit) && perf_outstanding != 0;
-      o_perf_events.path_hit <= s4_valid_q;
-      o_perf_events.path_hit_under_miss <= s4_valid_q && perf_outstanding != 0;
-      o_perf_events.writeback <= active && phase_q == Freeze &&
+  always_comb begin
+    perf_raw = '0;
+    perf_raw.store_combined = store_combined;
+    perf_raw.store_combined_under_miss = store_combined && perf_outstanding != 0;
+    perf_raw.access = perf_access;
+    perf_raw.hit = perf_hit;
+    perf_raw.miss = perf_access && !perf_hit;
+    perf_raw.miss_outstanding = perf_outstanding;
+    perf_raw.hit_under_miss = perf_hit && perf_outstanding != 0;
+    perf_raw.path_hit = s4_valid_q;
+    perf_raw.path_hit_under_miss = s4_valid_q && perf_outstanding != 0;
+    perf_raw.writeback = active && phase_q == Freeze &&
           wb_freeze_ready[freeze_slot_q] && !freeze_maintenance_q;
-      o_perf_events.slot_full_stall <= active && phase_q == LookupWait && array_valid &&
+    perf_raw.slot_full_stall = active && phase_q == LookupWait && array_valid &&
           (operation_q == StoreOp || operation_q == ReadOp) && !array_hit &&
           !(shadow_q && path_hit_q) &&
           (!Multi ? (request_live || !wb_free) : operation_q == StoreOp ?
@@ -675,11 +686,87 @@ module coherence_l1d #(
            (same_line || request_live || !ep0_wb_ok || load_block) :
            selected_kind_q == ReadAMO ? (any_live || !wb_free) :
            (same_line || !load_ep_free || load_block));
-      o_perf_events.conflict_stall <= active && phase_q == Idle &&
+    perf_raw.conflict_stall = active && phase_q == Idle &&
           !probe_valid_q && !probe_priority && !grant_valid && !atomic_write_q &&
           pending_q && pending_blocked;
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      perf_store_seen_q <= '0;
+      perf_sample_q <= '0;
+    end else begin
+      for (int slot = 0; slot < 4; slot++)
+        if (!store_valid[slot] || (store_pop && store_head_index == 2'(slot)))
+          perf_store_seen_q[slot] <= 1'b0;
+      if (perf_lookup && (operation_q == StoreOp || operation_q == LookaheadOp))
+        perf_store_seen_q[store_selected_q] <= 1'b1;
+      perf_sample_q <= perf_raw;
     end
   end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) o_perf_events <= '0;
+    else begin
+      o_perf_events <= perf_sample_q;
+      o_perf_events.access <= perf_sample_q.access || perf_emit_hit || perf_emit_miss;
+      o_perf_events.hit <= perf_sample_q.hit || perf_emit_hit;
+      o_perf_events.miss <= perf_sample_q.miss || perf_emit_miss;
+      o_perf_events.hit_under_miss <= (perf_sample_q.hit || perf_emit_hit) &&
+          perf_sample_q.miss_outstanding != 0;
+    end
+  end
+`ifdef FORMAL
+`ifdef PERF_EVENT_PROOF
+  // Compare the event stream and each pre-debit sum with the direct
+  // serializer followed by one register. Inputs may be arbitrary events.
+  cache_perf_pkg::cache_instance_perf_events_t perf_ref_q, perf_ref_delay_q;
+  logic [3:0] perf_ref_hit_q, perf_ref_miss_q, perf_ref_add_hit, perf_ref_add_miss;
+  logic [4:0] perf_ref_hit_sum_q, perf_ref_miss_sum_q;
+  logic perf_ref_emit_hit, perf_ref_emit_miss;
+  always_comb begin
+    perf_ref_add_hit = '0;
+    perf_ref_add_miss = '0;
+    for (int slot = 0; slot < 8; slot++) begin
+      perf_ref_add_hit += 4'(perf_merge_hit_new[slot]);
+      perf_ref_add_miss += 4'(perf_merge_miss_new[slot]);
+    end
+  end
+  assign perf_ref_emit_miss = !perf_raw.access && perf_ref_miss_q != 0;
+  assign perf_ref_emit_hit = !perf_raw.access && perf_ref_miss_q == 0 &&
+      perf_ref_hit_q != 0;
+  always_ff @(posedge i_clk) begin
+    p_perf_retime_reset : assume (f_past_valid || i_rst);
+    if (i_rst) begin
+      perf_ref_q <= '0;
+      perf_ref_delay_q <= '0;
+      perf_ref_hit_q <= '0;
+      perf_ref_miss_q <= '0;
+      perf_ref_hit_sum_q <= '0;
+      perf_ref_miss_sum_q <= '0;
+    end else begin
+      perf_ref_q <= perf_raw;
+      perf_ref_q.access <= perf_raw.access || perf_ref_emit_hit || perf_ref_emit_miss;
+      perf_ref_q.hit <= perf_raw.hit || perf_ref_emit_hit;
+      perf_ref_q.miss <= perf_raw.miss || perf_ref_emit_miss;
+      perf_ref_q.hit_under_miss <= (perf_raw.hit || perf_ref_emit_hit) &&
+          perf_raw.miss_outstanding != 0;
+      perf_ref_delay_q <= perf_ref_q;
+      perf_ref_hit_q <= perf_ref_hit_q + perf_ref_add_hit - 4'(perf_ref_emit_hit);
+      perf_ref_miss_q <= perf_ref_miss_q + perf_ref_add_miss - 4'(perf_ref_emit_miss);
+      perf_ref_hit_sum_q <= 5'(perf_ref_hit_q) + 5'(perf_ref_add_hit);
+      perf_ref_miss_sum_q <= 5'(perf_ref_miss_q) + 5'(perf_ref_add_miss);
+    end
+    if (f_past_valid) begin
+      p_perf_retime_events : assert (o_perf_events == perf_ref_delay_q);
+      p_perf_retime_hit_bound : assert (5'(perf_owed_hit_q) + 5'(perf_merge_hits) ==
+          perf_ref_hit_sum_q);
+      p_perf_retime_miss_bound : assert (5'(perf_owed_miss_q) + 5'(perf_merge_misses) ==
+          perf_ref_miss_sum_q);
+      p_perf_retime_masks : assert ({perf_merge_hit_q, perf_merge_miss_q} ==
+          $past(i_rst ? 16'd0 : {perf_merge_hit_new, perf_merge_miss_new}));
+    end
+  end
+`endif
+`endif
 `ifdef FORMAL
   always @(posedge i_clk) begin
     if (f_past_valid) begin
@@ -971,7 +1058,7 @@ module coherence_l1d #(
       // A prefetch never acquires a sector that a twin or an acquired record
       // holds (a record that arrives after the lookup orders after the
       // prefetch, which its own acquisition then waits for).
-      if (phase_q == Acquire && operation_q == PrefetchOp && acquire_ready)
+      if (phase_q == Acquire && operation_q == PrefetchOp && prefetch_acquire_ok && acquire_ready)
         p_prefetch_not_record : assert (f_prefetch_record == '0);
     end
 `endif
@@ -1855,6 +1942,20 @@ module coherence_l1d #(
         if (grant_answer_slots[slot])
           p_grant_answer_slot : assert (!(ld_prefetch_q[grant_ep_q] && !grant_attached[slot]) &&
               grant_q.addr[ADDR_WIDTH-1:5] == ld_line_q[grant_ep_q]);
+    end
+    // The hit path's block check sees only the four valid store records, not
+    // a cbo.zero twin still waiting for a record. While a twin waits, the hit
+    // path takes no load of either sector of its 64-byte block: the store
+    // queue holds younger loads of the block until o_write_done at twin
+    // allocation, and the hit path takes only loads arriving on the request
+    // port. Read selection is not checked: the L1D has no read cancel, so a
+    // load flushed from the load queue stays live here until answered and can
+    // be re-selected as a lookup of the block while a younger cbo.zero's twin
+    // waits.
+    if (sim_reset_seen_q && !i_rst && active && store_twin_pending) begin
+      if (path_take)
+        p_zero_pending_twin_no_path :
+        assert (path_addr_q[ADDR_WIDTH-1:6] != store_twin_addr[ADDR_WIDTH-1:6]);
     end
   end
 `endif
