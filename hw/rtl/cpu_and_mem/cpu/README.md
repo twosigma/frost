@@ -192,8 +192,8 @@ a cost of two bubbles, and ID gives the branch the new prediction so the
 branch unit checks the path fetch follows. Commit trains the bimodal entry
 at the carried index, not at the branch's own PC, because the fetch PC that
 read the predictor can differ from the branch PC after a stall replay or at
-a halfword boundary. A slot-2 branch's training waits, one deep, for a cycle in which
-slot 1 does not train; a newer one replaces it.
+a halfword boundary. A slot-2 branch's training waits, one deep, for a cycle
+in which slot 1 does not train; a newer one replaces it.
 
 The tagged predictor (`tage_predictor`) follows TAGE. T1 hashes the branch's
 word address with the newest 16 bits of the global path history, T2 with all

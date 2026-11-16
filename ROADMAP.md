@@ -498,10 +498,9 @@ and targeted microbenchmarks give these items:
    tagged-history tables remain possible later work. A backing hit served
    from IF would save a bubble, but its correction would sit on the fetch
    loop, one of the hardest paths at the target clock. In bare-metal
-   microbenchmarks a taken branch
-   costs about 5 cycles, and a loop of four additions runs at 0.6 IPC with
-   translation off; those small-loop costs come from fetch coverage and
-   packet formation, not BTB capacity.
+   microbenchmarks a taken branch costs about 5 cycles, and a loop of four
+   additions runs at 0.6 IPC with translation off; those small-loop costs
+   come from fetch coverage and packet formation, not BTB capacity.
 5. Floating point. One engine executes F and D instructions one at a time.
    Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
    and sign injection use two-cycle paths. Integer-to-FP conversion takes
