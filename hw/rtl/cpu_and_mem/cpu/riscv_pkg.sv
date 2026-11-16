@@ -1118,8 +1118,8 @@ package riscv_pkg;
     FCVT_D_LU,                  // Unsigned 64-bit int to FP (double)
     FMV_X_D,                    // Move double bits to int reg
     FMV_D_X,                    // Move int bits to double reg
-    VLOAD,                      // V: unit-stride, whole-register and mask loads; INT_RS
-                                // passes the rs1 base to the ROB
+    VLOAD,                      // V: unit-stride, whole-register and mask loads: translated
+                                // at the ROB head once older vector work drains; no RS
     VSTORE,                     // V: unit-stride, whole-register and mask stores; as VLOAD
     // Zfhmin: half-precision moves and conversions (loads/stores use LOAD_FP/STORE_FP).
     FMV_X_H,                    // Move half bits to int reg (sign-extended)
@@ -3313,8 +3313,8 @@ package riscv_pkg;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET and DRET ride the MRET machinery.
-      // VTOX completes from the vector unit at the ROB head.
-      JAL, WFI, MRET, SRET, DRET, VTOX: get_rs_type = RS_NONE;
+      // VTOX, VLOAD and VSTORE complete from the vector unit at the ROB head.
+      JAL, WFI, MRET, SRET, DRET, VTOX, VLOAD, VSTORE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -3467,7 +3467,7 @@ package riscv_pkg;
       case (op)
         LUI, AUIPC, JAL, ECALL, EBREAK, FENCE, FENCE_I, WFI, MRET, SRET, DRET, PAUSE, CSR_IMM, MOP,
         // Zfa FLI: rs1 is the constant index, not a register
-        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX:
+        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX, VLOAD, VSTORE:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase

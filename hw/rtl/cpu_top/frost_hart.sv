@@ -51,8 +51,8 @@ module frost_hart #(
     parameter int unsigned DATA_BYTES = 64,
     parameter logic [2:0] DATA_PROT = 3'b011,
     // Request identities of the hart's line client: a power of two from 2 to
-    // coherence_pkg::HartLineIds.
-    parameter int unsigned LINE_CLIENT_IDS = 2,
+    // coherence_pkg::HartLineIds (8 with the vector unit: 2 misaligned + 6 VMU).
+    parameter int unsigned LINE_CLIENT_IDS = VECTOR ? coherence_pkg::HartLineIds : 2,
     // Instruction, walker and line-client requests use 32-byte lines.
     localparam int unsigned L1LineBytes = 32,
     localparam int unsigned LineIdBits = 4,
@@ -318,6 +318,7 @@ module frost_hart #(
       .MMIO_ADDR(riscv_pkg::MmioWindowAddr),
       .CACHED_BASE(CachedBase),
       .CACHED_SIZE_BYTES(CachedSizeBytes),
+      .CACHED_TIER_EN((ENABLE_CACHED_TIER != 0) && (CachedSizeBytes != 64'd0)),
       .PERF_COUNTERS(PERF_COUNTERS),
       .VECTOR(VECTOR),
       .VLEN(VLEN),
@@ -835,10 +836,11 @@ module frost_hart #(
 
   // The hart's line client: sector reads and masked sector writes with the
   // home's DMA-style service (probe, dirty merge, masked update), under the
-  // hart's own source and port class 3. The misaligned-access engine in
-  // cpu_ooo issues its requests (MISALIGNED_HW); otherwise it stays idle.
+  // hart's own source and port class 3. The misaligned-access engine
+  // (MISALIGNED_HW, IDs 0..1) and vector memory unit (VECTOR, IDs 2..7) in
+  // cpu_ooo issue its requests; otherwise it stays idle.
   // Its request signals are declared with the cpu_ooo port map above.
-  // A failed engine write joins the cache's fatal report.
+  // A failed engine or vector memory sector response joins the cache's fatal report.
   assign o_cache_fatal = hart_cache_fatal || ma_fatal;
   assign o_cache_fatal_addr = hart_cache_fatal ? hart_cache_fatal_addr : ma_fatal_addr;
   // The engine's sector requests need the cached tier's line client.
@@ -894,8 +896,13 @@ module frost_hart #(
     assign o_line_c = '0;
   end
   if (LINE_CLIENT_IDS < 2 || LINE_CLIENT_IDS > coherence_pkg::HartLineIds ||
-      (LINE_CLIENT_IDS & (LINE_CLIENT_IDS - 1)) != 0) begin : gen_invalid_line_client
-    initial $fatal(1, "frost_hart: LINE_CLIENT_IDS must be a power of two, 2 to HartLineIds");
+      coherence_pkg::HartLineIds > 16 ||
+      (LINE_CLIENT_IDS & (LINE_CLIENT_IDS - 1)) != 0 ||
+      coherence_pkg::home_count(
+          2, 8
+      ) > (1 << coherence_pkg::TidBits)) begin : gen_invalid_line_client
+    initial
+      $fatal(1, "frost_hart: LINE_CLIENT_IDS must be a power of two, 2 to HartLineIds (<= 16)");
   end
 `ifndef SYNTHESIS
   // G and U cross on always-taken links: the client must match every one.

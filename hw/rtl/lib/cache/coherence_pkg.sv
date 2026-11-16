@@ -22,9 +22,10 @@ package coherence_pkg;
   // Prefetch identities: source 3, class 3, IDs 0 to PrefetchIds - 1.
   localparam int unsigned PrefetchIds = 4;
   // Hart line-client identities: a hart's source, class 3, IDs 0 to
-  // HartLineIds - 1. They make DMARead and DMAWrite requests and share the
-  // home's main completion partition with the hart and DMA identities.
-  localparam int unsigned HartLineIds = 2;
+  // HartLineIds - 1 (two for the misaligned-access engine and six for the
+  // vector memory unit). They make DMARead and DMAWrite requests and share
+  // the home's main completion partition with the hart and DMA identities.
+  localparam int unsigned HartLineIds = 8;
 
   typedef struct packed {
     logic [1:0] src;
