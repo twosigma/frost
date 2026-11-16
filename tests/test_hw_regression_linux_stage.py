@@ -2097,6 +2097,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "sscofpmf_test",
         "strings_test",
         "sum_toggle_test",
+        "sysreset_test",
         "tick_torture",
         "tomasulo_perf",
         "tomasulo_test",
