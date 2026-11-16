@@ -9,14 +9,18 @@ cover: mode cover
 cover: depth 10
 
 [engines]
-smtbmc boolector
+bmc: abc bmc3
+cover: smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv rvc_decompressor.sv
 read -formal -sv pd_target_high_precompute.sv
 read -formal -sv pd_stage.sv
-prep -top pd_stage
+hierarchy -check -top pd_stage
+setattr -unset dont_touch *
+setattr -mod -unset keep_hierarchy *
+prep -flatten -top pd_stage
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

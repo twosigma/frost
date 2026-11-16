@@ -967,6 +967,26 @@ seed the runner prints. A mismatch is shrunk to a short counterexample
 in `tests/testrig_failures/`, which `--trace` replays; the logs and the
 engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
 replays the saved counterexamples in `verif/testrig/traces/`.
+Each successful session ends with `TestRIG PASS: compared <traces> traces
+and <instructions> instructions`, followed by the required minimum counts
+and log directory. The runner counts instruction requests and both peers'
+RVFI replies, excluding version negotiation, halt tokens, and the reset
+preamble. Completed QuickCheck size-zero cases count as traces; the session
+must compare at least one instruction. The engine's output is saved in
+`tests/testrig_logs/engine.log`.
+Non-halt execution packets count with either value of the RVFI `valid` byte,
+matching the engine's use of the received records.
+
+An empty run fails with a nonzero exit status and a `TestRIG FAIL` line
+stating the expected and actual work. Missing directories, directories
+without `.S` files, instruction-free replay files, empty template selections,
+short generator output, and missing instruction replies fail. All explicit
+counts and instruction limits must be positive. Replay requires every input
+instruction and every requested trace; generated runs require the requested
+tests per selected template. Paths in the examples above resolve from the
+repository root. A direct invocation from `tests/` uses
+`python3 test_testrig.py --trace-dir ../verif/testrig/traces`.
+
 The reference memory map includes the MMIO, APLIC and full 2 MiB IMSIC
 windows, backed by the injection harness's device RAM. Their aligned loads
 and stores succeed; AMOs, LR and SC fault. The saved IMSIC trace checks an
@@ -1256,6 +1276,10 @@ all of them.
 | `trap_unit` | `cover_wfi_wakes_without_enabled_interrupt` | A raw pending source wakes WFI while neither interrupt class is latched |
 | `imsic_file` | `cover_msi_reasserts_claimed_identity` | An MSI sets the identity that a same-cycle claim clears |
 | `imsic_file` | `cover_msi_over_eip_clear` | An MSI sets a pending bit that a same-cycle CSR write clears |
+| `pd_stage` | `cover_pd_slot2_taken_redirect` | A slot-2 tagged conditional-branch match overrides a not-taken BTB prediction to taken |
+| `pd_stage` | `cover_pd_slot2_not_taken_veto` | A slot-2 tagged conditional-branch match vetoes a taken BTB prediction to the fall-through |
+| `pd_stage` | `cover_pd_slot2_redirect_held_through_stall` | A slot-2 tagged conditional-branch redirect is asserted during a front-end stall |
+| `pd_stage` | `cover_pd_slot2_candidate_lost_to_flush` | A registered slot-2 tagged conditional-branch candidate is cleared by a pipeline flush |
 
 Only the load queue's unit bench reaches two of them, because the whole SoC
 never builds the state they check. For `cover_dma_write_hits_lr_in_flight`,

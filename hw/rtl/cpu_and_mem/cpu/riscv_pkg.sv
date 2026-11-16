@@ -2215,9 +2215,10 @@ package riscv_pkg;
     // Prediction-time index carried to commit to train the same entry.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
     // Tagged-predictor direction for this instruction, valid only when a
-    // tagged entry matched. For a slot-1 conditional branch it replaces the
-    // BTB and bimodal directions in PD, which then redirects IF to the
-    // branch target or the fall-through as needed. Consumed in PD.
+    // tagged entry matched. For a conditional branch in either slot it
+    // replaces the BTB direction (and, for slot 1, the bimodal direction) in
+    // PD, which then redirects IF to the branch target or the fall-through as
+    // needed. Consumed in PD.
     logic tage_valid;
     logic tage_taken;
     // The instruction bytes could not be fetched; the payload is invalid.
@@ -2233,10 +2234,14 @@ package riscv_pkg;
     // instruction_aligner). 0 for slot 1, whose illegal flag PD takes from
     // rvc_extra_predecoded.
     logic decomp_illegal;
-    // Slot 1 redirect candidates from pd_target_candidate: low PC+offset
-    // bits for native and compressed branches, with {offset sign, carry}
+    // Slot-2 only: conditional-branch opcode flag (effective_instr[6:0] ==
+    // OPC_BRANCH), predecoded per slot-2 start position in instruction_aligner
+    // before the position select. Zero for slot 1.
+    logic is_cond_branch;
+    // Redirect candidates from pd_target_candidate: low PC+offset bits for
+    // native and compressed branches in this slot, with {offset sign, carry}
     // selecting PC-high. PD registers these and decodes the high select
-    // afterward. Zero for slot 2.
+    // afterward.
     logic [PdTargetSplit-1:0] pd_target_native_low;
     logic [1:0] pd_target_native_high_select;
     logic [PdTargetSplit-1:0] pd_target_compressed_low;

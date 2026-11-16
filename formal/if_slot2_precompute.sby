@@ -1,0 +1,55 @@
+[tasks]
+if_slot2_precompute_bmc
+if_slot2_precompute_cover
+
+[options]
+if_slot2_precompute_bmc: mode bmc
+if_slot2_precompute_bmc: depth 8
+if_slot2_precompute_cover: mode cover
+if_slot2_precompute_cover: depth 8
+
+[engines]
+if_slot2_precompute_bmc: abc bmc3
+if_slot2_precompute_cover: smtbmc boolector
+
+[script]
+read_verilog -D SYNTHESIS -sv riscv_pkg.sv
+read_verilog -D SYNTHESIS -sv stall_capture_reg.sv
+read_verilog -D SYNTHESIS -sv c_ext_state.sv
+read_verilog -D SYNTHESIS -sv instruction_aligner.sv
+read_verilog -D SYNTHESIS -sv control_flow_tracker.sv
+read_verilog -D SYNTHESIS -sv pc_reg_precompute.sv
+read_verilog -D SYNTHESIS -sv pc_increment_calculator.sv
+read_verilog -D SYNTHESIS -sv pc_controller.sv
+read_verilog -D SYNTHESIS -sv served_window_coverage.sv
+read_verilog -D SYNTHESIS -sv fetch_redirect.sv
+read_verilog -D SYNTHESIS -sv pd_target_candidate.sv
+read_verilog -D SYNTHESIS -sv slot2_prediction_capture.sv
+read_verilog -D SYNTHESIS -sv prediction_metadata_tracker.sv
+read_verilog -formal -D SYNTHESIS -D IF_SLOT2_PRECOMPUTE_FORMAL -sv if_stage.sv
+hierarchy -top if_stage
+delete t:branch_prediction_controller t:immu t:backing_btb t:tage_predictor
+proc
+setattr -unset dont_touch *
+setattr -mod -unset keep_hierarchy *
+setundef -undriven -anyseq
+opt
+prep -flatten -top if_stage
+if_slot2_precompute_bmc: select -assert-count 10 t:$check r:FLAVOR=assert %i
+if_slot2_precompute_cover: select -assert-count 6 t:$check r:FLAVOR=cover %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/stall_capture_reg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_ext_state.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/instruction_aligner.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/served_window_coverage.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_redirect.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pd_target_candidate.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/slot2_prediction_capture.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv
