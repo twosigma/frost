@@ -1075,6 +1075,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ),
         ),
     ),
+    "sysreset_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sysreset",
+        hdl_toplevel_module="frost",
+        app_name="sysreset_test",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description=(
+            "SYSRESET word and halfword requests restart the program and reset "
+            "hart/timer state after reloads over stale markers; invalid writes do nothing"
+        ),
+    ),
     "vec_state_test_v512": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3412,7 +3423,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_coherence_stale_line",
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="cbo.zero twin beside an L1D stream, with a 64 KiB home",
-        include_in_pytest=False,
     ),
     "coherence_cbo_zero": CocotbRunConfig(
         verilator_extra_args=("--assert",),
@@ -3597,7 +3607,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_home_array": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home_array",
         hdl_toplevel_module="coherence_home_array",
-        description="Independent tag and data ports with physical-row hazards",
+        description=(
+            "Independent tag and data ports, explicit row reads, per-way banks "
+            "and physical-row hazards"
+        ),
         verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
     ),
     "coherence_home_array_bram": CocotbRunConfig(
@@ -3653,13 +3666,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_coherence_home",
         hdl_toplevel_module="coherence_home",
         description=(
-            "Independent completions, dirty recalls, way pins, victim locks, "
-            "prefetches, grants forwarded from fills, and streaming placement"
+            "Independent completions, parallel way reads, dispatch-cycle lookup "
+            "offers, dirty recalls, way pins, victim locks, prefetches, grants "
+            "forwarded from fills, and streaming placement"
         ),
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=1024",
         ),
+    ),
+    "coherence_home_rowread": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home",
+        hdl_toplevel_module="coherence_home",
+        description="The home with UltraRAM and the hit row read after the decision",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=1024",
+            "-GPARALLEL_READ=0",
+        ),
+        extra_env=(("FROST_TEST_HOME_PARALLEL", "0"),),
     ),
     "coherence_home_equal": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",
@@ -4147,11 +4172,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "the GMII preamble-discard and rx_er counters"
         ),
     ),
+    "nic_rx_preamble_er": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_rx_preamble_er",
+        hdl_toplevel_module="nic_mac_wrap",
+        verilator_extra_args=(
+            "-GGMII_MODE=1",
+            "-GRX_FIFO_DEPTH=8192",
+            "-GRX_PREAMBLE_ER_TOLERANT=1",
+        ),
+        description="GMII receive tolerates one errored 0x55 preamble byte and rejects errored SFDs",
+    ),
+    "vcu118_phy_mdio": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_vcu118_phy_mdio",
+        hdl_toplevel_module="vcu118_phy_mdio",
+        verilator_extra_args=("-GRST_BIT=6", "-GSETTLE_BIT=5", "-GPOLL_BIT=9"),
+        description="DP83867 bootstrap, acknowledged RECR read/clear and held diagnostic samples",
+    ),
     "nic_top_rx_fifo": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
         verilator_extra_args=("-GRX_FIFO_DEPTH=8192",),
         description="NIC registers and traffic with the 8192-word RX FIFO and its limit register",
+    ),
+    "nic_top_gmii_diag": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_top_gmii_diag",
+        hdl_toplevel_module="nic_top",
+        verilator_extra_args=("-GGMII_MODE=1", "-GRX_PREAMBLE_ER_TOLERANT=1"),
+        description="NIC GMII diagnostic counters 21-35 read back, PHY poll bus and RESET",
     ),
     "nic_pause_rx_wire": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_pause_rx_wire",

@@ -37,6 +37,17 @@ READY_MARGIN = 2
 MAC_BUFFER_WORDS = 4096
 OVERFLOW, BAD_FRAME, BAD_FCS = 0, 1, 2
 PREAMBLE_DROP, RX_ER = 6, 7
+# o_totals index = nic_pkg counter index - 10
+# A stalled reader stores (512 + 4096) / 8 = 576 frames before the MAC overflows
+FRAMES_PAST_STORAGE = 700
+(ER_PREAMBLE, ER_EXT, SHORT_IFG, PRE_ACCEPT, NO_DESC) = (11, 12, 13, 14, 15)
+(PCS_SYNC_LOSS, PCS_RUDI_C, PCS_RUDI_INVALID, PCS_RXDISPERR, PCS_RXNOTINTABLE) = (
+    16,
+    17,
+    18,
+    19,
+    20,
+)
 
 
 class StalledPeer(GmiiPeer):
@@ -106,6 +117,7 @@ async def _start(dut: Any) -> StalledPeer:
         "i_rx_signal_ok": 1,
         "i_rx_fifo_limit": 0,
         "i_rx_fifo_limit_wr": 0,
+        "i_rx_desc_starved": 0,
     }.items():
         getattr(dut, name).value = value
     for name, period in (("i_clk", 6), ("i_tx_clk", 8), ("i_rx_clk", 8)):
@@ -210,7 +222,91 @@ async def gmii_preamble_and_error_counters(dut: Any) -> None:
     await ClockCycles(dut.i_clk, 3000)
     assert [bytes(frame) for frame in peer.received] == [payload]
     assert _total(dut, PREAMBLE_DROP) == 3
-    # The preamble frame's rx_er, the two-symbol burst, and the two separate errors.
-    assert _total(dut, RX_ER) == 4
+    # The two-symbol burst and the two separate errors inside frames; the preamble's rx_er has its own
+    # counter.
+    assert _total(dut, RX_ER) == 3
+    assert _total(dut, ER_PREAMBLE) == 1
+    assert _total(dut, ER_EXT) == 0
+    assert _total(dut, PRE_ACCEPT) == 0
     assert _total(dut, BAD_FRAME) >= 2
     assert _total(dut, BAD_FCS) == 0
+
+
+@cocotb.test()
+async def gmii_error_position_and_gap_counters(dut: Any) -> None:
+    """rx_er outside a frame and a short inter-frame gap each have a counter."""
+    peer = await _start(dut)
+    peer.ready = True
+    payload = bytes(range(80))
+    wire = _wire_frame(payload)
+    # Carrier extend: rx_er with the data enable low, one burst of three symbols, then a second burst.
+    peer.symbols.extend([0x20F] * 3 + [0] * 12 + [0x21F] + [0] * 12)
+    peer.inject(wire)
+    # A gap of eight byte times, shorter than the 12 of a conforming sender.
+    peer.symbols.extend(byte | 0x100 for byte in wire)
+    peer.symbols.extend([0] * 8)
+    peer.symbols.extend(byte | 0x100 for byte in wire)
+    peer.symbols.extend([0] * 12)
+    # And one of exactly twelve, which is conforming.
+    peer.inject(wire)
+    await ClockCycles(dut.i_clk, 4000)
+    assert [bytes(frame) for frame in peer.received] == [payload] * 4
+    assert _total(dut, ER_EXT) == 2
+    assert _total(dut, ER_PREAMBLE) == 0
+    assert _total(dut, RX_ER) == 0
+    assert _total(dut, SHORT_IFG) == 1
+    assert _total(dut, PREAMBLE_DROP) == 0
+
+
+@cocotb.test()
+async def pcs_status_vector_events(dut: Any) -> None:
+    """Each status_vector event bit reaches its own total."""
+    peer = await _start(dut)
+    peer.ready = True
+    await ClockCycles(dut.i_rx_clk, 10)
+    # Link synchronised (bit 1), then lost, then regained: one loss.
+    peer.status = 0x0002
+    await ClockCycles(dut.i_rx_clk, 10)
+    peer.status = 0x0000
+    await ClockCycles(dut.i_rx_clk, 10)
+    peer.status = 0x0002
+    await ClockCycles(dut.i_rx_clk, 10)
+    # RUDI(/C/) held for many clocks counts once; RUDI(INVALID) twice; RXDISPERR for three clocks;
+    # RXNOTINTABLE for two.
+    peer.status = 0x0006
+    await ClockCycles(dut.i_rx_clk, 20)
+    peer.status = 0x0002
+    await ClockCycles(dut.i_rx_clk, 4)
+    for _ in range(2):
+        peer.status = 0x0012
+        await ClockCycles(dut.i_rx_clk, 3)
+        peer.status = 0x0002
+        await ClockCycles(dut.i_rx_clk, 3)
+    peer.status = 0x0022
+    await ClockCycles(dut.i_rx_clk, 3)
+    peer.status = 0x0042
+    await ClockCycles(dut.i_rx_clk, 2)
+    peer.status = 0x0002
+    await ClockCycles(dut.i_clk, 200)
+    assert _total(dut, PCS_SYNC_LOSS) == 1
+    assert _total(dut, PCS_RUDI_C) == 1
+    assert _total(dut, PCS_RUDI_INVALID) == 2
+    assert _total(dut, PCS_RXDISPERR) == 3
+    assert _total(dut, PCS_RXNOTINTABLE) == 2
+
+
+@cocotb.test()
+async def overflow_with_no_descriptor_is_counted_apart(dut: Any) -> None:
+    """Count a MAC overflow while the RX engine has no descriptor as dropped for that reason."""
+    peer = await _start(dut)
+    await _set_limit(dut, 512)
+    delivered, overflowed = await _fill(dut, peer, FRAMES_PAST_STORAGE)
+    assert overflowed > 0
+    assert _total(dut, NO_DESC) == 0
+    dut.i_rx_desc_starved.value = 1
+    await ClockCycles(dut.i_rx_clk, 8)
+    before = _total(dut, OVERFLOW)
+    delivered, overflowed = await _fill(dut, peer, FRAMES_PAST_STORAGE)
+    assert overflowed > 0
+    assert _total(dut, OVERFLOW) - before == overflowed
+    assert _total(dut, NO_DESC) == overflowed

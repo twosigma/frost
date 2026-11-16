@@ -144,6 +144,7 @@ these instruction-copy writes before completing.
 | CLINT | `0x40010000` | SiFive CLINT-compatible alias of MSIP, `mtimecmp`, and `mtime`, for Linux |
 | DMA test engine | `0x40020000` | Coherent DMA copy and fill engine |
 | Memory error unit | `0x40021000` | Counts and addresses of DDR ECC errors and DDR error responses |
+| SYSRESET | `0x4002F000` | Stores at this address with both low byte strobes set and low 16 bits `0x7777` request CPU reset, including doubleword stores; upper data bits are ignored and reads return zero |
 | NIC | `0x40030000` | 10G Ethernet control, descriptor rings, and counters |
 | IMSIC | `0x48000000` | 2 MiB device window; M/S pages at +0/+0x100000 with 4 KiB hart stride and 63 identities |
 | APLIC | `0x44000000` | AIA direct and MSI delivery: 4 MiB window, M domain at +0 and S domain at +0x8000, one IDC each for hart 0 |
@@ -373,6 +374,7 @@ can be debugged and where each one first stops.
 | `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions |
 | `pm_test/` | Ssnpm pointer masking for U-mode: `senvcfg.PMM` reads back 00, 10 and 11 and keeps its value on the reserved 01; loads, stores, AMOs, LR/SC and `cbo.zero` through tagged pointers in U and through MPRV for PMLEN 7 and 16, under Sv39 (low and upper-half pages) and Bare, over DDR and BRAM; a store and a load through different tags forward and order; masked faults report the transformed address; signed instruction offsets cross the retained-field boundaries, split accesses check upper-page faults, timer interrupts surround mode changes, and tagged NC/IO mappings preserve data and report transformed atomic-fault addresses; S, M, MXR and fetch stay unmasked |
 | `svpbmt_test/` | Svpbmt: PBMTE and reserved PTE faults, NC and IO coherence and mixed-view ordering, U-mode data access, 4 KiB/2 MiB/1 GiB leaves, atomic/zero/fetch access faults, TLB attribute retention, alias PMA protection, and `sfence.vma` after clearing PBMTE. The `svpbmt_test_2g` variant checks DDR access faults, page-permission precedence and device PBMT on a map without an alias; `svpbmt_bus_error` injects alias read and write errors and checks the original virtual address in the trap value. |
+| `sysreset_test/` | Invalid keys, byte writes and neighbouring writes leave the core running; word and halfword reset requests each restart the program, reset `mscratch` and both halves of `mtimecmp`, and preserve its BRAM marker across reset; every image load clears the marker |
 | `tick_torture/` | CLINT timer re-arming, lost-tick detection, and `wfi` wakeup under DDR traffic |
 | `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run unless the head-load counter split adds up and the reserved counters read 0. Simulation allows 750,000 cycles for all 14 benchmarks and reports |
 | `tomasulo_test/` | RAW/WAR/WAW hazards, register renaming, and out-of-order execution, with order-independent results |

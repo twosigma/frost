@@ -33,6 +33,13 @@
  *      - BMCR (0x0000) <= 0x1340 (1000M full-duplex, enable & restart AN)
  *   4. Clock stabilization wait (~2.6 ms) before releasing vcu118_pcs_pma_1g
  *      out of reset.
+ *   5. Poll the PHY receive-error counter (RECR, 0x0015), then dummy-write it to clear it.
+ *      Publish the sample with an acknowledged toggle through o_phy_diag. The unused FCS
+ *      field is reserved and zero: DP83867 exposes no FCS error count. Use rx_mac_bad_fcs for
+ *      MAC-detected FCS errors. The status_vector rides in o_rx_raw_data[25:10] for the
+ *      NIC's PCS event counters (its bits: 0 link, 1 sync, 2 RUDI /C/, 3 RUDI /I/, 4 RUDI INVALID,
+ *      5 RXDISPERR, 6 RXNOTINTABLE, 7 PHY link, 9:8 remote fault code, 11:10 speed, 12 duplex,
+ *      13 remote fault, 15:14 pause).
  */
 module vcu118_eth1g (
     input logic i_clk_div4,  // Free-running CPU/4 clock
@@ -63,6 +70,10 @@ module vcu118_eth1g (
     output logic        o_rx_signal_ok,
     input  logic [ 3:1] i_phy_ctrl,
     output logic [ 4:0] o_phy_status,
+    // Hold {toggle, 16'b0, RECR[15:0]} until i_phy_diag_ack matches the toggle.
+    // The FCS field is reserved and zero on DP83867 (nic_pkg PhyDiagBits).
+    output logic [32:0] o_phy_diag,
+    input  logic        i_phy_diag_ack,
     input  logic        i_rx_block_lock
 );
   /* verilator lint_off UNUSEDSIGNAL */
@@ -90,171 +101,24 @@ module vcu118_eth1g (
   // ---------------------------------------------------------------------------
   // 1. Clause-22 MDIO Master & TI DP83867 Bootstrap Sequencer (i_clk_div4)
   // ---------------------------------------------------------------------------
-  localparam logic [4:0] PhyAddr = 5'h03;
-  localparam logic [4:0] RegBmcr = 5'h00;
-  localparam logic [4:0] RegRegcr = 5'h0D;
-  localparam logic [4:0] RegAddar = 5'h0E;
-  localparam logic [4:0] RegPhycr = 5'h10;
-  localparam int unsigned NumInitWrites = 14;
+  logic mdio_i_raw, mdio_o_w, mdio_t_w, phy_init_done_q;
+  vcu118_phy_mdio u_mdio (
+      .i_clk          (i_clk_div4),
+      .i_rst          (i_rst),
+      .o_phy_rst_n    (o_phy_rst_n),
+      .o_phy_mdc      (o_phy_mdc),
+      .o_mdio_o       (mdio_o_w),
+      .o_mdio_t       (mdio_t_w),
+      .i_mdio_i       (mdio_i_raw),
+      .o_phy_init_done(phy_init_done_q),
+      .o_phy_diag     (o_phy_diag),
+      .i_phy_diag_ack (i_phy_diag_ack)
+  );
 
-  function automatic logic [20:0] get_init_cmd(input logic [3:0] idx);
-    unique case (idx)
-      // 0..3: Extended write 0x0031 (CFG4) <= 0x0070 (SGMII AN timer = 11 ms)
-      4'd0: return {RegRegcr, 16'h001F};
-      4'd1: return {RegAddar, 16'h0031};
-      4'd2: return {RegRegcr, 16'h401F};
-      4'd3: return {RegAddar, 16'h0070};
-      // 4..7: Extended write 0x00D3 (SGMIICTL1) <= 0x4000 (6-wire SGMII clock)
-      4'd4: return {RegRegcr, 16'h001F};
-      4'd5: return {RegAddar, 16'h00D3};
-      4'd6: return {RegRegcr, 16'h401F};
-      4'd7: return {RegAddar, 16'h4000};
-      // 8..11: Extended write 0x016F (10M_SGMII_CFG) <= 0x0015
-      4'd8: return {RegRegcr, 16'h001F};
-      4'd9: return {RegAddar, 16'h016F};
-      4'd10: return {RegRegcr, 16'h401F};
-      4'd11: return {RegAddar, 16'h0015};
-      // 12: Direct write 0x0010 (PHYCR) <= 0x5848 (SGMII enable, auto MDIX)
-      4'd12: return {RegPhycr, 16'h5848};
-      // 13: Direct write 0x0000 (BMCR) <= 0x1340 (1000M FD, AN enable + restart)
-      default: return {RegBmcr, 16'h1340};
-    endcase
-  endfunction
-
-  typedef enum logic [2:0] {
-    ST_RST_ASSERT = 3'd0,
-    ST_RST_WAIT   = 3'd1,
-    ST_MDIO_LOAD  = 3'd2,
-    ST_MDIO_SHIFT = 3'd3,
-    ST_CLK_SETTLE = 3'd4,
-    ST_DONE       = 3'd5
-  } init_state_e;
-
-  init_state_e        state_q = ST_RST_ASSERT;
-  logic        [20:0] wait_cnt_q = '0;
-  logic        [ 3:0] cmd_idx_q = '0;
-  logic        [ 6:0] bit_cnt_q = '0;
-  logic        [ 4:0] clk_div_q = '0;
-  logic        [63:0] shift_reg_q = '1;
-  logic               phy_rst_n_q = 1'b0;
-  logic               mdc_q = 1'b0;
-  logic               mdio_o_q = 1'b1;
-  logic               mdio_t_q = 1'b1;
-  logic               phy_init_done_q = 1'b0;
-
-  logic        [20:0] init_cmd;
-  assign init_cmd = get_init_cmd(cmd_idx_q);
-
-  always_ff @(posedge i_clk_div4) begin
-    if (i_rst) begin
-      state_q         <= ST_RST_ASSERT;
-      wait_cnt_q      <= '0;
-      cmd_idx_q       <= '0;
-      bit_cnt_q       <= '0;
-      clk_div_q       <= '0;
-      shift_reg_q     <= '1;
-      phy_rst_n_q     <= 1'b0;
-      mdc_q           <= 1'b0;
-      mdio_o_q        <= 1'b1;
-      mdio_t_q        <= 1'b1;
-      phy_init_done_q <= 1'b0;
-    end else begin
-      unique case (state_q)
-        ST_RST_ASSERT: begin
-          phy_rst_n_q     <= 1'b0;
-          phy_init_done_q <= 1'b0;
-          mdc_q           <= 1'b0;
-          mdio_t_q        <= 1'b1;
-          if (wait_cnt_q[20]) begin
-            wait_cnt_q  <= '0;
-            phy_rst_n_q <= 1'b1;
-            state_q     <= ST_RST_WAIT;
-          end else begin
-            wait_cnt_q <= wait_cnt_q + 1'b1;
-          end
-        end
-
-        ST_RST_WAIT: begin
-          phy_rst_n_q <= 1'b1;
-          if (wait_cnt_q[20]) begin
-            wait_cnt_q <= '0;
-            cmd_idx_q  <= '0;
-            state_q    <= ST_MDIO_LOAD;
-          end else begin
-            wait_cnt_q <= wait_cnt_q + 1'b1;
-          end
-        end
-
-        ST_MDIO_LOAD: begin
-          // 32-bit preamble (all 1s) + ST(01) + OP(01) + PA(5) + RA(5) + TA(10) + DATA(16)
-          shift_reg_q <= {
-            32'hFFFF_FFFF, 2'b01, 2'b01, PhyAddr, init_cmd[20:16], 2'b10, init_cmd[15:0]
-          };
-          bit_cnt_q <= 7'd64;
-          clk_div_q <= '0;
-          mdc_q <= 1'b0;
-          mdio_o_q <= 1'b1;
-          mdio_t_q <= 1'b0;
-          state_q <= ST_MDIO_SHIFT;
-        end
-
-        ST_MDIO_SHIFT: begin
-          clk_div_q <= clk_div_q + 1'b1;
-          if (clk_div_q == 5'd15) begin
-            mdc_q <= 1'b1;
-          end else if (clk_div_q == 5'd31) begin
-            mdc_q <= 1'b0;
-            if (bit_cnt_q == 7'd0) begin
-              mdio_t_q <= 1'b1;
-              mdio_o_q <= 1'b1;
-              if (cmd_idx_q == 4'(NumInitWrites - 1)) begin
-                wait_cnt_q <= '0;
-                state_q    <= ST_CLK_SETTLE;
-              end else begin
-                cmd_idx_q <= cmd_idx_q + 1'b1;
-                state_q   <= ST_MDIO_LOAD;
-              end
-            end else begin
-              mdio_o_q    <= shift_reg_q[63];
-              mdio_t_q    <= 1'b0;
-              shift_reg_q <= {shift_reg_q[62:0], 1'b1};
-              bit_cnt_q   <= bit_cnt_q - 1'b1;
-            end
-          end
-        end
-
-        ST_CLK_SETTLE: begin
-          mdio_t_q <= 1'b1;
-          mdc_q    <= 1'b0;
-          if (wait_cnt_q[17]) begin
-            state_q <= ST_DONE;
-          end else begin
-            wait_cnt_q <= wait_cnt_q + 1'b1;
-          end
-        end
-
-        ST_DONE: begin
-          phy_rst_n_q     <= 1'b1;
-          phy_init_done_q <= 1'b1;
-          mdio_t_q        <= 1'b1;
-          mdc_q           <= 1'b0;
-        end
-
-        default: state_q <= ST_RST_ASSERT;
-      endcase
-    end
-  end
-
-  assign o_phy_rst_n = phy_rst_n_q;
-  assign o_phy_mdc   = mdc_q;
-
-  /* verilator lint_off UNUSEDSIGNAL */
-  logic mdio_i_unused;
-  /* verilator lint_on UNUSEDSIGNAL */
   IOBUF u_mdio_iobuf (
-      .I (mdio_o_q),
-      .O (mdio_i_unused),
-      .T (mdio_t_q),
+      .I (mdio_o_w),
+      .O (mdio_i_raw),
+      .T (mdio_t_w),
       .IO(io_phy_mdio)
   );
 
@@ -373,7 +237,8 @@ module vcu118_eth1g (
   assign o_rx_clk       = clk125_out;
   assign o_tx_clk_ok    = clk_ok;
   assign o_rx_clk_ok    = clk_ok;
-  assign o_rx_raw_data  = {54'b0, gmii_rx_er, gmii_rx_dv, gmii_rxd};
+  // The PCS/PMA status_vector rides above the GMII bits for the NIC's PCS event counters.
+  assign o_rx_raw_data  = {38'b0, status_vector_0, gmii_rx_er, gmii_rx_dv, gmii_rxd};
   assign o_rx_raw_valid = sgmii_clk_en_0;
   assign o_rx_signal_ok = rx_signal_ok_q;
 
@@ -400,3 +265,262 @@ module vcu118_sgmii_link (
     else o_ready <= (i_status[0] && i_status[1] && i_status[7] && i_status[12]) || i_loopback;
   end
 endmodule : vcu118_sgmii_link
+
+// The Clause-22 MDIO master and DP83867 bootstrap and counter-poll sequencer. The wait bits set
+// the PHY reset, post-reset and clock settle times and the poll interval, in clocks of i_clk
+// (2^RST_BIT, 2^SETTLE_BIT, 2^POLL_BIT); the defaults give about 21 ms, 2.6 ms and 21 ms at 50 MHz.
+module vcu118_phy_mdio #(
+    parameter int unsigned RST_BIT = 20,
+    parameter int unsigned SETTLE_BIT = 17,
+    parameter int unsigned POLL_BIT = 20
+) (
+    input  logic        i_clk,
+    input  logic        i_rst,
+    output logic        o_phy_rst_n,
+    output logic        o_phy_mdc,
+    output logic        o_mdio_o,
+    output logic        o_mdio_t,
+    input  logic        i_mdio_i,
+    output logic        o_phy_init_done,
+    output logic [32:0] o_phy_diag,
+    input  logic        i_phy_diag_ack
+);
+  localparam int unsigned RstBit = RST_BIT;
+  localparam int unsigned SettleBit = SETTLE_BIT;
+  localparam int unsigned PollBit = POLL_BIT;
+  localparam logic [4:0] PhyAddr = 5'h03;
+  localparam logic [4:0] RegBmcr = 5'h00;
+  localparam logic [4:0] RegRegcr = 5'h0D;
+  localparam logic [4:0] RegAddar = 5'h0E;
+  localparam logic [4:0] RegPhycr = 5'h10;
+  localparam logic [4:0] RegRecr = 5'h15;
+  localparam int unsigned NumInitWrites = 14;
+  // Poll sequence after the init writes: an acknowledged RECR read, then a dummy write to clear.
+  localparam int unsigned PollRecrIdx = NumInitWrites;
+  localparam int unsigned PollRecrClearIdx = NumInitWrites + 1;
+
+  // {read, register, data}
+  function automatic logic [21:0] get_cmd(input logic [4:0] idx);
+    unique case (idx)
+      // 0..3: Extended write 0x0031 (CFG4) <= 0x0070 (SGMII AN timer = 11 ms)
+      5'd0: return {1'b0, RegRegcr, 16'h001F};
+      5'd1: return {1'b0, RegAddar, 16'h0031};
+      5'd2: return {1'b0, RegRegcr, 16'h401F};
+      5'd3: return {1'b0, RegAddar, 16'h0070};
+      // 4..7: Extended write 0x00D3 (SGMIICTL1) <= 0x4000 (6-wire SGMII clock)
+      5'd4: return {1'b0, RegRegcr, 16'h001F};
+      5'd5: return {1'b0, RegAddar, 16'h00D3};
+      5'd6: return {1'b0, RegRegcr, 16'h401F};
+      5'd7: return {1'b0, RegAddar, 16'h4000};
+      // 8..11: Extended write 0x016F (10M_SGMII_CFG) <= 0x0015
+      5'd8: return {1'b0, RegRegcr, 16'h001F};
+      5'd9: return {1'b0, RegAddar, 16'h016F};
+      5'd10: return {1'b0, RegRegcr, 16'h401F};
+      5'd11: return {1'b0, RegAddar, 16'h0015};
+      // 12: Direct write 0x0010 (PHYCR) <= 0x5848 (SGMII enable, auto MDIX)
+      5'd12: return {1'b0, RegPhycr, 16'h5848};
+      // 13: Direct write 0x0000 (BMCR) <= 0x1340 (1000M FD, AN enable + restart)
+      5'd13: return {1'b0, RegBmcr, 16'h1340};
+      // 14: Direct read of RECR (receive error counter)
+      5'd14: return {1'b1, RegRecr, 16'h0000};
+      // A dummy write clears the saturating RECR after its acknowledged read.
+      default: return {1'b0, RegRecr, 16'h0000};
+    endcase
+  endfunction
+
+  typedef enum logic [2:0] {
+    ST_RST_ASSERT = 3'd0,
+    ST_RST_WAIT   = 3'd1,
+    ST_MDIO_LOAD  = 3'd2,
+    ST_MDIO_SHIFT = 3'd3,
+    ST_CLK_SETTLE = 3'd4,
+    ST_DONE       = 3'd5
+  } init_state_e;
+
+  init_state_e        state_q = ST_RST_ASSERT;
+  logic        [20:0] wait_cnt_q = '0;
+  logic        [ 4:0] cmd_idx_q = '0;
+  logic        [ 6:0] bit_cnt_q = '0;
+  logic        [ 4:0] clk_div_q = '0;
+  logic        [63:0] shift_reg_q = '1;
+  logic               phy_rst_n_q = 1'b0;
+  logic               mdc_q = 1'b0;
+  logic               mdio_o_q = 1'b1;
+  logic               mdio_t_q = 1'b1;
+  logic               phy_init_done_q = 1'b0;
+
+  logic        [21:0] init_cmd;
+  assign init_cmd = get_cmd(cmd_idx_q);
+
+  // MDIO read path: the pad level is synchronised, shifted in at the rising MDC edge of each
+  // data bit. Publish the complete sample atomically and hold it until acknowledged.
+  // The published payload and toggle survive sequencer reset, so an in-flight transfer
+  // stays coherent and reset cannot impersonate a completed poll. Partial reads are discarded.
+  (* ASYNC_REG = "TRUE" *) logic mdio_i_s1_q, mdio_i_s_q;
+  logic rd_ok_q;
+  logic [15:0] rd_shift_q = '0;
+  logic [15:0] diag_recr_q = '0;
+  logic diag_tog_q = 1'b0;
+  logic polled_q = 1'b0;
+  logic [15:0] sample_recr_q;
+  logic diag_ack_s;
+  cdc_sync u_diag_ack_sync (
+      .i_clk  (i_clk),
+      .i_rst  (1'b0),
+      .i_async(i_phy_diag_ack),
+      .o_sync (diag_ack_s)
+  );
+  always_ff @(posedge i_clk) begin
+    mdio_i_s1_q <= i_mdio_i;
+    mdio_i_s_q  <= mdio_i_s1_q;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      state_q         <= ST_RST_ASSERT;
+      wait_cnt_q      <= '0;
+      cmd_idx_q       <= '0;
+      bit_cnt_q       <= '0;
+      clk_div_q       <= '0;
+      shift_reg_q     <= '1;
+      phy_rst_n_q     <= 1'b0;
+      mdc_q           <= 1'b0;
+      mdio_o_q        <= 1'b1;
+      mdio_t_q        <= 1'b1;
+      phy_init_done_q <= 1'b0;
+      polled_q        <= 1'b0;
+      rd_ok_q         <= 1'b0;
+      sample_recr_q   <= '0;
+    end else begin
+      unique case (state_q)
+        ST_RST_ASSERT: begin
+          phy_rst_n_q     <= 1'b0;
+          phy_init_done_q <= 1'b0;
+          mdc_q           <= 1'b0;
+          mdio_t_q        <= 1'b1;
+          if (wait_cnt_q[RstBit]) begin
+            wait_cnt_q  <= '0;
+            phy_rst_n_q <= 1'b1;
+            state_q     <= ST_RST_WAIT;
+          end else begin
+            wait_cnt_q <= wait_cnt_q + 1'b1;
+          end
+        end
+
+        ST_RST_WAIT: begin
+          phy_rst_n_q <= 1'b1;
+          if (wait_cnt_q[RstBit]) begin
+            wait_cnt_q <= '0;
+            cmd_idx_q  <= '0;
+            state_q    <= ST_MDIO_LOAD;
+          end else begin
+            wait_cnt_q <= wait_cnt_q + 1'b1;
+          end
+        end
+
+        ST_MDIO_LOAD: begin
+          // 32-bit preamble (all 1s) + ST(01) + OP(01) + PA(5) + RA(5) + TA(10) + DATA(16)
+          // OP is 01 for a write and 10 for a read (init_cmd[21]; a read ignores the data field)
+          shift_reg_q <= {
+            32'hFFFF_FFFF,
+            2'b01,
+            init_cmd[21] ? 2'b10 : 2'b01,
+            PhyAddr,
+            init_cmd[20:16],
+            2'b10,
+            init_cmd[15:0]
+          };
+          rd_ok_q <= 1'b0;
+          bit_cnt_q <= 7'd64;
+          clk_div_q <= '0;
+          mdc_q <= 1'b0;
+          mdio_o_q <= 1'b1;
+          mdio_t_q <= 1'b0;
+          state_q <= ST_MDIO_SHIFT;
+        end
+
+        ST_MDIO_SHIFT: begin
+          clk_div_q <= clk_div_q + 1'b1;
+          if (clk_div_q == 5'd15) begin
+            mdc_q <= 1'b1;
+            // The PHY drives zero in the second turnaround slot. A released line is no reply.
+            if (init_cmd[21] && bit_cnt_q == 7'd16) rd_ok_q <= !mdio_i_s_q;
+            // A read's 16 data bits are the last 16 slots (bit_cnt 15..0): sample before MDC rises.
+            if (init_cmd[21] && bit_cnt_q <= 7'd15) rd_shift_q <= {rd_shift_q[14:0], mdio_i_s_q};
+          end else if (clk_div_q == 5'd31) begin
+            mdc_q <= 1'b0;
+            if (bit_cnt_q == 7'd0) begin
+              mdio_t_q <= 1'b1;
+              mdio_o_q <= 1'b1;
+              if (init_cmd[21] && !rd_ok_q) begin
+                polled_q <= 1'b0;
+                wait_cnt_q <= '0;
+                state_q <= ST_DONE;
+              end else if (cmd_idx_q == 5'(NumInitWrites - 1)) begin
+                wait_cnt_q <= '0;
+                state_q    <= ST_CLK_SETTLE;
+              end else if (cmd_idx_q == 5'(PollRecrClearIdx)) begin
+                polled_q   <= 1'b1;
+                wait_cnt_q <= '0;
+                state_q    <= ST_DONE;
+              end else begin
+                if (cmd_idx_q == 5'(PollRecrIdx)) sample_recr_q <= rd_shift_q;
+                cmd_idx_q <= cmd_idx_q + 1'b1;
+                state_q   <= ST_MDIO_LOAD;
+              end
+            end else begin
+              mdio_o_q    <= shift_reg_q[63];
+              // A read releases the line from the turnaround's first bit (frame bit 46)
+              mdio_t_q    <= init_cmd[21] && (bit_cnt_q <= 7'd18);
+              shift_reg_q <= {shift_reg_q[62:0], 1'b1};
+              bit_cnt_q   <= bit_cnt_q - 1'b1;
+            end
+          end
+        end
+
+        ST_CLK_SETTLE: begin
+          mdio_t_q <= 1'b1;
+          mdc_q    <= 1'b0;
+          if (wait_cnt_q[SettleBit]) begin
+            wait_cnt_q <= '0;
+            state_q    <= ST_DONE;
+          end else begin
+            wait_cnt_q <= wait_cnt_q + 1'b1;
+          end
+        end
+
+        ST_DONE: begin
+          phy_rst_n_q     <= 1'b1;
+          phy_init_done_q <= 1'b1;
+          mdio_t_q        <= 1'b1;
+          mdc_q           <= 1'b0;
+          if (polled_q && diag_ack_s == diag_tog_q) begin
+            diag_recr_q <= sample_recr_q;
+            diag_tog_q <= !diag_tog_q;
+            polled_q <= 1'b0;
+          end
+          // A stopped destination holds the published sample and delays the next poll.
+          if (wait_cnt_q[PollBit]) begin
+            if (!polled_q && diag_ack_s == diag_tog_q) begin
+              wait_cnt_q <= '0;
+              cmd_idx_q  <= 5'(PollRecrIdx);
+              state_q    <= ST_MDIO_LOAD;
+            end
+          end else begin
+            wait_cnt_q <= wait_cnt_q + 1'b1;
+          end
+        end
+
+        default: state_q <= ST_RST_ASSERT;
+      endcase
+    end
+  end
+
+  assign o_phy_diag = {diag_tog_q, 16'b0, diag_recr_q};
+  assign o_phy_rst_n = phy_rst_n_q;
+  assign o_phy_mdc = mdc_q;
+  assign o_phy_init_done = phy_init_done_q;
+  assign o_mdio_o = mdio_o_q;
+  assign o_mdio_t = mdio_t_q;
+
+endmodule : vcu118_phy_mdio

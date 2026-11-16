@@ -420,6 +420,49 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         assert f"<0x{event:08x} 0x{event:08x}" not in dts
 
 
+def test_both_trees_describe_the_sysreset_syscon_reboot() -> None:
+    """SBI system reset: OpenSBI's syscon-reboot writes SYSRESET_VALUE to the register.
+
+    The packer's tree and the hand-written VCU118 tree both carry the syscon
+    node at soc_top.sv's SysResetAddr and a syscon-reboot child that stores the
+    key soc_top.sv's SysResetKey accepts; the OpenSBI defconfig enables the
+    drivers that read them.
+    """
+    packer = _load_module(SBI_PACKER)
+    rtl = (REPO_ROOT / "hw/rtl/soc_top/soc_top.sv").read_text()
+    addr = re.search(r"SysResetAddr = 32'h([0-9A-Fa-f_]+);", rtl)
+    key = re.search(r"SysResetKey = 16'h([0-9A-Fa-f_]+);", rtl)
+    assert addr is not None and key is not None
+    assert int(addr[1].replace("_", ""), 16) == packer.SYSRESET_BASE
+    assert int(key[1].replace("_", ""), 16) == packer.SYSRESET_VALUE
+    generated = packer.gen_dts(
+        clk_hz=200_000_000, initrd_range=None, bootargs="", model="m"
+    )
+    handwritten = (REPO_ROOT / "boards/vcu118/dts/frost_vcu118.dts").read_text()
+    for dts in (generated, handwritten):
+        node = re.search(r"sysreset: syscon@([0-9a-f]+) {(.*?)\n\t\t};", dts, re.S)
+        assert node is not None
+        assert int(node[1], 16) == packer.SYSRESET_BASE
+        body = node[2]
+        assert 'compatible = "frost,sysreset", "syscon";' in body
+        assert "reg-io-width = <4>;" in body
+        assert f"reg = <0x{packer.SYSRESET_BASE:08x} 0x1000>;" in body or (
+            f"reg = <0x{packer.SYSRESET_BASE:x} 0x1000>;" in body
+        )
+        assert 'compatible = "syscon-reboot";' in body
+        assert "regmap = <&sysreset>;" in body
+        assert "offset = <0x0>;" in body
+        assert f"value = <0x{packer.SYSRESET_VALUE:x}>;" in body
+    config = (REPO_ROOT / "linux/opensbi_frost_defconfig").read_text()
+    for symbol in (
+        "CONFIG_FDT_REGMAP=y",
+        "CONFIG_FDT_REGMAP_SYSCON=y",
+        "CONFIG_FDT_RESET=y",
+        "CONFIG_FDT_RESET_SYSCON=y",
+    ):
+        assert symbol in config.splitlines()
+
+
 def test_vcu118_device_tree_isa_matches_the_boot_packer() -> None:
     """The VCU118 tree lists the packer's extensions and the RTL's cbo.zero block.
 

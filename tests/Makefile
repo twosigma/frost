@@ -476,8 +476,9 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_tx_beat_merge.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_tx_segment.sv
 VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),vcu118_sgmii_link)
+else ifneq ($(filter $(TOPLEVEL),vcu118_sgmii_link vcu118_phy_mdio),)
 COMPILE_ARGS := $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/hw/rtl/lib/cdc/cdc_sync.sv \
         $(ROOT)/boards/vcu118/vcu118_eth1g.sv
 VERILOG_SOURCES :=
 else ifneq ($(filter $(TOPLEVEL),nic_top nic_mac_wrap nic_pause_rx_wire),)

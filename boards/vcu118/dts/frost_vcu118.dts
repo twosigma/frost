@@ -184,6 +184,21 @@
 			interrupts = <3 4>;
 		};
 
+		/* System reset: a 32-bit store of 0x7777 resets the core domain and
+		 * restarts the boot ROM; OpenSBI serves SBI SRST from it. */
+		sysreset: syscon@4002f000 {
+			compatible = "frost,sysreset", "syscon";
+			reg = <0x4002f000 0x1000>;
+			reg-io-width = <4>;
+
+			reboot {
+				compatible = "syscon-reboot";
+				regmap = <&sysreset>;
+				offset = <0x0>;
+				value = <0x7777>;
+			};
+		};
+
 		memory-controller@40021000 {
 			compatible = "frost,memory-error";
 			reg = <0x40021000 0x100>;
