@@ -1090,6 +1090,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
         include_in_pytest=False,
     ),
+    **{
+        f"vec_integer_test_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="vec_integer_test",
+            nic_mac_clocks=False,
+            description=(
+                f"Integer/fixed-point/mask/permutation instruction forms at VLEN {vlen}, "
+                "including CSR rounding snapshots and saturation readback"
+            ),
+            verilator_extra_args=("-GVECTOR=1", f"-GVLEN={vlen}"),
+            extra_env=(
+                ("EXTRA_CFLAGS", f"-DVEC_VLEN={vlen}"),
+                ("COCOTB_MAX_CYCLES", "5000000"),
+            ),
+            include_in_pytest=(vlen == 256),
+        )
+        for vlen in (128, 256, 512)
+    },
     "vec_arith_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2717,6 +2736,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector FP64 divide and square root, bit for bit against Berkeley SoftFloat",
         verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
     ),
+    **{
+        f"vec_integer_exec_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_integer_exec",
+            hdl_toplevel_module="vec_engine",
+            description="Integer, fixed-point, mask and permutation execution against architectural semantics",
+            verilator_extra_args=(f"-GVLEN={vlen}",),
+        )
+        for vlen in (128, 256, 512)
+    },
     "vec_engine_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_engine",
         hdl_toplevel_module="vec_engine",

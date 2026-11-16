@@ -211,7 +211,7 @@ module instr_operand_classifier (
         raw_class.has_int_dest = 1'b1;
         raw_class.rs_type = riscv_pkg::RS_NONE;
       end else begin
-        raw_class.uses_int_rs1 = i_instr.funct3 == 3'b100;
+        raw_class.uses_int_rs1 = (i_instr.funct3 == 3'b100) || (i_instr.funct3 == 3'b110);
       end
       default: ;  // Illegal opcode: i_illegal selects the neutral class.
     endcase

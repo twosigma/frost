@@ -1095,7 +1095,7 @@ module cpu_ooo #(
   // retirement of vector arithmetic, the unit's commit hold and idle state.
   logic [8:0] vec_vtype_spec;
   // vec_lmul_legality's classes of the dispatch slot-1 instruction
-  logic [3:0] dispatch_vec_lmul_illegal;
+  logic [32:0] dispatch_vec_lmul_illegal;
   logic dispatch_vec_mem_illegal;
   logic vec_vtype_valid;
   logic vec_vcfg_in_flight;
@@ -1104,6 +1104,8 @@ module cpu_ooo #(
   logic vec_varith_commit;
   logic vec_commit_hold;
   logic vec_idle;
+  logic vec_vstart_nonzero, vec_vxsat_set, vec_vtox_commit;
+  logic [1:0] csr_vec_vxrm;
   riscv_pkg::fu_complete_t vec_vtox_complete;  // CDB slot 6
   // The vector memory table as the load and store queues see it, and its
   // registered "no live retired entry" (rule V-O4: FENCE, FENCE.I,
@@ -1254,41 +1256,41 @@ module cpu_ooo #(
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next, producer_ctrl_next_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_go, producer_ctrl_next_go_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_hold, producer_ctrl_next_hold_2;
-      // Slot 1's vector legality (memory rejection and four LMUL classes)
+      // Slot 1's vector legality (memory rejection and arithmetic geometry)
       // beside the shadow slice, from each producer copy's own instruction
-      logic [4:0] producer_vlc, producer_vlc_next, producer_vlc_next_go, producer_vlc_next_hold;
-      logic [4:0] queue_vlc, queue_vlc_next;
+      logic [33:0] producer_vlc, producer_vlc_next, producer_vlc_next_go, producer_vlc_next_hold;
+      logic [33:0] queue_vlc, queue_vlc_next;
       vec_lmul_legality u_vlc (
           .i_insn(32'(decoded_packet.instruction)),
           .i_op(decoded_packet.instruction_operation),
           .i_is_illegal(decoded_packet.is_illegal_instruction),
           .i_is_fetch_fault(decoded_packet.is_fetch_fault),
-          .o_illegal(producer_vlc[3:0]),
-          .o_mem_illegal(producer_vlc[4])
+          .o_illegal(producer_vlc[32:0]),
+          .o_mem_illegal(producer_vlc[33])
       );
       vec_lmul_legality u_vlc_next (
           .i_insn(32'(decoded_packet_next.instruction)),
           .i_op(decoded_packet_next.instruction_operation),
           .i_is_illegal(decoded_packet_next.is_illegal_instruction),
           .i_is_fetch_fault(decoded_packet_next.is_fetch_fault),
-          .o_illegal(producer_vlc_next[3:0]),
-          .o_mem_illegal(producer_vlc_next[4])
+          .o_illegal(producer_vlc_next[32:0]),
+          .o_mem_illegal(producer_vlc_next[33])
       );
       vec_lmul_legality u_vlc_next_go (
           .i_insn(32'(decoded_packet_next_go.instruction)),
           .i_op(decoded_packet_next_go.instruction_operation),
           .i_is_illegal(decoded_packet_next_go.is_illegal_instruction),
           .i_is_fetch_fault(decoded_packet_next_go.is_fetch_fault),
-          .o_illegal(producer_vlc_next_go[3:0]),
-          .o_mem_illegal(producer_vlc_next_go[4])
+          .o_illegal(producer_vlc_next_go[32:0]),
+          .o_mem_illegal(producer_vlc_next_go[33])
       );
       vec_lmul_legality u_vlc_next_hold (
           .i_insn(32'(decoded_packet_next_hold.instruction)),
           .i_op(decoded_packet_next_hold.instruction_operation),
           .i_is_illegal(decoded_packet_next_hold.is_illegal_instruction),
           .i_is_fetch_fault(decoded_packet_next_hold.is_fetch_fault),
-          .o_illegal(producer_vlc_next_hold[3:0]),
-          .o_mem_illegal(producer_vlc_next_hold[4])
+          .o_illegal(producer_vlc_next_hold[32:0]),
+          .o_mem_illegal(producer_vlc_next_hold[33])
       );
       // The shadow slice of an ID packet: the same field copy as
       // producer_ctrl_next, for the go and hold outcomes.
@@ -1617,14 +1619,14 @@ module cpu_ooo #(
 `ifndef SYNTHESIS
       // The shadow moves whole words, so its legality bits stay those of its
       // own instruction and decode outcome once reset has loaded it.
-      logic [4:0] queue_vlc_check;
+      logic [33:0] queue_vlc_check;
       vec_lmul_legality u_vlc_check (
           .i_insn(32'(queue_ctrl.instruction)),
           .i_op(queue_ctrl.instruction_operation),
           .i_is_illegal(queue_ctrl.is_illegal_instruction),
           .i_is_fetch_fault(queue_ctrl.is_fetch_fault),
-          .o_illegal(queue_vlc_check[3:0]),
-          .o_mem_illegal(queue_vlc_check[4])
+          .o_illegal(queue_vlc_check[32:0]),
+          .o_mem_illegal(queue_vlc_check[33])
       );
       always_ff @(posedge i_clk) begin
         if (reset_seen_q && !i_rst && !$isunknown(
@@ -2993,6 +2995,7 @@ module cpu_ooo #(
   ) u_dispatch (
       .i_vtype_spec(vec_vtype_spec),
       .i_vec_lmul_illegal(dispatch_vec_lmul_illegal),
+      .i_vec_vstart_nonzero(vec_vstart_nonzero),
       .i_vec_mem_illegal(dispatch_vec_mem_illegal),
       .i_clk,
       .i_rst_n(rst_n),
@@ -4274,6 +4277,9 @@ module cpu_ooo #(
       .o_mstatus_vs_off(csr_mstatus_vs_off),
       .i_vcfg_commit(vcfg_commit),
       .i_varith_commit(vec_varith_commit),
+      .i_vtox_commit(vec_vtox_commit),
+      .i_vec_vxsat_set(vec_vxsat_set),
+      .o_vec_vxrm(csr_vec_vxrm),
       .o_vec_vl(csr_vec_vl),
       .o_vec_vtype(csr_vec_vtype),
       .o_vec_vstart(csr_vec_vstart),
@@ -4453,15 +4459,26 @@ module cpu_ooo #(
       .i_line_resp_rdata(i_walk_line_resp_rdata)
   );
 
-  // CSR done acknowledgment, one cycle after csr_start: csr_start fires in
+  // CSR acknowledgment waits for committed vector effects. With the unit
+  // idle it arrives one cycle after csr_start: csr_start fires in
   // cycle N (the ROB serializer enters SERIAL_CSR_EXEC at its end) and
   // csr_done_ack in cycle N+1 lets the ROB commit an ordinary CSR. A CSR that
   // may change translation moves to SERIAL_CSR_TRANSLATION_DRAIN instead and
   // retires only after committed stores drain.
-  logic csr_done_q;
+  logic csr_done_q, csr_vec_wait_q;
+  logic vec_csr_quiet;
+  assign vec_csr_quiet = !VECTOR || (vec_idle && !vec_varith_commit);
   always_ff @(posedge i_clk) begin
-    if (i_rst) csr_done_q <= 1'b0;
-    else csr_done_q <= csr_start;
+    if (i_rst) begin
+      csr_done_q <= 1'b0;
+      csr_vec_wait_q <= 1'b0;
+    end else if (flush_all) begin
+      csr_done_q <= 1'b0;
+      csr_vec_wait_q <= 1'b0;
+    end else begin
+      csr_done_q <= (csr_start || csr_vec_wait_q) && vec_csr_quiet;
+      csr_vec_wait_q <= (csr_start || csr_vec_wait_q) && !vec_csr_quiet;
+    end
   end
   assign csr_done_ack = csr_done_q;
 
@@ -5298,7 +5315,7 @@ module cpu_ooo #(
     ) u_vtype_tracker (
         .i_clk           (i_clk),
         .i_rst           (i_rst),
-        .i_alloc         (vec_alloc && rob_alloc_req.is_vcfg),
+        .i_alloc         (vec_alloc),
         .i_alloc_op      (from_id_to_ex.instruction_operation),
         .i_alloc_imm     (from_id_to_ex.csr_address),
         .i_ckpt_save     (checkpoint_save),
@@ -5308,6 +5325,9 @@ module cpu_ooo #(
         .i_flush_all     (flush_all),
         .i_vcfg_in_flight(vec_vcfg_in_flight),
         .i_arch_vtype    (csr_vec_vtype),
+        .i_arch_vstart_nonzero(|csr_vec_vstart),
+        .i_arch_reload(csr_commit_fire),
+        .o_vstart_nonzero(vec_vstart_nonzero),
         .o_vtype         (vec_vtype_spec),
         .o_valid         (vec_vtype_valid)
     );
@@ -5329,6 +5349,9 @@ module cpu_ooo #(
         .i_vl(csr_vec_vl),
         .i_vtype(csr_vec_vtype),
         .i_vstart(csr_vec_vstart),
+        .i_vxrm(csr_vec_vxrm),
+        .o_vxsat_set(vec_vxsat_set),
+        .o_vtox_commit(vec_vtox_commit),
         .i_alloc_is_vtox(from_id_to_ex.instruction_operation == riscv_pkg::VTOX),
         .i_head_tag(head_tag),
         .i_rob_empty(rob_empty),
@@ -5382,6 +5405,9 @@ module cpu_ooo #(
     assign vec_varith_commit = 1'b0;
     assign vec_commit_hold = 1'b0;
     assign vec_idle = 1'b1;
+    assign vec_vstart_nonzero = 1'b0;
+    assign vec_vxsat_set = 1'b0;
+    assign vec_vtox_commit = 1'b0;
     assign vec_vtox_complete = '0;
   end
 

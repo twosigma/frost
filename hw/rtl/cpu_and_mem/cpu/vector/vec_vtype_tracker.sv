@@ -24,6 +24,9 @@
   vector-config instruction has been in the ROB for three cycles (its commit
   update reaches the CSR file two cycles after it leaves the ROB). Branch
   checkpoints save it with the rename state, and a partial flush restores it.
+  The same checkpoint holds the nonzero-vstart flag. Every vector allocation
+  clears that flag for younger instructions; CSR retirement invalidates the
+  tracked state so the architectural vstart is read after its CSR update.
 */
 module vec_vtype_tracker #(
     parameter int unsigned VLEN = 256
@@ -41,6 +44,9 @@ module vec_vtype_tracker #(
     input logic i_flush_all,
     input logic i_vcfg_in_flight,  // registered, from the ROB
     input logic [8:0] i_arch_vtype,  // {vill, vtype[7:0]}
+    input logic i_arch_vstart_nonzero,
+    input logic i_arch_reload,
+    output logic o_vstart_nonzero,
     output logic [8:0] o_vtype,
     output logic o_valid
 );
@@ -69,29 +75,38 @@ module vec_vtype_tracker #(
   end
 
   logic [8:0] vt_n;
-  logic valid_n;
+  logic valid_n, start_n;
   always_comb begin
     vt_n = o_vtype;
     valid_n = o_valid;
+    start_n = o_vstart_nonzero;
     if (i_alloc && (i_alloc_op == riscv_pkg::VSETVLI || i_alloc_op == riscv_pkg::VSETIVLI)) begin
+      start_n = 1'b0;
       vt_n = {imm_vill, imm_vtype};
       valid_n = 1'b1;
     end else if (i_alloc && i_alloc_op == riscv_pkg::VSETVL) begin
+      start_n = 1'b0;
       valid_n = 1'b0;
     end else if (!o_valid && quiet_q == 3'd3 && !i_vcfg_in_flight) begin
+      start_n = i_arch_vstart_nonzero;
       vt_n = i_arch_vtype;
       valid_n = 1'b1;
     end
+    if (i_alloc && (i_alloc_op == riscv_pkg::VARITH || i_alloc_op == riscv_pkg::VARITH_X ||
+                    i_alloc_op == riscv_pkg::VTOX))
+      start_n = 1'b0;
+    if (i_arch_reload) valid_n = 1'b0;
   end
 
-  logic [9:0] ckpt_q[riscv_pkg::NumCheckpoints];
+  logic [10:0] ckpt_q[riscv_pkg::NumCheckpoints];
   always_ff @(posedge i_clk) begin
-    if (i_ckpt_save) ckpt_q[i_ckpt_id] <= {valid_n, vt_n};
+    if (i_ckpt_save) ckpt_q[i_ckpt_id] <= {start_n, valid_n, vt_n};
     if (i_rst || i_flush_all) begin
       o_valid <= 1'b0;
     end else if (i_restore) begin
-      {o_valid, o_vtype} <= ckpt_q[i_restore_id];
+      {o_vstart_nonzero, o_valid, o_vtype} <= ckpt_q[i_restore_id];
     end else begin
+      o_vstart_nonzero <= start_n;
       o_valid <= valid_n;
       o_vtype <= vt_n;
     end

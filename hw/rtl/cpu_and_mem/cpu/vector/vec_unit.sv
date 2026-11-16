@@ -56,6 +56,9 @@ module vec_unit #(
     input  logic                    [    15:0] i_vl,
     input  logic                    [     8:0] i_vtype,
     input  logic                    [    15:0] i_vstart,
+    input  logic                    [     1:0] i_vxrm,
+    output logic o_vxsat_set,
+    output logic o_vtox_commit,
     // Head execution of vector-to-scalar ops
     input  logic                               i_alloc_is_vtox,
     input  logic                    [TagW-1:0] i_head_tag,
@@ -74,6 +77,7 @@ module vec_unit #(
   logic [31:0] insn_q[riscv_pkg::ReorderBufferDepth];
   logic [riscv_pkg::ReorderBufferDepth-1:0] is_varith_q, is_vtox_q;
   logic vtox_done;
+  logic [riscv_pkg::ReorderBufferDepth-1:0] vtox_retire_q;
   logic [TagW-1:0] vtox_tag_q;
   always_ff @(posedge i_clk) begin
     if (i_alloc) insn_q[i_alloc_tag] <= i_alloc_insn;
@@ -81,19 +85,23 @@ module vec_unit #(
     // squashed vector instruction never describes a later one.
     if (i_rst) begin
       is_vtox_q   <= '0;
+      vtox_retire_q <= '0;
       is_varith_q <= '0;
     end else begin
       if (vtox_done) is_vtox_q[vtox_tag_q] <= 1'b0;
       if (i_alloc) begin
         is_vtox_q[i_alloc_tag]   <= i_alloc_is_vtox;
+        vtox_retire_q[i_alloc_tag] <= i_alloc_is_vtox;
         is_varith_q[i_alloc_tag] <= i_alloc_is_varith;
       end
       if (i_alloc_2) begin
         is_vtox_q[i_alloc_tag_2]   <= 1'b0;
+        vtox_retire_q[i_alloc_tag_2] <= 1'b0;
         is_varith_q[i_alloc_tag_2] <= 1'b0;
       end
     end
   end
+  assign o_vtox_commit = i_commit_valid && vtox_retire_q[i_commit_tag] && !i_commit_exception;
   assign o_varith_commit = i_commit_valid && is_varith_q[i_commit_tag] && !i_commit_exception;
 
   // The engine's register read port, used by the vector-to-scalar logic.
@@ -101,7 +109,7 @@ module vec_unit #(
   logic [VLEN-1:0] xr_data;
 
   // VIQ: {insn, scalar, vl, vtype, vstart}
-  localparam int unsigned EntryW = 32 + 64 + 16 + 9 + 16;
+  localparam int unsigned EntryW = 32 + 64 + 16 + 9 + 16 + 2;
   logic [EntryW-1:0] viq_q[Depth];
   logic [$clog2(Depth)-1:0] head_q, tail_q;
   logic [$clog2(Depth):0] count_q;
@@ -110,7 +118,8 @@ module vec_unit #(
   assign push = o_varith_commit;
   assign pop  = eng_idle && !issued_q && (count_q != '0);
   always_ff @(posedge i_clk) begin
-    if (push) viq_q[tail_q] <= {insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart};
+    if (push)
+      viq_q[tail_q] <= {insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart, i_vxrm};
     if (i_rst) begin
       head_q <= '0;
       tail_q <= '0;
@@ -131,7 +140,8 @@ module vec_unit #(
   logic [63:0] e_scalar;
   logic [15:0] e_vl, e_vstart;
   logic [8:0] e_vtype;
-  assign {e_insn, e_scalar, e_vl, e_vtype, e_vstart} = viq_q[head_q];
+  logic [1:0] e_vxrm;
+  assign {e_insn, e_scalar, e_vl, e_vtype, e_vstart, e_vxrm} = viq_q[head_q];
 
   vec_engine #(
       .VLEN(VLEN)
@@ -147,6 +157,8 @@ module vec_unit #(
       .i_vstart     (e_vstart),
       .i_rs1        (e_scalar),
       .o_unsupported(),
+      .i_vxrm       (e_vxrm),
+      .o_sat        (o_vxsat_set),
       .i_xr_addr    (xr_addr),
       .o_xr_data    (xr_data),
       .i_xw_en      (1'b0),

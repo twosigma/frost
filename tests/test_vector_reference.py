@@ -150,3 +150,23 @@ def test_stale_disassembly_is_not_linked(tmp_path: Path) -> None:
         check=False,
     )
     assert build.returncode == 0, build.stderr[-1000:]
+
+
+@pytest.mark.parametrize("vlen", (128, 256, 512))
+def test_integer_execution_program(vlen: int, tmp_path: Path) -> None:
+    """The fixed register-image expectations agree with the reference ISA."""
+    build_and_run(
+        "vec_integer_test", vlen, vlen, tmp_path, extra_cflags=f"-DVEC_VLEN={vlen}"
+    )
+
+
+def test_integer_program_negative_control(tmp_path: Path) -> None:
+    """Flipping an expected destination bit must be detected by the program."""
+    with pytest.raises(AssertionError, match="1 failures"):
+        build_and_run(
+            "vec_integer_test",
+            128,
+            128,
+            tmp_path,
+            extra_cflags="-DVEC_VLEN=128 -DVEC_NEGATIVE_CONTROL",
+        )

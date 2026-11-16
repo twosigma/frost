@@ -678,10 +678,9 @@ FS or VS is Dirty. A read that does not write, such as `csrr`, leaves VS
 unchanged. `vstart` keeps log2(`VLEN`) bits, `vlenb` reads `VLEN/8`, `vl` resets
 to 0 and `vtype` to vill.
 
-`vsetvli`, `vsetivli` and `vsetvl` are the vector instructions implemented so
-far; every other vector encoding raises illegal-instruction, and while VS is
-Off (always, with `VECTOR=0`) ID decodes all of them as illegal, as it does F
-and D instructions with FS Off. They dispatch in slot 1 only and go to MUL_RS,
+`vsetvli`, `vsetivli` and `vsetvl` configure the vector unit. While VS is
+Off (always, with `VECTOR=0`) ID decodes vector instructions as illegal.
+Configuration instructions dispatch in slot 1 only and go to MUL_RS,
 which issues them through its divide gate to the vector-config unit
 (`vector/vec_cfg_unit.sv`) in the muldiv shim. The unit computes the new
 `vtype` (vill for a reserved or unsupported setting), VLMAX and `vl`
@@ -698,15 +697,22 @@ that depends on `vtype` (vill, register-group alignment, mask-destination
 overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
 (vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
-unknown). The register-number rules depend on `vtype` only through LMUL, so
-`vector/vec_lmul_legality.sv` evaluates them from the instruction bits for
-each LMUL class (1 or fractional, 2, 4, 8) before the decoded queue, which
-carries the four results beside slot 1; dispatch selects the class of the
-tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with its scalar and the
-architectural `vl`, `vtype` and `vstart`, and the engine executes it after
+unknown). `vector/vec_lmul_legality.sv` evaluates the EEW, EMUL,
+alignment and overlap rules for all 32 SEW/LMUL combinations before the
+decoded queue. Dispatch selects the tracked configuration and rejects vill
+except for whole-register moves. The tracker also checkpoints whether
+`vstart` is nonzero, clearing it for each dispatched vector instruction and
+reloading it after CSR accesses and full flushes. Arithmetic rejects nonzero
+`vstart`; scalar moves and whole-register moves follow their specified
+start-index behavior. When one retires, `vec_unit` queues it with its scalar and the
+architectural `vl`, `vtype`, `vstart` and `vxrm`, and the engine executes it after
 commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
-result on CDB slot 6.
+result on CDB slot 6. Retiring these scalar-result instructions clears
+`vstart`, dirtying VS only if that changes it. Saturation from active,
+committed elements sets sticky `vxsat`. CSR execution waits for the vector
+engine and its retirement queue to drain, so reads and writes observe
+completed vector effects in program order.
 
 ID decodes the unit-stride (one field), whole-register and mask loads and
 stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1
@@ -722,8 +728,8 @@ misaligned-access engine before its first access. The unit does not perform
 vector loads and stores: each raises illegal-instruction when it reaches the
 ROB head, and the trap's flush frees its entry. `vec_lmul_legality` decides
 this rejection from the decoded operation before the queue, excluding decode
-illegality and fetch faults. A separate bit travels beside the four LMUL
-classes, and dispatch includes it without consulting `vtype`. The other vector
+illegality and fetch faults. A separate bit travels beside the arithmetic legality
+lookup, and dispatch includes it without consulting `vtype`. The other vector
 instructions, and the strided, indexed, segment and fault-only-first loads
 and stores, are illegal.
 
@@ -732,12 +738,12 @@ elaboration while the vector instructions are not implemented, and bare-metal
 software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
 not exist and VS reads zero.
 
-The vector unit's datapath blocks live in `vector/`; the core does not
-instantiate them, and each has its own unit bench. `vec_int_lane` is one 64-bit integer lane: add, subtract and
+The vector unit's datapath blocks live in `vector/`, each with its own
+unit bench. `vec_int_lane` is one 64-bit integer lane: add, subtract and
 reverse subtract, the logical operations and `vandn`, signed and unsigned
 minimum and maximum, shifts and rotates, merge and move, the Zvbb bit and byte
 reversals and counts, and the eight compares, at SEW 8, 16, 32 or 64. Its
-result appears a fixed two cycles after the cycle that takes its input, for
+result appears a fixed three cycles after the cycle that takes its input, for
 every operation and operand, as Zvkt requires. A 72-bit adder with a
 separator bit after each byte serves every element width: a separator inside
 an element propagates the carry, one at an element boundary stops it and
@@ -807,14 +813,25 @@ the other blocks. It takes one operation at a time, signals when it is free,
 and returns each result a fixed P + 10 cycles later (P is the format's
 precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
 
-`vec_engine` puts the register file and the integer lanes together and
-executes committed vector instructions one at a time, register group by
-register group, with no overlap between instructions yet: the single-width
-integer arithmetic, logical, minimum and maximum, shift and Zvbb operations,
-the integer compares into a mask register, `vmerge` and `vmv.v.*`. Only active
-body elements are written (the register file's byte enables), so tail and
-inactive elements stay undisturbed. A read port and a byte-enabled write port
-serve the memory side.
+`vec_engine` combines the register file with the integer execution blocks.
+Single-width ALU operations execute a register group at a time.
+`vec_int_exec` executes one element at a time for multiply/divide, carry and
+borrow, widening and narrowing arithmetic, extension, fixed point, masks,
+reductions and permutations. `vec_fixed_lane` separates arithmetic, shifts,
+rounding and saturation into registered stages; `vec_div_lane` uses 64
+restoring steps. The multiply, mask and reduction units supply their
+respective results. Gathers and slides read the selected source element in a
+separate registered step. Compress visits every source element, including
+unselected elements, and advances a packed destination cursor. Whole-register
+moves use the encoded register count independently of `vl` and LMUL.
+
+Instructions execute in order with no overlap. Only active body bytes are
+written, preserving tails and inactive elements. Mask results merge one bit
+into the previous destination byte. Widening and narrowing operations permit
+the overlaps specified by their source and destination EEWs; reductions read
+their seed before writing their scalar result. Each operand value follows the
+same sequence of states for its instruction and configuration. A registered
+read port and a byte-enabled write port serve the memory side.
 
 ## Subtle cases
 

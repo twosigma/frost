@@ -898,6 +898,15 @@ cycle budgets are ceilings to tighten after the first run. To put them in the
 default pytest collection, remove `include_in_pytest=False` from the loop under
 `VECTOR_BRING_UP_PROGRAMS` in `test_run_cocotb.py`.
 
+The `vec_integer_test_v128`, `vec_integer_test_v256` and
+`vec_integer_test_v512` entries exercise 149 integer, fixed-point, mask and
+permutation instruction forms without vector memory, reading register images
+through scalar moves. `test_vector_reference.py` checks their expected images
+on Spike at the same three lengths, including a deliberately wrong expected
+bit. The `vec_integer_exec_v*` engine benches separately compare all registers,
+tails, inactive elements and saturation against an element model across SEW,
+LMUL and rounding modes.
+
 ### `test_riscv_torture.py`
 
 Runs a committed corpus of random RV64IMAFDC programs and compares each

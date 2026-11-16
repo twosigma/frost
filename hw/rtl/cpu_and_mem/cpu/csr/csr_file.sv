@@ -345,6 +345,9 @@ module csr_file #(
     // A vector arithmetic instruction retired (registered commit bus): it
     // clears vstart and sets VS Dirty.
     input logic i_varith_commit = 1'b0,
+    input logic i_vtox_commit = 1'b0,
+    input logic i_vec_vxsat_set = 1'b0,
+    output logic [1:0] o_vec_vxrm,
     // The architectural vl, vtype ({vill, vtype[7:0]}) and vstart, for the
     // vector unit (zero without it)
     output logic [15:0] o_vec_vl,
@@ -1683,6 +1686,7 @@ module csr_file #(
     assign o_vec_vl = 16'(vl_q);
     assign o_vec_vtype = {vill_q, vtype_low_q};
     assign o_vec_vstart = 16'(vstart_q);
+    assign o_vec_vxrm = vxrm_q;
 `ifdef FORMAL
     assign vec_vstart = vstart_q;
     assign vec_vxsat = vxsat_q;
@@ -1729,28 +1733,31 @@ module csr_file #(
         vl_q <= '0;
         vill_q <= 1'b1;
         vtype_low_q <= '0;
-      end else if (i_vcfg_commit.valid) begin
-        // A vector-config instruction never commits beside a CSR
-        // instruction, so this never meets a CSR write.
-        vill_q <= i_vcfg_commit.vill;
-        vtype_low_q <= i_vcfg_commit.vtype;
-        vl_q <= i_vcfg_commit.keep ?
+      end else begin
+        if (i_vec_vxsat_set) vxsat_q <= 1'b1;
+        if (i_vcfg_commit.valid) begin
+          // A vector-config instruction never commits beside a CSR
+          // instruction, so this never meets a CSR write.
+          vill_q <= i_vcfg_commit.vill;
+          vtype_low_q <= i_vcfg_commit.vtype;
+          vl_q <= i_vcfg_commit.keep ?
             ((vl_q > VlBits'(i_vcfg_commit.vlmax)) ? VlBits'(i_vcfg_commit.vlmax) : vl_q) :
             VlBits'(i_vcfg_commit.vl);
-        vstart_q <= '0;
-      end else if (i_varith_commit) begin
-        vstart_q <= '0;
-      end else if (vec_csr_write) begin
-        unique case (i_csr_address)
-          riscv_pkg::CsrVstart: vstart_q <= vec_new_value[VstartBits-1:0];
-          riscv_pkg::CsrVxsat: vxsat_q <= vec_new_value[0];
-          riscv_pkg::CsrVxrm: vxrm_q <= vec_new_value[1:0];
-          riscv_pkg::CsrVcsr: begin
-            vxsat_q <= vec_new_value[0];
-            vxrm_q  <= vec_new_value[2:1];
-          end
-          default: ;
-        endcase
+          vstart_q <= '0;
+        end else if (i_varith_commit || i_vtox_commit) begin
+          vstart_q <= '0;
+        end else if (vec_csr_write) begin
+          unique case (i_csr_address)
+            riscv_pkg::CsrVstart: vstart_q <= vec_new_value[VstartBits-1:0];
+            riscv_pkg::CsrVxsat: vxsat_q <= vec_new_value[0];
+            riscv_pkg::CsrVxrm: vxrm_q <= vec_new_value[1:0];
+            riscv_pkg::CsrVcsr: begin
+              vxsat_q <= vec_new_value[0];
+              vxrm_q  <= vec_new_value[2:1];
+            end
+            default: ;
+          endcase
+        end
       end
     end
     // VS is WARL with all four values storable. An mstatus or sstatus write
@@ -1762,13 +1769,16 @@ module csr_file #(
         mstatus_vs <= mstatus_new_value[riscv_pkg::MstatusVsLo+:2];
       else if (status_csr_write && (i_csr_address == riscv_pkg::CsrSstatus))
         mstatus_vs <= sstatus_new_value[riscv_pkg::MstatusVsLo+:2];
-      else if (vec_csr_write || i_vcfg_commit.valid || i_varith_commit) mstatus_vs <= FsDirty;
+      else if (vec_csr_write || i_vcfg_commit.valid || i_varith_commit ||
+               i_vec_vxsat_set || (i_vtox_commit && vstart_q != '0))
+        mstatus_vs <= FsDirty;
     end
   end else begin : gen_no_vector_csrs
     assign vec_read_value = '0;
     assign o_vec_vl = '0;
     assign o_vec_vtype = '0;
     assign o_vec_vstart = '0;
+    assign o_vec_vxrm = '0;
     assign vec_csr_write = 1'b0;
 `ifdef FORMAL
     assign vec_vstart = '0;
@@ -2614,6 +2624,7 @@ module csr_file #(
     // Vector arithmetic and vector-config instructions retire one at a time,
     // never beside a CSR instruction.
     assume (!(i_varith_commit && (i_csr_write_enable || i_vcfg_commit.valid)));
+    assume (!(i_vtox_commit && (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit)));
     // vl and VLMAX are element counts, at most VLEN (SEW 8, LMUL 8).
     assume (i_vcfg_commit.vlmax <= 16'(VLEN) && i_vcfg_commit.vl <= i_vcfg_commit.vlmax);
     assume (!(i_trap_taken && i_sret_taken));
@@ -2848,7 +2859,7 @@ module csr_file #(
       // register's old value (computed here independently of the RTL's RMW),
       // every other cycle keeps the value, and an access whose csr_op[1:0] is
       // 00 (no write intent) never changes it.
-      if ($past(VECTOR && (i_vcfg_commit.valid || i_varith_commit))) begin
+      if ($past(VECTOR && (i_vcfg_commit.valid || i_varith_commit || i_vtox_commit))) begin
         p_vstart_vcfg_clear : assert (vec_vstart == '0);
       end else if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVstart)) begin
         p_vstart_write : assert (vec_vstart == $past(f_vstart_next[VstartBits-1:0]));
@@ -2859,6 +2870,8 @@ module csr_file #(
         p_vxsat_write : assert (vec_vxsat == $past(f_vxsat_next[0]));
       end else if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVcsr)) begin
         p_vxsat_vcsr_write : assert (vec_vxsat == $past(f_vcsr_next[0]));
+      end else if ($past(VECTOR && i_vec_vxsat_set)) begin
+        p_vxsat_accumulate : assert (vec_vxsat);
       end else begin
         p_vxsat_stable : assert (vec_vxsat == $past(vec_vxsat));
       end
@@ -2869,7 +2882,10 @@ module csr_file #(
       end else begin
         p_vxrm_stable : assert (vec_vxrm == $past(vec_vxrm));
       end
-      if ($past(i_csr_op[1:0] == 2'b00 && !i_vcfg_commit.valid && !i_varith_commit)) begin
+      if ($past(
+              i_csr_op[1:0] == 2'b00 && !i_vcfg_commit.valid && !i_varith_commit &&
+                !i_vtox_commit && !i_vec_vxsat_set
+          )) begin
         p_vec_read_only_access :
         assert ({vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs} == $past(
             {vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs}
@@ -2880,14 +2896,17 @@ module csr_file #(
 
       // A vector CSR write sets VS Dirty; a status CSR write installs VS;
       // nothing else, including a read-only vector CSR access, changes it.
-      if ($past(vec_csr_write || (VECTOR && (i_vcfg_commit.valid || i_varith_commit)))) begin
-        p_vs_dirty_set : assert (mstatus_vs == FsDirty);
-      end else if ($past(
+      if ($past(
               status_csr_write && (i_csr_address == riscv_pkg::CsrMstatus ||
-                                              i_csr_address == riscv_pkg::CsrSstatus)
+                                   i_csr_address == riscv_pkg::CsrSstatus)
           )) begin
         p_vs_status_write :
         assert (!VECTOR || mstatus_vs == $past(csr_new_value[riscv_pkg::MstatusVsLo+:2]));
+      end else if ($past(
+              vec_csr_write || (VECTOR && (i_vcfg_commit.valid || i_varith_commit ||
+                  i_vec_vxsat_set || (i_vtox_commit && vec_vstart != 0)))
+          )) begin
+        p_vs_dirty_set : assert (mstatus_vs == FsDirty);
       end else begin
         p_vs_stable : assert (mstatus_vs == $past(mstatus_vs));
       end

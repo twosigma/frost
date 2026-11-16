@@ -3202,34 +3202,168 @@ package riscv_pkg;
     logic slot2_pred_taken;  // Slot-2 BTB predicted-taken accepted (the 1-bubble redirect)
   } if_width_events_t;
 
-  // A vector arithmetic instruction (one the decoder accepted) is illegal
-  // under vtype vt ({vill, vtype[7:0]}) when vtype is vill, when a register
-  // group is not aligned to LMUL, when a mask destination overlaps a source
-  // group anywhere but at its first register, or when a masked instruction
-  // other than a compare writes v0.
-  function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
-    logic [2:0] vlmul, funct3;
-    logic [5:0] funct6;
-    logic [4:0] vd, vs1, vs2, align;
-    logic mask_dest, uses_vs1, masked;
-    vlmul = vt[2:0];
-    funct3 = insn[14:12];
-    funct6 = insn[31:26];
-    vd = insn[11:7];
+  // Integer arithmetic served by the element sequencer in vec_int_exec.
+  // Width, register-group, overlap and vstart rules are checked separately.
+  function automatic logic vector_int_extra_ok(input logic [31:0] insn);
+    logic [5:0] f6;
+    logic [2:0] f3;
+    logic [4:0] vs1, vs2;
+    logic vm, iv, mv, vv, vx, vi;
+    f6 = insn[31:26];
+    f3 = insn[14:12];
     vs1 = insn[19:15];
     vs2 = insn[24:20];
-    masked = !insn[25];
-    mask_dest = (funct3 != 3'b010) && (funct6[5:3] == 3'b011);
-    uses_vs1 = (funct3 == 3'b000);
-    // LMUL 2, 4, 8 align groups to 2, 4, 8 registers; fractional LMUL to 1.
-    align = vlmul[2] ? 5'd0 : 5'((1 << vlmul[1:0]) - 1);
-    vector_arith_illegal = vt[8] ||
-        ((vs2 & align) != 5'd0) ||
-        (uses_vs1 && ((vs1 & align) != 5'd0)) ||
-        (!mask_dest && ((vd & align) != 5'd0)) ||
-        (mask_dest && (vd > vs2) && (vd <= (vs2 | align))) ||
-        (mask_dest && uses_vs1 && (vd > vs1) && (vd <= (vs1 | align))) ||
-        (masked && !mask_dest && (vd == 5'd0));
+    vm = insn[25];
+    vv = f3 == 0;
+    vx = f3 == 4;
+    vi = f3 == 3;
+    iv = vv || vx || vi;
+    mv = (f3 == 2) || (f3 == 6);
+    vector_int_extra_ok = 1'b0;
+    if (insn[6:0] == 7'h57) begin
+      if (iv) begin
+        case (f6)
+          6'h0c, 6'h0e, 6'h0f: vector_int_extra_ok = (f6 != 6'h0f) || !vv;
+          6'h10: vector_int_extra_ok = !vm;
+          6'h11: vector_int_extra_ok = 1'b1;
+          6'h12: vector_int_extra_ok = !vi && !vm;
+          6'h13: vector_int_extra_ok = !vi;
+          6'h20, 6'h21: vector_int_extra_ok = 1'b1;
+          6'h22, 6'h23: vector_int_extra_ok = !vi;
+          6'h27:
+          vector_int_extra_ok = !vi || (vm &&
+              ((vs1 == 0) || (vs1 == 1) || (vs1 == 3) || (vs1 == 7)));
+          6'h2a, 6'h2b, 6'h2c, 6'h2d, 6'h2e, 6'h2f, 6'h35: vector_int_extra_ok = 1'b1;
+          6'h30, 6'h31: vector_int_extra_ok = vv;
+          default: ;
+        endcase
+      end else if (mv) begin
+        case (f6)
+          6'h00, 6'h01, 6'h02, 6'h03, 6'h04, 6'h05, 6'h06, 6'h07: vector_int_extra_ok = f3 == 2;
+          6'h08, 6'h09, 6'h0a, 6'h0b: vector_int_extra_ok = 1'b1;
+          6'h0e, 6'h0f: vector_int_extra_ok = f3 == 6;
+          6'h10: vector_int_extra_ok = (f3 == 6) && vm && (vs2 == 0);
+          6'h12: vector_int_extra_ok = (f3 == 2) && (vs1 >= 2) && (vs1 <= 7);
+          6'h14:
+          vector_int_extra_ok = (f3 == 2) &&
+              ((vs1 == 1) || (vs1 == 2) || (vs1 == 3) || (vs1 == 16) ||
+               ((vs1 == 17) && (vs2 == 0)));
+          6'h17, 6'h18, 6'h19, 6'h1a, 6'h1b, 6'h1c, 6'h1d, 6'h1e, 6'h1f:
+          vector_int_extra_ok = (f3 == 2) && vm;
+          6'h20, 6'h21, 6'h22, 6'h23, 6'h24, 6'h25, 6'h26, 6'h27,
+          6'h29, 6'h2b, 6'h2d, 6'h2f,
+          6'h30, 6'h31, 6'h32, 6'h33, 6'h34, 6'h35, 6'h36, 6'h37,
+          6'h38, 6'h3a, 6'h3b, 6'h3c, 6'h3d, 6'h3f:
+          vector_int_extra_ok = 1'b1;
+          6'h3e: vector_int_extra_ok = f3 == 6;
+          default: ;
+        endcase
+      end
+    end
+  endfunction
+
+  // Register counts for a signed log2(EMUL). A fractional group occupies
+  // the low part of one register, while alignment concerns whole registers.
+  function automatic int vector_group_regs(input int emul);
+    vector_group_regs = (emul > 0) ? (1 << emul) : 1;
+  endfunction
+
+  function automatic logic vector_groups_overlap(input int a, input int an, input int b,
+                                                 input int bn);
+    vector_groups_overlap = (a < b + bn) && (b < a + an);
+  endfunction
+
+  function automatic logic vector_overlap_illegal(input int d, input int dn, input int deew,
+                                                  input int s, input int sn, input int seew,
+                                                  input int semul);
+    vector_overlap_illegal = 1'b0;
+    if (vector_groups_overlap(d, dn, s, sn)) begin
+      if (deew < seew) vector_overlap_illegal = d != s;
+      else if (deew > seew) vector_overlap_illegal = (semul < 0) || ((s + sn) != (d + dn));
+    end
+  endfunction
+
+  // Geometry of accepted integer arithmetic: EEW and EMUL, aligned groups,
+  // permitted source/destination overlaps, and instructions using masks or
+  // scalar vector elements independently of LMUL. Whole-register moves are
+  // independent of vtype; other encodings require a supported vtype.
+  function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
+    int ml, sew, da, sa, sb, nd, na, nb, de, ae, be, dm, am, bm;
+    logic [5:0] f6;
+    logic [2:0] f3;
+    logic vm, vv, mv, whole, red, wred, masks, scan, iota, id_op, ext;
+    logic uses_a, uses_b, mask_dest, scalar_move, widen, narrow, gather, slideup, compress;
+    logic illegal;
+    f6 = insn[31:26];
+    f3 = insn[14:12];
+    vm = insn[25];
+    da = int'(insn[11:7]);
+    sa = int'(insn[24:20]);
+    sb = int'(insn[19:15]);
+    ml = int'($signed(vt[2:0]));
+    sew = int'(vt[5:3]);
+    vv = (f3 == 0) || (f3 == 2);
+    mv = (f3 == 2) || (f3 == 6);
+    whole = (f3 == 3) && (f6 == 6'h27);
+    wred = (f3 == 0) && (f6 == 6'h30 || f6 == 6'h31);
+    red = wred || (f3 == 2 && f6 < 8);
+    masks = (f3 == 2) && (f6[5:3] == 3'b011);
+    scan = (f3 == 2) && (f6 == 6'h14) && sb < 16;
+    iota = (f3 == 2) && (f6 == 6'h14) && sb == 16;
+    id_op = (f3 == 2) && (f6 == 6'h14) && sb == 17;
+    ext = (f3 == 2) && (f6 == 6'h12) && sb < 8;
+    scalar_move = (f3 == 6) && (f6 == 6'h10);
+    widen = (mv && f6 >= 6'h30) || (!mv && f6 == 6'h35);
+    narrow = !mv && (f6 >= 6'h2c) && (f6 <= 6'h2f);
+    gather = !mv && (f6 == 6'h0c || (f3 == 0 && f6 == 6'h0e));
+    slideup = f6 == 6'h0e && !gather;
+    compress = (f3 == 2) && (f6 == 6'h17);
+    mask_dest = masks || scan || (!mv && ((f6[5:3] == 3'b011) || f6 == 6'h11 || f6 == 6'h13));
+    uses_a = !id_op && !scalar_move && !(f6 == 6'h17 && !mv && vm);
+    uses_b = vv && !red && !ext && !(f3 == 2 && (f6 == 6'h12 || f6 == 6'h14));
+    de = sew + int'(widen || wred);
+    ae = sew + int'(narrow || (mv && f6 >= 6'h34 && f6 <= 6'h37));
+    be = (gather && f6 == 6'h0e) ? 1 : sew;
+    if (ext) ae = sew - (4 - (sb >> 1));
+    dm = ml + de - sew;
+    am = ml + ae - sew;
+    bm = ml + be - sew;
+    if (red || scalar_move) dm = 0;
+    if (mask_dest) begin
+      de = -3;
+      dm = 0;
+    end
+    if (masks || scan || iota) begin
+      ae = -3;
+      am = 0;
+    end
+    if (masks || compress) begin
+      be = -3;
+      bm = 0;
+    end
+    nd = vector_group_regs(dm);
+    na = vector_group_regs(am);
+    nb = vector_group_regs(bm);
+    illegal = vt[8] || sew > 3 || ml == -4 || (ml < sew - 3) ||
+        dm > 3 || dm < -3 ||
+        (uses_a && (am > 3 || am < -3 || (ae < 0 && !(masks || scan || iota)) || ae > 3)) ||
+        (uses_b && (bm > 3 || bm < -3 || be > 3)) || de > 3 ||
+        (da % nd != 0) || (uses_a && sa % na != 0) || (uses_b && sb % nb != 0) ||
+        (!vm && da == 0 && !mask_dest && !red);
+    if (!red && !scalar_move) begin
+      if (uses_a) illegal |= vector_overlap_illegal(da, nd, de, sa, na, ae, am);
+      if (uses_b) illegal |= vector_overlap_illegal(da, nd, de, sb, nb, be, bm);
+      if (uses_a && uses_b && ae != be && vector_groups_overlap(sa, na, sb, nb)) illegal = 1'b1;
+    end
+    if ((gather || slideup || compress || scan || iota) && vector_groups_overlap(da, nd, sa, na))
+      illegal = 1'b1;
+    if ((gather || compress) && uses_b && vector_groups_overlap(da, nd, sb, nb)) illegal = 1'b1;
+    if (scan && !vm && da == 0) illegal = 1'b1;
+    if (whole) begin
+      nd = sb + 1;
+      illegal = (da % nd != 0) || (sa % nd != 0);
+    end
+    vector_arith_illegal = illegal;
   endfunction
 
   // ---------------------------------------------------------------------------

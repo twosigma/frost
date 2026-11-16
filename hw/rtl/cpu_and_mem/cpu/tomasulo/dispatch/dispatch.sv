@@ -47,19 +47,20 @@ module dispatch #(
     // =========================================================================
     // Instruction Input (from ID stage pipeline register)
     // =========================================================================
-    input riscv_pkg::from_id_to_ex_t       i_from_id_to_ex,
+    input riscv_pkg::from_id_to_ex_t        i_from_id_to_ex,
     // The vtype in effect at slot 1's place in program order ({vill, vtype}),
     // for vector arithmetic legality; cpu_ooo holds vector arithmetic while
     // it is unknown
-    input logic                      [8:0] i_vtype_spec = 9'd0,
+    input logic                      [ 8:0] i_vtype_spec = 9'd0,
     // vec_lmul_legality's classes of slot 1's instruction bits, formed before
     // the decoded queue; the default suits benches without vector arithmetic
-    input logic                      [3:0] i_vec_lmul_illegal = 4'd0,
+    input logic                             i_vec_vstart_nonzero = 1'b0,
+    input logic                      [32:0] i_vec_lmul_illegal = 33'd0,
     // Instruction-only vector load/store rejection, carried beside the classes
-    input logic                            i_vec_mem_illegal = 1'b0,
+    input logic                             i_vec_mem_illegal = 1'b0,
     // Bundle-valid candidate, not yet qualified by flush. Dispatch applies
     // i_flush (below) as the only recovery qualification.
-    input logic                            i_valid,
+    input logic                             i_valid,
 
     // Slot 2 is a preflush candidate. An absent slot 2 leaves admission to slot 1.
     input riscv_pkg::from_id_to_ex_t i_from_id_to_ex_2,
@@ -890,7 +891,7 @@ module dispatch #(
   // With both queued legality inputs from slot 1's own decoded instruction,
   // dispatch equals the arithmetic, VTOX and vector-memory reference for
   // every vtype, instruction and operation.
-  logic [3:0] f_vec_lmul_illegal;
+  logic [32:0] f_vec_lmul_illegal;
   logic f_vec_mem_illegal;
   logic f_vec_illegal_ref;
   vec_lmul_legality u_f_vec_lmul_legality (
@@ -906,7 +907,8 @@ module dispatch #(
   )) || ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) || (op == riscv_pkg::VLOAD) ||
       (op == riscv_pkg::VSTORE);
   always_comb begin
-    assume ({i_vec_mem_illegal, i_vec_lmul_illegal} == {f_vec_mem_illegal, f_vec_lmul_illegal});
+    assume (!i_vec_vstart_nonzero &&
+            ({i_vec_mem_illegal, i_vec_lmul_illegal} == {f_vec_mem_illegal, f_vec_lmul_illegal}));
     p_vec_illegal_exact : assert (o_rob_alloc_req.vec_illegal == f_vec_illegal_ref);
   end
 `endif
@@ -1408,10 +1410,16 @@ module dispatch #(
     // Vector arithmetic uses its queued LMUL class and vill; VTOX uses vill.
     // Vector loads and stores carry their instruction-only rejection from
     // before the queue. The vtype selects last.
-    o_rob_alloc_req.vec_illegal = ((o_rob_alloc_req.is_varith || (op == riscv_pkg::VTOX)) &&
-                                   i_vtype_spec[8]) ||
+    o_rob_alloc_req.vec_illegal = ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) ||
         (o_rob_alloc_req.is_varith &&
-         i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]]) || i_vec_mem_illegal;
+         (((i_vtype_spec[8] || i_vtype_spec[5]) && i_vec_lmul_illegal[32]) ||
+          i_vec_lmul_illegal[i_vtype_spec[4:0]])) || i_vec_mem_illegal ||
+        (i_vec_vstart_nonzero &&
+         ((o_rob_alloc_req.is_varith && !((i_from_id_to_ex.insn_bits[14:12] == 3'b011 &&
+             i_from_id_to_ex.insn_bits[31:26] == 6'h27) ||
+            (i_from_id_to_ex.insn_bits[14:12] == 3'b110 &&
+             i_from_id_to_ex.insn_bits[31:26] == 6'h10))) ||
+          (op == riscv_pkg::VTOX && i_from_id_to_ex.insn_bits[19:15] != 0)));
     // Sstvala: raw instruction bits, the illegal-instruction xtval.
     o_rob_alloc_req.insn_bits = i_from_id_to_ex.insn_bits;
 
