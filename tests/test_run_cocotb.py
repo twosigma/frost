@@ -1329,6 +1329,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=("Precise fetch faults on the second instruction of a pair"),
     ),
+    "slot2_tage_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="slot2_tage_bench",
+        nic_mac_clocks=False,
+        description=(
+            "Slot-2 tagged conditional branch overrides in both directions, "
+            "checked with machine HPM counters"
+        ),
+    ),
     "itlb_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
