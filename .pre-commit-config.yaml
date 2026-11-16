@@ -143,7 +143,8 @@ repos:
             verif/cocotb_tests/cache/test_coherence_stale_line\.py|
             verif/cocotb_tests/hang_probe\.py|
             verif/cocotb_tests/nic/test_nic_tx_segment\.py|
-            verif/cocotb_tests/nic/test_nic_(rx_fifo_limit|pause)\.py|
+            verif/cocotb_tests/nic/test_nic_(rx_fifo_limit|pause|rx_preamble_er|top_gmii_diag)\.py|
+            verif/cocotb_tests/nic/test_vcu118_phy_mdio\.py|
             verif/cocotb_tests/mmu/test_(ptw_walk_cache|l2tlb)\.py|
             fpga/flash/(make_flash_image|program_flash)\.py
           )$
@@ -196,6 +197,7 @@ repos:
           (?x)^(
             hw/third_party/.*|
             tests/test_(ddr_width_config|ptw_high_addr)\.sv|
+            formal/rs_payload_twin_formal\.sv|
             boards/vcu118/vcu118_(clock|eth1g)\.sv|
             hw/rtl/lib/cache/coherence_prefetch_agent\.sv|
             hw/rtl/peripherals/nic/nic_tx_(segment|beat_merge)\.sv|

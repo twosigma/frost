@@ -798,6 +798,22 @@ def test_synthesis_hook_marks_passes_and_skips_them(
 # ---------------------------------------------------------------------------
 
 
+def test_linux_cache_excludes_firmware_outputs() -> None:
+    """Linux cache restore keys can reuse downloads and ccache, never firmware."""
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["build-frost-linux-mmu"]["steps"]
+    caches = [
+        step["with"]
+        for step in steps
+        if step.get("uses", "").startswith("actions/cache")
+    ]
+    assert {cache["path"] for cache in caches} == {
+        "linux/dl",
+        "linux/ccache",
+        "linux/debian-kernel/dl",
+    }
+
+
 def test_collection_output_is_checked() -> None:
     """A selection record needs output whose node count matches its summary."""
     nodes = "a.py::t[x]\na.py::t[y]\n\n2/9 tests collected (7 deselected) in 0.1s\n"
