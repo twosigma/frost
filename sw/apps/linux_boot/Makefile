@@ -153,14 +153,11 @@ all: sw_ddr.mem sw64.mem
 sw64.mem: sw.mem ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 
-# Stage 1a: build the test initramfs and OpenSBI. A grouped target prevents
-# parallel Buildroot invocations in the same O= directory.
+# Stage 1a: build the test initramfs. Buildroot's post-image hook also builds
+# OpenSBI; the firmware rule below checks it on every make.
 # Package-source and inittab prerequisites trigger frost-stress-rebuild;
 # Buildroot does not detect package-source edits itself. check_base_initramfs
 # in debian_kernel.py also rejects frost_stress without the counter token.
-# The OpenSBI defconfig and build helper are prerequisites too: every Buildroot
-# run repeats the post-image hook, whose OpenSBI build regenerates its
-# configuration from a newer defconfig.
 #
 # Pass BR2_EXTERNAL on every call. The saved absolute BR2_EXTERNAL_FROST_PATH
 # still cannot be overridden this way, so reject builds configured through
@@ -171,13 +168,11 @@ sw64.mem: sw.mem ../../common/make_dword_mem.py
 # Buildroot does not uninstall deselected packages; these builds need a new tree.
 FROST_STRESS_SRC := $(wildcard $(BR2_EXTERNAL)/package/frost-stress/src/*.c)
 BR2_OVERLAY := $(wildcard $(BOARD_DIR)/rootfs-overlay-mmu/etc/inittab)
-OPENSBI_INPUTS := $(wildcard $(FROST_ROOT)/linux/opensbi_frost_defconfig \
-  $(FROST_ROOT)/linux/opensbi_build.py)
 BR2_RECORDED = $(patsubst "%",%,$(shell sed -n \
   's/^BR2_EXTERNAL_FROST_PATH=//p' "$(BR2_OUT)/.config" 2>/dev/null))
 BR2_STALE_KERNEL = $(shell sed -n 's/^BR2_LINUX_KERNEL=y$$/y/p' \
   "$(BR2_OUT)/.config" 2>/dev/null)
-$(BR2_INITRD) $(FW_JUMP) &: $(FROST_STRESS_SRC) $(BR2_OVERLAY) $(OPENSBI_INPUTS)
+$(BR2_INITRD): $(FROST_STRESS_SRC) $(BR2_OVERLAY)
 	@test -f "$(BR2_SRC)/Makefile" || { \
 	  echo "ERROR: buildroot submodule not initialized."; \
 	  echo "  Run: git submodule update --init linux/buildroot"; \
@@ -208,6 +203,20 @@ $(BR2_INITRD) $(FW_JUMP) &: $(FROST_STRESS_SRC) $(BR2_OVERLAY) $(OPENSBI_INPUTS)
 	    frost-stress-rebuild || exit 1; \
 	fi
 	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)"
+
+# Check the configuration, source, build options and toolchain on every make.
+# Changed inputs discard the OpenSBI output directory without rebuilding userspace.
+# Preserve staged timestamps when the firmware contents match.
+.PHONY: FORCE_OPENSBI
+FORCE_OPENSBI:
+
+$(FW_JUMP): $(BR2_INITRD) FORCE_OPENSBI
+	python3 "$(FROST_ROOT)/linux/opensbi_build.py" --out "$(IMAGES)/opensbi" $(MODULE_CROSS)
+	@for ext in bin elf; do \
+	  src="$(IMAGES)/opensbi/platform/generic/firmware/fw_jump.$$ext"; \
+	  dst="$(IMAGES)/fw_jump.$$ext"; \
+	  cmp -s "$$src" "$$dst" || cp "$$src" "$$dst" || exit 1; \
+	done
 
 # Stage 1b: Debian's kernel, cached under linux/debian-kernel. No prerequisites,
 # so the fetch runs only when the Image is absent; a changed pin changes this

@@ -1814,6 +1814,8 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
+      # Cache downloads and ccache entries, keeping OpenSBI output directories
+      # and firmware outside the caches. The post-image hook builds firmware.
       - name: Cache Buildroot downloads (source tarballs and the toolchain)
         uses: actions/cache@v6.1.0
         with:
