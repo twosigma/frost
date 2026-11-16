@@ -333,7 +333,7 @@ to 3, one for each way.
 
 | Instance | Wrapper | Memory | Macros |
 | --- | --- | --- | --- |
-| `cpu.cluster_memory.gen_coherent_tier.home.array.data_array` | `sdp_ram_byte_en` | 4,096 x 512, byte lanes | 1 row of 8 `sram_1w1r_4096x64_m8` |
+| `cpu.cluster_memory.gen_coherent_tier.home.array.gen_single.data_array` | `sdp_ram_byte_en` | 4,096 x 512, byte lanes | 1 row of 8 `sram_1w1r_4096x64_m8` |
 | `cpu.cluster_memory.gen_coherent_tier.home.array.gen_tag_ultra.tags` | `sdp_packed_tag_uram` | 4,096 tags of 18 bits, read four at a time | 1 row of 4 `sram_1w1r_1024x18` |
 | `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.gen_data_bank[w].data_array` | `sdp_ram_byte_en` | 1,024 x 256, byte lanes | 1 row of 4 `sram_1w1r_1024x64_m8` each |
 | `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.gen_tag_block.gen_way[w].tags` | `sdp_block_ram` | 1,024 x 19 | 1 `sram_1w1r_1024x19` each |
