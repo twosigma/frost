@@ -204,6 +204,12 @@ module if_stage #(
     output logic [1:0] o_backing_compressed,
     output logic [1:0] o_backing_return,
     output logic [1:0][riscv_pkg::PhysAddrBits-2:0] o_backing_target,
+    // Slot 2's return type and target for each size of slot 1, indexed by
+    // slot 1's compressed flag and replay-aligned the same way:
+    // o_backing_return[1] and o_backing_target[1] are the entries at
+    // o_from_if_to_pd.sel_compressed.
+    output logic [1:0] o_backing_slot2_return_by_size,
+    output logic [1:0][riscv_pkg::PhysAddrBits-2:0] o_backing_slot2_target_by_size,
     // Replay-aligned control-flow class from the aligner's predecode, used
     // by frontend_validity_tracker.
     output logic o_slot1_has_control_flow,
@@ -2142,6 +2148,8 @@ module if_stage #(
   logic [1:0] backing_compressed_live;
   logic [1:0] backing_return_live;
   logic [1:0][BackingTargetBits-1:0] backing_target_live;
+  logic [1:0] backing_slot2_return_by_size_live;
+  logic [1:0][BackingTargetBits-1:0] backing_slot2_target_by_size_live;
   logic backing_refresh_q;
   logic [XLEN-1:0] backing_refresh_pc_q;
   always_ff @(posedge i_clk) begin
@@ -2160,6 +2168,8 @@ module if_stage #(
       .o_compressed(backing_compressed_live),
       .o_return(backing_return_live),
       .o_target(backing_target_live),
+      .o_slot2_return_by_size(backing_slot2_return_by_size_live),
+      .o_slot2_target_by_size(backing_slot2_target_by_size_live),
       .i_update(i_from_ex_comb.btb_update && i_from_ex_comb.btb_update_jump),
       .i_update_pc(i_from_ex_comb.btb_update_pc),
       .i_update_target(i_from_ex_comb.btb_update_target),
@@ -2187,6 +2197,41 @@ module if_stage #(
   );
   assign {o_backing_hit, o_backing_compressed, o_backing_return, o_backing_target} =
       replay_saved_if_outputs ? backing_result_sc : backing_result_live;
+
+  // Slot 2's return type and target for each size of slot 1: the live
+  // result formed for that size, or during replay the captured slot-2 result
+  // for both sizes. With the packet's sel_compressed (is_compressed when
+  // live) as the select they are o_backing_return[1] and o_backing_target[1].
+  logic [1:0] backing_hit_sc;
+  logic [1:0] backing_compressed_sc;
+  logic [1:0] backing_return_sc;
+  logic [1:0][BackingTargetBits-1:0] backing_target_sc;
+  assign {backing_hit_sc, backing_compressed_sc, backing_return_sc, backing_target_sc} =
+      backing_result_sc;
+  for (genvar size = 0; size < 2; size++) begin : gen_backing_slot2_by_size
+    assign o_backing_slot2_return_by_size[size] = replay_saved_if_outputs ?
+        backing_return_sc[1] : backing_slot2_return_by_size_live[size];
+    assign o_backing_slot2_target_by_size[size] = replay_saved_if_outputs ?
+        backing_target_sc[1] : backing_slot2_target_by_size_live[size];
+  end
+`ifndef SYNTHESIS
+  always_comb begin
+    if (coverage_reset_seen_q && !$isunknown(
+            {
+              o_from_if_to_pd.sel_compressed,
+              o_backing_return[1],
+              o_backing_target[1],
+              o_backing_slot2_return_by_size,
+              o_backing_slot2_target_by_size
+            }
+        )) begin
+      p_backing_slot2_by_size_select :
+      assert ({o_backing_return[1], o_backing_target[1]} ==
+              {o_backing_slot2_return_by_size[o_from_if_to_pd.sel_compressed],
+               o_backing_slot2_target_by_size[o_from_if_to_pd.sel_compressed]});
+    end
+  end
+`endif
 
   // ===========================================================================
   // Return Address Stack Operation and Recovery Point
@@ -3321,6 +3366,21 @@ module if_stage #(
       assert (o_from_if_to_pd_2.sel_nop || !o_from_if_to_pd.fetch_fault ||
               o_from_if_to_pd_2.fetch_fault);
     end
+  end
+
+  // The backing BTB, removed from this model, outputs slot 2's fields of the
+  // size it is given from the fields it forms for each size
+  // (formal/backing_btb.sby, size_select tasks). Given that, the per-size
+  // outputs select to the slot-2 result by the packet's size, live or
+  // replayed. No reset qualifier: the first step covers every register value.
+  always_comb begin
+    assume ({backing_return_live[1], backing_target_live[1]} ==
+            {backing_slot2_return_by_size_live[is_compressed],
+             backing_slot2_target_by_size_live[is_compressed]});
+    f_if_backing_slot2_by_size_exact :
+    assert ({o_backing_return[1], o_backing_target[1]} ==
+            {o_backing_slot2_return_by_size[o_from_if_to_pd.sel_compressed],
+             o_backing_slot2_target_by_size[o_from_if_to_pd.sel_compressed]});
   end
 
   always_ff @(posedge i_clk) begin

@@ -16,6 +16,7 @@ cover: smtbmc boolector
 read -formal -sv riscv_pkg.sv
 read -formal -sv rvc_decompressor.sv
 read -formal -sv pd_target_high_precompute.sv
+read -formal -sv pd_redirect_next.sv
 read -formal -sv pd_stage.sv
 hierarchy -check -top pd_stage
 setattr -unset dont_touch *
@@ -26,4 +27,5 @@ prep -flatten -top pd_stage
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
 ../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_target_high_precompute.sv
+../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_redirect_next.sv
 ../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_stage.sv
