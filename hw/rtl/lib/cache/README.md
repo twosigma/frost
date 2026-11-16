@@ -496,15 +496,22 @@ fatal logic. The CPU's retirement stop takes effect on the cycle after the
 failure. An endpoint accepts every acquisition while idle, so the
 controller reads the endpoint's idle state for acceptance. The lookup address,
 selected read slot and grant payload have no reset and capture on every Idle
-cycle, because nothing reads them until a selection leaves Idle. The read
-address joins that selection last. The priority conditions above a read are
-prepared separately, so read eligibility controls the final address selection
-without passing through the non-read address priority chain. The phase and
-the operation that the Idle selection assigns are prepared the same way, from
-every source except the read selector's found output, which selects last: a
-found read takes the read operation through a final selection at the
-operation register's input, and Lookup through the controller's last
-assignment to the phase.
+cycle, because nothing reads them until a selection leaves Idle. The lookup
+address is prepared for both values of the store head's readiness, which
+selects between them last; in that readiness, the gather hold, endpoint 0's
+write-back credit and the head's write-back address comparison join the terms
+read directly from registers in one final step. In each
+prepared address the read address joins last: the priority conditions above a
+read are prepared separately, so read eligibility controls that selection
+without passing through the non-read address priority chain. Read eligibility
+and SC readiness both take the grant selection last. The phase and the
+operation that the Idle selection assigns are prepared the same way, from
+every source except the store head's readiness and the read selector's found
+output, which select last. A ready head on its turn takes the store operation,
+and a found read the read operation: a credited read turn ahead of the head,
+an ordinary read turn only without a ready head. Both late signals enter one
+final selection at the operation register's input, and their Lookup phase is
+the controller's last assignment to the phase.
 
 Each read slot's kind registers on its allocation edge, so selection reads the
 slot's kind without selecting from the buffered payload. Each slot has a local

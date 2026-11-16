@@ -484,6 +484,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_l1d_lookup.sby",
+        "The L1D lookup address and head readiness match the one-chain reference.",
+        tasks=("lookup_prove", "lookup_multi_prove", "lookup_stream_prove"),
+    ),
+    FormalTarget(
         "coherence_home_select.sby",
         "Seat admission and circular work selection, in encoded and one-hot form, "
         "match serial priority.",
@@ -727,6 +732,11 @@ FORMAL_TARGETS = [
         "sq_committed_empty.sby",
         "Store-queue committed-empty state matches the reference through flush and commit",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "sq_next_same.sby",
+        "Store-queue same-sector claim matches the reference after launch and allocation",
+        tasks=("bmc", "bmc_cpu"),
     ),
     FormalTarget(
         "pc_pending_capture.sby",
@@ -1772,6 +1782,7 @@ FORMAL_TARGETS = [
         tasks=(
             "l1d_twin_single",
             "l1d_twin_multi",
+            "l1d_twin_stream",
         ),
     ),
     FormalTarget(
@@ -1838,7 +1849,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "store_queue_twin.sby",
         "Store queue: primitive and portable forms are equivalent.",
-        tasks=("sq_twin",),
+        tasks=("sq_twin", "sq_twin_cpu"),
     ),
     FormalTarget(
         "reservation_station_twin.sby",
@@ -2378,6 +2389,18 @@ SBY_TASKS = [
         "coh_l1d_put_select_prove",
         "The W selection releases a slot without a put on the next edge.",
     ),
+    (
+        "lookup_prove",
+        "L1D lookup address selected last by head readiness equals the reference, one miss slot.",
+    ),
+    (
+        "lookup_multi_prove",
+        "L1D lookup address selected last by head readiness equals the reference, three miss slots.",
+    ),
+    (
+        "lookup_stream_prove",
+        "L1D lookup address selected last by head readiness equals the reference, eight slots, streaming.",
+    ),
     ("coh_array_select_prove", "Conditional data selection with one way."),
     ("coh_array_select4_prove", "Conditional data selection with four ways."),
     ("coh_array_select56_prove", "Conditional data selection at 56 address bits."),
@@ -2527,7 +2550,10 @@ SBY_TASKS = [
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("bmc_core", "Load-result selection with the CPU feature configuration."),
-    ("bmc_cpu", "Store-queue live count with the CPU's store-queue parameters."),
+    (
+        "bmc_cpu",
+        "The store-queue reference check (live count or same-sector claim) with the CPU's store-queue, dispatch, precise and Normal-memory settings.",
+    ),
     ("coh_lq_capture4_prove", "Coherent capture equality at four entries."),
     ("coh_lq_capture8_prove", "Coherent capture equality at eight entries."),
     ("coh_lq_capture16_prove", "Coherent capture equality at sixteen entries."),
@@ -3301,6 +3327,10 @@ SBY_TASKS = [
         "L1D primitive form equals its portable form, three miss slots.",
     ),
     (
+        "l1d_twin_stream",
+        "L1D primitive form equals its portable form, eight miss slots with stream prefetching.",
+    ),
+    (
         "dbq_twin",
         "Decoded bundle queue primitive form equals its portable form with the split shadow stall.",
     ),
@@ -3363,6 +3393,10 @@ SBY_TASKS = [
     (
         "sq_twin",
         "Store queue primitive form equals its portable form.",
+    ),
+    (
+        "sq_twin_cpu",
+        "Store queue primitive form equals its portable form with the CPU's store-queue settings.",
     ),
     (
         "rs_twin_indexed",
