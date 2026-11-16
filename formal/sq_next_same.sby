@@ -15,10 +15,14 @@ read_verilog -formal -D SYNTHESIS -D SQ_NEXT_SAME_LOCAL_PROOF -sv store_queue.sv
 # The CPU's store queue: trusted dispatch room, precise uncached writes and
 # buffered Normal-memory writes.
 cpu: chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 -set CACHE_NORMAL_MEMORY 1 store_queue
+# The submodules' outputs become free inputs; their sources are not read, so
+# the hierarchy check below fails if any instance is left.
 delete t:sq_forwarding_unit t:vec_hold_rows t:mwp_dist_ram t:sdp_dist_ram t:mwp_dist_ram_ohread
 proc
 setundef -undriven -anyseq
-opt
+# No flip-flop simplification: a register that this configuration never
+# writes after reset keeps a free value too.
+opt -noff
 prep -top store_queue
 select -assert-count 1 t:$check
 select -assert-none t:$assume a:init
