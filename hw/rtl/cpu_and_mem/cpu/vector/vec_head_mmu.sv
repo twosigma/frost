@@ -973,6 +973,7 @@ module vec_head_mmu #(
 `ifdef VEC_HEAD_MMU_PROOF
   logic f_past_valid = 1'b0;
   logic f_cdb_accepted = 1'b0;
+  logic f_cdb_registered = 1'b0;
   logic f_launched = 1'b0;
   logic f_retired = 1'b0;
   logic [1:0] f_walks = '0;
@@ -987,12 +988,17 @@ module vec_head_mmu #(
       else assume (!i_rst);
     assume (!i_flush_all && !i_fatal_stop && !i_vmu_fatal);
     assume (i_head_tag == 3 && !i_rob_empty && i_head_safe);
-    assume (i_head_is_vmem == !f_retired && i_head_insn == 32'h02056407);
+    // vec_unit clears the head's vector memory flag on the edge that accepts
+    // its CDB completion.
+    assume (i_head_is_vmem == !f_cdb_accepted && i_head_insn == 32'h02056407);
     assume (i_head_vmt_idx == 0 && i_vec_idle && !i_csr_wb_pending && !i_int_take_armed);
     assume (i_vl == 4 && i_vtype == 9'h10 && i_vstart == 0);
     assume (i_rf_read_data == 64'h400ff8 && i_vrf_read_data == '1);
     assume (i_translate && !i_eff_priv_u && !i_sum && !i_mxr && !i_tlb_invalidate);
-    assume (!i_commit_valid || (f_cdb_accepted && !f_page1_fault && !f_retired));
+    // The CDB is registered before the ROB, whose earliest (bypass) commit
+    // follows in the next cycle, and the commit bus is registered again: the
+    // registered commit arrives at least two cycles after the acceptance.
+    assume (!i_commit_valid || (f_cdb_registered && !f_page1_fault && !f_retired));
     assume (i_commit_tag == 3 && !i_commit_exception);
     assume (!i_vmu_done || f_launched);
     if (i_walk_resp_valid) begin
@@ -1007,6 +1013,7 @@ module vec_head_mmu #(
     end
     if (i_rst) begin
       f_cdb_accepted <= 1'b0;
+      f_cdb_registered <= 1'b0;
       f_launched <= 1'b0;
       f_retired <= 1'b0;
       f_walks <= '0;
@@ -1024,8 +1031,15 @@ module vec_head_mmu #(
         if (f_pending_vpn == 27'h400) f_pages_checked[0] <= 1'b1;
         if (f_pending_vpn == 27'h401) f_pages_checked[1] <= 1'b1;
       end
-      if (o_cdb_done) f_cdb_accepted <= 1'b1;
+      if (o_cdb_done) begin
+        f_cdb_accepted <= 1'b1;
+        p_single_completion : assert (!f_cdb_accepted);
+      end
+      if (f_cdb_accepted) f_cdb_registered <= 1'b1;
       if (i_commit_valid) f_retired <= 1'b1;
+      // Every commit of the instruction is consumed: it retires the load and
+      // launches its descriptor.
+      if (i_commit_valid) p_commit_consumed : assert (o_desc_valid && o_retire_vload);
       if (o_desc_valid) begin
         f_launched <= 1'b1;
         p_translate_before_access : assert (f_walks == 2 && f_pages_checked == 2'b11);
@@ -1048,6 +1062,8 @@ module vec_head_mmu #(
       end
       c_partial : cover (o_desc_valid && f_page1_fault);
       c_retired : cover (o_desc_valid && !f_page1_fault);
+      // The commit at the earliest cycle the registered buses allow.
+      c_earliest_commit : cover (i_commit_valid && !$past(f_cdb_registered));
     end
   end
 `endif

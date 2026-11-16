@@ -983,7 +983,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_head_mmu.sby",
-        "Head vector translation before access, precise partial faults and commit shield",
+        "Head vector translation before access, precise partial faults, commit shield "
+        "and consumption of every commit",
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
