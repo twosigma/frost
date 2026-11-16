@@ -181,9 +181,12 @@ module coherence_home_completions #(
   logic [  SlotBits-1:0] free_slot_index;
   logic [ResultBits-1:0] free_buffer_index;
   logic work_selected_q, work_found;
-  // The selected slot's parked state is captured with the work selection,
-  // including a park on that edge. Dispatch reads this register directly.
-  logic work_parked_q;
+  // Each pair captures the selected slot's parked state, including a park
+  // on the selecting edge. Dispatch reduces these registered groups.
+  localparam int unsigned ParkGroups = (SLOTS + 1) / 2;
+  logic [ParkGroups-1:0] work_parked_q;
+  (* keep = "true" *) logic [SLOTS-1:0] work_park_enable;
+  logic [SLOTS-1:0] work_park_prior;
   logic [SLOTS-1:0] work_eligible;
   logic [SlotBits-1:0] work_slot_q, work_pick;
   // Work rotates over positions: one per main slot, then one for all the
@@ -374,7 +377,7 @@ module coherence_home_completions #(
   wire request_legal = request_q_legal && request_opcode_legal && incoming.q.epoch == 1'b0 &&
       (incoming.q.src == 2'd0 || incoming.q.src >= 2'd2) && incoming.addr[4:0] == 0;
   assign o_d_ready = !i_fatal_stop && !duplicate && request_legal && free_slot;
-  assign o_work_valid = !i_fatal_stop && work_selected_q && !work_parked_q;
+  assign o_work_valid = !i_fatal_stop && work_selected_q && !(|work_parked_q);
   assign o_work = work[work_slot_q];
   assign o_work_tid = 6'(work_slot_q);
   assign o_work_buffer = work_buffer_q;
@@ -749,13 +752,29 @@ module coherence_home_completions #(
   end
 
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_parked_next
+    wire retry = i_retry_valid && i_retry_tid == 6'(slot);
+    wire selected = work_selected_q ? work_slot_q == SlotBits'(slot) : work_pick == SlotBits'(slot);
     assign parked_next[slot] = forwarded[slot] ? 1'b0 :
-        (i_retry_valid && i_retry_tid == 6'(slot)) ? i_retry_park :
+        retry ? i_retry_park :
         i_wake[slot] ? 1'b0 : i_park[slot] ? 1'b1 : parked_q[slot];
+    // These qualifiers do not depend on the arriving park event.
+    assign work_park_enable[slot] = selected && !forwarded[slot] && !retry && !i_wake[slot];
+    assign work_park_prior[slot] = selected && !forwarded[slot] &&
+        (retry ? i_retry_park : (!i_wake[slot] && parked_q[slot]));
   end
-  always_ff @(posedge i_clk) begin
-    if (i_rst) work_parked_q <= 1'b0;
-    else work_parked_q <= parked_next[work_selected_q ? work_slot_q : work_pick];
+  for (genvar group_index = 0; group_index < ParkGroups; group_index++) begin : gen_work_park
+    localparam int unsigned Base  = 2 * group_index;
+    localparam int unsigned Width = SLOTS - Base < 2 ? SLOTS - Base : 2;
+    (* keep = "true" *) wire prior;
+    assign prior = |work_park_prior[Base+:Width];
+    // Two qualified park inputs and the prior-state term fit together;
+    // the slot-selection mux is outside the park event's capture path.
+    always_ff @(posedge i_clk) begin
+      if (i_rst) work_parked_q[group_index] <= 1'b0;
+      else
+        work_parked_q[group_index] <= prior ||
+          |(i_park[Base+:Width] & work_park_enable[Base+:Width]);
+    end
   end
 
   always_ff @(posedge i_clk) begin
@@ -1031,7 +1050,8 @@ module coherence_home_completions #(
         assert (!buffer_live_q[BufferBits'(work_buffer_q)] && !parked_q[work_slot_q]);
         assert (int'(work_buffer_q) < RESULT_SLOTS);
       end
-      if (work_selected_q) assert (work_parked_q == parked_q[work_slot_q]);
+      if (work_selected_q)
+        assert (work_parked_q == (ParkGroups'(parked_q[work_slot_q]) << (work_slot_q >> 1)));
       // A forward names one parked GetS, LoadReserved or GetM that holds no
       // buffer, pin or result and has no other event on the edge; the slot
       // that owns the forward buffer holds its pin and has no engine.
@@ -1308,7 +1328,9 @@ module coherence_home_completions #(
       p_capture_slot : assert (work_slot_q == f_capture_slot_q);
       p_capture_dispatch : assert (o_work_valid == f_capture_valid);
       if (work_selected_q)
-        p_capture_selected_park : assert (work_parked_q == f_capture_parked_q[f_capture_slot_q]);
+        p_capture_selected_park :
+        assert (work_parked_q ==
+            (ParkGroups'(f_capture_parked_q[f_capture_slot_q]) << (f_capture_slot_q >> 1)));
     end
   end
 `endif
