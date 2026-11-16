@@ -1245,6 +1245,11 @@ that also starts its `GrantOp`. A twin whose lower record received
 zeros are performed at the lower record's installation and the upper
 sector's at the twin's, both inside the `GetMZero`'s hold on the line:
 
+- With 64-byte home lines, from endpoint acceptance of `GetMZero(X)` through
+  its Done handshake, the L1D accepts no request for `X + 32`. This includes
+  retries of flushed loads
+  that remain live in the L1D. Its own same-block twin holds the upper sector
+  until installation; an older head twin in a full buffer supplies no such hold.
 - From the `GetMZero`'s dispatch to its U, the home serves no other request
   to either sector and pins the line's way, so no DMA access, PTW or IF read,
   probe or replacement observes the L2's zero image or the L1D's sectors

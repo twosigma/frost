@@ -3689,6 +3689,34 @@ module coherence_l1d #(
 `endif
 `endif
 `ifdef L1D_ZERO_CHECKS
+`ifndef SYNTHESIS
+  // With 64-byte home lines, an endpoint holds both sectors from GetMZero
+  // acceptance through Done.
+  // Check request admission, including retries of reads that predate the zero.
+  logic [EpSlots-1:0] f_zero_open_q;
+  logic [MISSES-1:0] f_zero_upper_request;
+  for (genvar ep = 0; ep < MISSES; ep++) begin : gen_zero_held
+    coh_d_t held;
+    assign held = o_d[ep];
+    assign f_zero_upper_request[ep] = f_zero_open_q[ep] &&
+        acquisition.addr[ADDR_WIDTH-1:5] == {held.addr[ADDR_WIDTH-1:6], 1'b1};
+  end
+  always_ff @(posedge i_clk) begin
+    for (int ep = 0; ep < MISSES; ep++) begin
+      if (i_rst) begin
+        f_zero_open_q[ep] <= 1'b0;
+      end else begin
+        if (o_c_valid[ep] && i_c_ready[ep]) f_zero_open_q[ep] <= 1'b0;
+        if (ep_request_valid[ep] && ep_request_ready[ep]) begin
+          f_zero_open_q[ep] <= HOME_LINE_BYTES == 64 &&
+              acquisition.opcode == coherence_pkg::GetMZero;
+        end
+      end
+    end
+    if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready))
+      p_zero_no_upper_request : assert (!(|f_zero_upper_request));
+  end
+`endif
   // A sector that a cbo.zero record holds, the lower record or its twin.
   logic [3:0] f_zero_path_sector;
   always_comb
@@ -3704,9 +3732,9 @@ module coherence_l1d #(
       if (store_push && i_write_zero)
         p_zero_write_block : assert (i_address[5:0] == 0 && i_write_mask == 8'hff);
       // A GetMZero starts from a zero record. With 64-byte home lines it is a
-      // lower record whose twin follows it, and the registered sample of its
-      // upper sector still matches: no endpoint, frozen PutM or older record
-      // holds that sector.
+      // lower record followed by its own same-block twin, not a wrapped head
+      // twin. The registered upper-sector sample matches: no endpoint,
+      // frozen PutM or older record holds that sector.
       if (|(ep_request_valid & ~live) && acquisition.opcode == coherence_pkg::GetMZero) begin
         p_zero_acquire_record : assert ((operation_q == StoreOp || operation_q == LookaheadOp) &&
             store_valid[store_selected_q] && store_zero[store_selected_q]);
@@ -3762,6 +3790,188 @@ module coherence_l1d #(
             !(wb_reserved_q && reserved_wb_q == freeze_slot_q && twin_ep_q != '0));
     end
 `ifdef FORMAL
+`ifdef ZERO_PROGRESS_COVER
+`define L1D_ZERO_SCHEDULE
+`endif
+`ifdef ZERO_REQUEST_PROOF
+`define L1D_ZERO_SCHEDULE
+`endif
+`ifdef L1D_ZERO_SCHEDULE
+  // A scalar store makes the first zero's lower sector a Modified hit. Hold
+  // its twin's grant until four records contain that twin, two scalar stores
+  // and a lower zero awaiting its twin.
+  // Only public inputs are constrained; the controller and arrays run from reset.
+  (* anyconst *) logic f_wrap_same;
+  logic [2:0] f_wrap_writes_q;
+  logic f_wrap_first_grant_q, f_wrap_full_q, f_wrap_target_q, f_wrap_done_q;
+  logic [1:0] f_wrap_installed_q;
+  logic [EpBits-1:0] f_wrap_ep_q;
+  logic [EpSlots-1:0] f_wrap_grants_q, f_wrap_releases_q;
+  logic [EpSlots-1:0] f_wrap_grant_allow;
+  logic f_wrap_write, f_wrap_g_valid, f_wrap_u_valid;
+  logic [ADDR_WIDTH-1:0] f_wrap_address, f_wrap_target;
+  logic [EpSlots-1:0][3:0] f_wrap_d_opcode;
+  logic [EpSlots-1:0][8:0] f_wrap_d_q, f_wrap_c_q;
+  logic [EpSlots-1:0][ADDR_WIDTH-1:0] f_wrap_d_addr, f_wrap_c_addr;
+  logic [EpSlots-1:0][5:0] f_wrap_c_tid;
+  coh_g_t f_wrap_g;
+  coh_u_t f_wrap_u;
+  coh_w_t f_wrap_w;
+  coh_wa_t f_wrap_wa_q;
+  logic f_wrap_wa_valid_q;
+  assign f_wrap_w = o_w;
+`ifdef ZERO_REQUEST_PROOF
+  // Two loads occupy the load endpoints. A third load misses without an
+  // owner before the zero arrives, as a flushed load can remain in the L1D.
+  logic [1:0] f_wrap_reads_q;
+  logic [7:0] f_wrap_cycle_q;
+  logic f_wrap_retry_q;
+  logic f_wrap_read;
+  logic [ADDR_WIDTH-1:0] f_wrap_read_addr;
+  assign f_wrap_read = active && f_wrap_writes_q == 2 &&
+      store_count == 1 && store_twin[store_head_index] &&
+      (f_wrap_reads_q == 0 || (f_wrap_reads_q == 1 && live[1]) ||
+       (f_wrap_reads_q == 2 && &live[MISSES-1:0]));
+  assign f_wrap_read_addr = f_wrap_reads_q == 0 ? ADDR_WIDTH'(32'h80000200) :
+      f_wrap_reads_q == 1 ? ADDR_WIDTH'(32'h80000320) : f_wrap_target + ADDR_WIDTH'(32);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_wrap_reads_q <= '0;
+      f_wrap_cycle_q <= '0;
+      f_wrap_retry_q <= 1'b0;
+    end else begin
+      if (f_wrap_read) f_wrap_reads_q <= f_wrap_reads_q + 1'b1;
+      if (!(&f_wrap_cycle_q)) f_wrap_cycle_q <= f_wrap_cycle_q + 1'b1;
+      if (|(ep_request_valid & ep_request_ready) && acquisition.opcode == coherence_pkg::GetS &&
+          acquisition.addr == f_wrap_target + ADDR_WIDTH'(32) && store_twin_pending)
+        f_wrap_retry_q <= 1'b1;
+      if (f_wrap_cycle_q == 158)
+        p_zero_request_complete : assert (f_wrap_full_q && f_wrap_retry_q && f_wrap_done_q);
+      p_zero_request_drained : cover (f_wrap_cycle_q == 158 && f_wrap_full_q &&
+          f_wrap_retry_q && f_wrap_done_q);
+    end
+    assume (!f_wrap_same);
+    assume (i_read_valid == f_wrap_read && i_read_id == 3'(f_wrap_reads_q));
+    assume (i_read_kind == ReadLoad && i_read_size == 3 && i_read_tag == 0);
+  end
+`endif
+  for (genvar ep = 0; ep < MISSES; ep++) begin : gen_wrap_packets
+    coh_d_t d;
+    coh_c_t c;
+    assign d = o_d[ep];
+    assign c = o_c[ep];
+    assign f_wrap_d_opcode[ep] = d.opcode;
+    assign f_wrap_d_q[ep] = d.q;
+    assign f_wrap_d_addr[ep] = d.addr;
+    assign f_wrap_c_q[ep] = c.q;
+    assign f_wrap_c_addr[ep] = c.addr;
+    assign f_wrap_c_tid[ep] = c.tid;
+  end
+  assign f_wrap_target = ADDR_WIDTH'(f_wrap_same ? 32'h80000000 : 32'h800000c0);
+  always_comb begin
+    f_wrap_address = f_wrap_writes_q <= 1 ? ADDR_WIDTH'(32'h80000000) :
+        f_wrap_writes_q == 2 ? ADDR_WIDTH'(32'h80080000) :
+        f_wrap_writes_q == 3 ? ADDR_WIDTH'(32'h80100000) : f_wrap_target;
+    f_wrap_write = active && store_launch_ready_q && f_wrap_writes_q < 5 &&
+        (f_wrap_writes_q != 1 || (!pending_q && !any_live)) &&
+        (f_wrap_writes_q != 2 || (store_count == 1 && store_twin[store_head_index]));
+`ifdef ZERO_REQUEST_PROOF
+    if (f_wrap_writes_q == 2 && !(f_wrap_reads_q == 3 && rd_miss_q[2] && !rd_owned[2]))
+      f_wrap_write = 1'b0;
+    if (f_wrap_read) f_wrap_address = f_wrap_read_addr;
+`endif
+    f_wrap_g_valid = 1'b0;
+    f_wrap_g = '0;
+    f_wrap_u_valid = 1'b0;
+    f_wrap_u = '0;
+    f_wrap_grant_allow = '1;
+`ifdef ZERO_REQUEST_PROOF
+    if (f_wrap_first_grant_q) f_wrap_grant_allow[0] = f_wrap_retry_q;
+`endif
+    for (int ep = MISSES - 1; ep >= 0; ep--) begin
+      if (f_wrap_grants_q[ep] && (!f_wrap_first_grant_q || f_wrap_full_q) &&
+          f_wrap_grant_allow[ep]) begin
+        f_wrap_g_valid = 1'b1;
+        f_wrap_g.q = f_wrap_d_q[ep];
+        f_wrap_g.addr = f_wrap_d_addr[ep];
+        f_wrap_g.tid = 6'(ep);
+        f_wrap_g.opcode = f_wrap_d_opcode[ep] == coherence_pkg::GetMZero ?
+            coherence_pkg::GrantMZero : f_wrap_d_opcode[ep] == coherence_pkg::GetS ?
+            coherence_pkg::GrantS : coherence_pkg::GrantM;
+      end
+      if (f_wrap_releases_q[ep]) begin
+        f_wrap_u_valid = 1'b1;
+        f_wrap_u.q = f_wrap_c_q[ep];
+        f_wrap_u.addr = f_wrap_c_addr[ep];
+        f_wrap_u.tid = f_wrap_c_tid[ep];
+      end
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_wrap_writes_q <= '0;
+      f_wrap_first_grant_q <= 1'b0;
+      f_wrap_full_q <= 1'b0;
+      f_wrap_target_q <= 1'b0;
+      f_wrap_done_q <= 1'b0;
+      f_wrap_installed_q <= '0;
+      f_wrap_ep_q <= '0;
+      f_wrap_grants_q <= '0;
+      f_wrap_releases_q <= '0;
+      f_wrap_wa_valid_q <= 1'b0;
+      f_wrap_wa_q <= '0;
+    end else begin
+      f_wrap_wa_valid_q <= o_w_valid && i_w_ready;
+      f_wrap_wa_q <= {f_wrap_w.hart, f_wrap_w.put_id, f_wrap_w.epoch,
+          f_wrap_w.addr, 1'b0, 6'b0, 1'b0};
+      if (store_push) f_wrap_writes_q <= f_wrap_writes_q + 1'b1;
+      if (i_g_valid && o_g_ready) f_wrap_first_grant_q <= 1'b1;
+      if (store_count == 4 && store_twin_pending && store_twin[store_head_index] &&
+          store_zero[2'(store_head_index + 2'd3)] &&
+          !store_twin[2'(store_head_index + 2'd3)] &&
+          store_twin_addr == f_wrap_target + ADDR_WIDTH'(32) &&
+          store_addr[store_head_index] == ADDR_WIDTH'(32'h80000020)) f_wrap_full_q <= 1'b1;
+      for (int ep = 0; ep < MISSES; ep++) begin
+        if (o_d_valid[ep] && i_d_ready[ep]) begin
+          f_wrap_grants_q[ep] <= 1'b1;
+          if (f_wrap_full_q && f_wrap_d_opcode[ep] == coherence_pkg::GetMZero &&
+              f_wrap_d_addr[ep] == f_wrap_target) begin
+            f_wrap_target_q <= 1'b1;
+            f_wrap_ep_q <= EpBits'(ep);
+          end
+        end
+        if (i_g_valid && ep_g_ready[ep]) f_wrap_grants_q[ep] <= 1'b0;
+        if (o_c_valid[ep] && i_c_ready[ep]) begin
+          f_wrap_releases_q[ep] <= 1'b1;
+          if (f_wrap_target_q && f_wrap_ep_q == EpBits'(ep) && &f_wrap_installed_q)
+            f_wrap_done_q <= 1'b1;
+        end
+        if (i_u_valid && ep_u_ready[ep]) f_wrap_releases_q[ep] <= 1'b0;
+      end
+      if (f_wrap_target_q && active && phase_q == Update && update_ready &&
+          update_addr_q[ADDR_WIDTH-1:6] == f_wrap_target[ADDR_WIDTH-1:6] &&
+          update_mask_q == '1 && image_q == '0 && state_q == coherence_pkg::Modified)
+        f_wrap_installed_q[update_addr_q[5]] <= 1'b1;
+    end
+    assume (i_rst == !f_past_valid);
+    assume (!i_fatal_stop && !i_maint_valid && !i_sc_valid && !i_sc_commit);
+`ifndef ZERO_REQUEST_PROOF
+    assume (!i_read_valid);
+`endif
+    assume (!i_write_atomic && !i_write_sc && !i_p_valid);
+    assume (i_wa_valid == f_wrap_wa_valid_q && i_wa == f_wrap_wa_q);
+    assume (i_address == f_wrap_address && i_write_data == 0 && i_write_tag == 0);
+    assume (i_write_mask == (f_wrap_write ? 8'hff : 0));
+    assume (i_write_zero == (f_wrap_write && (f_wrap_writes_q == 1 || f_wrap_writes_q == 4)));
+    assume (i_d_ready == '1 && i_c_ready == '1 && i_read_ready && i_r_ready && i_w_ready);
+    assume (i_sc_result_ready && i_cut_admit_ready && i_cut_admit_clean && i_cut_inval_done);
+    assume (i_g_valid == f_wrap_g_valid && i_g == f_wrap_g);
+    assume (i_u_valid == f_wrap_u_valid && i_u == f_wrap_u);
+    p_zero_progress_other : cover (!i_rst && f_wrap_full_q && f_wrap_done_q && !f_wrap_same);
+    p_zero_progress_same : cover (!i_rst && f_wrap_full_q && f_wrap_done_q && f_wrap_same);
+  end
+`undef L1D_ZERO_SCHEDULE
+`endif
   always_ff @(posedge i_clk)
     if (!i_rst) begin
       p_zero_cover_twin : cover (store_pop && operation_q == TwinOp);

@@ -56,7 +56,10 @@ coh_l1d_zero_multi_bmc multi zcontrol control_multi padded zero zmulti
 coh_l1d_zero_payload_bmc single data zpayload zero
 coh_l1d_zero_cover single zcovers zsingle covermode zero
 coh_l1d_zero_lookahead_cover multi zcovers zlook covermode zero padded
-coh_l1d_zero_stream_bmc turnstream multi cadical padded zero zstream
+coh_l1d_zero_stream_free_bmc turnstream multi cadical padded zero zstream
+coh_l1d_zero_progress_cover multi zprogress covermode zero padded wordcover
+coh_l1d_zero_stream_bmc turnstream multi zrequest zero padded
+coh_l1d_zero_request_cover turnstream multi zrequest zrequestcover covermode zero padded wordcover
 
 [options]
 ~covermode: mode bmc
@@ -140,6 +143,16 @@ coh_l1d_ways_data_bmc: timeout 5100
 # is first reachable at step 29.
 zmulti: depth 30
 zstream: depth 31
+zprogress: depth 160
+zprogress: timeout 1200
+zprogress: vcd_sim on
+zprogress: skip 128
+zrequest: depth 170
+zrequest: timeout 1200
+zrequest: vcd_sim on
+zrequestcover: timeout 2400
+zrequestcover: skip 159
+zrequestcover: vcd_sim on
 # The answer BMCs check only the read-answer properties: grant answers of
 # attached loads and same-sector merges, against stores, probes, the hit path
 # and duplicate answers. The eight-endpoint task is shallower, as the free
@@ -165,6 +178,9 @@ covers: smtbmc boolector
 pathcovers: smtbmc boolector
 zsingle: smtbmc boolector
 zlook: smtbmc boolector
+zprogress: smtbmc boolector
+coh_l1d_zero_stream_bmc: abc bmc3 -c
+zrequestcover: smtbmc boolector
 streamcovers: smtbmc boolector
 turncovers: smtbmc boolector
 owner: abc pdr
@@ -193,6 +209,8 @@ zcontrol: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1
 zcovers: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zpayload: read -formal -sv -D ZERO_WRITES -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 zstream: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
+zprogress: read -formal -sv -D ZERO_WRITES -D ZERO_PROGRESS_COVER coherence_read_payload.sv coherence_l1d.sv
+zrequest: read -formal -sv -D ZERO_WRITES -D ZERO_REQUEST_PROOF coherence_read_payload.sv coherence_l1d.sv
 streamscript: read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 coherence_read_payload.sv coherence_l1d.sv
 conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
@@ -293,9 +311,21 @@ zsingle: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_twin 
 zsingle: select -assert-count 4 t:$check r:FLAVOR=cover %i
 zlook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_lookahead %d
 zcovers: chformal -assert -remove
-zstream: select -assert-count 3 c:p_prefetch_not_record c:p_grant_keeps_modified c:p_zero_acquire_line
-zstream: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified c:p_zero_acquire_line %u %u %d
-zstream: select -assert-count 3 t:$check r:FLAVOR=assert %i
+zstream: select -assert-count 4 c:p_prefetch_not_record c:p_grant_keeps_modified c:p_zero_acquire_line c:p_zero_no_upper_request
+zstream: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified c:p_zero_acquire_line c:p_zero_no_upper_request %u %u %u %d
+zstream: select -assert-count 4 t:$check r:FLAVOR=assert %i
+zstream: check -assert
+zprogress: select -assert-count 2 c:p_zero_progress_* t:$check %i r:FLAVOR=cover %i
+zprogress: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_progress_* %d
+zprogress: chformal -assert -remove
+zprogress: check -assert
+zrequest: select -assert-count 3 c:p_zero_no_upper_request c:p_grant_keeps_modified c:p_zero_request_complete
+zrequest: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_zero_no_upper_request c:p_grant_keeps_modified c:p_zero_request_complete %u %u %d
+zrequest: select -assert-count 3 t:$check r:FLAVOR=assert %i
+zrequest: check -assert
+zrequestcover: chformal -assert -remove
+zrequestcover: select -assert-count 1 c:p_zero_request_drained t:$check %i r:FLAVOR=cover %i
+zrequestcover: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_request_drained %d
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
 arraydata: select -assert-count 4 c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known
@@ -385,7 +415,8 @@ conflict: opt_clean
 # Leave only the check's cone.
 putselect: delete -output w:*
 opt
-techmap
+# Keep word operations for the long scheduled SMT covers.
+~wordcover: techmap
 opt -fast
 setundef -anyseq
 opt_clean

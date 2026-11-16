@@ -401,7 +401,10 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_payload_bmc",
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
+            "coh_l1d_zero_stream_free_bmc",
+            "coh_l1d_zero_progress_cover",
             "coh_l1d_zero_stream_bmc",
+            "coh_l1d_zero_request_cover",
             "coh_l1d_answer_bmc",
             "coh_l1d_stream_answer_bmc",
         ),
@@ -2025,8 +2028,20 @@ SBY_TASKS = [
     ),
     ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
     (
+        "coh_l1d_zero_stream_free_bmc",
+        "Stream prefetching, GetMZero twin ownership and upper-sector request exclusion through Done, and Modified-sector grants with cbo.zero writes and three endpoints.",
+    ),
+    (
+        "coh_l1d_zero_progress_cover",
+        "Full-buffer zero wrap with a different-block or same-block head twin resolves through both sector installations and Done.",
+    ),
+    (
         "coh_l1d_zero_stream_bmc",
-        "Stream prefetching, GetMZero twin ownership and Modified-sector grants with cbo.zero writes and three endpoints.",
+        "A dropped load retries beside a full-buffer zero wrap without accepting an upper-sector request during GetMZero.",
+    ),
+    (
+        "coh_l1d_zero_request_cover",
+        "The dropped-load schedule reaches its final checked frame after retry and zero completion.",
     ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),

@@ -65,9 +65,11 @@ class FullCluster(ZeroCluster):
         # (cycle, endpoint, opcode, address, mask) of each accepted request.
         self.requests: list[tuple[int, int, int, int, int]] = []
         self.agent_grants: list[tuple[Any, ...]] = []
+        # Endpoint -> (block, acceptance cycle), through its Done handshake.
+        self.open_zeros: dict[int, tuple[int, int]] = {}
 
     async def tick(self, count: int = 1) -> None:
-        """Advance, counting write completions."""
+        """Advance, checking zero ownership and counting write completions."""
         for _ in range(count):
             if self.get("o_write_done"):
                 self.dones += 1
@@ -86,9 +88,25 @@ class FullCluster(ZeroCluster):
                             (1 << width) - 1
                         )
                         fields = unpack(bits, (4, 9, self.p, 5, 3, 32, 1, 1, 1, 256))
+                        for owner, (block, cycle) in self.open_zeros.items():
+                            assert fields[2] != block + 32, (
+                                f"request op={fields[0]} ep={ep} at cycle {self.cycle} "
+                                f"to {fields[2]:#x} while GetMZero({block:#x}) "
+                                f"on ep={owner} from cycle {cycle} has not sent Done"
+                            )
                         self.requests.append(
                             (self.cycle, ep, fields[0], fields[2], fields[5])
                         )
+                        if fields[0] == 10 and self.line == 64:
+                            self.open_zeros[ep] = (fields[2], self.cycle)
+                completed = int(self.dut.hart_c_valid.value) & int(
+                    self.dut.hart_c_ready.value
+                )
+                for ep in list(self.open_zeros):
+                    if completed >> ep & 1:
+                        del self.open_zeros[ep]
+            else:
+                self.open_zeros.clear()
             await super().tick()
 
     def preload(self, block: int, seed: int) -> None:
@@ -1200,9 +1218,6 @@ async def dropped_load_retry_during_pending_twin(dut: Any) -> None:
             _, _, op, addr, _ = c.requests[seen_idx]
             seen_idx += 1
             pending_now = int(dut.hart.store_twin_pending.value)
-            assert not (op in (1, 10) and addr == block and pending_now), (
-                "cbo.zero acquired before its own twin allocated"
-            )
             if op == 0 and addr == block + 32 and pending_now:
                 saw_gets_while_pending = True
         if (
