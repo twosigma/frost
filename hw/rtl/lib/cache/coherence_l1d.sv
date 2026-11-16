@@ -511,6 +511,8 @@ module coherence_l1d #(
       .o_write_mask(rd_write_mask)
   );
   for (genvar slot = 0; slot < 8; slot++) begin : gen_unpack_read_payload
+    // The buffered copy of the kind has one reader, the read-kind check below
+    // (READ_KIND_PROOF), which compares rd_kind_q with it.
     assign {rd_addr_q[slot], rd_buffered_kind[slot], rd_size_q[slot], rd_tag_q[slot]} =
         rd_payload_flat[slot*ReadPayloadWidth+:ReadPayloadWidth];
     // Selection reads the kind directly from its slot's allocation edge.
@@ -3451,10 +3453,11 @@ module coherence_l1d #(
                 end else if (selected_kind_q == ReadAMO) begin
                   phase_q <= LocalCheck;
                 end else if (array_hit) begin
-                  // A shadow lookup whose tags hit answers nothing either: a
-                  // later lookup does. Otherwise the read and the merged
-                  // loads of its sector each take their own dword of the row;
-                  // a shadow lookup merges nothing.
+                  // The lookup ends here. The read and the merged loads of
+                  // its sector each take their own dword of the row in
+                  // gen_read_capture (array_capture). A shadow lookup whose
+                  // tags hit answers and merges nothing there: a later
+                  // lookup does.
                   phase_q <= Idle;
                 end else if (!Multi) begin
                   phase_q <= !request_live && wb_free ? Acquire : Idle;
