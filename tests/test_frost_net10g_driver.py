@@ -219,7 +219,8 @@ def _ethtool_ops(source: str) -> str:
 def test_driver_sizes_the_rings_from_ethtool() -> None:
     """Both rings, the page pool and the buffer arrays follow per-device sizes."""
     source = DRIVER_SOURCE.read_text()
-    assert _define("FROST_RING_DEFAULT") == "512"
+    assert _define("FROST_RX_RING_DEFAULT") == "4096"
+    assert _define("FROST_TX_RING_DEFAULT") == "512"
     assert _define("FROST_RING_MIN") == "64"
     assert _define("FROST_RING_MAX") == "4096"
     # The fixed-size constants are gone
@@ -238,8 +239,8 @@ def test_driver_sizes_the_rings_from_ethtool() -> None:
     assert "readl(priv->base + NET10G_TX_SIZE) != ilog2(priv->tx_entries)" in source
     ops = _ethtool_ops(source)
     assert ".get_ringparam" in ops and ".set_ringparam" in ops
-    assert "priv->rx_entries = FROST_RING_DEFAULT;" in source
-    assert "priv->tx_entries = FROST_RING_DEFAULT;" in source
+    assert "priv->rx_entries = FROST_RX_RING_DEFAULT;" in source
+    assert "priv->tx_entries = FROST_TX_RING_DEFAULT;" in source
 
 
 def test_driver_ring_range_fits_the_nic_and_the_tx_queue_thresholds() -> None:
@@ -248,7 +249,12 @@ def test_driver_ring_range_fits_the_nic_and_the_tx_queue_thresholds() -> None:
     lo = int(_group(r"RingSizeLog2Min = (\d+);", pkg))
     hi = int(_group(r"RingSizeLog2Max = (\d+);", pkg))
     ring_min = int(_define("FROST_RING_MIN"))
-    for name in ("FROST_RING_MIN", "FROST_RING_MAX", "FROST_RING_DEFAULT"):
+    for name in (
+        "FROST_RING_MIN",
+        "FROST_RING_MAX",
+        "FROST_RX_RING_DEFAULT",
+        "FROST_TX_RING_DEFAULT",
+    ):
         size = int(_define(name))
         assert size & (size - 1) == 0, name
         assert (1 << lo) <= size <= (1 << hi), name
@@ -289,7 +295,7 @@ def _snake(name: str) -> str:
 
 
 def test_driver_exposes_every_hardware_counter_in_order() -> None:
-    """Ethtool -S lists each nic_pkg counter, read as 64 bits."""
+    """Keep the driver, firmware and documentation aligned with the hardware counter map."""
     pkg = (REPO_ROOT / "hw/rtl/peripherals/nic/nic_pkg.sv").read_text()
     indexed = {
         name: int(index)
@@ -301,6 +307,20 @@ def test_driver_exposes_every_hardware_counter_in_order() -> None:
     assert int(_define("NET10G_COUNTERS"), 16) == int(
         _group(r"CounterBaseOffset = 12'h([0-9A-Fa-f]+);", pkg), 16
     )
+    # The counters from NumBaseCounters on continue at CounterExtBaseOffset, past the pause registers
+    num_base = int(_group(r"NumBaseCounters = (\d+);", pkg))
+    assert int(_define("FROST_NUM_BASE_COUNTERS")) == num_base
+    ext = int(_group(r"CounterExtBaseOffset = 12'h([0-9A-Fa-f]+);", pkg), 16)
+    assert int(_define("NET10G_COUNTERS_EXT"), 16) == ext
+    base = int(_group(r"CounterBaseOffset = 12'h([0-9A-Fa-f]+);", pkg), 16)
+    registers = [
+        int(value, 16)
+        for value in re.findall(r"Offset = 12'h([0-9A-Fa-f]+);", pkg)
+        if int(value, 16) not in (base, ext)
+    ]
+    first_span = range(base, base + 8 * num_base)
+    ext_span = range(ext, ext + 8 * (len(ordered) - num_base))
+    assert not [r for r in registers if r in first_span or r in ext_span]
     source = DRIVER_SOURCE.read_text()
     table = re.search(
         r"frost_stat_names\[\]\[ETH_GSTRING_LEN\] = \{(.*?)\n\};", source, re.S
@@ -308,6 +328,26 @@ def test_driver_exposes_every_hardware_counter_in_order() -> None:
     assert table is not None
     names = re.findall(r'"(\w+)"', table.group(1))
     assert names == [_snake(name.removeprefix("Cnt")) for name in ordered]
+    header = (REPO_ROOT / "sw/lib/include/nic.h").read_text()
+    assert int(_group(r"#define NIC_NUM_COUNTERS (\d+)u", header)) == len(ordered)
+    assert int(_group(r"#define NIC_NUM_BASE_COUNTERS (\d+)u", header)) == num_base
+    assert int(_group(r"#define NIC_COUNTERS_EXT (0x[0-9A-Fa-f]+)u", header), 16) == ext
+    for index, name in enumerate(names):
+        assert int(_group(rf"#define NIC_CNT_{name.upper()} (\d+)u", header)) == index
+    documentation = (REPO_ROOT / "hw/rtl/peripherals/nic/README.md").read_text()
+    documented = re.findall(
+        r"^\| (\d+) \| `(0x[0-9A-Fa-f]+)` \| `(\w+)` \|", documentation, re.M
+    )
+    assert [
+        (int(index), int(offset, 16), name) for index, offset, name in documented
+    ] == [
+        (
+            index,
+            base + 8 * index if index < num_base else ext + 8 * (index - num_base),
+            names[index],
+        )
+        for index in range(16, len(names))
+    ]
     ops = _ethtool_ops(source)
     for hook in (".get_sset_count", ".get_strings", ".get_ethtool_stats"):
         assert hook in ops
@@ -333,6 +373,22 @@ def test_driver_rx_fifo_limit_matches_the_nic_registers() -> None:
         r"RxFifoLimitDefault = (\d+);", pkg
     )
     assert _define("FROST_FIFO_WORD_BYTES") == "8"
+
+
+def test_driver_defaults_the_rx_fifo_to_the_built_depth_and_the_rx_ring_to_4096() -> (
+    None
+):
+    """Sync #18: the MAC FIFO limit starts at the built depth, not the 4 KiB reset value."""
+    source = DRIVER_SOURCE.read_text()
+    assert (
+        "priv->rx_fifo_limit = priv->rx_fifo_depth ? priv->rx_fifo_depth : "
+        "FROST_FIFO_LIMIT_DEFAULT;" in source
+    )
+    # The reset value stays the register default, so a write is skipped only when they agree
+    assert "priv->rx_fifo_limit == FROST_FIFO_LIMIT_DEFAULT" in source
+    # The RX default fits the ring range and exceeds the TX default
+    assert int(_define("FROST_RX_RING_DEFAULT")) <= int(_define("FROST_RING_MAX"))
+    assert int(_define("FROST_RX_RING_DEFAULT")) > int(_define("FROST_TX_RING_DEFAULT"))
 
 
 def test_driver_exposes_rx_fifo_bytes_as_a_devlink_runtime_parameter() -> None:
@@ -891,6 +947,83 @@ int main(void)
     assert(frost_set_tunable(&dev, &tuna, &saved) == -EOPNOTSUPP);
     assert(frost_get_tunable(&dev, &tuna, &got) == -EOPNOTSUPP);
     assert(dev.priv.rx_copybreak == saved);
+    return 0;
+}
+""",
+    )
+
+
+def test_counter_reads_cross_the_pause_gap_and_support_old_hardware(
+    tmp_path: Path,
+) -> None:
+    """Execute both read widths, absent extension registers and a carry between split reads."""
+    definitions = "\n".join(
+        f"#define {name} {_define(name)}"
+        for name in (
+            "NET10G_COUNTERS",
+            "NET10G_COUNTERS_EXT",
+            "FROST_NUM_BASE_COUNTERS",
+        )
+    )
+    _run_driver_function(
+        tmp_path,
+        definitions
+        + r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#define __iomem
+#define u64 uint64_t
+#define u32 uint32_t
+struct frost_priv { void *base; bool wide_abi; };
+static uint64_t regs[64];
+static bool carry;
+static unsigned int reads;
+static u64 readq(const void *p)
+{
+    u64 value;
+    memcpy(&value, p, sizeof(value));
+    return value;
+}
+static u32 readl(const void *p)
+{
+    u32 value;
+    if (carry) {
+        static const u32 sequence[] = {0, 3, 1, 1, 3, 1};
+        assert(reads < 6);
+        return sequence[reads++];
+    }
+    memcpy(&value, p, sizeof(value));
+    return value;
+}
+""",
+        "frost_read_counter",
+        r"""
+int main(void)
+{
+    struct frost_priv priv = {.base = regs};
+    for (unsigned int index = 0; index < 36; ++index) {
+        unsigned int offset = index < 21 ? 0x80 + 8 * index : 0x140 + 8 * (index - 21);
+        regs[offset / 8] = 0x1234567800000000ULL + index;
+    }
+    regs[0x130 / 8] = 0xabcdef;
+    regs[0x138 / 8] = 0xfedcba;
+    for (unsigned int wide = 0; wide < 2; ++wide) {
+        priv.wide_abi = wide;
+        for (unsigned int index = 0; index < 36; ++index)
+            assert(frost_read_counter(&priv, index) == 0x1234567800000000ULL + index);
+    }
+    memset((char *)regs + 0x140, 0, 15 * 8);
+    for (unsigned int wide = 0; wide < 2; ++wide) {
+        priv.wide_abi = wide;
+        for (unsigned int index = 21; index < 36; ++index)
+            assert(frost_read_counter(&priv, index) == 0);
+    }
+    carry = true;
+    priv.wide_abi = false;
+    assert(frost_read_counter(&priv, 21) == 0x100000003ULL);
+    assert(reads == 6);
     return 0;
 }
 """,
