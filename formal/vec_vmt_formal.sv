@@ -21,13 +21,21 @@
   sequence numbers (the ROB tag is the low bits), a vector memory instruction
   is the first of its dispatch group and allocates only while the table is not
   full, the head passes instructions in order and passes a vector memory
-  instruction alone through the combinational commit bus, nothing allocates or
-  commits during a flush, a full flush removes everything behind the head, a
-  partial flush everything younger than its tag, the window from the head to
-  the newest tag stays inside the tag space, and the memory unit completes an
+  instruction alone through the combinational commit bus, nothing allocates
+  during a flush, a full flush removes everything behind the head, a partial
+  flush everything younger than its tag, the window from the head to the
+  newest tag stays inside the tag space, and the memory unit completes an
   entry only after it has retired. Range writes are unconstrained, so writes to
   a known or free entry are tried too. The sequence starts anywhere, so tags
   wrap within a few frames.
+
+  The head may also pass instructions on the edge of a flush. The reorder
+  buffer never does that (its commit excludes every flush), so the check covers
+  more than the core produces: a vector memory instruction passing on a full
+  flush retires, its own pending removal is overridden by the retirement, and
+  the flush removes every other unretired entry. The covers of the reorder
+  buffer's own orderings require that no instruction has passed on a flush
+  edge.
 
   The properties are the lifecycle the range-ordering holds rely on
   (formal/vec_hold_rows_formal.sv assumes them of its table, including an
@@ -119,8 +127,10 @@ module vec_vmt_formal (
   always_comb begin
     if (!rst) begin
       assume (!(flush_all && flush_en));
-      if (flush_all || flush_en) assume (!alloc_en && n_other == 2'd0 && head_step == 2'd0);
+      if (flush_all || flush_en) assume (!alloc_en && n_other == 2'd0);
       if (flush_en) assume (flush_seq >= gh && flush_seq < gseq);
+      // The head passes only instructions at or before the flush tag.
+      if (flush_en) assume (8'(gh + 8'(head_step)) <= 8'(flush_seq + 8'd1));
       if (alloc_en) assume (!full);
       assume (8'(gh + 8'(head_step)) <= gseq);
       assume (8'(gseq + 8'(alloc_en) + 8'(n_other) - gh) <= 8'(1 << TW));
@@ -139,14 +149,16 @@ module vec_vmt_formal (
       g_known <= '0;
     end else begin
       gh <= gh + 8'(head_step);
-      if (flush_all) gseq <= gh;
+      if (flush_all) gseq <= gh + 8'(head_step);
       else if (flush_en) gseq <= flush_seq + 8'd1;
       else gseq <= gseq + 8'(alloc_en) + 8'(n_other);
       for (int t = 0; t < V; t++) begin
-        g_pending[t] <= g_live[t] && !g_ret[t] && (flush_all || (flush_en && g_seq[t] > flush_seq));
+        g_pending[t] <= g_live[t] && !g_ret[t] && !passing[t] &&
+            (flush_all || (flush_en && g_seq[t] > flush_seq));
         if (passing[t]) g_ret[t] <= 1'b1;
         // A removed entry keeps its range state through its cleanup cycle.
-        if (g_live[t] && !g_ret[t] && (flush_all || (flush_en && g_seq[t] > flush_seq)))
+        if (g_live[t] && !g_ret[t] && !passing[t] &&
+            (flush_all || (flush_en && g_seq[t] > flush_seq)))
           g_live[t] <= 1'b0;
         if (rng_en && rng_idx == IW'(t) && g_live[t] && !g_known[t]) begin
           g_known[t] <= 1'b1;
@@ -201,27 +213,48 @@ module vec_vmt_formal (
     end
   end
 
-  // Reachability
-  logic quiet_p, full_seen;
+  // Reachability. rob_order: no instruction has passed on a flush edge, as
+  // in the reorder buffer.
+  logic quiet_p, full_seen, rob_order_q, rob_order;
+  logic [V-1:0] passing_p, pending_p, override_p, override_pp;
+  assign rob_order = rob_order_q && !((flush_all || flush_en) && head_step != 2'd0);
   always_ff @(posedge i_clk) begin
-    quiet_p   <= rst ? 1'b1 : quiet;
-    full_seen <= !rst && (full_seen || full);
+    quiet_p     <= rst ? 1'b1 : quiet;
+    full_seen   <= !rst && (full_seen || full);
+    rob_order_q <= rst || rob_order;
+    passing_p   <= rst ? '0 : passing;
+    pending_p   <= rst ? '0 : g_pending;
+    override_p  <= rst ? '0 : (flush_all ? passing : '0);
+    override_pp <= rst ? '0 : override_p;
   end
   always_comb begin
     if (!rst) begin
       // The table fills, and an entry later completes and is reused.
-      c_full_then_reuse : cover (full_seen && alloc_en && g_live != '0);
+      c_full_then_reuse : cover (rob_order && full_seen && alloc_en && g_live != '0);
       // A partial flush removes one entry and keeps an older one.
       c_partial_keeps_older :
-      cover (flush_en && |(g_live & ~g_ret & {V{1'b1}}) && g_live[0] && g_live[1] &&
-             g_seq[0] <= flush_seq && g_seq[1] > flush_seq);
+      cover (rob_order && flush_en && |(g_live & ~g_ret & {V{1'b1}}) && g_live[0] &&
+             g_live[1] && g_seq[0] <= flush_seq && g_seq[1] > flush_seq);
       // V-O4: quiet falls when an entry retires and rises at its completion.
-      c_quiet_cycle : cover (!quiet_p && quiet && |gen);
+      c_quiet_cycle : cover (rob_order && !quiet_p && quiet && |gen);
       // An unretired entry whose tag is numerically below the head's (wrapped)
       // survives a partial flush.
       c_tag_wrap :
-      cover (flush_en && g_live[0] && !g_ret[0] && g_seq[0] <= flush_seq &&
-                          g_seq[0][TW-1:0] < gh[TW-1:0]);
+      cover (rob_order && flush_en && g_live[0] && !g_ret[0] && g_seq[0] <= flush_seq &&
+             g_seq[0][TW-1:0] < gh[TW-1:0]);
+      // A flush at N, then at N+1, while the removed entry awaits cleanup, an
+      // older entry that survived the flush retires.
+      c_flush_then_retire : cover (rob_order && |g_pending && commit_valid);
+      // A retirement at N, then a flush at N+1 that keeps the retired entry.
+      c_retire_then_flush :
+      cover (rob_order && (flush_all || flush_en) && |(passing_p & g_live & g_ret));
+      // An allocation in the cleanup cycle.
+      c_cleanup_alloc : cover (rob_order && |g_pending && alloc_en);
+      // An index cleaned at N+1 is allocated again at N+2.
+      c_cleaned_reuse : cover (rob_order && alloc_en && pending_p[alloc_idx]);
+      // An entry retiring on a full-flush edge stays live and retired after
+      // the cycle in which its pending removal is overridden.
+      c_retire_overrides_cleanup : cover (|(override_pp & live & retired));
     end
   end
 
