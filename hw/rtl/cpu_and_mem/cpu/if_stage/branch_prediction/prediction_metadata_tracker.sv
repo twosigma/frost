@@ -31,8 +31,9 @@ module prediction_metadata_tracker #(
     input logic i_reset,
     input logic i_stall,
     input logic i_flush,
-    // Clear saved metadata when pc_controller kills the pending prediction
-    // after a redirect or after pc_reg steps past its PC.
+    // Clear saved metadata when pc_controller kills the pending prediction:
+    // after a redirect, after pc_reg steps past its PC, or on an unstalled
+    // taken slot-2 prediction, which retires the pending entry.
     input logic i_pending_prediction_kill,
     // pc_reg is past the pending prediction's PC (an instruction overlapping
     // it; see pc_controller). The saved copy is ignored at once, so a packet
@@ -183,7 +184,11 @@ module prediction_metadata_tracker #(
   // cycle; redirects squash that output through flush or PD's redirect clear.
   // A walk-past kill (a 32-bit instruction at P - 2 stepping pc_reg past P)
   // has no such clear, so i_pending_prediction_walk_past masks the saved
-  // entry (pending_saved_active) in the same cycle.
+  // entry (pending_saved_active) in the same cycle. The kill for an unstalled
+  // taken slot-2 prediction (an overlapping 32-bit instruction at P - 2 is
+  // released and slot 2 at P + 2 predicts taken) also takes priority over
+  // capture. No replay can coincide with it: that cycle's slot 1 is at P - 2,
+  // not the saved entry's owner.
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush || i_pending_prediction_kill) begin
       prediction_taken_pending_saved <= 1'b0;

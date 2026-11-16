@@ -843,9 +843,12 @@ variable latency closes the gap between the two PCs, never pends.
 Instruction streams can overlap: a 32-bit instruction at `P-2` contains the
 halfword at `P`, which another path through the same bytes can execute as an
 instruction and train into the BTB. While an unkilled prediction is pending,
-`pc_controller` blocks new slot-1 BTB predictions even when a released
-predecessor at `P-2` drops the shared pending prediction disable; if a 32-bit
-instruction at `P-2` is released there and slot 2 at `P+2` predicts taken, that
+`pc_controller` blocks new slot-1 BTB predictions in only two cases: the entry
+is one `pc_reg` has walked past, or it is a crossing entry and `pc_reg` is at
+its predecessor `P-2`, even when a released predecessor drops the shared
+pending prediction disable. Every other pending entry no longer blocks slot 1.
+If a 32-bit instruction at `P-2` is released there and slot 2 at `P+2`
+predicts taken, that
 slot-2 redirect retires the pending entry and kills its saved metadata on the
 same edge. Otherwise a lookup at `P` that hit while IF emitted the 32-bit
 instruction leaves `pc_reg` past `P` instead of stopping there. From that cycle
