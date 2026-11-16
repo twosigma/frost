@@ -1118,8 +1118,8 @@ package riscv_pkg;
     FCVT_D_LU,                  // Unsigned 64-bit int to FP (double)
     FMV_X_D,                    // Move double bits to int reg
     FMV_D_X,                    // Move int bits to double reg
-    VLOAD,                      // V: unit-stride, whole-register and mask loads; INT_RS
-                                // passes the rs1 base to the ROB
+    VLOAD,                      // V: unit-stride, whole-register and mask loads: translated
+                                // at the ROB head once older vector work drains; no RS
     VSTORE,                     // V: unit-stride, whole-register and mask stores; as VLOAD
     // Zfhmin: half-precision moves and conversions (loads/stores use LOAD_FP/STORE_FP).
     FMV_X_H,                    // Move half bits to int reg (sign-extended)
@@ -3275,7 +3275,8 @@ package riscv_pkg;
   // under vtype vt ({vill, vtype[7:0]}) when vtype is vill, when a register
   // group is not aligned to LMUL, when a mask destination overlaps a source
   // group anywhere but at its first register, or when a masked instruction
-  // other than a compare writes v0.
+  // other than a compare writes v0, or when a masked instruction reads v0
+  // both as an EEW=1 mask and as a SEW-width data source.
   function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
     logic [2:0] vlmul, funct3;
     logic [5:0] funct6;
@@ -3292,13 +3293,15 @@ package riscv_pkg;
     uses_vs1 = (funct3 == 3'b000);
     // LMUL 2, 4, 8 align groups to 2, 4, 8 registers; fractional LMUL to 1.
     align = vlmul[2] ? 5'd0 : 5'((1 << vlmul[1:0]) - 1);
+    // The implicit mask uses EEW=1; a vector data source uses SEW.
     vector_arith_illegal = vt[8] ||
         ((vs2 & align) != 5'd0) ||
         (uses_vs1 && ((vs1 & align) != 5'd0)) ||
         (!mask_dest && ((vd & align) != 5'd0)) ||
         (mask_dest && (vd > vs2) && (vd <= (vs2 | align))) ||
         (mask_dest && uses_vs1 && (vd > vs1) && (vd <= (vs1 | align))) ||
-        (masked && !mask_dest && (vd == 5'd0));
+        (masked && !mask_dest && (vd == 5'd0)) ||
+        (masked && ((vs2 == 5'd0) || (uses_vs1 && vs1 == 5'd0)));
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -3377,8 +3380,8 @@ package riscv_pkg;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET and DRET ride the MRET machinery.
-      // VTOX completes from the vector unit at the ROB head.
-      JAL, WFI, MRET, SRET, DRET, VTOX: get_rs_type = RS_NONE;
+      // VTOX, VLOAD and VSTORE complete from the vector unit at the ROB head.
+      JAL, WFI, MRET, SRET, DRET, VTOX, VLOAD, VSTORE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -3531,7 +3534,7 @@ package riscv_pkg;
       case (op)
         LUI, AUIPC, JAL, ECALL, EBREAK, FENCE, FENCE_I, WFI, MRET, SRET, DRET, PAUSE, CSR_IMM, MOP,
         // Zfa FLI: rs1 is the constant index, not a register
-        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX:
+        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX, VLOAD, VSTORE:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase

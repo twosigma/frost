@@ -4897,7 +4897,7 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = TICK_TORTURE_MAX_CYCLES
     elif app_name == "mem_divergence_probe":
         max_cycles = MEM_DIVERGENCE_PROBE_MAX_CYCLES
-    elif app_name == "misaligned_test":
+    elif app_name in ("misaligned_test", "vec_mem_test"):
         # Several hundred engine accesses, translated S/U-mode crossings and
         # faults, and the timer-interrupt section take ~1.28M cycles (1,275,934
         # in DDR at DDR_MODEL_LATENCY=160); 2M leaves ~57% headroom.
@@ -4964,6 +4964,13 @@ async def test_real_program(dut: Any) -> None:
     )
     if coverage is not None:
         cocotb.start_soon(coverage.run())
+
+    vector_watch = None
+    if app_name == "vec_order_test":
+        from cocotb_tests.vector.memory_watch import VectorMemoryWatch
+
+        vector_watch = VectorMemoryWatch(dut)
+        cocotb.start_soon(vector_watch.run())
 
     # The architecture-test runner names the low-BRAM bytes that hold the
     # signature once the program passes, as "address:length" in hex, and the
@@ -5048,6 +5055,8 @@ async def test_real_program(dut: Any) -> None:
             coverage.verify(run_number)
         if store_watch is not None:
             store_watch.verify()
+        if vector_watch is not None:
+            vector_watch.verify()
 
     uart_monitor.stop()
     if line_monitor is not None:

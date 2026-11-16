@@ -20,9 +20,13 @@ pieces come before the second hart:
   CSRs) is in place behind the `VECTOR` build parameter, and so are the
   unit's datapath blocks with their unit benches. The core executes
   `vsetvli`, `vsetivli` and `vsetvl`, the vector integer arithmetic, logical,
-  compare and Zvbb instructions, and `vmv.x.s`, `vcpop.m` and `vfirst.m`, and
-  the X3 build includes the unit; vector loads and stores and the other
-  instruction families are not executed yet.
+  compare and Zvbb instructions, `vmv.x.s`, `vcpop.m` and `vfirst.m`, and the
+  unit-stride, whole-register and mask loads and stores, and the X3 build
+  includes the unit; the other load and store forms and instruction families
+  are not executed yet. One limitation is known: a vector load executed in
+  Debug Mode that faults after writing part of its destination register
+  leaves `mstatus.VS` Clean; `vec_debug_partial` records it as an expected
+  failure until it is fixed.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR in the X3
   build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
@@ -58,7 +62,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
 | Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Partial (state, `vsetvl*`, integer ALU, mask-scalar; memory and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vmt.sby` |
+| V | Partial (state, `vsetvl*`, integer ALU, mask-scalar, unit-stride/whole-register/mask loads and stores; other memory forms and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_mem_test`, `test_riscv_vector_tests.py`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vmt.sby` |
 | Zvfhmin | Partial (FP16 convert datapath block in place; core execution not connected) | `test_vec_fcvt.py` |
 | Zvbb | Partial (single-width lane instructions in place; `vwsll` and vector advertisement not in place) | `test_vec_int_lane.py`, `test_vec_engine.py` |
 | Zvkt | Partial (fixed-latency integer and bitmanip lanes in place; vector unit unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py` |

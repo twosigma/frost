@@ -12,4 +12,6 @@ frost.dtb
 frost_boot_shim.S
 shim.elf
 shim.bin
+.config.stamp
 build/
+.config.stamp.tmp

@@ -1210,7 +1210,7 @@ class DispatchInterface:
         self.dut.i_from_id_to_ex.value = 0
         self.dut.i_vtype_spec.value = 0
         self.dut.i_vec_lmul_illegal.value = 0
-        self.dut.i_vec_mem_illegal.value = 0
+        self.dut.i_slot2_is_vector.value = 0
         self.dut.i_valid.value = 0
         self.dut.i_from_id_to_ex_2.value = 0
         self.dut.i_valid_2.value = 0
