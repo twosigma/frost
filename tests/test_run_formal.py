@@ -310,6 +310,23 @@ FORMAL_TARGETS = [
         tasks=("mirror_hold_prove", "mirror_hold15_prove", "mirror_hold32_prove"),
     ),
     FormalTarget(
+        "coherence_read_capture.sby",
+        "Read-slot capture, the Idle phase and operation selection, per-slot kinds and registered array responses equal their references.",
+        tasks=(
+            "coh_read_capture_prove",
+            "coh_read_capture_stream_prove",
+            "coh_idle_select_prove",
+            "coh_idle_select_stream_prove",
+            "coh_idle_phase_prove",
+            "coh_idle_phase_stream_prove",
+            "coh_read_kind_prove",
+            "coh_array_reply_prove",
+            "coh_array_reply4_prove",
+            "coh_array_reply_uram_prove",
+            "coh_array_reply4_uram_prove",
+        ),
+    ),
+    FormalTarget(
         "coherence_read_payload.sby",
         "Buffered coherent read payloads and exports equal independent reference storage.",
         tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
@@ -988,7 +1005,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_head_mmu.sby",
-        "Head vector translation before access, precise partial faults and commit shield",
+        "Head vector translation before access, precise partial faults, commit shield "
+        "and consumption of every commit",
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
@@ -1000,7 +1018,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "vec_vmt.sby",
         "Vector memory table lifecycle: allocation into free entries, retirement "
-        "exactly as the head passes, flushes, fixed ranges and the exact "
+        "exactly as the head passes, registered flush cleanup, fixed ranges and the exact "
         "no-live-retired-entry output",
         tasks=("vmt_bmc", "cover"),
     ),
@@ -1177,7 +1195,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ma_engine.sby",
-        "Misaligned-access engine: no memory request before both parts pass their "
+        "Misaligned-access engine: request controls match the issue states, no memory request before both parts pass their "
         "checks, lower sector first, one request and response per identity, one "
         "completion, fault or write-back per access, and terminal fatal stops",
         tasks=("bmc", "cover"),
@@ -2296,6 +2314,29 @@ SBY_TASKS = [
     ("mirror_hold_prove", "Debug mirror address equality at sixteen bits."),
     ("mirror_hold15_prove", "Debug mirror address equality at fifteen bits."),
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
+    ("coh_read_capture_prove", "Read data capture with arbitrary controller state."),
+    ("coh_read_capture_stream_prove", "Read data capture with stream endpoints."),
+    ("coh_idle_select_prove", "Idle phase and operation selection with one endpoint."),
+    (
+        "coh_idle_select_stream_prove",
+        "Idle phase and operation selection with stream endpoints.",
+    ),
+    ("coh_idle_phase_prove", "Phase register after Idle cycles with one endpoint."),
+    (
+        "coh_idle_phase_stream_prove",
+        "Phase register after Idle cycles with stream endpoints.",
+    ),
+    ("coh_read_kind_prove", "Per-slot read kinds equal buffered allocation payloads."),
+    ("coh_array_reply_prove", "Registered response indication with block RAM."),
+    (
+        "coh_array_reply4_prove",
+        "Registered response indication with four block-RAM ways.",
+    ),
+    ("coh_array_reply_uram_prove", "Registered response indication with UltraRAM."),
+    (
+        "coh_array_reply4_uram_prove",
+        "Registered response indication with four UltraRAM ways.",
+    ),
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("bmc_core", "Load-result selection with the CPU feature configuration."),

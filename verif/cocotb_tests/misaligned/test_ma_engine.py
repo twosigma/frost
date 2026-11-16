@@ -839,3 +839,85 @@ async def test_no_alias_permission_precedence(dut: Any) -> None:
                     )
                     assert result["tval"] == (0x101000 if upper else va)
                     assert not env.requests
+
+
+@cocotb.test()
+async def test_request_control_cycles(dut: Any) -> None:
+    """Issue controls arrive with the decision and hold across backpressure."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+
+    async def tick(**values: int) -> None:
+        await FallingEdge(dut.i_clk)
+        for name, value in values.items():
+            getattr(dut, name).value = value
+        await RisingEdge(dut.i_clk)
+        await ReadOnly()
+
+    for store in (0, 1):
+        for split in (0, 1):
+            await tick(
+                **{
+                    name: 0
+                    for name in (
+                        "i_start",
+                        "i_unsigned",
+                        "i_fp",
+                        "i_translate",
+                        "i_eff_priv_u",
+                        "i_sum",
+                        "i_mxr",
+                        "i_fatal_stop",
+                        "i_walk_req_ready",
+                        "i_walk_resp_valid",
+                        "i_walk_resp",
+                        "i_lc_req_ready",
+                        "i_lc_resp_valid",
+                        "i_lc_resp_id",
+                        "i_lc_resp_error",
+                        "i_lc_resp_data",
+                    )
+                },
+                i_rst=1,
+                i_older_vector_mem_done=1,
+                i_store=store,
+                i_va=DDR_BASE + (31 if split else 1),
+                i_size=3,
+                i_rd=5,
+                i_rd_valid=1,
+                i_rs2=7,
+                i_rf_read_data=0x12345678,
+            )
+            await tick(i_rst=0, i_start=1)
+            # ORDER, optional store-data read/capture, XLATE(s), DECIDE.
+            first_request = 3 + split + 2 * store
+            for cycle in range(1, first_request + 1):
+                await tick(i_start=0)
+                assert int(dut.o_lc_req_valid.value) == int(cycle == first_request), (
+                    store,
+                    split,
+                    cycle,
+                    first_request,
+                )
+            assert int(dut.o_lc_req_id.value) == 0
+            lower = int(dut.o_lc_req_addr.value)
+            for _ in range(3):
+                await tick()
+                assert int(dut.o_lc_req_valid.value) == 1
+                assert int(dut.o_lc_req_id.value) == 0
+                assert int(dut.o_lc_req_addr.value) == lower
+            await tick(i_lc_req_ready=1)
+            assert int(dut.o_lc_req_valid.value) == split
+            if split:
+                assert int(dut.o_lc_req_id.value) == 1
+                assert int(dut.o_lc_req_addr.value) == lower + SECTOR
+                await tick(i_lc_req_ready=0)
+                assert int(dut.o_lc_req_valid.value) == 1
+                assert int(dut.o_lc_req_id.value) == 1
+                await tick(i_lc_req_ready=1)
+            assert int(dut.o_lc_req_valid.value) == 0
+            await tick(i_lc_resp_valid=1, i_lc_resp_id=0)
+            if split:
+                await tick(i_lc_resp_id=1)
+            assert int(dut.o_done.value) == 1
+            await tick(i_lc_resp_valid=0)
+            assert int(dut.o_busy.value) == 0

@@ -756,12 +756,19 @@ only with `RS_NONE` and take an entry in the vector memory table
 The table lists the vector memory instructions in flight in program order for
 the load and store queues' range holds (including 64-byte block holds on
 Zicbom entries), marks an entry retired on the edge the ROB head passes it, and
-frees entries that a flush removes. Its registered "no live retired entry"
-output holds the serializer's FENCE, FENCE.I and SFENCE.VMA drain, the
-store-conditional unit's firing and arming, the misaligned-access engine before
+frees entries one cycle after a flush removes them. Its registered
+"no live retired entry" output holds the serializer's FENCE, FENCE.I and
+SFENCE.VMA drain, the store-conditional unit's firing and arming, the
+misaligned-access engine before
 its first access, and interrupt and debug-halt takes (`sq_committed_empty_for_trap`).
 When one reaches the ROB head and older committed vector work has drained,
-`vector/vec_head_mmu.sv` reads `rs1` through the integer register file's extra
+`vector/vec_head_mmu.sv` samples the head metadata and head-match predicate in
+local registers. It rechecks the match after admission and before raising the
+interrupt shield. A flush suppresses walks and publications immediately and
+clears the local state on the following edge; the trap's `vstart` sideband
+remains available on the trap-taking edge. A local CDB acknowledgement
+suppresses duplicate completion while the state machine enters its retirement
+or trap wait. The unit reads `rs1` through the integer register file's extra
 read port and checks `vtype` and register-group legality (`vill` except on
 whole-register forms, EMUL in `[1/8, 8]`, group alignment, and masked loads to
 `v0`), computes the active byte span from `vl`, `vstart` and `v0`, translates

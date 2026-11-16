@@ -17,7 +17,9 @@
 Vector memory instructions are allocated in program order (ROB tags are the
 low bits of a sequence number), commit oldest first, are flushed (all
 unretired ones, or those younger than a flush point), complete only after
-they retire, and get their range once. Every cycle the bench compares the
+they retire, and get their range once. Flush removals remain live for one
+extra cycle; they cannot retire or release a retired entry's ordering hold.
+Every cycle the bench compares the
 table's view, its allocation index and full flag, the generations and the
 registered "no live retired entry" term with the model.
 """
@@ -27,7 +29,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 
 VMT = 4
 
@@ -69,6 +71,7 @@ async def test_vec_vmt_random(dut: Any) -> None:
     seq = 0
     head = 0  # sequence number of the oldest unretired instruction
     stats = {"alloc": 0, "commit": 0, "flush": 0, "done": 0, "quiet0": 0}
+    pending: set[int] = set()
     for cycle in range(8000):
         # Expected outputs from the registered model state.
         free = [t for t in range(VMT) if ent[t] is None]
@@ -105,13 +108,16 @@ async def test_vec_vmt_random(dut: Any) -> None:
 
         # Inputs for the next edge.
         unret = sorted(
-            (e["seq"], t) for t, e in enumerate(ent) if e is not None and not e["ret"]
+            (e["seq"], t)
+            for t, e in enumerate(ent)
+            if e is not None and not e["ret"] and t not in pending
         )
         alloc = not exp_full and rng.random() < 0.4
         commit = bool(unret) and rng.random() < 0.3
         flush_all = rng.random() < 0.02
         flush_en = not flush_all and len(unret) > 1 and rng.random() < 0.05
         flush_point = unret[rng.randrange(len(unret) - 1)][0] if flush_en else 0
+        alloc = alloc and not flush_all
         done_cand = [t for t, e in enumerate(ent) if e is not None and e["ret"]]
         done = bool(done_cand) and rng.random() < 0.25
         done_idx = rng.choice(done_cand) if done else 0
@@ -135,6 +141,11 @@ async def test_vec_vmt_random(dut: Any) -> None:
         dut.i_range_seg1.value = s1
         await RisingEdge(dut.i_clk)
 
+        # Apply last cycle's removals; the pre-edge free index cannot name
+        # one of these entries, even when a tag is reused after a flush.
+        for t in pending:
+            ent[t] = None
+        pending = set()
         # Model update for that edge.
         if commit:
             ent[unret[0][1]]["ret"] = True
@@ -145,7 +156,7 @@ async def test_vec_vmt_random(dut: Any) -> None:
                 and not e["ret"]
                 and (flush_all or (flush_en and e["seq"] > flush_point))
             ):
-                ent[t] = None
+                pending.add(t)
                 stats["flush"] += 1
         if done:
             ent[done_idx] = None
@@ -158,7 +169,89 @@ async def test_vec_vmt_random(dut: Any) -> None:
             gen[exp_idx] += 1
             seq += 1
             stats["alloc"] += 1
-        unret_seqs = [e["seq"] for e in ent if e is not None and not e["ret"]]
+        unret_seqs = [
+            e["seq"]
+            for t, e in enumerate(ent)
+            if e is not None and not e["ret"] and t not in pending
+        ]
         head = min(unret_seqs) if unret_seqs else seq
     dut._log.info(f"model matched: {stats}")
     assert min(stats.values()) > 50, "traffic too thin"
+
+
+@cocotb.test()
+async def test_flush_retirement_and_reuse(dut: Any) -> None:
+    """Flush cleanup cannot release retired work or kill a reused entry."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    ent_w = len(dut.o_view) // VMT
+
+    def live() -> int:
+        view = int(dut.o_view.value)
+        return sum(((view >> (ent_w * t + ent_w - 1)) & 1) << t for t in range(VMT))
+
+    async def tick(**values: int) -> None:
+        await FallingEdge(dut.i_clk)
+        for name, value in values.items():
+            getattr(dut, name).value = value
+        await RisingEdge(dut.i_clk)
+        await ReadOnly()
+
+    await tick(
+        **{
+            name: 0
+            for name in (
+                "i_alloc_valid",
+                "i_alloc_tag",
+                "i_commit_valid",
+                "i_commit_tag",
+                "i_flush_all",
+                "i_flush_en",
+                "i_flush_tag",
+                "i_head_tag",
+                "i_range_valid",
+                "i_range_idx",
+                "i_range_seg0",
+                "i_range_seg1",
+                "i_done_valid",
+                "i_done_idx",
+            )
+        },
+        i_rst=1,
+    )
+    await tick(i_rst=0)
+    for tag in (4, 5, 6):
+        await tick(i_alloc_valid=1, i_alloc_tag=tag, i_head_tag=4)
+    assert live() == 7
+    # Retirement wins on the flush edge, and quiet falls on that same edge.
+    await tick(i_alloc_valid=0, i_commit_valid=1, i_commit_tag=4, i_flush_all=1)
+    assert live() == 7, "flush cleanup must wait for its local register"
+    assert int(dut.o_quiet_q.value) == 0
+    # The first recovery allocation uses the pre-edge free index, not a
+    # pending removal. The head can move without changing the sampled mask.
+    await tick(
+        i_flush_all=0, i_commit_valid=0, i_head_tag=20, i_alloc_valid=1, i_alloc_tag=20
+    )
+    assert live() == 9 and int(dut.o_quiet_q.value) == 0
+    await tick(i_alloc_tag=21)
+    assert live() == 11, "a pending flush must not kill a reused index"
+    await tick(i_alloc_valid=0, i_flush_en=1, i_flush_tag=20)
+    assert live() == 11
+    await tick(i_flush_en=0, i_head_tag=21)
+    assert live() == 9
+    # Full flushes on consecutive cycles remove only unretired work; the
+    # live retired entry keeps quiet low until its completion edge.
+    await tick(i_flush_all=1)
+    await tick(i_flush_all=1)
+    assert live() == 1 and int(dut.o_quiet_q.value) == 0
+    await tick(i_flush_all=0, i_done_valid=1, i_done_idx=0)
+    assert live() == 0 and int(dut.o_quiet_q.value) == 1
+    await tick(i_done_valid=0, i_alloc_valid=1, i_alloc_tag=21)
+    await tick(i_alloc_valid=0)
+    assert live() == 1
+    # Neither a trap's nor an interrupt's full flush creates a quiet pulse
+    # before retired memory completes; an unretired entry never affects it.
+    await tick(i_flush_all=1)
+    assert live() == 1 and int(dut.o_quiet_q.value) == 1
+    await tick(i_flush_all=0)
+    assert live() == 0 and int(dut.o_quiet_q.value) == 1
+    await Timer(1, unit="ns")
