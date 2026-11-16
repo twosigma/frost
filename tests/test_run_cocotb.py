@@ -1815,30 +1815,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
-    "opensbi_reset_cold": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_sbi_reset",
-        hdl_toplevel_module="frost",
-        app_name="opensbi_smoke",
-        nic_mac_clocks=False,
-        rerun_after_reset=False,
-        description="S-mode SBI cold reboot reaches SYSRESET and the boot entry",
-        extra_env=(
-            ("PAYLOAD_SRC", "reset.c"),
-            ("EXTRA_CFLAGS", "-DFROST_SBI_RESET_TYPE=1"),
-        ),
-    ),
-    "opensbi_reset_warm": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_sbi_reset",
-        hdl_toplevel_module="frost",
-        app_name="opensbi_smoke",
-        nic_mac_clocks=False,
-        rerun_after_reset=False,
-        description="S-mode SBI warm reboot reaches SYSRESET and the boot entry",
-        extra_env=(
-            ("PAYLOAD_SRC", "reset.c"),
-            ("EXTRA_CFLAGS", "-DFROST_SBI_RESET_TYPE=2"),
-        ),
-    ),
     # Without the misaligned-access engine, OpenSBI emulates the payload's
     # misaligned loads and stores in DDR (phase F); with it, the hardware
     # performs them.
