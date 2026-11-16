@@ -3,7 +3,10 @@ home_small home small
 home_four home four
 home_default home
 array_bram array bram
+array_bram_four array bram bram_four
 array_uram array uram
+array_uram32 array uram uram32
+array_uram_row array uram row_read
 endpoint32 endpoint
 endpoint56 endpoint wide
 arbiter_default arbiter
@@ -26,7 +29,10 @@ small: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 
 four: chparam -set CACHE_BYTES 1024 -set WAYS 4 -set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home
 array: chparam -set CACHE_BYTES 128 -set WAYS 1 -set LINE_BYTES 32 coherence_home_array
 bram: chparam -set ULTRA 0 coherence_home_array
+bram_four: chparam -set CACHE_BYTES 512 -set WAYS 4 -set LINE_BYTES 64 coherence_home_array
 uram: chparam -set CACHE_BYTES 512 -set WAYS 4 -set LINE_BYTES 64 coherence_home_array
+uram32: chparam -set CACHE_BYTES 256 -set LINE_BYTES 32 coherence_home_array
+row_read: chparam -set DATA_READ_LATENCY 4 coherence_home_array
 wide: chparam -set ADDR_WIDTH 56 -set L2_NUM_MSHR 16 coherence_home_endpoint
 arbiter: chparam -set WIDTH 12 -set PORTS 3 -set HOLD_VALID 1 coherence_d_arbiter
 idle: chparam -set IDLE_PAYLOAD_LOAD 1 coherence_d_arbiter
@@ -55,7 +61,7 @@ endpoint: prep -top coherence_home_endpoint
 arbiter: prep -top coherence_d_arbiter
 select -assert-none t:$check r:FLAVOR=assume %i
 home: select -assert-count 3 t:$check r:FLAVOR=assert %i
-array: select -assert-count 4 t:$check r:FLAVOR=assert %i
+array: select -assert-count 5 t:$check r:FLAVOR=assert %i
 endpoint: select -assert-count 3 t:$check r:FLAVOR=assert %i
 arbiter: select -assert-count 1 t:$check r:FLAVOR=assert %i
 
