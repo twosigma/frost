@@ -184,6 +184,36 @@ module coherence_store_buffer #(
     end
   end
 `ifdef FORMAL
+`ifdef ZERO_INDEX_PROOF
+  // The L1D samples older upper-sector conflicts and invalidates its look
+  // snapshot on a push or pop. Endpoint and write-back conflicts can only
+  // add blockers to this store-record contribution.
+  logic [3:0] f_index_older_conflict, f_index_conflict_q, f_index_head_ok;
+  logic f_index_snapshot_q;
+  always_comb begin
+    f_index_older_conflict = '0;
+    for (int slot = 0; slot < 4; slot++)
+    for (int older = 0; older < 4; older++)
+    if (o_valid[older] && 2'(2'(older) - o_head) < 2'(2'(slot) - o_head) &&
+          o_addr[older][ADDR_WIDTH-1:5] == {o_addr[slot][ADDR_WIDTH-1:6], 1'b1})
+      f_index_older_conflict[slot] = 1'b1;
+    for (int slot = 0; slot < 4; slot++)
+    f_index_head_ok[slot] = !(f_index_snapshot_q && o_valid[slot] && o_zero[slot] &&
+          !o_twin[slot] && 2'(2'(slot) + 2'd1) == o_head && o_valid[o_head] &&
+          o_twin[o_head] && o_addr[o_head][ADDR_WIDTH-1:6] == o_addr[slot][ADDR_WIDTH-1:6]) ||
+          f_index_conflict_q[slot];
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_index_snapshot_q <= 1'b0;
+      f_index_conflict_q <= '1;
+    end else begin
+      f_index_snapshot_q <= !i_pop && !i_push;
+      f_index_conflict_q <= f_index_older_conflict;
+      p_index_head_conflict : assert (&f_index_head_ok);
+    end
+  end
+`endif
   logic f_past_valid = 1'b0;
   logic [7:0] f_outstanding_q;
   logic [7:0] f_total;
