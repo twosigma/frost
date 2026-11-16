@@ -121,6 +121,9 @@ module coherence_array #(
   logic tags_only_q, init_done_q;
   // The early reply depends only on registered request flags and tag results.
   logic data_valid_q, early_reply;
+  // The response indication captures with the tag result or the data row.
+  (* keep = "true", max_fanout = 32 *) logic resp_valid_q;
+  logic selected_early_reply;
   logic [WayBits-1:0] visit_way_q;
   logic [WAYS-1:0] exclude_q;
   logic [PlruBits-1:0] plru_read, plru_q, plru_write;
@@ -206,8 +209,9 @@ module coherence_array #(
   assign request_fire = i_req_valid && o_req_ready;
   assign early_reply = (hit_data_q && !o_resp_hit) ||
       (victim_data_q && (o_resp_hit || o_resp_state != 2'b11));
-  // An early reply holds through Reply until it is consumed.
-  assign o_resp_valid = phase_q == Reply || (phase_q == Data && early_reply);
+  assign selected_early_reply = (hit_data_q && !(hit && !visit_q)) ||
+      (victim_data_q && ((hit && !visit_q) || tag_rdata[selected][TagBits+:2] != 2'b11));
+  assign o_resp_valid = resp_valid_q;
   assign o_resp_data_valid = data_valid_q && !early_reply;
   assign tag_raddr = i_req_addr[OffsetBits+:SetBits];
   assign tag_waddr = phase_q == Init ? init_set_q : i_update_addr[OffsetBits+:SetBits];
@@ -462,6 +466,7 @@ module coherence_array #(
       o_resp_state <= '0;
       o_resp_data <= '0;
       data_valid_q <= 1'b0;
+      resp_valid_q <= 1'b0;
     end else begin
       plru_hit_q <= select_valid && hit && !visit_q && !no_touch_q;
       if (phase_q == Idle) init_done_q <= 1'b1;
@@ -511,6 +516,7 @@ module coherence_array #(
             o_resp_addr <= {tag_rdata[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
             o_resp_state <= tag_rdata[selected][TagBits+:2];
             data_valid_q <= select_data;
+            resp_valid_q <= !select_data || selected_early_reply;
             if (!select_data) begin
               phase_q <= Reply;
             end else begin
@@ -521,22 +527,42 @@ module coherence_array #(
         end
         Data: begin
           count_q <= count_q - 1'b1;
-          if (early_reply && i_resp_ready) phase_q <= Idle;
-          else if (count_q == 1) begin
+          if (early_reply && i_resp_ready) begin
+            phase_q <= Idle;
+            resp_valid_q <= 1'b0;
+          end else if (count_q == 1) begin
             // A held early reply keeps its data unchanged into Reply.
             if (!early_reply) o_resp_data <= data_rdata;
             phase_q <= Reply;
+            resp_valid_q <= 1'b1;
           end
         end
-        Reply:   if (i_resp_ready) phase_q <= Idle;
+        Reply:
+        if (i_resp_ready) begin
+          phase_q <= Idle;
+          resp_valid_q <= 1'b0;
+        end
         WriteWait: begin
           count_q <= count_q - 1'b1;
           if (count_q == 1) phase_q <= Idle;
         end
-        default: phase_q <= Init;
+        default: begin
+          phase_q <= Init;
+          resp_valid_q <= 1'b0;
+        end
       endcase
     end
   end
+
+`ifdef ARRAY_REPLY_PROOF
+  logic f_reply_seen = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_reply_seen <= 1'b1;
+    if (f_reply_seen)
+      p_array_reply_exact :
+      assert (o_resp_valid == (phase_q == Reply || (phase_q == Data && early_reply)));
+  end
+`endif
 
   if (ADDR_WIDTH < 32 || ADDR_WIDTH > 56 || (LINE_BYTES != 32 && LINE_BYTES != 64) ||
       Sets < 2 || (Sets & (Sets - 1)) != 0 || (WAYS != 1 && WAYS != 4) ||
