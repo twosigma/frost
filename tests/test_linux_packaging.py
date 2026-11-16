@@ -338,6 +338,7 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         "smaia",
         "ssaia",
         "sscofpmf",
+        "ssnpm",
         "sstc",
         "sstvala",
         "svade",

@@ -25,7 +25,8 @@
   delegated SSIP and LCOFIP. medeleg/mideleg use the package WARL masks:
   M-mode ECALL and the machine software, timer and external interrupt classes
   cannot delegate. menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE;
-  senvcfg, required for S/U support, implements FIOM, CBIE, CBCFE and CBZE.
+  senvcfg, required for S/U support, implements FIOM, CBIE, CBCFE, CBZE and PMM.
+  PMM selects U-mode pointer masking, WARL {00, 10, 11} (o_mmu_pm_mode).
   FIOM is stored only (see riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero
   below M, and CBCFE and CBIE gate cbo.clean/cbo.flush and cbo.inval. CBIE is
   WARL {00, 01, 11}: a write of the reserved 10 stores 00. With
@@ -314,6 +315,13 @@ module csr_file #(
     output logic o_mmu_sum,
     output logic o_mmu_mxr,
     output logic o_mmu_eff_priv_u,  // effective data privilege == U
+    // Ssnpm: the pointer-masking mode of data accesses (riscv_pkg "Pointer
+    // masking"): senvcfg.PMM at effective data privilege U with mstatus.MXR
+    // clear, else off. A senvcfg write forwards its legalized PMM on the
+    // commit edge, before a younger store can allocate an early address.
+    // The write holds ID until it commits. MXR, MPRV and privilege changes
+    // end in a full flush.
+    output riscv_pkg::pm_mode_t o_mmu_pm_mode,
     output logic [riscv_pkg::AsidBits-1:0] o_mmu_asid,  // satp.ASID
     // Fetch uses current privilege; MPRV affects data only. These outputs
     // decode from fetch_priv_q, which equals priv_q on every cycle. There
@@ -691,6 +699,7 @@ module csr_file #(
   logic menvcfg_cbcfe, senvcfg_cbcfe;
   logic [1:0] menvcfg_cbie, senvcfg_cbie;
   logic menvcfg_pbmte;
+  logic [1:0] senvcfg_pmm;
   logic [XLEN-1:0] menvcfg, senvcfg;  // Readback views of the stored fields
   assign menvcfg = (XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit) |
       (XLEN'(menvcfg_pbmte) << riscv_pkg::MenvcfgPbmteBit) |
@@ -698,7 +707,8 @@ module csr_file #(
       (XLEN'(menvcfg_cbcfe) << riscv_pkg::EnvcfgCbcfeBit) |
       (XLEN'(menvcfg_cbie) << riscv_pkg::EnvcfgCbieLsb) |
       (XLEN'(menvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
-  assign senvcfg = (XLEN'(senvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
+  assign senvcfg = (XLEN'(senvcfg_pmm) << riscv_pkg::EnvcfgPmmLsb) |
+      (XLEN'(senvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
       (XLEN'(senvcfg_cbcfe) << riscv_pkg::EnvcfgCbcfeBit) |
       (XLEN'(senvcfg_cbie) << riscv_pkg::EnvcfgCbieLsb) |
       (XLEN'(senvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
@@ -1850,6 +1860,7 @@ module csr_file #(
       senvcfg_cbcfe              <= 1'b0;
       senvcfg_cbie               <= 2'b00;
       senvcfg_fiom               <= 1'b0;
+      senvcfg_pmm                <= riscv_pkg::EnvcfgPmmOff;
       stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       perf_counter_select        <= '0;
       perf_cache_previous_select <= 1'b0;
@@ -1925,7 +1936,7 @@ module csr_file #(
           end
         end
         // menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE, senvcfg
-        // FIOM, CBIE, CBCFE and CBZE (the rest stays WARL-0); stimecmp is the
+        // FIOM, CBIE, CBCFE, CBZE and PMM (the rest stays WARL-0); stimecmp is the
         // full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
           menvcfg_stce  <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
@@ -1936,10 +1947,13 @@ module csr_file #(
           menvcfg_fiom  <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
-          senvcfg_cbze  <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
+          senvcfg_cbze <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
           senvcfg_cbcfe <= senvcfg_new_value[riscv_pkg::EnvcfgCbcfeBit];
-          senvcfg_cbie  <= cbie_warl(senvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
-          senvcfg_fiom  <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+          senvcfg_cbie <= cbie_warl(senvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
+          senvcfg_fiom <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+          senvcfg_pmm <= riscv_pkg::pmm_warl(
+              senvcfg_new_value[riscv_pkg::EnvcfgPmmLsb+:2], senvcfg_pmm
+          );
         end
         riscv_pkg::CsrStimecmp: stimecmp <= stimecmp_new_value;
         // Without counters the profiling state keeps its reset value.
@@ -2115,6 +2129,7 @@ module csr_file #(
   assign eff_data_priv = mstatus_mprv ? mstatus_mpp : priv_q;
 
   logic translation_active_q, mmu_sum_q, mmu_mxr_q, mmu_eff_priv_u_q;
+  riscv_pkg::pm_mode_t mmu_pm_mode_q;
   logic [SatpAsidBits-1:0] mmu_asid_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -2122,12 +2137,20 @@ module csr_file #(
       mmu_sum_q <= 1'b0;
       mmu_mxr_q <= 1'b0;
       mmu_eff_priv_u_q <= 1'b0;
+      mmu_pm_mode_q <= riscv_pkg::EnvcfgPmmOff;
       mmu_asid_q <= '0;
     end else begin
       translation_active_q <= satp_mode_sv39 && (eff_data_priv != riscv_pkg::PrivM);
       mmu_sum_q <= mstatus_sum;
       mmu_mxr_q <= mstatus_mxr;
       mmu_eff_priv_u_q <= (eff_data_priv == riscv_pkg::PrivU);
+      // Ordinary CSR serialization can release store allocation on this
+      // edge. Capture a written PMM together with its architectural field.
+      mmu_pm_mode_q <= ((eff_data_priv == riscv_pkg::PrivU) && !mstatus_mxr) ?
+          ((storage_csr_write && (i_csr_address == riscv_pkg::CsrSenvcfg)) ?
+            riscv_pkg::pmm_warl(
+          senvcfg_new_value[riscv_pkg::EnvcfgPmmLsb+:2], senvcfg_pmm
+      ) : senvcfg_pmm) : riscv_pkg::EnvcfgPmmOff;
       mmu_asid_q <= satp_asid;
     end
   end
@@ -2135,6 +2158,7 @@ module csr_file #(
   assign o_mmu_sum = mmu_sum_q;
   assign o_mmu_mxr = mmu_mxr_q;
   assign o_mmu_eff_priv_u = mmu_eff_priv_u_q;
+  assign o_mmu_pm_mode = mmu_pm_mode_q;
   assign o_mmu_asid = mmu_asid_q;
   // Fetch uses the ASID register itself: the refetch after a satp write
   // starts after the register has updated, like fetch_translation_active_q.
@@ -2696,6 +2720,16 @@ module csr_file #(
       p_priv_valid : assert (priv_q != 2'b10);
       // The fetch duplicate must equal architectural privilege.
       p_fetch_priv_replica_exact : assert (fetch_priv_q == priv_q);
+      // Ssnpm: PMM includes the preceding edge's CSR write. Privilege and
+      // MXR follow the data-state pipeline, whose transitions flush issue.
+      p_pm_mode_exact :
+      assert (o_mmu_pm_mode == ((($past(
+          mstatus_mprv ? mstatus_mpp : priv_q
+      ) == riscv_pkg::PrivU) && !$past(
+          mstatus_mxr
+      )) ? senvcfg_pmm : 2'b00));
+      p_pm_mode_not_reserved : assert (o_mmu_pm_mode != 2'b01);
+      p_pmm_not_reserved : assert (senvcfg_pmm != 2'b01);
 
       // Access privilege is enforced by the ROB, not by this standalone file.
       // A legal envcfg write cannot change permission in the executing mode:
@@ -3505,6 +3539,14 @@ module csr_file #(
   logic [$bits(senvcfg_cbcfe)-1:0] f_old_senvcfg_cbcfe;
   logic [$bits(senvcfg_cbie)-1:0] f_old_senvcfg_cbie;
   logic [$bits(senvcfg_fiom)-1:0] f_old_senvcfg_fiom;
+  logic [1:0] f_old_senvcfg_pmm;
+  logic f_old_pm_enable;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_old_pm_enable <= 1'b0;
+    else
+      f_old_pm_enable <= !mstatus_mxr &&
+        (mstatus_mprv ? (mstatus_mpp == 2'b00) : (priv_q == 2'b00));
+  end
   // Reference CBIE WARL: reserved 10 stores 00; 11 stores 01 when inval
   // always executes as flush.
   function automatic logic [1:0] f_cbie_ref(input logic [1:0] written);
@@ -3581,6 +3623,7 @@ module csr_file #(
     f_old_senvcfg_cbcfe <= senvcfg_cbcfe;
     f_old_senvcfg_cbie <= senvcfg_cbie;
     f_old_senvcfg_fiom <= senvcfg_fiom;
+    f_old_senvcfg_pmm <= senvcfg_pmm;
     f_old_sepc <= sepc;
     f_old_sscratch <= sscratch;
     f_old_stimecmp <= stimecmp;
@@ -3625,6 +3668,7 @@ module csr_file #(
       f_old_senvcfg_cbcfe              <= 1'b0;
       f_old_senvcfg_cbie               <= 2'b00;
       f_old_senvcfg_fiom               <= 1'b0;
+      f_old_senvcfg_pmm                <= 2'b00;
       f_old_stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       f_old_perf_counter_select        <= '0;
       f_old_perf_cache_previous_select <= 1'b0;
@@ -3706,7 +3750,7 @@ module csr_file #(
           end
         end
         // menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE, senvcfg
-        // FIOM, CBIE, CBCFE and CBZE (the rest stays WARL-0); stimecmp is the
+        // FIOM, CBIE, CBCFE, CBZE and PMM (the rest stays WARL-0); stimecmp is the
         // full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
           f_old_menvcfg_stce  <= csr_new_value[riscv_pkg::MenvcfgStceBit];
@@ -3721,6 +3765,12 @@ module csr_file #(
           f_old_senvcfg_cbcfe <= csr_new_value[6];
           f_old_senvcfg_cbie  <= f_cbie_ref(csr_new_value[5:4]);
           f_old_senvcfg_fiom  <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
+          // PMM (bits 33:32): 00, and 10 / 11 where PMLEN 7 / 16 is offered,
+          // are stored; 01 and an unoffered PMLEN keep the old value.
+          if ((csr_new_value[33:32] == 2'b00) ||
+              (riscv_pkg::SsnpmPmlen7 && (csr_new_value[33:32] == 2'b10)) ||
+              (riscv_pkg::SsnpmPmlen16 && (csr_new_value[33:32] == 2'b11)))
+            f_old_senvcfg_pmm <= csr_new_value[33:32];
         end
         riscv_pkg::CsrStimecmp: f_old_stimecmp <= csr_new_value;
         // Without counters the profiling state keeps its reset value.
@@ -3864,6 +3914,8 @@ module csr_file #(
       assert (senvcfg_cbze == f_old_senvcfg_cbze);
       assert ({senvcfg_cbcfe, senvcfg_cbie} == {f_old_senvcfg_cbcfe, f_old_senvcfg_cbie});
       assert (senvcfg_fiom == f_old_senvcfg_fiom);
+      assert (senvcfg_pmm == f_old_senvcfg_pmm);
+      assert (o_mmu_pm_mode == (f_old_pm_enable ? f_old_senvcfg_pmm : 2'b00));
       assert (sepc == f_old_sepc);
       assert (sscratch == f_old_sscratch);
       assert (stimecmp == f_old_stimecmp);

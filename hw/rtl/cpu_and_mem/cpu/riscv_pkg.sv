@@ -1279,6 +1279,14 @@ package riscv_pkg;
   // page-table walker, which accepts a nonzero PTE PBMT field only while it
   // is set (see ptw.sv and "Svpbmt" below).
   localparam int unsigned MenvcfgPbmteBit = 62;
+  // senvcfg.PMM (bits 33:32, Ssnpm): pointer masking for U-mode. WARL
+  // {00, 10, 11}: 00 off, 10 PMLEN=7, 11 PMLEN=16 (while SsnpmPmlen16 below
+  // holds). A write of the reserved 01, or of an unsupported PMLEN, keeps the
+  // old value, as the Sail model does. See "Pointer masking" below.
+  localparam int unsigned EnvcfgPmmLsb = 32;
+  localparam bit [1:0] EnvcfgPmmOff = 2'b00;
+  localparam bit [1:0] EnvcfgPmmPmlen7 = 2'b10;
+  localparam bit [1:0] EnvcfgPmmPmlen16 = 2'b11;
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
@@ -1917,6 +1925,62 @@ package riscv_pkg;
 
   function automatic logic sv39_va_canonical(input logic [XLEN-1:0] va);
     sv39_va_canonical = (va[XLEN-1:Sv39VaBits-1] == '0) || (va[XLEN-1:Sv39VaBits-1] == '1);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Pointer masking (Ssnpm: senvcfg.PMM for U-mode)
+  // ---------------------------------------------------------------------------
+  // The ignore transformation replaces an explicit access's top PMLEN address
+  // bits with the sign extension of bit XLEN-PMLEN-1 under Sv39 and with
+  // zeros under Bare. csr_file registers the mode in force for data accesses
+  // (pm_mode_t: off, PMLEN 7 or PMLEN 16; nonzero only at effective data
+  // privilege U, with mstatus.MXR clear).
+  //
+  // FROST applies one transform for both translation modes, to the base
+  // register at MEM_RS issue: pm_base_transform sign-extends the base from
+  // bit XLEN-PMLEN-1, before the address adders. Every consumer of the address
+  // (data MMU, PMA decoders, LQ/SQ, forwarding) is then unchanged:
+  //   Let W = XLEN-PMLEN. base' lies in [-2**(W-1), 2**(W-1)) and every
+  //   immediate here is a 12-bit signed value (zero for AMO, LR/SC and CBO),
+  //   so s = base' + imm leaves that range by at most 2048. Bits [W-1:0] of s
+  //   equal those of the effective address.
+  //   - Sv39: inside the range s is its own sign extension from bit W-1, the
+  //     transformed address. Outside it, bit W-1 of s differs from bits
+  //     [W-2:38], so s and the transformed address are both non-canonical.
+  //   - Bare: the transformed address is s mod 2**W. Inside [0, 2**(W-1)) the
+  //     two are equal. Otherwise s is negative or at least 2**(W-1), and
+  //     s mod 2**W is at least 2**(W-1) - 2048. With every PMA region below
+  //     2**(W-2) (SsnpmPmlen7, SsnpmPmlen16) both fail the PMA map.
+  // A fault's xtval is the transformed address (norm:pm_csr_hw_apply):
+  // pm_tval applies the exact transform to the faulting base' + imm.
+  // Instruction fetch, page-table walks and SFENCE.VMA are never masked.
+  typedef logic [1:0] pm_mode_t;  // EnvcfgPmm* encoding; 01 is never produced
+
+  // Offer each PMLEN only when every configured physical region lies below
+  // 2**(XLEN-PMLEN-2), as required by the equivalence argument above.
+  localparam bit SsnpmPmlen7  = PmaAddressLimit <= (64'(1) << (XLEN - 7 - 2));
+  localparam bit SsnpmPmlen16 = PmaAddressLimit <= (64'(1) << (XLEN - 16 - 2));
+
+  // senvcfg.PMM write legalization: an unsupported value keeps the old one.
+  function automatic logic [1:0] pmm_warl(input logic [1:0] written, input logic [1:0] old);
+    pmm_warl = ((written == EnvcfgPmmOff) || (SsnpmPmlen7 && (written == EnvcfgPmmPmlen7)) ||
+                (SsnpmPmlen16 && (written == EnvcfgPmmPmlen16))) ? written : old;
+  endfunction
+
+  // The base-register transform at MEM_RS issue (sign extension from bit
+  // XLEN-PMLEN-1). Only bits [XLEN-1:XLEN-16] can change.
+  function automatic logic [XLEN-1:0] pm_base_transform(input logic [XLEN-1:0] base,
+                                                        input pm_mode_t mode);
+    pm_base_transform = (mode == EnvcfgPmmPmlen7) ? {{7{base[XLEN-8]}}, base[XLEN-8:0]} :
+        (mode == EnvcfgPmmPmlen16) ? {{16{base[XLEN-17]}}, base[XLEN-17:0]} : base;
+  endfunction
+
+  // xtval of a data fault: the ignore transformation of the faulting address,
+  // sign extension under Sv39 (virt), zero extension under Bare.
+  function automatic logic [XLEN-1:0] pm_tval(input logic [XLEN-1:0] addr, input pm_mode_t mode,
+                                              input logic virt);
+    pm_tval = (mode == EnvcfgPmmPmlen7) ? {{7{virt && addr[XLEN-8]}}, addr[XLEN-8:0]} :
+        (mode == EnvcfgPmmPmlen16) ? {{16{virt && addr[XLEN-17]}}, addr[XLEN-17:0]} : addr;
   endfunction
 
   // Data-side translation fault classification, carried from the translation

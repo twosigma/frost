@@ -111,9 +111,12 @@ The ROB marks a CSR instruction as a translation CSR at allocation: any
 and SFENCE.VMA, its retirement is followed by a full flush, which discards
 instructions decoded under the old FS or TW value. Legal `menvcfg` and `senvcfg`
 writes use ordinary CSR serialization: their CBZE, CBCFE and CBIE bits affect
-only lower privilege. The trap, xRET or debug transition flushes decode when
-the executing mode's `cbo.zero`, Zicbom or `wrs.nto` permission changes (ID
-reads them as registered gates). The CSR file
+only lower privilege. `senvcfg.PMM` selects U-mode pointer masking, including
+MPRV accesses with MPP = U. ID holds younger instructions until the write
+commits, and the CSR file captures the legalized PMM on that edge before a
+younger store can allocate an early address. The trap, xRET or debug
+transition flushes decode when the executing mode's `cbo.zero`, Zicbom or
+`wrs.nto` permission changes (ID reads them as registered gates). The CSR file
 invalidates the TLBs and walker on its own: on every `satp` access, and on an
 `mstatus` write that changes MPRV (or MPP while MPRV is set). SUM and MXR are
 applied at lookup, so their changes need only the full flush.

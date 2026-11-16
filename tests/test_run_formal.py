@@ -1036,7 +1036,14 @@ FORMAL_TARGETS = [
         "csr_file.sby",
         "CSR state and access behavior with profiling counters on or off, and "
         "with the vector state",
-        tasks=("bmc", "cover", "bmc_perf_off", "vector_bmc", "vector_cover"),
+        tasks=(
+            "bmc",
+            "cover",
+            "bmc_perf_off",
+            "vector_bmc",
+            "vector_cover",
+            "pm_mode_bmc",
+        ),
     ),
     FormalTarget(
         "tlb.sby",
@@ -1174,6 +1181,13 @@ FORMAL_TARGETS = [
         "ALU shifts and rotates match the reference with captured shift amounts on or "
         "off",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "pointer_masking.sby",
+        "Ssnpm: the MEM_RS base transform gives the Sv39 canonical check, the Bare PMA "
+        "decodes, xtval and misaligned assist the ignore transformation's result "
+        "across DDR apertures, and senvcfg.PMM is WARL",
+        tasks=("bmc", "bmc_ddr31", "bmc_ddr36", "bmc_ddr37"),
     ),
     FormalTarget(
         "divider.sby",
@@ -1760,6 +1774,7 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
     (
@@ -2905,6 +2920,9 @@ SBY_TASKS = [
     ),
     ("cover_wide", "Svpbmt alias and no-alias reachability with the 64 GiB DDR map"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
+    ("bmc_ddr31", "Pointer masking with a 2 GiB DDR aperture"),
+    ("bmc_ddr36", "Pointer masking with a 64 GiB DDR aperture"),
+    ("bmc_ddr37", "Pointer masking with a 128 GiB DDR aperture"),
     (
         "bmc_small_btb",
         "Bounded tag comparison with a 16-entry BTB and partial final group",

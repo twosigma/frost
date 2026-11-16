@@ -814,6 +814,7 @@ module cpu_ooo #(
   // Registered translation state from csr_file, and the data MMU's walker
   // port between the wrapper and the ptw below.
   logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
+  riscv_pkg::pm_mode_t csr_mmu_pm_mode;
   logic [43:0] csr_satp_root_ppn;
   logic csr_menvcfg_pbmte;
   logic tlb_invalidate;
@@ -2716,6 +2717,7 @@ module cpu_ooo #(
       .i_mmu_sum(csr_mmu_sum),
       .i_mmu_mxr(csr_mmu_mxr),
       .i_mmu_eff_priv_u(csr_mmu_eff_priv_u),
+      .i_mmu_pm_mode(csr_mmu_pm_mode),
       .i_csr_translation_flush_req(csr_translation_flush_req),
       .o_tlb_invalidate(tlb_invalidate),
       .i_csr_tlb_flush_all_req(csr_tlb_flush_all_req),
@@ -4087,15 +4089,19 @@ module cpu_ooo #(
       // address of the faulting portion of the instruction (the PC, or PC + 2
       // for a page-straddling instruction whose second halfword faulted),
       // parked in the value slot by the INT ALU shim.
-      // Misaligned and PMA access faults on data, and data
-      // page faults: tval = the faulting data virtual
-      // address, parked in the entry's value slot by the LQ bypass or the
-      // store fault strobe.
       riscv_pkg::ExcInstrAccessFault[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcInstrPageFault[$bits(
           rob_trap_cause
-      )-1:0], riscv_pkg::ExcLoadAddrMisalign[$bits(
+      )-1:0]:
+      csr_trap_value = rob_trap_value;
+      // Misaligned and data page faults: tval = the faulting data virtual
+      // address, parked in the entry's value slot by the LQ bypass or the
+      // store fault strobe. Under Ssnpm pointer masking it is the
+      // transformed address (riscv_pkg "Pointer masking"); the mode and
+      // translation state are those the access used: both change only at
+      // serializing points, and none lies between an access and its trap.
+      riscv_pkg::ExcLoadAddrMisalign[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
           rob_trap_cause
@@ -4104,16 +4110,19 @@ module cpu_ooo #(
       )-1:0], riscv_pkg::ExcStorePageFault[$bits(
           rob_trap_cause
       )-1:0]:
-      csr_trap_value = rob_trap_value;
-      // A bus-response access fault (a failed fill, or an SLVERR or DECERR
-      // response) leaves zero in the value slot; the wrapper's table of
-      // issue addresses gives its virtual address.
+      csr_trap_value = riscv_pkg::pm_tval(rob_trap_value, csr_mmu_pm_mode, csr_translation_active);
+      // The bus-fault table stores the issue VA after the base transform.
+      // Apply the same architectural tval conversion to the selected VA.
       riscv_pkg::ExcLoadAccessFault[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStoreAccessFault[$bits(
           rob_trap_cause
       )-1:0]:
-      csr_trap_value = rob_head_bus_fault ? rob_head_bus_fault_va : rob_trap_value;
+      csr_trap_value = riscv_pkg::pm_tval(
+        rob_head_bus_fault ? rob_head_bus_fault_va : rob_trap_value,
+        csr_mmu_pm_mode,
+        csr_translation_active
+      );
       riscv_pkg::ExcIllegalInstr[$bits(rob_trap_cause)-1:0]: csr_trap_value = XLEN'(rob_trap_insn);
       default: csr_trap_value = '0;
     endcase
@@ -4201,6 +4210,24 @@ module cpu_ooo #(
       end
     end
   end
+`endif
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Store allocation and memory issue must use the current pointer mode.
+  // RS stage 2 can present a packet during full flush; its consumers discard it.
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && !i_rst && !flush_all &&
+        ((rs_issue_mem.valid && (rs_issue_mem.mem_needs_lq || rs_issue_mem.mem_needs_sq)) ||
+         u_tomasulo.sq_alloc_req.valid || u_tomasulo.sq_alloc_req_2.valid)) begin
+      p_memory_pointer_mode_current :
+      assert (csr_mmu_pm_mode ==
+          (((csr_file_inst.mstatus_mprv ? csr_file_inst.mstatus_mpp : csr_priv) ==
+             riscv_pkg::PrivU && !csr_file_inst.mstatus_mxr) ?
+            csr_file_inst.senvcfg_pmm : riscv_pkg::EnvcfgPmmOff));
+    end
+  end
+`endif
 `endif
 
   logic [1:0] commit_branch_retired_count;
@@ -4335,6 +4362,7 @@ module cpu_ooo #(
       .o_mmu_sum(csr_mmu_sum),
       .o_mmu_mxr(csr_mmu_mxr),
       .o_mmu_eff_priv_u(csr_mmu_eff_priv_u),
+      .o_mmu_pm_mode(csr_mmu_pm_mode),
       .o_fetch_translation_active(csr_fetch_translation_active),
       .o_fetch_priv_u(csr_fetch_priv_u),
       .o_satp_root_ppn(csr_satp_root_ppn),
@@ -4590,7 +4618,9 @@ module cpu_ooo #(
         .i_clk(i_clk),
         .i_rst(i_rst),
         .i_start(ma_assist_start),
-        .i_va(rob_trap_value),
+        // An assist uses the exact transformed address, including faults
+        // whose MEM_RS sum crossed the pointer mask's sign boundary.
+        .i_va(csr_trap_value),
         .i_size(riscv_pkg::mem_size_e'(rob_head_mem_funct3[1:0])),
         .i_unsigned(rob_head_mem_funct3[2]),
         // The ROB marks integer and FP stores with separate flags.

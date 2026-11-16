@@ -1002,6 +1002,31 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=("--assert",),
     ),
+    "pm_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="pm_test",
+        nic_mac_clocks=False,
+        description=(
+            "Ssnpm: senvcfg.PMM WARL; U-mode and MPRV loads, stores, AMOs, LR/SC and "
+            "cbo.zero through tagged pointers for PMLEN 7 and 16 under Sv39 and Bare, over "
+            "DDR and BRAM; forwarding and ordering across tags; xtval of masked faults; "
+            "base-offset wrap, split accesses, tagged Svpbmt NC/IO pages, SRET and "
+            "mode changes under timer interrupts, including U with stores queued; "
+            "delegated stval and permission faults; "
+            "no masking in actual S-mode execution, M, with MXR or for fetch"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),
+    ),
+    "pm_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="pm_test",
+        nic_mac_clocks=False,
+        description="Ssnpm with the cache, load-queue and store-queue assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),
+        verilator_extra_args=("--assert",),
+    ),
     "vec_state_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1523,7 +1548,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="debug_target",
         description=(
             "JTAG debug control, register and memory access, stepping (including "
-            "misaligned accesses), and reset"
+            "misaligned accesses and U pointer masking), and reset"
         ),
     ),
     "debug_fence_test": CocotbRunConfig(
