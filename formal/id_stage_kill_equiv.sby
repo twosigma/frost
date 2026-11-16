@@ -1,0 +1,82 @@
+[tasks]
+id_kill_equiv
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+# Equivalence check for ID operand-classification kill placement. Gold rewires
+# id_stage to apply is_illegal_instruction and is_fetch_fault inside both
+# instr_operand_classifier instances with no post-classifier mask; gate is
+# id_stage as shipped, forming id_kill beside the decoder and masking the
+# 19 class bits last. Both are flattened with registers unmapped and every
+# named net outside the internal pre-kill wires kept, so equiv_make pairs
+# all 38 pre-register class bits, every pipeline register next-state bit,
+# and all eight id_stage outputs across both slots.
+read -sv -D SYNTHESIS riscv_pkg.sv instr_decoder.sv instr_operand_classifier.sv immediate_decoder.sv instruction_type_decoder.sv branch_target_precompute.sv id_stage.sv
+hierarchy -check -top id_stage
+proc
+opt_clean
+select -module id_stage
+connect -port operand_classifier \i_illegal \is_illegal_instruction
+connect -port operand_classifier \i_fetch_fault \is_fetch_fault
+connect -port operand_classifier_2 \i_illegal \is_illegal_instruction_2
+connect -port operand_classifier_2 \i_fetch_fault \is_fetch_fault_2
+delete w:\id_kill %ci t:$* %i
+delete w:\id_kill_2 %ci t:$* %i
+connect -set \id_kill 1'b0
+connect -set \id_kill_2 1'b0
+select -clear
+setattr -mod -unset keep_hierarchy *
+flatten
+memory_map
+setundef -zero
+setattr -unset init
+dffunmap
+rename -hide w:id_kill* w:*_nokill* w:operand_classifier.* w:operand_classifier_2.*
+setattr -set keep 1 w:* w:$* %d
+opt_clean -purge
+rename -top gold
+design -stash gold
+design -reset
+read -sv -D SYNTHESIS riscv_pkg.sv instr_decoder.sv instr_operand_classifier.sv immediate_decoder.sv instruction_type_decoder.sv branch_target_precompute.sv id_stage.sv
+hierarchy -check -top id_stage
+proc
+setattr -mod -unset keep_hierarchy *
+flatten
+memory_map
+setundef -zero
+setattr -unset init
+dffunmap
+rename -hide w:id_kill* w:*_nokill* w:operand_classifier.* w:operand_classifier_2.*
+setattr -set keep 1 w:* w:$* %d
+opt_clean -purge
+rename -top gate
+design -stash gate
+design -reset
+design -copy-from gold -as gold gold
+design -copy-from gate -as gate gate
+equiv_make gold gate equiv
+hierarchy -top equiv
+select -assert-count 34 w:has_int_dest_pre_gold w:has_fp_dest_pre_gold w:uses_int_rs1_pre_gold w:uses_int_rs2_pre_gold w:uses_fp_rs1_pre_gold w:uses_fp_rs2_pre_gold w:uses_fp_rs3_pre_gold w:rs_type_pre_gold w:is_int_store_pre_gold w:is_branch_or_jump_pre_gold w:is_fence_pre_gold w:is_fence_i_pre_gold w:is_sfence_vma_pre_gold w:is_csr_imm_pre_gold w:has_fp_flags_pre_gold w:needs_lq_pre_gold w:needs_sq_pre_gold w:has_int_dest_pre_2_gold w:has_fp_dest_pre_2_gold w:uses_int_rs1_pre_2_gold w:uses_int_rs2_pre_2_gold w:uses_fp_rs1_pre_2_gold w:uses_fp_rs2_pre_2_gold w:uses_fp_rs3_pre_2_gold w:rs_type_pre_2_gold w:is_int_store_pre_2_gold w:is_branch_or_jump_pre_2_gold w:is_fence_pre_2_gold w:is_fence_i_pre_2_gold w:is_sfence_vma_pre_2_gold w:is_csr_imm_pre_2_gold w:has_fp_flags_pre_2_gold w:needs_lq_pre_2_gold w:needs_sq_pre_2_gold
+select -assert-count 8 o:o_from_id_to_ex*
+select -assert-min 11700 t:$equiv
+equiv_simple
+equiv_status -assert
+design -reset
+read -formal -sv prim_twin_done.sv
+prep -top prim_twin_done
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/instr_decoder.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/instr_operand_classifier.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/immediate_decoder.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/instruction_type_decoder.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/branch_target_precompute.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/id_stage.sv
+prim_twin_done.sv

@@ -1,4 +1,5 @@
 [tasks]
+coh_l1d_perf_prove stream multi perfretime
 coh_l1d_conflict_prove single conflict
 coh_l1d_conflict_multi_prove multi conflict padded
 coh_l1d_conflict_stream_prove stream multi conflict padded
@@ -55,6 +56,7 @@ coh_l1d_zero_multi_bmc multi zcontrol control_multi padded zero zmulti
 coh_l1d_zero_payload_bmc single data zpayload zero
 coh_l1d_zero_cover single zcovers zsingle covermode zero
 coh_l1d_zero_lookahead_cover multi zcovers zlook covermode zero padded
+coh_l1d_zero_stream_bmc turnstream multi cadical padded zero zstream
 
 [options]
 ~covermode: mode bmc
@@ -85,6 +87,10 @@ zsingle: vcd_sim on
 # Keep every transition from reset, but query only the later cover window.
 # Reaching a dirty twin victim requires several completed transactions.
 zsingle: skip 48
+# The single-endpoint zero cover reaches its last cover in 53 to 109 minutes
+# running beside one other formal job and needs about three hours on the
+# build host with the trial tree's cbo.zero changes.
+coh_l1d_zero_cover: timeout 14400
 ~covermode: aigsmt boolector
 conflict: mode prove
 conflict: depth 2
@@ -129,8 +135,11 @@ coh_l1d_multi_data2_bmc: timeout 4200
 coh_l1d_multi_data3_bmc: timeout 4200
 coh_l1d_ways_data_bmc: timeout 5100
 # The zero-write BMC with three endpoints stops short of the control BMC's
-# depth to stay inside its allowance with the extra write kind.
+# depth to stay inside its allowance with the extra write kind. With streaming
+# enabled on the same three-endpoint geometry, a prefetch into a cbo.zero twin
+# is first reachable at step 29.
 zmulti: depth 30
+zstream: depth 31
 # The answer BMCs check only the read-answer properties: grant answers of
 # attached loads and same-sector merges, against stores, probes, the hit path
 # and duplicate answers. The eight-endpoint task is shallower, as the free
@@ -139,7 +148,12 @@ answer: depth 20
 answer: timeout 3600
 streamanswer: depth 16
 
+perfretime: mode prove
+perfretime: depth 4
+perfretime: timeout 120
+
 [engines]
+perfretime: smtbmc boolector
 control_single: abc bmc3
 pdr: abc pdr
 control_multi: abc bmc3 -c
@@ -172,11 +186,13 @@ read -sv coherence_pkg.sv
 epphase: read -formal -sv coherence_request_endpoint.sv
 ~epphase: read -sv coherence_request_endpoint.sv
 read -sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv
+perfretime: read -formal -sv -D PERF_EVENT_PROOF coherence_read_payload.sv coherence_l1d.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamread: read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv
 zcontrol: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zcovers: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zpayload: read -formal -sv -D ZERO_WRITES -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
+zstream: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 streamscript: read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 coherence_read_payload.sv coherence_l1d.sv
 conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
@@ -277,6 +293,9 @@ zsingle: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_twin 
 zsingle: select -assert-count 4 t:$check r:FLAVOR=cover %i
 zlook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_lookahead %d
 zcovers: chformal -assert -remove
+zstream: select -assert-count 2 c:p_prefetch_not_record c:p_grant_keeps_modified
+zstream: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified %u %d
+zstream: select -assert-count 2 t:$check r:FLAVOR=assert %i
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
 arraydata: select -assert-count 4 c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known
@@ -350,6 +369,13 @@ zsingle: connect -set i_w_ready 1'b1
 zsingle: connect -set i_cut_admit_ready 1'b1
 zsingle: connect -set i_cut_admit_clean 1'b1
 zsingle: connect -set i_cut_inval_done 1'b1
+# Only the event serializer is observed; its input vectors are unconstrained.
+perfretime: select -assert-count 4 c:p_perf_retime_* t:$check %i r:FLAVOR=assert %i
+perfretime: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_perf_retime_* %d
+perfretime: chformal -assume -remove t:$check r:FLAVOR=assume %i c:p_perf_retime_reset %d
+perfretime: chformal -cover -remove
+perfretime: cutpoint w:perf_raw w:perf_merge_hit_new w:perf_merge_miss_new
+perfretime: delete -output w:*
 memory_map
 conflict: select -assert-min 1 t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
 conflict: cutpoint t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff

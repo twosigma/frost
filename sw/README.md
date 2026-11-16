@@ -286,6 +286,7 @@ can be debugged and where each one first stops.
 | `drain_trapframe_test/` | Trap-frame stores to DDR must survive the L1D evicting their line during a timer interrupt |
 | `ecc_scrub_test/` | In simulation, eight atomic no-op writes preserve a patterned line and cause exactly one DDR writeback after eviction; a clean read causes none |
 | `fencei_bench/` | `fence.i` and refetch cost for JIT-style code generation in cached DDR |
+| `fencei_jit_bench/` | `fence.i` and refetch cost in a JIT-style write, `fence.i` and call loop: patch size sweep, straight-line and one-line-per-hop layouts, and a small patch inside a hot unmodified region |
 | `fetch_lead_repro/` | A call into a cold cached line whose first bundle advances 6 bytes, followed by a 32-bit instruction split across fetch words |
 | `fetch_stall_repro/` | 32-bit instructions near cache-line boundaries, fetched cold from DDR; a PC+2 mis-step traps |
 | `fp_dyn_rm_test/` | F/D and Zfhmin/Zfa instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |
@@ -317,6 +318,7 @@ can be debugged and where each one first stops.
 | `linux_irq_ddr_test/` | Linux-style timer interrupt path from `wfi` idle, with code, data, and stack in DDR |
 | `linux_irq_find_next_slot_test/` | Timer interrupts swept across a `_find_next_bit`-shaped loop whose saved-`ra` slot is poisoned |
 | `linux_irq_stack_slot_test/` | A timer interrupt inside a callee whose saved-`ra` stack slot was poisoned beforehand |
+| `l1i_set_test/` | Every L1I set filled, hit, patched and cleared: lines differing only in PA[12], 8 KiB-apart lines sharing a set, an over-subscribed upper set, and an Sv39 page crossing whose PA[12] differs from its VA[12]; `L1I_TEST_BYTES` (16384 or 32768) selects the residence and refill bounds |
 | `l2_capacity_chase/` | Dependent-load cycles over checked random cycles of 64-byte lines; `L2CC_SIZES_KIB` selects 1 to 16384 KiB working sets (default 1024, 3072, 4096, 5120). CI checks short rings with a 4 MiB L2 and DDR read counts below and above a reduced L2 capacity |
 | `lq_stale_slot_probe/` | Cached-load results must reach the right load across two partial flushes and ROB-tag reuse, with slow, reordered DDR responses; eviction aliases follow `FROST_L2_CACHE_BYTES` (2 MiB by default, 4 MiB on VCU118) |
 | `mem_divergence_probe/` | Cold versus warm reads of cached DDR (both dword halves, 64-bit reads, store forwarding) |
@@ -355,14 +357,14 @@ can be debugged and where each one first stops.
 | `rv64_smoke/` | The smallest RV64I program: W-form operations, 6-bit shift amounts, and 64-bit loads and stores |
 | `satp_drain_test/` | A store committed just before a `satp` or `mstatus` write must drain before that write retires and flushes the pipeline |
 | `sum_toggle_test/` | S-mode SUM and MXR toggles against resident TLB entries: the live bits decide every access, no toggle walks a page table, and the toggle cost is reported |
-| `asid_test/` | S-mode `satp.ASID`, global pages and the SFENCE.VMA forms against resident TLB entries: two address spaces keep separate entries for one VA, a context switch walks nothing when both are resident, the global page serves every ASID, and each SFENCE.VMA form flushes exactly what the privileged spec names; reports ASIDLEN the way Linux probes it |
+| `asid_test/` | S-mode `satp.ASID`, global pages, the SFENCE.VMA forms against resident TLB entries, and immediate `Svvptc` invalid-to-valid leaf PTE stores followed in the next instruction by a data load or instruction fetch under a retry-only handler: two address spaces keep separate entries for one VA, a context switch walks nothing when both are resident, the global page serves every ASID, each SFENCE.VMA form flushes what the privileged spec names, and ASIDLEN is reported the way Linux probes it |
 | `served_window_resteer/` | A BTB-predicted loop branch to an upper-half target; `served_window_resteer_fetch_fuzz` uses uncached Normal fetches and requires AXI fuzz delays and predicted-target waits on each reset run, with count/sum checks across 2,000 iterations. The IF-stage unit bench explicitly checks stale-window rejection and retry |
 | `slot2_fault_test/` | A fetch fault on the second instruction of a fetch pair, one whose bytes encode a NOP included, must trap at that instruction with exact `mepc` and `mtval` |
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |
 | `smc_predict_test/` | A `ret`, a `j` and an always-taken `beq`, each trained and then rewritten as an `addi`, must not follow their old predictions after `fence.i` |
 | `smc_stale_test/` | Rewritten code that is dirty in the L1D over an older L2 copy runs after `fence.i` |
 | `smc_torture/` | Random code mutation under trained predictors: leaf functions in DDR are trained, then patched in place or regenerated in a new layout, and after each `fence.i` an interpreter checks them; `-DSMC_SEED=<n>` varies the stream |
-| `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |
+| `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, `fence.i` in S and U, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
 | `sprintf_test/` | All 344 `sprintf`/`snprintf` checks against constant expected strings; the 2M-cycle simulation budget covers the measured 1.23M cycles in BRAM and DDR |
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp`; also the writable `menvcfg` and `senvcfg` bits |
@@ -370,6 +372,7 @@ can be debugged and where each one first stops.
 | `sstvala_fault_test/` | Sstvala for access faults from failed bus responses (the registry makes one DDR line answer SLVERR): doubleword, word and byte loads, LR and AMOs, misaligned loads the misaligned-access engine splits, a fetch from the line and an instruction whose second halfword starts it, in M, S and U, delegated and not, bare and through Sv39 where the virtual address differs from the physical one, each with exact cause, `xepc` and `mtval` or `stval` |
 | `sstvala_test/` | Sstvala: every illegal-instruction source in M, S and U, delegated and not, writes the faulting instruction's bits to `mtval` or `stval` (a compressed instruction's 16 bits zero-extended), including an instruction second in its fetch pair, one across a line or page boundary, and one reached after a mispredicted branch |
 | `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions |
+| `svpbmt_test/` | Svpbmt: PBMTE and reserved PTE faults, NC and IO coherence and mixed-view ordering, U-mode data access, 4 KiB/2 MiB/1 GiB leaves, atomic/zero/fetch access faults, TLB attribute retention, alias PMA protection, and `sfence.vma` after clearing PBMTE. The `svpbmt_test_2g` variant checks DDR access faults, page-permission precedence and device PBMT on a map without an alias; `svpbmt_bus_error` injects alias read and write errors and checks the original virtual address in the trap value. |
 | `sysreset_test/` | Invalid keys, byte writes and neighbouring writes leave the core running; word and halfword reset requests each restart the program, reset `mscratch` and both halves of `mtimecmp`, and preserve its uncached BRAM marker |
 | `tick_torture/` | CLINT timer re-arming, lost-tick detection, and `wfi` wakeup under DDR traffic |
 | `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run unless the head-load counter split adds up and the reserved counters read 0. Simulation allows 750,000 cycles for all 14 benchmarks and reports |

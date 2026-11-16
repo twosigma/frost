@@ -364,7 +364,9 @@ module if_stage #(
   // pc_controller's one-hot next-PC arm ordering; arm 8 is slot-1 prediction.
   localparam int unsigned PredictionNpcArm = 8;
   logic fetch_pa_valid;  // physical result for o_pc is visible
-  logic [riscv_pkg::FetchPaHoldCopies-1:0] fetch_pa_valid_copy;
+  // The IMMU forms the hold copies in their own LUTs (PA_COPY_HOLD), so no
+  // inverter sits between them and the queue's stall-select LUTs.
+  logic [riscv_pkg::FetchPaHoldCopies-1:0] fetch_pa_hold_copy;
   logic fetch_fault0_live;  // o_pc's word-0 fetch fault
 
   // ---------------------------------------------------------------------------
@@ -981,7 +983,8 @@ module if_stage #(
   immu #(
       .XLEN(XLEN),
       .NUM_ENTRIES(16),
-      .PA_VALID_COPIES(riscv_pkg::FetchPaHoldCopies)
+      .PA_VALID_COPIES(riscv_pkg::FetchPaHoldCopies),
+      .PA_COPY_HOLD(1'b1)
   ) u_immu (
       .i_clk(i_clk),
       .i_rst(i_pipeline_ctrl.reset),
@@ -995,7 +998,7 @@ module if_stage #(
       .o_pa0(o_fetch_pa0),
       .o_pa1(o_fetch_pa1),
       .o_pa_valid(fetch_pa_valid),
-      .o_pa_valid_copy(fetch_pa_valid_copy),
+      .o_pa_valid_copy(fetch_pa_hold_copy),
       .o_fault0(fetch_fault0_live),
       .o_fault0_page(o_fetch_fault0_page),
       .o_fault1(o_fetch_fault1),
@@ -1010,7 +1013,7 @@ module if_stage #(
   assign o_fetch_pa_valid = fetch_pa_valid;
   assign o_fetch_fault0 = fetch_fault0_live;
   assign o_fetch_pa_hold = !fetch_pa_valid;
-  assign o_fetch_pa_hold_copy = ~fetch_pa_valid_copy;
+  assign o_fetch_pa_hold_copy = fetch_pa_hold_copy;
 
   // The presenter needs a pulse when a nonsequential PC load kills its
   // owed request. A slot-1 prediction made before emitting its branch must

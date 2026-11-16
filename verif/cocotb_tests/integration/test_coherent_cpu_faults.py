@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check coherent atomic faults, parked-hart service and reset through the CPU."""
+"""Check coherent atomic faults, alias-load replay, parked service and reset."""
 
 from collections.abc import Callable
 from typing import Any
@@ -144,7 +144,7 @@ async def amo_refill_fault_releases_selected_owner(dut: Any) -> None:
         assert protected
         assert effects[0x40000010] == 7
         assert effects[0x40000018] == fault_pc
-        assert effects[0x40000020] == 0
+        assert effects[0x40000020] == address
         assert 0x40000008 not in effects
         assert system.memory[address] == 123
         assert not int(dut.hart.coherent_atomic_live.value)
@@ -810,3 +810,119 @@ async def local_amo_operators_widths_and_order_bits(dut: Any) -> None:
                 )
                 assert result == expected, (size, offset, opcode, order)
                 assert effects[0x40000010] == signed_old & ((1 << 64) - 1)
+
+
+@cocotb.test()
+async def pbmt_alias_control_entry_replays_read(dut: Any) -> None:
+    """Check that IRQ/debug entry flushes and repeats an accepted NC/IO read."""
+    cpu = dut.hart.cpu_inst
+    alias = 0xC0000018
+    load_va = 0x200018
+    for pbmt in (1, 2):
+        for entry in ("irq", "debug"):
+            s = System(dut)
+            root, level1 = 0x80002000, 0x80003000
+
+            def word(address: int, value: int) -> None:
+                for offset, byte in enumerate(value.to_bytes(8, "little")):
+                    s.memory[address + offset] = byte
+
+            word(root, ((level1 >> 12) << 10) | 1)
+            word(root + 8, ((0x40000000 >> 12) << 10) | 0xC7)
+            word(level1, 0xCF)  # Ordinary executable low memory for S-mode code.
+            word(level1 + 8, ((0x80000000 >> 12) << 10) | 0xC7 | (pbmt << 61))
+            word(alias, 0x11)
+            boot = literal(2, 0x1400) + [csr(0, 2, 0x305)]
+            boot += literal(2, 1 << 62) + [csr(0, 2, 0x30A)]
+            boot += literal(2, (8 << 60) | (root >> 12))
+            boot += [csr(0, 2, 0x180), 0x12000073]
+            boot += [addi(2, 0, 8), csr(0, 2, 0x304)]
+            boot += literal(2, (1 << 11) | (1 << 7)) + [csr(0, 2, 0x300)]
+            boot += literal(2, 0x1200) + [csr(0, 2, 0x341), 0x30200073]
+            s.program(boot)
+            body = literal(1, 0x40000000) + literal(4, load_va)
+            load_pc = 0x1200 + 4 * len(body)
+            body += [load(3, 4, 0, 3), store(3, 1, 0x28, 3), 0x0000006F]
+            s.program(body, 0x1200)
+            s.program(
+                [
+                    csr(7, 0, 0x342, 2),
+                    store(7, 1, 0x10, 3),
+                    csr(8, 0, 0x341, 2),
+                    store(8, 1, 0x18, 3),
+                    0x30200073,
+                ],
+                0x1400,
+            )
+            s.program([0x0000006F], 0x17C00)
+            s.program([csr(8, 0, 0x7B1, 2), store(8, 1, 0x30, 3), 0x7B200073], 0x1600)
+            await s.reset()
+            for _ in range(20000):
+                await s.step()
+                if any(
+                    kind == "read" and address == alias
+                    for _, kind, address, *_ in s.transactions
+                ):
+                    break
+            else:
+                raise AssertionError(
+                    f"Alias read did not reach AXI: {pbmt=} {entry=} "
+                    f"transactions={s.transactions[-12:]} effects={s.effects[-6:]}"
+                )
+            assert s.reads
+            first_accept = s.cycle
+            # Hold the accepted read across control entry. Its old value must
+            # be discarded; the restarted instruction reads the new value.
+            due, ident, value, status = s.reads[-1]
+            first_reply = due + 500
+            s.reads[-1] = (first_reply, ident, value, status)
+            word(alias, 0x22)
+            control_cycles: list[int] = []
+
+            def observe_entry() -> None:
+                assert not int(cpu.device_read_shield_q.value)
+                if int(cpu.trap_taken.value):
+                    control_cycles.append(s.cycle)
+
+            s.before_edge = observe_entry
+            if entry == "irq":
+                dut.i_interrupts.value = 1
+            else:
+                dut.i_dbg_haltreq.value = 1
+            for _ in range(400):
+                await s.step()
+                if control_cycles:
+                    break
+            else:
+                raise AssertionError(
+                    f"Control entry waited for the alias response: {entry=}"
+                )
+            assert first_accept < control_cycles[0] < first_reply
+            s.before_edge = None
+            dut.i_interrupts.value = 0
+            if entry == "debug":
+                for _ in range(2000):
+                    if int(dut.o_dbg_parked.value):
+                        break
+                    await s.step()
+                else:
+                    raise AssertionError("Debug entry did not park the CPU")
+                dut.i_dbg_haltreq.value = 0
+                await debug_go(s, 0x1600)
+            assert await s.until_write(0x40000028) == 0x22
+            reads = [item for item in s.transactions if item[1:3] == ("read", alias)]
+            assert len(reads) == 2, (pbmt, entry, len(reads), reads[-4:])
+            assert all(size == 3 and cache == 0 for _, _, _, size, cache, _ in reads)
+            effects = {address: value for _, address, value in s.effects}
+            if entry == "irq":
+                assert effects[0x40000010] == (1 << 63) | 3
+                assert effects[0x40000018] == load_pc
+            else:
+                assert effects[0x40000030] == load_pc
+            dut._log.info(
+                "PBMT_REPLAY pbmt=%d entry=%s reads=%d result=%#x",
+                pbmt,
+                entry,
+                len(reads),
+                effects[0x40000028],
+            )

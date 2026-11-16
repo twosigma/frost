@@ -626,7 +626,7 @@ async def test_csr_read(dut: Any) -> None:
     iface.drive_issue(
         valid=True,
         rob_tag=rob_tag,
-        op=_op("CSRRS"),
+        op=_op("CSR_REG"),
         src1_value=rs1_val,
         src2_value=0,
     )

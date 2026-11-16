@@ -461,25 +461,16 @@ module load_queue #(
 
   function automatic amo_kind_e encode_amo_kind(input riscv_pkg::instr_op_e op);
     case (op)
-      riscv_pkg::AMOSWAP_W: encode_amo_kind = AMO_KIND_SWAP;
-      riscv_pkg::AMOADD_W:  encode_amo_kind = AMO_KIND_ADD;
-      riscv_pkg::AMOXOR_W:  encode_amo_kind = AMO_KIND_XOR;
-      riscv_pkg::AMOAND_W:  encode_amo_kind = AMO_KIND_AND;
-      riscv_pkg::AMOOR_W:   encode_amo_kind = AMO_KIND_OR;
-      riscv_pkg::AMOMIN_W:  encode_amo_kind = AMO_KIND_MIN;
-      riscv_pkg::AMOMAX_W:  encode_amo_kind = AMO_KIND_MAX;
-      riscv_pkg::AMOMINU_W: encode_amo_kind = AMO_KIND_MINU;
-      riscv_pkg::AMOMAXU_W: encode_amo_kind = AMO_KIND_MAXU;
-      riscv_pkg::AMOSWAP_D: encode_amo_kind = AMO_KIND_SWAP;
-      riscv_pkg::AMOADD_D:  encode_amo_kind = AMO_KIND_ADD;
-      riscv_pkg::AMOXOR_D:  encode_amo_kind = AMO_KIND_XOR;
-      riscv_pkg::AMOAND_D:  encode_amo_kind = AMO_KIND_AND;
-      riscv_pkg::AMOOR_D:   encode_amo_kind = AMO_KIND_OR;
-      riscv_pkg::AMOMIN_D:  encode_amo_kind = AMO_KIND_MIN;
-      riscv_pkg::AMOMAX_D:  encode_amo_kind = AMO_KIND_MAX;
-      riscv_pkg::AMOMINU_D: encode_amo_kind = AMO_KIND_MINU;
-      riscv_pkg::AMOMAXU_D: encode_amo_kind = AMO_KIND_MAXU;
-      default:              encode_amo_kind = AMO_KIND_INVALID;
+      riscv_pkg::AMOSWAP: encode_amo_kind = AMO_KIND_SWAP;
+      riscv_pkg::AMOADD:  encode_amo_kind = AMO_KIND_ADD;
+      riscv_pkg::AMOXOR:  encode_amo_kind = AMO_KIND_XOR;
+      riscv_pkg::AMOAND:  encode_amo_kind = AMO_KIND_AND;
+      riscv_pkg::AMOOR:   encode_amo_kind = AMO_KIND_OR;
+      riscv_pkg::AMOMIN:  encode_amo_kind = AMO_KIND_MIN;
+      riscv_pkg::AMOMAX:  encode_amo_kind = AMO_KIND_MAX;
+      riscv_pkg::AMOMINU: encode_amo_kind = AMO_KIND_MINU;
+      riscv_pkg::AMOMAXU: encode_amo_kind = AMO_KIND_MAXU;
+      default:            encode_amo_kind = AMO_KIND_INVALID;
     endcase
   endfunction
 
@@ -845,7 +836,7 @@ module load_queue #(
 
   // lq_address and lq_amo_rs2 are only written once the address CAM resolves.
   // Valid bits stay in FFs; stale RAM contents are don't-care until addr_valid.
-  logic [3:0] coherent_stored_class, coherent_update_class;
+  logic [4:0] coherent_stored_class, coherent_update_class;
   if (1'b1) begin : gen_coherent_address_store
     coherent_lq_address_store #(
         .ADDR_WIDTH(IdxWidth),
@@ -2034,7 +2025,7 @@ module load_queue #(
   (* max_fanout = 32 *) logic sq_check_payload_en_c;
   (* max_fanout = 32 *) logic sq_check_payload_en_d;
   if (1'b1) begin : gen_coherent_staged_class
-    logic pma_ok_q, cached_q, misaligned_q, normal_q;
+    logic pma_ok_q, cached_q, misaligned_q, normal_q, pbmt_alias_q;
     wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
     (* keep = "true" *) wire update_atomic;
     assign update_atomic =
@@ -2057,7 +2048,7 @@ module load_queue #(
     assign selected_permission = issue_mem_uses_addr_update ?
         (update_uncached_ok || update_cached_ok || (!update_atomic && update_device_ok)) :
         stored_permission;
-    wire [3:0] selected_class = issue_mem_uses_addr_update ?
+    wire [4:0] selected_class = issue_mem_uses_addr_update ?
         coherent_update_class : coherent_stored_class;
     (* keep = "true" *) wire stored_misaligned;
     assign stored_misaligned = is_load_misaligned(
@@ -2073,9 +2064,15 @@ module load_queue #(
         cached_q <= selected_class[0];
         normal_q <= selected_class[3];
         misaligned_q <= selected_misaligned;
+        pbmt_alias_q <= selected_class[4];
       end
     end
-    assign sq_check_pma_ok = pma_ok_q;
+    // Svpbmt: the uncached alias of DDR is outside the PMA map, so an
+    // untranslated access there faults; the data MMU sends an NC or IO access
+    // there only as an MMIO load, which this check then accepts (atomics
+    // there keep their access fault).
+    assign sq_check_pma_ok = pma_ok_q ||
+        (pbmt_alias_q && sq_check_is_mmio_q && !(sq_check_is_amo_q || sq_check_is_lr_q));
     assign sq_check_is_cached_region = cached_q;
     assign coherent_staged_misaligned = misaligned_q;
     assign coherent_staged_normal = normal_q;
@@ -2109,6 +2106,8 @@ module load_queue #(
         p_staged_pma_exact : assert (pma_ok_q ==
             ((sq_check_is_amo_q || sq_check_is_lr_q) ?
              riscv_pkg::pma_atomic_ok(sq_check_addr_q) : riscv_pkg::pma_data_ok(sq_check_addr_q)));
+        p_staged_pbmt_alias_exact :
+        assert (pbmt_alias_q == riscv_pkg::pma_pbmt_alias_ok(sq_check_addr_q));
         p_staged_cached_exact : assert (cached_q == is_cached_addr(sq_check_addr_q));
         p_staged_normal_exact : assert (normal_q ==
             riscv_pkg::pma_writethrough_ok(sq_check_addr_q));

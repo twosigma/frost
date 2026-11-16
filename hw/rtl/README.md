@@ -103,6 +103,7 @@ entry.
 | APLIC | `0x4400_0000` | 4 MiB | AIA direct and MSI delivery, M and S domains of 32 KiB each |
 | IMSIC | `0x4800_0000` | 2 MiB | 4 KiB M and S pages at `0x4800_0000` and `0x4810_0000`, with `0x1000` hart stride |
 | DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
+| DDR uncached alias | DDR address with bit 30 set (`0xC000_0000`, DDR up to 1 GiB) or bit c set (a 2^c-byte DDR window, c >= 32: `[2^c + 2^31, 2^(c+1))`) | The aliased DDR | Not in the PMA map. Svpbmt: the walker gives NC and IO leaves over DDR this alias; the MMUs make such an access MMIO (at the ROB head, no AMOs, no fetch) and the SoC turns it into a single-beat coherent DMA transfer of the real DDR address. An untranslated access, or a PMA leaf, there is an access fault |
 
 Addresses outside the defined regions, including the rest of the device
 quadrant `[0x4000_0000, 0x8000_0000)` and addresses at or beyond the
@@ -110,7 +111,8 @@ configured DDR end (`0x8000_0000 + 2^FROST_DDR_CAPACITY_LOG2_BYTES`), are
 unmapped: a fetch, load, store, or AMO there raises a precise access fault
 (cause 1, 5, or 7) and never aliases onto the map. DDR addresses above 4 GiB
 remain valid when they are inside the configured aperture. At the default
-1 GiB capacity, `0xc000_0000` and higher addresses fault. Fetch also faults
+1 GiB capacity, `0xc000_0000` and higher addresses fault (the Svpbmt alias
+above DDR is reached only through an NC or IO page). Fetch also faults
 in the low BRAM above its 128 KiB code region `[0, 0x2_0000)`. The one
 exception is a store to the rest of the device quadrant with translation off: the
 store-issue check covers the whole quadrant, so the store issues and the
@@ -468,7 +470,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `80` | DDR model size and access latency in cycles (simulation) |
 | `frost.sv` | `DDR_MODEL_LATENCY_JITTER` / `DDR_MODEL_REORDER` | `0` / `0` | DDR model per-transaction latency jitter, and out-of-order completion across ids (simulation); `FROST_DDR_MODEL_SEED` draws these and the latency for a test run ([tests/README.md](../../tests/README.md#environment-and-output)) |
-| `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 clears coherent-array tags, states and replacement bits in one cycle and accelerates L1I maintenance; 0 keeps the per-set reset sweep |
+| `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 clears coherent-array tags, states and replacement bits in one cycle and bulk-clears the L1I tag and replacement RAMs on reset and every invalidate-all; 0 keeps the per-set reset sweep. L1I invalidate-all clears valid flip-flops in one cycle in either mode |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation only: 1 delays local instruction AXI responses to exercise variable fetch latency |
 | `frost.sv` | `L1D_NUM_MSHR` | `8` | L1D request endpoints, 1 to 8: one for stores, LR and atomics, the rest for load misses in flight |
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |

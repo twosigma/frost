@@ -466,3 +466,236 @@ async def nic_access_guard(dut: Any) -> None:
             await with_timeout(guard, 100, "ns")
         finally:
             guard.cancel()
+
+
+@cocotb.test()
+async def pbmt_alias_transfers(dut: Any) -> None:
+    """Alias lanes and errors cross the coherent port with the real address."""
+    b = Bench(dut)
+    await b.reset()
+    memory: dict[int, int] = {}
+    requests: list[tuple[int, int, int]] = []
+    inject_error = False
+
+    async def serve() -> None:
+        pending: list[tuple[int, int, int, int]] = []
+        cycle = 0
+        while True:
+            # The coherent port is on the CPU side of the DMA clock crossing.
+            await FallingEdge(b.clock)
+            cycle += 1
+            dut.i_coherent_req_ready.value = int(cycle % 5 != 0)
+            dut.i_coherent_resp_valid.value = 0
+            if pending and pending[0][0] <= cycle:
+                _, ident, data, error = pending.pop(0)
+                dut.i_coherent_resp_id.value = ident
+                dut.i_coherent_resp_rdata.value = data
+                dut.i_coherent_resp_error.value = error
+                dut.i_coherent_resp_valid.value = 1
+            await RisingEdge(b.clock)
+            if int(dut.o_coherent_req_valid.value) and int(
+                dut.i_coherent_req_ready.value
+            ):
+                address = int(dut.o_coherent_req_addr.value)
+                write = int(dut.o_coherent_req_write.value)
+                strobe = int(dut.o_coherent_req_wstrb.value) if write else 0
+                requests.append((write, address, strobe))
+                assert address & 31 == 0
+                assert 0x80000000 <= address < 0xC0000000
+                if 0x81100000 <= address < 0x81101000:
+                    assert int(dut.o_coherent_req_non_alloc.value)
+                if write and not inject_error:
+                    data = int(dut.o_coherent_req_wdata.value)
+                    for lane in range(32):
+                        if strobe & (1 << lane):
+                            memory[address + lane] = (data >> (8 * lane)) & 255
+                result = sum(
+                    memory.get(address + lane, 0) << (8 * lane) for lane in range(32)
+                )
+                pending.append(
+                    (
+                        cycle + 3,
+                        int(dut.o_coherent_req_id.value),
+                        result,
+                        int(inject_error),
+                    )
+                )
+
+    responder = cocotb.start_soon(serve())
+    for size in range(4):
+        for offset in range(0, 64, 1 << size):
+            address = 0xC1100000 + offset
+            data = (0xCAFE9876543210AB ^ offset) & ((1 << (8 << size)) - 1)
+            before = len(requests)
+            await b.write(address, data, size=size)
+            assert len(requests) == before + 1
+            write, real, strobe = requests[-1]
+            assert write == 1 and real == ((address & ~0x40000000) & ~31)
+            assert strobe == ((1 << (1 << size)) - 1) << (address & 31)
+            assert await b.read(address, size=size) == data
+            assert len(requests) == before + 2
+    inject_error = True
+    await b.read(0xC1100000, size=3, status=2)
+    await b.write(0xC1100000, 0xBAD, size=3, status=2)
+    inject_error = False
+    await b.write(0xC1100000, 0x123456, size=3)
+    assert await b.read(0xC1100000, size=3) == 0x123456
+    # The DMA engine and alias master share the mux and response-ID space.
+    # Its bursts must complete while the hart keeps issuing alias transfers.
+    src, dst, length = 0x82200000, 0x82300000, 256
+    for offset in range(length):
+        memory[src + offset] = (offset * 17 + 3) & 255
+    dma = 0x40020000
+    start = len(requests)
+    for offset, value in ((8, src), (12, dst), (16, length), (20, 8), (0, 1)):
+        await b.write(dma + offset, value)
+    for value in range(32):
+        await b.write(0xC1100018, value, size=3)
+        assert await b.read(0xC1100018, size=3) == value
+    assert any(src <= address < src + length for _, address, _ in requests[start:])
+    assert any(dst <= address < dst + length for _, address, _ in requests[start:])
+    for _ in range(100):
+        status = await b.read(dma)
+        if status & 1 == 0:
+            assert status & 7 == 2
+            break
+    else:
+        raise AssertionError("DMA did not complete beside alias traffic")
+    assert [memory.get(dst + i) for i in range(length)] == [
+        memory[src + i] for i in range(length)
+    ]
+    responder.cancel()
+
+
+@cocotb.test()
+async def pbmt_alias_core_reset(dut: Any) -> None:
+    """Abort an alias wait on core reset while the local AXI bus stays live."""
+    b = Bench(dut)
+    await b.reset()
+
+    async def reset_alias() -> None:
+        for _ in range(200):
+            await FallingEdge(dut.i_clk)
+            if int(dut.local_state_q.value) == 6:
+                break
+        else:
+            raise AssertionError("Alias request did not reach the coherent port")
+        await b.pulse_reset(12, False)
+
+    # The coherent port holds the transfer; only its reset can end this wait.
+    dut.i_coherent_req_ready.value = 0
+    if b.cpu_period:
+        reset = cocotb.start_soon(reset_alias())
+        assert await b.read(0xC1100018, size=3) == 0
+        await reset
+        reset = cocotb.start_soon(reset_alias())
+        await b.write(0xC1100018, 0xCAFEBABE, size=3)
+        await reset
+    else:
+        assert await b.read(0xC1100018, size=3, reset_delay=12) == 0
+        await b.write(0xC1100018, 0xCAFEBABE, size=3, reset_delay=12)
+    # A completed abort must leave the local bus able to serve another slave.
+    await b.write(0x1000, 0x1122334455667788, size=3)
+    assert await b.read(0x1000, size=3) == 0x1122334455667788
+
+
+@cocotb.test()
+async def pbmt_alias_accepted_reset_and_recovery(dut: Any) -> None:
+    """Reset an accepted coherent transfer, then reuse the alias for read/write."""
+    b = Bench(dut)
+    await b.reset()
+    for write in (False, True):
+        requests: list[tuple[int, int, int]] = []
+        replies: list[int] = []
+        memory: dict[int, int] = {}
+        reply_enabled = False
+
+        async def serve() -> None:
+            pending: list[tuple[int, int, int]] = []
+            cycle = 0
+            while True:
+                await FallingEdge(b.clock)
+                cycle += 1
+                dut.i_coherent_req_ready.value = 1
+                dut.i_coherent_resp_valid.value = 0
+                if int(dut.o_cpu_rst.value):
+                    # The home and its ingress reset with the core. An old
+                    # completion cannot survive that reset and reuse its tag.
+                    pending.clear()
+                elif reply_enabled and pending and pending[0][0] <= cycle:
+                    _, ident, value = pending.pop(0)
+                    dut.i_coherent_resp_id.value = ident
+                    dut.i_coherent_resp_rdata.value = value
+                    dut.i_coherent_resp_error.value = 0
+                    dut.i_coherent_resp_valid.value = 1
+                    replies.append(ident)
+                await RisingEdge(b.clock)
+                if int(dut.o_coherent_req_valid.value) and int(
+                    dut.i_coherent_req_ready.value
+                ):
+                    address = int(dut.o_coherent_req_addr.value)
+                    is_write = int(dut.o_coherent_req_write.value)
+                    ident = int(dut.o_coherent_req_id.value)
+                    requests.append((is_write, address, ident))
+                    assert address == 0x81100000
+                    if is_write:
+                        data = int(dut.o_coherent_req_wdata.value)
+                        strobe = int(dut.o_coherent_req_wstrb.value)
+                        assert strobe == 0xFF << 24
+                        for lane in range(32):
+                            if strobe & (1 << lane):
+                                memory[address + lane] = (data >> (8 * lane)) & 255
+                    value = sum(
+                        memory.get(address + lane, 0) << (8 * lane)
+                        for lane in range(32)
+                    )
+                    pending.append((cycle + 3, ident, value))
+
+        responder = cocotb.start_soon(serve())
+        try:
+            await b.address("aw" if write else "ar", 0xC1100018, 3)
+            if write:
+                lane = 0x18 & (b.bus_bytes - 1)
+                for _ in range(50):
+                    sample = await b.step(
+                        axi_wvalid=1,
+                        axi_wdata=0xBAD << (8 * lane),
+                        axi_wstrb=0xFF << lane,
+                    )
+                    if sample["wready"]:
+                        dut.i_axi_wvalid.value = 0
+                        break
+                else:
+                    raise AssertionError("Alias write data was not accepted")
+            for _ in range(200):
+                if requests:
+                    break
+                await b.step()
+            else:
+                raise AssertionError("Alias transfer did not enter the coherent home")
+            assert len(requests) == 1 and requests[0][0] == write
+            assert int(dut.local_state_q.value) == 6
+            assert not replies
+            # Unlike the earlier reset case, READY has accepted the request.
+            # Keep its response withheld while the core and home reset; the
+            # CPU-facing AXI bus remains live and receives the registered abort.
+            for _ in range(20):
+                await b.step(rst=1)
+            await b.step(rst=0)
+            sample = await b.response("b" if write else "r", 0, None, False)
+            if not write:
+                assert sample["rdata"] == 0
+            assert not replies and len(requests) == 1
+            assert not int(dut.o_cpu_rst.value)
+            reply_enabled = True
+            await b.write(0xC1100018, 0x123456789ABCDEF0, size=3)
+            assert await b.read(0xC1100018, size=3) == 0x123456789ABCDEF0
+            assert len(requests) == 3 and len(replies) == 2
+            dut._log.info(
+                "PBMT_ACCEPTED_RESET write=%s accepted=%d replies=%d recovery=PASS",
+                write,
+                len(requests),
+                len(replies),
+            )
+        finally:
+            responder.cancel()
