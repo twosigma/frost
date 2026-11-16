@@ -568,7 +568,7 @@ int main(unsigned long hartid, unsigned long fdt)
         check(" present", r.error == 0 && r.value != 0);
     }
     r = sbi_ecall(SBI_EXT_BASE, 3, SBI_EXT_SRST, 0, 0, 0);
-    puts_("  probe SRST (no reset device expected): ");
+    puts_("  probe SRST (syscon-reboot): ");
     puthex((uint64_t) r.value);
     puts_("\n");
     r = sbi_ecall(SBI_EXT_BASE, 4, 0, 0, 0, 0);

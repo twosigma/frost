@@ -226,3 +226,29 @@ def test_cache_report_code_stays_in_its_section(tmp_path: Path, profile: str) ->
         for name, section in report.items()
         if section != ".cache_profile_text"
     } == {}
+
+
+@pytest.mark.parametrize("mem_config", ["bram", "ddr"])
+def test_sysreset_image_clears_the_retained_marker(
+    tmp_path: Path, mem_config: str
+) -> None:
+    """Each load overwrites every possible old phase without crt0 clearing it."""
+    app = scratch_app(tmp_path, "sysreset_test")
+    result = build(app, f"MEM_CONFIG={mem_config}")
+    assert result.returncode == 0, result.stdout + result.stderr
+    address = 0x30000
+    # The dense image is what the JTAG loader writes starting at BRAM zero.
+    words = (app / "sw.txt").read_text().splitlines()
+    assert int(words[address // 4], 16) == 0
+    # The simulator reads the sparse dword image. Require an explicit write,
+    # rather than a missing row that only happens to start at zero.
+    rows: dict[int, int] = {}
+    row = 0
+    for token in (app / "sw64.mem").read_text().split():
+        if token.startswith("@"):
+            row = int(token[1:], 16)
+        else:
+            rows[row] = int(token, 16)
+            row += 1
+    assert address // 8 in rows
+    assert rows[address // 8] & 0xFFFFFFFF == 0

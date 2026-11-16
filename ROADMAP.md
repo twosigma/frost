@@ -206,6 +206,8 @@ that repeatedly exercise the recovery paths.
 
 ## Memory system
 
+CPU resets (`ndmreset` and SYSRESET) discard dirty cache lines; preserving modified data and restoring mutable boot images for a complete reboot remain software responsibilities.
+
 The L1D, L1I, and L2 are 4-way set-associative with tree pseudo-LRU
 replacement, one design for every target. The L1D inserts lines bimodally: a
 fill becomes its set's most recently used only one time in 32, or when a read
