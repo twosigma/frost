@@ -3,6 +3,8 @@ coh_read_capture_prove capture l1d
 coh_read_capture_stream_prove capture stream l1d
 coh_idle_select_prove idle l1d
 coh_idle_select_stream_prove idle stream l1d
+coh_idle_phase_prove phasereg l1d
+coh_idle_phase_stream_prove phasereg stream l1d
 coh_read_kind_prove kind l1d
 coh_array_reply_prove reply
 coh_array_reply4_prove reply four
@@ -14,6 +16,7 @@ mode prove
 depth 6
 capture: depth 1
 idle: depth 1
+phasereg: depth 2
 timeout 180
 
 [engines]
@@ -39,6 +42,8 @@ capture: select -assert-count 1 c:*p_read_capture_exact t:$check %i r:FLAVOR=ass
 capture: chformal -assert -remove t:$check r:FLAVOR=assert %i c:*p_read_capture_exact %d
 idle: select -assert-count 1 c:p_idle_select_exact t:$check %i r:FLAVOR=assert %i
 idle: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_idle_select_exact %d
+phasereg: select -assert-count 1 c:p_idle_phase_taken t:$check %i r:FLAVOR=assert %i
+phasereg: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_idle_phase_taken %d
 kind: select -assert-count 1 c:p_read_kind_exact t:$check %i r:FLAVOR=assert %i
 kind: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_read_kind_exact %d
 reply: select -assert-count 1 c:p_array_reply_exact t:$check %i r:FLAVOR=assert %i
@@ -60,6 +65,7 @@ async2sync
 chformal -lower
 capture: select -assert-count 1 t:$assert
 idle: select -assert-count 1 t:$assert
+phasereg: select -assert-count 1 t:$assert
 kind: select -assert-count 1 t:$assert
 reply: select -assert-count 1 t:$assert
 select -assert-none t:$assume

@@ -315,6 +315,8 @@ FORMAL_TARGETS = [
             "coh_read_capture_stream_prove",
             "coh_idle_select_prove",
             "coh_idle_select_stream_prove",
+            "coh_idle_phase_prove",
+            "coh_idle_phase_stream_prove",
             "coh_read_kind_prove",
             "coh_array_reply_prove",
             "coh_array_reply4_prove",
@@ -2250,6 +2252,11 @@ SBY_TASKS = [
     (
         "coh_idle_select_stream_prove",
         "Idle phase and operation selection with stream endpoints.",
+    ),
+    ("coh_idle_phase_prove", "Phase register after Idle cycles with one endpoint."),
+    (
+        "coh_idle_phase_stream_prove",
+        "Phase register after Idle cycles with stream endpoints.",
     ),
     ("coh_read_kind_prove", "Per-slot read kinds equal buffered allocation payloads."),
     ("coh_array_reply_prove", "Registered response indication with block RAM."),
