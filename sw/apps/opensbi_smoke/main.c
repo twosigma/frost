@@ -568,9 +568,9 @@ int main(unsigned long hartid, unsigned long fdt)
         check(" present", r.error == 0 && r.value != 0);
     }
     r = sbi_ecall(SBI_EXT_BASE, 3, SBI_EXT_SRST, 0, 0, 0);
-    puts_("  probe SRST (no reset device expected): ");
-    puthex((uint64_t) r.value);
-    puts_("\n");
+    check("SRST present", r.error == 0 && r.value != 0);
+    r = sbi_ecall(SBI_EXT_SRST, 0, 0, 0, 0, 0);
+    check("shutdown unsupported", r.error == -2);
     r = sbi_ecall(SBI_EXT_BASE, 4, 0, 0, 0, 0);
     check_eq("mvendorid reads 0", (uint64_t) r.value, 0);
     r = sbi_ecall(SBI_EXT_BASE, 5, 0, 0, 0, 0);

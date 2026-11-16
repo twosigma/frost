@@ -106,6 +106,10 @@ The X3 build includes the vector unit (`VECTOR`, at a `VLEN` of 256 bits); the
 loader's board list for each vector test program names the boards whose builds
 include it.
 
+On X3, Linux `reboot` requests SYSRESET and re-enters the retained DDR images;
+they can be stale or hang in OpenSBI, so reload them for a fresh boot.
+`poweroff` halts with power still applied.
+
 ## JTAG-based software loading
 
 The loader writes images through two JTAG-to-AXI masters, one for low BRAM

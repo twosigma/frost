@@ -71,6 +71,15 @@ to the container. `check` keeps going after a failed phase unless you add
 `--fail-fast`, and its lint hooks may modify files. Run
 `./scripts/frost.py --help` for every option.
 
+The fast Python suite, dedicated frontend CI job, and manual
+`slang-frontend` hook share the [strict elaboration matrix](../tests/README.md#strict-systemverilog-elaboration).
+It checks default tops, the X3 vector configuration, simulation vector
+lengths 128, 256, and 512, and formal source views. Declarations must
+precede every use, including references in vector-only branches.
+Top-level synthesis also rejects implicit nets (`Synth 8-11241`) and
+names used before their declarations (`Synth 8-6901`). These message
+guards are set after vendor IP synthesis runs finish.
+
 ## Shared RISC-V toolchain
 
 The toolchain is Bootlin's 2026.08-1 bleeding-edge musl bundle, with
@@ -114,11 +123,10 @@ the language lockfiles consistent. Some constraints that are easy to break:
   setting, and Lingeling uses C17.
 - Docker and Buildroot must use the same checksummed Bootlin archive. After a
   compiler change, rebuild Buildroot in a fresh output directory.
-- After updating OpenSBI or the compiler, run
-  `./scripts/frost.py run make -C sw/apps/opensbi_smoke distclean`. A plain
-  `clean` keeps that application's cached firmware. Changes to
-  `linux/opensbi_frost_defconfig` or `linux/opensbi_build.py` rerun the
-  firmware build on the next `make` of `opensbi_smoke` or `linux_boot`.
+- `opensbi_smoke` and `linux_boot` check OpenSBI's configuration, source,
+  build options and toolchain on every `make`. A changed input or missing
+  build stamp causes a build in an empty firmware output directory.
+  `opensbi_smoke`'s `clean` keeps matching firmware; `distclean` removes it.
 - The Debian kernel and its headers must match the driver modules' ABI.
 - OpenOCD is Ubuntu's package, and `OPENOCD_VERSION` is the upstream release
   it must report. The image build fails when a base-image change or an

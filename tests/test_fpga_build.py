@@ -1673,12 +1673,17 @@ proc wait_on_run {{run}} {{}}
         assert expected_text in combined
 
 
-def test_synthesis_rejects_implicit_nets() -> None:
-    """Vivado's implicit-net message is an error in top-level synthesis."""
+@pytest.mark.parametrize("message", ("8-11241", "8-6901"))
+def test_synthesis_rejects_implicit_nets_and_late_declarations(message: str) -> None:
+    """Declaration errors fail top-level synthesis after vendor IP runs finish."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
-    guard = "set_msg_config -id {Synth 8-11241} -new_severity ERROR"
-    assert guard in tcl
-    assert tcl.index(guard) < tcl.index("synth_design {*}$synth_args")
+    guard = f"set_msg_config -id {{Synth {message}}} -new_severity ERROR"
+    assert tcl.count(guard) == 1
+    synth_start = tcl.index('if {$step eq "synth"}')
+    ip_wait = tcl.index("wait_on_run $ip_synth_run", synth_start)
+    top_synth = tcl.index("synth_design {*}$synth_args", ip_wait)
+    synth_end = tcl.index('} elseif {$step eq "opt"}', top_synth)
+    assert synth_start < ip_wait < tcl.index(guard) < top_synth < synth_end
 
 
 def test_step_arm_state_is_declared_before_first_use() -> None:

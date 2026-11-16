@@ -419,6 +419,49 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         assert f"<0x{event:08x} 0x{event:08x}" not in dts
 
 
+def test_both_trees_describe_the_sysreset_syscon_reboot() -> None:
+    """SBI system reset: OpenSBI's syscon-reboot writes SYSRESET_VALUE to the register.
+
+    The packer's tree and the hand-written VCU118 tree both carry the syscon
+    node at soc_top.sv's SysResetAddr and a syscon-reboot child that stores the
+    key soc_top.sv's SysResetKey accepts; the OpenSBI defconfig enables the
+    drivers that read them.
+    """
+    packer = _load_module(SBI_PACKER)
+    rtl = (REPO_ROOT / "hw/rtl/soc_top/soc_top.sv").read_text()
+    addr = re.search(r"SysResetAddr = 32'h([0-9A-Fa-f_]+);", rtl)
+    key = re.search(r"SysResetKey = 16'h([0-9A-Fa-f_]+);", rtl)
+    assert addr is not None and key is not None
+    assert int(addr[1].replace("_", ""), 16) == packer.SYSRESET_BASE
+    assert int(key[1].replace("_", ""), 16) == packer.SYSRESET_VALUE
+    generated = packer.gen_dts(
+        clk_hz=200_000_000, initrd_range=None, bootargs="", model="m"
+    )
+    handwritten = (REPO_ROOT / "boards/vcu118/dts/frost_vcu118.dts").read_text()
+    for dts in (generated, handwritten):
+        node = re.search(r"sysreset: syscon@([0-9a-f]+) {(.*?)\n\t\t};", dts, re.S)
+        assert node is not None
+        assert int(node[1], 16) == packer.SYSRESET_BASE
+        body = node[2]
+        assert 'compatible = "frost,sysreset", "syscon";' in body
+        assert "reg-io-width = <4>;" in body
+        assert f"reg = <0x{packer.SYSRESET_BASE:08x} 0x1000>;" in body or (
+            f"reg = <0x{packer.SYSRESET_BASE:x} 0x1000>;" in body
+        )
+        assert 'compatible = "syscon-reboot";' in body
+        assert "regmap = <&sysreset>;" in body
+        assert "offset = <0x0>;" in body
+        assert f"value = <0x{packer.SYSRESET_VALUE:x}>;" in body
+    config = (REPO_ROOT / "linux/opensbi_frost_defconfig").read_text()
+    for symbol in (
+        "CONFIG_FDT_REGMAP=y",
+        "CONFIG_FDT_REGMAP_SYSCON=y",
+        "CONFIG_FDT_RESET=y",
+        "CONFIG_FDT_RESET_SYSCON=y",
+    ):
+        assert symbol in config.splitlines()
+
+
 def test_vcu118_device_tree_isa_matches_the_boot_packer() -> None:
     """The VCU118 tree lists the packer's extensions and the RTL's cbo.zero block.
 
@@ -1087,9 +1130,9 @@ def _linux_boot_tree(tmp_path: Path) -> Path:
     """Build a temporary linux_boot tree and return its app directory.
 
     The symlinked Makefile resolves inputs relative to make's working directory.
-    Synthetic Buildroot images, a cached Debian Image, and the driver modules
-    avoid downloads and kernel or module builds. The boot shim still needs the
-    cross toolchain. All output stays under tmp_path.
+    Synthetic Buildroot images, an OpenSBI helper stand-in, a cached Debian
+    Image, and the driver modules avoid downloads and firmware or kernel builds.
+    The boot shim needs the cross toolchain. All output stays under tmp_path.
     """
     packer = _load_module(SBI_PACKER)
     helper = _load_module(DEBIAN_KERNEL)
@@ -1110,6 +1153,11 @@ def _linux_boot_tree(tmp_path: Path) -> Path:
     for name in ("Makefile", "frost_memerr.c"):
         (memerr / name).symlink_to(MEMERR_DIR / name)
     (images / "fw_jump.bin").write_bytes(bytes(range(256)))
+    firmware = images / "opensbi" / "platform" / "generic" / "firmware"
+    firmware.mkdir(parents=True)
+    (firmware / "fw_jump.bin").write_bytes(bytes(range(256)))
+    (firmware / "fw_jump.elf").write_bytes(b"synthetic ELF")
+    (tmp_path / "linux" / "opensbi_build.py").write_text("")
     # A real newc archive, whose frost_stress carries the counter token that
     # debian_kernel.py's check_base_initramfs() requires.
     (images / "rootfs.cpio").write_bytes(_newc_archive(BASE_ENTRIES))
@@ -1392,19 +1440,30 @@ def test_linux_boot_make_refuses_a_build_directory_that_built_a_kernel(
 def test_linux_boot_make_rebuilds_firmware_after_an_opensbi_change(
     tmp_path: Path,
 ) -> None:
-    """A newer OpenSBI defconfig reruns Buildroot, without a userspace rebuild.
-
-    Buildroot's post-image hook rebuilds fw_jump.bin on every run, so an
-    existing build must not keep packing firmware with the old interrupt
-    driver. A stand-in Buildroot copies the defconfig into the firmware.
-    """
+    """Check firmware inputs on every make without rebuilding the userspace."""
     app = _linux_boot_tree(tmp_path)
     linux = tmp_path / "linux"
     firmware = linux / "build-mmu" / "images" / "fw_jump.bin"
     defconfig = linux / "opensbi_frost_defconfig"
     defconfig.write_text("CONFIG_FDT_IRQCHIP_PLIC=y\n")
     builder = linux / "opensbi_build.py"
-    builder.write_text("")
+    revision = linux / "source-revision"
+    revision.write_text("revision one\n")
+    toolchain = linux / "toolchain-version"
+    toolchain.write_text("compiler one\n")
+    builder.write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        "linux = Path(__file__).parent\n"
+        "out = Path(sys.argv[sys.argv.index('--out') + 1])\n"
+        "firmware = out / 'platform/generic/firmware'\n"
+        "data = b''.join((linux / name).read_bytes() for name in "
+        "('opensbi_frost_defconfig', 'source-revision', 'toolchain-version', 'opensbi_build.py'))\n"
+        "for ext in ('bin', 'elf'):\n"
+        "    path = firmware / ('fw_jump.' + ext)\n"
+        "    if path.read_bytes() != data: path.write_bytes(data)\n"
+        "with (linux / 'firmware-checks').open('a') as log: log.write('check\\n')\n"
+    )
     for path in (defconfig, builder):
         os.utime(path, ns=(1, 1))
     (linux / "build-mmu" / ".config").write_text(
@@ -1413,29 +1472,51 @@ def test_linux_boot_make_rebuilds_firmware_after_an_opensbi_change(
     runs = tmp_path / "buildroot-runs"
     buildroot = linux / "buildroot"
     buildroot.mkdir()
-    (buildroot / "Makefile").write_text(
-        "all frost-stress-rebuild:\n"
-        f"\techo $@ >> '{runs}'\n"
-        f"\tcp '{defconfig}' '{firmware}'\n"
-    )
+    (buildroot / "Makefile").write_text(f"all:\n\ttouch '{runs}'\n\texit 1\n")
     command = ["make", "--no-print-directory", "-C", str(app), str(firmware)]
     env = _linux_boot_env(app)
 
-    result = subprocess.run(
-        command, env=env, capture_output=True, text=True, timeout=60
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert not runs.exists()
+    before = None
+    for check_count, changed in enumerate(
+        (None, None, defconfig, revision, toolchain, builder), start=1
+    ):
+        if changed is not None:
+            changed.write_text(changed.read_text() + "# changed\n")
+            os.utime(changed, ns=(1, 1))
+        result = subprocess.run(
+            command, env=env, capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not runs.exists()
+        expected = b"".join(
+            path.read_bytes() for path in (defconfig, revision, toolchain, builder)
+        )
+        assert firmware.read_bytes() == expected
+        assert (linux / "firmware-checks").read_text().splitlines() == [
+            "check"
+        ] * check_count
+        if check_count == 2:
+            assert firmware.stat().st_mtime_ns == before
+        before = firmware.stat().st_mtime_ns
 
-    defconfig.write_text("CONFIG_FDT_IRQCHIP_APLIC=y\n")
-    newer = firmware.stat().st_mtime_ns + 1
-    os.utime(defconfig, ns=(newer, newer))
+
+def test_linux_boot_make_reuses_packed_images_when_firmware_matches(
+    tmp_path: Path,
+) -> None:
+    """An unchanged firmware check preserves the packed Linux images."""
+    app = _linux_boot_tree(tmp_path)
+    result = _make_linux_boot(app)
+    assert result.returncode == 0, result.stdout + result.stderr
+    before = (app / "sw_ddr.mem").stat().st_mtime_ns
     result = subprocess.run(
-        command, env=env, capture_output=True, text=True, timeout=60
+        ["make", "-C", str(app)],
+        env=_linux_boot_env(app),
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert runs.read_text().splitlines() == ["all"]
-    assert firmware.read_text() == defconfig.read_text()
+    assert (app / "sw_ddr.mem").stat().st_mtime_ns == before
 
 
 # --- Debian's kernel ------------------------------------------------------------
@@ -2211,7 +2292,7 @@ def test_linux_boot_make_rebuilds_a_stale_test_userspace() -> None:
     text = LINUX_BOOT_MAKEFILE.read_text()
     assert "FROST_STRESS_SRC := $(wildcard" in text
     assert "package/frost-stress/src/*.c" in text
-    assert "$(BR2_INITRD) $(FW_JUMP) &: $(FROST_STRESS_SRC)" in text
+    assert "$(BR2_INITRD): $(FROST_STRESS_SRC)" in text
     assert "frost-stress-rebuild" in text
     # The cold path runs the defconfig; a warm one must not, or it would discard
     # what the build directory already carries (CI appends to that config).
