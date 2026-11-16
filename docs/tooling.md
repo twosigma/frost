@@ -71,6 +71,15 @@ to the container. `check` keeps going after a failed phase unless you add
 `--fail-fast`, and its lint hooks may modify files. Run
 `./scripts/frost.py --help` for every option.
 
+The fast Python suite, dedicated frontend CI job, and manual
+`slang-frontend` hook share the [strict elaboration matrix](../tests/README.md#strict-systemverilog-elaboration).
+It checks default tops, the X3 vector configuration, simulation vector
+lengths 128, 256, and 512, and formal source views. Declarations must
+precede every use, including references in vector-only branches.
+Top-level synthesis also rejects implicit nets (`Synth 8-11241`) and
+names used before their declarations (`Synth 8-6901`). These message
+guards are set after vendor IP synthesis runs finish.
+
 ## Shared RISC-V toolchain
 
 The toolchain is Bootlin's 2026.08-1 bleeding-edge musl bundle, with
