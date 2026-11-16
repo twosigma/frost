@@ -1023,7 +1023,14 @@ FORMAL_TARGETS = [
         "csr_file.sby",
         "CSR state and access behavior with profiling counters on or off, and "
         "with the vector state",
-        tasks=("bmc", "cover", "bmc_perf_off", "vector_bmc", "vector_cover"),
+        tasks=(
+            "bmc",
+            "cover",
+            "bmc_perf_off",
+            "vector_bmc",
+            "vector_cover",
+            "pm_mode_bmc",
+        ),
     ),
     FormalTarget(
         "tlb.sby",
@@ -1739,6 +1746,7 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
     (
