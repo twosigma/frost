@@ -470,7 +470,7 @@ and targeted microbenchmarks give these items:
    reading DRAM and installing both sectors before release; stores to Modified
    sectors use masked writes, and waiting reads share array service with
    buffered hits. In simulation (`store_fill_bench`, 64 KiB) a sequential
-   `sd` stream takes about 30 cycles per 64 bytes cold and 16.5 cycles
+   `sd` stream takes about 28 cycles per 64 bytes cold and 15.3 cycles
    L2-resident. Taking ownership of a single 32-byte sector without fetching
    its 64-byte home line would still need per-sector L2 validity tracking.
 2. Data translation. A last-page bypass sends eligible translated accesses
