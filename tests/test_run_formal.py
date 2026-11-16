@@ -85,6 +85,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
     ("coherence_l1d", "coh_l1d_zero_cover"): 14400,
+    ("coherence_l1d", "coh_l1d_zero_stream_free_bmc"): 6000,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
@@ -309,6 +310,23 @@ FORMAL_TARGETS = [
         tasks=("mirror_hold_prove", "mirror_hold15_prove", "mirror_hold32_prove"),
     ),
     FormalTarget(
+        "coherence_read_capture.sby",
+        "Read-slot capture, the Idle phase and operation selection, per-slot kinds and registered array responses equal their references.",
+        tasks=(
+            "coh_read_capture_prove",
+            "coh_read_capture_stream_prove",
+            "coh_idle_select_prove",
+            "coh_idle_select_stream_prove",
+            "coh_idle_phase_prove",
+            "coh_idle_phase_stream_prove",
+            "coh_read_kind_prove",
+            "coh_array_reply_prove",
+            "coh_array_reply4_prove",
+            "coh_array_reply_uram_prove",
+            "coh_array_reply4_uram_prove",
+        ),
+    ),
+    FormalTarget(
         "coherence_read_payload.sby",
         "Buffered coherent read payloads and exports equal independent reference storage.",
         tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
@@ -402,7 +420,10 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_payload_bmc",
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
+            "coh_l1d_zero_stream_free_bmc",
+            "coh_l1d_zero_progress_cover",
             "coh_l1d_zero_stream_bmc",
+            "coh_l1d_zero_request_cover",
             "coh_l1d_answer_bmc",
             "coh_l1d_stream_answer_bmc",
         ),
@@ -653,7 +674,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pc_pending_capture.sby",
-        "Pending-prediction capture matches reference clear/set/hold priority",
+        "Pending-prediction capture matches reference clear/set/hold priority, including "
+        "walked-past entries",
         tasks=("bmc", "bmc_integrated"),
     ),
     FormalTarget(
@@ -1037,7 +1059,14 @@ FORMAL_TARGETS = [
         "csr_file.sby",
         "CSR state and access behavior with profiling counters on or off, and "
         "with the vector state",
-        tasks=("bmc", "cover", "bmc_perf_off", "vector_bmc", "vector_cover"),
+        tasks=(
+            "bmc",
+            "cover",
+            "bmc_perf_off",
+            "vector_bmc",
+            "vector_cover",
+            "pm_mode_bmc",
+        ),
     ),
     FormalTarget(
         "tlb.sby",
@@ -1175,6 +1204,13 @@ FORMAL_TARGETS = [
         "ALU shifts and rotates match the reference with captured shift amounts on or "
         "off",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "pointer_masking.sby",
+        "Ssnpm: the MEM_RS base transform gives the Sv39 canonical check, the Bare PMA "
+        "decodes, xtval and misaligned assist the ignore transformation's result "
+        "across DDR apertures, and senvcfg.PMM is WARL",
+        tasks=("bmc", "bmc_ddr31", "bmc_ddr36", "bmc_ddr37"),
     ),
     FormalTarget(
         "divider.sby",
@@ -1534,8 +1570,15 @@ FORMAL_TARGETS = [
     FormalTarget(
         "prediction_release.sby",
         "Pending-prediction release preserves state masking, fetch holdoffs, and the "
-        "registered PC relations, and the instruction buffer takes only pc_reg's word",
+        "registered PC relations, including walked-past entries, and the instruction "
+        "buffer takes only pc_reg's word",
         tasks=("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
+        "if_prediction_walk_past.sby",
+        "Fetch stage preserves pc_reg continuity and emits no real packet while "
+        "post-prediction holdoff holds pc_reg, including walked-past pending predictions",
+        tasks=("bmc", "continuity", "cover"),
     ),
     FormalTarget(
         "prediction_metadata_tracker.sby",
@@ -1624,6 +1667,11 @@ FORMAL_TARGETS = [
             "home_twin_four",
             "home_twin_addr40",
         ),
+    ),
+    FormalTarget(
+        "coherence_l1d_zero_index.sby",
+        "Conditional equivalence of zero look-ahead blocking, with buffer invariants proved under its interface contract.",
+        tasks=("zero_index_prove", "zero_index_invariants"),
     ),
     FormalTarget(
         "coherence_l1d_twin.sby",
@@ -1761,6 +1809,7 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
     (
@@ -2040,8 +2089,28 @@ SBY_TASKS = [
     ),
     ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
     (
+        "coh_l1d_zero_stream_free_bmc",
+        "Stream prefetching, GetMZero twin ownership and upper-sector request exclusion through Done, and Modified-sector grants with cbo.zero writes and three endpoints.",
+    ),
+    (
+        "coh_l1d_zero_progress_cover",
+        "Full-buffer zero wrap with a different-block or same-block head twin resolves through both sector installations and Done.",
+    ),
+    (
         "coh_l1d_zero_stream_bmc",
-        "Stream prefetching and Modified-sector grants with cbo.zero writes and three endpoints.",
+        "A dropped load retries beside a full-buffer zero wrap without accepting an upper-sector request during GetMZero.",
+    ),
+    (
+        "coh_l1d_zero_request_cover",
+        "The dropped-load schedule reaches its final checked frame after retry and zero completion.",
+    ),
+    (
+        "zero_index_prove",
+        "Index-based zero look-ahead blocking equals the address form under the buffer shape and sampled-conflict invariants.",
+    ),
+    (
+        "zero_index_invariants",
+        "Store-buffer shape and the sampled same-block head conflict under the buffer interface contract.",
     ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
@@ -2244,6 +2313,29 @@ SBY_TASKS = [
     ("mirror_hold_prove", "Debug mirror address equality at sixteen bits."),
     ("mirror_hold15_prove", "Debug mirror address equality at fifteen bits."),
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
+    ("coh_read_capture_prove", "Read data capture with arbitrary controller state."),
+    ("coh_read_capture_stream_prove", "Read data capture with stream endpoints."),
+    ("coh_idle_select_prove", "Idle phase and operation selection with one endpoint."),
+    (
+        "coh_idle_select_stream_prove",
+        "Idle phase and operation selection with stream endpoints.",
+    ),
+    ("coh_idle_phase_prove", "Phase register after Idle cycles with one endpoint."),
+    (
+        "coh_idle_phase_stream_prove",
+        "Phase register after Idle cycles with stream endpoints.",
+    ),
+    ("coh_read_kind_prove", "Per-slot read kinds equal buffered allocation payloads."),
+    ("coh_array_reply_prove", "Registered response indication with block RAM."),
+    (
+        "coh_array_reply4_prove",
+        "Registered response indication with four block-RAM ways.",
+    ),
+    ("coh_array_reply_uram_prove", "Registered response indication with UltraRAM."),
+    (
+        "coh_array_reply4_uram_prove",
+        "Registered response indication with four UltraRAM ways.",
+    ),
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("bmc_core", "Load-result selection with the CPU feature configuration."),
@@ -2799,6 +2891,7 @@ SBY_TASKS = [
         "Vector memory table lifecycle against a ghost reorder buffer, 14 frames.",
     ),
     ("bmc", "Check assertions up to the configured depth"),
+    ("continuity", "Bounded pc_reg and slot-1 PC continuity check"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
     ("home_small", "Consumed packets and fill phase flags with two fills."),
     (
@@ -2906,6 +2999,9 @@ SBY_TASKS = [
     ),
     ("cover_wide", "Svpbmt alias and no-alias reachability with the 64 GiB DDR map"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
+    ("bmc_ddr31", "Pointer masking with a 2 GiB DDR aperture"),
+    ("bmc_ddr36", "Pointer masking with a 64 GiB DDR aperture"),
+    ("bmc_ddr37", "Pointer masking with a 128 GiB DDR aperture"),
     (
         "bmc_small_btb",
         "Bounded tag comparison with a 16-entry BTB and partial final group",
@@ -3345,6 +3441,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_zero_bmc": "Coherence L1D zero control",
         "coherence_l1d_coh_l1d_zero_multi_bmc": "Coherence L1D zero multi-endpoint",
         "coherence_l1d_coh_l1d_zero_cover": "Coherence L1D zero cover",
+        "coherence_l1d_coh_l1d_zero_stream_free_bmc": "Coherence L1D zero stream",
         "coherence_l1d_coh_l1d_local_data_bmc": "Coherence L1D local data",
         "coherence_l1d_coh_l1d_local_hold_bmc": "Coherence L1D local holds",
         "coherence_l1d_coh_l1d_local_control_bmc": "Coherence L1D local control",
@@ -3446,6 +3543,21 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     assert len(selected_by_shard["Coherence L1D zero cover"]) == 1
     assert len(selected_by_shard["Coherence L1D local holds"]) == 1
     check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
+
+
+def test_runner_limits_cover_sby_limits() -> None:
+    """Give every task at least its SBY limit, so the runner never stops a task SBY still allows."""
+    root = Path(__file__).resolve().parents[1]
+    for target in FORMAL_TARGETS:
+        limits = _sby_task_timeouts_s(root / "formal" / target.sby_file)
+        for task in target.tasks:
+            sby_limit = limits.get(task, limits.get(""))
+            if sby_limit is not None:
+                assert sby_limit <= formal_task_timeout_s(target.name, task), (
+                    target.name,
+                    task,
+                    sby_limit,
+                )
 
 
 def test_formal_shard_budget_sum_rejects_overcommitted_shard() -> None:
@@ -3687,14 +3799,30 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {data} %u %u %u %u %d",
         "select -assert-count 5 t:$check r:FLAVOR=assert %i",
     ]
+    stream_checks = (
+        "c:p_prefetch_not_record c:p_grant_keeps_modified "
+        "c:p_zero_acquire_line c:p_zero_no_upper_request"
+    )
+    stream_properties = [
+        f"select -assert-count 4 {stream_checks}",
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+        f"{stream_checks} %u %u %u %d",
+        "select -assert-count 4 t:$check r:FLAVOR=assert %i",
+        "check -assert",
+    ]
     for suffix, depth, timeout, engine in (
         ("bmc", "40", "10800", "abc bmc3"),
         ("multi_bmc", "30", "18000", "abc bmc3 -c"),
         ("payload_bmc", "40", "1200", "abc bmc3 -c"),
+        ("stream_free_bmc", "31", "6000", "abc bmc3 -g"),
     ):
         payload = suffix == "payload_bmc"
+        stream = suffix == "stream_free_bmc"
         define = " -D STORE_DATA_PROOF" if payload else ""
-        endpoints = " -set MISSES 3" if suffix == "multi_bmc" else ""
+        endpoints = " -set MISSES 3" if stream or suffix == "multi_bmc" else ""
+        properties = stream_properties if stream else control_properties
+        if payload:
+            properties = payload_properties
         script = (
             reads
             + [
@@ -3702,9 +3830,10 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
                 "read -sv coherence_store_buffer.sv",
                 "read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv",
                 f"chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2{endpoints} coherence_l1d",
-                "prep -flatten -top coherence_l1d",
             ]
-            + (payload_properties if payload else control_properties)
+            + (["chparam -set STREAM_PREFETCH 1 coherence_l1d"] if stream else [])
+            + ["prep -flatten -top coherence_l1d"]
+            + properties
             + [
                 "memory_map",
                 "opt",
@@ -3736,6 +3865,8 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
             ("[script]", "cutpoint w:phase_q"),
             ("[script]", "chformal -assume -remove"),
             ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
+            ("[script]", "chformal -assert -remove c:p_zero_no_upper_request"),
+            ("[options]", f"depth {int(depth) - 1}"),
             ("[options]", "skip 48"),
             ("[options]", "smtc hidden.smtc"),
             ("[engines]", "smtbmc boolector --smtc hidden.smtc"),

@@ -313,6 +313,8 @@ insertion.
 An insertion update uses the most recent lookup's set and selected way;
 the controller completes that update before issuing another lookup.
 The L1D asserts this pairing for each grant installation.
+The response-valid bit registers beside the response, on the tag-result edge
+for a reply without data or on the data-capture edge for a reply with data.
 Response data is meaningful only with `o_resp_data_valid`. A tag-only or
 skipped read keeps the prior response data without reading the data array.
 A lookup marked `i_req_tags_only` reads no data and replies after the tag
@@ -495,7 +497,18 @@ selected read slot and grant payload have no reset and capture on every Idle
 cycle, because nothing reads them until a selection leaves Idle. The read
 address joins that selection last. The priority conditions above a read are
 prepared separately, so read eligibility controls the final address selection
-without passing through the non-read address priority chain.
+without passing through the non-read address priority chain. The phase and
+the operation that the Idle selection assigns are prepared the same way, from
+every source except the read selector's found output, which selects last: a
+found read takes the read operation through a final selection at the
+operation register's input, and Lookup through the controller's last
+assignment to the phase.
+
+Each read slot's kind registers on its allocation edge, so selection reads the
+slot's kind without selecting from the buffered payload. Each slot has a local
+data-source selection for the hit path, array row, grant and local atomic
+image. Controller answers take priority over the hit path, which takes priority
+over a failed-read clear.
 
 Ready read slots share one response register in circular slot order. Each
 selection advances the pointer past that slot. A continuously ready slot has
@@ -590,13 +603,13 @@ The array uses the highest matching valid way for hit state and modified-only
 data service, including a matching way in the replacement exclusion mask.
 A miss has no modified hit. Skip-on-hit suppresses hit data even for a
 modified-only request; a maintenance visit always reads its selected row.
-Read-slot payload writes pass through a one-record buffer. The buffer
-captures the payload and a slot mask each cycle. Reset clears the slot mask
-through its data input. The mask identifies the allocated slot
-and is zero without an allocation. It qualifies forwarding
-and writes to the slot storage. The forwarding mux
-makes each allocation visible on the allocation edge. Each slot keeps its
-allocated payload until reset or another allocation to that slot.
+Read-slot address, size and tag writes pass through a one-record buffer. The
+buffer captures the payload and a slot mask each cycle. Reset clears the slot
+mask through its data input. The mask identifies the allocated slot and is zero
+without an allocation. It qualifies forwarding and writes to the slot storage.
+The forwarding mux makes each allocation visible on the allocation edge. Each
+slot keeps its allocated payload until reset or another allocation to that
+slot.
 Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen
 writeback sectors on 18 sector index bits. An alias waits for its holder like
 a match, and holders do not wait for reads. The comparisons use the stored slot addresses and the
@@ -1205,7 +1218,9 @@ load queue's registered same-sector matches see the twin as they see every
 record, one cycle after its push.
 
 **Acquisition.** With 64-byte L2 lines the lower record acquires with
-`GetMZero` when its twin follows it and no live request endpoint, frozen PutM
+`GetMZero` when its own twin follows it (same 64-byte block, so a younger lower
+record in a full four-record buffer does not mistake an older head twin for its
+waiting twin) and no live request endpoint, frozen PutM
 or older record holds the upper sector; otherwise it acquires with `GetM` and
 the twin is an ordinary store record. Each condition is a registered sample,
 and none can appear while the controller serves the record, because only the
@@ -1244,6 +1259,11 @@ that also starts its `GrantOp`. A twin whose lower record received
 zeros are performed at the lower record's installation and the upper
 sector's at the twin's, both inside the `GetMZero`'s hold on the line:
 
+- With 64-byte home lines, from endpoint acceptance of `GetMZero(X)` through
+  its Done handshake, the L1D accepts no request for `X + 32`. This includes
+  retries of flushed loads
+  that remain live in the L1D. Its own same-block twin holds the upper sector
+  until installation; an older head twin in a full buffer supplies no such hold.
 - From the `GetMZero`'s dispatch to its U, the home serves no other request
   to either sector and pins the line's way, so no DMA access, PTW or IF read,
   probe or replacement observes the L2's zero image or the L1D's sectors
@@ -1804,7 +1824,7 @@ to answer.
 | `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with every hart and DMA completion slot, every engine's result buffer and both PutM controls full, and instruction and data streams on one line |
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
-| `coherence_stale_line_prefetch_l2` | `cbo.zero` twin beside an L1D stream on the cluster with eight L1D request endpoints, stream prefetching and a 64 KiB home: no stream prefetch acquires a sector held by a pending store record or waiting twin, including a `cbo.zero` pushed during the prefetch lookup and a look-ahead `GetMZero` issued while its twin still waits |
+| `coherence_stale_line_prefetch_l2` | `cbo.zero` twin beside an L1D stream or flushed load retry on the cluster with eight L1D request endpoints, stream prefetching and a 64 KiB home: no stream prefetch acquires a sector held by a pending store record or waiting twin (including a `cbo.zero` pushed during the prefetch lookup), and look-ahead holds off `GetMZero` while the block's twin still waits behind an older head twin so a dropped wrong-path load retry cannot overwrite the zeroed twin sector |
 | `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, dirty-L1D walker coherence, and one refill event per allocation that reads a line |
 | `coherence_home*` | Home service and ownership, with each accepted memory line read producing exactly one demand or prefetch refill pulse, including a held read accepted after fatal stop |

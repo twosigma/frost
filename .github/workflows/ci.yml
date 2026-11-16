@@ -242,6 +242,7 @@ jobs:
               [csr_test] or [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or
               [satp_drain_test] or [ad_fault_test] or [smode_test] or [csr_rmw_test] or
               [ptw_bus_fault_test] or [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or
+              [svinval_test] or
               [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error]
           - name: Real Programs (Interrupts)
             coverage: [ddr]
@@ -354,7 +355,7 @@ jobs:
               or [csr_test] or
               [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or [satp_drain_test] or
               [ad_fault_test] or [smode_test] or [csr_rmw_test] or [ptw_bus_fault_test] or
-              [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or
+              [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or [svinval_test] or
               [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error] or
               [imsic_csr_test] or [imsic_msi_test] or
               [imsic_collision_test] or [timer_replay_test] or [imsic_aplic_coexist_test] or
@@ -379,7 +380,8 @@ jobs:
               [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [ddr_bench] or
               [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz]
               or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
-              [opensbi_smoke_no_misaligned_hw] or [isa_test_sram_macros] or [ddr_test_sram_macros]
+              [opensbi_smoke_no_misaligned_hw] or [opensbi_reset_cold] or [opensbi_reset_warm]
+              or [isa_test_sram_macros] or [ddr_test_sram_macros]
               or [ddr_exec_test_sram_macros] or
               [nic_loopback_sram_macros] or [cache_counters_openocd] or [async_hello_world]
               or [async_nic_loopback] or [async_dma_torture]
@@ -472,6 +474,18 @@ jobs:
               coverage: [bram]
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_smoke_no_misaligned_hw]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (OpenSBI cold reset)
+              coverage: [bram]
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[opensbi_reset_cold]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (OpenSBI warm reset)
+              coverage: [bram]
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[opensbi_reset_warm]"
           # The OpenOCD session that reads the cache counters is long, and its
           # program runs from low BRAM in either tier.
           - mem_config: bram
@@ -1045,6 +1059,8 @@ jobs:
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --crypto 50 --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --svinval 50 --continue-on-fail
+          ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --sscofpmf
 
       - name: Compare FROST with Sail on random instruction sequences
@@ -1428,6 +1444,11 @@ jobs:
           - shard: Coherence L1D zero cover
             pytest_filter: coh_l1d_zero_cover
             timeout_minutes: 260
+          # The unrestricted zero-stream request check has a 100-minute
+          # allowance; keep image setup outside that solver budget.
+          - shard: Coherence L1D zero stream
+            pytest_filter: coh_l1d_zero_stream_free_bmc
+            timeout_minutes: 120
           # The scheduled real-array checks keep all 80 frames, with disjoint
           # property groups and no assumptions between them. Run them in
           # parallel so their combined work does not delay the bridges.
@@ -1455,7 +1476,7 @@ jobs:
               (coherence_l1d and not (_twin or coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
               coh_l1d_stream_outlier_prove or
               coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_bmc or coh_l1d_zero_multi_bmc or
-              coh_l1d_zero_cover or coh_l1d_data or
+              coh_l1d_zero_cover or coh_l1d_zero_stream_free_bmc or coh_l1d_data or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))
             timeout_minutes: 330
@@ -1508,10 +1529,15 @@ jobs:
           - shard: Vector
             pytest_filter: csr_file_vector or vec_lmul_legality
             timeout_minutes: 75
-          # The line client link BMCs and cover.
-          - shard: Line client links
-            pytest_filter: line_client_link
-            timeout_minutes: 90
+          # The line client link proofs, in two jobs: the zero-stage BMC, the
+          # two-identity one-stage BMC and the cover take about an hour; the
+          # four- and eight-identity BMCs about forty minutes.
+          - shard: Line client links (zero and two)
+            pytest_filter: line_link0_bmc or line_link1_bmc or line_link1_cover
+            timeout_minutes: 95
+          - shard: Line client links (four and eight)
+            pytest_filter: line_link1_four_bmc or line_link1_eight_bmc
+            timeout_minutes: 80
           # Page table walker, TLBs, instruction and data MMUs, and the
           # interrupt controllers.
           - shard: Memory management

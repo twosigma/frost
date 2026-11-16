@@ -117,6 +117,13 @@ BODY(b_c_lui0, ".half 0x6201")
 BODY(b_hlv, ".word 0x6005c573")
 /* mop.r.0 x10, x11 with bit 28 set. */
 BODY(b_mop_near, ".word 0x91c5c573")
+/* SYSTEM funct3=000 with reserved non-zero rd or rs1 fields. */
+BODY(b_sfence_bad_rd, ".word 0x120000f3")
+BODY(b_ecall_bad_rs1, ".word 0x00008073")
+BODY(b_ebreak_bad_rd, ".word 0x001000f3")
+BODY(b_mret_bad_rs1, ".word 0x30208073")
+BODY(b_sret_bad_rd, ".word 0x102000f3")
+BODY(b_wfi_bad_rs1, ".word 0x10508073")
 /* FP with mstatus.FS=Off: fadd.d f1, f2, f3 and c.fld f9, 8(s0). */
 BODY(b_fadd, ".word 0x023170d3")
 BODY(b_c_fld, ".half 0x2404")
@@ -256,6 +263,12 @@ int main(void)
         {"c.lui x4,0", b_c_lui0},
         {"hlv.b", b_hlv},
         {"mop.r near miss", b_mop_near},
+        {"sfence.vma rd!=0", b_sfence_bad_rd},
+        {"ecall rs1!=0", b_ecall_bad_rs1},
+        {"ebreak rd!=0", b_ebreak_bad_rd},
+        {"mret rs1!=0", b_mret_bad_rs1},
+        {"sret rd!=0", b_sret_bad_rd},
+        {"wfi rs1!=0", b_wfi_bad_rs1},
         {"csr missing", b_csr_missing},
         {"csr read-only write", b_csr_ro},
     };

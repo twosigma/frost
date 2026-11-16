@@ -1058,6 +1058,54 @@ async def l0_hit_watch(dut: Any) -> None:
                     return
 
 
+class PointerMaskingInterruptCoverage:
+    """Observe an IRQ pending in actual U mode while tagged stores are queued.
+
+    The program checks the trap's saved privilege and the stores' backing data.
+    These fixed signal paths establish the overlap, which software cannot see.
+    """
+
+    def __init__(self, dut: Any) -> None:
+        """Bind the core signals without traversing the design hierarchy."""
+        self.dut = dut
+        cpu = dut.cpu_and_memory_subsystem.cpu.hart.cpu_inst
+        self.priv = cpu.csr_priv
+        self.mode = cpu.csr_mmu_pm_mode
+        self.pending = cpu.interrupt_pending
+        self.stores = cpu.sq_count
+        self.hits: dict[int, int] = {}
+
+    def clear(self) -> None:
+        """Start a new reset-to-pass coverage interval."""
+        self.hits.clear()
+
+    async def run(self) -> None:
+        """Count simultaneous U privilege, PMM, IRQ and store occupancy."""
+        while True:
+            await RisingEdge(cpu_clock(self.dut))
+            await ReadOnly()
+            if not int(self.dut.i_rst_n.value):
+                continue
+            mode = int(self.mode.value)
+            if (
+                int(self.priv.value) == 0
+                and mode in (2, 3)
+                and int(self.pending.value)
+                and int(self.stores.value) > 0
+            ):
+                self.hits[mode] = self.hits.get(mode, 0) + 1
+
+    def verify(self, run_number: int) -> None:
+        """Require the requested overlap independently for each PMLEN."""
+        for mode in (2, 3):
+            assert self.hits.get(mode, 0), (
+                f"run {run_number}: no U-mode IRQ with stores queued at PMM={mode}"
+            )
+        cocotb.log.info(
+            f"PMM U-mode IRQ with stores queued, run {run_number}: {self.hits} cycles"
+        )
+
+
 class WfiRecoveryWatch:
     """Check the resume PC around a wrong-path WFI at the ROB head.
 
@@ -4874,6 +4922,19 @@ async def test_real_program(dut: Any) -> None:
         line_monitor = UartLineMonitor(dut)
         await line_monitor.start()
 
+    if app_name == "walk_past_test":
+        from cocotb_tests.if_stage.walk_past_watch import watch
+
+        ranges = _load_symbol_ranges(["wp_odd_overlap", "wp_slot2_at_stale"], app_name)
+        cocotb.start_soon(
+            watch(
+                dut,
+                cpu_clock(dut),
+                ranges["wp_odd_overlap"][0],
+                ranges["wp_slot2_at_stale"][1],
+            )
+        )
+
     # Optional trap and MRET hang diagnostics.
     if os.environ.get("FROST_WEDGE_MONITOR") == "1":
         cocotb.start_soon(wedge_monitor(dut, uart_monitor))
@@ -4908,7 +4969,11 @@ async def test_real_program(dut: Any) -> None:
     if wfi_watch is not None:
         cocotb.start_soon(wfi_watch.run())
     coverage = (
-        DelayedBranchFetchCoverage(dut) if app_name == "served_window_resteer" else None
+        DelayedBranchFetchCoverage(dut)
+        if app_name == "served_window_resteer"
+        else PointerMaskingInterruptCoverage(dut)
+        if app_name == "pm_test"
+        else None
     )
     if coverage is not None:
         cocotb.start_soon(coverage.run())

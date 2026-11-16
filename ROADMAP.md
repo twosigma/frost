@@ -7,12 +7,8 @@ set the direction of this roadmap. The sections are in priority order.
 
 FROST is working toward the RVA23 profile without the hypervisor extension:
 the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
-The remaining scalar extensions are in progress, as are the remaining
-supervisor extensions apart from Svinval.
-`hpmcounter11`-`31` raise illegal-instruction in every privilege mode; making
-them read zero in M-mode, as the reference models do, would let the TestRIG
-comparison run with Zihpm enabled. Two larger pieces come before the second
-hart:
+The remaining scalar and supervisor extensions are in progress. Two larger
+pieces come before the second hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; Zvbc,
   Zvfh and vector cryptography follow. The vector length
@@ -53,7 +49,7 @@ extensions implemented on `main` or planned with the vector unit:
 | B | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzba`, `rv64uzbb`, `rv64uzbs`), `isa_test`, TestRIG, `alu_shift_hint.sby` |
 | Zicsr | Implemented | `riscv-tests` (`rv64mi`, `rv64si`), `csr_test`, `csr_rmw_test`, TestRIG, `csr_file.sby` |
 | Zicntr | Implemented | `csr_test`, `instret_test`, `zihpm_test`, TestRIG (`instret_nops.S`), `csr_file.sby` |
-| Zihpm | Implemented (`hpmcounter11`-`31` trap in every privilege mode; off in default TestRIG) | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`hpm_counters.S`, `--sscofpmf`), `csr_sscofpmf.sby` |
+| Zihpm | Implemented | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`hpm_counters.S`, `--sscofpmf`), `csr_sscofpmf.sby` |
 | Ziccif | Implemented | `ifread_test`, `ddr_exec_test`, `smc_fencei_test`, `coherent_hart_cache.sby`, `immu_twin.sby` |
 | Ziccrse | Implemented | `rv64_amo_test`, `ddr_atomic_test`, TestRIG (`--atomics`), `coherence_l1d.sby`, `coherence_home.sby` |
 | Ziccamoa | Implemented | `riscv-arch-test` (`A`), `riscv-tests` (`rv64ua`), `rv64_amo_test`, TestRIG (`--atomics`), `load_queue_amo_compute.sby`, `coherence_l1d.sby` |
@@ -77,7 +73,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zcb | Implemented | `riscv-arch-test` (`C`), `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
 | Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
 | Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
-| Supm | In progress | - |
+| Supm | Scalar hardware support through Ssnpm; the supplied Linux image does not expose the tagged-address ABI | `pm_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby` |
 | Zifencei | Implemented | `riscv-arch-test` (`Zifencei`), `smc_fencei_test`, `ddr_smc_test`, TestRIG, `coherent_hart_cache.sby` |
 | Ss1p13 | Implemented | `riscv-tests` (`rv64si`), `smode_test`, `umode_test`, `vm_test`, TestRIG, `csr_file.sby`, `trap_unit.sby` |
 | Svbare | Implemented | `pa_width_test`, `pma_fault_test`, TestRIG, `immu_bare.sby`, `dmmu_twin.sby` |
@@ -88,11 +84,11 @@ extensions implemented on `main` or planned with the vector unit:
 | Sstvala | Implemented | `sstvala_test`, `sstvala_fault_test`, `ad_fault_test`, `misaligned_test`, TestRIG (`sstvala_illegal.S`, `access_fault_tval.S`), `trap_unit.sby` |
 | Sscounterenw | Implemented | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`scounteren`), `csr_file.sby` |
 | Svpbmt | Implemented (NC/IO DDR mappings require an uncached alias; the VCU118's 2 GiB map has none and raises access faults, with device mappings unaffected) | `svpbmt_test`, `svpbmt_test_2g`, `svpbmt_bus_error`, TestRIG (`svpbmt_pbmte.S`), `ptw.sby`, `dmmu_mmio.sby`, `tlb.sby`, `l2tlb.sby` |
-| Svinval | Not yet implemented | - |
+| Svinval | Implemented | `svinval_test`, TestRIG, `instr_operand_classifier.sby` |
 | Svnapot | In progress | - |
-| Sstc | Implemented (S-mode `mcounteren.TM` check missing) | `sstc_test`, `irq_take_latency`, `csr_file.sby` |
+| Sstc | Implemented | `sstc_test`, `irq_take_latency`, TestRIG (`stimecmp`), `csr_file.sby` |
 | Sscofpmf | Implemented | `sscofpmf_test`, TestRIG (`--sscofpmf`), `csr_sscofpmf.sby` |
-| Ssnpm | In progress | - |
+| Ssnpm | Implemented for scalar accesses (`senvcfg.PMM`, PMLEN 0, 7 and 16). Vector memory does not yet apply pointer masking after element-address addition. | `pm_test`, `debug_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `csr_commit_cofactor.sby` |
 | Ssu64xl | Implemented; advertisement in progress | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`), `csr_file.sby` |
 | Zbc (optional) | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzbc`), TestRIG, `cl_multiplier.sby` |
 | Svvptc (optional) | Implemented | `vm_test`, `asid_test`, TestRIG, `ptw.sby`, `immu_memo.sby`, `dmmu_twin.sby` |

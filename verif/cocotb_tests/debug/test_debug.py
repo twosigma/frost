@@ -186,6 +186,44 @@ async def _misaligned_steps(dm: DebugModule, patch_addr: int, resume_pc: int) ->
     assert (await dm.cmderr()) == 0
 
 
+async def _pointer_mask_steps(dm: DebugModule, patch_addr: int, resume_pc: int) -> None:
+    """DRET restores U masking; debug entry uses M, or MPRV with mprven set."""
+    saved_csrs = {n: await dm.read_csr(n) for n in (0x300, 0x10A)}
+    saved_regs = {n: await dm.read_gpr(n) for n in (5, 6, 7)}
+    saved_patch = await dm.read_mem(patch_addr, 8)
+    saved_dcsr = await dm.read_dcsr()
+    await dm.write_csr(0x300, saved_csrs[0x300] & ~((1 << 17) | (1 << 19)))
+    await dm.write_mem(patch_addr, 8, load(6, 5, 8) | (store(7, 5, 8, imm=8) << 32))
+    for pmm, pmlen in ((2, 7), (3, 16)):
+        tagged = DDR_SCRATCH_ADDR | (0x35 << (64 - pmlen))
+        await dm.write_csr(0x10A, pmm << 32)
+        await dm.write_mem(DDR_SCRATCH_ADDR, 8, 0x123456789ABCDEF0)
+        await dm.write_gpr(5, tagged)
+        await dm.write_gpr(7, 0xFEDCBA9876543210)
+        await dm.write_dcsr(saved_dcsr & ~DCSR_PRV_MASK)
+        await dm.set_step(True)
+        await dm.write_dpc(patch_addr)
+        assert (await dm.step()) == patch_addr + 4
+        assert (await dm.read_gpr(6)) == 0x123456789ABCDEF0
+        assert (await dm.read_dcsr()) & DCSR_PRV_MASK == 0
+        # Debug entry executes at M privilege without MPRV.
+        await dm.read_mem(tagged, 8, expect=CMDERR_EXCEPTION)
+        assert (await dm.step()) == patch_addr + 8
+        assert (await dm.read_mem(DDR_SCRATCH_ADDR + 8, 8)) == 0xFEDCBA9876543210
+        # dcsr.mprven is one, so an explicit debug access can select U.
+        await dm.write_csr(
+            0x300, (saved_csrs[0x300] & ~((3 << 11) | (1 << 19))) | (1 << 17)
+        )
+        assert (await dm.read_mem(tagged, 8)) == 0x123456789ABCDEF0
+        await dm.write_csr(0x300, saved_csrs[0x300])
+    await dm.write_csr(0x10A, saved_csrs[0x10A])
+    await dm.write_dcsr(saved_dcsr)
+    await dm.write_dpc(resume_pc)
+    for n, value in saved_regs.items():
+        await dm.write_gpr(n, value)
+    await dm.write_mem(patch_addr, 8, saved_patch)
+
+
 @cocotb.test()
 @takes_last_edge
 async def test_debug(dut: Any) -> None:
@@ -367,6 +405,8 @@ async def test_debug(dut: Any) -> None:
     # program buffer's misaligned load reports cmderr 3.
     if os.environ.get("MISALIGNED_HW", "1") != "0":
         await _misaligned_steps(dm, patch_addr, dpc)
+
+    await _pointer_mask_steps(dm, patch_addr, dpc)
 
     # ---- A progbuf exception: unmapped address -> cmderr 3 -------------------
     await dm.read_mem(0xDEAD_0000_0000, 8, expect=CMDERR_EXCEPTION)
