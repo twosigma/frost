@@ -36,23 +36,35 @@ def session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
         status=0,
         starts=0,
         commands=[],
+        monitor_error=None,
+        engine_running=False,
+        engine_polls=0,
+        stopped_running_engine=False,
     )
 
     class Process:
-        def __init__(self, finished: bool = False) -> None:
+        def __init__(self, finished: bool = False, is_engine: bool = False) -> None:
             self.returncode = state.status if finished else None
             self.stdout = io.StringIO(state.output)
+            self.is_engine = is_engine
 
         def poll(self) -> int | None:
+            if self.is_engine:
+                state.engine_polls += 1
+                if state.engine_running and state.engine_polls >= 4:
+                    self.returncode = state.status
             return self.returncode
 
         def wait(self, **kwargs: Any) -> int:
-            return state.status
+            return self.returncode if self.returncode is not None else state.status
 
     def popen(command: list[str], **kwargs: Any) -> Process:
         state.commands.append(command)
         state.starts += 1
-        return Process(finished=command[0] == "QCVEngine")
+        is_engine = command[0] == "QCVEngine"
+        return Process(
+            finished=is_engine and not state.engine_running, is_engine=is_engine
+        )
 
     def start_frost(
         port: int,
@@ -71,6 +83,8 @@ def session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
             self.name = name
             self.port = port
             self.errors: list[str] = []
+            if state.monitor_error and name == "Sail":
+                self.errors.append(state.monitor_error)
             counts = state.sail if name == "Sail" else state.frost
             self.traces = [
                 SimpleNamespace(requested=requested, received=received)
@@ -82,7 +96,12 @@ def session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
 
     monkeypatch.setattr(testrig.subprocess, "Popen", popen)
     monkeypatch.setattr(testrig, "start_frost", start_frost)
-    monkeypatch.setattr(testrig, "stop", lambda *args, **kwargs: None)
+
+    def stop(process: Process | None, **kwargs: Any) -> None:
+        if process is not None and process.is_engine and process.returncode is None:
+            state.stopped_running_engine = True
+
+    monkeypatch.setattr(testrig, "stop", stop)
     monkeypatch.setattr(testrig, "write_empty_images", lambda: [])
     monkeypatch.setattr(testrig, "TraceMonitor", Monitor, raising=False)
     monkeypatch.setattr(testrig, "tool_path", lambda name, variable: name)
@@ -299,3 +318,18 @@ def test_empty_sscofpmf_trace(
     assert session.run(["--sscofpmf"]) != 0
     assert session.starts == 0
     assert "expected at least 1 instruction" in capsys.readouterr().out
+
+
+def test_monitor_failure_stops_engine(
+    session: SimpleNamespace, tmp_path: Path, capsys: Any
+) -> None:
+    """A closed proxy must stop an engine even when both peers remain alive."""
+    path = tmp_path / "trace.S"
+    path.write_text(".4byte 0x13\n")
+    session.sail = session.frost = []
+    session.monitor_error = "Sail: implementation did not listen"
+    session.engine_running = True
+    assert session.run(["--trace", str(path)]) != 0
+    assert session.stopped_running_engine
+    assert session.engine_polls < 4
+    assert "found 0 traces and 0 instructions" in capsys.readouterr().out

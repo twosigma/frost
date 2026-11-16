@@ -693,6 +693,10 @@ def run(arguments: argparse.Namespace) -> int:
         # The engine reads a closed connection forever, so stop it if the
         # simulation or the model exits first.
         while engine.poll() is None:
+            if any(monitor.errors for monitor in monitors):
+                stop(engine, grace=0)
+                engine.returncode = engine.returncode or 1
+                break
             if frost.poll() is not None or sail.poll() is not None:
                 time.sleep(2)
                 if engine.poll() is None:
