@@ -85,6 +85,7 @@ IF_TO_PD_FIELDS = [
     ("fetch_fault_page", 1),
     ("fetch_fault_hi", 1),
     ("decomp_illegal", 1),
+    ("is_cond_branch", 1),
     ("pd_target_native_low", PD_TARGET_SPLIT),
     ("pd_target_native_high_select", 2),
     ("pd_target_compressed_low", PD_TARGET_SPLIT),

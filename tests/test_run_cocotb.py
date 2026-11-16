@@ -1140,6 +1140,71 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
         include_in_pytest=False,
     ),
+    "vec_arith_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_arith_test",
+        nic_mac_clocks=False,
+        description="Vector integer arithmetic at VLEN 512; CLI-only",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
+        include_in_pytest=False,
+    ),
+    "vec_order_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_order_test",
+        nic_mac_clocks=False,
+        description="Vector store fences and concurrent SoC DMA at VLEN 128",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=128"),
+        include_in_pytest=False,
+    ),
+    "vec_order_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_order_test",
+        nic_mac_clocks=False,
+        description="Vector store fences and concurrent SoC DMA at VLEN 256",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+        include_in_pytest=True,
+    ),
+    "vec_order_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_order_test",
+        nic_mac_clocks=False,
+        description="Vector store fences and concurrent SoC DMA at VLEN 512",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        include_in_pytest=False,
+    ),
+    "vec_mem_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_mem_test",
+        nic_mac_clocks=False,
+        description=(
+            "Unit-stride, whole-register and mask vector loads and stores at VLEN 256: "
+            "geometry, masking, ordering, Zicbom/Zicboz, Sv39 and timer interrupts"
+        ),
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+    ),
+    "vec_mem_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_mem_test",
+        nic_mac_clocks=False,
+        description="Unit-stride, whole-register and mask vector loads/stores at VLEN 128; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=128"),
+        include_in_pytest=False,
+    ),
+    "vec_mem_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_mem_test",
+        nic_mac_clocks=False,
+        description="Unit-stride, whole-register and mask vector loads/stores at VLEN 512; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        include_in_pytest=False,
+    ),
     "cbo_zero_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1348,6 +1413,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=("Precise fetch faults on the second instruction of a pair"),
     ),
+    "slot2_tage_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="slot2_tage_bench",
+        nic_mac_clocks=False,
+        description=(
+            "Slot-2 tagged conditional branch overrides in both directions, "
+            "checked with machine HPM counters"
+        ),
+    ),
     "itlb_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1373,6 +1448,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),
         ),
         verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
+    ),
+    "vec_debug_partial": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_debug_partial",
+        hdl_toplevel_module="frost",
+        app_name="debug_target",
+        description="Debug Mode partial vector load VS defect (expected failure)",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+        include_in_pytest=False,
     ),
     "debug_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug",
@@ -1831,7 +1914,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="opensbi_smoke",
         rerun_after_reset=False,
         description=(
-            "OpenSBI boot, SBI services and delegated APLIC interrupts (fixed memory layout)"
+            "OpenSBI boot, SBI services, SRST presence, unsupported shutdown and "
+            "delegated APLIC interrupts (fixed memory layout)"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
@@ -1844,8 +1928,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="opensbi_smoke",
         rerun_after_reset=False,
         description=(
-            "OpenSBI boot and SBI services, with OpenSBI emulating misaligned "
-            "accesses (no misaligned-access engine)"
+            "OpenSBI boot, SBI services, SRST presence and unsupported shutdown, "
+            "with OpenSBI emulating misaligned accesses (no misaligned-access engine)"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
         verilator_extra_args=("-GMISALIGNED_HW=0",),
@@ -2511,6 +2595,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "element width against a Python model, with a fixed latency"
         ),
     ),
+    "vec_operand_widths": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_operand_widths",
+        hdl_toplevel_module="vec_lmul_legality",
+        description="Mask/data source widths and widening accumulator overlap legality",
+    ),
     "vec_vtype_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_vtype_tracker",
         hdl_toplevel_module="vec_vtype_tracker",
@@ -2761,6 +2850,42 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         )
         for vlen in (128, 256, 512)
     },
+    "vec_head_mmu_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_head_mmu",
+        hdl_toplevel_module="vec_head_mmu",
+        description="Head vector translation, commit shield and partial faults at VLEN 128",
+        verilator_extra_args=("--assert", "-GVLEN=128"),
+    ),
+    "vec_head_mmu_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_head_mmu",
+        hdl_toplevel_module="vec_head_mmu",
+        description="Head vector translation, commit shield and partial faults at VLEN 256",
+        verilator_extra_args=("--assert", "-GVLEN=256"),
+    ),
+    "vec_head_mmu_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_head_mmu",
+        hdl_toplevel_module="vec_head_mmu",
+        description="Head vector translation, commit shield and partial faults at VLEN 512",
+        verilator_extra_args=("--assert", "-GVLEN=512"),
+    ),
+    "vec_vmu_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vmu",
+        hdl_toplevel_module="vec_vmu",
+        description="VMU sector ordering, byte masks and stalled slots at VLEN 128",
+        verilator_extra_args=("--assert", "-GVLEN=128"),
+    ),
+    "vec_vmu_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vmu",
+        hdl_toplevel_module="vec_vmu",
+        description="VMU sector ordering, byte masks and stalled slots at VLEN 256",
+        verilator_extra_args=("--assert", "-GVLEN=256"),
+    ),
+    "vec_vmu_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vmu",
+        hdl_toplevel_module="vec_vmu",
+        description="VMU sector ordering, byte masks and stalled slots at VLEN 512",
+        verilator_extra_args=("--assert", "-GVLEN=512"),
+    ),
     "vec_engine_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_engine",
         hdl_toplevel_module="vec_engine",
@@ -4181,11 +4306,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "the GMII preamble-discard and rx_er counters"
         ),
     ),
+    "nic_rx_preamble_er": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_rx_preamble_er",
+        hdl_toplevel_module="nic_mac_wrap",
+        verilator_extra_args=(
+            "-GGMII_MODE=1",
+            "-GRX_FIFO_DEPTH=8192",
+            "-GRX_PREAMBLE_ER_TOLERANT=1",
+        ),
+        description="GMII receive tolerates one errored 0x55 preamble byte and rejects errored SFDs",
+    ),
+    "vcu118_phy_mdio": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_vcu118_phy_mdio",
+        hdl_toplevel_module="vcu118_phy_mdio",
+        verilator_extra_args=("-GRST_BIT=6", "-GSETTLE_BIT=5", "-GPOLL_BIT=9"),
+        description="DP83867 bootstrap, acknowledged RECR read/clear and held diagnostic samples",
+    ),
     "nic_top_rx_fifo": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
         verilator_extra_args=("-GRX_FIFO_DEPTH=8192",),
         description="NIC registers and traffic with the 8192-word RX FIFO and its limit register",
+    ),
+    "nic_top_gmii_diag": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_top_gmii_diag",
+        hdl_toplevel_module="nic_top",
+        verilator_extra_args=("-GGMII_MODE=1", "-GRX_PREAMBLE_ER_TOLERANT=1"),
+        description="NIC GMII diagnostic counters 21-35 read back, PHY poll bus and RESET",
     ),
     "nic_pause_rx_wire": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_pause_rx_wire",

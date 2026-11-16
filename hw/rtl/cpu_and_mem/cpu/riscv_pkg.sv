@@ -1118,8 +1118,8 @@ package riscv_pkg;
     FCVT_D_LU,                  // Unsigned 64-bit int to FP (double)
     FMV_X_D,                    // Move double bits to int reg
     FMV_D_X,                    // Move int bits to double reg
-    VLOAD,                      // V: unit-stride, whole-register and mask loads; INT_RS
-                                // passes the rs1 base to the ROB
+    VLOAD,                      // V: unit-stride, whole-register and mask loads: translated
+                                // at the ROB head once older vector work drains; no RS
     VSTORE,                     // V: unit-stride, whole-register and mask stores; as VLOAD
     // Zfhmin: half-precision moves and conversions (loads/stores use LOAD_FP/STORE_FP).
     FMV_X_H,                    // Move half bits to int reg (sign-extended)
@@ -2151,9 +2151,10 @@ package riscv_pkg;
     // Prediction-time index carried to commit to train the same entry.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
     // Tagged-predictor direction for this instruction, valid only when a
-    // tagged entry matched. For a slot-1 conditional branch it replaces the
-    // BTB and bimodal directions in PD, which then redirects IF to the
-    // branch target or the fall-through as needed. Consumed in PD.
+    // tagged entry matched. For a conditional branch in either slot it
+    // replaces the BTB direction (and, for slot 1, the bimodal direction) in
+    // PD, which then redirects IF to the branch target or the fall-through as
+    // needed. Consumed in PD.
     logic tage_valid;
     logic tage_taken;
     // The instruction bytes could not be fetched; the payload is invalid.
@@ -2169,10 +2170,14 @@ package riscv_pkg;
     // instruction_aligner). 0 for slot 1, whose illegal flag PD takes from
     // rvc_extra_predecoded.
     logic decomp_illegal;
-    // Slot 1 redirect candidates from pd_target_candidate: low PC+offset
-    // bits for native and compressed branches, with {offset sign, carry}
+    // Slot-2 only: conditional-branch opcode flag (effective_instr[6:0] ==
+    // OPC_BRANCH), predecoded per slot-2 start position in instruction_aligner
+    // before the position select. Zero for slot 1.
+    logic is_cond_branch;
+    // Redirect candidates from pd_target_candidate: low PC+offset bits for
+    // native and compressed branches in this slot, with {offset sign, carry}
     // selecting PC-high. PD registers these and decodes the high select
-    // afterward. Zero for slot 2.
+    // afterward.
     logic [PdTargetSplit-1:0] pd_target_native_low;
     logic [1:0] pd_target_native_high_select;
     logic [PdTargetSplit-1:0] pd_target_compressed_low;
@@ -3355,6 +3360,14 @@ package riscv_pkg;
     // wherever their register groups overlap, including reduction seeds.
     illegal |= !vm && ((uses_a && sa == 0 && ae != -3) || (uses_b && sb == 0 && be != -3));
     if (uses_a && uses_b && ae != be && vector_groups_overlap(sa, na, sb, nb)) illegal = 1'b1;
+    // Widening multiply-accumulate also reads its double-width destination.
+    // A narrow input overlapping it would read one register at two EEWs.
+    if (mv && f6 >= 6'h3c && (vector_groups_overlap(
+            da, nd, sa, na
+        ) || (uses_b && vector_groups_overlap(
+            da, nd, sb, nb
+        ))))
+      illegal = 1'b1;
     if (!red && !scalar_move) begin
       if (uses_a) illegal |= vector_overlap_illegal(da, nd, de, sa, na, ae, am);
       if (uses_b) illegal |= vector_overlap_illegal(da, nd, de, sb, nb, be, bm);
@@ -3448,8 +3461,8 @@ package riscv_pkg;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET and DRET ride the MRET machinery.
-      // VTOX completes from the vector unit at the ROB head.
-      JAL, WFI, MRET, SRET, DRET, VTOX: get_rs_type = RS_NONE;
+      // VTOX, VLOAD and VSTORE complete from the vector unit at the ROB head.
+      JAL, WFI, MRET, SRET, DRET, VTOX, VLOAD, VSTORE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -3602,7 +3615,7 @@ package riscv_pkg;
       case (op)
         LUI, AUIPC, JAL, ECALL, EBREAK, FENCE, FENCE_I, WFI, MRET, SRET, DRET, PAUSE, CSR_IMM, MOP,
         // Zfa FLI: rs1 is the constant index, not a register
-        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX:
+        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX, VLOAD, VSTORE:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase

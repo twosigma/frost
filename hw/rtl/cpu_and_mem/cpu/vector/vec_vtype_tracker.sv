@@ -99,7 +99,8 @@ module vec_vtype_tracker #(
       valid_n = 1'b1;
     end
     if (i_alloc && (i_alloc_op == riscv_pkg::VARITH || i_alloc_op == riscv_pkg::VARITH_X ||
-                    i_alloc_op == riscv_pkg::VTOX))
+                    i_alloc_op == riscv_pkg::VTOX || i_alloc_op == riscv_pkg::VLOAD ||
+                    i_alloc_op == riscv_pkg::VSTORE))
       start_n = 1'b0;
     if (i_arch_reload) valid_n = 1'b0;
   end

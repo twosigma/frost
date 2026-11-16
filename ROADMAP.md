@@ -25,9 +25,13 @@ hart:
   unit's datapath blocks with their unit benches. The core executes
   `vsetvli`, `vsetivli` and `vsetvl`, the vector integer arithmetic, logical,
   fixed-point, multiply/divide, mask, reduction, permutation and Zvbb instructions,
-  and `vmv.x.s`, `vcpop.m` and `vfirst.m`, and
-  the X3 build includes the unit; vector loads and stores and the other
-  instruction families are not executed yet.
+  `vmv.x.s`, `vcpop.m` and `vfirst.m`, and unit-stride, whole-register and mask
+  loads and stores. The X3 build includes the unit; other memory forms, floating
+  point and vector cryptography are not executed yet.
+  One limitation is known: a vector load executed in
+  Debug Mode that faults after writing part of its destination register
+  leaves `mstatus.VS` Clean; `vec_debug_partial` records it as an expected
+  failure until it is fixed.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR in the X3
   build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
@@ -63,7 +67,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
 | Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction and permutation execution; memory and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vmt.sby` |
+| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction and permutation execution; unit-stride/whole-register/mask loads and stores; other memory forms and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_mem_test`, `test_riscv_vector_tests.py`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vmt.sby` |
 | Zvfhmin | Partial (FP16 convert datapath block in place; core execution not connected) | `test_vec_fcvt.py` |
 | Zvbb | Implemented with `VECTOR=1` (including `vwsll`; unadvertised) | `test_vec_int_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py` |
 | Zvkt | Partial (fixed-latency integer and bitmanip lanes in place; vector unit unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py` |
@@ -363,7 +367,7 @@ for an ASIC, the RTL also needs:
 
 ## Single-core performance
 
-FROST runs CoreMark at 4.58 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
+FROST runs CoreMark at 4.77 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
 The next goal is 5 CoreMark/MHz. Work toward it is paused while memory
 performance on the coherent hierarchy and timing margin at the target clock
 are restored. A score counts only from a run of at least ten seconds that
@@ -371,7 +375,7 @@ passes the CRC checks for both official seed sets, with the compiler flags,
 the `sw.bin` hash, and memory and cache settings recorded; see the
 [CoreMark README](sw/apps/coremark/README.md).
 
-5 CoreMark/MHz is 200,000 cycles per iteration, against about 220,000 today.
+5 CoreMark/MHz is 200,000 cycles per iteration, against about 210,000 today.
 A model driven by the CoreMark instruction trace gives these estimates for
 each change on its own, for the design before load results woke integer
 consumers early and before Zbc. It treats the BRAM as attached directly to
@@ -401,9 +405,9 @@ of the load-latency cut.
 
 Priorities, guided by the performance counters and timing reports:
 
-1. Branch prediction. About 2,100 mispredictions per iteration remain. PD,
-   the pre-decode stage, overrides only slot-1 directions, so slot-2 branches
-   keep the BTB's direction, and long loops mispredict their exits.
+1. Branch prediction. PD overrides conditional-branch directions in both
+   slots when the tagged predictor matches (slot 1 also keeps the bimodal
+   fallback).
 2. Pairing across fetch windows. The front end pairs two instructions only
    when both fit in one 64-bit fetch window, and after a redirect the fetch
    address advances four and eight bytes in turn, so straight-line code
@@ -489,14 +493,19 @@ and targeted microbenchmarks give these items:
    predicts the jumps, calls and returns it misses through a PD redirect, at
    that redirect's cost of two bubbles. In Linux-like traces the 256-entry
    BTB misses on 44 to 46% of lookups, and a 1024-entry two-way one on 7 to
-   11%. A slot-1 conditional branch that misses the BTB is redirected by PD
-   when its direction predictors say taken, at the same cost, and a slot-2
-   one recovers from execution. A backing hit served from IF would save a
-   bubble, but its correction would sit on the fetch loop, one of the hardest
-   paths at the target clock. In bare-metal microbenchmarks a taken branch
-   costs about 5 cycles, and a loop of four additions runs at 0.6 IPC with
-   translation off; those small-loop costs come from fetch coverage and
-   packet formation, not BTB capacity.
+   11%. PD redirects a conditional branch in either slot when the tagged
+   direction predictor disagrees with the BTB (and, in slot 1, when the
+   bimodal fallback predicts taken on a BTB miss or not-taken entry), at the
+   same two-bubble cost; a slot-2 branch without a tagged match keeps the
+   BTB's direction and recovers from execution if wrong. Using the backing
+   BTB's second lookup image when a one-instruction packet lands in the word
+   after the looked-up one is next; an indirect-target predictor and longer
+   tagged-history tables remain possible later work. A backing hit served
+   from IF would save a bubble, but its correction would sit on the fetch
+   loop, one of the hardest paths at the target clock. In bare-metal
+   microbenchmarks a taken branch costs about 5 cycles, and a loop of four
+   additions runs at 0.6 IPC with translation off; those small-loop costs
+   come from fetch coverage and packet formation, not BTB capacity.
 5. Floating point. One engine executes F and D instructions one at a time.
    Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
    and sign injection use two-cycle paths. Integer-to-FP conversion takes
@@ -577,6 +586,8 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   when the tagged predictor overrides a taken prediction, with a separate
   case for slot 2, or at retirement, retiring the instruction alone and
   restarting after a full flush.
+- Synchronize the PHY management reset into the MDIO sequencer clock domain.
+- Extend the network receive test beyond the default ring size so it checks descriptor wrap.
 - The second DDR4 interface on the VCU118. The target has RJ-45 SGMII
   Ethernet and 10GBASE-R on QSFP1 lane 0, using the NIC's registers,
   descriptors, driver, and coherent DMA. It uses one DDR4 interface; the

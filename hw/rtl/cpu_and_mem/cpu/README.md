@@ -131,7 +131,7 @@ cases, then the sequential PC.
 | Backing BTB | 1024 entries, two-way set-associative | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | Mispredicted JALs and JALRs at commit; each PD redirect it serves refreshes its entry's replacement state |
 | Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`), and of a backing BTB redirect for one | IF, when it hands PD a packet predicted from a typed entry, and for a backing BTB redirect: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
-| Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of slot-1 conditional branches whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
+| Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of conditional branches in either slot whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
 
 A return is predicted like any BTB hit, from the lookup at its fetch PC, but
 its entry is typed, so its target is the top of the return address stack
@@ -155,7 +155,8 @@ Slot 2 has three BTB copies of its own, keyed by the PC of the instruction
 before it (+2 and +4, plus a copy rotated by one index for a slot 2 in the
 next word). They are read a cycle ahead, so the lookup adds no fetch cycle,
 but a taken slot-2 prediction costs one bubble because fetch has already
-requested the next sequential window. At a halfword PC, a slot-2 hit predicts
+requested the next sequential window (plus PD's redirect bubbles if a tagged
+match vetoes it there). At a halfword PC, a slot-2 hit predicts
 only if the entry was trained for an instruction of the same size. A JAL that
 misses both the BTB and the backing BTB mispredicts once; training at commit
 makes its next execution hit.
@@ -175,21 +176,24 @@ switch, keep the BTB. Code changed without FENCE.I, or a valid executable
 mapping replaced without SFENCE.VMA, is not covered (see the
 [roadmap](../../../../ROADMAP.md#possible-future-work)).
 
-PD can change the direction fetch followed for a slot-1 conditional branch,
-and redirects a JAL or JALR that the BTB did not predict taken when the
+PD can change the direction fetch followed for a conditional branch in either
+slot, and redirects a JAL or JALR that the BTB did not predict taken when the
 backing BTB holds it (see [Backing BTB](#backing-btb)).
 IF reads two direction predictors at the fetch PC and passes their
-directions along with the branch. A tagged direction, when the branch's lookup
-matches a tag, is used either way; otherwise the bimodal direction can only
-turn a branch without a taken BTB prediction (a miss, or a hit predicted
-not-taken) to taken. When that direction differs from fetch's, PD redirects
-fetch to PC + offset, or for not-taken to the next instruction, at a cost of
-two bubbles, and ID gives the branch the new prediction so the branch unit
-checks the path fetch now follows. Commit trains the bimodal entry at the
-carried index, not at the branch's own PC, because the fetch PC that read the
-predictor can differ from the branch PC after a stall replay or at a halfword
-boundary. A slot-2 branch's training waits, one deep, for a cycle in which
-slot 1 does not train; a newer one replaces it.
+directions along with the packet. For slot 1, a tagged direction, when the
+branch's lookup matches a tag, is used either way; otherwise the bimodal
+direction can only turn a branch without a taken BTB prediction (a miss, or
+a hit predicted not-taken) to taken. Slot 2 uses the tagged predictor only
+(it has no bimodal lookup): a tagged match can turn a slot-2 branch without a
+taken BTB prediction to taken, or veto a taken slot-2 BTB prediction after
+its fetch bubble. When the chosen direction differs from fetch's, PD
+redirects fetch to PC + offset, or for not-taken to the next instruction, at
+a cost of two bubbles, and ID gives the branch the new prediction so the
+branch unit checks the path fetch follows. Commit trains the bimodal entry
+at the carried index, not at the branch's own PC, because the fetch PC that
+read the predictor can differ from the branch PC after a stall replay or at
+a halfword boundary. A slot-2 branch's training waits, one deep, for a cycle
+in which slot 1 does not train; a newer one replaces it.
 
 The tagged predictor (`tage_predictor`) follows TAGE. T1 hashes the branch's
 word address with the newest 16 bits of the global path history, T2 with all
@@ -220,7 +224,8 @@ provider and the alternate direction disagree, its usefulness bit records
 whether the provider was right. A mispredicted branch allocates a weak entry
 in the first table above its provider (T1, then T2) whose entry is not useful,
 or clears those usefulness bits when every candidate is useful. Slot-2
-branches are trained, though PD overrides only slot 1.
+branches are trained the same way, from the prediction left after any PD
+override.
 
 ### Backing BTB
 
@@ -278,9 +283,10 @@ IF pairs two instructions only when all of these hold:
   like an integer instruction, in either slot.
 - Slot 2 is not a native SYSTEM (other than a may-be-operation), MISC-MEM,
   AMO, FP-compute (OP-FP or fused multiply-add) or vector instruction (OP-V,
-  or LOAD-FP and STORE-FP with a vector width). It may be a branch or jump,
-  but only the slot-2 BTB lookup or the backing BTB can predict it; the PD
-  redirect's direction change covers slot 1 only.
+  or LOAD-FP and STORE-FP with a vector width). It may be a branch or jump:
+  the slot-2 BTB lookup, the tagged direction predictor (through a PD
+  redirect), or the backing BTB can predict it, while the bimodal fallback
+  covers slot 1 only.
 - Slot 2 fits in the window. A 32-bit slot 2 that would start in the upper
   half of the second word does not.
 - No transient condition intervenes, such as an unsafe window read, an
@@ -506,9 +512,10 @@ walk response carries the field (`ptw_resp_t.pbmt`); the second-level TLB
 (4 KiB array and superpage array), the DTLB and the ITLB store it and return
 it on a hit. Over low BRAM, which has no alias, the DTLB's per-entry checks
 and the walk-response checks apply the field: the page is MMIO and refuses
-AMOs. AMO, LR, SC and `cbo.zero` on an NC or IO page are access faults, and so
-is an instruction fetch (PMA overrides the Svpbmt chapter permits). The walk
-cache holds only pointers, whose PBMT field must be zero.
+AMOs. AMO, LR, SC, `cbo.zero` and vector loads and stores on an NC or IO page
+are access faults, and so is an instruction fetch (PMA overrides the Svpbmt
+chapter permits). The walk cache holds only pointers, whose PBMT field must be
+zero.
 
 On the X3, a misaligned NC/IO load or store to a DDR alias raises a load or
 store access fault (cause 5 or 7); one to low BRAM or device registers raises
@@ -702,7 +709,9 @@ before the registered ROB in-flight indication arrives. `vector/vec_lmul_legalit
 alignment and overlap rules for all 32 SEW/LMUL combinations before the
 decoded queue. Dispatch selects the tracked configuration and rejects vill.
 Sources that overlap at different element widths are reserved; this includes
-using v0 as both a mask and an integer data source.
+using v0 as both a mask and an integer data source. Widening
+multiply-accumulate also reads its old double-width destination, so a narrow
+source may not overlap that accumulator.
 The tracker also checkpoints whether
 `vstart` is nonzero, clearing it for each dispatched vector instruction and
 reloading it after CSR accesses and full flushes. Arithmetic rejects nonzero
@@ -719,21 +728,37 @@ completed vector effects in program order.
 
 ID decodes the unit-stride (one field), whole-register and mask loads and
 stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1
-only and go to INT_RS, which hands the rs1 base to the ROB. Each takes an
-entry in the vector memory table (`vector/vec_vmt.sv`) at dispatch, and
-dispatch holds the next one while all four entries are live. The table lists
-the vector memory instructions in flight in program order for the load and
-store queues' range holds, marks an entry retired on the edge the ROB head
-passes it, and frees entries that a flush removes. Its registered "no live
-retired entry" output holds the serializer's FENCE, FENCE.I and SFENCE.VMA
-drain, the store-conditional unit's firing and arming, and the
-misaligned-access engine before its first access. The unit does not perform
-vector loads and stores: each raises illegal-instruction when it reaches the
-ROB head, and the trap's flush frees its entry. `vec_lmul_legality` decides
-this rejection from the decoded operation before the queue, excluding decode
-illegality and fetch faults. A separate bit travels beside the arithmetic legality
-lookup, and dispatch includes it without consulting `vtype`. Strided, indexed,
-segment and fault-only-first loads and stores are illegal.
+only with `RS_NONE` and take an entry in the vector memory table
+(`vector/vec_vmt.sv`), holding the next one while all four entries are live.
+The table lists the vector memory instructions in flight in program order for
+the load and store queues' range holds (including 64-byte block holds on
+Zicbom entries), marks an entry retired on the edge the ROB head passes it, and
+frees entries that a flush removes. Its registered "no live retired entry"
+output holds the serializer's FENCE, FENCE.I and SFENCE.VMA drain, the
+store-conditional unit's firing and arming, the misaligned-access engine before
+its first access, and interrupt and debug-halt takes (`sq_committed_empty_for_trap`).
+When one reaches the ROB head and older committed vector work has drained,
+`vector/vec_head_mmu.sv` reads `rs1` through the integer register file's extra
+read port and checks `vtype` and register-group legality (`vill` except on
+whole-register forms, EMUL in `[1/8, 8]`, group alignment, and masked loads to
+`v0`), computes the active byte span from `vl`, `vstart` and `v0`, translates
+the one or two touched pages on the DMMU's walk-request port (requiring cached
+DDR with `PBMT = PMA`), waits for older committed scalar stores (`o_sq_committed_empty`), records
+the physical page segments in `vec_vmt`, and completes on CDB slot 6 to retire
+alone in slot 1 (`vstart` cleared; VS set Dirty on loads and when `vstart` was
+nonzero). Faults are reported precisely at the head (`xtval` holds the first
+active byte's virtual address in the faulting page, or the second page's base
+when a single element straddles into a faulting second page); if earlier whole
+elements lie on a valid first page before a faulting second page, `vec_vmu`
+executes those first-page elements before a synchronous machine or supervisor
+trap records the first unexecuted element in `vstart`. A partial-load fault in
+Debug Mode re-parks without that CSR update and can leave VS Clean after
+writing vector registers. After retirement, `vector/vec_vmu.sv` splits the
+access into 32-byte sectors across six line-client identities (IDs 2..7) to the
+coherence home, freeing the `vec_vmt` entry once all sector responses and VRF
+writes finish. A failed sector response after retirement, or during a partial
+first-page run ahead of a second-page fault, suppresses any VRF write and
+raises a sticky hart fatal error alongside `o_cache_fatal`. Strided, indexed, segment and fault-only-first loads and stores are illegal.
 
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector implementation is incomplete, and bare-metal

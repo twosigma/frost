@@ -103,6 +103,10 @@ SAMPLE_PATTERN = (
     r"^(vadd\.vv|vwmul\.vv|vfadd\.vv|vle8\.v|vmseq\.vv|vsha2ms\.vv|vclmul\.vv)$"
 )
 
+# Instruction forms selected for the RTL smoke sample: integer arithmetic
+# and compare plus unit-stride, whole-register and mask memory operations.
+RTL_SAMPLE_PATTERN = r"^(vadd\.vv|vmseq\.vv|vle8\.v|vle32\.v|vse16\.v|vse64\.v|vl2re8\.v|vs2r\.v|vlm\.v|vsm\.v)$"
+
 
 # Subdirectories of the work directory that one run fills.
 PIPELINE_DIRECTORIES = ("stage1", "stage2", "patch", "bin1", "bin2")
@@ -599,7 +603,7 @@ def test_sample_shard_changes_selection(tmp_path: Path) -> None:
 def test_rtl_sample(tmp_path: Path) -> None:
     """A sample of generated tests passes on the simulated core."""
     vlen = int(os.environ.get("FROST_RVV_TESTS_VLEN", str(DEFAULT_VLEN)))
-    results = run_rtl_tests(tmp_path, vlen, SAMPLE_PATTERN, shard=(1, 4))
+    results = run_rtl_tests(tmp_path, vlen, RTL_SAMPLE_PATTERN, shard=(1, 4))
     failed = [f"{r.name}: {r.message}" for r in results if not r.passed]
     assert results and not failed, "\n".join(failed)
 

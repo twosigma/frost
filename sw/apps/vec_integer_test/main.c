@@ -3948,6 +3948,10 @@ static void special_cases(void)
     ILLEGAL(OPV(0x02, 0, 0, 0, 0, 16)); /* v0 cannot be both mask and data. */
     ILLEGAL(OPV(0x20, 0, 8, 0, 0, 16)); /* The same rule applies to vs1. */
     ILLEGAL(OPV(0x00, 0, 8, 0, 2, 16)); /* Reduction seed also reads data. */
+    setvl(~0ul, 0x10);
+    ILLEGAL(OPV(0x3c, 1, 17, 8, 2, 16));  /* Wide accumulator aliases narrow vs2. */
+    ILLEGAL(OPV(0x3d, 1, 8, 17, 2, 16));  /* Wide accumulator aliases narrow vs1. */
+    ILLEGAL(OPV(0x3f, 1, 17, 10, 6, 16)); /* Scalar form still reads wide vd. */
 #endif
     setvl(~0ul, 0x18);
     ILLEGAL(OPV(0x30, 1, 8, 24, 2, 16)); /* widening beyond ELEN */

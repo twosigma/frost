@@ -101,6 +101,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("line_client_link", "line_link0_bmc"): 4200,
     ("line_client_link", "line_link1_bmc"): 4200,
     ("line_client_link", "line_link1_four_bmc"): 4200,
+    ("line_client_link", "line_link1_eight_bmc"): 4200,
     ("coherence_store_home", "link_bmc_pressure"): 8700,
 }
 
@@ -458,14 +459,16 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_dma_ingress.sby",
         "DMA issue order, opaque identities, independent completion, and reset ownership; "
-        "the same for the hart's two-identity line client.",
+        "the same for the hart's two- and eight-identity line client.",
         tasks=(
             "coh_dma_ingress_prove",
             "coh_dma_ingress_cover",
             "coh_dma_ingress_soc_prove",
             "coh_dma_ingress_soc_cover",
             "coh_line_client_prove",
+            "coh_line_client_eight_prove",
             "coh_line_client_cover",
+            "coh_line_client_eight_cover",
         ),
     ),
     FormalTarget(
@@ -969,9 +972,19 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Queued LMUL classes and vector-memory rejection equal the arithmetic, VTOX "
-        "and VLOAD/VSTORE legality rules for every vtype, instruction and operation",
+        "Queued LMUL classes equal the arithmetic and VTOX legality rules for "
+        "every vtype, instruction and operation",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "vec_vmu.sby",
+        "Vector sector order, identity conservation and stalled preparation registers",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "vec_head_mmu.sby",
+        "Head vector translation before access, precise partial faults and commit shield",
+        tasks=("bmc", "cover"),
     ),
     FormalTarget(
         "vec_hold_rows.sby",
@@ -1098,6 +1111,7 @@ FORMAL_TARGETS = [
             "line_link0_bmc",
             "line_link1_bmc",
             "line_link1_four_bmc",
+            "line_link1_eight_bmc",
             "line_link1_cover",
         ),
     ),
@@ -1393,10 +1407,24 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
-        "Backing BTB redirects fire for their slot's jump with its vetoes clear, "
-        "stack operations and refreshes follow them, and the redirect targets "
-        "match PD's reference models",
+        "PD backing-BTB jump redirects and slot-1/slot-2 TAGE conditional-branch "
+        "overrides fire only with their vetoes clear, stack operations and "
+        "refreshes follow them, and redirect directions and targets match PD's "
+        "reference models",
         tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "pd_id_slot2_redirect.sby",
+        "Composed PD and ID stages dispatch slot 2's effective prediction and "
+        "target equal to PD's slot-2 redirect while leaving slot 1 untouched",
+        tasks=("pd_id_slot2_bmc", "pd_id_slot2_cover"),
+    ),
+    FormalTarget(
+        "if_slot2_precompute.sby",
+        "IF precomputed slot-2 TAGE coverage, lookup select, branch flag, target "
+        "candidates, PC step, and bubble/fault pairing match direct references "
+        "across live and stall-replayed packets",
+        tasks=("if_slot2_precompute_bmc", "if_slot2_precompute_cover"),
     ),
     FormalTarget(
         "slot2_prediction_capture.sby",
@@ -2151,6 +2179,22 @@ SBY_TASKS = [
     ),
     ("pc_tage_events_prove", "Unbounded history event equivalence"),
     ("pc_tage_events_cover", "History event and suppression reachability"),
+    (
+        "pd_id_slot2_bmc",
+        "Bounded PD and ID composition check for slot-2 prediction overrides",
+    ),
+    (
+        "pd_id_slot2_cover",
+        "Reachability of slot-2 taken overrides, not-taken vetoes, and stall holds",
+    ),
+    (
+        "if_slot2_precompute_bmc",
+        "Bounded IF slot-2 TAGE coverage, decode, and target-candidate check",
+    ),
+    (
+        "if_slot2_precompute_cover",
+        "Reachability of live and stall-replayed slot-2 TAGE-covered packets",
+    ),
     ("coh_rs_payload4_prove", "Coherent payload storage equality at four entries."),
     ("coh_rs_payload8_prove", "Coherent payload storage equality at eight entries."),
     ("coh_rs_payload16_prove", "Coherent payload storage equality at sixteen entries."),
@@ -2788,11 +2832,20 @@ SBY_TASKS = [
         "Ingress under a hart source and class 3 with two identities.",
     ),
     (
+        "coh_line_client_eight_prove",
+        "Ingress under a hart source and class 3 with eight identities.",
+    ),
+    (
         "coh_line_client_cover",
         "Ingress reachability under a hart source with two identities.",
     ),
+    (
+        "coh_line_client_eight_cover",
+        "Ingress reachability under a hart source with eight identities.",
+    ),
     ("line_link1_bmc", "Line client and links at one stage, two identities."),
     ("line_link1_four_bmc", "Line client and links at one stage, four identities."),
+    ("line_link1_eight_bmc", "Line client and links at one stage, eight identities."),
     (
         "line_link1_cover",
         "Line client at one stage reaches two live identities and a write response.",

@@ -27,8 +27,9 @@ module id_stage #(
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
     // Direction override from PD registers, shared with IF: the new
     // direction and, when taken, the target. It applies to slot 1, or to
-    // slot 2 for a backing BTB prediction there. Apply it here to keep target
-    // arithmetic out of PD's packet register.
+    // slot 2 when i_pd_redirect_slot2 is set (a slot-2 tagged branch override
+    // or backing BTB prediction). Apply it here to keep target arithmetic out
+    // of PD's packet register.
     input logic i_pd_redirect,
     input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
@@ -74,7 +75,7 @@ module id_stage #(
 
   // PD's redirect and veto metadata align with this cycle's packet. A
   // not-taken override keeps the BTB target, which only a taken prediction
-  // uses. A slot-2 override is always taken.
+  // uses.
   logic [XLEN-1:0] effective_btb_predicted_target;
   logic            effective_btb_predicted_taken;
   logic [XLEN-1:0] effective_btb_predicted_target_2;
@@ -88,9 +89,10 @@ module id_stage #(
                                           i_from_pd_to_id.btb_predicted_target;
   assign effective_btb_predicted_taken = pd_redirect_slot1 ? i_pd_redirect_taken :
                                                              i_from_pd_to_id.btb_predicted_taken;
-  assign effective_btb_predicted_target_2 = pd_redirect_slot2 ? i_pd_redirect_target :
+  assign effective_btb_predicted_target_2 = (pd_redirect_slot2 && i_pd_redirect_taken) ?
+                                            i_pd_redirect_target :
                                             i_from_pd_to_id_2.btb_predicted_target;
-  assign effective_btb_predicted_taken_2 = pd_redirect_slot2 ||
+  assign effective_btb_predicted_taken_2 = pd_redirect_slot2 ? i_pd_redirect_taken :
                                            i_from_pd_to_id_2.btb_predicted_taken;
 
   // Slot-1 instruction and decoder outputs
@@ -698,7 +700,7 @@ module id_stage #(
   // Slot-2: Decoders + FP Detect + Pipeline Register
   // ===========================================================================
   // Slot 2 uses the same decode and NOP handling, with BTB/RAS metadata
-  // from IF and no PD redirect override.
+  // from IF updated by any slot-2 PD redirect override.
 
   riscv_pkg::instr_t               instruction_2;
   riscv_pkg::instr_op_e            instruction_operation_2;

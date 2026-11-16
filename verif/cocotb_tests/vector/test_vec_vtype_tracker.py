@@ -88,3 +88,17 @@ async def configuration_handoff(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     dut.i_restore.value = 0
     assert int(dut.o_valid.value) and int(dut.o_vstart_nonzero.value)
+
+    # A completed vector memory instruction clears architectural vstart before
+    # a younger arithmetic instruction can observe it. Allocation predicts that
+    # effect; a fault flush reloads the architectural restart index.
+    for operation in ("VLOAD", "VSTORE"):
+        dut.i_alloc.value = 1
+        dut.i_alloc_op.value = ops[operation]
+        await FallingEdge(dut.i_clk)
+        dut.i_alloc.value = 0
+        assert not int(dut.o_vstart_nonzero.value)
+        dut.i_restore.value = 1
+        await FallingEdge(dut.i_clk)
+        dut.i_restore.value = 0
+        assert int(dut.o_vstart_nonzero.value)

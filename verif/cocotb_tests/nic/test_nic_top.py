@@ -64,7 +64,9 @@ LINK, PHY_CTRL, PHY_STATUS, COUNTERS = 0x060, 0x064, 0x068, 0x080
 ABI_CTRL, RX_BASE64, TX_BASE64 = 0x06C, 0x070, 0x078
 RX_FIFO_LIMIT, RX_FIFO_DEPTH_REG = 0x014, 0x018
 RX_FIFO_LIMIT_MIN, RX_FIFO_LIMIT_DEFAULT = 8, 512
-NUM_COUNTERS = 21
+NUM_COUNTERS = 36
+NUM_BASE_COUNTERS = 21
+COUNTERS_EXT = 0x140
 PAUSE_CTRL, PAUSE_HIGH_WATER, PAUSE_LOW_WATER, PAUSE_INTERVAL = (
     0x01C,
     0x130,
@@ -564,6 +566,26 @@ async def test_extended_address_descriptor(dut: Any) -> None:
         nic.stop()
 
 
+PAUSE_HIGH_WATER_OFF, PAUSE_LOW_WATER_OFF, PAUSE_INTERVAL_OFF = 0x130, 0x134, 0x138
+
+
+@cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
+@cocotb.test()
+async def test_counter_map_leaves_the_pause_registers_alone(dut: Any) -> None:
+    """Counters 21 and up continue at 0x140; the pause registers at 0x130 read as registers."""
+    nic = await _start(dut, 1, loopback=False)
+    for index in range(NUM_COUNTERS):
+        offset = (
+            COUNTERS + 8 * index
+            if index < NUM_BASE_COUNTERS
+            else COUNTERS_EXT + 8 * (index - NUM_BASE_COUNTERS)
+        )
+        assert await nic.rd64(offset) == 0, f"counter {index} at {offset:#x}"
+    assert await nic.rd(PAUSE_INTERVAL_OFF) == 0xFFFF
+    assert await nic.rd(PAUSE_HIGH_WATER_OFF) == 0
+    assert await nic.rd(PAUSE_LOW_WATER_OFF) == 0
+
+
 @cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
 @cocotb.test()
 async def test_registers_and_bringup(dut: Any) -> None:
@@ -696,10 +718,16 @@ async def test_rx_fifo_limit_register(dut: Any) -> None:
     await nic.wr(CTRL, CTRL_RESET)
     await nic.wait_status(ST_RESET_BUSY, 0, what="RESET done")
     assert await nic.rd(PAUSE_CTRL) == 0 and await nic.rd(PAUSE_INTERVAL) == 0xFFFF
-    # The counters run to index 20 and nothing is mapped after them.
+    # The extension follows the pause registers; the reserved gap reads zero.
     for index in range(NUM_COUNTERS):
-        assert await nic.rd(COUNTERS + 8 * index) == 0, index
-    assert await nic.rd(COUNTERS + 8 * NUM_COUNTERS) == 0
+        offset = (
+            COUNTERS + 8 * index
+            if index < NUM_BASE_COUNTERS
+            else COUNTERS_EXT + 8 * (index - NUM_BASE_COUNTERS)
+        )
+        assert await nic.rd(offset) == 0, index
+    assert await nic.rd(COUNTERS + 8 * NUM_BASE_COUNTERS) == 0
+    assert await nic.rd(COUNTERS_EXT + 8 * (NUM_COUNTERS - NUM_BASE_COUNTERS)) == 0
     nic.stop()
 
 

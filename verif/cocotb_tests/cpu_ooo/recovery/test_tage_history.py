@@ -611,3 +611,80 @@ async def test_held_slot2_training_is_dropped_when_its_entry_is_reused(
     # The first cycle without slot-1 training would have drained the hold.
     await _step(dut)
     assert not _train(dut)["valid"]
+
+
+@cocotb.test()
+async def test_slot2_pd_veto_discards_fast_btb_push_without_pushing_fallthrough(
+    dut: Any,
+) -> None:
+    """Arm 4 with taken=0 after a slot-2 fast-BTB push restores lookup history cleanly."""
+    await _setup_test(dut)
+    pre_branch_hist = 0x1357_9BDF_2468_ACE0
+    dut.i_hist_push.value = 1
+    for shift in range(HIST_BITS - PATH_BITS, -1, -PATH_BITS):
+        dut.i_fetch_pc_path_bits.value = (pre_branch_hist >> shift) & 0b11
+        await _step(dut)
+    dut.i_hist_push.value = 0
+    await _settle()
+    assert _lookup_hist(dut) == pre_branch_hist
+
+    # Cycle T: PD accepts a slot-2 conditional branch whose fast-BTB prediction
+    # was taken (`base_taken=True`), while `i_hist_push` shifts the fast-BTB
+    # target's path bits (0b11) into the live fetch history.
+    idx = _write_index(dut)
+    dut.i_pd_accept.value = 1
+    dut.i_pd_cond_branch.value = 0b10
+    dut.i_tage_slot_valid.value = 0b10
+    dut.i_tage_slot_bank.value = 0b10
+    dut.i_base_taken.value = 0b10
+    dut.i_tage_slot_lookup_2.value = pack_struct(TAGE_LOOKUP_FIELDS, LOOKUP_A)
+    dut.i_tage_lookup_hist.value = pre_branch_hist
+    dut.i_hist_push.value = 1
+    dut.i_fetch_pc_path_bits.value = 0b11
+    await _step(dut)
+
+    # Confirm the speculative fast-BTB push polluted hist_q before the PD veto.
+    dut.i_pd_accept.value = 0
+    dut.i_pd_cond_branch.value = 0
+    dut.i_tage_slot_valid.value = 0
+    dut.i_hist_push.value = 0
+    await _settle()
+    assert _lookup_hist(dut) == _push(pre_branch_hist, 0b11)
+
+    # Cycle T+1 (PD redirect cycle): PD vetoes the slot-2 branch (`taken=0`).
+    # Even if another speculative push occurs on this edge, pd_hist_q captures
+    # `pre_branch_hist` and pd_taken_q captures 0.
+    dut.i_pd_redirect_taken.value = 0
+    dut.i_hist_push.value = 1
+    dut.i_fetch_pc_path_bits.value = 0b01
+    await _step(dut)
+    dut.i_hist_push.value = 0
+
+    # Cycle T+2: pc_controller asserts arm 4 (ARM_PD_REDIRECT) with fall-through
+    # fetch PC path bits (0b10) on i_fetch_pc_path_bits. Because taken=0, arm 4
+    # must restore `pre_branch_hist` and NOT push 0b10.
+    dut.i_hist_restore_arm.value = 1 << ARM_PD_REDIRECT
+    dut.i_fetch_pc_path_bits.value = 0b10
+    await _settle()
+    assert _lookup_hist(dut) == pre_branch_hist
+    await _step(dut)
+    dut.i_hist_restore_arm.value = 0
+    await _settle()
+    assert _lookup_hist(dut) == pre_branch_hist
+
+    # Allocate and retire the vetoed slot-2 branch: its FTQ entry must still
+    # carry base_taken[1] = True as alt_taken when no T1 alternate matched.
+    await _allocate(dut, 14, idx, slot=1)
+    await _commit(
+        dut,
+        [
+            None,
+            {"valid": 1, "cond_branch": 1, "tag": 14, "taken": 0, "mispredicted": 0},
+        ],
+    )
+    train = _train(dut)
+    assert train["valid"]
+    assert train["bank"] == 1
+    assert train["alt_taken"] is True
+    assert train["taken"] is False
+    assert train["mispredicted"] is False
