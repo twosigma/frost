@@ -111,9 +111,12 @@ The ROB marks a CSR instruction as a translation CSR at allocation: any
 and SFENCE.VMA, its retirement is followed by a full flush, which discards
 instructions decoded under the old FS or TW value. Legal `menvcfg` and `senvcfg`
 writes use ordinary CSR serialization: their CBZE, CBCFE and CBIE bits affect
-only lower privilege. The trap, xRET or debug transition flushes decode when
-the executing mode's `cbo.zero`, Zicbom or `wrs.nto` permission changes (ID
-reads them as registered gates). The CSR file
+only lower privilege. `senvcfg.PMM` selects U-mode pointer masking, including
+MPRV accesses with MPP = U. ID holds younger instructions until the write
+commits, and the CSR file captures the legalized PMM on that edge before a
+younger store can allocate an early address. The trap, xRET or debug
+transition flushes decode when the executing mode's `cbo.zero`, Zicbom or
+`wrs.nto` permission changes (ID reads them as registered gates). The CSR file
 invalidates the TLBs and walker on its own: on every `satp` access, and on an
 `mstatus` write that changes MPRV (or MPP while MPRV is set). SUM and MXR are
 applied at lookup, so their changes need only the full flush.
@@ -136,9 +139,9 @@ MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 
 The FP engine completes on the `FP_ADD` slot; the vector-config unit
 (`vsetvli`, `vsetivli`, `vsetvl`, with the vector unit present) on the `FP_MUL`
-slot; and, with the vector unit, `vmv.x.s`, `vcpop.m` and `vfirst.m` on the
-`FP_DIV` slot, through its test input, which cpu_ooo drives from the vector
-unit. A completion that loses waits in its
+slot; and, with the vector unit, `vmv.x.s`, `vcpop.m`, `vfirst.m` and the
+head-executed `VLOAD` and `VSTORE` translations on the `FP_DIV` slot, through
+its test input, which cpu_ooo drives from the vector unit. A completion that loses waits in its
 [`fu_cdb_adapter`](fu_cdb_adapter/README.md) and competes again the next
 cycle; the pipelined MUL path presents its result directly, and the divider
 holds its result until its adapter is free. On a full flush the arbiter's
@@ -191,7 +194,7 @@ result waits in its register only behind a store fault.
 | `MUL_RS`   | 4     | MUL/MULW/MULH\*/CLMUL/CLMULH/CLMULR/DIV\*/REM\* |
 | `MEM_RS`   | 8     | All loads and stores (INT and FP), AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
 | `FP_RS`    | 2     | Every F and D compute instruction: FADD/FSUB, FMUL, FMA (3-source), FDIV, FSQRT, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
-| (none)     | n/a   | JAL, WFI, MRET, SRET, DRET: ROB only, no operands to wait for |
+| (none)     | n/a   | JAL, WFI, MRET, SRET, DRET, and with the vector unit `VTOX`, `VLOAD`, `VSTORE` and non-scalar `VARITH`: ROB only, no reservation-station operands |
 
 `INT_RS_DEPTH` must be a power of two from 2 to 32. The INT RS's second issue
 port considers only the lowest eight entries (`riscv_pkg::IntRsIssue2Window`).

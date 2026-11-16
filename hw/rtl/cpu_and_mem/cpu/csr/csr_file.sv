@@ -25,7 +25,8 @@
   delegated SSIP and LCOFIP. medeleg/mideleg use the package WARL masks:
   M-mode ECALL and the machine software, timer and external interrupt classes
   cannot delegate. menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE;
-  senvcfg, required for S/U support, implements FIOM, CBIE, CBCFE and CBZE.
+  senvcfg, required for S/U support, implements FIOM, CBIE, CBCFE, CBZE and PMM.
+  PMM selects U-mode pointer masking, WARL {00, 10, 11} (o_mmu_pm_mode).
   FIOM is stored only (see riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero
   below M, and CBCFE and CBIE gate cbo.clean/cbo.flush and cbo.inval. CBIE is
   WARL {00, 01, 11}: a write of the reserved 10 stores 00. With
@@ -65,14 +66,15 @@
   Selected, uninhibited event inputs are sampled and added on the following
   cycle. Counter writes replace the count and discard the pending increment.
   Machine counters and selectors 11..31 read zero and ignore writes; their
-  user aliases are absent. RV32 high-half counter addresses are illegal at
-  every privilege. mcounteren/scounteren implement CY/TM/IR/HPM3..10 and
-  reset to 0x7ff.
+  user aliases read zero in M-mode and trap below M-mode. RV32 high-half
+  counter addresses are illegal at every privilege. mcounteren/scounteren
+  implement CY/TM/IR/HPM3..10 and reset to 0x7ff.
 
   Three counters also accept a translation event, selected by a value above
   the counter numbers so that "event N selects counter N" stays unambiguous
   for the DT's raw-event map: mhpmevent8=16 counts page-walker busy cycles,
-  mhpmevent7=17 counts SFENCE.VMA TLB invalidates, and mhpmevent4=18 counts
+  mhpmevent7=17 counts SFENCE.VMA and SINVAL.VMA TLB invalidates, and
+  mhpmevent4=18 counts
   CSR-requested translation-state flushes (a satp access, or an MPRV/MPP
   change), including those that preserve ASID-tagged TLB entries.
   Three more count cache refills: mhpmevent3=19 counts L1I refills (one per
@@ -162,7 +164,7 @@ module csr_file #(
     input logic       i_l1d_miss = '0,
     input logic       i_sq_full_stall = '0,
     // Translation events: the page walker is busy this cycle, and an
-    // SFENCE.VMA TLB invalidate begins (one pulse per invalidate window).
+    // SFENCE.VMA or SINVAL.VMA TLB invalidate begins (one pulse per invalidate window).
     // CSR-requested invalidates are counted from o_csr_translation_flush_req.
     input logic       i_walk_busy = '0,
     input logic       i_sfence_tlb_flush = '0,
@@ -286,8 +288,8 @@ module csr_file #(
     //   o_wfi_illegal: U, or S with TW set.
     //   o_priv_is_u: current privilege is U, for CSRs requiring S.
     output logic [riscv_pkg::CounterMaskBits-1:0] o_counter_blocked,
-    // Sstc: stimecmp access in S requires menvcfg.STCE. M is never blocked;
-    // U fails the generic needs-S check. Sampled at allocation as above.
+    // Sstc: stimecmp access in S requires menvcfg.STCE and mcounteren.TM. M is
+    // never blocked; U fails the generic needs-S check. Sampled at allocation.
     output logic o_stimecmp_blocked,
     output logic o_sret_illegal,
     output logic o_sfence_illegal,
@@ -314,6 +316,13 @@ module csr_file #(
     output logic o_mmu_sum,
     output logic o_mmu_mxr,
     output logic o_mmu_eff_priv_u,  // effective data privilege == U
+    // Ssnpm: the pointer-masking mode of data accesses (riscv_pkg "Pointer
+    // masking"): senvcfg.PMM at effective data privilege U with mstatus.MXR
+    // clear, else off. A senvcfg write forwards its legalized PMM on the
+    // commit edge, before a younger store can allocate an early address.
+    // The write holds ID until it commits. MXR, MPRV and privilege changes
+    // end in a full flush.
+    output riscv_pkg::pm_mode_t o_mmu_pm_mode,
     output logic [riscv_pkg::AsidBits-1:0] o_mmu_asid,  // satp.ASID
     // Fetch uses current privilege; MPRV affects data only. These outputs
     // decode from fetch_priv_q, which equals priv_q on every cycle. There
@@ -342,9 +351,16 @@ module csr_file #(
     // vl/vtype update of a committed vsetvli/vsetivli/vsetvl, from the
     // registered commit bus (VECTOR). It also clears vstart and sets VS Dirty.
     input riscv_pkg::vcfg_commit_t i_vcfg_commit = '0,
-    // A vector arithmetic instruction retired (registered commit bus): it
-    // clears vstart and sets VS Dirty.
+    // A vector arithmetic or non-faulting vector load instruction retired
+    // (registered commit bus): it clears vstart and sets VS Dirty.
     input logic i_varith_commit = 1'b0,
+    // A non-faulting vector store retired (registered commit bus): clears
+    // vstart, and sets VS Dirty only when vstart was non-zero.
+    input logic i_vstore_commit = 1'b0,
+    // Synchronous vector load/store fault vstart update, held by the head unit
+    // until the synchronous exception trap takes.
+    input logic i_vmem_fault_vstart_valid = 1'b0,
+    input logic [15:0] i_vmem_fault_vstart = '0,
     // The architectural vl, vtype ({vill, vtype[7:0]}) and vstart, for the
     // vector unit (zero without it)
     output logic [15:0] o_vec_vl,
@@ -681,6 +697,7 @@ module csr_file #(
   logic menvcfg_cbcfe, senvcfg_cbcfe;
   logic [1:0] menvcfg_cbie, senvcfg_cbie;
   logic menvcfg_pbmte;
+  logic [1:0] senvcfg_pmm;
   logic [XLEN-1:0] menvcfg, senvcfg;  // Readback views of the stored fields
   assign menvcfg = (XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit) |
       (XLEN'(menvcfg_pbmte) << riscv_pkg::MenvcfgPbmteBit) |
@@ -688,7 +705,8 @@ module csr_file #(
       (XLEN'(menvcfg_cbcfe) << riscv_pkg::EnvcfgCbcfeBit) |
       (XLEN'(menvcfg_cbie) << riscv_pkg::EnvcfgCbieLsb) |
       (XLEN'(menvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
-  assign senvcfg = (XLEN'(senvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
+  assign senvcfg = (XLEN'(senvcfg_pmm) << riscv_pkg::EnvcfgPmmLsb) |
+      (XLEN'(senvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
       (XLEN'(senvcfg_cbcfe) << riscv_pkg::EnvcfgCbcfeBit) |
       (XLEN'(senvcfg_cbie) << riscv_pkg::EnvcfgCbieLsb) |
       (XLEN'(senvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
@@ -707,7 +725,7 @@ module csr_file #(
   assign o_scounteren = scounteren_q;
   assign o_counter_blocked = gate_priv_is_u ? ~(mcounteren_q & scounteren_q) :
       gate_priv_is_s ? ~mcounteren_q : '0;
-  assign o_stimecmp_blocked = gate_priv_is_s && !menvcfg_stce;
+  assign o_stimecmp_blocked = gate_priv_is_s && (!menvcfg_stce || !mcounteren_q[1]);
   assign o_cbo_zero_illegal = (gate_priv_is_s && !menvcfg_cbze) ||
       (gate_priv_is_u && !(menvcfg_cbze && senvcfg_cbze));
   assign o_cbo_cf_illegal = (gate_priv_is_s && !menvcfg_cbcfe) ||
@@ -1720,7 +1738,12 @@ module csr_file #(
     // a read-only access (set/clear with x0 or a zero immediate), so such an
     // access neither writes nor dirties VS. The reorder buffer makes writes
     // to the read-only vl, vtype and vlenb illegal at allocation.
-    assign vec_csr_write  = storage_csr_write && vec_addr_writable && (i_csr_op[1:0] != 2'b00);
+    logic vmem_fault_vstart_write;
+    assign vec_csr_write = storage_csr_write && vec_addr_writable && (i_csr_op[1:0] != 2'b00);
+    // Only a synchronous M/S-mode exception entry (cause MSB 0, not Debug Mode)
+    // writes a faulting vector memory op's vstart and dirties VS.
+    assign vmem_fault_vstart_write = i_vmem_fault_vstart_valid &&
+        (i_trap_save_m || i_trap_save_s) && !i_trap_cause[XLEN-1];
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         vstart_q <= '0;
@@ -1738,8 +1761,10 @@ module csr_file #(
             ((vl_q > VlBits'(i_vcfg_commit.vlmax)) ? VlBits'(i_vcfg_commit.vlmax) : vl_q) :
             VlBits'(i_vcfg_commit.vl);
         vstart_q <= '0;
-      end else if (i_varith_commit) begin
+      end else if (i_varith_commit || i_vstore_commit) begin
         vstart_q <= '0;
+      end else if (vmem_fault_vstart_write) begin
+        vstart_q <= i_vmem_fault_vstart[VstartBits-1:0];
       end else if (vec_csr_write) begin
         unique case (i_csr_address)
           riscv_pkg::CsrVstart: vstart_q <= vec_new_value[VstartBits-1:0];
@@ -1755,14 +1780,17 @@ module csr_file #(
     end
     // VS is WARL with all four values storable. An mstatus or sstatus write
     // sets it; a vector CSR write sets Dirty. Both cannot happen together,
-    // because CSR instructions commit one at a time.
+    // because CSR instructions commit one at a time. A retiring vector store
+    // dirties VS only when it clears a non-zero vstart.
     always_ff @(posedge i_clk) begin
       if (i_rst) mstatus_vs <= FsOff;
       else if (status_csr_write && (i_csr_address == riscv_pkg::CsrMstatus))
         mstatus_vs <= mstatus_new_value[riscv_pkg::MstatusVsLo+:2];
       else if (status_csr_write && (i_csr_address == riscv_pkg::CsrSstatus))
         mstatus_vs <= sstatus_new_value[riscv_pkg::MstatusVsLo+:2];
-      else if (vec_csr_write || i_vcfg_commit.valid || i_varith_commit) mstatus_vs <= FsDirty;
+      else if (vec_csr_write || i_vcfg_commit.valid || i_varith_commit ||
+               (i_vstore_commit && (vstart_q != '0)) || vmem_fault_vstart_write)
+        mstatus_vs <= FsDirty;
     end
   end else begin : gen_no_vector_csrs
     assign vec_read_value = '0;
@@ -1824,6 +1852,7 @@ module csr_file #(
       senvcfg_cbcfe              <= 1'b0;
       senvcfg_cbie               <= 2'b00;
       senvcfg_fiom               <= 1'b0;
+      senvcfg_pmm                <= riscv_pkg::EnvcfgPmmOff;
       stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       perf_counter_select        <= '0;
       perf_cache_previous_select <= 1'b0;
@@ -1865,10 +1894,11 @@ module csr_file #(
           mideleg_lcofi <= mideleg_new_value[riscv_pkg::MieLcofBit];
         end
         // mip: the machine bits are read-only (input reflections); the
-        // supervisor pending bits are the M-mode software-injection state.
+        // supervisor pending bits are the M-mode software-injection state,
+        // except STIP is read-only while menvcfg.STCE selects stimecmp.
         riscv_pkg::CsrMip: begin
           mip_ssip <= mip_new_value[riscv_pkg::MieSsiBit];
-          mip_stip <= mip_new_value[riscv_pkg::MieStiBit];
+          if (!menvcfg_stce) mip_stip <= mip_new_value[riscv_pkg::MieStiBit];
           mip_seip <= mip_new_value[riscv_pkg::MieSeiBit];
         end
         // sip: SSIP is the only S-writable pending bit, and only where
@@ -1899,7 +1929,7 @@ module csr_file #(
           end
         end
         // menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE, senvcfg
-        // FIOM, CBIE, CBCFE and CBZE (the rest stays WARL-0); stimecmp is the
+        // FIOM, CBIE, CBCFE, CBZE and PMM (the rest stays WARL-0); stimecmp is the
         // full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
           menvcfg_stce  <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
@@ -1910,10 +1940,13 @@ module csr_file #(
           menvcfg_fiom  <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
-          senvcfg_cbze  <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
+          senvcfg_cbze <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
           senvcfg_cbcfe <= senvcfg_new_value[riscv_pkg::EnvcfgCbcfeBit];
-          senvcfg_cbie  <= cbie_warl(senvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
-          senvcfg_fiom  <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+          senvcfg_cbie <= cbie_warl(senvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
+          senvcfg_fiom <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+          senvcfg_pmm <= riscv_pkg::pmm_warl(
+              senvcfg_new_value[riscv_pkg::EnvcfgPmmLsb+:2], senvcfg_pmm
+          );
         end
         riscv_pkg::CsrStimecmp: stimecmp <= stimecmp_new_value;
         // Without counters the profiling state keeps its reset value.
@@ -2089,6 +2122,7 @@ module csr_file #(
   assign eff_data_priv = mstatus_mprv ? mstatus_mpp : priv_q;
 
   logic translation_active_q, mmu_sum_q, mmu_mxr_q, mmu_eff_priv_u_q;
+  riscv_pkg::pm_mode_t mmu_pm_mode_q;
   logic [SatpAsidBits-1:0] mmu_asid_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -2096,12 +2130,20 @@ module csr_file #(
       mmu_sum_q <= 1'b0;
       mmu_mxr_q <= 1'b0;
       mmu_eff_priv_u_q <= 1'b0;
+      mmu_pm_mode_q <= riscv_pkg::EnvcfgPmmOff;
       mmu_asid_q <= '0;
     end else begin
       translation_active_q <= satp_mode_sv39 && (eff_data_priv != riscv_pkg::PrivM);
       mmu_sum_q <= mstatus_sum;
       mmu_mxr_q <= mstatus_mxr;
       mmu_eff_priv_u_q <= (eff_data_priv == riscv_pkg::PrivU);
+      // Ordinary CSR serialization can release store allocation on this
+      // edge. Capture a written PMM together with its architectural field.
+      mmu_pm_mode_q <= ((eff_data_priv == riscv_pkg::PrivU) && !mstatus_mxr) ?
+          ((storage_csr_write && (i_csr_address == riscv_pkg::CsrSenvcfg)) ?
+            riscv_pkg::pmm_warl(
+          senvcfg_new_value[riscv_pkg::EnvcfgPmmLsb+:2], senvcfg_pmm
+      ) : senvcfg_pmm) : riscv_pkg::EnvcfgPmmOff;
       mmu_asid_q <= satp_asid;
     end
   end
@@ -2109,6 +2151,7 @@ module csr_file #(
   assign o_mmu_sum = mmu_sum_q;
   assign o_mmu_mxr = mmu_mxr_q;
   assign o_mmu_eff_priv_u = mmu_eff_priv_u_q;
+  assign o_mmu_pm_mode = mmu_pm_mode_q;
   assign o_mmu_asid = mmu_asid_q;
   // Fetch uses the ASID register itself: the refetch after a satp write
   // starts after the register has updated, like fetch_translation_active_q.
@@ -2480,6 +2523,8 @@ module csr_file #(
       (i_csr_op[1:0] != 2'b00) &&
       (i_csr_address == riscv_pkg::CsrVstart || i_csr_address == riscv_pkg::CsrVxsat ||
        i_csr_address == riscv_pkg::CsrVxrm || i_csr_address == riscv_pkg::CsrVcsr);
+  wire f_vmem_fault_write = VECTOR && i_vmem_fault_vstart_valid &&
+      i_trap_taken && !i_trap_to_d && !i_trap_cause[XLEN-1];
   // The value a read of a vector CSR returns.
   wire [XLEN-1:0] f_vec_read =
       (i_csr_address == riscv_pkg::CsrVstart) ? XLEN'(vec_vstart) :
@@ -2598,6 +2643,11 @@ module csr_file #(
           assert (mip_seip == $past(csr_new_value[9]));
           assert (mip_stip == ($past(menvcfg_stce) ? $past(mip_stip) : $past(csr_new_value[5])));
         end
+        if ($past(storage_csr_write && i_csr_address == riscv_pkg::CsrMip)) begin
+          assert (mip_ssip == $past(csr_new_value[1]));
+          assert (mip_seip == $past(csr_new_value[9]));
+          assert (mip_stip == ($past(menvcfg_stce) ? $past(mip_stip) : $past(csr_new_value[5])));
+        end
       end
       cover (o_m_topei_claim);
       cover (o_s_topei_claim && priv_q == riscv_pkg::PrivS);
@@ -2611,9 +2661,13 @@ module csr_file #(
     assume (!(i_trap_taken && i_mret_taken));
     // A vector-config commit never meets a CSR instruction's write.
     assume (!(i_vcfg_commit.valid && i_csr_write_enable));
-    // Vector arithmetic and vector-config instructions retire one at a time,
-    // never beside a CSR instruction.
+    // Vector arithmetic, vector store and vector-config instructions retire
+    // one at a time, never beside a CSR instruction or a head-faulting vector
+    // memory op.
     assume (!(i_varith_commit && (i_csr_write_enable || i_vcfg_commit.valid)));
+    assume (!(i_vstore_commit && (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit)));
+    assume (!(i_vmem_fault_vstart_valid &&
+              (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit || i_vstore_commit)));
     // vl and VLMAX are element counts, at most VLEN (SEW 8, LMUL 8).
     assume (i_vcfg_commit.vlmax <= 16'(VLEN) && i_vcfg_commit.vl <= i_vcfg_commit.vlmax);
     assume (!(i_trap_taken && i_sret_taken));
@@ -2659,6 +2713,16 @@ module csr_file #(
       p_priv_valid : assert (priv_q != 2'b10);
       // The fetch duplicate must equal architectural privilege.
       p_fetch_priv_replica_exact : assert (fetch_priv_q == priv_q);
+      // Ssnpm: PMM includes the preceding edge's CSR write. Privilege and
+      // MXR follow the data-state pipeline, whose transitions flush issue.
+      p_pm_mode_exact :
+      assert (o_mmu_pm_mode == ((($past(
+          mstatus_mprv ? mstatus_mpp : priv_q
+      ) == riscv_pkg::PrivU) && !$past(
+          mstatus_mxr
+      )) ? senvcfg_pmm : 2'b00));
+      p_pm_mode_not_reserved : assert (o_mmu_pm_mode != 2'b01);
+      p_pmm_not_reserved : assert (senvcfg_pmm != 2'b01);
 
       // Access privilege is enforced by the ROB, not by this standalone file.
       // A legal envcfg write cannot change permission in the executing mode:
@@ -2848,8 +2912,11 @@ module csr_file #(
       // register's old value (computed here independently of the RTL's RMW),
       // every other cycle keeps the value, and an access whose csr_op[1:0] is
       // 00 (no write intent) never changes it.
-      if ($past(VECTOR && (i_vcfg_commit.valid || i_varith_commit))) begin
+      if ($past(VECTOR && (i_vcfg_commit.valid || i_varith_commit || i_vstore_commit))) begin
         p_vstart_vcfg_clear : assert (vec_vstart == '0);
+      end else if ($past(f_vmem_fault_write)) begin
+        p_vstart_vmem_fault_write :
+        assert (vec_vstart == $past(i_vmem_fault_vstart[VstartBits-1:0]));
       end else if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVstart)) begin
         p_vstart_write : assert (vec_vstart == $past(f_vstart_next[VstartBits-1:0]));
       end else begin
@@ -2869,7 +2936,10 @@ module csr_file #(
       end else begin
         p_vxrm_stable : assert (vec_vxrm == $past(vec_vxrm));
       end
-      if ($past(i_csr_op[1:0] == 2'b00 && !i_vcfg_commit.valid && !i_varith_commit)) begin
+      if ($past(
+              i_csr_op[1:0] == 2'b00 && !i_vcfg_commit.valid && !i_varith_commit &&
+              !i_vstore_commit && !f_vmem_fault_write
+          )) begin
         p_vec_read_only_access :
         assert ({vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs} == $past(
             {vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs}
@@ -2878,9 +2948,14 @@ module csr_file #(
       // The RTL's write enable equals the one derived from the inputs.
       p_vec_write_enable : assert (vec_csr_write == f_vec_write);
 
-      // A vector CSR write sets VS Dirty; a status CSR write installs VS;
-      // nothing else, including a read-only vector CSR access, changes it.
-      if ($past(vec_csr_write || (VECTOR && (i_vcfg_commit.valid || i_varith_commit)))) begin
+      // A vector CSR write or synchronous vector memory fault sets VS Dirty; a
+      // status CSR write installs VS; nothing else, including a read-only
+      // vector CSR access or a retiring vector store with vstart == 0, changes it.
+      if ($past(
+              vec_csr_write || f_vmem_fault_write ||
+              (VECTOR && (i_vcfg_commit.valid || i_varith_commit ||
+                          (i_vstore_commit && (vec_vstart != '0))))
+          )) begin
         p_vs_dirty_set : assert (mstatus_vs == FsDirty);
       end else if ($past(
               status_csr_write && (i_csr_address == riscv_pkg::CsrMstatus ||
@@ -3045,6 +3120,11 @@ module csr_file #(
       p_wrs_nto_gate_export :
       assert (o_wrs_nto_illegal == ((priv_q != riscv_pkg::PrivM) &&
                                     mstatus[riscv_pkg::MstatusTwBit]));
+      // Sstc stimecmp legality in S: requires both menvcfg.STCE and mcounteren.TM.
+      p_stimecmp_gate_export :
+      assert (o_stimecmp_blocked ==
+              ((priv_q == riscv_pkg::PrivS) &&
+               (!menvcfg[riscv_pkg::MenvcfgStceBit] || !o_mcounteren[1])));
 
       // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);
@@ -3150,6 +3230,14 @@ module csr_file #(
         cover (f_past_valid && $past(
             !i_rst && f_vec_write && i_csr_address == riscv_pkg::CsrVstart
         ));
+        cover_vstart_vmem_fault_write :
+        cover (f_past_valid && $past(
+            !i_rst && f_vmem_fault_write && i_vmem_fault_vstart[VstartBits-1:0] != '0
+        ) && vec_vstart != '0 && vs_dirty);
+        cover_vstore_preserves_vs_clean :
+        cover (f_past_valid && $past(
+            !i_rst && i_vstore_commit && vec_vstart == '0 && mstatus_vs == 2'b10
+        ) && mstatus_vs == 2'b10);
       end
     end
   end
@@ -3446,6 +3534,14 @@ module csr_file #(
   logic [$bits(senvcfg_cbcfe)-1:0] f_old_senvcfg_cbcfe;
   logic [$bits(senvcfg_cbie)-1:0] f_old_senvcfg_cbie;
   logic [$bits(senvcfg_fiom)-1:0] f_old_senvcfg_fiom;
+  logic [1:0] f_old_senvcfg_pmm;
+  logic f_old_pm_enable;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_old_pm_enable <= 1'b0;
+    else
+      f_old_pm_enable <= !mstatus_mxr &&
+        (mstatus_mprv ? (mstatus_mpp == 2'b00) : (priv_q == 2'b00));
+  end
   // Reference CBIE WARL: reserved 10 stores 00; 11 stores 01 when inval
   // always executes as flush.
   function automatic logic [1:0] f_cbie_ref(input logic [1:0] written);
@@ -3522,6 +3618,7 @@ module csr_file #(
     f_old_senvcfg_cbcfe <= senvcfg_cbcfe;
     f_old_senvcfg_cbie <= senvcfg_cbie;
     f_old_senvcfg_fiom <= senvcfg_fiom;
+    f_old_senvcfg_pmm <= senvcfg_pmm;
     f_old_sepc <= sepc;
     f_old_sscratch <= sscratch;
     f_old_stimecmp <= stimecmp;
@@ -3566,6 +3663,7 @@ module csr_file #(
       f_old_senvcfg_cbcfe              <= 1'b0;
       f_old_senvcfg_cbie               <= 2'b00;
       f_old_senvcfg_fiom               <= 1'b0;
+      f_old_senvcfg_pmm                <= 2'b00;
       f_old_stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       f_old_perf_counter_select        <= '0;
       f_old_perf_cache_previous_select <= 1'b0;
@@ -3608,10 +3706,11 @@ module csr_file #(
           f_old_mideleg_lcofi <= csr_new_value[riscv_pkg::MieLcofBit];
         end
         // mip: the machine bits are read-only (input reflections); the
-        // supervisor pending bits are the M-mode software-injection state.
+        // supervisor pending bits are the M-mode software-injection state,
+        // except STIP is read-only while menvcfg.STCE selects stimecmp.
         riscv_pkg::CsrMip: begin
           f_old_mip_ssip <= csr_new_value[riscv_pkg::MieSsiBit];
-          f_old_mip_stip <= csr_new_value[riscv_pkg::MieStiBit];
+          if (!menvcfg_stce) f_old_mip_stip <= csr_new_value[riscv_pkg::MieStiBit];
           f_old_mip_seip <= csr_new_value[riscv_pkg::MieSeiBit];
         end
         // sip: SSIP is the only S-writable pending bit, and only where
@@ -3647,7 +3746,7 @@ module csr_file #(
           end
         end
         // menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE, senvcfg
-        // FIOM, CBIE, CBCFE and CBZE (the rest stays WARL-0); stimecmp is the
+        // FIOM, CBIE, CBCFE, CBZE and PMM (the rest stays WARL-0); stimecmp is the
         // full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
           f_old_menvcfg_stce  <= csr_new_value[riscv_pkg::MenvcfgStceBit];
@@ -3662,6 +3761,12 @@ module csr_file #(
           f_old_senvcfg_cbcfe <= csr_new_value[6];
           f_old_senvcfg_cbie  <= f_cbie_ref(csr_new_value[5:4]);
           f_old_senvcfg_fiom  <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
+          // PMM (bits 33:32): 00, and 10 / 11 where PMLEN 7 / 16 is offered,
+          // are stored; 01 and an unoffered PMLEN keep the old value.
+          if ((csr_new_value[33:32] == 2'b00) ||
+              (riscv_pkg::SsnpmPmlen7 && (csr_new_value[33:32] == 2'b10)) ||
+              (riscv_pkg::SsnpmPmlen16 && (csr_new_value[33:32] == 2'b11)))
+            f_old_senvcfg_pmm <= csr_new_value[33:32];
         end
         riscv_pkg::CsrStimecmp: f_old_stimecmp <= csr_new_value;
         // Without counters the profiling state keeps its reset value.
@@ -3805,6 +3910,8 @@ module csr_file #(
       assert (senvcfg_cbze == f_old_senvcfg_cbze);
       assert ({senvcfg_cbcfe, senvcfg_cbie} == {f_old_senvcfg_cbcfe, f_old_senvcfg_cbie});
       assert (senvcfg_fiom == f_old_senvcfg_fiom);
+      assert (senvcfg_pmm == f_old_senvcfg_pmm);
+      assert (o_mmu_pm_mode == (f_old_pm_enable ? f_old_senvcfg_pmm : 2'b00));
       assert (sepc == f_old_sepc);
       assert (sscratch == f_old_sscratch);
       assert (stimecmp == f_old_stimecmp);
