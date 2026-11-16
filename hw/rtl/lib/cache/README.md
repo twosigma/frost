@@ -495,8 +495,9 @@ controller reads the endpoint's idle state for acceptance. The lookup address,
 selected read slot and grant payload have no reset and capture on every Idle
 cycle, because nothing reads them until a selection leaves Idle. The lookup
 address is prepared for both values of the store head's readiness, which
-selects between them last; in that readiness, the head's write-back address
-comparison joins the terms formed from registered state last. In each
+selects between them last; in that readiness, the gather hold, endpoint 0's
+write-back credit and the head's write-back address comparison join the terms
+read directly from registers in one final step. In each
 prepared address the read address joins last: the priority conditions above a
 read are prepared separately, so read eligibility controls that selection
 without passing through the non-read address priority chain. Read eligibility

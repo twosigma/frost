@@ -1275,15 +1275,17 @@ module coherence_l1d #(
       (pair_open && store_count == 3'd3 && gather_pair_wait[store_next_index]);
   // A lower zero record that is the only record waits for its twin, which
   // allocates on the next cycle. A gathering head waits for its block. The
-  // terms formed from registered state combine first, and the head's
-  // write-back address comparison (pending_blocked) applies last.
+  // terms read directly from registers combine first; the gather hold,
+  // endpoint 0's write-back credit and the head's write-back address
+  // comparison (pending_blocked) apply in one final step.
   (* keep = "true" *) logic store_head_ready_early;
+  (* keep = "true" *) logic store_head_miss_free;
   assign store_head_ready_early = pending_q && !look_priority_q &&
-      !store_acquired[store_head_index] && !gather_hold_head &&
-      !(store_read_turn_q && read_waiting_q) &&
-      !(store_twin_pending && store_count == 3'd1) && !twin_owed &&
-      (!pending_miss_q || (!request_live && ep0_wb_ok && !store_same_line_q));
-  assign store_head_ready = store_head_ready_early && !pending_blocked;
+      !store_acquired[store_head_index] && !(store_read_turn_q && read_waiting_q) &&
+      !(store_twin_pending && store_count == 3'd1) && !twin_owed;
+  assign store_head_miss_free = !request_live && !store_same_line_q;
+  assign store_head_ready = store_head_ready_early && !gather_hold_head &&
+      (!pending_miss_q || (store_head_miss_free && ep0_wb_ok)) && !pending_blocked;
   // SC readiness from everything but the grant selection, which applies last.
   (* keep = "true" *) logic sc_ready_early;
   assign sc_ready_early = active && !atomic_q && !pending_q && !request_live &&
