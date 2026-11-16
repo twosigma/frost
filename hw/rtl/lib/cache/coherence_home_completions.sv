@@ -150,7 +150,7 @@ module coherence_home_completions #(
   // since their grant installs after the result. A prefetch changes nothing
   // a client sees, so it neither waits for nor orders other requests.
   logic [SLOTS-1:0] handed_q;
-  logic [SLOTS-1:0] parked_q, ready_q, wake_error_q, counted_q;
+  logic [SLOTS-1:0] parked_q, parked_next, ready_q, wake_error_q, counted_q;
   // nofill_q[slot], while the slot is live: it holds a prefetch, and a
   // non-prefetch request for its block was live at the prefetch's admission
   // or was admitted after it. The work carries the flag, and the engine takes
@@ -181,6 +181,9 @@ module coherence_home_completions #(
   logic [  SlotBits-1:0] free_slot_index;
   logic [ResultBits-1:0] free_buffer_index;
   logic work_selected_q, work_found;
+  // The selected slot's parked state is captured with the work selection,
+  // including a park on that edge. Dispatch reads this register directly.
+  logic work_parked_q;
   logic [SLOTS-1:0] work_eligible;
   logic [SlotBits-1:0] work_slot_q, work_pick;
   // Work rotates over positions: one per main slot, then one for all the
@@ -371,7 +374,7 @@ module coherence_home_completions #(
   wire request_legal = request_q_legal && request_opcode_legal && incoming.q.epoch == 1'b0 &&
       (incoming.q.src == 2'd0 || incoming.q.src >= 2'd2) && incoming.addr[4:0] == 0;
   assign o_d_ready = !i_fatal_stop && !duplicate && request_legal && free_slot;
-  assign o_work_valid = !i_fatal_stop && work_selected_q && !parked_q[work_slot_q];
+  assign o_work_valid = !i_fatal_stop && work_selected_q && !work_parked_q;
   assign o_work = work[work_slot_q];
   assign o_work_tid = 6'(work_slot_q);
   assign o_work_buffer = work_buffer_q;
@@ -745,6 +748,16 @@ module coherence_home_completions #(
     end
   end
 
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_parked_next
+    assign parked_next[slot] = forwarded[slot] ? 1'b0 :
+        (i_retry_valid && i_retry_tid == 6'(slot)) ? i_retry_park :
+        i_wake[slot] ? 1'b0 : i_park[slot] ? 1'b1 : parked_q[slot];
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) work_parked_q <= 1'b0;
+    else work_parked_q <= parked_next[work_selected_q ? work_slot_q : work_pick];
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       parked_q <= '0;
@@ -770,6 +783,7 @@ module coherence_home_completions #(
       end
       for (int index = 0; index < Buffers; index++) buffer_q[index] <= '0;
     end else begin
+      parked_q <= parked_next;
       if (!work_selected_q && work_found && free_buffer) begin
         work_selected_q <= 1'b1;
         work_slot_q <= work_pick;
@@ -830,12 +844,8 @@ module coherence_home_completions #(
         pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
             (i_u_ready ? accepted_clear_if_release : accepted_clear_if_hold) :
             (i_u_ready ? clear_if_release[slot] : clear_if_hold[slot]);
-        if (i_park[slot]) parked_q[slot] <= 1'b1;
-        if (i_wake[slot]) parked_q[slot] <= 1'b0;
         if (i_pin_valid && i_pin_tid == 6'(slot)) way_q[slot] <= i_pin_way;
-        if (i_retry_valid && i_retry_tid == 6'(slot)) parked_q[slot] <= i_retry_park;
         if (forwarded[slot]) begin
-          parked_q[slot] <= 1'b0;
           buffer_index_q[slot] <= BufferBits'(ForwardBuffer);
           way_q[slot] <= i_forward_way;
         end
@@ -1021,6 +1031,7 @@ module coherence_home_completions #(
         assert (!buffer_live_q[BufferBits'(work_buffer_q)] && !parked_q[work_slot_q]);
         assert (int'(work_buffer_q) < RESULT_SLOTS);
       end
+      if (work_selected_q) assert (work_parked_q == parked_q[work_slot_q]);
       // A forward names one parked GetS, LoadReserved or GetM that holds no
       // buffer, pin or result and has no other event on the edge; the slot
       // that owns the forward buffer holds its pin and has no engine.
@@ -1260,5 +1271,45 @@ module coherence_home_completions #(
         cover (accept_grant && PrefetchSlot[grant_slot_q]);
   end
 `endif
+`endif
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+  // Reference parking and selection use the slot table on the dispatch
+  // cycle. All event inputs remain free, including simultaneous events.
+  logic f_capture_reset_seen_q = 1'b0;
+  logic [SLOTS-1:0] f_capture_parked_q;
+  logic f_capture_selected_q;
+  logic [SlotBits-1:0] f_capture_slot_q;
+  wire f_capture_valid = !i_fatal_stop && f_capture_selected_q &&
+      !f_capture_parked_q[f_capture_slot_q];
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_capture_reset_seen_q <= 1'b1;
+      f_capture_parked_q <= '0;
+      f_capture_selected_q <= 1'b0;
+      f_capture_slot_q <= '0;
+    end else begin
+      if (!f_capture_selected_q && work_found && free_buffer) begin
+        f_capture_selected_q <= 1'b1;
+        f_capture_slot_q <= work_pick;
+      end
+      if (f_capture_selected_q && f_capture_parked_q[f_capture_slot_q])
+        f_capture_selected_q <= 1'b0;
+      if (f_capture_valid && i_work_ready) f_capture_selected_q <= 1'b0;
+      for (int slot = 0; slot < SLOTS; slot++) begin
+        if (i_park[slot]) f_capture_parked_q[slot] <= 1'b1;
+        if (i_wake[slot]) f_capture_parked_q[slot] <= 1'b0;
+        if (i_retry_valid && i_retry_tid == 6'(slot)) f_capture_parked_q[slot] <= i_retry_park;
+        if (forwarded[slot]) f_capture_parked_q[slot] <= 1'b0;
+      end
+    end
+    if (f_capture_reset_seen_q && !i_rst) begin
+      p_capture_parked : assert (parked_q == f_capture_parked_q);
+      p_capture_selection : assert (work_selected_q == f_capture_selected_q);
+      p_capture_slot : assert (work_slot_q == f_capture_slot_q);
+      p_capture_dispatch : assert (o_work_valid == f_capture_valid);
+      if (work_selected_q)
+        p_capture_selected_park : assert (work_parked_q == f_capture_parked_q[f_capture_slot_q]);
+    end
+  end
 `endif
 endmodule

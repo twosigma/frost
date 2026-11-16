@@ -841,8 +841,10 @@ eligible work. Both classes compute their circular priorities independently
 before selecting an encoded winner. The prefetch slots share one place in
 that rotation, after the other slots; it offers a prefetch slot chosen in
 rotation among them on the previous cycle, leaving out the slot being
-dispatched. Work selection uses registered parking
-state. A selection captured with a simultaneous fill park is canceled before
+dispatched. Work selection captures the selected slot's next parking state
+in a register beside its slot index. Dispatch reads that register, which
+follows the slot's parking updates while the selection is held. A selection
+captured with a simultaneous fill park is canceled before
 allocating an engine or image credit. The tag decision carries its captured
 query address through conflict and replacement checks. Engine address pins
 exclude valid victim lines. An invalid way's stored tag does not create an
