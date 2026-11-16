@@ -2811,8 +2811,9 @@ module coherence_l1d #(
   // settles last. idle_read_turn is the Idle turn that a found read takes: no
   // probe, twin, grant, SC, atomic, store or look-ahead record takes it first,
   // maintenance does not hold the turn, and a credited read turn is not
-  // cancelled. The found output then selects at the registers, after the
-  // priority, as it does for the lookup address.
+  // cancelled. The found output then selects after the priority, as it does
+  // for the lookup address: at the operation register, and as the controller's
+  // last assignment to the phase.
   (* keep = "true" *) wire idle_read_turn;
   assign idle_read_turn = active && phase_q == Idle &&
       ((lookup_read_turn && !prefetch_cancel) || lookup_read_enable);
@@ -2874,9 +2875,8 @@ module coherence_l1d #(
       endcase
     end
   end
-  // A found read takes ReadOp, whose encoding is zero, and Lookup, whose only
-  // set bit is bit 0: the found output reaches no other phase bit.
-  wire [3:0] operation_next, idle_phase_next;
+  // A found read takes ReadOp, whose encoding is zero.
+  wire [3:0] operation_next;
   for (genvar bit_index = 0; bit_index < 4; bit_index++) begin : gen_operation_select
 `ifdef FROST_XILINX_PRIMS
     (* dont_touch = "true" *) LUT3 #(.INIT(8'h2a)) u_select (
@@ -2890,17 +2890,6 @@ module coherence_l1d #(
         operation_rest[bit_index] && !(idle_read_turn && rd_candidate);
 `endif
   end
-`ifdef FROST_XILINX_PRIMS
-  (* dont_touch = "true" *) LUT3 #(.INIT(8'hea)) u_idle_phase_select (
-      .I0(idle_phase_rest[0]),
-      .I1(idle_read_turn),
-      .I2(rd_candidate),
-      .O(idle_phase_next[0])
-  );
-`else
-  assign idle_phase_next[0] = idle_phase_rest[0] || (idle_read_turn && rd_candidate);
-`endif
-  assign idle_phase_next[3:1] = idle_phase_rest[3:1];
   always_ff @(posedge i_clk) begin
     if (i_rst) operation_q <= ReadOp;
     else operation_q <= operation_t'(operation_next);
@@ -2981,12 +2970,25 @@ module coherence_l1d #(
     end
     if (i_rst) reference_operation = ReadOp;
   end
-  // The controller takes the prepared phase only on an active Idle cycle
-  // without reset.
+  // Without reset, an active Idle cycle takes the prepared phase, or Lookup
+  // when the controller's last assignment applies a found read; that
+  // assignment applies on no other cycle.
+  logic [3:0] f_idle_phase;
+  assign f_idle_phase = idle_read_turn && rd_candidate ? Lookup : idle_phase_rest;
   always_comb
     p_idle_select_exact :
     assert ((i_rst ? ReadOp : operation_t'(operation_next)) == reference_operation &&
-        (i_rst || !active || phase_q != Idle || idle_phase_next == reference_idle_phase));
+        (i_rst || (active && phase_q == Idle ? f_idle_phase == reference_idle_phase :
+         !(idle_read_turn && rd_candidate))));
+  // The phase register itself: after an active Idle cycle without reset it
+  // holds the reference phase of that cycle.
+  logic f_idle_seen_q = 1'b0;
+  logic [3:0] f_idle_phase_q;
+  always_ff @(posedge i_clk) begin
+    f_idle_seen_q  <= !i_rst && active && phase_q == Idle;
+    f_idle_phase_q <= reference_idle_phase;
+    if (f_idle_seen_q) p_idle_phase_taken : assert (phase_q == f_idle_phase_q);
+  end
 `endif
   // The non-read address follows the controller's Idle priority. When a read
   // wins, its address replaces this value at the final selection, so its
@@ -3213,8 +3215,9 @@ module coherence_l1d #(
         case (phase_q)
           Idle: begin
             // The phase and the operation come from the prepared Idle
-            // selection above; the same priority sets the rest here.
-            phase_q <= phase_t'(idle_phase_next);
+            // selection above, and a found read's phase is applied last; the
+            // same priority sets the rest here.
+            phase_q <= phase_t'(idle_phase_rest);
             if (probe_capture && probe_in.opcode != coherence_pkg::CheckSC) begin
               reply_q <= '0;
               reply_q.tid <= probe_in.tid;
@@ -3581,6 +3584,10 @@ module coherence_l1d #(
           default: phase_q <= Idle;
         endcase
       end
+      // A read that the Idle selection finds enters Lookup. Its eligibility
+      // settles last, so it selects the phase after every other assignment;
+      // idle_read_turn holds only on an active Idle cycle.
+      if (idle_read_turn && rd_candidate) phase_q <= Lookup;
       // A pushed store that allocates record 0 sets holder zero's address,
       // applied last so the late push and combining terms select only the
       // final value (see block_zero_late).
