@@ -3208,14 +3208,18 @@ module cpu_ooo #(
     if (reset_seen_q && !i_rst) begin
       if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
+`else
         $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
+`endif
       if (lq_mem_request_valid && lq_mem_read_en)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: LQ read handoff overlapped held router request");
+`else
         $error("cpu_ooo: LQ read handoff overlapped held router request");
+`endif
       // A full flush already on its way (trap, xRET, FENCE-class) may overlap
       // the held request's staging cycle; that is where the router cancels
       // it. Commit-time recovery is in the router's flush only to match the
@@ -3224,49 +3228,61 @@ module cpu_ooo #(
       // ROB head.
       if (lq_mem_request_valid && commit_recovery_flush_after_head)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: commit recovery overlapped a held LQ router request");
+`else
         $error("cpu_ooo: commit recovery overlapped a held LQ router request");
+`endif
       if (lq_mem_request_valid && lq_router_flush_all &&
           (o_data_mem_read_enable || o_data_mem_cached_read_enable ||
            o_mmio_read_pulse || o_mmio_load_valid))
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: owner flush did not suppress held LQ read effects");
+`else
         $error("cpu_ooo: owner flush did not suppress held LQ read effects");
+`endif
       // Once sq_committed_empty is high, no older SQ or cached store can
       // still hold the write port, and device reads launch only at the ROB
       // head, so no AMO can be writing either.
       if (lq_mem_request_valid && sq_committed_empty &&
           (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: drained held LQ request remained write-blocked");
+`else
         $error("cpu_ooo: drained held LQ request remained write-blocked");
+`endif
       // Device-read interrupt shield (trap_unit.i_device_read_at_head): the
       // device read must never happen before the shield is up.
       if (o_mmio_read_pulse && !device_read_shield_q)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: MMIO read pulse fired without the device interrupt shield");
+`else
         $error("cpu_ooo: MMIO read pulse fired without the device interrupt shield");
+`endif
       // The hold must not lapse while the request is still parked. The first
       // pending cycle is exempt: that cycle is what raises the shield, and
       // the router cannot arm until the cycle after it is visible.
       if (lq_device_request_pending && device_request_pending_q && !device_read_shield_q &&
           !lq_router_flush_all && !router_flush_all_q)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: device request pending without the interrupt shield");
+`else
         $error("cpu_ooo: device request pending without the interrupt shield");
+`endif
       // An interrupt must never be taken inside the shielded window.
       // (trap_pending is the trap unit's exception input; exceptions stay
       // ungated by both shields, so only an interrupt take is a violation.)
       if (device_read_shield_q && trap_taken && !trap_pending)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: interrupt taken inside the device-read shield window");
+`else
         $error("cpu_ooo: interrupt taken inside the device-read shield window");
+`endif
     end
   end
 
@@ -3285,12 +3301,16 @@ module cpu_ooo #(
       device_shield_stuck_cnt <= device_shield_stuck_cnt + 1;
       if (device_shield_stuck_cnt == DeviceShieldWatchdogCycles)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: device-read interrupt shield held for %0d cycles (forward progress lost)",
+              DeviceShieldWatchdogCycles
+          );
+`else
+        $error("cpu_ooo: device-read interrupt shield held for %0d cycles (forward progress lost)",
+               DeviceShieldWatchdogCycles);
 `endif
-        $error(
-            "cpu_ooo: device-read interrupt shield held for %0d cycles (forward progress lost)",
-            DeviceShieldWatchdogCycles
-        );
     end
   end
   always @(posedge i_clk) begin
@@ -3300,12 +3320,16 @@ module cpu_ooo #(
       device_shield_drain_cnt <= device_shield_drain_cnt + 1;
       if (device_shield_drain_cnt == DeviceShieldDrainWatchdogCycles)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: device-read interrupt shield waited for older writes for %0d cycles",
+              DeviceShieldDrainWatchdogCycles
+          );
+`else
+        $error("cpu_ooo: device-read interrupt shield waited for older writes for %0d cycles",
+               DeviceShieldDrainWatchdogCycles);
 `endif
-        $error(
-            "cpu_ooo: device-read interrupt shield waited for older writes for %0d cycles",
-            DeviceShieldDrainWatchdogCycles
-        );
     end
   end
 `endif
@@ -4758,10 +4782,17 @@ module cpu_ooo #(
     if (i_rst) resume_pc_reference_armed_q <= 1'b1;
     if (resume_pc_reference_armed_q && !i_rst && interrupt_resume_pc != resume_pc_reference_q) begin
 `ifdef FROST_SIM_ASSERTIONS
-      assert (1'b0) else
-`endif
+      assert (1'b0)
+      else
+        $error(
+            "cpu_ooo: interrupt_resume_pc %08x != reference %08x",
+            interrupt_resume_pc,
+            resume_pc_reference_q
+        );
+`else
       $error("cpu_ooo: interrupt_resume_pc %08x != reference %08x", interrupt_resume_pc,
              resume_pc_reference_q);
+`endif
     end
   end
 `endif
@@ -4802,19 +4833,33 @@ module cpu_ooo #(
           rob_commit_comb.pc != next_pc_expected_q) begin
         next_pc_dump();
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: retired pc %016x, architectural next pc %016x",
+              rob_commit_comb.pc,
+              next_pc_expected_q
+          );
+`else
         $error("cpu_ooo: retired pc %016x, architectural next pc %016x", rob_commit_comb.pc,
                next_pc_expected_q);
+`endif
       end
       if (rob_commit_valid_raw && rob_commit_2_valid_raw &&
           rob_commit_comb_2.pc != rob_head_retired_next_pc) begin
         next_pc_dump();
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: slot-2 retired pc %016x, slot-1 next pc %016x",
+              rob_commit_comb_2.pc,
+              rob_head_retired_next_pc
+          );
+`else
         $error("cpu_ooo: slot-2 retired pc %016x, slot-1 next pc %016x", rob_commit_comb_2.pc,
                rob_head_retired_next_pc);
+`endif
       end
       if (rob_commit_valid_raw) begin
         next_pc_hist_pc_q <= {next_pc_hist_pc_q[NextPcHistory-2:0], rob_commit_comb.pc};
@@ -4917,49 +4962,75 @@ module cpu_ooo #(
     if (reset_seen_q && !i_rst) begin
       if (trap_or_xret_taken != (trap_taken || xret_taken)) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: combined trap/xRET take differs from individual takes");
+`else
         $error("cpu_ooo: combined trap/xRET take differs from individual takes");
+`endif
       end
       if (xret_taken &&
           (mret_start_is_dret ? csr_dpc : mret_start_is_sret ? csr_sepc : csr_mepc) !=
           (dret_taken ? csr_dpc : sret_taken ? csr_sepc : csr_mepc)) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: ROB head return flavor differs from the taken xRET");
+`else
         $error("cpu_ooo: ROB head return flavor differs from the taken xRET");
+`endif
       end
       if (trap_taken && trap_entry_target != trap_target) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: trap-entry target differs from its redirect");
+`else
         $error("cpu_ooo: trap-entry target differs from its redirect");
+`endif
       end
       if (rob_commit_valid_raw && rob_head_retired_next_pc != retired_next_pc(
               rob_commit_comb
           )) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: rob_head_retired_next_pc %08x != retired_next_pc(commit) %08x",
+              rob_head_retired_next_pc,
+              retired_next_pc(
+                  rob_commit_comb
+              )
+          );
+`else
         $error("cpu_ooo: rob_head_retired_next_pc %08x != retired_next_pc(commit) %08x",
                rob_head_retired_next_pc, retired_next_pc(rob_commit_comb));
+`endif
       end
       if (rob_commit_2_valid_raw && rob_head_next_retired_next_pc != retired_next_pc(
               rob_commit_comb_2
           )) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: rob_head_next_retired_next_pc %08x != retired_next_pc(commit_2) %08x",
+              rob_head_next_retired_next_pc,
+              retired_next_pc(
+                  rob_commit_comb_2
+              )
+          );
+`else
         $error("cpu_ooo: rob_head_next_retired_next_pc %08x != retired_next_pc(commit_2) %08x",
                rob_head_next_retired_next_pc, retired_next_pc(rob_commit_comb_2));
+`endif
       end
       // An xRET retires through the full flush that follows it, never on the
       // raw commit path, so the ROB's retired next-PC outputs need no xRET arm.
       if (rob_commit_valid_raw && rob_commit_comb.is_mret) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: an xRET retired on the raw commit path");
+`else
         $error("cpu_ooo: an xRET retired on the raw commit path");
+`endif
       end
     end
   end
@@ -5313,23 +5384,23 @@ module cpu_ooo #(
     vec_vtype_tracker #(
         .VLEN(VLEN)
     ) u_vtype_tracker (
-        .i_clk           (i_clk),
-        .i_rst           (i_rst),
-        .i_alloc         (vec_alloc),
-        .i_alloc_op      (from_id_to_ex.instruction_operation),
-        .i_alloc_imm     (from_id_to_ex.csr_address),
-        .i_ckpt_save     (checkpoint_save),
-        .i_ckpt_id       (checkpoint_id),
-        .i_restore       (checkpoint_restore),
-        .i_restore_id    (checkpoint_restore_id),
-        .i_flush_all     (flush_all),
-        .i_vcfg_in_flight(vec_vcfg_in_flight),
-        .i_arch_vtype    (csr_vec_vtype),
+        .i_clk                (i_clk),
+        .i_rst                (i_rst),
+        .i_alloc              (vec_alloc),
+        .i_alloc_op           (from_id_to_ex.instruction_operation),
+        .i_alloc_imm          (from_id_to_ex.csr_address),
+        .i_ckpt_save          (checkpoint_save),
+        .i_ckpt_id            (checkpoint_id),
+        .i_restore            (checkpoint_restore),
+        .i_restore_id         (checkpoint_restore_id),
+        .i_flush_all          (flush_all),
+        .i_vcfg_in_flight     (vec_vcfg_in_flight),
+        .i_arch_vtype         (csr_vec_vtype),
         .i_arch_vstart_nonzero(|csr_vec_vstart),
-        .i_arch_reload(csr_commit_fire),
-        .o_vstart_nonzero(vec_vstart_nonzero),
-        .o_vtype         (vec_vtype_spec),
-        .o_valid         (vec_vtype_valid)
+        .i_arch_reload        (csr_commit_fire),
+        .o_vstart_nonzero     (vec_vstart_nonzero),
+        .o_vtype              (vec_vtype_spec),
+        .o_valid              (vec_vtype_valid)
     );
     vec_unit #(
         .VLEN(VLEN)

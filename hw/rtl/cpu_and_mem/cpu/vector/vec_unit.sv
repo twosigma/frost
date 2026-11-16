@@ -57,8 +57,8 @@ module vec_unit #(
     input  logic                    [     8:0] i_vtype,
     input  logic                    [    15:0] i_vstart,
     input  logic                    [     1:0] i_vxrm,
-    output logic o_vxsat_set,
-    output logic o_vtox_commit,
+    output logic                               o_vxsat_set,
+    output logic                               o_vtox_commit,
     // Head execution of vector-to-scalar ops
     input  logic                               i_alloc_is_vtox,
     input  logic                    [TagW-1:0] i_head_tag,
@@ -84,24 +84,24 @@ module vec_unit #(
     // Every allocation of a tag rewrites its flags, so a flag left by a
     // squashed vector instruction never describes a later one.
     if (i_rst) begin
-      is_vtox_q   <= '0;
+      is_vtox_q <= '0;
       vtox_retire_q <= '0;
       is_varith_q <= '0;
     end else begin
       if (vtox_done) is_vtox_q[vtox_tag_q] <= 1'b0;
       if (i_alloc) begin
-        is_vtox_q[i_alloc_tag]   <= i_alloc_is_vtox;
+        is_vtox_q[i_alloc_tag] <= i_alloc_is_vtox;
         vtox_retire_q[i_alloc_tag] <= i_alloc_is_vtox;
         is_varith_q[i_alloc_tag] <= i_alloc_is_varith;
       end
       if (i_alloc_2) begin
-        is_vtox_q[i_alloc_tag_2]   <= 1'b0;
+        is_vtox_q[i_alloc_tag_2] <= 1'b0;
         vtox_retire_q[i_alloc_tag_2] <= 1'b0;
         is_varith_q[i_alloc_tag_2] <= 1'b0;
       end
     end
   end
-  assign o_vtox_commit = i_commit_valid && vtox_retire_q[i_commit_tag] && !i_commit_exception;
+  assign o_vtox_commit   = i_commit_valid && vtox_retire_q[i_commit_tag] && !i_commit_exception;
   assign o_varith_commit = i_commit_valid && is_varith_q[i_commit_tag] && !i_commit_exception;
 
   // The engine's register read port, used by the vector-to-scalar logic.
@@ -293,14 +293,18 @@ module vec_unit #(
     if (i_rst) x_reset_seen_q <= 1'b1;
     if (x_reset_seen_q && !i_rst && xs == X_OUT && (i_rob_empty || i_head_tag != vtox_tag_q))
 `ifdef FROST_SIM_ASSERTIONS
-      assert (1'b0) else
+      assert (1'b0)
+      else
+        $error(
+            "vec_unit: vector-to-scalar result presented for tag %0d, head %0d, empty %0b",
+            vtox_tag_q,
+            i_head_tag,
+            i_rob_empty
+        );
+`else
+      $error("vec_unit: vector-to-scalar result presented for tag %0d, head %0d, empty %0b",
+             vtox_tag_q, i_head_tag, i_rob_empty);
 `endif
-      $error(
-          "vec_unit: vector-to-scalar result presented for tag %0d, head %0d, empty %0b",
-          vtox_tag_q,
-          i_head_tag,
-          i_rob_empty
-      );
   end
 `endif
 `endif
