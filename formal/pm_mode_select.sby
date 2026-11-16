@@ -1,0 +1,32 @@
+# Ssnpm with the mode applied to operand terms: the store PMA verdict and
+# untranslated store completion of coherent_store_pm_select equal the forms
+# that apply the transform first, for every input and mode. Combinational, so
+# one BMC step covers every input.
+[tasks]
+bmc
+bmc_ddr31
+bmc_ddr36
+bmc_ddr37
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+bmc_ddr31: verilog_defines -D FROST_DDR_CAPACITY_LOG2_BYTES=31
+bmc_ddr36: verilog_defines -D FROST_DDR_CAPACITY_LOG2_BYTES=36
+bmc_ddr37: verilog_defines -D FROST_DDR_CAPACITY_LOG2_BYTES=37
+read -formal -sv riscv_pkg.sv
+read -sv -D SYNTHESIS tomasulo_wrapper.sv
+read -formal -sv pm_mode_select.sv
+prep -top pm_mode_select
+select -assert-count 12 t:$check
+select -assert-none t:$assume
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
+pm_mode_select.sv

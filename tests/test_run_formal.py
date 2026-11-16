@@ -1242,6 +1242,13 @@ FORMAL_TARGETS = [
         tasks=("bmc", "bmc_ddr31", "bmc_ddr36", "bmc_ddr37"),
     ),
     FormalTarget(
+        "pm_mode_select.sby",
+        "Ssnpm: the store PMA verdict and untranslated store completion with the "
+        "pointer-masking mode applied to operand terms equal the transform-first "
+        "forms for every input and mode across DDR apertures",
+        tasks=("bmc", "bmc_ddr31", "bmc_ddr36", "bmc_ddr37"),
+    ),
+    FormalTarget(
         "divider.sby",
         "Divider arithmetic at 8 bits and setup, completion, and cancellation at 64 bits",
         tasks=("bmc_width8", "prove_width64", "cover_width8"),
@@ -1805,6 +1812,12 @@ FORMAL_TARGETS = [
         "store_queue_twin.sby",
         "Store queue: primitive and portable forms are equivalent.",
         tasks=("sq_twin",),
+    ),
+    FormalTarget(
+        "coherent_store_pma_twin.sby",
+        "Store page decoder: primitive and portable forms are equivalent at the "
+        "1 GiB and 2 GiB DDR sizes.",
+        tasks=("store_pma_twin_ddr30", "store_pma_twin_ddr31"),
     ),
     FormalTarget(
         "reservation_station_twin.sby",
@@ -3267,6 +3280,14 @@ SBY_TASKS = [
     (
         "sq_twin",
         "Store queue primitive form equals its portable form.",
+    ),
+    (
+        "store_pma_twin_ddr30",
+        "Store page decoder primitive form equals its portable form, 1 GiB DDR.",
+    ),
+    (
+        "store_pma_twin_ddr31",
+        "Store page decoder primitive form equals its portable form, 2 GiB DDR.",
     ),
     (
         "rs_twin_indexed",
