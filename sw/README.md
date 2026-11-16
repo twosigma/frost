@@ -361,6 +361,7 @@ can be debugged and where each one first stops.
 | `svinval_test/` | Svinval: selective `sinval.vma` forms and batched PTE updates with `sfence.w.inval`/`sfence.inval.ir` on resident DTLB and ITLB entries, `mstatus.TVM` trapping `sinval.vma` while leaving the two fence forms legal, U-mode traps, and reserved register fields |
 | `served_window_resteer/` | A BTB-predicted loop branch to an upper-half target; `served_window_resteer_fetch_fuzz` uses uncached Normal fetches and requires AXI fuzz delays and predicted-target waits on each reset run, with count/sum checks across 2,000 iterations. The IF-stage unit bench explicitly checks stale-window rejection and retry |
 | `slot2_fault_test/` | A fetch fault on the second instruction of a fetch pair, one whose bytes encode a NOP included, must trap at that instruction with exact `mepc` and `mtval` |
+| `slot2_tage_bench/` | History-correlated conditional branch in the second bundle slot with 3:1 taken and 3:1 not-taken 4-step periods, checked against `mhpmcounter3` and `mhpmcounter4` so both PD override directions must fire |
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |
 | `smc_predict_test/` | A `ret`, a `j` and an always-taken `beq`, each trained and then rewritten as an `addi`, must not follow their old predictions after `fence.i` |
 | `smc_stale_test/` | Rewritten code that is dirty in the L1D over an older L2 copy runs after `fence.i` |

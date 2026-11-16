@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -687,20 +688,26 @@ def run_live_cocotb_case(
         _run_checked(["make", "-C", str(TESTS_DIR), "clean"], env=env)
 
     t0 = time.monotonic()
-    proc = subprocess.run(
-        ["./test_run_cocotb.py", app],
-        cwd=TESTS_DIR,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
+    with tempfile.TemporaryFile() as log:
+        proc = subprocess.run(
+            ["./test_run_cocotb.py", app],
+            cwd=TESTS_DIR,
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            timeout=1800,
+            check=False,
+        )
+        if log.tell() > 64 * 1024 * 1024:
+            raise RuntimeError(f"{app}: cocotb log exceeds 64 MiB")
+        log.seek(0)
+        raw_log = log.read(64 * 1024 * 1024)
     elapsed = time.monotonic() - t0
     if proc.returncode != 0:
-        sys.stderr.buffer.write(proc.stdout)
+        sys.stderr.buffer.write(raw_log)
         sys.stderr.flush()
         raise subprocess.CalledProcessError(proc.returncode, proc.args)
-    parsed = parse_cocotb_program_log(proc.stdout)
+    parsed = parse_cocotb_program_log(raw_log)
     print(
         f"[cocotb] {app} ({mem_config}) completed in {elapsed:.2f}s "
         f"(cycles={parsed.cycles}, ticks={parsed.coremark_ticks}, "
@@ -759,8 +766,12 @@ def _verify_demo_script_on_binary(
         check=True,
     )
     assert "Frost: Hello, world!" in proc.stdout
-    assert "to stop marker + 10,000 drain" in proc.stderr
-    assert "RTL assertions   : enabled after reset" in proc.stderr
+    assert "to stop marker + 10,000 drain" in proc.stdout
+    assert "RTL assertions   : enabled after reset" in proc.stdout
+    assert proc.stdout.index("Frost: Hello, world!") < proc.stdout.index(
+        "--- FROST RTL simulation summary ---"
+    )
+    assert not proc.stderr
 
 
 def _verify_thread_cli_bounds(
@@ -837,11 +848,11 @@ def run_exactness_suite(
     sim_build = NATIVE_DIR / "sim_build"
     live_cocotb: dict[str, ParsedRunResult] = {}
 
-    for index, case in enumerate(selected):
+    for case in selected:
         live_cocotb[case.name] = run_live_cocotb_case(
             case.app,
             case.mem_config,
-            clean_first=(index == 0),
+            clean_first=True,
         )
 
     if ci_only:
@@ -1226,6 +1237,7 @@ module frost (
 
   int unsigned clk_edge_count = 0;
   int unsigned post_rst_step;
+  string pass_text = "Hello, world!\\n<<PASS>>TAIL\\n";
 
   always_ff @(posedge i_clk) begin
     clk_edge_count <= clk_edge_count + 1;
@@ -1297,6 +1309,14 @@ module frost (
           3: $finish;
           default: ;
         endcase
+      end else if ($test$plusargs("SPLIT_PASS_MARKER")) begin
+        if (post_rst_step < 21) begin
+          uart_write_enable_from_cpu <= 1'b1;
+          uart_write_data_from_cpu <= pass_text[post_rst_step];
+        end else if (post_rst_step >= 34 && post_rst_step < 40) begin
+          uart_write_enable_from_cpu <= 1'b1;
+          uart_write_data_from_cpu <= pass_text[post_rst_step - 13];
+        end
       end else if ($test$plusargs("SPLIT_FAIL_MARKER")) begin
         case (post_rst_step)
           0: begin
@@ -1341,7 +1361,7 @@ endmodule
 
 
 def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
-    """Compile main.cpp + sim_assertions.cpp on a test top to check arming and faults."""
+    """Compile the native runner on a test top to check arming, faults, and UART order."""
     work_dir.mkdir(parents=True, exist_ok=True)
     harness_sv = work_dir / "frost_fault_harness.sv"
     harness_sv.write_text(_SYNTHETIC_FROST_HARNESS_SV, encoding="utf-8")
@@ -1657,6 +1677,96 @@ def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
     assert split_summary["passed"] is False
     assert split_summary["failed"] is True
     assert split_summary["assertions_armed"] is True
+
+    # The final '>' arrives after a gap. A partial marker cannot stop the run.
+    for max_cycles, drain, expected_cycles, expected_uart in (
+        (55, 0, 55, b"Hello, world!\n<<PASS>"),
+        (100, 0, 56, b"Hello, world!\n<<PASS>>"),
+        (100, 5, 61, b"Hello, world!\n<<PASS>>TAIL\n"),
+    ):
+        pass_json = work_dir / f"split_pass_{max_cycles}_{drain}.json"
+        pass_uart = pass_json.with_suffix(".uart")
+        pass_proc = subprocess.run(
+            [
+                str(bin_path),
+                "--mem-dir",
+                str(mem_dir),
+                "--max-cycles",
+                str(max_cycles),
+                "--drain",
+                str(drain),
+                "--uart-out",
+                str(pass_uart),
+                "--summary-json",
+                str(pass_json),
+                "+SPLIT_PASS_MARKER",
+            ],
+            cwd=work_dir,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        passed = max_cycles == 100
+        assert pass_proc.returncode == (0 if passed else 1)
+        assert pass_proc.stdout == expected_uart
+        assert pass_uart.read_bytes() == expected_uart
+        pass_summary = json.loads(pass_json.read_text(encoding="utf-8"))
+        assert pass_summary["cycles"] == expected_cycles
+        assert pass_summary["marker_cycle"] == (56 if passed else None)
+        assert pass_summary["passed"] is passed
+
+    _verify_demo_uart_summary_order(bin_path, mem_dir, work_dir)
+
+
+def _verify_demo_uart_summary_order(
+    binary: Path, mem_dir: Path, work_dir: Path
+) -> None:
+    """Relay stderr before the final UART byte to force separate-pipe reordering."""
+    demo_root = work_dir / "demo_order"
+    bin_dir = demo_root / "bin"
+    apps_dir = demo_root / "apps"
+    bin_dir.mkdir(parents=True)
+    apps_dir.mkdir()
+    for app in ("hello_world", "coremark"):
+        (apps_dir / f"{app}_bram").symlink_to(mem_dir)
+    wrapper = bin_dir / "frost-native-t1"
+    wrapper.write_text(
+        f'#!/bin/sh\nexec {shlex.quote(str(binary))} "$@" +SPLIT_PASS_MARKER\n',
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    env = dict(os.environ, FROST_DEMO_ROOT=str(demo_root))
+    summary_header = b"--- FROST RTL simulation summary ---"
+
+    for app in ("coremark", "all", "hello_world"):
+        # Spool stdout until stderr reaches EOF, then forward stderr at the
+        # final '>' to model a delayed stdout relay without a scheduling race.
+        stdout_log = work_dir / f"demo_order_{app}.stdout"
+        with stdout_log.open("wb") as stdout_file:
+            proc = subprocess.run(
+                [str(DEMO_SCRIPT), "--threads", "1", "--app", app],
+                cwd=work_dir,
+                env=env,
+                stdout=stdout_file,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+        assert proc.returncode == 0
+        stdout_bytes = stdout_log.read_bytes()
+        delay_at = stdout_bytes.index(b"<<PASS>>") + len(b"<<PASS>>") - 1
+        relayed = stdout_bytes[:delay_at] + proc.stderr + stdout_bytes[delay_at:]
+        expected_uart = (
+            b"Hello, world!\n<<PASS>>"
+            if app == "coremark"
+            else b"Hello, world!\n<<PASS>>TAIL\n"
+        )
+        assert b"<<PASS>>" in relayed, "summary split the UART success marker"
+        assert relayed.index(expected_uart) < relayed.index(summary_header)
+        assert not proc.stderr, "demo output must share one stdout pipe"
+        assert relayed.count(summary_header) == (2 if app == "all" else 1)
+        if app == "all":
+            assert relayed.rindex(b"<<PASS>>") < relayed.rindex(summary_header)
 
 
 def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> None:
@@ -2319,7 +2429,7 @@ def test_ci_workflow_runs_native_and_demo_image_jobs() -> None:
 
 
 def test_native_runner_rtl_assertion_finish_and_split_fail(tmp_path: Path) -> None:
-    """Native C++ runner reports RTL assertion, $finish, and split-marker failures."""
+    """Native runner checks arming, HDL exits, complete markers, and demo UART order."""
     if shutil.which("verilator") is None:
         pytest.skip("verilator is not installed in this environment")
     verify_runner_assertion_finish_and_split_fail(tmp_path)
