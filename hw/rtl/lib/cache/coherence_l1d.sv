@@ -3925,6 +3925,9 @@ module coherence_l1d #(
       p_full_cover_fallback : cover (store_acquire && store_full[store_selected_q] &&
           !store_addr[store_selected_q][5] && !store_zero[store_selected_q] &&
           store_upper[2'(store_selected_q + 2'd1)] && !zero_acquire_q);
+      p_withdraw_full_cover : cover (WITHDRAW_ABSORBED_W && active && wb_selected_q &&
+          wb_valid[wb_select_q] && wb_absorbed[wb_select_q] && !o_w_valid &&
+          store_pop && operation_q == TwinOp && !store_zero[store_head_index]);
 `endif
     end
 `endif

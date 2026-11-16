@@ -95,6 +95,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_withdraw_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_withdraw_full_payload_bmc"): 5400,
     ("coherence_l1d", "coh_l1d_withdraw_zero_payload_bmc"): 5400,
+    ("coherence_l1d", "coh_l1d_withdraw_full_cover"): 4800,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
@@ -421,6 +422,7 @@ FORMAL_TARGETS = [
             "coh_l1d_withdraw_zero_bmc",
             "coh_l1d_withdraw_full_payload_bmc",
             "coh_l1d_withdraw_zero_payload_bmc",
+            "coh_l1d_withdraw_full_cover",
             "coh_l1d_answer_bmc",
             "coh_l1d_stream_answer_bmc",
         ),
@@ -2076,6 +2078,10 @@ SBY_TASKS = [
     (
         "coh_l1d_withdraw_zero_payload_bmc",
         "cbo.zero store byte values with absorbed puts withdrawn.",
+    ),
+    (
+        "coh_l1d_withdraw_full_cover",
+        "Absorbed put withdrawn beside a full-line pair or owed data twin.",
     ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),

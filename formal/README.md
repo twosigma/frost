@@ -49,8 +49,9 @@ has 240 minutes. `coherence_l1d:coh_l1d_bmc` has 180 minutes at depth 40;
 depth 30; `coh_l1d_zero_payload_bmc`, `coh_l1d_full_payload_bmc`,
 `coh_l1d_withdraw_full_payload_bmc` and `coh_l1d_withdraw_zero_payload_bmc`
 have 90 minutes each at depth 40; `coh_l1d_zero_cover` has 240 minutes at depth
-80; and `coh_l1d_full_cover` and `coh_l1d_full_lookahead_cover` have 120
-minutes each at depth 80.
+80; `coh_l1d_full_cover` and `coh_l1d_full_lookahead_cover` have 120
+minutes each at depth 80; and `coh_l1d_withdraw_full_cover` has 80 minutes at
+depth 80.
 `coh_l1d_answer_bmc` and `coh_l1d_stream_answer_bmc` have 60 minutes each at
 depths 20 and 16.
 `coh_l1d_stream_free_bmc` has 180 minutes; `coh_l1d_stream_bmc`,
@@ -124,8 +125,9 @@ alone with 330-minute limits, and the zero cover job runs `coh_l1d_zero_cover`
 alone with a 260-minute limit. `coh_l1d_zero_payload_bmc`,
 `coh_l1d_zero_lookahead_cover` and `coh_l1d_zero_stream_bmc` share a
 180-minute job (150 minutes of allowances); `coh_l1d_full_payload_bmc` runs in
-a 120-minute job; `coh_l1d_full_cover` and `coh_l1d_full_lookahead_cover` share
-a 270-minute job (240 minutes of allowances); and three withdrawn-put jobs
+a 120-minute job; `coh_l1d_full_cover`, `coh_l1d_full_lookahead_cover` and
+`coh_l1d_withdraw_full_cover` share a 330-minute job (320 minutes of
+allowances); and three withdrawn-put jobs
 (`WITHDRAW_ABSORBED_W=1`) run `coh_l1d_withdraw_full_bmc` (200 minutes),
 `coh_l1d_withdraw_zero_bmc` (200 minutes), and both withdrawn-put payload BMCs
 (210 minutes). Three Coherence L1D data jobs run the four single-endpoint word tasks

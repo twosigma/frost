@@ -1454,8 +1454,10 @@ jobs:
             pytest_filter: coh_l1d_full_payload_bmc
             timeout_minutes: 120
           - shard: Coherence L1D full-line covers
-            pytest_filter: coh_l1d_full_cover or coh_l1d_full_lookahead_cover
-            timeout_minutes: 270
+            pytest_filter: >-
+              coh_l1d_full_cover or coh_l1d_full_lookahead_cover or
+              coh_l1d_withdraw_full_cover
+            timeout_minutes: 330
           # The same control and payload checks with absorbed puts withdrawn
           # (WITHDRAW_ABSORBED_W, as MEMORY_LINK_STAGES sets it): each control
           # BMC has a job of its own; both payload BMCs share a third.
