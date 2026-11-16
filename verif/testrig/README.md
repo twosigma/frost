@@ -65,7 +65,8 @@ repository root:
 The first run builds the `rvfi_dii` simulation, and later runs reuse it
 until `tests/` is cleaned. Counterexamples go to
 `tests/testrig_failures/`, and the simulation log, Sail's log, and the
-engine's instruction coverage table go to `tests/testrig_logs/`. A
+engine's output (`engine.log`) and instruction coverage table go to
+`tests/testrig_logs/`. A
 generated Sail configuration in that log directory records the selected DDR
 capacity. The runner gives the same setting to FROST's RTL and enables the
 full-width sparse DDR simulation model; the default is 1 GiB. This is a
@@ -74,6 +75,31 @@ counterexample file lists the sequence as `.4byte` words with both traces in
 comments; `--trace` replays it, and editing the words is the quickest way to
 narrow a bug down. `FROST_RVFI_DII_DEBUG=1` logs every record the harness
 collects, preamble included.
+
+A successful run ends with `TestRIG PASS: compared <traces> traces and
+<instructions> instructions; expected at least <traces> traces and
+<instructions> instructions; logs in <directory>`. The counts come from
+the instruction requests and both implementations' RVFI replies. Version
+negotiation, halt tokens, and FROST's reset preamble are excluded from the
+instruction count. QuickCheck's completed size-zero cases count as traces;
+the session must compare at least one instruction.
+Every non-halt execution packet counts, including replies with the RVFI
+`valid` byte clear. The transport carries the execution record for comparison;
+that byte is not a filter for packet counts.
+
+Empty runs fail with a nonzero exit status and a `TestRIG FAIL` line stating
+what was expected and what was found. Replay requires an existing trace file,
+or a directory containing `.S` files, including subdirectories. Every replay
+file must contain at least one `.4byte` or `.2byte` instruction. All requested
+traces and instructions must be compared, and each implementation must
+return every injected instruction. Generated runs require the requested
+number of tests for each selected template; a filter or architecture that
+selects no runnable templates fails. Explicit test counts and instruction
+limits must be positive, including counts for every generator option.
+
+Replay paths are relative to the command's working directory. The examples
+above run from the repository root. For a direct invocation from `tests/`,
+use `python3 test_testrig.py --trace-dir ../verif/testrig/traces`.
 
 The runner selects the two loopback TCP ports while holding both probe
 sockets open, then releases them for Sail and FROST to bind. This prevents
@@ -100,11 +126,14 @@ its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--arch` | `rv64imfdcs_zicsr_zifencei` | Architecture the templates target (`rv64imafdcs_zicsr_zifencei` with `--atomics`, `--mmu` or `--cmo`) |
 | `--tests` | 50 | Tests per template |
 | `--ddr-capacity-log2-bytes` | 30 (1 GiB) | Set the DDR aperture for both FROST and Sail; accepted values 30–37 (1–128 GiB) |
-| `--atomics` | 0 | Replay this many random A-extension tests instead of the templates |
-| `--mmu` | 0 | Replay this many random Sv39 MMU, ASID, SFENCE.VMA, and Sstvala tests instead of the templates |
-| `--cmo` | 0 | Replay this many random Zicbom, Zicboz, Zicbop, Zawrs, device-window, and Sstvala tests instead of the templates |
+| `--atomics` | off | Replay this many random A-extension tests instead of the templates |
+| `--mmu` | off | Replay this many random Sv39 MMU, ASID, SFENCE.VMA, and Sstvala tests instead of the templates |
+| `--cmo` | off | Replay this many random Zicbom, Zicboz, Zicbop, Zawrs, device-window, and Sstvala tests instead of the templates |
+| `--crypto` | off | Replay this many scalar cryptography tests |
+| `--zcb` | off | Replay this many Zcb, Zcmop, Zimop, and Zihintntl tests |
+| `--fp-ext` | off | Replay this many Zfhmin and Zfa tests |
 | `--sscofpmf` | off | Replay the deterministic counter-control trace with Sail Zihpm enabled; `--trace` selects a counterexample in this view |
-| `--vector` | 0 | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
+| `--vector` | off | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
 | `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
 | `--seed` | random | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--crypto` and `--vector`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
