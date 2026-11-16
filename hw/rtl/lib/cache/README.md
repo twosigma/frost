@@ -837,31 +837,39 @@ to completion metadata and releases its control before the waiters dispatch
 in sector order.
 
 Fill waiter ranks are independent of the available-seat count. A balanced
-prefix network counts up to three eligible entries before each candidate. Each fill
-stores its occupied seat count beside the seat mask. Allocation, joining
+prefix network counts up to three eligible entries before each candidate. Each
+fill stores its occupied seat count beside the seat mask. Allocation, joining
 readers, handoff, a forward and error cleanup update both on the same edge.
-Seat joins, retirements and error cleanup keep their priority over allocation. The mask prepares the
-allocation and non-allocation outcomes before selecting between them. Whether a decision is a
-reader that can join a fill is the decision's last term to settle, so each
-fill's added seats and their count, its mask and the parked set are formed for both
-values of that term (a fill that is ready to join reserves the joining seat in
-one selection and not in the other), and the term selects last.
-A fill's image takes the memory response or the zero fill's clear, through
-its data input. The clear is registered: it takes effect on the edge after the
-zero fill's allocation, while the fill waits in FillMemory or FillRecall and
-neither installs nor forwards, so the allocation decision reaches one flop per
-fill rather than the image bits.
-A joining
-engine uses one seat before the queued waiters. Ready work precedes other
-eligible work. Both classes compute their circular priorities independently
-before selecting an encoded winner. The prefetch slots share one place in
-that rotation, after the other slots; it offers a prefetch slot chosen in
-rotation among them on the previous cycle, leaving out the slot being
-dispatched. Work selection uses registered parking
-state. A selection captured with a simultaneous fill park is canceled before
-allocating an engine or image credit. The tag decision carries its captured
-query address through conflict and replacement checks. Engine address pins
-exclude valid victim lines. An invalid way's stored tag does not create an
+Seat joins, retirements and error cleanup keep their priority over allocation.
+The mask prepares the allocation and non-allocation outcomes before selecting
+between them. Whether a decision is a reader that can join a fill is the
+decision's last term to settle, so each fill's added seats and their count, its
+mask and the parked set are formed for both values of that term (a fill that is
+ready to join reserves the joining seat in one selection and not in the other),
+and the term selects last. A fill's image takes the memory response or the zero
+fill's clear, through its data input. The clear is registered: it takes effect
+on the edge after the zero fill's allocation, while the fill waits in
+FillMemory or FillRecall and neither installs nor forwards, so the allocation
+decision reaches one flop per fill rather than the image bits. A joining engine
+uses one seat before the queued waiters. Ready work precedes other eligible
+work. Both classes compute their circular priorities independently before
+selecting a one-hot position and an encoded winner. Parking capture and the
+selected-slot mask read the one-hot position directly. The prefetch slots share
+one place in that rotation, after the other slots; it offers a prefetch slot
+chosen in rotation among them on the previous cycle, leaving out the slot being
+dispatched. Work selection captures a one-hot slot mask beside the slot index;
+waiter eligibility and the prefetch offer exclude that registered mask without
+decoding the index. Work selection also captures the selected slot's next
+parking state in groups of two slots beside its slot index. Each group combines
+its park inputs with qualifiers computed independently of those inputs. The
+parking table also combines each park event with precomputed priority and hold
+terms. Dispatch reduces the registered groups four at a time before its final
+selection and stop gate. While a selection is held, the groups follow its
+slot's parking updates and only that slot's group may be set. Idle group values
+are unobserved. A selection captured with a simultaneous fill park is canceled
+before allocating an engine or image credit. The tag decision carries its
+captured query address through conflict and replacement checks. Engine address
+pins exclude valid victim lines. An invalid way's stored tag does not create an
 address conflict; physical way pins and fill claims govern its reuse.
 
 Two ordinary PutM controls have frozen payload storage and independent array

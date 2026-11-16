@@ -498,6 +498,9 @@ module cpu_ooo #(
   logic [1:0] if_backing_compressed;
   logic [1:0] if_backing_return;
   logic [1:0][riscv_pkg::PhysAddrBits-2:0] if_backing_target;
+  // Slot 2's backing type and target for each size of slot 1
+  logic [1:0] if_backing_slot2_return_by_size;
+  logic [1:0][riscv_pkg::PhysAddrBits-2:0] if_backing_slot2_target_by_size;
 
   // Tagged direction predictor: lookup history, events, per-slot lookups,
   // saved-lookup index, and training (see tage_history).
@@ -940,6 +943,8 @@ module cpu_ooo #(
       .o_backing_compressed(if_backing_compressed),
       .o_backing_return(if_backing_return),
       .o_backing_target(if_backing_target),
+      .o_backing_slot2_return_by_size(if_backing_slot2_return_by_size),
+      .o_backing_slot2_target_by_size(if_backing_slot2_target_by_size),
       .o_slot1_has_control_flow(if_slot1_has_control_flow),
       .o_slot1_is_indirect(if_slot1_is_indirect),
       .o_width_events(if_width_events),
@@ -978,6 +983,8 @@ module cpu_ooo #(
       .i_backing_compressed(if_backing_compressed),
       .i_backing_return(if_backing_return),
       .i_backing_target(if_backing_target),
+      .i_backing_slot2_return_by_size(if_backing_slot2_return_by_size),
+      .i_backing_slot2_target_by_size(if_backing_slot2_target_by_size),
       .o_pd_redirect(pd_redirect),
       .o_pd_redirect_taken(pd_redirect_taken),
       .o_pd_redirect_target(pd_redirect_target),
@@ -4741,23 +4748,29 @@ module cpu_ooo #(
     assign ma_fatal_addr_out = '0;
   end
 
-  // Fixed-priority mux between the misaligned-access engine (identities 0..1)
-  // and the vector memory unit (identities 2..7). ma_engine waits for
-  // vec_vmem_quiet and runs with an empty ROB, so the two never request
-  // together.
-  assign o_ma_line_req_valid = ma_lc_req_valid_out || vec_lc_req_valid;
-  assign o_ma_line_req_write = ma_lc_req_valid_out ? ma_lc_req_write_out : vec_lc_req_write;
-  assign o_ma_line_req_addr  = ma_lc_req_valid_out ? ma_lc_req_addr_out : vec_lc_req_addr;
-  assign o_ma_line_req_data  = ma_lc_req_valid_out ? ma_lc_req_data_out : vec_lc_req_data;
-  assign o_ma_line_req_mask  = ma_lc_req_valid_out ? ma_lc_req_mask_out : vec_lc_req_mask;
-  assign o_ma_line_req_id    = ma_lc_req_valid_out ? ma_lc_req_id_out : vec_lc_req_id;
-  assign vec_lc_req_ready    = i_ma_line_req_ready && !ma_lc_req_valid_out;
+  // Ownership is sampled while the misaligned engine waits for older vector
+  // memory work. Its translation and decision states precede any request;
+  // the owner therefore settles before either lower or upper sector issues.
+  logic ma_lc_owner_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) ma_lc_owner_q <= 1'b0;
+    else ma_lc_owner_q <= ma_hold_q && vec_vmem_quiet;
+  end
+  assign o_ma_line_req_valid = ma_lc_owner_q ? ma_lc_req_valid_out : vec_lc_req_valid;
+  assign o_ma_line_req_write = ma_lc_owner_q ? ma_lc_req_write_out : vec_lc_req_write;
+  assign o_ma_line_req_addr  = ma_lc_owner_q ? ma_lc_req_addr_out : vec_lc_req_addr;
+  assign o_ma_line_req_data  = ma_lc_owner_q ? ma_lc_req_data_out : vec_lc_req_data;
+  assign o_ma_line_req_mask  = ma_lc_owner_q ? ma_lc_req_mask_out : vec_lc_req_mask;
+  assign o_ma_line_req_id    = ma_lc_owner_q ? ma_lc_req_id_out : vec_lc_req_id;
+  assign vec_lc_req_ready    = i_ma_line_req_ready && !ma_lc_owner_q;
   assign o_ma_fatal          = ma_fatal_out || vec_vmu_fatal;
   assign o_ma_fatal_addr     = ma_fatal_out ? ma_fatal_addr_out : vec_vmu_fatal_addr;
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       p_lc_ma_vec_disjoint : assert (!(ma_lc_req_valid_out && vec_lc_req_valid));
+      p_lc_ma_owner : assert (!ma_lc_req_valid_out || ma_lc_owner_q);
+      p_lc_vec_owner : assert (!vec_lc_req_valid || !ma_lc_owner_q);
       p_rf_ma_vec_disjoint : assert (!(ma_busy && vec_rf_read_en));
     end
   end
@@ -5538,7 +5551,9 @@ module cpu_ooo #(
         .o_full(vec_vmt_full),
         .o_alloc_idx(vec_vmt_alloc_idx),
         .i_commit_valid(rob_commit_comb.valid && !rob_commit_comb.exception),
-        .i_commit_tag(rob_commit_comb.tag),
+        // Slot 1 commits the current head. Use that registered tag directly;
+        // the commit packet's tag is qualified by the serializer's decision.
+        .i_commit_tag(head_tag),
         // Commit-time recovery flushes behind a branch that has already
         // retired, so its tag is not a live instruction: it removes every
         // unretired entry, as in the wrapper's speculative full flush.
@@ -5573,6 +5588,8 @@ module cpu_ooo #(
     end
     always_ff @(posedge i_clk) begin
       if (reset_seen_q && !i_rst) begin
+        if (rob_commit_comb.valid)
+          p_vmt_commit_head_tag : assert (rob_commit_comb.tag == head_tag);
         if (vmt_head_retiring) begin
           p_vmem_no_trap_cancelled_retire : assert (!trap_taken && !xret_taken && !flush_all);
           p_vmem_retires_alone : assert (!rob_commit_comb_2.valid);

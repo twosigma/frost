@@ -417,7 +417,9 @@ module store_queue #(
   (* keep = "true" *)logic [CountWidth-1:0] live_count_q;
   logic [CountWidth-1:0] live_count_next;
   logic [CountWidth-1:0] live_remove_count;
-  logic [     DEPTH-1:0] live_remove_mask;
+  // Kept so the removal counts read each entry's mask gate directly (see the
+  // staged mask below).
+  (* keep = "true" *)logic [     DEPTH-1:0] live_remove_mask;
   logic [     DEPTH-1:0] sc_discard_remove_mask;
   logic                  drain_remove_valid;
   logic                  committed_empty_q;
@@ -1715,7 +1717,8 @@ module store_queue #(
     end
   end
 
-  // Use the same failed-SC removal mask for sq_valid and live count.
+  // Failed-SC removal for sq_valid. The live count's mask below forms the
+  // same terms in stages.
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       sc_discard_remove_mask[i] =
@@ -1729,14 +1732,64 @@ module store_queue #(
 
   // Union removal causes before counting: discard and flush may remove the
   // same SC. Allocations target free slots and cannot overlap removals.
+  //
+  // Each entry's removal forms in kept stages. The terms that do not read the
+  // commit pulses, the SC discard or the write done come first: the
+  // partial-flush kill without its commit exemption, each commit port's tag
+  // match, the failed-SC candidate, the Zicbom free, and the entry that the
+  // oldest in-flight write frees when it completes. The SC discard and the
+  // write done apply next, and the registered commit pulses last, in the
+  // mask's own gate, so each of these pulses reaches the count through a
+  // fixed number of gates.
+  (* keep = "true" *)logic [     DEPTH-1:0] live_flush_kill_cand;
+  (* keep = "true" *)logic [     DEPTH-1:0] live_commit_match;
+  (* keep = "true" *)logic [     DEPTH-1:0] live_commit_match_2;
+  (* keep = "true" *)logic [     DEPTH-1:0] live_sc_discard_cand;
+  (* keep = "true" *)logic [     DEPTH-1:0] live_cmo_free;
+  (* keep = "true" *)logic [     DEPTH-1:0] live_write_done_cand;
+  (* keep = "true" *)logic [     DEPTH-1:0] live_other_remove;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      live_remove_mask[i] = (i_flush_en && flush_kill_base[i]) ||
-                            sc_discard_remove_mask[i] ||
-                            (cmo_free_q && (cmo_free_idx_q == IdxWidth'(i))) ||
-                            (drain_remove_valid && (write_entry_idx == IdxWidth'(i)));
+      live_flush_kill_cand[i] = i_flush_en && sq_valid[i] && !sq_committed[i] &&
+          (flush_all_uncommitted || is_younger(sq_rob_tag[i], i_flush_tag, i_rob_head_tag));
+      live_commit_match[i] = sq_rob_tag[i] == i_commit_rob_tag;
+      live_commit_match_2[i] = sq_rob_tag[i] == i_commit_rob_tag_2;
+      live_sc_discard_cand[i] = sq_valid[i] && sq_is_sc[i] && !sq_committed[i] &&
+          (sq_rob_tag[i] == i_sc_discard_rob_tag);
+      live_cmo_free[i] = cmo_free_q && (cmo_free_idx_q == IdxWidth'(i));
+      live_write_done_cand[i] = (write_inflight_cnt != 2'd0) && write_completes_entry &&
+          sq_valid[write_entry_idx] && (write_entry_idx == IdxWidth'(i));
     end
   end
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      live_other_remove[i] = (i_sc_discard && live_sc_discard_cand[i]) ||
+          (i_mem_write_done && live_write_done_cand[i]) || live_cmo_free[i];
+      live_remove_mask[i] = (live_flush_kill_cand[i] &&
+          !(i_commit_valid && live_commit_match[i]) &&
+          !(i_commit_valid_2 && live_commit_match_2[i])) || live_other_remove[i];
+    end
+  end
+
+`ifndef SYNTHESIS
+  `define SQ_LIVE_REMOVE_CHECK
+`elsif SQ_LIVE_COUNT_LOCAL_PROOF
+  `define SQ_LIVE_REMOVE_CHECK
+`endif
+`ifdef SQ_LIVE_REMOVE_CHECK
+  // Reference: each entry's removal causes as one expression, from the
+  // partial-flush kill and failed-SC masks that sq_valid uses.
+  logic [DEPTH-1:0] live_remove_mask_reference;
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      live_remove_mask_reference[i] = (i_flush_en && flush_kill_base[i]) ||
+                                      sc_discard_remove_mask[i] ||
+                                      (cmo_free_q && (cmo_free_idx_q == IdxWidth'(i))) ||
+                                      (drain_remove_valid && (write_entry_idx == IdxWidth'(i)));
+    end
+  end
+`endif
+  `undef SQ_LIVE_REMOVE_CHECK
 
   // Precompute allocation increments before subtracting removals for timing.
   assign live_count_alloc_one = live_count_q + CountWidth'(alloc_room_1);
@@ -1969,6 +2022,11 @@ module store_queue #(
         assert (1'b0) else
 `endif
         $error("SQ: selected live-count candidate differs from the adder form");
+      if (live_remove_mask != live_remove_mask_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("SQ: staged live-count removal mask differs from the reference");
       if (dispatch_full_next != dispatch_full_next_reference ||
           dispatch_full_for_2_next != dispatch_full_for_2_next_reference)
 `ifdef FROST_SIM_ASSERTIONS
@@ -1989,12 +2047,24 @@ module store_queue #(
   assign f_count_none = live_count_q - live_remove_count;
   assign f_count_one  = f_count_none + CountWidth'(alloc_room_1);
   assign f_count_both = f_count_one + CountWidth'(alloc_room_2);
+  // The reference mask counted one entry at a time.
+  logic [CountWidth-1:0] f_remove_count_reference;
+  always_comb begin
+    f_remove_count_reference = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      f_remove_count_reference = f_remove_count_reference +
+          CountWidth'(live_remove_mask_reference[i]);
+    end
+  end
   always_comb begin
     assert (live_count_if_none == f_count_none);
     assert (live_count_if_one == f_count_one);
     assert (live_count_if_both == f_count_both);
     assert (live_count_next == live_count_q + CountWidth'(slot1_alloc_en) +
         CountWidth'(slot2_alloc_en) - live_remove_count);
+    assert (live_remove_mask == live_remove_mask_reference);
+    assert (live_count_next == live_count_q + CountWidth'(slot1_alloc_en) +
+        CountWidth'(slot2_alloc_en) - f_remove_count_reference);
   end
 `endif
 

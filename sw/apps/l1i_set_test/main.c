@@ -22,13 +22,16 @@
  *      ret; six rets }. Lines i and i+128 of a region differ only in PA[12]
  *      (one set at 16 KiB, two at 32 KiB); line i of each region shares a
  *      set at both sizes (8 KiB apart). Each round patches every line's
- *      immediate, executes fence.i, calls every line cold and then warm, and
- *      checks that each call returns the round's value. Cold and warm L1I
- *      refills/misses over the 24 KiB are checked via mhpmevent3 = 19 when
- *      supported or profiling counter 108 (L1I_MISS) when present, and an
- *      unfenced D-side overwrite checks directly that all 768 lines remain
- *      resident in a 32 KiB L1I (three lines per set in four ways) while a
- *      16 KiB L1I evicts and refetches at least a third of them.
+ *      immediate, executes fence.i, calls every line cold and then warm
+ *      through one out-of-line pass that reads the counter around its calls,
+ *      and checks that each call returns the round's value. The cold count
+ *      runs from just before fence.i to the end of the cold pass, the warm
+ *      count across the warm pass's calls. Cold and warm L1I refills/misses
+ *      over the 24 KiB are checked via mhpmevent3 = 19 when supported or
+ *      profiling counter 108 (L1I_MISS) when present, and an unfenced D-side
+ *      overwrite checks directly that all 768 lines remain resident in a
+ *      32 KiB L1I (three lines per set in four ways) while a 16 KiB L1I
+ *      evicts and refetches at least a third of them.
  *   W  Set 133 (an upper set, PA[12] = 1): line 133 of regions 0..4, five
  *      lines in four ways, patched and called twice per round.
  *   V  Sv39 from S-mode: VA page 0x400000 (VA[12] = 0) maps to a code page
@@ -41,12 +44,14 @@
  *      from M-mode and verifies S-mode refetches the patched line rather
  *      than hitting a virtual-set alias at set 42.
  *
- * The first statement of main calls a .ddr_text function, so the first
- * cached fetch after reset follows the L1I reset sweep (256 sets with
- * SIM_FAST_MAINT=0).
- *
- * The program and its stack stay in low BRAM; the code regions, page tables
- * and S-mode pages are at fixed DDR addresses.
+ * The code regions, page tables and S-mode pages are at fixed DDR
+ * addresses, and the stack is in low BRAM. In the BRAM build the rest of
+ * the program is also in low BRAM, and the first statement of main calls a
+ * .ddr_text function, so the first cached fetch after reset follows the L1I
+ * reset sweep (256 sets with SIM_FAST_MAINT=0). In the DDR build the whole
+ * program runs from cached DDR behind the low BRAM boot stub: the fetch of
+ * _start is the first cached fetch after reset and follows that sweep, and
+ * the program's own instruction lines share the L1I with the regions.
  */
 
 #include <stdint.h>
@@ -144,8 +149,10 @@ static unsigned long read_l1i_counter(int mode)
     return 0;
 }
 
-/* The first cached fetch after reset. Low BRAM text reaches it through an
- * address table (the medany code model cannot reach DDR symbols). */
+/* In the BRAM build, the first cached fetch after reset; the DDR build has
+ * fetched _start through the L1I before it. main calls it through an
+ * address table, which BRAM text needs: the medany code model cannot reach
+ * DDR symbols from low BRAM. */
 __asm__(".pushsection .ddr_text, \"ax\", @progbits\n"
         ".option push\n"
         ".option norvc\n"
@@ -182,10 +189,28 @@ static unsigned long call_line(unsigned long region, unsigned long line)
     return ((line_fn) (uintptr_t) line_at(region, line))();
 }
 
-/* Call every line of regions 0..2; returns the number of wrong values. */
-static unsigned long pass(unsigned long round, const char *name)
+/* The L1I counter read just before a pass's first call and just after its
+ * last one. */
+struct l1i_window {
+    unsigned long start;
+    unsigned long end;
+};
+
+/* Call every line of regions 0..2; returns the number of wrong values and
+ * records the L1I counter around the calls in *w. The cold and the warm pass
+ * run this one body, counter reads included: noipa keeps the compiler from
+ * inlining or cloning it per call. When the program itself runs from cached
+ * DDR, sharing the body avoids the compulsory misses that a separate warm
+ * copy of the loop would take on the architectural path (every call
+ * returning its value): the cold pass fetches each line of that path after
+ * the round's fence.i. Speculative fetches and next-line prefetches can
+ * allocate lines the path never executes, such as the reads of an unused
+ * counter mode, and the 32 KiB warm bound of 16 leaves room for them. */
+__attribute__((noipa)) static unsigned long
+pass(unsigned long round, const char *name, int mode, struct l1i_window *w)
 {
     unsigned long bad = 0;
+    w->start = read_l1i_counter(mode);
     for (unsigned long r = 0; r < 3; r++)
         for (unsigned long i = 0; i < LINES; i++) {
             unsigned long got = call_line(r, i);
@@ -201,6 +226,7 @@ static unsigned long pass(unsigned long round, const char *name)
                 bad++;
             }
         }
+    w->end = read_l1i_counter(mode);
     return bad;
 }
 
@@ -381,15 +407,19 @@ int main(void)
         for (unsigned long r = 0; r < 3; r++)
             for (unsigned long i = 0; i < LINES; i++)
                 write_line(round, r, i);
+        /* The cold count opens before fence.i, so that it holds every refill
+         * after the invalidation: a counter read executes at commit, and the
+         * front end can fetch a predicted call target (a region line) and its
+         * next line before the pass reads the counter. */
+        unsigned long before_fence = read_l1i_counter(counter_mode);
         fence_i();
 
-        unsigned long before_cold = read_l1i_counter(counter_mode);
-        unsigned long bad_cold = pass(round, "R cold");
-        unsigned long after_cold = read_l1i_counter(counter_mode);
-        unsigned long bad_warm = pass(round, "R warm");
-        unsigned long after_warm = read_l1i_counter(counter_mode);
-        unsigned long cold_misses = after_cold - before_cold;
-        unsigned long warm_misses = after_warm - after_cold;
+        struct l1i_window cold;
+        struct l1i_window warm;
+        unsigned long bad_cold = pass(round, "R cold", counter_mode, &cold);
+        unsigned long bad_warm = pass(round, "R warm", counter_mode, &warm);
+        unsigned long cold_misses = cold.end - before_fence;
+        unsigned long warm_misses = warm.end - warm.start;
         expect("R cold wrong values", bad_cold, 0);
         expect("R warm wrong values", bad_warm, 0);
         if (counter_mode != L1I_COUNT_NONE) {

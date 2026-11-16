@@ -6,6 +6,7 @@ home_twin_addr40 small addr40
 [options]
 mode bmc
 depth 1
+timeout 600
 
 [engines]
 smtbmc boolector
@@ -61,7 +62,9 @@ rename -top gate
 design -stash gate
 design -reset
 design -copy-from gold -as gold gold
+design -delete gold
 design -copy-from gate -as gate gate
+design -delete gate
 equiv_make gold gate equiv
 hierarchy -top equiv
 # Prove every equivalence point whose cone holds a primitive cell.

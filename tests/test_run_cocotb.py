@@ -1017,6 +1017,27 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
         verilator_extra_args=("--assert",),
     ),
+    "svnapot_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svnapot_test",
+        nic_mac_clocks=False,
+        description=(
+            "Svnapot: a 64 KiB NAPOT range in S and U (loads, stores, AMOs, fetch), the "
+            "second-level TLB residency, reserved N encodings, per-page remap, Svade, "
+            "split accesses and upper-page fault values, and NC/IO aliases"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
+    ),
+    "svnapot_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svnapot_test",
+        nic_mac_clocks=False,
+        description="Svnapot with the cache, load-queue and store-queue assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
+        verilator_extra_args=("--assert",),
+    ),
     "svpbmt_test_2g": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3076,11 +3097,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
         verilator_extra_args=("-GVLEN=256",),
     ),
+    **{
+        f"vec_head_controls_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_head_controls",
+            hdl_toplevel_module="vec_head_mmu",
+            description="Vector head translation: flush, trap, interrupt and head-move boundaries",
+            verilator_extra_args=("--assert", f"-GVLEN={vlen}"),
+        )
+        for vlen in (128, 256, 512)
+    },
     "vec_vmt": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_vmt",
         hdl_toplevel_module="vec_vmt",
         description=(
-            "Vector memory table allocation, retirement, flushes, completion and ranges "
+            "Vector memory table allocation, retirement, registered flush cleanup, completion and ranges "
             "against a model of its lifecycle"
         ),
     ),
@@ -4784,7 +4814,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="ma_engine",
         description=(
             "Misaligned-access engine against a reference: faults and trap values, "
-            "split sector requests, loaded values and stored bytes"
+            "split sector request cycles and backpressure, loaded values and stored bytes"
         ),
         verilator_extra_args=("--assert",),
     ),
@@ -4793,7 +4823,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="ptw",
         description=(
             "Walk-cache hits, discards and Svvptc-permitted page-table changes "
-            "against a reference Sv39 walk"
+            "against a reference Sv39 walk, including Svnapot and Svpbmt encodings"
         ),
     ),
     "l2tlb": CocotbRunConfig(
