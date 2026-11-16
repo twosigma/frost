@@ -512,9 +512,10 @@ walk response carries the field (`ptw_resp_t.pbmt`); the second-level TLB
 (4 KiB array and superpage array), the DTLB and the ITLB store it and return
 it on a hit. Over low BRAM, which has no alias, the DTLB's per-entry checks
 and the walk-response checks apply the field: the page is MMIO and refuses
-AMOs. AMO, LR, SC and `cbo.zero` on an NC or IO page are access faults, and so
-is an instruction fetch (PMA overrides the Svpbmt chapter permits). The walk
-cache holds only pointers, whose PBMT field must be zero.
+AMOs. AMO, LR, SC, `cbo.zero` and vector loads and stores on an NC or IO page
+are access faults, and so is an instruction fetch (PMA overrides the Svpbmt
+chapter permits). The walk cache holds only pointers, whose PBMT field must be
+zero.
 
 On the X3, a misaligned NC/IO load or store to a DDR alias raises a load or
 store access fault (cause 5 or 7); one to low BRAM or device registers raises
@@ -714,42 +715,66 @@ that depends on `vtype` (vill, register-group alignment, mask-destination
 overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
 (vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
-unknown). The register-number rules depend on `vtype` only through LMUL, so
+unknown). Masked operations reject v0 as a SEW data source because the
+implicit mask has element width 1. A configuration allocation restarts the
+three-cycle wait for an empty configuration pipeline before the registered
+ROB in-flight indication arrives. The tracker reloads the architectural
+`vtype` only after that wait, allowing its retiring CSR update to arrive.
+The register-number rules depend on `vtype` only through LMUL, so
 `vector/vec_lmul_legality.sv` evaluates them from the instruction bits for
 each LMUL class (1 or fractional, 2, 4, 8) before the decoded queue, which
 carries the four results beside slot 1; dispatch selects the class of the
-tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with its scalar and the
-architectural `vl`, `vtype` and `vstart`, and the engine executes it after
-commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
+tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with
+its scalar and the architectural `vl`, `vtype` and `vstart`, and the engine
+executes it after commit; the CSR file clears `vstart` and sets VS Dirty.
+`vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
 result on CDB slot 6.
 
 ID decodes the unit-stride (one field), whole-register and mask loads and
 stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1
-only and go to INT_RS, which hands the rs1 base to the ROB. Each takes an
-entry in the vector memory table (`vector/vec_vmt.sv`) at dispatch, and
-dispatch holds the next one while all four entries are live. The table lists
-the vector memory instructions in flight in program order for the load and
-store queues' range holds, marks an entry retired on the edge the ROB head
-passes it, and frees entries that a flush removes. Its registered "no live
-retired entry" output holds the serializer's FENCE, FENCE.I and SFENCE.VMA
-drain, the store-conditional unit's firing and arming, and the
-misaligned-access engine before its first access. The unit does not perform
-vector loads and stores: each raises illegal-instruction when it reaches the
-ROB head, and the trap's flush frees its entry. `vec_lmul_legality` decides
-this rejection from the decoded operation before the queue, excluding decode
-illegality and fetch faults. A separate bit travels beside the four LMUL
-classes, and dispatch includes it without consulting `vtype`. The other vector
-instructions, and the strided, indexed, segment and fault-only-first loads
-and stores, are illegal.
+only with `RS_NONE` and take an entry in the vector memory table
+(`vector/vec_vmt.sv`), holding the next one while all four entries are live.
+The table lists the vector memory instructions in flight in program order for
+the load and store queues' range holds (including 64-byte block holds on
+Zicbom entries), marks an entry retired on the edge the ROB head passes it, and
+frees entries that a flush removes. Its registered "no live retired entry"
+output holds the serializer's FENCE, FENCE.I and SFENCE.VMA drain, the
+store-conditional unit's firing and arming, the misaligned-access engine before
+its first access, and interrupt and debug-halt takes (`sq_committed_empty_for_trap`).
+When one reaches the ROB head and older committed vector work has drained,
+`vector/vec_head_mmu.sv` reads `rs1` through the integer register file's extra
+read port and checks `vtype` and register-group legality (`vill` except on
+whole-register forms, EMUL in `[1/8, 8]`, group alignment, and masked loads to
+`v0`), computes the active byte span from `vl`, `vstart` and `v0`, translates
+the one or two touched pages on the DMMU's walk-request port (requiring cached
+DDR with `PBMT = PMA`), waits for older committed scalar stores (`o_sq_committed_empty`), records
+the physical page segments in `vec_vmt`, and completes on CDB slot 6 to retire
+alone in slot 1 (`vstart` cleared; VS set Dirty on loads and when `vstart` was
+nonzero). Faults are reported precisely at the head (`xtval` holds the first
+active byte's virtual address in the faulting page, or the second page's base
+when a single element straddles into a faulting second page); if earlier whole
+elements lie on a valid first page before a faulting second page, `vec_vmu`
+executes those first-page elements before a synchronous machine or supervisor
+trap records the first unexecuted element in `vstart`. A partial-load fault in
+Debug Mode re-parks without that CSR update and can leave VS Clean after
+writing vector registers. After retirement, `vector/vec_vmu.sv` splits the
+access into 32-byte sectors across six line-client identities (IDs 2..7) to the
+coherence home, freeing the `vec_vmt` entry once all sector responses and VRF
+writes finish. A failed sector response after retirement, or during a partial
+first-page run ahead of a second-page fault, suppresses any VRF write and
+raises a sticky hart fatal error alongside `o_cache_fatal`. The other vector
+instructions, and the strided, indexed, segment and fault-only-first loads and
+stores, are illegal.
 
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector instructions are not implemented, and bare-metal
 software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
 not exist and VS reads zero.
 
-The vector unit's datapath blocks live in `vector/`; the core does not
-instantiate them, and each has its own unit bench. `vec_int_lane` is one 64-bit integer lane: add, subtract and
+The vector unit's datapath blocks live in `vector/` and have unit benches.
+`vec_engine` connects `vec_vrf` and `vec_int_lane` to the core.
+`vec_int_lane` is one 64-bit integer lane: add, subtract and
 reverse subtract, the logical operations and `vandn`, signed and unsigned
 minimum and maximum, shifts and rotates, merge and move, the Zvbb bit and byte
 reversals and counts, and the eight compares, at SEW 8, 16, 32 or 64. Its

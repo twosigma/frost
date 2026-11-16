@@ -554,9 +554,9 @@ async def complete_request_identity_space(dut: Any) -> None:
     allowed: set[int] = set()
     for hart in range(harts):
         # The cache protocol assigns each hart eight data, two fetch, two
-        # walk and HartLineIds (two) line-client identities. Line clients
+        # walk and HartLineIds (eight) line-client identities. Line clients
         # use DMARead/DMAWrite under the hart's source and class 3.
-        for port_class, count in ((0, 8), (1, 2), (2, 2), (3, 2)):
+        for port_class, count in ((0, 8), (1, 2), (2, 2), (3, 8)):
             allowed.update(
                 pack((2, hart), (2, port_class), (4, slot), (1, 0))
                 for slot in range(count)

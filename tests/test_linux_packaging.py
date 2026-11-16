@@ -463,6 +463,34 @@ def test_both_trees_describe_the_sysreset_syscon_reboot() -> None:
         assert symbol in config.splitlines()
 
 
+def test_reset_tree_resolves_the_production_syscon(tmp_path: Path) -> None:
+    """The smaller reset platform retains the real driver binding and regmap."""
+    reset_packer = _load_module(APPS / "opensbi_smoke" / "reset_pack_image.py")
+    packer = _load_module(SBI_PACKER)
+    dts = tmp_path / "reset.dts"
+    dtb = tmp_path / "reset.dtb"
+    dts.write_text(reset_packer.gen_reset_dts(clk_hz=200_000_000, mem_size=0x4000000))
+    subprocess.run(
+        ["dtc", "-I", "dts", "-O", "dtb", "-o", str(dtb), str(dts)], check=True
+    )
+
+    def cells(node: str, property_name: str) -> list[int]:
+        result = subprocess.run(
+            ["fdtget", "-t", "x", str(dtb), node, property_name],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return [int(value, 16) for value in result.stdout.split()]
+
+    node = f"/syscon@{packer.SYSRESET_BASE:x}"
+    assert cells(node, "reg") == [packer.SYSRESET_BASE, packer.SYSRESET_SIZE]
+    assert cells(node, "reg-io-width") == [4]
+    assert cells(node + "/reboot", "regmap") == cells(node, "phandle")
+    assert cells(node + "/reboot", "offset") == [0]
+    assert cells(node + "/reboot", "value") == [packer.SYSRESET_VALUE]
+
+
 def test_vcu118_device_tree_isa_matches_the_boot_packer() -> None:
     """The VCU118 tree lists the packer's extensions and the RTL's cbo.zero block.
 

@@ -103,11 +103,14 @@ module instr_operand_classifier (
         raw_class.uses_int_rs2 = 1'b1;
         raw_class.is_branch_or_jump = 1'b1;
       end
-      // A vector load or store (a vector width) reads only its rs1 base, in
-      // INT_RS, which hands it to the ROB; it takes no queue entry.
+      // A vector load or store (a vector width) executes at the ROB head
+      // without a reservation station or load/store-queue entry, reading its
+      // rs1 base from the extra integer register-file port at the head.
       riscv_pkg::OPC_LOAD, riscv_pkg::OPC_LOAD_FP: begin
-        raw_class.uses_int_rs1 = 1'b1;
-        if (!vector_mem) begin
+        if (vector_mem) begin
+          raw_class.rs_type = riscv_pkg::RS_NONE;
+        end else begin
+          raw_class.uses_int_rs1 = 1'b1;
           raw_class.has_int_dest = i_instr.opcode == riscv_pkg::OPC_LOAD;
           raw_class.has_fp_dest = i_instr.opcode == riscv_pkg::OPC_LOAD_FP;
           raw_class.rs_type = riscv_pkg::RS_MEM;
@@ -115,8 +118,10 @@ module instr_operand_classifier (
         end
       end
       riscv_pkg::OPC_STORE, riscv_pkg::OPC_STORE_FP: begin
-        raw_class.uses_int_rs1 = 1'b1;
-        if (!vector_mem) begin
+        if (vector_mem) begin
+          raw_class.rs_type = riscv_pkg::RS_NONE;
+        end else begin
+          raw_class.uses_int_rs1 = 1'b1;
           raw_class.uses_int_rs2 = i_instr.opcode == riscv_pkg::OPC_STORE;
           raw_class.uses_fp_rs2 = i_instr.opcode == riscv_pkg::OPC_STORE_FP;
           raw_class.is_int_store = i_instr.opcode == riscv_pkg::OPC_STORE;

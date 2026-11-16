@@ -110,6 +110,7 @@ VALID_APPS = [
     "uart_echo",
     "umode_test",
     "vec_arith_test",
+    "vec_mem_test",
     "vec_vsetvl_test",
     "vm_test",
 ]
@@ -121,6 +122,7 @@ BOARD_SPECIFIC_APPS = {
     "misaligned_test": frozenset({"x3"}),
     "nic_bench": frozenset({"vcu118"}),
     "vec_arith_test": frozenset({"x3"}),
+    "vec_mem_test": frozenset({"x3"}),
     "vec_vsetvl_test": frozenset({"x3"}),
 }
 
@@ -221,6 +223,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "pde_return_hazard",
     "ptw_coherence_test",
     "tick_torture",
+    "vec_mem_test",
 }
 
 

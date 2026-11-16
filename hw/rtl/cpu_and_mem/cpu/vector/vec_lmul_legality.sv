@@ -28,19 +28,9 @@
   (formal/vec_lmul_legality_equiv.sby).
 */
 module vec_lmul_legality (
-    input logic [31:0] i_insn,
-    input riscv_pkg::instr_op_e i_op,
-    input logic i_is_illegal,
-    input logic i_is_fetch_fault,
-    output logic [3:0] o_illegal,
-    output logic o_mem_illegal
+    input  logic [31:0] i_insn,
+    output logic [ 3:0] o_illegal
 );
-
-  // Vector loads and stores trap at the ROB head. This instruction-only
-  // rejection travels beside the LMUL classes; it does not depend on vtype.
-  // Decode illegality (including VS Off) and fetch faults keep their own cause.
-  assign o_mem_illegal = !i_is_illegal && !i_is_fetch_fault &&
-      ((i_op == riscv_pkg::VLOAD) || (i_op == riscv_pkg::VSTORE));
 
   logic [2:0] funct3;
   logic [5:0] funct6;
@@ -63,7 +53,9 @@ module vec_lmul_legality (
         (!mask_dest && ((vd & Align) != 5'd0)) ||
         (mask_dest && (vd > vs2) && (vd <= (vs2 | Align))) ||
         (mask_dest && uses_vs1 && (vd > vs1) && (vd <= (vs1 | Align))) ||
-        (masked && !mask_dest && (vd == 5'd0));
+        (masked && !mask_dest && (vd == 5'd0)) ||
+        // The implicit mask uses EEW=1; a vector data source uses SEW.
+        (masked && ((vs2 == 5'd0) || (uses_vs1 && vs1 == 5'd0)));
   end
 
 endmodule
