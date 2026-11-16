@@ -30,15 +30,18 @@
   wrap within a few frames.
 
   The properties are the lifecycle the range-ordering holds rely on
-  (formal/vec_hold_rows_formal.sv assumes them of its table):
+  (formal/vec_hold_rows_formal.sv assumes them of its table, including an
+  entry a flush removes staying live for one more cycle):
     p_alloc_free     an index is allocated only when it was free before the
                      edge, so a freed index has an invalid cycle before reuse;
     p_live           an entry is live from allocation through completion,
                      or through the cycle after its instruction is flushed;
-  and, per entry (gen_entry_props), a live entry carries its instruction's tag
-  (program order), is retired exactly when the head has passed its
-  instruction (a flushed entry awaiting cleanup can remain behind the head),
-  and has its range written once while live and then fixed;
+    p_pending_not_retired
+                     an entry awaiting that cleanup is not retired;
+  and, per entry (gen_entry_props), a live entry, and an entry awaiting
+  cleanup, carries its instruction's tag (program order), is retired exactly
+  when the head has passed its instruction, and has its range written once
+  while live and then fixed;
     p_quiet          the registered "no live retired entry" output is exact
                      on every cycle (V-O4);
     p_full           the dispatch stall term is exact.
@@ -142,10 +145,9 @@ module vec_vmt_formal (
       for (int t = 0; t < V; t++) begin
         g_pending[t] <= g_live[t] && !g_ret[t] && (flush_all || (flush_en && g_seq[t] > flush_seq));
         if (passing[t]) g_ret[t] <= 1'b1;
-        if (g_live[t] && !g_ret[t] && (flush_all || (flush_en && g_seq[t] > flush_seq))) begin
-          g_live[t]  <= 1'b0;
-          g_known[t] <= 1'b0;
-        end
+        // A removed entry keeps its range state through its cleanup cycle.
+        if (g_live[t] && !g_ret[t] && (flush_all || (flush_en && g_seq[t] > flush_seq)))
+          g_live[t] <= 1'b0;
         if (rng_en && rng_idx == IW'(t) && g_live[t] && !g_known[t]) begin
           g_known[t] <= 1'b1;
           g_seg0[t]  <= seg0_in;
@@ -190,7 +192,7 @@ module vec_vmt_formal (
   end
   for (genvar t = 0; t < V; t++) begin : gen_entry_props
     always_comb begin
-      if (!rst && g_live[t]) begin
+      if (!rst && (g_live[t] || g_pending[t])) begin
         assert (tag[t] == g_seq[t][TW-1:0]);
         assert (retired[t] == (g_seq[t] < gh));
         assert (known[t] == g_known[t]);
