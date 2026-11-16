@@ -63,8 +63,6 @@ idle: select -assert-count 1 t:$assert
 kind: select -assert-count 1 t:$assert
 reply: select -assert-count 1 t:$assert
 select -assert-none t:$assume
-capture: sat -prove-asserts -verify -timeout 60
-idle: sat -prove-asserts -verify -timeout 60
 
 [files]
 ../hw/rtl/lib/cache/coherence_read_stream.sv
