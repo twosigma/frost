@@ -5006,8 +5006,11 @@ module coherence_l1d #(
             assume (i_address[ADDR_WIDTH-1:5] == f_claim_sector_q && !i_write_zero);
         end
       end
-      // The claim follows a scalar write.
-      if (i_next_same) assume (f_last_scalar_q);
+      // The claim follows a scalar write: this cycle's write, or the last one
+      // when none arrives. The store queue raises it on the bus cycle of the
+      // first cached plain store after a cbo.zero, when the last write before
+      // that cycle was the zero write, as the store buffer's proof assumes.
+      if (i_next_same) assume (store_push ? !i_write_zero : f_last_scalar_q);
       // The store queue's cbo.zero write: the block base, every strobe set.
       if (i_write_zero)
         assume (i_write_mask == 8'hff && !i_write_atomic && i_address[5:0] == 0);
