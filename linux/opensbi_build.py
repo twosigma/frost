@@ -29,9 +29,14 @@ PIE.
 """
 
 import argparse
+import fcntl
+import hashlib
+import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -52,6 +57,7 @@ FW_JUMP_OFFSET = 0x20_0000
 # Zicsr/Zifencei spelling, and OpenSBI's own code uses nothing beyond G+C.
 PLATFORM_RISCV_ISA = "rv64imafdc_zicsr_zifencei"
 PLATFORM_RISCV_ABI = "lp64d"
+BUILD_STAMP = ".frost-build.json"
 
 
 def firmware_paths(out_dir: Path) -> tuple[Path, Path]:
@@ -73,21 +79,9 @@ def default_cross(
     return default_riscv_prefix(repo) if configured is None else configured
 
 
-def build(out_dir: Path, cross: str, jobs: int, verbose: bool = False) -> Path:
-    """Build fw_jump into ``out_dir`` and return the .bin path."""
-    if not (OPENSBI_DIR / "Makefile").exists():
-        sys.exit(
-            "opensbi_build.py: linux/opensbi is not initialized "
-            "(run: git submodule update --init linux/opensbi)"
-        )
-    out_dir = out_dir.resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "make",
-        "-C",
-        str(OPENSBI_DIR),
-        f"-j{jobs}",
-        f"O={out_dir}",
+def make_arguments(cross: str) -> list[str]:
+    """Return the firmware options used by both make and the build stamp."""
+    return [
         "PLATFORM=generic",
         f"CROSS_COMPILE={cross}",
         "PLATFORM_RISCV_XLEN=64",
@@ -102,22 +96,163 @@ def build(out_dir: Path, cross: str, jobs: int, verbose: bool = False) -> Path:
         "PLATFORM_DEFCONFIG=" + os.path.relpath(FROST_DEFCONFIG, GENERIC_CONFIGS_DIR),
         f"platform-cflags-y=-DFDT_ASSUME_MASK={LIBFDT_ASSUME_MASK:#x}",
     ]
-    result = subprocess.run(
-        cmd,
-        cwd=OPENSBI_DIR,
-        stdout=None if verbose else subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
+
+
+def build_environment() -> dict[str, str]:
+    """Pass tool search paths, keeping inherited Make options out of the build."""
+    names = (
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "SOURCE_DATE_EPOCH",
+        "GCC_EXEC_PREFIX",
+        "COMPILER_PATH",
+        "LIBRARY_PATH",
+        "CPATH",
+        "C_INCLUDE_PATH",
     )
-    if result.returncode != 0:
-        if result.stdout:
-            print(result.stdout[-4000:], file=sys.stderr)
-        sys.exit(f"opensbi_build.py: OpenSBI build failed (exit {result.returncode})")
-    fw_bin, fw_elf = firmware_paths(out_dir)
-    if not fw_bin.exists() or not fw_elf.exists():
-        sys.exit(f"opensbi_build.py: build produced no fw_jump image under {out_dir}")
-    return fw_bin
+    return {
+        **{name: os.environ[name] for name in names if name in os.environ},
+        "LC_ALL": "C",
+    }
+
+
+def command_output(command: list[str], environment: Mapping[str, str]) -> str:
+    """Read a short, bounded Git or toolchain query."""
+    return subprocess.run(
+        command,
+        cwd=OPENSBI_DIR,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout
+
+
+def source_identity(environment: Mapping[str, str]) -> dict[str, str]:
+    """Hash the revision and tracked and untracked source contents, including edits."""
+    git = ["git", "-C", str(OPENSBI_DIR)]
+    revision = command_output([*git, "rev-parse", "HEAD"], environment).strip()
+    description = command_output([*git, "describe", "--always"], environment).strip()
+    files = command_output(
+        [*git, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        environment,
+    )
+    contents = hashlib.sha256()
+    for name in sorted(set(files.split("\0")) - {""}):
+        path = OPENSBI_DIR / name
+        contents.update(os.fsencode(name) + b"\0")
+        if path.is_symlink():
+            data = (
+                b"symlink\0"
+                + os.fsencode(os.readlink(path))
+                + b"\0"
+                + path.read_bytes()
+            )
+        elif path.is_file():
+            data = str(path.stat().st_mode).encode() + b"\0" + path.read_bytes()
+        else:
+            data = b"missing"
+        contents.update(hashlib.sha256(data).digest())
+    return {
+        "revision": revision,
+        "description": description,
+        "contents": contents.hexdigest(),
+    }
+
+
+def build_inputs(cross: str, environment: Mapping[str, str]) -> str:
+    """Describe every selected input without relying on file timestamps."""
+    tools = {}
+    for tool in ("gcc", "as", "ld", "ar", "objcopy"):
+        command = cross + tool
+        tools[command] = {
+            "path": shutil.which(command, path=environment.get("PATH")),
+            "version": command_output([command, "--version"], environment),
+        }
+    return (
+        json.dumps(
+            {
+                "schema": 1,
+                "builder": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "source_path": str(OPENSBI_DIR.resolve()),
+                "source": source_identity(environment),
+                "defconfig": hashlib.sha256(FROST_DEFCONFIG.read_bytes()).hexdigest(),
+                "arguments": make_arguments(cross),
+                "environment": dict(environment),
+                "toolchain": tools,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def build(out_dir: Path, cross: str, jobs: int, verbose: bool = False) -> Path:
+    """Reuse matching firmware, or build fw_jump in an empty output directory."""
+    if not (OPENSBI_DIR / "Makefile").exists():
+        sys.exit(
+            "opensbi_build.py: linux/opensbi is not initialized "
+            "(run: git submodule update --init linux/opensbi)"
+        )
+    out_dir = out_dir.resolve()
+    if any(
+        path.resolve().is_relative_to(out_dir)
+        for path in (OPENSBI_DIR, FROST_DEFCONFIG, Path(__file__))
+    ):
+        sys.exit(f"opensbi_build.py: output directory contains build inputs: {out_dir}")
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    # The lock survives replacement of the output directory by either caller.
+    with (out_dir.parent / f".{out_dir.name}.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        environment = build_environment()
+        inputs = build_inputs(cross, environment)
+        stamp = out_dir / BUILD_STAMP
+        fw_bin, fw_elf = firmware_paths(out_dir)
+        try:
+            matches = stamp.read_text() == inputs
+        except (OSError, UnicodeError):
+            matches = False
+        if matches and fw_bin.is_file() and fw_elf.is_file():
+            return fw_bin
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir()
+        cmd = [
+            "make",
+            "-C",
+            str(OPENSBI_DIR),
+            f"-j{jobs}",
+            f"O={out_dir}",
+            *make_arguments(cross),
+        ]
+        with tempfile.TemporaryFile(mode="w+t") as log:
+            result = subprocess.run(
+                cmd,
+                cwd=OPENSBI_DIR,
+                env=environment,
+                stdout=None if verbose else log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                timeout=600,
+            )
+            if result.returncode != 0:
+                log.seek(max(0, log.tell() - 4000))
+                print(log.read(), file=sys.stderr)
+                sys.exit(
+                    f"opensbi_build.py: OpenSBI build failed (exit {result.returncode})"
+                )
+        if not fw_bin.is_file() or not fw_elf.is_file():
+            sys.exit(
+                f"opensbi_build.py: build produced no fw_jump image under {out_dir}"
+            )
+        pending = stamp.with_suffix(".tmp")
+        pending.write_text(inputs)
+        pending.replace(stamp)
+        return fw_bin
 
 
 def main() -> int:
