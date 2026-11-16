@@ -358,8 +358,9 @@ The shell opens MTU, flags and IPv6 restoration files before the test and
 writes through those descriptors, since absolute sysfs or proc lookups can
 revalidate the NFS root. It writes, syncs and removes a file on the root to
 prove that the root came back after the test took its link down. It leaves
-`frost_stress`, `frost_nettest`, and `frost_memerr.ko` in `/usr/local/bin`. The SoC has no
-software reset, so reload the image before the next boot.
+`frost_stress`, `frost_nettest`, and `frost_memerr.ko` in `/usr/local/bin`.
+Reload the X3 images for a fresh boot: SYSRESET does not restore the mutable
+firmware and kernel images in DDR.
 
 ## Operation
 
