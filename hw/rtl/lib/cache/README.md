@@ -850,9 +850,9 @@ inputs with qualifiers computed independently of those inputs. The parking
 table also combines each park event with precomputed priority and hold terms.
 Dispatch
 reduces the registered groups four at a time before its final selection and
-stop gate. The groups follow the slot's parking updates while
-the selection is held. Only the selected slot's group may be set. A selection
-captured with a simultaneous fill park is canceled before
+stop gate. While a selection is held, the groups follow its slot's parking
+updates and only that slot's group may be set. Idle group values are
+unobserved. A selection captured with a simultaneous fill park is canceled before
 allocating an engine or image credit. The tag decision carries its captured
 query address through conflict and replacement checks. Engine address pins
 exclude valid victim lines. An invalid way's stored tag does not create an

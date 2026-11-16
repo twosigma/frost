@@ -61,7 +61,8 @@ home: cutpoint w:memory_payload w:memory_pick w:memory_found w:run w:update_sele
 # buffer availability and forward events are arbitrary in the capture model.
 completions: cutpoint w:work_eligible w:work_position_ready w:free_buffer w:forwarded
 # Only the capture properties are observable in this local model. Reset is
-# unrestricted, and each property starts after the first observed reset.
+# unrestricted. State comparisons start after the first observed reset;
+# the completion next-state comparison is unconditional.
 delete -output w:*
 opt -purge
 setundef -undriven -anyseq
