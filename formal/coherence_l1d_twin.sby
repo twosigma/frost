@@ -1,6 +1,9 @@
 [tasks]
 l1d_twin_single single
 l1d_twin_multi multi
+# Stream prefetching sets the credited read turn, the operation LUT6's other
+# half of rows.
+l1d_twin_stream stream
 
 [options]
 mode bmc
@@ -23,6 +26,7 @@ read -sv -D SYNTHESIS coherence_read_select.sv
 read -sv -D SYNTHESIS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv coherence_l1d.sv
 single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
 multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
+stream: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d
 hierarchy -check -top coherence_l1d
 proc
 setattr -mod -unset keep_hierarchy *
@@ -45,6 +49,7 @@ read -sv -D SYNTHESIS coherence_read_select.sv
 read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv coherence_l1d.sv
 single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
 multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
+stream: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d
 hierarchy -check -top coherence_l1d
 proc
 setattr -mod -unset keep_hierarchy *
@@ -71,6 +76,7 @@ select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
 # A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
 l1d_twin_single: select -assert-min 1 @blk
 l1d_twin_multi: select -assert-min 3446 @blk
+l1d_twin_stream: select -assert-min 8617 @blk
 equiv_simple @blk
 equiv_status -assert @blk
 design -reset

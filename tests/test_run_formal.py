@@ -1712,6 +1712,7 @@ FORMAL_TARGETS = [
         tasks=(
             "l1d_twin_single",
             "l1d_twin_multi",
+            "l1d_twin_stream",
         ),
     ),
     FormalTarget(
@@ -1778,7 +1779,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "store_queue_twin.sby",
         "Store queue: primitive and portable forms are equivalent.",
-        tasks=("sq_twin",),
+        tasks=("sq_twin", "sq_twin_cpu"),
     ),
     FormalTarget(
         "reservation_station_twin.sby",
@@ -3182,6 +3183,10 @@ SBY_TASKS = [
         "L1D primitive form equals its portable form, three miss slots.",
     ),
     (
+        "l1d_twin_stream",
+        "L1D primitive form equals its portable form, eight miss slots with stream prefetching.",
+    ),
+    (
         "dbq_twin",
         "Decoded bundle queue primitive form equals its portable form with the split shadow stall.",
     ),
@@ -3244,6 +3249,10 @@ SBY_TASKS = [
     (
         "sq_twin",
         "Store queue primitive form equals its portable form.",
+    ),
+    (
+        "sq_twin_cpu",
+        "Store queue primitive form equals its portable form with the CPU's store-queue settings.",
     ),
     (
         "rs_twin_indexed",

@@ -46,7 +46,7 @@ setundef -undriven -anyseq
 delete -output w:*
 opt_clean
 memory_map
-opt -fast -noff
+opt -fast -noff -keepdc
 select -assert-min 1 t:$*ff*
 cutpoint t:$*ff* t:$*latch*
 select -assert-none t:*ff* t:*FF* t:*latch*

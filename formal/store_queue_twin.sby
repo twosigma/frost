@@ -1,5 +1,7 @@
 [tasks]
 sq_twin sq
+# The CPU's store-queue settings, as sq_next_same's bmc_cpu sets them.
+sq_twin_cpu sq cpu
 
 [options]
 mode bmc
@@ -16,6 +18,7 @@ smtbmc boolector
 # registers and signals by name. equiv_simple then proves each equivalence point
 # whose cone holds a primitive cell, for any register state and input.
 read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv
+cpu: chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 -set CACHE_NORMAL_MEMORY 1 store_queue
 hierarchy -check -top store_queue
 proc
 setattr -mod -unset keep_hierarchy *
@@ -32,6 +35,7 @@ design -stash gold
 design -reset
 read_verilog -formal +/xilinx/cells_sim.v
 read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv
+cpu: chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 -set CACHE_NORMAL_MEMORY 1 store_queue
 hierarchy -check -top store_queue
 proc
 setattr -mod -unset keep_hierarchy *
@@ -58,6 +62,7 @@ select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
 # A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
 # o_cache_invalidate_valid ORs two registers (Zicbom's pulse), so it is no point.
 sq_twin: select -assert-min 87 @blk
+sq_twin_cpu: select -assert-min 87 @blk
 equiv_simple @blk
 equiv_status -assert @blk
 design -reset

@@ -22,7 +22,7 @@ proc
 setundef -undriven -anyseq
 # No flip-flop simplification: a register that this configuration never
 # writes after reset keeps a free value too.
-opt -noff
+opt -noff -keepdc
 prep -top store_queue
 select -assert-count 1 t:$check
 select -assert-none t:$assume a:init
