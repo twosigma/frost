@@ -97,7 +97,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_withdraw_zero_payload_bmc"): 5400,
     ("coherence_l1d", "coh_l1d_withdraw_full_cover"): 4800,
     ("coherence_l1d", "coh_l1d_full_hold_cover"): 4800,
-    ("coherence_l1d", "coh_l1d_full_twin_borrowed_cover"): 7200,
+    ("coherence_l1d", "coh_l1d_full_borrowed_cover"): 7200,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
@@ -429,7 +429,7 @@ FORMAL_TARGETS = [
             "coh_l1d_withdraw_zero_payload_bmc",
             "coh_l1d_withdraw_full_cover",
             "coh_l1d_full_hold_cover",
-            "coh_l1d_full_twin_borrowed_cover",
+            "coh_l1d_full_borrowed_cover",
             "coh_l1d_answer_bmc",
             "coh_l1d_stream_answer_bmc",
         ),
@@ -2120,7 +2120,7 @@ SBY_TASKS = [
         "Gather and pair holds, claimed credit at three and four records, and a data twin's Modified victim.",
     ),
     (
-        "coh_l1d_full_twin_borrowed_cover",
+        "coh_l1d_full_borrowed_cover",
         "A look-ahead pair's data twin installs on a borrowed endpoint before its Done.",
     ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
@@ -3821,6 +3821,130 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
             ("[script]", "cutpoint w:phase_q"),
             ("[script]", "chformal -assume -remove"),
             ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
+            ("[options]", "skip 48"),
+            ("[options]", "smtc hidden.smtc"),
+            ("[engines]", "smtbmc boolector --smtc hidden.smtc"),
+            ("[files]", "hidden.smtc"),
+            ("[file hidden.smtc]", "assume (= hidden 0)"),
+        ):
+            altered = {key: list(value) for key, value in safety.items()}
+            altered.setdefault(section, []).append(line)
+            with pytest.raises(AssertionError):
+                validate(altered)
+
+
+def test_full_line_safety_models_pinned() -> None:
+    """Pin the full-line and withdrawn-put safety models: sources, scripts, engines, bounds."""
+    reads = [
+        "read -sv coherence_read_stream.sv",
+        "read -sv cache_perf_pkg.sv",
+        "read -sv coherence_pkg.sv",
+        "read -sv coherence_request_endpoint.sv",
+        "read -sv coherence_put_endpoint.sv coherence_read_owners.sv "
+        "coherence_miss_credit.sv coherence_read_flags.sv "
+        "coherence_grant_select.sv coherence_read_select.sv",
+    ]
+    files = [
+        "../hw/rtl/lib/cache/coherence_read_stream.sv",
+        "../hw/rtl/lib/ram/sdp_block_ram.sv",
+        "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
+        "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
+    ] + [
+        f"../hw/rtl/lib/cache/{name}"
+        for name in (
+            "coherence_pkg.sv",
+            "coherence_types.svh",
+            "coherence_array.sv",
+            "coherence_request_endpoint.sv",
+            "coherence_put_endpoint.sv",
+            "coherence_l1d.sv",
+            "coherence_read_owners.sv",
+            "coherence_miss_credit.sv",
+            "coherence_read_flags.sv",
+            "coherence_grant_select.sv",
+            "coherence_read_select.sv",
+            "coherence_read_payload.sv",
+            "cache_perf_pkg.sv",
+            "coherence_store_buffer.sv",
+        )
+    ]
+    data = " ".join(f"c:p_store_data_{index}" for index in range(1, 6))
+    payload_properties = [
+        f"select -assert-count 5 {data}",
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {data} %u %u %u %u %d",
+        "select -assert-count 5 t:$check r:FLAVOR=assert %i",
+    ]
+    for task, depth, timeout, engine in (
+        ("coh_l1d_full_bmc", "40", "10800", "abc bmc3"),
+        ("coh_l1d_full_multi_bmc", "30", "18000", "abc bmc3 -c"),
+        ("coh_l1d_full_payload_bmc", "40", "5400", "abc bmc3 -c"),
+        ("coh_l1d_withdraw_full_bmc", "40", "10800", "abc bmc3"),
+        ("coh_l1d_withdraw_zero_bmc", "40", "10800", "abc bmc3"),
+        ("coh_l1d_withdraw_full_payload_bmc", "40", "5400", "abc bmc3 -c"),
+        ("coh_l1d_withdraw_zero_payload_bmc", "40", "5400", "abc bmc3 -c"),
+    ):
+        payload = task.endswith("payload_bmc")
+        # The full-line tasks hold the zero write low; the zero-line ones
+        # leave it free and keep the zero-line property selection.
+        full = "_full_" in task
+        defines = " -D ZERO_WRITES" + (" -D FULL_WRITES" if full else "")
+        defines += " -D STORE_DATA_PROOF" if payload else ""
+        endpoints = " -set MISSES 3" if "multi" in task else ""
+        withdraw = (
+            ["chparam -set WITHDRAW_ABSORBED_W 1 coherence_l1d"]
+            if task.startswith("coh_l1d_withdraw_")
+            else []
+        )
+        control_properties = [
+            "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
+            "chformal -assert2assume c:p_prefetch_conflict_split",
+            f"select -assert-min 1 c:p_{'full' if full else 'zero'}_* t:$check %i "
+            "r:FLAVOR=assert %i",
+        ]
+        script = (
+            reads
+            + [
+                f"read -formal -sv{defines} coherence_read_payload.sv coherence_l1d.sv",
+                "read -sv coherence_store_buffer.sv",
+                "read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv",
+                f"chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2{endpoints} coherence_l1d",
+            ]
+            + withdraw
+            + ["prep -flatten -top coherence_l1d"]
+            + (payload_properties if payload else control_properties)
+            + (["connect -set i_write_zero 1'b0"] if full else [])
+            + [
+                "memory_map",
+                "opt",
+                "techmap",
+                "opt -fast",
+                "setundef -anyseq",
+                "opt_clean",
+            ]
+        )
+
+        def validate(config: dict[str, list[str]]) -> None:
+            assert config.keys() == {"[options]", "[engines]", "[script]", "[files]"}
+            assert dict(line.split(maxsplit=1) for line in config["[options]"]) == {
+                "mode": "bmc",
+                "depth": depth,
+                "timeout": timeout,
+                "aigsmt": "boolector",
+            }
+            assert config["[engines]"] == [engine]
+            assert config["[script]"] == script, task
+            assert config["[files]"] == files
+
+        safety = l1d_task_config(task)
+        validate(safety)
+        for section, line in (
+            ("[script]", "connect -set i_read_valid 1'b0"),
+            ("[script]", "connect -set i_next_same 1'b0"),
+            ("[script]", "connect -set i_write_more 1'b0"),
+            ("[script]", "delete -input w:i_p_valid"),
+            ("[script]", "cutpoint w:store_upper"),
+            ("[script]", "chformal -assume -remove"),
+            ("[script]", "chformal -assert2assume c:p_zero_acquire_line"),
             ("[options]", "skip 48"),
             ("[options]", "smtc hidden.smtc"),
             ("[engines]", "smtbmc boolector --smtc hidden.smtc"),

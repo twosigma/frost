@@ -80,7 +80,7 @@ coh_l1d_withdraw_full_cover single fwcover covermode zero fullonly withdraw
 # three and four records and a data twin's Modified victim with one endpoint,
 # and a look-ahead pair's data twin installing on a borrowed endpoint.
 coh_l1d_full_hold_cover single fhcover covermode zero fullonly
-coh_l1d_full_twin_borrowed_cover multi fhlook covermode zero padded fullonly
+coh_l1d_full_borrowed_cover multi fhlook covermode zero padded fullonly
 
 [options]
 ~covermode: mode bmc
