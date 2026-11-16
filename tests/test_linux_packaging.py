@@ -572,12 +572,20 @@ def test_advertised_isa_lists_agree() -> None:
         "\n### Microarchitecture", 1
     )[0]
     readme_exts: set[str] = set()
+    vector_unadvertised = {"v", "zvbb", "zvfhmin", "zvfh", "zvbc", "zvkng"}
     for match in re.finditer(
         r"^\|\s*\*\*([^*]+)\*\*\s*\|\s*(.*?)\s*\|$", ext_section, re.M
     ):
         names, desc = match[1], match[2]
         for raw_token in names.split(","):
             token = raw_token.strip().lower()
+            if token == "v (partial)":
+                token = "v"
+            if token in vector_unadvertised:
+                assert (
+                    "unadvertised" in desc.lower()
+                    or "advertisement remain disabled" in desc.lower()
+                ), token
             if token == "rv64i":
                 readme_exts.add("i")
             elif token == "b":
@@ -589,9 +597,11 @@ def test_advertised_isa_lists_agree() -> None:
                 continue
             else:
                 readme_exts.add(token)
-    # Supm is described in the README but deliberately not advertised: the
-    # supplied Linux image does not expose the tagged-address ABI it needs.
-    readme_unadvertised = {"supm"}
+    # Supm needs a tagged-address ABI that the supplied Linux image lacks.
+    # Optional vector execution is documented but remains unadvertised at
+    # every implementation stage, including completed arithmetic subsets.
+    readme_unadvertised = {"supm"} | (readme_exts & vector_unadvertised)
+    assert not (vector_unadvertised & advertised)
     assert readme_unadvertised <= readme_exts
     assert not (readme_unadvertised & advertised)
     assert readme_exts - readme_unadvertised == advertised
@@ -631,6 +641,7 @@ def test_advertised_isa_lists_agree() -> None:
         if (
             status.startswith("Implemented")
             and "advertisement in progress" not in status
+            and "unadvertised" not in status
         ):
             if ext_name == "rv64i":
                 roadmap_implemented.add("i")
