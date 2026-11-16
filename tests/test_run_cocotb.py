@@ -1205,6 +1205,66 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
         include_in_pytest=False,
     ),
+    "vec_vtype_handoff_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vtype_handoff_test",
+        nic_mac_clocks=False,
+        description="Register-form vsetvl immediately followed by arithmetic from reset vill; VLEN 128",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=128"),),
+        include_in_pytest=False,
+    ),
+    "vec_vtype_handoff_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vtype_handoff_test",
+        nic_mac_clocks=False,
+        description="Register-form vsetvl immediately followed by arithmetic from reset vill; VLEN 256",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=256"),),
+        include_in_pytest=True,
+    ),
+    "vec_vtype_handoff_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vtype_handoff_test",
+        nic_mac_clocks=False,
+        description="Register-form vsetvl immediately followed by arithmetic from reset vill; VLEN 512",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=512"),),
+        include_in_pytest=False,
+    ),
+    "vec_source_eew_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_source_eew_test",
+        nic_mac_clocks=False,
+        description="Masked v0 data-source traps preserve destination, vstart and VS; VLEN 128",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=128"),),
+        include_in_pytest=False,
+    ),
+    "vec_source_eew_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_source_eew_test",
+        nic_mac_clocks=False,
+        description="Masked v0 data-source traps preserve destination, vstart and VS; VLEN 256",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=256"),),
+        include_in_pytest=True,
+    ),
+    "vec_source_eew_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_source_eew_test",
+        nic_mac_clocks=False,
+        description="Masked v0 data-source traps preserve destination, vstart and VS; VLEN 512",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=512"),),
+        include_in_pytest=False,
+    ),
     "cbo_zero_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1919,6 +1979,38 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
+    "opensbi_reset_cold": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sbi_reset",
+        hdl_toplevel_module="frost",
+        app_name="opensbi_smoke",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description="S-mode SBI cold reboot through syscon and the boot entry",
+        extra_env=(
+            ("OPENSBI_SMOKE_PAYLOAD_SRC", "reset.c"),
+            ("OPENSBI_SMOKE_PACKER", "reset_pack_image.py"),
+            ("EXTRA_CFLAGS", "-DFROST_SBI_RESET_TYPE=1"),
+        ),
+        verilator_extra_args=("-GDDR_MODEL_LATENCY=1",),
+    ),
+    "opensbi_reset_warm": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sbi_reset",
+        hdl_toplevel_module="frost",
+        app_name="opensbi_smoke",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description=(
+            "S-mode SBI warm reboot through syscon and the boot entry; OpenSBI "
+            "routes cold and warm reboot to the same SYSRESET register here, so "
+            "this differs from opensbi_reset_cold only in the SBI reset type"
+        ),
+        extra_env=(
+            ("OPENSBI_SMOKE_PAYLOAD_SRC", "reset.c"),
+            ("OPENSBI_SMOKE_PACKER", "reset_pack_image.py"),
+            ("EXTRA_CFLAGS", "-DFROST_SBI_RESET_TYPE=2"),
+        ),
+        verilator_extra_args=("-GDDR_MODEL_LATENCY=1",),
+    ),
     # Without the misaligned-access engine, OpenSBI emulates the payload's
     # misaligned loads and stores in DDR (phase F); with it, the hardware
     # performs them.
@@ -2600,10 +2692,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="vec_lmul_legality",
         description="Mask/data source widths and widening accumulator overlap legality",
     ),
+    "vec_source_eew": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_source_eew",
+        hdl_toplevel_module="vec_lmul_legality",
+        description="Masked vector data sources cannot alias the implicit EEW1 mask",
+    ),
     "vec_vtype_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_vtype_tracker",
         hdl_toplevel_module="vec_vtype_tracker",
-        description="Delayed configuration retirement cannot reload stale vtype; CSR vstart and checkpoint recovery",
+        description=(
+            "Configuration handoff, immediate forms, CSR vstart, memory allocation "
+            "and checkpoint recovery"
+        ),
     ),
     "vec_mul_lane": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_mul_lane",

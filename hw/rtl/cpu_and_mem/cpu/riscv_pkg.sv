@@ -3289,7 +3289,8 @@ package riscv_pkg;
   endfunction
 
   // Geometry of accepted integer arithmetic: EEW and EMUL, aligned groups,
-  // permitted source/destination overlaps, and instructions using masks or
+  // permitted source/destination overlaps, including the implicit EEW1 mask
+  // versus data-source widths, and instructions using masks or
   // scalar vector elements independently of LMUL. Whole-register moves ignore
   // vl and LMUL but still use SEW and require a supported vtype.
   function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);

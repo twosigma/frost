@@ -379,7 +379,8 @@ jobs:
               [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [ddr_bench] or
               [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz]
               or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
-              [opensbi_smoke_no_misaligned_hw] or [isa_test_sram_macros] or [ddr_test_sram_macros]
+              [opensbi_smoke_no_misaligned_hw] or [opensbi_reset_cold] or [opensbi_reset_warm]
+              or [isa_test_sram_macros] or [ddr_test_sram_macros]
               or [ddr_exec_test_sram_macros] or
               [nic_loopback_sram_macros] or [cache_counters_openocd] or [async_hello_world]
               or [async_nic_loopback] or [async_dma_torture]
@@ -472,6 +473,18 @@ jobs:
               coverage: [bram]
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_smoke_no_misaligned_hw]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (OpenSBI cold reset)
+              coverage: [bram]
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[opensbi_reset_cold]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (OpenSBI warm reset)
+              coverage: [bram]
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[opensbi_reset_warm]"
           # The OpenOCD session that reads the cache counters is long, and its
           # program runs from low BRAM in either tier.
           - mem_config: bram
