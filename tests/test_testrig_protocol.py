@@ -211,8 +211,9 @@ def test_sail_ddr_capacity_matches_frost(
     assert len(ddr) == 1
     assert int(ddr[0]["size"]["value"], 16) == 1 << capacity_log2_bytes
     assert len(regions) == len(test_testrig.atomics.load_regions())
-    assert config["extensions"]["Zihpm"]["supported"] == sscofpmf
+    assert config["extensions"]["Zihpm"]["supported"]
     assert config["extensions"]["Sscofpmf"]["supported"]
+    assert config["extensions"]["Svinval"]["supported"]
     assert config["platform"]["reservation"] == {
         "reservation_set_size_exp": 5,
         "require_exact_reservation_addr": False,
@@ -221,13 +222,16 @@ def test_sail_ddr_capacity_matches_frost(
 
 
 def test_default_csr_view_keeps_absent_hpm_aliases() -> None:
-    """Default generation checks absent aliases; Sscofpmf needs its own view."""
+    """Default generation includes Zihpm user aliases, stimecmp, scountovf and mideleg."""
     include = re.compile(test_testrig.DEFAULT_CSR_INCLUDE)
-    for counter in range(11, 32):
+    for counter in range(3, 32):
         assert include.fullmatch(f"hpmcounter{counter}")
+    for counter in range(3, 11):
+        assert not include.fullmatch(f"mhpmevent{counter}")
     assert include.fullmatch("medeleg")
-    assert not include.fullmatch("mideleg")
-    assert not include.fullmatch("scountovf")
+    assert include.fullmatch("mideleg")
+    assert include.fullmatch("stimecmp")
+    assert include.fullmatch("scountovf")
 
 
 def test_dii_packet_wire_layout() -> None:
@@ -352,11 +356,53 @@ def test_sail_config_validates(tmp_path: Path, sscofpmf: bool) -> None:
         check=True,
     ).stdout
     assert re.match(
-        r"rv64imafdcb_zic64b_zicbom_zicbop_zicboz_ziccif_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause",
+        r"rv64imafdcb_zic64b_zicbom_zicbop_zicboz_ziccif_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm",
         isa,
     )
-    tokens = isa.strip().split("_")
-    for ext in ("zkt", "sscounterenw", "sstvecd", "zcb", "zcmop", "zimop", "zihintntl"):
+    tokens = set(isa.strip().split("_"))
+    for ext in (
+        "zkt",
+        "sscounterenw",
+        "sstvecd",
+        "zcb",
+        "zcmop",
+        "zimop",
+        "zihintntl",
+        "zihpm",
+        "svinval",
+        "sscofpmf",
+    ):
         assert ext in tokens
     assert "zicclsm" not in tokens
-    assert ("zihpm" in tokens) == sscofpmf
+
+
+def test_svinval_generator_reproducibility_and_coverage(tmp_path: Path) -> None:
+    """verif/testrig/svinval.py writes deterministic traces covering Svinval forms."""
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    paths_a = test_testrig.svinval.write_tests(
+        dir_a, count=8, seed=20261115, length=120
+    )
+    paths_b = test_testrig.svinval.write_tests(
+        dir_b, count=8, seed=20261115, length=120
+    )
+    assert len(paths_a) == 8
+    texts_a = [p.read_text(encoding="utf-8") for p in paths_a]
+    texts_b = [p.read_text(encoding="utf-8") for p in paths_b]
+    assert texts_a == texts_b
+
+    joined = "\n".join(texts_a)
+    assert ".noshrink" in joined and ".shrink" in joined
+    assert "0x18000073" in joined  # sfence.w.inval
+    assert "0x18100073" in joined  # sfence.inval.ir
+    assert "0x16000073" in joined  # sinval.vma x0, x0
+    assert "remap" in joined
+    assert "first insn after U->" in joined
+    assert "mop ->" in joined
+
+    args = test_testrig.parse_arguments(["--svinval", "50", "--seed", "7"])
+    assert args.svinval == 50 and args.seed == 7
+    with pytest.raises(SystemExit):
+        test_testrig.parse_arguments(["--sscofpmf", "--svinval", "5"])
+    with pytest.raises(SystemExit):
+        test_testrig.parse_arguments(["--vector", "2", "--svinval", "5"])

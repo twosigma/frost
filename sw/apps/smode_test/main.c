@@ -403,6 +403,12 @@ __attribute__((naked)) static void b_read_hpm3(void)
     __asm__ volatile("csrr t0, 0xC03\n ecall\n j .");
 }
 
+__attribute__((naked)) static void b_read_hpm31(void)
+{
+    /* hpmcounter31 (0xC1F) has mcounteren[31]=0 -> illegal below M mode. */
+    __asm__ volatile("csrr t0, 0xC1F\n ecall\n j .");
+}
+
 __attribute__((naked)) static void b_read_mhpm3(void)
 {
     /* mhpmcounter3 (0xB03) exists but is M-only -> illegal from S. */
@@ -893,8 +899,15 @@ int main(void)
     all_ok &= report("R unimpl-0xB20-from-M", g_cause, 2u);
     M_CSR_PROBE("csrr %0, 0xC03", hpm_val); /* Implemented user alias, readable in M. */
     all_ok &= report("R hpmcounter3-from-M", g_cause, ~0ul);
-    M_CSR_PROBE("csrr %0, 0xC1F", hpm_val); /* Unimplemented user alias. */
-    all_ok &= report("R unimpl-0xC1F-from-M", g_cause, 2u);
+    M_CSR_PROBE("csrr %0, 0xC1F", hpm_val); /* Zero-only user alias, readable in M. */
+    all_ok &= report("R hpmcounter31-from-M", g_cause, ~0ul);
+    all_ok &= report("R hpmcounter31-zero", hpm_val, 0);
+    M_CSR_PROBE("csrw 0xC1F, t1", hpm_val); /* Read-only user alias traps on write. */
+    all_ok &= report("R hpmcounter31-write-from-M", g_cause, 2u);
+    M_CSR_PROBE("csrr %0, 0xC9F", hpm_val); /* hpmcounter31h: absent on RV64 */
+    all_ok &= report("R unimpl-0xC9F-from-M", g_cause, 2u);
+    cause = run_at_priv(&b_read_hpm31, PRIV_S);
+    all_ok &= report("R hpmcounter31-from-S", cause, 2u);
     cause = run_at_priv(&b_read_hpm3, PRIV_S);
     all_ok &= report("R hpmcounter3-gated-from-S", cause, 2u);
 

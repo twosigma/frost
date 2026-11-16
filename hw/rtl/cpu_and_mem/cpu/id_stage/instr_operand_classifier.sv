@@ -185,7 +185,7 @@ module instr_operand_classifier (
           // Zimop MOP.R / MOP.RR: INT_RS, no operands, writes zero to rd.
           // i_illegal covers the funct3=100 encodings that are not MOPs.
           raw_class.has_int_dest = 1'b1;
-        end else if (i_instr.funct7 == 7'b0001001) begin
+        end else if (i_instr.funct7 == 7'b0001001 || i_instr.funct7 == 7'b0001011) begin
           raw_class.rs_type = riscv_pkg::RS_MEM;
           raw_class.is_fence_i = 1'b1;
           raw_class.is_sfence_vma = 1'b1;
@@ -194,6 +194,9 @@ module instr_operand_classifier (
           // (x0 reads as ready zero; dispatch records which are nonzero).
           raw_class.uses_int_rs1 = 1'b1;
           raw_class.uses_int_rs2 = 1'b1;
+        end else if (i_instr.funct7 == 7'b0001100) begin
+          raw_class.rs_type  = riscv_pkg::RS_MEM;
+          raw_class.is_fence = 1'b1;
         end else if ({i_instr.funct7, i_instr.source_reg_2} != 12'h000 &&
                      {i_instr.funct7, i_instr.source_reg_2} != 12'h001 &&
                      {i_instr.funct7, i_instr.source_reg_2[3:0]} != 11'b0000000_1101) begin

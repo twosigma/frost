@@ -477,6 +477,11 @@ its own ASID, or a global entry under any ASID.
   side array applies the flush's filter to all its entries in the flush's
   first cycle; a page flush removes the superpage whose region holds the page.
   While a flush runs the arrays accept no request.
+- Svinval's `sinval.vma` shares the `SFENCE_VMA` operation, selective VA/ASID
+  filter, serializer drain and U-mode/`mstatus.TVM` check; `sfence.w.inval`
+  and `sfence.inval.ir` decode as `FENCE` in M and S modes (regardless of
+  `mstatus.TVM`) and raise illegal-instruction in U-mode through ID's
+  registered `i_priv_is_u` gate.
 
 Svpbmt. The walker checks a leaf's PBMT field (PTE bits 62:61) against
 `menvcfg.PBMTE`, sampled when the walk starts: with PBMTE clear any nonzero PBMT is a

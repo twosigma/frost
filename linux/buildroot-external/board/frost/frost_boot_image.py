@@ -90,7 +90,7 @@ ISA_EXTENSIONS = (
     "zihintntl", "zihintpause", "zihpm", "zimop", "za64rs", "zawrs", "zba", "zbb",
     "zbc", "zbkb", "zbkc", "zbs", "zcb", "zcmop", "zkt", "smaia",
     "ssaia", "ssccptr", "sscofpmf", "sscounterenw", "ssnpm", "sstc", "sstvala",
-    "sstvecd", "svade", "svpbmt", "svvptc",
+    "sstvecd", "svade", "svinval", "svpbmt", "svvptc",
 )  # fmt: skip
 # Zicbom block size: cbo.clean, cbo.flush and cbo.inval act on the same
 # 64-byte L2 line (riscv_pkg::CboMgmtBlockBytes).
@@ -101,7 +101,7 @@ CBOZ_BLOCK_BYTES = 64
 # Zicbop block size: the prefetch hints name the same 64-byte block (they
 # execute as no-ops).
 CBOP_BLOCK_BYTES = 64
-ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_svade_svpbmt_svvptc"
+ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_svade_svinval_svpbmt_svvptc"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
@@ -371,7 +371,7 @@ def gen_dts(
 \t\t * cycles and instructions on counters 9 and 10, which overflow and
 \t\t * filter by privilege; the fixed counters 0 and 2 do neither.
 \t\t * Raw translation events: 16 = page-walker busy cycles (counter 8),
-\t\t * 17 = SFENCE.VMA TLB invalidates (counter 7), 18 = CSR-requested TLB
+\t\t * 17 = SFENCE.VMA and SINVAL.VMA TLB invalidates (counter 7), 18 = CSR-requested TLB
 \t\t * invalidates (counter 4). Raw cache refill events: 19 = L1I refills
 \t\t * (counter 3), 20 = L2 demand misses, the home's demand line reads
 \t\t * from memory (counter 6), 21 = L2 prefetch misses (counter 5); the
