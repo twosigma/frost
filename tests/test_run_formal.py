@@ -1421,8 +1421,18 @@ FORMAL_TARGETS = [
         "backing_btb.sby",
         "Backing BTB lookups match a mirror of its sets, every set holds each "
         "valid tag once, and requests in training hold their set's current "
-        "entries, at two and four ways",
-        tasks=("bmc", "bmc_four_way", "prove", "prove_four_way", "cover"),
+        "entries, at two and four ways; slot 2's fields formed for each slot-1 "
+        "size and selected by the packet's size equal the single reduction they "
+        "replace, for any register state",
+        tasks=(
+            "bmc",
+            "bmc_four_way",
+            "prove",
+            "prove_four_way",
+            "cover",
+            "size_select",
+            "size_select_four_way",
+        ),
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
@@ -2969,6 +2979,14 @@ SBY_TASKS = [
     ("bmc_btb_index3", "Bounded relation checking with three BTB index bits"),
     ("bmc_four_way", "Bounded checking with four ways"),
     ("prove_four_way", "Unbounded safety checking with four ways"),
+    (
+        "size_select",
+        "Slot-2 fields per slot-1 size equal the single reduction, any state.",
+    ),
+    (
+        "size_select_four_way",
+        "Slot-2 fields per slot-1 size equal the single reduction, four ways.",
+    ),
     ("bmc_xlen72", "Bounded Bare-output checking with local XLEN 72"),
     ("bmc_integrated", "Bounded checking with the integrated IF handoff parameter"),
     ("prove_xlen32", "Unbounded safety checking with a local 32-bit datapath"),
