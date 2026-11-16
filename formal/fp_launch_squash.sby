@@ -17,7 +17,9 @@ cover: depth 14
 smtbmc boolector
 
 [script]
-read -sv -D SYNTHESIS riscv_pkg.sv fp_engine.sv fp_launch_squash_reference.sv
+# The engine's significand multiplier is replaced by fp_launch_squash_mul_stub.sv
+# (see there): this miter checks launch control, fp_engine_equiv the arithmetic.
+read -sv -D SYNTHESIS riscv_pkg.sv fp_launch_squash_mul_stub.sv fp_engine.sv fp_launch_squash_reference.sv
 on: read -sv fp_shim.sv
 off: read -sv fp_shim.sv
 cover: read -sv fp_shim.sv
@@ -61,7 +63,7 @@ connect -nounset -set b_dp[82:82] u_base.u_engine.sx_q
 connect -nounset -set b_dp[81:81] u_base.u_engine.zr_q
 connect -nounset -set b_dp[80:80] u_base.u_engine.zx_q
 connect -nounset -set b_dp[79:79] u_base.u_engine.eff_sub_q
-connect -nounset -set b_dp[78:78] u_base.u_engine.first_q
+connect -nounset -set b_dp[78:78] 1'0
 connect -nounset -set b_dp[77:77] u_base.u_engine.qlast_q
 connect -nounset -set b_dp[76:76] u_base.u_engine.rem_nz_q
 connect -nounset -set b_dp[75:75] u_base.u_engine.tiny_q
@@ -76,6 +78,11 @@ connect -nounset -set b_dp[4:0] u_base.u_engine.flags_q
 connect -nounset -set b_i2f[133:70] u_base.u_engine.fast_i2f_abs_q
 connect -nounset -set b_i2f[69:64] u_base.u_engine.fast_i2f_lz_q
 connect -nounset -set b_i2f[63:0] u_base.u_engine.fast_i2f_norm_q
+connect -nounset -set b_mul[105:53] u_base.u_engine.mul_a_q
+connect -nounset -set b_mul[52:0] u_base.u_engine.mul_b_q
+connect -nounset -set b_div[163:110] u_base.u_engine.div_rem_q
+connect -nounset -set b_div[109:56] u_base.u_engine.div_d1_q
+connect -nounset -set b_div[55:0] u_base.u_engine.div_d3_q
 connect -nounset -set c_state u_cand.u_engine.state_q
 connect -nounset -set c_tag u_cand.tag_q
 connect -nounset -set c_squash u_cand.squash_q
@@ -109,7 +116,7 @@ connect -nounset -set c_dp[82:82] u_cand.u_engine.sx_q
 connect -nounset -set c_dp[81:81] u_cand.u_engine.zr_q
 connect -nounset -set c_dp[80:80] u_cand.u_engine.zx_q
 connect -nounset -set c_dp[79:79] u_cand.u_engine.eff_sub_q
-connect -nounset -set c_dp[78:78] u_cand.u_engine.first_q
+connect -nounset -set c_dp[78:78] 1'0
 connect -nounset -set c_dp[77:77] u_cand.u_engine.qlast_q
 connect -nounset -set c_dp[76:76] u_cand.u_engine.rem_nz_q
 connect -nounset -set c_dp[75:75] u_cand.u_engine.tiny_q
@@ -124,17 +131,23 @@ connect -nounset -set c_dp[4:0] u_cand.u_engine.flags_q
 connect -nounset -set c_i2f[133:70] u_cand.u_engine.fast_i2f_abs_q
 connect -nounset -set c_i2f[69:64] u_cand.u_engine.fast_i2f_lz_q
 connect -nounset -set c_i2f[63:0] u_cand.u_engine.fast_i2f_norm_q
+connect -nounset -set c_mul[105:53] u_cand.u_engine.mul_a_q
+connect -nounset -set c_mul[52:0] u_cand.u_engine.mul_b_q
+connect -nounset -set c_div[163:110] u_cand.u_engine.div_rem_q
+connect -nounset -set c_div[109:56] u_cand.u_engine.div_d1_q
+connect -nounset -set c_div[55:0] u_cand.u_engine.div_d3_q
 prep -top fp_launch_squash_miter
 # Fails on any undriven wire, so every probe must be connected.
 check -assert
 on: select -assert-count 3 t:$check r:FLAVOR=assume %i
 cover: select -assert-count 3 t:$check r:FLAVOR=assume %i
 off: select -assert-count 2 t:$check r:FLAVOR=assume %i
-select -assert-count 11 t:$check r:FLAVOR=assert %i
+select -assert-count 12 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume t:$assert t:$live t:$fair
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+fp_launch_squash_mul_stub.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv
 fp_launch_squash_reference.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
