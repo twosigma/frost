@@ -3416,6 +3416,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_zero_bmc": "Coherence L1D zero control",
         "coherence_l1d_coh_l1d_zero_multi_bmc": "Coherence L1D zero multi-endpoint",
         "coherence_l1d_coh_l1d_zero_cover": "Coherence L1D zero cover",
+        "coherence_l1d_coh_l1d_zero_stream_free_bmc": "Coherence L1D zero stream",
         "coherence_l1d_coh_l1d_full_bmc": "Coherence L1D full control",
         "coherence_l1d_coh_l1d_full_multi_bmc": "Coherence L1D full multi-endpoint",
         "coherence_l1d_coh_l1d_full_payload_bmc": "Coherence L1D full payload",
@@ -3772,14 +3773,30 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {data} %u %u %u %u %d",
         "select -assert-count 5 t:$check r:FLAVOR=assert %i",
     ]
+    stream_checks = (
+        "c:p_prefetch_not_record c:p_grant_keeps_modified "
+        "c:p_zero_acquire_line c:p_zero_no_upper_request"
+    )
+    stream_properties = [
+        f"select -assert-count 4 {stream_checks}",
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+        f"{stream_checks} %u %u %u %d",
+        "select -assert-count 4 t:$check r:FLAVOR=assert %i",
+        "check -assert",
+    ]
     for suffix, depth, timeout, engine in (
         ("bmc", "40", "10800", "abc bmc3"),
         ("multi_bmc", "30", "18000", "abc bmc3 -c"),
         ("payload_bmc", "40", "5400", "abc bmc3 -c"),
+        ("stream_free_bmc", "31", "6000", "abc bmc3 -g"),
     ):
         payload = suffix == "payload_bmc"
+        stream = suffix == "stream_free_bmc"
         define = " -D STORE_DATA_PROOF" if payload else ""
-        endpoints = " -set MISSES 3" if suffix == "multi_bmc" else ""
+        endpoints = " -set MISSES 3" if stream or suffix == "multi_bmc" else ""
+        properties = stream_properties if stream else control_properties
+        if payload:
+            properties = payload_properties
         script = (
             reads
             + [
@@ -3787,9 +3804,10 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
                 "read -sv coherence_store_buffer.sv",
                 "read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv",
                 f"chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2{endpoints} coherence_l1d",
-                "prep -flatten -top coherence_l1d",
             ]
-            + (payload_properties if payload else control_properties)
+            + (["chparam -set STREAM_PREFETCH 1 coherence_l1d"] if stream else [])
+            + ["prep -flatten -top coherence_l1d"]
+            + properties
             + [
                 "memory_map",
                 "opt",
@@ -3821,6 +3839,8 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
             ("[script]", "cutpoint w:phase_q"),
             ("[script]", "chformal -assume -remove"),
             ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
+            ("[script]", "chformal -assert -remove c:p_zero_no_upper_request"),
+            ("[options]", f"depth {int(depth) - 1}"),
             ("[options]", "skip 48"),
             ("[options]", "smtc hidden.smtc"),
             ("[engines]", "smtbmc boolector --smtc hidden.smtc"),

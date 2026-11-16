@@ -56,7 +56,7 @@ coh_l1d_zero_multi_bmc multi zcontrol control_multi padded zero zmulti
 coh_l1d_zero_payload_bmc single data zpayload zero
 coh_l1d_zero_cover single zcovers zsingle covermode zero
 coh_l1d_zero_lookahead_cover multi zcovers zlook covermode zero padded
-coh_l1d_zero_stream_free_bmc turnstream multi cadical padded zero zstream
+coh_l1d_zero_stream_free_bmc turnstream multi padded zero zstream
 coh_l1d_zero_progress_cover multi zprogress covermode zero padded wordcover
 coh_l1d_zero_stream_bmc turnstream multi zrequest zero padded
 coh_l1d_zero_request_cover turnstream multi zrequest zrequestcover covermode zero padded wordcover
@@ -179,6 +179,10 @@ coh_l1d_ways_data_bmc: timeout 5100
 # is first reachable at step 29.
 zmulti: depth 30
 zstream: depth 31
+# Upper-sector request exclusion adds a hold interval to the free-input
+# stream check. Glucose closes all four properties in about 48 minutes;
+# allow 100 minutes without changing the inputs, properties or frame bound.
+zstream: timeout 6000
 zprogress: depth 160
 zprogress: timeout 1200
 zprogress: vcd_sim on
@@ -214,6 +218,7 @@ covers: smtbmc boolector
 pathcovers: smtbmc boolector
 zsingle: smtbmc boolector
 zlook: smtbmc boolector
+zstream: abc bmc3 -g
 zprogress: smtbmc boolector
 coh_l1d_zero_stream_bmc: abc bmc3 -c
 zrequestcover: smtbmc boolector
