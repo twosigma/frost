@@ -1821,7 +1821,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="opensbi_smoke",
         rerun_after_reset=False,
         description=(
-            "OpenSBI boot, SBI services and delegated APLIC interrupts (fixed memory layout)"
+            "OpenSBI boot, SBI services, SRST presence, unsupported shutdown and "
+            "delegated APLIC interrupts (fixed memory layout)"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
@@ -1834,8 +1835,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="opensbi_smoke",
         rerun_after_reset=False,
         description=(
-            "OpenSBI boot and SBI services, with OpenSBI emulating misaligned "
-            "accesses (no misaligned-access engine)"
+            "OpenSBI boot, SBI services, SRST presence and unsupported shutdown, "
+            "with OpenSBI emulating misaligned accesses (no misaligned-access engine)"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
         verilator_extra_args=("-GMISALIGNED_HW=0",),
