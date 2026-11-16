@@ -3211,7 +3211,8 @@ package riscv_pkg;
   // under vtype vt ({vill, vtype[7:0]}) when vtype is vill, when a register
   // group is not aligned to LMUL, when a mask destination overlaps a source
   // group anywhere but at its first register, or when a masked instruction
-  // other than a compare writes v0.
+  // other than a compare writes v0, or when a masked instruction reads v0
+  // both as an EEW=1 mask and as a SEW-width data source.
   function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
     logic [2:0] vlmul, funct3;
     logic [5:0] funct6;
@@ -3228,13 +3229,15 @@ package riscv_pkg;
     uses_vs1 = (funct3 == 3'b000);
     // LMUL 2, 4, 8 align groups to 2, 4, 8 registers; fractional LMUL to 1.
     align = vlmul[2] ? 5'd0 : 5'((1 << vlmul[1:0]) - 1);
+    // The implicit mask uses EEW=1; a vector data source uses SEW.
     vector_arith_illegal = vt[8] ||
         ((vs2 & align) != 5'd0) ||
         (uses_vs1 && ((vs1 & align) != 5'd0)) ||
         (!mask_dest && ((vd & align) != 5'd0)) ||
         (mask_dest && (vd > vs2) && (vd <= (vs2 | align))) ||
         (mask_dest && uses_vs1 && (vd > vs1) && (vd <= (vs1 | align))) ||
-        (masked && !mask_dest && (vd == 5'd0));
+        (masked && !mask_dest && (vd == 5'd0)) ||
+        (masked && ((vs2 == 5'd0) || (uses_vs1 && vs1 == 5'd0)));
   endfunction
 
   // ---------------------------------------------------------------------------
