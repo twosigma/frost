@@ -962,6 +962,10 @@ module vec_head_mmu #(
       assert (!o_vhead_complete.valid || (!i_rob_empty && (i_head_tag == tag_q)));
       // A retired non-faulting op waiting in HM_WAIT_RETIRE must never be flushed.
       assert (!((state_q == HM_WAIT_RETIRE) && i_flush_all));
+      // The registered commit of the instruction arrives in HM_WAIT_RETIRE,
+      // never in HM_CDB_OK, where commit_hit would miss it. The CDB is
+      // registered before the ROB and the commit bus is registered again.
+      assert (!(i_commit_valid && (i_commit_tag == tag_q) && (state_q == HM_CDB_OK)));
       // Case-C partial launch always stays inside Page 0.
       assert (!partial_launch || (last_p0_only_elem_q < first_p1_elem_q));
     end
@@ -1040,6 +1044,8 @@ module vec_head_mmu #(
       // Every commit of the instruction is consumed: it retires the load and
       // launches its descriptor.
       if (i_commit_valid) p_commit_consumed : assert (o_desc_valid && o_retire_vload);
+      p_commit_not_early :
+      assert (!(i_commit_valid && (i_commit_tag == tag_q) && (state_q == HM_CDB_OK)));
       if (o_desc_valid) begin
         f_launched <= 1'b1;
         p_translate_before_access : assert (f_walks == 2 && f_pages_checked == 2'b11);
