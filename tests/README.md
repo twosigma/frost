@@ -1006,6 +1006,23 @@ three-hour timeout, which `FROST_YOSYS_XILINX_TIMEOUT_SEC` overrides.
 ./scripts/frost.py synthesis --target generic   # portable synthesis only
 ```
 
+`test_read_verilog_element_selects`, also marked `synthesis`, elaborates
+small modules with Yosys's own SystemVerilog reader (`read_verilog`) and with
+yosys-slang and proves the two netlists equal with a SAT miter: element
+selects of packed arrays declared at module scope or in a function, of a
+multidimensional array in a generate block used only in port connections,
+and of a flat vector in a generate block selected with one part-select per
+element. It also checks forms `read_verilog` reads wrongly: an element
+select of a multidimensional packed array declared in a generate block and
+assigned there can stop with an error, and when the array's type is a
+typedef the select can become a bit select of the flattened vector. The fast
+check `test_rtl_generate_blocks_have_no_multidimensional_packed_arrays` reads
+the text of `hw/rtl` and flags each declaration in a generate block with two
+or more packed dimensions, counting those of a typedef declared in the same
+file or in a package that the file imports or names, or with a named type
+and packed dimensions of its own. It matches source text and is not a full
+SystemVerilog parser.
+
 The standalone Ethernet MAC/PCS has its own
 [simulation and synthesis checks](net10g/README.md).
 
