@@ -1,0 +1,31 @@
+[tasks]
+bmc
+prove
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 18
+prove: mode prove
+prove: depth 18
+cover: mode cover
+cover: depth 18
+timeout 300
+
+[engines]
+bmc: smtbmc boolector
+prove: abc pdr
+cover: smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv vec_cfg_unit.sv
+read -formal -sv vec_vtype_tracker.sv
+read -formal -sv vec_vtype_tracker_formal.sv
+prep -top vec_vtype_tracker_formal
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_cfg_unit.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_vtype_tracker.sv
+vec_vtype_tracker_formal.sv

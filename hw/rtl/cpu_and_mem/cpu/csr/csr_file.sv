@@ -3255,6 +3255,26 @@ module csr_file #(
         cover (f_past_valid && $past(
             !i_rst && i_vstore_commit && vec_vstart == '0 && mstatus_vs == 2'b10
         ) && mstatus_vs == 2'b10);
+        cover_vxsat_accumulate_and_dirty :
+        cover (f_past_valid && $past(
+            !i_rst && i_vec_vxsat_set && !vec_vxsat && !vec_csr_write &&
+            !status_csr_write && mstatus_vs == 2'b10
+        ) && vec_vxsat && vs_dirty);
+        cover_vtox_clears_vstart_and_dirty :
+        cover (f_past_valid && $past(
+            !i_rst && i_vtox_commit && vec_vstart != '0 && mstatus_vs == 2'b10
+        ) && vec_vstart == '0 && vs_dirty);
+        cover_vstore_clears_vstart_and_dirty :
+        cover (f_past_valid && $past(
+            !i_rst && i_vstore_commit && vec_vstart != '0 && mstatus_vs == 2'b10
+        ) && vec_vstart == '0 && vs_dirty);
+        cover_vector_read_preserves_clean :
+        cover (f_past_valid && $past(
+            !i_rst && i_csr_read_enable && i_csr_address == riscv_pkg::CsrVcsr &&
+            i_csr_op[1:0] == 2'b00 && mstatus_vs == 2'b10 &&
+            !i_vec_vxsat_set && !i_vcfg_commit.valid && !i_varith_commit &&
+            !i_vtox_commit && !i_vstore_commit && !i_vmem_fault_vstart_valid
+        ) && mstatus_vs == 2'b10);
       end
     end
   end

@@ -5669,6 +5669,10 @@ module cpu_ooo #(
         assert (!(vec_vmem_fault_vstart_valid &&
                   (csr_commit_fire || vcfg_commit.valid || vec_varith_commit ||
                    vec_vstore_commit)));
+        p_vtox_commit_exclusive :
+        assert (!(vec_vtox_commit &&
+                  (csr_commit_fire || vcfg_commit.valid || vec_varith_commit ||
+                   vec_vstore_commit || vec_vmem_fault_vstart_valid)));
       end
     end
 `endif

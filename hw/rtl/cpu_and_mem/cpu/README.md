@@ -732,18 +732,26 @@ using v0 as both a mask and an integer data source. Widening
 multiply-accumulate also reads its old double-width destination, so a narrow
 source may not overlap that accumulator.
 The tracker also checkpoints whether
-`vstart` is nonzero, clearing it for each dispatched vector instruction and
-reloading it after CSR accesses and full flushes. Arithmetic rejects nonzero
-`vstart`; scalar moves and whole-register moves follow their specified
-start-index behavior. When one retires, `vec_unit` queues it with its scalar and the
+`vstart` is nonzero, clearing it for each dispatched vector instruction. A
+checkpoint also records whether an allocation owns that prediction, so a delayed
+architectural `vtype` reload cannot overwrite a younger load/store's clear. A
+later CSR access or full flush discards the prediction before reloading the
+architectural state. This adds no dispatch wait, including after immediate
+configuration instructions. Arithmetic rejects nonzero `vstart`; whole-register
+moves honour their start index. `vmv.x.s` reads element zero irrespective of
+`vstart`. `vmv.s.x` writes element zero when `vstart < vl`, including
+`0 < vstart < vl`, following Spike's interpretation; it writes nothing when
+`vstart >= vl`. When arithmetic retires, `vec_unit` queues it with its scalar and the
 architectural `vl`, `vtype`, `vstart` and `vxrm`, and the engine executes it after
 commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
 result on CDB slot 6. Retiring these scalar-result instructions clears
 `vstart`, dirtying VS only if that changes it. Saturation from active,
-committed elements sets sticky `vxsat`. CSR execution waits for the vector
+committed elements sets sticky `vxsat`. Every CSR access waits for the vector
 engine and its retirement queue to drain, so reads and writes observe
-completed vector effects in program order.
+completed vector effects in program order. An interrupt can enter while the
+engine runs, but its handler's first CSR access may wait for all queued work;
+a large vector division can therefore make that wait long.
 
 ID decodes the unit-stride (one field), whole-register and mask loads and
 stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1

@@ -15,7 +15,7 @@ read_verilog -formal -D SYNTHESIS -D VEC_LMUL_LEGALITY_LOCAL_PROOF -sv dispatch.
 prep -top dispatch
 select -assert-none t:$assume a:init
 select -assert-count 1 t:$check r:FLAVOR=assume %i
-select -assert-count 1 t:$check r:FLAVOR=assert %i
+select -assert-count 2 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

@@ -201,3 +201,147 @@ async def immediate_and_recovery(dut: Any) -> None:
     dut.i_arch_vtype.value = 0x00
     await cycles(4)
     assert int(dut.o_valid.value) and int(dut.o_vtype.value) == 0
+
+
+@cocotb.test()
+async def memory_clear_survives_architectural_reload(dut: Any) -> None:
+    """Keep the younger memory allocation's clear while the vtype reload waits."""
+    ops = _parse_instr_op_enum()
+    await reset_tracker(dut)
+    for operation, delay in (("VLOAD", 0), ("VSTORE", 0), ("VLOAD", 1), ("VSTORE", 1)):
+        dut.i_alloc.value = 1
+        dut.i_alloc_op.value = ops["VSETVLI"]
+        dut.i_alloc_imm.value = 0xC0
+        await FallingEdge(dut.i_clk)
+        dut.i_alloc.value = 0
+        dut.i_vcfg_in_flight.value = 1
+        await FallingEdge(dut.i_clk)
+        dut.i_vcfg_in_flight.value = 0
+        dut.i_arch_vtype.value = 0xC0
+        dut.i_arch_vstart_nonzero.value = 1
+        dut.i_arch_reload.value = 1
+        await FallingEdge(dut.i_clk)
+        dut.i_arch_reload.value = 0
+        assert not int(dut.o_valid.value)
+        for _ in range(delay):
+            await FallingEdge(dut.i_clk)
+        dut.i_alloc.value = 1
+        dut.i_alloc_op.value = ops[operation]
+        await FallingEdge(dut.i_clk)
+        dut.i_alloc.value = 0
+        assert not int(dut.o_vstart_nonzero.value)
+        for _ in range(5):
+            await FallingEdge(dut.i_clk)
+            assert not int(dut.o_vstart_nonzero.value), (
+                operation
+                + ": architectural reload overwrote allocated memory vstart clear"
+            )
+        assert int(dut.o_valid.value) and int(dut.o_vtype.value) == 0xC0
+        # A later retiring CSR may write a new restart value after that memory
+        # operation completes; it replaces the older allocation prediction.
+        dut.i_arch_reload.value = 1
+        await FallingEdge(dut.i_clk)
+        dut.i_arch_reload.value = 0
+        for _ in range(5):
+            await FallingEdge(dut.i_clk)
+        assert int(dut.o_valid.value) and int(dut.o_vstart_nonzero.value)
+
+
+@cocotb.test()
+async def memory_prediction_recovery(dut: Any) -> None:
+    """Recovery keeps only surviving prediction; later CSRs own the next reload."""
+    ops = _parse_instr_op_enum()
+    await reset_tracker(dut)
+
+    async def cycles(count: int = 1) -> None:
+        for _ in range(count):
+            await FallingEdge(dut.i_clk)
+
+    async def allocate(name: str, immediate: int = 0) -> None:
+        dut.i_alloc.value = 1
+        dut.i_alloc_op.value = ops[name]
+        dut.i_alloc_imm.value = immediate
+        await cycles()
+        dut.i_alloc.value = 0
+
+    async def reload(vtype: int, start: int) -> None:
+        dut.i_arch_reload.value = 1
+        await cycles()
+        dut.i_arch_reload.value = 0
+        dut.i_arch_vtype.value = vtype
+        dut.i_arch_vstart_nonzero.value = start
+        await cycles(5)
+        assert int(dut.o_valid.value)
+        assert int(dut.o_vtype.value) == vtype
+        assert int(dut.o_vstart_nonzero.value) == start
+
+    for operation in ("VLOAD", "VSTORE"):
+        await reload(0xC0, 1)
+        # A checkpoint before the memory instruction must restore nonzero start.
+        dut.i_ckpt_id.value = 0
+        dut.i_ckpt_save.value = 1
+        await cycles()
+        dut.i_ckpt_save.value = 0
+
+        # Reload waits for a configuration, while memory may already allocate.
+        dut.i_vcfg_in_flight.value = 1
+        dut.i_arch_reload.value = 1
+        await cycles()
+        dut.i_arch_reload.value = 0
+        dut.i_ckpt_id.value = 1
+        dut.i_ckpt_save.value = 1
+        await allocate(operation)
+        dut.i_ckpt_save.value = 0
+        assert not int(dut.o_valid.value)
+        assert not int(dut.o_vstart_nonzero.value)
+
+        # A wrong-path vsetvli overwrites both type and start. Restore the
+        # unknown-type checkpoint that includes the surviving memory clear.
+        await allocate("VSETVLI", 0x100)
+        assert int(dut.o_valid.value) and int(dut.o_vtype.value) == 0x100
+        dut.i_restore_id.value = 1
+        dut.i_restore.value = 1
+        await cycles()
+        dut.i_restore.value = 0
+        assert not int(dut.o_valid.value)
+        dut.i_arch_vtype.value = 0xD1
+        dut.i_vcfg_in_flight.value = 0
+        for _ in range(5):
+            await cycles()
+            assert not int(dut.o_vstart_nonzero.value)
+        assert int(dut.o_valid.value) and int(dut.o_vtype.value) == 0xD1
+
+        # Restoring before the memory operation discards its clear completely.
+        dut.i_restore_id.value = 0
+        dut.i_restore.value = 1
+        await cycles()
+        dut.i_restore.value = 0
+        assert int(dut.o_valid.value) and int(dut.o_vtype.value) == 0xC0
+        assert int(dut.o_vstart_nonzero.value)
+
+        await allocate(operation)
+        assert not int(dut.o_vstart_nonzero.value)
+        # A full flush discards speculative ownership, including its saved vill.
+        dut.i_arch_vtype.value = 0x100
+        dut.i_flush_all.value = 1
+        await cycles()
+        dut.i_flush_all.value = 0
+        await cycles(5)
+        assert int(dut.o_valid.value) and int(dut.o_vtype.value) == 0x100
+        assert int(dut.o_vstart_nonzero.value)
+
+        # Once memory has retired, a younger CSR may explicitly re-establish a
+        # nonzero start. Its reload must not retain the old prediction marker.
+        await allocate(operation)
+        await reload(0xC0, 1)
+
+        # Immediate configurations are valid immediately, irrespective of the
+        # older architectural vill/start values. A memory allocation adds no wait.
+        for name, immediate in (("VSETVLI", 0xC0), ("VSETIVLI", 0xCC0)):
+            await allocate(name, immediate)
+            assert int(dut.o_valid.value) and int(dut.o_vtype.value) == 0xC0
+            await allocate(operation)
+            assert int(dut.o_valid.value) and not int(dut.o_vstart_nonzero.value)
+            await cycles(5)
+            assert int(dut.o_valid.value) and int(dut.o_vtype.value) == 0xC0
+            assert not int(dut.o_vstart_nonzero.value)

@@ -198,8 +198,6 @@ every supported extension and privilege mode.
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
 | **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks), ordered no-ops while every bus master is coherent; the device tree lists it with `riscv,cbom-block-size = <64>` |
 | **Zicbop**       | Cache-block prefetch hints (`prefetch.i/r/w`), executed as no-ops |
-| **V (partial)**  | Optional `VECTOR=1`: configuration, integer, fixed-point, mask, reduction and permutation execution at VLEN 128, 256 or 512; unit-stride, whole-register and mask loads/stores execute; other memory forms and floating-point execution are incomplete. `misa.V` and device-tree advertisement remain disabled |
-| **Zvbb**         | Vector bit manipulation, including widening shifts, with `VECTOR=1`; unadvertised |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |

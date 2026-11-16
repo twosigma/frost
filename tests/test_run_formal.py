@@ -708,8 +708,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "csr_commit_cofactor.sby",
         "Selected CSR commit updates match reference transitions under each interface "
-        "contract",
-        tasks=("prove", "prove_integrated", "prove_perf_off"),
+        "contract, including VECTOR=1",
+        tasks=("prove", "prove_integrated", "prove_perf_off", "prove_vector"),
     ),
     FormalTarget(
         "csr_sscofpmf.sby",
@@ -993,9 +993,15 @@ FORMAL_TARGETS = [
         tasks=("id_kill_equiv",),
     ),
     FormalTarget(
+        "vec_vtype_tracker.sby",
+        "Surviving vector-memory allocation clears restart state across delayed "
+        "architectural reload and checkpoint recovery",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
         "vec_lmul_legality_equiv.sby",
         "Queued LMUL classes equal the arithmetic and VTOX legality rules for "
-        "every vtype, instruction and operation",
+        "every vtype, instruction, operation and nonzero-vstart state",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -1705,8 +1711,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "csr_file_twin.sby",
-        "CSR file: primitive and portable forms are equivalent.",
-        tasks=("csr_twin",),
+        "CSR file: primitive and portable forms are equivalent with VECTOR=0 and 1.",
+        tasks=("csr_twin", "csr_twin_vector"),
     ),
     FormalTarget(
         "fp_engine_twin.sby",

@@ -24,9 +24,11 @@
   vector-config instruction has been in the ROB for three cycles (its commit
   update reaches the CSR file two cycles after it leaves the ROB). Branch
   checkpoints save it with the rename state, and a partial flush restores it.
-  The same checkpoint holds the nonzero-vstart flag. Every vector allocation
-  clears that flag for younger instructions; CSR retirement invalidates the
-  tracked state so the architectural vstart is read after its CSR update.
+  The same checkpoint holds the nonzero-vstart flag and whether an allocation
+  has predicted it clear. A load/store may allocate while vtype is unknown:
+  its prediction must survive the delayed architectural reload. CSR retirement
+  and full flush discard the prediction so the next reload observes the newer
+  CSR value or the surviving architectural state, respectively.
 */
 module vec_vtype_tracker #(
     parameter int unsigned VLEN = 256
@@ -82,37 +84,52 @@ module vec_vtype_tracker #(
 
   logic [8:0] vt_n;
   logic valid_n, start_n;
+  // vtype validity and ownership of the vstart prediction are independent.
+  // A pending vtype reload must not undo a younger memory allocation's clear.
+  logic start_predicted_q, start_predicted_n;
   always_comb begin
     vt_n = o_vtype;
     valid_n = o_valid;
     start_n = o_vstart_nonzero;
+    start_predicted_n = start_predicted_q;
     if (i_alloc && (i_alloc_op == riscv_pkg::VSETVLI || i_alloc_op == riscv_pkg::VSETIVLI)) begin
       start_n = 1'b0;
+      start_predicted_n = 1'b1;
       vt_n = {imm_vill, imm_vtype};
       valid_n = 1'b1;
     end else if (i_alloc && i_alloc_op == riscv_pkg::VSETVL) begin
       start_n = 1'b0;
+      start_predicted_n = 1'b1;
       valid_n = 1'b0;
     end else if (!o_valid && quiet_q == 3'd3 && !i_vcfg_in_flight) begin
-      start_n = i_arch_vstart_nonzero;
+      start_n = i_arch_vstart_nonzero && !start_predicted_q;
       vt_n = i_arch_vtype;
       valid_n = 1'b1;
     end
     if (i_alloc && (i_alloc_op == riscv_pkg::VARITH || i_alloc_op == riscv_pkg::VARITH_X ||
                     i_alloc_op == riscv_pkg::VTOX || i_alloc_op == riscv_pkg::VLOAD ||
-                    i_alloc_op == riscv_pkg::VSTORE))
+                    i_alloc_op == riscv_pkg::VSTORE)) begin
       start_n = 1'b0;
-    if (i_arch_reload) valid_n = 1'b0;
+      start_predicted_n = 1'b1;
+    end
+    // The CSR dispatch fence excludes allocation during its registered commit.
+    // A later CSR access observes drained vector work and supersedes prediction.
+    if (i_arch_reload) begin
+      valid_n = 1'b0;
+      start_predicted_n = 1'b0;
+    end
   end
 
-  logic [10:0] ckpt_q[riscv_pkg::NumCheckpoints];
+  logic [11:0] ckpt_q[riscv_pkg::NumCheckpoints];
   always_ff @(posedge i_clk) begin
-    if (i_ckpt_save) ckpt_q[i_ckpt_id] <= {start_n, valid_n, vt_n};
+    if (i_ckpt_save) ckpt_q[i_ckpt_id] <= {start_predicted_n, start_n, valid_n, vt_n};
     if (i_rst || i_flush_all) begin
       o_valid <= 1'b0;
+      start_predicted_q <= 1'b0;
     end else if (i_restore) begin
-      {o_vstart_nonzero, o_valid, o_vtype} <= ckpt_q[i_restore_id];
+      {start_predicted_q, o_vstart_nonzero, o_valid, o_vtype} <= ckpt_q[i_restore_id];
     end else begin
+      start_predicted_q <= start_predicted_n;
       o_vstart_nonzero <= start_n;
       o_valid <= valid_n;
       o_vtype <= vt_n;
