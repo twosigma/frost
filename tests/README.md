@@ -383,6 +383,11 @@ budget. `ptw_recovery_test` uses twelve million cycles for its complete
 branch-delay and walker-discard matrix. Their SFENCE.VMA operations drain
 committed stores, invalidate L1I and flush fetch and translation state.
 
+`sysreset_test` runs in both memory tiers and checks word and halfword reset
+requests, invalid writes, reset state and BRAM retention. Its marker is
+part of both load images, so loading the program clears state from an
+earlier invocation without clearing it on the resets under test.
+
 `opensbi_smoke` uses a twenty-million-cycle budget for firmware boot and
 its S-mode payload. Its misaligned loads and stores to DDR (phase F) run on
 the misaligned-access engine; `opensbi_smoke_no_misaligned_hw` builds without
@@ -417,6 +422,7 @@ of its memory and ALU loop.
 | `coremark_pro_loops`, `coremark_pro_nnet`, `irq_take_latency`, `lq_stale_slot_probe`, `fencei_jit_bench` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
+| `sysreset_test` | Its harness reloads the same memories over all three stale markers and checks both reset widths on each load. |
 
 Entries with `nic_mac_clocks=False` run as on a board with no NIC link
 clock: both MAC clocks absent and their clock-OK levels low, so the NIC keeps
