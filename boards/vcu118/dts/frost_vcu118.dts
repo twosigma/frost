@@ -31,14 +31,14 @@
 			compatible = "riscv";
 			mmu-type = "riscv,sv39";
 			riscv,isa-base = "rv64i";
-			riscv,isa = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_svade_svinval_svnapot_svpbmt_svvptc";
+			riscv,isa = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_ssu64xl_svade_svinval_svnapot_svpbmt_svvptc";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
 				"zfa", "zfhmin", "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
 				"zicclsm", "ziccrse", "zicntr", "zicond", "zicsr", "zifencei",
 				"zihintntl", "zihintpause", "zihpm", "zimop", "za64rs", "zawrs", "zba", "zbb",
 				"zbc", "zbkb", "zbkc", "zbs", "zcb", "zcmop", "zkt", "smaia",
 				"ssaia", "ssccptr", "sscofpmf", "sscounterenw", "ssnpm", "sstc", "sstvala",
-				"sstvecd", "svade", "svinval", "svnapot", "svpbmt", "svvptc";
+				"sstvecd", "ssu64xl", "svade", "svinval", "svnapot", "svpbmt", "svvptc";
 			/* cbo.clean/flush/inval act on one 64-byte L2 line; every bus master is coherent. */
 			riscv,cbom-block-size = <64>;
 			/* cbo.zero zeroes one 64-byte L2 line. */
