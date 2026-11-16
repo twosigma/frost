@@ -401,6 +401,7 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_payload_bmc",
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
+            "coh_l1d_zero_stream_bmc",
             "coh_l1d_answer_bmc",
             "coh_l1d_stream_answer_bmc",
         ),
@@ -451,6 +452,7 @@ FORMAL_TARGETS = [
             "coh_home_victim_cover",
             "coh_home_error_cover",
             "coh_home_prefetch_cover",
+            "coh_home_dispatch_cover",
         ),
     ),
     FormalTarget(
@@ -468,7 +470,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_engine.sby",
-        "Resident image merges, independent probe/data arrival, and held service payloads.",
+        "Resident image merges, independent probe/data arrival, quick result offers, "
+        "and held service payloads.",
         tasks=(
             "coh_home_engine_prove",
             "coh_home_engine64_prove",
@@ -477,7 +480,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_array.sby",
-        "Independent L2 ports preserve byte values, tokens and physical-row exclusions.",
+        "Independent L2 ports and one-way parallel reads preserve byte values, tokens "
+        "and physical-row exclusions.",
         tasks=(
             "coh_home_array_prove",
             *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
@@ -1106,7 +1110,10 @@ FORMAL_TARGETS = [
             "home_four",
             "home_default",
             "array_bram",
+            "array_bram_four",
             "array_uram",
+            "array_uram32",
+            "array_uram_row",
             "endpoint32",
             "endpoint56",
             "arbiter_default",
@@ -1214,6 +1221,18 @@ FORMAL_TARGETS = [
         "Store-address copies and the instantiated wrapper's consumed packets equal "
         "the translation select, with reset, flush and translation-change covers",
         tasks=("prove", "prove_integrated", "cover"),
+    ),
+    FormalTarget(
+        "rs_payload_twin.sby",
+        "Two tomasulo_wrapper copies whose reservation stations hold arbitrary stage2 payloads while "
+        "empty have equal outputs",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rs_stage2_payload_equiv.sby",
+        "Occupied reservation-station stage2 and stage2b payloads loaded on FU readiness equal "
+        "issue-fire capture across all four station configurations",
+        tasks=("int_prove", "mul_prove", "mem_prove", "fp_prove", "int_cover"),
     ),
     FormalTarget(
         "served_window_coverage.sby",
@@ -2005,6 +2024,10 @@ SBY_TASKS = [
         "cbo.zero twin installation, victim, wait and fallback covers.",
     ),
     ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
+    (
+        "coh_l1d_zero_stream_bmc",
+        "Stream prefetching and Modified-sector grants with cbo.zero writes and three endpoints.",
+    ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
@@ -2418,6 +2441,10 @@ SBY_TASKS = [
         "Prefetch fills that install, gain a seat or fail; reserve and no-fill decisions.",
     ),
     ("coh_home_fill_cover", "Fill installation, forward and waiter wake reachability."),
+    (
+        "coh_home_dispatch_cover",
+        "A dispatch-cycle lookup offer that loses the tag arbiter and wins from Lookup.",
+    ),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
         (
@@ -2764,8 +2791,20 @@ SBY_TASKS = [
         "Consumed packets and fill phase flags with three fills and four ways.",
     ),
     ("home_default", "Consumed packets and fill phase flags with eight fills."),
-    ("array_bram", "Reset-qualified response and row-read captures in the BRAM array."),
-    ("array_uram", "Reset-qualified response and row-read captures in the URAM array."),
+    ("array_bram", "Separate selection and row-read captures with one BRAM way."),
+    (
+        "array_bram_four",
+        "Separate selection and row-read captures with four BRAM ways.",
+    ),
+    ("array_uram", "Folded selection and banked captures with four 64-byte URAM ways."),
+    (
+        "array_uram32",
+        "Folded selection and banked captures with four 32-byte URAM ways.",
+    ),
+    (
+        "array_uram_row",
+        "Folded selection and single-array captures with short read latency.",
+    ),
     ("endpoint32", "Demand and grant captures with 32-bit addresses."),
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),
@@ -3058,6 +3097,26 @@ SBY_TASKS = [
     (
         "tree_equiv",
         "Store-queue forwarding balanced winner tree equals the linear formal selector.",
+    ),
+    (
+        "int_prove",
+        "Unbounded stage2 and stage2b payload equivalence in the INT station configuration.",
+    ),
+    (
+        "mul_prove",
+        "Unbounded stage2 payload equivalence in the MUL station configuration.",
+    ),
+    (
+        "mem_prove",
+        "Unbounded stage2 payload equivalence in the MEM station configuration.",
+    ),
+    (
+        "fp_prove",
+        "Unbounded stage2 payload equivalence in the FP station configuration.",
+    ),
+    (
+        "int_cover",
+        "Stage2 and stage2b stall, flush, back-to-back issue, and reset reachability.",
     ),
 ]
 
@@ -4344,7 +4403,7 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     proof = formal_task_config("coherent_hart_cache", "coh_hart_maint_prove")
     common = [
         "select -assert-none t:$check r:FLAVOR=assume %i",
-        "select -assert-count 372 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 373 t:$check r:FLAVOR=assert %i",
     ]
     lemmas = (
         "c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* "
@@ -4354,13 +4413,13 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     covers = "chformal -cover -remove"
     owned_commands = common + [
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %d",
-        "select -assert-count 284 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 285 t:$check r:FLAVOR=assert %i",
         covers,
     ]
     proof_commands = common + [
-        f"select -assert-count 284 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
+        f"select -assert-count 285 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
         f"chformal -assert2assume {lemmas}",
-        "select -assert-count 284 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 285 t:$check r:FLAVOR=assume %i",
         "select -assert-count 88 t:$check r:FLAVOR=assert %i",
         covers,
     ]
