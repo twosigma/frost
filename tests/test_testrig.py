@@ -42,14 +42,16 @@ import importlib
 import json
 import os
 import random
+import re
 import shutil
 import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +72,7 @@ rvfi_dii = importlib.import_module("testrig.rvfi_dii")
 vector = importlib.import_module("testrig.vector")
 compressed_mops = importlib.import_module("testrig.compressed_mops")
 fp_ext = importlib.import_module("testrig.fp_ext")
+TraceMonitor = importlib.import_module("testrig.run_stats").TraceMonitor
 SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 DEFAULT_VECTOR_LENGTH = 128
 SAVED_TRACES_DIR = REPO_ROOT / "verif" / "testrig" / "traces"
@@ -306,8 +309,248 @@ def stop(process: subprocess.Popen | None, grace: float) -> None:
         process.wait()
 
 
+@dataclass
+class TracePlan:
+    """Engine inputs and the minimum amount of work a session must compare."""
+
+    command: list[str]
+    traces: int
+    instructions: int
+    generated: bool = False
+    mode_check: tuple[str, tuple[str, ...], int, list[list[Any]]] | None = None
+
+
+def prepare_inputs(
+    arguments: argparse.Namespace, work_dir: Path, sail_config: Path
+) -> TracePlan:
+    """Generate or discover replay inputs before starting implementations."""
+    command: list[str] = []
+    mode_check = None
+    if arguments.trace is not None:
+        command += ["-t", str(Path(arguments.trace).resolve())]
+    elif arguments.sscofpmf:
+        command += ["-t", str(SSCOFPMF_TRACE)]
+    elif arguments.trace_dir is not None:
+        command += ["-d", str(Path(arguments.trace_dir).resolve())]
+    elif arguments.zcb:
+        seed = (
+            arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
+        )
+        trace_dir = work_dir / "compressed_mops"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        compressed_mops.write_tests(
+            trace_dir, arguments.zcb, seed, arguments.test_length
+        )
+        print(
+            f"Wrote {arguments.zcb} Zcb/Zcmop/Zimop/Zihintntl tests from seed {seed}",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
+    elif arguments.crypto:
+        seed = (
+            arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
+        )
+        trace_dir = work_dir / "crypto"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        crypto.write_tests(trace_dir, arguments.crypto, seed, arguments.test_length)
+        print(
+            f"Wrote {arguments.crypto} scalar cryptography tests from seed {seed}",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
+    elif arguments.vector:
+        seed = (
+            arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
+        )
+        trace_dir = work_dir / "vector"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        vector.write_tests(
+            trace_dir,
+            arguments.vector,
+            seed,
+            arguments.vector_length,
+            arguments.vlen,
+        )
+        print(
+            f"Wrote {arguments.vector} vector tests at VLEN {arguments.vlen} "
+            f"from seed {seed} (--seed {seed} regenerates them)",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
+    elif arguments.fp_ext:
+        seed = (
+            arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
+        )
+        trace_dir = work_dir / "fp_ext"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        fp_ext.write_tests(trace_dir, arguments.fp_ext, seed, arguments.test_length)
+        print(
+            f"Wrote {arguments.fp_ext} Zfhmin/Zfa tests from seed {seed}",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
+    elif arguments.mmu:
+        seed = (
+            arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
+        )
+        trace_dir = work_dir / "mmu"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        _, strands = mmu.write_tests_with_strands(
+            trace_dir, arguments.mmu, seed, arguments.test_length
+        )
+        mode_check = ("mmu", mmu.STRAND_KINDS, mmu.MIN_FULL_SAMPLE, strands)
+        print(
+            f"Wrote {arguments.mmu} Sv39 MMU tests from seed {seed} "
+            f"to {trace_dir} (--seed {seed} regenerates them)",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
+    elif arguments.cmo:
+        seed = (
+            arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
+        )
+        trace_dir = work_dir / "cmo"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        _, strands = cmo.write_tests_with_strands(
+            trace_dir, arguments.cmo, seed, arguments.test_length
+        )
+        mode_check = ("cmo", cmo.STRAND_KINDS, cmo.MIN_FULL_SAMPLE, strands)
+        print(
+            f"Wrote {arguments.cmo} CMO and Sstvala tests from seed {seed} "
+            f"to {trace_dir} (--seed {seed} regenerates them)",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
+    elif arguments.atomics:
+        seed = arguments.seed
+        if seed is None:
+            seed = random.randrange(1 << 32)
+        trace_dir = work_dir / "atomics"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        trace_dir.mkdir()
+        atomics.write_tests(
+            trace_dir,
+            arguments.atomics,
+            seed,
+            arguments.test_length,
+            config_path=sail_config,
+        )
+        print(
+            f"Wrote {arguments.atomics} A-extension tests from seed {seed} "
+            f"to {trace_dir} (--seed {seed} regenerates them)",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
+    else:
+        command += [
+            "-n",
+            str(arguments.tests),
+            "-L",
+            str(arguments.test_length),
+            "-I",
+            arguments.include,
+        ]
+        if arguments.exclude:
+            command += ["-x", arguments.exclude]
+    if "-d" in command:
+        directory = Path(command[command.index("-d") + 1])
+        paths = sorted(p for p in directory.rglob("*.S") if p.is_file())
+        requested = next(
+            (
+                count
+                for count in (
+                    arguments.atomics,
+                    arguments.crypto,
+                    arguments.zcb,
+                    arguments.fp_ext,
+                    arguments.mmu,
+                    arguments.cmo,
+                    arguments.vector,
+                )
+                if count is not None
+            ),
+            max(1, len(paths)),
+        )
+        if not directory.is_dir() or len(paths) < requested:
+            raise ValueError(
+                f"expected at least {requested} .S traces in {directory}; "
+                f"found {len(paths)}"
+            )
+    elif "-t" in command:
+        paths = [Path(command[command.index("-t") + 1])]
+        requested = 1
+    else:
+        return TracePlan(command, arguments.tests, 1, generated=True)
+    instructions = 0
+    for path in paths:
+        if not path.is_file():
+            raise ValueError(f"expected a trace file at {path}; found no file")
+        # Trace comments and assertion descriptions can contain directive names.
+        text = re.sub(r'"(?:\\.|[^"\\])*"|#(?!>)[^\n]*', "", path.read_text())
+        count = len(re.findall(r"\.(?:2|4)byte\b", text))
+        if count == 0:
+            raise ValueError(f"expected at least 1 instruction in {path}; found 0")
+        instructions += count
+    return TracePlan(command, requested, instructions, mode_check=mode_check)
+
+
+def comparison_counts(
+    monitors: list[Any], plan: TracePlan, engine_log: Path, tests: int
+) -> tuple[int, int, int, int, str]:
+    """Validate both peers' completed replies and the engine's requested work."""
+    expected_traces, expected_instructions = plan.traces, plan.instructions
+    error = ""
+    if plan.generated:
+        templates = []
+        successes = []
+        with engine_log.open(encoding="utf-8", errors="replace") as log:
+            for line in log:
+                if re.match(r"^\w+ -- .+:$", line.rstrip()):
+                    templates.append(line.split(" -- ", 1)[0])
+                if match := re.search(r"\+\+\+ OK, passed (\d+) tests?\.", line):
+                    successes.append(int(match[1]))
+        expected_traces = tests * max(1, len(templates))
+        expected_instructions = 1
+        if (
+            not templates
+            or len(successes) != len(templates)
+            or any(count < tests for count in successes)
+        ):
+            error = (
+                f"expected {tests} successful tests per selected template; "
+                f"found {len(templates)} templates with completed counts {successes}"
+            )
+    for monitor in monitors:
+        if monitor.errors:
+            error = error or monitor.errors[0]
+        for index, trace in enumerate(monitor.traces, 1):
+            # QuickCheck includes size-zero cases within a nonempty session.
+            if (
+                trace.requested < 1 and not plan.generated
+            ) or trace.received != trace.requested:
+                error = error or (
+                    f"expected {max(1, trace.requested)} instructions from "
+                    f"{monitor.name} in trace {index}; found {trace.received}"
+                )
+    paired = list(zip(*(monitor.traces for monitor in monitors), strict=False))
+    traces = sum(
+        a.requested == b.requested == a.received == b.received for a, b in paired
+    )
+    instructions = sum(
+        min(a.requested, b.requested, a.received, b.received) for a, b in paired
+    )
+    if len(monitors[0].traces) != len(monitors[1].traces):
+        error = (
+            error
+            or "expected matching trace counts from Sail and FROST; found different counts"
+        )
+    if traces < expected_traces or instructions < expected_instructions:
+        error = error or "incomplete comparisons"
+    return traces, instructions, expected_traces, expected_instructions, error
+
+
 def run(arguments: argparse.Namespace) -> int:
-    """Run one TestRIG session and return QuickCheckVEngine's exit status."""
+    """Run TestRIG and require the requested nonempty comparisons to finish."""
     save_dir = Path(arguments.save_dir).resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
     work_dir = Path(arguments.log_dir).resolve()
@@ -318,6 +561,11 @@ def run(arguments: argparse.Namespace) -> int:
         sscofpmf=arguments.sscofpmf,
         vlen=arguments.vlen,
     )
+    try:
+        plan = prepare_inputs(arguments, work_dir, sail_config)
+    except (OSError, ValueError) as input_error:
+        print(f"TestRIG FAIL: {input_error}", flush=True)
+        return 1
     sail_port, frost_port = free_ports()
     ready_file = work_dir / "frost_ready"
     ready_file.unlink(missing_ok=True)
@@ -328,7 +576,9 @@ def run(arguments: argparse.Namespace) -> int:
     )
     if records_log is not None:
         records_log.unlink(missing_ok=True)
-    mode_check: tuple[str, tuple[str, ...], int, list[list[Any]]] | None = None
+    mode_check = plan.mode_check
+    monitors: list[Any] = []
+    output_thread = None
     images = write_empty_images()
     architecture = arguments.arch or (
         ATOMICS_ARCHITECTURE
@@ -339,6 +589,16 @@ def run(arguments: argparse.Namespace) -> int:
     )
     sail = frost = engine = None
     status = 1
+
+    def startup_failed(message: str) -> int:
+        print(
+            f"TestRIG FAIL: expected at least {plan.traces} traces and "
+            f"{plan.instructions} instructions; found 0 traces and 0 instructions "
+            f"compared; {message}; logs in {work_dir}",
+            flush=True,
+        )
+        return 1
+
     try:
         sail = subprocess.Popen(
             [
@@ -367,27 +627,32 @@ def run(arguments: argparse.Namespace) -> int:
         while not ready_file.exists():
             if frost.poll() is not None:
                 print(frost_log.read_text(encoding="utf-8", errors="replace")[-8000:])
-                print("The frost simulation exited before listening")
-                return 1
+                return startup_failed("the frost simulation exited before listening")
             if sail.poll() is not None:
                 print(sail_log.read_text(encoding="utf-8", errors="replace"))
-                print("The Sail model exited before the engine connected")
-                return 1
+                return startup_failed(
+                    "the Sail model exited before the engine connected"
+                )
             if time.monotonic() > deadline:
-                print("Timed out waiting for the frost simulation to listen")
-                return 1
+                return startup_failed(
+                    "timed out waiting for the frost simulation to listen"
+                )
             time.sleep(0.5)
 
+        monitors = [
+            TraceMonitor("Sail", sail_port, arguments.response_timeout),
+            TraceMonitor("FROST", frost_port, arguments.response_timeout),
+        ]
         command = [
             tool_path("QCVEngine", "FROST_QCVENGINE"),
             "-a",
-            str(sail_port),
+            str(monitors[0].port),
             "-b",
-            str(frost_port),
+            str(monitors[1].port),
             "-r",
             architecture,
             "-v",
-            str(arguments.verbosity),
+            str(max(1, arguments.verbosity)),
             "-T",
             str(arguments.response_timeout * 1_000_000),
             "--csr-include-regex",
@@ -397,153 +662,34 @@ def run(arguments: argparse.Namespace) -> int:
             "--statsFile",
             str(work_dir / "coverage_stats.txt"),
         ]
-        if arguments.trace:
-            command += ["-t", str(Path(arguments.trace).resolve())]
-        elif arguments.sscofpmf:
-            command += ["-t", str(SSCOFPMF_TRACE)]
-        elif arguments.trace_dir:
-            command += ["-d", str(Path(arguments.trace_dir).resolve())]
-        elif arguments.zcb:
-            seed = (
-                arguments.seed
-                if arguments.seed is not None
-                else random.randrange(1 << 32)
-            )
-            trace_dir = work_dir / "compressed_mops"
-            shutil.rmtree(trace_dir, ignore_errors=True)
-            compressed_mops.write_tests(
-                trace_dir, arguments.zcb, seed, arguments.test_length
-            )
-            print(
-                f"Wrote {arguments.zcb} Zcb/Zcmop/Zimop/Zihintntl tests from seed {seed}",
-                flush=True,
-            )
-            command += ["-d", str(trace_dir)]
-        elif arguments.crypto:
-            seed = (
-                arguments.seed
-                if arguments.seed is not None
-                else random.randrange(1 << 32)
-            )
-            trace_dir = work_dir / "crypto"
-            shutil.rmtree(trace_dir, ignore_errors=True)
-            crypto.write_tests(trace_dir, arguments.crypto, seed, arguments.test_length)
-            print(
-                f"Wrote {arguments.crypto} scalar cryptography tests from seed {seed}",
-                flush=True,
-            )
-            command += ["-d", str(trace_dir)]
-        elif arguments.vector:
-            seed = (
-                arguments.seed
-                if arguments.seed is not None
-                else random.randrange(1 << 32)
-            )
-            trace_dir = work_dir / "vector"
-            shutil.rmtree(trace_dir, ignore_errors=True)
-            vector.write_tests(
-                trace_dir,
-                arguments.vector,
-                seed,
-                arguments.vector_length,
-                arguments.vlen,
-            )
-            print(
-                f"Wrote {arguments.vector} vector tests at VLEN {arguments.vlen} "
-                f"from seed {seed} (--seed {seed} regenerates them)",
-                flush=True,
-            )
-            command += ["-d", str(trace_dir)]
-        elif arguments.fp_ext:
-            seed = (
-                arguments.seed
-                if arguments.seed is not None
-                else random.randrange(1 << 32)
-            )
-            trace_dir = work_dir / "fp_ext"
-            shutil.rmtree(trace_dir, ignore_errors=True)
-            fp_ext.write_tests(trace_dir, arguments.fp_ext, seed, arguments.test_length)
-            print(
-                f"Wrote {arguments.fp_ext} Zfhmin/Zfa tests from seed {seed}",
-                flush=True,
-            )
-            command += ["-d", str(trace_dir)]
-        elif arguments.mmu:
-            seed = (
-                arguments.seed
-                if arguments.seed is not None
-                else random.randrange(1 << 32)
-            )
-            trace_dir = work_dir / "mmu"
-            shutil.rmtree(trace_dir, ignore_errors=True)
-            _, strands = mmu.write_tests_with_strands(
-                trace_dir, arguments.mmu, seed, arguments.test_length
-            )
-            mode_check = ("mmu", mmu.STRAND_KINDS, mmu.MIN_FULL_SAMPLE, strands)
-            print(
-                f"Wrote {arguments.mmu} Sv39 MMU tests from seed {seed} "
-                f"to {trace_dir} (--seed {seed} regenerates them)",
-                flush=True,
-            )
-            command += ["-d", str(trace_dir)]
-        elif arguments.cmo:
-            seed = (
-                arguments.seed
-                if arguments.seed is not None
-                else random.randrange(1 << 32)
-            )
-            trace_dir = work_dir / "cmo"
-            shutil.rmtree(trace_dir, ignore_errors=True)
-            _, strands = cmo.write_tests_with_strands(
-                trace_dir, arguments.cmo, seed, arguments.test_length
-            )
-            mode_check = ("cmo", cmo.STRAND_KINDS, cmo.MIN_FULL_SAMPLE, strands)
-            print(
-                f"Wrote {arguments.cmo} CMO and Sstvala tests from seed {seed} "
-                f"to {trace_dir} (--seed {seed} regenerates them)",
-                flush=True,
-            )
-            command += ["-d", str(trace_dir)]
-        elif arguments.atomics:
-            seed = arguments.seed
-            if seed is None:
-                seed = random.randrange(1 << 32)
-            trace_dir = work_dir / "atomics"
-            shutil.rmtree(trace_dir, ignore_errors=True)
-            trace_dir.mkdir()
-            atomics.write_tests(
-                trace_dir,
-                arguments.atomics,
-                seed,
-                arguments.test_length,
-                config_path=sail_config,
-            )
-            print(
-                f"Wrote {arguments.atomics} A-extension tests from seed {seed} "
-                f"to {trace_dir} (--seed {seed} regenerates them)",
-                flush=True,
-            )
-            command += ["-d", str(trace_dir)]
-        else:
-            command += [
-                "-n",
-                str(arguments.tests),
-                "-L",
-                str(arguments.test_length),
-                "-I",
-                arguments.include,
-            ]
-            if arguments.exclude:
-                command += ["-x", arguments.exclude]
+        command += plan.command
         if arguments.no_shrink:
             command.append("-S")
         if arguments.continue_on_fail:
             command.append("--continue-on-fail")
         print("Running:", " ".join(command), flush=True)
         # The engine writes last_failure.S to its working directory.
+        engine_log = work_dir / "engine.log"
         engine = subprocess.Popen(
-            command, stdin=subprocess.DEVNULL, cwd=work_dir, start_new_session=True
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=work_dir,
+            start_new_session=True,
         )
+
+        def copy_engine_output() -> None:
+            assert engine is not None and engine.stdout is not None
+            with engine_log.open("w", encoding="utf-8") as log:
+                while chunk := engine.stdout.read(4096):
+                    log.write(chunk)
+                    if arguments.verbosity > 0:
+                        print(chunk, end="", flush=True)
+
+        output_thread = threading.Thread(target=copy_engine_output, daemon=True)
+        output_thread.start()
         # The engine reads a closed connection forever, so stop it if the
         # simulation or the model exits first.
         while engine.poll() is None:
@@ -558,6 +704,9 @@ def run(arguments: argparse.Namespace) -> int:
                 break
             time.sleep(0.5)
         status = engine.wait()
+        output_thread.join()
+        for monitor in monitors:
+            monitor.close()
         # The engine closes both connections when it finishes, which ends the
         # simulation and the model.
         stop(frost, grace=120)
@@ -584,10 +733,33 @@ def run(arguments: argparse.Namespace) -> int:
                 for err in summary.errors[:20]:
                     print(f"RVFI strand check failed: {err}")
                 status = 1
-        print(f"QuickCheckVEngine exit status {status}; logs in {work_dir}")
+        traces, instructions, expected_traces, expected_instructions, error = (
+            comparison_counts(monitors, plan, engine_log, arguments.tests)
+        )
+        if error:
+            status = status or 1
+        if status:
+            print(
+                f"TestRIG FAIL: expected at least {expected_traces} traces and "
+                f"{expected_instructions} instructions; found {traces} traces and "
+                f"{instructions} instructions compared; "
+                f"{error or f'engine or harness exit status {status}'}; logs in {work_dir}",
+                flush=True,
+            )
+        else:
+            print(
+                f"TestRIG PASS: compared {traces} traces and {instructions} instructions; "
+                f"expected at least {expected_traces} traces and {expected_instructions} "
+                f"instructions; logs in {work_dir}",
+                flush=True,
+            )
         return status
     finally:
         stop(engine, grace=0)
+        if output_thread is not None:
+            output_thread.join(timeout=2)
+        for monitor in monitors:
+            monitor.close()
         stop(frost, grace=1)
         stop(sail, grace=1)
         for image in images:
@@ -595,11 +767,31 @@ def run(arguments: argparse.Namespace) -> int:
         (TESTS_DIR / ".rvfi_dii_build_ok").unlink(missing_ok=True)
 
 
+def positive_count(value: str) -> int:
+    """Accept an explicit positive count or instruction limit."""
+    count = int(value)
+    if count < 1:
+        raise argparse.ArgumentTypeError(f"expected a positive count; found {value}")
+    return count
+
+
+def nonempty_path(value: str) -> str:
+    """Require a supplied replay path to name a file or directory."""
+    if not value:
+        raise argparse.ArgumentTypeError(
+            "expected a replay path; found an empty string"
+        )
+    return value
+
+
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the command line."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--tests", type=int, default=50, help="tests per template (default 50)"
+        "--tests",
+        type=positive_count,
+        default=50,
+        help="tests per template (default 50)",
     )
     parser.add_argument(
         "--ddr-capacity-log2-bytes",
@@ -610,7 +802,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--test-length",
-        type=int,
+        type=positive_count,
         default=200,
         help="maximum instructions per test (default 200)",
     )
@@ -629,8 +821,12 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_CSR_INCLUDE,
         help="regex of CSR names the templates may access",
     )
-    parser.add_argument("--trace", help="replay one saved trace instead")
-    parser.add_argument("--trace-dir", help="replay every .S trace in a directory")
+    parser.add_argument(
+        "--trace", type=nonempty_path, help="replay one saved trace instead"
+    )
+    parser.add_argument(
+        "--trace-dir", type=nonempty_path, help="replay every .S trace in a directory"
+    )
     parser.add_argument(
         "--sscofpmf",
         action="store_true",
@@ -640,14 +836,12 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--crypto",
-        type=int,
-        default=0,
+        type=positive_count,
         help="replay this many scalar cryptography tests from verif/testrig/crypto.py",
     )
     parser.add_argument(
         "--zcb",
-        type=int,
-        default=0,
+        type=positive_count,
         help=(
             "replay this many random Zcb/Zcmop/Zimop/Zihintntl tests from "
             "verif/testrig/compressed_mops.py"
@@ -655,42 +849,37 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--fp-ext",
-        type=int,
-        default=0,
+        type=positive_count,
         help="replay this many Zfhmin/Zfa tests from verif/testrig/fp_ext.py",
     )
     parser.add_argument(
         "--mmu",
-        type=int,
-        default=0,
+        type=positive_count,
         help="instead of the templates, replay this many random Sv39 MMU, "
         "ASID, SFENCE.VMA, and Sstvala tests from verif/testrig/mmu.py",
     )
     parser.add_argument(
         "--cmo",
-        type=int,
-        default=0,
+        type=positive_count,
         help="instead of the templates, replay this many random Zicbom, "
         "Zicbop, Zicboz, Zawrs, and Sstvala tests from verif/testrig/cmo.py",
     )
     parser.add_argument(
         "--atomics",
-        type=int,
-        default=0,
+        type=positive_count,
         help="instead of the templates, replay this many random A-extension "
         "tests from verif/testrig/atomics.py",
     )
     parser.add_argument(
         "--vector",
-        type=int,
-        default=0,
+        type=positive_count,
         help="replay this many random vector-instruction tests from "
         "verif/testrig/vector.py, on a core built with the vector unit "
         "(sets --vlen to 128 when it is not given)",
     )
     parser.add_argument(
         "--vector-length",
-        type=int,
+        type=positive_count,
         default=20,
         help="random vector operation groups per --vector test (default 20)",
     )
@@ -740,19 +929,6 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="seconds the engine waits for one test's trace (default 600)",
     )
     arguments = parser.parse_args(argv)
-    if (
-        arguments.vector < 0
-        or arguments.atomics < 0
-        or arguments.crypto < 0
-        or arguments.zcb < 0
-        or arguments.fp_ext < 0
-        or arguments.mmu < 0
-        or arguments.cmo < 0
-        or arguments.vector_length < 1
-    ):
-        parser.error(
-            "generator counts must not be negative and --vector-length must be positive"
-        )
     if arguments.vector and arguments.vlen is None:
         arguments.vlen = DEFAULT_VECTOR_LENGTH
     active_modes = sum(
@@ -770,7 +946,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             arguments.vector,
         )
     )
-    if active_modes > 1 and not (arguments.sscofpmf and arguments.trace):
+    if active_modes > 1 and not (
+        active_modes == 2 and arguments.sscofpmf and arguments.trace
+    ):
         parser.error(
             "--trace, --trace-dir, --sscofpmf, --atomics, --crypto, --zcb, "
             "--fp-ext, --mmu, --cmo and --vector are mutually exclusive "
