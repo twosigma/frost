@@ -549,6 +549,96 @@ async def test_pd_not_taken_redirect_clears_slot1_btb_taken(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_slot2_pd_taken_branch_redirect_overrides_slot2_only(dut: Any) -> None:
+    """A slot-2 taken conditional-branch PD redirect sets slot 2's target and taken flag."""
+    await _setup_test(dut)
+    addi = 0x00108093  # addi x1, x1, 1
+    slot2_branch = _pack_b(imm=32, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    redirect_target = (BASE_PC + 4 + 32) & 0xFFFFFFFF
+
+    _drive_pd_packet(
+        dut,
+        {
+            "program_counter": BASE_PC,
+            "instruction": addi,
+            "btb_predicted_taken": False,
+            "btb_predicted_target": 0x11112222,
+        },
+    )
+    _drive_pd_packet(
+        dut,
+        {
+            "program_counter": BASE_PC + 4,
+            "instruction": slot2_branch,
+            "btb_predicted_taken": False,
+            "btb_predicted_target": 0x33334444,
+        },
+        slot2=True,
+    )
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_taken.value = 1
+    dut.i_pd_redirect_target.value = redirect_target
+    dut.i_pd_redirect_slot2.value = 1
+    await _advance_cycle(dut)
+
+    packet = _read_id_packet(dut)
+    assert packet["btb_predicted_taken"] is False
+    assert packet["btb_predicted_target"] == 0x11112222
+
+    slot2_packet = _read_id_packet(dut, slot2=True)
+    assert slot2_packet["instruction_operation"] == BEQ
+    assert slot2_packet["branch_target_precomputed"] == redirect_target
+    assert slot2_packet["btb_predicted_taken"] is True
+    assert slot2_packet["btb_predicted_target"] == redirect_target
+    assert slot2_packet["btb_correct_non_jalr"] is True
+
+
+@cocotb.test()
+async def test_slot2_pd_not_taken_veto_clears_slot2_taken_keeps_target(
+    dut: Any,
+) -> None:
+    """A slot-2 not-taken PD redirect clears slot 2's taken flag, keeps its target, and leaves slot 1 untouched."""
+    await _setup_test(dut)
+    addi = 0x00108093  # addi x1, x1, 1
+    slot2_branch = _pack_b(imm=-8, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    slot2_btb_target = (BASE_PC + 4 - 8) & 0xFFFFFFFF
+
+    _drive_pd_packet(
+        dut,
+        {
+            "program_counter": BASE_PC,
+            "instruction": addi,
+            "btb_predicted_taken": False,
+            "btb_predicted_target": 0x55556666,
+        },
+    )
+    _drive_pd_packet(
+        dut,
+        {
+            "program_counter": BASE_PC + 4,
+            "instruction": slot2_branch,
+            "btb_predicted_taken": True,
+            "btb_predicted_target": slot2_btb_target,
+        },
+        slot2=True,
+    )
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_taken.value = 0
+    dut.i_pd_redirect_target.value = BASE_PC + 8
+    dut.i_pd_redirect_slot2.value = 1
+    await _advance_cycle(dut)
+
+    packet = _read_id_packet(dut)
+    assert packet["btb_predicted_taken"] is False
+    assert packet["btb_predicted_target"] == 0x55556666
+
+    slot2_packet = _read_id_packet(dut, slot2=True)
+    assert slot2_packet["instruction_operation"] == BEQ
+    assert slot2_packet["btb_predicted_taken"] is False
+    assert slot2_packet["btb_predicted_target"] == slot2_btb_target
+
+
+@cocotb.test()
 async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
     """JAL/JALR decode precomputes branch-prediction and RAS metadata."""
     await _setup_test(dut)
