@@ -126,3 +126,4 @@
 - Implemented Ssnpm pointer masking for U-mode with PMLEN 7 and 16, including CSR controls, memory-address handling, formal checks, directed programs, and comparison with Sail.
 - Implemented Svnapot 64 KiB NAPOT leaves in the page-table walker, with reserved-encoding checks, Svpbmt alias composition, a directed program, bench cases, formal checks and a TestRIG trace
 - Advertised Ssu64xl in the device tree and boot image, with a TestRIG trace that checks the read-only UXL and SXL fields against Sail
+- Gave each quarter of the integer reservation station's entries its own register copy of the CDB issue tags, with a simulation check, an induction proof that each copy equals its tag and an equivalence proof that the copies leave the station's behavior unchanged from reset

@@ -351,6 +351,7 @@ station does:
 | `BROADCAST_FREE_SOURCE_VALUES` | 0 | 1 on INT | Write slot 1's source values into every free entry and slot 2's into its target; requires speculative writes |
 | `ISSUE_CDB_TAG_SHADOW` | 0 | 1 on INT | A second src1/src2 tag bank used only by the same-cycle bypass; equal to the main tags for every valid entry |
 | `ISSUE_CDB_META_ANCHORS` | 0 | 1 on INT | The issue compares use separate valid/tag inputs (`i_issue_cdb_*`); the wrapper merges early loads into copies of the registered lanes |
+| `ISSUE_CDB_TAG_BANKS` | 1 | 4 on INT | With `ISSUE_CDB_META_ANCHORS`, entry e's issue compares read copy `e * ISSUE_CDB_TAG_BANKS / DEPTH` of the issue tags (`i_issue_cdb_tag_bank`, `i_issue_cdb_2_tag_bank`), so each copy serves one contiguous group of entries, an equal share when `ISSUE_CDB_TAG_BANKS` divides `DEPTH`; each `i_issue_cdb_tag_bank` copy must equal `i_issue_cdb_tag` and each `i_issue_cdb_2_tag_bank` copy `i_issue_cdb_2_tag` (simulation asserts both). 1 uses the single tags |
 | `CAPTURE_PRIMARY_EFFECTIVE_OPERANDS` | 0 | 1 on INT | Port 0 registers final src1/src2 values at issue instead of muxing CDB values after stage 2; requires `HAS_SRC3=0` |
 | `BRANCH_PREDICATE_TAG_ANCHOR` | 0 | 1 on INT | A copy of the stage-2 ROB tag drives `o_branch_predicate_tag` for branch resolution's checkpoint and age compares; off, the output is the stage-2 tag |
 
@@ -375,6 +376,13 @@ station does:
   copy loaded only on issue. `rs_payload_twin` checks two wrappers whose idle
   stage-2 payloads differ freely for a few cycles after reset; the formal
   guide gives its scope.
+- `rs_issue_tag_banks` (formal) proves that INT_RS with four issue-tag
+  copies, each driven by its lane's tag, has the same outputs and next state
+  as INT_RS with the single tags, for any state and input, in the portable
+  and the Xilinx-primitive builds. The `tomasulo_wrapper` target asserts that
+  the wrapper's copies equal the tags, and `rs_issue_tag_copies` proves by
+  induction that each copy equals its tag after one clock edge, from any
+  initial state.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

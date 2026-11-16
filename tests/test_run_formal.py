@@ -116,6 +116,9 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("line_client_link", "line_link1_bmc"): 4200,
     ("line_client_link", "line_link1_four_bmc"): 4200,
     ("line_client_link", "line_link1_eight_bmc"): 4200,
+    ("rs_issue_tag_banks", "int_equiv"): 600,
+    ("rs_issue_tag_banks", "int_equiv_prims"): 600,
+    ("rs_issue_tag_copies", "prove"): 600,
 }
 
 
@@ -1310,6 +1313,18 @@ FORMAL_TARGETS = [
         "Occupied reservation-station stage2 and stage2b payloads loaded on FU readiness equal "
         "issue-fire capture across all four station configurations",
         tasks=("int_prove", "mul_prove", "mem_prove", "fp_prove", "int_cover"),
+    ),
+    FormalTarget(
+        "rs_issue_tag_banks.sby",
+        "INT_RS with four issue-tag copies equal to the tags equals INT_RS with the single "
+        "tags, in portable and primitive builds",
+        tasks=("int_equiv", "int_equiv_prims"),
+    ),
+    FormalTarget(
+        "rs_issue_tag_copies.sby",
+        "Each INT_RS issue-tag copy in tomasulo_wrapper equals its tag after one clock edge, "
+        "from any initial state, by induction",
+        tasks=("prove",),
     ),
     FormalTarget(
         "served_window_coverage.sby",
@@ -3255,6 +3270,14 @@ SBY_TASKS = [
     (
         "rs_twin_indexed",
         "Indexed-write reservation station primitive form equals its portable form.",
+    ),
+    (
+        "int_equiv",
+        "INT_RS issue-tag copies: every output and next state equal the single-tag station.",
+    ),
+    (
+        "int_equiv_prims",
+        "Same with Xilinx primitives in both stations.",
     ),
     (
         "prove_aw",
