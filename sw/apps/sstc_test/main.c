@@ -17,7 +17,7 @@
 /*
  * Test stimecmp, menvcfg.STCE, and mcounteren.TM across M, S, and U modes:
  *   - Reset values of menvcfg, senvcfg, stimecmp, mcounteren, scounteren, and
- *     mip.STIP, and WARL masks of menvcfg and senvcfg.
+ *     mip.STIP, and WARL masks of menvcfg (including PBMTE) and senvcfg.
  *   - M-mode read/write of stimecmp under every (STCE, mcounteren.TM) pair, and
  *     retention of stimecmp writes performed while STCE=0.
  *   - mip.STIP, mvip.STIP, and sip.STIP source and writability under STCE=0
@@ -59,6 +59,7 @@ static void uart_hex(unsigned long v)
 
 #define MIP_STIP (1ul << 5)
 #define MENVCFG_STCE (1ul << 63)
+#define MENVCFG_PBMTE (1ul << 62)
 #define ENVCFG_CBZE (1ul << 7)
 #define ENVCFG_CBCFE (1ul << 6)
 #define ENVCFG_CBIE (3ul << 4)
@@ -313,7 +314,8 @@ int main(void)
     csr_write_num(0x30A, ~0ul);
     ok &= report("A menvcfg-warl",
                  csr_read_num(0x30A),
-                 MENVCFG_STCE | ENVCFG_CBZE | ENVCFG_CBCFE | ENVCFG_CBIE | ENVCFG_FIOM);
+                 MENVCFG_STCE | MENVCFG_PBMTE | ENVCFG_CBZE | ENVCFG_CBCFE | ENVCFG_CBIE |
+                     ENVCFG_FIOM);
     csr_write_num(0x30A, 0);
     ok &= report("A menvcfg-clear", csr_read_num(0x30A), 0);
     csr_write_num(0x10A, ~0ul);
