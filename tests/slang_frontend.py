@@ -151,6 +151,37 @@ def top_cases(root: Path = ROOT) -> list[SlangCase]:
     return cases
 
 
+def vector_cases(root: Path = ROOT) -> list[SlangCase]:
+    """Check the X3 FROST instance and the simulation's three vector lengths."""
+    bases = {case.name: case for case in top_cases(root)}
+    common = (("VECTOR", "1"), ("ENABLE_CACHED_TIER", "1"), ("MISALIGNED_HW", "1"))
+    hardware = bases["synthesis/xilinx/platform_top"]
+    simulation = bases["simulation/generic/platform_top"]
+    return [
+        replace(
+            hardware,
+            name="synthesis/xilinx/vector-x3/frost",
+            top="frost",
+            parameters=common
+            + (
+                ("VLEN", "256"),
+                ("USE_BEHAVIORAL_DDR", "0"),
+                ("DEBUG_JTAG_TAP", "0"),
+                ("RAW_LOOPBACK", "0"),
+            ),
+        ),
+        *(
+            replace(
+                simulation,
+                name=f"simulation/generic/vector-v{vlen}/frost",
+                top="frost",
+                parameters=common + (("VLEN", str(vlen)), ("SIM_FAST_MAINT", "1")),
+            )
+            for vlen in (128, 256, 512)
+        ),
+    ]
+
+
 # Additional simulation roots alongside the complete CPU/platform views.
 SIMULATION_MODULES = (
     "misprediction_flush_controller",
@@ -497,7 +528,7 @@ def check(
         raise RuntimeError(
             "yosys is missing; run through ./scripts/frost.py in the FROST image"
         )
-    cases = top_cases() + simulation_module_cases() + formal_cases()
+    cases = top_cases() + vector_cases() + simulation_module_cases() + formal_cases()
     cases += [
         replace(c, name=c.name.replace("synthesis/", "lower/"), ast_only=False)
         for c in top_cases()
