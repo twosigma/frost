@@ -1591,3 +1591,22 @@ and says when the run proves everything again.
 
 The formal and synthesis jobs check out the repository without submodules and
 set `FROST_SKIP_SUBMODULE_INIT=1`; none of their inputs is in a submodule.
+
+The standalone integer legality sweep compares the decoder and geometry helper
+with the installed Spike instruction implementations. It covers all 231 integer
+arithmetic forms, all 512 vtype encodings (reserved configurations normalize to
+vill), both mask encodings where permitted, each register field and pairwise
+alias/adjacent layouts, at VLEN 128/256/512. VL is one and vstart zero; the tracker
+and dispatch proofs cover restart policy. Run
+`python3 tests/test_vector_legality_reference.py --vlen 256` in the image.
+The comparator source is under `hw/sim/vector_reference/` and builds against host
+reference libraries and the generated RTL header.
+
+`python3 tests/test_vector_integer_corners.py --vlen 256 --rtl` adds fixed-point
+and divide files with explicit boundary operands, at e64,m1 and e8,mf8. Narrowing
+clips use e32,m1 with 64-bit sources, since 128-bit elements are unsupported.
+The reference patcher records destination bytes and vxsat for every case; both
+mask modes and all four fixed-point rounding modes run. Use `--resume` to retain
+an existing prepared corpus and completed results. Clean `tests/` before the RTL
+run and set `FROST_VERILATOR_EXTRA_ARGS` to `-GVECTOR=1 -GVLEN=256` (or the chosen
+length), as for the main generated-suite runner.
