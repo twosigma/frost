@@ -96,18 +96,24 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_boundary", "bmc_amo_same"): 3300,
     ("coherence_store_boundary", "bmc_amo_other"): 4800,
     ("coherence_store_boundary", "bmc_sc"): 3600,
-    ("coherence_store_home", "bmc_siblings"): 1800,
-    ("coherence_store_home", "bmc_rows"): 2100,
-    ("coherence_store_home", "bmc_conflict"): 2400,
-    ("coherence_store_home", "bmc_pressure"): 2700,
+    ("coherence_store_home", "bmc_siblings"): 900,
+    ("coherence_store_home", "bmc_siblings_second"): 900,
+    ("coherence_store_home", "bmc_rows"): 900,
+    ("coherence_store_home", "bmc_rows_second"): 900,
+    ("coherence_store_home", "bmc_conflict"): 900,
+    ("coherence_store_home", "bmc_conflict_second"): 900,
+    ("coherence_store_home", "bmc_pressure"): 900,
+    ("coherence_store_home", "bmc_pressure_second"): 900,
+    ("coherence_store_home", "link_bmc_siblings"): 900,
+    ("coherence_store_home", "link_bmc_siblings_second"): 900,
+    ("coherence_store_home", "link_bmc_pressure"): 900,
+    ("coherence_store_home", "link_bmc_pressure_second"): 900,
     ("coherence_store_home", "cover_conflict"): 900,
     ("coherence_store_home", "cover_pressure"): 900,
-    ("coherence_store_home", "link_bmc_siblings"): 7200,
     ("coherence_store_home", "link_cover_pressure"): 900,
     ("line_client_link", "line_link0_bmc"): 4200,
     ("line_client_link", "line_link1_bmc"): 4200,
     ("line_client_link", "line_link1_four_bmc"): 4200,
-    ("coherence_store_home", "link_bmc_pressure"): 8700,
 }
 
 
@@ -178,15 +184,21 @@ FORMAL_TARGETS = [
         "Production private and home caches preserve streamed bytes through replacement and DMA.",
         tasks=(
             "bmc_siblings",
+            "bmc_siblings_second",
             "bmc_rows",
+            "bmc_rows_second",
             "bmc_conflict",
+            "bmc_conflict_second",
             "cover_siblings",
             "cover_rows",
             "cover_conflict",
             "bmc_pressure",
+            "bmc_pressure_second",
             "cover_pressure",
             "link_bmc_siblings",
+            "link_bmc_siblings_second",
             "link_bmc_pressure",
+            "link_bmc_pressure_second",
             "link_cover_pressure",
         ),
     ),
@@ -1786,11 +1798,19 @@ SBY_TASKS = [
     ("link_mirror1_cover", "A mirrored link completes four handshakes."),
     (
         "link_bmc_siblings",
-        "Production L1D and home through one-stage links preserve sibling-sector bytes.",
+        "Production L1D and home through one-stage links preserve sibling-sector bytes; first watched byte.",
+    ),
+    (
+        "link_bmc_siblings_second",
+        "Production L1D and home through one-stage links preserve sibling-sector bytes; second watched byte.",
     ),
     (
         "link_bmc_pressure",
-        "One-stage links under two dirty victims, delayed releases and a probing DMA read.",
+        "One-stage links under two dirty victims, delayed releases and a probing DMA read; first watched byte.",
+    ),
+    (
+        "link_bmc_pressure_second",
+        "One-stage links under two dirty victims, delayed releases and a probing DMA read; second watched byte.",
     ),
     (
         "link_cover_pressure",
@@ -1973,9 +1993,24 @@ SBY_TASKS = [
     ("coh_miss_credit3_prove", "Binary acquisition credits cover 3 endpoints."),
     ("coh_miss_credit4_prove", "Binary acquisition credits cover 4 endpoints."),
     ("coh_miss_credit8_prove", "Binary acquisition credits cover 8 endpoints."),
-    ("bmc_siblings", "Real-home sibling store byte safety."),
-    ("bmc_rows", "Real-home distinct-row store byte safety."),
-    ("bmc_conflict", "Real-home conflicting-row store byte safety."),
+    ("bmc_siblings", "Real-home sibling store byte safety; first watched byte."),
+    (
+        "bmc_siblings_second",
+        "Real-home sibling store byte safety; second watched byte.",
+    ),
+    ("bmc_rows", "Real-home distinct-row store byte safety; first watched byte."),
+    (
+        "bmc_rows_second",
+        "Real-home distinct-row store byte safety; second watched byte.",
+    ),
+    (
+        "bmc_conflict",
+        "Real-home conflicting-row store byte safety; first watched byte.",
+    ),
+    (
+        "bmc_conflict_second",
+        "Real-home conflicting-row store byte safety; second watched byte.",
+    ),
     ("cover_siblings", "Sibling acquisitions complete and supply DMA data."),
     (
         "cover_rows",
@@ -1987,7 +2022,11 @@ SBY_TASKS = [
     ),
     (
         "bmc_pressure",
-        "Real-home stores and load data survive held writebacks and releases.",
+        "Real-home stores and load data survive held writebacks and releases; first watched byte.",
+    ),
+    (
+        "bmc_pressure_second",
+        "Real-home stores and load data survive held writebacks and releases; second watched byte.",
     ),
     (
         "cover_pressure",
@@ -3491,27 +3530,36 @@ def test_store_home_cover_budgets() -> None:
         "cover_pressure",
         "link_cover_pressure",
     )
-    for task, depth in (
-        ("cover_conflict", 233),
-        ("cover_pressure", 235),
-        ("link_cover_pressure", 250),
+    for task, depth, timeout in (
+        ("cover_siblings", 240, 2400),
+        ("cover_rows", 240, 2400),
+        ("cover_conflict", 233, 900),
+        ("cover_pressure", 235, 900),
+        ("link_cover_pressure", 250, 900),
     ):
         config = formal_task_config(target.name, task)
         options = dict(line.split(None, 1) for line in config["[options]"])
         assert options["mode"] == "cover"
         assert options["depth"] == str(depth)
-        assert options["timeout"] == "900"
+        assert options["timeout"] == str(timeout)
         assert "skip" not in options
-        assert formal_task_timeout_s(target.name, task) == 900
+        assert formal_task_timeout_s(target.name, task) == timeout
         assert config["[engines]"] == ["btor btormc"]
         script = config["[script]"]
         assert "chparam -set COVER_MODE 1 coherence_store_home_formal" in script
         if "pressure" in task:
             assert "chparam -set PRESSURE 1 coherence_store_home_formal" in script
-        else:
+        elif task == "cover_conflict":
             assert "chparam -set SECTOR_CASE 2 coherence_store_home_formal" in script
+        elif task == "cover_rows":
+            assert "chparam -set SECTOR_CASE 1 coherence_store_home_formal" in script
         if task == "link_cover_pressure":
             assert "chparam -set LINK_STAGES 1 coherence_store_home_formal" in script
+        assert "peepopt" not in script
+        if timeout == 2400:
+            assert not any("chformal" in line for line in script)
+            assert "abc" not in script
+            continue
         assert [line for line in script if line.startswith("chformal")] == [
             "chformal -assert -remove"
         ]
@@ -3530,21 +3578,63 @@ def test_store_home_cover_budgets() -> None:
         positions = [script.index(command) for command in pipeline]
         assert positions == sorted(positions)
         assert positions[-1] < script.index("setundef -anyseq")
-    for task, depth in (
+    bounded_tasks = (
         ("bmc_siblings", 240),
         ("bmc_rows", 240),
         ("bmc_conflict", 360),
         ("bmc_pressure", 360),
         ("link_bmc_siblings", 300),
         ("link_bmc_pressure", 420),
-    ):
-        bounded = formal_task_config(target.name, task)
-        bounded_options = dict(line.split(None, 1) for line in bounded["[options]"])
-        assert bounded_options["mode"] == "bmc"
-        assert bounded_options["depth"] == str(depth)
-        assert bounded["[engines]"] == ["abc bmc3"]
-        assert "abc" not in bounded["[script]"]
-        assert not any("chformal" in line for line in bounded["[script]"])
+    )
+    assert {task for task in target.tasks if "bmc" in task} == {
+        task + suffix for task, _ in bounded_tasks for suffix in ("", "_second")
+    }
+    for base, depth in bounded_tasks:
+        pair = []
+        for choice, suffix in enumerate(("", "_second")):
+            task = base + suffix
+            bounded = formal_task_config(target.name, task)
+            options = dict(line.split(None, 1) for line in bounded["[options]"])
+            assert options["mode"] == "bmc"
+            assert options["depth"] == str(depth)
+            assert options["timeout"] == "900"
+            assert formal_task_timeout_s(target.name, task) == 900
+            assert "skip" not in options
+            engine = "abc bmc3 -c" if base.startswith("link_") else "abc bmc3"
+            assert bounded["[engines]"] == [engine]
+            script = bounded["[script]"]
+            assert "abc" not in script
+            assert not any("chformal" in line for line in script)
+            assert not any(
+                "cutpoint" in line or "setundef -zero" in line for line in script
+            )
+            bind = f"connect -nomap -set watch_second 1'b{choice}"
+            assert [line for line in script if line.startswith("connect ")] == [bind]
+            assert [line for line in script if line.startswith("delete ")] == [
+                "delete @watch_choice"
+            ]
+            partition = (
+                "select -module coherence_store_home_formal",
+                "select -assert-count 3 t:$anyconst",
+                "select -set watch_choice w:watch_second %ci* t:$anyconst %i",
+                "select -assert-count 1 @watch_choice",
+                "select -assert-count 1 t:$anyconst r:WIDTH=1 %i",
+                "delete @watch_choice",
+                bind,
+                "select -assert-count 2 t:$anyconst r:WIDTH=8 %i",
+                "select -assert-none t:$anyconst r:WIDTH=1 %i",
+                "select -clear",
+            )
+            positions = [script.index(command) for command in partition]
+            assert positions == sorted(positions)
+            assert positions[-1] < script.index("memory_map")
+            assert script.index("peepopt") < script.index("techmap")
+            assert script.index("techmap") < script.index("setundef -anyseq")
+            assert "select -assert-none t:$check r:FLAVOR=assume %i" in script
+            # The complete configurations differ only by the exhaustive watch value.
+            bounded["[script]"] = [line for line in script if line != bind]
+            pair.append(bounded)
+        assert pair[0] == pair[1]
 
 
 def test_home_twin_snapshot_budget() -> None:
@@ -4823,10 +4913,18 @@ def test_fatal_frame_validation(
         ("coherence_store_boundary", "bmc_amo_same", 3300),
         ("coherence_store_boundary", "bmc_amo_other", 4800),
         ("coherence_store_boundary", "bmc_sc", 3600),
-        ("coherence_store_home", "bmc_siblings", 1800),
-        ("coherence_store_home", "bmc_rows", 2100),
-        ("coherence_store_home", "bmc_conflict", 2400),
-        ("coherence_store_home", "bmc_pressure", 2700),
+        ("coherence_store_home", "bmc_siblings", 900),
+        ("coherence_store_home", "bmc_siblings_second", 900),
+        ("coherence_store_home", "bmc_rows", 900),
+        ("coherence_store_home", "bmc_rows_second", 900),
+        ("coherence_store_home", "bmc_conflict", 900),
+        ("coherence_store_home", "bmc_conflict_second", 900),
+        ("coherence_store_home", "bmc_pressure", 900),
+        ("coherence_store_home", "bmc_pressure_second", 900),
+        ("coherence_store_home", "link_bmc_siblings", 900),
+        ("coherence_store_home", "link_bmc_siblings_second", 900),
+        ("coherence_store_home", "link_bmc_pressure", 900),
+        ("coherence_store_home", "link_bmc_pressure_second", 900),
         ("coherence_store_home", "cover_siblings", 2400),
         ("coherence_store_home", "cover_conflict", 900),
         ("coherence_store_home", "cover_pressure", 900),

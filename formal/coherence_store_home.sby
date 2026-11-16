@@ -1,14 +1,20 @@
 [tasks]
-bmc_siblings bmc siblings ordinary
-bmc_rows bmc rows ordinary
-bmc_conflict bmc conflict deep
+bmc_siblings bmc siblings ordinary first_watch direct_bmc
+bmc_siblings_second bmc siblings ordinary second_watch direct_bmc
+bmc_rows bmc rows ordinary first_watch direct_bmc
+bmc_rows_second bmc rows ordinary second_watch direct_bmc
+bmc_conflict bmc conflict deep first_watch direct_bmc
+bmc_conflict_second bmc conflict deep second_watch direct_bmc
 cover_siblings covers siblings ordinary
 cover_rows covers rows ordinary
 cover_conflict covers conflict deep compact_covers
-bmc_pressure bmc pressure deep
+bmc_pressure bmc pressure deep first_watch direct_bmc
+bmc_pressure_second bmc pressure deep second_watch direct_bmc
 cover_pressure covers pressure deep compact_covers
-link_bmc_siblings bmc siblings linked ordinary_link
-link_bmc_pressure bmc pressure deep_link linked
+link_bmc_siblings bmc siblings linked ordinary_link first_watch linked_bmc
+link_bmc_siblings_second bmc siblings linked ordinary_link second_watch linked_bmc
+link_bmc_pressure bmc pressure deep_link linked first_watch linked_bmc
+link_bmc_pressure_second bmc pressure deep_link linked second_watch linked_bmc
 link_cover_pressure covers pressure deep_link linked compact_covers
 
 [options]
@@ -24,16 +30,12 @@ cover_pressure: depth 235
 link_cover_pressure: depth 250
 timeout 2400
 compact_covers: timeout 900
-bmc_siblings: timeout 1800
-bmc_rows: timeout 2100
-bmc_conflict: timeout 2400
-bmc_pressure: timeout 2700
-link_bmc_siblings: timeout 7200
-link_bmc_pressure: timeout 8700
+bmc: timeout 900
 bmc: aigsmt boolector
 
 [engines]
-bmc: abc bmc3
+direct_bmc: abc bmc3
+linked_bmc: abc bmc3 -c
 covers: btor btormc
 
 [script]
@@ -51,10 +53,26 @@ covers: chparam -set COVER_MODE 1 coherence_store_home_formal
 linked: chparam -set LINK_STAGES 1 coherence_store_home_formal
 prep -flatten -top coherence_store_home_formal
 check -assert
+# Partition only the one-bit constant watch choice; both byte values stay arbitrary.
+bmc: select -module coherence_store_home_formal
+bmc: select -assert-count 3 t:$anyconst
+bmc: select -set watch_choice w:watch_second %ci* t:$anyconst %i
+bmc: select -assert-count 1 @watch_choice
+bmc: select -assert-count 1 t:$anyconst r:WIDTH=1 %i
+bmc: delete @watch_choice
+first_watch: connect -nomap -set watch_second 1'b0
+second_watch: connect -nomap -set watch_second 1'b1
+bmc: select -assert-count 2 t:$anyconst r:WIDTH=8 %i
+bmc: select -assert-none t:$anyconst r:WIDTH=1 %i
+bmc: select -clear
 memory_map
 opt
+# Canonicalize packed word selections in the bounded checks.
+bmc: peepopt
 bmc: techmap
 bmc: opt -fast
+bmc: select -assert-none t:$check r:FLAVOR=assume %i
+bmc: select -clear
 # Optimize the cover and its assumptions before undefined bits become inputs.
 compact_covers: chformal -assert -remove
 compact_covers: setattr -unset keep
