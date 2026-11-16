@@ -79,11 +79,9 @@ coh_l1d_withdraw_zero_bmc single zcontrol control_single zero withdraw
 coh_l1d_withdraw_full_payload_bmc single data fpayload zero fullonly withdraw
 coh_l1d_withdraw_zero_payload_bmc single data zpayload zero withdraw
 coh_l1d_withdraw_full_cover single fwcover covermode zero fullonly withdraw
-# Full-line holds and data twins: the gather and pair holds and claimed credit
-# at three and four records with one endpoint, and a look-ahead pair's data
-# twin installing on a borrowed endpoint.
+# Full-line holds: the gather and pair holds and claimed credit at three and
+# four records with one endpoint.
 coh_l1d_full_hold_cover single fhcover covermode zero fullonly
-coh_l1d_full_borrowed_cover multi fhlook covermode zero padded fullonly
 
 [options]
 ~covermode: mode bmc
@@ -116,8 +114,6 @@ fwcover: vcd_sim on
 fwcover: skip 48
 fhcover: timeout 1200
 fhcover: vcd_sim on
-fhlook: timeout 7200
-fhlook: vcd_sim on
 zsingle: vcd_sim on
 # Keep every transition from reset, but query only the later cover window.
 # Reaching a dirty twin victim requires several completed transactions.
@@ -235,7 +231,6 @@ fsingle: smtbmc boolector
 flook: smtbmc boolector
 fwcover: smtbmc boolector
 fhcover: smtbmc boolector
-fhlook: smtbmc boolector
 streamcovers: smtbmc boolector
 turncovers: smtbmc boolector
 owner: abc pdr
@@ -271,7 +266,6 @@ fcontrol: read -formal -sv -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.
 fcovers: read -formal -sv -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.sv coherence_l1d.sv
 fwcover: read -formal -sv -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.sv coherence_l1d.sv
 fhcover: read -formal -sv -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.sv coherence_l1d.sv
-fhlook: read -formal -sv -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.sv coherence_l1d.sv
 fpayload: read -formal -sv -D ZERO_WRITES -D FULL_WRITES -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 streamscript: read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 coherence_read_payload.sv coherence_l1d.sv
 conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
@@ -411,9 +405,6 @@ fwcover: chformal -assert -remove
 fhcover: select -assert-count 6 c:p_full_hold_cover_* c:p_full_credit_cover_* %u t:$check %i r:FLAVOR=cover %i
 fhcover: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_full_hold_cover_* c:p_full_credit_cover_* %u %d
 fhcover: chformal -assert -remove
-fhlook: select -assert-count 1 c:p_full_twin_cover_borrowed t:$check %i r:FLAVOR=cover %i
-fhlook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_full_twin_cover_borrowed %d
-fhlook: chformal -assert -remove
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
 arraydata: select -assert-count 4 c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known

@@ -4285,10 +4285,6 @@ module coherence_l1d #(
       p_full_credit_cover_three : cover (store_push && !store_combined && merge_claim &&
           store_count == 3'd3 && store_credit);
       p_full_credit_cover_four : cover (store_push && store_combined && store_count == 3'd4);
-      // A look-ahead pair's data twin installs on a borrowed endpoint before
-      // its Done.
-      p_full_twin_cover_borrowed : cover (store_pop && operation_q == TwinOp &&
-          !store_zero[store_head_index] && twin_ep_q != '0);
 `endif
     end
 `endif

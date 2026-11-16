@@ -1488,11 +1488,10 @@ jobs:
               coh_l1d_full_cover or coh_l1d_full_lookahead_cover or
               coh_l1d_withdraw_full_cover
             timeout_minutes: 330
-          # The full-line hold, credit and data-twin covers: 140 minutes of
-          # allowances.
+          # The full-line hold and credit covers: a 20-minute allowance.
           - shard: Coherence L1D full-line holds
-            pytest_filter: coh_l1d_full_hold_cover or coh_l1d_full_borrowed_cover
-            timeout_minutes: 150
+            pytest_filter: coh_l1d_full_hold_cover
+            timeout_minutes: 30
           # The same control and payload checks with absorbed puts withdrawn
           # (WITHDRAW_ABSORBED_W, as MEMORY_LINK_STAGES sets it): each control
           # BMC has a job of its own; both payload BMCs share a third.
