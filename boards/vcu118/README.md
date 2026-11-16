@@ -102,6 +102,9 @@ The boot controller at `0x40023000` provides SPI transfers through STARTUPE3,
 DDR status and an instruction-SRAM programming port. The initial BRAM
 application loads an FSBL from flash into executable SRAM. The FSBL loads
 OpenSBI, a device tree and U-Boot into DDR after checking their checksums.
+With this flash boot path, Linux `reboot` requests SYSRESET, re-enters the
+surviving BRAM ROM and reloads these stages before U-Boot follows its boot
+command; `poweroff` halts with power still applied.
 
 ## Build and load
 

@@ -103,6 +103,7 @@ VALID_APPS = [
     "sscofpmf_test",
     "strings_test",
     "sum_toggle_test",
+    "sysreset_test",
     "tick_torture",
     "tomasulo_perf",
     "tomasulo_test",
