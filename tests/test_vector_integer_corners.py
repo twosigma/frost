@@ -115,7 +115,7 @@ def source(form: str, vlen: int, fractional: bool) -> tuple[str, dict[str, objec
                 ]
                 count += 1
     lines += [
-        "TEST_CASE(2, x0, 0)",
+        "li TESTNUM, 1",
         "TEST_PASSFAIL",
         "RVTEST_CODE_END",
         ".data",
