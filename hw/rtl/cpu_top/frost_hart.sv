@@ -899,14 +899,16 @@ module frost_hart #(
     assign o_line_c_valid = 1'b0;
     assign o_line_c = '0;
   end
+  // Home transaction capacity is checked against NUM_HARTS and L2_NUM_MSHR
+  // in coherence_home_endpoint; this hart checks its line-client identities.
   if (LINE_CLIENT_IDS < 2 || LINE_CLIENT_IDS > coherence_pkg::HartLineIds ||
-      coherence_pkg::HartLineIds > 16 ||
-      (LINE_CLIENT_IDS & (LINE_CLIENT_IDS - 1)) != 0 ||
-      coherence_pkg::home_count(
-          2, 8
-      ) > (1 << coherence_pkg::TidBits)) begin : gen_invalid_line_client
+      coherence_pkg::HartLineIds > (1 << LineIdBits) ||
+      (LINE_CLIENT_IDS & (LINE_CLIENT_IDS - 1)) != 0) begin : gen_invalid_line_client
     initial
-      $fatal(1, "frost_hart: LINE_CLIENT_IDS must be a power of two, 2 to HartLineIds (<= 16)");
+      $fatal(
+          1,
+          "frost_hart: LINE_CLIENT_IDS must be a power of two in [2, HartLineIds]; HartLineIds must be <= 2**LineIdBits"
+      );
   end
 `ifndef SYNTHESIS
   // G and U cross on always-taken links: the client must match every one.
