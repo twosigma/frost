@@ -5669,8 +5669,7 @@ module cpu_ooo #(
     end
     always_ff @(posedge i_clk) begin
       if (reset_seen_q && !i_rst) begin
-        if (rob_commit_comb.valid)
-          p_vmt_commit_head_tag : assert (rob_commit_comb.tag == head_tag);
+        if (rob_commit_comb.valid) p_vmt_commit_head_tag : assert (rob_commit_comb.tag == head_tag);
         if (vmt_head_retiring) begin
           p_vmem_no_trap_cancelled_retire : assert (!trap_taken && !xret_taken && !flush_all);
           p_vmem_retires_alone : assert (!rob_commit_comb_2.valid);
