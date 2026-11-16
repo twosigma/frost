@@ -36,6 +36,8 @@ class GmiiPeer:
         """Bind the MAC boundary and initialize the packet queues."""
         self.dut = dut
         self.period = 1
+        # The PCS status_vector, driven on raw receive data bits 25:10 (a level)
+        self.status = 0
         self.symbols: deque[int] = deque()
         self.transmitted: deque[bytes] = deque()
         self.received: deque[bytes] = deque()
@@ -50,7 +52,7 @@ class GmiiPeer:
             self.dut.i_rx_raw_valid.value = int(enabled)
             self.dut.i_rx_raw_data.value = (
                 self.symbols.popleft() if enabled and self.symbols else 0
-            )
+            ) | (self.status << 10)
             await RisingEdge(self.dut.i_rx_clk)
             if enabled:
                 value = int(self.dut.o_tx_raw_data.value)
@@ -190,3 +192,11 @@ async def gmii_frames_and_errors(dut: Any) -> None:
     # preamble breaks off at its second byte) and the rx_er burst inside a frame.
     assert (totals >> (64 * 6)) & ((1 << 64) - 1) == 1
     assert (totals >> (64 * 7)) & ((1 << 64) - 1) == 1
+
+
+@cocotb.test()
+async def strict_pre_delimiter_matrix(dut: Any) -> None:
+    """Strict receive rejects errored preamble symbols and accepts clean shortened preambles."""
+    from cocotb_tests.nic.test_nic_rx_preamble_er import _check_preamble_matrix
+
+    await _check_preamble_matrix(dut, tolerant=False)
