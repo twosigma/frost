@@ -308,6 +308,16 @@ FORMAL_TARGETS = [
         tasks=("mirror_hold_prove", "mirror_hold15_prove", "mirror_hold32_prove"),
     ),
     FormalTarget(
+        "coherence_read_capture.sby",
+        "Read-slot capture priority and registered array response indication equal their references.",
+        tasks=(
+            "coh_read_capture_prove",
+            "coh_read_capture_stream_prove",
+            "coh_array_reply_prove",
+            "coh_array_reply_uram_prove",
+        ),
+    ),
+    FormalTarget(
         "coherence_read_payload.sby",
         "Buffered coherent read payloads and exports equal independent reference storage.",
         tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
@@ -2229,6 +2239,10 @@ SBY_TASKS = [
     ("mirror_hold_prove", "Debug mirror address equality at sixteen bits."),
     ("mirror_hold15_prove", "Debug mirror address equality at fifteen bits."),
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
+    ("coh_read_capture_prove", "Read data capture with arbitrary controller state."),
+    ("coh_read_capture_stream_prove", "Read data capture with stream endpoints."),
+    ("coh_array_reply_prove", "Registered response indication with block RAM."),
+    ("coh_array_reply_uram_prove", "Registered response indication with UltraRAM."),
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("bmc_core", "Load-result selection with the CPU feature configuration."),

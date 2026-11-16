@@ -2441,6 +2441,93 @@ module coherence_l1d #(
       .o_hp_data(path_data)
   );
 
+  // Each read slot captures from one local source selection. Controller
+  // answers take priority over the hit path, which takes priority over a
+  // failed-read clear. Controller sources occupy distinct phases.
+  logic capture_array_read;
+`ifdef READ_CAPTURE_PROOF
+  logic [7:0] capture_exact;
+  always_comb p_read_capture_exact : assert (&capture_exact);
+`endif
+  always_comb begin
+    capture_array_read = 1'b0;
+    case (operation_q)
+      ProbeOp, GrantOp, StoreOp, LookaheadOp, TwinOp, PrefetchOp,
+          AtomicWriteOp, MaintOp, SCOp: begin
+      end
+      default: capture_array_read = 1'b1;
+    endcase
+  end
+  for (genvar slot = 0; slot < 8; slot++) begin : gen_read_capture
+    logic grant_capture, array_capture, local_capture, path_capture, fail_capture;
+    logic controller_capture, capture_valid;
+    (* keep = "true" *) logic [3:0] capture_select;
+    logic [63:0] capture_data, capture_next;
+    assign grant_capture = grant_answer_slots[slot] ||
+        (active && phase_q == UpdateWait && array_ready && operation_q == GrantOp &&
+         grant_ep_q == '0 && !selected_grant_store && !acquisition_sc_q &&
+         acquisition_read_q == 3'(slot));
+    assign array_capture = active && phase_q == LookupWait && array_valid &&
+        capture_array_read && !(shadow_q && path_hit_q) && selected_kind_q != ReadAMO &&
+        array_hit && ((selected_read_q == 3'(slot) && !shadow_q) || merge_hit_slots[slot]);
+    assign local_capture = active && phase_q == LocalReadReady && atomic_read_q == 3'(slot);
+    assign controller_capture = grant_capture || array_capture || local_capture;
+    assign path_capture = s4_valid_q && s4_slot_q == 3'(slot);
+    assign fail_capture = fail_clear_q && fail_clear_slot_q == 3'(slot);
+    assign capture_valid = controller_capture || path_capture || fail_capture;
+    assign capture_select = {local_capture, array_capture, grant_capture,
+        path_capture && !controller_capture};
+    assign capture_data =
+        ({64{capture_select[0]}} & path_data) |
+        ({64{capture_select[1]}} & grant_q.data[64*rd_addr_q[slot][4:3]+:64]) |
+        ({64{capture_select[2]}} & array_data[64*rd_addr_q[slot][4:3]+:64]) |
+        ({64{capture_select[3]}} & image_q[64*atomic_addr_q[4:3]+:64]);
+    assign capture_next = capture_valid ? capture_data : rd_data_q[slot];
+    always_ff @(posedge i_clk) begin
+      if (i_rst) rd_data_q[slot] <= '0;
+      else rd_data_q[slot] <= capture_next;
+    end
+`ifdef READ_CAPTURE_PROOF
+    // The reference follows the controller's procedural assignment order.
+    logic [63:0] reference_data;
+    always_comb begin
+      reference_data = rd_data_q[slot];
+      if (fail_clear_q && fail_clear_slot_q == 3'(slot)) reference_data = '0;
+      if (s4_valid_q && s4_slot_q == 3'(slot)) reference_data = path_data;
+      if (active) begin
+        case (phase_q)
+          Lookup:
+          if (grant_answer_slots[slot])
+            reference_data = grant_q.data[64*rd_addr_q[slot][4:3]+:64];
+          LookupWait:
+          if (array_valid) begin
+            case (operation_q)
+              ProbeOp, GrantOp, StoreOp, LookaheadOp, TwinOp, PrefetchOp,
+                  AtomicWriteOp, MaintOp, SCOp: begin
+              end
+              default:
+              if (!(shadow_q && path_hit_q) && selected_kind_q != ReadAMO && array_hit &&
+                  ((selected_read_q == 3'(slot) && !shadow_q) || merge_hit_slots[slot]))
+                reference_data = array_data[64*rd_addr_q[slot][4:3]+:64];
+            endcase
+          end
+          LocalReadReady:
+          if (atomic_read_q == 3'(slot))
+            reference_data = image_q[64*atomic_addr_q[4:3]+:64];
+          UpdateWait:
+          if (array_ready && operation_q == GrantOp && !selected_grant_store &&
+              grant_ep_q == '0 && !acquisition_sc_q && acquisition_read_q == 3'(slot))
+            reference_data = grant_q.data[64*rd_addr_q[slot][4:3]+:64];
+          default: begin
+          end
+        endcase
+      end
+      if (i_rst) reference_data = '0;
+      capture_exact[slot] = reference_data == (i_rst ? 64'd0 : capture_next);
+    end
+`endif
+  end
+
   // ===========================================================================
   // Hit path
   // ===========================================================================
@@ -2812,9 +2899,6 @@ module coherence_l1d #(
       done_status_q <= coherence_pkg::Consumed;
       o_fatal <= 1'b0;
       o_fatal_addr <= '0;
-      for (int index = 0; index < 8; index++) begin
-        rd_data_q[index] <= '0;
-      end
       fail_clear_q <= 1'b0;
       fail_error_q <= 1'b0;
       fail_clear_slot_q <= '0;
@@ -2826,8 +2910,6 @@ module coherence_l1d #(
       fail_clear_q <= read_failure;
       fail_error_q <= |(pick_onehot & ep_fail_error);
       fail_clear_slot_q <= failure_read_slot;
-      if (fail_clear_q) rd_data_q[fail_clear_slot_q] <= '0;
-      if (s4_valid_q) rd_data_q[s4_slot_q] <= path_data;
       atomic_done_q <= 1'b0;
       o_sc_write_done <= 1'b0;
       o_cut_release <= 1'b0;
@@ -3026,10 +3108,6 @@ module coherence_l1d #(
             end
           end
           Lookup: begin
-            // Each answered slot selects its own dword of the captured grant.
-            for (int slot = 0; slot < 8; slot++)
-              if (grant_answer_slots[slot])
-                rd_data_q[slot] <= grant_q.data[64*rd_addr_q[slot][4:3]+:64];
             if (array_ready) phase_q <= LookupWait;
           end
           LookupWait:
@@ -3151,9 +3229,6 @@ module coherence_l1d #(
                   // later lookup does. Otherwise the read and the merged
                   // loads of its sector each take their own dword of the row;
                   // a shadow lookup merges nothing.
-                  for (int slot = 0; slot < 8; slot++)
-                    if ((selected_read_q == 3'(slot) && !shadow_q) || merge_hit_slots[slot])
-                      rd_data_q[slot] <= array_data[64*rd_addr_q[slot][4:3]+:64];
                   phase_q <= Idle;
                 end else if (!Multi) begin
                   phase_q <= !request_live && wb_free ? Acquire : Idle;
@@ -3210,7 +3285,6 @@ module coherence_l1d #(
             end else phase_q <= Idle;
           end
           LocalReadReady: begin
-            rd_data_q[atomic_read_q] <= image_q[64*atomic_addr_q[4:3]+:64];
             phase_q <= LocalWaitWrite;
           end
           LocalWaitWrite: if (atomic_write_q) phase_q <= LocalMerge;
@@ -3284,8 +3358,6 @@ module coherence_l1d #(
                   o_sc_success <= 1'b1;
                   o_sc_error <= 1'b0;
                 end else begin
-                  rd_data_q[acquisition_read_q] <=
-                      grant_q.data[64*rd_addr_q[acquisition_read_q][4:3]+:64];
                   if (acquisition_q.opcode == coherence_pkg::Atomic) begin
                     atomic_granted_q <= 1'b1;
                     atomic_way_q <= way_q;

@@ -1,0 +1,68 @@
+[tasks]
+coh_read_capture_prove capture
+coh_read_capture_stream_prove capture stream
+coh_array_reply_prove reply
+coh_array_reply_uram_prove reply uram
+
+[options]
+mode prove
+depth 6
+timeout 180
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv cache_perf_pkg.sv coherence_pkg.sv
+read -sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_stream.sv coherence_store_buffer.sv coherence_read_payload.sv
+read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+read -formal -sv -D ARRAY_REPLY_PROOF coherence_array.sv
+capture: read -formal -sv -D READ_CAPTURE_PROOF coherence_l1d.sv
+capture: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
+stream: chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d
+capture: hierarchy -check -top coherence_l1d
+reply: chparam -set CACHE_BYTES 64 -set WAYS 1 coherence_array
+uram: chparam -set ULTRA 1 coherence_array
+reply: hierarchy -check -top coherence_array
+proc -noopt
+flatten
+opt_expr -keepdc -noclkinv
+capture: select -assert-count 1 c:*p_read_capture_exact t:$check %i r:FLAVOR=assert %i
+capture: chformal -assert -remove t:$check r:FLAVOR=assert %i c:*p_read_capture_exact %d
+reply: select -assert-count 1 c:p_array_reply_exact t:$check %i r:FLAVOR=assert %i
+reply: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_array_reply_exact %d
+chformal -assume -remove
+chformal -cover -remove
+memory_map
+capture: cutpoint t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
+capture: select -assert-none t:*ff* t:*FF* t:*latch*
+capture: setattr -unset init w:*
+delete -output w:*
+opt_clean
+opt
+async2sync
+chformal -lower
+capture: select -assert-count 1 t:$assert
+reply: select -assert-count 1 t:$assert
+select -assert-none t:$assume
+capture: sat -prove-asserts -verify -timeout 60
+
+[files]
+../hw/rtl/lib/cache/coherence_read_stream.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_array.sv
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_put_endpoint.sv
+../hw/rtl/lib/cache/coherence_l1d.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
+../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
+../hw/rtl/lib/cache/coherence_read_select.sv
+../hw/rtl/lib/cache/coherence_read_payload.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_store_buffer.sv

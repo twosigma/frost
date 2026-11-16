@@ -312,6 +312,8 @@ insertion.
 An insertion update uses the most recent lookup's set and selected way;
 the controller completes that update before issuing another lookup.
 The L1D asserts this pairing for each grant installation.
+The response-valid bit registers beside the response, on the tag-result edge
+for a reply without data or on the data-capture edge for a reply with data.
 Response data is meaningful only with `o_resp_data_valid`. A tag-only or
 skipped read keeps the prior response data without reading the data array.
 A lookup marked `i_req_tags_only` reads no data and replies after the tag
@@ -495,6 +497,10 @@ cycle, because nothing reads them until a selection leaves Idle. The read
 address joins that selection last. The priority conditions above a read are
 prepared separately, so read eligibility controls the final address selection
 without passing through the non-read address priority chain.
+
+Each read slot has a local data-source selection for the hit path, array row,
+grant and local atomic image. Controller answers take priority over the hit
+path, which takes priority over a failed-read clear.
 
 Ready read slots share one response register in circular slot order. Each
 selection advances the pointer past that slot. A continuously ready slot has
