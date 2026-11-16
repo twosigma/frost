@@ -1,0 +1,35 @@
+[tasks]
+bmc_small
+bmc_1g
+bmc_4g
+bmc_8g
+bmc_16g
+bmc_32g
+bmc_64g
+bmc_128g
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+bmc_small: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=28 riscv_pkg.sv
+bmc_1g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=30 riscv_pkg.sv
+bmc_4g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=32 riscv_pkg.sv
+bmc_8g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=33 riscv_pkg.sv
+bmc_16g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=34 riscv_pkg.sv
+bmc_32g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=35 riscv_pkg.sv
+bmc_64g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=36 riscv_pkg.sv
+bmc_128g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=37 riscv_pkg.sv
+read -formal -sv ptw_pbmt_alias_ref.sv
+prep -top ptw_pbmt_alias_ref
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 1 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+ptw_pbmt_alias_ref.sv

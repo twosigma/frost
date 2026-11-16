@@ -315,7 +315,7 @@ Beyond a root that boots by hand, the stage needs:
 | The pinned kernel release on the root | The stage requires that release's boot banner, and the preflight reads the release out of the packed `Image` first. Install that version on the root, with `frost_net10g` in its initramfs (step 3). |
 | The pinned kernel in the checkout's cache | Unless `FROST_LINUX_KERNEL` names a kernel, the stage packs the one in `linux/debian-kernel` (or `FROST_DEBIAN_KERNEL_CACHE`), and the preflight fails if it is not there yet. Run `python3 linux/debian_kernel.py fetch` once to fill the cache. |
 | NFSv3 over TCP | Step 4. The preflight sends the server an NFSv3 NULL call. |
-| A server on the board's own subnet | `frost_nettest` takes the root's interface down. When the interface comes back, the kernel restores its connected route but not a route through a gateway, so a server behind a gateway can leave the root stranded. The preflight reports which case applies. |
+| A server on the board's own subnet | `frost_nettest` takes the root's interface down and loops it back. The kernel may send ARP requests for the server meanwhile; the test captures them and accounts for them in its counter checks. When the interface comes back, the kernel restores its connected route but not a route through a gateway, so a server behind a gateway can leave the root stranded. The preflight reports which case applies. |
 | An executable `/dev/shm` | `frost_nettest` runs from a copy in `/dev/shm` while the root's link is down, so that tmpfs must not be mounted `noexec`. |
 | A fresh initramfs after driver changes | The initramfs carries the DKMS build from step 3. After editing `linux/frost-net10g`, repeat step 3, or the run tests the old module. |
 
@@ -327,6 +327,19 @@ reports a problem as `ENV_FAIL`, not as a board failure. Without
 `--linux-timeout` (default 1200 seconds) covers the build, the JTAG load, the
 boot, and the tests. Raise it for a divided-clock bitstream, or for a first
 build that must download the Buildroot toolchain or the kernel.
+
+To diagnose an intermittent `frost_nettest` failure, set
+`FROST_HW_NETTEST_REPEAT=<n>` (1 to 20) to run the test n times in one boot.
+Each repetition restores the interface and checks the root before the next.
+Repetitions before the last report `FROST_NET_DIAG_PASS rep=<r>` or
+`FROST_NET_DIAG_FAIL rep=<r> <reason>`, which do not end the capture, and any
+failed repetition fails the stage. A repetition holds the link down for 65
+seconds and takes about 80 in all, so raise `--linux-timeout` to match.
+`FROST_HW_NETTEST_POKE_NFS=<s>` (1 to 300) also starts, just before each run
+of the test, a background lookup of a name that has never existed under
+`/root`, `s` seconds later. No cache can answer it, so the NFS client sends a
+request while the link is held down; the request completes once the link is
+restored. The stage prints `FROST_NET_DIAG: nfs poke scheduled at +<s> s`.
 
 The stage checks the NFS mount and systemd and runs the stress and counter
 tests. Systemd must report `running`, or `degraded` with only failed

@@ -170,11 +170,12 @@ select between them. Cached-AMO protection qualifies issue and SQ-probe permissi
 after this selection.
 Forwarding
 requires an ordinary load and has no head-match dependency.
-Each coherent address slot stores PMA permission, Normal-memory classification
-and cache-region classification with its address. Stored and arriving payloads
-compute PMA permission before address-source selection. Staging selects the
-permission, Normal-memory class and cache-region class from the stored or arriving
-address. The arriving address's permission is formed from its uncached,
+Each coherent address slot stores PMA permission, PBMT-alias membership,
+Normal-memory classification and cache-region classification with its address.
+Stored and arriving payloads compute these classes before address-source
+selection. Staging selects the classes from the stored or arriving address.
+Alias membership permits only MMIO loads without AMO or LR semantics.
+The arriving address's permission is formed from its uncached,
 cached-DDR and device range checks, which meet the source select and the
 atomic flag in one final term. The captured Normal-memory class supplies
 L0-hit eligibility.
