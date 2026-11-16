@@ -42,6 +42,9 @@ SBY_TASK_TIMEOUT_S = 2400
 # SBY files and separate CI jobs. Keep the runner's backstops in sync with
 # those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("coherence_home_twin", "home_twin_small"): 600,
+    ("coherence_home_twin", "home_twin_four"): 600,
+    ("coherence_home_twin", "home_twin_addr40"): 600,
     ("coherence_home", "coh_home_control_prove"): 1800,
     ("coherence_home", "coh_home_control64_prove"): 1800,
     ("coherence_home", "coh_home_control_partition_prove"): 1800,
@@ -94,16 +97,25 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_boundary", "bmc_amo_same"): 3300,
     ("coherence_store_boundary", "bmc_amo_other"): 4800,
     ("coherence_store_boundary", "bmc_sc"): 3600,
-    ("coherence_store_home", "bmc_siblings"): 1800,
-    ("coherence_store_home", "bmc_rows"): 2100,
-    ("coherence_store_home", "bmc_conflict"): 2400,
-    ("coherence_store_home", "bmc_pressure"): 2700,
-    ("coherence_store_home", "link_bmc_siblings"): 7200,
+    ("coherence_store_home", "bmc_siblings"): 900,
+    ("coherence_store_home", "bmc_siblings_second"): 900,
+    ("coherence_store_home", "bmc_rows"): 900,
+    ("coherence_store_home", "bmc_rows_second"): 900,
+    ("coherence_store_home", "bmc_conflict"): 900,
+    ("coherence_store_home", "bmc_conflict_second"): 900,
+    ("coherence_store_home", "bmc_pressure"): 900,
+    ("coherence_store_home", "bmc_pressure_second"): 900,
+    ("coherence_store_home", "link_bmc_siblings"): 900,
+    ("coherence_store_home", "link_bmc_siblings_second"): 900,
+    ("coherence_store_home", "link_bmc_pressure"): 900,
+    ("coherence_store_home", "link_bmc_pressure_second"): 900,
+    ("coherence_store_home", "cover_conflict"): 900,
+    ("coherence_store_home", "cover_pressure"): 900,
+    ("coherence_store_home", "link_cover_pressure"): 900,
     ("line_client_link", "line_link0_bmc"): 4200,
     ("line_client_link", "line_link1_bmc"): 4200,
     ("line_client_link", "line_link1_four_bmc"): 4200,
     ("line_client_link", "line_link1_eight_bmc"): 4200,
-    ("coherence_store_home", "link_bmc_pressure"): 8700,
     ("rs_issue_tag_banks", "int_equiv"): 600,
     ("rs_issue_tag_banks", "int_equiv_prims"): 600,
     ("rs_issue_tag_copies", "prove"): 600,
@@ -177,15 +189,21 @@ FORMAL_TARGETS = [
         "Production private and home caches preserve streamed bytes through replacement and DMA.",
         tasks=(
             "bmc_siblings",
+            "bmc_siblings_second",
             "bmc_rows",
+            "bmc_rows_second",
             "bmc_conflict",
+            "bmc_conflict_second",
             "cover_siblings",
             "cover_rows",
             "cover_conflict",
             "bmc_pressure",
+            "bmc_pressure_second",
             "cover_pressure",
             "link_bmc_siblings",
+            "link_bmc_siblings_second",
             "link_bmc_pressure",
+            "link_bmc_pressure_second",
             "link_cover_pressure",
         ),
     ),
@@ -313,6 +331,23 @@ FORMAL_TARGETS = [
         tasks=("mirror_hold_prove", "mirror_hold15_prove", "mirror_hold32_prove"),
     ),
     FormalTarget(
+        "coherence_read_capture.sby",
+        "Read-slot capture, the Idle phase and operation selection, per-slot kinds and registered array responses equal their references.",
+        tasks=(
+            "coh_read_capture_prove",
+            "coh_read_capture_stream_prove",
+            "coh_idle_select_prove",
+            "coh_idle_select_stream_prove",
+            "coh_idle_phase_prove",
+            "coh_idle_phase_stream_prove",
+            "coh_read_kind_prove",
+            "coh_array_reply_prove",
+            "coh_array_reply4_prove",
+            "coh_array_reply_uram_prove",
+            "coh_array_reply4_uram_prove",
+        ),
+    ),
+    FormalTarget(
         "coherence_read_payload.sby",
         "Buffered coherent read payloads and exports equal independent reference storage.",
         tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
@@ -416,7 +451,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_select.sby",
-        "Seat admission and circular work selection match serial priority.",
+        "Seat admission and circular work selection, in encoded and one-hot form, "
+        "match serial priority.",
         tasks=("coh_seat_select_prove", "coh_work_select_prove"),
     ),
     FormalTarget(
@@ -991,7 +1027,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_head_mmu.sby",
-        "Head vector translation before access, precise partial faults and commit shield",
+        "Head vector translation before access, precise partial faults, commit shield "
+        "and consumption of every commit",
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
@@ -1003,7 +1040,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "vec_vmt.sby",
         "Vector memory table lifecycle: allocation into free entries, retirement "
-        "exactly as the head passes, flushes, fixed ranges and the exact "
+        "exactly as the head passes, registered flush cleanup, fixed ranges and the exact "
         "no-live-retired-entry output",
         tasks=("vmt_bmc", "cover"),
     ),
@@ -1083,7 +1120,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "ptw.sby",
         "Page-table walk state matches reference PTE classification, including the "
-        "Svpbmt reserved encodings, PBMTE and the uncached alias, and the walk "
+        "Svnapot PPN substitution, Svpbmt reserved encodings, PBMTE and the uncached "
+        "alias, and the walk "
         "cache holds only valid pointers that memory holds, cleared by every discard",
         tasks=(
             "bmc",
@@ -1133,7 +1171,10 @@ FORMAL_TARGETS = [
     FormalTarget(
         "home_capture_equiv.sby",
         "Consumed home payloads match handshake-only captures, and registered "
-        "fill flags match their phase decodes across arbitrary reset and stalls.",
+        "fill flags match their phase decodes across arbitrary reset and stalls. "
+        "The parked next-state function preserves event priority; selected-slot "
+        "parking, the one-hot selection, dispatch and waiter eligibility match a "
+        "slot-table reference.",
         tasks=(
             "home_small",
             "home_four",
@@ -1147,6 +1188,9 @@ FORMAL_TARGETS = [
             "endpoint56",
             "arbiter_default",
             "arbiter_idle",
+            "completions_two",
+            "completions_three",
+            "completions_default",
         ),
     ),
     FormalTarget(
@@ -1179,7 +1223,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ma_engine.sby",
-        "Misaligned-access engine: no memory request before both parts pass their "
+        "Misaligned-access engine: request controls match the issue states, no memory request before both parts pass their "
         "checks, lower sector first, one request and response per identity, one "
         "completion, fault or write-back per access, and terminal fatal stops",
         tasks=("bmc", "cover"),
@@ -1436,8 +1480,18 @@ FORMAL_TARGETS = [
         "backing_btb.sby",
         "Backing BTB lookups match a mirror of its sets, every set holds each "
         "valid tag once, and requests in training hold their set's current "
-        "entries, at two and four ways",
-        tasks=("bmc", "bmc_four_way", "prove", "prove_four_way", "cover"),
+        "entries, at two and four ways; slot 2's fields formed for each slot-1 "
+        "size and selected by the packet's size equal the single reduction they "
+        "replace, for any register state",
+        tasks=(
+            "bmc",
+            "bmc_four_way",
+            "prove",
+            "prove_four_way",
+            "cover",
+            "size_select",
+            "size_select_four_way",
+        ),
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
@@ -1446,6 +1500,14 @@ FORMAL_TARGETS = [
         "refreshes follow them, and redirect directions and targets match PD's "
         "reference models",
         tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "pd_redirect_next_equiv.sby",
+        "PD's redirect target registers' next values, with every candidate formed "
+        "before the slot selects and slot 1's size picked last, equal the form "
+        "they replace for any decode, packet, candidates, backing BTB result and "
+        "stack state",
+        tasks=("bmc",),
     ),
     FormalTarget(
         "pd_id_slot2_redirect.sby",
@@ -1841,13 +1903,24 @@ SBY_TASKS = [
     ("link_mirror1_cover", "A mirrored link completes four handshakes."),
     (
         "link_bmc_siblings",
-        "Production L1D and home through one-stage links preserve sibling-sector bytes.",
+        "Production L1D and home through one-stage links preserve sibling-sector bytes; first watched byte.",
+    ),
+    (
+        "link_bmc_siblings_second",
+        "Production L1D and home through one-stage links preserve sibling-sector bytes; second watched byte.",
     ),
     (
         "link_bmc_pressure",
-        "One-stage links under two dirty victims, delayed releases and a probing DMA read.",
+        "One-stage links under two dirty victims, delayed releases and a probing DMA read; first watched byte.",
     ),
-    ("link_cover_pressure", "The pressure schedule completes through one-stage links."),
+    (
+        "link_bmc_pressure_second",
+        "One-stage links under two dirty victims, delayed releases and a probing DMA read; second watched byte.",
+    ),
+    (
+        "link_cover_pressure",
+        "The pressure schedule completes through one-stage links.",
+    ),
     ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
     ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
     (
@@ -2025,18 +2098,40 @@ SBY_TASKS = [
     ("coh_miss_credit3_prove", "Binary acquisition credits cover 3 endpoints."),
     ("coh_miss_credit4_prove", "Binary acquisition credits cover 4 endpoints."),
     ("coh_miss_credit8_prove", "Binary acquisition credits cover 8 endpoints."),
-    ("bmc_siblings", "Real-home sibling store byte safety."),
-    ("bmc_rows", "Real-home distinct-row store byte safety."),
-    ("bmc_conflict", "Real-home conflicting-row store byte safety."),
+    ("bmc_siblings", "Real-home sibling store byte safety; first watched byte."),
+    (
+        "bmc_siblings_second",
+        "Real-home sibling store byte safety; second watched byte.",
+    ),
+    ("bmc_rows", "Real-home distinct-row store byte safety; first watched byte."),
+    (
+        "bmc_rows_second",
+        "Real-home distinct-row store byte safety; second watched byte.",
+    ),
+    (
+        "bmc_conflict",
+        "Real-home conflicting-row store byte safety; first watched byte.",
+    ),
+    (
+        "bmc_conflict_second",
+        "Real-home conflicting-row store byte safety; second watched byte.",
+    ),
     ("cover_siblings", "Sibling acquisitions complete and supply DMA data."),
     (
         "cover_rows",
         "Distinct-row concurrent acquisitions complete and supply DMA data.",
     ),
-    ("cover_conflict", "A same-set conflict serializes and supplies DMA data."),
+    (
+        "cover_conflict",
+        "A same-set conflict serializes and supplies DMA data.",
+    ),
     (
         "bmc_pressure",
-        "Real-home stores and load data survive held writebacks and releases.",
+        "Real-home stores and load data survive held writebacks and releases; first watched byte.",
+    ),
+    (
+        "bmc_pressure_second",
+        "Real-home stores and load data survive held writebacks and releases; second watched byte.",
     ),
     (
         "cover_pressure",
@@ -2310,6 +2405,29 @@ SBY_TASKS = [
     ("mirror_hold_prove", "Debug mirror address equality at sixteen bits."),
     ("mirror_hold15_prove", "Debug mirror address equality at fifteen bits."),
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
+    ("coh_read_capture_prove", "Read data capture with arbitrary controller state."),
+    ("coh_read_capture_stream_prove", "Read data capture with stream endpoints."),
+    ("coh_idle_select_prove", "Idle phase and operation selection with one endpoint."),
+    (
+        "coh_idle_select_stream_prove",
+        "Idle phase and operation selection with stream endpoints.",
+    ),
+    ("coh_idle_phase_prove", "Phase register after Idle cycles with one endpoint."),
+    (
+        "coh_idle_phase_stream_prove",
+        "Phase register after Idle cycles with stream endpoints.",
+    ),
+    ("coh_read_kind_prove", "Per-slot read kinds equal buffered allocation payloads."),
+    ("coh_array_reply_prove", "Registered response indication with block RAM."),
+    (
+        "coh_array_reply4_prove",
+        "Registered response indication with four block-RAM ways.",
+    ),
+    ("coh_array_reply_uram_prove", "Registered response indication with UltraRAM."),
+    (
+        "coh_array_reply4_uram_prove",
+        "Registered response indication with four UltraRAM ways.",
+    ),
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("bmc_core", "Load-result selection with the CPU feature configuration."),
@@ -2486,7 +2604,8 @@ SBY_TASKS = [
     ("coh_seat_select_prove", "Fill waiter ranks match serial seat allocation."),
     (
         "coh_work_select_prove",
-        "Ready work and circular priority match serial selection, last pick coded.",
+        "Encoded and one-hot ready/circular selection match serial priority, "
+        "with the last pick coded.",
     ),
     ("coh_home_forward1_prove", "One-fill forward choice matches the reference."),
     ("coh_home_forward3_prove", "Three-fill forward choice matches the reference."),
@@ -2891,6 +3010,18 @@ SBY_TASKS = [
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),
     ("arbiter_idle", "Selected payloads with loading on every idle cycle."),
+    (
+        "completions_two",
+        "Selected parking, dispatch and waiter exclusion with two completion slots.",
+    ),
+    (
+        "completions_three",
+        "Selected parking, dispatch and waiter exclusion with three completion slots.",
+    ),
+    (
+        "completions_default",
+        "Selected parking, dispatch and waiter exclusion with the full completion table.",
+    ),
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_seat2", "Seat next-state equivalence with two fills."),
     ("bmc_seat3", "Seat next-state equivalence with three fills and four ways."),
@@ -2984,6 +3115,14 @@ SBY_TASKS = [
     ("bmc_btb_index3", "Bounded relation checking with three BTB index bits"),
     ("bmc_four_way", "Bounded checking with four ways"),
     ("prove_four_way", "Unbounded safety checking with four ways"),
+    (
+        "size_select",
+        "Slot-2 fields per slot-1 size equal the single reduction, any state.",
+    ),
+    (
+        "size_select_four_way",
+        "Slot-2 fields per slot-1 size equal the single reduction, four ways.",
+    ),
     ("bmc_xlen72", "Bounded Bare-output checking with local XLEN 72"),
     ("bmc_integrated", "Bounded checking with the integrated IF handoff parameter"),
     ("prove_xlen32", "Unbounded safety checking with a local 32-bit datapath"),
@@ -3585,6 +3724,157 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
         else:
             sections[section].append(line)
     return sections
+
+
+def test_store_home_cover_budgets() -> None:
+    """Pin cover bounds, engines and the complete task selection."""
+    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_store_home")
+    assert tuple(task for task in target.tasks if "cover" in task) == (
+        "cover_siblings",
+        "cover_rows",
+        "cover_conflict",
+        "cover_pressure",
+        "link_cover_pressure",
+    )
+    for task, depth, timeout in (
+        ("cover_siblings", 240, 2400),
+        ("cover_rows", 240, 2400),
+        ("cover_conflict", 233, 900),
+        ("cover_pressure", 235, 900),
+        ("link_cover_pressure", 250, 900),
+    ):
+        config = formal_task_config(target.name, task)
+        options = dict(line.split(None, 1) for line in config["[options]"])
+        assert options == {
+            "mode": "cover",
+            "vcd_sim": "on",
+            "depth": str(depth),
+            "timeout": str(timeout),
+        }
+        assert formal_task_timeout_s(target.name, task) == timeout
+        assert config["[engines]"] == ["btor btormc"]
+        script = config["[script]"]
+        assert "chparam -set COVER_MODE 1 coherence_store_home_formal" in script
+        if "pressure" in task:
+            assert "chparam -set PRESSURE 1 coherence_store_home_formal" in script
+        elif task == "cover_conflict":
+            assert "chparam -set SECTOR_CASE 2 coherence_store_home_formal" in script
+        elif task == "cover_rows":
+            assert "chparam -set SECTOR_CASE 1 coherence_store_home_formal" in script
+        if task == "link_cover_pressure":
+            assert "chparam -set LINK_STAGES 1 coherence_store_home_formal" in script
+        assert "peepopt" not in script
+        if timeout == 2400:
+            assert not any("chformal" in line for line in script)
+            assert "abc" not in script
+            continue
+        assert [line for line in script if line.startswith("chformal")] == [
+            "chformal -assert -remove"
+        ]
+        pipeline = (
+            "chformal -assert -remove",
+            "setattr -unset keep",
+            "techmap",
+            "opt -fast",
+            "abc",
+            "opt -full",
+            "setundef -undriven -anyseq",
+            "select -assert-count 1 t:$check r:FLAVOR=cover %i",
+            "select -assert-count 1 t:$check r:FLAVOR=assume %i",
+            "select -clear",
+        )
+        positions = [script.index(command) for command in pipeline]
+        assert positions == sorted(positions)
+        assert positions[-1] < script.index("setundef -anyseq")
+    bounded_tasks = (
+        ("bmc_siblings", 240),
+        ("bmc_rows", 240),
+        ("bmc_conflict", 360),
+        ("bmc_pressure", 360),
+        ("link_bmc_siblings", 300),
+        ("link_bmc_pressure", 420),
+    )
+    assert {task for task in target.tasks if "bmc" in task} == {
+        task + suffix for task, _ in bounded_tasks for suffix in ("", "_second")
+    }
+    for base, depth in bounded_tasks:
+        pair = []
+        for choice, suffix in enumerate(("", "_second")):
+            task = base + suffix
+            bounded = formal_task_config(target.name, task)
+            options = dict(line.split(None, 1) for line in bounded["[options]"])
+            assert options == {
+                "mode": "bmc",
+                "depth": str(depth),
+                "timeout": "900",
+                "aigsmt": "boolector",
+            }
+            assert formal_task_timeout_s(target.name, task) == 900
+            engine = "abc bmc3 -c" if base.startswith("link_") else "abc bmc3"
+            assert bounded["[engines]"] == [engine]
+            script = bounded["[script]"]
+            assert "abc" not in script
+            assert not any("chformal" in line for line in script)
+            assert not any(
+                "cutpoint" in line or "setundef -zero" in line for line in script
+            )
+            bind = f"connect -nomap -set watch_second 1'b{choice}"
+            assert [line for line in script if line.startswith("connect ")] == [bind]
+            assert [line for line in script if line.startswith("delete ")] == [
+                "delete @watch_choice"
+            ]
+            partition = (
+                "select -module coherence_store_home_formal",
+                "select -assert-count 3 t:$anyconst",
+                "select -set watch_choice w:watch_second %ci* t:$anyconst %i",
+                "select -assert-count 1 @watch_choice",
+                "select -assert-count 1 t:$anyconst r:WIDTH=1 %i",
+                "delete @watch_choice",
+                bind,
+                "select -assert-count 2 t:$anyconst r:WIDTH=8 %i",
+                "select -assert-none t:$anyconst r:WIDTH=1 %i",
+                "select -clear",
+            )
+            positions = [script.index(command) for command in partition]
+            assert positions == sorted(positions)
+            assert positions[-1] < script.index("memory_map")
+            assert script.index("peepopt") < script.index("techmap")
+            assert script.index("techmap") < script.index("setundef -anyseq")
+            assert "select -assert-none t:$check r:FLAVOR=assume %i" in script
+            assert "select -assert-none t:$assume" in script
+            # The complete configurations differ only by the exhaustive watch value.
+            bounded["[script]"] = [line for line in script if line != bind]
+            pair.append(bounded)
+        assert pair[0] == pair[1]
+
+
+def test_home_twin_snapshot_budget() -> None:
+    """Equivalence construction releases saved copies without changing geometry."""
+    for task, floor in (
+        ("home_twin_small", 4296),
+        ("home_twin_four", 4870),
+        ("home_twin_addr40", 4328),
+    ):
+        config = formal_task_config("coherence_home_twin", task)
+        options = dict(line.split(None, 1) for line in config["[options]"])
+        assert options == {"mode": "bmc", "depth": "1", "timeout": "600"}
+        assert formal_task_timeout_s("coherence_home_twin", task) == 600
+        script = config["[script]"]
+        make = script.index("equiv_make gold gate equiv")
+        for variant in ("gold", "gate"):
+            copy = f"design -copy-from {variant} -as {variant} {variant}"
+            release = f"design -delete {variant}"
+            assert script.index(copy) < script.index(release) < make
+        assert f"select -assert-min {floor} @blk" in script
+        assert "equiv_simple @blk" in script
+        assert "equiv_status -assert @blk" in script
+        if task == "home_twin_four":
+            geometry = (
+                "chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 "
+                "-set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 "
+                "-set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home"
+            )
+            assert script.count(geometry) == 2
 
 
 def test_home_shard_budget() -> None:
@@ -4853,11 +5143,25 @@ def test_fatal_frame_validation(
         ("coherence_store_boundary", "bmc_amo_same", 3300),
         ("coherence_store_boundary", "bmc_amo_other", 4800),
         ("coherence_store_boundary", "bmc_sc", 3600),
-        ("coherence_store_home", "bmc_siblings", 1800),
-        ("coherence_store_home", "bmc_rows", 2100),
-        ("coherence_store_home", "bmc_conflict", 2400),
-        ("coherence_store_home", "bmc_pressure", 2700),
+        ("coherence_store_home", "bmc_siblings", 900),
+        ("coherence_store_home", "bmc_siblings_second", 900),
+        ("coherence_store_home", "bmc_rows", 900),
+        ("coherence_store_home", "bmc_rows_second", 900),
+        ("coherence_store_home", "bmc_conflict", 900),
+        ("coherence_store_home", "bmc_conflict_second", 900),
+        ("coherence_store_home", "bmc_pressure", 900),
+        ("coherence_store_home", "bmc_pressure_second", 900),
+        ("coherence_store_home", "link_bmc_siblings", 900),
+        ("coherence_store_home", "link_bmc_siblings_second", 900),
+        ("coherence_store_home", "link_bmc_pressure", 900),
+        ("coherence_store_home", "link_bmc_pressure_second", 900),
         ("coherence_store_home", "cover_siblings", 2400),
+        ("coherence_store_home", "cover_conflict", 900),
+        ("coherence_store_home", "cover_pressure", 900),
+        ("coherence_store_home", "link_cover_pressure", 900),
+        ("coherence_home_twin", "home_twin_small", 600),
+        ("coherence_home_twin", "home_twin_four", 600),
+        ("coherence_home_twin", "home_twin_addr40", 600),
         ("coherence_l1d", "coh_l1d_stream_free_bmc", 10800),
         ("coherence_l1d", "coh_l1d_multi_bmc", 18000),
         ("coherence_l1d", "coh_l1d_data_bmc", 3900),

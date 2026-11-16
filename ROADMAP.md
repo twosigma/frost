@@ -85,11 +85,11 @@ extensions implemented on `main` or planned with the vector unit:
 | Sscounterenw | Implemented | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`scounteren`), `csr_file.sby` |
 | Svpbmt | Implemented (NC/IO DDR mappings require an uncached alias; the VCU118's 2 GiB map has none and raises access faults, with device mappings unaffected) | `svpbmt_test`, `svpbmt_test_2g`, `svpbmt_bus_error`, TestRIG (`svpbmt_pbmte.S`), `ptw.sby`, `dmmu_mmio.sby`, `tlb.sby`, `l2tlb.sby` |
 | Svinval | Implemented | `svinval_test`, TestRIG, `instr_operand_classifier.sby` |
-| Svnapot | In progress | - |
+| Svnapot | Implemented (64 KiB ranges use ordinary 4 KiB TLB entries) | `svnapot_test`, TestRIG (`svnapot_leaf.S`), `ptw.sby`, `tlb.sby`, `l2tlb.sby` |
 | Sstc | Implemented | `sstc_test`, `irq_take_latency`, TestRIG (`stimecmp`), `csr_file.sby` |
 | Sscofpmf | Implemented | `sscofpmf_test`, TestRIG (`--sscofpmf`), `csr_sscofpmf.sby` |
 | Ssnpm | Implemented for scalar accesses (`senvcfg.PMM`, PMLEN 0, 7 and 16). Vector memory does not yet apply pointer masking after element-address addition. | `pm_test`, `debug_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `csr_commit_cofactor.sby` |
-| Ssu64xl | Implemented; advertisement in progress | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`), `csr_file.sby` |
+| Ssu64xl | Implemented | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`, `ssu64xl_uxl.S`), `csr_file.sby` |
 | Zbc (optional) | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzbc`), TestRIG, `cl_multiplier.sby` |
 | Svvptc (optional) | Implemented | `vm_test`, `asid_test`, TestRIG, `ptw.sby`, `immu_memo.sby`, `dmmu_twin.sby` |
 | Zvfh (optional) | Partial (FP16 lane datapath blocks in place; core execution not connected) | `test_vec_fma.py`, `test_vec_fcvt.py`, `test_vec_fdivsqrt.py`, `test_vec_fp_misc.py` |
@@ -301,6 +301,20 @@ Open: restore `coherence_store_boundary:bmc_four` to depth 120 with the
 L1D hit path, using additional lemmas or splitting the checks into smaller
 cones so the task fits its CI budget.
 
+Open: the three compact store-home covers optimize their logic before
+undefined values become free inputs, which does not guarantee in general
+that a cover witness is a trace of the unoptimized model. The three were
+confirmed by replaying them on the unoptimized model when they were
+introduced. The replay is planned as a registered check, or the
+optimization would use `opt -keepdc` if that meets the memory budget.
+
+Open: thirteen `.sby` files run a plain `opt` before `setundef -anyseq`. A
+register that never loads and has an undefined initial value can then be
+resolved differently at different readers, which could drop behaviors from
+a bounded safety check. Planned: `opt -keepdc` before `setundef` in those
+files, re-measured, and a check of whether any affected register is
+observable.
+
 The FPGA build's hand-instantiated primitives are compared with their
 portable forms by [equivalence checks](formal/README.md#primitive-twins).
 Open: a few primitive blocks in the load queue, the Tomasulo wrapper, the
@@ -481,8 +495,8 @@ and targeted microbenchmarks give these items:
    without the array. Starting the walk in parallel with the second-level
    lookup and cancelling it on a hit would remove that cycle. A 32-entry
    superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
-   Reach beyond 2 MiB of 4 KiB pages, and Svnapot 64 KiB pages, would be the
-   next steps.
+   Svnapot 64 KiB ranges use ordinary 4 KiB TLB entries. Coalescing those
+   entries and extending 4 KiB-page reach beyond 2 MiB would be next steps.
 4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
    predicts the jumps, calls and returns it misses through a PD redirect, at

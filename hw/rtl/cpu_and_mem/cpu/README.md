@@ -251,7 +251,11 @@ with the packet's PC, so a packet whose set was not read gets no backing hit,
 and neither does a slot 2 in the word after the last set. The hit, size and
 type come from the registered tags, and the target from the target array
 read on the same edge. IF passes PD each slot's hit, size, type and target,
-kept across stall replay like the packet. PD registers a candidate for a
+kept across stall replay like the packet. Slot 2's type and target also come
+for each size of slot 1, formed from the tags and the packet's PC alone; PD
+picks between them by slot 1's size where it forms the backing target, so
+the redirect target registers select between finished values (see
+`pd_redirect_next`). PD registers a candidate for a
 slot-1 or slot-2 JAL or JALR whose backing entry has the instruction's size.
 When the slot's BTB prediction was not taken, the candidate fires the PD
 redirect, which costs the PD redirect's two bubbles instead of a
@@ -483,11 +487,23 @@ its own ASID, or a global entry under any ASID.
   `mstatus.TVM`) and raise illegal-instruction in U-mode through ID's
   registered `i_priv_is_u` gate.
 
+Svnapot. A level-0 leaf with N (bit 63) set and PPN[3:0] = 1000 maps a
+64 KiB range. The walker replaces PPN[3:0] with VPN[3:0] and returns the
+requested 4 KiB page; both TLB levels store it as a level-0 entry. Every
+other encoding with N set is a page fault, including non-leaf pointers and
+superpage leaves. A range update requires fences covering all sixteen
+pages, or an address-space fence. One address fence removes the named
+page's entry with the usual ASID and global filters. The walker reads the
+requested PTE slot and does not compare the range's other PTEs. A clear A
+bit faults the walk; a clear D bit faults a store at the requesting MMU.
+The hardware does not update either bit.
+
 Svpbmt. The walker checks a leaf's PBMT field (PTE bits 62:61) against
 `menvcfg.PBMTE`, sampled when the walk starts: with PBMTE clear any nonzero PBMT is a
 page fault, and with it set PBMT 3 in a leaf and any nonzero PBMT in a non-leaf are
-page faults, as are bit 63 (no Svnapot) and bits 60:54. An NC or IO leaf over
-cached DDR answers the PPN of the uncached alias of DDR (riscv_pkg "Svpbmt":
+page faults, as are bits 60:54. An NC or IO leaf over
+cached DDR answers the PPN of the uncached alias of DDR after any Svnapot
+PPN substitution (riscv_pkg "Svpbmt":
 bit 30 for DDR up to 1 GiB, bit c for a 2^c-byte window of c >= 32, which
 leaves its top 2 GiB without an alias and makes an NC or IO leaf there an
 access fault). A 2 GiB DDR window has no alias in the current 32-bit physical
@@ -744,12 +760,19 @@ only with `RS_NONE` and take an entry in the vector memory table
 The table lists the vector memory instructions in flight in program order for
 the load and store queues' range holds (including 64-byte block holds on
 Zicbom entries), marks an entry retired on the edge the ROB head passes it, and
-frees entries that a flush removes. Its registered "no live retired entry"
-output holds the serializer's FENCE, FENCE.I and SFENCE.VMA drain, the
-store-conditional unit's firing and arming, the misaligned-access engine before
+frees entries one cycle after a flush removes them. Its registered
+"no live retired entry" output holds the serializer's FENCE, FENCE.I and
+SFENCE.VMA drain, the store-conditional unit's firing and arming, the
+misaligned-access engine before
 its first access, and interrupt and debug-halt takes (`sq_committed_empty_for_trap`).
 When one reaches the ROB head and older committed vector work has drained,
-`vector/vec_head_mmu.sv` reads `rs1` through the integer register file's extra
+`vector/vec_head_mmu.sv` samples the head metadata and head-match predicate in
+local registers. It rechecks the match after admission and before raising the
+interrupt shield. A flush suppresses walks and publications immediately and
+clears the local state on the following edge; the trap's `vstart` sideband
+remains available on the trap-taking edge. A local CDB acknowledgement
+suppresses duplicate completion while the state machine enters its retirement
+or trap wait. The unit reads `rs1` through the integer register file's extra
 read port and checks `vtype` and register-group legality (`vill` except on
 whole-register forms, EMUL in `[1/8, 8]`, group alignment, and masked loads to
 `v0`), computes the active byte span from `vl`, `vstart` and `v0`, translates

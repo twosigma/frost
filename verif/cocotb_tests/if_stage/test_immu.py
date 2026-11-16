@@ -1603,3 +1603,46 @@ async def test_asid_switch_keeps_address_spaces_apart(dut: Any) -> None:
     assert await _fetch_page(dut, pc_glob + 8, leaf_glob)
     await _asid_switch(dut, 1)
     assert await _fetch_page(dut, pc + 20, leaf_one)
+
+
+@cocotb.test()
+async def test_materialized_range_selective_fences(dut: Any) -> None:
+    """Fetch entries for adjacent pages obey each page and ASID filter."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    entries = [(1, Leaf(vpn=0x400 + i, ppn=0x80000 + i)) for i in range(8)]
+    entries += [(2, Leaf(vpn=0x400 + i, ppn=0x81000 + i)) for i in range(4)]
+    entries += [(1, Leaf(vpn=0x408, ppn=0x82008, perm_g=1))]
+    entries += [(1, Leaf(vpn=0x500 + i, ppn=0x83000 + i)) for i in range(3)]
+    for vpn, asid in ((0x402, None), (0x402, 1), (0x408, 1), (0x500, None)):
+        dut.i_tlb_invalidate.value = 1
+        await _cycle(dut)
+        dut.i_tlb_invalidate.value = 0
+        for owner, leaf in entries:
+            await _asid_switch(dut, owner)
+            assert not await _fetch_page(dut, (leaf.vpn << 12) | 0x100, leaf)
+        dut.i_tlb_invalidate.value = 1
+        dut.i_flush_use_va.value = 1
+        dut.i_flush_vpn.value = vpn
+        dut.i_flush_use_asid.value = int(asid is not None)
+        dut.i_flush_asid.value = asid or 0
+        await _cycle(dut)
+        dut.i_tlb_invalidate.value = 0
+        dut.i_flush_use_va.value = 0
+        dut.i_flush_use_asid.value = 0
+
+        def survives(item: tuple[int, Leaf]) -> bool:
+            owner, leaf = item
+            return leaf.vpn != vpn or (
+                asid is not None and (owner != asid or bool(leaf.perm_g))
+            )
+
+        hits = 0
+        for owner, leaf in sorted(entries, key=survives, reverse=True):
+            await _asid_switch(dut, owner)
+            hit = await _fetch_page(dut, (leaf.vpn << 12) | 0x100, leaf)
+            assert hit == survives((owner, leaf)), (vpn, asid, owner, leaf, hit)
+            hits += hit
+        dut._log.info(
+            "ITLB survivors vpn=%#x asid=%s: %d/%d", vpn, asid, hits, len(entries)
+        )
