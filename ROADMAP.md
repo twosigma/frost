@@ -366,7 +366,7 @@ for an ASIC, the RTL also needs:
 
 ## Single-core performance
 
-FROST runs CoreMark at 4.58 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
+FROST runs CoreMark at 4.77 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
 The next goal is 5 CoreMark/MHz. Work toward it is paused while memory
 performance on the coherent hierarchy and timing margin at the target clock
 are restored. A score counts only from a run of at least ten seconds that
@@ -374,7 +374,7 @@ passes the CRC checks for both official seed sets, with the compiler flags,
 the `sw.bin` hash, and memory and cache settings recorded; see the
 [CoreMark README](sw/apps/coremark/README.md).
 
-5 CoreMark/MHz is 200,000 cycles per iteration, against about 220,000 today.
+5 CoreMark/MHz is 200,000 cycles per iteration, against about 210,000 today.
 A model driven by the CoreMark instruction trace gives these estimates for
 each change on its own, for the design before load results woke integer
 consumers early and before Zbc. It treats the BRAM as attached directly to
@@ -404,9 +404,9 @@ of the load-latency cut.
 
 Priorities, guided by the performance counters and timing reports:
 
-1. Branch prediction. About 2,100 mispredictions per iteration remain. PD,
-   the pre-decode stage, overrides only slot-1 directions, so slot-2 branches
-   keep the BTB's direction, and long loops mispredict their exits.
+1. Branch prediction. PD overrides conditional-branch directions in both
+   slots when the tagged predictor matches (slot 1 also keeps the bimodal
+   fallback).
 2. Pairing across fetch windows. The front end pairs two instructions only
    when both fit in one 64-bit fetch window, and after a redirect the fetch
    address advances four and eight bytes in turn, so straight-line code
@@ -494,14 +494,19 @@ and targeted microbenchmarks give these items:
    predicts the jumps, calls and returns it misses through a PD redirect, at
    that redirect's cost of two bubbles. In Linux-like traces the 256-entry
    BTB misses on 44 to 46% of lookups, and a 1024-entry two-way one on 7 to
-   11%. A slot-1 conditional branch that misses the BTB is redirected by PD
-   when its direction predictors say taken, at the same cost, and a slot-2
-   one recovers from execution. A backing hit served from IF would save a
-   bubble, but its correction would sit on the fetch loop, one of the hardest
-   paths at the target clock. In bare-metal microbenchmarks a taken branch
-   costs about 5 cycles, and a loop of four additions runs at 0.6 IPC with
-   translation off; those small-loop costs come from fetch coverage and
-   packet formation, not BTB capacity.
+   11%. PD redirects a conditional branch in either slot when the tagged
+   direction predictor disagrees with the BTB (and, in slot 1, when the
+   bimodal fallback predicts taken on a BTB miss or not-taken entry), at the
+   same two-bubble cost; a slot-2 branch without a tagged match keeps the
+   BTB's direction and recovers from execution if wrong. Using the backing
+   BTB's second lookup image when a one-instruction packet lands in the word
+   after the looked-up one is next; an indirect-target predictor and longer
+   tagged-history tables remain possible later work. A backing hit served
+   from IF would save a bubble, but its correction would sit on the fetch
+   loop, one of the hardest paths at the target clock. In bare-metal
+   microbenchmarks a taken branch costs about 5 cycles, and a loop of four
+   additions runs at 0.6 IPC with translation off; those small-loop costs
+   come from fetch coverage and packet formation, not BTB capacity.
 5. Floating point. One engine executes F and D instructions one at a time.
    Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
    and sign injection use two-cycle paths. Integer-to-FP conversion takes

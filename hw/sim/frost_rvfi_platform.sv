@@ -1763,7 +1763,8 @@ module frost_rvfi_platform #(
       .i_fence_redirect_pc(cpu_inst.if_stage_inst.pc_controller_inst.npc_val[2]),
       .i_branch_redirect_pc(cpu_inst.if_stage_inst.pc_controller_inst.npc_val[3]),
       .i_pd_redirect_pc(cpu_inst.if_stage_inst.pc_controller_inst.npc_val[4]),
-      .i_pd_branch_pc(cpu_inst.from_pd_to_id.program_counter),
+      .i_pd_branch_pc(cpu_inst.pd_redirect_slot2 ? cpu_inst.from_pd_to_id_2.program_counter :
+                                                   cpu_inst.from_pd_to_id.program_counter),
       .i_early_mispredict_active(cpu_inst.early_mispredict_active),
       .i_early_mispredict_tag(cpu_inst.early_mispredict_tag),
       .i_rob_head_ptr(cpu_inst.u_tomasulo.u_rob.head_ptr),
