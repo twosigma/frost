@@ -85,7 +85,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
     ("coherence_l1d", "coh_l1d_zero_cover"): 14400,
-    ("coherence_l1d", "coh_l1d_zero_stream_free_bmc"): 6000,
+    ("coherence_l1d", "coh_l1d_zero_stream_free_bmc"): 9900,
     ("coherence_l1d", "coh_l1d_full_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_full_multi_bmc"): 18000,
     ("coherence_l1d", "coh_l1d_zero_payload_bmc"): 5400,
@@ -416,6 +416,7 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
             "coh_l1d_zero_stream_free_bmc",
+            "coh_l1d_zero_stream_hint_bmc",
             "coh_l1d_zero_progress_cover",
             "coh_l1d_zero_stream_bmc",
             "coh_l1d_zero_request_cover",
@@ -2060,7 +2061,11 @@ SBY_TASKS = [
     ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
     (
         "coh_l1d_zero_stream_free_bmc",
-        "Stream prefetching, GetMZero twin ownership and upper-sector request exclusion through Done, and Modified-sector grants with cbo.zero writes and three endpoints.",
+        "Stream prefetching, GetMZero twin ownership and upper-sector request exclusion through Done, and Modified-sector grants with cbo.zero writes, full-line stores and three endpoints; the store queue's hints are held low.",
+    ),
+    (
+        "coh_l1d_zero_stream_hint_bmc",
+        "Stream prefetching and Modified-sector grants with cbo.zero writes, full-line stores and the store queue's hints free.",
     ),
     (
         "coh_l1d_zero_progress_cover",
@@ -3804,7 +3809,7 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         ("bmc", "40", "10800", "abc bmc3"),
         ("multi_bmc", "30", "18000", "abc bmc3 -c"),
         ("payload_bmc", "40", "5400", "abc bmc3 -c"),
-        ("stream_free_bmc", "31", "6000", "abc bmc3 -g"),
+        ("stream_free_bmc", "31", "9900", "abc bmc3 -g"),
     ):
         payload = suffix == "payload_bmc"
         stream = suffix == "stream_free_bmc"
@@ -3824,6 +3829,12 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
             + (["chparam -set STREAM_PREFETCH 1 coherence_l1d"] if stream else [])
             + ["prep -flatten -top coherence_l1d"]
             + properties
+            # The four-property stream model holds the store queue's hints low.
+            + (
+                ["connect -set i_write_more 1'b0", "connect -set i_next_same 1'b0"]
+                if stream
+                else []
+            )
             + [
                 "memory_map",
                 "opt",

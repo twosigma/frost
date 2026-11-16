@@ -57,6 +57,9 @@ coh_l1d_zero_payload_bmc single data zpayload zero
 coh_l1d_zero_cover single zcovers zsingle covermode zero
 coh_l1d_zero_lookahead_cover multi zcovers zlook covermode zero padded
 coh_l1d_zero_stream_free_bmc turnstream multi padded zero zstream
+# The same unrestricted stream model with the store queue's hints free, for
+# the two stream properties that predate the request checks.
+coh_l1d_zero_stream_hint_bmc turnstream multi cadical padded zero zstreamhint
 coh_l1d_zero_progress_cover multi zprogress covermode zero padded wordcover
 coh_l1d_zero_stream_bmc turnstream multi zrequest zero padded
 coh_l1d_zero_request_cover turnstream multi zrequest zrequestcover covermode zero padded wordcover
@@ -180,9 +183,15 @@ coh_l1d_ways_data_bmc: timeout 5100
 zmulti: depth 30
 zstream: depth 31
 # Upper-sector request exclusion adds a hold interval to the free-input
-# stream check. Glucose closes all four properties in about 48 minutes;
-# allow 100 minutes without changing the inputs, properties or frame bound.
-zstream: timeout 6000
+# stream check. With full-line stores in the model Glucose closes all four
+# properties in about 80 minutes once the store queue's write-more hint and
+# same-sector claim are held low (with them free it did not finish in two
+# hours). The hints only time scalar records' selection and grant credit at
+# four records; no cbo.zero record is held or claimed, and the zero control
+# BMCs and the hinted stream task below keep them free. Allow about twice
+# the measured time.
+zstream: timeout 9900
+zstreamhint: depth 31
 zprogress: depth 160
 zprogress: timeout 1200
 zprogress: vcd_sim on
@@ -255,6 +264,7 @@ zcontrol: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1
 zcovers: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zpayload: read -formal -sv -D ZERO_WRITES -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 zstream: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
+zstreamhint: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zprogress: read -formal -sv -D ZERO_WRITES -D ZERO_PROGRESS_COVER coherence_read_payload.sv coherence_l1d.sv
 zrequest: read -formal -sv -D ZERO_WRITES -D ZERO_REQUEST_PROOF coherence_read_payload.sv coherence_l1d.sv
 fcontrol: read -formal -sv -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.sv coherence_l1d.sv
@@ -375,6 +385,10 @@ zstream: select -assert-count 4 c:p_prefetch_not_record c:p_grant_keeps_modified
 zstream: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified c:p_zero_acquire_line c:p_zero_no_upper_request %u %u %u %d
 zstream: select -assert-count 4 t:$check r:FLAVOR=assert %i
 zstream: check -assert
+zstreamhint: select -assert-count 2 c:p_prefetch_not_record c:p_grant_keeps_modified
+zstreamhint: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified %u %d
+zstreamhint: select -assert-count 2 t:$check r:FLAVOR=assert %i
+zstreamhint: check -assert
 zprogress: select -assert-count 2 c:p_zero_progress_* t:$check %i r:FLAVOR=cover %i
 zprogress: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_progress_* %d
 zprogress: chformal -assert -remove
@@ -450,6 +464,8 @@ localcontrol: select -assert-min 1 t:$check r:FLAVOR=assert %i
 nostore: connect -set i_write_mask 8'h00
 ~zero: connect -set i_write_zero 1'b0
 fullonly: connect -set i_write_zero 1'b0
+zstream: connect -set i_write_more 1'b0
+zstream: connect -set i_next_same 1'b0
 # Cover-only public-input profile: scalar and zero writes, addresses and
 # grant/release scheduling remain free. Each event has a store-only scenario;
 # reads, maintenance, probes and atomics stay idle, and consumers are ready.

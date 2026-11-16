@@ -1444,16 +1444,18 @@ jobs:
               coh_l1d_zero_payload_bmc or coh_l1d_zero_lookahead_cover or
               coh_l1d_zero_stream_bmc
             timeout_minutes: 180
-          # The unrestricted zero-stream request check has a 100-minute
+          # The unrestricted zero-stream request check has a 165-minute
           # allowance; keep image setup outside that solver budget.
           - shard: Coherence L1D zero stream
             pytest_filter: coh_l1d_zero_stream_free_bmc
-            timeout_minutes: 120
-          # The two scheduled full-buffer zero covers: 60 minutes of
-          # allowances.
+            timeout_minutes: 185
+          # The hinted zero stream BMC and the two scheduled full-buffer zero
+          # covers: 80 minutes of allowances.
           - shard: Coherence L1D zero schedules
-            pytest_filter: coh_l1d_zero_progress_cover or coh_l1d_zero_request_cover
-            timeout_minutes: 70
+            pytest_filter: >-
+              coh_l1d_zero_stream_hint_bmc or coh_l1d_zero_progress_cover or
+              coh_l1d_zero_request_cover
+            timeout_minutes: 90
           - shard: Coherence L1D full control
             pytest_filter: coh_l1d_full_bmc
             timeout_minutes: 200
