@@ -41,7 +41,10 @@ def build(build_dir: Path) -> Path:
     declarations = ["#include <riscv/encoding.h>"]
     entries = []
     for form in forms:
-        name = form.replace(".", "_")
+        # The two greater-than vector/vector spellings are assembler aliases
+        # of less-than with exchanged sources, not distinct instruction bits.
+        canonical = {"vmsgt.vv": "vmslt.vv", "vmsgtu.vv": "vmsltu.vv"}.get(form, form)
+        name = canonical.replace(".", "_")
         symbol = "fast_rv64i_" + name
         declarations.append(f"extern reg_t {symbol}(processor_t *, insn_t, reg_t);")
         entries.append(

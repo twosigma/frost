@@ -167,6 +167,7 @@ def main() -> None:
     )
     parser.add_argument("--rtl", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--negative-control", action="store_true")
     args = parser.parse_args()
     work = args.work_dir.resolve()
     if args.resume:
@@ -177,6 +178,34 @@ def main() -> None:
         names = prepare(work, args.vlen)
     print(f"Prepared {len(names)} complete programs at VLEN {args.vlen}", flush=True)
     if not args.rtl:
+        return
+    if args.negative_control:
+        path = work / "stage2" / f"{names[0]}.S"
+        original = path.read_text()
+        match = re.search(r"(TEST_CASE\(\d+,\s*t0,\s*)(0x[0-9a-fA-F]+)", original)
+        assert match, "reference program has no expected register value"
+        changed = (
+            original[: match.start(2)]
+            + hex(int(match.group(2), 16) ^ 1)
+            + original[match.end(2) :]
+        )
+        try:
+            path.write_text(changed)
+            error = suite.compile_for_frost(path, args.vlen)
+            assert not error, error
+            result = run_simulation(
+                os.environ.get("SIM", "verilator"),
+                max_cycles=suite.DEFAULT_RTL_MAX_CYCLES,
+                coverage_label="vector_corner_negative",
+            )
+            assert result is not None, "negative control timed out"
+            output = (result.stdout or "") + (result.stderr or "")
+            (work / "negative.log").write_text(output)
+            status, message = check_pass_fail(result)
+            assert status == "FAIL" and "<<FAIL>>" in output, message
+            print("Negative control detected the corrupted expectation", flush=True)
+        finally:
+            path.write_text(original)
         return
     results = (
         json.loads((work / "results.json").read_text())
