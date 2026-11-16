@@ -1440,8 +1440,18 @@ FORMAL_TARGETS = [
         "backing_btb.sby",
         "Backing BTB lookups match a mirror of its sets, every set holds each "
         "valid tag once, and requests in training hold their set's current "
-        "entries, at two and four ways",
-        tasks=("bmc", "bmc_four_way", "prove", "prove_four_way", "cover"),
+        "entries, at two and four ways; slot 2's fields formed for each slot-1 "
+        "size and selected by the packet's size equal the single reduction they "
+        "replace, for any register state",
+        tasks=(
+            "bmc",
+            "bmc_four_way",
+            "prove",
+            "prove_four_way",
+            "cover",
+            "size_select",
+            "size_select_four_way",
+        ),
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
@@ -1450,6 +1460,14 @@ FORMAL_TARGETS = [
         "refreshes follow them, and redirect directions and targets match PD's "
         "reference models",
         tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "pd_redirect_next_equiv.sby",
+        "PD's redirect target registers' next values, with every candidate formed "
+        "before the slot selects and slot 1's size picked last, equal the form "
+        "they replace for any decode, packet, candidates, backing BTB result and "
+        "stack state",
+        tasks=("bmc",),
     ),
     FormalTarget(
         "pd_id_slot2_redirect.sby",
@@ -3011,6 +3029,14 @@ SBY_TASKS = [
     ("bmc_btb_index3", "Bounded relation checking with three BTB index bits"),
     ("bmc_four_way", "Bounded checking with four ways"),
     ("prove_four_way", "Unbounded safety checking with four ways"),
+    (
+        "size_select",
+        "Slot-2 fields per slot-1 size equal the single reduction, any state.",
+    ),
+    (
+        "size_select_four_way",
+        "Slot-2 fields per slot-1 size equal the single reduction, four ways.",
+    ),
     ("bmc_xlen72", "Bounded Bare-output checking with local XLEN 72"),
     ("bmc_integrated", "Bounded checking with the integrated IF handoff parameter"),
     ("prove_xlen32", "Unbounded safety checking with a local 32-bit datapath"),

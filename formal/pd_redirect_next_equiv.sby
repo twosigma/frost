@@ -1,0 +1,21 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv pd_redirect_next.sv
+read -formal -sv pd_redirect_next_equiv.sv
+prep -top pd_redirect_next_equiv
+select -assert-count 9 t:$check r:FLAVOR=assert %i
+
+[files]
+pd_redirect_next_equiv.sv
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_redirect_next.sv

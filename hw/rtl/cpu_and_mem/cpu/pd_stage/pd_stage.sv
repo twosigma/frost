@@ -53,6 +53,12 @@ module pd_stage #(
     input logic [1:0] i_backing_compressed,
     input logic [1:0] i_backing_return,
     input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_target,
+    // Slot 2's return type and target for each size of slot 1 (index 1:
+    // compressed). The entries at the packet's sel_compressed are
+    // i_backing_return[1] and i_backing_target[1]; the redirect target
+    // registers take slot 2's from these, so slot 1's size selects last.
+    input logic [1:0] i_backing_slot2_return_by_size,
+    input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_slot2_target_by_size,
     // Redirect to IF, and the new direction: taken redirects to the branch
     // target, not taken to the fall-through. It fires for a conditional
     // branch whose final direction differs from the BTB direction IF
@@ -318,6 +324,15 @@ module pd_stage #(
   // PC_high with its +/-1 corrections on the same edge (adjusting the slot-2
   // high select when slot 2 crosses bit PdTargetSplit). The next cycle selects
   // the format and high correction. The full target is exact modulo 2^XLEN.
+  //
+  // pd_redirect_next forms the values those registers load. The slot that
+  // owns them comes from the packet's decode, which arrives last, so each
+  // candidate is complete without it: slot 2's PC step and carry for both
+  // sizes of slot 1, and the backing target from slot 2's entry for both
+  // sizes, with the size picked inside the stack-return select. The slot
+  // selects then pick between finished values. The expressions below that
+  // form the same values the direct way are the reference for the checks
+  // (formal/pd_redirect_next_equiv.sv proves the two equal).
 
 `ifndef SYNTHESIS
   // The two branch immediates, for the candidate checks below.
@@ -651,7 +666,8 @@ module pd_stage #(
   // A control-flow slot 1 ends the bundle in IF, so a valid non-faulting slot 2
   // follows a slot 1 that is neither a branch nor a jump; keeping slot 1's jump
   // decode ahead of slot 2's branch also preserves priority when slot 2's
-  // unused parcel behind a jump decodes as a branch.
+  // unused parcel behind a jump decodes as a branch. pd_redirect_next forms
+  // these selects from the decode terms; the copies here serve the checks.
   function automatic logic is_jalr(input logic [31:0] instruction);
     is_jalr = (instruction[6:0] == riscv_pkg::OPC_JALR) && (instruction[14:12] == 3'b000);
   endfunction
@@ -666,20 +682,14 @@ module pd_stage #(
         (instruction[31:20] == 12'd0) &&
         ((instruction[11:7] == 5'd0) || (instruction[11:7] == 5'd5));
   endfunction
-  (* keep = "true" *) logic pd_native_jump;
-  (* keep = "true" *) logic pd_rvc_jump;
+  (* keep = "true" *)logic pd_native_jump;
+  (* keep = "true" *)logic pd_rvc_jump;
   logic pd_slot1_jump;
   logic pd_slot2_jump;
-  logic pd_backing_target_return;
   logic pd_backing_candidate;
   logic pd_backing_candidate_2;
   logic pd_backing_candidate_r;
   logic pd_backing_candidate_2_r;
-  (* max_fanout = 32 *) logic pd_slot2_target_select;
-  (* keep = "true" *) logic pd_backing_low_select;
-  (* keep = "true", max_fanout = 32 *) logic pd_backing_high_select;
-  logic pd_backing_target_select;
-  (* keep = "true" *) logic [XLEN-1:0] pd_backing_target;
   assign pd_native_jump = is_jump(i_from_if_to_pd.effective_instr);
   assign pd_rvc_jump =
       (i_from_if_to_pd.rvc_extra_predecoded[6:0] == riscv_pkg::OPC_JAL) ||
@@ -691,10 +701,13 @@ module pd_stage #(
                                 (i_backing_compressed[0] == pd_sel_compressed);
   assign pd_backing_candidate_2 = pd_slot2_jump && i_backing_hit[1] &&
                                   (i_backing_compressed[1] == pd_sel_compressed_2);
+`ifndef SYNTHESIS
+  logic pd_slot2_target_select;
+  logic pd_backing_target_select;
+  logic pd_backing_target_return;
+  logic [XLEN-1:0] pd_backing_target;
   assign pd_slot2_target_select = !pd_cond_branch && !pd_slot1_jump && pd_cond_branch_2;
-  assign pd_backing_low_select = !pd_cond_branch && (pd_slot1_jump || !pd_cond_branch_2);
-  assign pd_backing_high_select = !pd_cond_branch && (pd_slot1_jump || !pd_cond_branch_2);
-  assign pd_backing_target_select = pd_backing_high_select;
+  assign pd_backing_target_select = !pd_cond_branch && (pd_slot1_jump || !pd_cond_branch_2);
   // Both slots share the packet's stack recovery point.
   assign pd_backing_target_return =
       (i_backing_hit[0] ? i_backing_return[0] : i_backing_return[1]) &&
@@ -704,6 +717,7 @@ module pd_stage #(
     i_backing_hit[0] ? i_backing_target[0] : i_backing_target[1],
     1'b0
   };
+`endif
 
   // The packet carries same-edge vetoes: predicted taken, inject_nop, and
   // fetch fault. A redirect sets inject_nop on the following wrong-path
@@ -785,29 +799,66 @@ module pd_stage #(
 
   // Load slot 1's branch candidates, slot 2's branch candidates, or the
   // backing BTB target into the shared target registers.
+  logic [PdTargetSplit-1:0] pd_redirect_target_native_low_next;
+  logic [PdTargetSplit-1:0] pd_redirect_target_compressed_low_next;
+  logic [1:0] pd_redirect_target_native_high_select_next;
+  logic [1:0] pd_redirect_target_compressed_high_select_next;
+  logic pd_redirect_target_compressed_next;
+  logic [PdTargetSplit-1:0] pd_redirect_pc_low_next;
+  logic pd_redirect_slot2_pc_carry_next;
+  logic pd_redirect_fall_through_select_next;
+  logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_next;
+  pd_redirect_next #(
+      .XLEN(XLEN)
+  ) u_redirect_next (
+      .i_slot1_native_branch(pd_native_branch),
+      .i_slot1_compressed_branch(pd_compressed_branch),
+      .i_slot1_native_jump(pd_native_jump),
+      .i_slot1_rvc_jump(pd_rvc_jump),
+      .i_slot1_compressed(pd_sel_compressed),
+      .i_slot2_cond_branch(pd_cond_branch_2),
+      .i_slot2_compressed(pd_sel_compressed_2),
+      .i_slot1_not_taken(pd_not_taken_candidate),
+      .i_slot2_not_taken(pd_not_taken_candidate_2),
+      .i_pc(i_from_if_to_pd.program_counter),
+      .i_slot1_native_low(pd_target_native_low_candidate),
+      .i_slot1_native_high_select(pd_target_native_high_select),
+      .i_slot1_compressed_low(pd_target_compressed_low_candidate),
+      .i_slot1_compressed_high_select(pd_target_compressed_high_select),
+      .i_slot2_native_low(pd_slot2_target_native_low_candidate),
+      .i_slot2_native_high_select(i_from_if_to_pd_2.pd_target_native_high_select),
+      .i_slot2_compressed_low(pd_slot2_target_compressed_low_candidate),
+      .i_slot2_compressed_high_select(i_from_if_to_pd_2.pd_target_compressed_high_select),
+      .i_backing_hit(i_backing_hit[0]),
+      .i_backing_return(i_backing_return[0]),
+      .i_backing_target(i_backing_target[0]),
+      .i_backing_slot2_return_by_size,
+      .i_backing_slot2_target_by_size,
+      .i_backing_size_select(i_from_if_to_pd.sel_compressed),
+      .i_stack_count(i_from_if_to_pd.ras_checkpoint_valid_count),
+      .i_stack_top(i_from_if_to_pd.ras_checkpoint_top),
+      .o_target_native_low(pd_redirect_target_native_low_next),
+      .o_target_compressed_low(pd_redirect_target_compressed_low_next),
+      .o_target_native_high_select(pd_redirect_target_native_high_select_next),
+      .o_target_compressed_high_select(pd_redirect_target_compressed_high_select_next),
+      .o_target_compressed(pd_redirect_target_compressed_next),
+      .o_pc_low(pd_redirect_pc_low_next),
+      .o_slot2_pc_carry(pd_redirect_slot2_pc_carry_next),
+      .o_fall_through_select(pd_redirect_fall_through_select_next),
+      .o_pc_high(pd_redirect_pc_high_next)
+  );
+
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall) begin
-      pd_redirect_target_native_low_r <= pd_slot2_target_select ?
-          pd_slot2_target_native_low_candidate :
-          (pd_backing_low_select ? pd_backing_target[PdTargetSplit-1:0] :
-                                   pd_target_native_low_candidate);
-      pd_redirect_target_compressed_low_r <= pd_slot2_target_select ?
-          pd_slot2_target_compressed_low_candidate : pd_target_compressed_low_candidate;
-      pd_redirect_target_native_high_select_r <= pd_slot2_target_select ?
-          pd_slot2_target_native_high_select :
-          (pd_backing_low_select ? 2'b00 : pd_target_native_high_select);
-      pd_redirect_target_compressed_high_select_r <= pd_slot2_target_select ?
-          pd_slot2_target_compressed_high_select : pd_target_compressed_high_select;
-      pd_redirect_target_compressed_r <= pd_slot2_target_select ?
-          pd_sel_compressed_2 : pd_compressed_branch;
-      pd_redirect_pc_low_r <= pd_slot2_target_select ?
-          pd_slot2_pc_low : i_from_if_to_pd.program_counter[PdTargetSplit-1:0];
-      pd_redirect_slot2_pc_carry_r <= pd_slot2_target_select && pd_slot2_pc_carry;
-      pd_redirect_fall_through_select_r <= pd_slot2_target_select ?
-          pd_not_taken_candidate_2 : pd_not_taken_candidate;
-      pd_redirect_pc_high_r <= pd_backing_high_select ?
-          pd_backing_target[XLEN-1:PdTargetSplit] :
-          i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit];
+      pd_redirect_target_native_low_r <= pd_redirect_target_native_low_next;
+      pd_redirect_target_compressed_low_r <= pd_redirect_target_compressed_low_next;
+      pd_redirect_target_native_high_select_r <= pd_redirect_target_native_high_select_next;
+      pd_redirect_target_compressed_high_select_r <= pd_redirect_target_compressed_high_select_next;
+      pd_redirect_target_compressed_r <= pd_redirect_target_compressed_next;
+      pd_redirect_pc_low_r <= pd_redirect_pc_low_next;
+      pd_redirect_slot2_pc_carry_r <= pd_redirect_slot2_pc_carry_next;
+      pd_redirect_fall_through_select_r <= pd_redirect_fall_through_select_next;
+      pd_redirect_pc_high_r <= pd_redirect_pc_high_next;
       pd_redirect_pc_high_plus_one_r <= pd_pc_high_plus_one;
       pd_redirect_pc_high_minus_one_r <= pd_pc_high_minus_one;
     end
@@ -1348,7 +1399,9 @@ module pd_stage #(
   // set no slot-2 hit (formal/backing_btb.sby). IF pairs a slot 2 behind a
   // slot 1 that decodes as a conditional branch or jump only when slot 1
   // faults, since a fault response carries arbitrary bytes and predecode
-  // metadata, and a valid slot 2 behind a faulting slot 1 faults too.
+  // metadata, and a valid slot 2 behind a faulting slot 1 faults too. IF's
+  // slot-2 backing type and target for each size of slot 1 are its slot-2
+  // fields at the packet's sel_compressed (formal/if_slot2_precompute.sby).
   logic formal_past_valid = 1'b0;
   logic [1:0] formal_backing_compressed_q;
   logic [31:0] formal_slot1_instruction_q;
@@ -1389,6 +1442,9 @@ module pd_stage #(
 
   always_comb begin
     assume (!i_from_if_to_pd.sel_nop || i_from_if_to_pd_2.sel_nop);
+    assume ({i_backing_return[1], i_backing_target[1]} ==
+            {i_backing_slot2_return_by_size[i_from_if_to_pd.sel_compressed],
+             i_backing_slot2_target_by_size[i_from_if_to_pd.sel_compressed]});
     assume (i_from_if_to_pd_2.program_counter ==
             {pd_slot2_pc_carry ? pd_pc_high_plus_one :
                                  i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit],
