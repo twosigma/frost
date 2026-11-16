@@ -161,7 +161,7 @@ proc frost_grid_height { macros columns } {
 }
 
 set frost_l2_data [lsort -command frost_compare_slices \
-  [frost_macros {home\.array\.data_array\.}]]
+  [frost_macros {home\.array\.gen_single\.data_array\.}]]
 set frost_l2_tags [frost_macros {home\.array\.gen_tag_ultra\.}]
 set frost_data_memory [frost_macros {data_memory\.}]
 set frost_l1d_data [frost_macros {l1d\.array\.gen_data_bank}]

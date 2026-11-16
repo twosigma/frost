@@ -196,6 +196,7 @@ repos:
           (?x)^(
             hw/third_party/.*|
             tests/test_(ddr_width_config|ptw_high_addr)\.sv|
+            formal/rs_payload_twin_formal\.sv|
             boards/vcu118/vcu118_(clock|eth1g)\.sv|
             hw/rtl/lib/cache/coherence_prefetch_agent\.sv|
             hw/rtl/peripherals/nic/nic_tx_(segment|beat_merge)\.sv|

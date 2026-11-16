@@ -31,6 +31,8 @@ module coherence_home_engine #(
     output logic o_idle,
     output logic o_lookup_valid,
     input logic i_lookup_ready,
+    // The lookup's address: the work's on its dispatch cycle, then o_addr.
+    output logic [ADDR_WIDTH-1:0] o_lookup_addr,
     output logic [ADDR_WIDTH-1:0] o_addr,
     output logic [5:0] o_tid,
     output logic [3:0] o_opcode,
@@ -40,6 +42,10 @@ module coherence_home_engine #(
     input logic i_decision_resident,
     input logic [WayBits-1:0] i_decision_way,
     input logic [1:0] i_decision_state,
+    // The decision's parallel read of the line's set is in flight: a resident
+    // decision that needs data takes it (o_take_spec) instead of a row read.
+    input logic i_decision_spec,
+    output logic o_take_spec,
     output logic o_read_valid,
     output logic o_read_offer,
     input logic i_read_ready,
@@ -121,6 +127,10 @@ module coherence_home_engine #(
   logic [8*LINE_BYTES-1:0] image_q;
   logic [1:0] state_q;
   logic read_sent_q, read_done_q, dirty_q, failed_q, error_q, lookup_sent_q;
+  // The service needs only its row: no probe, so no reply, no merge and no
+  // update. Its data's arrival completes it, and the result is offered in
+  // that cycle with the arriving sector (early_result).
+  logic quick_q, early_result;
   // A prefetch's decision found no resident line (or a blocked one): it
   // goes to Result with nothing to read or probe. Cleared at the result
   // handshake.
@@ -166,13 +176,20 @@ module coherence_home_engine #(
   assign o_read_owner   = (phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q;
   assign o_update_owner = phase_q == UpdateWait;
 `endif
-  assign o_lookup_valid = run && phase_q == Lookup && !lookup_sent_q;
+  // A dispatched request offers its lookup on its work's cycle. A selecting
+  // arbiter holds the offer from its next cycle, when the engine is in
+  // Lookup with the same address.
+  wire dispatch_lookup = phase_q == Free && i_work_valid && !i_work_error;
+  assign o_lookup_valid = run && ((phase_q == Lookup && !lookup_sent_q) || dispatch_lookup);
+  assign o_lookup_addr = phase_q == Free ? work_in.addr : request_q.addr;
   assign o_addr = request_q.addr;
   assign o_tid = tid_q;
   assign o_opcode = request_q.opcode;
   assign o_maintenance = request_q.maintenance;
   assign o_non_alloc = request_q.non_alloc;
   assign o_way = way_q;
+  assign o_take_spec = deciding && i_decision_valid && i_decision_resident && needs_data &&
+      i_decision_spec;
   assign o_read_offer = phase_q == Service && !read_sent_q;
   assign o_read_valid = run && o_read_offer;
   assign o_p_valid = run && phase_q == Service && probe_phase_q == ProbeOffer;
@@ -229,7 +246,8 @@ module coherence_home_engine #(
   assign o_update_valid = run && phase_q == Update;
   assign o_update_data = image_q;
   assign o_update_mask = LINE_BYTES'(dirty_q ? 32'hffff_ffff : request_q.mask) << (upper ? 32 : 0);
-  assign o_result_valid = run && phase_q == Result;
+  assign early_result = phase_q == Service && quick_q && i_data_valid;
+  assign o_result_valid = run && (phase_q == Result || early_result);
   assign o_result = result;
   assign o_image = image_q[(upper ? 256 : 0)+:256];
   assign o_fatal = phase_q == Fatal;
@@ -240,7 +258,7 @@ module coherence_home_engine #(
     result.tid = tid_q;
     result.error = error_q;
     result.opcode = coherence_pkg::GrantData;
-    result.data = o_image;
+    result.data = early_result ? i_data[(upper ? 256 : 0)+:256] : o_image;
     case (request_q.opcode)
       coherence_pkg::GetS, coherence_pkg::LoadReserved: result.opcode = coherence_pkg::GrantS;
       coherence_pkg::GetM, coherence_pkg::Atomic: result.opcode = coherence_pkg::GrantM;
@@ -303,7 +321,7 @@ module coherence_home_engine #(
         else begin
           way_q <= i_decision_way;
           state_q <= i_decision_state;
-          read_sent_q <= !needs_data;
+          read_sent_q <= !needs_data || i_decision_spec;
           read_done_q <= !needs_data;
           probe_phase_q <= needs_probe ? ProbeOffer : ProbeDone;
           probe_q <= '0;
@@ -382,10 +400,32 @@ module coherence_home_engine #(
       end
     end
   end
+  // A resident decision sets quick_q for a service without a probe; new work
+  // clears it.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) quick_q <= 1'b0;
+    else if (run) begin
+      if (i_work_valid) quick_q <= 1'b0;
+      if (deciding && i_decision_valid && i_decision_resident)
+        quick_q <= needs_data && !needs_probe;
+    end
+  end
+`ifdef COH_MAINT_OWNED
+  // A quick service has no probe, so it is clean and error-free (for the
+  // ownership tasks, which read the engine with SYNTHESIS defined).
+  always_ff @(posedge i_clk)
+    if (!i_rst && quick_q)
+      p_maint_owned_home_quick :
+      assert (!needs_probe && needs_data && probe_phase_q == ProbeDone && !dirty_q && !error_q);
+`endif
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst) begin
       assert (!read_done_q || read_sent_q);
+      // A quick service has no probe, so it is clean and error-free.
+      if (quick_q && phase_q == Service)
+        assert (probe_phase_q == ProbeDone && !dirty_q && !error_q && needs_data &&
+            request_q.opcode != coherence_pkg::DMAWrite);
       if (phase_q == Update || phase_q == UpdateWait)
         assert (read_done_q && probe_phase_q == ProbeDone);
       if (i_work_valid) assert (o_idle);
