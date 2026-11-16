@@ -432,7 +432,9 @@ async def old_word_response_crosses_back_to_back_store_capture(dut: Any) -> None
     With credit on every cycle the store queue launches the second cached store
     on the cycle after the first, as it drains a store stream. The old load's
     response lands on the first capture, on the second capture (also the cycle
-    after the first), or when the first record is removed.
+    after the first), or when the first record is removed. The two captures
+    carry the two stores in program order: address, byte lanes, the bytes in
+    those lanes, and the store's reorder-buffer tag.
     """
     dut_if, _ = await setup_test(dut)
     for response_edge in range(3):
@@ -442,9 +444,14 @@ async def old_word_response_crosses_back_to_back_store_capture(dut: Any) -> None
         dut.i_coherent_block_valid.value = 0
         dut_if.set_fu_ready(RS_MEM, True)
         dut_if.set_commit_hold(True)
+        expected = []
         for offset, value in ((4, 0x55667788), (36, 0x99AABBCC)):
             tag = await dut_if.dispatch(make_store_req(pc=0x8000 + offset))
             await issue(dut_if, tag, OP_SW, WORD + offset, value)
+            # A word store at byte 4 of its double: lanes 4-7, low byte first.
+            expected.append(
+                (WORD + offset, 0xF0, list(value.to_bytes(4, "little")), tag)
+            )
             for _ in range(5):
                 await dut_if.step()
         old = await dut_if.dispatch(make_int_req(pc=0x8040, rd=5))
@@ -454,6 +461,7 @@ async def old_word_response_crosses_back_to_back_store_capture(dut: Any) -> None
         dut_if.set_commit_hold(False)
         owned = []
         captures = []
+        written = []
         accepted = 0
         age = 0
         returned = False
@@ -464,6 +472,20 @@ async def old_word_response_crosses_back_to_back_store_capture(dut: Any) -> None
         for cycle in range(100):
             write = dut_if.read_sq_mem_write()
             capture = bool(write["en"])
+            if capture:
+                lanes = [
+                    (write["data"] >> (8 * lane)) & 0xFF
+                    for lane in range(8)
+                    if (write["byte_en"] >> lane) & 1
+                ]
+                written.append(
+                    (
+                        write["addr"],
+                        write["byte_en"],
+                        lanes,
+                        int(dut.o_coherent_sq_write_tag.value),
+                    )
+                )
             target = (
                 capture and accepted == response_edge
                 if response_edge < 2
@@ -511,6 +533,7 @@ async def old_word_response_crosses_back_to_back_store_capture(dut: Any) -> None
         else:
             raise AssertionError("old load and buffered stores did not drain")
         assert captures == [captures[0], captures[0] + 1], captures
+        assert written == expected, (written, expected)
         assert returned and saw_two and saw_removal
         fresh_tag = await dut_if.dispatch(make_int_req(pc=0x8044, rd=6))
         await issue(dut_if, fresh_tag, OP_LW, WORD + 4)
