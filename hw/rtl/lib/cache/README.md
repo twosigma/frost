@@ -846,7 +846,9 @@ dispatched. Work selection captures a one-hot slot mask beside the slot index;
 waiter eligibility and the prefetch offer exclude that registered mask without
 decoding the index. Work selection also captures the selected slot's next parking state
 in groups of two slots beside its slot index. Each group combines its park
-inputs with qualifiers computed independently of those inputs. Dispatch
+inputs with qualifiers computed independently of those inputs. The parking
+table also combines each park event with precomputed priority and hold terms.
+Dispatch
 reduces the registered groups four at a time before its final selection and
 stop gate. The groups follow the slot's parking updates while
 the selection is held. Only the selected slot's group may be set. A selection

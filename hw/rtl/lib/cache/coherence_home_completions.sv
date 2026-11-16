@@ -151,6 +151,7 @@ module coherence_home_completions #(
   // a client sees, so it neither waits for nor orders other requests.
   logic [SLOTS-1:0] handed_q;
   logic [SLOTS-1:0] parked_q, parked_next, ready_q, wake_error_q, counted_q;
+  (* keep = "true" *) logic [SLOTS-1:0] park_enable, park_prior;
   // nofill_q[slot], while the slot is live: it holds a prefetch, and a
   // non-prefetch request for its block was live at the prefetch's admission
   // or was admitted after it. The work carries the flag, and the engine takes
@@ -786,9 +787,11 @@ module coherence_home_completions #(
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_parked_next
     wire retry = i_retry_valid && i_retry_tid == 6'(slot);
     wire selected = work_selected_q ? work_selected_slots_q[slot] : work_pick_slots[slot];
-    assign parked_next[slot] = forwarded[slot] ? 1'b0 :
-        retry ? i_retry_park :
-        i_wake[slot] ? 1'b0 : i_park[slot] ? 1'b1 : parked_q[slot];
+    // The table's arriving park event follows its priority qualifiers.
+    assign park_enable[slot] = !forwarded[slot] && !retry && !i_wake[slot];
+    assign park_prior[slot] = !forwarded[slot] &&
+        (retry ? i_retry_park : (!i_wake[slot] && parked_q[slot]));
+    assign parked_next[slot] = park_prior[slot] || (i_park[slot] && park_enable[slot]);
     // These qualifiers do not depend on the arriving park event.
     assign work_park_enable[slot] = selected && !forwarded[slot] && !retry && !i_wake[slot];
     assign work_park_prior[slot] = selected && !forwarded[slot] &&
@@ -1333,13 +1336,20 @@ module coherence_home_completions #(
   logic f_capture_selected_q;
   logic [SlotBits-1:0] f_capture_slot_q;
   logic [SLOTS-1:0] f_capture_waiting;
+  logic [SLOTS-1:0] f_capture_parked_next;
   wire f_capture_valid = !i_fatal_stop && f_capture_selected_q &&
       !f_capture_parked_q[f_capture_slot_q];
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_capture_waiting
     assign f_capture_waiting[slot] = work_valid[slot] && !issued_q[slot] &&
         !f_capture_parked_q[slot] && !ready_q[slot] &&
         !(f_capture_selected_q && f_capture_slot_q == SlotBits'(slot));
+    assign f_capture_parked_next[slot] = forwarded[slot] ? 1'b0 :
+        i_retry_valid && i_retry_tid == 6'(slot) ? i_retry_park :
+        i_wake[slot] ? 1'b0 : i_park[slot] ? 1'b1 : parked_q[slot];
   end
+  // This comparison has no reset or selection qualifier: every possible
+  // table state and combination of arriving events has the same next state.
+  always_comb p_capture_parked_next : assert (parked_next == f_capture_parked_next);
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       f_capture_reset_seen_q <= 1'b1;

@@ -1106,7 +1106,8 @@ FORMAL_TARGETS = [
         "home_capture_equiv.sby",
         "Consumed home payloads match handshake-only captures, and registered "
         "fill flags match their phase decodes across arbitrary reset and stalls. "
-        "Selected completion parking and the one-hot selection match dispatch "
+        "The parked next-state function preserves event priority; selected completion "
+        "parking and the one-hot selection match dispatch "
         "and waiter eligibility from the slot table.",
         tasks=(
             "home_small",
