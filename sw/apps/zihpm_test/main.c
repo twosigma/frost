@@ -27,8 +27,8 @@
  *   mhpmcounterN and mhpmeventN are M-only.
  * - mcounteren and scounteren bits 3..10 are writable (Sscounterenw), bits
  *   11..31 read zero; mhpmcounter11..31 and mhpmevent11..31 read zero and
- *   ignore writes; hpmcounter11..31 are unimplemented and illegal at every
- *   privilege (Zihpm permits either a trap or a constant).
+ *   ignore writes; hpmcounter11..31 read zero in M-mode and raise
+ *   illegal-instruction on writes or below M-mode.
  */
 
 #include <stdint.h>
@@ -96,6 +96,8 @@ READ_BODY(0x32B)
 READ_BODY(0x33F)
 WRITE_BODY(0xC03)
 WRITE_BODY(0xC0A)
+WRITE_BODY(0xC0B)
+WRITE_BODY(0xC1F)
 WRITE_BODY(0xB03)
 WRITE_BODY(0xB0B)
 WRITE_BODY(0xB1F)
@@ -232,11 +234,15 @@ int main(void)
         d_ok &= expect("mhpmevent3-read", mpp, 3, m_only, 0, 0);
         run_mode(mpp, write_0xB03, 0x2003);
         d_ok &= expect("mhpmcounter3-write", mpp, 3, m_only, 0, 0);
-        /* E: unimplemented user counters trap everywhere. */
+        /* E: unimplemented user aliases read zero in M and trap elsewhere. */
         run_mode(mpp, read_0xC0B, 0);
-        d_ok &= expect("hpmcounter11-read", mpp, 11, CAUSE_ILLEGAL, 0, 0);
+        d_ok &= expect("hpmcounter11-read", mpp, 11, m_only, mpp == 3, 0);
         run_mode(mpp, read_0xC1F, 0);
-        d_ok &= expect("hpmcounter31-read", mpp, 31, CAUSE_ILLEGAL, 0, 0);
+        d_ok &= expect("hpmcounter31-read", mpp, 31, m_only, mpp == 3, 0);
+        run_mode(mpp, write_0xC0B, 5);
+        d_ok &= expect("hpmcounter11-write", mpp, 11, CAUSE_ILLEGAL, 0, 0);
+        run_mode(mpp, write_0xC1F, 5);
+        d_ok &= expect("hpmcounter31-write", mpp, 31, CAUSE_ILLEGAL, 0, 0);
     }
     /* mhpmcounter3 took the M write. */
     run_mode(3, read_0xC03, 0);
