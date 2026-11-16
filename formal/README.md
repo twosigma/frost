@@ -595,7 +595,7 @@ the least populated ordinary partition, and keeps B-channel stability alone.
 | `uncached_read_capture` | The factored uncached-read pending-bit update preserves enqueue, downstream handoff, and reset priority from arbitrary state, with no assumptions |
 | `coherence_home_twin` | The home's probe-address match, writeback reply-capture select, forward turn selects, and the parking, waiter-mask and fill-image next-state selects equal their portable form, at one way with two fills, four ways with three fills, and 40-bit addresses. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 | `coherence_home_engine_twin` | The engine's probe-reply match (LUT6) equals its portable form at 32-byte and 64-byte lines and at 40-bit addresses, where all five address groups enter the LUT |
-| `coherence_l1d_twin` | The L1D acquisition-endpoint select (LUT3 per bit) equals its portable form with one and three miss slots. The read selector is compared by `coherence_control` |
+| `coherence_l1d_twin` | The L1D acquisition-endpoint and operation-register input selections (LUT3 per bit) equal their portable forms with one and three miss slots. The read selector is compared by `coherence_control` |
 | `cached_tier_adapter_twin` | The read-slot valid, live, sent and open next-state LUTs equal their portable form, with and without split read requests |
 | `data_mem_request_router_twin` | The MMIO drain-accept gate (LUT4) equals its portable form |
 | `dmmu_twin` | The last-capture select (LUT4) and the lookup-stage and result-stage VA selects (LUT3 per bit) equal their portable form |
