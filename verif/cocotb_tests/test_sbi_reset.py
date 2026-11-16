@@ -15,8 +15,8 @@
 """Follow an S-mode SRST ecall through OpenSBI to reset and boot entry.
 
 The image uses the smoke test's fixed BRAM shim and DDR firmware layout.
-A minimal DT and suppressed boot prints shorten setup; the reset driver and
-S-mode ecall path use the production OpenSBI configuration.
+A minimal DT shortens setup; the reset driver and S-mode ecall path use the
+same guarded OpenSBI firmware build as the smoke test.
 Returning to the shim does not prove that mutable firmware or an OS image
 can be booted again without reloading it.
 """

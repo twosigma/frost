@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Pack the manual SRST payload with a small, reset-focused device tree.
+"""Pack the SRST payload with a small, reset-focused device tree.
 
 Use the production firmware configuration, reset binding and image layout.
 The reduced platform describes only the boot hart, console and SYSRESET;

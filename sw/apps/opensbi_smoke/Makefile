@@ -31,7 +31,7 @@ CC      := $(RISCV_PREFIX)gcc
 OBJCOPY := $(RISCV_PREFIX)objcopy
 OBJDUMP := $(RISCV_PREFIX)objdump
 
-OPENSBI_OUT ?= $(CURDIR)/build/opensbi
+OPENSBI_OUT := $(CURDIR)/build/opensbi
 FW_BIN      := $(OPENSBI_OUT)/platform/generic/firmware/fw_jump.bin
 
 CFLAGS := -march=rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause \

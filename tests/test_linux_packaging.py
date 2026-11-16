@@ -462,7 +462,7 @@ def test_both_trees_describe_the_sysreset_syscon_reboot() -> None:
         assert symbol in config.splitlines()
 
 
-def test_manual_reset_tree_resolves_the_production_syscon(tmp_path: Path) -> None:
+def test_reset_tree_resolves_the_production_syscon(tmp_path: Path) -> None:
     """The smaller reset platform retains the real driver binding and regmap."""
     reset_packer = _load_module(APPS / "opensbi_smoke" / "reset_pack_image.py")
     packer = _load_module(SBI_PACKER)
