@@ -1105,7 +1105,8 @@ FORMAL_TARGETS = [
         "home_capture_equiv.sby",
         "Consumed home payloads match handshake-only captures, and registered "
         "fill flags match their phase decodes across arbitrary reset and stalls. "
-        "Selected completion parking matches dispatch from the slot table.",
+        "Selected completion parking and the one-hot selection match dispatch "
+        "and waiter eligibility from the slot table.",
         tasks=(
             "home_small",
             "home_four",
@@ -2813,11 +2814,17 @@ SBY_TASKS = [
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),
     ("arbiter_idle", "Selected payloads with loading on every idle cycle."),
-    ("completions_two", "Selected parking and dispatch with two completion slots."),
-    ("completions_three", "Selected parking and dispatch with three completion slots."),
+    (
+        "completions_two",
+        "Selected parking, dispatch and waiter exclusion with two completion slots.",
+    ),
+    (
+        "completions_three",
+        "Selected parking, dispatch and waiter exclusion with three completion slots.",
+    ),
     (
         "completions_default",
-        "Selected parking and dispatch with the full completion table.",
+        "Selected parking, dispatch and waiter exclusion with the full completion table.",
     ),
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_seat2", "Seat next-state equivalence with two fills."),

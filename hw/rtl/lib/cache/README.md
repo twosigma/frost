@@ -841,7 +841,9 @@ eligible work. Both classes compute their circular priorities independently
 before selecting an encoded winner. The prefetch slots share one place in
 that rotation, after the other slots; it offers a prefetch slot chosen in
 rotation among them on the previous cycle, leaving out the slot being
-dispatched. Work selection captures the selected slot's next parking state
+dispatched. Work selection captures a one-hot slot mask beside the slot index;
+waiter eligibility and the prefetch offer exclude that registered mask without
+decoding the index. Work selection also captures the selected slot's next parking state
 in groups of two slots beside its slot index. Each group combines its park
 inputs with qualifiers computed independently of those inputs. Dispatch
 reduces the registered groups, which follow the slot's parking updates while

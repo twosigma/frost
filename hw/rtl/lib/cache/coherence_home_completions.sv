@@ -181,6 +181,9 @@ module coherence_home_completions #(
   logic [  SlotBits-1:0] free_slot_index;
   logic [ResultBits-1:0] free_buffer_index;
   logic work_selected_q, work_found;
+  // The selected slot's one-hot form is captured on the selection edge.
+  // Waiter eligibility reads it without decoding the slot index.
+  logic [SLOTS-1:0] work_selected_slots_q;
   // Each pair captures the selected slot's parked state, including a park
   // on the selecting edge. Dispatch reduces these registered groups.
   localparam int unsigned ParkGroups = (SLOTS + 1) / 2;
@@ -388,7 +391,7 @@ module coherence_home_completions #(
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_waiting
     assign o_waiting[slot] = work_valid[slot] && !issued_q[slot] &&
         !parked_q[slot] && !ready_q[slot] &&
-        !(work_selected_q && work_slot_q == SlotBits'(slot));
+        !work_selected_slots_q[slot];
   end
   // A presented result matches at most one slot, the one its tid names.
   // Each slot compares the result with its own tid, state, identity and
@@ -507,7 +510,7 @@ module coherence_home_completions #(
     logic [SlotBits-1:0] pick;
     for (genvar index = 0; index < PREFETCH_SLOTS; index++) begin : gen_offered
       assign offered[index] = work_eligible[MainSlots+index] &&
-          !(work_selected_q && int'(work_slot_q) == MainSlots + index);
+          !work_selected_slots_q[MainSlots+index];
     end
     assign later = offered & later_q;
     always_comb begin
@@ -751,9 +754,16 @@ module coherence_home_completions #(
     end
   end
 
+  always_ff @(posedge i_clk) begin
+    if (i_rst) work_selected_slots_q <= '0;
+    else if (work_selected_q) begin
+      if ((|work_parked_q) || (!i_fatal_stop && i_work_ready)) work_selected_slots_q <= '0;
+    end else work_selected_slots_q <= work_found && free_buffer ? SLOTS'(1) << work_pick : '0;
+  end
+
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_parked_next
     wire retry = i_retry_valid && i_retry_tid == 6'(slot);
-    wire selected = work_selected_q ? work_slot_q == SlotBits'(slot) : work_pick == SlotBits'(slot);
+    wire selected = work_selected_q ? work_selected_slots_q[slot] : work_pick == SlotBits'(slot);
     assign parked_next[slot] = forwarded[slot] ? 1'b0 :
         retry ? i_retry_park :
         i_wake[slot] ? 1'b0 : i_park[slot] ? 1'b1 : parked_q[slot];
@@ -1050,6 +1060,7 @@ module coherence_home_completions #(
         assert (!buffer_live_q[BufferBits'(work_buffer_q)] && !parked_q[work_slot_q]);
         assert (int'(work_buffer_q) < RESULT_SLOTS);
       end
+      assert (work_selected_slots_q == (work_selected_q ? SLOTS'(1) << work_slot_q : '0));
       if (work_selected_q)
         assert (work_parked_q == (ParkGroups'(parked_q[work_slot_q]) << (work_slot_q >> 1)));
       // A forward names one parked GetS, LoadReserved or GetM that holds no
@@ -1299,8 +1310,14 @@ module coherence_home_completions #(
   logic [SLOTS-1:0] f_capture_parked_q;
   logic f_capture_selected_q;
   logic [SlotBits-1:0] f_capture_slot_q;
+  logic [SLOTS-1:0] f_capture_waiting;
   wire f_capture_valid = !i_fatal_stop && f_capture_selected_q &&
       !f_capture_parked_q[f_capture_slot_q];
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_capture_waiting
+    assign f_capture_waiting[slot] = work_valid[slot] && !issued_q[slot] &&
+        !f_capture_parked_q[slot] && !ready_q[slot] &&
+        !(f_capture_selected_q && f_capture_slot_q == SlotBits'(slot));
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       f_capture_reset_seen_q <= 1'b1;
@@ -1327,6 +1344,9 @@ module coherence_home_completions #(
       p_capture_selection : assert (work_selected_q == f_capture_selected_q);
       p_capture_slot : assert (work_slot_q == f_capture_slot_q);
       p_capture_dispatch : assert (o_work_valid == f_capture_valid);
+      p_capture_waiting : assert (o_waiting == f_capture_waiting);
+      p_capture_selected_slots :
+      assert (work_selected_slots_q == (f_capture_selected_q ? SLOTS'(1) << f_capture_slot_q : '0));
       if (work_selected_q)
         p_capture_selected_park :
         assert (work_parked_q ==

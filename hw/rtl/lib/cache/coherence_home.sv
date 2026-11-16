@@ -182,7 +182,9 @@ module coherence_home #(
   logic [FILLS-1:0] fill_live_q, fill_blocking_q;
   logic [Puts-1:0] put_busy_q;
   recall_phase_t recall_phase_q[FILLS];
-  put_phase_t put_phase_q[Puts];
+  // Keep phase holds in the data input, so the transition-event reduction
+  // does not also become a clock-enable path.
+  (* extract_enable = "no" *) put_phase_t put_phase_q[Puts];
   (* max_fanout = 64 *) logic run;
   logic fatal_event, work_valid, work_error;
   coh_d_t work;
