@@ -204,7 +204,7 @@ every supported extension and privilege mode.
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
-| **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit scalar U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare). Vector loads and stores do not execute; each element address must be masked after its address addition when they are implemented. |
+| **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit scalar U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare). Vector memory execution is unadvertised and does not yet apply pointer masking after element-address addition. |
 | **Supm**         | Scalar U-mode pointer masking supplied by Ssnpm when the execution environment enables it; the supplied Linux image does not expose the tagged-address ABI |
 | **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended; an instruction or data access, misaligned or page fault, a failed bus response included, writes the faulting virtual address |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |

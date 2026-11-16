@@ -89,7 +89,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Svnapot | In progress | - |
 | Sstc | Implemented | `sstc_test`, `irq_take_latency`, TestRIG (`stimecmp`), `csr_file.sby` |
 | Sscofpmf | Implemented | `sscofpmf_test`, TestRIG (`--sscofpmf`), `csr_sscofpmf.sby` |
-| Ssnpm | Implemented for scalar accesses (`senvcfg.PMM`, PMLEN 0, 7 and 16). Vector loads and stores do not execute; each element address must be masked after its address addition when they are implemented. | `pm_test`, `debug_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `csr_commit_cofactor.sby` |
+| Ssnpm | Implemented for scalar accesses (`senvcfg.PMM`, PMLEN 0, 7 and 16). Vector memory does not yet apply pointer masking after element-address addition. | `pm_test`, `debug_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `csr_commit_cofactor.sby` |
 | Ssu64xl | Implemented; advertisement in progress | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`), `csr_file.sby` |
 | Zbc (optional) | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzbc`), TestRIG, `cl_multiplier.sby` |
 | Svvptc (optional) | Implemented | `vm_test`, `asid_test`, TestRIG, `ptw.sby`, `immu_memo.sby`, `dmmu_twin.sby` |
