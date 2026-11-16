@@ -27,7 +27,10 @@ hart:
   compare and Zvbb instructions, `vmv.x.s`, `vcpop.m` and `vfirst.m`, and the
   unit-stride, whole-register and mask loads and stores, and the X3 build
   includes the unit; the other load and store forms and instruction families
-  are not executed yet.
+  are not executed yet. One limitation is known: a vector load executed in
+  Debug Mode that faults after writing part of its destination register
+  leaves `mstatus.VS` Clean; `vec_debug_partial` records it as an expected
+  failure until it is fixed.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR in the X3
   build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
