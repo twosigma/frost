@@ -383,7 +383,9 @@ branch-delay and walker-discard matrix. Their SFENCE.VMA operations drain
 committed stores, invalidate L1I and flush fetch and translation state.
 
 `sysreset_test` runs in both memory tiers and checks word and halfword reset
-requests, invalid writes, reset state and uncached BRAM retention.
+requests, invalid writes, reset state and BRAM retention. Its marker is
+part of both load images, so loading the program clears state from an
+earlier invocation without clearing it on the resets under test.
 
 `opensbi_smoke` uses a twenty-million-cycle budget for firmware boot and
 its S-mode payload. Its misaligned loads and stores to DDR (phase F) run on

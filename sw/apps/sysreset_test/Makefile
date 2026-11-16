@@ -14,4 +14,7 @@
 
 # Directed test: the SYSRESET register restarts the boot ROM (see main.c).
 SRC_C := main.c
+EXTRA_LDFLAGS += -Wl,-T,reset_marker.ld
 include ../../common/common.mk
+
+$(EXECUTABLE_ELF_FILE): reset_marker.ld

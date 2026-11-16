@@ -75,7 +75,7 @@ The board and simulation share one physical map.
 | Range | Contents |
 |---|---|
 | `[0x0000_0000, 256 KiB)` | Uncached boot BRAM, outside Linux's memory node. Code runs only from its first 128 KiB. `[0x17C00, 0x18000)` is reserved for the debug module. |
-| `[0x4000_0000, 0x4003_1000)` | Native MMIO: UART, FIFOs, timer, DMA test engine, memory error unit, SYSRESET, and NIC. See `sw/lib/include/mmio.h`. |
+| `[0x4000_0000, 0x4003_1000)` | Native MMIO: UART, FIFOs, timer, DMA test engine, memory error unit, SYSRESET, and NIC. See the [software memory map](../sw/README.md#memory-map). |
 | `[0x4000_1000, +0x100)` | ns16550a UART alias, APLIC source 1, with `reg-shift=2` and `reg-io-width=4` |
 | `[0x4001_0000, +0xC000)` | SiFive CLINT alias: `msip` at `+0`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8` |
 | `[0x4002_1000, +0x100)` | Memory error unit, APLIC source 5, bound by the `frost_memerr` driver ([device-tree binding](buildroot-external/board/frost/frost,memory-error.yaml)) |
@@ -86,13 +86,18 @@ The board and simulation share one physical map.
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises the board's DDR size: 1 GiB on X3. |
 
 SYSRESET has the same memory contract as debug `ndmreset`: it preserves
-BRAM and DDR storage while discarding dirty cache lines. The boot shim jumps
-back into the existing OpenSBI image; it does not reload firmware, the kernel
-or the DTB. OpenSBI keeps boot state in `.data`, so returning to the shim
-alone does not ensure a fresh Linux boot. A complete reboot needs a boot
-path that restores mutable images and handles data that must survive reset.
+BRAM and DDR storage while discarding dirty cache lines. On the X3 JTAG
+boot path, the BRAM shim jumps back into the existing OpenSBI image without
+reloading firmware, the kernel or the DTB. Those retained images may be stale;
+OpenSBI also keeps boot state in `.data`, so re-entry can hang in its warm-boot
+path. Reload the images to obtain a fresh X3 boot. On a VCU118 booting from
+flash, the surviving BRAM ROM reloads the FSBL, which checks and reloads
+OpenSBI, the DTB and U-Boot; U-Boot then follows its configured boot command.
 Linux uses SBI SRST when it detects this firmware service. Only cold and
-warm reboot are supported; there is no shutdown device. `poweroff` cannot
+warm reboot are supported; there is no shutdown device.
+Any supervisor-mode code can write SYSRESET directly: the platform has no
+PMP enforcement, and OpenSBI exposes the syscon region with S-mode read/write
+permissions. Root can also reach it through `/dev/mem`. `poweroff` cannot
 remove power: the SBI shutdown request returns unsupported and Linux halts.
 
 The PMA map has five regions: the BRAM, the MMIO register window

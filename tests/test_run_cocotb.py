@@ -1052,13 +1052,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
     ),
     "sysreset_test": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
+        python_test_module="cocotb_tests.test_sysreset",
         hdl_toplevel_module="frost",
         app_name="sysreset_test",
         nic_mac_clocks=False,
+        rerun_after_reset=False,
         description=(
             "SYSRESET word and halfword requests restart the program and reset "
-            "hart/timer state; invalid writes and reads have no side effects"
+            "hart/timer state after reloads over stale markers; invalid writes do nothing"
         ),
     ),
     "vec_state_test_v512": CocotbRunConfig(

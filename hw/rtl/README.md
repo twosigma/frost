@@ -183,7 +183,7 @@ MMIO registers:
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
 | `0x4002_0000`–`0057` | DMA test engine | Legacy CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES plus versioned ABI_CTRL and SRC64/DST64/STATUS_ADDR64 (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
 | `0x4002_1000`–`1038` | Memory error unit | CAPS/STATUS/IRQ_EN/CE_COUNT/UE_COUNT/AXI_RD_ERRS/AXI_WR_ERRS/CE_ADDR/UE_ADDR/AXI_ERR/ECC_POLLS (`memory_error_unit.sv`, `sw/lib/include/memory_error.h`) |
-| `0x4002_F000` | SYSRESET | Word or halfword stores with low 16 bits `0x7777` reset the core domain like `ndmreset`; reads return zero. The CPU restarts at the boot address. BRAM and DDR storage survive, but dirty cache lines are discarded. OpenSBI uses it through `syscon-reboot` (see [reset contract](soc_top/README.md)). |
+| `0x4002_F000` | SYSRESET | Stores at this address with both low byte strobes set and low 16 bits `0x7777` reset the core domain like `ndmreset`, including doubleword stores; upper data bits are ignored and reads return zero. The CPU restarts at the boot address. BRAM and DDR storage survive, but dirty cache lines are discarded. OpenSBI uses it through `syscon-reboot` (see [reset contract](soc_top/README.md)). |
 | `0x4003_0000`–`0FFF` | NIC | 4 KiB window: control and status, station address, rings, link and PHY, 64-bit counters (`peripherals/nic/nic_pkg.sv`, `sw/lib/include/nic.h`) |
 
 The UART console runs at 115200 baud, 8N1. For Linux, the same UART also
@@ -347,6 +347,10 @@ Debug Spec 0.13.2 (section 3.2) resets the module only at power-up and while
 `dmactive` is 0; FROST treats these resets as power-up. `ndmreset` and SYSRESET reset only
 the core. A DMI access that arrives while the system reset is held waits, with
 the DTM reporting busy, and is handled when the reset ends, with `dmactive` 0.
+
+A debugger write of the SYSRESET key executes through the program buffer and
+can leave its abstract command busy across the reset; halt the hart so it
+parks again and completes the command.
 
 `debug_slice_writer` writes the module's words into the slice through the
 BRAM programming port. It also mirrors Debug-Mode stores to the low BRAM's

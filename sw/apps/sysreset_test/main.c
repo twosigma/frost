@@ -15,8 +15,10 @@
  */
 
 /*
- * SYSRESET register test. The marker is outside .data, .bss and the stack,
- * in uncached BRAM that survives CPU reset. Set the next-boot marker only
+ * SYSRESET register test. The marker is outside .data and .bss, within the
+ * general BRAM stack reserve but below this program's small stack. The load
+ * image clears it on every load; crt0 leaves it intact across SYSRESET.
+ * Set the next-boot marker only
  * after invalid writes have completed, so an unintended reset fails.
  * Word and halfword requests each restart the program at its reset entry.
  */
@@ -96,6 +98,7 @@ int main(void)
     }
 
     BOOT_MARK = CHECKING;
+    __asm__ volatile("fence iorw, iorw" ::: "memory");
     poison_state();
     SYSRESET = 0x1234u;
     SYSRESET = 0x7776u;

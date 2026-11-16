@@ -372,9 +372,12 @@ software reset, so reload the image before the next boot.
 - Manage the tree's packages from one place at a time: apt on the board while
   it runs from the tree, or the chroot only while the board is stopped. Two
   package managers writing one dpkg database corrupt it.
-- The SoC has no software reset or power-off, so `reboot` and `poweroff`
-  leave the board stopped; load it again to boot. Run `poweroff` (or `sync`)
-  before reloading so the board's writes reach the server.
+- `reboot` requests SYSRESET through OpenSBI. On X3 it re-enters the images
+  already in DDR, which can be stale and can hang; reload them for a fresh
+  boot. On a VCU118 using flash boot, the ROM and FSBL reload the firmware,
+  device tree and U-Boot, which follows its configured boot command.
+  `poweroff` still halts with power applied. Run `poweroff` (or `sync`)
+  before reloading so writes reach the server.
 
 ### Kernel updates
 
