@@ -1451,3 +1451,6 @@ set `FROST_SKIP_SUBMODULE_INIT=1`; none of their inputs is in a submodule.
 
 `vec_vtype_tracker` checks the allocation-to-commit configuration handoff,
 including the delayed ROB in-flight indication and architectural reload.
+
+`vec_source_eew` rejects v0 data operands in masked instructions and checks
+legal scalar-zero operands, unmasked v0 sources and mask destinations.

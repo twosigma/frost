@@ -63,7 +63,9 @@ module vec_lmul_legality (
         (!mask_dest && ((vd & Align) != 5'd0)) ||
         (mask_dest && (vd > vs2) && (vd <= (vs2 | Align))) ||
         (mask_dest && uses_vs1 && (vd > vs1) && (vd <= (vs1 | Align))) ||
-        (masked && !mask_dest && (vd == 5'd0));
+        (masked && !mask_dest && (vd == 5'd0)) ||
+        // The implicit mask uses EEW=1; a vector data source uses SEW.
+        (masked && ((vs2 == 5'd0) || (uses_vs1 && vs1 == 5'd0)));
   end
 
 endmodule

@@ -2492,6 +2492,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "element width against a Python model, with a fixed latency"
         ),
     ),
+    "vec_source_eew": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_source_eew",
+        hdl_toplevel_module="vec_lmul_legality",
+        description="Masked vector data sources cannot alias the implicit EEW1 mask",
+    ),
     "vec_vtype_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_vtype_tracker",
         hdl_toplevel_module="vec_vtype_tracker",
