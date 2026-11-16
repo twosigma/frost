@@ -2480,6 +2480,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         # the Normal instruction cache would serve its hot loop without AXI.
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1", "-GCACHE_NORMAL_MEMORY=0"),
     ),
+    "walk_past_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="walk_past_test",
+        nic_mac_clocks=False,
+        description="Overlapping odd and even BTB entries cannot repeat or skip instructions",
+    ),
+    "walk_past_test_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="walk_past_test",
+        nic_mac_clocks=False,
+        description="Overlapping BTB entries preserve program results across fetch-valid gaps",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
     "fetch_lead_repro": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
