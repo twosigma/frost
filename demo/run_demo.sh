@@ -190,6 +190,10 @@ else
     MEM_DESC="coherent L1/L2 caches and behavioral AXI memory model"
 fi
 
+# UART bytes and simulator diagnostics share one pipe before container log
+# readers consume them, preserving their write order.
+exec 2>&1
+
 cat <<EOF
 FROST RTL demonstration (Verilator SystemVerilog simulation, assertions enabled)
 Simulating the two-wide out-of-order RV64GCB CPU and SoC RTL from hw/rtl/frost.f.
