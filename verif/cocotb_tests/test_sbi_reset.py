@@ -57,7 +57,7 @@ async def test_sbi_reset(dut: Any) -> None:
     uart.clear()
     dut.i_rst_n.value = 1
 
-    await with_timeout(RisingEdge(soc.sysreset_q), 60_000_000, "ns")
+    await with_timeout(RisingEdge(soc.sysreset_q), 10_000_000, "ns")
     started = get_sim_time(unit="ps")
     assert "SBI reset: requesting reboot" in uart.get_output(), uart.get_output()
     assert "<<FAIL>>" not in uart.get_output(), uart.get_output()

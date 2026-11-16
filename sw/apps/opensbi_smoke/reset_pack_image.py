@@ -17,7 +17,7 @@
 """Pack the manual SRST payload with a small, reset-focused device tree.
 
 Use the production firmware, reset binding and image layout. The reduced
-platform describes the boot hart, memory, console, CLINT and SYSRESET;
+platform describes only the boot hart, console and SYSRESET;
 it does not exercise Linux's full tree or interrupt-controller setup.
 """
 
@@ -35,15 +35,15 @@ sys.modules[spec.name] = packer
 spec.loader.exec_module(packer)
 
 
-def gen_reset_dts(*, clk_hz: int, mem_size: int, **unused: Any) -> str:
+def gen_reset_dts(*, clk_hz: int, **unused: Any) -> str:
     """Describe only the devices needed for the S-mode reset call."""
     return f"""/dts-v1/;
 / {{
     #address-cells = <1>;
     #size-cells = <1>;
-    compatible = "frost,rv64", "frost";
+    compatible = "frost";
     model = "FROST SBI reset";
-    chosen {{ stdout-path = "/soc/serial@{packer.UART_BASE:x}"; }};
+    chosen {{ stdout-path = "/serial@{packer.UART_BASE:x}"; }};
     cpus {{
         #address-cells = <1>;
         #size-cells = <0>;
@@ -51,49 +51,27 @@ def gen_reset_dts(*, clk_hz: int, mem_size: int, **unused: Any) -> str:
         cpu@0 {{
             device_type = "cpu";
             reg = <0>;
-            status = "okay";
             compatible = "riscv";
             riscv,isa = "rv64imafdc_zicsr_zifencei";
-            mmu-type = "riscv,sv39";
-            cpu_intc: interrupt-controller {{
-                #interrupt-cells = <1>;
-                interrupt-controller;
-                compatible = "riscv,cpu-intc";
-            }};
         }};
     }};
-    memory@{packer.DDR_BASE:x} {{
-        device_type = "memory";
-        reg = <0x{packer.DDR_BASE:x} 0x{mem_size:x}>;
+    serial@{packer.UART_BASE:x} {{
+        compatible = "ns16550a";
+        reg = <0x{packer.UART_BASE:x} 0x100>;
+        reg-shift = <2>;
+        reg-io-width = <4>;
+        clock-frequency = <{clk_hz}>;
+        current-speed = <115200>;
     }};
-    soc {{
-        compatible = "simple-bus";
-        #address-cells = <1>;
-        #size-cells = <1>;
-        ranges;
-        serial@{packer.UART_BASE:x} {{
-            compatible = "ns16550a";
-            reg = <0x{packer.UART_BASE:x} 0x100>;
-            reg-shift = <2>;
-            reg-io-width = <4>;
-            clock-frequency = <{clk_hz}>;
-            current-speed = <115200>;
-        }};
-        clint@{packer.CLINT_BASE:x} {{
-            compatible = "sifive,clint0", "riscv,clint0";
-            reg = <0x{packer.CLINT_BASE:x} 0xc000>;
-            interrupts-extended = <&cpu_intc 3 &cpu_intc 7>;
-        }};
-        sysreset: syscon@{packer.SYSRESET_BASE:x} {{
-            compatible = "frost,sysreset", "syscon";
-            reg = <0x{packer.SYSRESET_BASE:x} 0x1000>;
-            reg-io-width = <4>;
-            reboot {{
-                compatible = "syscon-reboot";
-                regmap = <&sysreset>;
-                offset = <0>;
-                value = <0x{packer.SYSRESET_VALUE:x}>;
-            }};
+    sysreset: syscon@{packer.SYSRESET_BASE:x} {{
+        compatible = "frost,sysreset", "syscon";
+        reg = <0x{packer.SYSRESET_BASE:x} 0x1000>;
+        reg-io-width = <4>;
+        reboot {{
+            compatible = "syscon-reboot";
+            regmap = <&sysreset>;
+            offset = <0>;
+            value = <0x{packer.SYSRESET_VALUE:x}>;
         }};
     }};
 }};

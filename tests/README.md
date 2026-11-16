@@ -402,10 +402,12 @@ memory transport, and the first retired boot instruction. It returns directly
 from its final ReadOnly phase without the ordinary application's final-edge
 wrapper.
 
-These tests shorten firmware setup with a minimal device tree, OpenSBI's
+These tests shorten firmware setup with a tree containing only the boot hart,
+console and SYSRESET, OpenSBI's
 `FW_OPTIONS=1` (no boot prints) in the separate `build/opensbi-reset` cache, and
 DDR model latency 1. The production OpenSBI configuration and syscon driver are
-unchanged. They cover the reset call and boot entry, not the complete platform
+unchanged. The reset request has a ten-millisecond simulated-time budget.
+They cover the reset call and boot entry, not the complete platform
 device tree or a second Linux boot; `opensbi_smoke` retains that full device
 setup and its usual firmware cache.
 

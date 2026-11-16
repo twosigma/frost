@@ -482,7 +482,7 @@ def test_manual_reset_tree_resolves_the_production_syscon(tmp_path: Path) -> Non
         )
         return [int(value, 16) for value in result.stdout.split()]
 
-    node = f"/soc/syscon@{packer.SYSRESET_BASE:x}"
+    node = f"/syscon@{packer.SYSRESET_BASE:x}"
     assert cells(node, "reg") == [packer.SYSRESET_BASE, packer.SYSRESET_SIZE]
     assert cells(node, "reg-io-width") == [4]
     assert cells(node + "/reboot", "regmap") == cells(node, "phandle")
