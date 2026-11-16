@@ -677,6 +677,11 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "sq_next_same.sby",
+        "Store-queue same-sector claim matches the reference after launch and allocation",
+        tasks=("bmc", "bmc_cpu"),
+    ),
+    FormalTarget(
         "pc_pending_capture.sby",
         "Pending-prediction capture matches reference clear/set/hold priority",
         tasks=("bmc", "bmc_integrated"),
@@ -2327,6 +2332,10 @@ SBY_TASKS = [
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("bmc_core", "Load-result selection with the CPU feature configuration."),
+    (
+        "bmc_cpu",
+        "Store-queue claim equivalence with the CPU's dispatch, precise and Normal-memory settings.",
+    ),
     ("coh_lq_capture4_prove", "Coherent capture equality at four entries."),
     ("coh_lq_capture8_prove", "Coherent capture equality at eight entries."),
     ("coh_lq_capture16_prove", "Coherent capture equality at sixteen entries."),

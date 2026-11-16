@@ -1342,18 +1342,107 @@ module store_queue #(
     end
   end
 
-  // The last write's sector and class, and the cursor entry that the next
-  // write will take, both after this cycle's launch.
+  // The last write's sector and class after this cycle's launch, and the
+  // same-sector claim: the cursor entry after this cycle's launch is a
+  // committed cached plain store to that sector and is unsent after this
+  // cycle's allocation, which clears a reused entry's sent mark. Only a
+  // cached plain launch leaves a claim, and that launch completes its entry,
+  // so the cursor takes the post-fire choice. Without a launch the cursor
+  // takes the post-fire choice past a Zicbom entry (cmo_drain_fire) and the
+  // base choice otherwise; the base choice is the cursor entry itself or the
+  // same entry as the post-fire choice. Each outcome's claim is formed from
+  // registered state, the allocation's dispatch valids apply next, and the
+  // launch selects last.
   logic [XLEN-6:0] last_write_sector_q;
   logic last_write_plain_q, next_same_d;
   wire [XLEN-6:0] last_write_sector_d = mem_write_fire_next ?
       sq_address[drain_idx_q][XLEN-1:5] : last_write_sector_q;
   wire last_write_plain_d = mem_write_fire_next ?
       sq_cached_plain_class[drain_idx_q] && !drain_is_cmo : last_write_plain_q;
-  assign next_same_d = last_write_plain_d && sq_valid[drain_idx_d] && !sq_sent_next[drain_idx_d] &&
-      sq_committed[drain_idx_d] && sq_addr_valid[drain_idx_d] &&
+  // A valid committed cached plain store with its address, not a Zicbom entry.
+  logic [DEPTH-1:0] next_same_class;
+  logic next_same_fire_match, next_same_hold_cursor, next_same_hold_match;
+  logic [IdxWidth-1:0] next_same_hold_idx;
+  // Each outcome's claim for an unsent entry, and for a sent entry that this
+  // cycle's first allocation (sent1) or a pair's second allocation (sent2)
+  // takes.
+  (* keep = "true" *) logic next_same_fire_unsent, next_same_fire_sent1, next_same_fire_sent2;
+  (* keep = "true" *) logic next_same_hold_unsent, next_same_hold_sent1, next_same_hold_sent2;
+  (* keep = "true" *) logic next_same_if_fire, next_same_if_hold;
+  logic next_same_launch;
+  always_comb
+    for (int i = 0; i < DEPTH; i++)
+      next_same_class[i] = sq_valid[i] && sq_committed[i] && sq_addr_valid[i] &&
+          sq_cached_plain_class[i] && !sq_is_cmo[i];
+  // A cached plain launch from the cursor, followed by the post-fire entry.
+  assign next_same_fire_match = sq_cached_plain_class[drain_idx_q] && !drain_is_cmo &&
+      drain_post_fire_idx_d != drain_idx_q && next_same_class[drain_post_fire_idx_d] &&
+      sq_address[drain_post_fire_idx_d][XLEN-1:5] == sq_address[drain_idx_q][XLEN-1:5];
+  // No launch: the cursor entry, or the post-fire entry.
+  assign next_same_hold_cursor = drain_base_idx_d == drain_idx_q && !cmo_drain_fire;
+  assign next_same_hold_idx = next_same_hold_cursor ? drain_idx_q : drain_post_fire_idx_d;
+  assign next_same_hold_match = last_write_plain_q && next_same_class[next_same_hold_idx] &&
+      (next_same_hold_cursor ? sq_address[drain_idx_q][XLEN-1:5] == last_write_sector_q :
+       sq_address[drain_post_fire_idx_d][XLEN-1:5] == last_write_sector_q);
+  assign next_same_fire_unsent = next_same_fire_match && !sq_sent[drain_post_fire_idx_d];
+  assign next_same_fire_sent1 = next_same_fire_match && sq_sent[drain_post_fire_idx_d] &&
+      first_room_oh[drain_post_fire_idx_d];
+  assign next_same_fire_sent2 = next_same_fire_match && sq_sent[drain_post_fire_idx_d] &&
+      second_room_oh[drain_post_fire_idx_d];
+  assign next_same_hold_unsent = next_same_hold_match && !sq_sent[next_same_hold_idx];
+  assign next_same_hold_sent1 = next_same_hold_match && sq_sent[next_same_hold_idx] &&
+      first_room_oh[next_same_hold_idx];
+  assign next_same_hold_sent2 = next_same_hold_match && sq_sent[next_same_hold_idx] &&
+      second_room_oh[next_same_hold_idx];
+  assign next_same_if_fire = next_same_fire_unsent ||
+      (next_same_fire_sent1 && (i_alloc.valid || i_alloc_2.valid)) ||
+      (next_same_fire_sent2 && i_alloc.valid && i_alloc_2.valid);
+  assign next_same_if_hold = next_same_hold_unsent ||
+      (next_same_hold_sent1 && (i_alloc.valid || i_alloc_2.valid)) ||
+      (next_same_hold_sent2 && i_alloc.valid && i_alloc_2.valid);
+`ifdef FROST_XILINX_PRIMS
+  // A copy of the launch selection drives only the claim's final selection,
+  // apart from the launch's wide fanout.
+  (* dont_touch = "true" *) LUT5 #(
+      .INIT(32'hfefaeeaa)
+  ) u_next_same_launch_select (
+      .I0(launch_without_store_ready),
+      .I1(precise_launch_qualified),
+      .I2(cached_launch_qualified),
+      .I3(precommit_shared_ready),
+      .I4(i_coherent_store_ready),
+      .O (next_same_launch)
+  );
+  (* dont_touch = "true" *) LUT3 #(
+      .INIT(8'hca)
+  ) u_next_same_select (
+      .I0(next_same_if_hold),
+      .I1(next_same_if_fire),
+      .I2(next_same_launch),
+      .O (next_same_d)
+  );
+`else
+  assign next_same_launch = mem_write_fire_next;
+  assign next_same_d = next_same_launch ? next_same_if_fire : next_same_if_hold;
+`endif
+`ifndef SYNTHESIS
+`define SQ_NEXT_SAME_REFERENCE
+`elsif SQ_NEXT_SAME_LOCAL_PROOF
+`define SQ_NEXT_SAME_REFERENCE
+`endif
+`ifdef SQ_NEXT_SAME_REFERENCE
+  // Reference: the cursor entry, sent marks and last write after this
+  // cycle's launch and allocation, as one expression.
+  logic next_same_reference;
+  assign next_same_reference = last_write_plain_d && sq_valid[drain_idx_d] &&
+      !sq_sent_next[drain_idx_d] && sq_committed[drain_idx_d] && sq_addr_valid[drain_idx_d] &&
       sq_cached_plain_class[drain_idx_d] && !sq_is_cmo[drain_idx_d] &&
       sq_address[drain_idx_d][XLEN-1:5] == last_write_sector_d;
+`undef SQ_NEXT_SAME_REFERENCE
+`endif
+`ifdef SQ_NEXT_SAME_LOCAL_PROOF
+  always_comb assert (next_same_d == next_same_reference);
+`endif
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       last_write_plain_q   <= 1'b0;
@@ -1975,6 +2064,11 @@ module store_queue #(
         assert (1'b0) else
 `endif
         $error("SQ: selected dispatch back-pressure differs from the adder form");
+      if (next_same_d != next_same_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("SQ: selected same-sector claim differs from the reference");
     end
   end
 `endif
@@ -2001,6 +2095,7 @@ module store_queue #(
 `ifdef FORMAL
 `ifndef SQ_LIVE_COUNT_LOCAL_PROOF
 `ifndef SQ_COMMITTED_EMPTY_LOCAL_PROOF
+`ifndef SQ_NEXT_SAME_LOCAL_PROOF
 
   initial assume (!i_rst_n);
 
@@ -2428,6 +2523,7 @@ module store_queue #(
     end
   end
 
+`endif  // SQ_NEXT_SAME_LOCAL_PROOF
 `endif  // SQ_COMMITTED_EMPTY_LOCAL_PROOF
 `endif  // SQ_LIVE_COUNT_LOCAL_PROOF
 `endif  // FORMAL
