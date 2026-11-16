@@ -1223,6 +1223,18 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_integrated", "cover"),
     ),
     FormalTarget(
+        "rs_payload_twin.sby",
+        "Two tomasulo_wrapper copies whose reservation stations hold arbitrary stage2 payloads while "
+        "empty have equal outputs",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rs_stage2_payload_equiv.sby",
+        "Occupied reservation-station stage2 and stage2b payloads loaded on FU readiness equal "
+        "issue-fire capture across all four station configurations",
+        tasks=("int_prove", "mul_prove", "mem_prove", "fp_prove", "int_cover"),
+    ),
+    FormalTarget(
         "served_window_coverage.sby",
         "Fetch-window coverage matches full-address comparisons for 32/64-bit "
         "addresses and portable/Xilinx implementations",
@@ -3055,6 +3067,26 @@ SBY_TASKS = [
     (
         "tree_equiv",
         "Store-queue forwarding balanced winner tree equals the linear formal selector.",
+    ),
+    (
+        "int_prove",
+        "Unbounded stage2 and stage2b payload equivalence in the INT station configuration.",
+    ),
+    (
+        "mul_prove",
+        "Unbounded stage2 payload equivalence in the MUL station configuration.",
+    ),
+    (
+        "mem_prove",
+        "Unbounded stage2 payload equivalence in the MEM station configuration.",
+    ),
+    (
+        "fp_prove",
+        "Unbounded stage2 payload equivalence in the FP station configuration.",
+    ),
+    (
+        "int_cover",
+        "Stage2 and stage2b stall, flush, back-to-back issue, and reset reachability.",
     ),
 ]
 

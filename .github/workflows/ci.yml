@@ -295,7 +295,7 @@ jobs:
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
               [debug_test] or [debug_fence_test] or [debug_openocd_test] or [bram_reload] or [instret_test] or
-              [hello_world] or [uart_burst] or [uart_echo] or [print_clock_speed]
+              [hello_world] or [uart_burst] or [uart_echo] or [print_clock_speed] or [sysreset_test]
           - name: Real Programs (Zicboz)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
@@ -367,7 +367,7 @@ jobs:
               or [ddr_test_equal_lines] or [ddr_exec_test_equal_lines] or
               [ddr_atomic_test_equal_lines] or [debug_test] or [debug_fence_test] or [debug_openocd_test] or [bram_reload]
               or [instret_test] or [hello_world] or [uart_burst] or [uart_echo] or
-              [print_clock_speed] or [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or
+              [print_clock_speed] or [sysreset_test] or [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or
               [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [ddr_bench] or
               [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz]
               or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
@@ -1490,7 +1490,7 @@ jobs:
           # Every comparison of a block's hand-instantiated primitives with its
           # portable form: the twin targets and the read select's primitive tasks.
           - shard: Primitive forms
-            pytest_filter: _twin or (coh_read_select and xilinx)
+            pytest_filter: (_twin and not rs_payload_twin) or (coh_read_select and xilinx)
             timeout_minutes: 90
           # The vector CSR state: the vector BMC alone is about forty minutes,
           # and new vector proofs join it.
@@ -1517,7 +1517,7 @@ jobs:
           - shard: Other tasks
             pytest_filter: >-
               not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or
-              coherence_ or coherent_ or _twin or csr_file_vector or
+              coherence_ or coherent_ or (_twin and not rs_payload_twin) or csr_file_vector or
               vec_lmul_legality or line_client_link or ptw or tlb or imsic or aplic or
               immu or dmmu or load_queue or lq_)
             timeout_minutes: 120
