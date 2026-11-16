@@ -102,6 +102,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("line_client_link", "line_link0_bmc"): 4200,
     ("line_client_link", "line_link1_bmc"): 4200,
     ("line_client_link", "line_link1_four_bmc"): 4200,
+    ("line_client_link", "line_link1_eight_bmc"): 4200,
     ("coherence_store_home", "link_bmc_pressure"): 8700,
 }
 
@@ -462,14 +463,16 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_dma_ingress.sby",
         "DMA issue order, opaque identities, independent completion, and reset ownership; "
-        "the same for the hart's two-identity line client.",
+        "the same for the hart's two- and eight-identity line client.",
         tasks=(
             "coh_dma_ingress_prove",
             "coh_dma_ingress_cover",
             "coh_dma_ingress_soc_prove",
             "coh_dma_ingress_soc_cover",
             "coh_line_client_prove",
+            "coh_line_client_eight_prove",
             "coh_line_client_cover",
+            "coh_line_client_eight_cover",
         ),
     ),
     FormalTarget(
@@ -654,7 +657,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pc_pending_capture.sby",
-        "Pending-prediction capture matches reference clear/set/hold priority",
+        "Pending-prediction capture matches reference clear/set/hold priority, including "
+        "walked-past entries",
         tasks=("bmc", "bmc_integrated"),
     ),
     FormalTarget(
@@ -973,9 +977,19 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Queued LMUL classes and vector-memory rejection equal the arithmetic, VTOX "
-        "and VLOAD/VSTORE legality rules for every vtype, instruction and operation",
+        "Queued LMUL classes equal the arithmetic and VTOX legality rules for "
+        "every vtype, instruction and operation",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "vec_vmu.sby",
+        "Vector sector order, identity conservation and stalled preparation registers",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "vec_head_mmu.sby",
+        "Head vector translation before access, precise partial faults and commit shield",
+        tasks=("bmc", "cover"),
     ),
     FormalTarget(
         "vec_hold_rows.sby",
@@ -1027,7 +1041,14 @@ FORMAL_TARGETS = [
         "csr_file.sby",
         "CSR state and access behavior with profiling counters on or off, and "
         "with the vector state",
-        tasks=("bmc", "cover", "bmc_perf_off", "vector_bmc", "vector_cover"),
+        tasks=(
+            "bmc",
+            "cover",
+            "bmc_perf_off",
+            "vector_bmc",
+            "vector_cover",
+            "pm_mode_bmc",
+        ),
     ),
     FormalTarget(
         "tlb.sby",
@@ -1102,6 +1123,7 @@ FORMAL_TARGETS = [
             "line_link0_bmc",
             "line_link1_bmc",
             "line_link1_four_bmc",
+            "line_link1_eight_bmc",
             "line_link1_cover",
         ),
     ),
@@ -1164,6 +1186,13 @@ FORMAL_TARGETS = [
         "ALU shifts and rotates match the reference with captured shift amounts on or "
         "off",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "pointer_masking.sby",
+        "Ssnpm: the MEM_RS base transform gives the Sv39 canonical check, the Bare PMA "
+        "decodes, xtval and misaligned assist the ignore transformation's result "
+        "across DDR apertures, and senvcfg.PMM is WARL",
+        tasks=("bmc", "bmc_ddr31", "bmc_ddr36", "bmc_ddr37"),
     ),
     FormalTarget(
         "divider.sby",
@@ -1523,8 +1552,15 @@ FORMAL_TARGETS = [
     FormalTarget(
         "prediction_release.sby",
         "Pending-prediction release preserves state masking, fetch holdoffs, and the "
-        "registered PC relations, and the instruction buffer takes only pc_reg's word",
+        "registered PC relations, including walked-past entries, and the instruction "
+        "buffer takes only pc_reg's word",
         tasks=("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
+        "if_prediction_walk_past.sby",
+        "Fetch stage preserves pc_reg continuity and emits no real packet while "
+        "post-prediction holdoff holds pc_reg, including walked-past pending predictions",
+        tasks=("bmc", "continuity", "cover"),
     ),
     FormalTarget(
         "prediction_metadata_tracker.sby",
@@ -1755,6 +1791,7 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
     (
@@ -2813,6 +2850,7 @@ SBY_TASKS = [
         "Vector memory table lifecycle against a ghost reorder buffer, 14 frames.",
     ),
     ("bmc", "Check assertions up to the configured depth"),
+    ("continuity", "Bounded pc_reg and slot-1 PC continuity check"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
     ("home_small", "Consumed packets and fill phase flags with two fills."),
     (
@@ -2847,11 +2885,20 @@ SBY_TASKS = [
         "Ingress under a hart source and class 3 with two identities.",
     ),
     (
+        "coh_line_client_eight_prove",
+        "Ingress under a hart source and class 3 with eight identities.",
+    ),
+    (
         "coh_line_client_cover",
         "Ingress reachability under a hart source with two identities.",
     ),
+    (
+        "coh_line_client_eight_cover",
+        "Ingress reachability under a hart source with eight identities.",
+    ),
     ("line_link1_bmc", "Line client and links at one stage, two identities."),
     ("line_link1_four_bmc", "Line client and links at one stage, four identities."),
+    ("line_link1_eight_bmc", "Line client and links at one stage, eight identities."),
     (
         "line_link1_cover",
         "Line client at one stage reaches two live identities and a write response.",
@@ -2911,6 +2958,9 @@ SBY_TASKS = [
     ),
     ("cover_wide", "Svpbmt alias and no-alias reachability with the 64 GiB DDR map"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
+    ("bmc_ddr31", "Pointer masking with a 2 GiB DDR aperture"),
+    ("bmc_ddr36", "Pointer masking with a 64 GiB DDR aperture"),
+    ("bmc_ddr37", "Pointer masking with a 128 GiB DDR aperture"),
     (
         "bmc_small_btb",
         "Bounded tag comparison with a 16-entry BTB and partial final group",

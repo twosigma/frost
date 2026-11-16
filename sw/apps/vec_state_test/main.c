@@ -26,9 +26,10 @@
  *   - a vector CSR write sets VS to Dirty, and SD follows Dirty;
  *   - sstatus.VS is a view of mstatus.VS;
  *   - writes to vl, vtype and vlenb raise illegal-instruction;
- *   - vector loads and stores (unit-stride, whole-register and mask) raise
- *     illegal-instruction with VS Off and, since the unit does not execute
- *     them, with VS on, and a store writes nothing.
+ *   - vector loads and stores raise illegal-instruction with VS Off; with VS
+ *     on and vill set, unit-stride and mask forms and misaligned whole-register
+ *     groups raise illegal-instruction, while legal whole-register accesses to
+ *     uncached BRAM raise load or store access fault without writing memory.
  * Without the unit, VS reads zero and ignores writes, and every vector CSR
  * access and vector load or store raises illegal-instruction. In both
  * builds, a vector load on a mispredicted path, or a run of them ending in a
@@ -138,11 +139,22 @@ static void check_illegal(const char *name, unsigned long pc)
     check(name, ok, g_cause, 2u);
 }
 
+#if VEC_VLEN > 0
+/* The trigger at `pc` raised `want_cause` with mtval `want_tval`. */
+static void
+check_fault(const char *name, unsigned long pc, unsigned long want_cause, unsigned long want_tval)
+{
+    int ok = g_cause == want_cause && g_epc == pc && g_tval == want_tval;
+    check(name, ok, g_cause, want_cause);
+}
+#endif
+
 /* Vector loads and stores, base register t5 (x30). */
 #define VLE32_V1 ".word 0x020f6087"       /* vle32.v v1, (t5) */
 #define VSE32_V1 ".word 0x020f60a7"       /* vse32.v v1, (t5) */
 #define VLE8_V2_MASKED ".word 0x000f0107" /* vle8.v v2, (t5), v0.t */
 #define VL1RE8_V1 ".word 0x028f0087"      /* vl1re8.v v1, (t5) */
+#define VL2RE64_V1 ".word 0x228f7087"     /* vl2re64.v v1, (t5) (misaligned vd) */
 #define VL2RE64_V2 ".word 0x228f7107"     /* vl2re64.v v2, (t5) */
 #define VS1R_V1 ".word 0x028f00a7"        /* vs1r.v v1, (t5) */
 #define VLM_V1 ".word 0x02bf0087"         /* vlm.v v1, (t5) */
@@ -203,6 +215,26 @@ static void check_vmem_illegal(const char *when)
         RUN_VMEM(VLE32_V1 "\n" VSE32_V1 "\n" VLE32_V1 "\n" VS1R_V1 "\n" VLE32_V1 "\n" VSM_V1));
     check_eq("vector stores write nothing", vbuf_intact(), 1);
 }
+
+#if VEC_VLEN > 0
+/* With VS on and vill set, vtype-dependent forms and misaligned whole-register
+ * groups raise illegal-instruction without modifying VS or memory. */
+static void check_vmem_vill_illegal(void)
+{
+    uart_printf("vector loads and stores illegal with VS on, vill set\n");
+    fill_vbuf();
+    check_illegal("vle32.v (vill)", RUN_VMEM(VLE32_V1));
+    check_illegal("vse32.v (vill)", RUN_VMEM(VSE32_V1));
+    check_illegal("vle8.v masked (vill)", RUN_VMEM(VLE8_V2_MASKED));
+    check_illegal("vl2re64.v v1 (unaligned)", RUN_VMEM(VL2RE64_V1));
+    check_illegal("vlm.v (vill)", RUN_VMEM(VLM_V1));
+    check_illegal("vsm.v (vill)", RUN_VMEM(VSM_V1));
+    check_illegal(
+        "vector run",
+        RUN_VMEM(VLE32_V1 "\n" VSE32_V1 "\n" VLE32_V1 "\n" VS1R_V1 "\n" VLE32_V1 "\n" VSM_V1));
+    check_eq("vector stores write nothing", vbuf_intact(), 1);
+}
+#endif
 
 /* A vector load behind a branch that resolves late (it waits for a load) and
  * is taken: the load is fetched on the wrong path and discarded. The scalar
@@ -377,13 +409,32 @@ int main(void)
     check_illegal("csrw vlenb", RUN_TRIGGER("csrw 0xC22, zero"));
     check_eq("rejected writes leave VS", vs_field(), VS_CLEAN);
 
-    /* The vector unit does not perform loads and stores. */
-    check_vmem_illegal("with VS on");
+    /* With vill set, vtype-dependent forms, misaligned whole-register groups,
+     * and wrong-path fetches leave VS Clean and memory untouched. */
+    check_vmem_vill_illegal();
     fill_vbuf();
     check_eq("wrong-path vector load", vmem_wrong_path(), 16 * 0x0202020202020202ul);
     fill_vbuf();
     check_eq("jump-target vector load", vmem_jump_wrong_path(), 6 * 0x0202020202020202ul);
-    check_eq("vector loads and stores leave VS", vs_field(), VS_CLEAN);
+    check_eq("illegal and wrong-path vector ops leave VS", vs_field(), VS_CLEAN);
+
+    /* Legal whole-register accesses targeting uncached BRAM raise load/store
+     * access fault with mtval = &g_vbuf, write vstart (dirtying VS), and write
+     * nothing to memory. */
+    {
+        unsigned long buf_va = (unsigned long) g_vbuf;
+        fill_vbuf();
+        set_vs(VS_CLEAN);
+        check_fault("vl1re8.v (BRAM access fault)", RUN_VMEM(VL1RE8_V1), 5u, buf_va);
+        check_eq("vl1re8.v fault dirties VS", vs_field(), VS_DIRTY);
+        set_vs(VS_CLEAN);
+        check_fault("vl2re64.v (BRAM access fault)", RUN_VMEM(VL2RE64_V2), 5u, buf_va);
+        check_eq("vl2re64.v fault dirties VS", vs_field(), VS_DIRTY);
+        set_vs(VS_CLEAN);
+        check_fault("vs1r.v (BRAM access fault)", RUN_VMEM(VS1R_V1), 7u, buf_va);
+        check_eq("vs1r.v fault dirties VS", vs_field(), VS_DIRTY);
+        check_eq("faulting BRAM store writes nothing", vbuf_intact(), 1);
+    }
 
     set_vs(VS_OFF);
     check_all_illegal("with VS Off again");

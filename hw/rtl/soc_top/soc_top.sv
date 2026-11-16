@@ -1501,6 +1501,7 @@ AxilPorts
     localparam int unsigned AliasPort = DmaPorts - 1;
     localparam int unsigned DmaAxiAddrBits = 64;
     localparam int unsigned DmaAxiDataBits = 8 * L1LineBytes;
+    localparam int unsigned DmaStrbBits = DmaAxiDataBits / 8;
     // The NIC's ids, 3 bits; the engine's 2-bit ids are zero-extended.
     localparam int unsigned DmaUpIdBits = 3;
     localparam int unsigned DmaDownIdBits = DmaUpIdBits + $clog2(DmaPorts);
@@ -1510,14 +1511,19 @@ AxilPorts
     logic [DmaPorts-1:0] up_awvalid, up_awready, up_awlock, up_wvalid, up_wready, up_wlast;
     logic [DmaPorts-1:0] up_bvalid, up_bready, up_arvalid, up_arready, up_arlock;
     logic [DmaPorts-1:0] up_rvalid, up_rready, up_rlast;
-    logic [DmaPorts-1:0][DmaUpIdBits-1:0] up_awid, up_bid, up_arid, up_rid;
-    logic [DmaPorts-1:0][DmaAxiAddrBits-1:0] up_awaddr, up_araddr;
-    logic [DmaPorts-1:0][7:0] up_awlen, up_arlen;
-    logic [DmaPorts-1:0][2:0] up_awsize, up_arsize, up_awprot, up_arprot;
-    logic [DmaPorts-1:0][1:0] up_awburst, up_arburst, up_bresp, up_rresp;
-    logic [DmaPorts-1:0][3:0] up_awcache, up_arcache, up_awqos, up_arqos;
-    logic [DmaPorts-1:0][DmaAxiDataBits-1:0] up_wdata, up_rdata;
-    logic [DmaPorts-1:0][DmaAxiDataBits/8-1:0] up_wstrb;
+    // Fields wider than a bit are flat vectors, port p's field at
+    // [p*width+:width]. Yosys's read_verilog can misread an element select of
+    // a multidimensional packed array declared in a generate block: assigning
+    // an element can stop with an error, and with a named element type it can
+    // take a single index as a bit select.
+    logic [DmaPorts*DmaUpIdBits-1:0] up_awid, up_bid, up_arid, up_rid;
+    logic [DmaPorts*DmaAxiAddrBits-1:0] up_awaddr, up_araddr;
+    logic [DmaPorts*8-1:0] up_awlen, up_arlen;
+    logic [DmaPorts*3-1:0] up_awsize, up_arsize, up_awprot, up_arprot;
+    logic [DmaPorts*2-1:0] up_awburst, up_arburst, up_bresp, up_rresp;
+    logic [DmaPorts*4-1:0] up_awcache, up_arcache, up_awqos, up_arqos;
+    logic [DmaPorts*DmaAxiDataBits-1:0] up_wdata, up_rdata;
+    logic [DmaPorts*DmaStrbBits-1:0] up_wstrb;
 
     logic dn_awvalid, dn_awready, dn_awlock, dn_wvalid, dn_wready, dn_wlast;
     logic dn_bvalid, dn_bready, dn_arvalid, dn_arready, dn_arlock, dn_rvalid, dn_rready, dn_rlast;
@@ -1564,41 +1570,41 @@ AxilPorts
         .o_reg_axil_rresp(reg_axil_rresp[0]),
         .o_irq(nic_irq),
         .o_dma_axi_awvalid(up_awvalid[0]),
-        .o_dma_axi_awid(up_awid[0]),
-        .o_dma_axi_awaddr(up_awaddr[0]),
-        .o_dma_axi_awlen(up_awlen[0]),
-        .o_dma_axi_awsize(up_awsize[0]),
-        .o_dma_axi_awburst(up_awburst[0]),
+        .o_dma_axi_awid(up_awid[0*DmaUpIdBits+:DmaUpIdBits]),
+        .o_dma_axi_awaddr(up_awaddr[0*DmaAxiAddrBits+:DmaAxiAddrBits]),
+        .o_dma_axi_awlen(up_awlen[0*8+:8]),
+        .o_dma_axi_awsize(up_awsize[0*3+:3]),
+        .o_dma_axi_awburst(up_awburst[0*2+:2]),
         .o_dma_axi_awlock(up_awlock[0]),
-        .o_dma_axi_awcache(up_awcache[0]),
-        .o_dma_axi_awprot(up_awprot[0]),
-        .o_dma_axi_awqos(up_awqos[0]),
+        .o_dma_axi_awcache(up_awcache[0*4+:4]),
+        .o_dma_axi_awprot(up_awprot[0*3+:3]),
+        .o_dma_axi_awqos(up_awqos[0*4+:4]),
         .o_dma_axi_wvalid(up_wvalid[0]),
-        .o_dma_axi_wdata(up_wdata[0]),
-        .o_dma_axi_wstrb(up_wstrb[0]),
+        .o_dma_axi_wdata(up_wdata[0*DmaAxiDataBits+:DmaAxiDataBits]),
+        .o_dma_axi_wstrb(up_wstrb[0*DmaStrbBits+:DmaStrbBits]),
         .o_dma_axi_wlast(up_wlast[0]),
         .o_dma_axi_bready(up_bready[0]),
         .o_dma_axi_arvalid(up_arvalid[0]),
-        .o_dma_axi_arid(up_arid[0]),
-        .o_dma_axi_araddr(up_araddr[0]),
-        .o_dma_axi_arlen(up_arlen[0]),
-        .o_dma_axi_arsize(up_arsize[0]),
-        .o_dma_axi_arburst(up_arburst[0]),
+        .o_dma_axi_arid(up_arid[0*DmaUpIdBits+:DmaUpIdBits]),
+        .o_dma_axi_araddr(up_araddr[0*DmaAxiAddrBits+:DmaAxiAddrBits]),
+        .o_dma_axi_arlen(up_arlen[0*8+:8]),
+        .o_dma_axi_arsize(up_arsize[0*3+:3]),
+        .o_dma_axi_arburst(up_arburst[0*2+:2]),
         .o_dma_axi_arlock(up_arlock[0]),
-        .o_dma_axi_arcache(up_arcache[0]),
-        .o_dma_axi_arprot(up_arprot[0]),
-        .o_dma_axi_arqos(up_arqos[0]),
+        .o_dma_axi_arcache(up_arcache[0*4+:4]),
+        .o_dma_axi_arprot(up_arprot[0*3+:3]),
+        .o_dma_axi_arqos(up_arqos[0*4+:4]),
         .o_dma_axi_rready(up_rready[0]),
         .i_dma_axi_awready(up_awready[0]),
         .i_dma_axi_wready(up_wready[0]),
         .i_dma_axi_bvalid(up_bvalid[0]),
-        .i_dma_axi_bid(up_bid[0]),
-        .i_dma_axi_bresp(up_bresp[0]),
+        .i_dma_axi_bid(up_bid[0*DmaUpIdBits+:DmaUpIdBits]),
+        .i_dma_axi_bresp(up_bresp[0*2+:2]),
         .i_dma_axi_arready(up_arready[0]),
         .i_dma_axi_rvalid(up_rvalid[0]),
-        .i_dma_axi_rid(up_rid[0]),
-        .i_dma_axi_rdata(up_rdata[0]),
-        .i_dma_axi_rresp(up_rresp[0]),
+        .i_dma_axi_rid(up_rid[0*DmaUpIdBits+:DmaUpIdBits]),
+        .i_dma_axi_rdata(up_rdata[0*DmaAxiDataBits+:DmaAxiDataBits]),
+        .i_dma_axi_rresp(up_rresp[0*2+:2]),
         .i_dma_axi_rlast(up_rlast[0]),
         .i_tx_clk(i_nic_tx_clk),
         .i_rx_clk(i_nic_rx_clk),
@@ -1648,41 +1654,41 @@ AxilPorts
         .o_reg_axil_rresp(reg_axil_rresp[1]),
         .o_irq(dma_engine_irq),
         .o_dma_axi_awvalid(up_awvalid[1]),
-        .o_dma_axi_awid(up_awid[1]),
-        .o_dma_axi_awaddr(up_awaddr[1]),
-        .o_dma_axi_awlen(up_awlen[1]),
-        .o_dma_axi_awsize(up_awsize[1]),
-        .o_dma_axi_awburst(up_awburst[1]),
+        .o_dma_axi_awid(up_awid[1*DmaUpIdBits+:DmaUpIdBits]),
+        .o_dma_axi_awaddr(up_awaddr[1*DmaAxiAddrBits+:DmaAxiAddrBits]),
+        .o_dma_axi_awlen(up_awlen[1*8+:8]),
+        .o_dma_axi_awsize(up_awsize[1*3+:3]),
+        .o_dma_axi_awburst(up_awburst[1*2+:2]),
         .o_dma_axi_awlock(up_awlock[1]),
-        .o_dma_axi_awcache(up_awcache[1]),
-        .o_dma_axi_awprot(up_awprot[1]),
-        .o_dma_axi_awqos(up_awqos[1]),
+        .o_dma_axi_awcache(up_awcache[1*4+:4]),
+        .o_dma_axi_awprot(up_awprot[1*3+:3]),
+        .o_dma_axi_awqos(up_awqos[1*4+:4]),
         .o_dma_axi_wvalid(up_wvalid[1]),
-        .o_dma_axi_wdata(up_wdata[1]),
-        .o_dma_axi_wstrb(up_wstrb[1]),
+        .o_dma_axi_wdata(up_wdata[1*DmaAxiDataBits+:DmaAxiDataBits]),
+        .o_dma_axi_wstrb(up_wstrb[1*DmaStrbBits+:DmaStrbBits]),
         .o_dma_axi_wlast(up_wlast[1]),
         .o_dma_axi_bready(up_bready[1]),
         .o_dma_axi_arvalid(up_arvalid[1]),
-        .o_dma_axi_arid(up_arid[1]),
-        .o_dma_axi_araddr(up_araddr[1]),
-        .o_dma_axi_arlen(up_arlen[1]),
-        .o_dma_axi_arsize(up_arsize[1]),
-        .o_dma_axi_arburst(up_arburst[1]),
+        .o_dma_axi_arid(up_arid[1*DmaUpIdBits+:DmaUpIdBits]),
+        .o_dma_axi_araddr(up_araddr[1*DmaAxiAddrBits+:DmaAxiAddrBits]),
+        .o_dma_axi_arlen(up_arlen[1*8+:8]),
+        .o_dma_axi_arsize(up_arsize[1*3+:3]),
+        .o_dma_axi_arburst(up_arburst[1*2+:2]),
         .o_dma_axi_arlock(up_arlock[1]),
-        .o_dma_axi_arcache(up_arcache[1]),
-        .o_dma_axi_arprot(up_arprot[1]),
-        .o_dma_axi_arqos(up_arqos[1]),
+        .o_dma_axi_arcache(up_arcache[1*4+:4]),
+        .o_dma_axi_arprot(up_arprot[1*3+:3]),
+        .o_dma_axi_arqos(up_arqos[1*4+:4]),
         .o_dma_axi_rready(up_rready[1]),
         .i_dma_axi_awready(up_awready[1]),
         .i_dma_axi_wready(up_wready[1]),
         .i_dma_axi_bvalid(up_bvalid[1]),
-        .i_dma_axi_bid(up_bid[1]),
-        .i_dma_axi_bresp(up_bresp[1]),
+        .i_dma_axi_bid(up_bid[1*DmaUpIdBits+:DmaUpIdBits]),
+        .i_dma_axi_bresp(up_bresp[1*2+:2]),
         .i_dma_axi_arready(up_arready[1]),
         .i_dma_axi_rvalid(up_rvalid[1]),
-        .i_dma_axi_rid(up_rid[1]),
-        .i_dma_axi_rdata(up_rdata[1]),
-        .i_dma_axi_rresp(up_rresp[1]),
+        .i_dma_axi_rid(up_rid[1*DmaUpIdBits+:DmaUpIdBits]),
+        .i_dma_axi_rdata(up_rdata[1*DmaAxiDataBits+:DmaAxiDataBits]),
+        .i_dma_axi_rresp(up_rresp[1*2+:2]),
         .i_dma_axi_rlast(up_rlast[1])
     );
 
@@ -1722,41 +1728,41 @@ AxilPorts
           .o_reg_axil_rresp(reg_axil_rresp[2]),
           .o_irq(nic_1g_irq),
           .o_dma_axi_awvalid(up_awvalid[2]),
-          .o_dma_axi_awid(up_awid[2]),
-          .o_dma_axi_awaddr(up_awaddr[2]),
-          .o_dma_axi_awlen(up_awlen[2]),
-          .o_dma_axi_awsize(up_awsize[2]),
-          .o_dma_axi_awburst(up_awburst[2]),
+          .o_dma_axi_awid(up_awid[2*DmaUpIdBits+:DmaUpIdBits]),
+          .o_dma_axi_awaddr(up_awaddr[2*DmaAxiAddrBits+:DmaAxiAddrBits]),
+          .o_dma_axi_awlen(up_awlen[2*8+:8]),
+          .o_dma_axi_awsize(up_awsize[2*3+:3]),
+          .o_dma_axi_awburst(up_awburst[2*2+:2]),
           .o_dma_axi_awlock(up_awlock[2]),
-          .o_dma_axi_awcache(up_awcache[2]),
-          .o_dma_axi_awprot(up_awprot[2]),
-          .o_dma_axi_awqos(up_awqos[2]),
+          .o_dma_axi_awcache(up_awcache[2*4+:4]),
+          .o_dma_axi_awprot(up_awprot[2*3+:3]),
+          .o_dma_axi_awqos(up_awqos[2*4+:4]),
           .o_dma_axi_wvalid(up_wvalid[2]),
-          .o_dma_axi_wdata(up_wdata[2]),
-          .o_dma_axi_wstrb(up_wstrb[2]),
+          .o_dma_axi_wdata(up_wdata[2*DmaAxiDataBits+:DmaAxiDataBits]),
+          .o_dma_axi_wstrb(up_wstrb[2*DmaStrbBits+:DmaStrbBits]),
           .o_dma_axi_wlast(up_wlast[2]),
           .o_dma_axi_bready(up_bready[2]),
           .o_dma_axi_arvalid(up_arvalid[2]),
-          .o_dma_axi_arid(up_arid[2]),
-          .o_dma_axi_araddr(up_araddr[2]),
-          .o_dma_axi_arlen(up_arlen[2]),
-          .o_dma_axi_arsize(up_arsize[2]),
-          .o_dma_axi_arburst(up_arburst[2]),
+          .o_dma_axi_arid(up_arid[2*DmaUpIdBits+:DmaUpIdBits]),
+          .o_dma_axi_araddr(up_araddr[2*DmaAxiAddrBits+:DmaAxiAddrBits]),
+          .o_dma_axi_arlen(up_arlen[2*8+:8]),
+          .o_dma_axi_arsize(up_arsize[2*3+:3]),
+          .o_dma_axi_arburst(up_arburst[2*2+:2]),
           .o_dma_axi_arlock(up_arlock[2]),
-          .o_dma_axi_arcache(up_arcache[2]),
-          .o_dma_axi_arprot(up_arprot[2]),
-          .o_dma_axi_arqos(up_arqos[2]),
+          .o_dma_axi_arcache(up_arcache[2*4+:4]),
+          .o_dma_axi_arprot(up_arprot[2*3+:3]),
+          .o_dma_axi_arqos(up_arqos[2*4+:4]),
           .o_dma_axi_rready(up_rready[2]),
           .i_dma_axi_awready(up_awready[2]),
           .i_dma_axi_wready(up_wready[2]),
           .i_dma_axi_bvalid(up_bvalid[2]),
-          .i_dma_axi_bid(up_bid[2]),
-          .i_dma_axi_bresp(up_bresp[2]),
+          .i_dma_axi_bid(up_bid[2*DmaUpIdBits+:DmaUpIdBits]),
+          .i_dma_axi_bresp(up_bresp[2*2+:2]),
           .i_dma_axi_arready(up_arready[2]),
           .i_dma_axi_rvalid(up_rvalid[2]),
-          .i_dma_axi_rid(up_rid[2]),
-          .i_dma_axi_rdata(up_rdata[2]),
-          .i_dma_axi_rresp(up_rresp[2]),
+          .i_dma_axi_rid(up_rid[2*DmaUpIdBits+:DmaUpIdBits]),
+          .i_dma_axi_rdata(up_rdata[2*DmaAxiDataBits+:DmaAxiDataBits]),
+          .i_dma_axi_rresp(up_rresp[2*2+:2]),
           .i_dma_axi_rlast(up_rlast[2]),
           .i_tx_clk(i_nic_1g_tx_clk),
           .i_rx_clk(i_nic_1g_rx_clk),
@@ -1824,39 +1830,41 @@ AxilPorts
       end
     end
     assign up_awvalid[AliasPort] = alias_aw_q;
-    assign up_awid[AliasPort] = '0;
-    assign up_awaddr[AliasPort] = DmaAxiAddrBits'(alias_real_addr);
-    assign up_awlen[AliasPort] = 8'd0;
-    assign up_awsize[AliasPort] = local_size;
-    assign up_awburst[AliasPort] = 2'b01;
+    assign up_awid[AliasPort*DmaUpIdBits+:DmaUpIdBits] = '0;
+    assign up_awaddr[AliasPort*DmaAxiAddrBits+:DmaAxiAddrBits] = DmaAxiAddrBits'(alias_real_addr);
+    assign up_awlen[AliasPort*8+:8] = 8'd0;
+    assign up_awsize[AliasPort*3+:3] = local_size;
+    assign up_awburst[AliasPort*2+:2] = 2'b01;
     assign up_awlock[AliasPort] = 1'b0;
-    assign up_awcache[AliasPort] = 4'b0000;
-    assign up_awprot[AliasPort] = local_prot;
-    assign up_awqos[AliasPort] = 4'd0;
+    assign up_awcache[AliasPort*4+:4] = 4'b0000;
+    assign up_awprot[AliasPort*3+:3] = local_prot;
+    assign up_awqos[AliasPort*4+:4] = 4'd0;
     assign up_wvalid[AliasPort] = alias_w_q;
-    assign up_wdata[AliasPort] = {(DmaAxiDataBits / 64) {local_wdata}};
-    assign up_wstrb[AliasPort] = (DmaAxiDataBits / 8)'(local_wstrb) <<
+    assign up_wdata[AliasPort*DmaAxiDataBits+:DmaAxiDataBits] =
+        {(DmaAxiDataBits / 64) {local_wdata}};
+    assign up_wstrb[AliasPort*DmaStrbBits+:DmaStrbBits] = (DmaAxiDataBits / 8)'(local_wstrb) <<
         {local_addr[AliasLaneMsb:AliasLaneLsb], 3'b000};
     assign up_wlast[AliasPort] = 1'b1;
     assign up_bready[AliasPort] = alias_wait && local_write && !alias_aw_q && !alias_w_q;
     assign up_arvalid[AliasPort] = alias_ar_q;
-    assign up_arid[AliasPort] = '0;
-    assign up_araddr[AliasPort] = DmaAxiAddrBits'(alias_real_addr);
-    assign up_arlen[AliasPort] = 8'd0;
-    assign up_arsize[AliasPort] = local_size;
-    assign up_arburst[AliasPort] = 2'b01;
+    assign up_arid[AliasPort*DmaUpIdBits+:DmaUpIdBits] = '0;
+    assign up_araddr[AliasPort*DmaAxiAddrBits+:DmaAxiAddrBits] = DmaAxiAddrBits'(alias_real_addr);
+    assign up_arlen[AliasPort*8+:8] = 8'd0;
+    assign up_arsize[AliasPort*3+:3] = local_size;
+    assign up_arburst[AliasPort*2+:2] = 2'b01;
     assign up_arlock[AliasPort] = 1'b0;
-    assign up_arcache[AliasPort] = 4'b0000;
-    assign up_arprot[AliasPort] = local_prot;
-    assign up_arqos[AliasPort] = 4'd0;
+    assign up_arcache[AliasPort*4+:4] = 4'b0000;
+    assign up_arprot[AliasPort*3+:3] = local_prot;
+    assign up_arqos[AliasPort*4+:4] = 4'd0;
     assign up_rready[AliasPort] = alias_wait && !local_write && !alias_ar_q;
     wire alias_b_fire = up_bvalid[AliasPort] && up_bready[AliasPort];
     wire alias_r_fire = up_rvalid[AliasPort] && up_rready[AliasPort];
     assign alias_done = alias_wait && (alias_aborted_q || alias_b_fire || alias_r_fire);
-    assign alias_status = alias_aborted_q ? 2'b00 : alias_b_fire ? up_bresp[AliasPort] :
-        up_rresp[AliasPort];
-    assign alias_rdata = alias_aborted_q ? 64'd0 : 64'(up_rdata[AliasPort] >>
-        {local_addr[AliasLaneMsb:AliasLaneLsb], 6'b000000});
+    assign alias_status = alias_aborted_q ? 2'b00 : alias_b_fire ? up_bresp[AliasPort*2+:2] :
+        up_rresp[AliasPort*2+:2];
+    assign alias_rdata = alias_aborted_q ? 64'd0 :
+        64'(up_rdata[AliasPort*DmaAxiDataBits+:DmaAxiDataBits] >>
+            {local_addr[AliasLaneMsb:AliasLaneLsb], 6'b000000});
 
     axi_mux #(
         .NUM_PORTS(DmaPorts),
@@ -2216,34 +2224,34 @@ AxilPorts
           .i_rst(rst_core),
           .i_awvalid(up_awvalid[g]),
           .i_awready(up_awready[g]),
-          .i_awid(up_awid[g]),
-          .i_awaddr(up_awaddr[g]),
-          .i_awlen(up_awlen[g]),
-          .i_awsize(up_awsize[g]),
-          .i_awburst(up_awburst[g]),
+          .i_awid(up_awid[g*DmaUpIdBits+:DmaUpIdBits]),
+          .i_awaddr(up_awaddr[g*DmaAxiAddrBits+:DmaAxiAddrBits]),
+          .i_awlen(up_awlen[g*8+:8]),
+          .i_awsize(up_awsize[g*3+:3]),
+          .i_awburst(up_awburst[g*2+:2]),
           .i_awlock(up_awlock[g]),
           .i_wvalid(up_wvalid[g]),
           .i_wready(up_wready[g]),
-          .i_wdata(up_wdata[g]),
-          .i_wstrb(up_wstrb[g]),
+          .i_wdata(up_wdata[g*DmaAxiDataBits+:DmaAxiDataBits]),
+          .i_wstrb(up_wstrb[g*DmaStrbBits+:DmaStrbBits]),
           .i_wlast(up_wlast[g]),
           .i_bvalid(up_bvalid[g]),
           .i_bready(up_bready[g]),
-          .i_bid(up_bid[g]),
-          .i_bresp(up_bresp[g]),
+          .i_bid(up_bid[g*DmaUpIdBits+:DmaUpIdBits]),
+          .i_bresp(up_bresp[g*2+:2]),
           .i_arvalid(up_arvalid[g]),
           .i_arready(up_arready[g]),
-          .i_arid(up_arid[g]),
-          .i_araddr(up_araddr[g]),
-          .i_arlen(up_arlen[g]),
-          .i_arsize(up_arsize[g]),
-          .i_arburst(up_arburst[g]),
+          .i_arid(up_arid[g*DmaUpIdBits+:DmaUpIdBits]),
+          .i_araddr(up_araddr[g*DmaAxiAddrBits+:DmaAxiAddrBits]),
+          .i_arlen(up_arlen[g*8+:8]),
+          .i_arsize(up_arsize[g*3+:3]),
+          .i_arburst(up_arburst[g*2+:2]),
           .i_arlock(up_arlock[g]),
           .i_rvalid(up_rvalid[g]),
           .i_rready(up_rready[g]),
-          .i_rid(up_rid[g]),
-          .i_rdata(up_rdata[g]),
-          .i_rresp(up_rresp[g]),
+          .i_rid(up_rid[g*DmaUpIdBits+:DmaUpIdBits]),
+          .i_rdata(up_rdata[g*DmaAxiDataBits+:DmaAxiDataBits]),
+          .i_rresp(up_rresp[g*2+:2]),
           .i_rlast(up_rlast[g])
       );
     end

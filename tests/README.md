@@ -143,6 +143,18 @@ execution; it does not use standalone `slang --lint-only`.
 blocks, directed CPU tests, and applications from `sw/apps/`, which the
 runner compiles first. A failing RTL assertion fails the simulation.
 
+`vec_vtype_tracker` checks register and immediate configuration allocation,
+the delayed ROB in-flight indication, architectural reload, full flushes
+and checkpoint restore. `vec_vtype_handoff_test_v128/v256/v512` execute a
+register-form `vsetvl` immediately followed by `vadd.vv` from the reset
+`vill` state and check that no spurious trap occurs.
+
+`vec_source_eew` rejects v0 data operands in masked instructions and checks
+legal scalar-zero operands, unmasked v0 sources and mask destinations.
+`vec_source_eew_test_v128/v256/v512` check illegal-instruction cause and
+trap value, unchanged destination registers, `vstart` and `mstatus.VS` for
+masked instructions that use v0 as data.
+
 The `coherence_endpoints`, `coherence_endpoints_single`, and
 `coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
 identity reuse, independent probe queues, keyed PutAck cancellation, errors,
@@ -401,6 +413,28 @@ returns `SBI_ERR_NOT_SUPPORTED`. Its misaligned loads and stores to DDR (phase F
 the misaligned-access engine; `opensbi_smoke_no_misaligned_hw` builds without
 the engine, so OpenSBI emulates them, as it does for low BRAM.
 
+`opensbi_reset_cold` and `opensbi_reset_warm` each have a covered BRAM-only
+CI shard. Run them locally with
+`./scripts/frost.py cocotb opensbi_reset_cold` and
+`./scripts/frost.py cocotb opensbi_reset_warm`. A small supervisor payload
+checks SRST probing, rejected shutdown/type/reason requests, and a real reboot
+through OpenSBI. The bench checks the 64-cycle request, surviving debug and
+memory transport, and the first retired boot instruction. It returns directly
+from its final ReadOnly phase without the ordinary application's final-edge
+wrapper.
+
+These tests shorten firmware setup with a tree containing only the boot hart,
+console and SYSRESET, and DDR model latency 1. They use the same firmware
+cache, guarded build rule and boot messages as `opensbi_smoke`; changing the
+payload or packer does not bypass the firmware input checks. The reset request
+has a ten-millisecond simulated-time budget.
+In this design OpenSBI routes both the cold and the warm reboot request to the
+same SYSRESET register, so the two tests exercise the same hardware reset and
+differ only in the SBI reset type the firmware must accept.
+They cover the reset call and boot entry, not the complete platform
+device tree or a second Linux boot; `opensbi_smoke` retains that full device
+setup.
+
 `mmu_reach` is a manual benchmark, excluded from the pytest application
 matrix. It runs dependent data and instruction chains at 1, 4, 16, 20, 32,
 and 64 pages after warmup traversals, plus a data control at fixed offsets.
@@ -429,6 +463,7 @@ of its memory and ALU loop.
 | --- | --- |
 | `coremark_pro_loops`, `coremark_pro_nnet`, `irq_take_latency`, `lq_stale_slot_probe`, `fencei_jit_bench` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
+| `opensbi_reset_cold`, `opensbi_reset_warm` | Each bench issues its own S-mode reset and stops at the first retired boot instruction |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
 | `sysreset_test` | Its harness reloads the same memories over all three stale markers and checks both reset widths on each load. |
 
@@ -808,6 +843,24 @@ and low BRAM raises the address-misaligned exception. In DDR, `ma_data` runs
 in both environments; under `--env v` its accesses cross demand-paged Sv39
 pages.
 
+The `vec_order_test_v128`, `vec_order_test_v256`, and `vec_order_test_v512`
+programs check vector stores before instruction fetch, page walks, and the
+SoC DMA START register. Their observer counts fence waits, overlapping
+vector/DMA requests on shared and separate lines, and balanced completions.
+It distinguishes each pairing of vector loads/stores with DMA reads/writes.
+DMA writes racing vector loads must return a complete old or new sector image;
+the observer requires concurrent requests to a shared sector for this case.
+The reverse race checks the DMA's sector images while a vector store runs.
+The VLEN 256 memory and ordering programs run in the vector program CI shard.
+`FROST_VEC_ORDER_CHECK_WAITS=0` disables only the observer's wait assertions
+for negative tests; the program still checks all three architectural results.
+The `vec_vmu_v*` and `vec_head_mmu_v*` unit benches check sector byte masks,
+response reordering, backpressure, fatal errors, two-page translation, and
+partial-fault descriptors, including an enabled suffix whose first element
+straddles the faulting page. `vec_debug_partial` preserves an expected
+failure: a partial vector load in Debug Mode changes vector registers but
+leaves `mstatus.VS` Clean when the exception re-parks the hart.
+
 ### `test_riscv_vector_tests.py`
 
 Runs [riscv-vector-tests](https://github.com/chipsalliance/riscv-vector-tests),
@@ -1005,6 +1058,23 @@ three-hour timeout, which `FROST_YOSYS_XILINX_TIMEOUT_SEC` overrides.
 ./scripts/frost.py synthesis                    # both targets
 ./scripts/frost.py synthesis --target generic   # portable synthesis only
 ```
+
+`test_read_verilog_element_selects`, also marked `synthesis`, elaborates
+small modules with Yosys's own SystemVerilog reader (`read_verilog`) and with
+yosys-slang and proves the two netlists equal with a SAT miter: element
+selects of packed arrays declared at module scope or in a function, of a
+multidimensional array in a generate block used only in port connections,
+and of a flat vector in a generate block selected with one part-select per
+element. It also checks forms `read_verilog` reads wrongly: an element
+select of a multidimensional packed array declared in a generate block and
+assigned there can stop with an error, and when the array's type is a
+typedef the select can become a bit select of the flattened vector. The fast
+check `test_rtl_generate_blocks_have_no_multidimensional_packed_arrays` reads
+the text of `hw/rtl` and flags each declaration in a generate block with two
+or more packed dimensions, counting those of a typedef declared in the same
+file or in a package that the file imports or names, or with a named type
+and packed dimensions of its own. It matches source text and is not a full
+SystemVerilog parser.
 
 The standalone Ethernet MAC/PCS has its own
 [simulation and synthesis checks](net10g/README.md).
@@ -1320,7 +1390,7 @@ Lint and Fast Python Tests jobs locally.
 | --- | --- |
 | Cocotb applications | BRAM and DDR where supported; the three longest CoreMark-PRO workloads run in jobs of their own and the other six share one; the memory-system programs with one register stage between the hart and the cluster memory (`*_link1`) have two shards |
 | Zicboz applications | Basic, page and eviction configurations have separate BRAM/DDR shards. The two 4 MiB cache configurations select their own BRAM or DDR program layout in one additional shard; the clearing benchmark has its own shard |
-| Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke, cache counters over OpenOCD | BRAM only: tier-independent or fixed-layout runs |
+| Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke and reset, cache counters over OpenOCD | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 128 GiB, with the Yosys job covering the 1 GiB default |
 | Architecture compliance | BRAM and DDR, in groups of extensions, including CMO's Zicboz `cbo.zero` case in both tiers; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards; only the I B C group in BRAM collects coverage; a fast check compares the workflow's groups with the runner's supported extensions |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
@@ -1332,7 +1402,7 @@ Lint and Fast Python Tests jobs locally.
 | Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D zero (control, multi-endpoint, and cover jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
-| Coverage | One job merges the coverage of the 23 jobs that contribute to it into a report |
+| Coverage | One job merges the coverage of the 25 jobs that contribute to it into a report |
 
 The software aperture tests also have registry entries for 2, 4, 8, 16,
 and 32 GiB, available through `./scripts/frost.py cocotb <test_name>`.
@@ -1358,13 +1428,13 @@ differs from the model's by more than the tolerance in
 `perf-modeling/calibration/ci_baseline.json`, and it prints the figures and
 deltas either way.
 
-The report covers 23 of the simulating jobs, chosen so that it keeps 99.9% of
+The report covers 25 of the simulating jobs, chosen so that it keeps 99.9% of
 the line, branch and cover points that every job together would reach, with no
 cover point lost. They are Arch Tests (I B C / bram); the Real Programs jobs
-Debug and UART, both OpenSBI smoke configurations, Memory and NIC stress,
-Runtime benchmarks and vector, Runtime and other, and SRAM macros in BRAM and
-C library and RTOS, DMA NIC and coherence, Interrupts, Memory link stage (other
-programs) and Privilege and MMU in DDR; four Physical address aperture jobs
+Debug and UART, both OpenSBI smoke configurations, cold and warm OpenSBI reset,
+Memory and NIC stress, Runtime benchmarks and vector, Runtime and other, and
+SRAM macros in BRAM and C library and RTOS, DMA NIC and coherence, Interrupts,
+Memory link stage (other programs) and Privilege and MMU in DDR; four Physical address aperture jobs
 (1 GiB / Bare access, 1 GiB / Unit boundaries, 128 GiB / DMA, 128 GiB / NIC);
 riscv-tests (all suites / bram / p); riscv-torture (ddr / paged); TestRIG
 shards 1, 2 and 4; and the unit-bench job. A model build with coverage takes

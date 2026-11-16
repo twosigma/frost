@@ -103,11 +103,14 @@ module instr_operand_classifier (
         raw_class.uses_int_rs2 = 1'b1;
         raw_class.is_branch_or_jump = 1'b1;
       end
-      // A vector load or store (a vector width) reads only its rs1 base, in
-      // INT_RS, which hands it to the ROB; it takes no queue entry.
+      // A vector load or store (a vector width) executes at the ROB head
+      // without a reservation station or load/store-queue entry, reading its
+      // rs1 base from the extra integer register-file port at the head.
       riscv_pkg::OPC_LOAD, riscv_pkg::OPC_LOAD_FP: begin
-        raw_class.uses_int_rs1 = 1'b1;
-        if (!vector_mem) begin
+        if (vector_mem) begin
+          raw_class.rs_type = riscv_pkg::RS_NONE;
+        end else begin
+          raw_class.uses_int_rs1 = 1'b1;
           raw_class.has_int_dest = i_instr.opcode == riscv_pkg::OPC_LOAD;
           raw_class.has_fp_dest = i_instr.opcode == riscv_pkg::OPC_LOAD_FP;
           raw_class.rs_type = riscv_pkg::RS_MEM;
@@ -115,8 +118,10 @@ module instr_operand_classifier (
         end
       end
       riscv_pkg::OPC_STORE, riscv_pkg::OPC_STORE_FP: begin
-        raw_class.uses_int_rs1 = 1'b1;
-        if (!vector_mem) begin
+        if (vector_mem) begin
+          raw_class.rs_type = riscv_pkg::RS_NONE;
+        end else begin
+          raw_class.uses_int_rs1 = 1'b1;
           raw_class.uses_int_rs2 = i_instr.opcode == riscv_pkg::OPC_STORE;
           raw_class.uses_fp_rs2 = i_instr.opcode == riscv_pkg::OPC_STORE_FP;
           raw_class.is_int_store = i_instr.opcode == riscv_pkg::OPC_STORE;
@@ -180,7 +185,7 @@ module instr_operand_classifier (
           // Zimop MOP.R / MOP.RR: INT_RS, no operands, writes zero to rd.
           // i_illegal covers the funct3=100 encodings that are not MOPs.
           raw_class.has_int_dest = 1'b1;
-        end else if (i_instr.funct7 == 7'b0001001) begin
+        end else if (i_instr.funct7 == 7'b0001001 || i_instr.funct7 == 7'b0001011) begin
           raw_class.rs_type = riscv_pkg::RS_MEM;
           raw_class.is_fence_i = 1'b1;
           raw_class.is_sfence_vma = 1'b1;
@@ -189,6 +194,9 @@ module instr_operand_classifier (
           // (x0 reads as ready zero; dispatch records which are nonzero).
           raw_class.uses_int_rs1 = 1'b1;
           raw_class.uses_int_rs2 = 1'b1;
+        end else if (i_instr.funct7 == 7'b0001100) begin
+          raw_class.rs_type  = riscv_pkg::RS_MEM;
+          raw_class.is_fence = 1'b1;
         end else if ({i_instr.funct7, i_instr.source_reg_2} != 12'h000 &&
                      {i_instr.funct7, i_instr.source_reg_2} != 12'h001 &&
                      {i_instr.funct7, i_instr.source_reg_2[3:0]} != 11'b0000000_1101) begin

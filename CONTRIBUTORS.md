@@ -123,3 +123,4 @@
 - Loaded reservation-station stage-2 issue payloads on functional-unit readiness while keeping validity on the flush-qualified issue path, with a two-copy wrapper payload-twin formal check
 - Added the SYSRESET register and OpenSBI syscon-reboot support for SBI system reset, with register and device-tree tests
 - Added GMII receive-loss diagnostics, PHY error polling, and larger default receive buffering in the NIC driver
+- Implemented Ssnpm pointer masking for U-mode with PMLEN 7 and 16, including CSR controls, memory-address handling, formal checks, directed programs, and comparison with Sail.

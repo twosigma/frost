@@ -112,7 +112,8 @@ Request identity q contains src 2, port_class 2, id 4, and epoch 1. Sources
 0 and 1 name harts, 2 names DMA, and 3 names prefetch. Classes 0, 1, 2, and 3
 name data, instruction fetch, page-table walk, and agent traffic. Hart data
 IDs are 0 through 7, and fetch and walk IDs are 0 and 1. A hart's class 3 is
-its line client, with IDs 0 through `HartLineIds - 1` (two) and only DMARead
+its line client, with IDs 0 through `HartLineIds - 1` (eight: two for the
+misaligned-access engine and six for the vector memory unit) and only DMARead
 and DMAWrite requests, which the home serves as DMA: it probes the hart's own
 L1D, merges dirty data and applies the write mask. A line client's request
 keeps same-sector ordering until its U, as hart requests do. DMA IDs are opaque

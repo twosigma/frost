@@ -267,6 +267,7 @@ module perf_csr_half_test_harness #(
         .o_mmu_sum(),
         .o_mmu_mxr(),
         .o_mmu_eff_priv_u(),
+        .o_mmu_pm_mode(),
         .o_fetch_translation_active(),
         .o_fetch_priv_u(),
         .o_satp_root_ppn(),
