@@ -214,8 +214,11 @@ somewhat larger than the L1D so keeps part of itself resident instead of
 evicting each line just before its next use. The L1I and the L1D read every
 way's data at the tag decision, which keeps their hit latency at that of a
 direct-mapped cache, and the L1D's hit path reads a copy of the tags and every
-way's row of a load's set on one edge. The L2 reads the selected way after the
-tag lookup.
+way's row of a load's set on one edge. In UltraRAM builds the L2 banks its
+data array by way, reads every way of a demand lookup's set in parallel with
+the tag lookup, and selects the way on the final tag-read cycle; block-RAM
+and SRAM-macro builds read the selected way from a single data array after
+the tag lookup.
 
 The L2 uses 64-byte lines, following John Goodacre's design. The home maps
 each 32-byte request from the L1 caches, the page-table walker, and the DMA
@@ -473,7 +476,7 @@ and targeted microbenchmarks give these items:
    cycles against 5 on a DTLB hit, and an instruction page visit that misses
    the ITLB and hits it takes 23 against 20. A miss in both walks, and the
    walker cache takes the walk to one dependent read; the second-level lookup
-   comes first, so a dependent load that walks takes 36 cycles, one more than
+   comes first, so a dependent load that walks takes 30 cycles, one more than
    without the array. Starting the walk in parallel with the second-level
    lookup and cancelling it on a hit would remove that cycle. A 32-entry
    superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
@@ -526,8 +529,8 @@ and targeted microbenchmarks give these items:
    through its two highest-numbered load endpoints. More cached loads in
    flight or one read slot per line for loads to the same line would let one
    stream keep more lines in flight. Dependent loads are also slower than
-   through the previous hierarchy: in simulation an L2 hit takes 36 cycles
-   against 23 and a DRAM miss about 6 cycles more. The L1D answers a load
+   through the previous hierarchy: in simulation an L2 hit takes 28 cycles
+   against 23 and a DRAM miss about 4 cycles more. The L1D answers a load
    from its grant, and registered stages
    and arbitration add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
