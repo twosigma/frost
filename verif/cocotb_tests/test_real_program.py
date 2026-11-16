@@ -807,6 +807,61 @@ async def check_uart_line(
     cocotb.log.info(f"UART TX line matches the CPU's {len(expected)} bytes")
 
 
+_MIDRESET_CPU = "cpu_and_memory_subsystem.cpu.hart.cpu_inst.u_tomasulo"
+_MIDRESET_HOME = "cpu_and_memory_subsystem.cpu.cluster_memory.gen_coherent_tier.home"
+
+
+async def _mid_traffic_reset(dut: Any, uart_monitor: Any, line_monitor: Any) -> None:
+    """Reset the running program in the middle of traffic (FROST_MIDRESET=1).
+
+    The reset falls in a cycle with a valid MEM_RS or INT_RS stage2, a held home memory
+    request and a home endpoint in Work or WaitC, so the run that follows starts from a
+    mid-traffic reset.
+    """
+    stage2 = [
+        s
+        for s in (
+            _get_signal(dut, f"{_MIDRESET_CPU}.u_mem_rs.stage2_valid"),
+            _get_signal(dut, f"{_MIDRESET_CPU}.u_int_rs.stage2_valid"),
+        )
+        if s is not None
+    ]
+    memory_out = _get_signal(dut, f"{_MIDRESET_HOME}.memory_out_valid")
+    completions = _get_signal(dut, f"{_MIDRESET_HOME}.completions")
+    assert memory_out is not None and completions is not None, (
+        "mid-traffic reset: home probe signals not found"
+    )
+    phases = []
+    for slot in range(64):
+        try:
+            phases.append(completions.gen_endpoint[slot].endpoint.phase_q)
+        except (AttributeError, IndexError, TypeError):
+            break
+    assert len(stage2) == 2 and phases, "mid-traffic reset: probe signals not found"
+    limit = int(os.environ.get("FROST_MIDRESET_LIMIT", "200000"))
+    for cycle in range(limit):
+        await RisingEdge(dut.i_clk)
+        rs = [int(s.value) for s in stage2]
+        live = [i for i, ph in enumerate(phases) if int(ph.value) in (1, 2)]
+        if any(rs) and int(memory_out.value) and live:
+            cocotb.log.info(
+                f"=== Mid-traffic reset at cycle {cycle}: stage2_valid mem/int={rs}, "
+                f"memory_out_valid=1, endpoints in Work/WaitC={live} ==="
+            )
+            break
+    else:
+        raise AssertionError(
+            f"mid-traffic reset: no qualifying cycle in {limit} cycles"
+        )
+    dut.i_rst_n.value = 0
+    for _ in range(RESET_CYCLES):
+        await RisingEdge(dut.i_clk)
+    uart_monitor.clear()
+    if line_monitor is not None:
+        line_monitor.clear()
+    dut.i_rst_n.value = 1
+
+
 def _get_signal(dut: Any, path: str) -> Any | None:
     """Get a nested signal by dotted path, or None if not found."""
     obj = dut
@@ -4900,6 +4955,19 @@ async def test_real_program(dut: Any) -> None:
 
         store_watch = StoreBurstWatch(dut)
         cocotb.start_soon(store_watch.run())
+    # full_line_test requires its events; FROST_FULL_LINE_WATCH=1 counts them
+    # for any program without requiring any.
+    full_line_watch = None
+    if app_name == "full_line_test" or os.environ.get("FROST_FULL_LINE_WATCH"):
+        from cocotb_tests.cache.full_line_watch import (
+            FULL_LINE_TEST_EVENTS,
+            FullLineWatch,
+        )
+
+        full_line_watch = FullLineWatch(
+            dut, FULL_LINE_TEST_EVENTS if app_name == "full_line_test" else ()
+        )
+        cocotb.start_soon(full_line_watch.run())
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
     ecc_driver = EccReportDriver(dut) if app_name == "memerr_test" else None
     if app_name == "memerr_readback":
@@ -4953,6 +5021,8 @@ async def test_real_program(dut: Any) -> None:
             if ecc_driver is not None:
                 cocotb.start_soon(ecc_driver.run())
 
+        if run_number == 1 and os.environ.get("FROST_MIDRESET") == "1":
+            await _mid_traffic_reset(dut, uart_monitor, line_monitor)
         cocotb.log.info(f"=== Starting run {run_number} of {NUM_RUNS} ===")
 
         if app_name == "uart_echo":
@@ -4996,6 +5066,8 @@ async def test_real_program(dut: Any) -> None:
             coverage.verify(run_number)
         if store_watch is not None:
             store_watch.verify()
+        if full_line_watch is not None:
+            full_line_watch.verify(cocotb.log)
 
     uart_monitor.stop()
     if line_monitor is not None:

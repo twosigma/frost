@@ -35,7 +35,9 @@ module coherence_cluster_test_harness #(
     // MEMORY_LINK_STAGES places them. With stages, the grant, put-ack and
     // release holds delay the home's side, because the L1D side of those
     // links takes every message.
-    parameter int unsigned LINK_STAGES = 0
+    parameter int unsigned LINK_STAGES = 0,
+    // 0 builds the L1D without full-line stores, for comparisons.
+    parameter bit L1D_FULL_LINE = 1'b1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -56,6 +58,8 @@ module coherence_cluster_test_harness #(
     input logic i_write_atomic,
     input logic i_write_sc,
     input logic i_write_zero = 1'b0,
+    input logic i_write_more = 1'b0,
+    input logic i_next_same = 1'b0,
     input logic [TAG_BITS-1:0] i_write_tag,
     output logic o_write_done,
     output logic o_write_inflight,
@@ -221,7 +225,8 @@ module coherence_cluster_test_harness #(
       .HOME_WAYS(HOME_WAYS),
       .HOME_LINE_BYTES(LINE_BYTES),
       .STREAM_PREFETCH(L1D_STREAM_PREFETCH),
-      .WITHDRAW_ABSORBED_W(LINK_STAGES != 0)
+      .WITHDRAW_ABSORBED_W(LINK_STAGES != 0),
+      .FULL_LINE(L1D_FULL_LINE)
   ) hart (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -242,6 +247,8 @@ module coherence_cluster_test_harness #(
       .i_write_atomic(i_write_atomic),
       .i_write_sc(i_write_sc),
       .i_write_zero(i_write_zero),
+      .i_write_more(i_write_more),
+      .i_next_same(i_next_same),
       .i_write_tag(i_write_tag),
       .o_write_done(o_write_done),
       .o_write_inflight(o_write_inflight),

@@ -61,6 +61,22 @@ coh_l1d_zero_progress_cover multi zprogress covermode zero padded wordcover
 coh_l1d_zero_stream_bmc turnstream multi zrequest zero padded
 coh_l1d_zero_request_cover turnstream multi zrequest zrequestcover covermode zero padded wordcover
 
+# Full-line stores: the zero-line and full-pair checks with every write a
+# scalar store, so the depth goes to filling and pairing records.
+coh_l1d_full_bmc single fcontrol control_single zero fullonly
+coh_l1d_full_multi_bmc multi fcontrol control_multi padded zero zmulti fullonly
+coh_l1d_full_payload_bmc single data fpayload zero fullonly
+coh_l1d_full_cover single fcovers fsingle covermode zero fullonly
+coh_l1d_full_lookahead_cover multi fcovers flook covermode zero padded fullonly
+
+# Full-line and zero-line stores with the absorbed-put withdrawal that
+# cpu_top sets with MEMORY_LINK_STAGES above 0 (WITHDRAW_ABSORBED_W).
+coh_l1d_withdraw_full_bmc single fcontrol control_single zero fullonly withdraw
+coh_l1d_withdraw_zero_bmc single zcontrol control_single zero withdraw
+coh_l1d_withdraw_full_payload_bmc single data fpayload zero fullonly withdraw
+coh_l1d_withdraw_zero_payload_bmc single data zpayload zero withdraw
+coh_l1d_withdraw_full_cover single fwcover covermode zero fullonly withdraw
+
 [options]
 ~covermode: mode bmc
 ~covermode: depth 40
@@ -86,6 +102,10 @@ pathcovers: timeout 1800
 # The store cover reaches its last cover in about ten minutes.
 covers: timeout 1200
 zcovers: timeout 2400
+fcovers: timeout 7200
+fwcover: timeout 4800
+fwcover: vcd_sim on
+fwcover: skip 48
 zsingle: vcd_sim on
 # Keep every transition from reset, but query only the later cover window.
 # Reaching a dirty twin victim requires several completed transactions.
@@ -94,6 +114,7 @@ zsingle: skip 48
 # running beside one other formal job and needs about three hours on the
 # build host with the trial tree's cbo.zero changes.
 coh_l1d_zero_cover: timeout 14400
+fsingle: vcd_sim on
 ~covermode: aigsmt boolector
 conflict: mode prove
 conflict: depth 2
@@ -129,6 +150,12 @@ coh_l1d_data1_bmc: timeout 3900
 coh_l1d_data2_bmc: timeout 3900
 coh_l1d_data3_bmc: timeout 3900
 coh_l1d_store_payload_bmc: timeout 900
+# The zero and full payload BMCs build the L1D with both twin kinds; they
+# take about 40 minutes on a loaded host.
+coh_l1d_zero_payload_bmc: timeout 5400
+coh_l1d_full_payload_bmc: timeout 5400
+coh_l1d_withdraw_zero_payload_bmc: timeout 5400
+coh_l1d_withdraw_full_payload_bmc: timeout 5400
 coh_l1d_store_grant_bmc: timeout 1200
 coh_l1d_store_multi_payload_bmc: timeout 1800
 coh_l1d_store_multi_grant_bmc: timeout 3600
@@ -181,6 +208,9 @@ zlook: smtbmc boolector
 zprogress: smtbmc boolector
 coh_l1d_zero_stream_bmc: abc bmc3 -c
 zrequestcover: smtbmc boolector
+fsingle: smtbmc boolector
+flook: smtbmc boolector
+fwcover: smtbmc boolector
 streamcovers: smtbmc boolector
 turncovers: smtbmc boolector
 owner: abc pdr
@@ -211,6 +241,10 @@ zpayload: read -formal -sv -D ZERO_WRITES -D STORE_DATA_PROOF coherence_read_pay
 zstream: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zprogress: read -formal -sv -D ZERO_WRITES -D ZERO_PROGRESS_COVER coherence_read_payload.sv coherence_l1d.sv
 zrequest: read -formal -sv -D ZERO_WRITES -D ZERO_REQUEST_PROOF coherence_read_payload.sv coherence_l1d.sv
+fcontrol: read -formal -sv -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.sv coherence_l1d.sv
+fcovers: read -formal -sv -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.sv coherence_l1d.sv
+fwcover: read -formal -sv -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.sv coherence_l1d.sv
+fpayload: read -formal -sv -D ZERO_WRITES -D FULL_WRITES -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 streamscript: read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 coherence_read_payload.sv coherence_l1d.sv
 conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
@@ -231,12 +265,14 @@ answer: read -formal -sv -D READ_ANSWER_PROOF coherence_read_payload.sv coherenc
 read -sv coherence_store_buffer.sv
 read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
 single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
+withdraw: chparam -set WITHDRAW_ABSORBED_W 1 coherence_l1d
 multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
 stream: chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d
 turnstream: chparam -set STREAM_PREFETCH 1 coherence_l1d
 ways: chparam -set CACHE_BYTES 256 -set WAYS 4 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
-# Tasks that drive no cbo.zero writes build the L1D without the zero path.
-~zero: chparam -set ZERO_LINE 0 coherence_l1d
+# Tasks that drive no cbo.zero writes build the L1D without the zero path
+# and without full-line stores; the zero and full tasks build both.
+~zero: chparam -set ZERO_LINE 0 -set FULL_LINE 0 coherence_l1d
 ~conflict: prep -flatten -top coherence_l1d
 conflict: hierarchy -check -top coherence_l1d
 conflict: proc -noopt
@@ -248,6 +284,9 @@ control: chformal -assert2assume c:p_prefetch_conflict_split
 zcontrol: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 zcontrol: chformal -assert2assume c:p_prefetch_conflict_split
 zcontrol: select -assert-min 1 c:p_zero_* t:$check %i r:FLAVOR=assert %i
+fcontrol: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
+fcontrol: chformal -assert2assume c:p_prefetch_conflict_split
+fcontrol: select -assert-min 1 c:p_full_* t:$check %i r:FLAVOR=assert %i
 streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
 # Preserve the complete 328-check stream scope before selecting a partition.
@@ -306,6 +345,9 @@ streamcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:*p_stream_two
 zpayload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 zpayload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
 zpayload: select -assert-count 5 t:$check r:FLAVOR=assert %i
+fpayload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
+fpayload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
+fpayload: select -assert-count 5 t:$check r:FLAVOR=assert %i
 zcovers: select -assert-count 5 c:p_zero_cover_* t:$check %i r:FLAVOR=cover %i
 zsingle: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_twin c:p_zero_cover_twin_victim c:p_zero_cover_twin_wait c:p_zero_cover_fallback %u %u %u %d
 zsingle: select -assert-count 4 t:$check r:FLAVOR=cover %i
@@ -326,6 +368,14 @@ zrequest: check -assert
 zrequestcover: chformal -assert -remove
 zrequestcover: select -assert-count 1 c:p_zero_request_drained t:$check %i r:FLAVOR=cover %i
 zrequestcover: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_request_drained %d
+fcovers: select -assert-count 4 c:p_full_cover_* t:$check %i r:FLAVOR=cover %i
+fsingle: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_full_cover_pair c:p_full_cover_twin c:p_full_cover_fallback %u %u %d
+fsingle: select -assert-count 3 t:$check r:FLAVOR=cover %i
+flook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_full_cover_lookahead %d
+fcovers: chformal -assert -remove
+fwcover: select -assert-count 1 c:p_withdraw_full_cover t:$check %i r:FLAVOR=cover %i
+fwcover: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_withdraw_full_cover %d
+fwcover: chformal -assert -remove
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
 arraydata: select -assert-count 4 c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known
@@ -375,6 +425,7 @@ localcontrol: chformal -assert -remove c:p_local_image c:p_local_probe_data c:p_
 localcontrol: select -assert-min 1 t:$check r:FLAVOR=assert %i
 nostore: connect -set i_write_mask 8'h00
 ~zero: connect -set i_write_zero 1'b0
+fullonly: connect -set i_write_zero 1'b0
 # Cover-only public-input profile: scalar and zero writes, addresses and
 # grant/release scheduling remain free. Each event has a store-only scenario;
 # reads, maintenance, probes and atomics stay idle, and consumers are ready.
@@ -399,6 +450,42 @@ zsingle: connect -set i_w_ready 1'b1
 zsingle: connect -set i_cut_admit_ready 1'b1
 zsingle: connect -set i_cut_admit_clean 1'b1
 zsingle: connect -set i_cut_inval_done 1'b1
+fsingle: delete -input w:i_read_valid w:i_fatal_stop w:i_write_atomic w:i_write_sc w:i_sc_valid w:i_sc_commit w:i_maint_valid w:i_p_valid w:i_read_kind w:i_read_ready w:i_sc_result_ready w:i_d_ready w:i_c_ready w:i_r_ready w:i_w_ready w:i_cut_admit_ready w:i_cut_admit_clean w:i_cut_inval_done
+fsingle: connect -set i_read_valid 1'b0
+fsingle: connect -set i_fatal_stop 1'b0
+fsingle: connect -set i_write_atomic 1'b0
+fsingle: connect -set i_write_sc 1'b0
+fsingle: connect -set i_sc_valid 1'b0
+fsingle: connect -set i_sc_commit 1'b0
+fsingle: connect -set i_maint_valid 1'b0
+fsingle: connect -set i_p_valid 1'b0
+fsingle: connect -set i_read_kind 2'b00
+fsingle: connect -set i_read_ready 1'b1
+fsingle: connect -set i_sc_result_ready 1'b1
+fsingle: connect -set i_d_ready 1'b1
+fsingle: connect -set i_c_ready 1'b1
+fsingle: connect -set i_r_ready 1'b1
+fsingle: connect -set i_w_ready 1'b1
+fsingle: connect -set i_cut_admit_ready 1'b1
+fsingle: connect -set i_cut_admit_clean 1'b1
+fsingle: connect -set i_cut_inval_done 1'b1
+fwcover: delete -input w:i_read_valid w:i_fatal_stop w:i_write_atomic w:i_write_sc w:i_sc_valid w:i_sc_commit w:i_maint_valid w:i_read_kind w:i_read_ready w:i_sc_result_ready w:i_d_ready w:i_c_ready w:i_r_ready w:i_cut_admit_ready w:i_cut_admit_clean w:i_cut_inval_done
+fwcover: connect -set i_read_valid 1'b0
+fwcover: connect -set i_fatal_stop 1'b0
+fwcover: connect -set i_write_atomic 1'b0
+fwcover: connect -set i_write_sc 1'b0
+fwcover: connect -set i_sc_valid 1'b0
+fwcover: connect -set i_sc_commit 1'b0
+fwcover: connect -set i_maint_valid 1'b0
+fwcover: connect -set i_read_kind 2'b00
+fwcover: connect -set i_read_ready 1'b1
+fwcover: connect -set i_sc_result_ready 1'b1
+fwcover: connect -set i_d_ready 1'b1
+fwcover: connect -set i_c_ready 1'b1
+fwcover: connect -set i_r_ready 1'b1
+fwcover: connect -set i_cut_admit_ready 1'b1
+fwcover: connect -set i_cut_admit_clean 1'b1
+fwcover: connect -set i_cut_inval_done 1'b1
 # Only the event serializer is observed; its input vectors are unconstrained.
 perfretime: select -assert-count 4 c:p_perf_retime_* t:$check %i r:FLAVOR=assert %i
 perfretime: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_perf_retime_* %d

@@ -22,6 +22,8 @@
  * A cached block launches once for the L1D to allocate both sector records; an
  * uncached block uses eight zero beats and completes after the last response.
  * Cached and optional Normal buffered writes launch in order after commit.
+ * Cached plain stores (not SC or cbo.zero) overlap like Normal buffered
+ * writes: two may be in flight, both to the L1D, whose dones come in order.
  * PRECISE_UNCACHED otherwise waits
  * at the ROB head, launches behind the interrupt/debug shield and reports
  * the real bus completion before retirement. Each launch invalidates or
@@ -54,6 +56,15 @@ module store_queue #(
     output logic o_coherent_write_sc,
     // The cached write is a cbo.zero of the 64-byte block at its address.
     output logic o_coherent_write_zero,
+    // Another unsent store (not SC, cbo.zero or Zicbom, committed or not)
+    // waits behind this write, so the L1D may keep the write's record open for
+    // it (a hint only: an OR over the entries, registered with the write).
+    output logic o_coherent_write_more,
+    // The store queue's next write is a committed cached plain store to the
+    // 32-byte sector of its last write, also a cached plain store, so the L1D
+    // may grant credit for it as a combining write. Registered every cycle
+    // from the cursor entry after that cycle's launch.
+    output logic o_coherent_next_same,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
     input logic i_clk,
     input logic i_rst_n,
@@ -446,11 +457,14 @@ module store_queue #(
   (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] slot2_alloc_oh;
   (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] alloc_oh;
 
-  // Track up to two ordinary Normal writes in completion order. The legacy
-  // port completes one cycle later; AXI holds each owner until its B response.
-  // Cached and MMIO writes allow only one outstanding write.
+  // Track up to two ordinary Normal writes, or two cached plain writes, in
+  // completion order. The legacy port and the L1D complete one cycle later;
+  // AXI holds each owner until its B response. Cached SC, cached cbo.zero and
+  // MMIO writes allow only one outstanding write, and the two writes in flight
+  // always share one completion source (write_inflight_cached).
   logic [           1:0] write_inflight_cnt;
   logic                  write_inflight_special;
+  logic                  write_inflight_cached;
   logic [  IdxWidth-1:0] write_fifo_idx0;
   logic [  IdxWidth-1:0] write_fifo_idx1;
   logic                  write_fifo_completes0;
@@ -903,7 +917,10 @@ module store_queue #(
     if (CachedRegionAligned) address_is_cached = (addr & ~CachedMask) == CachedBase;
     else address_is_cached = (addr >= CachedBase) && (addr < CachedLimit);
   endfunction
-  (* keep = "true" *) logic [DEPTH-1:0] sq_cached_class;
+  (* keep = "true" *)logic [DEPTH-1:0] sq_cached_class;
+  // A cached write other than SC and cbo.zero: one L1D write whose done
+  // follows on the next cycle, so it may overlap others of its class.
+  (* keep = "true" *)logic [DEPTH-1:0] sq_cached_plain_class;
   (* keep = "true" *) logic [DEPTH-1:0] sq_precise_class, sq_plain_fast_class;
   logic [DEPTH-1:0] drain_entry_ready, drain_sc_order_ok;
   // Range-ordering holds against the vector memory table, registered. An SC
@@ -944,6 +961,8 @@ module store_queue #(
     // Resolve PMA, SC and MMIO qualification before selecting the cursor.
     wire normal_buffered = CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_address[slot]);
     assign sq_cached_class[slot] = address_is_cached(sq_address[slot]);
+    assign sq_cached_plain_class[slot] = sq_cached_class[slot] && !sq_is_sc[slot] &&
+        !sq_is_zero[slot];
     assign sq_precise_class[slot] = (!normal_buffered || sq_is_sc[slot]) && !sq_cached_class[slot];
     assign sq_plain_fast_class[slot] = (!PRECISE_UNCACHED ||
         (normal_buffered && !sq_is_sc[slot])) && !sq_is_mmio[slot] && !sq_cached_class[slot];
@@ -1030,6 +1049,10 @@ module store_queue #(
   logic                                              mem_write_is_cached_next;
   logic                                              mem_write_launch_serial_next;
   logic                                              mem_write_overlap_ready;
+  logic mem_write_cached_overlap_ready, mem_write_uncached_overlap_ready;
+  logic mem_write_cached_plain_next, mem_write_overlap_class_next;
+  // A plain Normal or cached plain write may share the pipeline.
+  assign mem_write_overlap_class_next = mem_write_plain_fast_next || mem_write_cached_plain_next;
   (* keep = "true" *) logic cached_launch_qualified, committed_uncached_launch;
   (* keep = "true" *) logic committed_uncached_complete;
   (* keep = "true" *) logic precise_launch_qualified, precise_complete_qualified;
@@ -1130,6 +1153,7 @@ module store_queue #(
   // beat.
   assign mem_write_completes_next = !drain_is_zero || drain_zero_cached || zero_beat_last;
   assign mem_write_plain_fast_next = sq_plain_fast_class[drain_idx_q];
+  assign mem_write_cached_plain_next = sq_cached_plain_class[drain_idx_q];
 
   // Serial launches require an empty pipeline. Plain BRAM launches may overlap
   // if the two-entry FIFO has room after the current bus push and done pop.
@@ -1141,19 +1165,27 @@ module store_queue #(
   assign mem_write_launch_serial_next = (write_inflight_cnt == 2'd0) && !o_mem_write_en;
   assign mem_write_overlap_ready = !write_inflight_special &&
       (write_fifo_occupancy_after_current_bus < 3'd2);
-  // Prepare every non-address condition per entry. Cached writes always use
-  // the serial arm and complete in one beat. Precise uncommitted writes are
+  // An overlapping write shares the completion source of the writes in
+  // flight: a cached plain write follows only cached plain writes, whose L1D
+  // dones arrive in launch order, and an uncached one only uncached ones.
+  assign mem_write_cached_overlap_ready = mem_write_overlap_ready && write_inflight_cached;
+  assign mem_write_uncached_overlap_ready = mem_write_overlap_ready &&
+      (mem_write_launch_serial_next || !write_inflight_cached);
+  // Prepare every non-address condition per entry. Cached writes complete in
+  // one beat; a cached plain write may also overlap cached plain writes in
+  // flight, and a cached SC or cbo.zero uses the serial arm. Precise uncommitted writes are
   // uncached and cannot use the Normal-memory overlap arm. Their class bits
   // select these decisions after local qualification. The shared permission
   // for precise writes applies after their per-entry reduction.
   for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_drain_class_cofactors
     wire committed_ready = drain_entry_ready[slot] && sq_committed[slot] && drain_sc_order_ok[slot];
     wire uncached_last = !sq_is_zero[slot] || zero_beat_last;
-    assign cached_serial_local[slot] = committed_ready && mem_write_launch_serial_next &&
+    assign cached_serial_local[slot] = committed_ready && (mem_write_launch_serial_next ||
+        (sq_cached_plain_class[slot] && mem_write_cached_overlap_ready)) &&
         (!i_coherent_store_pending || !sq_is_sc[slot]);
     assign uncached_serial_local[slot] = committed_ready && mem_write_launch_serial_next &&
         !i_coherent_store_pending;
-    assign uncached_overlap_local[slot] = committed_ready && mem_write_overlap_ready &&
+    assign uncached_overlap_local[slot] = committed_ready && mem_write_uncached_overlap_ready &&
         !i_coherent_store_pending;
     assign precise_entry_local[slot] = precommit_local_ready[slot] &&
         drain_sc_order_ok[slot] && mem_write_launch_serial_next && !i_coherent_store_pending;
@@ -1231,14 +1263,14 @@ module store_queue #(
       .INIT(8'h3a)
   ) u_write_inflight_special_select (
       .I0(write_inflight_special_hold),
-      .I1(mem_write_plain_fast_next),
+      .I1(mem_write_overlap_class_next),
       .I2(mem_write_fire_next),
       .O (write_inflight_special_next)
   );
 `else
   always_comb begin
     write_inflight_special_next = write_inflight_special_hold;
-    if (mem_write_fire_next) write_inflight_special_next = !mem_write_plain_fast_next;
+    if (mem_write_fire_next) write_inflight_special_next = !mem_write_overlap_class_next;
   end
 `endif
 
@@ -1310,10 +1342,33 @@ module store_queue #(
     end
   end
 
+  // The last write's sector and class, and the cursor entry that the next
+  // write will take, both after this cycle's launch.
+  logic [XLEN-6:0] last_write_sector_q;
+  logic last_write_plain_q, next_same_d;
+  wire [XLEN-6:0] last_write_sector_d = mem_write_fire_next ?
+      sq_address[drain_idx_q][XLEN-1:5] : last_write_sector_q;
+  wire last_write_plain_d = mem_write_fire_next ?
+      sq_cached_plain_class[drain_idx_q] && !drain_is_cmo : last_write_plain_q;
+  assign next_same_d = last_write_plain_d && sq_valid[drain_idx_d] && !sq_sent_next[drain_idx_d] &&
+      sq_committed[drain_idx_d] && sq_addr_valid[drain_idx_d] &&
+      sq_cached_plain_class[drain_idx_d] && !sq_is_cmo[drain_idx_d] &&
+      sq_address[drain_idx_d][XLEN-1:5] == last_write_sector_d;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      last_write_plain_q   <= 1'b0;
+      o_coherent_next_same <= 1'b0;
+    end else begin
+      last_write_plain_q   <= last_write_plain_d;
+      o_coherent_next_same <= next_same_d;
+    end
+    last_write_sector_q <= last_write_sector_d;
+  end
   if (1'b1) begin : gen_coherent_write_metadata
     always_ff @(posedge i_clk) begin
       o_coherent_write_sc   <= sq_is_sc[drain_idx_q];
       o_coherent_write_zero <= drain_zero_cached;
+      o_coherent_write_more <= |(drain_mask_post_fire & ~sq_is_sc & ~sq_is_zero & ~sq_is_cmo);
       o_coherent_write_tag  <= sq_rob_tag[drain_idx_q];
     end
   end
@@ -1476,6 +1531,7 @@ module store_queue #(
       sq_sent                <= '0;
       write_inflight_cnt     <= '0;
       write_inflight_special <= 1'b0;
+      write_inflight_cached  <= 1'b0;
     end else if (i_flush_all) begin
       // Full flush: reset control signals
       head_ptr               <= '0;
@@ -1486,6 +1542,7 @@ module store_queue #(
       sq_sent                <= '0;
       write_inflight_cnt     <= '0;
       write_inflight_special <= 1'b0;
+      write_inflight_cached  <= 1'b0;
     end else begin
 
       // -----------------------------------------------------------------
@@ -1595,6 +1652,8 @@ module store_queue #(
       // A special cached or MMIO write flies alone: its in-flight window
       // blocks all further launches until completion.
       write_inflight_special <= write_inflight_special_next;
+      // The class of the latest launch is the class of every write in flight.
+      if (mem_write_fire_next) write_inflight_cached <= mem_write_cached_plain_next;
       sq_sent <= sq_sent_next;
       // A Zicbom entry is sent as it fires (no write follows) and frees on
       // the next cycle.
@@ -2126,6 +2185,16 @@ module store_queue #(
   // L0 invalidation, which completes it; an uncached one completes on its
   // eighth beat. No other write carries either mark.
   logic f_mem_write_zero_stg, f_mem_write_zero_cached_stg;
+  // The claim on the cycle that the next write fired (the write's bus cycle
+  // follows it), and the sector of the write before. A full flush empties
+  // only an SQ without committed stores.
+  logic f_same_q;
+  logic [XLEN-1:0] f_same_addr_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) f_same_q <= 1'b0;
+    else if (mem_write_fire_next) f_same_q <= o_coherent_next_same;
+    if (o_mem_write_en) f_same_addr_q <= o_mem_write_addr;
+  end
   logic [ZeroBeatBits-1:0] f_mem_write_beat_stg;
   always_ff @(posedge i_clk) begin
     if (mem_write_fire_next) begin
@@ -2163,6 +2232,13 @@ module store_queue #(
     if (i_rst_n && o_mem_write_en && !f_mem_write_zero_stg) begin
       p_scalar_write_completes : assert (mem_write_completes_stg);
     end
+    // The claim holds for the next write: a cached plain write to the sector
+    // of the write before it.
+    if (i_rst_n && o_mem_write_en && f_same_q) begin
+      p_write_same_successor :
+      assert (o_mem_write_is_cached && !o_coherent_write_zero &&
+          !o_coherent_write_sc && o_mem_write_addr[XLEN-1:5] == f_same_addr_q[XLEN-1:5]);
+    end
   end
 
   // Zicbom entries: never data-valid, so never written (p_write_needs_data);
@@ -2186,10 +2262,32 @@ module store_queue #(
     end
   end
 
+  // Completion source of each write in the pipeline: the staged write on the
+  // bus and the two FIFO slots, mirrored from the FIFO's own updates.
+  logic f_cached_stg, f_cached0, f_cached1;
+  always_ff @(posedge i_clk) begin
+    if (mem_write_fire_next) f_cached_stg <= sq_cached_class[drain_idx_q];
+    if (o_mem_write_en && i_mem_write_done && (write_inflight_cnt != 2'd0)) begin
+      if (write_inflight_cnt == 2'd1) f_cached0 <= f_cached_stg;
+      else begin
+        f_cached0 <= f_cached1;
+        f_cached1 <= f_cached_stg;
+      end
+    end else if (o_mem_write_en) begin
+      if (write_inflight_cnt == 2'd0) f_cached0 <= f_cached_stg;
+      else f_cached1 <= f_cached_stg;
+    end else if (i_mem_write_done && (write_inflight_cnt != 2'd0)) f_cached0 <= f_cached1;
+  end
   // In-flight discipline: never more than the 2-deep metadata FIFO can
-  // hold, and a special (cached / MMIO) write flies alone.
+  // hold, a special (cached SC, cbo.zero or MMIO) write flies alone, and
+  // writes that share the pipeline share one completion source, so their
+  // dones arrive in launch order.
   always_comb begin
     if (i_rst_n) begin
+      if (write_inflight_cnt == 2'd2) p_overlap_one_source : assert (f_cached0 == f_cached1);
+      if (write_inflight_cnt != 2'd0 && o_mem_write_en)
+        p_overlap_bus_source :
+        assert (f_cached_stg == (write_inflight_cnt == 2'd2 ? f_cached1 : f_cached0));
       p_inflight_bound : assert (write_inflight_cnt <= 2'd2);
       p_special_alone :
       assert (!write_inflight_special ||
@@ -2322,6 +2420,11 @@ module store_queue #(
       cover_zero_block_completes : cover (drain_remove_valid && sq_is_zero[write_entry_idx]);
       // A cached zero block leaves as one write.
       cover_zero_block_cached : cover (o_mem_write_en && o_coherent_write_zero);
+      cover_write_more : cover (o_mem_write_en && o_mem_write_is_cached && o_coherent_write_more);
+      // Two cached plain writes share the pipeline.
+      cover_cached_overlap :
+      cover (o_mem_write_en && o_mem_write_is_cached &&
+          write_inflight_cnt != 2'd0 && write_inflight_cached);
     end
   end
 
