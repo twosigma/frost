@@ -21,7 +21,9 @@
 #include <riscv/simif.h>
 #include <riscv/trap.h>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -48,6 +50,59 @@ class ReferenceHost : public simif_t
     const char *get_symbol(uint64_t) override { return nullptr; }
 };
 
+
+// Spike's instruction checks omit the general source/source EEW reservation.
+// Apply only that rule separately, using instruction operand names and the
+// reference's configured SEW/LMUL, not the RTL opcode/geometry formulas.
+// See the vector specification, "Vector Operands": a physical register may
+// not be read at two different element widths by the same instruction.
+bool source_width_reserved(const char *label, uint32_t bits, unsigned sew, float lmul)
+{
+    struct Source {
+        unsigned first, count, width;
+    };
+    std::vector<Source> sources;
+    unsigned rs2 = (bits >> 20) & 31, rs1 = (bits >> 15) & 31, rd = (bits >> 7) & 31;
+    std::string name(label), suffix = name.substr(name.find_last_of('.') + 1);
+    auto starts = [&](const char *prefix) { return name.rfind(prefix, 0) == 0; };
+    auto add = [&](unsigned reg, unsigned width, bool single = false) {
+        unsigned count = single ? 1 : std::max(1U, unsigned(std::ceil(lmul * width / sew)));
+        sources.push_back({reg, count, width});
+    };
+    if (starts("vmv")) {
+        if (name == "vmv.v.v")
+            add(rs1, sew);
+        else if (name == "vmv.x.s")
+            add(rs2, sew, true);
+    } else if (name == "vid.v") {
+        // No data source.
+    } else if (suffix == "mm") {
+        add(rs2, 1, true);
+        add(rs1, 1, true);
+    } else if (suffix == "m" || name == "vcompress.vm") {
+        add(rs2, name == "vcompress.vm" ? sew : 1, name != "vcompress.vm");
+        if (name == "vcompress.vm")
+            add(rs1, 1, true);
+    } else {
+        unsigned width = sew * (suffix.front() == 'w' ? 2 : 1);
+        if (starts("vzext") || starts("vsext"))
+            width = sew / unsigned(name.back() - '0');
+        add(rs2, width);
+        if (suffix == "vv" || suffix == "wv" || suffix == "vvm" || suffix == "vs")
+            add(rs1, starts("vrgatherei16") ? 16 : sew * (starts("vwred") ? 2 : 1), suffix == "vs");
+        if (starts("vwmacc"))
+            add(rd, 2 * sew);
+    }
+    if (!(bits & (1U << 25)))
+        add(0, 1, true);
+    for (const auto &a : sources)
+        for (const auto &b : sources)
+            if (a.width != b.width &&
+                std::max(a.first, b.first) < std::min(a.first + a.count, b.first + b.count))
+                return true;
+    return false;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2)
@@ -64,9 +119,9 @@ int main(int argc, char **argv)
     for (unsigned reg = 1; reg < 32; ++reg)
         reference.get_state()->XPR.write(reg, 1);
     Vvec_legality_reference rtl;
-    uint64_t compared = 0, mismatches = 0, accepted = 0, rejected = 0;
+    uint64_t compared = 0, mismatches = 0, accepted = 0, rejected = 0, reserved = 0;
     for (const Form &form : forms) {
-        uint64_t form_cases = 0, form_mismatches = 0;
+        uint64_t form_cases = 0, form_mismatches = 0, form_reserved = 0;
         // Sweep each register field, all pairwise aliases, and adjacent groups.
         // The reference decoder mask keeps fixed unary selectors and vm bits.
         std::set<uint32_t> encodings;
@@ -108,6 +163,12 @@ int main(int argc, char **argv)
                     }
                     illegal = true;
                 }
+                bool reserved_width =
+                    !illegal &&
+                    source_width_reserved(form.name, bits, reference.VU.vsew, reference.VU.vflmul);
+                reserved += reserved_width;
+                form_reserved += reserved_width;
+                bool expected = illegal || reserved_width;
                 rtl.i_insn = bits;
                 rtl.eval();
                 bool got = rtl.o_illegal;
@@ -116,23 +177,25 @@ int main(int argc, char **argv)
                 ++compared;
                 ++form_cases;
                 illegal ? ++rejected : ++accepted;
-                if (got != illegal) {
+                if (got != expected) {
                     ++mismatches;
                     ++form_mismatches;
                     if (mismatches <= 100)
                         std::cout << "MISMATCH " << form.name << " type=" << std::hex << type
                                   << " actual=" << actual << " insn=" << bits << std::dec
-                                  << " rtl=" << got << " reference=" << illegal << '\n';
+                                  << " rtl=" << got << " reference=" << illegal
+                                  << " reserved_width=" << reserved_width << '\n';
                     if (negative)
                         return 1;
                 }
             }
         }
         std::cout << "FORM " << form.name << " compared=" << form_cases
-                  << " mismatches=" << form_mismatches << std::endl;
+                  << " reserved_width=" << form_reserved << " mismatches=" << form_mismatches
+                  << std::endl;
     }
     std::cout << "TOTAL vlen=" << vlen << " forms=" << std::size(forms) << " compared=" << compared
               << " accepted=" << accepted << " rejected=" << rejected
-              << " mismatches=" << mismatches << std::endl;
+              << " reserved_width=" << reserved << " mismatches=" << mismatches << std::endl;
     return mismatches ? 1 : 0;
 }

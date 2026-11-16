@@ -115,6 +115,7 @@ def source(form: str, vlen: int, fractional: bool) -> tuple[str, dict[str, objec
                 ]
                 count += 1
     lines += [
+        "TEST_CASE(2, x0, 0)",
         "TEST_PASSFAIL",
         "RVTEST_CODE_END",
         ".data",
@@ -148,6 +149,7 @@ def prepare(work: Path, vlen: int) -> list[str]:
             name = form.replace(".", "_") + ("_fractional" if fractional else "_wide")
             text, detail = source(form, vlen, fractional)
             (work / "stage1" / f"{name}.S").write_text(text)
+            print(f"Preparing {name}", flush=True)
             error = suite.build_and_patch(work, name, vlen)
             if error:
                 raise RuntimeError(f"{name}: {error}")
@@ -211,6 +213,9 @@ def main() -> None:
         json.loads((work / "results.json").read_text())
         if args.resume and (work / "results.json").exists()
         else []
+    )
+    assert all(row["status"] == "PASS" for row in results), (
+        "resume requires a passing prefix; retain the failed log and remove its result first"
     )
     assert [row["name"] for row in results] == names[: len(results)]
     for name in names[len(results) :]:

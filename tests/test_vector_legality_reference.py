@@ -18,6 +18,9 @@ Run in the frost image with ``python3 tests/test_vector_legality_reference.py``.
 The comparison calls the installed reference instruction implementations and
 the RTL decoder/legality function. It does not copy the reference's formulas.
 VL is one and vstart zero; this sweep checks geometry, not restart policy.
+Spike omits the general source/source EEW reservation, so the comparator
+checks that specification rule separately and reports its cases separately.
+All other accepted/rejected results come from Spike's instruction functions.
 """
 
 import argparse

@@ -1599,8 +1599,14 @@ vill), both mask encodings where permitted, each register field and pairwise
 alias/adjacent layouts, at VLEN 128/256/512. VL is one and vstart zero; the tracker
 and dispatch proofs cover restart policy. Run
 `python3 tests/test_vector_legality_reference.py --vlen 256` in the image.
-The comparator source is under `hw/sim/vector_reference/` and builds against host
-reference libraries and the generated RTL header.
+The comparator source is under `hw/sim/vector_reference/` and builds against the
+image's reference libraries and generated RTL header. Spike omits the general
+source/source EEW reservation in the vector specification's Vector Operands
+section. The comparator checks that rule separately from the instruction
+functions, using operand names and the reference's SEW/LMUL, and reports those
+cases as `reserved_width`. Those counts are specification checks, not agreements
+with Spike. Every other legality outcome must agree with the reference. Use
+`--negative-control` to check that a flipped outcome fails the comparison.
 
 `python3 tests/test_vector_integer_corners.py --vlen 256 --rtl` adds fixed-point
 and divide files with explicit boundary operands, at e64,m1 and e8,mf8. Narrowing
