@@ -34,23 +34,25 @@
 module pd_id_slot2_redirect_formal #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
-    input  logic                                                         i_clk,
-    input  riscv_pkg::pipeline_ctrl_t                                    i_pipeline_ctrl,
-    input  riscv_pkg::from_if_to_pd_t                                    i_from_if_to_pd,
-    input  riscv_pkg::from_if_to_pd_t                                    i_from_if_to_pd_2,
-    input  logic                      [1:0]                              i_backing_hit,
-    input  logic                      [1:0]                              i_backing_compressed,
-    input  logic                      [1:0]                              i_backing_return,
-    input  logic                      [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_target,
-    input  logic                                                         i_mstatus_fs_off,
-    input  logic                                                         i_mstatus_vs_off,
-    input  logic                                                         i_cbo_zero_illegal,
-    input  logic                                                         i_cbo_cf_illegal,
-    input  logic                                                         i_cbo_inval_illegal,
-    input  logic                                                         i_cbo_inval_flush,
-    input  logic                                                         i_wrs_nto_illegal,
-    output riscv_pkg::from_id_to_ex_t                                    o_from_id_to_ex,
-    output riscv_pkg::from_id_to_ex_t                                    o_from_id_to_ex_2
+    input logic i_clk,
+    input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
+    input riscv_pkg::from_if_to_pd_t i_from_if_to_pd,
+    input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
+    input logic [1:0] i_backing_hit,
+    input logic [1:0] i_backing_compressed,
+    input logic [1:0] i_backing_return,
+    input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_target,
+    input logic [1:0] i_backing_slot2_return_by_size,
+    input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_slot2_target_by_size,
+    input logic i_mstatus_fs_off,
+    input logic i_mstatus_vs_off,
+    input logic i_cbo_zero_illegal,
+    input logic i_cbo_cf_illegal,
+    input logic i_cbo_inval_illegal,
+    input logic i_cbo_inval_flush,
+    input logic i_wrs_nto_illegal,
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2
 );
 
   riscv_pkg::from_pd_to_id_t            from_pd_to_id;
@@ -85,6 +87,8 @@ module pd_id_slot2_redirect_formal #(
       .i_backing_compressed,
       .i_backing_return,
       .i_backing_target,
+      .i_backing_slot2_return_by_size,
+      .i_backing_slot2_target_by_size,
       .o_pd_redirect          (pd_redirect),
       .o_pd_redirect_taken    (pd_redirect_taken),
       .o_pd_redirect_target   (pd_redirect_target),

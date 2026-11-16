@@ -240,7 +240,7 @@ module reorder_buffer #(
     // allocation, and privilege/Debug-Mode changes interpose a flushing
     // trap/xRET, so the snapshot remains exact for every surviving entry.
     input logic [riscv_pkg::CounterMaskBits-1:0] i_counter_blocked,
-    // Sstc: S-mode stimecmp access with menvcfg.STCE=0 is illegal.
+    // Sstc: S-mode stimecmp access with menvcfg.STCE=0 or mcounteren.TM=0 is illegal.
     input logic i_stimecmp_blocked,
     input logic i_mireg_illegal = 1'b0,
     input logic i_sireg_illegal = 1'b0,
@@ -446,14 +446,22 @@ module reorder_buffer #(
                   (addr[4:0] >= 5'd3);
   endfunction
 
+  // Unimplemented Zihpm user aliases (0xC0B-0xC1F) read zero in M-mode and
+  // raise illegal-instruction on writes or below M-mode, where mcounteren
+  // bits 11..31 are hardwired zero.
+  function automatic logic csr_is_uhpm_zero(input logic [11:0] addr);
+    csr_is_uhpm_zero = (addr[11:5] == 7'b1100_000) && (addr[4:0] >= 5'd11);
+  endfunction
+
   // CSR existence map. An access to an address outside this set raises
   // illegal-instruction at every privilege, as the privileged spec requires.
   // OpenSBI probes optional CSRs by catching that trap, so reading
   // unimplemented CSRs as zero would advertise missing features.
-  // senvcfg exists (S/U make it mandatory) with FIOM and CBZE as its fields, and the
+  // senvcfg implements FIOM, CBIE, CBCFE, CBZE and PMM, and the
   // read-only id registers mvendorid/marchid/mimpid/mconfigptr exist and
   // read 0. Machine HPM counters and selectors exist across 3..31, with
-  // storage for 3..10 and zero-only pairs for 11..31. Sscofpmf adds
+  // storage for 3..10 and zero-only pairs for 11..31; user HPM aliases
+  // 11..31 read zero in M-mode and trap below M-mode. Sscofpmf adds
   // scountovf, an S-level read-only CSR.
   function automatic logic csr_addr_exists(input logic [11:0] addr);
     unique case (addr)
@@ -502,7 +510,7 @@ module reorder_buffer #(
       riscv_pkg::CsrMperfSel, riscv_pkg::CsrMperfCtl, riscv_pkg::CsrMperfData,
       riscv_pkg::CsrMperfDataH, riscv_pkg::CsrMperfCount:
       csr_addr_exists = 1'b1;
-      default: csr_addr_exists = csr_is_mhpm(addr) || csr_is_vector(addr);
+      default: csr_addr_exists = csr_is_mhpm(addr) || csr_is_uhpm_zero(addr) || csr_is_vector(addr);
     endcase
   endfunction
 
@@ -546,7 +554,7 @@ module reorder_buffer #(
     begin
       needs_m_priv =
           (req.is_mret && !req.is_sret && !req.is_dret) ||
-          (req.is_csr && (req.csr_addr[9:8] == 2'b11));
+          (req.is_csr && ((req.csr_addr[9:8] == 2'b11) || csr_is_uhpm_zero(req.csr_addr)));
       needs_s_priv = req.is_sret || req.is_sfence_vma ||
           (req.is_csr && (req.csr_addr[9:8] == 2'b01));
       is_debug_csr = req.is_csr && (req.csr_addr[11:4] == 8'h7B);
@@ -648,8 +656,9 @@ module reorder_buffer #(
   // architectural write intent. id_stage's mstatus.FS=Off check also relies
   // on this class: the full flush that ends every such write discards whatever
   // ID decoded under the old FS value. Legal menvcfg/senvcfg writes affect
-  // cbo.zero permission only at lower privilege, so they use ordinary CSR
-  // serialization. The privilege transition itself flushes the old decode.
+  // CBO permission at lower privilege and PMM for effective U accesses,
+  // including MPRV. Ordinary CSR serialization holds younger instructions
+  // through the write; privilege transitions flush the old decode.
   logic [ReorderBufferDepth-1:0] rob_f_csr_may_change_translation;
 
 

@@ -131,7 +131,8 @@ with the eighth response. A Zicbom entry keeps `rs1` and its kind and has no
 data: it never becomes data-valid, so the write launch never selects it.
 Every bus master in FROST reaches DDR through the coherent home, so the
 operations have no data effect, and the entry completes as an ordered no-op:
-committed, at the drain cursor, with no write in flight or on the bus and no
+committed, at the drain cursor, not held by an older vector memory entry over
+its 64-byte block, with no write in flight or on the bus and no
 L1D store record pending, it is marked sent without a write and frees on the
 next cycle from registered state, as a completed write does. Every older
 store has then completed, and the next entry drains behind it; a second

@@ -24,7 +24,8 @@
  * M (S needs menvcfg.CBCFE, U needs both). CBIE (bits 5:4) is WARL {00, 01, 11}:
  * cbo.inval is illegal in S with menvcfg.CBIE = 00 and in U with either CBIE =
  * 00, and a write of the reserved 10 reads back 00. M always executes all
- * three. menvcfg.PBMTE (bit 62) is writable; senvcfg has no PBMTE field.
+ * three. menvcfg.PBMTE (bit 62) and senvcfg.PMM (bits 33:32) retain their
+ * implemented values alongside the cache-block controls.
  *
  * Permissions: a CMO is permitted where a load is (R, or X with MXR; A must be
  * set; D is ignored), so a read-only or D-clear page is fine where cbo.zero
@@ -54,6 +55,7 @@
 #define ENVCFG_CBCFE (1ul << 6)
 #define ENVCFG_CBZE (1ul << 7)
 #define MENVCFG_PBMTE (1ul << 62)
+#define SENVCFG_PMM_MASK (3ul << 32)
 
 #define CAUSE_ILLEGAL 2ul
 #define CAUSE_STORE_ACCESS 7ul
@@ -377,7 +379,7 @@ int main(void)
     }
 
     /* C: CSR fields. CBIE is WARL {00, 01, 11}: 10 reads back 00. CBCFE and
-     * CBIE read back in both CSRs; menvcfg.PBMTE reads back as written. */
+     * CBIE read back in both CSRs alongside PBMTE and PMM. */
     {
         int c_ok = 1;
         for (unsigned long v = 0; v < 4; v++) {
@@ -392,7 +394,8 @@ int main(void)
                  (ENVCFG_CBCFE | ENVCFG_CBIE_MASK | ENVCFG_CBZE | MENVCFG_PBMTE)) ==
                 (ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | MENVCFG_PBMTE);
         csr_write_num(0x10A, ~0ul);
-        c_ok &= csr_read_num(0x10A) == (ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | 1ul);
+        c_ok &= csr_read_num(0x10A) ==
+                (ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | SENVCFG_PMM_MASK | 1ul);
         /* A set or clear of the reserved pattern through csrs/csrc: 01 | 10 = 11. */
         csr_write_num(0x30A, ENVCFG_CBIE(1));
         __asm__ volatile("csrs 0x30A, %0" ::"r"(ENVCFG_CBIE(2)));

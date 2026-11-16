@@ -1118,8 +1118,8 @@ package riscv_pkg;
     FCVT_D_LU,                  // Unsigned 64-bit int to FP (double)
     FMV_X_D,                    // Move double bits to int reg
     FMV_D_X,                    // Move int bits to double reg
-    VLOAD,                      // V: unit-stride, whole-register and mask loads; INT_RS
-                                // passes the rs1 base to the ROB
+    VLOAD,                      // V: unit-stride, whole-register and mask loads: translated
+                                // at the ROB head once older vector work drains; no RS
     VSTORE,                     // V: unit-stride, whole-register and mask stores; as VLOAD
     // Zfhmin: half-precision moves and conversions (loads/stores use LOAD_FP/STORE_FP).
     FMV_X_H,                    // Move half bits to int reg (sign-extended)
@@ -1279,6 +1279,14 @@ package riscv_pkg;
   // page-table walker, which accepts a nonzero PTE PBMT field only while it
   // is set (see ptw.sv and "Svpbmt" below).
   localparam int unsigned MenvcfgPbmteBit = 62;
+  // senvcfg.PMM (bits 33:32, Ssnpm): pointer masking for U-mode. WARL
+  // {00, 10, 11}: 00 off, 10 PMLEN=7, 11 PMLEN=16 (while SsnpmPmlen16 below
+  // holds). A write of the reserved 01, or of an unsupported PMLEN, keeps the
+  // old value, as the Sail model does. See "Pointer masking" below.
+  localparam int unsigned EnvcfgPmmLsb = 32;
+  localparam bit [1:0] EnvcfgPmmOff = 2'b00;
+  localparam bit [1:0] EnvcfgPmmPmlen7 = 2'b10;
+  localparam bit [1:0] EnvcfgPmmPmlen16 = 2'b11;
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
@@ -1891,12 +1899,14 @@ package riscv_pkg;
   localparam int unsigned Sv39VpnBits = Sv39Levels * Sv39VpnFieldBits;  // 27
 
   // PTE layout (RV64): PPN in [53:10], flags in [7:0], Svpbmt's PBMT in
-  // [62:61]. Bit 63 (N, Svnapot, not implemented) and bits [60:54] are
-  // reserved: set, they raise a page fault. PBMT must be zero in a non-leaf
+  // [62:61], Svnapot's N in 63. N is legal only in a level-0 leaf whose
+  // PPN[3:0] is 1000 (a 64 KiB range, see ptw.sv); set anywhere else, and
+  // bits [60:54] set anywhere, raise a page fault. PBMT must be zero in a non-leaf
   // PTE, must not be 3 in a leaf, and must be zero in a leaf while
   // menvcfg.PBMTE is clear; each of these raises a page fault too.
   localparam int unsigned PtePpnBits = 44;
   localparam int unsigned PtePbmtLsb = 61;
+  localparam int unsigned PteNapotBit = 63;
   // PBMT encodings (Svpbmt): 0 PMA, 1 NC (non-cacheable, idempotent, weakly
   // ordered main memory), 2 IO (non-cacheable, non-idempotent, strongly
   // ordered I/O), 3 reserved. FROST uses the same uncached classification
@@ -1917,6 +1927,62 @@ package riscv_pkg;
 
   function automatic logic sv39_va_canonical(input logic [XLEN-1:0] va);
     sv39_va_canonical = (va[XLEN-1:Sv39VaBits-1] == '0) || (va[XLEN-1:Sv39VaBits-1] == '1);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Pointer masking (Ssnpm: senvcfg.PMM for U-mode)
+  // ---------------------------------------------------------------------------
+  // The ignore transformation replaces an explicit access's top PMLEN address
+  // bits with the sign extension of bit XLEN-PMLEN-1 under Sv39 and with
+  // zeros under Bare. csr_file registers the mode in force for data accesses
+  // (pm_mode_t: off, PMLEN 7 or PMLEN 16; nonzero only at effective data
+  // privilege U, with mstatus.MXR clear).
+  //
+  // FROST applies one transform for both translation modes, to the base
+  // register at MEM_RS issue: pm_base_transform sign-extends the base from
+  // bit XLEN-PMLEN-1, before the address adders. Every consumer of the address
+  // (data MMU, PMA decoders, LQ/SQ, forwarding) is then unchanged:
+  //   Let W = XLEN-PMLEN. base' lies in [-2**(W-1), 2**(W-1)) and every
+  //   immediate here is a 12-bit signed value (zero for AMO, LR/SC and CBO),
+  //   so s = base' + imm leaves that range by at most 2048. Bits [W-1:0] of s
+  //   equal those of the effective address.
+  //   - Sv39: inside the range s is its own sign extension from bit W-1, the
+  //     transformed address. Outside it, bit W-1 of s differs from bits
+  //     [W-2:38], so s and the transformed address are both non-canonical.
+  //   - Bare: the transformed address is s mod 2**W. Inside [0, 2**(W-1)) the
+  //     two are equal. Otherwise s is negative or at least 2**(W-1), and
+  //     s mod 2**W is at least 2**(W-1) - 2048. With every PMA region below
+  //     2**(W-2) (SsnpmPmlen7, SsnpmPmlen16) both fail the PMA map.
+  // A fault's xtval is the transformed address (norm:pm_csr_hw_apply):
+  // pm_tval applies the exact transform to the faulting base' + imm.
+  // Instruction fetch, page-table walks and SFENCE.VMA are never masked.
+  typedef logic [1:0] pm_mode_t;  // EnvcfgPmm* encoding; 01 is never produced
+
+  // Offer each PMLEN only when every configured physical region lies below
+  // 2**(XLEN-PMLEN-2), as required by the equivalence argument above.
+  localparam bit SsnpmPmlen7  = PmaAddressLimit <= (64'(1) << (XLEN - 7 - 2));
+  localparam bit SsnpmPmlen16 = PmaAddressLimit <= (64'(1) << (XLEN - 16 - 2));
+
+  // senvcfg.PMM write legalization: an unsupported value keeps the old one.
+  function automatic logic [1:0] pmm_warl(input logic [1:0] written, input logic [1:0] old);
+    pmm_warl = ((written == EnvcfgPmmOff) || (SsnpmPmlen7 && (written == EnvcfgPmmPmlen7)) ||
+                (SsnpmPmlen16 && (written == EnvcfgPmmPmlen16))) ? written : old;
+  endfunction
+
+  // The base-register transform at MEM_RS issue (sign extension from bit
+  // XLEN-PMLEN-1). Only bits [XLEN-1:XLEN-16] can change.
+  function automatic logic [XLEN-1:0] pm_base_transform(input logic [XLEN-1:0] base,
+                                                        input pm_mode_t mode);
+    pm_base_transform = (mode == EnvcfgPmmPmlen7) ? {{7{base[XLEN-8]}}, base[XLEN-8:0]} :
+        (mode == EnvcfgPmmPmlen16) ? {{16{base[XLEN-17]}}, base[XLEN-17:0]} : base;
+  endfunction
+
+  // xtval of a data fault: the ignore transformation of the faulting address,
+  // sign extension under Sv39 (virt), zero extension under Bare.
+  function automatic logic [XLEN-1:0] pm_tval(input logic [XLEN-1:0] addr, input pm_mode_t mode,
+                                              input logic virt);
+    pm_tval = (mode == EnvcfgPmmPmlen7) ? {{7{virt && addr[XLEN-8]}}, addr[XLEN-8:0]} :
+        (mode == EnvcfgPmmPmlen16) ? {{16{virt && addr[XLEN-17]}}, addr[XLEN-17:0]} : addr;
   endfunction
 
   // Data-side translation fault classification, carried from the translation
@@ -3211,7 +3277,8 @@ package riscv_pkg;
   // under vtype vt ({vill, vtype[7:0]}) when vtype is vill, when a register
   // group is not aligned to LMUL, when a mask destination overlaps a source
   // group anywhere but at its first register, or when a masked instruction
-  // other than a compare writes v0.
+  // other than a compare writes v0, or when a masked instruction reads v0
+  // both as an EEW=1 mask and as a SEW-width data source.
   function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
     logic [2:0] vlmul, funct3;
     logic [5:0] funct6;
@@ -3228,13 +3295,15 @@ package riscv_pkg;
     uses_vs1 = (funct3 == 3'b000);
     // LMUL 2, 4, 8 align groups to 2, 4, 8 registers; fractional LMUL to 1.
     align = vlmul[2] ? 5'd0 : 5'((1 << vlmul[1:0]) - 1);
+    // The implicit mask uses EEW=1; a vector data source uses SEW.
     vector_arith_illegal = vt[8] ||
         ((vs2 & align) != 5'd0) ||
         (uses_vs1 && ((vs1 & align) != 5'd0)) ||
         (!mask_dest && ((vd & align) != 5'd0)) ||
         (mask_dest && (vd > vs2) && (vd <= (vs2 | align))) ||
         (mask_dest && uses_vs1 && (vd > vs1) && (vd <= (vs1 | align))) ||
-        (masked && !mask_dest && (vd == 5'd0));
+        (masked && !mask_dest && (vd == 5'd0)) ||
+        (masked && ((vs2 == 5'd0) || (uses_vs1 && vs1 == 5'd0)));
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -3313,8 +3382,8 @@ package riscv_pkg;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET and DRET ride the MRET machinery.
-      // VTOX completes from the vector unit at the ROB head.
-      JAL, WFI, MRET, SRET, DRET, VTOX: get_rs_type = RS_NONE;
+      // VTOX, VLOAD and VSTORE complete from the vector unit at the ROB head.
+      JAL, WFI, MRET, SRET, DRET, VTOX, VLOAD, VSTORE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -3467,7 +3536,7 @@ package riscv_pkg;
       case (op)
         LUI, AUIPC, JAL, ECALL, EBREAK, FENCE, FENCE_I, WFI, MRET, SRET, DRET, PAUSE, CSR_IMM, MOP,
         // Zfa FLI: rs1 is the constant index, not a register
-        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX:
+        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX, VLOAD, VSTORE:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase
