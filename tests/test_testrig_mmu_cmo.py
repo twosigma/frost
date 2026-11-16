@@ -229,9 +229,9 @@ def test_cmo_batch_covers_zicbom_zicboz_zicbop_and_zawrs() -> None:
 def test_cli_flags_for_mmu_and_cmo() -> None:
     """test_testrig parses --mmu and --cmo and rejects conflicting mode combinations."""
     mmu_args = test_testrig.parse_arguments(["--mmu", "25", "--seed", "7"])
-    assert mmu_args.mmu == 25 and mmu_args.cmo == 0 and mmu_args.seed == 7
+    assert mmu_args.mmu == 25 and mmu_args.cmo is None and mmu_args.seed == 7
     cmo_args = test_testrig.parse_arguments(["--cmo", "30"])
-    assert cmo_args.cmo == 30 and cmo_args.mmu == 0
+    assert cmo_args.cmo == 30 and cmo_args.mmu is None
     for bad in (
         ["--mmu", "-1"],
         ["--cmo", "-1"],
