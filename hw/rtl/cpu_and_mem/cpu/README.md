@@ -701,6 +701,8 @@ unknown). Allocation immediately restarts the tracker's quiet interval,
 before the registered ROB in-flight indication arrives. `vector/vec_lmul_legality.sv` evaluates the EEW, EMUL,
 alignment and overlap rules for all 32 SEW/LMUL combinations before the
 decoded queue. Dispatch selects the tracked configuration and rejects vill.
+Sources that overlap at different element widths are reserved; this includes
+using v0 as both a mask and an integer data source.
 The tracker also checkpoints whether
 `vstart` is nonzero, clearing it for each dispatched vector instruction and
 reloading it after CSR accesses and full flushes. Arithmetic rejects nonzero

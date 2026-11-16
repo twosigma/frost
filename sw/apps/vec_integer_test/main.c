@@ -3943,6 +3943,12 @@ static void special_cases(void)
     ILLEGAL(OPV(0x12, 1, 8, 2, 2, 16));  /* vsext/zext vf8 at SEW 8 */
     ILLEGAL(OPV(0x0c, 1, 8, 24, 0, 8));  /* gather overlaps source */
     ILLEGAL(OPV(0x17, 0, 8, 24, 2, 16)); /* compress requires vm=1 */
+#ifndef VT_SPIKE
+    /* Reserved source EEW aliasing needs strict source-overlap validation. */
+    ILLEGAL(OPV(0x02, 0, 0, 0, 0, 16)); /* v0 cannot be both mask and data. */
+    ILLEGAL(OPV(0x20, 0, 8, 0, 0, 16)); /* The same rule applies to vs1. */
+    ILLEGAL(OPV(0x00, 0, 8, 0, 2, 16)); /* Reduction seed also reads data. */
+#endif
     setvl(~0ul, 0x18);
     ILLEGAL(OPV(0x30, 1, 8, 24, 2, 16)); /* widening beyond ELEN */
     setvl(~0ul, 2);

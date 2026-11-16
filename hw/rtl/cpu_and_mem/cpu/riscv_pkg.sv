@@ -3320,14 +3320,14 @@ package riscv_pkg;
     compress = (f3 == 2) && (f6 == 6'h17);
     mask_dest = masks || scan || (!mv && ((f6[5:3] == 3'b011) || f6 == 6'h11 || f6 == 6'h13));
     uses_a = !id_op && !scalar_move && !(f6 == 6'h17 && !mv && vm);
-    uses_b = vv && !red && !ext && !(f3 == 2 && (f6 == 6'h12 || f6 == 6'h14));
+    uses_b = vv && !ext && !(f3 == 2 && (f6 == 6'h12 || f6 == 6'h14));
     de = sew + int'(widen || wred);
     ae = sew + int'(narrow || (mv && f6 >= 6'h34 && f6 <= 6'h37));
-    be = (gather && f6 == 6'h0e) ? 1 : sew;
+    be = red ? de : (gather && f6 == 6'h0e) ? 1 : sew;
     if (ext) ae = sew - (4 - (sb >> 1));
     dm = ml + de - sew;
     am = ml + ae - sew;
-    bm = ml + be - sew;
+    bm = red ? 0 : ml + be - sew;
     if (red || scalar_move) dm = 0;
     if (mask_dest) begin
       de = -3;
@@ -3351,10 +3351,13 @@ package riscv_pkg;
         ((da & (nd - 1)) != 0) ||
         (uses_a && (sa & (na - 1)) != 0) || (uses_b && (sb & (nb - 1)) != 0) ||
         (!vm && da == 0 && !mask_dest && !red);
+    // Explicit sources and the implicit EEW=1 mask must agree on EEW
+    // wherever their register groups overlap, including reduction seeds.
+    illegal |= !vm && ((uses_a && sa == 0 && ae != -3) || (uses_b && sb == 0 && be != -3));
+    if (uses_a && uses_b && ae != be && vector_groups_overlap(sa, na, sb, nb)) illegal = 1'b1;
     if (!red && !scalar_move) begin
       if (uses_a) illegal |= vector_overlap_illegal(da, nd, de, sa, na, ae, am);
       if (uses_b) illegal |= vector_overlap_illegal(da, nd, de, sb, nb, be, bm);
-      if (uses_a && uses_b && ae != be && vector_groups_overlap(sa, na, sb, nb)) illegal = 1'b1;
     end
     if ((gather || slideup || compress || scan || iota) && vector_groups_overlap(da, nd, sa, na))
       illegal = 1'b1;
