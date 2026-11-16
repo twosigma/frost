@@ -944,7 +944,7 @@ module store_queue #(
       .i_addr_flat (sq_address_flat),
       .i_size_flat (sq_size_flat),
       .i_addr_valid(sq_addr_valid),
-      .i_block_flat(sq_is_zero),
+      .i_block_flat(sq_is_zero | sq_is_cmo),
       .i_vmt       (i_vmt),
       .o_hold_d    (vec_hold_d)
   );
@@ -1115,7 +1115,7 @@ module store_queue #(
   logic [IdxWidth-1:0] cmo_free_idx_q;
   assign drain_is_cmo = sq_is_cmo[drain_idx_q];
   assign cmo_drain_fire = drain_is_cmo && sq_valid[drain_idx_q] && sq_committed[drain_idx_q] &&
-      sq_addr_valid[drain_idx_q] && !sq_sent[drain_idx_q] &&
+      sq_addr_valid[drain_idx_q] && !sq_sent[drain_idx_q] && !vec_hold_q[drain_idx_q] &&
       (write_inflight_cnt == 2'd0) && !o_mem_write_en &&
       !i_coherent_store_pending && !i_coherent_sc_pending && !cmo_free_q;
   always_ff @(posedge i_clk) begin
@@ -2254,6 +2254,7 @@ module store_queue #(
         p_cmo_frees_after_writes : assert (write_inflight_cnt == 2'd0 && !o_mem_write_en);
         p_cmo_frees_oldest : assert (!(|(sq_valid & sq_sent)));
         p_cmo_frees_without_write : assert (!mem_write_fire_next);
+        p_cmo_not_vec_held : assert (!vec_hold_q[drain_idx_q]);
       end
       if (cmo_free_q) begin
         p_cmo_free_is_sent_cmo :

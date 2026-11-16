@@ -72,6 +72,7 @@ rvfi_dii = importlib.import_module("testrig.rvfi_dii")
 vector = importlib.import_module("testrig.vector")
 compressed_mops = importlib.import_module("testrig.compressed_mops")
 fp_ext = importlib.import_module("testrig.fp_ext")
+svinval = importlib.import_module("testrig.svinval")
 TraceMonitor = importlib.import_module("testrig.run_stats").TraceMonitor
 SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 DEFAULT_VECTOR_LENGTH = 128
@@ -102,25 +103,23 @@ DEFAULT_TEST_INCLUDE = (
     "float|float64|double|double64|csr|fencei|fencei64|pte|all|random)$"
 )
 
-# HPM event selectors 3..10 have implementation-defined WARL values, and Sail
-# cannot represent the partial set of user aliases 3..10. Those addresses
-# are checked by the CSR and privilege benches. Random traces leave their
-# selectors disabled, so machine counter storage can be compared.
+# HPM event selectors 3..10 have implementation-defined WARL values and are
+# checked by the CSR, privilege and --sscofpmf traces; leaving them untouched
+# in random traces keeps every HPM counter disabled so mhpmcounter3..31,
+# hpmcounter3..31 and scountovf can be compared directly.
 # CSRs the generators may access. Left out, as implementation-defined or
 # nondeterministic between the two: the cycle and time counters (FROST counts
 # clock cycles, Sail instructions); the interrupt enable and pending
 # registers, since an interrupt consumes an instruction slot in Sail's
-# RVFI-DII mode; mideleg, whose LCOFI bit needs the --sscofpmf Sail view
-# (the dedicated trace checks its full WARL mask and RMW operations);
-# stimecmp, whose timer compare depends on time; mtvec and
+# RVFI-DII mode; mtvec and
 # stvec, whose reserved MODE values FROST and Sail legalize differently;
 # mcause and scause, whose WLRL cause codes FROST keeps as written and Sail
 # does not; and unnamed addresses, which include FROST's custom profiling
 # CSRs.
 DEFAULT_CSR_INCLUDE = (
-    "^(fflags|frm|fcsr|instret|hpmcounter(1[1-9]|2[0-9]|3[01])|sstatus|scounteren|senvcfg|"
-    "sscratch|sepc|stval|satp|mvendorid|marchid|mimpid|mhartid|mstatus|misa|"
-    "medeleg|mcounteren|menvcfg|mscratch|mepc|mtval|pmpcfg[0-9]+|"
+    "^(fflags|frm|fcsr|instret|hpmcounter([3-9]|[12][0-9]|3[01])|sstatus|scounteren|senvcfg|"
+    "sscratch|sepc|stval|satp|stimecmp|scountovf|mvendorid|marchid|mimpid|mhartid|mstatus|misa|"
+    "medeleg|mideleg|mcounteren|menvcfg|mscratch|mepc|mtval|pmpcfg[0-9]+|"
     "pmpaddr[0-9]+|minstret|mhpmcounter[0-9]+|mhpmevent(1[1-9]|2[0-9]|3[01])|mcountinhibit)$"
 )
 
@@ -176,22 +175,17 @@ def write_sail_config(
     sscofpmf: bool = False,
     vlen: int | None = None,
 ) -> Path:
-    """Match DDR capacity, and enable Zihpm or the vector unit when asked.
+    """Match DDR capacity, and enable the vector unit when asked.
 
-    Zihpm is for the dedicated Sscofpmf trace; the vector unit at `vlen` is for
-    the --vector traces, which FROST must be built for with -GVECTOR=1 -GVLEN.
+    `sscofpmf` selects the dedicated Sscofpmf control config filename suffix;
+    the vector unit at `vlen` is for the --vector traces, which FROST must be
+    built for with -GVECTOR=1 -GVLEN.
     """
     if capacity_log2_bytes not in range(30, 38):
         raise ValueError("DDR capacity must be 1, 2, 4, 8, 16, 32, 64 or 128 GiB")
     config = load_sail_json(SAIL_CONFIG)
     if vlen is not None:
         merge_settings(config, load_sail_json(sail_vector_overlay(vlen)))
-    # Sail 0.16 makes Sscofpmf depend on Zihpm. Enabling Zihpm also
-    # exposes every user HPM alias, including FROST's absent 11..31.
-    # Only the dedicated trace can use this view: it accesses implemented
-    # counters and deterministic controls, with event selectors disabled.
-    if sscofpmf:
-        config["extensions"]["Zihpm"]["supported"] = True
     ddr_regions = [
         region
         for region in config["memory"]["regions"]
@@ -389,6 +383,18 @@ def prepare_inputs(
             flush=True,
         )
         command += ["-d", str(trace_dir)]
+    elif arguments.svinval:
+        seed = (
+            arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
+        )
+        trace_dir = work_dir / "svinval"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        svinval.write_tests(trace_dir, arguments.svinval, seed, arguments.test_length)
+        print(
+            f"Wrote {arguments.svinval} Svinval tests from seed {seed}",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
     elif arguments.mmu:
         seed = (
             arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
@@ -463,6 +469,7 @@ def prepare_inputs(
                     arguments.crypto,
                     arguments.zcb,
                     arguments.fp_ext,
+                    arguments.svinval,
                     arguments.mmu,
                     arguments.cmo,
                     arguments.vector,
@@ -835,8 +842,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--sscofpmf",
         action="store_true",
         help="replay deterministic Sscofpmf controls and implemented counters "
-        "with Sail's required Zihpm support enabled; use --trace to replay "
-        "a counterexample in this view",
+        "(verif/testrig/sscofpmf/controls.S); --trace overrides the trace path",
     )
     parser.add_argument(
         "--crypto",
@@ -855,6 +861,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--fp-ext",
         type=positive_count,
         help="replay this many Zfhmin/Zfa tests from verif/testrig/fp_ext.py",
+    )
+    parser.add_argument(
+        "--svinval",
+        type=positive_count,
+        help="replay this many random Svinval tests from verif/testrig/svinval.py",
     )
     parser.add_argument(
         "--mmu",
@@ -898,8 +909,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--seed",
         type=int,
-        help="seed for --atomics, --crypto, --zcb, --fp-ext, --mmu, --cmo or --vector "
-        "(default: random, printed)",
+        help=(
+            "seed for --atomics, --crypto, --zcb, --fp-ext, --mmu, --cmo, --svinval "
+            "or --vector (default: random, printed)"
+        ),
     )
     parser.add_argument(
         "--save-dir",
@@ -945,6 +958,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             arguments.crypto,
             arguments.zcb,
             arguments.fp_ext,
+            arguments.svinval,
             arguments.mmu,
             arguments.cmo,
             arguments.vector,
@@ -955,7 +969,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     ):
         parser.error(
             "--trace, --trace-dir, --sscofpmf, --atomics, --crypto, --zcb, "
-            "--fp-ext, --mmu, --cmo and --vector are mutually exclusive "
+            "--fp-ext, --svinval, --mmu, --cmo and --vector are mutually exclusive "
             "(except --sscofpmf --trace)"
         )
     return arguments

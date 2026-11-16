@@ -155,6 +155,7 @@ class SQInterface:
         self.dut.i_early_addr_update_2.value = 0
         self.dut.i_early_addr_capture_valid_2.value = 0
         self.dut.i_addr_update.value = 0
+        self.dut.i_vmt.value = 0
         self.dut.i_addr_update_capture_valid.value = 0
         self.dut.i_data_update.value = 0
         self.dut.i_data_update_capture_valid.value = 0

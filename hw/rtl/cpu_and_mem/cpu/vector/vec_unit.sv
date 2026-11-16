@@ -16,89 +16,179 @@
 
 
 /*
-  The vector unit as the core sees it so far: the instruction word of every
-  vector arithmetic ROB entry (written at allocation), an 8-entry queue (VIQ)
-  filled when such an entry retires, with the scalar operand INT_RS left in
-  its ROB value and the vl, vtype and vstart it executes under, and the engine,
-  which takes one queued instruction at a time.
-
-  vmv.x.s, vcpop.m and vfirst.m (VTOX) execute at the ROB head: once such an
-  entry is the head, the head is not speculative, and the queue and engine
-  are idle, the unit waits two cycles (a vector-config update reaches the CSR
-  file that late, and the last older instruction's queue push one cycle after
-  it retires) and checks idleness again, reads vs2 (and v0 when masked) through the engine's read
-  port, computes the result in two stages and presents it on CDB slot 6 until
-  it is granted; a full flush drops it. Each entry completes once. o_commit_hold asks the ROB to
-  stop retiring while the queue is nearly full (registered); o_idle is high
-  when the queue is empty and the engine idle.
+  The vector unit:
+    - Per-ROB-tag instruction word and class flags (is_varith_q, is_vtox_q,
+      is_vmem_q) plus the allocated VMT index of each vector memory op.
+    - An 8-entry queue (VIQ) filled when a vector arithmetic entry retires,
+      feeding vec_engine one instruction at a time.
+    - Head-executed vector-to-scalar operations (VTOX: vmv.x.s, vcpop.m,
+      vfirst.m) completing on CDB slot 6.
+    - Head-executed legality and translation for vector loads and stores
+      (vec_head_mmu) completing on CDB slot 6, paired with the post-retirement
+      sector memory engine (vec_vmu) on the hart's coherence line client.
 */
 module vec_unit #(
-    parameter  int unsigned VLEN = 256,
-    localparam int unsigned TagW = riscv_pkg::ReorderBufferTagWidth
+    parameter  int unsigned VLEN           = 256,
+    parameter  bit          CACHED_TIER_EN = 1'b1,
+    localparam int unsigned XLEN           = riscv_pkg::XLEN,
+    localparam int unsigned TagW           = riscv_pkg::ReorderBufferTagWidth,
+    localparam int unsigned VmtIdxW        = $clog2(riscv_pkg::VmtDepth),
+    localparam int unsigned SegW           = 1 + riscv_pkg::VmtPpnBits + 14,
+    localparam int unsigned PhysAddrBits   = riscv_pkg::PhysAddrBits
 ) (
-    input  logic                               i_clk,
-    input  logic                               i_rst,
+    input  logic                                                 i_clk,
+    input  logic                                                 i_rst,
+    input  logic                                                 i_fatal_stop,
     // Slot-1 allocation
-    input  logic                               i_alloc,
-    input  logic                    [TagW-1:0] i_alloc_tag,
-    input  logic                               i_alloc_is_varith,
-    input  logic                    [    31:0] i_alloc_insn,
-    // Slot-2 allocation (never a vector instruction): it clears the flags of
-    // its tag, which a squashed vector instruction may have left set
-    input  logic                               i_alloc_2,
-    input  logic                    [TagW-1:0] i_alloc_tag_2,
-    // Registered commit bus (slot 1; vector arithmetic never retires as slot 2)
-    input  logic                               i_commit_valid,
-    input  logic                    [TagW-1:0] i_commit_tag,
-    input  logic                               i_commit_exception,
-    input  logic                    [    63:0] i_commit_value,
+    input  logic                                                 i_alloc,
+    input  logic                    [                  TagW-1:0] i_alloc_tag,
+    input  logic                                                 i_alloc_is_varith,
+    input  logic                                                 i_alloc_is_vtox,
+    input  logic                                                 i_alloc_is_vmem,
+    input  logic                    [               VmtIdxW-1:0] i_alloc_vmt_idx,
+    input  logic                    [                      31:0] i_alloc_insn,
+    // Slot-2 allocation (never a vector instruction): clears the flags of its tag
+    input  logic                                                 i_alloc_2,
+    input  logic                    [                  TagW-1:0] i_alloc_tag_2,
+    // Registered commit bus (slot 1; vector ops never retire as slot 2)
+    input  logic                                                 i_commit_valid,
+    input  logic                    [                  TagW-1:0] i_commit_tag,
+    input  logic                                                 i_commit_exception,
+    input  logic                    [                      63:0] i_commit_value,
     // Architectural vl, vtype ({vill, vtype[7:0]}) and vstart
-    input  logic                    [    15:0] i_vl,
-    input  logic                    [     8:0] i_vtype,
-    input  logic                    [    15:0] i_vstart,
-    // Head execution of vector-to-scalar ops
-    input  logic                               i_alloc_is_vtox,
-    input  logic                    [TagW-1:0] i_head_tag,
-    input  logic                               i_rob_empty,
-    input  logic                               i_head_safe,
-    input  logic                               i_flush_all,
-    input  logic                               i_grant,
-    output riscv_pkg::fu_complete_t            o_vtox_complete,
-    output logic                               o_varith_commit,
-    output logic                               o_commit_hold,
-    output logic                               o_idle
+    input  logic                    [                      15:0] i_vl,
+    input  logic                    [                       8:0] i_vtype,
+    input  logic                    [                      15:0] i_vstart,
+    // ROB head & ordering inputs
+    input  logic                    [                  TagW-1:0] i_head_tag,
+    input  logic                                                 i_rob_empty,
+    input  logic                                                 i_head_safe,
+    input  logic                                                 i_flush_all,
+    input  logic                                                 i_csr_wb_pending,
+    input  logic                                                 i_sq_committed_empty,
+    input  logic                                                 i_int_take_armed,
+    // Integer RF extra read port (rs1 for VLOAD/VSTORE)
+    output logic                                                 o_rf_read_en,
+    output logic                    [                       4:0] o_rf_read_addr,
+    input  logic                    [                  XLEN-1:0] i_rf_read_data,
+    // Data-translation state & walker port
+    input  logic                                                 i_translate,
+    input  logic                                                 i_eff_priv_u,
+    input  logic                                                 i_sum,
+    input  logic                                                 i_mxr,
+    input  logic                                                 i_tlb_invalidate,
+    output logic                                                 o_walk_req_valid,
+    input  logic                                                 i_walk_req_ready,
+    output logic                    [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
+    input  logic                                                 i_walk_resp_valid,
+    input  riscv_pkg::ptw_resp_t                                 i_walk_resp,
+    // VMT range write & completion
+    output logic                                                 o_vmt_range_valid,
+    output logic                    [               VmtIdxW-1:0] o_vmt_range_idx,
+    output logic                    [                  SegW-1:0] o_vmt_range_seg0,
+    output logic                    [                  SegW-1:0] o_vmt_range_seg1,
+    output logic                                                 o_vmt_done_valid,
+    output logic                    [               VmtIdxW-1:0] o_vmt_done_idx,
+    // Coherence line-client port (identities 2..7)
+    output logic                                                 o_lc_req_valid,
+    input  logic                                                 i_lc_req_ready,
+    output logic                                                 o_lc_req_write,
+    output logic                    [          PhysAddrBits-1:0] o_lc_req_addr,
+    output logic                    [                     255:0] o_lc_req_data,
+    output logic                    [                      31:0] o_lc_req_mask,
+    output logic                    [                       3:0] o_lc_req_id,
+    input  logic                                                 i_lc_resp_valid,
+    input  logic                    [                       3:0] i_lc_resp_id,
+    input  logic                    [                     255:0] i_lc_resp_data,
+    input  logic                                                 i_lc_resp_error,
+    // CDB slot 6 & sideband outputs
+    input  logic                                                 i_grant,
+    output riscv_pkg::fu_complete_t                              o_vtox_complete,
+    output logic                                                 o_varith_commit,
+    output logic                                                 o_vstore_commit,
+    output logic                                                 o_vmem_fault_vstart_valid,
+    output logic                    [                      15:0] o_vmem_fault_vstart,
+    output logic                                                 o_vmem_head_shield,
+    output logic                                                 o_vmu_fatal,
+    output logic                    [          PhysAddrBits-1:0] o_vmu_fatal_addr,
+    output logic                                                 o_commit_hold,
+    output logic                                                 o_idle
 );
 
   localparam int unsigned Depth = 8;
+  localparam int unsigned VlenBytes = VLEN / 8;
 
   logic [31:0] insn_q[riscv_pkg::ReorderBufferDepth];
-  logic [riscv_pkg::ReorderBufferDepth-1:0] is_varith_q, is_vtox_q;
+  logic [VmtIdxW-1:0] vmt_idx_by_tag_q[riscv_pkg::ReorderBufferDepth];
+  logic [riscv_pkg::ReorderBufferDepth-1:0] is_varith_q, is_vtox_q, is_vmem_q;
   logic vtox_done;
   logic [TagW-1:0] vtox_tag_q;
+  logic vhead_cdb_done;
+  logic [TagW-1:0] vhead_cdb_done_tag;
+
   always_ff @(posedge i_clk) begin
-    if (i_alloc) insn_q[i_alloc_tag] <= i_alloc_insn;
+    if (i_alloc) begin
+      insn_q[i_alloc_tag]           <= i_alloc_insn;
+      vmt_idx_by_tag_q[i_alloc_tag] <= i_alloc_vmt_idx;
+    end
     // Every allocation of a tag rewrites its flags, so a flag left by a
     // squashed vector instruction never describes a later one.
     if (i_rst) begin
       is_vtox_q   <= '0;
       is_varith_q <= '0;
+      is_vmem_q   <= '0;
     end else begin
       if (vtox_done) is_vtox_q[vtox_tag_q] <= 1'b0;
+      if (vhead_cdb_done) is_vmem_q[vhead_cdb_done_tag] <= 1'b0;
       if (i_alloc) begin
         is_vtox_q[i_alloc_tag]   <= i_alloc_is_vtox;
         is_varith_q[i_alloc_tag] <= i_alloc_is_varith;
+        is_vmem_q[i_alloc_tag]   <= i_alloc_is_vmem;
       end
       if (i_alloc_2) begin
         is_vtox_q[i_alloc_tag_2]   <= 1'b0;
         is_varith_q[i_alloc_tag_2] <= 1'b0;
+        is_vmem_q[i_alloc_tag_2]   <= 1'b0;
       end
     end
   end
-  assign o_varith_commit = i_commit_valid && is_varith_q[i_commit_tag] && !i_commit_exception;
 
-  // The engine's register read port, used by the vector-to-scalar logic.
+  logic varith_commit_only;
+  logic vhead_retire_vload, vhead_retire_vstore;
+  assign varith_commit_only = i_commit_valid && is_varith_q[i_commit_tag] && !i_commit_exception;
+  assign o_varith_commit    = varith_commit_only || vhead_retire_vload;
+  assign o_vstore_commit    = vhead_retire_vstore;
+
+  // Shared VRF memory-side read & write ports on u_engine
   logic [4:0] xr_addr;
   logic [VLEN-1:0] xr_data;
+  logic vmu_xr_en;
+  logic [4:0] vmu_xr_addr;
+  logic vhead_vrf_read_en;
+  logic [4:0] vhead_vrf_read_addr;
+  logic vmu_xw_en;
+  logic [4:0] vmu_xw_addr;
+  logic [VLEN-1:0] vmu_xw_data;
+  logic [VlenBytes-1:0] vmu_xw_be;
+
+  // Registered handoff latch between vec_head_mmu and vec_vmu
+  logic vmem_desc_valid_q;
+  logic [riscv_pkg::VmtPpnBits-1:0] vmem_desc_ppn0_q, vmem_desc_ppn1_q;
+  logic [11:0] vmem_desc_page_offset_q;
+  logic [15:0] vmem_desc_first_elem_q, vmem_desc_last_elem_q;
+  logic [1:0] vmem_desc_eew_log2_q;
+  logic [VLEN-1:0] vmem_desc_active_mask_q;
+  logic vmem_desc_is_store_q;
+  logic [4:0] vmem_desc_vd_vs3_q;
+  logic [VmtIdxW-1:0] vmem_desc_vmt_idx_q;
+  logic vmem_desc_free_vmt_q;
+  logic [SegW-1:0] vmem_desc_seg0_q, vmem_desc_seg1_q;
+
+  logic vmu_idle, vmu_done, vmu_cmd_valid;
+  logic vmu_vmt_done_valid;
+  logic [VmtIdxW-1:0] vmu_vmt_done_idx;
+  logic zero_vmt_done_valid;
+  logic [VmtIdxW-1:0] zero_vmt_done_idx;
 
   // VIQ: {insn, scalar, vl, vtype, vstart}
   localparam int unsigned EntryW = 32 + 64 + 16 + 9 + 16;
@@ -107,15 +197,15 @@ module vec_unit #(
   logic [$clog2(Depth):0] count_q;
   logic push, pop, issued_q;
   logic eng_idle;
-  assign push = o_varith_commit;
-  assign pop  = eng_idle && !issued_q && (count_q != '0);
+  assign push = varith_commit_only;
+  assign pop  = eng_idle && !issued_q && (count_q != '0) && vmu_idle && !vmem_desc_valid_q;
   always_ff @(posedge i_clk) begin
     if (push) viq_q[tail_q] <= {insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart};
     if (i_rst) begin
-      head_q <= '0;
-      tail_q <= '0;
-      count_q <= '0;
-      issued_q <= 1'b0;
+      head_q        <= '0;
+      tail_q        <= '0;
+      count_q       <= '0;
+      issued_q      <= 1'b0;
       o_commit_hold <= 1'b0;
     end else begin
       if (push) tail_q <= tail_q + 1'b1;
@@ -149,13 +239,11 @@ module vec_unit #(
       .o_unsupported(),
       .i_xr_addr    (xr_addr),
       .o_xr_data    (xr_data),
-      .i_xw_en      (1'b0),
-      .i_xw_addr    ('0),
-      .i_xw_data    ('0),
-      .i_xw_be      ('0)
+      .i_xw_en      (vmu_xw_en),
+      .i_xw_addr    (vmu_xw_addr),
+      .i_xw_data    (vmu_xw_data),
+      .i_xw_be      (vmu_xw_be)
   );
-
-  assign o_idle = eng_idle && (count_q == '0) && !issued_q;
 
   // --------------------------------------------------------------------------
   // Vector-to-scalar at the head
@@ -184,8 +272,20 @@ module vec_unit #(
   wire x_is_mv = (xi[19:15] == 5'b00000);
   wire x_is_first = (xi[19:15] == 5'b10001);
   assign xi = insn_q[vtox_tag_q];
-  assign xr_addr = (xs == X_RD0) ? 5'd0 : xi[24:20];
+
+  logic vtox_xr_en;
+  assign vtox_xr_en = (xs == X_RD2) || (xs == X_RD0);
+  assign xr_addr = vmu_xr_en         ? vmu_xr_addr :
+                   vhead_vrf_read_en ? vhead_vrf_read_addr :
+                   (xs == X_RD0)     ? 5'd0 : xi[24:20];
   assign vtox_done = (xs == X_OUT) && i_grant;
+
+  logic vec_backend_idle;
+  logic vtox_backend_ready;
+  assign vec_backend_idle   = eng_idle && (count_q == '0) && !issued_q &&
+                              vmu_idle && !vmem_desc_valid_q;
+  assign vtox_backend_ready = vec_backend_idle && !o_vmem_head_shield && !i_csr_wb_pending;
+  assign o_idle = vec_backend_idle && (xs == X_IDLE) && !o_vmem_head_shield;
 
   // Per-64-bit counts and first set bits of the active mask.
   logic [Blocks-1:0][6:0] blk_cnt;
@@ -210,7 +310,7 @@ module vec_unit #(
     end else begin
       unique case (xs)
         X_IDLE:
-        if (!i_rob_empty && is_vtox_q[i_head_tag] && i_head_safe && o_idle) begin
+        if (!i_rob_empty && is_vtox_q[i_head_tag] && i_head_safe && vtox_backend_ready) begin
           vtox_tag_q <= i_head_tag;
           xwait_q <= '0;
           xs <= X_WAIT;
@@ -222,7 +322,8 @@ module vec_unit #(
           if (xwait_q == 2'd1) begin
             xvl_q <= i_vl;
             xvt_q <= i_vtype;
-            xs <= o_idle ? X_RD2 : X_IDLE;
+            xs <= (vtox_backend_ready && !i_rob_empty &&
+                   (i_head_tag == vtox_tag_q) && i_head_safe) ? X_RD2 : X_IDLE;
           end
         end
         X_RD2:   xs <= X_RD0;
@@ -273,31 +374,205 @@ module vec_unit #(
     else xres_q = 64'(cnt);
   end
 
+  riscv_pkg::fu_complete_t vtox_only_complete, vhead_complete;
+  always_comb begin
+    vtox_only_complete       = '0;
+    vtox_only_complete.valid = (xs == X_OUT);
+    vtox_only_complete.tag   = vtox_tag_q;
+    vtox_only_complete.value = riscv_pkg::FLEN'(xres_q);
+  end
+
+  // --------------------------------------------------------------------------
+  // Head MMU & Vector Memory Unit
+  // --------------------------------------------------------------------------
+  logic desc_launch_valid;
+  logic [riscv_pkg::VmtPpnBits-1:0] desc_launch_ppn0, desc_launch_ppn1;
+  logic [11:0] desc_launch_page_offset;
+  logic [15:0] desc_launch_first_elem, desc_launch_last_elem;
+  logic [1:0] desc_launch_eew_log2;
+  logic [VLEN-1:0] desc_launch_active_mask;
+  logic desc_launch_is_store;
+  logic [4:0] desc_launch_vd_vs3;
+  logic [VmtIdxW-1:0] desc_launch_vmt_idx;
+  logic desc_launch_free_vmt;
+  logic [SegW-1:0] desc_launch_seg0, desc_launch_seg1;
+
+  vec_head_mmu #(
+      .VLEN          (VLEN),
+      .CACHED_TIER_EN(CACHED_TIER_EN)
+  ) u_head_mmu (
+      .i_clk                    (i_clk),
+      .i_rst                    (i_rst),
+      .i_head_tag               (i_head_tag),
+      .i_rob_empty              (i_rob_empty),
+      .i_head_safe              (i_head_safe),
+      .i_head_is_vmem           (is_vmem_q[i_head_tag]),
+      .i_head_insn              (insn_q[i_head_tag]),
+      .i_head_vmt_idx           (vmt_idx_by_tag_q[i_head_tag]),
+      .i_flush_all              (i_flush_all),
+      .i_fatal_stop             (i_fatal_stop),
+      .i_commit_valid           (i_commit_valid),
+      .i_commit_tag             (i_commit_tag),
+      .i_commit_exception       (i_commit_exception),
+      .i_vec_idle               (vec_backend_idle && (xs == X_IDLE)),
+      .i_csr_wb_pending         (i_csr_wb_pending),
+      .i_sq_committed_empty     (i_sq_committed_empty),
+      .i_int_take_armed         (i_int_take_armed),
+      .i_vl                     (i_vl),
+      .i_vtype                  (i_vtype),
+      .i_vstart                 (i_vstart),
+      .o_rf_read_en             (o_rf_read_en),
+      .o_rf_read_addr           (o_rf_read_addr),
+      .i_rf_read_data           (i_rf_read_data),
+      .o_vrf_read_en            (vhead_vrf_read_en),
+      .o_vrf_read_addr          (vhead_vrf_read_addr),
+      .i_vrf_read_data          (xr_data),
+      .i_translate              (i_translate),
+      .i_eff_priv_u             (i_eff_priv_u),
+      .i_sum                    (i_sum),
+      .i_mxr                    (i_mxr),
+      .i_tlb_invalidate         (i_tlb_invalidate),
+      .o_walk_req_valid         (o_walk_req_valid),
+      .i_walk_req_ready         (i_walk_req_ready),
+      .o_walk_vpn               (o_walk_vpn),
+      .i_walk_resp_valid        (i_walk_resp_valid),
+      .i_walk_resp              (i_walk_resp),
+      .o_vmt_range_valid        (o_vmt_range_valid),
+      .o_vmt_range_idx          (o_vmt_range_idx),
+      .o_vmt_range_seg0         (o_vmt_range_seg0),
+      .o_vmt_range_seg1         (o_vmt_range_seg1),
+      .o_zero_vmt_done_valid    (zero_vmt_done_valid),
+      .o_zero_vmt_done_idx      (zero_vmt_done_idx),
+      .i_grant                  (i_grant),
+      .o_vhead_complete         (vhead_complete),
+      .o_cdb_done               (vhead_cdb_done),
+      .o_cdb_done_tag           (vhead_cdb_done_tag),
+      .o_vmem_head_shield       (o_vmem_head_shield),
+      .o_vmem_fault_vstart_valid(o_vmem_fault_vstart_valid),
+      .o_vmem_fault_vstart      (o_vmem_fault_vstart),
+      .o_retire_vload           (vhead_retire_vload),
+      .o_retire_vstore          (vhead_retire_vstore),
+      .o_desc_valid             (desc_launch_valid),
+      .o_desc_ppn0              (desc_launch_ppn0),
+      .o_desc_ppn1              (desc_launch_ppn1),
+      .o_desc_page_offset       (desc_launch_page_offset),
+      .o_desc_first_elem        (desc_launch_first_elem),
+      .o_desc_last_elem         (desc_launch_last_elem),
+      .o_desc_eew_log2          (desc_launch_eew_log2),
+      .o_desc_active_mask       (desc_launch_active_mask),
+      .o_desc_is_store          (desc_launch_is_store),
+      .o_desc_vd_vs3            (desc_launch_vd_vs3),
+      .o_desc_vmt_idx           (desc_launch_vmt_idx),
+      .o_desc_free_vmt_on_done  (desc_launch_free_vmt),
+      .o_desc_seg0              (desc_launch_seg0),
+      .o_desc_seg1              (desc_launch_seg1),
+      .i_vmu_done               (vmu_done),
+      .i_vmu_fatal              (o_vmu_fatal)
+  );
+
+  // Handoff latch: never cleared by i_flush_all, because retired vector memory
+  // instructions must run to completion across any younger mispredict/trap flush.
+  assign vmu_cmd_valid = vmem_desc_valid_q && vmu_idle && eng_idle && !issued_q &&
+                         !i_fatal_stop && !o_vmu_fatal;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      vmem_desc_valid_q <= 1'b0;
+    end else if (i_fatal_stop || o_vmu_fatal) begin
+      vmem_desc_valid_q <= 1'b0;
+    end else if (desc_launch_valid) begin
+      vmem_desc_valid_q       <= 1'b1;
+      vmem_desc_ppn0_q        <= desc_launch_ppn0;
+      vmem_desc_ppn1_q        <= desc_launch_ppn1;
+      vmem_desc_page_offset_q <= desc_launch_page_offset;
+      vmem_desc_first_elem_q  <= desc_launch_first_elem;
+      vmem_desc_last_elem_q   <= desc_launch_last_elem;
+      vmem_desc_eew_log2_q    <= desc_launch_eew_log2;
+      vmem_desc_active_mask_q <= desc_launch_active_mask;
+      vmem_desc_is_store_q    <= desc_launch_is_store;
+      vmem_desc_vd_vs3_q      <= desc_launch_vd_vs3;
+      vmem_desc_vmt_idx_q     <= desc_launch_vmt_idx;
+      vmem_desc_free_vmt_q    <= desc_launch_free_vmt;
+      vmem_desc_seg0_q        <= desc_launch_seg0;
+      vmem_desc_seg1_q        <= desc_launch_seg1;
+    end else if (vmu_cmd_valid) begin
+      vmem_desc_valid_q <= 1'b0;
+    end
+  end
+
+  vec_vmu #(
+      .VLEN(VLEN)
+  ) u_vmu (
+      .i_clk             (i_clk),
+      .i_rst             (i_rst),
+      .i_fatal_stop      (i_fatal_stop),
+      .i_cmd_valid       (vmu_cmd_valid),
+      .i_ppn0            (vmem_desc_ppn0_q),
+      .i_ppn1            (vmem_desc_ppn1_q),
+      .i_page_offset     (vmem_desc_page_offset_q),
+      .i_first_elem      (vmem_desc_first_elem_q),
+      .i_last_elem       (vmem_desc_last_elem_q),
+      .i_eew_log2        (vmem_desc_eew_log2_q),
+      .i_row_stride      (64'd0),
+      .i_row_count       (16'd1),
+      .i_active_mask     (vmem_desc_active_mask_q),
+      .i_is_store        (vmem_desc_is_store_q),
+      .i_vd_vs3          (vmem_desc_vd_vs3_q),
+      .i_vmt_idx         (vmem_desc_vmt_idx_q),
+      .i_free_vmt_on_done(vmem_desc_free_vmt_q),
+      .i_dbg_seg0        (vmem_desc_seg0_q),
+      .i_dbg_seg1        (vmem_desc_seg1_q),
+      .o_idle            (vmu_idle),
+      .o_done            (vmu_done),
+      .o_vmt_done_valid  (vmu_vmt_done_valid),
+      .o_vmt_done_idx    (vmu_vmt_done_idx),
+      .o_xr_en           (vmu_xr_en),
+      .o_xr_addr         (vmu_xr_addr),
+      .i_xr_data         (xr_data),
+      .o_xw_en           (vmu_xw_en),
+      .o_xw_addr         (vmu_xw_addr),
+      .o_xw_data         (vmu_xw_data),
+      .o_xw_be           (vmu_xw_be),
+      .o_lc_req_valid    (o_lc_req_valid),
+      .i_lc_req_ready    (i_lc_req_ready),
+      .o_lc_req_write    (o_lc_req_write),
+      .o_lc_req_addr     (o_lc_req_addr),
+      .o_lc_req_data     (o_lc_req_data),
+      .o_lc_req_mask     (o_lc_req_mask),
+      .o_lc_req_id       (o_lc_req_id),
+      .i_lc_resp_valid   (i_lc_resp_valid),
+      .i_lc_resp_id      (i_lc_resp_id),
+      .i_lc_resp_data    (i_lc_resp_data),
+      .i_lc_resp_error   (i_lc_resp_error),
+      .o_fatal           (o_vmu_fatal),
+      .o_fatal_addr      (o_vmu_fatal_addr)
+  );
+
+  assign o_vtox_complete  = vhead_complete.valid ? vhead_complete : vtox_only_complete;
+  assign o_vmt_done_valid = zero_vmt_done_valid || vmu_vmt_done_valid;
+  assign o_vmt_done_idx   = zero_vmt_done_valid ? zero_vmt_done_idx : vmu_vmt_done_idx;
+
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // A vector-to-scalar result is presented only while its entry is the head.
   logic x_reset_seen_q = 1'b0;
   always @(posedge i_clk) begin
     if (i_rst) x_reset_seen_q <= 1'b1;
-    if (x_reset_seen_q && !i_rst && xs == X_OUT && (i_rob_empty || i_head_tag != vtox_tag_q))
-`ifdef FROST_SIM_ASSERTIONS
-      assert (1'b0) else
-`endif
-      $error(
-          "vec_unit: vector-to-scalar result presented for tag %0d, head %0d, empty %0b",
-          vtox_tag_q,
-          i_head_tag,
-          i_rob_empty
-      );
+    if (x_reset_seen_q && !i_rst) begin
+      assert (!(xs == X_OUT && (i_rob_empty || i_head_tag != vtox_tag_q)))
+      else
+        $error(
+            "vec_unit: vector-to-scalar result presented for tag %0d, head %0d, empty %0b",
+            vtox_tag_q,
+            i_head_tag,
+            i_rob_empty
+        );
+      assert (!(vhead_complete.valid && vtox_only_complete.valid));
+      assert (!(zero_vmt_done_valid && vmu_vmt_done_valid));
+      assert ($onehot0({vtox_xr_en, vhead_vrf_read_en, vmu_xr_en}));
+      assert (!(desc_launch_valid && vmem_desc_valid_q));
+    end
   end
 `endif
 `endif
-
-  always_comb begin
-    o_vtox_complete = '0;
-    o_vtox_complete.valid = (xs == X_OUT);
-    o_vtox_complete.tag = vtox_tag_q;
-    o_vtox_complete.value = riscv_pkg::FLEN'(xres_q);
-  end
 
 endmodule

@@ -242,6 +242,7 @@ jobs:
               [csr_test] or [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or
               [satp_drain_test] or [ad_fault_test] or [smode_test] or [csr_rmw_test] or
               [ptw_bus_fault_test] or [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or
+              [svinval_test] or
               [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error]
           - name: Real Programs (Interrupts)
             coverage: [ddr]
@@ -341,7 +342,8 @@ jobs:
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
               [pause_test] or [ras_slot_bench] or [ras_repair_bench] or
-              [vec_state_test_v256] or [vec_vsetvl_test_v256] or [vec_arith_test_v256]
+              [vec_state_test_v256] or [vec_vsetvl_test_v256] or [vec_arith_test_v256] or
+              [vec_mem_test_v256] or [vec_order_test_v256]
           - name: Real Programs (Memory and NIC stress)
             coverage: [bram]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
@@ -365,7 +367,7 @@ jobs:
               or [csr_test] or
               [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or [satp_drain_test] or
               [ad_fault_test] or [smode_test] or [csr_rmw_test] or [ptw_bus_fault_test] or
-              [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or
+              [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or [svinval_test] or
               [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error] or
               [imsic_csr_test] or [imsic_msi_test] or
               [imsic_collision_test] or [timer_replay_test] or [imsic_aplic_coexist_test] or
@@ -390,7 +392,8 @@ jobs:
               [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [ddr_bench] or
               [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz]
               or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
-              [opensbi_smoke_no_misaligned_hw] or [isa_test_sram_macros] or [ddr_test_sram_macros]
+              [opensbi_smoke_no_misaligned_hw] or [opensbi_reset_cold] or [opensbi_reset_warm]
+              or [isa_test_sram_macros] or [ddr_test_sram_macros]
               or [ddr_exec_test_sram_macros] or
               [nic_loopback_sram_macros] or [cache_counters_openocd] or [async_hello_world]
               or [async_nic_loopback] or [async_dma_torture]
@@ -410,7 +413,8 @@ jobs:
               or [memerr_test] or [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
               or [sstvala_fault_test] or [ddr_reset_distribution] or [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
               or [pause_test] or [ras_slot_bench] or [ras_repair_bench]
-              or [vec_state_test_v256] or [vec_vsetvl_test_v256] or [vec_arith_test_v256])
+              or [vec_state_test_v256] or [vec_vsetvl_test_v256] or [vec_arith_test_v256] or
+              [vec_mem_test_v256] or [vec_order_test_v256])
           - name: Real Programs (CoreMark-PRO / core)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
@@ -482,6 +486,18 @@ jobs:
               coverage: [bram]
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_smoke_no_misaligned_hw]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (OpenSBI cold reset)
+              coverage: [bram]
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[opensbi_reset_cold]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (OpenSBI warm reset)
+              coverage: [bram]
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[opensbi_reset_warm]"
           # The OpenOCD session that reads the cache counters is long, and its
           # program runs from low BRAM in either tier.
           - mem_config: bram
@@ -1054,6 +1070,8 @@ jobs:
             python3 tests/test_testrig.py --trace-dir verif/testrig/traces --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --crypto 50 --continue-on-fail
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --svinval 50 --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --sscofpmf
 

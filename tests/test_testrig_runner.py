@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 testrig = importlib.import_module("test_testrig")
-GENERATORS = ("atomics", "crypto", "zcb", "fp-ext", "mmu", "cmo", "vector")
+GENERATORS = ("atomics", "crypto", "zcb", "fp-ext", "mmu", "cmo", "vector", "svinval")
 
 
 @pytest.fixture
@@ -229,6 +229,52 @@ def test_incomplete_generator(
 
 
 @pytest.mark.parametrize(
+    "sail,frost,passed",
+    (
+        ([], [], False),
+        ([], [(2, 2), (2, 2)], False),
+        ([(2, 2), (2, 2)], [], False),
+        ([(2, 2)], [(2, 2)], False),
+        ([(2, 2), (2, 0)], [(2, 2), (2, 2)], False),
+        ([(2, 2), (2, 2)], [(2, 2), (2, 0)], False),
+        ([(2, 2), (2, 1)], [(2, 2), (2, 2)], False),
+        ([(2, 2), (2, 2)], [(2, 2), (2, 1)], False),
+        ([(1, 1), (1, 1)], [(1, 1), (1, 1)], False),
+        ([(2, 2), (2, 2)], [(2, 2), (2, 2)], True),
+    ),
+)
+def test_svinval_comparison_counts(
+    sail: list[tuple[int, int]],
+    frost: list[tuple[int, int]],
+    passed: bool,
+    session: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    """Svinval requires the requested traces and instructions from both peers."""
+
+    def write(directory: Path, count: int, seed: int, length: int) -> list[Path]:
+        assert (count, seed, length) == (2, 7, 200)
+        directory.mkdir()
+        paths = [directory / f"trace{i}.S" for i in range(count)]
+        for path in paths:
+            path.write_text(".4byte 0x13\n.2byte 0x1\n")
+        return paths
+
+    monkeypatch.setattr(testrig.svinval, "write_tests", write)
+    session.sail, session.frost = sail, frost
+    # Even a successful engine exit cannot replace the actual comparisons.
+    session.output = "+++ OK, passed 2 tests.\n"
+    assert (session.run(["--svinval", "2", "--seed", "7"]) == 0) == passed
+    output = capsys.readouterr().out
+    assert "expected at least 2 traces and 4 instructions" in output
+    if passed:
+        assert "TestRIG PASS: compared 2 traces and 4 instructions" in output
+    else:
+        assert "TestRIG FAIL" in output
+
+
+@pytest.mark.parametrize(
     "output,traces",
     (
         ("Warning: no tests selected\n", []),
@@ -292,10 +338,11 @@ def test_engine_failure(session: SimpleNamespace, tmp_path: Path, capsys: Any) -
     assert "TestRIG FAIL" in capsys.readouterr().out
 
 
-def test_counted_modes_cannot_hide_behind_sscofpmf() -> None:
+@pytest.mark.parametrize("option", GENERATORS)
+def test_counted_modes_cannot_hide_behind_sscofpmf(option: str) -> None:
     """The Sscofpmf replay exception permits only a single trace override."""
     with pytest.raises(SystemExit):
-        testrig.parse_arguments(["--sscofpmf", "--trace", "x.S", "--crypto", "1"])
+        testrig.parse_arguments(["--sscofpmf", "--trace", "x.S", f"--{option}", "1"])
 
 
 @pytest.mark.parametrize("option", ("--trace", "--trace-dir"))

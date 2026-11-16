@@ -144,6 +144,7 @@ module tomasulo_coherent_cut_test_harness #(
     input logic i_mmu_sum,
     input logic i_mmu_mxr,
     input logic i_mmu_eff_priv_u,
+    input riscv_pkg::pm_mode_t i_mmu_pm_mode,
     input logic i_csr_translation_flush_req,
     output logic o_tlb_invalidate,
     input logic i_csr_tlb_flush_all_req,
