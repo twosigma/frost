@@ -5715,6 +5715,11 @@ module cpu_ooo #(
         assert (!(vec_vtox_commit &&
                   (csr_commit_fire || vcfg_commit.valid || vec_varith_commit ||
                    vec_vstore_commit || vec_vmem_fault_vstart_valid)));
+        // The tracker writes a checkpoint from the allocation's next state
+        // and orders a restore before the allocation: bundles dispatch whole,
+        // and recovery holds dispatch.
+        p_vec_tracker_save_allocates : assert (!checkpoint_save || vec_alloc);
+        p_vec_tracker_restore_without_allocation : assert (!(checkpoint_restore && vec_alloc));
         // Dispatch takes the registered legality: it belongs to the
         // allocating instruction under the vtype in effect.
         if (vec_alloc && ((from_id_to_ex.instruction_operation == riscv_pkg::VARITH) ||

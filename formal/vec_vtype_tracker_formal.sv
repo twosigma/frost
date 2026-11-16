@@ -16,8 +16,9 @@
 
 /* A surviving memory allocation's restart clear cannot become an older CSR value.
  * Inputs are free after an initial reset. Dispatch is quiescent during recovery
- * and a retiring CSR; checkpoints may be restored only after being saved in the
- * current full-flush epoch. A later CSR retirement supersedes earlier prediction.
+ * and a retiring CSR, and a checkpoint is saved only while slot 1 allocates;
+ * checkpoints may be restored only after being saved in the current full-flush
+ * epoch. A later CSR retirement supersedes earlier prediction.
  */
 module vec_vtype_tracker_formal (
     input logic i_clk
@@ -63,6 +64,7 @@ module vec_vtype_tracker_formal (
     if (!seen_reset) assume (rst);
     if (rst || flush_all || restore || arch_reload) assume (!alloc);
     if (rst || flush_all || restore) assume (!save);
+    if (save) assume (alloc);  // bundles dispatch whole (p_vec_tracker_save_allocates)
     assume (!(restore && (rst || flush_all || arch_reload)));
     if (restore) assume (ckpt_valid_q[restore_id]);
     owned_n = owned_q;

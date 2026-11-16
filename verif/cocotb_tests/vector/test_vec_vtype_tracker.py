@@ -81,6 +81,9 @@ async def configuration_handoff(dut: Any) -> None:
     assert not int(dut.o_valid.value)
     await FallingEdge(dut.i_clk)
     assert int(dut.o_valid.value) and int(dut.o_vstart_nonzero.value)
+    # A checkpoint is saved by its branch, which allocates in that cycle.
+    dut.i_alloc.value = 1
+    dut.i_alloc_op.value = ops["BEQ"]
     dut.i_ckpt_save.value = 1
     await FallingEdge(dut.i_clk)
     dut.i_ckpt_save.value = 0
@@ -168,10 +171,11 @@ async def immediate_and_recovery(dut: Any) -> None:
     await cycles(5)
     assert int(dut.o_valid.value) and int(dut.o_vtype.value) == 0x18
 
-    # Restore a known checkpoint after a wrong-path immediate change.
+    # Restore a known checkpoint after a wrong-path immediate change. A
+    # checkpoint is saved by its branch, which allocates in that cycle.
     dut.i_ckpt_save.value = 1
     dut.i_ckpt_id.value = 0
-    await cycles(1)
+    await allocate("BEQ")
     dut.i_ckpt_save.value = 0
     await allocate("VSETIVLI", 0xC00)
     assert int(dut.o_vtype.value) == 0
@@ -187,7 +191,7 @@ async def immediate_and_recovery(dut: Any) -> None:
     await allocate("VSETVL")
     dut.i_ckpt_save.value = 1
     dut.i_ckpt_id.value = 1
-    await cycles(1)
+    await allocate("BEQ")
     dut.i_ckpt_save.value = 0
     dut.i_vcfg_in_flight.value = 1
     await allocate("VSETVLI", 0x08)
@@ -329,7 +333,7 @@ async def memory_prediction_recovery(dut: Any) -> None:
         # A checkpoint before the memory instruction must restore nonzero start.
         dut.i_ckpt_id.value = 0
         dut.i_ckpt_save.value = 1
-        await cycles()
+        await allocate("BEQ")
         dut.i_ckpt_save.value = 0
 
         # Reload waits for a configuration, while memory may already allocate.
