@@ -18,8 +18,8 @@
 /*
   Instruction-side arithmetic legality, precomputed before the decoded queue.
   Bits 31:0 index {vsew[1:0], vlmul}; bit 32 says whether vill or an
-  unsupported SEW makes this instruction illegal. Whole-register moves do
-  not depend on vtype. Dispatch selects a bit from the registered lookup.
+  unsupported SEW makes this instruction illegal. Dispatch selects a bit
+  from the registered lookup.
 */
 module vec_lmul_legality (
     input logic [31:0] i_insn,
@@ -36,7 +36,7 @@ module vec_lmul_legality (
   assign o_mem_illegal = !i_is_illegal && !i_is_fetch_fault &&
       ((i_op == riscv_pkg::VLOAD) || (i_op == riscv_pkg::VSTORE));
 
-  assign o_illegal[32] = !((i_insn[14:12] == 3'b011) && (i_insn[31:26] == 6'h27));
+  assign o_illegal[32] = 1'b1;
   for (genvar k = 0; k < 32; k++) begin : gen_class
     assign o_illegal[k] = riscv_pkg::vector_arith_illegal(9'(k), i_insn);
   end

@@ -697,10 +697,11 @@ that depends on `vtype` (vill, register-group alignment, mask-destination
 overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
 (vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
-unknown). `vector/vec_lmul_legality.sv` evaluates the EEW, EMUL,
+unknown). Allocation immediately restarts the tracker's quiet interval,
+before the registered ROB in-flight indication arrives. `vector/vec_lmul_legality.sv` evaluates the EEW, EMUL,
 alignment and overlap rules for all 32 SEW/LMUL combinations before the
-decoded queue. Dispatch selects the tracked configuration and rejects vill
-except for whole-register moves. The tracker also checkpoints whether
+decoded queue. Dispatch selects the tracked configuration and rejects vill.
+The tracker also checkpoints whether
 `vstart` is nonzero, clearing it for each dispatched vector instruction and
 reloading it after CSR accesses and full flushes. Arithmetic rejects nonzero
 `vstart`; scalar moves and whole-register moves follow their specified

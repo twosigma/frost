@@ -3853,6 +3853,93 @@ static const struct test_case cases[] = {
 };
 #endif
 
+#define OPV(f, m, a, b, t, d)                                                                      \
+    (((uint32_t) (f) << 26) | ((m) << 25) | ((a) << 20) | ((b) << 15) | ((t) << 12) | ((d) << 7) | \
+     0x57)
+#define EMIT(word) __asm__ volatile(".word %0" ::"i"(word) : "memory")
+#define ILLEGAL(word)                                                                              \
+    do {                                                                                           \
+        vt_trap_clear();                                                                           \
+        EMIT(word);                                                                                \
+        VT_EQ(vt_trap_count, 1, "reserved form traps");                                            \
+        VT_EQ(vt_trap_cause, 2, "illegal-instruction cause");                                      \
+        VT_EQ(vt_trap_tval, word, "illegal instruction word");                                     \
+    } while (0)
+static void special_cases(void)
+{
+    /* Read and clear saturation immediately after a long committed operation. */
+    setvl(~0ul, 3);
+    splat(8, 0x7f7f7f7f7f7f7f7full);
+    VT_CSR_WRITE(vxsat, 0);
+    EMIT(OPV(0x21, 1, 8, 8, 0, 16));
+    VT_EQ(VT_CSR_READ(vxsat), 1, "saturation read waits for execution");
+    VT_CSR_WRITE(vxsat, 0);
+    EMIT(OPV(0x21, 1, 8, 8, 0, 16));
+    VT_CSR_WRITE(vxsat, 0);
+    VT_EQ(VT_CSR_READ(vxsat), 0, "younger saturation clear wins");
+    splat(0, 0);
+    EMIT(OPV(0x21, 0, 8, 8, 0, 16));
+    VT_EQ(VT_CSR_READ(vxsat), 0, "inactive saturation does not set vxsat");
+    unsigned long status = VT_CSR_READ(mstatus);
+    VT_CSR_WRITE(mstatus, (status & ~0x600ul) | 0x200ul);
+    EMIT(OPV(0x21, 1, 8, 8, 0, 16));
+    VT_EQ((VT_CSR_READ(mstatus) >> 9) & 3, 3, "arithmetic dirties VS");
+#ifndef VT_SPIKE
+    /* The reference simulator reserves all nonzero arithmetic vstart values. */
+    setvl(~0ul, 24);
+    splat(8, 0x81726354a5b6c7d8ull);
+    splat(16, 0xaaaaaaaaaaaaaaaaull);
+    setvl(0, 0); /* Whole-register moves ignore vl and start in SEW units. */
+    VT_CSR_WRITE(vstart, 1);
+    EMIT(OPV(0x27, 1, 8, 0, 3, 16));
+    VT_EQ(VT_CSR_READ(vstart), 0, "whole move clears vstart");
+    setvl(~0ul, 24);
+    VT_EQ(extract(16), 0x81726354a5b6c7aaull, "whole move preserves prestart byte");
+
+    setvl(2, 24);
+    VT_CSR_WRITE(vstart, 1);
+    {
+        register unsigned long a0 __asm__("a0");
+        __asm__ volatile(".word %1" : "=r"(a0) : "i"(OPV(0x10, 1, 8, 0, 2, 10)) : "memory");
+        VT_EQ(a0, 0x81726354a5b6c7d8ull, "scalar extract ignores vstart");
+    }
+    VT_EQ(VT_CSR_READ(vstart), 0, "scalar extract clears vstart");
+    VT_CSR_WRITE(vstart, 1);
+    {
+        register unsigned long a0 __asm__("a0") = 0x1234;
+        __asm__ volatile(".word %1" ::"r"(a0), "i"(OPV(0x10, 1, 0, 10, 6, 16)) : "memory");
+    }
+    VT_EQ(VT_CSR_READ(vstart), 0, "scalar insert clears vstart");
+    VT_EQ(extract(16), 0x1234, "scalar insert writes element zero");
+    setvl(1, 24);
+    splat(16, 0x4321);
+    VT_CSR_WRITE(vstart, 1);
+    {
+        register unsigned long a0 __asm__("a0") = 0x1234;
+        __asm__ volatile(".word %1" ::"r"(a0), "i"(OPV(0x10, 1, 0, 10, 6, 16)) : "memory");
+    }
+    VT_EQ(extract(16), 0x4321, "scalar insert at vstart equal to vl is a no-op");
+    setvl(~0ul, 0);
+    /* This implementation never interrupts arithmetic mid-instruction. */
+    VT_CSR_WRITE(vstart, 1);
+    ILLEGAL(OPV(0, 1, 8, 24, 0, 16));
+    VT_EQ(vt_trap_vstart, 1, "nonzero arithmetic vstart is reserved");
+#endif
+    setvl(~0ul, 0x20); /* Whole moves depend on SEW and require a valid vtype. */
+    ILLEGAL(OPV(0x27, 1, 8, 0, 3, 16));
+    setvl(~0ul, 0);
+    ILLEGAL(OPV(0x12, 1, 8, 2, 2, 16));  /* vsext/zext vf8 at SEW 8 */
+    ILLEGAL(OPV(0x0c, 1, 8, 24, 0, 8));  /* gather overlaps source */
+    ILLEGAL(OPV(0x17, 0, 8, 24, 2, 16)); /* compress requires vm=1 */
+    setvl(~0ul, 0x18);
+    ILLEGAL(OPV(0x30, 1, 8, 24, 2, 16)); /* widening beyond ELEN */
+    setvl(~0ul, 2);
+    ILLEGAL(OPV(0x25, 1, 8, 24, 2, 17)); /* LMUL 4 destination misaligned */
+    setvl(~0ul, 0x0f);                   /* e16,mf2: widening overlap has fractional source. */
+    ILLEGAL(OPV(0x30, 1, 8, 24, 2, 8));
+    vt_trap_clear();
+}
+
 int main(void)
 {
     vt_enable_vector();
@@ -3882,5 +3969,6 @@ int main(void)
         }
         VT_EQ(vt_trap_count, 0, "legal arithmetic does not trap");
     }
+    special_cases();
     return vt_finish("vec_integer_test");
 }

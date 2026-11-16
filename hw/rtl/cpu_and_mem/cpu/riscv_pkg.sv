@@ -3285,8 +3285,8 @@ package riscv_pkg;
 
   // Geometry of accepted integer arithmetic: EEW and EMUL, aligned groups,
   // permitted source/destination overlaps, and instructions using masks or
-  // scalar vector elements independently of LMUL. Whole-register moves are
-  // independent of vtype; other encodings require a supported vtype.
+  // scalar vector elements independently of LMUL. Whole-register moves ignore
+  // vl and LMUL but still use SEW and require a supported vtype.
   function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
     int ml, sew, da, sa, sb, nd, na, nb, de, ae, be, dm, am, bm;
     logic [5:0] f6;
@@ -3348,7 +3348,8 @@ package riscv_pkg;
         dm > 3 || dm < -3 ||
         (uses_a && (am > 3 || am < -3 || (ae < 0 && !(masks || scan || iota)) || ae > 3)) ||
         (uses_b && (bm > 3 || bm < -3 || be > 3)) || de > 3 ||
-        (da % nd != 0) || (uses_a && sa % na != 0) || (uses_b && sb % nb != 0) ||
+        ((da & (nd - 1)) != 0) ||
+        (uses_a && (sa & (na - 1)) != 0) || (uses_b && (sb & (nb - 1)) != 0) ||
         (!vm && da == 0 && !mask_dest && !red);
     if (!red && !scalar_move) begin
       if (uses_a) illegal |= vector_overlap_illegal(da, nd, de, sa, na, ae, am);
@@ -3361,7 +3362,9 @@ package riscv_pkg;
     if (scan && !vm && da == 0) illegal = 1'b1;
     if (whole) begin
       nd = sb + 1;
-      illegal = (da % nd != 0) || (sa % nd != 0);
+      illegal = vt[8] || sew > 3 || ml == -4 || (ml < sew - 3) ||
+          !(sb == 0 || sb == 1 || sb == 3 || sb == 7) ||
+          ((da & (nd - 1)) != 0) || ((sa & (nd - 1)) != 0);
     end
     vector_arith_illegal = illegal;
   endfunction

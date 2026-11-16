@@ -68,9 +68,15 @@ module vec_vtype_tracker #(
       .o_vl       ()
   );
 
+  // Allocation precedes the registered ROB in-flight flag. Restart the quiet
+  // interval immediately so a register-form vsetvl cannot reload the old CSR
+  // value in that gap.
   logic [2:0] quiet_q;  // cycles with no vector-config instruction in flight
   always_ff @(posedge i_clk) begin
-    if (i_rst || i_vcfg_in_flight) quiet_q <= '0;
+    if (i_rst || i_vcfg_in_flight ||
+        (i_alloc && (i_alloc_op == riscv_pkg::VSETVL || i_alloc_op == riscv_pkg::VSETVLI ||
+                     i_alloc_op == riscv_pkg::VSETIVLI)))
+      quiet_q <= '0;
     else if (quiet_q != 3'd3) quiet_q <= quiet_q + 3'd1;
   end
 

@@ -175,7 +175,7 @@ def execute(
     if name.startswith("mv") and name.endswith("r"):
         vl = int(name[2:-1]) * model.vlen // sew
     if name == "mv_s_x":
-        vl = min(vl, 1)
+        vl, start = (1, 0) if start < vl else (0, 0)
     vlmax = int(model.vlen // sew * lm)
     for i in range(start, vl):
         a = old.elem(vs2, i, aw)
@@ -371,11 +371,46 @@ async def integer_families(dut: Any) -> None:
         await FallingEdge(dut.i_clk)
     dut.i_rst.value = 0
     cases = [
-        (spec, w, rm) for spec in SPECS for w in [8, 16, 32, 64] for rm in range(4)
+        (spec, w, rm, False)
+        for spec in SPECS
+        for w in [8, 16, 32, 64]
+        for rm in range(4)
     ]
+    # Legal source/destination overlaps need original source values even as
+    # earlier destination elements are written. Include the high-half overlap
+    # for widening, low-half for narrowing, and in-place descending slides.
+    overlap_names = {
+        "wmul",
+        "wmacc",
+        "wadd",
+        "wadd_w",
+        "wsub",
+        "wsll",
+        "nsrl",
+        "nclip",
+        "zext2",
+        "sext2",
+        "zext4",
+        "sext8",
+        "macc",
+        "madd",
+        "sadd",
+        "smul",
+        "slidedown",
+        "slide1down",
+        "redsum",
+        "wredsum",
+        "mand",
+        "madc",
+    }
+    for spec in SPECS:
+        if spec[0] in overlap_names:
+            cases.extend(
+                (spec, 64 if "ext" in spec[0] else 16, rm, True) for rm in range(4)
+            )
     rng.shuffle(cases)
     checked = 0
-    for (name, f6, f3, code), sew, rm in cases:
+    for (name, f6, f3, code), sew, rm, overlap in cases:
         width_change = name.startswith(("w", "nsr", "nclip"))
         if width_change and sew == 64:
             continue
@@ -385,6 +420,10 @@ async def integer_families(dut: Any) -> None:
         lm = 2 ** (lmul_code if lmul_code < 4 else lmul_code - 8)
         if sew > 64 * lm or width_change and lm > 4:
             lmul_code, lm = 0, 1
+        if name == "rgatherei16" and not 0.125 <= lm * 16 / sew <= 8:
+            lmul_code, lm = 0, 1
+        if name.startswith(("zext", "sext")) and lm / int(name[4:]) < 0.125:
+            lmul_code, lm = 0, 1
         vd, vs2, vs1 = 16, 8, 24
         if name.startswith(("red", "wred")):
             vd, vs1 = 5, 3
@@ -393,6 +432,19 @@ async def integer_families(dut: Any) -> None:
         if name == "id":
             vs2 = 0
         whole = name.startswith("mv") and name.endswith("r")
+        if overlap:
+            lmul_code, lm = 1, 2
+            vd, vs2, vs1 = 8, 8, 24
+            if (
+                name.startswith("w")
+                and not name.startswith("wred")
+                and not name.endswith("_w")
+            ):
+                vs2 = 10  # upper two registers of the four-register destination
+            if "ext" in name:
+                lm = int(name[4:])
+                lmul_code = lm.bit_length() - 1
+                vs2 = vd + lm - 1
         vm = rng.randrange(2)
         if name in {"adc", "sbc"}:
             vm = 0
@@ -406,6 +458,8 @@ async def integer_families(dut: Any) -> None:
             vm = 1
         vlmax = int(vlen // sew * lm)
         vl = rng.choice([0, 1, vlmax, rng.randrange(vlmax + 1)])
+        if overlap:
+            vl = vlmax
         scalar = rng.getrandbits(64)
         if "slide" in name or name == "rgather":
             scalar = rng.choice([0, 1, 3, vlmax, 2**64 - 1])
@@ -432,8 +486,26 @@ async def integer_families(dut: Any) -> None:
             dut.i_xw_be.value = (1 << (vlen // 8)) - 1
             await FallingEdge(dut.i_clk)
         dut.i_xw_en.value = 0
+        start = 0
+        if whole:
+            count = int(name[2:-1]) * vlen // sew
+            start = rng.choice([0, 1, count - 1, count, count + 1])
+        elif name == "mv_s_x":
+            start = rng.choice([0, 1, vl, vl + 1])
         expected_sat = execute(
-            model, name, sew, lm, vl, vm, vd, vs1, vs2, scalar, f3 in [3, 4, 6], rm
+            model,
+            name,
+            sew,
+            lm,
+            vl,
+            vm,
+            vd,
+            vs1,
+            vs2,
+            scalar,
+            f3 in [3, 4, 6],
+            rm,
+            start,
         )
         if os.environ.get("FROST_VECTOR_NEGATIVE_CONTROL") == "1" and checked == 0:
             model.regs[vd] ^= 1
@@ -442,7 +514,7 @@ async def integer_families(dut: Any) -> None:
         dut.i_vsew.value = sew.bit_length() - 4
         dut.i_vlmul.value = lmul_code
         dut.i_vl.value = vl
-        dut.i_vstart.value = 0
+        dut.i_vstart.value = start
         dut.i_rs1.value = scalar & ((1 << 64) - 1)
         dut.i_vxrm.value = rm
         dut.i_valid.value = 1

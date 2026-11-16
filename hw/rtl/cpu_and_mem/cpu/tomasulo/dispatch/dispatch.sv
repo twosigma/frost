@@ -1413,7 +1413,7 @@ module dispatch #(
     o_rob_alloc_req.vec_illegal = ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) ||
         (o_rob_alloc_req.is_varith &&
          (((i_vtype_spec[8] || i_vtype_spec[5]) && i_vec_lmul_illegal[32]) ||
-          i_vec_lmul_illegal[i_vtype_spec[4:0]])) || i_vec_mem_illegal ||
+          i_vec_lmul_illegal[{1'b0, i_vtype_spec[4:0]}])) || i_vec_mem_illegal ||
         (i_vec_vstart_nonzero &&
          ((o_rob_alloc_req.is_varith && !((i_from_id_to_ex.insn_bits[14:12] == 3'b011 &&
              i_from_id_to_ex.insn_bits[31:26] == 6'h27) ||
