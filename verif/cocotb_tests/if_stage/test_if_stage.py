@@ -4084,3 +4084,187 @@ async def test_walk_past_native_predecessor_slot2_redirect_at_pending(
     await _exercise_walk_past_native_predecessor_slot2_redirect(
         dut, target_at_owner=True
     )
+
+
+@cocotb.test()
+async def test_slot2_tage_valid_positions_spanning_fault_and_replay(dut: Any) -> None:
+    """Slot-2 TAGE coverage, branch flag, and PD target candidates cover all positions and replay."""
+    await _setup_test(dut)
+    dut.i_disable_branch_prediction.value = 0
+
+    c_beqz_p16 = (0b110 << 13) | (0b10 << 10) | (1 << 7) | 0b01  # c.beqz x9, +16
+    c_beqz_exp = 0x00048863  # beq x9, x0, +16
+    native_beq_m32 = 0xFE2080E3  # beq x1, x2, -32
+
+    async def _train_slot2(
+        pc: int,
+        slot2_pc: int,
+        current_w: int,
+        next_w: int,
+        csb: int,
+        nsb: int,
+        taken: bool,
+    ) -> None:
+        _drive_fetch(
+            dut,
+            current_word=current_w,
+            next_word=next_w,
+            current_sb=csb | _rvc_sideband(current_w),
+            next_sb=nsb | _rvc_sideband(next_w),
+            bank_sel=(pc >> 2) & 1,
+        )
+        await _redirect_to(dut, pc)
+        lookup_bits = int(dut.o_tage_slot_lookup_2.value)
+        dut.i_tage_train_valid.value = 1
+        dut.i_tage_train_lookup.value = lookup_bits
+        dut.i_tage_train_bank.value = (slot2_pc >> 2) & 1
+        dut.i_tage_train_alt_taken.value = int(not taken)
+        dut.i_tage_train_taken.value = int(taken)
+        dut.i_tage_train_mispredicted.value = 1
+        await _advance_cycle(dut)
+        dut.i_tage_train_valid.value = 0
+        await _advance_cycle(dut)
+
+    # Test every slot-2 position:
+    # 1. SLOT2_CURRENT_HI compressed (pc=+0, slot1 C.NOP, slot2 C.BEQZ at +2)
+    # 2. SLOT2_CURRENT_HI spanning native (pc=+0, slot1 C.NOP, slot2 BEQ at +2..+5)
+    # 3. SLOT2_NEXT_LO native (pc=+0, slot1 ADD, slot2 BEQ at +4)
+    # 4. SLOT2_NEXT_LO compressed after high-half slot 1 (pc=+2, slot1 C.NOP, slot2 C.BEQZ at +4)
+    # 5. SLOT2_NEXT_HI compressed after spanning native slot 1 (pc=+2, slot1 spanning ADD, slot2 C.BEQZ at +6)
+    shapes = [
+        (
+            0x8000_4000,
+            0x8000_4002,
+            _word(lo=COMPRESSED_NOP, hi=c_beqz_p16),
+            NOP_INSTR,
+            _sideband(compressed_lo=True, compressed_hi=True),
+            _sideband(),
+            True,
+            +16,
+            True,
+        ),
+        (
+            0x8000_4100,
+            0x8000_4102,
+            _word(lo=COMPRESSED_NOP, hi=native_beq_m32 & 0xFFFF),
+            native_beq_m32 >> 16,
+            _sideband(compressed_lo=True),
+            _sideband(),
+            False,
+            -32,
+            False,
+        ),
+        (
+            0x8000_4200,
+            0x8000_4204,
+            ADD_INSTR_A,
+            native_beq_m32,
+            _sideband(native_pairable_lo=True),
+            _sideband(),
+            False,
+            -32,
+            True,
+        ),
+        (
+            0x8000_4302,
+            0x8000_4304,
+            _word(lo=COMPRESSED_NOP, hi=COMPRESSED_NOP),
+            _word(lo=c_beqz_p16, hi=COMPRESSED_NOP),
+            _sideband(compressed_lo=True, compressed_hi=True),
+            _sideband(compressed_lo=True, compressed_hi=True),
+            True,
+            +16,
+            False,
+        ),
+        (
+            0x8000_4402,
+            0x8000_4406,
+            _word(lo=COMPRESSED_NOP, hi=ADD_INSTR_A & 0xFFFF),
+            _word(lo=ADD_INSTR_A >> 16, hi=c_beqz_p16),
+            _sideband(compressed_lo=True, native_pairable_hi=True),
+            _sideband(compressed_hi=True),
+            True,
+            +16,
+            True,
+        ),
+    ]
+
+    for pc, slot2_pc, cw, nw, csb, nsb, is_comp, imm, trained_taken in shapes:
+        await _train_slot2(pc, slot2_pc, cw, nw, csb, nsb, trained_taken)
+        _drive_fetch(
+            dut,
+            current_word=cw,
+            next_word=nw,
+            current_sb=csb | _rvc_sideband(cw),
+            next_sb=nsb | _rvc_sideband(nw),
+            bank_sel=(pc >> 2) & 1,
+        )
+        await _redirect_to(dut, pc)
+        pkt2 = _read_if_packet(dut, slot2=True)
+        assert not pkt2["sel_nop"], hex(pc)
+        assert pkt2["program_counter"] == slot2_pc
+        assert bool(int(dut.o_tage_slot_valid.value) & 0b10), hex(pc)
+        assert pkt2["tage_valid"] is True, hex(pc)
+        assert pkt2["tage_taken"] is trained_taken, hex(pc)
+        assert pkt2["is_cond_branch"] is True, hex(pc)
+        expected_low = (slot2_pc + imm) & 0x1FFF
+        actual_low = (
+            pkt2["pd_target_compressed_low"]
+            if is_comp
+            else pkt2["pd_target_native_low"]
+        )
+        assert actual_low == expected_low, (hex(pc), hex(actual_low), hex(expected_low))
+        assert pkt2["effective_instr"] == (c_beqz_exp if is_comp else native_beq_m32)
+
+    # Fault masking on slot 2: next-word fault on spanning slot-2 branch clears
+    # packet tage_valid while preserving packet fault status.
+    pc, slot2_pc, cw, nw, csb, nsb, _, _, _ = shapes[1]
+    _drive_fetch(
+        dut,
+        current_word=cw,
+        next_word=nw,
+        current_sb=csb | _rvc_sideband(cw),
+        next_sb=nsb | _rvc_sideband(nw),
+        bank_sel=(pc >> 2) & 1,
+    )
+    await _redirect_to(dut, pc)
+    dut.i_instr_fault1.value = 1
+    await _settle()
+    pkt2_fault = _read_if_packet(dut, slot2=True)
+    assert pkt2_fault["fetch_fault"] is True
+    assert pkt2_fault["tage_valid"] is False
+    dut.i_instr_fault1.value = 0
+
+    # Stall capture and replay: capture the trained slot-2 packet on a stall
+    # entry, change live fetch during the stall, then release and verify replay
+    # preserves tage_valid, tage_taken, is_cond_branch, and pd_target_*_low.
+    pc, slot2_pc, cw, nw, csb, nsb, _, imm, trained_taken = shapes[2]
+    _drive_fetch(
+        dut,
+        current_word=cw,
+        next_word=nw,
+        current_sb=csb | _rvc_sideband(cw),
+        next_sb=nsb | _rvc_sideband(nw),
+        bank_sel=(pc >> 2) & 1,
+    )
+    await _redirect_to(dut, pc)
+    live_pkt2 = _read_if_packet(dut, slot2=True)
+    assert live_pkt2["tage_valid"] is True
+
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+    _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
+    await _advance_cycle(dut)
+
+    # Release stall (`stall=False, stall_registered=True` on the replay cycle).
+    _drive_pipeline_ctrl(dut, {"stall": False, "stall_registered": True})
+    await _settle()
+    replayed_pkt2 = _read_if_packet(dut, slot2=True)
+    assert int(dut.replay_saved_if_outputs.value) == 1
+    assert replayed_pkt2["program_counter"] == slot2_pc
+    assert replayed_pkt2["tage_valid"] is True
+    assert replayed_pkt2["tage_taken"] is trained_taken
+    assert replayed_pkt2["is_cond_branch"] is True
+    assert replayed_pkt2["pd_target_native_low"] == ((slot2_pc + imm) & 0x1FFF)
+    assert bool(int(dut.o_tage_slot_valid.value) & 0b10)
