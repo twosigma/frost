@@ -310,6 +310,23 @@ FORMAL_TARGETS = [
         tasks=("mirror_hold_prove", "mirror_hold15_prove", "mirror_hold32_prove"),
     ),
     FormalTarget(
+        "coherence_read_capture.sby",
+        "Read-slot capture, the Idle phase and operation selection, per-slot kinds and registered array responses equal their references.",
+        tasks=(
+            "coh_read_capture_prove",
+            "coh_read_capture_stream_prove",
+            "coh_idle_select_prove",
+            "coh_idle_select_stream_prove",
+            "coh_idle_phase_prove",
+            "coh_idle_phase_stream_prove",
+            "coh_read_kind_prove",
+            "coh_array_reply_prove",
+            "coh_array_reply4_prove",
+            "coh_array_reply_uram_prove",
+            "coh_array_reply4_uram_prove",
+        ),
+    ),
+    FormalTarget(
         "coherence_read_payload.sby",
         "Buffered coherent read payloads and exports equal independent reference storage.",
         tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
@@ -413,7 +430,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_select.sby",
-        "Seat admission and circular work selection match serial priority.",
+        "Seat admission and circular work selection, in encoded and one-hot form, "
+        "match serial priority.",
         tasks=("coh_seat_select_prove", "coh_work_select_prove"),
     ),
     FormalTarget(
@@ -988,7 +1006,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_head_mmu.sby",
-        "Head vector translation before access, precise partial faults and commit shield",
+        "Head vector translation before access, precise partial faults, commit shield "
+        "and consumption of every commit",
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
@@ -1000,7 +1019,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "vec_vmt.sby",
         "Vector memory table lifecycle: allocation into free entries, retirement "
-        "exactly as the head passes, flushes, fixed ranges and the exact "
+        "exactly as the head passes, registered flush cleanup, fixed ranges and the exact "
         "no-live-retired-entry output",
         tasks=("vmt_bmc", "cover"),
     ),
@@ -1080,7 +1099,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "ptw.sby",
         "Page-table walk state matches reference PTE classification, including the "
-        "Svpbmt reserved encodings, PBMTE and the uncached alias, and the walk "
+        "Svnapot PPN substitution, Svpbmt reserved encodings, PBMTE and the uncached "
+        "alias, and the walk "
         "cache holds only valid pointers that memory holds, cleared by every discard",
         tasks=(
             "bmc",
@@ -1130,7 +1150,10 @@ FORMAL_TARGETS = [
     FormalTarget(
         "home_capture_equiv.sby",
         "Consumed home payloads match handshake-only captures, and registered "
-        "fill flags match their phase decodes across arbitrary reset and stalls.",
+        "fill flags match their phase decodes across arbitrary reset and stalls. "
+        "The parked next-state function preserves event priority; selected-slot "
+        "parking, the one-hot selection, dispatch and waiter eligibility match a "
+        "slot-table reference.",
         tasks=(
             "home_small",
             "home_four",
@@ -1144,6 +1167,9 @@ FORMAL_TARGETS = [
             "endpoint56",
             "arbiter_default",
             "arbiter_idle",
+            "completions_two",
+            "completions_three",
+            "completions_default",
         ),
     ),
     FormalTarget(
@@ -1176,7 +1202,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ma_engine.sby",
-        "Misaligned-access engine: no memory request before both parts pass their "
+        "Misaligned-access engine: request controls match the issue states, no memory request before both parts pass their "
         "checks, lower sector first, one request and response per identity, one "
         "completion, fault or write-back per access, and terminal fatal stops",
         tasks=("bmc", "cover"),
@@ -1421,8 +1447,18 @@ FORMAL_TARGETS = [
         "backing_btb.sby",
         "Backing BTB lookups match a mirror of its sets, every set holds each "
         "valid tag once, and requests in training hold their set's current "
-        "entries, at two and four ways",
-        tasks=("bmc", "bmc_four_way", "prove", "prove_four_way", "cover"),
+        "entries, at two and four ways; slot 2's fields formed for each slot-1 "
+        "size and selected by the packet's size equal the single reduction they "
+        "replace, for any register state",
+        tasks=(
+            "bmc",
+            "bmc_four_way",
+            "prove",
+            "prove_four_way",
+            "cover",
+            "size_select",
+            "size_select_four_way",
+        ),
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
@@ -1431,6 +1467,14 @@ FORMAL_TARGETS = [
         "refreshes follow them, and redirect directions and targets match PD's "
         "reference models",
         tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "pd_redirect_next_equiv.sby",
+        "PD's redirect target registers' next values, with every candidate formed "
+        "before the slot selects and slot 1's size picked last, equal the form "
+        "they replace for any decode, packet, candidates, backing BTB result and "
+        "stack state",
+        tasks=("bmc",),
     ),
     FormalTarget(
         "pd_id_slot2_redirect.sby",
@@ -2295,6 +2339,29 @@ SBY_TASKS = [
     ("mirror_hold_prove", "Debug mirror address equality at sixteen bits."),
     ("mirror_hold15_prove", "Debug mirror address equality at fifteen bits."),
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
+    ("coh_read_capture_prove", "Read data capture with arbitrary controller state."),
+    ("coh_read_capture_stream_prove", "Read data capture with stream endpoints."),
+    ("coh_idle_select_prove", "Idle phase and operation selection with one endpoint."),
+    (
+        "coh_idle_select_stream_prove",
+        "Idle phase and operation selection with stream endpoints.",
+    ),
+    ("coh_idle_phase_prove", "Phase register after Idle cycles with one endpoint."),
+    (
+        "coh_idle_phase_stream_prove",
+        "Phase register after Idle cycles with stream endpoints.",
+    ),
+    ("coh_read_kind_prove", "Per-slot read kinds equal buffered allocation payloads."),
+    ("coh_array_reply_prove", "Registered response indication with block RAM."),
+    (
+        "coh_array_reply4_prove",
+        "Registered response indication with four block-RAM ways.",
+    ),
+    ("coh_array_reply_uram_prove", "Registered response indication with UltraRAM."),
+    (
+        "coh_array_reply4_uram_prove",
+        "Registered response indication with four UltraRAM ways.",
+    ),
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("bmc_core", "Load-result selection with the CPU feature configuration."),
@@ -2471,7 +2538,8 @@ SBY_TASKS = [
     ("coh_seat_select_prove", "Fill waiter ranks match serial seat allocation."),
     (
         "coh_work_select_prove",
-        "Ready work and circular priority match serial selection, last pick coded.",
+        "Encoded and one-hot ready/circular selection match serial priority, "
+        "with the last pick coded.",
     ),
     ("coh_home_forward1_prove", "One-fill forward choice matches the reference."),
     ("coh_home_forward3_prove", "Three-fill forward choice matches the reference."),
@@ -2876,6 +2944,18 @@ SBY_TASKS = [
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),
     ("arbiter_idle", "Selected payloads with loading on every idle cycle."),
+    (
+        "completions_two",
+        "Selected parking, dispatch and waiter exclusion with two completion slots.",
+    ),
+    (
+        "completions_three",
+        "Selected parking, dispatch and waiter exclusion with three completion slots.",
+    ),
+    (
+        "completions_default",
+        "Selected parking, dispatch and waiter exclusion with the full completion table.",
+    ),
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_seat2", "Seat next-state equivalence with two fills."),
     ("bmc_seat3", "Seat next-state equivalence with three fills and four ways."),
@@ -2969,6 +3049,14 @@ SBY_TASKS = [
     ("bmc_btb_index3", "Bounded relation checking with three BTB index bits"),
     ("bmc_four_way", "Bounded checking with four ways"),
     ("prove_four_way", "Unbounded safety checking with four ways"),
+    (
+        "size_select",
+        "Slot-2 fields per slot-1 size equal the single reduction, any state.",
+    ),
+    (
+        "size_select_four_way",
+        "Slot-2 fields per slot-1 size equal the single reduction, four ways.",
+    ),
     ("bmc_xlen72", "Bounded Bare-output checking with local XLEN 72"),
     ("bmc_integrated", "Bounded checking with the integrated IF handoff parameter"),
     ("prove_xlen32", "Unbounded safety checking with a local 32-bit datapath"),

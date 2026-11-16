@@ -80,6 +80,11 @@ module backing_btb #(
     output logic [1:0] o_compressed,
     output logic [1:0] o_return,
     output logic [1:0][TARGET_BITS-2:0] o_target,
+    // Slot 2's return type and target for each size of slot 1, indexed by
+    // i_packet_compressed's value: o_return[1] and o_target[1] are the entries
+    // at i_packet_compressed. They let a consumer select by slot 1's size last.
+    output logic [1:0] o_slot2_return_by_size,
+    output logic [1:0][TARGET_BITS-2:0] o_slot2_target_by_size,
 
     // Training: a jump's update from the one ex_comb_synthesizer selects,
     // at most one per cycle
@@ -414,34 +419,50 @@ module backing_btb #(
 
   // Slot 1 is the packet word's halfword at PC[1]. Slot 2 starts 2 or 4
   // bytes later: the packet word's upper halfword after a compressed slot 1
-  // at a word boundary, otherwise a halfword of the next word.
+  // at a word boundary, otherwise a halfword of the next word. Slot 2's
+  // fields are formed for each size of slot 1 (index 1 compressed, index 0
+  // native) from the registered tags and the packet PC alone, and the
+  // packet's size selects between them last.
   logic slot1_halfword;
   logic slot2_image;
   logic slot2_halfword;
+  logic [1:0] slot2_image_by_size;
+  logic [1:0] slot2_halfword_by_size;
   assign slot1_halfword = i_packet_pc[1];
   assign slot2_image = i_packet_pc[1] || !i_packet_compressed;
   assign slot2_halfword = i_packet_pc[1] ^ i_packet_compressed;
+  assign slot2_image_by_size = {i_packet_pc[1], 1'b1};
+  assign slot2_halfword_by_size = {!i_packet_pc[1], i_packet_pc[1]};
 
   logic [WAYS-1:0] slot1_way_match;
-  logic [1:0][WAYS-1:0] slot2_way_match;
+  logic [1:0][1:0][WAYS-1:0] slot2_way_match_by_size;
   for (genvar way = 0; way < WAYS; way++) begin : gen_slot_match
     assign slot1_way_match[way] = upper_match[0][way] && (entry_halfword[0][way] == slot1_halfword);
     // The set after the last one is set 0 of the next block, whose tags this
     // block's upper PC bits do not name.
     for (genvar image = 0; image < 2; image++) begin : gen_image
-      assign slot2_way_match[image][way] = upper_match[image][way] &&
-          (slot2_image == 1'(image)) && (entry_halfword[image][way] == slot2_halfword) &&
-          !(image == 1 && last_set);
+      for (genvar size = 0; size < 2; size++) begin : gen_size
+        assign slot2_way_match_by_size[size][image][way] = upper_match[image][way] &&
+            (slot2_image_by_size[size] == 1'(image)) &&
+            (entry_halfword[image][way] == slot2_halfword_by_size[size]) &&
+            !(image == 1 && last_set);
+      end
     end
   end
 
   // At most one way of a set holds a tag (training finds the hit way first),
   // so the field selects are AND-OR reductions.
+  logic [1:0] slot2_hit_by_size;
+  logic [1:0] slot2_compressed_by_size;
   always_comb begin
     o_hit = '0;
     o_compressed = '0;
     o_return = '0;
     o_target = '0;
+    slot2_hit_by_size = '0;
+    slot2_compressed_by_size = '0;
+    o_slot2_return_by_size = '0;
+    o_slot2_target_by_size = '0;
     for (int way = 0; way < WAYS; way++) begin
       if (slot1_way_match[way]) begin
         o_hit[0] = 1'b1;
@@ -449,15 +470,22 @@ module backing_btb #(
         o_return[0] = o_return[0] || entry_return[0][way];
         o_target[0] = o_target[0] | entry_target[0][way];
       end
-      for (int image = 0; image < 2; image++) begin
-        if (slot2_way_match[image][way]) begin
-          o_hit[1] = 1'b1;
-          o_compressed[1] = o_compressed[1] || entry_compressed[image][way];
-          o_return[1] = o_return[1] || entry_return[image][way];
-          o_target[1] = o_target[1] | entry_target[image][way];
+      for (int size = 0; size < 2; size++) begin
+        for (int image = 0; image < 2; image++) begin
+          if (slot2_way_match_by_size[size][image][way]) begin
+            slot2_hit_by_size[size] = 1'b1;
+            slot2_compressed_by_size[size] =
+                slot2_compressed_by_size[size] || entry_compressed[image][way];
+            o_slot2_return_by_size[size] = o_slot2_return_by_size[size] || entry_return[image][way];
+            o_slot2_target_by_size[size] = o_slot2_target_by_size[size] | entry_target[image][way];
+          end
         end
       end
     end
+    o_hit[1] = slot2_hit_by_size[i_packet_compressed];
+    o_compressed[1] = slot2_compressed_by_size[i_packet_compressed];
+    o_return[1] = o_slot2_return_by_size[i_packet_compressed];
+    o_target[1] = o_slot2_target_by_size[i_packet_compressed];
     if (!aligned) o_hit = 2'b00;
   end
 
@@ -592,6 +620,65 @@ module backing_btb #(
     assign formal_compressed[slot] = |way_compressed;
     assign formal_return[slot] = |way_return;
     assign formal_target[slot] = target_or[WAYS*(TARGET_BITS-1)+:TARGET_BITS-1];
+  end
+
+  // Slot 2's {hit, size, type, target} as one AND-OR reduction over the
+  // ways whose halfword is slot 2's for a given slot-1 size: the form that
+  // the per-size reductions and the size select replace. Index 0 and 1 fix
+  // the size; index 2 takes the packet's own. The checks below have no reset
+  // qualifier, so their first step covers every value of the tag, payload
+  // and request registers.
+  localparam int unsigned FormalSlot2RefBits = TARGET_BITS + 2;
+  logic [3*FormalSlot2RefBits-1:0] formal_slot2_ref;
+  for (genvar k = 0; k < 3; k++) begin : gen_formal_slot2_ref
+    logic size;
+    logic image_select;
+    logic halfword_select;
+    logic [2*WAYS-1:0] match;
+    // Fields of the matching ways ORed so far, one step per image and way.
+    logic [2*WAYS:0] hit_or;
+    logic [2*WAYS:0] compressed_or;
+    logic [2*WAYS:0] return_or;
+    logic [(2*WAYS+1)*(TARGET_BITS-1)-1:0] target_or;
+    assign size = (k == 2) ? i_packet_compressed : 1'(k);
+    assign image_select = i_packet_pc[1] || !size;
+    assign halfword_select = i_packet_pc[1] ^ size;
+    assign hit_or[0] = 1'b0;
+    assign compressed_or[0] = 1'b0;
+    assign return_or[0] = 1'b0;
+    assign target_or[TARGET_BITS-2:0] = '0;
+    for (genvar image = 0; image < 2; image++) begin : gen_image
+      for (genvar way = 0; way < WAYS; way++) begin : gen_way
+        localparam int unsigned Step = image * WAYS + way;
+        assign match[Step] = upper_match[image][way] && (image_select == 1'(image)) &&
+            (entry_halfword[image][way] == halfword_select) && !(image == 1 && last_set);
+        assign hit_or[Step+1] = hit_or[Step] || match[Step];
+        assign compressed_or[Step+1] = compressed_or[Step] ||
+            (match[Step] && entry_compressed[image][way]);
+        assign return_or[Step+1] = return_or[Step] || (match[Step] && entry_return[image][way]);
+        assign target_or[(Step+1)*(TARGET_BITS-1)+:TARGET_BITS-1] =
+            target_or[Step*(TARGET_BITS-1)+:TARGET_BITS-1] |
+            (match[Step] ? entry_target[image][way] : '0);
+      end
+    end
+    assign formal_slot2_ref[k*FormalSlot2RefBits+:FormalSlot2RefBits] = {
+      aligned && hit_or[2*WAYS],
+      compressed_or[2*WAYS],
+      return_or[2*WAYS],
+      target_or[2*WAYS*(TARGET_BITS-1)+:TARGET_BITS-1]
+    };
+  end
+
+  always_comb begin
+    p_formal_slot2_fields_equal_single_reduction :
+    assert ({o_hit[1], o_compressed[1], o_return[1], o_target[1]} ==
+            formal_slot2_ref[2*FormalSlot2RefBits+:FormalSlot2RefBits]);
+    p_formal_slot2_after_native_equal_single_reduction :
+    assert ({o_slot2_return_by_size[0], o_slot2_target_by_size[0]} ==
+            formal_slot2_ref[0+:TARGET_BITS]);
+    p_formal_slot2_after_compressed_equal_single_reduction :
+    assert ({o_slot2_return_by_size[1], o_slot2_target_by_size[1]} ==
+            formal_slot2_ref[FormalSlot2RefBits+:TARGET_BITS]);
   end
 
   logic formal_past_valid = 1'b0;

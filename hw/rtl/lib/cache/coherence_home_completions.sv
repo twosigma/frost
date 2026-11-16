@@ -150,7 +150,8 @@ module coherence_home_completions #(
   // since their grant installs after the result. A prefetch changes nothing
   // a client sees, so it neither waits for nor orders other requests.
   logic [SLOTS-1:0] handed_q;
-  logic [SLOTS-1:0] parked_q, ready_q, wake_error_q, counted_q;
+  logic [SLOTS-1:0] parked_q, parked_next, ready_q, wake_error_q, counted_q;
+  (* keep = "true" *) logic [SLOTS-1:0] park_enable, park_prior;
   // nofill_q[slot], while the slot is live: it holds a prefetch, and a
   // non-prefetch request for its block was live at the prefetch's admission
   // or was admitted after it. The work carries the flag, and the engine takes
@@ -181,6 +182,18 @@ module coherence_home_completions #(
   logic [  SlotBits-1:0] free_slot_index;
   logic [ResultBits-1:0] free_buffer_index;
   logic work_selected_q, work_found;
+  // The selected slot's one-hot form is captured on the selection edge.
+  // Waiter eligibility, the prefetch offer and a held selection's parking
+  // capture read it without decoding the slot index.
+  logic [SLOTS-1:0] work_selected_slots_q;
+  // Each pair captures the selected slot's parked state, including a park
+  // on the selecting edge. Dispatch reduces these registered groups.
+  localparam int unsigned ParkGroups = (SLOTS + 1) / 2;
+  logic [ParkGroups-1:0] work_parked_q;
+  localparam int unsigned DispatchGroups = (ParkGroups + 3) / 4;
+  (* keep = "true" *) logic [DispatchGroups-1:0] work_group_unparked;
+  (* keep = "true" *) logic [SLOTS-1:0] work_park_enable;
+  logic [SLOTS-1:0] work_park_prior;
   logic [SLOTS-1:0] work_eligible;
   logic [SlotBits-1:0] work_slot_q, work_pick;
   // Work rotates over positions: one per main slot, then one for all the
@@ -192,6 +205,8 @@ module coherence_home_completions #(
   // can be picked. work_later_q[position] holds position >= work_next_q.
   localparam int unsigned WorkPositions = PREFETCH_SLOTS != 0 ? MainSlots + 1 : SLOTS;
   logic [WorkPositions-1:0] work_position_eligible, work_position_ready, work_later_q;
+  logic [WorkPositions-1:0] work_position_selected;
+  logic [SLOTS-1:0] work_pick_slots;
   logic [SlotBits-1:0] work_next_q, work_position;
   logic prefetch_work_found_q;
   logic [SlotBits-1:0] prefetch_work_slot_q;
@@ -371,7 +386,14 @@ module coherence_home_completions #(
   wire request_legal = request_q_legal && request_opcode_legal && incoming.q.epoch == 1'b0 &&
       (incoming.q.src == 2'd0 || incoming.q.src >= 2'd2) && incoming.addr[4:0] == 0;
   assign o_d_ready = !i_fatal_stop && !duplicate && request_legal && free_slot;
-  assign o_work_valid = !i_fatal_stop && work_selected_q && !parked_q[work_slot_q];
+  // Four parking groups per term leave room for selection and stop in
+  // the final dispatch gate at the full completion-table geometry.
+  for (genvar group_index = 0; group_index < DispatchGroups; group_index++) begin : gen_dispatch
+    localparam int unsigned Base  = 4 * group_index;
+    localparam int unsigned Width = ParkGroups - Base < 4 ? ParkGroups - Base : 4;
+    assign work_group_unparked[group_index] = !(|work_parked_q[Base+:Width]);
+  end
+  assign o_work_valid = !i_fatal_stop && work_selected_q && (&work_group_unparked);
   assign o_work = work[work_slot_q];
   assign o_work_tid = 6'(work_slot_q);
   assign o_work_buffer = work_buffer_q;
@@ -382,7 +404,7 @@ module coherence_home_completions #(
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_waiting
     assign o_waiting[slot] = work_valid[slot] && !issued_q[slot] &&
         !parked_q[slot] && !ready_q[slot] &&
-        !(work_selected_q && work_slot_q == SlotBits'(slot));
+        !work_selected_slots_q[slot];
   end
   // A presented result matches at most one slot, the one its tid names.
   // Each slot compares the result with its own tid, state, identity and
@@ -488,8 +510,19 @@ module coherence_home_completions #(
       .i_later(work_later_q),
       .i_last_code(prefetch_work_slot_q),
       .o_found(work_found),
-      .o_pick(work_pick)
+      .o_pick(work_pick),
+      .o_selected(work_position_selected)
   );
+  // The ordinary positions are slot bits directly. Only the prefetch
+  // position expands a code, which is registered before work selection.
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_pick_slots
+    if (slot < MainSlots) begin : gen_main
+      assign work_pick_slots[slot] = work_position_selected[slot];
+    end else begin : gen_prefetch
+      assign work_pick_slots[slot] = work_position_selected[MainSlots] &&
+          prefetch_work_slot_q == SlotBits'(slot);
+    end
+  end
   // The selected slot's position in the rotation.
   assign work_position = PREFETCH_SLOTS != 0 && int'(work_slot_q) >= MainSlots ?
       SlotBits'(MainSlots) : work_slot_q;
@@ -501,7 +534,7 @@ module coherence_home_completions #(
     logic [SlotBits-1:0] pick;
     for (genvar index = 0; index < PREFETCH_SLOTS; index++) begin : gen_offered
       assign offered[index] = work_eligible[MainSlots+index] &&
-          !(work_selected_q && int'(work_slot_q) == MainSlots + index);
+          !work_selected_slots_q[MainSlots+index];
     end
     assign later = offered & later_q;
     always_comb begin
@@ -746,6 +779,41 @@ module coherence_home_completions #(
   end
 
   always_ff @(posedge i_clk) begin
+    if (i_rst) work_selected_slots_q <= '0;
+    else if (work_selected_q) begin
+      if ((|work_parked_q) || (!i_fatal_stop && i_work_ready)) work_selected_slots_q <= '0;
+    end else work_selected_slots_q <= free_buffer ? work_pick_slots : '0;
+  end
+
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_parked_next
+    wire retry = i_retry_valid && i_retry_tid == 6'(slot);
+    wire selected = work_selected_q ? work_selected_slots_q[slot] : work_pick_slots[slot];
+    // The table's arriving park event follows its priority qualifiers.
+    assign park_enable[slot] = !forwarded[slot] && !retry && !i_wake[slot];
+    assign park_prior[slot] = !forwarded[slot] &&
+        (retry ? i_retry_park : (!i_wake[slot] && parked_q[slot]));
+    assign parked_next[slot] = park_prior[slot] || (i_park[slot] && park_enable[slot]);
+    // These qualifiers do not depend on the arriving park event.
+    assign work_park_enable[slot] = selected && !forwarded[slot] && !retry && !i_wake[slot];
+    assign work_park_prior[slot] = selected && !forwarded[slot] &&
+        (retry ? i_retry_park : (!i_wake[slot] && parked_q[slot]));
+  end
+  for (genvar group_index = 0; group_index < ParkGroups; group_index++) begin : gen_work_park
+    localparam int unsigned Base  = 2 * group_index;
+    localparam int unsigned Width = SLOTS - Base < 2 ? SLOTS - Base : 2;
+    (* keep = "true" *) wire prior;
+    assign prior = |work_park_prior[Base+:Width];
+    // Two qualified park inputs and the prior-state term fit together;
+    // the slot-selection mux is outside the park event's capture path.
+    always_ff @(posedge i_clk) begin
+      if (i_rst) work_parked_q[group_index] <= 1'b0;
+      else
+        work_parked_q[group_index] <= prior ||
+          |(i_park[Base+:Width] & work_park_enable[Base+:Width]);
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
     if (i_rst) begin
       parked_q <= '0;
       nofill_q <= '0;
@@ -770,6 +838,7 @@ module coherence_home_completions #(
       end
       for (int index = 0; index < Buffers; index++) buffer_q[index] <= '0;
     end else begin
+      parked_q <= parked_next;
       if (!work_selected_q && work_found && free_buffer) begin
         work_selected_q <= 1'b1;
         work_slot_q <= work_pick;
@@ -830,12 +899,8 @@ module coherence_home_completions #(
         pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
             (i_u_ready ? accepted_clear_if_release : accepted_clear_if_hold) :
             (i_u_ready ? clear_if_release[slot] : clear_if_hold[slot]);
-        if (i_park[slot]) parked_q[slot] <= 1'b1;
-        if (i_wake[slot]) parked_q[slot] <= 1'b0;
         if (i_pin_valid && i_pin_tid == 6'(slot)) way_q[slot] <= i_pin_way;
-        if (i_retry_valid && i_retry_tid == 6'(slot)) parked_q[slot] <= i_retry_park;
         if (forwarded[slot]) begin
-          parked_q[slot] <= 1'b0;
           buffer_index_q[slot] <= BufferBits'(ForwardBuffer);
           way_q[slot] <= i_forward_way;
         end
@@ -1021,6 +1086,9 @@ module coherence_home_completions #(
         assert (!buffer_live_q[BufferBits'(work_buffer_q)] && !parked_q[work_slot_q]);
         assert (int'(work_buffer_q) < RESULT_SLOTS);
       end
+      assert (work_selected_slots_q == (work_selected_q ? SLOTS'(1) << work_slot_q : '0));
+      if (work_selected_q)
+        assert (work_parked_q == (ParkGroups'(parked_q[work_slot_q]) << (work_slot_q >> 1)));
       // A forward names one parked GetS, LoadReserved or GetM that holds no
       // buffer, pin or result and has no other event on the edge; the slot
       // that owns the forward buffer holds its pin and has no engine.
@@ -1260,5 +1328,63 @@ module coherence_home_completions #(
         cover (accept_grant && PrefetchSlot[grant_slot_q]);
   end
 `endif
+`endif
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+  // Reference parking and selection use the slot table on the dispatch
+  // cycle. All event inputs remain free, including simultaneous events.
+  logic f_capture_reset_seen_q = 1'b0;
+  logic [SLOTS-1:0] f_capture_parked_q;
+  logic f_capture_selected_q;
+  logic [SlotBits-1:0] f_capture_slot_q;
+  logic [SLOTS-1:0] f_capture_waiting;
+  logic [SLOTS-1:0] f_capture_parked_next;
+  wire f_capture_valid = !i_fatal_stop && f_capture_selected_q &&
+      !f_capture_parked_q[f_capture_slot_q];
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_capture_waiting
+    assign f_capture_waiting[slot] = work_valid[slot] && !issued_q[slot] &&
+        !f_capture_parked_q[slot] && !ready_q[slot] &&
+        !(f_capture_selected_q && f_capture_slot_q == SlotBits'(slot));
+    assign f_capture_parked_next[slot] = forwarded[slot] ? 1'b0 :
+        i_retry_valid && i_retry_tid == 6'(slot) ? i_retry_park :
+        i_wake[slot] ? 1'b0 : i_park[slot] ? 1'b1 : parked_q[slot];
+  end
+  // This comparison has no reset or selection qualifier: every possible
+  // table state and combination of arriving events has the same next state.
+  always_comb p_capture_parked_next : assert (parked_next == f_capture_parked_next);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_capture_reset_seen_q <= 1'b1;
+      f_capture_parked_q <= '0;
+      f_capture_selected_q <= 1'b0;
+      f_capture_slot_q <= '0;
+    end else begin
+      if (!f_capture_selected_q && work_found && free_buffer) begin
+        f_capture_selected_q <= 1'b1;
+        f_capture_slot_q <= work_pick;
+      end
+      if (f_capture_selected_q && f_capture_parked_q[f_capture_slot_q])
+        f_capture_selected_q <= 1'b0;
+      if (f_capture_valid && i_work_ready) f_capture_selected_q <= 1'b0;
+      for (int slot = 0; slot < SLOTS; slot++) begin
+        if (i_park[slot]) f_capture_parked_q[slot] <= 1'b1;
+        if (i_wake[slot]) f_capture_parked_q[slot] <= 1'b0;
+        if (i_retry_valid && i_retry_tid == 6'(slot)) f_capture_parked_q[slot] <= i_retry_park;
+        if (forwarded[slot]) f_capture_parked_q[slot] <= 1'b0;
+      end
+    end
+    if (f_capture_reset_seen_q && !i_rst) begin
+      p_capture_parked : assert (parked_q == f_capture_parked_q);
+      p_capture_selection : assert (work_selected_q == f_capture_selected_q);
+      p_capture_slot : assert (work_slot_q == f_capture_slot_q);
+      p_capture_dispatch : assert (o_work_valid == f_capture_valid);
+      p_capture_waiting : assert (o_waiting == f_capture_waiting);
+      p_capture_selected_slots :
+      assert (work_selected_slots_q == (f_capture_selected_q ? SLOTS'(1) << f_capture_slot_q : '0));
+      if (work_selected_q)
+        p_capture_selected_park :
+        assert (work_parked_q ==
+            (ParkGroups'(f_capture_parked_q[f_capture_slot_q]) << (f_capture_slot_q >> 1)));
+    end
+  end
 `endif
 endmodule
