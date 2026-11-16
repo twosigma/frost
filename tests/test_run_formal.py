@@ -435,6 +435,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_l1d_lookup.sby",
+        "The L1D lookup address and head readiness match the one-chain reference.",
+        tasks=("lookup_prove", "lookup_multi_prove", "lookup_stream_prove"),
+    ),
+    FormalTarget(
         "coherence_home_select.sby",
         "Seat admission and circular work selection match serial priority.",
         tasks=("coh_seat_select_prove", "coh_work_select_prove"),
@@ -2205,6 +2210,18 @@ SBY_TASKS = [
     (
         "coh_l1d_put_select_prove",
         "The W selection releases a slot without a put on the next edge.",
+    ),
+    (
+        "lookup_prove",
+        "L1D lookup address selected last by head readiness equals the reference, one miss slot.",
+    ),
+    (
+        "lookup_multi_prove",
+        "L1D lookup address selected last by head readiness equals the reference, three miss slots.",
+    ),
+    (
+        "lookup_stream_prove",
+        "L1D lookup address selected last by head readiness equals the reference, eight slots, streaming.",
     ),
     ("coh_array_select_prove", "Conditional data selection with one way."),
     ("coh_array_select4_prove", "Conditional data selection with four ways."),

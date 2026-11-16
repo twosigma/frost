@@ -493,9 +493,12 @@ fatal logic. The CPU's retirement stop takes effect on the cycle after the
 failure. An endpoint accepts every acquisition while idle, so the
 controller reads the endpoint's idle state for acceptance. The lookup address,
 selected read slot and grant payload have no reset and capture on every Idle
-cycle, because nothing reads them until a selection leaves Idle. The read
-address joins that selection last. The priority conditions above a read are
-prepared separately, so read eligibility controls the final address selection
+cycle, because nothing reads them until a selection leaves Idle. The lookup
+address is prepared for both values of the store head's readiness, which
+selects between them last; in that readiness, the head's write-back address
+comparison joins the terms formed from registered state last. In each
+prepared address the read address joins last: the priority conditions above a
+read are prepared separately, so read eligibility controls that selection
 without passing through the non-read address priority chain.
 
 Ready read slots share one response register in circular slot order. Each
