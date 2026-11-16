@@ -313,6 +313,8 @@ insertion.
 An insertion update uses the most recent lookup's set and selected way;
 the controller completes that update before issuing another lookup.
 The L1D asserts this pairing for each grant installation.
+The response-valid bit registers beside the response, on the tag-result edge
+for a reply without data or on the data-capture edge for a reply with data.
 Response data is meaningful only with `o_resp_data_valid`. A tag-only or
 skipped read keeps the prior response data without reading the data array.
 A lookup marked `i_req_tags_only` reads no data and replies after the tag
@@ -495,7 +497,18 @@ selected read slot and grant payload have no reset and capture on every Idle
 cycle, because nothing reads them until a selection leaves Idle. The read
 address joins that selection last. The priority conditions above a read are
 prepared separately, so read eligibility controls the final address selection
-without passing through the non-read address priority chain.
+without passing through the non-read address priority chain. The phase and
+the operation that the Idle selection assigns are prepared the same way, from
+every source except the read selector's found output, which selects last: a
+found read takes the read operation through a final selection at the
+operation register's input, and Lookup through the controller's last
+assignment to the phase.
+
+Each read slot's kind registers on its allocation edge, so selection reads the
+slot's kind without selecting from the buffered payload. Each slot has a local
+data-source selection for the hit path, array row, grant and local atomic
+image. Controller answers take priority over the hit path, which takes priority
+over a failed-read clear.
 
 Ready read slots share one response register in circular slot order. Each
 selection advances the pointer past that slot. A continuously ready slot has
@@ -590,13 +603,13 @@ The array uses the highest matching valid way for hit state and modified-only
 data service, including a matching way in the replacement exclusion mask.
 A miss has no modified hit. Skip-on-hit suppresses hit data even for a
 modified-only request; a maintenance visit always reads its selected row.
-Read-slot payload writes pass through a one-record buffer. The buffer
-captures the payload and a slot mask each cycle. Reset clears the slot mask
-through its data input. The mask identifies the allocated slot
-and is zero without an allocation. It qualifies forwarding
-and writes to the slot storage. The forwarding mux
-makes each allocation visible on the allocation edge. Each slot keeps its
-allocated payload until reset or another allocation to that slot.
+Read-slot address, size and tag writes pass through a one-record buffer. The
+buffer captures the payload and a slot mask each cycle. Reset clears the slot
+mask through its data input. The mask identifies the allocated slot and is zero
+without an allocation. It qualifies forwarding and writes to the slot storage.
+The forwarding mux makes each allocation visible on the allocation edge. Each
+slot keeps its allocated payload until reset or another allocation to that
+slot.
 Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen
 writeback sectors on 18 sector index bits. An alias waits for its holder like
 a match, and holders do not wait for reads. The comparisons use the stored slot addresses and the
