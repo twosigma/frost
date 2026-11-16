@@ -2931,11 +2931,18 @@ module tomasulo_wrapper #(
     end
   end
 `ifdef FORMAL
-  // Equal from the first clock on; this prunes unequal initial states.
+  // Neither the copies nor the tags reset, so only the initial state is
+  // assumed equal. Both load the same D on every edge; every later cycle
+  // asserts the equality.
   always_comb
     for (int bank = 0; bank < int'(IntRsTagBanks); bank++) begin
-      assume (int_rs_issue_cdb_tag_bank[bank] == int_rs_issue_cdb_tag);
-      assume (int_rs_issue_cdb_2_tag_bank[bank] == int_rs_issue_cdb_2_tag);
+      if ($initstate) begin
+        assume (int_rs_issue_cdb_tag_bank[bank] == int_rs_issue_cdb_tag);
+        assume (int_rs_issue_cdb_2_tag_bank[bank] == int_rs_issue_cdb_2_tag);
+      end else begin
+        assert (int_rs_issue_cdb_tag_bank[bank] == int_rs_issue_cdb_tag);
+        assert (int_rs_issue_cdb_2_tag_bank[bank] == int_rs_issue_cdb_2_tag);
+      end
     end
 `endif
 `ifndef SYNTHESIS

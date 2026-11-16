@@ -416,7 +416,9 @@ the standalone `reservation_station` tasks cover that case. Besides a reset
 and legal back-pressure, rename, and checkpoint inputs, the environment
 assumes that dispatch comes with an allocation and uses that cycle's ROB tag,
 that a partial flush names a live ROB entry, and that address translation is
-off (the `tlb` and `ptw` targets and `vm_test` cover translation). At depth 4
+off (the `tlb` and `ptw` targets and `vm_test` cover translation). INT_RS's
+issue-tag copies and the tags they copy have no reset: their initial values
+are assumed equal, and every later cycle asserts the equality. At depth 4
 the proof does not reach ROB tag wraparound; simulation covers tag reuse.
 `fp_repair_bmc` enables the FP dispatch done repair, as the CPU does, and
 assumes the repair channels carry the pending FP instruction's source
