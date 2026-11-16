@@ -211,6 +211,8 @@ jobs:
     runs-on: ubuntu-26.04
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
+    # Real-program jobs allow four hours, including setup and coverage uploads.
+    timeout-minutes: ${{ matrix.shard.name == 'Unit Tests' && 360 || 240 }}
     strategy:
       fail-fast: false
       matrix:
@@ -321,8 +323,26 @@ jobs:
               [coremark_link1] or [csr_test_link1] or [dma_torture_link1] or
               [ptw_coherence_test_link1] or [cached_store_burst_test_link1] or
               [cbo_zero_test_link1] or [cbo_zero_pages_link1]
-          # The complement keeps new non-CoreMark-PRO programs in CI.
-          # Keep it in sync when moving a test into a named shard.
+          # Profiling and VLEN 256 configurations share their respective builds.
+          - name: Real Programs (Runtime benchmarks and vector)
+            coverage: [bram]
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [pause_test] or [ras_slot_bench] or [ras_repair_bench] or
+              [vec_state_test_v256] or [vec_vsetvl_test_v256] or [vec_arith_test_v256]
+          - name: Real Programs (Memory and NIC stress)
+            coverage: [bram]
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [nic_bench] or [nic_sg_loopback] or [nic_rate] or
+              [l2_capacity_chase_capacity] or [l2_capacity_chase_smoke] or
+              [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [misaligned_test] or
+              [memerr_test] or [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test] or
+              [sstvala_fault_test] or [ddr_reset_distribution] or [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
+          # The complement keeps unlisted non-CoreMark-PRO programs in CI.
+          # OpenSBI and registry budgets above 10 million cycles need named
+          # shards; give each OpenSBI boot its own BRAM-only include entry.
+          # Keep the exclusions in sync with every named shard.
           - name: Real Programs (Runtime and other)
             coverage: [bram]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
@@ -340,7 +360,8 @@ jobs:
               [aplic_test] or [sstc_test] or [sscofpmf_test] or
               [ns16550_irq_console_test] or [wfi_mepc_test] or [wfi_drain_mepc_test] or
               [mret_timer_resume_test] or [mtimer_stress] or [wfi_lost_tick] or [irq_mie_window] or
-              [ns16550_test] or [clint_test] or [linux_irq_ddr_test] or [linux_irq_active_ddr_test]
+              [irq_take_hold_test] or [ns16550_test] or [clint_test] or [linux_irq_ddr_test]
+              or [linux_irq_active_ddr_test]
               or [linux_irq_stack_slot_test] or [linux_irq_find_next_slot_test] or
               [branch_pred_test] or [c_ext_test] or [cf_ext_test] or [call_stress] or [fpu_test] or
               [fpu_assembly_test] or [isa_test] or [rv64_smoke] or [rv64_amo_test] or
@@ -357,7 +378,8 @@ jobs:
               [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [ddr_bench] or
               [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz]
               or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
-              [isa_test_sram_macros] or [ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or
+              [opensbi_smoke_no_misaligned_hw] or [isa_test_sram_macros] or [ddr_test_sram_macros]
+              or [ddr_exec_test_sram_macros] or
               [nic_loopback_sram_macros] or [cache_counters_openocd] or [async_hello_world]
               or [async_nic_loopback] or [async_dma_torture]
               or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
@@ -369,7 +391,14 @@ jobs:
               or [ptw_coherence_test_link1] or [cached_store_burst_test_link1]
               or [cbo_zero_test_link1] or [cbo_zero_pages_link1]
               or [l1i_set_test] or [smc_fencei_test_l1i32] or [ifread_test_l1i32]
-              or [l1i_set_test_l1i32] or [l1i_set_test_l1i32_hw_sweep])
+              or [l1i_set_test_l1i32] or [l1i_set_test_l1i32_hw_sweep]
+              or [nic_bench] or [nic_sg_loopback] or [nic_rate]
+              or [l2_capacity_chase_capacity] or [l2_capacity_chase_smoke]
+              or [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [misaligned_test]
+              or [memerr_test] or [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
+              or [sstvala_fault_test] or [ddr_reset_distribution] or [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
+              or [pause_test] or [ras_slot_bench] or [ras_repair_bench]
+              or [vec_state_test_v256] or [vec_vsetvl_test_v256] or [vec_arith_test_v256])
           - name: Real Programs (CoreMark-PRO / core)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
@@ -428,13 +457,19 @@ jobs:
               pytest_filter: >-
                 [isa_test_sram_macros] or [ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or
                 [nic_loopback_sram_macros]
-          # OpenSBI smoke uses a fixed image layout and a separate long-running job.
+          # Each OpenSBI boot has a fixed image layout and its own long-running job.
           - mem_config: bram
             shard:
               name: Real Programs (OpenSBI smoke)
               coverage: [bram]
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_smoke]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (OpenSBI smoke, no misaligned hardware)
+              coverage: [bram]
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[opensbi_smoke_no_misaligned_hw]"
           # The OpenOCD session that reads the cache counters is long, and its
           # program runs from low BRAM in either tier.
           - mem_config: bram
