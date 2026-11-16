@@ -1268,6 +1268,12 @@ FORMAL_TARGETS = [
         tasks=("int_prove", "mul_prove", "mem_prove", "fp_prove", "int_cover"),
     ),
     FormalTarget(
+        "rs_issue_tag_banks.sby",
+        "INT_RS with four issue-tag copies equal to the tags equals INT_RS with the single "
+        "tags, in portable and primitive builds",
+        tasks=("int_equiv", "int_equiv_prims"),
+    ),
+    FormalTarget(
         "served_window_coverage.sby",
         "Fetch-window coverage matches full-address comparisons for 32/64-bit "
         "addresses and portable/Xilinx implementations",
@@ -3116,6 +3122,14 @@ SBY_TASKS = [
     (
         "rs_twin_indexed",
         "Indexed-write reservation station primitive form equals its portable form.",
+    ),
+    (
+        "int_equiv",
+        "INT_RS issue-tag copies: every output and next state equal the single-tag station.",
+    ),
+    (
+        "int_equiv_prims",
+        "Same with Xilinx primitives in both stations.",
     ),
     (
         "prove_aw",
