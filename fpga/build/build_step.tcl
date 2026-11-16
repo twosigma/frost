@@ -992,9 +992,11 @@ if {$step eq "synth"} {
     # A name used before its declaration becomes an implicit net. Verilator
     # binds the later declaration, but inside a generate block Vivado gives the
     # use its own net, so either the use or the declaration is left undriven.
-    # Top-level synthesis rejects Vivado's implicit-net message (Synth 8-11241)
-    # and generated primitive inputs on an undriven net (Synth 8-605).
+    # Top-level synthesis rejects implicit nets (Synth 8-11241), names used
+    # before their declarations (Synth 8-6901), and generated primitive inputs
+    # on an undriven net (Synth 8-605). Vendor IP runs finish before these guards.
     set_msg_config -id {Synth 8-11241} -new_severity ERROR
+    set_msg_config -id {Synth 8-6901} -new_severity ERROR
     set_msg_config -id {Synth 8-605} -new_severity ERROR
     # Out-of-range indices can become don't-cares in synthesis even when
     # simulation truncates the index to the intended vector width.
