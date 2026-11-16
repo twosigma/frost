@@ -448,7 +448,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_select.sby",
-        "Seat admission and circular work selection match serial priority.",
+        "Seat admission and circular work selection, in encoded and one-hot form, "
+        "match serial priority.",
         tasks=("coh_seat_select_prove", "coh_work_select_prove"),
     ),
     FormalTarget(
@@ -1167,7 +1168,10 @@ FORMAL_TARGETS = [
     FormalTarget(
         "home_capture_equiv.sby",
         "Consumed home payloads match handshake-only captures, and registered "
-        "fill flags match their phase decodes across arbitrary reset and stalls.",
+        "fill flags match their phase decodes across arbitrary reset and stalls. "
+        "The parked next-state function preserves event priority; selected-slot "
+        "parking, the one-hot selection, dispatch and waiter eligibility match a "
+        "slot-table reference.",
         tasks=(
             "home_small",
             "home_four",
@@ -1181,6 +1185,9 @@ FORMAL_TARGETS = [
             "endpoint56",
             "arbiter_default",
             "arbiter_idle",
+            "completions_two",
+            "completions_three",
+            "completions_default",
         ),
     ),
     FormalTarget(
@@ -2582,7 +2589,8 @@ SBY_TASKS = [
     ("coh_seat_select_prove", "Fill waiter ranks match serial seat allocation."),
     (
         "coh_work_select_prove",
-        "Ready work and circular priority match serial selection, last pick coded.",
+        "Encoded and one-hot ready/circular selection match serial priority, "
+        "with the last pick coded.",
     ),
     ("coh_home_forward1_prove", "One-fill forward choice matches the reference."),
     ("coh_home_forward3_prove", "Three-fill forward choice matches the reference."),
@@ -2987,6 +2995,18 @@ SBY_TASKS = [
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),
     ("arbiter_idle", "Selected payloads with loading on every idle cycle."),
+    (
+        "completions_two",
+        "Selected parking, dispatch and waiter exclusion with two completion slots.",
+    ),
+    (
+        "completions_three",
+        "Selected parking, dispatch and waiter exclusion with three completion slots.",
+    ),
+    (
+        "completions_default",
+        "Selected parking, dispatch and waiter exclusion with the full completion table.",
+    ),
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_seat2", "Seat next-state equivalence with two fills."),
     ("bmc_seat3", "Seat next-state equivalence with three fills and four ways."),

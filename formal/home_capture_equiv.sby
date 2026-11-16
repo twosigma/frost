@@ -11,6 +11,9 @@ endpoint32 endpoint
 endpoint56 endpoint wide
 arbiter_default arbiter
 arbiter_idle arbiter idle
+completions_two completions two
+completions_three completions three
+completions_default completions
 
 [options]
 mode prove
@@ -23,8 +26,8 @@ smtbmc boolector
 [script]
 read -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv
 read -sv -D SYNTHESIS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
-read -sv -D SYNTHESIS coherence_seat_select.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv
-read -formal -sv -D SYNTHESIS -D HOME_CAPTURE_LOCAL_PROOF coherence_d_arbiter.sv coherence_home_endpoint.sv coherence_home_array.sv coherence_home.sv
+read -sv -D SYNTHESIS coherence_seat_select.sv coherence_work_select.sv coherence_home_engine.sv
+read -formal -sv -D SYNTHESIS -D HOME_CAPTURE_LOCAL_PROOF coherence_home_completions.sv coherence_d_arbiter.sv coherence_home_endpoint.sv coherence_home_array.sv coherence_home.sv
 small: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home
 four: chparam -set CACHE_BYTES 1024 -set WAYS 4 -set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home
 array: chparam -set CACHE_BYTES 128 -set WAYS 1 -set LINE_BYTES 32 coherence_home_array
@@ -36,22 +39,30 @@ row_read: chparam -set DATA_READ_LATENCY 4 coherence_home_array
 wide: chparam -set ADDR_WIDTH 56 -set L2_NUM_MSHR 16 coherence_home_endpoint
 arbiter: chparam -set WIDTH 12 -set PORTS 3 -set HOLD_VALID 1 coherence_d_arbiter
 idle: chparam -set IDLE_PAYLOAD_LOAD 1 coherence_d_arbiter
+two: chparam -set SLOTS 2 -set RESULT_SLOTS 2 -set PREFETCH_SLOTS 0 coherence_home_completions
+three: chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set PREFETCH_SLOTS 0 coherence_home_completions
 home: hierarchy -check -top coherence_home
 array: hierarchy -check -top coherence_home_array
 endpoint: hierarchy -check -top coherence_home_endpoint
 arbiter: hierarchy -check -top coherence_d_arbiter
+completions: hierarchy -check -top coherence_home_completions
 # The capture proof keeps the DUT's phase, valid and payload flops. Other
 # modules' outputs and the home's producer values are arbitrary each cycle.
 home: delete t:*coherence_home_array t:*coherence_home_endpoint t:*coherence_d_arbiter t:*coherence_home_completions t:*coherence_home_engine t:*coherence_seat_select t:*coherence_work_select
 array: delete t:*sdp_block_ram t:*sdp_packed_tag_uram t:*sdp_ram_byte_en
+completions: delete t:*coherence_home_endpoint t:*coherence_d_arbiter
 proc
 setattr -mod -unset keep_hierarchy
 setattr -unset keep
 flatten
 chformal -remove t:$check c:*p_capture* %d
 home: cutpoint w:memory_payload w:memory_pick w:memory_found w:run w:update_selected w:update_request_ready w:gen_fill*.allocate w:gen_fill*.fill_phase_hold
+# The selector retains its legal slot encoding. Eligibility, ready priority,
+# buffer availability and forward events are arbitrary in the capture model.
+completions: cutpoint w:work_eligible w:work_position_ready w:free_buffer w:forwarded
 # Only the capture properties are observable in this local model. Reset is
-# unrestricted, and each property starts after the first observed reset.
+# unrestricted. State comparisons start after the first observed reset;
+# the completion next-state comparison is unconditional.
 delete -output w:*
 opt -purge
 setundef -undriven -anyseq
@@ -59,11 +70,13 @@ home: prep -top coherence_home
 array: prep -top coherence_home_array
 endpoint: prep -top coherence_home_endpoint
 arbiter: prep -top coherence_d_arbiter
+completions: prep -top coherence_home_completions
 select -assert-none t:$check r:FLAVOR=assume %i
 home: select -assert-count 3 t:$check r:FLAVOR=assert %i
 array: select -assert-count 5 t:$check r:FLAVOR=assert %i
 endpoint: select -assert-count 3 t:$check r:FLAVOR=assert %i
 arbiter: select -assert-count 1 t:$check r:FLAVOR=assert %i
+completions: select -assert-count 8 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
