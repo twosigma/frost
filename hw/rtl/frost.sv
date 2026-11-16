@@ -234,6 +234,8 @@ module frost #(
     input  logic        i_nic_1g_rx_raw_valid = 1'b0,
     input  logic        i_nic_1g_rx_signal_ok = 1'b0,
     input  logic [ 4:0] i_nic_1g_phy_status = '0,
+    input  logic [32:0] i_nic_1g_phy_diag = '0,
+    output logic o_nic_1g_phy_diag_ack,
     output logic [ 3:1] o_nic_1g_phy_ctrl,
     output logic        o_nic_1g_rx_block_lock,
 
@@ -517,6 +519,8 @@ module frost #(
       .i_nic_1g_rx_raw_valid,
       .i_nic_1g_rx_signal_ok,
       .i_nic_1g_phy_status,
+      .i_nic_1g_phy_diag,
+      .o_nic_1g_phy_diag_ack,
       .o_nic_1g_phy_ctrl,
       .o_nic_1g_rx_block_lock,
       // VCU118 SPI flash & boot status
@@ -601,6 +605,9 @@ module frost #(
     if (uart_reset_seen_q && uart_tx_drop_check != 0 &&
         !(ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized) &&
         uart_write_enable_from_cpu && !uart_fifo_input_ready)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("frost: UART TX byte dropped: the transmit FIFO was full");
 `endif
 

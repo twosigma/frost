@@ -19,9 +19,9 @@
  *
  * With PMM = 10 (PMLEN 7) or 11 (PMLEN 16), every explicit U-mode data access
  * ignores the top PMLEN address bits: under Sv39 they become the sign
- * extension of bit 63-PMLEN, under Bare zeros. Each case runs twice: in
- * U-mode itself (mret into U, ecall back) and in M with MPRV and MPP = U,
- * where the effective data privilege U selects senvcfg.PMM as well.
+ * extension of bit 63-PMLEN, under Bare zeros. Scalar data cases cover
+ * U-mode itself (mret into U, ecall back) and M with MPRV and MPP = U,
+ * where effective data privilege U also selects senvcfg.PMM.
  *
  *   A  PMM WARL: 00, 10 and 11 read back; the reserved 01 keeps the old value.
  *   B  For each PMLEN, under Sv39 (low and upper-half pages) and Bare, over
@@ -42,6 +42,14 @@
  *      tagged cache-block management operations.
  *   G  Consecutive PMM, MPRV, MXR and SUM changes around loads and stores
  *      while timer interrupts arrive; SRET into U applies its masking mode.
+ *   H  Tagged Svpbmt NC/IO loads, stores, cache-block operations and atomic
+ *      faults use the transformed VA and preserve the cached backing data.
+ *   I  Actual S-mode execution ignores PMM; delegated U faults write the
+ *      transformed address to stval.
+ *   J  Tagged U/MPRV-U accesses to read-only and supervisor-only leaves
+ *      report permission faults at the transformed VA.
+ *   K  A timer interrupt in genuine U mode returns to tagged stores/loads;
+ *      the simulation monitor requires stores queued while it is pending.
  */
 
 #include <stdint.h>
@@ -52,6 +60,7 @@
 
 #define CSR_SENVCFG 0x10A
 #define CSR_MENVCFG 0x30A
+#define ENVCFG_PBMTE (1ul << 62)
 #define ENVCFG_CBZE (1ul << 7)
 #define ENVCFG_CBO (ENVCFG_CBZE | (1ul << 6) | (3ul << 4))
 #define PMM_SHIFT 32
@@ -66,6 +75,7 @@
 #define CAUSE_STORE_MISALIGN 6ul
 #define CAUSE_STORE_ACCESS 7ul
 #define CAUSE_ECALL_U 8ul
+#define CAUSE_ECALL_S 9ul
 #define CAUSE_FETCH_PAGE 12ul
 #define CAUSE_LOAD_PAGE 13ul
 #define CAUSE_STORE_PAGE 15ul
@@ -93,10 +103,15 @@
 #define FRAME(n) (0x81100000ul + ((unsigned long) (n) << 12))
 /* Low VA window 0x400000 (root[0] -> l1[2] -> l0) and its upper-half twin
  * 0xFFFFFFFFC0400000 (root[511] -> l1_up[2] -> l0). l0[0..3] map DDR frames
- * 0..3, l0[4] the BRAM page, and l0[6] frame 2 with l0[7] unmapped. */
+ * 0..3, l0[4] the BRAM page, l0[6] frame 2 with l0[7] unmapped, and
+ * l0[8..9] NC/IO aliases of frame 0. */
 #define VA_LO 0x00400000ul
 #define VA_UP 0xFFFFFFFFC0400000ul
 #define PG_BRAM 4
+#define PG_NC 8
+#define PG_IO 9
+#define PG_RO 10
+#define PG_S_ONLY 11
 
 enum kind {
     K_LD,
@@ -139,9 +154,9 @@ static const char *const kind_name[] = {"ld",
                                         "cbo.flush",
                                         "cbo.inval"};
 
-/* How the access runs: in U, in M with MPRV and MPP = U or S, or in M plain. */
-enum how { H_U = 0, H_MPRV_U = 1, H_MPRV_S = 2, H_M = 3 };
-static const char *const how_name[4] = {"U", "mprv-U", "mprv-S", "M"};
+/* Actual U/S execution, MPRV with MPP = U/S, or plain M execution. */
+enum how { H_U = 0, H_MPRV_U = 1, H_MPRV_S = 2, H_M = 3, H_S = 4 };
+static const char *const how_name[] = {"U", "mprv-U", "mprv-S", "M", "S"};
 
 static volatile unsigned long g_cause;
 static volatile unsigned long g_tval;
@@ -169,17 +184,17 @@ __attribute__((naked, aligned(4))) static void pm_trap_handler(void)
 }
 
 /*
- * One data access at va. In U the access runs after an mret into U and ends
- * with an ecall (cause 8, recorded as success). With MPRV the M-mode access
+ * One data access at va. In U/S the access runs after an mret and ends
+ * with an ecall (cause 8/9, recorded as success). With MPRV the M-mode access
  * takes MPP's privilege. Returns the loaded value (LD/LW/AMO/LR) or the SC
  * result; g_cause is NO_TRAP for a successful access.
  */
 static unsigned long access(int how, int kind, unsigned long va, unsigned long val)
 {
     unsigned long out = 0;
-    unsigned long mpp = (how == H_MPRV_S) ? 0x0800ul : 0ul;
+    unsigned long mpp = (how == H_MPRV_S || how == H_S) ? 0x0800ul : 0ul;
     unsigned long mprv = (how == H_MPRV_U || how == H_MPRV_S) ? MSTATUS_MPRV : 0ul;
-    unsigned long to_u = (how == H_U);
+    unsigned long to_lower = (how == H_U || how == H_S);
     g_cause = NO_TRAP;
     g_tval = NO_TRAP;
     __asm__ volatile("la   t0, 1f\n"
@@ -188,7 +203,7 @@ static unsigned long access(int how, int kind, unsigned long va, unsigned long v
                      "csrc mstatus, t0\n"
                      "csrs mstatus, %[mpp]\n"
                      "csrs mstatus, %[mprv]\n"
-                     "beqz %[to_u], 3f\n"
+                     "beqz %[to_lower], 3f\n"
                      "la   t0, 3f\n"
                      "csrw mepc, t0\n"
                      "mret\n"
@@ -273,7 +288,7 @@ static unsigned long access(int how, int kind, unsigned long va, unsigned long v
                      "j    4f\n"
                      "28: .insn i 0x0F, 2, x0, %[va], 0\n"
                      "4:\n"
-                     "bnez %[to_u], 6f\n"
+                     "bnez %[to_lower], 6f\n"
                      "1:\n"
                      "csrc mstatus, %[mprv]\n"
                      "j    7f\n"
@@ -285,9 +300,9 @@ static unsigned long access(int how, int kind, unsigned long va, unsigned long v
                        [k] "r"((unsigned long) kind),
                        [mpp] "r"(mpp),
                        [mprv] "r"(mprv),
-                       [to_u] "r"(to_u)
+                       [to_lower] "r"(to_lower)
                      : "t0", "t1", "t2", "t3", "a4", "a5", "ft0", "memory");
-    if (to_u && g_cause == CAUSE_ECALL_U) {
+    if ((how == H_U && g_cause == CAUSE_ECALL_U) || (how == H_S && g_cause == CAUSE_ECALL_S)) {
         g_cause = NO_TRAP;
         g_tval = NO_TRAP;
     }
@@ -488,6 +503,10 @@ static void build_tables(void)
     l0[PG_BRAM] = PTE_PPN(g_bram_page) | URWAD;
     /* A cached lower page followed by an unmapped page for split faults. */
     l0[6] = PTE_PPN(FRAME(2)) | URWAD;
+    l0[PG_NC] = PTE_PPN(FRAME(0)) | URWAD | (1ul << 61);
+    l0[PG_IO] = PTE_PPN(FRAME(0)) | URWAD | (2ul << 61);
+    l0[PG_RO] = PTE_PPN(FRAME(3)) | (URWAD & ~PTE_W);
+    l0[PG_S_ONLY] = PTE_PPN(FRAME(3)) | (URWAD & ~PTE_U);
     __asm__ volatile("fence rw, rw" ::: "memory");
 }
 
@@ -857,6 +876,173 @@ static void sret_accesses(void)
     }
 }
 
+/* NC/IO aliases are selected after the tagged VA reaches translation. */
+static void pbmt_accesses(int pmlen)
+{
+    volatile uint64_t *word = (volatile uint64_t *) (FRAME(0) + 64);
+    const int faults[] = {K_LR, K_SC, K_AMO, K_CBOZ};
+    const int cmos[] = {K_CLEAN, K_FLUSH, K_INVAL};
+    for (int page = PG_NC; page <= PG_IO; page++) {
+        for (int how = H_U; how <= H_MPRV_U; how++) {
+            unsigned long base = VA_LO + ((unsigned long) page << 12) + 64;
+            unsigned long va = tag(base, pmlen, 0x5Aul);
+            unsigned long other = tag(base, pmlen, 0x2Cul);
+            unsigned long seed = 0x123456789ABCDEF0ul ^ (unsigned long) page;
+            *word = seed;
+            __asm__ volatile("fence rw, rw" ::: "memory");
+            expect_value("H pbmt-load", how, K_LD, va, access(how, K_LD, va, 0), seed);
+            access(how, K_SD, other, ~seed);
+            expect_trap("H pbmt-store", how, K_SD, other, NO_TRAP, 0);
+            __asm__ volatile("fence rw, rw" ::: "memory");
+            expect_value("H pbmt-backing", how, K_SD, other, *word, ~seed);
+            expect_value("H pbmt-cross-tag",
+                         how,
+                         K_LD,
+                         other,
+                         store_load(how, va, other, seed + 1, 1),
+                         seed + 1);
+            for (unsigned i = 0; i < sizeof(faults) / sizeof(faults[0]); i++) {
+                access(how, faults[i], va, 1);
+                expect_trap("H pbmt-atomic-fault",
+                            how,
+                            faults[i],
+                            va,
+                            faults[i] == K_LR ? CAUSE_LOAD_ACCESS : CAUSE_STORE_ACCESS,
+                            base);
+            }
+            for (unsigned i = 0; i < sizeof(cmos) / sizeof(cmos[0]); i++) {
+                access(how, cmos[i], va, 0);
+                expect_trap("H pbmt-cmo", how, cmos[i], va, NO_TRAP, 0);
+            }
+        }
+    }
+}
+
+static volatile unsigned long g_irq_bad_priv;
+
+/* The timer is enabled only after MIE is cleared. It can first be taken
+ * after entering U. Record MPP before returning to the tagged store loop. */
+__attribute__((naked, aligned(4))) static void user_timer_handler(void)
+{
+    __asm__ volatile("addi sp, sp, -32\n"
+                     "sd t0, 0(sp)\n sd t1, 8(sp)\n sd t2, 16(sp)\n"
+                     "csrr t0, mcause\n bgez t0, 2f\n"
+                     "csrr t0, mstatus\n li t1, 0x1800\n and t0, t0, t1\n"
+                     "la t1, g_irq_bad_priv\n sd t0, 0(t1)\n"
+                     "la t0, g_irq\n li t1, 1\n sd t1, 0(t0)\n"
+                     "li t0, 0x4000001c\n li t1, -1\n sw t1, 0(t0)\n"
+                     "ld t0, 0(sp)\n ld t1, 8(sp)\n ld t2, 16(sp)\n"
+                     "addi sp, sp, 32\n mret\n"
+                     "2: ld t0, 0(sp)\n ld t1, 8(sp)\n ld t2, 16(sp)\n"
+                     "addi sp, sp, 32\n j pm_trap_handler\n");
+}
+
+static void user_interrupt(int pmlen)
+{
+    unsigned long raw = FRAME(2) + 0xc00;
+    unsigned long va = tag(raw, pmlen, 0x35);
+    unsigned long out = 0;
+    g_irq = 0;
+    g_irq_bad_priv = NO_TRAP;
+    g_cause = g_tval = NO_TRAP;
+    disable_interrupts();
+    set_trap_handler(&user_timer_handler);
+    MTIMECMP_HI = 0;
+    MTIMECMP_LO = (uint32_t) rdmtime() + 700;
+    enable_timer_interrupt();
+    __asm__ volatile("la t0, 1f\n csrw mscratch, t0\n"
+                     "li t0, 0x21800\n csrc mstatus, t0\n"
+                     "la t0, 2f\n csrw mepc, t0\n mret\n"
+                     "2: li t2, 4096\n"
+                     "3: sd %[value], 0(%[va])\n sd %[value], 8(%[va])\n"
+                     "sd %[value], 16(%[va])\n sd %[value], 24(%[va])\n"
+                     "la t0, g_irq\n ld t1, 0(t0)\n bnez t1, 4f\n"
+                     "addi t2, t2, -1\n bnez t2, 3b\n"
+                     "4: sd %[value], 32(%[va])\n ld %[out], 32(%[va])\n ecall\n"
+                     "1:\n"
+                     : [out] "+&r"(out)
+                     : [va] "r"(va), [value] "r"(0x7531ul)
+                     : "t0", "t1", "t2", "t3", "memory");
+    disable_timer_interrupt();
+    MTIMECMP_HI = ~0u;
+    set_trap_handler(&pm_trap_handler);
+    report(g_irq == 1 && g_irq_bad_priv == 0, "K interrupt-from-U", H_U, K_SD, va);
+    if (g_cause == CAUSE_ECALL_U)
+        g_cause = NO_TRAP;
+    expect_value("K interrupt-return", H_U, K_LD, va + 32, out, 0x7531);
+    report(*(volatile uint64_t *) raw == 0x7531, "K interrupt-store-backing", H_U, K_SD, va);
+}
+
+/* Delegated data faults must retain the transformed address in stval.
+ * Bare lets the S handler use the same code and data as M and U. Its ECALL
+ * is not delegated and returns through the access helper's M recovery. */
+static volatile unsigned long g_scause;
+static volatile unsigned long g_stval;
+static volatile unsigned long g_sstatus;
+
+__attribute__((naked, aligned(4))) static void pm_s_trap_handler(void)
+{
+    __asm__ volatile("csrr t0, scause\n la t1, g_scause\n sd t0, 0(t1)\n"
+                     "csrr t0, stval\n la t1, g_stval\n sd t0, 0(t1)\n"
+                     "csrr t0, sstatus\n la t1, g_sstatus\n sd t0, 0(t1)\n"
+                     "ecall\n");
+}
+
+static void supervisor_accesses(int pmlen)
+{
+    const unsigned long raw = FRAME(3) + 0x100;
+    const unsigned long va = tag(raw, pmlen, 0x35);
+    volatile uint64_t *word = (volatile uint64_t *) raw;
+    *word = 0x2468;
+    expect_value("I real-S-raw", H_S, K_LD, raw, access(H_S, K_LD, raw, 0), 0x2468);
+    access(H_S, K_LD, va, 0);
+    expect_trap("I real-S-tag", H_S, K_LD, va, CAUSE_LOAD_ACCESS, va);
+    access(H_S, K_SD, va, 0x8765);
+    expect_trap("I real-S-tag", H_S, K_SD, va, CAUSE_STORE_ACCESS, va);
+    report(*word == 0x2468, "I real-S-backing", H_S, K_SD, va);
+
+    unsigned long old_stvec = csr_read(stvec);
+    csr_write(stvec, (unsigned long) &pm_s_trap_handler);
+    csr_write(medeleg, (1ul << CAUSE_LOAD_ACCESS) | (1ul << CAUSE_STORE_ACCESS));
+    for (int kind = K_LD; kind <= K_SD; kind++) {
+        unsigned long bad = tag(0x30000008ul, pmlen, 0x35);
+        unsigned long cause = kind == K_LD ? CAUSE_LOAD_ACCESS : CAUSE_STORE_ACCESS;
+        g_scause = g_stval = g_sstatus = NO_TRAP;
+        access(H_U, kind, bad, 0x8765);
+        report(g_cause == CAUSE_ECALL_S && g_scause == cause && g_stval == 0x30000008ul &&
+                   !(g_sstatus & (1ul << 8)),
+               "I delegated-stval",
+               H_U,
+               kind,
+               bad);
+        if (g_scause != cause || g_stval != 0x30000008ul)
+            uart_printf(
+                "  scause=0x%lx stval=0x%016lx want 0x%016lx\r\n", g_scause, g_stval, 0x30000008ul);
+    }
+    csr_write(medeleg, 0);
+    csr_write(stvec, old_stvec);
+}
+
+/* Both leaves are valid. A read-only U page rejects the store and a
+ * supervisor page rejects the U load, after the tagged VA is transformed. */
+static void permission_faults(int pmlen)
+{
+    unsigned long ro = VA_LO + ((unsigned long) PG_RO << 12) + 0x100;
+    unsigned long supervisor = VA_LO + ((unsigned long) PG_S_ONLY << 12) + 0x100;
+    unsigned long ro_tag = tag(ro, pmlen, 0x35);
+    unsigned long s_tag = tag(supervisor, pmlen, 0x35);
+    volatile uint64_t *word = (volatile uint64_t *) (FRAME(3) + 0x100);
+    *word = 0x2468;
+    for (int how = H_U; how <= H_MPRV_U; how++) {
+        expect_value("J read-only-load", how, K_LD, ro_tag, access(how, K_LD, ro_tag, 0), 0x2468);
+        access(how, K_SD, ro_tag, 0x8765);
+        expect_trap("J permission-store", how, K_SD, ro_tag, CAUSE_STORE_PAGE, ro);
+        report(*word == 0x2468, "J read-only-backing", how, K_SD, ro_tag);
+        access(how, K_LD, s_tag, 0);
+        expect_trap("J permission-load", how, K_LD, s_tag, CAUSE_LOAD_PAGE, supervisor);
+    }
+}
+
 int main(void)
 {
     volatile uint64_t bram_page[512] __attribute__((aligned(4096)));
@@ -868,7 +1054,7 @@ int main(void)
     for (int p = 0; p < 4; p++)
         for (int i = 0; i < 512; i++)
             ((volatile uint64_t *) FRAME(p))[i] = 0;
-    csr_write(0x30A, ENVCFG_CBO);
+    csr_write(0x30A, ENVCFG_CBO | ENVCFG_PBMTE);
 
     /* A: WARL. */
     {
@@ -913,6 +1099,8 @@ int main(void)
             boundary_accesses(pmlen, virt);
             split_accesses(pmlen, virt);
             if (virt) {
+                permission_faults(pmlen);
+                pbmt_accesses(pmlen);
                 tagged_accesses(pmlen == 7 ? "B sv39-ddr-7" : "B sv39-ddr-16",
                                 pmlen,
                                 1,
@@ -934,6 +1122,8 @@ int main(void)
                               VA_LO + 0x2000,
                               VA_LO + ((unsigned long) PG_BRAM << 12));
             } else {
+                supervisor_accesses(pmlen);
+                user_interrupt(pmlen);
                 tagged_accesses(pmlen == 7 ? "B bare-ddr-7" : "B bare-ddr-16",
                                 pmlen,
                                 0,

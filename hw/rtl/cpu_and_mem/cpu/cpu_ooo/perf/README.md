@@ -12,11 +12,21 @@ holds the back-end counters. This page is the reference for the build option,
 the CSR protocol, the counter numbering, and the C API.
 
 Architectural HPM counters 3–10 are available independently of `PERF_COUNTERS`.
-They count retired branches, mispredictions, instruction and data TLB walks,
+They count retired branches, mispredictions, instruction and data L1 TLB misses,
 L1D permission misses, store-queue capacity stalls, cycles, and retired
 instructions; Sscofpmf adds overflow and privilege filtering to each. Selectors
 16, 17 and 18 instead count page-walker busy cycles (counter 8), SFENCE.VMA TLB
-invalidates (counter 7) and CSR-requested TLB invalidates (counter 4). Linux `perf` accesses
+invalidates (counter 7) and CSR-requested translation-state flushes (counter 4);
+L1 TLB misses include requests answered by the second-level TLB. Selectors
+19, 20 and 21 count L1I refills (counter 3), L2 demand misses (counter 6) and L2
+prefetch misses (counter 5), where an L2 miss is a line the coherence home reads
+from memory. The refill events take the `fill` and `fill_prefetch` fields of
+`cache_perf_pkg::cache_instance_perf_events_t`, registered once more in
+`cpu_ooo`. Each instance has 18 packed bits, with `fill` at bit 17 and
+`fill_prefetch` at bit 16. The three instances and the eight write-event
+bits form a 62-bit hierarchy; the fetch-stall bit makes the CPU bus 63 bits.
+Privilege filtering uses the mode when the CSR logic samples these pulses.
+Linux `perf` accesses
 them through the OpenSBI PMU mapping; the [Linux counter guide](../../../../../../linux/README.md#counters-and-mcounteren)
 describes their event selectors, enables and user aliases. The custom
 snapshot protocol below applies to the optional profiling counters.
@@ -156,7 +166,7 @@ Sources: `dispatch.sv` (`o_status`), `ooo_pipeline_control.sv`,
 | 17 | `NO_RETIRE_NOT_EMPTY` | cycle | Nothing committed while the ROB is not empty and no flush is active |
 | 18 | `ROB_EMPTY` | cycle | The ROB is empty and no flush is active |
 | 19 | `PREDICTION_DISABLED` | cycle | Branch prediction is suppressed because a CSR instruction is in flight (from the cycle after it dispatches until it commits), while the static disable input is off |
-| 20 | `PRED_FENCE_BRANCH` | cycle | The highest-priority unpredicted control-flow instruction in PD or ID is a conditional branch |
+| 20 | `PRED_FENCE_BRANCH` | cycle | The highest-priority unpredicted slot-1 control-flow instruction in PD or ID is a conditional branch |
 | 21 | `PRED_FENCE_JAL` | cycle | Same, a JAL |
 | 22 | `PRED_FENCE_INDIRECT` | cycle | Same, an indirect jump (JALR) |
 
@@ -165,9 +175,9 @@ resource in question. Several can fire in the same cycle, so they overlap
 rather than partition counter 1. A cycle in which only slot 2 blocks the
 bundle counts in 1 but in none of 7–16; it lands in 35–39 instead.
 
-Counters 20–22 are one-hot: each cycle counts at most one instruction,
-choosing ID over PD and, within a stage, indirect over JAL over branch. They
-only observe; nothing gates prediction on them.
+Counters 20–22 inspect slot 1 only and are one-hot: each cycle counts at most
+one instruction, choosing ID over PD and, within a stage, indirect over JAL
+over branch. They only observe; nothing gates prediction on them.
 
 ### Top level 23–41: 2-wide width funnel
 
@@ -185,12 +195,12 @@ same-cycle alignment with other counters shifts.
 | 23 | `IF_DELIVER1` | event | IF handed PD a real slot-1 instruction (once per accepted handoff) |
 | 24 | `IF_DELIVER2` | event | That handoff also carried a real slot-2 instruction (a subset of 23) |
 | 25 | `IF_S2KILL_S1_NATIVE_CTRL` | event | 1-wide handoff: slot 1 is native 32-bit control flow (branch, JAL, JALR), which ends the bundle |
-| 26 | `IF_S2KILL_S1_NATIVE_SERIALIZE` | event | 1-wide handoff: slot 1 is a native serializing instruction (SYSTEM, MISC-MEM, or AMO), which never leads a pair |
+| 26 | `IF_S2KILL_S1_NATIVE_SERIALIZE` | event | 1-wide handoff: slot 1 is a native serializing instruction (SYSTEM except Zimop, MISC-MEM, or AMO), which never leads a pair |
 | 27 | `IF_S2KILL_S1_CTRL` | event | 1-wide handoff: slot 1 is compressed control flow, which ends the bundle |
-| 28 | `IF_S2KILL_S2_CLASS` | event | 1-wide handoff: the slot-2 candidate is a class excluded from slot 2 (native SYSTEM, MISC-MEM, AMO, FP compute or vector) |
+| 28 | `IF_S2KILL_S2_CLASS` | event | 1-wide handoff: the slot-2 candidate is a class excluded from slot 2 (native SYSTEM except Zimop, MISC-MEM, AMO, FP compute or vector) |
 | 29 | `IF_S2KILL_WINDOW_LIMIT` | event | 1-wide handoff: the slot-2 candidate is a 32-bit instruction starting in the upper half of the second word, which cannot fit the 64-bit window |
 | 30 | `IF_S2KILL_TRANSIENT` | event | 1-wide handoff: transient aligner-buffer or window state, such as a parity-unsafe window read, kept slot 2 out |
-| 31 | `IF_SLOT2_PRED_TAKEN` | event | A slot-2 BTB taken prediction was accepted. Each costs one fetch bubble, because fetch has already requested the next sequential window |
+| 31 | `IF_SLOT2_PRED_TAKEN` | event | A slot-2 BTB taken prediction was accepted in IF. Each costs one fetch bubble because fetch has already requested the next sequential window; PD may still veto a conditional branch's prediction afterward (no counter records PD redirects by slot or kind) |
 | 32 | `DISPATCH_FIRE_2` | event | Slot 2 dispatched (`rob_alloc_req_2.alloc_valid`): one per instruction dispatched through slot 2 |
 | 33 | `DISPATCH_SLOT2_PRESENT` | cycle | A real slot-2 instruction is at the dispatch input |
 | 34 | `DISPATCH_SLOT2_FP_SERIALIZED` | cycle | A slot-2 instruction targets the FP RS (an FP compute operation); these never dispatch in slot 2 |

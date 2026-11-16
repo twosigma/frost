@@ -41,7 +41,8 @@
  *     PBMT = 3 in a leaf, and a nonzero PBMT in a leaf while menvcfg.PBMTE,
  *     sampled when the walk starts, is clear (Svpbmt).
  *   - a leaf with PBMT = NC or IO over cached DDR that has no uncached alias
- *     (riscv_pkg "Svpbmt") => DFAULT_ACCESS.
+ *     (riscv_pkg "Svpbmt") => DFAULT_ACCESS with the leaf payload, so the
+ *     requester checks page permissions before applying this PMA refusal.
  * A NAPOT leaf (Svnapot, 64 KiB) answers the 4 KiB page walked: its PPN[3:0]
  * is VPN[3:0], and it computes the alias below from that PPN.
  * A clean leaf answers DFAULT_NONE with {pbmt, ppn, level, RWXUDG} and echoes
@@ -517,20 +518,21 @@ module ptw #(
             end else if (pte_is_leaf) begin
               if (superpage_misaligned || !pte_a) begin
                 resp_q.fault_kind <= riscv_pkg::DFAULT_PAGE;
-              end else if (riscv_pkg::pbmt_leaf_access_fault(leaf_ppn, pte_pbmt)) begin
-                // NC or IO over DDR without an uncached alias.
-                resp_q.fault_kind <= riscv_pkg::DFAULT_ACCESS;
               end else begin
-                resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
-                resp_q.pbmt       <= pte_pbmt;
-                resp_q.ppn        <= riscv_pkg::pbmt_leaf_ppn(leaf_ppn, pte_pbmt);
-                resp_q.level      <= level_q;
-                resp_q.perm_r     <= pte_r;
-                resp_q.perm_w     <= pte_w;
-                resp_q.perm_x     <= pte_x;
-                resp_q.perm_u     <= pte_u;
-                resp_q.perm_d     <= pte_d;
-                resp_q.perm_g     <= g_acc_q || pte[riscv_pkg::PteFlagG];
+                // Keep permissions on a no-alias leaf: a page-permission
+                // fault has priority over its physical-access refusal.
+                resp_q.fault_kind <= riscv_pkg::pbmt_leaf_access_fault(
+                    leaf_ppn, pte_pbmt
+                ) ? riscv_pkg::DFAULT_ACCESS : riscv_pkg::DFAULT_NONE;
+                resp_q.pbmt <= pte_pbmt;
+                resp_q.ppn <= riscv_pkg::pbmt_leaf_ppn(leaf_ppn, pte_pbmt);
+                resp_q.level <= level_q;
+                resp_q.perm_r <= pte_r;
+                resp_q.perm_w <= pte_w;
+                resp_q.perm_x <= pte_x;
+                resp_q.perm_u <= pte_u;
+                resp_q.perm_d <= pte_d;
+                resp_q.perm_g <= g_acc_q || pte[riscv_pkg::PteFlagG];
               end
               state_q <= PTW_RESP;
             end else if (level_q == 2'd0) begin
@@ -582,6 +584,9 @@ module ptw #(
   // delivered something this walker never asked for.
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst && i_line_resp_valid && (state_q != PTW_WAIT))
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("ptw: line response in state %0d (id=%0d)", state_q, i_line_resp_id);
   end
 `endif
@@ -726,7 +731,15 @@ module ptw #(
           p_access_pbmt_reason :
           assert (!f_g_reserved && !f_g_invalid && f_g_leaf && !f_g_misaligned && !f_g_a0 &&
                   f_g_pbmt_no_alias);
+          p_access_pbmt_payload :
+          assert (o_resp.pbmt == f_g_pbmt && o_resp.ppn == f_pte[53:10] &&
+                  o_resp.level == f_level && o_resp.perm_r == f_pte[1] &&
+                  o_resp.perm_w == f_pte[2] && o_resp.perm_x == f_pte[3] &&
+                  o_resp.perm_u == f_pte[4] && o_resp.perm_d == f_pte[7]);
         end
+        if (o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS && o_resp.pbmt != 0)
+          p_access_leaf_marker :
+          assert (f_pte_seen && f_g_pbmt_no_alias && ($past(state_q) == PTW_DECODE));
         // A reserved PBMT, or any PBMT while PBMTE was clear, never answers
         // a translation.
         if (f_pte_seen && f_g_pbmt_reserved && ($past(state_q) == PTW_DECODE))
@@ -744,24 +757,39 @@ module ptw #(
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE && o_resp.level == 2'd0);
       c_page : cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE);
       c_access : cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS);
-      // Svpbmt: an NC and an IO leaf over DDR answer the alias, a PBMT 3 leaf
-      // and a PBMT leaf under PBMTE = 0 fault, and so does a non-leaf PBMT.
-      c_pbmt_nc_alias :
+      // Alias-return covers apply only to maps that have an alias.
+      if (riscv_pkg::PbmtAliasEnabled) begin
+        c_pbmt_nc_alias :
+        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
+               o_resp.pbmt == riscv_pkg::PbmtNc && f_g_pbmt_ddr);
+        c_pbmt_io_alias :
+        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
+               o_resp.pbmt == riscv_pkg::PbmtIo && f_g_pbmt_ddr && o_resp.level == 2'd1);
+      end
+      c_pbmt_nc_device :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
-             o_resp.pbmt == riscv_pkg::PbmtNc && f_g_pbmt_ddr);
-      c_pbmt_io_alias :
+             o_resp.pbmt == riscv_pkg::PbmtNc &&
+             riscv_pkg::pma_device_ok({8'b0, o_resp.ppn, 12'h000}));
+      c_pbmt_io_device :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
-             o_resp.pbmt == riscv_pkg::PbmtIo && f_g_pbmt_ddr && o_resp.level == 2'd1);
+             o_resp.pbmt == riscv_pkg::PbmtIo &&
+             riscv_pkg::pma_device_ok({8'b0, o_resp.ppn, 12'h000}));
       c_pbmt_reserved_fault :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE && f_g_leaf &&
              f_g_pbmt == 2'd3 && f_pbmte);
       c_pbmte_off_fault :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE && f_g_leaf &&
              f_g_pbmt == riscv_pkg::PbmtNc && !f_pbmte && !f_g_invalid && !f_g_a0);
-      // Only a DDR window wider than 2 GiB has addresses without an alias.
-      if (riscv_pkg::DdrCapacityLog2Bytes >= 32)
-        c_pbmt_no_alias_fault :
-        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS && f_g_pbmt_no_alias);
+      // Disabled-alias maps refuse every NC/IO DDR leaf; wide maps also
+      // refuse the uncovered tail. Reach both types with their leaf payload.
+      if (!riscv_pkg::PbmtAliasEnabled || riscv_pkg::DdrCapacityLog2Bytes >= 32) begin
+        c_pbmt_nc_no_alias_fault :
+        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS &&
+               o_resp.pbmt == riscv_pkg::PbmtNc && f_g_pbmt_no_alias);
+        c_pbmt_io_no_alias_fault :
+        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS &&
+               o_resp.pbmt == riscv_pkg::PbmtIo && f_g_pbmt_no_alias);
+      end
       c_pbmt_nonleaf_fault :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE && !f_g_leaf &&
              f_g_pbmt != 2'd0 && !f_g_invalid);

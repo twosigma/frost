@@ -249,6 +249,8 @@ module frost_rvfi_platform #(
     input  logic        i_nic_1g_rx_raw_valid = 1'b0,
     input  logic        i_nic_1g_rx_signal_ok = 1'b0,
     input  logic [ 4:0] i_nic_1g_phy_status = '0,
+    input  logic [32:0] i_nic_1g_phy_diag = '0,
+    output logic        o_nic_1g_phy_diag_ack,
     output logic [ 3:1] o_nic_1g_phy_ctrl,
     output logic        o_nic_1g_rx_block_lock,
     output logic        o_spi_cs_n,
@@ -260,6 +262,7 @@ module frost_rvfi_platform #(
 
   assign o_nic_1g_tx_raw_data = '0;
   assign o_nic_1g_tx_raw_valid = 1'b0;
+  assign o_nic_1g_phy_diag_ack = 1'b0;
   assign o_nic_1g_phy_ctrl = '0;
   assign o_nic_1g_rx_block_lock = 1'b0;
   assign o_spi_cs_n = 1'b1;
@@ -1758,7 +1761,8 @@ module frost_rvfi_platform #(
       .i_fence_redirect_pc(cpu_inst.if_stage_inst.pc_controller_inst.npc_val[2]),
       .i_branch_redirect_pc(cpu_inst.if_stage_inst.pc_controller_inst.npc_val[3]),
       .i_pd_redirect_pc(cpu_inst.if_stage_inst.pc_controller_inst.npc_val[4]),
-      .i_pd_branch_pc(cpu_inst.from_pd_to_id.program_counter),
+      .i_pd_branch_pc(cpu_inst.pd_redirect_slot2 ? cpu_inst.from_pd_to_id_2.program_counter :
+                                                   cpu_inst.from_pd_to_id.program_counter),
       .i_early_mispredict_active(cpu_inst.early_mispredict_active),
       .i_early_mispredict_tag(cpu_inst.early_mispredict_tag),
       .i_rob_head_ptr(cpu_inst.u_tomasulo.u_rob.head_ptr),
@@ -2330,6 +2334,8 @@ module frost_rvfi_platform #(
         .i_rx_raw_valid(i_nic_rx_raw_valid),
         .i_rx_signal_ok(i_nic_rx_signal_ok),
         .i_phy_status(i_nic_phy_status),
+        .i_phy_diag('0),
+        .o_phy_diag_ack(),
         .o_phy_ctrl(o_nic_phy_ctrl),
         .o_rx_block_lock(o_nic_rx_block_lock)
     );

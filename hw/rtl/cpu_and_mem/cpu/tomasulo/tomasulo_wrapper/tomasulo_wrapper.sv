@@ -1820,17 +1820,15 @@ module tomasulo_wrapper #(
   logic store_addr_pma_ok;
   logic store_addr_misaligned;
   logic mem_rs_issue_is_sc;
-  logic mem_rs_issue_is_cbo_zero;
-  logic mem_rs_issue_atomic_pma;
+  (* keep = "true" *) logic mem_rs_issue_atomic_pma;
   logic mem_rs_issue_is_cmo;
 
   assign store_page_offset_sum =
       {1'b0, o_mem_rs_issue.src1_value[11:0]} + {1'b0, o_mem_rs_issue.imm[11:0]};
-  assign mem_rs_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::SC_D);
+  assign mem_rs_issue_is_sc = o_mem_rs_issue.op == riscv_pkg::SC;
   // SC and cbo.zero use the atomic PMA map, excluding all device pages.
-  assign mem_rs_issue_is_cbo_zero = o_mem_rs_issue.op == riscv_pkg::CBO_ZERO;
-  assign mem_rs_issue_atomic_pma = mem_rs_issue_is_sc || mem_rs_issue_is_cbo_zero;
+  assign mem_rs_issue_atomic_pma = (o_mem_rs_issue.op == riscv_pkg::SC) ||
+      (o_mem_rs_issue.op == riscv_pkg::CBO_ZERO);
   // Zicbom ops take the ordinary store PMA map: a block in BRAM, DDR or a
   // device window is permitted (as a load or a store to it would be) and
   // executes as an ordered no-op (store_queue); outside the map is a store
@@ -1890,8 +1888,7 @@ module tomasulo_wrapper #(
   logic store_addr_misaligned_full_ref;
   logic store_misalign_issue_full_ref;
   logic store_issue_fire_full_ref;
-  assign store_addr_pma_ok_full_ref = ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
-                                       (o_mem_rs_issue.op == riscv_pkg::SC_D) ||
+  assign store_addr_pma_ok_full_ref = ((o_mem_rs_issue.op == riscv_pkg::SC) ||
                                        (o_mem_rs_issue.op == riscv_pkg::CBO_ZERO)) ?
       riscv_pkg::pma_atomic_ok(
       sq_effective_addr
@@ -1908,8 +1905,7 @@ module tomasulo_wrapper #(
   assign store_issue_fire_full_ref = i_translation_active ?
       (dmmu_store_ok && !dmmu_out_is_sc) :
       (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-       (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
-       (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
+       (o_mem_rs_issue.op != riscv_pkg::SC) &&
        store_addr_pma_ok_full_ref &&
        (!i_trap_misaligned_accesses || !store_addr_misaligned_full_ref));
   always_comb begin
@@ -2526,6 +2522,38 @@ module tomasulo_wrapper #(
     end
   end
 
+  // Prepare translated and untranslated store-completion cofactors ahead of
+  // the store PMA check. A Zicbom op completes at issue wherever its block
+  // lies: it writes nothing, so no precise bus response can fault it.
+  (* keep = "true" *) logic store_complete_translated;
+  (* keep = "true" *) logic store_complete_untranslated_without_pma;
+  logic store_complete_valid;
+  assign store_complete_translated = store_issue_translated &&
+      (!MEM_RESPONSE_ERRORS || dmmu_out_is_cmo ||
+       (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(dmmu_out_addr)) ||
+       ((dmmu_out_addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
+        (dmmu_out_addr < riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))));
+  assign store_complete_untranslated_without_pma = store_issue_untranslated_without_pma &&
+      (!MEM_RESPONSE_ERRORS || mem_rs_issue_is_cmo ||
+       (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_effective_addr)) ||
+       ((sq_effective_addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
+        (sq_effective_addr <
+         riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))));
+  assign store_complete_valid = i_translation_active ? store_complete_translated :
+      (store_complete_untranslated_without_pma && store_addr_pma_ok);
+`ifndef SYNTHESIS
+  always_comb
+    assert (store_complete_valid == (store_issue_fire &&
+        (!MEM_RESPONSE_ERRORS ||
+         (i_translation_active ? dmmu_out_is_cmo : mem_rs_issue_is_cmo) ||
+         (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+             i_translation_active ? dmmu_out_addr : sq_effective_addr
+         )) || (((i_translation_active ? dmmu_out_addr : sq_effective_addr) >=
+                 riscv_pkg::XLEN'(CACHED_BASE)) &&
+                ((i_translation_active ? dmmu_out_addr : sq_effective_addr) <
+                 riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))))));
+`endif
+
   reorder_buffer #(
       .SharedLinkBank(ROB_SHARED_LINK_BANK),
       .VECTOR(VECTOR),
@@ -2545,17 +2573,7 @@ module tomasulo_wrapper #(
       .i_cdb_write_2(cdb_write_from_arbiter_2),
       .i_cdb_match_tag(cdb_rob_match_tag),
       .i_cdb_match_tag_2(cdb_rob_match_tag_2),
-      // A Zicbom op completes at issue wherever its block lies: it writes
-      // nothing, so no precise bus response can fault it.
-      .i_store_complete_valid(store_issue_fire &&
-          (!MEM_RESPONSE_ERRORS ||
-           (i_translation_active ? dmmu_out_is_cmo : mem_rs_issue_is_cmo) ||
-           (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
-          i_translation_active ? dmmu_out_addr : sq_effective_addr
-      )) || (((i_translation_active ? dmmu_out_addr : sq_effective_addr) >=
-              riscv_pkg::XLEN'(CACHED_BASE)) &&
-             ((i_translation_active ? dmmu_out_addr : sq_effective_addr) <
-              riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))))),
+      .i_store_complete_valid(store_complete_valid),
       .i_store_complete_tag(store_complete_tag),
 
       // Branch
@@ -3973,25 +3991,16 @@ module tomasulo_wrapper #(
       r.is_fp = dispatch.is_fp_mem;
       r.size = dispatch.mem_size;
       r.sign_ext = dispatch.mem_signed;
-      r.is_lr = (dispatch.op == riscv_pkg::LR_W) || (dispatch.op == riscv_pkg::LR_D);
-      r.is_amo   = (dispatch.op == riscv_pkg::AMOSWAP_W)
-                || (dispatch.op == riscv_pkg::AMOADD_W)
-                || (dispatch.op == riscv_pkg::AMOXOR_W)
-                || (dispatch.op == riscv_pkg::AMOAND_W)
-                || (dispatch.op == riscv_pkg::AMOOR_W)
-                || (dispatch.op == riscv_pkg::AMOMIN_W)
-                || (dispatch.op == riscv_pkg::AMOMAX_W)
-                || (dispatch.op == riscv_pkg::AMOMINU_W)
-                || (dispatch.op == riscv_pkg::AMOMAXU_W)
-                || (dispatch.op == riscv_pkg::AMOSWAP_D)
-                || (dispatch.op == riscv_pkg::AMOADD_D)
-                || (dispatch.op == riscv_pkg::AMOXOR_D)
-                || (dispatch.op == riscv_pkg::AMOAND_D)
-                || (dispatch.op == riscv_pkg::AMOOR_D)
-                || (dispatch.op == riscv_pkg::AMOMIN_D)
-                || (dispatch.op == riscv_pkg::AMOMAX_D)
-                || (dispatch.op == riscv_pkg::AMOMINU_D)
-                || (dispatch.op == riscv_pkg::AMOMAXU_D);
+      r.is_lr = dispatch.op == riscv_pkg::LR;
+      r.is_amo   = (dispatch.op == riscv_pkg::AMOSWAP)
+                || (dispatch.op == riscv_pkg::AMOADD)
+                || (dispatch.op == riscv_pkg::AMOXOR)
+                || (dispatch.op == riscv_pkg::AMOAND)
+                || (dispatch.op == riscv_pkg::AMOOR)
+                || (dispatch.op == riscv_pkg::AMOMIN)
+                || (dispatch.op == riscv_pkg::AMOMAX)
+                || (dispatch.op == riscv_pkg::AMOMINU)
+                || (dispatch.op == riscv_pkg::AMOMAXU);
       r.amo_op = dispatch.op;
       make_lq_alloc = r;
     end
@@ -4282,7 +4291,7 @@ module tomasulo_wrapper #(
       r.rob_tag = dispatch.rob_tag;
       r.is_fp = dispatch.is_fp_mem;
       r.size = dispatch.mem_size;
-      r.is_sc = (dispatch.op == riscv_pkg::SC_W) || (dispatch.op == riscv_pkg::SC_D);
+      r.is_sc = dispatch.op == riscv_pkg::SC;
       r.is_zero = dispatch.op == riscv_pkg::CBO_ZERO;
       r.is_cmo = is_cmo;
       r.cmo_kind = cmo_kind_of(dispatch.op);
@@ -4323,6 +4332,10 @@ module tomasulo_wrapper #(
     sq_early_alloc_req_2 = sq_alloc_req_2;
     sq_early_alloc_req_2.valid = sq_alloc_req_2.valid && !i_mmu_pm_mode[1];
   end
+  // The store queue's copies of the packets' address and MMIO flag (zero
+  // under translation); see sq_early_addr_update_final.
+  logic [1:0][riscv_pkg::XLEN-1:0] sq_early_sq_address;
+  logic [1:0] sq_early_sq_is_mmio;
   sq_early_addr_pipeline sq_early_addr_pipeline_inst (
       .i_clk                          (i_clk),
       .i_rst_n                        (i_rst_n),
@@ -4358,10 +4371,13 @@ module tomasulo_wrapper #(
       .i_sq_alloc_req_2               (sq_early_alloc_req_2),
       .i_sq_full                      (o_sq_full),
       .i_sq_full_for_2                (o_sq_full_for_2),
+      .i_translation_active           (i_translation_active),
       .o_sq_early_addr_update         (sq_early_addr_update),
       .o_sq_early_addr_update_2       (sq_early_addr_update_2),
       .o_sq_early_addr_capture_valid  (sq_early_addr_capture_valid),
-      .o_sq_early_addr_capture_valid_2(sq_early_addr_capture_valid_2)
+      .o_sq_early_addr_capture_valid_2(sq_early_addr_capture_valid_2),
+      .o_sq_early_sq_address          (sq_early_sq_address),
+      .o_sq_early_sq_is_mmio          (sq_early_sq_is_mmio)
   );
 
   // ===========================================================================
@@ -4382,20 +4398,14 @@ module tomasulo_wrapper #(
   // Inline enum comparisons work around Yosys package-function elaboration.
   logic dmmu_iss_is_amo;
   assign dmmu_iss_is_amo =
-      (o_mem_rs_issue.op == riscv_pkg::AMOSWAP_W) || (o_mem_rs_issue.op == riscv_pkg::AMOADD_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOXOR_W) || (o_mem_rs_issue.op == riscv_pkg::AMOAND_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOOR_W) || (o_mem_rs_issue.op == riscv_pkg::AMOMIN_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOMAX_W) || (o_mem_rs_issue.op == riscv_pkg::AMOMINU_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOMAXU_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOSWAP_D) || (o_mem_rs_issue.op == riscv_pkg::AMOADD_D) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOXOR_D) || (o_mem_rs_issue.op == riscv_pkg::AMOAND_D) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOOR_D) || (o_mem_rs_issue.op == riscv_pkg::AMOMIN_D) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOMAX_D) || (o_mem_rs_issue.op == riscv_pkg::AMOMINU_D) ||
-      (o_mem_rs_issue.op == riscv_pkg::AMOMAXU_D);
+      (o_mem_rs_issue.op == riscv_pkg::AMOSWAP) || (o_mem_rs_issue.op == riscv_pkg::AMOADD) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOXOR) || (o_mem_rs_issue.op == riscv_pkg::AMOAND) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOOR) || (o_mem_rs_issue.op == riscv_pkg::AMOMIN) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOMAX) || (o_mem_rs_issue.op == riscv_pkg::AMOMINU) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOMAXU);
   // LR joins AMOs and SC in the MMU's atomic class (no device access).
   logic dmmu_iss_is_lr;
-  assign dmmu_iss_is_lr = (o_mem_rs_issue.op == riscv_pkg::LR_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::LR_D);
+  assign dmmu_iss_is_lr = o_mem_rs_issue.op == riscv_pkg::LR;
 
   logic dmmu_out_valid;
   logic dmmu_out_lq_capture_valid;
@@ -4526,7 +4536,50 @@ module tomasulo_wrapper #(
       sq_early_addr_capture_valid_final = sq_early_addr_capture_valid;
       sq_early_addr_capture_valid_2_final = sq_early_addr_capture_valid_2;
     end
+    // Address and MMIO flag: the pipeline's SQ copies, zero under
+    // translation, OR the MMU's, masked off without it. The SQ's address
+    // net is then apart from the MMU's VA input, and the translation select
+    // joins the final AND-OR instead of following it.
+    sq_early_addr_update_final.address = sq_early_sq_address[0] |
+        (dmmu_early_pa & {riscv_pkg::XLEN{i_translation_active}});
+    sq_early_addr_update_final.is_mmio = sq_early_sq_is_mmio[0] |
+        (dmmu_early_is_mmio & i_translation_active);
+    sq_early_addr_update_2_final.address = sq_early_sq_address[1] |
+        (dmmu_early2_pa & {riscv_pkg::XLEN{i_translation_active}});
+    sq_early_addr_update_2_final.is_mmio = sq_early_sq_is_mmio[1] |
+        (dmmu_early2_is_mmio & i_translation_active);
   end
+
+`ifdef SQ_EARLY_SQ_COPY_PROOF
+  // Check the consumed packets and capture enables against the translation
+  // select, including the delayed tag and valid bits.
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_sq_copy_consumer_proof
+    wire riscv_pkg::sq_addr_update_t raw_packet =
+        slot == 0 ? sq_early_addr_update : sq_early_addr_update_2;
+    wire riscv_pkg::sq_addr_update_t delayed_packet =
+        slot == 0 ? sq_early_addr_update_q2 : sq_early_addr_update_2_q2;
+    wire riscv_pkg::sq_addr_update_t final_packet =
+        slot == 0 ? sq_early_addr_update_final : sq_early_addr_update_2_final;
+    wire [riscv_pkg::XLEN-1:0] pa = slot == 0 ? dmmu_early_pa : dmmu_early2_pa;
+    wire mmio = slot == 0 ? dmmu_early_is_mmio : dmmu_early2_is_mmio;
+    wire hit = slot == 0 ? dmmu_early_ok : dmmu_early2_ok;
+    wire raw_capture = slot == 0 ? sq_early_addr_capture_valid : sq_early_addr_capture_valid_2;
+    wire final_capture =
+        slot == 0 ? sq_early_addr_capture_valid_final : sq_early_addr_capture_valid_2_final;
+    riscv_pkg::sq_addr_update_t reference_packet;
+    always_comb begin
+      reference_packet = raw_packet;
+      if (i_translation_active) begin
+        reference_packet.valid   = delayed_packet.valid && hit;
+        reference_packet.rob_tag = delayed_packet.rob_tag;
+        reference_packet.address = pa;
+        reference_packet.is_mmio = mmio;
+      end
+      assert (final_packet == reference_packet);
+      assert (final_capture == (i_translation_active ? reference_packet.valid : raw_capture));
+    end
+  end
+`endif
 
   // The translated LQ packet carries the S2 PA, or VA and fault kind. Its
   // valid omits recovery kills for timing: killed updates may write payload,
@@ -4976,6 +5029,9 @@ module tomasulo_wrapper #(
   // one whose stale response is still due.
   always @(posedge i_clk) begin
     if (i_rst_n && sc_check_armed && i_lq_mem_request_pending && !lq_mem_outstanding)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("tomasulo_wrapper: router pending request has no LQ response owner");
   end
 `endif

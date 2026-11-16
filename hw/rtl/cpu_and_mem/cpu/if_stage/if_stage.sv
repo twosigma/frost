@@ -121,9 +121,10 @@ module if_stage #(
     input logic i_dir_update_valid,
     input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
     input logic i_dir_update_taken,
-    // PD redirect (from pd_stage): a slot-1 conditional branch whose final
-    // direction differs from the BTB direction IF followed, or a backing BTB
-    // prediction of a jump in either slot, with the new direction and target
+    // PD redirect (from pd_stage): a conditional branch in either slot whose
+    // final direction differs from the BTB direction IF followed, or a backing
+    // BTB prediction of a jump in either slot, with the new direction and
+    // target
     input logic i_pd_redirect,
     input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
@@ -364,7 +365,9 @@ module if_stage #(
   // pc_controller's one-hot next-PC arm ordering; arm 8 is slot-1 prediction.
   localparam int unsigned PredictionNpcArm = 8;
   logic fetch_pa_valid;  // physical result for o_pc is visible
-  logic [riscv_pkg::FetchPaHoldCopies-1:0] fetch_pa_valid_copy;
+  // The IMMU forms the hold copies in their own LUTs (PA_COPY_HOLD), so no
+  // inverter sits between them and the queue's stall-select LUTs.
+  logic [riscv_pkg::FetchPaHoldCopies-1:0] fetch_pa_hold_copy;
   logic fetch_fault0_live;  // o_pc's word-0 fetch fault
 
   // ---------------------------------------------------------------------------
@@ -412,6 +415,7 @@ module if_stage #(
   logic [15:0] raw_parcel_2;
   logic [31:0] effective_instr_2;
   logic slot2_decomp_illegal;
+  logic slot2_is_cond_branch_live;
   logic is_compressed_2;
   logic sel_nop_2_aligner;  // raw output from instruction_aligner
   logic sel_nop_2;  // effective: also NOP'd whenever slot-1 NOPs
@@ -981,7 +985,8 @@ module if_stage #(
   immu #(
       .XLEN(XLEN),
       .NUM_ENTRIES(16),
-      .PA_VALID_COPIES(riscv_pkg::FetchPaHoldCopies)
+      .PA_VALID_COPIES(riscv_pkg::FetchPaHoldCopies),
+      .PA_COPY_HOLD(1'b1)
   ) u_immu (
       .i_clk(i_clk),
       .i_rst(i_pipeline_ctrl.reset),
@@ -995,7 +1000,7 @@ module if_stage #(
       .o_pa0(o_fetch_pa0),
       .o_pa1(o_fetch_pa1),
       .o_pa_valid(fetch_pa_valid),
-      .o_pa_valid_copy(fetch_pa_valid_copy),
+      .o_pa_valid_copy(fetch_pa_hold_copy),
       .o_fault0(fetch_fault0_live),
       .o_fault0_page(o_fetch_fault0_page),
       .o_fault1(o_fetch_fault1),
@@ -1010,7 +1015,7 @@ module if_stage #(
   assign o_fetch_pa_valid = fetch_pa_valid;
   assign o_fetch_fault0 = fetch_fault0_live;
   assign o_fetch_pa_hold = !fetch_pa_valid;
-  assign o_fetch_pa_hold_copy = ~fetch_pa_valid_copy;
+  assign o_fetch_pa_hold_copy = fetch_pa_hold_copy;
 
   // The presenter needs a pulse when a nonsequential PC load kills its
   // owed request. A slot-1 prediction made before emitting its branch must
@@ -1190,6 +1195,7 @@ module if_stage #(
       .o_raw_parcel_2(raw_parcel_2),
       .o_effective_instr_2(effective_instr_2),
       .o_slot2_decomp_illegal(slot2_decomp_illegal),
+      .o_slot2_is_cond_branch(slot2_is_cond_branch_live),
       .o_is_compressed_2(is_compressed_2),
       .o_sel_nop_2(sel_nop_2_aligner),
       .o_sel_compressed_2(sel_compressed_2),
@@ -1950,8 +1956,10 @@ module if_stage #(
   // Replay only real, still-valid saved packets.
   assign o_from_if_to_pd.raw_parcel = replay_saved_if_outputs ? raw_parcel_sc : raw_parcel;
   // Unused for slot 1: PD takes slot 1's illegal flag from the predecoded
-  // sideband (rvc_extra_predecoded).
+  // sideband (rvc_extra_predecoded), and decodes slot 1's conditional branches
+  // from raw_parcel and effective_instr.
   assign o_from_if_to_pd.decomp_illegal = 1'b0;
+  assign o_from_if_to_pd.is_cond_branch = 1'b0;
 
   assign o_from_if_to_pd.sel_nop = replay_saved_if_outputs ? sel_nop_saved : sel_nop;
   assign o_from_if_to_pd.sel_compressed = replay_saved_if_outputs ? sel_compressed_sc :
@@ -2442,23 +2450,74 @@ module if_stage #(
   );
 
   // A slot's bank is its word's parity. The registered lookup covered the
-  // slot when that bank's looked-up word is the slot's word.
+  // slot when that bank's looked-up word is the slot's word. Slot 2's live
+  // word is either pc_reg's word (compressed slot 1 at pc_reg[1] = 0) or the
+  // next word (pc_reg[1] || !is_compressed); precompute coverage and bank hits
+  // for both live candidates and the stall-saved word ahead of slot 1's size
+  // and the slot-2 PC adder.
   logic [riscv_pkg::TageLookupHiBit:2] tage_slot_word;
-  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_word_2;
   logic [riscv_pkg::TageLookupHiBit:2] tage_slot_bank_word;
-  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_bank_word_2;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_word_cur_live;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_word_next_live;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_slot2_word_saved_q;
+  logic tage_slot2_uses_next_word_live;
+  logic tage_cov_cur_live;
+  logic tage_cov_next_live;
+  logic tage_cov_saved;
+  logic tage_bank0_hit;
+  logic tage_bank1_hit;
+  logic tage_slot2_bank_sel;
+  (* keep = "true" *) logic tage_slot2_hit_cur_live;
+  (* keep = "true" *) logic tage_slot2_hit_next_live;
+  (* keep = "true" *) logic tage_slot2_hit_saved;
+
   assign tage_slot_word = o_from_if_to_pd.program_counter[riscv_pkg::TageLookupHiBit:2];
-  assign tage_slot_word_2 = o_from_if_to_pd_2.program_counter[riscv_pkg::TageLookupHiBit:2];
   assign tage_slot_bank_word = (tage_lookup_word[2] == tage_slot_word[2]) ?
                                tage_lookup_word : tage_lookup_word_next;
-  assign tage_slot_bank_word_2 = (tage_lookup_word[2] == tage_slot_word_2[2]) ?
-                                 tage_lookup_word : tage_lookup_word_next;
   assign o_tage_slot_valid[0] = tage_slot_bank_word == tage_slot_word;
-  assign o_tage_slot_valid[1] = tage_slot_bank_word_2 == tage_slot_word_2;
   assign o_tage_slot_lookup = tage_slot_word[2] ? tage_bank1 : tage_bank0;
-  assign o_tage_slot_lookup_2 = tage_slot_word_2[2] ? tage_bank1 : tage_bank0;
 
-  // PD overrides slot 1 only. A fetch fault's bytes carry no branch.
+  assign tage_word_cur_live = pc_reg[riscv_pkg::TageLookupHiBit:2];
+  assign tage_word_next_live = (riscv_pkg::TageLookupHiBit - 1)'(tage_word_cur_live + 1'b1);
+  assign tage_slot2_uses_next_word_live = pc_reg[1] || !is_compressed;
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      tage_slot2_word_saved_q <= '0;
+    end else if (flush_for_c_ext_safe) begin
+      tage_slot2_word_saved_q <= '0;
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
+      tage_slot2_word_saved_q <= tage_slot2_uses_next_word_live ?
+          tage_word_next_live : tage_word_cur_live;
+    end
+  end
+
+  assign tage_cov_cur_live =
+      ((tage_lookup_word[2] == tage_word_cur_live[2]) ?
+       tage_lookup_word : tage_lookup_word_next) == tage_word_cur_live;
+  assign tage_cov_next_live =
+      ((tage_lookup_word[2] == tage_word_next_live[2]) ?
+       tage_lookup_word : tage_lookup_word_next) == tage_word_next_live;
+  assign tage_cov_saved =
+      ((tage_lookup_word[2] == tage_slot2_word_saved_q[2]) ?
+       tage_lookup_word : tage_lookup_word_next) == tage_slot2_word_saved_q;
+
+  assign tage_bank0_hit = tage_bank0.hit1 || tage_bank0.hit2;
+  assign tage_bank1_hit = tage_bank1.hit1 || tage_bank1.hit2;
+  assign tage_slot2_hit_cur_live = tage_cov_cur_live &&
+      (pc_reg[2] ? tage_bank1_hit : tage_bank0_hit);
+  assign tage_slot2_hit_next_live = tage_cov_next_live &&
+      (pc_reg[2] ? tage_bank0_hit : tage_bank1_hit);
+  assign tage_slot2_hit_saved = tage_cov_saved &&
+      (tage_slot2_word_saved_q[2] ? tage_bank1_hit : tage_bank0_hit);
+
+  assign tage_slot2_bank_sel = replay_saved_if_outputs ?
+      tage_slot2_word_saved_q[2] : (tage_slot2_uses_next_word_live ^ pc_reg[2]);
+  assign o_tage_slot_valid[1] = replay_saved_if_outputs ? tage_cov_saved :
+      (tage_slot2_uses_next_word_live ? tage_cov_next_live : tage_cov_cur_live);
+  assign o_tage_slot_lookup_2 = tage_slot2_bank_sel ? tage_bank1 : tage_bank0;
+
+  // Slot-1 tagged-predictor direction. A fetch fault's bytes carry no branch.
   assign o_from_if_to_pd.tage_valid = o_tage_slot_valid[0] &&
       (o_tage_slot_lookup.hit1 || o_tage_slot_lookup.hit2) && !o_from_if_to_pd.fetch_fault;
   assign o_from_if_to_pd.tage_taken = o_tage_slot_lookup.taken;
@@ -2783,15 +2842,123 @@ module if_stage #(
                          (sel_compressed_sc ? riscv_pkg::PcIncrementCompressed :
                                               riscv_pkg::PcIncrement32bit);
 
+  // Precompute slot 2's branch target candidates ahead of slot 1's size and
+  // the aligner's position mux. A +2 slot 2 sits at CURRENT_HI (pc_reg[1] = 0)
+  // or NEXT_LO (pc_reg[1] = 1); a +4 slot 2 sits at NEXT_LO (pc_reg[1] = 0) or
+  // NEXT_HI (pc_reg[1] = 1, where a native candidate is NOP).
+  logic [31:0] slot2_cur_word;
+  logic [31:0] slot2_next_word;
+  logic [riscv_pkg::PdTargetSplit-1:0] pc_plus2_low;
+  logic [riscv_pkg::PdTargetSplit-1:0] pc_plus4_low;
+  logic slot2_is_cond_branch_saved_q;
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_native_imm_saved_q;
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_compressed_imm_saved_q;
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_pc_low_saved_q;
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_native_plus2_low;
+  logic [1:0] pd_slot2_target_native_plus2_high_select;
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_native_plus4_low;
+  logic [1:0] pd_slot2_target_native_plus4_high_select;
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_compressed_plus2_low;
+  logic [1:0] pd_slot2_target_compressed_plus2_high_select;
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_compressed_plus4_low;
+  logic [1:0] pd_slot2_target_compressed_plus4_high_select;
+
+  assign slot2_cur_word = fetch_word_swapped_for_spanning ? i_instr[63:32] : i_instr[31:0];
+  assign slot2_next_word = fetch_word_swapped_for_spanning ? i_instr[31:0] : i_instr[63:32];
+  assign pc_plus2_low = pc_reg[riscv_pkg::PdTargetSplit-1:0] +
+      riscv_pkg::PdTargetSplit'(riscv_pkg::PcIncrementCompressed);
+  assign pc_plus4_low = pc_reg[riscv_pkg::PdTargetSplit-1:0] +
+      riscv_pkg::PdTargetSplit'(riscv_pkg::PcIncrement32bit);
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      slot2_is_cond_branch_saved_q           <= 1'b0;
+      pd_slot2_target_native_imm_saved_q     <= '0;
+      pd_slot2_target_compressed_imm_saved_q <= '0;
+      pd_slot2_target_pc_low_saved_q         <= '0;
+    end else if (flush_for_c_ext_safe) begin
+      slot2_is_cond_branch_saved_q           <= 1'b0;
+      pd_slot2_target_native_imm_saved_q     <= '0;
+      pd_slot2_target_compressed_imm_saved_q <= '0;
+      pd_slot2_target_pc_low_saved_q         <= '0;
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
+      slot2_is_cond_branch_saved_q           <= slot2_is_cond_branch_live;
+      pd_slot2_target_native_imm_saved_q     <= native_branch_imm_low(effective_instr_2);
+      pd_slot2_target_compressed_imm_saved_q <= compressed_branch_imm_low(raw_parcel_2);
+      pd_slot2_target_pc_low_saved_q         <= slot2_pc_live[riscv_pkg::PdTargetSplit-1:0];
+    end
+  end
+
+  (* dont_touch = "yes" *) pd_target_candidate #(
+      .SPLIT(riscv_pkg::PdTargetSplit)
+  ) u_pd_slot2_target_native_plus2 (
+      .i_pc_low       (pc_plus2_low),
+      .i_pc_low_saved (pd_slot2_target_pc_low_saved_q),
+      .i_imm_low_lo   (native_branch_imm_low({slot2_next_word[15:0], slot2_cur_word[31:16]})),
+      .i_imm_low_hi   (native_branch_imm_low(slot2_next_word)),
+      .i_imm_low_saved(pd_slot2_target_native_imm_saved_q),
+      .i_pc_high      (pc_reg[1]),
+      .i_replay       (replay_saved_if_outputs),
+      .o_target_low   (pd_slot2_target_native_plus2_low),
+      .o_high_select  (pd_slot2_target_native_plus2_high_select)
+  );
+  (* dont_touch = "yes" *) pd_target_candidate #(
+      .SPLIT(riscv_pkg::PdTargetSplit)
+  ) u_pd_slot2_target_native_plus4 (
+      .i_pc_low       (pc_plus4_low),
+      .i_pc_low_saved (pd_slot2_target_pc_low_saved_q),
+      .i_imm_low_lo   (native_branch_imm_low(slot2_next_word)),
+      .i_imm_low_hi   ('0),
+      .i_imm_low_saved(pd_slot2_target_native_imm_saved_q),
+      .i_pc_high      (pc_reg[1]),
+      .i_replay       (replay_saved_if_outputs),
+      .o_target_low   (pd_slot2_target_native_plus4_low),
+      .o_high_select  (pd_slot2_target_native_plus4_high_select)
+  );
+  (* dont_touch = "yes" *) pd_target_candidate #(
+      .SPLIT(riscv_pkg::PdTargetSplit)
+  ) u_pd_slot2_target_compressed_plus2 (
+      .i_pc_low       (pc_plus2_low),
+      .i_pc_low_saved (pd_slot2_target_pc_low_saved_q),
+      .i_imm_low_lo   (compressed_branch_imm_low(slot2_cur_word[31:16])),
+      .i_imm_low_hi   (compressed_branch_imm_low(slot2_next_word[15:0])),
+      .i_imm_low_saved(pd_slot2_target_compressed_imm_saved_q),
+      .i_pc_high      (pc_reg[1]),
+      .i_replay       (replay_saved_if_outputs),
+      .o_target_low   (pd_slot2_target_compressed_plus2_low),
+      .o_high_select  (pd_slot2_target_compressed_plus2_high_select)
+  );
+  (* dont_touch = "yes" *) pd_target_candidate #(
+      .SPLIT(riscv_pkg::PdTargetSplit)
+  ) u_pd_slot2_target_compressed_plus4 (
+      .i_pc_low       (pc_plus4_low),
+      .i_pc_low_saved (pd_slot2_target_pc_low_saved_q),
+      .i_imm_low_lo   (compressed_branch_imm_low(slot2_next_word[15:0])),
+      .i_imm_low_hi   (compressed_branch_imm_low(slot2_next_word[31:16])),
+      .i_imm_low_saved(pd_slot2_target_compressed_imm_saved_q),
+      .i_pc_high      (pc_reg[1]),
+      .i_replay       (replay_saved_if_outputs),
+      .o_target_low   (pd_slot2_target_compressed_plus4_low),
+      .o_high_select  (pd_slot2_target_compressed_plus4_high_select)
+  );
+
   // Slot-2 packet assembly.
   assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_saved : raw_parcel_2;
   assign o_from_if_to_pd_2.decomp_illegal = replay_saved_if_outputs ? slot2_decomp_illegal_sc :
                                             slot2_decomp_illegal;
-  // PD's direction redirect is slot-1 only.
-  assign o_from_if_to_pd_2.pd_target_native_low = '0;
-  assign o_from_if_to_pd_2.pd_target_native_high_select = '0;
-  assign o_from_if_to_pd_2.pd_target_compressed_low = '0;
-  assign o_from_if_to_pd_2.pd_target_compressed_high_select = '0;
+  assign o_from_if_to_pd_2.is_cond_branch = replay_saved_if_outputs ?
+      slot2_is_cond_branch_saved_q : slot2_is_cond_branch_live;
+  assign o_from_if_to_pd_2.pd_target_native_low =
+      is_compressed ? pd_slot2_target_native_plus2_low : pd_slot2_target_native_plus4_low;
+  assign o_from_if_to_pd_2.pd_target_native_high_select =
+      is_compressed ? pd_slot2_target_native_plus2_high_select :
+                      pd_slot2_target_native_plus4_high_select;
+  assign o_from_if_to_pd_2.pd_target_compressed_low =
+      is_compressed ? pd_slot2_target_compressed_plus2_low :
+                      pd_slot2_target_compressed_plus4_low;
+  assign o_from_if_to_pd_2.pd_target_compressed_high_select =
+      is_compressed ? pd_slot2_target_compressed_plus2_high_select :
+                      pd_slot2_target_compressed_plus4_high_select;
   assign o_from_if_to_pd_2.sel_nop = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
   assign o_from_if_to_pd_2.sel_compressed = replay_saved_if_outputs ? sel_compressed_2_sc :
                                             sel_compressed_2;
@@ -2925,10 +3092,215 @@ module if_stage #(
   // Carry its PC's index for conditional-branch training at commit.
   assign o_from_if_to_pd_2.bp_dir_taken = 1'b0;
   assign o_from_if_to_pd_2.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_2_sc : bp_dir_idx_2;
-  // PD's direction redirect is slot-1 only, so slot 2 carries no
-  // tagged-predictor direction.
-  assign o_from_if_to_pd_2.tage_valid = 1'b0;
-  assign o_from_if_to_pd_2.tage_taken = 1'b0;
+  // Slot-2 tagged-predictor direction, from the precomputed coverage and bank
+  // hits above.
+  assign o_from_if_to_pd_2.tage_valid =
+      (replay_saved_if_outputs ? tage_slot2_hit_saved :
+       (tage_slot2_uses_next_word_live ? tage_slot2_hit_next_live :
+                                         tage_slot2_hit_cur_live)) &&
+      !o_from_if_to_pd_2.fetch_fault;
+  assign o_from_if_to_pd_2.tage_taken = tage_slot2_bank_sel ? tage_bank1.taken : tage_bank0.taken;
+
+`ifndef SYNTHESIS
+  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_word_2_ref;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_bank_word_2_ref;
+  riscv_pkg::tage_lookup_t tage_slot_lookup_2_ref;
+  logic tage_slot2_cov_ref;
+  assign tage_slot_word_2_ref = o_from_if_to_pd_2.program_counter[riscv_pkg::TageLookupHiBit:2];
+  assign tage_slot_bank_word_2_ref = (tage_lookup_word[2] == tage_slot_word_2_ref[2]) ?
+                                     tage_lookup_word : tage_lookup_word_next;
+  assign tage_slot2_cov_ref = tage_slot_bank_word_2_ref == tage_slot_word_2_ref;
+  assign tage_slot_lookup_2_ref = tage_slot_word_2_ref[2] ? tage_bank1 : tage_bank0;
+
+  // Sampled at the clock so the check sees settled values on kept nets.
+  always_ff @(posedge i_clk) begin
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset) begin
+      // PD derives slot 1's size from its raw parcel and shares its high PC
+      // with slot 2. Check the memory-sideband contracts on the final packet,
+      // including stall replay, before PD consumes it.
+      if (!o_from_if_to_pd_2.sel_nop && !o_from_if_to_pd_2.fetch_fault && !$isunknown(
+              {o_from_if_to_pd.sel_compressed, o_from_if_to_pd.raw_parcel,
+               o_from_if_to_pd.effective_instr[6:0]}
+          )) begin
+        p_if_slot1_size_matches_raw_parcel :
+        assert (o_from_if_to_pd.sel_compressed == (o_from_if_to_pd.raw_parcel[1:0] != 2'b11));
+        p_if_slot2_follows_non_control_slot1 :
+        assert ((o_from_if_to_pd.raw_parcel[1:0] != 2'b11) ? !riscv_pkg::imem_compressed_control(
+            o_from_if_to_pd.raw_parcel
+        ) : !riscv_pkg::imem_native_control(
+            o_from_if_to_pd.effective_instr[6:0]
+        ));
+      end
+      if (!$isunknown({o_tage_slot_valid[1], tage_slot2_cov_ref})) begin
+        p_if_slot2_tage_cov_exact : assert (o_tage_slot_valid[1] == tage_slot2_cov_ref);
+      end
+      if (!$isunknown({o_tage_slot_lookup_2, tage_slot_lookup_2_ref})) begin
+        p_if_slot2_tage_lookup_exact : assert (o_tage_slot_lookup_2 == tage_slot_lookup_2_ref);
+      end
+      if (!$isunknown(
+              {
+                o_from_if_to_pd_2.tage_valid,
+                tage_slot2_cov_ref,
+                tage_slot_lookup_2_ref.hit1,
+                tage_slot_lookup_2_ref.hit2,
+                o_from_if_to_pd_2.fetch_fault
+              }
+          )) begin
+        p_if_slot2_tage_valid_exact :
+        assert (o_from_if_to_pd_2.tage_valid ==
+                (tage_slot2_cov_ref &&
+                 (tage_slot_lookup_2_ref.hit1 || tage_slot_lookup_2_ref.hit2) &&
+                 !o_from_if_to_pd_2.fetch_fault));
+      end
+      if (!$isunknown({o_from_if_to_pd_2.tage_taken, tage_slot_lookup_2_ref.taken})) begin
+        p_if_slot2_tage_taken_exact :
+        assert (o_from_if_to_pd_2.tage_taken == tage_slot_lookup_2_ref.taken);
+      end
+      if (!$isunknown(
+              {o_from_if_to_pd_2.is_cond_branch, o_from_if_to_pd_2.effective_instr[6:0]}
+          )) begin
+        p_if_slot2_is_cond_branch_exact :
+        assert (o_from_if_to_pd_2.is_cond_branch ==
+                (o_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_BRANCH));
+      end
+      if (!o_from_if_to_pd_2.sel_compressed && !$isunknown(
+              {
+                o_from_if_to_pd_2.program_counter,
+                o_from_if_to_pd_2.effective_instr,
+                o_from_if_to_pd_2.pd_target_native_low,
+                o_from_if_to_pd_2.pd_target_native_high_select
+              }
+          )) begin
+        p_if_slot2_pd_target_native_exact :
+        assert ({o_from_if_to_pd_2.pd_target_native_high_select[1],
+                 o_from_if_to_pd_2.pd_target_native_high_select[0],
+                 o_from_if_to_pd_2.pd_target_native_low} ==
+                {o_from_if_to_pd_2.effective_instr[31],
+                 (riscv_pkg::PdTargetSplit + 1)'(
+                     o_from_if_to_pd_2.program_counter[riscv_pkg::PdTargetSplit-1:0] +
+                     native_branch_imm_low(
+            o_from_if_to_pd_2.effective_instr
+        ))});
+      end
+      if (!$isunknown(
+              {
+                o_from_if_to_pd_2.program_counter,
+                o_from_if_to_pd_2.raw_parcel,
+                o_from_if_to_pd_2.pd_target_compressed_low,
+                o_from_if_to_pd_2.pd_target_compressed_high_select
+              }
+          )) begin
+        p_if_slot2_pd_target_compressed_exact :
+        assert ({o_from_if_to_pd_2.pd_target_compressed_high_select[1],
+                 o_from_if_to_pd_2.pd_target_compressed_high_select[0],
+                 o_from_if_to_pd_2.pd_target_compressed_low} ==
+                {o_from_if_to_pd_2.raw_parcel[12],
+                 (riscv_pkg::PdTargetSplit + 1)'(
+                     o_from_if_to_pd_2.program_counter[riscv_pkg::PdTargetSplit-1:0] +
+                     compressed_branch_imm_low(
+            o_from_if_to_pd_2.raw_parcel
+        ))});
+      end
+    end
+  end
+`endif
+
+`ifdef IF_SLOT2_PRECOMPUTE_FORMAL
+  // Formal model (formal/if_slot2_precompute.sby): proves that IF's precomputed
+  // slot-2 TAGE coverage, lookup select, direction flags, conditional-branch
+  // flag, target candidates, PC step, and bubble/fault pairing invariants match
+  // direct architectural references across live and stall-replayed packets.
+  logic f_slot2_past_valid = 1'b0;
+  logic [riscv_pkg::TageLookupHiBit:2] f_tage_slot_word_2_ref;
+  logic [riscv_pkg::TageLookupHiBit:2] f_tage_slot_bank_word_2_ref;
+  riscv_pkg::tage_lookup_t f_tage_slot_lookup_2_ref;
+  logic f_tage_slot2_cov_ref;
+
+  assign f_tage_slot_word_2_ref = o_from_if_to_pd_2.program_counter[riscv_pkg::TageLookupHiBit:2];
+  assign f_tage_slot_bank_word_2_ref =
+      (tage_lookup_word[2] == f_tage_slot_word_2_ref[2]) ?
+      tage_lookup_word : tage_lookup_word_next;
+  assign f_tage_slot2_cov_ref = f_tage_slot_bank_word_2_ref == f_tage_slot_word_2_ref;
+  assign f_tage_slot_lookup_2_ref = f_tage_slot_word_2_ref[2] ? tage_bank1 : tage_bank0;
+
+  always_ff @(posedge i_clk) begin
+    f_slot2_past_valid <= 1'b1;
+    if (!f_slot2_past_valid) assume (i_pipeline_ctrl.reset);
+  end
+
+  always_comb begin
+    if (f_slot2_past_valid && !i_pipeline_ctrl.reset) begin
+      f_if_slot2_tage_cov_exact : assert (o_tage_slot_valid[1] == f_tage_slot2_cov_ref);
+      f_if_slot2_tage_lookup_exact : assert (o_tage_slot_lookup_2 == f_tage_slot_lookup_2_ref);
+      f_if_slot2_tage_valid_exact :
+      assert (o_from_if_to_pd_2.tage_valid ==
+              (f_tage_slot2_cov_ref &&
+               (f_tage_slot_lookup_2_ref.hit1 || f_tage_slot_lookup_2_ref.hit2) &&
+               !o_from_if_to_pd_2.fetch_fault));
+      f_if_slot2_tage_taken_exact :
+      assert (o_from_if_to_pd_2.tage_taken == f_tage_slot_lookup_2_ref.taken);
+      f_if_slot2_is_cond_branch_exact :
+      assert (o_from_if_to_pd_2.is_cond_branch ==
+              (o_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_BRANCH));
+      if (!o_from_if_to_pd_2.sel_compressed) begin
+        f_if_slot2_pd_target_native_exact :
+        assert ({o_from_if_to_pd_2.pd_target_native_high_select[1],
+                 o_from_if_to_pd_2.pd_target_native_high_select[0],
+                 o_from_if_to_pd_2.pd_target_native_low} ==
+                {o_from_if_to_pd_2.effective_instr[31],
+                 (riscv_pkg::PdTargetSplit + 1)'(
+                     o_from_if_to_pd_2.program_counter[riscv_pkg::PdTargetSplit-1:0] +
+                     native_branch_imm_low(
+            o_from_if_to_pd_2.effective_instr
+        ))});
+      end
+      f_if_slot2_pd_target_compressed_exact :
+      assert ({o_from_if_to_pd_2.pd_target_compressed_high_select[1],
+               o_from_if_to_pd_2.pd_target_compressed_high_select[0],
+               o_from_if_to_pd_2.pd_target_compressed_low} ==
+              {o_from_if_to_pd_2.raw_parcel[12],
+               (riscv_pkg::PdTargetSplit + 1)'(
+                   o_from_if_to_pd_2.program_counter[riscv_pkg::PdTargetSplit-1:0] +
+                   compressed_branch_imm_low(
+          o_from_if_to_pd_2.raw_parcel
+      ))});
+      f_if_slot2_pc_step_exact :
+      assert (o_from_if_to_pd_2.program_counter ==
+              (o_from_if_to_pd.program_counter +
+               (o_from_if_to_pd.sel_compressed ? riscv_pkg::PcIncrementCompressed :
+                                                 riscv_pkg::PcIncrement32bit)));
+      f_if_slot1_nop_implies_slot2_nop :
+      assert (!o_from_if_to_pd.sel_nop || o_from_if_to_pd_2.sel_nop);
+      f_if_slot1_fault_implies_slot2_fault_or_nop :
+      assert (o_from_if_to_pd_2.sel_nop || !o_from_if_to_pd.fetch_fault ||
+              o_from_if_to_pd_2.fetch_fault);
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (f_slot2_past_valid && !i_pipeline_ctrl.reset) begin
+      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && !pc_reg[1] &&
+             is_compressed && o_from_if_to_pd_2.sel_compressed &&
+             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid &&
+             o_from_if_to_pd_2.tage_taken);
+      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && !pc_reg[1] &&
+             is_compressed && !o_from_if_to_pd_2.sel_compressed &&
+             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid &&
+             !o_from_if_to_pd_2.tage_taken);
+      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && !pc_reg[1] &&
+             !is_compressed && !o_from_if_to_pd_2.sel_compressed &&
+             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid);
+      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && use_instr_buffer &&
+             pc_reg[1] && is_compressed && o_from_if_to_pd_2.sel_compressed &&
+             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid);
+      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && pc_reg[1] &&
+             !is_compressed && o_from_if_to_pd_2.sel_compressed &&
+             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid);
+      cover (replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop &&
+             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid);
+    end
+  end
+`endif
 
   // ===========================================================================
   // Slot-1 Control Classification and Width Events

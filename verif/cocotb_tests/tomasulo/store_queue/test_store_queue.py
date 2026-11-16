@@ -3246,3 +3246,124 @@ async def test_cbo_mgmt_partial_flush_removes_uncommitted(dut: Any) -> None:
         await dut_if.step()
         assert not dut_if.read_mem_write().en
     assert dut_if.empty, "The committed CMO frees and the flushed one is gone"
+
+
+def _pack_vmt_entry0(
+    dut: Any,
+    *,
+    live: bool,
+    retired: bool,
+    rob_tag: int,
+    range_known: bool,
+    seg0: tuple[int, int, int, int] = (0, 0, 0, 0),
+    seg1: tuple[int, int, int, int] = (0, 0, 0, 0),
+) -> int:
+    """Pack entry 0 of i_vmt using the DUT's configured tag and PPN widths."""
+    tagw = len(dut.i_rob_head_tag)
+    seg_w = (len(dut.i_vmt) // 4 - 3 - tagw) // 2
+    ppn_w = seg_w - 15
+
+    def pack_seg(s: tuple[int, int, int, int]) -> int:
+        v, ppn, lo, hi = s
+        return (
+            ((v & 1) << (ppn_w + 14))
+            | ((ppn & ((1 << ppn_w) - 1)) << 14)
+            | ((lo & 0x7F) << 7)
+            | (hi & 0x7F)
+        )
+
+    s0 = pack_seg(seg0)
+    s1 = pack_seg(seg1)
+    top = (
+        ((1 if live else 0) << (tagw + 2))
+        | ((1 if retired else 0) << (tagw + 1))
+        | ((rob_tag & ((1 << tagw) - 1)) << 1)
+        | (1 if range_known else 0)
+    )
+    return (top << (2 * seg_w)) | (s1 << seg_w) | s0
+
+
+@cocotb.test()
+async def test_cbo_mgmt_waits_for_vec_hold_block(dut: Any) -> None:
+    """A Zicbom entry waits when its 64 B block overlaps a held vector sector.
+
+    VMT entry 0 is retired and covers only the upper 32 B sector (sector 3:
+    0x8000_0060..0x8000_007F) of block 0x8000_0040..0x8000_007F, while a
+    younger cbo.flush addresses 0x8000_0044 in the lower 32 B sector (sector 2)
+    of that same 64 B block. Block-wide overlap keeps vec_hold_q asserted and
+    prevents cmo_drain_fire until the VMT entry frees; a second cbo.inval in a
+    non-overlapping block drains immediately once at the cursor.
+    """
+    dut_if, _model = await setup(dut)
+
+    ppn = 0x80000
+    # Hold only upper 32 B sector 3 (0x8000_0060..0x8000_007F) of block 0x8000_0040.
+    dut.i_vmt.value = _pack_vmt_entry0(
+        dut,
+        live=True,
+        retired=True,
+        rob_tag=0,
+        range_known=True,
+        seg0=(1, ppn, 3, 3),
+    )
+    await dut_if.step()
+
+    # Allocate cbo.flush in lower 32 B sector 2 of the SAME 64 B block (0x8000_0044),
+    # followed by cbo.inval in a non-overlapping block (0x8000_0100).
+    await alloc_cmo(dut_if, rob_tag=1, address=0x8000_0044, kind=CMO_FLUSH)
+    await alloc_cmo(dut_if, rob_tag=2, address=0x8000_0100, kind=CMO_INVAL)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_commit(1)
+    await dut_if.step()
+    dut_if.drive_rob_head_tag(2)
+    dut_if.drive_commit(2)
+    await dut_if.step()
+    dut_if.clear_commit()
+
+    # While VMT entry 0 holds sector 3, the committed cbo.flush at 0x8000_0044
+    # must NOT fire or pulse L0 invalidation or free.
+    for _ in range(8):
+        await dut_if.step()
+        assert not dut_if.read_mem_write().en
+        assert int(dut.o_cache_invalidate_valid.value) == 0
+        assert int(dut.o_count.value) == 2, (
+            "CMO drained while its 64 B block was vector-held"
+        )
+
+    # Free VMT entry 0: both CMOs now drain in order, each pulsing block invalidation.
+    dut.i_vmt.value = 0
+    inval_addrs: list[int] = []
+    for _ in range(10):
+        await dut_if.step()
+        assert not dut_if.read_mem_write().en
+        if int(dut.o_cache_invalidate_valid.value):
+            assert int(dut.o_cache_invalidate_block.value) == 1
+            inval_addrs.append(int(dut.o_cache_invalidate_addr.value))
+    assert dut_if.empty, "Both CMOs must free once the held vector range releases"
+    assert inval_addrs == [0x8000_0044, 0x8000_0100]
+
+    # Also check an older unretired VMT entry with range_known=False holds a younger CMO.
+    dut.i_vmt.value = _pack_vmt_entry0(
+        dut,
+        live=True,
+        retired=False,
+        rob_tag=3,
+        range_known=False,
+    )
+    dut_if.drive_rob_head_tag(3)
+    await dut_if.step()
+    await alloc_cmo(dut_if, rob_tag=4, address=0x8000_0200, kind=CMO_CLEAN)
+    dut_if.drive_rob_head_tag(4)
+    dut_if.drive_commit(4)
+    await dut_if.step()
+    dut_if.clear_commit()
+    for _ in range(6):
+        await dut_if.step()
+        assert int(dut.o_cache_invalidate_valid.value) == 0
+        assert int(dut.o_count.value) == 1
+    dut.i_vmt.value = 0
+    for _ in range(6):
+        await dut_if.step()
+        if dut_if.empty:
+            break
+    assert dut_if.empty, "CMO must drain once the unknown-range older VMT entry clears"

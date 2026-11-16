@@ -67,7 +67,7 @@ module ma_engine #(
     input riscv_pkg::mem_size_e            i_size,
     input logic                            i_unsigned,
     input logic                            i_store,
-    // FP destination (FLW/FLD) or FP data source (FSW/FSD).
+    // FP destination (FLH/FLW/FLD) or FP data source (FSH/FSW/FSD).
     input logic                            i_fp,
     input logic                 [     4:0] i_rd,
     input logic                            i_rd_valid,
@@ -179,24 +179,29 @@ module ma_engine #(
 
   ma_pkg::ma_part_e walk_verdict;
   logic [XLEN-1:0] walk_pa;
+  logic walk_perm_ok;
   assign walk_pa = ma_pkg::leaf_pa(i_walk_resp.ppn, i_walk_resp.level, part_va);
+  assign walk_perm_ok = ma_pkg::leaf_perm_ok(
+      store_q,
+      i_walk_resp.perm_r,
+      i_walk_resp.perm_w,
+      i_walk_resp.perm_x,
+      i_walk_resp.perm_u,
+      i_walk_resp.perm_d,
+      i_eff_priv_u,
+      i_sum,
+      i_mxr
+  );
   always_comb begin
     unique case (i_walk_resp.fault_kind)
-      riscv_pkg::DFAULT_PAGE:   walk_verdict = ma_pkg::MaPartPage;
-      riscv_pkg::DFAULT_ACCESS: walk_verdict = ma_pkg::MaPartAccess;
+      riscv_pkg::DFAULT_PAGE: walk_verdict = ma_pkg::MaPartPage;
+      riscv_pkg::DFAULT_ACCESS: begin
+        // A no-alias leaf carries permissions; its page fault wins.
+        walk_verdict = (i_walk_resp.pbmt != riscv_pkg::PbmtPma) && !walk_perm_ok ?
+            ma_pkg::MaPartPage : ma_pkg::MaPartAccess;
+      end
       default: begin
-        if (!ma_pkg::leaf_perm_ok(
-                store_q,
-                i_walk_resp.perm_r,
-                i_walk_resp.perm_w,
-                i_walk_resp.perm_x,
-                i_walk_resp.perm_u,
-                i_walk_resp.perm_d,
-                i_eff_priv_u,
-                i_sum,
-                i_mxr
-            ))
-          walk_verdict = ma_pkg::MaPartPage;
+        if (!walk_perm_ok) walk_verdict = ma_pkg::MaPartPage;
         else if (ma_pkg::leaf_ppn_out_of_range(i_walk_resp.ppn))
           walk_verdict = ma_pkg::MaPartAccess;
         else walk_verdict = ma_pkg::region(walk_pa, 1'b0);

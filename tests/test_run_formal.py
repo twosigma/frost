@@ -42,6 +42,17 @@ SBY_TASK_TIMEOUT_S = 2400
 # SBY files and separate CI jobs. Keep the runner's backstops in sync with
 # those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("coherence_home", "coh_home_control_prove"): 1800,
+    ("coherence_home", "coh_home_control64_prove"): 1800,
+    ("coherence_home", "coh_home_control_partition_prove"): 1800,
+    ("coherence_home", "coh_home_fill_cover"): 1800,
+    ("coherence_home", "coh_home_control4_bmc"): 1200,
+    ("coherence_home", "coh_home_control4_ultra_bmc"): 1200,
+    ("coherence_home", "coh_home_prefetch_cover"): 1200,
+    ("coherence_home", "coh_home_wb_prove"): 180,
+    ("coherence_home", "coh_home_victim_cover"): 180,
+    ("coherence_home", "coh_home_error_cover"): 180,
+    ("coherence_l1d", "coh_l1d_perf_prove"): 120,
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
@@ -51,6 +62,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
     ("coherence_l1d", "coh_l1d_stream_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_hold_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_cover"): 1200,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
@@ -72,6 +84,9 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_ways_data_bmc"): 5100,
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
+    ("coherence_l1d", "coh_l1d_zero_cover"): 14400,
+    ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
     ("coherence_store_boundary", "cover_four"): 7200,
     ("coherence_store_boundary", "bmc_intervening"): 14400,
@@ -86,6 +101,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("line_client_link", "line_link0_bmc"): 4200,
     ("line_client_link", "line_link1_bmc"): 4200,
     ("line_client_link", "line_link1_four_bmc"): 4200,
+    ("line_client_link", "line_link1_eight_bmc"): 4200,
     ("coherence_store_home", "link_bmc_pressure"): 8700,
 }
 
@@ -307,7 +323,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherent_cpu.sby",
-        "Coherent SC ownership, load selection, parking, and reservation cuts.",
+        "Coherent SC ownership, load selection, address/PBMT classification, parking, and reservation cuts.",
         tasks=(
             "coh_sc_selected_prove",
             "coh_sc_class_small_prove",
@@ -336,6 +352,7 @@ FORMAL_TARGETS = [
         "coherence_l1d.sby",
         "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
         tasks=(
+            "coh_l1d_perf_prove",
             "coh_l1d_conflict_prove",
             "coh_l1d_conflict_multi_prove",
             "coh_l1d_conflict_stream_prove",
@@ -385,6 +402,9 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_payload_bmc",
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
+            "coh_l1d_zero_stream_bmc",
+            "coh_l1d_answer_bmc",
+            "coh_l1d_stream_answer_bmc",
         ),
     ),
     FormalTarget(
@@ -433,24 +453,28 @@ FORMAL_TARGETS = [
             "coh_home_victim_cover",
             "coh_home_error_cover",
             "coh_home_prefetch_cover",
+            "coh_home_dispatch_cover",
         ),
     ),
     FormalTarget(
         "coherence_dma_ingress.sby",
         "DMA issue order, opaque identities, independent completion, and reset ownership; "
-        "the same for the hart's two-identity line client.",
+        "the same for the hart's two- and eight-identity line client.",
         tasks=(
             "coh_dma_ingress_prove",
             "coh_dma_ingress_cover",
             "coh_dma_ingress_soc_prove",
             "coh_dma_ingress_soc_cover",
             "coh_line_client_prove",
+            "coh_line_client_eight_prove",
             "coh_line_client_cover",
+            "coh_line_client_eight_cover",
         ),
     ),
     FormalTarget(
         "coherence_home_engine.sby",
-        "Resident image merges, independent probe/data arrival, and held service payloads.",
+        "Resident image merges, independent probe/data arrival, quick result offers, "
+        "and held service payloads.",
         tasks=(
             "coh_home_engine_prove",
             "coh_home_engine64_prove",
@@ -459,7 +483,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_array.sby",
-        "Independent L2 ports preserve byte values, tokens and physical-row exclusions.",
+        "Independent L2 ports and one-way parallel reads preserve byte values, tokens "
+        "and physical-row exclusions.",
         tasks=(
             "coh_home_array_prove",
             *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
@@ -775,6 +800,19 @@ FORMAL_TARGETS = [
         tasks=("bmc", "bmc_ways1", "bmc_delayed"),
     ),
     FormalTarget(
+        "cache_flash_valid.sby",
+        "Flash-valid assignment checks and independent watched-line hit exclusion "
+        "after invalidation, with install/invalidate/refill covers in each mode",
+        tasks=(
+            "bmc_fast",
+            "bmc_fast_ways1",
+            "bmc_hw",
+            "cover_fast",
+            "cover_fast_ways1",
+            "cover_hw",
+        ),
+    ),
+    FormalTarget(
         "lq_alloc_mask.sby",
         "Load-queue allocation masks and capacity checks match the reference search",
         tasks=("bmc4", "bmc8", "bmc16"),
@@ -905,7 +943,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rvc_predecode.sby",
-        "RV64C predecode expansion matches the reference decoder for every parcel",
+        "RV64C/Zcb/Zcmop expansion and source metadata match every parcel; MOPs permit pairing",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -927,10 +965,26 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_depth2", "cover"),
     ),
     FormalTarget(
+        "id_stage_kill_equiv.sby",
+        "ID post-classifier kill masking equals in-classifier legality and fault "
+        "overrides across both slots and all stage outputs",
+        tasks=("id_kill_equiv",),
+    ),
+    FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Queued LMUL classes and vector-memory rejection equal the arithmetic, VTOX "
-        "and VLOAD/VSTORE legality rules for every vtype, instruction and operation",
+        "Queued LMUL classes equal the arithmetic and VTOX legality rules for "
+        "every vtype, instruction and operation",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "vec_vmu.sby",
+        "Vector sector order, identity conservation and stalled preparation registers",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "vec_head_mmu.sby",
+        "Head vector translation before access, precise partial faults and commit shield",
+        tasks=("bmc", "cover"),
     ),
     FormalTarget(
         "vec_hold_rows.sby",
@@ -982,7 +1036,14 @@ FORMAL_TARGETS = [
         "csr_file.sby",
         "CSR state and access behavior with profiling counters on or off, and "
         "with the vector state",
-        tasks=("bmc", "cover", "bmc_perf_off", "vector_bmc", "vector_cover"),
+        tasks=(
+            "bmc",
+            "cover",
+            "bmc_perf_off",
+            "vector_bmc",
+            "vector_cover",
+            "pm_mode_bmc",
+        ),
     ),
     FormalTarget(
         "tlb.sby",
@@ -998,12 +1059,37 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover", "walk_select_prove", "walk_select_cover"),
     ),
     FormalTarget(
+        "ptw_pbmt_alias.sby",
+        "Svpbmt alias bit predicates equal the full-address range check for every address",
+        tasks=(
+            "bmc_small",
+            "bmc_1g",
+            "bmc_4g",
+            "bmc_8g",
+            "bmc_16g",
+            "bmc_32g",
+            "bmc_64g",
+            "bmc_128g",
+        ),
+    ),
+    FormalTarget(
         "ptw.sby",
         "Page-table walk state matches reference PTE classification, including the "
         "Svnapot PPN substitution, Svpbmt reserved encodings, PBMTE and the uncached "
         "alias, and the walk "
         "cache holds only valid pointers that memory holds, cleared by every discard",
-        tasks=("bmc", "cover", "bmc_nopwc", "bmc_replace", "bmc_wide", "cover_wide"),
+        tasks=(
+            "bmc",
+            "cover",
+            "bmc_nopwc",
+            "bmc_replace",
+            "bmc_wide",
+            "cover_wide",
+            "bmc_2g",
+            "cover_2g",
+            "bmc_external",
+            "cover_external",
+        ),
     ),
     FormalTarget(
         "reorder_buffer.sby",
@@ -1033,7 +1119,27 @@ FORMAL_TARGETS = [
             "line_link0_bmc",
             "line_link1_bmc",
             "line_link1_four_bmc",
+            "line_link1_eight_bmc",
             "line_link1_cover",
+        ),
+    ),
+    FormalTarget(
+        "home_capture_equiv.sby",
+        "Consumed home payloads match handshake-only captures, and registered "
+        "fill flags match their phase decodes across arbitrary reset and stalls.",
+        tasks=(
+            "home_small",
+            "home_four",
+            "home_default",
+            "array_bram",
+            "array_bram_four",
+            "array_uram",
+            "array_uram32",
+            "array_uram_row",
+            "endpoint32",
+            "endpoint56",
+            "arbiter_default",
+            "arbiter_idle",
         ),
     ),
     FormalTarget(
@@ -1045,9 +1151,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "home_seat_next_equiv.sby",
-        "The home's fill waiter masks, seat counts, parking and fill images, formed "
-        "for both values of the decision's late term and selected last, equal the "
-        "original form for any state and input, at two, three and eight fills, "
+        "The home's fill waiter masks, seat counts and parking, formed for both "
+        "values of the decision's late term and selected last, equal the original "
+        "form, and the fill images' next state equals the response load and "
+        "registered zero clear, for any state and input, at two, three and eight fills, "
         "portable and primitive",
         tasks=("bmc_seat2", "bmc_seat3", "bmc", "bmc_xilinx"),
     ),
@@ -1124,6 +1231,7 @@ FORMAL_TARGETS = [
             "bmc_free_small_oh",
             "cover_bin",
             "cover_oh",
+            "prove_copy",
         ),
     ),
     FormalTarget(
@@ -1136,6 +1244,24 @@ FORMAL_TARGETS = [
         "sq_live_result_select.sby",
         "Store addresses and MMIO flags match reference CDB priority selection",
         tasks=("prove",),
+    ),
+    FormalTarget(
+        "sq_early_sq_copy.sby",
+        "Store-address copies and the instantiated wrapper's consumed packets equal "
+        "the translation select, with reset, flush and translation-change covers",
+        tasks=("prove", "prove_integrated", "cover"),
+    ),
+    FormalTarget(
+        "rs_payload_twin.sby",
+        "Two tomasulo_wrapper copies whose reservation stations hold arbitrary stage2 payloads while "
+        "empty have equal outputs",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rs_stage2_payload_equiv.sby",
+        "Occupied reservation-station stage2 and stage2b payloads loaded on FU readiness equal "
+        "issue-fire capture across all four station configurations",
+        tasks=("int_prove", "mul_prove", "mem_prove", "fp_prove", "int_cover"),
     ),
     FormalTarget(
         "served_window_coverage.sby",
@@ -1296,10 +1422,24 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
-        "Backing BTB redirects fire for their slot's jump with its vetoes clear, "
-        "stack operations and refreshes follow them, and the redirect targets "
-        "match PD's reference models",
+        "PD backing-BTB jump redirects and slot-1/slot-2 TAGE conditional-branch "
+        "overrides fire only with their vetoes clear, stack operations and "
+        "refreshes follow them, and redirect directions and targets match PD's "
+        "reference models",
         tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "pd_id_slot2_redirect.sby",
+        "Composed PD and ID stages dispatch slot 2's effective prediction and "
+        "target equal to PD's slot-2 redirect while leaving slot 1 untouched",
+        tasks=("pd_id_slot2_bmc", "pd_id_slot2_cover"),
+    ),
+    FormalTarget(
+        "if_slot2_precompute.sby",
+        "IF precomputed slot-2 TAGE coverage, lookup select, branch flag, target "
+        "candidates, PC step, and bubble/fault pairing match direct references "
+        "across live and stall-replayed packets",
+        tasks=("if_slot2_precompute_bmc", "if_slot2_precompute_cover"),
     ),
     FormalTarget(
         "slot2_prediction_capture.sby",
@@ -1520,7 +1660,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "immu_twin.sby",
         "Instruction MMU: primitive and portable forms are equivalent.",
-        tasks=("immu_twin",),
+        tasks=("immu_twin", "immu_twin_hold"),
     ),
     FormalTarget(
         "cached_tier_adapter_twin.sby",
@@ -1578,10 +1718,64 @@ FORMAL_TARGETS = [
         "Reservation station: primitive and portable forms are equivalent.",
         tasks=("rs_twin_indexed",),
     ),
+    FormalTarget(
+        "sq_forwarding_unit.sby",
+        "Store-queue forwarding: byte merge, CMO/MMIO/SC blocks, ring-order priority and tree equivalence.",
+        tasks=("prove", "cover", "tree_equiv"),
+    ),
+    FormalTarget(
+        "axi_cdc.sby",
+        "AXI4 clock-domain crossing: staggered resets, ordering and payload preservation.",
+        tasks=("prove_aw", "prove_w", "prove_b", "prove_ar", "prove_r", "cover"),
+    ),
+    FormalTarget(
+        "cdc_mailbox.sby",
+        "Toggle-handshake CDC mailbox: single in-flight transfer and stable payload capture.",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "dc_fifo.sby",
+        "Dual-clock BRAM FIFO: free-clock occupancy, ready margin and payload delivery.",
+        tasks=("prove", "prove_margin2", "cover"),
+    ),
+    FormalTarget(
+        "sync_dist_ram_fifo.sby",
+        "Synchronous distributed-RAM FIFO: flags, pointer wrap and ordered word delivery.",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "mwp_dist_ram.sby",
+        "Multi-write-port LVT distributed RAM: staged write forwarding and port priority.",
+        tasks=("bmc", "bmc_addr1", "bmc_unstaged", "cover"),
+    ),
+    FormalTarget(
+        "nic_irq.sby",
+        "NIC interrupt controller: W1C priority, count/timer coalescing and mask control.",
+        tasks=("prove", "bmc", "cover"),
+    ),
+    FormalTarget(
+        "nic_dma_front.sby",
+        "NIC DMA front-end: aperture filter, unique IDs, side caps and same-line RW exclusion.",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "rat_checkpoint_restore.sby",
+        "Register alias table: unbounded circular ROB and sequence oracle across save, restore and commit.",
+        tasks=(
+            "prove_int_active",
+            "prove_int_ckpt_lo",
+            "prove_int_ckpt_hi",
+            "prove_fp_active",
+            "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_hi",
+            "cover",
+        ),
+    ),
 ]
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
     (
@@ -1625,6 +1819,10 @@ SBY_TASKS = [
     ("link_cover_pressure", "The pressure schedule completes through one-stage links."),
     ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
     ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
+    (
+        "coh_l1d_perf_prove",
+        "The L1D counter stream equals the direct serializer delayed once.",
+    ),
     ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),
     ("coh_l1d_conflict_multi_prove", "Guarded conflict identity with three endpoints."),
     (
@@ -1856,6 +2054,10 @@ SBY_TASKS = [
         "cbo.zero twin installation, victim, wait and fallback covers.",
     ),
     ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
+    (
+        "coh_l1d_zero_stream_bmc",
+        "Stream prefetching and Modified-sector grants with cbo.zero writes and three endpoints.",
+    ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
@@ -1911,6 +2113,15 @@ SBY_TASKS = [
     (
         "coh_l1d_store_multi_grant_bmc",
         "Concurrent store grants merge only the head record.",
+    ),
+    (
+        "coh_l1d_answer_bmc",
+        "Grant answers and same-sector merges complete each read once, in order "
+        "with stores and probes.",
+    ),
+    (
+        "coh_l1d_stream_answer_bmc",
+        "Speculative grants answer attached loads; merges keep store and probe order.",
     ),
     (
         "coh_l1d_data_bmc",
@@ -1984,6 +2195,22 @@ SBY_TASKS = [
     ),
     ("pc_tage_events_prove", "Unbounded history event equivalence"),
     ("pc_tage_events_cover", "History event and suppression reachability"),
+    (
+        "pd_id_slot2_bmc",
+        "Bounded PD and ID composition check for slot-2 prediction overrides",
+    ),
+    (
+        "pd_id_slot2_cover",
+        "Reachability of slot-2 taken overrides, not-taken vetoes, and stall holds",
+    ),
+    (
+        "if_slot2_precompute_bmc",
+        "Bounded IF slot-2 TAGE coverage, decode, and target-candidate check",
+    ),
+    (
+        "if_slot2_precompute_cover",
+        "Reachability of live and stall-replayed slot-2 TAGE-covered packets",
+    ),
     ("coh_rs_payload4_prove", "Coherent payload storage equality at four entries."),
     ("coh_rs_payload8_prove", "Coherent payload storage equality at eight entries."),
     ("coh_rs_payload16_prove", "Coherent payload storage equality at sixteen entries."),
@@ -2244,6 +2471,10 @@ SBY_TASKS = [
         "Prefetch fills that install, gain a seat or fail; reserve and no-fill decisions.",
     ),
     ("coh_home_fill_cover", "Fill installation, forward and waiter wake reachability."),
+    (
+        "coh_home_dispatch_cover",
+        "A dispatch-cycle lookup offer that loses the tag arbiter and wins from Lookup.",
+    ),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
         (
@@ -2403,6 +2634,15 @@ SBY_TASKS = [
     ("bmc_mshr8", "Bounded check with eight miss-status slots"),
     ("bmc_ways1", "Bounded check of a direct-mapped cache"),
     ("bmc_delayed", "Bounded check with delayed (UltraRAM) tags"),
+    ("bmc_fast", "Bounded check with the simulation bulk clear"),
+    (
+        "bmc_fast_ways1",
+        "Bounded check of a direct-mapped cache with the simulation bulk clear",
+    ),
+    ("bmc_hw", "Bounded check of the hardware maintenance path"),
+    ("cover_fast", "Reachability covers with the simulation bulk clear"),
+    ("cover_fast_ways1", "Watched-line covers for the direct-mapped flash cache"),
+    ("cover_hw", "Watched-line covers for the hardware flash-invalidate path"),
     ("bmc_free_bin", "Bounded shared-link memory equivalence with free binary reads"),
     ("bmc_free_oh", "Bounded shared-link memory equivalence with free one-hot reads"),
     (
@@ -2472,6 +2712,7 @@ SBY_TASKS = [
     ("cover_direct", "Direct-fetch responses coincident with clears and errors"),
     ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
+    ("prove_copy", "Staged address copies sample identical inputs on every edge"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
     ("bmc_raw", "Bounded equivalence with eight raw-wakeup candidates"),
     ("prove_raw", "Unbounded equivalence with eight raw-wakeup candidates"),
@@ -2483,6 +2724,21 @@ SBY_TASKS = [
     ("bmc16", "Bounded local equivalence at depth 16"),
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
+    ("bmc_small", "Svpbmt alias range equivalence at a 256 MiB DDR capacity"),
+    ("bmc_2g", "Svpbmt translation and alias refusal at a 2 GiB DDR capacity"),
+    ("cover_2g", "Svpbmt no-alias faults and device-page translations at 2 GiB"),
+    ("bmc_4g", "Svpbmt alias range equivalence at a 4 GiB DDR capacity"),
+    ("bmc_8g", "Svpbmt alias range equivalence at an 8 GiB DDR capacity"),
+    ("bmc_16g", "Svpbmt alias range equivalence at a 16 GiB DDR capacity"),
+    ("bmc_32g", "Svpbmt alias range equivalence at a 32 GiB DDR capacity"),
+    (
+        "bmc_external",
+        "Svpbmt walker response and leaf payload outside the FROST physical map",
+    ),
+    (
+        "cover_external",
+        "Svpbmt no-alias faults and device translations outside the FROST map",
+    ),
     ("prove_full_width", "Unbounded proof with a bus as wide as a line"),
     (
         "prove_soc",
@@ -2559,6 +2815,30 @@ SBY_TASKS = [
     ),
     ("bmc", "Check assertions up to the configured depth"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
+    ("home_small", "Consumed packets and fill phase flags with two fills."),
+    (
+        "home_four",
+        "Consumed packets and fill phase flags with three fills and four ways.",
+    ),
+    ("home_default", "Consumed packets and fill phase flags with eight fills."),
+    ("array_bram", "Separate selection and row-read captures with one BRAM way."),
+    (
+        "array_bram_four",
+        "Separate selection and row-read captures with four BRAM ways.",
+    ),
+    ("array_uram", "Folded selection and banked captures with four 64-byte URAM ways."),
+    (
+        "array_uram32",
+        "Folded selection and banked captures with four 32-byte URAM ways.",
+    ),
+    (
+        "array_uram_row",
+        "Folded selection and single-array captures with short read latency.",
+    ),
+    ("endpoint32", "Demand and grant captures with 32-bit addresses."),
+    ("endpoint56", "Demand and grant captures with 56-bit addresses."),
+    ("arbiter_default", "Selected payloads with handshake-only loading."),
+    ("arbiter_idle", "Selected payloads with loading on every idle cycle."),
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_seat2", "Seat next-state equivalence with two fills."),
     ("bmc_seat3", "Seat next-state equivalence with three fills and four ways."),
@@ -2568,11 +2848,20 @@ SBY_TASKS = [
         "Ingress under a hart source and class 3 with two identities.",
     ),
     (
+        "coh_line_client_eight_prove",
+        "Ingress under a hart source and class 3 with eight identities.",
+    ),
+    (
         "coh_line_client_cover",
         "Ingress reachability under a hart source with two identities.",
     ),
+    (
+        "coh_line_client_eight_cover",
+        "Ingress reachability under a hart source with eight identities.",
+    ),
     ("line_link1_bmc", "Line client and links at one stage, two identities."),
     ("line_link1_four_bmc", "Line client and links at one stage, four identities."),
+    ("line_link1_eight_bmc", "Line client and links at one stage, eight identities."),
     (
         "line_link1_cover",
         "Line client at one stage reaches two live identities and a write response.",
@@ -2736,6 +3025,14 @@ SBY_TASKS = [
         "Instruction MMU primitive form equals its portable form.",
     ),
     (
+        "immu_twin_hold",
+        "Instruction MMU primitive form equals its portable form with four hold-polarity copies.",
+    ),
+    (
+        "id_kill_equiv",
+        "ID post-classifier kill masking equals in-classifier legality and fault overrides.",
+    ),
+    (
         "cached_tier_twin",
         "Cached tier adapter primitive form equals its portable form with split read requests.",
     ),
@@ -2782,6 +3079,86 @@ SBY_TASKS = [
     (
         "rs_twin_indexed",
         "Indexed-write reservation station primitive form equals its portable form.",
+    ),
+    (
+        "prove_aw",
+        "Unbounded AXI4 CDC proof on the write-address channel.",
+    ),
+    (
+        "prove_w",
+        "Unbounded AXI4 CDC proof on the write-data channel.",
+    ),
+    (
+        "prove_b",
+        "Unbounded AXI4 CDC proof on the write-response channel.",
+    ),
+    (
+        "prove_ar",
+        "Unbounded AXI4 CDC proof on the read-address channel.",
+    ),
+    (
+        "prove_r",
+        "Unbounded AXI4 CDC proof on the read-data channel.",
+    ),
+    (
+        "prove_margin2",
+        "Unbounded dual-clock FIFO proof with almost-full margin 2.",
+    ),
+    (
+        "prove_int_active",
+        "Unbounded RAT proof for active integer rename, checkpoint pool and RAS outputs.",
+    ),
+    (
+        "prove_int_ckpt_lo",
+        "Unbounded RAT proof for integer snapshot invariants in checkpoints 0 through 3.",
+    ),
+    (
+        "prove_int_ckpt_hi",
+        "Unbounded RAT proof for integer snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "prove_fp_active",
+        "Unbounded RAT proof for active floating-point rename state.",
+    ),
+    (
+        "prove_fp_ckpt_lo",
+        "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 0 through 3.",
+    ),
+    (
+        "prove_fp_ckpt_hi",
+        "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "bmc_addr1",
+        "Bounded multi-write RAM equivalence with two entries.",
+    ),
+    (
+        "bmc_unstaged",
+        "Bounded multi-write RAM equivalence without write staging.",
+    ),
+    (
+        "tree_equiv",
+        "Store-queue forwarding balanced winner tree equals the linear formal selector.",
+    ),
+    (
+        "int_prove",
+        "Unbounded stage2 and stage2b payload equivalence in the INT station configuration.",
+    ),
+    (
+        "mul_prove",
+        "Unbounded stage2 payload equivalence in the MUL station configuration.",
+    ),
+    (
+        "mem_prove",
+        "Unbounded stage2 payload equivalence in the MEM station configuration.",
+    ),
+    (
+        "fp_prove",
+        "Unbounded stage2 payload equivalence in the FP station configuration.",
+    ),
+    (
+        "int_cover",
+        "Stage2 and stage2b stall, flush, back-to-back issue, and reset reachability.",
     ),
 ]
 
@@ -2836,6 +3213,76 @@ def formal_task_timeout_s(target: str, task: str) -> int:
     return SBY_TASK_TIMEOUT_OVERRIDES_S.get((target, task), SBY_TASK_TIMEOUT_S)
 
 
+# Measured CI setup budget (checkout, image download and docker load, collection).
+FORMAL_SHARD_SETUP_S = 600
+
+
+def _sby_task_timeouts_s(sby_path: Path) -> dict[str, int]:
+    """Return explicit ``timeout`` options (seconds) by task for an SBY file."""
+    section = ""
+    tasks: dict[str, set[str]] = {}
+    option_lines: list[str] = []
+    for raw in sby_path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("--"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line.split()[0]
+            continue
+        if section == "[tasks]":
+            parts = line.split()
+            tasks[parts[0]] = set(parts)
+        elif section == "[options]":
+            option_lines.append(line)
+    if not tasks:
+        tasks[""] = {""}
+    timeouts: dict[str, int] = {}
+    for task_name, tags in tasks.items():
+        value: int | None = None
+        for line in option_lines:
+            if ":" in line:
+                selector, rest = (part.strip() for part in line.split(":", 1))
+                if selector.startswith("~"):
+                    pat = selector[1:]
+                    matched = pat not in tags and not re.fullmatch(pat, task_name)
+                else:
+                    matched = selector in tags or bool(
+                        re.fullmatch(selector, task_name)
+                    )
+                if not matched:
+                    continue
+            else:
+                rest = line
+            parts = rest.split()
+            if len(parts) == 2 and parts[0] == "timeout":
+                value = int(parts[1])
+        if value is not None:
+            timeouts[task_name] = value
+    return timeouts
+
+
+def check_formal_shard_budgets(
+    shard_timeouts_s: dict[str, int],
+    selected_limits_s: dict[str, list[int]],
+    allowance_shards: set[str],
+    setup_s: int = FORMAL_SHARD_SETUP_S,
+) -> None:
+    """Check per-shard task limit sums and multi-hour task isolation."""
+    for shard_name, limits_s in selected_limits_s.items():
+        budget_s = shard_timeouts_s[shard_name]
+        for limit_s in limits_s:
+            assert limit_s + setup_s <= budget_s, (shard_name, limit_s, budget_s)
+            if limit_s > 7200:
+                assert shard_name in allowance_shards, (shard_name, limit_s)
+        if shard_name in allowance_shards:
+            assert sum(limits_s) + setup_s <= budget_s, (
+                shard_name,
+                sum(limits_s),
+                setup_s,
+                budget_s,
+            )
+
+
 def test_atomic_proof_pairs_and_formal_shards() -> None:
     """Require proof dependencies and one CI shard for every formal case."""
     import yaml  # type: ignore[import-untyped]
@@ -2848,6 +3295,14 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "prove_soc",
             "prove_soc_held",
             *(f"prove_soc8_{index}" for index in range(9)),
+        ],
+        "rat_checkpoint_restore": [
+            "prove_int_active",
+            "prove_int_ckpt_lo",
+            "prove_int_ckpt_hi",
+            "prove_fp_active",
+            "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_hi",
         ],
         "coherent_hart_cache": [
             "coh_hart_maint_owned_prove",
@@ -2905,6 +3360,9 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_stream_free_nostore_hold_bmc": "Coherence L1D no-store holds",
         "coherence_l1d_coh_l1d_bmc": "Coherence L1D control",
         "coherence_l1d_coh_l1d_multi_bmc": "Coherence L1D multi-endpoint",
+        "coherence_l1d_coh_l1d_zero_bmc": "Coherence L1D zero control",
+        "coherence_l1d_coh_l1d_zero_multi_bmc": "Coherence L1D zero multi-endpoint",
+        "coherence_l1d_coh_l1d_zero_cover": "Coherence L1D zero cover",
         "coherence_l1d_coh_l1d_local_data_bmc": "Coherence L1D local data",
         "coherence_l1d_coh_l1d_local_hold_bmc": "Coherence L1D local holds",
         "coherence_l1d_coh_l1d_local_control_bmc": "Coherence L1D local control",
@@ -2913,6 +3371,16 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_store_boundary_bmc_amo_same": "Store boundary AMO flow",
         "coherence_store_boundary_bmc_amo_other": "Store boundary AMO flow",
         "coherence_store_boundary_bmc_sc": "Store boundary",
+    }
+    # Shards sized directly from their tasks' allowances plus CI setup; the
+    # remaining catch-all shards group short partitions under hang backstops
+    # and may not hold any multi-hour (> 120 minute) task.
+    allowance_shards = (set(dedicated_shards.values()) - {"Store boundary"}) | {
+        "Coherence links pressure",
+        "Coherence L1D data single-endpoint",
+        "Coherence L1D data multi-endpoint",
+        "Coherence L1D data stores and ways",
+        "Reorder buffer",
     }
     data_prefixes = (
         "coh_l1d_data",
@@ -2949,6 +3417,20 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     for target_name, names in required.items():
         for name in names:
             assert sum(f"[{target_name}_{name}]" in node for node in nodes) == 1
+    sby_timeouts = {
+        target.name: _sby_task_timeouts_s(root / "formal" / target.sby_file)
+        for target in FORMAL_TARGETS
+    }
+    target_by_id = {
+        f"{target.name}_{task}": (target.name, task)
+        for target in FORMAL_TARGETS
+        for task in target.tasks
+    }
+    shard_timeouts_s = {
+        shard["shard"]: shard["timeout_minutes"] * 60 for shard in shards
+    }
+    selected_by_shard: dict[str, list[str]] = {name: [] for name in filters}
+    selected_limits_s: dict[str, list[int]] = {name: [] for name in filters}
     for node in nodes:
 
         def matches_keyword(keyword: str, /, **kwargs: str | int | bool | None) -> bool:
@@ -2962,11 +3444,47 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             if expression.evaluate(matches_keyword)
         ]
         assert len(matches) == 1, (node, matches)
+        shard_name = matches[0]
+        selected_by_shard[shard_name].append(node)
+        if node.startswith("tests/test_run_formal.py::") and "[" in node:
+            test_id = node.split("[", 1)[1].rstrip("]")
+            if test_id in target_by_id:
+                tgt, tsk = target_by_id[test_id]
+                limit_s = sby_timeouts[tgt].get(tsk)
+                if limit_s is None and shard_name in allowance_shards:
+                    limit_s = formal_task_timeout_s(tgt, tsk)
+                if limit_s is not None:
+                    selected_limits_s[shard_name].append(limit_s)
         for test_id, shard in dedicated_shards.items():
             if node.endswith(f"[{test_id}]"):
                 assert matches == [shard], (node, matches)
         if any(f"[coherence_l1d_{prefix}" in node for prefix in data_prefixes):
-            assert matches[0].startswith("Coherence L1D data"), (node, matches)
+            assert shard_name.startswith("Coherence L1D data"), (node, matches)
+    assert len(selected_by_shard["Coherence L1D zero control"]) == 1
+    assert len(selected_by_shard["Coherence L1D zero cover"]) == 1
+    assert len(selected_by_shard["Coherence L1D local holds"]) == 1
+    check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
+
+
+def test_formal_shard_budget_sum_rejects_overcommitted_shard() -> None:
+    """Reject a shard whose summed task allowances plus setup exceed its limit."""
+    check_formal_shard_budgets(
+        {"Dedicated": 260 * 60, "Shared": 330 * 60},
+        {"Dedicated": [240 * 60], "Shared": [20 * 60, 40 * 60]},
+        {"Dedicated"},
+    )
+    with pytest.raises(AssertionError):
+        check_formal_shard_budgets(
+            {"Dedicated": 330 * 60},
+            {"Dedicated": [120 * 60, 240 * 60]},
+            {"Dedicated"},
+        )
+    with pytest.raises(AssertionError):
+        check_formal_shard_budgets(
+            {"Shared": 330 * 60},
+            {"Shared": [240 * 60]},
+            set(),
+        )
 
 
 def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
@@ -2991,6 +3509,49 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
         else:
             sections[section].append(line)
     return sections
+
+
+def test_home_shard_budget() -> None:
+    """The complete home task limits and image setup fit their CI job."""
+    import yaml
+    from _pytest.mark.expression import Expression
+
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    shards = workflow["jobs"]["test-formal"]["strategy"]["matrix"]["include"]
+    shard = next(row for row in shards if row["shard"] == "Coherence home")
+    expression = Expression.compile(shard["pytest_filter"])
+    selected = []
+    for target in FORMAL_TARGETS:
+        for task in target.tasks:
+            node = f"{target.name}_{task}"
+
+            def matches_keyword(
+                keyword: str, /, **kwargs: str | int | bool | None
+            ) -> bool:
+                assert not kwargs
+                return keyword.casefold() in node.casefold()
+
+            if expression.evaluate(matches_keyword):
+                selected.append((target.name, task))
+    home = next(target for target in FORMAL_TARGETS if target.name == "coherence_home")
+    assert selected == [(home.name, task) for task in home.tasks]
+    limits = []
+    for target_name, task in selected:
+        options = {
+            key: value
+            for key, value in (
+                line.split(None, 1)
+                for line in formal_task_config(target_name, task)["[options]"]
+            )
+        }
+        limit = formal_task_timeout_s(target_name, task)
+        sby_limit = int(options.get("timeout", str(limit)))
+        if (target_name, task) in SBY_TASK_TIMEOUT_OVERRIDES_S:
+            assert sby_limit == limit, task
+        limits.append(min(sby_limit, limit))
+    setup_seconds = 20 * 60
+    assert sum(limits) + setup_seconds <= shard["timeout_minutes"] * 60
 
 
 def l1d_task_config(task: str) -> dict[str, list[str]]:
@@ -3262,7 +3823,7 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
         assert dict(line.split(maxsplit=1) for line in task["[options]"]) == {
             "mode": "cover",
             "depth": "80",
-            "timeout": "2400",
+            "timeout": "14400",
             "vcd_sim": "on",
             "skip": "48",
         }
@@ -3385,16 +3946,16 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
     commands = {
         "hold": common
         + [
-            "select -assert-count 326 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
             f"select -assert-count 4 {holds}",
             f"chformal -assert -remove t:$check r:FLAVOR=assert %i {holds} %u %u %u %d",
             "select -assert-count 4 t:$check r:FLAVOR=assert %i",
         ],
         "bmc": common
         + [
-            "select -assert-count 326 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
             f"chformal -assert -remove {holds}",
-            "select -assert-count 322 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
         ],
     }
 
@@ -3709,7 +4270,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",
     ]
-    script += ["select -assert-count 326 t:$check r:FLAVOR=assert %i"]
+    script += ["select -assert-count 328 t:$check r:FLAVOR=assert %i"]
     if outlier or hold:
         if hold:
             script += [
@@ -3726,7 +4287,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         script += [
             "chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable "
             "c:p_load_payload_held c:p_reply_hold",
-            "select -assert-count 322 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
         ]
     if task.startswith("coh_l1d_stream_free_nostore_"):
         script += ["connect -set i_write_mask 8'h00"]
@@ -3884,7 +4445,7 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     proof = formal_task_config("coherent_hart_cache", "coh_hart_maint_prove")
     common = [
         "select -assert-none t:$check r:FLAVOR=assume %i",
-        "select -assert-count 372 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 373 t:$check r:FLAVOR=assert %i",
     ]
     lemmas = (
         "c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* "
@@ -3894,13 +4455,13 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     covers = "chformal -cover -remove"
     owned_commands = common + [
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %d",
-        "select -assert-count 284 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 285 t:$check r:FLAVOR=assert %i",
         covers,
     ]
     proof_commands = common + [
-        f"select -assert-count 284 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
+        f"select -assert-count 285 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
         f"chformal -assert2assume {lemmas}",
-        "select -assert-count 284 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 285 t:$check r:FLAVOR=assume %i",
         "select -assert-count 88 t:$check r:FLAVOR=assert %i",
         covers,
     ]

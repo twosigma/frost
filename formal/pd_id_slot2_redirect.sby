@@ -1,0 +1,43 @@
+[tasks]
+pd_id_slot2_bmc
+pd_id_slot2_cover
+
+[options]
+pd_id_slot2_bmc: mode bmc
+pd_id_slot2_bmc: depth 8
+pd_id_slot2_cover: mode cover
+pd_id_slot2_cover: depth 8
+
+[engines]
+pd_id_slot2_bmc: abc bmc3
+pd_id_slot2_cover: smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv rvc_decompressor.sv
+read -formal -sv pd_target_high_precompute.sv
+read -formal -sv pd_stage.sv
+read_verilog -D SYNTHESIS -sv instr_decoder.sv
+read_verilog -D SYNTHESIS -sv instr_operand_classifier.sv
+read_verilog -D SYNTHESIS -sv immediate_decoder.sv
+read_verilog -D SYNTHESIS -sv instruction_type_decoder.sv
+read_verilog -D SYNTHESIS -sv branch_target_precompute.sv
+read_verilog -D SYNTHESIS -sv id_stage.sv
+read -formal -sv pd_id_slot2_redirect_formal.sv
+hierarchy -check -top pd_id_slot2_redirect_formal
+setattr -unset dont_touch *
+setattr -mod -unset keep_hierarchy *
+prep -flatten -top pd_id_slot2_redirect_formal
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
+../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_target_high_precompute.sv
+../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_stage.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/instr_decoder.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/instr_operand_classifier.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/immediate_decoder.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/instruction_type_decoder.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/branch_target_precompute.sv
+../hw/rtl/cpu_and_mem/cpu/id_stage/id_stage.sv
+pd_id_slot2_redirect_formal.sv

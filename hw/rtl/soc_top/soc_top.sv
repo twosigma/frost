@@ -184,6 +184,8 @@ module soc_top #(
     input  logic                                                i_nic_1g_rx_raw_valid = 1'b0,
     input  logic                                                i_nic_1g_rx_signal_ok = 1'b0,
     input  logic                  [                        4:0] i_nic_1g_phy_status = 5'b01111,
+    input  logic                  [                       32:0] i_nic_1g_phy_diag = '0,
+    output logic                                                o_nic_1g_phy_diag_ack,
     output logic                  [                        3:1] o_nic_1g_phy_ctrl,
     output logic                                                o_nic_1g_rx_block_lock,
     // Optional VCU118 SPI flash & boot status (ENABLE_1G_ETH=1).
@@ -274,11 +276,13 @@ module soc_top #(
     output logic                  [          AXI_USER_BITS-1:0] o_axi_ruser
 );
   logic local_fire, local_ok, local_bram, local_device, local_instruction;
-  // Registered core reset combines external reset and ndmreset, for fanout.
-  // Debug logic uses external reset alone so it survives debugger-requested
-  // resets. Cache tags are swept on core reset.
+  // Registered core reset combines external reset, ndmreset and SYSRESET.
+  // Debug logic uses external reset alone so it survives both core-reset
+  // requests. Cache tags are swept on core reset; dirty lines are discarded.
   wire  core_clk = ASYNC_CPU_CLOCK ? i_cpu_clk : i_clk;
   logic dbg_ndmreset;
+  // System-reset request from the SYSRESET register (sysreset_q below).
+  logic sysreset_q;
   (* max_fanout = 256 *)logic soc_cpu_rst;
   logic soc_axi_rst;
   logic debug_cpu_rst, debug_soc_rst;
@@ -295,7 +299,7 @@ module soc_top #(
         .o_b_rst(o_cpu_axi_rst)
     );
     cdc_reset_pair core_reset (
-        .i_arst (i_rst || dbg_ndmreset || fabric_reset_request),
+        .i_arst (i_rst || dbg_ndmreset || sysreset_q || fabric_reset_request),
         .i_a_clk(i_clk),
         .i_b_clk(core_clk),
         .o_a_rst(reset_request_soc),
@@ -313,7 +317,7 @@ module soc_top #(
     assign soc_axi_rst = fabric_reset_request;
     assign o_cpu_axi_rst = soc_axi_rst;
     assign o_cpu_rst = soc_cpu_rst;
-    assign reset_request_soc = i_rst || dbg_ndmreset;
+    assign reset_request_soc = i_rst || dbg_ndmreset || sysreset_q;
     assign debug_cpu_rst = i_rst;
     assign debug_soc_rst = i_rst;
   end
@@ -407,6 +411,12 @@ module soc_top #(
   localparam int unsigned BootSpiXferByteAddr = 32'h4002_3008;
   localparam int unsigned BootSpiXferWordAddr = 32'h4002_300C;
   localparam int unsigned BootSramAddrReg = 32'h4002_3010;
+  // System reset register @ 0x4002_F000 (a 4 KiB page). A 16-bit store of
+  // SysResetKey, the sifive_test FINISHER_RESET code, resets the core domain
+  // like the debug module's ndmreset: the CPU restarts at the boot address
+  // while BRAM and DDR storage survive; dirty cache lines are discarded.
+  localparam int unsigned SysResetAddr = 32'h4002_F000;
+  localparam logic [15:0] SysResetKey = 16'h7777;
   localparam int unsigned BootSramDataReg = 32'h4002_3014;
   // Memory error unit @ 0x4002_1000, a 256-byte window of 32-bit registers
   // (memory_error_unit.sv): counts of DDR ECC errors and of the DDR bridge's
@@ -1600,6 +1610,8 @@ AxilPorts
         .i_rx_raw_valid(i_nic_rx_raw_valid),
         .i_rx_signal_ok(i_nic_rx_signal_ok),
         .i_phy_status(i_nic_phy_status),
+        .i_phy_diag('0),
+        .o_phy_diag_ack(),
         .o_phy_ctrl(o_nic_phy_ctrl),
         .o_rx_block_lock(o_nic_rx_block_lock)
     );
@@ -1756,6 +1768,8 @@ AxilPorts
           .i_rx_raw_valid(i_nic_1g_rx_raw_valid),
           .i_rx_signal_ok(i_nic_1g_rx_signal_ok),
           .i_phy_status(i_nic_1g_phy_status),
+          .i_phy_diag(i_nic_1g_phy_diag),
+          .o_phy_diag_ack(o_nic_1g_phy_diag_ack),
           .o_phy_ctrl(o_nic_1g_phy_ctrl),
           .o_rx_block_lock(o_nic_1g_rx_block_lock)
       );
@@ -1763,6 +1777,7 @@ AxilPorts
       assign nic_1g_irq = 1'b0;
       assign o_nic_1g_tx_raw_data = '0;
       assign o_nic_1g_tx_raw_valid = 1'b0;
+      assign o_nic_1g_phy_diag_ack = 1'b0;
       assign o_nic_1g_phy_ctrl = '0;
       assign o_nic_1g_rx_block_lock = 1'b0;
     end
@@ -2302,6 +2317,7 @@ AxilPorts
     assign o_nic_rx_block_lock = 1'b0;
     assign o_nic_1g_tx_raw_data = '0;
     assign o_nic_1g_tx_raw_valid = 1'b0;
+    assign o_nic_1g_phy_diag_ack = 1'b0;
     assign o_nic_1g_phy_ctrl = '0;
     assign o_nic_1g_rx_block_lock = 1'b0;
   end
@@ -3188,6 +3204,29 @@ AxilPorts
            (data_memory_address_registered == riscv_pkg::PhysAddrBits'(ClintMsip)))) begin
         msip <= data_memory_write_data_registered[0];
       end
+    end
+  end
+
+  // SYSRESET: a store of SysResetKey to SysResetAddr raises sysreset_q for
+  // SysResetCycles clocks. Only the external reset can cancel it, because the
+  // core reset it causes must not cancel its own pulse; the stretch lets the
+  // asynchronous reset chains of both clock domains observe it.
+  localparam int unsigned SysResetCycles = 64;
+  logic [$clog2(SysResetCycles)-1:0] sysreset_cnt_q;
+  wire sysreset_write =
+      (data_memory_address_registered == riscv_pkg::PhysAddrBits'(SysResetAddr)) &&
+      (data_memory_byte_write_enable_registered[1:0] == 2'b11) &&
+      (data_memory_write_data_registered[15:0] == SysResetKey);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      sysreset_q <= 1'b0;
+      sysreset_cnt_q <= '0;
+    end else if (sysreset_write) begin
+      sysreset_q <= 1'b1;
+      sysreset_cnt_q <= $bits(sysreset_cnt_q)'(SysResetCycles - 1);
+    end else if (sysreset_q) begin
+      sysreset_cnt_q <= sysreset_cnt_q - 1'b1;
+      if (sysreset_cnt_q == '0) sysreset_q <= 1'b0;
     end
   end
 

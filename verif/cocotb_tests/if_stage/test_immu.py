@@ -370,6 +370,40 @@ async def test_pbmt_pages_refuse_fetch(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_no_alias_refusal_keeps_permissions_in_itlb(dut: Any) -> None:
+    """A no-alias leaf checks execute and live privilege before its PMA fault."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    for pbmt in (1, 2):
+        for execute, user in ((0, 0), (1, 0), (1, 1)):
+            pc = 0x20040 + (pbmt * 4 + execute * 2 + user) * 0x1000
+            leaf = Leaf(
+                vpn=pc >> 12, ppn=0x80100, pbmt=pbmt, perm_x=execute, perm_u=user
+            )
+            dut.i_priv_u.value = 0
+            await _move_pc(dut, pc)
+            await _cycle(dut)
+            await _accept_request(dut, leaf.vpn)
+            await _pulse_response(
+                dut,
+                vpn=leaf.vpn,
+                ppn=leaf.ppn,
+                fault_kind=DFAULT_ACCESS,
+                pbmt=pbmt,
+                perm_x=execute,
+                perm_u=user,
+            )
+            _assert_window(dut, _translated_window(pc, leaf))
+            for priv_u in (1, 0):
+                dut.i_priv_u.value = priv_u
+                await _move_pc(dut, pc + 8)
+                await _cycle(dut)
+                await _settle()
+                assert int(dut.o_walk_req_valid.value) == 0, "no-alias leaf lost"
+                _assert_window(dut, _translated_window(pc + 8, leaf, priv_u=priv_u))
+
+
+@cocotb.test()
 async def test_bare_exact_selected_pc_window(dut: Any) -> None:
     """Bare mode passes the PC through with no bubble and exact faults at PMA edges."""
     await _setup(dut)

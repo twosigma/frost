@@ -102,7 +102,9 @@ module nic_rx_engine #(
     output logic        o_complete,        // a status write's response returned
     output logic [ 2:0] o_complete_flags,  // {ABORT, ERR, TRUNC}
     output logic [15:0] o_complete_bytes,  // received length
-    output logic        o_filtered         // a frame was rejected by the filter
+    output logic        o_filtered,        // a frame was rejected by the filter
+    // Registered level: a frame waits in the FIFO and no descriptor is cached.
+    output logic        o_desc_starved
 );
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
 
@@ -222,6 +224,11 @@ module nic_rx_engine #(
   assign accept  = i_promisc || i_fifo_data[0] || (i_fifo_data[47:0] == i_mac);
   assign desc_ok = (df_word1[15:0] != 16'd0) && in_aperture(df_word0, df_word1[15:0]);
   logic consider, admit;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) o_desc_starved <= 1'b0;
+    else o_desc_starved <= (state_q == S_IDLE) && i_enable && !i_stop && !i_abort &&
+        i_fifo_valid && !df_desc_valid;
+  end
   assign consider = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && i_fifo_valid &&
       df_desc_valid;
   assign admit = (state_q == S_ADMIT) && i_enable && !i_stop && !i_abort && df_desc_valid;
@@ -474,8 +481,14 @@ module nic_rx_engine #(
     if (i_rst) reset_seen_q <= 1'b1;
     if (!i_sim_hold) begin
       if (reset_seen_q && !i_rst && data_resp && (outstanding_q == 3'd0) && !data_fire)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("nic_rx_engine: data response with nothing outstanding");
       if (reset_seen_q && !i_rst && status_resp && !dd_inflight_q)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("nic_rx_engine: status response with no status write in flight");
     end
   end

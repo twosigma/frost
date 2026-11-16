@@ -1,8 +1,9 @@
 # FPGA Board Support
 
 The supported boards are Alveo X3522PV (X3) and VCU118. Both have 256 KiB
-BRAM, 16 KiB L1I and 128 KiB L1D. X3 has a 2 MiB URAM L2 and exposes 1 GiB
-of DDR4; VCU118 has a 4 MiB URAM L2 and exposes 2 GiB of DDR4. Both L2s are
+BRAM and 128 KiB L1D. X3 has a 16 KiB L1I and a 2 MiB URAM L2 and exposes
+1 GiB of DDR4; VCU118 has a 32 KiB L1I and a 4 MiB URAM L2 and exposes 2 GiB
+of DDR4. Both L2s are
 four-way with 64-byte lines. X3 has 10GBASE-R Ethernet; VCU118 has a 1 Gb/s
 RJ-45 interface and 10GBASE-R on QSFP1 lane 0. Both NIC interfaces use
 coherent DMA. X3 performs plain misaligned loads and stores to cached DDR in
@@ -32,7 +33,7 @@ and instruction miss streams.
 | `x3/x3_nic_gty.sv` | Ethernet transceiver, MAC clocks, transceiver reset supervisor |
 | `x3/x3_cpu_clock_gty.sv` | CPU clock from a dedicated GTY transmitter |
 | `x3/constr/x3.xdc` | Pin and timing constraints |
-| `x3/constr/cpu_clock_boundary.tcl` | Conditional CPU clock constraints, applied after synthesis |
+| `x3/constr/cpu_clock_boundary.tcl` | Debug transport clock/CDC and optional CPU clock-boundary constraints, applied after synthesis |
 
 `x3/x3_frost.f` lists the board RTL. The Vivado flow generates the loader,
 DDR, and transceiver IP from `fpga/build/build_step.tcl`, `x3_ddr_bd.tcl`, and
@@ -104,6 +105,10 @@ channel still runs. Load software with the matching clock. The
 The X3 build includes the vector unit (`VECTOR`, at a `VLEN` of 256 bits); the
 loader's board list for each vector test program names the boards whose builds
 include it.
+
+On X3, Linux `reboot` requests SYSRESET and re-enters the retained DDR images;
+they can be stale or hang in OpenSBI, so reload them for a fresh boot.
+`poweroff` halts with power still applied.
 
 ## JTAG-based software loading
 

@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import time
 import sys
@@ -1551,7 +1552,11 @@ def test_board_gty_generation_is_capability_gated() -> None:
     ):
         assert operation in guarded_body
     generate = tcl.index("generate_target all [get_ips]")
-    assert guard.end() < generate < tcl.index("synth_ip [get_ips]")
+    # The IP cores, GTY included, synthesize in their own project-mode runs after
+    # generation: create_ip_run per core, then one launch_runs for the set.
+    create_run = tcl.index("create_ip_run $ip_core_xci", generate)
+    launch = tcl.index("launch_runs $ip_synth_runs", create_run)
+    assert guard.end() < generate < create_run < launch
 
     gty = (REPO_ROOT / "fpga/build/x3_gty_ip.tcl").read_text()
     assert "proc create_x3_gty_ip {{rx_eq_mode LPM}}" in gty
@@ -1600,12 +1605,85 @@ def test_board_gty_generation_is_capability_gated() -> None:
     )
 
 
-def test_synthesis_rejects_implicit_nets() -> None:
-    """Vivado's implicit-net message is an error in top-level synthesis."""
+def test_synth_step_clears_project_dir_and_requires_ip_runs(tmp_path: Path) -> None:
+    """Clear leftover vivado_proj state and fail if an IP synthesis run is missing."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
-    guard = "set_msg_config -id {Synth 8-11241} -new_severity ERROR"
-    assert guard in tcl
-    assert tcl.index(guard) < tcl.index("synth_design {*}$synth_args")
+    delete_proj = tcl.index("file delete -force $work_directory/vivado_proj")
+    create_proj = tcl.index(
+        "create_project -part $fpga_part_number -force tmp_proj $work_directory/vivado_proj"
+    )
+    assert delete_proj < create_proj
+    assert "this flow never creates OOC IP runs" not in tcl
+
+    start = tcl.index("    set ip_synth_runs [list]")
+    end = tcl.index("\n    if {$board_has_ddr}", start)
+    snippet = tcl[start:end]
+
+    for mode, expected_code, expected_text in (
+        ("normal", 0, "LAUNCHED jtag_axi_0_synth_1 axi_bram_ctrl_0_synth_1"),
+        ("missing", 1, "IP synthesis run axi_bram_ctrl_0_synth_1 was not created"),
+        ("failed", 1, "jtag_axi_0_synth_1 did not complete: synth_design ERROR"),
+    ):
+        harness = tmp_path / f"ip_runs_{mode}.tcl"
+        harness.write_text(
+            f"""set mode {mode}
+set number_of_parallel_jobs 4
+proc get_ips {{}} {{return {{jtag_axi_0 axi_bram_ctrl_0}}}}
+proc get_property {{prop obj}} {{
+    global mode
+    if {{$prop eq "NAME"}} {{return $obj}}
+    if {{$prop eq "PROGRESS"}} {{return "100%"}}
+    if {{$prop eq "STATUS"}} {{
+        if {{$mode eq "failed"}} {{return "synth_design ERROR"}}
+        return "synth_design Complete!"
+    }}
+    error "unexpected property $prop"
+}}
+proc get_files {{args}} {{
+    set target [lindex $args end]
+    if {{[string match *.xci $target]}} {{return $target}}
+    return {{}}
+}}
+set created_runs [list]
+proc get_runs {{args}} {{
+    global created_runs
+    set name [lindex $args end]
+    if {{[lsearch -exact $created_runs $name] >= 0}} {{return [list $name]}}
+    return {{}}
+}}
+proc create_ip_run {{xci}} {{
+    global created_runs mode
+    set base [file rootname $xci]
+    if {{$base eq "axi_bram_ctrl_0" && $mode eq "missing"}} {{
+        return
+    }}
+    lappend created_runs ${{base}}_synth_1
+}}
+proc launch_runs {{runs args}} {{puts "LAUNCHED $runs"}}
+proc wait_on_run {{run}} {{}}
+"""
+            + snippet
+            + "\n"
+        )
+        result = subprocess.run(
+            ["tclsh", str(harness)], capture_output=True, text=True, timeout=10
+        )
+        assert result.returncode == expected_code, (mode, result.stdout, result.stderr)
+        combined = result.stdout + result.stderr
+        assert expected_text in combined
+
+
+@pytest.mark.parametrize("message", ("8-11241", "8-6901"))
+def test_synthesis_rejects_implicit_nets_and_late_declarations(message: str) -> None:
+    """Declaration errors fail top-level synthesis after vendor IP runs finish."""
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    guard = f"set_msg_config -id {{Synth {message}}} -new_severity ERROR"
+    assert tcl.count(guard) == 1
+    synth_start = tcl.index('if {$step eq "synth"}')
+    ip_wait = tcl.index("wait_on_run $ip_synth_run", synth_start)
+    top_synth = tcl.index("synth_design {*}$synth_args", ip_wait)
+    synth_end = tcl.index('} elseif {$step eq "opt"}', top_synth)
+    assert synth_start < ip_wait < tcl.index(guard) < top_synth < synth_end
 
 
 def test_step_arm_state_is_declared_before_first_use() -> None:
@@ -5585,3 +5663,475 @@ def test_failed_step_with_unreadable_log_says_so(
     monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
     assert fpga_build.run_vivado_step(["vivado"], tmp_path) == 1
     assert "cannot be read" in capsys.readouterr().out
+
+
+def test_child_run_exit_line_does_not_end_the_vivado_step(tmp_path: Path) -> None:
+    """A child run's ``Exiting Vivado`` copied into the parent log is not the parent's exit."""
+    fpga_build = _load_fpga_build()
+    child_echo = (
+        "INFO: [Common 17-206] Exiting Vivado at Fri Nov 13 15:07:46 2026...\n"
+        "[Fri Nov 13 15:07:47 2026] axi_bram_ctrl_0_synth_1 finished\n"
+        "[Fri Nov 13 15:07:47 2026] Waiting for ddr4_c2_synth_1 to finish...\n"
+    )
+    assert not fpga_build.vivado_log_ends_with_exit(child_echo)
+    assert fpga_build.vivado_log_ends_with_exit(
+        child_echo
+        + "** DONE\nINFO: [Common 17-206] Exiting Vivado at Fri Nov 13 16:00:00 2026...\n\n"
+    )
+    assert not fpga_build.vivado_log_ends_with_exit("")
+
+    # A session that echoes a child exit line, keeps running past the grace period and
+    # then exits by itself is waited for, not terminated.
+    script = tmp_path / "fake_vivado.py"
+    script.write_text(
+        "import sys, time\n"
+        "log = open('vivado.log', 'w')\n"
+        f"log.write({child_echo!r}); log.flush()\n"
+        "time.sleep(0.3)\n"
+        "log.write('** DONE\\nINFO: [Common 17-206] Exiting Vivado at end...\\n'); log.flush()\n"
+        "sys.exit(7)\n"
+    )
+    original_grace = fpga_build.VIVADO_EXIT_GRACE_S
+    original_poll = fpga_build.VIVADO_POLL_S
+    fpga_build.VIVADO_EXIT_GRACE_S = 0.1
+    fpga_build.VIVADO_POLL_S = 0.05
+    try:
+        assert fpga_build.run_vivado_step([sys.executable, str(script)], tmp_path) == 7
+    finally:
+        fpga_build.VIVADO_EXIT_GRACE_S = original_grace
+        fpga_build.VIVADO_POLL_S = original_poll
+
+
+def test_caught_error_before_done_succeeds_under_stuck_launcher(
+    platform: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caught placement ERROR lines before ``** DONE`` do not fail a stuck launcher."""
+    log = (
+        "Phase 4.1 Post Commit Optimization\n"
+        "ERROR: [Vivado 12-1409] Cannot set LOC and BEL property of instance(s)\n"
+        "FROST_LOCAL_PLACE pair=9 attempts=21 legal=5 no qualifying move\n"
+        "** DONE - place_design complete with directive: ExtraTimingOpt\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:10:00 2026...\n"
+    )
+    launcher = _StuckLauncher()
+    assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, log) == 0
+    assert launcher.terminated or launcher.killed
+
+
+def test_live_parent_session_with_trailing_child_exit_line_is_not_killed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live parent session is not killed when a child exit line sits at EOF."""
+    if not Path("/proc").is_dir():
+        pytest.skip("requires /proc process inspection")
+    script = tmp_path / "parent_session.py"
+    script.write_text(
+        "import sys, time\n"
+        "with open('vivado.log', 'w') as log:\n"
+        "    log.write('INFO: [Common 17-206] Exiting Vivado at child end...\\n')\n"
+        "    log.flush()\n"
+        "    time.sleep(0.25)\n"
+        "    log.write('** DONE\\nINFO: [Common 17-206] Exiting Vivado at parent end...\\n')\n"
+        "    log.flush()\n"
+        "sys.exit(7)\n"
+    )
+    monkeypatch.setattr(fpga_build, "VIVADO_EXIT_GRACE_S", 0.05)
+    monkeypatch.setattr(fpga_build, "VIVADO_POLL_S", 0.02)
+    assert fpga_build.run_vivado_step([sys.executable, str(script)], tmp_path) == 7
+
+
+def test_crashed_parent_session_under_stuck_launcher_terminates_and_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the parent session exits without an exit marker, a stuck wrapper is ended."""
+    if not Path("/proc").is_dir():
+        pytest.skip("requires /proc process inspection")
+    child = tmp_path / "session.py"
+    child.write_text(
+        "import time\n"
+        "with open('vivado.log', 'w') as log:\n"
+        "    log.write('Running synth\\n')\n"
+        "    log.flush()\n"
+        "    time.sleep(0.08)\n"
+    )
+    wrapper = tmp_path / "wrapper.sh"
+    wrapper.write_text(f"#!/bin/bash\n{sys.executable} {child}\nsleep 300 &\nwait\n")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(fpga_build, "VIVADO_EXIT_GRACE_S", 0.05)
+    monkeypatch.setattr(fpga_build, "VIVADO_POLL_S", 0.02)
+    assert fpga_build.run_vivado_step([str(wrapper)], tmp_path) == 1
+
+
+@pytest.mark.parametrize("exit_code", (1, 2))
+def test_non_zero_process_exit_is_preserved_even_with_done_and_exit_markers(
+    platform: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
+) -> None:
+    """A launcher that exits non-zero is never turned into success by log markers."""
+    assert _fail_vivado(tmp_path, monkeypatch, _DONE_LOG, returncode=exit_code) == (
+        exit_code
+    )
+
+
+@pytest.mark.parametrize(
+    "failure_log",
+    (
+        "Running synth\nERROR: [Synth 8-605] undriven pin\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:00 2026...\n",
+        "** DONE\nERROR: [DRC 23-20] Rule violation\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:00 2026...\n",
+        "** DONE\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:00 2026...\n"
+        "[Sun Nov 15 08:00:01 2026] jtag_axi_0_synth_1 finished\n"
+        "Command: synth_design -top x3_frost\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:05:00 2026...\n",
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:00 2026...\n"
+        "[Sun Nov 15 08:00:01 2026] jtag_axi_0_synth_1 finished\n"
+        "ERROR: [Common 17-69] Command failed: IP synthesis run x3_nic_gty_wiz_synth_1 "
+        "did not complete: synth_design ERROR!\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:02 2026...\n",
+        "Command: synth_design -top x3_frost\n"
+        "ERROR: [Common 17-345] A valid license was not found for feature 'Synthesis'\n"
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:03 2026...\n",
+    ),
+)
+def test_error_tcl_and_license_failures_fail_under_normal_and_stuck_launchers(
+    platform: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure_log: str,
+) -> None:
+    """Post-DONE ERROR lines, Tcl errors, license failures and child DONEs fail."""
+    assert _fail_vivado(tmp_path, monkeypatch, failure_log, returncode=1) == 1
+    assert "ended abnormally" not in capsys.readouterr().out
+
+    launcher = _StuckLauncher()
+    assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, failure_log) == 1
+    assert launcher.terminated or launcher.killed
+    assert "ended abnormally" not in capsys.readouterr().out
+
+
+def test_killed_process_after_child_ip_exit_reports_abnormal_end(
+    platform: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A SIGKILL mid-synthesis after child IP runs still reports an abnormal end."""
+    log = (
+        "INFO: [Common 17-206] Exiting Vivado at Sun Nov 15 08:00:00 2026...\n"
+        "[Sun Nov 15 08:00:01 2026] jtag_axi_0_synth_1 finished\n"
+        "Start Technology Mapping\n"
+    )
+    assert _fail_vivado(tmp_path, monkeypatch, log, returncode=-9) == -9
+    output = capsys.readouterr().out
+    assert "ended abnormally" in output
+    assert "exited with code -9" in output
+    assert "Start Technology Mapping" in output
+
+
+def test_killed_process_before_rewriting_stale_log_reports_abnormal_end(
+    platform: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An unrewritten stale log does not suppress the abnormal-end note."""
+    log = tmp_path / "vivado.log"
+    log.write_text(_DONE_LOG)
+    _keep_log_in_place(monkeypatch, log)
+    launcher = SimpleNamespace(wait=lambda timeout=None: -9)
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+    assert fpga_build.run_vivado_step(["vivado"], tmp_path) == -9
+    output = capsys.readouterr().out
+    assert "before rewriting" in output
+    assert "ended abnormally" in output
+
+
+@pytest.mark.parametrize("sig_name", ("SIGTERM", "SIGHUP"))
+def test_step_timeout_signal_kills_launcher_group_and_exits_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sig_name: str
+) -> None:
+    """SIGTERM and SIGHUP timeouts kill the step's process group and raise SystemExit."""
+    sig = getattr(fpga_build.signal, sig_name)
+    original_handler = fpga_build.signal.getsignal(sig)
+    killpg_calls: list[tuple[int, int, int | None]] = []
+
+    class TimedOut(_StuckLauncher):
+        def wait(self, timeout: float | None = None) -> int:
+            if not self.killed:
+                os.kill(os.getpid(), sig)
+            return -9
+
+    launcher = TimedOut(pid=5150)
+
+    def killpg(pid: int, sent_sig: int) -> None:
+        killpg_calls.append((pid, sent_sig, launcher.returncode))
+        launcher.killed = True
+
+    monkeypatch.setattr(fpga_build.os, "killpg", killpg, raising=False)
+    with pytest.raises(SystemExit) as stopped:
+        _launch_stuck_vivado(tmp_path, monkeypatch, launcher, "Running synth\n")
+    assert stopped.value.code == 128 + int(sig)
+    assert killpg_calls == [(5150, fpga_build.signal.SIGKILL, None)]
+    assert fpga_build.signal.getsignal(sig) == original_handler
+
+
+@pytest.mark.parametrize(
+    "case, ok, expected_substr",
+    (
+        ("common_clock", True, "MAX_DELAY 4.6545"),
+        ("common_clock_with_resp_op", True, "RESP_PAYLOAD_COUNT=34"),
+        (
+            "async_cpu_boundary",
+            True,
+            "MAX_DELAY 2.4824 FROM_N=1 TO_N=1 FROM=cpu_clk TO=soc_clk",
+        ),
+        ("zero_req_toggle_pin", False, "req_toggle_q_reg/C"),
+        ("many_req_toggle_pin", False, "req_toggle_q_reg/C"),
+        ("zero_req_seen_pin", False, "req_seen_q_reg/C"),
+        ("many_req_seen_pin", False, "req_seen_q_reg/C"),
+        ("zero_bscan", False, "two BSCANE2 cells"),
+        ("one_bscan", False, "two BSCANE2 cells"),
+        ("many_bscan", False, "two BSCANE2 cells"),
+        ("zero_internal_tck", False, "two BSCANE2 INTERNAL_TCK pins"),
+        ("many_internal_tck", False, "two BSCANE2 INTERNAL_TCK pins"),
+        ("zero_req_sync1", False, "one toggle flop and one sync1/D pin"),
+        ("many_ack_sync1", False, "one toggle flop and one sync1/D pin"),
+        ("missing_req_payload", False, "2 req_op_q, 7 req_addr_q, and 32 req_data_q"),
+        ("extra_req_payload", False, "2 req_op_q, 7 req_addr_q, and 32 req_data_q"),
+        ("missing_resp_payload", False, "32 resp_data_q cells"),
+        ("many_resp_op", False, "at most 2 resp_op_q"),
+        ("zero_async_ar_valid", False, "ar_valid_q_reg/C"),
+        ("many_async_ar_valid", False, "ar_valid_q_reg/C"),
+    ),
+)
+def test_x3_cpu_clock_boundary_tcl_constraints_and_loud_lookup_failures(
+    tmp_path: Path, case: str, ok: bool, expected_substr: str
+) -> None:
+    """X3 cpu_clock_boundary.tcl bounds toggles vs payloads and fails on bad lookups."""
+    if shutil.which("tclsh") is None:
+        pytest.skip("requires tclsh")
+    boundary_tcl = REPO_ROOT / "boards/x3/constr/cpu_clock_boundary.tcl"
+    harness = tmp_path / "run_boundary.tcl"
+    harness.write_text(
+        r"""
+set case_name [lindex $argv 0]
+set target_tcl [lindex $argv 1]
+
+array set cell_ref {}
+array set pin_cell {}
+array set pin_ref {}
+array set pin_clk {}
+array set clk_period {cpu_clk 3.103 soc_clk 6.206 dbg_hub_tck 33.333}
+
+proc add_cell {name {ref FDRE}} {
+    global cell_ref
+    set cell_ref($name) $ref
+}
+proc add_pin {name cell ref {clk ""}} {
+    global pin_cell pin_ref pin_clk
+    set pin_cell($name) $cell
+    set pin_ref($name) $ref
+    if {$clk ne ""} { set pin_clk($name) $clk }
+}
+proc add_flop {name clk} {
+    add_cell $name FDRE
+    add_pin "$name/C" $name C $clk
+    add_pin "$name/D" $name D ""
+}
+
+# Unrelated debug-hub BSCANE2 must never be matched by the DTM clock lookup.
+add_cell "dbg_hub/inst/bscan_inst" BSCANE2
+add_pin "dbg_hub/inst/bscan_inst/INTERNAL_TCK" "dbg_hub/inst/bscan_inst" INTERNAL_TCK dbg_hub_tck
+
+if {$case_name ne "zero_bscan"} {
+    add_cell "sub/bscan_dtmcs" BSCANE2
+    if {$case_name ne "zero_internal_tck"} {
+        add_pin "sub/bscan_dtmcs/INTERNAL_TCK" "sub/bscan_dtmcs" INTERNAL_TCK ""
+    }
+    if {$case_name ne "one_bscan"} {
+        add_cell "sub/bscan_dmi" BSCANE2
+        if {$case_name ne "zero_internal_tck"} {
+            add_pin "sub/bscan_dmi/INTERNAL_TCK" "sub/bscan_dmi" INTERNAL_TCK ""
+        }
+    }
+}
+if {$case_name eq "many_bscan"} {
+    add_cell "dup/bscan_dmi" BSCANE2
+    add_pin "dup/bscan_dmi/INTERNAL_TCK" "dup/bscan_dmi" INTERNAL_TCK ""
+}
+if {$case_name eq "many_internal_tck"} {
+    add_pin "sub/bscan_dmi/INTERNAL_TCK_2" "sub/bscan_dmi" INTERNAL_TCK ""
+}
+
+set dtm "sub/frost/soc/u_dtm"
+if {$case_name ne "zero_req_toggle_pin"} {
+    add_flop "$dtm/req_toggle_q_reg" ""
+}
+if {$case_name eq "many_req_toggle_pin"} {
+    add_flop "dup/u_dtm/req_toggle_q_reg" ""
+}
+if {$case_name ne "zero_req_seen_pin"} {
+    add_flop "$dtm/req_seen_q_reg" cpu_clk
+}
+if {$case_name eq "many_req_seen_pin"} {
+    add_flop "dup/u_dtm/req_seen_q_reg" cpu_clk
+}
+if {$case_name ne "zero_req_sync1"} {
+    add_flop "$dtm/req_sync1_reg" cpu_clk
+}
+add_flop "$dtm/ack_toggle_q_reg" cpu_clk
+add_flop "$dtm/ack_sync1_reg" ""
+if {$case_name eq "many_ack_sync1"} {
+    add_flop "dup/u_dtm/ack_sync1_reg" ""
+}
+
+for {set i 0} {$i < 2} {incr i} { add_flop "$dtm/req_op_q_reg\[$i\]" "" }
+for {set i 0} {$i < 7} {incr i} { add_flop "$dtm/req_addr_q_reg\[$i\]" "" }
+set req_data_n [expr {$case_name eq "missing_req_payload" ? 31 : ($case_name eq "extra_req_payload" ? 33 : 32)}]
+for {set i 0} {$i < $req_data_n} {incr i} { add_flop "$dtm/req_data_q_reg\[$i\]" "" }
+
+set resp_data_n [expr {$case_name eq "missing_resp_payload" ? 31 : 32}]
+for {set i 0} {$i < $resp_data_n} {incr i} { add_flop "$dtm/resp_data_q_reg\[$i\]" cpu_clk }
+set resp_op_n [expr {$case_name eq "common_clock_with_resp_op" ? 2 : ($case_name eq "many_resp_op" ? 3 : 0)}]
+for {set i 0} {$i < $resp_op_n} {incr i} { add_flop "$dtm/resp_op_q_reg\[$i\]" cpu_clk }
+
+if {$case_name in {async_cpu_boundary zero_async_ar_valid many_async_ar_valid}} {
+    add_cell "sub/frost/soc/gen_memory_cdc/u_fifo" LUT6
+    add_flop "sub/frost/soc/rst_core_reg" soc_clk
+    add_flop "sub/frost/soc/rst_core_reg_replica" soc_clk
+    if {$case_name ne "zero_async_ar_valid"} {
+        add_flop "sub/frost/cpu/cluster_memory/memory_fabric/master/ar_valid_q_reg" cpu_clk
+    }
+    if {$case_name eq "many_async_ar_valid"} {
+        add_flop "dup/cpu/cluster_memory/memory_fabric/master/ar_valid_q_reg" cpu_clk
+    }
+}
+
+proc eval_filter {props expr_text} {
+    dict with props {
+        set rewritten $expr_text
+        regsub -all {([A-Z_]+)\s*=~\s*"([^"]*)"} $rewritten {[string match "\2" $\1]} rewritten
+        regsub -all {([A-Z_]+)\s*==\s*"([^"]*)"} $rewritten {($\1 eq "\2")} rewritten
+        regsub -all {([A-Z_]+)\s*==\s*([A-Za-z0-9_]+)} $rewritten {($\1 eq "\2")} rewritten
+        return [expr $rewritten]
+    }
+}
+
+proc get_cells {args} {
+    global cell_ref
+    set filt ""
+    for {set i 0} {$i < [llength $args]} {incr i} {
+        if {[lindex $args $i] eq "-filter"} { incr i; set filt [lindex $args $i] }
+    }
+    set out [list]
+    foreach name [lsort [array names cell_ref]] {
+        set props [dict create NAME $name REF_NAME $cell_ref($name)]
+        if {$filt eq "" || [eval_filter $props $filt]} { lappend out $name }
+    }
+    return $out
+}
+
+proc get_pins {args} {
+    global pin_cell pin_ref
+    set filt ""
+    set objs ""
+    set has_objs 0
+    for {set i 0} {$i < [llength $args]} {incr i} {
+        set a [lindex $args $i]
+        if {$a eq "-filter"} { incr i; set filt [lindex $args $i] }
+        if {$a eq "-of_objects"} { incr i; set objs [lindex $args $i]; set has_objs 1 }
+    }
+    set out [list]
+    foreach name [lsort [array names pin_cell]] {
+        if {$has_objs && [lsearch -exact $objs $pin_cell($name)] < 0} { continue }
+        set props [dict create NAME $name REF_PIN_NAME $pin_ref($name)]
+        if {$filt eq "" || [eval_filter $props $filt]} { lappend out $name }
+    }
+    return $out
+}
+
+proc get_clocks {args} {
+    global pin_clk
+    set objs [lindex $args end]
+    set out [list]
+    foreach p $objs {
+        if {[info exists pin_clk($p)] && $pin_clk($p) ne ""} {
+            if {[lsearch -exact $out $pin_clk($p)] < 0} { lappend out $pin_clk($p) }
+        }
+    }
+    return $out
+}
+
+proc create_clock {args} {
+    global pin_cell pin_clk clk_period
+    set idx_n [lsearch -exact $args -name]
+    set name [lindex $args [expr {$idx_n + 1}]]
+    set idx_p [lsearch -exact $args -period]
+    set period [lindex $args [expr {$idx_p + 1}]]
+    set pins [lindex $args end]
+    set clk_period($name) $period
+    foreach p $pins { set pin_clk($p) $name }
+    foreach p [array names pin_cell] {
+        if {[string match "*/u_dtm/*" $p] && [string match "*/C" $p] && ![info exists pin_clk($p)]} {
+            set pin_clk($p) $name
+        }
+    }
+    puts "CREATE_CLOCK $name $period PINS=[lsort $pins]"
+}
+
+proc get_property {prop obj} {
+    global clk_period
+    if {$prop eq "PERIOD"} { return $clk_period($obj) }
+    error "unsupported property $prop"
+}
+
+proc set_max_delay {args} {
+    set idx_f [lsearch -exact $args -from]
+    set from_v [lindex $args [expr {$idx_f + 1}]]
+    set idx_t [lsearch -exact $args -to]
+    set to_v [lindex $args [expr {$idx_t + 1}]]
+    set val [lindex $args [expr {[lsearch -exact $args -datapath_only] + 1}]]
+    puts [format "MAX_DELAY %.4f FROM_N=%d TO_N=%d FROM=%s TO=%s" $val [llength $from_v] [llength $to_v] $from_v $to_v]
+    if {$to_v eq "cpu_dtm_tck" && [llength $from_v] > 1} {
+        puts "RESP_PAYLOAD_COUNT=[llength $from_v]"
+    }
+}
+
+proc set_false_path {args} {
+    puts "FALSE_PATH $args"
+}
+
+source $target_tcl
+"""
+    )
+    result = subprocess.run(
+        ["tclsh", str(harness), case, str(boundary_tcl)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if ok:
+        assert result.returncode == 0, (case, result.stdout, result.stderr)
+        assert expected_substr in result.stdout
+        assert (
+            "CREATE_CLOCK cpu_dtm_tck 100.0 "
+            "PINS={sub/bscan_dmi/INTERNAL_TCK sub/bscan_dtmcs/INTERNAL_TCK}"
+            in result.stdout
+            or "CREATE_CLOCK cpu_dtm_tck 100.0 "
+            "PINS=sub/bscan_dmi/INTERNAL_TCK sub/bscan_dtmcs/INTERNAL_TCK"
+            in result.stdout
+        )
+        assert "MAX_DELAY 2.4824 FROM_N=1 TO_N=1" in result.stdout
+        assert "MAX_DELAY 4.6545 FROM_N=41 TO_N=1" in result.stdout
+        assert "FALSE_PATH -hold -from cpu_dtm_tck -to cpu_clk" in result.stdout
+        assert "FALSE_PATH -hold -from cpu_clk -to cpu_dtm_tck" in result.stdout
+    else:
+        assert result.returncode != 0, (case, result.stdout, result.stderr)
+        assert expected_substr in (result.stdout + result.stderr)

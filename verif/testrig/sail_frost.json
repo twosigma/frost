@@ -449,7 +449,7 @@
     "V": {"support_level": "Disabled", "mutable_misa": false},
     "H": {"supported": false},
     "Zibi": {"supported": false},
-    "Zic64b": {"supported": false},
+    "Zic64b": {"supported": true},
     // cbo.clean/flush/inval on 64-byte blocks; menvcfg/senvcfg CBIE and CBCFE.
     // Every FROST master is coherent, so they change no data, as in Sail.
     "Zicbom": {"supported": true},
@@ -458,14 +458,18 @@
     // cbo.zero zeroes 64-byte blocks (platform.cache_block_size_exp) of low
     // BRAM and cached DDR, the regions marked supports_cbo_zero above.
     "Zicboz": {"supported": true},
+    // Left off: Sail requires AMO support on every coherent cacheable MainMemory region, while the TestRIG device RAM windows set AMONone.
     "Ziccamoa": {"supported": false},
     "Ziccamoc": {"supported": false},
-    "Ziccif": {"supported": false},
+    "Ziccif": {"supported": true},
+    // Left off: TestRIG builds omit the misaligned-access engine and trap misaligned loads and stores.
     "Zicclsm": {"supported": false},
+    // Left off: Sail requires RsrvEventual on every coherent cacheable MainMemory region, while the TestRIG device RAM windows set RsrvNone.
     "Ziccrse": {"supported": false},
     "Zicfilp": {"supported": false},
     "Zicfiss": {"supported": false},
-    "Zihintntl": {"supported": false},
+    // ntl.* and c.ntl.* are add/c.add x0 hints and retire as no-ops.
+    "Zihintntl": {"supported": true},
     // FROST implements and advertises Zihpm with hpmcounter3..10; it traps
     // hpmcounter11..31 at every privilege, which Zihpm permits for an
     // unimplemented counter, while Sail with Zihpm reads them as zero in M.
@@ -473,23 +477,28 @@
     // advertised.
     "Zihpm": {"supported": false},
     "Zilx": {"supported": false},
-    "Zimop": {"supported": false},
+    // No implemented extension redefines them: mop.r.n and mop.rr.n write zero to rd.
+    "Zimop": {"supported": true},
     "Zabha": {"supported": false},
     "Zacas": {"supported": false},
     "Zama16b": {"supported": false},
-    // FROST retires wrs.nto and wrs.sto at once and traps wrs.nto below M
-    // with TW set. Sail's nop form skips the mstatus.TW check. With
-    // nto.is_nop false, Sail retires wrs.nto at once when no reservation is
-    // valid, and otherwise
-    // waits (platform.max_time_to_wait) and then traps below M with TW set,
-    // as FROST does; wrs.sto never traps.
-    "Zawrs": {"supported": true, "nto": {"is_nop": false}, "sto": {"is_nop": true}},
-    "Zfa": {"supported": false},
+    // FROST retires wrs.nto and wrs.sto at once and raises illegal-instruction
+    // on wrs.nto in S and U when mstatus.TW is set; wrs.sto never traps.
+    // Sail 0.16's non-nop wrs.nto enters Step_Waiting in RVFI-DII mode even
+    // without a reservation, reporting pc_wdata = 0 and consuming the next
+    // packet, so nto.is_nop is true and zawrs_test covers the mstatus.TW trap.
+    "Zawrs": {"supported": true, "nto": {"is_nop": true}, "sto": {"is_nop": true}},
+    // Zfa (FLI, FMINM/FMAXM, FROUND/FROUNDNX, FCVTMOD.W.D, FLEQ/FLTQ; D-format
+    // high-half moves require RV32) and Zfhmin (FLH/FSH, FMV.X.H/FMV.H.X, FCVT between H and
+    // S/D) are implemented; full Zfh is not.
+    "Zfa": {"supported": true},
     "Zfbfmin": {"supported": false},
     "Zfh": {"supported": false},
-    "Zfhmin": {"supported": false},
-    "Zcb": {"supported": false},
-    "Zcmop": {"supported": false},
+    "Zfhmin": {"supported": true},
+    // c.lbu/lhu/lh/sb/sh, c.zext.b/h/w, c.sext.b/h, c.not and c.mul expand in predecode.
+    "Zcb": {"supported": true},
+    // c.mop.n (n odd, 1-15) writes no register.
+    "Zcmop": {"supported": true},
     "Zbc": {"supported": true},
     "Zbkc": {"supported": true},
     "Zbkx": {"supported": false},
@@ -499,7 +508,7 @@
     "Zkr": {"supported": false},
     "Zksed": {"supported": false},
     "Zksh": {"supported": false},
-    "Zkt": {"supported": false},
+    "Zkt": {"supported": true},
     "Zvabd": {"supported": false},
     "Zvfbfmin": {"supported": false},
     "Zvfbfwma": {"supported": false},
@@ -514,12 +523,13 @@
     "Zvksed": {"supported": false},
     "Zvksh": {"supported": false},
     "Zvkt": {"supported": false},
+    // Left off: Sail requires supports_pte_read on every coherent cacheable MainMemory region, while FROST walks page tables in DDR only.
     "Ssccptr": {"supported": false},
     "Sdtrig": {"supported": false},
     "Sscofpmf": {"supported": true},
     "Sha": {"supported": false},
     "Shcounterenw": {"supported": false},
-    "Sscounterenw": {"supported": false},
+    "Sscounterenw": {"supported": true},
     "Shvsatpa": {"supported": false},
     "Shvstvala": {"supported": false},
     "Shvstvecd": {"supported": false},
@@ -527,7 +537,7 @@
     "Shgatpa": {"supported": false},
     "Shtvala": {"supported": false},
     "Sstvala": {"supported": true},
-    "Sstvecd": {"supported": false},
+    "Sstvecd": {"supported": true},
     "Svadu": {"supported": false},
     "Svinval": {"supported": false},
     "Svrsw60t59b": {"supported": false},

@@ -296,10 +296,19 @@ module axi_mux #(
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (i_dn_bvalid && (32'(b_port) >= NUM_PORTS))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_mux: B for nonexistent port %0d", b_port);
       if (i_dn_rvalid && (32'(r_port) >= NUM_PORTS))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_mux: R for nonexistent port %0d", r_port);
       if (w_fire && (o_dn_wlast != w_pop))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "axi_mux: WLAST %0d from port %0d on beat %0d of %0d",
             o_dn_wlast,

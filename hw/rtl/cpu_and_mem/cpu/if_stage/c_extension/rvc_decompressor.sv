@@ -32,6 +32,13 @@
   C.SUBW/C.ADDW, and the base shifts take 6-bit shamts with bit 12 as
   shamt[5]. C.FLD/C.FSD/C.FLDSP/C.FSDSP keep their RV32C meanings.
 
+  Zcb fills reserved slots: quadrant 0 funct3=100 holds C.LBU, C.LHU, C.LH,
+  C.SB and C.SH; quadrant 1 funct3=100 with bits [12:10]=111 holds C.MUL
+  ([6:5]=10) and, at [6:5]=11, C.ZEXT.B, C.SEXT.B, C.ZEXT.H, C.SEXT.H,
+  C.ZEXT.W and C.NOT selected by bits [4:2]. Zcmop C.MOP.n (n odd, 1-15)
+  is C.LUI xn, 0; it writes no register and expands to the canonical NOP.
+  Zihintntl C.NTL.* are C.ADD x0 hints and need no special case.
+
   IF and PD use expansions computed on instruction-memory writes by
   riscv_pkg::imem_rvc_expand and the related imem_rvc_* functions. PD
   instantiates this module only in simulation as an independent reference.
@@ -172,6 +179,11 @@ module rvc_decompressor (
   logic [5:0] shamt6;
   assign shamt6 = {i_instr_compressed[12], i_instr_compressed[6:2]};
 
+  // Zcb C.LBU/C.SB: uimm[1|0] from bits [5,6]; C.LHU/C.LH/C.SH: uimm[1] from bit 5
+  logic [11:0] imm_lb, imm_lh;
+  assign imm_lb = {10'b0, i_instr_compressed[5], i_instr_compressed[6]};
+  assign imm_lh = {10'b0, i_instr_compressed[5], 1'b0};
+
   // ===========================================================================
   // Instruction Expansion
   // ===========================================================================
@@ -205,6 +217,25 @@ module rvc_decompressor (
           o_instr_expanded = {
             imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStore
           };  // C.SD
+          3'b100: begin  // Zcb loads and stores; reserved forms expand to zero
+            unique case (i_instr_compressed[12:10])
+              3'b000: o_instr_expanded = {imm_lb, rs1_prime, 3'b100, rd_prime, OpcLoad};  // C.LBU
+              3'b001:  // C.LHU (bit 6 = 0) / C.LH (bit 6 = 1)
+              o_instr_expanded = {
+                imm_lh, rs1_prime, i_instr_compressed[6] ? 3'b001 : 3'b101, rd_prime, OpcLoad
+              };
+              3'b010:
+              o_instr_expanded = {
+                7'b0, rs2_prime, rs1_prime, 3'b000, imm_lb[4:0], OpcStore
+              };  // C.SB
+              3'b011: begin  // C.SH (bit 6 = 1 is reserved)
+                if (!i_instr_compressed[6])
+                  o_instr_expanded = {7'b0, rs2_prime, rs1_prime, 3'b001, imm_lh[4:0], OpcStore};
+                else o_illegal = 1'b1;
+              end
+              default: o_illegal = 1'b1;
+            endcase
+          end
           default: o_illegal = 1'b1;  // Reserved encoding
         endcase
       end
@@ -226,7 +257,11 @@ module rvc_decompressor (
               if (imm_addi16sp == 12'b0) o_illegal = 1'b1;
             end else begin  // C.LUI (rd=0 is a HINT: lui x0)
               o_instr_expanded = {imm_lui, rd_full, OpcLui};
-              if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) o_illegal = 1'b1;
+              if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) begin
+                // Zcmop C.MOP.n: rd = n odd in 1..15; writes no register.
+                if (!rd_full[4] && rd_full[0]) o_instr_expanded = 32'h0000_0013;
+                else o_illegal = 1'b1;
+              end
             end
           end
           3'b100: begin
@@ -249,7 +284,39 @@ module rvc_decompressor (
                     o_instr_expanded = {
                       7'b0000000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
                     };  // C.ADDW
-                    default: o_illegal = 1'b1;  // [6:5]=10/11 stay reserved
+                    2'b10:
+                    o_instr_expanded = {
+                      7'b0000001, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp
+                    };  // Zcb C.MUL
+                    2'b11: begin  // Zcb unary forms; [4:2]=110/111 stay reserved
+                      unique case (i_instr_compressed[4:2])
+                        3'b000:
+                        o_instr_expanded = {
+                          12'h0ff, rs1_prime, 3'b111, rs1_prime, OpcOpImm
+                        };  // C.ZEXT.B = andi rd', rd', 0xff
+                        3'b001:
+                        o_instr_expanded = {
+                          12'h604, rs1_prime, 3'b001, rs1_prime, OpcOpImm
+                        };  // C.SEXT.B
+                        3'b010:
+                        o_instr_expanded = {
+                          12'h080, rs1_prime, 3'b100, rs1_prime, OpcOp32
+                        };  // C.ZEXT.H = zext.h (RV64 encoding)
+                        3'b011:
+                        o_instr_expanded = {
+                          12'h605, rs1_prime, 3'b001, rs1_prime, OpcOpImm
+                        };  // C.SEXT.H
+                        3'b100:
+                        o_instr_expanded = {
+                          12'h080, rs1_prime, 3'b000, rs1_prime, OpcOp32
+                        };  // C.ZEXT.W = add.uw rd', rd', x0
+                        3'b101:
+                        o_instr_expanded = {
+                          12'hfff, rs1_prime, 3'b100, rs1_prime, OpcOpImm
+                        };  // C.NOT = xori rd', rd', -1
+                        default: o_illegal = 1'b1;
+                      endcase
+                    end
                   endcase
                 end else begin
                   unique case (i_instr_compressed[6:5])

@@ -44,7 +44,10 @@
 module immu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned NUM_ENTRIES = 16,
-    parameter int unsigned PA_VALID_COPIES = 1
+    parameter int unsigned PA_VALID_COPIES = 1,
+    // o_pa_valid_copy carries !o_pa_valid (the fetch hold), formed in the
+    // copy's own LUT, so a consumer of the hold needs no inverter after it.
+    parameter bit PA_COPY_HOLD = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -75,7 +78,8 @@ module immu #(
     output logic [riscv_pkg::PhysAddrBits-1:0] o_pa0,
     output logic [riscv_pkg::PhysAddrBits-1:0] o_pa1,
     output logic o_pa_valid,
-    // Copies of o_pa_valid for fanout to decoded-queue shadow selects.
+    // Copies of o_pa_valid (of !o_pa_valid with PA_COPY_HOLD) for fanout to
+    // decoded-queue shadow selects.
     output logic [PA_VALID_COPIES-1:0] o_pa_valid_copy,
     output logic o_fault0,
     output logic o_fault0_page,
@@ -223,6 +227,7 @@ module immu #(
   logic [1:0][PpnBits-1:0] tlb_ppn_own;
   logic [1:0] tlb_giga, tlb_mega;
   logic tlb_install;
+  logic walk_resp_leaf;
 
   // The hit's Svpbmt field: a nonzero one makes the page unfetchable (the
   // ITLB's per-entry fetch checks apply it; the walk response is checked
@@ -230,8 +235,12 @@ module immu #(
   logic [1:0][1:0] tlb_pbmt;
   assign tlb_vpn[0] = pc_vpn;
   assign tlb_vpn[1] = VpnBits'({{VpnBits{1'bx}}, np_va_q});
-  assign tlb_install = walk_resp_matches &&
-      (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
+  // An NC/IO no-alias refusal carries leaf permissions. Keep that leaf in
+  // the ITLB: PBMT refuses fetch after the live privilege and execute checks.
+  assign walk_resp_leaf = ((i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) ||
+        ((i_walk_resp.fault_kind == riscv_pkg::DFAULT_ACCESS) &&
+         (i_walk_resp.pbmt != riscv_pkg::PbmtPma)));
+  assign tlb_install = walk_resp_matches && walk_resp_leaf && !i_tlb_invalidate;
 
   dtlb #(
       .NUM_ENTRIES    (NUM_ENTRIES),
@@ -279,8 +288,8 @@ module immu #(
   );
 
   // ---------------------------------------------------------------------------
-  // One-entry memo of the last faulting walk (resp_refused). A walk fault
-  // depends on the page tables, not on privilege, so the memo carries no
+  // One-entry memo of the last faulting walk without a leaf (resp_refused).
+  // Its fault depends on the page tables, not on privilege, so the memo carries no
   // privilege tag. It holds a fault only until the next epoch expiry,
   // invalidate or full pipeline flush (Svvptc). Expiry also bounds the
   // lifetime of a wrong-path refusal that never causes a trap. A fetch that
@@ -297,8 +306,7 @@ module immu #(
   logic memo_page_q;
   logic resp_refused;
   logic walk_memo_ok_q;  // the walk in flight was accepted after the last full flush
-  assign resp_refused = walk_resp_matches && walk_memo_ok_q &&
-      (i_walk_resp.fault_kind != riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
+  assign resp_refused = walk_resp_matches && walk_memo_ok_q && !walk_resp_leaf && !i_tlb_invalidate;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_full_flush) walk_memo_ok_q <= 1'b0;
@@ -373,7 +381,8 @@ module immu #(
     begin
       r = '0;
       resp_match = resp_valid && !invalidate && (resp.vpn == vpn);
-      use_resp_leaf = resp_match && (resp.fault_kind == riscv_pkg::DFAULT_NONE);
+      use_resp_leaf = resp_match && ((resp.fault_kind == riscv_pkg::DFAULT_NONE) ||
+          ((resp.fault_kind == riscv_pkg::DFAULT_ACCESS) && (resp.pbmt != riscv_pkg::PbmtPma)));
       hit_valid = hit && !invalidate;
       memo_match = memo_valid && !invalidate && (memo_vpn == vpn);
       resp_hi_nonzero = |resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits];
@@ -933,10 +942,10 @@ module immu #(
     (* keep = "true", dont_touch = "true" *) logic pa_valid_copy;
 `ifdef FROST_XILINX_PRIMS
     // One LUT after the page compare and the crossing test:
-    // !I0 || (I1 && I2 && (!I3 || I4)).
+    // !I0 || (I1 && I2 && (!I3 || I4)), complemented for PA_COPY_HOLD.
     (* dont_touch = "true" *)
     LUT5 #(
-        .INIT(32'hD5D555D5)
+        .INIT(PA_COPY_HOLD ? 32'h2A2AAA2A : 32'hD5D555D5)
     ) u_pa_valid (
         .I0(i_active),
         .I1(visible_before_pc_compare),
@@ -946,7 +955,7 @@ module immu #(
         .O (pa_valid_copy)
     );
 `else
-    assign pa_valid_copy = !i_active || (visible_before_pc_compare && pc_match);
+    assign pa_valid_copy = PA_COPY_HOLD ^ (!i_active || (visible_before_pc_compare && pc_match));
 `endif
     assign o_pa_valid_copy[copy] = pa_valid_copy;
   end

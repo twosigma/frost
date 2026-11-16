@@ -135,75 +135,25 @@ def instr_op_value(name: str) -> int:
 _LQ_OPS = {
     _INSTR_OPS[name]
     for name in (
-        "LB",
-        "LH",
-        "LW",
-        "LD",
-        "LWU",
-        "LBU",
-        "LHU",
-        "FLW",
-        "FLD",
-        "LR_W",
-        "LR_D",
-        "AMOSWAP_W",
-        "AMOADD_W",
-        "AMOXOR_W",
-        "AMOAND_W",
-        "AMOOR_W",
-        "AMOMIN_W",
-        "AMOMAX_W",
-        "AMOMINU_W",
-        "AMOMAXU_W",
-        "AMOSWAP_D",
-        "AMOADD_D",
-        "AMOXOR_D",
-        "AMOAND_D",
-        "AMOOR_D",
-        "AMOMIN_D",
-        "AMOMAX_D",
-        "AMOMINU_D",
-        "AMOMAXU_D",
+        "LOAD",
+        "LOAD_FP",
+        "LR",
+        "AMOSWAP",
+        "AMOADD",
+        "AMOXOR",
+        "AMOAND",
+        "AMOOR",
+        "AMOMIN",
+        "AMOMAX",
+        "AMOMINU",
+        "AMOMAXU",
     )
 }
-_SQ_OPS = {
-    _INSTR_OPS[name] for name in ("SB", "SH", "SW", "SD", "FSW", "FSD", "SC_W", "SC_D")
-}
-_FP_MEM_OPS = {_INSTR_OPS[name] for name in ("FLW", "FLD", "FSW", "FSD")}
-_SIGNED_LOAD_OPS = {_INSTR_OPS[name] for name in ("LB", "LH")}
-_BYTE_OPS = {_INSTR_OPS[name] for name in ("LB", "LBU", "SB")}
-_HALF_OPS = {_INSTR_OPS[name] for name in ("LH", "LHU", "SH")}
-_DOUBLE_OPS = {
-    _INSTR_OPS[name]
-    for name in (
-        "LD",
-        "SD",
-        "FLD",
-        "FSD",
-        "LR_D",
-        "SC_D",
-        "AMOSWAP_D",
-        "AMOADD_D",
-        "AMOXOR_D",
-        "AMOAND_D",
-        "AMOOR_D",
-        "AMOMIN_D",
-        "AMOMAX_D",
-        "AMOMINU_D",
-        "AMOMAXU_D",
-    )
-}
-
-
-def _mem_size_for_op(op: int) -> int:
-    """Return riscv_pkg::mem_size_e encoding for a memory op."""
-    if op in _BYTE_OPS:
-        return 0
-    if op in _HALF_OPS:
-        return 1
-    if op in _DOUBLE_OPS:
-        return 3
-    return 2
+_SQ_OPS = {_INSTR_OPS[name] for name in ("STORE", "STORE_FP", "SC")}
+_FP_MEM_OPS = {_INSTR_OPS[name] for name in ("LOAD_FP", "STORE_FP")}
+_MEM_OPS = _LQ_OPS | _SQ_OPS
+_LOAD_OP = _INSTR_OPS["LOAD"]
+_LR_OP = _INSTR_OPS["LR"]
 
 
 # Use each station's full flag. o_rs_full instead follows the station
@@ -424,6 +374,8 @@ class TomasuloInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self._reset_coherent_cache()
+        if hasattr(self.dut, "i_vmt"):
+            self.dut.i_vmt.value = 0
         # ROB allocation
         self.dut.i_alloc_req.value = 0
         self.dut.i_alloc_req_2.value = 0
@@ -1144,19 +1096,27 @@ class TomasuloInterface:
     ) -> dict[str, Any]:
         """Build the pack_rs_dispatch kwargs for one packet.
 
-        For RS_MEM, the LQ/SQ, FP-memory, size, and sign fields default to
-        values derived from ``op``.
+        For RS_MEM, the LQ/SQ and FP-memory flags default to values derived
+        from ``op``; real memory operations require an explicit ``mem_size``
+        and integer loads require an explicit ``mem_signed``.
         """
         dispatch_kwargs = dict(kwargs)
         dispatch_kwargs["valid"] = valid
         dispatch_kwargs["rs_type"] = rs_type
         if rs_type == RS_MEM:
             op = int(dispatch_kwargs.get("op", 0))
+            if op in _MEM_OPS:
+                if dispatch_kwargs.get("mem_size") is None:
+                    raise ValueError(
+                        "RS_MEM memory operations require an explicit mem_size"
+                    )
+                if op == _LOAD_OP and dispatch_kwargs.get("mem_signed") is None:
+                    raise ValueError("LOAD dispatch requires an explicit mem_signed")
             dispatch_kwargs.setdefault("mem_needs_lq", op in _LQ_OPS)
             dispatch_kwargs.setdefault("mem_needs_sq", op in _SQ_OPS)
             dispatch_kwargs.setdefault("is_fp_mem", op in _FP_MEM_OPS)
-            dispatch_kwargs.setdefault("mem_size", _mem_size_for_op(op))
-            dispatch_kwargs.setdefault("mem_signed", op in _SIGNED_LOAD_OPS)
+            dispatch_kwargs.setdefault("mem_size", 2)
+            dispatch_kwargs.setdefault("mem_signed", op == _LR_OP)
         return dispatch_kwargs
 
     def drive_rs_dispatch(self, rs_type: int = RS_INT, **kwargs: Any) -> None:

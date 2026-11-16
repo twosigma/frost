@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Keep the Zicboz configurations and NIC benchmark reachable from CI."""
+"""Keep every collected real program in one appropriately sized CI shard."""
 
 import subprocess
 import sys
@@ -21,10 +21,10 @@ from pathlib import Path
 import yaml  # type: ignore[import-untyped]
 from _pytest.mark.expression import Expression
 
-from test_run_cocotb import TEST_REGISTRY
+from test_run_cocotb import COREMARK_PRO_TESTS, DDR_TIER_EXCLUDE, TEST_REGISTRY
 
 
-def test_zero_and_nic_programs_have_one_ci_shard() -> None:
+def test_registered_programs_have_one_ci_shard() -> None:
     """Require collection and one CI selection for each supported program tier."""
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
@@ -49,8 +49,8 @@ def test_zero_and_nic_programs_have_one_ci_shard() -> None:
     nodes = [line for line in result.stdout.splitlines() if line.startswith("tests/")]
     programs = {
         name
-        for name in TEST_REGISTRY
-        if name.startswith("cbo_zero_") or name == "nic_bench"
+        for name, config in TEST_REGISTRY.items()
+        if config.app_name is not None and config.include_in_pytest
     }
     assert programs
     missing = [
@@ -63,11 +63,15 @@ def test_zero_and_nic_programs_have_one_ci_shard() -> None:
     jobs = [
         (tier, shard) for tier in matrix["mem_config"] for shard in matrix["shard"]
     ] + [(job["mem_config"], job["shard"]) for job in matrix["include"]]
+    # Fixed-layout programs and tier-independent builds run on the BRAM axis.
     bram_axis_only = {
         "cbo_zero_bench",
         "cbo_zero_pages_board",
-        # This registry entry selects its own DDR program layout.
         "cbo_zero_pages_board_ddr",
+    } | {
+        name
+        for name in programs
+        if name.startswith("opensbi_") or name.endswith("_sram_macros")
     }
     marks = {"cocotb", "cocotb_real_program"}
 
@@ -75,7 +79,11 @@ def test_zero_and_nic_programs_have_one_ci_shard() -> None:
         assert not kwargs
         return keyword in marks
 
+    errors = []
     for name in sorted(programs):
+        marks.discard("coremark_pro")
+        if name in COREMARK_PRO_TESTS:
+            marks.add("coremark_pro")
         selected = [node for node in nodes if f"[{name}]" in node]
         assert len(selected) == 1, (name, selected)
         node = selected[0]
@@ -85,6 +93,8 @@ def test_zero_and_nic_programs_have_one_ci_shard() -> None:
             return keyword.casefold() in node.casefold()
 
         for tier in matrix["mem_config"]:
+            if tier == "ddr" and name in DDR_TIER_EXCLUDE:
+                continue
             matches = [
                 shard["name"]
                 for job_tier, shard in jobs
@@ -93,4 +103,58 @@ def test_zero_and_nic_programs_have_one_ci_shard() -> None:
                 and Expression.compile(shard["pytest_filter"]).evaluate(matches_keyword)
             ]
             expected = 0 if tier == "ddr" and name in bram_axis_only else 1
-            assert len(matches) == expected, (name, tier, matches)
+            if len(matches) != expected:
+                errors.append((name, tier, matches, expected))
+    assert not errors, (
+        f"Programs must select exactly one shard per supported tier: {errors}"
+    )
+
+
+def test_long_programs_have_named_ci_shards() -> None:
+    """OpenSBI and budgets above 10 million cycles require explicit shards."""
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    matrix = workflow["jobs"]["test-verilator"]["strategy"]["matrix"]
+    complements = [
+        shard
+        for shard in matrix["shard"]
+        if shard["pytest_filter"].lstrip().startswith("not (")
+    ]
+    assert len(complements) == 1, "Keep one complement for unlisted programs"
+    complement = Expression.compile(complements[0]["pytest_filter"])
+    complement_mark = Expression.compile(complements[0]["pytest_mark"])
+    unassigned = []
+    for name, config in TEST_REGISTRY.items():
+        if config.app_name is None or not config.include_in_pytest:
+            continue
+        long_budget = any(
+            key.startswith("COCOTB_")
+            and key.endswith("MAX_CYCLES")
+            and int(value) > 10_000_000
+            for key, value in config.extra_env
+        )
+        if not (name.startswith("opensbi_") or long_budget):
+            continue
+        marks = {"cocotb", "cocotb_real_program"}
+        if name in COREMARK_PRO_TESTS:
+            marks.add("coremark_pro")
+
+        def matches_mark(keyword: str, /, **kwargs: str | int | bool | None) -> bool:
+            assert not kwargs
+            return keyword in marks
+
+        if not complement_mark.evaluate(matches_mark):
+            continue
+        node = f"tests/test_run_cocotb.py::TestRealPrograms::test_real_program[{name}]"
+
+        def matches_keyword(keyword: str, /, **kwargs: str | int | bool | None) -> bool:
+            assert not kwargs
+            return keyword.casefold() in node.casefold()
+
+        if complement.evaluate(matches_keyword):
+            unassigned.append(name)
+    assert not unassigned, (
+        "OpenSBI and programs with registry budgets above 10 million cycles need "
+        "named shards and exclusions from Runtime and other: "
+        f"{unassigned}"
+    )

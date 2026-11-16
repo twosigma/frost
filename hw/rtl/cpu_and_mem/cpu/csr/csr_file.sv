@@ -74,17 +74,26 @@
   the counter numbers so that "event N selects counter N" stays unambiguous
   for the DT's raw-event map: mhpmevent8=16 counts page-walker busy cycles,
   mhpmevent7=17 counts SFENCE.VMA TLB invalidates, and mhpmevent4=18 counts
-  CSR-requested TLB invalidates (a satp access, or an MPRV/MPP change).
+  CSR-requested translation-state flushes (a satp access, or an MPRV/MPP
+  change), including those that preserve ASID-tagged TLB entries.
+  Three more count cache refills: mhpmevent3=19 counts L1I refills (one per
+  line the L1I requests from the L2, for fetch misses including the fetch
+  provider's next-line prefetches), mhpmevent6=20 counts the home's demand
+  line reads from memory (L2 misses that read DRAM: CPU and DMA requests,
+  without prefetches) and mhpmevent5=21 counts the home's prefetch line
+  reads from memory.
 
   Sscofpmf: mhpmevent3..10 implement OF (63), MINH (62), SINH (61) and
   UINH (60); VSINH, VUINH and the WPRI bits 57:56 read zero (no H
   extension). An xINH bit stops counting while the event's privilege is x.
   Retirement events (3 branches, 4 mispredictions, 10 instructions) take the
-  privilege the instruction retired in; the others (5 ITLB walks, 6 DTLB
-  walks, 7 L1D misses, 8 SQ-full cycles, 9 cycles) take the hart's privilege
-  in the cycle the event occurs. The registered CSR-requested translation
-  event uses its committing instruction's saved privilege. Debug Mode counts
-  as M. A carry out of bit
+  privilege the instruction retired in; the others (5 L1 ITLB misses, 6 L1
+  DTLB misses, 7 L1D misses, 8 SQ-full cycles, 9 cycles, and the refill events
+  19, 20 and 21) take the hart's privilege when csr_file samples the event.
+  A refill passes through the cache's observer and cpu_ooo's register before
+  this sample, so a privilege transition can attribute it to the later mode.
+  The registered CSR-requested translation event uses its committing
+  instruction's saved privilege. Debug Mode counts as M. A carry out of bit
   63 sets OF on the wrapping edge; when OF was clear it also raises a count
   overflow request, which sets mip.LCOFIP (bit 13) one cycle later. CSR
   writes never cause overflow. LCOFIP is read-write in mip, and in sip when
@@ -158,6 +167,11 @@ module csr_file #(
     // CSR-requested invalidates are counted from o_csr_translation_flush_req.
     input logic       i_walk_busy = '0,
     input logic       i_sfence_tlb_flush = '0,
+    // Cache refill events, registered by the caller: an L1I refill request,
+    // and the home's demand and prefetch line reads from memory.
+    input logic       i_l1i_refill = '0,
+    input logic       i_l2_demand_miss = '0,
+    input logic       i_l2_prefetch_miss = '0,
 
     // Pending inputs: registered IMSIC MEIP, registered timer, and software IRQ
     input riscv_pkg::interrupt_t i_interrupts,
@@ -336,9 +350,16 @@ module csr_file #(
     // vl/vtype update of a committed vsetvli/vsetivli/vsetvl, from the
     // registered commit bus (VECTOR). It also clears vstart and sets VS Dirty.
     input riscv_pkg::vcfg_commit_t i_vcfg_commit = '0,
-    // A vector arithmetic instruction retired (registered commit bus): it
-    // clears vstart and sets VS Dirty.
+    // A vector arithmetic or non-faulting vector load instruction retired
+    // (registered commit bus): it clears vstart and sets VS Dirty.
     input logic i_varith_commit = 1'b0,
+    // A non-faulting vector store retired (registered commit bus): clears
+    // vstart, and sets VS Dirty only when vstart was non-zero.
+    input logic i_vstore_commit = 1'b0,
+    // Synchronous vector load/store fault vstart update, held by the head unit
+    // until the synchronous exception trap takes.
+    input logic i_vmem_fault_vstart_valid = 1'b0,
+    input logic [15:0] i_vmem_fault_vstart = '0,
     // The architectural vl, vtype ({vill, vtype[7:0]}) and vstart, for the
     // vector unit (zero without it)
     output logic [15:0] o_vec_vl,
@@ -418,23 +439,27 @@ module csr_file #(
   // Per-counter arrays are zero-based: element n-HpmFirst holds counter n.
   localparam int unsigned NumHpm = HpmLast - HpmFirst + 1;
   logic [NumHpm-1:0][63:0] mhpmcounter;
-  // hpm_select: an event is selected (the counter's own, or its translation
+  // hpm_select: an event is selected (the counter's own, or its alternate
   // event, flagged by hpm_alt).
   logic [NumHpm-1:0] hpm_select, hpm_alt, hpm_of, hpm_minh, hpm_sinh, hpm_uinh;
-  // Translation event selectors (counters 8, 7 and 4); zero elsewhere.
+  // Alternate event selectors: translation events (counters 8, 7 and 4) and
+  // cache refill events (counters 3, 6 and 5); zero elsewhere.
   localparam int unsigned HpmSelWalkBusy = 16;
   localparam int unsigned HpmSelSfenceFlush = 17;
   localparam int unsigned HpmSelCsrFlush = 18;
+  localparam int unsigned HpmSelL1iRefill = 19;
+  localparam int unsigned HpmSelL2DemandMiss = 20;
+  localparam int unsigned HpmSelL2PrefetchMiss = 21;
   // Per counter, MSB first (counter 10 down to 3).
   localparam logic [8*NumHpm-1:0] HpmAltSelectors = {
     8'd0,  // 10
     8'd0,  // 9
     8'(HpmSelWalkBusy),  // 8
     8'(HpmSelSfenceFlush),  // 7
-    8'd0,  // 6
-    8'd0,  // 5
+    8'(HpmSelL2DemandMiss),  // 6
+    8'(HpmSelL2PrefetchMiss),  // 5
     8'(HpmSelCsrFlush),  // 4
-    8'd0  // 3
+    8'(HpmSelL1iRefill)  // 3
   };
   // The registered translation invalidate request (driven with the CSR
   // translation logic below), counted by mhpmevent4=18.
@@ -1266,15 +1291,19 @@ module csr_file #(
   // Hardware Performance Counters (mhpmcounter3..10, Sscofpmf)
   // ==========================================================================
   // Event inputs by counter number: 3 retired branches, 4 retired
-  // mispredictions, 5 ITLB walks, 6 DTLB walks, 7 L1D misses, 8 SQ-full
+  // mispredictions, 5 L1 ITLB misses, 6 L1 DTLB misses, 7 L1D misses, 8 SQ-full
   // stall cycles, 9 cycles, 10 retired instructions (the minstret count).
-  // Counters 4, 7 and 8 switch to their translation event when hpm_alt is set.
+  // Counters 4, 7 and 8 switch to their translation event and counters 3, 5
+  // and 6 to their cache refill event when hpm_alt is set.
   logic [NumHpm-1:0][1:0] hpm_event_count;
-  assign hpm_event_count[3-HpmFirst] = i_branch_retired_count;
+  assign hpm_event_count[3-HpmFirst] = hpm_alt[3-HpmFirst] ?
+      {1'b0, i_l1i_refill} : i_branch_retired_count;
   assign hpm_event_count[4-HpmFirst]  = hpm_alt[4-HpmFirst] ?
       {1'b0, csr_translation_flush_req_q} : i_branch_mispredict_count;
-  assign hpm_event_count[5-HpmFirst] = {1'b0, i_itlb_miss};
-  assign hpm_event_count[6-HpmFirst] = {1'b0, i_dtlb_miss};
+  assign hpm_event_count[5-HpmFirst] = {
+    1'b0, hpm_alt[5-HpmFirst] ? i_l2_prefetch_miss : i_itlb_miss
+  };
+  assign hpm_event_count[6-HpmFirst] = {1'b0, hpm_alt[6-HpmFirst] ? i_l2_demand_miss : i_dtlb_miss};
   assign hpm_event_count[7-HpmFirst] = {
     1'b0, hpm_alt[7-HpmFirst] ? i_sfence_tlb_flush : i_l1d_miss
   };
@@ -1288,8 +1317,12 @@ module csr_file #(
   // retirement. retire_priv_q holds the privilege of that retirement cycle.
   // Privilege changes only on a trap or xRET take, which flushes younger
   // instructions, so every instruction retires in the privilege it executed
-  // in. The other events take the privilege of the cycle they occur in.
+  // in. The other events take the privilege when this module samples them,
+  // including counter 3's L1I refill event; counter 4's registered
+  // CSR-requested invalidate keeps the retirement timing.
   localparam logic [NumHpm-1:0] HpmRetireEvent = 8'b1000_0011;
+  // Counters 9 and 10 have no alternate; 10 keeps the retirement timing.
+  localparam logic [NumHpm-1:0] HpmAltRetireEvent = 8'b1000_0010;
   logic [1:0] retire_priv_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) retire_priv_q <= riscv_pkg::PrivM;
@@ -1304,7 +1337,8 @@ module csr_file #(
           (i_csr_address == 12'(riscv_pkg::CsrMcycle + 12'(k + HpmFirst)));
       mhpmevent_write[k] = csr_counter_write &&
           (i_csr_address == 12'(riscv_pkg::CsrMcountinhibit + 12'(k + HpmFirst)));
-      hpm_event_priv[k] = HpmRetireEvent[k] ? retire_priv_q : priv_q;
+      hpm_event_priv[k] = (hpm_alt[k] ? HpmAltRetireEvent[k] : HpmRetireEvent[k]) ?
+          retire_priv_q : priv_q;
       hpm_mode_inhibit[k] =
           (hpm_minh[k] && (hpm_event_priv[k] == riscv_pkg::PrivM)) ||
           (hpm_sinh[k] && (hpm_event_priv[k] == riscv_pkg::PrivS)) ||
@@ -1703,7 +1737,12 @@ module csr_file #(
     // a read-only access (set/clear with x0 or a zero immediate), so such an
     // access neither writes nor dirties VS. The reorder buffer makes writes
     // to the read-only vl, vtype and vlenb illegal at allocation.
-    assign vec_csr_write  = storage_csr_write && vec_addr_writable && (i_csr_op[1:0] != 2'b00);
+    logic vmem_fault_vstart_write;
+    assign vec_csr_write = storage_csr_write && vec_addr_writable && (i_csr_op[1:0] != 2'b00);
+    // Only a synchronous M/S-mode exception entry (cause MSB 0, not Debug Mode)
+    // writes a faulting vector memory op's vstart and dirties VS.
+    assign vmem_fault_vstart_write = i_vmem_fault_vstart_valid &&
+        (i_trap_save_m || i_trap_save_s) && !i_trap_cause[XLEN-1];
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         vstart_q <= '0;
@@ -1721,8 +1760,10 @@ module csr_file #(
             ((vl_q > VlBits'(i_vcfg_commit.vlmax)) ? VlBits'(i_vcfg_commit.vlmax) : vl_q) :
             VlBits'(i_vcfg_commit.vl);
         vstart_q <= '0;
-      end else if (i_varith_commit) begin
+      end else if (i_varith_commit || i_vstore_commit) begin
         vstart_q <= '0;
+      end else if (vmem_fault_vstart_write) begin
+        vstart_q <= i_vmem_fault_vstart[VstartBits-1:0];
       end else if (vec_csr_write) begin
         unique case (i_csr_address)
           riscv_pkg::CsrVstart: vstart_q <= vec_new_value[VstartBits-1:0];
@@ -1738,14 +1779,17 @@ module csr_file #(
     end
     // VS is WARL with all four values storable. An mstatus or sstatus write
     // sets it; a vector CSR write sets Dirty. Both cannot happen together,
-    // because CSR instructions commit one at a time.
+    // because CSR instructions commit one at a time. A retiring vector store
+    // dirties VS only when it clears a non-zero vstart.
     always_ff @(posedge i_clk) begin
       if (i_rst) mstatus_vs <= FsOff;
       else if (status_csr_write && (i_csr_address == riscv_pkg::CsrMstatus))
         mstatus_vs <= mstatus_new_value[riscv_pkg::MstatusVsLo+:2];
       else if (status_csr_write && (i_csr_address == riscv_pkg::CsrSstatus))
         mstatus_vs <= sstatus_new_value[riscv_pkg::MstatusVsLo+:2];
-      else if (vec_csr_write || i_vcfg_commit.valid || i_varith_commit) mstatus_vs <= FsDirty;
+      else if (vec_csr_write || i_vcfg_commit.valid || i_varith_commit ||
+               (i_vstore_commit && (vstart_q != '0)) || vmem_fault_vstart_write)
+        mstatus_vs <= FsDirty;
     end
   end else begin : gen_no_vector_csrs
     assign vec_read_value = '0;
@@ -2477,6 +2521,8 @@ module csr_file #(
       (i_csr_op[1:0] != 2'b00) &&
       (i_csr_address == riscv_pkg::CsrVstart || i_csr_address == riscv_pkg::CsrVxsat ||
        i_csr_address == riscv_pkg::CsrVxrm || i_csr_address == riscv_pkg::CsrVcsr);
+  wire f_vmem_fault_write = VECTOR && i_vmem_fault_vstart_valid &&
+      i_trap_taken && !i_trap_to_d && !i_trap_cause[XLEN-1];
   // The value a read of a vector CSR returns.
   wire [XLEN-1:0] f_vec_read =
       (i_csr_address == riscv_pkg::CsrVstart) ? XLEN'(vec_vstart) :
@@ -2608,9 +2654,13 @@ module csr_file #(
     assume (!(i_trap_taken && i_mret_taken));
     // A vector-config commit never meets a CSR instruction's write.
     assume (!(i_vcfg_commit.valid && i_csr_write_enable));
-    // Vector arithmetic and vector-config instructions retire one at a time,
-    // never beside a CSR instruction.
+    // Vector arithmetic, vector store and vector-config instructions retire
+    // one at a time, never beside a CSR instruction or a head-faulting vector
+    // memory op.
     assume (!(i_varith_commit && (i_csr_write_enable || i_vcfg_commit.valid)));
+    assume (!(i_vstore_commit && (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit)));
+    assume (!(i_vmem_fault_vstart_valid &&
+              (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit || i_vstore_commit)));
     // vl and VLMAX are element counts, at most VLEN (SEW 8, LMUL 8).
     assume (i_vcfg_commit.vlmax <= 16'(VLEN) && i_vcfg_commit.vl <= i_vcfg_commit.vlmax);
     assume (!(i_trap_taken && i_sret_taken));
@@ -2855,8 +2905,11 @@ module csr_file #(
       // register's old value (computed here independently of the RTL's RMW),
       // every other cycle keeps the value, and an access whose csr_op[1:0] is
       // 00 (no write intent) never changes it.
-      if ($past(VECTOR && (i_vcfg_commit.valid || i_varith_commit))) begin
+      if ($past(VECTOR && (i_vcfg_commit.valid || i_varith_commit || i_vstore_commit))) begin
         p_vstart_vcfg_clear : assert (vec_vstart == '0);
+      end else if ($past(f_vmem_fault_write)) begin
+        p_vstart_vmem_fault_write :
+        assert (vec_vstart == $past(i_vmem_fault_vstart[VstartBits-1:0]));
       end else if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVstart)) begin
         p_vstart_write : assert (vec_vstart == $past(f_vstart_next[VstartBits-1:0]));
       end else begin
@@ -2876,7 +2929,10 @@ module csr_file #(
       end else begin
         p_vxrm_stable : assert (vec_vxrm == $past(vec_vxrm));
       end
-      if ($past(i_csr_op[1:0] == 2'b00 && !i_vcfg_commit.valid && !i_varith_commit)) begin
+      if ($past(
+              i_csr_op[1:0] == 2'b00 && !i_vcfg_commit.valid && !i_varith_commit &&
+              !i_vstore_commit && !f_vmem_fault_write
+          )) begin
         p_vec_read_only_access :
         assert ({vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs} == $past(
             {vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs}
@@ -2885,9 +2941,14 @@ module csr_file #(
       // The RTL's write enable equals the one derived from the inputs.
       p_vec_write_enable : assert (vec_csr_write == f_vec_write);
 
-      // A vector CSR write sets VS Dirty; a status CSR write installs VS;
-      // nothing else, including a read-only vector CSR access, changes it.
-      if ($past(vec_csr_write || (VECTOR && (i_vcfg_commit.valid || i_varith_commit)))) begin
+      // A vector CSR write or synchronous vector memory fault sets VS Dirty; a
+      // status CSR write installs VS; nothing else, including a read-only
+      // vector CSR access or a retiring vector store with vstart == 0, changes it.
+      if ($past(
+              vec_csr_write || f_vmem_fault_write ||
+              (VECTOR && (i_vcfg_commit.valid || i_varith_commit ||
+                          (i_vstore_commit && (vec_vstart != '0))))
+          )) begin
         p_vs_dirty_set : assert (mstatus_vs == FsDirty);
       end else if ($past(
               status_csr_write && (i_csr_address == riscv_pkg::CsrMstatus ||
@@ -3157,6 +3218,14 @@ module csr_file #(
         cover (f_past_valid && $past(
             !i_rst && f_vec_write && i_csr_address == riscv_pkg::CsrVstart
         ));
+        cover_vstart_vmem_fault_write :
+        cover (f_past_valid && $past(
+            !i_rst && f_vmem_fault_write && i_vmem_fault_vstart[VstartBits-1:0] != '0
+        ) && vec_vstart != '0 && vs_dirty);
+        cover_vstore_preserves_vs_clean :
+        cover (f_past_valid && $past(
+            !i_rst && i_vstore_commit && vec_vstart == '0 && mstatus_vs == 2'b10
+        ) && mstatus_vs == 2'b10);
       end
     end
   end
@@ -3893,6 +3962,24 @@ module csr_file #(
         assert (mhpmevent[K][59:8] == '0);
         assert (mhpmevent[K][7:0] == (hpm_alt[K] ? HpmAltSelectors[8*K+:8] :
                                       hpm_select[K] ? 8'(n) : 8'd0));
+        // Each counter's event input, written out per counter number: its
+        // own event, or its alternate while hpm_alt is set.
+        if (n == 3)
+          assert (hpm_event_count[K] ==
+                  (hpm_alt[K] ? {1'b0, i_l1i_refill} : i_branch_retired_count));
+        if (n == 4)
+          assert (hpm_event_count[K] == (hpm_alt[K] ? {1'b0, csr_translation_flush_req_q} :
+                                         i_branch_mispredict_count));
+        if (n == 5)
+          assert (hpm_event_count[K] == {1'b0, hpm_alt[K] ? i_l2_prefetch_miss : i_itlb_miss});
+        if (n == 6)
+          assert (hpm_event_count[K] == {1'b0, hpm_alt[K] ? i_l2_demand_miss : i_dtlb_miss});
+        if (n == 7)
+          assert (hpm_event_count[K] == {1'b0, hpm_alt[K] ? i_sfence_tlb_flush : i_l1d_miss});
+        if (n == 8)
+          assert (hpm_event_count[K] == {1'b0, hpm_alt[K] ? i_walk_busy : i_sq_full_stall});
+        if (n == 9) assert (hpm_event_count[K] == 2'd1);
+        if (n == 10) assert (hpm_event_count[K] == i_instruction_retired_count);
       end
       if (f_hpm_q_valid && !i_rst) begin
         // OF is sticky: only an mhpmevent write clears it.
@@ -3919,8 +4006,10 @@ module csr_file #(
             !f_inhibited_ref)
           assert (hpm_count_q[K] == f_q_hpm_event_count[K]);
         // Classify independently of the DUT's event mask. Counter 4's
-        // alternate event is also delayed by its committed CSR's register.
-        assert (hpm_event_priv[K] == (((n == 3) || (n == 4) || (n == 10)) ? f_q_priv : priv_q));
+        // alternate event is also delayed by its committed CSR's register;
+        // counter 3's alternate (L1I refills) is a cycle event.
+        assert (hpm_event_priv[K] == ((((n == 3) && !hpm_alt[K]) || (n == 4) || (n == 10)) ?
+                                      f_q_priv : priv_q));
         // Each request is exactly the independently checked wrap with old
         // OF clear, including when a selector write changes OF on that edge.
         assert (f_q_hpm_lcof_request[K] == (f_q_hpm_overflow[K] && !f_q_hpm_of[K]));

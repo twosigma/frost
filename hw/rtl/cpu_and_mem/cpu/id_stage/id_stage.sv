@@ -27,8 +27,9 @@ module id_stage #(
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
     // Direction override from PD registers, shared with IF: the new
     // direction and, when taken, the target. It applies to slot 1, or to
-    // slot 2 for a backing BTB prediction there. Apply it here to keep target
-    // arithmetic out of PD's packet register.
+    // slot 2 when i_pd_redirect_slot2 is set (a slot-2 tagged branch override
+    // or backing BTB prediction). Apply it here to keep target arithmetic out
+    // of PD's packet register.
     input logic i_pd_redirect,
     input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
@@ -74,7 +75,7 @@ module id_stage #(
 
   // PD's redirect and veto metadata align with this cycle's packet. A
   // not-taken override keeps the BTB target, which only a taken prediction
-  // uses. A slot-2 override is always taken.
+  // uses.
   logic [XLEN-1:0] effective_btb_predicted_target;
   logic            effective_btb_predicted_taken;
   logic [XLEN-1:0] effective_btb_predicted_target_2;
@@ -88,9 +89,10 @@ module id_stage #(
                                           i_from_pd_to_id.btb_predicted_target;
   assign effective_btb_predicted_taken = pd_redirect_slot1 ? i_pd_redirect_taken :
                                                              i_from_pd_to_id.btb_predicted_taken;
-  assign effective_btb_predicted_target_2 = pd_redirect_slot2 ? i_pd_redirect_target :
+  assign effective_btb_predicted_target_2 = (pd_redirect_slot2 && i_pd_redirect_taken) ?
+                                            i_pd_redirect_target :
                                             i_from_pd_to_id_2.btb_predicted_target;
-  assign effective_btb_predicted_taken_2 = pd_redirect_slot2 ||
+  assign effective_btb_predicted_taken_2 = pd_redirect_slot2 ? i_pd_redirect_taken :
                                            i_from_pd_to_id_2.btb_predicted_taken;
 
   // Slot-1 instruction and decoder outputs
@@ -225,17 +227,19 @@ module id_stage #(
   );
 
   // F/D instruction classes, decoded directly from the fields.
-  logic is_fp_load_direct;  // FLW/FLD
-  logic is_fp_store_direct;  // FSW/FSD
+  logic is_fp_load_direct;  // FLH/FLW/FLD
+  logic is_fp_store_direct;  // FSH/FSW/FSD
   logic is_fp_compute_direct;  // All F arithmetic/compare/convert ops
   logic is_fp_fma_direct;  // FMA instructions (separate opcode)
   logic is_fp_instruction_direct;
 
   assign is_fp_load_direct = (instruction.opcode == riscv_pkg::OPC_LOAD_FP) &&
-                             ((instruction.funct3 == 3'b010) ||
+                             ((instruction.funct3 == 3'b001) ||
+                              (instruction.funct3 == 3'b010) ||
                               (instruction.funct3 == 3'b011));
   assign is_fp_store_direct = (instruction.opcode == riscv_pkg::OPC_STORE_FP) &&
-                              ((instruction.funct3 == 3'b010) ||
+                              ((instruction.funct3 == 3'b001) ||
+                               (instruction.funct3 == 3'b010) ||
                                (instruction.funct3 == 3'b011));
   assign is_fp_compute_direct = instruction.opcode == riscv_pkg::OPC_OP_FP;
   assign is_fp_fma_direct = (instruction.opcode == riscv_pkg::OPC_FMADD) |
@@ -256,6 +260,26 @@ module id_stage #(
     cbo_illegal_for = funct12_low[2] ? i_cbo_zero_illegal :
         (|funct12_low[1:0]) ? i_cbo_cf_illegal : i_cbo_inval_illegal;
   endfunction
+  // The legality terms beside the decoder's (FS off, VS off, CBO, WRS.NTO),
+  // on an instruction as fetched. An injected NOP (OP-IMM) matches none of
+  // them, so with !inject_nop they equal the same terms on the substituted
+  // instruction that is_illegal_instruction reads.
+  /* verilator lint_off UNUSEDSIGNAL */  // the compares read four fields of r
+  function automatic logic csr_gated_illegal(input riscv_pkg::instr_t r);
+    logic fp, vec, cbo, wrs;
+    fp = (((r.opcode == riscv_pkg::OPC_LOAD_FP) || (r.opcode == riscv_pkg::OPC_STORE_FP)) &&
+          ((r.funct3 == 3'b001) || (r.funct3 == 3'b010) || (r.funct3 == 3'b011))) ||
+        (r.opcode == riscv_pkg::OPC_OP_FP) || (r.opcode == riscv_pkg::OPC_FMADD) ||
+        (r.opcode == riscv_pkg::OPC_FMSUB) || (r.opcode == riscv_pkg::OPC_FNMSUB) ||
+        (r.opcode == riscv_pkg::OPC_FNMADD);
+    vec = (r.opcode == riscv_pkg::OPC_OP_V) || riscv_pkg::is_vector_mem(r.opcode, r.funct3);
+    cbo = (r.opcode == riscv_pkg::OPC_MISC_MEM) && (r.funct3 == 3'b010);
+    wrs = (r.opcode == riscv_pkg::OPC_CSR) && (r.funct3 == 3'b000) &&
+        ({r.funct7, r.source_reg_2} == 12'h00D);
+    csr_gated_illegal = (i_mstatus_fs_off & fp) | (i_mstatus_vs_off & vec) |
+        (cbo_illegal_for(r.source_reg_2[2:0]) & cbo) | (i_wrs_nto_illegal & wrs);
+  endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
   logic is_cbo_direct;
   assign is_cbo_direct = (instruction.opcode == riscv_pkg::OPC_MISC_MEM) &&
                          (instruction.funct3 == 3'b010);
@@ -305,29 +329,87 @@ module id_stage #(
   logic is_csr_imm_pre;
   logic has_fp_flags_pre;
 
+  // ID applies one kill for the class fields: the illegal and
+  // fetch-fault terms meet the classification last, as an AND-NOT. The classifier's neutral
+  // class is all zeros (RS_INT is 0), so the class equals the unkilled class
+  // with every bit cleared by the kill. The non-decoder terms form beside
+  // the decoder from the fetched instruction (csr_gated_illegal), so the
+  // decoder's illegal flag passes one OR before the kill.
+  (* keep = "true" *) logic id_kill_early, id_kill;
+  assign id_kill_early = i_from_pd_to_id.illegal_instruction | is_fetch_fault |
+      (!i_from_pd_to_id.inject_nop && csr_gated_illegal(
+      i_from_pd_to_id.instruction
+  ));
+  assign id_kill = id_kill_early | decoder_illegal;
+  logic has_int_dest_nokill;
+  logic has_fp_dest_nokill;
+  logic uses_int_rs1_nokill;
+  logic uses_int_rs2_nokill;
+  logic uses_fp_rs1_nokill;
+  logic uses_fp_rs2_nokill;
+  logic uses_fp_rs3_nokill;
+  logic [2:0] rs_type_nokill;
+  logic is_int_store_nokill;
+  logic is_branch_or_jump_nokill;
+  logic is_fence_nokill;
+  logic is_fence_i_nokill;
+  logic is_sfence_vma_nokill;
+  logic is_csr_imm_nokill;
+  logic has_fp_flags_nokill;
+  logic needs_lq_nokill;
+  logic needs_sq_nokill;
   instr_operand_classifier operand_classifier (
       .i_instr(i_from_pd_to_id.instruction),
       .i_inject_nop(i_from_pd_to_id.inject_nop),
-      .i_illegal(is_illegal_instruction),
-      .i_fetch_fault(is_fetch_fault),
-      .o_has_int_dest(has_int_dest_pre),
-      .o_has_fp_dest(has_fp_dest_pre),
-      .o_uses_int_rs1(uses_int_rs1_pre),
-      .o_uses_int_rs2(uses_int_rs2_pre),
-      .o_uses_fp_rs1(uses_fp_rs1_pre),
-      .o_uses_fp_rs2(uses_fp_rs2_pre),
-      .o_uses_fp_rs3(uses_fp_rs3_pre),
-      .o_rs_type(rs_type_pre),
-      .o_is_int_store(is_int_store_pre),
-      .o_is_branch_or_jump(is_branch_or_jump_pre),
-      .o_is_fence(is_fence_pre),
-      .o_is_fence_i(is_fence_i_pre),
-      .o_is_sfence_vma(is_sfence_vma_pre),
-      .o_is_csr_imm(is_csr_imm_pre),
-      .o_has_fp_flags(has_fp_flags_pre),
-      .o_needs_lq(needs_lq_pre),
-      .o_needs_sq(needs_sq_pre)
+      .i_illegal(1'b0),
+      .i_fetch_fault(1'b0),
+      .o_has_int_dest(has_int_dest_nokill),
+      .o_has_fp_dest(has_fp_dest_nokill),
+      .o_uses_int_rs1(uses_int_rs1_nokill),
+      .o_uses_int_rs2(uses_int_rs2_nokill),
+      .o_uses_fp_rs1(uses_fp_rs1_nokill),
+      .o_uses_fp_rs2(uses_fp_rs2_nokill),
+      .o_uses_fp_rs3(uses_fp_rs3_nokill),
+      .o_rs_type(rs_type_nokill),
+      .o_is_int_store(is_int_store_nokill),
+      .o_is_branch_or_jump(is_branch_or_jump_nokill),
+      .o_is_fence(is_fence_nokill),
+      .o_is_fence_i(is_fence_i_nokill),
+      .o_is_sfence_vma(is_sfence_vma_nokill),
+      .o_is_csr_imm(is_csr_imm_nokill),
+      .o_has_fp_flags(has_fp_flags_nokill),
+      .o_needs_lq(needs_lq_nokill),
+      .o_needs_sq(needs_sq_nokill)
   );
+  // 19 class bits (rs_type is 3).
+  assign {
+    has_int_dest_pre, has_fp_dest_pre, uses_int_rs1_pre, uses_int_rs2_pre, uses_fp_rs1_pre,
+    uses_fp_rs2_pre, uses_fp_rs3_pre, rs_type_pre, is_int_store_pre, is_branch_or_jump_pre,
+    is_fence_pre, is_fence_i_pre, is_sfence_vma_pre, is_csr_imm_pre, has_fp_flags_pre,
+    needs_lq_pre, needs_sq_pre
+  } = {
+    has_int_dest_nokill, has_fp_dest_nokill, uses_int_rs1_nokill, uses_int_rs2_nokill,
+    uses_fp_rs1_nokill, uses_fp_rs2_nokill, uses_fp_rs3_nokill, rs_type_nokill,
+    is_int_store_nokill, is_branch_or_jump_nokill, is_fence_nokill, is_fence_i_nokill,
+    is_sfence_vma_nokill, is_csr_imm_nokill, has_fp_flags_nokill, needs_lq_nokill, needs_sq_nokill
+  } & {19{!id_kill}};
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {
+              i_from_pd_to_id,
+              i_mstatus_fs_off,
+              i_mstatus_vs_off,
+              i_cbo_zero_illegal,
+              i_cbo_cf_illegal,
+              i_cbo_inval_illegal,
+              i_wrs_nto_illegal
+            }
+        )) begin
+      p_kill_matches_legality : assert (id_kill == (is_illegal_instruction || is_fetch_fault));
+    end
+  end
+`endif
 
   // ===========================================================================
   // Pipeline Register
@@ -618,7 +700,7 @@ module id_stage #(
   // Slot-2: Decoders + FP Detect + Pipeline Register
   // ===========================================================================
   // Slot 2 uses the same decode and NOP handling, with BTB/RAS metadata
-  // from IF and no PD redirect override.
+  // from IF updated by any slot-2 PD redirect override.
 
   riscv_pkg::instr_t               instruction_2;
   riscv_pkg::instr_op_e            instruction_operation_2;
@@ -744,10 +826,12 @@ module id_stage #(
   logic is_fp_instruction_direct_2;
 
   assign is_fp_load_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_LOAD_FP) &&
-                               ((instruction_2.funct3 == 3'b010) ||
+                               ((instruction_2.funct3 == 3'b001) ||
+                                (instruction_2.funct3 == 3'b010) ||
                                 (instruction_2.funct3 == 3'b011));
   assign is_fp_store_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_STORE_FP) &&
-                                ((instruction_2.funct3 == 3'b010) ||
+                                ((instruction_2.funct3 == 3'b001) ||
+                                 (instruction_2.funct3 == 3'b010) ||
                                  (instruction_2.funct3 == 3'b011));
   assign is_fp_compute_direct_2 = instruction_2.opcode == riscv_pkg::OPC_OP_FP;
   assign is_fp_fma_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_FMADD) |
@@ -800,29 +884,89 @@ module id_stage #(
   logic is_csr_imm_pre_2;
   logic has_fp_flags_pre_2;
 
+  // Slot 2 applies the same one kill for the class fields: the illegal and
+  // fetch-fault terms meet the classification last, as an AND-NOT. The classifier's neutral
+  // class is all zeros (RS_INT is 0), so the class equals the unkilled class
+  // with every bit cleared by the kill. The non-decoder terms form beside
+  // the decoder from the fetched instruction (csr_gated_illegal), so the
+  // decoder's illegal flag passes one OR before the kill.
+  (* keep = "true" *) logic id_kill_early_2, id_kill_2;
+  assign id_kill_early_2 = i_from_pd_to_id_2.illegal_instruction | is_fetch_fault_2 |
+      (!i_from_pd_to_id_2.inject_nop && csr_gated_illegal(
+      i_from_pd_to_id_2.instruction
+  ));
+  assign id_kill_2 = id_kill_early_2 | decoder_illegal_2;
+  logic has_int_dest_nokill_2;
+  logic has_fp_dest_nokill_2;
+  logic uses_int_rs1_nokill_2;
+  logic uses_int_rs2_nokill_2;
+  logic uses_fp_rs1_nokill_2;
+  logic uses_fp_rs2_nokill_2;
+  logic uses_fp_rs3_nokill_2;
+  logic [2:0] rs_type_nokill_2;
+  logic is_int_store_nokill_2;
+  logic is_branch_or_jump_nokill_2;
+  logic is_fence_nokill_2;
+  logic is_fence_i_nokill_2;
+  logic is_sfence_vma_nokill_2;
+  logic is_csr_imm_nokill_2;
+  logic has_fp_flags_nokill_2;
+  logic needs_lq_nokill_2;
+  logic needs_sq_nokill_2;
   instr_operand_classifier operand_classifier_2 (
       .i_instr(i_from_pd_to_id_2.instruction),
       .i_inject_nop(i_from_pd_to_id_2.inject_nop),
-      .i_illegal(is_illegal_instruction_2),
-      .i_fetch_fault(is_fetch_fault_2),
-      .o_has_int_dest(has_int_dest_pre_2),
-      .o_has_fp_dest(has_fp_dest_pre_2),
-      .o_uses_int_rs1(uses_int_rs1_pre_2),
-      .o_uses_int_rs2(uses_int_rs2_pre_2),
-      .o_uses_fp_rs1(uses_fp_rs1_pre_2),
-      .o_uses_fp_rs2(uses_fp_rs2_pre_2),
-      .o_uses_fp_rs3(uses_fp_rs3_pre_2),
-      .o_rs_type(rs_type_pre_2),
-      .o_is_int_store(is_int_store_pre_2),
-      .o_is_branch_or_jump(is_branch_or_jump_pre_2),
-      .o_is_fence(is_fence_pre_2),
-      .o_is_fence_i(is_fence_i_pre_2),
-      .o_is_sfence_vma(is_sfence_vma_pre_2),
-      .o_is_csr_imm(is_csr_imm_pre_2),
-      .o_has_fp_flags(has_fp_flags_pre_2),
-      .o_needs_lq(needs_lq_pre_2),
-      .o_needs_sq(needs_sq_pre_2)
+      .i_illegal(1'b0),
+      .i_fetch_fault(1'b0),
+      .o_has_int_dest(has_int_dest_nokill_2),
+      .o_has_fp_dest(has_fp_dest_nokill_2),
+      .o_uses_int_rs1(uses_int_rs1_nokill_2),
+      .o_uses_int_rs2(uses_int_rs2_nokill_2),
+      .o_uses_fp_rs1(uses_fp_rs1_nokill_2),
+      .o_uses_fp_rs2(uses_fp_rs2_nokill_2),
+      .o_uses_fp_rs3(uses_fp_rs3_nokill_2),
+      .o_rs_type(rs_type_nokill_2),
+      .o_is_int_store(is_int_store_nokill_2),
+      .o_is_branch_or_jump(is_branch_or_jump_nokill_2),
+      .o_is_fence(is_fence_nokill_2),
+      .o_is_fence_i(is_fence_i_nokill_2),
+      .o_is_sfence_vma(is_sfence_vma_nokill_2),
+      .o_is_csr_imm(is_csr_imm_nokill_2),
+      .o_has_fp_flags(has_fp_flags_nokill_2),
+      .o_needs_lq(needs_lq_nokill_2),
+      .o_needs_sq(needs_sq_nokill_2)
   );
+  // 19 class bits (rs_type is 3).
+  assign {
+    has_int_dest_pre_2, has_fp_dest_pre_2, uses_int_rs1_pre_2, uses_int_rs2_pre_2,
+    uses_fp_rs1_pre_2, uses_fp_rs2_pre_2, uses_fp_rs3_pre_2, rs_type_pre_2, is_int_store_pre_2,
+    is_branch_or_jump_pre_2, is_fence_pre_2, is_fence_i_pre_2, is_sfence_vma_pre_2,
+    is_csr_imm_pre_2, has_fp_flags_pre_2, needs_lq_pre_2, needs_sq_pre_2
+  } = {
+    has_int_dest_nokill_2, has_fp_dest_nokill_2, uses_int_rs1_nokill_2, uses_int_rs2_nokill_2,
+    uses_fp_rs1_nokill_2, uses_fp_rs2_nokill_2, uses_fp_rs3_nokill_2, rs_type_nokill_2,
+    is_int_store_nokill_2, is_branch_or_jump_nokill_2, is_fence_nokill_2, is_fence_i_nokill_2,
+    is_sfence_vma_nokill_2, is_csr_imm_nokill_2, has_fp_flags_nokill_2, needs_lq_nokill_2,
+    needs_sq_nokill_2
+  } & {19{!id_kill_2}};
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {
+              i_from_pd_to_id_2,
+              i_mstatus_fs_off,
+              i_mstatus_vs_off,
+              i_cbo_zero_illegal,
+              i_cbo_cf_illegal,
+              i_cbo_inval_illegal,
+              i_wrs_nto_illegal
+            }
+        )) begin
+      p_kill_2_matches_legality :
+      assert (id_kill_2 == (is_illegal_instruction_2 || is_fetch_fault_2));
+    end
+  end
+`endif
 
 
   // Slot-2 Pipeline Register

@@ -282,7 +282,9 @@ module dmmu (
     end
 
     walk_fault = i_walk_resp.fault_kind;
-    if (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) begin
+    if (((i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) ||
+        ((i_walk_resp.fault_kind == riscv_pkg::DFAULT_ACCESS) &&
+         (i_walk_resp.pbmt != riscv_pkg::PbmtPma)))) begin
       if (!leaf_perm_ok(
               i_walk_resp.perm_r,
               i_walk_resp.perm_w,
@@ -329,9 +331,10 @@ module dmmu (
   //      page fault). A U page accessed from S needs SUM, and an S page
   //      accessed from U faults.
   //   4. A walk response for S1's VPN, matched by the VPN echo because the op
-  //      that asked may have been flushed and replaced. A clean leaf goes
-  //      through the same checks (and installs in the DTLB on the same edge),
-  //      and a refused walk resolves as its fault.
+  //      that asked may have been flushed and replaced. A leaf goes
+  //      through the same checks; a fault-free walk installs in the DTLB.
+  //      A no-alias NC/IO leaf checks permissions before its PMA refusal.
+  //      Other refused walks resolve as their faults.
   // Otherwise the op waits in S1 and asks for a walk (o_walk_req_valid).
   logic resolve_now;
   riscv_pkg::data_fault_kind_e resolve_fault;
@@ -966,7 +969,7 @@ module dmmu (
     // S2's split address rebuilds the resolution's address.
     p_resolve_addr_exact : assert (f_resolve_addr_ref == resolve_addr);
   end
-  // A clean walk leaf is checked with the live SUM, MXR and effective
+  // A walk leaf payload is checked with the live SUM, MXR and effective
   // privilege, never with state from the walk: SUM and MXR changes keep the
   // TLBs and the walk in flight, so no other check may cache them.
   always_comb begin
@@ -974,7 +977,8 @@ module dmmu (
     f_walk_perm_ref = (i_walk_resp.perm_u ? (i_eff_priv_u || i_sum) : !i_eff_priv_u) &&
         (s1_q.store_perms ? (i_walk_resp.perm_w && i_walk_resp.perm_d) :
                             (i_walk_resp.perm_r || (i_mxr && i_walk_resp.perm_x)));
-    if (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE)
+    if ((i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) ||
+        ((i_walk_resp.fault_kind == riscv_pkg::DFAULT_ACCESS) && (i_walk_resp.pbmt != 0)))
       p_walk_leaf_perm_live : assert ((walk_fault == riscv_pkg::DFAULT_PAGE) == !f_walk_perm_ref);
   end
 `endif

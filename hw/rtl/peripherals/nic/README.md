@@ -387,13 +387,78 @@ bits:
 | `0x070`, `0x078` | RX_BASE64, TX_BASE64 | Aligned 64-bit ring bases; accept only one complete eight-byte store in extended mode. Partial writes and high bits beyond `ADDR_WIDTH` are ignored |
 | `0x130`, `0x134`, `0x138` | PAUSE_HIGH_WATER, PAUSE_LOW_WATER, PAUSE_INTERVAL | Flow control high and low water thresholds in RX FIFO words (0 selects default relative to RX_FIFO_LIMIT) and pause duration. Same write rule as PAUSE_CTRL |
 | `0x080`–`0x127` | Counters | 64-bit counters in `nic_pkg` order: RX frames, bytes, filtered, truncated, descriptor errors, and aborts; TX descriptor completions (`tx_frames`), bytes, descriptor errors, and aborts; the MAC's RX overflow, bad frame, bad FCS, and PCS bad block, and TX drop and PCS bad block; GMII preamble discards and `rx_er` bursts (zero on 10GBASE-R); then PAUSE frames received, PAUSE frames sent (requests, refreshes and releases), and TX MAC clock cycles spent paused |
+| `0x140`–`0x1B7` | Receive diagnostics | Counters 21 through 35, in the order below |
+
+| Index | Offset | `ethtool -S` name | Meaning |
+| --- | --- | --- | --- |
+| 16 | `0x100` | `rx_gmii_preamble_drop` | Frames rejected while seeking the SFD, counted once on entering WAIT_END |
+| 17 | `0x108` | `rx_gmii_rx_er` | RX_ER bursts with RX_DV high while in DATA, after accepting the SFD |
+| 18 | `0x110` | `rx_pause_frames` | Received PAUSE frames |
+| 19 | `0x118` | `tx_pause_frames` | Transmitted PAUSE requests, refreshes and releases |
+| 20 | `0x120` | `tx_paused_cycles` | TX MAC clock cycles spent paused |
+| 21 | `0x140` | `rx_gmii_er_preamble` | RX_ER bursts with RX_DV high while seeking the SFD in IDLE or PREAMBLE |
+| 22 | `0x148` | `rx_gmii_er_carrier_ext` | RX_ER bursts with RX_DV low, including carrier extension and false carrier |
+| 23 | `0x150` | `rx_gmii_short_ifg` | RX_DV rising edges after fewer than 12 idle byte times since its preceding fall; includes gaps shortened legitimately by the receive path |
+| 24 | `0x158` | `rx_gmii_preamble_er_accepted` | Delimiters accepted after tolerating one errored 0x55 preamble byte; zero in production strict mode |
+| 25 | `0x160` | `rx_mac_overflow_no_desc` | MAC overflows while the synchronized RX descriptor-starved indication is high |
+| 26 | `0x168` | `pcs_sync_loss` | Falling edges of PCS status bit 1 |
+| 27 | `0x170` | `pcs_rudi_c` | Rising edges of PCS status bit 2 |
+| 28 | `0x178` | `pcs_rudi_invalid` | Rising edges of PCS status bit 4 |
+| 29 | `0x180` | `pcs_rxdisperr` | RX clock cycles with PCS status bit 5 high |
+| 30 | `0x188` | `pcs_rxnotintable` | RX clock cycles with PCS status bit 6 high |
+| 31 | `0x190` | `phy_rx_err_last` | Most recent receive-error sample from PHY management |
+| 32 | `0x198` | `phy_rx_err_sum` | Sum of receive-error samples |
+| 33 | `0x1A0` | `phy_fcs_last` | Reserved, reads zero; DP83867 exposes no FCS error count |
+| 34 | `0x1A8` | `phy_fcs_sum` | Reserved, reads zero; DP83867 exposes no FCS error count |
+| 35 | `0x1B0` | `phy_polls` | Completed PHY management samples accepted by the NIC |
+
+Counters 17 and 21 do not count RX_ER bursts while WAIT_END discards the rest of a
+frame rejected before its SFD. Counter 22 still counts RX_ER bursts with RX_DV low,
+including carrier extension and false carrier. A burst means a rising edge of the
+qualified RX_ER condition, sampled on enabled GMII byte cycles. These diagnostics
+describe received symbols; a short observed gap alone does not prove a sender fault.
+
+Counters are unsigned 64-bit values and wrap modulo 2^64. Reads do not clear them.
+MAC events cross as eight-bit Gray counts; fewer than 256 events must occur
+between core samples. A stopped core can lose complete wraps of those transport
+counts. This bound is separate from the acknowledged PHY sample transfer below.
+Core reset and CTRL.RESET clear the totals and last-sample registers. Absent registers
+read zero, so software can read the extended range on hardware that does not implement it.
+The GMII and PCS status-vector counters read zero on the 10G port; descriptor-starved overflow applies
+to both ports. That qualification is delayed by a core register and two RX synchronizer
+stages, so it describes the observed starvation interval, not the exact cause of each loss.
+
+The PHY management payload is `{toggle, FCS[15:0], RECR[15:0]}`. The source holds
+all fields until the NIC returns the toggle as an acknowledgement. The NIC synchronizes
+the toggle, captures the payload, and accumulates it on the following core clock.
+Source reset preserves the published payload and toggle and discards unfinished reads.
+Destination reset acknowledges observed transfers while discarding their data; a transfer
+first observed after reset is counted once. A stopped destination delays subsequent polls.
+The payload route must settle before the synchronized toggle permits capture.
+
+DP83867 management polls RECR (`0x0015`) and clears it with a dummy write after
+an acknowledged read. RECR saturates at 65535. Errors arriving between the read
+and clear, or while saturated, can be lost; `phy_rx_err_sum` is a sum of sampled
+intervals. An unanswered read preserves the last sample and does not increment
+`phy_polls`. The DP83867 exposes no FCS error count: `phy_fcs_last` and
+`phy_fcs_sum` retain their names and indices as reserved slots and read zero.
+Use the MAC's `rx_mac_bad_fcs` (counter 12, `0x0E0`) for received FCS errors.
+The 33-bit management bus keeps its layout and drives its FCS field to zero;
+`0x0139` is the SecureOn password low word and is not polled. See the
+[DP83867IS register map](https://www.ti.com/lit/ds/symlink/dp83867is.pdf).
 
 The TX engine counters track descriptor completions and their buffer bytes, including parameter
 descriptors in `tx_frames`. A scatter-gather frame uses several descriptors, and a segmented frame
 can produce several wire frames from one descriptor chain. These counters therefore differ from
 the Linux driver's packet counters. The GMII preamble counter counts a first byte other than
-`0x55` or SFD, a later preamble byte other than `0x55`, or `rx_er` in the preamble; the error
-counter counts each burst of consecutive `rx_er` symbols inside a frame.
+`0x55` or a clean SFD, a later preamble byte other than `0x55` or a clean SFD,
+or `rx_er` in the preamble. With `RX_PREAMBLE_ER_TOLERANT=1`, one errored
+`0x55` is accepted before a clean SFD; a second error or an errored SFD discards
+the frame. Clean shortened preambles, including an SFD as the first byte, are
+accepted in either mode. The production instances use strict mode (the parameter
+default, zero). The error counter counts each burst of consecutive `rx_er` symbols
+after the SFD. Recognizing a delimiter after a tolerated error increments
+`rx_gmii_preamble_er_accepted` even if a later frame error prevents delivery.
 
 **RX ingress FIFO and its limit.** Received frames cross to the core clock through an
 asynchronous FIFO of 68-bit words (up to 8 frame bytes each) that the SoC builds 8192 words
@@ -540,6 +605,9 @@ final scan.
 | `nic_pause_rx_wire` | Both XGMII starts, all termination lanes, enable gaps, CRC, length, header validation and partial-frame reset |
 | `nic_pause_gmii`, `nic_pause_10g` | Pause reception through blocked RX and MAC overflow, timer duration, generation, refresh, release, and publication of the interval with its completed-frame event |
 | `nic_rx_fifo_limit`, `nic_top_rx_fifo` | Runtime FIFO limits and the 8192-word configuration, including GMII receive diagnostic counters |
+| `nic_rx_preamble_er`, `nic_mac_gmii` | Strict and tolerant preamble symbol classes, shortened preambles, errored delimiters and recovery |
+| `nic_top_gmii_diag` | Diagnostic register offsets, event counts, PHY payload transfer and reset |
+| `vcu118_phy_mdio` | Management framing, receive-counter clearing, missing-PHY rejection and held transfers |
 | `nic_top` | Whole NIC with three clocks and raw loopback, AXI4-Lite register accesses with channel skew and response stalls, its AXI4 master against a reordering slave, and SLVERR on buffer reads and writes |
 | `nic_top_unrelated_clocks` | Independent TX and RX clocks with `RAW_LOOPBACK=0` |
 | `nic_loopback`, `nic_echo` | Full-system software tests in both memory tiers |
@@ -552,5 +620,10 @@ counts; displayed Gb/s values use the fixed reference frequency printed in the o
 Run with `./scripts/frost.py cocotb <target>`. The
 [NIC benches](../../../../verif/cocotb_tests/nic/) contain the detailed cases.
 The `async_fifo` formal target checks bounded ordering and occupancy under
-unrelated clocks. Linux driver testing uses `frost_nettest`; see the
+unrelated clocks; `nic_dma_front` and `nic_irq` check the DMA front end and
+interrupt moderation and mask non-interference, and `cdc_mailbox` checks the
+two-phase CDC mailbox primitive under `cdc_reset_pair` (`nic_mac_wrap`'s
+`nic_domain_reset` coupling is outside that harness; see the
+[formal guide](../../../../formal/README.md) for proof scope and reset-model
+limits). Linux driver testing uses `frost_nettest`; see the
 [driver guide](../../../../linux/frost-net10g/README.md).

@@ -830,6 +830,9 @@ puts "=========================================="
 if {$step eq "synth"} {
     # Synthesis
     set_param general.maxThreads $number_of_parallel_jobs
+    # Remove any project directory left by an interrupted or preserved synthesis
+    # step so create_ip_run starts from a clean project without cached IP outputs.
+    file delete -force $work_directory/vivado_proj
     create_project -part $fpga_part_number -force tmp_proj $work_directory/vivado_proj
     set_property IP_OUTPUT_REPO $work_directory/vivado_proj/ip_cache [current_project]
 
@@ -859,7 +862,32 @@ if {$step eq "synth"} {
     }
 
     generate_target all [get_ips]
-    synth_ip [get_ips]
+    # Project mode has no synth_ip (CRITICAL WARNING Vivado 12-5447). Each IP gets its out-of-context
+    # run instead (create_ip_run, launch_runs, wait_on_run); the run leaves the IP's synthesized
+    # checkpoint beside the IP, which synth_design links below.
+    set ip_synth_runs [list]
+    foreach ip_core [get_ips] {
+        set ip_core_name [get_property NAME $ip_core]
+        set ip_core_xci [get_files -all ${ip_core_name}.xci]
+        set ip_synth_run ${ip_core_name}_synth_1
+        if {[llength [get_runs -quiet $ip_synth_run]] == 0} {
+            create_ip_run $ip_core_xci
+        }
+        if {[llength [get_runs -quiet $ip_synth_run]] != 1} {
+            error "IP synthesis run $ip_synth_run was not created"
+        }
+        lappend ip_synth_runs $ip_synth_run
+    }
+    if {[llength $ip_synth_runs]} {
+        launch_runs $ip_synth_runs -jobs $number_of_parallel_jobs
+        foreach ip_synth_run $ip_synth_runs {
+            wait_on_run $ip_synth_run
+            if {[get_property PROGRESS [get_runs $ip_synth_run]] ne "100%" ||
+                [get_property STATUS [get_runs $ip_synth_run]] ne "synth_design Complete!"} {
+                error "IP synthesis run $ip_synth_run did not complete: [get_property STATUS [get_runs $ip_synth_run]]"
+            }
+        }
+    }
 
     if {$board_has_ddr} {
         # The board BD script builds its memory controller, SmartConnect, and
@@ -867,7 +895,7 @@ if {$step eq "synth"} {
         source [file join [file dirname [info script]] ${board_name}_ddr_bd.tcl]
         set create_ddr_bd_proc create_${board_name}_ddr_bd
         $create_ddr_bd_proc
-        # Synthesize BD children globally; this flow never creates OOC IP runs.
+        # Synthesize BD children globally without out-of-context runs for the block design.
         set_property synth_checkpoint_mode None [get_files ddr_subsys.bd]
         generate_target all [get_files ddr_subsys.bd]
         set ddr_subsys_wrapper [make_wrapper -files [get_files ddr_subsys.bd] -top]
@@ -964,9 +992,11 @@ if {$step eq "synth"} {
     # A name used before its declaration becomes an implicit net. Verilator
     # binds the later declaration, but inside a generate block Vivado gives the
     # use its own net, so either the use or the declaration is left undriven.
-    # Top-level synthesis rejects Vivado's implicit-net message (Synth 8-11241)
-    # and generated primitive inputs on an undriven net (Synth 8-605).
+    # Top-level synthesis rejects implicit nets (Synth 8-11241), names used
+    # before their declarations (Synth 8-6901), and generated primitive inputs
+    # on an undriven net (Synth 8-605). Vendor IP runs finish before these guards.
     set_msg_config -id {Synth 8-11241} -new_severity ERROR
+    set_msg_config -id {Synth 8-6901} -new_severity ERROR
     set_msg_config -id {Synth 8-605} -new_severity ERROR
     # Out-of-range indices can become don't-cares in synthesis even when
     # simulation truncates the index to the intended vector width.

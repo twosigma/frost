@@ -108,6 +108,9 @@ module instruction_aligner #(
     // Slot-2 illegal-RVC flag for the selected candidate (PD masks with
     // sel_nop; 0 when slot-2 is a native 32-bit instruction).
     output logic o_slot2_decomp_illegal,
+    // Slot-2 conditional-branch flag (o_effective_instr_2[6:0] == OPC_BRANCH),
+    // resolved per candidate before the position select.
+    output logic o_slot2_is_cond_branch,
     // Slot-2 is compressed (RVC).
     output logic o_is_compressed_2,
     // No live pair: slot 1 is control flow or serializing, or slot 2 is
@@ -706,6 +709,31 @@ module instruction_aligner #(
     endcase
   end
 
+  // Conditional-branch opcode check per start position, ahead of slot2_pos.
+  // Compressed candidates take bits [6:0] of their sideband RVC expansion;
+  // native candidates take bits [6:0] of their word (0 at NEXT_HI, where a
+  // native candidate is NOP).
+  logic slot2_cond_branch_cur_hi;
+  logic slot2_cond_branch_next_lo;
+  logic slot2_cond_branch_next_hi;
+  assign slot2_cond_branch_cur_hi = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi] ?
+      (aligned_current_sb[riscv_pkg::ImemSbRvcExtraHiLsb+:7] == riscv_pkg::OPC_BRANCH) :
+      (bram_current_word[22:16] == riscv_pkg::OPC_BRANCH);
+  assign slot2_cond_branch_next_lo = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo] ?
+      (aligned_next_sb[riscv_pkg::ImemSbRvcExtraLoLsb+:7] == riscv_pkg::OPC_BRANCH) :
+      (bram_next_word[6:0] == riscv_pkg::OPC_BRANCH);
+  assign slot2_cond_branch_next_hi = aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi] &&
+      (aligned_next_sb[riscv_pkg::ImemSbRvcExtraHiLsb+:7] == riscv_pkg::OPC_BRANCH);
+
+  always_comb begin
+    unique case (slot2_pos)
+      Slot2AtCurrentHi: o_slot2_is_cond_branch = slot2_cond_branch_cur_hi;
+      Slot2AtNextLo:    o_slot2_is_cond_branch = slot2_cond_branch_next_lo;
+      Slot2AtNextHi:    o_slot2_is_cond_branch = slot2_cond_branch_next_hi;
+      default:          o_slot2_is_cond_branch = 1'b0;
+    endcase
+  end
+
 `ifndef SYNTHESIS
   // Reference: select the RVC sideband field by slot2_pos, then choose it or
   // the selected instruction's own bits by o_is_compressed_2. Both forms read
@@ -714,6 +742,7 @@ module instruction_aligner #(
   logic [2:0] slot2_rvc_source_hot_legacy;
   logic [2:0] slot2_source_hot_legacy;
   logic slot2_candidate_compressed_selected;
+  logic slot2_cond_branch_legacy;
   always_comb begin
     unique case (slot2_pos)
       Slot2AtCurrentHi: slot2_rvc_source_hot_legacy = rvc_source_hot_instr_hi;
@@ -743,6 +772,7 @@ module instruction_aligner #(
       slot2_rvc_bits24_20_legacy : o_effective_instr_2[24:20];
   assign slot2_candidate_compressed_selected = o_is_compressed ?
       o_slot2_is_compressed_plus2_for_btb : o_slot2_is_compressed_plus4_for_btb;
+  assign slot2_cond_branch_legacy = o_effective_instr_2[6:0] == riscv_pkg::OPC_BRANCH;
 
   always_comb begin
     if (!$isunknown({o_source_hot_2, slot2_source_hot_legacy})) begin
@@ -750,6 +780,10 @@ module instruction_aligner #(
     end
     if (!$isunknown({o_bits24_20_2, slot2_bits24_20_legacy})) begin
       p_slot2_bits24_20_matches_legacy : assert (o_bits24_20_2 == slot2_bits24_20_legacy);
+    end
+    if (!$isunknown({o_slot2_is_cond_branch, slot2_cond_branch_legacy})) begin
+      p_slot2_cond_branch_matches_legacy :
+      assert (o_slot2_is_cond_branch == slot2_cond_branch_legacy);
     end
     if ((slot2_pos != Slot2InvalidPos) && !$isunknown(
             {o_is_compressed_2, slot2_candidate_compressed_selected}
@@ -788,7 +822,7 @@ module instruction_aligner #(
   logic slot2_bram_unsafe;
   assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped_slot2;
   // Slot 1 leads a pair only when its AllowsSlot2After bit is set: it is
-  // neither control flow nor a native serializing instruction (SYSTEM,
+  // neither control flow nor a native serializing instruction (SYSTEM except Zimop,
   // MISC-MEM, or AMO opcode). A CSR instruction broadcasts only its write
   // operand on the CDB; the value it reads reaches the register file through
   // the delayed writeback at commit, and younger instructions are held out of
@@ -1005,8 +1039,8 @@ module instruction_aligner #(
   //   1. native slot 1 is control flow or serializing (split by its
   //      NativeSerialize bit)
   //   2. compressed slot 1 is control flow
-  //   3. slot 2 cannot start a pair (Slot2StartValid = 0: a native SYSTEM,
-  //      MISC-MEM, AMO, or FP-compute instruction)
+  //   3. slot 2 cannot start a pair (Slot2StartValid = 0: a native SYSTEM
+  //      except Zimop, MISC-MEM, AMO, FP-compute, or vector instruction)
   //   4. a start-valid native slot 2 at NEXT_HI, which never pairs (a fixed
   //      limit, not a transient)
   //   5. transient: slot2_bram_unsafe

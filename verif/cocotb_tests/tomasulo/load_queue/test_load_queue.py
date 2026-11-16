@@ -1227,12 +1227,13 @@ async def test_misaligned_mmio_completes_without_device_read_during_drain(
 async def test_device_atomics_and_unserved_device_loads_fault_without_a_read(
     dut: Any,
 ) -> None:
-    """AMO and LR to a device window, and loads outside the windows, fault with no read.
+    """Device or alias atomics, and loads outside the windows, fault with no read.
 
     The device windows take loads but no atomics (AMO cause 7, LR cause 5), and
     a device-quadrant address outside them is unmapped (load cause 5). Each
     fault completes at the ROB head with its address as the trap value; a load
-    inside a window still reads the device.
+    inside a window reads the device. A PBMT alias permits an MMIO load but
+    rejects AMO and LR, and high address bits cannot alias the physical map.
     """
     from .lq_interface import AMOSWAP_W, LR_W
 
@@ -1240,6 +1241,10 @@ async def test_device_atomics_and_unserved_device_loads_fault_without_a_read(
     cases: list[tuple[str, int, bool, bool, int, int | None]] = [
         ("amo-mmio-window", 0x4000_101C, True, False, AMOSWAP_W, 7),
         ("lr-mmio-window", 0x4000_101C, False, True, LR_W, 5),
+        ("amo-pbmt-alias", 0xC000_101C, True, False, AMOSWAP_W, 7),
+        ("lr-pbmt-alias", 0xC000_101C, False, True, LR_W, 5),
+        ("load-pbmt-alias", 0xC000_101C, False, False, 0, None),
+        ("load-above-pbmt-alias", 0x1_C000_101C, False, False, 0, 5),
         ("amo-aplic-window", 0x4400_0004, True, False, AMOSWAP_W, 7),
         ("amo-unserved", 0x4011_8000, True, False, AMOSWAP_W, 7),
         ("load-unserved", 0x4011_8000, False, False, 0, 5),
@@ -5082,3 +5087,113 @@ async def test_cached_response_with_zero_block_does_not_fill_l0(dut: Any) -> Non
         result = await wait_for_fu_complete(dut_if)
         assert result.valid and result.tag == 1 and result.value == 0x1234_5678
         await accept_fu_complete(dut_if)
+
+
+@cocotb.test()
+async def test_flh_memory_and_l0_boxing(dut: Any) -> None:
+    """Each halfword lane is boxed on memory responses and warm L0 hits."""
+    dut_if, model = await setup(dut)
+    beat = 0xFE55_7C01_3C00_8000
+    for cached in (False, True):
+        for offset in (0, 2, 4, 6):
+            await dut_if.reset_dut()
+            model = LQModel()
+            address = (0x8000_7000 if cached else 0x7000) + offset
+            expected = (MASK64 ^ 0xFFFF) | ((beat >> (8 * offset)) & 0xFFFF)
+            await alloc_and_addr(
+                dut_if,
+                model,
+                rob_tag=1,
+                address=address,
+                is_fp=True,
+                size=MEM_SIZE_HALF,
+            )
+            dut_if.drive_sq_all_older_known(True)
+            dut_if.drive_sq_forward(match=False, can_forward=False)
+            request = await wait_for_mem_request(dut_if)
+            assert request["en"] and request["addr"] == address
+            await dut_if.step()
+            dut_if.drive_mem_response(beat, dword=True)
+            await dut_if.step()
+            dut_if.clear_mem_response()
+            result = await wait_for_fu_complete(dut_if)
+            assert result.valid and result.value == expected, (cached, offset, result)
+            await accept_fu_complete(dut_if)
+            if not cached:
+                await alloc_and_addr(
+                    dut_if,
+                    model,
+                    rob_tag=2,
+                    address=address,
+                    is_fp=True,
+                    size=MEM_SIZE_HALF,
+                )
+                dut_if.drive_sq_all_older_known(True)
+                result, fast = await complete_load_fast_path_or_memory(
+                    dut_if, model, mem_data=beat, expected_addr=address
+                )
+                assert fast and result.value == expected, (offset, result)
+                await accept_fu_complete(dut_if)
+
+
+@cocotb.test()
+async def test_half_forwarding_and_queued_boxing(dut: Any) -> None:
+    """Forwarded halfwords retain raw bits for FP and signed or unsigned loads."""
+    if not SQ_FORWARD_FAST_PATH:
+        return
+    dut_if, model = await setup(dut)
+    beat = 0xFE55_7C01_3C00_8000
+    for blocked in (False, True):
+        for offset in (0, 2, 4, 6):
+            for kind in ("fp", "signed", "unsigned"):
+                await dut_if.reset_dut()
+                model = LQModel()
+                if blocked:
+                    await alloc_and_addr(dut_if, model, rob_tag=0, address=0x6000)
+                    dut_if.drive_sq_all_older_known(True)
+                    dut_if.drive_sq_forward(match=False, can_forward=False)
+                    request = await wait_for_mem_request(dut_if)
+                    assert request["en"]
+                    await dut_if.step()
+                    dut_if.drive_mem_response(0x12345678)
+                    await dut_if.step()
+                    dut_if.clear_mem_response()
+                    held = await wait_for_fu_complete(dut_if)
+                    assert held.valid
+                await alloc_and_addr(
+                    dut_if,
+                    model,
+                    rob_tag=1,
+                    address=0x7000 + offset,
+                    is_fp=kind == "fp",
+                    size=MEM_SIZE_HALF,
+                    sign_ext=kind == "signed",
+                )
+                dut_if.drive_sq_all_older_known(True)
+                dut_if.drive_sq_forward(match=True, can_forward=True, data=beat)
+                check = await wait_for_sq_check(dut_if)
+                assert check["valid"]
+                for _ in range(8):
+                    assert not dut_if.read_mem_request()["en"]
+                    await dut_if.step()
+                if blocked:
+                    assert dut_if.read_fu_complete() == held
+                    await accept_fu_complete(dut_if)
+                result = await wait_for_fu_complete(dut_if)
+                raw = (beat >> (8 * offset)) & 0xFFFF
+                expected = (
+                    (MASK64 ^ 0xFFFF) | raw
+                    if kind == "fp"
+                    else sign_extend_to_xlen(raw, 16)
+                    if kind == "signed"
+                    else raw
+                )
+                assert result.valid and result.tag == 1 and result.value == expected, (
+                    blocked,
+                    offset,
+                    kind,
+                    result,
+                    expected,
+                )
+                dut_if.clear_sq_forward()
+                await accept_fu_complete(dut_if)

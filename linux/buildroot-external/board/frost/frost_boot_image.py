@@ -78,18 +78,17 @@ LINUX_IMAGE_MAGIC = b"RISCV\x00\x00\x00"  # header offset 0x30
 LINUX_IMAGE_SIZE_OFFSET = 0x10  # u64 image_size (text + bss)
 
 # What the DT advertises: the ISA the core implements, in the spelling both
-# OpenSBI and Linux parse. Single-letter imafdc and zba/zbb/zbs match misa in
-# csr_file.sv; beyond FROST_MARCH_EXTENSIONS in sw/common/common.mk, the
-# unprivileged entries include zicbom, zkt, and the memory and block-size
-# capability names (zic64b, ziccamoa, ziccif, zicclsm, ziccrse, za64rs).
+# OpenSBI and Linux parse. FROST_MARCH_EXTENSIONS in sw/common/common.mk
+# selects a subset for bare-metal applications; misa lists single-letter
+# extensions in csr_file.sv.
 # linux/README.md documents the privileged extensions too.
 ISA_BASE = "rv64i"
 ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
-    "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
+    "zfa", "zfhmin", "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
     "zicclsm", "ziccrse", "zicntr", "zicond", "zicsr", "zifencei",
-    "zihintpause", "zihpm", "za64rs", "zawrs", "zba", "zbb",
-    "zbc", "zbkb", "zbkc", "zbs", "zkt", "smaia",
+    "zihintntl", "zihintpause", "zihpm", "zimop", "za64rs", "zawrs", "zba", "zbb",
+    "zbc", "zbkb", "zbkc", "zbs", "zcb", "zcmop", "zkt", "smaia",
     "ssaia", "ssccptr", "sscofpmf", "sscounterenw", "ssnpm", "sstc", "sstvala",
     "sstvecd", "svade", "svnapot", "svpbmt", "svvptc",
 )  # fmt: skip
@@ -102,7 +101,7 @@ CBOZ_BLOCK_BYTES = 64
 # Zicbop block size: the prefetch hints name the same 64-byte block (they
 # execute as no-ops).
 CBOP_BLOCK_BYTES = 64
-ISA_STRING = "rv64imafdc_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintpause_zihpm_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_svade_svnapot_svpbmt_svvptc"
+ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_svade_svnapot_svpbmt_svvptc"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
@@ -131,6 +130,12 @@ IMSIC_M_BASE = 0x4800_0000
 IMSIC_S_BASE = 0x4810_0000
 IMSIC_FILE_SIZE = 0x1000
 IMSIC_NUM_IDS = 63
+# SYSRESET: a 32-bit store of SYSRESET_VALUE (the sifive_test reset code)
+# resets the core domain and restarts the boot ROM. OpenSBI serves SBI
+# system reset from it through syscon-reboot (soc_top.sv SysResetAddr).
+SYSRESET_BASE = 0x4002_F000
+SYSRESET_SIZE = 0x1000
+SYSRESET_VALUE = 0x7777
 # The DMA test engine's register window; no Linux driver binds to it, the
 # node only records the device and its APLIC source.
 DMA_ENGINE_BASE = 0x4002_0000
@@ -367,20 +372,30 @@ def gen_dts(
 \t\t * filter by privilege; the fixed counters 0 and 2 do neither.
 \t\t * Raw translation events: 16 = page-walker busy cycles (counter 8),
 \t\t * 17 = SFENCE.VMA TLB invalidates (counter 7), 18 = CSR-requested TLB
-\t\t * invalidates (counter 4). They sit above the counter numbers, so no
-\t\t * raw selector names two events. */
+\t\t * invalidates (counter 4). Raw cache refill events: 19 = L1I refills
+\t\t * (counter 3), 20 = L2 demand misses, the home's demand line reads
+\t\t * from memory (counter 6), 21 = L2 prefetch misses (counter 5); the
+\t\t * generic L1-icache-load-misses, LLC-load-misses and
+\t\t * LLC-prefetch-misses map to them. They sit above the counter
+\t\t * numbers, so no raw selector names two events. */
 \t\triscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000200>,
 \t\t\t\t      <0x00000002 0x00000002 0x00000400>,
 \t\t\t\t      <0x00000004 0x00000004 0x00000080>,
 \t\t\t\t      <0x00000005 0x00000005 0x00000008>,
 \t\t\t\t      <0x00000006 0x00000006 0x00000010>,
-\t\t\t\t      <0x00010021 0x00010021 0x00000020>;
+\t\t\t\t      <0x00010021 0x00010021 0x00000020>,
+\t\t\t\t      <0x00010009 0x00010009 0x00000008>,
+\t\t\t\t      <0x00010011 0x00010011 0x00000040>,
+\t\t\t\t      <0x00010015 0x00010015 0x00000020>;
 \t\triscv,event-to-mhpmevent = <0x00000001 0x00000000 0x00000009>,
 \t\t\t\t    <0x00000002 0x00000000 0x0000000a>,
 \t\t\t\t    <0x00000004 0x00000000 0x00000007>,
 \t\t\t\t    <0x00000005 0x00000000 0x00000003>,
 \t\t\t\t    <0x00000006 0x00000000 0x00000004>,
-\t\t\t\t    <0x00010021 0x00000000 0x00000005>;
+\t\t\t\t    <0x00010021 0x00000000 0x00000005>,
+\t\t\t\t    <0x00010009 0x00000000 0x00000013>,
+\t\t\t\t    <0x00010011 0x00000000 0x00000014>,
+\t\t\t\t    <0x00010015 0x00000000 0x00000015>;
 \t\triscv,raw-event-to-mhpmcounters = <0x0 0x3 0xffffffff 0xffffffff 0x08>,
 \t\t\t\t        <0x0 0x4 0xffffffff 0xffffffff 0x10>,
 \t\t\t\t        <0x0 0x5 0xffffffff 0xffffffff 0x20>,
@@ -391,7 +406,10 @@ def gen_dts(
 \t\t\t\t        <0x0 0xa 0xffffffff 0xffffffff 0x400>,
 \t\t\t\t        <0x0 0x10 0xffffffff 0xffffffff 0x100>,
 \t\t\t\t        <0x0 0x11 0xffffffff 0xffffffff 0x80>,
-\t\t\t\t        <0x0 0x12 0xffffffff 0xffffffff 0x10>;
+\t\t\t\t        <0x0 0x12 0xffffffff 0xffffffff 0x10>,
+\t\t\t\t        <0x0 0x13 0xffffffff 0xffffffff 0x08>,
+\t\t\t\t        <0x0 0x14 0xffffffff 0xffffffff 0x40>,
+\t\t\t\t        <0x0 0x15 0xffffffff 0xffffffff 0x20>;
 \t}};
 
 \tsoc@0 {{
@@ -463,6 +481,18 @@ def gen_dts(
 \t\t\treg = <0x{DMA_ENGINE_BASE:08x} 0x{DMA_ENGINE_SIZE:x}>;
 \t\t\tinterrupt-parent = <&aplic_s>;
 \t\t\tinterrupts = <{DMA_ENGINE_APLIC_SOURCE} 4>;
+\t\t}};
+\t\tsysreset: syscon@{SYSRESET_BASE:x} {{
+\t\t\tcompatible = "frost,sysreset", "syscon";
+\t\t\treg = <0x{SYSRESET_BASE:08x} 0x{SYSRESET_SIZE:x}>;
+\t\t\treg-io-width = <4>;
+
+\t\t\treboot {{
+\t\t\t\tcompatible = "syscon-reboot";
+\t\t\t\tregmap = <&sysreset>;
+\t\t\t\toffset = <0x0>;
+\t\t\t\tvalue = <0x{SYSRESET_VALUE:x}>;
+\t\t\t}};
 \t\t}};
 \t\tmemory-controller@{MEMORY_ERROR_BASE:x} {{
 \t\t\tcompatible = "frost,memory-error";

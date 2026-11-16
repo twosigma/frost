@@ -597,3 +597,105 @@ async def pbmt_alias_core_reset(dut: Any) -> None:
     # A completed abort must leave the local bus able to serve another slave.
     await b.write(0x1000, 0x1122334455667788, size=3)
     assert await b.read(0x1000, size=3) == 0x1122334455667788
+
+
+@cocotb.test()
+async def pbmt_alias_accepted_reset_and_recovery(dut: Any) -> None:
+    """Reset an accepted coherent transfer, then reuse the alias for read/write."""
+    b = Bench(dut)
+    await b.reset()
+    for write in (False, True):
+        requests: list[tuple[int, int, int]] = []
+        replies: list[int] = []
+        memory: dict[int, int] = {}
+        reply_enabled = False
+
+        async def serve() -> None:
+            pending: list[tuple[int, int, int]] = []
+            cycle = 0
+            while True:
+                await FallingEdge(b.clock)
+                cycle += 1
+                dut.i_coherent_req_ready.value = 1
+                dut.i_coherent_resp_valid.value = 0
+                if int(dut.o_cpu_rst.value):
+                    # The home and its ingress reset with the core. An old
+                    # completion cannot survive that reset and reuse its tag.
+                    pending.clear()
+                elif reply_enabled and pending and pending[0][0] <= cycle:
+                    _, ident, value = pending.pop(0)
+                    dut.i_coherent_resp_id.value = ident
+                    dut.i_coherent_resp_rdata.value = value
+                    dut.i_coherent_resp_error.value = 0
+                    dut.i_coherent_resp_valid.value = 1
+                    replies.append(ident)
+                await RisingEdge(b.clock)
+                if int(dut.o_coherent_req_valid.value) and int(
+                    dut.i_coherent_req_ready.value
+                ):
+                    address = int(dut.o_coherent_req_addr.value)
+                    is_write = int(dut.o_coherent_req_write.value)
+                    ident = int(dut.o_coherent_req_id.value)
+                    requests.append((is_write, address, ident))
+                    assert address == 0x81100000
+                    if is_write:
+                        data = int(dut.o_coherent_req_wdata.value)
+                        strobe = int(dut.o_coherent_req_wstrb.value)
+                        assert strobe == 0xFF << 24
+                        for lane in range(32):
+                            if strobe & (1 << lane):
+                                memory[address + lane] = (data >> (8 * lane)) & 255
+                    value = sum(
+                        memory.get(address + lane, 0) << (8 * lane)
+                        for lane in range(32)
+                    )
+                    pending.append((cycle + 3, ident, value))
+
+        responder = cocotb.start_soon(serve())
+        try:
+            await b.address("aw" if write else "ar", 0xC1100018, 3)
+            if write:
+                lane = 0x18 & (b.bus_bytes - 1)
+                for _ in range(50):
+                    sample = await b.step(
+                        axi_wvalid=1,
+                        axi_wdata=0xBAD << (8 * lane),
+                        axi_wstrb=0xFF << lane,
+                    )
+                    if sample["wready"]:
+                        dut.i_axi_wvalid.value = 0
+                        break
+                else:
+                    raise AssertionError("Alias write data was not accepted")
+            for _ in range(200):
+                if requests:
+                    break
+                await b.step()
+            else:
+                raise AssertionError("Alias transfer did not enter the coherent home")
+            assert len(requests) == 1 and requests[0][0] == write
+            assert int(dut.local_state_q.value) == 6
+            assert not replies
+            # Unlike the earlier reset case, READY has accepted the request.
+            # Keep its response withheld while the core and home reset; the
+            # CPU-facing AXI bus remains live and receives the registered abort.
+            for _ in range(20):
+                await b.step(rst=1)
+            await b.step(rst=0)
+            sample = await b.response("b" if write else "r", 0, None, False)
+            if not write:
+                assert sample["rdata"] == 0
+            assert not replies and len(requests) == 1
+            assert not int(dut.o_cpu_rst.value)
+            reply_enabled = True
+            await b.write(0xC1100018, 0x123456789ABCDEF0, size=3)
+            assert await b.read(0xC1100018, size=3) == 0x123456789ABCDEF0
+            assert len(requests) == 3 and len(replies) == 2
+            dut._log.info(
+                "PBMT_ACCEPTED_RESET write=%s accepted=%d replies=%d recovery=PASS",
+                write,
+                len(requests),
+                len(replies),
+            )
+        finally:
+            responder.cancel()

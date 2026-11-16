@@ -7,7 +7,7 @@ SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
 and Sv39 virtual memory. The AMD Alveo X3522PV configuration targets 322 MHz
 and boots Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
 filesystem over NFS through its own 10 Gigabit Ethernet NIC. It runs
-[CoreMark](sw/apps/coremark/README.md) at 4.58 CoreMark/MHz.
+[CoreMark](sw/apps/coremark/README.md) at 4.77 CoreMark/MHz.
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
 
@@ -102,6 +102,40 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 ./scripts/frost.py shell
 ```
 
+## Try it without an FPGA
+
+A standalone C++ Verilator runner simulates the `frost` SystemVerilog RTL with
+live UART output and no Python in the clock loop. On every CI run, `test-native`
+compares live unseeded cocotb runs of BRAM and DDR `hello_world` and BRAM
+CoreMark with the native runner on cycles, CoreMark ticks, and UART bytes
+alongside each program's pass, CRC, and summary conditions; the full comparison
+mode (`tests/test_native_sim.py --all`) adds DDR CoreMark and checkpoint save
+and restore against live unseeded cocotb runs:
+
+```bash
+./scripts/frost.py native hello_world
+./scripts/frost.py native coremark --threads 4
+./scripts/frost.py native coremark --mem-config ddr --threads 4
+```
+
+With the `frost` development image built first (`docker build -t frost .`, see
+[Quick Start](#quick-start)) and the CoreMark submodule initialized,
+`demo/Dockerfile` packages baseline x86-64 simulator binaries (`1`, `4`, and `8`
+threads) and prebuilt `hello_world` and CoreMark images into a small standalone
+runtime container (`frost-demo:local`), which CI builds and runs in
+`test-demo-image`:
+
+```bash
+git submodule update --init --recursive sw/apps/coremark/coremark
+docker build -f demo/Dockerfile -t frost-demo:local .
+docker run --rm -it frost-demo:local
+```
+
+Every clock cycle evaluates the hardware model in software; RTL simulation is
+far slower than hardware. See [hw/sim/native/README.md](hw/sim/native/README.md)
+for what runs, how it compares with the cocotb flow, what the summary figures
+mean, and how to run other applications.
+
 ## Running on the FPGA
 
 FPGA builds and board tools run natively on a host with Vivado 2025.2 and the
@@ -143,7 +177,11 @@ every supported extension and privilege mode.
 | **A**            | Atomic memory operations (LR/SC, AMO; word and doubleword) |
 | **F**            | Single-precision floating-point (32-bit)       |
 | **D**            | Double-precision floating-point (64-bit)       |
+| **Zfhmin**       | Half-precision loads, stores, moves and conversions to and from single and double precision |
+| **Zfa**          | Additional floating-point instructions: `fli`, `fminm`/`fmaxm`, `fround`/`froundnx`, `fcvtmod.w.d`, `fleq`/`fltq` |
 | **C**            | Compressed instructions (16-bit encodings) |
+| **Zcb**          | Compressed byte/halfword loads and stores, `c.zext.*`, `c.sext.*`, `c.not`, `c.mul`, expanded at instruction fill |
+| **Zcmop**        | Compressed may-be-operations `c.mop.n`, which write no register |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
@@ -154,6 +192,8 @@ every supported extension and privilege mode.
 | **Zbc**          | Carry-less multiplication (clmul, clmulh, clmulr) |
 | **Zbkc**         | Carry-less multiplication for crypto (clmul, clmulh) |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
+| **Zihintntl**    | Non-temporal locality hints (`ntl.*`, `c.ntl.*`), retired as no-ops |
+| **Zimop**        | May-be-operations `mop.r.n`/`mop.rr.n`, which write zero to rd |
 | **Zawrs**        | `wrs.nto`/`wrs.sto` retire at once; `wrs.nto` traps below M with `mstatus.TW` set |
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
 | **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks), ordered no-ops while every bus master is coherent; the device tree lists it with `riscv,cbom-block-size = <64>` |
@@ -162,11 +202,12 @@ every supported extension and privilege mode.
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
-| **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare); Linux offers it as Supm through `prctl(PR_SET_TAGGED_ADDR_CTRL)` |
+| **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit scalar U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare). Vector loads and stores do not execute; each element address must be masked after its address addition when they are implemented. |
+| **Supm**         | Scalar U-mode pointer masking supplied by Ssnpm when the execution environment enables it; the supplied Linux image does not expose the tagged-address ABI |
 | **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended; an instruction or data access, misaligned or page fault, a failed bus response included, writes the faulting virtual address |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
 | **Svnapot**      | 64 KiB NAPOT leaf PTEs (N = 1, PPN[3:0] = 1000 at level 0): each page translates with PPN[3:0] = VA[15:12] and fills the TLBs as a 4 KiB entry; every other N encoding is a page fault |
-| **Svpbmt**       | PTE bits 62:61 under `menvcfg.PBMTE`: NC and IO pages use the uncached path at the ROB head; DDR mappings require a configured alias into the coherent DMA port. AMO/LR/SC, `cbo.zero` and fetch on NC or IO pages are access faults |
+| **Svpbmt**       | PTE bits 62:61 under `menvcfg.PBMTE`: NC and IO loads use the uncached path at the ROB head; DDR mappings require a configured alias into the coherent DMA port. The VCU118's 2 GiB map has no alias, so NC/IO DDR mappings raise access faults; device mappings are unaffected. AMO/LR/SC, `cbo.zero` and fetch on NC or IO pages are access faults |
 | **Svvptc**       | A PTE changed from invalid to valid becomes visible to the walker without `sfence.vma` |
 | **Zic64b, Ziccif, Ziccrse, Ziccamoa, Zicclsm, Za64rs, Zkt, Ssccptr, Sstvecd, Sscounterenw** | RVA22 profile properties: 64-byte cache blocks, instruction fetch, LR/SC, AMOs and misaligned loads and stores in cached memory (in hardware on the X3, emulated by OpenSBI on the VCU118), reservation sets of at most 64 bytes, data-independent latency for the Zkt instructions, page-table walks of cached memory, direct-mode `stvec`, and a writable `scounteren` bit for each counter that is not read-only zero |
 | **User Mode**    | U-mode privilege and system calls |
@@ -223,7 +264,7 @@ part works.
 | Board | FPGA | Ethernet | Cache hierarchy → main memory |
 |---|---|---|---|
 | Alveo X3522PV | UltraScale+ (xcux35) | 10GBASE-R | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
-| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 1 Gb/s RJ-45 and 10GBASE-R on QSFP1 lane 0 | 128 KiB L1D + 16 KiB L1I → 4 MiB URAM L2 → 2 GiB DDR4 |
+| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 1 Gb/s RJ-45 and 10GBASE-R on QSFP1 lane 0 | 128 KiB L1D + 32 KiB L1I → 4 MiB URAM L2 → 2 GiB DDR4 |
 
 See the [board guide](boards/README.md) for pinouts, clocking, and adding a board.
 
@@ -301,6 +342,8 @@ For native builds outside the container, initialize the submodules first with
 | Directory | Contents |
 |-----------|----------|
 | [hw/rtl/](hw/rtl/README.md) | CPU, caches, peripherals, and reusable hardware blocks |
+| [hw/sim/native/](hw/sim/native/README.md) | Standalone C++ Verilator runner for the SoC RTL |
+| [demo/](demo/Dockerfile) | Runtime Docker image for running `hello_world` and CoreMark on the RTL |
 | [sw/](sw/README.md) | Bare-metal libraries, applications, and benchmarks |
 | [linux/](linux/README.md) | Linux boot images, firmware, and NIC driver |
 | [fpga/](fpga/README.md) | FPGA build, programming, and software-loading tools |

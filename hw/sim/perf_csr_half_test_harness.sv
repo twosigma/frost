@@ -43,6 +43,8 @@ module perf_csr_half_test_harness #(
     input logic [3:0] i_hpm_events,
     // {SFENCE.VMA invalidate start, walker busy} for selectors 17 and 16.
     input logic [1:0] i_hpm_translation_events,
+    // {L2 prefetch miss, L2 demand miss, L1I refill} for selectors 21..19.
+    input logic [2:0] i_hpm_refill_events,
     input logic [1:0] i_hpm_instret,
     input logic i_mret,
     input logic i_sret,
@@ -191,6 +193,9 @@ module perf_csr_half_test_harness #(
         .i_sq_full_stall(i_hpm_events[3]),
         .i_walk_busy(i_hpm_translation_events[0]),
         .i_sfence_tlb_flush(i_hpm_translation_events[1]),
+        .i_l1i_refill(i_hpm_refill_events[0]),
+        .i_l2_demand_miss(i_hpm_refill_events[1]),
+        .i_l2_prefetch_miss(i_hpm_refill_events[2]),
         .i_interrupts('0),
         .i_mtime(i_mtime),
         .i_seip_line('0),

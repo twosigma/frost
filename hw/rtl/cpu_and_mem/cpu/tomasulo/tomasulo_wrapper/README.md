@@ -316,6 +316,12 @@ data MMU's opportunistic lookup and is dropped unless that lookup hits and
 passes every store check; MEM_RS issue translates every store anyway and
 reports any fault.
 
+The pipeline supplies a separate address and device flag for each SQ port.
+Their select terms include the current translation enable: the copies equal
+the early packet fields when translation is inactive and zero when it is
+active. The wrapper combines them with the translation-qualified MMU result.
+The MMU virtual address and its two-cycle packet delay use the original fields.
+
 ## Store-conditional resolution
 
 MEM_RS issues an SC like a store: its address and data go to the SQ. The SC

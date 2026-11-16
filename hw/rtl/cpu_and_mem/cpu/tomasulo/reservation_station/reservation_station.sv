@@ -76,8 +76,10 @@ module reservation_station #(
     // repair bypasses, as port 1 does. Requires HAS_SRC3=0. When disabled,
     // stage2 stores resident or repair values and masks for a later CDB mux.
     parameter bit CAPTURE_PRIMARY_EFFECTIVE_OPERANDS = 1'b0,
-    // INT only: duplicate stage2_rob_tag, with the same value and enable,
-    // for branch checkpoint and age compares, to reduce fanout.
+    // INT only: a second copy of the stage2 ROB tag for branch checkpoint and
+    // age compares, to reduce fanout. The copy loads only on issue_fire, while
+    // stage2_rob_tag also loads on idle i_fu_ready cycles, so the two are
+    // equal whenever stage2_valid is set.
     parameter bit BRANCH_PREDICATE_TAG_ANCHOR = 1'b0,
     parameter bit TRUST_DISPATCH_VALID = 1'b0,
     // Reserve entries when reporting dispatch capacity from the previous
@@ -104,6 +106,11 @@ module reservation_station #(
     // the divider or the vector-config unit holds one, or stage2 holds one.
     // Every issued one then finds its unit idle; multiplies can pass waiting
     // ones. Requires DUAL_ISSUE=0.
+    // This parameter also marks the station that feeds int_muldiv_shim, which
+    // decodes o_issue.op into its busy output without o_issue.valid. With it
+    // set, stage2_op keeps the issue_fire load (gen_stage2_op_issue_fire), so
+    // o_issue.op stays at the last issued op while stage 2 is empty. A
+    // station feeding that shim must set this parameter.
     parameter bit DIVIDE_ISSUE_GATE = 1'b0,
     // formal/reservation_station.sby uses free inputs and assumes dispatch
     // requirements. formal/tomasulo_wrapper.sby sets this to 0: its real
@@ -189,7 +196,8 @@ module reservation_station #(
     // predicates (BRANCH_PREDICATE_TAG_ANCHOR). Off, it aliases stage2_rob_tag.
     output logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] o_branch_predicate_tag,
     // Stage2 holds a JALR (o_issue.is_jalr without the issue packet), for
-    // logic that feeds i_fu_ready.
+    // logic that feeds i_fu_ready. It loads only on issue_fire, so while
+    // stage 2 is empty it keeps the last issued packet's bit.
     output logic                                                        o_issue_is_jalr,
     // Stage2 holds a packet (o_issue.valid without i_fu_ready), for logic that
     // feeds i_fu_ready or that applies it last.
@@ -1772,8 +1780,10 @@ module reservation_station #(
       logic [ReorderBufferTagWidth-1:0] stage2_branch_predicate_tag;
 
       always_ff @(posedge i_clk) begin
-        // stage2_rob_tag is held by the enclosing reset branch, so include
-        // i_rst_n here to preserve its exact effective clock enable.
+        // Loads only on issue_fire outside reset. stage2_rob_tag loads on
+        // every i_fu_ready cycle; both take primary_issue_tag at each issue
+        // and neither changes while stage 2 holds a packet without
+        // i_fu_ready, so they agree whenever stage2_valid is set.
         if (i_rst_n && issue_fire) stage2_branch_predicate_tag <= primary_issue_tag;
       end
 
@@ -1781,8 +1791,8 @@ module reservation_station #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-      // The tags have identical input and enable behavior but no reset;
-      // compare only while stage2_valid is set.
+      // Neither tag has a reset, and stage2_rob_tag also loads on idle
+      // i_fu_ready cycles, so compare only while stage2_valid is set.
       always_ff @(posedge i_clk) begin
         if (reset_seen_q && i_rst_n && stage2_valid) begin
           assert (stage2_branch_predicate_tag == stage2_rob_tag)
@@ -1813,7 +1823,9 @@ module reservation_station #(
       logic [ReorderBufferTagWidth-1:0] stage2_branch_payload_tag;
 
       always_ff @(posedge i_clk) begin
-        // Use stage2_rob_tag's effective enable, including reset qualification.
+        // Loads only on issue_fire outside reset, so it equals
+        // stage2_rob_tag whenever stage2_valid is set (see the predicate tag
+        // copy above).
         if (i_rst_n && issue_fire) stage2_branch_payload_tag <= primary_issue_tag;
       end
 
@@ -2368,8 +2380,8 @@ module reservation_station #(
             .i_write_data({payload_wr_data_2, payload_wr_data}),
             .o_read_data(reference_payload)
         );
-        // A random-start simulation begins with arbitrary RAM contents and
-        // registers, so the checks start after local reset.
+        // The local guard requires a sampled reset. System simulations also
+        // wait for the testbench's driven reset interval.
         logic second_payload_reset_seen_q = 1'b0;
         always_ff @(posedge i_clk) if (!i_rst_n) second_payload_reset_seen_q <= 1'b1;
         always @(posedge i_clk) begin
@@ -2658,6 +2670,27 @@ module reservation_station #(
           stage2b_valid <= 1'b0;
         end else if (issue_fire_2) begin
           stage2b_valid <= 1'b1;
+        end else if (stage2b_accept) begin
+          stage2b_valid <= 1'b0;
+        end
+      end
+
+      // Stage2b payload: no reset, loads on every cycle with i_fu_ready_2,
+      // read only while stage2b_valid is set (as for stage2 above).
+`ifdef RS_STAGE2_PAYLOAD_HAVOC
+      (* anyseq *) logic [$bits({
+          stage2b_rob_tag, stage2b_op, stage2b_src1_value, stage2b_src2_value,
+          stage2b_shift_amount, stage2b_src3_value, stage2b_imm, stage2b_jalr_imm,
+          stage2b_use_imm, stage2b_writes_cdb_hint, stage2b_rm, stage2b_predicted_taken,
+          stage2b_predicted_target_ok, stage2b_is_compressed, stage2b_is_fp_mem,
+          stage2b_mem_needs_lq, stage2b_mem_needs_sq, stage2b_mem_size, stage2b_mem_signed,
+          stage2b_csr_addr, stage2b_csr_imm, stage2b_has_checkpoint, stage2b_checkpoint_id,
+          stage2b_is_call, stage2b_is_return, stage2b_is_branch_class, stage2b_is_jal,
+          stage2b_is_jalr, stage2b_branch_op
+      })-1:0] f_stage2b_havoc;
+`endif
+      always_ff @(posedge i_clk) begin
+        if (i_fu_ready_2) begin
           stage2b_rob_tag <= PREPARE_ISSUE_CONTROLS ?
               coherent_issue2_rob_tag : issue2_rob_tag_selected;
           stage2b_op <= riscv_pkg::instr_op_e'(pl2_op_bits);
@@ -2698,10 +2731,96 @@ module reservation_station #(
           stage2b_is_jal <= pl2_is_jal;
           stage2b_is_jalr <= pl2_is_jalr;
           stage2b_branch_op <= riscv_pkg::branch_taken_op_e'(pl2_branch_op_bits);
-        end else if (stage2b_accept) begin
-          stage2b_valid <= 1'b0;
         end
+`ifdef RS_STAGE2_PAYLOAD_HAVOC
+        if (!issue_fire_2 && (!stage2b_valid || i_fu_ready_2 || stage2b_should_flush)) begin
+          {
+            stage2b_rob_tag, stage2b_op, stage2b_src1_value, stage2b_src2_value,
+            stage2b_shift_amount, stage2b_src3_value, stage2b_imm, stage2b_jalr_imm,
+            stage2b_use_imm, stage2b_writes_cdb_hint, stage2b_rm, stage2b_predicted_taken,
+            stage2b_predicted_target_ok, stage2b_is_compressed, stage2b_is_fp_mem,
+            stage2b_mem_needs_lq, stage2b_mem_needs_sq, stage2b_mem_size, stage2b_mem_signed,
+            stage2b_csr_addr, stage2b_csr_imm, stage2b_has_checkpoint, stage2b_checkpoint_id,
+            stage2b_is_call, stage2b_is_return, stage2b_is_branch_class, stage2b_is_jal,
+            stage2b_is_jalr, stage2b_branch_op
+          } <= f_stage2b_havoc;
+        end
+`endif
       end
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      // The stage2b payload changes only at an issue_fire_2 edge while stage2b_valid is
+      // set, so it equals the capture of the packet it holds.
+      wire [$bits({
+          stage2b_rob_tag,
+          stage2b_op,
+          stage2b_use_imm,
+          stage2b_src1_value,
+          stage2b_src2_value,
+          stage2b_shift_amount,
+          stage2b_src3_value,
+          stage2b_imm,
+          stage2b_jalr_imm,
+          stage2b_writes_cdb_hint,
+          stage2b_rm,
+          stage2b_predicted_taken,
+          stage2b_predicted_target_ok,
+          stage2b_is_compressed,
+          stage2b_is_fp_mem,
+          stage2b_mem_needs_lq,
+          stage2b_mem_needs_sq,
+          stage2b_mem_size,
+          stage2b_mem_signed,
+          stage2b_csr_addr,
+          stage2b_csr_imm,
+          stage2b_has_checkpoint,
+          stage2b_checkpoint_id,
+          stage2b_is_call,
+          stage2b_is_return,
+          stage2b_is_branch_class,
+          stage2b_is_jal,
+          stage2b_is_jalr,
+          stage2b_branch_op})-1:0] f_stage2b_payload = {
+          stage2b_rob_tag,
+          stage2b_op,
+          stage2b_use_imm,
+          stage2b_src1_value,
+          stage2b_src2_value,
+          stage2b_shift_amount,
+          stage2b_src3_value,
+          stage2b_imm,
+          stage2b_jalr_imm,
+          stage2b_writes_cdb_hint,
+          stage2b_rm,
+          stage2b_predicted_taken,
+          stage2b_predicted_target_ok,
+          stage2b_is_compressed,
+          stage2b_is_fp_mem,
+          stage2b_mem_needs_lq,
+          stage2b_mem_needs_sq,
+          stage2b_mem_size,
+          stage2b_mem_signed,
+          stage2b_csr_addr,
+          stage2b_csr_imm,
+          stage2b_has_checkpoint,
+          stage2b_checkpoint_id,
+          stage2b_is_call,
+          stage2b_is_return,
+          stage2b_is_branch_class,
+          stage2b_is_jal,
+          stage2b_is_jalr,
+          stage2b_branch_op};
+      logic f_stage2b_loaded_q;
+      logic [$bits(f_stage2b_payload)-1:0] f_stage2b_payload_q;
+      always_ff @(posedge i_clk) begin
+        f_stage2b_loaded_q <= i_rst_n && issue_fire_2;
+        if (f_stage2b_loaded_q) f_stage2b_payload_q <= f_stage2b_payload;
+        if (reset_seen_q && i_rst_n && stage2b_valid && !f_stage2b_loaded_q)
+          p_stage2b_payload_held : assert (f_stage2b_payload == f_stage2b_payload_q)
+          else $error("RS: stage2b payload changed while stage2b_valid held");
+      end
+`endif
+`endif
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
@@ -2811,6 +2930,132 @@ module reservation_station #(
 `endif
 
       assign stage2b_head_query_match = stage2b_valid && (stage2b_rob_tag == i_head_query_tag);
+
+`ifdef RS_STAGE2_PAYLOAD_EQUIV_LOCAL_PROOF
+      // Reference copy with the issue_fire_2 stage2b load enable.
+      logic [ReorderBufferTagWidth-1:0] f_ref_stage2b_rob_tag;
+      riscv_pkg::instr_op_e f_ref_stage2b_op;
+      logic [FLEN-1:0] f_ref_stage2b_src1_value;
+      logic [FLEN-1:0] f_ref_stage2b_src2_value;
+      logic [FLEN-1:0] f_ref_stage2b_src3_value;
+      logic [XLEN-1:0] f_ref_stage2b_imm;
+      logic [11:0] f_ref_stage2b_jalr_imm;
+      logic f_ref_stage2b_use_imm;
+      logic [5:0] f_ref_stage2b_shift_amount;
+      logic f_ref_stage2b_writes_cdb_hint;
+      logic [2:0] f_ref_stage2b_rm;
+      logic f_ref_stage2b_predicted_taken;
+      logic f_ref_stage2b_predicted_target_ok;
+      logic f_ref_stage2b_is_compressed;
+      logic f_ref_stage2b_is_fp_mem;
+      logic f_ref_stage2b_mem_needs_lq;
+      logic f_ref_stage2b_mem_needs_sq;
+      riscv_pkg::mem_size_e f_ref_stage2b_mem_size;
+      logic f_ref_stage2b_mem_signed;
+      logic [11:0] f_ref_stage2b_csr_addr;
+      logic [4:0] f_ref_stage2b_csr_imm;
+      logic f_ref_stage2b_has_checkpoint;
+      logic [CheckpointIdWidth-1:0] f_ref_stage2b_checkpoint_id;
+      logic f_ref_stage2b_is_call;
+      logic f_ref_stage2b_is_return;
+      logic f_ref_stage2b_is_branch_class;
+      logic f_ref_stage2b_is_jal;
+      logic f_ref_stage2b_is_jalr;
+      riscv_pkg::branch_taken_op_e f_ref_stage2b_branch_op;
+
+      always_ff @(posedge i_clk) begin
+        if (!i_rst_n) begin
+        end else if (stage2b_should_flush) begin
+        end else if (issue_fire_2) begin
+          f_ref_stage2b_rob_tag <= PREPARE_ISSUE_CONTROLS ?
+              coherent_issue2_rob_tag : issue2_rob_tag_selected;
+          f_ref_stage2b_op <= riscv_pkg::instr_op_e'(pl2_op_bits);
+          f_ref_stage2b_src1_value <= issue2_src1_value_effective;
+          f_ref_stage2b_src2_value <= issue2_src2_value_effective;
+          if (PREPARE_ISSUE_CONTROLS) f_ref_stage2b_shift_amount <= coherent_shift_amount;
+          else
+            f_ref_stage2b_shift_amount <= issue2_shift_uses_imm_selected ?
+                issue2_shift_imm_selected : issue2_src2_value_effective[5:0];
+          if (HAS_SRC3) begin
+            f_ref_stage2b_src3_value <= issue2_src3_value_effective;
+          end
+          f_ref_stage2b_imm <= pl2_imm;
+          f_ref_stage2b_jalr_imm <= pl2_jalr_imm;
+          if (PREPARE_ISSUE_CONTROLS) f_ref_stage2b_use_imm <= coherent_issue2_use_imm;
+          else f_ref_stage2b_use_imm <= issue2_use_imm_selected;
+          f_ref_stage2b_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ?
+              (PREPARE_ISSUE_CONTROLS ? coherent_issue2_writes_cdb_hint :
+               issue2_writes_cdb_hint_selected) : 1'b0;
+          f_ref_stage2b_rm <= pl2_rm;
+          f_ref_stage2b_predicted_taken <= pl2_predicted_taken;
+          f_ref_stage2b_predicted_target_ok <= pl2_predicted_target_ok;
+          f_ref_stage2b_is_compressed <= pl2_is_compressed;
+          f_ref_stage2b_is_fp_mem <= pl2_is_fp_mem;
+          f_ref_stage2b_mem_needs_lq <= pl2_mem_needs_lq;
+          f_ref_stage2b_mem_needs_sq <= pl2_mem_needs_sq;
+          f_ref_stage2b_mem_size <= riscv_pkg::mem_size_e'(pl2_mem_size_bits);
+          f_ref_stage2b_mem_signed <= pl2_mem_signed;
+          f_ref_stage2b_csr_addr <= pl2_csr_addr;
+          f_ref_stage2b_csr_imm <= pl2_csr_imm;
+          f_ref_stage2b_has_checkpoint <= pl2_has_checkpoint;
+          f_ref_stage2b_checkpoint_id <= pl2_checkpoint_id;
+          f_ref_stage2b_is_call <= pl2_is_call;
+          f_ref_stage2b_is_return <= pl2_is_return;
+          f_ref_stage2b_is_branch_class <= pl2_is_branch_class;
+          f_ref_stage2b_is_jal <= pl2_is_jal;
+          f_ref_stage2b_is_jalr <= pl2_is_jalr;
+          f_ref_stage2b_branch_op <= riscv_pkg::branch_taken_op_e'(pl2_branch_op_bits);
+        end
+      end
+
+      reg f_stage2b_equiv_past_valid;
+      initial f_stage2b_equiv_past_valid = 1'b0;
+      always @(posedge i_clk) f_stage2b_equiv_past_valid <= 1'b1;
+
+      always_comb begin
+        if (f_stage2b_equiv_past_valid && stage2b_valid) begin
+          p_stage2b_payload_equiv :
+          assert ({stage2b_rob_tag, stage2b_op, stage2b_src1_value, stage2b_src2_value,
+                   stage2b_shift_amount, stage2b_imm, stage2b_jalr_imm, stage2b_use_imm,
+                   stage2b_writes_cdb_hint, stage2b_rm, stage2b_predicted_taken,
+                   stage2b_predicted_target_ok, stage2b_is_compressed, stage2b_is_fp_mem,
+                   stage2b_mem_needs_lq, stage2b_mem_needs_sq, stage2b_mem_size,
+                   stage2b_mem_signed, stage2b_csr_addr, stage2b_csr_imm,
+                   stage2b_has_checkpoint, stage2b_checkpoint_id, stage2b_is_call,
+                   stage2b_is_return, stage2b_is_branch_class, stage2b_is_jal,
+                   stage2b_is_jalr, stage2b_branch_op} ==
+                  {f_ref_stage2b_rob_tag, f_ref_stage2b_op, f_ref_stage2b_src1_value,
+                   f_ref_stage2b_src2_value, f_ref_stage2b_shift_amount, f_ref_stage2b_imm,
+                   f_ref_stage2b_jalr_imm, f_ref_stage2b_use_imm,
+                   f_ref_stage2b_writes_cdb_hint, f_ref_stage2b_rm,
+                   f_ref_stage2b_predicted_taken, f_ref_stage2b_predicted_target_ok,
+                   f_ref_stage2b_is_compressed, f_ref_stage2b_is_fp_mem,
+                   f_ref_stage2b_mem_needs_lq, f_ref_stage2b_mem_needs_sq,
+                   f_ref_stage2b_mem_size, f_ref_stage2b_mem_signed,
+                   f_ref_stage2b_csr_addr, f_ref_stage2b_csr_imm,
+                   f_ref_stage2b_has_checkpoint, f_ref_stage2b_checkpoint_id,
+                   f_ref_stage2b_is_call, f_ref_stage2b_is_return,
+                   f_ref_stage2b_is_branch_class, f_ref_stage2b_is_jal,
+                   f_ref_stage2b_is_jalr, f_ref_stage2b_branch_op});
+          if (HAS_SRC3) begin
+            p_stage2b_src3_equiv : assert (stage2b_src3_value == f_ref_stage2b_src3_value);
+          end
+        end
+      end
+`ifdef RS_STAGE2_PAYLOAD_EQUIV_COVER
+      always @(posedge i_clk) begin
+        if (f_stage2b_equiv_past_valid && i_rst_n && $past(i_rst_n)) begin
+          cover_stage2b_ready_fall :
+          cover ($past(issue_fire_2) && stage2b_valid && !i_fu_ready_2);
+          cover_stage2b_back_to_back :
+          cover ($past(issue_fire_2) && stage2b_accept && issue_fire_2);
+          cover_stage2b_held_then_flushed :
+          cover ($past(stage2b_valid && !i_fu_ready_2 && !stage2b_should_flush) &&
+                 stage2b_valid && stage2b_should_flush);
+        end
+      end
+`endif
+`endif
 
       // No sideband is_sc mirror: SC issues via MEM_RS, never a DUAL_ISSUE
       // (INT) reservation station.
@@ -3543,8 +3788,17 @@ module reservation_station #(
   // ===========================================================================
   // Stage 2 Pipeline Register: Sequential Logic
   // ===========================================================================
-  // Captures the issued instruction's data on issue_fire and holds it until
-  // consumed by the downstream FU (stage2_accept) or flushed.
+  // stage2_valid keeps the reset, flush, issue_fire and accept terms below:
+  // it sets on issue_fire and clears on reset, on a flush that covers the
+  // packet, and on stage2_accept without a refill. The payload registers
+  // after it load on every i_fu_ready cycle instead (see the comment there).
+  // These keep the issue_fire load, so they hold the last issued packet's
+  // value while stage 2 is empty:
+  //   - stage2_is_jalr, and stage2_op in the station built with
+  //     DIVIDE_ISSUE_GATE: their outputs are read without stage2_valid;
+  //   - stage2_is_sc and the branch tag copies (stage2_branch_predicate_tag,
+  //     stage2_branch_payload_tag): read only under stage2_valid, and left
+  //     on issue_fire.
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -3556,8 +3810,38 @@ module reservation_station #(
     end else if (issue_fire) begin
       // Load on empty fill or simultaneous acceptance and refill.
       stage2_valid <= 1'b1;
+    end else if (stage2_accept) begin
+      // Consumed by FU with no new entry ready: go empty.
+      stage2_valid <= 1'b0;
+    end
+    // else: stage2_valid && !stage2_accept && !stage2_should_flush: hold while blocked.
+  end
+
+  // Stage2 payload: no reset, and it loads on every cycle with i_fu_ready.
+  // Every reader takes it only while stage2_valid is set, and the payload
+  // equals the issue_fire capture whenever stage2_valid is set:
+  //   - issue_fire implies i_fu_ready, so each issue loads the same values;
+  //   - with i_fu_ready and no issue_fire, stage2 is empty, accepted or
+  //     flushed, so stage2_valid is clear after the edge;
+  //   - without i_fu_ready the payload holds, as a blocked packet needs.
+  // The flush terms (flush_en replicas, the stage2 age compare) and the
+  // ready scan leave the payload enable.
+`ifdef RS_STAGE2_PAYLOAD_HAVOC
+  (* anyseq *) logic [$bits({
+      stage2_rob_tag, stage2_is_divide, stage2_src1_value, stage2_src2_value,
+      stage2_src1_bypass_mask, stage2_src2_bypass_mask, stage2_src1_bypass_mask_l1,
+      stage2_src2_bypass_mask_l1, stage2_src3_value, stage2_src3_bypass_mask,
+      stage2_src3_bypass_mask_l1, stage2_cdb_value, stage2_cdb_value_l1, stage2_imm,
+      stage2_jalr_imm, stage2_use_imm, stage2_writes_cdb_hint, stage2_rm, stage2_predicted_taken,
+      stage2_predicted_target_ok, stage2_is_compressed, stage2_is_fp_mem, stage2_mem_needs_lq,
+      stage2_mem_needs_sq, stage2_mem_size, stage2_mem_signed, stage2_csr_addr, stage2_csr_imm,
+      stage2_has_checkpoint, stage2_checkpoint_id, stage2_is_call, stage2_is_return,
+      stage2_is_branch_class, stage2_is_jal, stage2_branch_op
+  })-1:0] f_stage2_havoc;
+`endif
+  always_ff @(posedge i_clk) begin
+    if (i_fu_ready) begin
       stage2_rob_tag <= primary_issue_tag;
-      stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
       stage2_is_divide <= primary_issue_divide;
       if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
         // Capture the final operands from resident, repair or CDB values.
@@ -3614,14 +3898,145 @@ module reservation_station #(
       stage2_is_return <= pl_is_return;
       stage2_is_branch_class <= pl_is_branch_class;
       stage2_is_jal <= pl_is_jal;
-      stage2_is_jalr <= pl_is_jalr;
       stage2_branch_op <= riscv_pkg::branch_taken_op_e'(pl_branch_op_bits);
-    end else if (stage2_accept) begin
-      // Consumed by FU with no new entry ready: go empty.
-      stage2_valid <= 1'b0;
     end
-    // else: stage2_valid && !stage2_accept && !stage2_should_flush. Hold (blocked).
+`ifdef RS_STAGE2_PAYLOAD_HAVOC
+    // Formal payload twin only (rs_payload_twin.sby): a stage2 that holds no
+    // packet after this edge takes an arbitrary payload.
+    if (!issue_fire && (!stage2_valid || i_fu_ready || stage2_should_flush)) begin
+      {
+        stage2_rob_tag, stage2_is_divide, stage2_src1_value, stage2_src2_value,
+        stage2_src1_bypass_mask, stage2_src2_bypass_mask, stage2_src1_bypass_mask_l1,
+        stage2_src2_bypass_mask_l1, stage2_src3_value, stage2_src3_bypass_mask,
+        stage2_src3_bypass_mask_l1, stage2_cdb_value, stage2_cdb_value_l1, stage2_imm,
+        stage2_jalr_imm, stage2_use_imm, stage2_writes_cdb_hint, stage2_rm,
+        stage2_predicted_taken, stage2_predicted_target_ok, stage2_is_compressed,
+        stage2_is_fp_mem, stage2_mem_needs_lq, stage2_mem_needs_sq, stage2_mem_size,
+        stage2_mem_signed, stage2_csr_addr, stage2_csr_imm, stage2_has_checkpoint,
+        stage2_checkpoint_id, stage2_is_call, stage2_is_return, stage2_is_branch_class,
+        stage2_is_jal, stage2_branch_op
+      } <= f_stage2_havoc;
+    end
+`endif
   end
+
+  // int_muldiv_shim decodes o_issue.op into o_fu_busy (mul_is_short) without a
+  // stage2_valid gate, feeding mul_rs_fu_ready. Keep stage2_op on issue_fire in
+  // the multiply/divide station so an empty stage2 retains the last issued op.
+  generate
+    if (DIVIDE_ISSUE_GATE) begin : gen_stage2_op_issue_fire
+      always_ff @(posedge i_clk) begin
+        if (i_rst_n && issue_fire) stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
+      end
+    end else begin : gen_stage2_op_fu_ready
+`ifdef RS_STAGE2_PAYLOAD_HAVOC
+      (* anyseq *) riscv_pkg::instr_op_e f_stage2_op_havoc;
+`endif
+      always_ff @(posedge i_clk) begin
+        if (i_fu_ready) stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
+`ifdef RS_STAGE2_PAYLOAD_HAVOC
+        if (!issue_fire && (!stage2_valid || i_fu_ready || stage2_should_flush)) begin
+          stage2_op <= f_stage2_op_havoc;
+        end
+`endif
+      end
+    end
+  endgenerate
+
+  // o_issue_is_jalr reaches int_rs_fu_ready without a stage2_valid gate in
+  // tomasulo_wrapper (alu_result_via_alu2), so this bit keeps the issue_fire
+  // load: its value while stage2 is empty is the last issued packet's.
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n && issue_fire) stage2_is_jalr <= pl_is_jalr;
+  end
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // The stage2 payload changes only at an issue_fire edge while stage2_valid is
+  // set, so it equals the capture of the packet it holds.
+  wire [$bits({
+      stage2_rob_tag,
+      stage2_op,
+      stage2_is_divide,
+      stage2_src1_value,
+      stage2_src2_value,
+      stage2_src1_bypass_mask,
+      stage2_src2_bypass_mask,
+      stage2_src1_bypass_mask_l1,
+      stage2_src2_bypass_mask_l1,
+      stage2_src3_value,
+      stage2_src3_bypass_mask,
+      stage2_src3_bypass_mask_l1,
+      stage2_cdb_value,
+      stage2_cdb_value_l1,
+      stage2_imm,
+      stage2_jalr_imm,
+      stage2_use_imm,
+      stage2_writes_cdb_hint,
+      stage2_rm,
+      stage2_predicted_taken,
+      stage2_predicted_target_ok,
+      stage2_is_compressed,
+      stage2_is_fp_mem,
+      stage2_mem_needs_lq,
+      stage2_mem_needs_sq,
+      stage2_mem_size,
+      stage2_mem_signed,
+      stage2_csr_addr,
+      stage2_csr_imm,
+      stage2_has_checkpoint,
+      stage2_checkpoint_id,
+      stage2_is_call,
+      stage2_is_return,
+      stage2_is_branch_class,
+      stage2_is_jal,
+      stage2_branch_op})-1:0] f_stage2_payload = {
+      stage2_rob_tag,
+      stage2_op,
+      stage2_is_divide,
+      stage2_src1_value,
+      stage2_src2_value,
+      stage2_src1_bypass_mask,
+      stage2_src2_bypass_mask,
+      stage2_src1_bypass_mask_l1,
+      stage2_src2_bypass_mask_l1,
+      stage2_src3_value,
+      stage2_src3_bypass_mask,
+      stage2_src3_bypass_mask_l1,
+      stage2_cdb_value,
+      stage2_cdb_value_l1,
+      stage2_imm,
+      stage2_jalr_imm,
+      stage2_use_imm,
+      stage2_writes_cdb_hint,
+      stage2_rm,
+      stage2_predicted_taken,
+      stage2_predicted_target_ok,
+      stage2_is_compressed,
+      stage2_is_fp_mem,
+      stage2_mem_needs_lq,
+      stage2_mem_needs_sq,
+      stage2_mem_size,
+      stage2_mem_signed,
+      stage2_csr_addr,
+      stage2_csr_imm,
+      stage2_has_checkpoint,
+      stage2_checkpoint_id,
+      stage2_is_call,
+      stage2_is_return,
+      stage2_is_branch_class,
+      stage2_is_jal,
+      stage2_branch_op};
+  logic f_stage2_loaded_q;
+  logic [$bits(f_stage2_payload)-1:0] f_stage2_payload_q;
+  always_ff @(posedge i_clk) begin
+    f_stage2_loaded_q <= i_rst_n && issue_fire;
+    if (f_stage2_loaded_q) f_stage2_payload_q <= f_stage2_payload;
+    if (reset_seen_q && i_rst_n && stage2_valid && !f_stage2_loaded_q)
+      p_stage2_payload_held : assert (f_stage2_payload == f_stage2_payload_q)
+      else $error("RS: stage2 payload changed while stage2_valid held");
+  end
+`endif
+`endif
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
@@ -3673,8 +4088,7 @@ module reservation_station #(
   // No reset: this sideband is only observed when stage2_valid is set.
   always_ff @(posedge i_clk) begin
     if (issue_fire) begin
-      stage2_is_sc <= (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W) ||
-          (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_D);
+      stage2_is_sc <= (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC);
     end
   end
 
@@ -3691,7 +4105,8 @@ module reservation_station #(
       $error("BROADCAST_FREE_SOURCE_VALUES requires SPECULATIVE_DATA_WRITES");
     if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS && HAS_SRC3)
       $error("CAPTURE_PRIMARY_EFFECTIVE_OPERANDS requires HAS_SRC3=0");
-    if (DIVIDE_ISSUE_GATE && DUAL_ISSUE) $error("DIVIDE_ISSUE_GATE requires DUAL_ISSUE=0");
+    if (DIVIDE_ISSUE_GATE && DUAL_ISSUE)
+      $error("DIVIDE_ISSUE_GATE requires DUAL_ISSUE=0");
   end
 
   always @(posedge i_clk) begin
@@ -3706,6 +4121,9 @@ module reservation_station #(
       // Slot-1 and slot-2 must never target the same physical entry.
       if (dispatch_fire && dispatch_fire_2 && !i_flush_all && !i_flush_en &&
           (free_idx == alloc_idx_2))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("RS: slot-1 and slot-2 alloc collide on entry %0d", free_idx);
 
       // The slot-2 value select must equal the binary allocation decode on
@@ -3717,10 +4135,16 @@ module reservation_station #(
 
       // Loading stage2 requires a ready entry.
       if (issue_fire && !entry_ready[issue_idx])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("RS: issue fired for non-ready entry %0d", issue_idx);
 
       // The divide gate reads stage2's divide bit in place of its opcode.
       if (DIVIDE_ISSUE_GATE && stage2_valid && (stage2_is_divide != rs_is_divide_op(stage2_op)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("RS: stage2 divide bit %0d disagrees with its opcode", stage2_is_divide);
 
       if (ALLOC_INDEXED_REPAIR) begin
@@ -3733,6 +4157,9 @@ module reservation_station #(
 
         for (int i = 0; i < DEPTH; i++) begin
           if ((repair_slot1_target_q[i] || repair_slot2_target_q[i]) && !rs_valid[i])
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error("RS: indexed-repair target %0d is not resident", i);
 
           // The wrapper response channels must remain aligned with the
@@ -3835,6 +4262,7 @@ module reservation_station #(
   // ===========================================================================
 `ifdef FORMAL
 `ifndef RS_PRETAG_LOCAL_PROOF
+`ifndef RS_STAGE2_PAYLOAD_EQUIV_LOCAL_PROOF
 
   initial assume (!i_rst_n);
 
@@ -4197,6 +4625,7 @@ module reservation_station #(
     end
   endgenerate
 
+`endif  // RS_STAGE2_PAYLOAD_EQUIV_LOCAL_PROOF
 `endif  // RS_PRETAG_LOCAL_PROOF
 `endif  // FORMAL
 
@@ -4419,6 +4848,190 @@ module reservation_station #(
       )'({payload_group_idx, payload_group_pick[payload_group_idx]}) == issue_idx);
     end
   end
+`endif
+
+`ifdef RS_STAGE2_PAYLOAD_EQUIV_LOCAL_PROOF
+  // Compare the i_fu_ready stage2 payload load against the issue_fire capture
+  // across flushes, stalls, back-to-back issues, and mid-run resets.
+  initial assume (!i_rst_n);
+
+  reg f_stage2_equiv_past_valid;
+  initial f_stage2_equiv_past_valid = 1'b0;
+  always @(posedge i_clk) f_stage2_equiv_past_valid <= 1'b1;
+
+  reg f_stage2_issue_seen_q;
+  initial f_stage2_issue_seen_q = 1'b0;
+  always @(posedge i_clk) begin
+    if (i_rst_n && issue_fire) f_stage2_issue_seen_q <= 1'b1;
+  end
+
+  logic [ReorderBufferTagWidth-1:0] f_ref_stage2_rob_tag;
+  riscv_pkg::instr_op_e f_ref_stage2_op;
+  logic f_ref_stage2_is_divide;
+  logic [FLEN-1:0] f_ref_stage2_src1_value;
+  logic [FLEN-1:0] f_ref_stage2_src2_value;
+  logic [FLEN-1:0] f_ref_stage2_src3_value;
+  logic [FLEN-1:0] f_ref_stage2_src1_bypass_mask;
+  logic [FLEN-1:0] f_ref_stage2_src1_bypass_mask_l1;
+  logic [FLEN-1:0] f_ref_stage2_src2_bypass_mask;
+  logic [FLEN-1:0] f_ref_stage2_src2_bypass_mask_l1;
+  logic [FLEN-1:0] f_ref_stage2_src3_bypass_mask;
+  logic [FLEN-1:0] f_ref_stage2_src3_bypass_mask_l1;
+  logic [FLEN-1:0] f_ref_stage2_cdb_value;
+  logic [FLEN-1:0] f_ref_stage2_cdb_value_l1;
+  logic [XLEN-1:0] f_ref_stage2_imm;
+  logic [11:0] f_ref_stage2_jalr_imm;
+  logic f_ref_stage2_use_imm;
+  logic f_ref_stage2_writes_cdb_hint;
+  logic [2:0] f_ref_stage2_rm;
+  logic f_ref_stage2_predicted_taken;
+  logic f_ref_stage2_predicted_target_ok;
+  logic f_ref_stage2_is_compressed;
+  logic f_ref_stage2_is_fp_mem;
+  logic f_ref_stage2_mem_needs_lq;
+  logic f_ref_stage2_mem_needs_sq;
+  riscv_pkg::mem_size_e f_ref_stage2_mem_size;
+  logic f_ref_stage2_mem_signed;
+  logic [11:0] f_ref_stage2_csr_addr;
+  logic [4:0] f_ref_stage2_csr_imm;
+  logic f_ref_stage2_has_checkpoint;
+  logic [CheckpointIdWidth-1:0] f_ref_stage2_checkpoint_id;
+  logic f_ref_stage2_is_call;
+  logic f_ref_stage2_is_return;
+  logic f_ref_stage2_is_branch_class;
+  logic f_ref_stage2_is_jal;
+  logic f_ref_stage2_is_jalr;
+  riscv_pkg::branch_taken_op_e f_ref_stage2_branch_op;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+    end else if (stage2_should_flush) begin
+    end else if (issue_fire) begin
+      f_ref_stage2_rob_tag <= primary_issue_tag;
+      f_ref_stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
+      f_ref_stage2_is_divide <= primary_issue_divide;
+      if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
+        f_ref_stage2_src1_value <= (issue_src1_resident &
+            {FLEN{!issue_src1_bypass && !issue_src1_bypass_l1}}) |
+            (i_cdb.value & {FLEN{issue_src1_bypass}}) |
+            (i_cdb_2.value & {FLEN{issue_src1_bypass_l1}});
+        f_ref_stage2_src2_value <= (issue_src2_resident &
+            {FLEN{!issue_src2_bypass && !issue_src2_bypass_l1}}) |
+            (i_cdb.value & {FLEN{issue_src2_bypass}}) |
+            (i_cdb_2.value & {FLEN{issue_src2_bypass_l1}});
+      end else begin
+        f_ref_stage2_src1_value <= (src1_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
+            src1_repair_sel[issue_idx]
+        ) : rs_src1_value[issue_idx];
+        f_ref_stage2_src2_value <= (src2_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
+            src2_repair_sel[issue_idx]
+        ) : rs_src2_value[issue_idx];
+        f_ref_stage2_src1_bypass_mask <= {FLEN{src1_cdb_bypass[issue_idx]}};
+        f_ref_stage2_src2_bypass_mask <= {FLEN{src2_cdb_bypass[issue_idx]}};
+        f_ref_stage2_src1_bypass_mask_l1 <= {FLEN{src1_cdb_bypass_l1[issue_idx]}};
+        f_ref_stage2_src2_bypass_mask_l1 <= {FLEN{src2_cdb_bypass_l1[issue_idx]}};
+      end
+      if (HAS_SRC3) begin
+        f_ref_stage2_src3_value <= (src3_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
+            src3_repair_sel[issue_idx]
+        ) : rs_src3_value[issue_idx];
+        f_ref_stage2_src3_bypass_mask <= {FLEN{src3_cdb_bypass[issue_idx]}};
+        f_ref_stage2_src3_bypass_mask_l1 <= {FLEN{src3_cdb_bypass_l1[issue_idx]}};
+      end
+      f_ref_stage2_cdb_value <= i_cdb.value;
+      f_ref_stage2_cdb_value_l1 <= i_cdb_2.value;
+      f_ref_stage2_imm <= pl_imm;
+      f_ref_stage2_jalr_imm <= pl_jalr_imm;
+      f_ref_stage2_use_imm <= primary_issue_use_imm;
+      f_ref_stage2_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ? primary_issue_hint : 1'b0;
+      f_ref_stage2_rm <= pl_rm;
+      f_ref_stage2_predicted_taken <= pl_predicted_taken;
+      f_ref_stage2_predicted_target_ok <= pl_predicted_target_ok;
+      f_ref_stage2_is_compressed <= pl_is_compressed;
+      f_ref_stage2_is_fp_mem <= pl_is_fp_mem;
+      f_ref_stage2_mem_needs_lq <= pl_mem_needs_lq;
+      f_ref_stage2_mem_needs_sq <= pl_mem_needs_sq;
+      f_ref_stage2_mem_size <= riscv_pkg::mem_size_e'(pl_mem_size_bits);
+      f_ref_stage2_mem_signed <= pl_mem_signed;
+      f_ref_stage2_csr_addr <= pl_csr_addr;
+      f_ref_stage2_csr_imm <= pl_csr_imm;
+      f_ref_stage2_has_checkpoint <= pl_has_checkpoint;
+      f_ref_stage2_checkpoint_id <= pl_checkpoint_id;
+      f_ref_stage2_is_call <= pl_is_call;
+      f_ref_stage2_is_return <= pl_is_return;
+      f_ref_stage2_is_branch_class <= pl_is_branch_class;
+      f_ref_stage2_is_jal <= pl_is_jal;
+      f_ref_stage2_is_jalr <= pl_is_jalr;
+      f_ref_stage2_branch_op <= riscv_pkg::branch_taken_op_e'(pl_branch_op_bits);
+    end
+  end
+
+  always_comb begin
+    if (f_stage2_equiv_past_valid && stage2_valid) begin
+      p_stage2_payload_equiv :
+      assert ({stage2_rob_tag, stage2_op, stage2_is_divide, stage2_src1_value, stage2_src2_value,
+               stage2_cdb_value, stage2_cdb_value_l1, stage2_imm, stage2_jalr_imm,
+               stage2_use_imm, stage2_writes_cdb_hint, stage2_rm, stage2_predicted_taken,
+               stage2_predicted_target_ok, stage2_is_compressed, stage2_is_fp_mem,
+               stage2_mem_needs_lq, stage2_mem_needs_sq, stage2_mem_size, stage2_mem_signed,
+               stage2_csr_addr, stage2_csr_imm, stage2_has_checkpoint, stage2_checkpoint_id,
+               stage2_is_call, stage2_is_return, stage2_is_branch_class, stage2_is_jal,
+               stage2_is_jalr, stage2_branch_op} ==
+              {f_ref_stage2_rob_tag, f_ref_stage2_op, f_ref_stage2_is_divide,
+               f_ref_stage2_src1_value, f_ref_stage2_src2_value, f_ref_stage2_cdb_value,
+               f_ref_stage2_cdb_value_l1, f_ref_stage2_imm, f_ref_stage2_jalr_imm,
+               f_ref_stage2_use_imm, f_ref_stage2_writes_cdb_hint, f_ref_stage2_rm,
+               f_ref_stage2_predicted_taken, f_ref_stage2_predicted_target_ok,
+               f_ref_stage2_is_compressed, f_ref_stage2_is_fp_mem, f_ref_stage2_mem_needs_lq,
+               f_ref_stage2_mem_needs_sq, f_ref_stage2_mem_size, f_ref_stage2_mem_signed,
+               f_ref_stage2_csr_addr, f_ref_stage2_csr_imm, f_ref_stage2_has_checkpoint,
+               f_ref_stage2_checkpoint_id, f_ref_stage2_is_call, f_ref_stage2_is_return,
+               f_ref_stage2_is_branch_class, f_ref_stage2_is_jal, f_ref_stage2_is_jalr,
+               f_ref_stage2_branch_op});
+      if (!CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
+        p_stage2_bypass_mask_equiv :
+        assert ({stage2_src1_bypass_mask, stage2_src2_bypass_mask,
+                 stage2_src1_bypass_mask_l1, stage2_src2_bypass_mask_l1} ==
+                {f_ref_stage2_src1_bypass_mask, f_ref_stage2_src2_bypass_mask,
+                 f_ref_stage2_src1_bypass_mask_l1, f_ref_stage2_src2_bypass_mask_l1});
+      end
+      if (HAS_SRC3) begin
+        p_stage2_src3_equiv :
+        assert ({stage2_src3_value, stage2_src3_bypass_mask, stage2_src3_bypass_mask_l1} ==
+                {f_ref_stage2_src3_value, f_ref_stage2_src3_bypass_mask,
+                 f_ref_stage2_src3_bypass_mask_l1});
+      end
+    end
+    if (f_stage2_issue_seen_q) begin
+      p_stage2_jalr_held_equiv : assert (o_issue_is_jalr == f_ref_stage2_is_jalr);
+      if (DIVIDE_ISSUE_GATE) begin
+        p_stage2_mul_op_held_equiv : assert (o_issue.op == f_ref_stage2_op);
+      end
+    end
+  end
+
+`ifdef RS_STAGE2_PAYLOAD_EQUIV_COVER
+  always @(posedge i_clk) begin
+    if (f_stage2_equiv_past_valid && i_rst_n && $past(i_rst_n)) begin
+      cover_stage2_ready_fall :
+      cover ($past(issue_fire) && stage2_valid && !i_fu_ready);
+      cover_stage2_flush_in_issue_cycle :
+      cover (any_ready && i_fu_ready && can_issue_to_stage2 && i_flush_en && !issue_fire);
+      cover_stage2_partial_flush_after_issue :
+      cover ($past(issue_fire) && stage2_valid && i_flush_en && !i_flush_all &&
+             stage2_should_flush);
+      cover_stage2_back_to_back :
+      cover ($past(issue_fire) && stage2_accept && issue_fire);
+      cover_stage2_held_then_flushed :
+      cover ($past(stage2_valid && !i_fu_ready && !stage2_should_flush) &&
+             stage2_valid && stage2_should_flush);
+    end
+    if (f_stage2_equiv_past_valid && !i_rst_n) begin
+      cover_stage2_midrun_reset :
+      cover ($past(stage2_valid && i_rst_n));
+    end
+  end
+`endif
 `endif
 
 endmodule

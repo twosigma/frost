@@ -93,7 +93,10 @@
  * line back through the writeback slots, and leaves it valid and clean.
  * o_maint_busy covers the walk and the drain of its writebacks.
  * SIM_FAST_MAINT (simulation only) makes the sweep one cycle and has
- * writeback-all visit only the sets with dirty lines.
+ * writeback-all visit only the sets with dirty lines. FLASH_INVALIDATE (the
+ * L1I, synthesizable) keeps the valid bits in flip-flops and clears them all
+ * at once, so invalidate-all takes one sweep cycle in hardware too; the
+ * reset sweep still walks every set to clear the tag and replacement RAMs.
  *
  * Probes (NUM_PROBE > 0, the L1D) are per-line coherence requests on the
  * upstream port. PROBE_CLEAN writes a dirty copy back and leaves it valid and
@@ -153,6 +156,11 @@ module frost_cache #(
     // verilog_lint: waive explicit-parameter-storage-type
     parameter TAG_MEMORY_PRIMITIVE = "block",
     parameter int unsigned TAG_READ_LATENCY = 1,
+    // 1: keep the valid bits in flip-flops beside the tag RAM, so
+    // invalidate-all clears every line in one cycle instead of sweeping the
+    // sets (fence.i on the L1I). Needs one-cycle block tags; like
+    // invalidate-all itself, only for a read-only cache.
+    parameter bit FLASH_INVALIDATE = 1'b0,
     // Simulation only: bulk-clear tags in one cycle and walk only dirty sets
     // for writeback-all. The resulting invalidation/writeback behavior matches
     // the hardware sweep. Keep 0 for synthesis.
@@ -291,6 +299,8 @@ module frost_cache #(
       $fatal(1, "frost_cache: block tags require TAG_READ_LATENCY=1");
     if ((TAG_MEMORY_PRIMITIVE == "ultra") && (TAG_READ_LATENCY < 3))
       $fatal(1, "frost_cache: packed ultra tags require TAG_READ_LATENCY>=3");
+    if (FLASH_INVALIDATE && ((TAG_MEMORY_PRIMITIVE != "block") || (TAG_READ_LATENCY != 1)))
+      $fatal(1, "frost_cache: FLASH_INVALIDATE requires one-cycle block tags");
     if (DOWN_ID_BITS < 2) $fatal(1, "frost_cache: DOWN_ID_BITS must be >= 2");
     if (NUM_WAITERS < 1) $fatal(1, "frost_cache: NUM_WAITERS must be >= 1");
     if ((1 << DownSlotBits) < NUM_MSHR || (1 << DownSlotBits) < NUM_WB)
@@ -369,7 +379,7 @@ module frost_cache #(
   // Maintenance / sweep control (drives the tag and data ports while active)
   // ===========================================================================
   typedef enum logic [2:0] {
-    M_SWEEP,        // reset/invalidate-all: clear every set's tags
+    M_SWEEP,        // reset/invalidate-all: clear line validity
     M_IDLE,         // the request pipeline runs
     M_FLUSH_SCAN,   // writeback-all: present the walk's set to the tags
     M_FLUSH_CHECK,  // examine the set; pick its lowest dirty way, if any
@@ -404,10 +414,82 @@ module frost_cache #(
   logic                        tag_re;
   logic [TAG_READ_LATENCY-1:0] tag_response_valid_q;
   logic                        tag_response_valid;
-  logic [WAYS-1:0] tag_rdata_valid, tag_rdata_dirty;
+  logic [WAYS-1:0] tag_rdata_valid, tag_rdata_dirty, tag_ram_valid;
   logic [TagBits-1:0] tag_rdata_tag[WAYS];
   for (genvar gw = 0; gw < int'(WAYS); gw++) begin : gen_tag_unpack
-    assign {tag_rdata_valid[gw], tag_rdata_dirty[gw], tag_rdata_tag[gw]} = tag_rdata[gw];
+    assign {tag_ram_valid[gw], tag_rdata_dirty[gw], tag_rdata_tag[gw]} = tag_rdata[gw];
+  end
+
+  // Flash invalidate: the valid bits live in flip-flops, written by every tag
+  // write and read like the one-cycle tag RAM (a read in the cycle of a write
+  // to its set returns the old bits, as the RAM does). The whole sweep state
+  // clears them, so invalidate-all needs one sweep cycle and the RAM's valid
+  // bit goes unused. The other tag fields of an invalid way are don't-care:
+  // every use of the dirty bit and the tag is qualified by valid.
+  if (FLASH_INVALIDATE) begin : gen_flash_valid
+    logic [WAYS-1:0] valid_q[NumSets];
+    logic [WAYS-1:0] valid_rd_q;
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        for (int s = 0; s < int'(NumSets); s++) valid_q[s] <= '0;
+      end else if (mstate_q == M_SWEEP) begin
+        for (int s = 0; s < int'(NumSets); s++) valid_q[s] <= '0;
+      end else begin
+        for (int w = 0; w < int'(WAYS); w++)
+        if (tag_we[w]) valid_q[tag_waddr][w] <= tag_wdata[TagEntryBits-1];
+      end
+    end
+    always_ff @(posedge i_clk) begin
+      if (i_rst) valid_rd_q <= '0;
+      else valid_rd_q <= valid_q[tag_raddr];
+    end
+    assign tag_rdata_valid = valid_rd_q;
+`ifdef CACHE_FLASH_PROOF
+    // formal/cache_flash_valid.sby. With SIM_FAST_MAINT the RAM's valid bits
+    // are bulk-cleared in the same sweep cycle, so once a sweep has cleared
+    // both after reset and its read has left the read register, every tag
+    // read returns the RAM's valid bits from the flip-flops. Without
+    // SIM_FAST_MAINT an invalidate-all sweep lasts one cycle.
+    logic proof_swept_q = 1'b0, proof_swept2_q = 1'b0, proof_inval_q = 1'b0;
+    logic proof_past_valid_q = 1'b0;
+    logic [NumSets*WAYS-1:0] proof_valid_bits;
+    for (genvar s = 0; s < int'(NumSets); s++) begin : gen_proof_valid_bits
+      assign proof_valid_bits[s*WAYS+:WAYS] = valid_q[s];
+    end
+    always_ff @(posedge i_clk) begin
+      proof_past_valid_q <= 1'b1;
+      if (i_rst) begin
+        proof_swept_q  <= 1'b0;
+        proof_swept2_q <= 1'b0;
+      end else begin
+        if (mstate_q == M_SWEEP) proof_swept_q <= 1'b1;
+        proof_swept2_q <= proof_swept_q;
+      end
+      proof_inval_q <= (mstate_q == M_IDLE) && i_invalidate_all && pipeline_idle && !i_rst;
+      // Assignment checks: these restate reset/clear priority and the
+      // registered read equation; they are not an independent hit reference.
+      if (proof_past_valid_q) begin
+        if ($past(i_rst || (mstate_q == M_SWEEP))) assert (proof_valid_bits == '0);
+        if ($past(i_rst)) begin
+          assert (valid_rd_q == '0);
+        end else begin
+          assert (valid_rd_q == $past(valid_q[tag_raddr]));
+        end
+      end
+    end
+    always_comb begin
+      if ((SIM_FAST_MAINT != 0) && proof_swept2_q) assert (valid_rd_q == tag_ram_valid);
+      // Assignment check: the invalidate entry chooses the last set.
+      if ((SIM_FAST_MAINT == 0) && proof_inval_q && !i_rst)
+        assert ((mstate_q == M_SWEEP) && (sweep_idx_q == {SetBits{1'b1}}));
+    end
+`endif
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic ram_valid_unused;
+    assign ram_valid_unused = ^tag_ram_valid;
+    /* verilator lint_on UNUSEDSIGNAL */
+  end else begin : gen_ram_valid
+    assign tag_rdata_valid = tag_ram_valid;
   end
 
   always_ff @(posedge i_clk) begin
@@ -849,7 +931,9 @@ module frost_cache #(
   logic  [  UP_ID_BITS-1:0] w_id_q;
   logic                     w_maint_q;
   logic                     w_probe_q;
-  logic  [    MshrBits-1:0] w_mshr_q;
+  // Selects every MSHR's line payload in W: replicated so the wide merge and
+  // payload loads sit near a copy.
+  (* max_fanout = 64 *)logic  [    MshrBits-1:0] w_mshr_q;
   logic  [      WbBits-1:0] w_wb_q;
   // The way W acts on: the hit way, or an allocation's victim way.
   logic  [     WayBits-1:0] w_way_q;
@@ -1306,7 +1390,10 @@ module frost_cache #(
   logic                mshr_resp_any;
   logic [MshrBits-1:0] mshr_resp_sel;
   logic                mshr_resp_fire;
-  logic [NUM_MSHR-1:0] mshr_resp_onehot_q, mshr_in_resp_next;
+  // Selects the response line among the MSHR payloads: replicated so the
+  // wide response mux sits near a copy.
+  (* max_fanout = 64 *)logic [NUM_MSHR-1:0] mshr_resp_onehot_q;
+  logic [NUM_MSHR-1:0] mshr_in_resp_next;
   always_comb begin
     mshr_resp_any = |mshr_resp_onehot_q;
     mshr_resp_sel = '0;
@@ -2096,7 +2183,9 @@ module frost_cache #(
           // Maintenance has priority and waits for the pipeline to drain
           // (ready is masked while it is requested).
           if (i_invalidate_all && pipeline_idle) begin
-            sweep_idx_q <= '0;
+            // Flash invalidate clears every valid bit in the sweep's first
+            // cycle, so the sweep starts at its last set and ends there.
+            sweep_idx_q <= FLASH_INVALIDATE ? {SetBits{1'b1}} : '0;
             mstate_q    <= M_SWEEP;
           end else if (i_writeback_all && pipeline_idle) begin
             flush_idx_q <= (SIM_FAST_MAINT != 0) ? first_dirty_full : (wb_any_q ? wb_lo_q : '0);
@@ -2147,6 +2236,62 @@ module frost_cache #(
     end
   end
 
+`ifdef CACHE_FLASH_PROOF
+  // Independent event reference for one arbitrary line. Installation comes
+  // from a committed MSHR installation; tag-only updates do not count.
+  // Invalidation comes from acceptance of the
+  // invalidate-all request, not from valid_q, its read register, the RAM's
+  // valid bits or the sweep's clear assignment. Check the consumer's hit.
+  (* anyconst *) logic [SetBits-1:0] flash_watch_set;
+  (* anyconst *) logic [TagBits-1:0] flash_watch_tag;
+  logic flash_watch_installed_q = 1'b0;
+  logic flash_watch_hit_q = 1'b0;
+  logic flash_watch_invalidated_q = 1'b0;
+  logic flash_watch_blocked_q = 1'b0;
+  logic flash_watch_missed_q = 1'b0;
+  logic flash_watch_reinstalled_q = 1'b0;
+  wire flash_watch_install = (mstate_q == M_IDLE) && mshr_write_fire &&
+      (fw_set_q == flash_watch_set) &&
+      (mshr_line_q[fw_sel_q][LineAddrBits-1-:TagBits] == flash_watch_tag);
+  wire flash_watch_lookup = (t_set == flash_watch_set) && (t_tag == flash_watch_tag) &&
+      t_plain && !t_write_q;
+  wire flash_watch_read_hit = flash_watch_lookup && t_is_read_hit;
+  wire flash_watch_read_miss = flash_watch_lookup && t_is_alloc;
+  wire flash_inval_accept = (mstate_q == M_IDLE) && i_invalidate_all && pipeline_idle;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      flash_watch_installed_q <= 1'b0;
+      flash_watch_hit_q <= 1'b0;
+      flash_watch_invalidated_q <= 1'b0;
+      flash_watch_blocked_q <= 1'b0;
+      flash_watch_missed_q <= 1'b0;
+      flash_watch_reinstalled_q <= 1'b0;
+    end else begin
+      if (flash_watch_install) begin
+        flash_watch_installed_q <= 1'b1;
+        flash_watch_blocked_q <= 1'b0;
+        flash_watch_reinstalled_q <= flash_watch_blocked_q && flash_watch_missed_q;
+      end
+      if (flash_watch_installed_q && flash_watch_read_hit) flash_watch_hit_q <= 1'b1;
+      if (flash_inval_accept) begin
+        flash_watch_invalidated_q <= flash_watch_hit_q;
+        flash_watch_hit_q <= 1'b0;
+        flash_watch_blocked_q <= flash_watch_installed_q;
+        flash_watch_missed_q <= 1'b0;
+        flash_watch_reinstalled_q <= 1'b0;
+      end
+      if (flash_watch_blocked_q && flash_watch_read_miss) flash_watch_missed_q <= 1'b1;
+      if (flash_watch_blocked_q && flash_watch_lookup && decide)
+        p_flash_watch_no_stale_hit : assert (!hit);
+      // Each task's cover run must observe an installed line being hit,
+      // invalidated, missed, installed again and then hit again.
+      cover (flash_watch_hit_q && flash_inval_accept);
+      cover (flash_watch_invalidated_q && flash_watch_blocked_q && flash_watch_read_miss);
+      cover (flash_watch_invalidated_q && flash_watch_reinstalled_q && flash_watch_read_hit);
+    end
+  end
+`endif
+
   // ===========================================================================
   // Source-registered performance observers
   // ===========================================================================
@@ -2176,6 +2321,10 @@ module frost_cache #(
       perf_events_q.slot_full_stall <= stall_full && t_plain && !t_maint_q;
       perf_events_q.conflict_stall <= (stall_conflict || stall_ways || stall_wb_snapshot) &&
           t_plain && !t_maint_q;
+      // An allocation that needs a fill requests its line from below once
+      // (a whole-line write allocates without one). This interface cannot
+      // distinguish prefetch reads from demand, so both contribute to fill.
+      perf_events_q.fill <= w_counts_miss && w_is_alloc && w_needs_fill_q;
     end
   end
   assign o_perf_events = perf_events_q;
@@ -2393,39 +2542,78 @@ module frost_cache #(
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (up_req_fire && i_up_req_write && i_up_req_wstrb == '0)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: write request with empty strobes");
       if (up_req_fire && i_up_req_probe && (NUM_PROBE == 0))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: probe request on a cache without probe slots");
       if (up_req_fire && i_up_req_probe && i_up_req_write)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: probe request with write set");
       if (resp_is_wb && wb_probe_q[resp_wb_slot] && !probe_valid_q[wb_probe_slot_q[resp_wb_slot]])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: probe writeback acknowledged for an unmanned probe slot");
       for (int k = 0; k < int'(ProbeSlots); k++) begin
         if ((NUM_PROBE > 0) && i_probe_release_valid && probe_valid_q[k] &&
             (probe_id_q[k] == i_probe_release_id) && probe_ack_q[k])
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("frost_cache: probe slot %0d released before its acknowledgement left", k);
       end
       if (resp_is_fill && (mshr_state_q[resp_fill_slot] != MS_SENT))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: fill response for MSHR %0d not in flight", resp_fill_slot);
       if (resp_is_wb && (wb_state_q[resp_wb_slot] != WB_SENT))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: writeback ack for slot %0d not in flight", resp_wb_slot);
       if (ack_push && ((ack_wr_q - ack_rd_q) == AckPtrBits'(AckDepth)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: acknowledgement queue overflow");
       if (w_valid_q && w_is_alloc && (mshr_state_q[w_mshr_q] != MS_FREE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: allocation into busy MSHR %0d", w_mshr_q);
       if (w_allocs_wb && (wb_state_q[w_wb_q] != WB_FREE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: victim into busy writeback slot %0d", w_wb_q);
       if (flush_read && (wb_state_q[flush_wb_q] != WB_FREE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: flush writeback into busy slot %0d", flush_wb_q);
       if (w_valid_q && (w_op_q == W_MERGE) &&
           !((mshr_state_q[w_mshr_q] == MS_PEND) || (mshr_state_q[w_mshr_q] == MS_SENT) ||
             (mshr_state_q[w_mshr_q] == MS_MERGE)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: merge into MSHR %0d in state %0d", w_mshr_q, mshr_state_q[w_mshr_q]);
       // A W read of the data array never meets a same-edge write of its row
       // (see the data array): one W operation per cycle, and fills install
       // only into ways that neither hit nor are being taken. The L1s' banks
       // check their own reads.
       if (!ParallelWayRead && data_re && data_row_we && (data_raddr == data_waddr))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: data row 0x%0h read and written in the same cycle", data_raddr);
       p_tag_response_has_owner :
       assert (!tag_response_valid ||
@@ -2474,17 +2662,26 @@ module frost_cache #(
       for (int j = 0; j < int'(NUM_WB); j++) begin
         for (int k = j + 1; k < int'(NUM_WB); k++) begin
           if (wb_valid[j] && wb_valid[k] && (wb_line_q[j] == wb_line_q[k]))
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error(
                 "frost_cache: writeback slots %0d and %0d both hold line 0x%0h", j, k, wb_line_q[j]
             );
         end
         if (wb_valid[j] && w_valid_q && (w_op_q == W_WRITE_HIT) && (wb_line_q[j] == w_line_q))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "frost_cache: write hit commits to line 0x%0h while writeback slot %0d holds it",
               w_line_q,
               j
           );
         if (wb_valid[j] && mshr_write_fire && (wb_line_q[j] == mshr_line_q[fw_sel_q]))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "frost_cache: install of line 0x%0h while writeback slot %0d holds it",
               mshr_line_q[fw_sel_q],
@@ -2495,11 +2692,21 @@ module frost_cache #(
       // no writeback pending: a slot leaves WB_PEND only through the load
       // that clears both.
       if (wb_turn_q != (wb_lost_q == WbStarveBits'(WbStarveLimit)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "frost_cache: writeback turn %0d disagrees with its count %0d", wb_turn_q, wb_lost_q
         );
-      if (wb_turn_q && !wb_req_any) $error("frost_cache: writeback turn owed with none pending");
+      if (wb_turn_q && !wb_req_any)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("frost_cache: writeback turn owed with none pending");
       if (dq_load && dq_load_is_wb && (wb_state_q[wb_req_sel] != WB_PEND))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: writeback load picked slot %0d, which is not pending", wb_req_sel);
     end
   end
@@ -2519,6 +2726,9 @@ module frost_cache #(
         if (dq_load && !(dq_load_is_wb && (wb_req_sel == WbBits'(j)))) begin
           wb_pend_loads[j] <= wb_pend_loads[j] + 1;
           if (wb_pend_loads[j] == WbStarveTripLoads) begin
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error("frost_cache: writeback slot %0d (line 0x%0h) starved: %0d loads, %0d cycles",
                    j, wb_line_q[j], wb_pend_loads[j] + 1, wb_pend_cycles[j] + 1);
           end
@@ -2537,6 +2747,9 @@ module frost_cache #(
       end else if (dq_load && !dq_load_is_wb && (fill_req_sel != MshrBits'(i))) begin
         fill_passed[i] <= fill_passed[i] + 1;
         if (fill_passed[i] + 1 == NUM_MSHR) begin
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("frost_cache: fill of MSHR %0d (line 0x%0h) passed over by %0d fill loads", i,
                  mshr_line_q[i], fill_passed[i] + 1);
         end
@@ -2600,6 +2813,9 @@ module frost_cache #(
             probe_line_q[k],
             probe_id_q[k]
         );
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: request stuck for %0d cycles (forward progress lost)",
                WedgeWatchdogCycles);
       end

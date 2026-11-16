@@ -50,8 +50,8 @@ package riscv_pkg;
     OPC_CSR       = 7'b1110011,
     OPC_AMO       = 7'b0101111,  // A extension (atomics)
     // Shared F/D opcodes
-    OPC_LOAD_FP   = 7'b0000111,  // FLW, FLD, vector loads
-    OPC_STORE_FP  = 7'b0100111,  // FSW, FSD, vector stores
+    OPC_LOAD_FP   = 7'b0000111,  // FLW, FLD, FLH, vector loads
+    OPC_STORE_FP  = 7'b0100111,  // FSW, FSD, FSH, vector stores
     OPC_FMADD     = 7'b1000011,  // FMADD.S/D
     OPC_FMSUB     = 7'b1000111,  // FMSUB.S/D
     OPC_FNMSUB    = 7'b1001011,  // FNMSUB.S/D
@@ -98,8 +98,8 @@ package riscv_pkg;
   localparam int unsigned ImemSbIsIndirectHi = 79;
 
   // Predecode is word-local: each halfword's fields depend only on that
-  // halfword; native classes use its low seven bits. imem_predecode and
-  // the L1I fill path use these functions. The offline mirror is
+  // halfword; native classes use its opcode and funct3.
+  // imem_predecode and the L1I fill path use these functions. The mirror is
   // sw/common/generate_imem_predecode_init.py, for Vivado power-up images.
   // Use opcode literals because Yosys cannot resolve package-function enums.
 
@@ -143,13 +143,14 @@ package riscv_pkg;
   endfunction
 
   // Native serializing class, which never pairs in a fetch bundle: SYSTEM
-  // (OPC_CSR: CSR accesses, ECALL, EBREAK, xRET, WFI, SFENCE.VMA), MISC-MEM,
-  // and AMO.
-  function automatic logic imem_native_serialize(input logic [6:0] opcode);
+  // except funct3=100 (Zimop), MISC-MEM, and AMO. The first parcel contains
+  // both the opcode and funct3, including instructions spanning words.
+  function automatic logic imem_native_serialize(input logic [15:0] parcel);
     begin
-      imem_native_serialize = (opcode == 7'b1110011) ||  // OPC_CSR
-      (opcode == 7'b0001111) ||  // OPC_MISC_MEM
-      (opcode == 7'b0101111);  // OPC_AMO
+      imem_native_serialize = ((parcel[6:0] == 7'b1110011) &&
+                               (parcel[14:12] != 3'b100)) ||
+      (parcel[6:0] == 7'b0001111) ||  // OPC_MISC_MEM
+      (parcel[6:0] == 7'b0101111);  // OPC_AMO
     end
   endfunction
 
@@ -185,6 +186,19 @@ package riscv_pkg;
       (opcode == 7'b1001111) ||  // OPC_FNMADD
       (opcode == 7'b1010111);  // OPC_OP_V
     end
+  endfunction
+
+  // Bits [24:20] of a Zcb unary expansion (quadrant 1, bits [15:10]=100111,
+  // [6:5]=11), selected by bits [4:2]: the C.ZEXT.B and C.NOT immediates
+  // (0xff, -1), the SEXT.B/SEXT.H funct12 low bits, and x0 for ZEXT.H and
+  // ZEXT.W. The reserved [4:2]=110/111 expand to zero.
+  function automatic logic [4:0] imem_rvc_zcb_unary_bits24_20(input logic [2:0] sel);
+    unique case (sel)
+      3'b000, 3'b101: imem_rvc_zcb_unary_bits24_20 = 5'b11111;
+      3'b001: imem_rvc_zcb_unary_bits24_20 = 5'b00100;
+      3'b011: imem_rvc_zcb_unary_bits24_20 = 5'b00101;
+      default: imem_rvc_zcb_unary_bits24_20 = 5'b00000;
+    endcase
   endfunction
 
   // Return {expanded instruction[21], expanded instruction[19:15]}, i.e.
@@ -261,6 +275,15 @@ package riscv_pkg;
               rs1 = rs1_prime;
               rs2 = rs2_prime;
             end
+            3'b100: begin  // Zcb; reserved forms expand to zero
+              if (!parcel[12] && !parcel[11]) begin  // C.LBU / C.LHU / C.LH
+                rs1 = rs1_prime;
+                rs2 = {3'b000, parcel[5], parcel[6] && !parcel[10]};
+              end else if (!parcel[12] && (!parcel[10] || !parcel[6])) begin  // C.SB / C.SH
+                rs1 = rs1_prime;
+                rs2 = rs2_prime;
+              end
+            end
             default: begin  // Reserved encoding expands to zero.
               rs1 = 5'd0;
               rs2 = 5'd0;
@@ -300,14 +323,18 @@ package riscv_pkg;
                   rs1 = rs1_prime;
                   rs2 = shamt;
                 end
-                default: begin  // C.SUB / C.XOR / C.OR / C.AND / C.SUBW / C.ADDW
-                  if (!parcel[12] || !parcel[6]) begin
+                default: begin  // C.SUB/XOR/OR/AND, C.SUBW/ADDW, Zcb C.MUL and unary
+                  if (!parcel[12] || !parcel[6] || !parcel[5]) begin
                     rs1 = rs1_prime;
                     rs2 = rs2_prime;
+                  end else if (!(parcel[4] && parcel[3])) begin
+                    // Zcb unary forms: rs1 = rd'; bits [24:20] hold the
+                    // immediate or the funct12 low bits.
+                    rs1 = rs1_prime;
+                    rs2 = imem_rvc_zcb_unary_bits24_20(parcel[4:2]);
                   end
-                  // With parcel[12]=1, [6:5]=00/01 are C.SUBW/C.ADDW with the
-                  // same register shape while [6:5]=10/11 stay reserved (zero
-                  // expansion).
+                  // With parcel[12]=1, [6:5]=11 and [4:2]=110/111 stay
+                  // reserved (zero expansion).
                 end
               endcase
             end
@@ -395,10 +422,10 @@ package riscv_pkg;
   // rvc_decompressor's expansion, including reserved encodings; a quadrant-3
   // (native) parcel returns zero.
   function automatic logic [4:0] imem_rvc_bits24_20(input logic [15:0] c, input logic rd_is_x2);
-    logic arithmetic_reserved;
+    logic zcb_unary;
     logic ebreak;
     begin
-      arithmetic_reserved = c[12] && (&c[11:10]) && c[6];
+      zcb_unary = c[12] && (&c[11:10]) && (&c[6:5]);
       ebreak = c[12] && (c[11:7] == 5'd0) && (c[6:2] == 5'd0);
       imem_rvc_bits24_20 = 5'd0;
       unique case (c[1:0])
@@ -408,6 +435,11 @@ package riscv_pkg;
             3'b001, 3'b011: imem_rvc_bits24_20 = {c[11:10], 3'b000};
             3'b010: imem_rvc_bits24_20 = {c[11:10], c[6], 2'b00};
             3'b101, 3'b110, 3'b111: imem_rvc_bits24_20 = {2'b01, c[4:2]};
+            // Zcb: C.LBU/C.LHU/C.LH uimm, C.SB/C.SH rs2'; reserved forms zero
+            3'b100:
+            imem_rvc_bits24_20 = c[12] ? 5'd0 :
+                !c[11] ? {3'b000, c[5], c[6] && !c[10]} :
+                (!c[10] || !c[6]) ? {2'b01, c[4:2]} : 5'd0;
             default: imem_rvc_bits24_20 = 5'd0;
           endcase
         end
@@ -416,8 +448,8 @@ package riscv_pkg;
             3'b000, 3'b001, 3'b010: imem_rvc_bits24_20 = c[6:2];
             3'b011: imem_rvc_bits24_20 = rd_is_x2 ? {c[6], 4'b0000} : {5{c[12]}};
             3'b100:
-            imem_rvc_bits24_20 = arithmetic_reserved ? 5'd0 :
-                ((&c[11:10]) ? {2'b01, c[4:2]} : c[6:2]);
+            imem_rvc_bits24_20 = zcb_unary ?
+                imem_rvc_zcb_unary_bits24_20(c[4:2]) : ((&c[11:10]) ? {2'b01, c[4:2]} : c[6:2]);
             3'b101: imem_rvc_bits24_20 = {c[11], c[5:3], c[12]};
             default: imem_rvc_bits24_20 = 5'd0;
           endcase
@@ -470,6 +502,8 @@ package riscv_pkg;
     logic [ 7:0] imm_swsp;
     logic [11:0] imm_sdsp;
     logic [ 5:0] shamt6;
+    logic [11:0] imm_lb;
+    logic [11:0] imm_lh;
     begin
       i_rd_is_x2 = (i_instr_compressed[11:7] == 5'd2);
       quadrant = i_instr_compressed[1:0];
@@ -531,6 +565,8 @@ package riscv_pkg;
       imm_swsp = {i_instr_compressed[8:7], i_instr_compressed[12:9], 2'b00};
       imm_sdsp = {3'b0, i_instr_compressed[9:7], i_instr_compressed[12:10], 3'b000};
       shamt6 = {i_instr_compressed[12], i_instr_compressed[6:2]};
+      imm_lb = {10'b0, i_instr_compressed[5], i_instr_compressed[6]};
+      imm_lh = {10'b0, i_instr_compressed[5], 1'b0};
       // Default outputs: zero instruction for reserved encodings.
       o_instr_expanded = 32'b0;
       o_illegal = 1'b0;
@@ -561,6 +597,25 @@ package riscv_pkg;
             o_instr_expanded = {
               imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStore
             };  // C.SD
+            3'b100: begin  // Zcb loads and stores; reserved forms expand to zero
+              unique case (i_instr_compressed[12:10])
+                3'b000: o_instr_expanded = {imm_lb, rs1_prime, 3'b100, rd_prime, OpcLoad};  // C.LBU
+                3'b001:  // C.LHU (bit 6 = 0) / C.LH (bit 6 = 1)
+                o_instr_expanded = {
+                  imm_lh, rs1_prime, i_instr_compressed[6] ? 3'b001 : 3'b101, rd_prime, OpcLoad
+                };
+                3'b010:
+                o_instr_expanded = {
+                  7'b0, rs2_prime, rs1_prime, 3'b000, imm_lb[4:0], OpcStore
+                };  // C.SB
+                3'b011: begin  // C.SH (bit 6 = 1 is reserved)
+                  if (!i_instr_compressed[6])
+                    o_instr_expanded = {7'b0, rs2_prime, rs1_prime, 3'b001, imm_lh[4:0], OpcStore};
+                  else o_illegal = 1'b1;
+                end
+                default: o_illegal = 1'b1;
+              endcase
+            end
             default: o_illegal = 1'b1;  // Reserved encoding
           endcase
         end
@@ -582,7 +637,11 @@ package riscv_pkg;
                 if (imm_addi16sp == 12'b0) o_illegal = 1'b1;
               end else begin  // C.LUI (rd=0 is a HINT: lui x0)
                 o_instr_expanded = {imm_lui, rd_full, OpcLui};
-                if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) o_illegal = 1'b1;
+                if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) begin
+                  // Zcmop C.MOP.n: rd = n odd in 1..15; writes no register.
+                  if (!rd_full[4] && rd_full[0]) o_instr_expanded = 32'h0000_0013;
+                  else o_illegal = 1'b1;
+                end
               end
             end
             3'b100: begin
@@ -605,7 +664,27 @@ package riscv_pkg;
                       o_instr_expanded = {
                         7'b0000000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
                       };  // C.ADDW
-                      default: o_illegal = 1'b1;  // [6:5]=10/11 stay reserved
+                      2'b10:
+                      o_instr_expanded = {
+                        7'b0000001, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp
+                      };  // Zcb C.MUL
+                      2'b11: begin  // Zcb unary forms; [4:2]=110/111 stay reserved
+                        unique case (i_instr_compressed[4:2])
+                          3'b000:  // C.ZEXT.B = andi rd', rd', 0xff
+                          o_instr_expanded = {12'h0ff, rs1_prime, 3'b111, rs1_prime, OpcOpImm};
+                          3'b001:  // C.SEXT.B
+                          o_instr_expanded = {12'h604, rs1_prime, 3'b001, rs1_prime, OpcOpImm};
+                          3'b010:  // C.ZEXT.H = zext.h (RV64 encoding)
+                          o_instr_expanded = {12'h080, rs1_prime, 3'b100, rs1_prime, OpcOp32};
+                          3'b011:  // C.SEXT.H
+                          o_instr_expanded = {12'h605, rs1_prime, 3'b001, rs1_prime, OpcOpImm};
+                          3'b100:  // C.ZEXT.W = add.uw rd', rd', x0
+                          o_instr_expanded = {12'h080, rs1_prime, 3'b000, rs1_prime, OpcOp32};
+                          3'b101:  // C.NOT = xori rd', rd', -1
+                          o_instr_expanded = {12'hfff, rs1_prime, 3'b100, rs1_prime, OpcOpImm};
+                          default: o_illegal = 1'b1;
+                        endcase
+                      end
                     endcase
                   end else begin
                     unique case (i_instr_compressed[6:5])
@@ -741,8 +820,8 @@ package riscv_pkg;
       sb[ImemSbIsCompressedHi] = (word[17:16] != 2'b11);
       compressed_control_lo = imem_compressed_control(word[15:0]);
       compressed_control_hi = imem_compressed_control(word[31:16]);
-      sb[ImemSbNativeSerializeLo] = imem_native_serialize(word[6:0]);
-      sb[ImemSbNativeSerializeHi] = imem_native_serialize(word[22:16]);
+      sb[ImemSbNativeSerializeLo] = imem_native_serialize(word[15:0]);
+      sb[ImemSbNativeSerializeHi] = imem_native_serialize(word[31:16]);
       native_fp_compute_lo = imem_native_fp_compute(word[6:0]) ||
           is_vector_mem(word[6:0], word[14:12]);
       native_fp_compute_hi = imem_native_fp_compute(word[22:16]) ||
@@ -801,12 +880,16 @@ package riscv_pkg;
   // Every instruction operation, grouped by extension. The decoder passes one
   // of these to the ALU and the other execution units.
 
-  // Keep ordinals fixed; append new members and leave 86/87 unused.
-  // The guided X3 placement flow in fpga/build/build_step.tcl depends on
-  // these encodings. projected_shift_controls also decodes operation bits
-  // directly: any enum edit must preserve or revalidate alu.sv's assertions.
-  // The unsigned 8-bit base bounds payload width and keeps values >=128
-  // nonnegative.
+  // Explicit anchors (ROL = 8'd76, ADDIW = 8'd170) hold ROL..RORI and
+  // SLLIW..RORIW at the ordinals projected_shift_controls decodes by bit
+  // position (SLL..SRAI sit ahead of any folded member); alu.sv checks the
+  // table in simulation and formal verification (alu_shift_hint). Append
+  // new members after the last member so none of the shift ordinals move.
+  // Operations carry one enum member per operation across widths and CSR
+  // source forms when width, sign or CSR operation travels in other fields
+  // (scalar integer and FP loads and stores, LR/SC, AMO W/D pairs, CSR
+  // reg/imm forms). The unsigned 8-bit base bounds payload width and keeps
+  // values >=128 nonnegative.
   localparam int unsigned InstrOpWidth = 8;
   typedef enum bit [InstrOpWidth-1:0] {
     // base-ISA integer ops
@@ -841,15 +924,9 @@ package riscv_pkg;
     BGE,
     BLTU,
     BGEU,
-    // base-ISA loads/stores
-    LB,
-    LH,
-    LW,
-    LBU,
-    LHU,
-    SB,
-    SH,
-    SW,
+    // Scalar integer loads and stores (width/sign carried in funct3)
+    LOAD,
+    STORE,
     // M-extension for multiply/divide
     MUL,
     MULH,
@@ -862,13 +939,9 @@ package riscv_pkg;
     // Fences (base ISA and Zifencei)
     FENCE,
     FENCE_I,
-    // Zicsr extension
-    CSRRW,
-    CSRRS,
-    CSRRC,
-    CSRRWI,
-    CSRRSI,
-    CSRRCI,
+    // Zicsr extension (CSR op carried in funct3)
+    CSR_REG,
+    CSR_IMM,
     // Zba extension (address generation)
     SH1ADD,
     SH2ADD,
@@ -895,7 +968,19 @@ package riscv_pkg;
     MINU,
     SEXT_B,
     SEXT_H,
-    ROL,
+    // Non-shift operations placed before ROL = 8'd76 to preserve shift ordinals
+    CLZW,                       // Zbb: count leading zeros in word
+    CTZW,                       // Zbb: count trailing zeros in word
+    CPOPW,                      // Zbb: population count of word
+    PACKW,                      // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
+    MULW,                       // Multiply word (sext32 of low-32 product)
+    DIVW,                       // Divide word signed (sext32 result)
+    DIVUW,                      // Divide word unsigned (sext32 result)
+    REMW,                       // Remainder word signed (sext32 result)
+    REMUW,                      // Remainder word unsigned (sext32 result)
+    ILLEGAL,                    // Illegal instruction trap marker
+    // Zbb shifts/rotates (pinned at 8'd76..8'd78 for projected_shift_controls)
+    ROL              = 8'd76,
     ROR,
     RORI,
     ORC_B,
@@ -907,169 +992,161 @@ package riscv_pkg;
     PACK,
     PACKH,
     BREV8,
-    // 8'd86 and 8'd87 are unused. Do not compact: see the ordinal note above.
+    SRET,                       // Return from supervisor-mode trap
+    SFENCE_VMA,                 // Supervisor fence.vma with address and ASID filters
     // Zihintpause extension
-    PAUSE            = 8'd88,
+    PAUSE,
     // Privileged instructions (trap handling)
-    MRET,                      // Return from machine-mode trap
-    WFI,                       // Wait for interrupt
-    ECALL,                     // Environment call (system call)
-    EBREAK,                    // Breakpoint exception
-    // A extension (atomics)
-    LR_W,                      // Load-reserved word
-    SC_W,                      // Store-conditional word
-    AMOSWAP_W,                 // Atomic swap
-    AMOADD_W,                  // Atomic add
-    AMOXOR_W,                  // Atomic XOR
-    AMOAND_W,                  // Atomic AND
-    AMOOR_W,                   // Atomic OR
-    AMOMIN_W,                  // Atomic minimum (signed)
-    AMOMAX_W,                  // Atomic maximum (signed)
-    AMOMINU_W,                 // Atomic minimum (unsigned)
-    AMOMAXU_W,                 // Atomic maximum (unsigned)
-    // RV64A doubleword forms.
-    LR_D,                      // Load-reserved doubleword
-    SC_D,                      // Store-conditional doubleword
-    AMOSWAP_D,                 // Atomic swap doubleword
-    AMOADD_D,                  // Atomic add doubleword
-    AMOXOR_D,                  // Atomic XOR doubleword
-    AMOAND_D,                  // Atomic AND doubleword
-    AMOOR_D,                   // Atomic OR doubleword
-    AMOMIN_D,                  // Atomic minimum doubleword (signed)
-    AMOMAX_D,                  // Atomic maximum doubleword (signed)
-    AMOMINU_D,                 // Atomic minimum doubleword (unsigned)
-    AMOMAXU_D,                 // Atomic maximum doubleword (unsigned)
+    MRET,                       // Return from machine-mode trap
+    WFI,                        // Wait for interrupt
+    ECALL,                      // Environment call (system call)
+    EBREAK,                     // Breakpoint exception
+    // A extension atomics (W/D width carried in funct3 / mem_size)
+    LR,                         // Load-reserved (word or doubleword)
+    SC,                         // Store-conditional (word or doubleword)
+    AMOSWAP,                    // Atomic swap
+    AMOADD,                     // Atomic add
+    AMOXOR,                     // Atomic XOR
+    AMOAND,                     // Atomic AND
+    AMOOR,                      // Atomic OR
+    AMOMIN,                     // Atomic minimum (signed)
+    AMOMAX,                     // Atomic maximum (signed)
+    AMOMINU,                    // Atomic minimum (unsigned)
+    AMOMAXU,                    // Atomic maximum (unsigned)
+    // Scalar FP loads and stores (width carried in funct3)
+    LOAD_FP,                    // Load floating-point scalar
+    STORE_FP,                   // Store floating-point scalar
     // F extension (single-precision floating-point)
-    FLW,                       // Load float
-    FSW,                       // Store float
-    FADD_S,                    // FP add
-    FSUB_S,                    // FP subtract
-    FMUL_S,                    // FP multiply
-    FDIV_S,                    // FP divide
-    FSQRT_S,                   // FP square root
-    FMADD_S,                   // FP fused multiply-add
-    FMSUB_S,                   // FP fused multiply-subtract
-    FNMADD_S,                  // FP negated fused multiply-add
-    FNMSUB_S,                  // FP negated fused multiply-subtract
-    FSGNJ_S,                   // FP sign inject
-    FSGNJN_S,                  // FP sign inject negated
-    FSGNJX_S,                  // FP sign inject XOR
-    FMIN_S,                    // FP minimum
-    FMAX_S,                    // FP maximum
-    FCVT_W_S,                  // FP to signed int
-    FCVT_WU_S,                 // FP to unsigned int
-    FCVT_S_W,                  // Signed int to FP
-    FCVT_S_WU,                 // Unsigned int to FP
-    FMV_X_W,                   // Move FP bits to int reg
-    FMV_W_X,                   // Move int bits to FP reg
-    FEQ_S,                     // FP equal
-    FLT_S,                     // FP less than
-    FLE_S,                     // FP less than or equal
-    FCLASS_S,                  // FP classify
+    FADD_S,                     // FP add
+    FSUB_S,                     // FP subtract
+    FMUL_S,                     // FP multiply
+    FDIV_S,                     // FP divide
+    FSQRT_S,                    // FP square root
+    FMADD_S,                    // FP fused multiply-add
+    FMSUB_S,                    // FP fused multiply-subtract
+    FNMADD_S,                   // FP negated fused multiply-add
+    FNMSUB_S,                   // FP negated fused multiply-subtract
+    FSGNJ_S,                    // FP sign inject
+    FSGNJN_S,                   // FP sign inject negated
+    FSGNJX_S,                   // FP sign inject XOR
+    FMIN_S,                     // FP minimum
+    FMAX_S,                     // FP maximum
+    FCVT_W_S,                   // FP to signed int
+    FCVT_WU_S,                  // FP to unsigned int
+    FCVT_S_W,                   // Signed int to FP
+    FCVT_S_WU,                  // Unsigned int to FP
+    FMV_X_W,                    // Move FP bits to int reg
+    FMV_W_X,                    // Move int bits to FP reg
+    FEQ_S,                      // FP equal
+    FLT_S,                      // FP less than
+    FLE_S,                      // FP less than or equal
+    FCLASS_S,                   // FP classify
     // D extension (double-precision floating-point)
-    FLD,                       // Load double
-    FSD,                       // Store double
-    FADD_D,                    // FP add (double)
-    FSUB_D,                    // FP subtract (double)
-    FMUL_D,                    // FP multiply (double)
-    FDIV_D,                    // FP divide (double)
-    FSQRT_D,                   // FP square root (double)
-    FMADD_D,                   // FP fused multiply-add (double)
-    FMSUB_D,                   // FP fused multiply-subtract (double)
-    FNMADD_D,                  // FP negated fused multiply-add (double)
-    FNMSUB_D,                  // FP negated fused multiply-subtract (double)
-    FSGNJ_D,                   // FP sign inject (double)
-    FSGNJN_D,                  // FP sign inject negated (double)
-    FSGNJX_D,                  // FP sign inject XOR (double)
-    FMIN_D,                    // FP minimum (double)
-    FMAX_D,                    // FP maximum (double)
-    FCVT_W_D,                  // FP to signed int (double)
-    FCVT_WU_D,                 // FP to unsigned int (double)
-    FCVT_D_W,                  // Signed int to FP (double)
-    FCVT_D_WU,                 // Unsigned int to FP (double)
-    FCVT_S_D,                  // Convert double to single
-    FCVT_D_S,                  // Convert single to double
-    FEQ_D,                     // FP equal (double)
-    FLT_D,                     // FP less than (double)
-    FLE_D,                     // FP less than or equal (double)
-    FCLASS_D,                  // FP classify (double)
-    // RV64I base.
-    LWU,                       // Load word unsigned (zero-extended)
-    LD,                        // Load doubleword
-    SD,                        // Store doubleword
-    ADDIW,                     // Add immediate word (sext32 result)
-    SLLIW,                     // Shift left logical immediate word
-    SRLIW,                     // Shift right logical immediate word
-    SRAIW,                     // Shift right arithmetic immediate word
-    ADDW,                      // Add word
-    SUBW,                      // Subtract word
-    SLLW,                      // Shift left logical word
-    SRLW,                      // Shift right logical word
-    SRAW,                      // Shift right arithmetic word
-    // RV64 B-extension W/UW forms.
-    ADD_UW,                    // Zba: add unsigned word (zext32(rs1) + rs2)
-    SH1ADD_UW,                 // Zba: shift-add unsigned word
-    SH2ADD_UW,                 // Zba: shift-add unsigned word
-    SH3ADD_UW,                 // Zba: shift-add unsigned word
-    SLLI_UW,                   // Zba: shift-left immediate unsigned word (6-bit shamt)
-    ROLW,                      // Zbb: rotate left word (sext32 result)
-    RORW,                      // Zbb: rotate right word (sext32 result)
-    RORIW,                     // Zbb: rotate right immediate word (5-bit shamt)
-    CLZW,                      // Zbb: count leading zeros in word
-    CTZW,                      // Zbb: count trailing zeros in word
-    CPOPW,                     // Zbb: population count of word
-    PACKW,                     // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
-    // RV64 M-extension word forms.
-    MULW,                      // Multiply word (sext32 of low-32 product)
-    DIVW,                      // Divide word signed (sext32 result)
-    DIVUW,                     // Divide word unsigned (sext32 result)
-    REMW,                      // Remainder word signed (sext32 result)
-    REMUW,                     // Remainder word unsigned (sext32 result)
-    // RV64 F/D conversions and moves.
-    FCVT_L_S,                  // FP to signed 64-bit int (single)
-    FCVT_LU_S,                 // FP to unsigned 64-bit int (single)
-    FCVT_S_L,                  // Signed 64-bit int to FP (single)
-    FCVT_S_LU,                 // Unsigned 64-bit int to FP (single)
-    FCVT_L_D,                  // FP to signed 64-bit int (double)
-    FCVT_LU_D,                 // FP to unsigned 64-bit int (double)
-    FCVT_D_L,                  // Signed 64-bit int to FP (double)
-    FCVT_D_LU,                 // Unsigned 64-bit int to FP (double)
-    FMV_X_D,                   // Move double bits to int reg
-    FMV_D_X,                   // Move int bits to double reg
-    ILLEGAL,                   // Illegal instruction trap marker
-    // Supervisor, fetch-fault, and Debug ops retain their fixed ordinals.
-    SRET,                      // Return from supervisor-mode trap
-    SFENCE_VMA,                // Supervisor fence.vma (operands ignored: flush-all)
-    FETCH_FAULT,               // Fetch access-fault pseudo-op: injected
-                               // by decode for a fault-tagged fetch bundle; raises the
-                               // precise instruction access fault (cause 1) through
-                               // the ILLEGAL/ECALL completion path
-    FETCH_PAGE_FAULT,          // Fetch page-fault pseudo-op: the
-                               // translated-fetch twin of FETCH_FAULT (cause 12)
-    DRET,                      // Return from Debug Mode: rides the
-                               // MRET serial path; illegal outside Debug Mode
-    CLMUL,                     // Zbc/Zbkc: low polynomial product
-    CLMULH,                    // Zbc/Zbkc: high polynomial product
-    CLMULR,                    // Zbc: reversed polynomial product
-    CBO_ZERO,                  // Zicboz: zero the 64-byte block containing rs1
-    VSETVLI,                   // V: set vl and vtype; AVL in rs1, vtype immediate
-    VSETIVLI,                  // V: set vl and vtype; AVL and vtype immediates
-    VSETVL,                    // V: set vl and vtype; AVL in rs1, vtype in rs2
-    VARITH,                    // V: vector arithmetic with no scalar operand; the engine
-                               // executes it after commit, INT_RS only completes it
-    VARITH_X,                  // V: vector arithmetic with rs1 as its scalar operand, which
-                               // INT_RS passes to the ROB for the engine
-    VTOX,                      // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
-                               // once the engine is idle; no reservation station
+    FADD_D,                     // FP add (double)
+    FSUB_D,                     // FP subtract (double)
+    FMUL_D,                     // FP multiply (double)
+    FDIV_D,                     // FP divide (double)
+    FSQRT_D,                    // FP square root (double)
+    FMADD_D,                    // FP fused multiply-add (double)
+    FMSUB_D,                    // FP fused multiply-subtract (double)
+    FNMADD_D,                   // FP negated fused multiply-add (double)
+    FNMSUB_D,                   // FP negated fused multiply-subtract (double)
+    FSGNJ_D,                    // FP sign inject (double)
+    FSGNJN_D,                   // FP sign inject negated (double)
+    FSGNJX_D,                   // FP sign inject XOR (double)
+    FMIN_D,                     // FP minimum (double)
+    FMAX_D,                     // FP maximum (double)
+    FCVT_W_D,                   // FP to signed int (double)
+    FCVT_WU_D,                  // FP to unsigned int (double)
+    FCVT_D_W,                   // Signed int to FP (double)
+    FCVT_D_WU,                  // Unsigned int to FP (double)
+    FCVT_S_D,                   // Convert double to single
+    FCVT_D_S,                   // Convert single to double
+    FEQ_D,                      // FP equal (double)
+    FLT_D,                      // FP less than (double)
+    FLE_D,                      // FP less than or equal (double)
+    FCLASS_D,                   // FP classify (double)
+    // Fault, debug, carry-less multiply, CMO, and vector control/arith ops
+    FETCH_FAULT,                // Fetch access-fault pseudo-op (cause 1)
+    FETCH_PAGE_FAULT,           // Fetch page-fault pseudo-op (cause 12)
+    DRET,                       // Return from Debug Mode
+    CLMUL,                      // Zbc/Zbkc: low polynomial product
+    CLMULH,                     // Zbc/Zbkc: high polynomial product
+    CLMULR,                     // Zbc: reversed polynomial product
+    CBO_ZERO,                   // Zicboz: zero the 64-byte block containing rs1
     // Zicbom: clean, flush or invalidate the 64-byte block containing rs1.
     // id_stage decodes cbo.inval as CBO_FLUSH while CBIE selects a flush, so
     // CBO_INVAL always means an invalidate.
     CBO_CLEAN,
     CBO_FLUSH,
     CBO_INVAL,
-    VLOAD,                     // V: unit-stride, whole-register and mask loads; INT_RS
-                               // passes the rs1 base to the ROB
-    VSTORE                     // V: unit-stride, whole-register and mask stores; as VLOAD
+    VSETVLI,                    // V: set vl and vtype; AVL in rs1, vtype immediate
+    VSETIVLI,                   // V: set vl and vtype; AVL and vtype immediates
+    VSETVL,                     // V: set vl and vtype; AVL in rs1, vtype in rs2
+    VARITH,                     // V: vector arithmetic with no scalar operand; the engine
+                                // executes it after commit, INT_RS only completes it
+    VARITH_X,                   // V: vector arithmetic with rs1 as its scalar operand, which
+                                // INT_RS passes to the ROB for the engine
+    VTOX,                       // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
+                                // once the engine is idle; no reservation station
+    // RV64I and B-extension word shifts/ops (pinned at 8'd170 for projected_shift_controls)
+    ADDIW            = 8'd170,  // Add immediate word (sext32 result)
+    SLLIW,                      // Shift left logical immediate word
+    SRLIW,                      // Shift right logical immediate word
+    SRAIW,                      // Shift right arithmetic immediate word
+    ADDW,                       // Add word
+    SUBW,                       // Subtract word
+    SLLW,                       // Shift left logical word
+    SRLW,                       // Shift right logical word
+    SRAW,                       // Shift right arithmetic word
+    ADD_UW,                     // Zba: add unsigned word (zext32(rs1) + rs2)
+    SH1ADD_UW,                  // Zba: shift-add unsigned word
+    SH2ADD_UW,                  // Zba: shift-add unsigned word
+    SH3ADD_UW,                  // Zba: shift-add unsigned word
+    SLLI_UW,                    // Zba: shift-left immediate unsigned word (6-bit shamt)
+    ROLW,                       // Zbb: rotate left word (sext32 result)
+    RORW,                       // Zbb: rotate right word (sext32 result)
+    RORIW,                      // Zbb: rotate right immediate word (5-bit shamt)
+    // RV64 F/D conversions and moves.
+    FCVT_L_S,                   // FP to signed 64-bit int (single)
+    FCVT_LU_S,                  // FP to unsigned 64-bit int (single)
+    FCVT_S_L,                   // Signed 64-bit int to FP (single)
+    FCVT_S_LU,                  // Unsigned 64-bit int to FP (single)
+    FCVT_L_D,                   // FP to signed 64-bit int (double)
+    FCVT_LU_D,                  // FP to unsigned 64-bit int (double)
+    FCVT_D_L,                   // Signed 64-bit int to FP (double)
+    FCVT_D_LU,                  // Unsigned 64-bit int to FP (double)
+    FMV_X_D,                    // Move double bits to int reg
+    FMV_D_X,                    // Move int bits to double reg
+    VLOAD,                      // V: unit-stride, whole-register and mask loads: translated
+                                // at the ROB head once older vector work drains; no RS
+    VSTORE,                     // V: unit-stride, whole-register and mask stores; as VLOAD
+    // Zfhmin: half-precision moves and conversions (loads/stores use LOAD_FP/STORE_FP).
+    FMV_X_H,                    // Move half bits to int reg (sign-extended)
+    FMV_H_X,                    // Move int bits to half reg (NaN-boxed)
+    FCVT_S_H,                   // Convert half to single
+    FCVT_H_S,                   // Convert single to half
+    FCVT_D_H,                   // Convert half to double
+    FCVT_H_D,                   // Convert double to half
+    // Zfa with F and D. FLI.H needs Zfh or Zvfh; D high-half moves need RV32.
+    FLI_S,                      // Load one of 32 single-precision constants
+    FLI_D,                      // Load one of 32 double-precision constants
+    FMINM_S,                    // Minimum, NaN if either operand is NaN
+    FMAXM_S,                    // Maximum, NaN if either operand is NaN
+    FMINM_D,
+    FMAXM_D,
+    FROUND_S,                   // Round to integral value, no NX
+    FROUNDNX_S,                 // Round to integral value, NX when inexact
+    FROUND_D,
+    FROUNDNX_D,
+    FCVTMOD_W_D,                // Double to 32-bit int, modular (RTZ)
+    FLEQ_S,                     // Quiet less than or equal
+    FLTQ_S,                     // Quiet less than
+    FLEQ_D,
+    FLTQ_D,
+    // Zimop MOP.R.n / MOP.RR.n: no extension redefines them, so each writes
+    // zero to rd. It reads no register and selects no ALU result group.
+    MOP
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -1689,11 +1766,16 @@ package riscv_pkg;
   // physical space. The window is not part of the PMA map: an untranslated
   // access to it, or a PMA leaf over it, is an access fault as before (none of
   // the pma_* decodes below contain it). Only an NC or IO leaf reaches it, and
-  // the MMUs classify that access as a device access (MMIO), so the load and
-  // store queues and the uncached data adapter treat it exactly as one: no L0,
-  // no L1D, at the ROB head after older stores drain, stores retired after
-  // their bus response; the load queue's PMA check accepts the window for its
-  // MMIO entries. soc_top turns an alias access into one single-beat transfer
+  // the MMUs classify that access as MMIO. NC/IO loads over the alias or low
+  // BRAM issue at the ROB head and bypass caches and store forwarding. The
+  // router uses the physical device quadrant for parking, committed-store
+  // draining and interrupt shielding. Memory loads do not get those three
+  // protections: an interrupt or debug halt can flush an accepted load and
+  // cause a second read after resumption. These targets are idempotent memory.
+  // Alias stores retire after their bus response; NC/IO low-BRAM stores are
+  // buffered and can retire before it. Device registers use the full device
+  // mechanism regardless of PBMT. The load queue's PMA check accepts the alias
+  // for MMIO entries. soc_top turns an alias access into one single-beat transfer
   // of the real DDR address through the coherent DMA port, so it is coherent
   // with cacheable copies of the same bytes (the L1D is probed, dirty data
   // merged) and leaves nothing in the hart's caches.
@@ -1719,11 +1801,16 @@ package riscv_pkg;
   // The alias window: bit PbmtAliasBit set and the address without it inside
   // the covered DDR range (which also bounds every higher bit).
   function automatic logic pma_pbmt_alias_ok(input logic [XLEN-1:0] addr);
-    logic [XLEN-1:0] real_addr;
-    real_addr = addr;
-    real_addr[PbmtAliasBit] = 1'b0;
-    pma_pbmt_alias_ok = PbmtAliasEnabled && addr[PbmtAliasBit] &&
-        (real_addr >= XLEN'(DdrBase)) && (real_addr < XLEN'(PbmtAliasCoverLimit));
+    if (!PbmtAliasEnabled) pma_pbmt_alias_ok = 1'b0;
+    else if (DdrCapacityLog2Bytes <= 30) begin
+      // The whole alias is one aligned DDR-sized window.
+      pma_pbmt_alias_ok = (addr & XLEN'(~(DdrCapacityBytes - 1))) == (DdrBase | PbmtAliasOffset);
+    end else begin
+      // Only the alias bit may be set above the covered range. At least one
+      // bit between the DDR base and that bit must be set to exclude the gap.
+      pma_pbmt_alias_ok = ((addr & XLEN'(~(PbmtAliasOffset - 1))) == XLEN'(PbmtAliasOffset)) &&
+          ((addr & XLEN'(PbmtAliasOffset - DdrBase)) != '0);
+    end
   endfunction
   // The DDR address an alias names.
   function automatic logic [XLEN-1:0] pbmt_alias_real(input logic [XLEN-1:0] addr);
@@ -1822,8 +1909,9 @@ package riscv_pkg;
   localparam int unsigned PteNapotBit = 63;
   // PBMT encodings (Svpbmt): 0 PMA, 1 NC (non-cacheable, idempotent, weakly
   // ordered main memory), 2 IO (non-cacheable, non-idempotent, strongly
-  // ordered I/O), 3 reserved. FROST executes NC exactly as IO: at the ROB
-  // head, in order, after older stores drain, which is stronger than RVWMO.
+  // ordered I/O), 3 reserved. FROST uses the same uncached classification
+  // for NC and IO. The ordering and retry behavior for each physical address
+  // range are described above with the alias map.
   localparam bit [1:0] PbmtPma = 2'd0;
   localparam bit [1:0] PbmtNc = 2'd1;
   localparam bit [1:0] PbmtIo = 2'd2;
@@ -1870,9 +1958,8 @@ package riscv_pkg;
   // Instruction fetch, page-table walks and SFENCE.VMA are never masked.
   typedef logic [1:0] pm_mode_t;  // EnvcfgPmm* encoding; 01 is never produced
 
-  // Every physical region lies below 2**(XLEN-PMLEN-2) (see above). Each
-  // PMLEN is offered only where this holds; the FROST maps need at most 37
-  // bits.
+  // Offer each PMLEN only when every configured physical region lies below
+  // 2**(XLEN-PMLEN-2), as required by the equivalence argument above.
   localparam bit SsnpmPmlen7  = PmaAddressLimit <= (64'(1) << (XLEN - 7 - 2));
   localparam bit SsnpmPmlen16 = PmaAddressLimit <= (64'(1) << (XLEN - 16 - 2));
 
@@ -1913,12 +2000,14 @@ package riscv_pkg;
   // leaf PTE with A=1 was found: install {ppn, level, flags} for the echoed
   // vpn. PAGE/ACCESS deliver the walk's refusal to the op that asked
   // (matched by the vpn echo: the requester may have been flushed and
-  // replaced since it asked). DFAULT_MISALIGN never occurs here.
+  // replaced since it asked). ACCESS with nonzero PBMT carries a valid
+  // no-alias leaf: its page permissions take priority over the PMA refusal.
+  // Other refused walks have PBMT zero. DFAULT_MISALIGN never occurs here.
   //
-  // pbmt is the leaf's PBMT field (never 3). For NC or IO over cached DDR,
-  // ppn is the alias's (pbmt_leaf_ppn); every TLB stores the alias PPN and
-  // the field, so a TLB hit returns both. The field sits first so that the
-  // positions of the older fields are unchanged.
+  // pbmt is the leaf's PBMT field (never 3). A successful NC/IO DDR
+  // translation uses the alias PPN (pbmt_leaf_ppn); a no-alias refusal keeps
+  // the original PPN. TLB fills store the PPN and field together. PBMT
+  // occupies the most significant bits of the packed response.
   typedef struct packed {
     logic [1:0] pbmt;
     data_fault_kind_e fault_kind;
@@ -2128,9 +2217,10 @@ package riscv_pkg;
     // Prediction-time index carried to commit to train the same entry.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
     // Tagged-predictor direction for this instruction, valid only when a
-    // tagged entry matched. For a slot-1 conditional branch it replaces the
-    // BTB and bimodal directions in PD, which then redirects IF to the
-    // branch target or the fall-through as needed. Consumed in PD.
+    // tagged entry matched. For a conditional branch in either slot it
+    // replaces the BTB direction (and, for slot 1, the bimodal direction) in
+    // PD, which then redirects IF to the branch target or the fall-through as
+    // needed. Consumed in PD.
     logic tage_valid;
     logic tage_taken;
     // The instruction bytes could not be fetched; the payload is invalid.
@@ -2146,10 +2236,14 @@ package riscv_pkg;
     // instruction_aligner). 0 for slot 1, whose illegal flag PD takes from
     // rvc_extra_predecoded.
     logic decomp_illegal;
-    // Slot 1 redirect candidates from pd_target_candidate: low PC+offset
-    // bits for native and compressed branches, with {offset sign, carry}
+    // Slot-2 only: conditional-branch opcode flag (effective_instr[6:0] ==
+    // OPC_BRANCH), predecoded per slot-2 start position in instruction_aligner
+    // before the position select. Zero for slot 1.
+    logic is_cond_branch;
+    // Redirect candidates from pd_target_candidate: low PC+offset bits for
+    // native and compressed branches in this slot, with {offset sign, carry}
     // selecting PC-high. PD registers these and decodes the high select
-    // afterward. Zero for slot 2.
+    // afterward.
     logic [PdTargetSplit-1:0] pd_target_native_low;
     logic [1:0] pd_target_native_high_select;
     logic [PdTargetSplit-1:0] pd_target_compressed_low;
@@ -2234,8 +2328,8 @@ package riscv_pkg;
     logic is_fetch_fault_page;  // ...FETCH_PAGE_FAULT (cause 12) instead of FETCH_FAULT
     // F extension fields
     logic is_fp_instruction;  // Any FP instruction
-    logic is_fp_load;  // FLW or FLD: data goes to the FP regfile
-    logic is_fp_store;  // FSW or FSD
+    logic is_fp_load;  // FLW, FLD or FLH: data goes to the FP regfile
+    logic is_fp_store;  // FSW, FSD or FSH
     logic [2:0] fp_rm;  // Rounding mode from instruction (funct3)
     // Pre-computed link address, PC+2 or PC+4 by compression: rd for
     // JAL/JALR, and the ROB's fall-through PC for every instruction
@@ -3183,7 +3277,8 @@ package riscv_pkg;
   // under vtype vt ({vill, vtype[7:0]}) when vtype is vill, when a register
   // group is not aligned to LMUL, when a mask destination overlaps a source
   // group anywhere but at its first register, or when a masked instruction
-  // other than a compare writes v0.
+  // other than a compare writes v0, or when a masked instruction reads v0
+  // both as an EEW=1 mask and as a SEW-width data source.
   function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
     logic [2:0] vlmul, funct3;
     logic [5:0] funct6;
@@ -3200,13 +3295,15 @@ package riscv_pkg;
     uses_vs1 = (funct3 == 3'b000);
     // LMUL 2, 4, 8 align groups to 2, 4, 8 registers; fractional LMUL to 1.
     align = vlmul[2] ? 5'd0 : 5'((1 << vlmul[1:0]) - 1);
+    // The implicit mask uses EEW=1; a vector data source uses SEW.
     vector_arith_illegal = vt[8] ||
         ((vs2 & align) != 5'd0) ||
         (uses_vs1 && ((vs1 & align) != 5'd0)) ||
         (!mask_dest && ((vd & align) != 5'd0)) ||
         (mask_dest && (vd > vs2) && (vd <= (vs2 | align))) ||
         (mask_dest && uses_vs1 && (vd > vs1) && (vd <= (vs1 | align))) ||
-        (masked && !mask_dest && (vd == 5'd0));
+        (masked && !mask_dest && (vd == 5'd0)) ||
+        (masked && ((vs2 == 5'd0) || (uses_vs1 && vs1 == 5'd0)));
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -3237,7 +3334,7 @@ package riscv_pkg;
       ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
       ROLW, RORW, RORIW, CLZW, CTZW, CPOPW, PACKW,
       // CSR instructions -> INT_RS (execute at Reorder Buffer head)
-      CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
+      CSR_REG, CSR_IMM,
       // Privileged (exceptions) -> INT_RS
       ECALL, EBREAK, FETCH_FAULT, FETCH_PAGE_FAULT,
       // Zihintpause: a no-operand NOP that completes through INT_RS
@@ -3251,15 +3348,11 @@ package riscv_pkg;
       get_rs_type = RS_MUL;
 
       // Memory operations -> MEM_RS (both INT and FP)
-      LB, LH, LW, LBU, LHU, SB, SH, SW,
-      LWU, LD, SD,
-      FLW, FSW, FLD, FSD,
-      LR_W, SC_W,
-      AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
-      AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
-      LR_D, SC_D,
-      AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
-      AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
+      LOAD, STORE,
+      LOAD_FP, STORE_FP,
+      LR, SC,
+      AMOSWAP, AMOADD, AMOXOR, AMOAND, AMOOR,
+      AMOMIN, AMOMAX, AMOMINU, AMOMAXU,
       FENCE, FENCE_I, SFENCE_VMA,
       // Zicboz: a store-queue entry that writes a whole block. Zicbom: a
       // store-queue entry that names a block
@@ -3277,7 +3370,11 @@ package riscv_pkg;
       FCVT_L_S, FCVT_LU_S, FCVT_S_L, FCVT_S_LU,
       FCVT_L_D, FCVT_LU_D, FCVT_D_L, FCVT_D_LU,
       FCVT_S_D, FCVT_D_S,
-      FMV_X_W, FMV_W_X, FMV_X_D, FMV_D_X,
+      FCVT_S_H, FCVT_H_S, FCVT_D_H, FCVT_H_D,
+      FMV_X_W, FMV_W_X, FMV_X_D, FMV_D_X, FMV_X_H, FMV_H_X,
+      FLI_S, FLI_D, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D,
+      FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D,
+      FCVTMOD_W_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D,
       FCLASS_S, FCLASS_D,
       FSGNJ_S, FSGNJN_S, FSGNJX_S,
       FSGNJ_D, FSGNJN_D, FSGNJX_D:
@@ -3285,8 +3382,8 @@ package riscv_pkg;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET and DRET ride the MRET machinery.
-      // VTOX completes from the vector unit at the ROB head.
-      JAL, WFI, MRET, SRET, DRET, VTOX: get_rs_type = RS_NONE;
+      // VTOX, VLOAD and VSTORE complete from the vector unit at the ROB head.
+      JAL, WFI, MRET, SRET, DRET, VTOX, VLOAD, VSTORE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -3316,24 +3413,23 @@ package riscv_pkg;
       // write their result
       VSETVLI, VSETIVLI, VSETVL, VTOX,
       // Integer loads
-      LB, LH, LW, LBU, LHU, LWU, LD,
+      LOAD,
       // LR/AMO return memory data; SC returns success/failure status.
-      LR_W, SC_W,
-      AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
-      AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
-      LR_D, SC_D,
-      AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
-      AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
+      LR, SC, AMOSWAP, AMOADD, AMOXOR, AMOAND, AMOOR, AMOMIN, AMOMAX, AMOMINU, AMOMAXU,
       // CSR (return old CSR value to rd)
-      CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
+      CSR_REG, CSR_IMM,
       // FP compare -> INT rd
       FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
       // FP classify -> INT rd
       FCLASS_S, FCLASS_D,
       // FP to INT conversion -> INT rd
       FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
+      // Zimop: writes zero to rd
+      MOP,
       // FP to INT bit move -> INT rd
-      FMV_X_W, FMV_X_D:
+      FMV_X_W, FMV_X_D, FMV_X_H,
+      // Zfa
+      FCVTMOD_W_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D:
       has_int_dest = 1'b1;
 
       default: has_int_dest = 1'b0;
@@ -3344,7 +3440,7 @@ package riscv_pkg;
   function automatic logic has_fp_dest(instr_op_e op);
     case (op)
       // FP loads
-      FLW, FLD,
+      LOAD_FP,
       // FP compute ops
       FADD_S, FSUB_S, FMUL_S, FDIV_S, FSQRT_S,
       FADD_D, FSUB_D, FMUL_D, FDIV_D, FSQRT_D,
@@ -3356,9 +3452,11 @@ package riscv_pkg;
       // INT to FP conversion -> FP fd
       FCVT_S_W, FCVT_S_WU, FCVT_D_W, FCVT_D_WU, FCVT_S_L, FCVT_S_LU, FCVT_D_L, FCVT_D_LU,
       // FP format conversion
-      FCVT_S_D, FCVT_D_S,
+      FCVT_S_D, FCVT_D_S, FCVT_S_H, FCVT_H_S, FCVT_D_H, FCVT_H_D,
       // INT to FP bit move -> FP fd
-      FMV_W_X, FMV_D_X:
+      FMV_W_X, FMV_D_X, FMV_H_X,
+      // Zfa
+      FLI_S, FLI_D, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D:
       has_fp_dest = 1'b1;
 
       default: has_fp_dest = 1'b0;
@@ -3383,9 +3481,12 @@ package riscv_pkg;
       // FP to INT conversion (fs1) -> INT rd
       FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
       // FP to INT bit move (fs1) -> INT rd
-      FMV_X_W, FMV_X_D,
+      FMV_X_W, FMV_X_D, FMV_X_H,
       // FP format conversion
-      FCVT_S_D, FCVT_D_S:
+      FCVT_S_D, FCVT_D_S, FCVT_S_H, FCVT_H_S, FCVT_D_H, FCVT_H_D,
+      // Zfa (FLI reads no register)
+      FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D,
+      FCVTMOD_W_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D:
       uses_fp_rs1 = 1'b1;
 
       default: uses_fp_rs1 = 1'b0;
@@ -3406,7 +3507,9 @@ package riscv_pkg;
       // FP compare (fs1, fs2)
       FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
       // FP stores (base=INT rs1, data=FP rs2)
-      FSW, FSD:
+      STORE_FP,
+      // Zfa
+      FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D:
       uses_fp_rs2 = 1'b1;
 
       default: uses_fp_rs2 = 1'b0;
@@ -3431,13 +3534,9 @@ package riscv_pkg;
       uses_int_rs1 = 1'b0;
     end else begin
       case (op)
-        LUI, AUIPC, JAL,
-        ECALL, EBREAK,
-        FENCE, FENCE_I,
-        WFI, MRET, SRET, DRET, PAUSE,
-        CSRRWI, CSRRSI, CSRRCI,
-        ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT,
-        VSETIVLI, VARITH, VTOX:
+        LUI, AUIPC, JAL, ECALL, EBREAK, FENCE, FENCE_I, WFI, MRET, SRET, DRET, PAUSE, CSR_IMM, MOP,
+        // Zfa FLI: rs1 is the constant index, not a register
+        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX, VLOAD, VSTORE:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase
@@ -3445,7 +3544,7 @@ package riscv_pkg;
   endfunction
 
   // Instructions that read integer rs2: branches, R-type integer ALU,
-  // integer stores, AMO/SC. FP stores (FSW/FSD) read FP rs2 for their data
+  // integer stores, AMO/SC. FP stores (STORE_FP) read FP rs2 for their data
   // instead.
   function automatic logic uses_int_rs2(instr_op_e op);
     if (uses_fp_rs2(op)) begin
@@ -3474,14 +3573,9 @@ package riscv_pkg;
         // RV64 W-form R-type ops
         ADDW, SUBW, SLLW, SRLW, SRAW, ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, ROLW, RORW, PACKW,
         // Integer stores
-        SB, SH, SW, SD,
+        STORE,
         // Atomics (rs2 is source value for AMO/SC)
-        SC_W,
-        AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
-        AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
-        SC_D,
-        AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
-        AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D:
+        SC, AMOSWAP, AMOADD, AMOXOR, AMOAND, AMOOR, AMOMIN, AMOMAX, AMOMINU, AMOMAXU:
         uses_int_rs2 = 1'b1;
         default: uses_int_rs2 = 1'b0;
       endcase

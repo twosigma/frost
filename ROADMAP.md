@@ -24,9 +24,13 @@ hart:
   CSRs) is in place behind the `VECTOR` build parameter, and so are the
   unit's datapath blocks with their unit benches. The core executes
   `vsetvli`, `vsetivli` and `vsetvl`, the vector integer arithmetic, logical,
-  compare and Zvbb instructions, and `vmv.x.s`, `vcpop.m` and `vfirst.m`, and
-  the X3 build includes the unit; vector loads and stores and the other
-  instruction families are not executed yet.
+  compare and Zvbb instructions, `vmv.x.s`, `vcpop.m` and `vfirst.m`, and the
+  unit-stride, whole-register and mask loads and stores, and the X3 build
+  includes the unit; the other load and store forms and instruction families
+  are not executed yet. One limitation is known: a vector load executed in
+  Debug Mode that faults after writing part of its destination register
+  leaves `mstatus.VS` Clean; `vec_debug_partial` records it as an expected
+  failure until it is fixed.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR in the X3
   build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
@@ -60,20 +64,20 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicbom | Implemented | `cbo_mgmt_test`, TestRIG (`zicbom_ops.S`), `csr_file.sby`, `reorder_buffer.sby` |
 | Zicbop | Implemented | `zicbop_test`, TestRIG |
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
-| Zfhmin | In progress | - |
+| Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Partial (state, `vsetvl*`, integer ALU, mask-scalar; memory and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vmt.sby` |
+| V | Partial (state, `vsetvl*`, integer ALU, mask-scalar, unit-stride/whole-register/mask loads and stores; other memory forms and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_mem_test`, `test_riscv_vector_tests.py`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vmt.sby` |
 | Zvfhmin | Partial (FP16 convert datapath block in place; core execution not connected) | `test_vec_fcvt.py` |
 | Zvbb | Partial (single-width lane instructions in place; `vwsll` and vector advertisement not in place) | `test_vec_int_lane.py`, `test_vec_engine.py` |
 | Zvkt | Partial (fixed-latency integer and bitmanip lanes in place; vector unit unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py` |
-| Zihintntl | Implemented (hints execute as no-ops); advertisement in progress | `riscv-arch-test` (`hints`), `rvc_predecode.sby`, TestRIG |
+| Zihintntl | Implemented (hints execute as no-ops) | `riscv-arch-test` (`hints`), `rvc_predecode.sby`, TestRIG (`--zcb`) |
 | Zicond | Implemented | `riscv-arch-test` (`Zicond`), `isa_test`, TestRIG |
-| Zimop | In progress | - |
-| Zcmop | In progress | - |
-| Zcb | In progress | - |
-| Zfa | In progress | - |
+| Zimop | Implemented | `riscv-arch-test` (`Zimop`), `mops`, `test_id_stage.py`, TestRIG (`--zcb`), `instr_operand_classifier.sby` |
+| Zcmop | Implemented | `mops`, `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
+| Zcb | Implemented | `riscv-arch-test` (`C`), `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
+| Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
 | Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
-| Supm | In progress | - |
+| Supm | Scalar hardware support through Ssnpm; the supplied Linux image does not expose the tagged-address ABI | `pm_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby` |
 | Zifencei | Implemented | `riscv-arch-test` (`Zifencei`), `smc_fencei_test`, `ddr_smc_test`, TestRIG, `coherent_hart_cache.sby` |
 | Ss1p13 | Implemented | `riscv-tests` (`rv64si`), `smode_test`, `umode_test`, `vm_test`, TestRIG, `csr_file.sby`, `trap_unit.sby` |
 | Svbare | Implemented | `pa_width_test`, `pma_fault_test`, TestRIG, `immu_bare.sby`, `dmmu_twin.sby` |
@@ -83,12 +87,12 @@ extensions implemented on `main` or planned with the vector unit:
 | Sstvecd | Implemented | `smode_test`, `csr_test`, `csr_file.sby`, `trap_unit.sby` |
 | Sstvala | Implemented | `sstvala_test`, `sstvala_fault_test`, `ad_fault_test`, `misaligned_test`, TestRIG (`sstvala_illegal.S`, `access_fault_tval.S`), `trap_unit.sby` |
 | Sscounterenw | Implemented | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`scounteren`), `csr_file.sby` |
-| Svpbmt | Implemented (NC/IO DDR mappings require an uncached alias) | `svpbmt_test`, `svpbmt_test_2g`, `svpbmt_bus_error`, TestRIG (`svpbmt_pbmte.S`), `ptw.sby`, `dmmu_mmio.sby`, `tlb.sby`, `l2tlb.sby` |
+| Svpbmt | Implemented (NC/IO DDR mappings require an uncached alias; the VCU118's 2 GiB map has none and raises access faults, with device mappings unaffected) | `svpbmt_test`, `svpbmt_test_2g`, `svpbmt_bus_error`, TestRIG (`svpbmt_pbmte.S`), `ptw.sby`, `dmmu_mmio.sby`, `tlb.sby`, `l2tlb.sby` |
 | Svinval | Not yet implemented | - |
 | Svnapot | Implemented (64 KiB ranges use ordinary 4 KiB TLB entries) | `svnapot_test`, TestRIG (`svnapot_leaf.S`), `ptw.sby`, `tlb.sby`, `l2tlb.sby` |
 | Sstc | Implemented (S-mode `mcounteren.TM` check missing) | `sstc_test`, `irq_take_latency`, `csr_file.sby` |
 | Sscofpmf | Implemented | `sscofpmf_test`, TestRIG (`--sscofpmf`), `csr_sscofpmf.sby` |
-| Ssnpm | In progress | - |
+| Ssnpm | Implemented for scalar accesses (`senvcfg.PMM`, PMLEN 0, 7 and 16). Vector loads and stores do not execute; each element address must be masked after its address addition when they are implemented. | `pm_test`, `debug_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `csr_commit_cofactor.sby` |
 | Ssu64xl | Implemented; advertisement in progress | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`), `csr_file.sby` |
 | Zbc (optional) | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzbc`), TestRIG, `cl_multiplier.sby` |
 | Svvptc (optional) | Implemented | `vm_test`, `asid_test`, TestRIG, `ptw.sby`, `immu_memo.sby`, `dmmu_twin.sby` |
@@ -102,10 +106,14 @@ Supervisor and user modes decode no non-standard instructions or CSRs
 `Zicfiss`, `Zfbfmin`, `Zvfbfmin`, `Zvfbfwma`, `Sv48`, `Sv57`, `Zkr`,
 `Svadu`, `Sdtrig`, and `Sspm`) are not implemented.
 
+Svpbmt: a platform with devices that have read side effects outside the physical device quadrant would need the page type to control request parking, committed-store draining and interrupt shielding.
+
 ## SMP
 
-Two harts on the X3, sharing one L2, with RVWMO litmus tests and Debian
-running on both. `cpu_top` holds one hart with its L0, L1D, L1I, and L2, and
+Two harts on the X3 first, sharing one L2, with RVWMO litmus tests and Debian
+running on both. The coherence design is to scale to four harts, so nothing
+in it may assume exactly two.
+`cpu_top` holds one hart with its L0, L1D, L1I, and L2, and
 its outgoing AXI4 master is not coherent, so two `cpu_top` instances on
 shared memory do not form an SMP system. Its coherent ingress gives DMA and
 the NIC access to one tile's caches; it is not a protocol between tiles (see
@@ -124,8 +132,8 @@ It probes the L1D for instruction reads, page-table walks, DMA, atomic and SC
 operations, and replacement victims; the L1D's own reads, store upgrades and
 LRs need no probe while it is the only L1D. The L1D holds sectors in I, S or
 M states and has up to eight requests in flight to the home, seven of them
-for loads. With a second hart, the
-home would probe both L1Ds, and dirty data would still pass through the L2
+for loads. With more than one hart, the
+home would probe the other L1Ds, and dirty data would still pass through the L2
 rather than directly between the L1Ds. A coherence unit at the L1 level can
 follow if measurements show that the probes or the trip through the L2 limit
 performance: it would keep a copy of each L1D's tags, so that a request probes
@@ -201,6 +209,8 @@ that repeatedly exercise the recovery paths.
 
 ## Memory system
 
+CPU resets (`ndmreset` and SYSRESET) discard dirty cache lines; preserving modified data and restoring mutable boot images for a complete reboot remain software responsibilities.
+
 The L1D, L1I, and L2 are 4-way set-associative with tree pseudo-LRU
 replacement, one design for every target. The L1D inserts lines bimodally: a
 fill becomes its set's most recently used only one time in 32, or when a read
@@ -209,8 +219,11 @@ somewhat larger than the L1D so keeps part of itself resident instead of
 evicting each line just before its next use. The L1I and the L1D read every
 way's data at the tag decision, which keeps their hit latency at that of a
 direct-mapped cache, and the L1D's hit path reads a copy of the tags and every
-way's row of a load's set on one edge. The L2 reads the selected way after the
-tag lookup.
+way's row of a load's set on one edge. In UltraRAM builds the L2 banks its
+data array by way, reads every way of a demand lookup's set in parallel with
+the tag lookup, and selects the way on the final tag-read cycle; block-RAM
+and SRAM-macro builds read the selected way from a single data array after
+the tag lookup.
 
 The L2 uses 64-byte lines, following John Goodacre's design. The home maps
 each 32-byte request from the L1 caches, the page-table walker, and the DMA
@@ -347,10 +360,13 @@ for an ASIC, the RTL also needs:
    reset, as an ASIC with an independent CPU clock or a multi-die FPGA with
    the cluster on its own die needs. The X3 keeps one clock, which spares its
    cache misses the crossing's latency.
+   Open: align `asic/constraint.sdc`'s JTAG debug-transport bounds with the X3
+   constraints (`0.8` on toggle synchronizer inputs and `1.5` on held DMI
+   payloads across `jtag_tck` and `core_clk` in both clock modes).
 
 ## Single-core performance
 
-FROST runs CoreMark at 4.58 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
+FROST runs CoreMark at 4.77 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
 The next goal is 5 CoreMark/MHz. Work toward it is paused while memory
 performance on the coherent hierarchy and timing margin at the target clock
 are restored. A score counts only from a run of at least ten seconds that
@@ -358,7 +374,7 @@ passes the CRC checks for both official seed sets, with the compiler flags,
 the `sw.bin` hash, and memory and cache settings recorded; see the
 [CoreMark README](sw/apps/coremark/README.md).
 
-5 CoreMark/MHz is 200,000 cycles per iteration, against about 220,000 today.
+5 CoreMark/MHz is 200,000 cycles per iteration, against about 210,000 today.
 A model driven by the CoreMark instruction trace gives these estimates for
 each change on its own, for the design before load results woke integer
 consumers early and before Zbc. It treats the BRAM as attached directly to
@@ -388,9 +404,9 @@ of the load-latency cut.
 
 Priorities, guided by the performance counters and timing reports:
 
-1. Branch prediction. About 2,100 mispredictions per iteration remain. PD,
-   the pre-decode stage, overrides only slot-1 directions, so slot-2 branches
-   keep the BTB's direction, and long loops mispredict their exits.
+1. Branch prediction. PD overrides conditional-branch directions in both
+   slots when the tagged predictor matches (slot 1 also keeps the bimodal
+   fallback).
 2. Pairing across fetch windows. The front end pairs two instructions only
    when both fit in one 64-bit fetch window, and after a redirect the fetch
    address advances four and eight bytes in turn, so straight-line code
@@ -465,7 +481,7 @@ and targeted microbenchmarks give these items:
    cycles against 5 on a DTLB hit, and an instruction page visit that misses
    the ITLB and hits it takes 23 against 20. A miss in both walks, and the
    walker cache takes the walk to one dependent read; the second-level lookup
-   comes first, so a dependent load that walks takes 36 cycles, one more than
+   comes first, so a dependent load that walks takes 30 cycles, one more than
    without the array. Starting the walk in parallel with the second-level
    lookup and cancelling it on a hit would remove that cycle. A 32-entry
    superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
@@ -476,14 +492,19 @@ and targeted microbenchmarks give these items:
    predicts the jumps, calls and returns it misses through a PD redirect, at
    that redirect's cost of two bubbles. In Linux-like traces the 256-entry
    BTB misses on 44 to 46% of lookups, and a 1024-entry two-way one on 7 to
-   11%. A slot-1 conditional branch that misses the BTB is redirected by PD
-   when its direction predictors say taken, at the same cost, and a slot-2
-   one recovers from execution. A backing hit served from IF would save a
-   bubble, but its correction would sit on the fetch loop, one of the hardest
-   paths at the target clock. In bare-metal microbenchmarks a taken branch
-   costs about 5 cycles, and a loop of four additions runs at 0.6 IPC with
-   translation off; those small-loop costs come from fetch coverage and
-   packet formation, not BTB capacity.
+   11%. PD redirects a conditional branch in either slot when the tagged
+   direction predictor disagrees with the BTB (and, in slot 1, when the
+   bimodal fallback predicts taken on a BTB miss or not-taken entry), at the
+   same two-bubble cost; a slot-2 branch without a tagged match keeps the
+   BTB's direction and recovers from execution if wrong. Using the backing
+   BTB's second lookup image when a one-instruction packet lands in the word
+   after the looked-up one is next; an indirect-target predictor and longer
+   tagged-history tables remain possible later work. A backing hit served
+   from IF would save a bubble, but its correction would sit on the fetch
+   loop, one of the hardest paths at the target clock. In bare-metal
+   microbenchmarks a taken branch costs about 5 cycles, and a loop of four
+   additions runs at 0.6 IPC with translation off; those small-loop costs
+   come from fetch coverage and packet formation, not BTB capacity.
 5. Floating point. One engine executes F and D instructions one at a time.
    Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
    and sign injection use two-cycle paths. Integer-to-FP conversion takes
@@ -508,8 +529,8 @@ and targeted microbenchmarks give these items:
    the entry count. Measured against eight entries, it leaves
    the DDR memory kernels unchanged, slows one memory-bound workload by about
    2%, in part from L0 fill collisions (see Single-core performance, item
-   3), and lengthens paths among the hardest at the target clock, so it
-   waits for the streaming-load work in item 8.
+   3), and lengthens paths among the hardest at the target clock, so the
+   station stays at eight entries.
 8. Streaming loads. The load queue and the L1D track eight cached loads, so
    their demand requests for a sequential stream of 8-byte loads cover only
    two 32-byte lines at a time. The home's prefetch agent reads ahead into the
@@ -518,8 +539,8 @@ and targeted microbenchmarks give these items:
    through its two highest-numbered load endpoints. More cached loads in
    flight or one read slot per line for loads to the same line would let one
    stream keep more lines in flight. Dependent loads are also slower than
-   through the previous hierarchy: in simulation an L2 hit takes 36 cycles
-   against 23 and a DRAM miss about 6 cycles more. The L1D answers a load
+   through the previous hierarchy: in simulation an L2 hit takes 28 cycles
+   against 23 and a DRAM miss about 4 cycles more. The L1D answers a load
    from its grant, and registered stages
    and arbitration add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
@@ -564,10 +585,15 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   when the tagged predictor overrides a taken prediction, with a separate
   case for slot 2, or at retirement, retiring the instruction alone and
   restarting after a full flush.
+- Synchronize the PHY management reset into the MDIO sequencer clock domain.
+- Extend the network receive test beyond the default ring size so it checks descriptor wrap.
 - The second DDR4 interface on the VCU118. The target has RJ-45 SGMII
   Ethernet and 10GBASE-R on QSFP1 lane 0, using the NIC's registers,
   descriptors, driver, and coherent DMA. It uses one DDR4 interface; the
   other could have its own memory controller.
+- Clocking the `BSCANE2` debug transport and bounding its toggle and held DMI
+  payload crossings on the VCU118, where the debug transport remains without
+  those bounds, to match `boards/x3/constr/cpu_clock_boundary.tcl`.
 - A PCIe Gen3 x4 root complex between `soc_top` and PIPE, the PHY interface
   that ASIC PCIe PHYs also use, with a small wrapper for the FPGA's
   transceivers, so that Linux finds NVMe drives and other devices with its

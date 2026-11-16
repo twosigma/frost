@@ -15,6 +15,8 @@
 """Check which CI jobs collect coverage and that their steps agree."""
 
 import itertools
+import re
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,7 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
 
 # Jobs that collect coverage: every one of these has a `coverage` field in its
 # matrix, and the rest of the matrix entries have it switched off.
-EXPECTED_COVERAGE_JOBS = 20
+EXPECTED_COVERAGE_JOBS = 25
 
 
 def _expand(matrix: dict[str, Any]) -> list[dict[str, Any]]:
@@ -67,15 +69,30 @@ def test_coverage_is_selected_by_the_matrix() -> None:
         "test-testrig",
     ]
     enabled = 0
+    artifacts = []
+    cocotb_files = []
     for name in selecting:
         job = jobs[name]
-        for combo in _expand(job["strategy"]["matrix"]):
+        steps = {s.get("name"): s for s in job["steps"]}
+        for index, combo in enumerate(_expand(job["strategy"]["matrix"])):
             if name in ("test-verilator", "test-pa-width"):
                 assert "coverage" in combo["shard"], (name, combo)
             else:
                 assert combo.get("coverage") in (0, 1), (name, combo)
             enabled += _collects(name, combo)
-        steps = {s.get("name"): s for s in job["steps"]}
+            if _collects(name, combo):
+                artifact = steps["Upload the job's coverage"]["with"]["name"]
+                artifact = artifact.replace("${{ github.job }}", name).replace(
+                    "${{ strategy.job-index }}", str(index)
+                )
+                assert "${{" not in artifact, artifact
+                artifacts.append(artifact)
+                if name == "test-verilator":
+                    label = steps["Merge the job's coverage"]["env"]["COVERAGE_NAME"]
+                    label = label.replace(
+                        "${{ matrix.shard.name }}", combo["shard"]["name"]
+                    ).replace("${{ matrix.mem_config }}", combo["mem_config"])
+                    cocotb_files.append(re.sub(r"[^A-Za-z0-9]+", "_", label))
         for step in (
             steps["Merge the job's coverage"],
             steps["Upload the job's coverage"],
@@ -84,3 +101,15 @@ def test_coverage_is_selected_by_the_matrix() -> None:
         assert "coverage" in steps["Merge the job's coverage"]["if"], name
         assert "coverage" in steps["Upload the job's coverage"]["if"], name
     assert enabled == EXPECTED_COVERAGE_JOBS
+    assert len(set(artifacts)) == enabled, "Coverage artifact names must be unique"
+    assert len(set(cocotb_files)) == len(cocotb_files), (
+        "Merged filenames must be unique"
+    )
+    report = jobs["coverage-report"]
+    assert set(selecting) <= set(report["needs"])
+    download = next(
+        s for s in report["steps"] if s.get("name") == "Download the jobs' coverage"
+    )
+    assert all(
+        fnmatchcase(artifact, download["with"]["pattern"]) for artifact in artifacts
+    )

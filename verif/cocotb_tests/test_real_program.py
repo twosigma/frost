@@ -271,10 +271,46 @@ async def _release_power_on_reset(dut: Any, cpu_reset: Any) -> None:
     dut.i_power_on_rst.value = 0
 
 
+async def _arm_simulation_assertions(cpu_reset: Any, enabled: bool = True) -> None:
+    """Wait for the driven CPU reset as well as the system reset interval."""
+    from cocotb_tests.sim_assertions import (
+        enable_simulation_assertions,
+        simulation_assertions_enabled,
+    )
+
+    await cpu_reset
+    await Timer(1, unit="ps")
+    if enabled:
+        enable_simulation_assertions()
+    else:
+        assert not simulation_assertions_enabled()
+        cocotb.log.info("Simulation assertions deliberately withheld after reset")
+
+
 async def wait_for_power_on_reset(dut: Any) -> None:
-    """Keep system reset held through a slow or delayed CPU's cold reset."""
+    """Wait for cold reset and require every NIC response checker to see it."""
     while int(dut.i_power_on_rst.value):
         await RisingEdge(dut.i_clk)
+    for seen in _nic_reset_history(dut):
+        assert int(seen.value), "NIC response checker did not observe reset"
+
+
+def _program_soc(dut: Any) -> Any:
+    """Locate the production SoC or the direct trace-injection platform."""
+    platform = getattr(dut, "cpu_and_memory_subsystem", None)
+    return getattr(platform, "soc", platform)
+
+
+def _nic_reset_history(dut: Any) -> tuple[Any, ...]:
+    """Return checker history without changing its reset evidence."""
+    soc = _program_soc(dut)
+    if not hasattr(soc, "gen_cached_tier"):
+        return ()
+    tier = soc.gen_cached_tier
+    fronts = [tier.nic.u_front]
+    if hasattr(tier, "gen_nic_1g"):
+        fronts.append(tier.gen_nic_1g.nic_1g.u_front)
+    return tuple(front.reset_seen_q for front in fronts)
 
 
 def _write_instruction_bank(bank: Any, words: list[int]) -> None:
@@ -377,8 +413,8 @@ def initialize_wrapper_resets(dut: Any) -> None:
             signal.value = Immediate((1 << len(signal)) - 1)
 
 
-async def prepare_program_start(dut: Any) -> tuple[Any, ...]:
-    """Settle startup events before initializing verification history and clocks."""
+async def prepare_program_start(dut: Any) -> None:
+    """Settle startup events before driving clocks and cold reset."""
     for name in (
         "i_clk",
         "i_cpu_clk",
@@ -397,24 +433,26 @@ async def prepare_program_start(dut: Any) -> tuple[Any, ...]:
         dut.i_power_on_rst.value = Immediate(0)
     initialize_wrapper_resets(dut)
     await Timer(1, unit="ps")
-    if not hasattr(dut, "cpu_and_memory_subsystem"):
-        return ()
-    soc = dut.cpu_and_memory_subsystem.soc
-    if not hasattr(soc, "gen_cached_tier"):
-        return ()
-    assert int(soc.reset_request_soc.value), "NIC startup requires system reset"
-    # Initial simulator edges can arm this history from an arbitrary local
-    # reset. The checker starts unarmed before the first driven clock edge.
-    nic_fronts = [soc.gen_cached_tier.nic.u_front]
-    if hasattr(soc.gen_cached_tier, "gen_nic_1g"):
-        nic_fronts.append(soc.gen_cached_tier.gen_nic_1g.nic_1g.u_front)
-    history = tuple(front.reset_seen_q for front in nic_fronts)
+    history = _nic_reset_history(dut)
     for seen in history:
         seen.value = Immediate(0)
-    return history
+    if history:
+        soc = _program_soc(dut)
+        request = (
+            soc.reset_request_soc
+            if hasattr(soc, "reset_request_soc")
+            else soc.rst_core_next
+        )
+        assert int(request.value), "NIC startup requires system reset"
 
 
-async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> None:
+async def generate_divided_clock(
+    dut: Any,
+    *,
+    core_clock: Any | None = None,
+    image_loader: Callable[[Any], None] = load_program_images,
+    arm_assertions: bool = True,
+) -> None:
     """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
 
     The dc_fifo crosses binary pointers without Gray coding and requires
@@ -448,7 +486,8 @@ async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> 
         level ^= 1
         divided.value = level
     await ReadWrite()
-    load_program_images(dut)
+    image_loader(dut)
+    cocotb.start_soon(_arm_simulation_assertions(cpu_reset, arm_assertions))
     while True:
         await clock_edge
         await clock_edge
@@ -1017,6 +1056,54 @@ async def l0_hit_watch(dut: Any) -> None:
                 if hits > 6000:
                     cocotb.log.warning("l0_hit_watch: hit cap reached; muting")
                     return
+
+
+class PointerMaskingInterruptCoverage:
+    """Observe an IRQ pending in actual U mode while tagged stores are queued.
+
+    The program checks the trap's saved privilege and the stores' backing data.
+    These fixed signal paths establish the overlap, which software cannot see.
+    """
+
+    def __init__(self, dut: Any) -> None:
+        """Bind the core signals without traversing the design hierarchy."""
+        self.dut = dut
+        cpu = dut.cpu_and_memory_subsystem.cpu.hart.cpu_inst
+        self.priv = cpu.csr_priv
+        self.mode = cpu.csr_mmu_pm_mode
+        self.pending = cpu.interrupt_pending
+        self.stores = cpu.sq_count
+        self.hits: dict[int, int] = {}
+
+    def clear(self) -> None:
+        """Start a new reset-to-pass coverage interval."""
+        self.hits.clear()
+
+    async def run(self) -> None:
+        """Count simultaneous U privilege, PMM, IRQ and store occupancy."""
+        while True:
+            await RisingEdge(cpu_clock(self.dut))
+            await ReadOnly()
+            if not int(self.dut.i_rst_n.value):
+                continue
+            mode = int(self.mode.value)
+            if (
+                int(self.priv.value) == 0
+                and mode in (2, 3)
+                and int(self.pending.value)
+                and int(self.stores.value) > 0
+            ):
+                self.hits[mode] = self.hits.get(mode, 0) + 1
+
+    def verify(self, run_number: int) -> None:
+        """Require the requested overlap independently for each PMLEN."""
+        for mode in (2, 3):
+            assert self.hits.get(mode, 0), (
+                f"run {run_number}: no U-mode IRQ with stores queued at PMM={mode}"
+            )
+        cocotb.log.info(
+            f"PMM U-mode IRQ with stores queued, run {run_number}: {self.hits} cycles"
+        )
 
 
 class WfiRecoveryWatch:
@@ -4743,7 +4830,7 @@ async def run_uart_echo_interaction(
 @takes_last_edge
 async def test_real_program(dut: Any) -> None:
     """Reset and run the loaded program NUM_RUNS times, checking UART each run."""
-    reset_history = await prepare_program_start(dut)
+    await prepare_program_start(dut)
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     start_cpu_clock(dut)
     if trace_path := os.environ.get("FROST_MMU_REACH_TRACE"):
@@ -4810,9 +4897,10 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = TICK_TORTURE_MAX_CYCLES
     elif app_name == "mem_divergence_probe":
         max_cycles = MEM_DIVERGENCE_PROBE_MAX_CYCLES
-    elif app_name == "misaligned_test":
-        # Several hundred engine accesses and the timer-interrupt section,
-        # at DDR model latencies up to 160 cycles.
+    elif app_name in ("misaligned_test", "vec_mem_test"):
+        # Several hundred engine accesses, translated S/U-mode crossings and
+        # faults, and the timer-interrupt section take ~1.28M cycles (1,275,934
+        # in DDR at DDR_MODEL_LATENCY=160); 2M leaves ~57% headroom.
         max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
     elif app_name == "linux_irq_active_ddr_test":
         # Allow for timer ticks and sentinel spin-waits.
@@ -4868,10 +4956,21 @@ async def test_real_program(dut: Any) -> None:
     if wfi_watch is not None:
         cocotb.start_soon(wfi_watch.run())
     coverage = (
-        DelayedBranchFetchCoverage(dut) if app_name == "served_window_resteer" else None
+        DelayedBranchFetchCoverage(dut)
+        if app_name == "served_window_resteer"
+        else PointerMaskingInterruptCoverage(dut)
+        if app_name == "pm_test"
+        else None
     )
     if coverage is not None:
         cocotb.start_soon(coverage.run())
+
+    vector_watch = None
+    if app_name == "vec_order_test":
+        from cocotb_tests.vector.memory_watch import VectorMemoryWatch
+
+        vector_watch = VectorMemoryWatch(dut)
+        cocotb.start_soon(vector_watch.run())
 
     # The architecture-test runner names the low-BRAM bytes that hold the
     # signature once the program passes, as "address:length" in hex, and the
@@ -4904,8 +5003,6 @@ async def test_real_program(dut: Any) -> None:
             for _ in range(RESET_CYCLES):
                 await RisingEdge(dut.i_clk)
             await wait_for_power_on_reset(dut)
-            for seen in reset_history:
-                assert int(seen.value), "NIC response checker did not observe reset"
             # Output qualifiers are arbitrary before the first completed reset.
             uart_monitor.clear()
             if line_monitor is not None:
@@ -4958,6 +5055,8 @@ async def test_real_program(dut: Any) -> None:
             coverage.verify(run_number)
         if store_watch is not None:
             store_watch.verify()
+        if vector_watch is not None:
+            vector_watch.verify()
 
     uart_monitor.stop()
     if line_monitor is not None:

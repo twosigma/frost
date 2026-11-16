@@ -101,18 +101,8 @@ BGE = _INSTR_OPS["BGE"]
 BLTU = _INSTR_OPS["BLTU"]
 BGEU = _INSTR_OPS["BGEU"]
 # loads/stores
-LB = _INSTR_OPS["LB"]
-LH = _INSTR_OPS["LH"]
-LW = _INSTR_OPS["LW"]
-LBU = _INSTR_OPS["LBU"]
-LHU = _INSTR_OPS["LHU"]
-SB = _INSTR_OPS["SB"]
-SH = _INSTR_OPS["SH"]
-SW = _INSTR_OPS["SW"]
-# RV64 loads/stores
-LWU = _INSTR_OPS["LWU"]
-LD = _INSTR_OPS["LD"]
-SD = _INSTR_OPS["SD"]
+LOAD = _INSTR_OPS["LOAD"]
+STORE = _INSTR_OPS["STORE"]
 # M-extension
 MUL = _INSTR_OPS["MUL"]
 MULH = _INSTR_OPS["MULH"]
@@ -132,12 +122,8 @@ REMUW = _INSTR_OPS["REMUW"]
 FENCE = _INSTR_OPS["FENCE"]
 FENCE_I = _INSTR_OPS["FENCE_I"]
 # Zicsr
-CSRRW = _INSTR_OPS["CSRRW"]
-CSRRS = _INSTR_OPS["CSRRS"]
-CSRRC = _INSTR_OPS["CSRRC"]
-CSRRWI = _INSTR_OPS["CSRRWI"]
-CSRRSI = _INSTR_OPS["CSRRSI"]
-CSRRCI = _INSTR_OPS["CSRRCI"]
+CSR_REG = _INSTR_OPS["CSR_REG"]
+CSR_IMM = _INSTR_OPS["CSR_IMM"]
 # Zba
 SH1ADD = _INSTR_OPS["SH1ADD"]
 SH2ADD = _INSTR_OPS["SH2ADD"]
@@ -213,31 +199,20 @@ ILLEGAL = _INSTR_OPS["ILLEGAL"]
 FETCH_FAULT = _INSTR_OPS["FETCH_FAULT"]
 FETCH_PAGE_FAULT = _INSTR_OPS["FETCH_PAGE_FAULT"]
 # A extension
-LR_W = _INSTR_OPS["LR_W"]
-SC_W = _INSTR_OPS["SC_W"]
-AMOSWAP_W = _INSTR_OPS["AMOSWAP_W"]
-AMOADD_W = _INSTR_OPS["AMOADD_W"]
-AMOXOR_W = _INSTR_OPS["AMOXOR_W"]
-AMOAND_W = _INSTR_OPS["AMOAND_W"]
-AMOOR_W = _INSTR_OPS["AMOOR_W"]
-AMOMIN_W = _INSTR_OPS["AMOMIN_W"]
-AMOMAX_W = _INSTR_OPS["AMOMAX_W"]
-AMOMINU_W = _INSTR_OPS["AMOMINU_W"]
-AMOMAXU_W = _INSTR_OPS["AMOMAXU_W"]
-LR_D = _INSTR_OPS["LR_D"]
-SC_D = _INSTR_OPS["SC_D"]
-AMOSWAP_D = _INSTR_OPS["AMOSWAP_D"]
-AMOADD_D = _INSTR_OPS["AMOADD_D"]
-AMOXOR_D = _INSTR_OPS["AMOXOR_D"]
-AMOAND_D = _INSTR_OPS["AMOAND_D"]
-AMOOR_D = _INSTR_OPS["AMOOR_D"]
-AMOMIN_D = _INSTR_OPS["AMOMIN_D"]
-AMOMAX_D = _INSTR_OPS["AMOMAX_D"]
-AMOMINU_D = _INSTR_OPS["AMOMINU_D"]
-AMOMAXU_D = _INSTR_OPS["AMOMAXU_D"]
-# F extension
-FLW = _INSTR_OPS["FLW"]
-FSW = _INSTR_OPS["FSW"]
+LR = _INSTR_OPS["LR"]
+SC = _INSTR_OPS["SC"]
+AMOSWAP = _INSTR_OPS["AMOSWAP"]
+AMOADD = _INSTR_OPS["AMOADD"]
+AMOXOR = _INSTR_OPS["AMOXOR"]
+AMOAND = _INSTR_OPS["AMOAND"]
+AMOOR = _INSTR_OPS["AMOOR"]
+AMOMIN = _INSTR_OPS["AMOMIN"]
+AMOMAX = _INSTR_OPS["AMOMAX"]
+AMOMINU = _INSTR_OPS["AMOMINU"]
+AMOMAXU = _INSTR_OPS["AMOMAXU"]
+# F/D memory and F extension
+LOAD_FP = _INSTR_OPS["LOAD_FP"]
+STORE_FP = _INSTR_OPS["STORE_FP"]
 FADD_S = _INSTR_OPS["FADD_S"]
 FSUB_S = _INSTR_OPS["FSUB_S"]
 FMUL_S = _INSTR_OPS["FMUL_S"]
@@ -263,8 +238,6 @@ FLT_S = _INSTR_OPS["FLT_S"]
 FLE_S = _INSTR_OPS["FLE_S"]
 FCLASS_S = _INSTR_OPS["FCLASS_S"]
 # D extension
-FLD = _INSTR_OPS["FLD"]
-FSD = _INSTR_OPS["FSD"]
 FADD_D = _INSTR_OPS["FADD_D"]
 FSUB_D = _INSTR_OPS["FSUB_D"]
 FMUL_D = _INSTR_OPS["FMUL_D"]
@@ -327,8 +300,7 @@ assert _offset == 0, f"Offset mismatch: {_offset}"
 # dispatch to consume without re-decoding.
 _HAS_FP_DEST_OPS: frozenset[int] = frozenset(
     {
-        FLW,
-        FLD,
+        LOAD_FP,
         FADD_S,
         FSUB_S,
         FMUL_S,
@@ -464,41 +436,20 @@ _HAS_INT_DEST_OPS: frozenset[int] = frozenset(
         DIVUW,
         REMW,
         REMUW,
-        LB,
-        LH,
-        LW,
-        LBU,
-        LHU,
-        LWU,
-        LD,
-        LR_W,
-        SC_W,
-        AMOSWAP_W,
-        AMOADD_W,
-        AMOXOR_W,
-        AMOAND_W,
-        AMOOR_W,
-        AMOMIN_W,
-        AMOMAX_W,
-        AMOMINU_W,
-        AMOMAXU_W,
-        LR_D,
-        SC_D,
-        AMOSWAP_D,
-        AMOADD_D,
-        AMOXOR_D,
-        AMOAND_D,
-        AMOOR_D,
-        AMOMIN_D,
-        AMOMAX_D,
-        AMOMINU_D,
-        AMOMAXU_D,
-        CSRRW,
-        CSRRS,
-        CSRRC,
-        CSRRWI,
-        CSRRSI,
-        CSRRCI,
+        LOAD,
+        LR,
+        SC,
+        AMOSWAP,
+        AMOADD,
+        AMOXOR,
+        AMOAND,
+        AMOOR,
+        AMOMIN,
+        AMOMAX,
+        AMOMINU,
+        AMOMAXU,
+        CSR_REG,
+        CSR_IMM,
         FEQ_S,
         FLT_S,
         FLE_S,
@@ -607,8 +558,7 @@ _USES_FP_RS2_OPS: frozenset[int] = frozenset(
         FEQ_D,
         FLT_D,
         FLE_D,
-        FSW,
-        FSD,
+        STORE_FP,
     }
 )
 
@@ -640,9 +590,7 @@ _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
         SRET,
         DRET,
         PAUSE,
-        CSRRWI,
-        CSRRSI,
-        CSRRCI,
+        CSR_IMM,
         ILLEGAL,
         FETCH_FAULT,
         FETCH_PAGE_FAULT,
@@ -714,30 +662,17 @@ _USES_INT_RS2_OPS: frozenset[int] = frozenset(
         ROLW,
         RORW,
         PACKW,
-        SB,
-        SH,
-        SW,
-        SD,
-        SC_W,
-        AMOSWAP_W,
-        AMOADD_W,
-        AMOXOR_W,
-        AMOAND_W,
-        AMOOR_W,
-        AMOMIN_W,
-        AMOMAX_W,
-        AMOMINU_W,
-        AMOMAXU_W,
-        SC_D,
-        AMOSWAP_D,
-        AMOADD_D,
-        AMOXOR_D,
-        AMOAND_D,
-        AMOOR_D,
-        AMOMIN_D,
-        AMOMAX_D,
-        AMOMINU_D,
-        AMOMAXU_D,
+        STORE,
+        SC,
+        AMOSWAP,
+        AMOADD,
+        AMOXOR,
+        AMOAND,
+        AMOOR,
+        AMOMIN,
+        AMOMAX,
+        AMOMINU,
+        AMOMAXU,
     }
 )
 
@@ -747,43 +682,21 @@ _RS_MUL_OPS: frozenset[int] = frozenset(
 
 _RS_MEM_OPS: frozenset[int] = frozenset(
     {
-        LB,
-        LH,
-        LW,
-        LBU,
-        LHU,
-        SB,
-        SH,
-        SW,
-        LWU,
-        LD,
-        SD,
-        FLW,
-        FSW,
-        FLD,
-        FSD,
-        LR_W,
-        SC_W,
-        AMOSWAP_W,
-        AMOADD_W,
-        AMOXOR_W,
-        AMOAND_W,
-        AMOOR_W,
-        AMOMIN_W,
-        AMOMAX_W,
-        AMOMINU_W,
-        AMOMAXU_W,
-        LR_D,
-        SC_D,
-        AMOSWAP_D,
-        AMOADD_D,
-        AMOXOR_D,
-        AMOAND_D,
-        AMOOR_D,
-        AMOMIN_D,
-        AMOMAX_D,
-        AMOMINU_D,
-        AMOMAXU_D,
+        LOAD,
+        STORE,
+        LOAD_FP,
+        STORE_FP,
+        LR,
+        SC,
+        AMOSWAP,
+        AMOADD,
+        AMOXOR,
+        AMOAND,
+        AMOOR,
+        AMOMIN,
+        AMOMAX,
+        AMOMINU,
+        AMOMAXU,
         FENCE,
         FENCE_I,
         SFENCE_VMA,
@@ -855,13 +768,13 @@ _RS_FP_OPS: frozenset[int] = frozenset(
 
 _RS_NONE_OPS: frozenset[int] = frozenset({JAL, WFI, MRET, SRET, DRET})
 
-_INT_STORE_OPS: frozenset[int] = frozenset({SB, SH, SW, SD})
+_INT_STORE_OPS: frozenset[int] = frozenset({STORE})
 
 _BRANCH_OR_JUMP_OPS: frozenset[int] = frozenset(
     {BEQ, BNE, BLT, BGE, BLTU, BGEU, JAL, JALR}
 )
 
-_CSR_IMM_OPS: frozenset[int] = frozenset({CSRRWI, CSRRSI, CSRRCI})
+_CSR_IMM_OPS: frozenset[int] = frozenset({CSR_IMM})
 
 _HAS_FP_FLAGS_OPS: frozenset[int] = frozenset(
     {
@@ -926,41 +839,65 @@ _HAS_FP_FLAGS_OPS: frozenset[int] = frozenset(
     }
 )
 
-_LOAD_OPS: frozenset[int] = frozenset({LB, LH, LW, LBU, LHU, LWU, LD})
-_LOAD_UNSIGNED_OPS: frozenset[int] = frozenset({LBU, LHU, LWU})
-_CSR_OPS: frozenset[int] = frozenset({CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI})
+_LOAD_OPS: frozenset[int] = frozenset({LOAD})
+_CSR_OPS: frozenset[int] = frozenset({CSR_REG, CSR_IMM})
 _AMO_OPS: frozenset[int] = frozenset(
     {
-        LR_W,
-        SC_W,
-        AMOSWAP_W,
-        AMOADD_W,
-        AMOXOR_W,
-        AMOAND_W,
-        AMOOR_W,
-        AMOMIN_W,
-        AMOMAX_W,
-        AMOMINU_W,
-        AMOMAXU_W,
-        LR_D,
-        SC_D,
-        AMOSWAP_D,
-        AMOADD_D,
-        AMOXOR_D,
-        AMOAND_D,
-        AMOOR_D,
-        AMOMIN_D,
-        AMOMAX_D,
-        AMOMINU_D,
-        AMOMAXU_D,
+        LR,
+        SC,
+        AMOSWAP,
+        AMOADD,
+        AMOXOR,
+        AMOAND,
+        AMOOR,
+        AMOMIN,
+        AMOMAX,
+        AMOMINU,
+        AMOMAXU,
     }
 )
-_FP_LOAD_OPS: frozenset[int] = frozenset({FLW, FLD})
-_FP_STORE_OPS: frozenset[int] = frozenset({FSW, FSD})
+_FP_LOAD_OPS: frozenset[int] = frozenset({LOAD_FP})
+_FP_STORE_OPS: frozenset[int] = frozenset({STORE_FP})
+# Zfhmin, Zfa and Zimop (RV64 with F and D).
+FLI_S = _INSTR_OPS["FLI_S"]
+MOP = _INSTR_OPS["MOP"]
+_ZFHMIN_FP_DEST = frozenset(
+    _INSTR_OPS[name]
+    for name in ("FCVT_S_H", "FCVT_H_S", "FCVT_D_H", "FCVT_H_D", "FMV_H_X")
+)
+_ZFA_FP_DEST = frozenset(
+    _INSTR_OPS[name]
+    for name in (
+        "FLI_S", "FLI_D", "FMINM_S", "FMAXM_S", "FMINM_D", "FMAXM_D",
+        "FROUND_S", "FROUNDNX_S", "FROUND_D", "FROUNDNX_D",
+    )
+)  # fmt: skip
+_ZFA_INT_DEST = frozenset(
+    _INSTR_OPS[name] for name in ("FCVTMOD_W_D", "FLEQ_S", "FLTQ_S", "FLEQ_D", "FLTQ_D")
+)
+_FLI_OPS = frozenset({_INSTR_OPS["FLI_S"], _INSTR_OPS["FLI_D"]})
+_FP_EXT_COMPUTE = (
+    _ZFHMIN_FP_DEST | _ZFA_FP_DEST | _ZFA_INT_DEST | {_INSTR_OPS["FMV_X_H"]}
+)
+_FP_EXT_TWO_SOURCES = frozenset(
+    _INSTR_OPS[name]
+    for name in (
+        "FMINM_S", "FMAXM_S", "FMINM_D", "FMAXM_D", "FLEQ_S", "FLTQ_S", "FLEQ_D", "FLTQ_D",
+    )
+)  # fmt: skip
+_HAS_FP_DEST_OPS = _HAS_FP_DEST_OPS | _ZFHMIN_FP_DEST | _ZFA_FP_DEST
+_HAS_INT_DEST_OPS = _HAS_INT_DEST_OPS | _ZFA_INT_DEST | {_INSTR_OPS["FMV_X_H"], MOP}
+_USES_FP_RS1_OPS = _USES_FP_RS1_OPS | (
+    _FP_EXT_COMPUTE - _FLI_OPS - {_INSTR_OPS["FMV_H_X"]}
+)
+_USES_FP_RS2_OPS = _USES_FP_RS2_OPS | _FP_EXT_TWO_SOURCES
+_NOT_USES_INT_RS1_OPS = _NOT_USES_INT_RS1_OPS | _FLI_OPS | {MOP}
+_RS_FP_OPS = _RS_FP_OPS | _FP_EXT_COMPUTE
+_HAS_FP_FLAGS_OPS = _HAS_FP_FLAGS_OPS | _FP_EXT_COMPUTE
 # The operand classifier's needs_lq and needs_sq: SC takes a store-queue entry,
 # LR and every other AMO a load-queue one.
-_NEEDS_LQ_OPS: frozenset[int] = _LOAD_OPS | _FP_LOAD_OPS | (_AMO_OPS - {SC_W, SC_D})
-_NEEDS_SQ_OPS: frozenset[int] = _INT_STORE_OPS | _FP_STORE_OPS | frozenset({SC_W, SC_D})
+_NEEDS_LQ_OPS: frozenset[int] = _LOAD_OPS | _FP_LOAD_OPS | (_AMO_OPS - {SC})
+_NEEDS_SQ_OPS: frozenset[int] = _INT_STORE_OPS | _FP_STORE_OPS | frozenset({SC})
 _FP_INSTRUCTION_OPS: frozenset[int] = frozenset(
     _FP_LOAD_OPS
     | _FP_STORE_OPS
@@ -985,8 +922,8 @@ def _derive_rs_type(op: int) -> int:
     return RS_INT
 
 
-def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
-    """Compute pre-decoded dispatch fields from instruction_operation."""
+def _derive_pre_decoded_flags(op: int, instruction: int = 0) -> dict[str, int]:
+    """Compute pre-decoded dispatch fields from instruction_operation and funct3."""
     has_fp_dest = 1 if op in _HAS_FP_DEST_OPS else 0
     has_int_dest = 1 if op in _HAS_INT_DEST_OPS else 0
     uses_fp_rs1 = 1 if op in _USES_FP_RS1_OPS else 0
@@ -994,6 +931,7 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
     uses_fp_rs3 = 1 if op in _USES_FP_RS3_OPS else 0
     uses_int_rs1 = 0 if (uses_fp_rs1 or op in _NOT_USES_INT_RS1_OPS) else 1
     uses_int_rs2 = 1 if (not uses_fp_rs2 and op in _USES_INT_RS2_OPS) else 0
+    funct3 = (instruction >> 12) & 0x7
     return {
         "has_fp_dest": has_fp_dest,
         "has_int_dest": has_int_dest,
@@ -1012,13 +950,13 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "needs_lq": 1 if op in _NEEDS_LQ_OPS else 0,
         "needs_sq": 1 if op in _NEEDS_SQ_OPS else 0,
         "is_load_instruction": 1 if op in _LOAD_OPS else 0,
-        "is_load_unsigned": 1 if op in _LOAD_UNSIGNED_OPS else 0,
+        "is_load_unsigned": 1 if (op in _LOAD_OPS and (funct3 & 0b100) != 0) else 0,
         "is_jump_and_link": 1 if op == JAL else 0,
         "is_jump_and_link_register": 1 if op == JALR else 0,
         "is_csr_instruction": 1 if op in _CSR_OPS else 0,
         "is_amo_instruction": 1 if op in _AMO_OPS else 0,
-        "is_lr": 1 if op in {LR_W, LR_D} else 0,
-        "is_sc": 1 if op in {SC_W, SC_D} else 0,
+        "is_lr": 1 if op == LR else 0,
+        "is_sc": 1 if op == SC else 0,
         "is_mret": 1 if op in {MRET, SRET, DRET} else 0,
         "is_sret": 1 if op == SRET else 0,
         "is_dret": 1 if op == DRET else 0,
@@ -1066,7 +1004,10 @@ def build_from_id_to_ex(**kwargs: int) -> int:
     unknown = sorted(set(kwargs) - set(_FROM_ID_TO_EX_OFFSETS))
     if unknown:
         raise ValueError(f"not from_id_to_ex_t fields: {', '.join(unknown)}")
-    derived = _derive_pre_decoded_flags(int(kwargs.get("instruction_operation", 0)))
+    derived = _derive_pre_decoded_flags(
+        int(kwargs.get("instruction_operation", 0)),
+        int(kwargs.get("instruction", 0)),
+    )
     if kwargs.get("is_illegal_instruction") or kwargs.get("is_fetch_fault"):
         neutral = _derive_pre_decoded_flags(ILLEGAL)
         derived.update({name: neutral[name] for name in _CLASSIFIER_FIELDS})
@@ -1269,7 +1210,7 @@ class DispatchInterface:
         self.dut.i_from_id_to_ex.value = 0
         self.dut.i_vtype_spec.value = 0
         self.dut.i_vec_lmul_illegal.value = 0
-        self.dut.i_vec_mem_illegal.value = 0
+        self.dut.i_slot2_is_vector.value = 0
         self.dut.i_valid.value = 0
         self.dut.i_from_id_to_ex_2.value = 0
         self.dut.i_valid_2.value = 0

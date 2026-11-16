@@ -263,8 +263,7 @@ module sc_pending_unit #(
   // captured.
   logic sct_alloc;
   assign sct_alloc = o_mem_rs_issue.valid && !speculative_flush_all &&
-      ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
-       (o_mem_rs_issue.op == riscv_pkg::SC_D)) &&
+      (o_mem_rs_issue.op == riscv_pkg::SC) &&
       // Capture issue-cycle faults too. The registered fault blocks firing and
       // clears the entry one cycle later; completion uses the fault path.
       !(speculative_flush_en && is_younger(
@@ -275,8 +274,7 @@ module sc_pending_unit #(
   // payload, so a rejected allocation may safely write a free entry.
   logic sct_payload_alloc;
   assign sct_payload_alloc = o_mem_rs_issue.valid &&
-      ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
-       (o_mem_rs_issue.op == riscv_pkg::SC_D));
+      (o_mem_rs_issue.op == riscv_pkg::SC);
 
   logic sc_can_fire;
   logic sc_success;
@@ -293,7 +291,7 @@ module sc_pending_unit #(
       for (int slot = 0; slot < ScTableDepth; slot++) begin
         if (sct_payload_alloc && sct_free_oh[slot]) begin
           virtual_address_q[slot] <= o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
-          sct_size[slot] <= o_mem_rs_issue.op == riscv_pkg::SC_D ? 3'd3 : 3'd2;
+          sct_size[slot] <= (o_mem_rs_issue.mem_size == riscv_pkg::MEM_SIZE_DOUBLE) ? 3'd3 : 3'd2;
         end
       end
     end
@@ -468,6 +466,9 @@ module sc_pending_unit #(
 `ifndef FORMAL
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && sct_alloc && !sct_has_free)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error(
           "sc_pending_unit: SC tag %0d issued with the table full; it would never fire",
           o_mem_rs_issue.rob_tag

@@ -131,7 +131,7 @@ cases, then the sequential PC.
 | Backing BTB | 1024 entries, two-way set-associative | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | Mispredicted JALs and JALRs at commit; each PD redirect it serves refreshes its entry's replacement state |
 | Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`), and of a backing BTB redirect for one | IF, when it hands PD a packet predicted from a typed entry, and for a backing BTB redirect: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
-| Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of slot-1 conditional branches whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
+| Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of conditional branches in either slot whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
 
 A return is predicted like any BTB hit, from the lookup at its fetch PC, but
 its entry is typed, so its target is the top of the return address stack
@@ -155,7 +155,8 @@ Slot 2 has three BTB copies of its own, keyed by the PC of the instruction
 before it (+2 and +4, plus a copy rotated by one index for a slot 2 in the
 next word). They are read a cycle ahead, so the lookup adds no fetch cycle,
 but a taken slot-2 prediction costs one bubble because fetch has already
-requested the next sequential window. At a halfword PC, a slot-2 hit predicts
+requested the next sequential window (plus PD's redirect bubbles if a tagged
+match vetoes it there). At a halfword PC, a slot-2 hit predicts
 only if the entry was trained for an instruction of the same size. A JAL that
 misses both the BTB and the backing BTB mispredicts once; training at commit
 makes its next execution hit.
@@ -175,21 +176,24 @@ switch, keep the BTB. Code changed without FENCE.I, or a valid executable
 mapping replaced without SFENCE.VMA, is not covered (see the
 [roadmap](../../../../ROADMAP.md#possible-future-work)).
 
-PD can change the direction fetch followed for a slot-1 conditional branch,
-and redirects a JAL or JALR that the BTB did not predict taken when the
+PD can change the direction fetch followed for a conditional branch in either
+slot, and redirects a JAL or JALR that the BTB did not predict taken when the
 backing BTB holds it (see [Backing BTB](#backing-btb)).
 IF reads two direction predictors at the fetch PC and passes their
-directions along with the branch. A tagged direction, when the branch's lookup
-matches a tag, is used either way; otherwise the bimodal direction can only
-turn a branch without a taken BTB prediction (a miss, or a hit predicted
-not-taken) to taken. When that direction differs from fetch's, PD redirects
-fetch to PC + offset, or for not-taken to the next instruction, at a cost of
-two bubbles, and ID gives the branch the new prediction so the branch unit
-checks the path fetch now follows. Commit trains the bimodal entry at the
-carried index, not at the branch's own PC, because the fetch PC that read the
-predictor can differ from the branch PC after a stall replay or at a halfword
-boundary. A slot-2 branch's training waits, one deep, for a cycle in which
-slot 1 does not train; a newer one replaces it.
+directions along with the packet. For slot 1, a tagged direction, when the
+branch's lookup matches a tag, is used either way; otherwise the bimodal
+direction can only turn a branch without a taken BTB prediction (a miss, or
+a hit predicted not-taken) to taken. Slot 2 uses the tagged predictor only
+(it has no bimodal lookup): a tagged match can turn a slot-2 branch without a
+taken BTB prediction to taken, or veto a taken slot-2 BTB prediction after
+its fetch bubble. When the chosen direction differs from fetch's, PD
+redirects fetch to PC + offset, or for not-taken to the next instruction, at
+a cost of two bubbles, and ID gives the branch the new prediction so the
+branch unit checks the path fetch follows. Commit trains the bimodal entry
+at the carried index, not at the branch's own PC, because the fetch PC that
+read the predictor can differ from the branch PC after a stall replay or at
+a halfword boundary. A slot-2 branch's training waits, one deep, for a cycle
+in which slot 1 does not train; a newer one replaces it.
 
 The tagged predictor (`tage_predictor`) follows TAGE. T1 hashes the branch's
 word address with the newest 16 bits of the global path history, T2 with all
@@ -220,7 +224,8 @@ provider and the alternate direction disagree, its usefulness bit records
 whether the provider was right. A mispredicted branch allocates a weak entry
 in the first table above its provider (T1, then T2) whose entry is not useful,
 or clears those usefulness bits when every candidate is useful. Slot-2
-branches are trained, though PD overrides only slot 1.
+branches are trained the same way, from the prediction left after any PD
+override.
 
 ### Backing BTB
 
@@ -273,12 +278,15 @@ IF pairs two instructions only when all of these hold:
 - Slot 1 is not control flow (a branch, JAL, JALR, or a compressed form of
   one) and not a native SYSTEM, MISC-MEM, or AMO instruction (CSR accesses,
   ECALL, EBREAK, xRET, WFI, SFENCE.VMA, FENCE, FENCE.I, and atomics including
-  LR/SC).
-- Slot 2 is not a native SYSTEM, MISC-MEM, AMO, FP-compute (OP-FP or fused
-  multiply-add) or vector instruction (OP-V, or LOAD-FP and STORE-FP with a
-  vector width). It may be a branch or jump, but only the slot-2
-  BTB lookup or the backing BTB can predict it; the PD redirect's direction
-  change covers slot 1 only.
+  LR/SC). The Zimop may-be-operations (SYSTEM with funct3 100) are the
+  exception: they write zero to rd and touch no other state, so they pair
+  like an integer instruction, in either slot.
+- Slot 2 is not a native SYSTEM (other than a may-be-operation), MISC-MEM,
+  AMO, FP-compute (OP-FP or fused multiply-add) or vector instruction (OP-V,
+  or LOAD-FP and STORE-FP with a vector width). It may be a branch or jump:
+  the slot-2 BTB lookup, the tagged direction predictor (through a PD
+  redirect), or the backing BTB can predict it, while the bimodal fallback
+  covers slot 1 only.
 - Slot 2 fits in the window. A 32-bit slot 2 that would start in the upper
   half of the second word does not.
 - No transient condition intervenes, such as an unsafe window read, an
@@ -290,7 +298,8 @@ A CSR instruction reads and writes its CSR at commit, and its CDB broadcast
 carries only its write operand, so dispatch holds everything younger until the
 CSR's result is written back. A slot-2 partner would slip past that hold. The
 predecode puts CSR accesses in one serializing class with the other native
-SYSTEM, MISC-MEM, and AMO instructions, and that class never leads a pair.
+SYSTEM instructions (all but the may-be-operations), MISC-MEM, and AMO
+instructions, and that class never leads a pair.
 These instructions also retire alone at the ROB head, which keeps them out of
 slot 2. FP-compute instructions stay out of slot 2 to keep FP
 reservation-station back-pressure off the slot-1 dispatch path, and vector
@@ -340,6 +349,39 @@ instruction's register fields from them. CPU fetch fills compute the metadata wi
 `riscv_pkg::imem_make_sideband`, and
 `sw/common/generate_imem_predecode_init.py` mirrors it for the
 instruction-memory metadata arrays that component tests use.
+
+### Operation encoding
+
+`id_stage/instr_decoder.sv` maps each instruction to an eight-bit
+`riscv_pkg::instr_op_e` value, while `id_stage/instr_operand_classifier.sv`
+extracts its reservation station, register-operand flags and serialization
+flags directly from the 32-bit instruction word in parallel. Explicit anchors
+in `instr_op_e` (`ROL = 8'd76` and `ADDIW = 8'd170`) hold `ROL..RORI` and
+`SLLIW..RORIW` at the ordinals `riscv_pkg::projected_shift_controls` decodes by
+bit position, while `SLL..SRAI` precede any folded member. New members are
+appended after the last member so an insertion or deletion never disturbs the
+shift ordinals (an insertion among the word shifts or a deletion ahead of
+`SRAI` compiles and is caught only by `alu.sv`'s simulation assertions and the
+`alu_shift_hint` formal check).
+
+Operations use one `instr_op_e` value per operation across widths and CSR
+source forms when width, sign or CSR operation travels in fields already
+carried to the consumer (`mem_size`, `mem_signed`, `rm`, `imm`, the ROB's
+`csr_op` field, or `vec_unit`'s per-tag instruction copy). Scalar integer and
+floating-point loads and stores, load-reserved, store-conditional and each
+atomic read-modify-write function share one operation across widths and
+signedness, taking width from `mem_size` (`funct3[1:0]`) and, for integer loads
+and `LR`, load sign from `mem_signed` (`!funct3[2]`, zero for floating-point
+loads and AMOs). Register and immediate CSR accesses use two operations
+(`CSR_REG` and `CSR_IMM`); dispatch writes `funct3` into the ROB entry's
+`csr_op` field (clearing `csr_op[1:0]` when a set or clear form has `rs1` or
+`uimm` equal to zero), and `csr_file` reads `rob_commit.csr_op` at commit.
+Vector instructions use class operations (`VARITH`, `VARITH_X`, `VTOX`,
+`VLOAD`, `VSTORE`), with `vec_unit` keeping its own per-tag instruction copy
+written at allocation from `from_id_to_ex.instruction`. Scalar floating-point
+compute operations are the next candidates for folding, as they differ by
+`funct7` and `rs2`, which the floating-point reservation station can carry in
+its unused immediate.
 
 ## Address translation
 
@@ -457,15 +499,21 @@ bit 30 for DDR up to 1 GiB, bit c for a 2^c-byte window of c >= 32, which
 leaves its top 2 GiB without an alias and makes an NC or IO leaf there an
 access fault). A 2 GiB DDR window has no alias in the current 32-bit physical
 map, so NC and IO leaves over DDR raise an access fault in that configuration,
-including the VCU118's 2 GiB map. Device mappings are unaffected. The alias
+including the VCU118's 2 GiB map. Page-permission faults take precedence over
+this PMA refusal. Device mappings are unaffected. The alias
 window is not in the PMA map (an untranslated
 access or a PMA leaf there faults as before); an NC or IO leaf over it is a
 device page in the DTLB's per-entry checks and the walk-response checks, so
 the DMMU classifies the op MMIO, the load queue's PMA check accepts the window
-for MMIO entries, and the load queue, store queue and uncached adapter treat
-it exactly as a device access: no L0 or L1D, at the ROB head after older
-stores drain, stores retired after their bus response. NC executes as IO,
-which is stronger than RVWMO. soc_top sends an
+for MMIO entries. NC/IO loads over the DDR alias or low BRAM issue at the
+ROB head and bypass L0, L1D and store forwarding. The router selects
+parking, committed-store draining and interrupt shielding by the physical
+device quadrant, so these memory loads do not wait for committed stores to
+drain. An interrupt or debug halt can flush an accepted load and cause it
+to perform another read after resumption. All such targets are idempotent
+memory. Alias stores retire after their bus response; NC/IO low-BRAM stores
+are buffered and can retire before their response. Device registers retain
+the full device mechanism regardless of PBMT. soc_top sends an
 alias access as one single-beat transfer of the real DDR address through the
 coherent DMA port, so the home probes the L1D and merges dirty data first:
 the transfer observes the cacheable copy of the same frame. Switching
@@ -476,9 +524,19 @@ walk response carries the field (`ptw_resp_t.pbmt`); the second-level TLB
 (4 KiB array and superpage array), the DTLB and the ITLB store it and return
 it on a hit. Over low BRAM, which has no alias, the DTLB's per-entry checks
 and the walk-response checks apply the field: the page is MMIO and refuses
-AMOs. AMO, LR, SC and `cbo.zero` on an NC or IO page are access faults, and so
-is an instruction fetch (PMA overrides the Svpbmt chapter permits). The walk
-cache holds only pointers, whose PBMT field must be zero.
+AMOs. AMO, LR, SC, `cbo.zero` and vector loads and stores on an NC or IO page
+are access faults, and so is an instruction fetch (PMA overrides the Svpbmt
+chapter permits). The walk cache holds only pointers, whose PBMT field must be
+zero.
+
+On the X3, a misaligned NC/IO load or store to a DDR alias raises a load or
+store access fault (cause 5 or 7); one to low BRAM or device registers raises
+an address-misaligned exception (cause 4 or 6). The VCU118 has no hardware
+misaligned-access engine:
+misaligned loads and stores raise cause 4 or 6 before translation, including
+NC/IO accesses, for firmware to handle. Aligned NC/IO DDR accesses on its
+2 GiB map raise cause 5 or 7 because the map has no alias.
+
 The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
 (the level-0 table of a 2 MiB region) and 4 root pointers (the level-1 table
 of a 1 GiB region). A walk looks both up in two registered cycles (tag
@@ -521,8 +579,9 @@ AMO. The engine reads a store's data through an extra read port on each
 register file, translates through the page-table walker when translation is
 on, and makes its sector requests on the hart's line client. A load's result
 is written through commit port 0, one cycle after completion, and the access
-counts as one retired instruction (`minstret` and a single step). If a part
-faults, the engine's exception is taken as the instruction's own, with its
+counts as one retired instruction (`minstret` and a single step). Half- and
+single-precision FP loads are NaN-boxed to 64 bits; FP stores transfer the
+low bits for their access size. If a part faults, the engine's exception is taken as the instruction's own, with its
 cause and trap value, and `mepc` or `sepc` holds the access's PC.
 
 An access is split at the first sector boundary it crosses. `ma_pkg` checks
@@ -668,42 +727,66 @@ that depends on `vtype` (vill, register-group alignment, mask-destination
 overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
 (vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
-unknown). The register-number rules depend on `vtype` only through LMUL, so
+unknown). Masked operations reject v0 as a SEW data source because the
+implicit mask has element width 1. A configuration allocation restarts the
+three-cycle wait for an empty configuration pipeline before the registered
+ROB in-flight indication arrives. The tracker reloads the architectural
+`vtype` only after that wait, allowing its retiring CSR update to arrive.
+The register-number rules depend on `vtype` only through LMUL, so
 `vector/vec_lmul_legality.sv` evaluates them from the instruction bits for
 each LMUL class (1 or fractional, 2, 4, 8) before the decoded queue, which
 carries the four results beside slot 1; dispatch selects the class of the
-tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with its scalar and the
-architectural `vl`, `vtype` and `vstart`, and the engine executes it after
-commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
+tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with
+its scalar and the architectural `vl`, `vtype` and `vstart`, and the engine
+executes it after commit; the CSR file clears `vstart` and sets VS Dirty.
+`vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
 result on CDB slot 6.
 
 ID decodes the unit-stride (one field), whole-register and mask loads and
 stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1
-only and go to INT_RS, which hands the rs1 base to the ROB. Each takes an
-entry in the vector memory table (`vector/vec_vmt.sv`) at dispatch, and
-dispatch holds the next one while all four entries are live. The table lists
-the vector memory instructions in flight in program order for the load and
-store queues' range holds, marks an entry retired on the edge the ROB head
-passes it, and frees entries that a flush removes. Its registered "no live
-retired entry" output holds the serializer's FENCE, FENCE.I and SFENCE.VMA
-drain, the store-conditional unit's firing and arming, and the
-misaligned-access engine before its first access. The unit does not perform
-vector loads and stores: each raises illegal-instruction when it reaches the
-ROB head, and the trap's flush frees its entry. `vec_lmul_legality` decides
-this rejection from the decoded operation before the queue, excluding decode
-illegality and fetch faults. A separate bit travels beside the four LMUL
-classes, and dispatch includes it without consulting `vtype`. The other vector
-instructions, and the strided, indexed, segment and fault-only-first loads
-and stores, are illegal.
+only with `RS_NONE` and take an entry in the vector memory table
+(`vector/vec_vmt.sv`), holding the next one while all four entries are live.
+The table lists the vector memory instructions in flight in program order for
+the load and store queues' range holds (including 64-byte block holds on
+Zicbom entries), marks an entry retired on the edge the ROB head passes it, and
+frees entries that a flush removes. Its registered "no live retired entry"
+output holds the serializer's FENCE, FENCE.I and SFENCE.VMA drain, the
+store-conditional unit's firing and arming, the misaligned-access engine before
+its first access, and interrupt and debug-halt takes (`sq_committed_empty_for_trap`).
+When one reaches the ROB head and older committed vector work has drained,
+`vector/vec_head_mmu.sv` reads `rs1` through the integer register file's extra
+read port and checks `vtype` and register-group legality (`vill` except on
+whole-register forms, EMUL in `[1/8, 8]`, group alignment, and masked loads to
+`v0`), computes the active byte span from `vl`, `vstart` and `v0`, translates
+the one or two touched pages on the DMMU's walk-request port (requiring cached
+DDR with `PBMT = PMA`), waits for older committed scalar stores (`o_sq_committed_empty`), records
+the physical page segments in `vec_vmt`, and completes on CDB slot 6 to retire
+alone in slot 1 (`vstart` cleared; VS set Dirty on loads and when `vstart` was
+nonzero). Faults are reported precisely at the head (`xtval` holds the first
+active byte's virtual address in the faulting page, or the second page's base
+when a single element straddles into a faulting second page); if earlier whole
+elements lie on a valid first page before a faulting second page, `vec_vmu`
+executes those first-page elements before a synchronous machine or supervisor
+trap records the first unexecuted element in `vstart`. A partial-load fault in
+Debug Mode re-parks without that CSR update and can leave VS Clean after
+writing vector registers. After retirement, `vector/vec_vmu.sv` splits the
+access into 32-byte sectors across six line-client identities (IDs 2..7) to the
+coherence home, freeing the `vec_vmt` entry once all sector responses and VRF
+writes finish. A failed sector response after retirement, or during a partial
+first-page run ahead of a second-page fault, suppresses any VRF write and
+raises a sticky hart fatal error alongside `o_cache_fatal`. The other vector
+instructions, and the strided, indexed, segment and fault-only-first loads and
+stores, are illegal.
 
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector instructions are not implemented, and bare-metal
 software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
 not exist and VS reads zero.
 
-The vector unit's datapath blocks live in `vector/`; the core does not
-instantiate them, and each has its own unit bench. `vec_int_lane` is one 64-bit integer lane: add, subtract and
+The vector unit's datapath blocks live in `vector/` and have unit benches.
+`vec_engine` connects `vec_vrf` and `vec_int_lane` to the core.
+`vec_int_lane` is one 64-bit integer lane: add, subtract and
 reverse subtract, the logical operations and `vandn`, signed and unsigned
 minimum and maximum, shifts and rotates, merge and move, the Zvbb bit and byte
 reversals and counts, and the eight compares, at SEW 8, 16, 32 or 64. Its

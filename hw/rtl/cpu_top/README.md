@@ -14,15 +14,17 @@ uncached data and instruction ports.
 | `frost_cluster_memory` | The DMA ingress queue; `coherence_home` with independent completions, the L2 array and victim ownership; and `cpu_memory_fabric` with its AXI master |
 
 The line client is a `coherence_dma_ingress` under the hart's own source and
-port class 3, with `LINE_CLIENT_IDS` (two) request identities. It makes
-sector reads and masked sector writes that the home serves as it serves DMA:
-it probes the hart's own L1D, merges dirty data and applies the byte mask. It
-has its own D, G, C and U channels. In `frost_cluster_memory` its D and C
-take the last port of the home's arbiters, so while it is idle the other
-ports' rotation is unchanged, and the home's G and U of source 0 class 3 go
-to it rather than to the L1D. With `MISALIGNED_HW` set, the CPU's
-misaligned-access engine issues its sector reads and writes on it; otherwise
-nothing in the hart uses it.
+port class 3, with `LINE_CLIENT_IDS` request identities (two without `VECTOR`;
+eight with `VECTOR`: two for the misaligned-access engine and six for the
+vector memory unit). It makes sector reads and masked sector writes that the
+home serves as it serves DMA: it probes the hart's own L1D, merges dirty data
+and applies the byte mask. It has its own D, G, C and U channels. In
+`frost_cluster_memory` its D and C take the last port of the home's arbiters,
+so while it is idle the other ports' rotation is unchanged, and the home's G
+and U of source 0 class 3 go to it rather than to the L1D. With `MISALIGNED_HW`
+or `VECTOR` set, the misaligned-access engine and the vector memory unit issue
+their sector reads and writes on it (never concurrently); otherwise nothing in
+the hart uses it.
 
 The D/P/R/W/WA/G/C/U channels carry requests, probes, dirty data, grants
 and completion ownership. Dirty data merges through L2. `cpu_top` latches
@@ -79,7 +81,7 @@ All ports are synchronous to the rising edge of `i_clk`. There are no clock cros
 - CPU reset does not clear the integer or floating-point register files. Apart from hardwired `x0`, software must initialize register values before using them; integration must not assume zeroed GPRs after reset.
 - `o_axi_idle` covers the master's queued requests, fabric transactions, buffered responses, and reset drain. It does not prove that all dirty cache lines have reached memory, and it is not a clock-gating permission by itself.
 
-FROST's SoC combines external reset and the Debug Module's `ndmreset` for CPU reset. The Debug Module survives `ndmreset`. Its board and JTAG clock crossings belong to `soc_top` and `frost`.
+FROST's SoC combines external reset, the Debug Module's `ndmreset`, and SYSRESET for CPU reset. The Debug Module survives both CPU-only reset requests. Its board and JTAG clock crossings belong to `soc_top` and `frost`.
 With `ASYNC_CPU_CLOCK=1`, FROST runs the Debug Module and the core side of
 its transport on the CPU clock. Debug data CSR reads and writes therefore
 share the same clock. The SoC boundary carries memory and DMA AXI channels
@@ -151,7 +153,7 @@ address in `xtval`, as Sstvala requires: the load, store or atomic's address
 failed part, or the fetch address of the failed instruction parcel. See the
 [privileged architecture](https://docs.riscv.org/reference/isa/priv/machine.html).
 
-Buffered cached stores may already have retired when a writeback or write-allocated refill fails. Such failures retain the dirty cache ownership, assert sticky `o_fatal_error`, record `o_fatal_addr`, and stop further CPU retirement and new side effects. They do not fabricate a precise exception for an instruction that has already retired. The wrapper must handle the fatal indication and eventually reset the CPU; automatic retries are not performed.
+Buffered cached stores may already have retired when a writeback or write-allocated refill fails; the same holds for a failed sector read or write response on a retired vector load or store (or on the first-page elements executed ahead of a second-page fault). Such failures retain any dirty cache ownership, suppress vector register writes, assert sticky `o_fatal_error`, record `o_fatal_addr`, and stop further CPU retirement and new side effects. They do not fabricate a precise exception for an instruction that has already retired. The wrapper must handle the fatal indication and eventually reset the CPU; automatic retries are not performed.
 
 The same fatal contract applies to a failed B response for an already-retired Normal write-through store. Its adapter ownership is retained, later requests are blocked, and fences cannot complete past the failure. SC/AMO and Device writes remain precise and do not use this buffered-store error path. Retirement and new memory requests stop on the cycle after the failure, from the latched flag; the internal execution hold is registered one cycle later, and any intervening execution result cannot retire.
 

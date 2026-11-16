@@ -461,25 +461,16 @@ module load_queue #(
 
   function automatic amo_kind_e encode_amo_kind(input riscv_pkg::instr_op_e op);
     case (op)
-      riscv_pkg::AMOSWAP_W: encode_amo_kind = AMO_KIND_SWAP;
-      riscv_pkg::AMOADD_W:  encode_amo_kind = AMO_KIND_ADD;
-      riscv_pkg::AMOXOR_W:  encode_amo_kind = AMO_KIND_XOR;
-      riscv_pkg::AMOAND_W:  encode_amo_kind = AMO_KIND_AND;
-      riscv_pkg::AMOOR_W:   encode_amo_kind = AMO_KIND_OR;
-      riscv_pkg::AMOMIN_W:  encode_amo_kind = AMO_KIND_MIN;
-      riscv_pkg::AMOMAX_W:  encode_amo_kind = AMO_KIND_MAX;
-      riscv_pkg::AMOMINU_W: encode_amo_kind = AMO_KIND_MINU;
-      riscv_pkg::AMOMAXU_W: encode_amo_kind = AMO_KIND_MAXU;
-      riscv_pkg::AMOSWAP_D: encode_amo_kind = AMO_KIND_SWAP;
-      riscv_pkg::AMOADD_D:  encode_amo_kind = AMO_KIND_ADD;
-      riscv_pkg::AMOXOR_D:  encode_amo_kind = AMO_KIND_XOR;
-      riscv_pkg::AMOAND_D:  encode_amo_kind = AMO_KIND_AND;
-      riscv_pkg::AMOOR_D:   encode_amo_kind = AMO_KIND_OR;
-      riscv_pkg::AMOMIN_D:  encode_amo_kind = AMO_KIND_MIN;
-      riscv_pkg::AMOMAX_D:  encode_amo_kind = AMO_KIND_MAX;
-      riscv_pkg::AMOMINU_D: encode_amo_kind = AMO_KIND_MINU;
-      riscv_pkg::AMOMAXU_D: encode_amo_kind = AMO_KIND_MAXU;
-      default:              encode_amo_kind = AMO_KIND_INVALID;
+      riscv_pkg::AMOSWAP: encode_amo_kind = AMO_KIND_SWAP;
+      riscv_pkg::AMOADD:  encode_amo_kind = AMO_KIND_ADD;
+      riscv_pkg::AMOXOR:  encode_amo_kind = AMO_KIND_XOR;
+      riscv_pkg::AMOAND:  encode_amo_kind = AMO_KIND_AND;
+      riscv_pkg::AMOOR:   encode_amo_kind = AMO_KIND_OR;
+      riscv_pkg::AMOMIN:  encode_amo_kind = AMO_KIND_MIN;
+      riscv_pkg::AMOMAX:  encode_amo_kind = AMO_KIND_MAX;
+      riscv_pkg::AMOMINU: encode_amo_kind = AMO_KIND_MINU;
+      riscv_pkg::AMOMAXU: encode_amo_kind = AMO_KIND_MAXU;
+      default:            encode_amo_kind = AMO_KIND_INVALID;
     endcase
   endfunction
 
@@ -845,7 +836,7 @@ module load_queue #(
 
   // lq_address and lq_amo_rs2 are only written once the address CAM resolves.
   // Valid bits stay in FFs; stale RAM contents are don't-care until addr_valid.
-  logic [3:0] coherent_stored_class, coherent_update_class;
+  logic [4:0] coherent_stored_class, coherent_update_class;
   if (1'b1) begin : gen_coherent_address_store
     coherent_lq_address_store #(
         .ADDR_WIDTH(IdxWidth),
@@ -2057,7 +2048,7 @@ module load_queue #(
     assign selected_permission = issue_mem_uses_addr_update ?
         (update_uncached_ok || update_cached_ok || (!update_atomic && update_device_ok)) :
         stored_permission;
-    wire [3:0] selected_class = issue_mem_uses_addr_update ?
+    wire [4:0] selected_class = issue_mem_uses_addr_update ?
         coherent_update_class : coherent_stored_class;
     (* keep = "true" *) wire stored_misaligned;
     assign stored_misaligned = is_load_misaligned(
@@ -2073,7 +2064,7 @@ module load_queue #(
         cached_q <= selected_class[0];
         normal_q <= selected_class[3];
         misaligned_q <= selected_misaligned;
-        pbmt_alias_q <= riscv_pkg::pma_pbmt_alias_ok(sq_check_addr_next);
+        pbmt_alias_q <= selected_class[4];
       end
     end
     // Svpbmt: the uncached alias of DDR is outside the PMA map, so an
@@ -3285,6 +3276,13 @@ module load_queue #(
   // ===========================================================================
   // CDB Broadcast Logic
   // ===========================================================================
+  // Bits 31:16 of a NaN-boxed FP load below double width: the loaded bits for
+  // FLW, all ones for FLH (Zfhmin), whose halfword the load unit zero-extends.
+  function automatic logic [15:0] fp_box_upper16(input logic [1:0] size,
+                                                 input logic [15:0] loaded);
+    fp_box_upper16 = (riscv_pkg::mem_size_e'(size) == riscv_pkg::MEM_SIZE_HALF) ? 16'hFFFF : loaded;
+  endfunction
+
   // Register the Phase A result before the MEM adapter for timing.
 
   // Qualify valid and capture enable, leaving invalid payloads unspecified.
@@ -3304,8 +3302,12 @@ module load_queue #(
       // FLD/RV64 LD: raw 64-bit beat from the LUTRAM
       issue_cdb_result.value = lq_data_rd;
     end else if (lq_is_fp[issue_cdb_idx]) begin
-      // FLW: NaN-box the stored 32-bit word
-      issue_cdb_result.value = {32'hFFFF_FFFF, lq_data_rd[31:0]};
+      // FLW: NaN-box the stored 32-bit word; FLH: the stored halfword
+      issue_cdb_result.value = {
+        32'hFFFF_FFFF,
+        fp_box_upper16(lq_size_issue_cdb_rd, lq_data_rd[31:16]),
+        lq_data_rd[15:0]
+      };
     end else begin
       // INT load: stored value is already zero-extended into FLEN
       issue_cdb_result.value = lq_data_rd;
@@ -3416,8 +3418,11 @@ module load_queue #(
       // LD / FLD / LR.D: preserve all 64 response bits, including FP payloads.
       resp_bypass_value = i_mem_read_data;
     end else if (issued_is_fp) begin
-      // FLW: NaN-box the addressed raw word (lu_data_out's word arm)
-      resp_bypass_value = {32'hFFFF_FFFF, lu_data_out[31:0]};
+      // FLW: NaN-box the addressed raw word (lu_data_out's word arm); FLH:
+      // the addressed halfword
+      resp_bypass_value = {
+        32'hFFFF_FFFF, fp_box_upper16(issued_size, lu_data_out[31:16]), lu_data_out[15:0]
+      };
     end else begin
       // INT / LR: zero-extend byte/half/word extracted value
       resp_bypass_value = FLEN'(lu_data_out);
@@ -3429,8 +3434,10 @@ module load_queue #(
       // FLD from L0: the full cached dword line
       cache_hit_bypass_value = cache_lookup_data;
     end else if (sq_check_is_fp_q) begin
-      // FLW from L0: NaN-box the addressed word of the cached beat
-      cache_hit_bypass_value = {32'hFFFF_FFFF, lu_cache_out[31:0]};
+      // FLW/FLH from L0: NaN-box the addressed word or half of the cached beat
+      cache_hit_bypass_value = {
+        32'hFFFF_FFFF, fp_box_upper16(sq_check_size_q, lu_cache_out[31:16]), lu_cache_out[15:0]
+      };
     end else begin
       // INT from L0: cache-path load_unit already did byte/half extract
       cache_hit_bypass_value = FLEN'(lu_cache_out);
@@ -3444,8 +3451,10 @@ module load_queue #(
       // FLD from FSD: full 64-bit image straight from the SQ
       fwd_bypass_value = i_sq_forward.data;
     end else if (sq_check_is_fp_q) begin
-      // FLW: NaN-box the addressed word of the forwarded image
-      fwd_bypass_value = {32'hFFFF_FFFF, lu_fwd_out[31:0]};
+      // FLW/FLH: NaN-box the addressed word or half of the forwarded image
+      fwd_bypass_value = {
+        32'hFFFF_FFFF, fp_box_upper16(sq_check_size_q, lu_fwd_out[31:16]), lu_fwd_out[15:0]
+      };
     end else begin
       // INT: fwd-path load_unit already did byte/half extract + extension
       fwd_bypass_value = FLEN'(lu_fwd_out);
@@ -5005,6 +5014,9 @@ module load_queue #(
           ((sq_check_addr_q[SqCheckCopyMsb:3] !== sq_check_addr_q_b) ||
            (sq_check_addr_q[SqCheckCopyMsb:3] !== sq_check_addr_q_c) ||
            (sq_check_addr_q[SqCheckCopyMsb:3] !== sq_check_addr_q_d)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: phase-identical SQ address anchors diverged");
       // Flush-cycle requests are legal; allocation gates reject them like the ROB.
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)
@@ -5012,17 +5024,30 @@ module load_queue #(
       if (i_alloc_2.valid && !i_alloc.valid && full)
         $warning("LQ: slot-2 alloc attempted alone when full");
       if (i_flush_all && accept_mem_response)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: accepted memory response during full flush");
-      if (i_flush_all && cache_fill_valid) $error("LQ: filled L0 cache during full flush");
+      if (i_flush_all && cache_fill_valid)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("LQ: filled L0 cache during full flush");
       // Never full-flush an active AMO write: memory could change after its
       // instruction is squashed, then trap recovery could execute it again. The
       // trap unit's AMO interrupt shield prevents this. COMPUTE may cancel
       // because it has not launched a write (load queue README, "AMO sequence").
       if (i_flush_all && (amo_state == AMO_WRITE_ACTIVE || o_amo_mem_write_en))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: full flush while an AMO memory write is in flight (orphaned write)");
       // Only one AMO may await computation or write completion. AMO_IDLE capture
       // gating also protects the payload against invalid overlapping responses.
       if (accept_mem_response && issued_is_amo && (amo_state != AMO_IDLE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: overlapping AMO response arrived while an owner was active");
       // Each live cached slot must name its launched entry: valid, issued, and
       // holding the saved ROB tag. Live slots and new launches cannot share an
@@ -5032,6 +5057,9 @@ module load_queue #(
         if (cs_valid[sl] && !cs_drop[sl] &&
             !(lq_valid[cs_idx[sl]] && lq_issued[cs_idx[sl]] &&
               (lq_rob_tag[cs_idx[sl]] == cs_rob_tag[sl])))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "LQ: live cached slot %0d (tag %0d) names entry %0d (valid %0d issued %0d tag %0d)",
               sl,
@@ -5044,9 +5072,15 @@ module load_queue #(
         for (int sl2 = sl + 1; sl2 < int'(CachedSlots); sl2++) begin
           if (cs_valid[sl] && !cs_drop[sl] && cs_valid[sl2] && !cs_drop[sl2] &&
               (cs_idx[sl] == cs_idx[sl2]))
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error("LQ: live cached slots %0d and %0d both name entry %0d", sl, sl2, cs_idx[sl]);
         end
         if (mem_read_en && cs_valid[sl] && !cs_drop[sl] && (cs_idx[sl] == launch_mem_issue_idx))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "LQ: launch of entry %0d while live cached slot %0d still names it",
               launch_mem_issue_idx,
@@ -5056,6 +5090,9 @@ module load_queue #(
       if (mem_read_en &&
           !(lq_valid[launch_mem_issue_idx] && !lq_issued[launch_mem_issue_idx] &&
             (lq_rob_tag[launch_mem_issue_idx] == sq_check_rob_tag_q)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "LQ: launch of entry %0d (valid %0d issued %0d tag %0d) from a staged copy tagged %0d",
             launch_mem_issue_idx,
@@ -5066,6 +5103,9 @@ module load_queue #(
         );
       if (accept_mem_response && resp_from_slot &&
           (cs_rob_tag[resp_slot] != lq_rob_tag[issued_idx]))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "LQ: cached response of slot %0d (tag %0d) accepted by entry %0d holding tag %0d",
             resp_slot,
@@ -5074,6 +5114,9 @@ module load_queue #(
             lq_rob_tag[issued_idx]
         );
       if (accept_mem_response && !resp_from_slot && (fast_rob_tag != lq_rob_tag[fast_idx]))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "LQ: fast-tier response (tag %0d) accepted by entry %0d holding tag %0d",
             fast_rob_tag,
@@ -5086,6 +5129,9 @@ module load_queue #(
       // rely on this timing.
       for (int unsigned i = 0; i < DEPTH; i++) begin
         if (lq_valid[i] && lq_issued[i] && !lq_data_valid[i] && !lq_is_amo[i] && !sim_resp_owned[i])
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "LQ: launched load in entry %0d (tag %0d) owes a response but has no owner",
               i,
@@ -5094,29 +5140,62 @@ module load_queue #(
       end
       // Slot-1 and slot-2 must never target the same physical entry.
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
       if (!$onehot0(slot1_alloc_oh) || !$onehot0(slot2_alloc_oh))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: allocation steering is not onehot-or-zero");
       if ((|slot1_alloc_oh) != slot1_alloc_en || (|slot2_alloc_oh) != slot2_alloc_en)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: allocation steering lost or invented an accepted request");
       if (|(slot1_alloc_oh & slot2_alloc_oh))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: slot-1 and slot-2 onehot allocation pulses overlap");
       if (slot2_alloc_en != slot2_alloc_en_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: expanded slot-2 allocation enable differs from the reference");
       if (slot2_alloc_oh != slot2_alloc_oh_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: expanded slot-2 allocation pulses differ from the reference");
       if (alloc_oh != (slot1_alloc_oh | slot2_alloc_oh))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: merged allocation pulses differ from the slot pulses");
       if (dispatch_full_next != (dispatch_count_next == CountWidth'(DEPTH)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: expanded dispatch-full prediction differs from the count reference");
       if (dispatch_full_for_2_next != (dispatch_count_next >= CountWidth'(DEPTH - 1)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: expanded dispatch-full-for-2 prediction differs from the count reference");
       if (accept_mem_response && dep_replaced_oh[issued_idx])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: memory response collided with a new physical generation");
       // COMPUTE retains only amo_entry_idx after releasing its response slot.
       // Reallocation could make its validity check pass for another instruction.
       // A live slot cannot be reallocated; check that invariant here.
       if ((amo_state == AMO_COMPUTE) && dep_replaced_oh[amo_entry_idx])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: AMO compute owner's entry %0d was reallocated under it", amo_entry_idx);
       // The compact-kind write must have drained before launch snapshots it.
       // This is guaranteed by the intervening address/SQ-check staging edge.
@@ -5124,21 +5203,36 @@ module load_queue #(
         if (amo_kind_alloc_present_q[0] &&
             dep_replaced_oh[amo_kind_alloc_idx_q[0]] &&
             (amo_kind_alloc_idx_q[0] == launch_mem_issue_idx))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("LQ: slot-1 AMO-kind write had not drained before launch");
         if (amo_kind_alloc_present_q[1] &&
             dep_replaced_oh[amo_kind_alloc_idx_q[1]] &&
             (amo_kind_alloc_idx_q[1] == launch_mem_issue_idx))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("LQ: slot-2 AMO-kind write had not drained before launch");
       end
       if (amo_state == AMO_WRITE_ACTIVE && amo_is_minmax_q &&
           (amo_minmax_selected_relation === 2'b11))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: active AMO MIN/MAX has an impossible {equal, less-than} relation");
       if (amo_state == AMO_WRITE_ACTIVE && amo_is_minmax_q &&
           amo_minmax_selected_relation[1] && amo_minmax_select_old_active)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: active AMO MIN/MAX selected old on equality");
       if (amo_state == AMO_WRITE_ACTIVE && amo_is_minmax_q &&
           (amo_write_value !==
            (amo_minmax_select_old_active ? amo_old_value : amo_minmax_rs2_q)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: active AMO MIN/MAX write no longer matches its captured relation");
     end
   end

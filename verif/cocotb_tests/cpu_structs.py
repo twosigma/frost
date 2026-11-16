@@ -32,6 +32,10 @@ TAGE_TAG_BITS = 9
 TAGE_FTQ_IDX_BITS = 6
 MEM_SIZE_WIDTH = 2
 PD_TARGET_SPLIT = 13
+SV39_VPN_BITS = 27
+PTE_PPN_BITS = 44
+ASID_BITS = 9
+DATA_FAULT_KIND_BITS = 2
 
 # pipeline_ctrl_t
 PIPELINE_CTRL_FIELDS = [
@@ -81,6 +85,7 @@ IF_TO_PD_FIELDS = [
     ("fetch_fault_page", 1),
     ("fetch_fault_hi", 1),
     ("decomp_illegal", 1),
+    ("is_cond_branch", 1),
     ("pd_target_native_low", PD_TARGET_SPLIT),
     ("pd_target_native_high_select", 2),
     ("pd_target_compressed_low", PD_TARGET_SPLIT),
@@ -352,4 +357,28 @@ RS_ISSUE_FIELDS = [
     ("is_jal", 1),
     ("is_jalr", 1),
     ("branch_op", 3),
+]
+
+# ptw_resp_t
+PTW_RESP_FIELDS = [
+    ("pbmt", 2),
+    ("fault_kind", DATA_FAULT_KIND_BITS),
+    ("vpn", SV39_VPN_BITS),
+    ("ppn", PTE_PPN_BITS),
+    ("level", 2),
+    ("perm_r", 1),
+    ("perm_w", 1),
+    ("perm_x", 1),
+    ("perm_u", 1),
+    ("perm_d", 1),
+    ("perm_g", 1),
+]
+
+# tlb_flush_t
+TLB_FLUSH_FIELDS = [
+    ("en", 1),
+    ("use_va", 1),
+    ("vpn", SV39_VPN_BITS),
+    ("use_asid", 1),
+    ("asid", ASID_BITS),
 ]

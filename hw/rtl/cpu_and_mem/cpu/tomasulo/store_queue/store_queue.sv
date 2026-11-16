@@ -927,7 +927,7 @@ module store_queue #(
       .i_addr_flat (sq_address_flat),
       .i_size_flat (sq_size_flat),
       .i_addr_valid(sq_addr_valid),
-      .i_block_flat(sq_is_zero),
+      .i_block_flat(sq_is_zero | sq_is_cmo),
       .i_vmt       (i_vmt),
       .o_hold_d    (vec_hold_d)
   );
@@ -1092,7 +1092,7 @@ module store_queue #(
   logic [IdxWidth-1:0] cmo_free_idx_q;
   assign drain_is_cmo = sq_is_cmo[drain_idx_q];
   assign cmo_drain_fire = drain_is_cmo && sq_valid[drain_idx_q] && sq_committed[drain_idx_q] &&
-      sq_addr_valid[drain_idx_q] && !sq_sent[drain_idx_q] &&
+      sq_addr_valid[drain_idx_q] && !sq_sent[drain_idx_q] && !vec_hold_q[drain_idx_q] &&
       (write_inflight_cnt == 2'd0) && !o_mem_write_en &&
       !i_coherent_store_pending && !i_coherent_sc_pending && !cmo_free_q;
   always_ff @(posedge i_clk) begin
@@ -1876,21 +1876,45 @@ module store_queue #(
       // Dispatch must be idle during deferred pullback: allocating at stale tail
       // would place a valid entry outside the rebuilt window.
       if ((i_alloc.valid || i_alloc_2.valid) && flush_pullback_pending)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: allocation attempted during flush tail-pullback cycle");
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
       if (slot2_alloc_en != slot2_alloc_en_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: expanded slot-2 allocation enable differs from the reference");
       if (slot2_alloc_oh != slot2_alloc_oh_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: expanded slot-2 allocation pulses differ from the reference");
       if ((|slot1_alloc_oh) != slot1_alloc_en || !$onehot0(slot1_alloc_oh))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: slot-1 allocation pulse lost or invented an accepted request");
       if (alloc_oh != (slot1_alloc_oh | slot2_alloc_oh) || (|(slot1_alloc_oh & slot2_alloc_oh)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: merged allocation pulses differ from the slot pulses");
       if (live_count_next != live_count_next_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: selected live-count candidate differs from the adder form");
       if (dispatch_full_next != dispatch_full_next_reference ||
           dispatch_full_for_2_next != dispatch_full_for_2_next_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("SQ: selected dispatch back-pressure differs from the adder form");
     end
   end
@@ -2154,6 +2178,7 @@ module store_queue #(
         p_cmo_frees_after_writes : assert (write_inflight_cnt == 2'd0 && !o_mem_write_en);
         p_cmo_frees_oldest : assert (!(|(sq_valid & sq_sent)));
         p_cmo_frees_without_write : assert (!mem_write_fire_next);
+        p_cmo_not_vec_held : assert (!vec_hold_q[drain_idx_q]);
       end
       if (cmo_free_q) begin
         p_cmo_free_is_sent_cmo :
