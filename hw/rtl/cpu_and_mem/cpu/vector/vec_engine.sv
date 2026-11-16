@@ -292,6 +292,9 @@ module vec_engine #(
   // bit k), registered when the group's sources are read.
   logic [VLEN-1:0] gmask;
   logic [15:0] gbase;
+  // The lanes' results, captured in the cycle they appear.
+  logic [VLEN-1:0] res_q, gcmp_q;
+
   always_ff @(posedge i_clk) begin
     if (state == S_RD) begin
       gbase <= 16'(g_q) * epr(sew_q);
@@ -401,8 +404,6 @@ module vec_engine #(
     end
   end
 
-  // The lanes' results, captured in the cycle they appear.
-  logic [VLEN-1:0] res_q, gcmp_q;
   always_ff @(posedge i_clk) begin
     if (state == S_EX && lane_ovalid[0]) begin
       for (int l = 0; l < Lanes; l++) res_q[64*l+:64] <= lane_res[l];
