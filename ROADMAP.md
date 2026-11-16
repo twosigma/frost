@@ -301,11 +301,11 @@ Open: restore `coherence_store_boundary:bmc_four` to depth 120 with the
 L1D hit path, using additional lemmas or splitting the checks into smaller
 cones so the task fits its CI budget.
 
-Open: the three compact store-home covers optimise their logic before
+Open: the three compact store-home covers optimize their logic before
 undefined values become free inputs, which does not guarantee in general
-that a cover witness is a trace of the unoptimised model. Today's three are
-confirmed by replaying them on the unoptimised model. The replay is planned
-as a registered check, or the optimisation would use `opt -keepdc` if that
+that a cover witness is a trace of the unoptimized model. Today's three are
+confirmed by replaying them on the unoptimized model. The replay is planned
+as a registered check, or the optimization would use `opt -keepdc` if that
 meets the memory budget.
 
 Open: thirteen `.sby` files run a plain `opt` before `setundef -anyseq`. A
