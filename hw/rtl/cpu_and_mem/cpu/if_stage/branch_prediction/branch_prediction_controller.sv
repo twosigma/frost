@@ -121,10 +121,9 @@ module branch_prediction_controller #(
     // ("Served-window check and retries" in the CPU README).  It blocks the
     // BTB prediction.
     input logic i_fetch_lookup_is_lower_parcel,
-    // Registered in pc_controller: an unkilled pending prediction already
-    // occupies the slot-1 pending state (or is retiring a walked-past phantom
-    // target stream), so new slot-1 BTB predictions are suppressed even when a
-    // released predecessor drops the shared pending prediction disable.
+    // Registered in pc_controller: suppresses new slot-1 BTB predictions while
+    // a walked-past entry retires its phantom target stream or while a crossing
+    // entry's predecessor at P - 2 drops the shared pending prediction disable.
     input logic i_pending_prediction_blocks_slot1 = 1'b0,
 
     // BTB update interface (from ex_comb_synthesizer)

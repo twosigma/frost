@@ -355,7 +355,7 @@ module if_stage #(
   logic pending_prediction_fetch_holdoff_wcs;  // ... with WCS forced to 1
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
   logic pending_prediction_walk_past;  // pc_reg is past a pending prediction's PC
-  logic pending_prediction_blocks_slot1;  // Registered unkilled pending state blocks slot 1
+  logic pending_prediction_blocks_slot1;  // Walk-past or crossing predecessor blocks slot 1
   logic pending_prediction_redirect_kill;  // Pending prediction dies without its handoff
   logic pc_update_en;  // Fetch-PC load enable; qualifies the low-presenter retarget
   // Used only to classify fetch retargets as sequential or not.

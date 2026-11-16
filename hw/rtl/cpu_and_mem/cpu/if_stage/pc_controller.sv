@@ -214,10 +214,12 @@ module pc_controller #(
     // post-prediction cycle and the tracker ignores the saved metadata. From
     // registers only.
     output logic o_pending_prediction_walk_past,
-    // An unkilled pending prediction occupies the slot-1 pending state (or is
-    // retiring a walked-past phantom target stream), so IF suppresses new
-    // slot-1 BTB predictions even when a released predecessor drops the shared
-    // pending prediction disable. From registers only.
+    // Registered slot-1 BTB blocker for cases where the shared pending
+    // prediction disable is clear: a walked-past entry retiring its phantom
+    // target stream, or a crossing entry's predecessor at P - 2 where a
+    // collapsed-lead lookup at P - 2 must not predict taken while an even
+    // entry's release at P - 2 stays free to re-predict o_pc == P. From
+    // registers only.
     output logic o_pending_prediction_blocks_slot1,
     // Observation outputs for tests: the next fetch PC, and whether it is a
     // hold because no window arrived. o_pc_update_en is the fetch PC's load
@@ -972,7 +974,9 @@ module pc_controller #(
   logic pending_mux_hold, pending_mux_consume_is_seq;
   assign pending_mux_valid = pending_prediction_valid && !redirect_kill_pending_q &&
                              !pc_reg_after_pending;
-  assign o_pending_prediction_blocks_slot1 = pending_prediction_valid && !redirect_kill_pending_q;
+  assign o_pending_prediction_blocks_slot1 =
+      pending_prediction_valid && !redirect_kill_pending_q &&
+      (pc_reg_after_pending || (pending_prediction_allow_cross && pc_reg_at_pending_predecessor));
   assign pending_mux_cross = pending_mux_valid && pending_prediction_allow_cross_pc_mux_q &&
       pc_reg_before_pending && seq_reaches_pending;
   assign pending_mux_target = pending_mux_valid && pc_reg_at_pending &&
