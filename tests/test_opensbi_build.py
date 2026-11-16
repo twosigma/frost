@@ -16,6 +16,7 @@
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -194,7 +195,8 @@ def test_changed_input_discards_intermediates(
     elif change == "untracked_delete":
         (source / "added.c").unlink()
     elif change == "symlink":
-        (tmp_path / "linked.h").write_text("linked two\n")
+        (source / "linked.h").unlink()
+        (source / "linked.h").symlink_to(tmp_path / "other.h")
     elif change == "deleted":
         (source / "driver.c").unlink()
     elif change == "mode":
@@ -205,7 +207,7 @@ def test_changed_input_discards_intermediates(
         tools = tmp_path / "other-tools"
         tools.mkdir()
         for name in TOOLS:
-            (tools / (prefix + name)).symlink_to(tmp_path / "tools" / (prefix + name))
+            shutil.copy2(tmp_path / "tools" / (prefix + name), tools / (prefix + name))
         monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
     elif change == "environment":
         monkeypatch.setenv("SOURCE_DATE_EPOCH", "1234")
@@ -294,3 +296,239 @@ def test_parent_make_options_do_not_enter_firmware_build(
     for name in ("MAKEFLAGS", "MAKEOVERRIDES", "DEBUG", "LLVM"):
         monkeypatch.setenv(name, "unexpected")
         assert name not in builder.build_environment()
+
+
+@pytest.mark.parametrize("name", ["PATH", "HOME", "TMPDIR"])
+def test_incidental_environment_paths_do_not_rebuild(
+    builder: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    """Changing working-environment paths preserves firmware for the same tools."""
+    out = tmp_path / "out"
+    builder.build(out, "riscv64-linux-", 1)
+    directory = tmp_path / "other"
+    directory.mkdir()
+    value = str(directory)
+    if name == "PATH":
+        value += os.pathsep + os.environ["PATH"]
+    monkeypatch.setenv(name, value)
+    builder.build(out, "riscv64-linux-", 1)
+    assert (tmp_path / "make-calls").read_text().splitlines() == ["make"]
+
+
+def test_tool_aliases_resolve_to_the_same_toolchain(
+    builder: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prepending aliases of the selected executables does not invalidate firmware."""
+    out = tmp_path / "out"
+    builder.build(out, "riscv64-linux-", 1)
+    aliases = tmp_path / "aliases"
+    aliases.mkdir()
+    for name in TOOLS:
+        (aliases / ("riscv64-linux-" + name)).symlink_to(
+            tmp_path / "tools" / ("riscv64-linux-" + name)
+        )
+    monkeypatch.setenv("PATH", str(aliases) + os.pathsep + os.environ["PATH"])
+    builder.build(out, "riscv64-linux-", 1)
+    assert (tmp_path / "make-calls").read_text().splitlines() == ["make"]
+
+
+def test_git_queries_accept_a_different_owner(
+    builder: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The protected-scope directory exception permits read-only source queries."""
+    environment = {
+        **builder.build_environment(),
+        "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+    }
+    with pytest.raises(subprocess.CalledProcessError):
+        builder.command_output(
+            ["git", "-C", str(builder.OPENSBI_DIR), "rev-parse", "HEAD"], environment
+        )
+    monkeypatch.setattr(builder, "build_environment", lambda: environment)
+    out = tmp_path / "out"
+    builder.build(out, "riscv64-linux-", 1)
+    builder.build(out, "riscv64-linux-", 1)
+    assert (out / builder.BUILD_STAMP).is_file()
+    assert (tmp_path / "make-calls").read_text().splitlines() == ["make"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["no_git", "refused", "timeout", "no_metadata", "unmounted", "parent_metadata"],
+)
+def test_unidentified_source_builds_without_a_stamp(
+    builder: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    """Git failures disable reuse and never prevent a complete firmware build."""
+    query = builder.command_output
+    if failure in ("no_metadata", "unmounted", "parent_metadata"):
+        shutil.rmtree(builder.OPENSBI_DIR / ".git")
+        if failure == "unmounted":
+            (builder.OPENSBI_DIR / ".git").write_text("gitdir: /unmounted/metadata\n")
+        elif failure == "parent_metadata":
+            git(tmp_path, "init", "-q")
+    else:
+
+        def unavailable(command: list[str], environment: dict[str, str]) -> str:
+            if command[0] == "git":
+                if failure == "no_git":
+                    raise FileNotFoundError("git executable unavailable")
+                if failure == "timeout":
+                    raise subprocess.TimeoutExpired(command, 30)
+                raise subprocess.CalledProcessError(
+                    128, command, stderr="fatal: ownership refused\n"
+                )
+            return query(command, environment)
+
+        monkeypatch.setattr(builder, "command_output", unavailable)
+    out = tmp_path / "out"
+    for _ in range(2):
+        assert builder.build(out, "riscv64-linux-", 1).read_text() == "firmware"
+        assert not (out / builder.BUILD_STAMP).exists()
+    assert (tmp_path / "make-calls").read_text().splitlines() == ["make", "make"]
+    messages = capsys.readouterr().err.splitlines()
+    assert len(messages) == 2
+    assert all(
+        "source identity unavailable" in line and "without a stamp" in line
+        for line in messages
+    )
+
+
+@pytest.mark.parametrize("target", ["missing", "directory"])
+def test_source_symlinks_do_not_require_readable_targets(
+    builder: ModuleType,
+    tmp_path: Path,
+    target: str,
+) -> None:
+    """Dangling links and links to directories can be fingerprinted and reused."""
+    destination = tmp_path / target
+    if target == "directory":
+        destination.mkdir()
+    (builder.OPENSBI_DIR / "link").symlink_to(destination)
+    out = tmp_path / "out"
+    builder.build(out, "riscv64-linux-", 1)
+    builder.build(out, "riscv64-linux-", 1)
+    assert (tmp_path / "make-calls").read_text().splitlines() == ["make"]
+
+
+@pytest.mark.parametrize("extension", ["bin", "elf"])
+@pytest.mark.parametrize("damage", ["truncate", "same_size", "empty"])
+def test_damaged_firmware_is_not_reused(
+    builder: ModuleType,
+    tmp_path: Path,
+    extension: str,
+    damage: str,
+) -> None:
+    """Content checks reject truncated or changed artifacts despite intact stamps."""
+    out = tmp_path / "out"
+    builder.build(out, "riscv64-linux-", 1)
+    path = out / f"platform/generic/firmware/fw_jump.{extension}"
+    before = path.stat()
+    contents = {"truncate": b"firm", "same_size": b"Firmware", "empty": b""}
+    path.write_bytes(contents[damage])
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    builder.build(out, "riscv64-linux-", 1)
+    assert (tmp_path / "make-calls").read_text().splitlines() == ["make", "make"]
+
+
+@pytest.mark.parametrize("state", ["empty", "firmware", "kconfig", "stamped"])
+def test_recognised_output_can_be_replaced(
+    builder: ModuleType,
+    tmp_path: Path,
+    state: str,
+) -> None:
+    """Allow empty directories, this helper's stamps and older OpenSBI layouts."""
+    out = tmp_path / "out"
+    if state == "stamped":
+        builder.build(out, "riscv64-linux-", 1)
+        shutil.rmtree(out / "platform")
+        (out / "old.o").unlink()
+    else:
+        out.mkdir()
+    if state in ("firmware", "kconfig"):
+        names = (
+            ("firmware/fw_jump.bin", "firmware/fw_jump.elf")
+            if state == "firmware"
+            else ("kconfig/auto.conf", "kconfig/autoconf.h")
+        )
+        for name in names:
+            path = out / "platform/generic" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("old output")
+        (out / "old.o").write_text("old intermediate")
+    assert builder.build(out, "riscv64-linux-", 1).read_text() == "firmware"
+
+
+@pytest.mark.parametrize("stamp", [None, "{}", '{"format":"frost-opensbi","schema":2}'])
+def test_unrecognised_output_preserves_its_files(
+    builder: ModuleType,
+    tmp_path: Path,
+    stamp: str | None,
+) -> None:
+    """An unrelated nonempty directory is refused without removing its contents."""
+    out = tmp_path / "unrelated"
+    out.mkdir()
+    important = out / "important.txt"
+    important.write_text("keep this")
+    if stamp is not None:
+        (out / builder.BUILD_STAMP).write_text(stamp)
+    with pytest.raises(SystemExit, match="unrecognised non-empty"):
+        builder.build(out, "riscv64-linux-", 1)
+    assert important.read_text() == "keep this"
+    assert not (tmp_path / "make-calls").exists()
+
+
+@pytest.mark.parametrize("kind", ["directory", "dangling", "parent"])
+def test_output_symlinks_are_refused(
+    builder: ModuleType,
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    """Output links and paths through a linked parent never authorize deletion."""
+    target = tmp_path / "target"
+    if kind != "dangling":
+        target.mkdir()
+        (target / "important.txt").write_text("keep this")
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    out = link / "child" if kind == "parent" else link
+    with pytest.raises(SystemExit, match="symlink output path"):
+        builder.build(out, "riscv64-linux-", 1)
+    assert link.is_symlink()
+    if kind != "dangling":
+        assert (target / "important.txt").read_text() == "keep this"
+    else:
+        assert not target.exists()
+
+
+def test_output_file_is_refused(builder: ModuleType, tmp_path: Path) -> None:
+    """A regular file cannot be selected as a replaceable output directory."""
+    out = tmp_path / "file"
+    out.write_text("keep this")
+    with pytest.raises(SystemExit, match="not a directory"):
+        builder.build(out, "riscv64-linux-", 1)
+    assert out.read_text() == "keep this"
+
+
+def test_empty_output_argument_is_refused(
+    builder: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An empty --out does not become the current directory."""
+    monkeypatch.setattr(sys, "argv", ["opensbi_build.py", "--out", ""])
+    with pytest.raises(SystemExit) as result:
+        builder.main()
+    assert result.value.code == 2
+    assert "output directory must not be empty" in capsys.readouterr().err
