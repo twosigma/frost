@@ -214,6 +214,15 @@ and `/proc/cpuinfo` lists `ssnpm`.
 The pinned Debian 6.12 kernel predates this interface; the supplied Linux
 workloads do not request tagged addresses.
 
+Svnapot: the DTB lists `svnapot`. With `CONFIG_RISCV_ISA_SVNAPOT` and
+hugetlb enabled, Linux offers 64 KiB hugetlb pages (`hugepages-64kB`). A
+workload must allocate and map such pages to use NAPOT PTEs; ordinary boot
+and the supplied Linux stress workload do not exercise them. The walker
+translates the requested 4 KiB page, so a resident 64 KiB range occupies
+sixteen TLB entries. Linux invalidates a changed range with an address fence
+for each 4 KiB page or a fence covering the address space. A single address
+fence removes that page's entry; ASID filters spare global entries.
+
 ## Counters and mcounteren
 
 FROST implements `cycle`, `time`, and `instret` as 64-bit Zicntr CSRs; `time`

@@ -466,6 +466,8 @@ module backing_btb #(
     output logic [                     1:0]                  o_compressed,
     output logic [                     1:0]                  o_return,
     output logic [                     1:0][TARGET_BITS-2:0] o_target,
+    output logic [                     1:0]                  o_slot2_return_by_size,
+    output logic [                     1:0][TARGET_BITS-2:0] o_slot2_target_by_size,
     input  logic                                             i_update,
     input  logic [                XLEN-1:0]                  i_update_pc,
     input  logic [                XLEN-1:0]                  i_update_target,
@@ -474,12 +476,16 @@ module backing_btb #(
     input  logic                                             i_refresh,
     input  logic [                XLEN-1:0]                  i_refresh_pc
 );
-  (* anyseq *) logic [1:0] f_hit, f_comp, f_ret;
-  (* anyseq *) logic [1:0][TARGET_BITS-2:0] f_target;
+  (* anyseq *) logic [1:0] f_hit, f_comp, f_ret, f_ret_by_size;
+  (* anyseq *) logic [1:0][TARGET_BITS-2:0] f_target, f_target_by_size;
   assign o_hit = f_hit;
   assign o_compressed = f_comp;
-  assign o_return = f_ret;
-  assign o_target = f_target;
+  // Slot 2's type and target are the entries at the packet's size, as in
+  // backing_btb.
+  assign o_return = {f_ret_by_size[i_packet_compressed], f_ret[0]};
+  assign o_target = {f_target_by_size[i_packet_compressed], f_target[0]};
+  assign o_slot2_return_by_size = f_ret_by_size;
+  assign o_slot2_target_by_size = f_target_by_size;
 endmodule : backing_btb
 
 // verilog_lint: waive module-filename

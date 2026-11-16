@@ -1293,3 +1293,35 @@ async def test_asid_follows_the_pulse_by_one_cycle(dut: Any) -> None:
     # Each address space keeps its own entry.
     assert await _probe(dut, 2, leaf_new)
     assert await _probe(dut, 1, leaf_old)
+
+
+@cocotb.test()
+async def test_materialized_range_selective_fences(dut: Any) -> None:
+    """Adjacent level-0 responses retain independent ASID and global invalidation."""
+    await _setup(dut)
+    entries = [(1, Leaf(vpn=0x400 + i, ppn=0x80000 + i)) for i in range(8)]
+    entries += [(2, Leaf(vpn=0x400 + i, ppn=0x81000 + i)) for i in range(4)]
+    entries += [(1, Leaf(vpn=0x408, ppn=0x82008, g=1))]
+    entries += [(1, Leaf(vpn=0x500 + i, ppn=0x83000 + i)) for i in range(3)]
+    for vpn, asid in ((0x402, None), (0x402, 1), (0x408, 1), (0x500, None)):
+        await _clear(dut)
+        for owner, leaf in entries:
+            await _switch_asid(dut, owner)
+            await _install(dut, leaf)
+        await _translation_changed(dut, _flush_cmd(vpn=vpn, asid=asid))
+
+        def survives(item: tuple[int, Leaf]) -> bool:
+            owner, leaf = item
+            return leaf.vpn != vpn or (
+                asid is not None and (owner != asid or bool(leaf.g))
+            )
+
+        hits = 0
+        # Probe survivors before refilling misses can evict one of them.
+        for owner, leaf in sorted(entries, key=survives, reverse=True):
+            hit = await _probe(dut, owner, leaf)
+            assert hit == survives((owner, leaf)), (vpn, asid, owner, leaf, hit)
+            hits += hit
+        dut._log.info(
+            "DTLB survivors vpn=%#x asid=%s: %d/%d", vpn, asid, hits, len(entries)
+        )
