@@ -29,7 +29,9 @@ module coherence_work_select #(
     input logic [SLOTS-1:0] i_later,
     input logic [CODE_BITS-1:0] i_last_code,
     output logic o_found,
-    output logic [CODE_BITS-1:0] o_pick
+    output logic [CODE_BITS-1:0] o_pick,
+    // One-hot input position; a coded last input occupies the last bit.
+    output logic [SLOTS-1:0] o_selected
 );
   localparam int unsigned GroupBits = 6;
   localparam int unsigned Groups = (SLOTS + GroupBits - 1) / GroupBits;
@@ -47,7 +49,6 @@ module coherence_work_select #(
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_codes
     assign codes[slot] = LAST_CODED && slot == SLOTS - 1 ? i_last_code : CODE_BITS'(slot);
   end
-  logic [SLOTS-1:0] selected;
   assign o_found = |i_eligible;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_candidates
     assign candidates[0][slot] = i_eligible[slot] && i_ready[slot] && i_later[slot];
@@ -83,7 +84,7 @@ module coherence_work_select #(
       assign class_pick[choice][bit_index] = |contributors;
     end
   end
-  assign selected = class_found[0] ? class_selected[0] : class_found[1] ? class_selected[1] :
+  assign o_selected = class_found[0] ? class_selected[0] : class_found[1] ? class_selected[1] :
       class_found[2] ? class_selected[2] : class_selected[3];
   assign o_pick = class_found[0] ? class_pick[0] : class_found[1] ? class_pick[1] :
       class_found[2] ? class_pick[2] : class_pick[3];
@@ -94,24 +95,33 @@ module coherence_work_select #(
   end
 `ifndef SYNTHESIS
   logic [CODE_BITS-1:0] reference_pick, reference_first;
+  logic [SLOTS-1:0] reference_selected, reference_first_selected;
   logic reference_after, ready_found;
   always_comb begin
     ready_found = |(i_eligible & i_ready);
     reference_pick = '0;
     reference_first = '0;
+    reference_selected = '0;
+    reference_first_selected = '0;
     reference_after = 1'b0;
     for (int slot = SLOTS - 1; slot >= 0; slot--) begin
       if (i_eligible[slot] && (!ready_found || i_ready[slot])) begin
         reference_first = codes[slot];
+        reference_first_selected = SLOTS'(1) << slot;
         if (i_later[slot]) begin
           reference_after = 1'b1;
-          reference_pick  = codes[slot];
+          reference_pick = codes[slot];
+          reference_selected = SLOTS'(1) << slot;
         end
       end
     end
-    if (!reference_after) reference_pick = reference_first;
+    if (!reference_after) begin
+      reference_pick = reference_first;
+      reference_selected = reference_first_selected;
+    end
     assert (o_pick == reference_pick);
-    assert ($onehot0(selected));
+    assert (o_selected == reference_selected);
+    assert ($onehot0(o_selected));
   end
 `endif
 endmodule

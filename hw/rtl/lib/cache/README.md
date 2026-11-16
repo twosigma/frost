@@ -838,7 +838,8 @@ fill rather than the image bits.
 A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently
-before selecting an encoded winner. The prefetch slots share one place in
+before selecting a one-hot position and an encoded winner. Parking capture
+and the selected-slot mask read the one-hot position directly. The prefetch slots share one place in
 that rotation, after the other slots; it offers a prefetch slot chosen in
 rotation among them on the previous cycle, leaving out the slot being
 dispatched. Work selection captures a one-hot slot mask beside the slot index;
@@ -846,7 +847,8 @@ waiter eligibility and the prefetch offer exclude that registered mask without
 decoding the index. Work selection also captures the selected slot's next parking state
 in groups of two slots beside its slot index. Each group combines its park
 inputs with qualifiers computed independently of those inputs. Dispatch
-reduces the registered groups, which follow the slot's parking updates while
+reduces the registered groups four at a time before its final selection and
+stop gate. The groups follow the slot's parking updates while
 the selection is held. Only the selected slot's group may be set. A selection
 captured with a simultaneous fill park is canceled before
 allocating an engine or image credit. The tag decision carries its captured

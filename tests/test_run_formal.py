@@ -408,7 +408,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_select.sby",
-        "Seat admission and circular work selection match serial priority.",
+        "Seat admission and circular work selection, in encoded and one-hot form, "
+        "match serial priority.",
         tasks=("coh_seat_select_prove", "coh_work_select_prove"),
     ),
     FormalTarget(
@@ -2410,7 +2411,8 @@ SBY_TASKS = [
     ("coh_seat_select_prove", "Fill waiter ranks match serial seat allocation."),
     (
         "coh_work_select_prove",
-        "Ready work and circular priority match serial selection, last pick coded.",
+        "Encoded and one-hot ready/circular selection match serial priority, "
+        "with the last pick coded.",
     ),
     ("coh_home_forward1_prove", "One-fill forward choice matches the reference."),
     ("coh_home_forward3_prove", "Three-fill forward choice matches the reference."),

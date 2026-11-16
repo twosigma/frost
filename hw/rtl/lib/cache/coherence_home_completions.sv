@@ -188,6 +188,8 @@ module coherence_home_completions #(
   // on the selecting edge. Dispatch reduces these registered groups.
   localparam int unsigned ParkGroups = (SLOTS + 1) / 2;
   logic [ParkGroups-1:0] work_parked_q;
+  localparam int unsigned DispatchGroups = (ParkGroups + 3) / 4;
+  (* keep = "true" *) logic [DispatchGroups-1:0] work_group_unparked;
   (* keep = "true" *) logic [SLOTS-1:0] work_park_enable;
   logic [SLOTS-1:0] work_park_prior;
   logic [SLOTS-1:0] work_eligible;
@@ -201,6 +203,8 @@ module coherence_home_completions #(
   // can be picked. work_later_q[position] holds position >= work_next_q.
   localparam int unsigned WorkPositions = PREFETCH_SLOTS != 0 ? MainSlots + 1 : SLOTS;
   logic [WorkPositions-1:0] work_position_eligible, work_position_ready, work_later_q;
+  logic [WorkPositions-1:0] work_position_selected;
+  logic [SLOTS-1:0] work_pick_slots;
   logic [SlotBits-1:0] work_next_q, work_position;
   logic prefetch_work_found_q;
   logic [SlotBits-1:0] prefetch_work_slot_q;
@@ -380,7 +384,14 @@ module coherence_home_completions #(
   wire request_legal = request_q_legal && request_opcode_legal && incoming.q.epoch == 1'b0 &&
       (incoming.q.src == 2'd0 || incoming.q.src >= 2'd2) && incoming.addr[4:0] == 0;
   assign o_d_ready = !i_fatal_stop && !duplicate && request_legal && free_slot;
-  assign o_work_valid = !i_fatal_stop && work_selected_q && !(|work_parked_q);
+  // Four parking groups per term leave room for selection and stop in
+  // the final dispatch gate at the full completion-table geometry.
+  for (genvar group_index = 0; group_index < DispatchGroups; group_index++) begin : gen_dispatch
+    localparam int unsigned Base  = 4 * group_index;
+    localparam int unsigned Width = ParkGroups - Base < 4 ? ParkGroups - Base : 4;
+    assign work_group_unparked[group_index] = !(|work_parked_q[Base+:Width]);
+  end
+  assign o_work_valid = !i_fatal_stop && work_selected_q && (&work_group_unparked);
   assign o_work = work[work_slot_q];
   assign o_work_tid = 6'(work_slot_q);
   assign o_work_buffer = work_buffer_q;
@@ -497,8 +508,19 @@ module coherence_home_completions #(
       .i_later(work_later_q),
       .i_last_code(prefetch_work_slot_q),
       .o_found(work_found),
-      .o_pick(work_pick)
+      .o_pick(work_pick),
+      .o_selected(work_position_selected)
   );
+  // The ordinary positions are slot bits directly. Only the prefetch
+  // position expands a code, which is registered before work selection.
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_pick_slots
+    if (slot < MainSlots) begin : gen_main
+      assign work_pick_slots[slot] = work_position_selected[slot];
+    end else begin : gen_prefetch
+      assign work_pick_slots[slot] = work_position_selected[MainSlots] &&
+          prefetch_work_slot_q == SlotBits'(slot);
+    end
+  end
   // The selected slot's position in the rotation.
   assign work_position = PREFETCH_SLOTS != 0 && int'(work_slot_q) >= MainSlots ?
       SlotBits'(MainSlots) : work_slot_q;
@@ -758,12 +780,12 @@ module coherence_home_completions #(
     if (i_rst) work_selected_slots_q <= '0;
     else if (work_selected_q) begin
       if ((|work_parked_q) || (!i_fatal_stop && i_work_ready)) work_selected_slots_q <= '0;
-    end else work_selected_slots_q <= work_found && free_buffer ? SLOTS'(1) << work_pick : '0;
+    end else work_selected_slots_q <= free_buffer ? work_pick_slots : '0;
   end
 
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_parked_next
     wire retry = i_retry_valid && i_retry_tid == 6'(slot);
-    wire selected = work_selected_q ? work_selected_slots_q[slot] : work_pick == SlotBits'(slot);
+    wire selected = work_selected_q ? work_selected_slots_q[slot] : work_pick_slots[slot];
     assign parked_next[slot] = forwarded[slot] ? 1'b0 :
         retry ? i_retry_park :
         i_wake[slot] ? 1'b0 : i_park[slot] ? 1'b1 : parked_q[slot];
