@@ -146,10 +146,9 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 The generated DTB declares the
 [implemented extensions and profile properties](../README.md#supported-risc-v-extensions),
-including Sstc, Smaia, Ssaia, Sscofpmf, Sstvala, Svade, Svinval and Svvptc,
-64-byte `riscv,cbom-block-size`, `riscv,cboz-block-size` and
-`riscv,cbop-block-size`, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF
-and the LP64D
+including Sstc, Smaia, Ssaia, Sscofpmf, Sstvala, Svade, Svinval, Svpbmt and Svvptc, 64-byte
+`riscv,cbom-block-size`, `riscv,cboz-block-size` and `riscv,cbop-block-size`,
+and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
 ABI. The ISA list includes Zihintntl, Zimop, Zcb and Zcmop. Svvptc tells Linux that a PTE changed from invalid to valid becomes
 visible to the walker without `sfence.vma`, so the kernel can omit that
 synchronization for those mapping updates. Other PTE changes retain their
@@ -160,6 +159,24 @@ probe, and the instruction MMU expires both its fault memo and completed
 registered refusals every 64 clocks. Even a refusal copied from the memo on its expiry
 edge is dropped within 128 clocks. Trap, xRET and FENCE-class full flushes
 also drop memo entries and verdicts, including a response on the flush edge.
+
+Svpbmt: OpenSBI sets `menvcfg.PBMTE` when the DTB lists `svpbmt`, and Linux
+then maps `ioremap` regions with PBMT = IO and write-combining or
+non-coherent-DMA remaps with PBMT = NC (`_PAGE_IO_SVPBMT`,
+`_PAGE_NOCACHE_SVPBMT`, patched in by the kernel's alternatives). Device pages
+are uncached by their PMA already, so every MMIO driver behaves as before; an
+NC or IO page over DDR uses the configured uncached alias through the coherent
+DMA port. Loads issue at the ROB head, and alias stores retire after their bus
+response. Memory loads can be flushed and repeated after an interrupt or debug
+halt; the [CPU memory-type description](../hw/rtl/cpu_and_mem/cpu/README.md)
+details the ordering and retry behavior for each physical address range.
+A 2 GiB DDR aperture has no
+alias in the current physical map and rejects those DDR mappings. For wider
+apertures, the top 2 GiB also has no alias. Switching between cacheable and
+uncached views requires `fence iorw, iorw; cbo.flush; fence iorw, iorw` for the
+location. The NIC's `dma-coherent` property keeps its normal DMA buffers
+cacheable; its IO register mappings exercise PBMT without using the DDR alias.
+`/proc/cpuinfo` lists `svpbmt` in its `isa` line.
 
 ## Counters and mcounteren
 
@@ -177,7 +194,7 @@ is an illegal instruction (`mcause` 2, `mtval` the instruction's bits).
 | `mcounteren`, `scounteren` | CY, TM, IR and HPM3..10 occupy bits 10:0; bits 31:11 read zero and ignore writes. Both reset to `0x7ff`. |
 | `mcountinhibit` (0x320) | CY (bit 0), IR (bit 2), and HPM3..10 (bits 10:3) inhibit their counters. TM and bits 31:11 read zero. |
 | `mcycle` (0xB00), `minstret` (0xB02) | Accept full 64-bit M-mode writes |
-| `mhpmcounter3`-`10` (0xB03-0xB0A), `mhpmevent3`-`10` (0x323-0x32A) | Writable 64-bit machine counters. An event field (bits 55:0) of N selects counter N's fixed event; counters 8, 7 and 4 also accept the translation selectors 16, 17 and 18 (see below); any other value selects zero and disables counting. Bits 63:60 are the Sscofpmf OF, MINH, SINH and UINH bits; VSINH, VUINH and bits 57:56 read zero. |
+| `mhpmcounter3`-`10` (0xB03-0xB0A), `mhpmevent3`-`10` (0x323-0x32A) | Writable 64-bit machine counters. An event field (bits 55:0) of N selects counter N's fixed event; counters 8, 7 and 4 also accept the translation selectors 16, 17 and 18, and counters 3, 6 and 5 the cache refill selectors 19, 20 and 21 (see below); any other value selects zero and disables counting. Bits 63:60 are the Sscofpmf OF, MINH, SINH and UINH bits; VSINH, VUINH and bits 57:56 read zero. |
 | `mhpmcounter11`-`31`, `mhpmevent11`-`31` | Machine-mode reads return zero and writes are ignored. |
 | `hpmcounter3`-`10` (0xC03-0xC0A) | Read-only aliases, gated by counter enables in S/U modes. |
 | `hpmcounter11`-`31` (0xC0B-0xC1F) | Read-only zero in M-mode; accesses raise illegal instruction on writes or below M-mode (`mcounteren` bits 11..31 are hardwired zero). |
@@ -216,18 +233,43 @@ through the SBI PMU. The DTB's `riscv,pmu` node maps both events to
 counters 9 and 10. Standard events map retired branches, branch mispredictions,
 ITLB read misses, and L1D permission misses. Permission misses include
 atomic requests that require cache permission. Raw selectors 3 through 10
-select branches, mispredictions, ITLB walks, DTLB walks, L1D permission
+select branches, mispredictions, L1 ITLB misses, L1 DTLB misses, L1D permission
 misses, store-queue capacity stalls, cycles, and retired instructions,
-respectively. DTLB walks include
-loads and stores; SQ stalls cover one source of backend stalls. These two
+respectively. L1 TLB misses include requests answered by the second-level
+TLB. DTLB misses include loads and stores; SQ stalls cover one source of
+backend stalls. These two
 events are exposed only through `riscv,raw-event-to-mhpmcounters`. Three raw
 translation selectors share those counters: 16 counts page-walker busy
-cycles on counter 8, 17 counts SFENCE.VMA and SINVAL.VMA TLB invalidates on
-counter 7, and
-18 counts CSR-requested TLB invalidates (any `satp` access, or an `mstatus`
+cycles on counter 8, 17 counts SFENCE.VMA and SINVAL.VMA TLB invalidates on counter 7, and
+18 counts CSR-requested translation-state flushes (any `satp` access, or an `mstatus`
 write that changes MPRV, or MPP while MPRV is set) on counter 4. Walker busy
-cycles divided by ITLB plus DTLB walks give the mean walk latency. HPM
-storage and event counting are independent of the optional profiling
+cycles divided by ITLB plus DTLB misses give walker busy cycles per L1 TLB
+miss, including second-level TLB hits in the denominator. CSR-requested
+flushes can preserve ASID-tagged TLB entries. Three raw
+cache refill selectors follow: 19 counts L1I refills (lines the L1I requests
+from the L2, including the fetch provider's next-line prefetches) on counter
+3, 20 counts L2 demand misses (lines the coherence home reads from memory for
+CPU and DMA requests) on counter 6, and 21 counts L2 prefetch misses (lines
+the L2 prefetcher reads from memory) on counter 5. The generic
+`L1-icache-load-misses`, `LLC-load-misses` and `LLC-prefetch-misses` events
+map to them; `perf stat -e r13,r14,r15` names them as raw events. A counter
+counts either its fixed event or its alternate selector, so selector 19
+replaces branches on counter 3, and 20 and 21 replace the L1 DTLB and ITLB misses.
+The L1I event counts allocations that fetch a line, including speculative
+fetches that are later discarded. L2 events count accepted memory line reads,
+including reads that return an error. A prefetch fill stays a prefetch event
+when a demand joins it. A zero fill sends no read and contributes no event.
+`LLC-load-misses` includes instruction reads, page-table walks, data ownership
+fills and coherent DMA or NIC traffic. Multiple requests sharing a fill
+contribute one memory read. The coherent L1D leaves its refill taps zero;
+its permission-miss event remains separate from these L2 line reads.
+
+The cache observer and `cpu_ooo` each register the refill pulse before the
+CSR logic samples it. Privilege filtering uses the hart's mode at that
+sample, including for DMA traffic. A refill caused before a privilege
+transition can therefore count in the mode after the transition.
+
+HPM storage and event counting are independent of the optional profiling
 counters. `frost_stress --counters` counts a child process
 running a fixed workload, from its exec to its exit, and the boot stress
 payload reports cycle, instruction, time, and IPC deltas for its own workload.
@@ -276,7 +318,12 @@ A replacement kernel selected with `FROST_LINUX_KERNEL` must provide:
 
 The test image boots with `ipv6.disable=1`: Debian's kernel builds IPv6 in,
 and its autoconfiguration frames would loop back through the NIC and fail
-`frost_nettest`'s idle checks.
+`frost_nettest`'s idle checks. IPv4 cannot be turned off on an NFS root, and
+the kernel may send ARP requests for the server while the interface is
+looped back. `frost_nettest` captures every frame of the interface and
+accepts such a frame only when the packet counters, the frames the kernel sent
+and their looped copies all agree; see
+[the package README](buildroot-external/README.md) for the rules.
 
 ## Driver modules
 

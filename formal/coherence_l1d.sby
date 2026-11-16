@@ -56,6 +56,7 @@ coh_l1d_zero_multi_bmc multi zcontrol control_multi padded zero zmulti
 coh_l1d_zero_payload_bmc single data zpayload zero
 coh_l1d_zero_cover single zcovers zsingle covermode zero
 coh_l1d_zero_lookahead_cover multi zcovers zlook covermode zero padded
+coh_l1d_zero_stream_bmc turnstream multi cadical padded zero zstream
 
 [options]
 ~covermode: mode bmc
@@ -86,6 +87,10 @@ zsingle: vcd_sim on
 # Keep every transition from reset, but query only the later cover window.
 # Reaching a dirty twin victim requires several completed transactions.
 zsingle: skip 48
+# The single-endpoint zero cover reaches its last cover in 53 to 109 minutes
+# running beside one other formal job and needs about three hours on the
+# build host with the trial tree's cbo.zero changes.
+coh_l1d_zero_cover: timeout 14400
 ~covermode: aigsmt boolector
 conflict: mode prove
 conflict: depth 2
@@ -130,8 +135,11 @@ coh_l1d_multi_data2_bmc: timeout 4200
 coh_l1d_multi_data3_bmc: timeout 4200
 coh_l1d_ways_data_bmc: timeout 5100
 # The zero-write BMC with three endpoints stops short of the control BMC's
-# depth to stay inside its allowance with the extra write kind.
+# depth to stay inside its allowance with the extra write kind. With streaming
+# enabled on the same three-endpoint geometry, a prefetch into a cbo.zero twin
+# is first reachable at step 29.
 zmulti: depth 30
+zstream: depth 31
 # The answer BMCs check only the read-answer properties: grant answers of
 # attached loads and same-sector merges, against stores, probes, the hit path
 # and duplicate answers. The eight-endpoint task is shallower, as the free
@@ -184,6 +192,7 @@ streamread: read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF coher
 zcontrol: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zcovers: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zpayload: read -formal -sv -D ZERO_WRITES -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
+zstream: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 streamscript: read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 coherence_read_payload.sv coherence_l1d.sv
 conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
@@ -284,6 +293,9 @@ zsingle: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_twin 
 zsingle: select -assert-count 4 t:$check r:FLAVOR=cover %i
 zlook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_lookahead %d
 zcovers: chformal -assert -remove
+zstream: select -assert-count 2 c:p_prefetch_not_record c:p_grant_keeps_modified
+zstream: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified %u %d
+zstream: select -assert-count 2 t:$check r:FLAVOR=assert %i
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
 arraydata: select -assert-count 4 c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known

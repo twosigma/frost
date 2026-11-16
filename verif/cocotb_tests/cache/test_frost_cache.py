@@ -90,11 +90,13 @@ _port_ids = {
     "dma": itertools.cycle(range(1 << UP_ID_BITS)),
 }
 
-# Packed cache_instance_perf_events_t layout, MSB first: two combining events,
-# two L1D hit-path events, access, hit, miss,
-# writeback (1 bit each), the MissOutstandingBits-wide outstanding count, then
-# hit_under_miss, slot_full_stall, conflict_stall (1 bit each).
+# Packed cache_instance_perf_events_t layout, MSB first: the demand and
+# prefetch refills, two combining events, two L1D hit-path events, access,
+# hit, miss, writeback (1 bit each), the MissOutstandingBits-wide outstanding
+# count, then hit_under_miss, slot_full_stall, conflict_stall (1 bit each).
 PERF_FIELD_WIDTHS = {
+    "fill": 1,
+    "fill_prefetch": 1,
     "store_combined": 1,
     "store_combined_under_miss": 1,
     "path_hit": 1,
@@ -1662,6 +1664,34 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     counts = _new_perf_counts()
     stop = [False]
     monitor = cocotb.start_soon(_monitor_perf_events(dut, counts, stop))
+    # Line reads each cache sends below, outside maintenance: the refills the
+    # fill events must count.
+    levels = {
+        "l1i": dut.cache_hierarchy.hart_cache.l1i_cache,
+        "l1d": dut.cache_hierarchy.hart_cache.l1_cache,
+        "l2": dut.cache_hierarchy.cluster_cache.l2_cache,
+    }
+    down_reads = dict.fromkeys(levels, 0)
+
+    async def _count_down_reads() -> None:
+        while True:
+            await FallingEdge(dut.i_clk)
+            if stop[0]:
+                return
+            for level, cache in levels.items():
+                if (
+                    int(cache.o_down_req_valid.value)
+                    and int(cache.i_down_req_ready.value)
+                    and not int(cache.o_down_req_write.value)
+                    and not int(cache.o_down_req_maintenance.value)
+                ):
+                    down_reads[level] += 1
+                # Allocation precedes downstream acceptance. Consume its
+                # event credit for each accepted read on every clock; the
+                # equality after draining below rejects unused credits.
+                assert down_reads[level] <= counts[level]["fill"], level
+
+    reads_monitor = cocotb.start_soon(_count_down_reads())
 
     # One cold + one warm read on each L1 gives a deterministic 2 = 1 hit +
     # 1 miss partition. Keep the addresses on distinct L1 sets.
@@ -1729,6 +1759,17 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     assert counts["l2_write"]["write_read_wait"] == 0
     assert counts["l2_write"]["write_read_waiting"] == 0
 
+    # Refills: each L1's cold read fetches its line; the whole-line writes
+    # allocate in the L1D without a fetch; the L2 fetches for the two cold
+    # reads and, with wider lines, for each victim writeback. No level
+    # prefetches. Every refill is one line read sent below.
+    assert counts["l1i"]["fill"] == 1
+    assert counts["l1d"]["fill"] == 1
+    assert counts["l2"]["fill"] == 2 + (l1d_writebacks if wide else 0)
+    for level in levels:
+        assert counts[level]["fill"] == down_reads[level], level
+        assert counts[level]["fill_prefetch"] == 0, level
+
     before_fence = _copy_perf_counts(counts)
     await _fence_sync(dut)
     await _settle(dut)
@@ -1743,6 +1784,7 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     stop[0] = True
     await FallingEdge(dut.i_clk)
     await monitor
+    await reads_monitor
 
 
 @cocotb.test()

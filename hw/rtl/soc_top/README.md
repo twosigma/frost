@@ -90,13 +90,15 @@ cancels a pending mirror returns SLVERR while the memory transport drains.
 The local slave carries the AWUSER value with its request. CPU-generated
 USER values have no other platform meaning.
 
-The board constraints and `asic/constraint.sdc` bound CPU/SoC and CPU/TCK
-crossing delays below one period of the faster clock in each pair. These
-bounds cover Gray-pointer skew and held payloads. Clock-group exceptions
-must not override them. The board constraints define the debug transport
-clock when it has no clock constraint.
-`boards/x3/constr/cpu_clock_boundary.tcl` applies these conditional
-constraints to the synthesized design.
+When `ASYNC_CPU_CLOCK=1`, `boards/x3/constr/cpu_clock_boundary.tcl` and
+`asic/constraint.sdc` bound CPU/SoC crossing delays (Gray-pointer skew and
+held payloads) at 0.8 of the faster clock's period. On the X3,
+`boards/x3/constr/cpu_clock_boundary.tcl` always defines `cpu_dtm_tck` on the
+debug-transport `BSCANE2` primitives and bounds CPU/TCK toggle synchronizer
+inputs at 0.8 and held DMI payloads at 1.5 of the faster clock's period
+(`asic/constraint.sdc` still bounds CPU/TCK crossings at 0.8 only when the
+asynchronous CPU boundary is enabled). Clock-group exceptions must not
+override these bounds.
 
 The NIC and the DMA test engine are AXI4 masters with 256-bit data. Each
 moves a 32-byte line per beat, except in the engine's burst mode, which uses

@@ -546,7 +546,11 @@
     "Sv48": {"supported": false},
     "Sv57": {"supported": false},
     "Ssqosid": {"supported": false},
-    "Svpbmt": {"supported": false},
+    // Svpbmt: PBMTE and the PBMT fault rules compare equal
+    // (traces/svpbmt_pbmte.S). FROST's NC and IO data path (its uncached
+    // alias) and its PMA overrides on NC and IO pages (AMO/LR/SC and fetch
+    // access faults) are outside what this configuration describes.
+    "Svpbmt": {"supported": true},
     "Stateen": {"Smstateen": {"supported": false}, "Ssstateen": {"supported": false}}
   }
 }

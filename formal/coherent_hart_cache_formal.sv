@@ -540,6 +540,11 @@ module coherent_hart_cache_formal #(
     end
     if (u_valid && (|u_ready)) released[release_slot] = 1;
   end
+  // The home array's parallel read and the home's result arbiter: in the
+  // unbounded proofs any decision may report a parallel read in flight and the
+  // result arbiter may take or stall a result on any cycle; the cover and
+  // four-record bounded schedules drive both deterministically.
+  logic decision_spec, result_take;
   if (COVER_MODE) begin : gen_home_schedule
     logic [1:0] next_work, next_grant, next_release;
     always_comb begin
@@ -555,13 +560,24 @@ module coherent_hart_cache_formal #(
       grant_slot   = next_grant;
       release_slot = next_release;
     end
+`ifdef COH_MAINT_FOUR
+    assign decision_spec = 1'b1;
+    assign result_take   = 1'b1;
+`else
+    assign decision_spec = cover_cycle_q[1];
+    assign result_take   = cover_cycle_q[0];
+`endif
   end else begin : gen_arbitrary_schedule
     (* anyseq *) logic [5:0] choices;
+    (* anyseq *) logic spec_choice, result_choice;
     assign {service_slot, grant_slot, release_slot} = choices;
+    assign decision_spec = spec_choice;
+    assign result_take = result_choice;
   end
   assign work_valid = !rst && service_slot < Slots && engine_idle &&
       state_q[service_slot] == Queued && predecessors_q[service_slot] == 0;
   logic lookup, decision_q, read_valid, read_pending_q, update_valid, update_pending_q;
+  logic take_spec;
   logic result_valid, result_ready;
   wire updated = update_pending_q && permit_update;
   logic [AddrWidth-1:0] address;
@@ -598,7 +614,7 @@ module coherent_hart_cache_formal #(
   assign home_d_ready = !rst && free_valid && !duplicate && !put_pending_q &&
       !put_ack_q && !(put_valid && put_ready);
   assign g_valid = !rst && grant_slot < Slots && state_q[grant_slot] == Result && permit_g;
-  assign result_ready = 1;
+  assign result_ready = result_take;
   assign home_c_ready = !rst && completion_found && state_q[completion_slot] == Granted && permit_c;
   assign u_valid = !rst && release_slot < Slots && state_q[release_slot] == Completed && permit_u;
   assign release_message = {released_grant.q, released_grant.tid, released_grant.addr};
@@ -617,6 +633,7 @@ module coherent_hart_cache_formal #(
       .o_idle(engine_idle),
       .o_lookup_valid(lookup),
       .i_lookup_ready(permit_lookup),
+      .o_lookup_addr(),
       .o_addr(address),
       .o_tid(engine_tid),
       .o_opcode(),
@@ -625,6 +642,8 @@ module coherent_hart_cache_formal #(
       .i_decision_resident(1'b1),
       .i_decision_way(1'b0),
       .i_decision_state(coherence_pkg::Shared),
+      .i_decision_spec(decision_spec),
+      .o_take_spec(take_spec),
       .o_read_valid(read_valid),
       .o_read_offer(),
       .i_read_ready(!read_pending_q),
@@ -972,7 +991,7 @@ module coherent_hart_cache_formal #(
       cover (put_pending_q && home_d_valid && demand.addr == pending_put_q.addr && !finish_put);
       cover (line_resp && walk_after_q && !line_error && put_seen_q);
       decision_q <= lookup && permit_lookup;
-      if (read_valid && !read_pending_q) begin
+      if ((read_valid && !read_pending_q) || take_spec) begin
         read_pending_q <= 1;
         read_data_q <= address[5] ? {4{64'h200004cf}} : home_data_q;
       end

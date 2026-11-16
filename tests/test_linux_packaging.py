@@ -343,6 +343,7 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         "sstvala",
         "svade",
         "svinval",
+        "svpbmt",
         "svvptc",
         "zicntr",
         "zihpm",
@@ -402,7 +403,19 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     # counter 4.
     assert "<0x0 0x10 0xffffffff 0xffffffff 0x100>" in dts
     assert "<0x0 0x11 0xffffffff 0xffffffff 0x80>" in dts
-    assert "<0x0 0x12 0xffffffff 0xffffffff 0x10>;" in dts
+    assert "<0x0 0x12 0xffffffff 0xffffffff 0x10>," in dts
+    # Cache refill selectors: L1I refills on counter 3, L2 demand misses on
+    # counter 6, L2 prefetch misses on counter 5, with the generic
+    # L1-icache-load-misses, LLC-load-misses and LLC-prefetch-misses events.
+    assert "<0x0 0x13 0xffffffff 0xffffffff 0x08>," in dts
+    assert "<0x0 0x14 0xffffffff 0xffffffff 0x40>," in dts
+    assert "<0x0 0x15 0xffffffff 0xffffffff 0x20>;" in dts
+    assert "<0x00010009 0x00010009 0x00000008>" in dts
+    assert "<0x00010011 0x00010011 0x00000040>" in dts
+    assert "<0x00010015 0x00010015 0x00000020>;" in dts
+    assert "<0x00010009 0x00000000 0x00000013>" in dts
+    assert "<0x00010011 0x00000000 0x00000014>" in dts
+    assert "<0x00010015 0x00000000 0x00000015>;" in dts
     assert "0x00020003" not in dts
     for event in (7, 8, 9, 10):
         assert f"<0x{event:08x} 0x{event:08x}" not in dts
@@ -518,6 +531,7 @@ def test_advertised_isa_lists_agree() -> None:
         "Sstvala",
         "Svade",
         "Svinval",
+        "Svpbmt",
         "Svvptc",
     ):
         assert priv_ext in linux_isa_section
@@ -600,6 +614,27 @@ def test_advertised_isa_lists_agree() -> None:
         sb_hi = predecode.make_sideband(0x0001 | ((svinval_word & 0xFFFF) << 16))
         assert (sb_hi >> predecode.SB_NATIVE_SERIALIZE_HI) & 1 == 1
         assert (sb_hi >> predecode.SB_PAIRABLE_NATIVE_HI) & 1 == 0
+
+
+@pytest.mark.parametrize(
+    "property_name",
+    ("event-to-mhpmcounters", "event-to-mhpmevent", "raw-event-to-mhpmcounters"),
+)
+def test_sbi_pmu_maps_match_flash_tree(property_name: str) -> None:
+    """Keep firmware and Linux event selectors and counter maps consistent."""
+    packer = _load_module(SBI_PACKER)
+    generated = packer.gen_dts(
+        clk_hz=300_000_000, initrd_range=None, bootargs="", model="t"
+    )
+    flash = (REPO_ROOT / "boards/vcu118/dts/frost_vcu118.dts").read_text()
+    tables = []
+    for source in (generated, flash):
+        match = re.search(rf"riscv,{property_name}\s*=\s*(.*?);", source, re.S)
+        assert match is not None
+        tables.append(
+            tuple(int(cell, 16) for cell in re.findall(r"0x[\da-f]+", match[1]))
+        )
+    assert tables[0] == tables[1]
 
 
 @pytest.mark.parametrize("board", ["x3", "vcu118"])
