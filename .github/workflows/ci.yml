@@ -1393,15 +1393,15 @@ jobs:
           - shard: Coherence array equivalence four-way
             pytest_filter: coh_array_equiv4
             timeout_minutes: 120
-          # The home's store BMC allowances plus twice main's cover times
-          # use about three quarters of this job.
+          # Each bounded store-home schedule checks both watched-byte choices
+          # at its full depth, with 15 minutes allowed for each case.
           - shard: Coherence store home
             pytest_filter: coherence_store_home and not coherence_store_home_link
             timeout_minutes: 240
           # The link proofs, and the store-home composition with one register
-          # stage between the L1D and the home: the sibling BMC (120-minute
-          # allowance) and the cover share a job, the pressure BMC (145
-          # minutes) has its own.
+          # stage between the L1D and the home. The sibling BMC's two
+          # watched-byte cases (15 minutes each) share a job with the cover;
+          # the pressure BMC's two cases have their own job.
           - shard: Coherence links
             pytest_filter: >-
               coherence_link or

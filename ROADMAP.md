@@ -301,6 +301,20 @@ Open: restore `coherence_store_boundary:bmc_four` to depth 120 with the
 L1D hit path, using additional lemmas or splitting the checks into smaller
 cones so the task fits its CI budget.
 
+Open: the three compact store-home covers optimize their logic before
+undefined values become free inputs, which does not guarantee in general
+that a cover witness is a trace of the unoptimized model. The three were
+confirmed by replaying them on the unoptimized model when they were
+introduced. The replay is planned as a registered check, or the
+optimization would use `opt -keepdc` if that meets the memory budget.
+
+Open: thirteen `.sby` files run a plain `opt` before `setundef -anyseq`. A
+register that never loads and has an undefined initial value can then be
+resolved differently at different readers, which could drop behaviors from
+a bounded safety check. Planned: `opt -keepdc` before `setundef` in those
+files, re-measured, and a check of whether any affected register is
+observable.
+
 The FPGA build's hand-instantiated primitives are compared with their
 portable forms by [equivalence checks](formal/README.md#primitive-twins).
 Open: a few primitive blocks in the load queue, the Tomasulo wrapper, the
