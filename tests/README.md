@@ -98,6 +98,13 @@ cases import RTLIL processes with `--no-proc --best-effort-hierarchy
 --ignore-initial`; source initialization still receives semantic checking,
 while the import omits initial state and image-loading work.
 
+Vector-enabled `frost` cases check the X3 configuration (`VECTOR=1`,
+`VLEN=256`, Xilinx primitives, the external DDR port, BSCAN debug, and
+hardware misaligned accesses) and the simulation configuration at VLEN
+128, 256, and 512. These cases elaborate the vector engine with the same
+declaration rules as the default tops. They check FROST's RTL without
+elaborating vendor IP or board clock and transceiver wrappers.
+
 The same four simulation variants, without `SYNTHESIS`, check both complete
 tops and 22 independent module roots, including the load queue and L1D.
 
@@ -389,7 +396,8 @@ part of both load images, so loading the program clears state from an
 earlier invocation without clearing it on the resets under test.
 
 `opensbi_smoke` uses a twenty-million-cycle budget for firmware boot and
-its S-mode payload. Its misaligned loads and stores to DDR (phase F) run on
+its S-mode payload. It requires the SRST extension and checks that shutdown
+returns `SBI_ERR_NOT_SUPPORTED`. Its misaligned loads and stores to DDR (phase F) run on
 the misaligned-access engine; `opensbi_smoke_no_misaligned_hw` builds without
 the engine, so OpenSBI emulates them, as it does for low BRAM.
 
@@ -1090,7 +1098,7 @@ same variable.
 
 `memerr_test_seeded` pins both the DDR timing and random-start seeds to
 `41317470809-test-verilator-10`. It checks fatal writeback twice with a
-20-cycle reset between runs in BRAM, and once in DDR. The Runtime and other
+20-cycle reset between runs in BRAM, and once in DDR. The Memory and NIC stress
 shard runs this entry alongside `memerr_test`, whose seeds come from the job.
 The eviction addresses depend on a CSR result after FENCE.I and on each
 preceding read, so speculative fills cannot warm the eviction set before
@@ -1287,7 +1295,7 @@ Lint and Fast Python Tests jobs locally.
 | Suite | Configurations |
 | --- | --- |
 | Cocotb applications | BRAM and DDR where supported; the three longest CoreMark-PRO workloads run in jobs of their own and the other six share one; the memory-system programs with one register stage between the hart and the cluster memory (`*_link1`) have two shards |
-| Zicboz applications | Basic, page and eviction configurations have separate BRAM/DDR shards. The two 4 MiB cache configurations select their own BRAM or DDR program layout in one additional shard; the clearing benchmark has its own shard. A fast collection check requires every registered `cbo_zero_*` configuration in exactly one shard per supported tier |
+| Zicboz applications | Basic, page and eviction configurations have separate BRAM/DDR shards. The two 4 MiB cache configurations select their own BRAM or DDR program layout in one additional shard; the clearing benchmark has its own shard |
 | Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke, cache counters over OpenOCD | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 128 GiB, with the Yosys job covering the 1 GiB default |
 | Architecture compliance | BRAM and DDR, in groups of extensions, including CMO's Zicboz `cbo.zero` case in both tiers; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards; only the I B C group in BRAM collects coverage; a fast check compares the workflow's groups with the runner's supported extensions |
@@ -1300,7 +1308,7 @@ Lint and Fast Python Tests jobs locally.
 | Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D zero (control, multi-endpoint, and cover jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
-| Coverage | One job merges the coverage of the 20 jobs that contribute to it into a report |
+| Coverage | One job merges the coverage of the 23 jobs that contribute to it into a report |
 
 The software aperture tests also have registry entries for 2, 4, 8, 16,
 and 32 GiB, available through `./scripts/frost.py cocotb <test_name>`.
@@ -1326,10 +1334,11 @@ differs from the model's by more than the tolerance in
 `perf-modeling/calibration/ci_baseline.json`, and it prints the figures and
 deltas either way.
 
-The report covers 20 of the simulating jobs, chosen so that it keeps 99.9% of
+The report covers 23 of the simulating jobs, chosen so that it keeps 99.9% of
 the line, branch and cover points that every job together would reach, with no
 cover point lost. They are Arch Tests (I B C / bram); the Real Programs jobs
-Debug and UART, OpenSBI smoke, Runtime and other, and SRAM macros in BRAM and
+Debug and UART, both OpenSBI smoke configurations, Memory and NIC stress,
+Runtime benchmarks and vector, Runtime and other, and SRAM macros in BRAM and
 C library and RTOS, DMA NIC and coherence, Interrupts, Memory link stage (other
 programs) and Privilege and MMU in DDR; four Physical address aperture jobs
 (1 GiB / Bare access, 1 GiB / Unit boundaries, 128 GiB / DMA, 128 GiB / NIC);
@@ -1351,12 +1360,23 @@ ones included.
 
 The workflow has the exact job filters. The named real-program shards select
 applications by name, and the "Runtime and other" shard runs every
-application they don't list. The shards are sized so that each job takes
-about an hour or less on a CI runner, except the jobs of the longest
-CoreMark-PRO workloads, which run one workload each. When you add an
-application to a named shard or remove one, update the "Runtime and other"
-exclusion list to match, or the application will run twice or not at all. To
-see what a filter selects without running it:
+application they don't list. Memory and NIC stress groups the NIC benchmarks,
+L2 capacity checks, cache management, misaligned accesses, memory faults and
+DDR reset checks. Runtime benchmarks and vector groups PAUSE, RAS benchmarks
+and VLEN 256 configurations by their shared builds. Real-program shards
+target at most about three hours per job and have a four-hour timeout,
+including setup and coverage uploads.
+
+Give each program that boots OpenSBI its own BRAM-only shard with coverage,
+including variants that disable a hardware feature or exercise reset through
+firmware. Programs whose registry cycle budget exceeds 10 million cycles
+also require a named shard. When adding a named selection, exclude it from
+"Runtime and other" on both tiers. The fast checks in
+`test_ci_real_program_shards.py` require collection and exactly one selection
+per supported tier for every registered CI program, and keep OpenSBI and
+large cycle budgets out of the complement. Entries with
+`include_in_pytest=False` remain available through the command line. To see
+what a filter selects without running it:
 
 ```bash
 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py pytest --collect-only -q \

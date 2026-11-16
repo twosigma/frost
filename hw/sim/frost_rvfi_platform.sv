@@ -249,6 +249,8 @@ module frost_rvfi_platform #(
     input  logic        i_nic_1g_rx_raw_valid = 1'b0,
     input  logic        i_nic_1g_rx_signal_ok = 1'b0,
     input  logic [ 4:0] i_nic_1g_phy_status = '0,
+    input  logic [32:0] i_nic_1g_phy_diag = '0,
+    output logic        o_nic_1g_phy_diag_ack,
     output logic [ 3:1] o_nic_1g_phy_ctrl,
     output logic        o_nic_1g_rx_block_lock,
     output logic        o_spi_cs_n,
@@ -260,6 +262,7 @@ module frost_rvfi_platform #(
 
   assign o_nic_1g_tx_raw_data = '0;
   assign o_nic_1g_tx_raw_valid = 1'b0;
+  assign o_nic_1g_phy_diag_ack = 1'b0;
   assign o_nic_1g_phy_ctrl = '0;
   assign o_nic_1g_rx_block_lock = 1'b0;
   assign o_spi_cs_n = 1'b1;
@@ -2334,6 +2337,8 @@ module frost_rvfi_platform #(
         .i_rx_raw_valid(i_nic_rx_raw_valid),
         .i_rx_signal_ok(i_nic_rx_signal_ok),
         .i_phy_status(i_nic_phy_status),
+        .i_phy_diag('0),
+        .o_phy_diag_ack(),
         .o_phy_ctrl(o_nic_phy_ctrl),
         .o_rx_block_lock(o_nic_rx_block_lock)
     );

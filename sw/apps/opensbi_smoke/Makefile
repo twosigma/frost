@@ -16,8 +16,9 @@
 # linux/opensbi_build.py builds the firmware from linux/opensbi; link.ld
 # keeps the payload below the DTB. MEM_CONFIG is ignored.
 #
-# Keep the firmware cache in build/opensbi across make clean so board reloads
-# do not need a host Linux toolchain. distclean removes the cache.
+# The helper checks firmware inputs on every make and discards build/opensbi
+# when the configuration, source, build options or toolchain changes.
+# clean keeps matching firmware; distclean removes the cache.
 
 FROST_ROOT := $(abspath $(CURDIR)/../../..)
 BOARD_DIR  := $(FROST_ROOT)/linux/buildroot-external/board/frost
@@ -36,11 +37,13 @@ CFLAGS := -march=rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zb
           -nostdlib -nostartfiles -static -fno-pie -no-pie -fno-stack-protector -ffreestanding -fno-builtin \
           -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-strict-aliasing
 
-.PHONY: all clean distclean
+.PHONY: all clean distclean FORCE_OPENSBI
 
 all: sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt payload.S
 
-$(FW_BIN): $(FROST_ROOT)/linux/opensbi_frost_defconfig $(FROST_ROOT)/linux/opensbi_build.py
+FORCE_OPENSBI:
+
+$(FW_BIN): FORCE_OPENSBI
 	python3 $(FROST_ROOT)/linux/opensbi_build.py --out $(OPENSBI_OUT)
 
 payload.elf: start.S main.c link.ld ../../lib/include/aplic.h

@@ -122,3 +122,4 @@
 - Shortened the L2 home's hit path with banked UltraRAM parallel way reads, final-tag-cycle way selection, quick result offers, and dispatch-cycle lookup offers, with formal checks and home bench coverage
 - Loaded reservation-station stage-2 issue payloads on functional-unit readiness while keeping validity on the flush-qualified issue path, with a two-copy wrapper payload-twin formal check
 - Added the SYSRESET register and OpenSBI syscon-reboot support for SBI system reset, with register and device-tree tests
+- Added GMII receive-loss diagnostics, PHY error polling, and larger default receive buffering in the NIC driver

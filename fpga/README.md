@@ -378,11 +378,17 @@ samples before the fetch fault.
 | No target found | Power, the cable, `hw_server`, and `--list-targets` |
 | Wrong or ambiguous target | Select one with `--target` or `--target-exact` |
 | Timing failure | `build/<board>/work/final_timing.rpt`; try other directives. Changing the CPU clock means changing the board's clock generation (`x3_cpu_clock_gty.sv`, or the MMCM that `--cpu-clock-div` 3 and 4 use) and the build and loader clock settings |
-| `Synth 8-11241` error | A name is used before its declaration, or never declared, so Vivado assumed an implicit net. Declare it before its first use. Verilator binds a later declaration, but inside a generate block Vivado gives the use its own net, which leaves the use or the declaration undriven |
+| `Synth 8-11241` or `Synth 8-6901` error | A name is undeclared or used before its declaration. Declare it before its first use. Vivado can bind the use to the later declaration or create an implicit net; inside a generate block the separate net can leave the use or the declaration undriven |
 | `Synth 8-605` error | The build treats this Vivado warning as an error. Declare each signal before any generated primitive instance that uses it; a later declaration can leave the primitive on an undriven implicit net |
 | `Synth 8-324` error | An array or vector index is out of range. The build rejects this because synthesis can replace the read with a don't-care while simulation silently truncates the index. Check index widths; for a two-entry vector indexed by an `int p` loop variable, use `p ^ 1` for the other entry, since `~p` is negative |
 | Step "ended abnormally" | The Vivado step exited non-zero with no `ERROR:` line and no `Exiting Vivado` line in its log, so the process was killed from outside (another session, the out-of-memory killer) or crashed. The message names the last log line; check `dmesg` and free memory, then rerun from that step |
 | Application does not run | The CPU clock setting (`FROST_CPU_CLK_HZ`), that the program fits in low BRAM, and that any DDR image was loaded |
+
+The declaration-message guards apply to top-level synthesis for every board.
+The shared build script sets them after vendor IP out-of-context synthesis
+runs finish, before synthesizing FROST's top. The [strict elaboration
+check](../tests/README.md#strict-systemverilog-elaboration) also checks the
+X3 vector configuration and simulation vector lengths 128, 256, and 512.
 
 To add a board, follow the
 [board checklist](../boards/README.md#adding-support-for-new-boards). To add an
