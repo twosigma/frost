@@ -2416,6 +2416,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "modes"
         ),
     ),
+    "fplat_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fplat_probe",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        description=(
+            "FP cycle limits for dependent and independent multiply, FMA and divide "
+            "at both precisions"
+        ),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DFPLAT_LIMITS"),
+            ("COCOTB_MAX_CYCLES", "3000000"),
+        ),
+    ),
     "hello_world": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
