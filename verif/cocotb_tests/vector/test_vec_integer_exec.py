@@ -235,7 +235,7 @@ def execute(
             x, y = (a, b) if name.startswith(("waddu", "wsubu")) else (sa, sb)
             result = x - y if name.startswith("wsub") else x + y
         elif name == "wsll":
-            result = a << (b & 63)
+            result = a << (b & (2 * sew - 1))
         elif name.startswith(("zext", "sext")):
             result = sa if name.startswith("s") else a
         elif name in {

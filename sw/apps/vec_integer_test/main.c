@@ -3867,6 +3867,18 @@ static const struct test_case cases[] = {
     } while (0)
 static void special_cases(void)
 {
+    setvl(~0ul, 0);
+    splat(8, 1);
+    splat(24, 16);
+    EMIT(OPV(0x35, 1, 8, 24, 0, 16));
+    setvl(1, 8);
+    VT_EQ(extract(16), 1, "vwsll e8 uses four shift bits");
+    setvl(~0ul, 8);
+    splat(8, 1);
+    splat(24, 32);
+    EMIT(OPV(0x35, 1, 8, 24, 0, 16));
+    setvl(1, 16);
+    VT_EQ(extract(16), 1, "vwsll e16 uses five shift bits");
     /* Read and clear saturation immediately after a long committed operation. */
     setvl(~0ul, 3);
     splat(8, 0x7f7f7f7f7f7f7f7full);

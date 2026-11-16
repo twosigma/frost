@@ -45,7 +45,7 @@ module vec_fixed_lane (
   logic v0, v1, v2, v3;
   vec_pkg::extra_op_e op0, op1, op2, op3;
   logic [1:0] w0, w1, w2, w3, aw0, rm0, rm1;
-  logic [64:0] a0, b0, sum1, rounded3;
+  logic [64:0] a0, b0, rounded3;
   logic [127:0] value1, shifted2;
   logic [6:0] shift1;
   logic signed1, increment2, carry0;
@@ -92,7 +92,6 @@ module vec_fixed_lane (
     op1 <= op0;
     w1 <= w0;
     rm1 <= rm0;
-    sum1 <= add_d;
     value1 <= {{63{add_d[64]}}, add_d};
     shift1 <= 0;
     signed1 <= 1'b1;
@@ -109,7 +108,7 @@ module vec_fixed_lane (
       end
       vec_pkg::VX_ZEXT, vec_pkg::VX_SEXT: value1 <= {{63{a0[64]}}, a0};
       vec_pkg::VX_WSLL: begin
-        value1  <= {63'd0, a0} << braw0[5:0];
+        value1  <= {63'd0, a0} << (braw0[5:0] & ((6'd16 << w0) - 1));
         signed1 <= 1'b0;
       end
       default: ;
