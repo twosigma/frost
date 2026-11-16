@@ -1350,50 +1350,60 @@ module store_queue #(
   // so the cursor takes the post-fire choice. Without a launch the cursor
   // takes the post-fire choice past a Zicbom entry (cmo_drain_fire) and the
   // base choice otherwise; the base choice is the cursor entry itself or the
-  // same entry as the post-fire choice. Each outcome's claim is formed
-  // without the launch decision and the allocation's dispatch valids; the
-  // valids apply next, and the launch selects last.
+  // same entry as the post-fire choice. Each entry's claim is formed from
+  // registered state and the room-qualified allocation targets; the cursor
+  // choices then select one entry for each launch outcome, the allocation's
+  // dispatch valids apply next, and the launch selects last.
   logic [XLEN-6:0] last_write_sector_q;
   logic last_write_plain_q, next_same_d;
   wire [XLEN-6:0] last_write_sector_d = mem_write_fire_next ?
       sq_address[drain_idx_q][XLEN-1:5] : last_write_sector_q;
   wire last_write_plain_d = mem_write_fire_next ?
       sq_cached_plain_class[drain_idx_q] && !drain_is_cmo : last_write_plain_q;
-  // A valid committed cached plain store with its address, not a Zicbom entry.
-  logic [DEPTH-1:0] next_same_class;
-  logic next_same_fire_match, next_same_hold_cursor, next_same_hold_match;
-  logic [IdxWidth-1:0] next_same_hold_idx;
-  // Each outcome's claim for an unsent entry, and for a sent entry that this
-  // cycle's first allocation (sent1) or a pair's second allocation (sent2)
-  // takes.
+  // Per entry: a valid committed cached plain store with its address, not a
+  // Zicbom entry (class); the next write after a cached plain launch from the
+  // cursor, in the launching entry's sector (fire); the next write without a
+  // launch, in the last write's sector (hold). Each claim is split by the
+  // entry's sent mark: unsent, or sent and taken by this cycle's first
+  // allocation (sent1) or by a pair's second allocation (sent2).
+  logic [DEPTH-1:0] next_same_class, next_same_fire_entry, next_same_hold_entry;
+  (* keep = "true" *) logic [DEPTH-1:0] next_same_fire_unsent_e, next_same_fire_sent1_e;
+  (* keep = "true" *) logic [DEPTH-1:0] next_same_fire_sent2_e, next_same_hold_unsent_e;
+  (* keep = "true" *) logic [DEPTH-1:0] next_same_hold_sent1_e, next_same_hold_sent2_e;
+  logic next_same_hold_cursor;
+  // The cursor choices then select one bit of each.
   (* keep = "true" *) logic next_same_fire_unsent, next_same_fire_sent1, next_same_fire_sent2;
   (* keep = "true" *) logic next_same_hold_unsent, next_same_hold_sent1, next_same_hold_sent2;
   (* keep = "true" *) logic next_same_if_fire, next_same_if_hold;
   logic next_same_launch;
   always_comb
-    for (int i = 0; i < DEPTH; i++)
+    for (int i = 0; i < DEPTH; i++) begin
       next_same_class[i] = sq_valid[i] && sq_committed[i] && sq_addr_valid[i] &&
           sq_cached_plain_class[i] && !sq_is_cmo[i];
-  // A cached plain launch from the cursor, followed by the post-fire entry.
-  assign next_same_fire_match = sq_cached_plain_class[drain_idx_q] && !drain_is_cmo &&
-      drain_post_fire_idx_d != drain_idx_q && next_same_class[drain_post_fire_idx_d] &&
-      sq_address[drain_post_fire_idx_d][XLEN-1:5] == sq_address[drain_idx_q][XLEN-1:5];
-  // No launch: the cursor entry, or the post-fire entry.
+      next_same_fire_entry[i] = sq_cached_plain_class[drain_idx_q] && !drain_is_cmo &&
+          drain_idx_q != IdxWidth'(i) && next_same_class[i] &&
+          sq_address[i][XLEN-1:5] == sq_address[drain_idx_q][XLEN-1:5];
+      next_same_hold_entry[i] = last_write_plain_q && next_same_class[i] &&
+          sq_address[i][XLEN-1:5] == last_write_sector_q;
+      next_same_fire_unsent_e[i] = next_same_fire_entry[i] && !sq_sent[i];
+      next_same_fire_sent1_e[i] = next_same_fire_entry[i] && sq_sent[i] && first_room_oh[i];
+      next_same_fire_sent2_e[i] = next_same_fire_entry[i] && sq_sent[i] && second_room_oh[i];
+      next_same_hold_unsent_e[i] = next_same_hold_entry[i] && !sq_sent[i];
+      next_same_hold_sent1_e[i] = next_same_hold_entry[i] && sq_sent[i] && first_room_oh[i];
+      next_same_hold_sent2_e[i] = next_same_hold_entry[i] && sq_sent[i] && second_room_oh[i];
+    end
+  // A launch: the post-fire entry. No launch: the cursor entry, or the
+  // post-fire entry.
   assign next_same_hold_cursor = drain_base_idx_d == drain_idx_q && !cmo_drain_fire;
-  assign next_same_hold_idx = next_same_hold_cursor ? drain_idx_q : drain_post_fire_idx_d;
-  assign next_same_hold_match = last_write_plain_q && next_same_class[next_same_hold_idx] &&
-      (next_same_hold_cursor ? sq_address[drain_idx_q][XLEN-1:5] == last_write_sector_q :
-       sq_address[drain_post_fire_idx_d][XLEN-1:5] == last_write_sector_q);
-  assign next_same_fire_unsent = next_same_fire_match && !sq_sent[drain_post_fire_idx_d];
-  assign next_same_fire_sent1 = next_same_fire_match && sq_sent[drain_post_fire_idx_d] &&
-      first_room_oh[drain_post_fire_idx_d];
-  assign next_same_fire_sent2 = next_same_fire_match && sq_sent[drain_post_fire_idx_d] &&
-      second_room_oh[drain_post_fire_idx_d];
-  assign next_same_hold_unsent = next_same_hold_match && !sq_sent[next_same_hold_idx];
-  assign next_same_hold_sent1 = next_same_hold_match && sq_sent[next_same_hold_idx] &&
-      first_room_oh[next_same_hold_idx];
-  assign next_same_hold_sent2 = next_same_hold_match && sq_sent[next_same_hold_idx] &&
-      second_room_oh[next_same_hold_idx];
+  assign next_same_fire_unsent = next_same_fire_unsent_e[drain_post_fire_idx_d];
+  assign next_same_fire_sent1 = next_same_fire_sent1_e[drain_post_fire_idx_d];
+  assign next_same_fire_sent2 = next_same_fire_sent2_e[drain_post_fire_idx_d];
+  assign next_same_hold_unsent = next_same_hold_cursor ? next_same_hold_unsent_e[drain_idx_q] :
+      next_same_hold_unsent_e[drain_post_fire_idx_d];
+  assign next_same_hold_sent1 = next_same_hold_cursor ? next_same_hold_sent1_e[drain_idx_q] :
+      next_same_hold_sent1_e[drain_post_fire_idx_d];
+  assign next_same_hold_sent2 = next_same_hold_cursor ? next_same_hold_sent2_e[drain_idx_q] :
+      next_same_hold_sent2_e[drain_post_fire_idx_d];
   assign next_same_if_fire = next_same_fire_unsent ||
       (next_same_fire_sent1 && (i_alloc.valid || i_alloc_2.valid)) ||
       (next_same_fire_sent2 && i_alloc.valid && i_alloc_2.valid);
