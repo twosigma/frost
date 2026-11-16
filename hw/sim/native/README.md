@@ -27,9 +27,10 @@ without VPI signal tables.
 `frost-native` matches unseeded cocotb runs of the same tree cycle for cycle and
 byte for byte on `hello_world` and CoreMark in both memory tiers. On every CI
 run, `test-native` checks that a live cocotb BRAM `hello_world` run and the
-native run agree in cycles and UART bytes, and checks DDR `hello_world` and
-BRAM CoreMark pass, CRC, tick, and summary conditions without stored cycle or
-tick counts; `test-demo-image` builds `demo/Dockerfile` and runs the packaged
+native run agree in cycles and UART bytes, compares DDR `hello_world` and
+BRAM CoreMark cycles, ticks, and UART bytes against live cocotb runs, and
+checks each program's pass and summary conditions without stored cycle or
+tick counts. `test-demo-image` builds `demo/Dockerfile` and runs the packaged
 demo container. Running `python3 tests/test_native_sim.py --all` locally
 compares all four `hello_world` and CoreMark cases (`bram` and `ddr`) directly
 against live unseeded cocotb runs of the same tree.
@@ -133,6 +134,10 @@ be run through `make -C hw/sim/native` inside the `frost` image:
     STOP_MARKER="Hello, world!" DRAIN_CYCLES=10000
 ```
 
+The simulation thread writes and flushes each UART byte to standard output
+before testing for the complete stop marker. The summary follows the
+configured drain window.
+
 | Make / CLI variable | Default | Meaning |
 | --- | --- | --- |
 | `APP` | `hello_world` | Application name passed to `sw/apps/compile_app.py` |
@@ -222,6 +227,10 @@ docker run --rm -it frost-demo:local --mem-config ddr --app coremark
 docker run --rm frost-demo:local --help
 ```
 
+The demo entry point joins simulator standard error to standard output before
+launching the simulator. UART bytes and summaries share one container output
+pipe, so log readers receive the complete UART marker before the summary.
+
 The demo binaries are compiled with `ASSERTIONS=1`, `PORTABLE=1`
 (`-march=x86-64` across all C++ files, with `-O3` on hot model files and C++
 runner sources `main.cpp` and `sim_assertions.cpp`, `-O0` on cold/initializer
@@ -256,7 +265,8 @@ Example checkpoint save and restore run inside the `frost` image:
 `hw/sim/native/Makefile` matches `tests/Makefile`'s `frost` top-level
 parameters and differs from `tests/Makefile`'s Verilator flags only by the
 documented native runner options, exercises RTL assertion, reset-arming, HDL
-`$finish`, and split-marker failure paths, and provides two simulation modes
+`$finish`, split success and failure markers, and UART ordering through a
+delayed container log relay, and provides two simulation modes
 with no stored cycle counts, tick counts, or output hashes:
 
 - **CI mode (`--ci`, run by `test-native` in
