@@ -2816,6 +2816,7 @@ SBY_TASKS = [
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
     ("prove_copy", "Staged address copies sample identical inputs on every edge"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
+    ("prove_vector", "Unbounded proof with vector state enabled"),
     ("bmc_raw", "Bounded equivalence with eight raw-wakeup candidates"),
     ("prove_raw", "Unbounded equivalence with eight raw-wakeup candidates"),
     ("bmc_forward", "Bounded equivalence with store forwarding enabled"),
@@ -3154,6 +3155,10 @@ SBY_TASKS = [
     (
         "csr_twin",
         "CSR file primitive form equals its portable form.",
+    ),
+    (
+        "csr_twin_vector",
+        "CSR file primitive form equals its portable form with vector state enabled.",
     ),
     (
         "fp_engine_twin",
