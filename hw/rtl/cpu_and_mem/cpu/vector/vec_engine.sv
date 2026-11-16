@@ -299,6 +299,7 @@ module vec_engine #(
 
   // Compare results of group g, element k at bit k.
   logic [VLEN-1:0] gcmp;
+  logic [VLEN-1:0] res_q, gcmp_q;
   always_comb begin
     gcmp = '0;
     for (int l = 0; l < Lanes; l++) begin
@@ -366,7 +367,6 @@ module vec_engine #(
   end
 
   // The lanes' results, captured in the cycle they appear.
-  logic [VLEN-1:0] res_q, gcmp_q;
   always_ff @(posedge i_clk) begin
     if (state == S_EX && lane_ovalid[0]) begin
       for (int l = 0; l < Lanes; l++) res_q[64*l+:64] <= lane_res[l];
