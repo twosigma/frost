@@ -20,6 +20,7 @@ All RTL reads run directly in FROST's Yosys; missing tools fail. Use
 ``./scripts/frost.py run python3 tests/slang_frontend.py`` for the manual CLI.
 """
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -41,6 +42,24 @@ def test_recursive_filelist_is_an_error(tmp_path: Path) -> None:
     filelist.write_text("-f recursive.f\n")
     with pytest.raises(ValueError, match="recursive filelist"):
         slang.expand_filelist(filelist)
+
+
+def test_vector_views_cover_build_and_simulation_settings() -> None:
+    """Vector branches elaborate at the board and registered simulation lengths."""
+    hardware, *simulations = slang.vector_cases()
+    board = (slang.ROOT / "boards/x3/x3_frost.sv").read_text()
+    registry = (slang.ROOT / "tests/test_run_cocotb.py").read_text()
+    board_vlen = re.search(r"\.VLEN\((\d+)\)", board)
+    assert board_vlen is not None
+    assert ".VECTOR(1'b1)" in board
+    assert dict(hardware.parameters)["VLEN"] == board_vlen[1]
+    assert hardware.name.startswith("synthesis/")
+    assert "-DFROST_XILINX_PRIMS" in hardware.units[0].options
+    lengths = set(re.findall(r'"-GVLEN=(\d+)"', registry))
+    assert {dict(case.parameters)["VLEN"] for case in simulations} == lengths
+    for case in (hardware, *simulations):
+        assert case.top == "frost"
+        assert dict(case.parameters)["VECTOR"] == "1"
 
 
 def test_formal_read_sets_preserve_task_defines_and_parameters(tmp_path: Path) -> None:
