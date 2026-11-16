@@ -35,6 +35,9 @@
   reads 0: a FENCE, SFENCE.VMA, SC or misaligned access that reaches the ROB
   head after a vector memory instruction waits for that instruction's
   accesses to finish before it drains, arms or accesses memory (rule V-O4).
+  Its next state is formed for both values of the commit valid from the table
+  state, the commit tag (the core's registered head tag) and the completion
+  inputs, and the commit valid selects between the two at the flop.
 */
 module vec_vmt #(
     localparam int unsigned VMT  = riscv_pkg::VmtDepth,
@@ -119,6 +122,20 @@ module vec_vmt #(
     end
   end
 
+  // !(|retired_d) for each value of the commit valid. A retiring entry is
+  // live, unretired and not awaiting cleanup, and carries the commit tag.
+  logic [VMT-1:0] held_if_none, held_if_commit;
+  for (genvar t = 0; t < VMT; t++) begin : gen_quiet_terms
+    assign held_if_none[t] = retired_q[t] && !(i_done_valid && i_done_idx == IdxW'(t));
+    assign held_if_commit[t] = (retired_q[t] ||
+                                (live_q[t] && !flush_pending_q[t] && tag_q[t] == i_commit_tag)) &&
+                               !(i_done_valid && i_done_idx == IdxW'(t));
+  end
+  (* keep = "true" *)logic quiet_if_none;
+  (* keep = "true" *)logic quiet_if_commit;
+  assign quiet_if_none   = !(|held_if_none);
+  assign quiet_if_commit = !(|held_if_commit);
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       live_q <= '0;
@@ -131,7 +148,7 @@ module vec_vmt #(
       live_q <= live_d;
       flush_pending_q <= flush_pending_d;
       retired_q <= retired_d;
-      o_quiet_q <= !(|retired_d);
+      o_quiet_q <= i_commit_valid ? quiet_if_commit : quiet_if_none;
       for (int t = 0; t < VMT; t++) begin
         if (i_alloc_valid && !o_full && o_alloc_idx == IdxW'(t)) begin
           tag_q[t]   <= i_alloc_tag;
@@ -154,6 +171,8 @@ module vec_vmt #(
     if (reset_seen_q && !i_rst) begin
       p_vmt_alloc_not_full : assert (!(i_alloc_valid && o_full));
       p_vmt_alloc_not_flushed : assert (!(i_alloc_valid && i_flush_all));
+      p_vmt_quiet_cofactors :
+      assert ((i_commit_valid ? quiet_if_commit : quiet_if_none) == !(|retired_d));
     end
   end
 `endif
