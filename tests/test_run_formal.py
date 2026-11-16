@@ -85,6 +85,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
     ("coherence_l1d", "coh_l1d_zero_cover"): 14400,
+    ("coherence_l1d", "coh_l1d_zero_stream_free_bmc"): 6000,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
@@ -3451,6 +3452,21 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     assert len(selected_by_shard["Coherence L1D zero cover"]) == 1
     assert len(selected_by_shard["Coherence L1D local holds"]) == 1
     check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
+
+
+def test_runner_limits_cover_sby_limits() -> None:
+    """Give every task at least its SBY limit, so the runner never stops a task SBY still allows."""
+    root = Path(__file__).resolve().parents[1]
+    for target in FORMAL_TARGETS:
+        limits = _sby_task_timeouts_s(root / "formal" / target.sby_file)
+        for task in target.tasks:
+            sby_limit = limits.get(task, limits.get(""))
+            if sby_limit is not None:
+                assert sby_limit <= formal_task_timeout_s(target.name, task), (
+                    target.name,
+                    task,
+                    sby_limit,
+                )
 
 
 def test_formal_shard_budget_sum_rejects_overcommitted_shard() -> None:
