@@ -124,3 +124,4 @@
 - Added the SYSRESET register and OpenSBI syscon-reboot support for SBI system reset, with register and device-tree tests
 - Added GMII receive-loss diagnostics, PHY error polling, and larger default receive buffering in the NIC driver
 - Implemented Ssnpm pointer masking for U-mode with PMLEN 7 and 16, including CSR controls, memory-address handling, formal checks, directed programs, and comparison with Sail.
+- Implemented Svnapot 64 KiB NAPOT leaves in the page-table walker, with reserved-encoding checks, Svpbmt alias composition, a directed program, bench cases, formal checks and a TestRIG trace
