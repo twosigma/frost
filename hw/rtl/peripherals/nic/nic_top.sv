@@ -51,6 +51,8 @@ module nic_top #(
     parameter int unsigned STARVATION_LIMIT = 8,
     parameter int unsigned RAW_LOOPBACK = 1,
     parameter bit GMII_MODE = 1'b0,
+    // GMII only: accept a frame whose preamble holds one lone rx_er (see nic_mac_wrap).
+    parameter bit RX_PREAMBLE_ER_TOLERANT = 1'b0,
     // The DMA master's AXI address and id widths; addresses are zero-extended
     // from ADDR_WIDTH and ids from IdBits.
     parameter int unsigned DMA_AXI_ADDR_BITS = 64,
@@ -122,18 +124,22 @@ module nic_top #(
     input  logic                         i_dma_axi_rlast,
 
     // MAC domains and the board.
-    input  logic        i_tx_clk,
-    input  logic        i_rx_clk,
-    input  logic        i_tx_clk_ok,     // asynchronous levels
-    input  logic        i_rx_clk_ok,
+    input logic i_tx_clk,
+    input logic i_rx_clk,
+    input logic i_tx_clk_ok,  // asynchronous levels
+    input logic i_rx_clk_ok,
     output logic [63:0] o_tx_raw_data,
-    output logic        o_tx_raw_valid,
-    input  logic [63:0] i_rx_raw_data,
-    input  logic        i_rx_raw_valid,
-    input  logic        i_rx_signal_ok,
-    input  logic [ 4:0] i_phy_status,    // asynchronous levels, nic_pkg PhyStatusBit*
-    output logic [ 3:1] o_phy_ctrl,      // PHY_RESET, PMA_LOOPBACK, TX_DISABLE
-    output logic        o_rx_block_lock  // PCS block lock, synchronized to i_clk (a flop)
+    output logic o_tx_raw_valid,
+    input logic [63:0] i_rx_raw_data,
+    input logic i_rx_raw_valid,
+    input logic i_rx_signal_ok,
+    input logic [4:0] i_phy_status,  // asynchronous levels, nic_pkg PhyStatusBit*
+    // PHY management payload {toggle, reserved FCS field, RECR}: held until acknowledged.
+    // DP83867 drives FCS to zero; all fields are zero where there is no MDIO poll.
+    input logic [nic_pkg::PhyDiagBits-1:0] i_phy_diag = '0,
+    output logic o_phy_diag_ack,
+    output logic [3:1] o_phy_ctrl,  // PHY_RESET, PMA_LOOPBACK, TX_DISABLE
+    output logic o_rx_block_lock  // PCS block lock, synchronized to i_clk (a flop)
 );
   localparam int unsigned TagBits = 4;
 
@@ -253,7 +259,8 @@ module nic_top #(
   logic tx_segment_err;
   logic rx_locked, rx_high_ber, rx_local_fault, rx_remote_fault, tx_link_ready, rx_signal_ok;
   logic [47:0] mac;  // the station address, which the MAC wrapper also takes
-  logic [10:0][63:0] mac_totals;
+  logic [nic_pkg::NumMacTotals-1:0][63:0] mac_totals;
+  logic rx_desc_starved;
   logic [1:0] pause_ctrl;
   logic [$clog2(RX_FIFO_DEPTH):0] pause_high_water, pause_low_water;
   logic [15:0] pause_interval;
@@ -267,7 +274,8 @@ module nic_top #(
       .RX_FIFO_DEPTH(RX_FIFO_DEPTH),
       .MAX_FRAME_BYTES(MAX_FRAME_BYTES),
       .RAW_LOOPBACK(RAW_LOOPBACK),
-      .GMII_MODE(GMII_MODE)
+      .GMII_MODE(GMII_MODE),
+      .RX_PREAMBLE_ER_TOLERANT(RX_PREAMBLE_ER_TOLERANT)
   ) u_mac (
       .i_clk               (i_clk),
       .i_rst               (rst_q),
@@ -303,6 +311,7 @@ module nic_top #(
       .o_rx_remote_fault   (rx_remote_fault),
       .o_tx_link_ready     (tx_link_ready),
       .o_rx_signal_ok      (rx_signal_ok),
+      .i_rx_desc_starved   (rx_desc_starved),
       .o_totals            (mac_totals),
       .i_tx_clk            (i_tx_clk),
       .i_rx_clk            (i_rx_clk),
@@ -405,6 +414,8 @@ module nic_top #(
         rx_locked
       }),
       .i_phy_status(phy_status),
+      .i_phy_diag(i_phy_diag),
+      .o_phy_diag_ack(o_phy_diag_ack),
       .i_rx_complete(rx_complete),
       .i_rx_complete_flags(rx_complete_flags),
       .i_rx_complete_bytes(rx_complete_bytes),
@@ -496,7 +507,8 @@ module nic_top #(
       .o_complete      (rx_complete),
       .o_complete_flags(rx_complete_flags),
       .o_complete_bytes(rx_complete_bytes),
-      .o_filtered      (rx_filtered)
+      .o_filtered      (rx_filtered),
+      .o_desc_starved  (rx_desc_starved)
   );
 
   nic_tx_engine #(

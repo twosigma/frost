@@ -303,7 +303,9 @@ int main(void)
     uart_puts("\r\n=== Sstc test ===\r\n");
     set_trap_handler(&m_trap_handler);
 
-    /* A: Reset values and WARL masks of menvcfg/senvcfg. */
+    /* A: Reset values and WARL masks. menvcfg and senvcfg reset to 0.
+     * menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE;
+     * senvcfg implements FIOM, CBIE, CBCFE and CBZE. */
     ok &= report("A menvcfg-reset", csr_read_num(0x30A), 0);
     ok &= report("A senvcfg-reset", csr_read_num(0x10A), 0);
     ok &= report("A stimecmp-reset", csr_read_num(0x14D), ~0ul);
