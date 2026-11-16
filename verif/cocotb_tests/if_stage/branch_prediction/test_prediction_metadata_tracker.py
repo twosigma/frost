@@ -34,6 +34,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_stall.value = 0
     dut.i_flush.value = 0
     dut.i_pending_prediction_kill.value = 0
+    dut.i_pending_prediction_walk_past.value = 0
     dut.i_stall_registered.value = 0
     dut.i_prediction_used_r.value = 0
     dut.i_predicted_target_r.value = 0
@@ -578,3 +579,27 @@ async def test_flush_clears_pending_prediction_replay(dut: Any) -> None:
     await _settle()
 
     _assert_metadata(dut, taken=False, target=TARGET_C)
+
+
+@cocotb.test()
+async def test_walk_past_masks_saved_entry_before_live_packet(dut: Any) -> None:
+    """A walked-past saved entry cannot hide a following packet's live prediction."""
+    await _setup_test(dut)
+    await _save_pending_prediction(dut)
+    assert dut.prediction_pending_saved_valid.value
+    dut.i_pending_prediction_active.value = 0
+    dut.i_pending_prediction_target_handoff.value = 0
+    dut.i_pending_prediction_kill.value = 1
+    dut.i_pending_prediction_walk_past.value = 1
+    dut.i_output_pc.value = PENDING_BRANCH_PC + 2
+    dut.i_prediction_used_r.value = 0
+    dut.i_live_prediction_for_output.value = 1
+    dut.i_live_target_aligned_with_output.value = 1
+    dut.i_live_predicted_target.value = TARGET_B
+    dut.i_live_predicted_is_return.value = 1
+    await _settle()
+    _assert_metadata(dut, taken=True, target=TARGET_B)
+    assert dut.o_btb_predicted_is_return.value
+    assert not dut.o_btb_predicted_is_call.value
+    await _advance_cycle(dut)
+    assert not dut.prediction_pending_saved_valid.value

@@ -17,6 +17,7 @@
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import re
 import struct
@@ -338,9 +339,13 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         "smaia",
         "ssaia",
         "sscofpmf",
+        "ssnpm",
         "sstc",
         "sstvala",
+        "ssu64xl",
         "svade",
+        "svinval",
+        "svnapot",
         "svpbmt",
         "svvptc",
         "zicntr",
@@ -397,7 +402,7 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert "<0x0 0x9 0xffffffff 0xffffffff 0x200>" in dts
     assert "<0x0 0xa 0xffffffff 0xffffffff 0x400>" in dts
     # Translation selectors sit above the counter numbers: walker busy cycles on
-    # counter 8, SFENCE.VMA invalidates on counter 7, CSR-requested invalidates on
+    # counter 8, SFENCE.VMA and SINVAL.VMA invalidates on counter 7, CSR-requested invalidates on
     # counter 4.
     assert "<0x0 0x10 0xffffffff 0xffffffff 0x100>" in dts
     assert "<0x0 0x11 0xffffffff 0xffffffff 0x80>" in dts
@@ -462,6 +467,34 @@ def test_both_trees_describe_the_sysreset_syscon_reboot() -> None:
         assert symbol in config.splitlines()
 
 
+def test_reset_tree_resolves_the_production_syscon(tmp_path: Path) -> None:
+    """The smaller reset platform retains the real driver binding and regmap."""
+    reset_packer = _load_module(APPS / "opensbi_smoke" / "reset_pack_image.py")
+    packer = _load_module(SBI_PACKER)
+    dts = tmp_path / "reset.dts"
+    dtb = tmp_path / "reset.dtb"
+    dts.write_text(reset_packer.gen_reset_dts(clk_hz=200_000_000, mem_size=0x4000000))
+    subprocess.run(
+        ["dtc", "-I", "dts", "-O", "dtb", "-o", str(dtb), str(dts)], check=True
+    )
+
+    def cells(node: str, property_name: str) -> list[int]:
+        result = subprocess.run(
+            ["fdtget", "-t", "x", str(dtb), node, property_name],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return [int(value, 16) for value in result.stdout.split()]
+
+    node = f"/syscon@{packer.SYSRESET_BASE:x}"
+    assert cells(node, "reg") == [packer.SYSRESET_BASE, packer.SYSRESET_SIZE]
+    assert cells(node, "reg-io-width") == [4]
+    assert cells(node + "/reboot", "regmap") == cells(node, "phandle")
+    assert cells(node + "/reboot", "offset") == [0]
+    assert cells(node + "/reboot", "value") == [packer.SYSRESET_VALUE]
+
+
 def test_vcu118_device_tree_isa_matches_the_boot_packer() -> None:
     """The VCU118 tree lists the packer's extensions and the RTL's cbo.zero block.
 
@@ -492,6 +525,177 @@ def test_vcu118_device_tree_isa_matches_the_boot_packer() -> None:
     rtl_block = re.search(r"localparam int unsigned CboZeroBlockBytes = (\d+);", rtl)
     assert rtl_block is not None
     assert int(block[1]) == packer.CBOZ_BLOCK_BYTES == int(rtl_block[1])
+
+
+def test_advertised_isa_lists_agree() -> None:
+    """Both boards' DTs, the boot packer, Sail, README and ROADMAP agree on extensions.
+
+    Keeps every extension advertisement surface in sync and rejects any unimplemented,
+    partial or unadvertised roadmap entry from appearing in the device trees or Sail.
+    Also checks that the predecode Python twin serializes the three Svinval words.
+    """
+    packer = _load_module(SBI_PACKER)
+    assert packer.ISA_BASE == "rv64i"
+    assert len(packer.ISA_EXTENSIONS) == len(set(packer.ISA_EXTENSIONS))
+
+    head, *multi_tokens = packer.ISA_STRING.split("_")
+    assert head.startswith("rv64")
+    parsed_isa_string = (*tuple(head[4:]), *multi_tokens)
+    assert parsed_isa_string == packer.ISA_EXTENSIONS
+
+    for dts_label, dts in (
+        (
+            "x3",
+            packer.gen_dts(
+                clk_hz=300_000_000, initrd_range=None, bootargs="", model="t"
+            ),
+        ),
+        (
+            "vcu118",
+            (REPO_ROOT / "boards" / "vcu118" / "dts" / "frost_vcu118.dts").read_text(),
+        ),
+    ):
+        base = re.search(r'riscv,isa-base = "([^"]+)";', dts)
+        isa = re.search(r'riscv,isa = "([^"]+)";', dts)
+        ext_prop = re.search(r"riscv,isa-extensions = (.*?);", dts, re.S)
+        mmu_prop = re.search(r'mmu-type = "([^"]+)";', dts)
+        assert base is not None and base[1] == packer.ISA_BASE, dts_label
+        assert isa is not None and isa[1] == packer.ISA_STRING, dts_label
+        assert ext_prop is not None, dts_label
+        assert tuple(re.findall(r'"([^"]+)"', ext_prop[1])) == packer.ISA_EXTENSIONS, (
+            dts_label
+        )
+        assert mmu_prop is not None and mmu_prop[1] == "riscv,sv39", dts_label
+
+    advertised = set(packer.ISA_EXTENSIONS)
+
+    readme = (REPO_ROOT / "README.md").read_text()
+    ext_section = readme.split("### Supported RISC-V Extensions\n", 1)[1].split(
+        "\n### Microarchitecture", 1
+    )[0]
+    readme_exts: set[str] = set()
+    for match in re.finditer(
+        r"^\|\s*\*\*([^*]+)\*\*\s*\|\s*(.*?)\s*\|$", ext_section, re.M
+    ):
+        names, desc = match[1], match[2]
+        for raw_token in names.split(","):
+            token = raw_token.strip().lower()
+            if token == "rv64i":
+                readme_exts.add("i")
+            elif token == "b":
+                readme_exts.update({"zba", "zbb", "zbs"})
+            elif token == "supervisor mode":
+                assert "Sv39" in desc and "Sstc" in desc
+                readme_exts.add("sstc")
+            elif token in {"machine mode", "user mode"}:
+                continue
+            else:
+                readme_exts.add(token)
+    # Supm is described in the README but deliberately not advertised: the
+    # supplied Linux image does not expose the tagged-address ABI it needs.
+    readme_unadvertised = {"supm"}
+    assert readme_unadvertised <= readme_exts
+    assert not (readme_unadvertised & advertised)
+    assert readme_exts - readme_unadvertised == advertised
+
+    linux_readme = (REPO_ROOT / "linux" / "README.md").read_text()
+    linux_isa_section = linux_readme.split("## Advertised ISA\n", 1)[1].split(
+        "\n## ", 1
+    )[0]
+    for priv_ext in (
+        "Sstc",
+        "Smaia",
+        "Ssaia",
+        "Sscofpmf",
+        "Sstvala",
+        "Svade",
+        "Svinval",
+        "Svpbmt",
+        "Svvptc",
+    ):
+        assert priv_ext in linux_isa_section
+        assert priv_ext.lower() in advertised
+
+    roadmap = (REPO_ROOT / "ROADMAP.md").read_text()
+    rva23_section = roadmap.split("## RVA23 profile and the vector extension\n", 1)[
+        1
+    ].split("\n## ", 1)[0]
+    roadmap_implemented: set[str] = set()
+    roadmap_unadvertised: set[str] = set()
+    for match in re.finditer(
+        r"^\| ([^|]+?) \| ([^|]+?) \| [^|]+ \|$", rva23_section, re.M
+    ):
+        raw_name = match[1].strip()
+        status = match[2].strip()
+        if raw_name in {"Extension", "---"}:
+            continue
+        ext_name = raw_name.removesuffix(" (optional)").strip().lower()
+        if (
+            status.startswith("Implemented")
+            and "advertisement in progress" not in status
+        ):
+            if ext_name == "rv64i":
+                roadmap_implemented.add("i")
+            elif ext_name == "b":
+                roadmap_implemented.update({"zba", "zbb", "zbs"})
+            elif ext_name in {"ss1p13", "sv39", "svbare"}:
+                continue
+            else:
+                roadmap_implemented.add(ext_name)
+        else:
+            roadmap_unadvertised.add(ext_name)
+    non_rva23_advertised = {"smaia", "ssaia", "zbkb", "zbkc"}
+    assert not (non_rva23_advertised & roadmap_unadvertised)
+    assert (roadmap_implemented | non_rva23_advertised) == advertised
+    assert not (roadmap_unadvertised & advertised)
+
+    sail_raw = (REPO_ROOT / "verif" / "testrig" / "sail_frost.json").read_text()
+    sail_clean = re.sub(r"^\s*//.*$", "", sail_raw, flags=re.M)
+    sail_exts = json.loads(sail_clean)["extensions"]
+    sail_enabled: set[str] = set()
+    for key, value in sail_exts.items():
+        if key == "Stateen":
+            for sub_key, sub_val in value.items():
+                if sub_val.get("supported") is True:
+                    sail_enabled.add(sub_key.lower())
+        elif isinstance(value, dict) and value.get("supported") is True:
+            sail_enabled.add(key.lower())
+    assert not (roadmap_unadvertised & sail_enabled)
+    # Sail enables B/S/U/Sv39/Svbare alongside individual subset flags, models
+    # RV64C as Zca + Zcd, and takes RV64I as the base ISA (not an extensions
+    # entry); AIA/IMSIC, Za64rs, misaligned hardware and multi-region PMA flags
+    # are either absent from Sail or kept off for the TestRIG device-RAM map.
+    # Sail has no Ssu64xl option: its RV64 model keeps UXL at 64 bits, which
+    # traces/ssu64xl_uxl.S compares.
+    sail_umbrella_only = {"b", "s", "sv39", "svbare", "u", "zca", "zcd"}
+    sail_not_toggled = {
+        "smaia",
+        "ssaia",
+        "ssccptr",
+        "ssu64xl",
+        "za64rs",
+        "ziccamoa",
+        "zicclsm",
+        "ziccrse",
+    }
+    assert sail_umbrella_only <= sail_enabled
+    assert not (sail_not_toggled & sail_enabled)
+    sail_advertised = (
+        (sail_enabled - sail_umbrella_only) | {"i", "c"} | sail_not_toggled
+    )
+    assert sail_advertised == advertised
+
+    predecode = _load_module(
+        REPO_ROOT / "sw" / "common" / "generate_imem_predecode_init.py"
+    )
+    for svinval_word in (0x16000073, 0x16208073, 0x18000073, 0x18100073):
+        sb = predecode.make_sideband(svinval_word)
+        assert (sb >> predecode.SB_NATIVE_SERIALIZE_LO) & 1 == 1
+        assert (sb >> predecode.SB_PAIRABLE_NATIVE_LO) & 1 == 0
+        assert (sb >> predecode.SB_ALLOWS_SLOT2_AFTER_LO) & 1 == 0
+        sb_hi = predecode.make_sideband(0x0001 | ((svinval_word & 0xFFFF) << 16))
+        assert (sb_hi >> predecode.SB_NATIVE_SERIALIZE_HI) & 1 == 1
+        assert (sb_hi >> predecode.SB_PAIRABLE_NATIVE_HI) & 1 == 0
 
 
 @pytest.mark.parametrize(

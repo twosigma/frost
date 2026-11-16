@@ -65,9 +65,11 @@ class FullCluster(ZeroCluster):
         # (cycle, endpoint, opcode, address, mask) of each accepted request.
         self.requests: list[tuple[int, int, int, int, int]] = []
         self.agent_grants: list[tuple[Any, ...]] = []
+        # Endpoint -> (block, acceptance cycle), through its Done handshake.
+        self.open_zeros: dict[int, tuple[int, int]] = {}
 
     async def tick(self, count: int = 1) -> None:
-        """Advance, counting write completions."""
+        """Advance, checking zero ownership and counting write completions."""
         for _ in range(count):
             if self.get("o_write_done"):
                 self.dones += 1
@@ -86,9 +88,25 @@ class FullCluster(ZeroCluster):
                             (1 << width) - 1
                         )
                         fields = unpack(bits, (4, 9, self.p, 5, 3, 32, 1, 1, 1, 256))
+                        for owner, (block, cycle) in self.open_zeros.items():
+                            assert fields[2] != block + 32, (
+                                f"request op={fields[0]} ep={ep} at cycle {self.cycle} "
+                                f"to {fields[2]:#x} while GetMZero({block:#x}) "
+                                f"on ep={owner} from cycle {cycle} has not sent Done"
+                            )
                         self.requests.append(
                             (self.cycle, ep, fields[0], fields[2], fields[5])
                         )
+                        if fields[0] == 10 and self.line == 64:
+                            self.open_zeros[ep] = (fields[2], self.cycle)
+                completed = int(self.dut.hart_c_valid.value) & int(
+                    self.dut.hart_c_ready.value
+                )
+                for ep in list(self.open_zeros):
+                    if completed >> ep & 1:
+                        del self.open_zeros[ep]
+            else:
+                self.open_zeros.clear()
             await super().tick()
 
     def preload(self, block: int, seed: int) -> None:
@@ -749,14 +767,13 @@ async def zero_push_during_prefetch_lookup(dut: Any) -> None:
 
 @cocotb.test()
 async def zero_pending_twin_lookahead_beside_stream(dut: Any) -> None:
-    """Keep stream prefetches off a pending twin whose GetMZero already issued.
+    """Keep look-ahead GetMZero and stream prefetches off a waiting cbo.zero twin.
 
     When an older cbo.zero's upper twin holds the store-buffer head on endpoint
     0, two same-home-set scalar stores sit behind it, and a younger cbo.zero
-    fills the fourth record, 2'(slot + 1) wraps to the head twin: LookaheadOp
-    issues GetMZero for the younger block while its own upper twin still waits
-    in store_twin_pending. An ascending load stream trained in that window must
-    not prefetch the pending twin's sector.
+    fills the fourth record, 2'(slot + 1) wraps to the head twin. Neither
+    LookaheadOp nor an ascending load stream trained in that window may acquire
+    the younger block before its own upper twin allocates.
     """
     c = FullCluster(dut)
     await c.reset()
@@ -931,22 +948,18 @@ async def zero_pending_twin_lookahead_beside_stream(dut: Any) -> None:
     await c.tick()
     await c.set(i_write_mask=0, i_write_zero=0)
 
-    row1_reached = False
+    assert int(dut.hart.store_count.value) == 4
+    assert int(dut.hart.store_twin_pending.value) == 1
+    assert int(dut.hart.store_twin_addr.value) == block + 32
     for _ in range(80):
-        if any(
-            op == 10 and addr == block for _, _, op, addr, _ in c.requests[req_before:]
-        ):
-            assert int(dut.hart.store_count.value) == 4
-            assert int(dut.hart.store_twin_pending.value) == 1
-            assert int(dut.hart.store_twin_addr.value) == block + 32
-            row1_reached = True
-            break
+        assert not any(
+            addr in (block, block + 32) for _, _, _, addr, _ in c.requests[req_before:]
+        ), "younger cbo.zero acquired while its own twin still waited"
         await c.tick()
-    assert row1_reached, "LookaheadOp never issued GetMZero while its twin waited"
+    assert int(dut.hart.store_twin_pending.value) == 1
 
     # Train and confirm an ascending stream on page + 0x20, +0x40, +0x60 while
-    # GetMZero(block) is still parked behind the L2 fill of block (so block + 32
-    # is still Invalid in L1D and store_twin_pending is the sole guard).
+    # store_twin_pending still holds the upper sector of block.
     for addr in (page + 0x20, page + 0x40, page + 0x60):
         await c.read(addr)
     for _ in range(60):
@@ -954,10 +967,12 @@ async def zero_pending_twin_lookahead_beside_stream(dut: Any) -> None:
             break
         await c.tick()
     assert int(dut.hart.store_twin_pending.value) == 1
+    assert not any(
+        addr in (block, block + 32) for _, _, _, addr, _ in c.requests[req_before:]
+    )
 
-    # Complete the source-3 L2 prefetch of block so GetMZero(block) wakes first
-    # (installing Modified zeros via twin_fill_q) followed by any speculative
-    # GetS(block + 32) returning stale nonzero L2 bytes.
+    # Complete the source-3 L2 prefetch of block, then drain all four records
+    # once endpoint 0's head twin completes.
     for _ in range(1200):
         if len(c.agent_grants) > grants_before:
             break
@@ -987,3 +1002,233 @@ async def zero_pending_twin_lookahead_beside_stream(dut: Any) -> None:
     await c.drain()
     await c.check_block(block)
     assert block + 32 not in c.speculative_requests
+
+
+@cocotb.test()
+async def dropped_load_retry_during_pending_twin(dut: Any) -> None:
+    """Keep a dropped wrong-path load retry from overwriting a cbo.zero twin.
+
+    A load to block + 32 launched on a mispredicted branch path while all load
+    endpoints are busy records rd_miss_q in the L1D without owning an endpoint,
+    and remains in rd_valid_q after the load queue marks its slot cs_drop. When
+    the architectural path fills the store buffer behind an older head twin and
+    pushes cbo.zero(block), store_count == 4 and store_twin_pending == 1 before
+    the dropped load retries its lookup. LookaheadOp must hold off GetMZero
+    until the block's own twin allocates, so the retry's GetS(block + 32)
+    completes ahead of cbo.zero(block) rather than overwriting Modified zeros.
+    """
+    c = FullCluster(dut)
+    await c.reset()
+    block = 0x80960080
+    head_block = 0x80F01040
+    s1_addr = head_block + 0x4000
+    s2_addr = head_block + 0x8000
+    c.preload(block, 0xA180)
+    c.preload(head_block, 0xA200)
+    c.preload(s1_addr, 0xA300)
+    c.preload(s2_addr, 0xA400)
+
+    # Warm block Clean in the 64 KiB L2 with nonzero data, then evict it from
+    # the 1 KiB L1D using lines in disjoint L2 sets.
+    await c.read(block)
+    old_upper = await c.read(block + 32)
+    assert old_upper != 0
+    for way in range(4):
+        for s in range(8):
+            await c.read(0x80E00200 + way * 0x400 + s * 32)
+    await c.drain()
+
+    # Park an older cbo.zero's upper twin at store_head_index on endpoint 0
+    # waiting on a 600-cycle DDR read.
+    await c.store(head_block, 0xCAFE)
+    c.pushes += 1
+    await c.drain()
+    await c.set(i_hold_wa=1)
+    for way in range(6):
+        if int(dut.hart.wb_live.value) == 3:
+            break
+        c.preload(0x80E20240 + way * 0x400, 0xA600 + way)
+        await c.store(0x80E20260 + way * 0x400, 0x3000 + way)
+        c.pushes += 1
+        for _ in range(120):
+            if int(dut.hart.store_count.value) == 0:
+                break
+            await c.tick()
+        assert int(dut.hart.store_count.value) == 0
+    assert int(dut.hart.wb_live.value) == 3
+
+    assert c.get("o_store_ready") == 1
+    await c.set(
+        i_address=head_block,
+        i_write_data=0,
+        i_write_mask=0xFF,
+        i_write_zero=1,
+        i_write_tag=5,
+    )
+    c.pushes += 1
+    await c.tick()
+    await c.set(i_write_mask=0, i_write_zero=0)
+
+    for _ in range(80):
+        if (
+            int(dut.hart.store_count.value) == 1
+            and int(dut.hart.store_twin_pending.value) == 0
+        ):
+            break
+        await c.tick()
+    head_idx = int(dut.hart.store_head_index.value)
+    assert int(dut.hart.store_count.value) == 1
+    assert (int(dut.hart.store_twin.value) >> head_idx) & 1 == 1
+
+    for way in range(1, 8):
+        evict_addr = head_block + way * 0x4000
+        c.preload(evict_addr, 0xA700 + way)
+        agent_q = pack((2, 3), (2, 3), (4, 1), (1, 0))
+        agent_req = pack(
+            (4, 9),
+            (9, agent_q),
+            (c.p, evict_addr),
+            (5, 0),
+            (3, 5),
+            (32, 0),
+            (1, 0),
+            (1, 0),
+            (1, 0),
+            (256, 0),
+        )
+        await c.set(i_agent_valid=1, i_agent_d=agent_req)
+        await c.wait("o_agent_ready")
+        await c.tick()
+        await c.set(i_agent_valid=0)
+        await c.wait("o_agent_g_valid")
+        ag = unpack(c.get("o_agent_g"), (3, 9, 6, c.p, 256, 1))
+        await c.tick()
+        await c.set(
+            i_agent_c_valid=1,
+            i_agent_c=pack((9, ag[1]), (6, ag[2]), (c.p, evict_addr), (2, 0), (1, 0)),
+        )
+        await c.wait("o_agent_c_ready")
+        await c.tick()
+        await c.set(i_agent_c_valid=0)
+        await c.wait("o_agent_u_valid")
+        await c.set(i_agent_u_ready=1)
+        await c.tick()
+        await c.set(i_agent_u_ready=0)
+
+    reads_before = c.reads_of(head_block)
+    c.read_delay = 600
+    await c.set(i_hold_wa=0)
+    for _ in range(120):
+        if (
+            (int(dut.hart.live.value) & 1)
+            and c.reads_of(head_block) > reads_before
+            and int(dut.hart.wb_live.value) == 0
+        ):
+            break
+        await c.tick()
+    c.read_delay = 7
+    assert c.reads_of(head_block) == reads_before + 1
+    assert int(dut.hart.wb_live.value) == 0
+    assert int(dut.hart.store_count.value) == 1
+    assert (int(dut.hart.store_twin.value) >> head_idx) & 1 == 1
+
+    # Restore clean ways in L1D set 3 after the writeback setup.
+    for way in range(4):
+        await c.read(0x80E00200 + way * 0x400 + 3 * 32)
+
+    # Occupy all seven load endpoints (ep 1..7): five 600-cycle DDR misses and
+    # two 120-cycle DDR misses, with i_read_ready draining flushed responses.
+    await c.set(i_read_ready=1)
+    for slot in range(7):
+        c.read_delay = 600 if slot < 5 else 120
+        miss_addr = 0x80B00200 + slot * 0x400 + slot * 32
+        c.preload(miss_addr & -64, 0xB100 + slot)
+        await c.set(
+            i_address=miss_addr,
+            i_read_id=slot,
+            i_read_kind=0,
+            i_read_size=3,
+            i_read_valid=1,
+        )
+        await c.tick()
+        await c.set(i_read_valid=0)
+        await c.tick(5)
+    c.read_delay = 7
+    for _ in range(40):
+        if int(dut.hart.live.value) == 0xFF and int(dut.hart.load_ep_free.value) == 0:
+            break
+        await c.tick()
+    assert int(dut.hart.live.value) == 0xFF
+    assert int(dut.hart.load_ep_free.value) == 0
+
+    # Launch the wrong-path load to block + 32 on slot 7: it misses L1D with no
+    # free load endpoint, recording rd_miss_q[7] = 1 with rd_owned[7] = 0.
+    await c.set(
+        i_address=block + 32,
+        i_read_id=7,
+        i_read_kind=0,
+        i_read_size=3,
+        i_read_valid=1,
+    )
+    await c.tick()
+    await c.set(i_read_valid=0)
+    for _ in range(25):
+        if (int(dut.hart.rd_miss_q.value) >> 7) & 1:
+            break
+        await c.tick()
+    assert (int(dut.hart.rd_valid_q.value) >> 7) & 1 == 1
+    assert (int(dut.hart.rd_miss_q.value) >> 7) & 1 == 1
+    assert (int(dut.hart.rd_owned.value) >> 7) & 1 == 0
+
+    # After the branch flushes slot 7 into cs_drop in the load queue, the
+    # architectural path commits two same-home-set stores and cbo.zero(block),
+    # filling store_count == 4 with store_twin_pending == 1.
+    req_before = len(c.requests)
+    for addr, val in ((s1_addr, 0x1111), (s2_addr, 0x2222)):
+        assert c.get("o_store_ready") == 1
+        await c.set(
+            i_address=addr,
+            i_write_data=val,
+            i_write_mask=0xFF,
+            i_write_zero=0,
+            i_write_tag=7,
+        )
+        c.pushes += 1
+        await c.tick()
+        await c.set(i_write_mask=0)
+    assert c.get("o_store_ready") == 1
+    await c.set(
+        i_address=block,
+        i_write_data=0,
+        i_write_mask=0xFF,
+        i_write_zero=1,
+        i_write_tag=5,
+    )
+    c.pushes += 1
+    await c.tick()
+    await c.set(i_write_mask=0, i_write_zero=0)
+    assert int(dut.hart.store_count.value) == 4
+    assert int(dut.hart.store_twin_pending.value) == 1
+    assert int(dut.hart.store_twin_addr.value) == block + 32
+
+    saw_gets_while_pending = False
+    seen_idx = req_before
+    for _ in range(1000):
+        while seen_idx < len(c.requests):
+            _, _, op, addr, _ = c.requests[seen_idx]
+            seen_idx += 1
+            pending_now = int(dut.hart.store_twin_pending.value)
+            if op == 0 and addr == block + 32 and pending_now:
+                saw_gets_while_pending = True
+        if (
+            int(dut.hart.store_count.value) == 0
+            and int(dut.hart.store_twin_pending.value) == 0
+            and int(dut.hart.rd_valid_q.value) == 0
+            and int(dut.hart.live.value) == 0
+        ):
+            break
+        await c.tick()
+    assert saw_gets_while_pending, "dropped load never retried GetS during pending twin"
+    await c.set(i_read_ready=0)
+    await c.drain()
+    await c.check_block(block)

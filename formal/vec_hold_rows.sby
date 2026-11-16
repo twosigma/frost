@@ -4,6 +4,7 @@ vhold_sq_bmc
 cover
 
 [options]
+vhold_lq_bmc: aigsmt boolector
 vhold_lq_bmc: mode bmc
 vhold_lq_bmc: depth 8
 vhold_sq_bmc: mode bmc
@@ -15,12 +16,13 @@ timeout 1800
 [engines]
 cover: smtbmc boolector
 vhold_lq_bmc: abc bmc3
-vhold_sq_bmc: abc bmc3
+vhold_sq_bmc: smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv vec_hold_rows.sv
 read -formal -sv vec_hold_rows_formal.sv
+cover: chparam -set DIRECT_ADDR 1 vec_hold_rows_formal
 vhold_sq_bmc: chparam -set DIRECT_ADDR 1 vec_hold_rows_formal
 prep -top vec_hold_rows_formal
 

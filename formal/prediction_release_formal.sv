@@ -109,6 +109,8 @@ module prediction_release_formal #(
   logic control_flow_holdoff;
   logic any_holdoff_safe;
   logic pending_prediction_active;
+  logic pending_prediction_walk_past;
+  logic pending_prediction_blocks_slot1;
   logic [XLEN-1:0] pending_prediction_pc;
   logic [XLEN-1:0] pending_prediction_prev_pc;
   logic [XLEN-1:0] pending_prediction_prev_native_pc;
@@ -155,7 +157,9 @@ module prediction_release_formal #(
 
   // Model the IF-stage boundary conservatively, without the BTB, RAS, or
   // instruction aligner: the request is arbitrary and IF's other blockers are
-  // omitted, which only admits extra requests. With
+  // omitted, which only admits extra requests. As in IF, a window that cannot
+  // serve pc_reg (raw WCS) blocks the slot-1 request; pc_controller relies on
+  // that when a walked-past entry meets a served-window resteer. With
   // PENDING_HANDOFF_EXCLUDES_SLOT2, the slot-2 request gets IF's
   // pending-holdoff mask when the window can serve (WCS=0; WCS is
   // i_window_cannot_serve_raw). When it cannot (WCS=1), IF disables
@@ -163,7 +167,9 @@ module prediction_release_formal #(
   // which admits more requests.
   assign prediction_used_for_pc =
       i_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
-      !stall_registered && !any_holdoff_safe && !prediction_holdoff;
+      !stall_registered && !any_holdoff_safe && !prediction_holdoff &&
+      !i_window_cannot_serve_raw &&
+      (!PENDING_HANDOFF_EXCLUDES_SLOT2 || !pending_prediction_blocks_slot1);
   assign prediction_used = prediction_used_for_pc && !i_branch_taken && !i_stall;
   assign slot2_live_request =
       i_slot2_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
@@ -370,6 +376,8 @@ module prediction_release_formal #(
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(),
+      .o_pending_prediction_walk_past(pending_prediction_walk_past),
+      .o_pending_prediction_blocks_slot1(pending_prediction_blocks_slot1),
       // Translation uses registered o_pc; next-PC observations are unused.
       .o_next_pc(),
       .o_next_pc_holds(),

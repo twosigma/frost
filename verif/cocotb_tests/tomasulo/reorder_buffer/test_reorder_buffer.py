@@ -2334,6 +2334,34 @@ async def test_hpm_user_alias_allocation_masks(dut: Any) -> None:
                     assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
                     assert dut_if.trap_pc == req.pc
 
+    for counter in (11, 31):
+        for priv in (0, 1, 3):
+            for write_intent in (False, True):
+                await dut_if.reset_dut(RESET_CYCLES)
+                dut.i_priv.value = priv
+                dut.i_priv_is_u.value = int(priv == PRIV_U)
+                dut.i_counter_blocked.value = 0
+                req = AllocationRequest(
+                    pc=0x2180,
+                    dest_reg=5,
+                    dest_valid=True,
+                    is_csr=True,
+                    csr_addr=0xC00 + counter,
+                    csr_write_intent=write_intent,
+                    csr_op=1 if write_intent else 0,
+                )
+                tag = await drive_single_alloc(dut_if, req)
+                dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0))
+                await RisingEdge(dut_if.clock)
+                await FallingEdge(dut_if.clock)
+                dut_if.clear_cdb_write()
+                fault = priv != PRIV_M or write_intent
+                assert dut_if.trap_pending == fault, (counter, priv, write_intent)
+                assert dut_if.csr_start == (not fault), (counter, priv, write_intent)
+                if fault:
+                    assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
+                    assert dut_if.trap_pc == req.pc
+
 
 @cocotb.test()
 async def test_scountovf_allocation_legality(dut: Any) -> None:

@@ -132,10 +132,11 @@ its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--crypto` | off | Replay this many scalar cryptography tests |
 | `--zcb` | off | Replay this many Zcb, Zcmop, Zimop, and Zihintntl tests |
 | `--fp-ext` | off | Replay this many Zfhmin and Zfa tests |
-| `--sscofpmf` | off | Replay the deterministic counter-control trace with Sail Zihpm enabled; `--trace` selects a counterexample in this view |
+| `--svinval` | off | Replay this many random Svinval tests (`verif/testrig/svinval.py`) instead of the templates |
+| `--sscofpmf` | off | Replay the deterministic counter-control trace (`verif/testrig/sscofpmf/controls.S`); `--trace` overrides the trace path |
 | `--vector` | off | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
 | `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
-| `--seed` | random | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--crypto` and `--vector`; the runner prints the one it used |
+| `--seed` | random | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval`, `--crypto` and `--vector`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
 | `--include`, `--exclude` | see the runner | Template name regexes |
 | `--csr-include` | see the runner | CSRs the templates may access |
@@ -240,42 +241,35 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zfa, Zfhmin, Zcb, Zcmop, Zihintntl, Zimop, Zicond, Zbc, Zbkb, Zbkc, Zkt, Zihintpause, Zicntr, Zic64b, Ziccif, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svpbmt, Svvptc, Sstc, Sscounterenw, Sstvala, Sstvecd; Sscofpmf is enabled in the dedicated replay; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zfa, Zfhmin, Zcb, Zcmop, Zihintntl, Zimop, Zicond, Zbc, Zbkb, Zbkc, Zkt, Zihintpause, Zicntr, Zihpm, Zic64b, Ziccif, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svinval, Svnapot, Svpbmt, Ssnpm, Svvptc, Sstc, Sscofpmf, Sscounterenw, Sstvala, Sstvecd; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check; `Zicclsm` is left off because TestRIG builds omit the misaligned-access engine |
 | `mtval` | The faulting instruction's bits for illegal instructions (Sstvala) |
 | `mstatus.FS` | Dirty when an FP instruction raises a flag, even one already set |
 | `mstatus.VS` | Read-only zero: FROST has no V extension |
-| HPM counters | Machine counters 3..10 have storage; saved traces keep their selectors disabled. User aliases 3..10 are checked by the CSR and privilege benches; aliases 11..31 are absent |
+| HPM counters | Machine counters 3..10 have storage; random and saved traces keep their selectors disabled. User aliases 3..10 mirror machine storage; aliases 11..31 read zero in M-mode and trap below M-mode |
 | Counter enables | `mcounteren`, `scounteren`: CY, TM, IR and HPM3..10; `mcountinhibit`: CY, IR and HPM3..10 |
-| Delegation | `medeleg` mask 0xB3FF; `mideleg` mask 0x2222, checked in the Sscofpmf replay |
+| Delegation | `medeleg` mask 0xB3FF; `mideleg` mask 0x2222 |
 | PMP | None |
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
 | WFI | Completes at once; FROST traps `wfi` in S-mode when `mstatus.TW` is set and always in U-mode, whereas Sail's `wfi_is_nop` skips the S-mode `TW` check while keeping U-mode `wfi` illegal |
 | Zawrs | `wrs.nto` and `wrs.sto` complete at once; `wrs.nto` below M with `mstatus.TW` set raises illegal-instruction. Sail 0.16's non-nop wait loop enters `Step_Waiting` in RVFI-DII mode with `pc_wdata = 0` and consumes an extra packet, so `sail_frost.json` sets `nto.is_nop` true; `zawrs_test` and `sstvala_test` cover the `mstatus.TW` traps on `wrs.nto` and `wfi` |
 | Sail's CLINT | At 0x2B6D_93F1_0000, outside FROST's map at an address random sequences do not form; Sail requires one for Zicntr |
 
-The `--sscofpmf` replay compares `mideleg`'s full WARL mask and register and
-immediate read-modify-write operations, OF and inhibit fields, `scountovf`,
-machine counter storage and user aliases 9/10 with event selectors disabled.
-Sail 0.16 enables Sscofpmf only when Zihpm is enabled, which also exposes
-user aliases 11..31 that FROST omits. This replay therefore enables Zihpm in
-its generated configuration and accesses only implemented counters. Default
-random and saved-counterexample runs keep Zihpm disabled and continue to
-compare absent aliases. The CSR and privilege benches cover the full set
-of implemented aliases, event selection and counting.
-
-The default Sail view [forces `mideleg.LCOFI` to zero](https://github.com/riscv/sail-riscv/blob/0.16/model/core/interrupt_regs.sail#L122-L146) even with bit 13 in
-the configured delegation mask, so random generation excludes `mideleg`.
-The dedicated replay includes the minimized counterexample that sets bit 13
-and reads it back through CSRRSI. No destination-register bits are masked.
-The [Sscofpmf specification](https://docs.riscv.org/reference/isa/v20260120/priv/sscofpmf.html)
+The `--sscofpmf` replay checks `mideleg`'s full WARL mask and register and
+immediate read-modify-write operations, `mhpmevent3..10` OF and inhibit fields
+(keeping event selectors disabled), `scountovf`, machine counter storage and
+user aliases 9/10. With `Zihpm` and `Sscofpmf` enabled in `sail_frost.json`,
+default random and saved-trace runs also include `mideleg`, `scountovf` and
+`hpmcounter3..31` while leaving `mhpmevent3..10` out so event selectors stay
+disabled. The [Sscofpmf specification](https://docs.riscv.org/reference/isa/v20260120/priv/sscofpmf.html)
 assigns local counter overflow interrupt number 13 and specifies that
 `mideleg` controls its delegation to S-mode versus M-mode.
 
-Replay a counterexample from this view with `--sscofpmf --trace <file>`;
-the option cannot be combined with `--trace-dir`, `--atomics`, `--crypto`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo` or `--vector`.
+Replay a saved counterexample directly with `--trace <file>` (or
+`--sscofpmf --trace <file>`); `--sscofpmf` cannot be combined with
+`--trace-dir`, `--atomics`, `--crypto`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval` or `--vector`.
 
 ## What the comparison leaves out
 
@@ -288,12 +282,9 @@ result depends on timing, out of the default run:
 |----------|-----|
 | `cycle`, `time`, `mcycle` | FROST counts clock cycles; Sail counts instructions |
 | `mie`, `mip`, `sie`, `sip` | Sail takes an interrupt in place of an instruction, which the trace cannot express |
-| `mideleg` | Sail requires Zihpm for LCOFI bit 13; the dedicated `--sscofpmf` replay checks the full register |
-| `stimecmp` | The Sstc timer compare depends on time |
 | `mtvec`, `stvec` | Reserved MODE values: FROST keeps the low bit, Sail keeps the old MODE |
 | `mcause`, `scause` | The cause code is WLRL: FROST keeps any value written, Sail keeps the old value when the code is one it does not support |
-| `hpmcounter3..10`, `mhpmevent3..10` | Sail cannot represent the partial user-alias set or the fixed-event WARL selectors; CSR and privilege benches check these addresses |
-| `scountovf` | The dedicated `--sscofpmf` replay checks OF shadows; Sail requires Zihpm for this register |
+| `mhpmevent3..10` | Implementation-defined fixed-event WARL selectors; leaving them untouched keeps counters disabled so `mhpmcounter3..31`, `hpmcounter3..31` and `scountovf` compare directly |
 | Unnamed CSR addresses | Include FROST's custom profiling CSRs |
 | The `atomic` and `memAmo` templates | They put traps between LR and SC (see [The A extension](#the-a-extension)); `--atomics` covers the A extension instead |
 | `unstructured` template | Random 32-bit words reach custom CSRs and other implementation-defined encodings |
@@ -463,6 +454,9 @@ CI's TestRIG jobs replays all of them before its random run.
 | [`lrsc_older_store.S`](traces/lrsc_older_store.S) | An older store to the other word of the reserved doubleword drains before LR and permits the following SC |
 | [`pte_nonleaf_dau.S`](traces/pte_nonleaf_dau.S) | A non-leaf PTE with D, A, or U set raises a page fault |
 | [`svpbmt_pbmte.S`](traces/svpbmt_pbmte.S) | PBMTE readback and PBMT page faults; Sail does not check the uncached alias transport or cache coherence |
+| [`svnapot_leaf.S`](traces/svnapot_leaf.S) | A 64 KiB NAPOT leaf (N, PPN[3:0] = 1000) translates two of its pages with PPN[3:0] = VA[15:12]; N with another PPN[3:0], in a 2 MiB leaf or in a pointer is a page fault |
+| [`ssu64xl_uxl.S`](traces/ssu64xl_uxl.S) | `mstatus.UXL`/`SXL` and `sstatus.UXL` read 2 and keep 2 when written with 3, 0 and 1 (UXLEN is 64) |
+| [`ssnpm_pmm.S`](traces/ssnpm_pmm.S) | `senvcfg.PMM` WARL (01 keeps the old value); with MPRV and MPP = U, tagged loads, stores and AMOs under Bare (PMLEN 16 and 7) and Sv39, masked faults with the transformed `mtval`, and no masking with MXR set or PMM = 00 |
 | [`sstvala_illegal.S`](traces/sstvala_illegal.S) | Illegal 32-bit and 16-bit instructions write their instruction bits to `mtval` and `stval` |
 | [`zawrs_ops.S`](traces/zawrs_ops.S) | `wrs.sto` and `wrs.nto` retire in M, S, and U modes and preserve an active `LR.D` reservation |
 | [`zicbom_ops.S`](traces/zicbom_ops.S) | `cbo.clean`, `cbo.flush`, and `cbo.inval` across cached DDR, low BRAM, device windows, and unmapped addresses, with `CBIE`/`CBCFE` WARL checks |

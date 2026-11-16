@@ -200,6 +200,38 @@ async def test_slot2_positions_follow_slot1_size(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_slot2_fields_for_each_slot1_size(dut: Any) -> None:
+    """Slot 2's type and target for each slot-1 size are slot 2's at that size.
+
+    They do not depend on the packet's size, which selects slot 2's outputs
+    from them.
+    """
+    await _setup(dut)
+    await _update(dut, PC_A + 2, TARGET_A, compressed=True, ret=True)
+    await _update(dut, PC_A + 4, TARGET_B)
+    await _update(dut, PC_A + 6, TARGET_A + 0x40, compressed=True, ret=True)
+    bits = _target_bits(dut)
+    for packet_pc in (PC_A, PC_A + 2):
+        per_size_seen = []
+        for compressed in (False, True):
+            _, _, target = await _lookup(dut, packet_pc, compressed=compressed)
+            returns = int(dut.o_slot2_return_by_size.value)
+            targets = int(dut.o_slot2_target_by_size.value)
+            per_size = [
+                (
+                    bool((returns >> size) & 1),
+                    ((targets >> (size * bits)) & ((1 << bits) - 1)) << 1,
+                )
+                for size in range(2)
+            ]
+            assert per_size[int(compressed)] == (_returns(dut)[1], target[1])
+            per_size_seen.append(per_size)
+        assert per_size_seen[0] == per_size_seen[1]
+        # The two sizes reach different trained entries.
+        assert per_size_seen[0][0] != per_size_seen[0][1]
+
+
+@cocotb.test()
 async def test_halfword_tags_do_not_alias(dut: Any) -> None:
     """An entry at one halfword of a word never hits at the other."""
     await _setup(dut)

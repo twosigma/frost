@@ -417,6 +417,7 @@ class TomasuloInterface:
         self.dut.i_mmu_sum.value = 0
         self.dut.i_mmu_mxr.value = 0
         self.dut.i_mmu_eff_priv_u.value = 0
+        self.dut.i_mmu_pm_mode.value = 0
         self.dut.i_csr_translation_flush_req.value = 0
         self.dut.i_walk_req_ready.value = 0
         self.dut.i_walk_resp_valid.value = 0

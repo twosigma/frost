@@ -26,7 +26,7 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
 
 # Jobs that collect coverage: every one of these has a `coverage` field in its
 # matrix, and the rest of the matrix entries have it switched off.
-EXPECTED_COVERAGE_JOBS = 23
+EXPECTED_COVERAGE_JOBS = 25
 
 
 def _expand(matrix: dict[str, Any]) -> list[dict[str, Any]]:

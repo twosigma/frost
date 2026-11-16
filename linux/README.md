@@ -171,7 +171,7 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 The generated DTB declares the
 [implemented extensions and profile properties](../README.md#supported-risc-v-extensions),
-including Sstc, Smaia, Ssaia, Sscofpmf, Sstvala, Svade, Svpbmt and Svvptc, 64-byte
+including Sstc, Smaia, Ssaia, Sscofpmf, Sstvala, Svade, Svinval, Svpbmt and Svvptc, 64-byte
 `riscv,cbom-block-size`, `riscv,cboz-block-size` and `riscv,cbop-block-size`,
 and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
 ABI. The ISA list includes Zihintntl, Zimop, Zcb and Zcmop. Svvptc tells Linux that a PTE changed from invalid to valid becomes
@@ -203,6 +203,26 @@ location. The NIC's `dma-coherent` property keeps its normal DMA buffers
 cacheable; its IO register mappings exercise PBMT without using the DDR alias.
 `/proc/cpuinfo` lists `svpbmt` in its `isa` line.
 
+Ssnpm: the DTB lists `ssnpm`, so Linux 6.13 and later (`CONFIG_RISCV_ISA_SUPM`)
+offer user pointer masking (Supm): `prctl(PR_SET_TAGGED_ADDR_CTRL,
+PR_TAGGED_ADDR_ENABLE | PMLEN << 24)` sets `senvcfg.PMM` for the process, and
+the kernel grants the smallest of FROST's PMLEN 7 and 16 that covers the
+request (HWASAN's 8 tag bits get 16). U-mode loads, stores, AMOs, LR/SC and
+CBOs then ignore the top PMLEN address bits; instruction fetch and the kernel's
+own accesses are never masked. `riscv_hwprobe` reports `RISCV_HWPROBE_EXT_SUPM`
+and `/proc/cpuinfo` lists `ssnpm`.
+The pinned Debian 6.12 kernel predates this interface; the supplied Linux
+workloads do not request tagged addresses.
+
+Svnapot: the DTB lists `svnapot`. With `CONFIG_RISCV_ISA_SVNAPOT` and
+hugetlb enabled, Linux offers 64 KiB hugetlb pages (`hugepages-64kB`). A
+workload must allocate and map such pages to use NAPOT PTEs; ordinary boot
+and the supplied Linux stress workload do not exercise them. The walker
+translates the requested 4 KiB page, so a resident 64 KiB range occupies
+sixteen TLB entries. Linux invalidates a changed range with an address fence
+for each 4 KiB page or a fence covering the address space. A single address
+fence removes that page's entry; ASID filters spare global entries.
+
 ## Counters and mcounteren
 
 FROST implements `cycle`, `time`, and `instret` as 64-bit Zicntr CSRs; `time`
@@ -222,7 +242,7 @@ is an illegal instruction (`mcause` 2, `mtval` the instruction's bits).
 | `mhpmcounter3`-`10` (0xB03-0xB0A), `mhpmevent3`-`10` (0x323-0x32A) | Writable 64-bit machine counters. An event field (bits 55:0) of N selects counter N's fixed event; counters 8, 7 and 4 also accept the translation selectors 16, 17 and 18, and counters 3, 6 and 5 the cache refill selectors 19, 20 and 21 (see below); any other value selects zero and disables counting. Bits 63:60 are the Sscofpmf OF, MINH, SINH and UINH bits; VSINH, VUINH and bits 57:56 read zero. |
 | `mhpmcounter11`-`31`, `mhpmevent11`-`31` | Machine-mode reads return zero and writes are ignored. |
 | `hpmcounter3`-`10` (0xC03-0xC0A) | Read-only aliases, gated by counter enables in S/U modes. |
-| `hpmcounter11`-`31` (0xC0B-0xC1F) | Unimplemented; accesses raise illegal instruction at every privilege (Zihpm: "Accessing an unimplemented counter may cause an illegal-instruction exception or may return a constant value"). |
+| `hpmcounter11`-`31` (0xC0B-0xC1F) | Read-only zero in M-mode; accesses raise illegal instruction on writes or below M-mode (`mcounteren` bits 11..31 are hardwired zero). |
 | `scountovf` (0xDA0) | Sscofpmf: read-only OF bits 3..10. M reads all of them; S reads those set in `mcounteren`; U access is illegal. |
 
 Counters 9 and 10 count cycles and retired instructions like `mcycle` and
@@ -265,7 +285,7 @@ TLB. DTLB misses include loads and stores; SQ stalls cover one source of
 backend stalls. These two
 events are exposed only through `riscv,raw-event-to-mhpmcounters`. Three raw
 translation selectors share those counters: 16 counts page-walker busy
-cycles on counter 8, 17 counts SFENCE.VMA TLB invalidates on counter 7, and
+cycles on counter 8, 17 counts SFENCE.VMA and SINVAL.VMA TLB invalidates on counter 7, and
 18 counts CSR-requested translation-state flushes (any `satp` access, or an `mstatus`
 write that changes MPRV, or MPP while MPRV is set) on counter 4. Walker busy
 cycles divided by ITLB plus DTLB misses give walker busy cycles per L1 TLB
