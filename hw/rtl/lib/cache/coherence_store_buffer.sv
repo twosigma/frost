@@ -402,8 +402,7 @@ module coherence_store_buffer #(
           // address after its lower record pops and its upper flag clears.
           assert (o_full[age] == &o_mask[age]);
           if (o_twin[age])
-            assert (o_addr[age][5] &&
-                (o_zero[age] || (FULL_LINE && o_sealed[age] && o_full[age])));
+            assert (o_addr[age][5] && (o_zero[age] || (FULL_LINE && o_sealed[age] && o_full[age])));
         end
       end
       // A lower zero record is the youngest with its twin waiting, or its
