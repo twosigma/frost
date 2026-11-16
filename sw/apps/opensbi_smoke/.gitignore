@@ -14,3 +14,4 @@ shim.elf
 shim.bin
 .config.stamp
 build/
+.config.stamp.tmp

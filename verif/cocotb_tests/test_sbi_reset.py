@@ -73,8 +73,12 @@ async def test_sbi_reset(dut: Any) -> None:
 
     # End the wait early, with the UART output, if the payload reports failure.
     failed = cocotb.start_soon(_wait_for_fail_marker(dut, uart))
-    await with_timeout(First(RisingEdge(soc.sysreset_q), failed), 10_000_000, "ns")
-    failed.cancel()
+    try:
+        await with_timeout(
+            First(RisingEdge(soc.sysreset_q), failed.complete), 10_000_000, "ns"
+        )
+    finally:
+        failed.cancel()
     started = get_sim_time(unit="ps")
     assert "SBI reset: requesting reboot" in uart.get_output(), uart.get_output()
     assert "<<FAIL>>" not in uart.get_output(), uart.get_output()

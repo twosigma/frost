@@ -48,13 +48,15 @@ FORCE_OPENSBI:
 FORCE_CONFIG:
 
 # Records the payload source, packer and extra C flags of the last build. The
-# file is rewritten only when its content changes, so the payload and packed
+# file is written verbatim by make (the shell never sees the settings) and
+# replaced only when its content changes, so the payload and packed
 # images are rebuilt exactly when one of them changes between invocations.
 CONFIG_STAMP := .config.stamp
 CONFIG_TEXT  := payload=$(OPENSBI_SMOKE_PAYLOAD_SRC) packer=$(OPENSBI_SMOKE_PACKER) cflags=$(EXTRA_CFLAGS)
 
 $(CONFIG_STAMP): FORCE_CONFIG
-	@printf '%s\n' '$(CONFIG_TEXT)' | cmp -s - $@ || printf '%s\n' '$(CONFIG_TEXT)' > $@
+	$(file >$@.tmp,$(CONFIG_TEXT))
+	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv -f $@.tmp $@; fi
 
 $(FW_BIN): FORCE_OPENSBI
 	python3 $(FROST_ROOT)/linux/opensbi_build.py --out $(OPENSBI_OUT)
@@ -80,7 +82,7 @@ sw64.mem: sw.mem ../../common/make_dword_mem.py
 
 clean:
 	rm -f payload.elf payload.bin payload.S sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt \
-	      frost.dts frost.dtb frost_boot_shim.S shim.elf shim.bin $(CONFIG_STAMP)
+	      frost.dts frost.dtb frost_boot_shim.S shim.elf shim.bin $(CONFIG_STAMP) $(CONFIG_STAMP).tmp
 
 distclean: clean
 	rm -rf build
