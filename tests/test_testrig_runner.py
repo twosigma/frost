@@ -333,3 +333,34 @@ def test_monitor_failure_stops_engine(
     assert session.stopped_running_engine
     assert session.engine_polls < 4
     assert "found 0 traces and 0 instructions" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("peer", ("sail", "frost"))
+@pytest.mark.parametrize("received", (0, 39))
+def test_incomplete_generated_replies(
+    peer: str, received: int, session: SimpleNamespace, capsys: Any
+) -> None:
+    """Successful template output cannot hide missing execution packets."""
+    session.output = "arith -- Arithmetic:\n+++ OK, passed 2 tests.\n"
+    session.sail = [(0, 0), (40, 40)]
+    session.frost = [(0, 0), (40, 40)]
+    setattr(session, peer, [(0, 0), (40, received)])
+    assert session.run(["--tests", "2", "--include", "^arith$"]) != 0
+    output = capsys.readouterr().out
+    assert "TestRIG FAIL" in output
+    assert (
+        f"expected 40 instructions from {peer.title() if peer == 'sail' else 'FROST'}"
+        in output
+    )
+
+
+def test_five_tests_per_default_template(session: SimpleNamespace, capsys: Any) -> None:
+    """Five tests for twenty selected templates require one hundred traces."""
+    session.output = "".join(
+        f"template{i} -- Verification:\n+++ OK, passed 5 tests.\n" for i in range(20)
+    )
+    session.sail = session.frost = [(n, n) for n in (0, 40, 80, 120, 160)] * 20
+    assert session.run(["--tests", "5"]) == 0
+    output = capsys.readouterr().out
+    assert "compared 100 traces and 8000 instructions" in output
+    assert "expected at least 100 traces" in output

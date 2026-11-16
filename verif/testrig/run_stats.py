@@ -160,18 +160,18 @@ class TraceMonitor:
                         if version == 1:
                             raw = reader.read(V1_PACKET_BYTES)
                             halt = raw[86]
-                            valid = True
                         else:
                             raw = reader.read(V2_HEADER_BYTES)
                             size = struct.unpack("<Q", raw[8:16])[0]
                             if raw[:8] != b"trace-v2" or not 64 <= size <= 192:
                                 raise ValueError("invalid trace-v2 header")
                             halt = raw[33]
-                            valid = bool(raw[37] or raw[32])
                             raw += reader.read(size - V2_HEADER_BYTES)
                         if halt:
                             self.traces.append(TraceCounts(instructions, received))
-                        elif valid:
+                        else:
+                            # A transported execution packet counts even when
+                            # its valid byte is clear, as in Sail's v2 replies.
                             received += 1
                         engine.sendall(raw)
                         if halt:

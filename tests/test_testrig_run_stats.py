@@ -29,7 +29,7 @@ stats = importlib.import_module("testrig.run_stats")
 @pytest.mark.parametrize("valid", (False, True))
 @pytest.mark.parametrize("requested,received", ((0, 0), (2, 0), (2, 1), (2, 2), (2, 3)))
 def test_wire_counts(version: int, valid: bool, requested: int, received: int) -> None:
-    """Negotiation is excluded, replies are counted, and bytes are preserved."""
+    """Non-halt replies count with either valid byte; all bytes are preserved."""
     listener = socket.create_server(("127.0.0.1", 0))
     listener.settimeout(3)
     requests: list[bytes] = []
@@ -89,9 +89,7 @@ def test_wire_counts(version: int, valid: bool, requested: int, received: int) -
         worker.join(timeout=3)
     assert not errors
     assert not monitor.errors
-    assert monitor.traces == [
-        stats.TraceCounts(requested, received if version == 1 or valid else 0)
-    ]
+    assert monitor.traces == [stats.TraceCounts(requested, received)]
     assert requests == sent
 
 

@@ -967,6 +967,8 @@ RVFI replies, excluding version negotiation, halt tokens, and the reset
 preamble. Completed QuickCheck size-zero cases count as traces; the session
 must compare at least one instruction. The engine's output is saved in
 `tests/testrig_logs/engine.log`.
+Non-halt execution packets count with either value of the RVFI `valid` byte,
+matching the engine's use of the received records.
 
 An empty run fails with a nonzero exit status and a `TestRIG FAIL` line
 stating the expected and actual work. Missing directories, directories

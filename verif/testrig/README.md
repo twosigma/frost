@@ -83,6 +83,9 @@ the instruction requests and both implementations' RVFI replies. Version
 negotiation, halt tokens, and FROST's reset preamble are excluded from the
 instruction count. QuickCheck's completed size-zero cases count as traces;
 the session must compare at least one instruction.
+Every non-halt execution packet counts, including replies with the RVFI
+`valid` byte clear. The transport carries the execution record for comparison;
+that byte is not a filter for packet counts.
 
 Empty runs fail with a nonzero exit status and a `TestRIG FAIL` line stating
 what was expected and what was found. Replay requires an existing trace file,
