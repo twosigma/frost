@@ -1443,6 +1443,14 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
+        "pd_redirect_next_equiv.sby",
+        "PD's redirect target registers' next values, with every candidate formed "
+        "before the slot selects and slot 1's size picked last, equal the form "
+        "they replace for any decode, packet, candidates, backing BTB result and "
+        "stack state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "pd_id_slot2_redirect.sby",
         "Composed PD and ID stages dispatch slot 2's effective prediction and "
         "target equal to PD's slot-2 redirect while leaving slot 1 untouched",

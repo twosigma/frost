@@ -496,6 +496,9 @@ module cpu_ooo #(
   logic [1:0] if_backing_compressed;
   logic [1:0] if_backing_return;
   logic [1:0][riscv_pkg::PhysAddrBits-2:0] if_backing_target;
+  // Slot 2's backing type and target for each size of slot 1
+  logic [1:0] if_backing_slot2_return_by_size;
+  logic [1:0][riscv_pkg::PhysAddrBits-2:0] if_backing_slot2_target_by_size;
 
   // Tagged direction predictor: lookup history, events, per-slot lookups,
   // saved-lookup index, and training (see tage_history).
@@ -938,6 +941,8 @@ module cpu_ooo #(
       .o_backing_compressed(if_backing_compressed),
       .o_backing_return(if_backing_return),
       .o_backing_target(if_backing_target),
+      .o_backing_slot2_return_by_size(if_backing_slot2_return_by_size),
+      .o_backing_slot2_target_by_size(if_backing_slot2_target_by_size),
       .o_slot1_has_control_flow(if_slot1_has_control_flow),
       .o_slot1_is_indirect(if_slot1_is_indirect),
       .o_width_events(if_width_events),
@@ -976,6 +981,8 @@ module cpu_ooo #(
       .i_backing_compressed(if_backing_compressed),
       .i_backing_return(if_backing_return),
       .i_backing_target(if_backing_target),
+      .i_backing_slot2_return_by_size(if_backing_slot2_return_by_size),
+      .i_backing_slot2_target_by_size(if_backing_slot2_target_by_size),
       .o_pd_redirect(pd_redirect),
       .o_pd_redirect_taken(pd_redirect_taken),
       .o_pd_redirect_target(pd_redirect_target),

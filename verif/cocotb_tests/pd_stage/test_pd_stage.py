@@ -268,14 +268,29 @@ def _drive_backing(
     target: int = 0,
     compressed: bool = False,
     is_return: bool = False,
+    size_select: bool | None = None,
 ) -> None:
-    """Drive IF's backing BTB result: a hit in one slot, or none."""
+    """Drive IF's backing BTB result: a hit in one slot, or none.
+
+    Slot 2's return type and target also drive the per-size inputs: at both
+    sizes of slot 1, or, with size_select, at that size only, with a different
+    entry at the other size.
+    """
     width = len(dut.i_backing_target) // 2
+    mask = (1 << width) - 1
     dut.i_backing_hit.value = 0 if slot is None else 1 << slot
     dut.i_backing_compressed.value = int(compressed) << (slot or 0)
     dut.i_backing_return.value = int(is_return and slot is not None) << (slot or 0)
-    value = ((target >> 1) & ((1 << width) - 1)) << (width * (slot or 0))
+    value = ((target >> 1) & mask) << (width * (slot or 0))
     dut.i_backing_target.value = value if slot is not None else 0
+    returns = [int(is_return and slot == 1)] * 2
+    targets = [(target >> 1) & mask if slot == 1 else 0] * 2
+    if size_select is not None:
+        other = int(not size_select)
+        returns[other] ^= 1
+        targets[other] ^= mask
+    dut.i_backing_slot2_return_by_size.value = returns[0] | (returns[1] << 1)
+    dut.i_backing_slot2_target_by_size.value = targets[0] | (targets[1] << width)
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -1514,6 +1529,47 @@ async def test_backing_btb_slot2_call_links_after_slot2(dut: Any) -> None:
     _drive_backing(dut, 1, target=target)
     redirect, _, _, _ = await _backing_redirect(dut)
     assert not redirect
+
+
+@cocotb.test()
+async def test_backing_btb_slot2_entry_follows_slot1_size(dut: Any) -> None:
+    """A slot-2 backing redirect takes slot 2's entry for slot 1's size.
+
+    IF passes slot 2's return type and target for both sizes of slot 1. The
+    entry for the other size differs in both here, so the redirect shows
+    which one PD took.
+    """
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    target = 0x8000_0F40
+    top = 0x8000_1234
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    c_addi = 0x0505  # c.addi a0, 1
+    c_addi_expansion = _pack_i(imm=1, rs1=10, funct3=0, rd=10, opcode=OPC_OP_IMM)
+    jal = _pack_jal(imm=0x40, rd=0)
+    ret = _pack_i(imm=0, rs1=1, funct3=0, rd=0, opcode=OPC_JALR)
+    for compressed in (False, True):
+        slot1 = (
+            _packet(pc, c_addi_expansion, raw_parcel=c_addi, sel_compressed=True)
+            if compressed
+            else _packet(pc, addi)
+        )
+        slot2_pc = pc + (2 if compressed else 4)
+        _drive_if_packet(dut, slot1)
+        _drive_if_packet(dut, _packet(slot2_pc, jal), slot2=True)
+        _drive_backing(dut, 1, target=target, size_select=compressed)
+        redirect, taken, redirect_target, slot2 = await _backing_redirect(dut)
+        assert redirect and taken and slot2
+        assert redirect_target == target
+
+        _drive_if_packet(
+            dut, {**slot1, "ras_checkpoint_valid_count": 1, "ras_checkpoint_top": top}
+        )
+        _drive_if_packet(dut, _packet(slot2_pc, ret), slot2=True)
+        _drive_backing(dut, 1, target=target, is_return=True, size_select=compressed)
+        redirect, _, redirect_target, slot2 = await _backing_redirect(dut)
+        assert redirect and slot2
+        assert redirect_target == top
 
 
 @cocotb.test()

@@ -251,7 +251,11 @@ with the packet's PC, so a packet whose set was not read gets no backing hit,
 and neither does a slot 2 in the word after the last set. The hit, size and
 type come from the registered tags, and the target from the target array
 read on the same edge. IF passes PD each slot's hit, size, type and target,
-kept across stall replay like the packet. PD registers a candidate for a
+kept across stall replay like the packet. Slot 2's type and target also come
+for each size of slot 1, formed from the tags and the packet's PC alone; PD
+picks between them by slot 1's size where it forms the backing target, so
+the redirect target registers select between finished values (see
+`pd_redirect_next`). PD registers a candidate for a
 slot-1 or slot-2 JAL or JALR whose backing entry has the instruction's size.
 When the slot's BTB prediction was not taken, the candidate fires the PD
 redirect, which costs the PD redirect's two bubbles instead of a
