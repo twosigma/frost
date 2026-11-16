@@ -210,17 +210,22 @@ def build_inputs(
     }
 
 
-def regular_output(path: Path) -> bool:
-    """Require a regular file reached without following any symlink."""
-    return path.is_file() and not any(
-        part.is_symlink() for part in (path, *path.parents)
-    )
+def regular_output(path: Path, out_dir: Path) -> bool:
+    """Require a regular file without symlinks within the output directory."""
+    if not path.is_relative_to(out_dir) or not path.is_file():
+        return False
+    for part in (path, *path.parents):
+        if part.is_symlink():
+            return False
+        if part == out_dir:
+            return True
+    return False
 
 
 def read_stamp(path: Path) -> dict[str, object] | None:
     """Read a stamp carrying this helper's format marker."""
     try:
-        if not regular_output(path):
+        if not regular_output(path, path.parent):
             return None
         value = json.loads(path.read_text())
         if (
@@ -241,7 +246,7 @@ def firmware_identity(out_dir: Path) -> dict[str, dict[str, str | int]] | None:
     outputs: dict[str, dict[str, str | int]] = {}
     try:
         for path in firmware_paths(out_dir):
-            if not regular_output(path):
+            if not regular_output(path, out_dir):
                 return None
             data = path.read_bytes()
             if not data:
@@ -263,9 +268,9 @@ def output_directory(value: str) -> Path:
 
 
 def checked_output_directory(path: Path) -> Path:
-    """Reject symlink paths and directories containing build inputs."""
+    """Resolve parent links, refusing a linked output directory or build inputs."""
     absolute = path.absolute()
-    if any(part.is_symlink() for part in (absolute, *absolute.parents)):
+    if absolute.is_symlink():
         sys.exit(f"opensbi_build.py: refusing symlink output path: {path}")
     absolute = absolute.resolve()
     if any(
@@ -280,7 +285,7 @@ def checked_output_directory(path: Path) -> Path:
 
 def remove_output_directory(out_dir: Path) -> None:
     """Replace only empty, stamped, or recognisable OpenSBI output directories."""
-    checked_output_directory(out_dir)
+    out_dir = checked_output_directory(out_dir)
     if not out_dir.exists():
         return
     if not out_dir.is_dir():
@@ -293,7 +298,8 @@ def remove_output_directory(out_dir: Path) -> None:
         ),
     )
     recognised = any(
-        all(regular_output(out_dir / name) for name in pair) for pair in markers
+        all(regular_output(out_dir / name, out_dir) for name in pair)
+        for pair in markers
     )
     if (
         next(out_dir.iterdir(), None) is not None
