@@ -309,12 +309,15 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_read_capture.sby",
-        "Read-slot capture priority and registered array response indication equal their references.",
+        "Read-slot capture, per-slot kinds and registered array responses equal their references.",
         tasks=(
             "coh_read_capture_prove",
             "coh_read_capture_stream_prove",
+            "coh_read_kind_prove",
             "coh_array_reply_prove",
+            "coh_array_reply4_prove",
             "coh_array_reply_uram_prove",
+            "coh_array_reply4_uram_prove",
         ),
     ),
     FormalTarget(
@@ -2241,8 +2244,17 @@ SBY_TASKS = [
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
     ("coh_read_capture_prove", "Read data capture with arbitrary controller state."),
     ("coh_read_capture_stream_prove", "Read data capture with stream endpoints."),
+    ("coh_read_kind_prove", "Per-slot read kinds equal buffered allocation payloads."),
     ("coh_array_reply_prove", "Registered response indication with block RAM."),
+    (
+        "coh_array_reply4_prove",
+        "Registered response indication with four block-RAM ways.",
+    ),
     ("coh_array_reply_uram_prove", "Registered response indication with UltraRAM."),
+    (
+        "coh_array_reply4_uram_prove",
+        "Registered response indication with four UltraRAM ways.",
+    ),
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("bmc_core", "Load-result selection with the CPU feature configuration."),

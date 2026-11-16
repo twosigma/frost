@@ -498,7 +498,9 @@ address joins that selection last. The priority conditions above a read are
 prepared separately, so read eligibility controls the final address selection
 without passing through the non-read address priority chain.
 
-Each read slot has a local data-source selection for the hit path, array row,
+Each read slot's kind registers on its allocation edge, so selection reads the
+slot's kind without selecting from the buffered payload. Each slot has a local
+data source selection for the hit path, array row,
 grant and local atomic image. Controller answers take priority over the hit
 path, which takes priority over a failed-read clear.
 

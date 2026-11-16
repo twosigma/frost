@@ -209,6 +209,7 @@ module coherence_l1d #(
   logic [7:0] rd_valid_q, rd_ready_q, rd_miss_q;
   logic [ADDR_WIDTH-1:0] rd_addr_q[8];
   logic [1:0] rd_kind_q[8];
+  logic [1:0] rd_buffered_kind[8];
   logic [2:0] rd_size_q[8];
   logic [TAG_BITS-1:0] rd_tag_q[8];
   localparam int unsigned ReadPayloadWidth = ADDR_WIDTH + TAG_BITS + 5;
@@ -510,9 +511,25 @@ module coherence_l1d #(
       .o_write_mask(rd_write_mask)
   );
   for (genvar slot = 0; slot < 8; slot++) begin : gen_unpack_read_payload
-    assign {rd_addr_q[slot], rd_kind_q[slot], rd_size_q[slot], rd_tag_q[slot]} =
+    assign {rd_addr_q[slot], rd_buffered_kind[slot], rd_size_q[slot], rd_tag_q[slot]} =
         rd_payload_flat[slot*ReadPayloadWidth+:ReadPayloadWidth];
+    // Selection reads the kind directly from its slot's allocation edge.
+    always_ff @(posedge i_clk) begin
+      if (i_rst) rd_kind_q[slot] <= ReadLoad;
+      else if (i_read_valid && i_read_id == 3'(slot)) rd_kind_q[slot] <= i_read_kind;
+    end
   end
+`ifdef READ_KIND_PROOF
+  logic f_kind_seen = 1'b0;
+  logic [7:0] kind_exact;
+  for (genvar slot = 0; slot < 8; slot++) begin : gen_kind_reference
+    assign kind_exact[slot] = rd_kind_q[slot] == rd_buffered_kind[slot];
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_kind_seen <= 1'b1;
+    if (f_kind_seen) p_read_kind_exact : assert (&kind_exact);
+  end
+`endif
   always_ff @(posedge i_clk) if (phase_q == Lookup) selected_kind_q <= rd_kind_q[selected_read_q];
 
   // Reset clears the controller at its flops. A fatal stop reaches the
