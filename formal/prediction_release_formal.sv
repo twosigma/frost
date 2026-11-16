@@ -110,6 +110,7 @@ module prediction_release_formal #(
   logic any_holdoff_safe;
   logic pending_prediction_active;
   logic pending_prediction_walk_past;
+  logic pending_prediction_blocks_slot1;
   logic [XLEN-1:0] pending_prediction_pc;
   logic [XLEN-1:0] pending_prediction_prev_pc;
   logic [XLEN-1:0] pending_prediction_prev_native_pc;
@@ -167,7 +168,8 @@ module prediction_release_formal #(
   assign prediction_used_for_pc =
       i_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff &&
-      !i_window_cannot_serve_raw;
+      !i_window_cannot_serve_raw &&
+      (!PENDING_HANDOFF_EXCLUDES_SLOT2 || !pending_prediction_blocks_slot1);
   assign prediction_used = prediction_used_for_pc && !i_branch_taken && !i_stall;
   assign slot2_live_request =
       i_slot2_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
@@ -375,6 +377,7 @@ module prediction_release_formal #(
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(),
       .o_pending_prediction_walk_past(pending_prediction_walk_past),
+      .o_pending_prediction_blocks_slot1(pending_prediction_blocks_slot1),
       // Translation uses registered o_pc; next-PC observations are unused.
       .o_next_pc(),
       .o_next_pc_holds(),

@@ -836,18 +836,26 @@ variable latency closes the gap between the two PCs, never pends.
 
 Instruction streams can overlap: a 32-bit instruction at `P-2` contains the
 halfword at `P`, which another path through the same bytes can execute as an
-instruction and train into the BTB. A lookup at `P` can then hit while IF
-emits the 32-bit instruction, and `pc_reg` steps past `P` instead of stopping
-there. From that cycle the pending prediction is inactive: it hands nothing
-off, holds nothing back, never moves `pc_reg` back onto `P`, and its saved
-metadata attaches to no packet. Its valid bit stays set through stalls and
-fetch gaps, so the registered redirect the predictor still holds cannot move
-`pc_reg` to the old target, and clears on the next cycle in which fetch
-advances. In the cycle after the prediction, when IF would let the branch's
-own packet through while `pc_reg` holds, IF squashes the packet instead, and
-the served-window check then refetches the bytes after the 32-bit
-instruction. A prediction made in the cycle the entry clears replaces it, as
-if none had been pending.
+instruction and train into the BTB. While an unkilled prediction is pending,
+`pc_controller` blocks new slot-1 BTB predictions even when a released
+predecessor at `P-2` drops the shared pending prediction disable; if a 32-bit
+instruction at `P-2` is released there and slot 2 at `P+2` predicts taken, that
+slot-2 redirect retires the pending entry and kills its saved metadata on the
+same edge. Otherwise a lookup at `P` that hit while IF emitted the 32-bit
+instruction leaves `pc_reg` past `P` instead of stopping there. From that cycle
+the pending prediction is inactive: it hands nothing off, holds nothing back,
+never moves `pc_reg` back onto `P`, and its saved metadata attaches to no
+packet. Its valid bit stays set through stalls and fetch gaps, so the
+registered redirect the predictor still holds cannot move `pc_reg` to the old
+target, and clears on the first cycle with neither a stall nor a fetch gap,
+including a served-window resteer cycle in which `pc_reg` holds. Because the
+lookup at `P` already moved `o_pc` to the phantom target, IF treats an active
+walk-past cycle as a served-window rejection, squashing the packet while
+`pc_reg` holds and resteering `o_pc` back to `pc_reg`'s word even if the
+phantom target's window would otherwise cover `pc_reg` through the instruction
+buffer. Within `pc_controller`, a prediction accepted on the unstalled edge an
+entry clears replaces it atomically, though IF suppresses new slot-1 lookups
+until the walked-past entry has cleared and `o_pc` has resteered.
 
 `pc_controller` registers how `pc_reg` relates to the saved PC one edge early,
 which keeps the wide compares out of the PC loop. For a slot-2 redirect,

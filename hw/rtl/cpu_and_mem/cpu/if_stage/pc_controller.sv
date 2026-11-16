@@ -202,10 +202,11 @@ module pc_controller #(
     // still settling.
     output logic o_pending_prediction_fetch_holdoff_wcs,
     output logic o_pending_prediction_target_holdoff,
-    // Kill saved pending metadata on redirects or when pc_reg passes the
-    // branch. Target handoff consumes it separately. Metadata must not
-    // outlive its redirect: a refetched JAL could otherwise appear correctly
-    // predicted and retire without recovering the lost redirect.
+    // Kill saved pending metadata on redirects, on a slot-2 prediction, or
+    // when pc_reg passes the branch. Target handoff consumes it separately.
+    // Metadata must not outlive its redirect: a refetched JAL could otherwise
+    // appear correctly predicted and retire without recovering the lost
+    // redirect.
     output logic o_pending_prediction_redirect_kill,
     // pc_reg is past the pending prediction's PC: a 32-bit instruction at
     // PC - 2 overlaps an entry another instruction stream trained at PC. The
@@ -213,6 +214,11 @@ module pc_controller #(
     // post-prediction cycle and the tracker ignores the saved metadata. From
     // registers only.
     output logic o_pending_prediction_walk_past,
+    // An unkilled pending prediction occupies the slot-1 pending state (or is
+    // retiring a walked-past phantom target stream), so IF suppresses new
+    // slot-1 BTB predictions even when a released predecessor drops the shared
+    // pending prediction disable. From registers only.
+    output logic o_pending_prediction_blocks_slot1,
     // Observation outputs for tests: the next fetch PC, and whether it is a
     // hold because no window arrived. o_pc_update_en is the fetch PC's load
     // enable, which if_stage uses to qualify its registered fetch-redirect
@@ -572,9 +578,11 @@ module pc_controller #(
   //
   // Only registered PC state is used here. seq_next_pc_reg depends on
   // sel_nop, which this predicate controls, so using it would form a
-  // combinational loop. A 32-bit predecessor is not released: the
+  // combinational loop. A 32-bit predecessor at P - 4 is not released: the
   // instruction-size signals are unreliable when the served-window check
-  // fails in the same cycle.
+  // fails in the same cycle. An overlapping 32-bit instruction at P - 2 is
+  // released here and steps pc_reg past P, retiring the pending entry (as
+  // does a taken slot-2 prediction behind it at P + 2).
   //
   // The predecessor is released only when raw WCS shows it was squashed, or
   // in the first prediction-holdoff cycle, while the branch's prediction is
@@ -791,7 +799,7 @@ module pc_controller #(
       pending_prediction_pc_ready_q <= 1'b0;
     end else if (!fetch_stall) begin
       if (redirect_kill_pending_q || pending_prediction_target_handoff_applies ||
-          stale_pending_prediction) begin
+          stale_pending_prediction || i_slot2_prediction_used) begin
         pending_prediction_pc_ready_q <= 1'b0;
       end else if (pending_prediction_effective && !pending_prediction_allow_cross &&
                    (o_pc == pending_prediction_pc)) begin
@@ -802,38 +810,48 @@ module pc_controller #(
 
   // Handoff consumption must share pc_reg's !fetch_stall enable. Otherwise
   // it would lose the target while pc_reg holds, pairing target bytes with
-  // sequential PCs on release. Clearing a walked-past entry shares it too:
-  // its valid bit masks the held registered redirect through a stall or
-  // fetch gap, including the release cycle. Only the capture reference below
-  // reads this.
+  // sequential PCs on release. Clearing a walked-past entry or retiring one
+  // on a slot-2 redirect shares it too: a walked-past entry's valid bit masks
+  // the held registered redirect through a stall or fetch gap, including the
+  // release cycle. Only the capture reference below reads this.
   assign clear_pending_prediction_state =
       redirect_kill_pending_q || pending_prediction_target_handoff_applies ||
-      (stale_pending_prediction && !fetch_stall);
+      ((stale_pending_prediction || i_slot2_prediction_used) && !fetch_stall);
 
   // Fires in the cycle of each event that kills the pending state, except the
   // target handoff, where the tracker itself attaches the metadata to the
   // branch being emitted. The redirect terms fire in the redirect cycle, one
   // cycle before redirect_kill_pending_q, because the tracker's pending-save
   // capture in that same cycle reads the prediction and fetch-holdoff values
-  // from before the kill. The walk-past term holds in every cycle pc_reg is
-  // past the pending PC, stalled or not.
+  // from before the kill. A slot-2 redirect behind an overlapping 32-bit
+  // instruction at P - 2 retires the entry on the unstalled edge too. The
+  // walk-past term holds in every cycle pc_reg is past the pending PC,
+  // stalled or not.
   assign o_pending_prediction_walk_past =
       pending_prediction_valid && !redirect_kill_pending_q && pc_reg_after_pending;
   assign o_pending_prediction_redirect_kill =
       i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
-      i_pd_redirect || i_fence_i_flush || o_pending_prediction_walk_past;
+      i_pd_redirect || i_fence_i_flush || o_pending_prediction_walk_past ||
+      (i_slot2_prediction_used && !fetch_stall);
 
 `ifndef SYNTHESIS
   // A ready handoff is consumed exactly when no higher-priority non-redirect
   // arm keeps it from reaching next_pc_reg (redirects kill the pending state
   // separately). These checks catch a priority change that would consume a
-  // handoff without applying it.
+  // handoff without applying it, and verify IF's non-covering-window gate on
+  // slot-1 prediction, which pending_rel_next's hold arm relies on.
   always_comb begin
     if (pending_rel_check_armed_q && !i_reset && PENDING_HANDOFF_EXCLUDES_SLOT2 && !$isunknown(
             {pending_prediction_target_handoff, i_slot2_prediction_used_for_pc}
         )) begin
       p_integrated_pending_handoff_excludes_slot2 :
       assert (!(pending_prediction_target_handoff && i_slot2_prediction_used_for_pc));
+    end
+    if (pending_rel_check_armed_q && !i_reset && PENDING_HANDOFF_EXCLUDES_SLOT2 && !$isunknown(
+            {i_window_cannot_serve_raw, i_prediction_used, i_prediction_used_for_pc}
+        )) begin
+      p_integrated_noncovering_window_blocks_slot1_prediction :
+      assert (!i_window_cannot_serve_raw || (!i_prediction_used && !i_prediction_used_for_pc));
     end
     if (pending_rel_check_armed_q && pending_prediction_target_handoff &&
         !fetch_stall && !i_reset && !$isunknown(
@@ -868,10 +886,13 @@ module pc_controller #(
   // registers. A prediction already emitted with its own packet never pends, so the
   // used values apply i_prediction_already_emitted, and the prediction-use
   // input selects directly. The slot-2 prediction, the latest input,
-  // selects in the final mux beside the stall: it blocks capture.
+  // selects in the final mux beside the stall: it blocks capture and retires
+  // any pending entry (whose saved metadata o_pending_prediction_redirect_kill
+  // clears on the same edge).
   (* keep = "true" *) logic [1:0][1:0] pending_valid_by_miss;  // [miss][used]
   (* keep = "true" *) logic pending_valid_when_stalled;
-  (* keep = "true" *) logic pending_valid_with_slot2, pending_valid_without_slot2;
+  logic pending_valid_with_slot2;
+  (* keep = "true" *) logic pending_valid_without_slot2;
   logic pending_clear_without_handoff;
   logic pending_valid_next;
   assign pending_clear_without_handoff =
@@ -888,8 +909,7 @@ module pc_controller #(
           ((pending_prediction_valid && !pc_reg_after_pending) || capture);
     end
   end
-  assign pending_valid_with_slot2 =
-      pending_valid_by_miss[pc_reg_next_misses_fetch_pc_for_prediction][0];
+  assign pending_valid_with_slot2 = 1'b0;
   assign pending_valid_without_slot2 =
       pending_valid_by_miss[pc_reg_next_misses_fetch_pc_for_prediction][i_prediction_used];
   assign pending_valid_next = fetch_stall ? pending_valid_when_stalled :
@@ -952,6 +972,7 @@ module pc_controller #(
   logic pending_mux_hold, pending_mux_consume_is_seq;
   assign pending_mux_valid = pending_prediction_valid && !redirect_kill_pending_q &&
                              !pc_reg_after_pending;
+  assign o_pending_prediction_blocks_slot1 = pending_prediction_valid && !redirect_kill_pending_q;
   assign pending_mux_cross = pending_mux_valid && pending_prediction_allow_cross_pc_mux_q &&
       pc_reg_before_pending && seq_reaches_pending;
   assign pending_mux_target = pending_mux_valid && pc_reg_at_pending &&
@@ -1647,18 +1668,21 @@ module pc_controller #(
   // two cases (prediction_release's p_formal_pending_relations_next_exact
   // checks that these selects cover every one):
   //   - It stays pending: the branch PC holds, and pc_reg holds, advances
-  //     sequentially, lands on the branch PC, or takes a slot-2 target.
-  //   - It is captured: the branch PC becomes o_pc, and pc_reg holds or
-  //     advances sequentially.
+  //     sequentially, or lands on the branch PC (a slot-2 redirect retires
+  //     any pending entry).
+  //   - It is captured, either with none valid or replacing a walked-past
+  //     entry: the branch PC becomes o_pc, and pc_reg holds or advances
+  //     sequentially.
   // The increment calculator relates every sequential candidate to both PCs
   // from registered values, so only the candidate select is late here. Raw
   // WCS, the served-window check, is the latest input: it sets sel_nop and
   // can permit the predecessor's sequential release. So the sequential arm
   // is built for each value of raw WCS, from the calculator's _wcs0 and _nop
   // relations, and raw WCS picks between the two in each bit's base LUT,
-  // one LUT before the final select. IF allows no slot-2 prediction while
-  // the pending holdoff applies, but the slot-2 targets are related here
-  // anyway, so these registers do not depend on that.
+  // one LUT before the final select. A slot-2 prediction can fire at a
+  // released native instruction at P - 2, where the pending holdoff drops,
+  // and retires the pending entry; the slot-2 targets are still related here
+  // so the final select needs no extra gate.
   // Every consumer is gated by pending validity. A redirect clears the
   // pending prediction, so the selects ignore it.
   riscv_pkg::pc_pending_rel_t pending_rel_q;
@@ -1732,9 +1756,11 @@ module pc_controller #(
   assign rel_advance_wcs0 = ({5{rel_seq_pending_wcs0}} & seq_next_pc_reg_rel_pending_wcs0) |
       ({5{rel_seq_fetch_wcs0}} & seq_next_pc_reg_rel_fetch_wcs0) | rel_nonseq_wcs0;
   // Without a redirect, pc_reg loads only when fetch advances, and a
-  // prediction is captured exactly when none is valid and fetch is not
-  // stalled; a valid one keeps its PC. A slot-2 target never loads while a
-  // prediction is captured. The base holds when fetch does not advance, so
+  // prediction is captured only when fetch is not stalled and either no entry
+  // is valid or pc_reg has walked past the valid one; an unwalked-past valid
+  // entry keeps its PC unless a slot-2 redirect retires it. A slot-2 target
+  // never loads while a prediction is captured. The base holds when fetch
+  // does not advance, so
   // each bit's final LUT takes fetch_advances, both slot-2 selects, and both
   // slot-2 target relations, the latest inputs, directly. if/else rather
   // than ternaries: in four-state simulation an unknown select falls to the
@@ -2271,6 +2297,8 @@ module pc_controller #(
       if (PENDING_HANDOFF_EXCLUDES_SLOT2) begin
         p_formal_integrated_pending_handoff_excludes_slot2 :
         assert (!(pending_prediction_target_handoff && i_slot2_prediction_used_for_pc));
+        p_formal_integrated_noncovering_window_blocks_slot1_prediction :
+        assert (!i_window_cannot_serve_raw || (!i_prediction_used && !i_prediction_used_for_pc));
         p_formal_integrated_handoff_matches_generic_priority :
         assert (pending_prediction_target_handoff_applies ==
               (pending_prediction_target_handoff && !fetch_stall &&
@@ -2312,6 +2340,10 @@ module pc_controller #(
         !pending_clear_without_handoff && !pending_prediction_target_handoff_ready) begin
       p_walk_past_replacement_captures_validity_and_payload :
       assert (pending_valid_next && pending_payload_capture);
+    end
+    if (!fetch_stall && i_slot2_prediction_used) begin
+      p_slot2_redirect_retires_pending_state :
+      assert (!pending_valid_next && o_pending_prediction_redirect_kill);
     end
   end
 
@@ -2383,9 +2415,14 @@ module pc_controller #(
       cover_walk_past_odd : cover (o_pending_prediction_walk_past && pending_prediction_pc[1]);
       cover_walk_past_even : cover (o_pending_prediction_walk_past && !pending_prediction_pc[1]);
       cover_walk_past_stalled : cover (o_pending_prediction_walk_past && fetch_stall);
-      cover_walk_past_replacement :
-      cover (stale_pending_prediction && !fetch_stall && prediction_needs_pending &&
-             !pending_clear_without_handoff && pending_valid_next);
+      if (!PENDING_HANDOFF_EXCLUDES_SLOT2) begin
+        cover_walk_past_replacement :
+        cover (stale_pending_prediction && !fetch_stall && prediction_needs_pending &&
+               !pending_clear_without_handoff && pending_valid_next);
+      end
+      cover_pending_predecessor_slot2_retires :
+      cover (pending_prediction_effective && pc_reg_at_pending_predecessor &&
+             !fetch_stall && i_slot2_prediction_used);
       cover_pending_predecessor_emit :
       cover (pending_prediction_effective && pending_predecessor_needs_emit);
       cover_pending_compressed_predecessor_tag :

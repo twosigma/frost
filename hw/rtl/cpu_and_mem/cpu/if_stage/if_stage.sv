@@ -355,6 +355,7 @@ module if_stage #(
   logic pending_prediction_fetch_holdoff_wcs;  // ... with WCS forced to 1
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
   logic pending_prediction_walk_past;  // pc_reg is past a pending prediction's PC
+  logic pending_prediction_blocks_slot1;  // Registered unkilled pending state blocks slot 1
   logic pending_prediction_redirect_kill;  // Pending prediction dies without its handoff
   logic pc_update_en;  // Fetch-PC load enable; qualifies the low-presenter retarget
   // Used only to classify fetch retargets as sequential or not.
@@ -452,13 +453,15 @@ module if_stage #(
   logic slot2_prediction_valid_wcs0;  // the same with the raw served-window guard low
   logic slot2_redirect_q;  // One-cycle bubble after slot-2 BTB redirect.
   // Slot 2 bubbles with slot 1: holdoffs and flushes can leave live bytes
-  // unrelated to pc_reg. A pending prediction belongs to one instruction.
-  // If its predecessor is released, kill the branch in slot 2 so it is
-  // delivered later as slot 1 with its saved metadata. When the branch is
-  // slot 1, kill its wrong-path partner even if stale bytes look pairable.
-  // Dispatch, slot-2 prediction, and PC advance share this one-wide decision.
-  // pc_controller registers pc_reg's equality with the branch PC and both
-  // predecessor PCs, for timing; select the predecessor by size.
+  // unrelated to pc_reg. A pending prediction belongs to one instruction at P.
+  // If a compressed predecessor at P - 2 or a native one at P - 4 is in slot 1,
+  // kill the branch at P in slot 2 so it is delivered later as slot 1 with its
+  // saved metadata (an overlapping 32-bit slot 1 at P - 2 has slot 2 at P + 2,
+  // which stays live and retires the pending entry if predicted taken). When
+  // the branch is slot 1, kill its wrong-path partner even if stale bytes look
+  // pairable. Dispatch, slot-2 prediction, and PC advance share this one-wide
+  // decision. pc_controller registers pc_reg's equality with the branch PC and
+  // both predecessor PCs, for timing; select the predecessor by size.
   assign pending_prediction_owns_live_slot1 = pending_prediction_active && pc_reg_at_pending;
   assign pending_prediction_owns_live_slot2 =
       pending_prediction_active && !sel_nop_2_aligner &&
@@ -767,6 +770,7 @@ module if_stage #(
       .i_disable_branch_prediction_wcs(disable_branch_prediction_effective_wcs),
       .i_window_cannot_serve_raw(window_cannot_serve_pc_reg),
       .i_fetch_lookup_is_lower_parcel(fetch_lookup_is_lower_parcel),
+      .i_pending_prediction_blocks_slot1(pending_prediction_blocks_slot1),
 
       // BTB update interface (from ex_comb_synthesizer)
       .i_btb_update(i_from_ex_comb.btb_update),
@@ -965,6 +969,7 @@ module if_stage #(
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(pending_prediction_redirect_kill),
       .o_pending_prediction_walk_past(pending_prediction_walk_past),
+      .o_pending_prediction_blocks_slot1(pending_prediction_blocks_slot1),
       .o_next_pc(),
       .o_next_pc_holds(),
       .o_pc_update_en(pc_update_en),
@@ -1461,12 +1466,18 @@ module if_stage #(
   logic replay_saved_if_outputs;
   // Both providers need coverage checks: parity cannot detect an even-word
   // slip. A mismatch squashes the packet and resteers fetch to pc_reg.
+  // A pending prediction that pc_reg has walked past does the same: its
+  // lookup already moved o_pc to the phantom target, so squashing the packet
+  // and resteering o_pc to pc_reg's word both blocks duplicate emission under
+  // post-prediction holdoff and restores the fetch lead invariant even when
+  // the phantom target's window would still cover pc_reg through the buffer.
   //
   // Exclude low-BRAM replay: the live window may have moved past pc_reg;
   // squashing the saved instruction would wedge the handshake. The cached
   // provider already holds valid low during replay. Select by the registered
   // provider bit, not virtual pc_reg[31], which need not identify the provider.
-  assign window_cannot_serve_pc_reg = i_instr_valid && !served_window_covers_pc_reg &&
+  assign window_cannot_serve_pc_reg = i_instr_valid &&
+      (!served_window_covers_pc_reg || pending_prediction_walk_past) &&
       (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
 
 `ifndef SYNTHESIS
@@ -1481,11 +1492,7 @@ module if_stage #(
   end
 `endif
 
-  // Every squash condition except the served-window guard. Once pc_reg has
-  // walked past a pending prediction's PC (an instruction overlapping it),
-  // that prediction no longer exempts the packet from the post-prediction
-  // holdoff: pc_reg holds in that cycle, so a real packet would be dispatched
-  // twice.
+  // Every squash condition except the served-window guard.
   logic sel_nop_existing;
   logic sel_nop_existing_wcs0;
   logic sel_nop_existing_wcs;
@@ -1496,7 +1503,7 @@ module if_stage #(
                    pending_prediction_fetch_holdoff ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q || pending_prediction_walk_past));
+                     prediction_already_emitted_q));
   // For W = WCS, squash W | E(W) equals W | E(0). Compute E(0) in
   // parallel with the coverage check.
   assign sel_nop_existing_wcs0 = i_pipeline_ctrl.flush ||
@@ -1506,7 +1513,7 @@ module if_stage #(
                    pending_prediction_fetch_holdoff_wcs0 ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q || pending_prediction_walk_past));
+                     prediction_already_emitted_q));
   // The resteer W & !E(W) uses E(1), also computed in parallel.
   assign sel_nop_existing_wcs = i_pipeline_ctrl.flush ||
                    flush_for_c_ext_safe || !fetch_progress ||
@@ -1515,7 +1522,7 @@ module if_stage #(
                    pending_prediction_fetch_holdoff_wcs ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q || pending_prediction_walk_past));
+                     prediction_already_emitted_q));
 
   // Resteer only when the packet would otherwise be consumed. Resteering
   // during a holdoff would fight the existing PC control. On release, it
@@ -1539,7 +1546,7 @@ module if_stage #(
                    pending_prediction_fetch_holdoff_wcs0 ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q || pending_prediction_walk_past));
+                     prediction_already_emitted_q));
   assign pc_control_sel_nop = sel_nop_existing_pc_control || window_cannot_serve_pc_reg;
 
 `ifndef SYNTHESIS
@@ -2489,10 +2496,10 @@ module if_stage #(
       .i_stall(if_stage_stall),
       // Flush with registered trap and xRET terms; see flush_for_c_ext_safe.
       .i_flush(flush_for_c_ext_safe),
-      // A flush or redirect, or pc_reg passing the pending PC, kills the
-      // pending prediction without a handoff, and the tracker's saved metadata
-      // for it must die too (see o_pending_prediction_redirect_kill in
-      // pc_controller).
+      // A flush or redirect, a slot-2 prediction, or pc_reg passing the
+      // pending PC kills the pending prediction without a handoff, and the
+      // tracker's saved metadata for it must die too (see
+      // o_pending_prediction_redirect_kill in pc_controller).
       .i_pending_prediction_kill(pending_prediction_redirect_kill),
       .i_pending_prediction_walk_past(pending_prediction_walk_past),
       .i_stall_registered(if_stage_stall_registered),
@@ -3130,6 +3137,43 @@ module if_stage #(
   logic f_wp_held_pc_check_q = 1'b0;
   logic f_wp_held_pc_sel_nop_q;
   logic [XLEN-1:0] f_wp_held_pc_reg_q;
+
+  logic f_wp_any_redirect;
+  logic f_wp_s1_real, f_wp_s2_real;
+  assign f_wp_any_redirect =
+      i_pipeline_ctrl.flush || i_frontend_state_flush ||
+      i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken ||
+      i_fence_i_flush || i_from_ex_comb.branch_taken || i_pd_redirect;
+  assign f_wp_s1_real = !o_from_if_to_pd.sel_nop;
+  assign f_wp_s2_real = !o_from_if_to_pd_2.sel_nop;
+
+`ifdef IF_CONTINUITY_PROOF
+  logic [XLEN-1:0] f_wp_s1_step, f_wp_s2_step, f_wp_bundle_bytes;
+  logic f_wp_deferred_s1_redirect_q = 1'b0;
+  logic [XLEN-1:0] f_wp_deferred_s1_target_q = '0;
+  logic [XLEN-1:0] f_wp_reg_pred_pc_q = '0;
+  logic [XLEN-1:0] f_wp_reg_pred_pc_saved_q = '0;
+  logic f_wp_s1_pred_matches_pc;
+  logic f_wp_continuity_check_q = 1'b0;
+  logic [XLEN-1:0] f_wp_expected_pc_reg_q = '0;
+
+  assign f_wp_s1_step = o_from_if_to_pd.sel_compressed ? 64'd2 : 64'd4;
+  assign f_wp_s2_step = o_from_if_to_pd_2.sel_compressed ? 64'd2 : 64'd4;
+  assign f_wp_bundle_bytes =
+      (f_wp_s1_real ? f_wp_s1_step : 64'd0) + (f_wp_s2_real ? f_wp_s2_step : 64'd0);
+  assign f_wp_s1_pred_matches_pc =
+      live_prediction_emits_with_output || pending_prediction_active ||
+      (o_from_if_to_pd.program_counter ==
+       (replay_saved_if_outputs ? f_wp_reg_pred_pc_saved_q : f_wp_reg_pred_pc_q));
+
+  // pc_controller orders pc_reg and pending_prediction_pc as unsigned
+  // addresses; exclude sequential wraparound across 2^XLEN -> 0.
+  always_comb begin
+    assume (!(&pc_reg[XLEN-1:4]));
+    assume (!(&pc[XLEN-1:4]));
+  end
+`endif
+
   always_ff @(posedge i_clk) begin
     f_wp_past_valid <= 1'b1;
     f_wp_held_pc_check_q <= !i_pipeline_ctrl.reset && !if_stage_stall && fetch_progress &&
@@ -3141,23 +3185,95 @@ module if_stage #(
           btb_predicted_target_r == pc_reg);
     f_wp_held_pc_sel_nop_q <= sel_nop_effective;
     f_wp_held_pc_reg_q <= pc_reg;
-    if (f_wp_past_valid && !i_pipeline_ctrl.reset) begin
+`ifdef IF_CONTINUITY_PROOF
+    if (!if_stage_stall && fetch_progress) begin
+      f_wp_reg_pred_pc_q <= pc;
+    end
+    if (if_stage_stall && !if_stage_stall_registered) begin
+      f_wp_reg_pred_pc_saved_q <= f_wp_reg_pred_pc_q;
+    end
+`endif
+
+    if (!i_pipeline_ctrl.reset && f_wp_past_valid) begin
+`ifndef IF_CONTINUITY_PROOF
       if (f_wp_held_pc_check_q && pc_reg == f_wp_held_pc_reg_q) begin
         p_formal_held_post_prediction_pc_emits_no_real_packet : assert (f_wp_held_pc_sel_nop_q);
       end
-      if (control_flow_holdoff && prediction_holdoff && pending_prediction_walk_past &&
-          !if_stage_stall && fetch_progress) begin
+      if (pending_prediction_walk_past && !if_stage_stall && fetch_progress) begin
         p_formal_held_walk_past_packet_is_not_real :
         assert (sel_nop_effective && !slot2_valid && o_from_if_to_pd.sel_nop &&
                 o_from_if_to_pd_2.sel_nop);
       end
+
       cover_if_walk_past_odd : cover (pending_prediction_walk_past && pending_prediction_pc[1]);
       cover_if_walk_past_even : cover (pending_prediction_walk_past && !pending_prediction_pc[1]);
       cover_if_walk_past_post_prediction_holdoff_squashed :
       cover (control_flow_holdoff && prediction_holdoff && pending_prediction_walk_past &&
              !if_stage_stall && fetch_progress && sel_nop_effective);
       cover_if_walk_past_stalled : cover (pending_prediction_walk_past && if_stage_stall);
+      cover_if_walk_past_release_after_stall_squashed :
+      cover ($past(
+          !i_pipeline_ctrl.reset && pending_prediction_walk_past && if_stage_stall &&
+                   control_flow_holdoff && prediction_holdoff
+      ) && !if_stage_stall && fetch_progress && pending_prediction_walk_past && sel_nop_effective &&
+          !slot2_valid && o_from_if_to_pd.sel_nop && o_from_if_to_pd_2.sel_nop);
+      cover_if_native_predecessor_slot2_redirect_below :
+      cover (!if_stage_stall && !f_wp_any_redirect && pending_prediction_active &&
+             pc_reg_at_pending_predecessor && !o_from_if_to_pd.sel_compressed &&
+             f_wp_s2_real && o_from_if_to_pd_2.btb_predicted_taken &&
+             (o_from_if_to_pd_2.btb_predicted_target[XLEN-1:1] <
+              pending_prediction_pc[XLEN-1:1]));
+      cover_if_native_predecessor_slot2_redirect_at :
+      cover (!if_stage_stall && !f_wp_any_redirect && pending_prediction_active &&
+             pc_reg_at_pending_predecessor && !o_from_if_to_pd.sel_compressed &&
+             f_wp_s2_real && o_from_if_to_pd_2.btb_predicted_taken &&
+             (o_from_if_to_pd_2.btb_predicted_target == pending_prediction_pc));
+`endif
     end
+
+`ifdef IF_CONTINUITY_PROOF
+    if (i_pipeline_ctrl.reset) begin
+      f_wp_continuity_check_q     <= 1'b0;
+      f_wp_deferred_s1_redirect_q <= 1'b0;
+    end else begin
+      if (f_wp_past_valid) begin
+        if (f_wp_continuity_check_q) begin
+          p_formal_pc_reg_continuity : assert (pc_reg == f_wp_expected_pc_reg_q);
+        end
+        if (!f_wp_any_redirect && !if_stage_stall && f_wp_s1_real) begin
+          p_formal_slot1_pc_matches_pc_reg : assert (o_from_if_to_pd.program_counter == pc_reg);
+        end
+      end
+
+      if (f_wp_any_redirect) begin
+        f_wp_continuity_check_q     <= 1'b0;
+        f_wp_deferred_s1_redirect_q <= 1'b0;
+      end else begin
+        f_wp_continuity_check_q <= 1'b1;
+        if (if_stage_stall) begin
+          f_wp_expected_pc_reg_q <= pc_reg;
+        end else if (f_wp_s2_real && o_from_if_to_pd_2.btb_predicted_taken) begin
+          f_wp_expected_pc_reg_q      <= o_from_if_to_pd_2.btb_predicted_target;
+          f_wp_deferred_s1_redirect_q <= 1'b0;
+        end else if (f_wp_s1_real && o_from_if_to_pd.btb_predicted_taken &&
+                     f_wp_s1_pred_matches_pc) begin
+          if (live_prediction_emits_with_output) begin
+            f_wp_expected_pc_reg_q      <= pc_reg + f_wp_bundle_bytes;
+            f_wp_deferred_s1_redirect_q <= 1'b1;
+            f_wp_deferred_s1_target_q   <= o_from_if_to_pd.btb_predicted_target;
+          end else begin
+            f_wp_expected_pc_reg_q      <= o_from_if_to_pd.btb_predicted_target;
+            f_wp_deferred_s1_redirect_q <= 1'b0;
+          end
+        end else if (!f_wp_s1_real && f_wp_deferred_s1_redirect_q && fetch_progress) begin
+          f_wp_expected_pc_reg_q      <= f_wp_deferred_s1_target_q;
+          f_wp_deferred_s1_redirect_q <= 1'b0;
+        end else begin
+          f_wp_expected_pc_reg_q <= pc_reg + f_wp_bundle_bytes;
+        end
+      end
+    end
+`endif
   end
 `endif
 

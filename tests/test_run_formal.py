@@ -1493,9 +1493,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "if_prediction_walk_past.sby",
-        "Fetch stage emits no real packet while post-prediction holdoff holds pc_reg, "
-        "including walked-past pending predictions",
-        tasks=("bmc", "cover"),
+        "Fetch stage preserves pc_reg continuity and emits no real packet while "
+        "post-prediction holdoff holds pc_reg, including walked-past pending predictions",
+        tasks=("bmc", "continuity", "cover"),
     ),
     FormalTarget(
         "prediction_metadata_tracker.sby",
@@ -2735,6 +2735,7 @@ SBY_TASKS = [
         "Vector memory table lifecycle against a ghost reorder buffer, 14 frames.",
     ),
     ("bmc", "Check assertions up to the configured depth"),
+    ("continuity", "Bounded pc_reg and slot-1 PC continuity check"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
     ("home_small", "Consumed packets and fill phase flags with two fills."),
     (
