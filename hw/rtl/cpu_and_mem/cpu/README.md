@@ -740,9 +740,19 @@ unknown). Configuration allocation restarts the three-cycle wait for an
 empty configuration pipeline before the registered ROB in-flight indication
 arrives. The tracker reloads architectural `vtype` only after that wait,
 allowing the retiring CSR update to arrive.
-`vector/vec_lmul_legality.sv` evaluates the EEW, EMUL,
-alignment and overlap rules for all 32 SEW/LMUL combinations before the
-decoded queue. Dispatch selects the tracked configuration and rejects vill.
+`vector/vec_dispatch_legality.sv` evaluates the EEW, EMUL, alignment and
+overlap rules (`vector/vec_arith_legality.sv`) for the instruction at the
+decoded queue's head under the tracked `vtype`, from the queue's registered
+head shadow and the tracker's registers into one register. A vector
+arithmetic instruction waits one cycle at the head for that result, and
+dispatch takes it into the allocation's illegal-instruction check; nothing
+else waits, and the decode stages and the queue are those of a build without
+the unit. `vec_arith_legality` has no adder or magnitude compare: register
+groups are 2-bit size codes from tables of LMUL and SEW, alignment is a test
+of a register number's low bits, and two aligned groups overlap exactly when
+their register numbers agree above the larger group's size. Without the unit,
+dispatch uses the four LMUL classes of `vector/vec_lmul_legality.sv` that the
+queue carries, and ID rejects every OP-V instruction anyway.
 Sources that overlap at different element widths are reserved; this includes
 using v0 as both a mask and an integer data source. Widening
 multiply-accumulate also reads its old double-width destination, so a narrow

@@ -336,6 +336,8 @@ module cpu_ooo #(
   logic direct_id_valid_preflush, direct_id_valid_2_preflush;
   logic direct_id_valid, direct_id_valid_2;
   logic decoded_queue_full;
+  // The decoded queue offers a bundle (its head) this cycle
+  logic decoded_queue_valid;
   logic decoded_queue_indirect_pending;
   (* max_fanout = 32 *) logic flush_pipeline;
   logic dispatch_flush;
@@ -1113,9 +1115,13 @@ module cpu_ooo #(
   logic [8:0] vec_vtype_spec;
   // vec_lmul_legality's classes of the dispatch slot-1 instruction, and
   // slot 2's vector-encoding flag for dispatch's slot-2 interlock
-  logic [32:0] dispatch_vec_lmul_illegal;
+  logic [3:0] dispatch_vec_lmul_illegal;
   logic dispatch_slot2_is_vector;
+  // Vector arithmetic may dispatch: the vtype is known and, with the unit,
+  // the queue head's registered arithmetic legality (vec_arith_illegal) is
+  // ready
   logic vec_vtype_valid;
+  logic vec_arith_illegal;
   logic vec_vcfg_in_flight;
   logic [15:0] csr_vec_vl, csr_vec_vstart;
   logic [8:0] csr_vec_vtype;
@@ -1295,10 +1301,10 @@ module cpu_ooo #(
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next, producer_ctrl_next_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_go, producer_ctrl_next_go_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_hold, producer_ctrl_next_hold_2;
-      // Slot 1's vector SEW/LMUL legality classes and slot 2's vector-presence
+      // Slot 1's four vector LMUL legality classes and slot 2's vector-presence
       // flag beside the shadow slice, from each producer copy's own packet
-      logic [32:0] producer_vlc, producer_vlc_next, producer_vlc_next_go, producer_vlc_next_hold;
-      logic [32:0] queue_vlc, queue_vlc_next;
+      logic [3:0] producer_vlc, producer_vlc_next, producer_vlc_next_go, producer_vlc_next_hold;
+      logic [3:0] queue_vlc, queue_vlc_next;
       logic producer_s2_vec, producer_s2_vec_next;
       logic producer_s2_vec_next_go, producer_s2_vec_next_hold;
       /* verilator lint_off UNUSEDSIGNAL */
@@ -1667,11 +1673,12 @@ module cpu_ooo #(
       end
 `endif
       assign dispatch_vec_lmul_illegal = queue_vlc;
-      assign dispatch_slot2_is_vector  = queue_s2_vec;
+      assign dispatch_slot2_is_vector = queue_s2_vec;
+      assign decoded_queue_valid = queue_valid;
 `ifndef SYNTHESIS
       // The shadow moves whole words, so its legality and slot-2 vector bits
       // stay those of its own instructions once reset has loaded it.
-      logic [32:0] queue_vlc_check;
+      logic [3:0] queue_vlc_check;
       vec_lmul_legality u_vlc_check (
           .i_insn   (32'(queue_ctrl.instruction)),
           .o_illegal(queue_vlc_check)
@@ -1861,6 +1868,7 @@ module cpu_ooo #(
     end else begin : gen_no_decoded_queue
       assign decoded_queue_full = 1'b0;
       assign decoded_queue_indirect_pending = 1'b0;
+      assign decoded_queue_valid = 1'b0;
       assign from_id_to_ex = decoded_packet;
       assign from_id_to_ex_2 = decoded_packet_2;
       vec_lmul_legality u_vlc (
@@ -3053,6 +3061,7 @@ module cpu_ooo #(
       .RAW_INT_RF_VALUES(1'b1)
   ) u_dispatch (
       .i_vtype_spec(vec_vtype_spec),
+      .i_vec_arith_illegal(vec_arith_illegal),
       .i_vec_lmul_illegal(dispatch_vec_lmul_illegal),
       .i_vec_vstart_nonzero(vec_vstart_nonzero),
       .i_slot2_is_vector(dispatch_slot2_is_vector),
@@ -5530,6 +5539,7 @@ module cpu_ooo #(
         ((from_id_to_ex.instruction_operation == riscv_pkg::VLOAD) ||
          (from_id_to_ex.instruction_operation == riscv_pkg::VSTORE));
 
+    logic vec_tracker_valid, vec_arith_ready;
     vec_vtype_tracker #(
         .VLEN(VLEN)
     ) u_vtype_tracker (
@@ -5549,8 +5559,24 @@ module cpu_ooo #(
         .i_arch_reload        (csr_commit_fire),
         .o_vstart_nonzero     (vec_vstart_nonzero),
         .o_vtype              (vec_vtype_spec),
-        .o_valid              (vec_vtype_valid)
+        .o_valid              (vec_tracker_valid)
     );
+    // Arithmetic legality of the queue head under the tracked vtype, from
+    // registers to a register; vector arithmetic waits one cycle at the
+    // head for it
+    vec_dispatch_legality u_dispatch_legality (
+        .i_clk        (i_clk),
+        .i_rst        (i_rst),
+        .i_head_valid (decoded_queue_valid),
+        .i_head_insn  (32'(from_id_to_ex.instruction)),
+        .i_vtype      (vec_vtype_spec),
+        .i_vtype_valid(vec_tracker_valid),
+        .i_pop        (rob_alloc_req.alloc_valid),
+        .i_flush      (flush_pipeline),
+        .o_ready      (vec_arith_ready),
+        .o_illegal    (vec_arith_illegal)
+    );
+    assign vec_vtype_valid = vec_tracker_valid && vec_arith_ready;
     vec_unit #(
         .VLEN          (VLEN),
         .CACHED_TIER_EN(CACHED_TIER_EN)
@@ -5689,6 +5715,16 @@ module cpu_ooo #(
         assert (!(vec_vtox_commit &&
                   (csr_commit_fire || vcfg_commit.valid || vec_varith_commit ||
                    vec_vstore_commit || vec_vmem_fault_vstart_valid)));
+        // Dispatch takes the registered legality: it belongs to the
+        // allocating instruction under the vtype in effect.
+        if (vec_alloc && ((from_id_to_ex.instruction_operation == riscv_pkg::VARITH) ||
+                          (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_X))) begin
+          p_vec_arith_alloc_ready : assert (vec_arith_ready && vec_tracker_valid);
+          p_vec_arith_legality_registered :
+          assert (vec_arith_illegal == riscv_pkg::vector_arith_illegal(
+              vec_vtype_spec, 32'(from_id_to_ex.instruction)
+          ));
+        end
       end
     end
 `endif
@@ -5698,6 +5734,7 @@ module cpu_ooo #(
     assign vec_vmt_full = 1'b0;
     assign vec_vtype_spec = '0;
     assign vec_vtype_valid = 1'b1;
+    assign vec_arith_illegal = 1'b0;
     assign vec_varith_commit = 1'b0;
     assign vec_vstore_commit = 1'b0;
     assign vec_vmem_fault_vstart_valid = 1'b0;

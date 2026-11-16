@@ -140,8 +140,9 @@ execution; it does not use standalone `slang --lint-only`.
 ### `test_run_cocotb.py`
 
 `vec_operand_widths` checks EEW=1 mask-source aliases, vector versus scalar
-source fields and the old destination read by widening multiply-accumulate.
-Its legal controls include an upper-half overlap for widening addition,
+source fields and the old destination read by widening multiply-accumulate,
+on `vec_arith_legality`, the legality module that dispatch's registered check
+uses. Its legal controls include an upper-half overlap for widening addition,
 which does not read the destination as an accumulator.
 The `verif/testrig/vector_source_widths_integer.S` trace checks these classes
 against the architectural reference with `test_testrig.py --trace
@@ -166,7 +167,8 @@ reload is pending; `vec_vtype_tracker.sby` checks the surviving clear through
 reload and checkpoint recovery.
 
 `vec_source_eew` rejects v0 data operands in masked instructions and checks
-legal scalar-zero operands, unmasked v0 sources and mask destinations.
+legal scalar-zero operands, unmasked v0 sources and mask destinations, on the
+four-class `vec_lmul_legality` that builds without the vector unit use.
 `vec_source_eew_test_v128/v256/v512` check illegal-instruction cause and
 trap value, unchanged destination registers, `vstart` and `mstatus.VS` for
 masked instructions that use v0 as data.
@@ -989,7 +991,9 @@ default pytest collection, remove `include_in_pytest=False` from the loop under
 The `vec_integer_test_v128`, `vec_integer_test_v256` and
 `vec_integer_test_v512` entries exercise 149 integer, fixed-point, mask and
 permutation instruction forms without vector memory, reading register images
-through scalar moves. `test_vector_reference.py` checks their expected images
+through scalar moves, and reserved forms, one of them right behind a legal
+form so that dispatch judges it on its own registered legality.
+`test_vector_reference.py` checks their expected images
 on Spike at the same three lengths, including a deliberately wrong expected
 bit. The `vec_integer_exec_v*` engine benches separately compare all registers,
 tails, inactive elements and saturation against an element model across SEW,
@@ -1592,8 +1596,9 @@ and says when the run proves everything again.
 The formal and synthesis jobs check out the repository without submodules and
 set `FROST_SKIP_SUBMODULE_INIT=1`; none of their inputs is in a submodule.
 
-The standalone integer legality sweep compares the decoder and geometry helper
-with the installed Spike instruction implementations. It covers all 231 integer
+The standalone integer legality sweep compares the decoder and the dispatch
+legality module (`vec_arith_legality`) with the installed Spike instruction
+implementations. It covers all 231 integer
 arithmetic forms, all 512 vtype encodings (reserved configurations normalize to
 vill), both mask encodings where permitted, each register field and pairwise
 alias/adjacent layouts, at VLEN 128/256/512. VL is one and vstart zero; the tracker

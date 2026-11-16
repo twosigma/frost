@@ -50,20 +50,26 @@ module dispatch #(
     // =========================================================================
     // Instruction Input (from ID stage pipeline register)
     // =========================================================================
-    input riscv_pkg::from_id_to_ex_t        i_from_id_to_ex,
+    input riscv_pkg::from_id_to_ex_t       i_from_id_to_ex,
     // The vtype in effect at slot 1's place in program order ({vill, vtype}),
     // for vector arithmetic legality; cpu_ooo holds vector arithmetic while
     // it is unknown
-    input logic                      [ 8:0] i_vtype_spec = 9'd0,
-    // vec_lmul_legality's classes of slot 1's instruction bits, formed before
-    // the decoded queue; the default suits benches without vector arithmetic
-    input logic                             i_vec_vstart_nonzero = 1'b0,
-    input logic                      [32:0] i_vec_lmul_illegal = 33'd0,
+    input logic                      [8:0] i_vtype_spec = 9'd0,
+    // With VECTOR: slot 1's arithmetic legality under i_vtype_spec, which
+    // cpu_ooo registers for the decoded queue's head (vec_dispatch_legality)
+    // before vector arithmetic may dispatch
+    input logic                            i_vec_arith_illegal = 1'b0,
+    // Without VECTOR: vec_lmul_legality's classes of slot 1's instruction
+    // bits, formed before the decoded queue (ID already rejects every OP-V
+    // instruction there). The defaults suit benches without vector arithmetic.
+    input logic                      [3:0] i_vec_lmul_illegal = 4'd0,
+    // The tracker's prediction that vstart is nonzero at slot 1
+    input logic                            i_vec_vstart_nonzero = 1'b0,
     // Registered slot-2 vector marker carried beside the decoded queue shadow
-    input logic                             i_slot2_is_vector = 1'b0,
+    input logic                            i_slot2_is_vector = 1'b0,
     // Bundle-valid candidate, not yet qualified by flush. Dispatch applies
     // i_flush (below) as the only recovery qualification.
-    input logic                             i_valid,
+    input logic                            i_valid,
 
     // Slot 2 is a preflush candidate. An absent slot 2 leaves admission to slot 1.
     input riscv_pkg::from_id_to_ex_t i_from_id_to_ex_2,
@@ -903,15 +909,21 @@ module dispatch #(
   end
 `endif
 `ifdef VEC_LMUL_LEGALITY_LOCAL_PROOF
-  // With the queued LMUL legality classes from slot 1's own decoded
-  // instruction, dispatch equals the arithmetic and VTOX reference for every
-  // vtype, instruction and operation. Vector load/store legality runs at the
-  // ROB head against architectural vtype.
-  logic [32:0] f_vec_lmul_illegal;
+  // With VECTOR (the proof sets it): vec_arith_legality, which forms the
+  // registered i_vec_arith_illegal, equals the reference for every vtype and
+  // instruction; and given that value for slot 1's own instruction, dispatch
+  // equals the arithmetic, VTOX and nonzero-vstart rules for every vtype,
+  // instruction, operation and vstart prediction. Vector load/store legality
+  // runs at the ROB head against architectural vtype.
+  logic f_arith_illegal, f_arith_illegal_ref;
   logic f_vec_illegal_ref, f_vstart_forbidden;
-  vec_lmul_legality u_f_vec_lmul_legality (
-      .i_insn(32'(i_from_id_to_ex.instruction)),
-      .o_illegal(f_vec_lmul_illegal)
+  vec_arith_legality u_f_arith_legality (
+      .i_vtype  (i_vtype_spec),
+      .i_insn   (32'(i_from_id_to_ex.instruction)),
+      .o_illegal(f_arith_illegal)
+  );
+  assign f_arith_illegal_ref = riscv_pkg::vector_arith_illegal(
+      i_vtype_spec, 32'(i_from_id_to_ex.instruction)
   );
   // Only whole-register moves and scalar insert have a restartable arithmetic
   // form. Scalar extraction ignores vstart; population/first-set require zero.
@@ -929,12 +941,11 @@ module dispatch #(
       f_vstart_forbidden = (i_from_id_to_ex.insn_bits[19:15] != 5'b00000);
     end
   end
-  assign f_vec_illegal_ref = (slot1_is_varith && riscv_pkg::vector_arith_illegal(
-      i_vtype_spec, 32'(i_from_id_to_ex.instruction)
-  )) || ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) ||
-      (i_vec_vstart_nonzero && f_vstart_forbidden);
+  assign f_vec_illegal_ref = (slot1_is_varith && f_arith_illegal_ref) ||
+      ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) || (i_vec_vstart_nonzero && f_vstart_forbidden);
   always_comb begin
-    assume (i_vec_lmul_illegal == f_vec_lmul_illegal);
+    assume (i_vec_arith_illegal == f_arith_illegal_ref);
+    p_arith_legality_exact : assert (f_arith_illegal == f_arith_illegal_ref);
     p_vec_illegal_exact : assert (o_rob_alloc_req.vec_illegal == f_vec_illegal_ref);
     p_nonzero_vstart_traps :
     assert (!(i_vec_vstart_nonzero && f_vstart_forbidden) || o_rob_alloc_req.vec_illegal);
@@ -1440,11 +1451,15 @@ module dispatch #(
     // the ROB head.
     o_rob_alloc_req.is_varith = slot1_is_varith || (op == riscv_pkg::VLOAD) ||
         (op == riscv_pkg::VSTORE);
-    // Vector arithmetic uses its queued LMUL class and vill; VTOX uses vill.
-    o_rob_alloc_req.vec_illegal = ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) ||
+    // Vector arithmetic uses its registered legality (VECTOR) or its queued
+    // LMUL class, and vill; VTOX uses vill. Arithmetic other than
+    // whole-register moves and vmv.s.x, and vcpop.m and vfirst.m, cannot
+    // start at a nonzero vstart.
+    o_rob_alloc_req.vec_illegal = ((slot1_is_varith || (op == riscv_pkg::VTOX)) &&
+                                   i_vtype_spec[8]) ||
         (slot1_is_varith &&
-         (((i_vtype_spec[8] || i_vtype_spec[5]) && i_vec_lmul_illegal[32]) ||
-          i_vec_lmul_illegal[{1'b0, i_vtype_spec[4:0]}])) ||
+         (VECTOR ? i_vec_arith_illegal :
+                   i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]])) ||
         (i_vec_vstart_nonzero &&
          ((slot1_is_varith && !((i_from_id_to_ex.insn_bits[14:12] == 3'b011 &&
              i_from_id_to_ex.insn_bits[31:26] == 6'h27) ||

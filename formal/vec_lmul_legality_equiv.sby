@@ -1,23 +1,45 @@
 [tasks]
-bmc
+bmc dispatch
+prove stage
+cover stage
 
 [options]
-mode bmc
-depth 1
+bmc: mode bmc
+bmc: depth 1
+prove: mode prove
+prove: depth 3
+cover: mode cover
+cover: depth 4
 
 [engines]
 smtbmc boolector
 
 [script]
-read -sv riscv_pkg.sv
-read -sv vec_lmul_legality.sv
-read_verilog -formal -D SYNTHESIS -D VEC_LMUL_LEGALITY_LOCAL_PROOF -sv dispatch.sv
-prep -top dispatch
-select -assert-none t:$assume a:init
-select -assert-count 1 t:$check r:FLAVOR=assume %i
-select -assert-count 2 t:$check r:FLAVOR=assert %i
+# dispatch (VECTOR=1): vec_arith_legality equals riscv_pkg::vector_arith_illegal
+# for every vtype and instruction; given that value for slot 1, dispatch's
+# vec_illegal equals the arithmetic, VTOX and nonzero-vstart rules.
+dispatch: read -sv riscv_pkg.sv
+dispatch: read -sv vec_arith_legality.sv
+dispatch: read_verilog -formal -D SYNTHESIS -D VEC_LMUL_LEGALITY_LOCAL_PROOF -sv dispatch.sv
+dispatch: chparam -set VECTOR 1 dispatch
+dispatch: prep -top dispatch
+dispatch: select -assert-none t:$assume a:init
+dispatch: select -assert-count 1 t:$check r:FLAVOR=assume %i
+dispatch: select -assert-count 3 t:$check r:FLAVOR=assert %i
+# stage: vec_dispatch_legality's registered result is the queue head's
+# legality under the current vtype whenever it is ready, given that the
+# queue keeps an unpopped, unflushed head and the tracker keeps a known vtype
+# without an allocation or flush.
+stage: read -sv riscv_pkg.sv
+stage: read -sv vec_arith_legality.sv
+stage: read_verilog -formal -D VEC_DISPATCH_LEGALITY_LOCAL_PROOF -sv vec_dispatch_legality.sv
+stage: prep -top vec_dispatch_legality
+stage: select -assert-count 4 t:$check r:FLAVOR=assume %i
+stage: select -assert-count 1 t:$check r:FLAVOR=assert %i
+stage: select -assert-count 2 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
-../hw/rtl/cpu_and_mem/cpu/vector/vec_lmul_legality.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_arith_legality.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_dispatch_legality.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv

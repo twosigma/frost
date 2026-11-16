@@ -27,11 +27,16 @@ module vec_legality_reference (
       .o_instr_op(op),
       .o_illegal(decode_illegal)
   );
+  logic arith_illegal;
+  vec_arith_legality legality (
+      .i_vtype  (i_vtype),
+      .i_insn   (i_insn),
+      .o_illegal(arith_illegal)
+  );
   always_comb begin
     o_illegal = decode_illegal;
     case (op)
-      riscv_pkg::VARITH, riscv_pkg::VARITH_X:
-      o_illegal |= riscv_pkg::vector_arith_illegal(i_vtype, i_insn);
+      riscv_pkg::VARITH, riscv_pkg::VARITH_X: o_illegal |= arith_illegal;
       riscv_pkg::VTOX: o_illegal |= i_vtype[8];
       default: o_illegal = 1'b1;
     endcase

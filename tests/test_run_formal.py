@@ -1000,9 +1000,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Queued LMUL classes equal the arithmetic and VTOX legality rules for "
-        "every vtype, instruction, operation and nonzero-vstart state",
-        tasks=("bmc",),
+        "Vector arithmetic legality equals the reference for every vtype and "
+        "instruction; dispatch applies it with the VTOX and nonzero-vstart rules; "
+        "the registered queue-head result is current whenever it is ready",
+        tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
         "vec_vmu.sby",

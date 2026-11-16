@@ -248,6 +248,55 @@ async def memory_clear_survives_architectural_reload(dut: Any) -> None:
 
 
 @cocotb.test()
+async def memory_allocation_before_csr_reload(dut: Any) -> None:
+    """Keep vstart clear for a load or store allocated before the post-CSR reload."""
+    ops = _parse_instr_op_enum()
+    await reset_tracker(dut)
+
+    async def cycles(count: int) -> None:
+        for _ in range(count):
+            await FallingEdge(dut.i_clk)
+
+    failures = []
+    for operation, delay in (("VLOAD", 0), ("VSTORE", 0), ("VLOAD", 1), ("VSTORE", 1)):
+        dut.i_arch_vstart_nonzero.value = 0
+        dut.i_alloc.value = 1
+        dut.i_alloc_op.value = ops["VSETVLI"]
+        dut.i_alloc_imm.value = 0x0C0  # e8, m1, ta, ma
+        await cycles(1)
+        dut.i_alloc.value = 0
+        dut.i_alloc_op.value = ops["ADDI"]
+        await cycles(1)
+        dut.i_vcfg_in_flight.value = 1  # registered ROB flag while it waits
+        await cycles(5)
+        dut.i_vcfg_in_flight.value = 0
+        await cycles(1)
+        dut.i_arch_reload.value = 1  # csrw vstart, 1 retires
+        await cycles(1)
+        dut.i_arch_reload.value = 0
+        dut.i_arch_vstart_nonzero.value = 1
+        assert not int(dut.o_valid.value)
+        await cycles(delay)
+        dut.i_alloc.value = 1  # the load or store dispatches
+        dut.i_alloc_op.value = ops[operation]
+        await cycles(1)
+        dut.i_alloc.value = 0
+        dut.i_alloc_op.value = ops["ADDI"]
+        for _ in range(4):
+            if int(dut.o_valid.value):
+                break
+            await cycles(1)
+        assert int(dut.o_valid.value)
+        if int(dut.o_vstart_nonzero.value):
+            failures.append(f"{operation} delay {delay}")
+        dut.i_arch_vstart_nonzero.value = 0
+        await cycles(4)
+    assert not failures, (
+        f"reload restored the CSR's vstart after the allocation: {failures}"
+    )
+
+
+@cocotb.test()
 async def memory_prediction_recovery(dut: Any) -> None:
     """Recovery keeps only surviving prediction; later CSRs own the next reload."""
     ops = _parse_instr_op_enum()

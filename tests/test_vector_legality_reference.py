@@ -16,7 +16,8 @@
 
 Run in the frost image with ``python3 tests/test_vector_legality_reference.py``.
 The comparison calls the installed reference instruction implementations and
-the RTL decoder/legality function. It does not copy the reference's formulas.
+the RTL decoder and dispatch legality module (vec_arith_legality). It does not
+copy the reference's formulas.
 VL is one and vstart zero; this sweep checks geometry, not restart policy.
 Spike omits the general source/source EEW reservation, so the comparator
 checks that specification rule separately and reports its cases separately.
@@ -78,6 +79,7 @@ def build(build_dir: Path) -> Path:
         "-L/usr/local/lib -Wl,-rpath,/usr/local/lib -lriscv",
         str(ROOT / "hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv"),
         str(ROOT / "hw/rtl/cpu_and_mem/cpu/id_stage/instr_decoder.sv"),
+        str(ROOT / "hw/rtl/cpu_and_mem/cpu/vector/vec_arith_legality.sv"),
         str(SOURCE / "vec_legality_reference.sv"),
         str(SOURCE / "legality.cpp"),
     ]

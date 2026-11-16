@@ -3957,7 +3957,13 @@ static void special_cases(void)
     ILLEGAL(OPV(0x30, 1, 8, 24, 2, 16)); /* widening beyond ELEN */
     setvl(~0ul, 2);
     ILLEGAL(OPV(0x25, 1, 8, 24, 2, 17)); /* LMUL 4 destination misaligned */
-    setvl(~0ul, 0x0f);                   /* e16,mf2: widening overlap has fractional source. */
+    /* A reserved form right behind a legal one is judged on its own. */
+    vt_trap_clear();
+    EMIT(OPV(0x00, 1, 8, 24, 0, 16)); /* vadd.vv v16, v8, v24 at LMUL 4 */
+    EMIT(OPV(0x00, 1, 8, 24, 0, 17)); /* the same with v17, misaligned */
+    VT_EQ(vt_trap_count, 1, "reserved form behind a legal one traps");
+    VT_EQ(vt_trap_tval, OPV(0x00, 1, 8, 24, 0, 17), "the reserved form's word");
+    setvl(~0ul, 0x0f); /* e16,mf2: widening overlap has fractional source. */
     ILLEGAL(OPV(0x30, 1, 8, 24, 2, 8));
     vt_trap_clear();
 }

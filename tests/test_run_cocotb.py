@@ -2789,7 +2789,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "vec_operand_widths": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_operand_widths",
-        hdl_toplevel_module="vec_lmul_legality",
+        hdl_toplevel_module="vec_arith_legality",
         description="Mask/data source widths and widening accumulator overlap legality",
     ),
     "vec_source_eew": CocotbRunConfig(

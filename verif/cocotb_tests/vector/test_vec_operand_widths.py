@@ -77,7 +77,8 @@ async def operand_widths(dut: Any) -> None:
             | (vd << 7)
             | 0x57
         )
+        dut.i_vtype.value = vt
         await Timer(1, unit="ns")
-        got = (int(dut.o_illegal.value) >> vt) & 1
+        got = int(dut.o_illegal.value)
         assert got == illegal, (name, vt, hex(int(dut.i_insn.value)), got, illegal)
     dut._log.info("Checked %d operand-width cases", len(cases))
