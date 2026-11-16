@@ -708,8 +708,9 @@ The register-number rules depend on `vtype` only through LMUL, so
 each LMUL class (1 or fractional, 2, 4, 8) before the decoded queue, which
 carries the four results beside slot 1; dispatch selects the class of the
 tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with
-its scalar and the architectural `vl`, `vtype` and `vstart`, and the engine executes it after
-commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
+its scalar and the architectural `vl`, `vtype` and `vstart`, and the engine
+executes it after commit; the CSR file clears `vstart` and sets VS Dirty.
+`vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
 result on CDB slot 6.
 
