@@ -393,6 +393,8 @@ module cpu_tb
       .o_coherent_write_atomic(),
       .o_coherent_write_sc(),
       .o_coherent_write_zero(),
+      .o_coherent_write_more(),
+      .o_coherent_next_same(),
       .o_coherent_write_tag(),
       .o_coherent_atomic_protected(),
       .o_coherent_sc_commit(),
