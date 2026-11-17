@@ -62,7 +62,7 @@ read -sv fp_engine.sv
 read -sv fp_shim.sv
 read -formal -sv tomasulo_wrapper.sv
 hierarchy -top tomasulo_wrapper
-proc
+script free_undefined.ys
 select -set copy_asserts tomasulo_wrapper/t:$initstate %co* tomasulo_wrapper/t:$check %i r:FLAVOR=assert %i
 select -assert-count 8 @copy_asserts
 chformal -assert -remove @copy_asserts %n
@@ -129,3 +129,4 @@ select -assert-count 8 t:$check r:FLAVOR=assert %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+free_undefined.ys

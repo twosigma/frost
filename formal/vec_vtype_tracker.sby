@@ -22,6 +22,8 @@ read -formal -sv riscv_pkg.sv
 read -formal -sv vec_cfg_unit.sv
 read -formal -sv vec_vtype_tracker.sv
 read -formal -sv vec_vtype_tracker_formal.sv
+hierarchy -top vec_vtype_tracker_formal
+script free_undefined.ys
 prep -top vec_vtype_tracker_formal
 
 [files]
@@ -29,3 +31,4 @@ prep -top vec_vtype_tracker_formal
 ../hw/rtl/cpu_and_mem/cpu/vector/vec_cfg_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/vector/vec_vtype_tracker.sv
 vec_vtype_tracker_formal.sv
+free_undefined.ys

@@ -25,6 +25,8 @@ chparam -set CACHE_BYTES 256 -set WAYS 4 coherence_array
 uram: chparam -set ULTRA 1 coherence_array
 bimodal: chparam -set BIMODAL_INSERT 1 coherence_array
 port: chparam -set HIT_PORT 1 coherence_array
+hierarchy -top coherence_array
+script free_undefined.ys
 prep -flatten -top coherence_array
 select -assert-count 4 c:p_plru_*
 chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_plru_* %d
@@ -41,3 +43,4 @@ opt_clean
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv
 ../hw/rtl/lib/cache/coherence_array.sv
+free_undefined.ys

@@ -46,7 +46,7 @@ reply: chparam -set CACHE_BYTES 64 -set WAYS 1 coherence_array
 four: chparam -set CACHE_BYTES 256 -set WAYS 4 coherence_array
 uram: chparam -set ULTRA 1 coherence_array
 reply: hierarchy -check -top coherence_array
-proc -noopt
+script free_undefined.ys
 flatten
 opt_expr -keepdc -noclkinv
 capture: select -assert-count 1 c:*p_read_capture_exact t:$check %i r:FLAVOR=assert %i
@@ -73,6 +73,7 @@ setattr -unset keep w:* c:*
 opt_clean
 opt -keepdc
 async2sync
+setundef -anyseq
 chformal -lower
 capture: select -assert-count 1 t:$assert
 idle: select -assert-count 1 t:$assert
@@ -100,3 +101,4 @@ select -assert-none t:$assume
 ../hw/rtl/lib/cache/coherence_read_payload.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
 ../hw/rtl/lib/cache/coherence_store_buffer.sv
+free_undefined.ys

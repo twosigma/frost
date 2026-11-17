@@ -781,9 +781,6 @@ cycles, which clears arbitrary memory history.
      constant-x multiplexer select as 0.
    - `opt_expr` reads constant-x bits at the same position of an `$eq` or
      `$ne` as equal (`$eqx` and `$nex` compare them exactly).
-   - `opt_clean`, which SymbiYosys's preparation also runs before its
-     `setundef`, gives a wire with a defined initial value that a constant
-     x drives that value.
    - `opt_merge` makes one cell of identical cells whose inputs hold a
      constant x.
    - `opt_reduce`, in `opt` without `-fast` and in `prep`, merges equal
@@ -791,17 +788,78 @@ cycles, which clears arbitrary memory history.
      constant x included, and repeated constant-x select bits of a `$bmux`
      or `$demux`.
    - `proc_rom`, in `proc` and `prep`, turns a case of constants into a
-     ROM; once `memory_collect` (in `prep`) or `memory_map -keepdc` runs,
-     its x words, such as an x default, hold one value for a whole trace
-     instead of a free value in every cycle.
+     ROM; once `memory_collect` (in `prep`), `memory_map -keepdc` or
+     `memory_map -formal` runs, its x words, such as an x default, hold one
+     value for a whole trace instead of a free value in every cycle.
    - `proc_dlatch` drops all-x cases, and replaces an all-x default with a
-     defined case, in a latch's fan-in.
+     defined case, in a latch's fan-in. When it decides in which cases a latch
+     holds, it reads multiplexer inputs through connections, so an x that a
+     wire carries to a multiplexer in the latch's feedback path counts too.
+   - `proc_dff`, in `proc` and `prep`, keeps an undefined asynchronous reset
+     value as a register parameter, which `setundef` does not reach, and
+     `opt_merge` can then fuse two such registers.
    - The default `techmap`'s shift templates run `opt_muxtree` and
-     `opt_expr -mux_undef`, and its `$lcu` template `opt -fast`, on the
-     constant inputs of the cell they map.
+     `opt_expr -mux_undef` on the constant inputs of the cell they map.
 
-   The [roadmap](../ROADMAP.md#verification) says what is known of the
-   registered models and what would remove these cases.
+   `opt_clean` is not among them: it drops the initial value of a wire that
+   a constant x drives, which leaves the x free.
+
+   So each task's script opens with these two lines, after the commands that
+   read sources, set parameters and elaborate, and before any other that
+   acts on the design, and lists `free_undefined.ys` in `[files]`:
+
+   ```
+   hierarchy -top <top>
+   script free_undefined.ys
+   ```
+
+   `hierarchy` derives every module the top uses. `free_undefined.ys` runs
+   `proc` pass by pass, without `proc_rom`, and frees the undefined bits
+   with `setundef -anyseq` in two steps: every multiplexer input and every
+   connection before `proc_dlatch`, and everything else before `proc_dff`,
+   so that an undefined asynchronous reset value becomes a free asynchronous
+   load. An `opt_expr` on memory initializations alone writes their
+   constants into the cells, which `setundef` needs, and `proc`'s own
+   closing `opt_expr -keepdc` runs last, once nothing undefined is left, so
+   that the commands after the opening see the netlist plain `proc` gives
+   them, apart from case tables kept as multiplexers, the free values and
+   the asynchronous loads. After the opening, no undefined constant of the
+   sources is left in a cell port, a connection or a register, and none of
+   the passes above finds one to act on. Commands that a script's open entry
+   pins are the exception: a plain `memory_map`, for one, writes x for words
+   that nothing writes, and a plain `opt` after it can read them before
+   SymbiYosys frees them. What is left are memory parameters that no pass
+   reads as values (the read-port reset and initial values of a port without
+   a clock) or that are a memory's unknown contents, which
+   `memory_map -keepdc` keeps free; the accepted forms of later passes write
+   x only where nothing uses the value (`opt_dff` on the feedback path of a
+   register it gives an enable, `wreduce` on bits nothing reads).
+
+   After the opening a script reads no further sources, sets no parameters,
+   connects no net to a constant with an x or z bit and names no other top,
+   and a script that runs `async2sync` or `clk2fflogic` itself, which write
+   x where an asynchronous set and clear are both active, runs
+   `setundef -anyseq` right after it. The opening runs on the whole design:
+   no `select` or `cd`, and no design that `design -load` or `-pop` brings
+   back, may leave a narrower selection or active module in place before it.
+
+   The opening does not reach undefined values that a cell computes, such as
+   a `$shiftx` read past its input, which the backends and the shift
+   templates give a defined value; constant z bits, which `setundef -anyseq`
+   leaves as they are, as SymbiYosys's own `setundef` does, and which no
+   source has; or a memory initialized with x, which stops the next pass
+   that reads the memory with "Non-constant data". A value free in every
+   cycle can also satisfy a cover that no circuit reaches, such as the same
+   inputs giving another output. Scripts that compare two designs inside the
+   script (the primitive twins and the other in-script equivalence checks)
+   do not open this way yet: both designs hold the same undefined constants,
+   and freeing them separately on each side would make the sides differ. The
+   fast Python tests check the opening of every script that
+   `UNDEFINED_OPENING_PENDING` and `UNDEFINED_OPENING_TWINS` do not list,
+   including that the script runs this repository's `free_undefined.ys`
+   itself: listed in `[files]` as that one name, never a changed copy,
+   another path, a `[file]` section or the opening's commands written out.
+   The [roadmap](../ROADMAP.md#verification) says what is left.
 3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
    `tasks` when the `.sby` defines it. Register any new task names in
    `SBY_TASKS` so CLI and pytest runs include them; the fast Python tests fail

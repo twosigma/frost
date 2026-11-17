@@ -20,11 +20,16 @@ smtbmc boolector
 [script]
 read -formal -sv coherence_store_buffer.sv
 ~saturation: chparam -set ADDR_WIDTH 8 -set TAG_BITS 2 -set EP_BITS 2 coherence_store_buffer
+~saturation: hierarchy -top coherence_store_buffer
+~saturation: script free_undefined.ys
 ~saturation: prep -top coherence_store_buffer
 saturation: read -formal -sv coherence_store_saturation_formal.sv
+saturation: hierarchy -top coherence_store_saturation_formal
+saturation: script free_undefined.ys
 saturation: prep -flatten -top coherence_store_saturation_formal
 saturation: chformal -cover -remove c:*dut*
 
 [files]
 ../hw/rtl/lib/cache/coherence_store_buffer.sv
 coherence_store_saturation_formal.sv
+free_undefined.ys

@@ -19,6 +19,8 @@ smtbmc boolector
 prove: read_slang --top dc_fifo_formal --single-unit -GALMOST_FULL_MARGIN=1 -GCOVER_MODE=0 cdc_reset_sync.sv cdc_reset_pair.sv sdp_block_ram_dc.sv dc_fifo.sv dc_fifo_formal.sv
 prove_margin2: read_slang --top dc_fifo_formal --single-unit -GALMOST_FULL_MARGIN=2 -GCOVER_MODE=0 cdc_reset_sync.sv cdc_reset_pair.sv sdp_block_ram_dc.sv dc_fifo.sv dc_fifo_formal.sv
 cover: read_slang --top dc_fifo_formal --single-unit -GALMOST_FULL_MARGIN=1 -GCOVER_MODE=1 cdc_reset_sync.sv cdc_reset_pair.sv sdp_block_ram_dc.sv dc_fifo.sv dc_fifo_formal.sv
+hierarchy -top dc_fifo_formal
+script free_undefined.ys
 prep -top dc_fifo_formal -flatten
 dffunmap w:gclk %co
 formalff -clk2ff w:gclk %co
@@ -34,3 +36,4 @@ cover: opt_clean -purge
 ../hw/rtl/lib/ram/sdp_block_ram_dc.sv
 ../hw/rtl/lib/fifo/dc_fifo.sv
 dc_fifo_formal.sv
+free_undefined.ys

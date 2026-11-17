@@ -23,6 +23,8 @@ read -formal -sv riscv_pkg.sv
 bmc: read -formal -D VEC_VMU_PROOF -sv vec_vmu.sv
 cover: read -formal -D VEC_VMU_PROOF -D VEC_VMU_COVER_PROOF -sv vec_vmu.sv
 read -formal -sv vec_vmu_formal.sv
+hierarchy -top vec_vmu_formal
+script free_undefined.ys
 prep -top vec_vmu_formal -flatten
 bmc: memory_map -keepdc
 bmc: opt -keepdc
@@ -34,3 +36,4 @@ bmc: setundef -undriven -anyseq
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/vector/vec_vmu.sv
 vec_vmu_formal.sv
+free_undefined.ys

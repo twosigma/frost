@@ -3987,25 +3987,29 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
 #   opt_muxtree (opt without -fast, prep): a constant-x select reads as 0.
 #   opt_expr (proc, prep, every opt): constant-x bits at the same position of
 #     an $eq or $ne compare equal ($eqx and $nex compare them exactly).
-#   opt_clean (prep, every opt, SymbiYosys's preparation before its setundef):
-#     a wire with a defined initial value that a constant x drives takes that
-#     value.
 #   opt_merge (prep, every opt): identical cells whose inputs hold a constant x
 #     become one.
 #   opt_reduce (opt without -fast, prep): equal output bits of a multiplexer
 #     that drives a memory write enable, constant x included, become one bit,
 #     as do repeated constant-x select bits of a $bmux or $demux.
 #   proc_rom (proc unless -norom, prep): a case of constants becomes a ROM;
-#     after memory_collect (in prep) or memory_map -keepdc its x words, such as
-#     an x default, hold one value for the whole trace, not a free value in
-#     every cycle.
+#     after memory_collect (in prep), memory_map -keepdc or memory_map -formal
+#     its x words, such as an x default, hold one value for the whole trace,
+#     not a free value in every cycle.
 #   proc_dlatch (proc, prep): in a latch's fan-in, all-x cases are dropped and
-#     an all-x default is replaced by a defined case.
+#     an all-x default is replaced by a defined case; when it decides in which
+#     cases a latch holds, it reads multiplexer inputs through connections, so
+#     an x that a wire carries to a multiplexer in the feedback path counts too.
+#   proc_dff (proc, prep): an undefined asynchronous reset value becomes a
+#     register parameter, which setundef does not reach and opt_merge compares
+#     exactly, so two such registers can become one.
 #   The default techmap: its shift templates run opt_muxtree and opt_expr
-#     -mux_undef, and its $lcu template opt -fast, on the constant inputs of
-#     the cell they map.
-# ROADMAP.md's verification items say what is known of the registered models
-# and what would remove these cases.
+#     -mux_undef on the constant inputs of the cell they map.
+# opt_clean drops the initial value of a wire that a constant x drives, so
+# that x stays undefined. Every script therefore opens as the check of
+# undefined constants below describes, which leaves none of these passes an
+# undefined constant of the sources in a cell port, a connection or a
+# register.
 #
 # The checks read each task's script as SymbiYosys selects it and as Yosys runs
 # it: a command after ';', behind a label or inside tee, debug, trace or an
@@ -4044,6 +4048,40 @@ DONT_CARE_SAFE: dict[str, list[tuple[str, str]]] = {
             "(unless -noopt) act on undefined constants as above",
         )
     ],
+    "proc_clean": [
+        ("", "removes empty switches; it folds only defined switch signals")
+    ],
+    "proc_rmdead": [
+        ("", "removes cases that cannot match; a case label with x never matches")
+    ],
+    "proc_prune": [
+        ("", "removes assignments that a later one overrides on every path")
+    ],
+    "proc_init": [("", "turns initial assignments into initial values")],
+    "proc_arst": [("", "finds asynchronous resets")],
+    "proc_mux": [
+        (
+            "",
+            "turns decision trees into multiplexers, with x only for the bits a full "
+            "case leaves unassigned",
+        )
+    ],
+    "proc_dlatch": [
+        (
+            "",
+            "turns incomplete combinational assignments into latches; in a latch's "
+            "fan-in it drops all-x multiplexer cases, as above",
+        )
+    ],
+    "proc_dff": [
+        (
+            "",
+            "turns clocked processes into registers with the same initial values; "
+            "it stores a constant asynchronous reset value, x included, in the "
+            "register's parameters",
+        )
+    ],
+    "proc_memwr": [("", "turns memory writes in processes into write ports")],
     "flatten": [("", "inlines submodules with their initial values")],
     "opt": [
         (
@@ -4112,8 +4150,8 @@ DONT_CARE_SAFE: dict[str, list[tuple[str, str]]] = {
     "techmap": [
         (
             "",
-            "maps cells to gates; its shift and $lcu templates can resolve a constant "
-            "x input, as above",
+            "maps cells to gates; its shift templates can resolve a constant x "
+            "input, as above",
         )
     ],
     "async2sync": [
@@ -4234,9 +4272,10 @@ DONT_CARE_REJECTED = {
 # one-line reason and, for each group of tasks, the commands outside the list
 # that each of those tasks runs, in the order it runs them. The checks fail
 # when a task runs such a command a further time, drops one, runs them in
-# another order, or moves one to another task, without the entry changing; a
-# pinned command moved only past listed commands keeps its pin. ROADMAP.md's
-# verification items describe the open work.
+# another order, or moves one to another task, without the entry changing. A
+# pinned command moved only past listed commands keeps its pin, and so does
+# every pin when a listed command next to a pinned one is added, removed or
+# edited. ROADMAP.md's verification items describe the open work.
 DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "axi_cdc": (
         "not converted: memory_map and opt -full; no setundef",
@@ -5055,10 +5094,51 @@ def yosys_commands(
         assert args[0] not in ("tcl", "exec", "python"), args
         if args[0] == "script":
             assert len(args) in (2, 3) and args[1] in files, args
-            result += yosys_commands(files[args[1]].splitlines(), files, depth + 1)
+            lines = files[args[1]].splitlines()
+            if len(args) == 3:
+                lines = script_block(lines, args[2])
+            result += yosys_commands(lines, files, depth + 1)
         else:
             result.append(args)
     return result
+
+
+def script_block(lines: list[str], labels: str) -> list[str]:
+    """Return the lines that `script <file> <labels>` runs, as Yosys selects them.
+
+    One label runs the block from that label to the next one; "from:to" runs
+    from the line labeled from (the start when empty) up to the line labeled to
+    (the end when empty), not including it. Continued lines are joined first.
+    """
+    run_from, _, run_to = (
+        labels.partition(":") if ":" in labels else (labels, "", labels)
+    )
+    active = not run_from
+    joined: list[str] = []
+    while lines:
+        line = lines[0]
+        lines = lines[1:]
+        while line.endswith("\\") and lines:
+            line, lines = line[:-1] + lines[0], lines[1:]
+        joined.append(line)
+    selected: list[str] = []
+    for line in joined:
+        words = line.split()
+        if (
+            words
+            and not words[0].startswith("#")
+            and len(words[0]) > 1
+            and words[0].endswith(":")
+        ):
+            label = words[0][:-1]
+            line = line.lstrip(" \t")[len(words[0]) :]
+            if label == run_from:
+                active = True
+            elif label == run_to or (run_from == run_to and run_from):
+                active = False
+        if active:
+            selected.append(line)
+    return selected
 
 
 def dont_care_form_matches(form: str, args: list[str]) -> bool:
@@ -5204,6 +5284,561 @@ def test_dont_care_classifies_every_command() -> None:
         for form, reason in forms:
             assert reason and "\n" not in reason, name
             dont_care_form_matches(form, [name])
+
+
+# Undefined constants. SymbiYosys makes them free inputs only after the script,
+# and the passes above fuse or fix them first. So each task's script opens,
+# after the commands that read sources, set parameters and elaborate, with
+#
+#   hierarchy -top <top>
+#   script free_undefined.ys
+#
+# and lists formal/free_undefined.ys in [files]. That file runs
+# UNDEFINED_OPENING and says why each command is there: proc pass by pass,
+# without proc_rom; a setundef -anyseq on every multiplexer and every
+# connection, but on no memory or process, before proc_dlatch, which reads
+# both and would let a latch keep its value in an all-x case of its fan-in; an
+# opt_expr on memory initializations alone, which setundef's memory handling
+# needs; a setundef -anyseq on the whole design before proc_dff, so that an
+# undefined asynchronous reset value becomes a free asynchronous load rather
+# than a register parameter; and proc's own closing opt_expr -keepdc once
+# nothing undefined is left, so that the commands after the opening see the
+# netlist plain proc gives them (a multiplexer with a constant select folded
+# into a connection), apart from case tables kept as multiplexers, the free
+# values and the asynchronous loads. After it no undefined constant of the
+# sources is left in a cell port, a connection or a register. Commands pinned
+# in an open entry are the exception: a plain memory_map, for one, writes x
+# for words that nothing writes, and a plain opt after it can read them before
+# SymbiYosys frees them. What is left are memory parameters: the initial
+# contents, which memory_map -keepdc keeps free, and the reset and initial
+# values of read ports without a clock, which no pass reads. Later passes
+# write x only where nothing uses the value: opt_dff on the feedback path of a
+# register it gives an enable, wreduce on bits that nothing reads. In a script
+# that opens this way, the undefined-constant cases in the reasons of prep,
+# proc, proc_dlatch, proc_dff, opt, opt_expr, opt_merge, opt_muxtree and
+# techmap above find none of these constants to act on.
+#
+# For every task of a script that neither pending list names, the check
+# requires `script free_undefined.ys`, with free_undefined.ys listed in
+# [files] as that single word, so that SymbiYosys copies the repository's
+# file, and neither a changed copy, another path nor a [file] section in its
+# place (the file's own commands are pinned to UNDEFINED_OPENING, and its
+# commands written out or held in another file are not the opening); a
+# hierarchy -top after the last source and before it; the whole design
+# selected when it runs (a select that replaces, empties or scopes the
+# selection, any select -module and a cd into a module scope it until a select
+# -clear or cd, and design -save, -stash and -push keep that scope with the
+# design for design -load and -pop to bring back, while design -reset clears
+# it); after it, another opening before the next command that acts once a
+# source is read or a parameter set again (read, read_verilog, read_slang,
+# chparam, hierarchy -chparam), the design is reset, or modules of a kept
+# design join it (design -copy-from, -import), and a design that design -load
+# or -pop brings back is opened only if it was when it was kept; the same top
+# in every later hierarchy -top and prep -top; no connect to a constant with
+# an x or z bit, in any spelling; and setundef -anyseq right after a script's
+# own async2sync or clk2fflogic, which write x where an asynchronous set and
+# clear are both active. A script file included with a label runs only that
+# block, as in Yosys.
+#
+# The opening does not reach undefined values that a cell computes, such as a
+# $shiftx read past its input, which the backends and the default techmap's
+# shift templates give a defined value, or a $pmux with more than one select
+# set; constant z bits, which setundef -anyseq leaves (as SymbiYosys's own
+# setundef does) and no source has; or a memory initialized with x, which makes
+# the next pass that reads the memory stop with "Non-constant data".
+UNDEFINED_OPENING = [
+    ["proc_clean"],
+    ["proc_rmdead"],
+    ["proc_prune"],
+    ["proc_init"],
+    ["proc_arst"],
+    ["proc_mux"],
+    ["setundef", "-anyseq", "t:$mux", "t:$pmux", "t:$bwmux", "w:*"],
+    ["proc_dlatch"],
+    ["opt_expr", "-keepdc", "t:$meminit*"],
+    ["setundef", "-anyseq"],
+    ["proc_dff"],
+    ["proc_memwr"],
+    ["proc_clean"],
+    ["opt_expr", "-keepdc"],
+]
+# Commands that may run before the opening: they read sources, set parameters,
+# elaborate, or change neither a cell nor a constant. select and cd can change
+# what the opening runs on; the check follows them.
+UNDEFINED_OPENING_BEFORE = {
+    "read",
+    "read_verilog",
+    "read_slang",
+    "verilog_defines",
+    "chparam",
+    "hierarchy",
+    "select",
+    "cd",
+    "log",
+    "echo",
+    "check",
+    "stat",
+    "write_rtlil",
+    "write_json",
+    "delete",
+    "setattr",
+    "rename",
+    "connect",
+    "cutpoint",
+    "chformal",
+    "debug",
+}
+# The opening's file. A script lists it in [files] as the single word
+# free_undefined.ys, so that SymbiYosys copies the repository's
+# formal/free_undefined.ys unchanged, and runs it with `script
+# free_undefined.ys`; the check reads that command as the opening, and the
+# file's content is pinned to UNDEFINED_OPENING.
+UNDEFINED_OPENING_FILE = "free_undefined.ys"
+UNDEFINED_OPENING_MARK = ["<free_undefined.ys>"]
+UNDEFINED_OPENING_SOURCES = {"read", "read_verilog", "read_slang", "chparam"}
+# A constant with an x or z digit, as Yosys's Verilog constant parser reads
+# connect arguments: 1'x, 1'bx, 1'X, 4'hx, 2'b0?, in a concatenation too.
+UNDEFINED_CONSTANT = re.compile(r"\d*'[sS]?[bBoOdDhH]?[0-9a-fA-F_xXzZ?]*[xXzZ?]")
+# Scripts that do not open that way yet. The list only shrinks: a listed script
+# whose every task opens fails the check.
+UNDEFINED_OPENING_PENDING = (
+    "alu_shift_hint",
+    "aplic",
+    "axi_cdc",
+    "axi_coherent_bridge",
+    "axi_mux",
+    "axil_reg_bridge",
+    "backing_btb",
+    "branch_prediction_alias",
+    "branch_prediction_disable",
+    "btb_pending_relation",
+    "btb_tag_compare",
+    "c_ext_buffer_next",
+    "c_ext_state_cofactor",
+    "cache_flash_valid",
+    "cache_mshr_payload",
+    "cache_way_choice",
+    "cdb_arbiter",
+    "cdc_mailbox",
+    "cl_multiplier",
+    "coherence_array",
+    "coherence_array_equiv",
+    "coherence_control",
+    "coherence_dma_ingress",
+    "coherence_endpoints",
+    "coherence_home",
+    "coherence_home_array",
+    "coherence_home_completions",
+    "coherence_home_engine",
+    "coherence_home_forward_pins",
+    "coherence_home_select",
+    "coherence_l1d",
+    "coherence_l1d_zero_index",
+    "coherence_link",
+    "coherence_observation",
+    "coherence_prefetch_agent",
+    "coherence_prefetch_pause",
+    "coherence_read_payload",
+    "coherence_read_stream",
+    "coherence_replay_compare",
+    "coherence_store_boundary",
+    "coherence_store_home",
+    "coherent_cpu",
+    "coherent_debug_request_count",
+    "coherent_hart_cache",
+    "coherent_l0",
+    "coherent_local_owners",
+    "coherent_rs_capacity",
+    "coherent_rs_control",
+    "coherent_rs_issue2_selector",
+    "coherent_rs_payload",
+    "control_flow_holdoff",
+    "cpu_axi_payload",
+    "csr_commit_cofactor",
+    "csr_file",
+    "csr_sscofpmf",
+    "data_mem_request_router",
+    "data_mem_response_mux",
+    "debug_dirty_next",
+    "debug_fetch_barrier",
+    "debug_go_pipeline",
+    "debug_store_mirror_hold",
+    "decoded_bundle_queue",
+    "dispatch_admission",
+    "divider",
+    "dmmu_capture",
+    "dmmu_mmio",
+    "dmmu_va_next",
+    "early_backend_hold",
+    "fetch_pc_mux",
+    "fetch_redirect",
+    "fetch_shadow_capture",
+    "fp_launch_squash",
+    "fp_launch_squash_rs",
+    "fp_shim",
+    "fu_cdb_adapter",
+    "fu_cdb_adapter_payload_no_refill",
+    "home_capture_equiv",
+    "home_forward_next_equiv",
+    "home_seat_next_equiv",
+    "if_direction_payload",
+    "if_prediction_walk_past",
+    "if_slot2_precompute",
+    "immu_bare",
+    "immu_capture_next",
+    "immu_memo",
+    "immu_page_offset",
+    "immu_successor",
+    "imsic",
+    "imsic_file",
+    "instr_operand_classifier",
+    "int_muldiv_shim",
+    "l2tlb",
+    "line_align",
+    "line_arbiter_grant",
+    "line_client_link",
+    "line_port_axi_bridge",
+    "line_size_adapter",
+    "load_queue",
+    "load_queue_amo_compute",
+    "low_bram_presenter_tier",
+    "lq_age_groups",
+    "lq_alloc_mask",
+    "lq_cached_flags",
+    "lq_cached_hold",
+    "lq_capacity",
+    "lq_capture_pins",
+    "lq_l0_cache",
+    "lq_l0_lookup",
+    "lq_normal_fill_policy",
+    "lq_prematch_cofactors",
+    "lq_ram_payload",
+    "lq_replace_select",
+    "lq_response_bypass",
+    "lq_result_pins",
+    "lq_result_valid",
+    "lq_sector_copy",
+    "lq_tag_order",
+    "ma_engine",
+    "ma_pkg",
+    "mem_wakeup_merge",
+    "mispredict_capture",
+    "mul_adapter_grant",
+    "mul_completion_tag",
+    "mwp_dist_ram",
+    "nic_dma_front",
+    "nic_irq",
+    "pc_holdoff_cofactor",
+    "pc_holdoff_tag",
+    "pc_increment_holdoff",
+    "pc_increment_relation",
+    "pc_pending_capture",
+    "pc_redirect_catchup_consumer",
+    "pc_redirect_catchup_producer",
+    "pc_register_mux",
+    "pc_tage_events",
+    "pd_backing_redirect",
+    "pd_id_slot2_redirect",
+    "pd_redirect_next_equiv",
+    "pm_mode_select",
+    "pointer_masking",
+    "prediction_handoff",
+    "prediction_metadata_output",
+    "prediction_metadata_tracker",
+    "prediction_release",
+    "ptw",
+    "ptw_pbmt_alias",
+    "ras_checkpoint",
+    "rat_checkpoint_restore",
+    "register_alias_table",
+    "reorder_buffer",
+    "reservation_station",
+    "rob_alloc_lvt",
+    "rob_bypass_control",
+    "rob_control_next",
+    "rob_link_dispatch",
+    "rob_link_value_ram",
+    "rob_retire_ready",
+    "rob_retire_stall",
+    "rob_start_cofactor",
+    "rs_alloc_parallel",
+    "rs_dispatch_defer",
+    "rs_divide_gate",
+    "rs_indexed_deferred_fold",
+    "rs_issue2_selector",
+    "rs_issue_clear",
+    "rs_lq_prematch",
+    "rs_payload_twin",
+    "rs_pretag_cofactor",
+    "rs_raw_pretag",
+    "rs_stage2_payload_equiv",
+    "rvc_predecode",
+    "sc_head_query",
+    "served_window_coverage",
+    "slot2_prediction_capture",
+    "sq_committed_empty",
+    "sq_early_sq_copy",
+    "sq_forwarding_unit",
+    "sq_live_result_select",
+    "sq_next_same",
+    "sq_repair_mmio",
+    "store_queue",
+    "sync_dist_ram_fifo",
+    "tlb",
+    "tomasulo_wrapper",
+    "trap_unit",
+    "uncached_read_capture",
+    "vec_head_mmu",
+    "vec_hold_rows",
+    "vec_lmul_legality_equiv",
+    "vec_vmt",
+)
+# Scripts that compare two designs inside the script (the primitive twins and
+# the other in-script equivalence checks). Both designs hold the same undefined
+# constants, so freeing them separately on each side would make the sides
+# differ; these scripts wait for an opening of their own and do not open yet.
+UNDEFINED_OPENING_TWINS = (
+    "branch_predictor_twin",
+    "cached_tier_adapter_twin",
+    "coherence_home_engine_twin",
+    "coherence_home_twin",
+    "coherence_l1d_twin",
+    "coherent_store_pma_twin",
+    "control_flow_tracker_twin",
+    "csr_file_twin",
+    "data_mem_request_router_twin",
+    "decoded_bundle_queue_twin",
+    "dmmu_twin",
+    "fp_engine_twin",
+    "id_stage_kill_equiv",
+    "immu_twin",
+    "pc_controller_twin",
+    "pd_target_candidate_twin",
+    "reservation_station_twin",
+    "rs_issue_tag_banks",
+    "store_queue_twin",
+)
+
+
+def selection_change(args: list[str]) -> str | None:
+    """Return "scoped" or "full" when a select or cd changes the selection.
+
+    A select that lists, counts, asserts, writes or names a selection changes
+    nothing unless it has -module, which sets the active module in any form.
+    """
+    if args[0] == "cd":
+        return "full" if args[1:] in ([], ["/"]) else "scoped"
+    if args[0] != "select":
+        return None
+    if "-module" in args:
+        return "scoped"
+    if "-clear" in args:
+        return "full"
+    if "-none" in args or "-add" in args or "-del" in args or "-read" in args:
+        return "scoped"
+    passive = {
+        "-list",
+        "-list-mod",
+        "-count",
+        "-write",
+        "-set",
+        "-unset",
+        "-assert-none",
+        "-assert-any",
+        "-assert-count",
+        "-assert-max",
+        "-assert-min",
+        "-assert-mod-count",
+    }
+    if passive & set(args):
+        return None
+    return "scoped" if len(args) > 1 else None
+
+
+def undefined_opening_gaps(commands: list[list[str]]) -> list[str]:
+    """Return what keeps a task's commands from opening as required, in order."""
+    gaps: list[str] = []
+    openings = 0
+    # What the check knows of the design Yosys works on: opened, it has had its
+    # opening; early, an acting command came before it; after_async, the last
+    # command was a script's own async2sync or clk2fflogic; scoped, the
+    # selection or the active module is narrower than the design; elaborated,
+    # the top named after the last source; top, the one the opening ran with.
+    # design -save, -stash and -push keep a design with its selection and
+    # active module, and -load and -pop bring both back (design.cc:344-385),
+    # so the check keeps this state with them.
+    fresh: dict = {
+        "opened": False,
+        "early": False,
+        "after_async": False,
+        "scoped": False,
+        "elaborated": None,
+        "top": None,
+    }
+    state = dict(fresh)
+    saved: dict[str, dict] = {}
+    pushed: list[dict] = []
+    for args in commands:
+        name, text = args[0], " ".join(args)
+        named_top = args[args.index("-top") + 1] if "-top" in args[:-1] else None
+        change = selection_change(args)
+        if change:
+            state["scoped"] = change == "scoped"
+            continue
+        if name == "design":
+            mode = args[1] if len(args) > 1 else ""
+            target = args[2] if len(args) > 2 else ""
+            # A design the check has not seen kept counts as unopened and scoped.
+            unknown = {**fresh, "scoped": True}
+            if mode in ("-save", "-stash"):
+                saved[target] = dict(state)
+            if mode in ("-push", "-push-copy"):
+                pushed.append(dict(state))
+            if mode in ("-reset", "-stash", "-push"):
+                state = dict(fresh)
+            elif mode == "-load":
+                state = dict(saved.get(target, unknown))
+            elif mode == "-pop":
+                state = pushed.pop() if pushed else unknown
+            elif mode in ("-copy-from", "-import"):
+                # Modules of a kept design join this one.
+                state.update(opened=False, early=False, after_async=False)
+                state["elaborated"] = None
+            elif mode == "-copy-to":
+                kept = saved.get(target, fresh)
+                saved[target] = {**kept, "opened": kept["opened"] and state["opened"]}
+            elif mode == "-delete":
+                saved.pop(target, None)
+            continue
+        if name in UNDEFINED_OPENING_SOURCES or (
+            name == "hierarchy" and "-chparam" in args
+        ):
+            state.update(opened=False, early=False, after_async=False)
+            state["elaborated"] = None
+            continue
+        if name == "hierarchy":
+            if not state["opened"]:
+                state["elaborated"] = named_top or state["elaborated"]
+            elif named_top not in (None, state["top"]):
+                gaps.append(f"{text}: another top after the opening")
+            continue
+        if args == UNDEFINED_OPENING_MARK:
+            text = f"script {UNDEFINED_OPENING_FILE}"
+            if not state["opened"]:
+                if state["scoped"]:
+                    gaps.append(
+                        f"{text}: the opening runs on a selection, not the design"
+                    )
+                if state["elaborated"] is None:
+                    gaps.append(f"{text}: no hierarchy -top after the last source")
+                state["opened"], state["top"] = True, state["elaborated"]
+                openings += 1
+            continue
+        if name in UNDEFINED_OPENING_BEFORE:
+            if (
+                state["opened"]
+                and name == "connect"
+                and any(UNDEFINED_CONSTANT.search(arg) for arg in args[1:])
+            ):
+                gaps.append(f"{text}: connects an undefined constant after the opening")
+            continue
+        if not state["opened"]:
+            if not state["early"]:
+                gaps.append(f"{text}: acts before the opening")
+            state["early"] = True
+            continue
+        if name == "prep" and named_top not in (None, state["top"]):
+            gaps.append(f"{text}: another top after the opening")
+        if state["after_async"] and not (
+            name == "setundef"
+            and sorted(args[1:]) in (["-anyseq"], ["-anyseq", "-undriven"])
+        ):
+            gaps.append(f"{text}: acts on what async2sync or clk2fflogic writes")
+        state["after_async"] = name in ("async2sync", "clk2fflogic")
+    if not openings:
+        gaps.append("no opening")
+    return gaps
+
+
+def undefined_opening_file_gaps(sby_path: Path) -> list[str]:
+    """Return why a script that names the opening's file would not run it as it is."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    gaps: list[str] = []
+    entries: list[str] = []
+    section = ""
+    for line in sby_path.read_text().splitlines():
+        if line.startswith("[") and line.rstrip().endswith("]"):
+            section = " ".join(line.strip()[1:-1].split())
+            if section == f"file {UNDEFINED_OPENING_FILE}":
+                gaps.append(f"[{section}]: the opening's file is written in the script")
+        elif section == "files" and line.split() and not line.startswith("#"):
+            words = line.split()
+            if (words[0] if len(words) > 1 else Path(words[-1]).name) == (
+                UNDEFINED_OPENING_FILE
+            ):
+                entries.append(" ".join(words))
+    if entries and entries != [UNDEFINED_OPENING_FILE]:
+        gaps.append(
+            f"[files] {' / '.join(entries)}: not the single entry {UNDEFINED_OPENING_FILE}"
+        )
+    elif entries:
+        copy = sby_path.parent / UNDEFINED_OPENING_FILE
+        if not copy.is_file() or (
+            copy.read_bytes() != (formal / UNDEFINED_OPENING_FILE).read_bytes()
+        ):
+            gaps.append(f"{copy}: not the repository's {UNDEFINED_OPENING_FILE}")
+    return gaps
+
+
+def sby_undefined_opening_gaps(sby_path: Path) -> dict[str, list[str]]:
+    """Return each task's opening gaps, for the tasks that have any."""
+    scripts, files = sby_task_scripts(sby_path)
+    # `script free_undefined.ys` runs the opening when [files] gives it the
+    # repository's file; the file's commands are checked once, against
+    # UNDEFINED_OPENING.
+    marked = {**files, UNDEFINED_OPENING_FILE: UNDEFINED_OPENING_MARK[0]}
+    named = UNDEFINED_OPENING_FILE in files or any(
+        UNDEFINED_OPENING_MARK in yosys_commands(script, marked)
+        for script in scripts.values()
+    )
+    file_gaps = undefined_opening_file_gaps(sby_path) if named else []
+    if named and UNDEFINED_OPENING_FILE not in files and not file_gaps:
+        file_gaps = [f"[files] does not list {UNDEFINED_OPENING_FILE}"]
+    return {
+        task or "-": gaps
+        for task, script in scripts.items()
+        if (gaps := file_gaps + undefined_opening_gaps(yosys_commands(script, marked)))
+    }
+
+
+def test_scripts_free_undefined_constants_first() -> None:
+    """Every script outside the two pending lists opens with UNDEFINED_OPENING."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    waiting = set(UNDEFINED_OPENING_PENDING) | set(UNDEFINED_OPENING_TWINS)
+    lacking: list[str] = []
+    opened: list[str] = []
+    for sby_path in sorted(formal.glob("*.sby")):
+        gaps = sby_undefined_opening_gaps(sby_path)
+        if sby_path.stem in waiting:
+            if not gaps:
+                opened.append(sby_path.stem)
+        else:
+            lacking += [
+                f"{sby_path.name} {task}: {gap}"
+                for task, found in gaps.items()
+                for gap in found
+            ]
+    # A script outside the lists must open in every task.
+    assert not lacking, lacking
+    # A listed script that opens in every task leaves its list.
+    assert not opened, opened
+    for names in (UNDEFINED_OPENING_PENDING, UNDEFINED_OPENING_TWINS):
+        assert list(names) == sorted(set(names))
+        assert [name for name in names if not (formal / f"{name}.sby").is_file()] == []
+    assert not set(UNDEFINED_OPENING_PENDING) & set(UNDEFINED_OPENING_TWINS)
+    # The opening's own file runs exactly UNDEFINED_OPENING.
+    opening = (formal / "free_undefined.ys").read_text().splitlines()
+    assert yosys_commands(opening, {}) == UNDEFINED_OPENING
 
 
 DONT_CARE_NO_STATE = (
@@ -5842,6 +6477,8 @@ def test_dont_care_guard_mutations(
         text = text.replace(old, new)
     mutated = tmp_path / source.name
     mutated.write_text(text)
+    for script_file in source.parent.glob("*.ys"):
+        (tmp_path / script_file.name).write_text(script_file.read_text())
     assert dont_care_changes(source) == ([], [])
     added, missing = dont_care_changes(mutated)
     if expect == "flag":
@@ -5927,6 +6564,598 @@ def test_dont_care_guard_reads_scripts_as_yosys_does(tmp_path: Path) -> None:
         "opt",
         "opt -fast",
     ]
+
+
+UNDEFINED_OPEN_VTYPE = (
+    "hierarchy -top vec_vtype_tracker_formal\nscript free_undefined.ys\n"
+)
+# Each case edits a real script that opens. A "flag" edit must leave some task
+# without the opening, an "accept" edit must leave every task opened.
+UNDEFINED_OPENING_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
+    # The opening removed, its two lines swapped, placed after an optimizing
+    # pass or after prep, in one task only, or another proc in its place.
+    ("flag", "vec_vtype_tracker", ((UNDEFINED_OPEN_VTYPE, ""),)),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                UNDEFINED_OPEN_VTYPE,
+                "script free_undefined.ys\nhierarchy -top vec_vtype_tracker_formal\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherence_array_plru",
+        (
+            (
+                "hierarchy -top coherence_array\n",
+                "opt -keepdc\nhierarchy -top coherence_array\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "async_fifo",
+        (
+            (
+                "hierarchy -top async_fifo\nscript free_undefined.ys\nprep -top async_fifo\n",
+                "prep -top async_fifo\nhierarchy -top async_fifo\nscript free_undefined.ys\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vmu",
+        (
+            (
+                "hierarchy -top vec_vmu_formal\nscript free_undefined.ys\n",
+                "bmc: hierarchy -top vec_vmu_formal\nbmc: script free_undefined.ys\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherence_store_buffer",
+        (
+            (
+                "~saturation: script free_undefined.ys\n",
+                "prove: script free_undefined.ys\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "rs_issue_tag_copies",
+        (("script free_undefined.ys\n", "proc -norom -noopt\nsetundef -anyseq\n"),),
+    ),
+    ("flag", "sq_live_count", (("hierarchy -top store_queue\n", ""),)),
+    # Sources or parameters after the opening, another top, what async2sync
+    # writes, and a connection to an undefined constant in four spellings.
+    (
+        "flag",
+        "async_fifo",
+        (
+            (
+                "script free_undefined.ys\nprep -top async_fifo\n",
+                "script free_undefined.ys\nchparam -set DEPTH 8 async_fifo\nprep -top async_fifo\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\nprep",
+                "script free_undefined.ys\nread -formal -sv vec_cfg_unit.sv\nprep",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherence_store_buffer",
+        (
+            (
+                "saturation: prep -flatten -top coherence_store_saturation_formal\n",
+                "saturation: prep -flatten -top coherence_store_buffer\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherent_local_atomic",
+        (("memory_map -keepdc\n", "async2sync\nmemory_map -keepdc\n"),),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\nprep",
+                "script free_undefined.ys\nasync2sync\nsetundef -anyseq w:*\nprep",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "lq_capture",
+        (
+            (
+                "connect -nounset -set p_hold dut.coh_launch_hold_q\n",
+                "connect -nounset -set p_hold 1'x\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\nprep",
+                "script free_undefined.ys\nconnect -set clk 1'bx\nprep",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\nprep",
+                "script free_undefined.ys\nconnect -set clk 1'X\nprep",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\nprep",
+                "script free_undefined.ys\nconnect -set clk {1'b0,4'hx}\nprep",
+            ),
+        ),
+    ),
+    # The opening on part of the design: an emptied, replaced or scoped
+    # selection before it, or cd into a module.
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\n",
+                "select -none\nscript free_undefined.ys\nselect -clear\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\n",
+                "cd vec_vtype_tracker\nscript free_undefined.ys\ncd\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\n",
+                "select -list -module vec_vtype_tracker\nscript free_undefined.ys\ncd\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\n",
+                "select w:*\nscript free_undefined.ys\nselect -clear\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\n",
+                "select -assert-none -module vec_vtype_tracker t:$nonexistent\n"
+                "script free_undefined.ys\ncd\n",
+            ),
+        ),
+    ),
+    # A narrower selection or active module kept with a design and brought
+    # back by design -load or -pop, and a design that comes back, or joins,
+    # without its opening.
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                UNDEFINED_OPEN_VTYPE,
+                "cd vec_vtype_tracker_formal\ndesign -save s\ncd\ndesign -load s\n"
+                + UNDEFINED_OPEN_VTYPE,
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                UNDEFINED_OPEN_VTYPE,
+                "select w:*\ndesign -save s\nselect -clear\ndesign -load s\n"
+                + UNDEFINED_OPEN_VTYPE,
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                UNDEFINED_OPEN_VTYPE,
+                "select w:*\ndesign -push-copy\nselect -clear\ndesign -pop\n"
+                + UNDEFINED_OPEN_VTYPE,
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                UNDEFINED_OPEN_VTYPE,
+                "design -push-copy\n" + UNDEFINED_OPEN_VTYPE + "design -pop\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                UNDEFINED_OPEN_VTYPE,
+                "design -save raw\n" + UNDEFINED_OPEN_VTYPE + "design -load raw\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                UNDEFINED_OPEN_VTYPE,
+                "design -save raw\n" + UNDEFINED_OPEN_VTYPE + "design -import raw\n",
+            ),
+        ),
+    ),
+    # A script file included with a label that skips the opening.
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (UNDEFINED_OPEN_VTYPE, "script open.ys rest\n"),
+            (
+                "[files]\n",
+                f"[file open.ys]\nopening:\n{UNDEFINED_OPEN_VTYPE}rest:\nlog skipped\n\n[files]\n",
+            ),
+        ),
+    ),
+    # The opening's file reached any other way: a [files] entry with a path,
+    # under another source name, listed twice, written as a [file] section,
+    # the opening's commands written out, or another file that holds them.
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (("\nfree_undefined.ys\n", "\ncopy/free_undefined.ys\n"),),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (("\nfree_undefined.ys\n", "\nfree_undefined.ys vec_unit_opening.ys\n"),),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (("\nfree_undefined.ys\n", "\nfree_undefined.ys\nfree_undefined.ys\n"),),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            ("\nfree_undefined.ys\n", "\n"),
+            (
+                "[files]\n",
+                "[file free_undefined.ys]\nproc\nsetundef -anyseq\n\n[files]\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\n",
+                "".join(" ".join(c) + "\n" for c in UNDEFINED_OPENING),
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vtype_tracker",
+        (
+            ("script free_undefined.ys\n", "script opening.ys\n"),
+            (
+                "[files]\n",
+                "[file opening.ys]\n"
+                + "".join(" ".join(c) + "\n" for c in UNDEFINED_OPENING)
+                + "\n[files]\n",
+            ),
+        ),
+    ),
+    # Sound variants: the opening in an included script, also entered at its
+    # label; setundef -undriven after it; a selection asserted or cleared
+    # before it; the opening run again after a parameter is set.
+    (
+        "accept",
+        "vec_vtype_tracker",
+        (
+            (
+                UNDEFINED_OPEN_VTYPE,
+                "cd vec_vtype_tracker_formal\ndesign -save s\ncd\n"
+                + UNDEFINED_OPEN_VTYPE,
+            ),
+        ),
+    ),
+    (
+        "accept",
+        "vec_vtype_tracker",
+        (
+            (
+                UNDEFINED_OPEN_VTYPE,
+                UNDEFINED_OPEN_VTYPE
+                + "design -save opened\ndesign -reset\ndesign -load opened\n",
+            ),
+        ),
+    ),
+    (
+        "accept",
+        "vec_vtype_tracker",
+        (
+            (UNDEFINED_OPEN_VTYPE, "script open.ys\n"),
+            ("[files]\n", f"[file open.ys]\n{UNDEFINED_OPEN_VTYPE}\n[files]\n"),
+        ),
+    ),
+    (
+        "accept",
+        "vec_vtype_tracker",
+        (
+            (UNDEFINED_OPEN_VTYPE, "script open.ys opening\n"),
+            (
+                "[files]\n",
+                f"[file open.ys]\nopening:\n{UNDEFINED_OPEN_VTYPE}rest:\nlog done\n\n[files]\n",
+            ),
+        ),
+    ),
+    (
+        "accept",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\nprep",
+                "script free_undefined.ys\nsetundef -undriven -anyseq\nprep",
+            ),
+        ),
+    ),
+    (
+        "accept",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\nprep",
+                "script free_undefined.ys\nasync2sync\nsetundef -anyseq\nprep",
+            ),
+        ),
+    ),
+    (
+        "accept",
+        "vec_vtype_tracker",
+        (
+            (
+                "script free_undefined.ys\n",
+                "select -assert-min 1 t:*\nselect w:*\nselect -clear\nscript free_undefined.ys\n",
+            ),
+        ),
+    ),
+    (
+        "accept",
+        "async_fifo",
+        (
+            (
+                "script free_undefined.ys\nprep -top async_fifo\n",
+                "script free_undefined.ys\nchparam -set DEPTH 4 async_fifo\n"
+                "hierarchy -top async_fifo\nscript free_undefined.ys\nprep -top async_fifo\n",
+            ),
+        ),
+    ),
+]
+# Edits of the copy of the opening's file that vec_vtype_tracker's script
+# gets: a command dropped, moved, added or run on another selection, and also
+# a change that leaves the commands as they are. Each is refused.
+UNDEFINED_OPENING_FILE_MUTATIONS: list[tuple[str, tuple[tuple[str, str], ...]]] = [
+    ("flag", (("setundef -anyseq t:$mux t:$pmux t:$bwmux w:*\n", ""),)),
+    (
+        "flag",
+        (
+            (
+                "setundef -anyseq t:$mux t:$pmux t:$bwmux w:*\n",
+                "setundef -anyseq t:$mux t:$pmux t:$bwmux\n",
+            ),
+        ),
+    ),
+    ("flag", (("setundef -anyseq\nproc_dff\n", "proc_dff\nsetundef -anyseq\n"),)),
+    ("flag", (("proc_mux\n", "proc_rom\nproc_mux\n"),)),
+    ("flag", (("opt_expr -keepdc t:$meminit*\n", "opt_expr -keepdc\n"),)),
+    (
+        "flag",
+        (
+            (
+                "proc_clean\nopt_expr -keepdc\n",
+                "proc_clean\nopt_expr -keepdc -mux_undef\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        (("proc_clean\nproc_rmdead\n", "select -none\nproc_clean\nproc_rmdead\n"),),
+    ),
+    ("flag", (("proc_dlatch\n", "cd top\nproc_dlatch\ncd\n"),)),
+    ("flag", (("proc_dlatch\n", "log latches\nproc_dlatch\necho off\n"),)),
+    (
+        "flag",
+        (("proc_dff\n", "select -assert-none t:$meminit_v2 %n %n\nproc_dff\n"),),
+    ),
+    ("flag", (("# Frees the undefined", "# Makes free the undefined"),)),
+]
+
+
+def undefined_opening_mutant(
+    tmp_path: Path,
+    name: str,
+    edits: tuple[tuple[str, str], ...],
+    file_edits: tuple[tuple[str, str], ...] = (),
+) -> Path:
+    """Write an edited copy of a script, and of the files it includes, to tmp_path."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    text = (formal / f"{name}.sby").read_text()
+    for old, new in edits:
+        assert text.count(old) == 1, (name, old)
+        text = text.replace(old, new)
+    for script_file in formal.glob("*.ys"):
+        body = script_file.read_text()
+        if script_file.name == "free_undefined.ys":
+            for old, new in file_edits:
+                assert body.count(old) == 1, old
+                body = body.replace(old, new)
+        (tmp_path / script_file.name).write_text(body)
+    mutated = tmp_path / f"{name}.sby"
+    mutated.write_text(text)
+    return mutated
+
+
+@pytest.mark.parametrize("expect,name,edits", UNDEFINED_OPENING_MUTATIONS)
+def test_undefined_opening_mutations(
+    tmp_path: Path, expect: str, name: str, edits: tuple[tuple[str, str], ...]
+) -> None:
+    """The opening check finds a task that a mutation leaves without its opening."""
+    source = Path(__file__).resolve().parents[1] / FORMAL_DIR / f"{name}.sby"
+    assert sby_undefined_opening_gaps(source) == {}
+    gaps = sby_undefined_opening_gaps(undefined_opening_mutant(tmp_path, name, edits))
+    if expect == "flag":
+        assert gaps, edits
+    else:
+        assert gaps == {}, gaps
+
+
+@pytest.mark.parametrize("expect,edits", UNDEFINED_OPENING_FILE_MUTATIONS)
+def test_undefined_opening_file_mutations(
+    tmp_path: Path, expect: str, edits: tuple[tuple[str, str], ...]
+) -> None:
+    """A script must get the repository's opening file unchanged."""
+    mutated = undefined_opening_mutant(tmp_path, "vec_vtype_tracker", (), edits)
+    gaps = sby_undefined_opening_gaps(mutated)
+    assert expect == "flag"
+    assert gaps, edits
+    assert all(
+        f"not the repository's {UNDEFINED_OPENING_FILE}" in found[0]
+        for found in gaps.values()
+    ), gaps
+
+
+def test_undefined_opening_reads_commands() -> None:
+    """Which commands may precede the opening, and what resets or scopes it."""
+    opening = [["hierarchy", "-top", "top"], UNDEFINED_OPENING_MARK]
+    assert (
+        undefined_opening_gaps(
+            [["read", "-formal", "a.sv"], *opening, ["opt", "-keepdc"]]
+        )
+        == []
+    )
+    # A delete, a cut or a listing may come first; an optimizing pass may not.
+    assert (
+        undefined_opening_gaps(
+            [
+                ["delete", "t:sub"],
+                ["cutpoint", "w:x"],
+                ["select", "-list", "t:*"],
+                *opening,
+            ]
+        )
+        == []
+    )
+    assert undefined_opening_gaps([["flatten"], *opening]) == [
+        "flatten: acts before the opening"
+    ]
+    # A selection left in place when the opening runs.
+    assert undefined_opening_gaps([["select", "-module", "sub"], *opening]) == [
+        "script free_undefined.ys: the opening runs on a selection, not the design"
+    ]
+    # The opening's commands written out are not the opening.
+    assert undefined_opening_gaps(
+        [["hierarchy", "-top", "top"], *UNDEFINED_OPENING, ["prep", "-top", "top"]]
+    ) == ["proc_clean: acts before the opening", "no opening"]
+    assert undefined_opening_gaps([["cd", "sub"], ["cd"], *opening]) == []
+    assert (
+        undefined_opening_gaps(
+            [["cd", "sub"], ["design", "-reset"], ["read", "-formal", "a.sv"], *opening]
+        )
+        == []
+    )
+    assert undefined_opening_gaps(
+        [["cd", "sub"], ["design", "-stash", "s"], ["design", "-load", "s"], *opening]
+    ) == ["script free_undefined.ys: the opening runs on a selection, not the design"]
+    # A design read after a reset needs its own opening; a further hierarchy
+    # with the same top does not.
+    assert undefined_opening_gaps(
+        [*opening, ["design", "-reset"], ["read", "b.sv"], ["prep", "-top", "b"]]
+    ) == ["prep -top b: acts before the opening"]
+    assert (
+        undefined_opening_gaps(
+            [*opening, ["hierarchy", "-top", "top"], ["prep", "-top", "top"]]
+        )
+        == []
+    )
+    assert undefined_opening_gaps([*opening, ["hierarchy", "-top", "sub"]]) == [
+        "hierarchy -top sub: another top after the opening"
+    ]
+    # clk2fflogic's undefined values are freed before the next acting command.
+    assert (
+        undefined_opening_gaps(
+            [*opening, ["clk2fflogic"], ["setundef", "-anyseq"], ["opt", "-keepdc"]]
+        )
+        == []
+    )
+    assert undefined_opening_gaps([*opening, ["clk2fflogic"], ["opt", "-keepdc"]]) == [
+        "opt -keepdc: acts on what async2sync or clk2fflogic writes"
+    ]
+    # Constants with x or z, as connect's Verilog constant parser takes them.
+    for spelled in ("1'x", "1'bx", "1'X", "4'hx", "2'b0?", "{a,1'bz}", "8'hxF"):
+        assert UNDEFINED_CONSTANT.search(spelled), spelled
+    for spelled in ("1'b0", "8'h00", "5'b00000", "16'hDEAD", "w:x_q", "dut.x"):
+        assert not UNDEFINED_CONSTANT.search(spelled), spelled
+    # A labeled include runs only its block, as Yosys runs it.
+    lines = ["a: log a", "log a2", "b: log b", "c:", "log c"]
+    assert script_block(list(lines), "b") == [" log b"]
+    assert script_block(list(lines), "a:c") == [" log a", "log a2", " log b"]
+    assert script_block(list(lines), ":b") == [" log a", "log a2"]
 
 
 def test_store_home_cover_budgets() -> None:

@@ -1,0 +1,34 @@
+# Frees the undefined constants of the sources before any pass that can act
+# on them. A script runs it right after `hierarchy -top <top>`, once every
+# source is read and every parameter set, and lists this file in [files].
+#
+# proc runs pass by pass, without proc_rom, and its closing opt_expr runs last.
+# The first setundef frees the undefined inputs of every multiplexer and every
+# undefined bit of a connection, before proc_dlatch, which reads both (the
+# connections through its signal map) and would make an all-x case in a
+# latch's fan-in hold. It selects no memory, since setundef reads a selected
+# memory's initialization, which processes still drive until proc_dlatch, and
+# no process. The second frees every other undefined bit, in cells,
+# connections and the processes that are left, before proc_dff, which would
+# otherwise store an undefined asynchronous reset value in a register's
+# parameters; a free reset value becomes an asynchronous load instead. The
+# opt_expr between them writes the constants of memory initializations into
+# their cells, which setundef's memory handling requires, and changes no other
+# cell. The last opt_expr is proc's own closing step, run once no undefined
+# constant is left for it: it folds what plain proc folds, such as a
+# multiplexer with a constant select, so that the commands after the opening
+# see the netlist they saw.
+proc_clean
+proc_rmdead
+proc_prune
+proc_init
+proc_arst
+proc_mux
+setundef -anyseq t:$mux t:$pmux t:$bwmux w:*
+proc_dlatch
+opt_expr -keepdc t:$meminit*
+setundef -anyseq
+proc_dff
+proc_memwr
+proc_clean
+opt_expr -keepdc
