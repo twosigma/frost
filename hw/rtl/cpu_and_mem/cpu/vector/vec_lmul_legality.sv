@@ -16,16 +16,17 @@
 
 
 /*
-  The register-number part of vector arithmetic legality, for each LMUL
-  class: o_illegal[k] is riscv_pkg::vector_arith_illegal's result for the
-  instruction under a legal vtype whose register groups are 2^k registers
-  (k = 0 for LMUL 1 and the fractional LMULs). It depends on the instruction
+  Register-number checks of vector arithmetic for each LMUL class:
+  o_illegal[k] covers alignment of groups of 2^k registers (k = 0 for LMUL 1
+  and the fractional LMULs), mask-destination overlap, a masked write of v0
+  and v0 read both as the mask and as data. It depends on the instruction
   bits only, so cpu_ooo forms it from each copy of ID's output that enters
   the decoded queue and carries it in the queue's shadow beside slot 1.
-  Dispatch selects the class of the vtype in effect and adds vill:
+  Dispatch uses it only in builds without the vector unit (VECTOR = 0, where
+  ID already rejects every OP-V instruction):
     illegal = vill || o_illegal[vlmul[2] ? 0 : vlmul[1:0]]
-  which equals vector_arith_illegal(vtype, instruction) for every vtype
-  (formal/vec_lmul_legality_equiv.sby).
+  With the unit, vec_dispatch_legality supplies the full arithmetic legality
+  instead, and these bits have no load.
 */
 module vec_lmul_legality (
     input  logic [31:0] i_insn,

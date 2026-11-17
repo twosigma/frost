@@ -18,7 +18,7 @@ Every cycle presents a random operation, element width and operand triple;
 each result is compared six cycles after the cycle that takes its input,
 which also checks the fixed latency. Directed operands (zero, one, all ones,
 the signed limits) are mixed in so the sign and overflow cases of every
-element width are reached. The wide products are checked at SEW 8, 16 and 32
+element width are reached. The wide products are checked at SEW 8, 16, 32 and 64
 for the three signedness forms.
 """
 
@@ -63,8 +63,7 @@ def lane(op: str, sew: int, x: int, y: int, z: int) -> tuple[int, int]:
         else:
             r = (ez - prod) & mask
         result |= r << (w * k)
-        if w < 64:
-            wide |= prod << (2 * w * k)
+        wide |= prod << (2 * w * k)
     return result, wide
 
 
@@ -147,7 +146,7 @@ async def test_vec_mul_lane_random(dut: Any) -> None:
                 f"{op} sew={8 << sew} x={x:#018x} y={y:#018x} z={z:#018x}: "
                 f"result {got_r:#018x}, want {r:#018x}"
             )
-            if op in ("MULH", "MULHU", "MULHSU") and sew < 3:
+            if op in ("MULH", "MULHU", "MULHSU"):
                 got_w = int(dut.o_wide.value)
                 assert got_w == wide, (
                     f"{op} sew={8 << sew}: wide {got_w:#034x}, want {wide:#034x}"

@@ -354,6 +354,9 @@ module csr_file #(
     // A vector arithmetic or non-faulting vector load instruction retired
     // (registered commit bus): it clears vstart and sets VS Dirty.
     input logic i_varith_commit = 1'b0,
+    input logic i_vtox_commit = 1'b0,
+    input logic i_vec_vxsat_set = 1'b0,
+    output logic [1:0] o_vec_vxrm,
     // A non-faulting vector store retired (registered commit bus): clears
     // vstart, and sets VS Dirty only when vstart was non-zero.
     input logic i_vstore_commit = 1'b0,
@@ -1701,6 +1704,7 @@ module csr_file #(
     assign o_vec_vl = 16'(vl_q);
     assign o_vec_vtype = {vill_q, vtype_low_q};
     assign o_vec_vstart = 16'(vstart_q);
+    assign o_vec_vxrm = vxrm_q;
 `ifdef FORMAL
     assign vec_vstart = vstart_q;
     assign vec_vxsat = vxsat_q;
@@ -1752,30 +1756,33 @@ module csr_file #(
         vl_q <= '0;
         vill_q <= 1'b1;
         vtype_low_q <= '0;
-      end else if (i_vcfg_commit.valid) begin
-        // A vector-config instruction never commits beside a CSR
-        // instruction, so this never meets a CSR write.
-        vill_q <= i_vcfg_commit.vill;
-        vtype_low_q <= i_vcfg_commit.vtype;
-        vl_q <= i_vcfg_commit.keep ?
+      end else begin
+        if (i_vec_vxsat_set) vxsat_q <= 1'b1;
+        if (i_vcfg_commit.valid) begin
+          // A vector-config instruction never commits beside a CSR
+          // instruction, so this never meets a CSR write.
+          vill_q <= i_vcfg_commit.vill;
+          vtype_low_q <= i_vcfg_commit.vtype;
+          vl_q <= i_vcfg_commit.keep ?
             ((vl_q > VlBits'(i_vcfg_commit.vlmax)) ? VlBits'(i_vcfg_commit.vlmax) : vl_q) :
             VlBits'(i_vcfg_commit.vl);
-        vstart_q <= '0;
-      end else if (i_varith_commit || i_vstore_commit) begin
-        vstart_q <= '0;
-      end else if (vmem_fault_vstart_write) begin
-        vstart_q <= i_vmem_fault_vstart[VstartBits-1:0];
-      end else if (vec_csr_write) begin
-        unique case (i_csr_address)
-          riscv_pkg::CsrVstart: vstart_q <= vec_new_value[VstartBits-1:0];
-          riscv_pkg::CsrVxsat: vxsat_q <= vec_new_value[0];
-          riscv_pkg::CsrVxrm: vxrm_q <= vec_new_value[1:0];
-          riscv_pkg::CsrVcsr: begin
-            vxsat_q <= vec_new_value[0];
-            vxrm_q  <= vec_new_value[2:1];
-          end
-          default: ;
-        endcase
+          vstart_q <= '0;
+        end else if (i_varith_commit || i_vtox_commit || i_vstore_commit) begin
+          vstart_q <= '0;
+        end else if (vmem_fault_vstart_write) begin
+          vstart_q <= i_vmem_fault_vstart[VstartBits-1:0];
+        end else if (vec_csr_write) begin
+          unique case (i_csr_address)
+            riscv_pkg::CsrVstart: vstart_q <= vec_new_value[VstartBits-1:0];
+            riscv_pkg::CsrVxsat: vxsat_q <= vec_new_value[0];
+            riscv_pkg::CsrVxrm: vxrm_q <= vec_new_value[1:0];
+            riscv_pkg::CsrVcsr: begin
+              vxsat_q <= vec_new_value[0];
+              vxrm_q  <= vec_new_value[2:1];
+            end
+            default: ;
+          endcase
+        end
       end
     end
     // VS is WARL with all four values storable. An mstatus or sstatus write
@@ -1789,7 +1796,8 @@ module csr_file #(
       else if (status_csr_write && (i_csr_address == riscv_pkg::CsrSstatus))
         mstatus_vs <= sstatus_new_value[riscv_pkg::MstatusVsLo+:2];
       else if (vec_csr_write || i_vcfg_commit.valid || i_varith_commit ||
-               (i_vstore_commit && (vstart_q != '0)) || vmem_fault_vstart_write)
+               i_vec_vxsat_set || ((i_vtox_commit || i_vstore_commit) && vstart_q != '0) ||
+               vmem_fault_vstart_write)
         mstatus_vs <= FsDirty;
     end
   end else begin : gen_no_vector_csrs
@@ -1797,6 +1805,7 @@ module csr_file #(
     assign o_vec_vl = '0;
     assign o_vec_vtype = '0;
     assign o_vec_vstart = '0;
+    assign o_vec_vxrm = '0;
     assign vec_csr_write = 1'b0;
 `ifdef FORMAL
     assign vec_vstart = '0;
@@ -2665,9 +2674,14 @@ module csr_file #(
     // one at a time, never beside a CSR instruction or a head-faulting vector
     // memory op.
     assume (!(i_varith_commit && (i_csr_write_enable || i_vcfg_commit.valid)));
-    assume (!(i_vstore_commit && (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit)));
+    assume (!(i_vtox_commit &&
+              (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit ||
+               i_vstore_commit || i_vmem_fault_vstart_valid)));
+    assume (!(i_vstore_commit &&
+              (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit || i_vtox_commit)));
     assume (!(i_vmem_fault_vstart_valid &&
-              (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit || i_vstore_commit)));
+              (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit ||
+               i_vtox_commit || i_vstore_commit)));
     // vl and VLMAX are element counts, at most VLEN (SEW 8, LMUL 8).
     assume (i_vcfg_commit.vlmax <= 16'(VLEN) && i_vcfg_commit.vl <= i_vcfg_commit.vlmax);
     assume (!(i_trap_taken && i_sret_taken));
@@ -2912,7 +2926,9 @@ module csr_file #(
       // register's old value (computed here independently of the RTL's RMW),
       // every other cycle keeps the value, and an access whose csr_op[1:0] is
       // 00 (no write intent) never changes it.
-      if ($past(VECTOR && (i_vcfg_commit.valid || i_varith_commit || i_vstore_commit))) begin
+      if ($past(
+              VECTOR && (i_vcfg_commit.valid || i_varith_commit || i_vtox_commit || i_vstore_commit)
+          )) begin
         p_vstart_vcfg_clear : assert (vec_vstart == '0);
       end else if ($past(f_vmem_fault_write)) begin
         p_vstart_vmem_fault_write :
@@ -2926,6 +2942,8 @@ module csr_file #(
         p_vxsat_write : assert (vec_vxsat == $past(f_vxsat_next[0]));
       end else if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVcsr)) begin
         p_vxsat_vcsr_write : assert (vec_vxsat == $past(f_vcsr_next[0]));
+      end else if ($past(VECTOR && i_vec_vxsat_set)) begin
+        p_vxsat_accumulate : assert (vec_vxsat);
       end else begin
         p_vxsat_stable : assert (vec_vxsat == $past(vec_vxsat));
       end
@@ -2938,7 +2956,7 @@ module csr_file #(
       end
       if ($past(
               i_csr_op[1:0] == 2'b00 && !i_vcfg_commit.valid && !i_varith_commit &&
-              !i_vstore_commit && !f_vmem_fault_write
+                !i_vtox_commit && !i_vec_vxsat_set && !i_vstore_commit && !f_vmem_fault_write
           )) begin
         p_vec_read_only_access :
         assert ({vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs} == $past(
@@ -2948,21 +2966,20 @@ module csr_file #(
       // The RTL's write enable equals the one derived from the inputs.
       p_vec_write_enable : assert (vec_csr_write == f_vec_write);
 
-      // A vector CSR write or synchronous vector memory fault sets VS Dirty; a
-      // status CSR write installs VS; nothing else, including a read-only
-      // vector CSR access or a retiring vector store with vstart == 0, changes it.
+      // A vector state change sets VS Dirty; a status CSR write installs VS.
+      // Scalar-result and store retirement dirty VS only when clearing vstart.
       if ($past(
-              vec_csr_write || f_vmem_fault_write ||
-              (VECTOR && (i_vcfg_commit.valid || i_varith_commit ||
-                          (i_vstore_commit && (vec_vstart != '0))))
-          )) begin
-        p_vs_dirty_set : assert (mstatus_vs == FsDirty);
-      end else if ($past(
               status_csr_write && (i_csr_address == riscv_pkg::CsrMstatus ||
-                                              i_csr_address == riscv_pkg::CsrSstatus)
+                                   i_csr_address == riscv_pkg::CsrSstatus)
           )) begin
         p_vs_status_write :
         assert (!VECTOR || mstatus_vs == $past(csr_new_value[riscv_pkg::MstatusVsLo+:2]));
+      end else if ($past(
+              vec_csr_write || (VECTOR && (i_vcfg_commit.valid || i_varith_commit ||
+                  i_vec_vxsat_set || ((i_vtox_commit || i_vstore_commit) && vec_vstart != 0))) ||
+              f_vmem_fault_write
+          )) begin
+        p_vs_dirty_set : assert (mstatus_vs == FsDirty);
       end else begin
         p_vs_stable : assert (mstatus_vs == $past(mstatus_vs));
       end
@@ -3237,6 +3254,26 @@ module csr_file #(
         cover_vstore_preserves_vs_clean :
         cover (f_past_valid && $past(
             !i_rst && i_vstore_commit && vec_vstart == '0 && mstatus_vs == 2'b10
+        ) && mstatus_vs == 2'b10);
+        cover_vxsat_accumulate_and_dirty :
+        cover (f_past_valid && $past(
+            !i_rst && i_vec_vxsat_set && !vec_vxsat && !vec_csr_write &&
+            !status_csr_write && mstatus_vs == 2'b10
+        ) && vec_vxsat && vs_dirty);
+        cover_vtox_clears_vstart_and_dirty :
+        cover (f_past_valid && $past(
+            !i_rst && i_vtox_commit && vec_vstart != '0 && mstatus_vs == 2'b10
+        ) && vec_vstart == '0 && vs_dirty);
+        cover_vstore_clears_vstart_and_dirty :
+        cover (f_past_valid && $past(
+            !i_rst && i_vstore_commit && vec_vstart != '0 && mstatus_vs == 2'b10
+        ) && vec_vstart == '0 && vs_dirty);
+        cover_vector_read_preserves_clean :
+        cover (f_past_valid && $past(
+            !i_rst && i_csr_read_enable && i_csr_address == riscv_pkg::CsrVcsr &&
+            i_csr_op[1:0] == 2'b00 && mstatus_vs == 2'b10 &&
+            !i_vec_vxsat_set && !i_vcfg_commit.valid && !i_varith_commit &&
+            !i_vtox_commit && !i_vstore_commit && !i_vmem_fault_vstart_valid
         ) && mstatus_vs == 2'b10);
       end
     end

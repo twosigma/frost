@@ -139,6 +139,15 @@ execution; it does not use standalone `slang --lint-only`.
 
 ### `test_run_cocotb.py`
 
+`vec_operand_widths` checks EEW=1 mask-source aliases, vector versus scalar
+source fields and the old destination read by widening multiply-accumulate,
+on `vec_arith_legality`, the legality module that dispatch's registered check
+uses. Its legal controls include an upper-half overlap for widening addition,
+which does not read the destination as an accumulator.
+The `verif/testrig/vector_source_widths_integer.S` trace checks these classes
+against the architectural reference with `test_testrig.py --trace
+../verif/testrig/vector_source_widths_integer.S --vlen 128` from `tests/`.
+
 `TEST_REGISTRY` defines every simulation target: benches for CPU and SoC
 blocks, directed CPU tests, and applications from `sw/apps/`, which the
 runner compiles first. A failing RTL assertion fails the simulation.
@@ -149,8 +158,17 @@ and checkpoint restore. `vec_vtype_handoff_test_v128/v256/v512` execute a
 register-form `vsetvl` immediately followed by `vadd.vv` from the reset
 `vill` state and check that no spurious trap occurs.
 
+`vec_vstart_reload_test_v128/v256/v512` check that register/immediate
+configuration and a CSR write of nonzero vstart, followed by a vector load
+or store, do not make the next legal arithmetic instruction trap. They use
+mixed masks and restart values 1 and vl-1, and retain delay controls around
+the CSR write. The tracker bench also checks allocation while architectural
+reload is pending; `vec_vtype_tracker.sby` checks the surviving clear through
+reload and checkpoint recovery.
+
 `vec_source_eew` rejects v0 data operands in masked instructions and checks
-legal scalar-zero operands, unmasked v0 sources and mask destinations.
+legal scalar-zero operands, unmasked v0 sources and mask destinations, on the
+four-class `vec_lmul_legality` that builds without the vector unit use.
 `vec_source_eew_test_v128/v256/v512` check illegal-instruction cause and
 trap value, unchanged destination registers, `vstart` and `mstatus.VS` for
 masked instructions that use v0 as data.
@@ -821,6 +839,10 @@ Runs the self-checking riscv-tests ISA suites and benchmarks, which print
 benchmarks, `--all` runs every ISA suite, and `--all-benchmarks` every
 benchmark.
 
+The physical test environment copies initialized data when its load and run
+addresses differ. DDR images already place data at its run address and skip
+that copy; BRAM images retain the ROM-to-RAM copy.
+
 ```bash
 ./scripts/frost.py run python3 tests/test_riscv_tests.py --suites rv64ui rv64um
 ./scripts/frost.py run python3 tests/test_riscv_tests.py --test rv64ui/add
@@ -965,6 +987,17 @@ are `vec_smoke`, `vec_ldst`, `vec_string`, `vec_dot_int`, `vec_dot_fp`,
 cycle budgets are ceilings to tighten after the first run. To put them in the
 default pytest collection, remove `include_in_pytest=False` from the loop under
 `VECTOR_BRING_UP_PROGRAMS` in `test_run_cocotb.py`.
+
+The `vec_integer_test_v128`, `vec_integer_test_v256` and
+`vec_integer_test_v512` entries exercise 149 integer, fixed-point, mask and
+permutation instruction forms without vector memory, reading register images
+through scalar moves, and reserved forms, one of them right behind a legal
+form so that dispatch judges it on its own registered legality.
+`test_vector_reference.py` checks their expected images
+on Spike at the same three lengths, including a deliberately wrong expected
+bit. The `vec_integer_exec_v*` engine benches separately compare all registers,
+tails, inactive elements and saturation against an element model across SEW,
+LMUL and rounding modes.
 
 ### `test_riscv_torture.py`
 
@@ -1562,3 +1595,29 @@ and says when the run proves everything again.
 
 The formal and synthesis jobs check out the repository without submodules and
 set `FROST_SKIP_SUBMODULE_INIT=1`; none of their inputs is in a submodule.
+
+The standalone integer legality sweep compares the decoder and the dispatch
+legality module (`vec_arith_legality`) with the installed Spike instruction
+implementations. It covers all 231 integer
+arithmetic forms, all 512 vtype encodings (reserved configurations normalize to
+vill), both mask encodings where permitted, each register field and pairwise
+alias/adjacent layouts, at VLEN 128/256/512. VL is one and vstart zero; the tracker
+and dispatch proofs cover restart policy. Run
+`python3 tests/test_vector_legality_reference.py --vlen 256` in the image.
+The comparator source is under `hw/sim/vector_reference/` and builds against the
+image's reference libraries and generated RTL header. Spike omits the general
+source/source EEW reservation in the vector specification's Vector Operands
+section. The comparator checks that rule separately from the instruction
+functions, using operand names and the reference's SEW/LMUL, and reports those
+cases as `reserved_width`. Those counts are specification checks, not agreements
+with Spike. Every other legality outcome must agree with the reference. Use
+`--negative-control` to check that a flipped outcome fails the comparison.
+
+`python3 tests/test_vector_integer_corners.py --vlen 256 --rtl` adds fixed-point
+and divide files with explicit boundary operands, at e64,m1 and e8,mf8. Narrowing
+clips use e32,m1 with 64-bit sources, since 128-bit elements are unsupported.
+The reference patcher records destination bytes and vxsat for every case; both
+mask modes and all four fixed-point rounding modes run. Use `--resume` to retain
+an existing prepared corpus and completed results. Clean `tests/` before the RTL
+run and set `FROST_VERILATOR_EXTRA_ARGS` to `-GVECTOR=1 -GVLEN=256` (or the chosen
+length), as for the main generated-suite runner.

@@ -18,9 +18,14 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_i2f.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_f2f.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_fdivsqrt.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_cfg_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_fixed_lane.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_div_lane.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_int_exec.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_engine.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_vtype_tracker.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_lmul_legality.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_arith_legality.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_dispatch_legality.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_head_mmu.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_vmu.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_unit.sv

@@ -265,6 +265,8 @@
     la t0, __data_load_start;                                                                      \
     la t1, __data_start;                                                                           \
     la t2, __data_end;                                                                             \
+    /* DDR already places .data at its run address. */                                            \
+    beq t0, t1, _frost_copy_done;                                                                  \
     _frost_copy_data:                                                                              \
     beq t1, t2, _frost_copy_done;                                                                  \
     lw t3, 0(t0);                                                                                  \

@@ -103,8 +103,8 @@ SAMPLE_PATTERN = (
     r"^(vadd\.vv|vwmul\.vv|vfadd\.vv|vle8\.v|vmseq\.vv|vsha2ms\.vv|vclmul\.vv)$"
 )
 
-# Instruction forms supported on the RTL vector unit so far: single-width
-# integer arithmetic/compare plus unit-stride, whole-register and mask memory ops.
+# Instruction forms selected for the RTL smoke sample: integer arithmetic
+# and compare plus unit-stride, whole-register and mask memory operations.
 RTL_SAMPLE_PATTERN = r"^(vadd\.vv|vmseq\.vv|vle8\.v|vle32\.v|vse16\.v|vse64\.v|vl2re8\.v|vs2r\.v|vlm\.v|vsm\.v)$"
 
 

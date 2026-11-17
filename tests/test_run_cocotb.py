@@ -1183,6 +1183,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
         include_in_pytest=False,
     ),
+    **{
+        f"vec_integer_test_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="vec_integer_test",
+            nic_mac_clocks=False,
+            description=(
+                f"Integer/fixed-point/mask/permutation instruction forms at VLEN {vlen}, "
+                "including CSR rounding snapshots and saturation readback"
+            ),
+            verilator_extra_args=("-GVECTOR=1", f"-GVLEN={vlen}"),
+            extra_env=(
+                ("EXTRA_CFLAGS", f"-DVEC_VLEN={vlen}"),
+                ("COCOTB_MAX_CYCLES", "5000000"),
+            ),
+            include_in_pytest=(vlen == 256),
+        )
+        for vlen in (128, 256, 512)
+    },
     "vec_arith_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1266,6 +1285,36 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Unit-stride, whole-register and mask vector loads/stores at VLEN 512; CLI-only",
         verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        include_in_pytest=False,
+    ),
+    "vec_vstart_reload_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vstart_reload_test",
+        nic_mac_clocks=False,
+        description="Memory clears vstart before arithmetic across configuration/CSR reload; VLEN 128",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=128"),),
+        include_in_pytest=False,
+    ),
+    "vec_vstart_reload_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vstart_reload_test",
+        nic_mac_clocks=False,
+        description="Memory clears vstart before arithmetic across configuration/CSR reload; VLEN 256",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=256"),),
+        include_in_pytest=True,
+    ),
+    "vec_vstart_reload_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vstart_reload_test",
+        nic_mac_clocks=False,
+        description="Memory clears vstart before arithmetic across configuration/CSR reload; VLEN 512",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=512"),),
         include_in_pytest=False,
     ),
     "vec_vtype_handoff_test_v128": CocotbRunConfig(
@@ -2809,6 +2858,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "element width against a Python model, with a fixed latency"
         ),
     ),
+    "vec_operand_widths": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_operand_widths",
+        hdl_toplevel_module="vec_arith_legality",
+        description="Mask/data source widths and widening accumulator overlap legality",
+    ),
     "vec_source_eew": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_source_eew",
         hdl_toplevel_module="vec_lmul_legality",
@@ -2817,7 +2871,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "vec_vtype_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_vtype_tracker",
         hdl_toplevel_module="vec_vtype_tracker",
-        description="Configuration handoff, immediate forms, full flush and checkpoint recovery",
+        description=(
+            "Configuration handoff, immediate forms, CSR vstart, memory allocation "
+            "and checkpoint recovery"
+        ),
     ),
     "vec_mul_lane": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_mul_lane",
@@ -3055,6 +3112,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector FP64 divide and square root, bit for bit against Berkeley SoftFloat",
         verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
     ),
+    **{
+        f"vec_integer_exec_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_integer_exec",
+            hdl_toplevel_module="vec_engine",
+            description="Integer, fixed-point, mask and permutation execution against architectural semantics",
+            verilator_extra_args=(f"-GVLEN={vlen}",),
+        )
+        for vlen in (128, 256, 512)
+    },
     "vec_head_mmu_v128": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_head_mmu",
         hdl_toplevel_module="vec_head_mmu",

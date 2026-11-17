@@ -782,8 +782,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "csr_commit_cofactor.sby",
         "Selected CSR commit updates match reference transitions under each interface "
-        "contract",
-        tasks=("prove", "prove_integrated", "prove_perf_off"),
+        "contract, including VECTOR=1",
+        tasks=("prove", "prove_integrated", "prove_perf_off", "prove_vector"),
     ),
     FormalTarget(
         "csr_sscofpmf.sby",
@@ -1067,10 +1067,17 @@ FORMAL_TARGETS = [
         tasks=("id_kill_equiv",),
     ),
     FormalTarget(
+        "vec_vtype_tracker.sby",
+        "Surviving vector-memory allocation clears restart state across delayed "
+        "architectural reload and checkpoint recovery",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Queued LMUL classes equal the arithmetic and VTOX legality rules for "
-        "every vtype, instruction and operation",
-        tasks=("bmc",),
+        "Vector arithmetic legality equals the reference for every vtype and "
+        "instruction; dispatch applies it with the VTOX and nonzero-vstart rules; "
+        "the registered queue-head result is current whenever it is ready",
+        tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
         "vec_vmu.sby",
@@ -1827,8 +1834,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "csr_file_twin.sby",
-        "CSR file: primitive and portable forms are equivalent.",
-        tasks=("csr_twin",),
+        "CSR file: primitive and portable forms are equivalent with VECTOR=0 and 1.",
+        tasks=("csr_twin", "csr_twin_vector"),
     ),
     FormalTarget(
         "fp_engine_twin.sby",
@@ -3046,6 +3053,7 @@ SBY_TASKS = [
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
     ("prove_copy", "Staged address copies sample identical inputs on every edge"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
+    ("prove_vector", "Unbounded proof with vector state enabled"),
     ("bmc_raw", "Bounded equivalence with eight raw-wakeup candidates"),
     ("prove_raw", "Unbounded equivalence with eight raw-wakeup candidates"),
     ("bmc_forward", "Bounded equivalence with store forwarding enabled"),
@@ -3400,6 +3408,10 @@ SBY_TASKS = [
     (
         "csr_twin",
         "CSR file primitive form equals its portable form.",
+    ),
+    (
+        "csr_twin_vector",
+        "CSR file primitive form equals its portable form with vector state enabled.",
     ),
     (
         "fp_engine_twin",

@@ -20,10 +20,11 @@ pieces come before the second hart:
   CSRs) is in place behind the `VECTOR` build parameter, and so are the
   unit's datapath blocks with their unit benches. The core executes
   `vsetvli`, `vsetivli` and `vsetvl`, the vector integer arithmetic, logical,
-  compare and Zvbb instructions, `vmv.x.s`, `vcpop.m` and `vfirst.m`, and the
-  unit-stride, whole-register and mask loads and stores, and the X3 build
-  includes the unit; the other load and store forms and instruction families
-  are not executed yet. One limitation is known: a vector load executed in
+  fixed-point, multiply/divide, mask, reduction, permutation and Zvbb instructions,
+  `vmv.x.s`, `vcpop.m` and `vfirst.m`, and unit-stride, whole-register and mask
+  loads and stores. The X3 build includes the unit; other memory forms, floating
+  point and vector cryptography are not executed yet.
+  One limitation is known: a vector load executed in
   Debug Mode that faults after writing part of its destination register
   leaves `mstatus.VS` Clean; `vec_debug_partial` records it as an expected
   failure until it is fixed.
@@ -62,9 +63,9 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
 | Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Partial (state, `vsetvl*`, integer ALU, mask-scalar, unit-stride/whole-register/mask loads and stores; other memory forms and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_mem_test`, `test_riscv_vector_tests.py`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vmt.sby` |
+| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction and permutation execution; unit-stride/whole-register/mask loads and stores; other memory forms and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_mem_test`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby` |
 | Zvfhmin | Partial (FP16 convert datapath block in place; core execution not connected) | `test_vec_fcvt.py` |
-| Zvbb | Partial (single-width lane instructions in place; `vwsll` and vector advertisement not in place) | `test_vec_int_lane.py`, `test_vec_engine.py` |
+| Zvbb | Implemented with `VECTOR=1` (including `vwsll`; unadvertised) | `test_vec_int_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py` |
 | Zvkt | Partial (fixed-latency integer and bitmanip lanes in place; vector unit unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py` |
 | Zihintntl | Implemented (hints execute as no-ops) | `riscv-arch-test` (`hints`), `rvc_predecode.sby`, TestRIG (`--zcb`) |
 | Zicond | Implemented | `riscv-arch-test` (`Zicond`), `isa_test`, TestRIG |
@@ -335,6 +336,11 @@ portable forms by [equivalence checks](formal/README.md#primitive-twins).
 Open: a few primitive blocks in the load queue, the Tomasulo wrapper, the
 branch prediction controller and the SoC top have no comparison yet;
 `NOT_COVERED` in `tests/test_prim_twins.py` gives the reason for each.
+
+Open: the vector configuration tracker's predicted `vtype` has no registered
+proof; its unit bench checks it. Planned: a stability property and allocation
+properties in `vec_vtype_tracker.sby`, and a simulation check at commit that
+the predicted `vtype` equals the CSR file's.
 
 ## ASIC-ready RTL
 

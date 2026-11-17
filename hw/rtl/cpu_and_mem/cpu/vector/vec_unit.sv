@@ -59,6 +59,9 @@ module vec_unit #(
     input  logic                    [                      15:0] i_vl,
     input  logic                    [                       8:0] i_vtype,
     input  logic                    [                      15:0] i_vstart,
+    input  logic                    [                       1:0] i_vxrm,
+    output logic                                                 o_vxsat_set,
+    output logic                                                 o_vtox_commit,
     // ROB head & ordering inputs
     input  logic                    [                  TagW-1:0] i_head_tag,
     input  logic                                                 i_rob_empty,
@@ -121,6 +124,7 @@ module vec_unit #(
   logic [31:0] insn_q[riscv_pkg::ReorderBufferDepth];
   logic [VmtIdxW-1:0] vmt_idx_by_tag_q[riscv_pkg::ReorderBufferDepth];
   logic [riscv_pkg::ReorderBufferDepth-1:0] is_varith_q, is_vtox_q, is_vmem_q;
+  logic [riscv_pkg::ReorderBufferDepth-1:0] vtox_retire_q;
   logic vtox_done;
   logic [TagW-1:0] vtox_tag_q;
   logic vhead_cdb_done;
@@ -134,24 +138,29 @@ module vec_unit #(
     // Every allocation of a tag rewrites its flags, so a flag left by a
     // squashed vector instruction never describes a later one.
     if (i_rst) begin
-      is_vtox_q   <= '0;
+      is_vtox_q <= '0;
+      vtox_retire_q <= '0;
       is_varith_q <= '0;
-      is_vmem_q   <= '0;
+      is_vmem_q <= '0;
     end else begin
       if (vtox_done) is_vtox_q[vtox_tag_q] <= 1'b0;
       if (vhead_cdb_done) is_vmem_q[vhead_cdb_done_tag] <= 1'b0;
       if (i_alloc) begin
-        is_vtox_q[i_alloc_tag]   <= i_alloc_is_vtox;
+        is_vtox_q[i_alloc_tag] <= i_alloc_is_vtox;
+        vtox_retire_q[i_alloc_tag] <= i_alloc_is_vtox;
         is_varith_q[i_alloc_tag] <= i_alloc_is_varith;
-        is_vmem_q[i_alloc_tag]   <= i_alloc_is_vmem;
+        is_vmem_q[i_alloc_tag] <= i_alloc_is_vmem;
       end
       if (i_alloc_2) begin
-        is_vtox_q[i_alloc_tag_2]   <= 1'b0;
+        is_vtox_q[i_alloc_tag_2] <= 1'b0;
+        vtox_retire_q[i_alloc_tag_2] <= 1'b0;
         is_varith_q[i_alloc_tag_2] <= 1'b0;
-        is_vmem_q[i_alloc_tag_2]   <= 1'b0;
+        is_vmem_q[i_alloc_tag_2] <= 1'b0;
       end
     end
   end
+
+  assign o_vtox_commit = i_commit_valid && vtox_retire_q[i_commit_tag] && !i_commit_exception;
 
   logic varith_commit_only;
   logic vhead_retire_vload, vhead_retire_vstore;
@@ -190,8 +199,8 @@ module vec_unit #(
   logic zero_vmt_done_valid;
   logic [VmtIdxW-1:0] zero_vmt_done_idx;
 
-  // VIQ: {insn, scalar, vl, vtype, vstart}
-  localparam int unsigned EntryW = 32 + 64 + 16 + 9 + 16;
+  // VIQ: {insn, scalar, vl, vtype, vstart, vxrm}
+  localparam int unsigned EntryW = 32 + 64 + 16 + 9 + 16 + 2;
   logic [EntryW-1:0] viq_q[Depth];
   logic [$clog2(Depth)-1:0] head_q, tail_q;
   logic [$clog2(Depth):0] count_q;
@@ -200,7 +209,8 @@ module vec_unit #(
   assign push = varith_commit_only;
   assign pop  = eng_idle && !issued_q && (count_q != '0) && vmu_idle && !vmem_desc_valid_q;
   always_ff @(posedge i_clk) begin
-    if (push) viq_q[tail_q] <= {insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart};
+    if (push)
+      viq_q[tail_q] <= {insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart, i_vxrm};
     if (i_rst) begin
       head_q        <= '0;
       tail_q        <= '0;
@@ -221,7 +231,8 @@ module vec_unit #(
   logic [63:0] e_scalar;
   logic [15:0] e_vl, e_vstart;
   logic [8:0] e_vtype;
-  assign {e_insn, e_scalar, e_vl, e_vtype, e_vstart} = viq_q[head_q];
+  logic [1:0] e_vxrm;
+  assign {e_insn, e_scalar, e_vl, e_vtype, e_vstart, e_vxrm} = viq_q[head_q];
 
   vec_engine #(
       .VLEN(VLEN)
@@ -237,6 +248,8 @@ module vec_unit #(
       .i_vstart     (e_vstart),
       .i_rs1        (e_scalar),
       .o_unsupported(),
+      .i_vxrm       (e_vxrm),
+      .o_sat        (o_vxsat_set),
       .i_xr_addr    (xr_addr),
       .o_xr_data    (xr_data),
       .i_xw_en      (vmu_xw_en),

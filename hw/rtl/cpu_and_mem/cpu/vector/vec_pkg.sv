@@ -112,6 +112,37 @@ package vec_pkg;
     VR_WSUM  = 4'd9
   } red_op_e;
 
+  // One element's extended integer arithmetic. Inputs are zero-extended
+  // elements; i_aw selects the source width for narrowing and extension.
+  typedef enum logic [4:0] {
+    VX_ADDU,
+    VX_ADD,
+    VX_SUBU,
+    VX_SUB,
+    VX_AADDU,
+    VX_AADD,
+    VX_ASUBU,
+    VX_ASUB,
+    VX_SSRL,
+    VX_SSRA,
+    VX_CLIPU,
+    VX_CLIP,
+    VX_SMUL,
+    VX_ADC,
+    VX_MADC,
+    VX_SBC,
+    VX_MSBC,
+    VX_WADDU,
+    VX_WADD,
+    VX_WSUBU,
+    VX_WSUB,
+    VX_NSRL,
+    VX_NSRA,
+    VX_ZEXT,
+    VX_SEXT,
+    VX_WSLL
+  } extra_op_e;
+
   // AES element-group operations (Zvkned). State is vd, the round key vs2.
   typedef enum logic [2:0] {
     VA_EF  = 3'd0,  // vaesef: final encryption round

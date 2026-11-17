@@ -17,8 +17,8 @@
 /**
  * Shared helpers for the vector bring-up programs.
  *
- * Every program is vector-length agnostic: it reads vlenb at run time and
- * checks its results against a scalar model computed in the same program.
+ * Most programs read vlenb at run time and check a scalar model.
+ * vec_integer_test selects fixed register-image expectations with VEC_VLEN.
  * The programs print <<PASS>> or <<FAIL>> as the other self-checking apps do.
  * Output goes to the UART, or to the Spike HTIF console when built with
  * -DVT_SPIKE (the reference run that proves a program correct before RTL

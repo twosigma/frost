@@ -338,6 +338,8 @@ module cpu_ooo #(
   logic direct_id_valid_preflush, direct_id_valid_2_preflush;
   logic direct_id_valid, direct_id_valid_2;
   logic decoded_queue_full;
+  // The decoded queue offers a bundle (its head) this cycle
+  logic decoded_queue_valid;
   logic decoded_queue_indirect_pending;
   (* max_fanout = 32 *) logic flush_pipeline;
   logic dispatch_flush;
@@ -1117,7 +1119,11 @@ module cpu_ooo #(
   // slot 2's vector-encoding flag for dispatch's slot-2 interlock
   logic [3:0] dispatch_vec_lmul_illegal;
   logic dispatch_slot2_is_vector;
+  // Vector arithmetic may dispatch: the vtype is known and, with the unit,
+  // the queue head's registered arithmetic legality (vec_arith_illegal) is
+  // ready
   logic vec_vtype_valid;
+  logic vec_arith_illegal;
   logic vec_vcfg_in_flight;
   logic [15:0] csr_vec_vl, csr_vec_vstart;
   logic [8:0] csr_vec_vtype;
@@ -1137,6 +1143,8 @@ module cpu_ooo #(
   logic [riscv_pkg::PhysAddrBits-1:0] vec_vmu_fatal_addr;
   logic vec_commit_hold;
   logic vec_idle;
+  logic vec_vstart_nonzero, vec_vxsat_set, vec_vtox_commit;
+  logic [1:0] csr_vec_vxrm;
   riscv_pkg::fu_complete_t vec_vtox_complete;  // CDB slot 6
   // The vector memory table as the load and store queues see it, and its
   // registered "no live retired entry" (rule V-O4: FENCE, FENCE.I,
@@ -1667,7 +1675,8 @@ module cpu_ooo #(
       end
 `endif
       assign dispatch_vec_lmul_illegal = queue_vlc;
-      assign dispatch_slot2_is_vector  = queue_s2_vec;
+      assign dispatch_slot2_is_vector = queue_s2_vec;
+      assign decoded_queue_valid = queue_valid;
 `ifndef SYNTHESIS
       // The shadow moves whole words, so its legality and slot-2 vector bits
       // stay those of its own instructions once reset has loaded it.
@@ -1680,13 +1689,15 @@ module cpu_ooo #(
         if (reset_seen_q && !i_rst && !$isunknown(queue_ctrl.instruction)) begin
           p_queue_vlc_matches_instruction : assert (queue_vlc == queue_vlc_check);
         end
-        if (reset_seen_q && !i_rst &&
-            !$isunknown({queue_ctrl_2.is_real, queue_ctrl_2.instruction})) begin
+        if (reset_seen_q && !i_rst && !$isunknown(
+                {queue_ctrl_2.is_real, queue_ctrl_2.instruction}
+            )) begin
           p_queue_s2_vec_matches_instruction :
           assert (queue_s2_vec == (queue_ctrl_2.is_real &&
                   ((queue_ctrl_2.instruction.opcode == riscv_pkg::OPC_OP_V) ||
-                   riscv_pkg::is_vector_mem(queue_ctrl_2.instruction.opcode,
-                                            queue_ctrl_2.instruction.funct3))));
+                   riscv_pkg::is_vector_mem(
+              queue_ctrl_2.instruction.opcode, queue_ctrl_2.instruction.funct3
+          ))));
         end
       end
 `endif
@@ -1859,6 +1870,7 @@ module cpu_ooo #(
     end else begin : gen_no_decoded_queue
       assign decoded_queue_full = 1'b0;
       assign decoded_queue_indirect_pending = 1'b0;
+      assign decoded_queue_valid = 1'b0;
       assign from_id_to_ex = decoded_packet;
       assign from_id_to_ex_2 = decoded_packet_2;
       vec_lmul_legality u_vlc (
@@ -3053,7 +3065,9 @@ module cpu_ooo #(
       .RAW_INT_RF_VALUES(1'b1)
   ) u_dispatch (
       .i_vtype_spec(vec_vtype_spec),
+      .i_vec_arith_illegal(vec_arith_illegal),
       .i_vec_lmul_illegal(dispatch_vec_lmul_illegal),
+      .i_vec_vstart_nonzero(vec_vstart_nonzero),
       .i_slot2_is_vector(dispatch_slot2_is_vector),
       .i_clk,
       .i_rst_n(rst_n),
@@ -3266,14 +3280,18 @@ module cpu_ooo #(
     if (reset_seen_q && !i_rst) begin
       if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
+`else
         $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
+`endif
       if (lq_mem_request_valid && lq_mem_read_en)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: LQ read handoff overlapped held router request");
+`else
         $error("cpu_ooo: LQ read handoff overlapped held router request");
+`endif
       // A full flush already on its way (trap, xRET, FENCE-class) may overlap
       // the held request's staging cycle; that is where the router cancels
       // it. Commit-time recovery is in the router's flush only to match the
@@ -3282,49 +3300,61 @@ module cpu_ooo #(
       // ROB head.
       if (lq_mem_request_valid && commit_recovery_flush_after_head)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: commit recovery overlapped a held LQ router request");
+`else
         $error("cpu_ooo: commit recovery overlapped a held LQ router request");
+`endif
       if (lq_mem_request_valid && lq_router_flush_all &&
           (o_data_mem_read_enable || o_data_mem_cached_read_enable ||
            o_mmio_read_pulse || o_mmio_load_valid))
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: owner flush did not suppress held LQ read effects");
+`else
         $error("cpu_ooo: owner flush did not suppress held LQ read effects");
+`endif
       // Once sq_committed_empty is high, no older SQ or cached store can
       // still hold the write port, and device reads launch only at the ROB
       // head, so no AMO can be writing either.
       if (lq_mem_request_valid && sq_committed_empty &&
           (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: drained held LQ request remained write-blocked");
+`else
         $error("cpu_ooo: drained held LQ request remained write-blocked");
+`endif
       // Device-read interrupt shield (trap_unit.i_device_read_at_head): the
       // device read must never happen before the shield is up.
       if (o_mmio_read_pulse && !device_read_shield_q)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: MMIO read pulse fired without the device interrupt shield");
+`else
         $error("cpu_ooo: MMIO read pulse fired without the device interrupt shield");
+`endif
       // The hold must not lapse while the request is still parked. The first
       // pending cycle is exempt: that cycle is what raises the shield, and
       // the router cannot arm until the cycle after it is visible.
       if (lq_device_request_pending && device_request_pending_q && !device_read_shield_q &&
           !lq_router_flush_all && !router_flush_all_q)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: device request pending without the interrupt shield");
+`else
         $error("cpu_ooo: device request pending without the interrupt shield");
+`endif
       // An interrupt must never be taken inside the shielded window.
       // (trap_pending is the trap unit's exception input; exceptions stay
       // ungated by both shields, so only an interrupt take is a violation.)
       if (device_read_shield_q && trap_taken && !trap_pending)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: interrupt taken inside the device-read shield window");
+`else
         $error("cpu_ooo: interrupt taken inside the device-read shield window");
+`endif
     end
   end
 
@@ -3343,12 +3373,16 @@ module cpu_ooo #(
       device_shield_stuck_cnt <= device_shield_stuck_cnt + 1;
       if (device_shield_stuck_cnt == DeviceShieldWatchdogCycles)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: device-read interrupt shield held for %0d cycles (forward progress lost)",
+              DeviceShieldWatchdogCycles
+          );
+`else
+        $error("cpu_ooo: device-read interrupt shield held for %0d cycles (forward progress lost)",
+               DeviceShieldWatchdogCycles);
 `endif
-        $error(
-            "cpu_ooo: device-read interrupt shield held for %0d cycles (forward progress lost)",
-            DeviceShieldWatchdogCycles
-        );
     end
   end
   always @(posedge i_clk) begin
@@ -3358,12 +3392,16 @@ module cpu_ooo #(
       device_shield_drain_cnt <= device_shield_drain_cnt + 1;
       if (device_shield_drain_cnt == DeviceShieldDrainWatchdogCycles)
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: device-read interrupt shield waited for older writes for %0d cycles",
+              DeviceShieldDrainWatchdogCycles
+          );
+`else
+        $error("cpu_ooo: device-read interrupt shield waited for older writes for %0d cycles",
+               DeviceShieldDrainWatchdogCycles);
 `endif
-        $error(
-            "cpu_ooo: device-read interrupt shield waited for older writes for %0d cycles",
-            DeviceShieldDrainWatchdogCycles
-        );
     end
   end
 `endif
@@ -4099,8 +4137,7 @@ module cpu_ooo #(
   // is final.
   logic [XLEN-1:0] trap_exception_tval;
   riscv_pkg::pm_mode_t trap_exception_tval_pm_mode;
-  assign trap_exception_tval = ma_fault_pending_q ? ma_fault_tval_q :
-      riscv_pkg::exception_tval(
+  assign trap_exception_tval = ma_fault_pending_q ? ma_fault_tval_q : riscv_pkg::exception_tval(
       rob_trap_cause,
       rob_trap_pc,
       rob_trap_value,
@@ -4111,7 +4148,9 @@ module cpu_ooo #(
       csr_translation_active
   );
   assign trap_exception_tval_pm_mode = ma_fault_pending_q ? riscv_pkg::EnvcfgPmmOff :
-      riscv_pkg::exception_tval_pm_mode(rob_trap_cause, csr_mmu_pm_mode);
+      riscv_pkg::exception_tval_pm_mode(
+      rob_trap_cause, csr_mmu_pm_mode
+  );
 
   // Remap the shim's ExcEcallMmode at commit: U=8, S=9, M=11. trap_unit
   // arbitrates this cause with interrupts before csr_file writes xcause.
@@ -4216,9 +4255,9 @@ module cpu_ooo #(
             {trap_exception_tval, trap_exception_tval_pm_mode, csr_translation_active}
         )) begin
       p_trap_tval_transform_after_register :
-      assert (riscv_pkg::pm_tval(trap_exception_tval, trap_exception_tval_pm_mode,
-                                 csr_translation_active) ==
-              (ma_fault_pending_q ? ma_fault_tval_q : csr_trap_value));
+      assert (riscv_pkg::pm_tval(
+          trap_exception_tval, trap_exception_tval_pm_mode, csr_translation_active
+      ) == (ma_fault_pending_q ? ma_fault_tval_q : csr_trap_value));
     end
   end
 `endif
@@ -4365,6 +4404,9 @@ module cpu_ooo #(
       .o_mstatus_vs_off(csr_mstatus_vs_off),
       .i_vcfg_commit(vcfg_commit),
       .i_varith_commit(vec_varith_commit),
+      .i_vtox_commit(vec_vtox_commit),
+      .i_vec_vxsat_set(vec_vxsat_set),
+      .o_vec_vxrm(csr_vec_vxrm),
       .i_vstore_commit(vec_vstore_commit),
       .i_vmem_fault_vstart_valid(vec_vmem_fault_vstart_valid),
       .i_vmem_fault_vstart(vec_vmem_fault_vstart),
@@ -4556,15 +4598,26 @@ module cpu_ooo #(
       .i_line_resp_rdata(i_walk_line_resp_rdata)
   );
 
-  // CSR done acknowledgment, one cycle after csr_start: csr_start fires in
+  // CSR acknowledgment waits for committed vector effects. With the unit
+  // idle it arrives one cycle after csr_start: csr_start fires in
   // cycle N (the ROB serializer enters SERIAL_CSR_EXEC at its end) and
   // csr_done_ack in cycle N+1 lets the ROB commit an ordinary CSR. A CSR that
   // may change translation moves to SERIAL_CSR_TRANSLATION_DRAIN instead and
   // retires only after committed stores drain.
-  logic csr_done_q;
+  logic csr_done_q, csr_vec_wait_q;
+  logic vec_csr_quiet;
+  assign vec_csr_quiet = !VECTOR || (vec_idle && !vec_varith_commit);
   always_ff @(posedge i_clk) begin
-    if (i_rst) csr_done_q <= 1'b0;
-    else csr_done_q <= csr_start;
+    if (i_rst) begin
+      csr_done_q <= 1'b0;
+      csr_vec_wait_q <= 1'b0;
+    end else if (flush_all) begin
+      csr_done_q <= 1'b0;
+      csr_vec_wait_q <= 1'b0;
+    end else begin
+      csr_done_q <= (csr_start || csr_vec_wait_q) && vec_csr_quiet;
+      csr_vec_wait_q <= (csr_start || csr_vec_wait_q) && !vec_csr_quiet;
+    end
   end
   assign csr_done_ack = csr_done_q;
 
@@ -4879,10 +4932,17 @@ module cpu_ooo #(
     if (i_rst) resume_pc_reference_armed_q <= 1'b1;
     if (resume_pc_reference_armed_q && !i_rst && interrupt_resume_pc != resume_pc_reference_q) begin
 `ifdef FROST_SIM_ASSERTIONS
-      assert (1'b0) else
-`endif
+      assert (1'b0)
+      else
+        $error(
+            "cpu_ooo: interrupt_resume_pc %08x != reference %08x",
+            interrupt_resume_pc,
+            resume_pc_reference_q
+        );
+`else
       $error("cpu_ooo: interrupt_resume_pc %08x != reference %08x", interrupt_resume_pc,
              resume_pc_reference_q);
+`endif
     end
   end
 `endif
@@ -4923,19 +4983,33 @@ module cpu_ooo #(
           rob_commit_comb.pc != next_pc_expected_q) begin
         next_pc_dump();
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: retired pc %016x, architectural next pc %016x",
+              rob_commit_comb.pc,
+              next_pc_expected_q
+          );
+`else
         $error("cpu_ooo: retired pc %016x, architectural next pc %016x", rob_commit_comb.pc,
                next_pc_expected_q);
+`endif
       end
       if (rob_commit_valid_raw && rob_commit_2_valid_raw &&
           rob_commit_comb_2.pc != rob_head_retired_next_pc) begin
         next_pc_dump();
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: slot-2 retired pc %016x, slot-1 next pc %016x",
+              rob_commit_comb_2.pc,
+              rob_head_retired_next_pc
+          );
+`else
         $error("cpu_ooo: slot-2 retired pc %016x, slot-1 next pc %016x", rob_commit_comb_2.pc,
                rob_head_retired_next_pc);
+`endif
       end
       if (rob_commit_valid_raw) begin
         next_pc_hist_pc_q <= {next_pc_hist_pc_q[NextPcHistory-2:0], rob_commit_comb.pc};
@@ -5038,49 +5112,75 @@ module cpu_ooo #(
     if (reset_seen_q && !i_rst) begin
       if (trap_or_xret_taken != (trap_taken || xret_taken)) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: combined trap/xRET take differs from individual takes");
+`else
         $error("cpu_ooo: combined trap/xRET take differs from individual takes");
+`endif
       end
       if (xret_taken &&
           (mret_start_is_dret ? csr_dpc : mret_start_is_sret ? csr_sepc : csr_mepc) !=
           (dret_taken ? csr_dpc : sret_taken ? csr_sepc : csr_mepc)) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: ROB head return flavor differs from the taken xRET");
+`else
         $error("cpu_ooo: ROB head return flavor differs from the taken xRET");
+`endif
       end
       if (trap_taken && trap_entry_target != trap_target) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: trap-entry target differs from its redirect");
+`else
         $error("cpu_ooo: trap-entry target differs from its redirect");
+`endif
       end
       if (rob_commit_valid_raw && rob_head_retired_next_pc != retired_next_pc(
               rob_commit_comb
           )) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: rob_head_retired_next_pc %08x != retired_next_pc(commit) %08x",
+              rob_head_retired_next_pc,
+              retired_next_pc(
+                  rob_commit_comb
+              )
+          );
+`else
         $error("cpu_ooo: rob_head_retired_next_pc %08x != retired_next_pc(commit) %08x",
                rob_head_retired_next_pc, retired_next_pc(rob_commit_comb));
+`endif
       end
       if (rob_commit_2_valid_raw && rob_head_next_retired_next_pc != retired_next_pc(
               rob_commit_comb_2
           )) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: rob_head_next_retired_next_pc %08x != retired_next_pc(commit_2) %08x",
+              rob_head_next_retired_next_pc,
+              retired_next_pc(
+                  rob_commit_comb_2
+              )
+          );
+`else
         $error("cpu_ooo: rob_head_next_retired_next_pc %08x != retired_next_pc(commit_2) %08x",
                rob_head_next_retired_next_pc, retired_next_pc(rob_commit_comb_2));
+`endif
       end
       // An xRET retires through the full flush that follows it, never on the
       // raw commit path, so the ROB's retired next-PC outputs need no xRET arm.
       if (rob_commit_valid_raw && rob_commit_comb.is_mret) begin
 `ifdef FROST_SIM_ASSERTIONS
-        assert (1'b0) else
-`endif
+        assert (1'b0)
+        else $error("cpu_ooo: an xRET retired on the raw commit path");
+`else
         $error("cpu_ooo: an xRET retired on the raw commit path");
+`endif
       end
     end
   end
@@ -5450,24 +5550,44 @@ module cpu_ooo #(
         ((from_id_to_ex.instruction_operation == riscv_pkg::VLOAD) ||
          (from_id_to_ex.instruction_operation == riscv_pkg::VSTORE));
 
+    logic vec_tracker_valid, vec_arith_ready;
     vec_vtype_tracker #(
         .VLEN(VLEN)
     ) u_vtype_tracker (
-        .i_clk           (i_clk),
-        .i_rst           (i_rst),
-        .i_alloc         (vec_alloc && rob_alloc_req.is_vcfg),
-        .i_alloc_op      (from_id_to_ex.instruction_operation),
-        .i_alloc_imm     (from_id_to_ex.csr_address),
-        .i_ckpt_save     (checkpoint_save),
-        .i_ckpt_id       (checkpoint_id),
-        .i_restore       (checkpoint_restore),
-        .i_restore_id    (checkpoint_restore_id),
-        .i_flush_all     (flush_all),
-        .i_vcfg_in_flight(vec_vcfg_in_flight),
-        .i_arch_vtype    (csr_vec_vtype),
-        .o_vtype         (vec_vtype_spec),
-        .o_valid         (vec_vtype_valid)
+        .i_clk                (i_clk),
+        .i_rst                (i_rst),
+        .i_alloc              (vec_alloc),
+        .i_alloc_op           (from_id_to_ex.instruction_operation),
+        .i_alloc_imm          (from_id_to_ex.csr_address),
+        .i_ckpt_save          (checkpoint_save),
+        .i_ckpt_id            (checkpoint_id),
+        .i_restore            (checkpoint_restore),
+        .i_restore_id         (checkpoint_restore_id),
+        .i_flush_all          (flush_all),
+        .i_vcfg_in_flight     (vec_vcfg_in_flight),
+        .i_arch_vtype         (csr_vec_vtype),
+        .i_arch_vstart_nonzero(|csr_vec_vstart),
+        .i_arch_reload        (csr_commit_fire),
+        .o_vstart_nonzero     (vec_vstart_nonzero),
+        .o_vtype              (vec_vtype_spec),
+        .o_valid              (vec_tracker_valid)
     );
+    // Arithmetic legality of the queue head under the tracked vtype, from
+    // registers to a register; vector arithmetic waits one cycle at the
+    // head for it
+    vec_dispatch_legality u_dispatch_legality (
+        .i_clk        (i_clk),
+        .i_rst        (i_rst),
+        .i_head_valid (decoded_queue_valid),
+        .i_head_insn  (32'(from_id_to_ex.instruction)),
+        .i_vtype      (vec_vtype_spec),
+        .i_vtype_valid(vec_tracker_valid),
+        .i_pop        (rob_alloc_req.alloc_valid),
+        .i_flush      (flush_pipeline),
+        .o_ready      (vec_arith_ready),
+        .o_illegal    (vec_arith_illegal)
+    );
+    assign vec_vtype_valid = vec_tracker_valid && vec_arith_ready;
     vec_unit #(
         .VLEN          (VLEN),
         .CACHED_TIER_EN(CACHED_TIER_EN)
@@ -5491,6 +5611,9 @@ module cpu_ooo #(
         .i_vl(csr_vec_vl),
         .i_vtype(csr_vec_vtype),
         .i_vstart(csr_vec_vstart),
+        .i_vxrm(csr_vec_vxrm),
+        .o_vxsat_set(vec_vxsat_set),
+        .o_vtox_commit(vec_vtox_commit),
         .i_head_tag(head_tag),
         .i_rob_empty(rob_empty),
         .i_head_safe              (!flush_all && !commit_recovery_flush_after_head &&
@@ -5590,8 +5713,7 @@ module cpu_ooo #(
     end
     always_ff @(posedge i_clk) begin
       if (reset_seen_q && !i_rst) begin
-        if (rob_commit_comb.valid)
-          p_vmt_commit_head_tag : assert (rob_commit_comb.tag == head_tag);
+        if (rob_commit_comb.valid) p_vmt_commit_head_tag : assert (rob_commit_comb.tag == head_tag);
         if (vmt_head_retiring) begin
           p_vmem_no_trap_cancelled_retire : assert (!trap_taken && !xret_taken && !flush_all);
           p_vmem_retires_alone : assert (!rob_commit_comb_2.valid);
@@ -5600,6 +5722,25 @@ module cpu_ooo #(
         assert (!(vec_vmem_fault_vstart_valid &&
                   (csr_commit_fire || vcfg_commit.valid || vec_varith_commit ||
                    vec_vstore_commit)));
+        p_vtox_commit_exclusive :
+        assert (!(vec_vtox_commit &&
+                  (csr_commit_fire || vcfg_commit.valid || vec_varith_commit ||
+                   vec_vstore_commit || vec_vmem_fault_vstart_valid)));
+        // The tracker writes a checkpoint from the allocation's next state
+        // and applies a restore only in a cycle without an allocation:
+        // bundles dispatch whole, and recovery holds dispatch.
+        p_vec_tracker_save_allocates : assert (!checkpoint_save || vec_alloc);
+        p_vec_tracker_restore_without_allocation : assert (!(checkpoint_restore && vec_alloc));
+        // Dispatch takes the registered legality: it belongs to the
+        // allocating instruction under the vtype in effect.
+        if (vec_alloc && ((from_id_to_ex.instruction_operation == riscv_pkg::VARITH) ||
+                          (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_X))) begin
+          p_vec_arith_alloc_ready : assert (vec_arith_ready && vec_tracker_valid);
+          p_vec_arith_legality_registered :
+          assert (vec_arith_illegal == riscv_pkg::vector_arith_illegal(
+              vec_vtype_spec, 32'(from_id_to_ex.instruction)
+          ));
+        end
       end
     end
 `endif
@@ -5609,6 +5750,7 @@ module cpu_ooo #(
     assign vec_vmt_full = 1'b0;
     assign vec_vtype_spec = '0;
     assign vec_vtype_valid = 1'b1;
+    assign vec_arith_illegal = 1'b0;
     assign vec_varith_commit = 1'b0;
     assign vec_vstore_commit = 1'b0;
     assign vec_vmem_fault_vstart_valid = 1'b0;
@@ -5628,6 +5770,9 @@ module cpu_ooo #(
     assign vec_vmu_fatal_addr = '0;
     assign vec_commit_hold = 1'b0;
     assign vec_idle = 1'b1;
+    assign vec_vstart_nonzero = 1'b0;
+    assign vec_vxsat_set = 1'b0;
+    assign vec_vtox_commit = 1'b0;
     assign vec_vtox_complete = '0;
     logic unused_no_vec;
     assign unused_no_vec = &{1'b0, vec_walk_req_ready, vec_walk_resp_valid, vec_lc_req_ready};
