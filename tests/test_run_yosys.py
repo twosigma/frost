@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import pytest
 
@@ -137,7 +137,9 @@ def _synthesis_defines() -> str:
     return f"-DSYNTHESIS -DFROST_DDR_CAPACITY_LOG2_BYTES={capacity}"
 
 
-# Pytest synthesis targets. Run others with:
+# Synthesis targets. Pytest runs the generic target whole and the Xilinx
+# target in the partitions of XILINX_PARTITIONS; the command line runs each
+# target whole, or any other Yosys target, with:
 # ./scripts/frost.py synthesis --target <name>
 #
 # Stop generic synthesis before mapping RAMs and wide arrays to flops, for
@@ -147,6 +149,154 @@ SYNTHESIS_TARGETS = [
     ("generic", GENERIC_SYNTH_COMMAND, "Generic/ASIC (coarse synthesis)"),
     ("xilinx_ultrascale_plus", "synth_xilinx -family xcup", "Xilinx UltraScale+"),
 ]
+XILINX_TARGET = "xilinx_ultrascale_plus"
+PYTEST_SYNTHESIS_TARGETS = [t for t in SYNTHESIS_TARGETS if t[0] != XILINX_TARGET]
+
+# The Xilinx target's partitions: (name, root module). synth_xilinx keeps the
+# design hierarchy (it runs without -flatten) and maps each module on its
+# own, so a module goes through the same steps in whichever partition
+# synthesizes it. Its netlist can still differ: the top of a partition gets
+# I/O buffers, global clock buffers follow the clock loads synthesis sees,
+# ABC's choice of LUTs follows the names synthesis generates, and cleanup
+# removes an instance of another partition's root whose outputs are all
+# unused, with the logic that only feeds it. Each partition elaborates the
+# whole design from platform_top with the full-chip parameters, then
+# synthesizes its root and everything below it, with the roots of the other
+# partitions as black boxes. A root other than platform_top must elaborate
+# to exactly one module (one parameter set); every module below platform_top
+# is then mapped by the partition of the nearest root above it.
+# test_xilinx_partitions_cover_the_design checks these rules, and CI's
+# synthesis jobs run the partitions apart from the other synthesis tests.
+XILINX_TOP = "platform_top"
+XILINX_PARTITIONS = [
+    # platform_top, soc_top without the NIC, and cpu_top and frost_hart
+    # without the cluster memory, the hart's caches and the core.
+    ("top", XILINX_TOP),
+    ("nic", "nic_top"),
+    # The coherence home, prefetch agent and CPU memory fabric.
+    ("cluster_memory", "frost_cluster_memory"),
+    # The hart's instruction cache and L1 data cache.
+    ("hart_cache", "coherent_hart_cache"),
+    # The core without its out-of-order back end.
+    ("core", "cpu_ooo"),
+    # The back end: reservation stations, reorder buffer, load and store
+    # queues, register alias table and functional units.
+    ("core_backend", "tomasulo_wrapper"),
+]
+
+
+def module_variants(module: str) -> str:
+    r"""Return a Yosys selection of every elaborated form of a module.
+
+    Elaboration keeps a module without parameters under its own name and
+    names a specialized one $paramod\<module>\<parameters>, or
+    $paramod$<hash>\<module> when the parameter list is long.
+    """
+    return f"{module} $paramod*\\{module} $paramod\\{module}\\*"
+
+
+def partition_block(root: str, boxes: Sequence[str]) -> list[str]:
+    """Return the Yosys commands that keep root's part of the design.
+
+    They run after elaboration from XILINX_TOP and make the modules in boxes
+    black boxes. A root other than XILINX_TOP must have exactly one
+    elaborated form, which becomes the top; the hierarchy pass then removes
+    every module that is not below it.
+    """
+    commands = []
+    if boxes:
+        commands.append("blackbox " + " ".join(module_variants(m) for m in boxes))
+    if root != XILINX_TOP:
+        commands += [
+            f"select -assert-mod-count 1 {module_variants(root)}",
+            "setattr -mod -unset top =A:top",
+            f"setattr -mod -set top 1 {module_variants(root)}",
+            "hierarchy",
+        ]
+    return commands
+
+
+def xilinx_partition_commands(root: str) -> list[str]:
+    """Return the commands of root's partition, other roots as black boxes."""
+    roots = [r for _, r in XILINX_PARTITIONS]
+    if root not in roots:
+        raise ValueError(f"{root} is not the root of a Xilinx partition")
+    return partition_block(root, [r for r in roots if r not in (root, XILINX_TOP)])
+
+
+def _named_modules(selection: str) -> list[str]:
+    """Return the modules of a selection of module_variants() forms, or []."""
+    modules = selection.split()[::3]
+    if " ".join(module_variants(m) for m in modules) != selection:
+        return []
+    return modules
+
+
+def xilinx_partition_gaps(
+    full_script: str, scripts: dict[str, str], modules: set[str]
+) -> list[str]:
+    """Return how the partition scripts fall short of the full-chip script.
+
+    Each partition script must be the full-chip script with a
+    partition_block() after elaboration from XILINX_TOP, and together the
+    partitions must read every source the full-chip script reads. Exactly
+    one partition keeps XILINX_TOP as its top, the roots are distinct
+    modules of the sources, and a module is a black box only where it is
+    the root of another partition, so that none is a black box everywhere.
+    """
+
+    def sources(script: str) -> set[str]:
+        return {
+            token
+            for line in script.splitlines()
+            if line.startswith("read_verilog ")
+            for token in line.split()[1:]
+            if not token.startswith(("-", "+/"))
+        }
+
+    gaps = []
+    read = set().union(*map(sources, scripts.values()))
+    gaps += [f"no partition reads {s}" for s in sorted(sources(full_script) - read)]
+    elaborate = f"hierarchy -top {XILINX_TOP}"
+    full = full_script.splitlines()
+    top_command = "setattr -mod -set top 1 "
+    parts: dict[str, tuple[str, list[str]]] = {}
+    for name, script in scripts.items():
+        lines = script.splitlines()
+        if elaborate not in full or elaborate not in lines:
+            gaps.append(f"{name} does not elaborate from {XILINX_TOP}")
+            continue
+        start = lines.index(elaborate) + 1
+        end = start + len(lines) - len(full)
+        block = lines[start:end]
+        root, boxes = XILINX_TOP, []
+        for line in block:
+            if line.startswith(top_command):
+                root = "".join(_named_modules(line[len(top_command) :])[:1])
+            elif line.startswith("blackbox "):
+                boxes = _named_modules(line[len("blackbox ") :])
+        if lines[:start] + lines[end:] != full or block != partition_block(root, boxes):
+            gaps.append(f"{name} runs commands other than its partition's")
+            continue
+        parts[name] = (root, boxes)
+    roots = [root for root, _ in parts.values()]
+    if roots.count(XILINX_TOP) != 1:
+        gaps.append(f"exactly one partition must keep {XILINX_TOP} as its top")
+    gaps += [
+        f"more than one partition has the root {root}"
+        for root in sorted({r for r in roots if roots.count(r) > 1})
+    ]
+    for name, (root, boxes) in parts.items():
+        if root not in modules:
+            gaps.append(f"the root {root!r} of {name} is not a module of the sources")
+        gaps += [
+            f"{name} makes {module} a black box, and no other partition has it "
+            "as its root"
+            for module in boxes
+            if module == root or module not in roots
+        ]
+    return gaps
+
 
 # Use the complete integration filelist even though platform_top is the
 # synthesis top: its cached tier instantiates the NIC and MAC/PCS, whose
@@ -311,6 +461,7 @@ class YosysRunner:
         top_module: str = "platform_top",
         parameters: dict[str, int] | None = None,
         reuse_hook: Callable[[str, Path, int, bool], None] | None = None,
+        after_hierarchy: Sequence[str] = (),
     ) -> subprocess.CompletedProcess[str]:
         """Run Yosys synthesis on the design.
 
@@ -321,6 +472,8 @@ class YosysRunner:
             reuse_hook: Called with the Yosys script, the directory of the
                 converted sources, the timeout and False before Yosys runs, and
                 with True after it returns. It may skip the test before the run.
+            after_hierarchy: Yosys commands to run after elaboration, such as
+                xilinx_partition_commands().
         """
         if not self.filelist.exists():
             raise FileNotFoundError(f"Filelist not found: {self.filelist}")
@@ -365,6 +518,7 @@ class YosysRunner:
                 yosys_script.append(_hierarchy_command(synth_command))
             else:
                 yosys_script.append(f"hierarchy -top {top_module}")
+            yosys_script.extend(after_hierarchy)
             # Preserve RX parser encoding to avoid expanding its symbolic
             # transitions into a table.
             yosys_script.append(
@@ -453,6 +607,156 @@ def test_synthesis_filelist_includes_cached_tier_dependencies(
     assert all(Path(source).is_file() for source in sources)
 
 
+def _xilinx_scripts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[str, dict[str, str], set[str]]:
+    """Build the full-chip and partition Xilinx scripts without running Yosys.
+
+    Return them with the names of the modules the sources declare. The NIC
+    sources stay unconverted, so the scripts name the files of the filelist.
+    """
+    monkeypatch.setattr(YosysRunner, "setup_sw_mem", lambda self: None)
+    monkeypatch.setattr(
+        YosysRunner,
+        "convert_nic_sources",
+        lambda self, files, directory, defines, timeout: files,
+    )
+    monkeypatch.delenv("FROST_DDR_CAPACITY_LOG2_BYTES", raising=False)
+    monkeypatch.delenv("FROST_ASYNC_CPU_CLOCK", raising=False)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    runner = YosysRunner()
+    command = next(t[1] for t in SYNTHESIS_TARGETS if t[0] == XILINX_TARGET)
+
+    def build(after_hierarchy: Sequence[str] = ()) -> str:
+        scripts: list[str] = []
+        runner.run_synthesis(
+            synth_command=command,
+            reuse_hook=lambda script, temp_dir, timeout, after: scripts.append(script),
+            after_hierarchy=after_hierarchy,
+        )
+        return scripts[0]
+
+    modules = {
+        name
+        for source in runner.parse_filelist(runner.filelist)
+        for name in re.findall(
+            r"^\s*module\s+(\w+)",
+            _blank_strings_and_comments(Path(source).read_text()),
+            flags=re.M,
+        )
+    }
+    partitions = {
+        name: build(xilinx_partition_commands(root)) for name, root in XILINX_PARTITIONS
+    }
+    return build(), partitions, modules
+
+
+def test_xilinx_partitions_cover_the_design(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The partitions read every source and leave no module unmapped."""
+    full, partitions, modules = _xilinx_scripts(monkeypatch)
+    assert len(partitions) > 1
+    assert not xilinx_partition_gaps(full, partitions, modules)
+
+
+def test_xilinx_partition_gaps_are_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Negative controls: a source no partition reads, and a module boxed everywhere."""
+    full, partitions, modules = _xilinx_scripts(monkeypatch)
+    names = [name for name, _ in XILINX_PARTITIONS]
+    roots = dict(XILINX_PARTITIONS)
+    source = next(
+        line for line in full.splitlines() if line.startswith("read_verilog -sv")
+    )
+    unread = {n: s.replace(source + "\n", "") for n, s in partitions.items()}
+    assert f"no partition reads {source.split()[-1]}" in xilinx_partition_gaps(
+        full, unread, modules
+    )
+    # A partition that makes a non-root module a black box.
+    boxed = dict(partitions)
+    boxed[names[0]] = full.replace(
+        f"hierarchy -top {XILINX_TOP}\n",
+        f"hierarchy -top {XILINX_TOP}\n"
+        + "\n".join(partition_block(roots[names[0]], ["load_queue"]))
+        + "\n",
+    )
+    assert any(
+        "makes load_queue a black box" in gap
+        for gap in xilinx_partition_gaps(full, boxed, modules)
+    )
+    # Without a partition, its root is a black box in every other one.
+    dropped = next(n for n in reversed(names) if roots[n] != XILINX_TOP)
+    missing = {n: s for n, s in partitions.items() if n != dropped}
+    assert any(
+        f"makes {roots[dropped]} a black box" in gap
+        for gap in xilinx_partition_gaps(full, missing, modules)
+    )
+    # Other commands, a root without its single-form check, a second top.
+    other = dict(partitions)
+    other[dropped] = partitions[dropped].replace(
+        "hierarchy -check\n", "delete t:*\nhierarchy -check\n"
+    )
+    unchecked = dict(partitions)
+    unchecked[dropped] = partitions[dropped].replace(
+        f"select -assert-mod-count 1 {module_variants(roots[dropped])}\n", ""
+    )
+    second = dict(partitions, extra=full)
+    typo = {
+        n: s.replace(module_variants(roots[dropped]), module_variants("no_such"))
+        for n, s in partitions.items()
+    }
+    for scripts, expected in (
+        (other, f"{dropped} runs commands other than its partition's"),
+        (unchecked, f"{dropped} runs commands other than its partition's"),
+        (second, f"exactly one partition must keep {XILINX_TOP} as its top"),
+        (typo, f"the root 'no_such' of {dropped} is not a module of the sources"),
+    ):
+        assert expected in xilinx_partition_gaps(full, scripts, modules)
+
+
+def test_synthesis_jobs_select_each_test_once() -> None:
+    """CI's synthesis jobs together run each synthesis test exactly once."""
+    import yaml  # type: ignore[import-untyped]
+    from _pytest.mark.expression import Expression
+
+    root = Path(__file__).resolve().parents[1]
+    collected = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests", "--collect-only", "-q"]
+        + ["-m", "synthesis", "-p", "no:cacheprovider"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    nodes = [n for n in collected.stdout.splitlines() if n.startswith("tests/")]
+    partitions = [n for n in nodes if "::test_xilinx_partition[" in n]
+    assert len(partitions) == len(XILINX_PARTITIONS), partitions
+    job = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())["jobs"][
+        "test-synthesis"
+    ]
+    assert any(
+        '-m synthesis -k "$PYTEST_FILTER"' in step.get("run", "")
+        for step in job["steps"]
+    )
+    shards = job["strategy"]["matrix"]["include"]
+
+    def selects(shard: dict[str, str], node: str) -> bool:
+        def keyword(name: str, /, **kwargs: str | int | bool | None) -> bool:
+            assert not kwargs
+            return name.casefold() in node.casefold()
+
+        return Expression.compile(shard["pytest_filter"]).evaluate(keyword)
+
+    runs = {n: [s["shard"] for s in shards if selects(s, n)] for n in nodes}
+    assert all(len(jobs) == 1 for jobs in runs.values()), {
+        n: jobs for n, jobs in runs.items() if len(jobs) != 1
+    }
+    assert all(any(selects(s, n) for n in nodes) for s in shards)
+
+
 def test_synthesis_capacity_uses_single_rtl_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -494,15 +798,47 @@ class TestYosysSynthesis:
 
     @pytest.mark.parametrize(
         "target_name,synth_command,description",
-        SYNTHESIS_TARGETS,
-        ids=[t[0] for t in SYNTHESIS_TARGETS],
+        PYTEST_SYNTHESIS_TARGETS,
+        ids=[t[0] for t in PYTEST_SYNTHESIS_TARGETS],
     )
     def test_synthesis(
         self, target_name: str, synth_command: str, description: str, capsys: Any
     ) -> None:
         """Run synthesis for a specific target and check for errors."""
+        self.synthesize_with_reuse(
+            f"test_synthesis[{target_name}]",
+            target_name,
+            synth_command,
+            description,
+            capsys,
+        )
+
+    @pytest.mark.parametrize(
+        "partition,root", XILINX_PARTITIONS, ids=[p[0] for p in XILINX_PARTITIONS]
+    )
+    def test_xilinx_partition(self, partition: str, root: str, capsys: Any) -> None:
+        """Synthesize one partition of the Xilinx UltraScale+ target."""
+        target = next(t for t in SYNTHESIS_TARGETS if t[0] == XILINX_TARGET)
+        self.synthesize_with_reuse(
+            f"test_xilinx_partition[{partition}]",
+            f"{XILINX_TARGET} partition {partition}",
+            target[1],
+            f"{target[2]}, partition {partition} (root {root})",
+            capsys,
+            xilinx_partition_commands(root),
+        )
+
+    def synthesize_with_reuse(
+        self,
+        test_id: str,
+        target_name: str,
+        synth_command: str,
+        description: str,
+        capsys: Any,
+        after_hierarchy: Sequence[str] = (),
+    ) -> None:
+        """Synthesize a target, or in CI skip it if it passed with its key."""
         runner = YosysRunner()
-        test_id = f"test_synthesis[{target_name}]"
         # In CI, skip a target that passed before with the same key
         # (tests/README.md, "Reusing formal and synthesis results").
         reuse = ci_reuse.Reuse.from_env(runner.root_dir, "synthesis")
@@ -540,6 +876,7 @@ class TestYosysSynthesis:
                 synth_command,
                 capsys,
                 reuse_hook if reuse is not None else None,
+                after_hierarchy,
             )
         except pytest.fail.Exception as failure:
             if reuse is not None and "decision" in state:
@@ -581,6 +918,7 @@ class TestYosysSynthesis:
         synth_command: str,
         capsys: Any,
         reuse_hook: Callable[[str, Path, int, bool], None] | None,
+        after_hierarchy: Sequence[str] = (),
     ) -> bool:
         """Run one synthesis target and fail the test unless it succeeds.
 
@@ -591,6 +929,7 @@ class TestYosysSynthesis:
                 capture_output=True,
                 synth_command=synth_command,
                 reuse_hook=reuse_hook,
+                after_hierarchy=after_hierarchy,
             )
 
             has_error, error_lines = runner.check_for_errors(result)
@@ -663,6 +1002,52 @@ def test_synthesis_rejects_invalid_nic(
         )
     else:
         assert any("selection is not empty" in error for error in errors)
+
+
+@pytest.mark.synthesis
+def test_every_module_maps_in_a_xilinx_partition(tmp_path: Path) -> None:
+    """Together the partitions map every module of the elaborated design.
+
+    Elaborate the Xilinx target once, then apply each partition's commands
+    to a copy and list the modules left to map, as synth_xilinx's first
+    step leaves them. Their union must be every module of the elaboration,
+    and without any one partition some module is mapped nowhere.
+    """
+    runner = YosysRunner()
+    listing = ["design -save elaborated"]
+    for name, root in [("", XILINX_TOP), *XILINX_PARTITIONS]:
+        if name:
+            listing += ["design -load elaborated", *xilinx_partition_commands(root)]
+            listing.append("hierarchy")
+        listing.append(f"tee -q -o {tmp_path}/{name or 'design'}.txt ls")
+    listing.append("design -load elaborated")
+    command = next(t[1] for t in SYNTHESIS_TARGETS if t[0] == XILINX_TARGET)
+    result = runner.run_synthesis(
+        synth_command=f"{command} -run begin:begin", after_hierarchy=listing
+    )
+    has_error, errors = runner.check_for_errors(result)
+    assert not has_error, errors
+
+    def modules(name: str) -> set[str]:
+        text = (tmp_path / f"{name}.txt").read_text()
+        lines = text.split("modules:", 1)[1].splitlines()
+        return {line.strip() for line in lines if line.strip()}
+
+    def form_of(module: str, root: str) -> bool:
+        return (
+            module == root
+            or module.startswith(f"$paramod\\{root}\\")
+            or (module.startswith("$paramod$") and module.endswith(f"\\{root}"))
+        )
+
+    design = modules("design")
+    mapped = {name: modules(name) for name, _ in XILINX_PARTITIONS}
+    assert len(design) > 100
+    assert set().union(*mapped.values()) == design
+    for name, root in XILINX_PARTITIONS:
+        assert any(form_of(m, root) for m in mapped[name]), (name, root)
+        others = set().union(*(m for n, m in mapped.items() if n != name))
+        assert mapped[name] - others, f"without {name} every module is still mapped"
 
 
 @pytest.mark.synthesis
@@ -1286,6 +1671,7 @@ def main() -> int:
 Examples:
   %(prog)s                           # Run standard targets (generic, UltraScale+)
   %(prog)s --target xilinx_ultrascale_plus  # Run the supported Xilinx target
+  %(prog)s --partition core          # Run one of its partitions, as CI does
   %(prog)s --target generic          # Run generic/ASIC synthesis
   %(prog)s --target ice40            # Run iCE40 synthesis (any Yosys target works)
   %(prog)s --verbose                 # Show full Yosys output
@@ -1304,6 +1690,11 @@ This script can also be run via pytest:
         default=None,
         help="Synthesis target (any Yosys synth_* target, e.g., xilinx, ice40, ecp5)",
     )
+    parser.add_argument(
+        "--partition",
+        choices=[name for name, _ in XILINX_PARTITIONS],
+        help="Run one partition of the Xilinx UltraScale+ target",
+    )
 
     args = parser.parse_args()
 
@@ -1320,30 +1711,44 @@ This script can also be run via pytest:
     runner = YosysRunner()
     print(f"Design: frost ({runner.filelist})")
 
-    if args.target:
-        matching = [t for t in SYNTHESIS_TARGETS if t[0] == args.target]
-        if matching:
-            targets = matching
-        else:
+    targets: list[tuple[str, str, str, Sequence[str]]]
+    if args.partition:
+        root = dict(XILINX_PARTITIONS)[args.partition]
+        name, command, description = next(
+            t for t in SYNTHESIS_TARGETS if t[0] == XILINX_TARGET
+        )
+        targets = [
+            (
+                f"{name} partition {args.partition}",
+                command,
+                f"{description}, partition {args.partition} (root {root})",
+                xilinx_partition_commands(root),
+            )
+        ]
+    elif args.target:
+        targets = [(n, c, d, ()) for n, c, d in SYNTHESIS_TARGETS if n == args.target]
+        if not targets:
             # Allow any Yosys synth_* target
             synth_cmd = (
                 GENERIC_SYNTH_COMMAND
                 if args.target == "generic"
                 else f"synth_{args.target}"
             )
-            targets = [(args.target, synth_cmd, args.target)]
+            targets = [(args.target, synth_cmd, args.target, ())]
     else:
-        targets = SYNTHESIS_TARGETS
+        targets = [(n, c, d, ()) for n, c, d in SYNTHESIS_TARGETS]
 
     failed_targets = []
-    for target_name, synth_command, description in targets:
+    for target_name, synth_command, description, after_hierarchy in targets:
         try:
             print(f"\n{'=' * 60}")
             print(f"Running Yosys synthesis for {description}...")
             print(f"{'=' * 60}")
 
             result = runner.run_synthesis(
-                capture_output=not args.verbose, synth_command=synth_command
+                capture_output=not args.verbose,
+                synth_command=synth_command,
+                after_hierarchy=after_hierarchy,
             )
 
             has_error, error_lines = runner.check_for_errors(result)
