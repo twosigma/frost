@@ -2752,6 +2752,52 @@ package riscv_pkg;
 
   typedef logic [ExcCauseWidth-1:0] exc_cause_t;
 
+  // xtval of a synchronous exception at the ROB head; cpu_ooo ("xtval for
+  // synchronous exceptions") says where each source comes from. A data
+  // misaligned, page or access fault reports its address after the
+  // pointer-masking transform (pm_tval) under mode and virt.
+  function automatic logic [XLEN-1:0] exception_tval(
+      input exc_cause_t cause, input logic [XLEN-1:0] pc, input logic [XLEN-1:0] value,
+      input logic bus_fault, input logic [XLEN-1:0] bus_fault_va, input logic [31:0] insn,
+      input pm_mode_t mode, input logic virt);
+    unique case (cause)
+      // Breakpoint: the breakpoint instruction's own (virtual) address.
+      ExcBreakpoint[ExcCauseWidth-1:0]: exception_tval = pc;
+      // Instruction access and page faults: the address of the faulting
+      // portion of the instruction, parked in the entry's value slot.
+      ExcInstrAccessFault[ExcCauseWidth-1:0], ExcInstrPageFault[ExcCauseWidth-1:0]:
+      exception_tval = value;
+      // Misaligned and data page faults: the faulting data address, parked
+      // in the entry's value slot.
+      ExcLoadAddrMisalign[ExcCauseWidth-1:0], ExcStoreAddrMisalign[ExcCauseWidth-1:0],
+          ExcLoadPageFault[ExcCauseWidth-1:0], ExcStorePageFault[ExcCauseWidth-1:0]:
+      exception_tval = pm_tval(value, mode, virt);
+      // Data access faults: a bus-response fault takes the issue address
+      // from the bus-fault table, which holds it after the base transform.
+      ExcLoadAccessFault[ExcCauseWidth-1:0], ExcStoreAccessFault[ExcCauseWidth-1:0]:
+      exception_tval = pm_tval(bus_fault ? bus_fault_va : value, mode, virt);
+      ExcIllegalInstr[ExcCauseWidth-1:0]: exception_tval = XLEN'(insn);
+      default: exception_tval = '0;
+    endcase
+  endfunction
+
+  // The pointer-masking mode exception_tval applies for a cause, Off for a
+  // cause that reports no data address. pm_tval under Off is the identity,
+  // so pm_tval(exception_tval(cause, ..., EnvcfgPmmOff, virt),
+  // exception_tval_pm_mode(cause, mode), virt) equals exception_tval(cause,
+  // ..., mode, virt): the trap unit registers the untransformed value with
+  // this mode and applies the transform after its register.
+  function automatic logic [1:0] exception_tval_pm_mode(input exc_cause_t cause,
+                                                        input pm_mode_t mode);
+    unique case (cause)
+      ExcLoadAddrMisalign[ExcCauseWidth-1:0], ExcStoreAddrMisalign[ExcCauseWidth-1:0],
+          ExcLoadPageFault[ExcCauseWidth-1:0], ExcStorePageFault[ExcCauseWidth-1:0],
+          ExcLoadAccessFault[ExcCauseWidth-1:0], ExcStoreAccessFault[ExcCauseWidth-1:0]:
+      exception_tval_pm_mode = mode;
+      default: exception_tval_pm_mode = EnvcfgPmmOff;
+    endcase
+  endfunction
+
   // Reorder Buffer interface signals (for module ports)
   typedef struct packed {
     logic alloc_valid;  // Request Reorder Buffer allocation
