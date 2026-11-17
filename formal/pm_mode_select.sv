@@ -14,8 +14,9 @@
  *    limitations under the License.
  */
 
-// Ssnpm pointer masking applied to operand terms. For every base, 64-bit
-// immediate, mode (the never-produced 01 included) and other input:
+// Ssnpm pointer masking applied to operand terms and after the trap unit's
+// register. For every base, 64-bit immediate, mode (the never-produced 01
+// included) and other input:
 //   - coherent_store_pm_select's store PMA verdict and untranslated
 //     completion at issue equal those of the transformed base: the store
 //     page decoder below (coherent_store_pma_transformed, which takes the
@@ -24,15 +25,30 @@
 //     both settings of MEM_RESPONSE_ERRORS and CACHE_NORMAL_MEMORY, the
 //     configured cached DDR range, a smaller range, and a range above bit
 //     46, which keeps the completion test on the transformed sum.
+//   - The trap value the trap unit latches before the transform, with the
+//     transform's mode, gives the value with the transform applied first:
+//     the misaligned engine's final value, or the selection by cause written
+//     out below with the transform inside each data-fault case.
+//     riscv_pkg::exception_tval under the access's mode equals that
+//     selection.
 // Combinational, so one BMC step covers every input.
 module pm_mode_select (
-    input logic                [63:0] base,
-    input logic                [63:0] imm,
-    input riscv_pkg::pm_mode_t        mode,
-    input logic                       page_carry,
-    input logic                       atomic,
-    input logic                       cmo,
-    input logic                       issue_without_pma
+    input logic                  [63:0] base,
+    input logic                  [63:0] imm,
+    input riscv_pkg::pm_mode_t          mode,
+    input logic                         page_carry,
+    input logic                         atomic,
+    input logic                         cmo,
+    input logic                         issue_without_pma,
+    input riscv_pkg::exc_cause_t        cause,
+    input logic                  [63:0] pc,
+    input logic                  [63:0] value,
+    input logic                         bus_fault,
+    input logic                  [63:0] bus_fault_va,
+    input logic                  [31:0] insn,
+    input logic                         virt,
+    input logic                         ma_pending,
+    input logic                  [63:0] ma_tval
 );
   localparam int unsigned XLEN = riscv_pkg::XLEN;
 
@@ -105,6 +121,68 @@ module pm_mode_select (
       assert (pma_ok == ref_pma_ok);
       assert (complete == ref_complete);
     end
+  end
+
+  // The trap value: cpu_ooo's selection by cause with the transform first.
+  logic [XLEN-1:0] main_tval;
+  always_comb begin
+    unique case (cause)
+      // Breakpoint: tval = the breakpoint instruction's own (virtual) address.
+      riscv_pkg::ExcBreakpoint[$bits(cause)-1:0]: main_tval = pc;
+      // Instruction access/page faults: tval = the virtual
+      // address of the faulting portion of the instruction (the PC, or PC + 2
+      // for a page-straddling instruction whose second halfword faulted),
+      // parked in the value slot by the INT ALU shim.
+      riscv_pkg::ExcInstrAccessFault[$bits(
+          cause
+      )-1:0], riscv_pkg::ExcInstrPageFault[$bits(
+          cause
+      )-1:0]:
+      main_tval = value;
+      // Misaligned and data page faults: tval = the faulting data virtual
+      // address, parked in the entry's value slot by the LQ bypass or the
+      // store fault strobe. Under Ssnpm pointer masking it is the
+      // transformed address (riscv_pkg "Pointer masking"); the mode and
+      // translation state are those the access used: both change only at
+      // serializing points, and none lies between an access and its trap.
+      riscv_pkg::ExcLoadAddrMisalign[$bits(
+          cause
+      )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
+          cause
+      )-1:0], riscv_pkg::ExcLoadPageFault[$bits(
+          cause
+      )-1:0], riscv_pkg::ExcStorePageFault[$bits(
+          cause
+      )-1:0]:
+      main_tval = riscv_pkg::pm_tval(value, mode, virt);
+      // The bus-fault table stores the issue VA after the base transform.
+      // Apply the same architectural tval conversion to the selected VA.
+      riscv_pkg::ExcLoadAccessFault[$bits(
+          cause
+      )-1:0], riscv_pkg::ExcStoreAccessFault[$bits(
+          cause
+      )-1:0]:
+      main_tval = riscv_pkg::pm_tval(bus_fault ? bus_fault_va : value, mode, virt);
+      riscv_pkg::ExcIllegalInstr[$bits(cause)-1:0]: main_tval = XLEN'(insn);
+      default: main_tval = '0;
+    endcase
+  end
+
+  logic [XLEN-1:0] latched_tval, ref_tval;
+  riscv_pkg::pm_mode_t latched_pm_mode;
+  assign latched_tval = ma_pending ? ma_tval : riscv_pkg::exception_tval(
+      cause, pc, value, bus_fault, bus_fault_va, insn, riscv_pkg::EnvcfgPmmOff, virt
+  );
+  assign latched_pm_mode = ma_pending ? riscv_pkg::EnvcfgPmmOff : riscv_pkg::exception_tval_pm_mode(
+      cause, mode
+  );
+  assign ref_tval = ma_pending ? ma_tval : main_tval;
+  always_comb begin
+    p_exception_tval_selection :
+    assert (riscv_pkg::exception_tval(
+        cause, pc, value, bus_fault, bus_fault_va, insn, mode, virt
+    ) == main_tval);
+    p_trap_value : assert (riscv_pkg::pm_tval(latched_tval, latched_pm_mode, virt) == ref_tval);
   end
 endmodule
 

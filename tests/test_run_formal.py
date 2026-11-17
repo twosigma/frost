@@ -1073,8 +1073,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "trap_unit.sby",
-        "Trap-unit exception and interrupt handling, and the CSR entry enables in "
-        "every state",
+        "Trap-unit exception and interrupt handling, the CSR entry enables in "
+        "every state, and the trap value with its pointer-masking transform after "
+        "the register",
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
@@ -1244,8 +1245,9 @@ FORMAL_TARGETS = [
     FormalTarget(
         "pm_mode_select.sby",
         "Ssnpm: the store PMA verdict and untranslated store completion with the "
-        "pointer-masking mode applied to operand terms equal the transform-first "
-        "forms for every input and mode across DDR apertures",
+        "pointer-masking mode applied to operand terms, and the trap value "
+        "latched before the transform, equal the transform-first forms for every "
+        "input and mode across DDR apertures",
         tasks=("bmc", "bmc_ddr31", "bmc_ddr36", "bmc_ddr37"),
     ),
     FormalTarget(

@@ -130,7 +130,12 @@ module trap_unit #(
     // Exception inputs from ROB commit/trap arbitration
     input logic i_exception_valid,
     input logic [XLEN-1:0] i_exception_cause,
+    // The trap value before the pointer-masking transform, and the
+    // transform's mode (Off when none applies) and translation state. Latched
+    // with the exception; o_trap_value applies riscv_pkg::pm_tval to them.
     input logic [XLEN-1:0] i_exception_tval,
+    input riscv_pkg::pm_mode_t i_exception_tval_pm_mode = riscv_pkg::EnvcfgPmmOff,
+    input logic i_exception_tval_virt = 1'b0,
     input logic [XLEN-1:0] i_exception_pc,
     // Misaligned-access assist: the exception is a plain load or store's
     // address-misaligned exception that the misaligned-access engine performs.
@@ -416,6 +421,11 @@ module trap_unit #(
   logic            exception_pending;
   logic [XLEN-1:0] exception_cause_q;
   logic [XLEN-1:0] exception_tval_q;
+  // The pointer-masking transform of the trap value (a pm_mode_t mode and
+  // the translation state) applies after the register, so the ROB head's
+  // value reaches it through the cause select alone.
+  logic [     1:0] exception_tval_pm_mode_q;
+  logic            exception_tval_virt_q;
   logic [XLEN-1:0] exception_pc_q;
   // Register the replay and breakpoint classes with the exception, for
   // timing: the take steering then needs no full-width cause compare.
@@ -438,6 +448,8 @@ module trap_unit #(
       exception_pending <= 1'b1;
       exception_cause_q <= i_exception_cause;
       exception_tval_q <= i_exception_tval;
+      exception_tval_pm_mode_q <= i_exception_tval_pm_mode;
+      exception_tval_virt_q <= i_exception_tval_virt;
       exception_pc_q <= i_exception_pc;
       exception_replay_q <= (i_exception_cause == riscv_pkg::ExcMemReplay);
       exception_ebreak_q <= (i_exception_cause == riscv_pkg::ExcBreakpoint);
@@ -831,7 +843,8 @@ module trap_unit #(
       o_trap_pc = i_interrupt_pc;
     end else begin
       o_trap_cause = exception_cause_q;
-      o_trap_value = exception_tval_q;
+      o_trap_value =
+          riscv_pkg::pm_tval(exception_tval_q, exception_tval_pm_mode_q, exception_tval_virt_q);
       o_trap_pc = exception_pc_q;
     end
   end
@@ -864,6 +877,35 @@ module trap_unit #(
     assert (o_trap_enter_d == (o_trap_taken && !o_trap_no_csr && o_trap_to_d));
     p_csr_refresh_excludes_architectural_interrupt :
     assert (!(i_csr_irq_update && (take_trap_m || take_trap_s)));
+  end
+
+  // The exception's trap value applies the pointer-masking transform after
+  // its registers. Once an exception has been latched, the transformed
+  // registers equal a reference register that latches the transformed input
+  // on the same edges, and o_trap_value equals its form with the reference.
+  // After reset no exception can be taken before the first latch, and the
+  // unreset value registers hold no defined value in either form.
+  logic [XLEN-1:0] f_tval_reference_q;
+  logic f_tval_latched_q;
+  initial f_tval_latched_q = 1'b0;
+  always @(posedge i_clk) begin
+    if (!i_rst && !o_trap_taken && !trap_taken_prev && i_exception_valid) begin
+      f_tval_reference_q <= riscv_pkg::pm_tval(
+          i_exception_tval, i_exception_tval_pm_mode, i_exception_tval_virt
+      );
+      f_tval_latched_q <= 1'b1;
+    end
+  end
+  always_comb begin
+    if (f_tval_latched_q) begin
+      p_trap_value_registers_match_reference :
+      assert (riscv_pkg::pm_tval(
+          exception_tval_q, exception_tval_pm_mode_q, exception_tval_virt_q
+      ) == f_tval_reference_q);
+      p_trap_value_matches_reference :
+      assert (o_trap_value == ((d_int_take_ready || m_int_take_ready || s_int_take_ready) ?
+                               '0 : f_tval_reference_q));
+    end
   end
 
 `ifndef TRAP_ENTRY_ENABLE_LOCAL_PROOF
