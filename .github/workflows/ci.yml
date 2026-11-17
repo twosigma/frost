@@ -1474,12 +1474,6 @@ jobs:
               coh_l1d_zero_payload_bmc or coh_l1d_zero_lookahead_cover or
               coh_l1d_zero_stream_bmc
             timeout_minutes: 180
-          # The four-property zero stream check, with the store queue's hints
-          # held low, has a 180-minute allowance; keep image setup outside that
-          # solver budget.
-          - shard: Coherence L1D zero stream
-            pytest_filter: coh_l1d_zero_stream_free_bmc
-            timeout_minutes: 200
           # The two hinted zero stream BMCs that finish within an hour (the
           # original stream properties and the same-block twin rule) and the two
           # scheduled full-buffer zero covers: 140 minutes of allowances.
@@ -1489,13 +1483,13 @@ jobs:
               coh_l1d_zero_progress_cover or coh_l1d_zero_request_cover
             timeout_minutes: 150
           # Upper-sector request exclusion with the store queue's hints free, by
-          # holding endpoint: endpoints 0 and 2 share a job (125 minutes of
+          # holding endpoint: endpoints 0 and 2 share a job (127 minutes of
           # allowances); endpoint 1's case, split by the operation in
           # operation_q, has its own (60 minutes).
           - shard: Coherence L1D zero stream, hinted endpoints 0 and 2
             pytest_filter: >-
               coh_l1d_zero_stream_upper_ep0_bmc or coh_l1d_zero_stream_upper_ep2_bmc
-            timeout_minutes: 135
+            timeout_minutes: 137
           - shard: Coherence L1D zero stream, hinted endpoint 1
             pytest_filter: coh_l1d_zero_stream_upper_ep1_
             timeout_minutes: 75

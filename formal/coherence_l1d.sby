@@ -56,23 +56,27 @@ coh_l1d_zero_multi_bmc multi zcontrol control_multi padded zero zmulti
 coh_l1d_zero_payload_bmc single data zpayload zero
 coh_l1d_zero_cover single zcovers zsingle covermode zero
 coh_l1d_zero_lookahead_cover multi zcovers zlook covermode zero padded
-coh_l1d_zero_stream_free_bmc turnstream multi padded zero zstream
-# The same stream model with the store queue's hints free, for the two stream
-# properties that predate the request checks.
+# The zero stream model: three endpoints with stream prefetching, cbo.zero
+# writes and full-line stores. The store queue's write-more hint and
+# same-sector claim are free, so these tasks also check every trace in which
+# the hints stay low. The two stream properties that predate the request
+# checks run in one task.
 coh_l1d_zero_stream_hint_bmc turnstream multi cadical padded zero zstreamhint
-# The two zero request properties on the same model with the hints free: the
-# same-block twin rule in one task, and upper-sector request exclusion in one
-# task per holding endpoint, whose three cases together are the property.
-# Endpoint 1's case is split again by the operation in operation_q when the
-# request is accepted; its five parts together are that case.
+# The two zero request properties on the same model: the same-block twin rule
+# in one task, and upper-sector request exclusion in one task per holding
+# endpoint, whose three cases together are the property. Endpoint 1's case is
+# split again by the operation in operation_q when the request is accepted;
+# its five parts together are that case. Endpoint 0's case runs on CaDiCaL,
+# unlike the other cases: on CaDiCaL its time per frame grows steadily, and
+# on Glucose single late frames of this case take about half an hour.
 coh_l1d_zero_stream_line_bmc turnstream multi padded zero zstreamline
-coh_l1d_zero_stream_upper_ep0_bmc turnstream multi padded zero zstreamupper upperep0
-coh_l1d_zero_stream_upper_ep1_read_bmc turnstream multi padded zero zstreamupper upperep1read
-coh_l1d_zero_stream_upper_ep1_store_bmc turnstream multi padded zero zstreamupper upperep1store
-coh_l1d_zero_stream_upper_ep1_lookahead_bmc turnstream multi padded zero zstreamupper upperep1lookahead
-coh_l1d_zero_stream_upper_ep1_prefetch_bmc turnstream multi padded zero zstreamupper upperep1prefetch
-coh_l1d_zero_stream_upper_ep1_rest_bmc turnstream multi padded zero zstreamupper upperep1rest
-coh_l1d_zero_stream_upper_ep2_bmc turnstream multi padded zero zstreamupper upperep2
+coh_l1d_zero_stream_upper_ep0_bmc turnstream multi cadical padded zero zstreamupper upperep0
+coh_l1d_zero_stream_upper_ep1_read_bmc turnstream multi padded zero zstreamupper upperglucose upperep1read
+coh_l1d_zero_stream_upper_ep1_store_bmc turnstream multi padded zero zstreamupper upperglucose upperep1store
+coh_l1d_zero_stream_upper_ep1_lookahead_bmc turnstream multi padded zero zstreamupper upperglucose upperep1lookahead
+coh_l1d_zero_stream_upper_ep1_prefetch_bmc turnstream multi padded zero zstreamupper upperglucose upperep1prefetch
+coh_l1d_zero_stream_upper_ep1_rest_bmc turnstream multi padded zero zstreamupper upperglucose upperep1rest
+coh_l1d_zero_stream_upper_ep2_bmc turnstream multi padded zero zstreamupper upperglucose upperep2
 coh_l1d_zero_progress_cover multi zprogress covermode zero padded wordcover
 coh_l1d_zero_stream_bmc turnstream multi zrequest zero padded
 coh_l1d_zero_request_cover turnstream multi zrequest zrequestcover covermode zero padded wordcover
@@ -202,26 +206,15 @@ coh_l1d_ways_data_bmc: timeout 5100
 # is first reachable at step 29.
 zmulti: depth 30
 contract: timeout 900
-zstream: depth 31
-# Upper-sector request exclusion adds a hold interval to the stream check.
-# With full-line stores in the model Glucose closes all four properties in
-# about 80 minutes once the store queue's write-more hint and same-sector
-# claim are held low (with them free it did not finish in two hours). Holding
-# them low narrows the model: the hints change scalar gathering, credit and
-# pairing, and so which records and endpoints are busy around a zero record.
-# The hinted tasks below check each of the four properties with them free.
-# CI runners take up to about 2.2 times as long as the measured time; allow
-# 180 minutes.
-zstream: timeout 10800
 zstreamhint: depth 31
 zstreamline: depth 31
 zstreamline: timeout 3600
 zstreamupper: depth 31
-# Measured: the endpoint 0 and 2 cases take about 44 and 10 minutes, and
+# Measured: the endpoint 0 and 2 cases take about 46 and 10 minutes, and
 # endpoint 1's read, store, look-ahead, prefetch and remaining-operation parts
-# 815, 196, 23, 28 and 21 seconds (155 minutes as one task); each allowance is
+# 846, 229, 27, 35 and 24 seconds (155 minutes as one task); each allowance is
 # at least 2.2 times that for slower CI runners.
-coh_l1d_zero_stream_upper_ep0_bmc: timeout 6000
+coh_l1d_zero_stream_upper_ep0_bmc: timeout 6120
 coh_l1d_zero_stream_upper_ep1_read_bmc: timeout 2100
 coh_l1d_zero_stream_upper_ep1_store_bmc: timeout 600
 coh_l1d_zero_stream_upper_ep1_lookahead_bmc: timeout 300
@@ -269,9 +262,8 @@ covers: smtbmc boolector
 pathcovers: smtbmc boolector
 zsingle: smtbmc boolector
 zlook: smtbmc boolector
-zstream: abc bmc3 -g
 zstreamline: abc bmc3 -g
-zstreamupper: abc bmc3 -g
+upperglucose: abc bmc3 -g
 zprogress: smtbmc boolector
 coh_l1d_zero_stream_bmc: abc bmc3 -c
 zrequestcover: smtbmc boolector
@@ -306,7 +298,6 @@ streamread: read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF coher
 zcontrol: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zcovers: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zpayload: read -formal -sv -D ZERO_WRITES -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
-zstream: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zstreamhint: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zstreamline: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 upperep0: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=0 coherence_read_payload.sv coherence_l1d.sv
@@ -434,10 +425,6 @@ zsingle: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_twin 
 zsingle: select -assert-count 4 t:$check r:FLAVOR=cover %i
 zlook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_lookahead %d
 zcovers: chformal -assert -remove
-zstream: select -assert-count 4 c:p_prefetch_not_record c:p_grant_keeps_modified c:p_zero_acquire_line c:p_zero_no_upper_request
-zstream: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified c:p_zero_acquire_line c:p_zero_no_upper_request %u %u %u %d
-zstream: select -assert-count 4 t:$check r:FLAVOR=assert %i
-zstream: check -assert
 zstreamhint: select -assert-count 2 c:p_prefetch_not_record c:p_grant_keeps_modified
 zstreamhint: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_not_record c:p_grant_keeps_modified %u %d
 zstreamhint: select -assert-count 2 t:$check r:FLAVOR=assert %i
@@ -526,8 +513,6 @@ localcontrol: select -assert-min 1 t:$check r:FLAVOR=assert %i
 nostore: connect -set i_write_mask 8'h00
 ~zero: connect -set i_write_zero 1'b0
 fullonly: connect -set i_write_zero 1'b0
-zstream: connect -set i_write_more 1'b0
-zstream: connect -set i_next_same 1'b0
 # Cover-only public-input profile: scalar and zero writes, addresses and
 # grant/release scheduling remain free. Each event has a store-only scenario;
 # reads, maintenance, probes and atomics stay idle, and consumers are ready.
