@@ -2107,7 +2107,16 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "umode_test",
         # The vector test programs run where the build has the vector unit.
         *(
-            ["vec_arith_test", "vec_mem_test", "vec_vsetvl_test"]
+            [
+                "vec_arith_test",
+                "vec_integer_test",
+                "vec_mem_test",
+                "vec_order_test",
+                "vec_source_eew_test",
+                "vec_vsetvl_test",
+                "vec_vstart_reload_test",
+                "vec_vtype_handoff_test",
+            ]
             if board == "x3"
             else []
         ),
