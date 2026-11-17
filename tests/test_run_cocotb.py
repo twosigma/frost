@@ -645,6 +645,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "jump tables and history-correlated branches"
         ),
     ),
+    "mispen_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mispen_probe",
+        nic_mac_clocks=False,
+        description=(
+            "Misprediction penalty per class: conditional branch, indirect jump, "
+            "indirect call, return and BTB-missing jump"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "1500000"),),
+    ),
     "smc_predict_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
