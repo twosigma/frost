@@ -225,7 +225,13 @@ whether the provider was right. A mispredicted branch allocates a weak entry
 in the first table above its provider (T1, then T2) whose entry is not useful,
 or clears those usefulness bits when every candidate is useful. Slot-2
 branches are trained the same way, from the prediction left after any PD
-override.
+override. Each table bank keeps two copies, one read by lookups and one by
+training, and every write goes to both. When the provider's entry in the
+training copy does not hold the branch (another training replaced it after
+the lookup, or the copies powered up with different contents), training
+writes that entry back as read. With equal copies this changes nothing; with
+unequal ones it gives the lookup copy the training copy's entry, so no
+prediction keeps coming from an entry that training never updates.
 
 ### Backing BTB
 

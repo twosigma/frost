@@ -43,6 +43,13 @@
  *   - The provider's counter moves toward the outcome if its tag still
  *     matches. Its usefulness bit sets when the provider was right and the
  *     alternate wrong, and clears in the opposite case.
+ *   - A provider whose entry in the training copy does not hold the branch has
+ *     that entry written back as read. Both copies of a bank take every
+ *     write, so while they hold equal contents this rewrites the value both
+ *     already hold. Copies that power up with different contents can differ
+ *     at an entry no training writes; the write-back gives the lookup copy
+ *     the training copy's entry, so no prediction keeps coming from an entry
+ *     that training does not see.
  *   - A mispredicted branch whose provider was not T2 allocates a weak entry
  *     in the shortest table above its provider whose entry is not useful and
  *     does not already hold the branch. If every candidate is useful, their
@@ -352,9 +359,12 @@ module tage_predictor #(
       write2.useful = 1'b0;
     end
   end
+  // A provider that does not own its entry writes the entry back as read
+  // (write1/write2 keep cur1/cur2 then: no allocation or usefulness clear
+  // happens in a table that provided).
   assign write_entry[0] = write1;
   assign write_entry[1] = write2;
-  assign write_any[0]   = train_valid_q && ((provider1 && owned1) || alloc1 || useful_clear1);
-  assign write_any[1]   = train_valid_q && ((provider2 && owned2) || alloc2 || useful_clear2);
+  assign write_any[0]   = train_valid_q && (provider1 || alloc1 || useful_clear1);
+  assign write_any[1]   = train_valid_q && (provider2 || alloc2 || useful_clear2);
 
 endmodule : tage_predictor

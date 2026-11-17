@@ -1563,6 +1563,13 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "tage_copy_convergence.sby",
+        "Tagged predictor training: with a table entry's two copies equal, "
+        "each copy's next value matches the write without the provider "
+        "write-back; with them unequal, a write makes them equal",
+        tasks=("prove", "cover", "bmc_unequal", "cover_unequal"),
+    ),
+    FormalTarget(
         "pd_backing_redirect.sby",
         "PD backing-BTB jump redirects and slot-1/slot-2 TAGE conditional-branch "
         "overrides fire only with their vetoes clear, stack operations and "
@@ -3286,6 +3293,8 @@ SBY_TASKS = [
     ("bmc_btb_index3", "Bounded relation checking with three BTB index bits"),
     ("bmc_four_way", "Bounded checking with four ways"),
     ("prove_four_way", "Unbounded safety checking with four ways"),
+    ("bmc_unequal", "Bounded check starting from unequal table copies"),
+    ("cover_unequal", "Cover scenarios starting from unequal table copies"),
     (
         "size_select",
         "Slot-2 fields per slot-1 size equal the single reduction, any state.",
