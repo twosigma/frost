@@ -17,6 +17,17 @@ depth 6
 capture: depth 1
 idle: depth 1
 phasereg: depth 3
+# With one way and every input free, a request's way can be out of range,
+# and the two reads of tag_rdata[selected] at the end of Tags are then
+# undefined, each on its own. Only a visit selects the request's way, and a
+# visit clears hit_data_q and victim_data_q, so neither read reaches the
+# reply decision; an induction that starts later than the request does not
+# know that. From an arbitrary count_q the Tags countdown lasts up to
+# 2**CountBits cycles (8 at block-RAM latencies, 16 at UltraRAM ones), so
+# these two tasks take that many steps and two more, and every window holds
+# the request.
+coh_array_reply_prove: depth 10
+coh_array_reply_uram_prove: depth 18
 timeout 180
 
 [engines]
