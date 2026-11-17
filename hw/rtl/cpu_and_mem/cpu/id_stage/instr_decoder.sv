@@ -502,7 +502,7 @@ module instr_decoder (
 
       // Vector configuration (OP-V, funct3 111): vsetvli (bit 31 clear),
       // vsetivli (bits 31:30 set), vsetvl (bits 31:25 = 1000000). Every other
-      // vector encoding is illegal so far. With VS Off, ID marks these illegal.
+      // reserved configuration encoding is illegal. VS Off rejects OP-V.
       riscv_pkg::OPC_OP_V:
       if (i_instr.funct3 == 3'b010 && i_instr.funct7[6:1] == 6'b010000 &&
           (i_instr.source_reg_1 == 5'b10000 || i_instr.source_reg_1 == 5'b10001 ||
@@ -512,15 +512,18 @@ module instr_decoder (
       end else if (i_instr.funct3 != 3'b111) begin
         // Vector arithmetic the engine executes: OPIVV (000), OPIVX (100),
         // OPIVI (011) by funct6 with each form the specification defines, and
-        // the Zvbb unary group (OPMVV 010, funct6 010010, by its vs1 code).
+        // the Zvbb unary group and the integer element sequencer's encodings.
         if (vector_arith_ok(
                 i_instr.funct7[6:1],
                 i_instr.funct3,
                 i_instr.funct7[0],
                 i_instr.source_reg_1,
                 i_instr.source_reg_2
+            ) || riscv_pkg::vector_int_extra_ok(
+                32'(i_instr)
             ))
-          o_instr_op = (i_instr.funct3 == 3'b100) ? riscv_pkg::VARITH_X : riscv_pkg::VARITH;
+          o_instr_op = ((i_instr.funct3 == 3'b100) || (i_instr.funct3 == 3'b110)) ?
+              riscv_pkg::VARITH_X : riscv_pkg::VARITH;
         else o_illegal = 1'b1;
       end else if (!i_instr.funct7[6]) o_instr_op = riscv_pkg::VSETVLI;
       else if (i_instr.funct7[6:5] == 2'b11) o_instr_op = riscv_pkg::VSETIVLI;

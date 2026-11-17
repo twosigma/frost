@@ -23,11 +23,10 @@
 
   It takes an instruction with the vl, vtype and vstart it executes under and
   its scalar operand (rs1's value), and raises o_idle when it has finished.
-  Supported so far: the single-width integer arithmetic, logical, minimum and
-  maximum, shift and Zvbb rotate operations (.vv, .vx, .vi), the integer
-  compares into a mask register, vmerge and vmv.v.*, vandn, and the Zvbb
-  unary operations (vbrev8, vrev8, vbrev, vclz, vctz, vcpop.v). o_unsupported
-  pulses for anything else, which the front end never sends.
+  The group path executes single-width ALU, compare, merge and move and
+  Zvbb unary operations. vec_int_exec executes mixed-width integer and
+  fixed-point arithmetic, multiply/divide, masks, reductions and permutations
+  one element at a time. o_unsupported pulses for other encodings.
 
   Masking and the tail use the register file's byte enables: only active body
   elements (vstart <= i < vl, and v0[i] set when masked) are written, so tail
@@ -54,6 +53,8 @@ module vec_engine #(
     input  logic [     15:0] i_vstart,
     input  logic [     63:0] i_rs1,
     output logic             o_unsupported,
+    input  logic [      1:0] i_vxrm = 2'b00,
+    output logic             o_sat,
     // Memory-side ports
     input  logic [      4:0] i_xr_addr,
     output logic [ VLEN-1:0] o_xr_data,
@@ -93,6 +94,41 @@ module vec_engine #(
   assign rf_waddr[1] = i_xw_addr;
   assign rf_wdata[1] = i_xw_data;
   assign rf_wbe[1]   = i_xw_be;
+
+  logic aux_idle, aux_we;
+  logic [3:0][4:0] aux_raddr, int_raddr;
+  logic [4:0] aux_waddr, int_waddr;
+  logic [VLEN-1:0] aux_wdata, int_wdata;
+  logic [Bytes-1:0] aux_wbe, int_wbe;
+  logic int_we, d_extra;
+  assign d_extra = riscv_pkg::vector_int_extra_ok(i_insn);
+  vec_int_exec #(
+      .VLEN(VLEN)
+  ) u_int_exec (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_valid(i_valid && o_idle && d_extra),
+      .i_insn(i_insn),
+      .i_sew(i_vsew[1:0]),
+      .i_lmul(i_vlmul),
+      .i_vl(i_vl),
+      .i_vstart(i_vstart),
+      .i_scalar(i_rs1),
+      .i_vxrm(i_vxrm),
+      .o_idle(aux_idle),
+      .o_sat(o_sat),
+      .o_raddr(aux_raddr),
+      .i_rdata(rf_rdata[3:0]),
+      .o_we(aux_we),
+      .o_waddr(aux_waddr),
+      .o_wdata(aux_wdata),
+      .o_wbe(aux_wbe)
+  );
+  assign rf_raddr[3:0] = aux_idle ? int_raddr : aux_raddr;
+  assign rf_we[0] = aux_idle ? int_we : aux_we;
+  assign rf_waddr[0] = aux_idle ? int_waddr : aux_waddr;
+  assign rf_wdata[0] = aux_idle ? int_wdata : aux_wdata;
+  assign rf_wbe[0] = aux_idle ? int_wbe : aux_wbe;
 
   // --------------------------------------------------------------------------
   // Decode
@@ -320,7 +356,7 @@ module vec_engine #(
     end else begin
       unique case (state)
         S_IDLE:
-        if (i_valid) begin
+        if (i_valid && aux_idle && !d_extra) begin
           insn_q <= i_insn;
           sew_q <= i_vsew[1:0];
           groups_q <= i_vlmul[2] ? 4'd1 : (4'd1 << i_vlmul[1:0]);
@@ -382,30 +418,30 @@ module vec_engine #(
 
   // Read addresses: v0 and old vd in S_PRE, sources in S_RD (the data is
   // there in S_EX's first cycle, when the lanes take it).
-  assign rf_raddr[0] = vs2_q + 5'(g_q);
-  assign rf_raddr[1] = unary_q ? vs2_q : vs1_q + 5'(g_q);
-  assign rf_raddr[2] = vd_q;
-  assign rf_raddr[3] = 5'd0;
+  assign int_raddr[0] = vs2_q + 5'(g_q);
+  assign int_raddr[1] = unary_q ? vs2_q : vs1_q + 5'(g_q);
+  assign int_raddr[2] = vd_q;
+  assign int_raddr[3] = 5'd0;
 
   // Writes, from registers: a group's result in S_WR (not for compares), the
   // mask in S_MWR.
   always_comb begin
-    rf_we[0] = 1'b0;
-    rf_waddr[0] = vd_q + 5'(g_q);
-    rf_wdata[0] = '0;
-    rf_wbe[0] = '0;
-    rf_wdata[0] = res_q;
+    int_we = 1'b0;
+    int_waddr = vd_q + 5'(g_q);
+    int_wdata = '0;
+    int_wbe = '0;
+    int_wdata = res_q;
     if (state == S_WR && !mask_dest_q) begin
-      rf_we[0]  = 1'b1;
-      rf_wbe[0] = wbe_q;
+      int_we  = 1'b1;
+      int_wbe = wbe_q;
     end else if (state == S_MWR) begin
-      rf_we[0] = 1'b1;
-      rf_waddr[0] = vd_q;
-      rf_wdata[0] = mres_q;
-      rf_wbe[0] = '1;
+      int_we = 1'b1;
+      int_waddr = vd_q;
+      int_wdata = mres_q;
+      int_wbe = '1;
     end
   end
 
-  assign o_idle = (state == S_IDLE);
+  assign o_idle = (state == S_IDLE) && aux_idle;
 
 endmodule

@@ -19,8 +19,9 @@ and CSRs, loads and stores, string routines, integer and floating-point dot
 products, vector cryptography, and bit manipulation. The same sources run on
 FROST through sw/common/common.mk and on Spike through
 sw/apps/vec_common/spike/Makefile.spike (HTIF console, -DVT_SPIKE). A program
-that does not pass on Spike is wrong, not the core, so these tests guard the
-programs themselves and need no vector hardware.
+that passes validates its expected values without vector hardware. Source
+comments identify restart and reserved-encoding cases checked only on RTL
+because the reference simulator does not support them.
 
 Each program is built for a vector length of 128, 256 and 512 bits and run at
 that length, then the 128-bit build is run at 256 and 512 to check that the
@@ -150,3 +151,23 @@ def test_stale_disassembly_is_not_linked(tmp_path: Path) -> None:
         check=False,
     )
     assert build.returncode == 0, build.stderr[-1000:]
+
+
+@pytest.mark.parametrize("vlen", (128, 256, 512))
+def test_integer_execution_program(vlen: int, tmp_path: Path) -> None:
+    """The fixed register-image expectations agree with the reference ISA."""
+    build_and_run(
+        "vec_integer_test", vlen, vlen, tmp_path, extra_cflags=f"-DVEC_VLEN={vlen}"
+    )
+
+
+def test_integer_program_negative_control(tmp_path: Path) -> None:
+    """Flipping an expected destination bit must be detected by the program."""
+    with pytest.raises(AssertionError, match="1 failures"):
+        build_and_run(
+            "vec_integer_test",
+            128,
+            128,
+            tmp_path,
+            extra_cflags="-DVEC_VLEN=128 -DVEC_NEGATIVE_CONTROL",
+        )

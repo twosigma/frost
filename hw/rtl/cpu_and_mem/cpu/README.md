@@ -719,10 +719,9 @@ FS or VS is Dirty. A read that does not write, such as `csrr`, leaves VS
 unchanged. `vstart` keeps log2(`VLEN`) bits, `vlenb` reads `VLEN/8`, `vl` resets
 to 0 and `vtype` to vill.
 
-`vsetvli`, `vsetivli` and `vsetvl` are the vector instructions implemented so
-far; every other vector encoding raises illegal-instruction, and while VS is
-Off (always, with `VECTOR=0`) ID decodes all of them as illegal, as it does F
-and D instructions with FS Off. They dispatch in slot 1 only and go to MUL_RS,
+`vsetvli`, `vsetivli` and `vsetvl` configure the vector unit. While VS is
+Off (always, with `VECTOR=0`) ID decodes vector instructions as illegal.
+Configuration instructions dispatch in slot 1 only and go to MUL_RS,
 which issues them through its divide gate to the vector-config unit
 (`vector/vec_cfg_unit.sv`) in the muldiv shim. The unit computes the new
 `vtype` (vill for a reserved or unsupported setting), VLMAX and `vl`
@@ -739,21 +738,51 @@ that depends on `vtype` (vill, register-group alignment, mask-destination
 overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
 (vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
-unknown). Masked operations reject v0 as a SEW data source because the
-implicit mask has element width 1. A configuration allocation restarts the
-three-cycle wait for an empty configuration pipeline before the registered
-ROB in-flight indication arrives. The tracker reloads the architectural
-`vtype` only after that wait, allowing its retiring CSR update to arrive.
-The register-number rules depend on `vtype` only through LMUL, so
-`vector/vec_lmul_legality.sv` evaluates them from the instruction bits for
-each LMUL class (1 or fractional, 2, 4, 8) before the decoded queue, which
-carries the four results beside slot 1; dispatch selects the class of the
-tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with
-its scalar and the architectural `vl`, `vtype` and `vstart`, and the engine
-executes it after commit; the CSR file clears `vstart` and sets VS Dirty.
-`vmv.x.s`, `vcpop.m`
+unknown). Configuration allocation restarts the three-cycle wait for an
+empty configuration pipeline before the registered ROB in-flight indication
+arrives. The tracker reloads architectural `vtype` only after that wait,
+allowing the retiring CSR update to arrive.
+`vector/vec_dispatch_legality.sv` evaluates the EEW, EMUL, alignment and
+overlap rules (`vector/vec_arith_legality.sv`) for the instruction at the
+decoded queue's head under the tracked `vtype`, from the queue's registered
+head shadow and the tracker's registers into one register. An instruction of
+the vector arithmetic opcode other than a configuration instruction (the
+arithmetic families, `vmv.x.s`, `vcpop.m`, `vfirst.m`, and encodings that
+decode rejects) waits one cycle at the head for that result, and dispatch
+takes it into the allocation's illegal-instruction check. Scalar instructions
+and vector loads, stores and configuration instructions do not wait, and the
+decode stages and the queue are those of a build without the unit.
+`vec_arith_legality` has no adder or magnitude compare: register
+groups are 2-bit size codes from tables of LMUL and SEW, alignment is a test
+of a register number's low bits, and two aligned groups overlap exactly when
+their register numbers agree above the larger group's size. Without the unit,
+dispatch uses the four LMUL classes of `vector/vec_lmul_legality.sv` that the
+queue carries, and ID rejects every OP-V instruction anyway.
+Sources that overlap at different element widths are reserved; this includes
+using v0 as both a mask and an integer data source. Widening
+multiply-accumulate also reads its old double-width destination, so a narrow
+source may not overlap that accumulator.
+The tracker also checkpoints whether
+`vstart` is nonzero, clearing it for each dispatched vector instruction. A
+checkpoint also records whether an allocation owns that prediction, so a delayed
+architectural `vtype` reload cannot overwrite a younger load/store's clear. A
+later CSR access or full flush discards the prediction before reloading the
+architectural state. The ownership bit adds no dispatch wait, including after
+immediate configuration instructions. Arithmetic rejects nonzero `vstart`;
+whole-register moves honor their start index. `vmv.x.s` reads element zero
+irrespective of `vstart`. `vmv.s.x` writes element zero when `vstart < vl`,
+including `0 < vstart < vl`, following Spike's interpretation; it writes nothing
+when `vstart >= vl`. When arithmetic retires, `vec_unit` queues it with its scalar and the
+architectural `vl`, `vtype`, `vstart` and `vxrm`, and the engine executes it after
+commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
-result on CDB slot 6.
+result on CDB slot 6. Retiring these scalar-result instructions clears
+`vstart`, dirtying VS only if that changes it. Saturation from active,
+committed elements sets sticky `vxsat`. Every CSR access waits for the vector
+engine and its retirement queue to drain, so reads and writes observe
+completed vector effects in program order. An interrupt can enter while the
+engine runs, but its handler's first CSR access may wait for all queued work;
+a large vector division can therefore make that wait long.
 
 ID decodes the unit-stride (one field), whole-register and mask loads and
 stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1
@@ -794,22 +823,19 @@ access into 32-byte sectors across six line-client identities (IDs 2..7) to the
 coherence home, freeing the `vec_vmt` entry once all sector responses and VRF
 writes finish. A failed sector response after retirement, or during a partial
 first-page run ahead of a second-page fault, suppresses any VRF write and
-raises a sticky hart fatal error alongside `o_cache_fatal`. The other vector
-instructions, and the strided, indexed, segment and fault-only-first loads and
-stores, are illegal.
+raises a sticky hart fatal error alongside `o_cache_fatal`. Strided, indexed, segment and fault-only-first loads and stores are illegal.
 
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
-elaboration while the vector instructions are not implemented, and bare-metal
+elaboration while the vector implementation is incomplete, and bare-metal
 software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
 not exist and VS reads zero.
 
-The vector unit's datapath blocks live in `vector/` and have unit benches.
-`vec_engine` connects `vec_vrf` and `vec_int_lane` to the core.
-`vec_int_lane` is one 64-bit integer lane: add, subtract and
+The vector unit's datapath blocks live in `vector/`, each with its own
+unit bench. `vec_int_lane` is one 64-bit integer lane: add, subtract and
 reverse subtract, the logical operations and `vandn`, signed and unsigned
 minimum and maximum, shifts and rotates, merge and move, the Zvbb bit and byte
 reversals and counts, and the eight compares, at SEW 8, 16, 32 or 64. Its
-result appears a fixed two cycles after the cycle that takes its input, for
+result appears a fixed three cycles after the cycle that takes its input, for
 every operation and operand, as Zvkt requires. A 72-bit adder with a
 separator bit after each byte serves every element width: a separator inside
 an element propagates the carry, one at an element boundary stops it and
@@ -879,14 +905,25 @@ the other blocks. It takes one operation at a time, signals when it is free,
 and returns each result a fixed P + 10 cycles later (P is the format's
 precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
 
-`vec_engine` puts the register file and the integer lanes together and
-executes committed vector instructions one at a time, register group by
-register group, with no overlap between instructions yet: the single-width
-integer arithmetic, logical, minimum and maximum, shift and Zvbb operations,
-the integer compares into a mask register, `vmerge` and `vmv.v.*`. Only active
-body elements are written (the register file's byte enables), so tail and
-inactive elements stay undisturbed. A read port and a byte-enabled write port
-serve the memory side.
+`vec_engine` combines the register file with registered execution blocks.
+Single-width ALU operations execute a register group at a time.
+`vec_int_exec` executes one element at a time for multiply/divide, carry and
+borrow, widening and narrowing arithmetic, extension, fixed point, masks,
+reductions and permutations. `vec_fixed_lane` separates arithmetic, shifts,
+rounding and saturation into registered stages; `vec_div_lane` uses 64
+restoring steps. The multiply, mask and reduction units supply their
+respective results. Gathers and slides read the selected source element in a
+separate registered step. Compress visits every source element, including
+unselected elements, and advances a packed destination cursor. Whole-register
+moves use the encoded register count independently of `vl` and LMUL.
+
+Instructions execute in order with no overlap. Only active body bytes are
+written, preserving tails and inactive elements. Mask results merge one bit
+into the previous destination byte. Widening and narrowing operations permit
+the overlaps specified by their source and destination EEWs; reductions read
+their seed before writing their scalar result. Each operand value follows the
+same sequence of states for its instruction and configuration. A registered
+read port and a byte-enabled write port serve the memory side.
 
 ## Subtle cases
 

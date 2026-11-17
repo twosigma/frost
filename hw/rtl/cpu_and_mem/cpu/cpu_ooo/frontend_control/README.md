@@ -71,8 +71,11 @@ stores it in the branch's RS entry. `cpu_ooo` keeps further copies of the shadow
 source-register fields (from `o_shadow_next`) for the INT and FP RAT lookups
 and the register files' commit-bypass compares. The shadow also carries
 slot 1's four vector legality classes (`vec_lmul_legality`), formed in
-`cpu_ooo` from each copy of ID's output. A simulation assertion checks all
-four bits against the shadow's instruction and decode outcome.
+`cpu_ooo` from each copy of ID's output, which dispatch uses in builds without
+the vector unit. A simulation assertion checks all four bits against the
+shadow's instruction and decode outcome. With the unit, `vec_dispatch_legality`
+instead registers the head's full arithmetic legality from the shadow's
+instruction, and vector arithmetic waits one cycle at the head for it.
 When ID supplies separate next values for advancing and holding, the primitive
 implementation combines early and late stall terms once per late-stall group.
 Each shadow bit then selects head data, producer hold data, or producer advance

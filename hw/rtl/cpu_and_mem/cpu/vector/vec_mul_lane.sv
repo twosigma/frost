@@ -20,7 +20,7 @@
   operation selects, and returns the low or high SEW bits (vmul, vmulh,
   vmulhu, vmulhsu) or z plus or minus the low bits (vmacc, vnmsac and, with
   the operands chosen by the sequencer, vmadd and vnmsub). o_wide holds the
-  full products of the lane's elements at SEW 8, 16 and 32 for the widening
+  full products of the lane's elements for the widening
   multiplies, element k at bits 2*SEW*k; vwmul, vwmulu and vwmulsu use vec_pkg::VM_MULH,
   vec_pkg::VM_MULHU and vec_pkg::VM_MULHSU for their signedness. Every result appears a fixed
   six cycles after the cycle that takes the input, whatever the operation
@@ -206,8 +206,9 @@ module vec_mul_lane (
         wide[64*e+:64] = s2_p32[e];
       end
       default: begin
-        lo = s2_p64[63:0];
-        hi = s2_p64[127:64];
+        lo   = s2_p64[63:0];
+        hi   = s2_p64[127:64];
+        wide = s2_p64;
       end
     endcase
   end
