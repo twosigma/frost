@@ -741,7 +741,10 @@ effect at that point, which a tracker beside the rename checkpoints keeps
 unknown). Configuration allocation restarts the three-cycle wait for an
 empty configuration pipeline before the registered ROB in-flight indication
 arrives. The tracker reloads architectural `vtype` only after that wait,
-allowing the retiring CSR update to arrive.
+allowing the retiring CSR update to arrive. A simulation check records the
+tracked `vtype` at the allocation of each vector arithmetic and
+vector-to-scalar instruction and requires the CSR file's `vtype` to equal it
+when the instruction retires.
 `vector/vec_dispatch_legality.sv` evaluates the EEW, EMUL, alignment and
 overlap rules (`vector/vec_arith_legality.sv`) for the instruction at the
 decoded queue's head under the tracked `vtype`, from the queue's registered

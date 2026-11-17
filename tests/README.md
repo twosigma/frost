@@ -156,7 +156,11 @@ runner compiles first. A failing RTL assertion fails the simulation.
 the delayed ROB in-flight indication, architectural reload, full flushes
 and checkpoint restore. `vec_vtype_handoff_test_v128/v256/v512` execute a
 register-form `vsetvl` immediately followed by `vadd.vv` from the reset
-`vill` state and check that no spurious trap occurs.
+`vill` state and check that no spurious trap occurs. With the vector unit,
+a simulation check in `cpu_ooo` compares the tracked `vtype` at the
+allocation of every vector arithmetic and vector-to-scalar instruction with
+the CSR file's `vtype` when it retires, so every vector program checks the
+tracker.
 
 `vec_vstart_reload_test_v128/v256/v512` check that register/immediate
 configuration and a CSR write of nonzero vstart, followed by a vector load
@@ -164,7 +168,7 @@ or store, do not make the next legal arithmetic instruction trap. They use
 mixed masks and restart values 1 and vl-1, and retain delay controls around
 the CSR write. The tracker bench also checks allocation while architectural
 reload is pending; `vec_vtype_tracker.sby` checks the surviving clear through
-reload and checkpoint recovery.
+reload and checkpoint recovery, and the tracked `vtype` in every cycle.
 
 `vec_source_eew` rejects v0 data operands in masked instructions and checks
 legal scalar-zero operands, unmasked v0 sources and mask destinations, on the
