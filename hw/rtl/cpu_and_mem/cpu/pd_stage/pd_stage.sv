@@ -769,6 +769,17 @@ module pd_stage #(
   assign pd_itt_candidate_2 = pd_itt_eligible[1] && i_itt_hit[1] &&
       !(i_from_if_to_pd_2.btb_predicted_taken &&
         (i_from_if_to_pd_2.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] == i_itt_target[1]));
+  // A live candidate's slot holds a real instruction: a killed slot 2 (behind
+  // slot-1 control flow) still decodes the bytes after slot 1, and its lookup
+  // may hit. Only a live candidate selects the redirect target, which every
+  // redirect of the packet shares: a stale one would replace a slot-1
+  // branch's fall-through, which resolution never checks, so the killed JALR
+  // would be skipped and its callee would run.
+  logic pd_itt_live;
+  logic pd_itt_live_2;
+  assign pd_itt_live = pd_itt_candidate && !i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault;
+  assign pd_itt_live_2 = pd_itt_candidate_2 && !i_from_if_to_pd_2.sel_nop &&
+                         !i_from_if_to_pd_2.fetch_fault;
   assign pd_itt_target = {
     i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
     pd_itt_eligible[0] ? i_itt_target[0] : i_itt_target[1],
@@ -890,7 +901,7 @@ module pd_stage #(
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall) begin
       pd_itt_target_r <= pd_itt_target;
-      pd_itt_target_select_r <= pd_itt_candidate || pd_itt_candidate_2;
+      pd_itt_target_select_r <= pd_itt_live || pd_itt_live_2;
     end
   end
 
@@ -1296,6 +1307,19 @@ module pd_stage #(
         p_pd_redirect_target_boundary_exact :
         assert (!pd_redirect_r || (o_pd_redirect_target == pd_redirect_target_reference));
       end
+      // Independent of the reference: a not-taken redirect goes to the
+      // redirecting instruction's fall-through.
+      if (pd_sim_reset_seen_q && o_pd_redirect && !o_pd_redirect_taken && !$isunknown(
+              {o_pd_redirect_target, o_pd_redirect_slot2, o_from_pd_to_id.program_counter,
+               o_from_pd_to_id_2.program_counter}
+          )) begin
+        p_pd_not_taken_redirect_falls_through :
+        assert (o_pd_redirect_target == (o_pd_redirect_slot2 ?
+            o_from_pd_to_id_2.program_counter + (o_from_pd_to_id_2.is_compressed ?
+                XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit)) :
+            o_from_pd_to_id.program_counter + (o_from_pd_to_id.is_compressed ?
+                XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit))));
+      end
       if (!i_pipeline_ctrl.stall) begin
         pd_slot1_redirect_target_reference_q <= pd_slot1_redirect_target_next_reference;
         pd_slot2_redirect_target_reference_q <= pd_slot2_redirect_target_next_reference;
@@ -1303,10 +1327,12 @@ module pd_stage #(
             pd_slot2_redirect_target_next_reference : pd_slot1_redirect_target_next_reference;
         pd_slot2_packet_valid_reference_q <=
             !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault;
-        pd_itt_target_reference_q <=
-            {i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
-             pd_itt_eligible[0] ? i_itt_target[0] : i_itt_target[1], 1'b0};
-        pd_itt_select_reference_q <= pd_itt_candidate || pd_itt_candidate_2;
+        pd_itt_target_reference_q <= {
+          i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
+          pd_itt_eligible[0] ? i_itt_target[0] : i_itt_target[1],
+          1'b0
+        };
+        pd_itt_select_reference_q <= pd_itt_reference_next || pd_itt_reference_next_2;
         pd_redirect_target_reference_armed <= 1'b1;
       end
     end

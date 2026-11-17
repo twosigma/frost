@@ -309,6 +309,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Compressed double-precision floating-point loads and stores (Zcd)",
     ),
+    "pd_itt_slot2": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="pd_itt_slot2",
+        nic_mac_clocks=False,
+        description=(
+            "A not-taken PD redirect keeps its fall-through when the killed slot 2 "
+            "behind the branch holds a trained indirect call"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+    ),
     "call_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
