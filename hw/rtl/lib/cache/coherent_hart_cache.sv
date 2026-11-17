@@ -52,6 +52,10 @@ module coherent_hart_cache #(
     input logic i_write_sc,
     // A cbo.zero of the 64-byte block (see coherence_l1d).
     input logic i_write_zero = 1'b0,
+    // Another committed cached store follows this write (see coherence_l1d).
+    input logic i_write_more = 1'b0,
+    // The next write combines into this write's sector (see coherence_l1d).
+    input logic i_next_same = 1'b0,
     input logic [TAG_BITS-1:0] i_write_tag,
     output logic o_write_done,
     output logic o_write_inflight,
@@ -300,6 +304,8 @@ module coherent_hart_cache #(
       .i_write_atomic(i_write_atomic),
       .i_write_sc(i_write_sc),
       .i_write_zero(i_write_zero),
+      .i_write_more(i_write_more),
+      .i_next_same(i_next_same),
       .i_write_tag(i_write_tag),
       .o_write_done(o_write_done),
       .o_write_inflight(o_write_inflight),

@@ -157,9 +157,12 @@ address, the wrapper supplies; successful SC completion is likewise delayed
 until B. A failed buffered Normal store retains ownership and raises the
 tile's fatal indication. Completions carry no tag,
 so the memory side must return them in launch order: each one frees the
-oldest in-flight write. A cached or MMIO store
-launches only when no other write is in flight, and nothing else launches until
-it completes. A cached write completes once the L1D has ordered it, so a store
+oldest in-flight write. A cached plain store (not SC or cbo.zero) may launch
+while cached plain stores are in flight, up to two, since the L1D acknowledges
+each one in order on the cycle after its write; it never shares the pipeline
+with an uncached write, whose completion has another source. A cached SC or
+cbo.zero, or an MMIO store, launches only when no other write is in flight,
+and nothing else launches until it completes. A cached write completes once the L1D has ordered it, so a store
 miss does not hold up the drain for the line fill.
 The in-flight class resolves completion of the previous write before launch
 credit arrives. A new launch selects its class last and takes priority over
@@ -167,6 +170,21 @@ a simultaneous completion, without adding state or cycles.
 The sent bits likewise prepare allocation clearing, cursor selection and entry
 completion before launch arrives. A completing launch takes priority over a
 same-entry allocation clear.
+
+Each cached write carries `o_coherent_write_more` when another unsent store
+(not SC, cbo.zero or Zicbom) waits behind it, a hint that lets the L1D keep a
+record open to collect a 64-byte block. Every cycle the SQ also registers
+`o_coherent_next_same`: its next write is a committed cached plain store to the
+32-byte sector of its last write, also a cached plain store, so the L1D may
+give it credit as a combining write when all four sector records are in use
+(see the [cache library](../../../../lib/cache/README.md#full-line-stores)).
+Each entry's claim is formed from registered state and the room-qualified
+allocation targets, and the cursor choices select one entry for each launch
+outcome: after a cached plain launch the cursor's post-fire choice; without a
+launch the post-fire choice past a Zicbom entry and the base choice
+otherwise, where the base choice is the cursor entry itself or the same entry
+as the post-fire choice. The allocation's dispatch valids apply next and the
+launch selects last.
 
 Cached ordinary stores complete when captured in one of the L1D's four ordered
 sector records. Each scalar receives an acknowledgement, including scalars

@@ -429,6 +429,42 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Buffered cached stores across masks, traps, FENCE.I, SC and AMO.",
     ),
+    "full_line_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="full_line_test",
+        nic_mac_clocks=False,
+        description=(
+            "Full-line stores end to end: gapped and partial streams, squashed "
+            "stores, ordering after overlapped stores, DMA during the no-fill window"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "full_line_test_board": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="full_line_test",
+        nic_mac_clocks=False,
+        description=(
+            "full_line_test in the VCU118 shape: 4 MiB L2, CPU clock twice the "
+            "SoC clock and asynchronous to it, DDR latency jitter and reordering"
+        ),
+        include_in_pytest=False,
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "8000000"),
+            ("FROST_CPU_PERIOD_PS", "1500"),
+            ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36"),
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
+            "-GL2_CACHE_BYTES=4194304",
+            "-GDDR_MODEL_LATENCY_JITTER=24",
+            "-GDDR_MODEL_REORDER=1",
+        ),
+    ),
     "dma_torture": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1399,6 +1435,41 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Cycles to clear 64 KiB and 1 MiB of cached DDR: sd loop against cbo.zero",
         extra_env=(("COCOTB_MAX_CYCLES", "40000000"),),
+    ),
+    "store_fill_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="store_fill_bench",
+        nic_mac_clocks=False,
+        description=(
+            "Cycles to write 64 KiB of cached DDR, cold and L2-resident, with memset, "
+            "copy_from_user, partial-line, interleaved-load and cbo.zero store streams"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "40000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "store_fill_bench_board": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="store_fill_bench",
+        nic_mac_clocks=False,
+        description=(
+            "store_fill_bench in the VCU118 shape: 4 MiB L2, CPU clock twice the "
+            "SoC clock and asynchronous to it, DDR latency jitter and reordering"
+        ),
+        include_in_pytest=False,
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "40000000"),
+            ("FROST_CPU_PERIOD_PS", "1500"),
+            ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36"),
+        ),
+        verilator_extra_args=(
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
+            "-GL2_CACHE_BYTES=4194304",
+            "-GDDR_MODEL_LATENCY_JITTER=24",
+            "-GDDR_MODEL_REORDER=1",
+        ),
     ),
     "cbo_zero_pages": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -3787,6 +3858,52 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Line-scope cbo.zero with 32-byte home lines: two zero-filled lines "
         "per block",
     ),
+    "coherence_full_line": CocotbRunConfig(
+        verilator_extra_args=("--assert",),
+        python_test_module="cocotb_tests.cache.test_coherence_full_line",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Full-line stores: blocks that stores cover install without memory "
+        "reads; partial, reversed and byte-written blocks fill; loads and DMA between stores",
+    ),
+    "coherence_full_line_misses": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3"),
+        python_test_module="cocotb_tests.cache.test_coherence_full_line",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Full-line stores with three L1D request endpoints and look-ahead pairs",
+    ),
+    "coherence_full_line_equal_lines": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3", "-GLINE_BYTES=32"),
+        python_test_module="cocotb_tests.cache.test_coherence_full_line",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Full-line stores with 32-byte home lines: each full sector is a line",
+    ),
+    "coherence_full_line_pressure": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GL1D_MISSES=3",
+            "-GL1D_CACHE_BYTES=128",
+            "-GL1D_WAYS=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_full_line",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Full-line stores in a two-set L1D: twins replace Modified victims",
+    ),
+    **{
+        f"coherence_full_line_perf_{flag}": CocotbRunConfig(
+            verilator_extra_args=(
+                "--assert",
+                "-GL1D_MISSES=8",
+                "-GL1D_CACHE_BYTES=16384",
+                "-GHOME_CACHE_BYTES=262144",
+                f"-GL1D_FULL_LINE={1 if flag == 'on' else 0}",
+            ),
+            python_test_module="cocotb_tests.cache.test_coherence_full_line",
+            hdl_toplevel_module="coherence_cluster_test_harness",
+            description=f"Full-line stores {flag} with eight L1D endpoints and a 256 KiB home",
+            include_in_pytest=False,
+        )
+        for flag in ("on", "off")
+    },
     "coherence_store_pressure": CocotbRunConfig(
         verilator_extra_args=(
             "--assert",
@@ -5649,6 +5766,7 @@ MEMORY_LINK_PROGRAMS = (
     "ddr_mlp_test",
     "cbo_zero_test",
     "cbo_zero_pages",
+    "full_line_test",
 )
 for _name in MEMORY_LINK_PROGRAMS:
     _base_config = TEST_REGISTRY[_name]
@@ -5665,6 +5783,8 @@ for _name in (
     "coherence_cluster_misses",
     "coherence_store_pressure",
     "coherence_line_client",
+    "coherence_full_line_misses",
+    "coherence_full_line_pressure",
 ):
     _base_config = TEST_REGISTRY[_name]
     TEST_REGISTRY[f"{_name}_link1"] = replace(

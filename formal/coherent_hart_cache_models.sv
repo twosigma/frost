@@ -51,8 +51,11 @@ module coherence_l1d #(
     input logic [63:0] i_write_data,
     input logic i_write_atomic,
     input logic i_write_sc,
-    // The hart-cache harness drives no cbo.zero writes.
+    // The hart-cache harness drives no cbo.zero writes and no full-line
+    // store hints.
     input logic i_write_zero,
+    input logic i_write_more,
+    input logic i_next_same,
     input logic [TAG_BITS-1:0] i_write_tag,
     output logic o_write_done,
     output logic o_write_inflight,

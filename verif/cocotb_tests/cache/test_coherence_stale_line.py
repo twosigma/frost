@@ -767,13 +767,15 @@ async def zero_push_during_prefetch_lookup(dut: Any) -> None:
 
 @cocotb.test()
 async def zero_pending_twin_lookahead_beside_stream(dut: Any) -> None:
-    """Keep look-ahead GetMZero and stream prefetches off a waiting cbo.zero twin.
+    """Keep look-ahead and stream prefetches off a waiting cbo.zero twin.
 
     When an older cbo.zero's upper twin holds the store-buffer head on endpoint
     0, two same-home-set scalar stores sit behind it, and a younger cbo.zero
-    fills the fourth record, 2'(slot + 1) wraps to the head twin. Neither
-    LookaheadOp nor an ascending load stream trained in that window may acquire
-    the younger block before its own upper twin allocates.
+    fills the fourth record, 2'(slot + 1) wraps to the head twin, whose o_upper
+    bit cleared when its lower record popped. Neither LookaheadOp (GetMZero or
+    GetM) nor an ascending load stream trained in that window may acquire the
+    younger block before its own upper twin allocates; the block acquires with
+    GetMZero once it has.
     """
     c = FullCluster(dut)
     await c.reset()
@@ -891,8 +893,8 @@ async def zero_pending_twin_lookahead_beside_stream(dut: Any) -> None:
     assert (int(dut.hart.store_twin.value) >> head_idx) & 1 == 1
 
     # Give L1D set 3 a clean way for page + 0x60, then launch a 220-cycle L2
-    # prefetch fill on block so LookaheadOp's GetMZero(block) parks behind that
-    # fill while the stream trains on L2-resident page + 0x20, +0x40, +0x60.
+    # prefetch fill on block while the stream trains on L2-resident page + 0x20,
+    # +0x40, +0x60 beside the held fourth record and pending twin.
     c.preload(0x80E40040, 0xA500)
     await c.read(0x80E40060)
 
@@ -956,10 +958,14 @@ async def zero_pending_twin_lookahead_beside_stream(dut: Any) -> None:
             addr in (block, block + 32) for _, _, _, addr, _ in c.requests[req_before:]
         ), "younger cbo.zero acquired while its own twin still waited"
         await c.tick()
+    assert int(dut.hart.store_count.value) == 4
     assert int(dut.hart.store_twin_pending.value) == 1
+    assert not any(
+        addr in (block, block + 32) for _, _, _, addr, _ in c.requests[req_before:]
+    ), "LookaheadOp acquired block while its own upper twin still waited"
 
     # Train and confirm an ascending stream on page + 0x20, +0x40, +0x60 while
-    # store_twin_pending still holds the upper sector of block.
+    # the fourth record and store_twin_pending hold block and block + 32.
     for addr in (page + 0x20, page + 0x40, page + 0x60):
         await c.read(addr)
     for _ in range(60):
@@ -971,8 +977,10 @@ async def zero_pending_twin_lookahead_beside_stream(dut: Any) -> None:
         addr in (block, block + 32) for _, _, _, addr, _ in c.requests[req_before:]
     )
 
-    # Complete the source-3 L2 prefetch of block, then drain all four records
-    # once endpoint 0's head twin completes.
+    # Complete the source-3 L2 prefetch of block, then let the older head finish
+    # so the younger twin materializes, GetMZero(block) installs Modified zeros
+    # across both sectors without any speculative GetS(block + 32), and all
+    # four records drain.
     for _ in range(1200):
         if len(c.agent_grants) > grants_before:
             break
@@ -1000,6 +1008,9 @@ async def zero_pending_twin_lookahead_beside_stream(dut: Any) -> None:
         await c.tick()
 
     await c.drain()
+    assert any(
+        op == 10 and addr == block for _, _, op, addr, _ in c.requests[req_before:]
+    )
     await c.check_block(block)
     assert block + 32 not in c.speculative_requests
 

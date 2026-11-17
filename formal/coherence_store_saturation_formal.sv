@@ -22,7 +22,7 @@ module coherence_store_saturation_formal (
   wire rst = cycle_q == 0;
   wire push = cycle_q >= 2 && cycle_q <= 35;
   wire pop = cycle_q >= 37 && cycle_q <= 39;
-  wire seal = cycle_q == 3 || cycle_q == 36;
+  wire seal = cycle_q == 3 || cycle_q == 38;
   wire [1:0] seal_index = cycle_q == 3 ? 2'd0 : 2'd2;
   wire [7:0] address = cycle_q == 2 ? 8'd0 : 8'd32;
   wire [63:0] data = 64'(cycle_q - 6'd2);

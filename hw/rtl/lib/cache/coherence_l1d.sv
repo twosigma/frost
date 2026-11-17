@@ -33,6 +33,9 @@ module coherence_l1d #(
     parameter int unsigned HOME_LINE_BYTES = 64,
     // 0 removes the cbo.zero path: a build, or a proof task, that issues no zero writes.
     parameter bit ZERO_LINE = 1'b1,
+    // 0 removes full-line stores without a fill: every store record that
+    // misses acquires with GetM (see the cache README, Full-line stores).
+    parameter bit FULL_LINE = 1'b1,
     parameter bit STREAM_PREFETCH = 1'b0,
     parameter int unsigned SIM_FAST_MAINT = 0,
     // An absorbed put slot stops presenting W. Set when register stages
@@ -65,6 +68,12 @@ module coherence_l1d #(
     // The write is a cbo.zero of the 64-byte block at i_address, one
     // operation that becomes the block's two sector records.
     input logic i_write_zero = 1'b0,
+    // With a scalar write: another committed cached store follows it in the
+    // store queue, so the youngest record may still collect bytes.
+    input logic i_write_more = 1'b0,
+    // The store queue's next write is a committed scalar store to the 32-byte
+    // sector of its last write, so it combines into the youngest record.
+    input logic i_next_same = 1'b0,
     input logic [TAG_BITS-1:0] i_write_tag,
     output logic o_write_done,
     output logic o_write_inflight,
@@ -266,7 +275,29 @@ module coherence_l1d #(
   logic grant_twin, twin_fill_q, twin_wb_ok, twin_wb_slot, twin_ready;
   logic [EpBits-1:0] twin_ep_q;
   logic twin_owed;
-  assign twin_owed = ZERO_LINE && twin_fill_q;
+  // Zero twins and full pairs' data twins share the twin installation.
+  localparam bit TwinLine = ZERO_LINE || FULL_LINE;
+  assign twin_owed = TwinLine && twin_fill_q;
+  // Full-line stores (see the cache README, Full-line stores): every byte of
+  // a record, or of a pair of adjacent records covering one 64-byte block, is
+  // masked, so the block acquires with GetMZero and installs without a fill.
+  // store_full marks a fully masked record and store_upper the upper record
+  // of the block whose lower sector the record before it holds.
+  logic [3:0] store_full, store_upper;
+  // The gather window: the last write carried i_write_more and fewer than
+  // three cycles have passed, the store queue's cadence for cached writes.
+  // The pair window: fewer than twelve cycles have passed since the last
+  // write, for a full lower record whose upper record is still growing.
+  logic write_more_q, gather_open, pair_open;
+  // The claim that the next write combines into the youngest record.
+  logic merge_claim;
+  logic [3:0] gather_gap_q;
+  // Holds that keep a record open while its block may still fill: the head
+  // in Idle, the next record for a continuation, and look-ahead candidates.
+  logic gather_hold_head, gather_hold_next;
+  logic [3:0] gather_grow, gather_pair_wait;
+  // The selected record and the next one are a full pair, from the lookup.
+  logic pair_acquire, pair_acquire_q;
   logic [1:0] store_twin_index;
   logic [ADDR_WIDTH-1:0] store_twin_addr;
   // A record's upper sector is held by a live endpoint, a frozen PutM or an
@@ -1110,9 +1141,10 @@ module coherence_l1d #(
       (operation_q == StoreOp || operation_q == TwinOp ||
        (operation_q == GrantOp && selected_grant_store));
   // The granted lower record's twin follows it in the buffer (the home grants
-  // GrantMZero only to a GetMZero, which requires that twin), so a build that
-  // issues no cbo.zero writes has no twin to install.
-  assign grant_twin = ZERO_LINE && operation_q == GrantOp && selected_grant_store &&
+  // GrantMZero only to a GetMZero, which requires that twin: a cbo.zero
+  // block's zero twin or a full pair's data twin), so a build with neither
+  // has no twin to install.
+  assign grant_twin = TwinLine && operation_q == GrantOp && selected_grant_store &&
       grant_q.opcode == coherence_pkg::GrantMZero && store_twin[store_next_index];
   assign store_seal = active && ((phase_q == Idle && !probe_valid_q && !probe_priority &&
       ((grant_valid && grant_ready && grant_is_store) ||
@@ -1124,7 +1156,8 @@ module coherence_l1d #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .TAG_BITS(TAG_BITS),
       .EP_BITS(EpBits),
-      .ZERO_LINE(ZERO_LINE)
+      .ZERO_LINE(ZERO_LINE),
+      .FULL_LINE(FULL_LINE && HOME_LINE_BYTES == 64)
   ) store_buffer (
       .i_clk,
       .i_rst,
@@ -1141,6 +1174,8 @@ module coherence_l1d #(
       .i_acquire(store_acquire),
       .i_acquire_index(store_selected_q),
       .i_acquire_ep(acq_ep_q),
+      .i_acquire_pair(pair_acquire_q),
+      .i_merge_claim(merge_claim),
       .o_ready(store_credit),
       .o_done(store_ack),
       .o_count(store_count),
@@ -1156,6 +1191,8 @@ module coherence_l1d #(
       .o_ep(store_ep),
       .o_zero(store_zero),
       .o_twin(store_twin),
+      .o_full(store_full),
+      .o_upper(store_upper),
       .o_twin_pending(store_twin_pending),
       .o_twin_alloc(store_twin_alloc),
       .o_twin_index(store_twin_index),
@@ -1221,15 +1258,60 @@ module coherence_l1d #(
       ((active && phase_q == LocalRelease) || (!(i_sc_valid && o_sc_ready) &&
        ((i_u_valid && ep_u_ready[0] && atomic_q && !atomic_local_q) ||
         (!atomic_q && !(store_twin_alloc && store_twin_index == 2'd0)))));
+  // Gather window: open from a write that carries i_write_more until the next
+  // write, or for three cycles without one.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      write_more_q <= 1'b0;
+      gather_gap_q <= 4'd15;
+    end else if (store_push) begin
+      write_more_q <= i_write_more && !i_write_zero;
+      gather_gap_q <= 4'd0;
+    end else if (gather_gap_q != 4'd15) gather_gap_q <= gather_gap_q + 4'd1;
+  end
+  assign merge_claim = FULL_LINE && i_next_same;
+  assign gather_open = FULL_LINE && write_more_q && gather_gap_q < 4'd3;
+  assign pair_open = FULL_LINE && gather_gap_q < 4'd12;
+  // A record may still grow when it is the youngest, unsealed and not a zero
+  // record; a full record grows no further, except that a full lower record
+  // (64-byte home lines) waits for its upper record. A full lower record waits
+  // while its upper record is the youngest and may still grow. Each hold
+  // needs the window, so it lasts only while the store queue keeps writing.
+  always_comb
+    for (int slot = 0; slot < 4; slot++) begin
+      gather_grow[slot] = store_valid[slot] && !store_sealed[slot] && !store_zero[slot] &&
+          !store_twin[slot] &&
+          !(store_full[slot] && (HOME_LINE_BYTES == 32 || store_addr[slot][5]));
+      gather_pair_wait[slot] = HOME_LINE_BYTES == 64 && store_valid[slot] && store_full[slot] &&
+          !store_zero[slot] && !store_twin[slot] && !store_addr[slot][5] &&
+          store_upper[2'(2'(slot) + 2'd1)] && !store_full[2'(2'(slot) + 2'd1)] &&
+          !store_sealed[2'(2'(slot) + 2'd1)];
+    end
+  assign gather_hold_head =
+      (gather_open && store_count == 3'd1 && gather_grow[store_head_index]) ||
+      (pair_open && store_count == 3'd2 && gather_pair_wait[store_head_index]);
+  assign gather_hold_next =
+      (gather_open && store_count == 3'd2 && gather_grow[store_next_index]) ||
+      (pair_open && store_count == 3'd3 && gather_pair_wait[store_next_index]);
   // A lower zero record that is the only record waits for its twin, which
-  // allocates on the next cycle.
-  assign store_head_ready = pending_q && !look_priority_q && !store_acquired[store_head_index] &&
-      !pending_blocked && !(store_read_turn_q && read_waiting_q) &&
-      !(store_twin_pending && store_count == 3'd1) && !twin_owed &&
-      (!pending_miss_q || (!request_live && ep0_wb_ok && !store_same_line_q));
-  assign o_sc_ready = active && !atomic_q && !pending_q && !request_live &&
-      !o_sc_result_valid && i_atomic_protected && phase_q == Idle && !grant_valid &&
+  // allocates on the next cycle. A gathering head waits for its block. The
+  // terms read directly from registers combine first; the gather hold,
+  // endpoint 0's write-back credit and the head's write-back address
+  // comparison (pending_blocked) apply in one final step.
+  (* keep = "true" *) logic store_head_ready_early;
+  (* keep = "true" *) logic store_head_miss_free;
+  assign store_head_ready_early = pending_q && !look_priority_q &&
+      !store_acquired[store_head_index] && !(store_read_turn_q && read_waiting_q) &&
+      !(store_twin_pending && store_count == 3'd1) && !twin_owed;
+  assign store_head_miss_free = !request_live && !store_same_line_q;
+  assign store_head_ready = store_head_ready_early && !gather_hold_head &&
+      (!pending_miss_q || (store_head_miss_free && ep0_wb_ok)) && !pending_blocked;
+  // SC readiness from everything but the grant selection, which applies last.
+  (* keep = "true" *) logic sc_ready_early;
+  assign sc_ready_early = active && !atomic_q && !pending_q && !request_live &&
+      !o_sc_result_valid && i_atomic_protected && phase_q == Idle &&
       !probe_valid_q && !probe_priority;
+  assign o_sc_ready = sc_ready_early && !grant_valid;
   assign o_sc_write_tag = atomic_tag_q;
   assign local_ready = grant_valid || atomic_write_q || twin_ready ||
       (atomic_q && atomic_sc_q && !request_live && (!sc_home_q || (!any_live && wb_free))) ||
@@ -2162,7 +2244,7 @@ module coherence_l1d #(
     acquisition.addr = {lookup_addr_q[ADDR_WIDTH-1:5], 5'b0};
     acquisition.offset = lookup_addr_q[4:0];
     if (operation_q == StoreOp || operation_q == LookaheadOp) begin
-      acquisition.opcode = (ZERO_LINE && zero_acquire_q) ? coherence_pkg::GetMZero :
+      acquisition.opcode = (TwinLine && zero_acquire_q) ? coherence_pkg::GetMZero :
           coherence_pkg::GetM;
       acquisition.mask   = store_mask[store_selected_q];
     end else if (StreamEnabled && operation_q == PrefetchOp) begin
@@ -2228,18 +2310,35 @@ module coherence_l1d #(
   // With 64-byte home lines, a lower zero record acquires with GetMZero when
   // its own twin follows it and its upper sector is free; with 32-byte lines,
   // every zero record does, since each sector is a whole home line.
-  assign zero_acquire = store_zero[store_selected_q] &&
+  // A full pair acquires the same way: a fully masked lower record whose next
+  // record is the fully masked, unacquired upper record of its block, with the
+  // upper sector free. With 32-byte lines, every fully masked record does.
+  // The next record's upper flag names the selected record as the lower
+  // sector of the same block, and the head's flag is always clear: with four
+  // records, a youngest lower record whose twin still waits never pairs with
+  // an older head twin across the buffer, whatever that twin's block.
+  assign pair_acquire = FULL_LINE && HOME_LINE_BYTES == 64 &&
+      !store_zero[store_selected_q] && !store_twin[store_selected_q] &&
+      store_full[store_selected_q] && !store_addr[store_selected_q][5] &&
+      store_upper[2'(store_selected_q + 2'd1)] && store_full[2'(store_selected_q + 2'd1)] &&
+      !store_acquired[2'(store_selected_q + 2'd1)] && !store_zero[2'(store_selected_q + 2'd1)] &&
+      !zero_sibling_conflict_q[store_selected_q];
+  assign zero_acquire = (store_zero[store_selected_q] &&
       (HOME_LINE_BYTES == 32 ||
        (HOME_LINE_BYTES == 64 && !store_twin[store_selected_q] &&
         store_valid[2'(store_selected_q + 2'd1)] && store_twin[2'(store_selected_q + 2'd1)] &&
-        store_addr[2'(store_selected_q + 2'd1)][ADDR_WIDTH-1:6] ==
-            store_addr[store_selected_q][ADDR_WIDTH-1:6] &&
-        !zero_sibling_conflict_q[store_selected_q]));
+        store_upper[2'(store_selected_q + 2'd1)] &&
+        !zero_sibling_conflict_q[store_selected_q]))) || pair_acquire ||
+      (FULL_LINE && HOME_LINE_BYTES == 32 && store_full[store_selected_q]);
   always_ff @(posedge i_clk) begin
-    if (i_rst) zero_acquire_q <= 1'b0;
-    else if (active && phase_q == LookupWait && array_valid &&
-        (operation_q == StoreOp || operation_q == LookaheadOp))
+    if (i_rst) begin
+      zero_acquire_q <= 1'b0;
+      pair_acquire_q <= 1'b0;
+    end else if (active && phase_q == LookupWait && array_valid &&
+        (operation_q == StoreOp || operation_q == LookaheadOp)) begin
       zero_acquire_q <= zero_acquire;
+      pair_acquire_q <= pair_acquire;
+    end
   end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -2249,7 +2348,9 @@ module coherence_l1d #(
       look_snapshot_valid_q <= 1'b0;
     end else begin
       look_owner_conflict_q <= look_owner_conflict;
-      look_snapshot_valid_q <= !store_pop && !store_push;
+      // A write that combines into the youngest record changes no record's
+      // address, so with full-line stores it keeps the sample.
+      look_snapshot_valid_q <= !store_pop && !(store_push && !(FULL_LINE && store_combined));
       for (int slot = 0; slot < 4; slot++) begin
         look_other_row_q[slot] <= store_addr[slot][ADDR_WIDTH-1:HomeOffset] !=
             pending_addr_q[ADDR_WIDTH-1:HomeOffset];
@@ -2268,14 +2369,32 @@ module coherence_l1d #(
     look_blocked = store_acquired | store_checked_q | ~store_valid | look_owner_conflict_q;
     // With 64-byte home lines, a twin installs at the head, and a
     // lower zero record looks ahead only with GetMZero: with its own twin and
-    // its upper sector free.
+    // its upper sector free. Its twin is the next record and that record's
+    // upper flag names it as its lower record: with four records, the next
+    // index after a youngest lower record whose twin still waits is the head,
+    // whose flag is clear.
     if (HOME_LINE_BYTES == 64)
       for (int slot = 0; slot < 4; slot++)
       if (store_twin[slot] || (store_zero[slot] && (zero_sibling_conflict_q[slot] ||
           !(store_valid[2'(2'(slot) + 2'd1)] && store_twin[2'(2'(slot) + 2'd1)] &&
-            store_addr[2'(2'(slot) + 2'd1)][ADDR_WIDTH-1:6] ==
-                store_addr[slot][ADDR_WIDTH-1:6]))))
+            store_upper[2'(2'(slot) + 2'd1)]))))
         look_blocked[slot] = 1'b1;
+    // A gathering record, and a full lower record whose upper record is still
+    // gathering, wait; so does the upper record of an unacquired full lower
+    // record, which may acquire both sectors.
+    if (FULL_LINE)
+      for (int slot = 0; slot < 4; slot++) begin
+        if (gather_open && 2'(2'(slot) - store_head_index) == 2'(store_count - 3'd1) &&
+            gather_grow[slot]) look_blocked[slot] = 1'b1;
+        // The upper record can still take writes: a record is free, or the
+        // store queue claims a combining write.
+        if (pair_open && (store_count != 3'd4 || merge_claim) &&
+            2'(2'(slot) - store_head_index) == 2'(store_count - 3'd2) &&
+            gather_pair_wait[slot]) look_blocked[slot] = 1'b1;
+        if (HOME_LINE_BYTES == 64 && store_upper[slot] &&
+            store_full[2'(2'(slot) - 2'd1)] && !store_zero[2'(2'(slot) - 2'd1)] &&
+            !store_acquired[2'(2'(slot) - 2'd1)]) look_blocked[slot] = 1'b1;
+      end
     if (!look_snapshot_valid_q) look_blocked = '1;
     for (int slot = 0; slot < 4; slot++) begin
       for (int older = 0; older < 4; older++)
@@ -2302,37 +2421,90 @@ module coherence_l1d #(
       store_valid[look_index_q] && !store_acquired[look_index_q] &&
       !store_checked_q[look_index_q] && look_index_q != store_head_index;
 `ifdef ZERO_INDEX_PROOF
-  // Compare the complete blocking decision with an index-based twin test.
-  // The same-block head case also needs the registered sibling conflict;
-  // the two twin tests alone are not equivalent.
-  logic [3:0] f_index_blocked;
+  // Compare the complete blocking decision, whose zero rule names a lower
+  // zero record's twin by the next record's upper flag, with the same
+  // decision naming it by the twin's block address and by its index (the
+  // next record is not the head). The same-block head case also needs the
+  // registered sibling conflict. The full-line rules are copied unchanged.
+  logic [3:0] f_index_blocked, f_address_blocked;
   always_comb begin
     f_index_blocked = store_acquired | store_checked_q | ~store_valid | look_owner_conflict_q;
+    f_address_blocked = f_index_blocked;
     if (HOME_LINE_BYTES == 64)
+      for (int slot = 0; slot < 4; slot++) begin
+        if (store_twin[slot] || (store_zero[slot] && (zero_sibling_conflict_q[slot] ||
+            !(store_valid[2'(2'(slot) + 2'd1)] && store_twin[2'(2'(slot) + 2'd1)] &&
+              2'(2'(slot) + 2'd1) != store_head_index))))
+          f_index_blocked[slot] = 1'b1;
+        if (store_twin[slot] || (store_zero[slot] && (zero_sibling_conflict_q[slot] ||
+            !(store_valid[2'(2'(slot) + 2'd1)] && store_twin[2'(2'(slot) + 2'd1)] &&
+              store_addr[2'(2'(slot) + 2'd1)][ADDR_WIDTH-1:6] ==
+                  store_addr[slot][ADDR_WIDTH-1:6]))))
+          f_address_blocked[slot] = 1'b1;
+      end
+    if (FULL_LINE)
       for (int slot = 0; slot < 4; slot++)
-      if (store_twin[slot] || (store_zero[slot] && (zero_sibling_conflict_q[slot] ||
-          !(store_valid[2'(2'(slot) + 2'd1)] && store_twin[2'(2'(slot) + 2'd1)] &&
-            2'(2'(slot) + 2'd1) != store_head_index))))
+      if ((gather_open && 2'(2'(slot) - store_head_index) == 2'(store_count - 3'd1) &&
+           gather_grow[slot]) ||
+          (pair_open && (store_count != 3'd4 || merge_claim) &&
+           2'(2'(slot) - store_head_index) == 2'(store_count - 3'd2) &&
+           gather_pair_wait[slot]) ||
+          (HOME_LINE_BYTES == 64 && store_upper[slot] &&
+           store_full[2'(2'(slot) - 2'd1)] && !store_zero[2'(2'(slot) - 2'd1)] &&
+           !store_acquired[2'(2'(slot) - 2'd1)])) begin
         f_index_blocked[slot] = 1'b1;
-    if (!look_snapshot_valid_q) f_index_blocked = '1;
+        f_address_blocked[slot] = 1'b1;
+      end
+    if (!look_snapshot_valid_q) begin
+      f_index_blocked = '1;
+      f_address_blocked = '1;
+    end
     for (int slot = 0; slot < 4; slot++)
       for (int older = 0; older < 4; older++)
       if (store_valid[older] && 2'(2'(older) - store_head_index) <
-          2'(2'(slot) - store_head_index) && look_pair_conflict_q[slot][older])
+          2'(2'(slot) - store_head_index) && look_pair_conflict_q[slot][older]) begin
         f_index_blocked[slot] = 1'b1;
+        f_address_blocked[slot] = 1'b1;
+      end
   end
+  // The GetMZero choice with the same two alternative twin tests; the pair
+  // and 32-byte terms are unchanged.
+  logic f_index_acquire, f_address_acquire;
+  assign f_index_acquire = (store_zero[store_selected_q] &&
+      (HOME_LINE_BYTES == 32 ||
+       (HOME_LINE_BYTES == 64 && !store_twin[store_selected_q] &&
+        store_valid[2'(store_selected_q + 2'd1)] && store_twin[2'(store_selected_q + 2'd1)] &&
+        2'(store_selected_q + 2'd1) != store_head_index &&
+        !zero_sibling_conflict_q[store_selected_q]))) || pair_acquire ||
+      (FULL_LINE && HOME_LINE_BYTES == 32 && store_full[store_selected_q]);
+  assign f_address_acquire = (store_zero[store_selected_q] &&
+      (HOME_LINE_BYTES == 32 ||
+       (HOME_LINE_BYTES == 64 && !store_twin[store_selected_q] &&
+        store_valid[2'(store_selected_q + 2'd1)] && store_twin[2'(store_selected_q + 2'd1)] &&
+        store_addr[2'(store_selected_q + 2'd1)][ADDR_WIDTH-1:6] ==
+            store_addr[store_selected_q][ADDR_WIDTH-1:6] &&
+        !zero_sibling_conflict_q[store_selected_q]))) || pair_acquire ||
+      (FULL_LINE && HOME_LINE_BYTES == 32 && store_full[store_selected_q]);
   // The comparison task assumes these lemmas; the buffer task proves them
-  // under its interface contract, with the sampled older-record conflict.
-  logic [3:0] f_index_twin_sector, f_index_twin_pair, f_index_head_conflict;
+  // under its interface contract (f_upper_ok, f_twin_ok and the sampled
+  // older-record conflict). A twin's predecessor is a lower zero record for a
+  // zero twin and an acquired full record for a data twin.
+  logic [3:0] f_index_upper_line, f_index_twin_pair, f_index_head_conflict;
   always_comb
     for (int slot = 0; slot < 4; slot++) begin
-      f_index_twin_sector[slot] = !(store_valid[slot] && store_twin[slot]) ||
-          (store_zero[slot] && store_addr[slot][5]);
+      f_index_upper_line[slot] = !store_upper[slot] ||
+          (store_valid[slot] && 2'(slot) != store_head_index &&
+           store_valid[2'(2'(slot) - 2'd1)] && !store_addr[2'(2'(slot) - 2'd1)][5] &&
+           store_addr[slot][5] &&
+           store_addr[2'(2'(slot) - 2'd1)][ADDR_WIDTH-1:6] == store_addr[slot][ADDR_WIDTH-1:6]);
       f_index_twin_pair[slot] = !(store_valid[slot] && store_twin[slot] &&
           2'(slot) != store_head_index) ||
-          (store_valid[2'(2'(slot) - 2'd1)] && store_zero[2'(2'(slot) - 2'd1)] &&
-           !store_twin[2'(2'(slot) - 2'd1)] &&
-           store_addr[2'(2'(slot) - 2'd1)][ADDR_WIDTH-1:6] == store_addr[slot][ADDR_WIDTH-1:6]);
+          (store_valid[2'(2'(slot) - 2'd1)] && !store_twin[2'(2'(slot) - 2'd1)] &&
+           store_upper[slot] &&
+           store_addr[2'(2'(slot) - 2'd1)][ADDR_WIDTH-1:6] == store_addr[slot][ADDR_WIDTH-1:6] &&
+           (store_zero[slot] ? store_zero[2'(2'(slot) - 2'd1)] :
+            !store_zero[2'(2'(slot) - 2'd1)] && store_full[2'(2'(slot) - 2'd1)] &&
+            store_acquired[2'(2'(slot) - 2'd1)]));
       f_index_head_conflict[slot] = !(look_snapshot_valid_q && store_valid[slot] &&
           store_zero[slot] && !store_twin[slot] && 2'(2'(slot) + 2'd1) == store_head_index &&
           store_valid[store_head_index] && store_twin[store_head_index] &&
@@ -2342,7 +2514,10 @@ module coherence_l1d #(
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst) begin
       p_zero_index_equal : assert (look_blocked == f_index_blocked);
-      p_zero_index_twin_sector : assert (&f_index_twin_sector);
+      p_zero_index_address : assert (look_blocked == f_address_blocked);
+      // The upper-flag GetMZero choice is at least as strict as either form.
+      p_zero_index_acquire : assert (!zero_acquire || (f_index_acquire && f_address_acquire));
+      p_zero_index_upper_line : assert (&f_index_upper_line);
       p_zero_index_twin_pair : assert (&f_index_twin_pair);
       p_zero_index_head_conflict : assert (&f_index_head_conflict);
     end
@@ -2363,7 +2538,7 @@ module coherence_l1d #(
       look_priority_index_q <= '0;
       store_checked_q <= '0;
     end else begin
-      look_valid_q <= look_found && !store_pop && !store_push;
+      look_valid_q <= look_found && !store_pop && !(store_push && !(FULL_LINE && store_combined));
       look_index_q <= look_index;
       look_addr_q <= store_addr[look_index];
       if (look_priority_q && (!store_valid[look_priority_index_q] ||
@@ -2418,7 +2593,7 @@ module coherence_l1d #(
   assign store_continue = tail_q && tail_checked_q && !tail_wb_blocked_q &&
       !(store_read_turn_q && read_waiting_q) && !(store_twin_pending && store_count == 3'd2) &&
       !i_p_valid && !probe_valid_q && !o_r_valid && !grant_valid &&
-      !store_acquired[store_next_index];
+      !store_acquired[store_next_index] && !gather_hold_next;
   assign array_skip_data = active && phase_q == Lookup &&
       (operation_q == StoreOp || operation_q == LookaheadOp) &&
       !probe_launch;
@@ -2855,27 +3030,39 @@ module coherence_l1d #(
   (* keep = "true" *) wire lookup_read_turn;
   assign lookup_read_turn =
       !probe_valid_q && !probe_priority && !twin_owed && grant_read_hold;
+  // A ready store head takes the lookup ahead of every source below it in
+  // the Idle priority and of a read without the credited turn, so the lookup
+  // address is prepared for both values of store_head_ready, which selects
+  // last. The read's eligibility below is the one without a ready head; the
+  // grant selection, which also gates o_sc_ready, applies last.
+  (* keep = "true" *) wire lookup_read_enable_early;
+  assign lookup_read_enable_early =
+      !probe_valid_q && !probe_priority && !twin_owed &&
+      !(i_sc_valid && sc_ready_early) && !atomic_write_q && !atomic_sc_selected &&
+      !look_ready && !(maint_eligible && maint_turn_q);
   (* keep = "true" *) wire lookup_read_enable;
-  assign lookup_read_enable =
-      !probe_valid_q && !probe_priority && !twin_owed && !grant_valid &&
-      !(i_sc_valid && o_sc_ready) && !atomic_write_q && !atomic_sc_selected &&
-      !store_head_ready && !look_ready && !(maint_eligible && maint_turn_q);
+  assign lookup_read_enable = lookup_read_enable_early && !grant_valid;
   assign lookup_other_valid = !(lookup_read_turn || (lookup_read_enable && rd_candidate));
-  // The Idle selection's phase and the operation register's next value,
-  // prepared from every source except the read selector's found output, which
-  // settles last. idle_read_turn is the Idle turn that a found read takes: no
-  // probe, twin, grant, SC, atomic, store or look-ahead record takes it first,
-  // maintenance does not hold the turn, and a credited read turn is not
-  // cancelled. The found output then selects after the priority, as it does
-  // for the lookup address: at the operation register, and as the controller's
-  // last assignment to the phase.
-  (* keep = "true" *) wire idle_read_turn;
-  assign idle_read_turn = active && phase_q == Idle &&
-      ((lookup_read_turn && !prefetch_cancel) || lookup_read_enable);
+  // The Idle selection's phase and the operation register's next value are
+  // prepared from every source except the store head's readiness and the read
+  // selector's found output, which both settle late and select last. The
+  // prepared values follow the Idle priority with the store head left out;
+  // idle_store_turn is the head's turn, when no source above it takes the
+  // cycle, and a ready head on its turn takes StoreOp. A found read takes the
+  // credited turn (idle_read_credit) whatever the head, and the ordinary read
+  // turn (idle_read_open: no probe, twin, grant, SC, atomic or look-ahead
+  // record takes the cycle, and maintenance does not hold the turn) only
+  // without a ready head. Both late signals select at the operation register's
+  // input, and their Lookup phase is the controller's last assignment.
+  (* keep = "true" *) wire idle_read_credit, idle_read_open;
+  assign idle_read_credit = active && phase_q == Idle && lookup_read_turn && !prefetch_cancel;
+  assign idle_read_open = active && phase_q == Idle && lookup_read_enable;
+  (* keep = "true" *) logic idle_store_turn;
   logic [3:0] idle_phase_rest, operation_rest;
   always_comb begin
     idle_phase_rest = Idle;
     operation_rest  = operation_q;
+    idle_store_turn = 1'b0;
     if (active) begin
       case (phase_q)
         Idle: begin
@@ -2907,21 +3094,23 @@ module coherence_l1d #(
           end else if (atomic_sc_selected) begin
             operation_rest  = SCOp;
             idle_phase_rest = sc_home_q ? Acquire : Lookup;
-          end else if (store_head_ready) begin
-            operation_rest  = StoreOp;
-            idle_phase_rest = Lookup;
-          end else if (look_ready) begin
-            operation_rest  = LookaheadOp;
-            idle_phase_rest = Lookup;
-          end else if (maint_eligible) begin
-            if (!maint_last_q) begin
-              operation_rest  = MaintOp;
+          end else begin
+            // The store head's turn; the sources below it apply when the
+            // head is not ready.
+            idle_store_turn = 1'b1;
+            if (look_ready) begin
+              operation_rest  = LookaheadOp;
+              idle_phase_rest = Lookup;
+            end else if (maint_eligible) begin
+              if (!maint_last_q) begin
+                operation_rest  = MaintOp;
+                idle_phase_rest = Lookup;
+              end
+            end else if (hint_valid_q && hint_checked_q && hint_eligible_q &&
+                prefetch_ep_free && !prefetch_cancel && hint_in_window) begin
+              operation_rest  = PrefetchOp;
               idle_phase_rest = Lookup;
             end
-          end else if (hint_valid_q && hint_checked_q && hint_eligible_q &&
-              prefetch_ep_free && !prefetch_cancel && hint_in_window) begin
-            operation_rest  = PrefetchOp;
-            idle_phase_rest = Lookup;
           end
         end
         LocalMerge: if (!(atomic_sc_q && !local_sc_match)) operation_rest = AtomicWriteOp;
@@ -2930,19 +3119,32 @@ module coherence_l1d #(
       endcase
     end
   end
-  // A found read takes ReadOp, whose encoding is zero.
+  // A found read on its turn takes ReadOp, whose encoding is zero; a ready
+  // head on its turn takes StoreOp. Either enters Lookup.
+  localparam logic [3:0] StoreCode = StoreOp;
+  wire idle_read_found, idle_store_taken, idle_late_lookup;
+  assign idle_read_found = rd_candidate &&
+      (idle_read_credit || (idle_read_open && !store_head_ready));
+  assign idle_store_taken = idle_store_turn && store_head_ready;
+  assign idle_late_lookup = idle_read_found || idle_store_taken;
   wire [3:0] operation_next;
   for (genvar bit_index = 0; bit_index < 4; bit_index++) begin : gen_operation_select
 `ifdef FROST_XILINX_PRIMS
-    (* dont_touch = "true" *) LUT3 #(.INIT(8'h2a)) u_select (
+    // StoreOp's bit sets which of the two functions this bit's LUT holds.
+    (* dont_touch = "true" *) LUT6 #(
+        .INIT(StoreCode[bit_index] ? 64'h0000e0eaeaeaeaea : 64'h0000202a2a2a2a2a)
+    ) u_select (
         .I0(operation_rest[bit_index]),
-        .I1(idle_read_turn),
-        .I2(rd_candidate),
-        .O(operation_next[bit_index])
+        .I1(idle_store_turn),
+        .I2(store_head_ready),
+        .I3(idle_read_open),
+        .I4(idle_read_credit),
+        .I5(rd_candidate),
+        .O (operation_next[bit_index])
     );
 `else
-    assign operation_next[bit_index] =
-        operation_rest[bit_index] && !(idle_read_turn && rd_candidate);
+    assign operation_next[bit_index] = !idle_read_found &&
+        (idle_store_taken ? StoreCode[bit_index] : operation_rest[bit_index]);
 `endif
   end
   always_ff @(posedge i_clk) begin
@@ -3026,15 +3228,15 @@ module coherence_l1d #(
     if (i_rst) reference_operation = ReadOp;
   end
   // Without reset, an active Idle cycle takes the prepared phase, or Lookup
-  // when the controller's last assignment applies a found read; that
-  // assignment applies on no other cycle.
+  // when the controller's last assignment applies a found read or a ready
+  // head; that assignment applies on no other cycle.
   logic [3:0] f_idle_phase;
-  assign f_idle_phase = idle_read_turn && rd_candidate ? Lookup : idle_phase_rest;
+  assign f_idle_phase = idle_late_lookup ? Lookup : idle_phase_rest;
   always_comb
     p_idle_select_exact :
     assert ((i_rst ? ReadOp : operation_t'(operation_next)) == reference_operation &&
         (i_rst || (active && phase_q == Idle ? f_idle_phase == reference_idle_phase :
-         !(idle_read_turn && rd_candidate))));
+         !idle_late_lookup)));
   // The phase register itself: after an active Idle cycle without reset it
   // holds the reference phase of that cycle.
   logic f_idle_seen_q = 1'b0;
@@ -3046,34 +3248,102 @@ module coherence_l1d #(
   end
 `endif
   // The non-read address follows the controller's Idle priority. When a read
-  // wins, its address replaces this value at the final selection, so its
+  // wins, its address replaces this value at the selection below, so its
   // eligibility need not feed this priority chain as well. The credited read
-  // turn also overrides this value, so its unused branch is omitted.
+  // turn also overrides this value, so its unused branch is omitted. Both
+  // values share the sources above the store head. The SC source follows the
+  // grant, so it needs only the rest of its readiness.
+  logic lookup_upper_valid;
+  logic [ADDR_WIDTH-1:0] lookup_upper_addr;
   always_comb begin
+    lookup_upper_valid = 1'b1;
+    lookup_upper_addr = atomic_addr_q;
+    if (probe_valid_q) lookup_upper_addr = probe_q.addr;
+    else if (probe_priority) lookup_upper_addr = probe_in.addr;
+    else if (twin_owed) lookup_upper_addr = pending_addr_q;
+    else if (grant_valid) lookup_upper_addr = grant.addr;
+    else if (i_sc_valid && sc_ready_early) lookup_upper_addr = i_sc_address;
+    else if (!(atomic_write_q || atomic_sc_selected)) lookup_upper_valid = 1'b0;
     lookup_prepared_addr = hint_addr_q;
-    if (probe_valid_q) lookup_prepared_addr = probe_q.addr;
-    else if (probe_priority) lookup_prepared_addr = probe_in.addr;
-    else if (twin_owed) lookup_prepared_addr = pending_addr_q;
-    else if (grant_valid) lookup_prepared_addr = grant.addr;
-    else if (i_sc_valid && o_sc_ready) lookup_prepared_addr = i_sc_address;
-    else if (atomic_write_q || atomic_sc_selected) lookup_prepared_addr = atomic_addr_q;
-    else if (store_head_ready) lookup_prepared_addr = pending_addr_q;
+    if (lookup_upper_valid) lookup_prepared_addr = lookup_upper_addr;
     else if (look_ready) lookup_prepared_addr = look_addr_q;
     else if (maint_eligible)
       lookup_prepared_addr = maint_line_q ? maint_addr_q : ADDR_WIDTH'(maint_set_q) << 5;
   end
+  (* keep = "true" *) logic [ADDR_WIDTH-1:0] lookup_head_addr, lookup_other_addr;
+  assign lookup_head_addr = lookup_read_turn ? rd_selected_addr :
+      (lookup_upper_valid ? lookup_upper_addr : pending_addr_q);
+  assign lookup_other_addr = lookup_other_valid ? lookup_prepared_addr : rd_selected_addr;
   // Lookup and grant payloads are read only after Idle hands them to the
   // controller, so they have no reset or stop term and capture every Idle
   // cycle.
   always_ff @(posedge i_clk) begin
     if (phase_q == Idle) begin
-      lookup_addr_q <= lookup_other_valid ? lookup_prepared_addr : rd_selected_addr;
+      lookup_addr_q <= store_head_ready ? lookup_head_addr : lookup_other_addr;
       selected_read_q <= rd_pick;
       grant_q <= grant;
       grant_ep_q <= grant_pick;
       grant_prefetch_q <= StreamEnabled && ld_prefetch_q[grant_pick];
     end else if (phase_q == UpdateWait && operation_q == StoreOp) lookup_addr_q <= tail_addr;
   end
+`ifndef SYNTHESIS
+`ifdef FORMAL
+`ifdef LOOKUP_SELECT_PROOF
+`define FROST_L1D_LOOKUP_SELECT_CHECK
+`endif
+`else
+`define FROST_L1D_LOOKUP_SELECT_CHECK
+`endif
+`endif
+`ifdef FROST_L1D_LOOKUP_SELECT_CHECK
+  // Reference: the head's and the SC's readiness each as one conjunction, and
+  // the Idle lookup address from one priority chain that holds the head in its
+  // place. The formal check runs in its own task, for any register state and
+  // input, so the other tasks keep their assertion counts.
+  logic f_lookup_head_ready, f_lookup_sc_ready, f_lookup_read_enable, f_lookup_other_valid;
+  logic [ADDR_WIDTH-1:0] f_lookup_prepared_addr, f_lookup_addr, f_lookup_split_addr;
+  always_comb begin
+    f_lookup_head_ready = pending_q && !look_priority_q && !store_acquired[store_head_index] &&
+        !gather_hold_head && !pending_blocked && !(store_read_turn_q && read_waiting_q) &&
+        !(store_twin_pending && store_count == 3'd1) && !twin_owed &&
+        (!pending_miss_q || (!request_live && ep0_wb_ok && !store_same_line_q));
+    f_lookup_sc_ready = active && !atomic_q && !pending_q && !request_live &&
+        !o_sc_result_valid && i_atomic_protected && phase_q == Idle && !grant_valid &&
+        !probe_valid_q && !probe_priority;
+    f_lookup_read_enable = !probe_valid_q && !probe_priority && !twin_owed && !grant_valid &&
+        !(i_sc_valid && f_lookup_sc_ready) && !atomic_write_q && !atomic_sc_selected &&
+        !f_lookup_head_ready && !look_ready && !(maint_eligible && maint_turn_q);
+    f_lookup_other_valid = !(lookup_read_turn || (f_lookup_read_enable && rd_candidate));
+    f_lookup_prepared_addr = hint_addr_q;
+    if (probe_valid_q) f_lookup_prepared_addr = probe_q.addr;
+    else if (probe_priority) f_lookup_prepared_addr = probe_in.addr;
+    else if (twin_owed) f_lookup_prepared_addr = pending_addr_q;
+    else if (grant_valid) f_lookup_prepared_addr = grant.addr;
+    else if (i_sc_valid && f_lookup_sc_ready) f_lookup_prepared_addr = i_sc_address;
+    else if (atomic_write_q || atomic_sc_selected) f_lookup_prepared_addr = atomic_addr_q;
+    else if (f_lookup_head_ready) f_lookup_prepared_addr = pending_addr_q;
+    else if (look_ready) f_lookup_prepared_addr = look_addr_q;
+    else if (maint_eligible)
+      f_lookup_prepared_addr = maint_line_q ? maint_addr_q : ADDR_WIDTH'(maint_set_q) << 5;
+    f_lookup_addr = f_lookup_other_valid ? f_lookup_prepared_addr : rd_selected_addr;
+    f_lookup_split_addr = store_head_ready ? lookup_head_addr : lookup_other_addr;
+  end
+`ifdef FORMAL
+  always_comb begin
+    p_lookup_select_head : assert (store_head_ready == f_lookup_head_ready);
+    p_lookup_select_sc : assert (o_sc_ready == f_lookup_sc_ready);
+    p_lookup_select_addr : assert (f_lookup_split_addr == f_lookup_addr);
+  end
+`else
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst) begin
+      p_lookup_select_head : assert (store_head_ready == f_lookup_head_ready);
+      p_lookup_select_sc : assert (o_sc_ready == f_lookup_sc_ready);
+      p_lookup_select_addr : assert (f_lookup_split_addr == f_lookup_addr);
+    end
+`endif
+`undef FROST_L1D_LOOKUP_SELECT_CHECK
+`endif
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       phase_q <= Idle;
@@ -3270,8 +3540,8 @@ module coherence_l1d #(
         case (phase_q)
           Idle: begin
             // The phase and the operation come from the prepared Idle
-            // selection above, and a found read's phase is applied last; the
-            // same priority sets the rest here.
+            // selection above, and a found read's or a ready head's phase is
+            // applied last; the same priority sets the rest here.
             phase_q <= phase_t'(idle_phase_rest);
             if (probe_capture && probe_in.opcode != coherence_pkg::CheckSC) begin
               reply_q <= '0;
@@ -3401,12 +3671,13 @@ module coherence_l1d #(
                 phase_q <= (!array_hit || array_state != coherence_pkg::Modified) &&
                     acquire_ready && !same_line && !look_retry ? Acquire : Idle;
               end
-              // The twin installs its sector Modified with the block's zeros, in
-              // its resident way or in a replaced one whose Modified victim
-              // freezes into a free write-back slot.
+              // The twin installs its sector Modified with its record's bytes,
+              // every byte masked (a zero twin's are the block's zeros), in its
+              // resident way or in a replaced one whose Modified victim freezes
+              // into a free write-back slot.
               TwinOp: begin
                 update_addr_q <= pending_addr_q;
-                image_q <= '0;
+                image_q <= pending_data_q;
                 state_q <= coherence_pkg::Modified;
                 if (!array_hit && array_state == coherence_pkg::Modified) begin
                   freeze_slot_q <= twin_wb_slot;
@@ -3640,10 +3911,10 @@ module coherence_l1d #(
           default: phase_q <= Idle;
         endcase
       end
-      // A read that the Idle selection finds enters Lookup. Its eligibility
-      // settles last, so it selects the phase after every other assignment;
-      // idle_read_turn holds only on an active Idle cycle.
-      if (idle_read_turn && rd_candidate) phase_q <= Lookup;
+      // A read that the Idle selection finds, or a ready store head on its
+      // turn, enters Lookup. Both settle last, so they select the phase after
+      // every other assignment; their turns hold only on an active Idle cycle.
+      if (idle_late_lookup) phase_q <= Lookup;
       // A pushed store that allocates record 0 sets holder zero's address,
       // applied last so the late push and combining terms select only the
       // final value (see block_zero_late).
@@ -3956,7 +4227,10 @@ module coherence_l1d #(
           assert (i_write_tag == atomic_tag_q);
           if (i_write_sc) assert (sc_committed_q);
         end else begin
-          p_bounded_store_launch : assert (active && store_count < 4 && !atomic_q);
+          // A write at four records combines into the youngest one, under the
+          // store queue's same-sector claim.
+          p_bounded_store_launch : assert (active && !atomic_q &&
+              (store_count < 4 || (FULL_LINE && store_combined)));
           assert (o_store_ready || store_launch_ready_q);
         end
       end
@@ -3988,7 +4262,7 @@ module coherence_l1d #(
 `ifdef L1D_ZERO_CHECKS
 `ifndef SYNTHESIS
   // With 64-byte home lines, an endpoint holds both sectors from GetMZero
-  // acceptance through Done.
+  // acceptance through Done, for a cbo.zero block and for a full pair alike.
   // Check request admission, including retries of reads that predate the zero.
   logic [EpSlots-1:0] f_zero_open_q;
   logic [MISSES-1:0] f_zero_upper_request;
@@ -4012,15 +4286,61 @@ module coherence_l1d #(
     end
     if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready))
       p_zero_no_upper_request : assert (!(|f_zero_upper_request));
-  end
+`ifdef ZERO_UPPER_EP
+    // One holding endpoint's case of the request exclusion, for proofs that
+    // check it endpoint by endpoint: together the cases are the assertion
+    // above. ZERO_UPPER_OP (one operation) or ZERO_UPPER_OP_REST (every
+    // operation but read, store, look-ahead and prefetch) narrows a case to
+    // the cycles with that operation in operation_q; the five parts together
+    // are the endpoint's case.
+`ifdef ZERO_UPPER_OP
+    if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready) &&
+        operation_q == `ZERO_UPPER_OP)
+      p_zero_no_upper_request_ep : assert (!f_zero_upper_request[`ZERO_UPPER_EP]);
+`elsif ZERO_UPPER_OP_REST
+    if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready) &&
+        operation_q != ReadOp && operation_q != StoreOp && operation_q != LookaheadOp &&
+        operation_q != PrefetchOp)
+      p_zero_no_upper_request_ep : assert (!f_zero_upper_request[`ZERO_UPPER_EP]);
+`else
+    if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready))
+      p_zero_no_upper_request_ep : assert (!f_zero_upper_request[`ZERO_UPPER_EP]);
 `endif
-  // A sector that a cbo.zero record holds, the lower record or its twin.
+`endif
+  end
+  // An upper flag names the record before it as the lower sector of the same
+  // 64-byte block: both are valid and the flagged record is not the head. The
+  // GetMZero and look-ahead twin tests rely on it in place of an address
+  // comparison; the store buffer's own proof shows it under its interface.
+  logic [3:0] f_upper_record_ok;
+  always_comb
+    for (int holder = 0; holder < 4; holder++)
+      f_upper_record_ok[holder] = !store_upper[holder] ||
+          (store_valid[holder] && 2'(holder) != store_head_index &&
+           store_valid[2'(2'(holder) - 2'd1)] && !store_addr[2'(2'(holder) - 2'd1)][5] &&
+           store_addr[holder][5] && store_addr[2'(2'(holder) - 2'd1)][ADDR_WIDTH-1:6] ==
+               store_addr[holder][ADDR_WIDTH-1:6]);
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst) p_zero_upper_record : assert (f_upper_record_ok == '1);
+`endif
+  // A sector that a cbo.zero record holds, the lower record or its twin, or
+  // that a full pair holds once its lower record acquired both sectors.
   logic [3:0] f_zero_path_sector;
   always_comb
     for (int holder = 0; holder < 4; holder++)
       f_zero_path_sector[holder] = store_valid[holder] &&
-          (store_zero[holder] || store_twin[holder]) &&
+          (store_zero[holder] || store_twin[holder] ||
+           (store_valid[2'(2'(holder) + 2'd1)] && store_twin[2'(2'(holder) + 2'd1)] &&
+            2'(2'(holder) + 2'd1) != store_head_index)) &&
           path_addr_q[ADDR_WIDTH-1:5] == store_addr[holder][ADDR_WIDTH-1:5];
+  // Every twin, zero or data, is a sealed, fully masked upper record that
+  // follows its lower record, or the head once that record has installed.
+  logic [3:0] f_twin_record_ok;
+  always_comb
+    for (int holder = 0; holder < 4; holder++)
+      f_twin_record_ok[holder] = !(store_valid[holder] && store_twin[holder]) ||
+          (store_sealed[holder] && store_mask[holder] == '1 &&
+           (store_upper[holder] || 2'(holder) == store_head_index));
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst) begin
       // The hit path takes no load to a sector whose zeros a cbo.zero record or
@@ -4028,29 +4348,56 @@ module coherence_l1d #(
       if (path_take) p_zero_path_blocked : assert (f_zero_path_sector == '0);
       if (store_push && i_write_zero)
         p_zero_write_block : assert (i_address[5:0] == 0 && i_write_mask == 8'hff);
-      // A GetMZero starts from a zero record. With 64-byte home lines it is a
-      // lower record followed by its own same-block twin, not a wrapped head
-      // twin. The registered upper-sector sample matches: no endpoint,
-      // frozen PutM or older record holds that sector.
+      // A GetMZero starts from a zero record or a fully masked record: no
+      // byte of its sector is left for a fill. With 64-byte home lines it is a
+      // lower record followed by its own same-block twin, a zero twin or the
+      // fully masked, unacquired upper record of its block, never a wrapped
+      // head twin, and the registered sample of its upper sector still
+      // matches: no endpoint, frozen PutM or older record holds that sector.
       if (|(ep_request_valid & ~live) && acquisition.opcode == coherence_pkg::GetMZero) begin
         p_zero_acquire_record : assert ((operation_q == StoreOp || operation_q == LookaheadOp) &&
-            store_valid[store_selected_q] && store_zero[store_selected_q]);
-        if (HOME_LINE_BYTES == 64)
+            store_valid[store_selected_q] &&
+            (store_zero[store_selected_q] || (FULL_LINE && store_full[store_selected_q])));
+        p_full_acquire_mask : assert (store_mask[store_selected_q] == '1 &&
+            acquisition.mask == '1);
+        if (HOME_LINE_BYTES == 64) begin
           p_zero_acquire_line : assert (!store_twin[store_selected_q] &&
+              !store_addr[store_selected_q][5] &&
               2'(store_selected_q + 2'd1) != store_head_index &&
               store_valid[2'(store_selected_q + 2'd1)] &&
-              store_twin[2'(store_selected_q + 2'd1)] &&
+              store_upper[2'(store_selected_q + 2'd1)] &&
               store_addr[2'(store_selected_q + 2'd1)][ADDR_WIDTH-1:6] ==
                   store_addr[store_selected_q][ADDR_WIDTH-1:6] &&
+              (store_zero[store_selected_q] ? store_twin[2'(store_selected_q + 2'd1)] :
+               pair_acquire_q && !store_acquired[2'(store_selected_q + 2'd1)]) &&
               !zero_sibling_conflict[store_selected_q]);
+          p_full_acquire_twin_mask : assert (store_mask[2'(store_selected_q + 2'd1)] == '1);
+        end
       end
+      // A full pair's upper record becomes its twin as the lower record
+      // acquires, and stays sealed and fully masked.
+      if (store_acquire && pair_acquire_q)
+        p_full_pair_acquire : assert (FULL_LINE && HOME_LINE_BYTES == 64 && zero_acquire_q &&
+            !store_zero[store_selected_q] && store_full[store_selected_q] &&
+            store_upper[2'(store_selected_q + 2'd1)] &&
+            store_full[2'(store_selected_q + 2'd1)]);
+      p_full_twin_record : assert (f_twin_record_ok == '1);
+      // A store installed from a GrantMZero, the lower record of a zero block
+      // or a full pair, has every byte of its sector masked: no grant byte,
+      // and so no unfetched byte, survives in the installed sector.
+      if (active && phase_q == Update && operation_q == GrantOp && selected_grant_store &&
+          grant_q.opcode == coherence_pkg::GrantMZero)
+        p_full_grant_full : assert (pending_mask_q == '1 && update_mask_q == '1 &&
+            image_q == pending_data_q);
       // A twin installs at the head, never through look-ahead.
       if (HOME_LINE_BYTES == 64 && store_acquire && operation_q == LookaheadOp)
         p_zero_twin_no_lookahead : assert (!store_twin[store_selected_q]);
       // A GrantMZero answers a lower record's GetMZero with 64-byte home lines
-      // and owes exactly that record's twin, which holds no endpoint.
+      // (a zero record or a full pair's lower record) and owes exactly that
+      // record's twin, which holds no endpoint.
       if (store_pop && grant_twin) begin
-        p_zero_grant_twin : assert (HOME_LINE_BYTES == 64 && store_zero[store_head_index] &&
+        p_zero_grant_twin : assert (HOME_LINE_BYTES == 64 &&
+            (store_zero[store_head_index] || (FULL_LINE && store_full[store_head_index])) &&
             !store_twin[store_head_index] && store_valid[store_next_index] &&
             store_twin[store_next_index] && !store_acquired[store_next_index]);
         if (grant_ep_q == '0)
@@ -4076,10 +4423,12 @@ module coherence_l1d #(
       // Idle selects an owed twin before any grant, so no endpoint hands over
       // a grant meanwhile: an accepted grant always becomes the GrantOp.
       if (twin_owed) p_zero_twin_grant_wait : assert (ep_grant_ready == '0 && !read_failure);
-      // No store is performed twice: the twin installs once, as Modified zeros
-      // over its whole sector, at its own address.
+      // No store is performed twice: the twin installs once, as Modified
+      // bytes of its own fully masked record (a zero twin's zeros) over its
+      // whole sector, at its own address.
       if (active && phase_q == Update && operation_q == TwinOp)
-        p_zero_twin_install : assert (update_mask_q == '1 && image_q == '0 &&
+        p_zero_twin_install : assert (update_mask_q == '1 && pending_mask_q == '1 &&
+            image_q == pending_data_q && (!store_zero[store_head_index] || image_q == '0) &&
             state_q == coherence_pkg::Modified &&
             update_addr_q[ADDR_WIDTH-1:5] == pending_addr_q[ADDR_WIDTH-1:5]);
       if (active && phase_q == Freeze && operation_q == TwinOp)
@@ -4256,6 +4605,10 @@ module coherence_l1d #(
     assume (!i_read_valid);
 `endif
     assume (!i_write_atomic && !i_write_sc && !i_p_valid);
+    // The schedule presents no store-queue hint or claim, so no gather window
+    // or four-record claim stretches it; its scalar writes fill no sector, so
+    // no full pair forms or holds either.
+    assume (!i_write_more && !i_next_same);
     assume (i_wa_valid == f_wrap_wa_valid_q && i_wa == f_wrap_wa_q);
     assume (i_address == f_wrap_address && i_write_data == 0 && i_write_tag == 0);
     assume (i_write_mask == (f_wrap_write ? 8'hff : 0));
@@ -4278,6 +4631,38 @@ module coherence_l1d #(
       p_zero_cover_twin_wait : cover (store_twin_pending && store_count == 3'd4);
       p_zero_cover_fallback : cover (store_acquire && operation_q == StoreOp &&
           store_zero[store_selected_q] && !store_twin[store_selected_q] && !zero_acquire_q);
+`ifdef FULL_WRITES
+      // Full pairs: a head and a look-ahead pair acquisition, a data twin's
+      // installation, and a full lower record whose partial upper record
+      // leaves it to acquire with GetM.
+      p_full_cover_pair : cover (store_acquire && operation_q == StoreOp && pair_acquire_q);
+      p_full_cover_lookahead : cover (store_acquire && operation_q == LookaheadOp &&
+          pair_acquire_q);
+      p_full_cover_twin : cover (store_pop && operation_q == TwinOp &&
+          !store_zero[store_head_index]);
+      p_full_cover_fallback : cover (store_acquire && store_full[store_selected_q] &&
+          !store_addr[store_selected_q][5] && !store_zero[store_selected_q] &&
+          store_upper[2'(store_selected_q + 2'd1)] && !zero_acquire_q);
+      p_withdraw_full_cover : cover (WITHDRAW_ABSORBED_W && active && wb_selected_q &&
+          wb_valid[wb_select_q] && wb_absorbed[wb_select_q] && !o_w_valid &&
+          store_pop && operation_q == TwinOp && !store_zero[store_head_index]);
+      // The gather and pair windows hold a record: Idle keeps a growing sole
+      // head, or a full lower head whose upper record grows; a store pop
+      // stops its continuation before such a next record.
+      p_full_hold_cover_gather_head : cover (active && phase_q == Idle && gather_open &&
+          store_count == 3'd1 && gather_grow[store_head_index]);
+      p_full_hold_cover_pair_head : cover (active && phase_q == Idle && pair_open &&
+          store_count == 3'd2 && gather_pair_wait[store_head_index]);
+      p_full_hold_cover_gather_next : cover (store_pop && operation_q == StoreOp && tail_q &&
+          gather_open && store_count == 3'd2 && gather_grow[store_next_index]);
+      p_full_hold_cover_pair_next : cover (store_pop && operation_q == StoreOp && tail_q &&
+          pair_open && store_count == 3'd3 && gather_pair_wait[store_next_index]);
+      // The claim grants credit beside an allocating push at three records,
+      // and a claimed write combines into the youngest of four records.
+      p_full_credit_cover_three : cover (store_push && !store_combined && merge_claim &&
+          store_count == 3'd3 && store_credit);
+      p_full_credit_cover_four : cover (store_push && store_combined && store_count == 3'd4);
+`endif
     end
 `endif
 `undef L1D_ZERO_CHECKS
@@ -4568,7 +4953,7 @@ module coherence_l1d #(
       p_owned_distinct : assert (f_owner_distinct);
       p_owned_fail : assert (f_owner_fail);
       p_owned_pending : assert (f_owner_pending);
-      p_owned_operation : assert (operation_q <= (ZERO_LINE ? TwinOp : LookaheadOp) &&
+      p_owned_operation : assert (operation_q <= (TwinLine ? TwinOp : LookaheadOp) &&
           (StreamEnabled || operation_q != PrefetchOp));
       p_owned_free : assert (!load_ep_free || f_owner_free);
       if (operation_q == LookaheadOp &&
@@ -4949,13 +5334,26 @@ module coherence_l1d #(
   end
   coh_g_t f_grant;
   assign f_grant = i_g;
+  // The last claim and the sector of the last scalar write.
+  logic f_merge_claim_q, f_last_scalar_q;
+  logic [ADDR_WIDTH-6:0] f_claim_sector_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_merge_claim_q <= 1'b0;
+      f_last_scalar_q <= 1'b0;
+    end else begin
+      f_merge_claim_q <= merge_claim;
+      if (store_push) f_last_scalar_q <= !i_write_zero;
+    end
+    if (store_push) f_claim_sector_q <= i_address[ADDR_WIDTH-1:5];
+  end
   // Each endpoint's live acquisition is a GetMZero.
   logic [EpSlots-1:0] f_ep_zero_q;
   always_ff @(posedge i_clk)
     for (int ep = 0; ep < MISSES; ep++)
     if (i_rst) f_ep_zero_q[ep] <= 1'b0;
     else if (ep_request_valid[ep] && !live[ep])
-      f_ep_zero_q[ep] <= ZERO_LINE && acquisition.opcode == coherence_pkg::GetMZero &&
+      f_ep_zero_q[ep] <= TwinLine && acquisition.opcode == coherence_pkg::GetMZero &&
           (ep == 0 || operation_q == LookaheadOp);
   logic [5:0] f_probe_age;
   logic [2:0] f_admit_age, f_inval_age;
@@ -4996,8 +5394,16 @@ module coherence_l1d #(
         end else begin
           assume (active && !atomic_q && !amo_waiting);
           assume (store_launch_ready_q);
+          // The store queue's same-sector claim names this write's sector.
+          if (f_merge_claim_q)
+            assume (i_address[ADDR_WIDTH-1:5] == f_claim_sector_q && !i_write_zero);
         end
       end
+      // The claim follows a scalar write: this cycle's write, or the last one
+      // when none arrives. The store queue raises it on the bus cycle of the
+      // first cached plain store after a cbo.zero, when the last write before
+      // that cycle was the zero write, as the store buffer's proof assumes.
+      if (i_next_same) assume (store_push ? !i_write_zero : f_last_scalar_q);
       // The store queue's cbo.zero write: the block base, every strobe set.
       if (i_write_zero)
         assume (i_write_mask == 8'hff && !i_write_atomic && i_address[5:0] == 0);

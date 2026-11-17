@@ -346,6 +346,7 @@ async def old_word_response_crosses_two_store_handoff(dut: Any) -> None:
         accepted = 0
         age = 0
         returned = False
+        credit_turn = False
         saw_two = False
         saw_removal = False
         old_done = False
@@ -394,6 +395,132 @@ async def old_word_response_crosses_two_store_handoff(dut: Any) -> None:
             dut.i_coherent_block_addr.value = sum(
                 addr << (64 * i) for i, addr in enumerate(owned)
             )
+            # Grant credit on alternate cycles, so the two captures are at
+            # least two cycles apart and each response edge falls where it
+            # targets; the store queue may otherwise launch the second store
+            # on the cycle after the first.
+            credit_turn = not credit_turn
+            dut.i_coherent_store_ready.value = int(len(owned) < 2 and credit_turn)
+            saw_two |= len(owned) == 2
+            saw_removal |= (
+                accepted == 2 and int(dut.o_sq_count.value) == 0 and bool(owned)
+            )
+            if owned:
+                assert not int(dut.o_sq_committed_empty_trap.value)
+            if accepted == 2 and age >= 20 and old_done:
+                break
+        else:
+            raise AssertionError("old load and buffered stores did not drain")
+        assert returned and saw_two and saw_removal
+        fresh_tag = await dut_if.dispatch(make_int_req(pc=0x8044, rd=6))
+        await issue(dut_if, fresh_tag, OP_LW, WORD + 4)
+        fresh = await request(dut_if)
+        assert fresh["addr"] == WORD + 4
+        await dut_if.step()
+        dut_if.drive_lq_mem_response(
+            0x5566778811223344, dword=True, cached=True, slot=fresh["id"]
+        )
+        cdb = await wait_for_cdb(dut_if)
+        assert cdb.tag == fresh_tag and cdb.value == 0x55667788
+        dut_if.clear_lq_mem_response()
+
+
+@cocotb.test()
+async def old_word_response_crosses_back_to_back_store_capture(dut: Any) -> None:
+    """Reject stale L0 bytes when two stores capture on consecutive cycles.
+
+    With credit on every cycle the store queue launches the second cached store
+    on the cycle after the first, as it drains a store stream. The old load's
+    response lands on the first capture, on the second capture (also the cycle
+    after the first), or when the first record is removed. The two captures
+    carry the two stores in program order: address, byte lanes, the bytes in
+    those lanes, and the store's reorder-buffer tag.
+    """
+    dut_if, _ = await setup_test(dut)
+    for response_edge in range(3):
+        await dut_if.reset_dut()
+        dut.i_coherent_store_ready.value = 1
+        dut.i_coherent_store_pending.value = 0
+        dut.i_coherent_block_valid.value = 0
+        dut_if.set_fu_ready(RS_MEM, True)
+        dut_if.set_commit_hold(True)
+        expected = []
+        for offset, value in ((4, 0x55667788), (36, 0x99AABBCC)):
+            tag = await dut_if.dispatch(make_store_req(pc=0x8000 + offset))
+            await issue(dut_if, tag, OP_SW, WORD + offset, value)
+            # A word store at byte 4 of its double: lanes 4-7, low byte first.
+            expected.append(
+                (WORD + offset, 0xF0, list(value.to_bytes(4, "little")), tag)
+            )
+            for _ in range(5):
+                await dut_if.step()
+        old = await dut_if.dispatch(make_int_req(pc=0x8040, rd=5))
+        await issue(dut_if, old, OP_LW, WORD)
+        old_request = await request(dut_if)
+        await dut_if.step()
+        dut_if.set_commit_hold(False)
+        owned = []
+        captures = []
+        written = []
+        accepted = 0
+        age = 0
+        returned = False
+        saw_two = False
+        saw_removal = False
+        old_done = False
+        # The private-cache contract acknowledges capture on the following edge.
+        for cycle in range(100):
+            write = dut_if.read_sq_mem_write()
+            capture = bool(write["en"])
+            if capture:
+                lanes = [
+                    (write["data"] >> (8 * lane)) & 0xFF
+                    for lane in range(8)
+                    if (write["byte_en"] >> lane) & 1
+                ]
+                written.append(
+                    (
+                        write["addr"],
+                        write["byte_en"],
+                        lanes,
+                        int(dut.o_coherent_sq_write_tag.value),
+                    )
+                )
+            target = (
+                capture and accepted == response_edge
+                if response_edge < 2
+                else accepted == 2 and age == 10
+            )
+            if target and not returned:
+                dut_if.drive_lq_mem_response(
+                    0xDEADBEEF11223344, dword=True, cached=True, slot=old_request["id"]
+                )
+                returned = True
+            await dut_if.step()
+            cdb = dut_if.read_cdb_output()
+            if cdb.valid and cdb.tag == old:
+                assert cdb.value == 0x11223344
+                old_done = True
+            dut_if.clear_lq_mem_response()
+            dut_if.clear_sq_mem_write_done()
+            if capture:
+                captures.append(cycle)
+                owned.append(write["addr"] & ~31)
+                accepted += 1
+                age = 0
+                dut_if.drive_sq_mem_write_done()
+            else:
+                age += 1
+            if accepted == 2 and age == 10:
+                assert len(owned) == 2
+                owned.pop(0)
+            if accepted == 2 and age == 18:
+                owned.clear()
+            dut.i_coherent_store_pending.value = int(bool(owned))
+            dut.i_coherent_block_valid.value = (1 << len(owned)) - 1
+            dut.i_coherent_block_addr.value = sum(
+                addr << (64 * i) for i, addr in enumerate(owned)
+            )
             dut.i_coherent_store_ready.value = int(len(owned) < 2)
             saw_two |= len(owned) == 2
             saw_removal |= (
@@ -405,6 +532,8 @@ async def old_word_response_crosses_two_store_handoff(dut: Any) -> None:
                 break
         else:
             raise AssertionError("old load and buffered stores did not drain")
+        assert captures == [captures[0], captures[0] + 1], captures
+        assert written == expected, (written, expected)
         assert returned and saw_two and saw_removal
         fresh_tag = await dut_if.dispatch(make_int_req(pc=0x8044, rd=6))
         await issue(dut_if, fresh_tag, OP_LW, WORD + 4)

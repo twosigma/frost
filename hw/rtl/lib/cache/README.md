@@ -163,7 +163,8 @@ Done, and Release. Size is log2 bytes. Offset and mask select bytes within a
 sector. Hart write operands stay local; DMA writes use D.wdata and D.mask.
 ProbeData and data-bearing grants carry a complete sector. Error overrides
 permission installation. GrantFail grants no permission. GetMZero and
-GrantMZero carry a cbo.zero block (see Line-scope cbo.zero). These encodings
+GrantMZero carry a cbo.zero block or a block that store records cover
+completely (see Line-scope cbo.zero and Full-line stores). These encodings
 describe messages; the endpoint library does not implement MESI transitions.
 
 `coherence_request_endpoint` reserves one request identity, a grant register,
@@ -349,7 +350,8 @@ the youngest record separately. A zero write always allocates and aligns its
 lower record to the 64-byte block.
 Launch credit reserves an arriving scalar without comparing its address or
 borrowing a simultaneous installation. The lookahead scheduler samples physical
-record conflicts before selecting by age. Queue changes invalidate that sample.
+record conflicts before selecting by age. Queue changes invalidate that sample;
+with full-line stores, a write that combines into the youngest record does not.
 
 Only the head installs. A Modified hit uses a tag-only lookup and the array's
 byte enables. A buffered successor can start its lookup after the head's
@@ -494,15 +496,22 @@ fatal logic. The CPU's retirement stop takes effect on the cycle after the
 failure. An endpoint accepts every acquisition while idle, so the
 controller reads the endpoint's idle state for acceptance. The lookup address,
 selected read slot and grant payload have no reset and capture on every Idle
-cycle, because nothing reads them until a selection leaves Idle. The read
-address joins that selection last. The priority conditions above a read are
-prepared separately, so read eligibility controls the final address selection
-without passing through the non-read address priority chain. The phase and
-the operation that the Idle selection assigns are prepared the same way, from
-every source except the read selector's found output, which selects last: a
-found read takes the read operation through a final selection at the
-operation register's input, and Lookup through the controller's last
-assignment to the phase.
+cycle, because nothing reads them until a selection leaves Idle. The lookup
+address is prepared for both values of the store head's readiness, which
+selects between them last; in that readiness, the gather hold, endpoint 0's
+write-back credit and the head's write-back address comparison join the terms
+read directly from registers in one final step. In each
+prepared address the read address joins last: the priority conditions above a
+read are prepared separately, so read eligibility controls that selection
+without passing through the non-read address priority chain. Read eligibility
+and SC readiness both take the grant selection last. The phase and the
+operation that the Idle selection assigns are prepared the same way, from
+every source except the store head's readiness and the read selector's found
+output, which select last. A ready head on its turn takes the store operation,
+and a found read the read operation: a credited read turn ahead of the head,
+an ordinary read turn only without a ready head. Both late signals enter one
+final selection at the operation register's input, and their Lookup phase is
+the controller's last assignment to the phase.
 
 Each read slot's kind registers on its allocation edge, so selection reads the
 slot's kind without selecting from the buffered payload. Each slot has a local
@@ -1226,13 +1235,16 @@ load queue's registered same-sector matches see the twin as they see every
 record, one cycle after its push.
 
 **Acquisition.** With 64-byte L2 lines the lower record acquires with
-`GetMZero` when its own twin follows it (same 64-byte block, so a younger lower
-record in a full four-record buffer does not mistake an older head twin for its
-waiting twin) and no live request endpoint, frozen PutM
-or older record holds the upper sector; otherwise it acquires with `GetM` and
-the twin is an ordinary store record. Each condition is a registered sample,
-and none can appear while the controller serves the record, because only the
-controller starts acquisitions and freezes victims. With 32-byte L2 lines
+`GetMZero` when its own twin follows it and no live request endpoint, frozen
+PutM or older record holds the upper sector; otherwise it acquires with `GetM` and
+the twin is an ordinary store record. The next record is its own twin when it
+is a twin whose registered upper flag is set: the flag names the record before
+it as the lower sector of the same 64-byte block and is always clear at the
+head, so a younger lower record in a full four-record buffer, whose next index
+is the head, does not mistake an older head twin for its waiting twin. Each
+condition is a registered sample, and none can appear while the controller
+serves the record, because only the controller starts acquisitions and freezes
+victims. With 32-byte L2 lines
 each sector is a whole line, so every zero record acquires with `GetMZero` on
 its own. With 64-byte L2 lines a twin never acquires through look-ahead. A lower record may acquire
 through look-ahead under the same conditions, so cold blocks overlap their
@@ -1295,6 +1307,73 @@ for the records to install. A look-ahead `GetMZero` grants permission early
 but writes nothing visible before its records reach the head, as for a
 look-ahead `GetM`. The L1I keeps instruction copies until FENCE.I, as for any
 store.
+
+### Full-line stores
+
+A store stream that writes every byte of a 64-byte block acquires the block
+as a cbo.zero block does: with `GetMZero`, so a home miss fills the line
+without reading memory, and the L1D installs the stores' bytes in both
+sectors before the home releases the line. `FULL_LINE=0` removes the path.
+
+**Full pair.** Two adjacent store records form a full pair when the older one
+holds the block's lower sector with every byte masked and the next one holds
+the same block's upper sector with every byte masked, neither is a zero
+record, and the upper record has not acquired. Each record keeps a registered
+full flag and an upper flag (it holds the upper sector of the block whose
+lower sector the record before it holds; the flag clears when that record
+pops). When the lower record misses, at the head or through look-ahead, it
+acquires with `GetMZero` under the conditions of a lower zero record (no live
+request endpoint, frozen PutM or older record holds the upper sector). On the
+acquisition edge the upper record seals and becomes the lower record's data
+twin, which the twin installation treats as it treats a zero twin: the lower
+record installs from the `GrantMZero` with every byte its own, and `TwinOp`
+installs the twin's bytes over its whole sector before the endpoint's Done.
+With 32-byte home lines every fully masked record acquires with `GetMZero`
+on its own. A pair that is not complete when the lower record's lookup
+classifies it acquires with `GetM` and fills like any other record.
+
+**Gather window.** Idle selects and seals the head as soon as it is ready,
+so without a hold a record would hold one write when it acquires. The SQ
+marks each cached write with `i_write_more` when another unsent store (not SC,
+cbo.zero or Zicbom) waits behind it. The L1D keeps a gather window open from
+such a write until the next write, or for three cycles without one, and a
+pair window for twelve cycles after any write. While the gather window is
+open, Idle does not select a head that is the only record, unsealed, not a
+zero record and not a full upper sector; while the pair window is open, it
+does not select a full lower head whose upper record is the youngest,
+unsealed and not yet full. A store continuation stops before such a record,
+and look-ahead skips it while its upper record can still take writes (a record
+is free or the store queue claims a combining write), and skips the upper
+record of an unacquired full lower record. A hold needs a recent write into a record that can still grow,
+and it ends when the stream moves to another block, a record seals at 32
+contributors, or the writes stop. A hold of the head lasts only while at most
+two records exist, so store credit stays available; a continuation that stops
+before a growing next record holds with up to three, and look-ahead's pair
+wait can hold with four while the store queue claims a combining write, which
+the combining credit below serves.
+
+**Combining credit.** Two blocks fill all four records, so the second
+block's upper record could otherwise take only its first write. The SQ
+registers `i_next_same` every cycle: its next write is a committed cached plain
+store to the 32-byte sector of its last write, also a cached plain store. Under
+that claim the store buffer grants credit at four records when the youngest
+record is unsealed, not full, below 30 contributors and not a zero record,
+and at three records for a write that brings the claim with it. Nothing
+seals the youngest of four records before that write: Idle and continuation
+seal the head or the record after it, a pair seals only a full upper record,
+and the contributor limit is excluded. With full-line stores a write that
+combines into the youngest record keeps the look-ahead sample.
+
+**Invariant.** As for cbo.zero, each byte of the block is performed once,
+inside the `GetMZero`'s hold on the line, and every byte the L1D installs
+under it comes from a store record: the zero image that a zero fill leaves in
+the L2 is never observed, because the L1D holds both sectors Modified with the
+stores' bytes before the home's U, and DMA, the other hart and L2 replacement
+reach them through probes. Records still install in program order at the head,
+and the two records of a pair are adjacent program-order stores to one block
+with no other store between them. Local loads wait for each record's
+installation as for any record; SC, AMO, LR and maintenance wait for the
+records to drain, which the window cannot delay once writes stop.
 
 ## The line cache
 
@@ -1832,8 +1911,10 @@ to answer.
 | `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with every hart and DMA completion slot, every engine's result buffer and both PutM controls full, and instruction and data streams on one line |
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
-| `coherence_stale_line_prefetch_l2` | `cbo.zero` twin beside an L1D stream or flushed load retry on the cluster with eight L1D request endpoints, stream prefetching and a 64 KiB home: no stream prefetch acquires a sector held by a pending store record or waiting twin (including a `cbo.zero` pushed during the prefetch lookup), and look-ahead holds off `GetMZero` while the block's twin still waits behind an older head twin so a dropped wrong-path load retry cannot overwrite the zeroed twin sector |
+| `coherence_stale_line_prefetch_l2` | `cbo.zero` twin beside an L1D stream or flushed load retry on the cluster with eight L1D request endpoints, stream prefetching and a 64 KiB home: no stream prefetch acquires a sector held by a pending store record or waiting twin (including a `cbo.zero` pushed during the prefetch lookup); while a fourth-slot `cbo.zero`'s twin still waits behind an older head twin, look-ahead requests neither sector of its block, so a dropped wrong-path load retry cannot overwrite the zeroed twin sector, and the block acquires with `GetMZero` once its own twin allocates; no request for the upper sector is accepted while an endpoint holds `GetMZero` through Done |
 | `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
+| `coherence_full_line*` | Full-line stores on the hart-and-home cluster with one and three L1D endpoints, 64- and 32-byte home lines and a two-set L1D: stores at the SQ cadence and back to back fill blocks without memory reads; the same stores without the SQ hint, partial, reversed and byte-written blocks fill; loads between the stores, DMA reads and writes of the block at every delay, stale Shared and dirty copies, and streams through evictions keep every byte; streams with irregular gaps keep the store queue's claim standing between writes and combine claimed writes at four records; a hint whose stores the store queue flushes holds a record only for its window; a reset with a gathering head, a pair hold or a held look-ahead leaves the cluster clean |
+| `full_line_test` (program) | Full-line stores from the production store queue into the L1D on the whole system: gapped, unaligned and partial memset and copy streams, stores squashed by a mispredicted branch or a faulting load inside a gathered line, ordering after two overlapped cached stores (forwarding, fence, fence.i, cbo.clean/flush/inval/zero, LR/SC), and DMA copies and fills of lines the CPU writes whole; `FullLineWatch` requires the store-queue hints, claims at three and four records, overlap, gather and pair holds, head and look-ahead pairs, data twins, flushes in a window and DMA requests that waited for a pair's window |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, dirty-L1D walker coherence, and one refill event per allocation that reads a line |
 | `coherence_home*` | Home service and ownership, with each accepted memory line read producing exactly one demand or prefetch refill pulse, including a held read accepted after fatal stop |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |

@@ -40,7 +40,9 @@ cover_four: timeout 7200
 intervening: timeout 14400
 bmc_amo_same: timeout 3300
 bmc_amo_other: timeout 4800
-bmc_sc: timeout 3600
+# The SC handoff BMC takes about 45 minutes; CI runners take up to about 2.2
+# times as long.
+bmc_sc: timeout 6000
 bmc: aigsmt boolector
 sticky: mode prove
 sticky: depth 2

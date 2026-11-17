@@ -16,7 +16,7 @@ mode prove
 depth 6
 capture: depth 1
 idle: depth 1
-phasereg: depth 2
+phasereg: depth 3
 timeout 180
 
 [engines]
@@ -60,7 +60,7 @@ idle: setattr -unset init w:*
 delete -output w:*
 setattr -unset keep w:* c:*
 opt_clean
-opt
+opt -keepdc
 async2sync
 chformal -lower
 capture: select -assert-count 1 t:$assert

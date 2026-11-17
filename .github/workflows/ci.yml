@@ -310,6 +310,14 @@ jobs:
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: "[cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]"
+          - name: Real Programs (Full-line stores)
+            coverage: []
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[full_line_test]"
+          - name: Real Programs (Store-stream benchmark)
+            coverage: []
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[store_fill_bench]"
           # One register stage between the hart and the cluster memory, as
           # the X3 builds it (MEMORY_LINK_STAGES=1).
           - name: Real Programs (Memory link stage, DDR programs)
@@ -324,6 +332,10 @@ jobs:
               [coremark_link1] or [csr_test_link1] or [dma_torture_link1] or
               [ptw_coherence_test_link1] or [cached_store_burst_test_link1] or
               [cbo_zero_test_link1] or [cbo_zero_pages_link1]
+          - name: Real Programs (Memory link stage, full-line stores)
+            coverage: []
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[full_line_test_link1]"
           # Profiling and VLEN 256 configurations share their respective builds.
           - name: Real Programs (Runtime benchmarks and vector)
             coverage: [bram]
@@ -388,11 +400,11 @@ jobs:
               or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
               or [cbo_zero_pages] or [cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]
               or [cbo_zero_pages_board] or [cbo_zero_pages_board_ddr] or [cbo_zero_bench]
-              or [fencei_jit_bench]
+              or [full_line_test] or [store_fill_bench] or [fencei_jit_bench]
               or [ddr_bench_link1] or [ddr_atomic_test_link1] or [ddr_mlp_test_link1]
               or [coremark_link1] or [csr_test_link1] or [dma_torture_link1]
               or [ptw_coherence_test_link1] or [cached_store_burst_test_link1]
-              or [cbo_zero_test_link1] or [cbo_zero_pages_link1]
+              or [cbo_zero_test_link1] or [cbo_zero_pages_link1] or [full_line_test_link1]
               or [l1i_set_test] or [smc_fencei_test_l1i32] or [ifread_test_l1i32]
               or [l1i_set_test_l1i32] or [l1i_set_test_l1i32_hw_sweep]
               or [nic_bench] or [nic_sg_loopback] or [nic_rate]
@@ -1433,8 +1445,9 @@ jobs:
           - shard: Coherence L1D data stores and ways
             pytest_filter: coh_l1d_store_ or coh_l1d_ways_data
             timeout_minutes: 270
-          # The L1D control BMCs and single-endpoint cover with cbo.zero writes
-          # have three-, five-, and four-hour allowances and jobs of their own.
+          # The L1D control BMCs and single-endpoint cover with cbo.zero writes,
+          # and the matching full-line and withdrawn-put control BMCs, each run
+          # in dedicated jobs sized from their task allowances.
           - shard: Coherence L1D zero control
             pytest_filter: coh_l1d_zero_bmc
             timeout_minutes: 200
@@ -1444,11 +1457,67 @@ jobs:
           - shard: Coherence L1D zero cover
             pytest_filter: coh_l1d_zero_cover
             timeout_minutes: 260
-          # The unrestricted zero-stream request check has a 100-minute
-          # allowance; keep image setup outside that solver budget.
+          - shard: Coherence L1D zero payload and stream
+            pytest_filter: >-
+              coh_l1d_zero_payload_bmc or coh_l1d_zero_lookahead_cover or
+              coh_l1d_zero_stream_bmc
+            timeout_minutes: 180
+          # The four-property zero stream check, with the store queue's hints
+          # held low, has a 180-minute allowance; keep image setup outside that
+          # solver budget.
           - shard: Coherence L1D zero stream
             pytest_filter: coh_l1d_zero_stream_free_bmc
+            timeout_minutes: 200
+          # The two hinted zero stream BMCs that finish within an hour (the
+          # original stream properties and the same-block twin rule) and the two
+          # scheduled full-buffer zero covers: 140 minutes of allowances.
+          - shard: Coherence L1D zero schedules
+            pytest_filter: >-
+              coh_l1d_zero_stream_hint_bmc or coh_l1d_zero_stream_line_bmc or
+              coh_l1d_zero_progress_cover or coh_l1d_zero_request_cover
+            timeout_minutes: 150
+          # Upper-sector request exclusion with the store queue's hints free, by
+          # holding endpoint: endpoints 0 and 2 share a job (125 minutes of
+          # allowances); endpoint 1's case, split by the operation in
+          # operation_q, has its own (55 minutes).
+          - shard: Coherence L1D zero stream, hinted endpoints 0 and 2
+            pytest_filter: >-
+              coh_l1d_zero_stream_upper_ep0_bmc or coh_l1d_zero_stream_upper_ep2_bmc
+            timeout_minutes: 135
+          - shard: Coherence L1D zero stream, hinted endpoint 1
+            pytest_filter: coh_l1d_zero_stream_upper_ep1_
+            timeout_minutes: 65
+          - shard: Coherence L1D full control
+            pytest_filter: coh_l1d_full_bmc
+            timeout_minutes: 200
+          - shard: Coherence L1D full multi-endpoint
+            pytest_filter: coh_l1d_full_multi_bmc
+            timeout_minutes: 330
+          - shard: Coherence L1D full payload
+            pytest_filter: coh_l1d_full_payload_bmc
             timeout_minutes: 120
+          - shard: Coherence L1D full-line covers
+            pytest_filter: >-
+              coh_l1d_full_cover or coh_l1d_full_lookahead_cover or
+              coh_l1d_withdraw_full_cover
+            timeout_minutes: 330
+          # The full-line hold and credit covers and the store buffer contract
+          # check: 35 minutes of allowances.
+          - shard: Coherence L1D full-line holds
+            pytest_filter: coh_l1d_full_hold_cover or coh_l1d_buffer_contract_bmc
+            timeout_minutes: 50
+          # The same control and payload checks with absorbed puts withdrawn
+          # (WITHDRAW_ABSORBED_W, as MEMORY_LINK_STAGES sets it): each control
+          # BMC has a job of its own; both payload BMCs share a third.
+          - shard: Coherence L1D withdrawn puts, full-line control
+            pytest_filter: coh_l1d_withdraw_full_bmc
+            timeout_minutes: 200
+          - shard: Coherence L1D withdrawn puts, zero-line control
+            pytest_filter: coh_l1d_withdraw_zero_bmc
+            timeout_minutes: 200
+          - shard: Coherence L1D withdrawn puts, payloads
+            pytest_filter: coh_l1d_withdraw and payload
+            timeout_minutes: 210
           # The scheduled real-array checks keep all 80 frames, with disjoint
           # property groups and no assumptions between them. Run them in
           # parallel so their combined work does not delay the bridges.
@@ -1475,8 +1544,8 @@ jobs:
               axi_coherent_bridge or
               (coherence_l1d and not (_twin or coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
               coh_l1d_stream_outlier_prove or
-              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_bmc or coh_l1d_zero_multi_bmc or
-              coh_l1d_zero_cover or coh_l1d_zero_stream_free_bmc or coh_l1d_data or
+              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero or coh_l1d_full or coh_l1d_data or
+              coh_l1d_withdraw or coh_l1d_buffer_contract or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))
             timeout_minutes: 330
@@ -1518,7 +1587,7 @@ jobs:
               coh_hart_maint_prove or coh_hart_maint_owned_prove or
               coh_l1d_stream_bmc or coh_l1d_stream_free_nostore_bmc or
               coh_l1d_stream_outlier_prove
-            timeout_minutes: 330
+            timeout_minutes: 335
           # Every comparison of a block's hand-instantiated primitives with its
           # portable form: the twin targets and the read select's primitive tasks;
           # also the INT_RS issue-tag copy proofs (rs_issue_tag_banks, with its
