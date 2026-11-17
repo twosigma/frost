@@ -290,7 +290,14 @@ With Ssnpm masking enabled, stores receive their addresses at MEM_RS issue.
 The issue base is sign-extended from bit 56 or 47 before addition. For the
 supported physical maps and Sv39, every accepted address equals the ignore
 transformation of the effective address; rejected sums can differ in the
-ignored bits. Data fault values use the exact transformation, and the
+ignored bits. The store PMA check and the test that an untranslated store
+completes at issue take the base as issued and apply the mode only to terms
+of the operands (`coherent_store_pm_select`). With FROST's bounded map the
+page decoder's upper-bit qualifiers are whole groups of base bits, and the
+mode chooses the groups each masked base needs; the completion test reads
+the sum's low bits, which are the same for every mode, and decides the upper
+bits from the operands bit by bit, with the mode choosing between the terms
+of each base. Data fault values use the exact transformation, and the
 misaligned-access engine starts from that value. A senvcfg write updates the
 registered PMM on the CSR write edge, before a younger store can allocate.
 CSR serialization and full flushes prevent an early-address candidate from

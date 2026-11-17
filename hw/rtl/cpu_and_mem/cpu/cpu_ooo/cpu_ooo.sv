@@ -4074,53 +4074,44 @@ module cpu_ooo #(
   //   - Everything else FROST raises here: 0, which the privileged spec
   //     permits. That is ECALL and the ExcMemReplay pseudo-cause, which
   //     writes no CSR.
+  // The INT ALU shim parks an instruction fault's address (the PC, or PC + 2
+  // for a page-straddling instruction whose second halfword faulted); the LQ
+  // bypass or the store fault strobe parks a misaligned or data page fault's
+  // address. Under Ssnpm pointer masking a data fault reports the
+  // transformed address (riscv_pkg "Pointer masking"); the mode and
+  // translation state are those the access used: both change only at
+  // serializing points, and none lies between an access and its trap.
+  // riscv_pkg::exception_tval selects the value for each cause.
   logic [XLEN-1:0] csr_trap_value;
-  always_comb begin
-    unique case (rob_trap_cause)
-      // Breakpoint: tval = the breakpoint instruction's own (virtual) address.
-      riscv_pkg::ExcBreakpoint[$bits(rob_trap_cause)-1:0]: csr_trap_value = rob_trap_pc;
-      // Instruction access/page faults: tval = the virtual
-      // address of the faulting portion of the instruction (the PC, or PC + 2
-      // for a page-straddling instruction whose second halfword faulted),
-      // parked in the value slot by the INT ALU shim.
-      riscv_pkg::ExcInstrAccessFault[$bits(
-          rob_trap_cause
-      )-1:0], riscv_pkg::ExcInstrPageFault[$bits(
-          rob_trap_cause
-      )-1:0]:
-      csr_trap_value = rob_trap_value;
-      // Misaligned and data page faults: tval = the faulting data virtual
-      // address, parked in the entry's value slot by the LQ bypass or the
-      // store fault strobe. Under Ssnpm pointer masking it is the
-      // transformed address (riscv_pkg "Pointer masking"); the mode and
-      // translation state are those the access used: both change only at
-      // serializing points, and none lies between an access and its trap.
-      riscv_pkg::ExcLoadAddrMisalign[$bits(
-          rob_trap_cause
-      )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
-          rob_trap_cause
-      )-1:0], riscv_pkg::ExcLoadPageFault[$bits(
-          rob_trap_cause
-      )-1:0], riscv_pkg::ExcStorePageFault[$bits(
-          rob_trap_cause
-      )-1:0]:
-      csr_trap_value = riscv_pkg::pm_tval(rob_trap_value, csr_mmu_pm_mode, csr_translation_active);
-      // The bus-fault table stores the issue VA after the base transform.
-      // Apply the same architectural tval conversion to the selected VA.
-      riscv_pkg::ExcLoadAccessFault[$bits(
-          rob_trap_cause
-      )-1:0], riscv_pkg::ExcStoreAccessFault[$bits(
-          rob_trap_cause
-      )-1:0]:
-      csr_trap_value = riscv_pkg::pm_tval(
-        rob_head_bus_fault ? rob_head_bus_fault_va : rob_trap_value,
-        csr_mmu_pm_mode,
-        csr_translation_active
-      );
-      riscv_pkg::ExcIllegalInstr[$bits(rob_trap_cause)-1:0]: csr_trap_value = XLEN'(rob_trap_insn);
-      default: csr_trap_value = '0;
-    endcase
-  end
+  assign csr_trap_value = riscv_pkg::exception_tval(
+      rob_trap_cause,
+      rob_trap_pc,
+      rob_trap_value,
+      rob_head_bus_fault,
+      rob_head_bus_fault_va,
+      rob_trap_insn,
+      csr_mmu_pm_mode,
+      csr_translation_active
+  );
+  // The trap unit registers the value before the pointer-masking transform,
+  // with the mode the transform uses, and applies the transform after its
+  // register; the result is csr_trap_value. A misaligned-engine fault's value
+  // is final.
+  logic [XLEN-1:0] trap_exception_tval;
+  riscv_pkg::pm_mode_t trap_exception_tval_pm_mode;
+  assign trap_exception_tval = ma_fault_pending_q ? ma_fault_tval_q :
+      riscv_pkg::exception_tval(
+      rob_trap_cause,
+      rob_trap_pc,
+      rob_trap_value,
+      rob_head_bus_fault,
+      rob_head_bus_fault_va,
+      rob_trap_insn,
+      riscv_pkg::EnvcfgPmmOff,
+      csr_translation_active
+  );
+  assign trap_exception_tval_pm_mode = ma_fault_pending_q ? riscv_pkg::EnvcfgPmmOff :
+      riscv_pkg::exception_tval_pm_mode(rob_trap_cause, csr_mmu_pm_mode);
 
   // Remap the shim's ExcEcallMmode at commit: U=8, S=9, M=11. trap_unit
   // arbitrates this cause with interrupts before csr_file writes xcause.
@@ -4219,6 +4210,15 @@ module cpu_ooo #(
           (((csr_file_inst.mstatus_mprv ? csr_file_inst.mstatus_mpp : csr_priv) ==
              riscv_pkg::PrivU && !csr_file_inst.mstatus_mxr) ?
             csr_file_inst.senvcfg_pmm : riscv_pkg::EnvcfgPmmOff));
+    end
+    // The trap unit's untransformed value and mode give the transformed one.
+    if (reset_seen_q && !i_rst && !$isunknown(
+            {trap_exception_tval, trap_exception_tval_pm_mode, csr_translation_active}
+        )) begin
+      p_trap_tval_transform_after_register :
+      assert (riscv_pkg::pm_tval(trap_exception_tval, trap_exception_tval_pm_mode,
+                                 csr_translation_active) ==
+              (ma_fault_pending_q ? ma_fault_tval_q : csr_trap_value));
     end
   end
 `endif
@@ -5219,7 +5219,9 @@ module cpu_ooo #(
       )) {1'b0}}, ma_fault_cause_q} : {{(XLEN - $bits(
           rob_trap_cause_remapped
       )) {1'b0}}, rob_trap_cause_remapped}),
-      .i_exception_tval(ma_fault_pending_q ? ma_fault_tval_q : csr_trap_value),
+      .i_exception_tval(trap_exception_tval),
+      .i_exception_tval_pm_mode(trap_exception_tval_pm_mode),
+      .i_exception_tval_virt(csr_translation_active),
       .i_exception_pc(ma_fault_pending_q ? ma_fault_pc_q : rob_trap_pc),
       .i_exception_assist(ma_exception_assist),
       .i_exception_next_pc(rob_head_fallthrough_pc),

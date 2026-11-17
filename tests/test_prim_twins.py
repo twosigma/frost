@@ -108,6 +108,9 @@ COVERAGE: dict[str, dict[str, tuple[str, ...] | None]] = {
         CPU + "if_stage/branch_prediction/branch_predictor.sv": None
     },
     "store_queue_twin.sby": {CPU + "tomasulo/store_queue/store_queue.sv": None},
+    "coherent_store_pma_twin.sby": {
+        CPU + "tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv": ("u_zero", "u_allow")
+    },
     "reservation_station_twin.sby": {
         CPU + "tomasulo/reservation_station/reservation_station.sv": None
     },
@@ -126,8 +129,6 @@ NOT_COVERED: dict[str, str] = {
     "cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv::u_mem_live_valid": "needs the whole Tomasulo wrapper elaborated; its twin did not finish in half an hour",
     "cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv::u_int_issue_valid_0": "needs the whole Tomasulo wrapper elaborated; its twin did not finish in half an hour",
     "cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv::u_tag": "needs the whole Tomasulo wrapper elaborated; its twin did not finish in half an hour",
-    "cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv::u_zero": "needs the whole Tomasulo wrapper elaborated; its twin did not finish in half an hour",
-    "cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv::u_allow": "needs the whole Tomasulo wrapper elaborated; its twin did not finish in half an hour",
     "soc_top/soc_top.sv::mmio_read_data_ff": "needs the whole SoC elaborated; an enable flop with reset tied low",
 }
 

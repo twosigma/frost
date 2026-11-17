@@ -1125,8 +1125,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "trap_unit.sby",
-        "Trap-unit exception and interrupt handling, and the CSR entry enables in "
-        "every state",
+        "Trap-unit exception and interrupt handling, the CSR entry enables in "
+        "every state, and the trap value with its pointer-masking transform after "
+        "the register",
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
@@ -1291,6 +1292,14 @@ FORMAL_TARGETS = [
         "Ssnpm: the MEM_RS base transform gives the Sv39 canonical check, the Bare PMA "
         "decodes, xtval and misaligned assist the ignore transformation's result "
         "across DDR apertures, and senvcfg.PMM is WARL",
+        tasks=("bmc", "bmc_ddr31", "bmc_ddr36", "bmc_ddr37"),
+    ),
+    FormalTarget(
+        "pm_mode_select.sby",
+        "Ssnpm: the store PMA verdict and untranslated store completion with the "
+        "pointer-masking mode applied to operand terms, and the trap value "
+        "latched before the transform, equal the transform-first forms for every "
+        "input and mode across DDR apertures",
         tasks=("bmc", "bmc_ddr31", "bmc_ddr36", "bmc_ddr37"),
     ),
     FormalTarget(
@@ -1858,6 +1867,12 @@ FORMAL_TARGETS = [
         "store_queue_twin.sby",
         "Store queue: primitive and portable forms are equivalent.",
         tasks=("sq_twin", "sq_twin_cpu"),
+    ),
+    FormalTarget(
+        "coherent_store_pma_twin.sby",
+        "Store page decoder: primitive and portable forms are equivalent at the "
+        "1 GiB and 2 GiB DDR sizes.",
+        tasks=("store_pma_twin_ddr30", "store_pma_twin_ddr31"),
     ),
     FormalTarget(
         "reservation_station_twin.sby",
@@ -3421,6 +3436,14 @@ SBY_TASKS = [
     (
         "sq_twin_cpu",
         "Store queue primitive form equals its portable form with the CPU's store-queue settings.",
+    ),
+    (
+        "store_pma_twin_ddr30",
+        "Store page decoder primitive form equals its portable form, 1 GiB DDR.",
+    ),
+    (
+        "store_pma_twin_ddr31",
+        "Store page decoder primitive form equals its portable form, 2 GiB DDR.",
     ),
     (
         "rs_twin_indexed",

@@ -1,0 +1,68 @@
+[tasks]
+store_pma_twin_ddr30 ddr30
+store_pma_twin_ddr31 ddr31
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+# Primitive twin of the store page decoder at the DDR sizes of the X3 (1 GiB)
+# and the VCU118 (2 GiB), where its bounded-map form holds the primitives.
+# Gold is the module as shipped; gate is the same sources with
+# FROST_XILINX_PRIMS defined and Yosys's Xilinx primitive models. Both are
+# flattened with undefined constants zeroed and every named net kept, so
+# equiv_make pairs signals by name. The decoder holds no registers.
+# equiv_simple then proves each equivalence point whose cone holds a primitive
+# cell, for any input.
+ddr30: read -sv -D SYNTHESIS -D FROST_DDR_CAPACITY_LOG2_BYTES=30 riscv_pkg.sv tomasulo_wrapper.sv
+ddr31: read -sv -D SYNTHESIS -D FROST_DDR_CAPACITY_LOG2_BYTES=31 riscv_pkg.sv tomasulo_wrapper.sv
+hierarchy -check -top coherent_store_pma
+proc
+setattr -mod -unset keep_hierarchy *
+flatten
+setundef -zero
+# Keep every named net so that signals pair by name.
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+rename -top gold
+design -stash gold
+design -reset
+read_verilog -formal +/xilinx/cells_sim.v
+ddr30: read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS -D FROST_DDR_CAPACITY_LOG2_BYTES=30 riscv_pkg.sv tomasulo_wrapper.sv
+ddr31: read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS -D FROST_DDR_CAPACITY_LOG2_BYTES=31 riscv_pkg.sv tomasulo_wrapper.sv
+hierarchy -check -top coherent_store_pma
+proc
+setattr -mod -unset keep_hierarchy *
+# Mark every cell that comes from a Xilinx primitive model.
+setattr -set from_prim 1 $paramod*LUT*/* LUT*/*
+flatten
+setundef -zero
+# Keep every named net so that signals pair by name.
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+rename -top gate
+design -stash gate
+design -reset
+design -copy-from gold -as gold gold
+design -copy-from gate -as gate gate
+equiv_make gold gate equiv
+hierarchy -top equiv
+# Prove every equivalence point whose cone holds a primitive cell.
+select -set prim t:* a:from_prim %i
+select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
+# A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
+select -assert-min 17 @blk
+equiv_simple @blk
+equiv_status -assert @blk
+design -reset
+read -formal -sv prim_twin_done.sv
+prep -top prim_twin_done
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
+prim_twin_done.sv
