@@ -393,7 +393,7 @@ async def test_banks_follow_word_parity(dut: Any) -> None:
 
 @cocotb.test()
 async def test_provider_replaced_since_lookup_is_not_updated(dut: Any) -> None:
-    """Training skips a provider entry whose tag changed after the lookup."""
+    """A provider entry whose tag changed after the lookup keeps its value."""
     await _setup_test(dut)
     hist = _fresh_hist(dut, PC_A)
 
@@ -494,3 +494,75 @@ async def test_back_to_back_trainings_of_one_entry_see_each_other(dut: Any) -> N
     await _train(dut, entry, 0, taken=False, mispredicted=False)
     after = await _lookup_word(dut, PC_A, hist)
     assert after["hit1"] and after["taken"]
+
+
+def _entry(*, valid: bool, tag: int, ctr: int, useful: bool) -> int:
+    """Pack a table entry: valid, tag, counter, useful (most significant first)."""
+    return (int(valid) << (TAGE_TAG_BITS + 4)) | (tag << 4) | (ctr << 1) | int(useful)
+
+
+def _copies(dut: Any, table: int, bank: int, index: int) -> tuple[int, int]:
+    """Return one entry's lookup-copy and training-copy values."""
+    storage = dut.gen_bank[bank].gen_table[table - 1]
+    return (
+        int(storage.u_lookup_copy.ram[index].value),
+        int(storage.u_train_copy.ram[index].value),
+    )
+
+
+@cocotb.test()
+async def test_lookup_only_t2_entry_is_replaced_by_its_first_training(dut: Any) -> None:
+    """A T2 entry that only the lookup copy holds stops providing after one training.
+
+    The copies power up with independent contents. Here the lookup copy alone
+    holds a not-taken T2 entry matching the branch, which overrides the
+    branch's taken T1 entry. Training writes the training copy's entry back,
+    so one misprediction later T1 provides and the copies agree.
+    """
+    await _setup_test(dut)
+    hist = _fresh_hist(dut, PC_A)
+
+    cold = await _lookup_word(dut, PC_A, hist)
+    await _train(dut, cold, 0, taken=True, mispredicted=True)
+    t1 = await _lookup_word(dut, PC_A, hist)
+    assert t1["hit1"] and t1["taken"] and not t1["hit2"]
+
+    index2 = int(t1["index2"])
+    dut.gen_bank[0].gen_table[1].u_lookup_copy.ram[index2].value = _entry(
+        valid=True, tag=int(t1["tag2"]), ctr=CTR_WEAK_NOT_TAKEN, useful=False
+    )
+    planted = await _lookup_word(dut, PC_A, hist)
+    assert planted["hit1"] and planted["hit2"]
+    assert not planted["taken"]
+    assert planted["alt_tagged_taken"]
+
+    await _train(dut, planted, 0, taken=True, mispredicted=True)
+    lookup_row, train_row = _copies(dut, 2, 0, index2)
+    assert lookup_row == train_row
+    after = await _lookup_word(dut, PC_A, hist)
+    assert after["hit1"] and not after["hit2"] and after["taken"]
+
+
+@cocotb.test()
+async def test_lookup_only_t1_entry_is_replaced_and_t2_allocated(dut: Any) -> None:
+    """A T1 entry that only the lookup copy holds is replaced by its training.
+
+    The misprediction it causes allocates T2 in the same training, so the
+    next lookup predicts the outcome, and the T1 copies agree.
+    """
+    await _setup_test(dut)
+    hist = _fresh_hist(dut, PC_A)
+
+    cold = await _lookup_word(dut, PC_A, hist)
+    index1 = int(cold["index1"])
+    dut.gen_bank[0].gen_table[0].u_lookup_copy.ram[index1].value = _entry(
+        valid=True, tag=int(cold["tag1"]), ctr=CTR_WEAK_NOT_TAKEN, useful=False
+    )
+    planted = await _lookup_word(dut, PC_A, hist)
+    assert planted["hit1"] and not planted["hit2"] and not planted["taken"]
+
+    await _train(dut, planted, 0, taken=True, mispredicted=True)
+    lookup_row, train_row = _copies(dut, 1, 0, index1)
+    assert lookup_row == train_row
+    after = await _lookup_word(dut, PC_A, hist)
+    assert not after["hit1"] and after["hit2"] and after["taken"]
