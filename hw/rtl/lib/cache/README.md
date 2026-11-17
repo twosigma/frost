@@ -1330,7 +1330,7 @@ record installs from the `GrantMZero` with every byte its own, and `TwinOp`
 installs the twin's bytes over its whole sector before the endpoint's Done.
 With 32-byte home lines every fully masked record acquires with `GetMZero`
 on its own. A pair that is not complete when the lower record's lookup
-classifies it acquires with `GetM` and fills as before.
+classifies it acquires with `GetM` and fills like any other record.
 
 **Gather window.** Idle selects and seals the head as soon as it is ready,
 so without a hold a record would hold one write when it acquires. The SQ

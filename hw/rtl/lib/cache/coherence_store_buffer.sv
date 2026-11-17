@@ -433,7 +433,7 @@ module coherence_store_buffer #(
       cover (o_valid[o_head] && o_twin[o_head]);
       // A full pair acquires, beside a contributor to its upper record, and its
       // data twin reaches the head.
-      cover (i_acquire_pair && i_push && merge && write_index == 2'(i_acquire_index + 2'd1));
+      cover (pair_in && i_push && merge && write_index == 2'(i_acquire_index + 2'd1));
       cover (o_valid[o_head] && o_twin[o_head] && !o_zero[o_head]);
       // A claimed write combines into the youngest of four records.
       cover (i_push && $past(o_count == 4) && o_count == 4 && merge);
