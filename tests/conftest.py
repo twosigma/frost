@@ -33,6 +33,12 @@ def pytest_configure(config: Any) -> None:
     )
     config.addinivalue_line("markers", "cocotb_unit: mark cocotb unit-bench tests")
     config.addinivalue_line(
+        "markers", "cocotb_unit_a: mark unit benches that CI runs in job A"
+    )
+    config.addinivalue_line(
+        "markers", "cocotb_unit_b: mark unit benches that CI runs in job B"
+    )
+    config.addinivalue_line(
         "markers", "coremark_pro: mark CoreMark-PRO real-program tests"
     )
 

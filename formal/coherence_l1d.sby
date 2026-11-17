@@ -127,7 +127,9 @@ pathcovers: timeout 1800
 covers: timeout 1200
 zcovers: timeout 2400
 fcovers: timeout 7200
-fwcover: timeout 4800
+# Measured at 2342 seconds; the allowance is 2.2 times that, rounded up to
+# a whole minute (86 minutes).
+fwcover: timeout 5160
 fwcover: vcd_sim on
 fwcover: skip 48
 fhcover: timeout 1200
@@ -217,10 +219,10 @@ zstreamline: timeout 3600
 zstreamupper: depth 31
 # Measured: the endpoint 0 and 2 cases take about 44 and 10 minutes, and
 # endpoint 1's read, store, look-ahead, prefetch and remaining-operation parts
-# 738, 196, 23, 28 and 21 seconds (155 minutes as one task); each allowance is
-# about 2.2 times that for slower CI runners.
+# 815, 196, 23, 28 and 21 seconds (155 minutes as one task); each allowance is
+# at least 2.2 times that for slower CI runners.
 coh_l1d_zero_stream_upper_ep0_bmc: timeout 6000
-coh_l1d_zero_stream_upper_ep1_read_bmc: timeout 1800
+coh_l1d_zero_stream_upper_ep1_read_bmc: timeout 2100
 coh_l1d_zero_stream_upper_ep1_store_bmc: timeout 600
 coh_l1d_zero_stream_upper_ep1_lookahead_bmc: timeout 300
 coh_l1d_zero_stream_upper_ep1_prefetch_bmc: timeout 300

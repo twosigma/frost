@@ -212,7 +212,7 @@ jobs:
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
     # Real-program jobs allow four hours, including setup and coverage uploads.
-    timeout-minutes: ${{ matrix.shard.name == 'Unit Tests' && 360 || 240 }}
+    timeout-minutes: ${{ startsWith(matrix.shard.name, 'Unit Tests') && 360 || 240 }}
     strategy:
       fail-fast: false
       matrix:
@@ -506,11 +506,19 @@ jobs:
               coverage: []
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[cache_counters_openocd]"
+          # The unit benches run serially in two jobs of about equal duration;
+          # tests/test_run_cocotb.py assigns each bench to one of them.
           - mem_config: bram
             shard:
-              name: Unit Tests
+              name: Unit Tests A
               coverage: [bram]
-              pytest_mark: "cocotb and cocotb_unit"
+              pytest_mark: "cocotb and cocotb_unit and cocotb_unit_a"
+              pytest_filter: test_unit
+          - mem_config: bram
+            shard:
+              name: Unit Tests B
+              coverage: [bram]
+              pytest_mark: "cocotb and cocotb_unit and cocotb_unit_b"
               pytest_filter: test_unit
     steps:
       - name: Checkout repository
@@ -537,14 +545,14 @@ jobs:
           # (tests/README.md); a failing test's output names the draw, and a
           # rerun of the job repeats it.
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
-          FROST_STARTUP_SWEEP: ${{ matrix.shard.name != 'Unit Tests' && '1' || '0' }}
+          FROST_STARTUP_SWEEP: ${{ !startsWith(matrix.shard.name, 'Unit Tests') && '1' || '0' }}
           FROST_STARTUP_SEED_BASE: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
-          FROST_RANDOM_START_SEED: ${{ matrix.shard.name != 'Unit Tests' && format('{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) || '' }}
+          FROST_RANDOM_START_SEED: ${{ !startsWith(matrix.shard.name, 'Unit Tests') && format('{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) || '' }}
           # A shard's coverage field lists the memory tiers in which it
           # collects line coverage and the cover points, and the unit benches
           # also toggle coverage (tests/README.md#coverage).
           FROST_COVERAGE: ${{ contains(matrix.shard.coverage, matrix.mem_config) && '1' || '0' }}
-          FROST_COVERAGE_TOGGLE: ${{ matrix.shard.name == 'Unit Tests' && '1' || '0' }}
+          FROST_COVERAGE_TOGGLE: ${{ startsWith(matrix.shard.name, 'Unit Tests') && '1' || '0' }}
           # Optional per-cycle Python progress tracing adds host runtime to
           # these long workloads. Keep their checks and reset runs unchanged.
           COCOTB_COREMARK_PROGRESS_INTERVAL: ${{ contains(matrix.shard.name, 'CoreMark-PRO') && '0' || '500000' }}
@@ -1479,14 +1487,14 @@ jobs:
           # Upper-sector request exclusion with the store queue's hints free, by
           # holding endpoint: endpoints 0 and 2 share a job (125 minutes of
           # allowances); endpoint 1's case, split by the operation in
-          # operation_q, has its own (55 minutes).
+          # operation_q, has its own (60 minutes).
           - shard: Coherence L1D zero stream, hinted endpoints 0 and 2
             pytest_filter: >-
               coh_l1d_zero_stream_upper_ep0_bmc or coh_l1d_zero_stream_upper_ep2_bmc
             timeout_minutes: 135
           - shard: Coherence L1D zero stream, hinted endpoint 1
             pytest_filter: coh_l1d_zero_stream_upper_ep1_
-            timeout_minutes: 65
+            timeout_minutes: 75
           - shard: Coherence L1D full control
             pytest_filter: coh_l1d_full_bmc
             timeout_minutes: 200
@@ -1496,11 +1504,13 @@ jobs:
           - shard: Coherence L1D full payload
             pytest_filter: coh_l1d_full_payload_bmc
             timeout_minutes: 120
+          # The two full-line covers and the withdrawn-put full-line cover:
+          # 326 minutes of allowances.
           - shard: Coherence L1D full-line covers
             pytest_filter: >-
               coh_l1d_full_cover or coh_l1d_full_lookahead_cover or
               coh_l1d_withdraw_full_cover
-            timeout_minutes: 330
+            timeout_minutes: 340
           # The full-line hold and credit covers and the store buffer contract
           # check: 35 minutes of allowances.
           - shard: Coherence L1D full-line holds
@@ -1558,21 +1568,29 @@ jobs:
             pytest_filter: coherence_store_boundary_bmc_intervening
             timeout_minutes: 330
           # The AMO flow BMCs have 55- and 80-minute allowances. The owner
-          # and fatal checks stay with SC and the shorter boundary tasks.
+          # and fatal checks and the AMO covers have a job of their own.
           - shard: Store boundary AMO flow
             pytest_filter: >-
               coherence_store_boundary and (bmc_amo_same or bmc_amo_other) and
               not (fatal or owner)
             timeout_minutes: 180
-          # SC's allowance plus twice the other cases' measured main times
-          # uses about three quarters of this job.
+          # The AMO owner and fatal checks, their sticky proofs and the AMO
+          # covers. With full-line stores they take up to about 2.3 times as
+          # long as before, so they are sized from that.
+          - shard: Store boundary AMO checks
+            pytest_filter: >-
+              coherence_store_boundary and amo and (fatal or owner or cover)
+            timeout_minutes: 240
+          # SC (a 100-minute allowance) and the load, old-order, four-record
+          # cover and edge tasks. The job's limit leaves room for the whole
+          # selection to run about 2.3 times as long as it did before
+          # full-line stores, on a runner 1.8 times slower than a typical one.
           - shard: Store boundary
             pytest_filter: >-
               coherence_store_boundary and not
               (coherence_store_boundary_bmc_four or
-              coherence_store_boundary_bmc_intervening or
-              ((bmc_amo_same or bmc_amo_other) and not (fatal or owner)))
-            timeout_minutes: 240
+              coherence_store_boundary_bmc_intervening or amo)
+            timeout_minutes: 330
           # The eight-endpoint L1D stream BMC with arbitrary inputs and
           # stores runs to depth 32, and the four-way hit-port array BMC,
           # about 50 minutes, shares its job.
@@ -1589,14 +1607,14 @@ jobs:
               coh_l1d_stream_outlier_prove
             timeout_minutes: 335
           # Every comparison of a block's hand-instantiated primitives with its
-          # portable form: the twin targets and the read select's primitive tasks;
+          # portable form: the twin targets (including the payload twin) and
+          # the read select's primitive tasks;
           # also the INT_RS issue-tag copy proofs (rs_issue_tag_banks, with its
           # primitive build, and rs_issue_tag_copies) and the tagged predictor's
           # table-copy proof (tage_copy_convergence).
           - shard: Primitive forms
             pytest_filter: >-
-              (_twin and not rs_payload_twin) or (coh_read_select and xilinx) or rs_issue_tag_ or
-              tage_copy_convergence
+              _twin or (coh_read_select and xilinx) or rs_issue_tag_ or tage_copy_convergence
             timeout_minutes: 90
           # The vector CSR state: the vector BMC alone is about forty minutes,
           # and new vector proofs join it.
@@ -1623,14 +1641,30 @@ jobs:
           - shard: Load queue
             pytest_filter: (load_queue or lq_) and not (coherence_ or coherent_ or _twin)
             timeout_minutes: 60
+          # The longest block proofs among the remaining targets: branch
+          # prediction hand-off and release, the flash-valid cache bits, the
+          # vector memory tracker, the issue and rename blocks and the home's
+          # seat logic. A full run takes about an hour.
+          - shard: Block proofs
+            pytest_filter: >-
+              prediction_release or prediction_handoff or if_prediction_walk_past or
+              cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
+              reservation_station_cover or
+              rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv
+            timeout_minutes: 150
           # Everything not named above: new small equivalence proofs and block
           # proofs go here unless they belong to one of the areas above.
           - shard: Other tasks
             pytest_filter: >-
               not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or
-              coherence_ or coherent_ or (_twin and not rs_payload_twin) or csr_file_vector or
+              coherence_ or coherent_ or _twin or csr_file_vector or
               vec_lmul_legality or vec_vtype_tracker or line_client_link or ptw or tlb or imsic or aplic or
-              immu or dmmu or load_queue or lq_ or rs_issue_tag_ or tage_copy_convergence)
+              immu or dmmu or load_queue or lq_ or rs_issue_tag_ or
+              prediction_release or prediction_handoff or if_prediction_walk_past or
+              cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
+              reservation_station_cover or
+              rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
+              tage_copy_convergence)
             timeout_minutes: 120
     # A task whose key has a pass marker is skipped; one in twenty of those
     # is proved again as a canary. The markers are cached per job: a main run
