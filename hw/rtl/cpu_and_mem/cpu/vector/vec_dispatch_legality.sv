@@ -29,8 +29,12 @@
   becoming unknown. So while o_ready is set and the vtype is known, o_illegal
   is the legality of the head under the vtype in effect (the local proof
   below states this under those two conditions; cpu_ooo checks it at every
-  vector arithmetic allocation in simulation). Vector arithmetic therefore
-  takes one more cycle at the queue head; other instructions do not wait.
+  vector arithmetic allocation in simulation). An instruction of the vector
+  arithmetic opcode other than a configuration instruction therefore takes
+  one more cycle at the queue head: the arithmetic families, the
+  vector-to-scalar moves and counts, and encodings that decode rejects.
+  Scalar instructions and vector loads, stores and configuration
+  instructions do not wait.
 */
 module vec_dispatch_legality (
     input  logic        i_clk,

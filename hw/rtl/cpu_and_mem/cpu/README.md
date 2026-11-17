@@ -743,11 +743,14 @@ allowing the retiring CSR update to arrive.
 `vector/vec_dispatch_legality.sv` evaluates the EEW, EMUL, alignment and
 overlap rules (`vector/vec_arith_legality.sv`) for the instruction at the
 decoded queue's head under the tracked `vtype`, from the queue's registered
-head shadow and the tracker's registers into one register. A vector
-arithmetic instruction waits one cycle at the head for that result, and
-dispatch takes it into the allocation's illegal-instruction check; nothing
-else waits, and the decode stages and the queue are those of a build without
-the unit. `vec_arith_legality` has no adder or magnitude compare: register
+head shadow and the tracker's registers into one register. An instruction of
+the vector arithmetic opcode other than a configuration instruction (the
+arithmetic families, `vmv.x.s`, `vcpop.m`, `vfirst.m`, and encodings that
+decode rejects) waits one cycle at the head for that result, and dispatch
+takes it into the allocation's illegal-instruction check. Scalar instructions
+and vector loads, stores and configuration instructions do not wait, and the
+decode stages and the queue are those of a build without the unit.
+`vec_arith_legality` has no adder or magnitude compare: register
 groups are 2-bit size codes from tables of LMUL and SEW, alignment is a test
 of a register number's low bits, and two aligned groups overlap exactly when
 their register numbers agree above the larger group's size. Without the unit,
@@ -762,12 +765,12 @@ The tracker also checkpoints whether
 checkpoint also records whether an allocation owns that prediction, so a delayed
 architectural `vtype` reload cannot overwrite a younger load/store's clear. A
 later CSR access or full flush discards the prediction before reloading the
-architectural state. This adds no dispatch wait, including after immediate
-configuration instructions. Arithmetic rejects nonzero `vstart`; whole-register
-moves honour their start index. `vmv.x.s` reads element zero irrespective of
-`vstart`. `vmv.s.x` writes element zero when `vstart < vl`, including
-`0 < vstart < vl`, following Spike's interpretation; it writes nothing when
-`vstart >= vl`. When arithmetic retires, `vec_unit` queues it with its scalar and the
+architectural state. The ownership bit adds no dispatch wait, including after
+immediate configuration instructions. Arithmetic rejects nonzero `vstart`;
+whole-register moves honor their start index. `vmv.x.s` reads element zero
+irrespective of `vstart`. `vmv.s.x` writes element zero when `vstart < vl`,
+including `0 < vstart < vl`, following Spike's interpretation; it writes nothing
+when `vstart >= vl`. When arithmetic retires, `vec_unit` queues it with its scalar and the
 architectural `vl`, `vtype`, `vstart` and `vxrm`, and the engine executes it after
 commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
