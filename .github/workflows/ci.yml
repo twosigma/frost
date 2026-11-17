@@ -1211,7 +1211,10 @@ jobs:
 
   # Yosys synthesis.
   # A full-chip synthesis target whose key has a pass marker is skipped, as
-  # in the formal jobs; the other synthesis tests always run.
+  # in the formal jobs; the other synthesis tests always run. The Xilinx
+  # target took 152, 161 and more than 180 minutes in three main runs, so
+  # its three-hour default is five hours here: with the other tests that
+  # stays inside the job's six.
   test-synthesis:
     name: Yosys Synthesis Check
     runs-on: ubuntu-26.04
@@ -1219,6 +1222,7 @@ jobs:
     if: ${{ needs.gate.outputs.full == 'true' }}
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
+      FROST_YOSYS_XILINX_TIMEOUT_SEC: "18000"
       FROST_REUSE_DIR: ${{ needs.gate.outputs.reuse == 'true' && '.ci-reuse' || '' }}
       FROST_REUSE_TOOLS_ID: ${{ needs.build-docker.outputs.tools_id }}
       FROST_REUSE_MAIN_RUN: ${{ needs.gate.outputs.main_run }}
