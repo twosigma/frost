@@ -14,11 +14,22 @@
  *    limitations under the License.
  */
 
-/* A surviving memory allocation's restart clear cannot become an older CSR value.
+/* A surviving memory allocation's restart clear cannot become an older CSR value,
+ * and the tracked vtype follows its specification in every cycle.
  * Inputs are free after an initial reset. Dispatch is quiescent during recovery
  * and a retiring CSR, and a checkpoint is saved only while slot 1 allocates;
  * checkpoints may be restored only after being saved in the current full-flush
  * epoch. A later CSR retirement supersedes earlier prediction.
+ *
+ * vtype: reset and full flush make it unknown, and so does a CSR retirement.
+ * vsetvli and vsetivli install the vtype of their immediate (vill, with the
+ * other bits clear, for a set bit above bit 7, the reserved vlmul or a SEW
+ * above LMUL * 64). vsetvl makes it unknown. Any other allocation, or a cycle
+ * without one, keeps a known vtype. An unknown vtype is reloaded from the
+ * architectural vtype exactly when the last three cycles had no reset and no
+ * configuration instruction allocating or in flight, and none is in flight
+ * now. A restore returns the {valid, vtype} that its checkpoint's allocation
+ * produced; the harness watches one arbitrary checkpoint.
  */
 module vec_vtype_tracker_formal (
     input logic i_clk
@@ -31,6 +42,7 @@ module vec_vtype_tracker_formal (
   (* anyseq *) logic [CW-1:0] save_id, restore_id;
   (* anyseq *) logic [8:0] arch_type;
   (* anyseq *) logic arch_start;
+  (* anyconst *) logic [CW-1:0] watch_id;
   logic valid, start;
   logic [8:0] vtype;
   logic seen_reset = 1'b0;
@@ -92,6 +104,97 @@ module vec_vtype_tracker_formal (
       cover (valid && unknown_clear_q && arch_start && !start);
       cover (restore && ckpt_owned_q[restore_id] && !valid);
       cover (owned_q && arch_reload && arch_start);
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // vtype half
+  // ---------------------------------------------------------------------------
+  logic imm_op, imm_alloc, reg_alloc, cfg_alloc;
+  assign imm_op = (alloc_op == riscv_pkg::VSETVLI) || (alloc_op == riscv_pkg::VSETIVLI);
+  assign imm_alloc = alloc && imm_op;
+  assign reg_alloc = alloc && (alloc_op == riscv_pkg::VSETVL);
+  assign cfg_alloc = imm_alloc || reg_alloc;
+
+  // The immediate's vtype: zimm is instruction bits 30:20 (vsetvli) or 29:20
+  // (vsetivli); alloc_imm holds bits 31:20.
+  logic [10:0] zimm;
+  logic [2:0] zsew, zlmul;
+  logic zill;
+  logic [8:0] imm_vtype;
+  assign zimm = (alloc_op == riscv_pkg::VSETIVLI) ? {1'b0, alloc_imm[9:0]} : alloc_imm[10:0];
+  assign zsew = zimm[5:3];
+  assign zlmul = zimm[2:0];
+  assign zill = (zimm[10:8] != 3'd0) || (zlmul == 3'b100) || (zsew > 3'd3) ||
+      ((zlmul == 3'b101) && (zsew > 3'd0)) || ((zlmul == 3'b110) && (zsew > 3'd1)) ||
+      ((zlmul == 3'b111) && (zsew > 3'd2));
+  assign imm_vtype = zill ? 9'h100 : {1'b0, zimm[7:0]};
+
+  // busy_q[i]: i + 1 cycles ago a reset, a configuration allocation or the
+  // in-flight indication. quiet: none in the last three cycles, and no
+  // configuration instruction is in flight now.
+  logic [2:0] busy_q;
+  logic quiet;
+  assign quiet = (busy_q == 3'd0) && !cfg_pending;
+
+  // The next {valid, vtype} of an allocation; the vtype matters only when valid
+  logic alloc_valid_n;
+  logic [8:0] alloc_vtype_n;
+  assign alloc_valid_n = imm_op || ((alloc_op != riscv_pkg::VSETVL) && (valid || quiet));
+  assign alloc_vtype_n = imm_op ? imm_vtype : valid ? vtype : arch_type;
+
+  // The previous cycle; past_q: it was at or after the first reset
+  logic past_q = 1'b0;
+  logic valid_q, alloc_q, restore_q, imm_alloc_q, reg_alloc_q, quiet_q;
+  logic kept_q, reg_wait_q, cleared_q, watch_restore_q;
+  logic [8:0] vtype_q, arch_type_q, imm_vtype_q;
+  logic [9:0] watch_ckpt_q;  // {valid, vtype} saved in checkpoint watch_id
+  // reg_seen_q: a vsetvl allocated and the vtype has not become known since;
+  // reg_wait_q: so in the previous cycle, with no vsetvli/vsetivli or restore
+  logic reg_seen_q;
+  always_ff @(posedge i_clk) begin
+    busy_q <= {busy_q[1:0], rst || cfg_alloc || cfg_pending};
+    if (save && (save_id == watch_id)) watch_ckpt_q <= {alloc_valid_n, alloc_vtype_n};
+    past_q <= seen_reset || rst;
+    valid_q <= valid;
+    vtype_q <= vtype;
+    arch_type_q <= arch_type;
+    imm_vtype_q <= imm_vtype;
+    alloc_q <= alloc;
+    restore_q <= restore;
+    imm_alloc_q <= imm_alloc;
+    reg_alloc_q <= reg_alloc;
+    quiet_q <= quiet;
+    // No reset, flush, restore, CSR retirement or configuration allocation
+    kept_q <= !(rst || flush_all || restore || arch_reload || cfg_alloc);
+    cleared_q <= rst || flush_all || (arch_reload && !restore);
+    watch_restore_q <= restore && (restore_id == watch_id);
+    if (rst || flush_all) reg_seen_q <= 1'b0;
+    else if (reg_alloc) reg_seen_q <= 1'b1;
+    else if (!valid_q && valid) reg_seen_q <= 1'b0;
+    reg_wait_q <= reg_seen_q && !valid && !imm_alloc && !restore;
+  end
+
+  always_comb begin
+    if (past_q) begin
+      if (valid_q && !alloc_q && !restore_q && valid)
+        p_known_vtype_stable : assert (vtype == vtype_q);
+      if (valid_q && kept_q) p_known_vtype_kept : assert (valid && (vtype == vtype_q));
+      if (imm_alloc_q) p_imm_config_installs_vtype : assert (valid && (vtype == imm_vtype_q));
+      if (reg_alloc_q) p_reg_config_makes_vtype_unknown : assert (!valid);
+      if (cleared_q) p_vtype_unknown_after_flush_or_csr : assert (!valid);
+      if (!valid_q && valid && !imm_alloc_q && !restore_q)
+        p_vtype_reloads_quiet_csr : assert (quiet_q && (vtype == arch_type_q));
+      if (!valid_q && quiet_q && kept_q)
+        p_vtype_reloads_when_quiet : assert (valid && (vtype == arch_type_q));
+      if (watch_restore_q)
+        p_vtype_restores_checkpoint :
+        assert ((valid == watch_ckpt_q[9]) && (!valid || (vtype == watch_ckpt_q[8:0])));
+      c_vtype_stable : cover (valid_q && !alloc_q && !restore_q && valid);
+      c_imm_legal : cover (imm_alloc_q && valid && !vtype[8]);
+      c_imm_vill : cover (imm_alloc_q && valid && vtype[8]);
+      c_reg_config_reload : cover (reg_wait_q && valid && (vtype != vtype_q));
+      c_restore_known : cover (watch_restore_q && !valid_q && valid);
     end
   end
 endmodule

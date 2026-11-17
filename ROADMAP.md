@@ -337,11 +337,6 @@ Open: a few primitive blocks in the load queue, the Tomasulo wrapper, the
 branch prediction controller and the SoC top have no comparison yet;
 `NOT_COVERED` in `tests/test_prim_twins.py` gives the reason for each.
 
-Open: the vector configuration tracker's predicted `vtype` has no registered
-proof; its unit bench checks it. Planned: a stability property and allocation
-properties in `vec_vtype_tracker.sby`, and a simulation check at commit that
-the predicted `vtype` equals the CSR file's.
-
 ## ASIC-ready RTL
 
 The RTL is portable: Xilinx primitives sit behind `FROST_XILINX_PRIMS`, and

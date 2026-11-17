@@ -1069,7 +1069,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "vec_vtype_tracker.sby",
         "Surviving vector-memory allocation clears restart state across delayed "
-        "architectural reload and checkpoint recovery",
+        "architectural reload and checkpoint recovery; the tracked vtype follows "
+        "configuration allocation, flush, reload and restore",
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(

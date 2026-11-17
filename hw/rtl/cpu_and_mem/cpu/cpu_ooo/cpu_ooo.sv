@@ -5743,6 +5743,36 @@ module cpu_ooo #(
         end
       end
     end
+    // The tracker's vtype at the allocation of each vector arithmetic,
+    // arithmetic-with-scalar and vector-to-scalar instruction, by ROB tag. It
+    // must be known and equal the CSR file's vtype when the instruction
+    // retires on the registered commit bus, where the unit takes vector
+    // arithmetic's vtype. A vector-to-scalar instruction reads vtype at the
+    // head, and it cannot change before that instruction retires. (An
+    // instruction that traps does not retire.) Every allocation of a tag
+    // rewrites its flag, as in the unit, and these instructions never retire
+    // in slot 2.
+    logic [riscv_pkg::ReorderBufferDepth-1:0] vtype_check_q;
+    logic [9:0] vtype_at_alloc_q[riscv_pkg::ReorderBufferDepth];  // {valid, vtype}
+    always_ff @(posedge i_clk) begin
+      if (vec_alloc)
+        vtype_at_alloc_q[rob_alloc_resp.alloc_tag] <= {vec_tracker_valid, vec_vtype_spec};
+      if (i_rst) begin
+        vtype_check_q <= '0;
+      end else begin
+        if (vec_alloc)
+          vtype_check_q[rob_alloc_resp.alloc_tag] <= vec_alloc_is_varith || vec_alloc_is_vtox;
+        if (rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready)
+          vtype_check_q[rob_alloc_resp_2.alloc_tag] <= 1'b0;
+      end
+      if (reset_seen_q && !i_rst) begin
+        if (rob_commit.valid && vtype_check_q[rob_commit.tag])
+          p_vec_vtype_prediction_at_commit :
+          assert (vtype_at_alloc_q[rob_commit.tag] == {1'b1, csr_vec_vtype});
+        if (rob_commit_2.valid)
+          p_vec_vtype_checked_in_slot_1 : assert (!vtype_check_q[rob_commit_2.tag]);
+      end
+    end
 `endif
   end else begin : gen_no_vector_unit
     assign vec_vmt_view = '0;

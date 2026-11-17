@@ -112,20 +112,33 @@ VALID_APPS = [
     "uart_echo",
     "umode_test",
     "vec_arith_test",
+    "vec_integer_test",
     "vec_mem_test",
+    "vec_order_test",
+    "vec_source_eew_test",
     "vec_vsetvl_test",
+    "vec_vstart_reload_test",
+    "vec_vtype_handoff_test",
     "vm_test",
 ]
 
 # The vector test programs need the vector unit and misaligned_test the
 # misaligned-access engine (MISALIGNED_HW), which only the X3 build has.
+# vec_integer_test, vec_source_eew_test, vec_vstart_reload_test and
+# vec_vtype_handoff_test also check the vector length they are built for:
+# VEC_VLEN, 256 by default, the X3 build's VLEN.
 BOARD_SPECIFIC_APPS = {
     "bootrom": frozenset({"vcu118"}),
     "misaligned_test": frozenset({"x3"}),
     "nic_bench": frozenset({"vcu118"}),
     "vec_arith_test": frozenset({"x3"}),
+    "vec_integer_test": frozenset({"x3"}),
     "vec_mem_test": frozenset({"x3"}),
+    "vec_order_test": frozenset({"x3"}),
+    "vec_source_eew_test": frozenset({"x3"}),
     "vec_vsetvl_test": frozenset({"x3"}),
+    "vec_vstart_reload_test": frozenset({"x3"}),
+    "vec_vtype_handoff_test": frozenset({"x3"}),
 }
 
 # Clock frequency in Hz; CoreMark iterations target about 10 seconds.
@@ -228,6 +241,8 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "store_fill_bench",
     "tick_torture",
     "vec_mem_test",
+    "vec_order_test",
+    "vec_vstart_reload_test",
 }
 
 
