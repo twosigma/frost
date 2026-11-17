@@ -22,6 +22,7 @@ live in the RTL (under `ifdef FORMAL` or a proof define) or in the harnesses
 in formal/.
 """
 
+import difflib
 import re
 import subprocess
 import sys
@@ -267,6 +268,7 @@ FORMAL_TARGETS = [
         tasks=(
             "coh_hart_maint_prove",
             "coh_hart_maint_owned_prove",
+            "coh_hart_maint_owned_reset_prove",
             "coh_hart_maint_cover",
             "coh_hart_maint_four_bmc",
             "coh_hart_maint_four_cover",
@@ -2496,6 +2498,10 @@ SBY_TASKS = [
         "Independent image, fill and walker invariants plus 21 maintenance checks by induction.",
     ),
     (
+        "coh_hart_maint_owned_reset_prove",
+        "The same induction from the state after the reset cycle, every other register free.",
+    ),
+    (
         "coh_hart_maint_cover",
         "Discard, PutM absorption, old fills and delayed completions.",
     ),
@@ -3961,6 +3967,1975 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
     return sections
 
 
+# SymbiYosys gives a register without an initial value its free starting value
+# only after a task's whole script, in its preparation step (formalff -setundef
+# -clk2ff -ff2anyinit), and there also turns undefined constants and undriven
+# nets into free inputs (setundef -undriven -anyseq). Until then a pass that
+# treats an undefined value as a don't-care can change the model: opt_dff can
+# fix such a register to the constant it loads, or turn one that never loads
+# into a constant x that each reader resolves on its own; opt_merge can fuse two
+# such registers that share an input; opt_expr and wreduce can resolve an
+# undefined bit differently at each reader; memory_map and the memory passes
+# can turn the words of a memory that is never written into constants; abc
+# reads an undefined bit as 0; and -share_all lets opt_merge fuse free inputs.
+# The proof can then miss behaviors of the hardware or combine values that it
+# cannot produce.
+#
+# So every command of every task's script must match a form in DONT_CARE_SAFE,
+# each with the reason this Yosys's source gives. Apart from the edits a script
+# names itself (connect, delete, chformal and the like), the listed forms keep
+# the unknown starting value of registers and memories and never merge two
+# free inputs. Every other form fails, among them every form known to fix such
+# a value or to merge free inputs; DONT_CARE_REJECTED gives the reason for the
+# forms that registered scripts run, and -share_all fails in any command.
+#
+# No list of forms keeps undefined constants: these passes, which listed forms
+# run, fuse or fix them before SymbiYosys frees them.
+#   opt_muxtree (opt without -fast, prep): a constant-x select reads as 0.
+#   opt_expr (proc, prep, every opt): constant-x bits at the same position of
+#     an $eq or $ne compare equal ($eqx and $nex compare them exactly).
+#   opt_clean (prep, every opt, SymbiYosys's preparation before its setundef):
+#     a wire with a defined initial value that a constant x drives takes that
+#     value.
+#   opt_merge (prep, every opt): identical cells whose inputs hold a constant x
+#     become one.
+#   opt_reduce (opt without -fast, prep): equal output bits of a multiplexer
+#     that drives a memory write enable, constant x included, become one bit,
+#     as do repeated constant-x select bits of a $bmux or $demux.
+#   proc_rom (proc unless -norom, prep): a case of constants becomes a ROM;
+#     after memory_collect (in prep) or memory_map -keepdc its x words, such as
+#     an x default, hold one value for the whole trace, not a free value in
+#     every cycle.
+#   proc_dlatch (proc, prep): in a latch's fan-in, all-x cases are dropped and
+#     an all-x default is replaced by a defined case.
+#   The default techmap: its shift templates run opt_muxtree and opt_expr
+#     -mux_undef, and its $lcu template opt -fast, on the constant inputs of
+#     the cell they map.
+# ROADMAP.md's verification items say what is known of the registered models
+# and what would remove these cases.
+#
+# The checks read each task's script as SymbiYosys selects it and as Yosys runs
+# it: a command after ';', behind a label or inside tee, debug, trace or an
+# included script counts, and an option after '#' does not. In a form, "*"
+# accepts any arguments, "-x" must be given and "[-x]" may be, ":N" is the
+# number of arguments an option takes, "=a|b" lists the values its first
+# argument may take, and "-x*" accepts any option that begins with -x. Other
+# words are selections or names, which every form accepts.
+DONT_CARE_FRONT_END = (
+    "reads sources; the design it builds is the design the proof checks"
+)
+DONT_CARE_UNCHANGED = "changes nothing in the design"
+DONT_CARE_SAFE: dict[str, list[tuple[str, str]]] = {
+    "read": [("*", DONT_CARE_FRONT_END)],
+    "read_verilog": [("*", DONT_CARE_FRONT_END)],
+    "read_slang": [("*", DONT_CARE_FRONT_END)],
+    "verilog_defines": [("*", "sets macros for the readers that follow")],
+    "hierarchy": [
+        ("[-check] [-top:1] [-chparam:2]", "elaborates the hierarchy below the top")
+    ],
+    "chparam": [("-set:2", "elaborates the modules again with the parameters it sets")],
+    "prep": [
+        (
+            "[-top:1] [-flatten]",
+            "runs hierarchy -check, proc, check and flatten (with -flatten), future, "
+            "opt_expr -keepdc, check, opt_clean, opt -noff -keepdc, wreduce -keepdc, "
+            "opt_clean, memory_collect, opt -noff -keepdc -fast, sort, stat and "
+            "check: starting values as in those passes, undefined constants as above",
+        )
+    ],
+    "proc": [
+        (
+            "[-noopt] [-norom]",
+            "lowers processes into cells and registers with the same initial values; "
+            "proc_rom (unless -norom), proc_dlatch and its closing opt_expr -keepdc "
+            "(unless -noopt) act on undefined constants as above",
+        )
+    ],
+    "flatten": [("", "inlines submodules with their initial values")],
+    "opt": [
+        (
+            "-keepdc [-fast] [-noff] [-purge] [-mux_bool]",
+            "runs opt_expr, opt_merge, opt_muxtree, opt_reduce, opt_dff and "
+            "opt_clean (-fast leaves out opt_muxtree and opt_reduce, -noff opt_dff); "
+            "with -keepdc, opt_merge and opt_dff keep registers without a defined "
+            "initial value and opt_expr skips the rewrites that consume undefined "
+            "bits; -mux_bool turns a 0/1 multiplexer into its select; undefined "
+            "constants as above",
+        )
+    ],
+    "opt_expr": [
+        (
+            "-keepdc [-noclkinv] [-mux_bool]",
+            "with -keepdc it skips the rewrites that consume undefined bits "
+            "(opt_expr.cc:2364), except the $eq and $ne case above",
+        )
+    ],
+    "opt_merge": [
+        (
+            "-keepdc",
+            "with -keepdc it merges no register without a defined initial value; it "
+            "never merges memories or free inputs; cells with constant-x inputs as "
+            "above",
+        )
+    ],
+    "opt_dff": [
+        (
+            "-keepdc",
+            "with -keepdc it never fixes a register without a defined initial value "
+            "to a constant",
+        )
+    ],
+    "opt_clean": [
+        ("[-purge]", "removes unused cells and wires, with the init case above")
+    ],
+    "clean": [("[-purge]", "the same pass as opt_clean")],
+    "opt_muxtree": [
+        (
+            "",
+            "removes multiplexer ports that cannot be selected, with the select case above",
+        )
+    ],
+    "wreduce": [
+        ("-keepdc", "with -keepdc it keeps every bit whose value is undefined")
+    ],
+    "memory_map": [
+        (
+            "-keepdc",
+            "with -keepdc a word without a defined initial value becomes a register, "
+            "which SymbiYosys makes free",
+        ),
+        (
+            "-formal [-keepdc]",
+            "implies -keepdc and uses $ff cells for ROMs and asynchronous writes",
+        ),
+    ],
+    "setundef": [
+        (
+            "-anyseq [-undriven]",
+            "gives each undefined bit, and with -undriven each undriven net, its own "
+            "$anyseq, as SymbiYosys's preparation does",
+        )
+    ],
+    "techmap": [
+        (
+            "",
+            "maps cells to gates; its shift and $lcu templates can resolve a constant "
+            "x input, as above",
+        )
+    ],
+    "async2sync": [
+        (
+            "",
+            "turns asynchronous resets, loads and set-reset into synchronous logic "
+            "with the same initial values, writing x where set and reset are both "
+            "active",
+        )
+    ],
+    "dffunmap": [("", "turns enables and synchronous resets into multiplexers")],
+    "formalff": [
+        (
+            "-clk2ff",
+            "turns clocked flip-flops into $ff cells with the same initial values",
+        )
+    ],
+    "chformal": [
+        (
+            f"{mode} [-assert] [-assume] [-cover] [-live] [-fair]",
+            "removes, relabels or lowers the property cells it selects",
+        )
+        for mode in ("-remove", "-assert2assume", "-lower")
+    ],
+    "connect": [
+        ("-set:2 [-nounset] [-nomap]", "connects the nets the script names"),
+        ("-port:3 [-nomap]", "connects the cell port the script names"),
+    ],
+    "delete": [
+        (
+            "[-input] [-output] [-port]",
+            "removes what it selects; what a removed cell drove is left undriven, "
+            "which SymbiYosys makes free",
+        )
+    ],
+    "cutpoint": [("", "drives each cut signal from its own $anyseq")],
+    "expose": [
+        ("-dff -cut", "turns flip-flop outputs into module inputs, which are free")
+    ],
+    "setattr": [
+        (
+            "-set=keep|from_prim:2 [-mod]",
+            "sets an attribute that decides only what may be removed or selected",
+        ),
+        (
+            "-unset=init|keep|keep_hierarchy|dont_touch:1 [-mod]",
+            "removes the attribute; a register without init starts free",
+        ),
+    ],
+    "rename": [("[-top] [-hide]", "renames modules or wires")],
+    "design": [
+        (
+            form,
+            "saves, loads, copies or clears designs without changing a cell",
+        )
+        for form in (
+            "-stash:1",
+            "-save:1",
+            "-load:1",
+            "-reset",
+            "-delete:1",
+            "-copy-from:1 [-as:1]",
+        )
+    ],
+    "equiv_make": [
+        (
+            "",
+            "builds the module that compares two designs; their undriven nets become x",
+        )
+    ],
+    "equiv_status": [("*", DONT_CARE_UNCHANGED)],
+    "debug": [
+        ("-on *", "turns debug messages on and runs nothing, whatever follows"),
+        ("-off *", "turns debug messages off and runs nothing, whatever follows"),
+    ],
+    "select": [("*", "changes only the selection")],
+    "cd": [("*", "changes only the current module")],
+    "check": [("*", DONT_CARE_UNCHANGED)],
+    "log": [("*", DONT_CARE_UNCHANGED)],
+    "echo": [("*", DONT_CARE_UNCHANGED)],
+    "stat": [("*", DONT_CARE_UNCHANGED)],
+    "write_rtlil": [("*", DONT_CARE_UNCHANGED)],
+    "write_json": [("*", DONT_CARE_UNCHANGED)],
+}
+# The other forms of the commands that registered scripts run, and why they are
+# rejected.
+DONT_CARE_REJECTED = {
+    "opt": (
+        "without -keepdc, or with -full, -mux_undef, -undriven or -sat, which resolve "
+        "undefined values, -fine, which also merges equal multiplexer output bits "
+        "with constant x, or -share_all"
+    ),
+    "memory_map": "without -keepdc, an unwritten word without an initial value is x",
+    "memory": (
+        "runs opt_mem, opt_mem_priority, opt_mem_feedback and memory_share, and "
+        "without -nomap a plain memory_map"
+    ),
+    "opt_mem": "reads undefined initial and written data as don't-cares",
+    "opt_mem_priority": "runs inside memory; its source was not read for undefined values",
+    "opt_mem_feedback": "resolves undefined multiplexer inputs",
+    "memory_share": "lets a port's defined initial value win over x, resolves x inputs",
+    "setundef": (
+        "-zero, -one and -random pick values, -anyconst fixes one per trace, -init "
+        "sets initial values"
+    ),
+    "chformal": "-delay adds registers without initial values, -skip adds a counter",
+    "abc": "replaces every undefined bit with 0",
+    "peepopt": "reads the x bits of a constant operand as 0",
+    "sim": "with -w writes simulated values as initial values",
+    "chtype": "changes cell types to whatever the script names",
+    "techmap": "with -map, the map file decides what runs",
+    "sat": "its proof reads an undefined bit as 0 without -enable_undef",
+    "equiv_simple": "its proof reads an undefined bit as 0 without -undef",
+    "equiv_struct": "merges structurally equal cells, free inputs included",
+    "synth": "runs opt, memory and abc without -keepdc",
+}
+# Targets whose scripts run a command outside DONT_CARE_SAFE, each with a
+# one-line reason and, for each group of tasks, the commands outside the list
+# that each of those tasks runs, in the order it runs them. The checks fail
+# when a task runs such a command a further time, drops one, runs them in
+# another order, or moves one to another task, without the entry changing; a
+# pinned command moved only past listed commands keeps its pin. ROADMAP.md's
+# verification items describe the open work.
+DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
+    "axi_cdc": (
+        "not converted: memory_map and opt -full; no setundef",
+        {
+            "prove_aw prove_w prove_b prove_ar prove_r cover": [
+                "memory_map",
+                "opt -full",
+            ],
+        },
+    ),
+    "axi_coherent_bridge": (
+        "the partitions retype their assertions and map them with a file that adds an assumption per assertion and a register starting at 1",
+        {
+            "prove_soc": [
+                "chtype -set axi_coherent_bridge_checked_assert @other",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+            "prove_soc_held": [
+                "chtype -set axi_coherent_bridge_checked_assert @held",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+            "prove_soc8_0": [
+                "chtype -set axi_coherent_bridge_checked_assert @group0",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+            "prove_soc8_1": [
+                "chtype -set axi_coherent_bridge_checked_assert @group1",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+            "prove_soc8_2": [
+                "chtype -set axi_coherent_bridge_checked_assert @group2",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+            "prove_soc8_3": [
+                "chtype -set axi_coherent_bridge_checked_assert @group3",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+            "prove_soc8_4": [
+                "chtype -set axi_coherent_bridge_checked_assert @group4",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+            "prove_soc8_5": [
+                "chtype -set axi_coherent_bridge_checked_assert @group5",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+            "prove_soc8_6": [
+                "chtype -set axi_coherent_bridge_checked_assert @group6",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+            "prove_soc8_7": [
+                "chtype -set axi_coherent_bridge_checked_assert @group7",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+            "prove_soc8_8": [
+                "chtype -set axi_coherent_bridge_checked_assert @group8",
+                "techmap -max_iter 1 -map %assertion_map",
+            ],
+        },
+    ),
+    "backing_btb": (
+        "not converted: memory_map and opt -fast without -keepdc; no setundef",
+        {
+            "bmc bmc_four_way prove prove_four_way cover size_select size_select_four_way": [
+                "memory_map",
+                "opt -fast",
+            ],
+        },
+    ),
+    "branch_prediction_alias": (
+        "not converted: opt -purge; no setundef",
+        {
+            "bmc": ["opt -purge"],
+        },
+    ),
+    "branch_prediction_disable": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc": ["opt"],
+        },
+    ),
+    "branch_predictor_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "bp_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+        },
+    ),
+    "btb_pending_relation": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc bmc_btb_index1 bmc_btb_index3": ["opt"],
+        },
+    ),
+    "btb_tag_compare": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc bmc_small_btb": ["opt"],
+        },
+    ),
+    "cache_flash_valid": (
+        "not converted: memory_map and opt without -keepdc; no setundef",
+        {
+            "bmc_fast bmc_fast_ways1 bmc_hw cover_fast cover_fast_ways1 cover_hw": [
+                "memory_map",
+                "opt",
+            ],
+        },
+    ),
+    "cache_mshr_payload": (
+        "not converted: memory_map and opt without -keepdc; no setundef",
+        {
+            "bmc bmc_mshr8": ["memory_map", "opt"],
+        },
+    ),
+    "cache_way_choice": (
+        "not converted: memory_map and opt without -keepdc; no setundef",
+        {
+            "bmc bmc_ways1 bmc_delayed": ["memory_map", "opt"],
+        },
+    ),
+    "cached_tier_adapter_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "cached_tier_twin cached_tier_unsplit": [
+                "setundef -zero",
+                "setundef -zero",
+                "equiv_simple @blk",
+            ],
+        },
+    ),
+    "cdc_mailbox": (
+        "not converted: opt -fast; no setundef",
+        {
+            "bmc cover": ["opt -fast"],
+        },
+    ),
+    "coherence_dma_ingress": (
+        "not converted: memory_map and opt without -keepdc; no setundef",
+        {
+            "coh_dma_ingress_prove coh_dma_ingress_cover coh_dma_ingress_soc_prove coh_dma_ingress_soc_cover coh_line_client_prove coh_line_client_eight_prove coh_line_client_cover coh_line_client_eight_cover": [
+                "memory_map",
+                "opt",
+            ],
+        },
+    ),
+    "coherence_home": (
+        "not converted: memory_map and opt without -keepdc; no setundef",
+        {
+            "coh_home_control_prove coh_home_control64_prove coh_home_control_partition_prove coh_home_control4_bmc coh_home_control4_ultra_bmc coh_home_fill_cover coh_home_wb_prove coh_home_victim_cover coh_home_error_cover coh_home_prefetch_cover coh_home_dispatch_cover": [
+                "memory_map",
+                "opt",
+            ],
+        },
+    ),
+    "coherence_home_engine": (
+        "not converted: memory_map and opt without -keepdc; no setundef",
+        {
+            "coh_home_engine_prove coh_home_engine64_prove coh_home_engine_cover": [
+                "memory_map",
+                "opt",
+            ],
+        },
+    ),
+    "coherence_home_engine_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "home_engine_twin32 home_engine_twin64 home_engine_twin40": [
+                "setundef -zero",
+                "setundef -zero",
+                "equiv_simple @blk",
+            ],
+        },
+    ),
+    "coherence_home_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "home_twin_small home_twin_four home_twin_addr40": [
+                "setundef -zero",
+                "setundef -zero",
+                "equiv_simple @blk",
+            ],
+        },
+    ),
+    "coherence_l1d": (
+        "converted in its own commit; its conflict tasks cut every flop, then run opt -full and sat",
+        {
+            "coh_l1d_perf_prove coh_l1d_bmc coh_l1d_multi_bmc coh_l1d_stream_bmc coh_l1d_stream_hold_bmc coh_l1d_stream_free_nostore_bmc coh_l1d_stream_free_nostore_hold_bmc coh_l1d_stream_free_bmc coh_l1d_stream_outlier_prove coh_l1d_stream_owned_prove coh_l1d_stream_prove coh_l1d_stream_cover coh_l1d_turn_cover coh_l1d_cover coh_l1d_path_cover coh_l1d_put_select_prove coh_l1d_data_bmc coh_l1d_data1_bmc coh_l1d_data2_bmc coh_l1d_data3_bmc coh_l1d_store_payload_bmc coh_l1d_store_grant_bmc coh_l1d_store_multi_payload_bmc coh_l1d_store_multi_grant_bmc coh_l1d_multi_data0_bmc coh_l1d_multi_data1_bmc coh_l1d_multi_data2_bmc coh_l1d_multi_data3_bmc coh_l1d_ways_data_bmc coh_l1d_answer_bmc coh_l1d_stream_answer_bmc coh_l1d_local_prove coh_l1d_local_multi_prove coh_l1d_local_owned_prove coh_l1d_local_multi_owned_prove coh_l1d_local_ways_owned_prove coh_l1d_local_sector_prove coh_l1d_local_multi_sector_prove coh_l1d_local_ways_sector_prove coh_l1d_local_cover coh_l1d_local_data_bmc coh_l1d_local_hold_bmc coh_l1d_local_control_bmc coh_l1d_local_ways_prove coh_l1d_zero_bmc coh_l1d_zero_multi_bmc coh_l1d_zero_payload_bmc coh_l1d_zero_cover coh_l1d_zero_lookahead_cover coh_l1d_zero_stream_free_bmc coh_l1d_zero_stream_hint_bmc coh_l1d_zero_stream_line_bmc coh_l1d_zero_stream_upper_ep0_bmc coh_l1d_zero_stream_upper_ep1_read_bmc coh_l1d_zero_stream_upper_ep1_store_bmc coh_l1d_zero_stream_upper_ep1_lookahead_bmc coh_l1d_zero_stream_upper_ep1_prefetch_bmc coh_l1d_zero_stream_upper_ep1_rest_bmc coh_l1d_zero_stream_upper_ep2_bmc coh_l1d_zero_progress_cover coh_l1d_zero_stream_bmc coh_l1d_zero_request_cover coh_l1d_full_bmc coh_l1d_full_multi_bmc coh_l1d_full_payload_bmc coh_l1d_full_cover coh_l1d_full_lookahead_cover coh_l1d_withdraw_full_bmc coh_l1d_withdraw_zero_bmc coh_l1d_withdraw_full_payload_bmc coh_l1d_withdraw_zero_payload_bmc coh_l1d_withdraw_full_cover coh_l1d_full_hold_cover coh_l1d_buffer_contract_bmc": [
+                "memory_map",
+                "opt",
+                "opt -fast",
+            ],
+            "coh_l1d_conflict_prove coh_l1d_conflict_multi_prove coh_l1d_conflict_stream_prove": [
+                "memory_map",
+                "opt",
+                "opt -fast",
+                "opt -full",
+                "sat -seq 2 -prove-asserts -verify -timeout 60",
+                "opt -full",
+                "sat -seq 2 -prove-asserts -verify -timeout 60",
+            ],
+        },
+    ),
+    "coherence_l1d_twin": (
+        "plain memory_map until converted together with coherence_l1d; zeroed undefined constants and equiv_simple as in every twin",
+        {
+            "l1d_twin_single l1d_twin_multi l1d_twin_stream": [
+                "memory_map",
+                "setundef -zero",
+                "memory_map",
+                "setundef -zero",
+                "equiv_simple @blk",
+            ],
+        },
+    ),
+    "coherence_l1d_zero_index": (
+        "converted together with coherence_l1d, in its own commit",
+        {
+            "zero_index_prove zero_index_invariants": ["memory_map", "opt"],
+        },
+    ),
+    "coherence_read_capture": (
+        "converted together with coherence_l1d, in its own commit",
+        {
+            "coh_read_capture_prove coh_read_capture_stream_prove coh_idle_select_prove coh_idle_select_stream_prove coh_idle_phase_prove coh_idle_phase_stream_prove coh_read_kind_prove coh_array_reply_prove coh_array_reply4_prove coh_array_reply_uram_prove coh_array_reply4_uram_prove": [
+                "memory_map"
+            ],
+        },
+    ),
+    # With every register starting free, bmc_load_same takes 1,480 s against
+    # 451 s, about 3.5 times as long per frame, also from the state after the
+    # reset cycle, and smtbmc with Boolector checks 38 of its 80 steps in 20
+    # minutes; the long tasks would not fit their limits.
+    "coherence_store_boundary": (
+        "plain memory_map and opt: half its tasks run them before their setundef, the other half have none",
+        {
+            "bmc_four bmc_intervening bmc_load_same bmc_load_other bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_fatal bmc_sc bmc_old": [
+                "memory_map",
+                "opt",
+                "opt -fast",
+            ],
+            "cover_four prove_amo_same_fatal_sticky prove_amo_other_fatal_sticky cover_load cover_amo cover_amo_same cover_amo_other_home cover_sc cover_old cover_edges_same cover_edges_other": [
+                "memory_map",
+                "opt",
+            ],
+        },
+    ),
+    "coherence_store_home": (
+        "peepopt in the BMCs and abc in the compact covers read constant x bits as 0, and the compact covers' opt -fine merges equal multiplexer output bits with constant x",
+        {
+            "bmc_siblings bmc_siblings_second bmc_rows bmc_rows_second bmc_conflict bmc_conflict_second bmc_pressure bmc_pressure_second link_bmc_siblings link_bmc_siblings_second link_bmc_pressure link_bmc_pressure_second": [
+                "peepopt"
+            ],
+            "cover_conflict cover_pressure link_cover_pressure": [
+                "abc",
+                "opt -keepdc -mux_bool -fine",
+            ],
+        },
+    ),
+    # From the state after the reset cycle with every other register free, the
+    # PDR proof of the unbounded pair leaves one assertion unresolved in its
+    # limit.
+    "coherent_hart_cache": (
+        "plain passes in the unbounded pair; the reset-state task retypes $eqx and $nex as $eq and $ne for sim, whose -w gives it its start; the covers zero undefined constants",
+        {
+            "coh_hart_maint_prove coh_hart_maint_owned_prove": [
+                "memory_map",
+                "opt",
+                "opt -fast",
+            ],
+            "coh_hart_maint_owned_reset_prove": [
+                "chtype -map $eqx $eq",
+                "chtype -map $nex $ne",
+                "sim -clock i_clk -n 1 -w",
+            ],
+            "coh_hart_maint_cover coh_hart_maint_four_cover": ["setundef -zero"],
+        },
+    ),
+    "coherent_store_pma_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "store_pma_twin_ddr30 store_pma_twin_ddr31": [
+                "setundef -zero",
+                "setundef -zero",
+                "equiv_simple @blk",
+            ],
+        },
+    ),
+    "control_flow_tracker_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "cft_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+        },
+    ),
+    "csr_file_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "csr_twin csr_twin_vector": [
+                "setundef -zero",
+                "setundef -zero",
+                "equiv_simple @blk",
+            ],
+        },
+    ),
+    "data_mem_request_router_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "router_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+        },
+    ),
+    "dc_fifo": (
+        "not converted: memory_map and opt -full; no setundef",
+        {
+            "prove prove_margin2 cover": ["memory_map", "opt -full"],
+        },
+    ),
+    "decoded_bundle_queue_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "dbq_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+        },
+    ),
+    "dmmu_capture": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc prove cover": ["opt"],
+        },
+    ),
+    "dmmu_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "dmmu_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+        },
+    ),
+    "fetch_pc_mux": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc bmc_integrated bmc_xilinx bmc_integrated_xilinx": ["opt"],
+        },
+    ),
+    "fp_engine_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "fp_engine_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+        },
+    ),
+    "id_stage_kill_equiv": (
+        "in-script equivalence check: undefined constants zeroed, proved by equiv_simple, which reads an undefined bit as 0",
+        {
+            "id_kill_equiv": ["setundef -zero", "setundef -zero", "equiv_simple"],
+        },
+    ),
+    "if_slot2_precompute": (
+        "not converted: plain opt after its setundef",
+        {
+            "if_slot2_precompute_bmc if_slot2_precompute_cover": ["opt"],
+        },
+    ),
+    "immu_bare": (
+        "not converted: opt -purge; no setundef",
+        {
+            "bmc bmc_1g bmc_64g bmc_128g bmc_xlen32 bmc_xlen72": ["opt -purge"],
+        },
+    ),
+    "immu_memo": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc prove": ["opt"],
+        },
+    ),
+    "immu_page_offset": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc prove": ["opt"],
+        },
+    ),
+    "immu_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "immu_twin immu_twin_hold": [
+                "setundef -zero",
+                "setundef -zero",
+                "equiv_simple @blk",
+            ],
+        },
+    ),
+    "line_client_link": (
+        "not converted: memory_map and opt without -keepdc; no setundef",
+        {
+            "line_link0_bmc line_link1_bmc line_link1_four_bmc line_link1_eight_bmc line_link1_cover": [
+                "memory_map",
+                "opt",
+            ],
+        },
+    ),
+    "lq_capture": (
+        "abc -g AND, which reads an undefined bit as 0, after cutpoint has cut every flop",
+        {
+            "coh_lq_capture4_prove coh_lq_capture8_prove coh_lq_capture8_xilinx_prove coh_lq_capture16_prove coh_lq_capture_no_forward_prove coh_lq_capture_no_l0_prove coh_lq_capture_plain_prove": [
+                "abc -g AND"
+            ],
+        },
+    ),
+    "lq_ram_payload": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc bmc_forward bmc_forward_only bmc_core cover": ["opt"],
+        },
+    ),
+    "lq_replace_select": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc4 bmc8 bmc16": ["opt"],
+        },
+    ),
+    "lq_result_valid": (
+        "abc -g AND, which reads an undefined bit as 0, after cutpoint has cut every flop",
+        {
+            "result4_prove result8_prove result8_xilinx_prove result16_prove result_no_forward_prove result_no_l0_prove result_plain_prove": [
+                "abc -g AND"
+            ],
+        },
+    ),
+    "lq_sector_copy": (
+        "not converted: plain opt after its setundef",
+        {
+            "sector_copy_prove sector_copy_xilinx_prove": ["opt"],
+        },
+    ),
+    "mwp_dist_ram": (
+        "not converted: memory_map and opt -fast without -keepdc; no setundef",
+        {
+            "bmc bmc_addr1 bmc_unstaged cover": ["memory_map", "opt -fast"],
+        },
+    ),
+    "nic_dma_front": (
+        "not converted: opt -fast; no setundef",
+        {
+            "bmc cover": ["opt -fast"],
+        },
+    ),
+    "pc_controller_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "pc_controller_twin pc_controller_twin_slot2": [
+                "setundef -zero",
+                "setundef -zero",
+                "equiv_simple @blk",
+            ],
+        },
+    ),
+    "pc_holdoff_cofactor": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc": ["opt"],
+        },
+    ),
+    "pc_holdoff_tag": (
+        "not converted: plain opt after its setundef",
+        {
+            "prove prove_xlen32 prove_xlen72 cover": ["opt"],
+        },
+    ),
+    "pc_pending_capture": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc bmc_integrated": ["opt"],
+        },
+    ),
+    "pc_redirect_catchup_producer": (
+        "not converted: plain opt after its setundef",
+        {
+            "x32 x64 x66": ["opt"],
+        },
+    ),
+    "pc_register_mux": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc bmc_integrated bmc_xilinx bmc_integrated_xilinx": ["opt"],
+        },
+    ),
+    "pc_tage_events": (
+        "not converted: plain opt after its setundef",
+        {
+            "pc_tage_events_prove pc_tage_events_cover": ["opt"],
+        },
+    ),
+    "pd_target_candidate_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "pdt_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+        },
+    ),
+    "ras_checkpoint": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc": ["opt"],
+        },
+    ),
+    "rat_checkpoint_restore": (
+        "not converted: memory_map and opt -full; no setundef",
+        {
+            "prove_int_active prove_int_ckpt_lo prove_int_ckpt_hi prove_fp_active prove_fp_ckpt_lo prove_fp_ckpt_hi cover": [
+                "memory_map",
+                "opt -full",
+            ],
+        },
+    ),
+    "reservation_station_twin": (
+        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        {
+            "rs_twin_indexed": [
+                "setundef -zero",
+                "setundef -zero",
+                "equiv_simple @blk",
+            ],
+        },
+    ),
+    "rob_alloc_lvt": (
+        "not converted: memory_map and opt without -keepdc; no setundef",
+        {
+            "prove": ["memory_map", "opt"],
+        },
+    ),
+    "rob_bypass_control": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc": ["opt"],
+        },
+    ),
+    "rob_control_next": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc": ["opt"],
+        },
+    ),
+    "rob_retire_ready": (
+        "not converted: plain opt after its setundef",
+        {
+            "prove": ["opt"],
+        },
+    ),
+    "rob_retire_stall": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc": ["opt"],
+        },
+    ),
+    "rob_start_cofactor": (
+        "not converted: plain opt after its setundef",
+        {
+            "prove": ["opt"],
+        },
+    ),
+    "rs_divide_gate": (
+        "not converted: plain opt after its setundef",
+        {
+            "prove cover": ["opt"],
+        },
+    ),
+    "rs_indexed_deferred_fold": (
+        "not converted: plain opt after its setundef",
+        {
+            "prove_int prove_mem prove_src3 prove_mul cover_int": ["opt"],
+        },
+    ),
+    "rs_issue_clear": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc bmc4 bmc8 bmc16 bmc32": ["opt"],
+        },
+    ),
+    "rs_issue_tag_banks": (
+        "in-script equivalence check with every flop cut: undefined constants zeroed, equiv_struct merging, and sat and equiv_simple reading x as 0",
+        {
+            "int_equiv int_equiv_prims": [
+                "setundef -zero",
+                "sat -seq 1 -verify -prove entry_cdb_tag[0] i_issue_cdb_tag -prove entry_cdb_tag[5] i_issue_cdb_tag -prove entry_cdb_tag[10] i_issue_cdb_tag -prove entry_cdb_tag[15] i_issue_cdb_tag -prove entry_cdb_2_tag[0] i_issue_cdb_2_tag -prove entry_cdb_2_tag[5] i_issue_cdb_2_tag -prove entry_cdb_2_tag[10] i_issue_cdb_2_tag -prove entry_cdb_2_tag[15] i_issue_cdb_2_tag reservation_station",
+                "setundef -zero",
+                "sat -seq 1 -verify -prove entry_cdb_tag[0] i_issue_cdb_tag -prove entry_cdb_tag[5] i_issue_cdb_tag -prove entry_cdb_tag[10] i_issue_cdb_tag -prove entry_cdb_tag[15] i_issue_cdb_tag -prove entry_cdb_2_tag[0] i_issue_cdb_2_tag -prove entry_cdb_2_tag[5] i_issue_cdb_2_tag -prove entry_cdb_2_tag[10] i_issue_cdb_2_tag -prove entry_cdb_2_tag[15] i_issue_cdb_2_tag reservation_station",
+                "equiv_struct -icells",
+                "equiv_simple",
+            ],
+        },
+    ),
+    "rs_lq_prematch": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc prove": ["opt"],
+        },
+    ),
+    "rs_payload_twin": (
+        "both copies start from the same zero state, as its harness states",
+        {
+            "bmc": ["setundef -zero -init"],
+        },
+    ),
+    "rs_primary_payload": (
+        "not converted: plain opt after its setundef; memory_map and opt and no setundef in prove",
+        {
+            "bmc16 bmc8 bmc4": ["opt"],
+            "prove": ["memory_map", "opt"],
+        },
+    ),
+    "rs_raw_pretag": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc bmc_export bmc_ready_vector": ["opt"],
+        },
+    ),
+    "rs_stage2_payload_equiv": (
+        "not converted: plain opt after its setundef",
+        {
+            "int_prove mul_prove mem_prove fp_prove int_cover": ["opt"],
+        },
+    ),
+    "sq_committed_empty": (
+        "not converted: plain opt after its setundef",
+        {
+            "bmc": ["opt"],
+        },
+    ),
+    "sq_early_sq_copy": (
+        "not converted: plain opt after its setundef in prove_integrated, without one in the others",
+        {
+            "prove prove_integrated cover": ["opt"],
+        },
+    ),
+    "sq_forwarding_unit": (
+        "not converted: opt -fast in one task, which has no setundef",
+        {
+            "tree_equiv": ["opt -fast"],
+        },
+    ),
+    "sq_live_result_select": (
+        "not converted: opt; no setundef",
+        {
+            "prove": ["opt"],
+        },
+    ),
+    "store_queue_twin": (
+        "plain memory_map until converted together with coherence_l1d; zeroed undefined constants and equiv_simple as in every twin",
+        {
+            "sq_twin sq_twin_cpu": [
+                "memory_map",
+                "setundef -zero",
+                "memory_map",
+                "setundef -zero",
+                "equiv_simple @blk",
+            ],
+        },
+    ),
+    "sync_dist_ram_fifo": (
+        "not converted: memory_map and opt -fast without -keepdc; no setundef",
+        {
+            "bmc cover": ["memory_map", "opt -fast"],
+        },
+    ),
+}
+
+
+def sby_task_scripts(sby_path: Path) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """Return each task's [script] lines as SymbiYosys selects them, and the files a script can run."""
+    lines = sby_path.read_text().splitlines()
+    tags: dict[str, set[str]] = {}
+    section = ""
+    for line in lines:
+        if line.startswith("["):
+            section = line.strip()
+        elif section == "[tasks]" and line.strip() and not line.startswith("#"):
+            fields = line.split(":")
+            assert len(fields) <= 2, (sby_path, line)
+            names, task_tags = (
+                (fields[0].split()[:1], fields[0].split()[1:])
+                if len(fields) == 1
+                else (fields[0].split(), fields[1].split())
+            )
+            for name in names:
+                # Pattern task names would select other tasks' tags.
+                assert not set("(?*.[]|)") & set(name), (sby_path, name)
+                tags.setdefault(name, {name}).update(
+                    t for t in task_tags if t != "default"
+                )
+    every_tag = set().union(*tags.values())
+    scripts: dict[str, list[str]] = {}
+    for task, active in (tags or {"": set()}).items():
+        section, in_tasks, in_block, skip_block = "", False, False, False
+        script: list[str] = []
+        for line in lines:
+            # SymbiYosys runs inline Python here, which these checks cannot read.
+            assert not line.startswith("--pycode"), sby_path
+            # The [tasks] section takes no tags.
+            if in_tasks and not line.startswith("["):
+                continue
+            in_tasks = line == "[tasks]"
+            if in_tasks:
+                continue
+            if in_block and line.strip() == "--":
+                in_block = skip_block = False
+                continue
+            skip_line = False
+            # Only one tag, and only at the start of the line: a tag after
+            # leading whitespace keeps the line for every task, and Yosys then
+            # reads the tag as a label.
+            for tag in every_tag:
+                if line.startswith(tag + ":"):
+                    line, match = line[len(tag) + 1 :].lstrip(), tag in active
+                elif line.startswith("~" + tag + ":"):
+                    line, match = line[len(tag) + 2 :].lstrip(), tag not in active
+                else:
+                    continue
+                if line:
+                    skip_line = not match
+                else:
+                    in_block, skip_block, skip_line = True, not match, True
+                break
+            if skip_line or skip_block:
+                continue
+            header = re.fullmatch(r"\s*\[(.*)\]\s*", line)
+            if header:
+                section = "[" + " ".join(header.group(1).split()) + "]"
+            elif section == "[script]":
+                script.append(line.rstrip())
+        scripts[task] = script
+    files: dict[str, str] = {}
+    section = ""
+    body: list[str] = []
+    for line in lines + ["[end]"]:
+        if line.startswith("[") and line.rstrip().endswith("]"):
+            if section.startswith("[file "):
+                files[section[len("[file ") : -1].strip()] = "\n".join(body)
+            section, body = line.strip(), []
+        elif section.startswith("[file "):
+            body.append(line)
+        elif section == "[files]" and line.split() and not line.startswith("#"):
+            words = line.split()
+            source = sby_path.parent / words[-1]
+            if source.suffix == ".ys" and source.is_file():
+                files[words[0] if len(words) > 1 else source.name] = source.read_text()
+    return scripts, files
+
+
+def yosys_token(text: str) -> tuple[str, str]:
+    """Split off the next argument as Yosys's next_token does for commands."""
+    ends = ("", " ", "\t", "\r", "\n")
+    rest = text.lstrip(" \t\r\n")
+    if rest.startswith('"'):
+        for index in range(1, len(rest)):
+            if rest[index] == '"' and rest[index + 1 : index + 2] in ends:
+                return rest[: index + 1], rest[index + 1 :]
+            if rest[index : index + 2] == '";' and rest[index + 2 : index + 3] in ends:
+                return rest[: index + 1] + ";", rest[index + 2 :]
+    match = re.match(r"[^ \t\r\n]*", rest)
+    assert match is not None
+    return match.group(), rest[match.end() :]
+
+
+def yosys_commands(
+    script: list[str], files: dict[str, str], depth: int = 0
+) -> list[list[str]]:
+    """Return the commands a Yosys script runs, as argument lists.
+
+    Follows Yosys: a trailing backslash continues a line, a first word ending in
+    ':' is a label, an argument starting with '#' starts a comment, an argument
+    ending in ';' ends a command (';;' and ';;;' add clean and clean -purge),
+    and tee, debug, trace and script are replaced by the commands they run.
+    """
+    assert depth < 8, "script files include each other"
+    lines = list(script)
+    commands: list[list[str]] = []
+    while lines:
+        line = lines.pop(0)
+        while line.endswith("\\") and lines:
+            line = line[:-1] + lines.pop(0)
+        words = line.split()
+        if (
+            words
+            and not words[0].startswith("#")
+            and len(words[0]) > 1
+            and words[0].endswith(":")
+        ):
+            line = line.lstrip(" \t")[len(words[0]) :]
+        args: list[str] = []
+        token, line = yosys_token(line)
+        while token and not token.startswith("#"):
+            if token.endswith(";"):
+                count = len(token) - len(token.rstrip(";"))
+                if token.rstrip(";"):
+                    args.append(token.rstrip(";"))
+                commands += [
+                    args,
+                    {2: ["clean"], 3: ["clean", "-purge"]}.get(count, []),
+                ]
+                args = []
+            else:
+                args.append(token)
+            token, line = yosys_token(line)
+        commands.append(args)
+    result: list[list[str]] = []
+    for args in commands:
+        while args[:1] in (["tee"], ["trace"]) or (
+            args[:1] == ["debug"] and args[1:2] not in (["-on"], ["-off"])
+        ):
+            index = 1
+            while args[0] == "tee" and index < len(args):
+                if args[index] in ("-o", "-a", "-s"):
+                    index += 2
+                elif args[index] == "-q" or re.match(r"[-+][0-9]", args[index]):
+                    index += 1
+                else:
+                    break
+            args = args[index:]
+        if not args or args[0].startswith(("#", ":")):
+            continue
+        # A shell escape, an option this reader does not know or a script
+        # language would hide the commands that run.
+        assert not args[0].startswith(("!", "-", "+")), args
+        assert args[0] not in ("tcl", "exec", "python"), args
+        if args[0] == "script":
+            assert len(args) in (2, 3) and args[1] in files, args
+            result += yosys_commands(files[args[1]].splitlines(), files, depth + 1)
+        else:
+            result.append(args)
+    return result
+
+
+def dont_care_form_matches(form: str, args: list[str]) -> bool:
+    """Report whether a command's arguments fit one DONT_CARE_SAFE form."""
+    if form == "*":
+        return True
+    options: dict[str, tuple[int, set[str] | None]] = {}
+    required: set[str] = set()
+    prefixes: list[str] = []
+    for item in form.split():
+        optional = item.startswith("[")
+        item = item.strip("[]")
+        if item.endswith("*"):
+            prefixes.append(item[:-1])
+            continue
+        name, _, arity = item.partition(":")
+        name, _, choices = name.partition("=")
+        options[name] = (
+            int(arity or bool(choices)),
+            set(choices.split("|")) if choices else None,
+        )
+        if not optional:
+            required.add(name)
+    seen: set[str] = set()
+    index = 1
+    while index < len(args):
+        arg = args[index]
+        if arg in options:
+            taken, allowed = options[arg]
+            if taken and index + taken >= len(args):
+                return False
+            if allowed is not None and args[index + 1] not in allowed:
+                return False
+            seen.add(arg)
+            index += 1 + taken
+        elif arg.startswith("-") and not any(arg.startswith(p) for p in prefixes):
+            return False
+        else:
+            index += 1
+    return required <= seen
+
+
+def dont_care_safe(args: list[str]) -> bool:
+    """Report whether a command matches a form in DONT_CARE_SAFE."""
+    return "-share_all" not in args and any(
+        dont_care_form_matches(form, args)
+        for form, _ in DONT_CARE_SAFE.get(args[0], [])
+    )
+
+
+def dont_care_optimizations(commands: list[list[str]]) -> list[str]:
+    """Return the commands outside DONT_CARE_SAFE a script runs, in order."""
+    return [" ".join(args) for args in commands if not dont_care_safe(args)]
+
+
+def sby_dont_care_optimizations(sby_path: Path) -> dict[str, list[str]]:
+    """Return each task's commands outside DONT_CARE_SAFE, in the order it runs them."""
+    scripts, files = sby_task_scripts(sby_path)
+    return {
+        task: found
+        for task, script in scripts.items()
+        if (found := dont_care_optimizations(yosys_commands(script, files)))
+    }
+
+
+def dont_care_pins(name: str) -> dict[str, list[str]]:
+    """Return each task's pinned commands from a target's open entry."""
+    pins: dict[str, list[str]] = {}
+    for tasks, commands in DONT_CARE_OPEN.get(name, ("", {}))[1].items():
+        assert commands, (name, tasks)
+        for task in tasks.split():
+            assert task not in pins, (name, task)
+            pins[task] = commands
+    return pins
+
+
+def dont_care_changes(sby_path: Path) -> tuple[list[str], list[str]]:
+    """Return the flagged commands a script runs beyond its open entry, and those it lacks.
+
+    Each task's commands are compared in order with its pinned ones: a command
+    run a further time is added, one dropped is lacking, and a reordered or
+    moved one is both. A file without an entry adds every command it flags. A
+    task named "-" is the one task of a file without a [tasks] section.
+    """
+    found = {
+        task or "-": commands
+        for task, commands in sby_dont_care_optimizations(sby_path).items()
+    }
+    pinned = dont_care_pins(sby_path.stem)
+    added: list[str] = []
+    missing: list[str] = []
+    for task in sorted(found.keys() | pinned.keys()):
+        old, new = pinned.get(task, []), found.get(task, [])
+        matcher = difflib.SequenceMatcher(a=old, b=new, autojunk=False)
+        for tag, start, end, new_start, new_end in matcher.get_opcodes():
+            if tag != "equal":
+                missing += [f"{sby_path.name} {task}: {c}" for c in old[start:end]]
+                added += [
+                    f"{sby_path.name} {task}: {c}" for c in new[new_start:new_end]
+                ]
+    return added, missing
+
+
+def test_scripts_keep_dont_cares() -> None:
+    """No proof script runs a command outside DONT_CARE_SAFE beyond its open entry."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    added: list[str] = []
+    missing: list[str] = []
+    for sby_path in sorted(formal.glob("*.sby")):
+        new, gone = dont_care_changes(sby_path)
+        added += new
+        missing += gone
+    # An added command needs a form in DONT_CARE_SAFE, a converted script, or
+    # its place in the task's open entry.
+    assert not added, added
+    # A pinned command that does not occur in its place is stale: update
+    # DONT_CARE_OPEN.
+    assert not missing, missing
+    assert (
+        sorted(
+            name for name in DONT_CARE_OPEN if not (formal / f"{name}.sby").is_file()
+        )
+        == []
+    )
+
+
+def test_dont_care_classifies_every_command() -> None:
+    """Every command a registered script runs has its forms decided."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    names: dict[str, str] = {}
+    for sby_path in sorted(formal.glob("*.sby")):
+        scripts, files = sby_task_scripts(sby_path)
+        for script in scripts.values():
+            for args in yosys_commands(script, files):
+                names.setdefault(args[0], sby_path.name)
+    unknown = {
+        name: path
+        for name, path in names.items()
+        if name not in DONT_CARE_SAFE and name not in DONT_CARE_REJECTED
+    }
+    assert not unknown, unknown
+    for name, forms in DONT_CARE_SAFE.items():
+        for form, reason in forms:
+            assert reason and "\n" not in reason, name
+            dont_care_form_matches(form, [name])
+
+
+DONT_CARE_NO_STATE = (
+    "select -assert-none t:*ff* t:*FF* t:*latch* t:*LATCH* t:$sr t:$_SR_* t:$mem* "
+    "t:$anyinit t:$fsm"
+)
+DONT_CARE_ARRAY_CUT = (
+    "selection: select -assert-none t:*ff* t:*FF* t:*latch*\n"
+    "selection: setattr -unset init w:*\nselection: delete -output w:*\n"
+    "selection: opt_clean\nselection: opt -keepdc\n"
+)
+# Each case edits a real script. A "flag" edit must make a task run a command
+# that the checks reject beyond its open entry, an "accept" edit must leave
+# every task's rejected commands as they are, a "stale" edit drops a pinned
+# command, which leaves its open entry stale, and a "moved" edit runs a pinned
+# command in another place, which both adds and drops one.
+DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
+    # A command after ';' on a line.
+    (
+        "flag",
+        "vec_vmu",
+        (
+            (
+                "bmc: memory_map -keepdc\nbmc: opt -keepdc\n",
+                "bmc: memory_map -keepdc; opt\n",
+            ),
+        ),
+    ),
+    # -keepdc in a comment.
+    (
+        "flag",
+        "coherence_home_completions",
+        (
+            (
+                "memory_map -keepdc\nopt -keepdc\n",
+                "memory_map -keepdc\nopt # -keepdc after the next measurement\n",
+            ),
+        ),
+    ),
+    # Commands run through tee, debug and trace.
+    (
+        "flag",
+        "coherent_local_atomic",
+        (("memory_map -keepdc\nopt -keepdc\n", "memory_map -keepdc\ntee -q opt\n"),),
+    ),
+    (
+        "flag",
+        "coherent_local_atomic",
+        (
+            (
+                "memory_map -keepdc\nopt -keepdc\n",
+                "memory_map -keepdc\ntee -q -o opt.log +1 opt_expr\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherent_local_atomic",
+        (("memory_map -keepdc\nopt -keepdc\n", "memory_map -keepdc\ndebug opt\n"),),
+    ),
+    (
+        "flag",
+        "coherent_local_atomic",
+        (("memory_map -keepdc\nopt -keepdc\n", "memory_map -keepdc\ntrace opt_dff\n"),),
+    ),
+    # A plain opt after the script's last setundef.
+    (
+        "flag",
+        "coherence_array_equiv",
+        (("setundef -anyseq\nopt_clean\n", "setundef -anyseq\nopt_clean\nopt\n"),),
+    ),
+    # An option that resolves undefined multiplexer inputs, with -keepdc.
+    (
+        "flag",
+        "coherence_array",
+        (
+            (
+                "undefined: opt -fast -keepdc\n",
+                "undefined: opt -fast -keepdc -mux_undef\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherent_local_atomic",
+        (("\nopt -fast -keepdc\n", "\nopt -keepdc -full\n"),),
+    ),
+    # A tag after leading whitespace: the line runs in every task.
+    (
+        "flag",
+        "vec_vmu",
+        (("bmc: opt -keepdc\nbmc: techmap\n", "  bmc: opt\nbmc: techmap\n"),),
+    ),
+    # A second tag on a line is a label.
+    (
+        "flag",
+        "vec_vmu",
+        (("bmc: opt -keepdc\nbmc: techmap\n", "bmc: cover: opt\nbmc: techmap\n"),),
+    ),
+    # A tag block.
+    (
+        "flag",
+        "vec_vmu",
+        (("bmc: opt -keepdc\nbmc: techmap\n", "bmc:\nopt\n--\nbmc: techmap\n"),),
+    ),
+    # synth and memory run plain passes; so does prep -nokeepdc.
+    (
+        "flag",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", "memory_map -keepdc\nsynth -run coarse\n"),),
+    ),
+    ("flag", "coherence_array_plru", (("memory_map -keepdc\n", "memory\n"),)),
+    (
+        "flag",
+        "coherence_array_plru",
+        (
+            (
+                "memory_map -keepdc\n",
+                "memory_map -keepdc\nprep -nokeepdc -top coherence_array_plru_formal\n",
+            ),
+        ),
+    ),
+    # A plain memory_map.
+    ("flag", "coherence_store_home", (("memory_map -keepdc\n", "memory_map\n"),)),
+    # A continued line.
+    (
+        "flag",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", "memory_map -keepdc\nopt \\\n-fast\n"),),
+    ),
+    # A quoted argument hides neither ';' nor what follows it.
+    (
+        "flag",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", 'memory_map -keepdc\nlog "done # ok"; opt\n'),),
+    ),
+    # Options that resolve undefined values after -keepdc, a script file, tee
+    # with several options, a negated tag, wreduce and opt_dff without -keepdc,
+    # -share_all, synth_xilinx and a tag inside a block.
+    (
+        "flag",
+        "coherence_home_completions",
+        (("proof: opt -keepdc\n", "proof: opt -keepdc -undriven\n"),),
+    ),
+    (
+        "flag",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", "memory_map -keepdc; opt -mux_undef -keepdc\n"),),
+    ),
+    (
+        "flag",
+        "vec_vmu",
+        (
+            ("bmc: techmap\n", "bmc: script extra.ys\nbmc: techmap\n"),
+            ("[files]\n", "[file extra.ys]\nopt\n\n[files]\n"),
+        ),
+    ),
+    (
+        "flag",
+        "coherent_local_atomic",
+        (("\nopt -fast -keepdc\n", "\ntee -a t.log -q +2 -s pad opt -fast\n"),),
+    ),
+    ("flag", "vec_vmu", (("bmc: techmap\n", "~bmc: opt\nbmc: techmap\n"),)),
+    (
+        "flag",
+        "coherence_home_array",
+        (("proof: techmap\n", "wreduce\nproof: techmap\n"),),
+    ),
+    (
+        "flag",
+        "coherence_array_equiv",
+        (("techmap\n", "opt_merge -share_all\ntechmap\n"),),
+    ),
+    (
+        "flag",
+        "coherence_array_plru",
+        (
+            (
+                "memory_map -keepdc\n",
+                "synth_xilinx -run begin:coarse\nmemory_map -keepdc\n",
+            ),
+        ),
+    ),
+    ("flag", "coherent_local_atomic", (("\nopt -fast -keepdc\n", "\nopt_dff -sat\n"),)),
+    (
+        "flag",
+        "vec_vmu",
+        (("bmc: techmap\n", "bmc:\n  cover: opt\n--\nbmc: techmap\n"),),
+    ),
+    # Passes that resolve undefined memory words, multiplexer inputs, initial
+    # values or free inputs, and a register added after an assertion that no
+    # state is left.
+    (
+        "flag",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", "memory -nomap\nmemory_map -keepdc\n"),),
+    ),
+    (
+        "flag",
+        "coherence_store_home",
+        (("memory_map -keepdc\n", "opt_mem\nmemory_map -keepdc\n"),),
+    ),
+    (
+        "flag",
+        "coherence_home_array",
+        (("memory_map -keepdc\n", "memory_share\nmemory_map -keepdc\n"),),
+    ),
+    (
+        "flag",
+        "coherent_local_atomic",
+        (("memory_map -keepdc\n", "opt_mem_feedback\nmemory_map -keepdc\n"),),
+    ),
+    (
+        "flag",
+        "coherence_array",
+        (
+            (
+                DONT_CARE_ARRAY_CUT,
+                f"selection: {DONT_CARE_NO_STATE}\nselection: chformal -delay 1\n"
+                "selection: setattr -unset init w:*\nselection: delete -output w:*\n"
+                "selection: opt_clean\nselection: opt -full\n",
+            ),
+        ),
+    ),
+    ("flag", "coherence_array_equiv", (("techmap\n", "techmap\nabc\n"),)),
+    ("flag", "coherence_array_equiv", (("techmap\n", "techmap\nzinit -all\n"),)),
+    (
+        "flag",
+        "vec_vmu",
+        (("bmc: techmap\n", "bmc: setundef -zero -init\nbmc: techmap\n"),),
+    ),
+    (
+        "flag",
+        "coherence_home_completions",
+        (("proof: techmap\n", "fsm\nproof: techmap\n"),),
+    ),
+    (
+        "flag",
+        "coherence_array_equiv",
+        (("techmap\n", "techmap\ndfflegalize -cell $_DFF_P_ 0\n"),),
+    ),
+    # More passes outside the list: -share_all with -keepdc, chformal -skip, a
+    # constant free input, opt_mem_priority inside tee and peepopt.
+    (
+        "flag",
+        "coherence_home_array",
+        (("memory_map -keepdc\n", "memory_map -keepdc\nopt -keepdc -share_all\n"),),
+    ),
+    ("flag", "vec_vmu", (("bmc: techmap\n", "bmc: chformal -skip 1\nbmc: techmap\n"),)),
+    (
+        "flag",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", "memory_map -keepdc\nsetundef -anyconst\n"),),
+    ),
+    (
+        "flag",
+        "coherent_local_atomic",
+        (("memory_map -keepdc\n", "tee -q opt_mem_priority\nmemory_map -keepdc\n"),),
+    ),
+    ("flag", "vec_vmu", (("bmc: techmap\n", "bmc: peepopt\nbmc: techmap\n"),)),
+    # An added task or line in a file with an open entry.
+    (
+        "flag",
+        "coherent_hart_cache",
+        (
+            (
+                "coh_hart_maint_four_cover four covers base\n",
+                "coh_hart_maint_four_cover four covers base\n"
+                "coh_hart_maint_four_plain_bmc four bounded fourbmc base plain\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherence_store_boundary",
+        (("[script]\n", "[script]\nread -formal -sv coherence_pkg.sv\nopt -full\n"),),
+    ),
+    (
+        "flag",
+        "coherent_hart_cache",
+        (
+            (
+                "coh_hart_maint_cover covers base\n",
+                "coh_hart_maint_cover covers base\ncoh_hart_maint_cover2 covers base\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "branch_predictor_twin",
+        (
+            (
+                "setundef -zero\nsetattr -unset init\ndffunmap\n"
+                "# Keep every named net so that registers and signals pair by name.\n"
+                "setattr -set keep 1 w:* w:$* %d\nopt_clean\nrename -top gold\n",
+                "setundef -one\nsetattr -unset init\ndffunmap\n"
+                "# Keep every named net so that registers and signals pair by name.\n"
+                "setattr -set keep 1 w:* w:$* %d\nopt_clean\nrename -top gold\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherence_store_home",
+        (("compact_covers: abc\n", "compact_covers: abc\ncompact_covers: peepopt\n"),),
+    ),
+    ("flag", "rs_payload_twin", (("opt_clean\n", "opt_clean\nabc\n"),)),
+    (
+        "flag",
+        "coherence_l1d",
+        (("[script]\n", "[script]\nread -formal -sv coherence_pkg.sv\nopt -full\n"),),
+    ),
+    # A pinned command that a script drops.
+    ("stale", "coherent_hart_cache", (("covers: setundef -zero\n", ""),)),
+    ("stale", "coherence_store_home", (("bmc: peepopt\n", ""),)),
+    # A pinned command run a further time in the tasks that run it: a plain opt
+    # after the BMCs' setundef, and a plain memory_map after their opt_clean.
+    (
+        "flag",
+        "coherence_store_boundary",
+        (("bmc: setundef -anyseq\n", "bmc: setundef -anyseq\nbmc: opt\n"),),
+    ),
+    (
+        "flag",
+        "coherence_store_boundary",
+        (("bmc: opt_clean\n", "bmc: opt_clean\nbmc: memory_map\n"),),
+    ),
+    # A pinned command moved before another one, or to the other tasks. One
+    # moved only past listed commands keeps its pin.
+    (
+        "moved",
+        "coherence_store_boundary",
+        (("memory_map\nopt\n", "opt\nmemory_map\n"),),
+    ),
+    ("moved", "coherence_store_boundary", (("bmc: opt -fast\n", "~bmc: opt -fast\n"),)),
+    (
+        "accept",
+        "coherence_store_boundary",
+        (
+            (
+                "bmc: opt -fast\nbmc: setundef -anyseq\n",
+                "bmc: setundef -anyseq\nbmc: opt -fast\n",
+            ),
+        ),
+    ),
+    # No assertion exempts a later command: opt -full after an assertion that
+    # no state is left, also with the assertion scoped to one module, and -fine,
+    # which merges equal multiplexer output bits.
+    (
+        "flag",
+        "coherence_array",
+        (
+            (
+                DONT_CARE_ARRAY_CUT,
+                f"selection: {DONT_CARE_NO_STATE}\nselection: setattr -unset init w:*\n"
+                "selection: delete -output w:*\nselection: opt_clean\n"
+                "selection: opt -full\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vmu",
+        (
+            (
+                "bmc: techmap\n",
+                "bmc: select -list -module vec_vmu_formal\n"
+                f"bmc: {DONT_CARE_NO_STATE}\nbmc: opt -full\nbmc: techmap\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vmu",
+        (("bmc: techmap\n", "bmc: opt_expr -keepdc -fine\nbmc: techmap\n"),),
+    ),
+    (
+        "flag",
+        "coherence_array_plru",
+        (("proof: opt -fast -keepdc\n", "proof: opt -fast -keepdc -fine\n"),),
+    ),
+    # Options a listed form does not take: -mux_undef on opt_expr and wreduce,
+    # -ifx on prep, -undef on cutpoint, -delay beside chformal -remove.
+    (
+        "flag",
+        "vec_vmu",
+        (("bmc: techmap\n", "bmc: opt_expr -keepdc -mux_undef\nbmc: techmap\n"),),
+    ),
+    (
+        "flag",
+        "coherence_array_plru",
+        (
+            (
+                "proof: opt -fast -keepdc\n",
+                "proof: wreduce -keepdc -mux_undef\nproof: opt -fast -keepdc\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vmu",
+        (
+            (
+                "prep -top vec_vmu_formal -flatten\n",
+                "prep -top vec_vmu_formal -flatten -ifx\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherence_home_completions",
+        (("memory_map -keepdc\n", "cutpoint -undef t:$dff\nmemory_map -keepdc\n"),),
+    ),
+    (
+        "flag",
+        "coherence_home_completions",
+        (("proof: techmap\n", "chformal -remove -cover -delay 1\nproof: techmap\n"),),
+    ),
+    # An attribute setattr may not set, and commands hidden in debug and tee,
+    # in a script file, behind a label, trace and ';', behind a task's own name
+    # as a tag, behind a negated tag, under another name and in quotes.
+    (
+        "flag",
+        "coherence_array_plru",
+        (
+            (
+                "proof: setundef -anyseq\nopt_clean\n",
+                "proof: setundef -anyseq\nsetattr -set init 1'0 w:*\nopt_clean\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherent_local_atomic",
+        (("\nopt -fast -keepdc\n", "\ndebug tee -q opt -full\n"),),
+    ),
+    (
+        "flag",
+        "vec_vmu",
+        (
+            ("bmc: techmap\n", "bmc: script hide.ys\nbmc: techmap\n"),
+            ("[files]\n", "[file hide.ys]\ntee -q memory -nomap\n\n[files]\n"),
+        ),
+    ),
+    (
+        "flag",
+        "coherence_array_plru",
+        (
+            (
+                "memory_map -keepdc\n",
+                "memory_map -keepdc\nstep: trace opt_clean; opt -purge\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherence_array_plru",
+        (
+            (
+                "proof: techmap\n",
+                "coh_array_plru_port_cover: opt -keepdc -mux_undef\nproof: techmap\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "coherence_home_completions",
+        (("proof: techmap\n", "~plain: memory_map\nproof: techmap\n"),),
+    ),
+    ("flag", "vec_vmu", (("bmc: techmap\n", "bmc: write_ilang x.il\nbmc: techmap\n"),)),
+    ("flag", "vec_vmu", (("bmc: techmap\n", 'bmc: "opt"\nbmc: techmap\n'),)),
+    # opt -full after assertions that leave out a state type, add a selection
+    # to the list, hold in one task only, or come before techmap -map.
+    (
+        "flag",
+        "vec_vmu",
+        (
+            (
+                "bmc: techmap\n",
+                f"bmc: {DONT_CARE_NO_STATE.replace('t:$mem*', 't:$mem')}\n"
+                "bmc: opt -full\nbmc: techmap\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vmu",
+        (
+            (
+                "bmc: techmap\n",
+                f"bmc: {DONT_CARE_NO_STATE} %u\nbmc: opt -full\nbmc: techmap\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vmu",
+        (
+            (
+                "bmc: techmap\n",
+                f"bmc: techmap\ncover: {DONT_CARE_NO_STATE}\nopt -full\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "vec_vmu",
+        (
+            (
+                "bmc: techmap\n",
+                f"bmc: {DONT_CARE_NO_STATE}\nbmc: techmap -map +/techmap.v\n"
+                "bmc: opt -full\nbmc: techmap\n",
+            ),
+        ),
+    ),
+    # A further command in pinned tasks of a file with an open entry.
+    (
+        "flag",
+        "coherent_hart_cache",
+        (("covers: setundef -zero\n", "covers: setundef -zero\ncovers: opt -full\n"),),
+    ),
+    # Sound edits: options in another order, tee around a listed form, debug
+    # -on with words after it (Yosys then runs nothing), ';;' and clean -purge,
+    # memory_map -keepdc -formal and setattr -unset init.
+    (
+        "accept",
+        "coherence_array_plru",
+        (("proof: opt -fast -keepdc\n", "proof: opt -purge -fast -keepdc\n"),),
+    ),
+    (
+        "accept",
+        "coherent_local_atomic",
+        (("\nopt -fast -keepdc\n", "\ntee -q -o t.log opt -keepdc -fast\n"),),
+    ),
+    (
+        "accept",
+        "coherence_home_completions",
+        (
+            (
+                "proof: setundef -undriven -anyseq\n",
+                "proof: setundef -anyseq -undriven\n",
+            ),
+        ),
+    ),
+    (
+        "accept",
+        "coherence_home_completions",
+        (("proof: techmap\n", "chformal -cover -remove c:none\nproof: techmap\n"),),
+    ),
+    (
+        "accept",
+        "vec_vmu",
+        (("bmc: techmap\n", "bmc: debug -on opt -full\nbmc: techmap\n"),),
+    ),
+    (
+        "accept",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", "memory_map -keepdc;;\nclean -purge\n"),),
+    ),
+    (
+        "accept",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", "memory_map -keepdc -formal\n"),),
+    ),
+    (
+        "accept",
+        "coherence_home_completions",
+        (("proof: techmap\n", "setattr -unset init w:*\nproof: techmap\n"),),
+    ),
+    # Sound edits: a continued -keepdc, a comment, a quoted string, debug -on
+    # and a label after leading whitespace.
+    (
+        "accept",
+        "coherence_home_completions",
+        (
+            (
+                "memory_map -keepdc\nopt -keepdc\n",
+                "memory_map -keepdc\nopt -kee\\\npdc\n",
+            ),
+        ),
+    ),
+    (
+        "accept",
+        "coherence_home_completions",
+        (("proof: opt -keepdc\n", "proof: opt -keepdc # -full\n"),),
+    ),
+    (
+        "accept",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", 'memory_map -keepdc\nlog "opt -full; opt"\n'),),
+    ),
+    (
+        "accept",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", "memory_map -keepdc\ndebug -on opt\n"),),
+    ),
+    (
+        "accept",
+        "coherence_array_equiv",
+        (("techmap\n", "  lbl: opt -keepdc\ntechmap\n"),),
+    ),
+    # More forms on the list.
+    (
+        "accept",
+        "coherence_home_completions",
+        (("proof: techmap\n", "setundef -undriven -anyseq\nproof: techmap\n"),),
+    ),
+    (
+        "accept",
+        "coherence_array_plru",
+        (("memory_map -keepdc\n", "memory_map -formal\n"),),
+    ),
+    ("accept", "coherence_array_equiv", (("techmap\n", "cutpoint t:$dff\ntechmap\n"),)),
+    (
+        "accept",
+        "coherence_home_array",
+        (
+            (
+                "memory_map -keepdc\n",
+                "design -save before\ndesign -load before\nmemory_map -keepdc\n",
+            ),
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize("expect,name,edits", DONT_CARE_MUTATIONS)
+def test_dont_care_guard_mutations(
+    tmp_path: Path, expect: str, name: str, edits: tuple[tuple[str, str], ...]
+) -> None:
+    """The guard rejects what a mutation adds outside the list, however it is spelled."""
+    source = Path(__file__).resolve().parents[1] / FORMAL_DIR / f"{name}.sby"
+    text = source.read_text()
+    for old, new in edits:
+        assert text.count(old) == 1, (name, old)
+        text = text.replace(old, new)
+    mutated = tmp_path / source.name
+    mutated.write_text(text)
+    assert dont_care_changes(source) == ([], [])
+    added, missing = dont_care_changes(mutated)
+    if expect == "flag":
+        assert added, edits
+    elif expect == "accept":
+        assert (added, missing) == ([], []), (added, missing)
+    elif expect == "moved":
+        assert added and missing, (added, missing)
+    else:
+        assert missing and not added, (added, missing)
+
+
+def test_dont_care_guard_reads_scripts_as_yosys_does(tmp_path: Path) -> None:
+    """Tags, labels, comments, ';', script files, and assertions exempt nothing."""
+    no_state = "select -assert-none " + " ".join(
+        f"t:{pattern}"
+        for pattern in (
+            "*ff*",
+            "*FF*",
+            "*latch*",
+            "*LATCH*",
+            "$sr",
+            "$_SR_*",
+            "$mem*",
+            "$anyinit",
+            "$fsm",
+        )
+    )
+    sby_path = tmp_path / "tags.sby"
+    sby_path.write_text(
+        "[tasks]\nfirst proof\nsecond covers\nthird:\n\n[script]\nprep -top top\n"
+        "proof: opt;; opt -keepdc # opt\n~proof: tee -q -o opt.log opt -keepdc\n"
+        "covers: script extra.ys\nlog opt\n"
+        f"proof: {no_state}\nproof: opt -full\n"
+        "\n[file extra.ys]\nlabel: opt_expr -keepdc; memory_map -formal\nmemory -nomap\n"
+    )
+    scripts, files = sby_task_scripts(sby_path)
+    assert {
+        task: yosys_commands(script, files) for task, script in scripts.items()
+    } == {
+        "first": [
+            ["prep", "-top", "top"],
+            ["opt"],
+            ["clean"],
+            ["opt", "-keepdc"],
+            ["log", "opt"],
+            no_state.split(),
+            ["opt", "-full"],
+        ],
+        "second": [
+            ["prep", "-top", "top"],
+            ["opt", "-keepdc"],
+            ["opt_expr", "-keepdc"],
+            ["memory_map", "-formal"],
+            ["memory", "-nomap"],
+            ["log", "opt"],
+        ],
+        # A task line in the "name:" form is not a tag block.
+        "third": [["prep", "-top", "top"], ["opt", "-keepdc"], ["log", "opt"]],
+    }
+    # The plain opt and, after the assertion, opt -full; memory -nomap runs
+    # opt_mem and memory_share, which resolve undefined words.
+    assert sby_dont_care_optimizations(sby_path) == {
+        "first": ["opt", "opt -full"],
+        "second": ["memory -nomap"],
+    }
+    # An assertion that no state is left exempts nothing, whatever scope or
+    # selection it has, since undefined constants remain.
+    for prefix in ([], [["cd", "top"]], [["select", "-list", "-module", "sub"]]):
+        assert dont_care_optimizations(
+            [*prefix, no_state.split(), ["opt", "-full"]]
+        ) == ["opt -full"]
+    assert dont_care_optimizations(
+        [no_state.split(), ["chformal", "-delay", "1"], ["opt"]]
+    ) == ["chformal -delay 1", "opt"]
+    # -share_all fuses free inputs, whatever else the command says.
+    assert dont_care_optimizations([["opt", "-keepdc", "-share_all"]]) == [
+        "opt -keepdc -share_all"
+    ]
+    # An open entry pins each task's commands in order.
+    assert dont_care_pins("coherence_store_boundary")["bmc_sc"] == [
+        "memory_map",
+        "opt",
+        "opt -fast",
+    ]
+
+
 def test_store_home_cover_budgets() -> None:
     """Pin cover bounds, engines and the complete task selection."""
     target = next(t for t in FORMAL_TARGETS if t.name == "coherence_store_home")
@@ -4010,9 +5985,9 @@ def test_store_home_cover_budgets() -> None:
             "chformal -assert -remove",
             "setattr -unset keep",
             "techmap",
-            "opt -fast",
+            "opt -fast -keepdc",
             "abc",
-            "opt -full",
+            "opt -keepdc -mux_bool -fine",
             "setundef -undriven -anyseq",
             "select -assert-count 1 t:$check r:FLAVOR=cover %i",
             "select -assert-count 1 t:$check r:FLAVOR=assume %i",
@@ -4072,7 +6047,7 @@ def test_store_home_cover_budgets() -> None:
             )
             positions = [script.index(command) for command in partition]
             assert positions == sorted(positions)
-            assert positions[-1] < script.index("memory_map")
+            assert positions[-1] < script.index("memory_map -keepdc")
             assert script.index("peepopt") < script.index("techmap")
             assert script.index("techmap") < script.index("setundef -anyseq")
             assert "select -assert-none t:$check r:FLAVOR=assume %i" in script
@@ -5506,6 +7481,71 @@ def test_hart_maintenance_lemma_model_matches() -> None:
         altered[side].setdefault(section, []).append(line)
         with pytest.raises(AssertionError):
             validate(*altered)
+    # coh_hart_maint_owned_reset_prove proves the same facts by the same
+    # induction from the state after the reset cycle, which sim computes. sim
+    # treats an undefined enable or synchronous reset as inactive and compares
+    # undefined bits literally in $eqx and $nex, so no opt_dff runs before it
+    # (prep runs opt with -noff), only plain $dff cells reach it, and those
+    # comparisons take their meaning in the proof first.
+    # No task assumes its facts.
+    reset = formal_task_config(
+        "coherent_hart_cache", "coh_hart_maint_owned_reset_prove"
+    )
+    plain_dffs = (
+        "select -assert-none t:$ff t:$dffe t:$adff* t:$aldff* t:$sdff* t:$dffsr* "
+        "t:$dlatch* t:$adlatch t:$sr t:$mem* t:$_*DFF* t:$_*LATCH* t:$_SR_* "
+        "t:$_FF_ t:$anyinit t:$fsm"
+    )
+    pair_model = [line for line in owned["[script]"] if not assertion_command(line)]
+    start = pair_model.index("memory_map")
+    assert pair_model[start : start + 4] == [
+        "memory_map",
+        "opt",
+        "techmap",
+        "opt -fast",
+    ]
+    assert pair_model[start - 2 : start] == [
+        "prep -flatten -top coherent_hart_cache_formal",
+        "check -assert",
+    ]
+    reset_model = (
+        pair_model[:start]
+        + [
+            "memory_map -keepdc",
+            "async2sync",
+            "chtype -map $eqx $eq",
+            "chtype -map $nex $ne",
+            "sim -clock i_clk -n 1 -w",
+            "opt -keepdc",
+            "techmap",
+            "opt -fast -keepdc",
+        ]
+        + pair_model[start + 4 :]
+    )
+
+    def validate_reset(config: dict[str, list[str]]) -> None:
+        assert {key: value for key, value in config.items() if key != "[script]"} == {
+            key: value for key, value in owned.items() if key != "[script]"
+        }
+        script = config["[script]"]
+        assert [
+            line for line in script if assertion_command(line)
+        ] == owned_commands + [plain_dffs]
+        assert [line for line in script if not assertion_command(line)] == reset_model
+
+    validate_reset(reset)
+    for edit in (
+        lambda script: script.insert(script.index("async2sync"), "opt_dff -keepdc"),
+        lambda script: script.remove(plain_dffs),
+        lambda script: script.remove("chtype -map $eqx $eq"),
+        lambda script: script.insert(
+            script.index("async2sync"), "chformal -assert2assume c:*"
+        ),
+    ):
+        changed = {key: list(value) for key, value in reset.items()}
+        edit(changed["[script]"])
+        with pytest.raises(AssertionError):
+            validate_reset(changed)
 
 
 def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:

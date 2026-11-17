@@ -33,7 +33,7 @@ setattr -mod -unset keep_hierarchy *
 flatten
 # The single-tag station does not read its bank inputs.
 delete reservation_station/w:i_issue_cdb_tag_bank reservation_station/w:i_issue_cdb_2_tag_bank
-memory_map
+memory_map -keepdc
 setundef -zero
 setattr -unset init
 dffunmap
@@ -68,7 +68,7 @@ delete -port w:i_issue_cdb_tag_bank w:i_issue_cdb_2_tag_bank
 connect -nounset -set i_issue_cdb_tag_bank i_issue_cdb_tag,i_issue_cdb_tag,i_issue_cdb_tag,i_issue_cdb_tag
 connect -nounset -set i_issue_cdb_2_tag_bank i_issue_cdb_2_tag,i_issue_cdb_2_tag,i_issue_cdb_2_tag,i_issue_cdb_2_tag
 cd ..
-memory_map
+memory_map -keepdc
 setundef -zero
 setattr -unset init
 dffunmap

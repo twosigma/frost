@@ -60,10 +60,10 @@ reservation: prep -flatten -top coherent_local_reservation_formal
 chformal -assert -cover -remove c:*sq_forwarding_unit_inst*
 amo: chformal -cover -remove c:*p_sc_*
 sc: chformal -cover -remove c:*p_amo_*
-memory_map
-opt
+memory_map -keepdc
+opt -keepdc
 techmap
-opt -fast
+opt -fast -keepdc
 setundef -anyseq
 opt_clean
 

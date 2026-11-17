@@ -32,8 +32,8 @@ hierarchy -top lq_result_valid_equiv
 proc -noopt
 setattr -mod -unset keep_hierarchy
 flatten
-opt_expr
-memory_map
+opt_expr -keepdc
+memory_map -keepdc
 cd lq_result_valid_equiv
 delete t:$anyseq
 connect -nounset -set p_alloc dut.alloc_oh
@@ -90,7 +90,7 @@ select -assert-none t:$*ff* t:$*latch* t:$sr t:$mem* a:init
 select -assert-count 3 t:$check r:FLAVOR=assert %i
 check -assert
 techmap
-opt
+opt -keepdc
 setundef -undriven -anyseq
 abc -g AND
 opt_clean

@@ -45,7 +45,7 @@ setundef -undriven -anyseq
 # never writes after reset keeps a free value too.
 delete -output w:*
 opt_clean
-memory_map
+memory_map -keepdc
 opt -fast -noff -keepdc
 select -assert-min 1 t:$*ff*
 cutpoint t:$*ff* t:$*latch*

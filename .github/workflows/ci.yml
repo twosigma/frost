@@ -1620,11 +1620,14 @@ jobs:
             pytest_filter: >-
               _twin or (coh_read_select and xilinx) or rs_issue_tag_ or tage_copy_convergence
             timeout_minutes: 90
-          # The vector CSR state: the vector BMC alone is about forty minutes,
-          # and new vector proofs join it.
+          # The vector CSR state, the vector memory unit and the vtype tracker:
+          # the vector CSR BMC takes forty to fifty minutes, the memory unit's
+          # BMC has a 25-minute limit and the tracker's proofs take seconds;
+          # new vector proofs join them.
           - shard: Vector
-            pytest_filter: csr_file_vector or vec_lmul_legality or vec_vtype_tracker
-            timeout_minutes: 75
+            pytest_filter: >-
+              csr_file_vector or vec_lmul_legality or vec_vmu or vec_vtype_tracker
+            timeout_minutes: 90
           # The line client link proofs, in two jobs: the zero-stage BMC, the
           # two-identity one-stage BMC and the cover take about an hour; the
           # four- and eight-identity BMCs about forty minutes.
@@ -1662,8 +1665,8 @@ jobs:
             pytest_filter: >-
               not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or
               coherence_ or coherent_ or _twin or csr_file_vector or
-              vec_lmul_legality or vec_vtype_tracker or line_client_link or ptw or tlb or imsic or aplic or
-              immu or dmmu or load_queue or lq_ or rs_issue_tag_ or
+              vec_lmul_legality or vec_vmu or vec_vtype_tracker or line_client_link or ptw or
+              tlb or imsic or aplic or immu or dmmu or load_queue or lq_ or rs_issue_tag_ or
               prediction_release or prediction_handoff or if_prediction_walk_past or
               cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
               reservation_station_cover or

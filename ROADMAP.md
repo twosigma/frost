@@ -317,19 +317,63 @@ checking a watched byte through installation and write-back. No free-input
 trace of 40 cycles or fewer reaches the first, and a store-only search found
 none for the second.
 
-Open: the three compact store-home covers optimize their logic before
-undefined values become free inputs, which does not guarantee in general
-that a cover witness is a trace of the unoptimized model. The three were
-confirmed by replaying them on the unoptimized model when they were
-introduced. The replay is planned as a registered check, or the
-optimization would use `opt -keepdc` if that meets the memory budget.
+Open: `coherence_l1d.sby`, `coherence_store_boundary.sby` and the
+unbounded pair of `coherent_hart_cache.sby` run a plain `opt` while their
+registers have no free starting value, which SymbiYosys gives them only
+after the script. A register without an initial value can then be fixed to
+the constant it loads, fused with a register that shares its input, or
+folded to a constant x that each reader resolves separately, which drops
+behaviors from their checks. With every register starting free, the
+store-boundary BMCs take about 3.5 times as long per frame, more than the
+long tasks' limits hold; starting them from the state after the reset
+cycle does not shorten them, because the added state is registers without
+a reset that the load tasks never load, such as the AMO operand and SC
+table registers. A word-level engine is slower still: in twenty minutes
+smtbmc with Boolector checks the sound load BMC's first 38 steps, where
+CaDiCaL checks 75 frames and main's script all 80 in seven minutes. From
+the state after the reset cycle with every other register free, the hart
+maintenance lemma induction passes in about two minutes
+(`coh_hart_maint_owned_reset_prove` keeps that check), but the PDR proof
+that assumes its lemmas leaves one property unresolved in two hours.
+Fifty-four other `.sby` files run such an optimization after their own
+`setundef` or without one, and `coherence_l1d_twin.sby` and
+`store_queue_twin.sby` run a plain `memory_map`. Planned: `-keepdc` in
+those files, re-measured. In every command of every script, the fast check
+of the scripts accepts only Yosys command forms that, apart from edits the
+script names itself, keep the unknown starting value of registers and
+memories and never merge two free inputs, and for each task of a script it
+lists as open it pins every other command, in order. It also pins commands
+that read undefined bits as defined, in twenty-two more files and some of
+those above: the primitive twins and two other equivalence checks zero
+undefined constants and prove with `equiv_simple`, which reads an undefined
+bit as 0; `rs_payload_twin.sby` starts both copies from a zero state; the
+store-home BMCs run `peepopt`, and its compact covers `abc` and
+`opt -fine`, which merges equal multiplexer output bits; the load-queue
+capture checks run `abc` after cutting every flip-flop; and the AXI
+bridge's partitions map their assertions with a file of their own. In
+files named above, the L1D conflict proofs run `opt -full` and `sat` after
+cutting every flip-flop, the hart reset-state task starts from `sim`'s
+state after the reset cycle, and the hart covers zero undefined constants.
 
-Open: thirteen `.sby` files run a plain `opt` before `setundef -anyseq`. A
-register that never loads and has an undefined initial value can then be
-resolved differently at different readers, which could drop behaviors from
-a bounded safety check. Planned: `opt -keepdc` before `setundef` in those
-files, re-measured, and a check of whether any affected register is
-observable.
+Open: no list of forms keeps undefined constants, which SymbiYosys also
+makes free only after the script. Passes inside the forms the check
+accepts fuse or fix them: `opt_muxtree`, `opt_expr`, `opt_clean`,
+`opt_merge` and `opt_reduce` in `opt` and `prep`, `proc_rom` and
+`proc_dlatch` in `proc` and `prep`, and the default `techmap`'s templates
+([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
+each case). A dump of every registered task's model before the first two
+`opt_muxtree` steps of each `opt` without `-fast` and each `prep`, and
+before every other `opt_muxtree`, found no constant-x multiplexer select;
+it did not reach the comparison design that `branch_predictor_twin.sby`
+builds inside its script. That dump cannot see the `opt_expr` and
+`opt_clean` cases where they act. In 17 of 26 sampled models of scripts
+that are not open, identical cells hold constant-x inputs before the first
+`opt_merge`, which makes each such group one cell. No proof result is
+known to change. Opening every script with `proc -norom -noopt` and
+`setundef -anyseq` before its first optimizing pass, with every proof
+rerun, would remove these cases, except `proc_dlatch`, which runs inside
+`proc`, and undefined constants that a later pass such as `async2sync`
+writes.
 
 The FPGA build's hand-instantiated primitives are compared with their
 portable forms by [equivalence checks](formal/README.md#primitive-twins).

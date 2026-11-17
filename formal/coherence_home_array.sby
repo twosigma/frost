@@ -148,10 +148,10 @@ uram: chparam -set CACHE_BYTES 128 -set LINE_BYTES 64 coherence_home_array
 bram: chparam -set ULTRA 0 coherence_home_array
 covers: chparam -set ULTRA 0 coherence_home_array
 prep -top coherence_home_array -flatten
-memory_map
-opt
+memory_map -keepdc
+opt -keepdc
 proof: techmap
-proof: opt
+proof: opt -keepdc
 proof: setundef -undriven -anyseq
 
 [files]
