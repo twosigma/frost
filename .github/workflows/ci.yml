@@ -1463,30 +1463,30 @@ jobs:
               coh_l1d_zero_stream_bmc
             timeout_minutes: 180
           # The four-property zero stream check, with the store queue's hints
-          # held low, has a 165-minute allowance; keep image setup outside that
+          # held low, has a 180-minute allowance; keep image setup outside that
           # solver budget.
           - shard: Coherence L1D zero stream
             pytest_filter: coh_l1d_zero_stream_free_bmc
-            timeout_minutes: 185
+            timeout_minutes: 200
           # The two hinted zero stream BMCs that finish within an hour (the
           # original stream properties and the same-block twin rule) and the two
-          # scheduled full-buffer zero covers: 135 minutes of allowances.
+          # scheduled full-buffer zero covers: 140 minutes of allowances.
           - shard: Coherence L1D zero schedules
             pytest_filter: >-
               coh_l1d_zero_stream_hint_bmc or coh_l1d_zero_stream_line_bmc or
               coh_l1d_zero_progress_cover or coh_l1d_zero_request_cover
             timeout_minutes: 150
           # Upper-sector request exclusion with the store queue's hints free, by
-          # holding endpoint: endpoints 0 and 2 share a job (110 minutes of
+          # holding endpoint: endpoints 0 and 2 share a job (125 minutes of
           # allowances); endpoint 1, whose last frame dominates, has its own
-          # (310 minutes).
+          # (345 minutes).
           - shard: Coherence L1D zero stream, hinted endpoints 0 and 2
             pytest_filter: >-
               coh_l1d_zero_stream_upper_ep0_bmc or coh_l1d_zero_stream_upper_ep2_bmc
-            timeout_minutes: 125
+            timeout_minutes: 135
           - shard: Coherence L1D zero stream, hinted endpoint 1
             pytest_filter: coh_l1d_zero_stream_upper_ep1_bmc
-            timeout_minutes: 325
+            timeout_minutes: 355
           - shard: Coherence L1D full control
             pytest_filter: coh_l1d_full_bmc
             timeout_minutes: 200
@@ -1587,7 +1587,7 @@ jobs:
               coh_hart_maint_prove or coh_hart_maint_owned_prove or
               coh_l1d_stream_bmc or coh_l1d_stream_free_nostore_bmc or
               coh_l1d_stream_outlier_prove
-            timeout_minutes: 330
+            timeout_minutes: 335
           # Every comparison of a block's hand-instantiated primitives with its
           # portable form: the twin targets and the read select's primitive tasks;
           # also the INT_RS issue-tag copy proofs (rs_issue_tag_banks, with its

@@ -63,7 +63,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
-    ("coherence_l1d", "coh_l1d_stream_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_bmc"): 5100,
     ("coherence_l1d", "coh_l1d_stream_hold_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_cover"): 1200,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc"): 3600,
@@ -88,11 +88,11 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
     ("coherence_l1d", "coh_l1d_zero_cover"): 14400,
-    ("coherence_l1d", "coh_l1d_zero_stream_free_bmc"): 9900,
+    ("coherence_l1d", "coh_l1d_zero_stream_free_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_full_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_full_multi_bmc"): 18000,
     ("coherence_l1d", "coh_l1d_zero_payload_bmc"): 5400,
-    ("coherence_l1d", "coh_l1d_full_payload_bmc"): 5400,
+    ("coherence_l1d", "coh_l1d_full_payload_bmc"): 5700,
     ("coherence_l1d", "coh_l1d_full_cover"): 7200,
     ("coherence_l1d", "coh_l1d_full_lookahead_cover"): 7200,
     ("coherence_l1d", "coh_l1d_withdraw_full_bmc"): 10800,
@@ -102,10 +102,10 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_withdraw_full_cover"): 4800,
     ("coherence_l1d", "coh_l1d_full_hold_cover"): 1200,
     ("coherence_l1d", "coh_l1d_buffer_contract_bmc"): 900,
-    ("coherence_l1d", "coh_l1d_zero_stream_line_bmc"): 3300,
-    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep0_bmc"): 5400,
-    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_bmc"): 18600,
-    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep2_bmc"): 1200,
+    ("coherence_l1d", "coh_l1d_zero_stream_line_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep0_bmc"): 6000,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_bmc"): 20700,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep2_bmc"): 1500,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
@@ -113,7 +113,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_boundary", "bmc_intervening"): 14400,
     ("coherence_store_boundary", "bmc_amo_same"): 3300,
     ("coherence_store_boundary", "bmc_amo_other"): 4800,
-    ("coherence_store_boundary", "bmc_sc"): 3600,
+    ("coherence_store_boundary", "bmc_sc"): 6000,
     ("coherence_store_home", "bmc_siblings"): 900,
     ("coherence_store_home", "bmc_siblings_second"): 900,
     ("coherence_store_home", "bmc_rows"): 900,
@@ -4252,11 +4252,11 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         ("bmc", "40", "10800", "abc bmc3 -g"),
         ("multi_bmc", "30", "18000", "abc bmc3 -c"),
         ("payload_bmc", "40", "5400", "abc bmc3 -c"),
-        ("stream_free_bmc", "31", "9900", "abc bmc3 -g"),
-        ("stream_line_bmc", "31", "3300", "abc bmc3 -g"),
-        ("stream_upper_ep0_bmc", "31", "5400", "abc bmc3 -g"),
-        ("stream_upper_ep1_bmc", "31", "18600", "abc bmc3 -g"),
-        ("stream_upper_ep2_bmc", "31", "1200", "abc bmc3 -g"),
+        ("stream_free_bmc", "31", "10800", "abc bmc3 -g"),
+        ("stream_line_bmc", "31", "3600", "abc bmc3 -g"),
+        ("stream_upper_ep0_bmc", "31", "6000", "abc bmc3 -g"),
+        ("stream_upper_ep1_bmc", "31", "20700", "abc bmc3 -g"),
+        ("stream_upper_ep2_bmc", "31", "1500", "abc bmc3 -g"),
     ):
         payload = suffix == "payload_bmc"
         stream = suffix == "stream_free_bmc"
@@ -4383,7 +4383,7 @@ def test_full_line_safety_models_pinned() -> None:
     for task, depth, timeout, engine in (
         ("coh_l1d_full_bmc", "40", "10800", "abc bmc3 -g"),
         ("coh_l1d_full_multi_bmc", "30", "18000", "abc bmc3 -c"),
-        ("coh_l1d_full_payload_bmc", "40", "5400", "abc bmc3 -c"),
+        ("coh_l1d_full_payload_bmc", "40", "5700", "abc bmc3 -c"),
         ("coh_l1d_withdraw_full_bmc", "40", "10800", "abc bmc3 -g"),
         ("coh_l1d_withdraw_zero_bmc", "40", "10800", "abc bmc3 -g"),
         ("coh_l1d_withdraw_full_payload_bmc", "40", "5400", "abc bmc3 -c"),
@@ -4778,10 +4778,11 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
             ] == model
             options = dict(line.split(maxsplit=1) for line in task["[options]"])
             options.setdefault("expect", "PASS")
+            # The scripted control task alone has a longer allowance.
             assert options == {
                 "mode": "bmc",
                 "depth": str(depth),
-                "timeout": "3600",
+                "timeout": "5100" if scripted and role == "bmc" else "3600",
                 "aigsmt": "boolector",
                 "expect": "PASS",
             }
@@ -5116,10 +5117,15 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         assert config.keys() == {"[options]", "[engines]", "[script]", "[files]"}
         options = dict(line.split(maxsplit=1) for line in config["[options]"])
         options.setdefault("expect", "PASS")
+        timeout = {"coh_l1d_stream_bmc": "5100"}.get(task, "3600")
+        if outlier:
+            timeout = "2400"
+        elif bulk:
+            timeout = "10800"
         assert options == {
             "mode": "prove" if outlier else "bmc",
             "depth": depth,
-            "timeout": "2400" if outlier else "10800" if bulk else "3600",
+            "timeout": timeout,
             "aigsmt": "boolector",
             "expect": "PASS",
         }
@@ -5538,7 +5544,7 @@ def test_fatal_frame_validation(
         ("coherent_hart_cache", "coh_hart_maint_prove", 7200),
         ("coherent_hart_cache", "coh_hart_maint_owned_prove", 1200),
         ("coherent_hart_cache", "coh_hart_maint_four_bmc", 7200),
-        ("coherence_l1d", "coh_l1d_stream_bmc", 3600),
+        ("coherence_l1d", "coh_l1d_stream_bmc", 5100),
         ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc", 3600),
         ("coherence_l1d", "coh_l1d_stream_outlier_prove", 2400),
         ("coherence_l1d", "coh_l1d_stream_hold_bmc", 3600),
@@ -5548,7 +5554,7 @@ def test_fatal_frame_validation(
         ("coherence_store_boundary", "bmc_intervening", 14400),
         ("coherence_store_boundary", "bmc_amo_same", 3300),
         ("coherence_store_boundary", "bmc_amo_other", 4800),
-        ("coherence_store_boundary", "bmc_sc", 3600),
+        ("coherence_store_boundary", "bmc_sc", 6000),
         ("coherence_store_home", "bmc_siblings", 900),
         ("coherence_store_home", "bmc_siblings_second", 900),
         ("coherence_store_home", "bmc_rows", 900),

@@ -150,6 +150,9 @@ putselect: timeout 600
 # at the original bounds. No partition assumes facts from another partition.
 # The free BMC with stores shares a job with the four-way hit-port array BMC.
 longbmc: timeout 3600
+# With full-line stores in the model the scripted stream BMC takes about 37
+# minutes; CI runners take up to about 2.2 times as long.
+coh_l1d_stream_bmc: timeout 5100
 streamscript: depth 42
 nostore: depth 24
 bulk: depth 32
@@ -171,9 +174,10 @@ coh_l1d_data2_bmc: timeout 3900
 coh_l1d_data3_bmc: timeout 3900
 coh_l1d_store_payload_bmc: timeout 900
 # The zero and full payload BMCs build the L1D with both twin kinds; they
-# take about 40 minutes on a loaded host.
+# take about 40 minutes on a loaded host. The full-line one took 41 minutes
+# here and gets about 2.2 times that for slower CI runners.
 coh_l1d_zero_payload_bmc: timeout 5400
-coh_l1d_full_payload_bmc: timeout 5400
+coh_l1d_full_payload_bmc: timeout 5700
 coh_l1d_withdraw_zero_payload_bmc: timeout 5400
 coh_l1d_withdraw_full_payload_bmc: timeout 5400
 coh_l1d_store_grant_bmc: timeout 1200
@@ -198,16 +202,18 @@ zstream: depth 31
 # them low narrows the model: the hints change scalar gathering, credit and
 # pairing, and so which records and endpoints are busy around a zero record.
 # The hinted tasks below check each of the four properties with them free.
-# Allow about twice the measured time.
-zstream: timeout 9900
+# CI runners take up to about 2.2 times as long as the measured time; allow
+# 180 minutes.
+zstream: timeout 10800
 zstreamhint: depth 31
 zstreamline: depth 31
-zstreamline: timeout 3300
+zstreamline: timeout 3600
 zstreamupper: depth 31
-# Measured: the endpoint 0, 1 and 2 cases take about 44, 155 and 10 minutes.
-coh_l1d_zero_stream_upper_ep0_bmc: timeout 5400
-coh_l1d_zero_stream_upper_ep1_bmc: timeout 18600
-coh_l1d_zero_stream_upper_ep2_bmc: timeout 1200
+# Measured: the endpoint 0, 1 and 2 cases take about 44, 155 and 10 minutes;
+# each allowance is about 2.2 times that for slower CI runners.
+coh_l1d_zero_stream_upper_ep0_bmc: timeout 6000
+coh_l1d_zero_stream_upper_ep1_bmc: timeout 20700
+coh_l1d_zero_stream_upper_ep2_bmc: timeout 1500
 zprogress: depth 160
 zprogress: timeout 1200
 zprogress: vcd_sim on
