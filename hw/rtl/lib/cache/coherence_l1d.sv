@@ -4289,9 +4289,23 @@ module coherence_l1d #(
 `ifdef ZERO_UPPER_EP
     // One holding endpoint's case of the request exclusion, for proofs that
     // check it endpoint by endpoint: together the cases are the assertion
-    // above.
+    // above. ZERO_UPPER_OP (one operation) or ZERO_UPPER_OP_REST (every
+    // operation but read, store, look-ahead and prefetch) narrows a case to
+    // the cycles with that operation in operation_q; the five parts together
+    // are the endpoint's case.
+`ifdef ZERO_UPPER_OP
+    if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready) &&
+        operation_q == `ZERO_UPPER_OP)
+      p_zero_no_upper_request_ep : assert (!f_zero_upper_request[`ZERO_UPPER_EP]);
+`elsif ZERO_UPPER_OP_REST
+    if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready) &&
+        operation_q != ReadOp && operation_q != StoreOp && operation_q != LookaheadOp &&
+        operation_q != PrefetchOp)
+      p_zero_no_upper_request_ep : assert (!f_zero_upper_request[`ZERO_UPPER_EP]);
+`else
     if (sim_reset_seen_q && !i_rst && |(ep_request_valid & ep_request_ready))
       p_zero_no_upper_request_ep : assert (!f_zero_upper_request[`ZERO_UPPER_EP]);
+`endif
 `endif
   end
   // An upper flag names the record before it as the lower sector of the same

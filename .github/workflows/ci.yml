@@ -1478,15 +1478,15 @@ jobs:
             timeout_minutes: 150
           # Upper-sector request exclusion with the store queue's hints free, by
           # holding endpoint: endpoints 0 and 2 share a job (125 minutes of
-          # allowances); endpoint 1, whose last frame dominates, has its own
-          # (345 minutes).
+          # allowances); endpoint 1's case, split by the operation in
+          # operation_q, has its own (55 minutes).
           - shard: Coherence L1D zero stream, hinted endpoints 0 and 2
             pytest_filter: >-
               coh_l1d_zero_stream_upper_ep0_bmc or coh_l1d_zero_stream_upper_ep2_bmc
             timeout_minutes: 135
           - shard: Coherence L1D zero stream, hinted endpoint 1
-            pytest_filter: coh_l1d_zero_stream_upper_ep1_bmc
-            timeout_minutes: 355
+            pytest_filter: coh_l1d_zero_stream_upper_ep1_
+            timeout_minutes: 65
           - shard: Coherence L1D full control
             pytest_filter: coh_l1d_full_bmc
             timeout_minutes: 200

@@ -63,9 +63,15 @@ coh_l1d_zero_stream_hint_bmc turnstream multi cadical padded zero zstreamhint
 # The two zero request properties on the same model with the hints free: the
 # same-block twin rule in one task, and upper-sector request exclusion in one
 # task per holding endpoint, whose three cases together are the property.
+# Endpoint 1's case is split again by the operation in operation_q when the
+# request is accepted; its five parts together are that case.
 coh_l1d_zero_stream_line_bmc turnstream multi padded zero zstreamline
 coh_l1d_zero_stream_upper_ep0_bmc turnstream multi padded zero zstreamupper upperep0
-coh_l1d_zero_stream_upper_ep1_bmc turnstream multi padded zero zstreamupper upperep1
+coh_l1d_zero_stream_upper_ep1_read_bmc turnstream multi padded zero zstreamupper upperep1read
+coh_l1d_zero_stream_upper_ep1_store_bmc turnstream multi padded zero zstreamupper upperep1store
+coh_l1d_zero_stream_upper_ep1_lookahead_bmc turnstream multi padded zero zstreamupper upperep1lookahead
+coh_l1d_zero_stream_upper_ep1_prefetch_bmc turnstream multi padded zero zstreamupper upperep1prefetch
+coh_l1d_zero_stream_upper_ep1_rest_bmc turnstream multi padded zero zstreamupper upperep1rest
 coh_l1d_zero_stream_upper_ep2_bmc turnstream multi padded zero zstreamupper upperep2
 coh_l1d_zero_progress_cover multi zprogress covermode zero padded wordcover
 coh_l1d_zero_stream_bmc turnstream multi zrequest zero padded
@@ -209,10 +215,16 @@ zstreamhint: depth 31
 zstreamline: depth 31
 zstreamline: timeout 3600
 zstreamupper: depth 31
-# Measured: the endpoint 0, 1 and 2 cases take about 44, 155 and 10 minutes;
-# each allowance is about 2.2 times that for slower CI runners.
+# Measured: the endpoint 0 and 2 cases take about 44 and 10 minutes, and
+# endpoint 1's read, store, look-ahead, prefetch and remaining-operation parts
+# 738, 196, 23, 28 and 21 seconds (155 minutes as one task); each allowance is
+# about 2.2 times that for slower CI runners.
 coh_l1d_zero_stream_upper_ep0_bmc: timeout 6000
-coh_l1d_zero_stream_upper_ep1_bmc: timeout 20700
+coh_l1d_zero_stream_upper_ep1_read_bmc: timeout 1800
+coh_l1d_zero_stream_upper_ep1_store_bmc: timeout 600
+coh_l1d_zero_stream_upper_ep1_lookahead_bmc: timeout 300
+coh_l1d_zero_stream_upper_ep1_prefetch_bmc: timeout 300
+coh_l1d_zero_stream_upper_ep1_rest_bmc: timeout 300
 coh_l1d_zero_stream_upper_ep2_bmc: timeout 1500
 zprogress: depth 160
 zprogress: timeout 1200
@@ -296,7 +308,11 @@ zstream: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d
 zstreamhint: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 zstreamline: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
 upperep0: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=0 coherence_read_payload.sv coherence_l1d.sv
-upperep1: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=1 coherence_read_payload.sv coherence_l1d.sv
+upperep1read: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=1 -D ZERO_UPPER_OP=ReadOp coherence_read_payload.sv coherence_l1d.sv
+upperep1store: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=1 -D ZERO_UPPER_OP=StoreOp coherence_read_payload.sv coherence_l1d.sv
+upperep1lookahead: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=1 -D ZERO_UPPER_OP=LookaheadOp coherence_read_payload.sv coherence_l1d.sv
+upperep1prefetch: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=1 -D ZERO_UPPER_OP=PrefetchOp coherence_read_payload.sv coherence_l1d.sv
+upperep1rest: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=1 -D ZERO_UPPER_OP_REST coherence_read_payload.sv coherence_l1d.sv
 upperep2: read -formal -sv -D ZERO_WRITES -D ZERO_UPPER_EP=2 coherence_read_payload.sv coherence_l1d.sv
 zprogress: read -formal -sv -D ZERO_WRITES -D ZERO_PROGRESS_COVER coherence_read_payload.sv coherence_l1d.sv
 zrequest: read -formal -sv -D ZERO_WRITES -D ZERO_REQUEST_PROOF coherence_read_payload.sv coherence_l1d.sv

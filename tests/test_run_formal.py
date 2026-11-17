@@ -104,7 +104,11 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_buffer_contract_bmc"): 900,
     ("coherence_l1d", "coh_l1d_zero_stream_line_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep0_bmc"): 6000,
-    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_bmc"): 20700,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_read_bmc"): 1800,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_store_bmc"): 600,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_lookahead_bmc"): 300,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_prefetch_bmc"): 300,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_rest_bmc"): 300,
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep2_bmc"): 1500,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
@@ -462,7 +466,11 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_stream_hint_bmc",
             "coh_l1d_zero_stream_line_bmc",
             "coh_l1d_zero_stream_upper_ep0_bmc",
-            "coh_l1d_zero_stream_upper_ep1_bmc",
+            "coh_l1d_zero_stream_upper_ep1_read_bmc",
+            "coh_l1d_zero_stream_upper_ep1_store_bmc",
+            "coh_l1d_zero_stream_upper_ep1_lookahead_bmc",
+            "coh_l1d_zero_stream_upper_ep1_prefetch_bmc",
+            "coh_l1d_zero_stream_upper_ep1_rest_bmc",
             "coh_l1d_zero_stream_upper_ep2_bmc",
             "coh_l1d_zero_progress_cover",
             "coh_l1d_zero_stream_bmc",
@@ -2242,8 +2250,24 @@ SBY_TASKS = [
         "No upper-sector request is accepted while endpoint 0 holds GetMZero through Done, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
     ),
     (
-        "coh_l1d_zero_stream_upper_ep1_bmc",
-        "No upper-sector request is accepted while endpoint 1 holds GetMZero through Done, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
+        "coh_l1d_zero_stream_upper_ep1_read_bmc",
+        "No upper-sector request is accepted while endpoint 1 holds GetMZero through Done and a read is in operation_q, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
+    ),
+    (
+        "coh_l1d_zero_stream_upper_ep1_store_bmc",
+        "No upper-sector request is accepted while endpoint 1 holds GetMZero through Done and a store is in operation_q, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
+    ),
+    (
+        "coh_l1d_zero_stream_upper_ep1_lookahead_bmc",
+        "No upper-sector request is accepted while endpoint 1 holds GetMZero through Done and a look-ahead is in operation_q, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
+    ),
+    (
+        "coh_l1d_zero_stream_upper_ep1_prefetch_bmc",
+        "No upper-sector request is accepted while endpoint 1 holds GetMZero through Done and a prefetch is in operation_q, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
+    ),
+    (
+        "coh_l1d_zero_stream_upper_ep1_rest_bmc",
+        "No upper-sector request is accepted while endpoint 1 holds GetMZero through Done and any other operation is in operation_q, with streaming, cbo.zero writes, full-line stores and the store queue's hints free.",
     ),
     (
         "coh_l1d_zero_stream_upper_ep2_bmc",
@@ -3700,7 +3724,19 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_zero_stream_upper_ep2_bmc": (
             "Coherence L1D zero stream, hinted endpoints 0 and 2"
         ),
-        "coherence_l1d_coh_l1d_zero_stream_upper_ep1_bmc": (
+        "coherence_l1d_coh_l1d_zero_stream_upper_ep1_read_bmc": (
+            "Coherence L1D zero stream, hinted endpoint 1"
+        ),
+        "coherence_l1d_coh_l1d_zero_stream_upper_ep1_store_bmc": (
+            "Coherence L1D zero stream, hinted endpoint 1"
+        ),
+        "coherence_l1d_coh_l1d_zero_stream_upper_ep1_lookahead_bmc": (
+            "Coherence L1D zero stream, hinted endpoint 1"
+        ),
+        "coherence_l1d_coh_l1d_zero_stream_upper_ep1_prefetch_bmc": (
+            "Coherence L1D zero stream, hinted endpoint 1"
+        ),
+        "coherence_l1d_coh_l1d_zero_stream_upper_ep1_rest_bmc": (
             "Coherence L1D zero stream, hinted endpoint 1"
         ),
         "coherence_l1d_coh_l1d_full_bmc": "Coherence L1D full control",
@@ -4237,7 +4273,15 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         "check -assert",
     ]
     # The hinted single-property stream tasks: the same-block twin rule, and
-    # upper-sector request exclusion one holding endpoint at a time.
+    # upper-sector request exclusion one holding endpoint at a time, with
+    # endpoint 1's case split by the operation in operation_q.
+    ep1_parts = {
+        "read": " -D ZERO_UPPER_OP=ReadOp",
+        "store": " -D ZERO_UPPER_OP=StoreOp",
+        "lookahead": " -D ZERO_UPPER_OP=LookaheadOp",
+        "prefetch": " -D ZERO_UPPER_OP=PrefetchOp",
+        "rest": " -D ZERO_UPPER_OP_REST",
+    }
     hinted = {
         "stream_line_bmc": ("c:p_zero_acquire_line", ""),
         **{
@@ -4245,7 +4289,14 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
                 "c:p_zero_no_upper_request_ep",
                 f" -D ZERO_UPPER_EP={ep}",
             )
-            for ep in range(3)
+            for ep in (0, 2)
+        },
+        **{
+            f"stream_upper_ep1_{part}_bmc": (
+                "c:p_zero_no_upper_request_ep",
+                f" -D ZERO_UPPER_EP=1{define}",
+            )
+            for part, define in ep1_parts.items()
         },
     }
     for suffix, depth, timeout, engine in (
@@ -4255,7 +4306,11 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         ("stream_free_bmc", "31", "10800", "abc bmc3 -g"),
         ("stream_line_bmc", "31", "3600", "abc bmc3 -g"),
         ("stream_upper_ep0_bmc", "31", "6000", "abc bmc3 -g"),
-        ("stream_upper_ep1_bmc", "31", "20700", "abc bmc3 -g"),
+        ("stream_upper_ep1_read_bmc", "31", "1800", "abc bmc3 -g"),
+        ("stream_upper_ep1_store_bmc", "31", "600", "abc bmc3 -g"),
+        ("stream_upper_ep1_lookahead_bmc", "31", "300", "abc bmc3 -g"),
+        ("stream_upper_ep1_prefetch_bmc", "31", "300", "abc bmc3 -g"),
+        ("stream_upper_ep1_rest_bmc", "31", "300", "abc bmc3 -g"),
         ("stream_upper_ep2_bmc", "31", "1500", "abc bmc3 -g"),
     ):
         payload = suffix == "payload_bmc"
