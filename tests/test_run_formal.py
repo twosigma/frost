@@ -99,12 +99,12 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_withdraw_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_withdraw_full_payload_bmc"): 5400,
     ("coherence_l1d", "coh_l1d_withdraw_zero_payload_bmc"): 5400,
-    ("coherence_l1d", "coh_l1d_withdraw_full_cover"): 4800,
+    ("coherence_l1d", "coh_l1d_withdraw_full_cover"): 5160,
     ("coherence_l1d", "coh_l1d_full_hold_cover"): 1200,
     ("coherence_l1d", "coh_l1d_buffer_contract_bmc"): 900,
     ("coherence_l1d", "coh_l1d_zero_stream_line_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep0_bmc"): 6000,
-    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_read_bmc"): 1800,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_read_bmc"): 2100,
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_store_bmc"): 600,
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_lookahead_bmc"): 300,
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_prefetch_bmc"): 300,
@@ -4349,9 +4349,10 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         ("multi_bmc", "30", "18000", "abc bmc3 -c"),
         ("payload_bmc", "40", "5400", "abc bmc3 -c"),
         ("stream_free_bmc", "31", "10800", "abc bmc3 -g"),
+        ("stream_hint_bmc", "31", "1200", "abc bmc3 -c"),
         ("stream_line_bmc", "31", "3600", "abc bmc3 -g"),
         ("stream_upper_ep0_bmc", "31", "6000", "abc bmc3 -g"),
-        ("stream_upper_ep1_read_bmc", "31", "1800", "abc bmc3 -g"),
+        ("stream_upper_ep1_read_bmc", "31", "2100", "abc bmc3 -g"),
         ("stream_upper_ep1_store_bmc", "31", "600", "abc bmc3 -g"),
         ("stream_upper_ep1_lookahead_bmc", "31", "300", "abc bmc3 -g"),
         ("stream_upper_ep1_prefetch_bmc", "31", "300", "abc bmc3 -g"),
@@ -4360,7 +4361,8 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
     ):
         payload = suffix == "payload_bmc"
         stream = suffix == "stream_free_bmc"
-        turn = stream or suffix in hinted
+        hint = suffix == "stream_hint_bmc"
+        turn = stream or hint or suffix in hinted
         define = " -D STORE_DATA_PROOF" if payload else ""
         if suffix in hinted:
             define = hinted[suffix][1]
@@ -4368,6 +4370,15 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         properties = stream_properties if stream else control_properties
         if payload:
             properties = payload_properties
+        if hint:
+            # The two original stream properties, with the hints free.
+            check = "c:p_prefetch_not_record c:p_grant_keeps_modified"
+            properties = [
+                f"select -assert-count 2 {check}",
+                f"chformal -assert -remove t:$check r:FLAVOR=assert %i {check} %u %d",
+                "select -assert-count 2 t:$check r:FLAVOR=assert %i",
+                "check -assert",
+            ]
         if suffix in hinted:
             check = hinted[suffix][0]
             properties = [
@@ -4437,6 +4448,88 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
             altered.setdefault(section, []).append(line)
             with pytest.raises(AssertionError):
                 validate(altered)
+
+
+def _zero_upper_tasks() -> dict[str, str]:
+    """Map each upper-sector request exclusion task to its model's read and chparam lines."""
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "formal" / "coherence_l1d.sby").read_text()
+    task_lines = text.split("[tasks]", 1)[1].split("[options]", 1)[0]
+    names = re.findall(
+        r"^(coh_l1d_zero_stream_upper_ep\w+_bmc)\b", task_lines, flags=re.MULTILINE
+    )
+    assert len(names) == len(set(names))
+    result = {}
+    for name in names:
+        script = l1d_task_config(name)["[script]"]
+        reads = [
+            line for line in script if "coherence_l1d.sv" in line and "-D " in line
+        ]
+        assert len(reads) == 1, name
+        result[name] = (
+            reads[0]
+            + " "
+            + " ".join(line for line in script if line.startswith("chparam "))
+        )
+    return result
+
+
+def test_zero_upper_endpoint_one_parts_cover_every_operation() -> None:
+    """Check that endpoint 1's rest part excludes exactly the other parts' operations."""
+    root = Path(__file__).resolve().parents[1]
+    rtl = (root / "hw/rtl/lib/cache/coherence_l1d.sv").read_text()
+    match = re.search(
+        r"`ifdef ZERO_UPPER_OP\n(?P<one>.*?)`elsif ZERO_UPPER_OP_REST\n"
+        r"(?P<rest>.*?)`else\n(?P<all>.*?)`endif\n",
+        rtl,
+        flags=re.DOTALL,
+    )
+    assert match
+    one, rest, everything = (
+        " ".join(match[group].split()) for group in ("one", "rest", "all")
+    )
+    # Every branch checks the same request condition: the one-operation branch
+    # adds a match on the operation and the rest branch one exclusion for each
+    # operation the other parts name.
+    assert one == everything.replace(
+        ") p_zero_no_upper_request_ep",
+        " && operation_q == `ZERO_UPPER_OP) p_zero_no_upper_request_ep",
+        1,
+    )
+    excluded = re.findall(r" && operation_q != (\w+)", rest)
+    assert len(excluded) == len(set(excluded))
+    stripped = rest
+    for name in excluded:
+        stripped = stripped.replace(f" && operation_q != {name}", "", 1)
+    assert stripped == everything
+    parts = {}
+    for name, model in _zero_upper_tasks().items():
+        if "ZERO_UPPER_EP=1" not in model:
+            continue
+        operations = re.findall(r"-D ZERO_UPPER_OP=(\w+)", model)
+        if operations:
+            assert len(operations) == 1, name
+            parts[name] = operations[0]
+        else:
+            assert "-D ZERO_UPPER_OP_REST" in model, name
+            assert name.endswith("_rest_bmc"), name
+    assert len(parts) == 4
+    assert sorted(excluded) == sorted(parts.values())
+
+
+def test_zero_upper_endpoint_tasks_cover_every_endpoint() -> None:
+    """Check that the holding-endpoint tasks name every endpoint index of their model."""
+    endpoints: set[int] = set()
+    sizes: set[int] = set()
+    for name, model in _zero_upper_tasks().items():
+        holders = re.findall(r"-D ZERO_UPPER_EP=(\d+)", model)
+        assert len(holders) == 1, name
+        endpoints.add(int(holders[0]))
+        misses = re.findall(r"-set MISSES (\d+)", model)
+        assert len(misses) == 1, name
+        sizes.add(int(misses[0]))
+    assert len(sizes) == 1
+    assert endpoints == set(range(sizes.pop()))
 
 
 def test_full_line_safety_models_pinned() -> None:

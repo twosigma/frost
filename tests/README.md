@@ -1427,7 +1427,7 @@ Lint and Fast Python Tests jobs locally.
 | --- | --- |
 | Cocotb applications | BRAM and DDR where supported; the three longest CoreMark-PRO workloads run in jobs of their own and the other six share one; the memory-system programs with one register stage between the hart and the cluster memory (`*_link1`) have two shards |
 | Zicboz applications | Basic, page and eviction configurations have separate BRAM/DDR shards. The two 4 MiB cache configurations select their own BRAM or DDR program layout in one additional shard; the clearing benchmark has its own shard |
-| Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke and reset, cache counters over OpenOCD | BRAM only: tier-independent or fixed-layout runs |
+| Cocotb unit benches (two jobs of about equal duration, split by the `cocotb_unit_a` and `cocotb_unit_b` marks), DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke and reset, cache counters over OpenOCD | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 128 GiB, with the Yosys job covering the 1 GiB default |
 | Architecture compliance | BRAM and DDR, in groups of extensions, including CMO's Zicboz `cbo.zero` case in both tiers; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards; only the I B C group in BRAM collects coverage; a fast check compares the workflow's groups with the runner's supported extensions |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
@@ -1436,10 +1436,10 @@ Lint and Fast Python Tests jobs locally.
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the two full-chip synthesis targets [reuse](#reusing-formal-and-synthesis-results) earlier passes |
-| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D zero (control, multi-endpoint, and cover jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
+| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D zero (control, multi-endpoint, and cover jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (five jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue, block proofs and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
-| Coverage | One job merges the coverage of the 25 jobs that contribute to it into a report |
+| Coverage | One job merges the coverage of the 26 jobs that contribute to it into a report |
 
 The software aperture tests also have registry entries for 2, 4, 8, 16,
 and 32 GiB, available through `./scripts/frost.py cocotb <test_name>`.
@@ -1520,6 +1520,7 @@ The pytest markers:
 | --- | --- |
 | `cocotb` | Simulation targets |
 | `cocotb_unit` | Unit benches |
+| `cocotb_unit_a`, `cocotb_unit_b` | The unit benches of CI's first and second unit-test job |
 | `cocotb_real_program` | Application tests |
 | `coremark_pro` | CoreMark-PRO workloads |
 | `synthesis` | Yosys checks |

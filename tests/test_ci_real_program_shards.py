@@ -21,7 +21,14 @@ from pathlib import Path
 import yaml  # type: ignore[import-untyped]
 from _pytest.mark.expression import Expression
 
-from test_run_cocotb import COREMARK_PRO_TESTS, DDR_TIER_EXCLUDE, TEST_REGISTRY
+from test_run_cocotb import (
+    COREMARK_PRO_TESTS,
+    DDR_TIER_EXCLUDE,
+    TEST_REGISTRY,
+    UNIT_TEST_PARAMS,
+    UNIT_TESTS,
+    UNIT_TESTS_IN_JOB_B,
+)
 
 
 def test_registered_programs_have_one_ci_shard() -> None:
@@ -158,3 +165,48 @@ def test_long_programs_have_named_ci_shards() -> None:
         "named shards and exclusions from Runtime and other: "
         f"{unassigned}"
     )
+
+
+def test_every_unit_bench_is_in_exactly_one_unit_job() -> None:
+    """Require each unit bench to select one of the two unit-test CI jobs."""
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    matrix = workflow["jobs"]["test-verilator"]["strategy"]["matrix"]
+    jobs = [
+        job["shard"]
+        for job in matrix["include"]
+        if job["shard"]["name"].startswith("Unit Tests")
+    ]
+    assert [job["name"] for job in jobs] == ["Unit Tests A", "Unit Tests B"]
+    assert not UNIT_TESTS_IN_JOB_B - set(UNIT_TESTS), "stale job B entries"
+    assert len(UNIT_TEST_PARAMS) == len(UNIT_TESTS)
+    selected: dict[str, list[str]] = {}
+    for param in UNIT_TEST_PARAMS:
+        name = str(param.values[0])
+        marks = {"cocotb"} | {mark.name for mark in param.marks}
+        node = f"tests/test_run_cocotb.py::TestUnitTests::test_unit[{name}]"
+
+        def matches_mark(keyword: str, /, **kwargs: str | int | bool | None) -> bool:
+            assert not kwargs
+            return keyword in marks
+
+        def matches_keyword(keyword: str, /, **kwargs: str | int | bool | None) -> bool:
+            assert not kwargs
+            return keyword.casefold() in node.casefold()
+
+        selected[name] = [
+            job["name"]
+            for job in jobs
+            if Expression.compile(job["pytest_mark"]).evaluate(matches_mark)
+            and Expression.compile(job["pytest_filter"]).evaluate(matches_keyword)
+        ]
+    wrong = {name: names for name, names in selected.items() if len(names) != 1}
+    assert not wrong, f"Unit benches must select exactly one job: {wrong}"
+    counts = [
+        sum(job == [n] for job in selected.values())
+        for n in ("Unit Tests A", "Unit Tests B")
+    ]
+    assert min(counts) > 0
+    # The assignment halves the benches by measured time, so neither job may
+    # hold much more than half of them.
+    assert max(counts) <= 0.6 * len(UNIT_TESTS), counts
