@@ -127,3 +127,4 @@
 - Implemented Svnapot 64 KiB NAPOT leaves in the page-table walker, with reserved-encoding checks, Svpbmt alias composition, a directed program, bench cases, formal checks and a TestRIG trace
 - Advertised Ssu64xl in the device tree and boot image, with a TestRIG trace that checks the read-only UXL and SXL fields against Sail
 - Gave each quarter of the integer reservation station's entries its own register copy of the CDB issue tags, with a simulation check, an induction proof that each copy equals its tag and an equivalence proof that the copies leave the station's behavior unchanged from reset
+- Installed fully written 64-byte store blocks without fill through paired `GetMZero` acquisitions and data twins, and overlapped cached plain writes in the store queue with gathering and same-sector combining hints, with their formal checks, benchmarks, and directed tests
