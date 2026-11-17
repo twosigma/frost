@@ -89,7 +89,6 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
     ("coherence_l1d", "coh_l1d_zero_cover"): 14400,
-    ("coherence_l1d", "coh_l1d_zero_stream_free_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_full_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_full_multi_bmc"): 18000,
     ("coherence_l1d", "coh_l1d_zero_payload_bmc"): 5400,
@@ -104,7 +103,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_full_hold_cover"): 1200,
     ("coherence_l1d", "coh_l1d_buffer_contract_bmc"): 900,
     ("coherence_l1d", "coh_l1d_zero_stream_line_bmc"): 3600,
-    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep0_bmc"): 6000,
+    ("coherence_l1d", "coh_l1d_zero_stream_upper_ep0_bmc"): 6120,
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_read_bmc"): 2100,
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_store_bmc"): 600,
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep1_lookahead_bmc"): 300,
@@ -464,7 +463,6 @@ FORMAL_TARGETS = [
             "coh_l1d_zero_payload_bmc",
             "coh_l1d_zero_cover",
             "coh_l1d_zero_lookahead_cover",
-            "coh_l1d_zero_stream_free_bmc",
             "coh_l1d_zero_stream_hint_bmc",
             "coh_l1d_zero_stream_line_bmc",
             "coh_l1d_zero_stream_upper_ep0_bmc",
@@ -2266,10 +2264,6 @@ SBY_TASKS = [
     ),
     ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
     (
-        "coh_l1d_zero_stream_free_bmc",
-        "Stream prefetching, GetMZero twin ownership and upper-sector request exclusion through Done, and Modified-sector grants with cbo.zero writes, full-line stores and three endpoints; the store queue's hints are held low.",
-    ),
-    (
         "coh_l1d_zero_stream_hint_bmc",
         "Stream prefetching and Modified-sector grants with cbo.zero writes, full-line stores and the store queue's hints free.",
     ),
@@ -3768,7 +3762,6 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_zero_bmc": "Coherence L1D zero control",
         "coherence_l1d_coh_l1d_zero_multi_bmc": "Coherence L1D zero multi-endpoint",
         "coherence_l1d_coh_l1d_zero_cover": "Coherence L1D zero cover",
-        "coherence_l1d_coh_l1d_zero_stream_free_bmc": "Coherence L1D zero stream",
         "coherence_l1d_coh_l1d_zero_stream_upper_ep0_bmc": (
             "Coherence L1D zero stream, hinted endpoints 0 and 2"
         ),
@@ -4429,7 +4422,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_l1d": (
         "converted in its own commit; its conflict tasks cut every flop, then run opt -full and sat",
         {
-            "coh_l1d_perf_prove coh_l1d_bmc coh_l1d_multi_bmc coh_l1d_stream_bmc coh_l1d_stream_hold_bmc coh_l1d_stream_free_nostore_bmc coh_l1d_stream_free_nostore_hold_bmc coh_l1d_stream_free_bmc coh_l1d_stream_outlier_prove coh_l1d_stream_owned_prove coh_l1d_stream_prove coh_l1d_stream_cover coh_l1d_turn_cover coh_l1d_cover coh_l1d_path_cover coh_l1d_put_select_prove coh_l1d_data_bmc coh_l1d_data1_bmc coh_l1d_data2_bmc coh_l1d_data3_bmc coh_l1d_store_payload_bmc coh_l1d_store_grant_bmc coh_l1d_store_multi_payload_bmc coh_l1d_store_multi_grant_bmc coh_l1d_multi_data0_bmc coh_l1d_multi_data1_bmc coh_l1d_multi_data2_bmc coh_l1d_multi_data3_bmc coh_l1d_ways_data_bmc coh_l1d_answer_bmc coh_l1d_stream_answer_bmc coh_l1d_local_prove coh_l1d_local_multi_prove coh_l1d_local_owned_prove coh_l1d_local_multi_owned_prove coh_l1d_local_ways_owned_prove coh_l1d_local_sector_prove coh_l1d_local_multi_sector_prove coh_l1d_local_ways_sector_prove coh_l1d_local_cover coh_l1d_local_data_bmc coh_l1d_local_hold_bmc coh_l1d_local_control_bmc coh_l1d_local_ways_prove coh_l1d_zero_bmc coh_l1d_zero_multi_bmc coh_l1d_zero_payload_bmc coh_l1d_zero_cover coh_l1d_zero_lookahead_cover coh_l1d_zero_stream_free_bmc coh_l1d_zero_stream_hint_bmc coh_l1d_zero_stream_line_bmc coh_l1d_zero_stream_upper_ep0_bmc coh_l1d_zero_stream_upper_ep1_read_bmc coh_l1d_zero_stream_upper_ep1_store_bmc coh_l1d_zero_stream_upper_ep1_lookahead_bmc coh_l1d_zero_stream_upper_ep1_prefetch_bmc coh_l1d_zero_stream_upper_ep1_rest_bmc coh_l1d_zero_stream_upper_ep2_bmc coh_l1d_zero_progress_cover coh_l1d_zero_stream_bmc coh_l1d_zero_request_cover coh_l1d_full_bmc coh_l1d_full_multi_bmc coh_l1d_full_payload_bmc coh_l1d_full_cover coh_l1d_full_lookahead_cover coh_l1d_withdraw_full_bmc coh_l1d_withdraw_zero_bmc coh_l1d_withdraw_full_payload_bmc coh_l1d_withdraw_zero_payload_bmc coh_l1d_withdraw_full_cover coh_l1d_full_hold_cover coh_l1d_buffer_contract_bmc": [
+            "coh_l1d_perf_prove coh_l1d_bmc coh_l1d_multi_bmc coh_l1d_stream_bmc coh_l1d_stream_hold_bmc coh_l1d_stream_free_nostore_bmc coh_l1d_stream_free_nostore_hold_bmc coh_l1d_stream_free_bmc coh_l1d_stream_outlier_prove coh_l1d_stream_owned_prove coh_l1d_stream_prove coh_l1d_stream_cover coh_l1d_turn_cover coh_l1d_cover coh_l1d_path_cover coh_l1d_put_select_prove coh_l1d_data_bmc coh_l1d_data1_bmc coh_l1d_data2_bmc coh_l1d_data3_bmc coh_l1d_store_payload_bmc coh_l1d_store_grant_bmc coh_l1d_store_multi_payload_bmc coh_l1d_store_multi_grant_bmc coh_l1d_multi_data0_bmc coh_l1d_multi_data1_bmc coh_l1d_multi_data2_bmc coh_l1d_multi_data3_bmc coh_l1d_ways_data_bmc coh_l1d_answer_bmc coh_l1d_stream_answer_bmc coh_l1d_local_prove coh_l1d_local_multi_prove coh_l1d_local_owned_prove coh_l1d_local_multi_owned_prove coh_l1d_local_ways_owned_prove coh_l1d_local_sector_prove coh_l1d_local_multi_sector_prove coh_l1d_local_ways_sector_prove coh_l1d_local_cover coh_l1d_local_data_bmc coh_l1d_local_hold_bmc coh_l1d_local_control_bmc coh_l1d_local_ways_prove coh_l1d_zero_bmc coh_l1d_zero_multi_bmc coh_l1d_zero_payload_bmc coh_l1d_zero_cover coh_l1d_zero_lookahead_cover coh_l1d_zero_stream_hint_bmc coh_l1d_zero_stream_line_bmc coh_l1d_zero_stream_upper_ep0_bmc coh_l1d_zero_stream_upper_ep1_read_bmc coh_l1d_zero_stream_upper_ep1_store_bmc coh_l1d_zero_stream_upper_ep1_lookahead_bmc coh_l1d_zero_stream_upper_ep1_prefetch_bmc coh_l1d_zero_stream_upper_ep1_rest_bmc coh_l1d_zero_stream_upper_ep2_bmc coh_l1d_zero_progress_cover coh_l1d_zero_stream_bmc coh_l1d_zero_request_cover coh_l1d_full_bmc coh_l1d_full_multi_bmc coh_l1d_full_payload_bmc coh_l1d_full_cover coh_l1d_full_lookahead_cover coh_l1d_withdraw_full_bmc coh_l1d_withdraw_zero_bmc coh_l1d_withdraw_full_payload_bmc coh_l1d_withdraw_zero_payload_bmc coh_l1d_withdraw_full_cover coh_l1d_full_hold_cover coh_l1d_buffer_contract_bmc": [
                 "memory_map",
                 "opt",
                 "opt -fast",
@@ -6281,17 +6274,6 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {data} %u %u %u %u %d",
         "select -assert-count 5 t:$check r:FLAVOR=assert %i",
     ]
-    stream_checks = (
-        "c:p_prefetch_not_record c:p_grant_keeps_modified "
-        "c:p_zero_acquire_line c:p_zero_no_upper_request"
-    )
-    stream_properties = [
-        f"select -assert-count 4 {stream_checks}",
-        "chformal -assert -remove t:$check r:FLAVOR=assert %i "
-        f"{stream_checks} %u %u %u %d",
-        "select -assert-count 4 t:$check r:FLAVOR=assert %i",
-        "check -assert",
-    ]
     # The hinted single-property stream tasks: the same-block twin rule, and
     # upper-sector request exclusion one holding endpoint at a time, with
     # endpoint 1's case split by the operation in operation_q.
@@ -6323,10 +6305,9 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         ("bmc", "40", "10800", "abc bmc3 -g"),
         ("multi_bmc", "30", "18000", "abc bmc3 -c"),
         ("payload_bmc", "40", "5400", "abc bmc3 -c"),
-        ("stream_free_bmc", "31", "10800", "abc bmc3 -g"),
         ("stream_hint_bmc", "31", "1200", "abc bmc3 -c"),
         ("stream_line_bmc", "31", "3600", "abc bmc3 -g"),
-        ("stream_upper_ep0_bmc", "31", "6000", "abc bmc3 -g"),
+        ("stream_upper_ep0_bmc", "31", "6120", "abc bmc3 -c"),
         ("stream_upper_ep1_read_bmc", "31", "2100", "abc bmc3 -g"),
         ("stream_upper_ep1_store_bmc", "31", "600", "abc bmc3 -g"),
         ("stream_upper_ep1_lookahead_bmc", "31", "300", "abc bmc3 -g"),
@@ -6335,14 +6316,13 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         ("stream_upper_ep2_bmc", "31", "1500", "abc bmc3 -g"),
     ):
         payload = suffix == "payload_bmc"
-        stream = suffix == "stream_free_bmc"
         hint = suffix == "stream_hint_bmc"
-        turn = stream or hint or suffix in hinted
+        turn = hint or suffix in hinted
         define = " -D STORE_DATA_PROOF" if payload else ""
         if suffix in hinted:
             define = hinted[suffix][1]
         endpoints = " -set MISSES 3" if turn or suffix == "multi_bmc" else ""
-        properties = stream_properties if stream else control_properties
+        properties = control_properties
         if payload:
             properties = payload_properties
         if hint:
@@ -6373,13 +6353,6 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
             + (["chparam -set STREAM_PREFETCH 1 coherence_l1d"] if turn else [])
             + ["prep -flatten -top coherence_l1d"]
             + properties
-            # The four-property stream model holds the store queue's hints
-            # low; the hinted tasks leave them free.
-            + (
-                ["connect -set i_write_more 1'b0", "connect -set i_next_same 1'b0"]
-                if stream
-                else []
-            )
             + [
                 "memory_map",
                 "opt",
@@ -6407,6 +6380,8 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         for section, line in (
             ("[script]", "connect -set i_address 32'h80000000"),
             ("[script]", "connect -set i_rst 1'b0"),
+            ("[script]", "connect -set i_write_more 1'b0"),
+            ("[script]", "connect -set i_next_same 1'b0"),
             ("[script]", "delete -input w:i_rst"),
             ("[script]", "cutpoint w:phase_q"),
             ("[script]", "chformal -assume -remove"),
@@ -6505,6 +6480,238 @@ def test_zero_upper_endpoint_tasks_cover_every_endpoint() -> None:
         sizes.add(int(misses[0]))
     assert len(sizes) == 1
     assert endpoints == set(range(sizes.pop()))
+
+
+# The zero stream model: three endpoints with stream prefetching, cbo.zero
+# writes and full-line stores, and its four properties.
+ZERO_STREAM_PROPERTIES = (
+    "p_prefetch_not_record",
+    "p_grant_keeps_modified",
+    "p_zero_acquire_line",
+    "p_zero_no_upper_request",
+)
+ZERO_STREAM_ENDPOINTS = 3
+# The upper-request case macros: the holding endpoint, optionally narrowed to
+# one operation in operation_q or to the operations no one-operation case names.
+_ZERO_UPPER_CASE_DEFINE = re.compile(r" -D ZERO_UPPER_(?:EP=\d+|OP=\w+|OP_REST)\b")
+
+
+def zero_stream_selection(names: list[str]) -> list[str]:
+    """Return the script lines that keep exactly the named assertions."""
+    kept = " ".join(f"c:{name}" for name in names)
+    unions = " %u" * (len(names) - 1)
+    return [
+        f"select -assert-count {len(names)} {kept}",
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {kept}{unions} %d",
+        f"select -assert-count {len(names)} t:$check r:FLAVOR=assert %i",
+        "check -assert",
+    ]
+
+
+def zero_stream_checks(config: dict[str, list[str]]) -> set[tuple[str | int, ...]]:
+    """Return what a task checks on the zero stream model with the store queue's hints free.
+
+    A task counts only as a bounded check of depth 31 or more whose script is
+    exactly the model's apart from its assertion selection and the
+    upper-request case macros: no tie-off, cutpoint, assumption change or
+    other added line. Each check is ``(property,)``, or
+    ``("p_zero_no_upper_request", endpoint, operation)`` for one case of that
+    property, with operation ``""`` for the whole endpoint case and ``"rest"``
+    for the operations that no one-operation case names.
+    """
+    model = [
+        "read -sv coherence_read_stream.sv",
+        "read -sv cache_perf_pkg.sv",
+        "read -sv coherence_pkg.sv",
+        "read -sv coherence_request_endpoint.sv",
+        "read -sv coherence_put_endpoint.sv coherence_read_owners.sv "
+        "coherence_miss_credit.sv coherence_read_flags.sv "
+        "coherence_grant_select.sv coherence_read_select.sv",
+        "read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv",
+        "read -sv coherence_store_buffer.sv",
+        "read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv",
+        "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 "
+        f"-set MISSES {ZERO_STREAM_ENDPOINTS} coherence_l1d",
+        "chparam -set STREAM_PREFETCH 1 coherence_l1d",
+        "prep -flatten -top coherence_l1d",
+        "memory_map",
+        "opt",
+        "techmap",
+        "opt -fast",
+        "setundef -anyseq",
+        "opt_clean",
+    ]
+    files = [
+        "../hw/rtl/lib/cache/coherence_read_stream.sv",
+        "../hw/rtl/lib/ram/sdp_block_ram.sv",
+        "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
+        "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
+    ] + [
+        f"../hw/rtl/lib/cache/{name}"
+        for name in (
+            "coherence_pkg.sv",
+            "coherence_types.svh",
+            "coherence_array.sv",
+            "coherence_request_endpoint.sv",
+            "coherence_put_endpoint.sv",
+            "coherence_l1d.sv",
+            "coherence_read_owners.sv",
+            "coherence_miss_credit.sv",
+            "coherence_read_flags.sv",
+            "coherence_grant_select.sv",
+            "coherence_read_select.sv",
+            "coherence_read_payload.sv",
+            "cache_perf_pkg.sv",
+            "coherence_store_buffer.sv",
+        )
+    ]
+    options = dict(line.split(maxsplit=1) for line in config.get("[options]", []))
+    if options.get("mode") != "bmc" or int(options.get("depth", "0")) < 31:
+        return set()
+    if config.get("[files]") != files:
+        return set()
+    script = config.get("[script]", [])
+    selection = [
+        line for line in script if assertion_command(line) or line == "check -assert"
+    ]
+    others = [line for line in script if line not in selection]
+    if [_ZERO_UPPER_CASE_DEFINE.sub("", line) for line in others] != model:
+        return set()
+    removals = [line for line in selection if line.startswith("chformal ")]
+    if len(removals) != 1:
+        return set()
+    names = [token[2:] for token in removals[0].split() if token.startswith("c:")]
+    if selection != zero_stream_selection(names):
+        return set()
+    read = next(line for line in others if "coherence_l1d.sv" in line)
+    endpoint = re.findall(r" -D ZERO_UPPER_EP=(\d+)\b", read)
+    operation = re.findall(r" -D ZERO_UPPER_OP=(\w+)", read)
+    rest = " -D ZERO_UPPER_OP_REST" in read
+    checks: set[tuple[str | int, ...]] = set()
+    for name in names:
+        if name != "p_zero_no_upper_request_ep":
+            checks.add((name,))
+        elif len(endpoint) == 1 and len(operation) + rest <= 1:
+            case = operation[0] if operation else "rest" if rest else ""
+            checks.add(("p_zero_no_upper_request", int(endpoint[0]), case))
+    return checks
+
+
+def check_zero_stream_subsumption(
+    checks: set[tuple[str | int, ...]],
+    named_operations: list[str],
+    endpoints: int = ZERO_STREAM_ENDPOINTS,
+) -> None:
+    """Require each of the four stream properties, or all of its cases, among the checks."""
+    for name in ZERO_STREAM_PROPERTIES:
+        if (name,) in checks:
+            continue
+        assert name == "p_zero_no_upper_request", name
+        for endpoint in range(endpoints):
+            cases = {check[2] for check in checks if check[:2] == (name, endpoint)}
+            assert "" in cases or cases >= {*named_operations, "rest"}, (
+                endpoint,
+                cases,
+            )
+
+
+def test_zero_stream_properties_checked_with_hints_free() -> None:
+    """Check each zero stream property, or all its cases, with the store queue's hints free.
+
+    No 31-frame stream task holds the write-more hint or the same-sector claim
+    low: with both free, these tasks check every trace that holding them low
+    would leave. This test checks each task's mode and depth;
+    test_zero_safety_models_reject_cover_constraints pins their other options
+    and their engines.
+    """
+    root = Path(__file__).resolve().parents[1]
+    rtl = (root / "hw/rtl/lib/cache/coherence_l1d.sv").read_text()
+    # The whole-endpoint case has the property's guard and one endpoint's bit
+    # of its upper-request vector, so the endpoint cases together are the
+    # property; test_zero_upper_endpoint_one_parts_cover_every_operation pins
+    # the one-operation and remaining-operation branches against this case.
+    whole = re.search(
+        r"if \((?P<guard>[^;]*?)\)\s*p_zero_no_upper_request : assert "
+        r"\(!\(\|f_zero_upper_request\)\);",
+        rtl,
+    )
+    branches = re.search(
+        r"`elsif ZERO_UPPER_OP_REST\n(?P<rest>.*?)`else\n(?P<all>.*?)`endif\n",
+        rtl,
+        flags=re.DOTALL,
+    )
+    assert whole and branches
+    assert "logic [MISSES-1:0] f_zero_upper_request;" in rtl
+    guard = " ".join(whole["guard"].split())
+    assert " ".join(branches["all"].split()) == (
+        f"if ({guard}) p_zero_no_upper_request_ep : assert "
+        "(!f_zero_upper_request[`ZERO_UPPER_EP]);"
+    )
+    named = re.findall(r" && operation_q != (\w+)", " ".join(branches["rest"].split()))
+    assert named and len(named) == len(set(named))
+
+    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_l1d")
+    configs = {
+        task: l1d_task_config(task)
+        for task in target.tasks
+        if task.startswith("coh_l1d_zero_stream_")
+    }
+
+    def checked(tasks: dict[str, dict[str, list[str]]]) -> set[tuple[str | int, ...]]:
+        return {
+            check for config in tasks.values() for check in zero_stream_checks(config)
+        }
+
+    def copied() -> dict[str, dict[str, list[str]]]:
+        return {
+            name: {key: list(value) for key, value in config.items()}
+            for name, config in configs.items()
+        }
+
+    def altered(task: str, section: str, line: str) -> dict[str, dict[str, list[str]]]:
+        changed = copied()
+        lines = changed[task][section]
+        if section == "[script]":
+            lines.insert(lines.index("memory_map"), line)
+        else:
+            lines.append(line)
+        return changed
+
+    def narrowed(task: str, names: list[str]) -> dict[str, dict[str, list[str]]]:
+        changed = copied()
+        script = changed[task]["[script]"]
+        start = next(i for i, line in enumerate(script) if line.startswith("select "))
+        script[start : start + 4] = zero_stream_selection(names)
+        return changed
+
+    check_zero_stream_subsumption(checked(configs), named)
+    hint, line = "coh_l1d_zero_stream_hint_bmc", "coh_l1d_zero_stream_line_bmc"
+    upper = "coh_l1d_zero_stream_upper_ep{}_bmc".format
+    for tasks in (
+        # A hint held low in one task.
+        altered(hint, "[script]", "connect -set i_next_same 1'b0"),
+        altered(line, "[script]", "connect -set i_write_more 1'b0"),
+        altered(upper(2), "[script]", "connect -set i_write_more 1'b0"),
+        altered(upper("1_rest"), "[script]", "connect -set i_next_same 1'b0"),
+        # A shallower task, or an added cutpoint.
+        altered(upper(0), "[options]", "depth 30"),
+        altered(line, "[script]", "cutpoint w:store_upper"),
+        # A task gone from the registry.
+        {name: config for name, config in configs.items() if name != hint},
+        {name: config for name, config in configs.items() if name != upper(2)},
+        {name: config for name, config in configs.items() if name != upper("1_rest")},
+        # An assertion dropped from a task's selection.
+        narrowed(hint, ["p_prefetch_not_record"]),
+    ):
+        with pytest.raises(AssertionError):
+            check_zero_stream_subsumption(checked(tasks), named)
+    # An operation or an endpoint that no case covers.
+    with pytest.raises(AssertionError):
+        check_zero_stream_subsumption(checked(configs), [*named, "GrantOp"])
+    with pytest.raises(AssertionError):
+        check_zero_stream_subsumption(
+            checked(configs), named, ZERO_STREAM_ENDPOINTS + 1
+        )
 
 
 def test_full_line_safety_models_pinned() -> None:
