@@ -1209,38 +1209,64 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
 
-  # Yosys synthesis.
-  # A full-chip synthesis target whose key has a pass marker is skipped, as
-  # in the formal jobs; the other synthesis tests always run. The Xilinx
-  # target took 152, 161 and more than 180 minutes in three main runs, so
-  # its three-hour default is five hours here: with the other tests that
-  # stays inside the job's six.
+  # Yosys synthesis. The Xilinx target runs in partitions
+  # (test_xilinx_partition in tests/test_run_yosys.py), in two jobs of about
+  # equal length; the first job runs every other synthesis test. A fast test
+  # checks that the jobs run each synthesis test once. A synthesis target
+  # whose key has a pass marker is skipped, as in the formal jobs; the other
+  # synthesis tests always run. Each partition may run for two hours and
+  # each job for its timeout_minutes, both more than twice their time on the
+  # slowest runners.
   test-synthesis:
-    name: Yosys Synthesis Check
+    name: Yosys Synthesis Check (${{ matrix.shard }})
     runs-on: ubuntu-26.04
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: Generic and checks
+            pytest_filter: not test_xilinx_partition
+            timeout_minutes: 120
+          - shard: Xilinx core, hart caches and NIC
+            pytest_filter: >-
+              test_xilinx_partition[core] or test_xilinx_partition[core_backend] or
+              test_xilinx_partition[hart_cache] or test_xilinx_partition[nic]
+            timeout_minutes: 180
+          - shard: Xilinx top and cluster memory
+            pytest_filter: >-
+              test_xilinx_partition[top] or test_xilinx_partition[cluster_memory]
+            timeout_minutes: 180
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
-      FROST_YOSYS_XILINX_TIMEOUT_SEC: "18000"
+      FROST_YOSYS_XILINX_TIMEOUT_SEC: "7200"
       FROST_REUSE_DIR: ${{ needs.gate.outputs.reuse == 'true' && '.ci-reuse' || '' }}
       FROST_REUSE_TOOLS_ID: ${{ needs.build-docker.outputs.tools_id }}
       FROST_REUSE_MAIN_RUN: ${{ needs.gate.outputs.main_run }}
       FROST_REUSE_MAIN_LIFETIME: ${{ needs.gate.outputs.main_lifetime }}
       FROST_REUSE_CANARY_SEED: ${{ needs.gate.outputs.main_run || github.run_number }}
       FROST_REUSE_REPORT: ci-reuse-report.jsonl
-      REUSE_CACHE: synthesis-reuse-v1-default-
+      PYTEST_FILTER: ${{ matrix.pytest_filter }}
+      SHARD: ${{ matrix.shard }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+
+      - name: Name the job's marker cache
+        id: cache-name
+        run: |
+          echo "prefix=synthesis-reuse-v1-$(printf '%s' "$SHARD" | tr -cs 'A-Za-z0-9' '_')-" \
+            >> "$GITHUB_OUTPUT"
 
       - name: Restore the pass markers
         if: env.FROST_REUSE_DIR != ''
         uses: actions/cache/restore@v6.1.0
         with:
           path: .ci-reuse
-          key: ${{ env.REUSE_CACHE }}${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ${{ env.REUSE_CACHE }}
+          key: ${{ steps.cache-name.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ steps.cache-name.outputs.prefix }}
 
       - name: Download Docker image
         uses: actions/download-artifact@v8.0.2
@@ -1257,20 +1283,21 @@ jobs:
 
       - name: Run synthesis tests
         run: |
-          ./scripts/frost.py --image frost-dev:latest run pytest tests/ -m synthesis -v
+          ./scripts/frost.py --image frost-dev:latest run \
+            pytest tests/ -m synthesis -k "$PYTEST_FILTER" -v --durations=0
 
       - name: Summarize synthesized and reused targets
         if: always()
         run: |
           python3 tests/ci_reuse.py summary --report "$FROST_REUSE_REPORT" \
-            --title "Synthesis targets" >> "$GITHUB_STEP_SUMMARY"
+            --title "Synthesis targets ($SHARD)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save the pass markers
         if: always() && env.FROST_REUSE_DIR != ''
         uses: actions/cache/save@v6.1.0
         with:
           path: .ci-reuse
-          key: ${{ env.REUSE_CACHE }}${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ steps.cache-name.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
 
   # Use FROST's pinned Yosys directly, as local fast checks do. The matrix
   # performs full slang elaboration, with two additional RTLIL import checks.
@@ -1301,7 +1328,7 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run python3 tests/slang_frontend.py
 
-  # The ordinary synthesis job checks the 1 GiB default. Check the widest
+  # The ordinary synthesis jobs check the 1 GiB default. Check the widest
   # supported PA width, 128 GiB, with the same RTL build setting.
   test-pa-synthesis-width:
     name: PA synthesis aperture (${{ matrix.capacity_log2_bytes }} log2 bytes)

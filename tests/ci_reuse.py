@@ -81,7 +81,12 @@ FORMAL_BY_VALUE = frozenset(
     }
 )
 SYNTHESIS_BY_VALUE = frozenset(
-    {"DESIGN_FILELISTS", "GENERIC_SYNTH_COMMAND", "SYNTHESIS_TARGETS"}
+    {
+        "DESIGN_FILELISTS",
+        "GENERIC_SYNTH_COMMAND",
+        "SYNTHESIS_TARGETS",
+        "XILINX_PARTITIONS",
+    }
 )
 
 # The wrapper that CI runs every check through.

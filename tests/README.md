@@ -1088,13 +1088,55 @@ Synthesizes `platform_top` (the CPU tile, SoC memory system, and NIC, from
 `hw/rtl/frost.f`) with portable coarse synthesis (`generic`) and with full
 Xilinx UltraScale+ synthesis. Both fail on unresolved modules or latches.
 sv2v converts the NIC, MAC, and PCS sources for Yosys first. Generic
-synthesis does not check device mapping or timing. Xilinx synthesis has a
-three-hour timeout, which `FROST_YOSYS_XILINX_TIMEOUT_SEC` overrides; CI
-sets five hours.
+synthesis does not check device mapping or timing. Each Xilinx synthesis run
+has a three-hour timeout, which `FROST_YOSYS_XILINX_TIMEOUT_SEC` overrides; CI
+gives each partition two hours.
+
+Pytest runs the Xilinx target in partitions, `test_xilinx_partition[<name>]`,
+each with its own pass marker. Yosys's LUT mapping (`abc9`) spends time on
+every module, and that time grows with the size of the design it runs on; a
+partition keeps that design small. Each partition elaborates the whole design
+from `platform_top`, so every module has its full-chip parameters, then
+synthesizes its root module and everything below it, with the roots of the
+other partitions as black boxes. `synth_xilinx` maps each module on its own
+(it does not flatten the design), so a module goes through the same steps as
+in one run of the whole target. Its netlist can still differ a little: the
+top of a partition gets I/O buffers, global clock buffers follow the clock
+loads that synthesis sees, and ABC's choice of LUTs follows the order of the
+netlist, which depends on the names synthesis generates across the design. A
+root other than `platform_top` must elaborate to exactly one module, or its
+partition fails. `XILINX_PARTITIONS` lists them:
+
+| Partition | Root | Synthesizes |
+| --- | --- | --- |
+| `top` | `platform_top` | `platform_top`, `soc_top` without the NIC, and `cpu_top` and `frost_hart` without the roots below |
+| `nic` | `nic_top` | The NIC with its MAC/PCS |
+| `cluster_memory` | `frost_cluster_memory` | The coherence home, prefetch agent and CPU memory fabric |
+| `hart_cache` | `coherent_hart_cache` | The hart's instruction cache and L1 data cache |
+| `core` | `cpu_ooo` | The core without its out-of-order back end |
+| `core_backend` | `tomasulo_wrapper` | The back end: reservation stations, reorder buffer, load and store queues, register alias table and functional units |
+
+Every module below `platform_top` is mapped by the partition of the nearest
+root above it. The fast check `test_xilinx_partitions_cover_the_design`
+builds each partition's script without running Yosys and checks that
+together they read every source of the whole target's script, that each is
+that script with only its partition's commands after elaboration, and that a
+module is a black box only where it is the root of another partition, so no
+module is a black box in every partition.
+`test_xilinx_partition_gaps_are_found` checks that the same function reports
+a source that no partition reads, a module that no partition maps, and scripts
+that break these rules. The synthesis test
+`test_every_module_maps_in_a_xilinx_partition` elaborates the design once and
+checks with Yosys that the modules the partitions map are together every
+module of the elaboration, and that each partition maps a module that no
+other one does. `test_synthesis_jobs_select_each_test_once` checks that CI's
+synthesis jobs run each synthesis test once; a partition added to
+`XILINX_PARTITIONS` also goes into the `pytest_filter` of one of those jobs.
 
 ```bash
-./scripts/frost.py synthesis                    # both targets
+./scripts/frost.py synthesis                    # both targets, each in one run
 ./scripts/frost.py synthesis --target generic   # portable synthesis only
+./scripts/frost.py synthesis --partition core   # one Xilinx partition
 ```
 
 `test_read_verilog_element_selects`, also marked `synthesis`, elaborates
@@ -1429,14 +1471,14 @@ Lint and Fast Python Tests jobs locally.
 | Cocotb applications | BRAM and DDR where supported; the three longest CoreMark-PRO workloads run in jobs of their own and the other six share one; the memory-system programs with one register stage between the hart and the cluster memory (`*_link1`) have two shards |
 | Zicboz applications | Basic, page and eviction configurations have separate BRAM/DDR shards. The two 4 MiB cache configurations select their own BRAM or DDR program layout in one additional shard; the clearing benchmark has its own shard |
 | Cocotb unit benches (two jobs of about equal duration, split by the `cocotb_unit_a` and `cocotb_unit_b` marks), DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke and reset, cache counters over OpenOCD | BRAM only: tier-independent or fixed-layout runs |
-| Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 128 GiB, with the Yosys job covering the 1 GiB default |
+| Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 128 GiB, with the Yosys jobs covering the 1 GiB default |
 | Architecture compliance | BRAM and DDR, in groups of extensions, including CMO's Zicboz `cbo.zero` case in both tiers; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards; only the I B C group in BRAM collects coverage; a fast check compares the workflow's groups with the runner's supported extensions |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
-| Tooling | Lint, fast Python tests and synthesis; the two full-chip synthesis targets [reuse](#reusing-formal-and-synthesis-results) earlier passes |
+| Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D zero (control, multi-endpoint, and cover jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (five jobs), L1D free-stream, vector CSR and memory unit, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue, block proofs and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
@@ -1534,7 +1576,7 @@ other markers with `./scripts/frost.py run pytest tests -m <marker>`.
 ### Reusing formal and synthesis results
 
 Formal proofs and synthesis are deterministic, so a CI job skips a formal task,
-or one of the two full-chip synthesis targets of `test_run_yosys.py`, when its
+or the generic target or a Xilinx partition of `test_run_yosys.py`, when its
 inputs are unchanged since a run in which it passed. `tests/ci_reuse.py`
 computes a key for each one, a SHA-256 over:
 
