@@ -74,7 +74,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zcb | Implemented | `riscv-arch-test` (`C`), `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
 | Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
 | Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
-| Supm | Scalar hardware support through Ssnpm; the supplied Linux image does not expose the tagged-address ABI | `pm_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby` |
+| Supm | Scalar hardware support through Ssnpm; the supplied Linux image does not expose the tagged-address ABI | `pm_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `pm_mode_select.sby`, `coherent_store_pma_twin.sby` |
 | Zifencei | Implemented | `riscv-arch-test` (`Zifencei`), `smc_fencei_test`, `ddr_smc_test`, TestRIG, `coherent_hart_cache.sby` |
 | Ss1p13 | Implemented | `riscv-tests` (`rv64si`), `smode_test`, `umode_test`, `vm_test`, TestRIG, `csr_file.sby`, `trap_unit.sby` |
 | Svbare | Implemented | `pa_width_test`, `pma_fault_test`, TestRIG, `immu_bare.sby`, `dmmu_twin.sby` |
@@ -89,7 +89,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Svnapot | Implemented (64 KiB ranges use ordinary 4 KiB TLB entries) | `svnapot_test`, TestRIG (`svnapot_leaf.S`), `ptw.sby`, `tlb.sby`, `l2tlb.sby` |
 | Sstc | Implemented | `sstc_test`, `irq_take_latency`, TestRIG (`stimecmp`), `csr_file.sby` |
 | Sscofpmf | Implemented | `sscofpmf_test`, TestRIG (`--sscofpmf`), `csr_sscofpmf.sby` |
-| Ssnpm | Implemented for scalar accesses (`senvcfg.PMM`, PMLEN 0, 7 and 16). Vector memory does not yet apply pointer masking after element-address addition. | `pm_test`, `debug_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `csr_commit_cofactor.sby` |
+| Ssnpm | Implemented for scalar accesses (`senvcfg.PMM`, PMLEN 0, 7 and 16). Vector memory does not yet apply pointer masking after element-address addition. | `pm_test`, `debug_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `pm_mode_select.sby`, `coherent_store_pma_twin.sby`, `csr_commit_cofactor.sby` |
 | Ssu64xl | Implemented | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`, `ssu64xl_uxl.S`), `csr_file.sby` |
 | Zbc (optional) | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzbc`), TestRIG, `cl_multiplier.sby` |
 | Svvptc (optional) | Implemented | `vm_test`, `asid_test`, TestRIG, `ptw.sby`, `immu_memo.sby`, `dmmu_twin.sby` |
@@ -301,6 +301,20 @@ installation.
 Open: restore `coherence_store_boundary:bmc_four` to depth 120 with the
 L1D hit path, using additional lemmas or splitting the checks into smaller
 cones so the task fits its CI budget.
+
+Open: the three compact store-home covers optimize their logic before
+undefined values become free inputs, which does not guarantee in general
+that a cover witness is a trace of the unoptimized model. The three were
+confirmed by replaying them on the unoptimized model when they were
+introduced. The replay is planned as a registered check, or the
+optimization would use `opt -keepdc` if that meets the memory budget.
+
+Open: thirteen `.sby` files run a plain `opt` before `setundef -anyseq`. A
+register that never loads and has an undefined initial value can then be
+resolved differently at different readers, which could drop behaviors from
+a bounded safety check. Planned: `opt -keepdc` before `setundef` in those
+files, re-measured, and a check of whether any affected register is
+observable.
 
 The FPGA build's hand-instantiated primitives are compared with their
 portable forms by [equivalence checks](formal/README.md#primitive-twins).

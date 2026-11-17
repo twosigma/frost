@@ -701,8 +701,10 @@ mode on the write edge, before a younger store can allocate an early address.
 Writes to mstatus or sstatus, traps, xRETs and debug transitions flush the
 pipeline while the mode updates. An assisted misaligned access receives the
 exact transformed address so that its faults and split parts use the same
-address interpretation. The unadvertised vector memory path does not yet mask
-its element addresses.
+address interpretation. The trap unit latches a data fault's address before
+the transform, together with the mode and translation state, and applies the
+transform to the latched value. The unadvertised vector memory path does not
+yet mask its element addresses.
 
 ## Vector state
 

@@ -1724,8 +1724,10 @@ module tomasulo_wrapper #(
   // Forward declaration (assigned in SQ address section below)
   logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
   // The MEM_RS issue base after the Ssnpm transform (riscv_pkg "Pointer
-  // masking"): every address adder and the store page decoder take it, so
-  // the transformed address reaches the MMU, PMA checks, LQ and SQ alike.
+  // masking"): every address adder takes it, so the transformed address
+  // reaches the MMU, PMA checks, LQ and SQ alike. The store page decoder and
+  // the untranslated completion test take src1 and apply the mode to terms
+  // of the operands alone (coherent_store_pm_select), with the same result.
   // Only bits [XLEN-1:XLEN-16] can differ from src1.
   logic [riscv_pkg::XLEN-1:0] mem_rs_issue_base;
   assign mem_rs_issue_base = riscv_pkg::pm_base_transform(
@@ -1835,14 +1837,7 @@ module tomasulo_wrapper #(
   // access fault. Their zero immediate leaves rs1 as the address.
   assign mem_rs_issue_is_cmo = (o_mem_rs_issue.op == riscv_pkg::CBO_CLEAN) ||
       (o_mem_rs_issue.op == riscv_pkg::CBO_FLUSH) || (o_mem_rs_issue.op == riscv_pkg::CBO_INVAL);
-  coherent_store_pma store_pma (
-      .i_base(mem_rs_issue_base),
-      .i_effective_addr(sq_effective_addr),
-      .i_imm_negative(o_mem_rs_issue.imm[11]),
-      .i_page_carry(store_page_offset_sum[12]),
-      .i_atomic(mem_rs_issue_atomic_pma),
-      .o_pma_ok(store_addr_pma_ok)
-  );
+  // store_addr_pma_ok comes from coherent_store_pm_select below.
   assign store_addr_misaligned = is_mem_access_misaligned(
       riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size),
       {
@@ -1874,6 +1869,29 @@ module tomasulo_wrapper #(
   assign store_issue_untranslated_without_pma =
       o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq && !mem_rs_issue_is_sc &&
       (!i_trap_misaligned_accesses || !store_addr_misaligned);
+  // The store PMA verdict and the untranslated completion at issue (the
+  // address lies where no bus response can fault the store). The
+  // pointer-masking mode reaches both only through terms of the issued
+  // operands; the page decoder's verdict and the sum's low bits meet them
+  // last.
+  logic store_complete_untranslated;
+  coherent_store_pm_select #(
+      .MEM_RESPONSE_ERRORS(MEM_RESPONSE_ERRORS),
+      .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
+      .CACHED_BASE(CACHED_BASE),
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+  ) store_pm_select (
+      .i_base(o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
+      .i_imm(o_mem_rs_issue.imm),
+      .i_effective_addr(sq_effective_addr),
+      .i_pm_mode(i_mmu_pm_mode),
+      .i_page_carry(store_page_offset_sum[12]),
+      .i_atomic(mem_rs_issue_atomic_pma),
+      .i_cmo(mem_rs_issue_is_cmo),
+      .i_issue_without_pma(store_issue_untranslated_without_pma),
+      .o_pma_ok(store_addr_pma_ok),
+      .o_complete(store_complete_untranslated)
+  );
   assign store_issue_fire = i_translation_active ? store_issue_translated :
       (store_issue_untranslated_without_pma && store_addr_pma_ok);
   assign store_complete_tag = i_translation_active ? dmmu_out_tag : o_mem_rs_issue.rob_tag;
@@ -2522,25 +2540,19 @@ module tomasulo_wrapper #(
     end
   end
 
-  // Prepare translated and untranslated store-completion cofactors ahead of
-  // the store PMA check. A Zicbom op completes at issue wherever its block
-  // lies: it writes nothing, so no precise bus response can fault it.
+  // Translated and untranslated store-completion cofactors; the untranslated
+  // one comes from coherent_store_pm_select. A Zicbom op completes at issue
+  // wherever its block lies: it writes nothing, so no precise bus response
+  // can fault it.
   (* keep = "true" *) logic store_complete_translated;
-  (* keep = "true" *) logic store_complete_untranslated_without_pma;
   logic store_complete_valid;
   assign store_complete_translated = store_issue_translated &&
       (!MEM_RESPONSE_ERRORS || dmmu_out_is_cmo ||
        (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(dmmu_out_addr)) ||
        ((dmmu_out_addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
         (dmmu_out_addr < riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))));
-  assign store_complete_untranslated_without_pma = store_issue_untranslated_without_pma &&
-      (!MEM_RESPONSE_ERRORS || mem_rs_issue_is_cmo ||
-       (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_effective_addr)) ||
-       ((sq_effective_addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
-        (sq_effective_addr <
-         riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))));
   assign store_complete_valid = i_translation_active ? store_complete_translated :
-      (store_complete_untranslated_without_pma && store_addr_pma_ok);
+      store_complete_untranslated;
 `ifndef SYNTHESIS
   always_comb
     assert (store_complete_valid == (store_issue_fire &&
@@ -2914,6 +2926,37 @@ module tomasulo_wrapper #(
     int_rs_issue_cdb_tag   <= issue_cdb_tag_next;
     int_rs_issue_cdb_2_tag <= issue_cdb_2_tag_next;
   end
+  // Per-bank register copies of the issue tags for INT_RS's entry compares:
+  // the same D as the tags above, one copy per quarter of the entries. Keep
+  // and equivalent_register_removal hold them apart; without dont_touch,
+  // max_fanout may replicate each further. The single tags keep their other
+  // readers (the registered issue packets and checks).
+  localparam int unsigned IntRsTagBanks = (INT_RS_DEPTH >= 4) ? 4 : INT_RS_DEPTH;
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
+  logic [IntRsTagBanks-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] int_rs_issue_cdb_tag_bank;
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
+  logic [IntRsTagBanks-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] int_rs_issue_cdb_2_tag_bank;
+  always_ff @(posedge i_clk) begin
+    for (int bank = 0; bank < int'(IntRsTagBanks); bank++) begin
+      int_rs_issue_cdb_tag_bank[bank]   <= issue_cdb_tag_next;
+      int_rs_issue_cdb_2_tag_bank[bank] <= issue_cdb_2_tag_next;
+    end
+  end
+`ifdef FORMAL
+  // Neither the copies nor the tags reset, so only the initial state is
+  // assumed equal. Both load the same D on every edge; every later cycle
+  // asserts the equality.
+  always_comb
+    for (int bank = 0; bank < int'(IntRsTagBanks); bank++) begin
+      if ($initstate) begin
+        assume (int_rs_issue_cdb_tag_bank[bank] == int_rs_issue_cdb_tag);
+        assume (int_rs_issue_cdb_2_tag_bank[bank] == int_rs_issue_cdb_2_tag);
+      end else begin
+        assert (int_rs_issue_cdb_tag_bank[bank] == int_rs_issue_cdb_tag);
+        assert (int_rs_issue_cdb_2_tag_bank[bank] == int_rs_issue_cdb_2_tag);
+      end
+    end
+`endif
 `ifndef SYNTHESIS
   always_comb
     if (i_rst_n && sc_check_armed) begin
@@ -2975,6 +3018,7 @@ module tomasulo_wrapper #(
       .ISSUE2_WINDOW(riscv_pkg::IntRsIssue2Window),
       .ISSUE_CDB_TAG_SHADOW(1'b1),
       .ISSUE_CDB_META_ANCHORS(1'b1),
+      .ISSUE_CDB_TAG_BANKS(IntRsTagBanks),
       .CAPTURE_PRIMARY_EFFECTIVE_OPERANDS(1'b1),
       .BRANCH_PREDICATE_TAG_ANCHOR(1'b1),
       // Dispatch checks full for slot 1 and full_for_2 when both slots target
@@ -3005,6 +3049,8 @@ module tomasulo_wrapper #(
       .i_cdb_2(int_rs_cdb_1),
       .i_issue_cdb_valid(EARLY_LOAD_WAKEUP ? int_issue_wakeup_0.valid : int_rs_issue_cdb_valid),
       .i_issue_cdb_tag(int_rs_issue_cdb_tag),
+      .i_issue_cdb_tag_bank(int_rs_issue_cdb_tag_bank),
+      .i_issue_cdb_2_tag_bank(int_rs_issue_cdb_2_tag_bank),
       .i_issue_cdb_2_valid(EARLY_LOAD_WAKEUP ? int_issue_wakeup_1.valid : int_rs_issue_cdb_2_valid),
       .i_issue_cdb_2_tag(int_rs_issue_cdb_2_tag),
       .i_repair_valid_1(int_done_repair_valid_1),
@@ -5991,13 +6037,21 @@ endmodule
 
 // Keep the store page decoder as a native synthesis unit. Its carry tap and
 // permission result retain the wrapper's original combinational interface.
+// The verdict is that of the base after the pointer-masking transform
+// (riscv_pkg::pm_base_transform under i_pm_mode). The bounded-map decoder
+// reads only bits [32:0] of the base, which the transform keeps; the mode
+// chooses which of the base's upper bits form its all-zero and all-one
+// qualifiers (a masked base copies bit XLEN-8 or XLEN-17 into its top bits).
 // verilog_format: off
 `ifdef FROST_XILINX_PRIMS
 (* keep_hierarchy = "yes" *)
 `endif
 // verilog_format: on
 module coherent_store_pma (
+    // MEM_RS src1 before the pointer-masking transform.
     input logic [riscv_pkg::XLEN-1:0] i_base,
+    input riscv_pkg::pm_mode_t i_pm_mode,
+    // The transformed base plus the immediate.
     input logic [riscv_pkg::XLEN-1:0] i_effective_addr,
     input logic i_imm_negative,
     input logic i_page_carry,
@@ -6033,14 +6087,14 @@ module coherent_store_pma (
   // configurations retain the original full-address decoder.
   localparam bit StorePmaLowCofactor = riscv_pkg::PmaUsesFrostMap &&
       riscv_pkg::DdrLimit < 64'h2_0000_0000;
-  localparam int StorePmaHighBits = riscv_pkg::XLEN - 33;
-  localparam int StorePmaHighGroups = (StorePmaHighBits + 5) / 6;
+  logic [riscv_pkg::XLEN-1:0] base_transformed;
   logic [riscv_pkg::XLEN-1:0] store_pma_compare_address;
   (* keep = "true" *) logic store_pma_compared_ok;
 
+  assign base_transformed = riscv_pkg::pm_base_transform(i_base, i_pm_mode);
   assign store_pma_compare_address = StorePmaLowCofactor ?
       {{(riscv_pkg::XLEN-33){1'b0}}, i_base[32:0]} :
-      i_base;
+      base_transformed;
 
   assign store_cmp_base_z18 = !(|store_pma_compare_address[riscv_pkg::XLEN-1:18]);
   assign store_cmp_base_z19 = !(|store_pma_compare_address[riscv_pkg::XLEN-1:19]);
@@ -6100,19 +6154,37 @@ module coherent_store_pma (
       i_effective_addr
   ));
   if (StorePmaLowCofactor) begin : gen_store_pma_cofactor
-    (* keep = "true" *) wire [StorePmaHighGroups-1:0] high_zero_groups;
-    (* keep = "true" *) wire [StorePmaHighGroups-1:0] high_one_groups;
+    // The upper base bits [XLEN-1:33] in seven groups, with bits XLEN-16 and
+    // XLEN-7 each starting one: the PMLEN 16 base's upper bits are all zero
+    // (all one) exactly when groups 0 to 2 are, the PMLEN 7 base's when
+    // groups 0 to 4 are, and the base as issued's when every group is.
+    localparam int HighGroups = 7;
+    localparam logic [HighGroups*8-1:0] GroupLsbs = {
+      8'(riscv_pkg::XLEN - 1),
+      8'(riscv_pkg::XLEN - 7),
+      8'(riscv_pkg::XLEN - 10),
+      8'(riscv_pkg::XLEN - 16),
+      8'd45,
+      8'd39,
+      8'd33
+    };
+    localparam logic [HighGroups*8-1:0] GroupWidths = {
+      8'd1, 8'd6, 8'd3, 8'd6, 8'(riscv_pkg::XLEN - 16 - 45), 8'd6, 8'd6
+    };
+    (* keep = "true" *) wire [HighGroups-1:0] high_zero_groups;
+    (* keep = "true" *) wire [HighGroups-1:0] high_one_groups;
     (* keep = "true" *) wire high_zero;
     (* keep = "true" *) wire high_ones;
     wire low_page_ones;
     wire positive_carry;
-    for (genvar group_index = 0; group_index < StorePmaHighGroups; group_index++) begin : gen_high
-      localparam int GroupBits = (StorePmaHighBits - group_index * 6) < 6 ?
-          StorePmaHighBits - group_index * 6 : 6;
+    wire select_pmlen7, select_pmlen16;
+    for (genvar group_index = 0; group_index < HighGroups; group_index++) begin : gen_high
+      localparam int GroupLsb = int'(GroupLsbs[group_index*8+:8]);
+      localparam int GroupBits = int'(GroupWidths[group_index*8+:8]);
       localparam logic [5:0] OneMatch = 6'((1 << GroupBits) - 1);
       wire [5:0] terms;
       for (genvar bit_index = 0; bit_index < 6; bit_index++) begin : gen_bit
-        if (bit_index < GroupBits) assign terms[bit_index] = i_base[33+group_index*6+bit_index];
+        if (bit_index < GroupBits) assign terms[bit_index] = i_base[GroupLsb+bit_index];
         else assign terms[bit_index] = 1'b0;
       end
 `ifdef FROST_XILINX_PRIMS
@@ -6143,8 +6215,14 @@ module coherent_store_pma (
       assign high_one_groups[group_index]  = terms == OneMatch;
 `endif
     end
-    assign high_zero = &high_zero_groups;
-    assign high_ones = &high_one_groups;
+    // The mode chooses the groups; the never-produced 01 takes every group,
+    // as pm_base_transform keeps the base.
+    assign select_pmlen7 = i_pm_mode == riscv_pkg::EnvcfgPmmPmlen7;
+    assign select_pmlen16 = i_pm_mode == riscv_pkg::EnvcfgPmmPmlen16;
+    assign high_zero = (&high_zero_groups[2:0]) && (select_pmlen16 ||
+        ((&high_zero_groups[4:3]) && (select_pmlen7 || (&high_zero_groups[6:5]))));
+    assign high_ones = (&high_one_groups[2:0]) && (select_pmlen16 ||
+        ((&high_one_groups[4:3]) && (select_pmlen7 || (&high_one_groups[6:5]))));
     assign low_page_ones = &i_base[32:12];
     assign positive_carry = !i_imm_negative && i_page_carry;
     // A positive move from the last full-width page wraps into legal page0.
@@ -6166,4 +6244,115 @@ module coherent_store_pma (
   end else begin : gen_store_pma_full_address
     assign o_pma_ok = store_pma_compared_ok;
   end
+endmodule
+
+// The untranslated store's PMA verdict and its completion at issue, for the
+// base after the pointer-masking transform, with the mode applied only to
+// terms that depend on the issued operands alone. i_effective_addr is the
+// transformed base plus the immediate.
+//
+// coherent_store_pma takes the issued base and the mode. Completion at issue
+// needs the address in write-through memory or cached DDR. Both regions lie
+// below 2**CompleteBits, so an address qualifies when its bits
+// [XLEN-1:CompleteBits] are zero and its low bits lie in a region. The
+// transform changes only base bits [XLEN-1:XLEN-16], so the issue sum's bits
+// [CompleteBits:0] are the same for every mode. When sum bit CompleteBits is
+// zero, bits [XLEN-1:CompleteBits+1] of a + b are zero exactly when
+// a[i] ^ b[i] == (a[i-1] | b[i-1]) for every i in that range (the carry into
+// bit i is then a[i-1] | b[i-1]). Each base the transform can produce
+// evaluates these terms on its own operand bits, and the mode chooses
+// between them before they meet the sum's low bits. Completion regions above
+// bit XLEN-18, and a write-through region whose limit wraps past 2**XLEN,
+// keep the test on the transformed sum.
+module coherent_store_pm_select #(
+    parameter bit MEM_RESPONSE_ERRORS = 1'b0,
+    parameter bit CACHE_NORMAL_MEMORY = 1'b0,
+    parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
+) (
+    // MEM_RS src1 before the pointer-masking transform, and the immediate.
+    input logic [riscv_pkg::XLEN-1:0] i_base,
+    input logic [riscv_pkg::XLEN-1:0] i_imm,
+    // The transformed base plus the immediate.
+    input logic [riscv_pkg::XLEN-1:0] i_effective_addr,
+    input riscv_pkg::pm_mode_t i_pm_mode,
+    input logic i_page_carry,
+    input logic i_atomic,
+    input logic i_cmo,
+    // The untranslated issue terms that do not depend on the address.
+    input logic i_issue_without_pma,
+    output logic o_pma_ok,
+    // The untranslated store completes at issue: no bus response can fault it.
+    output logic o_complete
+);
+  localparam int unsigned XLEN = riscv_pkg::XLEN;
+  localparam longint unsigned WriteThroughLimit = (riscv_pkg::PmaUncachedBytes == 0) ? 64'd0 :
+      riscv_pkg::PmaUncachedBase + riscv_pkg::PmaUncachedBytes;
+  localparam longint unsigned CachedLimit = CACHED_BASE + CACHED_SIZE_BYTES;
+  localparam int unsigned CompleteBits = ($clog2(WriteThroughLimit) > $clog2(CachedLimit)) ?
+      $clog2(WriteThroughLimit) : $clog2(CachedLimit);
+  localparam bit CompleteSplit = (CompleteBits >= 1) && (CompleteBits <= XLEN - 18) &&
+      ((riscv_pkg::PmaUncachedBytes == 0) || (WriteThroughLimit > riscv_pkg::PmaUncachedBase));
+
+  coherent_store_pma store_pma (
+      .i_base(i_base),
+      .i_pm_mode(i_pm_mode),
+      .i_effective_addr(i_effective_addr),
+      .i_imm_negative(i_imm[11]),
+      .i_page_carry(i_page_carry),
+      .i_atomic(i_atomic),
+      .o_pma_ok(o_pma_ok)
+  );
+
+  // The completion test without the PMA verdict, kept so that the verdict
+  // meets it in the last term, as store_complete_valid takes them.
+  (* keep = "true" *) logic complete_without_pma;
+  if (CompleteSplit) begin : gen_complete_split
+    logic [XLEN-1:0] base_pmlen7, base_pmlen16;
+    assign base_pmlen7  = riscv_pkg::pm_base_transform(i_base, riscv_pkg::EnvcfgPmmPmlen7);
+    assign base_pmlen16 = riscv_pkg::pm_base_transform(i_base, riscv_pkg::EnvcfgPmmPmlen16);
+
+    // The completion regions on the sum's low bits, the same for every mode.
+    logic [XLEN-1:0] low_addr;
+    logic low_complete;
+    assign low_addr = {{(XLEN - CompleteBits) {1'b0}}, i_effective_addr[CompleteBits-1:0]};
+    assign low_complete = (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(low_addr)) ||
+        ((low_addr >= XLEN'(CACHED_BASE)) &&
+         (low_addr < XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
+
+    // The carry-free terms of the sum's bits above CompleteBits, per base.
+    logic [XLEN-1:CompleteBits+1] high_terms_base, high_terms_pmlen7, high_terms_pmlen16;
+    assign high_terms_base = ~((i_base[XLEN-1:CompleteBits+1] ^ i_imm[XLEN-1:CompleteBits+1]) ^
+                               (i_base[XLEN-2:CompleteBits] | i_imm[XLEN-2:CompleteBits]));
+    assign high_terms_pmlen7 =
+        ~((base_pmlen7[XLEN-1:CompleteBits+1] ^ i_imm[XLEN-1:CompleteBits+1]) ^
+          (base_pmlen7[XLEN-2:CompleteBits] | i_imm[XLEN-2:CompleteBits]));
+    assign high_terms_pmlen16 =
+        ~((base_pmlen16[XLEN-1:CompleteBits+1] ^ i_imm[XLEN-1:CompleteBits+1]) ^
+          (base_pmlen16[XLEN-2:CompleteBits] | i_imm[XLEN-2:CompleteBits]));
+    // Terms through bit XLEN-17 are the same for every base, and through bit
+    // XLEN-8 for the base as issued and PMLEN 7. The mode chooses the rest;
+    // the never-produced 01 takes the base as issued, as pm_base_transform
+    // does.
+    logic select_pmlen7, select_pmlen16;
+    logic high_zero_low, high_zero_rest;
+    (* keep = "true" *) logic high_zero;
+    assign select_pmlen7 = i_pm_mode == riscv_pkg::EnvcfgPmmPmlen7;
+    assign select_pmlen16 = i_pm_mode == riscv_pkg::EnvcfgPmmPmlen16;
+    assign high_zero_low = &high_terms_base[XLEN-17:CompleteBits+1];
+    assign high_zero_rest = select_pmlen16 ? (&high_terms_pmlen16[XLEN-1:XLEN-16]) :
+        ((&high_terms_base[XLEN-8:XLEN-16]) && (select_pmlen7 ?
+        (&high_terms_pmlen7[XLEN-1:XLEN-7]) : (&high_terms_base[XLEN-1:XLEN-7])));
+    assign high_zero = high_zero_low && high_zero_rest;
+
+    assign complete_without_pma = i_issue_without_pma && (!MEM_RESPONSE_ERRORS || i_cmo ||
+        (!i_effective_addr[CompleteBits] && low_complete && high_zero));
+  end else begin : gen_complete_full
+    assign complete_without_pma = i_issue_without_pma &&
+        (!MEM_RESPONSE_ERRORS || i_cmo ||
+         (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(i_effective_addr)) ||
+         ((i_effective_addr >= XLEN'(CACHED_BASE)) &&
+          (i_effective_addr < XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES))));
+  end
+  assign o_complete = complete_without_pma && o_pma_ok;
 endmodule

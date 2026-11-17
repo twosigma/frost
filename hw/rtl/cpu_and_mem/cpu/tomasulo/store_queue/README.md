@@ -71,7 +71,9 @@ flags. They count this cycle's allocations but give no credit for this cycle's
 drains, flushes, or SC discards, so they err only on the side of stalling;
 early credit would let dispatch send a store the SQ cannot accept. `o_full`
 and `o_full_for_2` give the exact combinational status, and a separate counter
-drives `o_count` and `o_empty`.
+drives `o_count` and `o_empty`. The counter forms each entry's removal from
+the queue's state and the flush and tag inputs first; the SC discard and the
+write completion apply next, and the registered commit pulses last.
 
 Addresses arrive from the early-address pipeline or from MEM_RS issue, and
 data from MEM_RS issue, matched to entries by ROB tag. If both address sources

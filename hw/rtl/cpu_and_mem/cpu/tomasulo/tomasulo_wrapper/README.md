@@ -172,9 +172,10 @@ results as described below. The grants stay combinational, so an
 adapter can clear its holding register in the cycle it is granted. The
 wrapper also keeps copies of each lane's register for particular consumers
 (per-station tag copies, an INT_RS copy with its own issue-compare valid and
-tag, the ROB's head-match tags, and a 64-bit copy for the store early-address
-path). Simulation assertions check that the station and SQ copies always
-match the main register.
+tag, four further copies of that tag for INT_RS's entry compares (two in a
+two-entry INT_RS), the ROB's head-match tags, and a 64-bit copy for the store
+early-address path). Simulation assertions check that the station and SQ
+copies always match the main register.
 
 A registered ALU result does not store a second copy of the ALU output. For
 other sources the registered value comes from the arbiter's value tree. For a
@@ -289,7 +290,14 @@ With Ssnpm masking enabled, stores receive their addresses at MEM_RS issue.
 The issue base is sign-extended from bit 56 or 47 before addition. For the
 supported physical maps and Sv39, every accepted address equals the ignore
 transformation of the effective address; rejected sums can differ in the
-ignored bits. Data fault values use the exact transformation, and the
+ignored bits. The store PMA check and the test that an untranslated store
+completes at issue take the base as issued and apply the mode only to terms
+of the operands (`coherent_store_pm_select`). With FROST's bounded map the
+page decoder's upper-bit qualifiers are whole groups of base bits, and the
+mode chooses the groups each masked base needs; the completion test reads
+the sum's low bits, which are the same for every mode, and decides the upper
+bits from the operands bit by bit, with the mode choosing between the terms
+of each base. Data fault values use the exact transformation, and the
 misaligned-access engine starts from that value. A senvcfg write updates the
 registered PMM on the CSR write edge, before a younger store can allocate.
 CSR serialization and full flushes prevent an early-address candidate from
@@ -439,10 +447,15 @@ the adapter idle.
 INT_RS merges the token into its local CDB copies. Its issue tag inputs are
 registers that make the same lane selection one edge earlier, from the next
 CDB valids and the LQ's next staged tag, so the issue compares start at a
-flop. Both issue ports capture the final operands in stage 2, including the
-early load value. A stalled packet holds those operands. An assertion checks
-that issue and resident wakeup see matching valid bits, and matching tags on a
-valid lane.
+flop. Each tag register has four copies loaded from the same next value (two
+in a two-entry INT_RS), and each copy serves the compares of an equal group of
+entries (`ISSUE_CDB_TAG_BANKS`). A simulation assertion in INT_RS and the
+wrapper's formal target check that every copy equals its tag, and
+`rs_issue_tag_copies` proves by induction that each copy equals its tag after
+one clock edge, from any initial state. Both issue ports capture the final
+operands in stage 2, including the early load value. A stalled packet holds
+those operands. An assertion checks that issue and resident wakeup see
+matching valid bits, and matching tags on a valid lane.
 
 The merged lanes also decide MEM_RS's next issue. MEM_RS exports one
 look-ahead candidate per combination of lane valids, and the LQ selects among
