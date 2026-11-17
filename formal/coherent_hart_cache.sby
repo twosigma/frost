@@ -1,6 +1,7 @@
 [tasks]
-coh_hart_maint_prove proof unbounded
-coh_hart_maint_owned_prove owned unbounded
+coh_hart_maint_prove proof unbounded plain
+coh_hart_maint_owned_prove owned unbounded plain
+coh_hart_maint_owned_reset_prove owned unbounded resetstate
 coh_hart_maint_cover covers base
 coh_hart_maint_four_bmc four bounded fourbmc base
 coh_hart_maint_four_cover four covers base
@@ -20,7 +21,8 @@ covers: timeout 1200
 four: depth 240
 bounded: mode bmc
 bounded: timeout 2400
-# The four-record bounded task needs more than 40 minutes for its 240 frames.
+# With every register starting free, the four-record bounded task takes
+# about 18 minutes for its 240 frames with the Glucose backend.
 fourbmc: timeout 7200
 bounded: aigsmt boolector
 
@@ -28,7 +30,7 @@ bounded: aigsmt boolector
 proof: abc pdr -r
 owned: smtbmc boolector
 covers: btor btormc
-bounded: abc bmc3 -c
+bounded: abc bmc3 -g
 
 [script]
 read -formal -sv riscv_pkg.sv cache_perf_pkg.sv coherence_pkg.sv
@@ -59,13 +61,34 @@ proof: select -assert-count 88 t:$check r:FLAVOR=assert %i
 unbounded: chformal -cover -remove
 base: chformal -cover -remove c:*flatten_home* c:*flatten_walker* c:walker.* c:*bridge* c:*endpoint* c:*arbiter*
 four: chformal -cover -remove c:* c:*p_four_records* %d
-memory_map
-opt
+# The unbounded pair runs a plain opt (ROADMAP.md): with every register
+# starting free its induction does not finish in its limit, and from the state
+# after the reset cycle its PDR proof leaves one assertion unresolved.
+plain: memory_map
+~plain: memory_map -keepdc
+# coh_hart_maint_owned_reset_prove proves the pair's 285 facts by the same
+# induction from the state after the reset cycle, where it finishes in its
+# limit, and no task assumes them from it. A register that the reset cycle
+# defines (by its reset or a constant load) starts with that value, and opt
+# -keepdc folds it when that is the only value it can hold; every other
+# register starts free. async2sync also lowers the properties, as sim
+# requires. sim treats an undefined enable or synchronous reset as inactive
+# and compares undefined bits literally in $eqx and $nex, so no opt_dff runs
+# before it (prep runs opt with -noff), only plain $dff cells reach it, and
+# the comparisons take the meaning they have in the proof.
+resetstate: async2sync
+resetstate: select -assert-none t:$ff t:$dffe t:$adff* t:$aldff* t:$sdff* t:$dffsr* t:$dlatch* t:$adlatch t:$sr t:$mem* t:$_*DFF* t:$_*LATCH* t:$_SR_* t:$_FF_ t:$anyinit t:$fsm
+resetstate: chtype -map $eqx $eq
+resetstate: chtype -map $nex $ne
+resetstate: sim -clock i_clk -n 1 -w
+plain: opt
+~plain: opt -keepdc
 unbounded: techmap
-unbounded: opt -fast
+plain: opt -fast
+resetstate: opt -fast -keepdc
 unbounded: setundef -anyseq
 bounded: techmap
-bounded: opt -fast
+bounded: opt -fast -keepdc
 bounded: setundef -anyseq
 covers: setundef -zero
 opt_clean

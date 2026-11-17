@@ -25,7 +25,7 @@ hierarchy -check -top coherence_home_engine
 proc
 setattr -mod -unset keep_hierarchy *
 flatten
-memory_map
+memory_map -keepdc
 setundef -zero
 setattr -unset init
 dffunmap
@@ -46,7 +46,7 @@ setattr -mod -unset keep_hierarchy *
 # Mark every cell that comes from a Xilinx primitive model.
 setattr -set from_prim 1 $paramod*LUT*/* $paramod*MUXF*/* $paramod*CARRY*/* $paramod*FD*/* LUT*/* MUXF*/* CARRY*/* FD*/*
 flatten
-memory_map
+memory_map -keepdc
 setundef -zero
 setattr -unset init
 dffunmap

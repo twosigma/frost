@@ -29,10 +29,10 @@ prep -flatten -top coherence_array
 select -assert-count 4 c:p_plru_*
 chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_plru_* %d
 chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_plru_* %d
-memory_map
-opt
+memory_map -keepdc
+opt -keepdc
 proof: techmap
-proof: opt -fast
+proof: opt -fast -keepdc
 proof: setundef -anyseq
 opt_clean
 

@@ -38,7 +38,7 @@ single: chparam -set MAX_INFLIGHT 1 coherence_prefetch_agent
 pair: chparam -set MAX_INFLIGHT 2 coherence_prefetch_agent
 full: chparam -set MAX_INFLIGHT 4 -set IF_STREAMS 0 coherence_prefetch_agent
 prep -top coherence_prefetch_agent
-memory_map
+memory_map -keepdc
 opt_clean
 
 [files]

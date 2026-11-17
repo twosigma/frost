@@ -43,10 +43,10 @@ port: chparam -set HIT_PORT 1 coherence_array_equiv
 prep -top coherence_array_equiv
 select -assert-count 3 c:p_equiv_*
 # Out-of-range bits of the four-way selections are unreachable constants.
-memory_map
-opt
+memory_map -keepdc
+opt -keepdc
 techmap
-opt -fast
+opt -fast -keepdc
 setundef -anyseq
 opt_clean
 

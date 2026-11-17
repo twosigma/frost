@@ -65,22 +65,26 @@ second_watch: connect -nomap -set watch_second 1'b1
 bmc: select -assert-count 2 t:$anyconst r:WIDTH=8 %i
 bmc: select -assert-none t:$anyconst r:WIDTH=1 %i
 bmc: select -clear
-memory_map
-opt
+memory_map -keepdc
+opt -keepdc
 # Canonicalize packed word selections in the bounded checks.
 bmc: peepopt
 bmc: techmap
-bmc: opt -fast
+bmc: opt -fast -keepdc
 bmc: select -assert-none t:$check r:FLAVOR=assume %i
 bmc: select -assert-none t:$assume
 bmc: select -clear
 # Optimize the cover and its assumptions before undefined bits become inputs.
+# The optimizations keep the unknown starting values of registers and
+# memories (-full would resolve undefined multiplexer inputs); -fine and the
+# merging steps can fuse undefined constants, and abc reads an undefined
+# constant as zero. For a cover such narrowing cannot create a witness.
 compact_covers: chformal -assert -remove
 compact_covers: setattr -unset keep
 compact_covers: techmap
-compact_covers: opt -fast
+compact_covers: opt -fast -keepdc
 compact_covers: abc
-compact_covers: opt -full
+compact_covers: opt -keepdc -mux_bool -fine
 compact_covers: setundef -undriven -anyseq
 compact_covers: select -assert-count 1 t:$check r:FLAVOR=cover %i
 compact_covers: select -assert-count 1 t:$check r:FLAVOR=assume %i

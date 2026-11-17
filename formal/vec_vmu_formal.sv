@@ -14,8 +14,10 @@
  *    limitations under the License.
  */
 
-// Constant descriptor wiring lets the formal model discard unused store
-// datapaths. The DUT's properties retain arbitrary ready/response choices.
+// Constant descriptor wiring fixes every command's descriptor. Registers that
+// load it hold arbitrary values until the first command, and the unused store
+// datapath keeps its arbitrary initial values. The DUT's properties retain
+// arbitrary ready/response choices.
 module vec_vmu_formal (
     input logic i_clk,
     input logic i_rst,

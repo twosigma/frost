@@ -70,7 +70,7 @@ chformal -assert -remove * rs_payload_twin_formal %d
 prep -top rs_payload_twin_formal
 setattr -mod -unset keep_hierarchy *
 flatten
-memory_map
+memory_map -keepdc
 opt_clean
 # Both copies start from the same state: every register at zero.
 setundef -zero -init

@@ -33,7 +33,7 @@ connect -set \id_kill_2 1'b0
 select -clear
 setattr -mod -unset keep_hierarchy *
 flatten
-memory_map
+memory_map -keepdc
 setundef -zero
 setattr -unset init
 dffunmap
@@ -48,7 +48,7 @@ hierarchy -check -top id_stage
 proc
 setattr -mod -unset keep_hierarchy *
 flatten
-memory_map
+memory_map -keepdc
 setundef -zero
 setattr -unset init
 dffunmap

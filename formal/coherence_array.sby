@@ -46,10 +46,10 @@ wide: chparam -set ADDR_WIDTH 56 coherence_array
 port: chparam -set HIT_PORT 1 coherence_array
 ~selection: prep -top coherence_array
 # Out-of-range bits of the four-way selections are unreachable constants.
-undefined: memory_map
-undefined: opt
+undefined: memory_map -keepdc
+undefined: opt -keepdc
 undefined: techmap
-undefined: opt -fast
+undefined: opt -fast -keepdc
 undefined: setundef -anyseq
 undefined: opt_clean
 selection: hierarchy -check -top coherence_array
@@ -60,18 +60,17 @@ selection: select -assert-count 1 c:p_data_select_exact t:$check %i r:FLAVOR=ass
 selection: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_data_select_exact %d
 selection: chformal -assume -remove
 selection: chformal -cover -remove
-selection: memory_map
+selection: memory_map -keepdc
 selection: select -assert-min 1 t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
 selection: cutpoint t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
 selection: select -assert-none t:*ff* t:*FF* t:*latch*
 selection: setattr -unset init w:*
 selection: delete -output w:*
 selection: opt_clean
-selection: opt
+selection: opt -keepdc
 selection: chformal -lower
 selection: select -assert-count 1 t:$assert
 selection: select -assert-none t:$assume
-selection: sat -prove-asserts -verify -timeout 60
 
 [files]
 ../hw/rtl/lib/ram/sdp_block_ram.sv

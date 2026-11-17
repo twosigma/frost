@@ -64,7 +64,7 @@ completions: cutpoint w:work_eligible w:work_position_ready w:free_buffer w:forw
 # unrestricted. State comparisons start after the first observed reset;
 # the completion next-state comparison is unconditional.
 delete -output w:*
-opt -purge
+opt -purge -keepdc
 setundef -undriven -anyseq
 home: prep -top coherence_home
 array: prep -top coherence_home_array
