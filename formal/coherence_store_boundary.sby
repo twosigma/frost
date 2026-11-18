@@ -16,10 +16,12 @@ bmc_old bmc regular old
 cover_load cover lifecycle load ordinary
 cover_amo cover lifecycle amo
 cover_amo_same cover lifecycle amo same
+cover_amo_same_two cover lifecycle delayed amo same
 cover_amo_other_home cover lifecycle amo other homepath
 cover_sc cover lifecycle sc
 cover_old cover lifecycle old
-cover_edges_same cover boundaries load same ordinary
+cover_edges_same cover boundaries delayed load same ordinary
+cover_edges_same_combined cover boundaries load same ordinary
 cover_edges_other cover boundaries load other ordinary
 
 [options]
@@ -95,6 +97,7 @@ sticky: read -formal -sv -noautowire -D LOCAL_ATOMIC_DEPENDENCY -D FATAL_STICKY_
 lifecycle: chparam -set COVER_MODE 1 coherence_store_boundary_formal
 homepath: chparam -set COVER_AMO_HOME 1 coherence_store_boundary_formal
 boundaries: chparam -set COVER_BOUNDARIES 1 coherence_store_boundary_formal
+delayed: chparam -set DELAY_SECOND_STORE 1 coherence_store_boundary_formal
 same: chparam -set SECTOR_CASE 0 coherence_store_boundary_formal
 other: chparam -set SECTOR_CASE 1 coherence_store_boundary_formal
 old: chparam -set SECTOR_CASE 1 coherence_store_boundary_formal
