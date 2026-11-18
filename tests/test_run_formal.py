@@ -1603,8 +1603,9 @@ FORMAL_TARGETS = [
     FormalTarget(
         "pd_backing_redirect.sby",
         "PD backing, indirect and direction redirects require a live slot; each "
-        "indirect candidate, target selection and history bit matches the "
-        "compare-before-register equations, and stack operations, refreshes, "
+        "indirect candidate and target selection matches the compare-before-register "
+        "equations, both history outputs match the branch direction or jump target bit, "
+        "and stack operations, refreshes, "
         "directions and targets match PD's reference models",
         tasks=("bmc", "cover"),
     ),

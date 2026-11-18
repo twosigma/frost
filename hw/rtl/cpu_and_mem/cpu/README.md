@@ -226,7 +226,8 @@ history. That costs accuracy, not correctness.
 
 The tagged predictor hashes a global direction history rather than the path
 history: each conditional branch shifts in one bit, its final predicted
-direction, taken or not, and each jump its predicted target's bit 2.
+direction, taken or not, and each jump its predicted target's bit 2. PD forms the
+possible history bits for each slot before the fast prediction chooses between them.
 `tage_history` pushes a packet's bit when PD passes the packet to ID, from a
 register, so a lookup sees every packet PD passed up to two fetches before
 it. A not-taken branch now reaches the history, which is what loop exits and
