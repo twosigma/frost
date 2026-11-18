@@ -668,8 +668,8 @@ module fp_shim #(
       end
     end
 
-    // An unsquashed issue completes exactly once: count completions of a
-    // watched issue with an always-accepting adapter.
+    // A watched issue completes at most once. Count its valid completion
+    // only when the adapter accepts it.
     logic [1:0] f_pwatch_done;
     logic f_pwatch_open;
     always @(posedge i_clk) begin
