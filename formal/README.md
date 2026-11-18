@@ -236,8 +236,8 @@ management (the page table
 walker, TLBs, instruction and data MMUs and interrupt controllers, 75), Load
 queue (60), Block proofs (the longest of the remaining block proofs: branch
 prediction hand-off and release, the flash-valid cache bits, the vector memory
-tracker, the wrapper, reservation station and rename checkpoint proofs, the
-fetch shadow capture and the home's seat logic, 150) and Other tasks (120). Other tasks takes every task that no
+tracker, the wrapper and payload-twin operand comparisons, the reservation
+station and rename checkpoint proofs, the fetch shadow capture and the home's seat logic, 150) and Other tasks (120). Other tasks takes every task that no
 other job selects, so new small equivalence proofs and block proofs go there
 unless they belong to one of the named areas; the fast test that requires
 exactly one job per task checks the placement.
@@ -329,7 +329,8 @@ fails on one that no registered check covers.
 CI runs these comparisons in a formal shard of their own, `Primitive forms`,
 which takes the `*_twin` targets and the read select's `xilinx` tasks, and also
 the INT_RS issue-tag copy proofs `rs_issue_tag_banks` and `rs_issue_tag_copies`
-and the tagged predictor's table-copy proof `tage_copy_convergence`.
+and the tagged predictor's table-copy proof `tage_copy_convergence`. The
+payload twin's operand group runs with the wrapper in `Block proofs`.
 
 ## Targets
 
@@ -458,7 +459,7 @@ cycle; simulation asserts the last three. The split shadow select that
 | `rob_link_dispatch` | Dispatch never allocates slot 2 behind a slot-1 branch, the rule the shared link bank needs, in all four bundle-valid and register-value configurations |
 | `sq_live_result_select` | The early store address and MMIO flag equal the reference priority with the live CDB sums selected last |
 | `sq_early_sq_copy` | The address and MMIO copies equal the untranslated packet or zero; the instantiated wrapper's final packets and capture enables equal the translation select for arbitrary state, reset, flush and translation inputs; depth-6 covers reach both translation transitions, fresh and repaired addresses, MMIO and reset |
-| `rs_payload_twin` | Two `tomasulo_wrapper` copies on the same inputs, including PMM, from one zero state, each station's stage2/stage2b payload arbitrary and independent while the stage holds no packet: every wrapper output (including head-retirement and vector-configuration status) is equal, and payload outputs (issue packets, CDB, commit, memory and walk requests, trap value) are equal while their valid is set. The wrapper has its default parameters, which differ from the core's: `SPLIT_RS_DISPATCH`, `ENABLE_DISPATCH_DONE_REPAIR`, `ROB_SHARED_LINK_BANK`, `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS` and `CACHE_NORMAL_MEMORY` are 0, `L0_CACHE_DEPTH` is 128 and `PERF_COUNTERS` is 1; `VECTOR` is 0. Address translation is off (the wrapper's formal assumption). smtbmc, depth 5 (reset and four cycles: a dispatch, an issue and one ALU result), so it finds leaks that show within a cycle or two of issue; `rs_stage2_payload_equiv` is the unbounded proof that a held payload is unchanged |
+| `rs_payload_twin` | Two `tomasulo_wrapper` copies receive the same inputs, including PMM. Both start with the RTL's explicit initial values and zero in otherwise undefined initial bits. Each station's stage2/stage2b payload is arbitrary and independent while the stage holds no packet. Every wrapper output (including head-retirement and vector-configuration status) is equal, and payload outputs (issue packets, CDB, commit, memory and walk requests, trap value) are equal while their valid is set. The wrapper has its default parameters, which differ from the core's: `SPLIT_RS_DISPATCH`, `ENABLE_DISPATCH_DONE_REPAIR`, `ROB_SHARED_LINK_BANK`, `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS` and `CACHE_NORMAL_MEMORY` are 0, `L0_CACHE_DEPTH` is 128 and `PERF_COUNTERS` is 1; `VECTOR` is 0. Address translation is off (the wrapper's formal assumption). Independent undefined operands in the two wrappers make the wide packet comparisons expensive. Four tasks check the two CDB and two combinational commit packets individually, one checks the bypass and register-read operands in the Block proofs job, and one checks the remaining outputs. All groups use depth 5 (reset and four cycles: a dispatch, an issue and one ALU result), so it finds leaks that show within a cycle or two of issue. `rs_stage2_payload_equiv` is the unbounded proof that a held payload is unchanged. After a deliberate change to the script, harness or other proof inputs outside the design RTL, run `python3 tests/rs_payload_twin_partition.py` in the formal image. Review the guarded comparisons and their compiled enables and operands for each task, then update the expected comparisons and SHA-256 hashes in `test_rs_payload_twin_assertion_groups` |
 | `rs_stage2_payload_equiv` | Unbounded induction across the INT (with dual issue), MUL, MEM, and FP station configurations: whenever `stage2_valid` or `stage2b_valid` holds, the FU-ready-loaded payload registers equal an `issue_fire`/`issue_fire_2`-gated reference across stalls, partial and full flushes, back-to-back issues, and mid-run resets, with `o_issue_is_jalr` and `MUL_RS` `o_issue.op` hold checks and reachability covers |
 | `rs_primary_payload` | INT_RS's grouped port-0 payload read, address, and entry clear equal indexed selection at depths 4, 8, and 16; an unbounded proof compares grouped payload RAMs and opcode registers with a single RAM |
 | `rs_issue_clear` | The second issue port's one-hot entry clear equals the indexed clear, for single and dual issue at several depths and with the INT station's window |
