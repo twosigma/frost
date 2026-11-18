@@ -3425,9 +3425,6 @@ module if_stage #(
                                                  riscv_pkg::PcIncrement32bit)));
       cover (replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && o_itt_hit[1]);
       cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && o_itt_hit[1]);
-      f_if_slot2_live_follows_noncontrol :
-      assert (o_from_if_to_pd_2.sel_nop || o_from_if_to_pd_2.fetch_fault ||
-              !o_slot1_has_control_flow);
       f_if_slot1_nop_implies_slot2_nop :
       assert (!o_from_if_to_pd.sel_nop || o_from_if_to_pd_2.sel_nop);
       f_if_slot1_fault_implies_slot2_fault_or_nop :
@@ -3643,6 +3640,32 @@ module if_stage #(
       i_fence_i_flush || i_from_ex_comb.branch_taken || i_pd_redirect;
   assign f_wp_s1_real = !o_from_if_to_pd.sel_nop;
   assign f_wp_s2_real = !o_from_if_to_pd_2.sel_nop;
+
+  // The walk-past harness derives both providers' pairing metadata from
+  // their instruction words. Check the presented parcel as well as the
+  // control-flow sideband, including packets replayed from a stall.
+  logic f_wp_slot1_control;
+  assign f_wp_slot1_control = o_from_if_to_pd.raw_parcel[1:0] == 2'b11 ?
+      riscv_pkg::imem_native_control(
+      o_from_if_to_pd.effective_instr[6:0]
+  ) : riscv_pkg::imem_compressed_control(
+      o_from_if_to_pd.raw_parcel[15:0]
+  );
+  always_comb begin
+    if (f_wp_past_valid && !i_pipeline_ctrl.reset) begin
+      if (f_wp_s2_real && !o_from_if_to_pd_2.fetch_fault) begin
+        f_if_slot2_live_follows_noncontrol : assert (!o_slot1_has_control_flow);
+        f_if_slot2_follows_noncontrol_parcel : assert (!f_wp_slot1_control);
+        f_if_slot1_size_matches_parcel :
+        assert (o_from_if_to_pd.sel_compressed == (o_from_if_to_pd.raw_parcel[1:0] != 2'b11));
+        cover (!replay_saved_if_outputs);
+        cover (replay_saved_if_outputs);
+      end
+      cover (f_wp_s1_real && !o_from_if_to_pd.fetch_fault &&
+             o_from_if_to_pd.raw_parcel[6:0] == riscv_pkg::OPC_JALR &&
+             o_slot1_has_control_flow && !f_wp_s2_real);
+    end
+  end
 
 `ifdef IF_CONTINUITY_PROOF
   logic [XLEN-1:0] f_wp_s1_step, f_wp_s2_step, f_wp_bundle_bytes;
