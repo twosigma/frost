@@ -89,8 +89,12 @@ bool source_width_reserved(const char *label, uint32_t bits, unsigned sew, float
             width = sew / unsigned(name.back() - '0');
         add(rs2, width);
         if (suffix == "vv" || suffix == "wv" || suffix == "vvm" || suffix == "vs")
-            add(rs1, starts("vrgatherei16") ? 16 : sew * (starts("vwred") ? 2 : 1), suffix == "vs");
-        if (starts("vwmacc"))
+            add(rs1,
+                starts("vrgatherei16") ? 16 : sew * (starts("vwred") || starts("vfwred") ? 2 : 1),
+                suffix == "vs");
+        // Widening multiply-accumulate also reads its double-width destination.
+        if (starts("vwmacc") || starts("vfwmacc") || starts("vfwnmacc") || starts("vfwmsac") ||
+            starts("vfwnmsac"))
             add(rd, 2 * sew);
     }
     if (!(bits & (1U << 25)))
@@ -109,7 +113,7 @@ int main(int argc, char **argv)
         return 2;
     unsigned vlen = std::stoul(argv[1]);
     bool negative = argc > 2;
-    std::string isa = "rv64gcv_zvbb_zvl" + std::to_string(vlen) + "b";
+    std::string isa = std::string("rv64gcv") + isa_extensions + "_zvl" + std::to_string(vlen) + "b";
     ReferenceHost host;
     host.cfg.isa = isa.c_str();
     host.cfg.hartids = {0};

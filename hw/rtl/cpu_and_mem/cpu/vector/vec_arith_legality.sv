@@ -33,7 +33,9 @@
   bit max(p, q) - 1, which is eq_*[p] || eq_*[q]. A misaligned operand makes
   the instruction illegal by the alignment rule, so the overlap rules may
   assume aligned groups. Each rule is a product of an instruction class, a
-  table entry and a register-field test, and the result is their OR.
+  table entry and a register-field test, and the result is their OR. The
+  floating-point encodings (OPFVV, OPFVF) have their own rule set, built the
+  same way from the same tables and register-field tests.
 */
 module vec_arith_legality (
     input  logic [ 8:0] i_vtype,   // {vill, vma, vta, vsew[2:0], vlmul[2:0]}
@@ -295,7 +297,128 @@ module vec_arith_legality (
   assign whole_bad = vtype_bad ||
       !((vs1 == 5'd0) || (vs1 == 5'd1) || (vs1 == 5'd3) || (vs1 == 5'd7)) ||
       ((vd[2:0] & vs1[2:0]) != 3'd0) || ((vs2[2:0] & vs1[2:0]) != 3'd0);
-  assign o_illegal = whole ? whole_bad : arith_bad;
+
+  // ---------------------------------------------------------------------------
+  // Floating point (OPFVV, OPFVF): riscv_pkg::vector_fp_illegal
+  // ---------------------------------------------------------------------------
+  // The encodings the FP families define (riscv_pkg::vector_fp_ok)
+  logic fvv, fvf, fp_ok;
+  assign fvv = f3 == 3'b001;
+  assign fvf = f3 == 3'b101;
+  always_comb begin
+    fp_ok = 1'b0;
+    if (fvv || fvf) begin
+      case (f6)
+        6'h00, 6'h02, 6'h04, 6'h06, 6'h08, 6'h09, 6'h0a, 6'h18, 6'h19, 6'h1b, 6'h1c, 6'h20, 6'h24,
+        6'h28, 6'h29, 6'h2a, 6'h2b, 6'h2c, 6'h2d, 6'h2e, 6'h2f, 6'h30, 6'h32, 6'h34, 6'h36,
+        6'h38, 6'h3c, 6'h3d, 6'h3e, 6'h3f:
+        fp_ok = 1'b1;
+        6'h01, 6'h03, 6'h05, 6'h07, 6'h31, 6'h33: fp_ok = fvv;
+        6'h0e, 6'h0f, 6'h1d, 6'h1f, 6'h21, 6'h27: fp_ok = fvf;
+        6'h10: fp_ok = vm && (fvf ? (vs2 == 5'd0) : (vs1 == 5'd0));
+        6'h17: fp_ok = fvf && (!vm || (vs2 == 5'd0));
+        // Conversions: every subopcode below 24 except 4, 5 and 13
+        6'h12: fp_ok = fvv && (vs1[4:3] != 2'b11) && (vs1[4:1] != 4'b0010) && (vs1 != 5'd13);
+        6'h13: fp_ok = fvv && ((vs1 == 5'd0) || (vs1 == 5'd4) || (vs1 == 5'd5) || (vs1 == 5'd16));
+        default: fp_ok = 1'b0;
+      endcase
+    end
+  end
+
+  // FP instruction classes: conversions (fcvt; fwcvt widening, fncvt
+  // narrowing), the unary group (square root, estimates, classify),
+  // reductions (fwred widening), widened destinations (fwiden: vd at twice
+  // SEW and twice LMUL, except the widening reductions' single register),
+  // vs2 at twice SEW (fawide), compares into masks, vfmv.s.f (fsmove),
+  // vfmv.f.s (fsread), vfmv.v.f (fmvvf), vfslide1up and the widening fused
+  // operations (fwfma). vs1 is a vector source only in the vector-vector
+  // forms other than the unary groups and vfmv.f.s.
+  logic fcvt, fwcvt, fncvt, funary, fred, fwred, fwiden, fawide, fcmp;
+  logic fsmove, fsread, fmvvf, fslideup, fwfma, fuses_a, fuses_b;
+  assign fcvt = f6 == 6'h12;
+  assign fwcvt = fcvt && (vs1[4:3] == 2'b01);
+  assign fncvt = fcvt && vs1[4];
+  assign funary = f6 == 6'h13;
+  assign fwred = fvv && ((f6 == 6'h31) || (f6 == 6'h33));
+  assign fred = fwred || (fvv && (f6[5:3] == 3'b000) && f6[0]);
+  assign fwiden = ((f6[5:4] == 2'b11) && !fwred) || fwcvt;
+  assign fawide = fncvt || (f6 == 6'h34) || (f6 == 6'h36);
+  assign fcmp = f6[5:3] == 3'b011;
+  assign fsmove = fvf && (f6 == 6'h10);
+  assign fsread = fvv && (f6 == 6'h10);
+  assign fmvvf = (f6 == 6'h17) && vm;
+  assign fslideup = f6 == 6'h0e;
+  assign fwfma = f6[5:2] == 4'b1111;
+  assign fuses_a = !fsmove && !fmvvf;
+  assign fuses_b = fvv && !fcvt && !funary && !fsread;
+
+  // FP elements are 16, 32 or 64 bits. A conversion whose vs1[2:1] is 1
+  // reads an integer, and one whose vs1[2:1] is 1 or 2 writes FP; the wide
+  // side of a widening or narrowing conversion is at least 16 bits.
+  logic fint_src, ffp_dst, fwidth_bad;
+  assign fint_src = vs1[2:1] == 2'b01;
+  assign ffp_dst = (vs1[2:1] == 2'b01) || (vs1[2:1] == 2'b10);
+  assign fwidth_bad = (sew == 2'd0) && (!fcvt || (!fint_src && !fncvt) || (ffp_dst && !fwcvt));
+
+  // A 16-bit FP operand outside the two Zvfhmin conversions, vfwcvt.f.f.v
+  // (vs1 = 12) and vfncvt.f.f.w (vs1 = 20): legal with Zvfh
+  logic ffp16;
+  assign ffp16 = fcvt ? (((!fint_src && (fncvt ? (sew == 2'd0) : (sew == 2'd1))) ||
+                          (ffp_dst && (fwcvt ? (sew == 2'd0) : (sew == 2'd1)))) &&
+                         (vs1 != 5'd12) && (vs1 != 5'd20)) : (sew == 2'd1);
+
+  // EEW above 64 or EMUL above 8 for a widened operand
+  logic frange_bad;
+  assign frange_bad = (fwiden && (lmul == 3'b011)) || ((fwiden || fwred) && (sew == 2'd3)) ||
+      (fawide && ((lmul == 3'b011) || (sew == 2'd3)));
+
+  // Masks, reductions and the scalar moves use one register for vd;
+  // reduction seeds one register for vs1; vfmv.f.s element 0 of vs2
+  logic fd_sew, fa_sew, falign_bad;
+  assign fd_sew = !fcmp && !fred && !fsmove && !fsread && !fwiden;
+  assign fa_sew = !fsread && !fawide;
+  assign falign_bad = (fwiden && misaligned(
+      vd[2:0], p1
+  )) || (fd_sew && misaligned(
+      vd[2:0], p0
+  )) || (fuses_a && ((fawide && misaligned(
+      vs2[2:0], p1
+  )) || (fa_sew && misaligned(
+      vs2[2:0], p0
+  )))) || (fuses_b && !fred && misaligned(
+      vs1[2:0], p0
+  ));
+
+  // A masked instruction may not write v0 unless the result is a mask or a
+  // reduction, and v0 as the EEW-1 mask may not also be read as data
+  logic fv0_bad;
+  assign fv0_bad = !vm && (((vd == 5'd0) && !fcmp && !fred) || (fuses_a && (vs2 == 5'd0)) ||
+                           (fuses_b && (vs1 == 5'd0)));
+
+  // Sources read at different EEWs may not overlap: a widening reduction's
+  // seed and vs2, and a wide vs2 beside an SEW vs1. A widening fused
+  // operation also reads its wide destination, so no narrow source may
+  // overlap it.
+  logic fsrc_bad, fwfma_bad;
+  assign fsrc_bad  = fuses_a && fuses_b && ((fwred && eq_ab[p0]) || (fawide && eq_ab[p1]));
+  assign fwfma_bad = fwfma && (eq_da[p1] || (fuses_b && eq_db[p1]));
+
+  // Destination overlaps: a mask result or a narrowed destination must be
+  // its source's lowest register; a source narrower than a widened
+  // destination must be its upper part and not fractional; vfslide1up's
+  // destination may not overlap vs2 at all
+  logic flow_bad, fhigh_bad;
+  assign flow_bad = (fcmp && eq_da[p0] && !eq_da[0]) ||
+      (fcmp && fuses_b && eq_db[p0] && !eq_db[0]) || (fncvt && eq_da[p1] && !eq_da[0]);
+  assign fhigh_bad = (fwiden && !fawide && eq_da[p1] && (lmul[2] || !vs2_low[p0])) ||
+      (fwiden && fuses_b && eq_db[p1] && (lmul[2] || !vs1_low[p0]));
+
+  logic fp_bad;
+  assign fp_bad = vtype_bad || fwidth_bad || (!riscv_pkg::VectorZvfh && ffp16) || frange_bad ||
+      falign_bad || fv0_bad || fsrc_bad || fwfma_bad || flow_bad || fhigh_bad ||
+      (fslideup && eq_da[p0]);
+
+  assign o_illegal = fp_ok ? fp_bad : whole ? whole_bad : arith_bad;
 
   // The opcode is OP-V by construction; vma and vta never affect legality
   logic unused;

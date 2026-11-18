@@ -14,8 +14,10 @@
  *    limitations under the License.
  */
 
-/* A surviving memory allocation's restart clear cannot become an older CSR value,
- * and the tracked vtype follows its specification in every cycle.
+/* A surviving allocation's restart clear cannot become an older CSR value, for
+ * every vector instruction other than configuration (arithmetic, floating point,
+ * vector-to-scalar moves, loads and stores), and the tracked vtype follows its
+ * specification in every cycle.
  * Inputs are free after an initial reset. Dispatch is quiescent during recovery
  * and a retiring CSR, and a checkpoint is saved only while slot 1 allocates;
  * checkpoints may be restored only after being saved in the current full-flush
@@ -47,6 +49,13 @@ module vec_vtype_tracker_formal (
   logic [8:0] vtype;
   logic seen_reset = 1'b0;
   logic owned_q, owned_n;
+  // The instructions that clear vstart when they retire, other than
+  // configuration: each allocation of one predicts vstart clear
+  logic clears;
+  assign clears = (alloc_op == riscv_pkg::VARITH) || (alloc_op == riscv_pkg::VARITH_X) ||
+      (alloc_op == riscv_pkg::VARITH_F) || (alloc_op == riscv_pkg::VTOX) ||
+      (alloc_op == riscv_pkg::VTOF) || (alloc_op == riscv_pkg::VLOAD) ||
+      (alloc_op == riscv_pkg::VSTORE);
   logic [NC-1:0] ckpt_owned_q, ckpt_valid_q;
   logic unknown_clear_q;
 
@@ -80,7 +89,7 @@ module vec_vtype_tracker_formal (
     assume (!(restore && (rst || flush_all || arch_reload)));
     if (restore) assume (ckpt_valid_q[restore_id]);
     owned_n = owned_q;
-    if (alloc && (alloc_op == riscv_pkg::VLOAD || alloc_op == riscv_pkg::VSTORE)) owned_n = 1'b1;
+    if (alloc && clears) owned_n = 1'b1;
     if (arch_reload) owned_n = 1'b0;
   end
 
@@ -100,7 +109,7 @@ module vec_vtype_tracker_formal (
         unknown_clear_q <= 1'b1;
     end
     if (seen_reset && !rst) begin
-      p_memory_clear_survives_reload : assert (!owned_q || !start);
+      p_vector_clear_survives_reload : assert (!owned_q || !start);
       cover (valid && unknown_clear_q && arch_start && !start);
       cover (restore && ckpt_owned_q[restore_id] && !valid);
       cover (owned_q && arch_reload && arch_start);

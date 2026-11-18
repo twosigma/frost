@@ -1146,7 +1146,10 @@ package riscv_pkg;
     FLTQ_D,
     // Zimop MOP.R.n / MOP.RR.n: no extension redefines them, so each writes
     // zero to rd. It reads no register and selects no ALU result group.
-    MOP
+    MOP,
+    VARITH_F,                   // V: vector FP arithmetic with an f-register scalar operand,
+                                // read at the ROB head; the engine executes it after commit
+    VTOF                        // V: vfmv.f.s, executed at the ROB head; no reservation station
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -3400,11 +3403,130 @@ package riscv_pkg;
     end
   endfunction
 
+  // SEW=16 floating-point arithmetic (Zvfh). Without it, an instruction with a
+  // 16-bit FP operand is reserved except the two Zvfhmin conversions,
+  // vfwcvt.f.f.v and vfncvt.f.f.w; vec_arith_legality applies the same rule,
+  // and vec_fp_lane builds its FP16 arithmetic and integer-conversion
+  // instances only with it.
+  localparam bit VectorZvfh = 1'b1;
+
+  // The FP encodings the vector unit executes (OPFVV and OPFVF). Element
+  // widths, register groups and overlaps are checked against vtype by
+  // vector_fp_illegal.
+  function automatic logic vector_fp_ok(input logic [31:0] insn);
+    logic [5:0] f6;
+    logic vf, vv, vm;
+    logic [4:0] sub;
+    f6 = insn[31:26];
+    vf = insn[14:12] == 5;
+    vv = insn[14:12] == 1;
+    vm = insn[25];
+    sub = insn[19:15];
+    vector_fp_ok = 1'b0;
+    if (vf || vv) begin
+      case (f6)
+        6'h00, 6'h02, 6'h04, 6'h06, 6'h08, 6'h09, 6'h0a, 6'h18, 6'h19, 6'h1b, 6'h1c, 6'h20, 6'h24,
+        6'h28, 6'h29, 6'h2a, 6'h2b, 6'h2c, 6'h2d, 6'h2e, 6'h2f, 6'h30, 6'h32, 6'h34, 6'h36,
+        6'h38, 6'h3c, 6'h3d, 6'h3e, 6'h3f:
+        vector_fp_ok = 1'b1;
+        6'h01, 6'h03, 6'h05, 6'h07, 6'h31, 6'h33: vector_fp_ok = vv;
+        6'h0e, 6'h0f, 6'h1d, 6'h1f, 6'h21, 6'h27: vector_fp_ok = vf;
+        6'h10: vector_fp_ok = vm && (vf ? insn[24:20] == 0 : sub == 0);
+        6'h17: vector_fp_ok = vf && (!vm || insn[24:20] == 0);
+        6'h12:
+        vector_fp_ok = vv && (sub == 0 || sub == 1 || sub == 2 || sub == 3 || sub == 6 ||
+            sub == 7 || sub == 8 || sub == 9 || sub == 10 || sub == 11 || sub == 12 ||
+            sub == 14 || sub == 15 || sub == 16 || sub == 17 || sub == 18 || sub == 19 ||
+            sub == 20 || sub == 21 || sub == 22 || sub == 23);
+        6'h13: vector_fp_ok = vv && (sub == 0 || sub == 4 || sub == 5 || sub == 16);
+        default: ;
+      endcase
+    end
+  endfunction
+
+  // Geometry of an accepted FP instruction: FP element widths of 16 to 64
+  // bits (conversions check their integer and FP sides separately), EEW and
+  // EMUL, aligned groups, permitted source/destination overlaps and the
+  // implicit EEW1 mask versus data-source widths, as for integer arithmetic.
+  // Reductions, vfmv.s.f and vfmv.f.s use one register independently of
+  // LMUL; vfslide1up's destination may not overlap its source.
+  function automatic logic vector_fp_illegal(input logic [8:0] vt, input logic [31:0] insn);
+    int ml, sew, de, ae, be, dm, am, bm, nd, na, nb, da, sa, sb;
+    logic [5:0] f6;
+    logic vf, cvt, red, wide, narrow, mask_dest, scalar_move, scalar_read, uses_a, uses_b, bad;
+    logic int_src, fp_dst, fp16;
+    f6 = insn[31:26];
+    vf = insn[14:12] == 5;
+    da = int'(insn[11:7]);
+    sa = int'(insn[24:20]);
+    sb = int'(insn[19:15]);
+    ml = int'($signed(vt[2:0]));
+    sew = int'(vt[5:3]);
+    cvt = f6 == 6'h12;
+    red = !vf && (f6 == 1 || f6 == 3 || f6 == 5 || f6 == 7 || f6 == 6'h31 || f6 == 6'h33);
+    wide = f6 >= 6'h30 || (cvt && sb >= 8 && sb < 16);
+    narrow = cvt && sb >= 16;
+    mask_dest = f6 >= 6'h18 && f6 <= 6'h1f;
+    scalar_move = f6 == 6'h10 && vf;
+    scalar_read = f6 == 6'h10 && !vf;
+    uses_a = !scalar_move && !(f6 == 6'h17 && insn[25]);
+    uses_b = !vf && !cvt && f6 != 6'h13 && !scalar_read;
+    de = sew + int'(wide);
+    ae = sew + int'(narrow || f6 == 6'h34 || f6 == 6'h36);
+    be = red ? de : sew;
+    dm = ml + de - sew;
+    am = ml + ae - sew;
+    bm = red ? 0 : ml;
+    // Conversion subopcodes with sb[2:1] = 1 read an integer; with
+    // sb[2:1] = 1 or 2 they write FP
+    int_src = cvt && ((sb & 7) == 2 || (sb & 7) == 3);
+    fp_dst = cvt && ((sb & 7) == 2 || (sb & 7) == 3 || (sb & 7) == 4 || (sb & 7) == 5);
+    bad = vt[8] || sew > 3 || ml == -4 || ml < sew - 3 || ae > 3 || de > 3;
+    if (cvt) begin
+      if (!int_src) bad |= ae < 1;
+      if (fp_dst) bad |= de < 1;
+    end else bad |= sew < 1;
+    // A 16-bit FP operand outside vfwcvt.f.f.v and vfncvt.f.f.w
+    fp16 = cvt ? ((!int_src && ae == 1) || (fp_dst && de == 1)) && sb != 12 && sb != 20 : sew == 1;
+    bad |= !VectorZvfh && fp16;
+    if (red || scalar_move) dm = 0;
+    if (scalar_read) am = 0;
+    if (mask_dest) begin
+      dm = 0;
+      de = -3;
+    end
+    nd = vector_group_regs(dm);
+    na = vector_group_regs(am);
+    nb = vector_group_regs(bm);
+    bad |= dm > 3 || dm < -3 || (uses_a && (am > 3 || am < -3));
+    bad |= !scalar_read && (da & (nd - 1)) != 0;
+    bad |= uses_a && (sa & (na - 1)) != 0;
+    bad |= uses_b && (sb & (nb - 1)) != 0;
+    bad |= !insn[25] && da == 0 && !mask_dest && !red;
+    // The mask has EEW=1 and cannot also be a data source at another EEW.
+    bad |= !insn[25] && ((uses_a && sa == 0) || (uses_b && sb == 0));
+    if (uses_a && uses_b && ae != be && vector_groups_overlap(sa, na, sb, nb)) bad = 1'b1;
+    // A widening fused operation reads old vd at the destination EEW.
+    if (f6 >= 6'h3c && (vector_groups_overlap(
+            da, nd, sa, na
+        ) || (uses_b && vector_groups_overlap(
+            da, nd, sb, nb
+        ))))
+      bad = 1'b1;
+    if (!red && !scalar_read && !scalar_move) begin
+      if (uses_a) bad |= vector_overlap_illegal(da, nd, de, sa, na, ae, am);
+      if (uses_b) bad |= vector_overlap_illegal(da, nd, de, sb, nb, be, bm);
+    end
+    if (f6 == 6'h0e && vector_groups_overlap(da, nd, sa, na)) bad = 1'b1;
+    vector_fp_illegal = bad;
+  endfunction
+
   // Geometry of accepted integer arithmetic: EEW and EMUL, aligned groups,
   // permitted source/destination overlaps, including the implicit EEW1 mask
   // versus data-source widths, and instructions using masks or
   // scalar vector elements independently of LMUL. Whole-register moves ignore
-  // vl and LMUL but still use SEW and require a supported vtype.
+  // vl and LMUL but still use SEW and require a supported vtype. FP
+  // encodings take vector_fp_illegal's rules.
   function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
     int ml, sew, da, sa, sb, nd, na, nb, de, ae, be, dm, am, bm;
     logic [5:0] f6;
@@ -3495,7 +3617,7 @@ package riscv_pkg;
           !(sb == 0 || sb == 1 || sb == 3 || sb == 7) ||
           ((da & (nd - 1)) != 0) || ((sa & (nd - 1)) != 0);
     end
-    vector_arith_illegal = illegal;
+    vector_arith_illegal = vector_fp_ok(insn) ? vector_fp_illegal(vt, insn) : illegal;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -3574,8 +3696,9 @@ package riscv_pkg;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET and DRET ride the MRET machinery.
-      // VTOX, VLOAD and VSTORE complete from the vector unit at the ROB head.
-      JAL, WFI, MRET, SRET, DRET, VTOX, VLOAD, VSTORE: get_rs_type = RS_NONE;
+      // VTOX, VTOF, VARITH_F, VLOAD and VSTORE complete from the vector unit at
+      // the ROB head.
+      JAL, WFI, MRET, SRET, DRET, VTOX, VTOF, VARITH_F, VLOAD, VSTORE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -3631,8 +3754,8 @@ package riscv_pkg;
   // Instructions with an FP destination (fd).
   function automatic logic has_fp_dest(instr_op_e op);
     case (op)
-      // FP loads
-      LOAD_FP,
+      // FP loads and the vector-to-FP move
+      LOAD_FP, VTOF,
       // FP compute ops
       FADD_S, FSUB_S, FMUL_S, FDIV_S, FSQRT_S,
       FADD_D, FSUB_D, FMUL_D, FDIV_D, FSQRT_D,
@@ -3728,7 +3851,8 @@ package riscv_pkg;
       case (op)
         LUI, AUIPC, JAL, ECALL, EBREAK, FENCE, FENCE_I, WFI, MRET, SRET, DRET, PAUSE, CSR_IMM, MOP,
         // Zfa FLI: rs1 is the constant index, not a register
-        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX, VLOAD, VSTORE:
+        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI,
+        VARITH, VARITH_F, VTOX, VTOF, VLOAD, VSTORE:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase

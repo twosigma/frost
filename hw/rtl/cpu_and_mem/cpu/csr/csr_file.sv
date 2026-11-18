@@ -356,6 +356,9 @@ module csr_file #(
     input logic i_varith_commit = 1'b0,
     input logic i_vtox_commit = 1'b0,
     input logic i_vec_vxsat_set = 1'b0,
+    // Flags from active committed vector elements. CSR access drains the engine.
+    input logic i_vec_fp_flags_valid = 1'b0,
+    input logic [4:0] i_vec_fp_flags = 5'b0,
     output logic [1:0] o_vec_vxrm,
     // A non-faulting vector store retired (registered commit bus): clears
     // vstart, and sets VS Dirty only when vstart was non-zero.
@@ -1439,6 +1442,12 @@ module csr_file #(
   // Effective FP flags valid: accumulation is suppressed for one cycle after
   // a CSR write to fflags/fcsr whose read forwarded pending flags.
   logic fp_flags_valid_eff;
+  logic vec_fp_flags_active;
+  logic [4:0] accumulated_flags;
+  assign vec_fp_flags_active = VECTOR && i_vec_fp_flags_valid;
+  assign accumulated_flags = fflags |
+      (fp_flags_valid_eff ? 5'(i_fp_flags) : 5'b0) |
+      (vec_fp_flags_active ? i_vec_fp_flags : 5'b0);
   assign fp_flags_valid_eff = i_fp_flags_valid && ~fflags_suppress_forwarded_wb;
 
   always_ff @(posedge i_clk) begin
@@ -1457,15 +1466,13 @@ module csr_file #(
           end
           default: begin
             // The write targets a non-FP CSR, so flags still accumulate.
-            if (fp_flags_valid_eff) begin
-              fflags <= fflags | {i_fp_flags.nv, i_fp_flags.dz,
-                                  i_fp_flags.of, i_fp_flags.uf, i_fp_flags.nx};
+            if (fp_flags_valid_eff || vec_fp_flags_active) begin
+              fflags <= accumulated_flags;
             end
           end
         endcase
-      end else if (fp_flags_valid_eff) begin
-        fflags <= fflags | {i_fp_flags.nv, i_fp_flags.dz,
-                            i_fp_flags.of, i_fp_flags.uf, i_fp_flags.nx};
+      end else if (fp_flags_valid_eff || vec_fp_flags_active) begin
+        fflags <= accumulated_flags;
       end
     end
   end
@@ -1601,7 +1608,7 @@ module csr_file #(
     if ((i_csr_write_enable && i_csr_read_enable &&
          (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
           i_csr_address == riscv_pkg::CsrFcsr)) ||
-        i_fp_dest_write || i_fp_flags_valid) begin
+        i_fp_dest_write || i_fp_flags_valid || vec_fp_flags_active) begin
       next_mstatus_fs = FsDirty;
     end
   end
@@ -2715,6 +2722,8 @@ module csr_file #(
     // commits in the same cycle (the FS Dirty-setting logic relies on this).
     assume (!(i_fp_dest_write && i_csr_write_enable));
     assume (!(i_fp_flags_valid && i_csr_write_enable));
+    // Vector CSR serialization waits for every committed element flag.
+    assume (!(vec_fp_flags_active && i_csr_write_enable));
     // PCs are at least 2-byte aligned (compressed extension minimum)
     assume (i_trap_pc[0] == 1'b0);
   end
@@ -2905,9 +2914,23 @@ module csr_file #(
         ));
       end
 
+      if ($past(vec_fp_flags_active && !i_csr_write_enable)) begin
+        p_vec_fflags_accumulate :
+        assert (fflags == ($past(
+            fflags
+        ) | $past(
+            i_vec_fp_flags
+        ) | ($past(
+            fp_flags_valid_eff
+        ) ? 5'($past(
+            i_fp_flags
+        )) : 5'b0)));
+      end
+
       // Without a CSR write or effective flag input, fflags stays unchanged.
       if ($past(
-              !fp_flags_valid_eff && !(i_csr_write_enable && i_csr_read_enable &&
+              !fp_flags_valid_eff && !vec_fp_flags_active &&
+          !(i_csr_write_enable && i_csr_read_enable &&
           (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFcsr))
           )) begin
         p_fflags_sticky : assert (fflags == $past(fflags));
@@ -2987,7 +3010,7 @@ module csr_file #(
       // FP-state writes set Dirty. Status CSR writes install FS; trap entry
       // and xRET preserve it for the OS's context-save decision.
       if ($past(
-              i_fp_dest_write || i_fp_flags_valid ||
+              i_fp_dest_write || i_fp_flags_valid || vec_fp_flags_active ||
                 (i_csr_write_enable && i_csr_read_enable &&
                  (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
                   i_csr_address == riscv_pkg::CsrFcsr))
@@ -3478,7 +3501,7 @@ module csr_file #(
     if ((i_csr_write_enable && i_csr_read_enable &&
          (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
           i_csr_address == riscv_pkg::CsrFcsr)) ||
-        i_fp_dest_write || i_fp_flags_valid) begin
+        i_fp_dest_write || i_fp_flags_valid || vec_fp_flags_active) begin
       f_old_next_mstatus_fs = FsDirty;
     end
   end

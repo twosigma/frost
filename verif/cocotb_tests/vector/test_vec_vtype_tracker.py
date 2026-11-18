@@ -87,15 +87,18 @@ async def configuration_handoff(dut: Any) -> None:
     dut.i_ckpt_save.value = 1
     await FallingEdge(dut.i_clk)
     dut.i_ckpt_save.value = 0
-    dut.i_alloc.value = 1
-    dut.i_alloc_op.value = ops["VARITH"]
-    await FallingEdge(dut.i_clk)
-    dut.i_alloc.value = 0
-    assert not int(dut.o_vstart_nonzero.value)
-    dut.i_restore.value = 1
-    await FallingEdge(dut.i_clk)
-    dut.i_restore.value = 0
-    assert int(dut.o_valid.value) and int(dut.o_vstart_nonzero.value)
+    # Arithmetic (integer and FP, with or without a scalar) and the
+    # vector-to-scalar moves each clear vstart when they retire.
+    for operation in ("VARITH", "VARITH_X", "VARITH_F", "VTOX", "VTOF"):
+        dut.i_alloc.value = 1
+        dut.i_alloc_op.value = ops[operation]
+        await FallingEdge(dut.i_clk)
+        dut.i_alloc.value = 0
+        assert not int(dut.o_vstart_nonzero.value), operation
+        dut.i_restore.value = 1
+        await FallingEdge(dut.i_clk)
+        dut.i_restore.value = 0
+        assert int(dut.o_valid.value) and int(dut.o_vstart_nonzero.value), operation
 
     # A completed vector memory instruction clears architectural vstart before
     # a younger arithmetic instruction can observe it. Allocation predicts that

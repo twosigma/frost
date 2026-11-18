@@ -10,8 +10,8 @@ the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
 The remaining scalar and supervisor extensions are in progress. Two larger
 pieces come before the second hart:
 
-- A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; Zvbc,
-  Zvfh and vector cryptography follow. The vector length
+- A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; Zvbc
+  and vector cryptography follow. The vector length
   is a build parameter from 128 to 512 bits; 512 bits is one L2 line. Vector
   loads and stores go through the coherent memory system, so they are
   ordered with the scalar load and store queues and the caches, and they
@@ -21,9 +21,10 @@ pieces come before the second hart:
   unit's datapath blocks with their unit benches. The core executes
   `vsetvli`, `vsetivli` and `vsetvl`, the vector integer arithmetic, logical,
   fixed-point, multiply/divide, mask, reduction, permutation and Zvbb instructions,
-  `vmv.x.s`, `vcpop.m` and `vfirst.m`, and unit-stride, whole-register and mask
-  loads and stores. The X3 build includes the unit; other memory forms, floating
-  point and vector cryptography are not executed yet.
+  the vector floating-point instructions at SEW 16, 32 and 64 (Zvfh, and with it
+  the Zvfhmin conversions), `vmv.x.s`, `vcpop.m`, `vfirst.m` and `vfmv.f.s`, and
+  unit-stride, whole-register and mask loads and stores. The X3 build includes the
+  unit; other memory forms and vector cryptography are not executed yet.
   One limitation is known: a vector load executed in
   Debug Mode that faults after writing part of its destination register
   leaves `mstatus.VS` Clean; `vec_debug_partial` records it as an expected
@@ -63,8 +64,8 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
 | Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction and permutation execution; unit-stride/whole-register/mask loads and stores; other memory forms and FP execution not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_mem_test`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py`, `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby` |
-| Zvfhmin | Partial (FP16 convert datapath block in place; core execution not connected) | `test_vec_fcvt.py` |
+| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction, permutation and floating-point execution; unit-stride/whole-register/mask loads and stores; other memory forms not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` (one generated program per form, and a sample of the suite's FP programs), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby` |
+| Zvfhmin | Implemented with `VECTOR=1` (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at SEW 16; unadvertised) | `vec_fp_test`, `test_vec_fcvt.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` (one generated program per FP form at VLEN 128, 256 and 512) |
 | Zvbb | Implemented with `VECTOR=1` (including `vwsll`; unadvertised) | `test_vec_int_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py` |
 | Zvkt | Partial (fixed-latency integer and bitmanip lanes in place; vector unit unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py` |
 | Zihintntl | Implemented (hints execute as no-ops) | `riscv-arch-test` (`hints`), `rvc_predecode.sby`, TestRIG (`--zcb`) |
@@ -93,7 +94,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Ssu64xl | Implemented | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`, `ssu64xl_uxl.S`), `csr_file.sby` |
 | Zbc (optional) | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzbc`), TestRIG, `cl_multiplier.sby` |
 | Svvptc (optional) | Implemented | `vm_test`, `asid_test`, TestRIG, `ptw.sby`, `immu_memo.sby`, `dmmu_twin.sby` |
-| Zvfh (optional) | Partial (FP16 lane datapath blocks in place; core execution not connected) | `test_vec_fma.py`, `test_vec_fcvt.py`, `test_vec_fdivsqrt.py`, `test_vec_fp_misc.py` |
+| Zvfh (optional) | Implemented with `VECTOR=1` (every vector floating-point instruction at SEW 16; optional in the profile; unadvertised) | `vec_fp_test`, `test_vec_fma.py`, `test_vec_fcvt.py`, `test_vec_fdivsqrt.py`, `test_vec_fp_misc.py`, `test_vec_fp_estimate.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` (one generated program per FP form at VLEN 128, 256 and 512, and 50 of the suite's FP programs chosen by instruction group) |
 | Zvbc (optional) | Partial (carry-less multiply lane block in place; core execution not connected) | `test_vec_clmul_lane.py` |
 | Zvkng (optional) | Partial (AES, SHA-2 and GHASH group blocks in place; core execution not connected) | `test_vec_aes_group.py`, `test_vec_sha2_group.py`, `test_vec_ghash_group.py` |
 

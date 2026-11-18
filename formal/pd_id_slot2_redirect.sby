@@ -1,16 +1,24 @@
 [tasks]
 pd_id_slot2_bmc
 pd_id_slot2_cover
+pd_id_slot2_vector_bmc
+pd_id_slot2_vector_cover
 
 [options]
 pd_id_slot2_bmc: mode bmc
 pd_id_slot2_bmc: depth 8
 pd_id_slot2_cover: mode cover
 pd_id_slot2_cover: depth 8
+pd_id_slot2_vector_bmc: mode bmc
+pd_id_slot2_vector_bmc: depth 8
+pd_id_slot2_vector_cover: mode cover
+pd_id_slot2_vector_cover: depth 8
 
 [engines]
 pd_id_slot2_bmc: abc bmc3
 pd_id_slot2_cover: smtbmc boolector
+pd_id_slot2_vector_bmc: abc bmc3
+pd_id_slot2_vector_cover: smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
@@ -25,6 +33,9 @@ read_verilog -D SYNTHESIS -sv instruction_type_decoder.sv
 read_verilog -D SYNTHESIS -sv branch_target_precompute.sv
 read_verilog -D SYNTHESIS -sv id_stage.sv
 read -formal -sv pd_id_slot2_redirect_formal.sv
+# The vector tasks add id_stage's vector floating-point decode.
+pd_id_slot2_vector_bmc: chparam -set VECTOR 1 pd_id_slot2_redirect_formal
+pd_id_slot2_vector_cover: chparam -set VECTOR 1 pd_id_slot2_redirect_formal
 hierarchy -check -top pd_id_slot2_redirect_formal
 setattr -unset dont_touch *
 setattr -mod -unset keep_hierarchy *

@@ -1,5 +1,6 @@
 [tasks]
 bmc
+vector_bmc
 
 [options]
 mode bmc
@@ -11,6 +12,8 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv instr_decoder.sv instr_operand_classifier.sv
 read -formal -sv instr_operand_classifier_equiv.sv
+# bmc is the default build; vector_bmc adds the vector floating-point decode.
+vector_bmc: chparam -set VECTOR 1 instr_operand_classifier_equiv
 hierarchy -top instr_operand_classifier_equiv
 script free_undefined.ys
 prep -top instr_operand_classifier_equiv

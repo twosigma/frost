@@ -18,8 +18,12 @@
 // the instruction fields, against a reference that decodes the operation enum
 // with instr_decoder and classifies it by operation lists. Covers every
 // instruction bit pattern and every combination of injected NOP, illegal
-// flag, and fetch fault.
-module instr_operand_classifier_equiv (
+// flag, and fetch fault. Both elaborate with VECTOR, 0 in task bmc (the
+// default build) and 1 in task vector_bmc, which adds the vector
+// floating-point forms and classes.
+module instr_operand_classifier_equiv #(
+    parameter bit VECTOR = 1'b0
+) (
     input riscv_pkg::instr_t i_instr,
     input logic i_inject_nop,
     input logic i_pd_illegal,
@@ -40,7 +44,9 @@ module instr_operand_classifier_equiv (
   assign instruction = i_inject_nop ? riscv_pkg::NOP : i_instr;
   assign is_illegal_instruction = decoder_illegal || i_pd_illegal;
   assign is_fetch_fault = i_fetch_fault;
-  instr_decoder decoder (
+  instr_decoder #(
+      .VECTOR(VECTOR)
+  ) decoder (
       .i_instr(instruction),
       .i_cbo_inval_flush(i_cbo_inval_flush),
       .o_instr_op(instruction_operation),
@@ -164,7 +170,8 @@ module instr_operand_classifier_equiv (
       rs_type_pre = riscv_pkg::RS_FP;
 
       riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET,
-      riscv_pkg::VTOX, riscv_pkg::VLOAD, riscv_pkg::VSTORE:
+      riscv_pkg::VTOX, riscv_pkg::VTOF, riscv_pkg::VARITH_F,
+      riscv_pkg::VLOAD, riscv_pkg::VSTORE:
       rs_type_pre = riscv_pkg::RS_NONE;
 
       default: rs_type_pre = riscv_pkg::RS_INT;
@@ -400,6 +407,8 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::VSETIVLI &&
       op_for_pre_decode != riscv_pkg::VARITH &&
       op_for_pre_decode != riscv_pkg::VTOX &&
+      op_for_pre_decode != riscv_pkg::VTOF && op_for_pre_decode != riscv_pkg::VARITH_F &&
+
       op_for_pre_decode != riscv_pkg::VLOAD &&
       op_for_pre_decode != riscv_pkg::VSTORE);
 
@@ -457,7 +466,9 @@ module instr_operand_classifier_equiv (
   logic has_fp_flags_direct;
   logic needs_lq_direct;
   logic needs_sq_direct;
-  instr_operand_classifier dut (
+  instr_operand_classifier #(
+      .VECTOR(VECTOR)
+  ) dut (
       .i_instr,
       .i_inject_nop,
       .i_illegal(is_illegal_instruction),
@@ -488,7 +499,8 @@ module instr_operand_classifier_equiv (
     p_lr_encoding :
     assert (((instruction_operation == riscv_pkg::LR) && !decoder_illegal) == spec_lr);
     p_has_int_dest : assert (has_int_dest_direct == has_int_dest_pre);
-    p_has_fp_dest : assert (has_fp_dest_direct == has_fp_dest_pre);
+    p_has_fp_dest :
+    assert (has_fp_dest_direct == (has_fp_dest_pre || op_for_pre_decode == riscv_pkg::VTOF));
     p_uses_int_rs1 : assert (uses_int_rs1_direct == uses_int_rs1_pre);
     p_uses_int_rs2 : assert (uses_int_rs2_direct == uses_int_rs2_pre);
     p_uses_fp_rs1 : assert (uses_fp_rs1_direct == uses_fp_rs1_pre);
@@ -501,7 +513,11 @@ module instr_operand_classifier_equiv (
     p_is_fence_i : assert (is_fence_i_direct == is_fence_i_pre);
     p_is_sfence_vma : assert (is_sfence_vma_direct == is_sfence_vma_pre);
     p_is_csr_imm : assert (is_csr_imm_direct == is_csr_imm_pre);
-    p_has_fp_flags : assert (has_fp_flags_direct == has_fp_flags_pre);
+    p_has_fp_flags :
+    assert (has_fp_flags_direct ==
+        (has_fp_flags_pre || op_for_pre_decode == riscv_pkg::VARITH_F ||
+         op_for_pre_decode == riscv_pkg::VTOF ||
+         (op_for_pre_decode == riscv_pkg::VARITH && instruction.funct3 == 1)));
     p_needs_lq : assert (needs_lq_direct == needs_lq_pre);
     p_needs_sq : assert (needs_sq_direct == needs_sq_pre);
     // Only FMA operations read FP source 3. Dispatch sends them to FP_RS

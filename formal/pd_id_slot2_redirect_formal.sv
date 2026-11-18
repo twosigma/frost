@@ -30,9 +30,12 @@
  * when one fires, keeps IF's metadata otherwise, leaves slot 1 untouched, and
  * holds across pipeline stalls. Covers taken overrides (native and compressed),
  * not-taken vetoes, backing-BTB jump redirects, and stalled veto release.
+ * VECTOR selects id_stage's decode: 0 for the default build, 1 to add the
+ * vector floating-point decode.
  */
 module pd_id_slot2_redirect_formal #(
-    parameter int unsigned XLEN = riscv_pkg::XLEN
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
+    parameter bit VECTOR = 1'b0
 ) (
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
@@ -102,7 +105,8 @@ module pd_id_slot2_redirect_formal #(
   );
 
   id_stage #(
-      .XLEN(XLEN)
+      .XLEN  (XLEN),
+      .VECTOR(VECTOR)
   ) u_id_stage (
       .i_clk,
       .i_pipeline_ctrl,

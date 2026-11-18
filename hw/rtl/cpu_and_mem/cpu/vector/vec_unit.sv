@@ -22,7 +22,10 @@
     - An 8-entry queue (VIQ) filled when a vector arithmetic entry retires,
       feeding vec_engine one instruction at a time.
     - Head-executed vector-to-scalar operations (VTOX: vmv.x.s, vcpop.m,
-      vfirst.m) completing on CDB slot 6.
+      vfirst.m; VTOF: vfmv.f.s, NaN-boxed) completing on CDB slot 6. The
+      same service reads the f-register scalar of an OPFVF instruction
+      (VARITH_F) at the head and completes it with that value, which the
+      instruction carries to the VIQ when it retires.
     - Head-executed legality and translation for vector loads and stores
       (vec_head_mmu) completing on CDB slot 6, paired with the post-retirement
       sector memory engine (vec_vmu) on the hart's coherence line client.
@@ -62,6 +65,15 @@ module vec_unit #(
     input  logic                    [                       1:0] i_vxrm,
     output logic                                                 o_vxsat_set,
     output logic                                                 o_vtox_commit,
+    // frm for each queued instruction, and the FP exception flags of the
+    // active elements, one pulse per instruction that raises any
+    input  logic                    [                       2:0] i_frm,
+    output logic                                                 o_fp_flags_valid,
+    output logic                    [                       4:0] o_fp_flags,
+    // An instruction with an f-register scalar operand (OPFVF): read at the
+    // ROB head through the register files' extra read port (o_rf_read_addr)
+    input  logic                                                 i_alloc_is_vfscalar,
+    input  logic                    [                      63:0] i_fp_read_data,
     // ROB head & ordering inputs
     input  logic                    [                  TagW-1:0] i_head_tag,
     input  logic                                                 i_rob_empty,
@@ -70,7 +82,8 @@ module vec_unit #(
     input  logic                                                 i_csr_wb_pending,
     input  logic                                                 i_sq_committed_empty,
     input  logic                                                 i_int_take_armed,
-    // Integer RF extra read port (rs1 for VLOAD/VSTORE)
+    // Register files' extra read port: the integer rs1 of VLOAD/VSTORE, or
+    // the f-register scalar of an OPFVF instruction at the head
     output logic                                                 o_rf_read_en,
     output logic                    [                       4:0] o_rf_read_addr,
     input  logic                    [                  XLEN-1:0] i_rf_read_data,
@@ -146,7 +159,7 @@ module vec_unit #(
       if (vtox_done) is_vtox_q[vtox_tag_q] <= 1'b0;
       if (vhead_cdb_done) is_vmem_q[vhead_cdb_done_tag] <= 1'b0;
       if (i_alloc) begin
-        is_vtox_q[i_alloc_tag] <= i_alloc_is_vtox;
+        is_vtox_q[i_alloc_tag] <= i_alloc_is_vtox || i_alloc_is_vfscalar;
         vtox_retire_q[i_alloc_tag] <= i_alloc_is_vtox;
         is_varith_q[i_alloc_tag] <= i_alloc_is_varith;
         is_vmem_q[i_alloc_tag] <= i_alloc_is_vmem;
@@ -199,8 +212,8 @@ module vec_unit #(
   logic zero_vmt_done_valid;
   logic [VmtIdxW-1:0] zero_vmt_done_idx;
 
-  // VIQ: {insn, scalar, vl, vtype, vstart, vxrm}
-  localparam int unsigned EntryW = 32 + 64 + 16 + 9 + 16 + 2;
+  // VIQ: {insn, scalar, vl, vtype, vstart, vxrm, frm}
+  localparam int unsigned EntryW = 32 + 64 + 16 + 9 + 16 + 2 + 3;
   logic [EntryW-1:0] viq_q[Depth];
   logic [$clog2(Depth)-1:0] head_q, tail_q;
   logic [$clog2(Depth):0] count_q;
@@ -210,7 +223,9 @@ module vec_unit #(
   assign pop  = eng_idle && !issued_q && (count_q != '0) && vmu_idle && !vmem_desc_valid_q;
   always_ff @(posedge i_clk) begin
     if (push)
-      viq_q[tail_q] <= {insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart, i_vxrm};
+      viq_q[tail_q] <= {
+        insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart, i_vxrm, i_frm
+      };
     if (i_rst) begin
       head_q        <= '0;
       tail_q        <= '0;
@@ -232,7 +247,8 @@ module vec_unit #(
   logic [15:0] e_vl, e_vstart;
   logic [8:0] e_vtype;
   logic [1:0] e_vxrm;
-  assign {e_insn, e_scalar, e_vl, e_vtype, e_vstart, e_vxrm} = viq_q[head_q];
+  logic [2:0] e_frm;
+  assign {e_insn, e_scalar, e_vl, e_vtype, e_vstart, e_vxrm, e_frm} = viq_q[head_q];
 
   vec_engine #(
       .VLEN(VLEN)
@@ -250,6 +266,9 @@ module vec_unit #(
       .o_unsupported(),
       .i_vxrm       (e_vxrm),
       .o_sat        (o_vxsat_set),
+      .i_frm        (e_frm),
+      .o_flags_valid(o_fp_flags_valid),
+      .o_flags      (o_fp_flags),
       .i_xr_addr    (xr_addr),
       .o_xr_data    (xr_data),
       .i_xw_en      (vmu_xw_en),
@@ -280,7 +299,11 @@ module vec_unit #(
   logic [Blocks-1:0][6:0] blk_cnt_q;
   logic [Blocks-1:0][5:0] blk_first_q;
   logic [Blocks-1:0] blk_any_q;
-  logic [63:0] xres_q;
+  logic [63:0] xres_q, fp_scalar_q;
+  // The f-register read of an OPFVF instruction, held from the head check to
+  // the grant
+  logic fp_read_q;
+  logic [4:0] fp_read_addr_q;
   wire x_masked = !xi[25];
   wire x_is_mv = (xi[19:15] == 5'b00000);
   wire x_is_first = (xi[19:15] == 5'b10001);
@@ -320,11 +343,15 @@ module vec_unit #(
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush_all) begin
       xs <= X_IDLE;
+      fp_read_q <= 1'b0;
+      fp_read_addr_q <= '0;
     end else begin
       unique case (xs)
         X_IDLE:
         if (!i_rob_empty && is_vtox_q[i_head_tag] && i_head_safe && vtox_backend_ready) begin
           vtox_tag_q <= i_head_tag;
+          fp_read_q <= insn_q[i_head_tag][14:12] == 3'b101;
+          fp_read_addr_q <= insn_q[i_head_tag][19:15];
           xwait_q <= '0;
           xs <= X_WAIT;
         end
@@ -337,10 +364,13 @@ module vec_unit #(
             xvt_q <= i_vtype;
             xs <= (vtox_backend_ready && !i_rob_empty &&
                    (i_head_tag == vtox_tag_q) && i_head_safe) ? X_RD2 : X_IDLE;
+            if (!(vtox_backend_ready && !i_rob_empty && i_head_tag == vtox_tag_q && i_head_safe))
+              fp_read_q <= 1'b0;
           end
         end
         X_RD2:   xs <= X_RD0;
         X_RD0: begin
+          fp_scalar_q <= i_fp_read_data;
           xs2_q <= xr_data;  // vs2, read last cycle
           xs <= X_ST1;
         end
@@ -355,7 +385,11 @@ module vec_unit #(
           blk_any_q <= blk_any;
           xs <= X_OUT;
         end
-        X_OUT:   if (i_grant) xs <= X_IDLE;
+        X_OUT:
+        if (i_grant) begin
+          xs <= X_IDLE;
+          fp_read_q <= 1'b0;
+        end
         default: xs <= X_IDLE;
       endcase
     end
@@ -376,7 +410,15 @@ module vec_unit #(
         found = 1'b1;
       end
     end
-    if (x_is_mv) begin
+    // OPFVF: the f-register scalar; vfmv.f.s: element 0, NaN-boxed
+    if (xi[14:12] == 3'b101) xres_q = fp_scalar_q;
+    else if (xi[14:12] == 3'b001) begin
+      case (xvt_q[4:3])
+        1: xres_q = {48'hffffffffffff, xs2_q[15:0]};
+        2: xres_q = {32'hffffffff, xs2_q[31:0]};
+        default: xres_q = xs2_q[63:0];
+      endcase
+    end else if (x_is_mv) begin
       unique case (xvt_q[4:3])
         2'd0: xres_q = {{56{xs2_q[7]}}, xs2_q[7:0]};
         2'd1: xres_q = {{48{xs2_q[15]}}, xs2_q[15:0]};
@@ -410,6 +452,14 @@ module vec_unit #(
   logic desc_launch_free_vmt;
   logic [SegW-1:0] desc_launch_seg0, desc_launch_seg1;
 
+  // The head MMU's rs1 read and the OPFVF scalar read share the register
+  // files' extra read port; one instruction is at the head, so they never
+  // overlap.
+  logic hmmu_rf_read_en;
+  logic [4:0] hmmu_rf_read_addr;
+  assign o_rf_read_en   = hmmu_rf_read_en || fp_read_q;
+  assign o_rf_read_addr = fp_read_q ? fp_read_addr_q : hmmu_rf_read_addr;
+
   vec_head_mmu #(
       .VLEN          (VLEN),
       .CACHED_TIER_EN(CACHED_TIER_EN)
@@ -434,8 +484,8 @@ module vec_unit #(
       .i_vl                     (i_vl),
       .i_vtype                  (i_vtype),
       .i_vstart                 (i_vstart),
-      .o_rf_read_en             (o_rf_read_en),
-      .o_rf_read_addr           (o_rf_read_addr),
+      .o_rf_read_en             (hmmu_rf_read_en),
+      .o_rf_read_addr           (hmmu_rf_read_addr),
       .i_rf_read_data           (i_rf_read_data),
       .o_vrf_read_en            (vhead_vrf_read_en),
       .o_vrf_read_addr          (vhead_vrf_read_addr),
@@ -582,6 +632,7 @@ module vec_unit #(
       assert (!(vhead_complete.valid && vtox_only_complete.valid));
       assert (!(zero_vmt_done_valid && vmu_vmt_done_valid));
       assert ($onehot0({vtox_xr_en, vhead_vrf_read_en, vmu_xr_en}));
+      assert (!(fp_read_q && hmmu_rf_read_en));
       assert (!(desc_launch_valid && vmem_desc_valid_q));
     end
   end

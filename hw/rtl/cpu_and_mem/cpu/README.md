@@ -737,9 +737,11 @@ slot 5. The wrapper keeps the result per ROB tag; when the instruction retires
 clears `vstart` and sets VS to Dirty. With rs1 = rd = x0 it keeps
 `min(vl, VLMAX)` under the new `vtype`, as the specification requires.
 
-The vector integer instructions listed for `vec_engine` below also execute.
-ID decodes them as `VARITH` (or `VARITH_X` with a scalar operand), which
-dispatch sends to INT_RS only to hand the scalar operand to the ROB; legality
+The vector integer and floating-point instructions listed for `vec_engine`
+below also execute. ID decodes them as `VARITH` (or `VARITH_X` with an
+x-register scalar operand), which dispatch sends to INT_RS only to hand the
+scalar operand to the ROB, or as `VARITH_F` with an f-register scalar operand,
+which goes to no reservation station; `vfmv.f.s` is `VTOF`. Legality
 that depends on `vtype` (vill, register-group alignment, mask-destination
 overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
@@ -748,19 +750,22 @@ unknown). Configuration allocation restarts the three-cycle wait for an
 empty configuration pipeline before the registered ROB in-flight indication
 arrives. The tracker reloads architectural `vtype` only after that wait,
 allowing the retiring CSR update to arrive. A simulation check records the
-tracked `vtype` at the allocation of each vector arithmetic and
-vector-to-scalar instruction and requires the CSR file's `vtype` to equal it
-when the instruction retires.
+tracked `vtype` at the allocation of each vector arithmetic (integer or
+floating point) and vector-to-scalar instruction and requires the CSR file's
+`vtype` to equal it when the instruction retires.
 `vector/vec_dispatch_legality.sv` evaluates the EEW, EMUL, alignment and
 overlap rules (`vector/vec_arith_legality.sv`) for the instruction at the
 decoded queue's head under the tracked `vtype`, from the queue's registered
 head shadow and the tracker's registers into one register. An instruction of
 the vector arithmetic opcode other than a configuration instruction (the
-arithmetic families, `vmv.x.s`, `vcpop.m`, `vfirst.m`, and encodings that
-decode rejects) waits one cycle at the head for that result, and dispatch
+integer and floating-point families, `vmv.x.s`, `vcpop.m`, `vfirst.m`,
+`vfmv.f.s`, and encodings that decode rejects) waits one cycle at the head
+for that result, and dispatch
 takes it into the allocation's illegal-instruction check. Scalar instructions
 and vector loads, stores and configuration instructions do not wait, and the
-decode stages and the queue are those of a build without the unit.
+decode stages and the queue are those of a build without the unit, except that
+only `VECTOR=1` decodes the floating-point forms and counts them as FP
+instructions (without the unit they stay illegal at the decoder).
 `vec_arith_legality` has no adder or magnitude compare: register
 groups are 2-bit size codes from tables of LMUL and SEW, alignment is a test
 of a register number's low bits, and two aligned groups overlap exactly when
@@ -768,22 +773,25 @@ their register numbers agree above the larger group's size. Without the unit,
 dispatch uses the four LMUL classes of `vector/vec_lmul_legality.sv` that the
 queue carries, and ID rejects every OP-V instruction anyway.
 Sources that overlap at different element widths are reserved; this includes
-using v0 as both a mask and an integer data source. Widening
-multiply-accumulate also reads its old double-width destination, so a narrow
-source may not overlap that accumulator.
+using v0 as both a mask and an integer or floating-point data source.
+Widening multiply-accumulate, integer or floating point, also reads its old
+double-width destination, so a narrow source may not overlap that
+accumulator.
 The tracker also checkpoints whether
 `vstart` is nonzero, clearing it for each dispatched vector instruction. A
 checkpoint also records whether an allocation owns that prediction, so a delayed
 architectural `vtype` reload cannot overwrite a younger load/store's clear. A
 later CSR access or full flush discards the prediction before reloading the
 architectural state. The ownership bit adds no dispatch wait, including after
-immediate configuration instructions. Arithmetic rejects nonzero `vstart`;
-whole-register moves honor their start index. `vmv.x.s` reads element zero
-irrespective of `vstart`. `vmv.s.x` writes element zero when `vstart < vl`,
-including `0 < vstart < vl`, following Spike's interpretation; it writes nothing
-when `vstart >= vl`. When arithmetic retires, `vec_unit` queues it with its scalar and the
-architectural `vl`, `vtype`, `vstart` and `vxrm`, and the engine executes it after
-commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
+immediate configuration instructions. Arithmetic rejects nonzero `vstart`,
+which the specification permits; whole-register moves honor their start index.
+The four scalar moves execute with any `vstart`, where the specification would
+also permit a trap: `vmv.x.s` and `vfmv.f.s` read element zero, and `vmv.s.x`
+and `vfmv.s.f` write element zero when `vstart < vl`, including
+`0 < vstart < vl`, and nothing when `vstart >= vl`. When arithmetic retires,
+`vec_unit` queues it with its scalar and the architectural `vl`, `vtype`,
+`vstart`, `vxrm` and `frm`, and the engine executes it after commit; the CSR
+file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
 result on CDB slot 6. Retiring these scalar-result instructions clears
 `vstart`, dirtying VS only if that changes it. Saturation from active,
@@ -792,6 +800,32 @@ engine and its retirement queue to drain, so reads and writes observe
 completed vector effects in program order. An interrupt can enter while the
 engine runs, but its handler's first CSR access may wait for all queued work;
 a large vector division can therefore make that wait long.
+
+Floating-point arithmetic uses the same queue. A vector FP instruction is an FP
+instruction for `mstatus.FS` (Off makes it illegal, at ID and again at
+allocation) and uses `frm`: a reserved rounding mode makes every vector FP
+instruction illegal at allocation, including moves and compares, which the
+specification permits. A `VARITH_F` instruction reads its f-register operand
+at the ROB head, once the unit is idle and the older instructions have
+retired, through the register files' extra read port, and completes on CDB
+slot 6 with that value, which retirement hands to the queue. `vfmv.f.s`
+executes at the head like `vmv.x.s` and returns element zero on CDB slot 6,
+NaN-boxed when SEW is 16 or 32; it writes the f register when it retires and
+clears `vstart`. The engine collects the exception flags of an instruction's
+active elements and, when the instruction finishes, sends them to the CSR file
+in one pulse if any is set; the CSR file ORs them into `fflags`. FS is set
+Dirty by `vfmv.f.s`'s register write and by a flag pulse, also when `fflags`
+already held those flags; a vector FP instruction that raises no flag and
+writes no f register leaves FS as it was, Initial or Clean included. Because
+every CSR access waits for the engine and its queue to drain, a read of
+`fflags` sees the flags of every older vector instruction and none of a
+younger one, in program order with the scalar FP instructions, whose flags
+accrue as they retire. A simulation check in `cpu_ooo` confirms that a flag
+pulse never meets a CSR write. Two choices the specification leaves to the
+implementation differ from Spike: `vfmv.f.s` and `vfmv.s.f` execute with a
+nonzero `vstart`, where Spike traps them, and with every element masked off,
+`vfredusum` returns its seed unchanged and raises no flag even for a signaling
+NaN, where Spike returns the canonical NaN and raises invalid.
 
 ID decodes the unit-stride (one field), whole-register and mask loads and
 stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1
@@ -925,6 +959,22 @@ respective results. Gathers and slides read the selected source element in a
 separate registered step. Compress visits every source element, including
 unselected elements, and advances a packed destination cursor. Whole-register
 moves use the encoded register count independently of `vl` and LMUL.
+
+`vec_fp_exec` executes the floating-point instructions one element at a time:
+it reads the source registers, extracts the elements, runs `vec_fp_lane` and
+writes the result, each step registered. `vec_fp_lane` holds `vec_fma`,
+`vec_fp_misc`, `vec_fdivsqrt` and `vec_fp_estimate` for each of FP16, FP32 and
+FP64 and a conversion block for each same-width, widening and narrowing pair
+of widths; a widening operation converts its narrow operands exactly before
+the wider operation.
+Both sum reductions use the ordered evaluation, which the unordered form
+permits; the widening reductions accumulate at twice SEW. Compares merge their
+result bit into the destination mask. `vec_fp_estimate` computes `vfrec7` and
+`vfrsqrt7` from the specification's 128-entry tables after normalizing
+subnormal inputs with a fixed number of steps. Inactive elements raise no
+flags. The FP16 arithmetic, estimate and FP16/integer conversion instances
+exist only with `riscv_pkg::VectorZvfh`, which also makes SEW=16 FP arithmetic
+legal; the FP16/FP32 conversions of Zvfhmin are always present.
 
 Instructions execute in order with no overlap. Only active body bytes are
 written, preserving tails and inactive elements. Mask results merge one bit

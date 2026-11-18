@@ -1202,6 +1202,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         )
         for vlen in (128, 256, 512)
     },
+    **{
+        f"vec_fp_test_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="vec_fp_test",
+            nic_mac_clocks=False,
+            description=(
+                f"FP arithmetic, reductions, masks and conversions at VLEN {vlen}, "
+                "including FP scalar operands and ordered flag readback"
+            ),
+            verilator_extra_args=("-GVECTOR=1", f"-GVLEN={vlen}"),
+            extra_env=(
+                ("EXTRA_CFLAGS", f"-DVEC_VLEN={vlen}"),
+                ("COCOTB_MAX_CYCLES", "5000000"),
+            ),
+            include_in_pytest=(vlen == 256),
+        )
+        for vlen in (128, 256, 512)
+    },
     "vec_arith_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2858,10 +2877,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "element width against a Python model, with a fixed latency"
         ),
     ),
+    **{
+        f"vec_fp_exec_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_fp_exec",
+            hdl_toplevel_module="vec_fp_exec",
+            description=(
+                f"FP instruction sequencing, mixed widths, masks, reductions and one "
+                f"flags pulse per flag-raising instruction at VLEN {vlen}"
+            ),
+            verilator_extra_args=(f"-GVLEN={vlen}",),
+        )
+        for vlen in (128, 256, 512)
+    },
     "vec_operand_widths": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_operand_widths",
         hdl_toplevel_module="vec_arith_legality",
-        description="Mask/data source widths and widening accumulator overlap legality",
+        description=(
+            "Integer and floating-point source widths and widening accumulator overlap "
+            "legality"
+        ),
+        extra_env=(("FROST_VECTOR_TEST_FP", "1"),),
     ),
     "vec_source_eew": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_source_eew",
@@ -2953,6 +2988,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector register file, 64 entries of 128 bits, 3 read and 3 write ports",
         verilator_extra_args=("-GDEPTH=64", "-GWIDTH=128", "-GNR=3", "-GNW=3"),
     ),
+    **{
+        f"vec_fp_estimate{width}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_fp_estimate",
+            hdl_toplevel_module="vec_fp_estimate",
+            description=(
+                f"FP{width} estimates: every table index, subnormal boundaries, flags and "
+                "fixed latency"
+            ),
+            verilator_extra_args=(f"-GEXP={exp}", f"-GFRAC={frac}"),
+        )
+        for width, exp, frac in ((16, 5, 10), (32, 8, 23), (64, 11, 52))
+    },
     "vec_fma16": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_fma",
         hdl_toplevel_module="vec_fma",

@@ -147,6 +147,14 @@ which does not read the destination as an accumulator.
 The `verif/testrig/vector_source_widths_integer.S` trace checks these classes
 against the architectural reference with `test_testrig.py --trace
 ../verif/testrig/vector_source_widths_integer.S --vlen 128` from `tests/`.
+The registry entry sets `FROST_VECTOR_TEST_FP`, which adds the floating-point
+cases: FP vector and scalar source fields, reduction seeds and the wide
+destination read by widening fused operations. The companion
+`vector_source_widths_fp.S` trace checks them against the reference. Sail 0.16
+omits the source-width overlap check for the widening scalar FP
+multiply-accumulate forms, so that trace uses a disjoint source and
+accumulator; `vec_operand_widths` and `vec_fp_test` cover the reserved
+overlaps of those forms.
 
 `TEST_REGISTRY` defines every simulation target: benches for CPU and SoC
 blocks, directed CPU tests, and applications from `sw/apps/`, which the
@@ -975,6 +983,20 @@ patcher and this wiring. The tests skip with a message when the image lacks
 add one, run `--rtl` with `--vlen` and `--shard` in a job built with the
 vector parameters above.
 
+The simulation evidence for the vector floating-point instructions is two
+selections from the suite, not the full suite. One is a complete generated
+program for each of the 101 FP instruction forms at VLEN 128, 256 and 512,
+generated at a tenth of the suite's program size (`-split=1000`): the first
+program with active elements at 128, the middle one at 256 and the last one at
+512. The other is 50 of the suite's own FP programs, chosen by instruction
+group: 30 at VLEN 128 (at least one of add, subtract and multiply, fused
+multiply-add, divide and square root, the estimates, min/max and sign
+injection, compares, classify, merge and moves, same-width, widening and
+narrowing conversions including the FP16 ones, ordered and unordered
+reductions, and widening arithmetic) and 10 each at 256 and 512 from different
+groups. The suite's 19 bfloat16 programs (Zvfbfmin, Zvfbfwma) are not run:
+FROST does not implement those extensions.
+
 ### `test_vector_reference.py`
 
 Builds the vector bring-up programs in `sw/apps/vec_*` for Spike and runs
@@ -1008,6 +1030,24 @@ on Spike at the same three lengths, including a deliberately wrong expected
 bit. The `vec_integer_exec_v*` engine benches separately compare all registers,
 tails, inactive elements and saturation against an element model across SEW,
 LMUL and rounding modes.
+
+The `vec_fp_test_v128`, `vec_fp_test_v256` and `vec_fp_test_v512` entries
+execute every floating-point instruction form through the core at SEW 16, 32
+and 64, reading register images through scalar moves and `fflags` after each
+instruction, and check f-register scalar operands, `vfmv.f.s` boxing and
+`vstart`, active-only flags and their order against `fflags` clears, VS
+dirtying, FS dirtying only by a raised flag or `vfmv.f.s` (instructions that
+raise no flag leave FS Clean or Initial), FS Off, VS Off and a reserved `frm`
+trapping, and reserved widths and geometry. `test_vector_reference.py` checks
+their expected images, flags and FS states on Spike at the same lengths, with
+a deliberately wrong expected bit.
+The `vec_fp_exec_v*` engine benches compare every FP form, width and rounding
+mode with SoftFloat, including registers, tails, inactive elements, flags from
+active elements only, and one flags pulse per instruction that raises a flag
+and none for one that raises none.
+`vec_fp_estimate16`, `vec_fp_estimate32` and `vec_fp_estimate64` cover every
+reciprocal-estimate table index, normal and subnormal exponent boundaries,
+special values, flags and the fixed latency.
 
 ### `test_riscv_torture.py`
 
@@ -1660,13 +1700,15 @@ and says when the run proves everything again.
 The formal and synthesis jobs check out the repository without submodules and
 set `FROST_SKIP_SUBMODULE_INIT=1`; none of their inputs is in a submodule.
 
-The standalone integer legality sweep compares the decoder and the dispatch
+The standalone legality sweep compares the decoder and the dispatch
 legality module (`vec_arith_legality`) with the installed Spike instruction
-implementations. It covers all 231 integer
-arithmetic forms, all 512 vtype encodings (reserved configurations normalize to
+implementations. It covers all 231 integer arithmetic forms, and with
+`--forms fp` the 101 floating-point forms (Spike configured with Zfh and
+Zvfh), all 512 vtype encodings (reserved configurations normalize to
 vill), both mask encodings where permitted, each register field and pairwise
-alias/adjacent layouts, at VLEN 128/256/512. VL is one and vstart zero; the tracker
-and dispatch proofs cover restart policy. Run
+alias/adjacent layouts, at VLEN 128/256/512. VL is one, vstart zero and frm a
+valid rounding mode; the tracker and dispatch proofs cover restart policy, and
+`vec_fp_test` the reserved rounding modes. Run
 `python3 tests/test_vector_legality_reference.py --vlen 256` in the image.
 The comparator source is under `hw/sim/vector_reference/` and builds against the
 image's reference libraries and generated RTL header. Spike omits the general

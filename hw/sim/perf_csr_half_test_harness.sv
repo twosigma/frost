@@ -236,6 +236,8 @@ module perf_csr_half_test_harness #(
         .o_vec_vxrm(),
         .i_vtox_commit(1'b0),
         .i_vec_vxsat_set(1'b0),
+        .i_vec_fp_flags_valid(1'b0),
+        .i_vec_fp_flags(5'b0),
         .i_dbg_data('0),
         .o_dbg_data_we(),
         .o_dbg_data_wdata(),

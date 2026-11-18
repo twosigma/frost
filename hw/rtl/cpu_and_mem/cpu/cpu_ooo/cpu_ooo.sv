@@ -1144,6 +1144,10 @@ module cpu_ooo #(
   logic vec_commit_hold;
   logic vec_idle;
   logic vec_vstart_nonzero, vec_vxsat_set, vec_vtox_commit;
+  // FP exception flags of a committed vector instruction's active elements,
+  // one registered pulse when the engine finishes it, sent only if one is set
+  logic vec_fp_flags_valid;
+  logic [4:0] vec_fp_flags;
   logic [1:0] csr_vec_vxrm;
   riscv_pkg::fu_complete_t vec_vtox_complete;  // CDB slot 6
   // The vector memory table as the load and store queues see it, and its
@@ -1210,7 +1214,8 @@ module cpu_ooo #(
   end
 
   id_stage #(
-      .XLEN(XLEN)
+      .XLEN  (XLEN),
+      .VECTOR(VECTOR)
   ) id_stage_inst (
       .i_clk,
       .i_pipeline_ctrl(pipeline_ctrl),
@@ -4406,6 +4411,8 @@ module cpu_ooo #(
       .i_varith_commit(vec_varith_commit),
       .i_vtox_commit(vec_vtox_commit),
       .i_vec_vxsat_set(vec_vxsat_set),
+      .i_vec_fp_flags_valid(vec_fp_flags_valid),
+      .i_vec_fp_flags(vec_fp_flags),
       .o_vec_vxrm(csr_vec_vxrm),
       .i_vstore_commit(vec_vstore_commit),
       .i_vmem_fault_vstart_valid(vec_vmem_fault_vstart_valid),
@@ -5541,11 +5548,16 @@ module cpu_ooo #(
 
     assign vec_alloc = rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready;
     assign vec_eff_valid = !from_id_to_ex.is_fetch_fault && !from_id_to_ex.is_illegal_instruction;
+    // Vector arithmetic, FP included, runs in the engine after it retires;
+    // the vector-to-scalar moves (vmv.x.s, vcpop.m, vfirst.m, vfmv.f.s)
+    // execute at the ROB head
     assign vec_alloc_is_varith = vec_eff_valid &&
         ((from_id_to_ex.instruction_operation == riscv_pkg::VARITH) ||
-         (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_X));
+         (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_X) ||
+         (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_F));
     assign vec_alloc_is_vtox = vec_eff_valid &&
-        (from_id_to_ex.instruction_operation == riscv_pkg::VTOX);
+        ((from_id_to_ex.instruction_operation == riscv_pkg::VTOX) ||
+         (from_id_to_ex.instruction_operation == riscv_pkg::VTOF));
     assign vec_alloc_is_vmem = vec_eff_valid &&
         ((from_id_to_ex.instruction_operation == riscv_pkg::VLOAD) ||
          (from_id_to_ex.instruction_operation == riscv_pkg::VSTORE));
@@ -5614,6 +5626,12 @@ module cpu_ooo #(
         .i_vxrm(csr_vec_vxrm),
         .o_vxsat_set(vec_vxsat_set),
         .o_vtox_commit(vec_vtox_commit),
+        .i_frm(frm_csr),
+        .o_fp_flags_valid(vec_fp_flags_valid),
+        .o_fp_flags(vec_fp_flags),
+        .i_alloc_is_vfscalar(vec_eff_valid &&
+                             (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_F)),
+        .i_fp_read_data(ma_extra_fp_read_data),
         .i_head_tag(head_tag),
         .i_rob_empty(rob_empty),
         .i_head_safe              (!flush_all && !commit_recovery_flush_after_head &&
@@ -5722,6 +5740,9 @@ module cpu_ooo #(
         assert (!(vec_vmem_fault_vstart_valid &&
                   (csr_commit_fire || vcfg_commit.valid || vec_varith_commit ||
                    vec_vstore_commit)));
+        // The flags of committed vector FP elements never meet a CSR
+        // write: every CSR access waits for the unit to drain
+        p_vec_fp_flags_not_with_csr_write : assert (!(vec_fp_flags_valid && csr_commit_fire));
         p_vtox_commit_exclusive :
         assert (!(vec_vtox_commit &&
                   (csr_commit_fire || vcfg_commit.valid || vec_varith_commit ||
@@ -5734,7 +5755,9 @@ module cpu_ooo #(
         // Dispatch takes the registered legality: it belongs to the
         // allocating instruction under the vtype in effect.
         if (vec_alloc && ((from_id_to_ex.instruction_operation == riscv_pkg::VARITH) ||
-                          (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_X))) begin
+                          (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_X) ||
+                          (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_F) ||
+                          (from_id_to_ex.instruction_operation == riscv_pkg::VTOF))) begin
           p_vec_arith_alloc_ready : assert (vec_arith_ready && vec_tracker_valid);
           p_vec_arith_legality_registered :
           assert (vec_arith_illegal == riscv_pkg::vector_arith_illegal(
@@ -5743,12 +5766,13 @@ module cpu_ooo #(
         end
       end
     end
-    // The tracker's vtype at the allocation of each vector arithmetic,
-    // arithmetic-with-scalar and vector-to-scalar instruction, by ROB tag. It
-    // must be known and equal the CSR file's vtype when the instruction
-    // retires on the registered commit bus, where the unit takes vector
-    // arithmetic's vtype. A vector-to-scalar instruction reads vtype at the
-    // head, and it cannot change before that instruction retires. (An
+    // The tracker's vtype at the allocation of each vector arithmetic
+    // instruction (with or without an x- or f-register scalar) and each
+    // vector-to-scalar instruction (vmv.x.s, vcpop.m, vfirst.m, vfmv.f.s), by
+    // ROB tag. It must be known and equal the CSR file's vtype when the
+    // instruction retires on the registered commit bus, where the unit takes
+    // vector arithmetic's vtype. A vector-to-scalar instruction reads vtype at
+    // the head, and it cannot change before that instruction retires. (An
     // instruction that traps does not retire.) Every allocation of a tag
     // rewrites its flag, as in the unit, and these instructions never retire
     // in slot 2.
@@ -5802,6 +5826,8 @@ module cpu_ooo #(
     assign vec_idle = 1'b1;
     assign vec_vstart_nonzero = 1'b0;
     assign vec_vxsat_set = 1'b0;
+    assign vec_fp_flags_valid = 1'b0;
+    assign vec_fp_flags = '0;
     assign vec_vtox_commit = 1'b0;
     assign vec_vtox_complete = '0;
     logic unused_no_vec;
