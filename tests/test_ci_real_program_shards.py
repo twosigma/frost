@@ -31,6 +31,9 @@ from test_run_cocotb import (
 )
 
 
+VECTOR_SHARD = "Real Programs (Vector programs)"
+
+
 def test_registered_programs_have_one_ci_shard() -> None:
     """Require collection and one CI selection for each supported program tier."""
     root = Path(__file__).resolve().parents[1]
@@ -86,7 +89,7 @@ def test_registered_programs_have_one_ci_shard() -> None:
         assert not kwargs
         return keyword in marks
 
-    errors = []
+    errors: list[tuple[str, str, list[str], int | str | list[str]]] = []
     for name in sorted(programs):
         marks.discard("coremark_pro")
         if name in COREMARK_PRO_TESTS:
@@ -112,6 +115,11 @@ def test_registered_programs_have_one_ci_shard() -> None:
             expected = 0 if tier == "ddr" and name in bram_axis_only else 1
             if len(matches) != expected:
                 errors.append((name, tier, matches, expected))
+            # Vector programs, including ones added later, share one shard.
+            if name.startswith("vec_") and matches != [VECTOR_SHARD]:
+                errors.append((name, tier, matches, [VECTOR_SHARD]))
+            if not name.startswith("vec_") and VECTOR_SHARD in matches:
+                errors.append((name, tier, matches, "not the vector shard"))
     assert not errors, (
         f"Programs must select exactly one shard per supported tier: {errors}"
     )
@@ -210,3 +218,17 @@ def test_every_unit_bench_is_in_exactly_one_unit_job() -> None:
     # The assignment halves the benches by measured time, so neither job may
     # hold much more than half of them.
     assert max(counts) <= 0.6 * len(UNIT_TESTS), counts
+
+
+def test_shard_time_limits_stay_within_github_and_policy() -> None:
+    """Only the unsplittable CoreMark-PRO loops program may exceed 300 minutes."""
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    matrix = workflow["jobs"]["test-verilator"]["strategy"]["matrix"]
+    shards = list(matrix["shard"]) + [job["shard"] for job in matrix["include"]]
+    too_long = {
+        shard["name"]: shard["timeout_minutes"]
+        for shard in shards
+        if shard.get("timeout_minutes", 0) > 300
+    }
+    assert too_long == {"Real Programs (CoreMark-PRO / loops)": 340}, too_long
