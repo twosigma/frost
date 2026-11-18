@@ -71,7 +71,7 @@ FROM ubuntu:26.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # cocotb 2.1 requires Verilator 5.036 or newer.
-ARG VERILATOR_VERSION=5.052
+ARG VERILATOR_VERSION=5.054
 
 ARG Z3_VERSION=5.3.2
 
