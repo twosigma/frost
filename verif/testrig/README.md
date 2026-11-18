@@ -413,6 +413,9 @@ target behavior across the sample.
 
 Several architectural and harness rules keep the comparison deterministic:
 
+- A leading `cbo.inval` in a cached store/load sequence is preceded by
+  `cbo.clean`. This gives both implementations the same value to reload after
+  invalidation. The directed cache tests exercise discarding a dirty block.
 - Sail walks page tables in memory on every access, whereas FROST caches
   translations across its L1 ITLB, L1 DTLB, L2 TLB, superpage array, and walk
   cache. Each non-zero ASID binds to one root table, valid-PTE edits pair with
