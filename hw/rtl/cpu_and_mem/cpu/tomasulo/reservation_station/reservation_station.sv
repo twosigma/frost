@@ -5158,6 +5158,57 @@ module reservation_station #(
     end
   end
 
+  if (FWD_WAKE) begin : gen_forward_operand_proof
+    // Observe any resident row. A pending delivery writes the value that
+    // follows the wake, including when a flush clears the row on that edge.
+    (* anyconst *) logic [$clog2(DEPTH)-1:0] f_row;
+    logic [2:0] f_match, f_cdb;
+    logic [3*FLEN-1:0] f_masks, f_expected_masks, f_operands;
+    assign f_masks = {stage2_src3_fwd_mask, stage2_src2_fwd_mask, stage2_src1_fwd_mask};
+    assign f_expected_masks = {{FLEN{f_match[2]}}, {FLEN{f_match[1]}}, {FLEN{f_match[0]}}};
+    assign f_operands = {o_issue.src1_value, o_issue.src2_value, o_issue.src3_value};
+    assign f_match[0] = i_fwd_wake_valid && !rs_src1_ready[issue_idx] &&
+        !src1_cdb_pend[issue_idx] && !src1_fwd_pend[issue_idx] &&
+        rs_src1_tag[issue_idx] == i_fwd_wake_tag;
+    assign f_cdb[0] = src1_cdb_bypass[issue_idx] || src1_cdb_bypass_l1[issue_idx];
+    assign f_match[1] = i_fwd_wake_valid && !rs_src2_ready[issue_idx] &&
+        !src2_cdb_pend[issue_idx] && !src2_fwd_pend[issue_idx] &&
+        rs_src2_tag[issue_idx] == i_fwd_wake_tag;
+    assign f_cdb[1] = src2_cdb_bypass[issue_idx] || src2_cdb_bypass_l1[issue_idx];
+    assign f_match[2] = i_fwd_wake_valid && !rs_src3_ready[issue_idx] &&
+        !src3_cdb_pend[issue_idx] && !src3_fwd_pend[issue_idx] &&
+        rs_src3_tag[issue_idx] == i_fwd_wake_tag;
+    assign f_cdb[2] = src3_cdb_bypass[issue_idx] || src3_cdb_bypass_l1[issue_idx];
+
+    always @(posedge i_clk) begin
+      if (f_stage2_equiv_past_valid && i_rst_n && $past(i_rst_n)) begin
+        if ($past(issue_fire)) begin
+          p_forward_mask : assert (f_masks == $past(f_expected_masks));
+          if ($past(f_match[0] && !f_cdb[0]))
+            p_forward_src1 : assert (o_issue.src1_value == i_fwd_value);
+          if ($past(f_match[1] && !f_cdb[1]))
+            p_forward_src2 : assert (o_issue.src2_value == i_fwd_value);
+          if ($past(f_match[2] && !f_cdb[2]))
+            p_forward_src3 : assert (o_issue.src3_value == i_fwd_value);
+        end
+        if ($past(stage2_valid && !stage2_accept && !stage2_should_flush))
+          p_held_forward_operands :
+          assert (stage2_valid && f_operands == $past(f_operands));
+        if (int'(f_row) < DEPTH) begin
+          if ($past(src1_fwd_pend[f_row]))
+            p_resident_forward_src1 :
+            assert (rs_src1_ready[f_row] && rs_src1_value[f_row] == $past(i_fwd_value));
+          if ($past(src2_fwd_pend[f_row]))
+            p_resident_forward_src2 :
+            assert (rs_src2_ready[f_row] && rs_src2_value[f_row] == $past(i_fwd_value));
+          if ($past(src3_fwd_pend[f_row]))
+            p_resident_forward_src3 :
+            assert (rs_src3_ready[f_row] && rs_src3_value[f_row] == $past(i_fwd_value));
+        end
+      end
+    end
+  end
+
 `ifdef RS_STAGE2_PAYLOAD_EQUIV_COVER
   always @(posedge i_clk) begin
     if (f_stage2_equiv_past_valid && i_rst_n && $past(i_rst_n)) begin
