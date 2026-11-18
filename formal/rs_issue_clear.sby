@@ -26,7 +26,7 @@ hierarchy -top reservation_station
 # The clear proof holds whatever the payload RAMs and payload stores return,
 # initial contents included.
 delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread t:coherent_rs_payload_store
-proc
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top reservation_station -flatten
@@ -40,3 +40,4 @@ select -assert-count 2 t:$check r:FLAVOR=assert %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+free_undefined.ys

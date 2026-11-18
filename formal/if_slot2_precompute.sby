@@ -29,7 +29,7 @@ read_verilog -D SYNTHESIS -sv prediction_metadata_tracker.sv
 read_verilog -formal -D SYNTHESIS -D IF_SLOT2_PRECOMPUTE_FORMAL -sv if_stage.sv
 hierarchy -top if_stage
 delete t:branch_prediction_controller t:immu t:backing_btb t:tage_predictor
-proc
+script free_undefined.ys
 setattr -unset dont_touch *
 setattr -mod -unset keep_hierarchy *
 setundef -undriven -anyseq
@@ -53,3 +53,4 @@ if_slot2_precompute_cover: select -assert-count 6 t:$check r:FLAVOR=cover %i
 ../hw/rtl/cpu_and_mem/cpu/if_stage/slot2_prediction_capture.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv
+free_undefined.ys

@@ -18,7 +18,8 @@ cpu: chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 -set CACHE_NORM
 # The submodules' outputs become free inputs; their sources are not read, so
 # the hierarchy check below fails if any instance is left.
 delete t:sq_forwarding_unit t:vec_hold_rows t:mwp_dist_ram t:sdp_dist_ram t:mwp_dist_ram_ohread
-proc
+hierarchy -top store_queue
+script free_undefined.ys
 setundef -undriven -anyseq
 # No flip-flop simplification: a register that this configuration never
 # writes after reset keeps a free value too.
@@ -31,3 +32,4 @@ select -assert-none t:$check r:FLAVOR=assume %i
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
+free_undefined.ys

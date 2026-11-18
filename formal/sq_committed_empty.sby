@@ -12,7 +12,8 @@ smtbmc boolector
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D SQ_COMMITTED_EMPTY_LOCAL_PROOF -sv store_queue.sv
 delete t:sq_forwarding_unit t:vec_hold_rows t:mwp_dist_ram t:sdp_dist_ram t:mwp_dist_ram_ohread
-proc
+hierarchy -top store_queue
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top store_queue
@@ -23,3 +24,4 @@ select -assert-none t:$check r:FLAVOR=assume %i
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
+free_undefined.ys

@@ -17,7 +17,8 @@ read_verilog -formal -D SYNTHESIS -D IMMU_MEMO_LOCAL_PROOF -sv immu.sv
 # contents, so allow
 # arbitrary ITLB answers and walker responses on every cycle.
 delete t:dtlb
-proc
+hierarchy -top immu
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top immu
@@ -25,3 +26,4 @@ prep -top immu
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/mmu/immu.sv
+free_undefined.ys

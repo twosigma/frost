@@ -18,7 +18,8 @@ read_verilog -formal -D SYNTHESIS -D DMMU_CAPTURE_LOCAL_PROOF -sv dmmu.sv
 # Consumer pairing and packet capture hold for arbitrary TLB answers whose
 # clean-hit verdict is a hit with no fault.
 delete t:dtlb
-proc
+hierarchy -top dmmu
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top dmmu
@@ -26,3 +27,4 @@ prep -top dmmu
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv
+free_undefined.ys

@@ -35,7 +35,7 @@ prove_integrated: delete tomasulo_wrapper/t:$paramod*
 prove_integrated: delete -output tomasulo_wrapper/o_*
 prove_integrated: hierarchy -top tomasulo_wrapper
 ~prove_integrated: hierarchy -top sq_early_addr_pipeline
-proc
+script free_undefined.ys
 flatten
 prove_integrated: setundef -undriven -anyseq
 opt
@@ -53,3 +53,4 @@ select -assert-none t:$check r:FLAVOR=assume %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv
+free_undefined.ys

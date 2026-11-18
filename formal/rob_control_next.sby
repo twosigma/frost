@@ -12,7 +12,8 @@ smtbmc boolector
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D ROB_CONTROL_NEXT_LOCAL_PROOF -sv reorder_buffer.sv
 delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread t:rob_serializer
-proc
+hierarchy -top reorder_buffer
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top reorder_buffer
@@ -24,3 +25,4 @@ select -assert-none a:init=*
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
+free_undefined.ys

@@ -14,7 +14,8 @@ read_verilog -formal -D SYNTHESIS -sv branch_prediction_controller.sv
 # Make predictor outputs arbitrary to check the controller's prediction-use
 # gates independently of lookup results.
 delete t:branch_predictor t:direction_predictor t:return_address_stack
-proc
+hierarchy -top branch_prediction_controller
+script free_undefined.ys
 # The separately proved btb_pending_relation contract preserves the original
 # per-candidate target abstraction; it adds no independent anyseq bit.
 cd branch_prediction_controller
@@ -31,3 +32,4 @@ prep -top branch_prediction_controller
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
+free_undefined.ys

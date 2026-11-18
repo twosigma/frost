@@ -15,7 +15,7 @@ read -formal -D SYNTHESIS -D PC_INCREMENT_RELATION_PROOF -sv pc_increment_calcul
 generic32: chparam -set XLEN 32 pc_increment_calculator
 generic64: chparam -set XLEN 64 pc_increment_calculator
 hierarchy -top pc_increment_calculator
-proc
+script free_undefined.ys
 prep -top pc_increment_calculator -flatten
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
@@ -25,3 +25,4 @@ select -assert-count 11 t:$check r:FLAVOR=assert %i
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
+free_undefined.ys

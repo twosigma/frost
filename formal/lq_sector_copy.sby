@@ -23,7 +23,7 @@ chparam -set REGISTERED_SECTOR_MATCH 1 -set CACHE_NORMAL_MEMORY 1 -set MEM_RESPO
 hierarchy -top load_queue
 delete t:*lq_l0_cache t:*mwp_dist_ram t:*sdp_dist_ram t:*coherent_lq_address_store
 hierarchy -top load_queue
-proc -noopt
+script free_undefined.ys
 setattr -mod -unset keep_hierarchy
 setattr -unset keep_hierarchy
 flatten
@@ -48,3 +48,4 @@ select -assert-count 1 t:$check r:FLAVOR=assert %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
+free_undefined.ys

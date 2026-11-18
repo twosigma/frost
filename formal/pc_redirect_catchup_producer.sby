@@ -14,7 +14,7 @@ x32: chparam -set XLEN 32 pc_controller
 x66: chparam -set XLEN 66 pc_controller
 hierarchy -top pc_controller
 delete t:control_flow_tracker t:pc_increment_calculator
-proc
+script free_undefined.ys
 setundef -undriven -anyseq
 delete -port pc_controller/o:*
 opt
@@ -25,3 +25,4 @@ select -assert-none t:$check r:FLAVOR=assume %i
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
+free_undefined.ys
