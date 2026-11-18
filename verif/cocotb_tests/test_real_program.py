@@ -1161,6 +1161,40 @@ class PointerMaskingInterruptCoverage:
         )
 
 
+class CmoTimerCoverage:
+    """Check for a timer interrupt arriving while a flush awaits the home."""
+
+    def __init__(self, dut: Any) -> None:
+        """Resolve the timer and the store queue issuing the flush."""
+        self.dut = dut
+        self.timer = dut.cpu_and_memory_subsystem.soc.mtip_registered
+        self.sq = dut.cpu_and_memory_subsystem.cpu.hart.cpu_inst.u_tomasulo.u_sq
+        self.hits = 0
+
+    def clear(self) -> None:
+        """Start a new program run."""
+        self.hits = 0
+
+    async def run(self) -> None:
+        """Sample only active edges of the timer interrupt."""
+        while True:
+            await RisingEdge(self.timer)
+            await ReadOnly()
+            if (
+                int(self.dut.i_rst_n.value)
+                and int(self.sq.cmo_state_q.value) == 2  # CmoWait
+                and int(self.sq.cmo_kind_q.value) == 2  # CMO_FLUSH
+            ):
+                self.hits += 1
+
+    def verify(self, run_number: int) -> None:
+        """Require an actual overlap in each reset-to-pass interval."""
+        assert self.hits, (
+            f"run {run_number}: no timer arrival during an outstanding flush"
+        )
+        cocotb.log.info(f"run {run_number}: {self.hits} timer arrivals during a flush")
+
+
 class WfiRecoveryWatch:
     """Check the resume PC around a wrong-path WFI at the ROB head.
 
@@ -5047,6 +5081,8 @@ async def test_real_program(dut: Any) -> None:
     coverage = (
         DelayedBranchFetchCoverage(dut)
         if app_name == "served_window_resteer"
+        else CmoTimerCoverage(dut)
+        if app_name == "cbo_mgmt_test"
         else PointerMaskingInterruptCoverage(dut)
         if app_name == "pm_test"
         else None

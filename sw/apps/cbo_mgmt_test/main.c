@@ -362,6 +362,76 @@ static void spin(unsigned long n)
     }
 }
 
+/* The handler and interrupted code write distinct words of the same block. */
+#define IRQ_BLOCK ((volatile uint64_t *) 0x81420400ul)
+static volatile unsigned long irq_count;
+static volatile unsigned long irq_cause;
+
+__attribute__((interrupt("machine"), aligned(4))) static void timer_handler(void)
+{
+    irq_cause = csr_read(mcause);
+    MTIMECMP_HI = 0xffffffffu;
+    IRQ_BLOCK[5]++;
+    irq_count++;
+}
+
+static int interrupt_order(void)
+{
+    int ok = 1;
+    unsigned long saved_mstatus = disable_interrupts();
+    unsigned long saved_mie = csr_read(mie);
+    unsigned long saved_mtvec = csr_read(mtvec);
+    set_trap_handler(&timer_handler);
+    csr_write(mie, MIE_MTIE);
+    irq_count = 0;
+    IRQ_BLOCK[5] = 0;
+    for (unsigned trial = 0; trial < 12; trial++) {
+        uint64_t deadline = rdmtime() + 480 + 47 * trial;
+        set_timer_cmp(deadline);
+        enable_interrupts();
+        for (unsigned i = 0; i < 12; i++) {
+            uint64_t value = pattern_at(trial * 12 + i);
+            IRQ_BLOCK[1] = value;
+            cbo_at(OP_FLUSH, (unsigned long) IRQ_BLOCK + 63);
+            cbo_at(OP_FLUSH, (unsigned long) IRQ_BLOCK + 1);
+            ok &= IRQ_BLOCK[1] == value;
+        }
+        while (irq_count == trial && rdmtime() < deadline + 8192) {
+        }
+        disable_interrupts();
+        ok &= irq_count == trial + 1 && irq_cause == (MCAUSE_INTERRUPT_BIT | INT_MTI);
+        ok &= IRQ_BLOCK[5] == trial + 1;
+        if (!ok)
+            break;
+    }
+    set_timer_cmp(~0ull);
+    csr_write(mtvec, saved_mtvec);
+    csr_write(mie, saved_mie);
+    restore_interrupts(saved_mstatus);
+    return ok;
+}
+
+static int atomic_order(void)
+{
+    volatile uint64_t *word = &g_ddr_buf[BLOCK / 8 + 4];
+    unsigned long original, sc, old;
+    *word = 21;
+    /* The intervening flush makes this an unconstrained LR/SC sequence.
+     * Either SC outcome must agree with the bytes subsequently read. */
+    __asm__ volatile("lr.d %0, (%2)\n" CBO_FLUSH_ASM("%2") "sc.d %1, %3, (%2)"
+                     : "=&r"(original), "=&r"(sc)
+                     : "r"(word), "r"(34ul)
+                     : "memory");
+    unsigned long expected = sc ? 21 : 34;
+    if (original != 21 || *word != expected)
+        return 0;
+    __asm__ volatile("amoadd.d %0, %2, (%1)\n" CBO_CLEAN_ASM("%1") CBO_FLUSH_ASM("%1")
+                     : "=&r"(old)
+                     : "r"(word), "r"(8ul)
+                     : "memory");
+    return old == expected && *word == expected + 8;
+}
+
 int main(void)
 {
     /* Both scalar images put the stack in low BRAM. In the DDR image even
@@ -440,9 +510,8 @@ int main(void)
         ok &= c_ok;
     }
 
-    /* D: gates in S and U for each op. clean/flush need CBCFE (S: menvcfg; U:
-     * both); inval needs CBIE != 00 (S: menvcfg; U: both). An executed op
-     * changes no data; an illegal one traps with cause 2. */
+    /* D: privilege gates with low BRAM and a dirty DDR block. The most
+     * restrictive applicable CBIE controls a permitted invalidate. */
     {
         static const struct {
             unsigned long mpp, menv, senv;
@@ -477,6 +546,24 @@ int main(void)
                 /* Sstvala: an illegal op's mtval holds its instruction bits. */
                 ok &= expect(cases[i].name, op, want, CBO_A0_BITS(op), want == CAUSE_ILLEGAL);
                 ok &= check_intact(cases[i].name, op, bram_buf);
+
+                volatile uint64_t *target = &g_ddr_buf[BLOCK / 8 + 2];
+                uint64_t base = pattern_at(i);
+                *target = base;
+                cbo_at(OP_FLUSH, (unsigned long) target);
+                *target = ~base;
+                run_lower(cases[i].mpp, op, (unsigned long) target + 3);
+                int flush =
+                    g_inval_flushes || (cases[i].menv & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(1) ||
+                    (cases[i].mpp == 0 && (cases[i].senv & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(1));
+                int discard = legal && op == OP_INVAL && !flush;
+                int data_ok = g_cause == want && *target == (discard ? base : ~base);
+                /* M-mode inval exposes memory unless the implementation always flushes.
+                 * A faulting instruction must leave the preceding store dirty. */
+                cbo_at(OP_INVAL, (unsigned long) target);
+                data_ok &= *target == (discard || (!legal && !g_inval_flushes) ? base : ~base);
+                report(data_ok, "D cached data", op_name[op]);
+                ok &= data_ok;
             }
         }
         csr_write_num(0x30A, 0);
@@ -624,6 +711,12 @@ int main(void)
         }
         __asm__ volatile("csrw satp, zero\n sfence.vma");
     }
+
+    int atomic_ok = atomic_order();
+    report(atomic_ok, "I atomic and repeated flush", 0);
+    int irq_ok = interrupt_order();
+    report(irq_ok, "J timer and repeated flush", 0);
+    ok &= atomic_ok && irq_ok;
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {
