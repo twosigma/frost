@@ -2,33 +2,18 @@
  * Copyright (c) 2026 John Goodacre.
  */
 
-// Formal stand-in for dsp_tiled_multiplier_unsigned in the fp_launch_squash
-// miter. fp_engine registers the multiplier operands in ST_DEC1, holds them
-// until the next operation's ST_DEC1, and reads the product only in ST_MUL,
-// MulStages cycles after the multiply starts, when the real multiplier's
-// output is a function of those held operands alone. Any function of the
-// current operands therefore gives both engine copies the same control
-// behaviour; the concatenation keeps the miter free of a 53 x 53 multiply.
-// fp_engine_equiv checks the real product against SoftFloat.
-// verilog_lint: waive module-filename
-module dsp_tiled_multiplier_unsigned #(
-    parameter int unsigned A_WIDTH = 33,
-    parameter int unsigned B_WIDTH = 33,
-    parameter int unsigned A_TILE_WIDTH = 27,
-    parameter int unsigned B_TILE_WIDTH = 35,
-    parameter int unsigned ADD_CHUNK_WIDTH = 32,
-    parameter bit INPUT_REGISTER = 1'b0
-) (
-    input logic i_clk,
-    input logic i_rst,
-    input logic i_valid_input,
-    input logic [A_WIDTH-1:0] i_operand_a,
-    input logic [B_WIDTH-1:0] i_operand_b,
-    output logic [A_WIDTH+B_WIDTH-1:0] o_product_result,
-    output logic o_valid_output,
-    output logic o_completing_next_cycle
+// The multiplier's four 27-by-35 tile products are arbitrary on each edge.
+// Equal operand pairs share the four values. For different operand pairs the
+// two copies can choose independently. Choosing the actual tile products
+// reproduces every concrete execution of the reduction and valid pipelines.
+module fp_launch_squash_mul_stub (
+    input  logic [105:0] i_base_operands,
+    input  logic [105:0] i_cand_operands,
+    output logic [247:0] o_base_terms,
+    output logic [247:0] o_cand_terms
 );
-  assign o_product_result = {i_operand_a, i_operand_b};
-  assign o_valid_output = i_valid_input;
-  assign o_completing_next_cycle = i_valid_input;
-endmodule : dsp_tiled_multiplier_unsigned
+  (* anyseq *)logic [247:0] base_terms;
+  (* anyseq *)logic [247:0] other_terms;
+  assign o_base_terms = base_terms;
+  assign o_cand_terms = (i_base_operands == i_cand_operands) ? base_terms : other_terms;
+endmodule : fp_launch_squash_mul_stub

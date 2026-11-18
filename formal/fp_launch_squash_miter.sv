@@ -15,8 +15,8 @@
  */
 
 // Compare the launch-gated reference and production fp_shim with identical
-// inputs and separate fp_engine instances. Only the miter is read with
-// -formal, so both shims use the real engine.
+// inputs and separate fp_engine instances. The multiplier reduction stages use
+// the RTL. Equal input pairs share arbitrary combinational tile products.
 //
 // The b_*/c_* probe wires are left undriven here and connected after flatten
 // by `connect -set` in fp_launch_squash.sby to the engine/shim registers.
@@ -39,6 +39,8 @@ module fp_launch_squash_miter (
   localparam logic [5:0] StIdle = 6'd0;  // fp_engine state_e encoding
   localparam logic [5:0] StDec1 = 6'd1;
   localparam logic [5:0] StDec2 = 6'd2;
+  localparam logic [5:0] StLoadB = 6'd3;
+  localparam logic [5:0] StMul = 6'd5;
   localparam logic [5:0] StI2fNorm = 6'd34;
   localparam logic [5:0] StI2fRound = 6'd35;
 
@@ -78,6 +80,21 @@ module fp_launch_squash_miter (
   );
 
   // Probes (connected after flatten).
+  logic [105:0] b_tile_operands, c_tile_operands;
+  logic [247:0] b_tile_products, c_tile_products;
+  fp_launch_squash_mul_stub u_tile_products (
+      .i_base_operands(b_tile_operands),
+      .i_cand_operands(c_tile_operands),
+      .o_base_terms(b_tile_products),
+      .o_cand_terms(c_tile_products)
+  );
+  logic [511:0] b_terms, c_terms;
+  logic [255:0] b_sums, c_sums;
+  logic [105:0] b_product, c_product;
+  logic [2:0] b_valid_pipe, c_valid_pipe;
+  logic f_reset_seen = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) f_reset_seen <= 1'b1;
+
   logic [5:0] b_state, c_state;  // u_*.u_engine.state_q
   logic c_squash;  // u_cand.squash_q
   logic [TagW-1:0] b_tag, c_tag;  // u_*.tag_q
@@ -122,7 +139,8 @@ module fp_launch_squash_miter (
       a_equal_init :
       assume (b_state == c_state && !c_squash && b_tag == c_tag &&
               b_payload == c_payload && b_dec1 == c_dec1 && b_dp == c_dp && b_i2f == c_i2f &&
-              b_mul == c_mul && b_div == c_div);
+              b_mul == c_mul && b_div == c_div && b_terms == c_terms &&
+              b_sums == c_sums && b_product == c_product);
     end
   end
 
@@ -166,6 +184,17 @@ module fp_launch_squash_miter (
     assert (b_dp[410:69] == c_dp[410:69] && b_div == c_div &&
             ((b_state == StIdle || b_state == StDec1 || b_state == StDec2) ||
              b_dp[4:0] == c_dp[4:0]));
+    // Four tile products feed two sums and the final product on successive edges.
+    if (b_state == StLoadB || b_state == StMul) p_mul_terms : assert (b_terms == c_terms);
+    if (f_reset_seen && b_state == StLoadB)
+      p_mul_launch : assert (b_valid_pipe[0] && c_valid_pipe[0]);
+    if (f_reset_seen && b_state == StMul && b_dp[100:95] != 0)
+      p_mul_wait : assert (b_dp[100:95] == 1 && b_valid_pipe[1] && c_valid_pipe[1]);
+    if (b_state == StMul) p_mul_sums : assert (b_sums == c_sums);
+    if (b_state == StMul && b_dp[100:95] == 0) begin
+      p_mul_product : assert (b_product == c_product);
+      if (f_reset_seen) p_mul_valid : assert (b_valid_pipe[2] && c_valid_pipe[2]);
+    end
     if (b_state == StI2fNorm || b_state == StI2fRound) begin
       p_i2f_input_equal : assert (b_i2f[133:70] == c_i2f[133:70]);
     end
@@ -212,6 +241,12 @@ module fp_launch_squash_miter (
 
   always_ff @(posedge i_clk) begin
     if (!f_init) begin
+      c_mul_capture :
+      cover (f_reset_seen && i_rst_n && b_state == StMul && b_dp[100:95] == 0 && b_valid_pipe[2]);
+      c_mul_age_kill :
+      cover (f_reset_seen && i_rst_n && b_state == StMul && !i_flush && i_flush_en && is_younger(
+          b_tag, i_flush_tag, i_rob_head_tag
+      ));
       c_phantom : cover (c_squash);
       c_phantom_then_issue_blocked_window : cover (c_squash && i_rst_n);
       c_back_to_back_complete : cover (f_restart_after_phantom && b_out.valid);

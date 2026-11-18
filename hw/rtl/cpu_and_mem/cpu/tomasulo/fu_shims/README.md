@@ -216,9 +216,11 @@ full-width MULW fallback. `mul_adapter_grant` proves the integrated acceptance
 and same-cycle flush contract with the arbiter.
 The `fp_shim` target replaces the engine with a model of arbitrary latency
 and result.
-`fp_launch_squash` checks both launch modes against a reference with the real
-engine, assuming the bubble after a flushed issue, and `fp_launch_squash_rs`
-checks that FP_RS leaves that bubble. The `divider` targets check the divider against
+`fp_launch_squash` checks both launch modes against a launch-gated reference.
+It uses arbitrary combinational tile products and the RTL multiplier pipeline,
+and checks the pipeline valid bit when the engine captures a product.
+The launch-squash mode assumes a bubble after a flushed issue.
+`fp_launch_squash_rs` checks that FP_RS leaves that bubble. The `divider` targets check the divider against
 integer division, and the `fp_engine_equiv` bench checks the FP engine against
 Berkeley SoftFloat, results and flags bit for bit.
 

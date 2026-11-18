@@ -29,7 +29,7 @@
        subtract), and column 0 is a sticky column: every right shift ORs the
        bits it shifts out into it.
     X  113-bit second operand, same layout.
-    Q  56-bit multiplier, quotient or root bits.
+    Q  56-bit quotient or root bits.
     E, EX  exponents of column 111 of R and X.
   one 113-bit adder, and shifts by one or eight columns. An operand's 53-bit
   significand ({hidden, fraction}, single-precision fractions left-aligned)
@@ -637,9 +637,9 @@ module fp_engine (
     ST_IDLE,
     ST_DEC1,        // classify the operands, registered
     ST_DEC2,        // special operands, FCLASS, sign injection; load operand A
-    ST_LOADB,       // multiplier into Q
+    ST_LOADB,       // set product exponent and pipeline countdown
     ST_XFER,        // R <= X through the adder, X <= operand B
-    ST_MUL,         // shift-and-add steps
+    ST_MUL,         // wait for and capture the significand product
     ST_FMA_C,       // addend into X
     ST_NORM_OPS,    // normalize subnormal operands, then set up alignment
     ST_RSHIFT,      // right shift R or X by sh_cnt, then continue at ret_q
@@ -904,8 +904,8 @@ module fp_engine (
   // product of the multiply started in ST_DEC2 stays at the output from
   // MulStages cycles later until then. ST_LOADB loads cnt with MulWait and
   // ST_MUL takes the product when cnt reaches zero, MulStages cycles after
-  // ST_DEC2; the multiplier's own valid chain is not used, so a kill leaves no
-  // multiply state behind.
+  // ST_DEC2. Killing the operation returns the engine to idle. A product
+  // already in flight drains before the next multiply reaches its capture cycle.
   localparam int unsigned MulStages = riscv_pkg::dsp_tiled_stages(MulWidth, MulWidth, 27, 35);
   localparam logic [5:0] MulWait = 6'(MulStages - 2);
 
