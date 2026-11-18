@@ -10,13 +10,14 @@
 
   States (cycles after the start sample):
     UNPACK  classify; special results (NaN, infinity, zero, division by zero)
-            go straight to ROUND; leading zeros of subnormal significands
+            go straight to ROUND. Capture exponent difference and leading zeros.
     NORM    normalize subnormal significands (only with a subnormal operand)
     SETUP   D = 2 * Mb and its multiples 2D..15D (one level of three-input
-            adds), remainder R = Ma (R < D)
+            adds), remainder R = Ma (R < D), exponent bias and leading-zero correction
     DIV     n steps: the fifteen remainders 16R - mD (m = 1..15) in parallel;
             the digit q is the number that are not negative, R' = 16R - qD.
             n = 7 (single, 28 quotient bits) or 14 (double, 56 bits).
+            The exponent sum is registered alongside these steps.
     POST    normalize the quotient by one column, round and sticky bits,
             tininess, and the right shift of a subnormal result
     ROUND   round, pack, overflow, tininess after rounding, flags
@@ -113,19 +114,11 @@ module fp_div_unit (
     end
   end
 
-  // Biased quotient exponent: (max(ea,1) - lz_a) - (max(eb,1) - lz_b) + bias.
-  logic signed [EW-1:0] eq_unpack;
-  assign eq_unpack = $signed(
-      EW'(a_sub ? 11'd1 : ea_f)
-  ) - $signed(
-      EW'(lz_a)
-  ) - $signed(
-      EW'(b_sub ? 11'd1 : eb_f)
-  ) + $signed(
-      EW'(lz_b)
-  ) + $signed(
-      is_d ? EW'(1023) : EW'(127)
-  );
+  // Normal and subnormal operands use max(exponent field, 1). Special
+  // results bypass the quotient exponent.
+  logic [10:0] ea_base, eb_base;
+  assign ea_base = (ea_f == '0) ? 11'd1 : ea_f;
+  assign eb_base = (eb_f == '0) ? 11'd1 : eb_f;
 
   // Special results.
   logic sp_nan, sp_nv, sp_dz, sp_inf, sp_zero, special;
@@ -141,6 +134,7 @@ module fp_div_unit (
   // ===========================================================================
   logic [52:0] ma, mb;
   logic [5:0] lza_q, lzb_q;
+  logic signed [EW-1:0] exp_diff_q, exp_adjust_q;
   logic signed [EW-1:0] eq;
   logic [RW-1:0] rem;
   logic [RW-1:0] mult[16];  // mult[m] = m * D, D = 2 * Mb
@@ -327,44 +321,52 @@ module fp_div_unit (
             ((&i_src1[63:32] && i_src1[31]) ^ (&i_src2[63:32] && i_src2[31]));
       end
       S_UNPACK: begin
-        ma        <= ma_raw;
-        mb        <= mb_raw;
-        lza_q     <= lz_a;
-        lzb_q     <= lz_b;
-        eq        <= eq_unpack;
-        sp_nan_q  <= sp_nan;
-        sp_nv_q   <= sp_nv;
-        sp_dz_q   <= sp_dz;
-        sp_inf_q  <= sp_inf;
-        sp_zero_q <= sp_zero;
+        ma         <= ma_raw;
+        mb         <= mb_raw;
+        lza_q      <= lz_a;
+        lzb_q      <= lz_b;
+        exp_diff_q <= $signed(EW'(ea_base)) - $signed(EW'(eb_base));
+        sp_nan_q   <= sp_nan;
+        sp_nv_q    <= sp_nv;
+        sp_dz_q    <= sp_dz;
+        sp_inf_q   <= sp_inf;
+        sp_zero_q  <= sp_zero;
       end
       S_NORM: begin
         ma <= ma << lza_q;
         mb <= mb << lzb_q;
       end
       S_SETUP: begin
+        exp_adjust_q <= $signed(
+            is_d ? EW'(1023) : EW'(127)
+        ) + $signed(
+            EW'(lzb_q)
+        ) - $signed(
+            EW'(lza_q)
+        );
         // D = 2 Mb; one level of three-input adds forms every multiple.
-        mult[0]  <= '0;
-        mult[1]  <= d1;
-        mult[2]  <= d2;
-        mult[3]  <= d2 + d1;
-        mult[4]  <= d4;
-        mult[5]  <= d4 + d1;
-        mult[6]  <= d4 + d2;
-        mult[7]  <= d4 + d2 + d1;
-        mult[8]  <= d8;
-        mult[9]  <= d8 + d1;
+        mult[0] <= '0;
+        mult[1] <= d1;
+        mult[2] <= d2;
+        mult[3] <= d2 + d1;
+        mult[4] <= d4;
+        mult[5] <= d4 + d1;
+        mult[6] <= d4 + d2;
+        mult[7] <= d4 + d2 + d1;
+        mult[8] <= d8;
+        mult[9] <= d8 + d1;
         mult[10] <= d8 + d2;
         mult[11] <= d8 + d2 + d1;
         mult[12] <= d8 + d4;
         mult[13] <= d8 + d4 + d1;
         mult[14] <= d8 + d4 + d2;
         mult[15] <= (d8 << 1) - d1;
-        rem      <= RW'(ma);
-        quo      <= '0;
-        steps    <= is_d ? 4'd14 : 4'd7;
+        rem <= RW'(ma);
+        quo <= '0;
+        steps <= is_d ? 4'd14 : 4'd7;
       end
       S_DIV: begin
+        eq    <= exp_diff_q + exp_adjust_q;
         rem   <= trial[digit][RW-1:0];
         quo   <= {quo[51:0], digit};
         steps <= steps - 4'd1;
