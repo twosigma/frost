@@ -833,8 +833,8 @@ locally. Each CI job runs a group of extensions in one tier, and three jobs
 share F and D through `--shard K/3`, so that no job runs much longer than an
 hour. `FROST_ARCH_SIM_TIMEOUT_SEC=1200` fails a hung test there after 20
 minutes; the runner's default limit of an hour is sized for the largest
-tests in DDR. Only the first BRAM group (I B C) collects line coverage and cover
-points.
+tests in DDR. Only the first BRAM group (I B C) collects line and branch
+coverage and cover points.
 
 In many of the pinned F and D sources, most `NAN_BOXED` data constants run
 the intended hex value together with its own decimal digits, less the first:
@@ -1270,7 +1270,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_RANDOM_START_SEED` | Seed string enabling random register and memory power-up state; each run prints the string and Verilator seed |
 | `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 160 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
 | `WAVES=1` | Write `dump.fst` waveforms |
-| `FROST_COVERAGE=1` | Build with line coverage and the cover points (see [Coverage](#coverage)) |
+| `FROST_COVERAGE=1` | Build with line and branch coverage and the cover points (see [Coverage](#coverage)) |
 | `FROST_COVERAGE_TOGGLE` | With `FROST_COVERAGE=1`: `0` disables toggle coverage, `1` collects the default set, and `control` selects control signals |
 | `FROST_COVERAGE_DIR` | Where each run writes its coverage file (default `tests/coverage`; a relative path starts at the repository root) |
 | `NUMBER_OF_CPU_CORES` | Parallel Verilator build jobs (default: every core; a seed sweep divides them among its workers) |
@@ -1347,12 +1347,12 @@ benches check active transactions across CPU-only and fabric reset.
 
 ## Coverage
 
-`FROST_COVERAGE=1` builds each simulation with Verilator line coverage, which
-counts statement blocks and the arms of every `if` and `case`, and with the
-[cover points](#cover-points) in the RTL. `FROST_COVERAGE_TOGGLE=1` adds
-toggle coverage, which counts each bit's rises and falls, for every signal
-of at most 256 bits, Verilator's default limit, counting the elements of
-unpacked arrays. `FROST_COVERAGE_TOGGLE=control` limits it to control
+`FROST_COVERAGE=1` builds each simulation with Verilator line and branch
+coverage and the [cover points](#cover-points) in the RTL.
+`FROST_COVERAGE_TOGGLE=1` adds toggle coverage, which counts each bit's
+rises and falls for every signal of at most 256 bits, Verilator's default
+limit, including the elements of unpacked arrays.
+`FROST_COVERAGE_TOGGLE=control` limits it to control
 signals of at most 8 bits: scalar ports and scalar registers written by
 nonblocking assignments whose names match the patterns in
 [coverage_toggle.json](coverage_toggle.json), and enum state registers. It
@@ -1362,8 +1362,8 @@ temporaries. Other declarations on a source line with a selected signal or
 a covered statement are included too, within the same limit. To select
 them, `coverage_toggle.py` elaborates the design and writes a Verilator
 configuration file, `coverage_control.vlt`, into the simulation build
-directory. Neither toggle setting changes line coverage or the cover
-points.
+directory. Both toggle settings preserve line and branch coverage and the
+cover points.
 
 The runners above and TestRIG all take the switches. Each run writes a file
 named after its test to `tests/coverage/`, or to `FROST_COVERAGE_DIR`, and

@@ -715,12 +715,12 @@ else
 	export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT -Wno-MODDUP
 endif
 
-# Coverage (tests/README.md). FROST_COVERAGE=1 builds with line coverage
-# (statement blocks and branches) and the cover points of the RTL, which only
-# a build that defines FROST_COVERAGE compiles. FROST_COVERAGE_TOGGLE=1 uses
-# Verilator's default toggle set. The control value selects scalar control
-# ports and registers and enum state through coverage_toggle.json and a
-# generated declaration filter, without changing line or user coverage.
+# Coverage (tests/README.md). FROST_COVERAGE=1 builds with line and branch
+# coverage and the RTL cover points, which compile only when FROST_COVERAGE
+# is defined. FROST_COVERAGE_TOGGLE=1 uses Verilator's default toggle set.
+# The control value selects scalar control ports and registers and enum state
+# through coverage_toggle.json and a generated declaration filter. The filter
+# preserves line, branch, and user coverage.
 # The simulation writes its coverage to FROST_COVERAGE_FILE, which
 # test_run_cocotb.py sets for each run, or to coverage.dat in this directory.
 FROST_COVERAGE ?= 0
@@ -789,15 +789,21 @@ endif
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
+ifeq ($(FROST_COVERAGE),1)
+# Verilator 5.054 and later expose branch coverage as a separate option.
+	EXTRA_ARGS += $(shell $(CMD) --coverage-branch --version >/dev/null 2>&1 && echo --coverage-branch)
+endif
+
 ifneq ($(TOGGLE_CONFIG),)
-# The elaborated tree supplies declaration locations, types, and register
-# writes. The filter protects executable coverage, including initializers
-# that span several lines. Verilator's dependencies track the source files
-# and nested file lists so edits also regenerate the declaration filter.
+# The coverage pass's JSON tree supplies declaration locations, types, and
+# register writes before later passes rewrite them. The filter protects
+# executable coverage, including initializers that span several lines.
+# Verilator tracks source files and nested file lists as dependencies.
 $(TOGGLE_CONFIG): $(ROOT)/tests/coverage_toggle.py $(ROOT)/tests/coverage_toggle.json $(VERILOG_SOURCES) | $(SIM_BUILD)
 	@mkdir -p $(TOGGLE_SCAN)
-	$(CMD) --json-only --MMD --MP -Mdir $(TOGGLE_SCAN) $(TOPMODULE_ARG) $(filter-out $(TOGGLE_CONFIG),$(COMPILE_ARGS)) $(EXTRA_ARGS) $(VERILOG_SOURCES) --json-only-output $(TOGGLE_SCAN)/tree.json --json-only-meta-output $(TOGGLE_SCAN)/meta.json
-	python3 $(ROOT)/tests/coverage_toggle.py generate $(TOGGLE_SCAN)/tree.json $(TOGGLE_SCAN)/meta.json $@ --dependencies $(TOGGLE_SCAN)/Vtop__ver.d
+	$(RM) $(TOGGLE_SCAN)/Vtop_*_coverage.tree.json
+	$(CMD) --lint-only --dumpi-tree-json 1 --dumpi-V3Coverage 3 --MMD --MP -Mdir $(TOGGLE_SCAN) $(TOPMODULE_ARG) $(filter-out $(TOGGLE_CONFIG),$(COMPILE_ARGS)) $(EXTRA_ARGS) $(VERILOG_SOURCES)
+	python3 $(ROOT)/tests/coverage_toggle.py generate $(TOGGLE_SCAN)/Vtop_*_coverage.tree.json $(TOGGLE_SCAN)/Vtop.tree.meta.json $@ --dependencies $(TOGGLE_SCAN)/Vtop__ver.d
 
 -include $(TOGGLE_CONFIG).d
 endif

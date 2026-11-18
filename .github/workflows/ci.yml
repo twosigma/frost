@@ -53,7 +53,7 @@ concurrency:
 
 env:
   # Keep in sync with Dockerfile.
-  VERILATOR_VERSION: "5.052"
+  VERILATOR_VERSION: "5.054"
   YOSYS_VERSION: "0.70"
   SBY_VERSION: "0.70"
   # Settings of the formal and synthesis jobs that reuse earlier passes
@@ -570,8 +570,8 @@ jobs:
           FROST_STARTUP_SEED_BASE: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           FROST_RANDOM_START_SEED: ${{ !startsWith(matrix.shard.name, 'Unit Tests') && format('{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) || '' }}
           # A shard's coverage field lists the memory tiers in which it
-          # collects line coverage and the cover points, and the unit benches
-          # also toggle coverage (tests/README.md#coverage).
+          # collects line and branch coverage and the cover points. The unit
+          # benches also collect toggle coverage (tests/README.md#coverage).
           FROST_COVERAGE: ${{ contains(matrix.shard.coverage, matrix.mem_config) && '1' || '0' }}
           FROST_COVERAGE_TOGGLE: ${{ startsWith(matrix.shard.name, 'Unit Tests') && '1' || '0' }}
           # Optional per-cycle Python progress tracing adds host runtime to
@@ -838,7 +838,7 @@ jobs:
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
-          # Line coverage and the cover points (tests/README.md#coverage).
+          # Line and branch coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: ${{ matrix.coverage }}
           # Fail a hung test after 20 minutes, well before the job timeout.
           FROST_ARCH_SIM_TIMEOUT_SEC: "1200"
@@ -915,7 +915,7 @@ jobs:
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
-          # Line coverage and the cover points (tests/README.md#coverage).
+          # Line and branch coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: ${{ matrix.coverage }}
         run: |
           docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE \
@@ -1023,7 +1023,7 @@ jobs:
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
-          # Line coverage and the cover points (tests/README.md#coverage).
+          # Line and branch coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: ${{ matrix.coverage }}
         run: |
           docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE \
@@ -1078,7 +1078,7 @@ jobs:
       FROST_STARTUP_SEED_BASE: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
       FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
       FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
-      # Line coverage and the cover points (tests/README.md#coverage).
+      # Line and branch coverage and the cover points (tests/README.md#coverage).
       FROST_COVERAGE: ${{ matrix.coverage }}
     steps:
       - name: Checkout repository
