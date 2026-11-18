@@ -16,12 +16,15 @@
 
 import shutil
 import subprocess
+from collections import deque
 from pathlib import Path
 
 import pytest
 
+from sby_config import stage_proof
+
 ROOT = Path(__file__).resolve().parents[1]
-BRIDGE = ROOT / "hw/rtl/lib/cache/line_port_axi_bridge.sv"
+BRIDGE = Path("hw/rtl/lib/cache/line_port_axi_bridge.sv")
 PROOF = ROOT / "formal/line_port_axi_bridge.sby"
 
 
@@ -33,37 +36,32 @@ PROOF = ROOT / "formal/line_port_axi_bridge.sby"
 def test_wide_bridge_rejects_32_bit_offset(
     tmp_path: Path, channel: str, assertion: str
 ) -> None:
-    """A high-address request must expose truncation on either AXI channel."""
+    """The 64 GiB proof reports the affected channel's full-offset assertion."""
     if shutil.which("sby") is None:
         pytest.skip("SymbiYosys is unavailable")
 
-    source = BRIDGE.read_text(encoding="utf-8")
+    source = (ROOT / BRIDGE).read_text(encoding="utf-8")
     original = f"{channel}  <= AXI_ADDR_WIDTH'(i_req_addr - BASE_ADDR);"
     truncated = f"{channel}  <= AXI_ADDR_WIDTH'(32'(i_req_addr - BASE_ADDR));"
     assert source.count(original) == 1, "bridge address assignment changed"
 
-    formal_dir = tmp_path / "formal"
-    bridge_dir = tmp_path / "hw/rtl/lib/cache"
-    formal_dir.mkdir(parents=True)
-    bridge_dir.mkdir(parents=True)
-    (bridge_dir / BRIDGE.name).write_text(
+    proof = stage_proof(PROOF, ROOT, tmp_path)
+    (tmp_path / BRIDGE).write_text(
         source.replace(original, truncated), encoding="utf-8"
     )
-    (formal_dir / PROOF.name).write_text(
-        PROOF.read_text(encoding="utf-8"), encoding="utf-8"
-    )
 
-    result = subprocess.run(
-        ["sby", "-f", PROOF.name, "bmc_64g"],
-        cwd=formal_dir,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    output = result.stdout + result.stderr
-    logfile = formal_dir / "line_port_axi_bridge_bmc_64g/logfile.txt"
-    if logfile.exists():
-        output += logfile.read_text(encoding="utf-8")
+    logfile = tmp_path / "sby.log"
+    with logfile.open("w", encoding="utf-8") as log:
+        result = subprocess.run(
+            ["sby", "-f", proof.name, "bmc_64g"],
+            cwd=proof.parent,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            timeout=120,
+            check=False,
+        )
     assert result.returncode != 0, "truncated address escaped the formal check"
-    assert assertion in output, output[-4000:]
+    with logfile.open(encoding="utf-8") as log:
+        output = "".join(deque(log, maxlen=40))
+    assert "DONE (FAIL," in output, output
+    assert f"failed assertion line_port_axi_bridge.{assertion} at " in output, output

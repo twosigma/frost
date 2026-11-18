@@ -6408,16 +6408,15 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
 def test_dont_care_guard_mutations(
     tmp_path: Path, expect: str, name: str, edits: tuple[tuple[str, str], ...]
 ) -> None:
-    """The guard rejects what a mutation adds outside the list, however it is spelled."""
-    source = Path(__file__).resolve().parents[1] / FORMAL_DIR / f"{name}.sby"
-    text = source.read_text()
+    """Check the command guard on an isolated copy of each proof and its inputs."""
+    root = Path(__file__).resolve().parents[1]
+    source = root / FORMAL_DIR / f"{name}.sby"
+    mutated = sby_config.stage_proof(source, root, tmp_path)
+    text = mutated.read_text()
     for old, new in edits:
         assert text.count(old) == 1, (name, old)
         text = text.replace(old, new)
-    mutated = tmp_path / source.name
     mutated.write_text(text)
-    for script_file in source.parent.glob("*.ys"):
-        (tmp_path / script_file.name).write_text(script_file.read_text())
     assert dont_care_changes(source) == ([], [])
     added, missing = dont_care_changes(mutated)
     if expect == "flag":
@@ -6980,21 +6979,21 @@ def undefined_opening_mutant(
     edits: tuple[tuple[str, str], ...],
     file_edits: tuple[tuple[str, str], ...] = (),
 ) -> Path:
-    """Write an edited copy of a script, and of the files it includes, to tmp_path."""
-    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
-    text = (formal / f"{name}.sby").read_text()
+    """Stage the proof's inputs before editing the configuration or opening."""
+    root = Path(__file__).resolve().parents[1]
+    mutated = sby_config.stage_proof(root / FORMAL_DIR / f"{name}.sby", root, tmp_path)
+    text = mutated.read_text()
     for old, new in edits:
         assert text.count(old) == 1, (name, old)
         text = text.replace(old, new)
-    for script_file in formal.glob("*.ys"):
-        body = script_file.read_text()
-        if script_file.name == "free_undefined.ys":
-            for old, new in file_edits:
-                assert body.count(old) == 1, old
-                body = body.replace(old, new)
-        (tmp_path / script_file.name).write_text(body)
-    mutated = tmp_path / f"{name}.sby"
     mutated.write_text(text)
+    if file_edits:
+        opening = mutated.with_name(UNDEFINED_OPENING_FILE)
+        body = opening.read_text()
+        for old, new in file_edits:
+            assert body.count(old) == 1, old
+            body = body.replace(old, new)
+        opening.write_text(body)
     return mutated
 
 
@@ -7163,6 +7162,41 @@ def test_sby_resolves_nondefault_tasks(tmp_path: Path) -> None:
         "setundef -zero",
     ]
     assert dont_care_changes(path)[0] == ["groups.sby b: setundef -zero"]
+
+
+def test_stage_proof_carries_nested_script_inputs(tmp_path: Path) -> None:
+    """A relocated proof keeps sibling RTL, nested scripts and inline inputs."""
+    root = tmp_path / "checkout"
+    proof = root / "formal/top.sby"
+    inputs = {
+        "formal/top.sby": (
+            "[script]\nscript setup.ys\nprep -top top\n"
+            "[files]\nshared/setup.ys\n../tools/read_top.ys\n../hw/top.sv\n"
+            "[file defines.ys]\nread -define FORMAL_INPUT\n"
+        ),
+        "formal/shared/setup.ys": "script defines.ys\nscript read_top.ys\n",
+        "tools/read_top.ys": "read -formal -sv top.sv\n",
+        "hw/top.sv": "module top; endmodule\n",
+        "formal/unused.ys": "log unused\n",
+    }
+    for name, content in inputs.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+
+    fixture = tmp_path / "fixture"
+    copied = sby_config.stage_proof(proof, root, fixture)
+    assert copied == fixture / "formal/top.sby"
+    assert {
+        path.relative_to(fixture).as_posix(): path.read_text()
+        for path in fixture.rglob("*")
+        if path.is_file()
+    } == {name: body for name, body in inputs.items() if name != "formal/unused.ys"}
+    assert sby_config.source(copied).task("").commands(copied.parent) == [
+        ["read", "-define", "FORMAL_INPUT"],
+        ["read", "-formal", "-sv", "top.sv"],
+        ["prep", "-top", "top"],
+    ]
 
 
 @pytest.mark.parametrize("section", ["files", "script", "options", "engines", "tasks"])
@@ -7654,7 +7688,7 @@ def test_axi_bridge_post_map_count_rejects_another_selection() -> None:
 def test_rs_payload_twin_assertion_groups(
     source: str, old: str, new: str, tmp_path: Path
 ) -> None:
-    """Pin the resolved six proof configurations and every guarded output comparison."""
+    """Check six proof configurations and guarded comparisons with isolated edits."""
     from hashlib import sha256
 
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
@@ -7663,7 +7697,7 @@ def test_rs_payload_twin_assertion_groups(
     if source == "sby":
         original = sby.read_text()
         assert original.count(old) == 1
-        sby = tmp_path / sby.name
+        sby = sby_config.stage_proof(sby, formal.parent, tmp_path)
         sby.write_text(original.replace(old, new))
     elif source == "sv":
         assert harness.count(old) == 1

@@ -30,6 +30,7 @@ import pytest
 import yaml  # type: ignore[import-untyped]
 
 import ci_reuse
+import sby_config
 import test_run_formal
 import test_run_yosys
 
@@ -113,21 +114,20 @@ def test_synthesis_key_covers_the_script_sources(
 # Formal key sensitivity
 # ---------------------------------------------------------------------------
 
-TRAP_FILES = (
-    "hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv",
-    "hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv",
-    "formal/free_undefined.ys",
+TRAP_PROOF = ROOT / "formal/trap_unit.sby"
+TRAP_FILES = tuple(
+    path.resolve().relative_to(ROOT).as_posix()
+    for path in sby_config.proof_inputs(TRAP_PROOF)[1:]
 )
 
 
 def formal_tree(root: Path) -> Path:
-    """Copy what the trap_unit formal target reads into root."""
+    """Stage the trap-unit proof and the files its reuse key reads."""
+    sby_config.stage_proof(TRAP_PROOF, ROOT, root)
     for name in (
         "tests/test_run_formal.py",
         "tests/conftest.py",
         "pyproject.toml",
-        "formal/trap_unit.sby",
-        *TRAP_FILES,
     ):
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / name, root / name)
@@ -253,13 +253,14 @@ def test_formal_key_ignores_everything_else(tmp_path: Path, change: str) -> None
         assert formal_key(other) == before
         return
     elif change == "file_order":
-        edit(
-            root / "formal/trap_unit.sby",
-            "../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv\n"
-            "../hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv\n",
-            "../hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv\n"
-            "../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv\n",
-        )
+        proof = root / TRAP_PROOF.relative_to(ROOT)
+        body = proof.read_text().splitlines()
+        start = body.index("[files]") + 1
+        entries = sby_config.source(proof).sections["files"]
+        paths = [line for line in entries if line.strip() and not line.startswith("#")]
+        first, second = (body.index(line, start) for line in paths[:2])
+        body[first], body[second] = body[second], body[first]
+        proof.write_text("\n".join(body) + "\n")
     else:
         (root / "hw/rtl/unrelated.sv").write_text("module unrelated; endmodule\n")
     assert formal_key(root) == before
