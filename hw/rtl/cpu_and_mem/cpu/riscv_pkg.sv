@@ -2696,7 +2696,9 @@ package riscv_pkg;
   localparam int unsigned IntRsIssue2Window = 8;
   localparam int unsigned MulRsDepth = 4;  // Multiply/divide operations
   localparam int unsigned MemRsDepth = 8;  // Load/store operations
-  localparam int unsigned FpRsDepth = 2;  // Every FP compute operation (3 sources)
+  localparam int unsigned FpRsDepth = 6;  // Every FP compute operation (3 sources)
+  // fp_fma_pipe latency, from the issue cycle to its result register.
+  localparam int unsigned FpPipeDepth = 7;
 
   // Memory queue depths
   localparam int unsigned LqDepth = 8;  // Load queue entries
@@ -2729,9 +2731,9 @@ package riscv_pkg;
     FU_MUL    = 3'd1,  // Integer multiplier
     FU_DIV    = 3'd2,  // Integer divider
     FU_MEM    = 3'd3,  // Load/store unit (both INT and FP)
-    FU_FP_ADD = 3'd4,  // FP engine (every FP compute operation)
+    FU_FP_ADD = 3'd4,  // fp_engine and fp_div_unit (every FP operation not pipelined)
     FU_FP_MUL = 3'd5,  // Spare: only the wrapper's test-injection input
-    FU_FP_DIV = 3'd6,  // Spare: only the wrapper's test-injection input
+    FU_FP_DIV = 3'd6,  // fp_fma_pipe (FADD, FSUB, FMUL, FMA), through fp_shim's FIFO
     FU_ALU2   = 3'd7   // Integer ALU pipe 1 (plain ALU ops only; branches stay on pipe 0)
   } fu_type_e;
 

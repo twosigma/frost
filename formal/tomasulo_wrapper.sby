@@ -65,6 +65,9 @@ read -sv dsp_tiled_multiplier_unsigned.sv
 read -sv multiplier.sv cl_multiplier.sv
 read -sv alu.sv
 read -sv fp_engine.sv
+# The FMA datapath's results are abstracted (fp_fma_pipe_equiv checks them).
+read -formal -D FP_FMA_PIPE_ABSTRACT -sv fp_pipe_lzc.sv fp_fma_pipe.sv
+read -sv fp_div_unit.sv
 read -sv fp_shim.sv
 read -formal -sv tomasulo_wrapper.sv
 fp_repair_bmc: chparam -set ENABLE_DISPATCH_DONE_REPAIR 1 tomasulo_wrapper
@@ -110,6 +113,9 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_pipe_lzc.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma_pipe.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv

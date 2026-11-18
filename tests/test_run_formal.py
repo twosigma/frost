@@ -1736,6 +1736,12 @@ FORMAL_TARGETS = [
         "FP completion tags, busy state, and cancellation",
     ),
     FormalTarget(
+        "fp_shim_pipe.sby",
+        "Pipelined FP tracker, forward wake, result FIFO and credits: no stale or "
+        "duplicate completion through flushes",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "fp_launch_squash.sby",
         "FP launch cancellation matches the reference under the producer bubble "
         "requirement",

@@ -6,7 +6,7 @@
  * FMA (through the addend and through the multiplicand), FDIV and FSQRT at
  * both precisions, for independent FADD, FMUL and FMA streams, and for FP
  * load-to-use (fld + fmv.x.d per ring node, against ld on the same ring).
- * FPLAT_LIMITS turns the dependent and throughput figures into pass/fail
+ * FPLAT_LIMITS turns the dependent, throughput, divide and FP load figures into pass/fail
  * assertions against the limits below.
  */
 #include "uart.h"
@@ -76,19 +76,23 @@ struct test {
     unsigned long limit; /* hundredths of a cycle, 0 for none */
 };
 
-/* Limits (hundredths): the sync #19 engine with the DSP multiplier and the
- * radix-4 divider in simulation, plus a margin. */
-#ifndef LIM_FMUL
-#define LIM_FMUL 1500
+/* Limits (hundredths): the sync #20 targets (dependent add/multiply/FMA
+ * 6-7 cycles, one independent operation per cycle, divide about 15 / 25,
+ * FP load-to-use on the early load wakeup) with a small margin. */
+#ifndef LIM_DEP
+#define LIM_DEP 750
 #endif
-#ifndef LIM_FMA
-#define LIM_FMA 2200
+#ifndef LIM_THR
+#define LIM_THR 150
 #endif
 #ifndef LIM_FDIV_S
-#define LIM_FDIV_S 3200
+#define LIM_FDIV_S 1600
 #endif
 #ifndef LIM_FDIV_D
-#define LIM_FDIV_D 4600
+#define LIM_FDIV_D 2600
+#endif
+#ifndef LIM_FLD_NODE
+#define LIM_FLD_NODE 950
 #endif
 
 int main(void)
@@ -106,31 +110,31 @@ int main(void)
         ring[i * 8] = (unsigned long) &ring[((i * 37 + 11) % 64) * 8];
 
     static const struct test tests[] = {
-        {"fadd_dep_s", fadd_dep_s, 2, 0},
-        {"fadd_dep_d", fadd_dep_d, 2, 0},
-        {"fmul_dep_s", fmul_dep_s, 2, LIM_FMUL},
-        {"fmul_dep_d", fmul_dep_d, 2, LIM_FMUL},
-        {"fmadd_acc_s", fmadd_acc_s, 2, LIM_FMA},
-        {"fmadd_acc_d", fmadd_acc_d, 2, LIM_FMA},
-        {"fmadd_mul_s", fmadd_mul_s, 2, LIM_FMA},
-        {"fmadd_mul_d", fmadd_mul_d, 2, LIM_FMA},
+        {"fadd_dep_s", fadd_dep_s, 2, LIM_DEP},
+        {"fadd_dep_d", fadd_dep_d, 2, LIM_DEP},
+        {"fmul_dep_s", fmul_dep_s, 2, LIM_DEP},
+        {"fmul_dep_d", fmul_dep_d, 2, LIM_DEP},
+        {"fmadd_acc_s", fmadd_acc_s, 2, LIM_DEP},
+        {"fmadd_acc_d", fmadd_acc_d, 2, LIM_DEP},
+        {"fmadd_mul_s", fmadd_mul_s, 2, LIM_DEP},
+        {"fmadd_mul_d", fmadd_mul_d, 2, LIM_DEP},
         {"fdiv_dep_s", fdiv_dep_s, 2, LIM_FDIV_S},
         {"fdiv_dep_d", fdiv_dep_d, 2, LIM_FDIV_D},
         {"fsqrt_pair_s", fsqrt_pair_s, 1, 0},
         {"fsqrt_pair_d", fsqrt_pair_d, 1, 0},
-        {"fadd_thr_s", fadd_thr_s, 16, 0},
-        {"fadd_thr_d", fadd_thr_d, 16, 0},
-        {"fmul_thr_s", fmul_thr_s, 16, LIM_FMUL},
-        {"fmul_thr_d", fmul_thr_d, 16, LIM_FMUL},
-        {"fmadd_thr_s", fmadd_thr_s, 16, LIM_FMA},
-        {"fmadd_thr_d", fmadd_thr_d, 16, LIM_FMA},
+        {"fadd_thr_s", fadd_thr_s, 16, LIM_THR},
+        {"fadd_thr_d", fadd_thr_d, 16, LIM_THR},
+        {"fmul_thr_s", fmul_thr_s, 16, LIM_THR},
+        {"fmul_thr_d", fmul_thr_d, 16, LIM_THR},
+        {"fmadd_thr_s", fmadd_thr_s, 16, LIM_THR},
+        {"fmadd_thr_d", fmadd_thr_d, 16, LIM_THR},
     };
     uart_puts("FPLAT begin\n");
     for (unsigned i = 0; i < sizeof tests / sizeof tests[0]; i++)
         report(tests[i].name,
                measure(tests[i].fn, &konst, tests[i].per_body, 0x7800 + i),
                tests[i].limit);
-    report("fld_fmv_node", measure(fld_chase, &ring[0], 1, 0x7880), 0);
+    report("fld_fmv_node", measure(fld_chase, &ring[0], 1, 0x7880), LIM_FLD_NODE);
     report("ld_node", measure(ld_chase, &ring[0], 2, 0x7881), 0);
     if (failures) {
         uart_printf("<<FAIL>> %d FP figures over their limits\n", failures);
