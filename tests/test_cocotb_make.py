@@ -108,6 +108,13 @@ def test_coverage_switches_reach_verilator_and_the_simulator(tmp_path: Path) -> 
     assert "FROST_COVERAGE" not in verilator_command()
     with_coverage = verilator_command("FROST_COVERAGE=1")
     assert "--coverage-line --coverage-user +define+FROST_COVERAGE" in with_coverage
+    branch_option = subprocess.run(
+        ["verilator", "--coverage-branch", "--version"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+    )
+    assert ("--coverage-branch" in with_coverage) == (branch_option.returncode == 0)
     assert "--coverage-toggle" not in with_coverage
     assert "--coverage-toggle" in verilator_command(
         "FROST_COVERAGE=1", "FROST_COVERAGE_TOGGLE=1"
