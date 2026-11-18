@@ -1561,7 +1561,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "backing_btb.sby",
         "Backing BTB lookups match a mirror of its sets, every set holds each "
-        "valid tag once, and requests in training hold their set's current "
+        "valid tag once, a redirect drops held and outstanding reads, and training holds current "
         "entries, at two and four ways; slot 2's fields formed for each slot-1 "
         "size and selected by the packet's size equal the single reduction they "
         "replace, for any register state",
@@ -1574,6 +1574,12 @@ FORMAL_TARGETS = [
             "size_select",
             "size_select_four_way",
         ),
+    ),
+    FormalTarget(
+        "tage_history_recovery.sby",
+        "Both lookup histories follow accepted predictions, ordered retirement, "
+        "saved early-recovery histories, and every PC restore arm",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "tage_copy_convergence.sby",

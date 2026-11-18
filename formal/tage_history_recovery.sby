@@ -1,0 +1,28 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 5
+cover: mode cover
+cover: depth 9
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top tage_history --single-unit -D SYNTHESIS -D TAGE_HISTORY_RECOVERY_PROOF riscv_pkg.sv sdp_dist_ram.sv tage_history.sv
+hierarchy -top tage_history
+script free_undefined.ys
+prep -top tage_history -flatten
+select -assert-count 15 t:$check r:FLAVOR=assert %i
+select -assert-count 8 t:$check r:FLAVOR=cover %i
+prove: chformal -cover -remove
+cover: chformal -assert -remove
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/tage_history.sv
+free_undefined.ys

@@ -536,4 +536,124 @@ module tage_history #(
     o_train_mispredicted     <= train_sel_mispredicted;
   end
 
+`ifdef TAGE_HISTORY_RECOVERY_PROOF
+  // Retirement is a two-slot fold in program order. Keep an independent
+  // reference so a restore checks every bit, including older retirements.
+  logic f_past_valid = 1'b0;
+  logic [HIST_BITS-1:0] f_path, f_path_next;
+  logic [DIR_BITS-1:0] f_dir, f_dir_next;
+  always_comb begin
+    f_path_next = f_path;
+    f_dir_next  = f_dir;
+    for (int s = 0; s < 2; s++) begin
+      if (i_commit_valid[s] && i_commit_taken_cf[s])
+        f_path_next = {f_path_next[HIST_BITS-PATH_BITS-1:0], i_commit_target_bits[s]};
+      if (i_commit_valid[s] && i_commit_cf[s])
+        f_dir_next = {
+          f_dir_next[DIR_BITS-2:0],
+          i_commit_cond_branch[s] ? i_commit_taken[s] : i_commit_target_bits[s][0]
+        };
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_path <= '0;
+      f_dir  <= '0;
+    end else begin
+      f_path <= f_path_next;
+      f_dir  <= f_dir_next;
+    end
+  end
+
+  // Record the PD input independently. The direction bit enters the lookup
+  // one edge after acceptance; the path on a PD redirect is the captured
+  // lookup history a further edge later.
+  logic [HIST_BITS-1:0] f_accepted_path, f_pd_path;
+  logic f_accepted = 1'b0;
+  logic f_pd_path_known = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_pd_accept) f_accepted_path <= i_tage_lookup_hist;
+    if (i_rst) f_accepted <= 1'b0;
+    else if (i_pd_accept) f_accepted <= 1'b1;
+    f_pd_path <= f_accepted_path;
+    f_pd_path_known <= f_accepted;
+  end
+
+  always_ff @(posedge i_clk) begin
+    f_past_valid <= 1'b1;
+    if (!f_past_valid) assume (i_rst);
+    if (f_past_valid) begin
+      p_retired_path : assert (retired_hist == f_path);
+      p_retired_direction : assert (retired_dir_hist == f_dir);
+      if (f_accepted) begin
+        p_pd_input_snapshot : assert (f_accepted_path == pd_lookup_hist_q);
+      end
+      if (f_pd_path_known) begin
+        p_pd_redirect_snapshot : assert (f_pd_path == pd_hist_q);
+      end
+      if (i_hist_restore_arm[1] || i_hist_restore_arm[2] || (i_hist_restore_arm[3] && !$past(
+              i_early_active
+          ))) begin
+        p_full_restore : assert ({o_lookup_hist, o_lookup_dir_hist} == {f_path, f_dir});
+      end else if (i_hist_restore_arm[3]) begin
+        if ($past(i_early_taken)) begin
+          p_early_taken_path :
+          assert (o_lookup_hist == {$past(
+              ftq_read_early.hist[HIST_BITS-PATH_BITS-1:0]
+          ), i_fetch_pc_path_bits});
+        end else begin
+          p_early_not_taken_path : assert (o_lookup_hist == $past(ftq_read_early.hist));
+        end
+        p_early_direction :
+        assert (o_lookup_dir_hist == {$past(
+            ftq_read_early.dir_hist[DIR_BITS-2:0]
+        ), $past(
+            i_early_taken
+        )});
+      end else begin
+        if ($past(!i_rst && i_pd_accept && (|i_pd_cf))) begin
+          p_accepted_direction :
+          assert (o_lookup_dir_hist == {$past(
+              o_lookup_dir_hist[DIR_BITS-2:0]
+          ), $past(
+              i_pd_cf[0] ? i_pd_pred_taken[0] : i_pd_pred_taken[1]
+          )});
+        end else begin
+          p_idle_direction :
+          assert (o_lookup_dir_hist == ($past(i_rst) ? '0 : $past(o_lookup_dir_hist)));
+        end
+        if (i_hist_restore_arm[4]) begin
+          if (f_pd_path_known) begin
+            p_pd_path :
+            assert (o_lookup_hist == ($past(
+                i_pd_redirect_taken
+            ) ? {f_pd_path[HIST_BITS-PATH_BITS-1:0], i_fetch_pc_path_bits} : f_pd_path));
+          end
+        end else if (i_hist_push) begin
+          p_predicted_path :
+          assert (o_lookup_hist == {($past(
+              i_rst
+          ) ? {(HIST_BITS - PATH_BITS) {1'b0}} : $past(
+              o_lookup_hist[HIST_BITS-PATH_BITS-1:0]
+          )), i_fetch_pc_path_bits});
+        end else begin
+          p_idle_path : assert (o_lookup_hist == ($past(i_rst) ? '0 : $past(o_lookup_hist)));
+        end
+      end
+      if (pd_entry_pending) begin
+        p_save_accepted_path : assert (pd_entry.hist == $past(i_tage_lookup_hist));
+        p_save_prebranch_direction : assert (pd_entry.dir_hist == $past(o_lookup_dir_hist));
+      end
+      cover (i_hist_restore_arm == 4'b0001 && f_dir != '0 && f_path != '0);
+      cover (i_hist_restore_arm == 4'b0010 && f_dir != '0 && f_path != '0);
+      cover (i_hist_restore_arm == 4'b0100 && !$past(i_early_active) && f_dir != '0);
+      cover (i_hist_restore_arm == 4'b0100 && $past(i_early_active && i_early_taken));
+      cover (i_hist_restore_arm == 4'b0100 && $past(i_early_active && !i_early_taken));
+      cover (i_hist_restore_arm == 4'b1000 && f_pd_path_known && $past(i_pd_redirect_taken));
+      cover ($past(i_commit_valid == 2'b11 && i_commit_cf == 2'b11) && f_dir[1:0] == 2'b10);
+      cover ($past(!i_rst && i_pd_accept && i_pd_cf == 2'b10) && o_lookup_dir_hist[0]);
+    end
+  end
+`endif
+
 endmodule : tage_history

@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the tagged predictor's path history and saved lookups."""
+"""Unit tests for both predictor histories, saved lookups and retirement training."""
 
 from typing import Any
 
@@ -78,6 +78,12 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_fetch_pc_path_bits.value = 0
     dut.i_pd_accept.value = 0
     dut.i_pd_cond_branch.value = 0
+    dut.i_pd_jalr.value = 0
+    dut.i_pd_cf.value = 0
+    dut.i_pd_pred_taken.value = 0
+    dut.i_itt_slot_valid.value = 0
+    dut.i_itt_slot_lookup.value = 0
+    dut.i_itt_slot_lookup_2.value = 0
     dut.i_tage_slot_valid.value = 0
     dut.i_tage_slot_lookup.value = 0
     dut.i_tage_slot_lookup_2.value = 0
@@ -102,6 +108,7 @@ def _clear_alloc(dut: Any) -> None:
     """Drive no dispatch allocation."""
     dut.i_alloc_tag.value = 0
     dut.i_alloc_cond_branch.value = 0
+    dut.i_alloc_jalr.value = 0
     dut.i_alloc_q.value = 0
 
 
@@ -114,6 +121,9 @@ def _clear_commit(dut: Any) -> None:
     dut.i_commit_taken.value = 0
     dut.i_commit_mispredicted.value = 0
     dut.i_commit_target_bits.value = 0
+    dut.i_commit_target.value = 0
+    dut.i_commit_jalr.value = 0
+    dut.i_commit_cf.value = 0
 
 
 async def _settle() -> None:
@@ -174,7 +184,13 @@ async def _accept_branch(
 
 
 async def _allocate(
-    dut: Any, tag: int, idx: int | None = None, *, slot: int = 0, cond: bool = True
+    dut: Any,
+    tag: int,
+    idx: int | None = None,
+    *,
+    slot: int = 0,
+    cond: bool = True,
+    jalr: bool = False,
 ) -> None:
     """Dispatch one instruction; return once its index write has landed.
 
@@ -183,11 +199,12 @@ async def _allocate(
     """
     dut.i_alloc_tag.value = tag << (slot * ROB_TAG_WIDTH)
     dut.i_alloc_cond_branch.value = int(cond) << slot
+    dut.i_alloc_jalr.value = int(jalr) << slot
     await _step(dut)
     _clear_alloc(dut)
     dut.i_alloc_q.value = 1 << slot
     await _settle()
-    if cond and idx is not None:
+    if (cond or jalr) and idx is not None:
         assert int(dut.ftq_dispatch_ptr.value) == idx
     await _step(dut)
     dut.i_alloc_q.value = 0
@@ -198,6 +215,8 @@ def _drive_commit(dut: Any, slots: list[dict[str, int] | None]) -> None:
     """Drive the registered commit bus for slot 1 and slot 2 (None = idle)."""
     fields = {
         "valid": "i_commit_valid",
+        "jalr": "i_commit_jalr",
+        "cf": "i_commit_cf",
         "cond_branch": "i_commit_cond_branch",
         "taken_cf": "i_commit_taken_cf",
         "taken": "i_commit_taken",
@@ -210,6 +229,10 @@ def _drive_commit(dut: Any, slots: list[dict[str, int] | None]) -> None:
     targets = [int(s.get("target_bits", 0)) if s else 0 for s in slots]
     dut.i_commit_tag.value = _pair((tags[0], tags[1]), ROB_TAG_WIDTH)
     dut.i_commit_target_bits.value = _pair((targets[0], targets[1]), PATH_BITS)
+    target_words = [s.get("target", 0) if s else 0 for s in slots]
+    dut.i_commit_target.value = _pair(
+        (target_words[0], target_words[1]), len(dut.i_commit_target) // 2
+    )
 
 
 async def _commit(dut: Any, slots: list[dict[str, int] | None]) -> None:
@@ -688,3 +711,122 @@ async def test_slot2_pd_veto_discards_fast_btb_push_without_pushing_fallthrough(
     assert train["alt_taken"] is True
     assert train["taken"] is False
     assert train["mispredicted"] is False
+
+
+@cocotb.test()
+async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
+    dut: Any,
+) -> None:
+    """An early recovery restores the saved pre-branch bits at the branch's ROB tag."""
+    await _setup_test(dut)
+    width = len(dut.o_lookup_dir_hist)
+    mask = (1 << width) - 1
+    for taken in (0, 1):
+        expected = int(dut.o_lookup_dir_hist.value)
+        for n in range(width + 5):
+            slot = n % 2
+            bit = int(n % 5 in (0, 2))
+            dut.i_pd_accept.value = 1
+            dut.i_pd_cf.value = 1 << slot
+            dut.i_pd_pred_taken.value = bit << slot
+            await _step(dut)
+            expected = ((expected << 1) | bit) & mask
+            assert int(dut.o_lookup_dir_hist.value) == expected
+        dut.i_pd_cf.value = 2
+        dut.i_pd_pred_taken.value = (1 - taken) << 1
+        index = await _accept_branch(dut, slot=1, hist=0xD234)
+        dut.i_pd_cf.value = 0
+        await _allocate(dut, 7, index, slot=1)
+        dut.i_pd_cf.value = 1
+        dut.i_pd_pred_taken.value = 1
+        await _accept_branch(dut, hist=0x21)
+        dut.i_pd_cf.value = 0
+        dut.i_early_tag.value = 7
+        dut.i_early_active.value = 1
+        dut.i_early_taken.value = taken
+        await _step(dut)
+        dut.i_early_active.value = 0
+        dut.i_hist_restore_arm.value = 1 << ARM_RECOVERY
+        dut.i_fetch_pc_path_bits.value = 3
+        await _settle()
+        assert int(dut.o_lookup_dir_hist.value) == ((expected << 1) | taken) & mask
+        assert _lookup_hist(dut) == (_push(0xD234, 3) if taken else 0xD234)
+        await _step(dut)
+        dut.i_hist_restore_arm.value = 0
+        await _settle()
+
+
+@cocotb.test()
+async def test_full_recovery_uses_both_retirement_slots(dut: Any) -> None:
+    """Branches push their outcome, jumps their target bit, and invalid slots push neither."""
+    await _setup_test(dut)
+    expected_dir = expected_path = 0
+    mask = (1 << len(dut.o_lookup_dir_hist)) - 1
+    for n in range(94):
+        bundle: list[dict[str, int] | None] = []
+        for slot in range(2):
+            valid = int((n + slot) % 5 != 0)
+            cond = int((n + slot) % 3 == 0)
+            cf = int((n + slot) % 4 != 0)
+            taken = int((n + slot) % 3 != 1) if cond else 1
+            target = (n + 2 * slot) % 4
+            bundle.append(
+                dict(
+                    valid=valid,
+                    cond_branch=cond,
+                    cf=cf,
+                    taken=taken,
+                    taken_cf=cf * taken,
+                    target_bits=target,
+                )
+            )
+            if valid and cf:
+                expected_dir = (
+                    (expected_dir << 1) | (taken if cond else target & 1)
+                ) & mask
+                if taken:
+                    expected_path = _push(expected_path, target)
+        await _commit(dut, bundle)
+        # Vary pending speculative work while the restore owns the lookup.
+        dut.i_pd_accept.value = 1
+        dut.i_pd_cf.value = 2
+        dut.i_pd_pred_taken.value = 2
+        dut.i_hist_push.value = 1
+        dut.i_hist_restore_arm.value = 1 << (ARM_TRAP, ARM_FENCE, ARM_RECOVERY)[n % 3]
+        await _settle()
+        assert int(dut.o_lookup_dir_hist.value) == expected_dir
+        assert _lookup_hist(dut) == expected_path
+
+
+@cocotb.test()
+async def test_indirect_training_uses_its_saved_slot_and_target(dut: Any) -> None:
+    """Two retiring JALRs use their respective saved lookup, bank and resolved target."""
+    await _setup_test(dut)
+    markers = [0x4351A, 0xA62C1]
+    for slot, tag in enumerate((8, 19)):
+        index = _write_index(dut)
+        dut.i_pd_accept.value = 1
+        dut.i_pd_jalr.value = 1 << slot
+        dut.i_itt_slot_valid.value = 1 << slot
+        dut.i_tage_slot_bank.value = slot << slot
+        dut.i_itt_slot_lookup.value = markers[0]
+        dut.i_itt_slot_lookup_2.value = markers[1]
+        await _step(dut)
+        dut.i_pd_accept.value = 0
+        dut.i_pd_jalr.value = 0
+        await _allocate(dut, tag, index, slot=slot, cond=False, jalr=True)
+    targets = [0x12345, 0x45678]
+    await _commit(
+        dut,
+        [
+            dict(valid=1, jalr=1, tag=8, target=targets[0]),
+            dict(valid=1, jalr=1, tag=19, target=targets[1]),
+        ],
+    )
+    for slot in range(2):
+        assert dut.o_itt_train_valid.value and not dut.o_train_valid.value
+        assert int(dut.o_itt_train_bank.value) == slot
+        assert int(dut.o_itt_train_lookup.value) == markers[slot]
+        assert int(dut.o_itt_train_target.value) == targets[slot]
+        await _step(dut)
+    assert not dut.o_itt_train_valid.value

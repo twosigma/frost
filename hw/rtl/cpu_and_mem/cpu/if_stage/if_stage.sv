@@ -3372,6 +3372,18 @@ module if_stage #(
 
   always_comb begin
     if (f_slot2_past_valid && !i_pipeline_ctrl.reset) begin
+      f_if_slot1_itt_hit_exact :
+      assert (o_itt_hit[0] == (o_tage_slot_valid[0] && !o_from_if_to_pd.fetch_fault &&
+                               itt_bank_hit[o_from_if_to_pd.program_counter[2]]));
+      f_if_slot2_itt_hit_exact :
+      assert (o_itt_hit[1] == (f_tage_slot2_cov_ref && !o_from_if_to_pd_2.fetch_fault &&
+                               itt_bank_hit[o_from_if_to_pd_2.program_counter[2]]));
+      f_if_slot1_itt_payload_exact :
+      assert ({o_itt_target[0], o_itt_slot_lookup} == (o_from_if_to_pd.program_counter[2] ?
+          {itt_bank_target[1], itt_bank1} : {itt_bank_target[0], itt_bank0}));
+      f_if_slot2_itt_payload_exact :
+      assert ({o_itt_target[1], o_itt_slot_lookup_2} == (o_from_if_to_pd_2.program_counter[2] ?
+          {itt_bank_target[1], itt_bank1} : {itt_bank_target[0], itt_bank0}));
       f_if_slot2_tage_cov_exact : assert (o_tage_slot_valid[1] == f_tage_slot2_cov_ref);
       f_if_slot2_tage_lookup_exact : assert (o_tage_slot_lookup_2 == f_tage_slot_lookup_2_ref);
       f_if_slot2_tage_valid_exact :
@@ -3411,6 +3423,11 @@ module if_stage #(
               (o_from_if_to_pd.program_counter +
                (o_from_if_to_pd.sel_compressed ? riscv_pkg::PcIncrementCompressed :
                                                  riscv_pkg::PcIncrement32bit)));
+      cover (replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && o_itt_hit[1]);
+      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && o_itt_hit[1]);
+      f_if_slot2_live_follows_noncontrol :
+      assert (o_from_if_to_pd_2.sel_nop || o_from_if_to_pd_2.fetch_fault ||
+              !o_slot1_has_control_flow);
       f_if_slot1_nop_implies_slot2_nop :
       assert (!o_from_if_to_pd.sel_nop || o_from_if_to_pd_2.sel_nop);
       f_if_slot1_fault_implies_slot2_fault_or_nop :
