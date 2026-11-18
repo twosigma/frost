@@ -1568,6 +1568,29 @@ module pd_stage #(
     pd_chk_instr[11:8],
     1'b0
   };
+  logic pd_chk_redirect_known;
+  logic pd_chk_aligned_inputs;
+`ifdef FORMAL
+  // The standalone model can supply an odd fetch PC or return-stack address.
+  // Keep those packets free for the source and decoded-target properties.
+  assign pd_chk_aligned_inputs = !pd_chk_pc[0] &&
+      (o_from_pd_to_id.ras_checkpoint_valid_count == '0 || !o_from_pd_to_id.ras_checkpoint_top[0]);
+  assign pd_chk_redirect_known = 1'b1;
+`else
+  assign pd_chk_aligned_inputs = 1'b1;
+  assign pd_chk_redirect_known = !$isunknown(
+      {
+        o_pd_redirect_target,
+        o_pd_redirect_slot2,
+        o_pd_redirect_taken,
+        pd_itt_target_select_r,
+        pd_backing_redirect_r,
+        pd_backing_redirect_2_r,
+        pd_chk_instr,
+        pd_chk_pc
+      }
+  );
+`endif
 
   // A full-width reference sampled on the same enabled edges checks target
   // alignment, stall hold, and the target, fall-through, and format
@@ -1622,12 +1645,9 @@ module pd_stage #(
       // indirect target predictor's target belongs to a taken JALR; a taken redirect that is
       // neither an indirect-target nor a backing-BTB one is a conditional branch to its decoded
       // target; every target is halfword aligned.
-      if (pd_sim_reset_seen_q && o_pd_redirect && !$isunknown(
-              {o_pd_redirect_target, o_pd_redirect_slot2, o_pd_redirect_taken,
-               pd_itt_target_select_r, pd_backing_redirect_r, pd_backing_redirect_2_r,
-               pd_chk_instr, pd_chk_pc}
-          )) begin
-        p_pd_redirect_target_halfword_aligned : assert (!o_pd_redirect_target[0]);
+      if (pd_sim_reset_seen_q && o_pd_redirect && pd_chk_redirect_known) begin
+        p_pd_redirect_target_halfword_aligned :
+        assert (!pd_chk_aligned_inputs || !o_pd_redirect_target[0]);
         p_pd_itt_redirect_is_a_jalr :
         assert (!pd_itt_target_select_r ||
                 (o_pd_redirect_taken && pd_chk_instr[6:0] == riscv_pkg::OPC_JALR));
@@ -2267,6 +2287,15 @@ module pd_stage #(
 
   always_ff @(posedge i_clk) begin
     if (formal_past_valid && !i_pipeline_ctrl.reset) begin
+      if (o_pd_redirect && pd_chk_aligned_inputs) begin
+        c_aligned_itt_slot1 : cover (pd_itt_target_select_r && !o_pd_redirect_slot2);
+        c_aligned_itt_slot2 : cover (pd_itt_target_select_r && o_pd_redirect_slot2);
+        if (o_pd_redirect_taken && !pd_itt_target_select_r &&
+            !pd_backing_redirect_r && !pd_backing_redirect_2_r) begin
+          c_taken_direction_slot1 : cover (!o_pd_redirect_slot2);
+          c_taken_direction_slot2 : cover (o_pd_redirect_slot2);
+        end
+      end
       cover (pd_itt_redirect_r && pd_backing_redirect_r);
       cover (pd_itt_redirect_2_r && pd_backing_redirect_2_r);
       cover (pd_backing_redirect_r && !o_pd_redirect_ras_push && !o_pd_redirect_ras_pop);

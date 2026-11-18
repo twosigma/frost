@@ -1663,7 +1663,9 @@ FORMAL_TARGETS = [
         "equations, both history outputs match the branch direction or jump target bit, "
         "a reserved compressed jump preserves only its trap, and stack operations, "
         "refreshes, directions and targets match PD's reference models across address regions; induction checks "
-        "indirect eligibility, payloads and reserved traps",
+        "indirect eligibility, payloads and reserved traps. "
+        "Redirects from aligned inputs are aligned, indirect targets select a taken "
+        "JALR, and taken direction redirects select the decoded branch target",
         tasks=("bmc", "cover", "prove_indirect"),
     ),
     FormalTarget(
