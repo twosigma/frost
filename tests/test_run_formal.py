@@ -5440,7 +5440,6 @@ UNDEFINED_OPENING_PENDING = (
     "coherence_store_home",
     "coherent_cpu",
     "coherent_hart_cache",
-    "coherent_rs_payload",
     "csr_commit_cofactor",
     "csr_file",
     "fetch_shadow_capture",
