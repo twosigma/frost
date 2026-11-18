@@ -307,6 +307,11 @@ Open: restore `coherence_store_boundary:bmc_four` to depth 120 with the
 L1D hit path, using additional lemmas or splitting the checks into smaller
 cones so the task fits its CI budget.
 
+Open: `coherence_store_boundary:cover_edges_same_combined` reaches its three
+covers on the back-to-back schedule without itself requiring that the two
+stores share one record; gate its covers on a seen flag, as the same-sector
+AMO covers are gated.
+
 Open: two directed L1D schedules for full-line paths that the bounded control
 checks do not reach. One forms a full pair behind an older pending head from
 eight scalar writes, grants it on a borrowed load endpoint, and retires the

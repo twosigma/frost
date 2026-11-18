@@ -250,9 +250,11 @@ FORMAL_TARGETS = [
             "cover_old",
             "cover_amo",
             "cover_amo_same",
+            "cover_amo_same_two",
             "cover_amo_other_home",
             "cover_sc",
             "cover_edges_same",
+            "cover_edges_same_combined",
             "cover_edges_other",
         ),
     ),
@@ -2406,11 +2408,19 @@ SBY_TASKS = [
     ("cover_old", "Delayed old response and a fresh load staged before drain."),
     ("cover_amo", "AMO retirement, delayed release and younger-store admission."),
     ("cover_amo_same", "Same-sector buffered stores and local AMO through release."),
+    (
+        "cover_amo_same_two",
+        "Delayed same-sector two-record buffered stores and local AMO through release.",
+    ),
     ("cover_amo_other_home", "Different-sector AMO home write lookup and release."),
     ("cover_sc", "SC retirement, delayed release and younger-store admission."),
     (
         "cover_edges_same",
         "Load staging at capture, acknowledgement, promotion and drain of same-sector stores.",
+    ),
+    (
+        "cover_edges_same_combined",
+        "Load staging at capture, acknowledgment and drain of combined same-sector stores.",
     ),
     (
         "cover_edges_other",
@@ -4532,14 +4542,14 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     # reset cycle, and smtbmc with Boolector checks 38 of its 80 steps in 20
     # minutes; the long tasks would not fit their limits.
     "coherence_store_boundary": (
-        "plain memory_map and opt: half its tasks run them before their setundef, the other half have none",
+        "plain memory_map and opt: its BMC tasks run them before their setundef, its cover and sticky tasks have none",
         {
             "bmc_four bmc_intervening bmc_load_same bmc_load_other bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_fatal bmc_sc bmc_old": [
                 "memory_map",
                 "opt",
                 "opt -fast",
             ],
-            "cover_four prove_amo_same_fatal_sticky prove_amo_other_fatal_sticky cover_load cover_amo cover_amo_same cover_amo_other_home cover_sc cover_old cover_edges_same cover_edges_other": [
+            "cover_four prove_amo_same_fatal_sticky prove_amo_other_fatal_sticky cover_load cover_amo cover_amo_same cover_amo_same_two cover_amo_other_home cover_sc cover_old cover_edges_same cover_edges_same_combined cover_edges_other": [
                 "memory_map",
                 "opt",
             ],

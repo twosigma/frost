@@ -24,6 +24,7 @@ module coherence_store_boundary_formal #(
     parameter bit LOCAL_PROGRESS = 1'b0,
     parameter bit COVER_LOCAL = 1'b0,
     parameter bit COVER_AMO_HOME = 1'b0,
+    parameter bit DELAY_SECOND_STORE = 1'b0,
     parameter bit FOUR_STORES = 1'b0,
     parameter int unsigned MODE = 0,
     parameter int unsigned SECTOR_CASE = 2
@@ -60,7 +61,27 @@ module coherence_store_boundary_formal #(
   (* anyconst *) logic [7:0] first_byte, second_byte;
   // The second older store may share the first store's sector, leaving a
   // different-sector AMO target absent from the cache.
-  (* anyconst *) logic amo_prefix_same_sector;
+  (* anyconst *)logic amo_prefix_same_sector;
+  // Back-to-back same-sector stores combine because the store queue launches
+  // them back to back and the store buffer merges into the youngest unsealed
+  // record; the gather window extends combining only to writes two to four
+  // cycles apart. In the delayed schedule, the second store's data arrives
+  // inside the window (two cycles before commit, as in the core), while it
+  // retires as the window closes and its write reaches the L1D after the first
+  // record seals. That write arrives two cycles after the seal, leaving one
+  // cycle of margin against the gather window's length; cover_edges_same
+  // failing with p_stage_promotion unreached can indicate the window changed.
+  wire  second_store_delayed;
+  if (DELAY_SECOND_STORE) begin : gen_second_store_delayed
+    assign second_store_delayed = 1'b1;
+  end else if (MODE == 0 && !FOUR_STORES && SECTOR_CASE == 0 && !COVER_BOUNDARIES &&
+               !COVER_MODE) begin : gen_second_store_choice
+    (* anyconst *) logic gap;
+    assign second_store_delayed = gap;
+  end else begin : gen_second_store_immediate
+    assign second_store_delayed = 1'b0;
+  end
+  logic [2:0] second_store_wait_q;
   logic [3:0] step_q;
   logic atomic_complete_q, sc_written_q, guard_retired;
   // Interfaces used by the ordered dispatch and retirement checks below.
@@ -150,6 +171,10 @@ module coherence_store_boundary_formal #(
   logic sq_mem_write_en;
   logic sq_mem_write_is_cached;
 
+  wire second_store_data_ready = second_store_delayed ?
+      (step_q == 5 && second_store_wait_q == 3'd3) : (step_q == 3);
+  wire commit_second_store = !FOUR_STORES && step_q == 5 && advance &&
+      (!second_store_delayed || second_store_wait_q == 3'd5);
   wire retire_atomic = step_q == 6 && (Mode == 1 || Mode == 2) && atomic_complete_q &&
       advance && (!LOCAL_PROGRESS || !commit_hold);
   wire commit_store = FOUR_STORES ? (step_q >= 6 && step_q <= 9) :
@@ -213,9 +238,10 @@ module coherence_store_boundary_formal #(
     alloc1.address = (Mode == 1 && !LOCAL_PROGRESS && amo_prefix_same_sector ?
         address0 : address1) + (Mode == 3 ? 4 : 0);
     store_data = '0;
-    store_data.valid = (step_q == 2 || step_q == 3 || step_q == 8 ||
+    store_data.valid = (step_q == 2 || second_store_data_ready || step_q == 8 ||
         (step_q == 4 && Mode == 2)) && advance;
-    store_data.rob_tag = step_q == 2 ? 0 : step_q == 3 ? 1 : step_q == 4 ? AtomicTag : YoungerTag;
+    store_data.rob_tag = step_q == 2 ? 0 :
+        second_store_data_ready ? 1 : step_q == 4 ? AtomicTag : YoungerTag;
     store_data.data = {8{step_q == 2 ? first_byte : second_byte}};
     load_alloc = '0;
     load_alloc.valid = (step_q == 1 && advance && (Mode != 2 || LocalLR)) || fresh_alloc;
@@ -263,6 +289,7 @@ module coherence_store_boundary_formal #(
   always_ff @(posedge i_clk) begin
     if (Mode == 3) assume (different_sector);
     if (rst) begin
+      second_store_wait_q <= '0;
       step_q <= 0;
       addressed_q <= 0;
       lr_addressed_q <= 0;
@@ -276,8 +303,10 @@ module coherence_store_boundary_formal #(
       fresh_stage_q <= 0;
       fresh_addressed_q <= 0;
     end else begin
+      if (second_store_delayed && step_q == 5 && second_store_wait_q != 3'd5)
+        second_store_wait_q <= second_store_wait_q + 1'b1;
       if (commit_advance && (FOUR_STORES ? step_q < 12 :
-          (step_q < 6 || (step_q > 6 && step_q < 10) || retire_atomic ||
+          (step_q < 5 || commit_second_store || (step_q > 6 && step_q < 10) || retire_atomic ||
            (Mode == 4 && step_q == 6 && atomic_complete_q))))
         step_q <= step_q + 1'b1;
       if (LOCAL_PROGRESS ? (dependency_result.valid && dependency_result.tag == AtomicTag) :
@@ -298,11 +327,16 @@ module coherence_store_boundary_formal #(
     end
   end
   if (COVER_MODE && !FOUR_STORES) begin : gen_cover_schedule
+    localparam bit CombinedPrefix = MODE == 1 && !DELAY_SECOND_STORE &&
+        (SECTOR_CASE == 0 || COVER_AMO_HOME);
     logic [6:0] cycle_q = 0;
+    logic [3:0] prev_block_valid_q = 0;
+    logic prev_atomic_live_q = 0, record_popped_q = 0;
     logic full_seen_q = 0, tail_drain_seen_q = 0, selected_seen_q = 0;
     logic retired_seen_q = 0, written_seen_q = 0, released_seen_q = 0;
     logic local_seen_q = 0, home_write_seen_q = 0;
     logic load_seen_q = 0, old_seen_q = 0, fresh_seen_q = 0;
+    wire record_pop = !rst && !prev_atomic_live_q && |(prev_block_valid_q & ~l1_block_valid);
     always_ff @(posedge i_clk) begin
       if (cycle_q != 127) cycle_q <= cycle_q + 1'b1;
       assume (advance && permit_d && permit_c && observe_drain);
@@ -312,8 +346,24 @@ module coherence_store_boundary_formal #(
       assume (permit_u == !((Mode == 1 || Mode == 2) && demand_q.opcode != coherence_pkg::GetM &&
           cycle_q < 105));
       assume (offer_load == (Mode != 0 || cycle_q == 30));
-      if (!rst) begin
-        full_seen_q <= full_seen_q || ($countones(l1_block_valid) == 2 && acknowledged_q == 2);
+      if (rst) begin
+        prev_block_valid_q <= '0;
+        prev_atomic_live_q <= 1'b0;
+        record_popped_q <= 1'b0;
+      end else begin
+        prev_block_valid_q <= l1_block_valid;
+        prev_atomic_live_q <= l1_atomic_live;
+        record_popped_q <= record_popped_q || record_pop;
+        // Back-to-back same-sector prefix stores combine into one unpopped
+        // record; delayed or different-sector prefix stores occupy two records.
+        full_seen_q <= full_seen_q ||
+            (acknowledged_q == 2 &&
+             (CombinedPrefix ?
+              (!l1_atomic_live && !record_popped_q && !record_pop && $countones(
+            l1_block_valid
+        ) == 1) : ($countones(
+            l1_block_valid
+        ) == 2)));
         tail_drain_seen_q <= tail_drain_seen_q || (observe_drain && accepted_q == 2 && $countones(
             l1_block_valid
         ) == 1);
@@ -381,7 +431,7 @@ module coherence_store_boundary_formal #(
         if (lq_fu_complete.valid && lq_fu_complete.value == {8{second_byte}}) begin
           p_stage_capture : cover (staged_q[0]);
           p_stage_acknowledge : cover (staged_q[1]);
-          p_stage_promotion : cover (staged_q[2]);
+          if (SECTOR_CASE != 0 || DELAY_SECOND_STORE) p_stage_promotion : cover (staged_q[2]);
           p_stage_drain : cover (staged_q[3]);
         end
       end
@@ -729,11 +779,11 @@ module coherence_store_boundary_formal #(
       .i_commit_valid(commit_store),
       .i_commit_rob_tag(commit_tag),
       .i_commit_valid_comb(commit_store),
-      .i_commit_valid_2(!FOUR_STORES && step_q == 5 && advance),
+      .i_commit_valid_2(commit_second_store),
       .i_commit_rob_tag_2(7'd1),
-      .i_commit_valid_comb_2(!FOUR_STORES && step_q == 5 && advance),
+      .i_commit_valid_comb_2(commit_second_store),
       .i_commit_valid_scan(commit_store),
-      .i_commit_valid_scan_2(!FOUR_STORES && step_q == 5 && advance),
+      .i_commit_valid_scan_2(commit_second_store),
       .i_sq_check_capture_valid(lq_sq_check_capture_valid),
       .i_sq_check_addr(lq_sq_check_addr),
       .i_sq_check_addr_b(lq_sq_check_addr_b),
@@ -886,7 +936,7 @@ module coherence_store_boundary_formal #(
       .o_sq_check_size(lq_sq_check_size),
       .i_sq_all_older_addrs_known(sq_sq_all_older_addrs_known),
       .i_sq_forward(sq_sq_forward),
-      .i_sq_commit_pending(commit_store || (!FOUR_STORES && step_q == 5 && advance)),
+      .i_sq_commit_pending(commit_store || commit_second_store),
       .o_mem_read_en(lq_mem_read_en),
       .o_mem_addr_valid(lq_mem_addr_valid),
       .o_mem_read_addr(lq_mem_read_addr),
