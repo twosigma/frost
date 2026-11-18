@@ -4607,6 +4607,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="cdc_reset_pair",
         description="Reset release with either clock stopped",
     ),
+    "cdc_reset_pair_waves": CocotbRunConfig(
+        python_test_module="cocotb_tests.lib.test_cdc_reset_pair",
+        hdl_toplevel_module="cdc_reset_pair",
+        description="FST waveform output during reset release",
+        extra_env=(("WAVES", "1"),),
+    ),
     "async_fifo": CocotbRunConfig(
         python_test_module="cocotb_tests.lib.test_async_fifo",
         hdl_toplevel_module="async_fifo",
@@ -5913,6 +5919,7 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "cached_tier_adapter_split",
         "cdc_mailbox",
         "cdc_reset_pair",
+        "cdc_reset_pair_waves",
         "coherence_array_reset_uram_sweep",
         "coherence_cbo_zero_misses",
         "coherence_cluster",
@@ -6718,7 +6725,19 @@ class TestUnitTests:
     @pytest.mark.parametrize("test_name", UNIT_TEST_PARAMS)
     def test_unit(self, test_name: str, capsys: Any) -> None:
         """Run one unit bench through cocotb."""
+        check_waveform = test_name == "cdc_reset_pair_waves"
+        trace_path = REPOSITORY_ROOT / "tests" / "dump.fst"
+        if check_waveform:
+            trace_path.unlink(missing_ok=True)
         run_test(test_name, capsys)
+        if check_waveform:
+            assert trace_path.is_file(), f"Missing waveform file {trace_path}"
+            with trace_path.open("rb") as trace:
+                # The FST header starts with a type byte and an eight-byte length.
+                header = trace.read(9)
+            assert len(header) == 9 and header[0] == 0, "Invalid FST header"
+            header_size = 1 + int.from_bytes(header[1:], "big")
+            assert trace_path.stat().st_size > header_size, "Missing FST payload"
 
 
 # =============================================================================

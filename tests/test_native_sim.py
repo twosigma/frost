@@ -1769,6 +1769,22 @@ def _verify_demo_uart_summary_order(
             assert relayed.rindex(b"<<PASS>>") < relayed.rindex(summary_header)
 
 
+def test_cocotb_makefile_waveform_flags() -> None:
+    """Pin the compile and runtime trace flags under WAVES=1."""
+    makefile = TESTS_MAKEFILE.read_text(encoding="utf-8")
+    assert parse_makefile_default_vars(makefile)["WAVES"] == "0"
+
+    waves_block = makefile.partition("ifeq ($(WAVES),1)\n")[2].partition("\nendif")[0]
+    enabled, disabled = waves_block.split("\nelse\n", 1)
+    compile_args = re.search(r"(?m)^\s*export EXTRA_ARGS := (.+)$", enabled)
+    assert compile_args is not None
+    assert {"--trace-fst", "--trace-structs"} <= set(
+        _group_verilator_tokens(compile_args.group(1))
+    )
+    assert "SIM_ARGS += --trace" in {line.strip() for line in enabled.splitlines()}
+    assert "--trace" not in disabled
+
+
 def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> None:
     """Native Makefile matches tests/Makefile parameters and documented flag diffs."""
     native_text = NATIVE_MAKEFILE.read_text(encoding="utf-8")
