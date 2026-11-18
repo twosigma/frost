@@ -18,7 +18,7 @@ regression run [natively](../fpga/README.md#hardware-regression) instead.
 | [`test_riscv_tests.py`](#test_riscv_testspy) | riscv-tests ISA suites and benchmarks |
 | [`test_riscv_vector_tests.py`](#test_riscv_vector_testspy) | Generated, self-checking vector instruction tests (riscv-vector-tests) on Spike or the simulated core |
 | [`test_vector_reference.py`](#test_vector_referencepy) | The vector bring-up programs on Spike at three vector lengths |
-| [`test_fplat_probe.py`](test_fplat_probe.py) | LP64D callee-saved registers across the FP throughput loops on Spike |
+| [`test_fplat_probe.py`](test_fplat_probe.py) | Scalar FP target links and LP64D callee-saved registers across the throughput loops on Spike |
 | [`test_riscv_torture.py`](#test_riscv_torturepy) | Random RV64IMAFDC programs against Spike references |
 | [`test_testrig.py`](#test_testrigpy) | Random instruction sequences against the Sail RISC-V model, one instruction at a time (TestRIG) |
 | [`test_run_yosys.py`](#test_run_yosyspy) | Portable and Xilinx synthesis |
@@ -139,6 +139,14 @@ execution; it does not use standalone `slang --lint-only`.
 ## Test runners
 
 ### `test_run_cocotb.py`
+
+Run the scalar floating-point checks with `./scripts/frost.py cocotb <target>`.
+
+| Target | Checks |
+| --- | --- |
+| [`fp_engine_equiv`](../verif/cocotb_tests/ex_stage/test_fp_engine.py) | Result bits and flags against Berkeley SoftFloat, including fused cancellation and multiply and divide rounding boundaries. A separate case measures engine latency against per-operation limits. |
+| [`fp_shim`](../verif/cocotb_tests/tomasulo/fu_shims/test_fp_shim.py) | Fast-path latency, issue after completion, result tags and flush handling. |
+| [`fplat_probe`](../sw/apps/fplat_probe) | Dependent chains and independent streams in the full processor. The registered build checks cycle limits for dependent FMUL, FMA and FDIV and independent FMUL and FMA at both precisions. |
 
 `vec_operand_widths` checks EEW=1 mask-source aliases, vector versus scalar
 source fields and the old destination read by widening multiply-accumulate,

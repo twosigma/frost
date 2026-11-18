@@ -3452,8 +3452,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.ex_stage.test_fp_engine",
         hdl_toplevel_module="fp_engine_equiv_harness",
         description=(
-            "F/D, Zfhmin and Zfa results and flags match their references, including "
-            "cancellation"
+            "F/D, Zfhmin and Zfa results and flags against their references, "
+            "including cancellation and multiply/divide boundaries, plus "
+            "per-operation latency limits"
         ),
     ),
     "dispatch": CocotbRunConfig(

@@ -12,13 +12,31 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Calling convention of the floating-point throughput loops."""
+"""Scalar floating-point test targets and the latency probe's calling convention."""
 
 from pathlib import Path
 import shutil
 import subprocess
 
 import pytest
+
+from test_run_cocotb import TEST_REGISTRY
+
+
+def test_scalar_fp_targets_link_to_their_implementations() -> None:
+    """Keep the scalar FP guide's target names and links aligned with the registry."""
+    root = Path(__file__).resolve().parents[1]
+    guide = (root / "tests/README.md").read_text()
+    for name in ("fp_engine_equiv", "fp_shim", "fplat_probe"):
+        config = TEST_REGISTRY[name]
+        if config.app_name is None:
+            source = Path("verif", *config.python_test_module.split(".")).with_suffix(
+                ".py"
+            )
+        else:
+            source = Path("sw/apps") / config.app_name
+        assert (root / source).exists()
+        assert f"[`{name}`](../{source.as_posix()})" in guide
 
 
 @pytest.mark.skipif(
