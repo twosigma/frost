@@ -1665,6 +1665,11 @@ class WfiRecoveryWatch:
         # The platform ties the CPU's verification input low.
         cpu_top.i_disable_branch_prediction.value = Force(1)
         self.cpu = cpu_top.hart.cpu_inst
+        # A mispredicted JAL launches its recovery from allocation
+        # (riscv_pkg::EarlyJalRecovery), which would flush the fall-through
+        # WFI before the older WFI wakes. Hold the staging request low so the
+        # jump recovers at commit, the path this bench checks.
+        self.cpu.jal_launch.value = Force(0)
         self.rob = self.cpu.u_tomasulo.u_rob
         symbols = _load_symbol_ranges(
             ["wfi_recovery_gate", "wfi_recovery_target"], "wfi_seed_recovery"

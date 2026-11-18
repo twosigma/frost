@@ -90,12 +90,16 @@ and the cycle after that it removes younger back-end work with an age-based
 partial flush.
 
 An early JALR restore maps its integer link register to the jump's ROB tag
-and replays its return-stack operation. A JAL, a JALR with
-`EarlyJalrRecovery` cleared, or a misprediction that could not start early
-recovery recovers at commit. After the jump or branch retires, every
-uncommitted instruction in the back end is younger and is flushed.
-Exceptions cause a full flush at commit under the trap unit's privilege
-and delegation rules.
+and replays its return-stack operation. A mispredicted JAL (no BTB
+prediction, or a stale BTB target) is known when it allocates: a staging
+register holds it, and it launches the same recovery, with the same link and
+return-stack handling, from the next cycle in which no checkpointed branch
+issues (`riscv_pkg::EarlyJalRecovery`). A JALR with `EarlyJalrRecovery`
+cleared, a JAL with `EarlyJalRecovery` cleared, or a misprediction that could
+not start early recovery recovers at commit. After the jump or branch
+retires, every uncommitted instruction in the back end is younger and is
+flushed. Exceptions cause a full flush at commit under the trap unit's
+privilege and delegation rules.
 
 ### Serializing instructions
 

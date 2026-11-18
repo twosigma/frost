@@ -2467,8 +2467,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="wfi_seed_recovery",
         nic_mac_clocks=False,
         description=(
-            "With prediction disabled, a direct JAL exposes its fall-through WFI "
-            "at the ROB head during recovery. Each run checks that the interrupt "
+            "With prediction disabled and the JAL's allocation-time recovery held "
+            "off, a direct JAL exposes its fall-through WFI at the ROB head during "
+            "commit recovery. Each run checks that the interrupt "
             "resume PC holds the JAL target until it retires. A timeout reports "
             "if the JAL and fall-through WFI never queued behind the waiting WFI."
         ),

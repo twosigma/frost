@@ -96,7 +96,15 @@ module pd_history_twin_side (
   logic [riscv_pkg::PhysAddrBits-2:0] itt_train_target;
   logic itt_train_mispredicted;
 
-  tage_history history (
+  // The reference predates the JAL entries for early JAL recovery, so the
+  // candidate runs with them off; tage_history_recovery checks them.
+  tage_history
+`ifndef PREDICTOR_TWIN_REFERENCE
+  #(
+      .JAL_ENTRIES(1'b0)
+  )
+`endif
+  history (
       .i_clk,
       .i_rst(i.pipeline_ctrl.reset),
       .i_pd_accept(accept),
@@ -136,6 +144,10 @@ module pd_history_twin_side (
       .i_alloc_tag(i.alloc_tag),
       .i_alloc_cond_branch(i.alloc_cond_branch),
       .i_alloc_jalr(i.alloc_jalr),
+`ifndef PREDICTOR_TWIN_REFERENCE
+      .i_alloc_jal(2'b00),
+      .i_commit_jal(2'b00),
+`endif
       .i_alloc_q(i.alloc_q),
       .i_commit_valid(i.commit_valid),
       .i_commit_tag(i.commit_tag),

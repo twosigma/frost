@@ -30,7 +30,7 @@
  * restores one in a single cycle. The allocator hands out the lowest free
  * ID below NumCheckpoints. A checkpoint holds the state before its
  * branch's own rename, plus that rename's integer destination: while the
- * branch is still in flight (an early-recovered JALR call), restore maps the
+ * branch is still in flight (an early-recovered JALR or JAL call), restore maps the
  * destination back to the branch. The active RATs are flip-flops, for
  * parallel lookup, per-entry commit clear, and bulk restore; snapshots live
  * in sdp_dist_ram. Struct arrays are avoided for Yosys compatibility.

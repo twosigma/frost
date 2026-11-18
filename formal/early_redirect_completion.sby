@@ -17,7 +17,7 @@ hierarchy -top early_redirect_completion_formal
 script free_undefined.ys
 prep -top early_redirect_completion_formal -flatten
 select -assert-count 2 t:$check r:FLAVOR=assert %i
-select -assert-count 7 t:$check r:FLAVOR=cover %i
+select -assert-count 8 t:$check r:FLAVOR=cover %i
 select -assert-none t:$check r:FLAVOR=assume %i
 prove: chformal -cover -remove
 cover: chformal -assert -remove

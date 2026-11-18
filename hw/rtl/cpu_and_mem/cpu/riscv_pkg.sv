@@ -2737,6 +2737,10 @@ package riscv_pkg;
   // when it resolves, like a conditional branch. Clear to recover JALRs at
   // commit.
   localparam bit EarlyJalrRecovery = 1'b1;
+  // A mispredicted JAL (a BTB miss, or a BTB hit with a stale target) launches
+  // the early recovery from allocation, through a one-cycle staging register,
+  // instead of waiting for commit. Clear to recover JALs at commit.
+  localparam bit EarlyJalRecovery = 1'b1;
 
   // Register file sizes
   localparam int unsigned NumIntRegs = 32;  // x0-x31

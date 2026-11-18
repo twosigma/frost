@@ -448,6 +448,8 @@ module cpu_ooo #(
   // Use packed arrays for module ports; Yosys rejects unpacked-array ports.
   logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
+  // Live checkpoints whose branch or JALR is unresolved (ooo_pipeline_control).
+  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_unresolved;
 
   ooo_pipeline_control #(
       .QUEUED_FRONTEND(DECODED_QUEUE_DEPTH != 0),
@@ -488,7 +490,8 @@ module cpu_ooo #(
       .o_post_flush_holdoff_q(post_flush_holdoff_q),
       .o_trap_taken_reg(trap_taken_reg),
       .o_mret_taken_reg(mret_taken_reg),
-      .o_trap_target_reg(trap_target_reg)
+      .o_trap_target_reg(trap_target_reg),
+      .o_checkpoint_unresolved(checkpoint_unresolved)
   );
 
   // ===========================================================================
@@ -803,6 +806,7 @@ module cpu_ooo #(
   logic early_mispredict_is_jalr;
   logic early_mispredict_is_call;
   logic early_mispredict_is_return;
+  logic early_mispredict_is_jal;
   logic early_recovery_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_recovery_tag;
   logic early_backend_recovery_hold;
@@ -3523,11 +3527,48 @@ module cpu_ooo #(
   // ===========================================================================
   // A mispredicted conditional branch or JALR that holds a checkpoint starts
   // recovery as soon as it resolves, unless another recovery or flush is in
-  // progress, instead of at commit (JAL mispredictions recover at commit):
+  // progress, instead of at commit:
   //   Cycle N:   branch_update reports the misprediction; capture its data
   //   Cycle N+1: early_mispredict_active: redirect fetch, restore the RAT,
   //              hold dispatch and issue (early_backend_recovery_hold)
   //   Cycle N+2: early_backend_recovery_pending: back-end partial flush
+  // A mispredicted JAL is known when it allocates (no BTB prediction, or a
+  // stale BTB target): it is staged at allocation and launches the same
+  // recovery from the next cycle (riscv_pkg::EarlyJalRecovery).
+  //
+  // JAL launch candidates per slot. A bundle holds at most one branch or jump,
+  // so at most one slot carries a JAL. The capture superset needs no dispatch
+  // fire; the launch adds the fire and the misprediction (the ROB's own
+  // allocation-time rule, from ID's registered target-match bit).
+  logic jal_capture_1, jal_capture_2;
+  logic jal_launch;
+  logic jal_launch_slot2;
+  assign jal_capture_1 = rob_alloc_req_raw.is_jal;
+  assign jal_capture_2 = rob_alloc_req_2_raw.is_jal;
+  assign jal_launch_slot2 = !jal_capture_1;
+  assign jal_launch =
+      (rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready && rob_alloc_req.is_jal &&
+       !(rob_alloc_req.predicted_taken && from_id_to_ex.btb_correct_non_jalr)) ||
+      (rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready && rob_alloc_req_2.is_jal &&
+       !(rob_alloc_req_2.predicted_taken && from_id_to_ex_2.btb_correct_non_jalr));
+`ifndef SYNTHESIS
+  // The launch rule equals the ROB's allocation-time JAL misprediction.
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && !i_rst) begin
+      if (rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready && rob_alloc_req.is_jal)
+        p_jal_launch_matches_rob_mispredict_1 :
+        assert ((rob_alloc_req.predicted_taken && from_id_to_ex.btb_correct_non_jalr) ==
+                (rob_alloc_req.predicted_taken &&
+                 (rob_alloc_req.predicted_target == rob_alloc_req.branch_target)));
+      if (rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready && rob_alloc_req_2.is_jal)
+        p_jal_launch_matches_rob_mispredict_2 :
+        assert ((rob_alloc_req_2.predicted_taken && from_id_to_ex_2.btb_correct_non_jalr) ==
+                (rob_alloc_req_2.predicted_taken &&
+                 (rob_alloc_req_2.predicted_target == rob_alloc_req_2.branch_target)));
+      p_jal_launch_one_slot : assert (!(jal_capture_1 && jal_capture_2));
+    end
+  end
+`endif
 
   // Same-cycle trap and xRET copies for early-recovery kill fanout.
   always_ff @(posedge i_clk) begin
@@ -3562,6 +3603,18 @@ module cpu_ooo #(
       .i_flush_for_mret(early_recovery_mret_taken_reg),
       .i_trap_taken_reg(early_recovery_trap_taken_reg),
       .i_mret_taken_reg(early_recovery_mret_taken_reg),
+      .i_jal_launch(jal_launch),
+      .i_checkpoint_unresolved(checkpoint_unresolved),
+      .i_head_tag(head_tag),
+      .i_jal_capture(jal_capture_1 || jal_capture_2),
+      .i_jal_tag(jal_launch_slot2 ? rob_alloc_resp_2.alloc_tag : rob_alloc_resp.alloc_tag),
+      .i_jal_checkpoint_id(rob_checkpoint_id),
+      .i_jal_pc(jal_launch_slot2 ? rob_alloc_req_2_raw.pc : rob_alloc_req_raw.pc),
+      .i_jal_target(jal_launch_slot2 ? rob_alloc_req_2_raw.branch_target :
+                                       rob_alloc_req_raw.branch_target),
+      .i_jal_is_compressed(jal_launch_slot2 ? rob_alloc_req_2_raw.is_compressed :
+                                              rob_alloc_req_raw.is_compressed),
+      .i_jal_is_call(jal_launch_slot2 ? rob_alloc_req_2_raw.is_call : rob_alloc_req_raw.is_call),
       .o_early_mispredict_active(early_mispredict_active),
       .o_early_mispredict_pending(early_mispredict_pending),
       .o_early_mispredict_fire(early_mispredict_fire),
@@ -3578,6 +3631,7 @@ module cpu_ooo #(
       .o_early_mispredict_is_jalr(early_mispredict_is_jalr),
       .o_early_mispredict_is_call(early_mispredict_is_call),
       .o_early_mispredict_is_return(early_mispredict_is_return),
+      .o_early_mispredict_is_jal(early_mispredict_is_jal),
       .o_early_recovery_en(early_recovery_en),
       .o_early_recovery_tag(early_recovery_tag),
       .o_early_backend_recovery_hold(early_backend_recovery_hold),
@@ -3879,6 +3933,9 @@ module cpu_ooo #(
   logic [1:0] tage_alloc_jalr;
   assign tage_alloc_jalr[0] = rob_alloc_req.is_branch && rob_alloc_req.is_jalr;
   assign tage_alloc_jalr[1] = rob_alloc_req_2.is_branch && rob_alloc_req_2.is_jalr;
+  logic [1:0] tage_alloc_jal;
+  assign tage_alloc_jal[0] = rob_alloc_req.is_branch && rob_alloc_req.is_jal;
+  assign tage_alloc_jal[1] = rob_alloc_req_2.is_branch && rob_alloc_req_2.is_jal;
 
   // The registered commit bus: retired conditional branches train, and every
   // retired taken control-flow instruction extends the retirement history.
@@ -3910,8 +3967,11 @@ module cpu_ooo #(
   assign tage_commit_cf[0] = rob_commit.is_branch;
   assign tage_commit_cf[1] = rob_commit_2.is_branch;
   logic [1:0][riscv_pkg::PhysAddrBits-2:0] tage_commit_target;
-  assign tage_commit_jalr[0]   = rob_commit.is_branch && rob_commit.is_jalr;
-  assign tage_commit_jalr[1]   = rob_commit_2.is_branch && rob_commit_2.is_jalr;
+  assign tage_commit_jalr[0] = rob_commit.is_branch && rob_commit.is_jalr;
+  assign tage_commit_jalr[1] = rob_commit_2.is_branch && rob_commit_2.is_jalr;
+  logic [1:0] tage_commit_jal;
+  assign tage_commit_jal[0] = rob_commit.is_branch && rob_commit.is_jal;
+  assign tage_commit_jal[1] = rob_commit_2.is_branch && rob_commit_2.is_jal;
   assign tage_commit_target[0] = rob_commit.branch_target[riscv_pkg::PhysAddrBits-1:1];
   assign tage_commit_target[1] = rob_commit_2.branch_target[riscv_pkg::PhysAddrBits-1:1];
 
@@ -3942,13 +4002,14 @@ module cpu_ooo #(
       .i_early_active(early_mispredict_active),
       .i_early_tag(early_mispredict_tag),
       .i_early_taken(early_mispredict_branch_taken),
-      .i_early_dir_bit(early_mispredict_is_jalr ? early_mispredict_branch_target[2] :
-                                                  early_mispredict_branch_taken),
+      .i_early_dir_bit((early_mispredict_is_jalr || early_mispredict_is_jal) ?
+                       early_mispredict_branch_target[2] : early_mispredict_branch_taken),
       .i_flush_full(flush_all || mispredict_recovery_pending),
       .i_alloc_q(rob_alloc_q),
       .i_alloc_tag(tage_alloc_tag),
       .i_alloc_cond_branch(tage_alloc_cond_branch),
       .i_alloc_jalr(tage_alloc_jalr),
+      .i_alloc_jal(tage_alloc_jal),
       .i_commit_valid(tage_commit_valid),
       .i_commit_tag(tage_commit_tag),
       .i_commit_cond_branch(tage_commit_cond_branch),
@@ -3957,6 +4018,7 @@ module cpu_ooo #(
       .i_commit_mispredicted(tage_commit_mispredicted),
       .i_commit_target_bits(tage_commit_target_bits),
       .i_commit_jalr(tage_commit_jalr),
+      .i_commit_jal(tage_commit_jal),
       .i_commit_cf(tage_commit_cf),
       .i_commit_target(tage_commit_target),
       .o_train_valid(tage_train_valid),
@@ -3973,12 +4035,14 @@ module cpu_ooo #(
   );
 
 `ifndef SYNTHESIS
-  // Record the PC that supplied each FTQ entry. Check branch and JALR
-  // ownership when execute restores history and when retirement trains.
+  // Record the PC that supplied each FTQ entry. Check branch, JALR and JAL
+  // ownership when early recovery restores history and when retirement trains
+  // or frees the entry.
+  // A JAL owns an entry only with EarlyJalRecovery (tage_history JAL_ENTRIES).
   logic [XLEN-1:0] tage_entry_pc[2**riscv_pkg::TageFtqIdxBits];
   always_ff @(posedge i_clk) begin
     if (u_tage_history.pd_entry_pending)
-      tage_entry_pc[u_tage_history.ftq_write_ptr] <= (pd_q_cond_branch[0] || pd_q_jalr[0]) ?
+      tage_entry_pc[u_tage_history.ftq_write_ptr] <= !u_tage_history.pd_branch_slot ?
           from_pd_to_id.program_counter : from_pd_to_id_2.program_counter;
   end
   always @(posedge i_clk) begin
@@ -3986,10 +4050,14 @@ module cpu_ooo #(
       if (early_mispredict_active)
         p_tage_entry_matches_early_branch :
         assert (tage_entry_pc[u_tage_history.early_ftq_idx] == early_mispredict_pc);
-      if (tage_commit_valid[0] && (tage_commit_cond_branch[0] || tage_commit_jalr[0]))
+      if (tage_commit_valid[0] &&
+          (tage_commit_cond_branch[0] || tage_commit_jalr[0] ||
+           (riscv_pkg::EarlyJalRecovery && tage_commit_jal[0])))
         p_tage_entry_matches_branch_0 :
         assert (tage_entry_pc[u_tage_history.commit_ftq_idx[0]] == rob_commit.pc);
-      if (tage_commit_valid[1] && (tage_commit_cond_branch[1] || tage_commit_jalr[1]))
+      if (tage_commit_valid[1] &&
+          (tage_commit_cond_branch[1] || tage_commit_jalr[1] ||
+           (riscv_pkg::EarlyJalRecovery && tage_commit_jal[1])))
         p_tage_entry_matches_branch_1 :
         assert (tage_entry_pc[u_tage_history.commit_ftq_idx[1]] == rob_commit_2.pc);
     end
@@ -4057,6 +4125,7 @@ module cpu_ooo #(
       .i_early_mispredict_is_jalr(early_mispredict_is_jalr),
       .i_early_mispredict_is_call(early_mispredict_is_call),
       .i_early_mispredict_is_return(early_mispredict_is_return),
+      .i_early_mispredict_is_jal(early_mispredict_is_jal),
       .i_restored_ras_tos(restored_ras_tos),
       .i_restored_ras_valid_count(restored_ras_valid_count),
       .i_restored_ras_top(restored_ras_top),
