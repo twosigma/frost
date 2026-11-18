@@ -1051,8 +1051,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "instr_operand_classifier.sby",
         "Direct instruction operand classes match operation decoding and fault "
-        "overrides",
-        tasks=("bmc",),
+        "overrides, without and with the vector floating-point decode",
+        tasks=("bmc", "vector_bmc"),
     ),
     FormalTarget(
         "decoded_bundle_queue.sby",
@@ -1063,21 +1063,24 @@ FORMAL_TARGETS = [
     FormalTarget(
         "id_stage_kill_equiv.sby",
         "ID post-classifier kill masking equals in-classifier legality and fault "
-        "overrides across both slots and all stage outputs",
-        tasks=("id_kill_equiv",),
+        "overrides across both slots and all stage outputs, without and with the vector "
+        "floating-point decode",
+        tasks=("id_kill_equiv", "id_kill_equiv_vector"),
     ),
     FormalTarget(
         "vec_vtype_tracker.sby",
-        "Surviving vector-memory allocation clears restart state across delayed "
-        "architectural reload and checkpoint recovery; the tracked vtype follows "
+        "A surviving vector allocation (arithmetic, FP, vector-to-scalar, load or "
+        "store) clears restart state across delayed architectural reload and "
+        "checkpoint recovery; the tracked vtype follows "
         "configuration allocation, flush, reload and restore",
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Vector arithmetic legality equals the reference for every vtype and "
-        "instruction; dispatch applies it with the VTOX and nonzero-vstart rules; "
-        "the registered queue-head result is current whenever it is ready",
+        "Vector arithmetic legality, floating point included, equals the reference "
+        "for every vtype and instruction; dispatch applies it with the VTOX and "
+        "nonzero-vstart rules; the registered queue-head result is current whenever "
+        "it is ready",
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
@@ -1588,8 +1591,14 @@ FORMAL_TARGETS = [
     FormalTarget(
         "pd_id_slot2_redirect.sby",
         "Composed PD and ID stages dispatch slot 2's effective prediction and "
-        "target equal to PD's slot-2 redirect while leaving slot 1 untouched",
-        tasks=("pd_id_slot2_bmc", "pd_id_slot2_cover"),
+        "target equal to PD's slot-2 redirect while leaving slot 1 untouched, without and "
+        "with the vector floating-point decode",
+        tasks=(
+            "pd_id_slot2_bmc",
+            "pd_id_slot2_cover",
+            "pd_id_slot2_vector_bmc",
+            "pd_id_slot2_vector_cover",
+        ),
     ),
     FormalTarget(
         "if_slot2_precompute.sby",
@@ -2523,6 +2532,16 @@ SBY_TASKS = [
         "Reachability of slot-2 taken overrides, not-taken vetoes, and stall holds",
     ),
     (
+        "pd_id_slot2_vector_bmc",
+        "Bounded PD and ID composition check for slot-2 prediction overrides with the "
+        "vector floating-point decode",
+    ),
+    (
+        "pd_id_slot2_vector_cover",
+        "Reachability of slot-2 taken overrides, not-taken vetoes, and stall holds with the "
+        "vector floating-point decode",
+    ),
+    (
         "if_slot2_precompute_bmc",
         "Bounded IF slot-2 TAGE coverage, decode, and target-candidate check",
     ),
@@ -3402,6 +3421,11 @@ SBY_TASKS = [
     (
         "immu_twin_hold",
         "Instruction MMU primitive form equals its portable form with four hold-polarity copies.",
+    ),
+    (
+        "id_kill_equiv_vector",
+        "ID post-classifier kill masking equals in-classifier legality and fault overrides "
+        "with the vector floating-point decode.",
     ),
     (
         "id_kill_equiv",
@@ -4624,6 +4648,11 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         "in-script equivalence check: undefined constants zeroed, proved by equiv_simple, which reads an undefined bit as 0",
         {
             "id_kill_equiv": ["setundef -zero", "setundef -zero", "equiv_simple"],
+            "id_kill_equiv_vector": [
+                "setundef -zero",
+                "setundef -zero",
+                "equiv_simple",
+            ],
         },
     ),
     "if_slot2_precompute": (

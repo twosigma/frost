@@ -112,6 +112,7 @@ VALID_APPS = [
     "uart_echo",
     "umode_test",
     "vec_arith_test",
+    "vec_fp_test",
     "vec_integer_test",
     "vec_mem_test",
     "vec_order_test",
@@ -124,14 +125,15 @@ VALID_APPS = [
 
 # The vector test programs need the vector unit and misaligned_test the
 # misaligned-access engine (MISALIGNED_HW), which only the X3 build has.
-# vec_integer_test, vec_source_eew_test, vec_vstart_reload_test and
-# vec_vtype_handoff_test also check the vector length they are built for:
+# vec_fp_test, vec_integer_test, vec_source_eew_test, vec_vstart_reload_test
+# and vec_vtype_handoff_test also check the vector length they are built for:
 # VEC_VLEN, 256 by default, the X3 build's VLEN.
 BOARD_SPECIFIC_APPS = {
     "bootrom": frozenset({"vcu118"}),
     "misaligned_test": frozenset({"x3"}),
     "nic_bench": frozenset({"vcu118"}),
     "vec_arith_test": frozenset({"x3"}),
+    "vec_fp_test": frozenset({"x3"}),
     "vec_integer_test": frozenset({"x3"}),
     "vec_mem_test": frozenset({"x3"}),
     "vec_order_test": frozenset({"x3"}),

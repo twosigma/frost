@@ -1,5 +1,6 @@
 [tasks]
 id_kill_equiv
+id_kill_equiv_vector
 
 [options]
 mode bmc
@@ -16,8 +17,12 @@ smtbmc boolector
 # 19 class bits last. Both are flattened with registers unmapped and every
 # named net outside the internal pre-kill wires kept, so equiv_make pairs
 # all 38 pre-register class bits, every pipeline register next-state bit,
-# and all eight id_stage outputs across both slots.
+# and all eight id_stage outputs across both slots. Both sides elaborate the
+# same VECTOR: 0 in id_kill_equiv (the default build) and 1 in
+# id_kill_equiv_vector, which adds the vector floating-point decode and classes.
 read -sv -D SYNTHESIS riscv_pkg.sv instr_decoder.sv instr_operand_classifier.sv immediate_decoder.sv instruction_type_decoder.sv branch_target_precompute.sv id_stage.sv
+id_kill_equiv: chparam -set VECTOR 0 id_stage
+id_kill_equiv_vector: chparam -set VECTOR 1 id_stage
 hierarchy -check -top id_stage
 proc
 opt_clean
@@ -44,6 +49,8 @@ rename -top gold
 design -stash gold
 design -reset
 read -sv -D SYNTHESIS riscv_pkg.sv instr_decoder.sv instr_operand_classifier.sv immediate_decoder.sv instruction_type_decoder.sv branch_target_precompute.sv id_stage.sv
+id_kill_equiv: chparam -set VECTOR 0 id_stage
+id_kill_equiv_vector: chparam -set VECTOR 1 id_stage
 hierarchy -check -top id_stage
 proc
 setattr -mod -unset keep_hierarchy *

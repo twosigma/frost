@@ -736,12 +736,19 @@ module dispatch #(
   logic slot2_op_is_vector;
   logic slot2_vector_serialized;
   logic slot1_is_varith;
-  assign slot1_is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X);
+  // The FP classes exist only with the vector unit (without it ID rejects
+  // every OP-V instruction), so with VECTOR=0 dispatch treats them as any
+  // other operation
+  logic op_is_vtof;
+  assign slot1_is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X) ||
+      (VECTOR && (op == riscv_pkg::VARITH_F));
+  assign op_is_vtof = VECTOR && (op == riscv_pkg::VTOF);
   assign slot2_fp_compute_serialized = (rs_type_2 == riscv_pkg::RS_FP);
   assign slot2_op_is_vector = (op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
       (op_2 == riscv_pkg::VSETVL) || (op_2 == riscv_pkg::VARITH) ||
       (op_2 == riscv_pkg::VARITH_X) || (op_2 == riscv_pkg::VTOX) ||
-      (op_2 == riscv_pkg::VLOAD) || (op_2 == riscv_pkg::VSTORE);
+      (op_2 == riscv_pkg::VLOAD) || (op_2 == riscv_pkg::VSTORE) ||
+      (op_2 == riscv_pkg::VARITH_F) || (op_2 == riscv_pkg::VTOF);
   assign slot2_vector_serialized = VECTOR &&
       (SLOT2_VALID_FROM_BUNDLE ? i_slot2_is_vector : (i_slot2_is_vector || slot2_op_is_vector));
   assign dispatch_valid_2 = i_valid_2 && !i_flush &&
@@ -911,10 +918,11 @@ module dispatch #(
 `ifdef VEC_LMUL_LEGALITY_LOCAL_PROOF
   // With VECTOR (the proof sets it): vec_arith_legality, which forms the
   // registered i_vec_arith_illegal, equals the reference for every vtype and
-  // instruction; and given that value for slot 1's own instruction, dispatch
-  // equals the arithmetic, VTOX and nonzero-vstart rules for every vtype,
-  // instruction, operation and vstart prediction. Vector load/store legality
-  // runs at the ROB head against architectural vtype.
+  // instruction, FP encodings included; and given that value for slot 1's own
+  // instruction, dispatch equals the arithmetic, VTOX, VTOF and nonzero-vstart
+  // rules for every vtype, instruction, operation and vstart prediction.
+  // Vector load/store legality runs at the ROB head against architectural
+  // vtype.
   logic f_arith_illegal, f_arith_illegal_ref;
   logic f_vec_illegal_ref, f_vstart_forbidden;
   vec_arith_legality u_f_arith_legality (
@@ -925,8 +933,9 @@ module dispatch #(
   assign f_arith_illegal_ref = riscv_pkg::vector_arith_illegal(
       i_vtype_spec, 32'(i_from_id_to_ex.instruction)
   );
-  // Only whole-register moves and scalar insert have a restartable arithmetic
-  // form. Scalar extraction ignores vstart; population/first-set require zero.
+  // Only whole-register moves and the scalar inserts (vmv.s.x, vfmv.s.f) have
+  // a restartable arithmetic form. Scalar extraction (vmv.x.s, vfmv.f.s)
+  // ignores vstart; population/first-set require zero.
   always_comb begin
     f_vstart_forbidden = 1'b0;
     if (slot1_is_varith) begin
@@ -934,14 +943,15 @@ module dispatch #(
       case ({
         i_from_id_to_ex.insn_bits[31:26], i_from_id_to_ex.insn_bits[14:12]
       })
-        {6'h27, 3'b011}, {6'h10, 3'b110} : f_vstart_forbidden = 1'b0;
+        {6'h27, 3'b011}, {6'h10, 3'b110}, {6'h10, 3'b101} : f_vstart_forbidden = 1'b0;
         default: ;
       endcase
     end else if (op == riscv_pkg::VTOX) begin
       f_vstart_forbidden = (i_from_id_to_ex.insn_bits[19:15] != 5'b00000);
     end
   end
-  assign f_vec_illegal_ref = (slot1_is_varith && f_arith_illegal_ref) ||
+  assign f_vec_illegal_ref = ((slot1_is_varith || (op == riscv_pkg::VTOF)) &&
+                              f_arith_illegal_ref) ||
       ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) || (i_vec_vstart_nonzero && f_vstart_forbidden);
   always_comb begin
     assume (i_vec_arith_illegal == f_arith_illegal_ref);
@@ -1452,18 +1462,20 @@ module dispatch #(
     o_rob_alloc_req.is_varith = slot1_is_varith || (op == riscv_pkg::VLOAD) ||
         (op == riscv_pkg::VSTORE);
     // Vector arithmetic uses its registered legality (VECTOR) or its queued
-    // LMUL class, and vill; VTOX uses vill. Arithmetic other than
-    // whole-register moves and vmv.s.x, and vcpop.m and vfirst.m, cannot
-    // start at a nonzero vstart.
-    o_rob_alloc_req.vec_illegal = ((slot1_is_varith || (op == riscv_pkg::VTOX)) &&
+    // LMUL class, and vill; VTOX uses vill, and VTOF (vfmv.f.s) the
+    // arithmetic legality. Arithmetic other than whole-register moves,
+    // vmv.s.x and vfmv.s.f, and vcpop.m and vfirst.m, cannot start at a
+    // nonzero vstart.
+    o_rob_alloc_req.vec_illegal = ((slot1_is_varith || (op == riscv_pkg::VTOX) || op_is_vtof) &&
                                    i_vtype_spec[8]) ||
-        (slot1_is_varith &&
+        ((slot1_is_varith || op_is_vtof) &&
          (VECTOR ? i_vec_arith_illegal :
                    i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]])) ||
         (i_vec_vstart_nonzero &&
          ((slot1_is_varith && !((i_from_id_to_ex.insn_bits[14:12] == 3'b011 &&
              i_from_id_to_ex.insn_bits[31:26] == 6'h27) ||
-            (i_from_id_to_ex.insn_bits[14:12] == 3'b110 &&
+            ((i_from_id_to_ex.insn_bits[14:12] == 3'b110 ||
+              (VECTOR && i_from_id_to_ex.insn_bits[14:12] == 3'b101)) &&
              i_from_id_to_ex.insn_bits[31:26] == 6'h10))) ||
           (op == riscv_pkg::VTOX && i_from_id_to_ex.insn_bits[19:15] != 0)));
     // Sstvala: raw instruction bits, the illegal-instruction xtval.
@@ -1475,8 +1487,11 @@ module dispatch #(
 
     // The ROB rejects dynamic rounding with frm in 5-7. Legal F/D ops without
     // an rm field have funct3 <= 101, so funct3 == DYN identifies rm users.
+    // Every vector FP instruction uses frm (ID marks OPFVV and OPFVF as FP),
+    // including moves, compares and sign injection.
     o_rob_alloc_req.fp_dyn_rm = i_from_id_to_ex.is_fp_instruction &&
-        (i_from_id_to_ex.instruction.funct3 == riscv_pkg::FRM_DYN);
+        ((i_from_id_to_ex.instruction.funct3 == riscv_pkg::FRM_DYN) ||
+         (VECTOR && (i_from_id_to_ex.instruction.opcode == riscv_pkg::OPC_OP_V)));
   end
 
   // Slot-2 allocation requires the whole bundle to fire.

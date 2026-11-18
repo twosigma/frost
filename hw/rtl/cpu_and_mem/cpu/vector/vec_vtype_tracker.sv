@@ -89,7 +89,8 @@ module vec_vtype_tracker #(
   assign cfg_imm = (i_alloc_op == riscv_pkg::VSETVLI) || (i_alloc_op == riscv_pkg::VSETIVLI);
   assign cfg_reg = i_alloc_op == riscv_pkg::VSETVL;
   assign clears_start = cfg_imm || cfg_reg || (i_alloc_op == riscv_pkg::VARITH) ||
-      (i_alloc_op == riscv_pkg::VARITH_X) || (i_alloc_op == riscv_pkg::VTOX) ||
+      (i_alloc_op == riscv_pkg::VARITH_X) || (i_alloc_op == riscv_pkg::VARITH_F) ||
+      (i_alloc_op == riscv_pkg::VTOX) || (i_alloc_op == riscv_pkg::VTOF) ||
       (i_alloc_op == riscv_pkg::VLOAD) || (i_alloc_op == riscv_pkg::VSTORE);
   assign reload = !o_valid && (quiet_q == 3'd3) && !i_vcfg_in_flight;
   // Without an allocation: reload the architectural state once it is current

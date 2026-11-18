@@ -18,8 +18,11 @@
 // instruction before NOP injection. i_inject_nop selects the NOP class;
 // i_illegal or i_fetch_fault overrides it with the neutral class. i_illegal
 // combines the decoder's flag for the selected instruction, PD's illegal
-// flag, and ID's mstatus.FS=Off check.
-module instr_operand_classifier (
+// flag, and ID's mstatus.FS=Off check. VECTOR adds the vector floating-point
+// classes.
+module instr_operand_classifier #(
+    parameter bit VECTOR = 1'b0
+) (
     input riscv_pkg::instr_t i_instr,
     input logic i_inject_nop,
     input logic i_illegal,
@@ -218,6 +221,17 @@ module instr_operand_classifier (
         // vmv.x.s, vcpop.m, vfirst.m: rd only, completed at the ROB head
         raw_class.has_int_dest = 1'b1;
         raw_class.rs_type = riscv_pkg::RS_NONE;
+      end else if (VECTOR && (i_instr.funct3 == 1 || i_instr.funct3 == 5)) begin
+        // Vector FP, with the vector unit. vfmv.f.s writes its f register
+        // and the .vf forms read theirs at the ROB head. Every vector FP
+        // completion carries zero flags, so retirement dirties FS only by
+        // vfmv.f.s's register write; the committed engine sends the flags
+        // its active elements raise, and only nonzero flags dirty FS.
+        raw_class.has_fp_flags = 1'b1;
+        if (i_instr.funct3 == 1 && i_instr.funct7[6:1] == 6'h10) begin
+          raw_class.has_fp_dest = 1'b1;
+          raw_class.rs_type = riscv_pkg::RS_NONE;
+        end else if (i_instr.funct3 == 5) raw_class.rs_type = riscv_pkg::RS_NONE;
       end else begin
         raw_class.uses_int_rs1 = (i_instr.funct3 == 3'b100) || (i_instr.funct3 == 3'b110);
       end

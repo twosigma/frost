@@ -26,7 +26,8 @@
   The group path executes single-width ALU, compare, merge and move and
   Zvbb unary operations. vec_int_exec executes mixed-width integer and
   fixed-point arithmetic, multiply/divide, masks, reductions and permutations
-  one element at a time. o_unsupported pulses for other encodings.
+  one element at a time. vec_fp_exec sequences FP16/32/64 arithmetic,
+  conversions and reductions. o_unsupported pulses for other encodings.
 
   Masking and the tail use the register file's byte enables: only active body
   elements (vstart <= i < vl, and v0[i] set when masked) are written, so tail
@@ -55,6 +56,9 @@ module vec_engine #(
     output logic             o_unsupported,
     input  logic [      1:0] i_vxrm = 2'b00,
     output logic             o_sat,
+    input  logic [      2:0] i_frm = 3'b000,
+    output logic             o_flags_valid,
+    output logic [      4:0] o_flags,
     // Memory-side ports
     input  logic [      4:0] i_xr_addr,
     output logic [ VLEN-1:0] o_xr_data,
@@ -124,11 +128,39 @@ module vec_engine #(
       .o_wdata(aux_wdata),
       .o_wbe(aux_wbe)
   );
-  assign rf_raddr[3:0] = aux_idle ? int_raddr : aux_raddr;
-  assign rf_we[0] = aux_idle ? int_we : aux_we;
-  assign rf_waddr[0] = aux_idle ? int_waddr : aux_waddr;
-  assign rf_wdata[0] = aux_idle ? int_wdata : aux_wdata;
-  assign rf_wbe[0] = aux_idle ? int_wbe : aux_wbe;
+  logic fp_idle, fp_we, d_fp;
+  logic [3:0][4:0] fp_raddr;
+  logic [4:0] fp_waddr;
+  logic [VLEN-1:0] fp_wdata;
+  logic [Bytes-1:0] fp_wbe;
+  assign d_fp = riscv_pkg::vector_fp_ok(i_insn) && !(i_insn[14:12] == 1 && i_insn[31:26] == 6'h10);
+  vec_fp_exec #(
+      .VLEN(VLEN)
+  ) u_fp_exec (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_valid(i_valid && o_idle && d_fp),
+      .i_insn(i_insn),
+      .i_sew(i_vsew[1:0]),
+      .i_vl(i_vl),
+      .i_vstart(i_vstart),
+      .i_scalar(i_rs1),
+      .i_frm(i_frm),
+      .o_idle(fp_idle),
+      .o_flags_valid(o_flags_valid),
+      .o_flags(o_flags),
+      .o_raddr(fp_raddr),
+      .i_rdata(rf_rdata[3:0]),
+      .o_we(fp_we),
+      .o_waddr(fp_waddr),
+      .o_wdata(fp_wdata),
+      .o_wbe(fp_wbe)
+  );
+  assign rf_raddr[3:0] = !fp_idle ? fp_raddr : aux_idle ? int_raddr : aux_raddr;
+  assign rf_we[0] = !fp_idle ? fp_we : aux_idle ? int_we : aux_we;
+  assign rf_waddr[0] = !fp_idle ? fp_waddr : aux_idle ? int_waddr : aux_waddr;
+  assign rf_wdata[0] = !fp_idle ? fp_wdata : aux_idle ? int_wdata : aux_wdata;
+  assign rf_wbe[0] = !fp_idle ? fp_wbe : aux_idle ? int_wbe : aux_wbe;
 
   // --------------------------------------------------------------------------
   // Decode
@@ -356,7 +388,7 @@ module vec_engine #(
     end else begin
       unique case (state)
         S_IDLE:
-        if (i_valid && aux_idle && !d_extra) begin
+        if (i_valid && aux_idle && fp_idle && !d_extra && !d_fp) begin
           insn_q <= i_insn;
           sew_q <= i_vsew[1:0];
           groups_q <= i_vlmul[2] ? 4'd1 : (4'd1 << i_vlmul[1:0]);
@@ -442,6 +474,6 @@ module vec_engine #(
     end
   end
 
-  assign o_idle = (state == S_IDLE) && aux_idle;
+  assign o_idle = (state == S_IDLE) && aux_idle && fp_idle;
 
 endmodule

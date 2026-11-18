@@ -20,7 +20,12 @@
  * decode operations, immediates, instruction classes, and branch targets.
  */
 module id_stage #(
-    parameter int unsigned XLEN = riscv_pkg::XLEN
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
+    // With the vector unit, the vector FP words (OPFVV, OPFVF) decode and
+    // count as FP instructions. Without it they stay decoder-illegal and
+    // outside the FP class; VS is then always Off, so every OP-V word is
+    // illegal anyway.
+    parameter bit VECTOR = 1'b0
 ) (
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
@@ -157,7 +162,9 @@ module id_stage #(
   // Decode the raw instruction and select the legal ADDI result for a NOP.
   riscv_pkg::instr_op_e decoded_operation;
   logic decoded_illegal;
-  instr_decoder instr_decoder_inst (
+  instr_decoder #(
+      .VECTOR(VECTOR)
+  ) instr_decoder_inst (
       .i_instr(i_from_pd_to_id.instruction),
       .i_cbo_inval_flush(i_cbo_inval_flush),
       .o_instr_op(decoded_operation),
@@ -248,8 +255,12 @@ module id_stage #(
                             (instruction.opcode == riscv_pkg::OPC_FMSUB) |
                             (instruction.opcode == riscv_pkg::OPC_FNMSUB) |
                             (instruction.opcode == riscv_pkg::OPC_FNMADD);
+  // With the vector unit, vector FP instructions (OPFVV, OPFVF) are FP
+  // instructions too: FS=Off makes them illegal, and they use frm.
   assign is_fp_instruction_direct = is_fp_load_direct | is_fp_store_direct |
-                                   is_fp_compute_direct | is_fp_fma_direct;
+                                   is_fp_compute_direct | is_fp_fma_direct |
+      (VECTOR && (instruction.opcode == riscv_pkg::OPC_OP_V) &&
+       ((instruction.funct3 == 3'b001) || (instruction.funct3 == 3'b101)));
 
   // FS=Off makes F/D instructions illegal alongside decoder and PD errors.
   // The illegal INT_RS operation cannot issue an FP memory access, so a
@@ -273,7 +284,9 @@ module id_stage #(
           ((r.funct3 == 3'b001) || (r.funct3 == 3'b010) || (r.funct3 == 3'b011))) ||
         (r.opcode == riscv_pkg::OPC_OP_FP) || (r.opcode == riscv_pkg::OPC_FMADD) ||
         (r.opcode == riscv_pkg::OPC_FMSUB) || (r.opcode == riscv_pkg::OPC_FNMSUB) ||
-        (r.opcode == riscv_pkg::OPC_FNMADD);
+        (r.opcode == riscv_pkg::OPC_FNMADD) ||
+        (VECTOR && (r.opcode == riscv_pkg::OPC_OP_V) &&
+         ((r.funct3 == 3'b001) || (r.funct3 == 3'b101)));
     vec = (r.opcode == riscv_pkg::OPC_OP_V) || riscv_pkg::is_vector_mem(r.opcode, r.funct3);
     cbo = (r.opcode == riscv_pkg::OPC_MISC_MEM) && (r.funct3 == 3'b010);
     wrs = (r.opcode == riscv_pkg::OPC_CSR) && (r.funct3 == 3'b000) &&
@@ -368,7 +381,9 @@ module id_stage #(
   logic has_fp_flags_nokill;
   logic needs_lq_nokill;
   logic needs_sq_nokill;
-  instr_operand_classifier operand_classifier (
+  instr_operand_classifier #(
+      .VECTOR(VECTOR)
+  ) operand_classifier (
       .i_instr(i_from_pd_to_id.instruction),
       .i_inject_nop(i_from_pd_to_id.inject_nop),
       .i_illegal(1'b0),
@@ -761,7 +776,9 @@ module id_stage #(
   // the decoder outputs.
   riscv_pkg::instr_op_e decoded_operation_2;
   logic decoded_illegal_2;
-  instr_decoder instr_decoder_inst_2 (
+  instr_decoder #(
+      .VECTOR(VECTOR)
+  ) instr_decoder_inst_2 (
       .i_instr(i_from_pd_to_id_2.instruction),
       .i_cbo_inval_flush(i_cbo_inval_flush),
       .o_instr_op(decoded_operation_2),
@@ -850,7 +867,9 @@ module id_stage #(
                               (instruction_2.opcode == riscv_pkg::OPC_FNMSUB) |
                               (instruction_2.opcode == riscv_pkg::OPC_FNMADD);
   assign is_fp_instruction_direct_2 = is_fp_load_direct_2 | is_fp_store_direct_2 |
-                                     is_fp_compute_direct_2 | is_fp_fma_direct_2;
+                                     is_fp_compute_direct_2 | is_fp_fma_direct_2 |
+      (VECTOR && (instruction_2.opcode == riscv_pkg::OPC_OP_V) &&
+       ((instruction_2.funct3 == 3'b001) || (instruction_2.funct3 == 3'b101)));
 
   logic is_cbo_direct_2;
   assign is_cbo_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_MISC_MEM) &&
@@ -929,7 +948,9 @@ module id_stage #(
   logic has_fp_flags_nokill_2;
   logic needs_lq_nokill_2;
   logic needs_sq_nokill_2;
-  instr_operand_classifier operand_classifier_2 (
+  instr_operand_classifier #(
+      .VECTOR(VECTOR)
+  ) operand_classifier_2 (
       .i_instr(i_from_pd_to_id_2.instruction),
       .i_inject_nop(i_from_pd_to_id_2.inject_nop),
       .i_illegal(1'b0),

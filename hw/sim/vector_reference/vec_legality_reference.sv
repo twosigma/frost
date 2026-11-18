@@ -21,7 +21,9 @@ module vec_legality_reference (
 );
   riscv_pkg::instr_op_e op;
   logic decode_illegal;
-  instr_decoder decoder (
+  instr_decoder #(
+      .VECTOR(1'b1)
+  ) decoder (
       .i_instr(riscv_pkg::instr_t'(i_insn)),
       .i_cbo_inval_flush(1'b0),
       .o_instr_op(op),
@@ -36,7 +38,8 @@ module vec_legality_reference (
   always_comb begin
     o_illegal = decode_illegal;
     case (op)
-      riscv_pkg::VARITH, riscv_pkg::VARITH_X: o_illegal |= arith_illegal;
+      riscv_pkg::VARITH, riscv_pkg::VARITH_X, riscv_pkg::VARITH_F, riscv_pkg::VTOF:
+      o_illegal |= arith_illegal;
       riscv_pkg::VTOX: o_illegal |= i_vtype[8];
       default: o_illegal = 1'b1;
     endcase

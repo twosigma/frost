@@ -18,9 +18,12 @@
   Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zfhmin, Zfa, Zicond, Zbc, Zbkb, Zbkc,
   Zicsr, Zicboz, Zicbom, Zimop, and M/S/U-mode privileged instructions. Compressed instructions arrive
   already expanded. o_instr_op selects the operation; o_illegal flags any
-  encoding not decoded here, including reserved FP rounding modes.
+  encoding not decoded here, including reserved FP rounding modes. VECTOR adds
+  the vector floating-point forms; without it they are illegal here.
  */
-module instr_decoder (
+module instr_decoder #(
+    parameter bit VECTOR = 1'b0
+) (
     input  riscv_pkg::instr_t    i_instr,
     // cbo.inval executes as cbo.flush (CBIE = 01 at a less privileged level,
     // see csr_file), so it decodes as CBO_FLUSH.
@@ -509,6 +512,12 @@ module instr_decoder (
            (i_instr.source_reg_1 == 5'b00000 && i_instr.funct7[0]))) begin
         // vcpop.m, vfirst.m, vmv.x.s (unmasked only)
         o_instr_op = riscv_pkg::VTOX;
+      end else if (VECTOR && riscv_pkg::vector_fp_ok(32'(i_instr))) begin
+        // Vector FP, with the vector unit: vfmv.f.s (VTOF), the f-register
+        // scalar forms (OPFVF, VARITH_F) and the vector-vector forms (OPFVV,
+        // VARITH)
+        if (i_instr.funct3 == 1 && i_instr.funct7[6:1] == 6'h10) o_instr_op = riscv_pkg::VTOF;
+        else o_instr_op = i_instr.funct3 == 5 ? riscv_pkg::VARITH_F : riscv_pkg::VARITH;
       end else if (i_instr.funct3 != 3'b111) begin
         // Vector arithmetic the engine executes: OPIVV (000), OPIVX (100),
         // OPIVI (011) by funct6 with each form the specification defines, and
