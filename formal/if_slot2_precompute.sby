@@ -28,7 +28,7 @@ read_verilog -D SYNTHESIS -sv slot2_prediction_capture.sv
 read_verilog -D SYNTHESIS -sv prediction_metadata_tracker.sv
 read_verilog -formal -D SYNTHESIS -D IF_SLOT2_PRECOMPUTE_FORMAL -sv if_stage.sv
 hierarchy -top if_stage
-delete t:branch_prediction_controller t:immu t:backing_btb t:tage_predictor
+delete t:branch_prediction_controller t:immu t:backing_btb t:tage_predictor t:ittage_predictor
 script free_undefined.ys
 setattr -unset dont_touch *
 setattr -mod -unset keep_hierarchy *

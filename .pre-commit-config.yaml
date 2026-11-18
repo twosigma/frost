@@ -166,6 +166,7 @@ repos:
             sw/apps/pa_vm_fetch_test/main\.c|
             sw/apps/pa_dma_test/main\.c|
             sw/apps/pa_nic_mmio_test/main\.c|
+            sw/apps/pd_itt_slot2/main\.c|
             sw/apps/pa_nic_packet_test/main\.c|
             sw/apps/(fencei_bench/fencei_bench|fencei_jit_bench/fencei_jit_bench|smc_predict_test/smc_predict_test)\.c|
             sw/apps/(smc_stale_test/smc_stale_test|smc_torture/smc_torture)\.c|

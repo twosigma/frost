@@ -36,16 +36,34 @@
  * branch.
  *
  * The retirement history applies the same pushes for retired taken
- * control-flow instructions, from the registered commit bus.
+ * control-flow instructions, from the registered commit bus. The indirect
+ * target predictor hashes this path history.
  *
- * Saved lookups. When PD passes a packet with a conditional branch to ID,
- * the branch's lookup (whether it covered the branch's word, the bank, the
- * indices, tags, matches, provider direction, the alternate direction, and
- * the lookup history) goes to the next entry of a circular buffer. Dispatch
+ * Direction history (the tagged direction predictor's). Each conditional
+ * branch shifts in its final predicted direction and each jump its predicted
+ * target's bit 2, when PD
+ * passes its packet to ID; the push is applied to the lookup the cycle after
+ * (registered), so a lookup sees every packet PD passed up to two fetches
+ * before it. Early recovery restores the branch's saved PD-time direction
+ * history and shifts in its outcome; a trap, xRET, FENCE-class flush, or a
+ * misprediction recovered at commit takes the retired direction history
+ * (each retired branch's outcome and each jump's target bit 2), with the
+ * same registered arms as the path history. A PD redirect needs no restore:
+ * the redirecting branch was pushed with its new direction, and nothing
+ * younger was passed.
+ *
+ * Saved lookups. When PD passes a packet with a conditional branch or a JALR
+ * to ID, the instruction's lookup goes to the next entry of a circular
+ * buffer: for a branch, whether the tagged lookup covered its word, the bank,
+ * the indices, tags, matches, provider direction, the alternate direction,
+ * and the lookup history; for a JALR that is not a return, the indirect
+ * target predictor's lookup (indices, tags, matches); a return keeps only its
+ * place. Dispatch
  * gives the branch the same index from a pointer of its own, since both see
  * the branches in program order, and records it by ROB tag. Early recovery
- * reads the branch's history from the entry; retirement trains the predictor
- * from it, one branch per cycle, holding a slot-2 branch for a cycle in which
+ * reads the branch's history from the entry; retirement trains the tagged
+ * predictor, or for a JALR the indirect target predictor with its target,
+ * from it, one instruction per cycle, holding a slot-2 branch for a cycle in which
  * slot 1 does not train (a newer one replaces it, and it is dropped if its
  * entry is reused first). Both pointers rewind past the recovered branch on
  * early recovery, and to the entry after the youngest retired branch on any
@@ -54,7 +72,8 @@
 module tage_history #(
     parameter int unsigned HIST_BITS = riscv_pkg::TageHistBits,
     parameter int unsigned PATH_BITS = riscv_pkg::TagePathBits,
-    parameter int unsigned FTQ_IDX_BITS = riscv_pkg::TageFtqIdxBits
+    parameter int unsigned FTQ_IDX_BITS = riscv_pkg::TageFtqIdxBits,
+    parameter int unsigned DIR_BITS = riscv_pkg::TageDirHistBits
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -69,15 +88,28 @@ module tage_history #(
     // PD passes a packet to ID (the PD-to-ID register loads a real packet).
     // Bit s of each per-slot vector is slot s + 1. A slot's flag marks a real
     // conditional branch; at most one is set.
-    input logic                                    i_pd_accept,
-    input logic                    [          1:0] i_pd_cond_branch,
-    input logic                    [          1:0] i_tage_slot_valid,
-    input riscv_pkg::tage_lookup_t                 i_tage_slot_lookup,
-    input riscv_pkg::tage_lookup_t                 i_tage_slot_lookup_2,
-    input logic                    [          1:0] i_tage_slot_bank,
+    input  logic                                    i_pd_accept,
+    input  logic                    [          1:0] i_pd_cond_branch,
+    input  logic                    [          1:0] i_tage_slot_valid,
+    input  riscv_pkg::tage_lookup_t                 i_tage_slot_lookup,
+    input  riscv_pkg::tage_lookup_t                 i_tage_slot_lookup_2,
+    input  logic                    [          1:0] i_tage_slot_bank,
     // The BTB and bimodal direction each slot's branch had before PD.
-    input logic                    [          1:0] i_base_taken,
-    input logic                    [HIST_BITS-1:0] i_tage_lookup_hist,
+    input  logic                    [          1:0] i_base_taken,
+    input  logic                    [HIST_BITS-1:0] i_tage_lookup_hist,
+    // A slot's flag marks a real JALR (at most one per packet, never with a
+    // conditional branch), and its lookup is saved when the indirect target
+    // lookup covered it and it is not a return.
+    input  logic                    [          1:0] i_pd_jalr,
+    // A slot's flag marks a real conditional branch or jump (at most one per
+    // packet), with the conditional branch's final predicted direction.
+    input  logic                    [          1:0] i_pd_cf,
+    input  logic                    [          1:0] i_pd_pred_taken,
+    // The direction history for the tagged predictor's lookup.
+    output logic                    [ DIR_BITS-1:0] o_lookup_dir_hist,
+    input  logic                    [          1:0] i_itt_slot_valid,
+    input  riscv_pkg::itt_lookup_t                  i_itt_slot_lookup,
+    input  riscv_pkg::itt_lookup_t                  i_itt_slot_lookup_2,
 
     // The PD redirect's direction, sampled in its redirect cycle.
     input logic i_pd_redirect_taken,
@@ -95,6 +127,7 @@ module tage_history #(
     // were allocated.
     input logic [1:0][riscv_pkg::ReorderBufferTagWidth-1:0] i_alloc_tag,
     input logic [1:0]                                       i_alloc_cond_branch,
+    input logic [1:0]                                       i_alloc_jalr,
     input logic [1:0]                                       i_alloc_q,
 
     // Registered commit bus, per slot.
@@ -105,6 +138,9 @@ module tage_history #(
     input logic [1:0]                                       i_commit_taken,
     input logic [1:0]                                       i_commit_mispredicted,
     input logic [1:0][                       PATH_BITS-1:0] i_commit_target_bits,
+    input logic [1:0]                                       i_commit_jalr,
+    input logic [1:0]                                       i_commit_cf,
+    input logic [1:0][         riscv_pkg::PhysAddrBits-2:0] i_commit_target,
 
     // Training port (tage_predictor).
     output logic                    o_train_valid,
@@ -112,7 +148,14 @@ module tage_history #(
     output logic                    o_train_bank,
     output logic                    o_train_alt_taken,
     output logic                    o_train_taken,
-    output logic                    o_train_mispredicted
+    output logic                    o_train_mispredicted,
+
+    // Indirect target training port (ittage_predictor).
+    output logic                                                 o_itt_train_valid,
+    output riscv_pkg::itt_lookup_t                               o_itt_train_lookup,
+    output logic                                                 o_itt_train_bank,
+    output logic                   [riscv_pkg::PhysAddrBits-2:0] o_itt_train_target,
+    output logic                                                 o_itt_train_mispredicted
 );
 
 `ifndef SYNTHESIS
@@ -128,8 +171,18 @@ module tage_history #(
     riscv_pkg::tage_lookup_t lookup;
     logic                    alt_taken;
     logic [HIST_BITS-1:0]    hist;
+    logic                    is_jalr;
+    logic                    itt_valid;
+    riscv_pkg::itt_lookup_t  itt_lookup;
+    logic [DIR_BITS-1:0]     dir_hist;
   } ftq_entry_t;
-  localparam int unsigned FtqEntryBits = 3 + riscv_pkg::TageLookupBits + HIST_BITS;
+  localparam int unsigned FtqEntryBits = 5 + riscv_pkg::TageLookupBits + HIST_BITS +
+      riscv_pkg::IttLookupBits + DIR_BITS;
+
+  function automatic logic [DIR_BITS-1:0] push_dir(input logic [DIR_BITS-1:0] hist,
+                                                   input logic bit_in);
+    push_dir = {hist[DIR_BITS-2:0], bit_in};
+  endfunction
 
   function automatic logic [HIST_BITS-1:0] push(input logic [HIST_BITS-1:0] hist,
                                                 input logic [PATH_BITS-1:0] bits);
@@ -170,17 +223,30 @@ module tage_history #(
   riscv_pkg::tage_lookup_t pd_lookup_q;
   riscv_pkg::tage_lookup_t pd_lookup_2_q;
   logic [HIST_BITS-1:0] pd_lookup_hist_q;
+  logic [1:0] pd_jalr_q;
+  logic [DIR_BITS-1:0] dir_hist_q;  // speculative direction history (below)
+  logic [1:0] pd_cf_q;
+  logic [1:0] pd_pred_taken_q;
+  logic [1:0] pd_itt_valid_q;
+  riscv_pkg::itt_lookup_t pd_itt_lookup_q;
+  riscv_pkg::itt_lookup_t pd_itt_lookup_2_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) pd_accept_q <= 1'b0;
     else pd_accept_q <= i_pd_accept;
     if (i_pd_accept) begin
-      pd_cond_branch_q <= i_pd_cond_branch;
-      pd_slot_valid_q  <= i_tage_slot_valid;
-      pd_slot_bank_q   <= i_tage_slot_bank;
-      pd_base_taken_q  <= i_base_taken;
-      pd_lookup_q      <= i_tage_slot_lookup;
-      pd_lookup_2_q    <= i_tage_slot_lookup_2;
-      pd_lookup_hist_q <= i_tage_lookup_hist;
+      pd_jalr_q         <= i_pd_jalr;
+      pd_cf_q           <= i_pd_cf;
+      pd_pred_taken_q   <= i_pd_pred_taken;
+      pd_itt_valid_q    <= i_itt_slot_valid;
+      pd_itt_lookup_q   <= i_itt_slot_lookup;
+      pd_itt_lookup_2_q <= i_itt_slot_lookup_2;
+      pd_cond_branch_q  <= i_pd_cond_branch;
+      pd_slot_valid_q   <= i_tage_slot_valid;
+      pd_slot_bank_q    <= i_tage_slot_bank;
+      pd_base_taken_q   <= i_base_taken;
+      pd_lookup_q       <= i_tage_slot_lookup;
+      pd_lookup_2_q     <= i_tage_slot_lookup_2;
+      pd_lookup_hist_q  <= i_tage_lookup_hist;
     end
   end
 
@@ -188,8 +254,9 @@ module tage_history #(
   logic pd_branch_slot;
   riscv_pkg::tage_lookup_t pd_branch_lookup;
   ftq_entry_t pd_entry;
-  assign pd_entry_pending = pd_accept_q && (pd_cond_branch_q[0] || pd_cond_branch_q[1]);
-  assign pd_branch_slot   = !pd_cond_branch_q[0];
+  assign pd_entry_pending = pd_accept_q && (pd_cond_branch_q[0] || pd_cond_branch_q[1] ||
+                                             pd_jalr_q[0] || pd_jalr_q[1]);
+  assign pd_branch_slot = !(pd_cond_branch_q[0] || pd_jalr_q[0]);
   assign pd_branch_lookup = pd_branch_slot ? pd_lookup_2_q : pd_lookup_q;
   always_comb begin
     pd_entry = '0;
@@ -199,6 +266,10 @@ module tage_history #(
     pd_entry.alt_taken = pd_branch_lookup.alt_tagged ? pd_branch_lookup.alt_tagged_taken :
                                                        pd_base_taken_q[pd_branch_slot];
     pd_entry.hist = pd_lookup_hist_q;
+    pd_entry.is_jalr = pd_jalr_q[pd_branch_slot];
+    pd_entry.itt_valid = pd_itt_valid_q[pd_branch_slot];
+    pd_entry.itt_lookup = pd_branch_slot ? pd_itt_lookup_2_q : pd_itt_lookup_q;
+    pd_entry.dir_hist = dir_hist_q;
   end
 
   logic [FtqEntryBits-1:0] ftq_read_early_raw;
@@ -242,7 +313,8 @@ module tage_history #(
   logic alloc_branch;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] alloc_branch_tag;
   always_ff @(posedge i_clk) begin
-    alloc_cond_branch_q <= i_alloc_cond_branch;
+    // A JALR takes an entry like a conditional branch.
+    alloc_cond_branch_q <= i_alloc_cond_branch | i_alloc_jalr;
     alloc_tag_q         <= i_alloc_tag;
   end
   assign alloc_branch = (i_alloc_q[0] && alloc_cond_branch_q[0]) ||
@@ -266,8 +338,8 @@ module tage_history #(
   // The youngest retired branch's entry and every older one are free.
   logic [1:0] commit_branch;
   logic [1:0][FTQ_IDX_BITS-1:0] commit_ftq_idx;
-  assign commit_branch[0]  = i_commit_valid[0] && i_commit_cond_branch[0];
-  assign commit_branch[1]  = i_commit_valid[1] && i_commit_cond_branch[1];
+  assign commit_branch[0]  = i_commit_valid[0] && (i_commit_cond_branch[0] || i_commit_jalr[0]);
+  assign commit_branch[1]  = i_commit_valid[1] && (i_commit_cond_branch[1] || i_commit_jalr[1]);
   assign commit_ftq_idx[0] = ftq_idx_by_tag[i_commit_tag[0]];
   assign commit_ftq_idx[1] = ftq_idx_by_tag[i_commit_tag[1]];
   always_ff @(posedge i_clk) begin
@@ -301,16 +373,18 @@ module tage_history #(
   logic [HIST_BITS-1:0] pd_hist_q;
   logic pd_taken_q;
   logic [HIST_BITS-1:0] early_hist_q;
+  logic [DIR_BITS-1:0] early_dir_hist_q;
   logic early_q;
   logic early_taken_q;
   ftq_entry_t ftq_read_early;
   assign ftq_read_early = ftq_read_early_raw;
   always_ff @(posedge i_clk) begin
-    pd_hist_q     <= pd_lookup_hist_q;
-    pd_taken_q    <= i_pd_redirect_taken;
-    early_hist_q  <= ftq_read_early.hist;
-    early_q       <= i_early_active;
-    early_taken_q <= i_early_taken;
+    pd_hist_q        <= pd_lookup_hist_q;
+    pd_taken_q       <= i_pd_redirect_taken;
+    early_hist_q     <= ftq_read_early.hist;
+    early_dir_hist_q <= ftq_read_early.dir_hist;
+    early_q          <= i_early_active;
+    early_taken_q    <= i_early_taken;
   end
 
   // Arms, highest priority first: 1 trap or xRET, 2 FENCE-class flush,
@@ -338,6 +412,53 @@ module tage_history #(
   end
 
   // ===========================================================================
+  // Direction history
+  // ===========================================================================
+  // Retired: each retired conditional branch's outcome and each jump's
+  // target bit 2, slot 1 then slot 2.
+  logic [DIR_BITS-1:0] retired_dir_hist;
+  logic [DIR_BITS-1:0] retired_dir_after_slot1;
+  logic [1:0] retired_dir_bit;
+  assign retired_dir_bit[0] = i_commit_cond_branch[0] ? i_commit_taken[0] :
+                                                         i_commit_target_bits[0][0];
+  assign retired_dir_bit[1] = i_commit_cond_branch[1] ? i_commit_taken[1] :
+                                                         i_commit_target_bits[1][0];
+  assign retired_dir_after_slot1 = (i_commit_valid[0] && i_commit_cf[0]) ? push_dir(
+      retired_dir_hist, retired_dir_bit[0]
+  ) : retired_dir_hist;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) retired_dir_hist <= '0;
+    else if (i_commit_valid[1] && i_commit_cf[1])
+      retired_dir_hist <= push_dir(retired_dir_after_slot1, retired_dir_bit[1]);
+    else retired_dir_hist <= retired_dir_after_slot1;
+  end
+
+  // Speculative: the packet PD passed, registered (pd_*_q), pushes its
+  // control-flow instruction's bit; the restore arms override it.
+  logic pd_dir_push;
+  logic pd_dir_bit;
+  logic [DIR_BITS-1:0] dir_base;
+  logic dir_push;
+  assign pd_dir_push = pd_accept_q && (pd_cf_q[0] || pd_cf_q[1]);
+  assign pd_dir_bit  = pd_cf_q[0] ? pd_pred_taken_q[0] : pd_pred_taken_q[1];
+  always_comb begin
+    dir_base = dir_hist_q;
+    dir_push = pd_dir_push;
+    if (i_hist_restore_arm[1] || i_hist_restore_arm[2]) begin
+      dir_base = retired_dir_hist;
+      dir_push = 1'b0;
+    end else if (i_hist_restore_arm[3]) begin
+      dir_base = early_q ? push_dir(early_dir_hist_q, early_taken_q) : retired_dir_hist;
+      dir_push = 1'b0;
+    end
+  end
+  assign o_lookup_dir_hist = dir_push ? push_dir(dir_base, pd_dir_bit) : dir_base;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) dir_hist_q <= '0;
+    else dir_hist_q <= o_lookup_dir_hist;
+  end
+
+  // ===========================================================================
   // Training
   // ===========================================================================
   // Slot 1 trains first; a slot-2 branch waits in a one-deep hold for a cycle
@@ -348,15 +469,18 @@ module tage_history #(
   logic [FTQ_IDX_BITS-1:0] held_idx;
   logic held_taken;
   logic held_mispredicted;
+  logic [riscv_pkg::PhysAddrBits-2:0] held_target;
   logic train_sel_valid;
   logic [FTQ_IDX_BITS-1:0] train_sel_idx;
   logic train_sel_taken;
   logic train_sel_mispredicted;
+  logic [riscv_pkg::PhysAddrBits-2:0] train_sel_target;
   always_comb begin
     train_sel_valid = 1'b0;
     train_sel_idx = commit_ftq_idx[0];
     train_sel_taken = i_commit_taken[0];
     train_sel_mispredicted = i_commit_mispredicted[0];
+    train_sel_target = i_commit_target[0];
     if (commit_branch[0]) begin
       train_sel_valid = 1'b1;
     end else if (held_valid) begin
@@ -364,11 +488,13 @@ module tage_history #(
       train_sel_idx = held_idx;
       train_sel_taken = held_taken;
       train_sel_mispredicted = held_mispredicted;
+      train_sel_target = held_target;
     end else if (commit_branch[1]) begin
       train_sel_valid = 1'b1;
       train_sel_idx = commit_ftq_idx[1];
       train_sel_taken = i_commit_taken[1];
       train_sel_mispredicted = i_commit_mispredicted[1];
+      train_sel_target = i_commit_target[1];
     end
   end
   always_ff @(posedge i_clk) begin
@@ -379,6 +505,7 @@ module tage_history #(
       held_idx <= commit_ftq_idx[1];
       held_taken <= i_commit_taken[1];
       held_mispredicted <= i_commit_mispredicted[1];
+      held_target <= i_commit_target[1];
     end else if (held_valid && !commit_branch[0]) begin
       held_valid <= 1'b0;
     end else if (pd_entry_pending && (ftq_write_ptr == held_idx)) begin
@@ -391,13 +518,22 @@ module tage_history #(
   ftq_entry_t ftq_read_train;
   assign ftq_read_train = ftq_read_train_raw;
   always_ff @(posedge i_clk) begin
-    if (i_rst) o_train_valid <= 1'b0;
-    else o_train_valid <= train_sel_valid && ftq_read_train.lookup_valid;
-    o_train_lookup       <= ftq_read_train.lookup;
-    o_train_bank         <= ftq_read_train.bank;
-    o_train_alt_taken    <= ftq_read_train.alt_taken;
-    o_train_taken        <= train_sel_taken;
-    o_train_mispredicted <= train_sel_mispredicted;
+    if (i_rst) begin
+      o_train_valid     <= 1'b0;
+      o_itt_train_valid <= 1'b0;
+    end else begin
+      o_train_valid <= train_sel_valid && ftq_read_train.lookup_valid && !ftq_read_train.is_jalr;
+      o_itt_train_valid <= train_sel_valid && ftq_read_train.itt_valid && ftq_read_train.is_jalr;
+    end
+    o_itt_train_lookup       <= ftq_read_train.itt_lookup;
+    o_itt_train_bank         <= ftq_read_train.bank;
+    o_itt_train_target       <= train_sel_target;
+    o_itt_train_mispredicted <= train_sel_mispredicted;
+    o_train_lookup           <= ftq_read_train.lookup;
+    o_train_bank             <= ftq_read_train.bank;
+    o_train_alt_taken        <= ftq_read_train.alt_taken;
+    o_train_taken            <= train_sel_taken;
+    o_train_mispredicted     <= train_sel_mispredicted;
   end
 
 endmodule : tage_history

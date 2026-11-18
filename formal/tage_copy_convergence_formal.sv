@@ -18,10 +18,10 @@
  * The tagged predictor's training write-back (tage_predictor.sv). A provider
  * whose entry in the training copy does not hold the branch has that entry
  * written back as read. The reference write enable below is the one without
- * the write-back: (provider && owned) || allocate || usefulness clear.
+ * the write-back: (provider && owned) || allocate || usefulness decrement.
  *
- * Inputs are free. The watched entry is any bank and index (the same for both
- * tables), and the properties hold for each table's entry there.
+ * Inputs are free. The watched entry is any bank and index (the same for every
+ * table), and the properties hold for each table's entry there.
  *
  * EQUAL_START = 1: the watched entry's two copies are equal at the start.
  *   - The copies stay equal: every write goes to both.
@@ -50,23 +50,25 @@
 module tage_copy_convergence_formal #(
     parameter bit EQUAL_START = 1'b1
 ) (
-    input logic                                                   i_clk,
-    input logic                    [riscv_pkg::TageLookupHiBit:2] i_lookup_word,
-    input logic                    [ riscv_pkg::TageHistBits-1:0] i_lookup_hist,
-    input logic                                                   i_lookup_capture,
-    input logic                                                   i_train_valid,
-    input riscv_pkg::tage_lookup_t                                i_train_lookup,
-    input logic                                                   i_train_bank,
-    input logic                                                   i_train_alt_taken,
-    input logic                                                   i_train_taken,
-    input logic                                                   i_train_mispredicted,
+    input logic                                                     i_clk,
+    input logic                    [  riscv_pkg::TageLookupHiBit:2] i_lookup_word,
+    input logic                    [riscv_pkg::TageDirHistBits-1:0] i_lookup_hist,
+    input logic                                                     i_lookup_capture,
+    input logic                                                     i_train_valid,
+    input riscv_pkg::tage_lookup_t                                  i_train_lookup,
+    input logic                                                     i_train_bank,
+    input logic                                                     i_train_alt_taken,
+    input logic                                                     i_train_taken,
+    input logic                                                     i_train_mispredicted,
     // The watched entry: free on the first cycle, then held.
-    input logic                                                   i_watch_bank,
-    input logic                    [riscv_pkg::TageIndexBits-1:0] i_watch_index
+    input logic                                                     i_watch_bank,
+    input logic                    [  riscv_pkg::TageIndexBits-1:0] i_watch_index
 );
 
   localparam int unsigned IndexBits = riscv_pkg::TageIndexBits;
-  localparam int unsigned EntryBits = 1 + riscv_pkg::TageTagBits + 3 + 1;
+  localparam int unsigned Tables = riscv_pkg::TageTables;
+  // {valid, tag, 3-bit counter, 2-bit usefulness}, as tage_predictor's entry_t.
+  localparam int unsigned EntryBits = 1 + riscv_pkg::TageTagBits + 3 + 2;
 
   tage_predictor dut (
       .i_clk,
@@ -97,29 +99,24 @@ module tage_copy_convergence_formal #(
     f_index_q <= i_watch_index;
   end
 
-  // The watched entry of each table, in the lookup copy and the training copy.
-  logic [1:0][EntryBits-1:0] f_lookup;
-  logic [1:0][EntryBits-1:0] f_train;
-  assign f_lookup[0] = f_bank ? dut.gen_bank[1].gen_table[0].u_lookup_copy.ram[f_index] :
-                                dut.gen_bank[0].gen_table[0].u_lookup_copy.ram[f_index];
-  assign f_lookup[1] = f_bank ? dut.gen_bank[1].gen_table[1].u_lookup_copy.ram[f_index] :
-                                dut.gen_bank[0].gen_table[1].u_lookup_copy.ram[f_index];
-  assign f_train[0] = f_bank ? dut.gen_bank[1].gen_table[0].u_train_copy.ram[f_index] :
-                               dut.gen_bank[0].gen_table[0].u_train_copy.ram[f_index];
-  assign f_train[1] = f_bank ? dut.gen_bank[1].gen_table[1].u_train_copy.ram[f_index] :
-                               dut.gen_bank[0].gen_table[1].u_train_copy.ram[f_index];
-
-  // The reference write enable and whether a write lands on the watched entry.
-  logic [1:0] f_reference_write;
-  logic [1:0] f_provider;
-  logic [1:0] f_at_watched;
-  assign f_reference_write[0] = dut.train_valid_q &&
-      ((dut.provider1 && dut.owned1) || dut.alloc1 || dut.useful_clear1);
-  assign f_reference_write[1] = dut.train_valid_q &&
-      ((dut.provider2 && dut.owned2) || dut.alloc2 || dut.useful_clear2);
-  assign f_provider = {dut.provider2, dut.provider1};
-  assign f_at_watched[0] = (dut.write_bank == f_bank) && (dut.write_index[0] == f_index);
-  assign f_at_watched[1] = (dut.write_bank == f_bank) && (dut.write_index[1] == f_index);
+  // The watched entry of each table, in the lookup copy and the training copy,
+  // the reference write enable, and whether a write lands on the watched entry.
+  logic [Tables-1:0][EntryBits-1:0] f_lookup;
+  logic [Tables-1:0][EntryBits-1:0] f_train;
+  logic [Tables-1:0] f_reference_write;
+  logic [Tables-1:0] f_provider;
+  logic [Tables-1:0] f_at_watched;
+  for (genvar t = 0; t < Tables; t++) begin : gen_watch
+    assign f_lookup[t] = f_bank ? dut.gen_bank[1].gen_table[t].u_lookup_copy.ram[f_index] :
+                                  dut.gen_bank[0].gen_table[t].u_lookup_copy.ram[f_index];
+    assign f_train[t] = f_bank ? dut.gen_bank[1].gen_table[t].u_train_copy.ram[f_index] :
+                                 dut.gen_bank[0].gen_table[t].u_train_copy.ram[f_index];
+    assign f_reference_write[t] = dut.train_valid_q &&
+        ((dut.provider[t] && dut.owned[t]) || dut.alloc[t] ||
+         (dut.useful_down[t] && (dut.cur[t].useful != '0)));
+    assign f_at_watched[t] = (dut.write_bank == f_bank) && (dut.write_index[t] == f_index);
+  end
+  assign f_provider = dut.provider;
 
   logic f_past_valid = 1'b0;
   always_ff @(posedge i_clk) f_past_valid <= 1'b1;
@@ -136,7 +133,7 @@ module tage_copy_convergence_formal #(
     end
   end
 
-  for (genvar t = 0; t < 2; t++) begin : gen_table
+  for (genvar t = 0; t < Tables; t++) begin : gen_table
     logic write_watched;
     logic reference_write_watched;
     logic written_q = 1'b0;
@@ -146,8 +143,8 @@ module tage_copy_convergence_formal #(
     assign write_watched = dut.write_any[t] && f_at_watched[t];
     assign reference_write_watched = f_reference_write[t] && f_at_watched[t];
     always_ff @(posedge i_clk) if (write_watched) written_q <= 1'b1;
-    assign train_read_index = (t == 0) ? i_train_lookup.index1 : i_train_lookup.index2;
-    assign training_read = (t == 0) ? dut.read1 : dut.read2;
+    assign train_read_index = i_train_lookup.index[t];
+    assign training_read = dut.read_entry[t];
     assign reference_read = (f_reference_write[t] && (dut.write_bank == i_train_bank) &&
                              (dut.write_index[t] == train_read_index)) ? dut.write_entry[t] :
         i_train_bank ? dut.train_entry[t][1] : dut.train_entry[t][0];

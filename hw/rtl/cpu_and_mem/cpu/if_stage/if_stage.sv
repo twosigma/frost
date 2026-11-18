@@ -225,7 +225,10 @@ module if_stage #(
     // the lookup history in. Each slot's lookup is valid when the registered
     // lookup covered that slot's word; cpu_ooo saves the branch's lookup and
     // the history it used, to train the same entries at commit.
-    input logic [riscv_pkg::TageHistBits-1:0] i_tage_hist,
+    // The tagged predictor's direction history and the indirect target
+    // predictor's path history (tage_history).
+    input logic [riscv_pkg::TageDirHistBits-1:0] i_tage_hist,
+    input logic [riscv_pkg::TageHistBits-1:0] i_itt_hist,
     input logic i_tage_train_valid,
     input riscv_pkg::tage_lookup_t i_tage_train_lookup,
     input logic i_tage_train_bank,
@@ -239,7 +242,19 @@ module if_stage #(
     output logic [1:0] o_tage_slot_valid,  // bit s: slot s + 1
     output riscv_pkg::tage_lookup_t o_tage_slot_lookup,
     output riscv_pkg::tage_lookup_t o_tage_slot_lookup_2,
-    output logic [riscv_pkg::TageHistBits-1:0] o_tage_lookup_hist
+    output logic [riscv_pkg::TageHistBits-1:0] o_tage_lookup_hist,
+    // Indirect target predictor: training (commit); each slot's saved lookup
+    // and PD prediction (a hit and target bits [PhysAddrBits-1:1]). A slot's
+    // lookup covers it when o_tage_slot_valid says so (the same lookup).
+    input logic i_itt_train_valid,
+    input riscv_pkg::itt_lookup_t i_itt_train_lookup,
+    input logic i_itt_train_bank,
+    input logic [riscv_pkg::PhysAddrBits-2:0] i_itt_train_target,
+    input logic i_itt_train_mispredicted,
+    output riscv_pkg::itt_lookup_t o_itt_slot_lookup,
+    output riscv_pkg::itt_lookup_t o_itt_slot_lookup_2,
+    output logic [1:0] o_itt_hit,
+    output logic [1:0][riscv_pkg::PhysAddrBits-2:0] o_itt_target
 );
 
   // ===========================================================================
@@ -2489,14 +2504,16 @@ module if_stage #(
   assign o_tage_fetch_path_bits = pc_tage_lookup[3:2];
   riscv_pkg::tage_lookup_t tage_bank0;
   riscv_pkg::tage_lookup_t tage_bank1;
-  tage_predictor u_tage_predictor (
+  tage_predictor #(
+      .HIST_BITS(riscv_pkg::TageDirHistBits)
+  ) u_tage_predictor (
       .i_clk,
       .i_lookup_word(pc_tage_lookup),
       .i_lookup_hist(i_tage_hist),
       .i_lookup_capture(!if_stage_stall && fetch_progress),
       .o_lookup_word(tage_lookup_word),
       .o_lookup_word_next(tage_lookup_word_next),
-      .o_lookup_hist(o_tage_lookup_hist),
+      .o_lookup_hist(),
       .o_bank0(tage_bank0),
       .o_bank1(tage_bank1),
       .i_train_valid(i_tage_train_valid),
@@ -2560,8 +2577,8 @@ module if_stage #(
       ((tage_lookup_word[2] == tage_slot2_word_saved_q[2]) ?
        tage_lookup_word : tage_lookup_word_next) == tage_slot2_word_saved_q;
 
-  assign tage_bank0_hit = tage_bank0.hit1 || tage_bank0.hit2;
-  assign tage_bank1_hit = tage_bank1.hit1 || tage_bank1.hit2;
+  assign tage_bank0_hit = |tage_bank0.hit;
+  assign tage_bank1_hit = |tage_bank1.hit;
   assign tage_slot2_hit_cur_live = tage_cov_cur_live &&
       (pc_reg[2] ? tage_bank1_hit : tage_bank0_hit);
   assign tage_slot2_hit_next_live = tage_cov_next_live &&
@@ -2577,8 +2594,44 @@ module if_stage #(
 
   // Slot-1 tagged-predictor direction. A fetch fault's bytes carry no branch.
   assign o_from_if_to_pd.tage_valid = o_tage_slot_valid[0] &&
-      (o_tage_slot_lookup.hit1 || o_tage_slot_lookup.hit2) && !o_from_if_to_pd.fetch_fault;
+      (|o_tage_slot_lookup.hit) && !o_from_if_to_pd.fetch_fault;
   assign o_from_if_to_pd.tage_taken = o_tage_slot_lookup.taken;
+
+  // ===========================================================================
+  // Indirect Target Predictor
+  // ===========================================================================
+  // Looked up with the tagged predictor's word, on the path history, and
+  // captured under the same condition, so the tagged predictor's coverage
+  // check applies to it. Its registered path history is the packet's, saved
+  // with each branch for path-history restores. Each slot takes its word's bank. A fetch fault's bytes carry no JALR.
+  riscv_pkg::itt_lookup_t itt_bank0;
+  riscv_pkg::itt_lookup_t itt_bank1;
+  logic [1:0] itt_bank_hit;
+  logic [1:0][riscv_pkg::PhysAddrBits-2:0] itt_bank_target;
+  ittage_predictor u_ittage_predictor (
+      .i_clk,
+      .i_lookup_word(pc_tage_lookup),
+      .i_lookup_hist(i_itt_hist),
+      .i_lookup_capture(!if_stage_stall && fetch_progress),
+      .o_lookup_hist(o_tage_lookup_hist),
+      .o_bank0(itt_bank0),
+      .o_bank1(itt_bank1),
+      .o_hit(itt_bank_hit),
+      .o_target(itt_bank_target),
+      .i_train_valid(i_itt_train_valid),
+      .i_train_lookup(i_itt_train_lookup),
+      .i_train_bank(i_itt_train_bank),
+      .i_train_target(i_itt_train_target),
+      .i_train_mispredicted(i_itt_train_mispredicted)
+  );
+  assign o_itt_slot_lookup = tage_slot_word[2] ? itt_bank1 : itt_bank0;
+  assign o_itt_slot_lookup_2 = tage_slot2_bank_sel ? itt_bank1 : itt_bank0;
+  assign o_itt_hit[0] = o_tage_slot_valid[0] && itt_bank_hit[tage_slot_word[2]] &&
+      !o_from_if_to_pd.fetch_fault;
+  assign o_itt_hit[1] = o_tage_slot_valid[1] && itt_bank_hit[tage_slot2_bank_sel] &&
+      !o_from_if_to_pd_2.fetch_fault;
+  assign o_itt_target[0] = itt_bank_target[tage_slot_word[2]];
+  assign o_itt_target[1] = itt_bank_target[tage_slot2_bank_sel];
 
   // ===========================================================================
   // Prediction Metadata Tracker
@@ -3232,15 +3285,14 @@ module if_stage #(
               {
                 o_from_if_to_pd_2.tage_valid,
                 tage_slot2_cov_ref,
-                tage_slot_lookup_2_ref.hit1,
-                tage_slot_lookup_2_ref.hit2,
+                tage_slot_lookup_2_ref.hit,
                 o_from_if_to_pd_2.fetch_fault
               }
           )) begin
         p_if_slot2_tage_valid_exact :
         assert (o_from_if_to_pd_2.tage_valid ==
                 (tage_slot2_cov_ref &&
-                 (tage_slot_lookup_2_ref.hit1 || tage_slot_lookup_2_ref.hit2) &&
+                 (|tage_slot_lookup_2_ref.hit) &&
                  !o_from_if_to_pd_2.fetch_fault));
       end
       if (!$isunknown({o_from_if_to_pd_2.tage_taken, tage_slot_lookup_2_ref.taken})) begin
@@ -3326,7 +3378,7 @@ module if_stage #(
       f_if_slot2_tage_valid_exact :
       assert (o_from_if_to_pd_2.tage_valid ==
               (f_tage_slot2_cov_ref &&
-               (f_tage_slot_lookup_2_ref.hit1 || f_tage_slot_lookup_2_ref.hit2) &&
+               (|f_tage_slot_lookup_2_ref.hit) &&
                !o_from_if_to_pd_2.fetch_fault));
       f_if_slot2_tage_taken_exact :
       assert (o_from_if_to_pd_2.tage_taken == f_tage_slot_lookup_2_ref.taken);

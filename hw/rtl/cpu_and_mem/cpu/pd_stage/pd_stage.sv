@@ -25,9 +25,10 @@
   the checks below. PD also registers early source-register fields, from
   which it reassembles slot 2's instruction, and raises the PD redirect when a
   conditional branch's final direction differs from the BTB direction IF
-  followed (tagged or bimodal in slot 1, tagged in slot 2), or when the
-  backing BTB predicts a JAL or JALR in either slot that the BTB did not
-  predict taken (see that section).
+  followed (tagged or bimodal in slot 1, tagged in slot 2), when the backing
+  BTB predicts a JAL or JALR in either slot that the BTB did not predict taken
+  (see that section), or when the indirect target predictor gives a JALR that
+  is not a return a target other than the one the BTB predicted.
 
   Both slots register the instruction without rewriting it to a NOP. A bubble
   (flush, PD redirect, or sel_nop) rides in inject_nop, which ID applies before
@@ -59,6 +60,10 @@ module pd_stage #(
     // registers take slot 2's from these, so slot 1's size selects last.
     input logic [1:0] i_backing_slot2_return_by_size,
     input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_slot2_target_by_size,
+    // IF's indirect target predictor result for each slot: a hit and target
+    // bits [PhysAddrBits-1:1]; the upper bits come from slot 1's PC.
+    input logic [1:0] i_itt_hit,
+    input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_itt_target,
     // Redirect to IF, and the new direction: taken redirects to the branch
     // target, not taken to the fall-through. It fires for a conditional
     // branch whose final direction differs from the BTB direction IF
@@ -82,7 +87,16 @@ module pd_stage #(
     output logic [XLEN-1:0] o_pd_backing_refresh_pc,
     // Each slot's conditional-branch decode, before validity qualification,
     // for the tagged predictor's saved lookups.
-    output logic [1:0] o_cond_branch
+    output logic [1:0] o_cond_branch,
+    // Each slot's JALR decode, and whether it is one the indirect target
+    // predictor covers (not a return), for the saved lookups.
+    output logic [1:0] o_jalr,
+    output logic [1:0] o_itt_eligible,
+    // Each slot's JAL or JALR decode and its direction-history bit: a
+    // conditional branch's final predicted direction (the direction ID
+    // applies), or a jump's predicted target bit 2.
+    output logic [1:0] o_jump,
+    output logic [1:0] o_pred_taken
 );
 
   // ===========================================================================
@@ -701,6 +715,76 @@ module pd_stage #(
                                 (i_backing_compressed[0] == pd_sel_compressed);
   assign pd_backing_candidate_2 = pd_slot2_jump && i_backing_hit[1] &&
                                   (i_backing_compressed[1] == pd_sel_compressed_2);
+  // Indirect target candidates, one per slot: a JALR that is not a return,
+  // whose indirect target predictor lookup hit, unless the BTB predicted it
+  // taken with that target. The target replaces the BTB's (or gives one) and
+  // takes precedence over a backing BTB entry for the same JALR. It has its
+  // own register, loaded from slot 1's lookup when slot 1 is such a JALR and
+  // from slot 2's otherwise, with slot 1's upper PC bits.
+  logic [1:0] pd_jalr;
+  logic [1:0] pd_itt_eligible;
+  logic pd_itt_candidate;
+  logic pd_itt_candidate_2;
+  logic pd_itt_candidate_r;
+  logic pd_itt_candidate_2_r;
+  logic pd_itt_redirect_r;
+  logic pd_itt_redirect_2_r;
+  logic [XLEN-1:0] pd_itt_target;
+  logic [XLEN-1:0] pd_itt_target_r;
+  assign pd_jalr[0] = is_jalr(instruction_non_nop_predecoded_rs2);
+  assign pd_jalr[1] = is_jalr(i_from_if_to_pd_2.effective_instr);
+  assign pd_itt_eligible[0] = pd_jalr[0] && !is_return(instruction_non_nop_predecoded_rs2);
+  assign pd_itt_eligible[1] = pd_jalr[1] && !is_return(i_from_if_to_pd_2.effective_instr);
+  assign o_jalr = pd_jalr;
+  assign o_itt_eligible = pd_itt_eligible;
+  assign o_jump = {pd_slot2_jump, pd_slot1_jump};
+  // A jump's target bit: the indirect target's, else the BTB's when it
+  // predicted taken, else the backing BTB's (a jump with no prediction
+  // mispredicts and the history is restored).
+  logic [1:0] pd_jump_target_bit;
+  // Bit 2 of the backing BTB target that the backing redirect would take: the
+  // stack's top for a return while the stack holds an entry, else the hit
+  // slot's entry (slot 1's first). It equals the simulation-only
+  // pd_backing_target's bit 2, formed from the fields synthesis keeps.
+  logic pd_backing_target_bit2;
+  assign pd_backing_target_bit2 =
+      ((i_backing_hit[0] ? i_backing_return[0] : i_backing_return[1]) &&
+       (i_from_if_to_pd.ras_checkpoint_valid_count != '0)) ?
+      i_from_if_to_pd.ras_checkpoint_top[2] :
+      (i_backing_hit[0] ? i_backing_target[0][1] : i_backing_target[1][1]);
+  assign pd_jump_target_bit[0] = pd_itt_candidate ? i_itt_target[0][1] :
+      i_from_if_to_pd.btb_predicted_taken ? i_from_if_to_pd.btb_predicted_target[2] :
+                                            pd_backing_target_bit2;
+  assign pd_jump_target_bit[1] = pd_itt_candidate_2 ? i_itt_target[1][1] :
+      i_from_if_to_pd_2.btb_predicted_taken ? i_from_if_to_pd_2.btb_predicted_target[2] :
+                                              pd_backing_target_bit2;
+  assign o_pred_taken[0] = pd_slot1_jump ? pd_jump_target_bit[0] :
+      (pd_taken_candidate || (!pd_not_taken_candidate && i_from_if_to_pd.btb_predicted_taken));
+  assign o_pred_taken[1] = pd_slot2_jump ? pd_jump_target_bit[1] :
+      (pd_taken_candidate_2 ||
+       (!pd_not_taken_candidate_2 && i_from_if_to_pd_2.btb_predicted_taken));
+  assign pd_itt_candidate = pd_itt_eligible[0] && i_itt_hit[0] &&
+      !(i_from_if_to_pd.btb_predicted_taken &&
+        (i_from_if_to_pd.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] == i_itt_target[0]));
+  assign pd_itt_candidate_2 = pd_itt_eligible[1] && i_itt_hit[1] &&
+      !(i_from_if_to_pd_2.btb_predicted_taken &&
+        (i_from_if_to_pd_2.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] == i_itt_target[1]));
+  // A live candidate's slot holds a real instruction: a killed slot 2 (behind
+  // slot-1 control flow) still decodes the bytes after slot 1, and its lookup
+  // may hit. Only a live candidate selects the redirect target, which every
+  // redirect of the packet shares: a stale one would replace a slot-1
+  // branch's fall-through, which resolution never checks, so the killed JALR
+  // would be skipped and its callee would run.
+  logic pd_itt_live;
+  logic pd_itt_live_2;
+  assign pd_itt_live = pd_itt_candidate && !i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault;
+  assign pd_itt_live_2 = pd_itt_candidate_2 && !i_from_if_to_pd_2.sel_nop &&
+                         !i_from_if_to_pd_2.fetch_fault;
+  assign pd_itt_target = {
+    i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
+    pd_itt_eligible[0] ? i_itt_target[0] : i_itt_target[1],
+    1'b0
+  };
 `ifndef SYNTHESIS
   logic pd_slot2_target_select;
   logic pd_backing_target_select;
@@ -731,6 +815,12 @@ module pd_stage #(
   assign pd_backing_redirect_2_r = pd_backing_candidate_2_r &&
       !o_from_pd_to_id_2.btb_predicted_taken && !o_from_pd_to_id_2.inject_nop &&
       !o_from_pd_to_id_2.fetch_fault;
+  // An indirect target redirect takes its slot's bubble and fetch-fault
+  // vetoes; a BTB prediction with another target does not veto it.
+  assign pd_itt_redirect_r = pd_itt_candidate_r && !o_from_pd_to_id.inject_nop &&
+                             !o_from_pd_to_id.fetch_fault;
+  assign pd_itt_redirect_2_r = pd_itt_candidate_2_r && !o_from_pd_to_id_2.inject_nop &&
+                               !o_from_pd_to_id_2.fetch_fault;
   assign pd_dir_redirect_1_r =
       ((pd_taken_candidate_r && !o_from_pd_to_id.btb_predicted_taken) ||
        (pd_not_taken_candidate_r && o_from_pd_to_id.btb_predicted_taken)) &&
@@ -742,10 +832,12 @@ module pd_stage #(
       !o_from_pd_to_id_2.inject_nop &&
       !o_from_pd_to_id_2.fetch_fault;
   assign pd_dir_redirect_2_r =
-      pd_dir_redirect_2_raw_r && !pd_dir_redirect_1_r && !pd_backing_redirect_r;
+      pd_dir_redirect_2_raw_r && !pd_dir_redirect_1_r && !pd_backing_redirect_r &&
+      !pd_itt_redirect_r;
   assign pd_redirect_r =
       pd_dir_redirect_1_r || pd_dir_redirect_2_raw_r ||
-      pd_backing_redirect_r || pd_backing_redirect_2_r;
+      pd_backing_redirect_r || pd_backing_redirect_2_r ||
+      pd_itt_redirect_r || pd_itt_redirect_2_r;
 
   // IF's redirect depends only on PD registers. It costs two bubbles; both
   // slots of the wrong-path packet entering PD behind the branch are
@@ -780,6 +872,8 @@ module pd_stage #(
       pd_not_taken_candidate_2_r <= 1'b0;
       pd_backing_candidate_r     <= 1'b0;
       pd_backing_candidate_2_r   <= 1'b0;
+      pd_itt_candidate_r         <= 1'b0;
+      pd_itt_candidate_2_r       <= 1'b0;
     end else if (i_pipeline_ctrl.flush) begin
       pd_taken_candidate_r       <= 1'b0;
       pd_not_taken_candidate_r   <= 1'b0;
@@ -787,6 +881,8 @@ module pd_stage #(
       pd_not_taken_candidate_2_r <= 1'b0;
       pd_backing_candidate_r     <= 1'b0;
       pd_backing_candidate_2_r   <= 1'b0;
+      pd_itt_candidate_r         <= 1'b0;
+      pd_itt_candidate_2_r       <= 1'b0;
     end else if (!i_pipeline_ctrl.stall) begin
       pd_taken_candidate_r       <= pd_taken_candidate;
       pd_not_taken_candidate_r   <= pd_not_taken_candidate;
@@ -794,6 +890,18 @@ module pd_stage #(
       pd_not_taken_candidate_2_r <= pd_not_taken_candidate_2;
       pd_backing_candidate_r     <= pd_backing_candidate;
       pd_backing_candidate_2_r   <= pd_backing_candidate_2;
+      pd_itt_candidate_r         <= pd_itt_candidate;
+      pd_itt_candidate_2_r       <= pd_itt_candidate_2;
+    end
+  end
+  // The target and its select load on every unstalled edge, like the other
+  // target registers, so a flush that clears the candidates leaves them
+  // aligned with the reference.
+  logic pd_itt_target_select_r;
+  always_ff @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.stall) begin
+      pd_itt_target_r <= pd_itt_target;
+      pd_itt_target_select_r <= pd_itt_live || pd_itt_live_2;
     end
   end
 
@@ -890,22 +998,31 @@ module pd_stage #(
 
   assign o_pd_redirect = pd_redirect_r;
   assign o_pd_redirect_taken = !pd_redirect_fall_through_select_r;
-  assign o_pd_redirect_target = {pd_redirect_target_high, pd_redirect_target_low};
-  assign o_pd_redirect_slot2 = pd_backing_redirect_2_r || pd_dir_redirect_2_r;
+  // An indirect target candidate's own register supplies the target, and a
+  // candidate is the packet's only redirect apart from a backing BTB one for
+  // the same JALR.
+  assign o_pd_redirect_target = pd_itt_target_select_r ? pd_itt_target_r :
+                                {pd_redirect_target_high, pd_redirect_target_low};
+  assign o_pd_redirect_slot2 = pd_backing_redirect_2_r || pd_dir_redirect_2_r ||
+                               pd_itt_redirect_2_r;
   logic pd_registered_call, pd_registered_call_2;
   logic pd_registered_return, pd_registered_return_2;
   assign pd_registered_call = is_call(o_from_pd_to_id.instruction);
   assign pd_registered_call_2 = is_call(o_from_pd_to_id_2.instruction);
   assign pd_registered_return = is_return(o_from_pd_to_id.instruction);
   assign pd_registered_return_2 = is_return(o_from_pd_to_id_2.instruction);
-  assign o_pd_redirect_ras_push = (pd_backing_redirect_r && pd_registered_call) ||
-                                  (pd_backing_redirect_2_r && pd_registered_call_2);
+  // An indirect call the BTB predicted taken has had its push from IF.
+  assign o_pd_redirect_ras_push =
+      ((pd_backing_redirect_r ||
+        (pd_itt_redirect_r && !o_from_pd_to_id.btb_predicted_taken)) && pd_registered_call) ||
+      ((pd_backing_redirect_2_r ||
+        (pd_itt_redirect_2_r && !o_from_pd_to_id_2.btb_predicted_taken)) && pd_registered_call_2);
   assign o_pd_redirect_ras_pop = (pd_backing_redirect_r && pd_registered_return) ||
                                  (pd_backing_redirect_2_r && pd_registered_return_2);
   assign o_pd_backing_refresh = pd_backing_redirect_r || pd_backing_redirect_2_r;
   assign o_pd_backing_refresh_pc = pd_backing_redirect_r ? o_from_pd_to_id.program_counter :
                                                            o_from_pd_to_id_2.program_counter;
-  assign o_pd_redirect_ras_link = pd_backing_redirect_2_r ?
+  assign o_pd_redirect_ras_link = (pd_backing_redirect_2_r || pd_itt_redirect_2_r) ?
       o_from_pd_to_id_2.program_counter + (o_from_pd_to_id_2.is_compressed ?
           XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit)) :
       o_from_pd_to_id.program_counter + (o_from_pd_to_id.is_compressed ?
@@ -1076,6 +1193,13 @@ module pd_stage #(
       (i_backing_compressed[1] == pd_sel_compressed_2) &&
       !i_from_if_to_pd_2.btb_predicted_taken && !i_from_if_to_pd_2.sel_nop &&
       !i_from_if_to_pd_2.fetch_fault;
+  // An indirect target candidate with its slot's bubble and fault vetoes.
+  logic pd_itt_reference_next;
+  logic pd_itt_reference_next_2;
+  assign pd_itt_reference_next = pd_itt_candidate && !i_from_if_to_pd.sel_nop &&
+                                 !i_from_if_to_pd.fetch_fault;
+  assign pd_itt_reference_next_2 = pd_itt_candidate_2 && !i_from_if_to_pd_2.sel_nop &&
+                                   !i_from_if_to_pd_2.fetch_fault;
   assign pd_dir_redirect_1_reference_next =
       (pd_native_branch || pd_compressed_branch) &&
       (pd_final_taken_reference != i_from_if_to_pd.btb_predicted_taken) &&
@@ -1089,10 +1213,12 @@ module pd_stage #(
       !i_from_if_to_pd_2.fetch_fault &&
       !pd_dir_redirect_1_reference_next &&
       !pd_backing_reference_next &&
+      !pd_itt_reference_next &&
       !pd_redirect_reference_q;
   assign pd_redirect_reference_next =
       pd_dir_redirect_1_reference_next || pd_dir_redirect_2_reference_next ||
-      ((pd_backing_reference_next || pd_backing_reference_next_2) &&
+      ((pd_backing_reference_next || pd_backing_reference_next_2 ||
+        pd_itt_reference_next || pd_itt_reference_next_2) &&
        !pd_redirect_reference_q);
 
   always @(posedge i_clk) begin
@@ -1121,7 +1247,8 @@ module pd_stage #(
         pd_dir_redirect_2_reference_q <= pd_dir_redirect_2_reference_next;
         pd_redirect_taken_reference_q <=
             pd_dir_redirect_2_reference_next ? pd_final_taken_reference_2 :
-            ((pd_backing_reference_next || pd_backing_reference_next_2) ||
+            ((pd_backing_reference_next || pd_backing_reference_next_2 ||
+              pd_itt_reference_next || pd_itt_reference_next_2) ||
              pd_final_taken_reference);
         pd_redirect_reference_armed <= 1'b1;
       end
@@ -1138,6 +1265,10 @@ module pd_stage #(
   logic [XLEN-1:0] pd_slot1_redirect_target_next_reference;
   logic [XLEN-1:0] pd_slot2_redirect_target_next_reference;
   logic [XLEN-1:0] pd_redirect_target_reference;
+  // An indirect target candidate's target and its select, sampled like the
+  // target registers.
+  logic [XLEN-1:0] pd_itt_target_reference_q;
+  logic pd_itt_select_reference_q;
   assign pd_slot1_redirect_target_next_reference = pd_not_taken_candidate ?
       i_from_if_to_pd.program_counter +
       (pd_sel_compressed ? XLEN'(riscv_pkg::PcIncrementCompressed) :
@@ -1148,8 +1279,9 @@ module pd_stage #(
       (pd_sel_compressed_2 ? XLEN'(riscv_pkg::PcIncrementCompressed) :
                              XLEN'(riscv_pkg::PcIncrement32bit)) :
       pd_slot2_target_reference;
-  assign pd_redirect_target_reference = pd_dir_redirect_2_reference_q ?
-      pd_slot2_redirect_target_reference_q : pd_slot1_redirect_target_reference_q;
+  assign pd_redirect_target_reference = pd_itt_select_reference_q ? pd_itt_target_reference_q :
+      pd_dir_redirect_2_reference_q ? pd_slot2_redirect_target_reference_q :
+                                      pd_slot1_redirect_target_reference_q;
   always @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
       pd_redirect_target_reference_armed <= 1'b0;
@@ -1175,6 +1307,19 @@ module pd_stage #(
         p_pd_redirect_target_boundary_exact :
         assert (!pd_redirect_r || (o_pd_redirect_target == pd_redirect_target_reference));
       end
+      // Independent of the reference: a not-taken redirect goes to the
+      // redirecting instruction's fall-through.
+      if (pd_sim_reset_seen_q && o_pd_redirect && !o_pd_redirect_taken && !$isunknown(
+              {o_pd_redirect_target, o_pd_redirect_slot2, o_from_pd_to_id.program_counter,
+               o_from_pd_to_id_2.program_counter}
+          )) begin
+        p_pd_not_taken_redirect_falls_through :
+        assert (o_pd_redirect_target == (o_pd_redirect_slot2 ?
+            o_from_pd_to_id_2.program_counter + (o_from_pd_to_id_2.is_compressed ?
+                XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit)) :
+            o_from_pd_to_id.program_counter + (o_from_pd_to_id.is_compressed ?
+                XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit))));
+      end
       if (!i_pipeline_ctrl.stall) begin
         pd_slot1_redirect_target_reference_q <= pd_slot1_redirect_target_next_reference;
         pd_slot2_redirect_target_reference_q <= pd_slot2_redirect_target_next_reference;
@@ -1182,6 +1327,12 @@ module pd_stage #(
             pd_slot2_redirect_target_next_reference : pd_slot1_redirect_target_next_reference;
         pd_slot2_packet_valid_reference_q <=
             !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault;
+        pd_itt_target_reference_q <= {
+          i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
+          pd_itt_eligible[0] ? i_itt_target[0] : i_itt_target[1],
+          1'b0
+        };
+        pd_itt_select_reference_q <= pd_itt_reference_next || pd_itt_reference_next_2;
         pd_redirect_target_reference_armed <= 1'b1;
       end
     end
@@ -1214,11 +1365,12 @@ module pd_stage #(
               }
           )) begin
         p_pd_backing_slot1_target_matches_decode :
-        assert (!(pd_backing_redirect_r && pd_backing_decoded_reference_valid_q) ||
+        assert (!(pd_backing_redirect_r && pd_backing_decoded_reference_valid_q &&
+                  !pd_itt_target_select_r) ||
                 (o_pd_redirect_target == pd_backing_decoded_target_reference_q));
         p_pd_backing_slot2_target_matches_decode :
         assert (!(pd_backing_redirect_2_r && !pd_backing_redirect_r &&
-                  pd_backing_decoded_reference_valid_2_q) ||
+                  pd_backing_decoded_reference_valid_2_q && !pd_itt_target_select_r) ||
                 (o_pd_redirect_target == pd_backing_decoded_target_reference_2_q));
       end
       if (!i_pipeline_ctrl.stall) begin
@@ -1521,7 +1673,8 @@ module pd_stage #(
       end
       if (o_pd_redirect_slot2) begin
         p_formal_slot2_flag_is_a_slot2_redirect :
-        assert ((pd_backing_redirect_2_r || pd_dir_redirect_2_r) && !o_from_pd_to_id_2.inject_nop);
+        assert ((pd_backing_redirect_2_r || pd_dir_redirect_2_r || pd_itt_redirect_2_r) &&
+                !o_from_pd_to_id_2.inject_nop);
       end
       // The registered instruction that names the stack operation is the
       // redirecting slot's instruction.
@@ -1537,8 +1690,8 @@ module pd_stage #(
       // return, by the redirecting instruction's encoding.
       if (o_pd_redirect_ras_push) begin
         p_formal_push_is_a_redirected_call :
-        assert ((pd_backing_redirect_r && pd_registered_call) ||
-                (pd_backing_redirect_2_r && pd_registered_call_2));
+        assert (((pd_backing_redirect_r || pd_itt_redirect_r) && pd_registered_call) ||
+                ((pd_backing_redirect_2_r || pd_itt_redirect_2_r) && pd_registered_call_2));
       end
       if (o_pd_redirect_ras_pop) begin
         p_formal_pop_is_a_redirected_return :
@@ -1595,12 +1748,27 @@ module pd_stage #(
       end
       if (pd_backing_decoded_reference_armed) begin
         p_formal_slot1_target_matches_decode :
-        assert (!(pd_backing_redirect_r && pd_backing_decoded_reference_valid_q) ||
+        assert (!(pd_backing_redirect_r && pd_backing_decoded_reference_valid_q &&
+                  !pd_itt_target_select_r) ||
                 (o_pd_redirect_target == pd_backing_decoded_target_reference_q));
         p_formal_slot2_target_matches_decode :
         assert (!(pd_backing_redirect_2_r && !pd_backing_redirect_r &&
-                  pd_backing_decoded_reference_valid_2_q) ||
+                  pd_backing_decoded_reference_valid_2_q && !pd_itt_target_select_r) ||
                 (o_pd_redirect_target == pd_backing_decoded_target_reference_2_q));
+      end
+      // An indirect target redirect fires for its slot's registered JALR that
+      // is not a return.
+      if (pd_itt_redirect_r) begin
+        p_formal_slot1_itt_redirect_is_its_jalr :
+        assert (is_jalr(
+            o_from_pd_to_id.instruction
+        ) && !pd_registered_return && !o_from_pd_to_id.inject_nop);
+      end
+      if (pd_itt_redirect_2_r) begin
+        p_formal_slot2_itt_redirect_is_its_jalr :
+        assert (is_jalr(
+            o_from_pd_to_id_2.instruction
+        ) && !pd_registered_return_2 && !o_from_pd_to_id_2.inject_nop);
       end
     end
   end
@@ -1625,6 +1793,8 @@ module pd_stage #(
              pd_backing_decoded_reference_valid_q);
       cover (pd_backing_redirect_2_r && !pd_backing_redirect_r &&
              pd_backing_decoded_reference_armed && pd_backing_decoded_reference_valid_2_q);
+      cover (pd_itt_redirect_r && o_from_pd_to_id.btb_predicted_taken);
+      cover (pd_itt_redirect_2_r && o_pd_redirect_ras_push);
     end
   end
 `endif
