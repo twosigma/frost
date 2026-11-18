@@ -102,8 +102,6 @@ static void uart_hex(unsigned long v)
 static volatile unsigned long g_cause;
 static volatile unsigned long g_tval;
 
-/* Three blocks each in low BRAM and cached DDR; tests target the middle one. */
-static volatile uint64_t g_bram_buf[3 * BLOCK / 8] __attribute__((aligned(64)));
 static volatile uint64_t g_ddr_buf[3 * BLOCK / 8]
     __attribute__((aligned(64), section(".ddr_data")));
 
@@ -177,7 +175,7 @@ static void fill_flushed(volatile uint64_t *buf, unsigned long dwords)
 /* cbo.inval executes as cbo.flush (CBO_INVAL_AS_FLUSH build). */
 static int g_inval_flushes;
 
-/* Every dword still holds its fill value: a coherent CMO changes no data. */
+/* Check the target block and both neighbors against their clean baseline. */
 static int check_intact(const char *name, int op, volatile uint64_t *buf)
 {
     int ok = 1;
@@ -366,9 +364,15 @@ static void spin(unsigned long n)
 
 int main(void)
 {
+    /* Both scalar images put the stack in low BRAM. In the DDR image even
+     * ordinary static data lives in the cacheable region. */
+    volatile uint64_t bram_buf[3 * BLOCK / 8] __attribute__((aligned(64)));
     int ok = 1;
 
     uart_puts("\r\n=== Zicbom test ===\r\n");
+    ok = (uintptr_t) bram_buf >= 0x18000 && (uintptr_t) (bram_buf + 3 * BLOCK / 8) <= 0x40000 &&
+         (uintptr_t) g_ddr_buf >= 0x80000000ul;
+    report(ok, "buffer placement", 0);
     set_trap_handler(&cbo_trap_handler);
     csr_write(medeleg, 0);
     csr_write_num(0x30A, ENVCFG_CBIE(3));
@@ -383,10 +387,10 @@ int main(void)
         run_m(op, (unsigned long) &g_ddr_buf[BLOCK / 8] + 0x2B);
         ok &= expect("A ddr-m-retires", op, CAUSE_ECALL_M, 0, 0);
         ok &= check_intact("A ddr", op, g_ddr_buf);
-        fill(g_bram_buf, 3 * BLOCK / 8);
-        run_m(op, (unsigned long) &g_bram_buf[BLOCK / 8] + 0x3F);
+        fill(bram_buf, 3 * BLOCK / 8);
+        run_m(op, (unsigned long) &bram_buf[BLOCK / 8] + 0x3F);
         ok &= expect("A bram-m-retires", op, CAUSE_ECALL_M, 0, 0);
-        ok &= check_intact("A bram", op, g_bram_buf);
+        ok &= check_intact("A bram", op, bram_buf);
     }
 
     /* B: device windows are ordered no-ops; outside the map is a store access
@@ -464,20 +468,20 @@ int main(void)
                 unsigned long want = !legal              ? CAUSE_ILLEGAL
                                      : cases[i].mpp == 1 ? CAUSE_ECALL_S
                                                          : CAUSE_ECALL_U;
-                fill(g_bram_buf, 3 * BLOCK / 8);
+                fill(bram_buf, 3 * BLOCK / 8);
                 csr_write_num(0x30A, cases[i].menv);
                 csr_write_num(0x10A, cases[i].senv);
-                run_lower(cases[i].mpp, op, (unsigned long) &g_bram_buf[BLOCK / 8] + 5);
+                run_lower(cases[i].mpp, op, (unsigned long) &bram_buf[BLOCK / 8] + 5);
                 /* Sstvala: an illegal op's mtval holds its instruction bits. */
                 ok &= expect(cases[i].name, op, want, CBO_A0_BITS(op), want == CAUSE_ILLEGAL);
-                ok &= check_intact(cases[i].name, op, g_bram_buf);
+                ok &= check_intact(cases[i].name, op, bram_buf);
             }
         }
         csr_write_num(0x30A, 0);
         csr_write_num(0x10A, 0);
         /* M ignores both CSRs. */
         for (int op = 0; op < 3; op++) {
-            run_m(op, (unsigned long) &g_bram_buf[BLOCK / 8] + 9);
+            run_m(op, (unsigned long) &bram_buf[BLOCK / 8] + 9);
             ok &= expect("D m-gates-off", op, CAUSE_ECALL_M, 0, 0);
         }
     }
@@ -488,7 +492,7 @@ int main(void)
      * nothing else changes. */
     for (int region = 0; region < 2; region++) {
         for (int op = 0; op < 3; op++) {
-            volatile uint64_t *buf = region ? g_bram_buf : g_ddr_buf;
+            volatile uint64_t *buf = region ? bram_buf : g_ddr_buf;
             unsigned long base = (unsigned long) &buf[BLOCK / 8];
             unsigned long seen, seen2, other;
             /* An invalidate of DDR drops the store before it. */
