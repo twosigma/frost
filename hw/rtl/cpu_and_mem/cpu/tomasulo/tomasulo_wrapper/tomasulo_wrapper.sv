@@ -2551,9 +2551,9 @@ module tomasulo_wrapper #(
   end
 
   // Translated and untranslated store-completion cofactors; the untranslated
-  // one comes from coherent_store_pm_select. A Zicbom op completes at issue
-  // wherever its block lies: it writes nothing, so no precise bus response
-  // can fault it.
+  // one comes from coherent_store_pm_select. The ROB marks a permitted Zicbom
+  // op done at issue. After retirement the SQ waits for any home write-back.
+  // A failed write response raises the home's fatal error.
   (* keep = "true" *) logic store_complete_translated;
   logic store_complete_valid;
   assign store_complete_translated = store_issue_translated &&

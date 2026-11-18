@@ -334,8 +334,8 @@ module store_queue #(
   // cbo.zero: write the 64-byte block containing sq_address, through the L1D
   // for cached memory or as eight zero beats for uncached memory.
   logic                 [                DEPTH-1:0] sq_is_zero;
-  // cbo.clean/flush/inval: name the 64-byte block containing sq_address; the
-  // entry writes nothing (see Zicbom entries below).
+  // cbo.clean/flush/inval name the 64-byte block containing sq_address.
+  // The entry supplies the operation and address for any home write-back.
   logic                 [                DEPTH-1:0] sq_is_cmo;
   riscv_pkg::cmo_kind_e                             sq_cmo_kind                       [DEPTH];
 
