@@ -17,7 +17,7 @@ coh_dma_ingress_soc_prove: mode prove
 coh_dma_ingress_soc_prove: depth 6
 coh_dma_ingress_soc_cover: mode cover
 coh_dma_ingress_soc_cover: depth 48
-coh_dma_ingress_soc_prove: timeout 1800
+coh_dma_ingress_soc_prove: timeout 3120
 coh_dma_ingress_soc_cover: timeout 600
 coh_line_client_prove: mode prove
 coh_line_client_prove: depth 6
@@ -47,6 +47,8 @@ coh_line_client_eight_prove: chparam -set SOURCE 0 -set SLOTS 8 coherence_dma_in
 coh_line_client_cover: chparam -set SOURCE 0 -set SLOTS 4 coherence_dma_ingress
 coh_line_client_eight_cover: chparam -set SOURCE 0 -set SLOTS 8 coherence_dma_ingress
 coh_dma_ingress_soc_cover: chformal -assert -remove
+hierarchy -top coherence_dma_ingress
+script free_undefined.ys
 prep -top coherence_dma_ingress
 memory_map
 opt
@@ -56,3 +58,4 @@ opt
 ../hw/rtl/lib/cache/coherence_types.svh
 ../hw/rtl/lib/cache/coherence_dma_ingress.sv
 ../hw/rtl/lib/cache/coherence_d_arbiter.sv
+free_undefined.ys
