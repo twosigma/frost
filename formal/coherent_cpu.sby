@@ -32,6 +32,8 @@ sc_offset: chparam -set CACHED_BASE 2147483680 -set CACHED_SIZE_BYTES 8192 sc_pe
 sc_size: chparam -set CACHED_SIZE_BYTES 402653184 sc_pending_unit
 sc_zero: chparam -set CACHED_BASE 0 -set CACHED_SIZE_BYTES 0 sc_pending_unit
 sc_wrap: chparam -set CACHED_BASE 64'hfffffffffffff000 -set CACHED_SIZE_BYTES 4096 sc_pending_unit
+sc: hierarchy -top sc_pending_unit
+sc: script free_undefined.ys
 sc: prep -flatten -top sc_pending_unit
 lq: read -sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv coherent_l0_flags.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv
 lq: read -formal -sv coherent_lq_address_store.sv
@@ -39,17 +41,25 @@ lq: read -formal -sv -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF -D F_LQ_RE
 forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 normal: chparam -set CACHE_NORMAL_MEMORY 1 -set CACHE_UNCACHED_DATA 0 -set MEM_RESPONSE_ERRORS 1 load_queue
 busy: chparam -set PREPARE_LOAD_WHILE_BUSY 0 load_queue
+lq: hierarchy -top load_queue
+lq: script free_undefined.ys
 lq: prep -flatten -top load_queue
 
 selector: read -formal -sv lq_issue_selector.sv coherent_lq_issue_selector.sv
 selector4: chparam -set DEPTH 4 coherent_lq_issue_selector
 selector16: chparam -set DEPTH 16 coherent_lq_issue_selector
+selector: hierarchy -top coherent_lq_issue_selector
+selector: script free_undefined.ys
 selector: prep -flatten -top coherent_lq_issue_selector
 
 candidate: read -formal -sv coherent_lq_candidate_select.sv
+candidate: hierarchy -top coherent_lq_candidate_select
+candidate: script free_undefined.ys
 candidate: prep -top coherent_lq_candidate_select
 
 address_class: read -formal -sv coherent_lq_address_store.sv
+address_class: hierarchy -top coherent_lq_address_store
+address_class: script free_undefined.ys
 address_class: prep -flatten -top coherent_lq_address_store
 
 [files]
@@ -66,3 +76,4 @@ address_class: prep -flatten -top coherent_lq_address_store
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+free_undefined.ys

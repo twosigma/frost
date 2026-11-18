@@ -26,6 +26,8 @@ bmc: chparam -set DEPTH 128 lq_l0_cache
 cover: chparam -set DEPTH 128 lq_l0_cache
 bmc_256: chparam -set DEPTH 256 lq_l0_cache
 cover_256: chparam -set DEPTH 256 lq_l0_cache
+hierarchy -top lq_l0_cache
+script free_undefined.ys
 prep -top lq_l0_cache
 
 [files]
@@ -33,3 +35,4 @@ prep -top lq_l0_cache
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+free_undefined.ys

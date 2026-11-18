@@ -14,6 +14,8 @@ smtbmc boolector
 [script]
 read -sv nic_dma_front.sv
 read -formal -sv nic_dma_front_formal.sv
+hierarchy -top nic_dma_front_formal
+script free_undefined.ys
 prep -top nic_dma_front_formal -flatten
 ~cover: chformal -cover -remove
 opt -fast
@@ -22,3 +24,4 @@ opt_clean -purge
 [files]
 ../hw/rtl/peripherals/nic/nic_dma_front.sv
 nic_dma_front_formal.sv
+free_undefined.ys

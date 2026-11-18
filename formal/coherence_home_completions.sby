@@ -30,8 +30,12 @@ pairs: read -formal -sv -D COHERENCE_COMPLETIONS_PAIRS coherence_home_completion
 plain: chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 -set PREFETCH_SLOTS 0 coherence_home_completions
 partition: chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 -set PREFETCH_SLOTS 1 coherence_home_completions
 partition2: chparam -set SLOTS 4 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 -set PREFETCH_SLOTS 2 coherence_home_completions
+base: hierarchy -top coherence_home_completions
+base: script free_undefined.ys
 base: prep -top coherence_home_completions -flatten
 if_pair: read -formal -sv coherence_if_pair_formal.sv
+if_pair: hierarchy -top coherence_if_pair_formal
+if_pair: script free_undefined.ys
 if_pair: prep -top coherence_if_pair_formal -flatten
 if_pair: chformal -cover -remove c:*dut*
 memory_map -keepdc
@@ -49,3 +53,4 @@ coherence_if_pair_formal.sv
 ../hw/rtl/lib/cache/coherence_home_endpoint.sv
 ../hw/rtl/lib/cache/coherence_d_arbiter.sv
 ../hw/rtl/lib/cache/coherence_home_completions.sv
+free_undefined.ys

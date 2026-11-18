@@ -25,6 +25,8 @@ prove_fp_active: read_slang --top rat_checkpoint_restore_formal --single-unit -G
 prove_fp_ckpt_lo: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=0 -GCHECK_FP=1 -GCHECK_ACTIVE=0 -GCHECK_CKPT_MASK=15 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
 prove_fp_ckpt_hi: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=0 -GCHECK_FP=1 -GCHECK_ACTIVE=0 -GCHECK_CKPT_MASK=240 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
 cover: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=1 -GCHECK_FP=1 -GCHECK_ACTIVE=1 -GCHECK_CKPT_MASK=255 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
+hierarchy -top rat_checkpoint_restore_formal
+script free_undefined.ys
 prep -top rat_checkpoint_restore_formal -flatten
 ~cover: chformal -cover -remove
 memory_map
@@ -37,3 +39,4 @@ opt_clean -purge
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv
 rat_checkpoint_restore_formal.sv
+free_undefined.ys

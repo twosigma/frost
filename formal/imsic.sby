@@ -42,6 +42,8 @@ prove_harts3: chparam -set NUM_HARTS 3 -set NUM_IDS 191 -set APLIC_DELIVERY 0 im
 cover_harts3: chparam -set NUM_HARTS 3 -set NUM_IDS 191 -set APLIC_DELIVERY 0 imsic
 prove_ids511: chparam -set NUM_HARTS 1 -set NUM_IDS 511 -set APLIC_DELIVERY 1 imsic
 bmc_ids2047: chparam -set NUM_HARTS 1 -set NUM_IDS 2047 -set APLIC_DELIVERY 1 imsic
+hierarchy -top imsic
+script free_undefined.ys
 prep -top imsic
 
 [files]
@@ -49,3 +51,4 @@ prep -top imsic
 ../hw/rtl/peripherals/imsic/imsic_file.sv
 ../hw/rtl/peripherals/imsic/imsic_decode.sv
 ../hw/rtl/peripherals/imsic/imsic.sv
+free_undefined.ys

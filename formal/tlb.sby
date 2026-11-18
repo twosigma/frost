@@ -26,8 +26,11 @@ read -formal -sv dtlb.sv
 # changing its top's parameters.
 bmc_itlb: chparam -set NUM_ENTRIES 16 -set NUM_PORTS 2 -set FETCH_VERDICTS 1 -set DATA_VERDICTS 0 -set PPN_SELECT_TREE 1 dtlb
 cover_itlb: chparam -set NUM_ENTRIES 16 -set NUM_PORTS 2 -set FETCH_VERDICTS 1 -set DATA_VERDICTS 0 -set PPN_SELECT_TREE 1 dtlb
+hierarchy -top dtlb
+script free_undefined.ys
 prep -top dtlb
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv
+free_undefined.ys

@@ -68,6 +68,8 @@ read -sv fp_engine.sv
 read -sv fp_shim.sv
 read -formal -sv tomasulo_wrapper.sv
 fp_repair_bmc: chparam -set ENABLE_DISPATCH_DONE_REPAIR 1 tomasulo_wrapper
+hierarchy -top tomasulo_wrapper
+script free_undefined.ys
 prep -top tomasulo_wrapper
 
 [files]
@@ -117,3 +119,4 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+free_undefined.ys
