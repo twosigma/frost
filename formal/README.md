@@ -596,7 +596,10 @@ cycle counts, including early termination and setup cancellation.
 
 ### Memory system and coherence
 
-After a bridge edit makes the AXI assertion roster check fail, run
+The four-burst AXI bridge proof checks B-channel stability in one partition and
+the other 138 assertions in a second partition. If an edit changes that count,
+review the changed assertions and update the count in the proof and its model test.
+After a bridge edit makes the eight-burst assertion roster check fail, run
 `./scripts/frost.py run python3 formal/update_axi_bridge_groups.py` from the
 repository root. The assignment file `axi_coherent_bridge_groups.json` matches
 labels or normalized assertion text and unroll order, preserving each recognized
