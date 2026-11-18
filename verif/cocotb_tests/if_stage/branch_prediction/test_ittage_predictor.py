@@ -223,3 +223,31 @@ async def test_allocates_above_provider(dut: Any) -> None:
     hit, target, lookup = await _lookup(dut, PC_B, hist)
     assert hit and _unpack_hits(lookup)[1] == 1, f"tables {_unpack_hits(lookup)}"
     assert target == 0x0000_4000, f"table 2 provides {target:#x}"
+
+
+@cocotb.test()
+async def test_lookup_only_provider_releases_a_stale_target(dut: Any) -> None:
+    """Training a lookup-only provider preserves the training row and releases its target."""
+    await _start(dut)
+    hist = 0x1234_5678_9ABC_DEF0
+    word = _word(PC_A)
+    _clear_rows(dut, word, hist)
+    index, tag = _keys(word, hist)[2]
+    storage = dut.gen_bank[word & 1].gen_table[2]
+    prefix = (1 << TAG_BITS) | tag
+    stale_target, actual_target = 0x1200, 0x3400
+    storage.u_lookup_copy.ram[index].value = (
+        (prefix << TARGET_BITS) | stale_target
+    ) << 3
+    other_entry = ((((prefix ^ 1) << TARGET_BITS) | 0x5600) << 3) | 3
+    storage.u_train_copy.ram[index].value = other_entry
+    hit, target, lookup = await _lookup(dut, PC_A, hist)
+    assert hit and target == stale_target and _unpack_hits(lookup) == (0, 0, 1)
+    await _train(dut, PC_A, lookup, actual_target, 1)
+    hit, _, lookup = await _lookup(dut, PC_A, hist)
+    assert not hit, "the training row belongs to another tag"
+    assert int(storage.u_train_copy.ram[index].value) == other_entry
+    assert int(storage.u_lookup_copy.ram[index].value) == other_entry
+    await _train(dut, PC_A, lookup, actual_target, 1)
+    hit, target, _ = await _lookup(dut, PC_A, hist)
+    assert hit and target == actual_target

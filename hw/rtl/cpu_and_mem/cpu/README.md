@@ -255,7 +255,8 @@ like a backing BTB redirect: two bubbles, a push for an indirect call the
 BTB did not predict, and ID gives the JALR the target to check. At commit a
 correct target raises the provider's confidence; a wrong one lowers it or,
 at zero, replaces the target; and a mispredicted JALR allocates in the
-shortest table above its provider whose entry is not useful. Before this, a
+shortest table above its provider whose entry is not useful. If the training
+row belongs to another tag, both copies receive that row. Before this, a
 `switch` on a state variable (CoreMark-PRO core's state machine) mispredicted
 nearly every time, since the BTB keeps only the last target.
 

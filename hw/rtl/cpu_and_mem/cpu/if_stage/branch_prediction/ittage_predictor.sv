@@ -52,7 +52,8 @@
  * takes the new value. The write:
  *   - The provider's entry, if its tag still matches: a correct target raises
  *     its confidence and sets its usefulness; a wrong one lowers the
- *     confidence, or replaces the target once the confidence is zero.
+ *     confidence, or replaces the target once the confidence is zero. If the
+ *     tag has changed, both copies receive the current training row.
  *   - A mispredicted JALR allocates its target with zero confidence in the
  *     shortest table above the provider whose entry is not useful and does
  *     not hold the JALR; each useful entry passed before it loses its
@@ -335,8 +336,7 @@ module ittage_predictor #(
       end
     end
     assign write_entry[t] = next[t];
-    assign write_any[t] = train_valid_q &&
-        ((provider[t] && owned[t]) || alloc[t] || useful_clear[t]);
+    assign write_any[t]   = train_valid_q && (provider[t] || alloc[t] || useful_clear[t]);
   end
 
 `ifndef SYNTHESIS
