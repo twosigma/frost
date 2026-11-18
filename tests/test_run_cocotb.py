@@ -632,7 +632,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="smc_predict_test",
         nic_mac_clocks=False,
-        description="Rewritten code does not follow stale branch predictions",
+        description="Rewritten ALU instructions ignore trained return, direct, indirect and branch targets",
     ),
     "btb_mode_alias_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
