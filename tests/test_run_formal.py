@@ -4397,7 +4397,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "branch_prediction_alias": (
-        "not converted: opt -purge; no setundef",
+        "opt -purge prunes predictor state outside the alias comparison",
         {
             "bmc": ["opt -purge"],
         },
@@ -4690,7 +4690,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "immu_bare": (
-        "not converted: opt -purge; no setundef",
+        "opt -purge prunes translation state outside the Bare outputs",
         {
             "bmc bmc_1g bmc_64g bmc_128g bmc_xlen32 bmc_xlen72": ["opt -purge"],
         },
@@ -5459,8 +5459,6 @@ UNDEFINED_CONSTANT = re.compile(r"\d*'[sS]?[bBoOdDhH]?[0-9a-fA-F_xXzZ?]*[xXzZ?]"
 # Scripts that do not open that way yet. The list only shrinks: a listed script
 # whose every task opens fails the check.
 UNDEFINED_OPENING_PENDING = (
-    "axi_coherent_bridge",
-    "branch_prediction_alias",
     "coherence_array",
     "coherence_array_equiv",
     "coherence_dma_ingress",
@@ -5468,10 +5466,8 @@ UNDEFINED_OPENING_PENDING = (
     "coherence_l1d",
     "coherence_store_boundary",
     "coherence_store_home",
-    "coherent_hart_cache",
     "csr_commit_cofactor",
     "csr_file",
-    "immu_bare",
     "line_client_link",
     "pm_mode_select",
     "reorder_buffer",
@@ -7365,6 +7361,37 @@ def l1d_task_config(task: str) -> dict[str, list[str]]:
     return formal_task_config("coherence_l1d", task)
 
 
+def normalize_axi_bridge_post_map_count(commands: list[str], task: str) -> None:
+    """Check the exact mapped-property guard before comparing partition models."""
+    # The four-burst partitions cover all 139 assertions. The eight-burst
+    # partitions check exact membership before mapping and a nonzero floor after.
+    counts = {
+        "prove_soc": ("-assert-count", 138),
+        "prove_soc_held": ("-assert-count", 1),
+        **{f"prove_soc8_{index}": ("-assert-min", 1) for index in range(9)},
+    }
+    kind, count = counts[task]
+    map_command = "techmap -max_iter 1 -map %assertion_map"
+    assert commands.count(map_command) == 1
+    after_map = commands.index(map_command) + 1
+    assert commands[after_map:] == [
+        "opt_clean",
+        "select -assert-none t:axi_coherent_bridge_checked_assert",
+        f"select {kind} {count} t:$assert",
+        "select -clear",
+    ]
+    commands[after_map + 2] = f"select {kind} <partition-count> t:$assert"
+
+
+def test_axi_bridge_post_map_count_rejects_another_selection() -> None:
+    """The count guard must still select the mapped assertions."""
+    commands = formal_task_config("axi_coherent_bridge", "prove_soc")["[script]"]
+    index = commands.index("select -assert-count 138 t:$assert")
+    commands[index] = "select -assert-count 138 t:$assume"
+    with pytest.raises(AssertionError):
+        normalize_axi_bridge_post_map_count(commands, "prove_soc")
+
+
 def test_axi_bridge_partitions_share_model_and_history() -> None:
     """Partitions of each configuration share one model and history contract."""
     families = [
@@ -7383,6 +7410,7 @@ def test_axi_bridge_partitions_share_model_and_history() -> None:
     ]
     for tasks, groups, guard, options in families:
         reference = formal_task_config("axi_coherent_bridge", tasks[0])
+        normalize_axi_bridge_post_map_count(reference["[script]"], tasks[0])
         for task, group in zip(tasks, groups, strict=True):
             config = formal_task_config("axi_coherent_bridge", task)
             assert dict(line.split(maxsplit=1) for line in config["[options]"]) == {
@@ -7391,6 +7419,7 @@ def test_axi_bridge_partitions_share_model_and_history() -> None:
                 **options,
             }
             commands = config["[script]"]
+            normalize_axi_bridge_post_map_count(commands, task)
             choose = f"chtype -set axi_coherent_bridge_checked_assert @{group}"
             assert commands.count(choose) == 1
             assert (
@@ -8957,6 +8986,7 @@ def test_hart_maintenance_lemma_model_matches() -> None:
         + [
             "memory_map -keepdc",
             "async2sync",
+            "setundef -anyseq",
             "chtype -map $eqx $eq",
             "chtype -map $nex $ne",
             "sim -clock i_clk -n 1 -w",
