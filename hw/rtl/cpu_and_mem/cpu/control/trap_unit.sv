@@ -693,7 +693,6 @@ module trap_unit #(
   assign o_trap_to_d = (take_trap_d && !i_debug_mode) || (exception_take && exception_ebreak_to_d);
   assign o_trap_no_csr = (take_trap_d && i_debug_mode) ||
       (exception_take && (exception_in_debug || exception_replay || exception_assist));
-  assign o_assist_start = exception_take && exception_assist;
   // csr_file's entry enables, built from the take's terms rather than from
   // take_trap and the steering above, so the late take-ready terms feed them
   // directly. Each side saves on its own interrupt take unless a higher class
@@ -707,13 +706,39 @@ module trap_unit #(
       !exception_in_debug && !exception_replay && !exception_assist;
   assign exception_saves_s = exception_pending && exception_to_s && !exception_in_debug;
   assign exception_enters_d = exception_ebreak_to_d && !exception_replay && !exception_assist;
-  assign o_trap_save_m = take_gate && !d_int_take_ready &&
-      (m_int_take_ready || (!s_int_take_ready && exception_saves_m));
-  assign o_trap_save_s = take_gate && !d_int_take_ready && !m_int_take_ready &&
-      (s_int_take_ready || exception_saves_s);
-  assign o_trap_enter_d = take_gate &&
-      ((d_int_take_ready && !i_debug_mode) ||
-       (!d_int_take_ready && !m_int_take_ready && !s_int_take_ready && exception_enters_d));
+  // The re-entry inhibit reaches these strobes only through the interrupt
+  // take-ready terms, each of which carries !trap_taken_prev in its
+  // eligibility. The CSR entry enables and the misaligned-access assist start,
+  // which have the largest fanout, are built twice: from those terms without
+  // the inhibit (*_raw, kept as nets) and with no interrupt ready (the
+  // exception alone), and trap_taken_prev selects between them at the last
+  // level. Each is the same function as its plain form, which the FORMAL
+  // block checks; the other strobes keep their plain form.
+  logic d_source_live_raw;
+  assign d_source_live_raw = (d_halt_source_live || d_go_source_live) && !mret_interrupt_inhibit;
+  logic d_take_ready_raw, m_take_ready_raw, s_take_ready_raw;
+  assign d_take_ready_raw = d_int_pending && d_source_live_raw && d_take_armed_q &&
+      !i_amo_at_head && !i_device_read_at_head;
+  assign m_take_ready_raw = m_int_pending && m_latched_source_enabled && m_int_globally_enabled &&
+      !mret_interrupt_inhibit && m_take_armed_q &&
+      !i_amo_at_head && !i_device_read_at_head && !i_csr_irq_update;
+  assign s_take_ready_raw = s_int_pending && s_latched_source_enabled && s_int_globally_enabled &&
+      !mret_interrupt_inhibit && s_take_armed_q &&
+      !i_amo_at_head && !i_device_read_at_head && !i_csr_irq_update;
+  (* keep = "true" *) logic trap_save_m_raw, trap_save_s_raw, trap_enter_d_raw, assist_start_raw;
+  assign trap_save_m_raw = take_gate && !d_take_ready_raw &&
+      (m_take_ready_raw || (!s_take_ready_raw && exception_saves_m));
+  assign trap_save_s_raw = take_gate && !d_take_ready_raw && !m_take_ready_raw &&
+      (s_take_ready_raw || exception_saves_s);
+  assign trap_enter_d_raw = take_gate &&
+      ((d_take_ready_raw && !i_debug_mode) ||
+       (!d_take_ready_raw && !m_take_ready_raw && !s_take_ready_raw && exception_enters_d));
+  assign assist_start_raw = take_gate && exception_assist &&
+      !d_take_ready_raw && !m_take_ready_raw && !s_take_ready_raw;
+  assign o_trap_save_m = trap_taken_prev ? (take_gate && exception_saves_m) : trap_save_m_raw;
+  assign o_trap_save_s = trap_taken_prev ? (take_gate && exception_saves_s) : trap_save_s_raw;
+  assign o_trap_enter_d = trap_taken_prev ? (take_gate && exception_enters_d) : trap_enter_d_raw;
+  assign o_assist_start = trap_taken_prev ? (take_gate && exception_assist) : assist_start_raw;
   assign o_dbg_go_taken = take_trap_d && i_debug_mode;
   assign o_dbg_park_entry = exception_take && exception_in_debug;
   assign o_dbg_park_exception = o_dbg_park_entry && !exception_ebreak_q;
@@ -877,6 +902,19 @@ module trap_unit #(
     assert (o_trap_enter_d == (o_trap_taken && !o_trap_no_csr && o_trap_to_d));
     p_csr_refresh_excludes_architectural_interrupt :
     assert (!(i_csr_irq_update && (take_trap_m || take_trap_s)));
+    // The strobes with trap_taken_prev at the last level equal their plain
+    // forms, built from the take-ready terms that carry it.
+    p_trap_save_m_plain :
+    assert (o_trap_save_m == (take_gate && !d_int_take_ready &&
+                              (m_int_take_ready || (!s_int_take_ready && exception_saves_m))));
+    p_trap_save_s_plain :
+    assert (o_trap_save_s == (take_gate && !d_int_take_ready && !m_int_take_ready &&
+                              (s_int_take_ready || exception_saves_s)));
+    p_trap_enter_d_plain :
+    assert (o_trap_enter_d == (take_gate && ((d_int_take_ready && !i_debug_mode) ||
+                                             (!d_int_take_ready && !m_int_take_ready &&
+                                              !s_int_take_ready && exception_enters_d))));
+    p_assist_start_plain : assert (o_assist_start == (exception_take && exception_assist));
   end
 
   // The exception's trap value applies the pointer-masking transform after
