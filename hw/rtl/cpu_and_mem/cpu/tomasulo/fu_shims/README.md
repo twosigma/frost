@@ -133,7 +133,7 @@ operations pass a running divide or square root.
 
 The shim also drives a forward wake: in the cycle before an operation's result
 reaches the pipeline's tail register it presents the operation's tag
-(`o_fwd_wake_*`, unflushed only), and in the next cycle the tail register
+(`o_fwd_wake_*`), and in the next cycle the tail register
 (`o_fwd_value`). FP_RS (`FWD_WAKE`) issues a dependent on the wake and reads
 the operand from the tail register, so a dependent FP chain costs the pipeline
 depth rather than depth plus the CDB register and issue. The CDB broadcast
@@ -196,10 +196,12 @@ never starts. As with `fp_shim`, a flush in the cycle the divider presents its
 result is left to the DIV adapter, which sees the same flush.
 
 `fp_shim` marks squashed pipelined operations in its tracker and FIFO, as
-`int_muldiv_shim` does, and drops them at the tail or the FIFO head; a squashed
-operation never raises the forward wake. It kills a squashed engine or divider
-operation inside the unit (`i_kill`), which is idle again on the next cycle, so FP_RS can issue without waiting out the rest
-of the operation. With the default `LAUNCH_SQUASH=0`, an issue the same flush
+`int_muldiv_shim` does, and drops them at the tail or the FIFO head. A previously
+marked tracker entry cannot wake a consumer. A flush coincident with a wake
+blocks selection and deferred capture in FP_RS. Before trap recovery, younger
+instructions can use a speculative producer value. Recovery discards their
+results and stores. The shim kills an engine or divider operation inside the
+unit (`i_kill`), which is idle again on the next cycle. With the default `LAUNCH_SQUASH=0`, an issue the same flush
 covers never starts. The wrapper sets `LAUNCH_SQUASH=1`: the issue starts, and
 a registered squash kills it in the first decode cycle, with busy low and no
 result. This mode requires no issue in the cycle after a flushed issue, which
