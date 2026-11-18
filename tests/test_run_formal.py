@@ -5460,7 +5460,6 @@ UNDEFINED_OPENING_PENDING = (
     "load_queue",
     "lq_l0_cache",
     "lq_prematch_cofactors",
-    "lq_result_valid",
     "nic_dma_front",
     "pd_backing_redirect",
     "pm_mode_select",
