@@ -4712,12 +4712,6 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
             "bmc bmc_forward bmc_forward_only bmc_core cover": ["opt"],
         },
     ),
-    "lq_replace_select": (
-        "not converted: plain opt after its setundef",
-        {
-            "bmc4 bmc8 bmc16": ["opt"],
-        },
-    ),
     "lq_result_valid": (
         "abc -g AND, which reads an undefined bit as 0, after cutpoint has cut every flop",
         {
@@ -5470,7 +5464,6 @@ UNDEFINED_OPENING_PENDING = (
     "lq_l0_cache",
     "lq_prematch_cofactors",
     "lq_ram_payload",
-    "lq_replace_select",
     "lq_result_valid",
     "nic_dma_front",
     "pd_backing_redirect",

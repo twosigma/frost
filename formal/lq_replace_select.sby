@@ -21,13 +21,16 @@ read -formal -D SYNTHESIS -D F_LQ_PREMATCH_ONLY -D F_LQ_RAM_PAYLOAD_PROOF -D F_L
 bmc4: chparam -set DEPTH 4 load_queue
 bmc8: chparam -set DEPTH 8 -set PREISSUE_CANDIDATES 1 -set PREISSUE_SEL_WIDTH 3 -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 bmc16: chparam -set DEPTH 16 load_queue
-# RAM/cache data are arbitrary; retain the actual selector and replacement
-# logic. No reset, tag-uniqueness, head-match or pre-match assumptions.
-delete t:lq_l0_cache t:mwp_dist_ram t:sdp_dist_ram
-proc
+hierarchy -top load_queue
+script free_undefined.ys
+# Cut the three storage instances at the top so the selectors see arbitrary
+# RAM and cache data. Only the internal checks need to drive the proof.
+select -assert-count 3 load_queue/u_l0_cache load_queue/u_lq_data load_queue/u_lq_amo_rs2
+delete load_queue/u_l0_cache load_queue/u_lq_data load_queue/u_lq_amo_rs2
+select -assert-count 60 load_queue/o:*
 delete -port load_queue/o:*
 setundef -undriven -anyseq
-opt
+opt -keepdc
 prep -top load_queue
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
@@ -48,3 +51,4 @@ select -assert-count 4 t:$check r:FLAVOR=cover %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+free_undefined.ys
