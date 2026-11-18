@@ -711,6 +711,7 @@ BUILD_ARGS += -j$(NUMBER_OF_CPU_CORES)
 # -Wno-MODDUP: suppress duplicate-module warnings from nested file lists.
 ifeq ($(WAVES),1)
 	export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) --trace-fst --trace-structs -Wno-UNOPTFLAT -Wno-MODDUP
+	SIM_ARGS += --trace
 else
 	export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT -Wno-MODDUP
 endif

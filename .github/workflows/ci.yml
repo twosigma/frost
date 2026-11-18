@@ -18,9 +18,10 @@ on:
   push:
     branches: [main]
   # A pull request starts no run by itself. Adding the run-ci label to it
-  # starts one run on its current head; any other label starts a run that
-  # skips every job but the selection. To run again after a later push,
-  # remove the label and add it again, or start a manual run on the branch.
+  # starts one run on the pull request's merge commit; any other label starts
+  # a run that skips every job but the selection. To run again after a later
+  # push, remove the label and add it again, or start a manual run on the
+  # branch.
   pull_request:
     branches: [main]
     types: [labeled]

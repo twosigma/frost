@@ -14,16 +14,20 @@
 
 """Tests for asic/orfs.py, which runs the OpenROAD flow in its pinned image."""
 
+import contextlib
 import json
 import math
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 import asic.orfs as orfs
 
@@ -148,16 +152,186 @@ def test_pin_access_guard_checks_make_assignments(
             _check_pin_access_reuse(config)
 
 
+def _asic_workflow() -> dict[object, object]:
+    """Return .github/workflows/asic.yml as YAML reads it."""
+    loaded = yaml.safe_load(
+        (orfs.REPOSITORY_ROOT / ".github" / "workflows" / "asic.yml").read_text()
+    )
+    assert isinstance(loaded, dict)
+    return loaded
+
+
+def _asic_steps(job: str) -> dict[str, dict[str, object]]:
+    """Return a job's steps by name, in order."""
+    jobs = _asic_workflow()["jobs"]
+    assert isinstance(jobs, dict)
+    return {step["name"]: step for step in jobs[job]["steps"]}
+
+
+def test_asic_workflow_triggers_and_concurrency() -> None:
+    """Pushes to main, the run-asic label, and manual runs; no run cancels main's."""
+    workflow = _asic_workflow()
+    # PyYAML reads the "on" key as True.
+    assert workflow[True] == {
+        "push": {"branches": ["main"]},
+        "pull_request": {"branches": ["main"], "types": ["labeled"]},
+        "workflow_dispatch": None,
+    }
+    assert workflow["concurrency"] == {
+        "group": (
+            "${{ github.workflow }}-${{ github.event.pull_request.number || "
+            "github.ref }}${{ github.event.action == 'labeled' && "
+            "github.event.label.name != 'run-asic' && '-label' || '' }}"
+        ),
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    }
+    assert workflow["permissions"] == {"contents": "read"}
+
+
+@pytest.mark.parametrize(
+    ("event", "added", "labeled", "runs"),
+    [
+        ("push", "", "false", "true"),
+        ("workflow_dispatch", "", "false", "true"),
+        ("pull_request", "run-asic", "true", "true"),
+        ("pull_request", "documentation", "true", "false"),
+        ("pull_request", "documentation", "false", "false"),
+    ],
+)
+def test_asic_workflow_gate_runs_the_flow_for_the_run_asic_label(
+    tmp_path: Path, event: str, added: str, labeled: str, runs: str
+) -> None:
+    """Another label starts only the gate, which skips the image and the flow."""
+    gate = _asic_steps("gate")["Decide whether the flow runs"]
+    output = tmp_path / "output"
+    environment = {
+        **os.environ,
+        "EVENT": event,
+        "ACTION": "labeled" if event == "pull_request" else "",
+        "ADDED": added,
+        "LABELED": labeled,
+        "GITHUB_OUTPUT": str(output),
+    }
+    subprocess.run(["bash", "-e", "-c", str(gate["run"])], env=environment, check=True)
+    assert output.read_text() == f"run={runs}\n"
+
+
+# The longest that each setup step took in four earlier runs of the job, in
+# seconds; each step's limit is at least three times that.
+MEASURED_SETUP_SECONDS = {
+    "Checkout repository": 5,
+    "Free disk space": 165,
+    "Download Docker image": 98,
+    "Load Docker image": 49,
+}
+
+
+def test_asic_workflow_runs_one_flow_job_within_its_limits() -> None:
+    """One flow job, with a limit for each step and the job's limit their sum."""
+    jobs = _asic_workflow()["jobs"]
+    assert isinstance(jobs, dict)
+    assert set(jobs) == {"gate", "build-docker", "asic-flow-synth"}
+    assert jobs["build-docker"]["needs"] == "gate"
+    assert jobs["build-docker"]["if"] == "${{ needs.gate.outputs.run == 'true' }}"
+    job = jobs["asic-flow-synth"]
+    assert job["needs"] == "build-docker" and "if" not in job
+    steps = _asic_steps("asic-flow-synth")
+    assert list(steps) == [
+        "Checkout repository",
+        "Free disk space",
+        "Download Docker image",
+        "Load Docker image",
+        "Run synthesis and floorplanning",
+        "Remove the flow's containers",
+        "Show disk and memory use",
+        "Publish the summary",
+        "Upload logs and reports",
+    ]
+    run = steps["Run synthesis and floorplanning"]
+    assert " ".join(str(run["run"]).replace("\\\n", " ").split()) == (
+        "exec ./asic/orfs.py run --frost-image frost-dev:latest --target floorplan "
+        "--memory-limit 75%"
+    )
+    # The run step took 133 to 181 minutes in four runs, the others seconds.
+    limits: dict[str, int] = {}
+    for name, step in steps.items():
+        limit = step["timeout-minutes"]
+        assert isinstance(limit, int), name
+        limits[name] = limit
+    assert limits.pop("Run synthesis and floorplanning") == 265
+    assert all(1 <= limit <= 10 for limit in limits.values())
+    for name, seconds in MEASURED_SETUP_SECONDS.items():
+        assert limits[name] * 60 >= 3 * seconds, name
+    # Four minutes for the runner's own setup and completion.
+    assert job["timeout-minutes"] == 265 + sum(limits.values()) + 4
+    for name in list(steps)[5:]:
+        assert steps[name]["if"] == "always()", name
+    sweep = str(steps["Remove the flow's containers"]["run"])
+    assert sweep.startswith("set -euo pipefail\n")
+    assert f"--filter label={orfs.CONTAINER_LABEL})" in sweep
+    upload = steps["Upload logs and reports"]["with"]
+    assert isinstance(upload, dict) and upload["name"] == "asic-flow-results"
+
+
+@pytest.mark.parametrize("number", [signal.SIGINT, signal.SIGTERM])
+def test_asic_workflow_run_step_passes_the_runners_signals_to_orfs(
+    tmp_path: Path, number: int
+) -> None:
+    """The runner signals only the step's process, which exec makes orfs.py.
+
+    The step runs as the runner runs it, with bash -e, and with a stand-in
+    for asic/orfs.py that records the signal it receives.
+    """
+    received, pid_file = tmp_path / "received", tmp_path / "pid"
+    driver = tmp_path / "asic" / "orfs.py"
+    driver.parent.mkdir()
+    driver.write_text(
+        f"#!{sys.executable}\n"
+        "import os, signal, sys, time\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "def stop(number, frame):\n"
+        f"    open({str(received)!r}, 'w').write(f'{{number}} {{os.getpid()}}')\n"
+        "    sys.exit(128 + number)\n"
+        "signal.signal(signal.SIGINT, stop)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    driver.chmod(0o755)
+    step = tmp_path / "step.sh"
+    step.write_text(
+        str(_asic_steps("asic-flow-synth")["Run synthesis and floorplanning"]["run"])
+    )
+    process = subprocess.Popen(
+        ["bash", "-e", str(step)], cwd=tmp_path, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline() == "ready\n"
+        os.kill(process.pid, number)
+        process.wait(timeout=20)
+    finally:
+        process.kill()
+        process.wait()
+        if pid_file.exists():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+    assert received.read_text() == f"{number} {process.pid}"
+    assert process.returncode == 128 + number
+
+
 def test_orfs_runs_as_host_user_with_checkout_mounted() -> None:
     """ORFS writes only into asic/build, as the invoking user."""
     command = orfs.orfs_command(["NUM_CORES=4", "finish"], uid=1234, gid=5678)
 
-    assert command[:4] == ["docker", "run", "--rm", "--init"]
-    assert ["--user", "1234:5678"] == command[4:6]
-    assert ["--volume", f"{orfs.REPOSITORY_ROOT}:/workspace"] == command[8:10]
-    assert ["--workdir", "/workspace/asic/build"] == command[10:12]
-    assert command[12] == orfs.ORFS_IMAGE
-    assert command[13:] == [
+    assert command[:3] == ["docker", "run", "--rm"]
+    assert command[3:5] == ["--label", f"org.frost.asic-flow={orfs.REPOSITORY_ROOT}"]
+    assert command[5:7] == ["--init", "--oom-score-adj=1000"]
+    assert ["--user", "1234:5678"] == command[7:9]
+    assert ["--volume", f"{orfs.REPOSITORY_ROOT}:/workspace"] == command[11:13]
+    assert ["--workdir", "/workspace/asic/build"] == command[13:15]
+    assert command[15] == orfs.ORFS_IMAGE
+    assert command[16:] == [
         "make",
         "--file=/OpenROAD-flow-scripts/flow/Makefile",
         "DESIGN_CONFIG=/workspace/asic/config.mk",
@@ -165,6 +339,700 @@ def test_orfs_runs_as_host_user_with_checkout_mounted() -> None:
         "NUM_CORES=4",
         "finish",
     ]
+    assert not any(argument.startswith("--memory") for argument in command)
+
+
+def test_memory_limit_keeps_the_container_in_its_ram_with_the_hosts_swap(
+    tmp_path: Path,
+) -> None:
+    """The limit caps RAM only; the kept, named container can be asked about memory."""
+    cidfile = tmp_path / "container"
+    command = orfs.orfs_command(
+        ["do-grt"],
+        uid=1,
+        gid=1,
+        name="frost-asic-flow-1-feed",
+        memory_limit=12 * orfs.GIB,
+        cidfile=cidfile,
+    )
+
+    assert "--rm" not in command
+    assert f"--cidfile={cidfile}" in command
+    assert command[command.index("--name") + 1] == "frost-asic-flow-1-feed"
+    assert "--oom-score-adj=1000" in command
+    assert f"--memory={12 * orfs.GIB}" in command
+    assert "--memory-swap=-1" in command
+    assert command.index("--memory-swap=-1") < command.index(orfs.ORFS_IMAGE)
+
+
+def test_memory_limit_option_takes_gib_or_a_share_of_ram(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A share of RAM follows the host; a size in GiB does not."""
+    share = orfs._memory_limit("75%")
+    assert share.size(lambda: 16 * orfs.GIB) == 12 * orfs.GIB
+    assert share.size(lambda: 64 * orfs.GIB) == 48 * orfs.GIB
+
+    # A size needs no RAM figure from the host.
+    def unreported() -> int:
+        raise RuntimeError("no MemTotal")
+
+    assert orfs._memory_limit("11.5").size(unreported) == int(11.5 * orfs.GIB)
+    assert orfs._memory_limit("100%").size(lambda: 8 * orfs.GIB) == 8 * orfs.GIB
+    for limit in ("0", "0%", "101%", "-4", "12G", "75 %", "%", ""):
+        with pytest.raises(SystemExit):
+            orfs.main(["run", "--memory-limit", limit])
+        assert "expected a size in GiB or a percentage" in capsys.readouterr().err
+    # A size that rounds to no bytes would be no limit at all.
+    with pytest.raises(SystemExit):
+        orfs.main(["run", "--memory-limit", "0.0000000001"])
+    assert "at least 6 MiB" in capsys.readouterr().err
+    assert orfs._memory_limit("0.006").size(unreported) == int(0.006 * orfs.GIB)
+    with pytest.raises(ValueError, match="below Docker's smallest"):
+        orfs._memory_limit("0.0000001%").size(lambda: 16 * orfs.GIB)
+
+
+def test_run_refuses_a_share_of_ram_below_dockers_smallest_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A share of a host's RAM that comes to under 6 MiB stops run before Docker."""
+    _write_synthesized_build(tmp_path, "3.1030")
+    monkeypatch.setattr(orfs, "BUILD_DIRECTORY", tmp_path)
+    monkeypatch.setattr(orfs, "host_ram", lambda: 16 * orfs.GIB)
+    monkeypatch.setattr(orfs, "run_logged", pytest.fail)
+    assert orfs.main(["run", "--from", "grt", "--memory-limit", "0.0000001%"]) == 2
+    assert "below Docker's smallest, 6 MiB" in capsys.readouterr().err
+
+
+def _write_memory_files(proc: Path, cgroups: Path | None, container: str) -> None:
+    """Leave the kernel's memory files of a host running a container."""
+    (proc / "pressure").mkdir(parents=True)
+    (proc / "meminfo").write_text(
+        "MemTotal:       16384000 kB\n"
+        "MemFree:          204800 kB\n"
+        "MemAvailable:    4096000 kB\n"
+        "SwapTotal:      28311552 kB\n"
+        "SwapFree:       18874368 kB\n"
+        "HugePages_Total:       0\n"
+    )
+    (proc / "pressure" / "memory").write_text(
+        "some avg10=31.50 avg60=24.75 avg300=10.00 total=123456\n"
+        "full avg10=12.00 avg60=9.40 avg300=3.00 total=65432\n"
+    )
+    if cgroups is not None:
+        directory = cgroups / "system.slice" / f"docker-{container}.scope"
+        directory.mkdir(parents=True)
+        (directory / "memory.current").write_text(f"{int(11.5 * orfs.GIB)}\n")
+        (directory / "memory.max").write_text(f"{12 * orfs.GIB}\n")
+        (directory / "memory.swap.current").write_text(f"{9 * orfs.GIB}\n")
+        (directory / "memory.stat").write_text(
+            f"anon {int(10.5 * orfs.GIB)}\nfile {orfs.GIB}\nkernel 0\n"
+        )
+        (directory / "memory.pressure").write_text(
+            "some avg10=70.00 avg60=61.20 avg300=20.00 total=99\n"
+            "full avg10=60.00 avg60=55.00 avg300=18.00 total=77\n"
+        )
+
+
+def test_memory_report_describes_the_host_and_the_flow_container(
+    tmp_path: Path,
+) -> None:
+    """One line gives RAM, swap, the container against its limit, and stalls."""
+    container = "c0ffee" * 10
+    proc, cgroups = tmp_path / "proc", tmp_path / "cgroup"
+    _write_memory_files(proc, cgroups, container)
+    cidfile = tmp_path / "container"
+    cidfile.write_text(container)
+
+    line = orfs.MemoryReport(cidfile, proc, cgroups)()
+
+    assert line is not None
+    assert line.startswith("Memory after 0:00:00: ")
+    assert line.endswith(
+        "host RAM 11.7 of 15.6 GiB in use, swap 9.0 of 27.0 GiB, waiting for "
+        "memory 25% of the last minute, every task 9%; flow container 11.5 of "
+        "12.0 GiB (10.5 GiB anonymous), swap 9.0 GiB, waiting for memory 61% "
+        "of the last minute, every task 55%"
+    )
+
+    # Before Docker names the container, and on a host without its group,
+    # the line describes the host alone.
+    assert "flow container" not in (orfs.MemoryReport(tmp_path / "none", proc)() or "")
+    other = tmp_path / "other"
+    _write_memory_files(other, None, container)
+    assert orfs.MemoryReport(cidfile, other, other / "cgroup")() == (
+        "Memory after 0:00:00: host RAM 11.7 of 15.6 GiB in use, "
+        "swap 9.0 of 27.0 GiB, waiting for memory 25% of the last minute, "
+        "every task 9%"
+    )
+    # A kernel without memory stall reports leaves them out.
+    (other / "pressure" / "memory").unlink()
+    assert orfs.MemoryReport(None, other)() == (
+        "Memory after 0:00:00: host RAM 11.7 of 15.6 GiB in use, swap 9.0 of 27.0 GiB"
+    )
+    assert orfs.MemoryReport(None, tmp_path / "missing")() is None
+
+
+def test_run_logged_kills_a_command_that_ignores_the_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command that ignores the watchdog's SIGTERM is killed after a while."""
+    monkeypatch.setattr(orfs, "STOP_SECONDS", 0.5)
+    child = (
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print('        0 |   0.9993 |  3.078199e+07 |   +0.00% |  1.95e-17 |', flush=True)\n"
+        "print('      550 |   0.2604 |  1.177593e+09 |  +29.49% |  3.61e-07 |', flush=True)\n"
+        "time.sleep(600)\n"
+    )
+    start = time.monotonic()
+    status = orfs.run_logged(
+        [sys.executable, "-c", child],
+        tmp_path / "orfs.log",
+        watchdog=orfs.PlacementWatchdog(),
+    )
+    assert status == 1
+    assert time.monotonic() - start < 30
+
+
+def test_run_logged_leaves_no_command_behind_when_interrupted(tmp_path: Path) -> None:
+    """An exception in run_logged, as a signal raises, stops the command's group.
+
+    The command ignores SIGINT and has started a process of its own, as
+    frost.py starts a docker client; both are gone within the bounded waits.
+    """
+    pid_file = tmp_path / "pids"
+    child = (
+        "import os, signal, subprocess, sys, time\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(f'{{os.getpid()}} {{grandchild.pid}}')\n"
+        "print('started', flush=True)\n"
+        "time.sleep(600)\n"
+    )
+
+    class Interrupt:
+        def check(self, line: str) -> str | None:
+            raise KeyboardInterrupt
+
+    start = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        orfs.run_logged(
+            [sys.executable, "-c", child],
+            tmp_path / "orfs.log",
+            watchdog=Interrupt(),  # type: ignore[arg-type]
+        )
+    assert time.monotonic() - start < orfs.INTERRUPT_SECONDS + 10
+    command, grandchild = (int(pid) for pid in pid_file.read_text().split())
+    with pytest.raises(ProcessLookupError):
+        os.kill(command, 0)
+    # The grandchild, killed with its group, waits for init to reap it.
+    for _ in range(100):
+        state = Path(f"/proc/{grandchild}/stat")
+        if not state.exists() or state.read_text().split(") ")[1].startswith("Z"):
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"process {grandchild} outlived its group")
+
+
+def test_signals_raise_outside_a_cleanup_and_wait_until_after_one() -> None:
+    """SIGINT and SIGTERM unwind run; during a cleanup they wait for its end."""
+    signals = orfs._Signals()
+    with pytest.raises(KeyboardInterrupt):
+        signals(signal.SIGINT, None)
+    with pytest.raises(SystemExit) as stop:
+        signals(signal.SIGTERM, None)
+    assert stop.value.code == 143
+    signals.deferring = True
+    signals(signal.SIGTERM, None)
+    signals(signal.SIGINT, None)
+    signals.deferring = False
+    with pytest.raises(SystemExit) as stop:
+        signals.honor()
+    assert stop.value.code == 143
+    # Without a signal during the cleanup, nothing happens after it.
+    orfs._Signals().honor()
+
+
+def test_docker_calls_that_hang_are_abandoned(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Inspection and removal give up after STOP_SECONDS instead of hanging."""
+    timeouts: list[object] = []
+
+    def hang(command: list[str], *, timeout: float, **kwargs: object) -> object:
+        timeouts.append(timeout)
+        raise subprocess.TimeoutExpired(command, timeout)
+
+    monkeypatch.setattr(orfs.subprocess, "run", hang)
+    assert orfs.stopped_for_memory("feed") is None
+    assert orfs.remove_container("feed") == (
+        f"Docker did not remove container feed: it did not finish within "
+        f"{orfs.STOP_SECONDS} seconds"
+    )
+    assert timeouts == [orfs.STOP_SECONDS, orfs.STOP_SECONDS]
+
+    # Nor does a Docker client that cannot start raise.
+    def missing(command: list[str], **kwargs: object) -> object:
+        raise FileNotFoundError(2, "No such file or directory", "docker")
+
+    monkeypatch.setattr(orfs.subprocess, "run", missing)
+    assert orfs.stopped_for_memory("feed") is None
+    reason = orfs.remove_container("feed")
+    assert reason is not None and "could not start" in reason
+
+
+def test_run_removes_the_container_when_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal during the flow still removes its container, without asking why."""
+    _write_synthesized_build(tmp_path, "3.1030")
+    monkeypatch.setattr(orfs, "BUILD_DIRECTORY", tmp_path)
+    names: list[str] = []
+    removed: list[str] = []
+    inspected: list[str] = []
+
+    def interrupted(command: list[str], *args: object, **kwargs: object) -> int:
+        names.append(command[command.index("--name") + 1])
+        raise SystemExit(143)
+
+    monkeypatch.setattr(orfs, "run_logged", interrupted)
+    monkeypatch.setattr(orfs, "stopped_for_memory", inspected.append)
+    monkeypatch.setattr(orfs, "remove_container", removed.append)
+    with pytest.raises(SystemExit):
+        orfs.main(["run", "--from", "grt"])
+    assert names[0].startswith(f"frost-asic-flow-{os.getpid()}-")
+    assert removed == names
+    assert inspected == []
+
+
+def test_run_logged_reports_while_the_command_is_silent(tmp_path: Path) -> None:
+    """Report lines reach the log between the command's own lines."""
+    child = (
+        "import time\n"
+        "print('first', flush=True)\n"
+        "time.sleep(1.0)\n"
+        "print('last', flush=True)\n"
+    )
+    log = tmp_path / "orfs.log"
+    reports = iter(range(1000))
+
+    def report() -> str:
+        return f"Memory report {next(reports)}"
+
+    status = orfs.run_logged(
+        [sys.executable, "-c", child], log, report=report, report_seconds=0.1
+    )
+
+    assert status == 0
+    lines = log.read_text().splitlines()
+    # A last report can follow the command's last line.
+    between = lines[lines.index("first") + 1 : lines.index("last")]
+    assert len(between) >= 3
+    assert all(line.startswith("Memory report ") for line in between)
+    assert all(
+        line.startswith("Memory report ") for line in lines[lines.index("last") + 1 :]
+    )
+
+
+def test_run_names_a_container_stopped_for_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flow that the kernel stopped for memory says so, with its limit."""
+    _write_synthesized_build(tmp_path, "3.1030")
+    monkeypatch.setattr(orfs, "BUILD_DIRECTORY", tmp_path)
+    monkeypatch.setattr(orfs, "host_ram", lambda: 16 * orfs.GIB)
+    commands: list[list[str]] = []
+    removed: list[str] = []
+
+    def stopped(command: list[str], *args: object, **kwargs: object) -> int:
+        commands.append(command)
+        return 2
+
+    monkeypatch.setattr(orfs, "run_logged", stopped)
+    monkeypatch.setattr(orfs, "stopped_for_memory", lambda container: True)
+    monkeypatch.setattr(orfs, "remove_container", removed.append)
+    monkeypatch.setattr(orfs, "summarize", lambda **kwargs: 0)
+
+    assert orfs.main(["run", "--from", "grt", "--memory-limit", "75%"]) == 2
+    assert f"--memory={12 * orfs.GIB}" in commands[0]
+    assert removed == [commands[0][commands[0].index("--name") + 1]]
+    message = (
+        "Error: the kernel stopped the flow for lack of memory; its container "
+        "may use 12.0 GiB of RAM and the host's swap space"
+    )
+    assert message in capsys.readouterr().err
+    assert message in (tmp_path / "orfs.log").read_text()
+
+    monkeypatch.setattr(orfs, "stopped_for_memory", lambda container: False)
+    assert orfs.main(["run", "--from", "grt"]) == 2
+    assert "lack of memory" not in capsys.readouterr().err
+    assert not any(argument.startswith("--memory=") for argument in commands[1])
+
+
+# A stand-in docker client. Each container is a file in FAKE_DOCKER_STATE,
+# and environment variables set what each command does. FAKE_DOCKER_FLOW and
+# FAKE_DOCKER_SUMMARY hold words: "exit <status>" last; "sleep"; "no-id",
+# which leaves the --cidfile unwritten; "keep", which leaves the container
+# as a client that fails after Docker made it does; and "signal", which
+# sends SIGTERM to the caller. FAKE_DOCKER_RM is "ok", "fail", "hang", or
+# "signal"; FAKE_DOCKER_OOM is what inspect reports, or "garbled" for bytes
+# that are not UTF-8; FAKE_DOCKER_PS "fail" fails the listing; and
+# FAKE_DOCKER_BREAK_LOG names a file that the flow turns into a directory,
+# as a full disk refuses writes.
+FAKE_DOCKER = r"""
+import json, os, pathlib, signal, sys, time
+state = pathlib.Path(os.environ["FAKE_DOCKER_STATE"])
+args = sys.argv[1:]
+with (state / "calls").open("a") as calls:
+    calls.write(json.dumps(args) + "\n")
+
+
+def option(flag):
+    for index, argument in enumerate(args):
+        if argument == flag:
+            return args[index + 1]
+        if argument.startswith(flag + "="):
+            return argument.partition("=")[2]
+    return None
+
+
+if args[0] == "run":
+    name = option("--name")
+    role = "SUMMARY" if "elapsed" in args else "FLOW"
+    behavior = os.environ.get(f"FAKE_DOCKER_{role}", "exit 0").split()
+    if name:
+        (state / f"container-{name}").write_text("")
+    cidfile = option("--cidfile")
+    if cidfile and "no-id" not in behavior:
+        pathlib.Path(cidfile).write_text(f"id-{name}\n")
+    print("created", flush=True)
+    if "sleep" in behavior:
+        time.sleep(600)
+    if "signal" in behavior:
+        os.kill(os.getppid(), signal.SIGTERM)
+        time.sleep(5)
+    broken = os.environ.get("FAKE_DOCKER_BREAK_LOG")
+    if broken and role == "FLOW":
+        pathlib.Path(broken).unlink()
+        pathlib.Path(broken).mkdir()
+    if "--rm" in args and name and "keep" not in behavior:
+        (state / f"container-{name}").unlink()
+    sys.exit(int(behavior[-1]))
+if args[0] == "rm":
+    mode = os.environ.get("FAKE_DOCKER_RM", "ok")
+    if mode == "signal":
+        os.kill(os.getppid(), signal.SIGTERM)
+        time.sleep(0.5)
+    if mode == "hang":
+        time.sleep(600)
+    if mode == "fail":
+        print("Error response from daemon: removal failed", file=sys.stderr)
+        sys.exit(1)
+    for name in args[2:]:
+        container = state / f"container-{name}"
+        if container.exists():
+            container.unlink()
+            print(name)
+        else:
+            print(f"Error response from daemon: No such container: {name}", file=sys.stderr)
+    sys.exit(0)
+if args[0] == "inspect":
+    answer = os.environ.get("FAKE_DOCKER_OOM", "false")
+    if answer == "garbled":
+        sys.stdout.buffer.write(b"\xff\xfe\xfa\n")
+    else:
+        print(answer)
+    sys.exit(0)
+if args[0] == "ps":
+    if os.environ.get("FAKE_DOCKER_PS") == "fail":
+        print("Cannot connect to the Docker daemon", file=sys.stderr)
+        sys.exit(42)
+    for container in sorted(state.glob("container-*")):
+        print(container.name.removeprefix("container-"))
+    sys.exit(0)
+sys.exit(f"fake docker: unexpected {args}")
+"""
+
+
+@pytest.fixture
+def fake_docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Put the stand-in docker client first on PATH; return its state directory.
+
+    The build directory holds a synthesized build, so that run --from grt
+    goes straight to the flow.
+    """
+    state = tmp_path / "docker"
+    state.mkdir()
+    client = tmp_path / "bin" / "docker"
+    client.parent.mkdir()
+    client.write_text(f"#!{sys.executable}\n{FAKE_DOCKER}")
+    client.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{client.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_DOCKER_STATE", str(state))
+    build = tmp_path / "build"
+    _write_synthesized_build(build, "3.1030")
+    monkeypatch.setattr(orfs, "BUILD_DIRECTORY", build)
+    return state
+
+
+def _containers(state: Path) -> list[str]:
+    """Return the names of the stand-in Docker's containers."""
+    return sorted(
+        path.name.removeprefix("container-") for path in state.glob("container-*")
+    )
+
+
+def _docker_calls(state: Path) -> list[list[str]]:
+    """Return the arguments of each call to the stand-in Docker client."""
+    return [json.loads(line) for line in (state / "calls").read_text().splitlines()]
+
+
+@pytest.mark.parametrize(
+    ("flow", "oom", "status"),
+    [("exit 0", "false", 0), ("exit 2", "false", 2), ("exit 2", "true", 2)],
+)
+def test_run_removes_its_container_and_keeps_the_flows_status(
+    fake_docker: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flow: str,
+    oom: str,
+    status: int,
+) -> None:
+    """Success, a failed make, and a stop for memory each remove the container."""
+    monkeypatch.setenv("FAKE_DOCKER_FLOW", flow)
+    monkeypatch.setenv("FAKE_DOCKER_OOM", oom)
+    assert orfs.main(["run", "--from", "grt"]) == status
+    assert _containers(fake_docker) == []
+    assert ("for lack of memory" in capsys.readouterr().err) == (oom == "true")
+
+
+@pytest.mark.parametrize("removal", ["fail", "hang"])
+@pytest.mark.parametrize(("flow", "status"), [("exit 0", 1), ("exit 2", 2)])
+def test_run_fails_when_docker_does_not_remove_its_container(
+    fake_docker: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    removal: str,
+    flow: str,
+    status: int,
+) -> None:
+    """A container left behind fails a run that passed and is named in the log.
+
+    A run that failed keeps the flow's status.
+    """
+    monkeypatch.setattr(orfs, "STOP_SECONDS", 1)
+    monkeypatch.setenv("FAKE_DOCKER_FLOW", flow)
+    monkeypatch.setenv("FAKE_DOCKER_RM", removal)
+    assert orfs.main(["run", "--from", "grt"]) == status
+    [name] = _containers(fake_docker)
+    error = capsys.readouterr().err
+    log = (orfs.BUILD_DIRECTORY / "orfs.log").read_text()
+    for text in (error, log):
+        assert f"Error: Docker did not remove container {name}: " in text
+        assert f"remove it with: docker rm --force {name}" in text
+
+
+def test_run_removes_a_container_whose_id_docker_has_not_written(
+    fake_docker: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interrupted after Docker made the container, run removes it by name."""
+    monkeypatch.setenv("FAKE_DOCKER_FLOW", "no-id sleep")
+
+    class Interrupt(orfs.PlacementWatchdog):
+        def check(self, line: str) -> str | None:
+            if line == "created\n":
+                raise KeyboardInterrupt
+            return None
+
+    monkeypatch.setattr(orfs, "PlacementWatchdog", Interrupt)
+    assert orfs.main(["run", "--from", "grt"]) == 130
+    assert _containers(fake_docker) == []
+    run, *rest = _docker_calls(fake_docker)
+    assert rest == [["rm", "--force", run[run.index("--name") + 1]]]
+
+
+def test_run_keeps_makes_status_when_the_memory_question_fails(
+    fake_docker: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed question about memory leaves it unknown and the removal done."""
+    monkeypatch.setenv("FAKE_DOCKER_FLOW", "exit 2")
+
+    def broken(container: str) -> bool:
+        raise RuntimeError("inspection failed")
+
+    monkeypatch.setattr(orfs, "stopped_for_memory", broken)
+    assert orfs.main(["run", "--from", "grt"]) == 2
+    error = capsys.readouterr().err
+    assert "Warning: could not ask Docker about memory: inspection failed" in error
+    assert "Traceback" not in error
+    assert _containers(fake_docker) == []
+
+
+def test_run_keeps_makes_status_when_docker_answers_garbage(
+    fake_docker: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An answer that is neither true nor false, nor UTF-8, means unknown."""
+    monkeypatch.setenv("FAKE_DOCKER_FLOW", "exit 2")
+    monkeypatch.setenv("FAKE_DOCKER_OOM", "garbled")
+    assert orfs.main(["run", "--from", "grt"]) == 2
+    error = capsys.readouterr().err
+    assert "Docker could not say whether the kernel stopped the flow" in error
+    assert "Traceback" not in error
+    assert _containers(fake_docker) == []
+
+
+def test_run_keeps_makes_status_when_the_summary_cannot_start(
+    fake_docker: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A Docker client missing when the summary starts does not hide make's 2."""
+    monkeypatch.setenv("FAKE_DOCKER_FLOW", "exit 2")
+    real_run = subprocess.run
+
+    def missing_for_the_summary(
+        command: list[str], *args: object, **kwargs: object
+    ) -> object:
+        if "elapsed" in command:
+            raise FileNotFoundError(2, "No such file or directory", "docker")
+        return real_run(command, *args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(orfs.subprocess, "run", missing_for_the_summary)
+    assert orfs.main(["run", "--from", "grt"]) == 2
+    error = capsys.readouterr().err
+    assert "Error: make elapsed could not start" in error
+    assert "Traceback" not in error
+    assert _containers(fake_docker) == []
+
+
+def test_summary_removes_the_container_that_its_failed_client_left(
+    fake_docker: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A docker client that fails after Docker made the container (125)."""
+    monkeypatch.setenv("FAKE_DOCKER_SUMMARY", "keep exit 125")
+    assert orfs.main(["summary"]) == 125
+    assert _containers(fake_docker) == []
+    calls = _docker_calls(fake_docker)
+    summary = next(call for call in calls if "elapsed" in call)
+    assert ["rm", "--force", summary[summary.index("--name") + 1]] in calls
+
+
+def test_run_removes_its_container_when_sigterm_comes_as_the_flow_ends(
+    fake_docker: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal at the end of the flow unwinds run through the removal."""
+    monkeypatch.setenv("FAKE_DOCKER_FLOW", "signal exit 0")
+    with pytest.raises(SystemExit) as stop:
+        orfs.main(["run", "--from", "grt"])
+    assert stop.value.code == 143
+    assert _containers(fake_docker) == []
+
+
+def test_run_honors_a_sigterm_during_the_removal_once_it_is_done(
+    fake_docker: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal while Docker removes the container stops run after the removal."""
+    monkeypatch.setenv("FAKE_DOCKER_RM", "signal")
+    with pytest.raises(SystemExit) as stop:
+        orfs.main(["run", "--from", "grt"])
+    assert stop.value.code == 143
+    assert _containers(fake_docker) == []
+    assert not any("elapsed" in call for call in _docker_calls(fake_docker))
+
+
+def _sweep_step(state: Path) -> Path:
+    """Write the workflow's step that removes the flow's containers to a file."""
+    step = state.parent / "sweep.sh"
+    step.write_text(
+        str(_asic_steps("asic-flow-synth")["Remove the flow's containers"]["run"])
+    )
+    return step
+
+
+def test_asic_workflow_sweep_removes_every_container_with_the_label(
+    fake_docker: Path,
+) -> None:
+    """The step after the run removes what a killed orfs.py left, or nothing."""
+    for name in ("frost-asic-flow-1-aa", "frost-asic-summary-1-bb"):
+        (fake_docker / f"container-{name}").write_text("")
+    step = _sweep_step(fake_docker)
+    subprocess.run(["bash", "-e", str(step)], check=True)
+    assert _containers(fake_docker) == []
+    subprocess.run(["bash", "-e", str(step)], check=True)
+
+
+@pytest.mark.parametrize("failure", ["FAKE_DOCKER_PS", "FAKE_DOCKER_RM"])
+def test_asic_workflow_sweep_fails_when_docker_fails(
+    fake_docker: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """A listing or a removal that fails fails the step."""
+    (fake_docker / "container-frost-asic-flow-1-aa").write_text("")
+    monkeypatch.setenv(failure, "fail")
+    step = _sweep_step(fake_docker)
+    assert subprocess.run(["bash", "-e", str(step)], check=False).returncode != 0
+
+
+def test_run_keeps_the_flows_status_when_the_log_takes_no_more(
+    fake_docker: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A log that refuses writes loses the out-of-memory line, not make's status."""
+    monkeypatch.setenv("FAKE_DOCKER_FLOW", "exit 2")
+    monkeypatch.setenv("FAKE_DOCKER_OOM", "true")
+    monkeypatch.setenv("FAKE_DOCKER_BREAK_LOG", str(orfs.BUILD_DIRECTORY / "orfs.log"))
+    assert orfs.main(["run", "--from", "grt"]) == 2
+    error = capsys.readouterr().err
+    assert "for lack of memory" in error
+    assert "could not add that line" in error
+    assert _containers(fake_docker) == []
+
+
+def test_summary_gives_up_on_a_docker_call_that_hangs(
+    fake_docker: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Make elapsed has a deadline, after which its container is removed."""
+    monkeypatch.setattr(orfs, "SUMMARY_SECONDS", 1)
+    monkeypatch.setenv("FAKE_DOCKER_SUMMARY", "sleep")
+    start = time.monotonic()
+    assert orfs.main(["summary"]) == 1
+    assert time.monotonic() - start < 30
+    assert "make elapsed did not finish within 1 seconds" in capsys.readouterr().err
+    assert _containers(fake_docker) == []
+
+
+def test_run_turns_sigterm_into_an_exception_before_preparing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preparation runs with the handler that unwinds run, which run restores."""
+    monkeypatch.setattr(orfs, "BUILD_DIRECTORY", tmp_path / "build")
+    handlers: list[tuple[object, object]] = []
+
+    def prepare(frost_image: str, log_path: Path) -> int:
+        handlers.append(
+            (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+        )
+        return 3
+
+    monkeypatch.setattr(orfs, "prepare_in_frost_image", prepare)
+    before = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    assert orfs.main(["run"]) == 3
+    [(on_interrupt, on_termination)] = handlers
+    assert isinstance(on_termination, orfs._Signals) and on_interrupt is on_termination
+    assert (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)) == before
 
 
 def test_make_goals_resume_with_unconditional_stage_targets() -> None:

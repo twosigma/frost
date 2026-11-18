@@ -314,7 +314,7 @@ to stop at the first failing phase.
 
 CI runs on pushes to `main`. A pull request starts no CI by itself: adding the
 `run-ci` label runs the CI workflow on it, and `run-asic` runs the OpenROAD
-flow. The full run covers the RISC-V
+flow's synthesis and floorplanning. The full run covers the RISC-V
 architecture tests and riscv-torture programs against Spike reference
 results, the riscv-tests suites, TestRIG's instruction-by-instruction
 comparison with the Sail RISC-V model, unit benches for the CPU and SoC

@@ -1315,7 +1315,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_COCOTB_MEM_CONFIG` | Application memory tier (`bram` default, or `ddr`) |
 | `FROST_RANDOM_START_SEED` | Seed string enabling random register and memory power-up state; each run prints the string and Verilator seed |
 | `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 160 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
-| `WAVES=1` | Write `dump.fst` waveforms |
+| `WAVES=1` | Write FST waveforms to `tests/dump.fst` |
 | `FROST_COVERAGE=1` | Build with line coverage and the cover points (see [Coverage](#coverage)) |
 | `FROST_COVERAGE_TOGGLE` | With `FROST_COVERAGE=1`: `0` disables toggle coverage, `1` collects the default set, and `control` selects control signals |
 | `FROST_COVERAGE_DIR` | Where each run writes its coverage file (default `tests/coverage`; a relative path starts at the repository root) |
@@ -1552,11 +1552,15 @@ pinned Docker image. The ASIC flow runs in its own
 [workflow](../.github/workflows/asic.yml) and its own image:
 
 A pull request starts no run by itself. Adding the `run-ci` label runs the CI
-workflow on the pull request's current head, and `run-asic` runs the ASIC
-flow; adding any other label starts nothing. To run again after a later push,
-remove the label and add it again, or start a manual run of the workflow on
-the branch. Pushes to `main` run every job. `./scripts/frost.py check` runs the
-Lint and Fast Python Tests jobs locally.
+workflow, and `run-asic` the ASIC flow's synthesis and floorplanning, on the
+commit that merges the pull request's current head into `main`, which a pull
+request's run checks out. Adding any other label starts a run of each workflow
+in which only its job selection runs. Adding a label again cancels the
+workflow's run in progress on the pull request. To run again after a later
+push, remove the label and add it again, or start a manual run of the workflow
+on the branch. Pushes to `main` run every job of the CI workflow and the ASIC
+flow's synthesis and floorplanning. `./scripts/frost.py check` runs the Lint
+and Fast Python Tests jobs locally.
 
 | Suite | Configurations |
 | --- | --- |
@@ -1572,7 +1576,7 @@ Lint and Fast Python Tests jobs locally.
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D zero (control, multi-endpoint, and cover jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (five jobs), L1D free-stream, vector CSR and memory unit, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue, block proofs and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
-| ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
+| ASIC flow | [OpenROAD](../asic/README.md) synthesis and floorplanning on Nangate45, with OpenRAM's SRAM macros, in a separate workflow, which a newer push to `main` does not cancel; the rest of the flow, to GDS, runs with `./asic/orfs.py run` outside CI |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the 26 jobs that contribute to it into a report |
 

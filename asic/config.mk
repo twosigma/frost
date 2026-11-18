@@ -28,8 +28,8 @@ include $(WORK_HOME)/sources.mk
 # Portable RTL (no FROST_XILINX_PRIMS) with the cached tier ending at the DDR
 # AXI port instead of the behavioral DDR model. FROST_SRAM_MACROS builds the
 # RAM wrappers' memories (hw/rtl/lib/ram) in asic/sram. The L2 holds 256 KiB,
-# where the X3's holds 2 MiB, so that the die, and the memory that the flow's
-# steps need with it, fits the standard CI runners (asic/README.md).
+# where the X3's holds 2 MiB, which keeps the die, and the memory that the
+# flow's steps need with it, smaller (asic/README.md).
 export VERILOG_DEFINES = -DSYNTHESIS -DFROST_SRAM_MACROS
 export VERILOG_TOP_PARAMS = ENABLE_CACHED_TIER 1 USE_BEHAVIORAL_DDR 0 L2_CACHE_BYTES 262144
 ifneq ($(FROST_CPU_CLOCK_PERIOD),)
@@ -102,8 +102,7 @@ export PLACE_DENSITY_LB_ADDON = 0.10
 # Skip the repairs after global routing, which take hours: with 4 threads,
 # repairing slew and capacitance over the routed wires took 82 minutes, the
 # timing repair 49 more, and they raised global routing's peak memory from
-# 15.6 to 21.1 GB. In CI that would pass the six-hour limit of a job. The
-# repairs after clock tree synthesis still run.
+# 15.6 to 21.1 GB. The repairs after clock tree synthesis still run.
 export SKIP_INCREMENTAL_REPAIR = 1
 # Skip the antenna repair after global routing. It has nothing to repair
 # here: the platform has no antenna diode cell, and it finds no violation.

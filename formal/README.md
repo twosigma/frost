@@ -596,7 +596,10 @@ cycle counts, including early termination and setup cancellation.
 
 ### Memory system and coherence
 
-After a bridge edit makes the AXI assertion roster check fail, run
+The four-burst AXI bridge proof checks B-channel stability in one partition and
+the other 138 assertions in a second partition. If an edit changes that count,
+review the changed assertions and update the count in the proof and its model test.
+After a bridge edit makes the eight-burst assertion roster check fail, run
 `./scripts/frost.py run python3 formal/update_axi_bridge_groups.py` from the
 repository root. The assignment file `axi_coherent_bridge_groups.json` matches
 labels or normalized assertion text and unroll order, preserving each recognized
@@ -859,6 +862,11 @@ cycles, which clears arbitrary memory history.
    including that the script runs this repository's `free_undefined.ys`
    itself: listed in `[files]` as that one name, never a changed copy,
    another path, a `[file]` section or the opening's commands written out.
+   No script may put a task tag on a section header or on a line of
+   `[files]` or of a `[file]` section, or open a tag block around one:
+   SymbiYosys applies tags before it reads the sections, so a tag there could
+   give a task other files, while the checks read `[script]` task by task
+   and those sections once for every task.
    The [roadmap](../ROADMAP.md#verification) says what is left.
 3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
    `tasks` when the `.sby` defines it. Register any new task names in

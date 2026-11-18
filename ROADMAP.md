@@ -410,9 +410,10 @@ branch prediction controller and the SoC top have no comparison yet;
 The RTL is portable: Xilinx primitives sit behind `FROST_XILINX_PRIMS`, and
 builds without it use portable versions. CI checks the portable build two
 ways: Yosys's generic synthesis through its coarse stage, which stops before
-memories and logic are mapped to gates, and the [ASIC flow](asic/README.md),
-which maps it to standard cells and SRAM macros and routes it. To be ready
-for an ASIC, the RTL also needs:
+memories and logic are mapped to gates, and the [ASIC flow](asic/README.md)'s
+synthesis and floorplanning, which map it to standard cells and SRAM macros;
+the whole flow, run outside CI, also places and routes it. To be ready for
+an ASIC, the RTL also needs:
 
 1. Reset. An FPGA loads declared initial values into registers at
    configuration; ASIC synthesis ignores them. Every register that relies on
@@ -427,17 +428,18 @@ for an ASIC, the RTL also needs:
    clock, such as the PC-metadata overlays and the BTB tags, have no macro
    form (item 3).
 3. The remaining memories in the ASIC flow. The [ASIC flow](asic/README.md)
-   synthesizes, places, and routes the design with OpenROAD's flow scripts
-   on FreePDK45 (their Nangate45 platform), from synthesis to GDS in CI on
-   every pull request and merge, and reports its area and timing. The RAM
-   wrappers' memories are dual-port SRAM macros that OpenRAM generates, since
-   FROST's block RAMs have two ports and bsg_fakeram models only single-port
-   memories. Its L2 holds 256 KiB, an eighth of the X3's, so that the flow
-   fits CI's runners. The flow still mocks the other memories larger than
-   4,096 bits as a single row of flip-flops: the arrays read without a
-   clock, such as the BTB tags, the TAGE tables, and the instruction
-   memory's PC-metadata overlays, which need flip-flop or latch arrays rather
-   than SRAM macros.
+   synthesizes, places, and routes the design with OpenROAD's flow scripts on
+   FreePDK45 (their Nangate45 platform), from synthesis to GDS with
+   `./asic/orfs.py run` on a machine with enough memory, and reports its area
+   and timing; CI runs its synthesis and floorplanning on every merge and on
+   labeled pull requests. The RAM wrappers' memories are dual-port SRAM macros
+   that OpenRAM generates, since FROST's block RAMs have two ports and
+   bsg_fakeram models only single-port memories. Its L2 holds 256 KiB, an
+   eighth of the X3's, which keeps the flow's die and memory smaller. The flow
+   still mocks the other memories larger than 4,096 bits as a single row of
+   flip-flops: the arrays read without a clock, such as the BTB tags, the TAGE
+   tables, and the instruction memory's PC-metadata overlays, which need
+   flip-flop or latch arrays rather than SRAM macros.
    The final GDS leaves the macros' cells empty, since their layouts are not
    in the repository. At the X3's clock, the macros' read paths fail by up
    to 0.35 ns, the worst from the L1D's tags to its read-way selection. That
@@ -711,6 +713,8 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   board or bridge board with an HDMI output.
 - Enough timing margin at 322.265625 MHz that a single default placement
   meets timing
+- Routing the ASIC flow in CI again, through a hierarchical flow: large
+  blocks hardened separately and placed as macros.
 - A redesign three or four instructions wide, sized first with a
   performance model
 - The hypervisor (H) extension

@@ -26,15 +26,20 @@ finished or partial build.
 """
 
 import argparse
+import contextlib
 import csv
 import json
 import math
 import os
 import re
+import secrets
+import signal
 import subprocess
 import sys
+import threading
+import time
 from collections import defaultdict
-from collections.abc import Iterable, Sequence, Set
+from collections.abc import Callable, Iterable, Iterator, Sequence, Set
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -106,6 +111,38 @@ CRITICAL_WINDOW_NS = 0.1
 SV2V_DEFINES = "-DSYNTHESIS"
 SV2V_TIMEOUT_SECONDS = 1800
 
+# The ORFS container's out-of-memory score, the highest: when the host runs
+# out of memory, the kernel's choice of a process to stop favors the flow over
+# every process with a lower score, such as a CI runner's agent.
+OOM_SCORE_ADJUSTMENT = 1000
+# Seconds between run's lines on the host's and the flow's memory.
+MEMORY_REPORT_SECONDS = 60
+# Seconds that a command which was asked to stop, or a Docker call that
+# inspects or removes the flow's container, may take before run gives up on
+# it, so that no cleanup can hold the flow past its CI step's time limit.
+STOP_SECONDS = 60
+# Seconds that an interrupted command and the processes it started get to
+# stop on SIGINT before run kills them. Short, because a CI runner sends
+# SIGTERM 7.5 seconds after it cancels a step and SIGKILL 2.5 seconds later;
+# a removal that Docker has not finished by then is left to the workflow's
+# sweep step.
+INTERRUPT_SECONDS = 2
+# Seconds that the summary's make elapsed may take.
+SUMMARY_SECONDS = 300
+# Every container that orfs.py starts carries this label, with the checkout's
+# path as its value, and run's containers also have names, so that a
+# container left behind, say after run itself was killed, can be found and
+# removed without its ID: docker ps --all --filter label=org.frost.asic-flow.
+CONTAINER_LABEL = "org.frost.asic-flow"
+# Docker's smallest memory limit. A limit that rounds to zero bytes would
+# mean no limit at all.
+MINIMUM_MEMORY_LIMIT = 6 << 20
+# Where the kernel reports the host's memory and memory stalls, and where
+# the control groups of Docker's containers live.
+PROC_DIRECTORY = Path("/proc")
+CGROUP_DIRECTORY = Path("/sys/fs/cgroup")
+GIB = 1 << 30
+
 
 def _write_if_changed(path: Path, content: bytes) -> None:
     """Write content to path unless it already holds it, keeping make's timestamps."""
@@ -175,13 +212,45 @@ def prepare(build_directory: Path) -> None:
     print(f"Prepared {len(converted)} sources in {build_directory}")
 
 
-def orfs_command(make_arguments: Sequence[str], *, uid: int, gid: int) -> list[str]:
-    """Return the docker command that runs ORFS's Makefile in the pinned image."""
+def container_name(purpose: str) -> str:
+    """Return a name for one of run's containers that no other run uses."""
+    return f"frost-asic-{purpose}-{os.getpid()}-{secrets.token_hex(4)}"
+
+
+def orfs_command(
+    make_arguments: Sequence[str],
+    *,
+    uid: int,
+    gid: int,
+    name: str | None = None,
+    memory_limit: int | None = None,
+    cidfile: Path | None = None,
+) -> list[str]:
+    """Return the docker command that runs ORFS's Makefile in the pinned image.
+
+    The container carries CONTAINER_LABEL. With name, it has that name from
+    its creation, so that the caller can remove it before Docker reports its
+    ID. With memory_limit, it holds at most that many bytes of RAM and keeps
+    the rest of what it needs in the host's swap space. With cidfile, Docker
+    writes the container's ID there and keeps the container when it stops,
+    so that the caller can ask whether the kernel stopped it for memory
+    before removing it.
+    """
+    removal = ["--rm"] if cidfile is None else [f"--cidfile={cidfile}"]
+    naming = [] if name is None else ["--name", name]
+    memory = (
+        [] if memory_limit is None else [f"--memory={memory_limit}", "--memory-swap=-1"]
+    )
     return [
         "docker",
         "run",
-        "--rm",
+        *removal,
+        *naming,
+        "--label",
+        f"{CONTAINER_LABEL}={REPOSITORY_ROOT}",
         "--init",
+        f"--oom-score-adj={OOM_SCORE_ADJUSTMENT}",
+        *memory,
         "--user",
         f"{uid}:{gid}",
         "--env",
@@ -244,44 +313,405 @@ def run_logged(
     log_path: Path,
     environment: dict[str, str] | None = None,
     watchdog: PlacementWatchdog | None = None,
+    report: Callable[[], str | None] | None = None,
+    report_seconds: float = MEMORY_REPORT_SECONDS,
 ) -> int:
     """Run command, echoing its output and appending it to log_path.
 
     With a watchdog, stop the command when it reports a failure and return 1.
+    With report, add the line it returns every report_seconds while the
+    command runs, however long the command stays silent.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log:
-        log.write(f"$ {' '.join(command)}\n")
-        log.flush()
-        with subprocess.Popen(
+        lock = threading.Lock()
+
+        def emit(text: str) -> None:
+            with lock:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+                log.write(text)
+                log.flush()
+
+        emit(f"$ {' '.join(command)}\n")
+        done = threading.Event()
+
+        def report_periodically() -> None:
+            assert report is not None
+            while not done.wait(report_seconds):
+                # A report that fails must not stop the flow it describes.
+                try:
+                    line = report()
+                except Exception as error:
+                    line = f"Memory report failed: {error}"
+                if line is not None:
+                    emit(line + "\n")
+
+        reporter = threading.Thread(target=report_periodically, daemon=True)
+        # In a process group of its own, so that an interruption reaches the
+        # command's own children too, such as frost.py's docker client.
+        process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
             env=environment,
-        ) as process:
-            assert process.stdout is not None
-            stopped = False
+            start_new_session=True,
+        )
+        assert process.stdout is not None
+        # Kills the command if it has not closed its output STOP_SECONDS
+        # after the watchdog asked it to stop.
+        killer = threading.Timer(STOP_SECONDS, process.kill)
+        killer.daemon = True
+        stopped = False
+        try:
+            if report is not None:
+                reporter.start()
             for line in process.stdout:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                log.write(line)
+                emit(line)
                 reason = (
                     watchdog.check(line)
                     if watchdog is not None and not stopped
                     else None
                 )
                 if reason is not None:
-                    message = f"Error: {reason}; stopping the flow\n"
-                    sys.stdout.write(message)
-                    log.write(message)
+                    emit(f"Error: {reason}; stopping the flow\n")
                     # Keep reading until the command closes its output, so that
                     # what it writes while stopping cannot fill the pipe.
                     process.terminate()
+                    killer.start()
                     stopped = True
             status = process.wait()
-            return 1 if stopped else status
+        except BaseException:
+            # Interrupted, say by a signal: leave no command behind.
+            with _signals_ignored():
+                _interrupt(process)
+            raise
+        finally:
+            killer.cancel()
+            done.set()
+            if reporter.is_alive():
+                reporter.join(timeout=STOP_SECONDS)
+            process.stdout.close()
+        return 1 if stopped else status
+
+
+@contextlib.contextmanager
+def _signals_ignored() -> Iterator[None]:
+    """Ignore SIGINT and SIGTERM, so that a second signal cannot cut a cleanup short."""
+    previous = {
+        number: signal.signal(number, signal.SIG_IGN)
+        for number in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def _interrupt(process: subprocess.Popen[str]) -> None:
+    """Stop an interrupted command and every process in its group.
+
+    SIGINT first, which a docker client passes on to its container, then
+    SIGKILL; each wait is bounded.
+    """
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGINT)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=INTERRUPT_SECONDS)
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    try:
+        process.wait(timeout=STOP_SECONDS)
+    except subprocess.TimeoutExpired:
+        print(
+            f"Warning: process {process.pid} did not stop within {STOP_SECONDS} seconds",
+            file=sys.stderr,
+        )
+
+
+def _report(message: str, log_path: Path) -> None:
+    """Print a message and add it to the log; a full disk loses only the log line."""
+    print(message, file=sys.stderr)
+    try:
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(message + "\n")
+    except OSError as error:
+        print(
+            f"Warning: could not add that line to {log_path}: {error}", file=sys.stderr
+        )
+
+
+def meminfo(text: str) -> dict[str, int]:
+    """Return the fields of /proc/meminfo in bytes."""
+    fields = {}
+    for line in text.splitlines():
+        name, _, value = line.partition(":")
+        parts = value.split()
+        if parts and parts[0].isdigit():
+            fields[name] = int(parts[0]) * (1024 if parts[1:] == ["kB"] else 1)
+    return fields
+
+
+def memory_stalls(text: str) -> dict[str, float]:
+    """Return the shares in % of the last minute that tasks waited for memory.
+
+    /proc/pressure/memory reports "some", when at least one task waited,
+    and "full", when every task that could run waited.
+    """
+    stalls = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        kind, *fields = line.split()
+        values = dict(field.partition("=")[::2] for field in fields)
+        if "avg60" in values:
+            stalls[kind] = float(values["avg60"])
+    return stalls
+
+
+def container_cgroup(container: str, cgroups: Path = CGROUP_DIRECTORY) -> Path | None:
+    """Return a Docker container's control group directory, or None.
+
+    Docker puts each container's group under system.slice with systemd's
+    group driver and under docker with its own.
+    """
+    for directory in (
+        cgroups / "system.slice" / f"docker-{container}.scope",
+        cgroups / "docker" / container,
+    ):
+        if (directory / "memory.current").is_file():
+            return directory
+    return None
+
+
+def _read(path: Path) -> str | None:
+    """Return a file's text, or None if it cannot be read."""
+    try:
+        return path.read_text()
+    except OSError:
+        return None
+
+
+def _gib(size: int) -> str:
+    """Format a size in bytes in GiB with one decimal."""
+    return f"{size / GIB:.1f}"
+
+
+def _duration(seconds: float) -> str:
+    """Format seconds as hours, minutes, and seconds."""
+    minutes, second = divmod(int(seconds), 60)
+    hour, minute = divmod(minutes, 60)
+    return f"{hour}:{minute:02d}:{second:02d}"
+
+
+class MemoryReport:
+    """Describe the host's memory and swap, and the flow container's, in a line."""
+
+    def __init__(
+        self,
+        cidfile: Path | None = None,
+        proc: Path = PROC_DIRECTORY,
+        cgroups: Path = CGROUP_DIRECTORY,
+    ) -> None:
+        """Measure time from now; find the container through the ID in cidfile."""
+        self.cidfile = cidfile
+        self.proc = proc
+        self.cgroups = cgroups
+        self.start = time.monotonic()
+
+    def _container(self) -> str | None:
+        """Return the container's memory and swap use and its limit, or None."""
+        if self.cidfile is None:
+            return None
+        container = (_read(self.cidfile) or "").strip()
+        directory = container_cgroup(container, self.cgroups) if container else None
+        if directory is None:
+            return None
+        current = _read(directory / "memory.current")
+        swap = _read(directory / "memory.swap.current")
+        limit = (_read(directory / "memory.max") or "max").strip()
+        if current is None or not current.strip().isdigit():
+            return None
+        text = f"flow container {_gib(int(current))}"
+        if limit.isdigit():
+            text += f" of {_gib(int(limit))}"
+        text += " GiB"
+        # The rest of the container's RAM is file cache, which the kernel
+        # can drop without swapping.
+        stat = dict(
+            line.split(maxsplit=1)
+            for line in (_read(directory / "memory.stat") or "").splitlines()
+            if line.strip()
+        )
+        if stat.get("anon", "").strip().isdigit():
+            text += f" ({_gib(int(stat['anon']))} GiB anonymous)"
+        if swap is not None and swap.strip().isdigit():
+            text += f", swap {_gib(int(swap))} GiB"
+        return text + _stall_text(_read(directory / "memory.pressure"))
+
+    def __call__(self) -> str | None:
+        """Return the line, or None if the host does not report its memory."""
+        fields = meminfo(_read(self.proc / "meminfo") or "")
+        if "MemTotal" not in fields or "MemAvailable" not in fields:
+            return None
+        total, available = fields["MemTotal"], fields["MemAvailable"]
+        swap_total = fields.get("SwapTotal", 0)
+        swap_used = swap_total - fields.get("SwapFree", swap_total)
+        parts = [
+            f"host RAM {_gib(total - available)} of {_gib(total)} GiB in use, "
+            f"swap {_gib(swap_used)} of {_gib(swap_total)} GiB"
+            + _stall_text(_read(self.proc / "pressure" / "memory"))
+        ]
+        container = self._container()
+        if container is not None:
+            parts.append(container)
+        elapsed = _duration(time.monotonic() - self.start)
+        return f"Memory after {elapsed}: {'; '.join(parts)}"
+
+
+def _stall_text(pressure: str | None) -> str:
+    """Describe a memory.pressure file's last minute, or return "" without one."""
+    stalls = memory_stalls(pressure or "")
+    if "some" not in stalls:
+        return ""
+    text = f", waiting for memory {stalls['some']:.0f}% of the last minute"
+    if "full" in stalls:
+        text += f", every task {stalls['full']:.0f}%"
+    return text
+
+
+def _docker(arguments: Sequence[str]) -> subprocess.CompletedProcess[str] | str:
+    """Run a short Docker command; return its result, or why it gave none.
+
+    Output that is not UTF-8 is decoded with replacement characters.
+    """
+    try:
+        return subprocess.run(
+            ["docker", *arguments],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=STOP_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return f"it did not finish within {STOP_SECONDS} seconds"
+    except OSError as error:
+        return f"it could not start: {error}"
+
+
+def stopped_for_memory(container: str) -> bool | None:
+    """Return whether the kernel stopped a process in the container for memory.
+
+    None means that Docker could not say: it failed, or answered neither
+    true nor false.
+    """
+    result = _docker(["inspect", "--format", "{{.State.OOMKilled}}", container])
+    if isinstance(result, str) or result.returncode != 0:
+        return None
+    return {"true": True, "false": False}.get(result.stdout.strip())
+
+
+def remove_container(container: str) -> str | None:
+    """Stop and remove a container, whatever state it is in.
+
+    Return None once it is gone, also when it never existed, for which
+    docker rm --force succeeds, or why it may still be there.
+    """
+    result = _docker(["rm", "--force", container])
+    if isinstance(result, str):
+        return f"Docker did not remove container {container}: {result}"
+    if result.returncode != 0:
+        reason = (
+            result.stderr.strip() or f"docker rm exited with status {result.returncode}"
+        )
+        return f"Docker did not remove container {container}: {reason}"
+    return None
+
+
+def _interruption(signum: int) -> BaseException:
+    """Return the exception with which a signal unwinds run or summary."""
+    if signum == signal.SIGINT:
+        return KeyboardInterrupt()
+    return SystemExit(128 + signum)
+
+
+class _Signals:
+    """The handler for SIGINT and SIGTERM while run or summary works.
+
+    A signal raises its exception, KeyboardInterrupt or SystemExit(143), which
+    unwinds through the cleanup of the commands and containers started so
+    far. While deferring is set, during that cleanup, a signal is recorded
+    instead, and honor raises it once the cleanup is done.
+    """
+
+    def __init__(self) -> None:
+        """Start with no signal recorded, outside a cleanup."""
+        self.deferring = False
+        self.deferred: list[int] = []
+
+    def __call__(self, signum: int, frame: object) -> None:
+        """Raise the signal's exception, or record the signal during a cleanup."""
+        if self.deferring:
+            self.deferred.append(signum)
+            return
+        raise _interruption(signum)
+
+    def honor(self) -> None:
+        """Raise the exception of the first signal recorded during a cleanup."""
+        if self.deferred:
+            raise _interruption(self.deferred[0])
+
+
+@contextlib.contextmanager
+def _signals_handled(signals: _Signals) -> Iterator[None]:
+    """Make signals the handler of SIGINT and SIGTERM, then restore the old ones."""
+    previous = {
+        number: signal.signal(number, signals)
+        for number in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+@dataclass(frozen=True)
+class MemoryLimit:
+    """The ORFS container's RAM: a size in GiB, or a share of the host's RAM."""
+
+    size_gib: float | None = None
+    percent: float | None = None
+
+    def size(self, host_ram: Callable[[], int]) -> int:
+        """Return the limit in bytes; host_ram gives the host's RAM in bytes.
+
+        Only a share of the RAM asks for it, so that a size in GiB works on a
+        host that does not report its memory. A limit below Docker's smallest
+        raises ValueError, since one that rounds to zero would be no limit.
+        """
+        if self.percent is not None:
+            size = int(host_ram() * self.percent / 100)
+        else:
+            assert self.size_gib is not None
+            size = int(self.size_gib * GIB)
+        if size < MINIMUM_MEMORY_LIMIT:
+            raise ValueError(
+                f"a memory limit of {size:,} bytes is below Docker's smallest, 6 MiB"
+            )
+        return size
+
+
+def host_ram(proc: Path = PROC_DIRECTORY) -> int:
+    """Return the host's RAM in bytes."""
+    fields = meminfo(_read(proc / "meminfo") or "")
+    if "MemTotal" not in fields:
+        raise RuntimeError(f"{proc / 'meminfo'} reports no MemTotal")
+    return fields["MemTotal"]
 
 
 def default_clock_period() -> float:
@@ -387,28 +817,125 @@ def run(args: argparse.Namespace) -> int:
             )
             return 2
     cpu_period = built_cpu_period if args.first is not None else args.cpu_clock_period
+    try:
+        memory_limit = (
+            None if args.memory_limit is None else args.memory_limit.size(host_ram)
+        )
+    except (RuntimeError, ValueError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
     BUILD_DIRECTORY.mkdir(parents=True, exist_ok=True)
     log_path = BUILD_DIRECTORY / "orfs.log"
-    if args.first is None:
-        log_path.unlink(missing_ok=True)
-        status = prepare_in_frost_image(args.frost_image, log_path)
-        if status != 0:
-            return status
+    # From here on SIGTERM unwinds run as SIGINT does, so that the commands it
+    # started, preparation's included, and their containers stop.
+    signals = _Signals()
+    with _signals_handled(signals):
+        if args.first is None:
+            log_path.unlink(missing_ok=True)
+            status = prepare_in_frost_image(args.frost_image, log_path)
+            if status != 0:
+                return status
+        make_arguments = [
+            *make_variables(args.num_cores, args.clock_period, cpu_period),
+            *goals,
+        ]
+        return _run_flow(make_arguments, memory_limit, log_path, signals)
 
+
+def _run_flow(
+    make_arguments: Sequence[str],
+    memory_limit: int | None,
+    log_path: Path,
+    signals: _Signals,
+) -> int:
+    """Run the flow's make in its container, remove the container, and summarize.
+
+    The status is the flow's if it failed, whatever the diagnostics after it
+    do. Otherwise it is 1 if Docker did not remove the container, and the
+    summary's status if it did. A signal during the removal stops run once
+    the container is gone.
+    """
     uid, gid = os.getuid(), os.getgid()
-    status = run_logged(
-        orfs_command(
-            [*make_variables(args.num_cores, args.clock_period, cpu_period), *goals],
-            uid=uid,
-            gid=gid,
-        ),
-        log_path,
-        watchdog=PlacementWatchdog(),
-    )
-    summary_status = summarize(uid=uid, gid=gid)
-    if status != 0:
-        print(f"Error: the flow failed with status {status}", file=sys.stderr)
-        return status
+    name = container_name("flow")
+    flow_status: int | None = None
+    out_of_memory: bool | None = False
+    removal_error: str | None = None
+    with TemporaryDirectory(prefix="frost-orfs-") as temporary:
+        cidfile = Path(temporary) / "container"
+        try:
+            flow_status = run_logged(
+                orfs_command(
+                    make_arguments,
+                    uid=uid,
+                    gid=gid,
+                    name=name,
+                    memory_limit=memory_limit,
+                    cidfile=cidfile,
+                ),
+                log_path,
+                watchdog=PlacementWatchdog(),
+                report=MemoryReport(cidfile),
+            )
+        finally:
+            # From here a signal is recorded, not raised, until the container
+            # is gone. CPython 3.12 and later, which this repository requires,
+            # run signal handlers only on calls and loop iterations, and this
+            # first statement is neither, so no signal can come between the
+            # flow's end and the flag and skip the removal.
+            signals.deferring = True
+            try:
+                # The container stays after it stops, so that Docker can say
+                # whether the kernel stopped it for memory; a question that
+                # fails leaves that unknown. The container is removed by its
+                # name, which it has from its creation, so also when run is
+                # interrupted before Docker reports its ID. Each Docker call
+                # is bounded.
+                if flow_status not in (None, 0):
+                    try:
+                        out_of_memory = stopped_for_memory(name)
+                    except Exception as error:
+                        out_of_memory = None
+                        _report(
+                            f"Warning: could not ask Docker about memory: {error}",
+                            log_path,
+                        )
+                removal_error = remove_container(name)
+                if removal_error is not None:
+                    _report(
+                        f"Error: {removal_error}; remove it with: "
+                        f"docker rm --force {name}",
+                        log_path,
+                    )
+            finally:
+                signals.deferring = False
+    signals.honor()
+    assert flow_status is not None
+    if out_of_memory:
+        allowed = "the host's RAM and swap space"
+        if memory_limit is not None:
+            allowed = f"{_gib(memory_limit)} GiB of RAM and the host's swap space"
+        _report(
+            "Error: the kernel stopped the flow for lack of memory; "
+            f"its container may use {allowed}",
+            log_path,
+        )
+    elif out_of_memory is None:
+        _report(
+            "Warning: Docker could not say whether the kernel stopped the flow "
+            "for lack of memory",
+            log_path,
+        )
+    try:
+        summary_status = summarize(uid=uid, gid=gid, signals=signals)
+    except Exception as error:
+        # A summary that fails must not hide the flow's own status.
+        _report(f"Error: the summary failed: {error}", log_path)
+        summary_status = 1
+    if flow_status != 0:
+        _report(f"Error: the flow failed with status {flow_status}", log_path)
+        return flow_status
+    if removal_error is not None:
+        return 1
     return summary_status
 
 
@@ -595,8 +1122,12 @@ def mocked_memories(yosys_log: Path) -> list[tuple[str, int, int]]:
     return sorted(memories, key=lambda memory: (-memory[1] * memory[2], memory[0]))
 
 
-def summarize(*, uid: int, gid: int) -> int:
-    """Write elapsed.txt and summary.md into the build directory and print them."""
+def summarize(*, uid: int, gid: int, signals: _Signals | None = None) -> int:
+    """Write elapsed.txt and summary.md into the build directory and print them.
+
+    With signals, a signal during the removal of make elapsed's container
+    takes effect once it is gone.
+    """
     # Docker would create a missing working directory as root.
     if not BUILD_DIRECTORY.is_dir():
         print(
@@ -604,15 +1135,52 @@ def summarize(*, uid: int, gid: int) -> int:
             file=sys.stderr,
         )
         return 1
-    elapsed = subprocess.run(
-        orfs_command(["elapsed"], uid=uid, gid=gid),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    (BUILD_DIRECTORY / "elapsed.txt").write_text(elapsed.stdout + elapsed.stderr)
-    summary = summary_markdown(BUILD_DIRECTORY, elapsed.stdout)
-    (BUILD_DIRECTORY / "summary.md").write_text(summary)
+    name = container_name("summary")
+    elapsed: subprocess.CompletedProcess[str] | None = None
+    failure: str | None = None
+    try:
+        elapsed = subprocess.run(
+            orfs_command(["elapsed"], uid=uid, gid=gid, name=name),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=SUMMARY_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        failure = f"make elapsed did not finish within {SUMMARY_SECONDS} seconds"
+    except OSError as error:
+        failure = f"make elapsed could not start: {error}"
+    finally:
+        # A docker client that fails, also after Docker made the container
+        # (status 125), times out, or is interrupted can leave the container,
+        # which --rm removes only when it runs to its end.
+        if signals is not None:
+            signals.deferring = True
+        try:
+            if elapsed is None or elapsed.returncode != 0:
+                removal_error = remove_container(name)
+                if removal_error is not None:
+                    print(
+                        f"Error: {removal_error}; remove it with: "
+                        f"docker rm --force {name}",
+                        file=sys.stderr,
+                    )
+        finally:
+            if signals is not None:
+                signals.deferring = False
+    if signals is not None:
+        signals.honor()
+    if elapsed is None:
+        print(f"Error: {failure}", file=sys.stderr)
+        return 1
+    try:
+        (BUILD_DIRECTORY / "elapsed.txt").write_text(elapsed.stdout + elapsed.stderr)
+        summary = summary_markdown(BUILD_DIRECTORY, elapsed.stdout)
+        (BUILD_DIRECTORY / "summary.md").write_text(summary)
+    except OSError as error:
+        print(f"Error: could not write the summary: {error}", file=sys.stderr)
+        return 1
     print(summary)
     return elapsed.returncode
 
@@ -987,6 +1555,27 @@ def _clock_period(text: str) -> float:
     return float(text)
 
 
+# A memory limit as run takes it: GiB, or a percentage of the host's RAM.
+_MEMORY_LIMIT = re.compile(r"(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<percent>%?)")
+
+
+def _memory_limit(text: str) -> MemoryLimit:
+    """Parse a memory limit in GiB, or in % of the host's RAM, for argparse."""
+    match = _MEMORY_LIMIT.fullmatch(text)
+    value = float(match["value"]) if match else 0.0
+    if match is None or value <= 0 or (match["percent"] and value > 100):
+        raise argparse.ArgumentTypeError(
+            f"expected a size in GiB or a percentage of RAM up to 100%, got {text}"
+        )
+    if match["percent"]:
+        return MemoryLimit(percent=value)
+    if int(value * GIB) < MINIMUM_MEMORY_LIMIT:
+        raise argparse.ArgumentTypeError(
+            f"expected a size of at least 6 MiB, Docker's smallest, got {text} GiB"
+        )
+    return MemoryLimit(size_gib=value)
+
+
 def _argument_parser() -> argparse.ArgumentParser:
     """Create the command-line parser."""
     parser = argparse.ArgumentParser(
@@ -998,6 +1587,7 @@ def _argument_parser() -> argparse.ArgumentParser:
   %(prog)s run --target grt         # stop after global routing
   %(prog)s run --from route         # rerun detailed routing and finishing
   %(prog)s run --clock-period 1.6   # ask for 625 MHz to find the fmax
+  %(prog)s run --memory-limit 75%%   # keep a quarter of the RAM outside the flow
   %(prog)s summary                  # summarize asic/build again
   %(prog)s paths --stage grt        # report the critical paths
 """,
@@ -1037,6 +1627,16 @@ def _argument_parser() -> argparse.ArgumentParser:
         help="enable the asynchronous CPU boundary with this CPU clock period in ns",
     )
     run_parser.add_argument(
+        "--memory-limit",
+        type=_memory_limit,
+        metavar="GIB|PERCENT%",
+        help=(
+            "RAM that the ORFS container may hold, in GiB or as a percentage of "
+            "the host's; it keeps the rest of what it needs in swap, and the "
+            "kernel stops the flow when that runs out too (default: no limit)"
+        ),
+    )
+    run_parser.add_argument(
         "--from",
         dest="first",
         choices=STAGES[1:],
@@ -1068,16 +1668,22 @@ def _argument_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the selected command."""
     args = _argument_parser().parse_args(argv)
-    if args.command == "prepare":
-        prepare(BUILD_DIRECTORY)
-        return 0
-    if args.command == "summary":
-        return summarize(uid=os.getuid(), gid=os.getgid())
-    if args.command == "paths":
-        return report_paths(
-            args.stage, args.num_cores, uid=os.getuid(), gid=os.getgid()
-        )
-    return run(args)
+    try:
+        if args.command == "prepare":
+            prepare(BUILD_DIRECTORY)
+            return 0
+        if args.command == "summary":
+            signals = _Signals()
+            with _signals_handled(signals):
+                return summarize(uid=os.getuid(), gid=os.getgid(), signals=signals)
+        if args.command == "paths":
+            return report_paths(
+                args.stage, args.num_cores, uid=os.getuid(), gid=os.getgid()
+            )
+        return run(args)
+    except KeyboardInterrupt:
+        print("Error: interrupted", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":
