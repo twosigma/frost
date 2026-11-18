@@ -27,8 +27,10 @@
       (VARITH_F) at the head and completes it with that value, which the
       instruction carries to the VIQ when it retires.
     - Head-executed legality and translation for vector loads and stores
-      (vec_head_mmu) completing on CDB slot 6, paired with the post-retirement
-      sector memory engine (vec_vmu) on the hart's coherence line client.
+      (vec_head_mmu) completing on CDB slot 6, paired with the sector memory
+      engine (vec_vmu) on the hart's coherence line client, which runs a span
+      after retirement and strided, indexed or segment elements one at a
+      time at the head.
 */
 module vec_unit #(
     parameter  int unsigned VLEN           = 256,
@@ -92,6 +94,7 @@ module vec_unit #(
     input  logic                                                 i_eff_priv_u,
     input  logic                                                 i_sum,
     input  logic                                                 i_mxr,
+    input  riscv_pkg::pm_mode_t                                  i_pm_mode,
     input  logic                                                 i_tlb_invalidate,
     output logic                                                 o_walk_req_valid,
     input  logic                                                 i_walk_req_ready,
@@ -124,6 +127,11 @@ module vec_unit #(
     output logic                                                 o_vstore_commit,
     output logic                                                 o_vmem_fault_vstart_valid,
     output logic                    [                      15:0] o_vmem_fault_vstart,
+    // A load wrote the VRF at the ROB head (before retiring or trapping)
+    output logic                                                 o_vmem_vs_dirty,
+    // A fault-only-first load retires with vl trimmed to o_vl_trim
+    output logic                                                 o_vl_trim_valid,
+    output logic                    [                      15:0] o_vl_trim,
     output logic                                                 o_vmem_head_shield,
     output logic                                                 o_vmu_fatal,
     output logic                    [          PhysAddrBits-1:0] o_vmu_fatal_addr,
@@ -494,6 +502,7 @@ module vec_unit #(
       .i_eff_priv_u             (i_eff_priv_u),
       .i_sum                    (i_sum),
       .i_mxr                    (i_mxr),
+      .i_pm_mode                (i_pm_mode),
       .i_tlb_invalidate         (i_tlb_invalidate),
       .o_walk_req_valid         (o_walk_req_valid),
       .i_walk_req_ready         (i_walk_req_ready),
@@ -515,6 +524,9 @@ module vec_unit #(
       .o_vmem_fault_vstart      (o_vmem_fault_vstart),
       .o_retire_vload           (vhead_retire_vload),
       .o_retire_vstore          (vhead_retire_vstore),
+      .o_vmem_vs_dirty          (o_vmem_vs_dirty),
+      .o_vl_trim_valid          (o_vl_trim_valid),
+      .o_vl_trim                (o_vl_trim),
       .o_desc_valid             (desc_launch_valid),
       .o_desc_ppn0              (desc_launch_ppn0),
       .o_desc_ppn1              (desc_launch_ppn1),

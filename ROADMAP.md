@@ -23,12 +23,18 @@ pieces come before the second hart:
   fixed-point, multiply/divide, mask, reduction, permutation and Zvbb instructions,
   the vector floating-point instructions at SEW 16, 32 and 64 (Zvfh, and with it
   the Zvfhmin conversions), `vmv.x.s`, `vcpop.m`, `vfirst.m` and `vfmv.f.s`, and
-  unit-stride, whole-register and mask loads and stores. The X3 build includes the
-  unit; other memory forms and vector cryptography are not executed yet.
-  One limitation is known: a vector load executed in
-  Debug Mode that faults after writing part of its destination register
-  leaves `mstatus.VS` Clean; `vec_debug_partial` records it as an expected
-  failure until it is fixed.
+  every vector load and store form. The X3 build includes the unit; vector
+  cryptography is not executed yet. Strided, indexed, segment and
+  fault-only-first loads and stores run one element at a time, and an interrupt
+  or debug halt that arrives after such a run has begun waits until the
+  instruction finishes; taking them between elements, with `vstart` naming the
+  next one, is later work. Vector loads and stores are executed in cached memory
+  only: an element address in any other region, such as the low BRAM or a
+  device, raises an access fault. In the bare-metal DDR layout, a program built
+  with the vector extension therefore has its stack in cached DDR as well, so
+  vector code that the compiler emits by itself, such as copies and clears of
+  stack objects, works there; in the BRAM layout, its static data and stack are
+  in the low BRAM.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR in the X3
   build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
@@ -64,7 +70,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
 | Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction, permutation and floating-point execution; unit-stride/whole-register/mask loads and stores; other memory forms not connected; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` (one generated program per form, and a sample of the suite's FP programs), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby` |
+| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction, permutation and floating-point execution; all load and store forms; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` (one generated program per form, and a sample of the suite's FP programs), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
 | Zvfhmin | Implemented with `VECTOR=1` (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at SEW 16; unadvertised) | `vec_fp_test`, `test_vec_fcvt.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` (one generated program per FP form at VLEN 128, 256 and 512) |
 | Zvbb | Implemented with `VECTOR=1` (including `vwsll`; unadvertised) | `test_vec_int_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py` |
 | Zvkt | Partial (fixed-latency integer and bitmanip lanes in place; vector unit unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py` |
@@ -90,7 +96,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Svnapot | Implemented (64 KiB ranges use ordinary 4 KiB TLB entries) | `svnapot_test`, TestRIG (`svnapot_leaf.S`), `ptw.sby`, `tlb.sby`, `l2tlb.sby` |
 | Sstc | Implemented | `sstc_test`, `irq_take_latency`, TestRIG (`stimecmp`), `csr_file.sby` |
 | Sscofpmf | Implemented | `sscofpmf_test`, TestRIG (`--sscofpmf`), `csr_sscofpmf.sby` |
-| Ssnpm | Implemented for scalar accesses (`senvcfg.PMM`, PMLEN 0, 7 and 16). Vector memory does not yet apply pointer masking after element-address addition. | `pm_test`, `debug_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `pm_mode_select.sby`, `coherent_store_pma_twin.sby`, `csr_commit_cofactor.sby` |
+| Ssnpm | Implemented (`senvcfg.PMM`, PMLEN 0, 7 and 16) for scalar accesses and for vector element addresses | `pm_test`, `debug_test`, `vec_stride_test`, `vec_index_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `pm_mode_select.sby`, `coherent_store_pma_twin.sby`, `csr_commit_cofactor.sby`, `vec_head_mmu.sby` |
 | Ssu64xl | Implemented | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`, `ssu64xl_uxl.S`), `csr_file.sby` |
 | Zbc (optional) | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzbc`), TestRIG, `cl_multiplier.sby` |
 | Svvptc (optional) | Implemented | `vm_test`, `asid_test`, TestRIG, `ptw.sby`, `immu_memo.sby`, `dmmu_twin.sby` |
@@ -663,6 +669,7 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
 
 ## Possible future work
 
+- Vector loads and stores to uncached memory, such as the low BRAM and devices.
 - A check that corrects a fast-BTB taken prediction on an instruction that
   is not control flow. The BTB is tagged by fetch PC alone and is cleared
   wherever software must fence a change to the code or translation under

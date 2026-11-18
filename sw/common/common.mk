@@ -96,7 +96,9 @@ RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)$(FROST_MARCH_EXTENSIONS) -mabi=$(MABI
 # Select the linker and image split:
 #   bram (default): whole program in low BRAM; only opt-in .ddr_* sections in DDR.
 #   ddr:            whole program relocated to the cached DDR region behind a ROM
-#                   boot stub (exercises the L1I fetch path + D-side cached tier).
+#                   boot stub (exercises the L1I fetch path + D-side cached tier);
+#                   a program built with the vector extension also has its stack
+#                   there (see below).
 MEM_CONFIG ?= bram
 
 ifneq ($(MEM_CONFIG),bram)
@@ -129,6 +131,20 @@ endif
 FROST_DDR_USABLE_BYTES := $(shell printf '0x%x' $$((1 << $(FROST_DDR_USABLE_LOG2_BYTES))))
 LDFLAGS  += $(RISCV_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections \
             -Wl,--defsym=__frost_ddr_usable_bytes=$(FROST_DDR_USABLE_BYTES) $(EXTRA_LDFLAGS)
+
+# Vector loads and stores execute in cached memory only, and a program built
+# with the vector extension may get vector code on stack objects from the
+# compiler itself. In the DDR tier such a program therefore keeps its stack in
+# cached DDR too: __frost_ddr_stack_bytes (a multiple of 16) makes link_ddr.ld
+# reserve that much between the program and the heap. The extension shows as a
+# v among the single-letter extensions before the first underscore, or as a Zve
+# subset. Programs built without it keep the stack in low BRAM.
+FROST_MARCH_PARTS := $(subst _, ,$(FROST_MARCH_EXTENSIONS))
+FROST_MARCH_VECTOR := $(if $(or $(findstring v,$(firstword $(FROST_MARCH_PARTS))),$(filter zve%,$(FROST_MARCH_PARTS))),1,0)
+FROST_DDR_STACK_BYTES ?= 0x100000
+ifeq ($(MEM_CONFIG)$(FROST_MARCH_VECTOR),ddr1)
+LDFLAGS  += -Wl,--defsym=__frost_ddr_stack_bytes=$(FROST_DDR_STACK_BYTES)
+endif
 
 # C flags and include paths.
 CFLAGS = $(RISCV_FLAGS)
