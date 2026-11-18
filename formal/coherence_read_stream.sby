@@ -15,7 +15,10 @@ smtbmc boolector
 [script]
 read -formal -sv coherence_read_stream.sv
 chparam -set ADDR_WIDTH 56 coherence_read_stream
+hierarchy -top coherence_read_stream
+script free_undefined.ys
 prep -top coherence_read_stream
 
 [files]
 ../hw/rtl/lib/cache/coherence_read_stream.sv
+free_undefined.ys

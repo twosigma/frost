@@ -13,7 +13,10 @@ smtbmc boolector
 [script]
 read -formal -sv coherent_debug_request_count.sv
 narrow: chparam -set WIDTH 4 coherent_debug_request_count
+hierarchy -top coherent_debug_request_count
+script free_undefined.ys
 prep -top coherent_debug_request_count
 
 [files]
 ../hw/rtl/cpu_and_mem/debug/coherent_debug_request_count.sv
+free_undefined.ys

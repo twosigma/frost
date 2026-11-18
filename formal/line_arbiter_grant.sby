@@ -17,9 +17,12 @@ portable: read -formal -D SYNTHESIS -D LINE_ARBITER_GRANT_PROOF -sv line_port_ar
 xilinx: read -formal -D SYNTHESIS -D LINE_ARBITER_GRANT_PROOF -D FROST_XILINX_PRIMS -sv line_port_arbiter.sv
 three: chparam -set NUM_PORTS 3 -set STARVATION_LIMIT 4 line_port_arbiter
 two: chparam -set NUM_PORTS 2 -set STARVATION_LIMIT 8 line_port_arbiter
+hierarchy -top line_port_arbiter
+script free_undefined.ys
 prep -top line_port_arbiter -flatten
 select -assert-none t:$assume
 select -assert-count 1 t:$check
 
 [files]
 ../hw/rtl/lib/cache/line_port_arbiter.sv
+free_undefined.ys

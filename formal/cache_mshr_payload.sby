@@ -14,6 +14,8 @@ read -sv cache_perf_pkg.sv sdp_block_ram.sv sdp_ram_byte_en.sv sdp_packed_tag_ur
 read -formal -D SYNTHESIS -D CACHE_MSHR_PAYLOAD_PROOF -sv frost_cache.sv
 bmc: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 frost_cache
 bmc_mshr8: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set NUM_MSHR 8 frost_cache
+hierarchy -top frost_cache
+script free_undefined.ys
 prep -top frost_cache -flatten
 memory_map
 opt
@@ -28,3 +30,4 @@ bmc_mshr8: select -assert-count 16 t:$check
 ../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+free_undefined.ys

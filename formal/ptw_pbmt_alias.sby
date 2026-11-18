@@ -25,6 +25,8 @@ bmc_32g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=35 riscv_pkg.sv
 bmc_64g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=36 riscv_pkg.sv
 bmc_128g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=37 riscv_pkg.sv
 read -formal -sv ptw_pbmt_alias_ref.sv
+hierarchy -top ptw_pbmt_alias_ref
+script free_undefined.ys
 prep -top ptw_pbmt_alias_ref
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
@@ -33,3 +35,4 @@ select -assert-count 1 t:$check r:FLAVOR=assert %i
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ptw_pbmt_alias_ref.sv
+free_undefined.ys

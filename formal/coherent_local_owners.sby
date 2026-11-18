@@ -15,7 +15,10 @@ cover: smtbmc boolector
 
 [script]
 read -formal -sv coherent_local_owners_formal.sv
+hierarchy -top coherent_local_owners_formal
+script free_undefined.ys
 prep -top coherent_local_owners_formal
 
 [files]
 coherent_local_owners_formal.sv
+free_undefined.ys

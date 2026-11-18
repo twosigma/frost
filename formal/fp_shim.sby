@@ -16,8 +16,11 @@ read -formal -sv riscv_pkg.sv
 # Under FORMAL the shim replaces fp_engine with a model that completes an
 # arbitrary number of cycles after its start, so fp_engine.sv is not read.
 read -formal -sv fp_shim.sv
+hierarchy -top fp_shim
+script free_undefined.ys
 prep -top fp_shim
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
+free_undefined.ys

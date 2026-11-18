@@ -16,9 +16,12 @@ smtbmc boolector
 # constrain the harness's arbitrary grant, flush, and payload inputs.
 read -sv riscv_pkg.sv fu_cdb_adapter.sv
 read -formal -sv mul_completion_tag.sv
+hierarchy -top mul_completion_tag
+script free_undefined.ys
 prep -top mul_completion_tag
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv
 mul_completion_tag.sv
+free_undefined.ys

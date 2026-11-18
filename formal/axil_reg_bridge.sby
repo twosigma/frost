@@ -17,8 +17,11 @@ smtbmc boolector
 [script]
 read -formal -sv axil_checker.sv axil_reg_bridge.sv
 prove_engine: chparam -set ADDR_BITS 8 -set WIDE_COUNT 3 -set WIDE_OFFSETS 24'h504840 axil_reg_bridge
+hierarchy -top axil_reg_bridge
+script free_undefined.ys
 prep -top axil_reg_bridge
 
 [files]
 ../hw/rtl/lib/axi/axil_checker.sv
 ../hw/rtl/lib/axi/axil_reg_bridge.sv
+free_undefined.ys

@@ -12,7 +12,10 @@ smtbmc boolector
 
 [script]
 read_verilog -formal -sv debug_fetch_barrier.sv
+hierarchy -top debug_fetch_barrier
+script free_undefined.ys
 prep -top debug_fetch_barrier
 
 [files]
 ../hw/rtl/cpu_top/debug_fetch_barrier.sv
+free_undefined.ys

@@ -20,6 +20,8 @@ read -sv riscv_pkg.sv fu_cdb_adapter.sv cdb_arbiter.sv
 read -formal -sv mul_adapter_grant.sv
 always: chparam -set ALWAYS_GRANTED 1 mul_adapter_grant
 mem: chparam -set MEM_SLOT 1 mul_adapter_grant
+hierarchy -top mul_adapter_grant
+script free_undefined.ys
 prep -top mul_adapter_grant
 
 [files]
@@ -27,3 +29,4 @@ prep -top mul_adapter_grant
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv
 mul_adapter_grant.sv
+free_undefined.ys

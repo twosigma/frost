@@ -17,8 +17,11 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv
 read -formal -sv fetch_redirect.sv
+hierarchy -top fetch_redirect
+script free_undefined.ys
 prep -top fetch_redirect
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_redirect.sv
+free_undefined.ys

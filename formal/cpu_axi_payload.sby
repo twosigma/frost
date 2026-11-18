@@ -15,6 +15,8 @@ smtbmc boolector
 read -sv riscv_pkg.sv
 read -formal -D SYNTHESIS -D FROST_RANDOM_START -D CPU_AXI_PAYLOAD_PROOF -sv cpu_axi_master.sv
 chparam -set DATA_BYTES 64 -set ID_BITS 6 cpu_axi_master
+hierarchy -top cpu_axi_master
+script free_undefined.ys
 prep -top cpu_axi_master -flatten
 select -assert-count 1 t:$check r:FLAVOR=assert %i
 select -assert-count 5 t:$check r:FLAVOR=cover %i
@@ -24,3 +26,4 @@ select -assert-none t:$check r:FLAVOR=assume %i
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_top/cpu_axi_master.sv
+free_undefined.ys

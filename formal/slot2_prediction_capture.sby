@@ -14,7 +14,10 @@ smtbmc boolector
 [script]
 read_verilog -formal -sv slot2_prediction_capture.sv
 chparam -set WIDTH 71 slot2_prediction_capture
+hierarchy -top slot2_prediction_capture
+script free_undefined.ys
 prep -top slot2_prediction_capture
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/if_stage/slot2_prediction_capture.sv
+free_undefined.ys

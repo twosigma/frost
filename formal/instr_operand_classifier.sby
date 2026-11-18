@@ -11,6 +11,8 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv instr_decoder.sv instr_operand_classifier.sv
 read -formal -sv instr_operand_classifier_equiv.sv
+hierarchy -top instr_operand_classifier_equiv
+script free_undefined.ys
 prep -top instr_operand_classifier_equiv
 
 [files]
@@ -18,3 +20,4 @@ prep -top instr_operand_classifier_equiv
 ../hw/rtl/cpu_and_mem/cpu/id_stage/instr_decoder.sv
 ../hw/rtl/cpu_and_mem/cpu/id_stage/instr_operand_classifier.sv
 instr_operand_classifier_equiv.sv
+free_undefined.ys
