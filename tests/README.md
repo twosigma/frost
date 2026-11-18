@@ -263,7 +263,9 @@ prefetch enabled or disabled.
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
 and CPU observation cuts; `coherence_home_rowread` runs the UltraRAM home with `PARALLEL_READ=0` so row reads after the decision and probe replies ahead of row data are exercised, and `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
 requests execute, preserve waiter order across an older writer, and check
-current data on waiter reentry. Streaming cases check way-0 miss placement,
+current data on waiter reentry. Two DMA reads with an intervening clean,
+flush or invalidate check that the later reader leaves the fill's way
+available to the management request. Streaming cases check way-0 miss placement,
 CPU line residency, dirty hits in other ways and progress after a pinned
 way is released, including a live prefetch fill in another way. Prefetch
 cases check the completion slots
@@ -722,6 +724,7 @@ The NIC targets include `nic_tx_segment`, `nic_rx_fifo_limit`, `nic_top_rx_fifo`
 `nic_pause_gmii`, `nic_pause_10g`, and `nic_pause_rx_wire`, alongside the engine and whole-NIC benches.
 Their registered tests cover segmentation headers, FIFO capacity, pause crossings, independent
 domain restarts, wire-side PAUSE validation during congestion, and cancellation under backpressure.
+`nic_cmo_loopback` checks eight transmitted frames while the CPU cleans packet blocks that DMA is reading. It runs in both memory tiers.
 `nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.

@@ -142,6 +142,7 @@ module coherence_home_completions #(
   logic [SLOTS-1:0] release_valid, release_ready, release_fire;
   logic [SLOTS-1:0] issued_q, buffer_owned_q, result_valid_q, pin_valid_q, error_q;
   logic [SLOTS-1:0] predecessors_q[SLOTS];
+  logic [SLOTS-1:0] pred_clear_q, matching_cmo, follows_cmo_q;
   // A DMA request's result completes its effect on the sector: its bytes and
   // probe results are in the array, and it keeps no private copy. From the
   // cycle after that result until its release, handed_q no longer orders
@@ -401,8 +402,11 @@ module coherence_home_completions #(
   assign o_work_nofill = nofill_q[work_slot_q];
   assign o_waiting_request = work;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_waiting
+    // A CMO needs its own way even on a hit. A younger reader that parks
+    // on an earlier fill of that line would hold the way until the CMO
+    // released it. Admit that reader to a seat once its predecessors clear.
     assign o_waiting[slot] = work_valid[slot] && !issued_q[slot] &&
-        !parked_q[slot] && !ready_q[slot] &&
+        (!follows_cmo_q[slot] || pred_clear_q[slot]) && !parked_q[slot] && !ready_q[slot] &&
         !work_selected_slots_q[slot];
   end
   // A presented result matches at most one slot, the one its tid names.
@@ -447,7 +451,7 @@ module coherence_home_completions #(
 
   // pred_clear_q[slot] holds predecessors_q[slot] == 0, registered from the
   // predecessors' next state, so eligibility reads one flag per slot.
-  logic [SLOTS-1:0] pred_clear_q, incoming_sectors, incoming_blocks, incoming_orders;
+  logic [SLOTS-1:0] incoming_sectors, incoming_blocks, incoming_orders;
   // A release fires for the arbiter's selected offering slot when the U
   // channel is ready. The clear flags are prepared for both outcomes, with
   // and without an accepted request, and the U ready selects last. The
@@ -480,6 +484,9 @@ module coherence_home_completions #(
     // (GetMZero, Zicbom) leaves out.
     assign incoming_blocks[slot] = (work_address[slot] >> OffsetBits) ==
         (incoming.addr >> OffsetBits);
+    assign matching_cmo[slot] = live[slot] && incoming_blocks[slot] && coherence_pkg::is_cmo(
+        request_opcode(work[slot])
+    );
     assign incoming_sectors[slot] = incoming_blocks[slot] &&
         (OffsetBits == 5 || work_address[slot][5] == incoming.addr[5] || incoming_line_zero ||
          coherence_pkg::holds_line(
@@ -746,7 +753,10 @@ module coherence_home_completions #(
         wake_error_q[slot] <= 1'b0;
         counted_q[slot] <= 1'b0;
         pin_valid_q[slot] <= 1'b0;
+        follows_cmo_q[slot] <= 1'b0;
       end else begin
+        if (accept_request && free_slot_index == SlotBits'(slot))
+          follows_cmo_q[slot] <= |matching_cmo;
         ready_q[slot] <= i_wake[slot] || (ready_hold[slot] && !release_fire[slot]);
         issued_q[slot] <= issued_hold[slot] && !release_fire[slot];
         error_q[slot] <= error_hold[slot] && !release_fire[slot];
@@ -1131,6 +1141,9 @@ module coherence_home_completions #(
         assert (pin_valid_q[slot]);
       for (int slot = 0; slot < SLOTS; slot++) begin
         assert (!predecessors_q[slot][slot]);
+        for (int older = 0; older < SLOTS; older++)
+        if (predecessors_q[slot][older] && coherence_pkg::is_cmo(request_opcode(work[older])))
+          assert (!o_waiting[slot]);
         if (i_park[slot]) assert (o_waiting[slot]);
         if (i_wake[slot]) assert (parked_q[slot]);
         if (parked_q[slot]) assert (work_valid[slot] && !issued_q[slot]);
@@ -1324,6 +1337,7 @@ module coherence_home_completions #(
       end
       cover ($countones(live) == SLOTS && $countones(buffer_owned_q) == RESULT_SLOTS);
       cover (accept_work && |f_granted_q);
+      cover (|(follows_cmo_q & live & ~pred_clear_q & ~o_waiting));
       cover (o_u_valid && |result_valid_q && i_u_ready);
       // A prefetch dispatched with no fill, and a handed DMA request beside a
       // live prefetch.

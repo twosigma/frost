@@ -355,6 +355,7 @@ can be debugged and where each one first stops.
 | `mtimer_stress/` | Frequent timer interrupts swept across 20,000 memory/ALU loop iterations and `mret`; a deadlock times out within the default 500,000-cycle simulation budget |
 | `nic_dma_stress/` | Two rounds of 15 queued 1518- and 64-byte NIC loopback frames per mode, each overlapping a 4 KiB DMA copy, in plain and burst modes; requires DMA busy at the first RX completion, checks every frame byte and copied word, and requires zero MAC RX overflow |
 | `nic_echo/` | Interrupt-driven Ethernet echo; needs a link partner, which the simulation bench provides |
+| `nic_cmo_loopback/` | NIC loopback while the CPU cleans the same packet blocks, with frame data and descriptor checks |
 | `nic_loopback/` | NIC loopback, descriptor rings, interrupts, filtering, and reset during traffic |
 | `ns16550_irq_console_test/` | Console output written one byte per THRE interrupt, each claimed through the APLIC |
 | `ns16550_test/` | The 16550 UART registers: Linux 8250 initialization, register file, LSR.THRE and LSR.TEMT around a write, and transmit |

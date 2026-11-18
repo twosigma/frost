@@ -815,7 +815,9 @@ fill has three read waiter seats. A demand fill's primary request, the
 request whose decision allocated it, takes the first; a prefetch's fill
 starts with none. Parked requests release their engine and
 image credit. A request waiting for a way or resource retries from completion
-metadata.
+metadata. A reader admitted behind a management request to the same home
+line waits for predecessor release before taking a waiter seat. This lets
+the earlier fill give up its way so the management request can recall it.
 
 A primary GetS, LoadReserved or GetM, whose hit service would read the row
 and send no probe, is granted from the fill's line. Once the fill holds its

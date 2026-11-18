@@ -528,6 +528,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC frame loopback through DDR rings, with completion and interrupt checks"
         ),
     ),
+    "nic_cmo_loopback": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_cmo_loopback",
+        description="Check transmitted payloads and DMA completions while cleaning packet blocks",
+    ),
     "nic_sg_loopback": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -4383,7 +4389,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Independent completions, parallel way reads, dispatch-cycle lookup "
             "offers, dirty recalls, way pins, victim locks, prefetches, grants "
-            "forwarded from fills, and streaming placement"
+            "forwarded from fills, CMO ordering between DMA readers, and streaming placement"
         ),
         verilator_extra_args=(
             "--assert",

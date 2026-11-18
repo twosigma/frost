@@ -1171,7 +1171,8 @@ module coherence_home #(
     pin_valid = run && array_response && decision_engine && decision_hit && !lookup_prefetch_q;
   end
 
-  // Parked readers own metadata seats, including readers with predecessors.
+  // Readers can take a seat behind an ordinary predecessor. A reader
+  // ordered behind a CMO leaves the fill free to release the way the CMO needs.
   // A demand fill's primary owns the first; a forward gives it up.
   assign join_live = run && array_response && decision_reader;
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_seats
