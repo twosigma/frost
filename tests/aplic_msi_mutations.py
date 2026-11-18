@@ -14,11 +14,10 @@
 
 """Check that both MSI verification layers reject five isolated faults.
 
-Run in the frost image: python3 tests/aplic_msi_mutations.py. Each case gets a
-small private copy under sim_build/, leaving the working RTL and tests alone.
+Run in the frost image with python3 tests/aplic_msi_mutations.py. Each case
+stages the proof's declared inputs and the cocotb bench under sim_build/.
 The cocotb cases run serially and always start with make clean. Logs and XML
-reports remain in the printed output directory. This is an explicit diagnostic,
-not part of normal pytest collection.
+reports remain in the printed output directory.
 """
 
 import os
@@ -29,8 +28,11 @@ import tempfile
 from pathlib import Path
 from xml.etree import ElementTree
 
+from sby_config import stage_proof
+
 ROOT = Path(__file__).resolve().parents[1]
 RTL = Path("hw/rtl/peripherals/aplic/aplic.sv")
+PROOF = ROOT / "formal/aplic.sby"
 MUTATIONS = (
     (
         "supervisor_shift",
@@ -87,12 +89,14 @@ RETIRE_AT_ACCEPT_STATE = """
 
 
 def _copy_case(destination: Path, source: str) -> None:
+    stage_proof(PROOF, ROOT, destination)
     files = (
         "tests/Makefile",
+        "tests/ci_reuse.py",
+        "tests/sby_config.py",
         "tests/test_run_cocotb.py",
         "tests/test_run_formal.py",
         "sw/apps/software_registry.py",
-        "formal/aplic.sby",
     )
     for name in files:
         target = destination / name
@@ -103,11 +107,10 @@ def _copy_case(destination: Path, source: str) -> None:
         destination / "verif",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
-    (destination / RTL).parent.mkdir(parents=True, exist_ok=True)
     (destination / RTL).write_text(source, encoding="utf-8")
 
 
-def _run(command: list[str], case: Path, log: str) -> subprocess.CompletedProcess[str]:
+def _run(command: list[str], case: Path, log: str) -> int:
     env = os.environ.copy()
     for key in (
         "SIM_BUILD",
@@ -118,23 +121,33 @@ def _run(command: list[str], case: Path, log: str) -> subprocess.CompletedProces
     ):
         env.pop(key, None)
     env.setdefault("NUMBER_OF_CPU_CORES", "8")
-    result = subprocess.run(
-        command,
-        cwd=case / "tests",
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=600,
-        check=False,
-    )
-    (case / log).write_text(result.stdout, encoding="utf-8")
-    return result
+    with (case / log).open("w", encoding="utf-8") as output:
+        return subprocess.run(
+            command,
+            cwd=case / "tests",
+            env=env,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            timeout=600,
+            check=False,
+        ).returncode
+
+
+def _log_contains(path: Path, *messages: str) -> bool:
+    pending = set(messages)
+    with path.open(encoding="utf-8") as log:
+        for line in log:
+            pending.difference_update(
+                message for message in messages if message in line
+            )
+            if not pending:
+                return True
+    return False
 
 
 def _check_case(case: Path, *, mutant: bool) -> None:
     clean = _run(["make", "clean"], case, "clean.log")
-    assert clean.returncode == 0, f"clean failed: {case}"
+    assert clean == 0, f"clean failed: {case}"
     bench = _run(
         [sys.executable, "test_run_cocotb.py", "aplic_msi"], case, "cocotb.log"
     )
@@ -162,16 +175,16 @@ def _check_case(case: Path, *, mutant: bool) -> None:
     )
     if mutant:
         assert (
-            bench.returncode != 0 and failures and "AssertionError" in bench.stdout
+            bench != 0
+            and failures
+            and _log_contains(case / "cocotb.log", "AssertionError")
         ), f"mutant escaped the bench or failed before an assertion: {case}"
-        assert (
-            formal.returncode != 0
-            and "Assert failed" in formal.stdout
-            and "DONE (FAIL" in formal.stdout
+        assert formal != 0 and _log_contains(
+            case / "formal.log", "Assert failed", "DONE (FAIL"
         ), f"mutant escaped formal or failed before a counterexample: {case}"
     else:
-        assert bench.returncode == 0 and not failures, f"baseline bench failed: {case}"
-        assert formal.returncode == 0 and "DONE (PASS" in formal.stdout, (
+        assert bench == 0 and not failures, f"baseline bench failed: {case}"
+        assert formal == 0 and _log_contains(case / "formal.log", "DONE (PASS"), (
             f"baseline formal failed: {case}"
         )
     print(
@@ -223,10 +236,8 @@ def main() -> None:
                 case,
                 "formal_conservation.log",
             )
-            assert (
-                formal.returncode != 0
-                and "Assert failed" in formal.stdout
-                and "DONE (FAIL" in formal.stdout
+            assert formal != 0 and _log_contains(
+                case / "formal_conservation.log", "Assert failed", "DONE (FAIL"
             )
             print(
                 "retire_at_accept: spec conservation alone rejects the mutant",

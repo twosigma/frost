@@ -1265,6 +1265,30 @@ proves, and its assumptions.
 
 Each target and task is a separate pytest case. Fast checks compare every SBY
 task list with the runner registration; selecting no matching task is an error.
+
+`test_pa_bridge_mutation.py` runs the 64 GiB proof on a private fixture for
+each AXI address channel and requires a counterexample at that channel's
+full-offset assertion. The standalone `aplic_msi_mutations.py` diagnostic
+checks the baseline and isolated mutants with both cocotb and formal.
+Tests that relocate a checkout proof use `sby_config.stage_proof` to copy the
+proof's `[files]` inputs in checkout-relative layout before applying edits.
+This includes files read by nested Yosys scripts. Inline `[file]` sections
+travel with the proof.
+
+`formal_selection.py` lists exact pytest node IDs for the workflow's
+**Other tasks** shard. Pass one or more repository paths to select cases that
+read those proof files or their declared inputs. The list includes fixture
+cases such as the two AXI mutations. With no paths, it lists the whole shard.
+Use `--shard` to select another formal job.
+
+```bash
+./scripts/frost.py run python3 tests/formal_selection.py formal/free_undefined.ys
+./scripts/frost.py run bash -o pipefail -c '
+  python3 tests/formal_selection.py formal/line_port_axi_bridge.sby |
+    xargs -r -d "\n" python3 -m pytest -m formal -v --durations=0
+'
+```
+
 The default timeout is 40 minutes; task-specific SBY and runner allowances are listed together in
 the [formal guide](../formal/README.md). The single-endpoint L1D control BMC
 keeps depth 40 with a 180-minute allowance in a 200-minute job; the
