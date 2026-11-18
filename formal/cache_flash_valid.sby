@@ -43,6 +43,8 @@ bmc_hw: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set NUM
 cover_fast: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set NUM_MSHR 2 -set NUM_WB 2 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
 cover_fast_ways1: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 1 -set NUM_MSHR 2 -set NUM_WB 2 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
 cover_hw: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set NUM_MSHR 2 -set NUM_WB 2 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 0 frost_cache
+hierarchy -top frost_cache
+script free_undefined.ys
 prep -top frost_cache -flatten
 memory_map
 opt
@@ -58,3 +60,4 @@ bmc_hw: select -assert-count 9 t:$check
 ../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+free_undefined.ys

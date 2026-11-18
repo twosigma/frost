@@ -30,6 +30,8 @@ size_select: read -formal -sv backing_btb.sv
 prove: read -formal -D BACKING_BTB_FORMAL_MIRROR_READ -sv backing_btb.sv
 chparam -set XLEN 8 -set ENTRIES 8 -set TARGET_BITS 5 backing_btb
 four: chparam -set WAYS 4 backing_btb
+hierarchy -top backing_btb
+script free_undefined.ys
 prep -top backing_btb
 memory_map
 opt -fast
@@ -39,3 +41,4 @@ opt -fast
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/backing_btb.sv
+free_undefined.ys

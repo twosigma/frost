@@ -709,8 +709,11 @@ pipeline while the mode updates. An assisted misaligned access receives the
 exact transformed address so that its faults and split parts use the same
 address interpretation. The trap unit latches a data fault's address before
 the transform, together with the mode and translation state, and applies the
-transform to the latched value. The unadvertised vector memory path does not
-yet mask its element addresses.
+transform to the latched value. The vector head unit applies the exact
+transform (sign extension under Sv39, zero extension under Bare) to each
+vector element address after the element-address addition, and to the first
+and last byte of a unit-stride span, before translation; a vector memory
+fault's xtval is the transformed address.
 
 ## Vector state
 
@@ -827,10 +830,13 @@ nonzero `vstart`, where Spike traps them, and with every element masked off,
 `vfredusum` returns its seed unchanged and raises no flag even for a signaling
 NaN, where Spike returns the canonical NaN and raises invalid.
 
-ID decodes the unit-stride (one field), whole-register and mask loads and
-stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1
-only with `RS_NONE` and take an entry in the vector memory table
-(`vector/vec_vmt.sv`), holding the next one while all four entries are live.
+ID decodes the unit-stride, strided and indexed loads and stores (each with
+one to eight fields), the fault-only-first loads, and the whole-register and
+mask loads and stores as `VLOAD` and `VSTORE` (illegal with VS Off); they
+dispatch in slot 1 only with `RS_NONE` and take an entry in the vector memory
+table (`vector/vec_vmt.sv`), holding the next one while all four entries are
+live. Without the unit, ID decodes only the one-field unit-stride, the
+whole-register and the mask forms that way, and the others are illegal there.
 The table lists the vector memory instructions in flight in program order for
 the load and store queues' range holds (including 64-byte block holds on
 Zicbom entries), marks an entry retired on the edge the ROB head passes it, and
@@ -859,14 +865,73 @@ active byte's virtual address in the faulting page, or the second page's base
 when a single element straddles into a faulting second page); if earlier whole
 elements lie on a valid first page before a faulting second page, `vec_vmu`
 executes those first-page elements before a synchronous machine or supervisor
-trap records the first unexecuted element in `vstart`. A partial-load fault in
-Debug Mode re-parks without that CSR update and can leave VS Clean after
-writing vector registers. After retirement, `vector/vec_vmu.sv` splits the
+trap records the first unexecuted element in `vstart`. The CSR file registers
+that entry and writes `vstart`, and sets VS Dirty, on the following edge;
+nothing retires or writes a CSR in between. A partial-load fault in
+Debug Mode re-parks without that `vstart` update. After retirement, `vector/vec_vmu.sv` splits the
 access into 32-byte sectors across six line-client identities (IDs 2..7) to the
 coherence home, freeing the `vec_vmt` entry once all sector responses and VRF
 writes finish. A failed sector response after retirement, or during a partial
 first-page run ahead of a second-page fault, suppresses any VRF write and
-raises a sticky hart fatal error alongside `o_cache_fatal`. Strided, indexed, segment and fault-only-first loads and stores are illegal.
+raises a sticky hart fatal error alongside `o_cache_fatal`.
+
+Vector loads and stores are executed in cached memory only: an element address
+in any other region, such as the low BRAM or a device, raises an access fault.
+Every address that a program's vector code touches, including copies and clears
+of stack objects that the compiler vectorizes by itself, must therefore be in
+cached memory. In the bare-metal DDR layout, a program built with the vector
+extension has its stack in cached DDR as well, so it runs as written; in the
+BRAM layout, its static data and stack are in the low BRAM (see the
+[software memory configuration](../../../../sw/README.md#memory-configuration)).
+
+Strided and indexed loads and stores run their active elements in order at
+the ROB head. A strided form reads its stride `rs2` through the same extra read
+port after `rs1` and forms element `i`'s address as `rs1 + i * rs2` by a running
+sum; an indexed form reads element `i` of the index group `vs2` through the VRF
+read port and adds it, zero-extended, to `rs1`. For each element the unit
+applies pointer masking, translates the one or two pages of the element's
+bytes, and then gives `vec_vmu` a descriptor for that element alone, waiting for
+its completion before the next element, so the ordered and unordered indexed
+forms both run in element order. A strided form's legality is that of the
+unit-stride form. An indexed form's data has EEW SEW and EMUL LMUL and its index
+group the width field's EEW and the matching EMUL, which must lie in
+`[1/8, 8]`; both groups must be aligned, a masked load may not write `v0`, and a
+load's destination may overlap the index group only with equal EEWs, at the
+index group's lowest register when the destination EEW is smaller, or at the
+destination group's highest register when it is larger and the index EMUL is
+at least 1. A segment form (NF of 2 to 8 fields, any addressing; a unit-stride
+segment's stride is NF * EEW) treats each segment as the element: its fields lie
+one after another from the segment's address, the segment's one or two pages are
+translated first, and each field then gets its own descriptor, for register
+group `vd + f * EMUL` (EMUL at least one register), so a fault on a segment is
+reported before any of its fields is accessed. NF * EMUL may not exceed 8, the
+last field group may not pass `v31`, and an indexed segment load's field groups
+may not overlap the index group. The first access waits for older committed
+scalar stores to drain and raises
+the interrupt shield, which stays up until the instruction traps or retires,
+so from the first access on, interrupts and debug requests wait for the rest of
+the instruction; one armed before the first access is taken first, and the
+instruction then runs again from its start. A fault on
+element `i` is reported with `vstart = i` after elements `vstart..i-1` are
+performed; `xtval` is the element's transformed address, or the second page's
+base when the element straddles into a faulting page. The instruction never
+writes a range into `vec_vmt`, so every younger scalar load and store waits
+until the entry is freed, which happens when the instruction retires after its
+last element. A load whose head-executed part (an element of a run, or the
+first-page run ahead of a second-page fault) writes the VRF reports it to the
+CSR file, which sets VS Dirty then, so a fault that re-parks the hart in Debug
+Mode leaves VS Dirty.
+
+A fault-only-first load (`vle<eew>ff.v`, `vlseg<nf>e<eew>ff.v`) runs as a
+unit-stride (segment) form. A fault on element 0 traps like any load's; a fault
+on element `i > 0` (an absolute index, so also when `vstart = i`) ends the run
+before element `i` without an exception, and the instruction completes and
+retires with `vl` set to `i`. The CSR file installs it on the edge of the load's
+registered commit, one edge after the reorder buffer passes the load. Later
+instructions read the architectural `vl` after that edge (arithmetic at its own
+registered commit, memory and vector-to-scalar instructions at the head,
+`vsetvli x0, x0` at its commit); a vector arithmetic instruction right behind the
+load reads it on the next edge, with no cycle to spare.
 
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector implementation is incomplete, and bare-metal

@@ -55,8 +55,11 @@ bmc_replace: chparam -set PWC_L1_ENTRIES 1 -set PWC_ROOT_ENTRIES 1 ptw
 wide: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
 noalias: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
 external: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
+hierarchy -top ptw
+script free_undefined.ys
 prep -top ptw
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/mmu/ptw.sv
+free_undefined.ys

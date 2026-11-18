@@ -1093,8 +1093,16 @@ FORMAL_TARGETS = [
     FormalTarget(
         "vec_head_mmu.sby",
         "Head vector translation before access, precise partial faults, commit shield "
-        "and consumption of every commit",
-        tasks=("bmc", "cover"),
+        "and consumption of every commit; strided and indexed element runs in order with "
+        "each element translated first, precise mid-run faults and pointer masking",
+        tasks=(
+            "bmc",
+            "cover",
+            "stride_bmc",
+            "stride_cover",
+            "index_bmc",
+            "index_cover",
+        ),
     ),
     FormalTarget(
         "vec_hold_rows.sby",
@@ -3190,6 +3198,16 @@ SBY_TASKS = [
         "vmt_bmc",
         "Vector memory table lifecycle against a ghost reorder buffer, 14 frames.",
     ),
+    (
+        "stride_bmc",
+        "Strided head run: element order, translation first, precise faults, 60 frames.",
+    ),
+    ("stride_cover", "Strided head run reachability: retirement, mid-run fault, tag."),
+    (
+        "index_bmc",
+        "Indexed head run: index reads, order, translation first, precise faults, 60 frames.",
+    ),
+    ("index_cover", "Indexed head run reachability: retirement, mid-run fault."),
     ("bmc", "Check assertions up to the configured depth"),
     ("continuity", "Bounded pc_reg and slot-1 PC continuity check"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
@@ -4370,7 +4388,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "backing_btb": (
-        "not converted: memory_map and opt -fast without -keepdc; no setundef",
+        "runs memory_map and opt -fast without -keepdc after the opening",
         {
             "bmc bmc_four_way prove prove_four_way cover size_select size_select_four_way": [
                 "memory_map",
@@ -4409,7 +4427,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "cache_flash_valid": (
-        "not converted: memory_map and opt without -keepdc; no setundef",
+        "runs memory_map and opt without -keepdc after the opening",
         {
             "bmc_fast bmc_fast_ways1 bmc_hw cover_fast cover_fast_ways1 cover_hw": [
                 "memory_map",
@@ -4743,7 +4761,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "nic_dma_front": (
-        "not converted: opt -fast; no setundef",
+        "runs opt -fast without -keepdc after the opening",
         {
             "bmc cover": ["opt -fast"],
         },
@@ -4807,7 +4825,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "rat_checkpoint_restore": (
-        "not converted: memory_map and opt -full; no setundef",
+        "runs memory_map and opt -full without -keepdc after the opening",
         {
             "prove_int_active prove_int_ckpt_lo prove_int_ckpt_hi prove_fp_active prove_fp_ckpt_lo prove_fp_ckpt_hi cover": [
                 "memory_map",
@@ -5429,58 +5447,26 @@ UNDEFINED_CONSTANT = re.compile(r"\d*'[sS]?[bBoOdDhH]?[0-9a-fA-F_xXzZ?]*[xXzZ?]"
 # Scripts that do not open that way yet. The list only shrinks: a listed script
 # whose every task opens fails the check.
 UNDEFINED_OPENING_PENDING = (
-    "aplic",
     "axi_coherent_bridge",
-    "backing_btb",
     "branch_prediction_alias",
-    "cache_flash_valid",
     "coherence_array",
     "coherence_array_equiv",
-    "coherence_control",
     "coherence_dma_ingress",
-    "coherence_endpoints",
     "coherence_home",
-    "coherence_home_array",
-    "coherence_home_completions",
     "coherence_l1d",
-    "coherence_link",
-    "coherence_prefetch_agent",
-    "coherence_replay_compare",
     "coherence_store_boundary",
     "coherence_store_home",
-    "coherent_cpu",
     "coherent_hart_cache",
     "csr_commit_cofactor",
     "csr_file",
-    "fetch_shadow_capture",
-    "home_seat_next_equiv",
-    "if_prediction_walk_past",
     "immu_bare",
-    "imsic",
-    "l2tlb",
-    "line_align",
     "line_client_link",
-    "load_queue",
-    "lq_l0_cache",
-    "lq_prematch_cofactors",
-    "nic_dma_front",
-    "pd_backing_redirect",
     "pm_mode_select",
-    "prediction_handoff",
-    "prediction_release",
-    "ptw",
-    "rat_checkpoint_restore",
     "reorder_buffer",
-    "reservation_station",
-    "rob_link_value_ram",
     "rs_payload_twin",
     "sq_forwarding_unit",
-    "tlb",
-    "tomasulo_wrapper",
     "trap_unit",
-    "vec_hold_rows",
     "vec_lmul_legality_equiv",
-    "vec_vmt",
 )
 # Scripts that compare two designs inside the script (the primitive twins and
 # the other in-script equivalence checks). Both designs hold the same undefined

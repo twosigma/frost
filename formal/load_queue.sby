@@ -38,6 +38,8 @@ prove_pre_match: read -sv coherent_lq_candidate_select.sv
 prove_pre_match: read -formal -sv coherent_lq_address_store.sv
 prove_pre_match: read -formal -D F_LQ_PREMATCH_ONLY -sv load_queue.sv
 no_prepare_busy: chparam -set PREPARE_LOAD_WHILE_BUSY 0 load_queue
+hierarchy -top load_queue
+script free_undefined.ys
 prep -top load_queue
 prove_pre_match: select -assert-none t:$assume
 
@@ -54,3 +56,4 @@ prove_pre_match: select -assert-none t:$assume
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+free_undefined.ys

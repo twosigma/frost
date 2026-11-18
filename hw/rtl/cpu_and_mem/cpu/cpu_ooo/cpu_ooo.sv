@@ -1131,6 +1131,9 @@ module cpu_ooo #(
   logic vec_vstore_commit;
   logic vec_vmem_fault_vstart_valid;
   logic [15:0] vec_vmem_fault_vstart;
+  logic vec_vmem_vs_dirty;
+  logic vec_vl_trim_valid;
+  logic [15:0] vec_vl_trim;
   logic vec_head_shield;
   logic vec_walk_req_valid, vec_walk_req_ready, vec_walk_resp_valid;
   logic [riscv_pkg::Sv39VpnBits-1:0] vec_walk_vpn;
@@ -4417,6 +4420,9 @@ module cpu_ooo #(
       .i_vstore_commit(vec_vstore_commit),
       .i_vmem_fault_vstart_valid(vec_vmem_fault_vstart_valid),
       .i_vmem_fault_vstart(vec_vmem_fault_vstart),
+      .i_vmem_vs_dirty(vec_vmem_vs_dirty),
+      .i_vl_trim_valid(vec_vl_trim_valid),
+      .i_vl_trim(vec_vl_trim),
       .o_vec_vl(csr_vec_vl),
       .o_vec_vtype(csr_vec_vtype),
       .o_vec_vstart(csr_vec_vstart),
@@ -5647,6 +5653,7 @@ module cpu_ooo #(
         .i_eff_priv_u(csr_mmu_eff_priv_u),
         .i_sum(csr_mmu_sum),
         .i_mxr(csr_mmu_mxr),
+        .i_pm_mode(csr_mmu_pm_mode),
         .i_tlb_invalidate(tlb_invalidate),
         .o_walk_req_valid(vec_walk_req_valid),
         .i_walk_req_ready(vec_walk_req_ready),
@@ -5676,6 +5683,9 @@ module cpu_ooo #(
         .o_vstore_commit(vec_vstore_commit),
         .o_vmem_fault_vstart_valid(vec_vmem_fault_vstart_valid),
         .o_vmem_fault_vstart(vec_vmem_fault_vstart),
+        .o_vmem_vs_dirty(vec_vmem_vs_dirty),
+        .o_vl_trim_valid(vec_vl_trim_valid),
+        .o_vl_trim(vec_vl_trim),
         .o_vmem_head_shield(vec_head_shield),
         .o_vmu_fatal(vec_vmu_fatal),
         .o_vmu_fatal_addr(vec_vmu_fatal_addr),
@@ -5809,6 +5819,9 @@ module cpu_ooo #(
     assign vec_vstore_commit = 1'b0;
     assign vec_vmem_fault_vstart_valid = 1'b0;
     assign vec_vmem_fault_vstart = '0;
+    assign vec_vmem_vs_dirty = 1'b0;
+    assign vec_vl_trim_valid = 1'b0;
+    assign vec_vl_trim = '0;
     assign vec_head_shield = 1'b0;
     assign vec_rf_read_en = 1'b0;
     assign vec_rf_read_addr = '0;
