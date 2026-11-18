@@ -295,7 +295,7 @@ static unsigned long run_lower(unsigned long mpp, int op, unsigned long rs1)
                      "1:\n"
                      :
                      : "r"(mpp), "r"(body), "r"(rs1)
-                     : "t0", "a0", "memory");
+                     : "t0", "t1", "t2", "t3", "a0", "memory");
     return g_cause;
 }
 
