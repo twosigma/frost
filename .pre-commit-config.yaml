@@ -129,6 +129,7 @@ repos:
         files: \.py$
         exclude: |
           (?x)^(
+            sw/apps/fefuzz/fe_gen\.py|
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
             verif/cocotb_tests/cache/test_(dma_test_engine|frost_cache)_wide\.py|
@@ -167,6 +168,7 @@ repos:
             sw/apps/pa_dma_test/main\.c|
             sw/apps/pa_nic_mmio_test/main\.c|
             sw/apps/pd_itt_slot2/main\.c|
+            sw/apps/fefuzz/main\.c|
             sw/apps/pa_nic_packet_test/main\.c|
             sw/apps/(fencei_bench/fencei_bench|fencei_jit_bench/fencei_jit_bench|smc_predict_test/smc_predict_test)\.c|
             sw/apps/(smc_stale_test/smc_stale_test|smc_torture/smc_torture)\.c|
@@ -219,7 +221,7 @@ repos:
       - id: insert-license
         name: insert-license (Tcl/Makefile/Shell)
         files: (\.tcl$|Makefile$|\.mk$|\.sh$)
-        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch|dma|nic_mmio|nic_packet)_test/Makefile$|sw/apps/sum_toggle_test/Makefile$|sw/apps/nic_(rate|sg_loopback)/Makefile$|sw/apps/l2_capacity_chase/Makefile$|sw/apps/(fencei_bench|fencei_jit_bench|smc_predict_test|smc_stale_test|smc_torture|sscofpmf_test|cbo_zero_test|cbo_zero_bench|cbo_zero_pages|store_fill_bench|full_line_test|cbo_mgmt_test|sstvala_test|sysreset_test|l1i_set_test)/Makefile$|sw/apps/(zicbop_test|zawrs_test|zihpm_test|ddr_hpm_refill_test)/Makefile$|sw/apps/(sum_toggle_test|asid_test)/Makefile$|sw/apps/irq_take_latency/Makefile$|sw/apps/(svpbmt_test|pm_test|svnapot_test)/Makefile$|sw/apps/(bootrom|fsbl)/Makefile$|sw/uboot/Makefile$)
+        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch|dma|nic_mmio|nic_packet)_test/Makefile$|sw/apps/sum_toggle_test/Makefile$|sw/apps/nic_(rate|sg_loopback)/Makefile$|sw/apps/l2_capacity_chase/Makefile$|sw/apps/(fencei_bench|fencei_jit_bench|smc_predict_test|smc_stale_test|smc_torture|sscofpmf_test|cbo_zero_test|cbo_zero_bench|cbo_zero_pages|store_fill_bench|full_line_test|cbo_mgmt_test|sstvala_test|sysreset_test|l1i_set_test)/Makefile$|sw/apps/(zicbop_test|zawrs_test|zihpm_test|ddr_hpm_refill_test)/Makefile$|sw/apps/(sum_toggle_test|asid_test)/Makefile$|sw/apps/irq_take_latency/Makefile$|sw/apps/(svpbmt_test|pm_test|svnapot_test)/Makefile$|sw/apps/(bootrom|fsbl)/Makefile$|sw/apps/(fefuzz|pd_itt_slot2)/Makefile$|sw/uboot/Makefile$)
         args:
           - --license-filepath=.license-header.txt
           - --comment-style=#
