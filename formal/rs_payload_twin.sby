@@ -1,14 +1,15 @@
 [tasks]
 bmc
-bmc_cdb packet
-bmc_cdb_2 packet
-bmc_commit packet
+bmc_cdb packet packet_only
+bmc_cdb_2 packet packet_only
+bmc_commit packet packet_only
 bmc_commit_2 packet
 bmc_operands
 
 [options]
 mode bmc
-depth 5
+~bmc_commit_2: depth 5
+bmc_commit_2: depth 6
 packet: vcd_sim on
 
 [engines]
@@ -83,21 +84,30 @@ opt_clean
 setundef -zero -init
 # Check the same complete model in each task. The four wide packets and
 # operand values have separate cones. The remaining assertions form the
-# complement of those named groups. Every task keeps all wrapper assumptions.
+# complement of those named groups. The second commit packet shares its task
+# with the CMO request. The kind and address faults pass at depth five because
+# the first valid request appears in frame five. Check that sixth frame.
+# Every task keeps all wrapper assumptions.
 select -assert-count 104 t:$check r:FLAVOR=assume %i
-select -assert-count 172 t:$check r:FLAVOR=assert %i
+select -assert-count 175 t:$check r:FLAVOR=assert %i
 select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2
 select -set operands c:p_twin_operand_*
+select -set cmo c:p_twin_cmo_*
+select -set commit_and_cmo c:p_twin_commit_comb_2 @cmo
+select -assert-count 3 @cmo
+select -assert-count 4 @commit_and_cmo
 select -assert-count 4 @packets
 select -assert-count 16 @operands
-bmc: chformal -assert -remove @packets @operands
+bmc_commit_2: select -assert-count 1 c:c_twin_cmo_request t:$check %i r:FLAVOR=cover %i
+bmc: chformal -assert -remove @packets @operands @cmo
 bmc_cdb: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_cdb %d
 bmc_cdb_2: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_cdb_2 %d
 bmc_commit: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_commit_comb %d
-bmc_commit_2: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_commit_comb_2 %d
+bmc_commit_2: chformal -assert -remove t:$check r:FLAVOR=assert %i @commit_and_cmo %d
 bmc_operands: chformal -assert -remove t:$check r:FLAVOR=assert %i @operands %d
 bmc: select -assert-count 152 t:$check r:FLAVOR=assert %i
-packet: select -assert-count 1 t:$check r:FLAVOR=assert %i
+packet_only: select -assert-count 1 t:$check r:FLAVOR=assert %i
+bmc_commit_2: select -assert-count 4 t:$check r:FLAVOR=assert %i
 bmc_operands: select -assert-count 16 t:$check r:FLAVOR=assert %i
 
 [files]
