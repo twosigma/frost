@@ -351,12 +351,11 @@ module coherence_home #(
   logic [COMPLETIONS-1:0] f_add_reference[FILLS];
 `endif
   logic [1:0] fill_seat_count_q[FILLS], fill_add_count[FILLS];
-  // Forwarding a fill's line to its primary request. fill_primary_q[fill] is
-  // the primary's seat while it waits for its forward: a GetS, LoadReserved
-  // or GetM whose decision allocated the fill, which needs no probe or update
-  // to be granted. fill_primary_upper_q is its sector of a 64-byte line.
-  // fill_forward_q marks a fill whose primary may take the forward: it holds
-  // its line, and its victim handling has let the install begin.
+  // fill_primary_q[fill] holds the seat of the request that allocated the
+  // fill. GetS, LoadReserved and GetM may receive their sector when the
+  // install begins. A Zicbom primary receives GrantAck after its recall and
+  // any write response. fill_primary_upper_q selects its sector on 64-byte
+  // lines. fill_forward_q marks a primary ready to offer its grant.
   logic [COMPLETIONS-1:0] fill_primary_q[FILLS];
   logic [FILLS-1:0] fill_primary_upper_q, fill_forward_q;
   // The primary's G without data, recorded at allocation: its q, its tid
@@ -373,14 +372,13 @@ module coherence_home #(
   // until the forward buffer's G.
   logic forward_valid, forward_ready, forward_accept;
   logic [FILLS-1:0] forward_pick, forward_pick_q, forward_later_q;
-  // fill_forward_set[fill]: the fill enters FillInstall with a primary on
-  // this edge, so it may forward from the next cycle. Both of its uses apply
-  // it only while the home runs.
+  // A fill entering FillInstall or FillCmoGrant with a primary may forward
+  // from the next cycle. Both uses of this signal require the home to run.
   logic [FILLS-1:0] fill_forward_set;
   // fill_forward_set split by its late term: forward_install_done[fill]
-  // enters FillInstall from a completed read, forward_install_candidate[fill]
-  // would enter it from this cycle's memory response if that response is
-  // valid and good. At most one fill is a candidate.
+  // marks a completed read entering FillInstall or a CMO entering
+  // FillCmoGrant. forward_install_candidate[fill] may enter FillInstall on
+  // this cycle's successful memory response. At most one fill is a candidate.
   logic [FILLS-1:0] forward_install_done, forward_install_candidate;
   logic forward_response_good;
   logic [COMPLETIONS-1:0] forward_slots;
@@ -1478,8 +1476,8 @@ module coherence_home #(
     assign probe_matches = probe_identity_matches && (&probe_addr_equal);
 `endif
     wire allocate = run && array_response && decision_fill && fill_free_index == FillBits'(fill);
-    // The primary may take a forward: a GetS, LoadReserved or GetM, and not
-    // a prefetch, whose decision allocates the fill.
+    // GetS, LoadReserved and GetM can receive their sector through the
+    // forward buffer. A Zicbom primary uses the same buffer for GrantAck.
     wire forwardable = !lookup_prefetch_q && (decision_opcode == coherence_pkg::GetS ||
         decision_opcode == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
         decision_opcode
@@ -1963,14 +1961,15 @@ module coherence_home #(
   endfunction
   // forward_pick_q holds the turn of the current state, formed from the
   // next state: the fills that may forward, without an accepted forward's
-  // fill and with each install that begins with a primary, and the turn
-  // past an accepted forward's fill. An allocation finds its fill free, so
+  // fill and with each primary entering FillInstall or FillCmoGrant, and
+  // the turn past an accepted forward's fill. An allocation finds its fill free, so
   // it never clears a fill that may forward, and the late decision stays
   // out of the pick.
   // The turn forms for both outcomes of this cycle's memory response, which
   // arrives late: without it, the fills that may forward are the registered
-  // ones and those installing from a completed read; with a valid and good
-  // response, also its candidate fill. The response and acceptance select
+  // ones, completed reads starting installation, and ready CMO grants. A
+  // successful response also enables its candidate fill.
+  // The response and acceptance select
   // among the four prepared turns last.
   assign forward_response_good = run && i_mem_resp_valid && !i_mem_resp_error;
   logic [FILLS-1:0] forward_pick_next;

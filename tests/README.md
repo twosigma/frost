@@ -199,7 +199,8 @@ The `coherence_endpoints`, `coherence_endpoints_single`, and
 identity reuse, independent probe queues, keyed PutAck cancellation, errors,
 and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
 identities. Admission checks cover every request identity and opcode in both
-epochs, including each hart's two class-3 line-client identities.
+epochs, including each hart's eight class-3 line-client identities and its
+dedicated Zicbom identity.
 The `coherence_endpoints_local` and
 `coherence_endpoints_local_wide` benches apply the same checks to request
 endpoints with separate phase occupancy registers.

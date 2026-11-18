@@ -14,6 +14,7 @@ benches compose these modules independently of the CPU hierarchy.
 | File | Role |
 |------|------|
 | `coherent_hart_cache.sv` | CPU private L1D and L1I, instruction and walker bridges, and maintenance arbitration |
+| `coherence_cmo_agent.sv` | Sends a Zicbom operation to each home line in a 64-byte block and signals completion after the final release |
 | `coherence_l1d.sv` | MSI data cache with probes, tagged reads and four ordered store records |
 | `coherence_home.sv` | Shared L2 home with sector ordering, dirty-data merge, configurable fills, lookup-only Prefetch service and streaming DMA placement |
 | `coherence_dma_ingress.sv` | Independent request lifetimes, read responses at grant and write responses after release, for the SoC's DMA port and a hart's line client |
@@ -111,11 +112,12 @@ and every payload bit during a stall. Addresses name aligned 32-byte sectors.
 Request identity q contains src 2, port_class 2, id 4, and epoch 1. Sources
 0 and 1 name harts, 2 names DMA, and 3 names prefetch. Classes 0, 1, 2, and 3
 name data, instruction fetch, page-table walk, and agent traffic. Hart data
-IDs are 0 through 7, and fetch and walk IDs are 0 and 1. A hart's class 3 is
-its line client, with IDs 0 through `HartLineIds - 1` (eight: two for the
-misaligned-access engine and six for the vector memory unit) and only DMARead
-and DMAWrite requests, which the home serves as DMA: it probes the hart's own
-L1D, merges dirty data and applies the write mask. A line client's request
+IDs are 0 through 7, and fetch and walk IDs are 0 and 1. A hart uses class 3
+for its line client and its Zicbom requester. IDs 0 through `HartLineIds - 1` belong to the line client (two for the
+misaligned-access engine and six for the vector memory unit). They send
+DMARead and DMAWrite requests. The home probes the hart's L1D, merges dirty
+data and applies the write mask. The next ID, `CmoId`, sends CleanBlock,
+FlushBlock and InvalBlock. A line client's request
 keeps same-sector ordering until its U, as hart requests do. DMA IDs are opaque
 four-bit values; prefetch IDs are 0 through 3, one for each request endpoint
 of the prefetch agent. Admission limits are the ingress's credits for DMA,
@@ -150,7 +152,7 @@ DMA requester has its own reset.
 
 | Encoding | Values |
 | --- | --- |
-| D opcode | 0 GetS, 1 GetM, 2 LoadReserved, 3 Atomic, 4 StoreConditional, 5 ReadOnceIF, 6 ReadOncePTW, 7 DMARead, 8 DMAWrite, 9 Prefetch, 10 GetMZero |
+| D opcode | 0 GetS, 1 GetM, 2 LoadReserved, 3 Atomic, 4 StoreConditional, 5 ReadOnceIF, 6 ReadOncePTW, 7 DMARead, 8 DMAWrite, 9 Prefetch, 10 GetMZero, 11 CleanBlock, 12 FlushBlock, 13 InvalBlock |
 | P opcode | 0 ProbeRead, 1 ProbeInvalidate, 2 CheckSC |
 | R opcode | 0 ProbeAck, 1 ProbeData, 2 CheckAck |
 | G opcode | 0 GrantS, 1 GrantE, 2 GrantM, 3 GrantData, 4 GrantAck, 5 GrantFail, 6 GrantMZero |
@@ -1387,17 +1389,17 @@ coherent or not, sees it.
 `coherence_cmo_agent` in `coherent_hart_cache`, after every older store has
 installed in the L1D (its existing drain condition). The requester sends one
 `CleanBlock`, `FlushBlock` or `InvalBlock` per home line with the identity
-`{source 0, class 3, id 0}`, takes the home's `GrantAck`, completes it and
-waits for the release, then pulses its done; the store queue frees the entry
-on that done. Younger stores wait behind the entry and younger loads of the
-block wait for it to free. The L1D holds no CMO state: the home reaches every
+`{hart source, class 3, id 8}` (`CmoId`). It takes the home's `GrantAck`
+and completes the transaction. After the final release it pulses done and
+the store queue can free the entry. Younger stores wait behind it, and younger
+loads of its block wait for it to free. The L1D holds no CMO state: the home reaches every
 L1D copy with probes, as it does for DMA.
 
-**Home.** A CMO holds both sectors of its line in the completion table, as
-`GetMZero` does. Its decision never takes the hit path: hit or miss, it
-allocates a fill control aimed at its own line, with a write-back slot, and
-parks on that fill's seat. The fill reads no memory and installs nothing. It
-recalls both L1D sectors, with `ProbeRead` for a clean (Modified copies merge
+**Home.** A CMO holds its home line in the completion table, including
+both sectors when the home line is 64 bytes. Both hits and misses allocate a
+fill control for the target line and a write-back slot. The request parks on
+its primary seat. The fill reads no memory and installs nothing. It
+recalls each sector of its home line, with `ProbeRead` for a clean (Modified copies merge
 their bytes and stay Shared) and `ProbeInvalidate` for a flush or an inval
 (every copy leaves, through the CPU cut: L0 dwords, LR reservations, live
 read slots and returned-load observations), absorbing a pending PutM as a
@@ -1408,8 +1410,8 @@ clean or a flush; an inval frees the slot and discards it. A resident line's
 tag is then invalidated. The fill waits in `FillCmo` for the slot's B, then
 offers `GrantAck` through the forward buffer in `FillCmoGrant` and frees when
 the completion table takes it. A line the L2 lacks has no Modified copy, so
-its recall brings no data and the fill writes nothing. A CMO's fill takes no
-waiter seats; readers of its line are ordered behind its U. A failed memory
+its recall brings no data and the fill writes nothing. A CMO's fill holds only its
+primary seat. Readers of its home line wait for its U. A failed memory
 write stops the home with the line's address.
 
 After a clean the L2 holds no copy and the L1D at most a Shared one, so no

@@ -72,13 +72,12 @@ module coherence_home_completions #(
     // One-hot form of o_image_index, all zero when no result awaits G.
     output logic [RESULT_SLOTS:0] o_image_select,
     input logic [255:0] i_image_data,
-    // A fill forwards its line to its primary request, a parked GetS,
-    // LoadReserved or GetM: the slot named by the one-hot i_forward_slots
-    // takes the forward buffer, a completion pin on i_forward_way and its
-    // result i_forward at once. i_forward is the slot's G without data:
-    // GrantM for a GetM, else GrantS, with the slot's q, tid and address and
-    // no error. o_forward_ready reads registers only; the forwarded sector
-    // comes back through i_image_data.
+    // The primary named by one-hot i_forward_slots takes the forward buffer,
+    // a completion pin on i_forward_way, and i_forward together. i_forward
+    // supplies G metadata with the slot's q, tid and address. Demand grants
+    // use GrantS, GrantM or GrantMZero. Zicbom uses a data-free GrantAck.
+    // o_forward_ready reads registers only. i_image_data supplies the sector
+    // for grants that carry data.
     input logic i_forward_valid,
     output logic o_forward_ready,
     input logic [SLOTS-1:0] i_forward_slots,
