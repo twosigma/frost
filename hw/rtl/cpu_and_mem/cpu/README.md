@@ -267,11 +267,12 @@ a 64-entry circular buffer. Dispatch sees the branches in the same order, so it 
 branch the same index from a pointer of its own and records it by ROB tag;
 every flush that drops branches in between rewinds both pointers to the same
 entry. Commit trains from that entry, one branch per cycle with the same
-slot-2 hold. The provider's counter moves toward the outcome, and when the
-provider and the alternate direction disagree, its usefulness bit records
-whether the provider was right. A mispredicted branch allocates a weak entry
-in the first table above its provider (T1, then T2) whose entry is not useful,
-or clears those usefulness bits when every candidate is useful. Slot-2
+slot-2 hold. The provider's direction counter moves toward the outcome. When
+the provider and alternate disagree, the two-bit usefulness counter moves up
+for a correct provider and down for an incorrect one, saturating at either
+end. A misprediction allocates a weak entry in the shortest eligible table
+above the provider whose row is free. If allocation fails, each candidate’s
+nonzero usefulness counter decreases by one. Slot-2
 branches are trained the same way, from the prediction left after any PD
 override. Each table bank keeps two copies, one read by lookups and one by
 training, and every write goes to both. When the provider's entry in the

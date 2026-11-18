@@ -275,6 +275,18 @@ module if_prediction_walk_past_formal (
       .o_slot1_has_control_flow(),
       .o_slot1_is_indirect(),
       .o_width_events(),
+      // Each predictor stub supplies independent responses. The walk-past
+      // contract has no training source and does not consume the saved lookups.
+      .i_itt_hist('0),
+      .i_itt_train_valid(1'b0),
+      .i_itt_train_lookup('0),
+      .i_itt_train_bank(1'b0),
+      .i_itt_train_target('0),
+      .i_itt_train_mispredicted(1'b0),
+      .o_itt_slot_lookup(),
+      .o_itt_slot_lookup_2(),
+      .o_itt_hit(),
+      .o_itt_target(),
       .i_tage_hist('0),
       .i_tage_train_valid(1'b0),
       .i_tage_train_lookup('0),
