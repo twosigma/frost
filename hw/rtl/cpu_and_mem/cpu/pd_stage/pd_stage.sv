@@ -1580,6 +1580,7 @@ module pd_stage #(
       {1'b0, i_from_if_to_pd_2.program_counter[PdTargetSplit-1:0]} +
       {1'b0, pd_slot2_imm_b_compressed[PdTargetSplit-1:0]};
 
+  logic [1:0][XLEN-1:0] formal_itt_slot_target_q;
   always_ff @(posedge i_clk) begin
     formal_past_valid <= 1'b1;
     if (!formal_past_valid) assume (i_pipeline_ctrl.reset);
@@ -1592,8 +1593,12 @@ module pd_stage #(
             i_from_if_to_pd_2.fetch_fault);
     if (!i_pipeline_ctrl.stall) begin
       formal_backing_compressed_q <= i_backing_compressed;
-      formal_slot1_instruction_q  <= instruction_non_nop;
-      formal_slot2_instruction_q  <= instruction_non_nop_2;
+      for (int slot = 0; slot < 2; slot++)
+      formal_itt_slot_target_q[slot] <= {
+        i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], i_itt_target[slot], 1'b0
+      };
+      formal_slot1_instruction_q <= instruction_non_nop;
+      formal_slot2_instruction_q <= instruction_non_nop_2;
     end
   end
 
@@ -1764,12 +1769,18 @@ module pd_stage #(
       // An indirect target redirect fires for its slot's registered JALR that
       // is not a return.
       if (pd_itt_redirect_r) begin
+        p_formal_slot1_indirect_payload :
+        assert (o_pd_redirect && o_pd_redirect_taken && !o_pd_redirect_slot2 &&
+                o_pd_redirect_target == formal_itt_slot_target_q[0]);
         p_formal_slot1_itt_redirect_is_its_jalr :
         assert (is_jalr(
             o_from_pd_to_id.instruction
         ) && !pd_registered_return && !o_from_pd_to_id.inject_nop);
       end
       if (pd_itt_redirect_2_r) begin
+        p_formal_slot2_indirect_payload :
+        assert (o_pd_redirect && o_pd_redirect_taken && o_pd_redirect_slot2 &&
+                o_pd_redirect_target == formal_itt_slot_target_q[1]);
         p_formal_slot2_itt_redirect_is_its_jalr :
         assert (is_jalr(
             o_from_pd_to_id_2.instruction
@@ -1780,6 +1791,8 @@ module pd_stage #(
 
   always_ff @(posedge i_clk) begin
     if (formal_past_valid && !i_pipeline_ctrl.reset) begin
+      cover (pd_itt_redirect_r && pd_backing_redirect_r);
+      cover (pd_itt_redirect_2_r && pd_backing_redirect_2_r);
       cover (pd_backing_redirect_r && !o_pd_redirect_ras_push && !o_pd_redirect_ras_pop);
       cover (pd_backing_redirect_2_r && o_pd_redirect_ras_push);
       cover (pd_backing_redirect_r && o_pd_redirect_ras_pop &&

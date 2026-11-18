@@ -341,6 +341,55 @@ module ittage_predictor #(
     assign write_any[t]   = train_valid_q && (provider[t] || alloc[t] || useful_clear[t]);
   end
 
+`ifdef ITTAGE_TRAINING_PROOF
+  logic f_past_valid = 1'b0;
+  always_ff @(posedge i_clk) begin
+    f_past_valid <= 1'b1;
+    if (f_past_valid) begin
+      p_capture_or_hold :
+      assert (lookup_presented == ($past(
+          i_lookup_capture
+      ) ? $past(
+          lookup_live
+      ) : $past(
+          lookup_presented
+      )));
+      if (!$past(i_train_valid)) begin
+        p_idle_never_writes : assert (write_any == '0);
+      end else begin
+        p_training_uses_its_bank : assert (write_bank == $past(i_train_bank));
+        p_one_allocation : assert ($onehot0(alloc));
+        p_correct_prediction_never_allocates : assert ($past(i_train_mispredicted) || alloc == '0);
+      end
+    end
+  end
+  for (genvar t = 0; t < Tables; t++) begin : gen_training_check
+    logic higher_hit;
+    if (t == Tables - 1) assign higher_hit = 1'b0;
+    else assign higher_hit = |train_lookup_q.hit[Tables-1:t+1];
+    always_ff @(posedge i_clk) begin
+      if (f_past_valid && $past(i_train_valid)) begin
+        p_saved_lookup : assert (train_lookup_q == $past(i_train_lookup));
+        p_write_index : assert (write_index[t] == $past(i_train_lookup.index[t]));
+        if (train_lookup_q.hit[t] && !higher_hit) begin
+          p_provider_is_written : assert (write_any[t]);
+          if (!owned[t]) begin
+            p_unowned_provider_preserves_training_row : assert (write_entry[t] == cur[t]);
+          end
+        end
+        if ($past(
+                write_any[t] && write_bank == i_train_bank &&
+                  write_index[t] == i_train_lookup.index[t]
+            )) begin
+          p_consecutive_training_forwards : assert (cur[t] == $past(write_entry[t]));
+        end
+        cover (train_lookup_q.hit[t] && !higher_hit && !owned[t] && write_any[t]);
+        cover (alloc[t] && write_any[t]);
+      end
+    end
+  end
+`endif
+
 `ifndef SYNTHESIS
   initial begin
     if (EntryBits != $bits(entry_t)) $error("ittage_predictor: EntryBits does not match entry_t");

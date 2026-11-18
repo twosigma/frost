@@ -1576,6 +1576,18 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "branch_prediction_resolution.sby",
+        "Two arbitrary predictions leave the resolved branch outcome, target and ROB update "
+        "identity equal; each wrong direction or taken target requests recovery",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "ittage_training.sby",
+        "Indirect prediction holds the captured lookup; each table uses the retiring lookup's "
+        "bank and index, forwards a colliding write, and repairs an unowned provider",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "tage_history_recovery.sby",
         "Both lookup histories follow accepted predictions, ordered retirement, "
         "saved early-recovery histories, and every PC restore arm",

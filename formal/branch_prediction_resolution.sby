@@ -1,0 +1,28 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+cover: mode cover
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top branch_prediction_resolution_formal --single-unit -D SYNTHESIS riscv_pkg.sv branch_jump_unit.sv branch_resolution.sv branch_prediction_resolution_formal.sv
+hierarchy -top branch_prediction_resolution_formal
+script free_undefined.ys
+bmc: select -assert-count 7 t:$check r:FLAVOR=assert %i
+prep -top branch_prediction_resolution_formal -flatten
+# Shared actual outcomes and flush qualification merge identical property cells.
+bmc: select -assert-count 5 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 4 t:$check r:FLAVOR=cover %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/branch_resolution.sv
+branch_prediction_resolution_formal.sv
+free_undefined.ys
