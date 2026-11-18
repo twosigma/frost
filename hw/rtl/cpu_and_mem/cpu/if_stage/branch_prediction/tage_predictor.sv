@@ -278,12 +278,11 @@ module tage_predictor #(
   // ===========================================================================
   // Read stage: the branch's bank of each table at the saved indices, or the
   // entry the write stage is writing this cycle.
-  entry_t [TABLES-1:0] read_entry;
-  entry_t [TABLES-1:0] cur;  // the saved entries
-  entry_t [TABLES-1:0] next;
+  logic [TABLES-1:0][EntryBits-1:0] read_entry;
+  logic [TABLES-1:0][EntryBits-1:0] cur;  // the saved entries
   for (genvar t = 0; t < TABLES; t++) begin : gen_train_read
     assign read_entry[t] = (write_any[t] && (write_bank == i_train_bank) &&
-                            (write_index[t] == i_train_lookup.index[t])) ? next[t] :
+                            (write_index[t] == i_train_lookup.index[t])) ? write_entry[t] :
                            i_train_bank ? train_entry[t][1] : train_entry[t][0];
   end
 
@@ -315,6 +314,7 @@ module tage_predictor #(
   // it, and the allocation among them.
   logic [TABLES-1:0] provider;
   logic [TABLES-1:0] above;
+  logic [TABLES-1:0] useful;
   logic [TABLES-1:0] owned;  // the saved entry still holds the branch
   logic [TABLES-1:0] alloc;
   logic [TABLES-1:0] useful_down;
@@ -335,13 +335,11 @@ module tage_predictor #(
         above[t] = 1'b1;
       end
     end
-    for (int t = 0; t < TABLES; t++)
-    owned[t] = cur[t].valid && (cur[t].tag == train_lookup_q.tag[t]);
     // The shortest free table above the provider; if none, every candidate
     // counts its usefulness down.
     alloc = '0;
     for (int t = 0; t < TABLES; t++) begin
-      if (train_mispredicted_q && above[t] && !owned[t] && (cur[t].useful == '0) && (alloc == '0))
+      if (train_mispredicted_q && above[t] && !owned[t] && !useful[t] && (alloc == '0))
         alloc[t] = 1'b1;
     end
     useful_down = '0;
@@ -351,30 +349,34 @@ module tage_predictor #(
   end
 
   for (genvar t = 0; t < TABLES; t++) begin : gen_write
+    entry_t entry;
+    entry_t updated;
+    assign entry = cur[t];
+    assign useful[t] = |entry.useful;
+    assign owned[t] = entry.valid && (entry.tag == train_lookup_q.tag[t]);
     always_comb begin
-      next[t] = cur[t];
+      updated = entry;
       if (provider[t] && owned[t]) begin
-        next[t].ctr = counter_step(cur[t].ctr, train_taken_q);
+        updated.ctr = counter_step(entry.ctr, train_taken_q);
         if (useful_update) begin
-          if (useful_value)
-            next[t].useful = (&cur[t].useful) ? cur[t].useful : cur[t].useful + 1'b1;
-          else next[t].useful = (cur[t].useful == '0) ? cur[t].useful : cur[t].useful - 1'b1;
+          if (useful_value) updated.useful = (&entry.useful) ? entry.useful : entry.useful + 1'b1;
+          else updated.useful = (entry.useful == '0) ? entry.useful : entry.useful - 1'b1;
         end
       end else if (alloc[t]) begin
-        next[t].valid  = 1'b1;
-        next[t].tag    = train_lookup_q.tag[t];
-        next[t].ctr    = train_taken_q ? CtrWeakTaken : CtrWeakNotTaken;
-        next[t].useful = '0;
-      end else if (useful_down[t] && (cur[t].useful != '0)) begin
-        next[t].useful = cur[t].useful - 1'b1;
+        updated.valid  = 1'b1;
+        updated.tag    = train_lookup_q.tag[t];
+        updated.ctr    = train_taken_q ? CtrWeakTaken : CtrWeakNotTaken;
+        updated.useful = '0;
+      end else if (useful_down[t] && (entry.useful != '0)) begin
+        updated.useful = entry.useful - 1'b1;
       end
     end
-    assign write_entry[t] = next[t];
+    assign write_entry[t] = updated;
     // A provider that does not own its entry writes the entry back as read
     // (next keeps cur then: no allocation or usefulness change happens in a
     // table that provided).
     assign write_any[t] = train_valid_q && (provider[t] || alloc[t] ||
-                                            (useful_down[t] && (cur[t].useful != '0)));
+                                            (useful_down[t] && (entry.useful != '0)));
   end
 
 `ifndef SYNTHESIS

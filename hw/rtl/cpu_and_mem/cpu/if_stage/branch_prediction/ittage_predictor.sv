@@ -112,9 +112,6 @@ module ittage_predictor #(
     hist_mask = '0;
     for (int b = 0; b < HIST_BITS; b++) if (b < bits) hist_mask[b] = 1'b1;
   endfunction
-  localparam logic [Tables-1:0][HIST_BITS-1:0] HistMask = {
-    hist_mask(HIST3), hist_mask(HIST2), hist_mask(HIST1)
-  };
 
   function automatic logic [INDEX_BITS-1:0] fold_index(input logic [HIST_BITS-1:0] hist);
     fold_index = '0;
@@ -167,9 +164,12 @@ module ittage_predictor #(
     logic [LOOKUP_HI:2] bank_word;
     assign bank_word = (word0[2] == 1'(b)) ? word0 : word1;
     for (genvar t = 0; t < Tables; t++) begin : gen_table
+      localparam logic [HIST_BITS-1:0] HistMask = hist_mask(
+          t == 0 ? HIST1 : t == 1 ? HIST2 : HIST3
+      );
       logic write_enable;
-      assign lookup_index[t][b] = hash_index(bank_word, i_lookup_hist & HistMask[t]);
-      assign lookup_tag[t][b] = hash_tag(bank_word, i_lookup_hist & HistMask[t]);
+      assign lookup_index[t][b] = hash_index(bank_word, i_lookup_hist & HistMask);
+      assign lookup_tag[t][b] = hash_tag(bank_word, i_lookup_hist & HistMask);
       assign write_enable = write_any[t] && (write_bank == 1'(b));
       sdp_dist_ram #(
           .ADDR_WIDTH(INDEX_BITS),
@@ -256,13 +256,12 @@ module ittage_predictor #(
   // ===========================================================================
   // Read stage: the JALR's bank of each table at the saved indices, or the
   // entry the write stage is writing this cycle.
-  entry_t [Tables-1:0] read_entry;
-  entry_t [Tables-1:0] cur;
-  entry_t [Tables-1:0] next;
+  logic [Tables-1:0][EntryBits-1:0] read_entry;
+  logic [Tables-1:0][EntryBits-1:0] cur;
   for (genvar t = 0; t < Tables; t++) begin : gen_train_read
     assign train_read_index[t] = i_train_lookup.index[t];
     assign read_entry[t] = (write_any[t] && (write_bank == i_train_bank) &&
-                            (write_index[t] == i_train_lookup.index[t])) ? next[t] :
+                            (write_index[t] == i_train_lookup.index[t])) ? write_entry[t] :
                            i_train_bank ? train_entry[t][1] : train_entry[t][0];
   end
 
@@ -284,6 +283,7 @@ module ittage_predictor #(
 
   // Write stage: the provider's update, then the allocation above it.
   logic [Tables-1:0] provider;
+  logic [Tables-1:0] useful;
   logic [Tables-1:0] owned;
   logic [Tables-1:0] above;  // tables above the provider
   logic [Tables-1:0] alloc;
@@ -296,46 +296,48 @@ module ittage_predictor #(
     above[0] = !(|train_lookup_q.hit);
     above[1] = !train_lookup_q.hit[1] && !train_lookup_q.hit[2];
     above[2] = !train_lookup_q.hit[2];
-    for (int t = 0; t < Tables; t++) begin
-      owned[t] = cur[t].valid && (cur[t].tag == train_lookup_q.tag[t]);
-    end
     // The shortest table above the provider that is free, and the useful
     // entries passed before it.
     alloc = '0;
     useful_clear = '0;
     for (int t = 0; t < Tables; t++) begin
       if (train_mispredicted_q && above[t] && !(|alloc)) begin
-        if (!owned[t] && !cur[t].useful) alloc[t] = 1'b1;
-        else if (cur[t].useful) useful_clear[t] = 1'b1;
+        if (!owned[t] && !useful[t]) alloc[t] = 1'b1;
+        else if (useful[t]) useful_clear[t] = 1'b1;
       end
     end
   end
 
   for (genvar t = 0; t < Tables; t++) begin : gen_write
+    entry_t entry;
+    entry_t updated;
+    assign entry = cur[t];
+    assign useful[t] = |entry.useful;
+    assign owned[t] = entry.valid && (entry.tag == train_lookup_q.tag[t]);
     logic correct;
-    assign correct = cur[t].target == train_target_q;
+    assign correct = entry.target == train_target_q;
     always_comb begin
-      next[t] = cur[t];
+      updated = entry;
       if (provider[t] && owned[t]) begin
         if (correct) begin
-          next[t].conf   = (&cur[t].conf) ? cur[t].conf : cur[t].conf + 2'd1;
-          next[t].useful = 1'b1;
-        end else if (cur[t].conf != 2'd0) begin
-          next[t].conf = cur[t].conf - 2'd1;
+          updated.conf   = (&entry.conf) ? entry.conf : entry.conf + 2'd1;
+          updated.useful = 1'b1;
+        end else if (entry.conf != 2'd0) begin
+          updated.conf = entry.conf - 2'd1;
         end else begin
-          next[t].target = train_target_q;
+          updated.target = train_target_q;
         end
       end else if (alloc[t]) begin
-        next[t].valid  = 1'b1;
-        next[t].tag    = train_lookup_q.tag[t];
-        next[t].target = train_target_q;
-        next[t].conf   = 2'd0;
-        next[t].useful = 1'b0;
+        updated.valid  = 1'b1;
+        updated.tag    = train_lookup_q.tag[t];
+        updated.target = train_target_q;
+        updated.conf   = 2'd0;
+        updated.useful = 1'b0;
       end else if (useful_clear[t]) begin
-        next[t].useful = 1'b0;
+        updated.useful = 1'b0;
       end
     end
-    assign write_entry[t] = next[t];
+    assign write_entry[t] = updated;
     assign write_any[t]   = train_valid_q && (provider[t] || alloc[t] || useful_clear[t]);
   end
 

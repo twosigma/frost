@@ -113,7 +113,7 @@ module tage_copy_convergence_formal #(
                                  dut.gen_bank[0].gen_table[t].u_train_copy.ram[f_index];
     assign f_reference_write[t] = dut.train_valid_q &&
         ((dut.provider[t] && dut.owned[t]) || dut.alloc[t] ||
-         (dut.useful_down[t] && (dut.cur[t].useful != '0)));
+         (dut.useful_down[t] && (dut.gen_write[t].entry.useful != '0)));
     assign f_at_watched[t] = (dut.write_bank == f_bank) && (dut.write_index[t] == f_index);
   end
   assign f_provider = dut.provider;
