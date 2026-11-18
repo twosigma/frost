@@ -32,7 +32,8 @@
 
   Both slots register the instruction without rewriting it to a NOP. A bubble
   (flush, PD redirect, or sel_nop) rides in inject_nop, which ID applies before
-  decode, and a bubble's early source fields are x0. PD, like ID, is flushed on
+  decode, and a bubble's early source fields are x0. An older illegal compressed
+  instruction also bubbles slot 2 while its own trap advances. PD and ID flush on
   branch, trap, xRET, and FENCE-class recovery.
 */
 module pd_stage #(
@@ -187,6 +188,16 @@ module pd_stage #(
   // must agree with raw_parcel[1:0] != 2'b11.
   logic pd_sel_compressed_2;
   assign pd_sel_compressed_2 = i_from_if_to_pd_2.sel_compressed;
+
+  // A reserved compressed parcel can expand to a jump while the fetch
+  // predecoder permits pairing. Keep the older trap and discard its younger
+  // slot at the same PD edge, before either can steer or allocate history.
+  logic pd_slot1_illegal_rvc, pd_older_illegal, pd_slot2_nop, pd_slot2_predictable;
+  assign pd_slot1_illegal_rvc = pd_sel_compressed && decomp_illegal;
+  assign pd_older_illegal = pd_slot1_illegal_rvc && !i_from_if_to_pd.sel_nop &&
+                            !i_from_if_to_pd.fetch_fault;
+  assign pd_slot2_nop = i_from_if_to_pd_2.sel_nop || pd_older_illegal;
+  assign pd_slot2_predictable = !pd_older_illegal && !i_from_if_to_pd_2.decomp_illegal;
 
   logic [31:0] instruction_non_nop_2;
   logic [21:0] slot2_instruction_non_source_q;
@@ -658,7 +669,7 @@ module pd_stage #(
   logic pd_backing_redirect_2_r;
   assign pd_cond_branch = pd_native_branch || pd_compressed_branch;
   // Predecoded per start position in instruction_aligner ahead of slot2_pos.
-  assign pd_cond_branch_2 = i_from_if_to_pd_2.is_cond_branch;
+  assign pd_cond_branch_2 = pd_slot2_predictable && i_from_if_to_pd_2.is_cond_branch;
   assign o_cond_branch[0] = pd_cond_branch;
   assign o_cond_branch[1] = pd_cond_branch_2;
   assign pd_taken_candidate = pd_cond_branch &&
@@ -706,12 +717,12 @@ module pd_stage #(
   logic pd_backing_candidate_r;
   logic pd_backing_candidate_2_r;
   assign pd_native_jump = is_jump(i_from_if_to_pd.effective_instr);
-  assign pd_rvc_jump =
-      (i_from_if_to_pd.rvc_extra_predecoded[6:0] == riscv_pkg::OPC_JAL) ||
-      ((i_from_if_to_pd.rvc_extra_predecoded[6:0] == riscv_pkg::OPC_JALR) &&
-       (i_from_if_to_pd.rvc_extra_predecoded[14:12] == 3'b000));
+  assign pd_rvc_jump = !decomp_illegal &&
+      ((i_from_if_to_pd.rvc_extra_predecoded[6:0] == riscv_pkg::OPC_JAL) ||
+       ((i_from_if_to_pd.rvc_extra_predecoded[6:0] == riscv_pkg::OPC_JALR) &&
+        (i_from_if_to_pd.rvc_extra_predecoded[14:12] == 3'b000)));
   assign pd_slot1_jump = pd_sel_compressed ? pd_rvc_jump : pd_native_jump;
-  assign pd_slot2_jump = is_jump(i_from_if_to_pd_2.effective_instr);
+  assign pd_slot2_jump = pd_slot2_predictable && is_jump(i_from_if_to_pd_2.effective_instr);
   assign pd_backing_candidate = pd_slot1_jump && i_backing_hit[0] &&
                                 (i_backing_compressed[0] == pd_sel_compressed);
   assign pd_backing_candidate_2 = pd_slot2_jump && i_backing_hit[1] &&
@@ -742,8 +753,8 @@ module pd_stage #(
   logic pd_itt_redirect_2_r;
   logic [XLEN-1:0] pd_itt_target;
   logic [XLEN-1:0] pd_itt_target_r;
-  assign pd_jalr[0] = is_jalr(instruction_non_nop_predecoded_rs2);
-  assign pd_jalr[1] = is_jalr(i_from_if_to_pd_2.effective_instr);
+  assign pd_jalr[0] = !pd_slot1_illegal_rvc && is_jalr(instruction_non_nop_predecoded_rs2);
+  assign pd_jalr[1] = pd_slot2_predictable && is_jalr(i_from_if_to_pd_2.effective_instr);
   assign pd_itt_eligible[0] = pd_jalr[0] && !is_return(instruction_non_nop_predecoded_rs2);
   assign pd_itt_eligible[1] = pd_jalr[1] && !is_return(i_from_if_to_pd_2.effective_instr);
   assign pd_itt_available = pd_itt_eligible & i_itt_hit;
@@ -1522,17 +1533,16 @@ module pd_stage #(
       o_from_pd_to_id_2.btb_predicted_taken <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
       slot2_instruction_non_source_q <= slot2_instruction_non_source;
-      o_from_pd_to_id_2.inject_nop <= i_pipeline_ctrl.flush || pd_redirect_r ||
-                                      i_from_if_to_pd_2.sel_nop;
+      o_from_pd_to_id_2.inject_nop <= i_pipeline_ctrl.flush || pd_redirect_r || pd_slot2_nop;
       o_from_pd_to_id_2.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_r ||
-                                          i_from_if_to_pd_2.sel_nop) ? 1'b0 :
+                                          pd_slot2_nop) ? 1'b0 :
                                                                     pd_sel_compressed_2;
       o_from_pd_to_id_2.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                                (!i_from_if_to_pd_2.sel_nop &&
+                                                (!pd_slot2_nop &&
                                                 i_from_if_to_pd_2.decomp_illegal);
       // slot-2 fetch-fault pass-through (see slot-1).
       o_from_pd_to_id_2.fetch_fault <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                        (!i_from_if_to_pd_2.sel_nop &&
+                                        (!pd_slot2_nop &&
                                          i_from_if_to_pd_2.fetch_fault);
       o_from_pd_to_id_2.fetch_fault_page <= i_from_if_to_pd_2.fetch_fault_page;
       o_from_pd_to_id_2.fetch_fault_hi <= i_from_if_to_pd_2.fetch_fault_hi;
@@ -1557,7 +1567,7 @@ module pd_stage #(
   // must not overwrite held source addresses before the bundle advances.
   logic slot2_early_source_clear;
   assign slot2_early_source_clear = !i_pipeline_ctrl.stall &&
-      (i_pipeline_ctrl.flush || pd_redirect_r || i_from_if_to_pd_2.sel_nop);
+      (i_pipeline_ctrl.flush || pd_redirect_r || pd_slot2_nop);
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
@@ -1596,10 +1606,10 @@ module pd_stage #(
   // RV64C expansions and target candidates match the packet's instruction,
   // as those checks state. A slot-2 backing hit lies in slot 1's 4 GiB
   // region, which backing_btb guarantees by giving the word after its last
-  // set no slot-2 hit (formal/backing_btb.sby). IF pairs a slot 2 behind a
-  // slot 1 that decodes as a conditional branch or jump only when slot 1
-  // faults, since a fault response carries arbitrary bytes and predecode
-  // metadata, and a valid slot 2 behind a faulting slot 1 faults too. IF's
+  // set no slot-2 hit (formal/backing_btb.sby). IF's pairing predecode
+  // recognizes legal control-flow encodings. It can pair a reserved C.JR x0
+  // even though expansion produces a JALR. Faulting bytes can be arbitrary,
+  // and a valid slot 2 behind a faulting slot 1 faults too. IF's
   // slot-2 backing type and target for each size of slot 1 are its slot-2
   // fields at the packet's sel_compressed (formal/if_slot2_precompute.sby).
   logic formal_past_valid = 1'b0;
@@ -1674,8 +1684,13 @@ module pd_stage #(
     assume (!i_backing_hit[1] ||
             (i_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits] ==
              i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]));
-    assume (i_from_if_to_pd_2.sel_nop || (!pd_cond_branch && !pd_slot1_jump) ||
-            i_from_if_to_pd.fetch_fault);
+    // The aligner classifies the original parcel. Reserved C.JR x0 can pair.
+    assume (i_from_if_to_pd_2.sel_nop || i_from_if_to_pd.fetch_fault ||
+            !(pd_sel_compressed ? riscv_pkg::imem_compressed_control(
+        i_from_if_to_pd.raw_parcel
+    ) : riscv_pkg::imem_native_control(
+        i_from_if_to_pd.effective_instr[6:0]
+    )));
     assume (i_from_if_to_pd_2.sel_nop || !i_from_if_to_pd.fetch_fault ||
             i_from_if_to_pd_2.fetch_fault);
     if (!i_pipeline_ctrl.stall) begin
@@ -1768,6 +1783,21 @@ module pd_stage #(
                 !o_from_pd_to_id_2.inject_nop && !o_from_pd_to_id_2.fetch_fault &&
                 !o_from_pd_to_id.fetch_fault && !pd_dir_redirect_1_r && !pd_backing_redirect_r);
       end
+      if (o_from_pd_to_id.illegal_instruction && !o_from_pd_to_id.fetch_fault) begin
+        p_reserved_slot_holds_redirect : assert (!o_pd_redirect && o_from_pd_to_id_2.inject_nop);
+      end
+      if (o_from_pd_to_id_2.illegal_instruction && !o_from_pd_to_id_2.fetch_fault) begin
+        p_reserved_slot2_no_redirect : assert (!o_pd_redirect_slot2);
+      end
+      if (pd_older_illegal) begin
+        p_reserved_slot_has_no_history :
+        assert (o_jalr == 0 && o_jump == 0 && o_cond_branch == 0 && o_itt_eligible == 0);
+      end
+      cover (pd_older_illegal && i_from_if_to_pd.raw_parcel == 16'h8002 &&
+             !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault &&
+             is_jalr(
+          i_from_if_to_pd_2.effective_instr
+      ) && i_itt_hit[1] && !i_pipeline_ctrl.stall && !i_pipeline_ctrl.flush && !pd_redirect_r);
       if (o_pd_redirect_slot2) begin
         p_formal_slot2_flag_is_a_slot2_redirect :
         assert ((pd_backing_redirect_2_r || pd_dir_redirect_2_r || pd_itt_redirect_2_r) &&

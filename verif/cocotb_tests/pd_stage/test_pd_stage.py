@@ -1628,37 +1628,60 @@ async def test_backing_btb_redirects_a_slot2_jump(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_backing_btb_slot2_redirect_behind_reserved_slot1_jump(dut: Any) -> None:
-    """A slot-2 redirect behind a reserved C.JR x0 takes slot 2's own entry.
-
-    The reserved parcel expands to an illegal JALR that pairs with a slot 2;
-    with no backing entry for slot 1, the slot-2 redirect targets slot 2's
-    entry with slot 2's stack operation.
-    """
+async def test_reserved_compressed_jump_preserves_only_its_trap(dut: Any) -> None:
+    """Reserved C.JR x0 traps in either slot and cannot steer or own history."""
     await _setup_test(dut)
     pc = 0x8000_0200
-    target = 0x8000_0F40
-    c_jr_x0 = 0x8002
-    jalr_x0_x0 = _pack_i(imm=0, rs1=0, funct3=0, rd=0, opcode=OPC_JALR)
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    jalr = _pack_i(imm=8, rs1=12, funct3=0, rd=1, opcode=OPC_JALR)
+    branch = _pack_b(imm=8, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    reserved = {
+        "program_counter": pc,
+        "raw_parcel": 0x8002,
+        "sel_nop": False,
+        "sel_compressed": True,
+        "effective_instr": OPC_JALR,
+    }
+    width = len(dut.i_itt_target) // 2
+    targets = ((0x8000_0F44 >> 1) << width) | (0x8000_0C40 >> 1)
+    for younger in (_pack_jal(imm=0x40, rd=1), jalr, branch):
+        for hits in (1, 2, 3):
+            _drive_if_packet(dut, reserved)
+            _drive_if_packet(
+                dut,
+                _packet(pc + 2, younger, tage_valid=True, tage_taken=True),
+                slot2=True,
+            )
+            _drive_backing(dut, 1, target=0x8000_0F44)
+            dut.i_itt_hit.value = hits
+            dut.i_itt_target.value = targets
+            await _advance_cycle(dut)
+            assert _read_pd_packet(dut)["illegal_instruction"]
+            assert _read_pd_packet(dut, slot2=True)["inject_nop"]
+            assert not bool(dut.o_pd_redirect.value)
+            assert not bool(dut.o_pd_redirect_ras_push.value)
+            assert not bool(dut.o_pd_redirect_ras_pop.value)
+            assert (
+                int(dut.o_jump.value)
+                == int(dut.o_jalr.value)
+                == int(dut.o_cond_branch.value)
+                == 0
+            )
+            _clear_inputs(dut)
+            await _advance_cycle(dut)
+
+    _drive_if_packet(dut, _packet(pc, addi))
     _drive_if_packet(
-        dut,
-        {
-            "program_counter": pc,
-            "raw_parcel": c_jr_x0,
-            "sel_nop": False,
-            "sel_compressed": True,
-            "effective_instr": jalr_x0_x0,
-        },
+        dut, {**reserved, "program_counter": pc + 4, "decomp_illegal": True}, slot2=True
     )
-    _drive_if_packet(dut, _packet(pc + 2, _pack_jal(imm=0x40, rd=1)), slot2=True)
-    _drive_backing(dut, 1, target=target)
+    _drive_backing(dut, 1, target=0x8000_0F44, compressed=True)
+    dut.i_itt_hit.value = 2
+    dut.i_itt_target.value = targets
     await _advance_cycle(dut)
-    assert bool(dut.o_pd_redirect.value) and bool(dut.o_pd_redirect_slot2.value)
-    assert int(dut.o_pd_redirect_target.value) == target
-    assert bool(dut.o_pd_redirect_ras_push.value)
-    assert int(dut.o_pd_redirect_ras_link.value) == pc + 6
-    _clear_inputs(dut)
-    await _advance_cycle(dut)
+    second = _read_pd_packet(dut, slot2=True)
+    assert second["illegal_instruction"] and not second["inject_nop"]
+    assert not bool(dut.o_pd_redirect.value)
+    assert int(dut.o_jump.value) == int(dut.o_jalr.value) == 0
 
 
 @cocotb.test()

@@ -3653,6 +3653,12 @@ module if_stage #(
   );
   always_comb begin
     if (f_wp_past_valid && !i_pipeline_ctrl.reset) begin
+      f_cover_slot2_itt_behind_reserved :
+      cover (f_wp_s1_real && f_wp_s2_real && !f_wp_any_redirect && !i_pipeline_ctrl.stall &&
+          !o_from_if_to_pd.fetch_fault && !o_from_if_to_pd_2.fetch_fault &&
+          o_from_if_to_pd.raw_parcel == 16'h8002 &&
+          !o_from_if_to_pd_2.sel_compressed && !o_from_if_to_pd_2.btb_predicted_taken &&
+          o_from_if_to_pd_2.effective_instr == 32'h0005_80e7 && o_itt_hit == 2'b10);
       if (f_wp_s2_real && !o_from_if_to_pd_2.fetch_fault) begin
         f_if_slot2_live_follows_noncontrol : assert (!o_slot1_has_control_flow);
         f_if_slot2_follows_noncontrol_parcel : assert (!f_wp_slot1_control);

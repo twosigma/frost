@@ -1605,8 +1605,8 @@ FORMAL_TARGETS = [
         "PD backing, indirect and direction redirects require a live slot; each "
         "indirect candidate and target selection matches the compare-before-register "
         "equations, both history outputs match the branch direction or jump target bit, "
-        "and stack operations, refreshes, "
-        "directions and targets match PD's reference models",
+        "a reserved compressed jump preserves only its trap, and stack operations, "
+        "refreshes, directions and targets match PD's reference models",
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
@@ -1749,7 +1749,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "if_prediction_walk_past.sby",
         "Fetch stage preserves pc_reg continuity and emits no real packet while "
-        "post-prediction holdoff holds pc_reg, including walked-past pending predictions",
+        "post-prediction holdoff holds pc_reg, including walked-past pending predictions; "
+        "covers real slot-2 packets and an indirect hit after a reserved compressed parcel",
         tasks=("bmc", "continuity", "cover"),
     ),
     FormalTarget(
