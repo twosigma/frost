@@ -43,6 +43,7 @@ SBY_TASK_TIMEOUT_S = 2400
 # SBY files and separate CI jobs. Keep the runner's backstops in sync with
 # those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("coherence_dma_ingress", "coh_dma_ingress_soc_prove"): 3120,
     ("coherence_home_twin", "home_twin_small"): 600,
     ("coherence_home_twin", "home_twin_four"): 600,
     ("coherence_home_twin", "home_twin_addr40"): 600,
@@ -4464,7 +4465,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "coherence_dma_ingress": (
-        "not converted: memory_map and opt without -keepdc; no setundef",
+        "runs memory_map and opt without -keepdc after the opening",
         {
             "coh_dma_ingress_prove coh_dma_ingress_cover coh_dma_ingress_soc_prove coh_dma_ingress_soc_cover coh_line_client_prove coh_line_client_eight_prove coh_line_client_cover coh_line_client_eight_cover": [
                 "memory_map",
@@ -5461,7 +5462,6 @@ UNDEFINED_CONSTANT = re.compile(r"\d*'[sS]?[bBoOdDhH]?[0-9a-fA-F_xXzZ?]*[xXzZ?]"
 UNDEFINED_OPENING_PENDING = (
     "coherence_array",
     "coherence_array_equiv",
-    "coherence_dma_ingress",
     "coherence_home",
     "coherence_l1d",
     "coherence_store_boundary",
