@@ -53,6 +53,7 @@ VALID_APPS = [
     "asid_test",
     "branch_pred_test",
     "c_ext_test",
+    "cbo_mgmt_test",
     "call_stress",
     "cf_ext_test",
     "coremark",
@@ -105,6 +106,7 @@ VALID_APPS = [
     "store_fill_bench",
     "strings_test",
     "sum_toggle_test",
+    "svpbmt_cmo_test",
     "sysreset_test",
     "tick_torture",
     "tomasulo_perf",
@@ -231,6 +233,7 @@ def board_clock_freq(
 # controller.
 DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "amo_irq_torture",
+    "cbo_mgmt_test",
     "ddr_exec_test",
     "ddr_atomic_test",
     "ddr_bench",
@@ -249,6 +252,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "pde_return_hazard",
     "ptw_coherence_test",
     "store_fill_bench",
+    "svpbmt_cmo_test",
     "tick_torture",
     "vec_ff_test",
     "vec_index_test",
