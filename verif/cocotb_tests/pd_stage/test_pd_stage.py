@@ -154,8 +154,11 @@ def _drive_if_packet(
             else ((instr >> 17) & 0x6) | ((instr >> 15) & 1)
         )
     if "is_cond_branch" not in fields:
+        instr_val = int(packet["effective_instr"])
         packet["is_cond_branch"] = (
-            (int(packet["effective_instr"]) & 0x7F) == OPC_BRANCH if slot2 else False
+            (instr_val & 0x7F) == OPC_BRANCH and ((instr_val >> 13) & 0x3) != 0b01
+            if slot2
+            else False
         )
     # IF carries the PD redirect's target candidates for both slots.
     pc = int(packet["program_counter"])
@@ -1682,6 +1685,94 @@ async def test_reserved_compressed_jump_preserves_only_its_trap(dut: Any) -> Non
     assert second["illegal_instruction"] and not second["inject_nop"]
     assert not bool(dut.o_pd_redirect.value)
     assert int(dut.o_jump.value) == int(dut.o_jalr.value) == 0
+
+
+@cocotb.test()
+async def test_compressed_ebreak_and_reserved_branch_suppress_pd_steering(
+    dut: Any,
+) -> None:
+    """c.ebreak drops younger slot-2 steering; reserved OPC_BRANCH funct3=2/3 never steers."""
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    jalr = _pack_i(imm=8, rs1=12, funct3=0, rd=1, opcode=OPC_JALR)
+    branch = _pack_b(imm=8, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    c_ebreak = {
+        "program_counter": pc,
+        "raw_parcel": 0x9002,
+        "sel_nop": False,
+        "sel_compressed": True,
+        "effective_instr": 0x0010_0073,
+    }
+    width = len(dut.i_itt_target) // 2
+    targets = ((0x8000_0F44 >> 1) << width) | (0x8000_0C40 >> 1)
+    for younger in (_pack_jal(imm=0x40, rd=1), jalr, branch):
+        for hits in (1, 2, 3):
+            _drive_if_packet(dut, c_ebreak)
+            _drive_if_packet(
+                dut,
+                _packet(pc + 2, younger, tage_valid=True, tage_taken=True),
+                slot2=True,
+            )
+            _drive_backing(dut, 1, target=0x8000_0F44)
+            dut.i_itt_hit.value = hits
+            dut.i_itt_target.value = targets
+            await _advance_cycle(dut)
+            first = _read_pd_packet(dut)
+            assert first["instruction"] == 0x0010_0073
+            assert first["is_compressed"] and not first["illegal_instruction"]
+            assert _read_pd_packet(dut, slot2=True)["inject_nop"]
+            assert not bool(dut.o_pd_redirect.value)
+            assert not bool(dut.o_pd_redirect_ras_push.value)
+            assert not bool(dut.o_pd_redirect_ras_pop.value)
+            assert (
+                int(dut.o_jump.value)
+                == int(dut.o_jalr.value)
+                == int(dut.o_cond_branch.value)
+                == int(dut.o_itt_eligible.value)
+                == 0
+            )
+            _clear_inputs(dut)
+            await _advance_cycle(dut)
+
+    # Reserved 32-bit OPC_BRANCH funct3=2 and funct3=3 never steer in either slot.
+    for funct3 in (2, 3):
+        res_br = _pack_b(imm=16, rs2=2, rs1=1, funct3=funct3, opcode=OPC_BRANCH)
+        _drive_if_packet(
+            dut,
+            _packet(
+                pc,
+                res_br,
+                btb_predicted_taken=False,
+                bp_dir_taken=True,
+                tage_valid=True,
+                tage_taken=True,
+            ),
+        )
+        _drive_if_packet(dut, _packet(pc + 4, NOP_INSTR, sel_nop=True), slot2=True)
+        assert int(dut.o_cond_branch.value) == 0
+        await _advance_cycle(dut)
+        assert not bool(dut.o_pd_redirect.value)
+        _clear_inputs(dut)
+        await _advance_cycle(dut)
+
+        _drive_if_packet(dut, _packet(pc, addi))
+        _drive_if_packet(
+            dut,
+            _packet(
+                pc + 4,
+                res_br,
+                btb_predicted_taken=False,
+                tage_valid=True,
+                tage_taken=True,
+            ),
+            slot2=True,
+        )
+        assert int(dut.o_cond_branch.value) == 0
+        await _advance_cycle(dut)
+        assert not bool(dut.o_pd_redirect.value)
+        _clear_inputs(dut)
+        await _advance_cycle(dut)
 
 
 @cocotb.test()

@@ -3299,11 +3299,16 @@ module if_stage #(
         assert (o_from_if_to_pd_2.tage_taken == tage_slot_lookup_2_ref.taken);
       end
       if (!$isunknown(
-              {o_from_if_to_pd_2.is_cond_branch, o_from_if_to_pd_2.effective_instr[6:0]}
+              {
+                o_from_if_to_pd_2.is_cond_branch,
+                o_from_if_to_pd_2.effective_instr[14:13],
+                o_from_if_to_pd_2.effective_instr[6:0]
+              }
           )) begin
         p_if_slot2_is_cond_branch_exact :
         assert (o_from_if_to_pd_2.is_cond_branch ==
-                (o_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_BRANCH));
+                ((o_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_BRANCH) &&
+                 (o_from_if_to_pd_2.effective_instr[14:13] != 2'b01)));
       end
       if (!o_from_if_to_pd_2.sel_compressed && !$isunknown(
               {
@@ -3395,7 +3400,8 @@ module if_stage #(
       assert (o_from_if_to_pd_2.tage_taken == f_tage_slot_lookup_2_ref.taken);
       f_if_slot2_is_cond_branch_exact :
       assert (o_from_if_to_pd_2.is_cond_branch ==
-              (o_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_BRANCH));
+              ((o_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_BRANCH) &&
+               (o_from_if_to_pd_2.effective_instr[14:13] != 2'b01)));
       if (!o_from_if_to_pd_2.sel_compressed) begin
         f_if_slot2_pd_target_native_exact :
         assert ({o_from_if_to_pd_2.pd_target_native_high_select[1],

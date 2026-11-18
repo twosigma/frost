@@ -709,21 +709,27 @@ module instruction_aligner #(
     endcase
   end
 
-  // Conditional-branch opcode check per start position, ahead of slot2_pos.
-  // Compressed candidates take bits [6:0] of their sideband RVC expansion;
-  // native candidates take bits [6:0] of their word (0 at NEXT_HI, where a
-  // native candidate is NOP).
+  // Conditional-branch check per start position, ahead of slot2_pos, excluding
+  // reserved OPC_BRANCH funct3 encodings 010 and 011 (bits [14:13] == 2'b01).
+  // Compressed candidates take bits [14:13] and [6:0] of their sideband RVC
+  // expansion; native candidates take the matching bits of their word (0 at
+  // NEXT_HI, where a native candidate is NOP).
   logic slot2_cond_branch_cur_hi;
   logic slot2_cond_branch_next_lo;
   logic slot2_cond_branch_next_hi;
   assign slot2_cond_branch_cur_hi = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi] ?
-      (aligned_current_sb[riscv_pkg::ImemSbRvcExtraHiLsb+:7] == riscv_pkg::OPC_BRANCH) :
-      (bram_current_word[22:16] == riscv_pkg::OPC_BRANCH);
+      ((aligned_current_sb[riscv_pkg::ImemSbRvcExtraHiLsb+:7] == riscv_pkg::OPC_BRANCH) &&
+       (aligned_current_sb[riscv_pkg::ImemSbRvcExtraHiLsb+13+:2] != 2'b01)) :
+      ((bram_current_word[22:16] == riscv_pkg::OPC_BRANCH) &&
+       (bram_current_word[30:29] != 2'b01));
   assign slot2_cond_branch_next_lo = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo] ?
-      (aligned_next_sb[riscv_pkg::ImemSbRvcExtraLoLsb+:7] == riscv_pkg::OPC_BRANCH) :
-      (bram_next_word[6:0] == riscv_pkg::OPC_BRANCH);
+      ((aligned_next_sb[riscv_pkg::ImemSbRvcExtraLoLsb+:7] == riscv_pkg::OPC_BRANCH) &&
+       (aligned_next_sb[riscv_pkg::ImemSbRvcExtraLoLsb+13+:2] != 2'b01)) :
+      ((bram_next_word[6:0] == riscv_pkg::OPC_BRANCH) &&
+       (bram_next_word[14:13] != 2'b01));
   assign slot2_cond_branch_next_hi = aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi] &&
-      (aligned_next_sb[riscv_pkg::ImemSbRvcExtraHiLsb+:7] == riscv_pkg::OPC_BRANCH);
+      (aligned_next_sb[riscv_pkg::ImemSbRvcExtraHiLsb+:7] == riscv_pkg::OPC_BRANCH) &&
+      (aligned_next_sb[riscv_pkg::ImemSbRvcExtraHiLsb+13+:2] != 2'b01);
 
   always_comb begin
     unique case (slot2_pos)
@@ -772,7 +778,8 @@ module instruction_aligner #(
       slot2_rvc_bits24_20_legacy : o_effective_instr_2[24:20];
   assign slot2_candidate_compressed_selected = o_is_compressed ?
       o_slot2_is_compressed_plus2_for_btb : o_slot2_is_compressed_plus4_for_btb;
-  assign slot2_cond_branch_legacy = o_effective_instr_2[6:0] == riscv_pkg::OPC_BRANCH;
+  assign slot2_cond_branch_legacy = (o_effective_instr_2[6:0] == riscv_pkg::OPC_BRANCH) &&
+                                    (o_effective_instr_2[14:13] != 2'b01);
 
   always_comb begin
     if (!$isunknown({o_source_hot_2, slot2_source_hot_legacy})) begin

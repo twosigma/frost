@@ -187,12 +187,18 @@ module pd_stage #(
   logic pd_sel_compressed_2;
   assign pd_sel_compressed_2 = i_from_if_to_pd_2.sel_compressed;
 
-  // A reserved compressed parcel can expand to a jump while the fetch
-  // predecoder permits pairing. Keep the older trap and discard its younger
-  // slot at the same PD edge, before either can steer or allocate history.
-  logic pd_slot1_illegal_rvc, pd_older_illegal, pd_slot2_nop, pd_slot2_predictable;
+  // A reserved compressed parcel or c.ebreak traps at the head of the bundle
+  // while the fetch predecoder permits pairing; c.ebreak is the sole compressed
+  // parcel whose expansion sets bits 6 and 4 (OPC_CSR). Keep the older trap and
+  // discard its younger slot at the same PD edge, before either can steer or
+  // allocate history.
+  logic pd_slot1_illegal_rvc, pd_slot1_traps_rvc, pd_older_illegal, pd_slot2_nop;
+  logic pd_slot2_predictable;
   assign pd_slot1_illegal_rvc = pd_sel_compressed && decomp_illegal;
-  assign pd_older_illegal = pd_slot1_illegal_rvc && !i_from_if_to_pd.sel_nop &&
+  assign pd_slot1_traps_rvc = pd_sel_compressed &&
+      (decomp_illegal ||
+       (i_from_if_to_pd.rvc_extra_predecoded[6] && i_from_if_to_pd.rvc_extra_predecoded[4]));
+  assign pd_older_illegal = pd_slot1_traps_rvc && !i_from_if_to_pd.sel_nop &&
                             !i_from_if_to_pd.fetch_fault;
   assign pd_slot2_nop = i_from_if_to_pd_2.sel_nop || pd_older_illegal;
   assign pd_slot2_predictable = !pd_older_illegal && !i_from_if_to_pd_2.decomp_illegal;
@@ -385,7 +391,8 @@ module pd_stage #(
   logic pd_native_branch;
   logic pd_compressed_branch;
   assign pd_native_branch = !pd_sel_compressed &&
-                            (i_from_if_to_pd.effective_instr[6:0] == riscv_pkg::OPC_BRANCH);
+                            (i_from_if_to_pd.effective_instr[6:0] == riscv_pkg::OPC_BRANCH) &&
+                            (i_from_if_to_pd.effective_instr[14:13] != 2'b01);
   assign pd_compressed_branch =
       (i_from_if_to_pd.raw_parcel[1:0] == 2'b01) &&
       ((i_from_if_to_pd.raw_parcel[15:13] == 3'b110) ||
@@ -627,11 +634,13 @@ module pd_stage #(
     end
     if (pd_reset_seen_q && !i_pipeline_ctrl.reset &&
         !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault && !$isunknown(
-            {i_from_if_to_pd_2.is_cond_branch, instruction_non_nop_2[6:0]}
+            {i_from_if_to_pd_2.is_cond_branch, instruction_non_nop_2[14:13],
+             instruction_non_nop_2[6:0]}
         )) begin
       p_pd_slot2_cond_branch_predecode_exact :
       assert (i_from_if_to_pd_2.is_cond_branch ==
-              (instruction_non_nop_2[6:0] == riscv_pkg::OPC_BRANCH));
+              ((instruction_non_nop_2[6:0] == riscv_pkg::OPC_BRANCH) &&
+               (instruction_non_nop_2[14:13] != 2'b01)));
     end
   end
 `endif
@@ -1734,7 +1743,8 @@ module pd_stage #(
                                        (i_from_if_to_pd_2.decomp_illegal ==
                                         decomp_illegal_reference_2)));
       assume (i_from_if_to_pd_2.is_cond_branch ==
-              (instruction_non_nop_2[6:0] == riscv_pkg::OPC_BRANCH));
+              ((instruction_non_nop_2[6:0] == riscv_pkg::OPC_BRANCH) &&
+               (instruction_non_nop_2[14:13] != 2'b01)));
       assume (i_from_if_to_pd_2.source_hot_predecoded ==
               {instruction_non_nop_2[21], instruction_non_nop_2[17:16]});
       assume (source_reg_1_2 == instruction_non_nop_2[19:15]);
@@ -1781,14 +1791,25 @@ module pd_stage #(
                 !o_from_pd_to_id_2.btb_predicted_taken && !o_from_pd_to_id_2.inject_nop &&
                 !o_from_pd_to_id_2.fetch_fault && !o_from_pd_to_id.fetch_fault);
       end
+      if (pd_dir_redirect_1_r) begin
+        p_formal_slot1_dir_redirect_is_its_branch :
+        assert ((o_from_pd_to_id.instruction == formal_slot1_instruction_q) &&
+                (o_from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_BRANCH) &&
+                (o_from_pd_to_id.instruction[14:13] != 2'b01) &&
+                !o_from_pd_to_id.inject_nop && !o_from_pd_to_id.fetch_fault);
+      end
       if (pd_dir_redirect_2_r) begin
         p_formal_slot2_dir_redirect_is_its_branch :
         assert ((o_from_pd_to_id_2.instruction == formal_slot2_instruction_q) &&
                 (o_from_pd_to_id_2.instruction[6:0] == riscv_pkg::OPC_BRANCH) &&
+                (o_from_pd_to_id_2.instruction[14:13] != 2'b01) &&
                 !o_from_pd_to_id_2.inject_nop && !o_from_pd_to_id_2.fetch_fault &&
                 !o_from_pd_to_id.fetch_fault && !pd_dir_redirect_1_r && !pd_backing_redirect_r);
       end
-      if (o_from_pd_to_id.illegal_instruction && !o_from_pd_to_id.fetch_fault) begin
+      if ((o_from_pd_to_id.illegal_instruction ||
+           (!o_from_pd_to_id.inject_nop && o_from_pd_to_id.is_compressed &&
+            (o_from_pd_to_id.instruction == 32'h0010_0073))) &&
+          !o_from_pd_to_id.fetch_fault) begin
         p_reserved_slot_holds_redirect : assert (!o_pd_redirect && o_from_pd_to_id_2.inject_nop);
       end
       if (o_from_pd_to_id_2.illegal_instruction && !o_from_pd_to_id_2.fetch_fault) begin
@@ -1799,6 +1820,11 @@ module pd_stage #(
         assert (o_jalr == 0 && o_jump == 0 && o_cond_branch == 0 && o_itt_eligible == 0);
       end
       cover (pd_older_illegal && i_from_if_to_pd.raw_parcel == 16'h8002 &&
+             !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault &&
+             is_jalr(
+          i_from_if_to_pd_2.effective_instr
+      ) && i_itt_hit[1] && !i_pipeline_ctrl.stall && !i_pipeline_ctrl.flush && !pd_redirect_r);
+      cover (pd_older_illegal && i_from_if_to_pd.raw_parcel == 16'h9002 &&
              !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault &&
              is_jalr(
           i_from_if_to_pd_2.effective_instr
