@@ -693,47 +693,87 @@ static void precise_faults(void)
     CHECK_MEM("vle32 with vstart = 2");
 }
 
+/* A program built with the vector extension has its stack in cached DDR in
+ * the DDR tier (sw/common/link_ddr.ld), so its vector code may use stack
+ * objects, as the masked cases above do with their masks. vec_mem_test checks
+ * the access fault on a stack in low BRAM. */
+static void stack_operands(void)
+{
+    unsigned long vl;
+    volatile uint8_t local[16];
+    for (unsigned i = 0; i < 16; i++)
+        local[i] = (uint8_t) i;
+    __asm__ volatile("vsetvli %0, %1, e8, m1, ta, ma\n\t"
+                     "vle8.v v8, (%2)\n\t"
+                     "vadd.vi v8, v8, 1\n\t"
+                     "vse8.v v8, (%2)\n\t"
+                     : "=&r"(vl)
+                     : "r"(16ul), "r"(local)
+                     : VCLOB);
+    for (unsigned i = 0; i < 16; i++)
+        VT_EQ(local[i], i + 1, "vector load and store on a stack object");
+}
+
+/* Runs a case that expects no trap: one taken anyway fails the program, so a
+ * skipped trap can never pass for a missing element. The cases that expect
+ * traps count them themselves. */
+#define NO_TRAP(fn)                                                                                \
+    do {                                                                                           \
+        vt_trap_clear();                                                                           \
+        fn();                                                                                      \
+        if (vt_trap_count != 0) {                                                                  \
+            vt_fail_head("unexpected trap in " #fn, __LINE__);                                     \
+            vt_puts(" cause ");                                                                    \
+            vt_hex(vt_trap_cause);                                                                 \
+            vt_puts(" mepc ");                                                                     \
+            vt_hex(vt_trap_epc);                                                                   \
+            vt_puts(" mtval ");                                                                    \
+            vt_hex(vt_trap_tval);                                                                  \
+            vt_puts("\r\n");                                                                       \
+        }                                                                                          \
+    } while (0)
+
 int main(void)
 {
     vt_enable_vector();
     vt_trap_install();
     init_data();
 
-    unit_e8_m1();
-    unit_e8_m8();
-    unit_e16_m1();
-    unit_e16_m2();
-    unit_e32_m1();
-    unit_e32_m4();
-    unit_e64_m1();
-    unit_e64_m8();
-    unit_fractional();
-    unit_eew_differs_from_sew();
-    unit_masked();
-    mask_ls();
-    whole_register();
-    stride_e8_m1();
-    stride_e16_m2();
-    stride_e32_m1();
-    stride_e64_m4();
-    indexed_unordered_i8();
-    indexed_unordered_i16();
-    indexed_unordered_i32();
-    indexed_unordered_i64();
-    indexed_ordered_i8();
-    indexed_ordered_i16();
-    indexed_ordered_i32();
-    indexed_ordered_i64();
-    ordered_store_duplicates();
-    indexed_masked();
-    seg_2_e8();
-    seg_3_e16();
-    seg_4_e32();
-    seg_5_e64();
-    seg_7_e8();
-    seg_8_e32();
-    seg_strided_indexed();
-    seg_lmul2();
+    NO_TRAP(unit_e8_m1);
+    NO_TRAP(unit_e8_m8);
+    NO_TRAP(unit_e16_m1);
+    NO_TRAP(unit_e16_m2);
+    NO_TRAP(unit_e32_m1);
+    NO_TRAP(unit_e32_m4);
+    NO_TRAP(unit_e64_m1);
+    NO_TRAP(unit_e64_m8);
+    NO_TRAP(unit_fractional);
+    NO_TRAP(unit_eew_differs_from_sew);
+    NO_TRAP(unit_masked);
+    NO_TRAP(mask_ls);
+    NO_TRAP(whole_register);
+    NO_TRAP(stride_e8_m1);
+    NO_TRAP(stride_e16_m2);
+    NO_TRAP(stride_e32_m1);
+    NO_TRAP(stride_e64_m4);
+    NO_TRAP(indexed_unordered_i8);
+    NO_TRAP(indexed_unordered_i16);
+    NO_TRAP(indexed_unordered_i32);
+    NO_TRAP(indexed_unordered_i64);
+    NO_TRAP(indexed_ordered_i8);
+    NO_TRAP(indexed_ordered_i16);
+    NO_TRAP(indexed_ordered_i32);
+    NO_TRAP(indexed_ordered_i64);
+    NO_TRAP(ordered_store_duplicates);
+    NO_TRAP(indexed_masked);
+    NO_TRAP(seg_2_e8);
+    NO_TRAP(seg_3_e16);
+    NO_TRAP(seg_4_e32);
+    NO_TRAP(seg_5_e64);
+    NO_TRAP(seg_7_e8);
+    NO_TRAP(seg_8_e32);
+    NO_TRAP(seg_strided_indexed);
+    NO_TRAP(seg_lmul2);
     ff_e8();
     ff_e16();
     ff_e32();
@@ -741,6 +781,7 @@ int main(void)
     ff_first_element();
     ff_segment();
     precise_faults();
+    NO_TRAP(stack_operands);
 
     return vt_finish("vec_ldst");
 }

@@ -202,7 +202,7 @@ every supported extension and privilege mode.
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
-| **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit scalar U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare). Vector memory execution is unadvertised and does not yet apply pointer masking after element-address addition. |
+| **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit scalar U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare). The unadvertised vector memory execution applies the same transform to each element address. |
 | **Supm**         | Scalar U-mode pointer masking supplied by Ssnpm when the execution environment enables it; the supplied Linux image does not expose the tagged-address ABI |
 | **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended; an instruction or data access, misaligned or page fault, a failed bus response included, writes the faulting virtual address |
 | **Ssu64xl**      | UXLEN is 64: `mstatus.UXL` and `sstatus.UXL` read 2 and cannot change |
@@ -314,7 +314,7 @@ to stop at the first failing phase.
 
 CI runs on pushes to `main`. A pull request starts no CI by itself: adding the
 `run-ci` label runs the CI workflow on it, and `run-asic` runs the OpenROAD
-flow. The full run covers the RISC-V
+flow's synthesis and floorplanning. The full run covers the RISC-V
 architecture tests and riscv-torture programs against Spike reference
 results, the riscv-tests suites, TestRIG's instruction-by-instruction
 comparison with the Sail RISC-V model, unit benches for the CPU and SoC

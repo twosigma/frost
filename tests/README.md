@@ -491,7 +491,7 @@ of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `irq_take_latency`, `lq_stale_slot_probe`, `fencei_jit_bench` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `irq_take_latency`, `lq_stale_slot_probe`, `fencei_jit_bench`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `opensbi_reset_cold`, `opensbi_reset_warm` | Each bench issues its own S-mode reset and stops at the first retired boot instruction |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
@@ -897,9 +897,52 @@ for negative tests; the program still checks all three architectural results.
 The `vec_vmu_v*` and `vec_head_mmu_v*` unit benches check sector byte masks,
 response reordering, backpressure, fatal errors, two-page translation, and
 partial-fault descriptors, including an enabled suffix whose first element
-straddles the faulting page. `vec_debug_partial` preserves an expected
-failure: a partial vector load in Debug Mode changes vector registers but
-leaves `mstatus.VS` Clean when the exception re-parks the hart.
+straddles the faulting page, and strided, indexed and segment element runs
+(one descriptor per element, or per field of a segment, in order, index reads,
+precise faults with the faulting element's `vstart` and address, pointer
+masking and the VS-dirty report). `vec_debug_partial` runs a
+partial vector load in Debug Mode, which changes vector registers before its
+exception re-parks the hart, and checks that `mstatus.VS` reads Dirty.
+
+The `vec_stride_test_v128`, `vec_stride_test_v256`, and `vec_stride_test_v512`
+programs check strided vector loads and stores: every element width and EMUL
+with positive, negative, zero, misaligned and page-sized strides across sector,
+line and page boundaries; masks, `vstart` and tail elements; faults on an
+element in low BRAM and Sv39 page faults part-way through, on a straddling
+element and with a negative stride, with `vstart`, `mtval`, the elements
+performed before the fault and resumption at `vstart`; scalar loads, stores,
+an AMO and LR/SC on element addresses on both sides; pointer masking under
+MPRV with MPP = U in Bare and Sv39; illegal forms; and timer interrupts during
+long element runs.
+
+The `vec_index_test_v128`, `vec_index_test_v256`, and `vec_index_test_v512`
+programs check indexed vector loads and stores, ordered and unordered: data
+SEW 8 to 64 with every index width whose EMUL is legal, with reversed,
+scattered, page-crossing and repeated offsets; masks and `vstart`; the register
+overlaps between the destination and the index group that the specification
+permits and the ones it reserves; faults on an element in low BRAM and an Sv39
+page fault part-way through, with resumption; scalar ordering on element
+addresses; pointer masking; illegal forms; timer interrupts during long
+gathers; and a gather whose destination is its own index group under timer
+interrupts, which is correct only if a started instruction runs to its end.
+
+The `vec_segment_test_v128`, `vec_segment_test_v256`, and
+`vec_segment_test_v512` programs check segment loads and stores with
+unit-stride, strided and indexed addressing: NF 2 to 8 at every EEW, fields of
+one and of several registers, field order, segments across page boundaries,
+masks and `vstart`; Sv39 faults on a straddling segment and on a strided
+segment store part-way through, before any field of the faulting segment, with
+resumption; and the reserved field-group layouts. Each instruction runs from a
+small code buffer built at run time, so one routine covers every encoding.
+
+The `vec_ff_test_v128`, `vec_ff_test_v256`, and `vec_ff_test_v512` programs
+check fault-only-first loads against an Sv39 page that is mapped followed by one
+that is not: a fault on element k > 0 sets `vl` to k without a trap and loads
+elements 0 to k - 1, at every element width and for segment forms; a fault on
+element 0 traps and keeps `vl`; with `vstart` = k nothing is loaded and `vl`
+becomes k; a masked-off element on the unmapped page keeps `vl`; and `csrr vl`,
+a tail-undisturbed `vadd.vi`, `vsetvli x0, x0` and `vcpop.m` placed right behind
+a trimming load all see the trimmed `vl`.
 
 ### `test_riscv_vector_tests.py`
 
@@ -1018,7 +1061,10 @@ are `vec_smoke`, `vec_ldst`, `vec_string`, `vec_dot_int`, `vec_dot_fp`,
 (`include_in_pytest=False`) because the default build has no vector unit; their
 cycle budgets are ceilings to tighten after the first run. To put them in the
 default pytest collection, remove `include_in_pytest=False` from the loop under
-`VECTOR_BRING_UP_PROGRAMS` in `test_run_cocotb.py`.
+`VECTOR_BRING_UP_PROGRAMS` in `test_run_cocotb.py`. Vector loads and stores reach only cached DDR (an access to BRAM takes an access fault), so a program
+whose vector code touches its static data or its stack runs correctly only with the program in DDR, where a
+program built with the vector extension has its stack in cached DDR as well: `vec_ldst_ddr_v128`,
+`vec_ldst_ddr_v256` and `vec_ldst_ddr_v512` run `vec_ldst` that way.
 
 The `vec_integer_test_v128`, `vec_integer_test_v256` and
 `vec_integer_test_v512` entries exercise 149 integer, fixed-point, mask and
@@ -1506,11 +1552,15 @@ pinned Docker image. The ASIC flow runs in its own
 [workflow](../.github/workflows/asic.yml) and its own image:
 
 A pull request starts no run by itself. Adding the `run-ci` label runs the CI
-workflow on the pull request's current head, and `run-asic` runs the ASIC
-flow; adding any other label starts nothing. To run again after a later push,
-remove the label and add it again, or start a manual run of the workflow on
-the branch. Pushes to `main` run every job. `./scripts/frost.py check` runs the
-Lint and Fast Python Tests jobs locally.
+workflow, and `run-asic` the ASIC flow's synthesis and floorplanning, on the
+commit that merges the pull request's current head into `main`, which a pull
+request's run checks out. Adding any other label starts a run of each workflow
+in which only its job selection runs. Adding a label again cancels the
+workflow's run in progress on the pull request. To run again after a later
+push, remove the label and add it again, or start a manual run of the workflow
+on the branch. Pushes to `main` run every job of the CI workflow and the ASIC
+flow's synthesis and floorplanning. `./scripts/frost.py check` runs the Lint
+and Fast Python Tests jobs locally.
 
 | Suite | Configurations |
 | --- | --- |
@@ -1526,7 +1576,7 @@ Lint and Fast Python Tests jobs locally.
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D zero (control, multi-endpoint, and cover jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (five jobs), L1D free-stream, vector CSR and memory unit, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue, block proofs and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
-| ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
+| ASIC flow | [OpenROAD](../asic/README.md) synthesis and floorplanning on Nangate45, with OpenRAM's SRAM macros, in a separate workflow, which a newer push to `main` does not cancel; the rest of the flow, to GDS, runs with `./asic/orfs.py run` outside CI |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the 26 jobs that contribute to it into a report |
 

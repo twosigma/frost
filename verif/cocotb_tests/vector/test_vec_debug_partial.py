@@ -34,14 +34,10 @@ from cocotb_tests.test_real_program import (
 )
 
 
-class PartialLoadVsError(Exception):
-    """The confirmed partial-load Dirty-state defect."""
-
-
-# The partial-load path writes the VRF without an M/S trap-save strobe.
-# csr_file.sv gates the fault Dirty update on those strobes, so Debug Mode
-# re-park leaves VS Clean. Keep the architectural assertion as expected-fail.
-@cocotb.test(expect_error=PartialLoadVsError)
+# The partial load writes v8 before its page fault, which re-parks the hart in
+# Debug Mode without an M/S trap. The head unit reports the register write
+# itself, so mstatus.VS must read Dirty afterwards.
+@cocotb.test()
 @takes_last_edge
 async def test_partial_load_dirties_vs(dut: Any) -> None:
     """A valid first page writes v8 before an invalid second page re-parks."""
@@ -99,7 +95,42 @@ async def test_partial_load_dirties_vs(dut: Any) -> None:
     cocotb.log.info(
         "Debug partial load wrote v8: VS=%d vstart=%d", (status >> 9) & 3, vstart
     )
-    if (status >> 9) & 3 != 3:
-        raise PartialLoadVsError(
-            "partial load changed v8 but left mstatus.VS non-Dirty"
-        )
+    assert (status >> 9) & 3 == 3, (
+        "partial load changed v8 but left mstatus.VS non-Dirty"
+    )
+
+    # A strided load: element 0 at 0x400ff8 is performed at the head, element
+    # 1 at 0x401000 faults. VS must read Dirty again.
+    await dm.write_mem(frame + 4088, 8, 0x0123456789ABCDEF)
+    await dm.write_csr(0x180, (8 << 60) | (root >> 12))
+    await dm.exec_progbuf([0x12000073])  # sfence.vma
+    await dm.write_gpr(dm.S0, 0x00400FF8)
+    await dm.write_gpr(dm.S1, 8)
+    saved = await dm.read_csr(0x300)
+    clean = (saved & ~((3 << 11) | (3 << 9))) | (1 << 11) | (1 << 17) | (2 << 9)
+    await dm.write_csr(0x300, clean)
+    # vlse32.v v8, (s0), s1
+    vlse32 = (
+        (2 << 26)
+        | (1 << 25)
+        | (dm.S1 << 20)
+        | (dm.S0 << 15)
+        | (6 << 12)
+        | (8 << 7)
+        | 0x07
+    )
+    await dm.exec_progbuf([vlse32], expect=CMDERR_EXCEPTION)
+    await dm.clear_cmderr()
+    status = await dm.read_csr(0x300)
+    await dm.write_csr(0x300, status & ~(1 << 17))
+    await dm.write_csr(0x180, 0)
+    await dm.write_gpr(dm.S0, dump)
+    await dm.exec_progbuf([vs1r])
+    low = await dm.read_mem(dump, 8)
+    high = await dm.read_mem(dump + 8, 8)
+    # Element 0 is the frame's word; element 1 keeps the earlier load's value.
+    assert low == 0x8877665589ABCDEF and high == 0, (hex(low), hex(high))
+    cocotb.log.info("Debug strided partial load: VS=%d", (status >> 9) & 3)
+    assert (status >> 9) & 3 == 3, (
+        "strided partial load changed v8 but left VS non-Dirty"
+    )

@@ -18,9 +18,11 @@ on:
   push:
     branches: [main]
   # A pull request starts no run by itself. Adding the run-asic label to it
-  # starts one run of the flow on its current head; any other label starts a
-  # run that skips the flow. To run again after a later push, remove the
-  # label and add it again, or start a manual run on the branch.
+  # starts one run of synthesis and floorplanning on the commit that merges
+  # its current head into main, which a pull request's run checks out. Any
+  # other label starts a run whose gate job skips the rest. To run again
+  # after a later push, remove the label and add it again, or start a manual
+  # run on the branch.
   pull_request:
     branches: [main]
     types: [labeled]
@@ -30,14 +32,15 @@ on:
 permissions:
   contents: read
 
-# The flow takes about fifteen hours end to end, longer than the gap between
-# pushes to main, so a newer push must not cancel it. On main, a started run
-# finishes; the most recently queued run waits behind it, and GitHub keeps only
-# one pending run per group, so a run still pending when another run is queued
-# is cancelled in its favour. A pull request keeps one run: adding run-asic
-# again cancels the run an earlier labelling started. Adding some other label
-# starts a run in a group of its own, so it does not cancel the pull request's
-# run.
+# Synthesis and floorplanning take two to three hours, longer than the gap
+# between pushes to main, so a newer push must not cancel them. On main, a
+# started run finishes; the most recently queued run waits behind it, and
+# GitHub keeps only one pending run per group, so a run still pending when
+# another run is queued is canceled in its favor. A pull request keeps one
+# run, on purpose: adding run-asic again cancels the run in progress that an
+# earlier labeling started, and the new run takes its place. Adding some
+# other label starts a run in a group of its own, so it does not cancel the
+# pull request's run.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{
@@ -52,9 +55,9 @@ env:
 
 jobs:
   # A pull request's run does the flow only when the label that started it is
-  # run-asic. The image build depends on this job's output and the chained
-  # jobs depend on the image build, so they are skipped with it. Pushes to
-  # main and manual runs always run the flow.
+  # run-asic. The image build depends on this job's output and the flow's job
+  # depends on the image build, so they are skipped with it. Pushes to main
+  # and manual runs always run synthesis and floorplanning.
   gate:
     name: Select jobs (ASIC Flow)
     runs-on: ubuntu-26.04
@@ -113,27 +116,42 @@ jobs:
           path: /tmp/frost-dev.tar
           retention-days: 1
 
-  # OpenROAD-flow-scripts from synthesis to GDS on Nangate45, with the RAM
-  # wrappers' memories as the OpenRAM SRAM macros in asic/sram and the other
-  # memories over 4,096 bits mocked as one row (asic/README.md). The frost
-  # image prepares the sources; the flow runs in the ORFS image that
-  # asic/orfs.py pins, with a 256 KiB L2 (asic/config.mk). Global routing,
-  # detailed routing, and the final report use swap space on standard runners.
-  # The flow runs in five chained jobs, each with a six-hour limit: synthesis
-  # with floorplanning, placement with clock tree synthesis, global routing,
-  # detailed routing, and the GDS with the final report, each resuming from the
-  # database of the one before. On four cores, synthesis with floorplanning
-  # takes about three hours and placement with clock tree synthesis under three.
+  # Synthesis and floorplanning in OpenROAD-flow-scripts on Nangate45, with
+  # the RAM wrappers' memories as the OpenRAM SRAM macros in asic/sram and
+  # the other memories over 4,096 bits mocked as one row (asic/README.md).
+  # The frost image prepares the sources; the flow runs in the ORFS image
+  # that asic/orfs.py pins, with a 256 KiB L2 (asic/config.mk). The job
+  # checks that the design maps to the standard cells and the SRAM macros
+  # and floorplans with them, and its summary shows the cells, the macros,
+  # and each step's time and memory. The rest of the flow, from placement
+  # to GDS, runs with ./asic/orfs.py run outside CI (asic/README.md).
+  #
+  # Yosys peaks at about 10 GiB and runs on one thread for most of the
+  # job's two to three hours. --memory-limit 75% keeps the RAM that the
+  # flow's container holds within three quarters of the runner's, so that a
+  # quarter stays with the runner's own processes. Past its limit the
+  # container's memory goes to the runner's swap space, and when that is
+  # full too, the kernel stops the flow; the job then fails and uploads its
+  # logs. orfs.py logs the memory in use every minute.
+  #
+  # Every step has a time limit of its own. The setup steps' limits are at
+  # least three times the longest that each took in four earlier runs, 2.75
+  # minutes at most; the run step's, 265 minutes, is about one and a half
+  # times its longest, 181; the steps after it take seconds. The job's limit
+  # is the sum of the steps' and four minutes for the runner's own setup and
+  # completion.
   asic-flow-synth:
     name: ASIC Flow (synthesis and floorplan)
     runs-on: ubuntu-26.04
     needs: build-docker
-    timeout-minutes: 360
+    timeout-minutes: 315
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+        timeout-minutes: 5
 
       - name: Free disk space
+        timeout-minutes: 10
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
@@ -143,307 +161,52 @@ jobs:
 
       - name: Download Docker image
         uses: actions/download-artifact@v8.0.2
+        timeout-minutes: 10
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
+        timeout-minutes: 5
         run: |
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
+      # The runner stops a step at its time limit, or when the run is
+      # canceled, by signaling the step's process. exec makes that process
+      # orfs.py, which then stops the flow and removes its container.
       - name: Run synthesis and floorplanning
-        run: ./asic/orfs.py run --frost-image frost-dev:latest --target floorplan
-
-      - name: Pack the floorplan database
+        timeout-minutes: 265
         run: |
-          tar -C asic -cf asic-flow-floorplan.tar \
-            build/orfs.log build/sources.mk build/src build/objects build/logs build/reports \
-            build/results/nangate45/frost/base/2_floorplan.odb \
-            build/results/nangate45/frost/base/2_floorplan.sdc
+          exec ./asic/orfs.py run --frost-image frost-dev:latest --target floorplan \
+            --memory-limit 75%
 
-      - name: Upload the floorplan database
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: asic-flow-floorplan
-          path: asic-flow-floorplan.tar
-          retention-days: 1
-          if-no-files-found: error
-
-      - name: Upload logs and reports of a failed run
-        if: failure()
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: asic-flow-synth-results
-          retention-days: 7
-          if-no-files-found: ignore
-          path: |
-            asic/build/orfs.log
-            asic/build/elapsed.txt
-            asic/build/summary.md
-            asic/build/logs/
-            asic/build/reports/
-
-  asic-flow-place:
-    name: ASIC Flow (placement and clock tree synthesis)
-    runs-on: ubuntu-26.04
-    needs: asic-flow-synth
-    timeout-minutes: 360
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7.0.1
-
-      - name: Free disk space
+      # The runner kills orfs.py ten seconds after it first signals it, which
+      # leaves the flow's container behind if Docker has not removed it by
+      # then. Every container that orfs.py starts for the flow and its
+      # summary carries this label. A listing or removal that fails fails the
+      # step.
+      - name: Remove the flow's containers
+        if: always()
+        timeout-minutes: 2
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          nproc
-          free -h
-          df -h / /mnt
-
-      # Global placement peaks near the runner's 16 GB.
-      - name: Add swap space
-        run: |
-          swapfile=/mnt/asic-flow.swap
-          if ! sudo fallocate -l 8G "$swapfile"; then
-            swapfile=/asic-flow.swap
-            sudo fallocate -l 8G "$swapfile"
+          set -euo pipefail
+          containers=$(docker ps --all --quiet --filter label=org.frost.asic-flow)
+          if [ -n "$containers" ]; then
+            echo "$containers" | xargs docker rm --force
           fi
-          sudo chmod 600 "$swapfile"
-          sudo mkswap "$swapfile"
-          sudo swapon "$swapfile"
-          free -h
 
-      - name: Download the floorplan database
-        uses: actions/download-artifact@v8.0.2
-        with:
-          name: asic-flow-floorplan
-
-      - name: Unpack the floorplan database
+      - name: Show disk and memory use
+        if: always()
+        timeout-minutes: 2
         run: |
-          tar -C asic -xf asic-flow-floorplan.tar
-          rm asic-flow-floorplan.tar
-
-      # asic/orfs.py stops this step within minutes if global placement
-      # diverges, instead of letting it run to OpenROAD's iteration limit.
-      - name: Run placement through clock tree synthesis
-        run: ./asic/orfs.py run --from place --target cts
-
-      - name: Pack the clock tree database
-        run: |
-          tar -C asic -cf asic-flow-cts.tar \
-            build/orfs.log build/sources.mk build/src build/objects build/logs build/reports \
-            build/results/nangate45/frost/base/4_cts.odb \
-            build/results/nangate45/frost/base/4_cts.sdc
-
-      - name: Upload the clock tree database
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: asic-flow-cts
-          path: asic-flow-cts.tar
-          retention-days: 1
-          if-no-files-found: error
-
-      - name: Upload logs and reports of a failed run
-        if: failure()
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: asic-flow-place-results
-          retention-days: 7
-          if-no-files-found: ignore
-          path: |
-            asic/build/orfs.log
-            asic/build/elapsed.txt
-            asic/build/summary.md
-            asic/build/logs/
-            asic/build/reports/
-
-  asic-flow-grt:
-    name: ASIC Flow (global routing)
-    runs-on: ubuntu-26.04
-    needs: asic-flow-place
-    timeout-minutes: 360
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7.0.1
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          nproc
           df -h / /mnt
-
-      - name: Add swap space
-        run: |
-          swapfile=/mnt/asic-flow.swap
-          if ! sudo fallocate -l 8G "$swapfile"; then
-            swapfile=/asic-flow.swap
-            sudo fallocate -l 8G "$swapfile"
-          fi
-          sudo chmod 600 "$swapfile"
-          sudo mkswap "$swapfile"
-          sudo swapon "$swapfile"
           free -h
-
-      - name: Download the clock tree database
-        uses: actions/download-artifact@v8.0.2
-        with:
-          name: asic-flow-cts
-
-      - name: Unpack the clock tree database
-        run: |
-          tar -C asic -xf asic-flow-cts.tar
-          rm asic-flow-cts.tar
-
-      - name: Run global routing
-        run: ./asic/orfs.py run --from grt --target grt
-
-      - name: Pack the global routing database
-        run: |
-          tar -C asic -cf asic-flow-grt.tar \
-            build/orfs.log build/sources.mk build/src build/objects build/logs build/reports \
-            build/results/nangate45/frost/base/5_1_grt.odb \
-            build/results/nangate45/frost/base/5_1_grt.sdc
-
-      - name: Upload the global routing database
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: asic-flow-grt
-          path: asic-flow-grt.tar
-          retention-days: 1
-          if-no-files-found: error
-
-      - name: Upload logs and reports of a failed run
-        if: failure()
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: asic-flow-grt-results
-          retention-days: 7
-          if-no-files-found: ignore
-          path: |
-            asic/build/orfs.log
-            asic/build/elapsed.txt
-            asic/build/summary.md
-            asic/build/logs/
-            asic/build/reports/
-
-  asic-flow-route:
-    name: ASIC Flow (detailed routing)
-    runs-on: ubuntu-26.04
-    needs: asic-flow-grt
-    timeout-minutes: 360
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7.0.1
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          nproc
-          df -h / /mnt
-
-      # Detailed routing reuses global routing's pin access (asic/config.mk).
-      # It peaks at about 29 GiB, in its first iteration.
-      - name: Add swap space
-        run: |
-          swapfile=/mnt/asic-flow.swap
-          if ! sudo fallocate -l 24G "$swapfile"; then
-            swapfile=/asic-flow.swap
-            sudo fallocate -l 24G "$swapfile"
-          fi
-          sudo chmod 600 "$swapfile"
-          sudo mkswap "$swapfile"
-          sudo swapon "$swapfile"
-          free -h
-
-      - name: Download the global routing database
-        uses: actions/download-artifact@v8.0.2
-        with:
-          name: asic-flow-grt
-
-      - name: Unpack the global routing database
-        run: |
-          tar -C asic -xf asic-flow-grt.tar
-          rm asic-flow-grt.tar
-
-      - name: Run detailed routing
-        run: ./asic/orfs.py run --from route --target route
-
-      - name: Pack the detailed routing database
-        run: |
-          tar -C asic -cf asic-flow-route.tar \
-            build/orfs.log build/sources.mk build/src build/objects build/logs build/reports \
-            build/results/nangate45/frost/base/5_route.odb \
-            build/results/nangate45/frost/base/5_route.sdc
-
-      - name: Upload the detailed routing database
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: asic-flow-route
-          path: asic-flow-route.tar
-          retention-days: 1
-          if-no-files-found: error
-
-      - name: Upload logs and reports of a failed run
-        if: failure()
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: asic-flow-route-results
-          retention-days: 7
-          if-no-files-found: ignore
-          path: |
-            asic/build/orfs.log
-            asic/build/elapsed.txt
-            asic/build/summary.md
-            asic/build/logs/
-            asic/build/reports/
-
-  asic-flow-finish:
-    name: ASIC Flow (GDS and final report)
-    runs-on: ubuntu-26.04
-    needs: asic-flow-route
-    timeout-minutes: 360
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7.0.1
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          nproc
-          df -h / /mnt
-
-      # The final report peaks at about 39 GiB.
-      - name: Add swap space
-        run: |
-          swapfile=/mnt/asic-flow.swap
-          if ! sudo fallocate -l 32G "$swapfile"; then
-            swapfile=/asic-flow.swap
-            sudo fallocate -l 32G "$swapfile"
-          fi
-          sudo chmod 600 "$swapfile"
-          sudo mkswap "$swapfile"
-          sudo swapon "$swapfile"
-          free -h
-
-      - name: Download the detailed routing database
-        uses: actions/download-artifact@v8.0.2
-        with:
-          name: asic-flow-route
-
-      - name: Unpack the detailed routing database
-        run: |
-          tar -C asic -xf asic-flow-route.tar
-          rm asic-flow-route.tar
-
-      - name: Run the GDS and the final report
-        run: ./asic/orfs.py run --from finish
+          du -sh asic/build 2>/dev/null || true
 
       - name: Publish the summary
         if: always()
+        timeout-minutes: 2
         run: |
           if [ -f asic/build/summary.md ]; then
             cat asic/build/summary.md >> "$GITHUB_STEP_SUMMARY"
@@ -452,6 +215,7 @@ jobs:
       - name: Upload logs and reports
         if: always()
         uses: actions/upload-artifact@v7.0.2
+        timeout-minutes: 10
         with:
           name: asic-flow-results
           retention-days: 7

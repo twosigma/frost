@@ -367,6 +367,14 @@ module csr_file #(
     // until the synchronous exception trap takes.
     input logic i_vmem_fault_vstart_valid = 1'b0,
     input logic [15:0] i_vmem_fault_vstart = '0,
+    // A vector load wrote vector registers before it retired or trapped (its
+    // head-executed part): sets VS Dirty whatever follows, including a fault
+    // that re-parks in Debug Mode.
+    input logic i_vmem_vs_dirty = 1'b0,
+    // A fault-only-first load retired with vl trimmed (registered commit bus,
+    // with i_varith_commit)
+    input logic i_vl_trim_valid = 1'b0,
+    input logic [15:0] i_vl_trim = '0,
     // The architectural vl, vtype ({vill, vtype[7:0]}) and vstart, for the
     // vector unit (zero without it)
     output logic [15:0] o_vec_vl,
@@ -1752,9 +1760,23 @@ module csr_file #(
     logic vmem_fault_vstart_write;
     assign vec_csr_write = storage_csr_write && vec_addr_writable && (i_csr_op[1:0] != 2'b00);
     // Only a synchronous M/S-mode exception entry (cause MSB 0, not Debug Mode)
-    // writes a faulting vector memory op's vstart and dirties VS.
-    assign vmem_fault_vstart_write = i_vmem_fault_vstart_valid &&
-        (i_trap_save_m || i_trap_save_s) && !i_trap_cause[XLEN-1];
+    // writes a faulting vector memory op's vstart and dirties VS. Both happen
+    // on the edge after the entry, so the late take terms reach one register
+    // here; nothing retires or writes a CSR in the cycle after a trap entry.
+    // The earliest reader is the dispatch-side vtype tracker, which reloads
+    // |vstart in the second cycle after the entry (its flush_all is the entry
+    // registered once, and it holds its state while that is high): the write
+    // lands on the edge before that read, with no cycle to spare.
+    logic vmem_fault_write_q;
+    logic [VstartBits-1:0] vmem_fault_vstart_q;
+    always_ff @(posedge i_clk) begin
+      if (i_rst) vmem_fault_write_q <= 1'b0;
+      else
+        vmem_fault_write_q <= i_vmem_fault_vstart_valid && (i_trap_save_m || i_trap_save_s) &&
+            !i_trap_cause[XLEN-1];
+      vmem_fault_vstart_q <= i_vmem_fault_vstart[VstartBits-1:0];
+    end
+    assign vmem_fault_vstart_write = vmem_fault_write_q;
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         vstart_q <= '0;
@@ -1777,10 +1799,17 @@ module csr_file #(
         end else if (i_varith_commit || i_vtox_commit || i_vstore_commit) begin
           vstart_q <= '0;
         end else if (vmem_fault_vstart_write) begin
-          vstart_q <= i_vmem_fault_vstart[VstartBits-1:0];
-        end else if (vec_csr_write) begin
+          vstart_q <= vmem_fault_vstart_q;
+        end else if (vec_csr_write && (i_csr_address == riscv_pkg::CsrVstart)) begin
+          vstart_q <= vec_new_value[VstartBits-1:0];
+        end
+        // A trimmed vl comes only with a vector load's retirement, never with
+        // a configuration commit.
+        if (i_vl_trim_valid) vl_q <= VlBits'(i_vl_trim);
+        // A CSR write never meets a vector retirement, a configuration commit
+        // or a fault's vstart write, so vxsat and vxrm take it directly.
+        if (vec_csr_write) begin
           unique case (i_csr_address)
-            riscv_pkg::CsrVstart: vstart_q <= vec_new_value[VstartBits-1:0];
             riscv_pkg::CsrVxsat: vxsat_q <= vec_new_value[0];
             riscv_pkg::CsrVxrm: vxrm_q <= vec_new_value[1:0];
             riscv_pkg::CsrVcsr: begin
@@ -1795,7 +1824,9 @@ module csr_file #(
     // VS is WARL with all four values storable. An mstatus or sstatus write
     // sets it; a vector CSR write sets Dirty. Both cannot happen together,
     // because CSR instructions commit one at a time. A retiring vector store
-    // dirties VS only when it clears a non-zero vstart.
+    // dirties VS only when it clears a non-zero vstart. A vector load that
+    // writes registers at the ROB head dirties VS when it does, so a later
+    // fault leaves VS Dirty also when it does not trap (Debug Mode).
     always_ff @(posedge i_clk) begin
       if (i_rst) mstatus_vs <= FsOff;
       else if (status_csr_write && (i_csr_address == riscv_pkg::CsrMstatus))
@@ -1804,7 +1835,7 @@ module csr_file #(
         mstatus_vs <= sstatus_new_value[riscv_pkg::MstatusVsLo+:2];
       else if (vec_csr_write || i_vcfg_commit.valid || i_varith_commit ||
                i_vec_vxsat_set || ((i_vtox_commit || i_vstore_commit) && vstart_q != '0) ||
-               vmem_fault_vstart_write)
+               vmem_fault_vstart_write || i_vmem_vs_dirty)
         mstatus_vs <= FsDirty;
     end
   end else begin : gen_no_vector_csrs
@@ -2541,6 +2572,16 @@ module csr_file #(
        i_csr_address == riscv_pkg::CsrVxrm || i_csr_address == riscv_pkg::CsrVcsr);
   wire f_vmem_fault_write = VECTOR && i_vmem_fault_vstart_valid &&
       i_trap_taken && !i_trap_to_d && !i_trap_cause[XLEN-1];
+  // The fault's vstart write and VS update land on the following edge.
+  reg f_vmem_fault_write_q = 1'b0;
+  reg [15:0] f_vmem_fault_vstart_q = '0;
+  // Two cycles of history, for the vtype tracker's reload below.
+  reg f_past_valid2 = 1'b0;
+  always @(posedge i_clk) begin
+    f_vmem_fault_write_q  <= !i_rst && f_vmem_fault_write;
+    f_vmem_fault_vstart_q <= i_vmem_fault_vstart;
+    f_past_valid2         <= f_past_valid;
+  end
   // The value a read of a vector CSR returns.
   wire [XLEN-1:0] f_vec_read =
       (i_csr_address == riscv_pkg::CsrVstart) ? XLEN'(vec_vstart) :
@@ -2689,6 +2730,12 @@ module csr_file #(
     assume (!(i_vmem_fault_vstart_valid &&
               (i_csr_write_enable || i_vcfg_commit.valid || i_varith_commit ||
                i_vtox_commit || i_vstore_commit)));
+    // A head-executed vector load writes registers while it is the oldest
+    // instruction, after older CSR writes have completed.
+    assume (!(i_vmem_vs_dirty && i_csr_write_enable));
+    // A trimmed vl arrives with the load's own retirement only.
+    assume (!i_vl_trim_valid || (i_varith_commit && !i_vcfg_commit.valid &&
+                                 !i_csr_write_enable && i_vl_trim <= 16'(VLEN)));
     // vl and VLMAX are element counts, at most VLEN (SEW 8, LMUL 8).
     assume (i_vcfg_commit.vlmax <= 16'(VLEN) && i_vcfg_commit.vl <= i_vcfg_commit.vlmax);
     assume (!(i_trap_taken && i_sret_taken));
@@ -2708,6 +2755,11 @@ module csr_file #(
     assume (i_trap_enter_d == (i_trap_taken && i_trap_to_d));
     assume (!(i_mret_taken && i_sret_taken));
     assume (!(i_trap_taken && i_csr_write_enable));
+    // Nothing retires or writes a CSR in the cycle after a trap entry (the
+    // entry holds commit and flushes), so a vector memory fault's registered
+    // vstart write meets no other vector CSR update.
+    assume (!(f_vmem_fault_write_q && (i_csr_write_enable || i_vcfg_commit.valid ||
+                                       i_varith_commit || i_vtox_commit || i_vstore_commit)));
     assume (!(i_mret_taken && i_csr_write_enable));
     assume (!(i_sret_taken && i_csr_write_enable));
     // Delegated traps only enter from below M (the trap unit never asserts
@@ -2953,13 +3005,19 @@ module csr_file #(
               VECTOR && (i_vcfg_commit.valid || i_varith_commit || i_vtox_commit || i_vstore_commit)
           )) begin
         p_vstart_vcfg_clear : assert (vec_vstart == '0);
-      end else if ($past(f_vmem_fault_write)) begin
+      end else if ($past(f_vmem_fault_write_q)) begin
         p_vstart_vmem_fault_write :
-        assert (vec_vstart == $past(i_vmem_fault_vstart[VstartBits-1:0]));
+        assert (vec_vstart == $past(f_vmem_fault_vstart_q[VstartBits-1:0]));
       end else if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVstart)) begin
         p_vstart_write : assert (vec_vstart == $past(f_vstart_next[VstartBits-1:0]));
       end else begin
         p_vstart_stable : assert (vec_vstart == $past(vec_vstart));
+      end
+      // The dispatch-side vtype tracker reloads |vstart in the second cycle
+      // after a trap entry: a vector memory fault's vstart is in place then.
+      if (f_past_valid2 && $past(!i_rst, 2) && $past(f_vmem_fault_write, 2)) begin
+        p_vstart_at_tracker_reload :
+        assert (vec_vstart == $past(i_vmem_fault_vstart[VstartBits-1:0], 2));
       end
       if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVxsat)) begin
         p_vxsat_write : assert (vec_vxsat == $past(f_vxsat_next[0]));
@@ -2979,7 +3037,8 @@ module csr_file #(
       end
       if ($past(
               i_csr_op[1:0] == 2'b00 && !i_vcfg_commit.valid && !i_varith_commit &&
-                !i_vtox_commit && !i_vec_vxsat_set && !i_vstore_commit && !f_vmem_fault_write
+                !i_vtox_commit && !i_vec_vxsat_set && !i_vstore_commit && !f_vmem_fault_write_q &&
+                !i_vmem_vs_dirty
           )) begin
         p_vec_read_only_access :
         assert ({vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs} == $past(
@@ -2999,8 +3058,9 @@ module csr_file #(
         assert (!VECTOR || mstatus_vs == $past(csr_new_value[riscv_pkg::MstatusVsLo+:2]));
       end else if ($past(
               vec_csr_write || (VECTOR && (i_vcfg_commit.valid || i_varith_commit ||
-                  i_vec_vxsat_set || ((i_vtox_commit || i_vstore_commit) && vec_vstart != 0))) ||
-              f_vmem_fault_write
+                  i_vec_vxsat_set || ((i_vtox_commit || i_vstore_commit) && vec_vstart != 0) ||
+                  i_vmem_vs_dirty)) ||
+              f_vmem_fault_write_q
           )) begin
         p_vs_dirty_set : assert (mstatus_vs == FsDirty);
       end else begin
@@ -3073,8 +3133,10 @@ module csr_file #(
       // exported gate signals are exactly FS==Off and VS==Off.
       p_sd_mirrors_fs : assert (mstatus[XLEN-1] == ((mstatus_fs == FsDirty) || vs_dirty));
       p_sstatus_sd : assert (sstatus[XLEN-1] == mstatus[XLEN-1]);
-      // Only a vector-config commit changes vl and vtype: vill alone for an
-      // illegal vtype, min(vl, VLMAX) for the keep form, the new vl otherwise.
+      // Only a vector-config commit changes vtype, and vl changes only on
+      // such a commit (vill alone for an illegal vtype, min(vl, VLMAX) for
+      // the keep form, the new vl otherwise) or to the trimmed vl of a
+      // retiring fault-only-first load.
       if (!f_past_valid || $past(i_rst)) begin
         // vl and vtype were just reset (p_reset_vl_vtype).
       end else if ($past(VECTOR && i_vcfg_commit.valid)) begin
@@ -3095,7 +3157,14 @@ module csr_file #(
           p_vl_vcfg : assert (XLEN'(vec_vl) == $past(XLEN'(i_vcfg_commit.vl[VlBits-1:0])));
         end
       end else begin
-        p_vl_stable : assert (vec_vl == $past(vec_vl));
+        p_vl_stable_or_trim :
+        assert (vec_vl == ($past(
+            VECTOR && i_vl_trim_valid
+        ) ? $past(
+            i_vl_trim[VlBits-1:0]
+        ) : $past(
+            vec_vl
+        )));
         p_vtype_stable : assert (vec_vtype == $past(vec_vtype));
       end
       // The vector read port answers exactly the vector CSR it is asked for.
@@ -3272,7 +3341,7 @@ module csr_file #(
         ));
         cover_vstart_vmem_fault_write :
         cover (f_past_valid && $past(
-            !i_rst && f_vmem_fault_write && i_vmem_fault_vstart[VstartBits-1:0] != '0
+            !i_rst && f_vmem_fault_write_q && f_vmem_fault_vstart_q[VstartBits-1:0] != '0
         ) && vec_vstart != '0 && vs_dirty);
         cover_vstore_preserves_vs_clean :
         cover (f_past_valid && $past(
@@ -3291,6 +3360,20 @@ module csr_file #(
         cover (f_past_valid && $past(
             !i_rst && i_vstore_commit && vec_vstart != '0 && mstatus_vs == 2'b10
         ) && vec_vstart == '0 && vs_dirty);
+        // A load's head-executed register write alone dirties VS.
+        cover_vmem_vs_dirty_alone :
+        cover (f_past_valid && $past(
+            !i_rst && i_vmem_vs_dirty && mstatus_vs == 2'b10 && !i_vmem_fault_vstart_valid &&
+                !i_varith_commit && !i_vcfg_commit.valid && !i_vec_vxsat_set &&
+                !vec_csr_write && !status_csr_write
+        ) && vs_dirty);
+        // A fault-only-first load's retirement trims vl.
+        cover_vl_trim :
+        cover (f_past_valid && $past(
+            !i_rst && i_vl_trim_valid && i_vl_trim[VlBits-1:0] != vec_vl
+        ) && vec_vl == $past(
+            i_vl_trim[VlBits-1:0]
+        ));
         cover_vector_read_preserves_clean :
         cover (f_past_valid && $past(
             !i_rst && i_csr_read_enable && i_csr_address == riscv_pkg::CsrVcsr &&

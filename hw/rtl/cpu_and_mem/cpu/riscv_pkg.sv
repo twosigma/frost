@@ -1118,9 +1118,9 @@ package riscv_pkg;
     FCVT_D_LU,                  // Unsigned 64-bit int to FP (double)
     FMV_X_D,                    // Move double bits to int reg
     FMV_D_X,                    // Move int bits to double reg
-    VLOAD,                      // V: unit-stride, whole-register and mask loads: translated
-                                // at the ROB head once older vector work drains; no RS
-    VSTORE,                     // V: unit-stride, whole-register and mask stores; as VLOAD
+    VLOAD,                      // V: every vector load form: translated at the ROB head once
+                                // older vector work drains; no RS
+    VSTORE,                     // V: the same forms of stores; as VLOAD
     // Zfhmin: half-precision moves and conversions (loads/stores use LOAD_FP/STORE_FP).
     FMV_X_H,                    // Move half bits to int reg (sign-extended)
     FMV_H_X,                    // Move int bits to half reg (NaN-boxed)

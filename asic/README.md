@@ -15,7 +15,8 @@ The memories behind the RAM wrappers in
 caches' data, the L1D's and the L2's tags, the data memory, the instruction
 memory, the NIC's packet FIFOs and MAC frame and packet buffers, and the BTB's
 slot-2 payload tables ([SRAM macros](#sram-macros)). The L2 holds 256 KiB,
-where the X3's holds 2 MiB, so that the flow fits CI's runners ([CI](#ci)).
+where the X3's holds 2 MiB, which keeps the die and the memory that the
+flow's stages need smaller ([The whole flow](#the-whole-flow)).
 Arrays of 4,096 bits or less, such as the L1I's tags and the caches'
 replacement state, become flip-flops. Memories larger than 4,096 bits
 without a matching macro are mocked: each keeps a single row, built from
@@ -38,6 +39,7 @@ From the repository root:
 ./asic/orfs.py run --from route           # rerun detailed routing and finishing from asic/build
 ./asic/orfs.py run --clock-period 1.6     # set the core clock period in ns
 ./asic/orfs.py run --cpu-clock-period 2.5 # give the CPU its own clock, period in ns (ASYNC_CPU_CLOCK)
+./asic/orfs.py run --memory-limit 75%     # keep the ORFS container within three quarters of the RAM
 ./asic/orfs.py summary                    # summarize asic/build again
 ./asic/orfs.py paths --stage grt          # report a stage's setup paths by block
 ```
@@ -47,8 +49,34 @@ The script needs Docker and the `frost` image (see the
 `--frost-image`, or `FROST_DOCKER_IMAGE`, names another frost image. Both
 images run as the invoking user, with the checkout mounted at `/workspace`,
 and everything the flow writes goes under `asic/build`, which git ignores.
-The [CI jobs](#ci) provide swap space for routing and the final report.
-`summary` reports the elapsed time and peak memory of each stage.
+`summary` reports the elapsed time and peak memory of each stage; the peak
+counts RAM, not swap.
+
+`--memory-limit` sets the RAM that the ORFS container may hold, in GiB or
+as a percentage of the host's RAM, at least 6 MiB, Docker's smallest. Past
+it, the container keeps the rest of what the flow needs in the host's swap
+space; when that is full too, the kernel stops the flow, and `run` reports
+that the flow ran out of memory. The container's processes have the highest
+out-of-memory score, so that when the host runs out of memory, the kernel's
+choice of a process to stop favors them over every process with a lower
+score. While the flow runs, `run` logs a line every minute with the RAM and
+swap in use, the container's share and limit, and the share of the last
+minute that tasks waited for memory. The [CI job](#ci) sets the limit.
+
+Every container that `orfs.py` starts for the flow, its summary, and `paths`
+carries the label `org.frost.asic-flow`, and the flow's and the summary's
+containers have names. When the flow ends, or SIGINT or SIGTERM stops `run`,
+`run` asks Docker to remove the flow's container by name, with each Docker
+call limited to a minute; a signal that arrives meanwhile takes effect once
+that is done. If Docker does not remove the container, `run` names it and
+fails. A run that is killed before Docker has removed its container leaves
+it behind, and preparation's container, which has no label, runs until
+preparation ends and then removes itself. This removes the flow's
+containers:
+
+```bash
+docker ps --all --quiet --filter label=org.frost.asic-flow | xargs --no-run-if-empty docker rm --force
+```
 
 `run` has three steps:
 
@@ -86,7 +114,7 @@ the stage before it.
 
 | Setting | Value |
 | --- | --- |
-| Top module | `platform_top`, with `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`, so the cached tier ends at the DDR AXI port, and `L2_CACHE_BYTES=262144`, a 256 KiB L2 where the X3's holds 2 MiB, so that the flow fits CI's runners ([CI](#ci)); other parameters keep their defaults |
+| Top module | `platform_top`, with `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`, so the cached tier ends at the DDR AXI port, and `L2_CACHE_BYTES=262144`, a 256 KiB L2 where the X3's holds 2 MiB, which keeps the die and the memory that the flow's stages need smaller ([The whole flow](#the-whole-flow)); other parameters keep their defaults |
 | Defines | `SYNTHESIS`, and `FROST_SRAM_MACROS` for the [SRAM macros](#sram-macros); not `FROST_XILINX_PRIMS`, so every block uses its portable version |
 | Memories | Supported RAM wrapper shapes are SRAM macros. `SYNTH_MOCK_LARGE_MEMORIES=1`: memories over 4,096 bits without a matching macro keep one row; smaller ones become flip-flops |
 | Die size | `DIE_AREA`: 5.13 by 8.105 mm; `CORE_AREA` leaves 15 um on each side. The core fits the macro placement |
@@ -96,7 +124,7 @@ the stage before it.
 | Placement density | `PLACE_DENSITY_LB_ADDON=0.10`: the initial target is the lower bound plus a tenth of the remaining room and 0.01, leaving whitespace for routing around the SRAM macros |
 | Global placement | `GLOBAL_PLACEMENT_ARGS`: `-max_phi_coef 1.03`, which lets the density penalty grow more slowly than OpenROAD's 1.05 per iteration. At 1.05 the placement of the one-hart design diverges after about 470 iterations (the wirelength grows a hundredfold, reaches OpenROAD's 5,000-iteration limit, and takes hours); at 1.03 it converges in about 1,000. `run` stops the flow when the wirelength passes 30 times its first iteration's, or when OpenROAD reports its iteration limit (`GPL-1010`) |
 | Clock tree synthesis | `CTS_ARGS`: ORFS's default arguments, with the clock ports' nets as the roots ([Timing constraints](#timing-constraints)) |
-| Repairs after global routing | `SKIP_INCREMENTAL_REPAIR=1`: with 4 threads they add over two hours to global routing, 82 minutes of it repairing slew and capacitance over the routed wires and 49 the timing repair, and raise its peak memory from 15.6 to 21.1 GB, more than a CI job allows; the repairs after placement and clock tree synthesis still run |
+| Repairs after global routing | `SKIP_INCREMENTAL_REPAIR=1`: with 4 threads they add over two hours to global routing, 82 minutes of it repairing slew and capacitance over the routed wires and 49 the timing repair, and raise its peak memory from 15.6 to 21.1 GB; the repairs after placement and clock tree synthesis still run |
 | Antenna repair after global routing | `SKIP_ANTENNA_REPAIR=1`: it finds nothing to repair, and the placement check after it needs 4.5 GB of memory |
 | Antenna repair after detailed routing | `SKIP_ANTENNA_REPAIR_POST_DRT=1`: prevents diode insertion before another detailed routing call reuses pin access; the platform has no antenna diode cell, and the final antenna check still writes `reports/.../drt_antennas.log` |
 | Detailed routing | `DETAILED_ROUTE_ARGS` replaces the script's defaults with `-droute_end_iter 64 -verbose 1 -drc_report_iter_step 5 -no_pin_access`, reusing global routing's saved access points; this requires all three repair skips above to stay 1 and `RECOVER_POWER` to stay at its default 0 so cells and placement stay unchanged |
@@ -700,43 +728,78 @@ mocks, so it cannot rank that family until real arrays replace the mocks.
 
 ## CI
 
-Five chained jobs in their own workflow,
-[`.github/workflows/asic.yml`](../.github/workflows/asic.yml), run the flow on
-every pull request and every push to `main`, each resuming from the database
-of the one before. The flow takes about fifteen hours, so a push to `main`
-does not cancel a run in progress: the run finishes and the most recently
-queued run waits behind it (GitHub keeps one pending run, so an older pending
-run is cancelled). A pull request runs the flow only when the `run-asic`
-label is added to it; to run it again after a later push, remove the label
-and add it again, or start a manual run on the branch.
+CI checks that the design synthesizes to Nangate45's standard cells and the
+SRAM macros and floorplans with them. Every push to `main`, and a pull
+request when the `run-asic` label is added to it, runs one job of its own
+workflow, [`.github/workflows/asic.yml`](../.github/workflows/asic.yml):
+`./asic/orfs.py run --target floorplan --memory-limit 75%`. A pull request's
+run checks the commit that merges its head into `main`. The job's step
+summary shows `summary.md`, and its `asic-flow-results` artifact holds the
+logs, reports, and summary. The job takes two to three hours, most of it in
+Yosys, which runs on one thread and peaks at about 10 GiB, so a push to
+`main` does not cancel a run in progress: the run finishes and the most
+recently queued run waits behind it (GitHub keeps one pending run, so an
+older pending run is canceled). A pull request keeps one run, on purpose:
+adding the label again cancels the run in progress and starts a new one. To
+run the job again after a later push, remove the label and add it again, or
+start a manual run on the branch. Each step has a time limit of its own: the
+setup steps' are at least three times the longest that each took in four
+earlier runs, the run step's, 265 minutes, is about one and a half times its
+longest, and the job's limit is the sum of the steps' and four minutes for
+the runner's own setup and completion. The run step starts `orfs.py` with
+`exec`, so that the signals with which the runner stops a step at its time
+limit or on a cancellation reach it. The runner kills the step ten seconds
+after its first signal, which leaves the flow's container if Docker has not
+removed it by then: the next step removes every container with the label and
+fails if Docker cannot, the job then logs its disk and memory use, and the
+hosted machine is discarded after the job.
 
-| Job | Runs | Extra swap |
-| --- | --- | ---: |
-| `ASIC Flow (synthesis and floorplan)` | `./asic/orfs.py run --target floorplan` | None |
-| `ASIC Flow (placement and clock tree synthesis)` | `./asic/orfs.py run --from place --target cts` | 8 GiB |
-| `ASIC Flow (global routing)` | `./asic/orfs.py run --from grt --target grt` | 8 GiB |
-| `ASIC Flow (detailed routing)` | `./asic/orfs.py run --from route --target route` | 24 GiB |
-| `ASIC Flow (GDS and final report)` | `./asic/orfs.py run --from finish` | 32 GiB |
+The rest of the flow, from placement to GDS, runs with `./asic/orfs.py run`
+outside CI ([The whole flow](#the-whole-flow)).
 
-The last job's step summary shows `summary.md`, and its `asic-flow-results`
-artifact holds the logs, reports, and summary of all five. The runners have
-four CPUs and 16 GB of memory, less than global placement (18 GB peak),
-global routing, detailed routing (29 GiB peak), and the final report (39 GiB
-peak) need, so those jobs add swap space. Each job also
-deletes preinstalled toolchains to make room for the databases and has a
-six-hour limit. On four cores, synthesis with floorplanning takes about
-three hours and placement with clock tree synthesis under three. The allocations are set in the
-[ASIC workflow](../.github/workflows/asic.yml).
+## The whole flow
+
+`./asic/orfs.py run` takes the design from synthesis to GDS. The routing
+stages and the final report need more memory than synthesis:
+
+| Stage | Peak memory |
+| --- | ---: |
+| Synthesis | 10 to 11 GiB |
+| Floorplanning | 6 GiB |
+| Global placement | about 18 GiB |
+| Detailed placement, clock tree synthesis | about 16 GiB |
+| Global routing | 24 GiB |
+| Detailed routing | 28 GiB or more |
+| Final report | 35 GiB or more |
+
+Detailed routing reached 28 GiB in the first 40% of its first iteration, and
+the final report 35 GiB in its IR drop analysis, where their measurements
+stopped; runs with 43 GiB and 51 GiB of RAM and swap together completed
+them. For planning, take the whole flow to need about 50 GiB of RAM, between
+the largest peak measured and the RAM and swap with which the final report
+completed; a machine with 64 GiB has room for it. The flow also needs about
+40 GiB of disk for `asic/build`. With four threads it takes about fifteen
+hours: synthesis with floorplanning about two and a half, placement about
+two, clock tree synthesis one to one and a half, global routing about two,
+detailed routing about five and a half, and the GDS with the final report
+about one and a half. Detailed routing keeps the threads busy for most of
+its time and runs faster with more of them; synthesis runs on one thread for
+most of its time.
+
+Global routing's pin access step builds the detailed router's copy of the
+design, 6 GiB with the database, and keeps it while the global router adds
+its grid, nets, and routes, 16 GiB more, for the parasitics and the timing
+report that follow. Detailed routing holds the 2.8 GiB database, the global
+router's grid, nets, and routes, about 8 GiB, which `detail_route.tcl`
+rebuilds to check that global routing finished and keeps through the step,
+and its own copy of the design with its shapes, guides, and routes. The
+final report holds the database with its 4.1 million fill cells, the
+extracted parasitics, the IR drop analysis, and the layout images.
 
 Detailed routing reuses the pin access saved in the global routing database.
 On the same 256 KiB input with four threads, `-no_pin_access` cut its CPU
 time from 24,280 to 18,282 seconds, about 25%, and produced byte-identical
 routed DEF with no DRC or antenna violations.
-
-Those three steps hold the design's cell connectivity, routing guides,
-and power-grid shapes in memory. The final report also runs IR drop
-analysis and renders layout images. Peak memory and elapsed time depend on
-the design and thread count; `summary.md` records both for each step.
 
 ## The ORFS image
 
