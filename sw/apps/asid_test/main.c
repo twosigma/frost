@@ -202,11 +202,11 @@ __asm__(".section .text\n"
     "    sd   a0, " #v "*8(s1)\n"                                                                  \
     "    sd   t1, " #w "*8(s1)\n"
 
-/* CALL(v, w): call the code page at s3 (a0 = its constant) and store the value
- * and the ITLB walks (hpmcounter5) the call caused. */
-#define CALL(v, w)                                                                                 \
-    "    csrr t0, 0xC05\n"                                                                         \
-    "    jalr t6, 0(s3)\n"                                                                         \
+/* Include the translation change in the counter window: a predicted call can
+ * fetch its target before the instruction preceding the JALR retires. The
+ * caller and return site share a global mapping in every address space. */
+#define CALL_AFTER(change, v, w)                                                                   \
+    "    csrr t0, 0xC05\n" change "    jalr t6, 0(s3)\n"                                           \
     "    csrr t1, 0xC05\n"                                                                         \
     "    sub  t1, t1, t0\n"                                                                        \
     "    sd   a0, " #v "*8(s1)\n"                                                                  \
@@ -301,20 +301,17 @@ __asm__(".section .text\n"
         "    sd   a0, 44*8(s1)\n"
         /* The ITLB follows the same rules: a per-ASID code page. */
         "    csrw satp, s4\n"
-        "    sfence.vma\n"
-        CALL(45, 46)
+        /* Invalidate only the code page, leaving the caller's translation hot. */
+        CALL_AFTER("    sfence.vma s3, zero\n", 45, 46)
         /* Train the non-return JALR at VA_CODE + 4 in A. The same PC in B
          * holds an addi, and the old target in B produces a different result. */
         "    li t3, 64\n"
         "8:  jalr t6, 0(s3)\n"
         "    addi t3, t3, -1\n"
         "    bnez t3, 8b\n"
-        "    csrw satp, s5\n"
-        CALL(47, 48)
-        "    csrw satp, s4\n"
-        CALL(49, 50)
-        "    sfence.vma zero, a6\n"
-        CALL(51, 52)
+        CALL_AFTER("    csrw satp, s5\n", 47, 48)
+        CALL_AFTER("    csrw satp, s4\n", 49, 50)
+        CALL_AFTER("    sfence.vma zero, a6\n", 51, 52)
         /* Context switches: two address spaces of 32 pages each, entered by ASID
          * alone, then with the SFENCE.VMA an ASID-less kernel would run. */
         "    li   s10, 0xC0008000\n"
