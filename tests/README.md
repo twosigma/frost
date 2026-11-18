@@ -18,6 +18,7 @@ regression run [natively](../fpga/README.md#hardware-regression) instead.
 | [`test_riscv_tests.py`](#test_riscv_testspy) | riscv-tests ISA suites and benchmarks |
 | [`test_riscv_vector_tests.py`](#test_riscv_vector_testspy) | Generated, self-checking vector instruction tests (riscv-vector-tests) on Spike or the simulated core |
 | [`test_vector_reference.py`](#test_vector_referencepy) | The vector bring-up programs on Spike at three vector lengths |
+| [`test_fplat_probe.py`](test_fplat_probe.py) | LP64D callee-saved registers across the FP throughput loops on Spike |
 | [`test_riscv_torture.py`](#test_riscv_torturepy) | Random RV64IMAFDC programs against Spike references |
 | [`test_testrig.py`](#test_testrigpy) | Random instruction sequences against the Sail RISC-V model, one instruction at a time (TestRIG) |
 | [`test_run_yosys.py`](#test_run_yosyspy) | Portable and Xilinx synthesis |

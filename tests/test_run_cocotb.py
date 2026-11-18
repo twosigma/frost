@@ -2563,8 +2563,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         rerun_after_reset=False,
         nic_mac_clocks=False,
         description=(
-            "FP cycle limits for dependent and independent multiply, FMA and divide "
-            "at both precisions"
+            "Cycle limits for dependent multiply, FMA and divide and independent "
+            "multiply and FMA at both precisions"
         ),
         extra_env=(
             ("EXTRA_CFLAGS", "-DFPLAT_LIMITS"),

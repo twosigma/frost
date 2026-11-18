@@ -5,8 +5,8 @@
  * a1 = the constant table (doubles at 0(a1), singles at 128(a1)), and
  * returns the cycles of the timed groups (16 bodies per group). A dependent
  * loop chains both operations of its body through f0; a throughput loop's
- * body writes f0..f15 from constant sources. sscratch carries a2 (a trace
- * id) during the timed window.
+ * body writes 16 caller-saved registers from constant sources. sscratch
+ * carries a2 (a trace id) during the timed window.
  */
     .option norvc
     .text
@@ -60,11 +60,11 @@
     TEND
 .endm
 
-/* 16 bodies of 16 independent operations: op f0..f15, srcs. */
+/* Each body writes ft0..ft7 and fa0..fa7 from constant sources. */
 .macro TIMED16 op:req, srcs:req
     TSTART
     .rept 16
-    .irp r, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    .irp r, 0,1,2,3,4,5,6,7,10,11,12,13,14,15,16,17
     \op f\r, \srcs
     .endr
     .endr
@@ -127,24 +127,24 @@ fsqrt_pair_\prec:
     .global fadd_thr_\prec
 fadd_thr_\prec:
     PROLOGUE
-    LDK \prec, f20, K_C11
-    LDK \prec, f21, K_C07
-    TIMED16 fadd.\prec, "f20, f21"
+    LDK \prec, ft8, K_C11
+    LDK \prec, ft9, K_C07
+    TIMED16 fadd.\prec, "ft8, ft9"
 
     .global fmul_thr_\prec
 fmul_thr_\prec:
     PROLOGUE
-    LDK \prec, f20, K_C11
-    LDK \prec, f21, K_C07
-    TIMED16 fmul.\prec, "f20, f21"
+    LDK \prec, ft8, K_C11
+    LDK \prec, ft9, K_C07
+    TIMED16 fmul.\prec, "ft8, ft9"
 
     .global fmadd_thr_\prec
 fmadd_thr_\prec:
     PROLOGUE
-    LDK \prec, f20, K_C11
-    LDK \prec, f21, K_C07
-    LDK \prec, f22, K_HALF
-    TIMED16 fmadd.\prec, "f20, f21, f22"
+    LDK \prec, ft8, K_C11
+    LDK \prec, ft9, K_C07
+    LDK \prec, ft10, K_HALF
+    TIMED16 fmadd.\prec, "ft8, ft9, ft10"
 .endm
 
     DEFS d

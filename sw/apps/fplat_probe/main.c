@@ -2,12 +2,11 @@
  * Copyright (c) 2026 John Goodacre.
  *
  * FP latency probe, the bare-metal form of the board's fplat test. Prints
- * cycles per operation, in hundredths, for dependent chains of FADD, FMUL,
- * FMA (through the addend and through the multiplicand), FDIV and FSQRT at
- * both precisions, for independent FADD, FMUL and FMA streams, and for FP
- * load-to-use (fld + fmv.x.d per ring node, against ld on the same ring).
- * FPLAT_LIMITS turns the dependent and throughput figures into pass/fail
- * assertions against the limits below.
+ * cycles in hundredths for dependent add/subtract, multiply, fused multiply-add
+ * and divide chains, for a square-root/add pair, for independent add, multiply
+ * and fused multiply-add streams, and for load-to-use latency. FPLAT_LIMITS
+ * bounds multiply and fused multiply-add in both kinds of loop and dependent
+ * divide at both precisions.
  */
 #include "uart.h"
 #include <stdint.h>
