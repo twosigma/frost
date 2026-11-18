@@ -19,8 +19,11 @@ read -formal -sv riscv_pkg.sv decoded_bundle_queue.sv
 chparam -set WIDTH 8 decoded_bundle_queue
 chparam -set SHADOW_WIDTH 3 decoded_bundle_queue
 prove_depth2: chparam -set DEPTH 2 decoded_bundle_queue
+hierarchy -top decoded_bundle_queue
+script free_undefined.ys
 prep -top decoded_bundle_queue
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/decoded_bundle_queue.sv
+free_undefined.ys

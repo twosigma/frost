@@ -15,6 +15,8 @@ xilinx: read_verilog -formal +/xilinx/cells_sim.v
 portable: read -sv -D SYNTHESIS coherent_lq_issue_selector.sv
 xilinx: read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS coherent_lq_issue_selector.sv
 read -formal -sv lq_age_groups.sv
+hierarchy -top lq_age_groups
+script free_undefined.ys
 prep -top lq_age_groups -flatten
 select -assert-count 4 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume t:$*ff* t:$*latch* t:$sr t:$mem* a:init
@@ -24,3 +26,4 @@ select -assert-none t:$check r:FLAVOR=assume %i
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
 lq_age_groups.sv
+free_undefined.ys

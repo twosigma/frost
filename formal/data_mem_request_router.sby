@@ -14,8 +14,11 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv data_mem_request_router.sv
+hierarchy -top data_mem_request_router
+script free_undefined.ys
 prep -top data_mem_request_router
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv
+free_undefined.ys

@@ -21,6 +21,8 @@ read -formal -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv coherence_home.
 one: chparam -set FILLS 1 coherence_home_forward_pins
 three: chparam -set FILLS 3 coherence_home_forward_pins
 eight: chparam -set FILLS 8 coherence_home_forward_pins
+hierarchy -top coherence_home_forward_pins
+script free_undefined.ys
 prep -flatten -top coherence_home_forward_pins
 select -assert-count 1 t:$check r:FLAVOR=assert %i
 
@@ -30,3 +32,4 @@ select -assert-count 1 t:$check r:FLAVOR=assert %i
 ../hw/rtl/lib/cache/coherence_types.svh
 ../hw/rtl/lib/cache/coherence_home.sv
 coherence_home_forward_pins.sv
+free_undefined.ys

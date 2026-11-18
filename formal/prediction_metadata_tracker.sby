@@ -20,9 +20,12 @@ prove: abc pdr
 read -formal -sv riscv_pkg.sv
 read -formal -sv prediction_metadata_tracker.sv
 read -formal -sv prediction_metadata_tracker_formal.sv
+hierarchy -top prediction_metadata_tracker_formal
+script free_undefined.ys
 prep -top prediction_metadata_tracker_formal
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
 prediction_metadata_tracker_formal.sv
+free_undefined.ys

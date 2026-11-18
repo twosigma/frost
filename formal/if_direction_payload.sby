@@ -14,9 +14,12 @@ prove: abc pdr
 
 [script]
 read -formal -sv stall_capture_reg.sv if_direction_payload_equiv.sv
+hierarchy -top if_direction_payload_equiv
+script free_undefined.ys
 prep -top if_direction_payload_equiv -flatten
 select -assert-count 2 t:$check
 
 [files]
 ../hw/rtl/lib/stall_capture_reg.sv
 if_direction_payload_equiv.sv
+free_undefined.ys

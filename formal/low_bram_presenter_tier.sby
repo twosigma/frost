@@ -14,8 +14,11 @@ prove: abc pdr
 
 [script]
 read -formal -sv -D SYNTHESIS low_bram_fetch_presenter.sv low_bram_presenter_tier_equiv.sv
+hierarchy -top low_bram_presenter_tier_equiv
+script free_undefined.ys
 prep -top low_bram_presenter_tier_equiv
 
 [files]
 ../hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
 low_bram_presenter_tier_equiv.sv
+free_undefined.ys

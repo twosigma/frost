@@ -16,6 +16,8 @@ read -sv -D SYNTHESIS -D ROB_LINK_DISPATCH_LOCAL_PROOF riscv_pkg.sv dispatch.sv
 p01: chparam -set RAW_INT_RF_VALUES 1 dispatch
 p10: chparam -set SLOT2_VALID_FROM_BUNDLE 1 dispatch
 p11: chparam -set SLOT2_VALID_FROM_BUNDLE 1 -set RAW_INT_RF_VALUES 1 dispatch
+hierarchy -top dispatch
+script free_undefined.ys
 prep -top dispatch -flatten
 select -assert-none t:$assume a:init
 select -assert-count 2 t:$check r:FLAVOR=assert %i
@@ -24,3 +26,4 @@ select -assert-none t:$check r:FLAVOR=assume %i
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv
+free_undefined.ys

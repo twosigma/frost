@@ -11,7 +11,10 @@ smtbmc boolector
 
 [script]
 read -formal -sv debug_dirty_next.sv
+hierarchy -top debug_dirty_next
+script free_undefined.ys
 prep -top debug_dirty_next
 
 [files]
 ../hw/rtl/cpu_and_mem/debug/debug_dirty_next.sv
+free_undefined.ys

@@ -14,9 +14,14 @@ smtbmc boolector
 read -formal -sv coherence_seat_select.sv coherence_work_select.sv
 seats: chparam -set SLOTS 24 coherence_seat_select
 work: chparam -set SLOTS 21 -set LAST_CODED 1 -set CODE_BITS 5 coherence_work_select
+seats: hierarchy -top coherence_seat_select
+seats: script free_undefined.ys
 seats: prep -top coherence_seat_select
+work: hierarchy -top coherence_work_select
+work: script free_undefined.ys
 work: prep -top coherence_work_select
 
 [files]
 ../hw/rtl/lib/cache/coherence_seat_select.sv
 ../hw/rtl/lib/cache/coherence_work_select.sv
+free_undefined.ys

@@ -16,6 +16,8 @@ read -formal -D SYNTHESIS -D CACHE_WAY_PROOF -sv frost_cache.sv
 bmc: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set NUM_PROBE 2 frost_cache
 bmc_ways1: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 1 -set NUM_PROBE 2 frost_cache
 bmc_delayed: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set TAG_MEMORY_PRIMITIVE "ultra" -set TAG_READ_LATENCY 3 -set DATA_MEMORY_PRIMITIVE "ultra" -set DATA_READ_LATENCY 6 -set DATA_WRITE_LATENCY 2 frost_cache
+hierarchy -top frost_cache
+script free_undefined.ys
 prep -top frost_cache -flatten
 memory_map
 opt
@@ -31,3 +33,4 @@ bmc_delayed: select -assert-count 6 t:$check
 ../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+free_undefined.ys

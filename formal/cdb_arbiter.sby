@@ -14,8 +14,11 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv cdb_arbiter.sv
+hierarchy -top cdb_arbiter
+script free_undefined.ys
 prep -top cdb_arbiter
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv
+free_undefined.ys

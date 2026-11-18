@@ -13,9 +13,12 @@ smtbmc boolector
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D DISPATCH_ADMISSION_LOCAL_PROOF -sv dispatch.sv
 bmc_queued: chparam -set SLOT2_VALID_FROM_BUNDLE 1 dispatch
+hierarchy -top dispatch
+script free_undefined.ys
 prep -top dispatch
 select -assert-count 6 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv
+free_undefined.ys

@@ -14,8 +14,11 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv fu_cdb_adapter.sv
+hierarchy -top fu_cdb_adapter
+script free_undefined.ys
 prep -top fu_cdb_adapter
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv
+free_undefined.ys
