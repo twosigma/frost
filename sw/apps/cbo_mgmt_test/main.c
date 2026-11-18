@@ -16,9 +16,15 @@
 
 /*
  * Zicbom directed test. cbo.clean, cbo.flush and cbo.inval name the naturally
- * aligned 64-byte block containing rs1. Every bus master in FROST is coherent,
- * so each executes as an ordered no-op: the block's data never changes, and
- * loads and stores around it keep program order.
+ * aligned 64-byte block containing rs1. Clean and flush write a dirty cached
+ * DDR block to memory and keep its data; inval (M mode, or CBIE = 11 below M)
+ * discards the cached copies, so the next load reads memory. Each DDR buffer
+ * is filled and then flushed, so memory holds the fill pattern and every op
+ * leaves the data intact; a store just before an inval is the one value an
+ * invalidate may drop (section E). A CBO_INVAL_AS_FLUSH build (CBIE 11 reads
+ * back 01) executes inval as flush. Low BRAM keeps no cached copy, so every
+ * op there is an ordered no-op. Loads and stores around each op keep program
+ * order.
  *
  * Gates (menvcfg/senvcfg): CBCFE (bit 6) enables cbo.clean and cbo.flush below
  * M (S needs menvcfg.CBCFE, U needs both). CBIE (bits 5:4) is WARL {00, 01, 11}:
@@ -154,6 +160,22 @@ static void fill(volatile uint64_t *buf, unsigned long dwords)
     for (unsigned long i = 0; i < dwords; i++)
         buf[i] = pattern_at(i);
 }
+
+/* Fill, then flush every block (M mode, untranslated), so memory holds the
+ * fill pattern: an invalidate then leaves the same values. */
+static void fill_flushed(volatile uint64_t *buf, unsigned long dwords)
+{
+    fill(buf, dwords);
+    for (unsigned long b = 0; b < dwords * 8; b += BLOCK)
+        __asm__ volatile("mv t1, %0\n" CBO_FLUSH_ASM("t1")
+                         :
+                         : "r"((unsigned long) buf + b)
+                         : "t1", "memory");
+    __asm__ volatile("fence rw, rw" ::: "memory");
+}
+
+/* cbo.inval executes as cbo.flush (CBO_INVAL_AS_FLUSH build). */
+static int g_inval_flushes;
 
 /* Every dword still holds its fill value: a coherent CMO changes no data. */
 static int check_intact(const char *name, int op, volatile uint64_t *buf)
@@ -349,11 +371,15 @@ int main(void)
     uart_puts("\r\n=== Zicbom test ===\r\n");
     set_trap_handler(&cbo_trap_handler);
     csr_write(medeleg, 0);
+    csr_write_num(0x30A, ENVCFG_CBIE(3));
+    g_inval_flushes = (csr_read_num(0x30A) & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(1);
+    csr_write_num(0x30A, 0);
+    uart_puts(g_inval_flushes ? "cbo.inval executes as flush\r\n" : "cbo.inval invalidates\r\n");
 
     /* A: M executes each op on cached DDR and low BRAM with an unaligned rs1,
      * retires, and changes no data. */
     for (int op = 0; op < 3; op++) {
-        fill(g_ddr_buf, 3 * BLOCK / 8);
+        fill_flushed(g_ddr_buf, 3 * BLOCK / 8);
         run_m(op, (unsigned long) &g_ddr_buf[BLOCK / 8] + 0x2B);
         ok &= expect("A ddr-m-retires", op, CAUSE_ECALL_M, 0, 0);
         ok &= check_intact("A ddr", op, g_ddr_buf);
@@ -457,14 +483,17 @@ int main(void)
     }
 
     /* E: program order with no fence. Each op sits between a store and loads
-     * of its block in DDR and BRAM: the loads see the store, the store after
-     * the op lands, and nothing else changes. */
+     * of its block in DDR and BRAM: the loads see the store (or, after a DDR
+     * invalidate, memory's fill value), the store after the op lands, and
+     * nothing else changes. */
     for (int region = 0; region < 2; region++) {
         for (int op = 0; op < 3; op++) {
             volatile uint64_t *buf = region ? g_bram_buf : g_ddr_buf;
             unsigned long base = (unsigned long) &buf[BLOCK / 8];
             unsigned long seen, seen2, other;
-            fill(buf, 3 * BLOCK / 8);
+            /* An invalidate of DDR drops the store before it. */
+            int drops = region == 0 && op == OP_INVAL && !g_inval_flushes;
+            fill_flushed(buf, 3 * BLOCK / 8);
             buf[BLOCK / 8 + 3] = PATTERN;
             cbo_at(op, base + 0x11);
             seen = buf[BLOCK / 8 + 3];
@@ -472,7 +501,9 @@ int main(void)
             cbo_at(op, base + 0x30);
             seen2 = buf[BLOCK / 8 + 4];
             other = buf[BLOCK / 8 + 7];
-            int e_ok = seen == PATTERN && seen2 == ~PATTERN && other == pattern_at(BLOCK / 8 + 7);
+            int e_ok = seen == (drops ? pattern_at(BLOCK / 8 + 3) : PATTERN) &&
+                       seen2 == (drops ? pattern_at(BLOCK / 8 + 4) : ~PATTERN) &&
+                       other == pattern_at(BLOCK / 8 + 7);
             buf[BLOCK / 8 + 3] = pattern_at(BLOCK / 8 + 3);
             buf[BLOCK / 8 + 4] = pattern_at(BLOCK / 8 + 4);
             report(e_ok, region ? "E bram-order" : "E ddr-order", op_name[op]);
@@ -484,8 +515,7 @@ int main(void)
     /* F: back-to-back ops over eight blocks with stores and loads between. */
     {
         volatile uint64_t *b = (volatile uint64_t *) 0x81400000ul;
-        for (int i = 0; i < 64; i++)
-            b[i] = pattern_at((unsigned long) i);
+        fill_flushed(b, 64);
         unsigned long base = (unsigned long) b;
         cbo_at(OP_CLEAN, base);
         cbo_at(OP_FLUSH, base + BLOCK);
@@ -504,10 +534,11 @@ int main(void)
         ok &= f_ok;
     }
 
-    /* G: a DMA engine write lands while the CPU cleans and invalidates the
-     * block, and a DMA copy reads a block the CPU just wrote and cleaned. The
-     * engine is coherent, so the CPU reads the DMA bytes and the copy sees the
-     * CPU's bytes, with or without the CMO. */
+    /* G: a DMA engine write lands while the CPU cleans and flushes the block,
+     * and a DMA copy reads a block the CPU just wrote and cleaned. The engine
+     * is coherent, so its bytes live in the coherent caches: the CPU flushes
+     * (an invalidate could drop them), reads the DMA bytes, and the copy sees
+     * the CPU's bytes. */
     {
         int g_ok = 1;
         unsigned long blk = 0x81410000ul;
@@ -520,9 +551,9 @@ int main(void)
             dma_engine_setup(0, (uint32_t) blk, 64, DMA_ENGINE_MODE_FILL, pattern, 0, 0);
             dma_engine_start();
             spin((unsigned long) d * 3);
-            cbo_at(OP_INVAL, blk);
+            cbo_at(OP_FLUSH, blk);
             dma_engine_wait();
-            cbo_at(OP_INVAL, blk + 32);
+            cbo_at(OP_FLUSH, blk + 32);
             for (int i = 0; i < 16; i++)
                 g_ok &= w[i] == pattern + (uint32_t) i;
         }
@@ -535,7 +566,7 @@ int main(void)
         dma_engine_setup((uint32_t) src, (uint32_t) dst, 64, DMA_ENGINE_MODE_COPY, 0, 0, 0);
         dma_engine_start();
         dma_engine_wait();
-        cbo_at(OP_INVAL, dst);
+        cbo_at(OP_FLUSH, dst);
         for (int i = 0; i < 8; i++)
             g_ok &= ((volatile uint64_t *) dst)[i] == pattern_at((unsigned long) i + 40);
         report(g_ok, "G coherent-dma", 0);
@@ -551,7 +582,7 @@ int main(void)
         build_tables();
         for (int p = 0; p < PG_COUNT; p++)
             if (p != PG_BEYOND)
-                fill((volatile uint64_t *) FRAME(p), 3 * BLOCK / 8);
+                fill_flushed((volatile uint64_t *) FRAME(p), 3 * BLOCK / 8);
         __asm__ volatile("csrw satp, %0\n sfence.vma" : : "r"(SATP_SV39 | (PT_ROOT >> 12)));
 
         static const struct {

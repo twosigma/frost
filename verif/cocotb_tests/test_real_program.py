@@ -5029,6 +5029,14 @@ async def test_real_program(dut: Any) -> None:
             dut, FULL_LINE_TEST_EVENTS if app_name == "full_line_test" else ()
         )
         cocotb.start_soon(full_line_watch.run())
+    # FROST_CMO_DDR_CHECK=1: the program brackets Zicbom operations with
+    # sscratch windows whose DDR write-backs are checked (cache/cmo_ddr_watch).
+    cmo_watch = None
+    if os.environ.get("FROST_CMO_DDR_CHECK") == "1":
+        from cocotb_tests.cache.cmo_ddr_watch import CmoDdrWatch
+
+        cmo_watch = CmoDdrWatch(dut)
+        cocotb.start_soon(cmo_watch.run())
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
     ecc_driver = EccReportDriver(dut) if app_name == "memerr_test" else None
     if app_name == "memerr_readback":
@@ -5061,6 +5069,8 @@ async def test_real_program(dut: Any) -> None:
     for run_number in range(1, NUM_RUNS + 1):
         if coverage is not None:
             coverage.clear()
+        if cmo_watch is not None:
+            cmo_watch.clear()
         if run_number > 1:
             cocotb.log.info(f"=== Asserting reset for {RESET_CYCLES} cycles ===")
             uart_monitor.clear()
@@ -5142,6 +5152,8 @@ async def test_real_program(dut: Any) -> None:
             full_line_watch.verify(cocotb.log)
         if vector_watch is not None:
             vector_watch.verify()
+        if cmo_watch is not None:
+            cmo_watch.verify()
 
     uart_monitor.stop()
     if line_monitor is not None:

@@ -471,20 +471,21 @@ module coherence_home_completions #(
       assert (release_fire == (release_valid & release_ready));
     end
 `endif
-  // A GetMZero holds both sectors of its 64-byte line (see the cache README,
-  // Line-scope cbo.zero): it orders behind, and ahead of, every request to
-  // either sector.
-  wire incoming_line_zero = OffsetBits != 5 && incoming.opcode == coherence_pkg::GetMZero;
+  // A GetMZero or a Zicbom request holds both sectors of its 64-byte line
+  // (see the cache README, Line-scope cbo.zero and Zicbom write-back): it
+  // orders behind, and ahead of, every request to either sector.
+  wire incoming_line_zero = OffsetBits != 5 && coherence_pkg::holds_line(incoming.opcode);
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_eligible
     // A slot's L2 block matches the presented request's; the sector match
-    // adds the sector bit of a 64-byte line, which a GetMZero leaves out.
+    // adds the sector bit of a 64-byte line, which a line-holding request
+    // (GetMZero, Zicbom) leaves out.
     assign incoming_blocks[slot] = (work_address[slot] >> OffsetBits) ==
         (incoming.addr >> OffsetBits);
     assign incoming_sectors[slot] = incoming_blocks[slot] &&
         (OffsetBits == 5 || work_address[slot][5] == incoming.addr[5] || incoming_line_zero ||
-         request_opcode(
-        work[slot]
-    ) == coherence_pkg::GetMZero);
+         coherence_pkg::holds_line(
+        request_opcode(work[slot])
+    ));
     // The slot orders the presented request: same sector, neither a prefetch.
     assign incoming_orders[slot] = incoming_sectors[slot] && !slot_prefetch[slot] &&
         !incoming_prefetch;
@@ -864,7 +865,8 @@ module coherence_home_completions #(
       end
       if (accept_forward) begin
         buffer_q[ForwardBuffer] <= forward_result;
-        buffer_zero_q[ForwardBuffer] <= 1'b0;
+        // A Zicbom request's forwarded GrantAck carries no data.
+        buffer_zero_q[ForwardBuffer] <= forward_result.opcode == coherence_pkg::GrantAck;
       end
       if (!grant_selected_q && !grant_found && accept_result) begin
         grant_selected_q <= 1'b1;
@@ -1089,8 +1091,9 @@ module coherence_home_completions #(
       assert (work_selected_slots_q == (work_selected_q ? SLOTS'(1) << work_slot_q : '0));
       if (work_selected_q)
         assert (work_parked_q == (ParkGroups'(parked_q[work_slot_q]) << (work_slot_q >> 1)));
-      // A forward names one parked GetS, LoadReserved or GetM that holds no
-      // buffer, pin or result and has no other event on the edge; the slot
+      // A forward names one parked GetS, LoadReserved, GetM or Zicbom
+      // request that holds no buffer, pin or result and has no other event
+      // on the edge; the slot
       // that owns the forward buffer holds its pin and has no engine.
       if (i_forward_valid) begin
         assert ($onehot(i_forward_slots) && int'(i_forward_way) < WAYS);
@@ -1105,12 +1108,16 @@ module coherence_home_completions #(
               work[slot]
           ) == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
               request_opcode(work[slot])
+          ) || coherence_pkg::is_cmo(
+              request_opcode(work[slot])
           ));
           assert (!i_wake[slot] && !i_park[slot]);
           assert (!(work_selected_q && work_slot_q == SlotBits'(slot)));
           assert (forward_result.q == work_identity[slot] && forward_result.tid == 6'(slot) &&
               forward_result.addr == work_address[slot] && !forward_result.error);
-          assert (forward_result.opcode == (request_opcode(
+          assert (forward_result.opcode == (coherence_pkg::is_cmo(
+              request_opcode(work[slot])
+          ) ? coherence_pkg::GrantAck : request_opcode(
               work[slot]
           ) == coherence_pkg::GetMZero ? (LINE_BYTES == 64 ? coherence_pkg::GrantMZero :
                                           coherence_pkg::GrantM) : request_opcode(
@@ -1169,8 +1176,9 @@ module coherence_home_completions #(
       assert ((i_fill_seated & (~work_valid | pin_valid_q | result_valid_q)) == 0);
       assert ((i_fill_seated & wake_error_q) == 0);
       assert ((wake_error_q & ~(ready_q | issued_q)) == 0);
-      // A fill's pending primary is a parked GetS, LoadReserved or GetM that
-      // holds no buffer, pin or result, and only a pending primary forwards.
+      // A fill's pending primary is a parked GetS, LoadReserved, GetM or
+      // Zicbom request that holds no buffer, pin or result, and only a
+      // pending primary forwards.
       assert ((i_fill_primary & (~work_valid | ~parked_q | issued_q | ready_q | buffer_owned_q |
           result_valid_q | pin_valid_q | wake_error_q | slot_prefetch)) == 0);
       // A primary was dispatched before it parked, so no earlier request of
@@ -1185,6 +1193,8 @@ module coherence_home_completions #(
         ) == coherence_pkg::GetS || request_opcode(
             work[slot]
         ) == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
+            request_opcode(work[slot])
+        ) || coherence_pkg::is_cmo(
             request_opcode(work[slot])
         ));
         assert (predecessors_q[slot] == 0);
@@ -1269,12 +1279,16 @@ module coherence_home_completions #(
               work[slot]
           ) == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
               request_opcode(work[slot])
+          ) || coherence_pkg::is_cmo(
+              request_opcode(work[slot])
           ));
           assume (!i_wake[slot] && !i_park[slot]);
           assume (!(work_selected_q && work_slot_q == SlotBits'(slot)));
           assume (forward_result.q == work_identity[slot] && forward_result.tid == 6'(slot) &&
               forward_result.addr == work_address[slot] && !forward_result.error);
-          assume (forward_result.opcode == (request_opcode(
+          assume (forward_result.opcode == (coherence_pkg::is_cmo(
+              request_opcode(work[slot])
+          ) ? coherence_pkg::GrantAck : request_opcode(
               work[slot]
           ) == coherence_pkg::GetMZero ? (LINE_BYTES == 64 ? coherence_pkg::GrantMZero :
                                           coherence_pkg::GrantM) : request_opcode(

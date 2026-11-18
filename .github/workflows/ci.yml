@@ -1459,7 +1459,7 @@ jobs:
           # Home task limits total 219 minutes; image setup has twenty more.
           - shard: Coherence home
             pytest_filter: coherence_home_coh_home_
-            timeout_minutes: 240
+            timeout_minutes: 340
           # The coherent array's equivalence with its reference array: the
           # one-way, UltraRAM and hit-port tasks with the cover, and the
           # four-way tasks, each about an hour of BMC tasks.
