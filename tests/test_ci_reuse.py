@@ -116,6 +116,7 @@ def test_synthesis_key_covers_the_script_sources(
 TRAP_FILES = (
     "hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv",
     "hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv",
+    "formal/free_undefined.ys",
 )
 
 

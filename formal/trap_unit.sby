@@ -20,6 +20,8 @@ bmc: read -formal -sv trap_unit.sv
 cover: read -formal -sv trap_unit.sv
 # Entry-enable identities and atomic exception selection use arbitrary state.
 prove: read -formal -D TRAP_ENTRY_ENABLE_LOCAL_PROOF -sv trap_unit.sv
+hierarchy -top trap_unit
+script free_undefined.ys
 prep -top trap_unit
 prove: select -assert-count 11 t:$check
 prove: select -assert-none t:$assume
@@ -27,3 +29,4 @@ prove: select -assert-none t:$assume
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
+free_undefined.ys
