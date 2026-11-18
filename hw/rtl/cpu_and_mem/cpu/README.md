@@ -288,7 +288,7 @@ measurement, through `riscv_pkg::BackingBtbWays`). It holds jumps, calls and
 returns only: the BTB updates of JALs and JALRs train it, so it holds every
 jump that has mispredicted unless replacement has since taken it, or an
 update was dropped because the update one stage ahead writes the same set.
-Every hit predicts taken. A correctly predicted jump sends no update, so a
+A backing hit can redirect a live jump of the stored size. When both slots hit, a stale entry on a slot-1 ALU instruction leaves the slot-2 jump’s target and return type in control. A correctly predicted jump sends no update, so a
 PD redirect that the backing BTB serves refreshes its entry instead, making
 it the most recently used way of its set. Its sets are indexed
 by the PC's word, like the BTB. An entry's tag holds the PC bits above the

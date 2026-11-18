@@ -715,6 +715,12 @@ module pd_stage #(
                                 (i_backing_compressed[0] == pd_sel_compressed);
   assign pd_backing_candidate_2 = pd_slot2_jump && i_backing_hit[1] &&
                                   (i_backing_compressed[1] == pd_sel_compressed_2);
+  // A hit on old bytes in slot 1 can coincide with a live jump in slot 2.
+  // Use the entry of the slot that can actually make the backing redirect.
+  logic pd_backing_slot1_owner;
+  assign pd_backing_slot1_owner = pd_backing_candidate && !i_from_if_to_pd.sel_nop &&
+                                  !i_from_if_to_pd.fetch_fault &&
+                                  !i_from_if_to_pd.btb_predicted_taken;
   // Indirect target candidates, one per slot: a JALR that is not a return,
   // whose indirect target predictor lookup hit, unless the BTB predicted it
   // taken with that target. The target replaces the BTB's (or gives one) and
@@ -744,14 +750,14 @@ module pd_stage #(
   logic [1:0] pd_jump_target_bit;
   // Bit 2 of the backing BTB target that the backing redirect would take: the
   // stack's top for a return while the stack holds an entry, else the hit
-  // slot's entry (slot 1's first). It equals the simulation-only
+  // slot's entry. It equals the simulation-only
   // pd_backing_target's bit 2, formed from the fields synthesis keeps.
   logic pd_backing_target_bit2;
   assign pd_backing_target_bit2 =
-      ((i_backing_hit[0] ? i_backing_return[0] : i_backing_return[1]) &&
+      ((pd_backing_slot1_owner ? i_backing_return[0] : i_backing_return[1]) &&
        (i_from_if_to_pd.ras_checkpoint_valid_count != '0)) ?
       i_from_if_to_pd.ras_checkpoint_top[2] :
-      (i_backing_hit[0] ? i_backing_target[0][1] : i_backing_target[1][1]);
+      (pd_backing_slot1_owner ? i_backing_target[0][1] : i_backing_target[1][1]);
   assign pd_jump_target_bit[0] = pd_itt_candidate ? i_itt_target[0][1] :
       i_from_if_to_pd.btb_predicted_taken ? i_from_if_to_pd.btb_predicted_target[2] :
                                             pd_backing_target_bit2;
@@ -794,11 +800,11 @@ module pd_stage #(
   assign pd_backing_target_select = !pd_cond_branch && (pd_slot1_jump || !pd_cond_branch_2);
   // Both slots share the packet's stack recovery point.
   assign pd_backing_target_return =
-      (i_backing_hit[0] ? i_backing_return[0] : i_backing_return[1]) &&
+      (pd_backing_slot1_owner ? i_backing_return[0] : i_backing_return[1]) &&
       (i_from_if_to_pd.ras_checkpoint_valid_count != '0);
   assign pd_backing_target = pd_backing_target_return ? i_from_if_to_pd.ras_checkpoint_top : {
     i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
-    i_backing_hit[0] ? i_backing_target[0] : i_backing_target[1],
+    pd_backing_slot1_owner ? i_backing_target[0] : i_backing_target[1],
     1'b0
   };
 `endif
@@ -937,7 +943,7 @@ module pd_stage #(
       .i_slot2_native_high_select(i_from_if_to_pd_2.pd_target_native_high_select),
       .i_slot2_compressed_low(pd_slot2_target_compressed_low_candidate),
       .i_slot2_compressed_high_select(i_from_if_to_pd_2.pd_target_compressed_high_select),
-      .i_backing_hit(i_backing_hit[0]),
+      .i_backing_hit(pd_backing_slot1_owner),
       .i_backing_return(i_backing_return[0]),
       .i_backing_target(i_backing_target[0]),
       .i_backing_slot2_return_by_size,
@@ -1341,7 +1347,7 @@ module pd_stage #(
   // A firing backing redirect takes the target its own instruction's decode
   // names, the stack's top for a return while the stack holds an entry and
   // its slot's entry otherwise, whenever the entry's return type matches that
-  // decode and, for slot 2, slot 1 has no hit.
+  // decode.
   logic [XLEN-1:0] pd_backing_decoded_target_reference_q;
   logic [XLEN-1:0] pd_backing_decoded_target_reference_2_q;
   logic pd_backing_decoded_reference_valid_q;
@@ -1385,8 +1391,7 @@ module pd_stage #(
             {i_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
              i_backing_target[1], 1'b0};
         pd_backing_decoded_reference_valid_q <= i_backing_return[0] == pd_slot1_return_reference;
-        pd_backing_decoded_reference_valid_2_q <= !i_backing_hit[0] &&
-            (i_backing_return[1] == pd_slot2_return_reference);
+        pd_backing_decoded_reference_valid_2_q <= i_backing_return[1] == pd_slot2_return_reference;
         pd_backing_decoded_reference_armed <= 1'b1;
       end
     end
