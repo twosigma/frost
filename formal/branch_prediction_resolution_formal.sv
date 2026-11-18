@@ -37,6 +37,23 @@ module branch_prediction_resolution_formal (
 
   riscv_pkg::reorder_buffer_branch_update_t update[2];
   logic [1:0] correct;
+  // Trap, return and fence flushes discard every issued branch. Partial
+  // recovery preserves strictly older issues and takes priority over the
+  // commit-pending indication when both controls are presented.
+  logic [riscv_pkg::ReorderBufferTagWidth:0] issue_age, cutoff_age;
+  logic partial_recovery, full_flush, checkpoint_live, eligible_issue, expected_valid;
+  assign issue_age = {1'b0, i_branch_predicate_tag} - {1'b0, i_head_tag};
+  assign cutoff_age = {1'b0, i_early_mispredict_tag} - {1'b0, i_head_tag};
+  assign partial_recovery = i_early_mispredict_active || i_early_backend_recovery_pending;
+  assign full_flush = i_flush_for_trap || i_flush_for_mret || i_fence_i_flush;
+  assign checkpoint_live = !i_issue.has_checkpoint ||
+      (i_checkpoint_in_use[i_issue.checkpoint_id] &&
+       i_checkpoint_owner_tag[i_issue.checkpoint_id] == i_branch_predicate_tag);
+  assign eligible_issue = i_issue.valid && i_issue.is_branch_class && !i_issue.is_jal &&
+                          checkpoint_live;
+  assign expected_valid = eligible_issue && !full_flush &&
+                          (partial_recovery ? issue_age < cutoff_age :
+                                              !i_mispredict_recovery_pending);
   for (genvar p = 0; p < 2; p++) begin : gen_prediction
     riscv_pkg::rs_issue_t issue;
     always_comb begin
@@ -71,8 +88,7 @@ module branch_prediction_resolution_formal (
       p_wrong_direction_or_taken_target_recovers :
       assert (update[p].mispredicted == (update[p].valid && missed));
       p_correct_resolution : assert (correct[p] == (update[p].valid && !update[p].mispredicted));
-      if (i_flush_for_trap || i_flush_for_mret || i_fence_i_flush || i_mispredict_recovery_pending)
-        p_flushed_issue_has_no_update : assert (!update[p].valid);
+      p_only_surviving_issues_update : assert (update[p].valid == expected_valid);
     end
   end
   always_comb begin
@@ -83,6 +99,9 @@ module branch_prediction_resolution_formal (
     cover (correct[0] && update[1].mispredicted && !i_issue.is_jalr && i_taken == 2'b01);
     cover (correct[0] && update[1].mispredicted && !i_issue.is_jalr && i_taken == 2'b10);
     cover ((&correct) && i_taken == 2'b00 && i_target[0] != i_target[1]);
+    cover (partial_recovery && i_mispredict_recovery_pending && update[0].valid);
+    cover (eligible_issue && !full_flush && partial_recovery && issue_age >= cutoff_age &&
+           !update[0].valid);
   end
 
 endmodule : branch_prediction_resolution_formal

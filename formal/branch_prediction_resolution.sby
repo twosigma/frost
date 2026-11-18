@@ -18,7 +18,7 @@ bmc: select -assert-count 7 t:$check r:FLAVOR=assert %i
 prep -top branch_prediction_resolution_formal -flatten
 # Shared actual outcomes and flush qualification merge identical property cells.
 bmc: select -assert-count 5 t:$check r:FLAVOR=assert %i
-cover: select -assert-count 4 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 6 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
