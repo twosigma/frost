@@ -20,9 +20,12 @@ read -formal -sv riscv_pkg.sv
 read -formal -sv sdp_dist_ram.sv
 read -formal -sv fp_shim.sv
 chparam -set PIPELINE 1 fp_shim
+hierarchy -top fp_shim
+script free_undefined.ys
 prep -top fp_shim
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
+free_undefined.ys
