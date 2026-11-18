@@ -604,14 +604,14 @@ and targeted microbenchmarks give these items:
    additions runs at 0.6 IPC with translation off; those small-loop costs
    come from fetch coverage and packet formation, not BTB capacity.
 5. Floating point. One engine executes F and D instructions one at a time.
-   Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
-   and sign injection use two-cycle paths. Integer-to-FP conversion takes
-   four cycles, or two for zero. Pipelined add and multiply units would let
-   FP_RS issue independent arithmetic while earlier operations execute. A
-   pipelined multiplier for both precisions, about 14 cycles instead of 66,
-   and a pipelined adder, 13 cycles instead of 15 to 20, are designed;
-   fused multiply-add would stay on the iterative engine at first. The first
-   multiplier implementation needs rework to fit the target clock.
+   Multiply and fused multiply-add share a three-stage significand multiplier.
+   In [`fplat_probe`](sw/apps/fplat_probe/), dependent multiplies take about
+   14 cycles in both precisions. Divide uses radix 4 and square root uses
+   radix 2. The engine shares an adder for addition, subtraction and fused
+   accumulation. Comparisons, moves, min/max, FCLASS and sign injection use
+   two-cycle paths. Integer-to-FP conversion takes four cycles, or two for
+   zero. A pipelined adder has been designed. Issuing independent arithmetic
+   from FP_RS while an earlier operation executes remains future work.
 6. Integer multiply and divide. The full-width multiplier has six stages;
    its integrated completion bypasses the result FIFO. The CDB and
    reservation station each contribute a cycle, giving eight cycles to a

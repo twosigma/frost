@@ -18,6 +18,7 @@ regression run [natively](../fpga/README.md#hardware-regression) instead.
 | [`test_riscv_tests.py`](#test_riscv_testspy) | riscv-tests ISA suites and benchmarks |
 | [`test_riscv_vector_tests.py`](#test_riscv_vector_testspy) | Generated, self-checking vector instruction tests (riscv-vector-tests) on Spike or the simulated core |
 | [`test_vector_reference.py`](#test_vector_referencepy) | The vector bring-up programs on Spike at three vector lengths |
+| [`test_fplat_probe.py`](test_fplat_probe.py) | Scalar FP target links and LP64D callee-saved registers across the throughput loops on Spike |
 | [`test_riscv_torture.py`](#test_riscv_torturepy) | Random RV64IMAFDC programs against Spike references |
 | [`test_testrig.py`](#test_testrigpy) | Random instruction sequences against the Sail RISC-V model, one instruction at a time (TestRIG) |
 | [`test_run_yosys.py`](#test_run_yosyspy) | Portable and Xilinx synthesis |
@@ -138,6 +139,14 @@ execution; it does not use standalone `slang --lint-only`.
 ## Test runners
 
 ### `test_run_cocotb.py`
+
+Run the scalar floating-point checks with `./scripts/frost.py cocotb <target>`.
+
+| Target | Checks |
+| --- | --- |
+| [`fp_engine_equiv`](../verif/cocotb_tests/ex_stage/test_fp_engine.py) | Result bits and flags against Berkeley SoftFloat, including fused cancellation and multiply and divide rounding boundaries. A separate case measures engine latency against per-operation limits. |
+| [`fp_shim`](../verif/cocotb_tests/tomasulo/fu_shims/test_fp_shim.py) | Fast-path latency, issue after completion, result tags and flush handling. |
+| [`fplat_probe`](../sw/apps/fplat_probe) | Dependent chains and independent streams in the full processor. The registered build checks cycle limits for dependent FMUL, FMA and FDIV and independent FMUL and FMA at both precisions. |
 
 `vec_operand_widths` checks EEW=1 mask-source aliases, vector versus scalar
 source fields and the old destination read by widening multiply-accumulate,
@@ -491,7 +500,7 @@ of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `irq_take_latency`, `lq_stale_slot_probe`, `fencei_jit_bench`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `opensbi_reset_cold`, `opensbi_reset_warm` | Each bench issues its own S-mode reset and stops at the first retired boot instruction |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |

@@ -122,6 +122,7 @@ else ifeq ($(TOPLEVEL),fp_engine_equiv_harness)
 # in the frost image, supplies the reference through DPI-C.
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv \
         $(ROOT)/hw/sim/fp_engine_equiv_harness.sv \
         $(ROOT)/hw/sim/fp_softfloat_ref.c \
