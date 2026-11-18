@@ -23,6 +23,8 @@ read -sv coherent_lq_issue_selector.sv
 read -sv coherent_lq_candidate_select.sv
 read -sv coherent_lq_address_store.sv
 read -formal -sv -D LQ_AMO_COMPUTE_LOCAL_PROOF load_queue.sv
+hierarchy -top load_queue
+script free_undefined.ys
 prep -top load_queue
 # Count only the named checks this proof relies on (p_local_*, cover_local_*,
 # p_lq_*_free_tree_*), so other assertions in load_queue.sv do not change the
@@ -45,3 +47,4 @@ select -assert-none t:$assume
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+free_undefined.ys

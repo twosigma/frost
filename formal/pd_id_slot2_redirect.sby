@@ -39,6 +39,8 @@ pd_id_slot2_vector_cover: chparam -set VECTOR 1 pd_id_slot2_redirect_formal
 hierarchy -check -top pd_id_slot2_redirect_formal
 setattr -unset dont_touch *
 setattr -mod -unset keep_hierarchy *
+hierarchy -top pd_id_slot2_redirect_formal
+script free_undefined.ys
 prep -flatten -top pd_id_slot2_redirect_formal
 
 [files]
@@ -54,3 +56,4 @@ prep -flatten -top pd_id_slot2_redirect_formal
 ../hw/rtl/cpu_and_mem/cpu/id_stage/branch_target_precompute.sv
 ../hw/rtl/cpu_and_mem/cpu/id_stage/id_stage.sv
 pd_id_slot2_redirect_formal.sv
+free_undefined.ys

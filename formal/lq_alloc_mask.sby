@@ -25,6 +25,8 @@ read -formal -D SYNTHESIS -D F_LQ_PREMATCH_ONLY -D F_LQ_ALLOC_MASK_PROOF -sv loa
 bmc4: chparam -set DEPTH 4 load_queue
 bmc8: chparam -set DEPTH 8 load_queue
 bmc16: chparam -set DEPTH 16 load_queue
+hierarchy -top load_queue
+script free_undefined.ys
 prep -top load_queue
 select -assert-none t:$assume
 select -assert-count 3 t:$check
@@ -42,3 +44,4 @@ select -assert-count 3 t:$check
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+free_undefined.ys

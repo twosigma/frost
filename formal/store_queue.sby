@@ -16,6 +16,8 @@ read -formal -sv riscv_pkg.sv vec_hold_rows.sv
 read -sv sdp_dist_ram.sv
 read -formal -sv sq_forwarding_unit.sv
 read -formal -sv store_queue.sv
+hierarchy -top store_queue
+script free_undefined.ys
 prep -top store_queue
 
 [files]
@@ -24,3 +26,4 @@ prep -top store_queue
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
+free_undefined.ys

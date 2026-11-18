@@ -18,6 +18,8 @@ smtbmc boolector
 prove: read_slang --top nic_irq_formal --single-unit --no-synthesis-define -DFORMAL -GBOUNDED_SPEC=0 nic_pkg.sv nic_irq.sv nic_irq_formal.sv
 bmc: read_slang --top nic_irq_formal --single-unit --no-synthesis-define -DFORMAL -GBOUNDED_SPEC=1 nic_pkg.sv nic_irq.sv nic_irq_formal.sv
 cover: read_slang --top nic_irq_formal --single-unit --no-synthesis-define -DFORMAL -GBOUNDED_SPEC=1 nic_pkg.sv nic_irq.sv nic_irq_formal.sv
+hierarchy -top nic_irq_formal
+script free_undefined.ys
 prep -top nic_irq_formal -flatten
 opt_clean
 
@@ -25,3 +27,4 @@ opt_clean
 ../hw/rtl/peripherals/nic/nic_pkg.sv
 ../hw/rtl/peripherals/nic/nic_irq.sv
 nic_irq_formal.sv
+free_undefined.ys

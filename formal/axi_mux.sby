@@ -26,7 +26,10 @@ prove: chparam -set NUM_PORTS 3 -set ADDR_WIDTH 12 -set DATA_WIDTH 32 -set UP_ID
 cover: chparam -set NUM_PORTS 3 -set ADDR_WIDTH 12 -set DATA_WIDTH 32 -set UP_ID_WIDTH 2 -set W_DEPTH 2 axi_mux
 prove_soc: chparam -set NUM_PORTS 3 -set ADDR_WIDTH 64 -set DATA_WIDTH 256 -set UP_ID_WIDTH 3 -set W_DEPTH 4 axi_mux
 prove_soc4: chparam -set NUM_PORTS 4 -set ADDR_WIDTH 64 -set DATA_WIDTH 256 -set UP_ID_WIDTH 3 -set W_DEPTH 4 axi_mux
+hierarchy -top axi_mux
+script free_undefined.ys
 prep -top axi_mux
 
 [files]
 ../hw/rtl/lib/axi/axi_mux.sv
+free_undefined.ys

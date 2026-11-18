@@ -20,6 +20,8 @@ compare: read -sv coherence_store_buffer.sv
 compare: read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
 compare: read -formal -sv -D ZERO_INDEX_PROOF coherence_l1d.sv
 compare: chparam -set ADDR_WIDTH 56 -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
+compare: hierarchy -top coherence_l1d
+compare: script free_undefined.ys
 compare: prep -flatten -top coherence_l1d
 # Abstract all selector inputs. The shape task proves the upper-flag line,
 # twin pairing (zero and data twins) and the sampled older-record conflict
@@ -33,6 +35,8 @@ compare: chformal -assert2assume c:p_zero_index_upper_line c:p_zero_index_twin_p
 compare: select -assert-count 3 t:$check r:FLAVOR=assert %i
 shape: read -formal -sv -D ZERO_INDEX_PROOF coherence_store_buffer.sv
 shape: chparam -set ADDR_WIDTH 56 -set TAG_BITS 2 -set EP_BITS 2 coherence_store_buffer
+shape: hierarchy -top coherence_store_buffer
+shape: script free_undefined.ys
 shape: prep -top coherence_store_buffer
 # Keep all of the buffer's assertions and interface assumptions.
 shape: select -assert-count 1 c:p_index_head_conflict t:$check %i r:FLAVOR=assert %i
@@ -59,3 +63,4 @@ opt
 ../hw/rtl/lib/cache/coherence_read_payload.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
 ../hw/rtl/lib/cache/coherence_store_buffer.sv
+free_undefined.ys

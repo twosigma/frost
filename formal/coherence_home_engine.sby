@@ -20,6 +20,8 @@ read -sv coherence_pkg.sv
 read -formal -sv -noautowire coherence_home_engine.sv
 chparam -set LINE_BYTES 32 -set WAYS 1 coherence_home_engine
 wide: chparam -set LINE_BYTES 64 coherence_home_engine
+hierarchy -top coherence_home_engine
+script free_undefined.ys
 prep -top coherence_home_engine -flatten
 memory_map
 opt
@@ -28,3 +30,4 @@ opt
 ../hw/rtl/lib/cache/coherence_pkg.sv
 ../hw/rtl/lib/cache/coherence_types.svh
 ../hw/rtl/lib/cache/coherence_home_engine.sv
+free_undefined.ys

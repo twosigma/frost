@@ -15,6 +15,8 @@ smtbmc boolector
 read -sv sdp_dist_ram.sv
 read -sv sync_dist_ram_fifo.sv
 read -formal -sv sync_dist_ram_fifo_formal.sv
+hierarchy -top sync_dist_ram_fifo_formal
+script free_undefined.ys
 prep -top sync_dist_ram_fifo_formal
 memory_map
 opt -fast
@@ -23,3 +25,4 @@ opt -fast
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/fifo/sync_dist_ram_fifo.sv
 sync_dist_ram_fifo_formal.sv
+free_undefined.ys

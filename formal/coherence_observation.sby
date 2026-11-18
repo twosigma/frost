@@ -18,8 +18,11 @@ read -sv riscv_pkg.sv
 prove: read_verilog -formal -D SYNTHESIS -D COHERENCE_OBSERVATION_PROOF -sv lq_coherence_port.sv
 prove_unrestricted: read_verilog -formal -D SYNTHESIS -D COHERENCE_OBSERVATION_PROOF -D COHERENCE_OBSERVATION_UNRESTRICTED -sv lq_coherence_port.sv
 cover: read_verilog -formal -D SYNTHESIS -D COHERENCE_OBSERVATION_PROOF -sv lq_coherence_port.sv
+hierarchy -top lq_coherence_port
+script free_undefined.ys
 prep -top lq_coherence_port
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/coherence/lq_coherence_port.sv
+free_undefined.ys

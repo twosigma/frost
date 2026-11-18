@@ -21,6 +21,8 @@ bmc4: chparam -set DEPTH 4 reservation_station
 bmc8: chparam -set DEPTH 8 reservation_station
 bmc16: chparam -set DEPTH 16 reservation_station
 bmc32: chparam -set DEPTH 32 reservation_station
+hierarchy -top reservation_station
+script free_undefined.ys
 prep -top reservation_station
 select -assert-none t:$assume
 select -assert-count 5 t:$check
@@ -35,3 +37,4 @@ select -assert-count 5 t:$check
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+free_undefined.ys

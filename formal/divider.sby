@@ -24,8 +24,11 @@ prove_width64: read -formal -D DIVIDER_FORMAL_NO_REFERENCE -sv riscv_pkg.sv divi
 bmc_width8: chparam -set WIDTH 8 divider
 cover_width8: chparam -set WIDTH 8 divider
 prove_width64: chparam -set WIDTH 64 divider
+hierarchy -top divider
+script free_undefined.ys
 prep -top divider
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
+free_undefined.ys

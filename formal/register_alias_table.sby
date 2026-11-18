@@ -15,9 +15,12 @@ smtbmc boolector
 read -formal -sv riscv_pkg.sv
 read -formal -sv sdp_dist_ram.sv
 read -formal -sv register_alias_table.sv
+hierarchy -top register_alias_table
+script free_undefined.ys
 prep -top register_alias_table
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv
+free_undefined.ys
