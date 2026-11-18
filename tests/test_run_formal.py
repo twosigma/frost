@@ -1755,6 +1755,12 @@ FORMAL_TARGETS = [
         "FP completion tags, busy state, and cancellation",
     ),
     FormalTarget(
+        "fp_shim_pipe.sby",
+        "Pipelined FP tracker, forward wake, result FIFO and credits: no stale or "
+        "duplicate completion through flushes",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "fp_launch_squash.sby",
         "FP launch cancellation matches the reference under the producer bubble "
         "requirement",
@@ -7838,6 +7844,8 @@ def test_rs_payload_twin_assertion_groups(
         "read -sv multiplier.sv cl_multiplier.sv",
         "read -sv alu.sv",
         "read -sv fp_engine.sv",
+        "read -formal -D FP_FMA_PIPE_ABSTRACT -sv fp_pipe_lzc.sv fp_fma_pipe.sv",
+        "read -sv fp_div_unit.sv",
         "read -sv fp_shim.sv",
         "read -formal -sv tomasulo_wrapper.sv",
         "read -formal -sv rs_payload_twin_formal.sv",
@@ -7895,6 +7903,9 @@ def test_rs_payload_twin_assertion_groups(
         "../hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv",
         "../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv",
         "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_pipe_lzc.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma_pipe.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_unit.sv",
         "../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv",
         "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv",
         "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv",
@@ -7910,7 +7921,7 @@ def test_rs_payload_twin_assertion_groups(
 
     if not source:
         hashes = {
-            "rs_payload_twin.sby": "e62d5bf7503bbf96df278187b90ad2d7f1eee99013be8bd3ee70290fa5b67854",
+            "rs_payload_twin.sby": "9b7cf0c5bb15b82e3f3e8a4ea09da740cd8b616477a8dba0196feb1e44c598a4",
             "rs_payload_twin_formal.sv": "36efe2495150878e0b0006ef50959dba70b1ab898df382ca98066fc5564b50af",
             "free_undefined.ys": "9b2c2cb8b810c89401509a3ab42db9ea522b9e80b132d5c73d5ab8d516c3fe89",
         }
