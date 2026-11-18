@@ -33,7 +33,8 @@ bmc_forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 bmc_forward_only: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set ENABLE_L0_FAST_PATH 0 load_queue
 bmc_core: chparam -set CACHE_NORMAL_MEMORY 1 -set MEM_RESPONSE_ERRORS 1 -set CACHE_UNCACHED_DATA 0 -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set PREISSUE_CANDIDATES 1 -set PREISSUE_READY_PICK 1 -set PREISSUE_SEL_WIDTH 3 -set L0_CACHE_DEPTH 256 load_queue
 delete t:lq_l0_cache t:mwp_dist_ram t:sdp_dist_ram
-proc
+hierarchy -top load_queue
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top load_queue
@@ -55,3 +56,4 @@ select -assert-none t:$check r:FLAVOR=assume %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+free_undefined.ys

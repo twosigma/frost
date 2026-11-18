@@ -17,6 +17,8 @@ read -sv coherent_rs_payload_store.sv
 read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -D RS_DISPATCH_DEFER_LOCAL_PROOF -sv reservation_station.sv
 bmc: chparam -set DISPATCH_REPAIR_BYPASS 0 reservation_station
 bmc_repair: chparam -set DISPATCH_REPAIR_BYPASS 1 reservation_station
+hierarchy -top reservation_station
+script free_undefined.ys
 prep -top reservation_station
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
@@ -32,3 +34,4 @@ select -assert-count 7 t:$check
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+free_undefined.ys
