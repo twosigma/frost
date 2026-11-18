@@ -118,6 +118,19 @@ module reservation_station #(
     // o_issue.op stays at the last issued op while stage 2 is empty. A
     // station feeding that shim must set this parameter.
     parameter bit DIVIDE_ISSUE_GATE = 1'b0,
+    // FP only: forward wake from a fixed-latency producer (fp_shim). A source
+    // whose tag equals i_fwd_wake_tag counts as ready; an entry issued on it
+    // takes i_fwd_value, which arrives the next cycle, the cycle o_issue
+    // presents it (and a held stage2 packet keeps that value). A matching
+    // entry that does not issue captures i_fwd_value on the next edge and
+    // is ready one cycle later. Requires the generic station form:
+    // PREPARE_ISSUE_CONTROLS, CAPTURE_PRIMARY_EFFECTIVE_OPERANDS,
+    // ALLOC_INDEXED_REPAIR and DUAL_ISSUE off.
+    parameter bit FWD_WAKE = 1'b0,
+    // FP only, with DIVIDE_ISSUE_GATE: the gated class is every FP operation
+    // the FP pipeline does not execute (fp_engine operations), instead of the
+    // integer divides.
+    parameter bit FP_ENGINE_GATE = 1'b0,
     // formal/reservation_station.sby uses free inputs and assumes dispatch
     // requirements. formal/tomasulo_wrapper.sby sets this to 0: its real
     // routing, capacity and flush logic must satisfy those requirements.
@@ -201,6 +214,10 @@ module reservation_station #(
     // DIVIDE_ISSUE_GATE only: the divider or the vector-config unit holds an
     // operation or its result.
     input  logic                                                        i_divider_busy,
+    // FWD_WAKE only: the producer's tag one cycle before its value.
+    input  logic                                                        i_fwd_wake_valid = 1'b0,
+    input  logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] i_fwd_wake_tag = '0,
+    input  logic                 [                 riscv_pkg::FLEN-1:0] i_fwd_value = '0,
     output logic                                                        o_issue_writes_cdb_hint,
     // Same-edge copy of the stage2 ROB tag used only by branch-resolution
     // predicates (BRANCH_PREDICATE_TAG_ANCHOR). Off, it aliases stage2_rob_tag.
@@ -630,6 +647,14 @@ module reservation_station #(
   logic [FLEN-1:0] stage2_cdb_value;  // lane-0 CDB value captured at issue time
   logic [FLEN-1:0] stage2_cdb_value_l1;  // lane-1 CDB value captured at issue time
 
+  // FWD_WAKE: per-source forward masks, the first cycle after the issue edge
+  // (i_fwd_value is the forwarded result then), and its copy for a held packet.
+  (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src1_fwd_mask;
+  (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src2_fwd_mask;
+  (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src3_fwd_mask;
+  (* max_fanout = 16 *) logic stage2_fwd_first_q;
+  logic [FLEN-1:0] stage2_fwd_value_q;
+  logic [FLEN-1:0] stage2_fwd_value;
 `ifndef SYNTHESIS
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
@@ -880,13 +905,25 @@ module reservation_station #(
   // Ops held back while the divider (or the vector-config unit, which shares
   // the gate) holds an operation or an untaken result.
   function automatic logic rs_is_divide_op(riscv_pkg::instr_op_e op);
-    case (op)
-      riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
-      riscv_pkg::DIVW, riscv_pkg::DIVUW, riscv_pkg::REMW, riscv_pkg::REMUW,
-      riscv_pkg::VSETVLI, riscv_pkg::VSETIVLI, riscv_pkg::VSETVL:
-      rs_is_divide_op = 1'b1;
-      default: rs_is_divide_op = 1'b0;
-    endcase
+    if (FP_ENGINE_GATE) begin
+      // fp_engine operations: everything but the pipelined FP list (fp_shim).
+      case (op)
+        riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FMADD_S,
+        riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S, riscv_pkg::FADD_D,
+        riscv_pkg::FSUB_D, riscv_pkg::FMUL_D, riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
+        riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D:
+        rs_is_divide_op = 1'b0;
+        default: rs_is_divide_op = 1'b1;
+      endcase
+    end else begin
+      case (op)
+        riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
+        riscv_pkg::DIVW, riscv_pkg::DIVUW, riscv_pkg::REMW, riscv_pkg::REMUW,
+        riscv_pkg::VSETVLI, riscv_pkg::VSETIVLI, riscv_pkg::VSETVL:
+        rs_is_divide_op = 1'b1;
+        default: rs_is_divide_op = 1'b0;
+      endcase
+    end
   endfunction
 
   logic dispatch_is_divide, dispatch_is_divide_2;
@@ -1535,6 +1572,23 @@ module reservation_station #(
     end
   end
 
+  // --- Forward wake (FWD_WAKE) ---
+  // Registers only: the producer's tag input is the shim's tracker register.
+  // A source with a deferred CDB delivery or a forward capture pending does
+  // not match.
+  logic [DEPTH-1:0] src1_fwd_wake, src2_fwd_wake, src3_fwd_wake;
+  logic [DEPTH-1:0] src1_fwd_pend, src2_fwd_pend, src3_fwd_pend;
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++) begin
+      src1_fwd_wake[i] = FWD_WAKE && i_fwd_wake_valid && rs_valid[i] && !rs_src1_ready[i] &&
+          !src1_cdb_pend[i] && !src1_fwd_pend[i] && rs_src1_tag[i] == i_fwd_wake_tag;
+      src2_fwd_wake[i] = FWD_WAKE && i_fwd_wake_valid && rs_valid[i] && !rs_src2_ready[i] &&
+          !src2_cdb_pend[i] && !src2_fwd_pend[i] && rs_src2_tag[i] == i_fwd_wake_tag;
+      src3_fwd_wake[i] = FWD_WAKE && HAS_SRC3 && i_fwd_wake_valid && rs_valid[i] &&
+          !rs_src3_ready[i] && !src3_cdb_pend[i] && !src3_fwd_pend[i] &&
+          rs_src3_tag[i] == i_fwd_wake_tag;
+    end
+  end
   // --- Divide gate (DIVIDE_ISSUE_GATE) ---
   // Only load a divide into stage2 while both stage2 and the divider are
   // free of divides. Since stage2 is the divider's only source, it remains
@@ -1549,13 +1603,13 @@ module reservation_station #(
     for (int i = 0; i < DEPTH; i++) begin
       entry_ready[i] = rs_valid[i] && !(rs_is_divide[i] && divide_blocked) &&
           (rs_src1_ready[i] || src1_cdb_bypass[i] || src1_cdb_bypass_l1[i] ||
-           (src1_repair_sel[i] != 3'd0))
+           src1_fwd_wake[i] || (src1_repair_sel[i] != 3'd0))
       // Stores need src2 data even when the address uses an immediate.
       // Dispatch marks unused operands ready, so always require src2 readiness.
       && (rs_src2_ready[i] || src2_cdb_bypass[i] || src2_cdb_bypass_l1[i] ||
-          (src2_repair_sel[i] != 3'd0)) &&
+          src2_fwd_wake[i] || (src2_repair_sel[i] != 3'd0)) &&
           (rs_src3_ready[i] || src3_cdb_bypass[i] || src3_cdb_bypass_l1[i] ||
-           (src3_repair_sel[i] != 3'd0));
+           src3_fwd_wake[i] || (src3_repair_sel[i] != 3'd0));
     end
   end
 
@@ -2216,23 +2270,35 @@ module reservation_station #(
     if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin : gen_primary_effective_operand_outputs
       assign o_issue.src1_value = stage2_src1_value;
       assign o_issue.src2_value = stage2_src2_value;
+      // FWD_WAKE is off in this form; its src1/src2 masks stay zero.
+      logic unused_fwd_masks;
+      assign unused_fwd_masks = ^{stage2_src1_fwd_mask, stage2_src2_fwd_mask};
     end else begin : gen_primary_legacy_operand_outputs
       // Select the CDB value captured at issue. Keep the expressions on the
       // ports and replicate mask bits for fanout.
       assign o_issue.src1_value =
-          (stage2_src1_value & ~stage2_src1_bypass_mask & ~stage2_src1_bypass_mask_l1) |
+          (stage2_src1_value & ~stage2_src1_bypass_mask & ~stage2_src1_bypass_mask_l1 &
+           ~stage2_src1_fwd_mask) |
           (stage2_cdb_value & stage2_src1_bypass_mask) |
-          (stage2_cdb_value_l1 & stage2_src1_bypass_mask_l1);
+          (stage2_cdb_value_l1 & stage2_src1_bypass_mask_l1) |
+          (stage2_fwd_value & stage2_src1_fwd_mask);
       assign o_issue.src2_value =
-          (stage2_src2_value & ~stage2_src2_bypass_mask & ~stage2_src2_bypass_mask_l1) |
+          (stage2_src2_value & ~stage2_src2_bypass_mask & ~stage2_src2_bypass_mask_l1 &
+           ~stage2_src2_fwd_mask) |
           (stage2_cdb_value & stage2_src2_bypass_mask) |
-          (stage2_cdb_value_l1 & stage2_src2_bypass_mask_l1);
+          (stage2_cdb_value_l1 & stage2_src2_bypass_mask_l1) |
+          (stage2_fwd_value & stage2_src2_fwd_mask);
     end
   endgenerate
   assign o_issue.src3_value = HAS_SRC3 ?
-      ((stage2_src3_value & ~stage2_src3_bypass_mask & ~stage2_src3_bypass_mask_l1) |
+      ((stage2_src3_value & ~stage2_src3_bypass_mask & ~stage2_src3_bypass_mask_l1 &
+        ~stage2_src3_fwd_mask) |
        (stage2_cdb_value & stage2_src3_bypass_mask) |
-       (stage2_cdb_value_l1 & stage2_src3_bypass_mask_l1)) : '0;
+       (stage2_cdb_value_l1 & stage2_src3_bypass_mask_l1) |
+       (stage2_fwd_value & stage2_src3_fwd_mask)) : '0;
+  // The forwarded result is live the cycle after the issue edge; a packet
+  // held longer reads its captured copy.
+  assign stage2_fwd_value = stage2_fwd_first_q ? i_fwd_value : stage2_fwd_value_q;
   assign o_issue.imm = stage2_imm;
   assign o_issue.jalr_imm = stage2_jalr_imm;
   assign o_issue.use_imm = stage2_use_imm;
@@ -3461,6 +3527,13 @@ module reservation_station #(
         end
       end
 
+      // FWD_WAKE: the forward capture of a woken entry that did not issue.
+      for (int i = 0; i < DEPTH; i++) begin
+        if (src1_fwd_pend[i]) rs_src1_ready[i] <= 1'b1;
+        if (src2_fwd_pend[i]) rs_src2_ready[i] <= 1'b1;
+        if (HAS_SRC3 && src3_fwd_pend[i]) rs_src3_ready_q[i] <= 1'b1;
+      end
+
     end
   end
 
@@ -3816,6 +3889,9 @@ module reservation_station #(
         if (HAS_SRC3 && src3_cdb_pend[i])
           rs_src3_value[i] <= src3_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q;
       end
+      if (src1_fwd_pend[i]) rs_src1_value[i] <= i_fwd_value;
+      if (src2_fwd_pend[i]) rs_src2_value[i] <= i_fwd_value;
+      if (HAS_SRC3 && src3_fwd_pend[i]) rs_src3_value[i] <= i_fwd_value;
     end
   end
 
@@ -3851,6 +3927,33 @@ module reservation_station #(
     // else: stage2_valid && !stage2_accept && !stage2_should_flush: hold while blocked.
   end
 
+  // FWD_WAKE: a woken source of an entry that stays resident (not issued
+  // this cycle, no flush) captures i_fwd_value on the next edge. Dispatch
+  // cannot target the entry then, since it is still valid.
+  logic [DEPTH-1:0] fwd_stays;
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++)
+      fwd_stays[i] = !(issue_fire && issue_idx == $clog2(DEPTH)'(i)) && !i_flush_all && !i_flush_en;
+  end
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || !FWD_WAKE) begin
+      src1_fwd_pend <= '0;
+      src2_fwd_pend <= '0;
+      src3_fwd_pend <= '0;
+    end else begin
+      src1_fwd_pend <= src1_fwd_wake & fwd_stays;
+      src2_fwd_pend <= src2_fwd_wake & fwd_stays;
+      src3_fwd_pend <= src3_fwd_wake & fwd_stays;
+    end
+  end
+
+  // FWD_WAKE: the first cycle after an issue edge, and the forwarded result
+  // captured at its end for a packet that is still held.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) stage2_fwd_first_q <= 1'b0;
+    else stage2_fwd_first_q <= FWD_WAKE && issue_fire;
+    if (stage2_fwd_first_q) stage2_fwd_value_q <= i_fwd_value;
+  end
   // Stage2 payload: no reset, and it loads on every cycle with i_fu_ready.
   // Every reader takes it only while stage2_valid is set, and the payload
   // equals the issue_fire capture whenever stage2_valid is set:
@@ -3878,6 +3981,8 @@ module reservation_station #(
       stage2_rob_tag <= primary_issue_tag;
       stage2_is_divide <= primary_issue_divide;
       if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
+        stage2_src1_fwd_mask <= '0;
+        stage2_src2_fwd_mask <= '0;
         // Capture the final operands from resident, repair or CDB values.
         // Issue-only inputs supply valid and tag; full CDB packets supply data.
         stage2_src1_value <= (issue_src1_resident &
@@ -3901,13 +4006,17 @@ module reservation_station #(
         stage2_src2_bypass_mask <= {FLEN{src2_cdb_bypass[issue_idx]}};
         stage2_src1_bypass_mask_l1 <= {FLEN{src1_cdb_bypass_l1[issue_idx]}};
         stage2_src2_bypass_mask_l1 <= {FLEN{src2_cdb_bypass_l1[issue_idx]}};
+        stage2_src1_fwd_mask <= {FLEN{src1_fwd_wake[issue_idx]}};
+        stage2_src2_fwd_mask <= {FLEN{src2_fwd_wake[issue_idx]}};
       end
+      if (!HAS_SRC3) stage2_src3_fwd_mask <= '0;
       if (HAS_SRC3) begin
         stage2_src3_value <= (src3_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
             src3_repair_sel[issue_idx]
         ) : rs_src3_value[issue_idx];
         stage2_src3_bypass_mask <= {FLEN{src3_cdb_bypass[issue_idx]}};
         stage2_src3_bypass_mask_l1 <= {FLEN{src3_cdb_bypass_l1[issue_idx]}};
+        stage2_src3_fwd_mask <= {FLEN{src3_fwd_wake[issue_idx]}};
       end
       stage2_cdb_value <= i_cdb.value;
       stage2_cdb_value_l1 <= i_cdb_2.value;
@@ -4141,6 +4250,11 @@ module reservation_station #(
       $error("CAPTURE_PRIMARY_EFFECTIVE_OPERANDS requires HAS_SRC3=0");
     if (DIVIDE_ISSUE_GATE && DUAL_ISSUE)
       $error("DIVIDE_ISSUE_GATE requires DUAL_ISSUE=0");
+    if (FWD_WAKE && (PREPARE_ISSUE_CONTROLS || CAPTURE_PRIMARY_EFFECTIVE_OPERANDS ||
+                     ALLOC_INDEXED_REPAIR || DUAL_ISSUE))
+      $error("FWD_WAKE requires the generic station form");
+    if (FP_ENGINE_GATE && !DIVIDE_ISSUE_GATE)
+      $error("FP_ENGINE_GATE requires DIVIDE_ISSUE_GATE");
   end
 
   always @(posedge i_clk) begin

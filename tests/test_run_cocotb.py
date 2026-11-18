@@ -2563,8 +2563,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         rerun_after_reset=False,
         nic_mac_clocks=False,
         description=(
-            "Cycle limits for dependent multiply, FMA and divide and independent "
-            "multiply and FMA at both precisions"
+            "Cycle limits for dependent and independent add, multiply and FMA, "
+            "dependent divide at both precisions, and double FP load-to-use"
         ),
         extra_env=(
             ("EXTRA_CFLAGS", "-DFPLAT_LIMITS"),
@@ -3455,6 +3455,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "F/D, Zfhmin and Zfa results and flags against their references, "
             "including cancellation and multiply/divide boundaries, plus "
             "per-operation latency limits"
+        ),
+    ),
+    "fp_div_equiv": CocotbRunConfig(
+        python_test_module="cocotb_tests.ex_stage.test_fp_engine",
+        hdl_toplevel_module="fp_engine_equiv_harness",
+        description=(
+            "fp_engine with FDIV on the radix-16 divider matches Berkeley SoftFloat, "
+            "kills included"
+        ),
+        verilator_extra_args=("-GDIV_UNIT=1",),
+    ),
+    "fp_fma_pipe_equiv": CocotbRunConfig(
+        python_test_module="cocotb_tests.ex_stage.test_fp_fma_pipe",
+        hdl_toplevel_module="fp_fma_pipe_equiv_harness",
+        description=(
+            "Pipelined FP add, multiply and FMA match Berkeley SoftFloat bit for "
+            "bit at one operation per cycle"
         ),
     ),
     "dispatch": CocotbRunConfig(
