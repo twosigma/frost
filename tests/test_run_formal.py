@@ -1990,7 +1990,10 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
-    ("prove_indirect", "Unbounded pre-decode indirect target, eligibility and trap isolation."),
+    (
+        "prove_indirect",
+        "Unbounded pre-decode indirect target, eligibility and trap isolation.",
+    ),
     ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
