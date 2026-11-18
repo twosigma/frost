@@ -1842,9 +1842,9 @@ module tomasulo_wrapper #(
   assign mem_rs_issue_atomic_pma = (o_mem_rs_issue.op == riscv_pkg::SC) ||
       (o_mem_rs_issue.op == riscv_pkg::CBO_ZERO);
   // Zicbom ops take the ordinary store PMA map: a block in BRAM, DDR or a
-  // device window is permitted (as a load or a store to it would be) and
-  // executes as an ordered no-op (store_queue); outside the map is a store
-  // access fault. Their zero immediate leaves rs1 as the address.
+  // device window is permitted. The store queue sends cacheable DDR blocks
+  // to the home. Other permitted blocks complete locally. Outside the map
+  // these instructions raise a store access fault at rs1.
   assign mem_rs_issue_is_cmo = (o_mem_rs_issue.op == riscv_pkg::CBO_CLEAN) ||
       (o_mem_rs_issue.op == riscv_pkg::CBO_FLUSH) || (o_mem_rs_issue.op == riscv_pkg::CBO_INVAL);
   // store_addr_pma_ok comes from coherent_store_pm_select below.

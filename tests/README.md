@@ -185,6 +185,15 @@ four-class `vec_lmul_legality` that builds without the vector unit use.
 trap value, unchanged destination registers, `vstart` and `mstatus.VS` for
 masked instructions that use v0 as data.
 
+The Zicbom programs and cluster benches run the following cases.
+
+| Registry entry | Checks |
+| --- | --- |
+| `cbo_mgmt_test`, `cbo_mgmt_test_assert` | Cacheable DDR, low BRAM and device accesses, S/U privilege gates, dirty-line policy, translation faults, ordering with stores, atomics, DMA and timer interrupts. |
+| `svpbmt_cmo_test`, `svpbmt_cmo_test_inval_flush` | Cacheable, NC and IO mappings of the same physical block, with per-operation DDR write checks in the default and flush-only configurations. |
+| `coherence_cbo_mgmt` | Dirty private and home copies, either dirty sector, absent or clean lines, DMA and write-backs in flight. |
+| `coherence_cbo_mgmt_misses`, `coherence_cbo_mgmt_equal_lines`, `coherence_cbo_mgmt_links` | The same data and ordering checks with three miss endpoints, 32-byte home lines or registered links. |
+
 The `coherence_endpoints`, `coherence_endpoints_single`, and
 `coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
 identity reuse, independent probe queues, keyed PutAck cancellation, errors,

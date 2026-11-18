@@ -70,7 +70,7 @@ four: chformal -cover -remove c:* c:*p_four_records* %d
 # after the reset cycle its PDR proof leaves one assertion unresolved.
 plain: memory_map
 ~plain: memory_map -keepdc
-# coh_hart_maint_owned_reset_prove proves the pair's 285 facts by the same
+# coh_hart_maint_owned_reset_prove proves the pair's 286 facts by the same
 # induction from the state after the reset cycle, where it finishes in its
 # limit, and no task assumes them from it. A register that the reset cycle
 # defines (by its reset or a constant load) starts with that value, and opt

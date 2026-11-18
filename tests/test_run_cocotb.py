@@ -1607,8 +1607,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="cbo_mgmt_test",
         nic_mac_clocks=False,
         description=(
-            "Zicbom cbo.clean/flush/inval as ordered no-ops: CBCFE and CBIE gates in S and U, "
-            "CBIE WARL, load-permission translation, store faults with mtval = rs1, device no-op"
+            "Zicbom dirty-line write-back and invalidate, CBCFE and CBIE gates in S and U, "
+            "CBIE WARL, translation faults, device access, atomic and interrupt ordering"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
