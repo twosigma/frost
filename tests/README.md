@@ -191,6 +191,8 @@ The Zicbom programs and cluster benches run the following cases.
 | --- | --- |
 | `cbo_mgmt_test`, `cbo_mgmt_test_assert` | Cacheable DDR, low BRAM and device accesses, S/U privilege gates, dirty-line policy, translation faults, ordering with stores, atomics, DMA and timer interrupts. |
 | `svpbmt_cmo_test`, `svpbmt_cmo_test_inval_flush` | Cacheable, NC and IO mappings of the same physical block, with per-operation DDR write checks in the default and flush-only configurations. Adjacent CMO/load pairs exercise every combination of the two mappings with a dirty cached line. |
+| `nic_cmo_loopback` | Eight transmitted payloads and descriptor completions while the CPU cleans packet blocks that DMA is reading, in both memory tiers. |
+| `coherence_home`, `coherence_home_equal` | An older DMA fill, a management request and a younger DMA read complete in order with 64-byte and 32-byte home lines. |
 | `coherence_cbo_mgmt` | Dirty private and home copies, either dirty sector, absent or clean lines, DMA and write-backs in flight. |
 | `coherence_cbo_mgmt_misses`, `coherence_cbo_mgmt_equal_lines`, `coherence_cbo_mgmt_links` | The same data and ordering checks with three miss endpoints, 32-byte home lines or registered links. |
 
@@ -724,8 +726,7 @@ The NIC targets include `nic_tx_segment`, `nic_rx_fifo_limit`, `nic_top_rx_fifo`
 `nic_pause_gmii`, `nic_pause_10g`, and `nic_pause_rx_wire`, alongside the engine and whole-NIC benches.
 Their registered tests cover segmentation headers, FIFO capacity, pause crossings, independent
 domain restarts, wire-side PAUSE validation during congestion, and cancellation under backpressure.
-`nic_cmo_loopback` checks eight transmitted frames while the CPU cleans packet blocks that DMA is reading. It runs in both memory tiers.
-`nic_sg_loopback` and `nic_rate` are
+`nic_cmo_loopback`, `nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
 `nic_bench` also runs in both tiers with `NIC_BENCH_QUICK`: eight-entry rings,
