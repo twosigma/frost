@@ -59,16 +59,24 @@ prove_full_width: chparam -set LINE_BYTES 8 -set DATA_WIDTH 64 -set ADDR_WIDTH 1
 soc4: chparam -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 4 -set REGION_BASE 16384 -set REGION_BYTES 16384 axi_coherent_bridge
 soc8: chparam -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 4 -set LINE_ID_BITS 4 -set WRITE_BURSTS 8 -set READ_BURSTS 8 -set REGION_BASE 16384 -set REGION_BYTES 16384 axi_coherent_bridge
 cover_soc: chformal -assert -remove
+hierarchy -top axi_coherent_bridge
+script free_undefined.ys
 prep -top axi_coherent_bridge
 # Freeze the DUT before loading the map. Explicit membership is checked for
 # completeness and disjointness before any assertion receives a history assumption.
 partitioned: async2sync
+partitioned: setundef -anyseq
 partitioned: chformal -lower
 partitioned: write_rtlil ../model/unpartitioned.il
 partitioned: design -stash unpartitioned
 partitioned: read_verilog -formal -sv axi_coherent_bridge_assert.sv
+partitioned: hierarchy -top axi_coherent_bridge_assert_maps
+partitioned: script free_undefined.ys
+partitioned: chformal -lower
 partitioned: design -stash assertion_map
 partitioned: design -load unpartitioned
+# Resolve the roster against the restored bridge top.
+partitioned: hierarchy -check -top axi_coherent_bridge
 soc8proof: log -stderr If the AXI bridge assertion roster check fails, it is stale. Run: ./scripts/frost.py run python3 formal/update_axi_bridge_groups.py
 soc8proof: script axi_coherent_bridge_groups.ys
 soc4proof: select -set held t:$assert c:p_b_held %i
@@ -88,10 +96,13 @@ prove_soc8_8: chtype -set axi_coherent_bridge_checked_assert @group8
 partitioned: techmap -max_iter 1 -map %assertion_map
 partitioned: opt_clean
 partitioned: select -assert-none t:axi_coherent_bridge_checked_assert
-partitioned: select -assert-min 1 t:$assert
+prove_soc: select -assert-count 138 t:$assert
+prove_soc_held: select -assert-count 1 t:$assert
+soc8proof: select -assert-min 1 t:$assert
 partitioned: select -clear
 
 [files]
+free_undefined.ys
 axi_coherent_bridge_groups.ys
 axi_coherent_bridge_assert.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv

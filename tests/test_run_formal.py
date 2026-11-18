@@ -4398,7 +4398,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "branch_prediction_alias": (
-        "not converted: opt -purge; no setundef",
+        "opt -purge prunes predictor state outside the alias comparison",
         {
             "bmc": ["opt -purge"],
         },
@@ -4691,7 +4691,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "immu_bare": (
-        "not converted: opt -purge; no setundef",
+        "opt -purge prunes translation state outside the Bare outputs",
         {
             "bmc bmc_1g bmc_64g bmc_128g bmc_xlen32 bmc_xlen72": ["opt -purge"],
         },
@@ -4981,12 +4981,11 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
 }
 
 
-def sby_task_scripts(sby_path: Path) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """Return each task's [script] lines as SymbiYosys selects them, and the files a script can run."""
-    lines = sby_path.read_text().splitlines()
+def sby_task_tags(sby_path: Path) -> dict[str, set[str]]:
+    """Return each task of a script with its tags, its own name among them."""
     tags: dict[str, set[str]] = {}
     section = ""
-    for line in lines:
+    for line in sby_path.read_text().splitlines():
         if line.startswith("["):
             section = line.strip()
         elif section == "[tasks]" and line.strip() and not line.startswith("#"):
@@ -5003,6 +5002,27 @@ def sby_task_scripts(sby_path: Path) -> tuple[dict[str, list[str]], dict[str, st
                 tags.setdefault(name, {name}).update(
                     t for t in task_tags if t != "default"
                 )
+    return tags
+
+
+def sby_line_tag(line: str, every_tag: set[str]) -> tuple[str, str]:
+    """Split a line into the task tag SymbiYosys reads at its start and the rest.
+
+    The tag is "" for a line without one. Only one tag counts, and only at the
+    start of the line: a tag after leading whitespace keeps the line for every
+    task, and Yosys then reads the tag as a label.
+    """
+    for tag in every_tag:
+        for prefix in (tag + ":", "~" + tag + ":"):
+            if line.startswith(prefix):
+                return prefix, line[len(prefix) :].lstrip()
+    return "", line
+
+
+def sby_task_scripts(sby_path: Path) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """Return each task's [script] lines as SymbiYosys selects them, and the files a script can run."""
+    lines = sby_path.read_text().splitlines()
+    tags = sby_task_tags(sby_path)
     every_tag = set().union(*tags.values())
     scripts: dict[str, list[str]] = {}
     for task, active in (tags or {"": set()}).items():
@@ -5021,21 +5041,13 @@ def sby_task_scripts(sby_path: Path) -> tuple[dict[str, list[str]], dict[str, st
                 in_block = skip_block = False
                 continue
             skip_line = False
-            # Only one tag, and only at the start of the line: a tag after
-            # leading whitespace keeps the line for every task, and Yosys then
-            # reads the tag as a label.
-            for tag in every_tag:
-                if line.startswith(tag + ":"):
-                    line, match = line[len(tag) + 1 :].lstrip(), tag in active
-                elif line.startswith("~" + tag + ":"):
-                    line, match = line[len(tag) + 2 :].lstrip(), tag not in active
-                else:
-                    continue
+            tag, line = sby_line_tag(line, every_tag)
+            if tag:
+                match = (tag.strip("~:") in active) != tag.startswith("~")
                 if line:
                     skip_line = not match
                 else:
                     in_block, skip_block, skip_line = True, not match, True
-                break
             if skip_line or skip_block:
                 continue
             header = re.fullmatch(r"\s*\[(.*)\]\s*", line)
@@ -5448,18 +5460,14 @@ UNDEFINED_CONSTANT = re.compile(r"\d*'[sS]?[bBoOdDhH]?[0-9a-fA-F_xXzZ?]*[xXzZ?]"
 # Scripts that do not open that way yet. The list only shrinks: a listed script
 # whose every task opens fails the check.
 UNDEFINED_OPENING_PENDING = (
-    "axi_coherent_bridge",
-    "branch_prediction_alias",
     "coherence_array",
     "coherence_array_equiv",
     "coherence_home",
     "coherence_l1d",
     "coherence_store_boundary",
     "coherence_store_home",
-    "coherent_hart_cache",
     "csr_commit_cofactor",
     "csr_file",
-    "immu_bare",
     "line_client_link",
     "pm_mode_select",
     "reorder_buffer",
@@ -5635,6 +5643,43 @@ def undefined_opening_gaps(commands: list[list[str]]) -> list[str]:
     return gaps
 
 
+def sby_tag_gaps(sby_path: Path) -> list[str]:
+    """Return the task tags of a script that the checks could not follow.
+
+    SymbiYosys keeps or drops each tagged line, and each block from a tag on a
+    line of its own to "--", per task before it reads the sections. The checks
+    read [script] the same way, task by task, but [files] and [file ...] once
+    for every task, so that a tag there could give a task other files, or its
+    own text of a pinned file. So no section header may carry a tag or lie
+    inside a block, and no line of [files] or [file ...] may carry or open one.
+    """
+    every_tag = set().union(*sby_task_tags(sby_path).values())
+    gaps: list[str] = []
+    section, block = "", 0
+    for number, line in enumerate(sby_path.read_text().splitlines(), 1):
+        if section == "[tasks]" and not line.startswith("["):
+            continue
+        if block and line.strip() == "--":
+            block = 0
+            continue
+        tag, rest = sby_line_tag(line, every_tag)
+        header = re.fullmatch(r"\s*\[(.*)\]\s*", rest)
+        if header:
+            if tag:
+                gaps.append(f"line {number}: the section header carries {tag}")
+            if block:
+                gaps.append(
+                    f"line {number}: a section header in the block of line {block}"
+                )
+            section = "[" + " ".join(header.group(1).split()) + "]"
+            continue
+        if tag and (section == "[files]" or section.startswith("[file ")):
+            gaps.append(f"line {number}: {section} carries {tag}")
+        if tag and not rest:
+            block = number
+    return gaps
+
+
 def undefined_opening_file_gaps(sby_path: Path) -> list[str]:
     """Return why a script that names the opening's file would not run it as it is."""
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
@@ -5672,6 +5717,7 @@ def sby_undefined_opening_gaps(sby_path: Path) -> dict[str, list[str]]:
     # repository's file; the file's commands are checked once, against
     # UNDEFINED_OPENING.
     marked = {**files, UNDEFINED_OPENING_FILE: UNDEFINED_OPENING_MARK[0]}
+    tag_gaps = sby_tag_gaps(sby_path)
     named = UNDEFINED_OPENING_FILE in files or any(
         UNDEFINED_OPENING_MARK in yosys_commands(script, marked)
         for script in scripts.values()
@@ -5682,7 +5728,11 @@ def sby_undefined_opening_gaps(sby_path: Path) -> dict[str, list[str]]:
     return {
         task or "-": gaps
         for task, script in scripts.items()
-        if (gaps := file_gaps + undefined_opening_gaps(yosys_commands(script, marked)))
+        if (
+            gaps := tag_gaps
+            + file_gaps
+            + undefined_opening_gaps(yosys_commands(script, marked))
+        )
     }
 
 
@@ -6955,6 +7005,85 @@ def test_undefined_opening_file_mutations(
     ), gaps
 
 
+# H7: SymbiYosys drops twin and opening files per task, which the checks, which
+# read [files] once, would not see. Each case is a script with the tag where
+# the check must find it, or a control the check must accept.
+SBY_TAG_HEAD = """[tasks]
+t
+u
+
+[options]
+mode bmc
+t: depth 1
+u: depth 2
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv top.sv
+hierarchy -top top
+"""
+SBY_TAG_CASES: list[tuple[str, str]] = [
+    # The reviewed script: a block drops the pinned file for task t, and a
+    # tagged section writes its own for t.
+    (
+        "flag",
+        "script free_undefined.ys\nprep -top top\n\n[files]\ntop.sv\n~t:\n"
+        "free_undefined.ys\n--\n\nt: [file free_undefined.ys]\nt: proc\n",
+    ),
+    ("flag", "script free_undefined.ys\n\n[files]\ntop.sv\nt: free_undefined.ys\n"),
+    (
+        "flag",
+        "script free_undefined.ys\n\n[files]\ntop.sv\nt:\nfree_undefined.ys\n--\n",
+    ),
+    ("flag", "script free_undefined.ys\n\nt: [files]\ntop.sv\nfree_undefined.ys\n"),
+    (
+        "flag",
+        "script free_undefined.ys\nt:\nprep\n\n[files]\ntop.sv\nfree_undefined.ys\n--\n",
+    ),
+    (
+        "flag",
+        "script free_undefined.ys\n\n[files]\ntop.sv\nfree_undefined.ys\n\n"
+        "[file x.ys]\nt: proc\n",
+    ),
+    # The checks read [script] per task, as SymbiYosys does, so tags there,
+    # on the opening too, and on [options] lines are the scripts' own.
+    ("accept", "t: script free_undefined.ys\n\n[files]\ntop.sv\nfree_undefined.ys\n"),
+    (
+        "accept",
+        "u:\nscript free_undefined.ys\n--\n\n[files]\ntop.sv\nfree_undefined.ys\n",
+    ),
+    (
+        "accept",
+        "script free_undefined.ys\nt: chparam -set W 4 top\nu:\nprep\n--\n\n"
+        "[files]\ntop.sv\nfree_undefined.ys\n",
+    ),
+]
+
+
+@pytest.mark.parametrize("expect,body", SBY_TAG_CASES)
+def test_sby_tag_gaps(tmp_path: Path, expect: str, body: str) -> None:
+    """The tag check finds the tags on files and section headers, and only those."""
+    script = tmp_path / "tags.sby"
+    script.write_text(SBY_TAG_HEAD + body)
+    gaps = sby_tag_gaps(script)
+    assert bool(gaps) == (expect == "flag"), gaps
+    if expect == "flag":
+        assert sby_undefined_opening_gaps(script), body
+
+
+def test_scripts_keep_tags_off_files() -> None:
+    """No script in the repository tags its files or its section headers."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    found = {
+        sby_path.name: gaps
+        for sby_path in sorted(formal.glob("*.sby"))
+        if (gaps := sby_tag_gaps(sby_path))
+    }
+    assert found == {}
+
+
 def test_undefined_opening_reads_commands() -> None:
     """Which commands may precede the opening, and what resets or scopes it."""
     opening = [["hierarchy", "-top", "top"], UNDEFINED_OPENING_MARK]
@@ -7232,6 +7361,37 @@ def l1d_task_config(task: str) -> dict[str, list[str]]:
     return formal_task_config("coherence_l1d", task)
 
 
+def normalize_axi_bridge_post_map_count(commands: list[str], task: str) -> None:
+    """Check the exact mapped-property guard before comparing partition models."""
+    # The four-burst partitions cover all 139 assertions. The eight-burst
+    # partitions check exact membership before mapping and a nonzero floor after.
+    counts = {
+        "prove_soc": ("-assert-count", 138),
+        "prove_soc_held": ("-assert-count", 1),
+        **{f"prove_soc8_{index}": ("-assert-min", 1) for index in range(9)},
+    }
+    kind, count = counts[task]
+    map_command = "techmap -max_iter 1 -map %assertion_map"
+    assert commands.count(map_command) == 1
+    after_map = commands.index(map_command) + 1
+    assert commands[after_map:] == [
+        "opt_clean",
+        "select -assert-none t:axi_coherent_bridge_checked_assert",
+        f"select {kind} {count} t:$assert",
+        "select -clear",
+    ]
+    commands[after_map + 2] = f"select {kind} <partition-count> t:$assert"
+
+
+def test_axi_bridge_post_map_count_rejects_another_selection() -> None:
+    """The count guard must still select the mapped assertions."""
+    commands = formal_task_config("axi_coherent_bridge", "prove_soc")["[script]"]
+    index = commands.index("select -assert-count 138 t:$assert")
+    commands[index] = "select -assert-count 138 t:$assume"
+    with pytest.raises(AssertionError):
+        normalize_axi_bridge_post_map_count(commands, "prove_soc")
+
+
 def test_axi_bridge_partitions_share_model_and_history() -> None:
     """Partitions of each configuration share one model and history contract."""
     families = [
@@ -7250,6 +7410,7 @@ def test_axi_bridge_partitions_share_model_and_history() -> None:
     ]
     for tasks, groups, guard, options in families:
         reference = formal_task_config("axi_coherent_bridge", tasks[0])
+        normalize_axi_bridge_post_map_count(reference["[script]"], tasks[0])
         for task, group in zip(tasks, groups, strict=True):
             config = formal_task_config("axi_coherent_bridge", task)
             assert dict(line.split(maxsplit=1) for line in config["[options]"]) == {
@@ -7258,6 +7419,7 @@ def test_axi_bridge_partitions_share_model_and_history() -> None:
                 **options,
             }
             commands = config["[script]"]
+            normalize_axi_bridge_post_map_count(commands, task)
             choose = f"chtype -set axi_coherent_bridge_checked_assert @{group}"
             assert commands.count(choose) == 1
             assert (
@@ -8824,6 +8986,7 @@ def test_hart_maintenance_lemma_model_matches() -> None:
         + [
             "memory_map -keepdc",
             "async2sync",
+            "setundef -anyseq",
             "chtype -map $eqx $eq",
             "chtype -map $nex $ne",
             "sim -clock i_clk -n 1 -w",

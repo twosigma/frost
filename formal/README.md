@@ -562,7 +562,7 @@ count.
 | `rob_retire_ready` | Per-entry retirement eligibility (completion, two-wide, misprediction) equals the selected-field expressions, and both head masks stay one-hot; unbounded, assuming an initial reset |
 | `rob_retire_stall` | Retirement strobes and every performance event equal a reference built from the serializer's full commit stall |
 | `rob_start_cofactor` | CSR and xRET start signals equal the reference equations, the head mask stays one-hot, and CSR and xRET entries never take the CDB bypass; unbounded. Assumes an initial reset |
-| `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), current pending/enable/delegation for each winning cause (including LCOFI), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain; the split trap-entry target and take outputs equal the reference ones. Assumes the start events are mutually exclusive. `prove` shows that `csr_file`'s entry enables equal the take and steering outputs, and that a post-CSR selection refresh cannot consume an architectural interrupt, from arbitrary state. Once an exception has been latched, the trap value, which applies the pointer-masking transform after its registers, equals a reference that latches the transformed value on the same edges; unbounded in `prove` |
+| `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), current pending/enable/delegation for each winning cause (including LCOFI), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain; the split trap-entry target and take outputs equal the reference ones. Assumes the start events are mutually exclusive. `prove` shows that `csr_file`'s entry enables equal the take and steering outputs, that the CSR entry enables and the assist start built with the re-entry inhibit at their last level equal their plain forms, and that a post-CSR selection refresh cannot consume an architectural interrupt, from arbitrary state. Once an exception has been latched, the trap value, which applies the pointer-masking transform after its registers, equals a reference that latches the transformed value on the same edges; unbounded in `prove` |
 | `csr_file_twin` | The fetch-return privilege select (LUT6, LUT4) equals its portable form, with VECTOR=0 and with VECTOR=1 at VLEN 256. This checks the primitive replacement, not vector CSR semantics |
 
 ### Execution units and CDB
@@ -596,7 +596,10 @@ cycle counts, including early termination and setup cancellation.
 
 ### Memory system and coherence
 
-After a bridge edit makes the AXI assertion roster check fail, run
+The four-burst AXI bridge proof checks B-channel stability in one partition and
+the other 138 assertions in a second partition. If an edit changes that count,
+review the changed assertions and update the count in the proof and its model test.
+After a bridge edit makes the eight-burst assertion roster check fail, run
 `./scripts/frost.py run python3 formal/update_axi_bridge_groups.py` from the
 repository root. The assignment file `axi_coherent_bridge_groups.json` matches
 labels or normalized assertion text and unroll order, preserving each recognized
@@ -859,6 +862,11 @@ cycles, which clears arbitrary memory history.
    including that the script runs this repository's `free_undefined.ys`
    itself: listed in `[files]` as that one name, never a changed copy,
    another path, a `[file]` section or the opening's commands written out.
+   No script may put a task tag on a section header or on a line of
+   `[files]` or of a `[file]` section, or open a tag block around one:
+   SymbiYosys applies tags before it reads the sections, so a tag there could
+   give a task other files, while the checks read `[script]` task by task
+   and those sections once for every task.
    The [roadmap](../ROADMAP.md#verification) says what is left.
 3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
    `tasks` when the `.sby` defines it. Register any new task names in

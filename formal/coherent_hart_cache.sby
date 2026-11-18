@@ -47,6 +47,8 @@ coh_hart_maint_cover: read -formal -D COH_MAINT_COVER -sv coherent_hart_cache_mo
 four: read -formal -D COH_MAINT_COVER -D COH_MAINT_FOUR -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 covers: chparam -set COVER_MODE 1 coherent_hart_cache_formal
 bounded: chparam -set COVER_MODE 1 coherent_hart_cache_formal
+hierarchy -top coherent_hart_cache_formal
+script free_undefined.ys
 prep -flatten -top coherent_hart_cache_formal
 check -assert
 # The induction task assumes nothing and proves all facts consumed by PDR.
@@ -77,6 +79,7 @@ plain: memory_map
 # before it (prep runs opt with -noff), only plain $dff cells reach it, and
 # the comparisons take the meaning they have in the proof.
 resetstate: async2sync
+resetstate: setundef -anyseq
 resetstate: select -assert-none t:$ff t:$dffe t:$adff* t:$aldff* t:$sdff* t:$dffsr* t:$dlatch* t:$adlatch t:$sr t:$mem* t:$_*DFF* t:$_*LATCH* t:$_SR_* t:$_FF_ t:$anyinit t:$fsm
 resetstate: chtype -map $eqx $eq
 resetstate: chtype -map $nex $ne
@@ -94,6 +97,7 @@ covers: setundef -zero
 opt_clean
 
 [files]
+free_undefined.ys
 coherent_hart_cache_models.sv
 coherent_hart_cache_formal.sv
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

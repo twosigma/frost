@@ -134,6 +134,7 @@ def test_environment_forwarding_is_scoped_and_deterministic() -> None:
         "COCOTB_RANDOM_SEED": "7",
         "DDR_MODEL_LATENCY": "80",
         "PYTEST_ADDOPTS": "-q",
+        "WAVES": "1",
         "PATH": "/host/bin",
         "AWS_SECRET_ACCESS_KEY": "do-not-forward",
     }
@@ -143,6 +144,7 @@ def test_environment_forwarding_is_scoped_and_deterministic() -> None:
         "DDR_MODEL_LATENCY",
         "FROST_COCOTB_MEM_CONFIG",
         "PYTEST_ADDOPTS",
+        "WAVES",
     ]
 
 
