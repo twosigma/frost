@@ -1656,15 +1656,15 @@ jobs:
               coh_l1d_stream_bmc or coh_l1d_stream_free_nostore_bmc or
               coh_l1d_stream_outlier_prove
             timeout_minutes: 335
-          # Every comparison of a block's hand-instantiated primitives with its
-          # portable form: the twin targets (including the payload twin) and
-          # the read select's primitive tasks;
-          # also the INT_RS issue-tag copy proofs (rs_issue_tag_banks, with its
-          # primitive build, and rs_issue_tag_copies) and the tagged predictor's
-          # table-copy proof (tage_copy_convergence).
+          # Compare hand-instantiated primitives with their portable forms. The
+          # payload twin's operand group runs with the wrapper proofs. This job
+          # runs the other twin tasks, the read select's primitive tasks, the
+          # INT_RS copy proofs (rs_issue_tag_banks and rs_issue_tag_copies)
+          # and the tagged predictor's table-copy proof (tage_copy_convergence).
           - shard: Primitive forms
             pytest_filter: >-
-              _twin or (coh_read_select and xilinx) or rs_issue_tag_ or tage_copy_convergence
+              (_twin and not rs_payload_twin_bmc_operands) or
+              (coh_read_select and xilinx) or rs_issue_tag_ or tage_copy_convergence
             timeout_minutes: 90
           # The vector CSR state, the vector memory unit and the vtype tracker:
           # the vector CSR BMC takes forty to fifty minutes, the memory unit's
@@ -1696,14 +1696,15 @@ jobs:
             timeout_minutes: 60
           # The longest block proofs among the remaining targets: branch
           # prediction hand-off and release, the flash-valid cache bits, the
-          # vector memory tracker, the issue and rename blocks and the home's
-          # seat logic. A full run takes about an hour.
+          # vector memory tracker, the issue and rename blocks, the payload
+          # twin's operand comparisons and the home's seat logic.
           - shard: Block proofs
             pytest_filter: >-
               prediction_release or prediction_handoff or if_prediction_walk_past or
               cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
               reservation_station_cover or
-              rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv
+              rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
+              rs_payload_twin_bmc_operands
             timeout_minutes: 150
           # Everything not named above: new small equivalence proofs and block
           # proofs go here unless they belong to one of the areas above.
