@@ -381,7 +381,15 @@ The instruction memory's sideband banks, `u_even_sideband` and
 reads, so synthesis removes them; simulations of the macros build them from
 `sram_1w1r_8192x4` macros too. The wrappers of distributed RAMs, such as the
 instruction memory's PC-metadata overlays (`sdp_dist_ram_init`), keep
-behavioral arrays.
+behavioral arrays. The asynchronous predictor memories below exceed the
+4,096-bit limit and contribute one row each to the default design. The
+32-by-6 tag-to-queue-index array stays at its full depth.
+
+| Module | Memories | Rows per memory | Bits per row |
+| --- | ---: | ---: | ---: |
+| `ittage_predictor` lookup and training copies | 12 | 128 | 46 |
+| `tage_predictor` lookup and training copies | 16 | 512 | 16 |
+| `tage_history` early-recovery and training copies | 2 | 64 | 337 |
 
 ## Timing constraints
 
