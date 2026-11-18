@@ -19,7 +19,8 @@
   Zicsr, Zicboz, Zicbom, Zimop, and M/S/U-mode privileged instructions. Compressed instructions arrive
   already expanded. o_instr_op selects the operation; o_illegal flags any
   encoding not decoded here, including reserved FP rounding modes. VECTOR adds
-  the vector floating-point forms; without it they are illegal here.
+  the vector floating-point forms and the strided, indexed, segment and
+  fault-only-first loads and stores; without it they are illegal here.
  */
 module instr_decoder #(
     parameter bit VECTOR = 1'b0
@@ -33,14 +34,20 @@ module instr_decoder #(
 );
 
   // The vector load and store forms decoded as VLOAD and VSTORE, for an instruction with a
-  // vector width (riscv_pkg::is_vector_mem): mew 0 and unit-stride
-  // addressing (mop 00), then by lumop/sumop (bits 24:20):
-  //   00000 unit-stride, one field (nf 0);
+  // vector width (riscv_pkg::is_vector_mem) and mew 0. Unit-stride
+  // addressing (mop 00) by lumop/sumop (bits 24:20):
+  //   00000 unit-stride, nf + 1 fields (a segment form when nf > 0);
   //   01000 whole-register, nf 0, 1, 3 or 7 (1, 2, 4 or 8 registers),
   //         unmasked; a store only with width 000;
-  //   01011 mask (vlm.v, vsm.v), nf 0, unmasked, width 000.
-  // Strided, indexed, segment and fault-only-first forms are illegal. Rules
-  // that depend on the register numbers or vtype are not checked here.
+  //   01011 mask (vlm.v, vsm.v), nf 0, unmasked, width 000;
+  //   10000 fault-only-first, loads only, nf + 1 fields.
+  // Strided addressing (mop 10); bits 24:20 are rs2. Indexed addressing,
+  // unordered (mop 01) and ordered (mop 11); bits 24:20 are vs2 and the width
+  // is the index EEW. Both take nf + 1 fields.
+  // Rules that depend on the register numbers or vtype are not checked here.
+  // Without the vector unit (VECTOR 0) only the one-field unit-stride, the
+  // whole-register and the mask forms decode as VLOAD and VSTORE, and the
+  // others are illegal here; VS is Off without the unit, so all of them trap.
   function automatic logic vector_mem_ok(input logic [31:0] insn, input logic is_store);
     logic [2:0] nf, width;
     logic [4:0] umop;
@@ -52,13 +59,16 @@ module instr_decoder #(
     vector_mem_ok = 1'b0;
     if (!insn[28] && (insn[27:26] == 2'b00)) begin
       unique case (umop)
-        5'b00000: vector_mem_ok = nf == 3'd0;
+        5'b00000: vector_mem_ok = VECTOR || (nf == 3'd0);
         5'b01000:
         vector_mem_ok = vm && ((nf == 3'd0) || (nf == 3'd1) || (nf == 3'd3) || (nf == 3'd7)) &&
             (!is_store || (width == 3'b000));
         5'b01011: vector_mem_ok = vm && (nf == 3'd0) && (width == 3'b000);
+        5'b10000: vector_mem_ok = VECTOR && !is_store;
         default: vector_mem_ok = 1'b0;
       endcase
+    end else if (VECTOR && !insn[28] && (insn[27:26] != 2'b00)) begin
+      vector_mem_ok = 1'b1;
     end
   endfunction
 

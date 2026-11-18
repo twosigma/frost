@@ -89,6 +89,7 @@ class Bench:
             i_eff_priv_u=0,
             i_sum=0,
             i_mxr=0,
+            i_pm_mode=0,
             i_tlb_invalidate=0,
             i_walk_req_ready=1,
             i_walk_resp_valid=0,

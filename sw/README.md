@@ -67,7 +67,17 @@ that build their own flags take the names from `common/arch.mk`:
 | `bram` | `common/link.ld` | Code and data in low BRAM; only opt-in `.ddr_*` sections and the heap in DDR |
 | `ddr` | `common/link_ddr.ld` | The whole program in DDR, entered through a boot stub in low BRAM, so code and static data go through the caches |
 
-Both linker scripts place the stack in low BRAM. Select the tier with
+Both linker scripts place the stack in low BRAM, with one exception: in the
+`ddr` configuration, a program built with the vector extension (a `v` among the
+single-letter extensions of its `-march`, or a Zve subset) has its stack in
+cached DDR, in `FROST_DDR_STACK_BYTES` (1 MiB) between the program and the
+heap. Vector loads and stores are executed in cached memory only: an element
+address in any other region, such as the low BRAM or a device, raises an access
+fault. Such a program therefore runs as written in the `ddr` configuration,
+including what the compiler vectorizes by itself, such as copies and clears of
+stack objects. In the `bram` configuration its static data and stack are in low
+BRAM, so its vector code must keep every operand in a `.ddr_*` section or on
+the heap. Select the tier with
 `FROST_COCOTB_MEM_CONFIG=ddr` in simulation or `--ddr` on the FPGA loader.
 Some apps choose for themselves: several interrupt and trap tests force
 `MEM_CONFIG=ddr` in their Makefiles, and apps with their own linker scripts,
@@ -299,6 +309,10 @@ can be debugged and where each one first stops.
 | `vec_arith_test/` | Single-width vector integer arithmetic, logical, shift, min/max, compare, mask-scalar (`vmv.x.s`, `vcpop.m`, `vfirst.m`) and Zvbb instructions checked by algebraic identities |
 | `vec_order_test/` | Vector stores followed by instruction fences, translation fences, and the SoC DMA START doorbell; concurrent DMA copies and vector loads/stores on shared and separate lines |
 | `vec_mem_test/` | Unit-stride, whole-register and mask vector loads and stores across `VLEN` 128, 256 and 512 in cached DDR: all widths and legal EMULs across sector, line and page boundaries, masking, `vstart`, tail undisturbed, zero-active pointers, `mstatus.VS`, head legality, ordering after older scalar stores, holds on younger overlapping scalar loads and stores, and fence/atomic waits, Zicbom/Zicboz, Sv39 `MPRV` faults and demand-paging resumption, speculative squashes, misaligned scalar interleaving, and timer interrupts |
+| `vec_stride_test/` | Strided vector loads and stores across `VLEN` 128, 256 and 512: every element width and EMUL with positive, negative, zero, misaligned and page-sized strides, masks, `vstart` and tail elements, faults part-way through with `vstart`, `mtval` and resumption, scalar accesses on element addresses on both sides, pointer masking, illegal forms, and timer interrupts during long element runs |
+| `vec_index_test/` | Indexed vector loads and stores, ordered and unordered: data SEW 8 to 64 with every legal index width, reversed, scattered, page-crossing and repeated offsets, masks and `vstart`, the permitted and reserved overlaps of the destination and the index group, faults part-way through with resumption, scalar ordering, pointer masking, illegal forms, and timer interrupts, also during a gather into its own index group |
+| `vec_segment_test/` | Segment loads and stores with unit-stride, strided and indexed addressing: NF 2 to 8 at every EEW, single- and multi-register fields, segments across page boundaries, masks and `vstart`, faults reported before any field of the faulting segment with resumption, and the reserved field-group layouts |
+| `vec_ff_test/` | Fault-only-first loads against a mapped page followed by an unmapped one: a fault on element k > 0 sets `vl` to k without a trap, a fault on element 0 traps and keeps `vl`, `vstart` = k loads nothing and sets `vl` to k, masked-off elements on the unmapped page keep `vl`, segment forms, and readers of `vl` right behind the trimming load |
 | `vec_fp_test/` | Floating-point arithmetic, fused, compare, min/max, sign-injection, classify, estimate, merge, move, slide, conversion and reduction forms at SEW 16, 32 and 64 through the committed engine, with register images read through scalar moves and `fflags` after each instruction: f-register scalar operands, `vfmv.f.s` boxing and `vstart`, active-only flags and their order, VS dirtying, FS dirtying only by a raised flag or `vfmv.f.s` (FS stays Clean or Initial otherwise), FS and VS Off, reserved `frm`, widths and geometry; `VEC_VLEN` selects 128, 256 or 512 |
 | `vec_integer_test/` | Integer arithmetic, fixed-point rounding and saturation, masks and permutations through the committed engine: 149 encoded forms, with register images read through scalar moves; `VEC_VLEN` selects 128, 256 or 512 |
 | `vec_vtype_handoff_test/` | Register-form `vsetvl` immediately followed by `vadd.vv` from reset `vill`, checked at VLEN 128, 256 and 512 |

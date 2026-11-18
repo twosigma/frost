@@ -7,7 +7,10 @@
  * 0x8000_0000, fetched through the L1I and accessed through the L1D. The
  * opt-in .ddr_* sections stay in DDR after the relocated program, and the heap
  * follows. The stack stays in Normal low BRAM, with L0 read caching and
- * write-through AXI stores in the FROST platform.
+ * write-through AXI stores in the FROST platform, except in a program built
+ * with the vector extension: vector loads and stores execute in cached memory
+ * only, so common.mk then defines __frost_ddr_stack_bytes, and the stack takes
+ * that much cached DDR between the program and the heap.
  *
  * DDR sections load in place (LMA == VMA): the sim preloads the behavioral DDR
  * from sw_ddr.mem, so crt0's .data copy loop self-copies (a no-op).
@@ -28,8 +31,9 @@ MEMORY
     MMIO (rw)  : ORIGIN = 0x40000000, LENGTH = 44     /* peripherals */
 }
 
-/* Stack stays in Normal low BRAM for every program. */
-_end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
+/* The stack: Normal low BRAM, or for a program built with the vector
+ * extension the __frost_ddr_stack_bytes of cached DDR below the heap. */
+_end_of_stack = DEFINED(__frost_ddr_stack_bytes) ? _heap_start : ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
 __freertos_irq_stack_top = _end_of_stack;
 
@@ -136,10 +140,11 @@ SECTIONS
         . = ALIGN(4);
     } > DDR
 
-    /* Heap: the rest of the region (memory.c _sbrk allocates from here). */
+    /* Heap: the rest of the region (memory.c _sbrk allocates from here),
+     * after the stack of a program built with the vector extension. */
     .ddr_heap (NOLOAD) : {
         . = ALIGN(16);
-        _heap_start = .;
+        _heap_start = . + (DEFINED(__frost_ddr_stack_bytes) ? __frost_ddr_stack_bytes : 0);
     } > DDR
     _heap_end = ORIGIN(DDR) + LENGTH(DDR);
 

@@ -1093,8 +1093,16 @@ FORMAL_TARGETS = [
     FormalTarget(
         "vec_head_mmu.sby",
         "Head vector translation before access, precise partial faults, commit shield "
-        "and consumption of every commit",
-        tasks=("bmc", "cover"),
+        "and consumption of every commit; strided and indexed element runs in order with "
+        "each element translated first, precise mid-run faults and pointer masking",
+        tasks=(
+            "bmc",
+            "cover",
+            "stride_bmc",
+            "stride_cover",
+            "index_bmc",
+            "index_cover",
+        ),
     ),
     FormalTarget(
         "vec_hold_rows.sby",
@@ -3190,6 +3198,16 @@ SBY_TASKS = [
         "vmt_bmc",
         "Vector memory table lifecycle against a ghost reorder buffer, 14 frames.",
     ),
+    (
+        "stride_bmc",
+        "Strided head run: element order, translation first, precise faults, 60 frames.",
+    ),
+    ("stride_cover", "Strided head run reachability: retirement, mid-run fault, tag."),
+    (
+        "index_bmc",
+        "Indexed head run: index reads, order, translation first, precise faults, 60 frames.",
+    ),
+    ("index_cover", "Indexed head run reachability: retirement, mid-run fault."),
     ("bmc", "Check assertions up to the configured depth"),
     ("continuity", "Bounded pc_reg and slot-1 PC continuity check"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
