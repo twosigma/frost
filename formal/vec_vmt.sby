@@ -17,9 +17,12 @@ vmt_bmc: abc bmc3
 read -formal -sv riscv_pkg.sv
 read -formal -sv vec_vmt.sv
 read -formal -sv vec_vmt_formal.sv
+hierarchy -top vec_vmt_formal
+script free_undefined.ys
 prep -top vec_vmt_formal
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/vector/vec_vmt.sv
 vec_vmt_formal.sv
+free_undefined.ys

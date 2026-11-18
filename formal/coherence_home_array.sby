@@ -147,6 +147,8 @@ chparam -set CACHE_BYTES 64 -set WAYS 1 -set LINE_BYTES 32 coherence_home_array
 uram: chparam -set CACHE_BYTES 128 -set LINE_BYTES 64 coherence_home_array
 bram: chparam -set ULTRA 0 coherence_home_array
 covers: chparam -set ULTRA 0 coherence_home_array
+hierarchy -top coherence_home_array
+script free_undefined.ys
 prep -top coherence_home_array -flatten
 memory_map -keepdc
 opt -keepdc
@@ -159,3 +161,4 @@ proof: setundef -undriven -anyseq
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv
 ../hw/rtl/lib/cache/coherence_home_array.sv
+free_undefined.ys

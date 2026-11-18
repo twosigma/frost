@@ -41,6 +41,8 @@ g_pick8: chparam -set PREISSUE_SEL_WIDTH 3 -set PREISSUE_READY_PICK 1 -set PREIS
 g_pick4: chparam -set PREISSUE_SEL_WIDTH 2 -set PREISSUE_READY_PICK 1 -set PREISSUE_RS_DEPTH 8 load_queue
 g_pickg4: chparam -set PREISSUE_SEL_WIDTH 2 -set PREISSUE_READY_PICK 1 -set PREISSUE_RS_DEPTH 4 load_queue
 g_pickg6: chparam -set PREISSUE_SEL_WIDTH 3 -set PREISSUE_READY_PICK 1 -set PREISSUE_RS_DEPTH 6 load_queue
+hierarchy -top load_queue
+script free_undefined.ys
 prep -top load_queue
 select -assert-none t:$assume
 legacy1: select -assert-count 1 t:$check
@@ -60,3 +62,4 @@ pick33: select -assert-count 33 t:$check
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+free_undefined.ys

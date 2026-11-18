@@ -37,6 +37,8 @@ narrow: chparam -set L2_LINE_BYTES 32 coherence_prefetch_agent
 single: chparam -set MAX_INFLIGHT 1 coherence_prefetch_agent
 pair: chparam -set MAX_INFLIGHT 2 coherence_prefetch_agent
 full: chparam -set MAX_INFLIGHT 4 -set IF_STREAMS 0 coherence_prefetch_agent
+hierarchy -top coherence_prefetch_agent
+script free_undefined.ys
 prep -top coherence_prefetch_agent
 memory_map -keepdc
 opt_clean
@@ -48,3 +50,4 @@ opt_clean
 ../hw/rtl/lib/cache/coherence_request_endpoint.sv
 ../hw/rtl/lib/cache/l2_stream_prefetcher.sv
 ../hw/rtl/lib/cache/coherence_prefetch_agent.sv
+free_undefined.ys

@@ -22,9 +22,12 @@ direct: read_verilog -formal -D SYNTHESIS -D FETCH_DIRECT_CAPTURE_PROOF -sv fetc
 direct: chparam -set DIRECT_LOOKUP 1 -set VICTIM_LINES 4 -set ENABLE_RESPONSE_ERRORS 1 fetch_provider
 zero: chparam -set VICTIM_LINES 0 fetch_provider
 one: chparam -set VICTIM_LINES 1 fetch_provider
+hierarchy -top fetch_provider
+script free_undefined.ys
 prep -top fetch_provider
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/imem_predecode_line.sv
 ../hw/rtl/cpu_and_mem/fetch_provider.sv
+free_undefined.ys

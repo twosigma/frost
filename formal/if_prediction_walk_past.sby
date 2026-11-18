@@ -32,6 +32,8 @@ read -sv -D SYNTHESIS branch_prediction_controller.sv
 ~continuity: read -formal -D SYNTHESIS -D IF_WALK_PAST_PROOF -sv if_stage.sv
 continuity: read -formal -D SYNTHESIS -D IF_WALK_PAST_PROOF -D IF_CONTINUITY_PROOF -sv if_stage.sv
 read -formal -sv if_prediction_walk_past_formal.sv
+hierarchy -top if_prediction_walk_past_formal
+script free_undefined.ys
 prep -top if_prediction_walk_past_formal
 
 [files]
@@ -51,3 +53,4 @@ prep -top if_prediction_walk_past_formal
 ../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv
 if_prediction_walk_past_formal.sv
+free_undefined.ys
