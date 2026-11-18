@@ -32,7 +32,7 @@ from utils.packed_structs import (
 
 
 ROB_TAG_WIDTH = 5
-CHECKPOINT_ID_WIDTH = 3
+CHECKPOINT_ID_WIDTH = 4
 RAS_PTR_BITS = 3
 
 

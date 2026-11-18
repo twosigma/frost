@@ -33,7 +33,7 @@ from utils.packed_structs import (
 
 CLOCK_PERIOD_NS = 10
 ROB_TAG_WIDTH = 5
-CHECKPOINT_ID_WIDTH = 3
+CHECKPOINT_ID_WIDTH = 4
 MEM_SIZE_WIDTH = 2
 
 OP_BEQ = 23

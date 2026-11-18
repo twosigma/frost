@@ -2227,9 +2227,11 @@ FORMAL_TARGETS = [
         tasks=(
             "prove_int_active",
             "prove_int_ckpt_lo",
+            "prove_int_ckpt_mid",
             "prove_int_ckpt_hi",
             "prove_fp_active",
             "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_mid",
             "prove_fp_ckpt_hi",
             "cover",
         ),
@@ -4016,8 +4018,12 @@ SBY_TASKS = [
         "Unbounded RAT proof for integer snapshot invariants in checkpoints 0 through 3.",
     ),
     (
-        "prove_int_ckpt_hi",
+        "prove_int_ckpt_mid",
         "Unbounded RAT proof for integer snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "prove_int_ckpt_hi",
+        "Unbounded RAT proof for integer snapshot invariants in checkpoints 8 through 11.",
     ),
     (
         "prove_fp_active",
@@ -4028,8 +4034,12 @@ SBY_TASKS = [
         "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 0 through 3.",
     ),
     (
-        "prove_fp_ckpt_hi",
+        "prove_fp_ckpt_mid",
         "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "prove_fp_ckpt_hi",
+        "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 8 through 11.",
     ),
     (
         "bmc_addr1",
@@ -4616,9 +4626,11 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "rat_checkpoint_restore": [
             "prove_int_active",
             "prove_int_ckpt_lo",
+            "prove_int_ckpt_mid",
             "prove_int_ckpt_hi",
             "prove_fp_active",
             "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_mid",
             "prove_fp_ckpt_hi",
         ],
         "coherent_hart_cache": [
@@ -5480,7 +5492,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "rat_checkpoint_restore": (
         "runs memory_map and opt -full without -keepdc after the opening",
         {
-            "prove_int_active prove_int_ckpt_lo prove_int_ckpt_hi prove_fp_active prove_fp_ckpt_lo prove_fp_ckpt_hi cover": [
+            "prove_int_active prove_int_ckpt_lo prove_int_ckpt_mid prove_int_ckpt_hi prove_fp_active prove_fp_ckpt_lo prove_fp_ckpt_mid prove_fp_ckpt_hi cover": [
                 "memory_map",
                 "opt -full",
             ],

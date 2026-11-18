@@ -59,7 +59,7 @@ from cocotb_tests.tomasulo.register_alias_table.rat_model import (
     LookupResult,
 )
 
-NUM_CHECKPOINTS = 8
+NUM_CHECKPOINTS = 12
 DDR_CAPACITY_LOG2_BYTES = int(os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES", "30"))
 if not 30 <= DDR_CAPACITY_LOG2_BYTES <= 37:
     raise ValueError("FROST_DDR_CAPACITY_LOG2_BYTES must select 1–128 GiB")

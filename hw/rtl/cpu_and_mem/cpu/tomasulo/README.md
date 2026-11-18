@@ -78,9 +78,9 @@ conservative gate costs some IPC on memory-heavy code.
 
 ### Two-tier branch recovery
 
-Every branch, JAL, and JALR takes one of eight checkpoints at dispatch: a
+Every branch, JAL, and JALR takes one of twelve checkpoints at dispatch: a
 snapshot of both RATs plus the return-address stack's top-of-stack pointer,
-valid count, and top entry. While all eight are in use, a branch or jump
+valid count, and top entry. While all twelve are in use, a branch or jump
 waits at dispatch; other instructions still dispatch.
 
 Conditional-branch and JALR mispredictions can recover early. When `branch_jump_unit`

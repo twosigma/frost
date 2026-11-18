@@ -89,6 +89,10 @@ module vec_vtype_tracker_formal (
     if (save) assume (alloc);  // bundles dispatch whole (p_vec_tracker_save_allocates)
     assume (!(restore && (rst || flush_all || arch_reload)));
     if (restore) assume (ckpt_valid_q[restore_id]);
+    // Checkpoint IDs name a real checkpoint (NC need not be a power of two).
+    assume (save_id < CW'(NC));
+    assume (restore_id < CW'(NC));
+    assume (watch_id < CW'(NC));
     owned_n = owned_q;
     if (alloc && clears) owned_n = 1'b1;
     if (arch_reload) owned_n = 1'b0;

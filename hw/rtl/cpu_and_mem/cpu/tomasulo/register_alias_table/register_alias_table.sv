@@ -25,8 +25,10 @@
  * ROB allocation still requires slot 1. Dispatch resolves same-bundle RAW
  * dependencies; RAT lookups read the current state.
  *
- * Eight checkpoints each save both RATs and the RAS state; a misprediction
- * restores one in a single cycle. A checkpoint holds the state before its
+ * Twelve checkpoints (riscv_pkg::NumCheckpoints; the count need not be a
+ * power of two) each save both RATs and the RAS state; a misprediction
+ * restores one in a single cycle. The allocator hands out the lowest free
+ * ID below NumCheckpoints. A checkpoint holds the state before its
  * branch's own rename, plus that rename's integer destination: while the
  * branch is still in flight (an early-recovered JALR call), restore maps the
  * destination back to the branch. The active RATs are flip-flops, for
@@ -189,8 +191,8 @@ module register_alias_table (
   localparam int unsigned NumFpRegs = riscv_pkg::NumFpRegs;  // 32
   localparam int unsigned RegAddrWidth = riscv_pkg::RegAddrWidth;  // 5
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;  // 5
-  localparam int unsigned NumCheckpoints = riscv_pkg::NumCheckpoints;  // 8
-  localparam int unsigned CheckpointIdWidth = riscv_pkg::CheckpointIdWidth;  // 3
+  localparam int unsigned NumCheckpoints = riscv_pkg::NumCheckpoints;  // 12
+  localparam int unsigned CheckpointIdWidth = riscv_pkg::CheckpointIdWidth;  // 4
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned RasPtrBits = riscv_pkg::RasPtrBits;  // 3
@@ -260,7 +262,7 @@ module register_alias_table (
   logic [   NumCheckpoints-1:0] checkpoint_valid;
 
   // Checkpoint RAT snapshots in distributed RAM: one combined INT + FP image,
-  // 448 bits wide, 3-bit address.
+  // 448 bits wide, one entry per checkpoint ID.
   logic                         ckpt_rat_wr_en;
   logic [CheckpointIdWidth-1:0] ckpt_rat_wr_addr;
   logic [ RatSnapshotWidth-1:0] ckpt_rat_wr_data;
@@ -947,6 +949,17 @@ module register_alias_table (
     end
   end
 
+  // Checkpoint IDs name a real checkpoint (NumCheckpoints need not be a power
+  // of two, so the ID width can encode more): a save uses the allocated ID,
+  // and frees and restores name a saved one.
+  always_comb begin
+    if (i_checkpoint_save) assume (i_checkpoint_id < CheckpointIdWidth'(NumCheckpoints));
+    if (i_checkpoint_free) assume (i_checkpoint_free_id < CheckpointIdWidth'(NumCheckpoints));
+    if (i_checkpoint_free_2) assume (i_checkpoint_free_id_2 < CheckpointIdWidth'(NumCheckpoints));
+    if (i_checkpoint_restore)
+      assume (i_checkpoint_restore_id < CheckpointIdWidth'(NumCheckpoints));
+  end
+
   // Dispatch never renames x0 (INT) on either slot
   always_comb begin
     if (i_alloc_valid && !i_alloc_dest_rf) begin
@@ -978,6 +991,10 @@ module register_alias_table (
       // Checkpoint availability consistent with valid bits
       p_ckpt_avail_consistent :
       assert (o_checkpoint_available == (checkpoint_valid != {NumCheckpoints{1'b1}}));
+
+      // The allocator hands out only real checkpoint IDs.
+      p_ckpt_alloc_id_in_range :
+      assert (o_checkpoint_alloc_id < CheckpointIdWidth'(NumCheckpoints));
     end
   end
 

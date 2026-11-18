@@ -43,8 +43,8 @@ FP_FLAGS_WIDTH = 5
 # fu_type_e: 3 bits
 FU_TYPE_WIDTH = 3
 
-# checkpoint_id_t: NumCheckpoints=8 -> 3 bits
-CHECKPOINT_ID_WIDTH = 3
+# checkpoint_id_t: NumCheckpoints=12 -> 4 bits
+CHECKPOINT_ID_WIDTH = 4
 
 
 # =============================================================================

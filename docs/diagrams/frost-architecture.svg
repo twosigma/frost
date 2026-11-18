@@ -3,7 +3,7 @@
   <desc id="desc">
     RV64GCBV out-of-order CPU with a VLEN 256 vector unit. IF, PD and ID feed
     a four-bundle decoded queue, two-wide dispatch and INT/FP register renaming
-    with eight branch checkpoints and a speculative vtype tracker. Branch
+    with twelve branch checkpoints and a speculative vtype tracker. Branch
     prediction combines a 256-entry BTB, a 1024-entry two-way backing BTB, a
     1024-entry bimodal predictor, a four-table 4 x 1024 tagged direction
     predictor, a three-table 3 x 256 indirect target predictor and an 8-entry
@@ -194,7 +194,7 @@
     <rect x="786" y="230" width="350" height="100" rx="12" class="front"/>
     <text x="810" y="261" class="heading">Dispatch &amp; rename</text>
     <text x="810" y="288" class="body">2-wide · INT + FP alias tables</text>
-    <text x="810" y="313" class="body">8 checkpoints · vtype tracker</text>
+    <text x="810" y="313" class="body">12 checkpoints · vtype tracker</text>
     <path d="M 80 288 H 65" class="memlink"/>
     <circle cx="64" cy="288" r="13" class="port"/>
     <text x="64" y="294" class="port-text">I</text>
