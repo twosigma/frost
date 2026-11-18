@@ -409,11 +409,13 @@ int main(void)
     }
 
     /* C: CSR fields. CBIE is WARL {00, 01, 11}: 10 reads back 00. CBCFE and
-     * CBIE read back in both CSRs alongside PBMTE and PMM. */
+     * CBIE read back in both CSRs alongside PBMTE and PMM. A flush-only
+     * implementation also maps 11 to 01. */
     {
         int c_ok = 1;
+        unsigned long cbie_max = g_inval_flushes ? 1 : 3;
         for (unsigned long v = 0; v < 4; v++) {
-            unsigned long want = (v == 2) ? 0 : v;
+            unsigned long want = (v == 2) ? 0 : (v == 3 ? cbie_max : v);
             csr_write_num(0x30A, ENVCFG_CBIE(v));
             c_ok &= (csr_read_num(0x30A) & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(want);
             csr_write_num(0x10A, ENVCFG_CBIE(v));
@@ -422,14 +424,14 @@ int main(void)
         csr_write_num(0x30A, ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | MENVCFG_PBMTE);
         c_ok &= (csr_read_num(0x30A) &
                  (ENVCFG_CBCFE | ENVCFG_CBIE_MASK | ENVCFG_CBZE | MENVCFG_PBMTE)) ==
-                (ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | MENVCFG_PBMTE);
+                (ENVCFG_CBCFE | ENVCFG_CBIE(cbie_max) | ENVCFG_CBZE | MENVCFG_PBMTE);
         csr_write_num(0x10A, ~0ul);
         c_ok &= csr_read_num(0x10A) ==
-                (ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | SENVCFG_PMM_MASK | 1ul);
+                (ENVCFG_CBCFE | ENVCFG_CBIE(cbie_max) | ENVCFG_CBZE | SENVCFG_PMM_MASK | 1ul);
         /* A set or clear of the reserved pattern through csrs/csrc: 01 | 10 = 11. */
         csr_write_num(0x30A, ENVCFG_CBIE(1));
         __asm__ volatile("csrs 0x30A, %0" ::"r"(ENVCFG_CBIE(2)));
-        c_ok &= (csr_read_num(0x30A) & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(3);
+        c_ok &= (csr_read_num(0x30A) & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(cbie_max);
         __asm__ volatile("csrc 0x30A, %0" ::"r"(ENVCFG_CBIE(1)));
         c_ok &= (csr_read_num(0x30A) & ENVCFG_CBIE_MASK) == 0;
         csr_write_num(0x30A, 0);
