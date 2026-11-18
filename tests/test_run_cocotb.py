@@ -1306,6 +1306,146 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
         include_in_pytest=False,
     ),
+    "vec_index_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_index_test",
+        nic_mac_clocks=False,
+        description=(
+            "Indexed vector loads and stores at VLEN 256: geometry, masks, register overlap, "
+            "precise faults and resumption, scalar ordering, pointer masking and timer interrupts"
+        ),
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+    ),
+    "vec_index_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_index_test",
+        nic_mac_clocks=False,
+        description="Indexed vector loads and stores at VLEN 128; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=128"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_index_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_index_test",
+        nic_mac_clocks=False,
+        description="Indexed vector loads and stores at VLEN 512; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_ff_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_ff_test",
+        nic_mac_clocks=False,
+        description=(
+            "Fault-only-first vector loads at VLEN 256: vl trimmed past element 0, traps on "
+            "element 0, vstart, masks and segment forms"
+        ),
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+    ),
+    "vec_ff_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_ff_test",
+        nic_mac_clocks=False,
+        description="Fault-only-first vector loads at VLEN 128; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=128"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_ff_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_ff_test",
+        nic_mac_clocks=False,
+        description="Fault-only-first vector loads at VLEN 512; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_segment_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_segment_test",
+        nic_mac_clocks=False,
+        description=(
+            "Segment vector loads and stores at VLEN 256: unit-stride, strided and indexed "
+            "addressing, field layout, masks, precise faults and resumption, legality"
+        ),
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+    ),
+    "vec_segment_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_segment_test",
+        nic_mac_clocks=False,
+        description="Segment vector loads and stores at VLEN 128; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=128"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_segment_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_segment_test",
+        nic_mac_clocks=False,
+        description="Segment vector loads and stores at VLEN 512; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_stride_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_stride_test",
+        nic_mac_clocks=False,
+        description=(
+            "Strided vector loads and stores at VLEN 256: geometry, masks, precise faults and "
+            "resumption, scalar ordering, pointer masking and timer interrupts"
+        ),
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+    ),
+    "vec_stride_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_stride_test",
+        nic_mac_clocks=False,
+        description="Strided vector loads and stores at VLEN 128; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=128"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_stride_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_stride_test",
+        nic_mac_clocks=False,
+        description="Strided vector loads and stores at VLEN 512; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        include_in_pytest=False,
+    ),
     "vec_vstart_reload_test_v128": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1679,7 +1819,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_debug_partial",
         hdl_toplevel_module="frost",
         app_name="debug_target",
-        description="Debug Mode partial vector load VS defect (expected failure)",
+        description="Debug Mode partial vector load dirties mstatus.VS",
         verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
         include_in_pytest=False,
     ),
@@ -5757,6 +5897,29 @@ for _program, (_what, _budget, _cflags) in VECTOR_BRING_UP_PROGRAMS.items():
                 *((("EXTRA_CFLAGS", _cflags),) if _cflags else ()),
             ),
         )
+# Vector loads and stores reach only cached DDR, so a bring-up program whose
+# vector code touches its static data or its stack needs the DDR tier, where a
+# program built with the vector extension has its stack in cached DDR as well:
+# vec_ldst also runs that way.
+for _vlen in (128, 256, 512):
+    TEST_REGISTRY[f"vec_ldst_ddr_v{_vlen}"] = CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_ldst",
+        nic_mac_clocks=False,
+        description=(
+            f"{VECTOR_BRING_UP_PROGRAMS['vec_ldst'][0]}, with the vector unit at VLEN "
+            f"{_vlen} and the program in cached DDR; CLI-only"
+        ),
+        include_in_pytest=False,
+        rerun_after_reset=False,
+        verilator_extra_args=("-GVECTOR=1", f"-GVLEN={_vlen}"),
+        extra_env=(
+            ("VLEN", str(_vlen)),
+            ("COCOTB_MAX_CYCLES", str(VECTOR_BRING_UP_PROGRAMS["vec_ldst"][1])),
+            ("FROST_COCOTB_MEM_CONFIG", "ddr"),
+        ),
+    )
 
 # The full power-of-two raw-DDR capacity matrix. Keep the historical 64 GiB
 # entry above for existing callers; all entries use the same byte-level
