@@ -396,6 +396,14 @@ module tomasulo_coherent_cut_test_harness #(
   assign o_probe_cut_inval = cut_inval;
   assign o_probe_cut_release = cut_release;
   assign o_probe_cut_addr = cut_addr;
+  // The Zicbom request port (wrapper .*): CMO_HOME is off here, so the store
+  // queue never raises a request and the requester side stays idle.
+  logic o_cmo_valid;
+  riscv_pkg::cmo_kind_e o_cmo_kind;
+  logic [riscv_pkg::XLEN-1:0] o_cmo_addr;
+  logic i_cmo_ready, i_cmo_done;
+  assign i_cmo_ready = 1'b0;
+  assign i_cmo_done  = 1'b0;
   tomasulo_wrapper #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .SPLIT_RS_DISPATCH(SPLIT_RS_DISPATCH),

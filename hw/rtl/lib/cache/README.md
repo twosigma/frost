@@ -1375,6 +1375,47 @@ with no other store between them. Local loads wait for each record's
 installation as for any record; SC, AMO, LR and maintenance wait for the
 records to drain, which the window cannot delay once writes stop.
 
+### Zicbom write-back
+
+`cbo.clean`, `cbo.flush` and `cbo.inval` act on a naturally aligned 64-byte
+block, one or two home lines, with DRAM behind the memory controller as the
+point of coherence: a clean or flush completes only after the memory write of
+a dirty line has received B, so a later read of the line by any master,
+coherent or not, sees it.
+
+**Requester.** The store queue hands one block at a time to
+`coherence_cmo_agent` in `coherent_hart_cache`, after every older store has
+installed in the L1D (its existing drain condition). The requester sends one
+`CleanBlock`, `FlushBlock` or `InvalBlock` per home line with the identity
+`{source 0, class 3, id 0}`, takes the home's `GrantAck`, completes it and
+waits for the release, then pulses its done; the store queue frees the entry
+on that done. Younger stores wait behind the entry and younger loads of the
+block wait for it to free. The L1D holds no CMO state: the home reaches every
+L1D copy with probes, as it does for DMA.
+
+**Home.** A CMO holds both sectors of its line in the completion table, as
+`GetMZero` does. Its decision never takes the hit path: hit or miss, it
+allocates a fill control aimed at its own line, with a write-back slot, and
+parks on that fill's seat. The fill reads no memory and installs nothing. It
+recalls both L1D sectors, with `ProbeRead` for a clean (Modified copies merge
+their bytes and stay Shared) and `ProbeInvalidate` for a flush or an inval
+(every copy leaves, through the CPU cut: L0 dwords, LR reservations, live
+read slots and returned-load observations), absorbing a pending PutM as a
+victim recall does. A resident line's row and the merged replies form the
+line's image in the write-back slot. At `FillDetach` a dirty image (an L2
+Modified line or merged probe data) freezes the slot and goes to memory for a
+clean or a flush; an inval frees the slot and discards it. A resident line's
+tag is then invalidated. The fill waits in `FillCmo` for the slot's B, then
+offers `GrantAck` through the forward buffer in `FillCmoGrant` and frees when
+the completion table takes it. A line the L2 lacks has no Modified copy, so
+its recall brings no data and the fill writes nothing. A CMO's fill takes no
+waiter seats; readers of its line are ordered behind its U. A failed memory
+write stops the home with the line's address.
+
+After a clean the L2 holds no copy and the L1D at most a Shared one, so no
+cache writes the block again until a later store; after a flush or an inval
+no copy remains.
+
 ## The line cache
 
 The following sections describe the generic line-cache components.
@@ -1913,6 +1954,7 @@ to answer.
 | `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
 | `coherence_stale_line_prefetch_l2` | `cbo.zero` twin beside an L1D stream or flushed load retry on the cluster with eight L1D request endpoints, stream prefetching and a 64 KiB home: no stream prefetch acquires a sector held by a pending store record or waiting twin (including a `cbo.zero` pushed during the prefetch lookup); while a fourth-slot `cbo.zero`'s twin still waits behind an older head twin, look-ahead requests neither sector of its block, so a dropped wrong-path load retry cannot overwrite the zeroed twin sector, and the block acquires with `GetMZero` once its own twin allocates; no request for the upper sector is accepted while an endpoint holds `GetMZero` through Done |
 | `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
+| `coherence_cbo_mgmt*` | Zicbom write-back on the hart-and-home cluster with one and three L1D endpoints, 32- and 64-byte home lines and link stages: clean and flush of L1D-Modified, half-dirty and L2-only dirty blocks write the latest bytes to memory before done, inval leaves memory and the next load at memory's bytes, clean, resident and absent blocks write nothing, no eviction rewrites a cleaned block after a non-coherent write, DMA writes at every delay around a flush, a block whose dirty sector is leaving as a PutM, and stores, loads and CMOs in program order |
 | `coherence_full_line*` | Full-line stores on the hart-and-home cluster with one and three L1D endpoints, 64- and 32-byte home lines and a two-set L1D: stores at the SQ cadence and back to back fill blocks without memory reads; the same stores without the SQ hint, partial, reversed and byte-written blocks fill; loads between the stores, DMA reads and writes of the block at every delay, stale Shared and dirty copies, and streams through evictions keep every byte; streams with irregular gaps keep the store queue's claim standing between writes and combine claimed writes at four records; a hint whose stores the store queue flushes holds a record only for its window; a reset with a gathering head, a pair hold or a held look-ahead leaves the cluster clean |
 | `full_line_test` (program) | Full-line stores from the production store queue into the L1D on the whole system: gapped, unaligned and partial memset and copy streams, stores squashed by a mispredicted branch or a faulting load inside a gathered line, ordering after two overlapped cached stores (forwarding, fence, fence.i, cbo.clean/flush/inval/zero, LR/SC), and DMA copies and fills of lines the CPU writes whole; `FullLineWatch` requires the store-queue hints, claims at three and four records, overlap, gather and pair holds, head and look-ahead pairs, data twins, flushes in a window and DMA requests that waited for a pair's window |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, dirty-L1D walker coherence, and one refill event per allocation that reads a line |

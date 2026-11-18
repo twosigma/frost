@@ -843,6 +843,11 @@ module frost_rvfi_platform #(
       .o_coherent_write_atomic(coherent_write_atomic),
       .o_coherent_write_sc(coherent_write_sc),
       .o_coherent_write_zero(coherent_write_zero),
+      // Zicbom requests: the platform's CPU has no coherent hierarchy (CMO_HOME
+      // is clear), so the store queue completes every CMO itself.
+      .o_cmo_valid(),
+      .o_cmo_kind(),
+      .o_cmo_addr(),
       .o_coherent_write_more(coherent_write_more),
       .o_coherent_next_same(coherent_next_same),
       .o_coherent_write_tag(coherent_write_tag),
