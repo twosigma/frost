@@ -7,6 +7,10 @@ coh_rs_payload_wide_prove d16 wide
 [options]
 mode prove
 depth 4
+# Row equality is one-step inductive: the winning write updates both
+# stores, or both keep the row. Check the zero initial state and the
+# first write in the wide base case.
+wide: depth 2
 timeout 120
 
 [engines]
@@ -18,6 +22,8 @@ read -formal -sv coherent_rs_payload_formal.sv
 d4: chparam -set ADDR_WIDTH 2 coherent_rs_payload_formal
 d8: chparam -set ADDR_WIDTH 3 coherent_rs_payload_formal
 wide: chparam -set DATA_WIDTH 125 coherent_rs_payload_formal
+hierarchy -top coherent_rs_payload_formal
+script free_undefined.ys
 prep -flatten -top coherent_rs_payload_formal
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
@@ -30,3 +36,4 @@ d16: select -assert-count 16 t:$check r:FLAVOR=assert %i
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
 coherent_rs_payload_formal.sv
+free_undefined.ys
