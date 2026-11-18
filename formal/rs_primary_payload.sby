@@ -25,7 +25,7 @@ bmc4: chparam -set DEPTH 4 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 reservation
 selector: hierarchy -top reservation_station
 # All readiness states, with arbitrary RAM outputs and no environment assumptions.
 selector: delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread
-selector: proc
+selector: script free_undefined.ys
 selector: setundef -undriven -anyseq
 selector: delete -port reservation_station/o:*
 selector: opt
@@ -41,6 +41,8 @@ selector: select -assert-count 5 t:$check r:FLAVOR=assert %i
 # Write data, enables and addresses are free, including port collisions.
 ram: read -sv riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv coherent_rs_payload_store.sv
 ram: read -formal -D SYNTHESIS -sv rs_primary_payload_equiv.sv
+ram: hierarchy -top rs_primary_payload_equiv
+ram: script free_undefined.ys
 ram: prep -top rs_primary_payload_equiv -flatten
 ram: memory_map
 ram: techmap
@@ -59,3 +61,4 @@ rs_primary_payload_equiv.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+free_undefined.ys

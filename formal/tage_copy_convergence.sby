@@ -20,6 +20,8 @@ smtbmc boolector
 [script]
 equal: read_slang --top tage_copy_convergence_formal --single-unit -GEQUAL_START=1 riscv_pkg.sv sdp_dist_ram.sv tage_predictor.sv tage_copy_convergence_formal.sv
 unequal: read_slang --top tage_copy_convergence_formal --single-unit -GEQUAL_START=0 riscv_pkg.sv sdp_dist_ram.sv tage_predictor.sv tage_copy_convergence_formal.sv
+hierarchy -top tage_copy_convergence_formal
+script free_undefined.ys
 prep -top tage_copy_convergence_formal -flatten
 prove_mode: chformal -cover -remove
 bmc_mode: chformal -cover -remove
@@ -42,3 +44,4 @@ opt_clean -purge
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/tage_predictor.sv
 tage_copy_convergence_formal.sv
+free_undefined.ys

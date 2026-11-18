@@ -55,7 +55,11 @@ read -formal -sv -D LOCAL_ATOMIC_DEPENDENCY -noautowire coherence_store_boundary
 amo: chparam -set MODE 1 coherent_local_atomic_formal
 sc: chparam -set MODE 2 coherent_local_atomic_formal
 cover: chparam -set COVER_MODE 1 coherent_local_atomic_formal
+~reservation: hierarchy -top coherent_local_atomic_formal
+~reservation: script free_undefined.ys
 ~reservation: prep -flatten -top coherent_local_atomic_formal
+reservation: hierarchy -top coherent_local_reservation_formal
+reservation: script free_undefined.ys
 reservation: prep -flatten -top coherent_local_reservation_formal
 chformal -assert -cover -remove c:*sq_forwarding_unit_inst*
 amo: chformal -cover -remove c:*p_sc_*
@@ -107,3 +111,4 @@ coherence_store_boundary_formal.sv
 ../hw/rtl/lib/cache/coherence_array.sv
 ../hw/rtl/lib/cache/coherence_l1d.sv
 ../hw/rtl/lib/cache/coherence_types.svh
+free_undefined.ys

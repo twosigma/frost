@@ -29,7 +29,7 @@ no_l0: chparam -set ENABLE_L0_FAST_PATH 0 lq_capture_equiv
 hierarchy -top lq_capture_equiv
 delete t:*lq_l0_cache t:*mwp_dist_ram t:*sdp_dist_ram t:*coherent_lq_address_store
 hierarchy -top lq_capture_equiv
-proc -noopt
+script free_undefined.ys
 setattr -mod -unset keep_hierarchy
 flatten
 opt_expr -keepdc
@@ -159,3 +159,4 @@ opt_clean
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
 lq_capture_equiv.sv
+free_undefined.ys

@@ -15,7 +15,8 @@ read_verilog -formal -D SYNTHESIS -D SQ_LIVE_COUNT_LOCAL_PROOF -sv store_queue.s
 # The CPU's store-queue parameters.
 bmc_cpu: chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 -set CACHE_NORMAL_MEMORY 1 store_queue
 delete t:sq_forwarding_unit t:vec_hold_rows t:mwp_dist_ram t:sdp_dist_ram t:mwp_dist_ram_ohread
-proc
+hierarchy -top store_queue
+script free_undefined.ys
 setundef -undriven -anyseq
 # No flip-flop simplification or merging, so every register keeps a free value.
 opt -noff -keepdc
@@ -29,3 +30,4 @@ select -assert-none t:$mem_v2 t:$meminit_v2
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
+free_undefined.ys

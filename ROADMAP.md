@@ -355,25 +355,37 @@ files named above, the L1D conflict proofs run `opt -full` and `sat` after
 cutting every flip-flop, the hart reset-state task starts from `sim`'s
 state after the reset cycle, and the hart covers zero undefined constants.
 
-Open: no list of forms keeps undefined constants, which SymbiYosys also
-makes free only after the script. Passes inside the forms the check
-accepts fuse or fix them: `opt_muxtree`, `opt_expr`, `opt_clean`,
-`opt_merge` and `opt_reduce` in `opt` and `prep`, `proc_rom` and
-`proc_dlatch` in `proc` and `prep`, and the default `techmap`'s templates
+No list of forms keeps undefined constants, which SymbiYosys also makes
+free only after the script. Passes inside the forms the check accepts fuse
+or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
+`opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
+`prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). A dump of every registered task's model before the first two
-`opt_muxtree` steps of each `opt` without `-fast` and each `prep`, and
-before every other `opt_muxtree`, found no constant-x multiplexer select;
-it did not reach the comparison design that `branch_predictor_twin.sby`
-builds inside its script. That dump cannot see the `opt_expr` and
-`opt_clean` cases where they act. In 17 of 26 sampled models of scripts
-that are not open, identical cells hold constant-x inputs before the first
-`opt_merge`, which makes each such group one cell. No proof result is
-known to change. Opening every script with `proc -norom -noopt` and
-`setundef -anyseq` before its first optimizing pass, with every proof
-rerun, would remove these cases, except `proc_dlatch`, which runs inside
-`proc`, and undefined constants that a later pass such as `async2sync`
-writes.
+each case). Fourteen scripts open with `hierarchy -top` and
+`script free_undefined.ys`, which lowers processes pass by pass, frees the
+undefined inputs of every multiplexer and the undefined bits of every
+connection with `setundef -anyseq` before `proc_dlatch` and every other
+undefined bit before `proc_dff`, and then runs `proc`'s own closing
+`opt_expr`. No undefined constant of the sources is then left in a cell
+port, a connection or a register when those passes run. Commands that a
+script's open entry pins are the exception: a plain `memory_map`, for one,
+writes x for words that nothing writes, and a plain `opt` after it can read
+them before SymbiYosys frees them. Every task of each of the fourteen
+scripts passes with that opening. The fast check of the scripts requires
+that opening of every script that `UNDEFINED_OPENING_PENDING` and
+`UNDEFINED_OPENING_TWINS` in `tests/test_run_formal.py` do not list.
+
+Open: the other 190 scripts, each to be opened with every task rerun, and
+the 19 scripts that compare two designs inside the script, which need an
+opening of their own because both designs hold the same undefined
+constants. Before the opening, a dump of every registered task's model
+before the first two `opt_muxtree` steps of each `opt` without `-fast` and
+each `prep`, and before every other `opt_muxtree`, found no constant-x
+multiplexer select; it did not reach the comparison design that
+`branch_predictor_twin.sby` builds inside its script, and it cannot see the
+`opt_expr` case where it acts. In 17 of 26 sampled models of scripts that
+are not open, identical cells hold constant-x inputs before the first
+`opt_merge`, which makes each such group one cell.
 
 The FPGA build's hand-instantiated primitives are compared with their
 portable forms by [equivalence checks](formal/README.md#primitive-twins).

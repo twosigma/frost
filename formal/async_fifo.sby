@@ -25,9 +25,12 @@ read -formal -sv async_fifo.sv
 chparam -set DEPTH 4 -set DATA_WIDTH 4 -set READY_MARGIN 1 async_fifo
 limit_bmc: chparam -set DYNAMIC_LIMIT 1 async_fifo
 limit_cover: chparam -set DYNAMIC_LIMIT 1 async_fifo
+hierarchy -top async_fifo
+script free_undefined.ys
 prep -top async_fifo
 
 [files]
 ../hw/rtl/lib/ram/sdp_block_ram_dc.sv
 ../hw/rtl/lib/cdc/cdc_sync.sv
 ../hw/rtl/lib/fifo/async_fifo.sv
+free_undefined.ys
