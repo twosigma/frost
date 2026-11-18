@@ -2482,15 +2482,6 @@ module store_queue #(
   always_comb begin
     if (i_rst_n) begin
       p_cmo_has_no_data : assert (!(|(sq_valid & sq_is_cmo & sq_data_valid)));
-`ifndef FORMAL
-      // A request in flight belongs to the committed CMO at the cursor,
-      // which no flush removes (a full flush waits for o_committed_empty).
-      if (cmo_state_q == CmoRequest || cmo_state_q == CmoWait) begin
-        assert (cmo_start_ready);
-        assert (!i_flush_all);
-      end
-      if (o_cmo_valid) assert (CMO_HOME && riscv_pkg::pma_cached_ok(o_cmo_addr));
-`endif
       if (cmo_drain_fire) begin
         p_cmo_frees_committed_cursor :
         assert (sq_valid[drain_idx_q] && sq_is_cmo[drain_idx_q] && sq_committed[drain_idx_q]);
@@ -2679,6 +2670,19 @@ module store_queue #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  // A full flush waits for this committed entry and its home transaction.
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && i_rst_n) begin
+      if (cmo_state_q == CmoRequest || cmo_state_q == CmoWait) begin
+        a_cmo_cursor_ready : assert (cmo_start_ready);
+        a_cmo_no_full_flush : assert (!i_flush_all);
+      end
+      if (o_cmo_valid) begin
+        a_cmo_home_address : assert (CMO_HOME && riscv_pkg::pma_cached_ok(o_cmo_addr));
+      end
+    end
+  end
+
   // Check that tail allocations use free slots and never overlap flush or
   // deferred pullback. Yosys does not parse assert-else actions; formal checks
   // flush rejection and free slots above, and assumes dispatch idle at pullback.
