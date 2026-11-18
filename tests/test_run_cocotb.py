@@ -320,6 +320,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
     ),
+    "bpred_trap_pair_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="bpred_trap_pair_test",
+        nic_mac_clocks=False,
+        description=(
+            "Fetch pairing and branch prediction around trap, trap-return, WFI "
+            "and reserved encodings across both slots and predictor tables"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+    ),
     "call_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

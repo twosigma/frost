@@ -165,6 +165,7 @@ runner compiles first. A failing RTL assertion fails the simulation.
 | `ittage_predictor` | Indirect target allocation, provider confidence, lookup capture and convergence of independently initialized table copies. |
 | `bpred_probe` | Reports mispredictions and cycles for calls, returns, slot-2 conditionals, a jump table and correlated branches. |
 | `pd_itt_slot2` | Checks that a slot-1 branch veto keeps its fall-through when a killed slot-2 JALR has a trained target. The callee checks its return address and call count. |
+| `bpred_trap_pair_test` | Checks fetch pairing, PD redirect suppression, and exact trap/return state across `ebreak`, `c.ebreak`, `ecall`, `xret`, trapping `wfi`, and reserved compressed and 32-bit encodings in both slots and both orders under primary BTB, backing BTB, ITTAGE and TAGE hits. |
 
 
 `vec_vtype_tracker` checks register and immediate configuration allocation,

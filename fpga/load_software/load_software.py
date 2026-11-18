@@ -52,6 +52,7 @@ VALID_APPS = [
     "amo_irq_torture",
     "asid_test",
     "bpred_probe",
+    "bpred_trap_pair_test",
     "branch_pred_test",
     "c_ext_test",
     "call_stress",
