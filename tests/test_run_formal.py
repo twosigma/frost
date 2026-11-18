@@ -1392,7 +1392,14 @@ FORMAL_TARGETS = [
         "rs_payload_twin.sby",
         "Two tomasulo_wrapper copies whose reservation stations hold arbitrary stage2 payloads while "
         "empty have equal outputs",
-        tasks=("bmc",),
+        tasks=(
+            "bmc",
+            "bmc_cdb",
+            "bmc_cdb_2",
+            "bmc_commit",
+            "bmc_commit_2",
+            "bmc_operands",
+        ),
     ),
     FormalTarget(
         "rs_stage2_payload_equiv.sby",
@@ -3219,6 +3226,14 @@ SBY_TASKS = [
     ),
     ("index_cover", "Indexed head run reachability: retirement, mid-run fault."),
     ("bmc", "Check assertions up to the configured depth"),
+    ("bmc_cdb", "Compare the first valid CDB packet across wrapper copies."),
+    ("bmc_cdb_2", "Compare the second valid CDB packet across wrapper copies."),
+    ("bmc_commit", "Compare the first valid combinational commit packet."),
+    ("bmc_commit_2", "Compare the second valid combinational commit packet."),
+    (
+        "bmc_operands",
+        "Compare bypass and register-file operands in the Block proofs job.",
+    ),
     ("continuity", "Bounded pc_reg and slot-1 PC continuity check"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
     ("home_small", "Consumed packets and fill phase flags with two fills."),
@@ -4874,7 +4889,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "rs_payload_twin": (
         "both copies start from the same zero state, as its harness states",
         {
-            "bmc": ["setundef -zero -init"],
+            "bmc bmc_cdb bmc_cdb_2 bmc_commit bmc_commit_2 bmc_operands": [
+                "setundef -zero -init"
+            ],
         },
     ),
     "rs_primary_payload": (
@@ -5303,7 +5320,6 @@ UNDEFINED_OPENING_PENDING = (
     "line_client_link",
     "pm_mode_select",
     "reorder_buffer",
-    "rs_payload_twin",
     "sq_forwarding_unit",
     "trap_unit",
     "vec_lmul_legality_equiv",
@@ -7588,6 +7604,386 @@ def test_axi_bridge_post_map_count_rejects_another_selection() -> None:
     commands[index] = "select -assert-count 138 t:$assume"
     with pytest.raises(AssertionError):
         normalize_axi_bridge_post_map_count(commands, "prove_soc")
+
+
+@pytest.mark.parametrize(
+    ("source", "old", "new"),
+    [
+        pytest.param("", "", "", id="reviewed-model"),
+        pytest.param("sby", "depth 5", "depth 5\nbmc_operands: depth 1", id="depth"),
+        pytest.param(
+            "sby",
+            "[files]",
+            "[files]\nspare.sv ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv\n\n[files]",
+            id="earlier-files-section",
+        ),
+        pytest.param(
+            "sby", "mode bmc", "mode bmc\nexpect PASS,UNKNOWN,TIMEOUT", id="expect"
+        ),
+        pytest.param(
+            "sby",
+            "[files]",
+            "bmc_cdb: delete c:p_twin_cdb\n[files]",
+            id="delete-after-count",
+        ),
+        pytest.param(
+            "sby",
+            "[files]",
+            " chformal -assert2assume c:p_twin_cdb\n[files]",
+            id="assert-to-assume",
+        ),
+        pytest.param(
+            "sby",
+            "rs_payload_twin_formal.sv\nfree_undefined.ys",
+            "other.sv\nfree_undefined.ys",
+            id="source-file",
+        ),
+        pytest.param(
+            "sv",
+            "p_twin_operand_int_src1 :",
+            "p_twin_operand_renamed :",
+            id="operand-label",
+        ),
+        pytest.param(
+            "sv",
+            "assert (o_cdb_a.valid == o_cdb_b.valid);\n    if (o_cdb_a.valid) p_twin_cdb :",
+            "p_twin_cdb : assert (o_cdb_a.valid == o_cdb_b.valid);\n    if (o_cdb_a.valid)",
+            id="packet-label-on-valid",
+        ),
+        pytest.param("sv", "o_cdb_a == o_cdb_b", "o_cdb_a == o_cdb_a", id="packet-rhs"),
+        pytest.param(
+            "sv",
+            "if (o_trap_pending_a) assert (o_trap_pc_a",
+            "assert (o_trap_pc_a",
+            id="missing-qualifier",
+        ),
+    ],
+)
+def test_rs_payload_twin_assertion_groups(
+    source: str, old: str, new: str, tmp_path: Path
+) -> None:
+    """Pin the resolved six proof configurations and every guarded output comparison."""
+    from hashlib import sha256
+
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby = formal / "rs_payload_twin.sby"
+    harness = (formal / "rs_payload_twin_formal.sv").read_text()
+    if source == "sby":
+        original = sby.read_text()
+        assert original.count(old) == 1
+        sby = tmp_path / sby.name
+        sby.write_text(original.replace(old, new))
+    elif source == "sv":
+        assert harness.count(old) == 1
+        harness = harness.replace(old, new)
+
+    packets = {
+        "bmc_cdb": "cdb",
+        "bmc_cdb_2": "cdb_2",
+        "bmc_commit": "commit_comb",
+        "bmc_commit_2": "commit_comb_2",
+    }
+    operands = """
+        bypass_value_1 bypass_value_2 bypass_value_3 bypass_value_4 bypass_value_5
+        bypass_value_6 int_src1 int_src2 fp_src1 fp_src2 fp_src3 int_src1_2
+        int_src2_2 fp_src1_2 fp_src2_2 fp_src3_2
+    """.split()
+    # Port names use the wrapper spelling before the copy suffix and any field.
+    general = {
+        "": """
+            coherent_sc_valid coherent_sc_result_ready coherent_reservation_valid
+            coherent_arm_valid coherent_read_kind coherent_read_tag coherent_write_sc
+            coherent_write_zero coherent_sq_write_tag coherent_amo_write_tag alloc_resp
+            alloc_resp_2 cdb_grant cdb.valid cdb_2.valid commit.valid vcfg_commit.valid
+            vcfg_in_flight commit_comb.valid commit_valid_raw commit_misprediction_raw
+            commit_correct_branch_raw commit_correct_branch_2_raw
+            head_commit_misprediction_candidate commit_2.valid commit_comb_2.valid
+            commit_2_valid_raw csr_start trap_pending head_is_wfi head_is_amo
+            head_mem_funct3 head_mem_rs2 head_dest_reg head_dest_rf head_dest_valid
+            head_mem_store head_mem_fp_store head_mem_atomic head_fallthrough_pc
+            head_bypass_int_we_early head_bypass_fp_we_early
+            head_next_bypass_int_we_early head_next_bypass_fp_we_early
+            head_dir_train_early head_branch_taken_early head_next_dir_train_early
+            head_next_branch_taken_early head_retired_next_pc head_next_retired_next_pc
+            head_bus_fault mret_start mret_start_is_sret mret_start_is_dret
+            tlb_invalidate tlb_flush walk_req_valid walk_hold coh_admit_ready
+            coh_admit_clean coh_inval_done fence_i_sync_req fence_i_flush
+            fence_class_flush_event translation_csr_commit_shadow sq_committed_empty
+            sq_committed_empty_trap rob_full rob_full_for_2 rob_empty rob_count head_tag
+            head_valid head_done rob_entry_done_vec ras_tos ras_valid_count ras_top
+            checkpoint_available checkpoint_alloc_id rs_full rs_issue.valid
+            rs_issue_branch_predicate_tag int_rs_full int_rs_full_for_2 rs_empty
+            rs_count mul_rs_issue.valid mul_rs_full mul_rs_full_for_2 mul_rs_empty
+            mul_rs_count mem_rs_issue.valid mem_rs_full mem_rs_full_for_2 mem_rs_empty
+            mem_rs_count fp_rs_issue.valid fp_rs_full fp_rs_full_for_2 fp_rs_empty
+            fp_rs_count sq_mem_write_en uncached_store_pending lq_mem_read_en
+            lq_mem_addr_valid lq_full lq_full_for_2 lq_empty lq_count sq_full
+            sq_full_for_2 sq_empty sq_count amo_mem_write_en perf_counter_data
+            perf_mem_rs_two_ready_one_issued perf_cdb_oversubscribed
+        """.split(),
+        "o_coherent_sc_valid_a": [
+            "coherent_sc_addr",
+            "coherent_sc_size",
+            "coherent_sc_tag",
+        ],
+        "o_coherent_reservation_valid_a": [
+            "coherent_reservation_addr",
+            "coherent_reservation_size",
+        ],
+        "o_coherent_arm_valid_a": ["coherent_arm_tag"],
+        "o_commit_a.valid": ["commit"],
+        "o_vcfg_commit_a.valid": ["vcfg_commit"],
+        "o_commit_2_a.valid": ["commit_2"],
+        "o_trap_pending_a": ["trap_pc", "trap_cause", "trap_value", "trap_insn"],
+        "o_head_bus_fault_a": ["head_bus_fault_va"],
+        "o_walk_req_valid_a": ["walk_vpn"],
+        "o_rs_issue_a.valid": ["rs_issue"],
+        "o_mul_rs_issue_a.valid": ["mul_rs_issue"],
+        "o_mem_rs_issue_a.valid": ["mem_rs_issue"],
+        "o_fp_rs_issue_a.valid": ["fp_rs_issue"],
+        "o_sq_mem_write_en_a": [
+            "sq_mem_write_addr",
+            "sq_mem_write_data",
+            "sq_mem_write_byte_en",
+            "sq_mem_write_buffered",
+            "sq_mem_write_size",
+            "sq_mem_write_is_mmio",
+            "sq_mem_write_is_cached",
+        ],
+        "o_lq_mem_read_en_a": [
+            "lq_mem_read_addr",
+            "lq_mem_read_size",
+            "lq_mem_read_id",
+            "lq_mem_read_no_merge",
+        ],
+        "o_amo_mem_write_en_a": [
+            "amo_mem_write_addr",
+            "amo_mem_write_data",
+            "amo_mem_write_is_dword",
+            "amo_mem_write_is_cached",
+        ],
+    }
+    counts = {"bmc": 152, "bmc_operands": 16, **dict.fromkeys(packets, 1)}
+    all_asserts = "t:$check r:FLAVOR=assert %i"
+    selections = {
+        "bmc": "@packets @operands",
+        "bmc_operands": f"{all_asserts} @operands %d",
+        **{task: f"{all_asserts} c:p_twin_{port} %d" for task, port in packets.items()},
+    }
+    model = [
+        "read -formal -sv riscv_pkg.sv vec_hold_rows.sv",
+        "read -formal -sv sdp_dist_ram.sv",
+        "read -formal -sv mwp_dist_ram.sv",
+        "read -formal -sv mwp_dist_ram_ohread.sv",
+        "read -sv rob_serializer.sv sfence_operand_store.sv",
+        "read -sv reorder_buffer.sv",
+        "read -sv register_alias_table.sv",
+        "read -formal -sv rs_issue2_selector.sv",
+        "read -sv coherent_rs_capacity.sv",
+        "read -sv coherent_rs_issue2_selector.sv",
+        "read -sv coherent_rs_payload_store.sv",
+        "read -formal -sv -D RS_STAGE2_PAYLOAD_HAVOC reservation_station.sv",
+        "read -sv cdb_arbiter.sv",
+        "read -sv fu_cdb_adapter.sv",
+        "read -sv int_alu_shim.sv",
+        "read -sv int_muldiv_shim.sv",
+        "read -sv load_unit.sv",
+        "read -sv coherent_l0_flags.sv",
+        "read -sv lq_l0_cache.sv",
+        "read -sv lq_issue_selector.sv",
+        "read -sv coherent_lq_issue_selector.sv",
+        "read -sv coherent_lq_candidate_select.sv",
+        "read -sv coherent_lq_address_store.sv",
+        "read -sv -DFROST_YOSYS load_queue.sv",
+        "read -sv sq_forwarding_unit.sv",
+        "read -sv store_queue.sv",
+        "read -sv dtlb.sv",
+        "read -sv dmmu.sv",
+        "read -sv tomasulo_perf_counters.sv",
+        "read -sv sq_early_addr_pipeline.sv",
+        "read -sv commit_bus_pipeline.sv",
+        "read -sv dispatch_rs_router.sv",
+        "read -sv sc_pending_unit.sv",
+        "read -sv coherent_atomic_select.sv",
+        "read -formal -sv mem_wakeup_merge.sv",
+        "read -sv lq_coherence_port.sv",
+        "read -sv divider.sv",
+        "read -sv dsp_tiled_multiplier_unsigned.sv",
+        "read -sv multiplier.sv cl_multiplier.sv",
+        "read -sv alu.sv",
+        "read -sv fp_engine.sv",
+        "read -sv fp_shim.sv",
+        "read -formal -sv tomasulo_wrapper.sv",
+        "read -formal -sv rs_payload_twin_formal.sv",
+        "hierarchy -top rs_payload_twin_formal",
+        "script free_undefined.ys",
+        "chformal -assert -remove * rs_payload_twin_formal %d",
+        "prep -top rs_payload_twin_formal",
+        "setattr -mod -unset keep_hierarchy *",
+        "flatten",
+        "memory_map -keepdc",
+        "opt_clean",
+        "setundef -zero -init",
+        "select -assert-count 104 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 172 t:$check r:FLAVOR=assert %i",
+        "select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2",
+        "select -set operands c:p_twin_operand_*",
+        "select -assert-count 4 @packets",
+        "select -assert-count 16 @operands",
+    ]
+    files = [
+        "../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv",
+        "../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv",
+        "../hw/rtl/lib/ram/sdp_dist_ram.sv",
+        "../hw/rtl/lib/ram/mwp_dist_ram.sv",
+        "../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/sfence_operand_store.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_alu_shim.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv",
+        "../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv",
+        "../hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/perf/tomasulo_perf_counters.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/dispatch_routing/dispatch_rs_router.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv",
+        "../hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/coherent_atomic_select.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/wakeup/mem_wakeup_merge.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/coherence/lq_coherence_port.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv",
+        "rs_payload_twin_formal.sv",
+        "free_undefined.ys",
+    ]
+
+    if not source:
+        hashes = {
+            "rs_payload_twin.sby": "e62d5bf7503bbf96df278187b90ad2d7f1eee99013be8bd3ee70290fa5b67854",
+            "rs_payload_twin_formal.sv": "36efe2495150878e0b0006ef50959dba70b1ab898df382ca98066fc5564b50af",
+            "free_undefined.ys": "9b2c2cb8b810c89401509a3ab42db9ea522b9e80b132d5c73d5ab8d516c3fe89",
+        }
+        procedure = (
+            "For a deliberate edit, run python3 tests/rs_payload_twin_partition.py "
+            "in the formal image, review the compiled partition, then update the "
+            "expected comparisons and SHA-256 hashes."
+        )
+        design_rtl = formal.parent / "hw/rtl"
+        non_rtl = {
+            entry
+            for entry in files
+            if not (formal / entry).resolve().is_relative_to(design_rtl)
+        }
+        assert hashes.keys() == {sby.name, *non_rtl}, procedure
+        for name, digest in hashes.items():
+            assert sha256((formal / name).read_bytes()).hexdigest() == digest, (
+                f"{name} changed. {procedure}"
+            )
+
+    def check() -> None:
+        assert not sby_tag_gaps(sby)
+        # Check every source in the untagged file section.
+        entries = [line.strip() for line in sby_config.source(sby).sections["files"]]
+        assert [line for line in entries if line and not line.startswith("#")] == files
+        scripts, _ = sby_task_scripts(sby)
+        assert scripts.keys() == counts.keys()
+        for task, count in counts.items():
+            config = formal_task_config(str(sby.with_suffix("")), task)
+            options = ["mode bmc", "depth 5"]
+            engine = "smtbmc boolector"
+            if task in packets:
+                options.append("vcd_sim on")
+                engine = "btor btormc"
+            assert config == {
+                "[options]": options,
+                "[engines]": [engine],
+                "[script]": [
+                    *model,
+                    "chformal -assert -remove " + selections[task],
+                    f"select -assert-count {count} {all_asserts}",
+                ],
+                "[files]": files,
+            }, task
+
+        # Key by the complete property, including both sides of the comparison.
+        expected: dict[tuple[str, str, str, str], str] = {}
+
+        def record(task: str, qualifier: str, label: str, port: str) -> None:
+            name, dot, field = port.partition(".")
+            lhs = f"o_{name}_a{dot}{field}"
+            rhs = f"o_{name}_b{dot}{field}"
+            expected[qualifier, label, lhs, rhs] = task
+
+        for qualifier, ports in general.items():
+            for port in ports:
+                record("bmc", qualifier, "", port)
+        for task, port in packets.items():
+            record(task, f"o_{port}_a.valid", f"p_twin_{port}", port)
+        for port in operands:
+            record("bmc_operands", "", f"p_twin_operand_{port}", port)
+
+        # Consume complete statements so a nested condition or trailing expression
+        # cannot disappear between two matched assertions.
+        body = re.sub(r"//[^\n]*|/\*.*?\*/", " ", harness, flags=re.DOTALL)
+        assert len(re.findall(r"\bassert\s*\(", body)) == 172
+        block = re.search(
+            r"\balways_comb\s+begin\b(.*?)\bend\s+endmodule\s*:\s*rs_payload_twin_formal\s*\Z",
+            body,
+            re.DOTALL,
+        )
+        assert block is not None
+        statements = block[1].strip().split(";")
+        assert statements.pop() == ""
+        assert len(statements) == len(expected) == sum(counts.values()) == 172
+        comparison = re.compile(
+            r"(?:if\s*\(\s*([\w.]+)\s*\)\s*)?(?:(\w+)\s*:\s*)?"
+            r"assert\s*\(\s*([\w.]+)\s*==\s*([\w.]+)\s*\)"
+        )
+        owners = {
+            "": "bmc",
+            **{f"p_twin_{p}": t for t, p in packets.items()},
+            **{f"p_twin_operand_{p}": "bmc_operands" for p in operands},
+        }
+        actual: dict[tuple[str, str, str, str], str] = {}
+        for statement in statements:
+            match = comparison.fullmatch(statement.strip())
+            assert match is not None, statement
+            qualifier, label, lhs, rhs = match.groups(default="")
+            assert label in owners, label
+            actual[qualifier, label, lhs, rhs] = owners[label]
+        assert actual == expected
+        assert {task: list(actual.values()).count(task) for task in counts} == counts
+
+    if source:
+        with pytest.raises(AssertionError):
+            check()
+    else:
+        check()
 
 
 def test_axi_bridge_partitions_share_model_and_history() -> None:
