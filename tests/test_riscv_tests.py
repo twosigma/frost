@@ -147,6 +147,13 @@ ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
 
 # Benchmarks, keyed by directory name: (description, source_files,
 # needs_double_fp).
+# Wall-clock limits for one simulation, including the model build. A limit is
+# 1.8 times the slowest time seen in CI, so a slow runner still finishes. The
+# job limits in ci.yml sit above these by the setup time.
+SIMULATION_TIMEOUT_SECONDS = 7200
+DEFAULT_BENCHMARK_TIMEOUT_SECONDS = 3600
+BENCHMARK_TIMEOUT_SECONDS = {"mm": 13200}
+
 BENCHMARKS = {
     "median": ("Median filter", ["median_main.c", "median.c"], False),
     "multiply": ("Software multiply", ["multiply_main.c", "multiply.c"], False),
@@ -255,10 +262,12 @@ def run_simulation(
     simulator: str,
     max_cycles: str = "10000000",
     coverage_label: str = "riscv_tests",
+    timeout: int = SIMULATION_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str] | None:
     """Run cocotb simulation and return the result.
 
     coverage_label names the run's coverage file under FROST_COVERAGE=1.
+    timeout is the wall-clock limit in seconds, covering the model build too.
     """
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
@@ -305,7 +314,7 @@ def run_simulation(
             f"make COCOTB_TEST_MODULES='cocotb_tests.test_real_program' "
             f"TOPLEVEL=frost"
         )
-        result = run_in_process_group(["bash", "-c", cmd], env=env, timeout=7200)
+        result = run_in_process_group(["bash", "-c", cmd], env=env, timeout=timeout)
 
         if simulator == "verilator" and result.returncode == 0:
             runner._update_verilator_toplevel_marker(sim_build_dir)
@@ -407,6 +416,9 @@ def run_single_benchmark(
         simulator,
         max_cycles="50000000",
         coverage_label=f"riscv_tests_benchmark_{bench_name}",
+        timeout=BENCHMARK_TIMEOUT_SECONDS.get(
+            bench_name, DEFAULT_BENCHMARK_TIMEOUT_SECONDS
+        ),
     )
     if result is None:
         return TestResult(bench_name, "benchmarks", "FAIL", "Simulation timed out")
