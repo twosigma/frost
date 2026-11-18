@@ -4815,12 +4815,6 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
             ],
         },
     ),
-    "rob_alloc_lvt": (
-        "not converted: memory_map and opt without -keepdc; no setundef",
-        {
-            "prove": ["memory_map", "opt"],
-        },
-    ),
     "rob_bypass_control": (
         "not converted: plain opt after its setundef",
         {
@@ -5468,7 +5462,6 @@ UNDEFINED_OPENING_PENDING = (
     "rat_checkpoint_restore",
     "reorder_buffer",
     "reservation_station",
-    "rob_alloc_lvt",
     "rob_link_value_ram",
     "rs_payload_twin",
     "sq_forwarding_unit",
