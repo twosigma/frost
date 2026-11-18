@@ -16,8 +16,8 @@ read_slang --top tage_history --single-unit -D SYNTHESIS -D TAGE_HISTORY_RECOVER
 hierarchy -top tage_history
 script free_undefined.ys
 prep -top tage_history -flatten
-select -assert-count 15 t:$check r:FLAVOR=assert %i
-select -assert-count 8 t:$check r:FLAVOR=cover %i
+select -assert-count 20 t:$check r:FLAVOR=assert %i
+select -assert-count 11 t:$check r:FLAVOR=cover %i
 prove: chformal -cover -remove
 cover: chformal -assert -remove
 

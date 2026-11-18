@@ -579,10 +579,63 @@ module tage_history #(
     f_pd_path_known <= f_accepted;
   end
 
+  // Only retired instructions may train. The oldest slot takes priority
+  // over a previously retired slot in the hold, then the younger slot.
+  // The hold survives redirects because its instruction already retired.
+  typedef struct packed {
+    logic [FTQ_IDX_BITS-1:0] index;
+    logic [riscv_pkg::PhysAddrBits-2:0] target;
+    logic taken;
+    logic missed;
+  } f_training_t;
+  logic [1:0] f_retiring;
+  f_training_t f_retire_0, f_retire_1, f_held, f_selected;
+  logic f_defer_slot2, f_keep_held;
+  assign f_retiring = i_commit_valid & (i_commit_cond_branch | i_commit_jalr);
+  assign f_retire_0 = {
+    ftq_idx_by_tag[i_commit_tag[0]], i_commit_target[0], i_commit_taken[0], i_commit_mispredicted[0]
+  };
+  assign f_retire_1 = {
+    ftq_idx_by_tag[i_commit_tag[1]], i_commit_target[1], i_commit_taken[1], i_commit_mispredicted[1]
+  };
+  assign f_held = {held_idx, held_target, held_taken, held_mispredicted};
+  assign f_selected = f_retiring[0] ? f_retire_0 : held_valid ? f_held : f_retire_1;
+  assign f_defer_slot2 = f_retiring[1] && (f_retiring[0] || held_valid);
+  assign f_keep_held = held_valid && f_retiring[0] &&
+                       !(pd_entry_pending && (ftq_write_ptr == held_idx));
+
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
     if (f_past_valid) begin
+      p_hold_contains_retired_slot :
+      assert (held_valid == $past(!i_rst && (f_defer_slot2 || f_keep_held)));
+      if (held_valid) begin
+        p_held_training_payload :
+        assert (f_held == ($past(f_defer_slot2) ? $past(f_retire_1) : $past(f_held)));
+      end
+      if ((|f_retiring) || held_valid) begin
+        p_retirement_selects_its_ftq_row : assert (train_read_idx == f_selected.index);
+      end
+      p_only_retired_lookups_train :
+      assert ({o_itt_train_valid, o_train_valid} == ($past(
+          !i_rst && ((|f_retiring) || held_valid)
+      ) ? $past(
+          {ftq_read_train.is_jalr && ftq_read_train.itt_valid,
+                 !ftq_read_train.is_jalr && ftq_read_train.lookup_valid}
+      ) : 2'b00));
+      if (o_train_valid || o_itt_train_valid) begin
+        p_training_carries_retired_result :
+        assert ({o_itt_train_target, o_train_taken, o_train_mispredicted} == $past(
+            {f_selected.target, f_selected.taken, f_selected.missed}
+        ) && o_itt_train_mispredicted == o_train_mispredicted);
+      end
+      cover (held_valid && i_flush_full && f_retiring[0] && !f_retiring[1]);
+      cover (held_valid && i_early_active && !f_retiring[0] && f_retiring[1]);
+      cover ($past(
+          !i_rst && held_valid && !f_defer_slot2 && f_retiring[0] &&
+                   pd_entry_pending && ftq_write_ptr == held_idx
+      ) && !held_valid);
       p_retired_path : assert (retired_hist == f_path);
       p_retired_direction : assert (retired_dir_hist == f_dir);
       if (f_accepted) begin

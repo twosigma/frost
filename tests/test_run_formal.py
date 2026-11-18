@@ -1590,7 +1590,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "tage_history_recovery.sby",
         "Both lookup histories follow accepted predictions, ordered retirement, "
-        "saved early-recovery histories, and every PC restore arm",
+        "saved early-recovery histories and every PC restore arm; only retired lookups train",
         tasks=("prove", "cover"),
     ),
     FormalTarget(
