@@ -31,7 +31,10 @@ bmc_64g: chparam -set ADDR_WIDTH 37 -set AXI_ADDR_WIDTH 36 line_port_axi_bridge
 bmc_128g: chparam -set ADDR_WIDTH 38 -set AXI_ADDR_WIDTH 37 line_port_axi_bridge
 cover_64g: chparam -set ADDR_WIDTH 37 -set AXI_ADDR_WIDTH 36 line_port_axi_bridge
 cover_128g: chparam -set ADDR_WIDTH 38 -set AXI_ADDR_WIDTH 37 line_port_axi_bridge
+hierarchy -top line_port_axi_bridge
+script free_undefined.ys
 prep -top line_port_axi_bridge
 
 [files]
 ../hw/rtl/lib/cache/line_port_axi_bridge.sv
+free_undefined.ys

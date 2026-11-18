@@ -15,8 +15,11 @@ smtbmc boolector
 [script]
 read -sv cl_multiplier.sv
 read -formal -sv cl_multiplier_formal.sv
+hierarchy -top cl_multiplier_formal
+script free_undefined.ys
 prep -top cl_multiplier_formal -flatten
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv
 cl_multiplier_formal.sv
+free_undefined.ys
