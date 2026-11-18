@@ -15,8 +15,8 @@
  */
 
 // Typed interface placeholders replaced in sq_forwarding_unit.sby:tree_equiv
-// by the stashed synthesis (balanced fwd_node tree) and formal (linear scan)
-// elaborations of sq_forwarding_unit at SqDepth=8.
+// by the stashed synthesis (fixed-priority newest pick) and formal (linear scan)
+// elaborations of sq_forwarding_unit at the core's SqDepth.
 module sq_forwarding_unit_shipped (
     input logic i_clk,
     input logic i_rst_n,
@@ -89,9 +89,9 @@ module sq_forwarding_unit_formal_sel (
   assign o_sq_forward = '0;
 endmodule
 
-// Unbounded sequential equivalence miter between the shipped balanced winner
-// tree (ifndef FORMAL) and the formal linear selector (ifdef FORMAL) at the
-// core's SqDepth=8 geometry across arbitrary unconstrained inputs.
+// Unbounded sequential equivalence miter between the shipped fixed-priority
+// newest pick (ifndef FORMAL) and the formal linear selector (ifdef FORMAL) at the
+// core's SqDepth geometry across arbitrary unconstrained inputs.
 module sq_forwarding_unit_tree_equiv #(
     parameter int unsigned DEPTH = riscv_pkg::SqDepth
 ) (

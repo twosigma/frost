@@ -16,7 +16,7 @@ smtbmc boolector
 
 [script]
 ~tree_equiv: read -formal -sv riscv_pkg.sv sq_forwarding_unit.sv sq_forwarding_unit_formal.sv
-~tree_equiv: chparam -set DEPTH 8 sq_forwarding_unit_formal
+~tree_equiv: chparam -set DEPTH 16 sq_forwarding_unit_formal
 ~tree_equiv: hierarchy -top sq_forwarding_unit_formal
 ~tree_equiv: script free_undefined.ys
 ~tree_equiv: prep -top sq_forwarding_unit_formal

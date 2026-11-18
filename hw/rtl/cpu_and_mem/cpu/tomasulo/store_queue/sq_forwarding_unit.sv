@@ -96,30 +96,6 @@ module sq_forwarding_unit #(
   localparam int unsigned DwordAddrWidth = XLEN - 3;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
 
-  typedef struct packed {
-    logic                valid;
-    // Ring distance from i_sq_head_idx, not ROB-tag age (see Block 2).
-    logic [IdxWidth-1:0] age;
-    logic                can_forward;
-    logic [IdxWidth-1:0] idx;
-    logic [2:0]          store_off;
-  } fwd_winner_t;
-
-  function automatic fwd_winner_t choose_newer_winner(input fwd_winner_t lhs,
-                                                      input fwd_winner_t rhs);
-    begin
-      if (!lhs.valid) begin
-        choose_newer_winner = rhs;
-      end else if (!rhs.valid) begin
-        choose_newer_winner = lhs;
-      end else if (rhs.age >= lhs.age) begin
-        choose_newer_winner = rhs;
-      end else begin
-        choose_newer_winner = lhs;
-      end
-    end
-  endfunction
-
   (* equivalent_register_removal = "no", max_fanout = 16 *)
   logic [ReorderBufferTagWidth-1:0] rob_head_tag_q;
 
@@ -187,22 +163,23 @@ module sq_forwarding_unit #(
   logic [DEPTH-1:0] fwd_can_forward_mask;
   logic [ReorderBufferTagWidth:0] fwd_load_age;
   logic [ReorderBufferTagWidth:0] fwd_entry_age[DEPTH];
-  logic [IdxWidth-1:0] fwd_entry_slot_age[DEPTH];
 `ifdef FORMAL
+  // Ring distance from the SQ head, the linear selector's rank.
+  logic [IdxWidth-1:0] fwd_entry_slot_age[DEPTH];
   // Reference payload computed by the scan: each forwardable entry's store
   // data shifted to its byte lanes. The formal check at the end of the module
   // compares the registered-metadata select against it.
   logic [FLEN-1:0] fwd_entry_data_reference[DEPTH];
 `endif
 `ifndef FORMAL
-  // Heap-ordered reduction tree in a flat array for Yosys compatibility:
-  // node[1] is the winner; node[2*k] and node[2*k+1] are node[k]'s children.
-  // Leaves occupy node[FwdTreeWidth .. FwdTreeWidth+DEPTH-1]; padding is
-  // invalid. SQ ring pointers require a power-of-two DEPTH.
-  localparam int unsigned FwdTreeLevels = $clog2(DEPTH);
-  localparam int unsigned FwdTreeWidth  = 1 << FwdTreeLevels;
-  fwd_winner_t fwd_node[2*FwdTreeWidth];
-  fwd_winner_t fwd_winner;
+  // Fixed-priority newest selection (Block 2). SQ ring pointers require a
+  // power-of-two DEPTH.
+  logic [DEPTH-1:0] fwd_below_head;
+  logic [DEPTH-1:0] fwd_wrapped_oh, fwd_unwrapped_oh;
+  logic fwd_any_wrapped;
+  logic fwd_wrapped_can_fwd, fwd_unwrapped_can_fwd;
+  logic [IdxWidth-1:0] fwd_wrapped_idx, fwd_unwrapped_idx;
+  logic [2:0] fwd_wrapped_store_off, fwd_unwrapped_store_off;
 `endif
 
   assign fwd_load_byte_mask = gen_byte_en(i_sq_check_addr[2:0], i_sq_check_size);
@@ -254,9 +231,11 @@ module sq_forwarding_unit #(
       block_probe_addr = sq_is_cmo[i] && riscv_pkg::pma_pbmt_alias_ok(sq_check_addr_for_entry) ?
           riscv_pkg::pbmt_alias_real(sq_check_addr_for_entry) : sq_check_addr_for_entry;
       fwd_entry_age[i] = {1'b0, entry_rob_tag} - {1'b0, rob_head_tag_q};
+`ifdef FORMAL
       // Program-order rank for winner selection: ring distance from the SQ
       // head.  DEPTH is a power of two, so the subtraction wraps modulo DEPTH.
       fwd_entry_slot_age[i] = IdxWidth'(i) - i_sq_head_idx;
+`endif
       fwd_addr_unknown_mask[i] = 1'b0;
       fwd_conflict_mask[i] = 1'b0;
       fwd_can_forward_mask[i] = 1'b0;
@@ -322,8 +301,8 @@ module sq_forwarding_unit #(
   // its ROB tag has been reused, and tag age would then rank it newest and
   // forward stale data.
 `ifdef FORMAL
-  // Yosys treats fields of the tree's unpacked struct array as implicit wires.
-  // Use an equivalent linear selector for formal builds.
+  // Linear reference selector for formal builds; tree_equiv proves the
+  // synthesis selector below equivalent to it.
   logic fwd_formal_winner_valid;
   logic [IdxWidth-1:0] fwd_formal_winner_age;
   logic [2:0] fwd_formal_winner_store_off;
@@ -351,32 +330,44 @@ module sq_forwarding_unit #(
   end
   assign fwd_winner_store_off = fwd_formal_winner_store_off;
 `else
-  // Use a balanced tree for timing.
+  // Ring distance from the head is i - head for an entry at or above the head
+  // and i - head + DEPTH for one below it (wrapped), so every wrapped entry is
+  // newer than every unwrapped one, and within each half a higher index is
+  // newer. The newest conflict is therefore the highest-index wrapped conflict
+  // if any, else the highest-index unwrapped one: two fixed-priority picks with
+  // no age comparison, formed in parallel from the conflict mask and the
+  // registered head, and a final select by whether any wrapped entry conflicts.
+  // With no conflict, index and offset are zero, as for the linear selector.
   always_comb begin
-    // Default unused nodes and padding to invalid to avoid latches.
-    for (int unsigned n = 0; n < 2 * FwdTreeWidth; n++) begin
-      fwd_node[n] = '0;
-    end
-
+    logic [DEPTH-1:0] wrapped_mask, unwrapped_mask, above_mask;
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      fwd_node[FwdTreeWidth+i].valid       = fwd_conflict_mask[i];
-      fwd_node[FwdTreeWidth+i].age         = fwd_entry_slot_age[i];
-      fwd_node[FwdTreeWidth+i].can_forward = fwd_can_forward_mask[i];
-      fwd_node[FwdTreeWidth+i].idx         = IdxWidth'(i);
-      fwd_node[FwdTreeWidth+i].store_off   = sq_address_flat[i*XLEN+:3];
+      fwd_below_head[i] = IdxWidth'(i) < i_sq_head_idx;
     end
-
-    // Descending order so both children are final before their parent.
-    for (int n = int'(FwdTreeWidth) - 1; n >= 1; n--) begin
-      fwd_node[n] = choose_newer_winner(fwd_node[2*n], fwd_node[(2*n)+1]);
+    wrapped_mask = fwd_conflict_mask & fwd_below_head;
+    unwrapped_mask = fwd_conflict_mask & ~fwd_below_head;
+    fwd_any_wrapped = |wrapped_mask;
+    fwd_wrapped_can_fwd = 1'b0;
+    fwd_unwrapped_can_fwd = 1'b0;
+    fwd_wrapped_idx = '0;
+    fwd_unwrapped_idx = '0;
+    fwd_wrapped_store_off = '0;
+    fwd_unwrapped_store_off = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      // Entries above i; empty for the last entry.
+      above_mask = ~((DEPTH'(2) << i) - DEPTH'(1));
+      fwd_wrapped_oh[i] = wrapped_mask[i] && !(|(wrapped_mask & above_mask));
+      fwd_unwrapped_oh[i] = unwrapped_mask[i] && !(|(unwrapped_mask & above_mask));
+      fwd_wrapped_can_fwd |= fwd_wrapped_oh[i] && fwd_can_forward_mask[i];
+      fwd_unwrapped_can_fwd |= fwd_unwrapped_oh[i] && fwd_can_forward_mask[i];
+      fwd_wrapped_idx |= fwd_wrapped_oh[i] ? IdxWidth'(i) : '0;
+      fwd_unwrapped_idx |= fwd_unwrapped_oh[i] ? IdxWidth'(i) : '0;
+      fwd_wrapped_store_off |= fwd_wrapped_oh[i] ? sq_address_flat[i*XLEN+:3] : 3'b000;
+      fwd_unwrapped_store_off |= fwd_unwrapped_oh[i] ? sq_address_flat[i*XLEN+:3] : 3'b000;
     end
-
-    fwd_winner    = fwd_node[1];
-
-    fwd_can_fwd   = fwd_winner.valid && fwd_winner.can_forward;
-    fwd_match_idx = fwd_winner.idx;
+    fwd_can_fwd   = fwd_any_wrapped ? fwd_wrapped_can_fwd : fwd_unwrapped_can_fwd;
+    fwd_match_idx = fwd_any_wrapped ? fwd_wrapped_idx : fwd_unwrapped_idx;
   end
-  assign fwd_winner_store_off = fwd_winner.store_off;
+  assign fwd_winner_store_off = fwd_any_wrapped ? fwd_wrapped_store_off : fwd_unwrapped_store_off;
 `endif
 
   // Block 3: register forwarding results for the following LQ cycle.
