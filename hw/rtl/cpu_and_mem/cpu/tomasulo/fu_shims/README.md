@@ -12,7 +12,7 @@ depends on how many operations its unit can have in flight.
 |------|----|-------|-----------------------|-----------|
 | `int_alu_shim` (two copies) | INT_RS | ALU | 0 (combinational) | n/a |
 | `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; radix-4 divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 2 to 35, word DIV/REM 2 to 19 | Up to 4 multiplies, 1 divide |
-| `fp_shim` | FP_RS | FP engine with iterative arithmetic and dedicated fast paths for F and D compute instructions | 2 to 139, by operation and operands (see below) | 1 |
+| `fp_shim` | FP_RS | FP engine with iterative arithmetic and dedicated fast paths for F and D compute instructions | 2 to about 90, by operation and operands (see below) | 1 |
 
 The wrapper sets `int_muldiv_shim.DIRECT_MUL=1`. Each multiply result reaches
 the adapter in the cycle its arithmetic unit produces it. The registered CDB
@@ -113,7 +113,9 @@ instead; only the tests and formal proofs use it.
 `fp_shim` starts each FP_RS issue on one
 [`fp_engine`](../../ex_stage/fpu/fp_engine.sv), which runs every F and D
 compute instruction one at a time. Arithmetic and FP-to-integer conversions
-share an iterative adder. Moves, comparisons, min/max, classification, sign
+share an iterative adder. Multiplies and FMAs take their significand product
+from a pipelined DSP-tiled multiplier, and divides run a radix-4 recurrence
+(two quotient bits per cycle). Moves, comparisons, min/max, classification, sign
 injection and integer-to-FP conversion have dedicated paths. One tag register
 tracks the operation in the engine. `o_fu_busy` is high
 while a nonsquashed operation occupies the engine, its result cycle included,
@@ -133,9 +135,9 @@ operands:
 | Operation | Single | Double |
 |-----------|--------|--------|
 | FADD, FSUB | 12 to 34 | 12 to 34 |
-| FMUL | 33 to 34 | 62 to 63 |
-| FMADD, FMSUB, FNMADD, FNMSUB | 37 to 60 | 66 to 89 |
-| FDIV | 49 to 50 | 70 to 71 |
+| FMUL | 11 | 11 |
+| FMADD, FMSUB, FNMADD, FNMSUB | 14 to 37 | 14 to 37 |
+| FDIV | 27 to 28 | 41 to 42 |
 | FSQRT | 58 to 59 | 79 to 80 |
 | FP-to-integer conversions | up to 31 | up to 31 |
 | Integer-to-FP conversions | 2 or 4 | 2 or 4 |
@@ -146,8 +148,8 @@ operands:
 
 An exact cancellation (a zero sum from normal operands) finishes a few cycles
 sooner than these ranges. Subnormal operands and results take longer, because
-the engine normalizes them a few bits per cycle. The slowest case found, a double-precision FMA on
-subnormal operands, takes 139 cycles.
+the engine normalizes them a few bits per cycle. The slowest case, a double-precision FMA on
+subnormal operands, takes about 90 cycles.
 
 ## Flushes
 

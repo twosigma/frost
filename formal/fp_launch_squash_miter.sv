@@ -85,6 +85,8 @@ module fp_launch_squash_miter (
   logic [65:0] b_dec1, c_dec1;  // ca/cb/cc ea/eb/ec f2i_over f2i_edge int_zero
   logic [410:0] b_dp, c_dp;  // shared arithmetic and result registers
   logic [133:0] b_i2f, c_i2f;  // integer magnitude, leading zeros, normalized bits
+  logic [105:0] b_mul, c_mul;  // multiplier operands mul_a_q mul_b_q
+  logic [163:0] b_div, c_div;  // divide remainder, D and 3D
 
   // The age compare both shims use, from the inputs.
   function automatic logic is_younger(input logic [TagW-1:0] entry_tag,
@@ -119,7 +121,8 @@ module fp_launch_squash_miter (
     if (f_init) begin
       a_equal_init :
       assume (b_state == c_state && !c_squash && b_tag == c_tag &&
-              b_payload == c_payload && b_dec1 == c_dec1 && b_dp == c_dp && b_i2f == c_i2f);
+              b_payload == c_payload && b_dec1 == c_dec1 && b_dp == c_dp && b_i2f == c_i2f &&
+              b_mul == c_mul && b_div == c_div);
     end
   end
 
@@ -160,7 +163,7 @@ module fp_launch_squash_miter (
     // stays idle. Each result is checked on completion. Decode initializes
     // flags before arithmetic uses them.
     p_datapath_equal :
-    assert (b_dp[410:69] == c_dp[410:69] &&
+    assert (b_dp[410:69] == c_dp[410:69] && b_div == c_div &&
             ((b_state == StIdle || b_state == StDec1 || b_state == StDec2) ||
              b_dp[4:0] == c_dp[4:0]));
     if (b_state == StI2fNorm || b_state == StI2fRound) begin
@@ -174,6 +177,9 @@ module fp_launch_squash_miter (
     end
     if (b_state != StIdle && b_state != StDec1) begin
       p_dec1_equal : assert (b_dec1 == c_dec1);
+      // The multiplier operands register in ST_DEC1 (a squashed candidate
+      // captures them there too, so they differ only while idle or in DEC1).
+      p_mul_operands_equal : assert (b_mul == c_mul);
     end
 `ifdef FP_LS_ON
     if (c_squash) p_squash_follows_flushed_issue : assert (f_prev_flushed_issue);
