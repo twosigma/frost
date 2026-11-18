@@ -20,7 +20,7 @@ coverage_toggle.json selects scalar control ports, scalar control registers,
 and enum state registers. Verilator applies its total-bit width limit before
 this selection. The generated control file disables other declarations by
 source line. Lines shared with selected declarations or executable coverage
-are included, so line coverage and explicit cover statements are unaffected.
+are included to preserve line and branch coverage and explicit cover statements.
 """
 
 import argparse
