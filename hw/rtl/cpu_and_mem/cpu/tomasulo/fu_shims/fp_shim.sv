@@ -166,8 +166,7 @@ module fp_shim #(
   end
 
 `ifdef FORMAL
-  // The standalone model uses LAUNCH_SQUASH=0. Arbitrary engine latency
-  // keeps completions reachable at small bounded depths; kill returns it idle.
+  // The engine can finish on any busy cycle. A kill returns it to idle.
   (* anyseq *) logic f_eng_finish;
   (* anyseq *) logic [riscv_pkg::FLEN-1:0] f_eng_result;
   (* anyseq *) logic [4:0] f_eng_flags;
@@ -290,14 +289,18 @@ module fp_shim #(
 
   // FP_RS presents an engine operation only while the engine is free.
   always_comb begin
-    if (i_rst_n) assume (!eng_issue || !o_fu_busy);
+    if (i_rst_n) begin
+      assume (!eng_issue || !o_fu_busy);
+      // The station leaves a bubble after an issue covered by a flush.
+      if (squash_q) a_engine_squash_bubble : assume (!eng_issue);
+    end
   end
 
   // Busy exactly while the engine holds an operation, result cycle included,
   // and a result only while busy.
   always_comb begin
     if (i_rst_n) begin
-      p_busy_is_engine : assert (o_fu_busy == f_eng_busy);
+      p_busy_is_engine : assert (o_fu_busy == (f_eng_busy && !squash_q));
       p_complete_only_when_busy : assert (!o_fu_complete.valid || o_fu_busy);
     end
   end
@@ -358,7 +361,8 @@ module fp_shim #(
   always_comb begin
     if (i_rst_n && f_eng_busy) begin
       p_busy_holds_started_tag : assert (tag_q == f_started_tag);
-      if (f_watch_dead_q) p_dead_not_held : assert (tag_q != f_watch_tag);
+      if (squash_q) p_squash_before_result : assert (!f_eng_done);
+      if (f_watch_dead_q && !squash_q) p_dead_not_held : assert (tag_q != f_watch_tag);
     end
   end
 
@@ -366,6 +370,9 @@ module fp_shim #(
     if (i_rst_n) begin
       cover_complete : cover (o_fu_complete.valid);
       cover_kill : cover (kill);
+      if (LAUNCH_SQUASH) begin
+        c_delayed_launch_kill : cover (squash_q && f_eng_busy && kill && !o_fu_busy);
+      end
       cover_launch_flushed : cover (i_rs_issue.valid && launch_flushed);
       cover_watch_dead_then_reused :
       cover (f_watch_dead_q && start && (i_rs_issue.rob_tag == f_watch_tag));

@@ -19,7 +19,7 @@ smtbmc boolector
 read -formal -sv riscv_pkg.sv
 read -formal -sv sdp_dist_ram.sv
 read -formal -sv fp_shim.sv
-chparam -set PIPELINE 1 fp_shim
+chparam -set PIPELINE 1 -set LAUNCH_SQUASH 1 fp_shim
 hierarchy -top fp_shim
 script free_undefined.ys
 prep -top fp_shim
