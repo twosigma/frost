@@ -14,9 +14,12 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D DEBUG_GO_PIPELINE_PROOF -sv debug_dirty_next.sv debug_module.sv
+hierarchy -top debug_module
+script free_undefined.ys
 prep -top debug_module
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/debug/debug_dirty_next.sv
 ../hw/rtl/cpu_and_mem/debug/debug_module.sv
+free_undefined.ys

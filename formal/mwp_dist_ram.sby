@@ -26,6 +26,8 @@ bmc: hierarchy -top mwp_dist_ram_formal
 cover: hierarchy -top mwp_dist_ram_formal
 bmc_addr1: hierarchy -top mwp_dist_ram_formal -chparam ADDR_WIDTH 1
 bmc_unstaged: hierarchy -top mwp_dist_ram_formal -chparam NUM_STAGED_LVT_PORTS 0
+hierarchy -top mwp_dist_ram_formal
+script free_undefined.ys
 prep -top mwp_dist_ram_formal
 memory_map
 opt -fast
@@ -35,3 +37,4 @@ opt -fast
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 mwp_dist_ram_formal.sv
+free_undefined.ys

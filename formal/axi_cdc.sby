@@ -23,6 +23,8 @@ prove_b: read_slang --top axi_cdc_formal --single-unit -GCHECK_MASK=4 -GCOVER_MO
 prove_ar: read_slang --top axi_cdc_formal --single-unit -GCHECK_MASK=8 -GCOVER_MODE=0 cdc_sync.sv cdc_reset_sync.sv cdc_reset_pair.sv sdp_block_ram_dc.sv async_fifo.sv axi_cdc.sv axi_cdc_formal.sv
 prove_r: read_slang --top axi_cdc_formal --single-unit -GCHECK_MASK=16 -GCOVER_MODE=0 cdc_sync.sv cdc_reset_sync.sv cdc_reset_pair.sv sdp_block_ram_dc.sv async_fifo.sv axi_cdc.sv axi_cdc_formal.sv
 cover: read_slang --top axi_cdc_formal --single-unit -GCHECK_MASK=31 -GCOVER_MODE=1 cdc_sync.sv cdc_reset_sync.sv cdc_reset_pair.sv sdp_block_ram_dc.sv async_fifo.sv axi_cdc.sv axi_cdc_formal.sv
+hierarchy -top axi_cdc_formal
+script free_undefined.ys
 prep -top axi_cdc_formal -flatten
 dffunmap w:gclk %co
 formalff -clk2ff w:gclk %co
@@ -40,3 +42,4 @@ opt_clean -purge
 ../hw/rtl/lib/fifo/async_fifo.sv
 ../hw/rtl/lib/axi/axi_cdc.sv
 axi_cdc_formal.sv
+free_undefined.ys

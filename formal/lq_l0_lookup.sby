@@ -34,6 +34,8 @@ d256: chparam -set DEPTH 256 lq_l0_lookup_equiv
 d512: chparam -set DEPTH 512 lq_l0_lookup_equiv
 hierarchy -top lq_l0_lookup_equiv
 setattr -mod -unset keep_hierarchy
+hierarchy -top lq_l0_lookup_equiv
+script free_undefined.ys
 prep -top lq_l0_lookup_equiv -flatten
 select -assert-count 1 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume t:$*ff* t:$*latch* t:$sr t:$mem* a:init
@@ -44,3 +46,4 @@ check -assert
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 lq_l0_lookup_equiv.sv
+free_undefined.ys

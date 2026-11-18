@@ -20,6 +20,8 @@ read -sv coherent_lq_issue_selector.sv
 read -sv coherent_lq_candidate_select.sv
 read -sv coherent_lq_address_store.sv
 read -formal -D F_LQ_PREMATCH_ONLY -D F_LQ_TAG_ORDER_PROOF -sv load_queue.sv
+hierarchy -top load_queue
+script free_undefined.ys
 prep -top load_queue
 select -assert-none t:$assume
 
@@ -36,3 +38,4 @@ select -assert-none t:$assume
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+free_undefined.ys

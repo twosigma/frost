@@ -51,6 +51,8 @@ control: read -formal -sv int_muldiv_shim.sv
 alignment: read -formal -D F_MULDIV_ALIGNMENT -sv int_muldiv_shim.sv
 fallback: chparam -set SHORT_WORD_OPS 0 int_muldiv_shim
 direct: chparam -set DIRECT_MUL 1 int_muldiv_shim
+hierarchy -top int_muldiv_shim
+script free_undefined.ys
 prep -top int_muldiv_shim -flatten
 
 [files]
@@ -61,3 +63,4 @@ prep -top int_muldiv_shim -flatten
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv
+free_undefined.ys
