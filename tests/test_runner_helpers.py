@@ -26,6 +26,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 import test_arch_compliance
 import test_run_cocotb
@@ -943,3 +944,23 @@ def test_applications_that_name_the_nic_keep_its_clocks() -> None:
             assert not re.search(
                 r"\bnic\.h\b|\bNIC_(BASE|ADDR)\b|\b0x4003_?0[0-9A-Fa-f]{3}", text
             ), f"{name} runs without the NIC's MAC clocks but {source} uses the NIC"
+
+
+def test_riscv_benchmark_job_limits_exceed_simulation_limits() -> None:
+    """Each benchmark job outlasts the simulations it runs by the setup time."""
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["test-riscv-benchmarks"]
+    assert job["timeout-minutes"] == "${{ matrix.timeout_minutes }}"
+    for entry in job["strategy"]["matrix"]["include"]:
+        names = entry["benchmarks"].split()
+        longest = max(
+            test_riscv_tests.BENCHMARK_TIMEOUT_SECONDS.get(
+                name, test_riscv_tests.DEFAULT_BENCHMARK_TIMEOUT_SECONDS
+            )
+            for name in names
+        )
+        assert entry["timeout_minutes"] <= 300
+        assert entry["timeout_minutes"] * 60 >= longest + 300, entry
+        if len(names) > 1:
+            assert "mm" not in names

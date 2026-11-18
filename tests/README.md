@@ -843,6 +843,12 @@ Runs the self-checking riscv-tests ISA suites and benchmarks, which print
 benchmarks, `--all` runs every ISA suite, and `--all-benchmarks` every
 benchmark.
 
+Each simulation has a wall-clock limit that includes the model build: two
+hours for an ISA test, one hour for a benchmark and 220 minutes for `mm`. The
+CI benchmark jobs allow 70 minutes (the small benchmarks) and 240 minutes
+(`mm`), 1.8 times the slowest measured job rounded up, so a job's limit stays
+above its simulation's by the setup time.
+
 The physical test environment copies initialized data when its load and run
 addresses differ. DDR images already place data at its run address and skip
 that copy; BRAM images retain the ROM-to-RAM copy.

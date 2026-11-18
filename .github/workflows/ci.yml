@@ -944,20 +944,23 @@ jobs:
           overwrite: true
 
   # riscv-tests benchmarks by memory tier, on one Verilator build per job; mm,
-  # the longest, runs on its own.
+  # the longest, runs on its own. The job limits are 1.8 times the slowest
+  # measured job, rounded up, and stay above the per-simulation limits in
+  # tests/test_riscv_tests.py by the setup time.
   test-riscv-benchmarks:
     name: riscv-tests Benchmarks (${{ matrix.benchmarks }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-26.04
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {benchmarks: median multiply qsort rsort towers vvadd dhrystone spmv, mem_config: bram}
-          - {benchmarks: median multiply qsort rsort towers vvadd dhrystone spmv, mem_config: ddr}
-          - {benchmarks: mm, mem_config: bram}
-          - {benchmarks: mm, mem_config: ddr}
+          - {benchmarks: median multiply qsort rsort towers vvadd dhrystone spmv, mem_config: bram, timeout_minutes: 70}
+          - {benchmarks: median multiply qsort rsort towers vvadd dhrystone spmv, mem_config: ddr, timeout_minutes: 70}
+          - {benchmarks: mm, mem_config: bram, timeout_minutes: 240}
+          - {benchmarks: mm, mem_config: ddr, timeout_minutes: 240}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
