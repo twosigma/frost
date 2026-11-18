@@ -51,7 +51,8 @@ frees the entry, then reads the zeros from memory. A younger store
 covering the load still forwards over the older block. A Zicbom entry
 (`cbo.clean`, `cbo.flush`, `cbo.inval`) takes the same block conflict, so a
 younger load of its block waits until the entry frees, even where a store
-between them covers the load.
+between them covers the load. The comparisons with the load and with older
+vector ranges use the physical DDR block through cacheable, NC and IO mappings.
 
 On a full-flush cycle the scan can treat a squashed store's commit as visible.
 This is harmless because the LQ discards any forwarding result captured on a

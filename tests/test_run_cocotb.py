@@ -1576,7 +1576,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "cbo.clean, cbo.flush and cbo.inval through cacheable, NC and IO views of "
             "a DDR line whose cacheable copy is dirty: no trap; clean and flush write the "
             "line to DDR inside the CBO's window and keep the data in every view; inval "
-            "writes nothing and exposes the DDR baseline"
+            "writes nothing and exposes the DDR baseline. Adjacent CMO/load pairs exercise "
+            "all nine PMA, NC and IO mapping combinations"
         ),
         extra_env=(
             ("COCOTB_MAX_CYCLES", "3000000"),
@@ -3023,8 +3024,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "store_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue",
         hdl_toplevel_module="store_queue",
-        description="Store-queue allocation, forwarding, committed writes, and "
-        "recovery",
+        description="Store-queue allocation, forwarding, committed writes, recovery, "
+        "and Zicbom load and vector ordering across Svpbmt aliases",
     ),
     "store_queue_axi": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue_axi",

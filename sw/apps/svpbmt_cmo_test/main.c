@@ -34,6 +34,9 @@
  *     reads back 01), behaves as flush, and
  *   - a store through the IO view, then a CBO, reaches the next cacheable
  *     load (inval: the baseline).
+ * A second set of blocks pairs each CBO with an immediately following load
+ * across all nine combinations of the CBO and load mappings. Older integer
+ * divisions delay retirement while the cache holds data newer than DDR.
  * A last pass dirties each line again and evicts it with conflicting stores;
  * those windows log the eviction's write-back.
  */
@@ -178,6 +181,70 @@ check(int cond, const char *what, int op, int view, unsigned long got, unsigned 
     return cond;
 }
 
+/* Keep the CMO in the SQ long enough for a younger independent load to issue. */
+#define ADJACENT_CMO(n)                                                                            \
+    __asm__ volatile(S_MODE_PROLOGUE "divu t4, %[dividend], %[divisor]\n"                          \
+                                     "divu t4, t4, %[divisor]\n"                                   \
+                                     "divu t4, t4, %[divisor]\n"                                   \
+                                     "divu t4, t4, %[divisor]\n"                                   \
+                                     ".insn i 0x0f, 2, zero, %[target], " #n "\n"                  \
+                                     "ld %[seen], 0(%[load_va])\n" S_MODE_EPILOGUE                 \
+                     : [seen] "+&r"(seen)                                                          \
+                     : [bits] "r"(bits),                                                           \
+                       [target] "r"(target),                                                       \
+                       [load_va] "r"(load_va),                                                     \
+                       [dividend] "r"(~index),                                                     \
+                       [divisor] "r"(index + 3)                                                    \
+                     : "t0", "t1", "t2", "t3", "t4", "memory")
+
+static int check_adjacent_load(int op, int cmo_view, int load_view, int inval_flushes)
+{
+    unsigned long index = (unsigned long) ((op * 3 + cmo_view) * 3 + load_view);
+    unsigned long offset = (16 + index) * 64;
+    volatile unsigned long *pa = (volatile unsigned long *) (FRAME + offset);
+    unsigned long target = VA_VIEW(cmo_view) + offset + 23;
+    unsigned long load_va = VA_VIEW(load_view) + offset;
+    unsigned long cached_va = VA_VIEW(VIEW_PMA) + offset;
+    unsigned long old = ~0x01230000ul - index;
+    unsigned long dirty = old ^ 1;
+    unsigned long want = op == 0 && !inval_flushes ? old : dirty;
+    unsigned long seen = 0;
+    unsigned long bits = MSTATUS_MPRV;
+
+    *pa = old;
+    fence_all();
+    (void) access_s(-1, load_va);
+    (void) access_s(1, target);
+    *pa = dirty;
+    fence_all();
+    unsigned long warm = access_s(-1, cached_va);
+    g_cause = NO_TRAP;
+    switch (op) {
+        case 0:
+            ADJACENT_CMO(0);
+            break;
+        case 1:
+            ADJACENT_CMO(1);
+            break;
+        default:
+            ADJACENT_CMO(2);
+            break;
+    }
+    fence_all();
+    unsigned long later = *pa;
+    int ok = warm == dirty && seen == want && later == want && g_cause == NO_TRAP;
+    uart_printf("%s adjacent cbo.%s via %s, load via %s",
+                ok ? "[PASS]" : "[FAIL]",
+                op_name[op],
+                view_name[cmo_view],
+                view_name[load_view]);
+    if (!ok)
+        uart_printf(
+            " warm=%lx seen=%lx later=%lx want=%lx cause=%lx", warm, seen, later, want, g_cause);
+    uart_puts("\r\n");
+    return ok;
+}
+
 static volatile unsigned long *const root = (volatile unsigned long *) PT_ROOT;
 static volatile unsigned long *const l1 = (volatile unsigned long *) PT_L1;
 static volatile unsigned long *const l0 = (volatile unsigned long *) PT_L0;
@@ -266,6 +333,11 @@ int main(void)
             line++;
         }
     }
+    for (int op = 0; op < 3; op++)
+        for (int cmo_view = VIEW_PMA; cmo_view <= VIEW_IO; cmo_view++)
+            for (int load_view = VIEW_PMA; load_view <= VIEW_IO; load_view++)
+                ok &= check_adjacent_load(op, cmo_view, load_view, inval_flushes);
+
     /* Eviction pass: dirty each test line again and evict it with a conflicting fill set
      * (16 dirty lines 512 KiB apart, more than the L2's ways and the L1D's); its window
      * logs the eviction's write-back. */

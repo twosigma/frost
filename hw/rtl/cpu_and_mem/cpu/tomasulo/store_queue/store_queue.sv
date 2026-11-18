@@ -710,7 +710,12 @@ module store_queue #(
   for (genvar g_sq_flat = 0; g_sq_flat < DEPTH; g_sq_flat++) begin : gen_sq_flat
     assign sq_rob_tag_flat[g_sq_flat*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
         sq_rob_tag[g_sq_flat];
-    assign sq_address_flat[g_sq_flat*XLEN+:XLEN] = sq_address[g_sq_flat];
+    // The forwarding CAM and vector range check order a CMO by the real
+    // physical block. Keep the bus address in the entry for the drain.
+    wire [XLEN-1:0] raw_addr = sq_address[g_sq_flat];
+    assign sq_address_flat[g_sq_flat*XLEN+:XLEN] =
+        sq_is_cmo[g_sq_flat] && riscv_pkg::pma_pbmt_alias_ok(raw_addr) ?
+        riscv_pkg::pbmt_alias_real(raw_addr) : raw_addr;
     assign sq_size_flat[g_sq_flat*MemSizeWidth+:MemSizeWidth] = sq_size[g_sq_flat];
   end
 
@@ -2493,6 +2498,21 @@ module store_queue #(
       if (cmo_free_q) begin
         p_cmo_free_is_sent_cmo :
         assert (sq_valid[cmo_free_idx_q] && sq_is_cmo[cmo_free_idx_q] && sq_sent[cmo_free_idx_q]);
+      end
+    end
+  end
+
+  // Check the physical address handed to both ordering consumers directly
+  // from the defined translated window and the original SQ operand.
+  for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_cmo_order_address_check
+    wire [XLEN-1:0] raw = sq_address[slot];
+    wire alias_window = riscv_pkg::PbmtAliasEnabled &&
+        raw >= XLEN'(riscv_pkg::DdrBase + riscv_pkg::PbmtAliasOffset) &&
+        raw < XLEN'(riscv_pkg::PbmtAliasCoverLimit + riscv_pkg::PbmtAliasOffset);
+    always_comb begin
+      if (i_rst_n && sq_valid[slot] && sq_addr_valid[slot]) begin
+        p_order_address : assert (sq_address_flat[slot*XLEN+:XLEN] ==
+            (sq_is_cmo[slot] && alias_window ? raw - XLEN'(riscv_pkg::PbmtAliasOffset) : raw));
       end
     end
   end
