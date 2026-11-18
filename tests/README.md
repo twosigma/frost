@@ -955,99 +955,134 @@ a trimming load all see the trimmed `vl`.
 
 ### `test_riscv_vector_tests.py`
 
-Runs [riscv-vector-tests](https://github.com/chipsalliance/riscv-vector-tests),
-a generator of self-checking tests for the RISC-V vector extension: about
-3,000 tests per vector length, covering integer, fixed-point, floating-point
-(including half precision and bfloat16), mask, permute, reduction, slide and
-gather instructions, loads and stores, and Zvbb, Zvbc and the AES, SHA-2, GCM
-and SM3/SM4 vector crypto instructions. It has no tests for fault-only-first,
-`vstart`, tail and mask agnostic contents, or register overlap; the bring-up
-programs cover some of that. The image carries the generator, its merger and
-`pspike` in `/opt/riscv-vector-tests`. For each test, Spike records the expected
-results, the merger writes them into the test, and the finished test compares
-its own results.
+The chipsalliance riscv-vector-tests generator writes assembly at VLEN 128,
+256 or 512. The suite's patched Spike records expected values, and its merger
+writes those checks into the program. By default the finished program runs on
+Spike. The frost image supplies the pinned tools in `/opt/riscv-vector-tests`.
+[Upstream suite](https://github.com/chipsalliance/riscv-vector-tests)
 
-The expected results are what Spike computes, compared as whole destination
-registers, so a core that makes a different legal choice where the
-specification leaves one open can fail a test: the tail bits of a mask result,
-and the `vl` that `vsetvli` grants for an AVL between VLMAX and twice VLMAX
-(Spike grants VLMAX).
+`--rtl` selects the core's vector ISA. Each vector length has 3,017 generated
+files across 665 instruction forms. The classes are `float` (1,243),
+`integer` (1,043), `load-store` (487), `mask-permute-reduce` (163), `bitmanip`
+(63) and `crypto` (18). The Spike selection also includes the upstream bfloat16
+and SM3/SM4 configurations. The narrowing and widening floating-point
+conversions each include the raw operands from both V and Zvfhmin.
 
-```bash
-./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --list
-./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --pattern '^vadd\.vv$'
-./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --vlen 256 --shard 3/20
-```
+The generator now starts a separate process for each instruction form. Each
+form starts its own TestFloat operand sequence, so selecting a form alone
+produces the same data as selecting it in a full run. The earlier generator
+shared TestFloat state across forms, and its operand data varied from run
+to run. One VLEN 128 comparison found changed data in 1,258 of the 3,017 RTL
+assembly files across 97 FP forms. Another found 1,239 across 96 forms. All
+non-FP files matched byte for byte in both comparisons.
 
-`--vlen` is 128 (the default), 256 or 512. `--pattern` is a regular expression
-on instruction names, and `--shard K/N` runs every N-th test of the sorted
-list. By default each test runs on Spike. A full run at VLEN 128 is about 3,050 tests
-and takes about 10 minutes at four jobs (`--jobs`). `--workdir DIR` keeps the
-generated sources and binaries.
-
-`--rtl` builds each test for FROST (the DDR configuration, since the images
-are about 0.75 MB, through `sw/apps/riscv_tests` and its `riscv_test.h`) and
-runs it in simulation. It needs a core with the vector unit built at the same
-vector length:
+Each test compares whole registers against Spike. A legal choice such as the
+tail bits of a mask result or the granted `vl` for an AVL between VLMAX and
+twice VLMAX can affect these comparisons. The generated memory tests include
+fault-only-first instructions. Directed tests also exercise faults, `vstart`,
+and register overlap.
 
 ```bash
-./scripts/frost.py run make -C tests clean
-FROST_VERILATOR_EXTRA_ARGS='-GVECTOR=1 -GVLEN=128' \
-    ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --rtl --vlen 128 --pattern '^vadd\.vv$'
+# Run one class in full on the native RTL simulator.
+./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
+    --rtl --simulator native --vlen 128 --class bitmanip --rtl-jobs 2
+
+# Run one split of each instruction form using the default cocotb backend.
+./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
+    --rtl --vlen 256 --one-per-form --results-jsonl results-256.jsonl
+
+# Run shard 3 of 20 at VLEN 512.
+./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
+    --rtl --simulator native --vlen 512 --shard 3/20 --results-jsonl shard-3.jsonl
 ```
 
-### Selecting tests for a simulation run
+`--pattern` matches the dotted instruction name, for example
+`--pattern '^vadd\.vv$'`. `--list` prints the selected names. Selection applies
+the class and pattern first. `--one-per-form` picks a numbered split using
+the form's checksum and the vector length. The split order follows the
+generator's register-group sweep. `--shard K/N` assigns the most expensive
+remaining split to the shard with the fewest estimated cycles. The estimate
+counts setup lines and the register words checked by Spike. To use measured
+cycles, give each shard the same `--cycle-profile previous.jsonl`. Passing
+records at the requested VLEN supply exact weights and calibrate estimates
+for the other splits.
 
-`--rtl` takes the same selectors as the Spike run: `--vlen` (128, 256 or 512,
-which must match the core's `-GVLEN`), `--pattern` (instruction names), `--class`
-and `--shard K/N`. The classes, with their test counts at VLEN 128, are
-`load-store` (487), `crypto` (24), `bitmanip` (63: Zvbb and Zvbc), `float`
-(1270), `mask-permute-reduce` (163) and `integer` (1043, everything else).
-`--list` prints what a selection contains without building or running anything.
-Simulation runs share the build directory of `tests/`, so run one at a time (or
-one per checkout) and clean `tests/` before each invocation. Use
-`V='-GVECTOR=1 -GVLEN=128'` below, and the same value in `--vlen`:
+Each result records the SHA-256 of the exact profile bytes (empty input for
+estimates alone) and the SHA-256 of the complete selection before sharding.
+The latter hashes the compact JSON array of VLEN and sorted test names.
+Merge the files from one VLEN and simulator with the following command.
+It verifies both identities, rejects repeated names and checks that the union
+contains the entire selection. A complete merge retains failed tests and
+exits nonzero if any failed.
 
 ```bash
-# one instruction (all of its generated tests)
-FROST_VERILATOR_EXTRA_ARGS="$V" ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
-    --rtl --vlen 128 --pattern '^vadd\.vv$'
-
-# one class, in 20 shards: run K = 1 to 20
-FROST_VERILATOR_EXTRA_ARGS="$V" ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
-    --rtl --vlen 128 --class load-store --shard K/20
-
-# a full run at one vector length, in 40 shards: run K = 1 to 40
-FROST_VERILATOR_EXTRA_ARGS="$V" ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
-    --rtl --vlen 128 --shard K/40
+./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
+    --merge-results part-*.jsonl --results-jsonl complete.jsonl
 ```
 
-Replace `K` with the shard number. The same commands without `--rtl` run on
-Spike. Each shard prints one line per test and exits nonzero if any test fails,
-so a job per shard is enough for CI.
+Both RTL backends build a core at the selected VLEN, use cached DDR and arm
+RTL assertions after reset. The simulated DDR defaults to 8 MiB with an
+80-cycle access latency. `--ddr-bytes` (or `DDR_MODEL_BYTES`) sizes both the
+model and the linker region, including zero-initialized data and heap.
+`--jobs` controls reference generation and parallel image builds. Each
+`--rtl-jobs` worker runs one program in its own process. `--workdir DIR`
+keeps the images, per-test logs and simulator build. Use a separate directory
+for each concurrent invocation.
 
-The pytest entry points run a sample of seven instruction forms on Spike at
-VLEN 128 and 256 in the Fast Python job, which guards the generator, the
-patcher and this wiring. The tests skip with a message when the image lacks
-`/opt/riscv-vector-tests`. The simulation entry point is marked `slow` and
-`cocotb`, and runs only with `FROST_RVV_TESTS_RTL=1` (and
-`FROST_RVV_TESTS_VLEN` for a length other than 128). No CI job runs it; to
-add one, run `--rtl` with `--vlen` and `--shard` in a job built with the
-vector parameters above.
+A prep job can build the portable native executable once per VLEN. Transfer
+both the executable and its adjacent `.json` file to each shard, preserve its
+execute permission, and use the same RTL revision and model settings.
 
-The simulation evidence for the vector floating-point instructions is two
-selections from the suite, not the full suite. One is a complete generated
-program for each of the 101 FP instruction forms at VLEN 128, 256 and 512,
-generated at a tenth of the suite's program size (`-split=1000`): the first
-program with active elements at 128, the middle one at 256 and the last one at
-512. The other is 50 of the suite's own FP programs, chosen by instruction
-group: 30 at VLEN 128 (at least one of add, subtract and multiply, fused
-multiply-add, divide and square root, the estimates, min/max and sign
-injection, compares, classify, merge and moves, same-width, widening and
-narrowing conversions including the FP16 ones, ordered and unordered
-reductions, and widening arithmetic) and 10 each at 256 and 512 from different
-groups. The suite's 19 bfloat16 programs (Zvfbfmin, Zvfbfwma) are not run:
-FROST does not implement those extensions.
+```bash
+./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
+    --rtl --simulator native --vlen 256 --build-sim models/v256/frost-native
+./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
+    --rtl --simulator native --vlen 256 --prebuilt-sim models/v256/frost-native \
+    --rtl-jobs 2 --one-per-form --shard 1/8 --results-jsonl part-1.jsonl
+```
+
+`--sim-threads` selects threads per native model at build time (default 1).
+The prebuilt check verifies the executable's SHA-256, model settings, Verilator
+version and working source tree against the build manifest. The tree SHA-256
+covers relative paths and file contents under `hw`, including uncommitted
+edits. It skips the native Makefile's generated `hw/sim/native/sim_build`
+directory. All RTL file lists, modules and included headers for this model
+are under `hw/rtl`. The manifest also lists individual hashes for the native
+Makefile, `main.cpp`, `frost_native.vlt` and the DPI glue in
+`hw/sim/sim_assertions.cpp`. These supply the build recipe, C++ harness,
+signal visibility and assertion control. Build and consume artifacts in the
+pinned frost image.
+`FROST_DDR_MODEL_SEED` selects the system bench's repeatable latency, jitter
+and reordering settings in both backends. Give every shard the build job's
+DDR settings. Native simulations use synchronous clocks and a cold reset.
+`--results-jsonl` writes one line per completed test. Each line identifies
+the name, class, VLEN, simulator, SHA-256 of the three memory files,
+verdict, program cycles, process wall seconds and observed assertion state.
+The hash covers `sw.mem`, `sw64.mem` and `sw_ddr.mem` in that order, with
+each file preceded by its byte length as an eight-byte big-endian integer.
+The cycle count starts at reset release and includes the final UART marker.
+Fields unavailable on a build or simulator failure are null. A failed or
+empty run exits nonzero.
+
+Both simulators stop on the first UART verdict marker. A program that prints
+`<<PASS>>` before a later failing check therefore passes in both. Generated
+programs must print the pass marker after their last check.
+
+The fast Python tests run a Spike sample at VLEN 128 and 256. The complete
+inventory test is marked `slow`. The cocotb sample also requires
+`FROST_RVV_TESTS_RTL=1`. `FROST_RVV_TESTS_VLEN` selects its vector length.
+
+
+The original floating-point execution runs used one generator process per
+instruction-group pattern and VLEN. Those results describe that generation's
+operand data. At `-split=1000`, cocotb ran one complete program for each of
+101 FP forms at each width. Among splits with active elements, it ran the
+first at 128 bits, the middle at 256 and the last at 512. At the suite's
+ordinary `-split=10000`, cocotb ran 50 programs chosen by instruction group,
+30 at VLEN 128 and 10 each at 256 and 512. The groups covered arithmetic,
+fused operations, divide and square root, estimates, min/max, sign injection,
+compares, classify, merges and moves, conversions including FP16, reductions
+and widening arithmetic. Both selections excluded bfloat16.
 
 ### `test_vector_reference.py`
 
