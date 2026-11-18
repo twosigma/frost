@@ -861,12 +861,31 @@ cycles, which clears arbitrary memory history.
    `UNDEFINED_OPENING_PENDING` and `UNDEFINED_OPENING_TWINS` do not list,
    including that the script runs this repository's `free_undefined.ys`
    itself: listed in `[files]` as that one name, never a changed copy,
-   another path, a `[file]` section or the opening's commands written out.
-   No script may put a task tag on a section header or on a line of
-   `[files]` or of a `[file]` section, or open a tag block around one:
-   SymbiYosys applies tags before it reads the sections, so a tag there could
-   give a task other files, while the checks read `[script]` task by task
-   and those sections once for every task.
+   another path, a `[file]` section or the opening's commands written out,
+   and that no command of the task writes a file that SymbiYosys copies into
+   `src/` or that another command of the task names. Before the opening a
+   command runs only in a form that `DONT_CARE_SAFE` lists, with no option
+   the form does not name. Every task of every script may write a file
+   only with `write_json <file>` or `write_rtlil <file>`, the forms the
+   scripts need (`SCRIPT_FILE_WRITES`); `YOSYS_FILE_WRITES` lists the forms of
+   the image's Yosys that write a file, from its help. `tee`, `trace` and
+   `debug` with a command count as commands of their own, so that the checks
+   see their options too.
+   The fast tests resolve every task with SymbiYosys and check its script and
+   source files. They compare the checkout-only reader used by the reuse and
+   frontend tools with each resolved configuration, and check that the reader
+   refuses each text of a corpus that SymbiYosys refuses. Section headers
+   occupy a full line starting in column one. Task names and group tags use
+   ASCII letters, digits and underscores. Once `[tasks]` names a task, no
+   other line, comments included, may begin with a word that ends in a colon
+   and is not a tag, and a `[tasks]` section must name a task. A tag can
+   select a command or a block inside `[options]`, `[engines]` or
+   `[script]`; section headers, `[tasks]` lines, `[files]` entries and
+   `[file]` bodies take none.
+   Each copied file has one source path and a unique destination basename.
+   Designs saved, transferred or used as mapping templates must have their
+   own opening. An explicit `techmap -map` must name an opened, saved design
+   with `%name`.
    The [roadmap](../ROADMAP.md#verification) says what is left.
 3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
    `tasks` when the `.sby` defines it. Register any new task names in

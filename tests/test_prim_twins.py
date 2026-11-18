@@ -33,6 +33,8 @@ import re
 
 import pytest
 
+import sby_config
+
 ROOT = Path(__file__).resolve().parents[1]
 RTL = ROOT / "hw/rtl"
 FORMAL = ROOT / "formal"
@@ -336,15 +338,34 @@ def test_coverage_entries_name_real_blocks() -> None:
     assert not problems, "\n".join(problems)
 
 
+def defines_macro(args: list[str]) -> bool:
+    """Report whether a read or define command defines the primitive macro."""
+    if args[0] not in ("read", "read_verilog", "read_slang", "verilog_defines"):
+        return False
+    names = [
+        word[2:] if word.startswith("-D") and word != "-D" else following
+        for word, following in zip(args[1:], [*args[2:], ""])
+        if word.startswith("-D")
+    ]
+    if args[0] == "read" and "-define" in args:
+        names += args[args.index("-define") + 1 :]
+    return any(name.split("=", 1)[0] == MACRO for name in names)
+
+
 @pytest.mark.parametrize("sby", sorted(COVERAGE))
 def test_covering_file_defines_the_macro(sby: str) -> None:
     """The covering formal file compares the primitive form and is registered."""
     path = FORMAL / sby
     assert path.is_file(), sby
-    text = path.read_text()
-    assert MACRO in text, f"{sby} never defines {MACRO}"
-    assert "xilinx/cells_sim.v" in text, f"{sby} does not read the Xilinx cell models"
-    listed = text.split("[files]", 1)[1]
+    configs = sby_config.resolved(path)
+    # The commands each task runs, as Yosys parses them: a comment or a line of
+    # another task does not count.
+    assert any(
+        any(defines_macro(args) for args in commands)
+        and ["read_verilog", "-formal", "+/xilinx/cells_sim.v"] in commands
+        for commands in (cfg.commands(path.parent) for cfg in configs.values())
+    ), f"{sby} has no task that reads the models and defines {MACRO}"
+    listed = {dest for cfg in configs.values() for dest in cfg.files}
     for file in COVERAGE[sby]:
         assert Path(file).name in listed, f"{sby} does not list {file}"
     assert f'"{sby}"' in RUN_FORMAL.read_text(), f"{sby} is not registered"
@@ -419,3 +440,22 @@ def test_block_detection(tmp_path: Path, source: str, expected: list[str]) -> No
         for name in blocks_of(path)
     ]
     assert names == expected
+
+
+def test_commented_macro_does_not_count(tmp_path: Path) -> None:
+    """A commented-out primitive read leaves a script without the primitive form."""
+    path = tmp_path / "commented.sby"
+    path.write_text(
+        "[tasks]\nbmc_xilinx\n[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+        "# read_verilog -formal +/xilinx/cells_sim.v\n"
+        "# read -formal -D FROST_XILINX_PRIMS -sv top.sv\n"
+        "read -formal -sv top.sv\nprep -top top\n[files]\ntop.sv\n"
+    )
+    (tmp_path / "top.sv").write_text("module top;\nendmodule\n")
+    (cfg,) = sby_config.resolved(path).values()
+    commands = cfg.commands(path.parent)
+    assert not any(defines_macro(args) for args in commands)
+    assert ["read_verilog", "-formal", "+/xilinx/cells_sim.v"] not in commands
+    assert defines_macro(["read", "-formal", "-D", MACRO, "-sv", "top.sv"])
+    assert defines_macro(["read", "-define", f"{MACRO}=1"])
+    assert defines_macro(["verilog_defines", f"-D{MACRO}"])

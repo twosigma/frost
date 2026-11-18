@@ -55,6 +55,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import sby_config
+
 # Bump SCHEMA when the meaning of a key or a marker changes. Bump SALT to make
 # every key new, for example after a change to an input the key leaves out.
 SCHEMA = 4
@@ -264,20 +266,6 @@ class FormalRegistry:
         )
 
 
-def sby_sections(text: str) -> dict[str, list[str]]:
-    """Split an .sby file into its sections."""
-    sections: dict[str, list[str]] = {"": []}
-    current = ""
-    for line in text.splitlines():
-        header = re.match(r"^\[([^\]]+)\]\s*$", line)
-        if header:
-            current = header.group(1).strip()
-            sections.setdefault(current, [])
-        else:
-            sections[current].append(line)
-    return sections
-
-
 def formal_task_key(
     root: Path,
     test_id: str,
@@ -302,7 +290,10 @@ def formal_task_key(
     formal_dir = root / registry.formal_dir
     sby_path = formal_dir / task.sby_file
     name = task.sby_file
-    sections = sby_sections(sby_path.read_text())
+    try:
+        sections = dict(sby_config.source(sby_path).sections)
+    except sby_config.ConfigError as error:
+        raise ReuseKeyError(str(error)) from error
     entries = [
         line.strip()
         for line in sections.get("files", [])
