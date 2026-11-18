@@ -70,6 +70,7 @@ VALID_APPS = [
     "ddr_test",
     "dma_torture",
     "fencei_jit_bench",
+    "fplat_probe",
     "freertos_demo",
     "fpu_assembly_test",
     "fpu_test",
