@@ -1268,8 +1268,8 @@ same variable.
 
 `memerr_test_seeded` pins both the DDR timing and random-start seeds to
 `41317470809-test-verilator-10`. It checks fatal writeback twice with a
-20-cycle reset between runs in BRAM, and once in DDR. The Memory and NIC stress
-shard runs this entry alongside `memerr_test`, whose seeds come from the job.
+20-cycle reset between runs in BRAM, and once in DDR. The Cache management and memory
+errors shard runs this entry alongside `memerr_test`, whose seeds come from the job.
 The eviction addresses depend on a CSR result after FENCE.I and on each
 preceding read, so speculative fills cannot warm the eviction set before
 the target store installs.
@@ -1508,11 +1508,12 @@ differs from the model's by more than the tolerance in
 `perf-modeling/calibration/ci_baseline.json`, and it prints the figures and
 deltas either way.
 
-The report covers 25 of the simulating jobs, chosen so that it keeps 99.9% of
+The report covers 29 of the simulating jobs, chosen so that it keeps 99.9% of
 the line, branch and cover points that every job together would reach, with no
 cover point lost. They are Arch Tests (I B C / bram); the Real Programs jobs
 Debug and UART, both OpenSBI smoke configurations, cold and warm OpenSBI reset,
-Memory and NIC stress, Runtime benchmarks and vector, Runtime and other, and
+Memory and NIC stress, Cache management and memory errors, Self-modifying code and
+fence.i, Runtime benchmarks, Vector programs, Runtime and other, and
 SRAM macros in BRAM and C library and RTOS, DMA NIC and coherence, Interrupts,
 Memory link stage (other programs) and Privilege and MMU in DDR; four Physical address aperture jobs
 (1 GiB / Bare access, 1 GiB / Unit boundaries, 128 GiB / DMA, 128 GiB / NIC);
@@ -1535,11 +1536,20 @@ ones included.
 The workflow has the exact job filters. The named real-program shards select
 applications by name, and the "Runtime and other" shard runs every
 application they don't list. Memory and NIC stress groups the NIC benchmarks,
-L2 capacity checks, cache management, misaligned accesses, memory faults and
-DDR reset checks. Runtime benchmarks and vector groups PAUSE, RAS benchmarks
-and VLEN 256 configurations by their shared builds. Real-program shards
-target at most about three hours per job and have a four-hour timeout,
-including setup and coverage uploads.
+L2 capacity checks, misaligned accesses and DDR reset checks. Cache management
+and memory errors holds the cache management and memory fault checks, and
+Self-modifying code and fence.i holds the self-modifying code programs and
+the fence.i benchmark; both were split off to keep their parents inside their
+time limits. Runtime benchmarks groups the PAUSE and RAS benchmarks by
+their shared builds. Vector programs selects every registry name that starts
+with `vec_`, so a vector program added later joins it without a workflow
+change; "Runtime and other" excludes the same prefix. Each real-program job
+has a four-hour timeout, including setup and coverage uploads, unless its
+shard sets `timeout_minutes`. A shard's limit is 1.8 times its slowest
+measured time, rounded up, so that a slow runner still finishes it; keep
+shards under about 165 minutes so the limit stays at or below 300. The one
+program that cannot be split further, CoreMark-PRO loops, has a 340-minute
+limit.
 
 Give each program that boots OpenSBI its own BRAM-only shard with coverage,
 including variants that disable a hardware feature or exercise reset through
