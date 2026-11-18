@@ -1074,6 +1074,7 @@
   "tlb:cover_itlb": [],
   "tomasulo_wrapper:bmc": ["design 0 read 24: read -sv -DFROST_YOSYS load_queue.sv", "design 0 read 42: read -formal -DFP_FMA_PIPE_ABSTRACT -sv fp_pipe_lzc.sv fp_fma_pipe.sv"],
   "tomasulo_wrapper:cover": ["design 0 read 24: read -sv -DFROST_YOSYS load_queue.sv", "design 0 read 42: read -formal -DFP_FMA_PIPE_ABSTRACT -sv fp_pipe_lzc.sv fp_fma_pipe.sv"],
+  "tomasulo_wrapper:cover_alu_issue": ["design 0 read 24: read -sv -DFROST_YOSYS load_queue.sv", "design 0 read 42: read -formal -DFP_FMA_PIPE_ABSTRACT -sv fp_pipe_lzc.sv fp_fma_pipe.sv"],
   "tomasulo_wrapper:fp_repair_bmc": ["design 0 read 24: read -sv -DFROST_YOSYS load_queue.sv", "design 0 read 42: read -formal -DFP_FMA_PIPE_ABSTRACT -sv fp_pipe_lzc.sv fp_fma_pipe.sv"],
   "tomasulo_wrapper_commit_bus:bmc": ["design 0 read 4: read -formal -DSYNTHESIS -sv reorder_buffer.sv", "design 0 read 8: read -formal -DSYNTHESIS -sv tomasulo_wrapper.sv tomasulo_commit_bus_formal.sv"],
   "tomasulo_wrapper_commit_bus:cover": ["design 0 read 4: read -formal -DSYNTHESIS -sv reorder_buffer.sv", "design 0 read 8: read -formal -DSYNTHESIS -sv tomasulo_wrapper.sv tomasulo_commit_bus_formal.sv"],

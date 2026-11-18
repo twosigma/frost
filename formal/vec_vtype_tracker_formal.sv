@@ -57,7 +57,8 @@ module vec_vtype_tracker_formal (
       (alloc_op == riscv_pkg::VTOX) ||
       (alloc_op == riscv_pkg::VTOF) || (alloc_op == riscv_pkg::VLOAD) ||
       (alloc_op == riscv_pkg::VSTORE);
-  logic [NC-1:0] ckpt_owned_q, ckpt_valid_q;
+  // Full-depth shadows keep every ID-indexed read defined (no x bits for the aig engine).
+  logic [2**CW-1:0] ckpt_owned_q, ckpt_valid_q;
   logic unknown_clear_q;
 
   vec_vtype_tracker #(

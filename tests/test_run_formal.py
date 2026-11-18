@@ -2035,7 +2035,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo commit and flush integration, including FP dispatch done repair",
-        tasks=("bmc", "cover", "fp_repair_bmc"),
+        tasks=("bmc", "cover", "cover_alu_issue", "fp_repair_bmc"),
     ),
     FormalTarget(
         "tomasulo_wrapper_commit_bus.sby",
@@ -3775,6 +3775,10 @@ SBY_TASKS = [
     (
         "fp_repair_bmc",
         "Bounded model checking with production FP dispatch done repair enabled",
+    ),
+    (
+        "cover_alu_issue",
+        "Cover search for the ALU-issue scenarios, split from the other covers",
     ),
     # INT reservation-station features at eight-entry component capacity;
     # the wrapper target checks the production sixteen-entry station.

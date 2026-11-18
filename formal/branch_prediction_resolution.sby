@@ -17,7 +17,10 @@ script free_undefined.ys
 bmc: select -assert-count 7 t:$check r:FLAVOR=assert %i
 prep -top branch_prediction_resolution_formal -flatten
 # Shared actual outcomes and flush qualification merge identical property cells.
-bmc: select -assert-count 5 t:$check r:FLAVOR=assert %i
+# Each instance's checkpoint-ownership read keeps its own undriven bits for the
+# 4-bit IDs above NumCheckpoints (assumed away, but still present after prep), so
+# the two surviving-issue checks stay separate cells.
+bmc: select -assert-count 6 t:$check r:FLAVOR=assert %i
 cover: select -assert-count 6 t:$check r:FLAVOR=cover %i
 
 [files]

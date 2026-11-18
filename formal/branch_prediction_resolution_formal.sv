@@ -37,6 +37,12 @@ module branch_prediction_resolution_formal (
 
   riscv_pkg::reorder_buffer_branch_update_t update[2];
   logic [1:0] correct;
+  // A checkpointed issue names a real checkpoint: the 4-bit ID encodes more
+  // than riscv_pkg::NumCheckpoints.
+  always_comb begin
+    if (i_issue.has_checkpoint)
+      assume (i_issue.checkpoint_id < riscv_pkg::CheckpointIdWidth'(riscv_pkg::NumCheckpoints));
+  end
   // Trap, return and fence flushes discard every issued branch. Partial
   // recovery preserves strictly older issues and takes priority over the
   // commit-pending indication when both controls are presented.
