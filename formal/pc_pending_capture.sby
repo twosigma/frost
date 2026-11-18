@@ -14,7 +14,8 @@ read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_FETCH_HOLDOFF_ONLY -D PC_PENDING_CAPTURE_LOCAL_PROOF -sv pc_controller.sv
 bmc_integrated: chparam -set PENDING_HANDOFF_EXCLUDES_SLOT2 1 pc_controller
 delete t:control_flow_tracker t:pc_increment_calculator
-proc
+hierarchy -top pc_controller
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top pc_controller
@@ -25,3 +26,4 @@ select -assert-none t:$check r:FLAVOR=assume %i
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
+free_undefined.ys

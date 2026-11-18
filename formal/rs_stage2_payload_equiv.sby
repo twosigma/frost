@@ -28,7 +28,7 @@ fp: chparam -set DEPTH 8 -set DUAL_ISSUE 0 -set HAS_SRC3 1 -set ISSUE_REPAIR_BYP
 hierarchy -top reservation_station
 # Abstract payload RAMs: equivalence holds for arbitrary RAM outputs.
 delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread t:coherent_rs_payload_store
-proc
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top reservation_station -flatten
@@ -45,3 +45,4 @@ int_cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+free_undefined.ys

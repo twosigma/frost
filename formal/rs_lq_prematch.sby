@@ -31,7 +31,7 @@ read -sv coherent_lq_address_store.sv
 read -formal -D F_LQ_PREMATCH_ONLY -D SYNTHESIS -D F_LQ_PREMATCH_PAIR -sv load_queue.sv
 read -formal -sv rs_lq_prematch_equiv.sv
 hierarchy -top rs_lq_prematch_equiv
-proc
+script free_undefined.ys
 flatten
 setundef -undriven -anyseq
 opt
@@ -60,3 +60,4 @@ rs_lq_prematch_equiv.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+free_undefined.ys

@@ -16,7 +16,8 @@ bmc_small_btb: chparam -set BTB_INDEX_BITS 4 branch_predictor
 # The tag compares are combinational. Cut every RAM, the slot-1 tag RAM
 # included, so each read returns an independent arbitrary word.
 delete t:sdp_dist_ram t:sdp_block_ram
-proc
+hierarchy -top branch_predictor
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top branch_predictor
@@ -27,3 +28,4 @@ write_json prepared_model.json
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
+free_undefined.ys

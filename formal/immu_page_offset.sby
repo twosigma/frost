@@ -18,7 +18,8 @@ read_verilog -formal -D SYNTHESIS -D IMMU_PAGE_OFFSET_LOCAL_PROOF -sv immu.sv
 # within the output contract immu.sv assumes for its PPN parts (tlb.sby checks
 # it of the real ITLB).
 delete t:dtlb
-proc
+hierarchy -top immu
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top immu
@@ -26,3 +27,4 @@ prep -top immu
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/mmu/immu.sv
+free_undefined.ys

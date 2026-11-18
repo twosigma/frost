@@ -19,7 +19,8 @@ read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_HOLDOFF_TAG_PR
 prove_xlen32: chparam -set XLEN 32 pc_controller
 prove_xlen72: chparam -set XLEN 72 pc_controller
 delete t:control_flow_tracker t:pc_increment_calculator
-proc
+hierarchy -top pc_controller
+script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top pc_controller
@@ -27,3 +28,4 @@ prep -top pc_controller
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
+free_undefined.ys

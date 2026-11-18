@@ -51,7 +51,7 @@ completions: hierarchy -check -top coherence_home_completions
 home: delete t:*coherence_home_array t:*coherence_home_endpoint t:*coherence_d_arbiter t:*coherence_home_completions t:*coherence_home_engine t:*coherence_seat_select t:*coherence_work_select
 array: delete t:*sdp_block_ram t:*sdp_packed_tag_uram t:*sdp_ram_byte_en
 completions: delete t:*coherence_home_endpoint t:*coherence_d_arbiter
-proc
+script free_undefined.ys
 setattr -mod -unset keep_hierarchy
 setattr -unset keep
 flatten
@@ -93,3 +93,4 @@ completions: select -assert-count 8 t:$check r:FLAVOR=assert %i
 ../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+free_undefined.ys

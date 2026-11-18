@@ -29,7 +29,7 @@ bmc_ready_vector: read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -D RS_PRETA
 bmc_export: chparam -set PREISSUE_READY_EXPORT 1 rs_raw_pretag_equiv
 bmc_ready_vector: chparam -set PREISSUE_READY_EXPORT 1 rs_raw_pretag_equiv
 hierarchy -top rs_raw_pretag_equiv
-proc
+script free_undefined.ys
 flatten
 setundef -undriven -anyseq
 opt
@@ -51,3 +51,4 @@ rs_raw_pretag_equiv.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+free_undefined.ys

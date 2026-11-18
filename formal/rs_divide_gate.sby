@@ -22,7 +22,7 @@ chparam -set DEPTH 4 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_RE
 hierarchy -top reservation_station
 # The gate proof holds whatever the payload RAMs return, initial contents included.
 delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread
-proc
+script free_undefined.ys
 setundef -undriven -anyseq
 # Drop output ports so opt can prune logic unused by the properties.
 delete -port reservation_station/o:*
@@ -38,3 +38,4 @@ select -assert-count 3 t:$check r:FLAVOR=assert %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+free_undefined.ys

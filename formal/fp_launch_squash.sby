@@ -27,7 +27,7 @@ off: read -formal fp_launch_squash_miter.sv
 hierarchy -check -top fp_launch_squash_miter
 # -norom: a decode_op ROM would read undefined (free) words for op codes
 # outside the case list; the RTL's default branch is deterministic.
-proc -norom
+script free_undefined.ys
 flatten
 connect -nounset -set b_state u_base.u_engine.state_q
 connect -nounset -set b_tag u_base.tag_q
@@ -139,3 +139,4 @@ select -assert-none t:$assume t:$assert t:$live t:$fair
 fp_launch_squash_reference.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
 fp_launch_squash_miter.sv
+free_undefined.ys
