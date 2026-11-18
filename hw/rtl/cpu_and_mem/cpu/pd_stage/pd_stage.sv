@@ -343,8 +343,9 @@ module pd_stage #(
   // owns them comes from the packet's decode, which arrives last, so each
   // candidate is complete without it: slot 2's PC step and carry for both
   // sizes of slot 1, and the backing target from slot 2's entry for both
-  // sizes, with the size picked inside the stack-return select. The slot
-  // selects then pick between finished values. The expressions below that
+  // sizes, with the size picked inside the stack-return select. The live
+  // slot-1 backing target and its select cross the register separately.
+  // The expressions below that
   // form the same values the direct way are the reference for the checks
   // (formal/pd_redirect_next_equiv.sv proves the two equal).
 
@@ -860,7 +861,8 @@ module pd_stage #(
   // The format candidates, the fall-through, and their selects load on the
   // same enabled edge, so the mux after them equals one register of the
   // selected target.
-  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_target_native_low_r;
+  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_alternate_native_low_r;
+  logic [PdTargetSplit-1:0] pd_redirect_target_native_low_r;
   (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_target_compressed_low_r;
   (* keep = "true" *) logic [1:0] pd_redirect_target_native_high_select_r;
   (* keep = "true" *) logic [1:0] pd_redirect_target_compressed_high_select_r;
@@ -872,6 +874,7 @@ module pd_stage #(
   logic [PdTargetSplit-1:0] pd_redirect_target_low;
   logic [1:0] pd_redirect_target_high_select;
   (* keep = "true", equivalent_register_removal = "no" *)
+  logic [PdTargetHighWidth-1:0] pd_redirect_alternate_pc_high_r;
   logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_r;
   (* keep = "true", equivalent_register_removal = "no" *)
   logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_plus_one_r;
@@ -928,8 +931,10 @@ module pd_stage #(
     end
   end
 
-  // Load slot 1's branch candidates, slot 2's branch candidates, or the
-  // backing BTB target into the shared target registers.
+  // Capture the slot-1 backing address alongside the branch or slot-2
+  // address. The late fast-taken and liveness decisions feed only its select.
+  logic pd_slot1_backing_select_next, pd_slot1_backing_select_r;
+  logic [XLEN-1:0] pd_slot1_backing_target_next, pd_slot1_backing_target_r;
   logic [PdTargetSplit-1:0] pd_redirect_target_native_low_next;
   logic [PdTargetSplit-1:0] pd_redirect_target_compressed_low_next;
   logic [1:0] pd_redirect_target_native_high_select_next;
@@ -976,12 +981,14 @@ module pd_stage #(
       .o_pc_low(pd_redirect_pc_low_next),
       .o_slot2_pc_carry(pd_redirect_slot2_pc_carry_next),
       .o_fall_through_select(pd_redirect_fall_through_select_next),
-      .o_pc_high(pd_redirect_pc_high_next)
+      .o_pc_high(pd_redirect_pc_high_next),
+      .o_slot1_backing_select(pd_slot1_backing_select_next),
+      .o_slot1_backing_target(pd_slot1_backing_target_next)
   );
 
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall) begin
-      pd_redirect_target_native_low_r <= pd_redirect_target_native_low_next;
+      pd_redirect_alternate_native_low_r <= pd_redirect_target_native_low_next;
       pd_redirect_target_compressed_low_r <= pd_redirect_target_compressed_low_next;
       pd_redirect_target_native_high_select_r <= pd_redirect_target_native_high_select_next;
       pd_redirect_target_compressed_high_select_r <= pd_redirect_target_compressed_high_select_next;
@@ -989,11 +996,18 @@ module pd_stage #(
       pd_redirect_pc_low_r <= pd_redirect_pc_low_next;
       pd_redirect_slot2_pc_carry_r <= pd_redirect_slot2_pc_carry_next;
       pd_redirect_fall_through_select_r <= pd_redirect_fall_through_select_next;
-      pd_redirect_pc_high_r <= pd_redirect_pc_high_next;
+      pd_redirect_alternate_pc_high_r <= pd_redirect_pc_high_next;
+      pd_slot1_backing_select_r <= pd_slot1_backing_select_next;
+      pd_slot1_backing_target_r <= pd_slot1_backing_target_next;
       pd_redirect_pc_high_plus_one_r <= pd_pc_high_plus_one;
       pd_redirect_pc_high_minus_one_r <= pd_pc_high_minus_one;
     end
   end
+
+  assign pd_redirect_target_native_low_r = pd_slot1_backing_select_r ?
+      pd_slot1_backing_target_r[PdTargetSplit-1:0] : pd_redirect_alternate_native_low_r;
+  assign pd_redirect_pc_high_r = pd_slot1_backing_select_r ?
+      pd_slot1_backing_target_r[XLEN-1:PdTargetSplit] : pd_redirect_alternate_pc_high_r;
 
   // A copy of the selected slot's not-taken candidate with the target
   // registers' enable selects the fall-through and the redirect direction.

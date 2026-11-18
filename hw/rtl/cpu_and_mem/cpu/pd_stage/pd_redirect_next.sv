@@ -15,22 +15,18 @@
  */
 
 /*
- * The values PD's shared redirect target registers load: slot 1's
- * conditional-branch candidates, slot 2's, or the backing BTB target (see
- * pd_stage.sv, "PD Redirect"). Which slot owns the registers comes from the
- * packet's decode, which arrives last, so every candidate is complete
- * without it and the slot selects choose between finished values in one
- * step:
+ * The values PD captures for its redirect target. The live slot-1
+ * backing target and its select are separate from the branch and slot-2
+ * candidates. PD chooses between those addresses after their common
+ * register edge.
  *   - slot 2's low PC and the carry into the high part are formed for both
  *     sizes of slot 1 from slot 1's PC alone, and slot 1's raw-parcel size
  *     picks one;
  *   - the backing target is formed from slot 2's return type and target for
  *     each size of slot 1, and the packet's size picks one inside the
  *     stack-return select;
- *   - the slot selects are single gates over the decode terms, and each
- *     register bit is one select over them and its candidates.
- * The kept nets hold that order: no slot select reaches a candidate's adder
- * or the backing target's select.
+ *   - the branch selects choose between finished values. Selecting the
+ *     slot-1 backing entry does not feed either address candidate.
  */
 module pd_redirect_next #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -85,7 +81,9 @@ module pd_redirect_next #(
     output logic [SPLIT-1:0] o_pc_low,
     output logic o_slot2_pc_carry,
     output logic o_fall_through_select,
-    output logic [XLEN-SPLIT-1:0] o_pc_high
+    output logic [XLEN-SPLIT-1:0] o_pc_high,
+    output logic o_slot1_backing_select,
+    output logic [XLEN-1:0] o_slot1_backing_target
 );
 
   // A carry out of slot 2's low PC moves slot 1's high select one step, as
@@ -138,21 +136,23 @@ module pd_redirect_next #(
       slot2_pc_sum[SPLIT], i_slot2_compressed_high_select
   );
 
-  // The backing target: the stack's top for an entry trained on a return
-  // while the stack holds an entry, otherwise the entry's target in slot 1's
-  // 4 GiB region. A live slot-1 backing candidate takes its entry; otherwise slot 2's, at
-  // the packet's size.
+  // Each slot's candidate uses the stack top for a trained return with a
+  // valid checkpoint. The entry target carries the upper bits of the packet PC.
   (* keep = "true" *) logic stack_holds_entry;
   (* keep = "true", max_fanout = 32 *) logic backing_return_select;
   logic [TARGET_BITS-2:0] backing_slot2_target;
   (* keep = "true" *) logic [XLEN-1:0] backing_target;
   assign stack_holds_entry = i_stack_count != '0;
-  assign backing_return_select = (i_backing_hit ? i_backing_return :
-      i_backing_slot2_return_by_size[i_backing_size_select]) && stack_holds_entry;
+  assign backing_return_select =
+      i_backing_slot2_return_by_size[i_backing_size_select] && stack_holds_entry;
   assign backing_slot2_target = i_backing_slot2_target_by_size[i_backing_size_select];
   assign backing_target = backing_return_select ? i_stack_top : {
-    i_pc[XLEN-1:TARGET_BITS], i_backing_hit ? i_backing_target : backing_slot2_target, 1'b0
+    i_pc[XLEN-1:TARGET_BITS], backing_slot2_target, 1'b0
   };
+  assign o_slot1_backing_target = i_backing_return && stack_holds_entry ? i_stack_top : {
+    i_pc[XLEN-1:TARGET_BITS], i_backing_target, 1'b0
+  };
+  assign o_slot1_backing_select = backing_low_select && i_backing_hit;
 
   assign o_target_native_low = slot2_select ? slot2_native_low :
       (backing_low_select ? backing_target[SPLIT-1:0] : i_slot1_native_low);

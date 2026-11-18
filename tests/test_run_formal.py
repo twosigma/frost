@@ -1610,10 +1610,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pd_redirect_next_equiv.sby",
-        "PD's redirect target registers' next values, with every candidate formed "
-        "before the slot selects and slot 1's size picked last, equal the form "
-        "they replace for any decode, packet, candidates, backing BTB result and "
-        "stack state",
+        "PD's redirect target fields equal the direct expressions for any packet, "
+        "candidates, backing BTB result and stack state. The slot-1 backing owner "
+        "selects between independent address candidates after capture",
         tasks=("bmc",),
     ),
     FormalTarget(

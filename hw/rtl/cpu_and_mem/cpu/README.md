@@ -327,9 +327,9 @@ CoreMark-PRO core the JALs it should have caught were a third of the
 mispredictions left after the indirect target predictor. IF passes PD each
 slot's hit, size, type and target, kept across stall replay like the packet.
 Slot 2's type and target also come for each size of slot 1, formed from the
-answering read's tags and the packet's PC alone; PD picks between them by slot
-1's size where it forms the backing target, so the redirect target registers
-select between finished values (see `pd_redirect_next`). PD registers a candidate for a
+answering read's tags and the packet's PC alone. PD uses slot 1's size to form the slot-2
+backing address. It captures the slot-1 backing address beside the branch or slot-2
+address, then chooses between them with the registered owner. PD registers a candidate for a
 slot-1 or slot-2 JAL or JALR whose backing entry has the instruction's size.
 When the slot's BTB prediction was not taken, the candidate fires the PD
 redirect, which costs the PD redirect's two bubbles instead of a
