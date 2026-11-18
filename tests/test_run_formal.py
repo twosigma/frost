@@ -5308,14 +5308,12 @@ UNDEFINED_OPENING_PENDING = (
     "coherence_home",
     "coherence_l1d",
     "coherence_store_boundary",
-    "coherence_store_home",
     "csr_commit_cofactor",
     "csr_file",
     "line_client_link",
     "pm_mode_select",
     "reorder_buffer",
     "sq_forwarding_unit",
-    "trap_unit",
     "vec_lmul_legality_equiv",
 )
 # Scripts that compare two designs inside the script (the primitive twins and

@@ -51,6 +51,8 @@ conflict: chparam -set SECTOR_CASE 2 coherence_store_home_formal
 pressure: chparam -set PRESSURE 1 coherence_store_home_formal
 covers: chparam -set COVER_MODE 1 coherence_store_home_formal
 linked: chparam -set LINK_STAGES 1 coherence_store_home_formal
+hierarchy -top coherence_store_home_formal
+script free_undefined.ys
 prep -flatten -top coherence_store_home_formal
 check -assert
 # Partition only the one-bit constant watch choice; both byte values stay arbitrary.
@@ -124,3 +126,4 @@ coherence_store_home_formal.sv
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv
 ../hw/rtl/lib/cache/coherence_types.svh
+free_undefined.ys
