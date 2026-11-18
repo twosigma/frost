@@ -71,38 +71,60 @@ arm_pair: read -formal -sv coherent_atomic_select.sv coherent_atomic_select_form
 arm_select_wide: chparam -set TAG_BITS 9 coherent_atomic_select
 arm_pair_wide: chparam -set TAG_BITS 9 coherent_atomic_select_formal
 read -formal -sv coherence_c_payload.sv coherence_pkg.sv coherence_d_arbiter.sv coherence_line_bridge.sv coherent_atomic_guard.sv coherence_read_flags.sv coherence_read_select.sv
+arm_select: hierarchy -top coherent_atomic_select
+arm_select: script free_undefined.ys
 arm_select: prep -top coherent_atomic_select
+arm_pair: hierarchy -top coherent_atomic_select_formal
+arm_pair: script free_undefined.ys
 arm_pair: prep -flatten -top coherent_atomic_select_formal
 payload_wide: chparam -set WIDTH 74 coherence_c_payload
+payload: hierarchy -top coherence_c_payload
+payload: script free_undefined.ys
 payload: prep -top coherence_c_payload
 arbiter: chparam -set WIDTH 12 -set PORTS 3 coherence_d_arbiter
 large_arbiter: chparam -set PORTS 24 coherence_d_arbiter
 held_arbiter: chparam -set HOLD_VALID 1 coherence_d_arbiter
+arbiter: hierarchy -top coherence_d_arbiter
+arbiter: script free_undefined.ys
 arbiter: prep -top coherence_d_arbiter
 dma: chparam -set SOURCE 2 -set PORT_CLASS 3 -set ID_BITS 4 coherence_line_bridge
 early: chparam -set EARLY_RESPONSE 1 coherence_line_bridge
 slot1: chparam -set SLOT 1 coherence_line_bridge
 ptw: chparam -set PORT_CLASS 2 coherence_line_bridge
+reader: hierarchy -top coherence_line_bridge
+reader: script free_undefined.ys
 reader: prep -top coherence_line_bridge
+guard: hierarchy -top coherent_atomic_guard
+guard: script free_undefined.ys
 guard: prep -top coherent_atomic_guard
+flags: hierarchy -top coherence_read_flags
+flags: script free_undefined.ys
 flags: prep -top coherence_read_flags
 wide: chparam -set ADDR_WIDTH 64 coherence_read_select
+select: hierarchy -top coherence_read_select
+select: script free_undefined.ys
 select: prep -top coherence_read_select
 grant_select: read -formal -sv coherence_grant_select.sv
 grant2: chparam -set SLOTS 2 coherence_grant_select
 grant4: chparam -set SLOTS 4 coherence_grant_select
+grant_select: hierarchy -top coherence_grant_select
+grant_select: script free_undefined.ys
 grant_select: prep -top coherence_grant_select
 owners: read -formal -sv coherence_read_owners.sv
 owners1: chparam -set SLOTS 1 coherence_read_owners
 owners3: chparam -set SLOTS 3 coherence_read_owners
 owners4: chparam -set SLOTS 4 coherence_read_owners
 owners8: chparam -set SLOTS 8 coherence_read_owners
+owners: hierarchy -top coherence_read_owners
+owners: script free_undefined.ys
 owners: prep -top coherence_read_owners
 credit: read -formal -sv coherence_miss_credit.sv
 credit1: chparam -set SLOTS 1 coherence_miss_credit
 credit3: chparam -set SLOTS 3 coherence_miss_credit
 credit4: chparam -set SLOTS 4 coherence_miss_credit
 credit8: chparam -set SLOTS 8 coherence_miss_credit
+credit: hierarchy -top coherence_miss_credit
+credit: script free_undefined.ys
 credit: prep -top coherence_miss_credit
 
 [files]
@@ -119,3 +141,4 @@ coherent_atomic_select_formal.sv
 ../hw/rtl/lib/cache/coherence_grant_select.sv
 ../hw/rtl/lib/cache/coherence_read_owners.sv
 ../hw/rtl/lib/cache/coherence_miss_credit.sv
+free_undefined.ys

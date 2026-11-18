@@ -24,9 +24,12 @@ read -formal -sv vec_hold_rows.sv
 read -formal -sv vec_hold_rows_formal.sv
 cover: chparam -set DIRECT_ADDR 1 vec_hold_rows_formal
 vhold_sq_bmc: chparam -set DIRECT_ADDR 1 vec_hold_rows_formal
+hierarchy -top vec_hold_rows_formal
+script free_undefined.ys
 prep -top vec_hold_rows_formal
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
 vec_hold_rows_formal.sv
+free_undefined.ys

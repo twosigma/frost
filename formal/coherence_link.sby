@@ -52,7 +52,10 @@ link_mirror1_prove: hierarchy -top coherence_link -chparam WIDTH 4 -chparam KIND
 link_mirror2_prove: hierarchy -top coherence_link -chparam WIDTH 4 -chparam KIND 2 -chparam STAGES 2 -chparam CREDITS 5
 link_credit1_cover: hierarchy -top coherence_link -chparam WIDTH 4 -chparam KIND 1 -chparam STAGES 1 -chparam CREDITS 3
 link_mirror1_cover: hierarchy -top coherence_link -chparam WIDTH 4 -chparam KIND 2 -chparam STAGES 1 -chparam CREDITS 3
+hierarchy -top coherence_link
+script free_undefined.ys
 prep -top coherence_link
 
 [files]
 ../hw/rtl/lib/cache/coherence_link.sv
+free_undefined.ys

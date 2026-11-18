@@ -24,6 +24,8 @@ xilinx: read -formal -sv -D SYNTHESIS -D FROST_XILINX_PRIMS -D HOME_SEAT_NEXT_LO
 ~xilinx: read -formal -sv -D SYNTHESIS -D HOME_SEAT_NEXT_LOCAL_PROOF coherence_home.sv
 small: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home
 four: chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 -set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home
+hierarchy -top coherence_home
+script free_undefined.ys
 prep -top coherence_home
 select -assert-none t:$check r:FLAVOR=assume %i
 # Four equalities per fill (added seats, their count, mask, image) and one
@@ -48,3 +50,4 @@ xilinx: select -assert-count 33 t:$check r:FLAVOR=assert %i
 ../hw/rtl/lib/cache/coherence_home_completions.sv
 ../hw/rtl/lib/cache/coherence_d_arbiter.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
+free_undefined.ys

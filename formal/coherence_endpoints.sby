@@ -53,13 +53,25 @@ equiv: read -formal -sv coherence_request_endpoint_reference.sv coherence_reques
 equiv_wide: chparam -set ADDR_WIDTH 56 coherence_request_endpoint_equiv
 slot0: chparam -set SLOT 0 coherence_request_endpoint_equiv
 ptw: chparam -set PORT_CLASS 2 -set SLOT 0 coherence_request_endpoint_equiv
+equiv: hierarchy -top coherence_request_endpoint_equiv
+equiv: script free_undefined.ys
 equiv: prep -top coherence_request_endpoint_equiv
 layout_wide: chparam -set ADDR_WIDTH 56 -set L2_NUM_MSHR 16 coherence_endpoints_test_harness
+layout: hierarchy -top coherence_endpoints_test_harness
+layout: script free_undefined.ys
 layout: prep -top coherence_endpoints_test_harness
 wide: chparam -set ADDR_WIDTH 56 -set L2_NUM_MSHR 16 coherence_home_endpoint
+request: hierarchy -top coherence_request_endpoint
+request: script free_undefined.ys
 request: prep -top coherence_request_endpoint
+home: hierarchy -top coherence_home_endpoint
+home: script free_undefined.ys
 home: prep -top coherence_home_endpoint
+put: hierarchy -top coherence_put_endpoint
+put: script free_undefined.ys
 put: prep -top coherence_put_endpoint
+channel: hierarchy -top coherence_channel
+channel: script free_undefined.ys
 channel: prep -top coherence_channel
 
 [files]
@@ -72,3 +84,4 @@ channel: prep -top coherence_channel
 ../hw/rtl/lib/cache/coherence_endpoints_test_harness.sv
 coherence_request_endpoint_reference.sv
 coherence_request_endpoint_equiv.sv
+free_undefined.ys
