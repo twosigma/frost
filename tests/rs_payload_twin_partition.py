@@ -12,10 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Print the payload twin's guarded assertions and their compiled task partition.
+"""Check the payload twin's assertion groups and reach its first CMO request.
 
 Run from the repository root in the formal image with
-python3 tests/rs_payload_twin_partition.py. The table goes to standard output.
+python3 tests/rs_payload_twin_partition.py. The assertion table goes to standard
+output and the bounded request-cover result goes to standard error.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from test_run_formal import formal_task_config
+import sby_config
+from test_run_formal import formal_task_config, formal_task_timeout_s
 
 FORMAL = Path(__file__).resolve().parents[1] / "formal"
 TARGET = "rs_payload_twin"
@@ -222,7 +224,47 @@ def report(work: Path, tasks: list[str]) -> None:
     )
 
 
+def check_cmo_request(work: Path) -> None:
+    """Reach the named request cover on the second commit task's exact model."""
+    task = "bmc_commit_2"
+    config = formal_task_config(TARGET, task)
+    source = sby_config.source(FORMAL / (TARGET + ".sby"))
+    files = source.task(task).files
+    depth = next(
+        option for option in config["[options]"] if option.startswith("depth ")
+    )
+    # The partition's script checks the selected assertions and the named cover.
+    # Solve only that cover, retaining its state, initial values and assumptions.
+    config_file = work / "cmo_request.sby"
+    config_file.write_text(
+        "\n".join(
+            [
+                "[options]",
+                "mode cover",
+                depth,
+                "[engines]",
+                "smtbmc boolector",
+                "[script]",
+                *config["[script]"],
+                "chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_twin_cmo_request %d",
+                "select -assert-count 1 t:$check r:FLAVOR=cover %i",
+                "[files]",
+                *(f"{name} setup/src/{name}" for name in files),
+                "",
+            ]
+        )
+    )
+    subprocess.run(
+        ["sby", "-f", config_file.name],
+        cwd=work,
+        stdout=sys.stderr,
+        check=True,
+        timeout=formal_task_timeout_s(TARGET, task),
+    )
+
+
 if __name__ == "__main__":
     with TemporaryDirectory() as directory:
         work = Path(directory)
         report(work, compile_groups(work))
+        check_cmo_request(work)
