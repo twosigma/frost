@@ -88,6 +88,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_active.value = 0
     dut.i_early_tag.value = 0
     dut.i_early_taken.value = 0
+    dut.i_early_dir_bit.value = 0
     dut.i_flush_full.value = 0
     _clear_alloc(dut)
     _clear_commit(dut)
@@ -414,6 +415,7 @@ async def test_early_recovery_restores_the_saved_history(dut: Any) -> None:
         dut.i_early_active.value = 1
         dut.i_early_tag.value = tag
         dut.i_early_taken.value = int(taken)
+        dut.i_early_dir_bit.value = int(taken)
         dut.i_fetch_pc_path_bits.value = 0b01
         await _step(dut)
         dut.i_early_active.value = 0

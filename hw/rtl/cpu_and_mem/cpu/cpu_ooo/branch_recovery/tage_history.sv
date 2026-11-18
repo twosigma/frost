@@ -45,7 +45,8 @@
  * passes its packet to ID; the push is applied to the lookup the cycle after
  * (registered), so a lookup sees every packet PD passed up to two fetches
  * before it. Early recovery restores the branch's saved PD-time direction
- * history and shifts in its outcome; a trap, xRET, FENCE-class flush, or a
+ * history and shifts in its bit (a conditional branch's outcome, a JALR's
+ * target bit 2); a trap, xRET, FENCE-class flush, or a
  * misprediction recovered at commit takes the retired direction history
  * (each retired branch's outcome and each jump's target bit 2), with the
  * same registered arms as the path history. A PD redirect needs no restore:
@@ -118,6 +119,8 @@ module tage_history #(
     input logic                                        i_early_active,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_tag,
     input logic                                        i_early_taken,
+    // Its direction-history bit: the outcome, or a JALR's target bit 2.
+    input logic                                        i_early_dir_bit,
     // A flush of every in-flight instruction: a trap, xRET, or FENCE-class
     // flush, or a misprediction recovered at commit.
     input logic                                        i_flush_full,
@@ -376,6 +379,7 @@ module tage_history #(
   logic [DIR_BITS-1:0] early_dir_hist_q;
   logic early_q;
   logic early_taken_q;
+  logic early_dir_bit_q;
   ftq_entry_t ftq_read_early;
   assign ftq_read_early = ftq_read_early_raw;
   always_ff @(posedge i_clk) begin
@@ -385,6 +389,7 @@ module tage_history #(
     early_dir_hist_q <= ftq_read_early.dir_hist;
     early_q          <= i_early_active;
     early_taken_q    <= i_early_taken;
+    early_dir_bit_q  <= i_early_dir_bit;
   end
 
   // Arms, highest priority first: 1 trap or xRET, 2 FENCE-class flush,
@@ -448,7 +453,7 @@ module tage_history #(
       dir_base = retired_dir_hist;
       dir_push = 1'b0;
     end else if (i_hist_restore_arm[3]) begin
-      dir_base = early_q ? push_dir(early_dir_hist_q, early_taken_q) : retired_dir_hist;
+      dir_base = early_q ? push_dir(early_dir_hist_q, early_dir_bit_q) : retired_dir_hist;
       dir_push = 1'b0;
     end
   end

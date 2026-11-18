@@ -782,6 +782,9 @@ module cpu_ooo #(
   logic [XLEN-1:0] early_mispredict_pc;
   logic [XLEN-1:0] early_mispredict_branch_target;
   logic early_mispredict_branch_taken;
+  logic early_mispredict_is_jalr;
+  logic early_mispredict_is_call;
+  logic early_mispredict_is_return;
   logic early_recovery_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_recovery_tag;
   logic early_backend_recovery_hold;
@@ -3448,9 +3451,9 @@ module cpu_ooo #(
   // ===========================================================================
   // Early Misprediction Recovery
   // ===========================================================================
-  // A mispredicted conditional branch that holds a checkpoint starts recovery
-  // as soon as it resolves, unless another recovery or flush is in progress,
-  // instead of at commit (JAL and JALR mispredictions recover at commit):
+  // A mispredicted conditional branch or JALR that holds a checkpoint starts
+  // recovery as soon as it resolves, unless another recovery or flush is in
+  // progress, instead of at commit (JAL mispredictions recover at commit):
   //   Cycle N:   branch_update reports the misprediction; capture its data
   //   Cycle N+1: early_mispredict_active: redirect fetch, restore the RAT,
   //              hold dispatch and issue (early_backend_recovery_hold)
@@ -3501,6 +3504,9 @@ module cpu_ooo #(
       .o_early_mispredict_pc(early_mispredict_pc),
       .o_early_mispredict_branch_target(early_mispredict_branch_target),
       .o_early_mispredict_branch_taken(early_mispredict_branch_taken),
+      .o_early_mispredict_is_jalr(early_mispredict_is_jalr),
+      .o_early_mispredict_is_call(early_mispredict_is_call),
+      .o_early_mispredict_is_return(early_mispredict_is_return),
       .o_early_recovery_en(early_recovery_en),
       .o_early_recovery_tag(early_recovery_tag),
       .o_early_backend_recovery_hold(early_backend_recovery_hold),
@@ -3868,6 +3874,8 @@ module cpu_ooo #(
       .i_early_active(early_mispredict_active),
       .i_early_tag(early_mispredict_tag),
       .i_early_taken(early_mispredict_branch_taken),
+      .i_early_dir_bit(early_mispredict_is_jalr ? early_mispredict_branch_target[2] :
+                                                  early_mispredict_branch_taken),
       .i_flush_full(flush_all || mispredict_recovery_pending),
       .i_alloc_q(rob_alloc_q),
       .i_alloc_tag(tage_alloc_tag),
@@ -3978,6 +3986,9 @@ module cpu_ooo #(
       .i_early_mispredict_branch_target(early_mispredict_branch_target),
       .i_early_mispredict_branch_taken(early_mispredict_branch_taken),
       .i_early_mispredict_is_compressed(early_mispredict_is_compressed),
+      .i_early_mispredict_is_jalr(early_mispredict_is_jalr),
+      .i_early_mispredict_is_call(early_mispredict_is_call),
+      .i_early_mispredict_is_return(early_mispredict_is_return),
       .i_restored_ras_tos(restored_ras_tos),
       .i_restored_ras_valid_count(restored_ras_valid_count),
       .i_restored_ras_top(restored_ras_top),

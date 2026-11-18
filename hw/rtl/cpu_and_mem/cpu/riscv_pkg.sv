@@ -2729,6 +2729,10 @@ package riscv_pkg;
   // Checkpoint parameters
   localparam int unsigned NumCheckpoints = 8;  // For branch speculation recovery
   localparam int unsigned CheckpointIdWidth = $clog2(NumCheckpoints);  // 3 bits
+  // A mispredicted JALR (indirect jump, indirect call or return) recovers
+  // when it resolves, like a conditional branch. Clear to recover JALRs at
+  // commit.
+  localparam bit EarlyJalrRecovery = 1'b1;
 
   // Register file sizes
   localparam int unsigned NumIntRegs = 32;  // x0-x31
