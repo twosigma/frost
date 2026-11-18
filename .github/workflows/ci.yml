@@ -211,8 +211,10 @@ jobs:
     runs-on: ubuntu-26.04
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
-    # Real-program jobs allow four hours, including setup and coverage uploads.
-    timeout-minutes: ${{ startsWith(matrix.shard.name, 'Unit Tests') && 360 || 240 }}
+    # Real-program jobs allow four hours, including setup and coverage uploads,
+    # unless the shard sets timeout_minutes. A shard's limit is 1.8 times its
+    # slowest measured time, rounded up, so a slow runner still finishes it.
+    timeout-minutes: ${{ matrix.shard.timeout_minutes || (startsWith(matrix.shard.name, 'Unit Tests') && 360 || 240) }}
     strategy:
       fail-fast: false
       matrix:
@@ -236,6 +238,7 @@ jobs:
               [drain_trapframe_test] or [restore_window_stress] or [mret_drain_deadlock] or
               [linux_clksrc_faithful] or [trap_s2l_fwd] or [pde_return_hazard] or [nic_dma_stress]
           - name: Real Programs (Privilege and MMU)
+            timeout_minutes: 280
             coverage: [ddr]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
@@ -336,28 +339,43 @@ jobs:
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: "[full_line_test_link1]"
-          # Profiling and VLEN 256 configurations share their respective builds.
-          - name: Real Programs (Runtime benchmarks and vector)
+          # The PAUSE and RAS benchmarks share profiling builds.
+          - name: Real Programs (Runtime benchmarks)
             coverage: [bram]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [pause_test] or [ras_slot_bench] or [ras_repair_bench] or
-              [vec_state_test_v256] or [vec_vsetvl_test_v256] or [vec_arith_test_v256] or
-              [vec_mem_test_v256] or [vec_order_test_v256]
+            pytest_filter: "[pause_test] or [ras_slot_bench] or [ras_repair_bench]"
+          # Every registry name starting with vec_ runs here, so vector programs
+          # added later need no workflow change. The VLEN 256 programs share one build.
+          - name: Real Programs (Vector programs)
+            timeout_minutes: 120
+            coverage: [bram]
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[vec_"
           - name: Real Programs (Memory and NIC stress)
+            timeout_minutes: 270
             coverage: [bram]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
               [nic_bench] or [nic_sg_loopback] or [nic_rate] or
               [l2_capacity_chase_capacity] or [l2_capacity_chase_smoke] or
-              [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [misaligned_test] or
-              [memerr_test] or [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test] or
-              [sstvala_fault_test] or [ddr_reset_distribution] or [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
+              [misaligned_test] or [sstvala_fault_test] or [ddr_reset_distribution] or
+              [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
+          - name: Real Programs (Cache management and memory errors)
+            coverage: [bram]
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [memerr_test] or
+              [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
+          - name: Real Programs (Self-modifying code and fence.i)
+            coverage: [bram]
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[smc_stale_test] or [smc_torture] or [smc_predict_test] or [fencei_bench]"
           # The complement keeps unlisted non-CoreMark-PRO programs in CI.
           # OpenSBI and registry budgets above 10 million cycles need named
           # shards; give each OpenSBI boot its own BRAM-only include entry.
           # Keep the exclusions in sync with every named shard.
           - name: Real Programs (Runtime and other)
+            timeout_minutes: 300
             coverage: [bram]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
@@ -413,17 +431,19 @@ jobs:
               or [memerr_test] or [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
               or [sstvala_fault_test] or [ddr_reset_distribution] or [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
               or [pause_test] or [ras_slot_bench] or [ras_repair_bench]
-              or [vec_state_test_v256] or [vec_vsetvl_test_v256] or [vec_arith_test_v256] or
-              [vec_mem_test_v256] or [vec_order_test_v256])
+              or [smc_stale_test] or [smc_torture] or [smc_predict_test] or [fencei_bench]
+              or [vec_)
           - name: Real Programs (CoreMark-PRO / core)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_core]"
           - name: Real Programs (CoreMark-PRO / loops)
+            timeout_minutes: 340
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_loops]"
           - name: Real Programs (CoreMark-PRO / nnet)
+            timeout_minutes: 270
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_nnet]"
@@ -483,6 +503,7 @@ jobs:
           - mem_config: bram
             shard:
               name: Real Programs (OpenSBI smoke, no misaligned hardware)
+              timeout_minutes: 290
               coverage: [bram]
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_smoke_no_misaligned_hw]"
