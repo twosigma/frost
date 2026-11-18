@@ -33,6 +33,8 @@
 
 module tomasulo_wrapper #(
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
+    // Zicbom CMOs of cached DDR go to the hierarchy (store_queue CMO_HOME).
+    parameter bit CMO_HOME = 1'b0,
     parameter bit SPLIT_RS_DISPATCH = 1'b0,
     parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0,
     parameter bit MEM_RESPONSE_ERRORS = 1'b0,
@@ -91,6 +93,12 @@ module tomasulo_wrapper #(
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
     output logic o_coherent_write_sc,
     output logic o_coherent_write_zero,
+    // Zicbom requests for the coherent hierarchy (store_queue CMO_HOME).
+    output logic o_cmo_valid,
+    output riscv_pkg::cmo_kind_e o_cmo_kind,
+    output logic [riscv_pkg::XLEN-1:0] o_cmo_addr,
+    input logic i_cmo_ready = 1'b0,
+    input logic i_cmo_done = 1'b0,
     output logic o_coherent_write_more,
     output logic o_coherent_next_same,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_sq_write_tag,
@@ -1834,9 +1842,9 @@ module tomasulo_wrapper #(
   assign mem_rs_issue_atomic_pma = (o_mem_rs_issue.op == riscv_pkg::SC) ||
       (o_mem_rs_issue.op == riscv_pkg::CBO_ZERO);
   // Zicbom ops take the ordinary store PMA map: a block in BRAM, DDR or a
-  // device window is permitted (as a load or a store to it would be) and
-  // executes as an ordered no-op (store_queue); outside the map is a store
-  // access fault. Their zero immediate leaves rs1 as the address.
+  // device window is permitted. The store queue sends cacheable DDR blocks
+  // to the home. Other permitted blocks complete locally. Outside the map
+  // these instructions raise a store access fault at rs1.
   assign mem_rs_issue_is_cmo = (o_mem_rs_issue.op == riscv_pkg::CBO_CLEAN) ||
       (o_mem_rs_issue.op == riscv_pkg::CBO_FLUSH) || (o_mem_rs_issue.op == riscv_pkg::CBO_INVAL);
   // store_addr_pma_ok comes from coherent_store_pm_select below.
@@ -2543,9 +2551,9 @@ module tomasulo_wrapper #(
   end
 
   // Translated and untranslated store-completion cofactors; the untranslated
-  // one comes from coherent_store_pm_select. A Zicbom op completes at issue
-  // wherever its block lies: it writes nothing, so no precise bus response
-  // can fault it.
+  // one comes from coherent_store_pm_select. The ROB marks a permitted Zicbom
+  // op done at issue. After retirement the SQ waits for any home write-back.
+  // A failed write response raises the home's fatal error.
   (* keep = "true" *) logic store_complete_translated;
   logic store_complete_valid;
   assign store_complete_translated = store_issue_translated &&
@@ -4830,6 +4838,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
   store_queue #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
+      .CMO_HOME(CMO_HOME),
       .PRECISE_UNCACHED(MEM_RESPONSE_ERRORS),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
@@ -4844,6 +4853,11 @@ module tomasulo_wrapper #(
       .i_coherent_sc_tag(o_coherent_sc_tag),
       .o_coherent_write_sc(o_coherent_write_sc),
       .o_coherent_write_zero(o_coherent_write_zero),
+      .o_cmo_valid(o_cmo_valid),
+      .o_cmo_kind(o_cmo_kind),
+      .o_cmo_addr(o_cmo_addr),
+      .i_cmo_ready(i_cmo_ready),
+      .i_cmo_done(i_cmo_done),
       .o_coherent_write_more(o_coherent_write_more),
       .o_coherent_next_same(o_coherent_next_same),
       .o_coherent_write_tag(o_coherent_sq_write_tag),

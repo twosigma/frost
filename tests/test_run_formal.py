@@ -65,6 +65,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
+    ("coherence_home", "coh_home_cmo_cover"): 6000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
@@ -545,6 +546,7 @@ FORMAL_TARGETS = [
             "coh_home_control4_bmc",
             "coh_home_control4_ultra_bmc",
             "coh_home_fill_cover",
+            "coh_home_cmo_cover",
             "coh_home_wb_prove",
             "coh_home_victim_cover",
             "coh_home_error_cover",
@@ -2867,6 +2869,10 @@ SBY_TASKS = [
     ),
     ("coh_home_fill_cover", "Fill installation, forward and waiter wake reachability."),
     (
+        "coh_home_cmo_cover",
+        "Zicbom fills: write-back, clean, inval and absent-line grants.",
+    ),
+    (
         "coh_home_dispatch_cover",
         "A dispatch-cycle lookup offer that loses the tag arbiter and wins from Lookup.",
     ),
@@ -4445,7 +4451,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_home": (
         "not converted: memory_map and opt without -keepdc; no setundef",
         {
-            "coh_home_control_prove coh_home_control64_prove coh_home_control_partition_prove coh_home_control4_bmc coh_home_control4_ultra_bmc coh_home_fill_cover coh_home_wb_prove coh_home_victim_cover coh_home_error_cover coh_home_prefetch_cover coh_home_dispatch_cover": [
+            "coh_home_control_prove coh_home_control64_prove coh_home_control_partition_prove coh_home_control4_bmc coh_home_control4_ultra_bmc coh_home_fill_cover coh_home_cmo_cover coh_home_wb_prove coh_home_victim_cover coh_home_error_cover coh_home_prefetch_cover coh_home_dispatch_cover": [
                 "memory_map",
                 "opt",
             ],
@@ -9508,7 +9514,7 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     proof = formal_task_config("coherent_hart_cache", "coh_hart_maint_prove")
     common = [
         "select -assert-none t:$check r:FLAVOR=assume %i",
-        "select -assert-count 373 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 375 t:$check r:FLAVOR=assert %i",
     ]
     lemmas = (
         "c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* "
@@ -9518,14 +9524,14 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     covers = "chformal -cover -remove"
     owned_commands = common + [
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %d",
-        "select -assert-count 285 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 286 t:$check r:FLAVOR=assert %i",
         covers,
     ]
     proof_commands = common + [
-        f"select -assert-count 285 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
+        f"select -assert-count 286 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
         f"chformal -assert2assume {lemmas}",
-        "select -assert-count 285 t:$check r:FLAVOR=assume %i",
-        "select -assert-count 88 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 286 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 89 t:$check r:FLAVOR=assert %i",
         covers,
     ]
 
