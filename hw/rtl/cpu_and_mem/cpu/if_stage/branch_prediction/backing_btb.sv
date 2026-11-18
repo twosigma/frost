@@ -82,6 +82,7 @@ module backing_btb #(
 ) (
     input logic i_clk,
     input logic i_reset,
+    input logic i_redirect, // The fetch request before this edge is discarded.
 
     // Lookup: the set of the fetch PC register's word. The response, one
     // cycle later, is for the packet IF serves then.
@@ -366,7 +367,8 @@ module backing_btb #(
   logic request_valid_q;
   always_ff @(posedge i_clk) begin
     request_index_q <= i_lookup_index;
-    request_valid_q <= !i_reset && !sweep_active;
+    if (i_reset) request_valid_q <= 1'b0;
+    else request_valid_q <= !sweep_active && !i_redirect;
   end
 
   logic [1:0][TagRowBits-1:0] tags_q;
@@ -429,10 +431,9 @@ module backing_btb #(
   assign held_last_set = &held_index_q;
 
   // The newest read is held whenever it covers the packet, aligned or
-  // shifted. Reset and the sweep drop the held read, like the reads they
-  // make.
+  // shifted. A redirect discards reads from the previous fetch path.
   always_ff @(posedge i_clk) begin
-    if (i_reset || sweep_active) begin
+    if (i_reset || sweep_active || i_redirect) begin
       held_valid_q <= 1'b0;
     end else if (aligned || shifted) begin
       held_valid_q   <= 1'b1;
@@ -710,7 +711,8 @@ module backing_btb #(
   // The mirror's sets as of the held read's request edge.
   logic [1:0][SetBits-1:0] formal_held_q;
   always_ff @(posedge i_clk) begin
-    if (!(i_reset || sweep_active) && (aligned || shifted)) formal_held_q <= formal_lookup_q;
+    if (!(i_reset || sweep_active || i_redirect) && (aligned || shifted))
+      formal_held_q <= formal_lookup_q;
   end
   initial for (int set = 0; set < Sets; set++) formal_sets[set] = '0;
   always_ff @(posedge i_clk) begin
@@ -912,6 +914,11 @@ module backing_btb #(
       if ($past(i_reset || sweep_active)) begin
         p_formal_no_hit_after_reset_or_sweep : assert (o_hit == 2'b00);
       end
+      if ($past(i_redirect)) begin
+        p_formal_redirect_discards_reads :
+        assert (!request_valid_q && !held_valid_q && (o_hit == 2'b00));
+      end
+      cover ($past(i_redirect) && i_redirect && !held_valid_q);
       cover (o_hit[0] && !$past(i_update || i_refresh));
       cover (o_hit[1] && !slot2_image);
       cover (o_hit[1] && slot2_image);

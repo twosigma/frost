@@ -311,7 +311,8 @@ read answers, compared with the packet's PC in the same way. The first packet
 after a redirect often waits in the holdoff while `o_pc` has already moved on
 to the next window, so without the held read a jump or return in that packet
 lost the hit it had in its first cycle and mispredicted (from cached DDR,
-every such return did). A held read can predate training writes made since;
+every such return did). A fetch retarget discards the outstanding and held reads. Within a fetch path,
+a held read can predate training writes made since;
 an entry it still shows costs at most a misprediction. The fetch PC also often
 sits at a halfword of the word before the window IF then serves (in compressed
 code, `o_pc` 0x902 and then `pc_reg` 0x904), so the read is for the set before

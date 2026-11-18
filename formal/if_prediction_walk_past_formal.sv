@@ -459,6 +459,7 @@ module backing_btb #(
 ) (
     input  logic                                             i_clk,
     input  logic                                             i_reset,
+    input  logic                                             i_redirect,
     input  logic [$clog2(ENTRIES/WAYS)-1:0]                  i_lookup_index,
     input  logic [                XLEN-1:0]                  i_packet_pc,
     input  logic                                             i_packet_compressed,

@@ -1092,16 +1092,14 @@ module if_stage #(
   assign fetch_cached_retarget_redirect = i_from_ex_comb.branch_taken || i_pd_redirect;
   assign fetch_cached_retarget_flush = i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken ||
                                        i_fence_i_flush;
+  logic discard_fetch_request;
+  assign discard_fetch_request = (pc_update_en &&
+      (fetch_cached_retarget_redirect || slot2_prediction_used_for_pc ||
+       live_prediction_emits_with_output || window_resteer_pc_reg)) ||
+      fetch_cached_retarget_flush;
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) begin
-      o_fetch_cached_retarget <= 1'b0;
-    end else begin
-      o_fetch_cached_retarget <=
-          (pc_update_en &&
-           (fetch_cached_retarget_redirect || slot2_prediction_used_for_pc ||
-            live_prediction_emits_with_output || window_resteer_pc_reg)) ||
-          fetch_cached_retarget_flush;
-    end
+    if (i_pipeline_ctrl.reset) o_fetch_cached_retarget <= 1'b0;
+    else o_fetch_cached_retarget <= discard_fetch_request;
   end
 
   // ===========================================================================
@@ -2176,6 +2174,7 @@ module if_stage #(
   ) u_backing_btb (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
+      .i_redirect(discard_fetch_request),
       .i_lookup_index(pc_tage_lookup[BackingIndexBits+1:2]),
       .i_packet_pc(pc_reg),
       .i_packet_compressed(is_compressed),
