@@ -729,8 +729,12 @@ module pd_stage #(
   // from slot 2's otherwise, with slot 1's upper PC bits.
   logic [1:0] pd_jalr;
   logic [1:0] pd_itt_eligible;
-  logic pd_itt_candidate;
-  logic pd_itt_candidate_2;
+  logic [1:0] pd_itt_available;
+  logic [1:0] pd_itt_available_r;
+  logic [1:0] pd_itt_live_hit_r;
+  logic [1:0] pd_itt_fast_taken_r;
+  logic [1:0][riscv_pkg::PhysAddrBits-2:0] pd_itt_slot_target_r;
+  logic [1:0] pd_itt_override_r;
   logic pd_itt_candidate_r;
   logic pd_itt_candidate_2_r;
   logic pd_itt_redirect_r;
@@ -741,6 +745,7 @@ module pd_stage #(
   assign pd_jalr[1] = is_jalr(i_from_if_to_pd_2.effective_instr);
   assign pd_itt_eligible[0] = pd_jalr[0] && !is_return(instruction_non_nop_predecoded_rs2);
   assign pd_itt_eligible[1] = pd_jalr[1] && !is_return(i_from_if_to_pd_2.effective_instr);
+  assign pd_itt_available = pd_itt_eligible & i_itt_hit;
   assign o_jalr = pd_jalr;
   assign o_itt_eligible = pd_itt_eligible;
   assign o_jump = {pd_slot2_jump, pd_slot1_jump};
@@ -758,10 +763,12 @@ module pd_stage #(
        (i_from_if_to_pd.ras_checkpoint_valid_count != '0)) ?
       i_from_if_to_pd.ras_checkpoint_top[2] :
       (pd_backing_slot1_owner ? i_backing_target[0][1] : i_backing_target[1][1]);
-  assign pd_jump_target_bit[0] = pd_itt_candidate ? i_itt_target[0][1] :
+  // On an eligible hit, the indirect bit is correct even if the fast target
+  // suppresses the redirect: equal targets have the same history bit.
+  assign pd_jump_target_bit[0] = pd_itt_available[0] ? i_itt_target[0][1] :
       i_from_if_to_pd.btb_predicted_taken ? i_from_if_to_pd.btb_predicted_target[2] :
                                             pd_backing_target_bit2;
-  assign pd_jump_target_bit[1] = pd_itt_candidate_2 ? i_itt_target[1][1] :
+  assign pd_jump_target_bit[1] = pd_itt_available[1] ? i_itt_target[1][1] :
       i_from_if_to_pd_2.btb_predicted_taken ? i_from_if_to_pd_2.btb_predicted_target[2] :
                                               pd_backing_target_bit2;
   assign o_pred_taken[0] = pd_slot1_jump ? pd_jump_target_bit[0] :
@@ -769,29 +776,21 @@ module pd_stage #(
   assign o_pred_taken[1] = pd_slot2_jump ? pd_jump_target_bit[1] :
       (pd_taken_candidate_2 ||
        (!pd_not_taken_candidate_2 && i_from_if_to_pd_2.btb_predicted_taken));
-  assign pd_itt_candidate = pd_itt_eligible[0] && i_itt_hit[0] &&
-      !(i_from_if_to_pd.btb_predicted_taken &&
-        (i_from_if_to_pd.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] == i_itt_target[0]));
-  assign pd_itt_candidate_2 = pd_itt_eligible[1] && i_itt_hit[1] &&
-      !(i_from_if_to_pd_2.btb_predicted_taken &&
-        (i_from_if_to_pd_2.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] == i_itt_target[1]));
-  // A live candidate's slot holds a real instruction: a killed slot 2 (behind
-  // slot-1 control flow) still decodes the bytes after slot 1, and its lookup
-  // may hit. Only a live candidate selects the redirect target, which every
-  // redirect of the packet shares: a stale one would replace a slot-1
-  // branch's fall-through, which resolution never checks, so the killed JALR
-  // would be skipped and its callee would run.
-  logic pd_itt_live;
-  logic pd_itt_live_2;
-  assign pd_itt_live = pd_itt_candidate && !i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault;
-  assign pd_itt_live_2 = pd_itt_candidate_2 && !i_from_if_to_pd_2.sel_nop &&
-                         !i_from_if_to_pd_2.fetch_fault;
   assign pd_itt_target = {
     i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
     pd_itt_eligible[0] ? i_itt_target[0] : i_itt_target[1],
     1'b0
   };
 `ifndef SYNTHESIS
+  // Reference with the target comparison before the packet register.
+  logic pd_itt_candidate;
+  logic pd_itt_candidate_2;
+  assign pd_itt_candidate = pd_itt_eligible[0] && i_itt_hit[0] &&
+      !(i_from_if_to_pd.btb_predicted_taken &&
+        (i_from_if_to_pd.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] == i_itt_target[0]));
+  assign pd_itt_candidate_2 = pd_itt_eligible[1] && i_itt_hit[1] &&
+      !(i_from_if_to_pd_2.btb_predicted_taken &&
+        (i_from_if_to_pd_2.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] == i_itt_target[1]));
   logic pd_slot2_target_select;
   logic pd_backing_target_select;
   logic pd_backing_target_return;
@@ -823,6 +822,16 @@ module pd_stage #(
       !o_from_pd_to_id_2.fetch_fault;
   // An indirect target redirect takes its slot's bubble and fetch-fault
   // vetoes; a BTB prediction with another target does not veto it.
+  // The packet already carries both fast targets. Compare its registered
+  // operands so neither fast target feeds an equality tree before this edge.
+  assign pd_itt_override_r[0] = !pd_itt_fast_taken_r[0] ||
+      (o_from_pd_to_id.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] !=
+       pd_itt_slot_target_r[0]);
+  assign pd_itt_override_r[1] = !pd_itt_fast_taken_r[1] ||
+      (o_from_pd_to_id_2.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] !=
+       pd_itt_slot_target_r[1]);
+  assign pd_itt_candidate_r = pd_itt_available_r[0] && pd_itt_override_r[0];
+  assign pd_itt_candidate_2_r = pd_itt_available_r[1] && pd_itt_override_r[1];
   assign pd_itt_redirect_r = pd_itt_candidate_r && !o_from_pd_to_id.inject_nop &&
                              !o_from_pd_to_id.fetch_fault;
   assign pd_itt_redirect_2_r = pd_itt_candidate_2_r && !o_from_pd_to_id_2.inject_nop &&
@@ -878,8 +887,7 @@ module pd_stage #(
       pd_not_taken_candidate_2_r <= 1'b0;
       pd_backing_candidate_r     <= 1'b0;
       pd_backing_candidate_2_r   <= 1'b0;
-      pd_itt_candidate_r         <= 1'b0;
-      pd_itt_candidate_2_r       <= 1'b0;
+      pd_itt_available_r         <= '0;
     end else if (i_pipeline_ctrl.flush) begin
       pd_taken_candidate_r       <= 1'b0;
       pd_not_taken_candidate_r   <= 1'b0;
@@ -887,8 +895,7 @@ module pd_stage #(
       pd_not_taken_candidate_2_r <= 1'b0;
       pd_backing_candidate_r     <= 1'b0;
       pd_backing_candidate_2_r   <= 1'b0;
-      pd_itt_candidate_r         <= 1'b0;
-      pd_itt_candidate_2_r       <= 1'b0;
+      pd_itt_available_r         <= '0;
     end else if (!i_pipeline_ctrl.stall) begin
       pd_taken_candidate_r       <= pd_taken_candidate;
       pd_not_taken_candidate_r   <= pd_not_taken_candidate;
@@ -896,18 +903,28 @@ module pd_stage #(
       pd_not_taken_candidate_2_r <= pd_not_taken_candidate_2;
       pd_backing_candidate_r     <= pd_backing_candidate;
       pd_backing_candidate_2_r   <= pd_backing_candidate_2;
-      pd_itt_candidate_r         <= pd_itt_candidate;
-      pd_itt_candidate_2_r       <= pd_itt_candidate_2;
+      pd_itt_available_r         <= pd_itt_available;
     end
   end
   // The target and its select load on every unstalled edge, like the other
   // target registers, so a flush that clears the candidates leaves them
   // aligned with the reference.
+  // A dead JALR behind a branch must never select the shared target.
+  // Capture the unmasked fast-taken bits because flush and a preceding PD
+  // redirect clear the taken bits sent to ID even when target data loads.
   logic pd_itt_target_select_r;
+  assign pd_itt_target_select_r = |(pd_itt_live_hit_r & pd_itt_override_r);
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall) begin
       pd_itt_target_r <= pd_itt_target;
-      pd_itt_target_select_r <= pd_itt_live || pd_itt_live_2;
+      pd_itt_slot_target_r <= i_itt_target;
+      pd_itt_fast_taken_r <= {
+        i_from_if_to_pd_2.btb_predicted_taken, i_from_if_to_pd.btb_predicted_taken
+      };
+      pd_itt_live_hit_r[0] <= pd_itt_available[0] && !i_from_if_to_pd.sel_nop &&
+                              !i_from_if_to_pd.fetch_fault;
+      pd_itt_live_hit_r[1] <= pd_itt_available[1] && !i_from_if_to_pd_2.sel_nop &&
+                              !i_from_if_to_pd_2.fetch_fault;
     end
   end
 
@@ -1579,6 +1596,45 @@ module pd_stage #(
   assign formal_s2_comp_low_sum =
       {1'b0, i_from_if_to_pd_2.program_counter[PdTargetSplit-1:0]} +
       {1'b0, pd_slot2_imm_b_compressed[PdTargetSplit-1:0]};
+
+  // Sample the original compare-before-register equations independently,
+  // including the different reset/flush rules for candidates and payload.
+  logic [1:0] formal_itt_candidates_q;
+  logic formal_itt_select_q;
+  logic formal_itt_payload_loaded = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) formal_itt_candidates_q <= '0;
+    else if (!i_pipeline_ctrl.stall)
+      formal_itt_candidates_q <= {pd_itt_candidate_2, pd_itt_candidate};
+    if (!i_pipeline_ctrl.stall) begin
+      formal_itt_select_q <= pd_itt_reference_next || pd_itt_reference_next_2;
+      formal_itt_payload_loaded <= 1'b1;
+    end
+  end
+
+  always_comb begin
+    if (formal_past_valid) begin
+      p_formal_itt_registered_candidates_exact :
+      assert ({pd_itt_candidate_2_r, pd_itt_candidate_r} == formal_itt_candidates_q);
+    end
+    if (formal_itt_payload_loaded) begin
+      p_formal_itt_registered_select_exact : assert (pd_itt_target_select_r == formal_itt_select_q);
+    end
+    p_formal_itt_history_bit1_exact :
+    assert (pd_jump_target_bit[0] == (pd_itt_candidate ? i_itt_target[0][1] :
+        i_from_if_to_pd.btb_predicted_taken ? i_from_if_to_pd.btb_predicted_target[2] :
+                                             pd_backing_target_bit2));
+    p_formal_itt_history_bit2_exact :
+    assert (pd_jump_target_bit[1] == (pd_itt_candidate_2 ? i_itt_target[1][1] :
+        i_from_if_to_pd_2.btb_predicted_taken ? i_from_if_to_pd_2.btb_predicted_target[2] :
+                                               pd_backing_target_bit2));
+    c_formal_itt_equal_fast_target :
+    cover (formal_itt_payload_loaded && pd_itt_live_hit_r[1] && !pd_itt_override_r[1]);
+    c_formal_itt_different_fast_target :
+    cover (formal_itt_payload_loaded && pd_itt_fast_taken_r[1] && pd_itt_redirect_2_r);
+    c_formal_itt_held_target_select :
+    cover (formal_itt_payload_loaded && i_pipeline_ctrl.stall && pd_itt_target_select_r);
+  end
 
   logic [1:0][XLEN-1:0] formal_itt_slot_target_q;
   always_ff @(posedge i_clk) begin

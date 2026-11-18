@@ -252,7 +252,10 @@ target's low bits (the upper bits come from the JALR's PC, as in the BTB), a
 provides the target. PD redirects a JALR that is not a return to that target
 when its lookup matched and the BTB did not already predict the same target,
 like a backing BTB redirect: two bubbles, a push for an indirect call the
-BTB did not predict, and ID gives the JALR the target to check. At commit a
+BTB did not predict, and ID gives the JALR the target to check. PD compares
+the two targets after registering them with the packet. An eligible hit
+supplies the jump's history bit directly because equal targets share that
+bit. At commit a
 correct target raises the provider's confidence; a wrong one lowers it or,
 at zero, replaces the target; and a mispredicted JALR allocates in the
 shortest table above its provider whose entry is not useful. If the training

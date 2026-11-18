@@ -1602,10 +1602,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
-        "PD backing-BTB jump redirects and slot-1/slot-2 TAGE conditional-branch "
-        "overrides fire only with their vetoes clear, stack operations and "
-        "refreshes follow them, and redirect directions and targets match PD's "
-        "reference models",
+        "PD backing, indirect and direction redirects require a live slot; each "
+        "indirect candidate, target selection and history bit matches the "
+        "compare-before-register equations, and stack operations, refreshes, "
+        "directions and targets match PD's reference models",
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
