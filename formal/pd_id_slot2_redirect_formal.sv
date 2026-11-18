@@ -173,7 +173,7 @@ module pd_id_slot2_redirect_formal #(
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall)
       slot2_itt_target_q <= {
-        i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], i_itt_target[1], 1'b0
+        i_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], i_itt_target[1], 1'b0
       };
   end
   assign fallthrough_pc = pd_redirect_slot2 ? from_pd_to_id_2.program_counter :

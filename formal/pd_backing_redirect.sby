@@ -1,16 +1,20 @@
 [tasks]
 bmc
 cover
+prove_indirect
 
 [options]
 bmc: mode bmc
 bmc: depth 10
 cover: mode cover
 cover: depth 10
+prove_indirect: mode prove
+prove_indirect: depth 6
 
 [engines]
 bmc: abc bmc3
 cover: smtbmc boolector
+prove_indirect: smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
@@ -24,6 +28,14 @@ setattr -mod -unset keep_hierarchy *
 hierarchy -top pd_stage
 script free_undefined.ys
 prep -flatten -top pd_stage
+
+# Prove eligibility, trap isolation and both full-width indirect payloads through
+# any number of stalls or redirects on the same packet assumptions as the BMC.
+prove_indirect: select -set edge_obligations c:p_reserved_slot* c:p_formal_slot?_indirect_payload c:p_formal_slot?_itt_redirect_is_its_jalr
+prove_indirect: select -assert-count 7 @edge_obligations t:$check %i r:FLAVOR=assert %i
+prove_indirect: chformal -assert -remove t:$check r:FLAVOR=assert %i @edge_obligations %d
+prove_indirect: chformal -cover -remove
+prove_indirect: select -assert-count 7 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

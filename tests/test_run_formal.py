@@ -1606,8 +1606,9 @@ FORMAL_TARGETS = [
         "indirect candidate and target selection matches the compare-before-register "
         "equations, both history outputs match the branch direction or jump target bit, "
         "a reserved compressed jump preserves only its trap, and stack operations, "
-        "refreshes, directions and targets match PD's reference models",
-        tasks=("bmc", "cover"),
+        "refreshes, directions and targets match PD's reference models across address regions; induction checks "
+        "indirect eligibility, payloads and reserved traps",
+        tasks=("bmc", "cover", "prove_indirect"),
     ),
     FormalTarget(
         "pd_redirect_next_equiv.sby",
@@ -1750,7 +1751,7 @@ FORMAL_TARGETS = [
         "if_prediction_walk_past.sby",
         "Fetch stage preserves pc_reg continuity and emits no real packet while "
         "post-prediction holdoff holds pc_reg, including walked-past pending predictions; "
-        "covers real slot-2 packets and an indirect hit after a reserved compressed parcel",
+        "covers real slot-2 packets, an indirect hit after a reserved compressed parcel, and a hit across the target-address region",
         tasks=("bmc", "continuity", "cover"),
     ),
     FormalTarget(
@@ -1989,6 +1990,7 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("prove_indirect", "Unbounded pre-decode indirect target, eligibility and trap isolation."),
     ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),

@@ -2164,3 +2164,31 @@ async def test_itt_hit_requires_a_live_nonreturn_jalr_in_its_slot(dut: Any) -> N
             assert fire == redirects
             if fire:
                 assert taken and second_slot == bool(slot) and target == targets[slot]
+
+
+@cocotb.test()
+async def test_slot2_indirect_target_uses_its_own_pc_region(dut: Any) -> None:
+    """A slot-2 JALR can begin just beyond the range stored in an ITT entry."""
+    await _setup_test(dut)
+    target_bits = len(dut.i_itt_target) // 2
+    region = 1 << (target_bits + 1)
+    low_target = 0x1000
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    jalr = _pack_i(imm=0, rs1=12, funct3=0, rd=1, opcode=OPC_JALR)
+    for first in (
+        _packet(region - 4, addi),
+        {
+            "program_counter": region - 2,
+            "raw_parcel": 0x0001,
+            "sel_compressed": True,
+            "sel_nop": False,
+            "effective_instr": OPC_OP_IMM,
+        },
+    ):
+        _drive_if_packet(dut, first)
+        _drive_if_packet(dut, _packet(region, jalr), slot2=True)
+        dut.i_itt_hit.value = 2
+        dut.i_itt_target.value = (low_target >> 1) << target_bits
+        redirect, taken, target, second = await _backing_redirect(dut)
+        assert redirect and taken and second
+        assert target == region + low_target

@@ -3653,6 +3653,14 @@ module if_stage #(
   );
   always_comb begin
     if (f_wp_past_valid && !i_pipeline_ctrl.reset) begin
+      f_cover_slot2_itt_crosses_region :
+      cover (f_wp_s1_real && f_wp_s2_real && !f_wp_any_redirect && !i_pipeline_ctrl.stall &&
+          !o_from_if_to_pd.fetch_fault && !o_from_if_to_pd_2.fetch_fault &&
+          o_from_if_to_pd.program_counter == (XLEN'(1) << riscv_pkg::PhysAddrBits) - 4 &&
+          o_from_if_to_pd_2.program_counter == (XLEN'(1) << riscv_pkg::PhysAddrBits) &&
+          !o_from_if_to_pd.sel_compressed && o_from_if_to_pd.effective_instr == 32'h0015_0513 &&
+          !o_from_if_to_pd_2.sel_compressed && !o_from_if_to_pd_2.btb_predicted_taken &&
+          o_from_if_to_pd_2.effective_instr == 32'h0005_80e7 && o_itt_hit == 2'b10);
       f_cover_slot2_itt_behind_reserved :
       cover (f_wp_s1_real && f_wp_s2_real && !f_wp_any_redirect && !i_pipeline_ctrl.stall &&
           !o_from_if_to_pd.fetch_fault && !o_from_if_to_pd_2.fetch_fault &&

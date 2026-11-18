@@ -1267,6 +1267,7 @@ proves, and its assumptions.
 ./scripts/frost.py formal                          # every task of every target
 ./scripts/frost.py formal --list-targets           # targets and their tasks
 ./scripts/frost.py formal --target reorder_buffer  # one target
+./scripts/frost.py formal --target pd_backing_redirect --task prove_indirect  # both indirect slots
 ./scripts/frost.py formal --task bmc               # one task on every target that declares it
 ```
 

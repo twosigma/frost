@@ -248,7 +248,8 @@ tables hash a JALR's word address with the newest 8, 24 and 64 bits of the
 tagged predictor's lookup history; each table is two 128-entry banks split by
 PC[2] and is looked up, registered and checked together with the tagged
 predictor, so the same coverage check applies. An entry holds a tag, the
-target's low bits (the upper bits come from the JALR's PC, as in the BTB), a
+target's low bits. The upper bits come from the JALR's own PC, including
+when the second slot starts in the next virtual address region. The entry also holds a
 2-bit confidence and a usefulness bit, and the longest-history match
 provides the target. PD redirects a JALR that is not a return to that target
 when its lookup matched and the BTB did not already predict the same target,
