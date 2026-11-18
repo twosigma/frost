@@ -33,6 +33,9 @@ from typing import Any
 import pytest
 
 import ci_reuse
+import sby_config
+from sby_config import commands as yosys_commands
+from sby_config import script_block
 
 # Path to the formal/ directory relative to the repository root
 FORMAL_DIR = "formal"
@@ -3622,14 +3625,7 @@ def test_formal_target_tasks_are_registered() -> None:
     assert len(files) == len(set(files)), "Duplicate formal target registration"
     assert set(files) == {path.name for path in formal_dir.glob("*.sby")}
     for target in FORMAL_TARGETS:
-        text = (formal_dir / target.sby_file).read_text()
-        section = text.split("[tasks]", 1)[1].split("[", 1)[0]
-        declared = [
-            line.split()[0]
-            for raw in section.splitlines()
-            if (line := raw.split("#", 1)[0].strip())
-        ]
-        assert len(declared) == len(set(declared)), target.name
+        declared = list(sby_config.source(formal_dir / target.sby_file).tasks)
         assert len(target.tasks) == len(set(target.tasks)), target.name
         assert set(declared) == set(target.tasks), (
             target.name,
@@ -3671,46 +3667,12 @@ FORMAL_SHARD_SETUP_S = 600
 
 def _sby_task_timeouts_s(sby_path: Path) -> dict[str, int]:
     """Return explicit ``timeout`` options (seconds) by task for an SBY file."""
-    section = ""
-    tasks: dict[str, set[str]] = {}
-    option_lines: list[str] = []
-    for raw in sby_path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or line.startswith("--"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            section = line.split()[0]
-            continue
-        if section == "[tasks]":
-            parts = line.split()
-            tasks[parts[0]] = set(parts)
-        elif section == "[options]":
-            option_lines.append(line)
-    if not tasks:
-        tasks[""] = {""}
-    timeouts: dict[str, int] = {}
-    for task_name, tags in tasks.items():
-        value: int | None = None
-        for line in option_lines:
-            if ":" in line:
-                selector, rest = (part.strip() for part in line.split(":", 1))
-                if selector.startswith("~"):
-                    pat = selector[1:]
-                    matched = pat not in tags and not re.fullmatch(pat, task_name)
-                else:
-                    matched = selector in tags or bool(
-                        re.fullmatch(selector, task_name)
-                    )
-                if not matched:
-                    continue
-            else:
-                rest = line
-            parts = rest.split()
-            if len(parts) == 2 and parts[0] == "timeout":
-                value = int(parts[1])
-        if value is not None:
-            timeouts[task_name] = value
-    return timeouts
+    source = sby_config.source(sby_path)
+    return {
+        name: int(value)
+        for name in source.tasks
+        if (value := source.task(name).options.get("timeout")) is not None
+    }
 
 
 def check_formal_shard_budgets(
@@ -3786,11 +3748,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     }
     for target_name, names in required.items():
         target = next(t for t in FORMAL_TARGETS if t.name == target_name)
-        task_text = (root / "formal" / target.sby_file).read_text()
-        task_lines = task_text.split("[tasks]", 1)[1].split("[options]", 1)[0]
-        sby_tasks = [
-            line.split()[0] for line in task_lines.splitlines() if line.strip()
-        ]
+        sby_tasks = list(sby_config.source(root / "formal" / target.sby_file).tasks)
         for name in names:
             assert registered.count(name) == 1, name
             assert target.tasks.count(name) == 1, name
@@ -3991,26 +3949,8 @@ def test_formal_shard_budget_sum_rejects_overcommitted_shard() -> None:
 
 def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
     """Return an SBY task's resolved sections, without comments."""
-    result = subprocess.run(
-        ["sby", "--dumpcfg", f"{target}.sby", task],
-        cwd=Path(__file__).resolve().parents[1] / "formal",
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
-    )
-    sections: dict[str, list[str]] = {}
-    section = ""
-    for raw in result.stdout.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("["):
-            section = line
-            sections[section] = []
-        else:
-            sections[section].append(line)
-    return sections
+    path = Path(__file__).resolve().parents[1] / FORMAL_DIR / f"{target}.sby"
+    return sby_config.resolved(path)[task].sections()
 
 
 # SymbiYosys gives a register without an initial value its free starting value
@@ -4070,16 +4010,28 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
 # accepts any arguments, "-x" must be given and "[-x]" may be, ":N" is the
 # number of arguments an option takes, "=a|b" lists the values its first
 # argument may take, and "-x*" accepts any option that begins with -x. Other
-# words are selections or names, which every form accepts.
+# words are selections or names, which every form accepts. No form accepts
+# any option at all: an option that a form does not list, a file it would
+# write among them, fails the form.
 DONT_CARE_FRONT_END = (
     "reads sources; the design it builds is the design the proof checks"
 )
 DONT_CARE_UNCHANGED = "changes nothing in the design"
 DONT_CARE_SAFE: dict[str, list[tuple[str, str]]] = {
-    "read": [("*", DONT_CARE_FRONT_END)],
-    "read_verilog": [("*", DONT_CARE_FRONT_END)],
-    "read_slang": [("*", DONT_CARE_FRONT_END)],
-    "verilog_defines": [("*", "sets macros for the readers that follow")],
+    "read": [
+        (
+            "[-formal] [-sv] [-noautowire] [-nosynthesis] [-define] [-D:1] [-D*]",
+            DONT_CARE_FRONT_END,
+        )
+    ],
+    "read_verilog": [("[-formal] [-sv] [-D:1] [-D*]", DONT_CARE_FRONT_END)],
+    "read_slang": [
+        (
+            "[--top:1] [--single-unit] [--no-synthesis-define] [-D*] [-G*]",
+            DONT_CARE_FRONT_END,
+        )
+    ],
+    "verilog_defines": [("[-D:1] [-D*]", "sets macros for the readers that follow")],
     "hierarchy": [
         ("[-check] [-top:1] [-chparam:2]", "elaborates the hierarchy below the top")
     ],
@@ -4275,19 +4227,21 @@ DONT_CARE_SAFE: dict[str, list[tuple[str, str]]] = {
             "builds the module that compares two designs; their undriven nets become x",
         )
     ],
-    "equiv_status": [("*", DONT_CARE_UNCHANGED)],
-    "debug": [
-        ("-on *", "turns debug messages on and runs nothing, whatever follows"),
-        ("-off *", "turns debug messages off and runs nothing, whatever follows"),
+    "equiv_status": [("[-assert]", DONT_CARE_UNCHANGED)],
+    "select": [
+        (
+            "[-assert-count:1] [-assert-min:1] [-assert-max:1] [-assert-none] "
+            "[-assert-any] [-set:1] [-module:1] [-clear] [-none] [-add] [-del] "
+            "[-list] [-count]",
+            "changes only the selection",
+        )
     ],
-    "select": [("*", "changes only the selection")],
-    "cd": [("*", "changes only the current module")],
-    "check": [("*", DONT_CARE_UNCHANGED)],
-    "log": [("*", DONT_CARE_UNCHANGED)],
-    "echo": [("*", DONT_CARE_UNCHANGED)],
-    "stat": [("*", DONT_CARE_UNCHANGED)],
-    "write_rtlil": [("*", DONT_CARE_UNCHANGED)],
-    "write_json": [("*", DONT_CARE_UNCHANGED)],
+    "cd": [("", "changes only the current module")],
+    "check": [("[-assert]", DONT_CARE_UNCHANGED)],
+    "log": [("[-stderr]", DONT_CARE_UNCHANGED)],
+    # They write a file; script_write_gaps checks which one.
+    "write_rtlil": [("", DONT_CARE_UNCHANGED)],
+    "write_json": [("", DONT_CARE_UNCHANGED)],
 }
 # The other forms of the commands that registered scripts run, and why they are
 # rejected.
@@ -4982,221 +4936,28 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
 
 
 def sby_task_tags(sby_path: Path) -> dict[str, set[str]]:
-    """Return each task of a script with its tags, its own name among them."""
-    tags: dict[str, set[str]] = {}
-    section = ""
-    for line in sby_path.read_text().splitlines():
-        if line.startswith("["):
-            section = line.strip()
-        elif section == "[tasks]" and line.strip() and not line.startswith("#"):
-            fields = line.split(":")
-            assert len(fields) <= 2, (sby_path, line)
-            names, task_tags = (
-                (fields[0].split()[:1], fields[0].split()[1:])
-                if len(fields) == 1
-                else (fields[0].split(), fields[1].split())
-            )
-            for name in names:
-                # Pattern task names would select other tasks' tags.
-                assert not set("(?*.[]|)") & set(name), (sby_path, name)
-                tags.setdefault(name, {name}).update(
-                    t for t in task_tags if t != "default"
-                )
-    return tags
+    """Return the declared tasks and their literal group tags."""
+    return {
+        task: tags for task, tags in sby_config.source(sby_path).tasks.items() if task
+    }
 
 
 def sby_line_tag(line: str, every_tag: set[str]) -> tuple[str, str]:
-    """Split a line into the task tag SymbiYosys reads at its start and the rest.
-
-    The tag is "" for a line without one. Only one tag counts, and only at the
-    start of the line: a tag after leading whitespace keeps the line for every
-    task, and Yosys then reads the tag as a label.
-    """
-    for tag in every_tag:
-        for prefix in (tag + ":", "~" + tag + ":"):
-            if line.startswith(prefix):
-                return prefix, line[len(prefix) :].lstrip()
+    """Split a literal task selector at the start of a validated source line."""
+    match = sby_config.TAG.fullmatch(line)
+    if match and match[2] in every_tag:
+        return match[1] + match[2] + ":", match[3].lstrip()
     return "", line
 
 
 def sby_task_scripts(sby_path: Path) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """Return each task's [script] lines as SymbiYosys selects them, and the files a script can run."""
-    lines = sby_path.read_text().splitlines()
-    tags = sby_task_tags(sby_path)
-    every_tag = set().union(*tags.values())
-    scripts: dict[str, list[str]] = {}
-    for task, active in (tags or {"": set()}).items():
-        section, in_tasks, in_block, skip_block = "", False, False, False
-        script: list[str] = []
-        for line in lines:
-            # SymbiYosys runs inline Python here, which these checks cannot read.
-            assert not line.startswith("--pycode"), sby_path
-            # The [tasks] section takes no tags.
-            if in_tasks and not line.startswith("["):
-                continue
-            in_tasks = line == "[tasks]"
-            if in_tasks:
-                continue
-            if in_block and line.strip() == "--":
-                in_block = skip_block = False
-                continue
-            skip_line = False
-            tag, line = sby_line_tag(line, every_tag)
-            if tag:
-                match = (tag.strip("~:") in active) != tag.startswith("~")
-                if line:
-                    skip_line = not match
-                else:
-                    in_block, skip_block, skip_line = True, not match, True
-            if skip_line or skip_block:
-                continue
-            header = re.fullmatch(r"\s*\[(.*)\]\s*", line)
-            if header:
-                section = "[" + " ".join(header.group(1).split()) + "]"
-            elif section == "[script]":
-                script.append(line.rstrip())
-        scripts[task] = script
-    files: dict[str, str] = {}
-    section = ""
-    body: list[str] = []
-    for line in lines + ["[end]"]:
-        if line.startswith("[") and line.rstrip().endswith("]"):
-            if section.startswith("[file "):
-                files[section[len("[file ") : -1].strip()] = "\n".join(body)
-            section, body = line.strip(), []
-        elif section.startswith("[file "):
-            body.append(line)
-        elif section == "[files]" and line.split() and not line.startswith("#"):
-            words = line.split()
-            source = sby_path.parent / words[-1]
-            if source.suffix == ".ys" and source.is_file():
-                files[words[0] if len(words) > 1 else source.name] = source.read_text()
-    return scripts, files
-
-
-def yosys_token(text: str) -> tuple[str, str]:
-    """Split off the next argument as Yosys's next_token does for commands."""
-    ends = ("", " ", "\t", "\r", "\n")
-    rest = text.lstrip(" \t\r\n")
-    if rest.startswith('"'):
-        for index in range(1, len(rest)):
-            if rest[index] == '"' and rest[index + 1 : index + 2] in ends:
-                return rest[: index + 1], rest[index + 1 :]
-            if rest[index : index + 2] == '";' and rest[index + 2 : index + 3] in ends:
-                return rest[: index + 1] + ";", rest[index + 2 :]
-    match = re.match(r"[^ \t\r\n]*", rest)
-    assert match is not None
-    return match.group(), rest[match.end() :]
-
-
-def yosys_commands(
-    script: list[str], files: dict[str, str], depth: int = 0
-) -> list[list[str]]:
-    """Return the commands a Yosys script runs, as argument lists.
-
-    Follows Yosys: a trailing backslash continues a line, a first word ending in
-    ':' is a label, an argument starting with '#' starts a comment, an argument
-    ending in ';' ends a command (';;' and ';;;' add clean and clean -purge),
-    and tee, debug, trace and script are replaced by the commands they run.
-    """
-    assert depth < 8, "script files include each other"
-    lines = list(script)
-    commands: list[list[str]] = []
-    while lines:
-        line = lines.pop(0)
-        while line.endswith("\\") and lines:
-            line = line[:-1] + lines.pop(0)
-        words = line.split()
-        if (
-            words
-            and not words[0].startswith("#")
-            and len(words[0]) > 1
-            and words[0].endswith(":")
-        ):
-            line = line.lstrip(" \t")[len(words[0]) :]
-        args: list[str] = []
-        token, line = yosys_token(line)
-        while token and not token.startswith("#"):
-            if token.endswith(";"):
-                count = len(token) - len(token.rstrip(";"))
-                if token.rstrip(";"):
-                    args.append(token.rstrip(";"))
-                commands += [
-                    args,
-                    {2: ["clean"], 3: ["clean", "-purge"]}.get(count, []),
-                ]
-                args = []
-            else:
-                args.append(token)
-            token, line = yosys_token(line)
-        commands.append(args)
-    result: list[list[str]] = []
-    for args in commands:
-        while args[:1] in (["tee"], ["trace"]) or (
-            args[:1] == ["debug"] and args[1:2] not in (["-on"], ["-off"])
-        ):
-            index = 1
-            while args[0] == "tee" and index < len(args):
-                if args[index] in ("-o", "-a", "-s"):
-                    index += 2
-                elif args[index] == "-q" or re.match(r"[-+][0-9]", args[index]):
-                    index += 1
-                else:
-                    break
-            args = args[index:]
-        if not args or args[0].startswith(("#", ":")):
-            continue
-        # A shell escape, an option this reader does not know or a script
-        # language would hide the commands that run.
-        assert not args[0].startswith(("!", "-", "+")), args
-        assert args[0] not in ("tcl", "exec", "python"), args
-        if args[0] == "script":
-            assert len(args) in (2, 3) and args[1] in files, args
-            lines = files[args[1]].splitlines()
-            if len(args) == 3:
-                lines = script_block(lines, args[2])
-            result += yosys_commands(lines, files, depth + 1)
-        else:
-            result.append(args)
-    return result
-
-
-def script_block(lines: list[str], labels: str) -> list[str]:
-    """Return the lines that `script <file> <labels>` runs, as Yosys selects them.
-
-    One label runs the block from that label to the next one; "from:to" runs
-    from the line labeled from (the start when empty) up to the line labeled to
-    (the end when empty), not including it. Continued lines are joined first.
-    """
-    run_from, _, run_to = (
-        labels.partition(":") if ":" in labels else (labels, "", labels)
+    """Read task scripts and shared include files for tools outside the image."""
+    source = sby_config.source(sby_path)
+    configs = {name: source.task(name) for name in source.tasks}
+    return (
+        {name: cfg.script for name, cfg in configs.items()},
+        next(iter(configs.values())).scripts(sby_path.parent),
     )
-    active = not run_from
-    joined: list[str] = []
-    while lines:
-        line = lines[0]
-        lines = lines[1:]
-        while line.endswith("\\") and lines:
-            line, lines = line[:-1] + lines[0], lines[1:]
-        joined.append(line)
-    selected: list[str] = []
-    for line in joined:
-        words = line.split()
-        if (
-            words
-            and not words[0].startswith("#")
-            and len(words[0]) > 1
-            and words[0].endswith(":")
-        ):
-            label = words[0][:-1]
-            line = line.lstrip(" \t")[len(words[0]) :]
-            if label == run_from:
-                active = True
-            elif label == run_to or (run_from == run_to and run_from):
-                active = False
-        if active:
-            selected.append(line)
-    return selected
 
 
 def dont_care_form_matches(form: str, args: list[str]) -> bool:
@@ -5254,11 +5015,14 @@ def dont_care_optimizations(commands: list[list[str]]) -> list[str]:
 
 def sby_dont_care_optimizations(sby_path: Path) -> dict[str, list[str]]:
     """Return each task's commands outside DONT_CARE_SAFE, in the order it runs them."""
-    scripts, files = sby_task_scripts(sby_path)
     return {
         task: found
-        for task, script in scripts.items()
-        if (found := dont_care_optimizations(yosys_commands(script, files)))
+        for task, cfg in sby_config.resolved(sby_path).items()
+        if (
+            found := dont_care_optimizations(
+                yosys_commands(cfg.script, cfg.scripts(sby_path.parent))
+            )
+        )
     }
 
 
@@ -5281,10 +5045,11 @@ def dont_care_changes(sby_path: Path) -> tuple[list[str], list[str]]:
     moved one is both. A file without an entry adds every command it flags. A
     task named "-" is the one task of a file without a [tasks] section.
     """
-    found = {
-        task or "-": commands
-        for task, commands in sby_dont_care_optimizations(sby_path).items()
-    }
+    try:
+        flagged = sby_dont_care_optimizations(sby_path)
+    except sby_config.ConfigError as error:
+        return [str(error)], []
+    found = {task or "-": commands for task, commands in flagged.items()}
     pinned = dont_care_pins(sby_path.stem)
     added: list[str] = []
     missing: list[str] = []
@@ -5303,6 +5068,7 @@ def dont_care_changes(sby_path: Path) -> tuple[list[str], list[str]]:
 def test_scripts_keep_dont_cares() -> None:
     """No proof script runs a command outside DONT_CARE_SAFE beyond its open entry."""
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
     added: list[str] = []
     missing: list[str] = []
     for sby_path in sorted(formal.glob("*.sby")):
@@ -5326,11 +5092,11 @@ def test_scripts_keep_dont_cares() -> None:
 def test_dont_care_classifies_every_command() -> None:
     """Every command a registered script runs has its forms decided."""
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
     names: dict[str, str] = {}
     for sby_path in sorted(formal.glob("*.sby")):
-        scripts, files = sby_task_scripts(sby_path)
-        for script in scripts.values():
-            for args in yosys_commands(script, files):
+        for cfg in sby_config.resolved(sby_path).values():
+            for args in yosys_commands(cfg.script, cfg.scripts(sby_path.parent)):
                 names.setdefault(args[0], sby_path.name)
     unknown = {
         name: path
@@ -5420,9 +5186,10 @@ UNDEFINED_OPENING = [
     ["proc_clean"],
     ["opt_expr", "-keepdc"],
 ]
-# Commands that may run before the opening: they read sources, set parameters,
-# elaborate, or change neither a cell nor a constant. select and cd can change
-# what the opening runs on; the check follows them.
+# Commands that may run before the opening, each only in a form that
+# DONT_CARE_SAFE lists: they read sources, set parameters, elaborate, or
+# change neither a cell nor a constant. select and cd can change what the
+# opening runs on; the check follows them.
 UNDEFINED_OPENING_BEFORE = {
     "read",
     "read_verilog",
@@ -5433,9 +5200,7 @@ UNDEFINED_OPENING_BEFORE = {
     "select",
     "cd",
     "log",
-    "echo",
     "check",
-    "stat",
     "write_rtlil",
     "write_json",
     "delete",
@@ -5444,8 +5209,69 @@ UNDEFINED_OPENING_BEFORE = {
     "connect",
     "cutpoint",
     "chformal",
-    "debug",
 }
+# Every form of a command of the image's Yosys (0.70) that writes a file, from
+# the help of each command: the options that take the file, or "*" when the
+# command writes whatever its options. Every write_* command writes the files
+# its words name. tee here is the wrapper `tee -o|-a <file> <command>`.
+YOSYS_FILE_WRITES: dict[str, tuple[str, ...]] = {
+    "tee": ("-o", "-a"),
+    "select": ("-write",),
+    "dump": ("-o", "-a"),
+    "json": ("-o",),
+    "jny": ("-o",),
+    "sat": ("-dump_vcd", "-dump_json", "-dump_cnf"),
+    "sim": ("-vcd", "-fst", "-aiw"),
+    "qbfsat": ("-dump-final-smt2", "-write-solution"),
+    "freduce": ("-dump",),
+    "mutate": ("-o", "-s"),
+    "fsm_export": ("*",),
+    "fsm_recode": ("-fm_set_fsm_file", "-encfile"),
+    "extract": ("-mine",),
+    "linecoverage": ("-lcov",),
+    "abc": ("-script",),
+    "abc9": ("-script",),
+    "abc9_exe": ("-script",),
+    "abc9_ops": ("-write_lut", "-write_box"),
+    "read_slang": (
+        "--diag-json",
+        "--Mall",
+        "--all-deps",
+        "--Minclude",
+        "--include-deps",
+        "--Mmodule",
+        "--module-deps",
+    ),
+    "opensta": ("-sdc-out",),
+    "sdc_expand": ("*",),
+    "show": ("*",),
+    "viz": ("*",),
+    "icell_liberty": ("*",),
+    "fst2tb": ("*",),
+    "test_autotb": ("*",),
+    "bugpoint": ("*",),
+    "verific": ("-d",),
+    "synth": ("-encfile",),
+    "synthprop": ("-map",),
+    "synth_*": (
+        "-blif",
+        "-edif",
+        "-json",
+        "-verilog",
+        "-vlog",
+        "-vout",
+        "-vpr",
+        "-vqm",
+    ),
+}
+# The file-writing forms that scripts may run, and only these: the forms that
+# the scripts on main need. btb_pending_relation, btb_tag_compare,
+# data_mem_response_mux and sc_head_query write the prepared model with
+# `write_json <file>`, and axi_coherent_bridge's partitioned task writes
+# `write_rtlil ../model/<file>`. The file is a plain name in src/ or in
+# ../model/, and never one that SymbiYosys copies into src/, one that any
+# command of the task names, or SymbiYosys's own design files in model/.
+SCRIPT_FILE_WRITES = {"write_json", "write_rtlil"}
 # The opening's file. A script lists it in [files] as the single word
 # free_undefined.ys, so that SymbiYosys copies the repository's
 # formal/free_undefined.ys unchanged, and runs it with `script
@@ -5538,6 +5364,73 @@ def selection_change(args: list[str]) -> str | None:
     return "scoped" if len(args) > 1 else None
 
 
+def file_write(args: list[str]) -> str | None:
+    """Return the form of a command that writes a file, or None.
+
+    The form is the command with the option that writes, from
+    YOSYS_FILE_WRITES, or the command alone for a write_* command and for one
+    that always writes.
+    """
+    name = args[0]
+    if name.startswith("write_"):
+        return name
+    spec = YOSYS_FILE_WRITES.get(name)
+    if spec is None and name.startswith("synth_"):
+        spec = YOSYS_FILE_WRITES["synth_*"]
+    if spec is None:
+        return None
+    if "*" in spec:
+        return name
+    for arg in args[1:]:
+        if arg in spec:
+            return f"{name} {arg}"
+    return None
+
+
+def script_write_gaps(sby_path: Path, cfg: sby_config.TaskConfig) -> list[str]:
+    """Return the files a task writes that the checks could not follow.
+
+    A task may write a file only with a form of SCRIPT_FILE_WRITES that has no
+    option, into a plain name in src/ or ../model/; the name may not be one that
+    SymbiYosys copies into src/, one that another command of the task names, or
+    a design file of SymbiYosys's own in model/.
+    """
+    gaps: list[str] = []
+    # The opening's file is pinned and writes nothing; it may be missing here.
+    files = cfg.scripts(sby_path.parent)
+    files.setdefault(UNDEFINED_OPENING_FILE, UNDEFINED_OPENING_MARK[0])
+    try:
+        commands = yosys_commands(cfg.script, files)
+    except AssertionError as error:
+        return [f"its commands cannot be read: {error}"]
+    copied = set(cfg.files) | set(cfg.inline)
+    for index, args in enumerate(commands):
+        form = file_write(args)
+        if form is None:
+            continue
+        text = " ".join(args)
+        if form not in SCRIPT_FILE_WRITES or len(args) != 2:
+            gaps.append(f"{text}: writes a file ({form}), which no script may")
+            continue
+        target = args[1]
+        match = re.fullmatch(r"(\.\./model/)?([A-Za-z0-9_][A-Za-z0-9_.-]*)", target)
+        named = {
+            word
+            for other, words in enumerate(commands)
+            if other != index
+            for word in words[1:]
+        }
+        if (
+            not match
+            or (match[1] and match[2].startswith("design"))
+            or (not match[1] and match[2] in copied)
+            or target in named
+            or match[2] in named
+        ):
+            gaps.append(f"{text}: writes a file the task reads or SymbiYosys owns")
+    return gaps
+
+
 def undefined_opening_gaps(commands: list[list[str]]) -> list[str]:
     """Return what keeps a task's commands from opening as required, in order."""
     gaps: list[str] = []
@@ -5564,6 +5457,9 @@ def undefined_opening_gaps(commands: list[list[str]]) -> list[str]:
     for args in commands:
         name, text = args[0], " ".join(args)
         named_top = args[args.index("-top") + 1] if "-top" in args[:-1] else None
+        if name in UNDEFINED_OPENING_BEFORE and not dont_care_safe(args):
+            gaps.append(f"{text}: not a form of {name} that DONT_CARE_SAFE lists")
+            continue
         change = selection_change(args)
         if change:
             state["scoped"] = change == "scoped"
@@ -5571,8 +5467,33 @@ def undefined_opening_gaps(commands: list[list[str]]) -> list[str]:
         if name == "design":
             mode = args[1] if len(args) > 1 else ""
             target = args[2] if len(args) > 2 else ""
-            # A design the check has not seen kept counts as unopened and scoped.
+            plain = r"[A-Za-z0-9_]+"
+            if mode in ("-copy-from", "-copy-to", "-import"):
+                shape = bool(
+                    re.fullmatch(
+                        rf"design {mode} {plain}(?: -as {plain})?(?: {plain})?", text
+                    )
+                )
+            elif mode in ("-save", "-stash", "-load", "-delete"):
+                shape = len(args) == 3 and bool(re.fullmatch(plain, target))
+            else:
+                shape = len(args) == 2 and mode in (
+                    "-reset",
+                    "-pop",
+                    "-push",
+                    "-push-copy",
+                )
+            if not shape:
+                gaps.append(f"{text}: unsupported design operation")
+                continue
+            # Keep the provenance of every design that can supply modules.
             unknown = {**fresh, "scoped": True}
+            if mode in ("-save", "-stash", "-push", "-push-copy", "-copy-to"):
+                if not state["opened"]:
+                    gaps.append(f"{text}: the source design has no opening")
+            if mode in ("-load", "-import", "-copy-from", "-copy-to"):
+                if not saved.get(target, fresh)["opened"]:
+                    gaps.append(f"{text}: saved design {target!r} has no opening")
             if mode in ("-save", "-stash"):
                 saved[target] = dict(state)
             if mode in ("-push", "-push-copy"):
@@ -5583,16 +5504,26 @@ def undefined_opening_gaps(commands: list[list[str]]) -> list[str]:
                 state = dict(saved.get(target, unknown))
             elif mode == "-pop":
                 state = pushed.pop() if pushed else unknown
+                if not state["opened"]:
+                    gaps.append(f"{text}: stacked design has no opening")
             elif mode in ("-copy-from", "-import"):
-                # Modules of a kept design join this one.
                 state.update(opened=False, early=False, after_async=False)
                 state["elaborated"] = None
             elif mode == "-copy-to":
-                kept = saved.get(target, fresh)
+                kept = saved.get(target, unknown)
                 saved[target] = {**kept, "opened": kept["opened"] and state["opened"]}
             elif mode == "-delete":
                 saved.pop(target, None)
             continue
+        if name == "techmap":
+            for index, arg in enumerate(args):
+                if arg == "-map":
+                    source = args[index + 1] if index + 1 < len(args) else ""
+                    if (
+                        not source.startswith("%")
+                        or not saved.get(source[1:], fresh)["opened"]
+                    ):
+                        gaps.append(f"{text}: map {source!r} has no saved opening")
         if name in UNDEFINED_OPENING_SOURCES or (
             name == "hierarchy" and "-chparam" in args
         ):
@@ -5644,101 +5575,170 @@ def undefined_opening_gaps(commands: list[list[str]]) -> list[str]:
 
 
 def sby_tag_gaps(sby_path: Path) -> list[str]:
-    """Return the task tags of a script that the checks could not follow.
-
-    SymbiYosys keeps or drops each tagged line, and each block from a tag on a
-    line of its own to "--", per task before it reads the sections. The checks
-    read [script] the same way, task by task, but [files] and [file ...] once
-    for every task, so that a tag there could give a task other files, or its
-    own text of a pinned file. So no section header may carry a tag or lie
-    inside a block, and no line of [files] or [file ...] may carry or open one.
-    """
-    every_tag = set().union(*sby_task_tags(sby_path).values())
-    gaps: list[str] = []
-    section, block = "", 0
-    for number, line in enumerate(sby_path.read_text().splitlines(), 1):
-        if section == "[tasks]" and not line.startswith("["):
-            continue
-        if block and line.strip() == "--":
-            block = 0
-            continue
-        tag, rest = sby_line_tag(line, every_tag)
-        header = re.fullmatch(r"\s*\[(.*)\]\s*", rest)
-        if header:
-            if tag:
-                gaps.append(f"line {number}: the section header carries {tag}")
-            if block:
-                gaps.append(
-                    f"line {number}: a section header in the block of line {block}"
-                )
-            section = "[" + " ".join(header.group(1).split()) + "]"
-            continue
-        if tag and (section == "[files]" or section.startswith("[file ")):
-            gaps.append(f"line {number}: {section} carries {tag}")
-        if tag and not rest:
-            block = number
-    return gaps
+    """Return syntax that cannot be read identically by all proof tools."""
+    try:
+        sby_config.source(sby_path)
+    except sby_config.ConfigError as error:
+        return [str(error)]
+    return []
 
 
-def undefined_opening_file_gaps(sby_path: Path) -> list[str]:
-    """Return why a script that names the opening's file would not run it as it is."""
+def undefined_opening_file_gaps(
+    sby_path: Path, cfg: sby_config.TaskConfig
+) -> list[str]:
+    """Check the named opening against the file SymbiYosys gives this task."""
+    name = UNDEFINED_OPENING_FILE
+    if name in cfg.inline:
+        return [f"[file {name}]: the opening's file is written in the script"]
+    if cfg.files.get(name) != name:
+        return [
+            f"[files]: expected the single entry {name}, got {cfg.files.get(name)!r}"
+        ]
+    copy = sby_path.parent / name
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
-    gaps: list[str] = []
-    entries: list[str] = []
-    section = ""
-    for line in sby_path.read_text().splitlines():
-        if line.startswith("[") and line.rstrip().endswith("]"):
-            section = " ".join(line.strip()[1:-1].split())
-            if section == f"file {UNDEFINED_OPENING_FILE}":
-                gaps.append(f"[{section}]: the opening's file is written in the script")
-        elif section == "files" and line.split() and not line.startswith("#"):
-            words = line.split()
-            if (words[0] if len(words) > 1 else Path(words[-1]).name) == (
-                UNDEFINED_OPENING_FILE
-            ):
-                entries.append(" ".join(words))
-    if entries and entries != [UNDEFINED_OPENING_FILE]:
-        gaps.append(
-            f"[files] {' / '.join(entries)}: not the single entry {UNDEFINED_OPENING_FILE}"
-        )
-    elif entries:
-        copy = sby_path.parent / UNDEFINED_OPENING_FILE
-        if not copy.is_file() or (
-            copy.read_bytes() != (formal / UNDEFINED_OPENING_FILE).read_bytes()
-        ):
-            gaps.append(f"{copy}: not the repository's {UNDEFINED_OPENING_FILE}")
-    return gaps
+    if not copy.is_file() or copy.read_bytes() != (formal / name).read_bytes():
+        return [f"{copy}: not the repository's {name}"]
+    return []
 
 
 def sby_undefined_opening_gaps(sby_path: Path) -> dict[str, list[str]]:
-    """Return each task's opening gaps, for the tasks that have any."""
-    scripts, files = sby_task_scripts(sby_path)
-    # `script free_undefined.ys` runs the opening when [files] gives it the
-    # repository's file; the file's commands are checked once, against
-    # UNDEFINED_OPENING.
-    marked = {**files, UNDEFINED_OPENING_FILE: UNDEFINED_OPENING_MARK[0]}
-    tag_gaps = sby_tag_gaps(sby_path)
-    named = UNDEFINED_OPENING_FILE in files or any(
-        UNDEFINED_OPENING_MARK in yosys_commands(script, marked)
-        for script in scripts.values()
-    )
-    file_gaps = undefined_opening_file_gaps(sby_path) if named else []
-    if named and UNDEFINED_OPENING_FILE not in files and not file_gaps:
-        file_gaps = [f"[files] does not list {UNDEFINED_OPENING_FILE}"]
-    return {
-        task or "-": gaps
-        for task, script in scripts.items()
-        if (
-            gaps := tag_gaps
-            + file_gaps
-            + undefined_opening_gaps(yosys_commands(script, marked))
+    """Return each task's opening gaps on its resolved SymbiYosys configuration."""
+    try:
+        configs = sby_config.resolved(sby_path)
+    except sby_config.ConfigError as error:
+        return {"-": [str(error)]}
+    result = {}
+    for task, cfg in configs.items():
+        files = cfg.scripts(sby_path.parent)
+        files[UNDEFINED_OPENING_FILE] = UNDEFINED_OPENING_MARK[0]
+        commands = yosys_commands(cfg.script, files)
+        named = (
+            UNDEFINED_OPENING_MARK in commands
+            or UNDEFINED_OPENING_FILE in cfg.files
+            or UNDEFINED_OPENING_FILE in cfg.inline
         )
-    }
+        gaps = undefined_opening_file_gaps(sby_path, cfg) if named else []
+        gaps += undefined_opening_gaps(commands)
+        gaps += script_write_gaps(sby_path, cfg)
+        if gaps:
+            result[task or "-"] = gaps
+    return result
+
+
+def test_scripts_write_no_task_file() -> None:
+    """No task of any script, pending ones too, writes a file outside its list."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
+    found = [
+        f"{path.name} {task}: {gap}"
+        for path in sorted(formal.glob("*.sby"))
+        for task, cfg in sby_config.resolved(path).items()
+        for gap in script_write_gaps(path, cfg)
+    ]
+    assert found == []
+
+
+# A file a command writes while the task runs, with the reviewed cases first
+# (the opening's file rewritten by tee, a copied source overwritten, the
+# opening's file emptied by select -write), then other writing forms; each
+# must fail the check. The controls are the forms that scripts on main use.
+SCRIPT_WRITE_CASES: list[tuple[str, str]] = [
+    (
+        "flag",
+        "tee -q -o free_undefined.ys log proc\ntee -q -a free_undefined.ys log setundef -zero\n",
+    ),
+    ("flag", "tee -q -o top.sv log //\n"),
+    ("flag", "select -none\nselect -write free_undefined.ys\nselect -clear\n"),
+    ("flag", "select -none -write free_undefined.ys\nselect -clear\n"),
+    ("flag", "write_rtlil free_undefined.ys\n"),
+    ("flag", "write_json top.sv\n"),
+    ("flag", "write_verilog out.v\n"),
+    ("flag", "write_file -a free_undefined.ys\n"),
+    ("flag", "dump -o free_undefined.ys\n"),
+    ("flag", "sat -dump_vcd trace.vcd -prove-asserts\n"),
+    ("flag", "write_json -selected model.json\n"),
+    ("flag", "write_json ../top.sv\n"),
+    ("flag", "write_rtlil ../model/design.il\n"),
+    ("flag", "write_json model.json\nread_json model.json\n"),
+    ("flag", "tee -q -o run.log stat\n"),
+    ("accept", "write_json prepared_model.json\n"),
+    ("accept", "write_rtlil ../model/unpartitioned.il\n"),
+]
+
+
+@pytest.mark.parametrize("expect,commands", SCRIPT_WRITE_CASES)
+def test_script_write_gaps(tmp_path: Path, expect: str, commands: str) -> None:
+    """A task writes a file only in a listed form and never one it reads."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    (tmp_path / UNDEFINED_OPENING_FILE).write_bytes(
+        (formal / UNDEFINED_OPENING_FILE).read_bytes()
+    )
+    (tmp_path / "top.sv").write_text(
+        "module top(input a, output y);\n  assign y = a;\nendmodule\n"
+    )
+    path = tmp_path / "writes.sby"
+    path.write_text(
+        "[options]\nmode bmc\n\n[engines]\nsmtbmc\n\n[script]\n"
+        "read -formal top.sv\nhierarchy -top top\n"
+        + commands
+        + "script free_undefined.ys\nprep -top top\n\n[files]\ntop.sv\nfree_undefined.ys\n"
+    )
+    (cfg,) = sby_config.resolved(path).values()
+    gaps = script_write_gaps(path, cfg)
+    assert bool(gaps) == (expect == "flag"), gaps
+    if expect == "flag":
+        assert sby_undefined_opening_gaps(path), commands
+
+
+def test_file_writes_follow_the_installed_yosys() -> None:
+    """Every command and option of YOSYS_FILE_WRITES is in the image's Yosys help."""
+    listing = subprocess.run(
+        ["yosys", "-Q", "-p", "help"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    ).stdout
+    known = set(re.findall(r"^\s+([a-z_0-9]+)\s", listing, re.M))
+    writers = sorted(name for name in known if name.startswith("write_"))
+    assert writers and all(file_write([name, "x"]) == name for name in writers)
+    for name, options in YOSYS_FILE_WRITES.items():
+        if name == "synth_*":
+            continue
+        assert name in known, name
+        if options == ("*",):
+            continue
+        text = subprocess.run(
+            ["yosys", "-h", name],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
+        ).stdout
+        missing = [
+            option
+            for option in options
+            if not re.search(
+                rf"(^|[\s,|\[]){re.escape(option)}([\s,|\]]|$)", text, re.M
+            )
+        ]
+        assert missing == [], (name, missing)
+
+
+def test_wrappers_show_their_files() -> None:
+    """tee, trace and debug come out with their options before the command."""
+    assert yosys_commands(["tee -q -o x.log opt -keepdc"], {}) == [
+        ["tee", "-q", "-o", "x.log"],
+        ["opt", "-keepdc"],
+    ]
+    assert yosys_commands(["trace debug prep"], {}) == [["trace"], ["debug"], ["prep"]]
+    assert yosys_commands(["debug -on"], {}) == [["debug", "-on"]]
 
 
 def test_scripts_free_undefined_constants_first() -> None:
     """Every script outside the two pending lists opens with UNDEFINED_OPENING."""
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
     waiting = set(UNDEFINED_OPENING_PENDING) | set(UNDEFINED_OPENING_TWINS)
     lacking: list[str] = []
     opened: list[str] = []
@@ -6294,7 +6294,7 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
         (("proof: opt -fast -keepdc\n", "proof: opt -purge -fast -keepdc\n"),),
     ),
     (
-        "accept",
+        "flag",
         "coherent_local_atomic",
         (("\nopt -fast -keepdc\n", "\ntee -q -o t.log opt -keepdc -fast\n"),),
     ),
@@ -6314,7 +6314,7 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
         (("proof: techmap\n", "chformal -cover -remove c:none\nproof: techmap\n"),),
     ),
     (
-        "accept",
+        "flag",
         "vec_vmu",
         (("bmc: techmap\n", "bmc: debug -on opt -full\nbmc: techmap\n"),),
     ),
@@ -6356,7 +6356,7 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
         (("memory_map -keepdc\n", 'memory_map -keepdc\nlog "opt -full; opt"\n'),),
     ),
     (
-        "accept",
+        "flag",
         "coherence_array_plru",
         (("memory_map -keepdc\n", "memory_map -keepdc\ndebug -on opt\n"),),
     ),
@@ -6438,7 +6438,7 @@ def test_dont_care_guard_reads_scripts_as_yosys_does(tmp_path: Path) -> None:
         "proof: opt;; opt -keepdc # opt\n~proof: tee -q -o opt.log opt -keepdc\n"
         "covers: script extra.ys\nlog opt\n"
         f"proof: {no_state}\nproof: opt -full\n"
-        "\n[file extra.ys]\nlabel: opt_expr -keepdc; memory_map -formal\nmemory -nomap\n"
+        "\n[file extra.ys]\n label: opt_expr -keepdc; memory_map -formal\nmemory -nomap\n"
     )
     scripts, files = sby_task_scripts(sby_path)
     assert {
@@ -6455,6 +6455,7 @@ def test_dont_care_guard_reads_scripts_as_yosys_does(tmp_path: Path) -> None:
         ],
         "second": [
             ["prep", "-top", "top"],
+            ["tee", "-q", "-o", "opt.log"],
             ["opt", "-keepdc"],
             ["opt_expr", "-keepdc"],
             ["memory_map", "-formal"],
@@ -6462,13 +6463,20 @@ def test_dont_care_guard_reads_scripts_as_yosys_does(tmp_path: Path) -> None:
             ["log", "opt"],
         ],
         # A task line in the "name:" form is not a tag block.
-        "third": [["prep", "-top", "top"], ["opt", "-keepdc"], ["log", "opt"]],
+        "third": [
+            ["prep", "-top", "top"],
+            ["tee", "-q", "-o", "opt.log"],
+            ["opt", "-keepdc"],
+            ["log", "opt"],
+        ],
     }
     # The plain opt and, after the assertion, opt -full; memory -nomap runs
-    # opt_mem and memory_share, which resolve undefined words.
+    # opt_mem and memory_share, which resolve undefined words; tee is not a
+    # listed command, and it writes a file.
     assert sby_dont_care_optimizations(sby_path) == {
         "first": ["opt", "opt -full"],
-        "second": ["memory -nomap"],
+        "second": ["tee -q -o opt.log", "memory -nomap"],
+        "third": ["tee -q -o opt.log"],
     }
     # An assertion that no state is left exempts nothing, whatever scope or
     # selection it has, since undefined constants remain.
@@ -6770,7 +6778,7 @@ UNDEFINED_OPENING_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] 
             (UNDEFINED_OPEN_VTYPE, "script open.ys rest\n"),
             (
                 "[files]\n",
-                f"[file open.ys]\nopening:\n{UNDEFINED_OPEN_VTYPE}rest:\nlog skipped\n\n[files]\n",
+                f"[file open.ys]\n opening:\n{UNDEFINED_OPEN_VTYPE} rest:\nlog skipped\n\n[files]\n",
             ),
         ),
     ),
@@ -6830,7 +6838,7 @@ UNDEFINED_OPENING_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] 
     # label; setundef -undriven after it; a selection asserted or cleared
     # before it; the opening run again after a parameter is set.
     (
-        "accept",
+        "flag",
         "vec_vtype_tracker",
         (
             (
@@ -6866,7 +6874,7 @@ UNDEFINED_OPENING_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] 
             (UNDEFINED_OPEN_VTYPE, "script open.ys opening\n"),
             (
                 "[files]\n",
-                f"[file open.ys]\nopening:\n{UNDEFINED_OPEN_VTYPE}rest:\nlog done\n\n[files]\n",
+                f"[file open.ys]\n opening:\n{UNDEFINED_OPEN_VTYPE} rest:\nlog done\n\n[files]\n",
             ),
         ),
     ),
@@ -7073,15 +7081,195 @@ def test_sby_tag_gaps(tmp_path: Path, expect: str, body: str) -> None:
         assert sby_undefined_opening_gaps(script), body
 
 
-def test_scripts_keep_tags_off_files() -> None:
-    """No script in the repository tags its files or its section headers."""
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "hidden_.*",
+        "hidden_.+",
+        "hidden_[a-z]+",
+        "(hidden_tag)",
+        "hidden_ta[g]",
+        "hidden_tag|unused",
+        "hidden_tag$",
+    ],
+)
+def test_sby_task_groups_are_literal(tmp_path: Path, pattern: str) -> None:
+    """Refuse patterns that add another task to a group."""
+    path = tmp_path / "groups.sby"
+    path.write_text(
+        f"[tasks]\nhelper: hidden_tag\nmain_task: {pattern}\n"
+        "[script]\nread -formal top.sv\nhierarchy -top top\n"
+        "helper: script free_undefined.ys\n~hidden_tag: script free_undefined.ys\n"
+        "hidden_tag:\n~helper: proc\n~helper: setundef -zero\n--\nprep -top top\n"
+        "[files]\ntop.sv\nfree_undefined.ys\n"
+    )
+    assert pattern in sby_undefined_opening_gaps(path)["-"][0]
+    assert pattern in dont_care_changes(path)[0][0]
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        ("[file dummy.ys] # copy", "  [file free_undefined.ys]"),
+        ("[file dummy.ys]\t# copy", "[file free_undefined.ys]"),
+        (" [file dummy.ys]", "[file free_undefined.ys]"),
+        ("[file dummy.ys]", "\t[file free_undefined.ys]"),
+        ("[file dummy.ys] ", "[file free_undefined.ys]"),
+        ("[file dummy.ys]", "[file ./free_undefined.ys]"),
+        ("[file dummy.ys]", "[file free_undefined.ys] # override"),
+    ],
+)
+def test_sby_file_headers_are_literal(tmp_path: Path, first: str, second: str) -> None:
+    """Refuse an ambiguous header before it can shadow the opening file."""
+    path = tmp_path / "headers.sby"
+    path.write_text(
+        SBY_TAG_HEAD
+        + "script free_undefined.ys\nprep -top top\n[files]\ntop.sv\n"
+        + f"{first}\nfree_undefined.ys\n{second}\nproc\nsetundef -zero\n"
+    )
+    assert "file " in sby_undefined_opening_gaps(path)["-"][0]
+    assert "file " in dont_care_changes(path)[0][0]
+
+
+def test_sby_resolves_nondefault_tasks(tmp_path: Path) -> None:
+    """Check every declared task even when only one is a default."""
+    path = tmp_path / "groups.sby"
+    path.write_text(
+        "[tasks]\na: group default\nb: group\n[script]\n"
+        "group: hierarchy -top top\na: script free_undefined.ys\nb: setundef -zero\n"
+        "[files]\nfree_undefined.ys\n"
+    )
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
-    found = {
-        sby_path.name: gaps
-        for sby_path in sorted(formal.glob("*.sby"))
-        if (gaps := sby_tag_gaps(sby_path))
-    }
-    assert found == {}
+    (tmp_path / UNDEFINED_OPENING_FILE).write_bytes(
+        (formal / UNDEFINED_OPENING_FILE).read_bytes()
+    )
+    assert list(sby_config.resolved(path)) == ["a", "b"]
+    assert sby_config.resolved(path)["b"].script == [
+        "hierarchy -top top",
+        "setundef -zero",
+    ]
+    assert dont_care_changes(path)[0] == ["groups.sby b: setundef -zero"]
+
+
+@pytest.mark.parametrize("section", ["files", "script", "options", "engines", "tasks"])
+def test_sby_sections_have_one_header(tmp_path: Path, section: str) -> None:
+    """Reject a repeated header before a reader can overwrite its first body."""
+    path = tmp_path / "repeated.sby"
+    path.write_text(
+        SBY_TAG_HEAD
+        + "script free_undefined.ys\n[files]\nfree_undefined.ys\n"
+        + f"[{section}]\n"
+    )
+    assert f"[{section}]" in sby_undefined_opening_gaps(path)["-"][0]
+
+
+def test_opening_tracks_map_sources() -> None:
+    """Every map and every saved design that supplies modules has an opening."""
+    read = [["read", "-sv", "map.sv"]]
+    opening = [["hierarchy", "-top", "template"], UNDEFINED_OPENING_MARK]
+    save = [["design", "-stash", "map"]]
+    apply = [["techmap", "-max_iter", "1", "-map", "%map"]]
+    assert not undefined_opening_gaps(read + opening + save + opening + apply)
+    assert undefined_opening_gaps(read + save + opening + apply)
+    for source in ("map.sv", "+/techmap.v", "%missing", ""):
+        assert undefined_opening_gaps(opening + [["techmap", "-map", source]])
+        assert undefined_opening_gaps(
+            opening + save + opening + [apply[0] + ["-map", source]]
+        )
+    for action in ("-load", "-import", "-copy-from", "-copy-to"):
+        assert undefined_opening_gaps(
+            opening + [["design", action, "missing"]] + opening
+        )
+    for action in ("-save", "-stash", "-push", "-push-copy"):
+        assert undefined_opening_gaps(read + [["design", action, "raw"]] + opening)
+    assert undefined_opening_gaps(opening + [["design", "-pop"]])
+    assert undefined_opening_gaps(
+        opening + save + opening + [["design", "-delete", "map"]] + apply
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "select -write sel.txt",
+        "select -read sel.txt",
+        "log -o x.log message",
+        "check -assert -noinit",
+        "read -formal -I/tmp top.sv",
+        "setattr -set foo 1 w:*",
+        "chparam -set W 4 -set",
+        "debug -on",
+        "echo on",
+        "stat",
+    ],
+)
+def test_opening_holds_commands_to_their_forms(command: str) -> None:
+    """A command before the opening runs only in a form DONT_CARE_SAFE lists."""
+    opening = [["hierarchy", "-top", "top"], UNDEFINED_OPENING_MARK]
+    commands = [["read", "-formal", "top.sv"], command.split(), *opening]
+    assert undefined_opening_gaps(commands), command
+
+
+# Configurations SymbiYosys refuses, which the checkout-only reader must
+# refuse too, and well-formed ones it must read as SymbiYosys does.
+SBY_READER_CORPUS: list[str] = [
+    "[tasks]\nbmc\n[options]\n#TODO: fix\nmode bmc\n[script]\nread -formal a.sv\n",
+    "[tasks]\nbmc\n[script]\nread -formal a.sv\n#note: here\n",
+    "[tasks]\nbmc\n[files]\n#x: y\na.sv\n",
+    "[tasks]\nbmc\n[file x.ys]\n#tag: x\n",
+    "[tasks]\n[options]\nmode bmc\n[script]\nread -formal a.sv\n",
+    "[tasks]\n# only a comment\n[options]\nmode bmc\n",
+    "[tasks]\nbmc\n[options]\nmode bmc\n[script]\nfoo: read -formal a.sv\n",
+    "[tasks]\nbmc: a: b\n[options]\nmode bmc\n",
+    "[tasks]\nbmc\n[options]\nbmc:\nmode bmc\n",
+    "[tasks]\nbmc\n[options]\nmode bmc\n--\n",
+    "[tasks]\nbmc .*\n[options]\nmode bmc\n",
+    "[tasks]\nbmc\n[options]\nmode bmc\n[options]\nmode prove\n",
+    "[tasks]\nbmc\n[script] # x\nread -formal a.sv\n",
+    "[tasks]\nbmc\n [script]\nread -formal a.sv\n",
+    "[tasks]\nbmc\n[stage x]\n",
+    "[options]\nmode bmc\n[tasks]\nbmc\n",
+    "--pycode-begin--\noutput('[options]')\n--pycode-end--\n",
+    # Well-formed: the reader must give what SymbiYosys gives.
+    "[tasks]\nbmc\nprove\n[options]\nbmc: mode bmc\nprove: mode prove\n# TODO: x\n"
+    "[script]\nread -formal a.sv\n  #note: indented\nbmc:\nprep -top a\n--\n[files]\na.sv\n",
+    "[options]\nmode bmc\n#TODO: no tasks here\n[script]\nread -formal a.sv\n",
+    "[tasks]\nbmc\n[options]\nmode bmc #comment\n[engines]\nsmtbmc\n[script]\n"
+    "read -formal a.sv; prep -top a\n[files]\na.sv\n",
+]
+
+
+def test_reader_refuses_what_sby_refuses(tmp_path: Path) -> None:
+    """Refuse each text SymbiYosys refuses, and read the others as it does."""
+    texts = {f"case{index}": text for index, text in enumerate(SBY_READER_CORPUS)}
+    outcomes = sby_config.sby_outcomes(texts)
+    refused = 0
+    for name, text in texts.items():
+        try:
+            source = sby_config.read_source(tmp_path / f"{name}.sby", text)
+        except sby_config.ConfigError:
+            source = None
+        if "error" in outcomes[name]:
+            refused += 1
+            assert source is None, (name, text, outcomes[name]["error"])
+        elif source is not None:
+            tasks = outcomes[name]["tasks"]
+            assert list(source.tasks) == list(tasks), name
+            for task, entry in tasks.items():
+                assert source.task(task) == sby_config.TaskConfig(**entry), (name, task)
+    assert refused == 12
+
+
+def test_scripts_match_resolved_sby_tasks() -> None:
+    """The checkout-only reader agrees with SymbiYosys on every task and file."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
+    for path in sorted(formal.glob("*.sby")):
+        source = sby_config.source(path)
+        resolved = sby_config.resolved(path)
+        assert list(source.tasks) == list(resolved), path
+        for task, config in resolved.items():
+            assert source.task(task) == config, (path.name, task)
 
 
 def test_undefined_opening_reads_commands() -> None:
@@ -7125,7 +7313,11 @@ def test_undefined_opening_reads_commands() -> None:
     )
     assert undefined_opening_gaps(
         [["cd", "sub"], ["design", "-stash", "s"], ["design", "-load", "s"], *opening]
-    ) == ["script free_undefined.ys: the opening runs on a selection, not the design"]
+    ) == [
+        "design -stash s: the source design has no opening",
+        "design -load s: saved design 's' has no opening",
+        "script free_undefined.ys: the opening runs on a selection, not the design",
+    ]
     # A design read after a reset needs its own opening; a further hierarchy
     # with the same top does not.
     assert undefined_opening_gaps(
@@ -7669,12 +7861,12 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
 def _zero_upper_tasks() -> dict[str, str]:
     """Map each upper-sector request exclusion task to its model's read and chparam lines."""
     root = Path(__file__).resolve().parents[1]
-    text = (root / "formal" / "coherence_l1d.sby").read_text()
-    task_lines = text.split("[tasks]", 1)[1].split("[options]", 1)[0]
-    names = re.findall(
-        r"^(coh_l1d_zero_stream_upper_ep\w+_bmc)\b", task_lines, flags=re.MULTILINE
-    )
-    assert len(names) == len(set(names))
+    tasks = sby_config.source(root / "formal" / "coherence_l1d.sby").tasks
+    names = [
+        name
+        for name in tasks
+        if re.fullmatch(r"coh_l1d_zero_stream_upper_ep\w+_bmc", name)
+    ]
     result = {}
     for name in names:
         script = l1d_task_config(name)["[script]"]
@@ -8190,12 +8382,17 @@ def test_store_buffer_contract_assertions_mirror_its_assumptions() -> None:
     assert renamed == expected
     labels = re.findall(r"\b(p_buffer_contract_\w+)\s*:", contract)
     assert len(labels) == len(set(labels)) == len(expected)
-    sby = (Path(__file__).resolve().parents[1] / "formal/coherence_l1d.sby").read_text()
-    assert (
-        f"contract: select -assert-count {len(expected)} c:*p_buffer_contract_*" in sby
+    formal_dir = Path(__file__).resolve().parents[1] / "formal"
+    task = sby_config.resolved(formal_dir / "coherence_l1d.sby")
+    commands = task["coh_l1d_buffer_contract_bmc"].commands(formal_dir)
+    assert any(
+        args[:4]
+        == ["select", "-assert-count", str(len(expected)), "c:*p_buffer_contract_*"]
+        for args in commands
     )
-    assert "contract: read -sv -D BUFFER_CONTRACT coherence_store_buffer.sv" in sby
-    assert "contract: read -formal" not in sby
+    assert [args for args in commands if "coherence_store_buffer.sv" in args] == [
+        ["read", "-sv", "-D", "BUFFER_CONTRACT", "coherence_store_buffer.sv"]
+    ]
 
 
 def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
