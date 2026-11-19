@@ -166,6 +166,9 @@ module fp_shim #(
   end
 
 `ifdef FORMAL
+`define FP_SHIM_ABSTRACT_PROOF
+`endif
+`ifdef FP_SHIM_ABSTRACT_PROOF
   // The engine can finish on any busy cycle. A kill returns it to idle.
   (* anyseq *) logic f_eng_finish;
   (* anyseq *) logic [riscv_pkg::FLEN-1:0] f_eng_result;
@@ -397,7 +400,7 @@ module fp_shim #(
     logic [riscv_pkg::FLEN-1:0] pipe_result;
     riscv_pkg::fp_flags_t pipe_flags;
     logic pipe_valid_unused;
-`ifdef FORMAL
+`ifdef FP_SHIM_ABSTRACT_PROOF
     (* anyseq *) logic [riscv_pkg::FLEN-1:0] f_pipe_result;
     (* anyseq *) logic [4:0] f_pipe_flags;
     assign pipe_result = f_pipe_result;
@@ -517,6 +520,11 @@ module fp_shim #(
 
     // The registered flushed bit drops results a flush marked earlier; the
     // adapter filters a same-cycle flush. Payload is unspecified without valid.
+`ifdef FP_FORWARD_ROUTE_PROOF
+    // The downstream proof ranges over every FIFO head and arbitrary stalls.
+    (* anyseq *) riscv_pkg::fu_complete_t route_head;
+    assign o_pipe_complete = route_head;
+`else
     always_comb begin
       o_pipe_complete          = '0;
       o_pipe_complete.valid    = fifo_nonempty && !fifo_head_flushed;
@@ -524,6 +532,7 @@ module fp_shim #(
       o_pipe_complete.value    = fifo_rd_data[riscv_pkg::FLEN-1:0];
       o_pipe_complete.fp_flags = riscv_pkg::fp_flags_t'(fifo_rd_data[riscv_pkg::FLEN+:5]);
     end
+`endif
 
     // --- Credit: tracker entries (flushed or not) plus FIFO entries ---
     // Registered from next-state counts: an issue is allowed only while the
@@ -565,36 +574,54 @@ module fp_shim #(
 `endif
 `endif
 
-`ifdef FORMAL
-    // -------------------------------------------------------------------------
-    // Pipelined-path properties
-    // -------------------------------------------------------------------------
-    // FIFO slot i holds an entry: its distance from the read pointer, taken
-    // modulo the depth, is below the count.
+    // The standalone shim assumes this predicate at issue. Use the identical
+    // predicate at its integrated boundary, where the real allocator and
+    // station supply the issue. The modular distance selects occupied slots.
+`ifndef SYNTHESIS
+`define FP_LIVE_TAG_PROOF
+`elsif FP_FORWARD_WAKE_PROOF
+`define FP_LIVE_TAG_PROOF
+`elsif FORMAL
+`define FP_LIVE_TAG_PROOF
+`endif
+`ifdef FP_LIVE_TAG_PROOF
     logic [FifoDepth-1:0] f_slot_used;
-    always_comb begin
-      for (int i = 0; i < FifoDepth; i++) begin
-        logic [FifoAw-1:0] slot_off;
-        slot_off = FifoAw'(i) - fifo_rd_ptr;
-        f_slot_used[i] = {1'b0, slot_off} < fifo_count;
-      end
-    end
-
-    // FP_RS presents a pipelined operation only with a credit, and never
-    // with the tag of a live operation (ROB tags are unique while live).
-    always_comb begin
-      if (i_rst_n) assume (!pipe_in || !pipe_busy_q);
-    end
     logic f_tag_live;
+    // Physical owners between the forward-data edge and the FIFO transfer.
+    // The wrapper joins these to the adapter and both registered CDB lanes.
+    logic [riscv_pkg::ReorderBufferDepth-1:0] forward_resident;
     always_comb begin
       f_tag_live = 1'b0;
+      forward_resident = '0;
+      if (tail_live) forward_resident[trk_tag[PipeDepth-1]] = 1'b1;
       for (int k = 0; k < PipeDepth; k++)
-      if (trk_valid[k] && !trk_flushed[k] && trk_tag[k] == i_rs_issue.rob_tag) f_tag_live = 1'b1;
-      for (int i = 0; i < FifoDepth; i++)
-      if (f_slot_used[i] && !fifo_flushed[i] && fifo_tag[i] == i_rs_issue.rob_tag)
-        f_tag_live = 1'b1;
-      if (i_rst_n) assume (!pipe_in || !f_tag_live);
+        if (trk_valid[k] && !trk_flushed[k] && trk_tag[k] == i_rs_issue.rob_tag)
+          f_tag_live = 1'b1;
+      for (int i = 0; i < FifoDepth; i++) begin
+        logic [FifoAw-1:0] distance;
+        distance = FifoAw'(i) - fifo_rd_ptr;
+        f_slot_used[i] = {1'b0, distance} < fifo_count;
+        if (f_slot_used[i] && !fifo_flushed[i]) begin
+          forward_resident[fifo_tag[i]] = 1'b1;
+          if (fifo_tag[i] == i_rs_issue.rob_tag) f_tag_live = 1'b1;
+        end
+      end
     end
+`ifdef FP_FORWARD_WAKE_PROOF
+    always @(posedge i_clk) if (i_rst_n && pipe_in)
+      p_pipeline_fresh_tag : assert (!f_tag_live);
+`elsif FORMAL
+    always_comb if (i_rst_n) assume (!pipe_in || !f_tag_live);
+`else
+    always @(posedge i_clk) if (reset_seen_q && i_rst_n && pipe_in && f_tag_live)
+      $error("fp_shim: pipelined issue reuses live tag %0d", i_rs_issue.rob_tag);
+`endif
+`undef FP_LIVE_TAG_PROOF
+`endif
+
+`ifdef FORMAL
+    // FP_RS presents a pipelined operation only with a credit.
+    always_comb if (i_rst_n) assume (!pipe_in || !pipe_busy_q);
 
     logic [FifoAw+1:0] f_occupancy;
     always_comb begin
@@ -751,4 +778,7 @@ module fp_shim #(
     assign unused_no_pipe = i_pipe_accepted;
   end
 
+`ifdef FORMAL
+`undef FP_SHIM_ABSTRACT_PROOF
+`endif
 endmodule : fp_shim

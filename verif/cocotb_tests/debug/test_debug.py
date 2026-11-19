@@ -29,13 +29,14 @@ from pathlib import Path
 from typing import Any
 
 import cocotb
-from cocotb.triggers import ClockCycles, RisingEdge
+from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
 
 from cocotb_tests.debug.jtag_dtm import (
     CMDERR_EXCEPTION,
     CMDERR_NOT_SUPPORTED,
     CSR_DPC,
     CSR_DSCRATCH0,
+    CSR_MEPC,
     CSR_MISA,
     CSR_MTVEC,
     DCSR_CAUSE_EBREAK,
@@ -78,6 +79,7 @@ from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
     RESET_CYCLES,
     UartMonitor,
+    cpu_clock,
     generate_divided_clock,
     start_clocks,
     start_cpu_clock,
@@ -595,3 +597,113 @@ async def test_debug(dut: Any) -> None:
         "expected the sticky-busy protocol to be exercised at idle=0"
     )
     assert "<<FAIL>>" not in monitor.get_output()
+
+
+@cocotb.test()
+@takes_last_edge
+async def test_return_stack_after_older_fault(dut: Any) -> None:
+    """A delayed load fault discards an indirect call that has already resolved."""
+    start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
+    start_cpu_clock(dut)
+    cocotb.start_soon(generate_divided_clock(dut))
+    await _reset(dut)
+    jtag = JtagDriver(dut, half_period=4)
+    await jtag.reset()
+    dm = DebugModule(Dtm(jtag, idle_cycles=1), cocotb.log)
+    await dm.activate()
+    await dm.halt()
+
+    pc = 0x1E000
+    fault_address = 0x0010_0000
+    handler = pc + 40
+    jump_here = 0x0000_006F  # jal zero, 0
+
+    # Two dependent divisions delay the load; the following call has a ready target.
+    def divide(source: int) -> int:
+        return (1 << 25) | (21 << 20) | (source << 15) | (5 << 12) | (6 << 7) | 0x33
+
+    words = [
+        0x0080_02EF,  # jal t0, +8: leaves pc + 4 at the top of the stack
+        jump_here,
+        divide(20),
+        divide(6),
+        load(11, 6, 8),
+        (8 << 15) | (1 << 7) | 0x67,  # jalr ra, 0(s0)
+        jump_here,
+        jump_here,
+        addi(7, 7, 1),  # squashed indirect target
+        jump_here,
+        jump_here,  # trap handler
+        jump_here,
+    ]
+    for n in range(0, len(words), 2):
+        await dm.write_mem(pc + n * 4, 8, words[n] | (words[n + 1] << 32), fence=False)
+    await dm.fence_i()
+    await dm.write_csr(CSR_MTVEC, handler)
+    await dm.write_gpr(20, fault_address * 9)
+    await dm.write_gpr(21, 3)
+    await dm.write_gpr(8, pc + 32)
+    await dm.write_gpr(1, 0x987)
+    await dm.write_gpr(7, 40)
+    await dm.write_dpc(pc)
+
+    cpu = dut.cpu_and_memory_subsystem.cpu.hart.cpu_inst
+    front = cpu.if_stage_inst
+    clock = cpu_clock(dut)
+
+    async def check_squash() -> None:
+        recovery = cpu.early_misprediction_recovery_inst
+        early_admitted = None
+        before_call = None
+        for _ in range(60000):
+            await RisingEdge(clock)
+            await ReadOnly()
+            if (
+                int(recovery.i_is_jalr_issue.value)
+                and int(recovery.i_branch_target_resolved.value) == pc + 32
+            ):
+                early_admitted = bool(int(recovery.jalr_admitted.value))
+            if (
+                int(cpu.early_mispredict_active.value)
+                and int(cpu.early_mispredict_pc.value) == pc + 20
+            ):
+                before_call = (
+                    int(cpu.restored_ras_tos.value),
+                    int(cpu.restored_ras_valid_count.value),
+                    int(cpu.restored_ras_top.value),
+                )
+            if int(cpu.trap_taken.value) and int(cpu.rob_trap_pc.value) == pc + 16:
+                break
+        else:
+            raise AssertionError("the load did not trap")
+        # The trap raises the registered full flush, then the existing RAS input
+        # register delivers its restore to the stack on the following edge.
+        await ClockCycles(clock, 3)
+        await ReadOnly()
+        after = (
+            int(front.ras_checkpoint_tos.value),
+            int(front.ras_checkpoint_valid_count.value),
+            int(front.ras_checkpoint_top.value),
+        )
+        assert early_admitted is not None, "the younger indirect call did not issue"
+        assert (before_call is not None) == early_admitted
+        assert after[1] and after[2] == pc + 4, after
+        if before_call is not None:
+            assert after == before_call
+        cocotb.log.info(
+            "Return stack before the early call %s, after the fault %s",
+            before_call,
+            after,
+        )
+
+    observer = cocotb.start_soon(check_squash())
+    await dm.resume()
+    await observer
+    await dm.halt()
+    assert await dm.read_dpc() == handler
+    assert await dm.read_csr(CSR_MEPC) == pc + 16
+    assert await dm.read_csr(0x342) == 5  # mcause, load access fault
+    assert await dm.read_csr(0x343) == fault_address  # mtval
+    assert await dm.read_gpr(6) == fault_address
+    assert await dm.read_gpr(1) == 0x987
+    assert await dm.read_gpr(7) == 40

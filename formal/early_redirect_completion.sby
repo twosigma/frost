@@ -1,0 +1,30 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 5
+cover: mode cover
+cover: depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top early_redirect_completion_formal --single-unit -DSYNTHESIS riscv_pkg.sv early_misprediction_recovery.sv misprediction_flush_controller.sv early_redirect_completion_formal.sv
+hierarchy -top early_redirect_completion_formal
+script free_undefined.ys
+prep -top early_redirect_completion_formal -flatten
+select -assert-count 2 t:$check r:FLAVOR=assert %i
+select -assert-count 7 t:$check r:FLAVOR=cover %i
+select -assert-none t:$check r:FLAVOR=assume %i
+prove: chformal -cover -remove
+cover: chformal -assert -remove
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/misprediction_flush_controller.sv
+early_redirect_completion_formal.sv
+free_undefined.ys

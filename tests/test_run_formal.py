@@ -290,7 +290,14 @@ FORMAL_TARGETS = [
     FormalTarget(
         "early_backend_hold.sby",
         "Combined backend hold equals early recovery or independently sampled fatal "
-        "stop through reset and flush",
+        "stop through reset and flush. A coherent not-taken launch redirects to "
+        "its issued PC plus the instruction length",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "early_redirect_completion.sby",
+        "An accepted early redirect flushes younger entries by tag on the next "
+        "edge or an older full flush supersedes it",
         tasks=("prove", "cover"),
     ),
     FormalTarget(
@@ -946,7 +953,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "mispredict_capture.sby",
-        "Recovery payload, pulse copies and frontend flush match their references",
+        "Recovery payload, pulse copies, frontend flush and registered fetch flush "
+        "match their references",
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
@@ -1041,6 +1049,11 @@ FORMAL_TARGETS = [
         "ras_checkpoint.sby",
         "Return-stack outputs and state updates match the checkpoint reference",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "ras_flush_checkpoint.sby",
+        "A full flush restores the return stack to the oldest discarded checkpoint",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "low_bram_presenter_tier.sby",
@@ -1436,9 +1449,21 @@ FORMAL_TARGETS = [
         tasks=("bmc16", "bmc8", "bmc4", "prove"),
     ),
     FormalTarget(
+        "fp_forward_wake.sby",
+        "FP forward offers, ROB tag ownership and both station wakeup lanes in the wrapper",
+        tasks=(
+            "bmc",
+            "delivery_bmc",
+            "cover",
+            "fifo_prove",
+            "route_prove",
+            "route_cover",
+        ),
+    ),
+    FormalTarget(
         "rs_divide_gate.sby",
-        "The MUL station issues a divide only while the divider is idle",
-        tasks=("prove", "cover"),
+        "The MUL and FP stations gate engine issues while pipelined operations may pass",
+        tasks=("prove", "cover", "fp_gate_prove", "fp_gate_cover"),
     ),
     FormalTarget(
         "cdb_arbiter.sby",
@@ -1663,7 +1688,10 @@ FORMAL_TARGETS = [
         "equations, both history outputs match the branch direction or jump target bit, "
         "a reserved compressed jump preserves only its trap, and stack operations, "
         "refreshes, directions and targets match PD's reference models across address regions; induction checks "
-        "indirect eligibility, payloads and reserved traps",
+        "indirect eligibility, payloads and reserved traps. "
+        "Each redirect has sources in only one slot. Redirects from aligned inputs "
+        "are aligned, indirect targets select a taken "
+        "JALR, and taken direction redirects select the decoded branch target",
         tasks=("bmc", "cover", "prove_indirect"),
     ),
     FormalTarget(
@@ -2078,6 +2106,24 @@ SBY_TASKS = [
         "prove_indirect",
         "Unbounded pre-decode indirect target, eligibility and trap isolation.",
     ),
+    (
+        "delivery_bmc",
+        "Check delivery or recovery of a pipelined result through the registered CDB.",
+    ),
+    (
+        "route_cover",
+        "Reach a stalled FP result and its grant on each registered CDB lane.",
+    ),
+    (
+        "route_prove",
+        "The FP adapter retains a stalled FIFO head and a slot-6 grant registers its word.",
+    ),
+    (
+        "fifo_prove",
+        "A selected forward word stays in its physical FIFO slot until delivery or recovery.",
+    ),
+    ("fp_gate_prove", "FP station engine issue, opcode and busy interlock."),
+    ("fp_gate_cover", "FP pipeline bypass, engine release and squashed launch."),
     ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
@@ -7997,7 +8043,9 @@ def test_store_home_cover_budgets() -> None:
                 "aigsmt": "boolector",
             }
             assert formal_task_timeout_s(target.name, task) == 900
-            engine = "abc bmc3 -c" if base.startswith("link_") else "abc bmc3"
+            engine = "abc bmc3"
+            if base == "link_bmc_siblings":
+                engine = "abc bmc3 -c"
             assert bounded["[engines]"] == [engine]
             script = bounded["[script]"]
             assert "abc" not in script

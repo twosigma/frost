@@ -295,11 +295,12 @@ module vec_unit #(
   typedef enum logic [2:0] {
     X_IDLE,
     X_WAIT,
-    X_RD2,   // vs2 read presented
-    X_RD0,   // v0 read presented
-    X_ST1,   // per-64-bit counts and first indices
-    X_ST2,   // combine
-    X_OUT    // presented until granted
+    X_RD2,  // vs2 read presented
+    X_RD0,  // v0 read presented
+    X_ST1,  // capture active mask
+    X_ST2,  // capture per-block counts and first indices
+    X_REDUCE,  // combine the blocks for vcpop.m and vfirst.m
+    X_OUT  // presented until granted
   } xstate_e;
   xstate_e xs;
   logic [31:0] xi;
@@ -310,7 +311,7 @@ module vec_unit #(
   logic [Blocks-1:0][6:0] blk_cnt_q;
   logic [Blocks-1:0][5:0] blk_first_q;
   logic [Blocks-1:0] blk_any_q;
-  logic [63:0] xres_q, fp_scalar_q;
+  logic [63:0] xres, xres_q, fp_scalar_q;
   logic group_bounds_fault_q;
   // The f-register read of an OPFVF instruction, held from the head check to
   // the grant
@@ -319,6 +320,7 @@ module vec_unit #(
   wire x_masked = !xi[25];
   wire x_is_mv = (xi[19:15] == 5'b00000);
   wire x_is_first = (xi[19:15] == 5'b10001);
+  wire x_mask_reduction = (xi[14:12] == 3'b010) && !x_is_mv;
   assign xi = insn_q[vtox_tag_q];
 
   logic vtox_xr_en;
@@ -387,7 +389,7 @@ module vec_unit #(
             end
           end
         end
-        X_RD2:   xs <= X_RD0;
+        X_RD2: xs <= X_RD0;
         X_RD0: begin
           fp_scalar_q <= i_fp_read_data;
           xs2_q <= xr_data;  // vs2, read last cycle
@@ -402,8 +404,9 @@ module vec_unit #(
           blk_cnt_q <= blk_cnt;
           blk_first_q <= blk_first;
           blk_any_q <= blk_any;
-          xs <= X_OUT;
+          xs <= x_mask_reduction ? X_REDUCE : X_OUT;
         end
+        X_REDUCE: xs <= X_OUT;
         X_OUT:
         if (i_grant) begin
           xs <= X_IDLE;
@@ -414,7 +417,7 @@ module vec_unit #(
     end
   end
 
-  // Result, formed from the block values while presented.
+  // Only mask reductions need the registered block values.
   always_comb begin
     logic [15:0] cnt;
     logic [63:0] first;
@@ -430,23 +433,27 @@ module vec_unit #(
       end
     end
     // OPFVF: the f-register scalar; vfmv.f.s: element 0, NaN-boxed
-    if (xi[6:0] == riscv_pkg::OPC_OP_VE) xres_q = 64'(xi);
-    else if (xi[14:12] == 3'b101) xres_q = fp_scalar_q;
+    if (xi[6:0] == riscv_pkg::OPC_OP_VE) xres = 64'(xi);
+    else if (xi[14:12] == 3'b101) xres = fp_scalar_q;
     else if (xi[14:12] == 3'b001) begin
       case (xvt_q[4:3])
-        1: xres_q = {48'hffffffffffff, xs2_q[15:0]};
-        2: xres_q = {32'hffffffff, xs2_q[31:0]};
-        default: xres_q = xs2_q[63:0];
+        1: xres = {48'hffffffffffff, xs2_q[15:0]};
+        2: xres = {32'hffffffff, xs2_q[31:0]};
+        default: xres = xs2_q[63:0];
       endcase
     end else if (x_is_mv) begin
       unique case (xvt_q[4:3])
-        2'd0: xres_q = {{56{xs2_q[7]}}, xs2_q[7:0]};
-        2'd1: xres_q = {{48{xs2_q[15]}}, xs2_q[15:0]};
-        2'd2: xres_q = {{32{xs2_q[31]}}, xs2_q[31:0]};
-        default: xres_q = xs2_q[63:0];
+        2'd0: xres = {{56{xs2_q[7]}}, xs2_q[7:0]};
+        2'd1: xres = {{48{xs2_q[15]}}, xs2_q[15:0]};
+        2'd2: xres = {{32{xs2_q[31]}}, xs2_q[31:0]};
+        default: xres = xs2_q[63:0];
       endcase
-    end else if (x_is_first) xres_q = first;
-    else xres_q = 64'(cnt);
+    end else if (x_is_first) xres = first;
+    else xres = 64'(cnt);
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (xs == X_WAIT || xs == X_ST2 || xs == X_REDUCE) xres_q <= xres;
   end
 
   riscv_pkg::fu_complete_t vtox_only_complete, vhead_complete;
@@ -687,6 +694,7 @@ module vec_unit #(
             i_head_tag,
             i_rob_empty
         );
+      if (xs == X_OUT) assert (xres_q == xres);
       assert (!(vhead_complete.valid && vtox_only_complete.valid));
       assert (!(zero_vmt_done_valid && vmu_vmt_done_valid));
       assert ($onehot0({vtox_xr_en, vhead_vrf_read_en, vmu_xr_en}));
