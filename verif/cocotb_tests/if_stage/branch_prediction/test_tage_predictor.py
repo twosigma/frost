@@ -22,20 +22,21 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from cocotb_tests.cpu_structs import (
     TAGE_INDEX_BITS,
     TAGE_LOOKUP_FIELDS,
+    TAGE_TABLES,
     TAGE_TAG_BITS,
 )
 from utils.packed_structs import pack_struct, unpack_struct
 
 
 CLOCK_PERIOD_NS = 10
-HIST_BITS = 64
-T1_HIST_BITS = 16
+HIST_BITS = 128
+TABLE_HIST_BITS = (12, 24, 64, 128)  # riscv_pkg::TageTableHist
+T1_HIST_BITS = TABLE_HIST_BITS[0]
 WORD_BITS = 2 * TAGE_INDEX_BITS + 1  # word-address bits [20:2]
 WORD_MASK = (1 << WORD_BITS) - 1
 INDEX_MASK = (1 << TAGE_INDEX_BITS) - 1
 TAG_MASK = (1 << TAGE_TAG_BITS) - 1
 HIST_MASK = (1 << HIST_BITS) - 1
-T1_HIST_MASK = (1 << T1_HIST_BITS) - 1
 
 CTR_WEAK_TAKEN = 4
 CTR_WEAK_NOT_TAKEN = 3
@@ -66,20 +67,19 @@ def _hash_index(word: int, hist: int) -> int:
 
 
 def _hash_tag(word: int, hist: int) -> int:
-    """Model hash_tag: PC[10:2] ^ fold9 ^ (fold8 << 1)."""
+    """Model hash_tag: PC[11:2] ^ fold10 ^ (fold9 << 1)."""
     folded = _fold(hist, TAGE_TAG_BITS) ^ (_fold(hist, TAGE_TAG_BITS - 1) << 1)
     return (word ^ folded) & TAG_MASK
 
 
 def _expected_keys(word: int, hist: int) -> dict[str, int]:
     """Return the indices and tags of one word's lookup."""
-    hist_t1 = hist & T1_HIST_MASK
-    return {
-        "index1": _hash_index(word, hist_t1),
-        "index2": _hash_index(word, hist),
-        "tag1": _hash_tag(word, hist_t1),
-        "tag2": _hash_tag(word, hist),
-    }
+    keys = {}
+    for n, bits in enumerate(TABLE_HIST_BITS, start=1):
+        table_hist = hist & ((1 << bits) - 1)
+        keys[f"index{n}"] = _hash_index(word, table_hist)
+        keys[f"tag{n}"] = _hash_tag(word, table_hist)
+    return keys
 
 
 def _bank_word(lookup_word: int, bank: int) -> int:
@@ -101,15 +101,15 @@ def _fresh_hist(dut: Any, pc: int) -> int:
         for lookup_word in (word, (word + 1) & WORD_MASK):
             keys = _expected_keys(lookup_word, hist)
             for bank in (0, 1):
-                entries.add((1, bank, keys["index1"]))
-                entries.add((2, bank, keys["index2"]))
+                for n in range(1, TAGE_TABLES + 1):
+                    entries.add((n, bank, keys[f"index{n}"]))
         if entries.isdisjoint(_used_entries):
             _used_entries.update(entries)
             for table, bank, index in entries:
                 storage = dut.gen_bank[bank].gen_table[table - 1]
                 for copy in (storage.u_lookup_copy, storage.u_train_copy):
                     row = copy.ram[index]
-                    payload_mask = ((1 << (len(row) - 1)) - 1) & ~1
+                    payload_mask = ((1 << (len(row) - 1)) - 1) & ~3
                     row.value = int(row.value) & payload_mask
             return hist
     raise AssertionError("no history reaches unused entries")
@@ -219,8 +219,8 @@ async def test_empty_lookup_misses_and_reports_keys_for_both_words(dut: Any) -> 
         assert int(dut.o_lookup_hist.value) == hist
         for bank in (0, 1):
             result = banks[bank]
-            assert not result["hit1"]
-            assert not result["hit2"]
+            for n in range(1, TAGE_TABLES + 1):
+                assert not result[f"hit{n}"]
             assert not result["alt_tagged"]
             for key, value in _expected_keys(_bank_word(word, bank), hist).items():
                 assert result[key] == value, (pc, bank, key)
@@ -317,28 +317,31 @@ async def test_t1_provider_mispredict_allocates_t2_which_then_provides(
 
 
 @cocotb.test()
-async def test_t2_provider_mispredict_updates_counter_without_allocating(
+async def test_top_provider_mispredict_updates_counter_without_allocating(
     dut: Any,
 ) -> None:
-    """With T2 providing, a misprediction only moves T2's counter."""
+    """Each misprediction allocates one table higher; with T4 providing it only moves T4."""
     await _setup_test(dut)
     hist = _fresh_hist(dut, PC_A)
 
-    cold = await _lookup_word(dut, PC_A, hist)
-    await _train(dut, cold, 0, taken=True, mispredicted=True)
-    t1 = await _lookup_word(dut, PC_A, hist)
-    await _train(dut, t1, 0, taken=False, mispredicted=True)
-    t2 = await _lookup_word(dut, PC_A, hist)
-    assert t2["hit2"] and not t2["taken"]
+    lookup = await _lookup_word(dut, PC_A, hist)
+    taken = True
+    for n in range(1, TAGE_TABLES + 1):
+        await _train(dut, lookup, 0, taken=taken, mispredicted=True)
+        lookup = await _lookup_word(dut, PC_A, hist)
+        assert all(lookup[f"hit{m}"] for m in range(1, n + 1)), n
+        assert lookup["taken"] == taken, n  # the new top entry, weakly the outcome
+        taken = not taken
 
-    # T2 weakly not-taken; a taken outcome moves it to weakly taken.
-    await _train(dut, t2, 0, taken=True, mispredicted=True)
+    # T4 weakly in the last outcome's direction; the opposite outcome flips it.
+    top = lookup
+    await _train(dut, top, 0, taken=taken, mispredicted=True)
     after = await _lookup_word(dut, PC_A, hist)
-    assert after["hit1"]
-    assert after["hit2"]
-    assert after["taken"]
-    # T1's counter is not the provider's and stays where it was.
-    assert after["alt_tagged_taken"] == t2["alt_tagged_taken"]
+    assert all(after[f"hit{m}"] for m in range(1, TAGE_TABLES + 1))
+    assert after["taken"] == taken
+    # T3, the alternate, is not the provider and stays where it was.
+    assert after["alt_tagged"]
+    assert after["alt_tagged_taken"] == top["alt_tagged_taken"]
 
 
 @cocotb.test()
@@ -411,43 +414,76 @@ async def test_provider_replaced_since_lookup_is_not_updated(dut: Any) -> None:
     assert result["hit1"] and result["taken"]
 
 
+def _poke(
+    dut: Any, table: int, bank: int, index: int, *, tag: int, ctr: int, useful: int
+) -> None:
+    """Write one entry into both read copies: {valid, tag, ctr[2:0], useful[1:0]}."""
+    storage = dut.gen_bank[bank].gen_table[table - 1]
+    value = (1 << (TAGE_TAG_BITS + 5)) | (tag << 5) | (ctr << 2) | useful
+    for copy in (storage.u_lookup_copy, storage.u_train_copy):
+        copy.ram[index].value = value
+
+
+def _peek_useful(dut: Any, table: int, bank: int, index: int) -> int:
+    return (
+        int(dut.gen_bank[bank].gen_table[table - 1].u_lookup_copy.ram[index].value) & 3
+    )
+
+
 @cocotb.test()
-async def test_useful_entries_block_allocation_until_cleared(dut: Any) -> None:
-    """Useful candidates are not replaced; a blocked allocation clears them."""
+async def test_useful_entries_block_allocation_until_they_count_down(dut: Any) -> None:
+    """Useful candidates are not replaced; each blocked allocation counts them down."""
     await _setup_test(dut)
     hist = _fresh_hist(dut, PC_A)
+    keys = _expected_keys(_word(PC_A), hist)
 
-    # Branch A: a T1 entry that is useful (right when the alternate was wrong).
+    # Another branch owns every table's entry, with usefulness 2 in T1 and 1 above.
+    for n in range(1, TAGE_TABLES + 1):
+        _poke(
+            dut,
+            n,
+            0,
+            keys[f"index{n}"],
+            tag=keys[f"tag{n}"] ^ 1,
+            ctr=4,
+            useful=2 if n == 1 else 1,
+        )
+    cold = await _lookup_word(dut, PC_A, hist)
+    assert not any(cold[f"hit{n}"] for n in range(1, TAGE_TABLES + 1))
+
+    # The first misprediction finds no free candidate: every usefulness counts down.
+    await _train(dut, cold, 0, taken=True, mispredicted=True)
+    assert [_peek_useful(dut, n, 0, keys[f"index{n}"]) for n in range(1, 5)] == [
+        1,
+        0,
+        0,
+        0,
+    ]
+    assert not (await _lookup_word(dut, PC_A, hist))["hit1"]
+
+    # The next allocates in T2, the shortest table no longer useful; T1 keeps its entry.
+    await _train(dut, cold, 0, taken=True, mispredicted=True)
+    after = await _lookup_word(dut, PC_A, hist)
+    assert not after["hit1"] and after["hit2"] and after["taken"]
+    assert _peek_useful(dut, 1, 0, keys["index1"]) == 1
+
+
+@cocotb.test()
+async def test_usefulness_counts_two_bits(dut: Any) -> None:
+    """A provider right where the alternate was wrong counts usefulness up to 3."""
+    await _setup_test(dut)
+    hist = _fresh_hist(dut, PC_A)
+    keys = _expected_keys(_word(PC_A), hist)
+
     cold = await _lookup_word(dut, PC_A, hist)
     await _train(dut, cold, 0, taken=True, mispredicted=True)
-    t1 = await _lookup_word(dut, PC_A, hist)
-    await _train(dut, t1, 0, taken=True, mispredicted=False, alt_taken=False)
-
-    # A T2 entry for A, made useful the same way. The alternate was wrong
-    # too, so T1 stays useful.
-    t1 = await _lookup_word(dut, PC_A, hist)
-    await _train(dut, t1, 0, taken=False, mispredicted=True, alt_taken=True)
-    t2 = await _lookup_word(dut, PC_A, hist)
-    assert t2["hit1"] and t2["hit2"] and not t2["taken"]
-    await _train(dut, t2, 0, taken=False, mispredicted=False, alt_taken=True)
-
-    # Branch B collides with both of A's entries and mispredicts with no
-    # provider: both candidates are useful, so their usefulness clears.
-    other = {
-        "index1": t2["index1"],
-        "index2": t2["index2"],
-        "tag1": t2["tag1"] ^ 1,
-        "tag2": t2["tag2"] ^ 1,
-    }
-    await _train(dut, other, 0, taken=True, mispredicted=True)
-    kept = await _lookup_word(dut, PC_A, hist)
-    assert kept["hit1"] and kept["hit2"]
-
-    # B's next misprediction replaces the T1 entry, now not useful.
-    await _train(dut, other, 0, taken=True, mispredicted=True)
-    replaced = await _lookup_word(dut, PC_A, hist)
-    assert not replaced["hit1"]
-    assert replaced["hit2"]
+    entry = await _lookup_word(dut, PC_A, hist)
+    for expected in (1, 2, 3, 3):
+        await _train(dut, entry, 0, taken=True, mispredicted=False, alt_taken=False)
+        assert _peek_useful(dut, 1, 0, keys["index1"]) == expected
+    # Wrong where the alternate was right: one step down.
+    await _train(dut, entry, 0, taken=False, mispredicted=True, alt_taken=False)
+    assert _peek_useful(dut, 1, 0, keys["index1"]) == 2
 
 
 @cocotb.test()
@@ -496,9 +532,9 @@ async def test_back_to_back_trainings_of_one_entry_see_each_other(dut: Any) -> N
     assert after["hit1"] and after["taken"]
 
 
-def _entry(*, valid: bool, tag: int, ctr: int, useful: bool) -> int:
-    """Pack a table entry: valid, tag, counter, useful (most significant first)."""
-    return (int(valid) << (TAGE_TAG_BITS + 4)) | (tag << 4) | (ctr << 1) | int(useful)
+def _entry(*, valid: bool, tag: int, ctr: int, useful: int) -> int:
+    """Pack a table entry: valid, tag, 3-bit counter, 2-bit usefulness (most significant first)."""
+    return (int(valid) << (TAGE_TAG_BITS + 5)) | (tag << 5) | (ctr << 2) | (useful & 3)
 
 
 def _copies(dut: Any, table: int, bank: int, index: int) -> tuple[int, int]:
@@ -529,7 +565,7 @@ async def test_lookup_only_t2_entry_is_replaced_by_its_first_training(dut: Any) 
 
     index2 = int(t1["index2"])
     dut.gen_bank[0].gen_table[1].u_lookup_copy.ram[index2].value = _entry(
-        valid=True, tag=int(t1["tag2"]), ctr=CTR_WEAK_NOT_TAKEN, useful=False
+        valid=True, tag=int(t1["tag2"]), ctr=CTR_WEAK_NOT_TAKEN, useful=0
     )
     planted = await _lookup_word(dut, PC_A, hist)
     assert planted["hit1"] and planted["hit2"]
@@ -556,7 +592,7 @@ async def test_lookup_only_t1_entry_is_replaced_and_t2_allocated(dut: Any) -> No
     cold = await _lookup_word(dut, PC_A, hist)
     index1 = int(cold["index1"])
     dut.gen_bank[0].gen_table[0].u_lookup_copy.ram[index1].value = _entry(
-        valid=True, tag=int(cold["tag1"]), ctr=CTR_WEAK_NOT_TAKEN, useful=False
+        valid=True, tag=int(cold["tag1"]), ctr=CTR_WEAK_NOT_TAKEN, useful=0
     )
     planted = await _lookup_word(dut, PC_A, hist)
     assert planted["hit1"] and not planted["hit2"] and not planted["taken"]

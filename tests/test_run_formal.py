@@ -23,6 +23,7 @@ in formal/.
 """
 
 import difflib
+import hashlib
 import re
 import subprocess
 import sys
@@ -1576,7 +1577,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "backing_btb.sby",
         "Backing BTB lookups match a mirror of its sets, every set holds each "
-        "valid tag once, and requests in training hold their set's current "
+        "valid tag once, a redirect drops held and outstanding reads, and training holds current "
         "entries, at two and four ways; slot 2's fields formed for each slot-1 "
         "size and selected by the packet's size equal the single reduction they "
         "replace, for any register state",
@@ -1591,6 +1592,64 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "branch_prediction_resolution.sby",
+        "Two arbitrary predictions leave the resolved branch outcome, target and ROB update "
+        "identity equal; each wrong direction or taken target requests recovery",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "predictor_fetch_contract.sby",
+        "The real fetch stage supplies PD packet order, PC and backing fields, source "
+        "register and target data, and the PC controller's registered recovery arm",
+        tasks=(
+            "bmc",
+            "prove_order",
+            "prove_addresses",
+            "prove_buffer_source",
+            "prove_slot1_sources",
+            "prove_slot2_sources",
+            "prove_targets",
+            "cover",
+            "cover_backing",
+        ),
+    ),
+    FormalTarget(
+        "backing_btb_twin.sby",
+        "Every backing lookup result, including misses, held and shifted reads, "
+        "and the pins of all five RAMs match the original backing BTB",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "pd_history_twin.sby",
+        "Both full decode packets, fetch redirects, return stack operations, history "
+        "folds, training and FTQ RAM pins match the original PD and history stages together",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "tage_predictor_twin.sby",
+        "Both direction banks, captured lookup, and every table RAM pin match "
+        "the original direction predictor with the index folded outside the predictor",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "ittage_predictor_twin.sby",
+        "Both indirect banks, target selection, captured lookup, and every "
+        "table RAM pin match the original indirect predictor",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "ittage_training.sby",
+        "Indirect prediction holds the captured lookup; each table uses the retiring lookup's "
+        "bank and index, forwards a colliding write, and repairs an unowned provider",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "tage_history_recovery.sby",
+        "Both lookup histories follow accepted predictions, ordered retirement, "
+        "saved early-recovery histories and every PC restore arm; only retired lookups train",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "tage_copy_convergence.sby",
         "Tagged predictor training: with a table entry's two copies equal, "
         "each copy's next value matches the write without the provider "
@@ -1599,18 +1658,19 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
-        "PD backing-BTB jump redirects and slot-1/slot-2 TAGE conditional-branch "
-        "overrides fire only with their vetoes clear, stack operations and "
-        "refreshes follow them, and redirect directions and targets match PD's "
-        "reference models",
-        tasks=("bmc", "cover"),
+        "PD backing, indirect and direction redirects require a live slot; each "
+        "indirect candidate and target selection matches the compare-before-register "
+        "equations, both history outputs match the branch direction or jump target bit, "
+        "a reserved compressed jump preserves only its trap, and stack operations, "
+        "refreshes, directions and targets match PD's reference models across address regions; induction checks "
+        "indirect eligibility, payloads and reserved traps",
+        tasks=("bmc", "cover", "prove_indirect"),
     ),
     FormalTarget(
         "pd_redirect_next_equiv.sby",
-        "PD's redirect target registers' next values, with every candidate formed "
-        "before the slot selects and slot 1's size picked last, equal the form "
-        "they replace for any decode, packet, candidates, backing BTB result and "
-        "stack state",
+        "PD's redirect target fields equal the direct expressions for any packet, "
+        "candidates, backing BTB result and stack state. The slot-1 backing owner "
+        "selects between independent address candidates after capture",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -1746,7 +1806,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "if_prediction_walk_past.sby",
         "Fetch stage preserves pc_reg continuity and emits no real packet while "
-        "post-prediction holdoff holds pc_reg, including walked-past pending predictions",
+        "post-prediction holdoff holds pc_reg, including walked-past pending predictions; "
+        "covers real slot-2 packets, an indirect hit after a reserved compressed parcel, and a hit across the target-address region",
         tasks=("bmc", "continuity", "cover"),
     ),
     FormalTarget(
@@ -1991,6 +2052,32 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "cover_backing",
+        "Reach a real second-slot backing hit after the full reset sweep",
+    ),
+    (
+        "prove_order",
+        "Prove fetch slot order, fault propagation and the registered PD restore",
+    ),
+    (
+        "prove_addresses",
+        "Prove the slot PC step and backing target region and size selection",
+    ),
+    (
+        "prove_buffer_source",
+        "Prove a live buffered first slot reads a paired instruction and sideband",
+    ),
+    (
+        "prove_slot1_sources",
+        "Prove first-slot expansion and source fields with the buffer source lemma",
+    ),
+    ("prove_slot2_sources", "Prove second-slot expansion, class and source fields"),
+    ("prove_targets", "Prove the target sums and high selectors used by fetch"),
+    (
+        "prove_indirect",
+        "Unbounded pre-decode indirect target, eligibility and trap isolation.",
+    ),
     ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
@@ -3743,6 +3830,8 @@ SKIP_PINNED: dict[tuple[str, str], int] = {
     ("coherence_l1d", "coh_l1d_zero_progress_cover"): 128,
     ("coherence_l1d", "coh_l1d_zero_request_cover"): 159,
     ("coherence_l1d", "coh_l1d_withdraw_full_cover"): 48,
+    # One reset clock and 512 backing set clears precede the first hit.
+    ("predictor_fetch_contract", "cover_backing"): 513,
 }
 
 FATAL_START_FRAME_TASKS: frozenset[tuple[str, str]] = frozenset(
@@ -3835,6 +3924,98 @@ def registered_task_config_gaps(
     if extra_ys:
         gaps.append(f"unpinned .ys helper in [files]: {extra_ys}")
     return gaps
+
+
+def test_predictor_twins_use_the_core_connections() -> None:
+    """Check the register boundary and external fold wiring used by the twins."""
+    root = Path(__file__).resolve().parents[1]
+    cpu = root / "hw/rtl/cpu_and_mem/cpu"
+
+    def source(path: Path) -> str:
+        return re.sub(r"//[^\n]*|/\*.*?\*/", "", path.read_text(), flags=re.S)
+
+    def body(text: str, instance: str) -> str:
+        match = re.search(rf"\b{instance}\s*\((.*?)\);", text, re.S)
+        assert match, instance
+        return re.sub(r"\s+", "", match[1])
+
+    def pin(body_text: str, name: str) -> str:
+        match = re.search(rf"\.{name}\(([^()]*)\)", body_text)
+        assert match, name
+        return match[1]
+
+    def expr(text: str, name: str) -> str:
+        match = re.search(rf"\b{re.escape(name)}\s*=\s*([^;]+);", text)
+        assert match, name
+        return re.sub(r"\s+", "", match[1])
+
+    core = source(cpu / "cpu_ooo/cpu_ooo.sv")
+    fetch = source(cpu / "if_stage/if_stage.sv")
+    twin = source(root / "formal/pd_history_twin_side.sv")
+    core_pd, core_hist = body(core, "pd_stage_inst"), body(core, "u_tage_history")
+    twin_pd, twin_hist = body(twin, "pd"), body(twin, "history")
+    for field in ("cond_branch", "jalr", "itt_eligible", "cf", "pred_taken"):
+        for pd, history in ((core_pd, core_hist), (twin_pd, twin_hist)):
+            assert pin(pd, "o_q_" + field) == pin(history, "i_pd_q_" + field), field
+
+    core_if = body(core, "if_stage_inst")
+    table = body(fetch, "u_tage_predictor")
+    for output, input_name in (
+        ("o_lookup_dir_fold", "i_tage_hist_fold"),
+        ("o_lookup_dir_hist", "i_tage_hist"),
+        ("o_lookup_hist", "i_itt_hist"),
+    ):
+        assert pin(core_hist, output) == pin(core_if, input_name)
+    assert pin(table, "i_lookup_fold_index") == "i_tage_hist_fold"
+    assert pin(table, "i_lookup_hist") == "i_tage_hist"
+    for text, module, instance, parameter, value in (
+        (core, "if_stage", "if_stage_inst", "USE_EXTERNAL_TAGE_FOLD", "1'b1"),
+        (
+            fetch,
+            "tage_predictor",
+            "u_tage_predictor",
+            "USE_EXTERNAL_FOLD_INDEX",
+            "USE_EXTERNAL_TAGE_FOLD",
+        ),
+    ):
+        parameters = re.search(
+            rf"\b{module}\s*#\s*\((.*?)\)\s*{instance}\b", text, re.S
+        )
+        assert parameters, module
+        assert pin(re.sub(r"\s+", "", parameters[1]), parameter) == value
+
+    assert pin(core_pd, "o_pd_redirect_taken") == pin(core_hist, "i_pd_redirect_taken")
+    assert pin(twin_pd, "o_pd_redirect_taken") == pin(twin_hist, "i_pd_redirect_taken")
+    assert expr(twin, "accept").replace("i.", "").replace("o.", "") == expr(
+        core, pin(core_hist, "i_pd_accept")
+    )
+    for bus, name in (("i_tage_slot_bank", "bank"), ("i_base_taken", "base_taken")):
+        core_name = pin(core_hist, bus)
+        assert pin(twin_hist, bus) == name
+        expected = "{" + ",".join(expr(core, f"{core_name}[{s}]") for s in (1, 0)) + "}"
+        assert expr(twin, name).replace("i.", "") == expected
+
+
+def test_predictor_reference_sources_are_frozen() -> None:
+    """The reference side is the exact source tree before the predictor register changes."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR / "predictor_reference"
+    blobs = {
+        "backing_btb.original.sv": "921c71bb493a2d40eb0fef1d4b01e84f528e365b",
+        "ittage_predictor.original.sv": "734034d46cb89c457287816e80fa522351afa982",
+        "pd_redirect_next.original.sv": "fc147c9b68002a4e9b24eac60c911f44665f72f0",
+        "pd_stage.original.sv": "951b0b09da7021e2f90bee2849c3aaa033560827",
+        "pd_target_high_precompute.original.sv": "2867ccea13165eaed9f78cc11289af9d1b00cf63",
+        "riscv_pkg.original.sv": "c57a8b22aecde88af5c7038440854363b50f766a",
+        "rvc_decompressor.original.sv": "b0cd92a276ccc22482b921ec07ff60483bf7d9a6",
+        "tage_history.original.sv": "1af737016740dd859e164fe8351d19902b92717d",
+        "tage_predictor.original.sv": "4a14696c3a70f50a4946fd2bfb7d182140cc66c2",
+    }
+    for filename, expected in blobs.items():
+        source = (formal / filename).read_bytes()
+        git_object = f"blob {len(source)}\0".encode() + source
+        assert (
+            hashlib.sha1(git_object, usedforsecurity=False).hexdigest() == expected
+        ), filename
 
 
 def test_formal_target_tasks_are_registered() -> None:
@@ -3960,6 +4141,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     root = Path(__file__).resolve().parents[1]
     registered = [name for name, _ in SBY_TASKS]
     required = {
+        "predictor_fetch_contract": ["prove_buffer_source", "prove_slot1_sources"],
         "axi_coherent_bridge": [
             "prove_soc",
             "prove_soc_held",

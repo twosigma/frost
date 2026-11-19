@@ -42,6 +42,21 @@
  * neither does a slot 2 in the word after the last set, which belongs to
  * the next block of sets.
  *
+ * Shifted read. When the read's set is the one before the packet's word (the
+ * fetch PC at a halfword of the word before the window IF then serves, common
+ * in compressed code), the second image holds the packet word's set: slot 1,
+ * and a slot 2 in the same word, are served from it.
+ *
+ * Held read. The response also keeps the last read whose set was the one of
+ * the packet IF served in its response cycle, or the one before it: its tags and targets, and its
+ * set index. When the newest read is for another set and the held one is for
+ * the packet's set, the held read answers, compared with the packet's PC like
+ * the newest. A packet that IF serves only after a holdoff, while the fetch
+ * PC has already moved on to the next window, then keeps the hit it had in
+ * its first cycle. A held read can be older than training writes made since;
+ * an entry it still shows costs at most a misprediction, which execution
+ * corrects like any wrong prediction.
+ *
  * Training. An update registers and reads its set from a third payload
  * array that also holds the tags, valid bits and replacement state; the
  * next stage finds its way and registers it, and the last writes the whole
@@ -67,6 +82,7 @@ module backing_btb #(
 ) (
     input logic i_clk,
     input logic i_reset,
+    input logic i_redirect, // The fetch request before this edge is discarded.
 
     // Lookup: the set of the fetch PC register's word. The response, one
     // cycle later, is for the packet IF serves then.
@@ -351,11 +367,17 @@ module backing_btb #(
   logic request_valid_q;
   always_ff @(posedge i_clk) begin
     request_index_q <= i_lookup_index;
-    request_valid_q <= !i_reset && !sweep_active;
+    if (i_reset) request_valid_q <= 1'b0;
+    else request_valid_q <= !sweep_active && !i_redirect;
   end
 
   logic [1:0][TagRowBits-1:0] tags_q;
   logic [1:0][PayloadRowBits-1:0] payload_rows;
+  // The held read: the last response aligned with its packet.
+  logic held_valid_q;
+  logic [IndexBits-1:0] held_index_q;
+  logic [1:0][TagRowBits-1:0] held_tags_q;
+  logic [1:0][PayloadRowBits-1:0] held_payload_q;
   for (genvar image = 0; image < 2; image++) begin : gen_image
     // Image 1 stores set S at row S-1, so its row Q holds the set after Q.
     logic [ IndexBits-1:0] image_write_index;
@@ -392,28 +414,37 @@ module backing_btb #(
   // Response
   // ===========================================================================
   // Matches, sizes and return types come from registers and the packet PC;
-  // the payload arrays' outputs supply only the targets.
+  // the payload arrays' outputs, or the held targets, supply the targets.
   logic aligned;
+  logic held_aligned;
+  logic shifted;  // the read's set is the one before the packet's word
+  logic held_shifted;
   logic last_set;
-  assign aligned  = request_valid_q && (request_index_q == i_packet_pc[IndexBits+1:2]);
+  logic held_last_set;
+  assign aligned = request_valid_q && (request_index_q == i_packet_pc[IndexBits+1:2]);
+  assign held_aligned = held_valid_q && (held_index_q == i_packet_pc[IndexBits+1:2]);
+  assign shifted = request_valid_q &&
+      ((request_index_q + IndexBits'(1)) == i_packet_pc[IndexBits+1:2]);
+  assign held_shifted = held_valid_q &&
+      ((held_index_q + IndexBits'(1)) == i_packet_pc[IndexBits+1:2]);
   assign last_set = &request_index_q;
+  assign held_last_set = &held_index_q;
 
-  logic [1:0][WAYS-1:0] upper_match;
-  logic [1:0][WAYS-1:0] entry_halfword;
-  logic [1:0][WAYS-1:0] entry_compressed;
-  logic [1:0][WAYS-1:0] entry_return;
-  logic [1:0][WAYS-1:0][TARGET_BITS-2:0] entry_target;
-  for (genvar image = 0; image < 2; image++) begin : gen_entry
-    for (genvar way = 0; way < WAYS; way++) begin : gen_way
-      tag_t tag;
-      payload_t payload;
-      assign tag = tags_q[image][way*TagEntryBits+:TagEntryBits];
-      assign payload = payload_rows[image][way*PayloadEntryBits+:PayloadEntryBits];
-      assign upper_match[image][way] = tag.valid && (tag.upper == i_packet_pc[XLEN-1:IndexBits+2]);
-      assign entry_halfword[image][way] = tag.halfword;
-      assign entry_compressed[image][way] = tag.compressed;
-      assign entry_return[image][way] = tag.is_return;
-      assign entry_target[image][way] = payload.target;
+  // The newest read is held whenever it covers the packet, aligned or
+  // shifted. A redirect discards reads from the previous fetch path; only the
+  // valid flag needs that kill, keeping redirect logic off the data enables.
+  always_ff @(posedge i_clk) begin
+    if (i_reset || sweep_active || i_redirect) begin
+      held_valid_q <= 1'b0;
+    end else if (aligned || shifted) begin
+      held_valid_q <= 1'b1;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (aligned || shifted) begin
+      held_index_q   <= request_index_q;
+      held_tags_q    <= tags_q;
+      held_payload_q <= payload_rows;
     end
   end
 
@@ -434,59 +465,179 @@ module backing_btb #(
   assign slot2_image_by_size = {i_packet_pc[1], 1'b1};
   assign slot2_halfword_by_size = {!i_packet_pc[1], i_packet_pc[1]};
 
-  logic [WAYS-1:0] slot1_way_match;
-  logic [1:0][1:0][WAYS-1:0] slot2_way_match_by_size;
-  for (genvar way = 0; way < WAYS; way++) begin : gen_slot_match
-    assign slot1_way_match[way] = upper_match[0][way] && (entry_halfword[0][way] == slot1_halfword);
-    // The set after the last one is set 0 of the next block, whose tags this
-    // block's upper PC bits do not name.
-    for (genvar image = 0; image < 2; image++) begin : gen_image
-      for (genvar size = 0; size < 2; size++) begin : gen_size
-        assign slot2_way_match_by_size[size][image][way] = upper_match[image][way] &&
-            (slot2_image_by_size[size] == 1'(image)) &&
-            (entry_halfword[image][way] == slot2_halfword_by_size[size]) &&
-            !(image == 1 && last_set);
+  // Each read's result per slot (index 0 the newest read, 1 the held one):
+  // the matches compare that read's tags with the packet's PC.
+  logic [1:0][1:0][TagRowBits-1:0] src_tags;
+  logic [1:0][1:0][PayloadRowBits-1:0] src_payloads;
+  logic [1:0] src_last_set;
+  assign src_tags = {held_tags_q, tags_q};
+  assign src_payloads = {held_payload_q, payload_rows};
+  assign src_last_set = {held_last_set, last_set};
+  logic [1:0] shift_hit, shift_compressed, shift_return;
+  logic [1:0][TARGET_BITS-2:0] shift_target;
+  logic [1:0][1:0] shift_slot2_hit_by_size, shift_slot2_compressed_by_size;
+  logic [1:0][1:0] shift_slot2_return_by_size;
+  logic [1:0][1:0][TARGET_BITS-2:0] shift_slot2_target_by_size;
+  // [read][image][way]
+  logic [1:0][1:0][WAYS-1:0] upper_match;
+  logic [1:0][1:0][WAYS-1:0] entry_halfword;
+  logic [1:0][1:0][WAYS-1:0] entry_compressed;
+  logic [1:0][1:0][WAYS-1:0] entry_return;
+  logic [1:0][1:0][WAYS-1:0][TARGET_BITS-2:0] entry_target;
+  logic [1:0][WAYS-1:0] slot1_way_match;
+  // [read][slot-1 size][image][way]
+  logic [1:0][1:0][1:0][WAYS-1:0] slot2_way_match_by_size;
+  // Shifted: both slots from image 1, slot 2 only in the packet's word
+  // ([read][way], slot 2 [read][slot-1 size][way]).
+  logic [1:0][WAYS-1:0] slot1_way_match_shifted;
+  logic [1:0][1:0][WAYS-1:0] slot2_way_match_shifted_by_size;
+  for (genvar src = 0; src < 2; src++) begin : gen_src
+    for (genvar image = 0; image < 2; image++) begin : gen_entry
+      for (genvar way = 0; way < WAYS; way++) begin : gen_way
+        tag_t tag;
+        payload_t payload;
+        assign tag = src_tags[src][image][way*TagEntryBits+:TagEntryBits];
+        assign payload = src_payloads[src][image][way*PayloadEntryBits+:PayloadEntryBits];
+        assign upper_match[src][image][way] = tag.valid &&
+            (tag.upper == i_packet_pc[XLEN-1:IndexBits+2]);
+        assign entry_halfword[src][image][way] = tag.halfword;
+        assign entry_compressed[src][image][way] = tag.compressed;
+        assign entry_return[src][image][way] = tag.is_return;
+        assign entry_target[src][image][way] = payload.target;
+        // Slot 1 reads image 0. The set after the last one is set 0 of the
+        // next block, whose tags this block's upper PC bits do not name.
+        if (image == 0) begin : gen_slot1
+          assign slot1_way_match[src][way] = upper_match[src][0][way] &&
+              (entry_halfword[src][0][way] == slot1_halfword);
+        end
+        for (genvar size = 0; size < 2; size++) begin : gen_size
+          assign slot2_way_match_by_size[src][size][image][way] = upper_match[src][image][way] &&
+              (slot2_image_by_size[size] == 1'(image)) &&
+              (entry_halfword[src][image][way] == slot2_halfword_by_size[size]) &&
+              !(image == 1 && src_last_set[src]);
+        end
+        // Image 1 of a shifted read is the packet word's own set, also after
+        // the last set, since the packet's PC names its block.
+        if (image == 1) begin : gen_shifted
+          assign slot1_way_match_shifted[src][way] = upper_match[src][1][way] &&
+              (entry_halfword[src][1][way] == slot1_halfword);
+          for (genvar size = 0; size < 2; size++) begin : gen_shifted_size
+            assign slot2_way_match_shifted_by_size[src][size][way] = upper_match[src][1][way] &&
+                !slot2_image_by_size[size] &&
+                (entry_halfword[src][1][way] == slot2_halfword_by_size[size]);
+          end
+        end
       end
     end
   end
 
   // At most one way of a set holds a tag (training finds the hit way first),
   // so the field selects are AND-OR reductions.
-  logic [1:0] slot2_hit_by_size;
-  logic [1:0] slot2_compressed_by_size;
+  logic [1:0] src_hit, src_compressed, src_return;
+  logic [1:0][TARGET_BITS-2:0] src_target;
+  logic [1:0][1:0] src_slot2_hit_by_size, src_slot2_compressed_by_size, src_slot2_return_by_size;
+  logic [1:0][1:0][TARGET_BITS-2:0] src_slot2_target_by_size;
+  logic held_select;
+  logic shift_select;  // the held read's shifted form answers
+  logic shift_answer;  // a shifted read answers
+  assign held_select  = !aligned && held_aligned;
+  assign shift_select = !shifted;
+  assign shift_answer = !(aligned || held_aligned) && (shifted || held_shifted);
   always_comb begin
-    o_hit = '0;
-    o_compressed = '0;
-    o_return = '0;
-    o_target = '0;
-    slot2_hit_by_size = '0;
-    slot2_compressed_by_size = '0;
-    o_slot2_return_by_size = '0;
-    o_slot2_target_by_size = '0;
-    for (int way = 0; way < WAYS; way++) begin
-      if (slot1_way_match[way]) begin
-        o_hit[0] = 1'b1;
-        o_compressed[0] = o_compressed[0] || entry_compressed[0][way];
-        o_return[0] = o_return[0] || entry_return[0][way];
-        o_target[0] = o_target[0] | entry_target[0][way];
-      end
-      for (int size = 0; size < 2; size++) begin
-        for (int image = 0; image < 2; image++) begin
-          if (slot2_way_match_by_size[size][image][way]) begin
-            slot2_hit_by_size[size] = 1'b1;
-            slot2_compressed_by_size[size] =
-                slot2_compressed_by_size[size] || entry_compressed[image][way];
-            o_slot2_return_by_size[size] = o_slot2_return_by_size[size] || entry_return[image][way];
-            o_slot2_target_by_size[size] = o_slot2_target_by_size[size] | entry_target[image][way];
+    src_hit = '0;
+    src_compressed = '0;
+    src_return = '0;
+    src_target = '0;
+    src_slot2_hit_by_size = '0;
+    src_slot2_compressed_by_size = '0;
+    src_slot2_return_by_size = '0;
+    src_slot2_target_by_size = '0;
+    for (int src = 0; src < 2; src++) begin
+      for (int way = 0; way < WAYS; way++) begin
+        if (slot1_way_match[src][way]) begin
+          src_hit[src] = 1'b1;
+          src_compressed[src] = src_compressed[src] || entry_compressed[src][0][way];
+          src_return[src] = src_return[src] || entry_return[src][0][way];
+          src_target[src] = src_target[src] | entry_target[src][0][way];
+        end
+        for (int size = 0; size < 2; size++) begin
+          for (int image = 0; image < 2; image++) begin
+            if (slot2_way_match_by_size[src][size][image][way]) begin
+              src_slot2_hit_by_size[src][size] = 1'b1;
+              src_slot2_compressed_by_size[src][size] =
+                  src_slot2_compressed_by_size[src][size] || entry_compressed[src][image][way];
+              src_slot2_return_by_size[src][size] =
+                  src_slot2_return_by_size[src][size] || entry_return[src][image][way];
+              src_slot2_target_by_size[src][size] =
+                  src_slot2_target_by_size[src][size] | entry_target[src][image][way];
+            end
           end
         end
       end
     end
-    o_hit[1] = slot2_hit_by_size[i_packet_compressed];
-    o_compressed[1] = slot2_compressed_by_size[i_packet_compressed];
+  end
+
+  always_comb begin
+    shift_hit = '0;
+    shift_compressed = '0;
+    shift_return = '0;
+    shift_target = '0;
+    shift_slot2_hit_by_size = '0;
+    shift_slot2_compressed_by_size = '0;
+    shift_slot2_return_by_size = '0;
+    shift_slot2_target_by_size = '0;
+    for (int src = 0; src < 2; src++) begin
+      for (int way = 0; way < WAYS; way++) begin
+        if (slot1_way_match_shifted[src][way]) begin
+          shift_hit[src] = 1'b1;
+          shift_compressed[src] = shift_compressed[src] || entry_compressed[src][1][way];
+          shift_return[src] = shift_return[src] || entry_return[src][1][way];
+          shift_target[src] = shift_target[src] | entry_target[src][1][way];
+        end
+        for (int size = 0; size < 2; size++) begin
+          if (slot2_way_match_shifted_by_size[src][size][way]) begin
+            shift_slot2_hit_by_size[src][size] = 1'b1;
+            shift_slot2_compressed_by_size[src][size] =
+                shift_slot2_compressed_by_size[src][size] || entry_compressed[src][1][way];
+            shift_slot2_return_by_size[src][size] =
+                shift_slot2_return_by_size[src][size] || entry_return[src][1][way];
+            shift_slot2_target_by_size[src][size] =
+                shift_slot2_target_by_size[src][size] | entry_target[src][1][way];
+          end
+        end
+      end
+    end
+  end
+
+  // The newest read answers when it is aligned, else an aligned held read,
+  // else a shifted newest read, else a shifted held read. Slot 2's fields
+  // for each slot-1 size come from the answering read, and the packet's size
+  // selects between them last.
+  always_comb begin
+    o_hit = '0;
+    o_compressed[0] = src_compressed[held_select];
+    o_return[0] = src_return[held_select];
+    o_target[0] = src_target[held_select];
+    o_slot2_return_by_size = src_slot2_return_by_size[held_select];
+    o_slot2_target_by_size = src_slot2_target_by_size[held_select];
+    o_compressed[1] = src_slot2_compressed_by_size[held_select][i_packet_compressed];
     o_return[1] = o_slot2_return_by_size[i_packet_compressed];
     o_target[1] = o_slot2_target_by_size[i_packet_compressed];
-    if (!aligned) o_hit = 2'b00;
+    if (aligned || held_aligned) begin
+      o_hit[0] = src_hit[held_select];
+      o_hit[1] = src_slot2_hit_by_size[held_select][i_packet_compressed];
+    end else if (shift_answer) begin
+      o_hit[0] = shift_hit[shift_select];
+      o_compressed[0] = shift_compressed[shift_select];
+      o_return[0] = shift_return[shift_select];
+      o_target[0] = shift_target[shift_select];
+      o_slot2_return_by_size = shift_slot2_return_by_size[shift_select];
+      o_slot2_target_by_size = shift_slot2_target_by_size[shift_select];
+      o_compressed[1] = shift_slot2_compressed_by_size[shift_select][i_packet_compressed];
+      o_return[1] = o_slot2_return_by_size[i_packet_compressed];
+      o_target[1] = o_slot2_target_by_size[i_packet_compressed];
+      o_hit[1] = shift_slot2_hit_by_size[shift_select][i_packet_compressed];
+    end
   end
 
   // Whether a set's tag row holds each valid tag once.
@@ -562,6 +713,12 @@ module backing_btb #(
   logic [SetBits-1:0] formal_sets[Sets];
   logic [SetBits-1:0] formal_update_read_q;
   logic [1:0][SetBits-1:0] formal_lookup_q;
+  // The mirror's sets as of the held read's request edge.
+  logic [1:0][SetBits-1:0] formal_held_q;
+  always_ff @(posedge i_clk) begin
+    if (!(i_reset || sweep_active || i_redirect) && (aligned || shifted))
+      formal_held_q <= formal_lookup_q;
+  end
   initial for (int set = 0; set < Sets; set++) formal_sets[set] = '0;
   always_ff @(posedge i_clk) begin
     if (write_enable) formal_sets[write_index] <= write_set;
@@ -602,7 +759,11 @@ module backing_btb #(
         i_packet_pc + (i_packet_compressed ? XLEN'(2) : XLEN'(4));
     assign same_word = pc[XLEN-1:2] == i_packet_pc[XLEN-1:2];
     assign crosses_block = !same_word && (&i_packet_pc[IndexBits+1:2]);
-    assign set = same_word ? formal_lookup_q[0] : formal_lookup_q[1];
+    // The newest read when it is aligned, else the held read; a shifted
+    // read serves only the packet's word, from the set after the read one.
+    assign set = aligned ? (same_word ? formal_lookup_q[0] : formal_lookup_q[1]) :
+        held_aligned ? (same_word ? formal_held_q[0] : formal_held_q[1]) :
+        shifted ? formal_lookup_q[1] : formal_held_q[1];
     for (genvar way = 0; way < WAYS; way++) begin : gen_way
       tag_t tag;
       assign tag = set[PayloadRowBits+way*TagEntryBits+:TagEntryBits];
@@ -615,8 +776,8 @@ module backing_btb #(
           (match[way] ? set[way*PayloadEntryBits+:PayloadEntryBits] : '0);
     end
     assign target_or[TARGET_BITS-2:0] = '0;
-    assign formal_hit[slot] = request_valid_q &&
-        (request_index_q == i_packet_pc[IndexBits+1:2]) && !crosses_block && |match;
+    assign formal_hit[slot] = (aligned || held_aligned) ? (!crosses_block && |match) :
+        ((shifted || held_shifted) && same_word && |match);
     assign formal_compressed[slot] = |way_compressed;
     assign formal_return[slot] = |way_return;
     assign formal_target[slot] = target_or[WAYS*(TARGET_BITS-1)+:TARGET_BITS-1];
@@ -643,6 +804,8 @@ module backing_btb #(
     assign size = (k == 2) ? i_packet_compressed : 1'(k);
     assign image_select = i_packet_pc[1] || !size;
     assign halfword_select = i_packet_pc[1] ^ size;
+    logic ref_src;
+    assign ref_src = shift_answer ? shift_select : held_select;
     assign hit_or[0] = 1'b0;
     assign compressed_or[0] = 1'b0;
     assign return_or[0] = 1'b0;
@@ -650,19 +813,25 @@ module backing_btb #(
     for (genvar image = 0; image < 2; image++) begin : gen_image
       for (genvar way = 0; way < WAYS; way++) begin : gen_way
         localparam int unsigned Step = image * WAYS + way;
-        assign match[Step] = upper_match[image][way] && (image_select == 1'(image)) &&
-            (entry_halfword[image][way] == halfword_select) && !(image == 1 && last_set);
+        // The answering read: a shifted one matches image 1 only, for a
+        // slot 2 in the packet's word.
+        assign match[Step] = upper_match[ref_src][image][way] &&
+            (entry_halfword[ref_src][image][way] == halfword_select) &&
+            (shift_answer ? (image == 1 && !image_select) :
+                            ((image_select == 1'(image)) &&
+                             !(image == 1 && src_last_set[ref_src])));
         assign hit_or[Step+1] = hit_or[Step] || match[Step];
         assign compressed_or[Step+1] = compressed_or[Step] ||
-            (match[Step] && entry_compressed[image][way]);
-        assign return_or[Step+1] = return_or[Step] || (match[Step] && entry_return[image][way]);
+            (match[Step] && entry_compressed[ref_src][image][way]);
+        assign return_or[Step+1] = return_or[Step] ||
+            (match[Step] && entry_return[ref_src][image][way]);
         assign target_or[(Step+1)*(TARGET_BITS-1)+:TARGET_BITS-1] =
             target_or[Step*(TARGET_BITS-1)+:TARGET_BITS-1] |
-            (match[Step] ? entry_target[image][way] : '0);
+            (match[Step] ? entry_target[ref_src][image][way] : '0);
       end
     end
     assign formal_slot2_ref[k*FormalSlot2RefBits+:FormalSlot2RefBits] = {
-      aligned && hit_or[2*WAYS],
+      (aligned || held_aligned || shifted || held_shifted) && hit_or[2*WAYS],
       compressed_or[2*WAYS],
       return_or[2*WAYS],
       target_or[2*WAYS*(TARGET_BITS-1)+:TARGET_BITS-1]
@@ -711,14 +880,18 @@ module backing_btb #(
         assert (write_set[TagRowBits+PayloadRowBits-1:0] == c_set[TagRowBits+PayloadRowBits-1:0]);
       end
       // A hit needs a request read outside reset and the sweep, for the set
-      // of the packet's word, and no slot-2 hit comes from the word after
-      // the last set.
+      // of the packet's word, the newest or the held one, and no slot-2 hit
+      // comes from the word after the last set.
       if (o_hit != 2'b00) begin
         p_formal_hit_needs_aligned_request :
-        assert (request_valid_q && (request_index_q == i_packet_pc[IndexBits+1:2]));
+        assert (aligned || held_aligned || shifted || held_shifted);
       end
-      if (last_set && slot2_image) begin
+      if (&i_packet_pc[IndexBits+1:2] && slot2_image) begin
         p_formal_no_slot2_hit_past_last_set : assert (!o_hit[1]);
+      end
+      // The held read is always a set read outside reset and the sweep.
+      if (held_valid_q) begin
+        p_formal_held_read_after_sweep : assert (!sweep_active);
       end
 `ifndef BACKING_BTB_FORMAL_MIRROR_READ
       // The arrays equal the mirror: the update array's read, and each slot's
@@ -746,9 +919,19 @@ module backing_btb #(
       if ($past(i_reset || sweep_active)) begin
         p_formal_no_hit_after_reset_or_sweep : assert (o_hit == 2'b00);
       end
+      if ($past(i_redirect)) begin
+        p_formal_redirect_discards_reads :
+        assert (!request_valid_q && !held_valid_q && (o_hit == 2'b00));
+      end
+      cover ($past(i_redirect) && i_redirect && !held_valid_q);
       cover (o_hit[0] && !$past(i_update || i_refresh));
       cover (o_hit[1] && !slot2_image);
       cover (o_hit[1] && slot2_image);
+      cover (o_hit[0] && !aligned && held_aligned);
+      cover (o_hit[1] && !aligned && held_aligned);
+      cover (o_hit[0] && !aligned && !held_aligned && shifted);
+      cover (o_hit[1] && !aligned && !held_aligned && shifted);
+      cover (o_hit[0] && !aligned && !held_aligned && !shifted && held_shifted);
       cover (c_valid && c_refresh);
       cover (b_valid && b_refresh && !b_hit);
       cover (b_valid && !b_accepted && c_valid && !c_refresh);

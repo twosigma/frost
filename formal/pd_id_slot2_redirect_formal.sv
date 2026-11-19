@@ -29,7 +29,7 @@
  * btb_predicted_target, and btb_correct_non_jalr) equals PD's slot-2 redirect
  * when one fires, keeps IF's metadata otherwise, leaves slot 1 untouched, and
  * holds across pipeline stalls. Covers taken overrides (native and compressed),
- * not-taken vetoes, backing-BTB jump redirects, and stalled veto release.
+ * not-taken vetoes, backing-BTB and indirect jump redirects, and stalled veto release.
  * VECTOR selects id_stage's decode: 0 for the default build, 1 to add the
  * vector floating-point decode.
  */
@@ -47,6 +47,8 @@ module pd_id_slot2_redirect_formal #(
     input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_target,
     input logic [1:0] i_backing_slot2_return_by_size,
     input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_slot2_target_by_size,
+    input logic [1:0] i_itt_hit,
+    input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_itt_target,
     input logic i_mstatus_fs_off,
     input logic i_mstatus_vs_off,
     input logic i_cbo_zero_illegal,
@@ -92,6 +94,12 @@ module pd_id_slot2_redirect_formal #(
       .i_backing_target,
       .i_backing_slot2_return_by_size,
       .i_backing_slot2_target_by_size,
+      .i_itt_hit,
+      .i_itt_target,
+      .o_jalr                 (),
+      .o_itt_eligible         (),
+      .o_jump                 (),
+      .o_pred_taken           (),
       .o_pd_redirect          (pd_redirect),
       .o_pd_redirect_taken    (pd_redirect_taken),
       .o_pd_redirect_target   (pd_redirect_target),
@@ -101,7 +109,12 @@ module pd_id_slot2_redirect_formal #(
       .o_pd_redirect_ras_link (pd_redirect_ras_link),
       .o_pd_backing_refresh   (pd_backing_refresh),
       .o_pd_backing_refresh_pc(pd_backing_refresh_pc),
-      .o_cond_branch          (pd_cond_branch)
+      .o_cond_branch          (pd_cond_branch),
+      .o_q_cond_branch        (),
+      .o_q_jalr               (),
+      .o_q_itt_eligible       (),
+      .o_q_cf                 (),
+      .o_q_pred_taken         ()
   );
 
   id_stage #(
@@ -152,11 +165,26 @@ module pd_id_slot2_redirect_formal #(
   logic            slot1_redirect_now;
   logic            slot2_dir_redirect_now;
   logic            slot2_backing_redirect_now;
+  logic            slot2_itt_redirect_now;
+  logic [XLEN-1:0] slot2_itt_target_q;
+  logic [XLEN-1:0] fallthrough_pc;
+  logic            fallthrough_compressed;
   assign slot2_redirect_now = pd_redirect && pd_redirect_slot2;
   assign slot1_redirect_now = pd_redirect && !pd_redirect_slot2;
-  // A slot-2 conditional-branch direction redirect never refreshes the backing
-  // BTB; a slot-2 backing-BTB jump redirect always asserts pd_backing_refresh.
-  assign slot2_dir_redirect_now = slot2_redirect_now && !pd_backing_refresh;
+  assign slot2_dir_redirect_now = slot2_redirect_now &&
+                                  from_pd_to_id_2.instruction[6:0] == riscv_pkg::OPC_BRANCH;
+  assign slot2_itt_redirect_now = slot2_redirect_now && !pd_backing_refresh &&
+                                  from_pd_to_id_2.instruction[6:0] == riscv_pkg::OPC_JALR;
+  always_ff @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.stall)
+      slot2_itt_target_q <= {
+        i_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], i_itt_target[1], 1'b0
+      };
+  end
+  assign fallthrough_pc = pd_redirect_slot2 ? from_pd_to_id_2.program_counter :
+                                              from_pd_to_id.program_counter;
+  assign fallthrough_compressed = pd_redirect_slot2 ? from_pd_to_id_2.is_compressed :
+                                                      from_pd_to_id.is_compressed;
   assign slot2_backing_redirect_now = slot2_redirect_now && pd_backing_refresh;
 
   always_ff @(posedge i_clk) begin
@@ -203,6 +231,25 @@ module pd_id_slot2_redirect_formal #(
 
   always_comb begin
     if (f_past_valid && !i_pipeline_ctrl.reset) begin
+      if (pd_redirect) begin
+        p_redirect_has_live_first_slot :
+        assert (!from_pd_to_id.inject_nop && !from_pd_to_id.fetch_fault);
+        if (pd_redirect_slot2) begin
+          p_redirect_has_live_second_slot :
+          assert (!from_pd_to_id_2.inject_nop && !from_pd_to_id_2.fetch_fault);
+          p_slot2_redirect_has_a_source :
+          assert (slot2_dir_redirect_now || slot2_backing_redirect_now || slot2_itt_redirect_now);
+        end
+        if (!pd_redirect_taken) begin
+          p_veto_redirects_to_its_own_fallthrough :
+          assert (pd_redirect_target == fallthrough_pc + (fallthrough_compressed ?
+              XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit)));
+        end
+        if (slot2_itt_redirect_now) begin
+          p_slot2_indirect_redirect_uses_its_target :
+          assert (pd_redirect_taken && pd_redirect_target == slot2_itt_target_q);
+        end
+      end
       // Same-cycle ID combinational go-packet check: slot 2's effective
       // prediction matches PD's slot-2 redirect, and slot 1 is untouched by a
       // slot-2 redirect.
@@ -277,6 +324,9 @@ module pd_id_slot2_redirect_formal #(
 
   always_ff @(posedge i_clk) begin
     if (f_past_valid && !i_pipeline_ctrl.reset && f_id_armed_q && !f_prev_flush_q) begin
+      cover (slot2_itt_redirect_now && !i_pipeline_ctrl.flush && !i_pipeline_ctrl.stall);
+      cover (slot1_redirect_now && !pd_redirect_taken && from_pd_to_id_2.inject_nop &&
+             from_pd_to_id_2.instruction[6:0] == riscv_pkg::OPC_JALR);
       // Native slot-2 conditional branch taken override dispatched from ID.
       cover (f_prev_slot2_dir_redirect_q && f_prev_redirect_taken_q &&
              !o_from_id_to_ex_2.is_compressed && o_from_id_to_ex_2.btb_correct_non_jalr);

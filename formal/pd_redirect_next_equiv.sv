@@ -14,8 +14,8 @@
  *    limitations under the License.
  */
 
-// The values pd_redirect_next forms for PD's redirect target registers equal
-// the expressions they replace, for any decode, packet, candidates, backing
+// The captured fields and slot-1 backing selection together equal the
+// original redirect expressions, for any decode, packet, candidates, backing
 // BTB result and stack state. In the replaced form the slot selects come
 // first, slot 1's size enters the slot-2 PC adder as its addend, and the
 // backing target reads slot 2's return type and target as IF's slot-2
@@ -148,6 +148,14 @@ module pd_redirect_next_equiv #(
   logic next_slot2_pc_carry;
   logic next_fall_through_select;
   logic [PdTargetHighWidth-1:0] next_pc_high;
+  logic [PdTargetSplit-1:0] alternate_native_low;
+  logic [PdTargetHighWidth-1:0] alternate_pc_high;
+  logic slot1_backing_select;
+  logic [XLEN-1:0] slot1_backing_target;
+  assign next_native_low = slot1_backing_select ? slot1_backing_target[PdTargetSplit-1:0] :
+                                                  alternate_native_low;
+  assign next_pc_high = slot1_backing_select ? slot1_backing_target[XLEN-1:PdTargetSplit] :
+                                               alternate_pc_high;
   pd_redirect_next #(
       .XLEN(XLEN)
   ) dut (
@@ -177,7 +185,7 @@ module pd_redirect_next_equiv #(
       .i_backing_size_select(sel_compressed),
       .i_stack_count(ras_checkpoint_valid_count),
       .i_stack_top(ras_checkpoint_top),
-      .o_target_native_low(next_native_low),
+      .o_target_native_low(alternate_native_low),
       .o_target_compressed_low(next_compressed_low),
       .o_target_native_high_select(next_native_high_select),
       .o_target_compressed_high_select(next_compressed_high_select),
@@ -185,7 +193,9 @@ module pd_redirect_next_equiv #(
       .o_pc_low(next_pc_low),
       .o_slot2_pc_carry(next_slot2_pc_carry),
       .o_fall_through_select(next_fall_through_select),
-      .o_pc_high(next_pc_high)
+      .o_pc_high(alternate_pc_high),
+      .o_slot1_backing_select(slot1_backing_select),
+      .o_slot1_backing_target(slot1_backing_target)
   );
 
   always_comb begin

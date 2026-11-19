@@ -508,14 +508,6 @@ SCRIPT_FORMS: tuple[CommandForm, ...] = (
         log_kind="pass",
     ),
     CommandForm(
-        "opt_merge",
-        "opt_merge",
-        required_flags=frozenset({"-keepdc"}),
-        safe_reason="with -keepdc it merges no register without a defined initial value",
-        transition="act",
-        log_kind="pass",
-    ),
-    CommandForm(
         "opt_muxtree",
         "opt_muxtree",
         safe_reason="removes multiplexer ports that cannot be selected",
