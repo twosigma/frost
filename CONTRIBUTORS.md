@@ -132,3 +132,4 @@
 - Implemented pipelined scalar floating-point arithmetic, radix-16 division and early wakeup of dependent operations.
 - Implemented Zicbom clean, flush and invalidate through the coherent cache hierarchy.
 - Extended the backing branch target buffer, added tagged indirect target
+- Added front-end redirect checks and a seeded control-flow test suite.
