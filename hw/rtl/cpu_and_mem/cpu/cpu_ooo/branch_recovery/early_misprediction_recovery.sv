@@ -266,6 +266,25 @@ module early_misprediction_recovery #(
     end
   end
 `else
+  // The early redirect is the branch's architectural next PC: its resolved target when taken,
+  // its fall-through when not (sync #20 item 7).
+  always_ff @(posedge i_clk) begin
+    if (
+`ifndef FORMAL
+        check_reset_seen_q &&
+`endif
+        !i_rst && o_early_mispredict_active && !$isunknown(
+            {o_early_mispredict_redirect_pc, o_early_mispredict_branch_taken,
+             o_early_mispredict_branch_target, o_early_mispredict_pc,
+             o_early_mispredict_is_compressed}
+        )) begin
+      p_early_redirect_is_architectural_next_pc :
+      assert (o_early_mispredict_redirect_pc == (o_early_mispredict_branch_taken ?
+          o_early_mispredict_branch_target : o_early_mispredict_pc +
+          (o_early_mispredict_is_compressed ? XLEN'(2) : XLEN'(4))));
+    end
+  end
+
   // Compare against the full misprediction flag and qualified JALR bit.
   // A misprediction requires a valid branch update, where the raw and
   // qualified JALR bits agree.
