@@ -2661,9 +2661,8 @@ module coherence_l1d #(
       .i_req_way(maint_way_q),
       .i_req_skip_data_on_hit(array_skip_data),
       .i_req_data_if_modified(probe_launch || operation_q == ProbeOp),
-      .i_req_snapshot(
-          probe_launch ? probe_in.opcode == coherence_pkg::ProbeSnapshot : probe_snapshot
-      ),
+      .i_req_snapshot(probe_launch ?
+          probe_in.opcode == coherence_pkg::ProbeSnapshot : probe_snapshot),
       // A CPU read uses data only on a hit; its miss decision follows the
       // tag result. A grant needs the replaced line's data only to freeze a
       // Modified victim.
