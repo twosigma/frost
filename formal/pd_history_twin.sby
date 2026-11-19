@@ -1,0 +1,79 @@
+[tasks]
+bmc
+prove
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 12
+prove: mode prove
+prove: depth 3
+cover: mode cover
+cover: depth 7
+
+[engines]
+smtbmc boolector
+
+[script]
+# Extract only the original fetch assumptions. The old and new datapaths expose
+# their real outputs independently of these input restrictions.
+read -formal -sv riscv_pkg.original.sv rvc_decompressor.original.sv pd_target_high_precompute.original.sv pd_redirect_next.original.sv pd_stage.original.sv
+hierarchy -check -top pd_stage
+setattr -unset dont_touch *
+setattr -mod -unset keep_hierarchy *
+hierarchy -top pd_stage
+script free_undefined.ys
+chformal -assert -remove
+chformal -cover -remove
+delete -output pd_stage/o:*
+prep -top pd_stage -flatten
+select -assert-count 27 t:$check r:FLAVOR=assume %i
+design -stash contract
+design -reset
+read_slang --top pd_history_twin_side --single-unit -DSYNTHESIS -DPREDICTOR_TWIN_REFERENCE riscv_pkg.original.sv predictor_twin_fold_pkg.sv pd_history_twin_pkg.sv rvc_decompressor.original.sv pd_target_high_precompute.original.sv pd_redirect_next.original.sv pd_stage.original.sv tage_history.original.sv sdp_dist_ram.sv pd_history_twin_side.sv
+hierarchy -top pd_history_twin_side
+script free_undefined.ys
+prep -top pd_history_twin_side -flatten
+select -assert-none t:$assume t:$check r:FLAVOR=assume %i
+design -stash reference
+design -reset
+read_slang --top pd_history_twin_side --single-unit -DSYNTHESIS riscv_pkg.sv predictor_twin_fold_pkg.sv pd_history_twin_pkg.sv rvc_decompressor.sv pd_target_high_precompute.sv pd_redirect_next.sv pd_stage.sv tage_history.sv sdp_dist_ram.sv pd_history_twin_side.sv
+hierarchy -top pd_history_twin_side
+script free_undefined.ys
+prep -top pd_history_twin_side -flatten
+select -assert-none t:$assume t:$check r:FLAVOR=assume %i
+design -stash candidate
+design -reset
+read_slang --top pd_history_twin --single-unit -DSYNTHESIS riscv_pkg.sv pd_history_twin_pkg.sv pd_history_twin.sv
+design -copy-from contract -as pd_fetch_contract pd_stage
+design -copy-from reference -as pd_history_reference pd_history_twin_side
+design -copy-from candidate -as pd_history_candidate pd_history_twin_side
+hierarchy -check -top pd_history_twin
+script free_undefined.ys
+prep -top pd_history_twin -flatten
+select -assert-count 66 t:$check r:FLAVOR=assert %i
+select -assert-count 32 t:$check r:FLAVOR=assume %i
+select -assert-count 4 t:$check r:FLAVOR=cover %i
+bmc: chformal -cover -remove
+prove: chformal -cover -remove
+cover: chformal -assert -remove
+
+[files]
+predictor_reference/riscv_pkg.original.sv
+predictor_reference/rvc_decompressor.original.sv
+predictor_reference/pd_target_high_precompute.original.sv
+predictor_reference/pd_redirect_next.original.sv
+predictor_reference/pd_stage.original.sv
+predictor_reference/tage_history.original.sv
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
+../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_target_high_precompute.sv
+../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_redirect_next.sv
+../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_stage.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/tage_history.sv
+predictor_twin_ram/sdp_dist_ram.sv
+predictor_twin_fold_pkg.sv
+pd_history_twin_pkg.sv
+pd_history_twin_side.sv
+pd_history_twin.sv
+free_undefined.ys

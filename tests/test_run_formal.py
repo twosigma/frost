@@ -1594,6 +1594,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
+        "pd_history_twin.sby",
+        "Both full decode packets, fetch redirects, return stack operations, history "
+        "folds, training and FTQ RAM pins match the original PD and history stages together",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
         "tage_predictor_twin.sby",
         "Both direction banks, captured lookup, and every table RAM pin match "
         "the original direction predictor with the index folded outside the predictor",

@@ -1348,6 +1348,8 @@ The standalone Ethernet MAC/PCS has its own
 See the [formal guide](../formal/README.md) for the targets, what each one
 proves, and its assumptions. The `tage_predictor_twin` and `ittage_predictor_twin`
 targets compare every prediction and RAM port with the original predictors.
+The `pd_history_twin` target compares PD and history together across the register
+boundary, including both decode packets and all training outputs.
 
 ```bash
 ./scripts/frost.py formal                          # every task of every target
