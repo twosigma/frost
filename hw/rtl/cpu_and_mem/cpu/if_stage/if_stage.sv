@@ -3281,7 +3281,9 @@ module if_stage #(
     if (coverage_reset_seen_q && !i_pipeline_ctrl.reset) begin
       // Consumer-side fold contract on the external pre-folded TAGE indices
       // supplied to u_tage_predictor (USE_EXTERNAL_FOLD_INDEX=1).
-      if (!$isunknown({i_tage_hist, i_tage_hist_fold})) begin
+      if (USE_EXTERNAL_TAGE_FOLD && !if_stage_stall && fetch_progress && !$isunknown(
+              {i_tage_hist, i_tage_hist_fold}
+          )) begin
         for (int t = 0; t < riscv_pkg::TageTables; t++) begin
           p_lookup_fold_index_matches_hist : assert (i_tage_hist_fold[t] == tage_fold_index_ref[t]);
         end
