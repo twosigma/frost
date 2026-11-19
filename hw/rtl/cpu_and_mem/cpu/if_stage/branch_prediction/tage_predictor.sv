@@ -412,14 +412,14 @@ module tage_predictor #(
       $error("tage_predictor: expects four tables within HIST_BITS of history");
   end
 `ifndef FORMAL
-  // Consumer-side fold check and defining-expression checks on registered
-  // training qualifiers (active in simulation builds).
+  // Defining-expression checks on registered training qualifiers (active in
+  // simulation builds). The external fold-index contract is checked in
+  // if_stage under its reset-seen and non-reset gate.
   logic train_qualifiers_armed_q = 1'b0;
   logic train_alt_taken_sim_q;
   logic [TABLES-1:0] ref_provider;
   logic [TABLES-1:0] ref_above;
   logic [TABLES-1:0] ref_owned;
-  logic [TABLES-1:0][INDEX_BITS-1:0] ref_fold_index;
   logic ref_found;
   always_comb begin
     ref_provider = '0;
@@ -435,27 +435,13 @@ module tage_predictor #(
     end
     for (int t = 0; t < TABLES; t++) begin
       entry_t cur_s;
-      int unsigned table_hist;
-      logic [HIST_BITS-1:0] table_mask;
       cur_s = cur[t];
       ref_owned[t] = cur_s.valid && (cur_s.tag == train_lookup_q.tag[t]);
-      table_hist = (t == 0) ? riscv_pkg::TageHist1Bits :
-          (t == 1) ? riscv_pkg::TageHist2Bits : (t == 2) ? riscv_pkg::TageHist3Bits :
-          riscv_pkg::TageHist4Bits;
-      table_mask = (table_hist >= HIST_BITS) ? '1 : ((HIST_BITS'(1) << table_hist) - HIST_BITS'(1));
-      ref_fold_index[t] = fold_index(i_lookup_hist & table_mask);
     end
   end
-  always @(posedge i_clk) begin
+  always_ff @(posedge i_clk) begin
     train_qualifiers_armed_q <= 1'b1;
     train_alt_taken_sim_q    <= i_train_alt_taken;
-    if (USE_EXTERNAL_FOLD_INDEX && i_lookup_capture && !$isunknown(
-            {i_lookup_hist, i_lookup_fold_index}
-        )) begin
-      for (int t = 0; t < TABLES; t++) begin
-        p_lookup_fold_index_matches_hist : assert (i_lookup_fold_index[t] == ref_fold_index[t]);
-      end
-    end
     if (train_qualifiers_armed_q && train_valid_q && !$isunknown(
             {
               provider,

@@ -3259,9 +3259,33 @@ module if_stage #(
   assign tage_slot2_cov_ref = tage_slot_bank_word_2_ref == tage_slot_word_2_ref;
   assign tage_slot_lookup_2_ref = tage_slot_word_2_ref[2] ? tage_bank1 : tage_bank0;
 
+  logic [riscv_pkg::TageTables-1:0][riscv_pkg::TageIndexBits-1:0] tage_fold_index_ref;
+  always_comb begin
+    for (int t = 0; t < riscv_pkg::TageTables; t++) begin
+      int unsigned table_hist;
+      logic [riscv_pkg::TageIndexBits-1:0] folded;
+      table_hist = (t == 0) ? riscv_pkg::TageHist1Bits :
+          (t == 1) ? riscv_pkg::TageHist2Bits : (t == 2) ? riscv_pkg::TageHist3Bits :
+          riscv_pkg::TageHist4Bits;
+      folded = '0;
+      for (int b = 0; b < riscv_pkg::TageDirHistBits; b++) begin
+        if (b < int'(table_hist))
+          folded[b%riscv_pkg::TageIndexBits] = folded[b%riscv_pkg::TageIndexBits] ^ i_tage_hist[b];
+      end
+      tage_fold_index_ref[t] = folded;
+    end
+  end
+
   // Sampled at the clock so the check sees settled values on kept nets.
   always_ff @(posedge i_clk) begin
     if (coverage_reset_seen_q && !i_pipeline_ctrl.reset) begin
+      // Consumer-side fold contract on the external pre-folded TAGE indices
+      // supplied to u_tage_predictor (USE_EXTERNAL_FOLD_INDEX=1).
+      if (!$isunknown({i_tage_hist, i_tage_hist_fold})) begin
+        for (int t = 0; t < riscv_pkg::TageTables; t++) begin
+          p_lookup_fold_index_matches_hist : assert (i_tage_hist_fold[t] == tage_fold_index_ref[t]);
+        end
+      end
       // PD derives slot 1's size from its raw parcel and shares its high PC
       // with slot 2. Check the memory-sideband and fetch-to-PD contracts on
       // the final packet, including stall replay, before PD consumes it.

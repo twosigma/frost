@@ -1307,7 +1307,8 @@ module pd_stage #(
   assign pd_s2_br_hs_reference_r = pd_dir_not_taken_2_raw_r ?
       pd_s2_ft_hs_ref_r : pd_s2_taken_hs_ref_r;
   always_ff @(posedge i_clk) begin
-    if (pd_reset_seen_q && pd_redirect_target_reference_armed && !$isunknown(
+    if (pd_reset_seen_q && !i_pipeline_ctrl.reset && pd_redirect_target_reference_armed &&
+        !$isunknown(
             {
               pd_reg_live,
               pd_s1_br_low_reference_r,
