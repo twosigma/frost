@@ -1344,6 +1344,29 @@ async def local_modified_atomics_hold_service_through_installation(dut: Any) -> 
 
 
 @cocotb.test()
+async def local_atomic_clears_snapshot_credit(dut: Any) -> None:
+    """Return the new AMO or SC bytes once from an already credited line."""
+    address = 0x80000000
+    pattern = int.from_bytes(bytes(range(32)), "little")
+    low = (1 << 64) - 1
+    for sc in (False, True):
+        b = Private(dut)
+        await b.reset()
+        await store(b, address, pattern & low)
+        await getm(b, address, pattern)
+        first = await probe_reply(b, address, 3)
+        assert (first[5], first[7], first[8]) == (3, 1, pattern)
+        before = await probe_reply(b, address, 3)
+        assert (before[5], before[7]) == (3, 0)
+        data = 0xA3456789ABCDEF12
+        await local_atomic(b, address, pattern & low, data, sc=sc, probe_stage=None)
+        dirty = await probe_reply(b, address, 3)
+        assert (dirty[5], dirty[7], dirty[8]) == (3, 1, (pattern & ~low) | data)
+        after = await probe_reply(b, address, 3)
+        assert (after[5], after[7]) == (3, 0)
+
+
+@cocotb.test()
 async def local_sc_reservation_failure_has_no_write(dut: Any) -> None:
     """Check failed selected SC returns once without modifying bytes."""
     b = Private(dut)

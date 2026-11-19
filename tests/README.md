@@ -304,7 +304,8 @@ grows from 36 to 37 bits.
 application, ordered read errors and installation of the following store.
 Its probe service case supplies P after the home bytes are ready. It checks
 the first and repeated reads and a fast-cut invalidation of both a retained
-Modified copy and a downgraded Shared copy.
+Modified copy and a downgraded Shared copy. A local AMO or successful SC
+between reads makes the next snapshot supply the new bytes.
 Its buffered-store cases check overlapping byte masks, same-sector order,
 held sector coverage, probe-driven reacquisition, frozen writeback conflicts
 and fatal acquisition errors. Stream cases witness registered LR/AMO cancellation
