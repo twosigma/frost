@@ -26,6 +26,8 @@
       same service reads the f-register scalar of an OPFVF instruction
       (VARITH_F) at the head and completes it with that value, which the
       instruction carries to the VIQ when it retires.
+    - OP-VE element-group alignment of architectural vl and vstart checked at
+      the ROB head before a successful retirement can enqueue the operation.
     - Head-executed legality and translation for vector loads and stores
       (vec_head_mmu) completing on CDB slot 6, paired with the sector memory
       engine (vec_vmu) on the hart's coherence line client, which runs a span
@@ -167,7 +169,8 @@ module vec_unit #(
       if (vtox_done) is_vtox_q[vtox_tag_q] <= 1'b0;
       if (vhead_cdb_done) is_vmem_q[vhead_cdb_done_tag] <= 1'b0;
       if (i_alloc) begin
-        is_vtox_q[i_alloc_tag] <= i_alloc_is_vtox || i_alloc_is_vfscalar;
+        is_vtox_q[i_alloc_tag] <= i_alloc_is_vtox || i_alloc_is_vfscalar ||
+            (i_alloc_is_varith && (i_alloc_insn[6:0] == riscv_pkg::OPC_OP_VE));
         vtox_retire_q[i_alloc_tag] <= i_alloc_is_vtox;
         is_varith_q[i_alloc_tag] <= i_alloc_is_varith;
         is_vmem_q[i_alloc_tag] <= i_alloc_is_vmem;
@@ -308,6 +311,7 @@ module vec_unit #(
   logic [Blocks-1:0][5:0] blk_first_q;
   logic [Blocks-1:0] blk_any_q;
   logic [63:0] xres_q, fp_scalar_q;
+  logic group_bounds_fault_q;
   // The f-register read of an OPFVF instruction, held from the head check to
   // the grant
   logic fp_read_q;
@@ -353,6 +357,7 @@ module vec_unit #(
       xs <= X_IDLE;
       fp_read_q <= 1'b0;
       fp_read_addr_q <= '0;
+      group_bounds_fault_q <= 1'b0;
     end else begin
       unique case (xs)
         X_IDLE:
@@ -370,10 +375,16 @@ module vec_unit #(
           if (xwait_q == 2'd1) begin
             xvl_q <= i_vl;
             xvt_q <= i_vtype;
-            xs <= (vtox_backend_ready && !i_rob_empty &&
-                   (i_head_tag == vtox_tag_q) && i_head_safe) ? X_RD2 : X_IDLE;
-            if (!(vtox_backend_ready && !i_rob_empty && i_head_tag == vtox_tag_q && i_head_safe))
+            group_bounds_fault_q <= riscv_pkg::vector_partial_group(
+                xi[6:0], i_vl[1:0], i_vstart[1:0]
+            );
+            if (vtox_backend_ready && !i_rob_empty && i_head_tag == vtox_tag_q && i_head_safe) begin
+              // Element groups need only the architectural bounds at the head.
+              xs <= (xi[6:0] == riscv_pkg::OPC_OP_VE) ? X_OUT : X_RD2;
+            end else begin
+              xs <= X_IDLE;
               fp_read_q <= 1'b0;
+            end
           end
         end
         X_RD2:   xs <= X_RD0;
@@ -419,7 +430,8 @@ module vec_unit #(
       end
     end
     // OPFVF: the f-register scalar; vfmv.f.s: element 0, NaN-boxed
-    if (xi[14:12] == 3'b101) xres_q = fp_scalar_q;
+    if (xi[6:0] == riscv_pkg::OPC_OP_VE) xres_q = 64'(xi);
+    else if (xi[14:12] == 3'b101) xres_q = fp_scalar_q;
     else if (xi[14:12] == 3'b001) begin
       case (xvt_q[4:3])
         1: xres_q = {48'hffffffffffff, xs2_q[15:0]};
@@ -439,10 +451,12 @@ module vec_unit #(
 
   riscv_pkg::fu_complete_t vtox_only_complete, vhead_complete;
   always_comb begin
-    vtox_only_complete       = '0;
-    vtox_only_complete.valid = (xs == X_OUT);
-    vtox_only_complete.tag   = vtox_tag_q;
-    vtox_only_complete.value = riscv_pkg::FLEN'(xres_q);
+    vtox_only_complete           = '0;
+    vtox_only_complete.valid     = (xs == X_OUT);
+    vtox_only_complete.tag       = vtox_tag_q;
+    vtox_only_complete.value     = riscv_pkg::FLEN'(xres_q);
+    vtox_only_complete.exception = group_bounds_fault_q;
+    vtox_only_complete.exc_cause = riscv_pkg::exc_cause_t'(2);
   end
 
   // --------------------------------------------------------------------------

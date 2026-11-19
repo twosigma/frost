@@ -540,13 +540,19 @@ module instr_decoder #(
                 i_instr.source_reg_2
             ) || riscv_pkg::vector_int_extra_ok(
                 32'(i_instr)
-            ))
+            ) || (VECTOR && riscv_pkg::vector_crypto_ok(
+                32'(i_instr)
+            )))
           o_instr_op = ((i_instr.funct3 == 3'b100) || (i_instr.funct3 == 3'b110)) ?
               riscv_pkg::VARITH_X : riscv_pkg::VARITH;
         else o_illegal = 1'b1;
       end else if (!i_instr.funct7[6]) o_instr_op = riscv_pkg::VSETVLI;
       else if (i_instr.funct7[6:5] == 2'b11) o_instr_op = riscv_pkg::VSETIVLI;
       else if (i_instr.funct7 == 7'b1000000) o_instr_op = riscv_pkg::VSETVL;
+      else o_illegal = 1'b1;
+
+      riscv_pkg::OPC_OP_VE:
+      if (VECTOR && riscv_pkg::vector_crypto_ok(32'(i_instr))) o_instr_op = riscv_pkg::VARITH_C;
       else o_illegal = 1'b1;
 
       // FP arithmetic operations (R-type format)

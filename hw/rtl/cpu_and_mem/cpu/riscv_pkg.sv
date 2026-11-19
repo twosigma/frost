@@ -57,7 +57,8 @@ package riscv_pkg;
     OPC_FNMSUB    = 7'b1001011,  // FNMSUB.S/D
     OPC_FNMADD    = 7'b1001111,  // FNMADD.S/D
     OPC_OP_FP     = 7'b1010011,  // Scalar FP operations (S/D)
-    OPC_OP_V      = 7'b1010111   // Vector operations (vsetvl* decoded so far)
+    OPC_OP_V      = 7'b1010111,  // Vector configuration and element arithmetic
+    OPC_OP_VE     = 7'b1110111   // Vector cryptographic element groups
   } opc_e;
 
   // Instruction-memory predecode sideband bits, stored per 32-bit word.
@@ -174,7 +175,7 @@ package riscv_pkg;
   endfunction
 
   // Native instructions that never pair as slot 2: those that use an FP
-  // compute unit (OP-FP and the four FMAs) and vector instructions (OP-V).
+  // compute unit (OP-FP and the four FMAs) and vector instructions (OP-V and OP-VE).
   // Vector loads and stores are excluded by their width as well
   // (is_vector_mem, in imem_make_sideband).
   function automatic logic imem_native_fp_compute(input logic [6:0] opcode);
@@ -184,7 +185,8 @@ package riscv_pkg;
       (opcode == 7'b1000111) ||  // OPC_FMSUB
       (opcode == 7'b1001011) ||  // OPC_FNMSUB
       (opcode == 7'b1001111) ||  // OPC_FNMADD
-      (opcode == 7'b1010111);  // OPC_OP_V
+      (opcode == 7'b1010111) ||  // OPC_OP_V
+      (opcode == 7'b1110111);  // OPC_OP_VE
     end
   endfunction
 
@@ -1149,7 +1151,8 @@ package riscv_pkg;
     MOP,
     VARITH_F,                   // V: vector FP arithmetic with an f-register scalar operand,
                                 // read at the ROB head; the engine executes it after commit
-    VTOF                        // V: vfmv.f.s, executed at the ROB head; no reservation station
+    VTOF,                       // V: vfmv.f.s, executed at the ROB head; no reservation station
+    VARITH_C                    // Cryptographic element groups
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -2434,8 +2437,8 @@ package riscv_pkg;
     logic uses_fp_rs2;
     logic uses_fp_rs3;
     logic is_real;
-    // Vector arithmetic (OP-V other than vsetvl*), for the hold while the
-    // vtype at dispatch is unknown
+    // Vector arithmetic (OP-V other than vsetvl*, or OP-VE), for the hold
+    // until the queue head's vtype and registered legality are ready
     logic is_varith;
     // A vector load or store encoding (is_vector_mem), for the hold while the
     // vector memory table is full
@@ -3410,6 +3413,76 @@ package riscv_pkg;
   // instances only with it.
   localparam bit VectorZvfh = 1'b1;
 
+  // Restart permissions of a vector encoding, sampled with the queue head.
+  // Bit 0 is the arithmetic element-restart exception. Bit 1 selects an
+  // element-zero scalar extraction instead of a mask count/first-set.
+  function automatic logic [1:0] vector_restart_ok(input logic [31:0] insn);
+    logic [5:0] f;
+    logic [2:0] form_code;
+    f = insn[31:26];
+    form_code = insn[14:12];
+    vector_restart_ok[0] = ((f[5:1] == 5'b00110) && (form_code[1:0] == 2)) ||
+        ((f == 6'h27) && (form_code == 3)) ||
+        ((f == 6'h10) && ((form_code == 6) || (form_code == 5)));
+    vector_restart_ok[1] = insn[19:15] == 0;
+  endfunction
+
+  // Exact Zvbc and cryptographic element-group encodings.
+  function automatic logic vector_crypto_ok(input logic [31:0] insn);
+    logic [5:0] f;
+    logic [4:0] sub;
+    f = insn[31:26];
+    sub = insn[19:15];
+    vector_crypto_ok = 1'b0;
+    if (insn[6:0] == 7'h57)
+      vector_crypto_ok = (insn[14:12] == 2 || insn[14:12] == 6) && (f == 12 || f == 13);
+    else if (insn[6:0] == 7'h77 && insn[14:12] == 2 && insn[25]) begin
+      case (f)
+        6'h22, 6'h2a, 6'h2c, 6'h2d, 6'h2e, 6'h2f: vector_crypto_ok = 1'b1;
+        6'h28: vector_crypto_ok = sub < 4 || sub == 17;
+        6'h29: vector_crypto_ok = sub < 4 || sub == 7;
+        default: ;
+      endcase
+    end
+  endfunction
+
+  // Only the architectural bounds are needed at the ROB head. Each OP-VE
+  // element group contains four elements.
+  function automatic logic vector_partial_group(input logic [6:0] opcode, input logic [1:0] vl_low,
+                                                input logic [1:0] start_low);
+    vector_partial_group = opcode == 7'h77 && ((|vl_low) || (|start_low));
+  endfunction
+
+  // Reference for the register geometry, element-group capacity and bounds.
+  function automatic logic vector_crypto_illegal(input logic [8:0] vt, input logic [31:0] insn,
+                                                 input int unsigned vlen, input logic [15:0] vl,
+                                                 input logic [15:0] vstart);
+    int ml, sew, n, d, a, b;
+    logic group_op, scalar_key, sha, uses_b, bad;
+    ml = int'($signed(vt[2:0]));
+    sew = int'(vt[4:3]);
+    n = vector_group_regs(ml);
+    d = int'(insn[11:7]);
+    a = int'(insn[24:20]);
+    b = int'(insn[19:15]);
+    group_op = insn[6:0] == 7'h77;
+    scalar_key = group_op && insn[31:26] == 6'h29;
+    sha = group_op && insn[31:26] >= 6'h2d;
+    uses_b = group_op ? (sha || insn[31:26] == 6'h2c) : insn[14:12] == 2;
+    bad = vt[8] || vt[5] || ml == -4 || ml < sew - 3;
+    bad |= group_op ? (sha ? vt[4:3] < 2 : vt[4:3] != 2) : vt[4:3] != 3;
+    bad |= (d & (n - 1)) != 0 || (!scalar_key && (a & (n - 1)) != 0);
+    bad |= uses_b && (b & (n - 1)) != 0;
+    if (!group_op && !insn[25]) bad |= d == 0 || a == 0 || (uses_b && b == 0);
+    if (group_op) begin
+      bad |= !vector_crypto_ok(insn) || (vl % 4 != 0) || (vstart % 4 != 0);
+      bad |= ((ml < 0) ? vlen >> -ml : vlen << ml) < (32 << vt[4:3]);
+    end
+    if (sha) bad |= vector_groups_overlap(d, n, a, n) || vector_groups_overlap(d, n, b, n);
+    if (scalar_key) bad |= vector_groups_overlap(d, n, a, 1);
+    vector_crypto_illegal = bad;
+  endfunction
+
   // The FP encodings the vector unit executes (OPFVV and OPFVF). Element
   // widths, register groups and overlaps are checked against vtype by
   // vector_fp_illegal.
@@ -3527,7 +3600,9 @@ package riscv_pkg;
   // scalar vector elements independently of LMUL. Whole-register moves ignore
   // vl and LMUL but still use SEW and require a supported vtype. FP
   // encodings take vector_fp_illegal's rules.
-  function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
+  function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn,
+                                                input int unsigned vlen, input logic [15:0] vl,
+                                                input logic [15:0] vstart);
     int ml, sew, da, sa, sb, nd, na, nb, de, ae, be, dm, am, bm;
     logic [5:0] f6;
     logic [2:0] f3;
@@ -3617,7 +3692,9 @@ package riscv_pkg;
           !(sb == 0 || sb == 1 || sb == 3 || sb == 7) ||
           ((da & (nd - 1)) != 0) || ((sa & (nd - 1)) != 0);
     end
-    vector_arith_illegal = vector_fp_ok(insn) ? vector_fp_illegal(vt, insn) : illegal;
+    if (insn[6:0] == 7'h77 || vector_crypto_ok(insn))
+      vector_arith_illegal = vector_crypto_illegal(vt, insn, vlen, vl, vstart);
+    else vector_arith_illegal = vector_fp_ok(insn) ? vector_fp_illegal(vt, insn) : illegal;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -3696,9 +3773,10 @@ package riscv_pkg;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET and DRET ride the MRET machinery.
-      // VTOX, VTOF, VARITH_F, VLOAD and VSTORE complete from the vector unit at
+      // VTOX, VTOF, VARITH_F, VARITH_C, VLOAD and VSTORE complete from the vector unit at
       // the ROB head.
-      JAL, WFI, MRET, SRET, DRET, VTOX, VTOF, VARITH_F, VLOAD, VSTORE: get_rs_type = RS_NONE;
+      JAL, WFI, MRET, SRET, DRET, VTOX, VTOF, VARITH_F, VARITH_C, VLOAD, VSTORE:
+      get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -3852,7 +3930,7 @@ package riscv_pkg;
         LUI, AUIPC, JAL, ECALL, EBREAK, FENCE, FENCE_I, WFI, MRET, SRET, DRET, PAUSE, CSR_IMM, MOP,
         // Zfa FLI: rs1 is the constant index, not a register
         FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI,
-        VARITH, VARITH_F, VTOX, VTOF, VLOAD, VSTORE:
+        VARITH, VARITH_F, VARITH_C, VTOX, VTOF, VLOAD, VSTORE:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase

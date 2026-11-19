@@ -21,11 +21,13 @@ smtbmc boolector
 dispatch: read -sv riscv_pkg.sv
 dispatch: read -sv vec_arith_legality.sv
 dispatch: read_verilog -formal -D SYNTHESIS -D VEC_LMUL_LEGALITY_LOCAL_PROOF -sv dispatch.sv
-dispatch: chparam -set VECTOR 1 dispatch
+dispatch: chparam -set VECTOR 1 -set REGISTERED_QUEUE_CLASSES 1 dispatch
+dispatch: hierarchy -top dispatch
+dispatch: script free_undefined.ys
 dispatch: prep -top dispatch
 dispatch: select -assert-none t:$assume a:init
-dispatch: select -assert-count 1 t:$check r:FLAVOR=assume %i
-dispatch: select -assert-count 3 t:$check r:FLAVOR=assert %i
+dispatch: select -assert-count 2 t:$check r:FLAVOR=assume %i
+dispatch: select -assert-count 6 t:$check r:FLAVOR=assert %i
 # stage: vec_dispatch_legality's registered result is the queue head's
 # legality under the current vtype whenever it is ready, given that the
 # queue keeps an unpopped, unflushed head and the tracker keeps a known vtype
@@ -33,9 +35,11 @@ dispatch: select -assert-count 3 t:$check r:FLAVOR=assert %i
 stage: read -sv riscv_pkg.sv
 stage: read -sv vec_arith_legality.sv
 stage: read_verilog -formal -D VEC_DISPATCH_LEGALITY_LOCAL_PROOF -sv vec_dispatch_legality.sv
+stage: hierarchy -top vec_dispatch_legality
+stage: script free_undefined.ys
 stage: prep -top vec_dispatch_legality
 stage: select -assert-count 4 t:$check r:FLAVOR=assume %i
-stage: select -assert-count 1 t:$check r:FLAVOR=assert %i
+stage: select -assert-count 2 t:$check r:FLAVOR=assert %i
 stage: select -assert-count 2 t:$check r:FLAVOR=cover %i
 
 [files]
@@ -43,3 +47,4 @@ stage: select -assert-count 2 t:$check r:FLAVOR=cover %i
 ../hw/rtl/cpu_and_mem/cpu/vector/vec_arith_legality.sv
 ../hw/rtl/cpu_and_mem/cpu/vector/vec_dispatch_legality.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv
+free_undefined.ys

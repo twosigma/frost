@@ -1050,9 +1050,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "dispatch_admission.sby",
-        "Dispatch admission matches the reference; slot-2 instructions use no FP "
-        "source 3",
-        tasks=("bmc", "bmc_queued"),
+        "Bundle, station and checkpoint admission match the encoded station types "
+        "with local or registered selects, and slot 2 uses no FP source 3",
+        tasks=("bmc", "bmc_queued", "bmc_queued_vector"),
     ),
     FormalTarget(
         "instr_operand_classifier.sby",
@@ -1075,7 +1075,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_vtype_tracker.sby",
-        "A surviving vector allocation (arithmetic, FP, vector-to-scalar, load or "
+        "A surviving vector allocation (integer, FP, crypto, vector-to-scalar, load or "
         "store) clears restart state across delayed architectural reload and "
         "checkpoint recovery; the tracked vtype follows "
         "configuration allocation, flush, reload and restore",
@@ -1083,10 +1083,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Vector arithmetic legality, floating point included, equals the reference "
+        "Vector arithmetic legality, including FP and cryptographic element groups at each vector length, equals the reference "
         "for every vtype and instruction; dispatch applies it with the VTOX and "
-        "nonzero-vstart rules; the registered queue-head result is current whenever "
-        "it is ready",
+        "nonzero-vstart rules. The registered legality and restart classes match "
+        "the current queue head whenever it is ready",
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
@@ -3197,6 +3197,10 @@ SBY_TASKS = [
     ("bmc_2port", "Bounded two-port arbitration equivalence"),
     ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
+    (
+        "bmc_queued_vector",
+        "Queued admission with registered vector and station classes",
+    ),
     (
         "vhold_lq_bmc",
         "Vector range holds with the load queue's address-update port, 8 frames.",
@@ -5314,7 +5318,6 @@ UNDEFINED_OPENING_PENDING = (
     "pm_mode_select",
     "reorder_buffer",
     "sq_forwarding_unit",
-    "vec_lmul_legality_equiv",
 )
 # Scripts that compare two designs inside the script (the primitive twins and
 # the other in-script equivalence checks). Both designs hold the same undefined
