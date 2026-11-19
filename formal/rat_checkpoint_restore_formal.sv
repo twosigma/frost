@@ -148,6 +148,7 @@ module rat_checkpoint_restore_formal #(
   logic [NumCheckpoints-1:0] env_ckpt_branch_live = '0;
   logic [SeqWidth-1:0] env_ckpt_branch_seq[NumCheckpoints];
   logic [NumCheckpoints-1:0] env_ckpt_branch_has_dest = '0;
+  logic [NumCheckpoints-1:0] env_ckpt_branch_fp_dest = '0;
 
   // Two-phase early recovery and 1-cycle commit recovery state.
   logic early_backend_flush_q = 1'b0;
@@ -220,14 +221,14 @@ module rat_checkpoint_restore_formal #(
     end
   end
 
-  // Early misprediction triggers only on a live conditional branch (!has_dest)
-  // that is not retiring in the same cycle.
+  // A conditional branch or an integer-link jump may recover before retirement.
+  // Neither class writes the floating-point register file.
   logic [SeqWidth-1:0] early_cand_seq;
   logic early_cand_valid;
   assign early_cand_seq = env_ckpt_branch_seq[i_early_mispredict_ckpt_id];
   assign early_cand_valid = env_ckpt_in_use[i_early_mispredict_ckpt_id] &&
       env_ckpt_branch_live[i_early_mispredict_ckpt_id] &&
-      !env_ckpt_branch_has_dest[i_early_mispredict_ckpt_id];
+      !env_ckpt_branch_fp_dest[i_early_mispredict_ckpt_id];
 
   // Retirement fire decode.
   logic retire_1;
@@ -445,7 +446,7 @@ module rat_checkpoint_restore_formal #(
   logic watch_ckpt_written = 1'b0;
   logic [RasPtrBits-1:0] watch_ckpt_ras_tos = '0;
   logic [RasPtrBits:0] watch_ckpt_ras_valid_count = '0;
-  logic [1:0] watch_ckpt_ras_top_ends = '0;
+  logic [XLEN-1:0] watch_ckpt_ras_top = '0;
 
   initial begin
     for (int c = 0; c < NumCheckpoints; c++) begin
@@ -514,6 +515,7 @@ module rat_checkpoint_restore_formal #(
       env_ckpt_in_use          <= '0;
       env_ckpt_branch_live     <= '0;
       env_ckpt_branch_has_dest <= '0;
+      env_ckpt_branch_fp_dest  <= '0;
       early_backend_flush_q    <= 1'b0;
       commit_recovery_q        <= 1'b0;
       ckpt_flush_free_mask_q   <= '0;
@@ -652,6 +654,8 @@ module rat_checkpoint_restore_formal #(
           env_ckpt_branch_seq[i_save_ckpt_id] <= ckpt_slot2_cand ? slot2_seq : slot1_seq;
           env_ckpt_branch_has_dest[i_save_ckpt_id] <= ckpt_slot2_cand ? dut_alloc_has_dest_2 :
               dut_alloc_has_dest;
+          env_ckpt_branch_fp_dest[i_save_ckpt_id] <= ckpt_slot2_cand ?
+              (dut_alloc_has_dest_2 && i_slot2_dest_rf) : (dut_alloc_has_dest && i_slot1_dest_rf);
 
           if (ckpt_slot2_cand && dut_alloc_valid && !i_slot1_dest_rf &&
               (i_slot1_dest_reg == watch_int_reg)) begin
@@ -675,7 +679,7 @@ module rat_checkpoint_restore_formal #(
             watch_ckpt_written         <= 1'b1;
             watch_ckpt_ras_tos         <= i_ras_tos;
             watch_ckpt_ras_valid_count <= i_ras_valid_count;
-            watch_ckpt_ras_top_ends    <= {i_ras_top[XLEN-1], i_ras_top[0]};
+            watch_ckpt_ras_top         <= i_ras_top;
           end
         end
       end
@@ -686,10 +690,15 @@ module rat_checkpoint_restore_formal #(
           arch_int_has_prod <= 1'b0;
           arch_fp_has_prod  <= 1'b0;
         end else begin
-          arch_int_has_prod <= ckpt_int_after_retire[dut_checkpoint_restore_id];
-          arch_int_seq      <= ckpt_int_seq[dut_checkpoint_restore_id];
-          arch_fp_has_prod  <= ckpt_fp_after_retire[dut_checkpoint_restore_id];
-          arch_fp_seq       <= ckpt_fp_seq[dut_checkpoint_restore_id];
+          if (rob_writes_watch_int[early_cand_seq[TagWidth-1:0]]) begin
+            arch_int_has_prod <= 1'b1;
+            arch_int_seq      <= early_cand_seq;
+          end else begin
+            arch_int_has_prod <= ckpt_int_after_retire[dut_checkpoint_restore_id];
+            arch_int_seq      <= ckpt_int_seq[dut_checkpoint_restore_id];
+          end
+          arch_fp_has_prod <= ckpt_fp_after_retire[dut_checkpoint_restore_id];
+          arch_fp_seq      <= ckpt_fp_seq[dut_checkpoint_restore_id];
         end
       end else if (i_flush_all) begin
         arch_int_has_prod <= 1'b0;
@@ -764,7 +773,7 @@ module rat_checkpoint_restore_formal #(
   wire ok_ckpt_alloc_free = !env_ckpt_in_use[o_checkpoint_alloc_id];
   wire ok_restore_ras = (o_ras_tos == watch_ckpt_ras_tos) &&
       (o_ras_valid_count == watch_ckpt_ras_valid_count) &&
-      ({o_ras_top[XLEN-1], o_ras_top[0]} == watch_ckpt_ras_top_ends);
+      (o_ras_top == watch_ckpt_ras_top);
   wire ok_int_lookup_ren = (o_int_src1.renamed == oracle_int_renamed) &&
       (o_int_src1_2.renamed == oracle_int_renamed);
   wire ok_int_lookup_tag = (o_int_src1.tag == oracle_int_tag) &&
@@ -786,6 +795,8 @@ module rat_checkpoint_restore_formal #(
   wire ok_commit2_dead = !rob_valid[commit_tag_2_q] &&
       (commit_tag_2_q == (commit_tag_q + TagWidth'(1)));
   wire ok_early_in_rob = (SeqWidth'(early_flush_seq_q - rob_head_seq) < rob_count);
+  wire early_branch_writes_watch_int = rob_writes_watch_int[early_flush_seq_q[TagWidth-1:0]];
+  wire ok_early_int_link = arch_int_has_prod && (arch_int_seq == early_flush_seq_q);
   wire ok_early_int_older =
       (SeqWidth'(arch_int_seq - rob_head_seq) < SeqWidth'(early_flush_seq_q - rob_head_seq));
   wire ok_early_fp_older =
@@ -796,9 +807,8 @@ module rat_checkpoint_restore_formal #(
   wire ok_watch_ras_ram =
       (dut.u_ckpt_metadata.ram[watch_ckpt_id][MetaRasLsb+:(2*RasPtrBits+1)] ==
        {watch_ckpt_ras_valid_count, watch_ckpt_ras_tos}) &&
-      ({dut.u_ckpt_metadata.ram[watch_ckpt_id][MetaRasLsb+MetaRasWidth-1],
-        dut.u_ckpt_metadata.ram[watch_ckpt_id][MetaRasLsb+2*RasPtrBits+1]} ==
-       watch_ckpt_ras_top_ends);
+      (dut.u_ckpt_metadata.ram[watch_ckpt_id][MetaRasLsb+2*RasPtrBits+1+:XLEN] ==
+       watch_ckpt_ras_top);
   wire ok_active_int_live = (SeqWidth'(arch_int_seq - rob_head_seq) < rob_count) &&
       dut.int_rat_valid[watch_int_reg] && (dut.int_rat_tag[watch_int_reg] == oracle_int_tag) &&
       rob_writes_watch_int[oracle_int_tag];
@@ -822,7 +832,8 @@ module rat_checkpoint_restore_formal #(
       ok_int_lookup_ren &&
       (!oracle_int_renamed || ok_int_lookup_tag) &&
       ok_x0_unrenamed &&
-      (!(early_backend_flush_q && arch_int_has_prod) || ok_early_int_older) &&
+      (!early_backend_flush_q || (early_branch_writes_watch_int ? ok_early_int_link :
+           (!arch_int_has_prod || ok_early_int_older))) &&
       (!watch_ckpt_written || ok_watch_ras_ram) &&
       (arch_int_has_prod ? ok_active_int_live : ok_active_int_dead));
 
@@ -920,7 +931,9 @@ module rat_checkpoint_restore_formal #(
 
         if (early_backend_flush_q) begin
           p_inv_early_flush_in_rob : assert (ok_early_in_rob);
-          if (CHECK_INT && arch_int_has_prod) begin
+          if (CHECK_INT && early_branch_writes_watch_int) begin
+            p_inv_early_flush_int_link : assert (ok_early_int_link);
+          end else if (CHECK_INT && arch_int_has_prod) begin
             p_inv_early_flush_int_older : assert (ok_early_int_older);
           end
           if (CHECK_FP && arch_fp_has_prod) begin
@@ -1031,11 +1044,15 @@ module rat_checkpoint_restore_formal #(
 
       wire ok_ckpt_live_used = env_ckpt_in_use[c] &&
           (SeqWidth'(br_seq - rob_head_seq) < rob_count) && !other_live_same_seq;
-      // The branch's own-destination bit is set only for a branch saved with a
-      // destination.
+      wire own_int_dest = dut.u_ckpt_metadata.ram[c][MetaRasLsb+MetaRasWidth];
+      wire [RegAddrWidth-1:0] own_reg =
+          dut.u_ckpt_metadata.ram[c][MetaRasLsb+MetaRasWidth+1+:RegAddrWidth];
       wire ok_ckpt_meta_br = (dut.u_ckpt_metadata.ram[c][TagWidth-1:0] == br_tag) &&
           (dut.u_ckpt_metadata.ram[c][TagWidth] == rob_entry_epoch[br_tag]) &&
-          (env_ckpt_branch_has_dest[c] || !dut.u_ckpt_metadata.ram[c][MetaRasLsb+MetaRasWidth]);
+          (!CHECK_INT || ((own_int_dest && (own_reg == watch_int_reg)) ==
+                         rob_writes_watch_int[br_tag])) &&
+          (own_int_dest == (env_ckpt_branch_has_dest[c] && !env_ckpt_branch_fp_dest[c])) &&
+          (!own_int_dest || (own_reg != '0));
       wire ok_ckpt_x0 = !dut.u_ckpt_rat_snapshot.ram[c][TagWidth+1];
       wire ok_ckpt_int_live = (SeqWidth'(p_seq - rob_head_seq) < br_dist) &&
           (snap_int == {1'b1, rob_entry_epoch[p_tag], p_tag}) && rob_writes_watch_int[p_tag];
@@ -1112,6 +1129,17 @@ module rat_checkpoint_restore_formal #(
             ckpt_int_after_retire[watch_ckpt_id] &&
             (!arch_int_has_prod || (arch_int_seq != ckpt_int_seq[watch_ckpt_id]))
         ) && o_int_src1.renamed);
+
+        // A younger rename of the same integer register is replaced by the live link.
+        c_early_link_replaces_younger :
+        cover ($past(
+            i_rst_n && early_restore_active &&
+            rob_writes_watch_int[early_cand_seq[TagWidth-1:0]] &&
+            arch_int_has_prod && (SeqWidth'(arch_int_seq - rob_head_seq) >
+                                 SeqWidth'(early_cand_seq - rob_head_seq))
+        ) && o_int_src1.renamed && o_int_src1.tag == $past(
+            early_cand_seq[TagWidth-1:0]
+        ));
 
         // Reach commit-time jump recovery clearing active rename state after branch retirement.
         c_commit_recovery_clears_rat :
