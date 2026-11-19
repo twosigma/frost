@@ -25,8 +25,10 @@
        integer RF read port; a strided form's stride rs2 follows on the same
        port), and mask register v0 (via the VRF read port).
     2. Checks register-group legality from architectural vtype (vill except on
-       whole-register forms, EMUL in [1/8, 8], register-group alignment, and
-       masked load destination overlap with v0).
+       whole-register forms, EMUL in [1/8, 8], register-group alignment, a
+       masked form's data group containing v0, a masked indexed form's index
+       group containing v0, and an indexed store's data overlapping its index
+       group at a different EEW: the last two read one register at two widths).
     3. Computes the active element mask [vstart, evl) & v0.t and reduces the
        lowest and highest active element indices across shallow 16-bit stages.
        Zero-active-element instructions perform no translation or memory check,
@@ -440,15 +442,18 @@ module vec_head_mmu #(
                     (dec_emul_log2 < -5'sd3) || (dec_emul_log2 > 5'sd3) ||
                     ((dec_vd_vs3 & dec_lmul_align_mask) != 5'd0) ||
                     ((dec_umop & dec_align_mask) != 5'd0) ||
-                    (!dec_vm && !dec_is_store && (dec_vd_vs3 == 5'd0)) || dec_seg_bad ||
+                    (!dec_vm && (dec_vd_vs3 == 5'd0)) || (!dec_vm && (dec_umop == 5'd0)) ||
+                    dec_seg_bad ||
                     (!dec_is_store && (dec_seg ? dec_seg_idx_overlap :
-                                                 (dec_idx_overlap && !dec_idx_overlap_ok)));
+                                                 (dec_idx_overlap && !dec_idx_overlap_ok))) ||
+                    (dec_is_store && (dec_weew_log2 != dec_vsew[1:0]) &&
+                     (dec_seg ? dec_seg_idx_overlap : dec_idx_overlap));
       dec_evl = vl_q;
     end else begin
       dec_illegal = dec_vill || dec_vsew[2] || (dec_vlmul == 3'b100) ||
                     (dec_emul_log2 < -5'sd3) || (dec_emul_log2 > 5'sd3) ||
                     ((dec_vd_vs3 & dec_align_mask) != 5'd0) ||
-                    (!dec_vm && !dec_is_store && (dec_vd_vs3 == 5'd0)) || dec_seg_bad;
+                    (!dec_vm && (dec_vd_vs3 == 5'd0)) || dec_seg_bad;
       dec_evl = vl_q;
     end
 

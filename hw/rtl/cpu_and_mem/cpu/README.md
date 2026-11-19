@@ -875,9 +875,12 @@ clears the local state on the following edge; the trap's `vstart` sideband
 remains available on the trap-taking edge. A local CDB acknowledgement
 suppresses duplicate completion while the state machine enters its retirement
 or trap wait. The unit reads `rs1` through the integer register file's extra
-read port and checks `vtype` and register-group legality (`vill` except on
-whole-register forms, EMUL in `[1/8, 8]`, group alignment, and masked loads to
-`v0`), computes the active byte span from `vl`, `vstart` and `v0`, translates
+read port and checks `vill` (except on whole-register forms), EMUL in
+`[1/8, 8]` and register-group alignment. On masked element loads and stores,
+the data group and any index group must exclude `v0`. On indexed stores, data
+and index groups may overlap only at equal element widths. Both checks cover
+every data field of a segment. The unit then computes the active byte span
+from `vl`, `vstart` and `v0`, translates
 the one or two touched pages on the DMMU's walk-request port (requiring cached
 DDR with `PBMT = PMA`), waits for older committed scalar stores (`o_sq_committed_empty`), records
 the physical page segments in `vec_vmt`, and completes on CDB slot 6 to retire
@@ -917,12 +920,17 @@ its completion before the next element, so the ordered and unordered indexed
 forms both run in element order. A strided form's legality is that of the
 unit-stride form. An indexed form's data has EEW SEW and EMUL LMUL and its index
 group the width field's EEW and the matching EMUL, which must lie in
-`[1/8, 8]`; both groups must be aligned, a masked load may not write `v0`, and a
-load's destination may overlap the index group only with equal EEWs, at the
-index group's lowest register when the destination EEW is smaller, or at the
-destination group's highest register when it is larger and the index EMUL is
-at least 1. A segment form (NF of 2 to 8 fields, any addressing; a unit-stride
-segment's stride is NF * EEW) treats each segment as the element: its fields lie
+`[1/8, 8]`; both groups must be aligned, and a load's destination may overlap
+the index group only with equal EEWs, at the index group's lowest register when
+the destination EEW is smaller, or at the destination group's highest register
+when it is larger and the index EMUL is at least 1. A masked load's destination
+group may not contain `v0`. The mask is a source with EEW 1, so a masked store
+cannot use `v0` as data and a masked indexed load or store cannot use it as an
+index. An indexed store may read overlapping data and index groups only when
+SEW equals the index EEW. The head raises an illegal-instruction exception for
+these reserved encodings before accessing memory. A segment form has 2 to 8
+fields and treats each segment as one element. For a unit-stride segment the
+stride is NF * EEW. Its fields lie
 one after another from the segment's address, the segment's one or two pages are
 translated first, and each field then gets its own descriptor, for register
 group `vd + f * EMUL` (EMUL at least one register), so a fault on a segment is

@@ -1555,6 +1555,42 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=512"),),
         include_in_pytest=False,
     ),
+    "vec_mem_source_eew_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_mem_source_eew_test",
+        nic_mac_clocks=False,
+        description=(
+            "Vector loads and stores reading one register at two widths trap as illegal; "
+            "VLEN 128"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
+        include_in_pytest=False,
+    ),
+    "vec_mem_source_eew_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_mem_source_eew_test",
+        nic_mac_clocks=False,
+        description=(
+            "Vector loads and stores reading one register at two widths trap as illegal; "
+            "VLEN 256"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+        include_in_pytest=True,
+    ),
+    "vec_mem_source_eew_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_mem_source_eew_test",
+        nic_mac_clocks=False,
+        description=(
+            "Vector loads and stores reading one register at two widths trap as illegal; "
+            "VLEN 512"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
+        include_in_pytest=False,
+    ),
     "cbo_zero_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

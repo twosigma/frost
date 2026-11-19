@@ -38,7 +38,7 @@ and `soc_axil_no_cached_tier` check the NIC-access guard.
 
 The `mops` bench executes every Zimop and Zcmop variant in M, S and U modes,
 checks dependent consumers and unchanged register, CSR and memory state, and
-checks the original compressed encoding in `mtval` for reserved neighbours.
+checks the original compressed encoding in `mtval` for reserved neighbors.
 The decompressor bench compares all 65,536 inputs with a specification oracle
 and the Python predecode mirror.
 
@@ -195,6 +195,14 @@ four-class `vec_lmul_legality` that builds without the vector unit use.
 `vec_source_eew_test_v128/v256/v512` check illegal-instruction cause and
 trap value, unchanged destination registers, `vstart` and `mstatus.VS` for
 masked instructions that use v0 as data.
+`vec_mem_source_eew_test_v128/v256/v512` do the same for vector loads and
+stores that read one register at two widths. They check masked stores of v0,
+masked indexed accesses with v0 as the index, and indexed stores whose data
+and index groups overlap at different widths. Each has a legal neighbor.
+Reserved loads preserve every destination register, including both segment
+fields, and reserved stores preserve the entire range they could write. The
+`verif/testrig/vector_source_widths_memory.S` trace checks those encodings
+against the architectural reference.
 
 The `coherence_endpoints`, `coherence_endpoints_single`, and
 `coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
@@ -1161,10 +1169,12 @@ are `vec_smoke`, `vec_ldst`, `vec_string`, `vec_dot_int`, `vec_dot_fp`,
 (`include_in_pytest=False`) because the default build has no vector unit; their
 cycle budgets are ceilings to tighten after the first run. To put them in the
 default pytest collection, remove `include_in_pytest=False` from the loop under
-`VECTOR_BRING_UP_PROGRAMS` in `test_run_cocotb.py`. Vector loads and stores reach only cached DDR (an access to BRAM takes an access fault), so a program
-whose vector code touches its static data or its stack runs correctly only with the program in DDR, where a
-program built with the vector extension has its stack in cached DDR as well: `vec_ldst_ddr_v128`,
-`vec_ldst_ddr_v256` and `vec_ldst_ddr_v512` run `vec_ldst` that way.
+`VECTOR_BRING_UP_PROGRAMS` in `test_run_cocotb.py`. Vector loads and stores
+reach only cached DDR (an access to BRAM takes an access fault), so a program
+whose vector code touches its static data or its stack runs correctly only with
+the program in DDR, where a program built with the vector extension has its
+stack in cached DDR as well: `vec_ldst_ddr_v128`, `vec_ldst_ddr_v256` and
+`vec_ldst_ddr_v512` run `vec_ldst` that way.
 
 The `vec_integer_test_v128`, `vec_integer_test_v256` and
 `vec_integer_test_v512` entries exercise 149 integer, fixed-point, mask and
