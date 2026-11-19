@@ -1346,7 +1346,8 @@ The standalone Ethernet MAC/PCS has its own
 ### `test_run_formal.py`
 
 See the [formal guide](../formal/README.md) for the targets, what each one
-proves, and its assumptions.
+proves, and its assumptions. The `tage_predictor_twin` and `ittage_predictor_twin`
+targets compare every prediction and RAM port with the original predictors.
 
 ```bash
 ./scripts/frost.py formal                          # every task of every target

@@ -1,4 +1,5 @@
 # SymbiYosys run output directories (e.g., trap_unit_bmc/, trap_unit_cover/).
-# The predictor reference directory holds the original RTL used by the twins.
+# The predictor reference and RAM model directories hold proof sources.
 */
 !predictor_reference/
+!predictor_twin_ram/
