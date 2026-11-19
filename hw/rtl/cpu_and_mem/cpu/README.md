@@ -888,7 +888,10 @@ and `vfmv.s.f` write element zero when `vstart < vl`, including
 `vstart`, `vxrm` and `frm`, and the engine executes it after commit; the CSR
 file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
-result on CDB slot 6. Retiring these scalar-result instructions clears
+registered result on CDB slot 6. Only `vcpop.m` and `vfirst.m` take an extra
+cycle to combine the counts or first-set indices from the 64-bit blocks.
+Scalar integer programs, including CoreMark, do not enter these states.
+Retiring these scalar-result instructions clears
 `vstart`, dirtying VS only if that changes it. Saturation from active,
 committed elements sets sticky `vxsat`. Every CSR access waits for the vector
 engine and its retirement queue to drain, so reads and writes observe
