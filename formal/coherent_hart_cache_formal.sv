@@ -1280,8 +1280,11 @@ module coherent_hart_cache_formal #(
   logic [1:0] f_sample_version, f_home_version;
   logic [Slots-1:0][1:0] f_read_version;
   wire f_lower_reply = r_valid && r_ready && reply.addr == 32'h80000000;
+  // An absorbed R has also sampled the read while its frozen PutM awaits WA.
   wire f_sampled_read = !engine_idle && !f_maint_home_state[4] && !result.error &&
-      f_maint_home_state[3] && result.q != 0 && address == 32'h80000000;
+      (f_maint_home_state[3] || engine_wa_valid) && result.q != 0 && address == 32'h80000000;
+  wire f_absorbed_owner = !(engine_wa_valid || (r_valid && reply.absorbed)) ||
+      (f_cache_flags[2] && !f_cache_flags[1]);
   // A dirty R owns the sampled version until the home publishes it. A
   // private copy or frozen writeback may already own a younger store.
   wire [1:0] f_handoff_version = f_dirty && !engine_idle ? f_sample_version : f_home_version;
@@ -1449,7 +1452,7 @@ module coherent_hart_cache_formal #(
           f_home_version
       ) && valid_version(
           f_sample_version
-      ) && f_credit_matches && f_latest_accounted &&
+      ) && f_credit_matches && f_latest_accounted && f_absorbed_owner &&
           (!f_sampled_read || (f_sample_version == f_read_version[2'(engine_tid)] &&
                                (!f_final_reader || f_sample_version[1]))));
 `endif
