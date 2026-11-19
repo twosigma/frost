@@ -2048,7 +2048,10 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
-    ("cover_backing", "Reach a real second-slot backing hit after the full reset sweep"),
+    (
+        "cover_backing",
+        "Reach a real second-slot backing hit after the full reset sweep",
+    ),
     (
         "prove_order",
         "Prove fetch slot order, fault propagation and the registered PD restore",
