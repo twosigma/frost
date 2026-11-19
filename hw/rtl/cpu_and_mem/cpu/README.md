@@ -616,13 +616,12 @@ are access faults, and so is an instruction fetch (PMA overrides the Svpbmt
 chapter permits). The walk cache holds only pointers, whose PBMT field must be
 zero.
 
-On the X3, a misaligned NC/IO load or store to a DDR alias raises a load or
-store access fault (cause 5 or 7); one to low BRAM or device registers raises
-an address-misaligned exception (cause 4 or 6). The VCU118 has no hardware
-misaligned-access engine:
-misaligned loads and stores raise cause 4 or 6 before translation, including
-NC/IO accesses, for firmware to handle. Aligned NC/IO DDR accesses on its
-2 GiB map raise cause 5 or 7 because the map has no alias.
+With the misaligned-access engine, a misaligned load or store to a permitted
+NC/IO DDR page raises an access fault (cause 5 or 7). The X3 has an uncached
+DDR alias. The VCU118's 2 GiB map has no alias, so aligned NC/IO DDR accesses
+also raise access faults. Misaligned NC/IO accesses to low BRAM or mapped
+device registers raise an address-misaligned exception (cause 4 or 6).
+Without the engine, misaligned NC/IO loads and stores trap before translation.
 
 The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
 (the level-0 table of a 2 MiB region) and 4 root pointers (the level-1 table
@@ -648,9 +647,9 @@ walker's port into the cache hierarchy.
 
 `misaligned/ma_engine.sv` performs one misaligned plain load or store in
 cacheable DDR as one or two 32-byte sector transactions. `cpu_ooo`
-instantiates it when the `MISALIGNED_HW` parameter is set (default off; the
-X3 build and the simulation default set it), which needs the cached tier;
-elaboration rejects it without one.
+instantiates it when the `MISALIGNED_HW` parameter is set. The parameter
+defaults to 0 at the core and requires the cached tier. The X3, VCU118 and
+simulation builds enable it by default.
 Without the engine, every misaligned access raises the address-misaligned
 exception.
 

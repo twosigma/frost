@@ -105,6 +105,13 @@ FROST_CPU_CLK_HZ=161132812 ./fpga/load_software/load_software.py x3 hello_world
 FROST_CPU_CLK_HZ=161132812 ./fpga/hw_regression.py --board x3 hello_world itlb_test
 ```
 
+## Misaligned accesses
+
+X3 and VCU118 perform plain misaligned loads and stores to cached DDR in
+hardware by default. `./fpga/build/build.py vcu118 --no-misaligned-hw`
+disables the engine at synthesis. Those accesses then trap for firmware
+to handle. The `misaligned_test` program requires the engine.
+
 ## Profiling counters
 
 `--perf-counters` includes the `mperf*` profiling counters. They are left out

@@ -38,11 +38,11 @@ pieces come before the second hart:
   stack objects, works there; in the BRAM layout, its static data and stack are
   in the low BRAM.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
-  engine performs plain misaligned loads and stores to cached DDR in the X3
-  build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
-  address-misaligned exception. TestRIG does not check the engine yet: its
-  build leaves the engine out until its RVFI-DII recorder reports the
-  engine's retirements and writes.
+  engine performs plain misaligned loads and stores to cached DDR by default
+  on the X3 and VCU118 and in simulation (`MISALIGNED_HW`). Misaligned
+  accesses to low BRAM raise the address-misaligned exception. TestRIG
+  leaves the engine out until its RVFI-DII recorder reports the engine's
+  retirements and writes.
 
 The table below lists the mandatory extensions of RVA23U64 and RVA23S64
 (excluding Sha, the hypervisor profile extension) and the RVA23 optional
@@ -63,7 +63,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Ziccif | Implemented | `ifread_test`, `ddr_exec_test`, `smc_fencei_test`, `coherent_hart_cache.sby`, `immu_twin.sby` |
 | Ziccrse | Implemented | `rv64_amo_test`, `ddr_atomic_test`, TestRIG (`--atomics`), `coherence_l1d.sby`, `coherence_home.sby` |
 | Ziccamoa | Implemented | `riscv-arch-test` (`A`), `riscv-tests` (`rv64ua`), `rv64_amo_test`, TestRIG (`--atomics`), `load_queue_amo_compute.sby`, `coherence_l1d.sby` |
-| Zicclsm | Implemented (in hardware on the X3 and in simulation; emulated by firmware on the VCU118; TestRIG builds leave the engine out) | `misaligned_test`, `riscv-tests` (`ma_data`), `test_ma_engine.py`, `ma_engine.sby`, `ma_pkg.sby` |
+| Zicclsm | Implemented in hardware by default on the X3 and VCU118 and in simulation. TestRIG builds leave the engine out | `misaligned_test`, `riscv-tests` (`ma_data`), `test_ma_engine.py`, `ma_engine.sby`, `ma_pkg.sby` |
 | Za64rs | Implemented | Verified by construction (32-byte sector and 64-byte line reservations); LR/SC functional tests in `rv64_amo_test`, `ddr_atomic_test`, `coherence_l1d.sby`, `coherence_home.sby` |
 | Zihintpause | Implemented | `riscv-arch-test` (`hints`), `pause_test`, TestRIG |
 | Zic64b | Implemented | `cbo_zero_test`, `cbo_mgmt_test`, `riscv-arch-test` (`CMO`), TestRIG (`Zicboz`, `Zicbom`), `store_queue.sby` |
