@@ -2,6 +2,7 @@
 # on them. A script runs it right after `hierarchy -top <top>`, once every
 # source is read and every parameter set, and lists this file in [files].
 #
+# select -clear resets the selection and active module to the whole design.
 # proc runs pass by pass, without proc_rom, and its closing opt_expr runs last.
 # The first setundef frees the undefined inputs of every multiplexer and every
 # undefined bit of a connection, before proc_dlatch, which reads both (the
@@ -18,6 +19,7 @@
 # constant is left for it: it folds what plain proc folds, such as a
 # multiplexer with a constant select, so that the commands after the opening
 # see the netlist they saw.
+select -clear
 proc_clean
 proc_rmdead
 proc_prune
