@@ -106,8 +106,10 @@ module coherent_hart_cache_formal #(
           (rewrite_early ? snapshot_count_q != 0 : first_walk_q);
       request_fence = first_walk_q && !fence_seen_q;
       fetch_sector = 0;
-      fetch = (first_install_q && !before_fetch_q) || (fence_seen_q && !after_fetch_q);
-      walk = (first_if_q && !walked_q) || (final_if_q && walk_count_q == 1);
+      // A request sampled during reset would consume a driver count while
+      // the corresponding endpoint discards it.
+      fetch = !rst && ((first_install_q && !before_fetch_q) || (fence_seen_q && !after_fetch_q));
+      walk = !rst && ((first_if_q && !walked_q) || (final_if_q && walk_count_q == 1));
       read_error = 0;
       discard = 0;
 `elsif COH_MAINT_FOUR
