@@ -917,8 +917,8 @@ before R readiness clears its valid bit. A simultaneous new reply takes priority
 over acceptance; reset clears the valid bit in its own flop.
 CheckSC samples the reservation after capture.
 Probe lookups read private data only for an M hit. A clean read probe leaves
-the tag and bytes untouched. A first dirty snapshot, a downgrade and an invalidation update the tag
-without writing the data row.
+the tag and bytes untouched. The first snapshot of an M version, a downgrade
+from M and an invalidation of a resident copy update only the tag.
 
 Every M sector has a resident L2 merge destination, or a fill that blocks
 its line until the destination is installed. Clean S and L0 copies
