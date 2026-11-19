@@ -277,10 +277,10 @@ module sq_forwarding_unit #(
         end
 
         // Overlap: same dword and intersecting 8-lane masks (a DOUBLE's mask
-        // is 8'hFF, the whole beat). A cbo.zero entry overlaps every load in
-        // its 64-byte block and never forwards. The load waits until the entry
-        // completes: after both cached sector records allocate or after the
-        // eighth uncached beat returns. Cached loads then also wait for the
+        // is 8'hFF, the whole beat). A cbo.zero or Zicbom entry conflicts
+        // with every load in its 64-byte block and never forwards. The load
+        // waits for zero's sector allocations or uncached writes, or for
+        // the Zicbom request to complete. Cached loads also wait for a
         // matching L1D record to install.
         if (sq_addr_valid[i]) begin
           same_dword = sq_is_zero[i] ?

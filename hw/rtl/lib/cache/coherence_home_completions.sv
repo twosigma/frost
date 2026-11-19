@@ -402,9 +402,9 @@ module coherence_home_completions #(
   assign o_work_nofill = nofill_q[work_slot_q];
   assign o_waiting_request = work;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_waiting
-    // A CMO needs its own way even on a hit. A younger reader that parks
-    // on an earlier fill of that line would hold the way until the CMO
-    // released it. Admit that reader to a seat once its predecessors clear.
+    // A CMO needs its own way even on a hit. A younger reader parked on an
+    // earlier fill would hold its seat while waiting for the CMO to finish.
+    // Admit the reader to a seat once its predecessors clear.
     assign o_waiting[slot] = work_valid[slot] && !issued_q[slot] &&
         (!follows_cmo_q[slot] || pred_clear_q[slot]) && !parked_q[slot] && !ready_q[slot] &&
         !work_selected_slots_q[slot];

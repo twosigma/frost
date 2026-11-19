@@ -710,8 +710,8 @@ module store_queue #(
   for (genvar g_sq_flat = 0; g_sq_flat < DEPTH; g_sq_flat++) begin : gen_sq_flat
     assign sq_rob_tag_flat[g_sq_flat*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
         sq_rob_tag[g_sq_flat];
-    // The forwarding CAM and vector range check order a CMO by the real
-    // physical block. Keep the bus address in the entry for the drain.
+    // One alias-decode bit per entry precedes the forwarding comparator and
+    // vector range check without an added cycle. The drain uses the bus address.
     wire [XLEN-1:0] raw_addr = sq_address[g_sq_flat];
     assign sq_address_flat[g_sq_flat*XLEN+:XLEN] =
         sq_is_cmo[g_sq_flat] && riscv_pkg::pma_pbmt_alias_ok(raw_addr) ?
