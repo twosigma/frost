@@ -193,15 +193,18 @@ every valid ALU result, which follows from the rule in the next section. The
 | 1 | MUL | 0 | 0 | `ALWAYS_GRANTED=1`: highest priority; pending is constant zero; `DIRECT_MUL=1` presents the tracker tail without a FIFO (see the [adapter proof](../fu_cdb_adapter/README.md)) |
 | 2 | DIV | 0 | 1 | |
 | 3 | MEM | 0 | 0 | `ALWAYS_GRANTED=1`: second priority on a two-lane bus; pending is constant zero |
-| 4 | FP | 0 | 1 | |
+| 4 | FP engine and divider | 0 | 1 | |
+| 6 | FP pipeline | 0 | 0 | Fed by `fp_shim`'s result FIFO, which pops whenever the adapter holds nothing |
 
 Slot 5 (`FU_FP_MUL`) carries the vector-config unit's results through its own
 registered adapter when `VECTOR` is set. The wrapper keeps a side record per ROB
 tag of each vector-config result (new `vtype`, `vl`, VLMAX, whether rs1 was
 x0) and, when that tag commits, presents the `vl`/`vtype` update to the CSR
-file on `o_vcfg_commit`. Slot 6 (`FU_FP_DIV`) has no adapter: cpu_ooo drives its
-test input with the vector unit's vector-to-scalar results (held until granted)
-and ties it to zero without the unit; slot 5's test input does the same without
+file on `o_vcfg_commit`. Slot 6 (`FU_FP_DIV`) carries the FP pipeline's adapter and cpu_ooo's test
+input, which the vector unit drives with its vector-to-scalar results (held
+until granted) and which is zero without the unit. The test input takes the
+slot first: the arbiter sees it whenever it is valid, and the FP pipeline
+adapter's grant is slot 6's grant without it; slot 5's test input does the same without
 the unit.
 
 With refill off, a granted adapter always returns to idle.
@@ -435,7 +438,8 @@ path waits for either.
 
 With `EARLY_LOAD_WAKEUP=1` (the default), a staged load result can wake its
 dependents in INT_RS and MEM_RS one cycle before the registered CDB
-broadcast. MUL_RS, FP_RS, the ROB, and the SQ receive the registered result.
+broadcast, and FP_RS does the same through a third merge. MUL_RS, the ROB, and
+the SQ receive the registered result.
 
 `mem_wakeup_merge` places the LQ's staged, nonfaulting result into an idle
 registered CDB lane on each station's inputs. Valid registered broadcasts

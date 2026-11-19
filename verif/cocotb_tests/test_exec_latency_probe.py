@@ -160,6 +160,10 @@ async def trace_exec_latency(dut: Any) -> None:
                 "fp_adapter": unpack_fu_complete(
                     int(backend.fp_adapter_to_arbiter.value)
                 ),
+                "fp_pipe_complete": unpack_fu_complete(int(backend.fp_pipe_out.value)),
+                "fp_pipe_adapter": unpack_fu_complete(
+                    int(backend.fp_pipe_adapter_to_arbiter.value)
+                ),
                 "fp_state": int(fp.u_engine.state_q.value),
                 "fp_busy": int(backend.fp_busy.value),
                 "fp_pending": int(backend.fp_adapter_result_pending.value),
@@ -198,11 +202,14 @@ async def trace_exec_latency(dut: Any) -> None:
                     ):
                         tag = issue["rob_tag"]
                         assert tag not in pending, ("tag reused before completion", tag)
-                        ports = (
-                            {"mul_complete", "cdb"}
-                            if name == "mul_issue"
-                            else {"fp_complete", "fp_adapter", "cdb"}
-                        )
+                        # Pipelined FP operations complete through the FIFO
+                        # and slot 5; the rest through the engine's adapter.
+                        if name == "mul_issue":
+                            ports = {"mul_complete", "cdb"}
+                        elif phase.startswith(("fadd", "fmul", "fma", "fsub")):
+                            ports = {"fp_pipe_complete", "fp_pipe_adapter", "cdb"}
+                        else:
+                            ports = {"fp_complete", "fp_adapter", "cdb"}
                         pending[tag] = (
                             phase,
                             expected_probe_result(phase, issue),
@@ -210,7 +217,15 @@ async def trace_exec_latency(dut: Any) -> None:
                             set(),
                         )
                         break
-            for name in ("mul_complete", "fp_complete", "fp_adapter", "cdb", "cdb2"):
+            for name in (
+                "mul_complete",
+                "fp_complete",
+                "fp_adapter",
+                "fp_pipe_complete",
+                "fp_pipe_adapter",
+                "cdb",
+                "cdb2",
+            ):
                 packet = row[name]
                 if not packet["valid"] or packet["tag"] not in pending:
                     continue
