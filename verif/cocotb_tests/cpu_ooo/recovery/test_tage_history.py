@@ -162,12 +162,14 @@ async def _accept_branch(
     bank: int = 0,
     base_taken: bool = False,
     hist: int = 0,
+    jalr: bool = False,
 ) -> int:
-    """Pass one packet with a conditional branch in `slot` to ID; return its index."""
+    """Pass a conditional branch or JALR in the selected slot and return its FTQ index."""
     idx = _write_index(dut)
     packed = pack_struct(TAGE_LOOKUP_FIELDS, lookup or {})
     dut.i_pd_accept.value = 1
-    dut.i_pd_cond_branch.value = 1 << slot
+    dut.i_pd_cond_branch.value = int(not jalr) << slot
+    dut.i_pd_jalr.value = int(jalr) << slot
     dut.i_tage_slot_valid.value = int(lookup_valid) << slot
     dut.i_tage_slot_bank.value = bank << slot
     dut.i_base_taken.value = int(base_taken) << slot
@@ -179,6 +181,7 @@ async def _accept_branch(
     await _step(dut)
     dut.i_pd_accept.value = 0
     dut.i_pd_cond_branch.value = 0
+    dut.i_pd_jalr.value = 0
     dut.i_tage_slot_valid.value = 0
     await _settle()
     return idx
@@ -723,7 +726,12 @@ async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
     await _setup_test(dut)
     width = len(dut.o_lookup_dir_hist)
     mask = (1 << width) - 1
-    for taken in (0, 1):
+    for taken, direction_bit, jalr in (
+        (0, 0, False),
+        (1, 1, False),
+        (1, 0, True),
+        (1, 1, True),
+    ):
         expected = int(dut.o_lookup_dir_hist.value)
         for n in range(width + 5):
             slot = n % 2
@@ -735,10 +743,10 @@ async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
             expected = ((expected << 1) | bit) & mask
             assert int(dut.o_lookup_dir_hist.value) == expected
         dut.i_pd_cf.value = 2
-        dut.i_pd_pred_taken.value = (1 - taken) << 1
-        index = await _accept_branch(dut, slot=1, hist=0xD234)
+        dut.i_pd_pred_taken.value = (1 - direction_bit) << 1
+        index = await _accept_branch(dut, slot=1, hist=0xD234, jalr=jalr)
         dut.i_pd_cf.value = 0
-        await _allocate(dut, 7, index, slot=1)
+        await _allocate(dut, 7, index, slot=1, cond=not jalr, jalr=jalr)
         dut.i_pd_cf.value = 1
         dut.i_pd_pred_taken.value = 1
         await _accept_branch(dut, hist=0x21)
@@ -746,12 +754,15 @@ async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
         dut.i_early_tag.value = 7
         dut.i_early_active.value = 1
         dut.i_early_taken.value = taken
+        dut.i_early_dir_bit.value = direction_bit
         await _step(dut)
         dut.i_early_active.value = 0
         dut.i_hist_restore_arm.value = 1 << ARM_RECOVERY
         dut.i_fetch_pc_path_bits.value = 3
         await _settle()
-        assert int(dut.o_lookup_dir_hist.value) == ((expected << 1) | taken) & mask
+        assert (
+            int(dut.o_lookup_dir_hist.value) == ((expected << 1) | direction_bit) & mask
+        )
         assert _lookup_hist(dut) == (_push(0xD234, 3) if taken else 0xD234)
         await _step(dut)
         dut.i_hist_restore_arm.value = 0

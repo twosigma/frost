@@ -666,7 +666,7 @@ module tage_history #(
         assert (o_lookup_dir_hist == {$past(
             ftq_read_early.dir_hist[DIR_BITS-2:0]
         ), $past(
-            i_early_taken
+            i_early_dir_bit
         )});
       end else begin
         if ($past(!i_rst && i_pd_accept && (|i_pd_cf))) begin
@@ -707,6 +707,10 @@ module tage_history #(
       cover (i_hist_restore_arm == 4'b0100 && !$past(i_early_active) && f_dir != '0);
       cover (i_hist_restore_arm == 4'b0100 && $past(i_early_active && i_early_taken));
       cover (i_hist_restore_arm == 4'b0100 && $past(i_early_active && !i_early_taken));
+      c_taken_with_clear_direction_bit :
+      cover (i_hist_restore_arm == 4'b0100 && $past(
+          i_early_active && i_early_taken && !i_early_dir_bit
+      ) && !o_lookup_dir_hist[0]);
       cover (i_hist_restore_arm == 4'b1000 && f_pd_path_known && $past(i_pd_redirect_taken));
       cover ($past(i_commit_valid == 2'b11 && i_commit_cf == 2'b11) && f_dir[1:0] == 2'b10);
       cover ($past(!i_rst && i_pd_accept && i_pd_cf == 2'b10) && o_lookup_dir_hist[0]);
