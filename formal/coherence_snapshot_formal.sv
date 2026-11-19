@@ -41,7 +41,7 @@ module coherence_snapshot_formal (
   (* anyconst *) logic [7:0] first_byte, second_byte;
   logic [2:0] transaction_q;
   logic [1:0] sent_q, done_q;
-  logic second_due_q, probe_seen_q, reply_seen_q, cut_seen_q, getm_seen_q;
+  logic probe_seen_q, reply_seen_q, cut_seen_q, getm_seen_q;
   logic first_held_q;
   logic [5:0] tid_q;
   logic ready, done, pending, fatal;
@@ -55,7 +55,7 @@ module coherence_snapshot_formal (
   coh_g_t agent_grant;
   coh_c_t agent_completion;
   coh_u_t agent_release;
-  wire store = !rst && ready && ((sent_q == 0 && cycle_q > 6) || (sent_q == 1 && second_due_q));
+  wire store = !rst && ready && ((sent_q == 0 && cycle_q > 6) || (sent_q == 1 && first_held_q));
   wire [7:0] write_mask = {7'd0, store};
   wire [63:0] write_data = {56'd0, sent_q == 0 ? first_byte : second_byte};
   wire installed_second = sent_q == 2 && done_q == 2 && !pending;
@@ -87,7 +87,6 @@ module coherence_snapshot_formal (
       transaction_q <= 0;
       sent_q <= 0;
       done_q <= 0;
-      second_due_q <= 0;
       probe_seen_q <= 0;
       reply_seen_q <= 0;
       cut_seen_q <= 0;
@@ -126,19 +125,21 @@ module coherence_snapshot_formal (
             coherence_pkg::Invalid));
         p_reply_data : assert (reply_has_data == (transaction_q < 2 || dma_write));
         if (reply_has_data) p_snapshot_bytes : assert (reply_image == expected);
-        if (transaction_q == 0) second_due_q <= 1;
         reply_seen_q <= 1;
       end
       if (agent_g_valid) begin
         assert (phase_q == Grant && reply_seen_q && !agent_grant.error);
         assert (agent_grant.addr == Address && agent_grant.q == AgentKey);
-        if (dma_write)
+        if (dma_write) begin
           assert (agent_grant.opcode == coherence_pkg::GrantAck && cut_seen_q);
-          else
-            p_snapshot_result :
-            assert (agent_grant.opcode == coherence_pkg::GrantData && agent_grant.data == expected);
+        end else begin
+          p_snapshot_result :
+          assert (agent_grant.opcode == coherence_pkg::GrantData && agent_grant.data == expected);
+        end
         if (transaction_q == 0 && !grant_ready) first_held_q <= 1;
       end
+      if (!$past(rst) && $past(agent_g_valid && !grant_ready))
+        p_snapshot_held : assert (agent_g_valid && agent_grant == $past(agent_grant));
       if (phase_q == WaitStores && getm_seen_q && done_q == 1 && !pending) phase_q <= Demand;
       if (agent_valid && agent_ready) phase_q <= Grant;
       if (agent_g_valid && grant_ready) begin
@@ -196,6 +197,8 @@ module coherence_snapshot_formal (
       .i_write_atomic('0),
       .i_write_sc('0),
       .i_write_zero(1'b0),
+      .i_write_more(1'b0),
+      .i_next_same(1'b0),
       .i_write_tag('0),
       .o_write_done(done),
       .o_write_inflight(),
