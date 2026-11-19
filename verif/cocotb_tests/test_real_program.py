@@ -1233,7 +1233,7 @@ class FefuzzActivity:
         if int(self.cpu.i_rst.value):
             return
         if int(self.cpu.tage_pd_accept.value):
-            hits = int(self.pd.pd_itt_available.value)
+            hits = int(self.pd.i_itt_hit.value) & int(self.pd.o_itt_eligible.value)
             for slot, packet in enumerate(self.fetch_packets):
                 if hits & (1 << slot):
                     value = packet.read()

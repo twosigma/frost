@@ -464,7 +464,8 @@ def test_fefuzz_requires_each_activity_in_the_generated_code(
     pd = SimpleNamespace(
         i_from_if_to_pd=packet(0x100),
         i_from_if_to_pd_2=packet(0x120),
-        pd_itt_available=_Signal(),
+        i_itt_hit=_Signal(),
+        o_itt_eligible=_Signal(),
         o_pd_redirect=_Signal(),
         pd_chk_pc=_Signal(),
         pd_itt_target_select_r=_Signal(),
@@ -487,7 +488,7 @@ def test_fefuzz_requires_each_activity_in_the_generated_code(
         )
     )
     activity = bench.FefuzzActivity(dut)
-    pd.pd_itt_available.value = 3
+    pd.i_itt_hit.value = 3
     pd.o_pd_redirect.value = 1
     pd.pd_chk_pc.value = 0x110
     pd.pd_dir_redirect_1_r.value = 1
@@ -502,6 +503,10 @@ def test_fefuzz_requires_each_activity_in_the_generated_code(
 
     cpu.tage_pd_accept.value = 1
     pd.o_pd_redirect.value = 0
+    pd.o_itt_eligible.value = 2
+    activity.sample()  # The in-range slot has a raw hit but no eligible JALR.
+    assert not any(activity.counts.values())
+    pd.o_itt_eligible.value = 3
     activity.sample()  # Only the first of two qualified hits is in range.
     cpu.tage_pd_accept.value = 0
     pd.o_pd_redirect.value = 1
