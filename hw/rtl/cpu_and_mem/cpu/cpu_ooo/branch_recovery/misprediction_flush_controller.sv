@@ -41,6 +41,7 @@ module misprediction_flush_controller #(
     input riscv_pkg::reorder_buffer_commit_t i_rob_commit_comb_2,
     input logic i_early_mispredict_active,
     input logic i_early_mispredict_pending,
+    input logic i_early_mispredict_fire,
     input logic i_early_backend_recovery_pending,
     // Next-cycle value of i_early_backend_recovery_pending.
     input logic i_early_backend_recovery_pending_next,
@@ -74,6 +75,7 @@ module misprediction_flush_controller #(
     output logic o_dispatch_flush,
     output logic o_full_flush_side_effect_kill,
     output logic o_frontend_state_flush,
+    output logic o_fetch_flush,
     output logic o_flush_en,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_flush_tag,
     output logic o_flush_all,
@@ -208,6 +210,11 @@ module misprediction_flush_controller #(
   // only on a mispredicted commit.
   riscv_pkg::mispredict_commit_capture_t f_gated_capture;
   logic f_capture_initialized = 1'b0;
+  logic f_early_pending_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_all) f_early_pending_q <= 1'b0;
+    else f_early_pending_q <= i_early_mispredict_fire;
+  end
   always @(posedge i_clk) begin
     f_capture_initialized <= 1'b1;
     if (commit_is_misprediction) f_gated_capture <= mispredict_commit_d;
@@ -216,6 +223,8 @@ module misprediction_flush_controller #(
     if (f_capture_initialized) begin
       assert (frontend_mispredict_pending_q == mispredict_recovery_pending);
       assert (frontend_state_flush == flush_pipeline);
+      p_fetch_flush_matches_registered_causes :
+      assert (o_fetch_flush == (flush_all || mispredict_recovery_pending || f_early_pending_q));
     end
   end
 `endif
@@ -363,10 +372,21 @@ module misprediction_flush_controller #(
   assign flush_pipeline = frontend_flush_all_q || mispredict_recovery_pending ||
                           early_redirect_fast;
 
-  // IF's internal-state flush uses the frontend recovery copy. It follows
-  // a trap or xRET take by one cycle.
+  // Frontend validity uses its own recovery copy.
   assign frontend_state_flush = frontend_flush_all_q || frontend_mispredict_pending_q ||
       (early_mispredict_pending && !frontend_mispredict_pending_q && !active_fence_i_flush);
+
+  // Sample the fetch flush alongside the pending bits, so fetch can use the
+  // register output directly. An active native fence already has a full-flush
+  // event on its capture edge. A previous full flush cancels partial requests.
+  (* max_fanout = 32 *) logic fetch_flush_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) fetch_flush_q <= 1'b0;
+    else
+      fetch_flush_q <= i_trap_taken || i_mret_taken || i_fence_class_flush_event ||
+          (!flush_all && (i_early_mispredict_fire || commit_is_misprediction));
+  end
+  assign o_fetch_flush  = fetch_flush_q;
 
   // Dispatch needs a same-cycle kill for commit-time partial recovery.
   assign dispatch_flush = mispredict_recovery_pending;
