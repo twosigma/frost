@@ -17,7 +17,7 @@ hierarchy -top tage_history
 script free_undefined.ys
 prep -top tage_history -flatten
 select -assert-count 24 t:$check r:FLAVOR=assert %i
-select -assert-count 11 t:$check r:FLAVOR=cover %i
+select -assert-count 12 t:$check r:FLAVOR=cover %i
 prove: chformal -cover -remove
 cover: chformal -assert -remove
 

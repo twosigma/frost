@@ -175,6 +175,7 @@ runner compiles first. A failing RTL assertion fails the simulation.
 |---|---|
 | `ittage_predictor` | Indirect target allocation, provider confidence, lookup capture and convergence of independently initialized table copies. |
 | `bpred_probe` | Reports mispredictions and cycles for calls, returns, slot-2 conditionals, a jump table and correlated branches. |
+| `mispen_probe` | Runs the per-class misprediction probe and checks its UART completion marker. |
 | `pd_itt_slot2` | Checks that a slot-1 branch veto keeps its fall-through when a killed slot-2 JALR has a trained target. The callee checks its return address and call count. |
 | `bpred_trap_pair_test` | Checks fetch pairing, PD redirect suppression, and exact trap/return state across `ebreak`, `c.ebreak`, `ecall`, `xret`, trapping `wfi`, and reserved compressed and 32-bit encodings in both slots and both orders under primary BTB, backing BTB, ITTAGE and TAGE hits. |
 | `fefuzz_1`, `fefuzz_4`, `fefuzz_7`, `fefuzz_11`, `fefuzz_13`, `fefuzz_19`, `fefuzz_22`, `fefuzz_23` | Front-end fuzzer, one generated program per seed: conditional branches, direct and indirect calls, jump tables, returns and loops in mixed encodings and alignments. The UART seed and signature must match the requested program. Each boot requires at least one accepted indirect-target hit, one fetch redirect each from direction slot 1, direction slot 2, backing BTB and indirect prediction, and one early recovery inside the generated code. Reset separates the two BRAM counts. The generator does not exercise traps, interrupts or FENCE.I, or compare restored direction history or return-stack contents. |
@@ -557,6 +558,24 @@ without them. Registry entries default to keeping the clocks.
 `FROST_NIC_MAC_CLOCKS=1` overrides a clock-free default for comparisons;
 `FROST_NIC_MAC_CLOCKS=0` selects the guarded clock-free mode explicitly.
 
+`misprediction_flush_controller` checks that the registered fetch flush
+matches the individual recovery pulses on every edge. It exercises early and
+retired mispredictions together with traps, xRETs, native and translation
+fences, and reset.
+
+The `early_redirect_completion` proof connects the early redirect and flush
+controllers. An accepted redirect flushes fetch and the next backend flush
+carries its ROB tag, unless an older full flush discards the entire window.
+The simulation check observes the same signals in the core.
+
+The `ras_flush_checkpoint` formal target checks the return stack on a full
+flush against the latest snapshot dispatched to the ROB head. Its covers
+exercise both allocation slots and a head tag that wrapped to zero.
+
+`ex_comb_synthesizer` checks the selected BTB update and return-stack
+operation for an early indirect jump, call, return, or coroutine swap. It
+checks both instruction lengths and the full link address for a push.
+
 `debug_fetch_barrier` checks invalidation before GO, retained targets, request
 withdrawal, acknowledgement without replay, and reset in each request phase.
 Its fetch-provider composition checks cached windows and old responses arriving
@@ -564,7 +583,9 @@ on or after the invalidation edge.
 `debug_module` checks DMI replies and registered command/resume GO requests,
 including waiting for slice completion, stable targets, acknowledgement, reset and
 module deactivation.
-`debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
+`debug_test` drives the JTAG debug module directly. Its older-load-fault
+case checks both the return stack and the architectural state of a younger
+indirect call discarded by the trap. `debug_openocd_test` runs
 OpenOCD and GDB sessions through `remote_bitbang`, and `cache_counters_openocd`
 reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.
 Without OpenOCD installed those targets log a warning and pass; set

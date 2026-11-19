@@ -85,6 +85,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_rob_commit_comb_2.value = 0
     dut.i_early_mispredict_active.value = 0
     dut.i_early_mispredict_pending.value = 0
+    dut.i_early_mispredict_fire.value = 0
     dut.i_early_backend_recovery_pending.value = 0
     dut.i_early_backend_recovery_pending_next.value = 0
     dut.i_head_tag.value = 0
@@ -187,6 +188,55 @@ def _drive_commit(dut: Any, fields: Mapping[str, int | bool]) -> None:
 def _drive_commit_2(dut: Any, fields: Mapping[str, int | bool]) -> None:
     """Drive the slot-2 ROB commit input struct."""
     dut.i_rob_commit_comb_2.value = _pack_commit(fields)
+
+
+@cocotb.test()
+async def test_registered_fetch_flush(dut: Any) -> None:
+    """Fetch changes only at the capture edge, including overlapping requests."""
+    await _setup_test(dut)
+    dut.i_head_tag.value = 1
+    dut.i_early_mispredict_tag.value = 2
+    full = False
+    flush = False
+    # Adjacent inputs cover isolated, simultaneous and consecutive recoveries,
+    # a native fence, a translation flush without a native fence, and reset.
+    stimuli = (0, 1, 2, 3, 4, 5, 8, 9, 16, 17, 32, 33, 64, 127)
+    for first in stimuli:
+        for second in stimuli:
+            for bits in (first, second):
+                early, late, trap, xret, native, translation, reset = (
+                    bool(bits & (1 << bit)) for bit in range(7)
+                )
+                dut.i_early_mispredict_fire.value = early
+                dut.i_rob_commit_misprediction_raw.value = late
+                dut.i_trap_taken.value = trap
+                dut.i_mret_taken.value = xret
+                dut.i_fence_class_flush_event.value = native or translation
+                dut.i_rst.value = reset
+                await _settle()
+                assert bool(dut.o_fetch_flush.value) == flush
+                await _advance_cycle(dut)
+                early_pending = early and not (reset or full)
+                late_pending = late and not (reset or full)
+                fence = (native or translation) and not reset
+                full = not reset and (trap or xret or fence)
+                flush = full or early_pending or late_pending
+                dut.i_trap_taken_reg.value = dut.i_flush_for_trap.value = (
+                    trap and not reset
+                )
+                dut.i_mret_taken_reg.value = dut.i_flush_for_mret.value = (
+                    xret and not reset
+                )
+                dut.i_fence_i_flush.value = fence
+                dut.i_active_fence_i_flush.value = native and not reset
+                dut.i_early_mispredict_pending.value = early_pending
+                dut.i_early_mispredict_active.value = early_pending and not (
+                    late_pending or full
+                )
+                await _settle()
+                assert bool(dut.o_fetch_flush.value) == flush
+                assert bool(dut.o_frontend_state_flush.value) == flush
+                assert bool(dut.o_flush_pipeline.value) == flush
 
 
 @cocotb.test()

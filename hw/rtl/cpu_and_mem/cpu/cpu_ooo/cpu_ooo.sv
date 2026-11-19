@@ -344,7 +344,7 @@ module cpu_ooo #(
   // ooo_pipeline_control builds pipeline_ctrl for IF/PD/ID. The stall comes
   // from dispatch back-pressure (with a decoded queue, from the queue being
   // full), CSR and control-flow serialization, and the fetch translation
-  // hold; the flush is flush_pipeline from misprediction_flush_controller.
+  // hold. The flush controller registers the fetch flush alongside recovery.
 
   riscv_pkg::pipeline_ctrl_t pipeline_ctrl;
   logic dispatch_stall;
@@ -355,6 +355,7 @@ module cpu_ooo #(
   logic decoded_queue_valid;
   logic decoded_queue_indirect_pending;
   (* max_fanout = 32 *) logic flush_pipeline;
+  logic fetch_flush;
   logic dispatch_flush;
   logic full_flush_side_effect_kill;
   logic flush_for_trap;
@@ -469,7 +470,7 @@ module cpu_ooo #(
       .i_front_end_indirect_control_flow_pending(
           front_end_indirect_control_flow_pending || decoded_queue_indirect_pending),
       .i_disable_branch_prediction(i_disable_branch_prediction),
-      .i_flush_pipeline(flush_pipeline),
+      .i_flush_pipeline(fetch_flush),
       .i_fetch_pa_hold(fetch_pa_hold),
       .o_pipeline_ctrl(pipeline_ctrl),
       .o_serializing_alloc_fire(serializing_alloc_fire),
@@ -657,6 +658,7 @@ module cpu_ooo #(
 
   // Synthesized from_ex_comb for IF stage (branch redirect, BTB update, RAS restore)
   riscv_pkg::from_ex_comb_t                     from_ex_comb_synth;
+  riscv_pkg::from_ex_comb_t                     from_ex_branch_recovery;
   logic                              [XLEN-1:0] btb_late_update_pc;
   logic                                         btb_late_update_taken;
 
@@ -784,6 +786,7 @@ module cpu_ooo #(
 
   logic early_mispredict_active;
   logic early_mispredict_pending;
+  logic early_mispredict_fire;
   logic early_backend_recovery_pending;
   logic early_backend_recovery_pending_next;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
@@ -794,6 +797,9 @@ module cpu_ooo #(
   logic [XLEN-1:0] early_mispredict_pc;
   logic [XLEN-1:0] early_mispredict_branch_target;
   logic early_mispredict_branch_taken;
+  logic early_mispredict_is_jalr;
+  logic early_mispredict_is_call;
+  logic early_mispredict_is_return;
   logic early_recovery_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_recovery_tag;
   logic early_backend_recovery_hold;
@@ -951,7 +957,7 @@ module cpu_ooo #(
       .i_btb_late_update_pc(btb_late_update_pc),
       .i_btb_late_update_taken(btb_late_update_taken),
       .i_trap_ctrl(trap_ctrl),
-      .i_frontend_state_flush(frontend_state_flush),
+      .i_frontend_state_flush(fetch_flush),
       .i_flush_all(flush_all),
       .i_fence_i_flush(fence_i_flush),
       .i_fence_i_target(fence_i_target_pc),
@@ -1340,7 +1346,7 @@ module cpu_ooo #(
       .i_dispatch_flush(dispatch_flush),
       .i_id_stall_q(id_stall_q),
       .i_replay_after_dispatch_stall_q(replay_after_dispatch_stall_q),
-      .i_flush_pipeline(flush_pipeline),
+      .i_flush_pipeline(frontend_state_flush),
       .o_if_valid_q(if_valid_q),
       .o_pd_valid_q(pd_valid_q),
       .o_id_valid_preflush(direct_id_valid_preflush),
@@ -3502,9 +3508,9 @@ module cpu_ooo #(
   // ===========================================================================
   // Early Misprediction Recovery
   // ===========================================================================
-  // A mispredicted conditional branch that holds a checkpoint starts recovery
-  // as soon as it resolves, unless another recovery or flush is in progress,
-  // instead of at commit (JAL and JALR mispredictions recover at commit):
+  // A mispredicted conditional branch or JALR that holds a checkpoint starts
+  // recovery as soon as it resolves, unless another recovery or flush is in
+  // progress, instead of at commit (JAL mispredictions recover at commit):
   //   Cycle N:   branch_update reports the misprediction; capture its data
   //   Cycle N+1: early_mispredict_active: redirect fetch, restore the RAT,
   //              hold dispatch and issue (early_backend_recovery_hold)
@@ -3545,6 +3551,7 @@ module cpu_ooo #(
       .i_mret_taken_reg(early_recovery_mret_taken_reg),
       .o_early_mispredict_active(early_mispredict_active),
       .o_early_mispredict_pending(early_mispredict_pending),
+      .o_early_mispredict_fire(early_mispredict_fire),
       .o_early_backend_recovery_pending(early_backend_recovery_pending),
       .o_early_backend_recovery_pending_next(early_backend_recovery_pending_next),
       .o_early_backend_flush_tag(early_backend_flush_tag),
@@ -3555,6 +3562,9 @@ module cpu_ooo #(
       .o_early_mispredict_pc(early_mispredict_pc),
       .o_early_mispredict_branch_target(early_mispredict_branch_target),
       .o_early_mispredict_branch_taken(early_mispredict_branch_taken),
+      .o_early_mispredict_is_jalr(early_mispredict_is_jalr),
+      .o_early_mispredict_is_call(early_mispredict_is_call),
+      .o_early_mispredict_is_return(early_mispredict_is_return),
       .o_early_recovery_en(early_recovery_en),
       .o_early_recovery_tag(early_recovery_tag),
       .o_early_backend_recovery_hold(early_backend_recovery_hold),
@@ -3757,6 +3767,7 @@ module cpu_ooo #(
       .i_rob_commit_comb_2(rob_commit_comb_2),
       .i_early_mispredict_active(early_mispredict_active),
       .i_early_mispredict_pending(early_mispredict_pending),
+      .i_early_mispredict_fire(early_mispredict_fire),
       .i_early_backend_recovery_pending(early_backend_recovery_pending),
       .i_early_backend_recovery_pending_next(early_backend_recovery_pending_next),
       .i_head_tag(head_tag),
@@ -3789,6 +3800,7 @@ module cpu_ooo #(
       .o_dispatch_flush(dispatch_flush),
       .o_full_flush_side_effect_kill(full_flush_side_effect_kill),
       .o_frontend_state_flush(frontend_state_flush),
+      .o_fetch_flush(fetch_flush),
       .o_flush_en(flush_en),
       .o_flush_tag(flush_tag),
       .o_flush_all(flush_all),
@@ -3801,6 +3813,21 @@ module cpu_ooo #(
       .o_checkpoint_free(checkpoint_free),
       .o_checkpoint_free_id(checkpoint_free_id)
   );
+
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && !i_rst) begin
+      p_fetch_flush_matches_recovery :
+      assert (fetch_flush == frontend_state_flush && fetch_flush == flush_pipeline);
+      // A full flush discards every entry. A partial flush must carry the
+      // tag of the redirect accepted on the preceding edge.
+      if ($past(reset_seen_q && !i_rst && early_mispredict_active && !flush_all)) begin
+        p_early_redirect_completes :
+        assert (flush_all || (flush_en && flush_tag == $past(early_mispredict_tag)));
+      end
+    end
+  end
+`endif
 
   // ===========================================================================
   // Tagged Direction Predictor History and Training
@@ -3902,6 +3929,8 @@ module cpu_ooo #(
       .i_early_active(early_mispredict_active),
       .i_early_tag(early_mispredict_tag),
       .i_early_taken(early_mispredict_branch_taken),
+      .i_early_dir_bit(early_mispredict_is_jalr ? early_mispredict_branch_target[2] :
+                                                  early_mispredict_branch_taken),
       .i_flush_full(flush_all || mispredict_recovery_pending),
       .i_alloc_q(rob_alloc_q),
       .i_alloc_tag(tage_alloc_tag),
@@ -3931,20 +3960,23 @@ module cpu_ooo #(
   );
 
 `ifndef SYNTHESIS
-  // Each retiring conditional branch trains from the saved lookup PD made for
-  // it: record the PD branch's PC with its entry and compare at commit.
+  // Record the PC that supplied each FTQ entry. Check branch and JALR
+  // ownership when execute restores history and when retirement trains.
   logic [XLEN-1:0] tage_entry_pc[2**riscv_pkg::TageFtqIdxBits];
   always_ff @(posedge i_clk) begin
     if (u_tage_history.pd_entry_pending)
-      tage_entry_pc[u_tage_history.ftq_write_ptr] <= pd_q_cond_branch[0] ?
+      tage_entry_pc[u_tage_history.ftq_write_ptr] <= (pd_q_cond_branch[0] || pd_q_jalr[0]) ?
           from_pd_to_id.program_counter : from_pd_to_id_2.program_counter;
   end
   always @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
-      if (tage_commit_valid[0] && tage_commit_cond_branch[0])
+      if (early_mispredict_active)
+        p_tage_entry_matches_early_branch :
+        assert (tage_entry_pc[u_tage_history.early_ftq_idx] == early_mispredict_pc);
+      if (tage_commit_valid[0] && (tage_commit_cond_branch[0] || tage_commit_jalr[0]))
         p_tage_entry_matches_branch_0 :
         assert (tage_entry_pc[u_tage_history.commit_ftq_idx[0]] == rob_commit.pc);
-      if (tage_commit_valid[1] && tage_commit_cond_branch[1])
+      if (tage_commit_valid[1] && (tage_commit_cond_branch[1] || tage_commit_jalr[1]))
         p_tage_entry_matches_branch_1 :
         assert (tage_entry_pc[u_tage_history.commit_ftq_idx[1]] == rob_commit_2.pc);
     end
@@ -4009,6 +4041,9 @@ module cpu_ooo #(
       .i_early_mispredict_branch_target(early_mispredict_branch_target),
       .i_early_mispredict_branch_taken(early_mispredict_branch_taken),
       .i_early_mispredict_is_compressed(early_mispredict_is_compressed),
+      .i_early_mispredict_is_jalr(early_mispredict_is_jalr),
+      .i_early_mispredict_is_call(early_mispredict_is_call),
+      .i_early_mispredict_is_return(early_mispredict_is_return),
       .i_restored_ras_tos(restored_ras_tos),
       .i_restored_ras_valid_count(restored_ras_valid_count),
       .i_restored_ras_top(restored_ras_top),
@@ -4020,8 +4055,33 @@ module cpu_ooo #(
       .i_correct_branch_commit_q_2(correct_branch_commit_q_2),
       .o_btb_late_update_pc(btb_late_update_pc),
       .o_btb_late_update_taken(btb_late_update_taken),
-      .o_from_ex_comb(from_ex_comb_synth)
+      .o_from_ex_comb(from_ex_branch_recovery)
   );
+
+  if (riscv_pkg::EarlyJalrRecovery) begin : gen_full_flush_ras
+    ras_flush_checkpoint u_ras_flush_checkpoint (
+        .i_clk,
+        .i_allocate({
+          rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready,
+          rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready
+        }),
+        .i_alloc_tag({rob_alloc_resp_2.alloc_tag, rob_alloc_resp.alloc_tag}),
+        .i_snapshot({
+          from_id_to_ex_2.ras_checkpoint_tos,
+          from_id_to_ex_2.ras_checkpoint_valid_count,
+          from_id_to_ex_2.ras_checkpoint_top,
+          from_id_to_ex.ras_checkpoint_tos,
+          from_id_to_ex.ras_checkpoint_valid_count,
+          from_id_to_ex.ras_checkpoint_top
+        }),
+        .i_restore_head(flush_all && head_valid),
+        .i_head_tag(head_tag),
+        .i_recovery(from_ex_branch_recovery),
+        .o_recovery(from_ex_comb_synth)
+    );
+  end else begin : gen_commit_ras
+    assign from_ex_comb_synth = from_ex_branch_recovery;
+  end
 
   // ===========================================================================
   // Memory Interface

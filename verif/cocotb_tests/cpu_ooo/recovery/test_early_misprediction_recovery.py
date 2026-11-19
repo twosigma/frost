@@ -96,6 +96,8 @@ def _drive_mispredict(
     branch_taken: bool = True,
     mispredicted: bool = True,
     is_jalr: bool = False,
+    is_call: bool = False,
+    is_return: bool = False,
     is_compressed: bool | None = None,
 ) -> None:
     """Drive a coherent branch-resolution transaction.
@@ -136,6 +138,8 @@ def _drive_mispredict(
             "is_branch_class": True,
             "is_jal": False,
             "is_jalr": is_jalr,
+            "is_call": is_call,
+            "is_return": is_return,
         },
     )
     # branch_resolution qualifies i_is_jalr_issue. A mispredicted transaction
@@ -248,6 +252,50 @@ async def test_taken_mispredict_redirects_then_flushes_backend(dut: Any) -> None
 
 
 @cocotb.test()
+async def test_jalr_mispredict_redirects_to_its_target(dut: Any) -> None:
+    """A mispredicted JALR recovers at execute with its target and stack class."""
+    await _setup_test(dut)
+
+    for index, (is_call, is_return) in enumerate(
+        ((False, False), (True, False), (False, True), (True, True))
+    ):
+        _drive_mispredict(
+            dut,
+            tag=10 + index,
+            checkpoint_id=index,
+            pc=0x80000300,
+            link_addr=0x80000302,
+            branch_target=0x80000480 + 8 * index,
+            branch_taken=True,
+            is_jalr=True,
+            is_call=is_call,
+            is_return=is_return,
+        )
+        await _settle_after_edge(dut)
+
+        assert dut.o_early_mispredict_active.value
+        assert int(dut.o_early_mispredict_tag.value) == 10 + index
+        assert int(dut.o_early_mispredict_redirect_pc.value) == 0x80000480 + 8 * index
+        assert int(dut.o_early_mispredict_checkpoint_id.value) == index
+        assert dut.o_early_mispredict_branch_taken.value
+        assert dut.o_early_mispredict_is_compressed.value
+        assert dut.o_early_mispredict_is_jalr.value
+        assert bool(dut.o_early_mispredict_is_call.value) == is_call
+        assert bool(dut.o_early_mispredict_is_return.value) == is_return
+
+        _clear_inputs(dut)
+        await _settle_after_edge(dut)
+        assert dut.o_early_mispredict_branch_taken.value
+        await _settle_after_edge(dut)
+        _assert_idle(dut)
+
+    # A correctly predicted JALR does not start a recovery.
+    _drive_mispredict(dut, tag=20, is_jalr=True, mispredicted=False)
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+
+@cocotb.test()
 async def test_not_taken_mispredict_redirects_to_link_address(dut: Any) -> None:
     """A not-taken misprediction redirects to fallthrough and records compression."""
     await _setup_test(dut)
@@ -274,12 +322,12 @@ async def test_not_taken_mispredict_redirects_to_link_address(dut: Any) -> None:
 
 @cocotb.test()
 async def test_unqualified_mispredictions_do_not_fire(dut: Any) -> None:
-    """JALR, uncheckpointed, fence, and commit-recovery cases are gated off."""
+    """Uncheckpointed, fence, and commit-recovery cases are gated off."""
     await _setup_test(dut)
 
     cases = [
         {"has_checkpoint": False},
-        {"is_jalr": True},
+        {"has_checkpoint": False, "is_jalr": True},
         {"fence_i_flush": True},
         {"mispredict_recovery_pending": True},
     ]

@@ -295,6 +295,12 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "early_redirect_completion.sby",
+        "An accepted early redirect flushes younger entries by tag on the next "
+        "edge or an older full flush supersedes it",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "debug_go_pipeline.sby",
         "Registered debug GO keeps its command or resume target, holds until "
         "acknowledgement, and clears on acknowledgement or module reset",
@@ -947,7 +953,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "mispredict_capture.sby",
-        "Recovery payload, pulse copies and frontend flush match their references",
+        "Recovery payload, pulse copies, frontend flush and registered fetch flush "
+        "match their references",
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
@@ -1042,6 +1049,11 @@ FORMAL_TARGETS = [
         "ras_checkpoint.sby",
         "Return-stack outputs and state updates match the checkpoint reference",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "ras_flush_checkpoint.sby",
+        "A full flush restores the return stack to the oldest discarded checkpoint",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "low_bram_presenter_tier.sby",

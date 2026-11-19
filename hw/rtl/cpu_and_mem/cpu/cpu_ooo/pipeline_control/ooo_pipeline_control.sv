@@ -196,7 +196,7 @@ module ooo_pipeline_control #(
   // Hold IF, PD, and ID when an unresolved branch or JALR coexists with an
   // unpredicted indirect jump in slot 1 of IF (stalled), PD, or ID, or either
   // slot of a queued bundle. This limits sequential wrong-path fetch until
-  // JALR commit recovery; correctness depends on recovery, not this stall.
+  // the JALR's recovery; correctness depends on recovery, not this stall.
   // The registered stall does not gate queued dispatch. A dispatched jump
   // still held in ID can sustain the stall with its own unresolved bit.
   logic front_end_cf_serialize_stall_comb;
