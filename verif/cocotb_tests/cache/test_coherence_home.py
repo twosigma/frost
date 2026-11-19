@@ -65,6 +65,8 @@ class Home:
         self.frozen: dict[int, tuple[int, int]] = {}
         self.accepted_puts: set[int] = set()
         self.probes: list[tuple[int, int, int, int]] = []
+        self.probe_cycles: list[int] = []
+        self.persisted: list[tuple[int, int]] = []
         self.transactions: list[tuple[int, int, int]] = []
         self.acks: list[tuple[int, ...]] = []
         self.read_delay = 3
@@ -147,6 +149,12 @@ class Home:
                 self.responses.remove(memory)
                 if memory[5] and not memory[3]:
                     self.memory[memory[4]] = memory[2]
+            if self.get("array_updated"):
+                token = self.get("array_updated_token")
+                if token < len(self.dut.engine_idle):
+                    self.persisted.append(
+                        (self.cycle, self.get("engine_tid") >> (6 * token) & 63)
+                    )
             if self.get("array_data_valid"):
                 token = self.get("array_data_token")
                 engines = len(self.dut.engine_idle)
@@ -173,6 +181,7 @@ class Home:
                     self.get("o_p"), (2, 6, 1, self.p, 2, 2, 9, 5, 3)
                 )
                 self.probes.append((op, address, reason, tid))
+                self.probe_cycles.append(self.cycle)
                 state, data = self.private.get(address, (0, 0))
                 slot = next(
                     (s for s, item in self.frozen.items() if item[0] == address), None
@@ -701,6 +710,57 @@ async def dirty_data_and_dma_masks(dut: Any) -> None:
     assert await b.read(address) == int.from_bytes(expected, "little")
     assert b.private[address][0] == 0
     assert await b.read(address, 7) == int.from_bytes(expected, "little")
+
+
+@cocotb.test()
+async def queued_reader_waits_for_the_snapshot_update(dut: Any) -> None:
+    """Discard or rewrite a private sector just after handing its image to the home."""
+    for discard in (True, False):
+        b = Home(dut)
+        await b.reset()
+        address = 0x80000100
+        first = int.from_bytes(bytes(range(32)), "little")
+        following = first ^ (0xFF << 104)
+        grant = await b.start(1, address)
+        b.set_modified(address, first)
+        await b.finish(grant, written=True)
+        b.probe_delay = 12
+        await b.submit(7, address, slot=0)
+        await b.submit(7, address, slot=1)
+        # Both demands own a home identity. Change the model only after the
+        # first R actually transfers and before its masked write completes.
+        for _ in range(200):
+            if b.arrivals and b.arrivals[-1][1] == "reply":
+                break
+            await b.tick()
+        else:
+            raise AssertionError("first snapshot R did not transfer")
+        first_cycle, _, first_tid = b.arrivals[-1]
+        assert len(b.probes) == 1 and address in b.home_current
+        assert all(tid != first_tid for _, tid in b.persisted)
+        if discard:
+            b.home_current.remove(address)
+            del b.private[address]
+        else:
+            b.set_modified(address, following)
+        await b.wait("o_g_valid")
+        held = b.get("o_g")
+        for _ in range(14):
+            await b.tick()
+            assert b.get("o_g_valid") and b.get("o_g") == held
+        first_grant = await b.take_grant()
+        assert first_grant[2] == first_tid and first_grant[4] == first
+        await b.complete(first_grant)
+        next_grant = await b.take_grant()
+        assert next_grant[2] != first_tid and next_grant[4] == (
+            first if discard else following
+        )
+        await b.complete(next_grant)
+        persist_cycle = next(cycle for cycle, tid in b.persisted if tid == first_tid)
+        assert first_cycle < persist_cycle < b.probe_cycles[1]
+        assert len(b.probes) == 2 and all(
+            op == 3 and addr == address for op, addr, _, _ in b.probes
+        )
 
 
 @cocotb.test()

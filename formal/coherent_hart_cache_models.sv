@@ -414,6 +414,23 @@ module coherence_l1d #(
       cover (o_r_valid && i_r_ready && reply_q.absorbed);
     end
   end
+`ifdef COH_MAINT_RETAINED
+  logic [63:0] captured_q;
+  logic installed_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) installed_q <= 0;
+    else begin
+      installed_q <= pop;
+      if (o_r_valid && reply_snapshot_q && reply_q.state == coherence_pkg::Modified) begin
+        p_retained_owner : assert (resident_q && !put_q);
+        p_retained_hold : assert (!pop && !acquire);
+        if (i_r_ready && reply_q.data_valid) captured_q <= reply_q.data[63:0];
+      end
+      if (home_current_q) p_retained_version : assert (resident_q && value_q == captured_q);
+      if (installed_q) p_retained_store : assert (resident_q && !home_current_q);
+    end
+  end
+`endif
 `ifdef COH_MAINT_OWNED
   localparam logic [63:0] ShapeMask = 64'hfffffffffffff8df;
   localparam logic [63:0] ShapeBase = 64'h200000cf;

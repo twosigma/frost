@@ -68,7 +68,8 @@ proof: select -assert-count 286 t:$check r:FLAVOR=assume %i
 proof: select -assert-count 89 t:$check r:FLAVOR=assert %i
 unbounded: chformal -cover -remove
 base: chformal -cover -remove c:*flatten_home* c:*flatten_walker* c:walker.* c:*bridge* c:*endpoint* c:*arbiter*
-coh_hart_snapshot_cover: chformal -cover -remove c:* c:*c_retained_publication %d
+coh_hart_snapshot_cover: chformal -cover -remove c:* c:*c_retained_publication_* %d
+coh_hart_snapshot_cover: select -assert-count 2 t:$check r:FLAVOR=cover %i
 four: chformal -cover -remove c:* c:*p_four_records* %d
 # The unbounded pair runs a plain opt (ROADMAP.md): with every register
 # starting free its induction does not finish in its limit, and from the state

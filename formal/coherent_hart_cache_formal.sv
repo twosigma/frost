@@ -65,7 +65,10 @@ module coherent_hart_cache_formal #(
   logic first_install_q, first_if_q, first_walk_q, final_if_q, final_walk_q;
   logic [2:0] snapshot_count_q;
   logic [7:0] snapshot_cycle_q;
-  wire  [1:0] stored_bits = arbitrary_stored_bits;
+  (* anyconst *) logic rewrite_early;
+  logic dirty_snapshot_q, persisted_snapshot_q, installed_before_update_q;
+  logic [255:0] snapshot_image_q;
+  wire  [  1:0] stored_bits = arbitrary_stored_bits;
 `else
   wire [1:0] stored_bits = COVER_MODE ? 2'd1 : arbitrary_stored_bits;
 `endif
@@ -99,7 +102,8 @@ module coherent_hart_cache_formal #(
       permit_c = 1;
       permit_g = 1;
       permit_u = 1;
-      start_store = (stores_launched_q == 0 && cover_cycle_q >= 3) || first_walk_q;
+      start_store = (stores_launched_q == 0 && cover_cycle_q >= 3) ||
+          (rewrite_early ? snapshot_count_q != 0 : first_walk_q);
       request_fence = first_walk_q && !fence_seen_q;
       fetch_sector = 0;
       fetch = (first_install_q && !before_fetch_q) || (fence_seen_q && !after_fetch_q);
@@ -615,6 +619,14 @@ module coherent_hart_cache_formal #(
   logic take_spec;
   logic result_valid, result_ready;
   wire updated = update_pending_q && permit_update;
+`ifdef COH_MAINT_RETAINED
+  // On the overlapping schedule the first dirty write waits until a newer
+  // version has actually installed in the still-writable private copy.
+  wire update_ready = !update_pending_q && (!rewrite_early || !dirty_snapshot_q ||
+      snapshot_count_q != 1 || (store_sent_q && !pending));
+`else
+  wire update_ready = !update_pending_q;
+`endif
   logic [AddrWidth-1:0] address;
   logic [255:0] home_data_q, read_data_q, update_data;
   logic [31:0] update_mask;
@@ -695,7 +707,7 @@ module coherent_hart_cache_formal #(
       .i_wa_ready(wa_ready),
       .o_wa(engine_wa),
       .o_update_valid(update_valid),
-      .i_update_ready(!update_pending_q),
+      .i_update_ready(update_ready),
       .o_update_mask(update_mask),
       .o_update_data(update_data),
       .i_updated(updated),
@@ -783,7 +795,7 @@ module coherent_hart_cache_formal #(
     end else begin
       if (pending && put_pending_q && finish_put) store_put_complete_q <= 1;
       if (pending && r_valid && r_ready && reply.absorbed) store_absorbed_q <= 1;
-      if (update_valid && !update_pending_q && address == 32'h80000000) begin
+      if (update_valid && update_ready && address == 32'h80000000) begin
         home_prefix_q <= 1;
         if (update_data == {4{stored_pte}}) home_published_q <= 1;
       end else if (put_pending_q && finish_put) begin
@@ -837,6 +849,9 @@ module coherent_hart_cache_formal #(
       final_walk_q <= 0;
       snapshot_count_q <= 0;
       snapshot_cycle_q <= 0;
+      dirty_snapshot_q <= 0;
+      persisted_snapshot_q <= 0;
+      installed_before_update_q <= 0;
     end else begin
       if (!(&snapshot_cycle_q)) snapshot_cycle_q <= snapshot_cycle_q + 1'b1;
       if (c_valid[0] && c_ready[0]) first_install_q <= 1;
@@ -844,10 +859,27 @@ module coherent_hart_cache_formal #(
         assert (demand.opcode != coherence_pkg::GetM);
       if (r_valid && r_ready && reply.addr == 32'h80000000) begin
         assert (snapshot_count_q < 4 && reply.state == coherence_pkg::Modified && !reply.absorbed);
-        assert (reply.data_valid == !snapshot_count_q[0]);
-        if (reply.data_valid)
-          assert (reply.data == {4{snapshot_count_q[1] ? stored_pte : first_pte}});
+        assert (reply.data_valid == (snapshot_count_q == 0 ||
+            snapshot_count_q == (rewrite_early ? 1 : 2)));
+        if (reply.data_valid) begin
+          assert (reply.data == {4{snapshot_count_q == 0 ? first_pte : stored_pte}});
+          dirty_snapshot_q <= 1;
+          persisted_snapshot_q <= 0;
+          snapshot_image_q <= reply.data;
+        end
         snapshot_count_q <= snapshot_count_q + 1'b1;
+      end
+      if (dirty_snapshot_q) begin
+        if (updated) persisted_snapshot_q <= 1;
+        if (update_valid) p_retained_update_image : assert (update_data == snapshot_image_q);
+        if (result_valid) begin
+          p_retained_result_image :
+          assert (persisted_snapshot_q && result.data == snapshot_image_q);
+          if (result_ready) dirty_snapshot_q <= 0;
+        end
+        if (snapshot_count_q == 1 && store_sent_q && !pending && update_valid && update_ready &&
+            !persisted_snapshot_q)
+          installed_before_update_q <= 1;
       end
       if (if_resp) begin
         assert (!if_error && if_data == {4{fence_seen_q ? stored_pte : first_pte}});
@@ -861,9 +893,11 @@ module coherent_hart_cache_formal #(
       end
       if (snapshot_cycle_q >= 210)
         p_retained_publication : assert (final_walk_q && final_if_q && snapshot_count_q == 4);
-      c_retained_publication :
-      cover (final_if_q && final_walk_q && snapshot_count_q == 4 &&
-          stored_bits == 1 && first_pte != stored_pte);
+      c_retained_publication_repeat :
+      cover (!rewrite_early && final_if_q && final_walk_q && snapshot_count_q == 4 && stored_bits == 1);
+      c_retained_publication_overlap :
+      cover (rewrite_early && installed_before_update_q && final_if_q && final_walk_q &&
+          snapshot_count_q == 4 && stored_bits == 1);
     end
   end
 `endif
@@ -1071,7 +1105,7 @@ module coherent_hart_cache_formal #(
         read_data_q <= address[5] ? {4{64'h200004cf}} : home_data_q;
       end
       if (read_pending_q && permit_data) read_pending_q <= 0;
-      if (update_valid && !update_pending_q) begin
+      if (update_valid && update_ready) begin
         update_pending_q <= 1;
         if (address == 32'h80000000) home_data_q <= update_data;
       end
