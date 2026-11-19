@@ -20,19 +20,35 @@ module pd_history_twin (
 );
   pd_history_twin_pkg::outputs_t ref_out, new_out;
   pd_history_twin_pkg::state_t ref_state, new_state;
+  logic started = 1'b0;
+  pd_history_twin_pkg::inputs_t fetch;
+
+  // The core starts in reset. The input contract begins on the following
+  // cycle. Both compared stages receive the arbitrary real input on every edge.
+  always_comb begin
+    fetch = i;
+    if (!started) begin
+      fetch = '0;
+      fetch.pipeline_ctrl.reset = i.pipeline_ctrl.reset;
+      fetch.from_if_to_pd.sel_nop = 1'b1;
+      fetch.from_if_to_pd.sel_compressed = 1'b1;
+      fetch.from_if_to_pd_2.sel_nop = 1'b1;
+      fetch.from_if_to_pd_2.program_counter = riscv_pkg::PcIncrementCompressed;
+    end
+  end
   pd_fetch_contract fetch_inputs (
       .i_clk,
-      .i_pipeline_ctrl(i.pipeline_ctrl),
-      .i_from_if_to_pd(i.from_if_to_pd),
-      .i_from_if_to_pd_2(i.from_if_to_pd_2),
-      .i_backing_hit(i.backing_hit),
-      .i_backing_compressed(i.backing_compressed),
-      .i_backing_return(i.backing_return),
-      .i_backing_target(i.backing_target),
-      .i_backing_slot2_return_by_size(i.backing_slot2_return_by_size),
-      .i_backing_slot2_target_by_size(i.backing_slot2_target_by_size),
-      .i_itt_hit(i.itt_hit),
-      .i_itt_target(i.itt_target)
+      .i_pipeline_ctrl(fetch.pipeline_ctrl),
+      .i_from_if_to_pd(fetch.from_if_to_pd),
+      .i_from_if_to_pd_2(fetch.from_if_to_pd_2),
+      .i_backing_hit(fetch.backing_hit),
+      .i_backing_compressed(fetch.backing_compressed),
+      .i_backing_return(fetch.backing_return),
+      .i_backing_target(fetch.backing_target),
+      .i_backing_slot2_return_by_size(fetch.backing_slot2_return_by_size),
+      .i_backing_slot2_target_by_size(fetch.backing_slot2_target_by_size),
+      .i_itt_hit(fetch.itt_hit),
+      .i_itt_target(fetch.itt_target)
   );
   pd_history_reference reference (
       .i_clk,
@@ -47,7 +63,6 @@ module pd_history_twin (
       .state(new_state)
   );
 
-  logic started = 1'b0;
   always @(posedge i_clk) begin
     started <= 1'b1;
     // The PC controller registers the selected redirect arm and clears it on reset.

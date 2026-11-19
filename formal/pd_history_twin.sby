@@ -28,6 +28,12 @@ chformal -cover -remove
 delete -output pd_stage/o:*
 prep -top pd_stage -flatten
 select -assert-count 27 t:$check r:FLAVOR=assume %i
+# These eight checks constrain input sums even when the corresponding target
+# field is unused. Compare the outputs with all eight input fields free.
+select -set target_sums a:src=pd_stage.original.sv:1754.* a:src=pd_stage.original.sv:1755.* a:src=pd_stage.original.sv:1757.* a:src=pd_stage.original.sv:1758.* a:src=pd_stage.original.sv:1760.* a:src=pd_stage.original.sv:1761.* a:src=pd_stage.original.sv:1763.* a:src=pd_stage.original.sv:1765.*
+select -assert-count 8 @target_sums t:$check %i r:FLAVOR=assume %i
+chformal -assume -remove @target_sums
+select -assert-count 19 t:$check r:FLAVOR=assume %i
 design -stash contract
 design -reset
 read_slang --top pd_history_twin_side --single-unit -DSYNTHESIS -DPREDICTOR_TWIN_REFERENCE riscv_pkg.original.sv predictor_twin_fold_pkg.sv pd_history_twin_pkg.sv rvc_decompressor.original.sv pd_target_high_precompute.original.sv pd_redirect_next.original.sv pd_stage.original.sv tage_history.original.sv sdp_dist_ram.sv pd_history_twin_side.sv
@@ -52,7 +58,7 @@ hierarchy -check -top pd_history_twin
 script free_undefined.ys
 prep -top pd_history_twin -flatten
 select -assert-count 66 t:$check r:FLAVOR=assert %i
-select -assert-count 32 t:$check r:FLAVOR=assume %i
+select -assert-count 24 t:$check r:FLAVOR=assume %i
 select -assert-count 4 t:$check r:FLAVOR=cover %i
 bmc: chformal -cover -remove
 prove: chformal -cover -remove
