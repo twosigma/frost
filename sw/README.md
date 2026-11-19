@@ -362,6 +362,7 @@ can be debugged and where each one first stops.
 | `nic_loopback/` | NIC loopback, descriptor rings, interrupts, filtering, and reset during traffic |
 | `ns16550_irq_console_test/` | Console output written one byte per THRE interrupt, each claimed through the APLIC |
 | `ns16550_test/` | The 16550 UART registers: Linux 8250 initialization, register file, LSR.THRE and LSR.TEMT around a write, and transmit |
+| `odd_halfword_pred_test/` | Pinned-alignment odd-halfword 32-bit loop branches and `jal ra` calls predicted by slot 1, even jumps to 32-bit odd targets, cache-line- and Sv39-page-spanning calls (with the second page unmapped for an `xtval = P + 2` fault and RAS check, then mapped and retried), and overlapping 32-bit instructions across odd BTB entries |
 | `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls, SRST presence with shutdown unsupported, APLIC delegation and supervisor interrupt delivery; fixed layout, ignores `MEM_CONFIG` |
 | `packet_parser/` | FIX message parser demo fed through the MMIO FIFOs; reports parse time in cycles |
 | `pause_test/` | `pause` (`0x0100000F`) retires without draining committed stores, while `fence r,0` and the other FENCE encodings next to it wait for the drain |
