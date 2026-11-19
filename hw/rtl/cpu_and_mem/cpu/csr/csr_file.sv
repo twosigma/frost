@@ -1609,11 +1609,11 @@ module csr_file #(
       if (dcsr_prv != riscv_pkg::PrivM) next_mstatus_mprv = 1'b0;
     end
 
-    // FP register writes, flag commits, and FP CSR writes set FS=Dirty.
+    // FP register writes, flag commits, and FP CSR writes set FS=Dirty,
+    // even when the value is unchanged. A pure FP CSR read preserves FS.
     // CSR serialization excludes concurrent mstatus writes. FS=Off prevents
-    // F/D instructions and FP CSR accesses from committing, so this priority
-    // cannot overwrite Off. Setting Dirty when no flags change is permitted.
-    if ((i_csr_write_enable && i_csr_read_enable &&
+    // F/D instructions and FP CSR accesses from committing.
+    if ((i_csr_write_enable && i_csr_read_enable && csr_write_intent &&
          (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
           i_csr_address == riscv_pkg::CsrFcsr)) ||
         i_fp_dest_write || i_fp_flags_valid || vec_fp_flags_active) begin
@@ -3069,13 +3069,18 @@ module csr_file #(
 
       // FP-state writes set Dirty. Status CSR writes install FS; trap entry
       // and xRET preserve it for the OS's context-save decision.
-      if ($past(
-              i_fp_dest_write || i_fp_flags_valid || vec_fp_flags_active ||
-                (i_csr_write_enable && i_csr_read_enable &&
-                 (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
-                  i_csr_address == riscv_pkg::CsrFcsr))
-          )) begin
+      if ($past(i_fp_dest_write || i_fp_flags_valid || vec_fp_flags_active)) begin
         p_fs_dirty_set : assert (mstatus_fs == FsDirty);
+      end else if ($past(
+              i_csr_write_enable && i_csr_read_enable &&
+              (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
+               i_csr_address == riscv_pkg::CsrFcsr)
+          )) begin
+        if ($past(i_csr_op[1:0] == 2'b00)) begin
+          p_fp_csr_read_preserves_fs : assert (mstatus_fs == $past(mstatus_fs));
+        end else begin
+          p_fp_csr_write_sets_fs_dirty : assert (mstatus_fs == FsDirty);
+        end
       end else if ($past(
               i_csr_write_enable && i_csr_read_enable &&
               ((i_csr_address == riscv_pkg::CsrMstatus) ||
@@ -3581,7 +3586,7 @@ module csr_file #(
         if (mideleg_lcofi) f_old_next_mie_lcofie = csr_new_value[riscv_pkg::MieLcofBit];
       end
     end
-    if ((i_csr_write_enable && i_csr_read_enable &&
+    if ((i_csr_write_enable && i_csr_read_enable && (i_csr_op[1:0] != 2'b00) &&
          (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
           i_csr_address == riscv_pkg::CsrFcsr)) ||
         i_fp_dest_write || i_fp_flags_valid || vec_fp_flags_active) begin

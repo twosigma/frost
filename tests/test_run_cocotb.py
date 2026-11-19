@@ -1216,7 +1216,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             nic_mac_clocks=False,
             description=(
                 f"FP arithmetic, reductions, masks and conversions at VLEN {vlen}, "
-                "including FP scalar operands and ordered flag readback"
+                "including FP scalar operands, ordered flag readback and FS on FP CSR accesses"
             ),
             verilator_extra_args=("-GVECTOR=1", f"-GVLEN={vlen}"),
             extra_env=(
