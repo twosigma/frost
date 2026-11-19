@@ -316,7 +316,7 @@ async def snapshot_credit_selects_the_matching_way(dut: Any) -> None:
                 current=current,
                 hold=2,
                 data_valid=not current,
-                latency=tag_latency if current else data_latency,
+                latency=tag_latency + (0 if current else data_latency),
             )
             assert result[:4] == (1, way, address, 3)
             if not current:
