@@ -25,7 +25,7 @@
  *   - Masking (vm = 0), vstart > 0, tail undisturbed, zero-active accesses on
  *     unmapped/non-canonical pointers, and mstatus.VS transitions.
  *   - Head-executed legality (vill, EMUL out of [1/8, 8], misaligned groups,
- *     masked load to v0 illegal vs masked store of v0 legal).
+ *     masked loads into v0 and masked stores of v0 illegal).
  *   - Scalar-vector ordering (V-O1, V-O2, V-O3, V-O4), Zicbom, Zicboz, LR/SC.
  *   - Bare PMA access faults, Sv39 translation (MPRV S/U, SUM, out-of-range
  *     PPN access fault, straddling faults, and Case-C partial Page-0 execution
@@ -723,8 +723,8 @@ static void test_legality(void)
     expect_illegal("vl8re32 vd=v4", RUN_TRAP_INSN(".insn r 0x07, 6, 0x71, x4, %1, x8", buf));
     check(vs_field() == VS_CLEAN, "illegal ops preserve VS Clean", 0, vs_field(), VS_CLEAN);
 
-    /* Masked load to v0 (vm=0, vd=v0) is ILLEGAL, while masked store of v0 (vm=0, vs3=v0) is LEGAL!
-     */
+    /* Masked load to v0 (vm=0, vd=v0) is ILLEGAL, and so is a masked store of v0 (vm=0,
+     * vs3=v0): it would read v0 as data and as the mask (EEW 1). */
     setvl(4, 0x10ul); /* e32, m1 */
     expect_illegal("masked vle32 vd=v0", RUN_TRAP_INSN(".insn r 0x07, 6, 0x00, x0, %1, x0", buf));
 
@@ -742,15 +742,12 @@ static void test_legality(void)
     vrf_io[11] = 0xCAu;
     load_v0(vrf_io);
     setvl(4, 0x10ul);
-    g_cause = ~0ul;
-    __asm__ volatile(".insn r 0x27, 6, 0x00, x0, %0, x0" : : "r"(buf + 0x500) : "memory");
-    check(g_cause == ~0ul, "masked vse32 vs3=v0 legal", 0, g_cause, ~0ul);
-    for (int b = 0; b < 4; b++) {
-        ref[0x500 + b] = vrf_io[b];
-        ref[0x508 + b] = vrf_io[8 + b];
-    }
     for (unsigned long i = 0x500; i < 0x510; i++)
-        check(buf[i] == ref[i], "masked vse32 v0 byte", i, buf[i], ref[i]);
+        ref[i] = buf[i];
+    expect_illegal("masked vse32 vs3=v0",
+                   RUN_TRAP_INSN(".insn r 0x27, 6, 0x00, x0, %1, x0", buf + 0x500));
+    for (unsigned long i = 0x500; i < 0x510; i++)
+        check(buf[i] == ref[i], "masked vse32 v0 wrote nothing", i, buf[i], ref[i]);
 }
 
 /* ========================================================================== */

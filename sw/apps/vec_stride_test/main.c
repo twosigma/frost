@@ -974,20 +974,16 @@ static void test_legality(void)
     RUN_TRAP_STRIDED(".insn r 0x07, 6, 0x04, x0, %0, %1", p, s);
     expect_illegal("masked vlse32 vd=v0");
     check(vs_field() == VS_CLEAN, "illegal strided forms keep VS Clean", 0, vs_field(), VS_CLEAN);
-    /* A masked strided store of v0 is legal. */
+    /* A masked strided store of v0 reads v0 as data and as the mask (EEW 1):
+     * reserved, so it traps and writes nothing. */
     fill_buf();
     for (unsigned long b = 0; b < g_vlenb; b++)
         vrf_io[b] = (uint8_t) (b == 0 ? 0x05u : 0x40u + b);
     load_v0(vrf_io);
     setvl(4, 0x10ul);
-    g_cause = ~0ul;
-    __asm__ volatile(".insn r 0x27, 6, 0x04, x0, %0, %1" : : "r"(p), "r"(s) : "memory");
-    check(g_cause == ~0ul, "masked vsse32 vs3=v0 is legal", 0, g_cause, ~0ul);
-    for (unsigned b = 0; b < 4u; b++) {
-        ref[0x100u + b] = vrf_io[b];
-        ref[0x100u + 16u + b] = vrf_io[8u + b];
-    }
-    check_buf("masked vsse32 of v0", 0);
+    RUN_TRAP_STRIDED(".insn r 0x27, 6, 0x04, x0, %0, %1", p, s);
+    expect_illegal("masked vsse32 vs3=v0");
+    check_buf("masked vsse32 of v0 wrote nothing", 0);
 }
 
 /* ========================================================================== */

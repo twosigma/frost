@@ -619,7 +619,7 @@ static void test_legality(void)
     exec_vec(insn, DDR_BUF, 0, 0);
     expect_illegal("vluxseg2ei8 fields overlapping vs2", insn);
     check(vs_field() == VS_CLEAN, "illegal segment forms keep VS Clean", 0, vs_field(), VS_CLEAN);
-    /* The store form reads both groups, which may overlap. */
+    /* The store form reads both groups, which may overlap at equal widths. */
     fill_buf();
     for (unsigned long i = 0; i < 2u * g_vlenb; i++)
         vrf_io[g_vlenb * 7u + i] = (uint8_t) (i & 0x3Fu);

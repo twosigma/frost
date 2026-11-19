@@ -618,10 +618,18 @@ static void test_overlap(void)
           0,
           g_cause,
           CAUSE_ILLEGAL);
-    /* Stores read both groups: any overlap is legal. */
+    /* Stores read both groups: an overlap is legal when SEW equals the index
+     * EEW, and reserved otherwise, since it reads one register at two widths. */
     setvl(8, 0x09ul);
     RUN_TRAP(".insn r 0x27, 0, 0x03, x8, %0, x8", DDR_BUF);
-    check(g_cause == ~0ul, "vsuxei8 with overlapping groups is legal", 0, g_cause, ~0ul);
+    check(g_cause == CAUSE_ILLEGAL,
+          "vsuxei8 over its own index at SEW 16 is reserved",
+          0,
+          g_cause,
+          CAUSE_ILLEGAL);
+    setvl(8, 0x01ul);
+    RUN_TRAP(".insn r 0x27, 0, 0x03, x8, %0, x8", DDR_BUF);
+    check(g_cause == ~0ul, "vsuxei8 over its own index at SEW 8 is legal", 0, g_cause, ~0ul);
     fill_buf();
 }
 
