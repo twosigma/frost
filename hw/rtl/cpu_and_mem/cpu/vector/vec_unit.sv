@@ -651,9 +651,41 @@ module vec_unit #(
 `ifndef SYNTHESIS
 `ifndef FORMAL
   logic x_reset_seen_q = 1'b0;
+  // The vl and vstart that the head check judged for the last OP-VE. Its
+  // queue entry samples the CSRs again at the registered commit, and the
+  // engine trusts that second sample to be whole element groups.
+  logic x_group_sampled_q;
+  logic [15:0] x_group_vl_q, x_group_vstart_q;
+  always @(posedge i_clk) begin
+    if (i_rst) x_group_sampled_q <= 1'b0;
+    else if (xs == X_WAIT && xwait_q == 2'd1 && xi[6:0] == riscv_pkg::OPC_OP_VE) begin
+      x_group_sampled_q <= 1'b1;
+      x_group_vl_q <= i_vl;
+      x_group_vstart_q <= i_vstart;
+    end
+  end
   always @(posedge i_clk) begin
     if (i_rst) x_reset_seen_q <= 1'b1;
     if (x_reset_seen_q && !i_rst) begin
+      if (push && insn_q[i_commit_tag][6:0] == riscv_pkg::OPC_OP_VE) begin
+        assert (i_vl[1:0] == 2'b00 && i_vstart[1:0] == 2'b00)
+        else
+          $error(
+              "vec_unit: element group queued with vl %0d, vstart %0d (tag %0d)",
+              i_vl,
+              i_vstart,
+              i_commit_tag
+          );
+        assert (x_group_sampled_q && i_vl == x_group_vl_q && i_vstart == x_group_vstart_q)
+        else
+          $error(
+              "vec_unit: element group queued with vl %0d, vstart %0d; head check saw %0d, %0d",
+              i_vl,
+              i_vstart,
+              x_group_vl_q,
+              x_group_vstart_q
+          );
+      end
       assert (!(xs == X_OUT && (i_rob_empty || i_head_tag != vtox_tag_q)))
       else
         $error(

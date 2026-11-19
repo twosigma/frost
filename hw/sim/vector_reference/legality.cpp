@@ -122,6 +122,11 @@ int main(int argc, char **argv)
     reference.put_csr(CSR_MSTATUS, MSTATUS_VS | MSTATUS_FS);
     for (unsigned reg = 1; reg < 32; ++reg)
         reference.get_state()->XPR.write(reg, 1);
+    // The crypto forms are also judged at several vl and vstart values: the
+    // element-group bounds trap at the ROB head, and FROST executes OP-VE and
+    // carry-less multiply from a nonzero vstart.
+    const bool bounds_sweep = std::strstr(isa_extensions, "zvk") != nullptr;
+    reference.VU.vstart_alu = bounds_sweep;
     Vvec_legality_reference rtl;
     uint64_t compared = 0, mismatches = 0, accepted = 0, rejected = 0, reserved = 0;
     for (const Form &form : forms) {
@@ -146,52 +151,64 @@ int main(int argc, char **argv)
                 }
             }
         }
+        // Requested vl and vstart. OP-VE operates on four elements, including
+        // at the smallest legal capacity; the other pairs give vl and vstart
+        // off and on a four-element boundary, vl = 0 and vstart >= vl.
+        std::vector<std::array<reg_t, 2>> bounds = {{(form.match & 0x7f) == 0x77 ? 4U : 1U, 0}};
+        if (bounds_sweep)
+            bounds.insert(
+                bounds.end(),
+                {{0, 0}, {6, 0}, {8, 0}, {32, 0}, {8, 2}, {8, 4}, {32, 12}, {6, 1}, {4, 8}});
         for (unsigned type = 0; type < 512; ++type) {
-            // Include every policy, SEW, LMUL and vill encoding. Invalid vtypes
-            // are normalized by the reference configuration unit, as hardware
-            // vsetvl does before dispatch uses the architectural vtype.
-            reg_t requested = (type & 255) | (reg_t(type >> 8) << 63);
-            // OP-VE operates on four elements, including at the smallest legal capacity.
-            reference.VU.set_vl(1, 1, (form.match & 0x7f) == 0x77 ? 4 : 1, requested);
-            reg_t actual = reference.VU.vtype->read();
-            rtl.i_vtype = (actual & 255) | ((actual >> 63) << 8);
-            for (uint32_t bits : encodings) {
-                reference.VU.vstart->write(0);
-                std::memset(reference.VU.reg_file, 0, 32 * vlen / 8);
-                bool illegal = false;
-                try {
-                    form.execute(&reference, insn_t(bits), 0x80000000);
-                } catch (trap_t &trap) {
-                    if (trap.cause() != CAUSE_ILLEGAL_INSTRUCTION) {
-                        std::cerr << "Unexpected reference trap " << trap.cause() << '\n';
-                        return 2;
+            for (const auto &bound : bounds) {
+                // Include every policy, SEW, LMUL and vill encoding. Invalid vtypes
+                // are normalized by the reference configuration unit, as hardware
+                // vsetvl does before dispatch uses the architectural vtype.
+                reg_t requested = (type & 255) | (reg_t(type >> 8) << 63);
+                reference.VU.set_vl(1, 1, bound[0], requested);
+                reg_t actual = reference.VU.vtype->read();
+                rtl.i_vtype = (actual & 255) | ((actual >> 63) << 8);
+                rtl.i_vl = reference.VU.vl->read();
+                rtl.i_vstart = bound[1];
+                for (uint32_t bits : encodings) {
+                    reference.VU.vstart->write(bound[1]);
+                    std::memset(reference.VU.reg_file, 0, 32 * vlen / 8);
+                    bool illegal = false;
+                    try {
+                        form.execute(&reference, insn_t(bits), 0x80000000);
+                    } catch (trap_t &trap) {
+                        if (trap.cause() != CAUSE_ILLEGAL_INSTRUCTION) {
+                            std::cerr << "Unexpected reference trap " << trap.cause() << '\n';
+                            return 2;
+                        }
+                        illegal = true;
                     }
-                    illegal = true;
-                }
-                bool reserved_width =
-                    !illegal &&
-                    source_width_reserved(form.name, bits, reference.VU.vsew, reference.VU.vflmul);
-                reserved += reserved_width;
-                form_reserved += reserved_width;
-                bool expected = illegal || reserved_width;
-                rtl.i_insn = bits;
-                rtl.eval();
-                bool got = rtl.o_illegal;
-                if (negative && compared == 0)
-                    got = !got;
-                ++compared;
-                ++form_cases;
-                illegal ? ++rejected : ++accepted;
-                if (got != expected) {
-                    ++mismatches;
-                    ++form_mismatches;
-                    if (mismatches <= 100)
-                        std::cout << "MISMATCH " << form.name << " type=" << std::hex << type
-                                  << " actual=" << actual << " insn=" << bits << std::dec
-                                  << " rtl=" << got << " reference=" << illegal
-                                  << " reserved_width=" << reserved_width << '\n';
-                    if (negative)
-                        return 1;
+                    bool reserved_width =
+                        !illegal && source_width_reserved(
+                                        form.name, bits, reference.VU.vsew, reference.VU.vflmul);
+                    reserved += reserved_width;
+                    form_reserved += reserved_width;
+                    bool expected = illegal || reserved_width;
+                    rtl.i_insn = bits;
+                    rtl.eval();
+                    bool got = rtl.o_illegal;
+                    if (negative && compared == 0)
+                        got = !got;
+                    ++compared;
+                    ++form_cases;
+                    illegal ? ++rejected : ++accepted;
+                    if (got != expected) {
+                        ++mismatches;
+                        ++form_mismatches;
+                        if (mismatches <= 100)
+                            std::cout << "MISMATCH " << form.name << " type=" << std::hex << type
+                                      << " actual=" << actual << " insn=" << bits << std::dec
+                                      << " vl=" << rtl.i_vl << " vstart=" << rtl.i_vstart
+                                      << " rtl=" << got << " reference=" << illegal
+                                      << " reserved_width=" << reserved_width << '\n';
+                        if (negative)
+                            return 1;
+                    }
                 }
             }
         }

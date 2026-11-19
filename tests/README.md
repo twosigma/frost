@@ -537,7 +537,7 @@ of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256`, `vec_crypto_irq_test_v256` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `opensbi_reset_cold`, `opensbi_reset_warm` | Each bench issues its own S-mode reset and stops at the first retired boot instruction |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
@@ -1254,13 +1254,34 @@ special values, flags and the fixed latency.
 
 The `vec_crypto_exec_test_v*` programs run the crypto forms through the core.
 They transfer register images through cached memory and check known answers,
-partial-group traps, restart, and scalar operands. `test_vector_reference.py`
-checks the register images on Spike at the three vector lengths.
+partial-group traps, restart, and scalar operands. A `vsetivli`, a
+`csrw vstart` or a fault-only-first load that trims vl directly before an
+element-group instruction must leave the ROB head judging the new value. The
+AES, GHASH and key-schedule forms whose destination group aliases a source
+group must match the same instruction on separate copies, with a vector add
+directly behind them. `test_vector_reference.py`
+checks the register images on Spike at the three vector lengths. The VLEN 128
+and 256 programs run with the other vector programs in CI; VLEN 128 is the only
+length with SHA-512 groups across two registers and with element groups too
+wide for some legal register groups. The VLEN 512 program is command-line only.
 
 The `vec_crypto_exec_v128`, `vec_crypto_exec_v256` and `vec_crypto_exec_v512`
 benches compare carry-less multiply, AES, SHA-2 and GHASH with independent
 element and group models. Each pair of runs uses different data at the same
 configuration and checks both the register image and completion time.
+They are built with assertions on, so the engine's element-group bounds and
+key-register checks run against every case, and all three run in CI.
+
+The `vec_crypto_irq_test_v*` programs arm a machine-timer interrupt at each
+cycle offset from before a crypto instruction to past its last write, so the
+interrupt arrives during its service at the ROB head and in each cycle of its
+execution in the engine. The handler records `mepc`, vl, vtype and vstart,
+saves and overwrites the vector registers, changes vl and vtype, and restores
+everything. The registers it saves must be the instruction's sources when
+`mepc` is at or before the instruction and its complete result when `mepc` is
+after it. The result, vl, vtype and vstart after the handler must equal an
+uninterrupted run's. The cases are `vaesz.vs`, `vaesz.vs` directly after
+`csrw vstart` and `vclmul.vv`.
 
 ### `test_riscv_torture.py`
 
@@ -1963,7 +1984,10 @@ all 512 vtype encodings (reserved configurations normalize to
 vill), both mask encodings where permitted, each register field and pairwise
 alias/adjacent layouts, at VLEN 128/256/512. The requested length is four elements for OP-VE and
 one otherwise, with vstart zero and a valid rounding mode; the tracker and dispatch proofs cover restart policy, and
-`vec_fp_test` the reserved rounding modes. Run
+`vec_fp_test` the reserved rounding modes. The crypto forms are also compared at requested lengths of
+0, 6, 8 and 32 elements and at vstart values of 1, 2, 4, 8 and 12, with the ROB head's element-group
+bounds check added to the RTL side and Spike set to accept a nonzero arithmetic vstart, as FROST does
+for OP-VE and carry-less multiply. Run
 `python3 tests/test_vector_legality_reference.py --vlen 256` in the image.
 The comparator source is under `hw/sim/vector_reference/` and builds against the
 image's reference libraries and generated RTL header. Spike omits the general

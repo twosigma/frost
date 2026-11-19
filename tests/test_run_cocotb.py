@@ -1296,13 +1296,34 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             nic_mac_clocks=False,
             description=(
                 f"Crypto element groups and carry-less multiplication at VLEN {vlen}, "
-                "including restart, group capacity and reserved geometry"
+                "including restart, group capacity, reserved geometry, a vl or vstart "
+                "write directly before a group, and aliased source and destination groups"
             ),
             verilator_extra_args=("-GVECTOR=1", f"-GVLEN={vlen}"),
             extra_env=(
                 ("EXTRA_CFLAGS", f"-DVEC_VLEN={vlen}"),
                 ("COCOTB_MAX_CYCLES", "5000000"),
             ),
+            # VLEN 128 alone has SHA-512 groups across two registers and
+            # groups too wide for a fractional or e64/m1 register group.
+            include_in_pytest=(vlen != 512),
+        )
+        for vlen in (128, 256, 512)
+    },
+    **{
+        f"vec_crypto_irq_test_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="vec_crypto_irq_test",
+            nic_mac_clocks=False,
+            description=(
+                f"Timer interrupts in each cycle of a crypto instruction's ROB-head service "
+                f"and engine execution at VLEN {vlen}, with a handler that saves, changes "
+                "and restores vector state"
+            ),
+            verilator_extra_args=("-GVECTOR=1", f"-GVLEN={vlen}"),
+            extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+            rerun_after_reset=False,
             include_in_pytest=(vlen == 256),
         )
         for vlen in (128, 256, 512)
@@ -3194,8 +3215,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             python_test_module="cocotb_tests.vector.test_vec_crypto_exec",
             hdl_toplevel_module="vec_crypto_exec",
             description=f"Zvbc, AES, SHA-2 and GHASH results, restart and operand-independent latency at VLEN {vlen}",
-            verilator_extra_args=(f"-GVLEN={vlen}",),
-            include_in_pytest=(vlen == 256),
+            verilator_extra_args=("--assert", f"-GVLEN={vlen}"),
         )
         for vlen in (128, 256, 512)
     },
