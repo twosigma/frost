@@ -3874,6 +3874,76 @@ def registered_task_config_gaps(
     return gaps
 
 
+def test_predictor_twins_use_the_core_connections() -> None:
+    """Check the register boundary and external fold wiring used by the twins."""
+    root = Path(__file__).resolve().parents[1]
+    cpu = root / "hw/rtl/cpu_and_mem/cpu"
+
+    def source(path: Path) -> str:
+        return re.sub(r"//[^\n]*|/\*.*?\*/", "", path.read_text(), flags=re.S)
+
+    def body(text: str, instance: str) -> str:
+        match = re.search(rf"\b{instance}\s*\((.*?)\);", text, re.S)
+        assert match, instance
+        return re.sub(r"\s+", "", match[1])
+
+    def pin(body_text: str, name: str) -> str:
+        match = re.search(rf"\.{name}\(([^()]*)\)", body_text)
+        assert match, name
+        return match[1]
+
+    def expr(text: str, name: str) -> str:
+        match = re.search(rf"\b{re.escape(name)}\s*=\s*([^;]+);", text)
+        assert match, name
+        return re.sub(r"\s+", "", match[1])
+
+    core = source(cpu / "cpu_ooo/cpu_ooo.sv")
+    fetch = source(cpu / "if_stage/if_stage.sv")
+    twin = source(root / "formal/pd_history_twin_side.sv")
+    core_pd, core_hist = body(core, "pd_stage_inst"), body(core, "u_tage_history")
+    twin_pd, twin_hist = body(twin, "pd"), body(twin, "history")
+    for field in ("cond_branch", "jalr", "itt_eligible", "cf", "pred_taken"):
+        for pd, history in ((core_pd, core_hist), (twin_pd, twin_hist)):
+            assert pin(pd, "o_q_" + field) == pin(history, "i_pd_q_" + field), field
+
+    core_if = body(core, "if_stage_inst")
+    table = body(fetch, "u_tage_predictor")
+    for output, input_name in (
+        ("o_lookup_dir_fold", "i_tage_hist_fold"),
+        ("o_lookup_dir_hist", "i_tage_hist"),
+        ("o_lookup_hist", "i_itt_hist"),
+    ):
+        assert pin(core_hist, output) == pin(core_if, input_name)
+    assert pin(table, "i_lookup_fold_index") == "i_tage_hist_fold"
+    assert pin(table, "i_lookup_hist") == "i_tage_hist"
+    for text, module, instance, parameter, value in (
+        (core, "if_stage", "if_stage_inst", "USE_EXTERNAL_TAGE_FOLD", "1'b1"),
+        (
+            fetch,
+            "tage_predictor",
+            "u_tage_predictor",
+            "USE_EXTERNAL_FOLD_INDEX",
+            "USE_EXTERNAL_TAGE_FOLD",
+        ),
+    ):
+        parameters = re.search(
+            rf"\b{module}\s*#\s*\((.*?)\)\s*{instance}\b", text, re.S
+        )
+        assert parameters, module
+        assert pin(re.sub(r"\s+", "", parameters[1]), parameter) == value
+
+    assert pin(core_pd, "o_pd_redirect_taken") == pin(core_hist, "i_pd_redirect_taken")
+    assert pin(twin_pd, "o_pd_redirect_taken") == pin(twin_hist, "i_pd_redirect_taken")
+    assert expr(twin, "accept").replace("i.", "").replace("o.", "") == expr(
+        core, pin(core_hist, "i_pd_accept")
+    )
+    for bus, name in (("i_tage_slot_bank", "bank"), ("i_base_taken", "base_taken")):
+        core_name = pin(core_hist, bus)
+        assert pin(twin_hist, bus) == name
+        expected = "{" + ",".join(expr(core, f"{core_name}[{s}]") for s in (1, 0)) + "}"
+        assert expr(twin, name).replace("i.", "") == expected
+
+
 def test_predictor_reference_sources_are_frozen() -> None:
     """The reference side is the exact source tree before the predictor register changes."""
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR / "predictor_reference"
