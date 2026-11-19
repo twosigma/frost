@@ -682,7 +682,9 @@ async def getm(b: Private, address: int, data: int, error: bool = False) -> None
     await b.set(i_u_valid=0)
 
 
-async def probe_reply(b: Private, address: int, opcode: int) -> tuple[int, ...]:
+async def probe_reply(
+    b: Private, address: int, opcode: int, *, latency: int | None = None
+) -> tuple[int, ...]:
     """Return the held R packet after a recall, DMA write or DMA read."""
     external = opcode != 0
     await b.set(
@@ -702,9 +704,14 @@ async def probe_reply(b: Private, address: int, opcode: int) -> tuple[int, ...]:
         i_cut_admit_clean=1,
     )
     await b.wait("o_p_ready")
+    capture = b.cycles
+    if opcode == 1:
+        assert b.get("o_cut_hold") and b.get("o_cut_admit_valid")
     await b.tick()
     await b.set(i_p_valid=0)
     await b.wait("o_r_valid")
+    if latency is not None:
+        assert b.cycles - capture == latency, (b.cycles - capture, latency)
     held = b.get("o_r")
     reply = unpack(held, (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
     assert reply[1:5] == (1, 0, 0, address) and not reply[-1]
@@ -723,6 +730,39 @@ async def collect_modified(b: Private, address: int, *, invalidate: bool = False
     reply = await probe_reply(b, address, int(invalidate))
     assert reply[0] == 1 and reply[7] == 1
     return reply[8]
+
+
+@cocotb.test()
+async def snapshot_with_home_bytes_ready(dut: Any) -> None:
+    """Check probe service after the home's baseline is already available."""
+    b = Private(dut)
+    await b.reset()
+    address = 0x80000000
+    home = int.from_bytes(bytes(range(32)), "little")
+    for first_probe in (3, 0):
+        # Exercise retained M and ordinary M-to-S from the same starting
+        # permission. Each trial ends by invalidating the resident copy.
+        byte = 0xA0 + first_probe
+        await store(b, address, byte, mask=1)
+        await getm(b, address, home)
+        expected = (home & ~255) | byte
+        retained = first_probe == 3
+        state = 3 if retained else 2
+        for opcode, after, data_valid, clocks in (
+            (first_probe, state, 1, 6),
+            (3, state, 0, 3),
+            (1, 0, int(retained), 6 if retained else 4),
+            (3, 0, 0, 3),
+        ):
+            # Dispatch P after the resident home row and any preceding
+            # dirty update are available. No CPU load needs cut replay.
+            await b.tick(12)
+            r = await probe_reply(b, address, opcode, latency=clocks)
+            assert (r[0], r[5], r[7], r[9]) == (data_valid, after, data_valid, 0)
+            if data_valid:
+                assert r[8] == expected
+                home = r[8]
+            assert home == expected
 
 
 @cocotb.test()

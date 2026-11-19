@@ -302,6 +302,9 @@ It checks the change from two packed banks to four when the tag entry
 grows from 36 to 37 bits.
 `coherence_l1d` holds a probe reply across a grant and checks single grant
 application, ordered read errors and installation of the following store.
+Its probe service case supplies P after the home bytes are ready. It checks
+the first and repeated reads and a fast-cut invalidation of both a retained
+Modified copy and a downgraded Shared copy.
 Its buffered-store cases check overlapping byte masks, same-sector order,
 held sector coverage, probe-driven reacquisition, frozen writeback conflicts
 and fatal acquisition errors. Stream cases witness registered LR/AMO cancellation

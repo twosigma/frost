@@ -42,7 +42,7 @@ module coherence_snapshot_formal (
   logic [2:0] transaction_q;
   logic [1:0] sent_q, done_q;
   logic probe_seen_q, reply_seen_q, cut_seen_q, getm_seen_q;
-  logic first_held_q;
+  logic first_held_q, store_offer_q;
   logic [5:0] tid_q;
   logic ready, done, pending, fatal;
   logic agent_ready, agent_g_valid, agent_c_ready, agent_u_valid;
@@ -55,7 +55,7 @@ module coherence_snapshot_formal (
   coh_g_t agent_grant;
   coh_c_t agent_completion;
   coh_u_t agent_release;
-  wire store = !rst && ready && ((sent_q == 0 && cycle_q > 6) || (sent_q == 1 && first_held_q));
+  wire store = !rst && store_offer_q;
   wire [7:0] write_mask = {7'd0, store};
   wire [63:0] write_data = {56'd0, sent_q == 0 ? first_byte : second_byte};
   wire installed_second = sent_q == 2 && done_q == 2 && !pending;
@@ -92,10 +92,14 @@ module coherence_snapshot_formal (
       cut_seen_q <= 0;
       getm_seen_q <= 0;
       first_held_q <= 0;
+      store_offer_q <= 0;
       response_valid_q <= 0;
       tid_q <= 0;
     end else begin
       if (!(&cycle_q)) cycle_q <= cycle_q + 1'b1;
+      // The CPU samples a launch credit on the preceding edge.
+      store_offer_q <= !store && ready &&
+          ((sent_q == 0 && cycle_q > 6) || (sent_q == 1 && first_held_q));
       response_valid_q <= mem_valid;
       if (mem_valid) begin
         assert (!mem_write);
