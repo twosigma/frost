@@ -25,7 +25,7 @@ script free_undefined.ys
 # Keep each physical copy as an independent SMT array with unconstrained
 # power-up data. The memory declarations and both read ports stay in the
 # model; only the simulation's initial writes of zero are removed.
-select -assert-any t:$meminit t:$meminit_v2
+select -assert-min 1 t:$meminit t:$meminit_v2
 delete t:$meminit t:$meminit_v2
 prep -top tage_copy_convergence_formal -flatten
 prove_mode: chformal -cover -remove

@@ -12,7 +12,7 @@ cover: depth 4
 smtbmc boolector
 
 [script]
-read_slang --top ittage_predictor --single-unit -D SYNTHESIS -D ITTAGE_TRAINING_PROOF riscv_pkg.sv sdp_dist_ram.sv ittage_predictor.sv
+read_slang --top ittage_predictor --single-unit -DSYNTHESIS -DITTAGE_TRAINING_PROOF riscv_pkg.sv sdp_dist_ram.sv ittage_predictor.sv
 hierarchy -top ittage_predictor
 script free_undefined.ys
 # Power-up contents are independent, including in the lookup and training copies.
