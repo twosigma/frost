@@ -20,6 +20,8 @@ The comparison calls the installed reference instruction implementations and
 the RTL decoder and dispatch legality module (vec_arith_legality). It does not
 copy the reference's formulas.
 The sweep requests four elements for OP-VE and one otherwise, with vstart zero.
+The crypto forms are also swept over other lengths and nonzero vstart values,
+with the ROB head's element-group bounds check on the RTL side.
 Spike omits the general source/source EEW reservation, so the comparator
 checks that specification rule separately and reports its cases separately.
 All other accepted/rejected results come from Spike's instruction functions.
