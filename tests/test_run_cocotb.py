@@ -225,8 +225,8 @@ UART_LINE_CHECK: dict[str, Any] = {
     "verilator_extra_args": ("-GCLK_FREQ_HZ=3686400",),
 }
 
-# Front-end fuzzer seeds (sw/apps/fefuzz): each seed is one generated program that checks its own
-# signature, with cpu_ooo's retire-order assertion and the PD assertions active in simulation.
+# Keep a fixed regular-CI corpus so the same programs run on both memory tiers.
+# Each boot must reach every front-end activity floor in the generated code.
 FEFUZZ_SEEDS = (1, 4, 7, 11, 13, 19, 22, 23)
 
 # Single source of truth for every runnable test, keyed by test name.
@@ -239,7 +239,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             nic_mac_clocks=False,
             description=(
                 f"Front-end fuzzer seed {seed}: random branch, call, indirect call and "
-                "jump mixes that check their own signature"
+                "jump mixes with a checked signature and per-boot predictor activity"
             ),
             extra_env=(("FE_SEED", str(seed)), ("COCOTB_MAX_CYCLES", "3000000")),
         )

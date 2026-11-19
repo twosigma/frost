@@ -16,6 +16,7 @@
 
 import importlib
 import asyncio
+import logging
 import re
 import sys
 from pathlib import Path
@@ -442,6 +443,91 @@ class _VectorHandle:
 
     def __len__(self) -> int:
         return self._width
+
+
+def test_fefuzz_requires_each_activity_in_the_generated_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stalls, losing redirects and UART code cannot satisfy a seed's floors."""
+    bench = importlib.import_module("cocotb_tests.test_real_program")
+    monkeypatch.setattr(
+        bench.subprocess, "check_output", lambda *a, **kw: "100 20 T fe_run\n"
+    )
+    monkeypatch.setattr(bench.cocotb, "log", logging.getLogger(__name__), raising=False)
+    monkeypatch.setenv("FE_SEED", "4")
+    layout = cpu_structs.IF_TO_PD_FIELDS
+
+    def packet(pc: int) -> _VectorHandle:
+        bits = packed_structs.pack_struct(layout, {"program_counter": pc})
+        return _VectorHandle(sum(width for _, width in layout), bits)
+
+    pd = SimpleNamespace(
+        i_from_if_to_pd=packet(0x100),
+        i_from_if_to_pd_2=packet(0x120),
+        pd_itt_available=_Signal(),
+        o_pd_redirect=_Signal(),
+        pd_chk_pc=_Signal(),
+        pd_itt_target_select_r=_Signal(),
+        o_pd_backing_refresh=_Signal(),
+        pd_dir_redirect_1_r=_Signal(),
+        pd_dir_redirect_2_r=_Signal(),
+    )
+    pc = SimpleNamespace(o_pc_update_en=_Signal(), o_npc_sel=_Signal())
+    cpu = SimpleNamespace(
+        pd_stage_inst=pd,
+        if_stage_inst=SimpleNamespace(pc_controller_inst=pc),
+        i_rst=_Signal(),
+        tage_pd_accept=_Signal(),
+        early_mispredict_active=_Signal(),
+        early_mispredict_pc=_Signal(),
+    )
+    dut = SimpleNamespace(
+        cpu_and_memory_subsystem=SimpleNamespace(
+            cpu=SimpleNamespace(hart=SimpleNamespace(cpu_inst=cpu))
+        )
+    )
+    activity = bench.FefuzzActivity(dut)
+    pd.pd_itt_available.value = 3
+    pd.o_pd_redirect.value = 1
+    pd.pd_chk_pc.value = 0x110
+    pd.pd_dir_redirect_1_r.value = 1
+    cpu.early_mispredict_active.value = 1
+    cpu.early_mispredict_pc.value = 0x120
+    pc.o_npc_sel.value = 1 << 4
+    activity.sample()  # Held PC and unaccepted ITT lookup.
+    pc.o_pc_update_en.value = 1
+    pc.o_npc_sel.value = 1 << 3
+    activity.sample()  # An older redirect won.
+    assert not any(activity.counts.values())
+
+    cpu.tage_pd_accept.value = 1
+    pd.o_pd_redirect.value = 0
+    activity.sample()  # Only the first of two qualified hits is in range.
+    cpu.tage_pd_accept.value = 0
+    pd.o_pd_redirect.value = 1
+    pc.o_npc_sel.value = 1 << 4
+    cpu.early_mispredict_pc.value = 0x108
+    activity.sample()
+    cpu.early_mispredict_active.value = 0
+    pd.pd_dir_redirect_1_r.value = 0
+    pd.pd_dir_redirect_2_r.value = 1
+    activity.sample()
+    pd.pd_dir_redirect_2_r.value = 0
+    pd.o_pd_backing_refresh.value = 1
+    activity.sample()
+    pd.pd_itt_target_select_r.value = 1
+    activity.sample()  # A same-slot indirect override wins over the backing hit.
+    assert list(activity.counts.values()) == [1] * 6
+
+    output = "fefuzz seed 4 rounds 1 sig 1234 want 1234\n<<PASS>>\n"
+    activity.verify(1, output)
+    with pytest.raises(AssertionError, match="requested fefuzz seed 4"):
+        activity.verify(1, output.replace("seed 4", "seed 1"))
+    for name in activity.counts:
+        activity.counts[name] = 0
+        with pytest.raises(AssertionError, match=rf"(?m)missing {name}$"):
+            activity.verify(2, output)
+        activity.counts[name] = 1
 
 
 def test_packed_struct_reads_fields_through_the_whole_vector() -> None:
