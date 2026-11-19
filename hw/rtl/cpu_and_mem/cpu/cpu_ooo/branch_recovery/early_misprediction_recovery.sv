@@ -256,11 +256,11 @@ module early_misprediction_recovery #(
   // Sample the PC and instruction length of the not-taken issue that actually
   // launched recovery. The redirect datapath reads the station's link address.
   logic check_not_taken_issue_q = 1'b0;
-  logic [XLEN-1:0] check_fallthrough_pc_q;
+  logic [XLEN-1:0] check_fallthrough_q;
   always_ff @(posedge i_clk) begin
     check_not_taken_issue_q <= early_mispredict_fire && !branch_taken_resolved;
     if (early_mispredict_fire && !branch_taken_resolved) begin
-      check_fallthrough_pc_q <= rs_issue_int.pc + (rs_issue_int.is_compressed ? XLEN'(2) : XLEN'(4));
+      check_fallthrough_q <= rs_issue_int.pc + (rs_issue_int.is_compressed ? XLEN'(2) : XLEN'(4));
     end
   end
   logic check_redirect_inputs;
@@ -277,7 +277,7 @@ module early_misprediction_recovery #(
   assign check_redirect_inputs = check_redirect_issue_q;
 `else
   assign check_redirect_inputs = check_reset_seen_q && !$isunknown(
-      {check_not_taken_issue_q, check_fallthrough_pc_q, o_early_mispredict_redirect_pc,
+      {check_not_taken_issue_q, check_fallthrough_q, o_early_mispredict_redirect_pc,
        o_early_mispredict_branch_taken}
   );
 `endif
@@ -285,7 +285,7 @@ module early_misprediction_recovery #(
     if (check_redirect_inputs && !i_rst && o_early_mispredict_active) begin
       p_early_not_taken_redirect_falls_through :
       assert (!check_not_taken_issue_q || (!o_early_mispredict_branch_taken &&
-              o_early_mispredict_redirect_pc == check_fallthrough_pc_q));
+              o_early_mispredict_redirect_pc == check_fallthrough_q));
 `ifdef EARLY_BACKEND_HOLD_PROOF
       cover_taken_redirect : cover (o_early_mispredict_branch_taken);
       cover_compressed_fallthrough :
