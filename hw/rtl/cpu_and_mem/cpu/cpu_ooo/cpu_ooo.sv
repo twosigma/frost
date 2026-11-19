@@ -1159,12 +1159,14 @@ module cpu_ooo #(
   // vec_lmul_legality's classes of the dispatch slot-1 instruction, and
   // slot 2's vector-encoding flag for dispatch's slot-2 interlock
   logic [3:0] dispatch_vec_lmul_illegal;
+  logic [3:0] dispatch_slot1_rs_select;
   logic dispatch_slot2_is_vector;
   // Vector arithmetic may dispatch: the vtype is known and, with the unit,
   // the queue head's registered arithmetic legality (vec_arith_illegal) is
   // ready
   logic vec_vtype_valid;
   logic vec_arith_illegal;
+  logic [1:0] vec_restart_ok;
   logic vec_vcfg_in_flight;
   logic [15:0] csr_vec_vl, csr_vec_vstart;
   logic [8:0] csr_vec_vtype;
@@ -1377,9 +1379,14 @@ module cpu_ooo #(
           .i_insn   (32'(decoded_packet_next_hold.instruction)),
           .o_illegal(producer_vlc_next_hold)
       );
+      function automatic logic id_is_varith(input riscv_pkg::instr_t insn);
+        id_is_varith = ((insn.opcode == riscv_pkg::OPC_OP_V) && (insn.funct3 != 3'b111)) ||
+            (VECTOR && (insn.opcode == riscv_pkg::OPC_OP_VE));
+      endfunction
       function automatic logic id_is_vec_any(input riscv_pkg::from_id_to_ex_t d);
         id_is_vec_any = d.is_real &&
             ((d.instruction.opcode == riscv_pkg::OPC_OP_V) ||
+             (VECTOR && (d.instruction.opcode == riscv_pkg::OPC_OP_VE)) ||
              riscv_pkg::is_vector_mem(d.instruction.opcode, d.instruction.funct3));
       endfunction
       assign producer_s2_vec           = id_is_vec_any(decoded_packet_2);
@@ -1434,8 +1441,7 @@ module cpu_ooo #(
         c.uses_fp_rs2 = d.uses_fp_rs2;
         c.uses_fp_rs3 = d.uses_fp_rs3;
         c.is_real = d.is_real;
-        c.is_varith = (d.instruction.opcode == riscv_pkg::OPC_OP_V) &&
-            (d.instruction.funct3 != 3'b111);
+        c.is_varith = id_is_varith(d.instruction);
         c.is_vmem = riscv_pkg::is_vector_mem(d.instruction.opcode, d.instruction.funct3);
         id_ctrl_of = c;
       endfunction
@@ -1489,8 +1495,7 @@ module cpu_ooo #(
         producer_ctrl.uses_fp_rs2 = decoded_packet.uses_fp_rs2;
         producer_ctrl.uses_fp_rs3 = decoded_packet.uses_fp_rs3;
         producer_ctrl.is_real = decoded_packet.is_real;
-        producer_ctrl.is_varith = (decoded_packet.instruction.opcode == riscv_pkg::OPC_OP_V) &&
-            (decoded_packet.instruction.funct3 != 3'b111);
+        producer_ctrl.is_varith = id_is_varith(decoded_packet.instruction);
         producer_ctrl.is_vmem = riscv_pkg::is_vector_mem(decoded_packet.instruction.opcode,
                                                          decoded_packet.instruction.funct3);
         producer_ctrl_2.is_load_instruction = decoded_packet_2.is_load_instruction;
@@ -1535,8 +1540,7 @@ module cpu_ooo #(
         producer_ctrl_2.uses_fp_rs2 = decoded_packet_2.uses_fp_rs2;
         producer_ctrl_2.uses_fp_rs3 = decoded_packet_2.uses_fp_rs3;
         producer_ctrl_2.is_real = decoded_packet_2.is_real;
-        producer_ctrl_2.is_varith = (decoded_packet_2.instruction.opcode == riscv_pkg::OPC_OP_V) &&
-            (decoded_packet_2.instruction.funct3 != 3'b111);
+        producer_ctrl_2.is_varith = id_is_varith(decoded_packet_2.instruction);
         producer_ctrl_2.is_vmem = riscv_pkg::is_vector_mem(decoded_packet_2.instruction.opcode,
                                                            decoded_packet_2.instruction.funct3);
         producer_ctrl_next.is_load_instruction = decoded_packet_next.is_load_instruction;
@@ -1582,9 +1586,7 @@ module cpu_ooo #(
         producer_ctrl_next.uses_fp_rs2 = decoded_packet_next.uses_fp_rs2;
         producer_ctrl_next.uses_fp_rs3 = decoded_packet_next.uses_fp_rs3;
         producer_ctrl_next.is_real = decoded_packet_next.is_real;
-        producer_ctrl_next.is_varith =
-            (decoded_packet_next.instruction.opcode == riscv_pkg::OPC_OP_V) &&
-            (decoded_packet_next.instruction.funct3 != 3'b111);
+        producer_ctrl_next.is_varith = id_is_varith(decoded_packet_next.instruction);
         producer_ctrl_next.is_vmem = riscv_pkg::is_vector_mem(
             decoded_packet_next.instruction.opcode, decoded_packet_next.instruction.funct3);
         producer_ctrl_next_2.is_load_instruction = decoded_packet_next_2.is_load_instruction;
@@ -1630,9 +1632,7 @@ module cpu_ooo #(
         producer_ctrl_next_2.uses_fp_rs2 = decoded_packet_next_2.uses_fp_rs2;
         producer_ctrl_next_2.uses_fp_rs3 = decoded_packet_next_2.uses_fp_rs3;
         producer_ctrl_next_2.is_real = decoded_packet_next_2.is_real;
-        producer_ctrl_next_2.is_varith =
-            (decoded_packet_next_2.instruction.opcode == riscv_pkg::OPC_OP_V) &&
-            (decoded_packet_next_2.instruction.funct3 != 3'b111);
+        producer_ctrl_next_2.is_varith = id_is_varith(decoded_packet_next_2.instruction);
         producer_ctrl_next_2.is_vmem = riscv_pkg::is_vector_mem(
             decoded_packet_next_2.instruction.opcode, decoded_packet_next_2.instruction.funct3);
       end
@@ -1726,6 +1726,24 @@ module cpu_ooo #(
       assign dispatch_vec_lmul_illegal = queue_vlc;
       assign dispatch_slot2_is_vector = queue_s2_vec;
       assign decoded_queue_valid = queue_valid;
+      if (VECTOR) begin : gen_slot1_rs_select
+        // Sample the station selects on the same edge as the head shadow so
+        // paired admission does not decode the station again at checkpoint save.
+        (* keep = "true" *) logic [3:0] select_q;
+        for (genvar s = 0; s < 4; s++) begin : gen_station
+          always_ff @(posedge i_clk) select_q[s] <= queue_ctrl_next.rs_type == 3'(s);
+        end
+        assign dispatch_slot1_rs_select = select_q;
+`ifndef SYNTHESIS
+        always_ff @(posedge i_clk) begin
+          if (reset_seen_q && !i_rst && queue_valid) begin
+            p_slot1_station_select_current : assert (select_q == (4'b0001 << queue_ctrl.rs_type));
+          end
+        end
+`endif
+      end else begin : gen_no_slot1_rs_select
+        assign dispatch_slot1_rs_select = '0;
+      end
 `ifndef SYNTHESIS
       // The shadow moves whole words, so its legality and slot-2 vector bits
       // stay those of its own instructions once reset has loaded it.
@@ -1744,6 +1762,7 @@ module cpu_ooo #(
           p_queue_s2_vec_matches_instruction :
           assert (queue_s2_vec == (queue_ctrl_2.is_real &&
                   ((queue_ctrl_2.instruction.opcode == riscv_pkg::OPC_OP_V) ||
+             (VECTOR && (queue_ctrl_2.instruction.opcode == riscv_pkg::OPC_OP_VE)) ||
                    riscv_pkg::is_vector_mem(
               queue_ctrl_2.instruction.opcode, queue_ctrl_2.instruction.funct3
           ))));
@@ -1920,6 +1939,7 @@ module cpu_ooo #(
       assign decoded_queue_full = 1'b0;
       assign decoded_queue_indirect_pending = 1'b0;
       assign decoded_queue_valid = 1'b0;
+      assign dispatch_slot1_rs_select = '0;
       assign from_id_to_ex = decoded_packet;
       assign from_id_to_ex_2 = decoded_packet_2;
       vec_lmul_legality u_vlc (
@@ -1928,6 +1948,7 @@ module cpu_ooo #(
       );
       assign dispatch_slot2_is_vector = from_id_to_ex_2.is_real &&
           ((from_id_to_ex_2.instruction.opcode == riscv_pkg::OPC_OP_V) ||
+             (VECTOR && (from_id_to_ex_2.instruction.opcode == riscv_pkg::OPC_OP_VE)) ||
            riscv_pkg::is_vector_mem(
           from_id_to_ex_2.instruction.opcode, from_id_to_ex_2.instruction.funct3
       ));
@@ -3109,12 +3130,15 @@ module cpu_ooo #(
   dispatch #(
       .VECTOR(VECTOR),
       .SLOT2_VALID_FROM_BUNDLE(DECODED_QUEUE_DEPTH > 0),
+      .REGISTERED_QUEUE_CLASSES(VECTOR && DECODED_QUEUE_DEPTH > 0),
       // The int_rf_dispatch_* reads below also feed the RAT's regfile-data
       // inputs, which is the contract RAW_INT_RF_VALUES needs.
       .RAW_INT_RF_VALUES(1'b1)
   ) u_dispatch (
       .i_vtype_spec(vec_vtype_spec),
       .i_vec_arith_illegal(vec_arith_illegal),
+      .i_vec_restart_ok(vec_restart_ok),
+      .i_slot1_rs_select(dispatch_slot1_rs_select),
       .i_vec_lmul_illegal(dispatch_vec_lmul_illegal),
       .i_vec_vstart_nonzero(vec_vstart_nonzero),
       .i_slot2_is_vector(dispatch_slot2_is_vector),
@@ -5617,13 +5641,14 @@ module cpu_ooo #(
 
     assign vec_alloc = rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready;
     assign vec_eff_valid = !from_id_to_ex.is_fetch_fault && !from_id_to_ex.is_illegal_instruction;
-    // Vector arithmetic, FP included, runs in the engine after it retires;
+    // Vector arithmetic, including FP and cryptographic groups, runs in the engine after it retires;
     // the vector-to-scalar moves (vmv.x.s, vcpop.m, vfirst.m, vfmv.f.s)
     // execute at the ROB head
     assign vec_alloc_is_varith = vec_eff_valid &&
         ((from_id_to_ex.instruction_operation == riscv_pkg::VARITH) ||
          (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_X) ||
-         (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_F));
+         (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_F) ||
+         (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_C));
     assign vec_alloc_is_vtox = vec_eff_valid &&
         ((from_id_to_ex.instruction_operation == riscv_pkg::VTOX) ||
          (from_id_to_ex.instruction_operation == riscv_pkg::VTOF));
@@ -5656,7 +5681,9 @@ module cpu_ooo #(
     // Arithmetic legality of the queue head under the tracked vtype, from
     // registers to a register; vector arithmetic waits one cycle at the
     // head for it
-    vec_dispatch_legality u_dispatch_legality (
+    vec_dispatch_legality #(
+        .VLEN(VLEN)
+    ) u_dispatch_legality (
         .i_clk        (i_clk),
         .i_rst        (i_rst),
         .i_head_valid (decoded_queue_valid),
@@ -5666,7 +5693,8 @@ module cpu_ooo #(
         .i_pop        (rob_alloc_req.alloc_valid),
         .i_flush      (flush_pipeline),
         .o_ready      (vec_arith_ready),
-        .o_illegal    (vec_arith_illegal)
+        .o_illegal    (vec_arith_illegal),
+        .o_restart_ok (vec_restart_ok)
     );
     assign vec_vtype_valid = vec_tracker_valid && vec_arith_ready;
     vec_unit #(
@@ -5827,20 +5855,27 @@ module cpu_ooo #(
         p_vec_tracker_restore_without_allocation : assert (!(checkpoint_restore && vec_alloc));
         // Dispatch takes the registered legality: it belongs to the
         // allocating instruction under the vtype in effect.
+        if (vec_alloc && (vec_alloc_is_varith || vec_alloc_is_vtox)) begin
+          p_vec_restart_class_current :
+          assert (vec_arith_ready && vec_restart_ok == riscv_pkg::vector_restart_ok(
+              from_id_to_ex.insn_bits
+          ));
+        end
         if (vec_alloc && ((from_id_to_ex.instruction_operation == riscv_pkg::VARITH) ||
                           (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_X) ||
                           (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_F) ||
+                          (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_C) ||
                           (from_id_to_ex.instruction_operation == riscv_pkg::VTOF))) begin
           p_vec_arith_alloc_ready : assert (vec_arith_ready && vec_tracker_valid);
           p_vec_arith_legality_registered :
           assert (vec_arith_illegal == riscv_pkg::vector_arith_illegal(
-              vec_vtype_spec, 32'(from_id_to_ex.instruction)
+              vec_vtype_spec, 32'(from_id_to_ex.instruction), VLEN, 0, 0
           ));
         end
       end
     end
     // The tracker's vtype at the allocation of each vector arithmetic
-    // instruction (with or without an x- or f-register scalar) and each
+    // instruction (including cryptographic groups and scalar operands) and each
     // vector-to-scalar instruction (vmv.x.s, vcpop.m, vfirst.m, vfmv.f.s), by
     // ROB tag. It must be known and equal the CSR file's vtype when the
     // instruction retires on the registered commit bus, where the unit takes
@@ -5878,6 +5913,7 @@ module cpu_ooo #(
     assign vec_vtype_spec = '0;
     assign vec_vtype_valid = 1'b1;
     assign vec_arith_illegal = 1'b0;
+    assign vec_restart_ok = '0;
     assign vec_varith_commit = 1'b0;
     assign vec_vstore_commit = 1'b0;
     assign vec_vmem_fault_vstart_valid = 1'b0;

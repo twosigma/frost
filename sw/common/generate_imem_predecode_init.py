@@ -51,6 +51,7 @@ OPC_FNMSUB = 0b1001011
 OPC_FNMADD = 0b1001111
 OPC_OP_FP = 0b1010011
 OPC_OP_V = 0b1010111
+OPC_OP_VE = 0b1110111
 OPC_LOAD_FP = 0b0000111
 OPC_STORE_FP = 0b0100111
 OPC_BRANCH = 0b1100011
@@ -151,14 +152,22 @@ def native_serialize(parcel: int) -> bool:
 
 def native_fp_compute(opcode: int) -> bool:
     """Return whether a native instruction never pairs as slot 2 (FP compute or vector)."""
-    return opcode in {OPC_OP_FP, OPC_FMADD, OPC_FMSUB, OPC_FNMSUB, OPC_FNMADD, OPC_OP_V}
+    return opcode in {
+        OPC_OP_FP,
+        OPC_FMADD,
+        OPC_FMSUB,
+        OPC_FNMSUB,
+        OPC_FNMADD,
+        OPC_OP_V,
+        OPC_OP_VE,
+    }
 
 
 def vector_mem(parcel: int) -> bool:
     """Return whether a native parcel is a vector load or store.
 
     These are LOAD-FP and STORE-FP with a vector width (funct3 000, 101, 110 or
-    111) and, like OP-V, never pair as slot 2.
+    111) and, like OP-V and OP-VE, never pair as slot 2.
     """
     return (parcel & 0x7F) in {OPC_LOAD_FP, OPC_STORE_FP} and ((parcel >> 12) & 7) in {
         0b000,

@@ -151,7 +151,8 @@ int main(int argc, char **argv)
             // are normalized by the reference configuration unit, as hardware
             // vsetvl does before dispatch uses the architectural vtype.
             reg_t requested = (type & 255) | (reg_t(type >> 8) << 63);
-            reference.VU.set_vl(1, 1, 1, requested);
+            // OP-VE operates on four elements, including at the smallest legal capacity.
+            reference.VU.set_vl(1, 1, (form.match & 0x7f) == 0x77 ? 4 : 1, requested);
             reg_t actual = reference.VU.vtype->read();
             rtl.i_vtype = (actual & 255) | ((actual >> 63) << 8);
             for (uint32_t bits : encodings) {

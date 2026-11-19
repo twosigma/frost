@@ -53,7 +53,8 @@ module vec_vtype_tracker_formal (
   // configuration: each allocation of one predicts vstart clear
   logic clears;
   assign clears = (alloc_op == riscv_pkg::VARITH) || (alloc_op == riscv_pkg::VARITH_X) ||
-      (alloc_op == riscv_pkg::VARITH_F) || (alloc_op == riscv_pkg::VTOX) ||
+      (alloc_op == riscv_pkg::VARITH_F) || (alloc_op == riscv_pkg::VARITH_C) ||
+      (alloc_op == riscv_pkg::VTOX) ||
       (alloc_op == riscv_pkg::VTOF) || (alloc_op == riscv_pkg::VLOAD) ||
       (alloc_op == riscv_pkg::VSTORE);
   logic [NC-1:0] ckpt_owned_q, ckpt_valid_q;

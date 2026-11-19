@@ -1,0 +1,4 @@
+# The hosted Ubuntu label is newer than actionlint's built-in list.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

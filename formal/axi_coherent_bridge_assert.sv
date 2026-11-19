@@ -18,17 +18,42 @@
 // partition assumes the preceding cycle's result for every assertion. History
 // starts true, so a first failure satisfies all history assumptions and reaches
 // its owning partition. All partitions must pass.
-(* techmap_celltype = "$assert axi_coherent_bridge_checked_assert" *)
+(* techmap_celltype = "axi_coherent_bridge_checked_assert" *)
 module axi_coherent_bridge_assert (
     input logic A,
     input logic EN
 );
-  parameter logic [8*64-1:0] _TECHMAP_CELLTYPE_ = "";
-  wire [8*32-1:0] _TECHMAP_DO_ = "proc; chformal -lower;";
+  // The bridge's mapped assertion names contain this file's source location.
+  // Keep its checked predicate at line 32 to preserve every assertion identity.
   logic prior_ok = 1'b1;
   always @($global_clock) prior_ok <= !EN || A;
   always_comb assume (prior_ok);
-  if (_TECHMAP_CELLTYPE_ == "axi_coherent_bridge_checked_assert") begin : g_check
-    always_comb if (EN) assert (A);
-  end
+
+  always_comb if (EN) assert (A);
+endmodule
+
+(* techmap_celltype = "$assert" *)
+module axi_coherent_bridge_assert_history (
+    input logic A,
+    input logic EN
+);
+  logic prior_ok = 1'b1;
+  always @($global_clock) prior_ok <= !EN || A;
+  always_comb assume (prior_ok);
+endmodule
+
+// Both fixed maps are reachable from this top before their processes are
+// lowered. Mapping then uses them without deriving a fresh specialization.
+module axi_coherent_bridge_assert_maps (
+    input logic A,
+    input logic EN
+);
+  axi_coherent_bridge_assert_history history (
+      .A,
+      .EN
+  );
+  axi_coherent_bridge_assert checked_map (
+      .A,
+      .EN
+  );
 endmodule

@@ -316,8 +316,9 @@ CI runs on pushes to `main`. A pull request starts no CI by itself: adding the
 `run-ci` label runs the CI workflow on it, and `run-asic` runs the OpenROAD
 flow's synthesis and floorplanning. The full run covers the RISC-V
 architecture tests and riscv-torture programs against Spike reference
-results, the riscv-tests suites, TestRIG's instruction-by-instruction
-comparison with the Sail RISC-V model, unit benches for the CPU and SoC
+results, the riscv-tests suites, a rotating slice of the generated
+vector programs at three vector lengths, TestRIG's comparison of each
+instruction with the Sail RISC-V model, unit benches for the CPU and SoC
 blocks, full programs from on-chip BRAM and from cached DDR, formal proofs,
 strict SystemVerilog elaboration and synthesis checks, the Ethernet MAC/PCS
 benches, and QEMU boots of the Linux images, and it merges the coverage of the
@@ -392,7 +393,7 @@ the image.
 | | Buildroot / OpenSBI | 2026.08.1 / 1.9 |
 | | Debian Linux kernel | 6.12.113-1 (`6.12.113+deb13-riscv64`) |
 | **Testbench** | Cocotb / pytest / pytest-cov | 2.1.0 / 9.1.1 / 7.1.0 |
-| **Simulator** | Verilator / QEMU | 5.052 / 11.1.2 |
+| **Simulator** | Verilator / QEMU | 5.054 / 11.1.2 |
 | | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` |
 | | Sail RISC-V model / QuickCheckVEngine | 0.16 / `5e15965a819ca1be9f14d2e8e319e98fd89a557f` |
 | | riscv-vector-tests (built with Go) | `f76bff121dce91b6b23e1d37be77a5e44af914c3` (Go 1.24.4, build stage only) |

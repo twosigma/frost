@@ -59,19 +59,18 @@ def elaborate(
 ) -> tuple[Path, Path]:
     """Elaborate the fixture with real line, user, and bounded toggle instrumentation."""
     output.mkdir()
-    tree = output / "tree.json"
-    metadata = output / "meta.json"
+    metadata = output / "Vcontrol_probe.tree.meta.json"
     command = [
         "verilator",
-        "--json-only",
+        "--lint-only",
+        "--dumpi-tree-json",
+        "1",
+        "--dumpi-V3Coverage",
+        "3",
         "--MMD",
         "--MP",
         "--Mdir",
         str(output),
-        "--json-only-output",
-        str(tree),
-        "--json-only-meta-output",
-        str(metadata),
         "--top-module",
         "control_probe",
         "--public-flat-rw",
@@ -81,6 +80,14 @@ def elaborate(
         "--coverage-max-width",
         "8",
     ]
+    branch_option = subprocess.run(
+        ["verilator", "--coverage-branch", "--version"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+    )
+    if branch_option.returncode == 0:
+        command.append("--coverage-branch")
     if control is not None:
         command.append(str(control))
     file_list = output / "inputs.f"
@@ -88,6 +95,7 @@ def elaborate(
     command.extend(("-f", str(file_list)))
     result = subprocess.run(command, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+    (tree,) = output.glob("*_coverage.tree.json")
     return tree, metadata
 
 

@@ -161,8 +161,7 @@ NO_COMPRESS_TESTS = {
 }
 
 
-# Extensions whose tests need the vector unit. They are not in
-# SUPPORTED_EXTENSIONS until FROST has one; generate their references with
+# The default scalar matrix excludes vector extensions. Generate their references with
 # --extensions Zvk. Each test turns on mstatus.VS itself. The references are
 # made at VLEN 128, and so are for a core at VLEN 128: the suite's macros skip a
 # case when AVL * SEW exceeds VLEN, so five of the tests (the SHA-2 and SM3 ones

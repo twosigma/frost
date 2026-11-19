@@ -16,9 +16,10 @@ Lane 0 carries the highest-priority valid completion and lane 1 the next, so
 `o_grant` is 0-, 1-, or 2-hot. Inputs `i_fu_complete_0` to `_7` and the grant
 bits are numbered by `riscv_pkg::fu_type_e` (ALU, MUL, DIV, MEM, FP_ADD,
 FP_MUL, FP_DIV, ALU2), which is not the priority order. In the wrapper the FP
-engine completes on FP_ADD, the vector-config unit (with the vector unit) on
+engine and divider complete on FP_ADD, the vector-config unit (with the vector unit) on
 FP_MUL, and the vector unit's head-executed vector-to-scalar and vector-memory
-completions on FP_DIV's test input.
+completions on FP_DIV's test input; the FP pipeline completes on FP_DIV when
+that input presents nothing.
 
 ALU and ALU2 are the two single-cycle integer pipes fed by the dual-issue INT
 reservation station. Either can win either lane, so a stream of pure ALU work
@@ -31,8 +32,8 @@ A completion that is not granted stays in its
 [`fu_cdb_adapter`](../fu_cdb_adapter/README.md) and competes again the next
 cycle. The pipelined MUL path presents results directly and always wins a lane.
 The divider
-holds its result until its adapter is free; the FP engine runs one operation
-at a time and issues no more until its adapter is free.
+holds its result until its adapter is free; the FP pipeline queues results in
+its FIFO, and the FP engine runs one operation at a time and issues no more until its adapter is free.
 
 The order matters for the MEM slot. Store faults, SC results, and loads share
 it; a store fault cannot wait, and an SC result can wait only behind a store

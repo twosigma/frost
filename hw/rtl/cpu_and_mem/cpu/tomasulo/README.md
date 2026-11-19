@@ -137,11 +137,12 @@ Up to six completions compete for the two CDB lanes each cycle, and
 MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
 
-The FP engine completes on the `FP_ADD` slot; the vector-config unit
+The FP engine and divider complete on the `FP_ADD` slot; the vector-config unit
 (`vsetvli`, `vsetivli`, `vsetvl`, with the vector unit present) on the `FP_MUL`
 slot; and, with the vector unit, `vmv.x.s`, `vcpop.m`, `vfirst.m` and the
 head-executed `VLOAD` and `VSTORE` translations on the `FP_DIV` slot, through
-its test input, which cpu_ooo drives from the vector unit. A completion that loses waits in its
+its test input, which cpu_ooo drives from the vector unit. The FP pipeline also
+completes on `FP_DIV`, whenever that input presents nothing. A completion that loses waits in its
 [`fu_cdb_adapter`](fu_cdb_adapter/README.md) and competes again the next
 cycle; the pipelined MUL path presents its result directly, and the divider
 holds its result until its adapter is free. On a full flush the arbiter's
@@ -193,7 +194,7 @@ result waits in its register only behind a store fault.
 | `INT_RS`   | 16 (`INT_RS_DEPTH`) | ALU ops including LUI and AUIPC, shifts, Zba/Zbb/Zbs/Zbkb, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK, PAUSE (a NOP with no operands), and the illegal-instruction and fetch-fault markers |
 | `MUL_RS`   | 4     | MUL/MULW/MULH\*/CLMUL/CLMULH/CLMULR/DIV\*/REM\* |
 | `MEM_RS`   | 8     | All loads and stores (INT and FP), AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
-| `FP_RS`    | 2     | Every F and D compute instruction: FADD/FSUB, FMUL, FMA (3-source), FDIV, FSQRT, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
+| `FP_RS`    | 6     | Every F and D compute instruction: FADD/FSUB, FMUL, FMA (3-source), FDIV, FSQRT, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
 | (none)     | n/a   | JAL, WFI, MRET, SRET, DRET, and with the vector unit `VTOX`, `VLOAD`, `VSTORE` and non-scalar `VARITH`: ROB only, no reservation-station operands |
 
 `INT_RS_DEPTH` must be a power of two from 2 to 32. The INT RS's second issue

@@ -2744,6 +2744,45 @@ static void fs_changes(unsigned long status)
     VT_CSR_WRITE(mstatus, status);
 }
 
+/* Set FS immediately before each access. t0 supplies zero through a
+ * nonzero rs1 field for the register set and clear controls. */
+#define CHECK_CSR_FS(insn, before, expected)                                                       \
+    do {                                                                                           \
+        unsigned long after;                                                                       \
+        __asm__ volatile("li t0, 0\n\tcsrw mstatus, %1\n\t" insn "\n\tcsrr %0, mstatus"            \
+                         : "=r"(after)                                                             \
+                         : "r"(before)                                                             \
+                         : "t0", "memory");                                                        \
+        VT_EQ(after & VT_MSTATUS_FS, (expected) & VT_MSTATUS_FS, insn);                            \
+    } while (0)
+
+#define CHECK_CSR_FORMS(csr, before)                                                               \
+    do {                                                                                           \
+        CHECK_CSR_FS("csrrs t0, " #csr ", zero", before, before);                                  \
+        CHECK_CSR_FS("csrrc t0, " #csr ", zero", before, before);                                  \
+        CHECK_CSR_FS("csrrsi t0, " #csr ", 0", before, before);                                    \
+        CHECK_CSR_FS("csrrci t0, " #csr ", 0", before, before);                                    \
+        CHECK_CSR_FS("csrrw zero, " #csr ", zero", before, VT_MSTATUS_FS);                         \
+        CHECK_CSR_FS("csrrwi zero, " #csr ", 0", before, VT_MSTATUS_FS);                           \
+        CHECK_CSR_FS("csrrs t0, " #csr ", t0", before, VT_MSTATUS_FS);                             \
+        CHECK_CSR_FS("csrrc t0, " #csr ", t0", before, VT_MSTATUS_FS);                             \
+        CHECK_CSR_FS("csrrci t0, " #csr ", 1", before, VT_MSTATUS_FS);                             \
+        CHECK_CSR_FS("csrrsi t0, " #csr ", 1", before, VT_MSTATUS_FS);                             \
+    } while (0)
+
+static void fp_csr_accesses(unsigned long status)
+{
+    unsigned long saved_fcsr = VT_CSR_READ(fcsr);
+    for (unsigned long fs = 1; fs <= 2; fs++) {
+        unsigned long before = (status & ~VT_MSTATUS_FS) | (fs << 13);
+        CHECK_CSR_FORMS(fflags, before);
+        CHECK_CSR_FORMS(frm, before);
+        CHECK_CSR_FORMS(fcsr, before);
+    }
+    VT_CSR_WRITE(fcsr, saved_fcsr);
+    VT_CSR_WRITE(mstatus, status);
+}
+
 static void special_cases(void)
 {
     uint64_t value;
@@ -2792,7 +2831,11 @@ static void special_cases(void)
     VT_EQ((VT_CSR_READ(mstatus) >> 13) & 3, 3, "a raised flag dirties FS from Initial");
     VT_EQ((VT_CSR_READ(mstatus) >> 9) & 3, 3, "vector FP dirties VS");
     fs_changes(status);
+    fp_csr_accesses(status);
     VT_CSR_WRITE(mstatus, status & ~VT_MSTATUS_FS);
+    ILLEGAL(0x00202073); /* csrrs zero, frm, zero */
+    ILLEGAL(0x00305073); /* csrrwi zero, fcsr, 0 */
+    VT_EQ(VT_CSR_READ(mstatus) & VT_MSTATUS_FS, 0, "illegal FP CSR accesses preserve FS Off");
     ILLEGAL(OPV(0, 1, 8, 8, 1, 16));
     VT_CSR_WRITE(mstatus, status);
     VT_CSR_WRITE(mstatus, status & ~VT_MSTATUS_VS);

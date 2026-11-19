@@ -15,11 +15,11 @@
 """Compare vector arithmetic legality with Spike across registers and every vtype.
 
 Run in the frost image with ``python3 tests/test_vector_legality_reference.py``
-(``--forms fp`` for the floating-point forms, which run with Zfh and Zvfh).
+(``--forms fp`` for floating point, ``--forms crypto`` for Zvbc, AES, SHA-2 and GHASH).
 The comparison calls the installed reference instruction implementations and
 the RTL decoder and dispatch legality module (vec_arith_legality). It does not
 copy the reference's formulas.
-VL is one and vstart zero; this sweep checks geometry, not restart policy.
+The sweep requests four elements for OP-VE and one otherwise, with vstart zero.
 Spike omits the general source/source EEW reservation, so the comparator
 checks that specification rule separately and reports its cases separately.
 All other accepted/rejected results come from Spike's instruction functions.
@@ -43,10 +43,11 @@ HEADERS = Path("/usr/local/include/riscv")
 FORM_SETS = {
     "integer": ("integer_forms.json", "_zvbb"),
     "fp": ("fp_forms.json", "_zfh_zvfh"),
+    "crypto": ("crypto_forms.json", "_zvbc_zvkg_zvkned_zvknhb"),
 }
 
 
-def build(build_dir: Path, form_set: str = "integer") -> Path:
+def build(build_dir: Path, form_set: str = "integer", vlen: int = 256) -> Path:
     """Build the RTL comparator and link the installed reference library."""
     build_dir.mkdir(parents=True, exist_ok=True)
     form_file, extensions = FORM_SETS[form_set]
@@ -83,6 +84,7 @@ def build(build_dir: Path, form_set: str = "integer") -> Path:
         "-Wno-fatal",
         "--top-module",
         "vec_legality_reference",
+        f"-GVLEN={vlen}",
         "--Mdir",
         str(build_dir / "obj"),
         "-CFLAGS",
@@ -145,6 +147,20 @@ def test_fp_legality_reference(tmp_path: Path) -> None:
     compare(binary, 128, tmp_path / "negative_fp.log", negative=True)
 
 
+@pytest.mark.slow
+@pytest.mark.skipif(
+    not HEADERS.is_dir() or shutil.which("verilator") is None,
+    reason="needs the frost image's reference headers and Verilator",
+)
+@pytest.mark.parametrize("vlen", (128, 256, 512))
+def test_crypto_legality_reference(tmp_path: Path, vlen: int) -> None:
+    """Compare the crypto forms with the reference configured for the same group capacity."""
+    binary = build(tmp_path, "crypto", vlen)
+    compare(binary, vlen, tmp_path / f"legality_crypto_{vlen}.log")
+    if vlen == 128:
+        compare(binary, vlen, tmp_path / "negative_crypto.log", negative=True)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vlen", type=int, choices=(128, 256, 512), default=256)
@@ -155,7 +171,7 @@ if __name__ == "__main__":
     parser.add_argument("--forms", choices=sorted(FORM_SETS), default="integer")
     args = parser.parse_args()
     build_path = args.build_dir.resolve() / args.forms
-    executable = build(build_path, args.forms)
+    executable = build(build_path, args.forms, args.vlen)
     compare(
         executable,
         args.vlen,
