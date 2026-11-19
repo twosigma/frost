@@ -130,3 +130,4 @@
 - Installed fully written 64-byte store blocks without fill through paired `GetMZero` acquisitions and data twins, and overlapped cached plain writes in the store queue with gathering and same-sector combining hints, with their formal checks, benchmarks, and directed tests
 - Implemented pipelined DSP multiplication and radix-4 division for single- and double-precision floating-point operations and added a regression for the latency of arithmetic operations
 - Implemented pipelined scalar floating-point arithmetic, radix-16 division and early wakeup of dependent operations.
+- Implemented Zicbom clean, flush and invalidate through the coherent cache hierarchy.
