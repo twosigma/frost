@@ -8001,7 +8001,9 @@ def test_store_home_cover_budgets() -> None:
                 "aigsmt": "boolector",
             }
             assert formal_task_timeout_s(target.name, task) == 900
-            engine = "abc bmc3 -c" if base.startswith("link_") else "abc bmc3"
+            engine = "abc bmc3"
+            if base == "link_bmc_siblings":
+                engine = "abc bmc3 -c"
             assert bounded["[engines]"] == [engine]
             script = bounded["[script]"]
             assert "abc" not in script
