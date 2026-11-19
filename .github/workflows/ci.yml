@@ -1493,7 +1493,7 @@ jobs:
               ((coherence_ or coherent_) and not
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
               coherence_store_home or coherence_link or coherent_local_atomic or coh_hart_maint_prove or
-              coh_hart_maint_owned_prove or coherence_array_equiv or
+              coh_hart_maint_owned_prove or coh_hart_maint_free_ or coherence_array_equiv or
               coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
             timeout_minutes: 300
@@ -1697,6 +1697,10 @@ jobs:
               coh_l1d_stream_bmc or coh_l1d_stream_free_nostore_bmc or
               coh_l1d_stream_outlier_prove
             timeout_minutes: 335
+          # Two 120-minute PDR allowances and ten minutes for setup.
+          - shard: Hart snapshot ownership
+            pytest_filter: coh_hart_maint_free_
+            timeout_minutes: 250
           # Compare hand-instantiated primitives with their portable forms. The
           # payload twin's operand group runs with the wrapper proofs. This job
           # runs the other twin tasks, the read select's primitive tasks, the

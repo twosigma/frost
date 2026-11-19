@@ -375,7 +375,8 @@ bridge's partitions map their assertions with a file of their own. In
 files named above, the L1D conflict proofs run `opt -full` and `sat` after
 cutting every flip-flop, the hart reset-state task starts from `sim`'s
 state after the reset cycle. The original two hart maintenance covers
-zero undefined constants. The retained-snapshot cover leaves them free.
+zero undefined constants. The retained-snapshot cover and the two
+free-state maintenance PDR tasks preserve those initial values.
 
 No list of forms keeps undefined constants, which SymbiYosys also makes
 free only after the script. Passes inside the forms the check accepts fuse

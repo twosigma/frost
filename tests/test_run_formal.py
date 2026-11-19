@@ -69,6 +69,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home", "coh_home_cmo_cover"): 6000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
+    ("coherent_hart_cache", "coh_hart_maint_free_owned_prove"): 7200,
+    ("coherent_hart_cache", "coh_hart_maint_free_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
     ("coherence_l1d", "coh_l1d_stream_bmc"): 5100,
     ("coherence_l1d", "coh_l1d_stream_hold_bmc"): 3600,
@@ -276,6 +278,8 @@ FORMAL_TARGETS = [
             "coh_hart_maint_prove",
             "coh_hart_maint_owned_prove",
             "coh_hart_maint_owned_reset_prove",
+            "coh_hart_maint_free_owned_prove",
+            "coh_hart_maint_free_prove",
             "coh_hart_maint_cover",
             "coh_hart_maint_four_bmc",
             "coh_hart_maint_four_cover",
@@ -2561,6 +2565,14 @@ SBY_TASKS = [
         "The same induction from the state after the reset cycle, every other register free.",
     ),
     (
+        "coh_hart_maint_free_owned_prove",
+        "Independent PDR proof of all maintenance ownership facts with free initial values.",
+    ),
+    (
+        "coh_hart_maint_free_prove",
+        "Maintenance visibility and completion using ownership facts on the same free-state model.",
+    ),
+    (
         "coh_hart_maint_cover",
         "Discard, PutM absorption, old fills and delayed completions.",
     ),
@@ -4003,6 +4015,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherent_hart_cache": [
             "coh_hart_maint_owned_prove",
             "coh_hart_maint_prove",
+            "coh_hart_maint_free_owned_prove",
+            "coh_hart_maint_free_prove",
         ],
         "coherence_store_boundary": [
             f"{prefix}_amo_{sector}_{suffix}"
@@ -4044,6 +4058,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     dedicated_shards = {
         "coherent_hart_cache_coh_hart_maint_prove": "Hart maintenance",
         "coherent_hart_cache_coh_hart_maint_owned_prove": "Hart maintenance",
+        "coherent_hart_cache_coh_hart_maint_free_owned_prove": "Hart snapshot ownership",
+        "coherent_hart_cache_coh_hart_maint_free_prove": "Hart snapshot ownership",
         "coherence_l1d_coh_l1d_stream_bmc": "Hart maintenance",
         "coherence_l1d_coh_l1d_stream_free_nostore_bmc": "Hart maintenance",
         "coherence_l1d_coh_l1d_stream_outlier_prove": "Hart maintenance",
@@ -10005,6 +10021,27 @@ def test_hart_maintenance_lemma_model_matches() -> None:
         ) in models[0]
 
     validate(owned, proof)
+    # Both free-state PDR tasks use the original pair's precise property
+    # selections. Compare the entire resolved model, including staged files.
+    free_passes = {
+        "memory_map": "memory_map -keepdc",
+        "opt": "opt -keepdc",
+        "opt -fast": "opt -fast -keepdc",
+    }
+    for task, original in (
+        ("coh_hart_maint_free_owned_prove", owned),
+        ("coh_hart_maint_free_prove", proof),
+    ):
+        expected = dict(original)
+        expected["[script]"] = [
+            free_passes.get(line, line) for line in original["[script]"]
+        ]
+        expected["[options]"] = [
+            "timeout 7200" if line == "timeout 1200" else line
+            for line in original["[options]"]
+        ]
+        expected["[engines]"] = ["abc pdr -r"]
+        assert formal_task_config("coherent_hart_cache", task) == expected
     for side, section, line in (
         (0, "[script]", "chformal -assert2assume c:p_maint_owned_engine"),
         (0, "[script]", "chformal -assume -remove"),
@@ -10829,6 +10866,8 @@ def test_fatal_frame_validation(
         ("reorder_buffer", "bmc", 5400),
         ("coherent_hart_cache", "coh_hart_maint_prove", 7200),
         ("coherent_hart_cache", "coh_hart_maint_owned_prove", 1200),
+        ("coherent_hart_cache", "coh_hart_maint_free_owned_prove", 7200),
+        ("coherent_hart_cache", "coh_hart_maint_free_prove", 7200),
         ("coherent_hart_cache", "coh_hart_maint_four_bmc", 7200),
         ("coherence_l1d", "coh_l1d_stream_bmc", 5100),
         ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc", 3600),

@@ -1,7 +1,9 @@
 [tasks]
 coh_hart_maint_prove proof unbounded plain
-coh_hart_maint_owned_prove owned unbounded plain
-coh_hart_maint_owned_reset_prove owned unbounded resetstate
+coh_hart_maint_owned_prove owned facts unbounded plain
+coh_hart_maint_owned_reset_prove owned facts unbounded resetstate
+coh_hart_maint_free_owned_prove freeowned facts unbounded freepdr
+coh_hart_maint_free_prove proof unbounded freepdr
 coh_hart_maint_cover covers base
 coh_hart_maint_four_bmc four bounded fourbmc base
 coh_hart_maint_four_cover four covers base
@@ -15,6 +17,9 @@ proof: aigsmt boolector
 owned: mode prove
 owned: depth 8
 owned: timeout 1200
+freeowned: mode prove
+freeowned: depth 8
+freeowned: timeout 7200
 covers: mode cover
 covers: depth 160
 covers: vcd_sim on
@@ -35,6 +40,7 @@ bounded: aigsmt boolector
 [engines]
 proof: abc pdr -r
 owned: smtbmc boolector
+freeowned: abc pdr -r
 covers: btor btormc
 snapshot_cover: btor btormc
 bounded: abc bmc3 -g
@@ -62,11 +68,11 @@ hierarchy -top coherent_hart_cache_formal
 script free_undefined.ys
 prep -flatten -top coherent_hart_cache_formal
 check -assert
-# The induction task assumes nothing and proves all facts consumed by PDR.
+# Each ownership task proves the same facts with no source assumptions.
 unbounded: select -assert-none t:$check r:FLAVOR=assume %i
 unbounded: select -assert-count 375 t:$check r:FLAVOR=assert %i
-owned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_* %u %u %u %u %u %u %u %d
-owned: select -assert-count 286 t:$check r:FLAVOR=assert %i
+facts: chformal -assert -remove t:$check r:FLAVOR=assert %i c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_* %u %u %u %u %u %u %u %d
+facts: select -assert-count 286 t:$check r:FLAVOR=assert %i
 proof: select -assert-count 286 t:$check r:FLAVOR=assert %i c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_* %u %u %u %u %u %u %u %i
 proof: chformal -assert2assume c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_*
 proof: select -assert-count 286 t:$check r:FLAVOR=assume %i
@@ -76,9 +82,8 @@ base: chformal -cover -remove c:*flatten_home* c:*flatten_walker* c:walker.* c:*
 coh_hart_snapshot_cover: chformal -cover -remove c:* c:*c_retained_publication_* %d
 coh_hart_snapshot_cover: select -assert-count 2 t:$check r:FLAVOR=cover %i
 four: chformal -cover -remove c:* c:*p_four_records* %d
-# The unbounded pair runs a plain opt (ROADMAP.md): with every register
-# starting free its induction does not finish in its limit, and from the state
-# after the reset cycle its PDR proof leaves one assertion unresolved.
+# The original pair uses plain optimization passes. The two free-state
+# PDR tasks share the same reset, driver and unknown-preserving passes.
 plain: memory_map
 ~plain: memory_map -keepdc
 # coh_hart_maint_owned_reset_prove checks the same 286 facts by induction
@@ -101,6 +106,7 @@ plain: opt
 ~plain: opt -keepdc
 unbounded: techmap
 plain: opt -fast
+freepdr: opt -fast -keepdc
 resetstate: opt -fast -keepdc
 unbounded: setundef -anyseq
 bounded: techmap
