@@ -56,19 +56,18 @@
  * Saved lookups. When PD passes a packet with a conditional branch or a JALR
  * to ID, the instruction's lookup goes to the next entry of a circular
  * buffer: for a branch, whether the tagged lookup covered its word, the bank,
- * the indices, tags, matches, provider direction, the alternate direction,
- * and the lookup history; for a JALR that is not a return, the indirect
- * target predictor's lookup (indices, tags, matches); a return keeps only its
- * place. Dispatch
- * gives the branch the same index from a pointer of its own, since both see
- * the branches in program order, and records it by ROB tag. Early recovery
- * reads the branch's history from the entry; retirement trains the tagged
- * predictor, or for a JALR the indirect target predictor with its target,
- * from it, one instruction per cycle, holding a slot-2 branch for a cycle in which
- * slot 1 does not train (a newer one replaces it, and it is dropped if its
- * entry is reused first). Both pointers rewind past the recovered branch on
- * early recovery, and to the entry after the youngest retired branch on any
- * other pipeline flush, so live entries never exceed the branches in flight.
+ * the indices, tags, matches, provider direction and alternate direction. A
+ * non-return JALR can save the indirect predictor's lookup (indices, tags,
+ * matches). Every entry saves both prediction histories, including returns
+ * that have no indirect predictor lookup.
+ * Dispatch gives the instruction the same index from a pointer of its own
+ * and records it by ROB tag. Early recovery reads both histories from that
+ * entry. Retirement trains the tagged predictor or an eligible JALR's
+ * indirect predictor entry, one instruction per cycle, holding a slot-2
+ * branch for a cycle in which slot 1 does not train. A newer slot-2 branch
+ * replaces a held one, and reusing its entry drops it. Both pointers rewind
+ * past the recovered branch on early recovery and past the youngest retired
+ * branch on any other pipeline flush.
  */
 module tage_history #(
     parameter int unsigned HIST_BITS = riscv_pkg::TageHistBits,
@@ -125,9 +124,9 @@ module tage_history #(
     // flush, or a misprediction recovered at commit.
     input logic                                        i_flush_full,
 
-    // Dispatch: each slot's ROB tag and whether it is a conditional branch
-    // (at most one per bundle), and, registered a cycle later, which slots
-    // were allocated.
+    // Dispatch supplies each slot's ROB tag and conditional-branch and JALR
+    // flags. At most one slot owns an FTQ entry. The allocation strobes
+    // follow one cycle later.
     input logic [1:0][riscv_pkg::ReorderBufferTagWidth-1:0] i_alloc_tag,
     input logic [1:0]                                       i_alloc_cond_branch,
     input logic [1:0]                                       i_alloc_jalr,
@@ -303,8 +302,8 @@ module tage_history #(
       .o_read_data(ftq_read_train_raw)
   );
 
-  // Dispatch gives each conditional branch the next index from its own
-  // pointer and records it by ROB tag. PD and dispatch see the same branches
+  // Dispatch gives each conditional branch or JALR the next index from its
+  // own pointer and records it by ROB tag. PD and dispatch see the same owners
   // in the same order, and every flush that drops branches between them
   // rewinds both pointers to the same entry (below). Dispatch's data is
   // registered and acts the next cycle with the registered allocation, which

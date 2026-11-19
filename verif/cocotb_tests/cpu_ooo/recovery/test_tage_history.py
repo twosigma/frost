@@ -722,16 +722,18 @@ async def test_slot2_pd_veto_discards_fast_btb_push_without_pushing_fallthrough(
 async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
     dut: Any,
 ) -> None:
-    """An early recovery restores the saved pre-branch bits at the branch's ROB tag."""
+    """Recover both full-width histories for branches and returns in either slot."""
     await _setup_test(dut)
     width = len(dut.o_lookup_dir_hist)
     mask = (1 << width) - 1
-    for taken, direction_bit, jalr in (
-        (0, 0, False),
-        (1, 1, False),
-        (1, 0, True),
-        (1, 1, True),
+    saved_path = 0xD234_8901_BCDE_52A7
+    for recovering_slot, taken, path_bits, jalr in (
+        (0, 0, 3, False),
+        (1, 1, 0, False),
+        (0, 1, 2, True),
+        (1, 1, 3, True),
     ):
+        direction_bit = path_bits & 1 if jalr else taken
         expected = int(dut.o_lookup_dir_hist.value)
         for n in range(width + 5):
             slot = n % 2
@@ -742,11 +744,14 @@ async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
             await _step(dut)
             expected = ((expected << 1) | bit) & mask
             assert int(dut.o_lookup_dir_hist.value) == expected
-        dut.i_pd_cf.value = 2
-        dut.i_pd_pred_taken.value = (1 - direction_bit) << 1
-        index = await _accept_branch(dut, slot=1, hist=0xD234, jalr=jalr)
+        dut.i_pd_cf.value = 1 << recovering_slot
+        dut.i_pd_pred_taken.value = (1 - direction_bit) << recovering_slot
+        # A return takes an FTQ entry even without an indirect predictor lookup.
+        index = await _accept_branch(
+            dut, slot=recovering_slot, hist=saved_path, jalr=jalr
+        )
         dut.i_pd_cf.value = 0
-        await _allocate(dut, 7, index, slot=1, cond=not jalr, jalr=jalr)
+        await _allocate(dut, 7, index, slot=recovering_slot, cond=not jalr, jalr=jalr)
         dut.i_pd_cf.value = 1
         dut.i_pd_pred_taken.value = 1
         await _accept_branch(dut, hist=0x21)
@@ -758,12 +763,14 @@ async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
         await _step(dut)
         dut.i_early_active.value = 0
         dut.i_hist_restore_arm.value = 1 << ARM_RECOVERY
-        dut.i_fetch_pc_path_bits.value = 3
+        dut.i_fetch_pc_path_bits.value = path_bits
         await _settle()
         assert (
             int(dut.o_lookup_dir_hist.value) == ((expected << 1) | direction_bit) & mask
         )
-        assert _lookup_hist(dut) == (_push(0xD234, 3) if taken else 0xD234)
+        assert _lookup_hist(dut) == (
+            _push(saved_path, path_bits) if taken else saved_path
+        )
         await _step(dut)
         dut.i_hist_restore_arm.value = 0
         await _settle()
