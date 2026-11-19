@@ -783,7 +783,7 @@ cycles, which clears arbitrary memory history.
    argument shape are refused. Each form in `SCRIPT_FORMS` is classified with
    the reason from Yosys's source into `DONT_CARE_SAFE` or
    `DONT_CARE_REJECTED` in `tests/test_run_formal.py`. Among the safe forms
-   are `opt`, `opt_expr` and `opt_merge` with `-keepdc`, `memory_map -keepdc`,
+   are `opt` and `opt_expr` with `-keepdc`, `memory_map -keepdc`,
    `setundef -anyseq`, the default `techmap`, `prep -top`, and the listed
    commands that read sources, scope, select, edit properties or manage
    designs. Plain `opt`, `opt` with `-fast`, `-full` or `-purge`,
