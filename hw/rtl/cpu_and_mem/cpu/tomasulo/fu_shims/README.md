@@ -12,7 +12,7 @@ depends on how many operations its unit can have in flight.
 |------|----|-------|-----------------------|-----------|
 | `int_alu_shim` (two copies) | INT_RS | ALU | 0 (combinational) | n/a |
 | `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; radix-4 divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 2 to 35, word DIV/REM 2 to 19 | Up to 4 multiplies, 1 divide |
-| `fp_shim` | FP_RS | FP engine with iterative arithmetic and dedicated fast paths for F and D compute instructions | 2 to about 90, by operation and operands (see below) | 1 |
+| `fp_shim` | FP_RS | `fp_fma_pipe` (FADD, FSUB, FMUL, FMA), `fp_div_unit` (FDIV) and `fp_engine` (the rest) | 7 pipelined; 12 / 19 for FDIV; 2 to about 90 on the engine (see below) | 1 pipelined, engine and divider one at a time |
 
 The wrapper sets `int_muldiv_shim.DIRECT_MUL=1`. Each multiply result reaches
 the adapter in the cycle its arithmetic unit produces it. The registered CDB
@@ -110,7 +110,36 @@ instead; only the tests and formal proofs use it.
 
 ## fp_shim
 
-`fp_shim` starts each FP_RS issue on one
+With `PIPELINE=1` (the wrapper's setting) `fp_shim` routes each FP_RS issue to
+one of three units:
+
+- [`fp_fma_pipe`](../../ex_stage/fpu/fp_fma_pipe.sv): FADD, FSUB, FMUL and the
+  four FMA forms at single and double precision, one per cycle, a fixed
+  `riscv_pkg::FpPipeDepth` (7) cycles from issue to its result register. Every
+  operation is one fused multiply-add with one rounding. A tracker as deep as
+  the pipeline carries each operation's valid bit, ROB tag and flushed bit;
+  unflushed results enter a 16-entry FIFO whose head goes to its own CDB adapter
+  on slot 6 (`FU_FP_DIV`), which outranks slot 5 and the engine's slot 4. `o_pipe_busy` is a registered credit: tracker plus
+  FIFO entries never exceed the FIFO depth, so the tail always finds room.
+- [`fp_div_unit`](../../ex_stage/fpu/fp_div_unit.sv): FDIV.S and FDIV.D, radix 16
+  (four quotient bits per cycle against fifteen precomputed multiples of the
+  divisor), 12 cycles single and 19 double for normal operands.
+- `fp_engine`, for everything else, as below.
+
+The divider and the engine share one tag register, the kill and the completion
+on slot 4; one of them holds an operation at a time. FP_RS gates them with
+MUL_RS's divide gate (`DIVIDE_ISSUE_GATE` with `FP_ENGINE_GATE`), so pipelined
+operations pass a running divide or square root.
+
+The shim also drives a forward wake: in the cycle before an operation's result
+reaches the pipeline's tail register it presents the operation's tag
+(`o_fwd_wake_*`), and in the next cycle the tail register
+(`o_fwd_value`). FP_RS (`FWD_WAKE`) issues a dependent on the wake and reads
+the operand from the tail register, so a dependent FP chain costs the pipeline
+depth rather than depth plus the CDB register and issue. The CDB broadcast
+still follows through the FIFO, and a missed wake falls back to it.
+
+With `PIPELINE=0`, `fp_shim` starts every FP_RS issue on one
 [`fp_engine`](../../ex_stage/fpu/fp_engine.sv), which runs every F and D
 compute instruction one at a time. Arithmetic and FP-to-integer conversions
 share an iterative adder. Multiplies and FMAs take their significand product
@@ -166,9 +195,13 @@ again on the next cycle, and a divide issue that the same cycle's flush covers
 never starts. As with `fp_shim`, a flush in the cycle the divider presents its
 result is left to the DIV adapter, which sees the same flush.
 
-`fp_shim` kills a squashed operation inside the engine (`i_kill`), which is
-idle again on the next cycle, so FP_RS can issue without waiting out the rest
-of the operation. With the default `LAUNCH_SQUASH=0`, an issue the same flush
+`fp_shim` marks squashed pipelined operations in its tracker and FIFO, as
+`int_muldiv_shim` does, and drops them at the tail or the FIFO head. A previously
+marked tracker entry cannot wake a consumer. A flush coincident with a wake
+blocks selection and deferred capture in FP_RS. Before trap recovery, younger
+instructions can use a speculative producer value. Recovery discards their
+results and stores. The shim kills an engine or divider operation inside the
+unit (`i_kill`), which is idle again on the next cycle. With the default `LAUNCH_SQUASH=0`, an issue the same flush
 covers never starts. The wrapper sets `LAUNCH_SQUASH=1`: the issue starts, and
 a registered squash kills it in the first decode cycle, with busy low and no
 result. This mode requires no issue in the cycle after a flushed issue, which
@@ -215,14 +248,20 @@ cycles, mixed operations, flushes, and tag reuse against integer models.
 full-width MULW fallback. `mul_adapter_grant` proves the integrated acceptance
 and same-cycle flush contract with the arbiter.
 The `fp_shim` target replaces the engine with a model of arbitrary latency
-and result.
-`fp_launch_squash` checks both launch modes against a launch-gated reference.
-It uses arbitrary combinational tile products and the RTL multiplier pipeline,
-and checks the pipeline valid bit when the engine captures a product.
-The launch-squash mode assumes a bubble after a flushed issue.
-`fp_launch_squash_rs` checks that FP_RS leaves that bubble. The `divider` targets check the divider against
+and result. `fp_shim_pipe` proves that the pipeline tracker matches a ghost
+issue history, a wake precedes its tail entry, and tracker and FIFO occupancy
+stay within the credit limit. Live tags stay distinct. After a squash the tag
+cannot complete or wake until reuse, and each live issue completes at most once.
+`fp_launch_squash` checks both launch modes of the engine-only shim against a
+launch-gated reference. It uses arbitrary combinational tile products and the
+RTL multiplier pipeline and checks the valid bit when the engine captures a
+product. The launch-squash mode assumes a bubble after a flushed issue.
+`fp_launch_squash_rs` checks the reservation station's bubble after a flush.
+The `divider` targets check the divider against
 integer division, and the `fp_engine_equiv` bench checks the FP engine against
-Berkeley SoftFloat, results and flags bit for bit.
+Berkeley SoftFloat, results and flags bit for bit. `fp_div_equiv` runs the same
+bench with FDIV on `fp_div_unit`, and `fp_fma_pipe_equiv` streams one vector per
+cycle through `fp_fma_pipe` against SoftFloat.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
