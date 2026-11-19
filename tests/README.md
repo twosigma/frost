@@ -525,6 +525,10 @@ matches the individual recovery pulses on every edge. It exercises early and
 retired mispredictions together with traps, xRETs, native and translation
 fences, and reset.
 
+`ex_comb_synthesizer` checks the selected BTB update and return-stack
+operation for an early indirect jump, call, return, or coroutine swap. It
+checks both instruction lengths and the full link address for a push.
+
 `debug_fetch_barrier` checks invalidation before GO, retained targets, request
 withdrawal, acknowledgement without replay, and reset in each request phase.
 Its fetch-provider composition checks cached windows and old responses arriving

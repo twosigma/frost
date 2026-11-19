@@ -1238,8 +1238,11 @@ operation takes the same registers in the redirect's first cycle, in which
 IF accepts no packet, so the stack sees it one cycle later than a typed
 BTB prediction's; the packets in IF and PD in the meantime are wrong-path
 ones that the redirect drops. The operation happens once even when a stall
-holds the redirect, and a flush in that first cycle drops it; a later flush
-that squashes the instruction leaves its recovery restore to undo it.
+holds the redirect. A flush in that first cycle drops it. An older
+mispredicted branch restores its own stack checkpoint. A trap that stays
+in the same privilege mode can leave the stack pointing to a link replayed
+by an early indirect call, even when the trap squashes that call. The
+architectural link register retains its value from before the call.
 
 The restore also writes the recovery point's top entry back. A wrong path
 that pops and then pushes overwrites that entry: a mispredicted branch just
@@ -1275,6 +1278,10 @@ refresh, reads its set, finds its way, and writes the set two cycles after
 the BTB writes; a refresh that misses writes nothing. A request that reads
 the set being written takes the written set, and one to the same set as an
 update in the stage ahead of it is dropped, which costs accuracy only.
+
+An indirect jump can train the backing BTB when it resolves. If an older
+instruction subsequently traps in the same privilege mode, the trained
+target can remain in the table after the jump is squashed.
 
 ### 4 GiB target limit
 

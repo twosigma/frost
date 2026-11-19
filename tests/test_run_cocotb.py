@@ -3510,7 +3510,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "ex_comb_synthesizer": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_ex_comb_synthesizer",
         hdl_toplevel_module="ex_comb_synthesizer",
-        description=("Recovery output priority and independent BTB update selection"),
+        description=(
+            "Recovery priority, independent BTB update selection, and early JALR "
+            "training and return-stack replay"
+        ),
     ),
     "early_misprediction_recovery": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_early_misprediction_recovery",
