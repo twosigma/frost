@@ -26,11 +26,15 @@ on:
     branches: [main]
     types: [labeled]
   # A manual run can replay a vector slice, run the complete vector
-  # campaign or run regular CI with optional fresh proofs.
+  # campaign or run regular CI with optional fresh proofs and toggle coverage.
   workflow_dispatch:
     inputs:
       reprove:
         description: Reprove formal and synthesis targets in regular CI
+        type: boolean
+        default: false
+      toggle_coverage:
+        description: Add toggle coverage to Cocotb jobs that collect coverage
         type: boolean
         default: false
       slice:
@@ -615,7 +619,16 @@ jobs:
           # collects line and branch coverage and the cover points. The unit
           # benches also collect toggle coverage (tests/README.md#coverage).
           FROST_COVERAGE: ${{ contains(matrix.shard.coverage, matrix.mem_config) && '1' || '0' }}
-          FROST_COVERAGE_TOGGLE: ${{ startsWith(matrix.shard.name, 'Unit Tests') && '1' || '0' }}
+          FROST_COVERAGE_TOGGLE: >-
+            ${{ (startsWith(matrix.shard.name, 'Unit Tests') ||
+              (github.event_name == 'workflow_dispatch' && inputs.toggle_coverage &&
+              contains(matrix.shard.coverage, matrix.mem_config))) && '1' || '0' }}
+          # 39 seeds and three controls at 41 seconds per start take about 29
+          # minutes. Allow 40 minutes within the shortest affected job (120).
+          FROST_STARTUP_TIMEOUT_SEC: >-
+            ${{ github.event_name == 'workflow_dispatch' && inputs.toggle_coverage &&
+              contains(matrix.shard.coverage, matrix.mem_config) &&
+              !startsWith(matrix.shard.name, 'Unit Tests') && '2400' || '' }}
           # Optional per-cycle Python progress tracing adds host runtime to
           # these long workloads. Keep their checks and reset runs unchanged.
           COCOTB_COREMARK_PROGRESS_INTERVAL: ${{ contains(matrix.shard.name, 'CoreMark-PRO') && '0' || '500000' }}

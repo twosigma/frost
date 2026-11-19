@@ -20,7 +20,10 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml  # type: ignore[import-untyped]
+
+from test_rvv_ci import job_condition
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
 
@@ -113,3 +116,55 @@ def test_coverage_is_selected_by_the_matrix() -> None:
     assert all(
         fnmatchcase(artifact, download["with"]["pattern"]) for artifact in artifacts
     )
+
+
+def _env_value(expression: str, event: str, predicates: dict[str, bool]) -> str:
+    """Evaluate the Verilator job's conditional environment values."""
+    expression = expression.removeprefix("${{").removesuffix("}}").strip()
+    guard, choices = expression.rsplit(" && ", 1)
+    on, off = choices.split(" || ")
+    for predicate, value in predicates.items():
+        guard = guard.replace(f"!{predicate}", str(not value).lower())
+        guard = guard.replace(predicate, str(value).lower())
+    return (on if job_condition(guard, {"github.event_name": event}) else off).strip(
+        "'"
+    )
+
+
+@pytest.mark.parametrize(
+    ("event", "requested"),
+    [
+        ("push", False),
+        ("pull_request", False),
+        ("workflow_dispatch", False),
+        ("workflow_dispatch", True),
+    ],
+)
+def test_verilator_toggle_coverage_expansion(event: str, requested: bool) -> None:
+    """Dispatch adds toggles and startup time to the covered program shards."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    spec = workflow[True]["workflow_dispatch"]["inputs"]["toggle_coverage"]
+    assert spec["type"] == "boolean" and spec["default"] is False
+    job = workflow["jobs"]["test-verilator"]
+    step = next(s for s in job["steps"] if s.get("name", "").startswith("Run Cocotb"))
+    env = step["env"]
+    for combo in _expand(job["strategy"]["matrix"]):
+        shard = combo["shard"]
+        covered = _collects("test-verilator", combo)
+        unit = shard["name"].startswith("Unit Tests")
+        opted_in = event == "workflow_dispatch" and requested and covered
+        timeout = "2400" if opted_in and not unit else ""
+        predicates = {
+            "inputs.toggle_coverage": requested,
+            "contains(matrix.shard.coverage, matrix.mem_config)": covered,
+            "startsWith(matrix.shard.name, 'Unit Tests')": unit,
+        }
+        assert _env_value(env["FROST_COVERAGE"], event, predicates) == str(int(covered))
+        assert _env_value(env["FROST_COVERAGE_TOGGLE"], event, predicates) == str(
+            int(unit or opted_in)
+        ), combo
+        assert (
+            _env_value(env["FROST_STARTUP_TIMEOUT_SEC"], event, predicates) == timeout
+        ), combo
+        if timeout:
+            assert int(timeout) < shard.get("timeout_minutes", 240) * 60, combo

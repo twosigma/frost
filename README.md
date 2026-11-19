@@ -331,6 +331,14 @@ its own workflow, so a newer push to `main` does not cancel it.
 The [test guide](tests/README.md#ci-integration) has the details and the commands
 for each suite.
 
+In the CI workflow's **Run workflow** menu, enable `toggle_coverage` to add
+Verilator toggle coverage to the Cocotb jobs that collect coverage. The input
+defaults to off. The opted-in whole-SoC jobs allow 40 minutes for startup
+sweeps within their job limits. In a local BRAM Runtime benchmarks shard,
+the program simulations took 3.1 times as long and the compressed job
+coverage grew from 0.26 MB to 3.63 MB with toggles enabled. Costs vary by
+shard. See the [coverage guide](tests/README.md#coverage) for what the report includes.
+
 Each started main push checks all 1,995 one-per-form vector programs.
 Pull requests labeled `run-ci` check one slice chosen by PR number. A
 regular manual run checks one slice chosen by workflow run number. A

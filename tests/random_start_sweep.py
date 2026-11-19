@@ -87,8 +87,15 @@ def has_assertion_controls(arguments: str) -> bool:
 def startup_limits() -> tuple[int, int]:
     """Return the estimated allocation and hard cumulative job limit."""
     if os.environ.get("FROST_STARTUP_SEEDS", "").strip():
-        return FULL_SWEEP_TIMEOUT_SECONDS, FULL_SWEEP_TIMEOUT_SECONDS
-    return STARTUP_BUDGET_SECONDS, STARTUP_TIMEOUT_SECONDS
+        allocation = timeout = FULL_SWEEP_TIMEOUT_SECONDS
+    else:
+        allocation, timeout = STARTUP_BUDGET_SECONDS, STARTUP_TIMEOUT_SECONDS
+    override = os.environ.get("FROST_STARTUP_TIMEOUT_SEC", "").strip()
+    if override:
+        timeout = int(override)
+        if timeout <= 0:
+            raise ValueError("FROST_STARTUP_TIMEOUT_SEC must be positive")
+    return allocation, timeout
 
 
 def startup_count(cost: float, control_cost: float | None = None) -> int:
@@ -178,15 +185,16 @@ def check_built_model(binary: Path, environment: dict[str, str]) -> None:
     plan_path = directory / "plan.json"
     plan = json.loads(plan_path.read_text()) if plan_path.exists() else {}
     requested = environment.get("FROST_STARTUP_SEEDS", "").strip()
+    _, timeout = startup_limits()
     if (
         plan.get("base") != base
-        or "limit_seconds" not in plan
+        or plan.get("limit_seconds") != timeout
         or plan.get("requested_seeds", "") != requested
     ):
         plan = {
             "base": base,
             "count": startup_count(cost, CONTROL_STARTS * cost if controls else 0),
-            "limit_seconds": startup_limits()[1],
+            "limit_seconds": timeout,
             "used_seconds": 0,
             "requested_seeds": requested,
         }

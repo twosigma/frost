@@ -700,7 +700,9 @@ The allocation reserves three starts per cached-tier model: two assertion
 controls that must fail after reset with their original diagnostics, and
 one that must complete with arming deliberately withheld. BRAM-tier models
 reserve no control starts. The cumulative startup time across a job's models
-has a 300-second hard limit; exceeding it fails the check.
+has a 300-second hard limit by default. Cocotb coverage jobs in a manual CI
+run with `toggle_coverage` allow 2,400 seconds for the same seed allocation.
+Exceeding the cumulative limit fails the check.
 
 Each seed comes from `random.Random(f"{base}:startup:{index}")`, with a draw
 from 1 through 2**31 - 1. The base is `FROST_RANDOM_START_SEED`, or
@@ -711,7 +713,9 @@ repeat them. Logs print the base, index and
 Verilator seed, and a failing run prints its exact command for the image.
 `FROST_STARTUP_SEEDS=201` selects the full sweep in the same CI check.
 Explicit counts are limited to 1–201. Full-sweep allocations include the
-controls and must fit a 1,800-second estimate and cumulative hard limit.
+controls and must fit a 1,800-second estimate and, by default, a cumulative
+hard limit of the same length. `FROST_STARTUP_TIMEOUT_SEC` overrides the hard
+limit in seconds independently of the estimated allocation.
 A selected set that cannot fit one seed and its controls, or the requested
 full sweep, fails before starting its samples. Restrict the selected builds
 or run one compiled model directly for a full sweep that exceeds the job allocation.
@@ -1514,6 +1518,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `COCOTB_RANDOM_SEED` | Random seed (set by `--random-seed`) |
 | `FROST_COCOTB_MEM_CONFIG` | Application memory tier (`bram` default, or `ddr`) |
 | `FROST_RANDOM_START_SEED` | Seed string enabling random register and memory power-up state; each run prints the string and Verilator seed |
+| `FROST_STARTUP_TIMEOUT_SEC` | Hard limit in seconds for the startup sweep across all models in a job |
 | `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 160 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
 | `WAVES=1` | Write FST waveforms to `tests/dump.fst` |
 | `FROST_COVERAGE=1` | Build with line and branch coverage and the cover points (see [Coverage](#coverage)) |
@@ -1816,16 +1821,16 @@ SRAM macros in BRAM and C library and RTOS, DMA NIC and coherence, Interrupts,
 Memory link stage (other programs) and Privilege and MMU in DDR; four Physical address aperture jobs
 (1 GiB / Bare access, 1 GiB / Unit boundaries, 128 GiB / DMA, 128 GiB / NIC);
 riscv-tests (all suites / bram / p); riscv-torture (ddr / paged); TestRIG
-shards 1, 2 and 4; and the unit-bench job. A model build with coverage takes
+shards 1, 2 and 4; and both unit-bench jobs. A model build with coverage takes
 about 2.3 times as long and a simulation about a quarter longer, so the other
 jobs build without it. A job selects coverage through the `coverage` field of
 its matrix entry, which sets `FROST_COVERAGE` and enables the merge and upload
 steps. When a change adds a job or moves tests between jobs, check the points
 the report reaches and move the field if a job it relied on no longer
-contributes. The unit-bench job also
-sets `FROST_COVERAGE_TOGGLE=1`. Toggle coverage stays out of the whole-SoC
-jobs, which the full set would slow about sixfold, and the control set is
-for local runs. Each job merges its files into a `coverage-job-*` artifact,
+contributes. The unit benches also set `FROST_COVERAGE_TOGGLE=1`. A regular
+manual CI run with the `toggle_coverage` input set adds the same toggle set
+to the Cocotb real-program jobs that collect coverage. The control set is
+available for local runs. Each job merges its files into a `coverage-job-*` artifact,
 and the Coverage Report job merges those into the
 `coverage-report` artifact (the [report](#coverage) with annotated sources)
 and shows its summary on the job's page, after the other jobs finish, failed
