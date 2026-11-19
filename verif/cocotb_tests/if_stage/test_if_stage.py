@@ -30,6 +30,8 @@ from cocotb_tests.cpu_structs import (
     PIPELINE_CTRL_FIELDS,
     IF_TO_PD_FIELDS,
     FROM_EX_FIELDS,
+    TAGE_LOOKUP_FIELDS,
+    TAGE_TABLES,
 )
 from utils.packed_structs import (
     pack_struct as _pack_struct,
@@ -4113,6 +4115,17 @@ async def test_slot2_tage_valid_positions_spanning_fault_and_replay(dut: Any) ->
             next_sb=nsb | _rvc_sideband(next_w),
             bank_sel=(pc >> 2) & 1,
         )
+        await _redirect_to(dut, pc)
+        # Training a known row lets this test check the selected fetch slot.
+        # The two physical copies can power up with different valid and useful bits.
+        lookup = _unpack_struct(TAGE_LOOKUP_FIELDS, int(dut.o_tage_slot_lookup_2.value))
+        bank = (slot2_pc >> 2) & 1
+        for table in range(TAGE_TABLES):
+            storage = dut.u_tage_predictor.gen_bank[bank].gen_table[table]
+            index = int(lookup[f"index{table + 1}"])
+            for copy in (storage.u_lookup_copy, storage.u_train_copy):
+                row = copy.ram[index]
+                row.value = int(row.value) & (((1 << (len(row) - 1)) - 1) & ~3)
         await _redirect_to(dut, pc)
         lookup_bits = int(dut.o_tage_slot_lookup_2.value)
         dut.i_tage_train_valid.value = 1
