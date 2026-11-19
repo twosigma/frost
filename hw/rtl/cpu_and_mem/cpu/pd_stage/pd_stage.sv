@@ -1341,6 +1341,43 @@ module pd_stage #(
                    (o_from_pd_to_id_2.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] !=
                     pd_itt_slot_target_r[1]))));
     end
+    if (pd_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
+            {
+              pd_reg_live,
+              pd_cond_branch_raw_r,
+              pd_jalr_raw_r,
+              pd_jump_raw_r,
+              pd_itt_eligible_raw_r,
+              o_from_pd_to_id.instruction,
+              o_from_pd_to_id_2.instruction
+            }
+        )) begin
+      p_pd_raw_class_matches_registered_instr :
+      assert ((!pd_reg_live[0] ||
+               ((pd_cond_branch_raw_r[0] ==
+                 ((o_from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_BRANCH) &&
+                  (o_from_pd_to_id.instruction[14:13] != 2'b01))) &&
+                (pd_jalr_raw_r[0] == is_jalr(
+          o_from_pd_to_id.instruction
+      )) && (pd_jump_raw_r[0] == is_jump(
+          o_from_pd_to_id.instruction
+      )) && (pd_itt_eligible_raw_r[0] == (is_jalr(
+          o_from_pd_to_id.instruction
+      ) && !is_return(
+          o_from_pd_to_id.instruction
+      ))))) && (!pd_reg_live[1] ||
+                ((pd_cond_branch_raw_r[1] ==
+                  ((o_from_pd_to_id_2.instruction[6:0] == riscv_pkg::OPC_BRANCH) && (
+                   o_from_pd_to_id_2.instruction[14:13] != 2'b01))) && (pd_jalr_raw_r[1] == is_jalr(
+          o_from_pd_to_id_2.instruction
+      )) && (pd_jump_raw_r[1] == is_jump(
+          o_from_pd_to_id_2.instruction
+      )) && (pd_itt_eligible_raw_r[1] == (is_jalr(
+          o_from_pd_to_id_2.instruction
+      ) && !is_return(
+          o_from_pd_to_id_2.instruction
+      ))))));
+    end
   end
 `endif
 
@@ -2114,6 +2151,31 @@ module pd_stage #(
       if (pd_redirect_reference_armed) begin
         p_formal_redirect_matches_reference : assert (pd_redirect_r == pd_redirect_reference_q);
         p_formal_o_pd_redirect_matches_internal : assert (o_pd_redirect == pd_redirect_r);
+        p_formal_raw_class_matches_registered_instr :
+        assert ((!pd_reg_live[0] ||
+                 ((pd_cond_branch_raw_r[0] ==
+                   ((o_from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_BRANCH) &&
+                    (o_from_pd_to_id.instruction[14:13] != 2'b01))) &&
+                  (pd_jalr_raw_r[0] == is_jalr(
+            o_from_pd_to_id.instruction
+        )) && (pd_jump_raw_r[0] == is_jump(
+            o_from_pd_to_id.instruction
+        )) && (pd_itt_eligible_raw_r[0] == (is_jalr(
+            o_from_pd_to_id.instruction
+        ) && !is_return(
+            o_from_pd_to_id.instruction
+        ))))) && (!pd_reg_live[1] || ((pd_cond_branch_raw_r[1] ==
+                                       ((o_from_pd_to_id_2.instruction[6:0] == riscv_pkg::OPC_BRANCH
+                                        ) && (o_from_pd_to_id_2.instruction[14:13] != 2'b01))) &&
+                                      (pd_jalr_raw_r[1] == is_jalr(
+            o_from_pd_to_id_2.instruction
+        )) && (pd_jump_raw_r[1] == is_jump(
+            o_from_pd_to_id_2.instruction
+        )) && (pd_itt_eligible_raw_r[1] == (is_jalr(
+            o_from_pd_to_id_2.instruction
+        ) && !is_return(
+            o_from_pd_to_id_2.instruction
+        ))))));
         p_formal_dir_redirect_2_matches_reference :
         assert (pd_dir_redirect_2_r == pd_dir_redirect_2_reference_q);
         p_formal_direction_matches_reference :

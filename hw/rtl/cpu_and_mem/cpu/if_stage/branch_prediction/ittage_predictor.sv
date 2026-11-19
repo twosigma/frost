@@ -380,13 +380,23 @@ module ittage_predictor #(
     end
   end
   for (genvar t = 0; t < Tables; t++) begin : gen_training_check
-    logic higher_hit;
+    logic   higher_hit;
+    entry_t f_cur_s;
     if (t == Tables - 1) assign higher_hit = 1'b0;
     else assign higher_hit = |train_lookup_q.hit[Tables-1:t+1];
+    assign f_cur_s = cur[t];
     always_ff @(posedge i_clk) begin
       if (f_past_valid && $past(i_train_valid)) begin
         p_saved_lookup : assert (train_lookup_q == $past(i_train_lookup));
         p_write_index : assert (write_index[t] == $past(i_train_lookup.index[t]));
+        p_registered_provider_matches_lookup :
+        assert (provider[t] == (train_lookup_q.hit[t] && !higher_hit));
+        p_registered_above_matches_lookup :
+        assert (above[t] == (!train_lookup_q.hit[t] && !higher_hit));
+        p_registered_owned_matches_row :
+        assert (owned[t] == (f_cur_s.valid && (f_cur_s.tag == train_lookup_q.tag[t])));
+        p_registered_correct_matches_row :
+        assert (correct_q[t] == (f_cur_s.target == train_target_q));
         if (train_lookup_q.hit[t] && !higher_hit) begin
           p_provider_is_written : assert (write_any[t]);
           if (!owned[t]) begin
@@ -423,6 +433,38 @@ module ittage_predictor #(
       ) <= 1));
     end
   end
+`ifndef FORMAL
+  logic itt_train_qualifiers_armed_q = 1'b0;
+  logic [Tables-1:0] sim_itt_provider_ref;
+  logic [Tables-1:0] sim_itt_above_ref;
+  logic [Tables-1:0] sim_itt_owned_ref;
+  logic [Tables-1:0] sim_itt_correct_ref;
+  always_comb begin
+    for (int t = 0; t < Tables; t++) begin
+      entry_t sim_cur_s;
+      logic   sim_higher_hit;
+      sim_cur_s = cur[t];
+      sim_higher_hit = (t == 0) ? (|train_lookup_q.hit[2:1]) :
+                       (t == 1) ? train_lookup_q.hit[2] : 1'b0;
+      sim_itt_provider_ref[t] = train_lookup_q.hit[t] && !sim_higher_hit;
+      sim_itt_above_ref[t] = !train_lookup_q.hit[t] && !sim_higher_hit;
+      sim_itt_owned_ref[t] = sim_cur_s.valid && (sim_cur_s.tag == train_lookup_q.tag[t]);
+      sim_itt_correct_ref[t] = sim_cur_s.target == train_target_q;
+    end
+  end
+  always @(posedge i_clk) begin
+    itt_train_qualifiers_armed_q <= 1'b1;
+    if (itt_train_qualifiers_armed_q && train_valid_q && !$isunknown(
+            {provider, above, owned, correct_q, sim_itt_provider_ref, sim_itt_above_ref,
+             sim_itt_owned_ref, sim_itt_correct_ref}
+        )) begin
+      p_sim_itt_provider_matches_lookup : assert (provider == sim_itt_provider_ref);
+      p_sim_itt_above_matches_lookup : assert (above == sim_itt_above_ref);
+      p_sim_itt_owned_matches_row : assert (owned == sim_itt_owned_ref);
+      p_sim_itt_correct_matches_row : assert (correct_q == sim_itt_correct_ref);
+    end
+  end
+`endif
 `endif
 
 endmodule : ittage_predictor
