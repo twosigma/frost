@@ -156,7 +156,12 @@ module coherence_home #(
     FillInstall,
     FillInstallWait,
     FillReady,
-    FillFatal
+    FillFatal,
+    // A Zicbom request's fill (fill_cmo_q): FillCmo waits for its line's
+    // write to memory to receive B, FillCmoGrant offers the GrantAck forward
+    // and frees the fill when the completion table accepts it.
+    FillCmo,
+    FillCmoGrant
   } fill_phase_t;
   typedef enum logic [2:0] {
     RecallOffer,
@@ -314,6 +319,21 @@ module coherence_home #(
   // live flags are exact at the decision but for slots freed meanwhile.
   logic lookup_prefetch_q, lookup_fill_q, prefetch_fill_q, prefetch_room_q, wb_two_free_q;
   logic [RESULTS-1:0] engine_prefetch_q, engine_nofill_q;
+  // Zicbom (cbo.clean, cbo.flush, cbo.inval on one line; see the cache
+  // README, Zicbom write-back). lookup_cmo_q: the lookup in progress is a
+  // CMO's, captured with its token as lookup_prefetch_q is. A CMO never takes
+  // the hit path: hit or miss, its decision allocates a fill control aimed at
+  // its own line (fill_cmo_q), which recalls every L1D sector of the line
+  // (ProbeRead to clean, ProbeInvalidate to flush or invalidate), reads a
+  // resident row into a write-back slot, freezes the slot for a dirty line
+  // (clean, flush), invalidates a resident tag, waits for the slot's B and
+  // then forwards GrantAck to the parked request. This is the home's per-line
+  // maintenance operation type; fill_cmo_hit_q records a resident line,
+  // fill_cmo_clean_q and fill_cmo_inval_q the kind, and fill_cmo_wb_q a
+  // write of the line to memory awaiting B.
+  logic lookup_cmo_q;
+  logic [RESULTS-1:0] engine_cmo_q;
+  logic [FILLS-1:0] fill_cmo_q, fill_cmo_hit_q, fill_cmo_clean_q, fill_cmo_inval_q, fill_cmo_wb_q;
   logic work_nofill, array_two_available;
   logic [FILLS-1:0][LINE_BYTES/32-1:0] fill_dirty_sectors_q;
   logic [COMPLETIONS-1:0] fill_seats_q[FILLS], fill_add_seats[FILLS];
@@ -331,12 +351,11 @@ module coherence_home #(
   logic [COMPLETIONS-1:0] f_add_reference[FILLS];
 `endif
   logic [1:0] fill_seat_count_q[FILLS], fill_add_count[FILLS];
-  // Forwarding a fill's line to its primary request. fill_primary_q[fill] is
-  // the primary's seat while it waits for its forward: a GetS, LoadReserved
-  // or GetM whose decision allocated the fill, which needs no probe or update
-  // to be granted. fill_primary_upper_q is its sector of a 64-byte line.
-  // fill_forward_q marks a fill whose primary may take the forward: it holds
-  // its line, and its victim handling has let the install begin.
+  // fill_primary_q[fill] holds the seat of the request that allocated the
+  // fill. GetS, LoadReserved and GetM may receive their sector when the
+  // install begins. A Zicbom primary receives GrantAck after its recall and
+  // any write response. fill_primary_upper_q selects its sector on 64-byte
+  // lines. fill_forward_q marks a primary ready to offer its grant.
   logic [COMPLETIONS-1:0] fill_primary_q[FILLS];
   logic [FILLS-1:0] fill_primary_upper_q, fill_forward_q;
   // The primary's G without data, recorded at allocation: its q, its tid
@@ -353,14 +372,13 @@ module coherence_home #(
   // until the forward buffer's G.
   logic forward_valid, forward_ready, forward_accept;
   logic [FILLS-1:0] forward_pick, forward_pick_q, forward_later_q;
-  // fill_forward_set[fill]: the fill enters FillInstall with a primary on
-  // this edge, so it may forward from the next cycle. Both of its uses apply
-  // it only while the home runs.
+  // A fill entering FillInstall or FillCmoGrant with a primary may forward
+  // from the next cycle. Both uses of this signal require the home to run.
   logic [FILLS-1:0] fill_forward_set;
   // fill_forward_set split by its late term: forward_install_done[fill]
-  // enters FillInstall from a completed read, forward_install_candidate[fill]
-  // would enter it from this cycle's memory response if that response is
-  // valid and good. At most one fill is a candidate.
+  // marks a completed read entering FillInstall or a CMO entering
+  // FillCmoGrant. forward_install_candidate[fill] may enter FillInstall on
+  // this cycle's successful memory response. At most one fill is a candidate.
   logic [FILLS-1:0] forward_install_done, forward_install_candidate;
   logic forward_response_good;
   logic [COMPLETIONS-1:0] forward_slots;
@@ -645,10 +663,12 @@ module coherence_home #(
         engine_counted_q[engine]  <= 1'b0;
         engine_prefetch_q[engine] <= 1'b0;
         engine_nofill_q[engine]   <= 1'b0;
+        engine_cmo_q[engine]      <= 1'b0;
       end else if (work_valid && work_buffer == ResultBits'(engine)) begin
         engine_counted_q[engine]  <= work_counted;
         engine_prefetch_q[engine] <= work.opcode == coherence_pkg::Prefetch;
         engine_nofill_q[engine]   <= work_nofill;
+        engine_cmo_q[engine]      <= coherence_pkg::is_cmo(work.opcode);
       end
     end
     assign tag_valid[engine] = engine_lookup[engine];
@@ -851,6 +871,7 @@ module coherence_home #(
     if (i_rst) begin
       lookup_prefetch_q <= 1'b0;
       lookup_fill_q <= 1'b0;
+      lookup_cmo_q <= 1'b0;
       prefetch_fill_q <= 1'b0;
       prefetch_room_q <= 1'b0;
       wb_two_free_q <= 1'b0;
@@ -861,6 +882,8 @@ module coherence_home #(
         lookup_fill_q <= int'(tag_request.token) < RESULTS &&
             engine_prefetch_q[ResultBits'(tag_request.token)] &&
             !engine_nofill_q[ResultBits'(tag_request.token)];
+        lookup_cmo_q <= int'(tag_request.token) < RESULTS &&
+            engine_cmo_q[ResultBits'(tag_request.token)];
       end
       prefetch_room_q <= $countones(~fill_live_q) > PREFETCH_RESERVE;
       prefetch_fill_q <= lookup_fill_q && $countones(~fill_live_q) > PREFETCH_RESERVE;
@@ -956,7 +979,11 @@ module coherence_home #(
   (* keep = "true" *) logic [Puts-1:0] put_tag_sel, put_live;
   (* keep = "true" *) logic [FILLS-1:0] fill_live, fill_blocking, fill_way_match;
   (* keep = "true" *) logic decision_from_engine, wb_free_any, fill_free_any, state_allows_fill;
-  (* keep = "true" *) logic fill_pre;
+  // The response's hit and availability for a fill: a miss with a way
+  // available, or any CMO decision (a CMO's fill targets its own line, hit or
+  // miss). One kept node, so the fill precondition keeps its depth.
+  (* keep = "true" *)logic hit_allows_fill;
+  (* keep = "true" *)logic fill_pre;
   assign work_tag_sel = work_tag_q[array_way];
   assign held_put_tag_sel = held_put_tag_q[array_way];
   for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_wb_terms
@@ -1017,7 +1044,10 @@ module coherence_home #(
     for (int wb = 0; wb < NUM_WB; wb++) wb_free_any |= !wb_valid_q[wb] && !wb_frozen_q[wb];
   end
   assign fill_free_any = !(&fill_live);
-  assign state_allows_fill = array_state == coherence_pkg::Invalid || wb_free_any;
+  assign hit_allows_fill = array_available && (!array_hit || lookup_cmo_q);
+  // A CMO always reserves a write-back slot, for its line's image.
+  assign state_allows_fill = (array_state == coherence_pkg::Invalid && !lookup_cmo_q) ||
+      wb_free_any;
   // A prefetch allocates only while more than PREFETCH_RESERVE fills are
   // free, two ways of the set were available and, for a valid victim, two
   // write-back slots are free, and only if it may fill at all: it never
@@ -1026,7 +1056,7 @@ module coherence_home #(
   (* keep = "true" *) logic prefetch_fill_ok;
   assign prefetch_fill_ok = !lookup_prefetch_q || (prefetch_fill_q && array_two_available &&
       (array_state == coherence_pkg::Invalid || wb_two_free_q));
-  assign fill_pre = decision_from_engine && !array_hit && array_available && fill_free_any &&
+  assign fill_pre = decision_from_engine && hit_allows_fill && fill_free_any &&
       state_allows_fill && prefetch_fill_ok;
 `ifndef SYNTHESIS
   // An engine whose offer the tag arbiter holds is in Lookup with its lookup
@@ -1073,8 +1103,9 @@ module coherence_home #(
 `ifdef HOME_DECISION_CHECKS
   always_comb
     if (decision_reset_seen) begin
-      assert (fill_pre == (decision_engine && !array_hit && array_available && fill_free &&
-          (array_state == coherence_pkg::Invalid || wb_free) && (!lookup_prefetch_q ||
+      assert (fill_pre == (decision_engine && (!array_hit || lookup_cmo_q) && array_available &&
+          fill_free && ((array_state == coherence_pkg::Invalid && !lookup_cmo_q) || wb_free) &&
+          (!lookup_prefetch_q ||
           (prefetch_fill_q && array_two_available &&
            (array_state == coherence_pkg::Invalid || wb_two_free_q)))));
       for (int token = 0; token < (1 << TokenBits); token++)
@@ -1130,7 +1161,7 @@ module coherence_home #(
         fill_free_index = FillBits'(fill);
       end
     end
-    decision_hit = array_hit && array_available && !decision_blocked;
+    decision_hit = array_hit && array_available && !decision_blocked && !lookup_cmo_q;
     decision_fill = fill_pre && !decision_blocked && !victim_blocked;
     decision_join = |join_fill;
     decision_retry = decision_engine && !decision_hit && !lookup_prefetch_q;
@@ -1140,19 +1171,23 @@ module coherence_home #(
     pin_valid = run && array_response && decision_engine && decision_hit && !lookup_prefetch_q;
   end
 
-  // Parked readers own metadata seats, including readers with predecessors.
+  // Readers can take a seat behind an ordinary predecessor. A reader
+  // ordered behind a CMO leaves the fill free to release the way the CMO needs.
   // A demand fill's primary owns the first; a forward gives it up.
   assign join_live = run && array_response && decision_reader;
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_seats
     logic [COMPLETIONS-1:0] eligible;
     logic enabled;
     logic [1:0] count_live, count_idle;
+    // A CMO's fill takes no waiter seat: readers of its line are ordered
+    // behind the CMO's U and dispatch after it.
     assign enabled = run && fill_phase_q[fill] != FillFree &&
         fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait &&
-        !fill_error_q[fill];
+        !fill_error_q[fill] && !fill_cmo_q[fill];
     assign join_ready[fill] = fill_phase_q[fill] != FillFree &&
         fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait &&
-        !fill_error_q[fill] && fill_seat_count_q[fill] < 3 && fill_block_q[fill];
+        !fill_error_q[fill] && !fill_cmo_q[fill] && fill_seat_count_q[fill] < 3 &&
+        fill_block_q[fill];
     assign join_fill[fill] = array_response && join_ready[fill] && decision_reader;
     for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_eligible
       if (PREFETCH_SLOTS != 0 && slot >= COMPLETIONS - PREFETCH_SLOTS) begin : gen_prefetch_slot
@@ -1283,8 +1318,10 @@ module coherence_home #(
       victim_allocated_q <= 1'b0;
     end else begin
       fill_allocated_q <= run && array_response && decision_fill;
+      // A CMO's fill holds its own line, the query's block, not the
+      // response's victim.
       victim_allocated_q <= run && array_response && decision_fill &&
-          array_state != coherence_pkg::Invalid;
+          array_state != coherence_pkg::Invalid && !lookup_cmo_q;
     end
   end
   // The fill decision arrives last: the selected put waits on it only when
@@ -1397,9 +1434,10 @@ module coherence_home #(
   end
 
   // An allocation's first phase: FillMemory without a victim, else
-  // FillRecall.
+  // FillRecall. A CMO's fill always recalls its own line.
   (* keep = "true" *) fill_phase_t fill_phase_allocated;
-  assign fill_phase_allocated = array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
+  assign fill_phase_allocated = array_state == coherence_pkg::Invalid && !lookup_cmo_q ?
+      FillMemory : FillRecall;
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill
     localparam int unsigned Client = RESULTS + fill;
     localparam int unsigned ProbeAddrGroups = (ADDR_WIDTH + 7) / 8;
@@ -1439,14 +1477,15 @@ module coherence_home #(
     assign probe_matches = probe_identity_matches && (&probe_addr_equal);
 `endif
     wire allocate = run && array_response && decision_fill && fill_free_index == FillBits'(fill);
-    // The primary may take a forward: a GetS, LoadReserved or GetM, and not
-    // a prefetch, whose decision allocates the fill.
+    // GetS, LoadReserved and GetM can receive their sector through the
+    // forward buffer. A Zicbom primary uses the same buffer for GrantAck.
     wire forwardable = !lookup_prefetch_q && (decision_opcode == coherence_pkg::GetS ||
         decision_opcode == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
         decision_opcode
-    ));
+    ) || lookup_cmo_q);
     // Every fill that a GetMZero's decision allocates is a zero fill.
-    wire zero_fill = !lookup_prefetch_q && decision_opcode == coherence_pkg::GetMZero;
+    wire zero_fill = !lookup_prefetch_q && !lookup_cmo_q &&
+        decision_opcode == coherence_pkg::GetMZero;
     assign fill_zero_alloc[fill] = allocate && zero_fill;
     // The fill image: the memory response's data, or zero on the edge after
     // a zero fill's allocation (it sends no read, so no response for its
@@ -1601,9 +1640,14 @@ module coherence_home #(
       assert (seats_next == (allocate ? f_with : f_without));
     end
 `endif
-    assign fill_forward_set[fill] = install_entry && fill_primary_q[fill] != 0;
-    assign forward_install_done[fill] = fill_phase_q[fill] == FillMemory && fill_done_q[fill] &&
-        !fill_error_q[fill] && fill_primary_q[fill] != 0;
+    // A CMO's fill enters FillCmoGrant on this edge: its line's write, if
+    // any, has received B. It forwards from registered state, as a fill
+    // installing from a completed read does.
+    wire cmo_grant_entry = fill_phase_q[fill] == FillCmo && !fill_cmo_wb_q[fill];
+    assign fill_forward_set[fill] = (install_entry || cmo_grant_entry) && fill_primary_q[fill] != 0;
+    assign forward_install_done[fill] = ((fill_phase_q[fill] == FillMemory &&
+        fill_done_q[fill] && !fill_error_q[fill]) || cmo_grant_entry) &&
+        fill_primary_q[fill] != 0;
     assign forward_install_candidate[fill] = fill_phase_q[fill] == FillMemory &&
         !fill_done_q[fill] && i_mem_resp_id == 5'(fill) && fill_primary_q[fill] != 0;
     // The phase's next state forms in kept nodes beside the two late
@@ -1620,10 +1664,15 @@ module coherence_home #(
         if (fill_phase_q[fill] == FillRecall && recall_phase_q[fill] == RecallDone &&
             !(LINE_BYTES == 64 && !fill_sector_q[fill]) && fill_read_done_q[fill])
           fill_phase_hold = FillDetach;
-        if (fill_phase_q[fill] == FillDetach) fill_phase_hold = FillInvalidate;
+        // A CMO's fill of a line the L2 lacks has no tag to invalidate.
+        if (fill_phase_q[fill] == FillDetach)
+          fill_phase_hold = fill_cmo_q[fill] && !fill_cmo_hit_q[fill] ? FillCmo : FillInvalidate;
         if (fill_phase_q[fill] == FillInvalidateWait && array_updated &&
             array_updated_token == TokenBits'(Client))
-          fill_phase_hold = FillMemory;
+          fill_phase_hold = fill_cmo_q[fill] ? FillCmo : FillMemory;
+        if (cmo_grant_entry) fill_phase_hold = FillCmoGrant;
+        // The completion table takes the GrantAck: the CMO's fill is done.
+        if (fill_phase_q[fill] == FillCmoGrant && forwarded) fill_phase_hold = FillFree;
         if (fill_phase_q[fill] == FillMemory && fill_done_q[fill])
           fill_phase_hold = fill_error_q[fill] ? FillFree : FillInstall;
         // A successful response that arrives in FillMemory installs from
@@ -1716,10 +1765,14 @@ module coherence_home #(
          (fill_phase_q[fill] == FillMemory && fill_done_q[fill] && fill_error_q[fill]));
     always_comb begin
       probe = '0;
-      probe.opcode = coherence_pkg::ProbeRead;
+      // A victim recall and a clean read dirty data and leave Shared copies;
+      // a flush or an invalidate removes every copy, through the CPU cut.
+      probe.opcode = fill_cmo_q[fill] && !fill_cmo_clean_q[fill] ?
+          coherence_pkg::ProbeInvalidate : coherence_pkg::ProbeRead;
       probe.tid = FillTid + 6'(fill);
       probe.addr = fill_old_addr_q[fill] | ADDR_WIDTH'(int'(fill_sector_q[fill]) * 32);
-      probe.reason = coherence_pkg::Replace;
+      probe.reason = fill_cmo_q[fill] && !fill_cmo_clean_q[fill] ?
+          coherence_pkg::Write : coherence_pkg::Replace;
       absorbed_ack = '0;
       absorbed_ack.hart = reply.hart;
       absorbed_ack.put_id = reply.put_id;
@@ -1758,6 +1811,11 @@ module coherence_home #(
         fill_write_q[fill] <= 1'b0;
         fill_prefetch_q[fill] <= 1'b0;
         fill_ack_q[fill] <= '0;
+        fill_cmo_q[fill] <= 1'b0;
+        fill_cmo_hit_q[fill] <= 1'b0;
+        fill_cmo_clean_q[fill] <= 1'b0;
+        fill_cmo_inval_q[fill] <= 1'b0;
+        fill_cmo_wb_q[fill] <= 1'b0;
       end else begin
         if (o_mem_req_valid && i_mem_req_ready && o_mem_req_id == 5'(fill))
           fill_sent_q[fill] <= 1'b1;
@@ -1765,6 +1823,10 @@ module coherence_home #(
           fill_done_q[fill]  <= 1'b1;
           fill_error_q[fill] <= i_mem_resp_error;
         end
+        // A CMO's line write is answered when its slot is, stopped or not.
+        if (i_mem_resp_valid && i_mem_resp_id == 5'(16 + int'(fill_wb_q[fill])) &&
+            !i_mem_resp_error)
+          fill_cmo_wb_q[fill] <= 1'b0;
         if (run) begin
           // A forward takes the primary's seat away on the edge it is
           // accepted, beside any seats added or released then.
@@ -1776,19 +1838,34 @@ module coherence_home #(
           if (fill_forward_set[fill]) fill_forward_q[fill] <= 1'b1;
           if (allocate) begin
             fill_addr_q[fill] <= {decision_addr[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}};
-            fill_old_addr_q[fill] <= array_addr;
+            // A CMO's fill recalls its own line; the response's way is the
+            // line's on a hit, and on a miss a way the fill excludes but
+            // never reads or writes.
+            fill_old_addr_q[fill] <= lookup_cmo_q ?
+                {decision_addr[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}} : array_addr;
             fill_way_q[fill] <= array_way;
             fill_wb_q[fill] <= wb_free_index;
-            fill_victim_q[fill] <= array_state != coherence_pkg::Invalid;
-            fill_sent_q[fill] <= zero_fill;
+            fill_victim_q[fill] <= array_state != coherence_pkg::Invalid || lookup_cmo_q;
+            // Neither a zero fill nor a CMO reads memory. A CMO's fill never
+            // reaches FillMemory, so its done flag stays clear: it holds no
+            // memory response.
+            fill_sent_q[fill] <= zero_fill || lookup_cmo_q;
             fill_done_q[fill] <= zero_fill;
             fill_error_q[fill] <= 1'b0;
             fill_zero_q[fill] <= zero_fill;
             fill_woken_q[fill] <= 1'b0;
-            fill_read_sent_q[fill] <= array_state == coherence_pkg::Invalid;
-            fill_read_done_q[fill] <= array_state == coherence_pkg::Invalid;
+            fill_read_sent_q[fill] <= lookup_cmo_q ? !array_hit :
+                array_state == coherence_pkg::Invalid;
+            fill_read_done_q[fill] <= lookup_cmo_q ? !array_hit :
+                array_state == coherence_pkg::Invalid;
             fill_sector_q[fill] <= 1'b0;
-            fill_dirty_q[fill] <= array_state == coherence_pkg::Modified;
+            fill_dirty_q[fill] <= array_state == coherence_pkg::Modified &&
+                (!lookup_cmo_q || array_hit);
+            fill_cmo_q[fill] <= lookup_cmo_q;
+            fill_cmo_hit_q[fill] <= lookup_cmo_q && array_hit;
+            fill_cmo_clean_q[fill] <= lookup_cmo_q && decision_opcode == coherence_pkg::CleanBlock;
+            fill_cmo_inval_q[fill] <= lookup_cmo_q && decision_opcode == coherence_pkg::InvalBlock;
+            fill_cmo_wb_q[fill] <= 1'b0;
             fill_dirty_sectors_q[fill] <= '0;
             fill_seat_count_q[fill] <= lookup_prefetch_q ? 2'd0 : 2'd1;
             fill_primary_q[fill] <= forwardable ? COMPLETIONS'(1) << decision_tid : '0;
@@ -1840,6 +1917,16 @@ module coherence_home #(
             fill_primary_q[fill] <= '0;
           end
           if (fill_phase_q[fill] == FillInstallWait) fill_woken_q[fill] <= 1'b1;
+          // A CMO's dirty line leaves for memory from its write-back slot,
+          // and the CMO waits for that write's B.
+          if (fill_phase_q[fill] == FillDetach && fill_cmo_q[fill] && fill_dirty_q[fill] &&
+              !fill_cmo_inval_q[fill])
+            fill_cmo_wb_q[fill] <= 1'b1;
+          if (fill_phase_q[fill] == FillCmoGrant && forwarded) begin
+            fill_live_q[fill] <= 1'b0;
+            fill_blocking_q[fill] <= 1'b0;
+            fill_cmo_q[fill] <= 1'b0;
+          end
           if (fill_phase_q[fill] == FillInstallWait && array_updated &&
               array_updated_token == TokenBits'(Client))
             fill_blocking_q[fill] <= 1'b0;
@@ -1875,14 +1962,15 @@ module coherence_home #(
   endfunction
   // forward_pick_q holds the turn of the current state, formed from the
   // next state: the fills that may forward, without an accepted forward's
-  // fill and with each install that begins with a primary, and the turn
-  // past an accepted forward's fill. An allocation finds its fill free, so
+  // fill and with each primary entering FillInstall or FillCmoGrant, and
+  // the turn past an accepted forward's fill. An allocation finds its fill free, so
   // it never clears a fill that may forward, and the late decision stays
   // out of the pick.
   // The turn forms for both outcomes of this cycle's memory response, which
   // arrives late: without it, the fills that may forward are the registered
-  // ones and those installing from a completed read; with a valid and good
-  // response, also its candidate fill. The response and acceptance select
+  // ones, completed reads starting installation, and ready CMO grants. A
+  // successful response also enables its candidate fill.
+  // The response and acceptance select
   // among the four prepared turns last.
   assign forward_response_good = run && i_mem_resp_valid && !i_mem_resp_error;
   logic [FILLS-1:0] forward_pick_next;
@@ -1920,7 +2008,8 @@ module coherence_home #(
             ADDR_WIDTH'(LINE_BYTES == 64 && fill_primary_upper_q[fill] ? 32 : 0);
         // With 64-byte lines a zero fill's grant tells its requester that the
         // upper sector's zeros are performed here.
-        forward_result.opcode |= fill_zero_q[fill] ?
+        forward_result.opcode |= fill_cmo_q[fill] ? coherence_pkg::GrantAck :
+            fill_zero_q[fill] ?
             (LINE_BYTES == 64 ? coherence_pkg::GrantMZero : coherence_pkg::GrantM) :
             fill_primary_getm_q[fill] ? coherence_pkg::GrantM : coherence_pkg::GrantS;
       end
@@ -2080,16 +2169,20 @@ module coherence_home #(
         end
       end
       if (run) begin
-        if (array_response && decision_fill && array_state != coherence_pkg::Invalid) begin
-          wb_valid_q[wb_free_index]  <= 1'b1;
+        // A CMO reserves a slot for its own line, resident or not.
+        if (array_response && decision_fill &&
+            (array_state != coherence_pkg::Invalid || lookup_cmo_q)) begin
+          wb_valid_q[wb_free_index] <= 1'b1;
           wb_frozen_q[wb_free_index] <= 1'b0;
-          wb_sent_q[wb_free_index]   <= 1'b0;
-          wb_addr_q[wb_free_index]   <= array_addr;
+          wb_sent_q[wb_free_index] <= 1'b0;
+          wb_addr_q[wb_free_index]   <= lookup_cmo_q ?
+              {decision_addr[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}} : array_addr;
         end
         for (int fill = 0; fill < FILLS; fill++) begin
           if (fill_phase_q[fill] == FillDetach && wb_valid_q[fill_wb_q[fill]] &&
               !wb_frozen_q[fill_wb_q[fill]]) begin
-            if (fill_dirty_q[fill]) wb_frozen_q[fill_wb_q[fill]] <= 1'b1;
+            // An invalidate discards the dirty image.
+            if (fill_dirty_q[fill] && !fill_cmo_inval_q[fill]) wb_frozen_q[fill_wb_q[fill]] <= 1'b1;
             else wb_valid_q[fill_wb_q[fill]] <= 1'b0;
           end
         end
@@ -2129,7 +2222,7 @@ module coherence_home #(
   end
 
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_perf
-    assign filling[fill] = fill_phase_q[fill] != FillFree;
+    assign filling[fill] = fill_phase_q[fill] != FillFree && !fill_cmo_q[fill];
     assign write_filling[fill] = filling[fill] && fill_write_q[fill];
   end
   always_comb begin
@@ -2178,7 +2271,7 @@ module coherence_home #(
             fill_addr_q[fill], decision_addr
         )) begin
       reference_join = fill_phase_q[fill] != FillInstallWait &&
-          !fill_error_q[fill] && fill_seat_count_q[fill] < 3 &&
+          !fill_error_q[fill] && !fill_cmo_q[fill] && fill_seat_count_q[fill] < 3 &&
           decision_engine && read_waiter(decision_opcode);
       reference_join_index = FillBits'(fill);
     end
@@ -2344,9 +2437,11 @@ module coherence_home #(
       for (int engine = 0; engine < RESULTS; engine++)
       if (f_tag_owner[engine])
         assert (lookup_prefetch_q == engine_prefetch_q[engine] &&
-            lookup_fill_q == (engine_prefetch_q[engine] && !engine_nofill_q[engine]));
+            lookup_fill_q == (engine_prefetch_q[engine] && !engine_nofill_q[engine]) &&
+            lookup_cmo_q == engine_cmo_q[engine]);
       for (int put = 0; put < Puts; put++)
-      if (f_tag_owner[RESULTS+FILLS+put]) assert (!lookup_prefetch_q && !lookup_fill_q);
+      if (f_tag_owner[RESULTS+FILLS+put])
+        assert (!lookup_prefetch_q && !lookup_fill_q && !lookup_cmo_q);
     end
   // While the array selects or responds, the query has held since the edge
   // before and no excluding owner changed its address on that edge.
@@ -2457,17 +2552,26 @@ module coherence_home #(
         end
       end
       if (array_response && run && decision_fill) begin
-        assert (!array_exclude[array_way] && !decision_blocked && !victim_blocked);
-        if (array_state != coherence_pkg::Invalid) assert (wb_free);
+        // A CMO's resident line may be pinned by a DMA completion between its
+        // result and U; the pin only keeps the way from replacement.
+        assert (!decision_blocked && !victim_blocked);
+        if (!lookup_cmo_q || !array_hit) assert (!array_exclude[array_way]);
+        if (array_state != coherence_pkg::Invalid || lookup_cmo_q) assert (wb_free);
       end
+      // A CMO decision never takes the hit path or joins a fill.
+      if (array_response && lookup_cmo_q)
+        assert (decision_engine && !pin_valid && !decision_join && !lookup_prefetch_q);
       // The prefetch flags belong to the decision in progress, and a
       // prefetch decision never retries, pins, joins or parks.
       if (array_response) begin
         if (decision_engine)
           assert (lookup_prefetch_q ==
               (engine_opcode[ResultBits'(array_token)] == coherence_pkg::Prefetch) &&
-              lookup_fill_q == (lookup_prefetch_q && !engine_nofill_q[ResultBits'(array_token)]));
-          else assert (!lookup_prefetch_q && !lookup_fill_q);
+              lookup_fill_q == (lookup_prefetch_q && !engine_nofill_q[ResultBits'(array_token)]) &&
+              lookup_cmo_q == coherence_pkg::is_cmo(
+              engine_opcode[ResultBits'(array_token)]
+          ));
+          else assert (!lookup_prefetch_q && !lookup_fill_q && !lookup_cmo_q);
         if (lookup_prefetch_q) assert (!retry_valid && !pin_valid && !decision_join);
       end
       // A prefetch allocates only when it may fill, more than PREFETCH_RESERVE
@@ -2484,6 +2588,7 @@ module coherence_home #(
         assert (int'(engine_tid[engine]) < COMPLETIONS &&
             engine_opcode[engine] == waiting_opcode[CompletionBits'(engine_tid[engine])]);
         assert (engine_prefetch_q[engine] == (engine_opcode[engine] == coherence_pkg::Prefetch));
+        assert (engine_cmo_q[engine] == coherence_pkg::is_cmo(engine_opcode[engine]));
         if (engine_nofill_q[engine]) assert (engine_prefetch_q[engine]);
       end
       for (int fill = 0; fill < FILLS; fill++)
@@ -2521,7 +2626,7 @@ module coherence_home #(
         ) && (fill_primary_q[fill] & ~fill_seats_q[fill]) == 0);
         assert (fill_forward_q[fill] == (fill_primary_q[fill] != 0 &&
             (fill_phase_q[fill] == FillInstall || fill_phase_q[fill] == FillInstallWait ||
-             fill_phase_q[fill] == FillReady)));
+             fill_phase_q[fill] == FillReady || fill_phase_q[fill] == FillCmoGrant)));
         // A fill's address is block aligned and a slot's is sector aligned,
         // so the fill's address and recorded sector give the primary's.
         if (fill_phase_q[fill] != FillFree) assert (fill_addr_q[fill][OffsetBits-1:0] == 0);
@@ -2533,7 +2638,15 @@ module coherence_home #(
                 waiting_opcode[slot] == coherence_pkg::LoadReserved ||
                 coherence_pkg::is_getm(
                 waiting_opcode[slot]
+            ) || coherence_pkg::is_cmo(
+                waiting_opcode[slot]
             ));
+            // A CMO's fill's primary is the CMO that allocated it, of its kind.
+            assert (fill_cmo_q[fill] == coherence_pkg::is_cmo(waiting_opcode[slot]));
+            if (fill_cmo_q[fill])
+              assert (fill_cmo_clean_q[fill] ==
+                  (waiting_opcode[slot] == coherence_pkg::CleanBlock) &&
+                  fill_cmo_inval_q[fill] == (waiting_opcode[slot] == coherence_pkg::InvalBlock));
             // A zero fill's primary is the GetMZero that allocated it.
             assert (fill_zero_q[fill] == (waiting_opcode[slot] == coherence_pkg::GetMZero));
             assert (same_block(waiting_addr[slot], fill_addr_q[fill]));
@@ -2564,7 +2677,52 @@ module coherence_home #(
           assert (fill_phase_q[fill] == FillMemory || fill_phase_q[fill] == FillRecall);
         end
         if (memory_valid[fill]) assert (!fill_zero_q[fill]);
+        // A CMO's fill reads no memory and installs nothing; only it enters
+        // FillCmo and FillCmoGrant, which it reaches with its write's B and
+        // its resident tag invalidated, holding its primary's seat alone.
+        if (fill_phase_q[fill] != FillFree && fill_cmo_q[fill]) begin
+          assert (fill_sent_q[fill] && !fill_done_q[fill] && !fill_error_q[fill] &&
+              !fill_zero_q[fill] && !fill_prefetch_q[fill] && !fill_write_q[fill]);
+          assert (fill_phase_q[fill] == FillRecall || fill_phase_q[fill] == FillDetach ||
+              fill_phase_q[fill] == FillInvalidate || fill_phase_q[fill] == FillInvalidateWait ||
+              fill_phase_q[fill] == FillCmo || fill_phase_q[fill] == FillCmoGrant ||
+              fill_phase_q[fill] == FillFatal);
+          assert (fill_old_addr_q[fill] == fill_addr_q[fill] && fill_victim_q[fill]);
+          assert (fill_seats_q[fill] == fill_primary_q[fill]);
+          if (fill_phase_q[fill] == FillCmoGrant) assert (!fill_cmo_wb_q[fill]);
+          if (!fill_cmo_hit_q[fill]) assert (fill_read_done_q[fill]);
+`ifndef FORMAL
+          // A line the L2 lacked has no dirty copy anywhere (every Modified
+          // L1D sector has a resident L2 destination), so its recall brings
+          // no data. The home's formal harness drives free replies; the
+          // cluster benches check this with the L1D.
+          if (!fill_cmo_hit_q[fill]) begin
+            assert (!fill_dirty_q[fill]);
+            if (i_r_valid && fill_r_ready[fill]) assert (!reply.data_valid);
+          end
+`endif
+        end
+        if (fill_phase_q[fill] == FillCmo || fill_phase_q[fill] == FillCmoGrant)
+          assert (fill_cmo_q[fill]);
+        // No lost dirty data: a clean's or a flush's dirty line is in a
+        // frozen slot, written, from FillDetach until its B; an invalidate
+        // never writes memory.
+        if (fill_cmo_wb_q[fill]) begin
+          assert (fill_cmo_q[fill] && fill_dirty_q[fill] && !fill_cmo_inval_q[fill]);
+          assert (fill_phase_q[fill] == FillInvalidate ||
+              fill_phase_q[fill] == FillInvalidateWait || fill_phase_q[fill] == FillCmo);
+          assert (wb_valid_q[fill_wb_q[fill]] && wb_frozen_q[fill_wb_q[fill]]);
+          assert (wb_addr_q[fill_wb_q[fill]] == fill_addr_q[fill]);
+        end
+        if (fill_cmo_q[fill] && (fill_phase_q[fill] == FillRecall ||
+            fill_phase_q[fill] == FillDetach)) begin
+          assert (!fill_cmo_wb_q[fill]);
+          assert (wb_addr_q[fill_wb_q[fill]] == fill_addr_q[fill]);
+        end
+        if (fill_phase_q[fill] == FillDetach && fill_cmo_q[fill])
+          assert (wb_valid_q[fill_wb_q[fill]] && !wb_frozen_q[fill_wb_q[fill]]);
         if (fill_phase_q[fill] != FillFree) assert (int'(fill_way_q[fill]) < WAYS);
+        if (fill_phase_q[fill] == FillFree) assert (!fill_cmo_q[fill]);
         // A seated request's decision takes its completion pin only from a
         // ready fill, which releases the seat on the same edge; a forward
         // gives the primary its pin and releases its seat in any phase it
@@ -2690,6 +2848,14 @@ module coherence_home #(
         if (fill_phase_q[fill] == FillInstall || fill_phase_q[fill] == FillInstallWait ||
             fill_phase_q[fill] == FillReady)
           assert (fill_sent_q[fill] && fill_done_q[fill] && !fill_error_q[fill]);
+        // A Zicbom fill reads no memory, and only it enters its own phases.
+        if (fill_phase_q[fill] != FillFree && fill_cmo_q[fill]) begin
+          assert (fill_sent_q[fill] && !fill_done_q[fill] && !fill_error_q[fill]);
+          assert (!f_memory_pending_q[fill]);
+        end
+        if (fill_phase_q[fill] == FillCmo || fill_phase_q[fill] == FillCmoGrant)
+          assert (fill_cmo_q[fill]);
+        if (fill_phase_q[fill] == FillFree) assert (!fill_cmo_q[fill]);
         if (fill_phase_q[fill] == FillRecall || fill_phase_q[fill] == FillDetach ||
             fill_phase_q[fill] == FillFatal) begin
           assert (wb_valid_q[fill_wb_q[fill]] && !wb_frozen_q[fill_wb_q[fill]]);
@@ -2801,6 +2967,21 @@ module coherence_home #(
       cover ($past(
           run && !forward_ready
       ) && run && forward_ready && fill_phase_q[0] == FillInstallWait);
+    end
+`endif
+`ifdef COHERENCE_HOME_CMO_COVER
+    // A Zicbom request's GrantAck leaves a fill that wrote its dirty line to
+    // memory and received B, one that wrote nothing, and an inval of a dirty
+    // line; and a CMO of a line the L2 lacks completes.
+    if (!i_rst) begin
+      cover (run && forward_accept && forward_pick[0] && fill_phase_q[0] == FillCmoGrant &&
+             fill_dirty_q[0] && !fill_cmo_inval_q[0]);
+      cover (run && forward_accept && forward_pick[0] && fill_phase_q[0] == FillCmoGrant &&
+             !fill_dirty_q[0] && fill_cmo_hit_q[0]);
+      cover (run && forward_accept && forward_pick[0] && fill_phase_q[0] == FillCmoGrant &&
+             fill_dirty_q[0] && fill_cmo_inval_q[0]);
+      cover (run && forward_accept && forward_pick[0] && fill_phase_q[0] == FillCmoGrant &&
+             !fill_cmo_hit_q[0]);
     end
 `endif
 `ifdef COHERENCE_HOME_COVER

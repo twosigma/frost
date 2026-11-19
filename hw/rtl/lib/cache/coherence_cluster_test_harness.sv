@@ -99,6 +99,12 @@ module coherence_cluster_test_harness #(
     input logic i_hold_grant,
     input logic i_hold_wa,
     input logic i_hold_release,
+    // Zicbom requester (coherence_cmo_agent), as in coherent_hart_cache.
+    input logic i_cmo_valid = 1'b0,
+    output logic o_cmo_ready,
+    input logic [1:0] i_cmo_kind = 2'd0,
+    input logic [ADDR_WIDTH-1:0] i_cmo_addr = '0,
+    output logic o_cmo_done,
     input logic i_agent_valid,
     output logic o_agent_ready,
     input logic [ADDR_WIDTH+311:0] i_agent_d,
@@ -182,8 +188,18 @@ module coherence_cluster_test_harness #(
   logic line_d_valid, line_d_ready, home_line_d_valid, home_line_d_ready;
   logic line_c_valid, line_c_ready, home_line_c_valid, home_line_c_ready;
   logic line_g_valid, line_g_ready, line_u_valid, line_u_ready;
-  wire grant_line = grant.q.src == 0 && grant.q.port_class == 3;
-  wire release_line = release_message.q.src == 0 && release_message.q.port_class == 3;
+  // Hart class 3: the line client's IDs, then the Zicbom requester's.
+  wire grant_line = grant.q.src == 0 && grant.q.port_class == 3 &&
+      int'(grant.q.id) < coherence_pkg::HartLineIds;
+  wire release_line = release_message.q.src == 0 && release_message.q.port_class == 3 &&
+      int'(release_message.q.id) < coherence_pkg::HartLineIds;
+  logic cmo_d_valid, cmo_d_ready, cmo_g_ready, cmo_c_valid, cmo_c_ready, cmo_u_ready;
+  logic [ADDR_WIDTH+311:0] cmo_d;
+  logic [ADDR_WIDTH+17:0] cmo_c;
+  wire grant_cmo = grant.q.src == 0 && grant.q.port_class == 3 &&
+      int'(grant.q.id) == coherence_pkg::CmoId;
+  wire release_cmo = release_message.q.src == 0 && release_message.q.port_class == 3 &&
+      int'(release_message.q.id) == coherence_pkg::CmoId;
   logic [ADDR_WIDTH-1:0] hart_fatal_addr, home_fatal_addr;
   assign o_fatal = hart_fatal || home_fatal;
   assign o_fatal_addr = hart_fatal ? hart_fatal_addr : home_fatal_addr;
@@ -335,10 +351,11 @@ module coherence_cluster_test_harness #(
     assign l1d_wa_valid = wa_valid && !i_hold_wa;
     assign wa_ready = l1d_wa_ready;
     assign l1d_ack = ack;
-    assign l1d_g_valid = g_valid && grant.q.src == 0 && !grant_line && !i_hold_grant;
+    assign l1d_g_valid = g_valid && grant.q.src == 0 && !grant_line && !grant_cmo && !i_hold_grant;
     assign hart_g_ready = l1d_g_ready;
     assign l1d_grant = grant;
-    assign l1d_u_valid = u_valid && release_message.q.src == 0 && !release_line && !i_hold_release;
+    assign l1d_u_valid = u_valid && release_message.q.src == 0 && !release_line &&
+        !release_cmo && !i_hold_release;
     assign hart_u_ready = l1d_u_ready;
     assign l1d_release = release_message;
   end else begin : gen_links
@@ -491,7 +508,7 @@ module coherence_cluster_test_harness #(
         .i_clk,
         .i_rst,
         .i_stopped(o_fatal),
-        .i_valid  (g_valid && grant.q.src == 0 && !grant_line && !i_hold_grant),
+        .i_valid  (g_valid && grant.q.src == 0 && !grant_line && !grant_cmo && !i_hold_grant),
         .o_ready  (),
         .i_payload(grant),
         .o_valid  (link_g_valid),
@@ -508,11 +525,12 @@ module coherence_cluster_test_harness #(
         .i_clk,
         .i_rst,
         .i_stopped(o_fatal),
-        .i_valid  (u_valid && release_message.q.src == 0 && !release_line && !i_hold_release),
-        .o_ready  (),
+        .i_valid  (u_valid && release_message.q.src == 0 && !release_line && !release_cmo &&
+            !i_hold_release),
+        .o_ready(),
         .i_payload(release_message),
-        .o_valid  (link_u_valid),
-        .i_ready  (l1d_u_ready),
+        .o_valid(link_u_valid),
+        .i_ready(l1d_u_ready),
         .o_payload(l1d_release)
     );
     assign l1d_u_valid  = link_u_valid;
@@ -623,15 +641,43 @@ module coherence_cluster_test_harness #(
     end
   end
 `endif
+  coherence_cmo_agent #(
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .HOME_LINE_BYTES(LINE_BYTES),
+      .SOURCE(0)
+  ) cmo_agent (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_fatal_stop(i_fatal_stop || o_fatal),
+      .i_req_valid(i_cmo_valid),
+      .o_req_ready(o_cmo_ready),
+      .i_req_kind(i_cmo_kind),
+      .i_req_addr(i_cmo_addr),
+      .o_done(o_cmo_done),
+      .o_error(),
+      .o_idle(),
+      .o_d_valid(cmo_d_valid),
+      .i_d_ready(cmo_d_ready),
+      .o_d(cmo_d),
+      .i_g_valid(g_valid && grant_cmo),
+      .o_g_ready(cmo_g_ready),
+      .i_g(grant),
+      .o_c_valid(cmo_c_valid),
+      .i_c_ready(cmo_c_ready),
+      .o_c(cmo_c),
+      .i_u_valid(u_valid && release_cmo),
+      .o_u_ready(cmo_u_ready),
+      .i_u(release_message)
+  );
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 312),
-      .PORTS(L1D_MISSES + 2)
+      .PORTS(L1D_MISSES + 3)
   ) arbiter (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid({home_line_d_valid, i_agent_valid, hart_d_valid}),
-      .o_ready({home_line_d_ready, o_agent_ready, hart_d_ready}),
-      .i_payload({home_line_d, i_agent_d, hart_d}),
+      .i_valid({cmo_d_valid, home_line_d_valid, i_agent_valid, hart_d_valid}),
+      .o_ready({cmo_d_ready, home_line_d_ready, o_agent_ready, hart_d_ready}),
+      .i_payload({cmo_d, home_line_d, i_agent_d, hart_d}),
       .o_valid(home_d_valid),
       .o_selected(),
       .i_ready(home_d_ready),
@@ -643,21 +689,21 @@ module coherence_cluster_test_harness #(
   assign o_agent_g_valid = g_valid && grant.q.src >= 2;
   assign o_agent_g = grant;
   assign g_ready = grant.q.src == 3 || grant_line ? 1'b1 :
-      grant.q.src == 2 ? i_agent_g_ready : hart_g_ready && !i_hold_grant;
+      grant.q.src == 2 ? i_agent_g_ready : grant_cmo ? cmo_g_ready : hart_g_ready && !i_hold_grant;
   assign o_agent_u_valid = u_valid && release_message.q.src >= 2;
   assign o_agent_u = release_message;
   assign u_ready = release_message.q.src >= 2 ? i_agent_u_ready :
-      release_line || (hart_u_ready && !i_hold_release);
+      release_line || (release_cmo ? cmo_u_ready : hart_u_ready && !i_hold_release);
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
-      .PORTS(L1D_MISSES + 2),
+      .PORTS(L1D_MISSES + 3),
       .HOLD_VALID(1)
   ) completions (
       .i_clk,
       .i_rst,
-      .i_valid({home_line_c_valid, i_agent_c_valid, hart_c_valid}),
-      .o_ready({home_line_c_ready, o_agent_c_ready, hart_c_ready}),
-      .i_payload({home_line_c, i_agent_c, hart_c}),
+      .i_valid({cmo_c_valid, home_line_c_valid, i_agent_c_valid, hart_c_valid}),
+      .o_ready({cmo_c_ready, home_line_c_ready, o_agent_c_ready, hart_c_ready}),
+      .i_payload({cmo_c, home_line_c, i_agent_c, hart_c}),
       .o_valid(home_c_valid),
       .o_selected(),
       .i_ready(home_c_ready),

@@ -16,6 +16,7 @@
 
 """Run configured Yosys targets to check RTL portability."""
 
+import json
 import os
 import re
 import subprocess
@@ -582,6 +583,48 @@ class YosysRunner:
                 error_lines.append(f"Yosys exited with code {result.returncode}")
 
         return has_error, error_lines
+
+
+def test_store_queue_physical_address_assertions(tmp_path: Path) -> None:
+    """The native frontend must retain a separately guarded check at each SQ slot."""
+    from test_run_formal import formal_task_config
+
+    formal = Path(__file__).resolve().parents[1] / "formal"
+    setup = tmp_path / "setup"
+    subprocess.run(
+        ["sby", "--setup", "-d", str(setup), "store_queue.sby", "bmc"],
+        cwd=formal,
+        check=True,
+        timeout=60,
+    )
+    src = setup / "src"
+    commands = formal_task_config("store_queue", "bmc")["[script]"]
+    script = tmp_path / "checks.ys"
+    script.write_text("\n".join([*commands, "write_json model.json", ""]))
+    subprocess.run(
+        ["yosys", "-Q", "-q", "-s", str(script)], cwd=src, check=True, timeout=60
+    )
+    module = json.loads((src / "model.json").read_text())["modules"]["store_queue"]
+    depth = len(module["netnames"]["sq_valid"]["bits"])
+    lines = (src / "store_queue.sv").read_text().splitlines()
+    first = next(
+        i
+        for i, line in enumerate(lines)
+        if "begin : gen_cmo_order_address_check" in line
+    )
+    last = lines.index("  end", first + 1)
+    checks = []
+    for cell in module["cells"].values():
+        if cell["type"] != "$check" or cell["parameters"]["FLAVOR"] != "assert":
+            continue
+        location = re.match(r"store_queue\.sv:(\d+)\.", cell["attributes"]["src"])
+        if location and first < int(location[1]) <= last:
+            checks.append(cell["connections"])
+    assert depth > 1 and len(checks) == depth
+    for port in ("A", "EN"):
+        bits = [check[port][0] for check in checks]
+        # Integer bit IDs are connected nets. JSON represents constants as strings.
+        assert all(isinstance(bit, int) for bit in bits) and len(set(bits)) == depth
 
 
 def test_synthesis_filelist_includes_cached_tier_dependencies(

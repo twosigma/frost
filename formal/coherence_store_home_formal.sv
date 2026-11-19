@@ -236,6 +236,11 @@ module coherence_store_home_formal #(
   ) cluster (
       .i_clk(i_clk),
       .i_rst(rst),
+      .i_cmo_valid(1'b0),
+      .i_cmo_kind(2'd1),
+      .i_cmo_addr('0),
+      .o_cmo_ready(),
+      .o_cmo_done(),
       .i_fatal_stop('0),
       .i_read_valid(read_valid_q),
       .i_read_id('0),

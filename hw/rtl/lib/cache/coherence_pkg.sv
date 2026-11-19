@@ -26,6 +26,10 @@ package coherence_pkg;
   // vector memory unit). They make DMARead and DMAWrite requests and share
   // the home's main completion partition with the hart and DMA identities.
   localparam int unsigned HartLineIds = 8;
+  // The hart's Zicbom requester (coherence_cmo_agent): its source, class 3,
+  // the ID after the line clients'. It makes only CleanBlock, FlushBlock and
+  // InvalBlock requests.
+  localparam int unsigned CmoId = HartLineIds;
 
   typedef struct packed {
     logic [1:0] src;
@@ -48,7 +52,15 @@ package coherence_pkg;
     // A GetM from the lower record of a cbo.zero block, which writes zeros to
     // the whole 64-byte block. A home miss installs the line as dirty zeros
     // without reading memory; otherwise it is a GetM.
-    GetMZero = 10
+    GetMZero = 10,
+    // Zicbom on one L2 line, from the hart's CMO requester (class 3). The
+    // home holds both sectors, recalls every L1D copy (ProbeRead to clean,
+    // ProbeInvalidate to flush or invalidate), writes a dirty line to memory
+    // and waits for B (clean, flush), invalidates the L2 line, then answers
+    // GrantAck.
+    CleanBlock = 11,
+    FlushBlock = 12,
+    InvalBlock = 13
   } d_opcode_t;
   typedef enum logic [1:0] {
     ProbeRead = 0,
@@ -114,6 +126,16 @@ package coherence_pkg;
   function automatic logic is_grantm(input logic [2:0] opcode);
     is_grantm = opcode == coherence_pkg::GrantM || opcode == coherence_pkg::GrantMZero;
   endfunction
+  // A Zicbom cache-block management request.
+  function automatic logic is_cmo(input logic [3:0] opcode);
+    is_cmo = opcode == coherence_pkg::CleanBlock || opcode == coherence_pkg::FlushBlock ||
+        opcode == coherence_pkg::InvalBlock;
+  endfunction
+  // A request that holds both sectors of a 64-byte line: GetMZero and the
+  // Zicbom requests.
+  function automatic logic holds_line(input logic [3:0] opcode);
+    holds_line = opcode == coherence_pkg::GetMZero || coherence_pkg::is_cmo(opcode);
+  endfunction
   function automatic logic irrevocable(input logic [3:0] opcode);
     irrevocable = coherence_pkg::is_getm(opcode) || opcode == coherence_pkg::Atomic ||
         opcode == coherence_pkg::StoreConditional;
@@ -122,7 +144,8 @@ package coherence_pkg;
     if (q.src < 2) begin
       legal_q = (q.port_class == 0 && q.id < 8) ||
           (q.port_class == 1 && q.id < 2) || (q.port_class == 2 && q.id < 2) ||
-          (q.port_class == 3 && int'(q.id) < coherence_pkg::HartLineIds);
+          (q.port_class == 3 && (int'(q.id) < coherence_pkg::HartLineIds ||
+          int'(q.id) == coherence_pkg::CmoId));
     end else begin
       legal_q = q.port_class == 3 && (q.src == 2 || int'(q.id) < coherence_pkg::PrefetchIds);
     end
@@ -133,8 +156,10 @@ package coherence_pkg;
           (opcode <= coherence_pkg::StoreConditional || opcode == coherence_pkg::GetMZero)) ||
           (q.port_class == 1 && opcode == coherence_pkg::ReadOnceIF) ||
           (q.port_class == 2 && opcode == coherence_pkg::ReadOncePTW) ||
-          (q.port_class == 3 && (opcode == coherence_pkg::DMARead ||
-          opcode == coherence_pkg::DMAWrite));
+          (q.port_class == 3 && int'(q.id) < coherence_pkg::HartLineIds &&
+          (opcode == coherence_pkg::DMARead || opcode == coherence_pkg::DMAWrite)) ||
+          (q.port_class == 3 && int'(q.id) == coherence_pkg::CmoId &&
+          coherence_pkg::is_cmo(opcode));
     end else begin
       legal_opcode = (q.src == 2 && (opcode == coherence_pkg::DMARead ||
           opcode == coherence_pkg::DMAWrite)) || (q.src == 3 && opcode == coherence_pkg::Prefetch);
