@@ -3908,23 +3908,26 @@ module cpu_ooo #(
   );
 
 `ifndef SYNTHESIS
-  // Each retiring conditional branch trains from the saved lookup PD made for
-  // it: record the PD branch's PC with its entry and compare at commit.
+  // Record the PC that supplied each FTQ entry. Check branch and JALR
+  // ownership when execute restores history and when retirement trains.
   logic [XLEN-1:0] tage_entry_pc[2**riscv_pkg::TageFtqIdxBits];
   logic [XLEN-1:0] tage_pd_branch_pc_q;
   always_ff @(posedge i_clk) begin
     if (tage_pd_accept)
-      tage_pd_branch_pc_q <= tage_pd_cond_branch[0] ? from_if_to_pd.program_counter :
-                                                      from_if_to_pd_2.program_counter;
+      tage_pd_branch_pc_q <= (tage_pd_cond_branch[0] || tage_pd_jalr[0]) ?
+          from_if_to_pd.program_counter : from_if_to_pd_2.program_counter;
     if (u_tage_history.pd_entry_pending)
       tage_entry_pc[u_tage_history.ftq_write_ptr] <= tage_pd_branch_pc_q;
   end
   always @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
-      if (tage_commit_valid[0] && tage_commit_cond_branch[0])
+      if (early_mispredict_active)
+        p_tage_entry_matches_early_branch :
+        assert (tage_entry_pc[u_tage_history.early_ftq_idx] == early_mispredict_pc);
+      if (tage_commit_valid[0] && (tage_commit_cond_branch[0] || tage_commit_jalr[0]))
         p_tage_entry_matches_branch_0 :
         assert (tage_entry_pc[u_tage_history.commit_ftq_idx[0]] == rob_commit.pc);
-      if (tage_commit_valid[1] && tage_commit_cond_branch[1])
+      if (tage_commit_valid[1] && (tage_commit_cond_branch[1] || tage_commit_jalr[1]))
         p_tage_entry_matches_branch_1 :
         assert (tage_entry_pc[u_tage_history.commit_ftq_idx[1]] == rob_commit_2.pc);
     end

@@ -50,7 +50,7 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `branch_resolution` | `branch_recovery/` | Resolves conditional branches and JALRs from INT_RS with `branch_jump_unit` and reports them to the ROB, ignoring a branch whose checkpoint was reused. A JAL resolves when the ROB allocates it |
 | `early_misprediction_recovery` | `branch_recovery/` | Redirects fetch and restores the RAT one cycle after a checkpointed conditional branch or enabled JALR resolves as mispredicted |
 | `misprediction_flush_controller` | `branch_recovery/` | Commit-time mispredictions, full and partial flush priority, checkpoint restore and free |
-| `tage_history` | `branch_recovery/` | The tagged direction predictor's path history and its restores, the saved lookup of each conditional branch, and training at commit |
+| `tage_history` | `branch_recovery/` | Path and direction history recovery, conditional-branch and JALR lookup snapshots, and training at commit |
 | `ex_comb_synthesizer` | `recovery/` | Builds IF's redirect, BTB-update, and RAS-restore bus from early recovery, commit-time recovery, and correct-branch commits, in that priority |
 | `data_mem_request_router` | `memory_if/` | Data-port arbitration (SQ writes, then AMO writes, then LQ reads), staged device reads, tagged completion for the cached tier; see the [data-tier bus rules](../../README.md#data-tier-bus-contract) |
 | `perf_counter_aggregator` | `perf/` | Top-level and cache profiling counters and the counter read mux, present only with `PERF_COUNTERS=1` ([counter reference](cpu_ooo/perf/README.md)) |
@@ -231,11 +231,11 @@ direction, taken or not, and each jump its predicted target's bit 2.
 `tage_history` pushes a packet's bit when PD passes the packet to ID, from a
 register, so a lookup sees every packet PD passed up to two fetches before
 it. A not-taken branch now reaches the history, which is what loop exits and
-correlated branches need. Early recovery restores the branch's saved PD-time
-history and shifts in its outcome; a trap, xRET, FENCE-class flush or
-commit-time recovery takes the retired direction history (each retired
-branch's outcome and each jump's target bit 2), with the same registered
-arms as the path history. A PD redirect needs no restore: the redirecting
+correlated branches need. Early recovery restores the instruction's PD-time
+direction history and shifts in the resolved conditional outcome or bit 2 of
+the resolved JALR target. A trap, xRET, FENCE-class flush or commit-time
+recovery takes the retired direction history (each retired branch's outcome
+and each jump's target bit 2), with the same registered arms as the path history. A PD redirect needs no restore: the redirecting
 branch was pushed with its new direction, and nothing younger was passed.
 The path history above stays for the indirect target predictor and its
 saved-lookup restores. In the trace model this takes CoreMark-PRO loops from

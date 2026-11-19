@@ -220,11 +220,11 @@ take saves the PC after the WFI.
 ### Early-recovered branches
 
 [`early_misprediction_recovery`](../../cpu_ooo/branch_recovery/early_misprediction_recovery.sv)
-recovers from a mispredicted conditional branch that holds a checkpoint as
-soon as the branch resolves, without waiting for the head. It marks the
-entry `early_recovered` (`i_early_recovery_en`, `i_early_recovery_tag`) so
-that retiring it does not start a second recovery. JALR mispredictions
-recover at retirement.
+starts recovery one cycle after a checkpointed conditional branch or JALR
+resolves as mispredicted. It marks the entry `early_recovered`
+(`i_early_recovery_en`, `i_early_recovery_tag`) so it can retire without
+redirecting again. A JALR recovers at retirement when `EarlyJalrRecovery`
+is cleared or an older recovery prevented its execute-time recovery.
 
 ## Serializing instructions
 
