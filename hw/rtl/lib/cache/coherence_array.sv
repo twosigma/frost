@@ -723,18 +723,18 @@ module coherence_array #(
   end
 `ifdef F_COH_ARRAY_SNAPSHOT_COVER
   // Two distinct resident tags in one set owe different versions to the home.
-  for (genvar other = 0; other < WAYS; other++) begin : gen_snapshot_cover
-    wire opposite = tag_rdata[other][TagBits+:2] == 2'b11 &&
-        tag_rdata[other][TagBits-1:0] != tag_rdata[selected][TagBits-1:0] &&
-        tag_rdata[other][TagBits+2] != tag_rdata[selected][TagBits+2];
-    always_ff @(posedge i_clk) begin
-      if (!i_rst && select_valid && modified_data_q && snapshot_q && !visit_q &&
-          !tags_only_q && !skip_data_q && opposite && tag_rdata[selected][TagBits+:2] == 2'b11) begin
-        c_snapshot_clean_hit : cover (hit && !select_data);
-        c_snapshot_dirty_hit : cover (hit && select_data);
-        c_snapshot_dirty_victim_miss :
-        cover (!hit && !tag_rdata[selected][TagBits+2] && !select_data);
-      end
+  wire [WAYS-1:0] f_opposite;
+  for (genvar way = 0; way < WAYS; way++) begin : gen_snapshot_cover
+    assign f_opposite[way] = tag_rdata[way][TagBits+:2] == 2'b11 &&
+        tag_rdata[way][TagBits-1:0] != tag_rdata[selected][TagBits-1:0] &&
+        tag_rdata[way][TagBits+2] != tag_rdata[selected][TagBits+2];
+  end
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && select_valid && modified_data_q && snapshot_q && !visit_q && !tags_only_q &&
+        !skip_data_q && |f_opposite && tag_rdata[selected][TagBits+:2] == 2'b11) begin
+      c_snapshot_clean_hit : cover (hit && !select_data);
+      c_snapshot_dirty_hit : cover (hit && select_data);
+      c_snapshot_dirty_victim_miss : cover (!hit && !tag_rdata[selected][TagBits+2] && !select_data);
     end
   end
 `endif
