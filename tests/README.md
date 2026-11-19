@@ -525,6 +525,11 @@ matches the individual recovery pulses on every edge. It exercises early and
 retired mispredictions together with traps, xRETs, native and translation
 fences, and reset.
 
+The `early_redirect_completion` proof connects the early redirect and flush
+controllers. An accepted redirect flushes fetch and the next backend flush
+carries its ROB tag, unless an older full flush discards the entire window.
+The simulation check observes the same signals in the core.
+
 The `ras_flush_checkpoint` formal target checks the return stack on a full
 flush against the latest snapshot dispatched to the ROB head. Its covers
 exercise both allocation slots and a head tag that wrapped to zero.

@@ -291,6 +291,12 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "early_redirect_completion.sby",
+        "An accepted early redirect flushes younger entries by tag on the next "
+        "edge or an older full flush supersedes it",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "debug_go_pipeline.sby",
         "Registered debug GO keeps its command or resume target, holds until "
         "acknowledgement, and clears on acknowledgement or module reset",

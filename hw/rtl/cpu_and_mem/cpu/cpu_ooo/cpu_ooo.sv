@@ -3768,6 +3768,12 @@ module cpu_ooo #(
     if (reset_seen_q && !i_rst) begin
       p_fetch_flush_matches_recovery :
       assert (fetch_flush == frontend_state_flush && fetch_flush == flush_pipeline);
+      // A full flush discards every entry. A partial flush must carry the
+      // tag of the redirect accepted on the preceding edge.
+      if ($past(reset_seen_q && !i_rst && early_mispredict_active && !flush_all)) begin
+        p_early_redirect_completes :
+        assert (flush_all || (flush_en && flush_tag == $past(early_mispredict_tag)));
+      end
     end
   end
 `endif
