@@ -1594,6 +1594,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
+        "backing_btb_twin.sby",
+        "Every backing lookup result, including misses, held and shifted reads, "
+        "and the pins of all five RAMs match the original backing BTB",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
         "pd_history_twin.sby",
         "Both full decode packets, fetch redirects, return stack operations, history "
         "folds, training and FTQ RAM pins match the original PD and history stages together",

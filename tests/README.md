@@ -1350,6 +1350,7 @@ proves, and its assumptions. The `tage_predictor_twin` and `ittage_predictor_twi
 targets compare every prediction and RAM port with the original predictors.
 The `pd_history_twin` target compares PD and history together across the register
 boundary, including both decode packets and all training outputs.
+The `backing_btb_twin` target covers held and shifted reads and all five RAM interfaces.
 
 ```bash
 ./scripts/frost.py formal                          # every task of every target
