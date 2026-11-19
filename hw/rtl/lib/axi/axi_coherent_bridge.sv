@@ -1024,9 +1024,8 @@ module axi_coherent_bridge #(
 
   // ---- the AXI4 master ---------------------------------------------------------
   always @(posedge i_clk) begin
-    if (i_rst) begin
-      assume (!i_axi_awvalid && !i_axi_wvalid && !i_axi_arvalid);
-    end else if (f_past_valid && !$past(i_rst)) begin
+    // The shared reset discards any offers sampled on a reset edge.
+    if (f_past_valid && !i_rst && !$past(i_rst)) begin
       if ($past(i_axi_awvalid && !o_axi_awready))
         assume (i_axi_awvalid && $stable(
             {i_axi_awid, i_axi_awaddr, i_axi_awlen, i_axi_awsize, i_axi_awburst, i_axi_awcache}
@@ -1057,10 +1056,12 @@ module axi_coherent_bridge #(
     end
   end
   always_comb begin
-    if (i_rst || !f_past_valid) assume (!i_line_resp_valid);
-    if (i_line_resp_valid) assume (f_out_q[i_line_resp_id]);
-    if (i_line_resp_valid && f_rline_f_q[i_line_resp_id])
-      assume ((i_line_resp_rdata[32'(f_off)*8+:8] == f_val) && (i_line_resp_error == f_line_err));
+    // The ingress may already be presenting a reply on the first reset edge.
+    if (!i_rst && i_line_resp_valid) begin
+      assume (f_out_q[i_line_resp_id]);
+      if (f_rline_f_q[i_line_resp_id])
+        assume ((i_line_resp_rdata[32'(f_off)*8+:8] == f_val) && (i_line_resp_error == f_line_err));
+    end
   end
 
   // ---- reference: write bursts -------------------------------------------------
@@ -1794,6 +1795,13 @@ module axi_coherent_bridge #(
   end
 `else
   always @(posedge i_clk) begin
+    c_reset_with_offers :
+    cover (f_past_valid && $past(!i_rst && aw_fire) && i_rst &&
+           i_axi_awvalid && i_axi_wvalid && i_axi_arvalid);
+    c_reset_with_read_reply :
+    cover (f_past_valid && i_rst && resp_read && f_out_q[i_line_resp_id]);
+    c_reset_with_write_reply :
+    cover (f_past_valid && i_rst && resp_write && f_out_q[i_line_resp_id]);
     if (!i_rst) begin
       c_wrap_write :
       cover (b_fire && (f_aw_burst[f_aw_head] == BurstWrap) &&

@@ -172,8 +172,7 @@ module axi_mux #(
   assign aw_sel = aw_hold_q ? aw_sel_q : rr_pick(aw_cand, aw_rr_q);
   assign aw_any = aw_hold_q || (|aw_cand);
 
-  // The coherent bridge's proof environment takes requests as quiet in reset.
-  assign o_dn_awvalid = !i_rst && aw_any && wq_room;
+  assign o_dn_awvalid = aw_any && wq_room;
   assign o_dn_awid = {aw_sel, i_up_awid[aw_sel]};
   assign o_dn_awaddr = i_up_awaddr[aw_sel];
   assign o_dn_awlen = i_up_awlen[aw_sel];
@@ -196,8 +195,7 @@ module axi_mux #(
   assign wq_any = wq_count_q != '0;
   assign w_port = wq_port_q[wq_head_q];
 
-  // The coherent bridge's proof environment takes requests as quiet in reset.
-  assign o_dn_wvalid = !i_rst && wq_any && i_up_wvalid[w_port];
+  assign o_dn_wvalid = wq_any && i_up_wvalid[w_port];
   assign o_dn_wdata = i_up_wdata[w_port];
   assign o_dn_wstrb = i_up_wstrb[w_port];
   assign o_dn_wlast = i_up_wlast[w_port];
@@ -242,8 +240,7 @@ module axi_mux #(
   assign ar_sel = ar_hold_q ? ar_sel_q : rr_pick(i_up_arvalid, ar_rr_q);
   assign ar_any = ar_hold_q || (|i_up_arvalid);
 
-  // The coherent bridge's proof environment takes requests as quiet in reset.
-  assign o_dn_arvalid = !i_rst && ar_any;
+  assign o_dn_arvalid = ar_any;
   assign o_dn_arid = {ar_sel, i_up_arid[ar_sel]};
   assign o_dn_araddr = i_up_araddr[ar_sel];
   assign o_dn_arlen = i_up_arlen[ar_sel];
@@ -335,12 +332,12 @@ module axi_mux #(
   localparam int unsigned FDepth = 2 * W_DEPTH;  // a power of two above the FIFO's depth
   localparam int unsigned FBits = $clog2(FDepth + 1);
 
-  // The masters hold VALID and payload until READY and are quiet in reset.
+  // The masters hold stalled offers and clear their valids on a reset edge.
   always @(posedge i_clk) begin
     for (int p = 0; p < int'(NUM_PORTS); p++) begin
-      if (i_rst) begin
+      if (f_past_valid && $past(i_rst) && i_rst) begin
         assume (!i_up_awvalid[p] && !i_up_wvalid[p] && !i_up_arvalid[p]);
-      end else if (f_past_valid && !$past(i_rst)) begin
+      end else if (f_past_valid && !i_rst && !$past(i_rst)) begin
         if ($past(i_up_awvalid[p] && !o_up_awready[p]))
           assume (i_up_awvalid[p] && $stable(
               {i_up_awid[p], i_up_awaddr[p], i_up_awlen[p], i_up_awsize[p], i_up_awburst[p]}
@@ -457,12 +454,15 @@ module axi_mux #(
     end
   end
 
-  always_comb begin
-    if (i_rst) begin
+  always @(posedge i_clk) begin
+    if (f_past_valid && $past(i_rst) && i_rst) begin
       p_quiet_in_reset :
       assert (!o_dn_awvalid && !o_dn_wvalid && !o_dn_arvalid && !(|o_up_awready) &&
                                  !(|o_up_wready) && !(|o_up_arready));
     end
+  end
+
+  always_comb begin
     if (!i_rst && f_past_valid) begin
       p_wq_bounded : assert (32'(f_wq_count) <= W_DEPTH);
       // A downstream AW is one upstream AW, of the port its id names.
@@ -523,6 +523,9 @@ module axi_mux #(
   end
 
   always @(posedge i_clk) begin
+    c_reset_with_offers :
+    cover (f_past_valid && $past(!i_rst && aw_fire) && i_rst &&
+           o_dn_awvalid && o_dn_wvalid && o_dn_arvalid);
     if (!i_rst) begin
       c_two_ports_queued :
       cover ((f_wq_count >= FBits'(2)) && (f_wq_port[f_wq_head] != f_wq_port[f_wq_next]));

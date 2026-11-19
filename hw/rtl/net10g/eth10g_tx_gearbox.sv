@@ -31,8 +31,7 @@ module eth10g_tx_gearbox (
   assign o_raw_data = reservoir[63:0];
   // The transceiver is not reset by i_rst.
   assign o_raw_valid = !i_rst && count >= 8'd64;
-  // The 10G block keeps its handshakes quiet in reset.
-  assign o_block_ready = !i_rst && count <= 8'd128;
+  assign o_block_ready = count <= 8'd128;
 
   always_comb begin
     next_reservoir = reservoir;

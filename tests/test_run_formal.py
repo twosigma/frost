@@ -1552,8 +1552,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "axi_coherent_bridge.sby",
-        "AXI4 safety: response ordering and conservation, burst bytes to line "
-        "requests and back, error bursts, and "
+        "AXI4 safety with arbitrary AXI offers and ingress replies at reset, response ordering and "
+        "conservation, burst bytes to line requests and back, error bursts, and "
         "the coherent ingress's request rules, unbounded on narrow and line-wide "
         "buses with up to eight bursts and eight line IDs per direction; "
         "a four-burst proof pair and nine explicit eight-burst partitions",
@@ -1583,8 +1583,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "axi_mux.sby",
-        "AXI4 rules on every port, W in AW-grant order, and B and R steered by port, "
-        "unbounded",
+        "AXI4 rules on every port, reset with active offers, W in AW-grant order, "
+        "and B and R steered by port, unbounded",
         tasks=("prove", "prove_soc", "prove_soc4", "cover"),
     ),
     FormalTarget(

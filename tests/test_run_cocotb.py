@@ -269,7 +269,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             python_test_module="cocotb_tests.test_ddr_reset_distribution",
             hdl_toplevel_module="frost",
             app_name="hello_world",
-            description=f"DDR reset assertion and release with {clock_mode} CPU clocks",
+            description=f"Stopped-clock DDR reset pulses and CPU reset edges with {clock_mode} clocks",
             extra_env=clock_env,
             verilator_extra_args=(
                 "--assert",
@@ -281,6 +281,30 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         for suffix, clock_mode, clock_env in (
             ("", "common", ()),
             ("_async", "independent", (("FROST_CPU_PERIOD_PS", "7000"),)),
+        )
+    },
+    **{
+        f"platform_dma_reset{suffix}": CocotbRunConfig(
+            python_test_module="cocotb_tests.integration.test_platform_dma_reset",
+            hdl_toplevel_module="platform_top",
+            description=f"One-cycle core reset at coherent DMA read and write completion with {mode} clocks",
+            verilator_extra_args=(
+                "--assert",
+                "+define+FROST_SIM_ASSERTIONS",
+                "-GUSE_BEHAVIORAL_DDR=0",
+                "-GENABLE_CACHED_TIER=1",
+                "-GSIM_FAST_MAINT=1",
+                "-GL2_PREFETCH=0",
+                "-GL1_CACHE_BYTES=4096",
+                "-GL1I_CACHE_BYTES=4096",
+                "-GL2_CACHE_BYTES=16384",
+                f"-GASYNC_CPU_CLOCK={int(period_ps != 0)}",
+            ),
+            extra_env=(("FROST_CPU_PERIOD_PS", str(period_ps)),),
+        )
+        for suffix, mode, period_ps in (
+            ("", "common", 0),
+            ("_async", "independent", 7000),
         )
     },
     "soc_async_reset": CocotbRunConfig(
@@ -301,7 +325,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="hello_world",
         include_in_pytest=False,
-        description="Power-on reset and paired reset with stopped CPU or SoC clocks",
+        description="Power-on reset, stopped peers and the first two resumed CPU edges",
         extra_env=(("FROST_CPU_PERIOD_PS", "7000"),),
         verilator_extra_args=("-GENABLE_CACHED_TIER=0", "-GMISALIGNED_HW=0"),
     ),
@@ -5585,7 +5609,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="axi_mux_test_harness",
         description=(
             "Three AXI4 masters through the mux: W follows the AW grants, B and R "
-            "return by port, and reset abandons transfers in flight"
+            "return by port, and a reset edge discards simultaneous AW, W and AR offers"
         ),
     ),
     "x3_ddr_init": CocotbRunConfig(

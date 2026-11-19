@@ -790,10 +790,9 @@ module soc_top #(
   if (ASYNC_CPU_CLOCK) begin : gen_soc_cpu_reset_async
     assign soc_cpu_rst = rst_core || soc_axi_rst;
   end else begin : gen_soc_cpu_reset_common
-    wire reset_request = rst_core || soc_axi_rst;
-    always_ff @(posedge i_clk or posedge reset_request)
-      if (reset_request) soc_cpu_rst <= 1'b1;
-      else soc_cpu_rst <= 1'b0;
+    // Assert with the DMA bridge and keep the ingress in reset for the
+    // following edge, even when the core request lasts only one cycle.
+    always_ff @(posedge i_clk) soc_cpu_rst <= rst_core_next || rst_core || soc_axi_rst;
   end
   if (ASYNC_CPU_CLOCK) begin : gen_cpu_controls
     cdc_sync #(

@@ -42,7 +42,7 @@ Cases that cannot occur at those limits are skipped.
 | `sequence` | Every sequence of four blocks from the five block classes; termination lookahead; pauses and reset; explicit error and control classification |
 | `gearbox` | Independent bit queues, all packing phases, randomized slips, sparse input and reset, continuous TX output |
 | `link` | Exact block-lock thresholds and windows; signal loss; BER thresholds and the physical-clock timer; local and remote fault qualification and timeout |
-| `tx_reconcile` | Midframe faults, local fault priority, paused enable, recovery at an idle boundary, suppression of packet tails |
+| `tx_reconcile` | Midframe faults and reset, local fault priority, link-ready deassertion during reset, paused enable and recovery at an idle boundary |
 | `mac_tx` | Independent XGMII and FCS checking; lengths, padding, and termination lanes; AXIS back-pressure; malformed, oversized, and aborted packets; resets |
 | `mac_rx` | Independent XGMII source and zlib FCS; both start lanes, including across enable gaps; malformed frames at every preamble position and termination lane; stalls and overflow; data and descriptor wraparound and rollback; mixed sizes; restart after early drops; clock-exact handshake release and final-beat credit; reset of the decode stage and output register |
 | `mac_rx_60`, `mac_rx_124` | The `mac_rx` cases at small frame limits, plus a frame that runs past the limit and out of space at once (reported as overlength) and admission with an empty output register |

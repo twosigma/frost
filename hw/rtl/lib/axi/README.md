@@ -121,7 +121,10 @@ a first reset cycle, when the masters and the ingress on that reset ignore it.
 The bridge resets with its AXI masters, and each reset of the ingress, which
 drops the requests it holds, must overlap one of the bridge. In the
 common-clock `soc_top` configuration, the masters, mux and bridge
-reset with `rst_core`, and the ingress reset includes it. The optional
+reset with `rst_core`. A one-cycle core reset reaches the bridge and ingress
+on the same edge. The bridge discards any reply already presented on that
+edge, and the ingress clears its response valid before the bridge can accept
+another reply. The optional
 asynchronous configuration pairs the resets of the DMA owners across both
 clocks.
 
@@ -134,6 +137,10 @@ granted only to a port that also presents WVALID, which AXI4 allows a slave
 to require, so a master whose write data is late cannot hold the W channel.
 Each downstream AW records `{port, AWLEN}` in a `W_DEPTH`-entry FIFO, and W
 beats come from the port at its head.
+
+The mux and its neighbors discard transfers on their shared reset edge.
+AW, W and AR can be presented on that edge. Reset clears both held grants
+and the W queue. The first AW after release selects the next W owner.
 
 The mux holds no beat: VALID and payload pass down and READY up through
 combinational paths, which AXI4 does not allow between one component's inputs
@@ -156,7 +163,7 @@ Its body is empty in synthesis and formal builds.
 | `axi_coherent_bridge`, `axi_coherent_bridge_64`, `axi_coherent_bridge_32` | Random bursts of every type and size against a byte reference at 256, 64 and 32 bits, error bursts, ingress errors, out-of-order line responses with stalls, exhausted ids and tables, read starvation under writes, and reset with bursts in flight |
 | `coherent_axi_ingress`, `coherent_axi_ingress_64`, `coherent_axi_ingress_8` | The bridge connected to the ingress (four entries; eight, with soc_top's eight line IDs and bursts per direction, in `_8`), delayed coherent channels, full credits, B after every line release, and shared reset at each coherent stage |
 | `axi_cdc` | All channel fields, independent backpressure, full FIFOs, wraparound, reset cancellation, equal periods with phase offset and unequal periods in both directions |
-| `axi_mux` | Three masters sharing id values against a reordering slave, late write data, and reset mid-traffic |
+| `axi_mux` | Three masters sharing id values against a reordering slave, late write data, and reset with simultaneous AW, W and AR offers followed by a fresh W owner |
 
 Unbounded formal safety tasks check the bridge (`axi_coherent_bridge`: AXI4 slave
 rules, B and R order and codes, each line write carrying exactly the bytes

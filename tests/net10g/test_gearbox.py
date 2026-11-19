@@ -51,6 +51,8 @@ async def bitstream_reference(dut: Any) -> None:
         dut.i_raw_valid.value = int(raw_valid)
         dut.i_slip.value = int(slip)
         await Timer(2, unit="ns")
+        if cycle:
+            assert int(dut.o_block_ready.value) == int(len(tx_bits) <= 128)
         if reset:
             tx_bits.clear()
             rx_bits.clear()

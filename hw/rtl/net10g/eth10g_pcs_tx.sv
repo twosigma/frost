@@ -15,7 +15,7 @@
  */
 
 // 10GBASE-R transmit PCS: the encoder and scrambler as one elastic pipeline
-// stage. There is no input valid: every clock with o_xgmii_ready high consumes
+// stage. Outside reset, every clock with o_xgmii_ready high consumes
 // an XGMII word and advances the scrambler, so the caller must supply idles
 // when no packet is available.
 module eth10g_pcs_tx (
@@ -32,8 +32,7 @@ module eth10g_pcs_tx (
   logic [63:0] payload, scrambled;
   logic [1:0] header, header_reg;
   logic bad_block;
-  // The 10G block keeps its handshakes quiet in reset.
-  assign o_xgmii_ready = !i_rst && (!o_block_valid || i_block_ready);
+  assign o_xgmii_ready = !o_block_valid || i_block_ready;
   assign o_block = {scrambled, header_reg};
   eth10g_encode encoder (
       .i_xgmii_data(i_xgmii_data),

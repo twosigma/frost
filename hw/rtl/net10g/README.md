@@ -73,7 +73,11 @@ top.
 | `i_rx_signal_ok` | `i_rx_clk` | Synchronized PMA/CDR readiness; deassert on signal or transceiver readiness loss |
 
 `i_tx_rst` and `i_rx_rst` are active-high synchronous resets in their own
-domains. The board wrapper must synchronize external resets/status, manage
+domains. Each MAC or PCS ignores its internal handshake on a reset edge.
+The TX word tick can be high during TX reset, and RX XGMII valid can
+indicate local fault during RX reset. Their consumers take the corresponding
+domain reset. TX raw valid and TX link ready are low throughout TX reset.
+The board wrapper must synchronize external resets/status, manage
 GTY initialization, and handle raw TX startup. `i_rx_raw_valid` gaps alone
 do not declare link loss; the wrapper must report loss through
 `i_rx_signal_ok`.
@@ -164,6 +168,8 @@ clock is stopped (across a transceiver RX reset, for example), the register
 cannot update: TX keeps the last fault state until the clock returns,
 whatever `i_rx_signal_ok` does meanwhile.
 
+A TX reset edge discards the reconciliation word in the PCS and suppresses
+the interrupted frame until the MAC supplies an enabled full idle word.
 A local receive fault causes remote-fault ordered sets on TX; a received
 remote fault causes idles. A fault interrupts any packet already on the
 wire. Frames accepted before a later link failure can be lost; there is no

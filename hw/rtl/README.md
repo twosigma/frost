@@ -374,9 +374,14 @@ synchronizer. A stopped SoC clock keeps the reset asserted. CPU owners and
 the fabric share this reset; CPU-only reset leaves presented AXI requests
 to drain through the fabric.
 
-With common CPU and SoC clocks, a separate CPU reset register asserts
-asynchronously with fabric reset or the registered core reset. CPU reset
-releases on the SoC clock edge after both requests clear.
+With a common CPU and SoC clock, a core reset request sampled on one rising
+edge asserts both the DMA bridge reset and the CPU reset pin. The pin stays
+high for one more edge after the bridge reset drops, giving the CPU and its
+coherent ingress two reset edges. With the clock stopped, the CPU reset pin
+holds its value. An external DDR reset pulse during the stop holds fabric
+reset high until the clock resumes. The first rising edge asserts CPU reset
+and the next edge resets the CPU state. CPU reset releases one edge after
+fabric reset clears if the core reset is also clear.
 
 Reset belongs at the flop, as `if (rst) ... else ...`. Combinational outputs
 can stay live in a first reset cycle, when every receiver on the same reset
