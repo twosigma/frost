@@ -378,10 +378,14 @@ module coherence_home_array #(
   always_comb begin
     write_hazard = 1'b0;
     read_hazard  = 1'b0;
-    // An open stage holds every way of its set.
+    // An open read reserves every way until its tag decision. A row
+    // read with a registered RAM input samples its bytes in stage zero.
+    // After sampling, even a write to its sibling sector cannot change
+    // the row in the output pipeline.
     for (int stage = 0; stage <= DATA_READ_LATENCY; stage++)
     if (read_valid_q[stage] && read_set_q[stage] == write_set &&
-        (read_open_q[stage] || read_way_q[stage] == i_update_way) && i_update_has_data)
+        (read_open_q[stage] || (ULTRA && stage == 0 && read_way_q[stage] == i_update_way)) &&
+        i_update_has_data)
       write_hazard = 1'b1;
     for (int stage = 0; stage <= DATA_WRITE_LATENCY; stage++) begin
       if (write_valid_q[stage] && write_data_q[stage]) begin

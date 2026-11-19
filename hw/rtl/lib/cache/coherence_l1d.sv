@@ -321,7 +321,7 @@ module coherence_l1d #(
   logic store_read_turn_q, read_waiting_q;
   logic read_service_waiting, load_grant_eligible;
   logic [31:0] update_mask_q;
-  logic array_skip_data, array_data_valid;
+  logic array_skip_data, array_data_valid, array_home_current;
   logic [ADDR_WIDTH-1:0] pending_addr_q;
   logic [255:0] pending_data_q;
   logic [31:0] pending_mask_q;
@@ -357,6 +357,8 @@ module coherence_l1d #(
   (* max_fanout = 32 *) logic probe_absorbed_q;
   (* max_fanout = 32 *) logic probe_put_q;
   logic probe_capture, probe_launch, probe_reply_eligible;
+  logic probe_snapshot, probe_dirty, probe_tag_write, victim_dirty;
+  logic [1:0] probe_state;
   logic local_ready, local_turn_q, probe_priority;
   logic [1:0] read_probe_count_q;
   logic [ADDR_WIDTH-1:0] array_request_addr;
@@ -1332,6 +1334,14 @@ module coherence_l1d #(
   (* keep = "true" *) wire lookup_atomic_set;
   assign lookup_atomic_set =
       lookup_addr_q[5+:SetBits] == atomic_addr_q[5+:SetBits];
+  assign probe_snapshot = probe_q.opcode == coherence_pkg::ProbeSnapshot;
+  assign probe_dirty = array_hit && array_state == coherence_pkg::Modified &&
+      !(probe_snapshot && array_home_current);
+  assign probe_state = !array_hit || probe_q.opcode == coherence_pkg::ProbeInvalidate ?
+      coherence_pkg::Invalid : probe_snapshot ? array_state : coherence_pkg::Shared;
+  assign probe_tag_write = probe_snapshot ? probe_dirty && !probe_absorbed_q :
+      array_hit && array_state != probe_state;
+  assign victim_dirty = !array_hit && array_state == coherence_pkg::Modified && !array_home_current;
   assign probe_reply_eligible = probe_q.opcode != coherence_pkg::ProbeInvalidate ||
       cut_phase_q == CutDone;
   // Prepare the reply's set condition independently of the home's R readiness.
@@ -1342,8 +1352,7 @@ module coherence_l1d #(
     if (active) begin
       case (phase_q)
         LookupWait: if (array_valid && operation_q == ProbeOp) begin
-          if (array_hit && !(array_state == coherence_pkg::Shared &&
-              probe_q.opcode == coherence_pkg::ProbeRead)) probe_reply_start = 1'b0;
+          if (probe_tag_write) probe_reply_start = 1'b0;
           else if (probe_absorbed_q) probe_reply_start = 1'b0;
           else if (probe_reply_eligible) probe_reply_start = 1'b1;
         end
@@ -2652,6 +2661,7 @@ module coherence_l1d #(
       .i_req_way(maint_way_q),
       .i_req_skip_data_on_hit(array_skip_data),
       .i_req_data_if_modified(probe_launch || operation_q == ProbeOp),
+      .i_req_snapshot(probe_launch ? probe_in.opcode == coherence_pkg::ProbeSnapshot : probe_snapshot),
       // A CPU read uses data only on a hit; its miss decision follows the
       // tag result. A grant needs the replaced line's data only to freeze a
       // Modified victim.
@@ -2670,6 +2680,7 @@ module coherence_l1d #(
       .o_resp_way(array_way),
       .o_resp_addr(array_addr),
       .o_resp_state(array_state),
+      .o_resp_home_current(array_home_current),
       .o_resp_data_valid(array_data_valid),
       .o_resp_data(array_data),
       .i_update_valid(active && phase_q == Update),
@@ -2677,6 +2688,7 @@ module coherence_l1d #(
       .i_update_addr(update_addr_q),
       .i_update_way(way_q),
       .i_update_state(state_q),
+      .i_update_home_current(operation_q == ProbeOp && probe_snapshot),
       .i_update_insert(operation_q == GrantOp || operation_q == TwinOp),
       .i_update_touch(grant_touch_q),
       .i_update_mask(update_mask_q),
@@ -3617,21 +3629,16 @@ module coherence_l1d #(
             update_mask_q <= operation_q == ProbeOp ? '0 : '1;
             case (operation_q)
               ProbeOp: begin
-                reply_q.state <= array_hit && probe_q.opcode == coherence_pkg::ProbeRead ?
-                    coherence_pkg::Shared : coherence_pkg::Invalid;
-                reply_q.opcode <= ((array_hit && array_state ==
-                    coherence_pkg::Modified) || probe_absorbed_q) ?
+                reply_q.state <= probe_state;
+                reply_q.opcode <= probe_dirty || probe_absorbed_q ?
                     coherence_pkg::ProbeData : coherence_pkg::ProbeAck;
-                reply_q.data_valid <= (array_hit && array_state ==
-                    coherence_pkg::Modified) || probe_absorbed_q;
+                reply_q.data_valid <= probe_dirty || probe_absorbed_q;
                 reply_q.data <= probe_absorbed_q ? probe_put.data : array_data;
                 reply_q.absorbed <= probe_absorbed_q;
                 reply_q.put_id <= probe_put_q;
                 reply_q.put_epoch <= probe_q.epoch;
-                if (array_hit && !(array_state == coherence_pkg::Shared &&
-                    probe_q.opcode == coherence_pkg::ProbeRead)) begin
-                  state_q <= probe_q.opcode == coherence_pkg::ProbeInvalidate ?
-                      coherence_pkg::Invalid : coherence_pkg::Shared;
+                if (probe_tag_write) begin
+                  state_q <= probe_state;
                   phase_q <= Update;
                 end else if (probe_absorbed_q) phase_q <= ProbeAbsorb;
                 else if (probe_reply_eligible) begin
@@ -3648,7 +3655,7 @@ module coherence_l1d #(
                     for (int index = 0; index < 32; index++)
                     if (pending_mask_q[index]) image_q[8*index+:8] <= pending_data_q[8*index+:8];
                   end
-                  if (!array_hit && array_state == coherence_pkg::Modified) begin
+                  if (victim_dirty) begin
                     freeze_slot_q <= grant_ep_q == '0 ? reserved_wb_q : wb_free_slot;
                     freeze_addr_q <= array_addr;
                     freeze_data_q <= array_data;
@@ -3679,7 +3686,7 @@ module coherence_l1d #(
                 update_addr_q <= pending_addr_q;
                 image_q <= pending_data_q;
                 state_q <= coherence_pkg::Modified;
-                if (!array_hit && array_state == coherence_pkg::Modified) begin
+                if (victim_dirty) begin
                   freeze_slot_q <= twin_wb_slot;
                   freeze_addr_q <= array_addr;
                   freeze_data_q <= array_data;
@@ -4173,11 +4180,12 @@ module coherence_l1d #(
       if (array_skip_data) assert (!probe_launch &&
           (operation_q == StoreOp || operation_q == LookaheadOp));
       if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&
-          array_hit && array_state == coherence_pkg::Modified) assert (array_data_valid);
+          array_hit && array_state == coherence_pkg::Modified)
+        p_probe_data : assert (array_data_valid == !(probe_snapshot && array_home_current));
       if (active && phase_q == LookupWait && array_valid &&
           (operation_q == GrantOp || operation_q == TwinOp) &&
           !array_hit && array_state == coherence_pkg::Modified)
-        p_grant_victim_data : assert (array_data_valid);
+        p_grant_victim_data : assert (array_data_valid == !array_home_current);
       // A shadow lookup whose read the hit path holds decides nothing from the
       // kind, and the hit path may have answered and freed the slot by then.
       if (active && phase_q == LookupWait && operation_q == ReadOp && !(shadow_q && path_hit_q))
@@ -4193,8 +4201,9 @@ module coherence_l1d #(
             ((operation_q == StoreOp || operation_q == LookaheadOp) && array_hit) ||
             (operation_q == ReadOp && (!array_hit || shadow_q)) ||
             ((operation_q == GrantOp || operation_q == TwinOp) &&
-             (array_hit || array_state != coherence_pkg::Modified)) ||
-            (operation_q == ProbeOp && (!array_hit || array_state != coherence_pkg::Modified)));
+             (array_hit || array_state != coherence_pkg::Modified || array_home_current)) ||
+            (operation_q == ProbeOp && (!array_hit || array_state != coherence_pkg::Modified ||
+                (probe_snapshot && array_home_current))));
       end
       // The hit path holds valid, unanswered load slots, one per stage. Its
       // answer is the slot's only completion, and a lookup of a slot whose
@@ -5418,8 +5427,7 @@ module coherence_l1d #(
       if (atomic_q || (request_live && acquisition_q.opcode == coherence_pkg::Atomic))
         assume (i_atomic_protected);
       if (i_p_valid) begin
-        assume (probe_in.addr[4:0] == 0 && probe_in.epoch == 0 && probe_in.opcode <=
-            coherence_pkg::CheckSC);
+        assume (probe_in.addr[4:0] == 0 && probe_in.epoch == 0);
         assume (!(atomic_q && !atomic_local_q && atomic_granted_q &&
                   probe_in.addr == acquisition_q.addr));
         if (probe_in.opcode == coherence_pkg::ProbeRead && atomic_q && !atomic_local_q &&

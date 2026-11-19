@@ -298,7 +298,7 @@ async def dirty_victim_put_and_streaming_dma(dut: Any) -> None:
         grant = await b.start(1, address)
         assert not grant[5]
         await b.finish(grant, written=True)
-        b.private[address] = (3, (index + 1) * 0x0101010101010101)
+        b.set_modified(address, (index + 1) * 0x0101010101010101)
     await b.prime(base + 0x1000, 80)
     await b.until(lambda: len(b.live) == DATA_IDS)
     put_address = base + 15 * b.line
@@ -343,7 +343,7 @@ async def put_passes_live_prefetches_of_its_line(dut: Any) -> None:
     for index, address in enumerate(targets):
         grant = await b.start(1, address, slot=index)
         await b.finish(grant, written=True)
-        b.private[address] = (3, (index + 1) * 0x1111)
+        b.set_modified(address, (index + 1) * 0x1111)
     # Each prefetch of them hits and waits at C, keeping its identity live.
     await b.set(i_hold_pf_c=1, i_train_enable=1)
     for address in (base, base + b.line):
@@ -457,7 +457,7 @@ async def full_completion_queue_progress(dut: Any) -> None:
         grant = await b.start(int(dirty), address)
         await b.finish(grant, written=dirty)
         if dirty:
-            b.private[address] = (3, (index + 1) * 0x0101010101010101)
+            b.set_modified(address, (index + 1) * 0x0101010101010101)
     stream = base + 0x1000
     for address in (stream, stream + b.line):
         assert await b.read(address) == b.expected(address)

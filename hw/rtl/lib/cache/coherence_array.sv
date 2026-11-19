@@ -48,8 +48,10 @@ module coherence_array #(
     input logic [WayBits-1:0] i_req_way,
     input logic i_req_skip_data_on_hit,
     input logic i_req_data_if_modified,
+    // A snapshot needs a Modified hit's bytes until the home has a copy.
+    input logic i_req_snapshot,
     // These lookups need data only on a hit, or only on a miss whose selected
-    // victim is Modified. Otherwise they reply in the first data-read cycle,
+    // victim has Modified bytes owed to the home. Otherwise they reply in the first data-read cycle,
     // from the registered tag result, and the data read goes unused. A
     // maintenance visit always waits for its data.
     input logic i_req_data_if_hit,
@@ -65,6 +67,7 @@ module coherence_array #(
     output logic [WayBits-1:0] o_resp_way,
     output logic [ADDR_WIDTH-1:0] o_resp_addr,
     output logic [1:0] o_resp_state,
+    output logic o_resp_home_current,
     // Data is meaningful only when valid; skipped reads keep the prior data.
     output logic o_resp_data_valid,
     output logic [8*LINE_BYTES-1:0] o_resp_data,
@@ -75,6 +78,7 @@ module coherence_array #(
     input logic [ADDR_WIDTH-1:0] i_update_addr,
     input logic [WayBits-1:0] i_update_way,
     input logic [1:0] i_update_state,
+    input logic i_update_home_current,
     // An insertion follows a lookup of the same set and selected way. With
     // BIMODAL_INSERT, i_update_touch makes it update replacement state.
     input logic i_update_insert,
@@ -100,7 +104,7 @@ module coherence_array #(
 `endif
 `endif
   localparam int unsigned TagBits = ADDR_WIDTH - SetBits - OffsetBits;
-  localparam int unsigned TagEntryBits = TagBits + 2;
+  localparam int unsigned TagEntryBits = TagBits + 3;
   localparam int unsigned PlruBits = WAYS > 1 ? WAYS - 1 : 1;
   localparam int unsigned MaxLatency = DATA_READ_LATENCY + DATA_WRITE_LATENCY +
       TAG_READ_LATENCY + 2;
@@ -118,7 +122,7 @@ module coherence_array #(
   logic [SetBits-1:0] init_set_q, set_q;
   logic [TagBits-1:0] tag_q;
   logic visit_q, skip_data_q, modified_data_q, no_touch_q, hit_data_q, victim_data_q;
-  logic tags_only_q, init_done_q;
+  logic tags_only_q, init_done_q, snapshot_q;
   // The early reply depends only on registered request flags and tag results.
   logic data_valid_q, early_reply;
   // The response indication captures with the tag result or the data row.
@@ -142,7 +146,7 @@ module coherence_array #(
   wire init_bulk_clear = SimFastInit != 0 && sim_reset_seen_q && !i_rst && phase_q == Init;
 `endif
 
-  logic hit, hit_modified;
+  logic hit, hit_needs_probe_data;
   logic select_valid;
   logic [PlruBits-1:0] select_plru;
   logic [WayBits-1:0] selected;
@@ -208,15 +212,16 @@ module coherence_array #(
   assign o_req_ready = phase_q == Idle && !i_update_valid;
   assign request_fire = i_req_valid && o_req_ready;
   assign early_reply = (hit_data_q && !o_resp_hit) ||
-      (victim_data_q && (o_resp_hit || o_resp_state != 2'b11));
+      (victim_data_q && (o_resp_hit || o_resp_state != 2'b11 || o_resp_home_current));
   assign selected_early_reply = (hit_data_q && !(hit && !visit_q)) ||
-      (victim_data_q && ((hit && !visit_q) || tag_rdata[selected][TagBits+:2] != 2'b11));
+      (victim_data_q && ((hit && !visit_q) || tag_rdata[selected][TagBits+:2] != 2'b11 ||
+          tag_rdata[selected][TagBits+2]));
   assign o_resp_valid = resp_valid_q;
   assign o_resp_data_valid = data_valid_q && !early_reply;
   assign tag_raddr = i_req_addr[OffsetBits+:SetBits];
   assign tag_waddr = phase_q == Init ? init_set_q : i_update_addr[OffsetBits+:SetBits];
   assign tag_wdata = phase_q == Init ? '0 :
-      {i_update_state, i_update_addr[ADDR_WIDTH-1:OffsetBits+SetBits]};
+      {i_update_home_current, i_update_state, i_update_addr[ADDR_WIDTH-1:OffsetBits+SetBits]};
   // The tag and replacement RAMs have no reset, so reset gates their writes.
   for (genvar way = 0; way < WAYS; way++) begin : gen_tag_en
     assign tag_we[way] = !i_rst && (phase_q == Init ||
@@ -376,12 +381,13 @@ module coherence_array #(
   assign hp_touch_set = hp3_set_q;
 
   assign select_data = visit_q ||
-      (!tags_only_q && !((hit && skip_data_q) || (modified_data_q && !hit_modified)));
+      (!tags_only_q && !((hit && skip_data_q) || (modified_data_q && !hit_needs_probe_data)));
 `ifdef FORMAL
   always_comb begin
     p_data_select_exact :
     assert (select_data == (visit_q || (!tags_only_q && !((hit && skip_data_q) ||
-        (modified_data_q && (!hit || tag_rdata[selected][TagBits+:2] != 2'b11))))));
+        (modified_data_q && (!hit || tag_rdata[selected][TagBits+:2] != 2'b11 ||
+            (snapshot_q && tag_rdata[selected][TagBits+2])))))));
   end
 `endif
   // Each way has a data bank of Sets rows. In the final tag-read cycle every
@@ -425,14 +431,15 @@ module coherence_array #(
   always_comb begin
     selected = victim(select_plru, ~exclude_q);
     hit = 1'b0;
-    hit_modified = 1'b0;
+    hit_needs_probe_data = 1'b0;
     for (int way = WAYS - 1; way >= 0; way--) begin
       if (tag_rdata[way][TagBits+:2] == 0 && !exclude_q[way]) selected = WayBits'(way);
     end
     for (int way = 0; way < WAYS; way++) begin
       if (tag_rdata[way][TagBits+:2] != 0 && tag_rdata[way][TagBits-1:0] == tag_q) begin
         hit = 1'b1;
-        hit_modified = tag_rdata[way][TagBits+:2] == 2'b11;
+        hit_needs_probe_data = tag_rdata[way][TagBits+:2] == 2'b11 &&
+            !(snapshot_q && tag_rdata[way][TagBits+2]);
         selected = WayBits'(way);
       end
     end
@@ -449,6 +456,7 @@ module coherence_array #(
       visit_q <= 1'b0;
       skip_data_q <= 1'b0;
       modified_data_q <= 1'b0;
+      snapshot_q <= 1'b0;
       no_touch_q <= 1'b0;
       tags_only_q <= 1'b0;
       init_done_q <= 1'b0;
@@ -464,6 +472,7 @@ module coherence_array #(
       o_resp_way <= '0;
       o_resp_addr <= '0;
       o_resp_state <= '0;
+      o_resp_home_current <= 1'b0;
       o_resp_data <= '0;
       data_valid_q <= 1'b0;
       resp_valid_q <= 1'b0;
@@ -497,6 +506,7 @@ module coherence_array #(
             visit_q <= i_req_visit;
             skip_data_q <= i_req_skip_data_on_hit;
             modified_data_q <= i_req_data_if_modified;
+            snapshot_q <= i_req_snapshot;
             no_touch_q <= i_req_no_touch;
             tags_only_q <= i_req_tags_only && !i_req_visit;
             hit_data_q <= i_req_data_if_hit && !i_req_visit;
@@ -515,6 +525,7 @@ module coherence_array #(
             o_resp_way <= selected;
             o_resp_addr <= {tag_rdata[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
             o_resp_state <= tag_rdata[selected][TagBits+:2];
+            o_resp_home_current <= tag_rdata[selected][TagBits+2];
             data_valid_q <= select_data;
             resp_valid_q <= !select_data || selected_early_reply;
             if (!select_data) begin
@@ -667,12 +678,14 @@ module coherence_array #(
   wire f_hp_watched = hp_take && hp_set == f_row_set;
   always_ff @(posedge i_clk) begin
     if (i_rst) f_tag_known <= 1'b0;
-    else if (init_bulk_clear) begin
+    else if (init_bulk_clear || (phase_q == Init && init_set_q == f_row_set)) begin
       f_tag_known <= 1'b1;
       f_tag_entry <= '0;
-    end else if (tag_we[f_row_way] && tag_waddr == f_row_set) begin
+    end else if (update_fire && f_update_row == f_row) begin
       f_tag_known <= 1'b1;
-      f_tag_entry <= tag_wdata;
+      f_tag_entry <= {
+        i_update_home_current, i_update_state, i_update_addr[ADDR_WIDTH-1:OffsetBits+SetBits]
+      };
     end
     if (i_rst) begin
       f_hp2_byte_q <= 1'b0;
@@ -694,6 +707,10 @@ module coherence_array #(
   always_comb begin
     if (!i_rst) begin
       // The port's tags and data are the array's as of its stage-1 edge.
+      if (o_resp_valid && f_tag_known && o_resp_way == f_row_way && set_q == f_row_set)
+        p_selected_tag :
+        assert ({o_resp_home_current, o_resp_state,
+            o_resp_addr[ADDR_WIDTH-1:OffsetBits+SetBits]} == f_tag_entry);
       if (f_hp2_tag_q) p_hp_tag_value : assert (copy_rdata[f_row_way] == f_hp2_entry_q);
       if (f_hp4_byte_q) p_hp_byte_value : assert (o_hp_data[8*f_byte[2:0]+:8] == f_hp4_value_q);
       // The port reads the banks only when no lookup reads data, and never
@@ -745,8 +762,14 @@ module coherence_array #(
     end
   end
   logic f_past_valid = 1'b0;
-  wire [ADDR_WIDTH+WayBits+11:0] f_response_signature = {
-    o_resp_hit, o_resp_available, o_resp_way, o_resp_addr, o_resp_state, o_resp_data[7:0]
+  wire [ADDR_WIDTH+WayBits+12:0] f_response_signature = {
+    o_resp_hit,
+    o_resp_available,
+    o_resp_way,
+    o_resp_addr,
+    o_resp_state,
+    o_resp_home_current,
+    o_resp_data[7:0]
   };
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
@@ -772,15 +795,16 @@ module coherence_array #(
       if (o_resp_valid && !o_resp_data_valid) begin
         assert (!visit_q);
         assert (tags_only_q || (o_resp_hit && skip_data_q) ||
-                (modified_data_q && (!o_resp_hit || o_resp_state != 2'b11)) ||
+                (modified_data_q && (!o_resp_hit || o_resp_state != 2'b11 ||
+                    (snapshot_q && o_resp_home_current))) ||
                 (hit_data_q && !o_resp_hit) ||
-                (victim_data_q && (o_resp_hit || o_resp_state != 2'b11)));
+                (victim_data_q && (o_resp_hit || o_resp_state != 2'b11 || o_resp_home_current)));
       end
       // Only a response that needs no data replies before its data read ends.
       if (o_resp_valid && phase_q == Data) begin
         p_early_reply_tags_only : assert (early_reply && !o_resp_data_valid);
         assert ((hit_data_q && !o_resp_hit) ||
-                (victim_data_q && (o_resp_hit || o_resp_state != 2'b11)));
+                (victim_data_q && (o_resp_hit || o_resp_state != 2'b11 || o_resp_home_current)));
       end
       if ($past(phase_q == Data && o_resp_valid && i_resp_ready))
         p_early_reply_releases : assert (phase_q == Idle);

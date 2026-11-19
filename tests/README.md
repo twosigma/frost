@@ -358,7 +358,7 @@ second-port issue, dual issue, simultaneous dispatch and issue, and flush.
 The `coherent_cpu_faults` bench injects SC refill errors after clean replacement.
 Successful local atomic cases inject interrupt and debug requests at every
 ownership phase, check a younger exception, and compare warm, fresh-sector and
-reader-downgraded SC latency.
+SC latency after a DMA read of a Modified sector.
 Every AMO operator runs at W/D widths, both word offsets and all aq/rl encodings.
 `coherent_cpu_local_contention` times a younger load's memory response to
 produce a same-set grant during local SC ownership. The grant and a DMA probe remain held

@@ -284,7 +284,19 @@ async def probe_reply_waits_for_cut_and_preserves_dirty_bytes(dut: Any) -> None:
     await b.tick()
     await b.set(i_u_valid=0)
     expected = (pattern & ~((1 << 64) - 1)) | stored
-    for tid, opcode in enumerate((0, 0, 1, 0), start=1):
+    # The first snapshot copies the dirty bytes. The repeat keeps M and
+    # the ordinary downgrade supplies the bytes even after that repeat.
+    probes = (
+        (3, 3, 1),
+        (3, 3, 0),
+        (0, 2, 1),
+        (3, 2, 0),
+        (0, 2, 0),
+        (1, 0, 0),
+        (0, 0, 0),
+        (3, 0, 0),
+    )
+    for tid, (opcode, state, data_valid) in enumerate(probes, start=1):
         probe = pack(
             (2, opcode),
             (6, tid),
@@ -317,11 +329,11 @@ async def probe_reply_waits_for_cut_and_preserves_dirty_bytes(dut: Any) -> None:
         held = b.get("o_r")
         reply = unpack(held, (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
         assert reply[1] == tid and reply[4] == address and not reply[-1]
-        assert reply[7] == int(tid == 1)
-        if tid == 1:
-            assert reply[8] == expected and reply[5] == 2
-        if opcode == 1 or tid == 4:
-            assert reply[5] == 0
+        assert (reply[0], reply[5], reply[7]) == (data_valid, state, data_valid)
+        if data_valid:
+            assert reply[8] == expected
+        if opcode == 3:
+            assert not b.get("o_cut_hold") and not b.get("o_cut_admit_valid")
         for _ in range(8):
             assert b.get("o_r_valid") and b.get("o_r") == held
             assert not b.get("o_p_ready")
@@ -670,20 +682,21 @@ async def getm(b: Private, address: int, data: int, error: bool = False) -> None
     await b.set(i_u_valid=0)
 
 
-async def snapshot(b: Private, address: int, *, invalidate: bool = False) -> int:
-    """Read a dirty sector through the probe channel, including every byte."""
+async def probe_reply(b: Private, address: int, opcode: int) -> tuple[int, ...]:
+    """Return the held R packet after a recall, DMA write or DMA read."""
+    external = opcode != 0
     await b.set(
         i_p_valid=1,
         i_p=pack(
-            (2, int(invalidate)),
+            (2, opcode),
             (6, 1),
             (1, 0),
             (b.p, address),
-            (2, 2),
-            (2, 0),
-            (9, 0),
+            (2, 2 if external else 0),
+            (2, int(opcode == 1) if external else 2),
+            (9, 0x160 if external else 0),
             (5, 0),
-            (3, 0),
+            (3, 5 if external else 0),
         ),
         i_cut_admit_ready=1,
         i_cut_admit_clean=1,
@@ -692,16 +705,120 @@ async def snapshot(b: Private, address: int, *, invalidate: bool = False) -> int
     await b.tick()
     await b.set(i_p_valid=0)
     await b.wait("o_r_valid")
-    reply = unpack(b.get("o_r"), (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
-    assert reply[0] == 1 and reply[7] == 1
     held = b.get("o_r")
+    reply = unpack(held, (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
+    assert reply[1:5] == (1, 0, 0, address) and not reply[-1]
     for _ in range(8):
+        assert not b.get("o_p_ready") and not b.get("store_pop")
         await b.tick()
         assert b.get("o_r_valid") and b.get("o_r") == held
     await b.set(i_r_ready=1)
     await b.tick()
     await b.set(i_r_ready=0)
+    return reply
+
+
+async def snapshot(b: Private, address: int, *, invalidate: bool = False) -> int:
+    """Collect dirty bytes through an ordinary downgrade or invalidation."""
+    reply = await probe_reply(b, address, int(invalidate))
+    assert reply[0] == 1 and reply[7] == 1
     return reply[8]
+
+
+@cocotb.test()
+async def retained_snapshot_between_store_installations(dut: Any) -> None:
+    """A blocked GetM and its younger store cannot change a snapshot."""
+    b = Private(dut)
+    await b.reset()
+    a = 0x80000000
+    pattern = int.from_bytes(bytes(range(32)), "little")
+    await store(b, a, pattern & ((1 << 64) - 1))
+    await getm(b, a, pattern)
+    await store(b, a + 32, 0x44)
+    await b.wait("o_d_valid")
+    await store(b, a + 8, 0x9988, mask=3)
+    before = b.installed
+    for has_data in (1, 0):
+        reply = await probe_reply(b, a, 3)
+        assert (reply[0], reply[5], reply[7], reply[9]) == (has_data, 3, has_data, 0)
+        if has_data:
+            assert reply[8] == pattern
+        assert b.get("o_block_valid").bit_count() == 2 and b.installed == before
+    await getm(b, a + 32, 0)
+    # No other demand has a receiver. The younger store must hit M.
+    await b.wait("o_pending_store", 0)
+    reply = await probe_reply(b, a, 3)
+    assert (reply[5], reply[7], reply[8]) == (
+        3,
+        1,
+        (pattern & ~(0xFFFF << 64)) | (0x9988 << 64),
+    )
+    assert b.installed == 3 and b.acknowledged == 3
+
+
+@cocotb.test()
+async def snapshot_credit_follows_the_replaced_way(dut: Any) -> None:
+    """Displace same-set sectors with opposite obligations to the home."""
+    base = 0x80000000
+    rows = [base + index * 128 for index in range(4)]
+    seed = int.from_bytes(bytes(range(32)), "little")
+    saw_discard = saw_put = False
+    for stale in rows:
+        b = Private(dut)
+        await b.reset()
+        images = {}
+        for index, address in enumerate(rows):
+            images[address] = (seed & ~255) | (31 + index)
+            await store(b, address, 31 + index, mask=1)
+            await getm(b, address, seed)
+            reply = await probe_reply(b, address, 3)
+            assert (reply[5], reply[7], reply[8]) == (3, 1, images[address])
+        await store(b, stale, 0xE7, mask=1)
+        await b.wait("o_pending_store", 0)
+        images[stale] = (images[stale] & ~255) | 0xE7
+        # Identical hit order in all four runs gives the same replacement.
+        for address in rows:
+            await b.set(i_address=address, i_read_valid=1, i_read_id=0)
+            await b.tick()
+            await b.set(i_read_valid=0)
+            await b.wait("o_read_valid")
+            assert b.get("o_read_data") == images[address] & ((1 << 64) - 1)
+            await b.set(i_read_ready=1)
+            await b.tick()
+            await b.set(i_read_ready=0)
+        new = base + 4 * 128
+        missing = await probe_reply(b, new, 3)
+        assert (missing[5], missing[7], missing[9]) == (0, 0, 0)
+        await store(b, new, 11)
+        await getm(b, new, 0)
+        has_put = bool(b.get("o_w_valid"))
+        frozen = b.get("o_w")
+        victim = None
+        for address in rows:
+            reply = await probe_reply(b, address, 3)
+            assert reply[7] == int(address == stale)
+            if reply[7]:
+                assert reply[8] == images[address]
+            if reply[5] == 0:
+                assert victim is None and bool(reply[9]) == has_put
+                victim = address
+                if has_put:
+                    assert victim == stale
+                    put = unpack(frozen, (1, 1, 1, b.p, 256, 1))
+                    assert (put[3], put[4]) == (victim, images[victim])
+                    await b.set(i_wa_valid=1, i_wa=put_ack(b, put, True))
+                    await b.wait("o_wa_ready")
+                    await b.tick()
+                    await b.set(i_wa_valid=0)
+                    saw_put = True
+                else:
+                    assert victim != stale
+                    saw_discard = True
+            else:
+                assert reply[5] == 3 and not reply[9]
+        assert victim is not None
+        assert not b.get("wb_live") and not b.get("o_fatal")
+    assert saw_put and saw_discard
 
 
 @cocotb.test()

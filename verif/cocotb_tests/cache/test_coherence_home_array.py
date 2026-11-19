@@ -81,12 +81,12 @@ class Array:
             rf = self.get("i_read_valid") and self.get("o_read_ready")
             wf = self.get("i_update_valid") and self.get("o_update_ready")
             if rf:
-                row = self.get("i_read_addr"), self.get("i_read_way")
+                row = self.get("i_read_addr") & -self.line, self.get("i_read_way")
                 token = self.get("i_read_token")
                 assert token not in self.reads
                 self.reads[token] = self.rows[row]
             if wf:
-                row = self.get("i_update_addr"), self.get("i_update_way")
+                row = self.get("i_update_addr") & -self.line, self.get("i_update_way")
                 value = self.rows.get(row, 0)
                 for byte in range(self.line):
                     if self.get("i_update_mask") & (1 << byte):
@@ -216,6 +216,36 @@ async def overlapping_ports_preserve_masked_bytes(dut: Any) -> None:
         await b.tick()
         await b.set(i_read_valid=0)
         await b.tick(12)
+
+
+@cocotb.test()
+async def masked_write_beside_a_sampled_row(dut: Any) -> None:
+    """A write can pass a sampled row and the read returns its entire old image."""
+    b = Array(dut)
+    await b.reset()
+    full = (1 << b.line) - 1
+    mask = (1 << 32) - 1
+    old = int.from_bytes(bytes(range(b.line)), "little")
+    await b.update(0, 0, old, full, 0)
+    await b.tick(12)
+    for sector in range(b.line // 32):
+        await b.set(
+            i_read_valid=1, i_read_addr=32 * sector, i_read_way=0, i_read_token=1
+        )
+        await b.wait("o_read_ready")
+        await b.tick()
+        await b.set(i_read_valid=0)
+        sibling = b.line - 32 - sector * 32
+        await b.update(sibling, 0, old ^ ((1 << (8 * b.line)) - 1), mask << sibling, 2)
+        assert 1 in b.reads, "write waited for the read response"
+        await b.tick(12)
+        assert not b.reads
+        await b.set(i_read_valid=1, i_read_addr=sibling, i_read_token=3)
+        await b.wait("o_read_ready")
+        await b.tick()
+        await b.set(i_read_valid=0)
+        await b.tick(12)
+        assert not b.reads
 
 
 @cocotb.test()
