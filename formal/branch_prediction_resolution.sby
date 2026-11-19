@@ -11,7 +11,7 @@ depth 1
 smtbmc boolector
 
 [script]
-read_slang --top branch_prediction_resolution_formal --single-unit -D SYNTHESIS riscv_pkg.sv branch_jump_unit.sv branch_resolution.sv branch_prediction_resolution_formal.sv
+read_slang --top branch_prediction_resolution_formal --single-unit -DSYNTHESIS riscv_pkg.sv branch_jump_unit.sv branch_resolution.sv branch_prediction_resolution_formal.sv
 hierarchy -top branch_prediction_resolution_formal
 script free_undefined.ys
 bmc: select -assert-count 7 t:$check r:FLAVOR=assert %i
