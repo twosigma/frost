@@ -235,6 +235,7 @@ module instr_operand_classifier #(
       end else begin
         raw_class.uses_int_rs1 = (i_instr.funct3 == 3'b100) || (i_instr.funct3 == 3'b110);
       end
+      riscv_pkg::OPC_OP_VE: if (VECTOR) raw_class.rs_type = riscv_pkg::RS_NONE;
       default: ;  // Illegal opcode: i_illegal selects the neutral class.
     endcase
 

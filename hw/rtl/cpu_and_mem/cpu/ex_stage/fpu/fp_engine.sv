@@ -29,7 +29,7 @@
        subtract), and column 0 is a sticky column: every right shift ORs the
        bits it shifts out into it.
     X  113-bit second operand, same layout.
-    Q  56-bit multiplier, quotient or root bits.
+    Q  56-bit quotient or root bits.
     E, EX  exponents of column 111 of R and X.
   one 113-bit adder, and shifts by one or eight columns. An operand's 53-bit
   significand ({hidden, fraction}, single-precision fractions left-aligned)
@@ -40,8 +40,13 @@
   precision of the format conversions only: its fraction loads at [111:102]
   and it rounds at column 101.
 
-  Multiply is radix-2 shift-and-add (53 or 24 steps); divide and square root
-  are non-restoring, one bit per step (56 or 27 bits). Add and FMA normalize
+  Multiply takes the 106-bit significand product from a pipelined DSP-tiled
+  multiplier (dsp_tiled_multiplier_unsigned, 53 x 53) started in decode, and
+  loads it into R normalized by one column when its top bit is clear. Divide
+  is restoring radix 4: each step evaluates three subtractions in parallel
+  (the integer divider's recurrence) on its own remainder register and
+  produces two quotient bits (28 steps for double, 14 for single). Square
+  root is non-restoring, one bit per step (56 or 27 bits). Add and FMA normalize
   both operands and align the one with the smaller exponent into its sticky
   column; the product keeps all 106 bits, so FMA rounds once. FP-to-integer
   conversions leave through R[111:48]. FROUND rounds like a conversion to
@@ -632,17 +637,17 @@ module fp_engine (
     ST_IDLE,
     ST_DEC1,        // classify the operands, registered
     ST_DEC2,        // special operands, FCLASS, sign injection; load operand A
-    ST_LOADB,       // multiplier into Q
+    ST_LOADB,       // set product exponent and pipeline countdown
     ST_XFER,        // R <= X through the adder, X <= operand B
-    ST_MUL,         // shift-and-add steps
+    ST_MUL,         // wait for and capture the significand product
     ST_FMA_C,       // addend into X
     ST_NORM_OPS,    // normalize subnormal operands, then set up alignment
     ST_RSHIFT,      // right shift R or X by sh_cnt, then continue at ret_q
     ST_ADD,
     ST_NEGATE,      // negative difference: R <= -R
     ST_DIV_SETUP,
-    ST_DIV,         // non-restoring divide steps
-    ST_DIV_FIX,     // restore a negative final remainder
+    ST_DIV,         // radix-4 divide steps
+    ST_DIV_FIX,     // unused (kept so the state encoding stays fixed)
     ST_SQRT_SETUP,
     ST_SQRT,        // non-restoring square-root steps
     ST_SQRT_FIX,    // restore a negative final remainder, last root bit
@@ -706,7 +711,6 @@ module fp_engine (
   logic zr_q, zr_d;  // R's operand is zero (add, FMA)
   logic zx_q, zx_d;  // X's operand is zero (or X unused)
   logic eff_sub_q, eff_sub_d;
-  logic first_q, first_d;  // first divide step
   logic qlast_q, qlast_d;  // last square-root bit, held for ST_SQRT_FIX
   logic rem_nz_q, rem_nz_d;
   logic tiny_q, tiny_d;
@@ -871,11 +875,119 @@ module fp_engine (
   end
 
   // ===========================================================================
+  // Significand multiplier
+  // ===========================================================================
+  // Operands {hidden, fraction}, single-precision fractions left-aligned as in
+  // the datapath, registered in ST_DEC1 and multiplied from ST_DEC2. Double:
+  // R = a * b * 2^6. Single: a and b carry 29 low zero bits each, so
+  // R = a24 * b24 * 2^64, the columns the shift-and-add multiply produced. An
+  // improperly boxed operand is a NaN, whose product is never used.
+  localparam int unsigned MulWidth = 53;
+  function automatic logic [MulWidth-1:0] mul_sig(input logic [62:0] v, input logic is_d);
+    mul_sig = is_d ? {v[62:52] != '0, v[51:0]} : {v[30:23] != '0, v[22:0], 29'b0};
+  endfunction
+
+  logic [MulWidth-1:0] mul_a_q, mul_b_q;
+  logic [2*MulWidth-1:0] mul_prod;
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic mul_valid, mul_completing;  // unused: ST_MUL counts MulWait instead
+  /* verilator lint_on UNUSEDSIGNAL */
+
+  always_ff @(posedge i_clk) begin
+    if (state_q == ST_DEC1) begin
+      mul_a_q <= mul_sig(opa_q[62:0], dec_q.src_d);
+      mul_b_q <= mul_sig(opb_q[62:0], dec_q.src_d);
+    end
+  end
+
+  // The operands hold from ST_DEC1 until the next operation's ST_DEC1, so the
+  // product of the multiply started in ST_DEC2 stays at the output from
+  // MulStages cycles later until then. ST_LOADB loads cnt with MulWait and
+  // ST_MUL takes the product when cnt reaches zero, MulStages cycles after
+  // ST_DEC2. Killing the operation returns the engine to idle. A product
+  // already in flight drains before the next multiply reaches its capture cycle.
+  localparam int unsigned MulStages = riscv_pkg::dsp_tiled_stages(MulWidth, MulWidth, 27, 35);
+  localparam logic [5:0] MulWait = 6'(MulStages - 2);
+
+  dsp_tiled_multiplier_unsigned #(
+      .A_WIDTH(MulWidth),
+      .B_WIDTH(MulWidth)
+  ) u_sig_mul (
+      .i_clk,
+      .i_rst(1'b0),  // only its unused valid chain resets
+      .i_valid_input(state_q == ST_DEC2),
+      .i_operand_a(mul_a_q),
+      .i_operand_b(mul_b_q),
+      .o_product_result(mul_prod),
+      .o_valid_output(mul_valid),
+      .o_completing_next_cycle(mul_completing)
+  );
+
+  // The product for R. A product below 2 (top bit clear) loads one column
+  // higher with E - 1, the step normalization would take next: always for
+  // FMA (its operands normalize without an exponent floor), and for FMUL
+  // while E is above the floor exponent.
+  logic prod_shift;
+  logic [112:0] prod_word;
+  assign prod_shift = !mul_prod[2*MulWidth-1] && ((dec_q.cls == CL_FMA) || (e_q > floor_p));
+  always_comb begin
+    if (state_q != ST_MUL) prod_word = '0;
+    else if (prod_shift) prod_word = {1'b0, mul_prod[2*MulWidth-2:0], 7'b0};
+    else prod_word = {1'b0, mul_prod, 6'b0};
+  end
+
+  // ===========================================================================
+  // Radix-4 divide recurrence
+  // ===========================================================================
+  // Normalized significands a and b (R and X at [111:59]): the remainder
+  // starts at a against D = 2b, so it is below D, and each step forms
+  // 4 * rem - d * D for the largest digit d in 0..3 that leaves it
+  // non-negative. After n steps the quotient is floor(a * 2^(2n-1) / b):
+  // 56 bits for double (28 steps), 28 for single (14), and the remainder is
+  // exact, so it is nonzero exactly when the quotient is inexact.
+  localparam int unsigned DivRemWidth = MulWidth + 1;  // D = 2b
+  logic [DivRemWidth-1:0] div_rem_q, div_rem_d, div_d1_q;
+  logic [DivRemWidth+1:0] div_d3_q;  // 3D
+  logic [DivRemWidth+1:0] div_shifted;  // 4 * rem
+  logic [DivRemWidth+2:0] div_diff1, div_diff2, div_diff3;
+  logic [1:0] div_digit;
+
+  assign div_shifted = {div_rem_q, 2'b00};
+  assign div_diff1   = {1'b0, div_shifted} - {3'b0, div_d1_q};
+  assign div_diff2   = {1'b0, div_shifted} - {2'b0, div_d1_q, 1'b0};
+  assign div_diff3   = {1'b0, div_shifted} - {1'b0, div_d3_q};
+
+  always_comb begin
+    if (!div_diff3[DivRemWidth+2]) begin
+      div_rem_d = div_diff3[DivRemWidth-1:0];
+      div_digit = 2'b11;
+    end else if (!div_diff2[DivRemWidth+2]) begin
+      div_rem_d = div_diff2[DivRemWidth-1:0];
+      div_digit = 2'b10;
+    end else if (!div_diff1[DivRemWidth+2]) begin
+      div_rem_d = div_diff1[DivRemWidth-1:0];
+      div_digit = 2'b01;
+    end else begin
+      div_rem_d = div_shifted[DivRemWidth-1:0];
+      div_digit = 2'b00;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (state_q == ST_DIV_SETUP) begin
+      div_rem_q <= {1'b0, r_q[111:59]};
+      div_d1_q  <= {x_q[111:59], 1'b0};
+      div_d3_q  <= {x_q[111:59], 2'b00} + {1'b0, x_q[111:59], 1'b0};
+    end else if (state_q == ST_DIV) begin
+      div_rem_q <= div_rem_d;
+    end
+  end
+
+  // ===========================================================================
   // Adder and register next-value selects
   // ===========================================================================
   typedef enum logic [1:0] {
     A_R,
-    A_SHL1,
     A_SHL2,
     A_TRUNC  // R[112:48], the integer of a conversion, with columns 47:0 cleared
   } a_sel_e;
@@ -928,7 +1040,6 @@ module fp_engine (
 
   always_comb begin
     unique case (a_sel)
-      A_SHL1:  a_in = {r_q[111:0], 1'b0};
       A_SHL2:  a_in = {r_q[110:0], 2'b0};
       A_TRUNC: a_in = {r_q[112:48], 48'b0};
       default: a_in = r_q;
@@ -979,7 +1090,8 @@ module fp_engine (
       R_SHR8:     r_d = shr8(sum);
       R_SHL1:     r_d = {r_q[111:0], 1'b0};
       R_SHL8:     r_d = {r_q[104:0], 8'b0};
-      R_CLEAR:    r_d = '0;
+      // Zero, except in ST_MUL, where it is the significand product.
+      R_CLEAR:    r_d = prod_word;
       R_COLLAPSE: r_d = collapse(r_q);
       default:    r_d = r_q;
     endcase
@@ -1669,15 +1781,9 @@ module fp_engine (
   // ===========================================================================
   // Sequencer
   // ===========================================================================
-  logic [5:0] mul_steps, qbits;
-  assign mul_steps = dec_q.src_d ? 6'd53 : 6'd24;
+  logic [5:0] div_steps, qbits;
+  assign div_steps = dec_q.src_d ? 6'd28 : 6'd14;
   assign qbits = dec_q.src_d ? 6'd56 : 6'd27;
-
-  // Multiplier bits straight from operand B (single precision: 24 bits
-  // right-aligned; an improperly boxed operand is a NaN and never multiplies).
-  logic [55:0] q_mul;
-  assign q_mul = dec_q.src_d ? {3'b0, !cb_q.exp_zero, opb_q[51:0]} :
-      {32'b0, !cb_q.exp_zero, opb_q[22:0]};
 
   // Keep the 113-bit zero test balanced before normalization selects the
   // exponent operation. Sharing partial reductions with the other R tests
@@ -1748,7 +1854,6 @@ module fp_engine (
     zr_d = zr_q;
     zx_d = zx_q;
     eff_sub_d = eff_sub_q;
-    first_d = first_q;
     qlast_d = qlast_q;
     rem_nz_d = rem_nz_q;
     tiny_d = tiny_q;
@@ -1904,13 +2009,13 @@ module fp_engine (
       end
 
       ST_LOADB: begin
-        q_d = q_mul;
-        ep_sel = EP_EX;
-        eq_sel = EQ_LD;
-        ld_sel = SEL_B;
-        e_cin = 1'b1;
-        e_load = 1'b1;
-        cnt_d = mul_steps;
+        // Product exponent; the multiplier started in ST_DEC2.
+        ep_sel  = EP_EX;
+        eq_sel  = EQ_LD;
+        ld_sel  = SEL_B;
+        e_cin   = 1'b1;
+        e_load  = 1'b1;
+        cnt_d   = MulWait;
         state_d = ST_MUL;
       end
 
@@ -1979,11 +2084,22 @@ module fp_engine (
       end
 
       ST_MUL: begin
-        b_sel = q_q[0] ? B_X : B_ZERO;
-        r_sel = R_SHR1;
-        q_d   = {1'b0, q_q[55:1]};
+        // Wait for the product. FMA loads its addend into X meanwhile (the
+        // work of ST_FMA_C), so the sum starts as soon as the product lands.
+        if (dec_q.cls == CL_FMA) begin
+          ld_sel = SEL_C;
+          x_sel = X_LOAD;
+          ex_load = 1'b1;
+          sx_d = sign_c;
+          zx_d = cc_q.zero;
+        end
         cnt_d = cnt_q - 6'd1;
-        if (cnt_q == 6'd1) state_d = (dec_q.cls == CL_FMA) ? ST_FMA_C : ST_BE_NORM;
+        if (cnt_q == '0) begin
+          r_sel   = R_CLEAR;  // the product (prod_word)
+          eq_sel  = prod_shift ? EQ_M1 : EQ_ZERO;
+          e_load  = 1'b1;
+          state_d = (dec_q.cls == CL_FMA) ? ST_NORM_OPS : ST_BE_NORM;
+        end
       end
 
       ST_FMA_C: begin
@@ -2071,38 +2187,23 @@ module fp_engine (
       end
 
       ST_DIV_SETUP: begin
-        // Operands to [110:58], so twice a remainder stays below column 112.
+        // E = E_A - E_B; the recurrence loads a, D and 3D (see above).
         eq_sel = EQ_NOTEX;
         e_cin = 1'b1;
         e_load = 1'b1;
-        r_sel = R_SHR1;
-        x_sel = X_SHR1;
         q_d = '0;
-        cnt_d = qbits;
-        first_d = 1'b1;
+        cnt_d = div_steps;
         state_d = ST_DIV;
       end
 
       ST_DIV: begin
-        // Non-restoring: P0 = A - B; then Pk = 2Pk-1 - B if Pk-1 >= 0, else
-        // 2Pk-1 + B. Quotient bit k is Pk >= 0.
-        a_sel = first_q ? A_R : A_SHL1;
-        b_sel = B_X;
-        inv_b = first_q || !r_q[112];
-        cin = first_q || !r_q[112];
-        r_sel = R_SUM;
-        q_d = {q_q[54:0], !sum[112]};
+        // Two quotient bits per step. The last single-precision step leaves
+        // its 28 bits left-aligned in Q, as double's 56 are, so the leading
+        // quotient bit lands at column 111 for both precisions.
         cnt_d = cnt_q - 6'd1;
-        first_d = 1'b0;
-        if (cnt_q == 6'd1) state_d = ST_DIV_FIX;
-      end
-
-      ST_DIV_FIX: begin
-        if (r_q[112]) begin
-          b_sel = B_X;
-          r_sel = R_SUM;
-        end
-        state_d = ST_QFIN;
+        if ((cnt_q == 6'd1) && !dec_q.src_d) q_d = {q_q[25:0], div_digit, 28'b0};
+        else q_d = {q_q[53:0], div_digit};
+        if (cnt_q == 6'd1) state_d = ST_QFIN;
       end
 
       ST_SQRT_SETUP: begin
@@ -2149,19 +2250,20 @@ module fp_engine (
       end
 
       ST_QFIN: begin
-        rem_nz_d = r_nonzero;
+        rem_nz_d = (dec_q.cls == CL_DIV) ? (div_rem_q != '0) : r_nonzero;
         r_sel = R_CLEAR;
         state_d = ST_QXFER;
       end
 
       ST_QXFER: begin
-        // Quotient or root to R[111:56], the remainder as sticky. Single
-        // precision produces 27 bits, at R[82:56].
+        // Quotient or root to R[111:56], the remainder as sticky. A
+        // single-precision root has 27 bits, at R[82:56]; a single-precision
+        // quotient is already left-aligned.
         b_sel   = B_QT;
         qt_b0   = rem_nz_q;
         r_sel   = R_SUM;
         eq_sel  = EQ_29;
-        e_load  = !dec_q.dst_d;
+        e_load  = !dec_q.dst_d && (dec_q.cls == CL_SQRT);
         state_d = ST_BE_NORM;
       end
 
@@ -2429,7 +2531,6 @@ module fp_engine (
     zr_q <= zr_d;
     zx_q <= zx_d;
     eff_sub_q <= eff_sub_d;
-    first_q <= first_d;
     qlast_q <= qlast_d;
     rem_nz_q <= rem_nz_d;
     tiny_q <= tiny_d;

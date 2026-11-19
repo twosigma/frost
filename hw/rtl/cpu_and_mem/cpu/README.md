@@ -362,7 +362,7 @@ IF pairs two instructions only when all of these hold:
   exception: they write zero to rd and touch no other state, so they pair
   like an integer instruction, in either slot.
 - Slot 2 is not a native SYSTEM (other than a may-be-operation), MISC-MEM,
-  AMO, FP-compute (OP-FP or fused multiply-add) or vector instruction (OP-V,
+  AMO, FP-compute (OP-FP or fused multiply-add) or vector instruction (OP-V, OP-VE,
   or LOAD-FP and STORE-FP with a vector width). It may be a branch or jump:
   the slot-2 BTB lookup, the tagged direction predictor (through a PD
   redirect), or the backing BTB can predict it, while the bimodal fallback
@@ -744,6 +744,11 @@ rule. Trap entry updates the CSRs through one-hot enables from `trap_unit` (an
 M-side save, an S-side save, or Debug Mode entry), which it builds beside the
 take decision rather than from it.
 
+A write to `fflags`, `frm`, or `fcsr` sets `mstatus.FS` to Dirty even if
+the stored value stays the same. CSRRS and CSRRC with `rs1=x0`, and CSRRSI
+and CSRRCI with a zero immediate, read these registers and preserve FS.
+When FS is Off, accesses to all three registers trap.
+
 Fetch translation is registered from the next `satp` mode and privilege,
 so it changes on the same edge as a CSR write, trap or return. In the integrated
 profile, the CSR file prepares that complete flag for MRET, SRET and neither
@@ -814,7 +819,8 @@ The vector integer and floating-point instructions listed for `vec_engine`
 below also execute. ID decodes them as `VARITH` (or `VARITH_X` with an
 x-register scalar operand), which dispatch sends to INT_RS only to hand the
 scalar operand to the ROB, or as `VARITH_F` with an f-register scalar operand,
-which goes to no reservation station; `vfmv.f.s` is `VTOF`. Legality
+which goes to no reservation station; `vfmv.f.s` is `VTOF`. OP-VE element
+groups are `VARITH_C` and take no scalar reservation station. Legality
 that depends on `vtype` (vill, register-group alignment, mask-destination
 overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
@@ -823,22 +829,26 @@ unknown). Configuration allocation restarts the three-cycle wait for an
 empty configuration pipeline before the registered ROB in-flight indication
 arrives. The tracker reloads architectural `vtype` only after that wait,
 allowing the retiring CSR update to arrive. A simulation check records the
-tracked `vtype` at the allocation of each vector arithmetic (integer or
-floating point) and vector-to-scalar instruction and requires the CSR file's
+tracked `vtype` at the allocation of each vector arithmetic instruction, including
+cryptographic groups, and each vector-to-scalar instruction and requires the CSR file's
 `vtype` to equal it when the instruction retires.
 `vector/vec_dispatch_legality.sv` evaluates the EEW, EMUL, alignment and
 overlap rules (`vector/vec_arith_legality.sv`) for the instruction at the
 decoded queue's head under the tracked `vtype`, from the queue's registered
 head shadow and the tracker's registers into one register. An instruction of
 the vector arithmetic opcode other than a configuration instruction (the
-integer and floating-point families, `vmv.x.s`, `vcpop.m`, `vfirst.m`,
-`vfmv.f.s`, and encodings that decode rejects) waits one cycle at the head
+integer, carry-less multiply and floating-point families, `vmv.x.s`, `vcpop.m`, `vfirst.m`,
+`vfmv.f.s`, and encodings that decode rejects) and OP-VE wait one cycle at the head
 for that result, and dispatch
 takes it into the allocation's illegal-instruction check. Scalar instructions
 and vector loads, stores and configuration instructions do not wait, and the
 decode stages and the queue are those of a build without the unit, except that
-only `VECTOR=1` decodes the floating-point forms and counts them as FP
-instructions (without the unit they stay illegal at the decoder).
+only `VECTOR=1` decodes the floating-point and crypto forms. Only the
+floating-point forms count as FP instructions. The queue head registers the
+restart classes with arithmetic legality. For a vector build, the queue also
+samples four reservation station selects on the same edge as the head control
+fields. Paired dispatch uses those selects when it checks station capacity
+before saving a rename checkpoint.
 `vec_arith_legality` has no adder or magnitude compare: register
 groups are 2-bit size codes from tables of LMUL and SEW, alignment is a test
 of a register number's low bits, and two aligned groups overlap exactly when
@@ -857,7 +867,19 @@ architectural `vtype` reload cannot overwrite a younger load/store's clear. A
 later CSR access or full flush discards the prediction before reloading the
 architectural state. The ownership bit adds no dispatch wait, including after
 immediate configuration instructions. Arithmetic rejects nonzero `vstart`,
-which the specification permits; whole-register moves honor their start index.
+which the specification permits. Whole-register moves and carry-less multiply honor
+the start index. Cryptographic element groups restart at multiples of four.
+AES, SHA-2 and GHASH use four-element groups. The registered geometry check
+requires room for a complete group even when `vl` is zero. SHA-512 at VLEN 128
+uses LMUL 2 or larger. A scalar AES key occupies the first group of its
+source register, which may be unaligned to LMUL and must be outside the
+destination group. SHA-2 requires its destination to be disjoint from both
+sources. OP-VE rejects masked encodings, unsupported widths and partial
+groups with an illegal-instruction exception. The head checks the low two
+bits of architectural `vl` and `vstart` before retirement. The engine reads
+all four elements of each source before writing the group, preserves prestart
+and tail elements, and uses a fixed sequence for a given instruction and
+configuration. Masked carry-less multiply suppresses only the destination write.
 The four scalar moves execute with any `vstart`, where the specification would
 also permit a trap: `vmv.x.s` and `vfmv.f.s` read element zero, and `vmv.s.x`
 and `vfmv.s.f` write element zero when `vstart < vl`, including

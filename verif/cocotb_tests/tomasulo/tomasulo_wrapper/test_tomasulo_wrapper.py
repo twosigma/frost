@@ -172,7 +172,7 @@ RS_DEPTHS = {
     RS_INT: 16,
     RS_MUL: 4,
     RS_MEM: 8,
-    RS_FP: 2,
+    RS_FP: 6,
 }
 
 ALL_RS_TYPES = [RS_INT, RS_MUL, RS_MEM, RS_FP]
@@ -2756,7 +2756,7 @@ async def test_per_rs_full_independence(dut: Any) -> None:
     cocotb.log.info("=== Test: Per-RS Full Independence ===")
     dut_if, model = await setup_test(dut)
 
-    # Fill the two-entry FP_RS.
+    # Fill the FP_RS (riscv_pkg::FpRsDepth entries).
     for i in range(RS_DEPTHS[RS_FP]):
         dut_if.drive_rs_dispatch(
             rs_type=RS_FP,

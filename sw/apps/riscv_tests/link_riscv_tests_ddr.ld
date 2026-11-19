@@ -10,7 +10,7 @@ MEMORY
     DEBUG (rx): ORIGIN = 0x00017C00, LENGTH = 1K  /* debug-module slice: reserved, never allocated */
     RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 160K
 
-    DDR (rwx) : ORIGIN = 0x80000000, LENGTH = 64M
+    DDR (rwx) : ORIGIN = 0x80000000, LENGTH = DEFINED(__frost_ddr_bytes) ? __frost_ddr_bytes : 64M
 
     MMIO (rw) : ORIGIN = 0x40000000, LENGTH = 40
 }

@@ -1,12 +1,19 @@
 [tasks]
 bmc
+bmc_cdb packet
+bmc_cdb_2 packet
+bmc_commit packet
+bmc_commit_2 packet
+bmc_operands
 
 [options]
 mode bmc
 depth 5
+packet: vcd_sim on
 
 [engines]
-smtbmc boolector
+~packet: smtbmc boolector
+packet: btor btormc
 
 [script]
 # Payload twin: two tomasulo_wrapper copies on the same inputs from the same
@@ -59,11 +66,14 @@ read -sv dsp_tiled_multiplier_unsigned.sv
 read -sv multiplier.sv cl_multiplier.sv
 read -sv alu.sv
 read -sv fp_engine.sv
+# The FMA datapath's results are abstracted (fp_fma_pipe_equiv checks them).
+read -formal -D FP_FMA_PIPE_ABSTRACT -sv fp_pipe_lzc.sv fp_fma_pipe.sv
+read -sv fp_div_unit.sv
 read -sv fp_shim.sv
 read -formal -sv tomasulo_wrapper.sv
 read -formal -sv rs_payload_twin_formal.sv
 hierarchy -top rs_payload_twin_formal
-proc
+script free_undefined.ys
 # Only the harness equalities are checked here: the submodules keep their
 # assumptions, and their own assertions belong to their tasks.
 chformal -assert -remove * rs_payload_twin_formal %d
@@ -74,7 +84,24 @@ memory_map -keepdc
 opt_clean
 # Both copies start from the same state: every register at zero.
 setundef -zero -init
+# Check the same complete model in each task. The four wide packets and
+# operand values have separate cones. The remaining assertions form the
+# complement of those named groups. Every task keeps all wrapper assumptions.
+select -assert-count 104 t:$check r:FLAVOR=assume %i
 select -assert-count 172 t:$check r:FLAVOR=assert %i
+select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2
+select -set operands c:p_twin_operand_*
+select -assert-count 4 @packets
+select -assert-count 16 @operands
+bmc: chformal -assert -remove @packets @operands
+bmc_cdb: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_cdb %d
+bmc_cdb_2: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_cdb_2 %d
+bmc_commit: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_commit_comb %d
+bmc_commit_2: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_commit_comb_2 %d
+bmc_operands: chformal -assert -remove t:$check r:FLAVOR=assert %i @operands %d
+bmc: select -assert-count 152 t:$check r:FLAVOR=assert %i
+packet: select -assert-count 1 t:$check r:FLAVOR=assert %i
+bmc_operands: select -assert-count 16 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
@@ -114,6 +141,9 @@ select -assert-count 172 t:$check r:FLAVOR=assert %i
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_pipe_lzc.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma_pipe.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
@@ -124,3 +154,4 @@ select -assert-count 172 t:$check r:FLAVOR=assert %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
 rs_payload_twin_formal.sv
+free_undefined.ys

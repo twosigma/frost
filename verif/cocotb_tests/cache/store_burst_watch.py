@@ -17,7 +17,10 @@
 from collections import Counter
 from typing import Any
 
+import cocotb
 from cocotb.triggers import FallingEdge
+
+ECALL_FROM_M = 11
 
 
 class StoreBurstWatch:
@@ -48,7 +51,13 @@ class StoreBurstWatch:
             if pending:
                 assert not int(self.sq.o_committed_empty.value)
                 assert not int(self.cache.o_atomic_live.value)
-                if int(self.cpu.trap_pending.value):
+                assert not int(self.cpu.trap_taken.value), (
+                    "trap taken with a pending cached store"
+                )
+                if (
+                    int(self.cpu.trap_pending.value)
+                    and int(self.rob.o_trap_cause.value) == ECALL_FROM_M
+                ):
                     self.hits["trap"] += 1
                 if int(self.rob.head_f_is_fence_i.value):
                     self.hits["fence"] += 1
@@ -63,5 +72,6 @@ class StoreBurstWatch:
 
     def verify(self) -> None:
         """Reject a passing program that missed the intended overlap windows."""
+        cocotb.log.info("Store burst events %s", self.hits)
         for event in ("two", "trap", "fence", "install", "sc", "amo"):
             assert self.hits[event], f"store burst missed {event}: {self.hits}"

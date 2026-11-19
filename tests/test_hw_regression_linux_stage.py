@@ -2070,6 +2070,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "ddr_test",
         "dma_torture",
         "fencei_jit_bench",
+        "fplat_probe",
         "freertos_demo",
         "fpu_assembly_test",
         "fpu_test",
@@ -2112,6 +2113,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         *(
             [
                 "vec_arith_test",
+                "vec_crypto_exec_test",
                 "vec_ff_test",
                 "vec_fp_test",
                 "vec_index_test",

@@ -524,6 +524,152 @@ async def test_cancellation(dut: Any) -> None:
 
 
 # ============================================================================
+# Multiply and divide: rounding boundaries, exact quotients, range limits
+# ============================================================================
+def _sig_patterns(rng: random.Random, bits: int) -> list[int]:
+    """Significands (hidden bit included) with dense high, low and all-ones patterns."""
+    top = 1 << (bits - 1)
+    ones = (1 << bits) - 1
+    pats = [top, top | 1, ones, ones - 1, top | (top >> 1), top | (ones >> 2)]
+    pats += [top | rng.getrandbits(bits - 1) for _ in range(10)]
+    return pats
+
+
+@cocotb.test()
+async def test_mul_div_boundaries(dut: Any) -> None:
+    """FMUL, FMA and FDIV near ties, with exact quotients, and across the range limits."""
+    await setup(dut)
+    inj = Injector(dut)
+    rng = random.Random(0x5EED_0019)
+
+    for rm in ROUNDING_MODES:
+        for suffix, frac_bits, ebias, emax in (
+            ("D", 52, 1023, 2046),
+            ("S", 23, 127, 254),
+        ):
+
+            def pack(sign: int, exp_field: int, sig: int, fb: int = frac_bits) -> int:
+                value = (
+                    (sign << (fb + 1 + (11 if fb == 52 else 8) - 1))
+                    | (exp_field << fb)
+                    | (sig & ((1 << fb) - 1))
+                )
+                return value if fb == 52 else box(value)
+
+            sigs = _sig_patterns(rng, frac_bits + 1)
+            for sa in sigs[:8]:
+                for sb in sigs[8:]:
+                    sign_a, sign_b = rng.getrandbits(1), rng.getrandbits(1)
+                    # Exponents: mid range, product and quotient overflow and
+                    # underflow, and results in the subnormal range.
+                    for ea, eb in (
+                        (ebias, ebias),
+                        (ebias + 3, ebias - 7),
+                        (emax - 1, ebias + 2),
+                        (3, ebias - 3),
+                        (ebias - frac_bits // 2, 1 + frac_bits // 3),
+                        (emax, 1),
+                        (1, emax),
+                    ):
+                        a = pack(sign_a, ea, sa)
+                        b = pack(sign_b, eb, sb)
+                        await inj.run(f"FMUL_{suffix}", rm, a, b)
+                        await inj.run(f"FDIV_{suffix}", rm, a, b)
+                        await inj.run(f"FDIV_{suffix}", rm, b, a)
+                        c = pack(
+                            rng.getrandbits(1),
+                            max(1, min(emax, ea + eb - ebias)),
+                            sb ^ sa,
+                        )
+                        await inj.run(f"FMADD_{suffix}", rm, a, b, c)
+                        await inj.run(f"FNMSUB_{suffix}", rm, a, b, c)
+                    # Subnormal operands.
+                    sub = pack(sign_a, 0, sa >> rng.randint(1, frac_bits))
+                    await inj.run(
+                        f"FMUL_{suffix}", rm, sub, pack(sign_b, ebias + 5, sb)
+                    )
+                    await inj.run(
+                        f"FDIV_{suffix}", rm, sub, pack(sign_b, ebias - 5, sb)
+                    )
+                    await inj.run(f"FDIV_{suffix}", rm, pack(sign_b, ebias, sb), sub)
+            # Exact quotients (remainder zero) and one unit either side of them.
+            half = (frac_bits + 1) // 2
+            for _ in range(24):
+                qs = (1 << (half - 1)) | rng.getrandbits(half - 1)
+                bs = (1 << (half - 1)) | rng.getrandbits(half - 1)
+                prod = qs * bs
+                shift = frac_bits + 1 - prod.bit_length()
+                for k in (-1, 0, 1):
+                    a = pack(0, ebias + 4, (prod << shift) + k)
+                    b = pack(0, ebias - 2, bs << (frac_bits + 1 - half))
+                    await inj.run(f"FDIV_{suffix}", rm, a, b)
+
+    _check_counters(dut, inj.count)
+    dut._log.info("multiply and divide boundary vectors: %d", inj.count)
+
+
+# ============================================================================
+# Engine latency per operation
+# ============================================================================
+# Upper bounds on engine cycles (ST_DEC1 to ST_DONE inclusive) for normal
+# operands, so a latency regression fails here.
+LATENCY_LIMITS = {
+    "FSGNJ_D": 2,
+    "FADD_D": 16,
+    "FMUL_S": 11,
+    "FMUL_D": 11,
+    "FMADD_S": 18,
+    "FMADD_D": 18,
+    "FDIV_S": 28,
+    "FDIV_D": 42,
+    "FSQRT_S": 62,
+    "FSQRT_D": 84,
+}
+
+
+@cocotb.test()
+async def test_latency_table(dut: Any) -> None:
+    """Report engine cycles per operation and hold them under LATENCY_LIMITS."""
+    await setup(dut)
+
+    async def harness_cycles(op: str, a: int, b: int = 0, c: int = 0) -> int:
+        start = int(dut.o_vectors.value)
+        dut.i_ext_op.value = op_value(op)
+        dut.i_ext_rm.value = 0
+        dut.i_ext_a.value = a & MASK64
+        dut.i_ext_b.value = b & MASK64
+        dut.i_ext_c.value = c & MASK64
+        dut.i_ext_valid.value = 1
+        await RisingEdge(dut.i_clk)
+        dut.i_ext_valid.value = 0
+        cycles = 1
+        while int(dut.o_vectors.value) == start:
+            await RisingEdge(dut.i_clk)
+            cycles += 1
+            assert cycles < VECTOR_CYCLES, f"{op} did not complete"
+        await ClockCycles(dut.i_clk, 2)
+        return cycles
+
+    operands = {
+        "S": (box(sp(1.375)), box(sp(3.0625)), box(sp(-0.75))),
+        "D": (dp(1.375), dp(3.0625), dp(-0.75)),
+    }
+    # FSGNJ takes 2 engine cycles: the harness overhead is the rest.
+    da, db, _ = operands["D"]
+    overhead = await harness_cycles("FSGNJ_D", da, db) - 2
+    rows = []
+    for op in LATENCY_LIMITS:
+        a, b, c = operands[op[-1]]
+        engine = await harness_cycles(op, a, b, c) - overhead
+        rows.append(f"{op} {engine}")
+        assert engine <= LATENCY_LIMITS[op], (
+            f"{op}: {engine} cycles > {LATENCY_LIMITS[op]}"
+        )
+    _check_counters(dut)
+    dut._log.info("engine cycles: %s", ", ".join(rows))
+
+
+# ============================================================================
 # Conversions at integer limits
 # ============================================================================
 @cocotb.test()
