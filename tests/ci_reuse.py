@@ -59,7 +59,7 @@ import sby_config
 
 # Bump SCHEMA when the meaning of a key or a marker changes. Bump SALT to make
 # every key new, for example after a change to an input the key leaves out.
-SCHEMA = 4
+SCHEMA = 5
 SALT = "2026-11-14"
 
 # One in CANARY_PERIOD reusable checks is proved again in each run.
@@ -93,6 +93,8 @@ SYNTHESIS_BY_VALUE = frozenset(
 
 # The wrapper that CI runs every check through.
 WRAPPERS = ("scripts/frost.py",)
+# Parser and SymbiYosys dump helpers shared by formal key computation and runs.
+FORMAL_HELPERS = ("tests/sby_config.py", "tests/sby_dump.sby")
 # Files pytest reads for its configuration and hooks when it runs tests/*.py,
 # besides pyproject.toml; each enters keys as present or absent.
 PYTEST_CONFIGURATION = tuple(
@@ -310,6 +312,12 @@ def formal_task_key(
             {"entry": entry, "path": relative(path, root), "sha256": cache.digest(path)}
         )
     sections["files"] = sorted(entries)
+    helpers: dict[str, str] = {}
+    for helper in FORMAL_HELPERS:
+        helper_digest = cache.digest(root / helper)
+        if helper_digest is None:
+            raise ReuseKeyError(f"missing formal helper: {helper}")
+        helpers[helper] = helper_digest
 
     return canonical_digest(
         {
@@ -324,6 +332,7 @@ def formal_task_key(
             "files": sorted(files, key=lambda f: (f["path"], f["entry"])),
             "timeout": registry.timeout(task),
             "runner": registry.runner,
+            "helpers": helpers,
             "harness": harness_digests(root, cache),
         }
     )
@@ -669,7 +678,7 @@ def selection_universe(root: Path, tools_id: str, expression: str) -> str:
     cache = FileCache()
     names = [relative(path, root) for path in sorted((root / "tests").glob("*.py"))]
     names += ["pyproject.toml", ".github/workflows/ci.yml"]
-    names += [*PYTEST_CONFIGURATION, *WRAPPERS]
+    names += [*PYTEST_CONFIGURATION, *WRAPPERS, *FORMAL_HELPERS]
     return canonical_digest(
         {
             "schema": SCHEMA,

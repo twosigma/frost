@@ -65,12 +65,12 @@ smtbmc boolector
 [script]
 # Primitive-form proofs elaborate Yosys's cell models and define the macro.
 xilinx: read_verilog -formal +/xilinx/cells_sim.v
-xilinx: read -define FROST_XILINX_PRIMS
 arm_select: read -formal -sv coherent_atomic_select.sv
 arm_pair: read -formal -sv coherent_atomic_select.sv coherent_atomic_select_formal.sv
 arm_select_wide: chparam -set TAG_BITS 9 coherent_atomic_select
 arm_pair_wide: chparam -set TAG_BITS 9 coherent_atomic_select_formal
-read -formal -sv coherence_c_payload.sv coherence_pkg.sv coherence_d_arbiter.sv coherence_line_bridge.sv coherent_atomic_guard.sv coherence_read_flags.sv coherence_read_select.sv
+~xilinx: read -formal -sv coherence_c_payload.sv coherence_pkg.sv coherence_d_arbiter.sv coherence_line_bridge.sv coherent_atomic_guard.sv coherence_read_flags.sv coherence_read_select.sv
+xilinx: read -formal -sv -D FROST_XILINX_PRIMS coherence_c_payload.sv coherence_pkg.sv coherence_d_arbiter.sv coherence_line_bridge.sv coherent_atomic_guard.sv coherence_read_flags.sv coherence_read_select.sv
 arm_select: hierarchy -top coherent_atomic_select
 arm_select: script free_undefined.ys
 arm_select: prep -top coherent_atomic_select

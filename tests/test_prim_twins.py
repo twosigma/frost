@@ -235,7 +235,7 @@ def instance_name(arm: str) -> str | None:
 def blocks_of(path: Path) -> list[str]:
     """Return the block names of one file, in order."""
     names: list[str] = []
-    for _, arm in arms(path.read_text()):
+    for _, arm in arms(sby_config.read_checked_text(path)):
         name = instance_name(arm)
         if name is None:
             body = code_lines(arm)
@@ -249,7 +249,7 @@ def rtl_blocks() -> dict[str, list[str]]:
     """Return {relative path: block names} for every RTL file with blocks."""
     result = {}
     for path in sorted(RTL.rglob("*.sv")):
-        if MACRO in path.read_text():
+        if MACRO in sby_config.read_checked_text(path):
             names = blocks_of(path)
             if names:
                 result[str(path.relative_to(RTL))] = names
@@ -263,7 +263,7 @@ def macro_uses_outside_directives() -> list[str]:
         text = re.sub(
             r"/\*.*?\*/",
             lambda m: "\n" * m.group(0).count("\n"),
-            path.read_text(),
+            sby_config.read_checked_text(path),
             flags=re.S,
         )
         for number, raw in enumerate(text.split("\n"), 1):
@@ -338,36 +338,185 @@ def test_coverage_entries_name_real_blocks() -> None:
     assert not problems, "\n".join(problems)
 
 
-def defines_macro(args: list[str]) -> bool:
-    """Report whether a read or define command defines the primitive macro."""
-    if args[0] not in ("read", "read_verilog", "read_slang", "verilog_defines"):
+def reads_with_macro(args: list[str], filename: str) -> bool:
+    """Report whether a read command reads filename with MACRO defined on it."""
+    if not args or args[0] not in ("read", "read_verilog", "read_slang"):
         return False
-    names = [
-        word[2:] if word.startswith("-D") and word != "-D" else following
-        for word, following in zip(args[1:], [*args[2:], ""])
-        if word.startswith("-D")
-    ]
     if args[0] == "read" and "-define" in args:
-        names += args[args.index("-define") + 1 :]
-    return any(name.split("=", 1)[0] == MACRO for name in names)
+        return False
+    defines: set[str] = set()
+    sources: set[str] = set()
+    index = 1
+    while index < len(args):
+        word = args[index]
+        if word == "-D" and index + 1 < len(args):
+            defines.add(args[index + 1].split("=", 1)[0])
+            index += 2
+            continue
+        if word in ("-I", "--top", "-top", "-G") and index + 1 < len(args):
+            index += 2
+            continue
+        if word.startswith("-D") and len(word) > 2:
+            defines.add(word[2:].split("=", 1)[0])
+        elif not word.startswith("-"):
+            sources.add(word)
+        index += 1
+    return MACRO in defines and filename in sources
+
+
+_SV_MODULE = re.compile(
+    r"\bmodule\s+(?:automatic\s+|static\s+)?([A-Za-z_][A-Za-z0-9_]*)\b(.*?)\bendmodule\b",
+    re.S,
+)
+_SV_IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+
+
+def _sv_module_refs(path: Path) -> dict[str, set[str]]:
+    """Return {module_name: referenced_identifiers} for each module in path."""
+    clean = re.sub(r"/\*.*?\*/", " ", sby_config.read_checked_text(path), flags=re.S)
+    clean = re.sub(r"//[^\n]*", " ", clean)
+    clean = re.sub(r'"(?:\\.|[^"\\])*"', '""', clean)
+    return {
+        match[1]: set(_SV_IDENT.findall(match[2])) - {match[1]}
+        for match in _SV_MODULE.finditer(clean)
+    }
+
+
+def _resolve_sv_path(
+    name: str, files: dict[str, str] | None, base_dir: Path
+) -> Path | None:
+    """Resolve a read source basename to its file path."""
+    if files is not None:
+        rel = files.get(name)
+        if rel is None:
+            return None
+        candidate = base_dir / rel
+        return candidate if candidate.is_file() else None
+    direct = base_dir / name
+    if direct.is_file():
+        return direct
+    matches = list(RTL.rglob(name))
+    return matches[0] if len(matches) == 1 else None
+
+
+def covers_with_models(
+    commands: list[list[str]],
+    filename: str,
+    files: dict[str, str] | None = None,
+    base_dir: Path = FORMAL,
+) -> bool:
+    """Report whether a retained or compared top keeps a module from filename with MACRO."""
+    has_models = False
+    macro_files: set[str] = set()
+    read_files: list[str] = []
+    current_top: str | None = None
+    current_retained = False
+    saved: dict[str, tuple[str | None, bool]] = {}
+    copied_modules: set[str] = set()
+    compared_in_script = False
+
+    def elaborate(top: str) -> bool:
+        mod_file: dict[str, str] = {}
+        mod_refs: dict[str, set[str]] = {}
+        for source_name in read_files:
+            disk = _resolve_sv_path(source_name, files, base_dir)
+            if disk is None:
+                continue
+            for mod_name, refs in _sv_module_refs(disk).items():
+                mod_file[mod_name] = source_name
+                mod_refs[mod_name] = refs
+        if top not in mod_file:
+            return False
+        reachable = {top}
+        stack = [top]
+        while stack:
+            cur = stack.pop()
+            for callee in mod_refs.get(cur, set()) & mod_file.keys():
+                if callee not in reachable:
+                    reachable.add(callee)
+                    stack.append(callee)
+        return (
+            has_models
+            and filename in macro_files
+            and any(mod_file[mod] == filename for mod in reachable)
+        )
+
+    for args in commands:
+        if args[:2] == ["design", "-reset"]:
+            has_models = False
+            macro_files = set()
+            read_files = []
+            current_top = None
+            current_retained = False
+            copied_modules = set()
+        elif args[:2] == ["design", "-save"] and len(args) == 3:
+            saved[args[2]] = (current_top, current_retained)
+        elif args[:2] == ["design", "-stash"] and len(args) == 3:
+            saved[args[2]] = (current_top, current_retained)
+            has_models = False
+            macro_files = set()
+            read_files = []
+            current_top = None
+            current_retained = False
+            copied_modules = set()
+        elif args[:2] == ["design", "-load"] and len(args) == 3:
+            current_top, current_retained = saved.get(args[2], (None, False))
+            copied_modules = set()
+        elif args[:2] == ["design", "-delete"] and len(args) == 3:
+            saved.pop(args[2], None)
+        elif args[0] == "design" and "-copy-from" in args:
+            slot = args[args.index("-copy-from") + 1]
+            dst = args[args.index("-as") + 1]
+            src_mod = args[-1]
+            saved_top, saved_ok = saved.get(slot, (None, False))
+            if saved_ok and saved_top == src_mod:
+                copied_modules.add(dst)
+        elif args[0] == "rename" and "-top" in args:
+            if current_top is not None:
+                current_top = args[args.index("-top") + 1]
+        elif args[0] in ("hierarchy", "prep") and "-top" in args:
+            top = args[args.index("-top") + 1]
+            if current_top is None or read_files:
+                current_top = top
+                if read_files:
+                    current_retained = elaborate(top)
+        elif args[0] == "equiv_make" and len(args) == 4:
+            if {args[1], args[2]} & copied_modules:
+                compared_in_script = True
+        elif args == ["read_verilog", "-formal", "+/xilinx/cells_sim.v"]:
+            has_models = True
+        elif (
+            args[0] in ("read", "read_verilog", "read_slang") and "-define" not in args
+        ):
+            idx = 1
+            while idx < len(args):
+                word = args[idx]
+                if word in ("-D", "-I", "--top", "-top", "-G"):
+                    idx += 2
+                    continue
+                if not word.startswith("-") and word != "+/xilinx/cells_sim.v":
+                    read_files.append(word)
+                idx += 1
+            if reads_with_macro(args, filename):
+                macro_files.add(filename)
+    return compared_in_script or current_retained
 
 
 @pytest.mark.parametrize("sby", sorted(COVERAGE))
 def test_covering_file_defines_the_macro(sby: str) -> None:
-    """The covering formal file compares the primitive form and is registered."""
+    """The covering formal file retains each covered module with MACRO and models."""
     path = FORMAL / sby
     assert path.is_file(), sby
     configs = sby_config.resolved(path)
-    # The commands each task runs, as Yosys parses them: a comment or a line of
-    # another task does not count.
-    assert any(
-        any(defines_macro(args) for args in commands)
-        and ["read_verilog", "-formal", "+/xilinx/cells_sim.v"] in commands
-        for commands in (cfg.commands(path.parent) for cfg in configs.values())
-    ), f"{sby} has no task that reads the models and defines {MACRO}"
-    listed = {dest for cfg in configs.values() for dest in cfg.files}
+    tasks = [(cfg.commands(path.parent), cfg.files) for cfg in configs.values()]
+    listed = {dest for _, files in tasks for dest in files}
     for file in COVERAGE[sby]:
-        assert Path(file).name in listed, f"{sby} does not list {file}"
+        filename = Path(file).name
+        assert filename in listed, f"{sby} does not list {file}"
+        assert any(
+            covers_with_models(commands, filename, files, path.parent)
+            for commands, files in tasks
+        ), f"{sby} has no task that retains {filename} with models and -D {MACRO}"
     assert f'"{sby}"' in RUN_FORMAL.read_text(), f"{sby} is not registered"
 
 
@@ -446,7 +595,7 @@ def test_commented_macro_does_not_count(tmp_path: Path) -> None:
     """A commented-out primitive read leaves a script without the primitive form."""
     path = tmp_path / "commented.sby"
     path.write_text(
-        "[tasks]\nbmc_xilinx\n[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+        "[tasks]\nbmc_xilinx\n[options]\nmode bmc\ndepth 1\n[engines]\nsmtbmc boolector\n[script]\n"
         "# read_verilog -formal +/xilinx/cells_sim.v\n"
         "# read -formal -D FROST_XILINX_PRIMS -sv top.sv\n"
         "read -formal -sv top.sv\nprep -top top\n[files]\ntop.sv\n"
@@ -454,8 +603,116 @@ def test_commented_macro_does_not_count(tmp_path: Path) -> None:
     (tmp_path / "top.sv").write_text("module top;\nendmodule\n")
     (cfg,) = sby_config.resolved(path).values()
     commands = cfg.commands(path.parent)
-    assert not any(defines_macro(args) for args in commands)
-    assert ["read_verilog", "-formal", "+/xilinx/cells_sim.v"] not in commands
-    assert defines_macro(["read", "-formal", "-D", MACRO, "-sv", "top.sv"])
-    assert defines_macro(["read", "-define", f"{MACRO}=1"])
-    assert defines_macro(["verilog_defines", f"-D{MACRO}"])
+    assert not covers_with_models(commands, "top.sv")
+    assert reads_with_macro(["read", "-formal", "-D", MACRO, "-sv", "top.sv"], "top.sv")
+    assert reads_with_macro(
+        ["read_slang", "--top", "top", "--single-unit", f"-D{MACRO}=1", "top.sv"],
+        "top.sv",
+    )
+
+
+@pytest.mark.parametrize(
+    ("script_body", "covered"),
+    [
+        # Macro defined after reading the covered file.
+        (
+            "read_verilog -formal +/xilinx/cells_sim.v\n"
+            "read -formal -sv top.sv\n"
+            "verilog_defines -DFROST_XILINX_PRIMS\n"
+            "prep -top top\n",
+            False,
+        ),
+        # Persistent define instead of -D on the read command itself.
+        (
+            "read_verilog -formal +/xilinx/cells_sim.v\n"
+            "read -define FROST_XILINX_PRIMS\n"
+            "read -formal -sv top.sv\n"
+            "prep -top top\n",
+            False,
+        ),
+        (
+            "read_verilog -formal +/xilinx/cells_sim.v\n"
+            "verilog_defines -D FROST_XILINX_PRIMS\n"
+            "read -formal -sv top.sv\n"
+            "prep -top top\n",
+            False,
+        ),
+        # Macro defined on a different file's read command.
+        (
+            "read_verilog -formal +/xilinx/cells_sim.v\n"
+            "read -formal -D FROST_XILINX_PRIMS -sv pkg.sv\n"
+            "read -formal -sv top.sv\n"
+            "prep -top top\n",
+            False,
+        ),
+        # Primitive models cleared by design -reset before reading top.sv.
+        (
+            "read_verilog -formal +/xilinx/cells_sim.v\n"
+            "design -reset\n"
+            "read -formal -D FROST_XILINX_PRIMS -sv top.sv\n"
+            "prep -top top\n",
+            False,
+        ),
+        # Primitive design discarded by design -reset instead of handed to solver.
+        (
+            "read_verilog -formal +/xilinx/cells_sim.v\n"
+            "read -formal -D FROST_XILINX_PRIMS -sv top.sv\n"
+            "design -reset\n"
+            "read -formal -sv top.sv\n"
+            "prep -top top\n",
+            False,
+        ),
+        # Covered file read with MACRO, then dropped by hierarchy -top on another module.
+        (
+            "read_verilog -formal +/xilinx/cells_sim.v\n"
+            "read -formal -D FROST_XILINX_PRIMS -sv top.sv unused.sv\n"
+            "hierarchy -top unused\n"
+            "prep -top unused\n",
+            False,
+        ),
+        # Stashed primitive top copied under an uncompared module name.
+        (
+            "read_verilog -formal +/xilinx/cells_sim.v\n"
+            "read -formal -D FROST_XILINX_PRIMS -sv top.sv\n"
+            "prep -top top\n"
+            "rename -top gate\n"
+            "design -stash gate\n"
+            "read -formal -sv unused.sv\n"
+            "prep -top unused\n"
+            "design -copy-from gate -as sideline gate\n"
+            "equiv_make unused unused equiv\n",
+            False,
+        ),
+        # Valid primitive coverage read.
+        (
+            "read_verilog -formal +/xilinx/cells_sim.v\n"
+            "read -formal -D FROST_XILINX_PRIMS -sv top.sv\n"
+            "prep -top top\n",
+            True,
+        ),
+    ],
+)
+def test_macro_must_be_on_covered_file_read(
+    tmp_path: Path, script_body: str, covered: bool
+) -> None:
+    """Require -D FROST_XILINX_PRIMS on a retained or compared module read."""
+    (tmp_path / "pkg.sv").write_text("package pkg;\nendpackage\n")
+    (tmp_path / "top.sv").write_text("module top;\nendmodule\n")
+    (tmp_path / "unused.sv").write_text("module unused;\nendmodule\n")
+    path = tmp_path / "case.sby"
+    path.write_text(
+        "[tasks]\nbmc_xilinx\n[options]\nmode bmc\ndepth 1\n[engines]\nsmtbmc boolector\n[script]\n"
+        + script_body
+        + "[files]\npkg.sv\ntop.sv\nunused.sv\n"
+    )
+    (cfg,) = sby_config.resolved(path).values()
+    assert (
+        covers_with_models(cfg.commands(tmp_path), "top.sv", cfg.files, tmp_path)
+        is covered
+    )
+    read_select_cfg = sby_config.resolved(FORMAL / "coherence_control.sby")[
+        "coh_read_select_xilinx_prove"
+    ]
+    read_select_cmds = read_select_cfg.commands(FORMAL)
+    assert covers_with_models(read_select_cmds, "coherence_read_select.sv")
+    assert not covers_with_models(read_select_cmds, "coherence_d_arbiter.sv")

@@ -126,6 +126,8 @@ def formal_tree(root: Path) -> Path:
     sby_config.stage_proof(TRAP_PROOF, ROOT, root)
     for name in (
         "tests/test_run_formal.py",
+        "tests/sby_config.py",
+        "tests/sby_dump.sby",
         "tests/conftest.py",
         "pyproject.toml",
     ):
@@ -162,6 +164,8 @@ def edit(path: Path, old: str, new: str) -> None:
         "runner:class FormalRunner:",
         "runner:def fatal_frame_completed(output: str) -> bool:",
         "runner:    def prove(",
+        "helper:tests/sby_config.py",
+        "helper:tests/sby_dump.sby",
         "new_helper",
     ],
 )
@@ -170,9 +174,9 @@ def test_formal_key_changes_with_each_input(tmp_path: Path, change: str) -> None
     root = formal_tree(tmp_path)
     before = formal_key(root)
     kind, _, name = change.partition(":")
-    if kind == "file":
+    if kind in ("file", "helper"):
         with open(root / name, "a") as stream:
-            stream.write("// changed\n")
+            stream.write("# changed\n")
     elif kind == "sby":
         edit(root / "formal/trap_unit.sby", "bmc: depth 20", "bmc: depth 21")
     elif kind == "timeout":
@@ -291,6 +295,7 @@ def test_formal_key_file_list_is_order_independent() -> None:
         "../../outside.sv",
         "src/x.sv ../hw/x.sv",
         "../hw/rtl/missing.sv",
+        "missing_helper",
         None,
     ],
 )
@@ -301,7 +306,9 @@ def test_formal_key_rejects_files_outside_the_checkout(
     root = formal_tree(tmp_path / "repo")
     (tmp_path / "outside.sv").write_text("module x; endmodule\n")
     sby = root / "formal/trap_unit.sby"
-    if files_line is None:
+    if files_line == "missing_helper":
+        (root / "tests/sby_config.py").unlink()
+    elif files_line is None:
         text = sby.read_text()
         sby.write_text(text[: text.index("[files]")])
     else:
@@ -581,9 +588,15 @@ def run_formal_test(test_id: str) -> str:
 @pytest.fixture
 def formal_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Run formal tests with reuse on, a fake sby and a marker directory."""
+    pass_output = (
+        "SBY 00:00:01 [t] engine_0: Status returned by engine: pass\n"
+        "SBY 00:00:01 [t] summary: engine_0 (smtbmc boolector) returned pass\n"
+        "SBY 00:00:01 [t] DONE (PASS, rc=0)\n"
+    )
     outcome: dict[str, Any] = {
         "returncode": 0,
-        "output": "DONE (PASS, rc=0)",
+        "output": pass_output,
+        "pass_output": pass_output,
         "calls": 0,
     }
 
@@ -598,6 +611,11 @@ def formal_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
         )
 
     monkeypatch.setattr(subprocess, "run", sby)
+    monkeypatch.setattr(
+        test_run_formal.FormalRunner,
+        "verify_model_artifacts",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setenv("FROST_REUSE_DIR", str(tmp_path / "markers"))
     monkeypatch.setenv("FROST_REUSE_TOOLS_ID", TOOLS)
     monkeypatch.setenv("FROST_REUSE_REPORT", str(tmp_path / "report.jsonl"))
@@ -625,7 +643,7 @@ def test_formal_hook_marks_passes_and_skips_them(formal_env: dict[str, Any]) -> 
     formal_env["output"] = "DONE (FAIL, rc=2)"
     assert run_formal_test("trap_unit_cover").startswith("failed")
     formal_env["returncode"] = 0
-    formal_env["output"] = "DONE (PASS, rc=0)"
+    formal_env["output"] = formal_env["pass_output"]
     formal_env["timeout"] = True
     assert run_formal_test("trap_unit_prove").startswith("failed")
     formal_env["timeout"] = False
@@ -659,7 +677,7 @@ def test_formal_hook_canary_failure_is_loud(
     assert "example.invalid/runs/1" in result
     monkeypatch.delenv("FROST_REUSE_CANARY_SEED")
     formal_env["returncode"] = 0
-    formal_env["output"] = "DONE (PASS, rc=0)"
+    formal_env["output"] = formal_env["pass_output"]
     calls = formal_env["calls"]
     assert run_formal_test(test_id) == "passed"
     assert formal_env["calls"] == calls + 1
@@ -677,20 +695,22 @@ def test_formal_hook_canary_failure_is_loud(
         "DONE (TIMEOUT, rc=0)",
         "DONE (UNKNOWN, rc=0)",
         "",
-        "DONE (PASS, rc=0)\nDONE (TIMEOUT, rc=0)",
+        "DONE (PASS, rc=0)",
+        "summary: engine_0 (smtbmc boolector) did not return a status\nDONE (PASS, rc=0)",
+        "engine_0: Status returned by engine: pass\nDONE (PASS, rc=0)\nDONE (TIMEOUT, rc=0)",
     ],
 )
 def test_formal_hook_needs_a_pass_summary_for_a_marker(
     formal_env: dict[str, Any], output: str
 ) -> None:
-    """A run that exits with 0 without a final PASS summary writes no marker."""
+    """A run that exits with 0 without an engine PASS verdict fails and writes no marker."""
     formal_env["output"] = output
-    assert run_formal_test("trap_unit_bmc") == "passed"
-    formal_env["output"] = "DONE (PASS, rc=0)"
+    assert run_formal_test("trap_unit_bmc").startswith("failed")
+    formal_env["output"] = formal_env["pass_output"]
     assert run_formal_test("trap_unit_bmc") == "passed"
     assert run_formal_test("trap_unit_bmc") == "skipped"
     assert report_statuses(formal_env["report"]) == [
-        "proved-without-marker",
+        "failed",
         "proved",
         "reused",
     ]
@@ -699,13 +719,13 @@ def test_formal_hook_needs_a_pass_summary_for_a_marker(
 def test_formal_hook_forced_run_without_pass_summary_drops_the_marker(
     formal_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A re-proof that passes without a PASS summary leaves no marker behind."""
+    """A forced re-proof without an engine PASS verdict fails loud and drops the marker."""
     assert run_formal_test("trap_unit_bmc") == "passed"
     monkeypatch.setenv("FROST_REUSE_FORCE", "true")
     formal_env["output"] = "DONE (TIMEOUT, rc=0)"
-    assert run_formal_test("trap_unit_bmc") == "passed"
+    assert run_formal_test("trap_unit_bmc").startswith("failed: CANARY")
     monkeypatch.delenv("FROST_REUSE_FORCE")
-    formal_env["output"] = "DONE (PASS, rc=0)"
+    formal_env["output"] = formal_env["pass_output"]
     calls = formal_env["calls"]
     assert run_formal_test("trap_unit_bmc") == "passed"
     assert formal_env["calls"] == calls + 1
@@ -722,7 +742,7 @@ def test_formal_hook_forced_failure_drops_the_marker(
     assert run_formal_test("trap_unit_bmc").startswith("failed: CANARY")
     monkeypatch.delenv("FROST_REUSE_FORCE")
     formal_env["returncode"] = 0
-    formal_env["output"] = "DONE (PASS, rc=0)"
+    formal_env["output"] = formal_env["pass_output"]
     assert run_formal_test("trap_unit_bmc") == "passed"
 
 
@@ -945,6 +965,13 @@ def test_plan_skips_the_image_only_when_every_task_is_reusable(
     with open(root / ".github/workflows/ci.yml", "a") as stream:
         stream.write("# x\n")
     assert plan(root, markers) == "need_image=true"  # selection inputs changed
+    for task in tasks:
+        store.record_pass(task, formal_key(root, task), {})
+    record()
+    assert plan(root, markers) == "need_image=false"
+    with open(root / "tests/sby_config.py", "a") as stream:
+        stream.write("# x\n")
+    assert plan(root, markers) == "need_image=true"  # formal helper changed
     collected.write_text(
         "tests/test_run_formal.py::TestFormalVerification::test_sby_installed\n"
         "\n1/900 tests collected (899 deselected) in 1.0s\n"
