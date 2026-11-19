@@ -223,7 +223,7 @@ def test_l1d_array_tag_geometry(
     script = (
         "read_verilog -sv -DSYNTHESIS " + " ".join(map(str, sources))
         + f"; chparam -set ADDR_WIDTH {address} -set ULTRA {int(ultra)} "
-        f"-set WAYS 4 -set HIT_PORT 1 {top}; hierarchy -check -top {top}; "
+        f"-set WAYS 4 -set HIT_PORT {int(not ultra)} {top}; hierarchy -check -top {top}; "
         f"proc; memory_collect; check -assert; write_json {netlist}"
     )
     result = subprocess.run(
@@ -231,14 +231,17 @@ def test_l1d_array_tag_geometry(
     )
     assert result.returncode == 0, result.stdout + result.stderr
     modules = json.loads(netlist.read_text())["modules"]
-    cells = modules[top]["cells"]
+    (array,) = (
+        module for module in modules.values() if int(module["attributes"].get("top", "0"), 2)
+    )
+    cells = array["cells"]
     # Four 32-byte ways in 128 KiB use 10 set bits and 5 offset bits.
     # Each tag carries its address, two permission bits and a snapshot bit.
     entry_bits = address - 15 + 3
     tags = [cell for name, cell in cells.items() if name.startswith("gen_tag_")]
     copies = [cell for name, cell in cells.items() if name.startswith("gen_hit_port.gen_copy")]
     assert len(tags) == (1 if ultra else 4)
-    assert len(copies) == 4
+    assert len(copies) == (0 if ultra else 4)
     for copy in copies:
         assert len(copy["connections"]["i_write_data"]) == entry_bits
         assert len(copy["connections"]["o_read_data"]) == entry_bits

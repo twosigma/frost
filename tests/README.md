@@ -297,7 +297,8 @@ run in the unit shard. The program shards
 exercise the coherent hierarchy in both memory configurations. Whole-L1D
 maintenance is active in simulation. Synthesis checks cover both line sizes
 at 32-bit and 56-bit physical widths. A four-way L1D geometry check
-elaborates the tag RAMs and hit-port copies at 32, 48, 49 and 56 bits.
+elaborates the tag RAMs at 32, 48, 49 and 56 bits. The block RAM
+configuration also checks all four copies for the hit port.
 It checks the change from two packed banks to four when the tag entry
 grows from 36 to 37 bits.
 `coherence_l1d` holds a probe reply across a grant and checks single grant
