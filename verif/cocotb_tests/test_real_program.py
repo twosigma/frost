@@ -302,15 +302,20 @@ def _program_soc(dut: Any) -> Any:
     return getattr(platform, "soc", platform)
 
 
+def _nic_engine(nic: Any) -> Any:
+    """Return the NIC engine directly or inside a nic_top wrapper."""
+    return getattr(nic, "u_engine", nic)
+
+
 def _nic_reset_history(dut: Any) -> tuple[Any, ...]:
     """Return checker history without changing its reset evidence."""
     soc = _program_soc(dut)
     if not hasattr(soc, "gen_cached_tier"):
         return ()
     tier = soc.gen_cached_tier
-    fronts = [tier.nic.u_front]
+    fronts = [_nic_engine(tier.nic).u_front]
     if hasattr(tier, "gen_nic_1g"):
-        fronts.append(tier.gen_nic_1g.nic_1g.u_front)
+        fronts.append(_nic_engine(tier.gen_nic_1g.nic_1g).u_front)
     return tuple(front.reset_seen_q for front in fronts)
 
 

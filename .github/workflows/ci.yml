@@ -1299,7 +1299,8 @@ jobs:
           - shard: Xilinx core, hart caches and NIC
             pytest_filter: >-
               test_xilinx_partition[core] or test_xilinx_partition[core_backend] or
-              test_xilinx_partition[hart_cache] or test_xilinx_partition[nic]
+              test_xilinx_partition[hart_cache] or test_xilinx_partition[nic_engine] or
+              test_xilinx_partition[nic_mac]
             timeout_minutes: 180
           - shard: Xilinx top and cluster memory
             pytest_filter: >-

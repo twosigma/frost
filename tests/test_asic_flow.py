@@ -1433,13 +1433,18 @@ def test_each_clock_has_an_io_copy_at_one_pin(tmp_path: Path) -> None:
         assert divisor == "1", name
         assert len(pins) == 1 and pins[0].endswith(("/CK", "/clk0")), name
 
-    wrapper = (
-        orfs.REPOSITORY_ROOT / "hw/rtl/peripherals/nic/nic_mac_wrap.sv"
+    soc_source = (orfs.REPOSITORY_ROOT / "hw/rtl/soc_top/soc_top.sv").read_text()
+    assert re.search(r"\bnic_mac_10g\s*#\s*\([^;]*\)\s*nic_mac\b", soc_source, re.S), (
+        "the 10G MAC instance name in soc_top must stay stable"
+    )
+    mac_source = (
+        orfs.REPOSITORY_ROOT / "hw/rtl/peripherals/nic/nic_mac_10g.sv"
     ).read_text()
-    pcs_branch = re.search(r"if\s*\(!GMII_MODE\)\s*begin\s*:\s*(\w+)", wrapper)
-    assert pcs_branch, "the default NIC branch must have a stable hierarchy name"
+    assert re.search(r"\beth10g_mac_pcs\s*#\s*\([^;]*\)\s*u_mac\b", mac_source, re.S), (
+        "the 10G PCS instance name in nic_mac_10g must stay stable"
+    )
     for direction in ("tx", "rx"):
-        expected = f".u_mac.{pcs_branch[1]}.u_mac.{direction}_gearbox.reservoir[0]"
+        expected = f".nic_mac.u_mac.{direction}_gearbox.reservoir[0]"
         assert expected in generated[f"nic_{direction}_clk_io"][2][0]
 
     missing = _evaluate_sdc(tmp_path, find_pins=False)

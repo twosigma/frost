@@ -1,0 +1,25 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 4
+cover: mode cover
+cover: depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top nic_axis_boundary_formal --single-unit --no-synthesis-define -DFORMAL nic_pkg.sv nic_axis_boundary_formal.sv
+hierarchy -top nic_axis_boundary_formal
+script free_undefined.ys
+prep -top nic_axis_boundary_formal -flatten
+~cover: chformal -cover -remove
+opt_clean
+
+[files]
+../hw/rtl/peripherals/nic/nic_pkg.sv
+nic_axis_boundary_formal.sv
+free_undefined.ys

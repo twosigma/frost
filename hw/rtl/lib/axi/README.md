@@ -18,7 +18,7 @@ copies.
 In `soc_top` and the TestRIG platform:
 
 ```
-nic_top (line_port_axi_bridge inside) --+
+nic_engine (line_port_axi_bridge inside) --+
                                         +-- axi_mux -- axi_coherent_bridge -- coherent ingress
 dma_test_engine_axi ---------------------+
 ```

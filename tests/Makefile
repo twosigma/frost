@@ -501,8 +501,8 @@ COMPILE_ARGS := $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
         $(ROOT)/hw/rtl/lib/cdc/cdc_sync.sv \
         $(ROOT)/boards/vcu118/vcu118_eth1g.sv
 VERILOG_SOURCES :=
-else ifneq ($(filter $(TOPLEVEL),nic_top nic_mac_wrap nic_pause_rx_wire),)
-# The whole NIC: MAC/PCS in its domains, FIFOs, engines, registers
+else ifneq ($(filter $(TOPLEVEL),nic_top nic_engine nic_mac_10g nic_mac_1g nic_pause_rx_wire),)
+# The whole NIC, its core engine, or a pluggable MAC block
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
@@ -521,6 +521,8 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/fifo/fifo.f \
         $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_domain_reset.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_core_reset_ctrl.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_mac_reset_ctrl.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_reset_ctrl.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_reset_test_harness.sv
 VERILOG_SOURCES :=

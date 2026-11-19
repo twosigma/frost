@@ -17,7 +17,7 @@
 The DMA memory model answers the NIC's AXI4 master, reordering responses
 across ids. Register accesses use AXI4-Lite with independent AW and W
 timing, 32-bit write lanes and aligned 64-bit read pairs. Frames use
-nic_mac_wrap's raw loopback or the independent net10g 64b/66b wire model.
+nic_mac_10g's raw loopback or the independent net10g 64b/66b wire model.
 
 RAW_LOOPBACK=1 uses aligned TX and RX clocks. RAW_LOOPBACK=0 runs the
 unrelated-clock case, reports no shared clock in PHY_STATUS, and exchanges
@@ -107,7 +107,11 @@ def _raw_loopback_built() -> bool:
     no top, and the default build is assumed.
     """
     top: Any = getattr(cocotb, "top", None)
-    return top is None or int(top.RAW_LOOPBACK.value) != 0
+    return (
+        top is None
+        or not hasattr(top, "RAW_LOOPBACK")
+        or int(top.RAW_LOOPBACK.value) != 0
+    )
 
 
 RAW_LOOPBACK = _raw_loopback_built()
@@ -957,7 +961,11 @@ async def test_rx_domain_restart_replays_fifo_and_pause_configuration(dut: Any) 
     for offset, value in settings:
         await nic.wr(offset, value)
     await nic.cycles(100)
-    mac = dut.u_mac
+    mac = (
+        dut.gen_mac_1g.u_mac.u_cdc
+        if hasattr(dut, "gen_mac_1g")
+        else dut.gen_mac_10g.u_mac.u_cdc
+    )
 
     def applied() -> tuple[int, ...]:
         return tuple(
