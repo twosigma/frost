@@ -737,107 +737,6 @@ async def test_rx_fifo_limit_register(dut: Any) -> None:
     nic.stop()
 
 
-@cocotb.test()
-async def test_reject_with_full_tx_fifo(dut: Any) -> None:
-    """Use PAUSE to fill the TX FIFO and follow a rejected frame through the MAC."""
-    from cocotb_tests.nic.test_nic_pause import CTRL_RX, pause_frame
-
-    nic = await _start(dut, 101, loopback=False)
-    await nic.program_rings()
-    await nic.wr(PAUSE_CTRL, CTRL_RX)
-    await nic.wr(CTRL, CTRL_TX_EN | CTRL_RX_EN)
-    await nic.wait_carrier()
-    mac = dut.u_mac
-    fifo = mac.u_tx_fifo
-    nic.wire.send([pause_frame(0xFFFF)])
-    for _ in range(4000):
-        await RisingEdge(dut.i_tx_clk)
-        if int(mac.tx_paused.value):
-            break
-    assert int(mac.tx_paused.value)
-
-    # The read-side skid prefetches two entries while PAUSE blocks the drain.
-    limit = int(fifo.stop_at.value)
-    partial = nic.frame(8 * (limit + 2 + 1))
-    await nic.send_tx(partial, FIRST)
-    last_word = int.from_bytes(partial[-8:], "little")
-    for _ in range(20000):
-        await RisingEdge(dut.i_clk)
-        if int(mac.i_tx_valid.value) and not int(mac.o_tx_ready.value):
-            break
-    assert int(fifo.o_occupancy.value) == limit
-    assert int(mac.tx_paused.value) and not int(mac.o_tx_ready.value)
-
-    async def check_fifo_offer() -> None:
-        accepted = False
-        for _ in range(20000):
-            await RisingEdge(dut.i_clk)
-            if not accepted:
-                assert int(mac.i_tx_valid.value), "withdrew the stalled data beat"
-                assert int(mac.i_tx_data.value) == last_word
-                assert int(mac.i_tx_code.value) == 7
-                assert int(mac.i_tx_csum.value) == 0 and not int(mac.i_tx_abort.value)
-                accepted = bool(mac.o_tx_ready.value)
-                if accepted:
-                    dut._log.info("TX FIFO accepted held data %016x", last_word)
-            elif int(mac.i_tx_valid.value) and int(mac.o_tx_ready.value):
-                assert int(mac.i_tx_abort.value) and int(mac.i_tx_code.value) == 8
-                dut._log.info("TX FIFO accepted closing abort")
-                return
-        raise AssertionError("TX FIFO did not accept held data followed by abort")
-
-    async def check_mac_drop() -> None:
-        data = bytearray()
-        closed = False
-        for _ in range(20000):
-            await RisingEdge(dut.i_tx_clk)
-            if int(mac.t_valid.value) and int(mac.t_ready.value):
-                word = int(mac.t_word.value)
-                code = (word >> 64) & 15
-                assert not closed
-                if word >> 83:
-                    assert code == 8 and data == partial
-                    closed = True
-                else:
-                    assert code == 7
-                    data.extend((word & ((1 << 64) - 1)).to_bytes(8, "little"))
-            if int(mac.tx_drop.value):
-                assert closed
-                dut._log.info("MAC dropped %d data bytes followed by abort", len(data))
-                return
-        raise AssertionError("MAC never dropped the aborted frame")
-
-    dut._log.info("TX FIFO reached its RAM limit of %d with the drain paused", limit)
-    core_check = cocotb.start_soon(check_fifo_offer())
-    mac_check = cocotb.start_soon(check_mac_drop())
-    post_desc(nic.mem, TX_RING, 1, 0x1000, LAST | 8)
-    nic.tx_posted += 1
-    await nic.wr(TX_TAIL, nic.tx_posted)
-    assert await nic.wait_done(TX_RING, 1) == DONE | ERR | ABORT
-    assert desc_status(nic.mem, TX_RING, 0) == DONE
-    await nic.cycles(64)
-    assert int(mac.tx_paused.value) and int(fifo.o_occupancy.value) == limit
-    assert await nic.rd64(COUNTERS + 8 * CNT_TX_MAC_DROP) == 0
-    nic.wire.send([pause_frame(0)])
-    await core_check
-    await mac_check
-    await nic.cycles(1200)
-    assert await nic.rd64(COUNTERS + 8 * CNT_TX_MAC_DROP) == 1
-    assert await nic.rd64(COUNTERS + 8 * CNT_TX_ABORTED) == 1
-    assert not nic.wire.frames and nic.wire.receiver.active is None
-
-    good = nic.frame(80)
-    index = await nic.send_tx(good)
-    assert await nic.wait_done(TX_RING, index) == DONE
-    await nic.cycles(1200)
-    assert nic.wire.frames == [good] and nic.wire.receiver.active is None
-    assert await nic.rd64(COUNTERS + 8 * CNT_TX_MAC_DROP) == 1
-    dut._log.info(
-        "TX_MAC_DROP 0 -> 1, TX_ABORTED 1, wire captured only the 80-byte successor"
-    )
-    nic.stop()
-
-
 @cocotb.skipif(not RAW_LOOPBACK, reason="needs the raw loopback")
 @cocotb.test()
 async def test_loopback_frames(dut: Any) -> None:
@@ -1163,4 +1062,105 @@ async def test_unrelated_mac_clocks(dut: Any) -> None:
     assert await nic.rd64(COUNTERS + 8 * CNT_TX_FRAMES) == len(outgoing)
     assert await nic.rd64(COUNTERS + 8 * CNT_RX_BYTES) == sum(map(len, incoming))
     assert await nic.rd64(COUNTERS + 8 * CNT_TX_BYTES) == sum(map(len, outgoing))
+    nic.stop()
+
+
+@cocotb.test()
+async def test_reject_with_full_tx_fifo(dut: Any) -> None:
+    """Use PAUSE to fill the TX FIFO and follow a rejected frame through the MAC."""
+    from cocotb_tests.nic.test_nic_pause import CTRL_RX, pause_frame
+
+    nic = await _start(dut, 101, loopback=False)
+    await nic.program_rings()
+    await nic.wr(PAUSE_CTRL, CTRL_RX)
+    await nic.wr(CTRL, CTRL_TX_EN | CTRL_RX_EN)
+    await nic.wait_carrier()
+    mac = dut.u_mac
+    fifo = mac.u_tx_fifo
+    nic.wire.send([pause_frame(0xFFFF)])
+    for _ in range(4000):
+        await RisingEdge(dut.i_tx_clk)
+        if int(mac.tx_paused.value):
+            break
+    assert int(mac.tx_paused.value)
+
+    # The read-side skid prefetches two entries while PAUSE blocks the drain.
+    limit = int(fifo.stop_at.value)
+    partial = nic.frame(8 * (limit + 2 + 1))
+    await nic.send_tx(partial, FIRST)
+    last_word = int.from_bytes(partial[-8:], "little")
+    for _ in range(20000):
+        await RisingEdge(dut.i_clk)
+        if int(mac.i_tx_valid.value) and not int(mac.o_tx_ready.value):
+            break
+    assert int(fifo.o_occupancy.value) == limit
+    assert int(mac.tx_paused.value) and not int(mac.o_tx_ready.value)
+
+    async def check_fifo_offer() -> None:
+        accepted = False
+        for _ in range(20000):
+            await RisingEdge(dut.i_clk)
+            if not accepted:
+                assert int(mac.i_tx_valid.value), "withdrew the stalled data beat"
+                assert int(mac.i_tx_data.value) == last_word
+                assert int(mac.i_tx_code.value) == 7
+                assert int(mac.i_tx_csum.value) == 0 and not int(mac.i_tx_abort.value)
+                accepted = bool(mac.o_tx_ready.value)
+                if accepted:
+                    dut._log.info("TX FIFO accepted held data %016x", last_word)
+            elif int(mac.i_tx_valid.value) and int(mac.o_tx_ready.value):
+                assert int(mac.i_tx_abort.value) and int(mac.i_tx_code.value) == 8
+                dut._log.info("TX FIFO accepted closing abort")
+                return
+        raise AssertionError("TX FIFO did not accept held data followed by abort")
+
+    async def check_mac_drop() -> None:
+        data = bytearray()
+        closed = False
+        for _ in range(20000):
+            await RisingEdge(dut.i_tx_clk)
+            if int(mac.t_valid.value) and int(mac.t_ready.value):
+                word = int(mac.t_word.value)
+                code = (word >> 64) & 15
+                assert not closed
+                if word >> 83:
+                    assert code == 8 and data == partial
+                    closed = True
+                else:
+                    assert code == 7
+                    data.extend((word & ((1 << 64) - 1)).to_bytes(8, "little"))
+            if int(mac.tx_drop.value):
+                assert closed
+                dut._log.info("MAC dropped %d data bytes followed by abort", len(data))
+                return
+        raise AssertionError("MAC never dropped the aborted frame")
+
+    dut._log.info("TX FIFO reached its RAM limit of %d with the drain paused", limit)
+    core_check = cocotb.start_soon(check_fifo_offer())
+    mac_check = cocotb.start_soon(check_mac_drop())
+    post_desc(nic.mem, TX_RING, 1, 0x1000, LAST | 8)
+    nic.tx_posted += 1
+    await nic.wr(TX_TAIL, nic.tx_posted)
+    assert await nic.wait_done(TX_RING, 1) == DONE | ERR | ABORT
+    assert desc_status(nic.mem, TX_RING, 0) == DONE
+    await nic.cycles(64)
+    assert int(mac.tx_paused.value) and int(fifo.o_occupancy.value) == limit
+    assert await nic.rd64(COUNTERS + 8 * CNT_TX_MAC_DROP) == 0
+    nic.wire.send([pause_frame(0)])
+    await core_check
+    await mac_check
+    await nic.cycles(1200)
+    assert await nic.rd64(COUNTERS + 8 * CNT_TX_MAC_DROP) == 1
+    assert await nic.rd64(COUNTERS + 8 * CNT_TX_ABORTED) == 1
+    assert not nic.wire.frames and nic.wire.receiver.active is None
+
+    good = nic.frame(80)
+    index = await nic.send_tx(good)
+    assert await nic.wait_done(TX_RING, index) == DONE
+    await nic.cycles(1200)
+    assert nic.wire.frames == [good] and nic.wire.receiver.active is None
+    assert await nic.rd64(COUNTERS + 8 * CNT_TX_MAC_DROP) == 1
+    dut._log.info(
+        "TX_MAC_DROP 0 -> 1, TX_ABORTED 1, wire captured only the 80-byte successor"
+    )
     nic.stop()
