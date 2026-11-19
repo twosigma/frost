@@ -290,7 +290,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "early_backend_hold.sby",
         "Combined backend hold equals early recovery or independently sampled fatal "
-        "stop through reset and flush",
+        "stop through reset and flush; a coherent issue packet redirects to its "
+        "resolved target or fall-through",
         tasks=("prove", "cover"),
     ),
     FormalTarget(

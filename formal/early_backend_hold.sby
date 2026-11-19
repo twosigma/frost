@@ -17,8 +17,8 @@ read -formal -D EARLY_BACKEND_HOLD_PROOF -sv early_misprediction_recovery.sv
 hierarchy -top early_misprediction_recovery
 script free_undefined.ys
 prep -top early_misprediction_recovery -flatten
-select -assert-count 1 t:$check r:FLAVOR=assert %i
-select -assert-count 5 t:$check r:FLAVOR=cover %i
+select -assert-count 2 t:$check r:FLAVOR=assert %i
+select -assert-count 8 t:$check r:FLAVOR=cover %i
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
 
