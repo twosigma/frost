@@ -199,7 +199,7 @@ class ModelConfig:
     l1d_mshrs: int = 8
     l1d_id_bits: int = 4
     l1d_wb_slots: int = 2
-    l2_mshrs: int = 4
+    l2_mshrs: int = 8
     l2_id_bits: int = 5
     l2_wb_slots: int = 2
     l2_waiters: int = 2

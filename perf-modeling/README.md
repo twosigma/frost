@@ -315,7 +315,7 @@ assumptions expressed in core cycles.
 | L1I / L1D / L2 capacity | 16 KiB / 128 KiB / 2 MiB |
 | Cache associativity | 4 ways |
 | L1 / L2 line bytes | 32 / 64 |
-| L1D request endpoints / L2 miss slots | 8 / 4 |
+| L1D request endpoints / L2 miss slots | 8 / 8 |
 | L1D stream look-ahead endpoints / window | 2 / 8 sectors |
 | L1D store records / read slots | 4 / 8 |
 | L1D / L2 writeback slots | 2 / 2 |
@@ -325,7 +325,7 @@ assumptions expressed in core cycles.
 | CPU / DDR AXI ID bits | 6 / 5 |
 | AXI outstanding transaction limit | 32 |
 
-`cpu_top` passes eight L2 fills (`L2_NUM_MSHR`) and a 512-entry L0 with Normal read caching; the model keeps four L2 miss slots and 256 L0 entries, and a configuration file states the RTL's values, as the board data set does for its fills.
+`cpu_top` passes eight L2 fills (`L2_NUM_MSHR`), as does the model, and a 512-entry L0 with Normal read caching; the model keeps 256 L0 entries, and a configuration file states the RTL's values, as the board data set does for its fills.
 
 `configs/vcu118_l2_4mib.json` selects the VCU118's 4 MiB L2 through
 `--config-file`. It overrides capacity only; the remaining settings retain
