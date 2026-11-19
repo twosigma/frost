@@ -1,0 +1,33 @@
+--pycode-begin--
+# Resolve a batch in one SymbiYosys process. The caller checks the source
+# dialect before passing the configuration texts on standard input.
+import json
+import sys
+from sby_core import SbyAbort, SbyConfig
+
+# A file SymbiYosys refuses gets {"error": message}, with what it printed to
+# standard error, instead of stopping the batch.
+import contextlib
+import io
+
+result = {}
+for path, text in json.load(sys.stdin).items():
+    lines = text.removesuffix("\n").split("\n")
+    printed = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(printed), contextlib.redirect_stdout(printed):
+            _, tasks, _, _ = read_sbyconfig(lines, None)
+            configs = {}
+            for taskname in tasks or [None]:
+                config, _, _, _ = read_sbyconfig(lines, taskname)
+                cfg = SbyConfig()
+                cfg.parse_config(config)
+                configs[taskname or ""] = dict(
+                    script=cfg.script, files=cfg.files, inline=cfg.verbatim_files,
+                    options=cfg.options, engines=cfg.engines.get(None, []),
+                )
+        result[path] = {"tasks": configs}
+    except (SbyAbort, SystemExit, Exception) as error:
+        result[path] = {"error": (printed.getvalue().strip() + " " + str(error)).strip()}
+output(json.dumps(result))
+--pycode-end--

@@ -39,6 +39,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypedDict
 
+import sby_config
+
 ROOT = Path(__file__).resolve().parents[1]
 TIMEOUT_SECONDS = 60
 UNROLL_LIMIT = 1 << 24
@@ -223,26 +225,6 @@ def simulation_module_cases() -> list[SlangCase]:
     return cases
 
 
-def _sections(path: Path) -> dict[str, list[str]]:
-    sections: dict[str, list[str]] = defaultdict(list)
-    section = ""
-    for raw in path.read_text().splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1]
-        elif line:
-            sections[section].append(line)
-    return sections
-
-
-def _task_line(line: str, tags: set[str]) -> str:
-    if not re.match(r"^~?[A-Za-z0-9_]+:", line):
-        return line
-    tag, command = line.split(":", 1)
-    selected = tag[1:] not in tags if tag.startswith("~") else tag in tags
-    return command.strip() if selected else ""
-
-
 def formal_cases(root: Path = ROOT) -> list[SlangCase]:
     """Extract actual .sby read/define/top views; deduplicate identical inputs.
 
@@ -253,19 +235,18 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
     """
     cases: dict[tuple[object, ...], SlangCase] = {}
     for sby in sorted((root / "formal").glob("*.sby")):
-        sections = _sections(sby)
-        filemap = {}
-        for line in sections["files"]:
-            words = shlex.split(line)
-            source = (sby.parent / words[-1]).resolve()
-            filemap[words[0] if len(words) > 1 else source.name] = source
-        includes = tuple(
-            "-I" + str(p)
-            for p in sorted({sby.parent} | {p.parent for p in filemap.values()})
-        )
-        for task in sections["tasks"] or ["default"]:
-            tags = set(task.split())
-            name = task.split()[0]
+        source = sby_config.source(sby)
+        for task in source.tasks:
+            config = source.task(task)
+            name = task or "default"
+            filemap = {
+                dest: (sby.parent / path).resolve()
+                for dest, path in config.files.items()
+            }
+            includes = tuple(
+                "-I" + str(p)
+                for p in sorted({sby.parent} | {p.parent for p in filemap.values()})
+            )
             persistent: list[str] = []
             units: list[ReadUnit] = []
             parameters: dict[str, dict[str, str]] = defaultdict(dict)
@@ -274,10 +255,9 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
             # A script that resets the design (the primitive-twin comparisons
             # read the module twice) holds one view per segment.
             segments: list[tuple[str, list[ReadUnit], dict, set[str]]] = []
-            for raw in sections["script"]:
-                line = _task_line(raw, tags)
-                # Yosys decimal Verilog literals contain a bare apostrophe.
-                words = line.split()
+            # The commands as Yosys parses them, included scripts too.
+            for words in config.commands(sby.parent):
+                line = " ".join(words)
                 if not words:
                     continue
                 if words[:2] == ["design", "-reset"]:

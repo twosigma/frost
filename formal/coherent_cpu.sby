@@ -19,7 +19,8 @@ coh_lq_selector16_prove selector selector16
 [options]
 mode prove
 depth 4
-timeout 180
+~lq: timeout 180
+lq: timeout 360
 
 [engines]
 smtbmc boolector

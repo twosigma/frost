@@ -16,8 +16,8 @@ smtbmc boolector
 [script]
 # Arbitrary ready/later masks: first ready in later, else first ready.
 xilinx: read_verilog -formal +/xilinx/cells_sim.v
-xilinx: read -define FROST_XILINX_PRIMS
-read -formal -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv coherence_home.sv coherence_home_forward_pins.sv
+portable: read -formal -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv coherence_home.sv coherence_home_forward_pins.sv
+xilinx: read -formal -sv -D SYNTHESIS -D FROST_XILINX_PRIMS cache_perf_pkg.sv coherence_pkg.sv coherence_home.sv coherence_home_forward_pins.sv
 one: chparam -set FILLS 1 coherence_home_forward_pins
 three: chparam -set FILLS 3 coherence_home_forward_pins
 eight: chparam -set FILLS 8 coherence_home_forward_pins

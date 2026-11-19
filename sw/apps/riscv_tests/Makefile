@@ -88,16 +88,19 @@ else
 $(error MEM_CONFIG must be one of: bram, ddr (got '$(MEM_CONFIG)'))
 endif
 
-# Output files
-EXECUTABLE_ELF_FILE  = sw.elf
-VERILOG_HEX_FILE     = sw.mem
-DWORD_HEX_FILE       = sw64.mem
-DDR_VERILOG_HEX_FILE = sw_ddr.mem
-RAW_BINARY_FILE      = sw.bin
-DISASSEMBLY_FILE     = sw.S
+# OUTPUT_DIR lets independent tests share the recipes and source headers.
+OUTPUT_DIR ?= .
+EXECUTABLE_ELF_FILE  = $(OUTPUT_DIR)/sw.elf
+VERILOG_HEX_FILE     = $(OUTPUT_DIR)/sw.mem
+DWORD_HEX_FILE       = $(OUTPUT_DIR)/sw64.mem
+DDR_VERILOG_HEX_FILE = $(OUTPUT_DIR)/sw_ddr.mem
+RAW_BINARY_FILE      = $(OUTPUT_DIR)/sw.bin
+DISASSEMBLY_FILE     = $(OUTPUT_DIR)/sw.S
 
 # Build targets
-all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
+all: images $(DISASSEMBLY_FILE)
+
+images: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE)
 
 # GCC preprocesses the .S test. DDR builds also link a ROM stub that jumps
 # to _start.
@@ -142,4 +145,4 @@ clean:
 	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) \
 		$(RAW_BINARY_FILE) $(DISASSEMBLY_FILE)
 
-.PHONY: all clean
+.PHONY: all images clean

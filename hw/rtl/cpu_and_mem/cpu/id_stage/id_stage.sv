@@ -287,7 +287,9 @@ module id_stage #(
         (r.opcode == riscv_pkg::OPC_FNMADD) ||
         (VECTOR && (r.opcode == riscv_pkg::OPC_OP_V) &&
          ((r.funct3 == 3'b001) || (r.funct3 == 3'b101)));
-    vec = (r.opcode == riscv_pkg::OPC_OP_V) || riscv_pkg::is_vector_mem(r.opcode, r.funct3);
+    vec = (r.opcode == riscv_pkg::OPC_OP_V) ||
+        (VECTOR && r.opcode == riscv_pkg::OPC_OP_VE) || riscv_pkg::is_vector_mem(r.opcode,
+                                                                                 r.funct3);
     cbo = (r.opcode == riscv_pkg::OPC_MISC_MEM) && (r.funct3 == 3'b010);
     wrs = (r.opcode == riscv_pkg::OPC_CSR) && (r.funct3 == 3'b000) &&
         ({r.funct7, r.source_reg_2} == 12'h00D);
@@ -312,10 +314,11 @@ module id_stage #(
                                    (instruction.funct3 == 3'b000) &&
                                    (instruction.funct7 == 7'b0001100);
   logic is_illegal_instruction;
-  // VS=Off makes vector instructions illegal: OP-V and the vector loads and
+  // VS=Off makes vector instructions illegal: OP-V, OP-VE and the vector loads and
   // stores (LOAD-FP and STORE-FP with a vector width).
   logic is_vector_direct;
-  assign is_vector_direct = (instruction.opcode == riscv_pkg::OPC_OP_V) || riscv_pkg::is_vector_mem(
+  assign is_vector_direct = (instruction.opcode == riscv_pkg::OPC_OP_V) ||
+        (VECTOR && instruction.opcode == riscv_pkg::OPC_OP_VE) || riscv_pkg::is_vector_mem(
       instruction.opcode, instruction.funct3
   );
   assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction |
@@ -887,6 +890,7 @@ module id_stage #(
   logic is_illegal_instruction_2;
   logic is_vector_direct_2;
   assign is_vector_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_OP_V) ||
+        (VECTOR && instruction_2.opcode == riscv_pkg::OPC_OP_VE) ||
                               riscv_pkg::is_vector_mem(
       instruction_2.opcode, instruction_2.funct3
   );

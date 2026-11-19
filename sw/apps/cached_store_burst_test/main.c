@@ -21,6 +21,7 @@
 #include "uart.h"
 
 #define cells ((volatile uint64_t *) (uintptr_t) 0x81080000)
+#define CELLS_PER_PAGE (4096 / sizeof(uint64_t))
 volatile uint64_t traps;
 
 __attribute__((naked, aligned(4))) static void store_trap(void)
@@ -59,7 +60,7 @@ int main(void)
                          : [p] "r"(cells), [v] "r"(value)
                          : "memory");
         fail |= merged != (value | (value << 8) | (value << 16));
-        /* Each sequence leaves several committed stores for the drain gate. */
+        /* FENCE.I drains stores to both sectors. */
         __asm__ volatile("sd %[v], 0(%[p])\n"
                          "sd %[v], 8(%[p])\n"
                          "sd %[v], 32(%[p])\n"
@@ -71,14 +72,21 @@ int main(void)
                          : "memory");
         fail |= cells[0] != (value | (value << 8) | (value << 16));
         fail |= cells[1] != value || cells[4] != value || cells[5] != value;
-        __asm__ volatile("sd %[v], 0(%[p])\n"
+        /* Keep ECALL's two-word fetch window on the burst's line.
+         * The final store needs ownership of a fresh line each time. */
+        volatile uint64_t *cold = cells + value * CELLS_PER_PAGE;
+        __asm__ volatile(".balign 32\n"
+                         "sd %[v], 0(%[p])\n"
                          "sd %[v], 8(%[p])\n"
                          "sd %[v], 32(%[p])\n"
                          "sd %[v], 40(%[p])\n"
+                         "sd %[v], 0(%[cold])\n"
                          "ecall\n" ::[p] "r"(cells),
-                         [v] "r"(value)
+                         [v] "r"(value),
+                         [cold] "r"(cold)
                          : "memory");
         fail |= cells[0] != value || cells[5] != value;
+        fail |= *cold != value;
         uint64_t old, status;
         __asm__ volatile("sd %[v], 0(%[p])\n"
                          "sd %[v], 8(%[p])\n"

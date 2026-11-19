@@ -15,9 +15,10 @@
  */
 
 // Check the LAUNCH_SQUASH issue rule on reservation_station with u_fp_rs's
-// parameters, tie-offs, and recovery-hold gate from tomasulo_wrapper.sv.
-// Other inputs are arbitrary. The proof has no assumptions; the RS is read
-// without FORMAL. Cover tasks assume an initial reset.
+// parameters, tie-offs and issue-ready gates from tomasulo_wrapper.sv.
+// The engine busy, pipeline credit and forward bus inputs are arbitrary.
+// The proof reads the RS without FORMAL and has no assumptions. The cover
+// task starts from reset.
 //
 // The shim and FP_RS share their flush inputs in the wrapper:
 //   shim i_flush        = speculative_flush_all = RS i_flush_all
@@ -28,12 +29,17 @@ module fp_launch_squash_rs_producer (
     input logic i_clk,
     input logic i_rst_n,
 
-    input riscv_pkg::rs_dispatch_t   i_dispatch,
-    input logic                      i_intent_1,
-    input riscv_pkg::cdb_broadcast_t i_cdb,
-    input riscv_pkg::cdb_broadcast_t i_cdb_2,
-    input logic                      i_fu_ready,
-    input logic                      i_backend_recovery_hold,
+    input riscv_pkg::rs_dispatch_t                                          i_dispatch,
+    input logic                                                             i_intent_1,
+    input riscv_pkg::cdb_broadcast_t                                        i_cdb,
+    input riscv_pkg::cdb_broadcast_t                                        i_cdb_2,
+    input logic                                                             i_fu_ready,
+    input logic                                                             i_backend_recovery_hold,
+    input logic                                                             i_pipe_busy,
+    input logic                                                             i_engine_busy,
+    input logic                                                             i_fwd_wake_valid,
+    input logic                      [riscv_pkg::ReorderBufferTagWidth-1:0] i_fwd_wake_tag,
+    input logic                      [                 riscv_pkg::FLEN-1:0] i_fwd_value,
 
     input logic                                        i_flush_all,
     input logic                                        i_flush_en,
@@ -43,12 +49,18 @@ module fp_launch_squash_rs_producer (
   localparam int unsigned TagW = riscv_pkg::ReorderBufferTagWidth;
 
   riscv_pkg::rs_issue_t rs_issue_raw;
+  logic rs_empty;
+  logic station_ready;
+  assign station_ready = i_fu_ready && !i_pipe_busy && !i_backend_recovery_hold;
 
   reservation_station #(
       .DEPTH(riscv_pkg::FpRsDepth),
       .HAS_SRC3(1'b1),
       .FORMAL_STANDALONE_ENV(1'b0),
-      .ISSUE_REPAIR_BYPASS(1'b0)
+      .ISSUE_REPAIR_BYPASS(1'b0),
+      .DIVIDE_ISSUE_GATE(1'b1),
+      .FP_ENGINE_GATE(1'b1),
+      .FWD_WAKE(1'b1)
   ) u_fp_rs (
       .i_clk                      (i_clk),
       .i_rst_n                    (i_rst_n),
@@ -82,8 +94,11 @@ module fp_launch_squash_rs_producer (
       .i_repair_tag_6             ('0),
       .i_repair_value_6           ('0),
       .o_issue                    (rs_issue_raw),
-      .i_fu_ready                 (i_fu_ready),
-      .i_divider_busy             (1'b0),
+      .i_fu_ready                 (station_ready),
+      .i_divider_busy             (i_engine_busy),
+      .i_fwd_wake_valid,
+      .i_fwd_wake_tag,
+      .i_fwd_value,
       .o_issue_writes_cdb_hint    (),
       .o_branch_predicate_tag     (),
       .o_issue_is_jalr            (),
@@ -108,7 +123,7 @@ module fp_launch_squash_rs_producer (
       .i_flush_tag                (i_flush_tag),
       .i_rob_head_tag             (i_rob_head_tag),
       .i_flush_all                (i_flush_all),
-      .o_empty                    (),
+      .o_empty                    (rs_empty),
       .o_count                    (),
       .i_head_query_tag           (i_rob_head_tag),
       .o_head_query_in_rs         (),
@@ -163,8 +178,33 @@ module fp_launch_squash_rs_producer (
   end
   always_comb if (f_init) assume (!i_rst_n);
 
+  // An isolated FMADD depends on the same tag for all three sources. Both
+  // broadcast lanes stay idle through its wake, so only the forward can
+  // supply the operands at issue.
+  logic f_dispatched = 1'b0;
+  logic f_woken = 1'b0;
+  logic [TagW-1:0] f_source_tag, f_consumer_tag, f_woken_tag;
+  always_ff @(posedge i_clk) begin
+    f_dispatched <= i_rst_n && rs_empty && i_dispatch.valid &&
+                    i_dispatch.op == riscv_pkg::FMADD_D &&
+                    !i_dispatch.src1_ready && !i_dispatch.src2_ready && !i_dispatch.src3_ready &&
+                    i_dispatch.src1_tag == i_dispatch.src2_tag &&
+                    i_dispatch.src1_tag == i_dispatch.src3_tag &&
+                    !i_flush_all && !i_flush_en && !i_cdb.valid && !i_cdb_2.valid;
+    f_source_tag <= i_dispatch.src1_tag;
+    f_consumer_tag <= i_dispatch.rob_tag;
+    f_woken <= i_rst_n && f_dispatched && i_fwd_wake_valid &&
+               i_fwd_wake_tag == f_source_tag && !i_cdb.valid && !i_cdb_2.valid &&
+               !i_flush_all && !i_flush_en && station_ready;
+    f_woken_tag <= f_consumer_tag;
+  end
+
   always_ff @(posedge i_clk) begin
     if (!f_init) begin
+      c_forward_during_engine_op :
+      cover (f_woken && shim_issue_valid && i_engine_busy &&
+             rs_issue_raw.rob_tag == f_woken_tag && rs_issue_raw.src1_value == i_fwd_value &&
+             rs_issue_raw.src2_value == i_fwd_value && rs_issue_raw.src3_value == i_fwd_value);
       // A full or partial flush covered the previous cycle's issue.
       c_flushed_issue : cover (f_prev_flushed_issue && i_rst_n);
       // FP_RS issues again two cycles after a flushed issue.

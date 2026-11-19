@@ -52,10 +52,10 @@ HEADER = "# SystemC::Coverage-3\n"
 # TestRIG. Unit benches have toplevels of their own.
 SOC_TOPLEVEL = "frost"
 
-# Verilator point types in report order. Line coverage comes as "line"
-# (statement blocks) and "branch" (if, else, and case arms) points, toggle
-# coverage as one point per bit and direction, and SystemVerilog cover
-# statements as "user" points.
+# Verilator point types in report order. Line points count statement blocks,
+# including case arms. Branch points count if/else and conditional expressions.
+# Toggle points count each bit per direction. User points count SystemVerilog
+# cover statements.
 KIND_TITLES = {
     "line": "Line",
     "branch": "Branch",

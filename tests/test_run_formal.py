@@ -26,13 +26,16 @@ import difflib
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import ci_reuse
+import sby_config
+from sby_config import SCRIPT_FORMS, UNDEFINED_CONSTANT
 
 # Path to the formal/ directory relative to the repository root
 FORMAL_DIR = "formal"
@@ -43,6 +46,7 @@ SBY_TASK_TIMEOUT_S = 2400
 # SBY files and separate CI jobs. Keep the runner's backstops in sync with
 # those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("coherence_dma_ingress", "coh_dma_ingress_soc_prove"): 3120,
     ("coherence_home_twin", "home_twin_small"): 600,
     ("coherence_home_twin", "home_twin_four"): 600,
     ("coherence_home_twin", "home_twin_addr40"): 600,
@@ -1046,9 +1050,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "dispatch_admission.sby",
-        "Dispatch admission matches the reference; slot-2 instructions use no FP "
-        "source 3",
-        tasks=("bmc", "bmc_queued"),
+        "Bundle, station and checkpoint admission match the encoded station types "
+        "with local or registered selects, and slot 2 uses no FP source 3",
+        tasks=("bmc", "bmc_queued", "bmc_queued_vector"),
     ),
     FormalTarget(
         "instr_operand_classifier.sby",
@@ -1071,7 +1075,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_vtype_tracker.sby",
-        "A surviving vector allocation (arithmetic, FP, vector-to-scalar, load or "
+        "A surviving vector allocation (integer, FP, crypto, vector-to-scalar, load or "
         "store) clears restart state across delayed architectural reload and "
         "checkpoint recovery; the tracked vtype follows "
         "configuration allocation, flush, reload and restore",
@@ -1079,10 +1083,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Vector arithmetic legality, floating point included, equals the reference "
+        "Vector arithmetic legality, including FP and cryptographic element groups at each vector length, equals the reference "
         "for every vtype and instruction; dispatch applies it with the VTOX and "
-        "nonzero-vstart rules; the registered queue-head result is current whenever "
-        "it is ready",
+        "nonzero-vstart rules. The registered legality and restart classes match "
+        "the current queue head whenever it is ready",
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
@@ -1388,7 +1392,14 @@ FORMAL_TARGETS = [
         "rs_payload_twin.sby",
         "Two tomasulo_wrapper copies whose reservation stations hold arbitrary stage2 payloads while "
         "empty have equal outputs",
-        tasks=("bmc",),
+        tasks=(
+            "bmc",
+            "bmc_cdb",
+            "bmc_cdb_2",
+            "bmc_commit",
+            "bmc_commit_2",
+            "bmc_operands",
+        ),
     ),
     FormalTarget(
         "rs_stage2_payload_equiv.sby",
@@ -1762,6 +1773,12 @@ FORMAL_TARGETS = [
     FormalTarget(
         "fp_shim.sby",
         "FP completion tags, busy state, and cancellation",
+    ),
+    FormalTarget(
+        "fp_shim_pipe.sby",
+        "Pipelined FP tracker, forward wake, result FIFO and credits: no stale or "
+        "duplicate completion through flushes",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "fp_launch_squash.sby",
@@ -3211,6 +3228,10 @@ SBY_TASKS = [
     ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     (
+        "bmc_queued_vector",
+        "Queued admission with registered vector and station classes",
+    ),
+    (
         "vhold_lq_bmc",
         "Vector range holds with the load queue's address-update port, 8 frames.",
     ),
@@ -3233,6 +3254,14 @@ SBY_TASKS = [
     ),
     ("index_cover", "Indexed head run reachability: retirement, mid-run fault."),
     ("bmc", "Check assertions up to the configured depth"),
+    ("bmc_cdb", "Compare the first valid CDB packet across wrapper copies."),
+    ("bmc_cdb_2", "Compare the second valid CDB packet across wrapper copies."),
+    ("bmc_commit", "Compare the first valid combinational commit packet."),
+    ("bmc_commit_2", "Compare the second valid combinational commit packet."),
+    (
+        "bmc_operands",
+        "Compare bypass and register-file operands in the Block proofs job.",
+    ),
     ("continuity", "Bounded pc_reg and slot-1 PC continuity check"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
     ("home_small", "Consumed packets and fill phase flags with two fills."),
@@ -3637,6 +3666,188 @@ SBY_TASKS = [
     ),
 ]
 
+# Explicit mode assignments for registered task names whose underscore-separated
+# words do not carry a single bmc*, prove*, or cover* token.
+SBY_TASK_MODE_OVERRIDES: dict[str, str] = {
+    "arbiter_default": "prove",
+    "arbiter_idle": "prove",
+    "array_bram": "prove",
+    "array_bram_four": "prove",
+    "array_uram": "prove",
+    "array_uram32": "prove",
+    "array_uram_row": "prove",
+    "bp_twin": "bmc",
+    "cached_tier_twin": "bmc",
+    "cached_tier_unsplit": "bmc",
+    "cft_twin": "bmc",
+    "completions_default": "prove",
+    "completions_three": "prove",
+    "completions_two": "prove",
+    "continuity": "bmc",
+    "csr_twin": "bmc",
+    "csr_twin_vector": "bmc",
+    "dbq_twin": "bmc",
+    "dmmu_twin": "bmc",
+    "endpoint32": "prove",
+    "endpoint56": "prove",
+    "fp_engine_twin": "bmc",
+    "generic32": "bmc",
+    "generic64": "bmc",
+    "home_default": "prove",
+    "home_engine_twin32": "bmc",
+    "home_engine_twin40": "bmc",
+    "home_engine_twin64": "bmc",
+    "home_four": "prove",
+    "home_small": "prove",
+    "home_twin_addr40": "bmc",
+    "home_twin_four": "bmc",
+    "home_twin_small": "bmc",
+    "home_wide": "prove",
+    "id_kill_equiv": "bmc",
+    "id_kill_equiv_vector": "bmc",
+    "immu_twin": "bmc",
+    "immu_twin_hold": "bmc",
+    "int_equiv": "bmc",
+    "int_equiv_prims": "bmc",
+    "l1d_twin_multi": "bmc",
+    "l1d_twin_single": "bmc",
+    "l1d_twin_stream": "bmc",
+    "layout32": "bmc",
+    "layout56": "bmc",
+    "lookup_multi_prove": "bmc",
+    "lookup_prove": "bmc",
+    "lookup_stream_prove": "bmc",
+    "off": "prove",
+    "on": "prove",
+    "p00": "prove",
+    "p01": "prove",
+    "p10": "prove",
+    "p11": "prove",
+    "pc_controller_twin": "bmc",
+    "pc_controller_twin_slot2": "bmc",
+    "pdt_twin": "bmc",
+    "request_equiv32": "prove",
+    "request_equiv56": "prove",
+    "request_equiv_ptw": "prove",
+    "request_equiv_slot0": "prove",
+    "request_equiv_wide_ptw": "prove",
+    "request_equiv_wide_slot0": "prove",
+    "router_twin": "bmc",
+    "rs_twin_indexed": "bmc",
+    "size_select": "bmc",
+    "size_select_four_way": "bmc",
+    "sq_twin": "bmc",
+    "sq_twin_cpu": "bmc",
+    "store_pma_twin_ddr30": "bmc",
+    "store_pma_twin_ddr31": "bmc",
+    "tree_equiv": "prove",
+    "x32": "prove",
+    "x64": "prove",
+    "x66": "prove",
+    "xilinx32": "bmc",
+    "xilinx64": "bmc",
+    "zero_index_invariants": "prove",
+}
+
+SKIP_PINNED: dict[tuple[str, str], int] = {
+    ("axi_coherent_bridge", "cover_soc"): 60,
+    ("coherence_l1d", "coh_l1d_zero_cover"): 48,
+    ("coherence_l1d", "coh_l1d_zero_progress_cover"): 128,
+    ("coherence_l1d", "coh_l1d_zero_request_cover"): 159,
+    ("coherence_l1d", "coh_l1d_withdraw_full_cover"): 48,
+}
+
+FATAL_START_FRAME_TASKS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("coherence_store_boundary", "bmc_amo_same_fatal"),
+        ("coherence_store_boundary", "bmc_amo_other_fatal"),
+    }
+)
+
+ALLOWED_TARGET_YS_FILES: dict[str, frozenset[str]] = {
+    "axi_coherent_bridge": frozenset(
+        {"free_undefined.ys", "axi_coherent_bridge_groups.ys"}
+    ),
+}
+
+
+def _inferred_task_mode(task_name: str) -> str | None:
+    """Infer mode when task_name contains one unambiguous bmc/prove/cover word."""
+    parts = task_name.split("_")
+    matches = [
+        mode
+        for mode in ("bmc", "prove", "cover")
+        if any(part.startswith(mode) for part in parts)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def registered_task_mode(task_name: str) -> str:
+    """Return the required SymbiYosys mode for a registered task name."""
+    if task_name in SBY_TASK_MODE_OVERRIDES:
+        return SBY_TASK_MODE_OVERRIDES[task_name]
+    inferred = _inferred_task_mode(task_name)
+    if inferred is None:
+        raise ValueError(f"Task {task_name!r} has no unambiguous registered mode")
+    return inferred
+
+
+def registered_task_config_gaps(
+    target_name: str,
+    task_name: str,
+    cfg: sby_config.TaskConfig,
+    formal_dir: Path,
+) -> list[str]:
+    """Validate options, engines, task mode, pins, and helper files for one task."""
+    gaps: list[str] = []
+    try:
+        cfg.validate()
+        cfg.parsed(formal_dir, expand_opening=True)
+    except sby_config.ConfigError as error:
+        gaps.append(str(error))
+        return gaps
+
+    try:
+        expected_mode = registered_task_mode(task_name)
+    except ValueError as error:
+        gaps.append(str(error))
+    else:
+        actual_mode = cfg.options.get("mode")
+        if actual_mode != expected_mode:
+            gaps.append(
+                f"[options] mode {actual_mode!r} does not match registered mode {expected_mode!r}"
+            )
+
+    key = (target_name, task_name)
+    if "skip" in cfg.options:
+        actual_skip = int(cfg.options["skip"])
+        if SKIP_PINNED.get(key) != actual_skip:
+            gaps.append(
+                f"[options] skip {actual_skip} is not pinned in SKIP_PINNED for {target_name}:{task_name}"
+            )
+    elif key in SKIP_PINNED:
+        gaps.append(
+            f"SKIP_PINNED entry {SKIP_PINNED[key]} missing from {target_name}:{task_name}"
+        )
+
+    uses_start_frame = tuple(cfg.engines[0]) == ("abc", "bmc3", "-c", "-S", "139")
+    if uses_start_frame != (key in FATAL_START_FRAME_TASKS):
+        gaps.append(f"start-frame engine pin mismatch on {target_name}:{task_name}")
+
+    if cfg.inline_files:
+        gaps.append(
+            f"inline [file ...] not allowed in registered target: {sorted(cfg.inline_files)}"
+        )
+    allowed_ys = ALLOWED_TARGET_YS_FILES.get(
+        target_name, frozenset({"free_undefined.ys"})
+    )
+    extra_ys = sorted(
+        dest for dest in cfg.files if dest.endswith(".ys") and dest not in allowed_ys
+    )
+    if extra_ys:
+        gaps.append(f"unpinned .ys helper in [files]: {extra_ys}")
+    return gaps
+
 
 def test_formal_target_tasks_are_registered() -> None:
     """Every SBY file and task must participate in CLI and pytest execution."""
@@ -3645,14 +3856,7 @@ def test_formal_target_tasks_are_registered() -> None:
     assert len(files) == len(set(files)), "Duplicate formal target registration"
     assert set(files) == {path.name for path in formal_dir.glob("*.sby")}
     for target in FORMAL_TARGETS:
-        text = (formal_dir / target.sby_file).read_text()
-        section = text.split("[tasks]", 1)[1].split("[", 1)[0]
-        declared = [
-            line.split()[0]
-            for raw in section.splitlines()
-            if (line := raw.split("#", 1)[0].strip())
-        ]
-        assert len(declared) == len(set(declared)), target.name
+        declared = list(sby_config.source(formal_dir / target.sby_file).tasks)
         assert len(target.tasks) == len(set(target.tasks)), target.name
         assert set(declared) == set(target.tasks), (
             target.name,
@@ -3666,6 +3870,42 @@ def test_formal_target_tasks_are_registered() -> None:
         if set(target.tasks) - registered
     }
     assert not missing, f"Formal tasks would be silently skipped: {missing}"
+    stale_overrides = sorted(set(SBY_TASK_MODE_OVERRIDES) - registered)
+    assert not stale_overrides, stale_overrides
+    redundant_overrides = [
+        name
+        for name, mode in sorted(SBY_TASK_MODE_OVERRIDES.items())
+        if _inferred_task_mode(name) == mode
+    ]
+    assert not redundant_overrides, redundant_overrides
+    for name in sorted(registered):
+        assert registered_task_mode(name) in ("bmc", "prove", "cover")
+
+    all_pairs = {
+        (target.name, task_name)
+        for target in FORMAL_TARGETS
+        for task_name in target.tasks
+    }
+    assert set(SKIP_PINNED) <= all_pairs
+    assert set(FATAL_START_FRAME_TASKS) <= all_pairs
+
+    seen_options: set[str] = set()
+    seen_engines: set[tuple[str, ...]] = set()
+    config_gaps: list[str] = []
+    for target in FORMAL_TARGETS:
+        src = sby_config.source(formal_dir / target.sby_file)
+        for task_name in target.tasks:
+            cfg = src.task(task_name)
+            seen_options.update(cfg.options)
+            for eng in cfg.engines:
+                seen_engines.add(tuple(eng))
+            for gap in registered_task_config_gaps(
+                target.name, task_name, cfg, formal_dir
+            ):
+                config_gaps.append(f"{target.name}:{task_name}: {gap}")
+    assert not config_gaps, config_gaps
+    assert seen_options == set(sby_config.OPTION_SPECS)
+    assert seen_engines == set(sby_config.ENGINE_FORMS)
 
 
 def test_formal_cli_rejects_empty_selection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3694,46 +3934,12 @@ FORMAL_SHARD_SETUP_S = 600
 
 def _sby_task_timeouts_s(sby_path: Path) -> dict[str, int]:
     """Return explicit ``timeout`` options (seconds) by task for an SBY file."""
-    section = ""
-    tasks: dict[str, set[str]] = {}
-    option_lines: list[str] = []
-    for raw in sby_path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or line.startswith("--"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            section = line.split()[0]
-            continue
-        if section == "[tasks]":
-            parts = line.split()
-            tasks[parts[0]] = set(parts)
-        elif section == "[options]":
-            option_lines.append(line)
-    if not tasks:
-        tasks[""] = {""}
-    timeouts: dict[str, int] = {}
-    for task_name, tags in tasks.items():
-        value: int | None = None
-        for line in option_lines:
-            if ":" in line:
-                selector, rest = (part.strip() for part in line.split(":", 1))
-                if selector.startswith("~"):
-                    pat = selector[1:]
-                    matched = pat not in tags and not re.fullmatch(pat, task_name)
-                else:
-                    matched = selector in tags or bool(
-                        re.fullmatch(selector, task_name)
-                    )
-                if not matched:
-                    continue
-            else:
-                rest = line
-            parts = rest.split()
-            if len(parts) == 2 and parts[0] == "timeout":
-                value = int(parts[1])
-        if value is not None:
-            timeouts[task_name] = value
-    return timeouts
+    source = sby_config.source(sby_path)
+    return {
+        name: int(value)
+        for name in source.tasks
+        if (value := source.task(name).options.get("timeout")) is not None
+    }
 
 
 def check_formal_shard_budgets(
@@ -3809,11 +4015,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     }
     for target_name, names in required.items():
         target = next(t for t in FORMAL_TARGETS if t.name == target_name)
-        task_text = (root / "formal" / target.sby_file).read_text()
-        task_lines = task_text.split("[tasks]", 1)[1].split("[options]", 1)[0]
-        sby_tasks = [
-            line.split()[0] for line in task_lines.splitlines() if line.strip()
-        ]
+        sby_tasks = list(sby_config.source(root / "formal" / target.sby_file).tasks)
         for name in names:
             assert registered.count(name) == 1, name
             assert target.tasks.count(name) == 1, name
@@ -4013,27 +4215,9 @@ def test_formal_shard_budget_sum_rejects_overcommitted_shard() -> None:
 
 
 def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
-    """Return an SBY task's resolved sections, without comments."""
-    result = subprocess.run(
-        ["sby", "--dumpcfg", f"{target}.sby", task],
-        cwd=Path(__file__).resolve().parents[1] / "formal",
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
-    )
-    sections: dict[str, list[str]] = {}
-    section = ""
-    for raw in result.stdout.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("["):
-            section = line
-            sections[section] = []
-        else:
-            sections[section].append(line)
-    return sections
+    """Return an SBY task's resolved sections, with parsed script commands."""
+    path = Path(__file__).resolve().parents[1] / FORMAL_DIR / f"{target}.sby"
+    return sby_config.resolved(path)[task].sections(path.parent)
 
 
 # SymbiYosys gives a register without an initial value its free starting value
@@ -4050,15 +4234,15 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
 # The proof can then miss behaviors of the hardware or combine values that it
 # cannot produce.
 #
-# So every command of every task's script must match a form in DONT_CARE_SAFE,
-# each with the reason this Yosys's source gives. Apart from the edits a script
-# names itself (connect, delete, chformal and the like), the listed forms keep
-# the unknown starting value of registers and memories and never merge two
-# free inputs. Every other form fails, among them every form known to fix such
-# a value or to merge free inputs; DONT_CARE_REJECTED gives the reason for the
-# forms that registered scripts run, and -share_all fails in any command.
+# Every command line of every task's script and included .ys file must parse
+# completely into a form in sby_config.SCRIPT_FORMS. DONT_CARE_SAFE and
+# DONT_CARE_REJECTED are direct projections of that closed form table: apart
+# from the edits a script names itself (connect, delete, chformal and the
+# like), the safe forms keep the unknown starting value of registers and
+# memories and never merge two free inputs, and the rejected forms require an
+# explicit per-task pin in DONT_CARE_OPEN.
 #
-# No list of forms keeps undefined constants: these passes, which listed forms
+# No list of forms keeps undefined constants: these passes, which safe forms
 # run, fuse or fix them before SymbiYosys frees them.
 #   opt_muxtree (opt without -fast, prep): a constant-x select reads as 0.
 #   opt_expr (proc, prep, every opt): constant-x bits at the same position of
@@ -4069,9 +4253,9 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
 #     that drives a memory write enable, constant x included, become one bit,
 #     as do repeated constant-x select bits of a $bmux or $demux.
 #   proc_rom (proc unless -norom, prep): a case of constants becomes a ROM;
-#     after memory_collect (in prep), memory_map -keepdc or memory_map -formal
-#     its x words, such as an x default, hold one value for the whole trace,
-#     not a free value in every cycle.
+#     after memory_collect (in prep) or memory_map -keepdc its x words, such as
+#     an x default, hold one value for the whole trace, not a free value in
+#     every cycle.
 #   proc_dlatch (proc, prep): in a latch's fan-in, all-x cases are dropped and
 #     an all-x default is replaced by a defined case; when it decides in which
 #     cases a latch holds, it reads multiplexer inputs through connections, so
@@ -4086,264 +4270,17 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
 # undefined constants below describes, which leaves none of these passes an
 # undefined constant of the sources in a cell port, a connection or a
 # register.
-#
-# The checks read each task's script as SymbiYosys selects it and as Yosys runs
-# it: a command after ';', behind a label or inside tee, debug, trace or an
-# included script counts, and an option after '#' does not. In a form, "*"
-# accepts any arguments, "-x" must be given and "[-x]" may be, ":N" is the
-# number of arguments an option takes, "=a|b" lists the values its first
-# argument may take, and "-x*" accepts any option that begins with -x. Other
-# words are selections or names, which every form accepts.
-DONT_CARE_FRONT_END = (
-    "reads sources; the design it builds is the design the proof checks"
-)
-DONT_CARE_UNCHANGED = "changes nothing in the design"
-DONT_CARE_SAFE: dict[str, list[tuple[str, str]]] = {
-    "read": [("*", DONT_CARE_FRONT_END)],
-    "read_verilog": [("*", DONT_CARE_FRONT_END)],
-    "read_slang": [("*", DONT_CARE_FRONT_END)],
-    "verilog_defines": [("*", "sets macros for the readers that follow")],
-    "hierarchy": [
-        ("[-check] [-top:1] [-chparam:2]", "elaborates the hierarchy below the top")
-    ],
-    "chparam": [("-set:2", "elaborates the modules again with the parameters it sets")],
-    "prep": [
-        (
-            "[-top:1] [-flatten]",
-            "runs hierarchy -check, proc, check and flatten (with -flatten), future, "
-            "opt_expr -keepdc, check, opt_clean, opt -noff -keepdc, wreduce -keepdc, "
-            "opt_clean, memory_collect, opt -noff -keepdc -fast, sort, stat and "
-            "check: starting values as in those passes, undefined constants as above",
+DONT_CARE_SAFE: dict[str, list[tuple[str, str]]] = {}
+DONT_CARE_REJECTED: dict[str, list[tuple[str, str]]] = {}
+for _form in SCRIPT_FORMS:
+    if _form.safe_reason is not None:
+        DONT_CARE_SAFE.setdefault(_form.command, []).append(
+            (_form.id, _form.safe_reason)
         )
-    ],
-    "proc": [
-        (
-            "[-noopt] [-norom]",
-            "lowers processes into cells and registers with the same initial values; "
-            "proc_rom (unless -norom), proc_dlatch and its closing opt_expr -keepdc "
-            "(unless -noopt) act on undefined constants as above",
+    elif _form.rejected_reason is not None:
+        DONT_CARE_REJECTED.setdefault(_form.command, []).append(
+            (_form.id, _form.rejected_reason)
         )
-    ],
-    "proc_clean": [
-        ("", "removes empty switches; it folds only defined switch signals")
-    ],
-    "proc_rmdead": [
-        ("", "removes cases that cannot match; a case label with x never matches")
-    ],
-    "proc_prune": [
-        ("", "removes assignments that a later one overrides on every path")
-    ],
-    "proc_init": [("", "turns initial assignments into initial values")],
-    "proc_arst": [("", "finds asynchronous resets")],
-    "proc_mux": [
-        (
-            "",
-            "turns decision trees into multiplexers, with x only for the bits a full "
-            "case leaves unassigned",
-        )
-    ],
-    "proc_dlatch": [
-        (
-            "",
-            "turns incomplete combinational assignments into latches; in a latch's "
-            "fan-in it drops all-x multiplexer cases, as above",
-        )
-    ],
-    "proc_dff": [
-        (
-            "",
-            "turns clocked processes into registers with the same initial values; "
-            "it stores a constant asynchronous reset value, x included, in the "
-            "register's parameters",
-        )
-    ],
-    "proc_memwr": [("", "turns memory writes in processes into write ports")],
-    "flatten": [("", "inlines submodules with their initial values")],
-    "opt": [
-        (
-            "-keepdc [-fast] [-noff] [-purge] [-mux_bool]",
-            "runs opt_expr, opt_merge, opt_muxtree, opt_reduce, opt_dff and "
-            "opt_clean (-fast leaves out opt_muxtree and opt_reduce, -noff opt_dff); "
-            "with -keepdc, opt_merge and opt_dff keep registers without a defined "
-            "initial value and opt_expr skips the rewrites that consume undefined "
-            "bits; -mux_bool turns a 0/1 multiplexer into its select; undefined "
-            "constants as above",
-        )
-    ],
-    "opt_expr": [
-        (
-            "-keepdc [-noclkinv] [-mux_bool]",
-            "with -keepdc it skips the rewrites that consume undefined bits "
-            "(opt_expr.cc:2364), except the $eq and $ne case above",
-        )
-    ],
-    "opt_merge": [
-        (
-            "-keepdc",
-            "with -keepdc it merges no register without a defined initial value; it "
-            "never merges memories or free inputs; cells with constant-x inputs as "
-            "above",
-        )
-    ],
-    "opt_dff": [
-        (
-            "-keepdc",
-            "with -keepdc it never fixes a register without a defined initial value "
-            "to a constant",
-        )
-    ],
-    "opt_clean": [
-        ("[-purge]", "removes unused cells and wires, with the init case above")
-    ],
-    "clean": [("[-purge]", "the same pass as opt_clean")],
-    "opt_muxtree": [
-        (
-            "",
-            "removes multiplexer ports that cannot be selected, with the select case above",
-        )
-    ],
-    "wreduce": [
-        ("-keepdc", "with -keepdc it keeps every bit whose value is undefined")
-    ],
-    "memory_map": [
-        (
-            "-keepdc",
-            "with -keepdc a word without a defined initial value becomes a register, "
-            "which SymbiYosys makes free",
-        ),
-        (
-            "-formal [-keepdc]",
-            "implies -keepdc and uses $ff cells for ROMs and asynchronous writes",
-        ),
-    ],
-    "setundef": [
-        (
-            "-anyseq [-undriven]",
-            "gives each undefined bit, and with -undriven each undriven net, its own "
-            "$anyseq, as SymbiYosys's preparation does",
-        )
-    ],
-    "techmap": [
-        (
-            "",
-            "maps cells to gates; its shift templates can resolve a constant x "
-            "input, as above",
-        )
-    ],
-    "async2sync": [
-        (
-            "",
-            "turns asynchronous resets, loads and set-reset into synchronous logic "
-            "with the same initial values, writing x where set and reset are both "
-            "active",
-        )
-    ],
-    "dffunmap": [("", "turns enables and synchronous resets into multiplexers")],
-    "formalff": [
-        (
-            "-clk2ff",
-            "turns clocked flip-flops into $ff cells with the same initial values",
-        )
-    ],
-    "chformal": [
-        (
-            f"{mode} [-assert] [-assume] [-cover] [-live] [-fair]",
-            "removes, relabels or lowers the property cells it selects",
-        )
-        for mode in ("-remove", "-assert2assume", "-lower")
-    ],
-    "connect": [
-        ("-set:2 [-nounset] [-nomap]", "connects the nets the script names"),
-        ("-port:3 [-nomap]", "connects the cell port the script names"),
-    ],
-    "delete": [
-        (
-            "[-input] [-output] [-port]",
-            "removes what it selects; what a removed cell drove is left undriven, "
-            "which SymbiYosys makes free",
-        )
-    ],
-    "cutpoint": [("", "drives each cut signal from its own $anyseq")],
-    "expose": [
-        ("-dff -cut", "turns flip-flop outputs into module inputs, which are free")
-    ],
-    "setattr": [
-        (
-            "-set=keep|from_prim:2 [-mod]",
-            "sets an attribute that decides only what may be removed or selected",
-        ),
-        (
-            "-unset=init|keep|keep_hierarchy|dont_touch:1 [-mod]",
-            "removes the attribute; a register without init starts free",
-        ),
-    ],
-    "rename": [("[-top] [-hide]", "renames modules or wires")],
-    "design": [
-        (
-            form,
-            "saves, loads, copies or clears designs without changing a cell",
-        )
-        for form in (
-            "-stash:1",
-            "-save:1",
-            "-load:1",
-            "-reset",
-            "-delete:1",
-            "-copy-from:1 [-as:1]",
-        )
-    ],
-    "equiv_make": [
-        (
-            "",
-            "builds the module that compares two designs; their undriven nets become x",
-        )
-    ],
-    "equiv_status": [("*", DONT_CARE_UNCHANGED)],
-    "debug": [
-        ("-on *", "turns debug messages on and runs nothing, whatever follows"),
-        ("-off *", "turns debug messages off and runs nothing, whatever follows"),
-    ],
-    "select": [("*", "changes only the selection")],
-    "cd": [("*", "changes only the current module")],
-    "check": [("*", DONT_CARE_UNCHANGED)],
-    "log": [("*", DONT_CARE_UNCHANGED)],
-    "echo": [("*", DONT_CARE_UNCHANGED)],
-    "stat": [("*", DONT_CARE_UNCHANGED)],
-    "write_rtlil": [("*", DONT_CARE_UNCHANGED)],
-    "write_json": [("*", DONT_CARE_UNCHANGED)],
-}
-# The other forms of the commands that registered scripts run, and why they are
-# rejected.
-DONT_CARE_REJECTED = {
-    "opt": (
-        "without -keepdc, or with -full, -mux_undef, -undriven or -sat, which resolve "
-        "undefined values, -fine, which also merges equal multiplexer output bits "
-        "with constant x, or -share_all"
-    ),
-    "memory_map": "without -keepdc, an unwritten word without an initial value is x",
-    "memory": (
-        "runs opt_mem, opt_mem_priority, opt_mem_feedback and memory_share, and "
-        "without -nomap a plain memory_map"
-    ),
-    "opt_mem": "reads undefined initial and written data as don't-cares",
-    "opt_mem_priority": "runs inside memory; its source was not read for undefined values",
-    "opt_mem_feedback": "resolves undefined multiplexer inputs",
-    "memory_share": "lets a port's defined initial value win over x, resolves x inputs",
-    "setundef": (
-        "-zero, -one and -random pick values, -anyconst fixes one per trace, -init "
-        "sets initial values"
-    ),
-    "chformal": "-delay adds registers without initial values, -skip adds a counter",
-    "abc": "replaces every undefined bit with 0",
-    "peepopt": "reads the x bits of a constant operand as 0",
-    "sim": "with -w writes simulated values as initial values",
-    "chtype": "changes cell types to whatever the script names",
-    "techmap": "with -map, the map file decides what runs",
-    "sat": "its proof reads an undefined bit as 0 without -enable_undef",
-    "equiv_simple": "its proof reads an undefined bit as 0 without -undef",
-    "equiv_struct": "merges structurally equal cells, free inputs included",
-    "synth": "runs opt, memory and abc without -keepdc",
-}
 # Targets whose scripts run a command outside DONT_CARE_SAFE, each with a
 # one-line reason and, for each group of tasks, the commands outside the list
 # that each of those tasks runs, in the order it runs them. The checks fail
@@ -4421,7 +4358,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "branch_prediction_alias": (
-        "not converted: opt -purge; no setundef",
+        "opt -purge prunes predictor state outside the alias comparison",
         {
             "bmc": ["opt -purge"],
         },
@@ -4488,7 +4425,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "coherence_dma_ingress": (
-        "not converted: memory_map and opt without -keepdc; no setundef",
+        "runs memory_map and opt without -keepdc after the opening",
         {
             "coh_dma_ingress_prove coh_dma_ingress_cover coh_dma_ingress_soc_prove coh_dma_ingress_soc_cover coh_line_client_prove coh_line_client_eight_prove coh_line_client_cover coh_line_client_eight_cover": [
                 "memory_map",
@@ -4714,7 +4651,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "immu_bare": (
-        "not converted: opt -purge; no setundef",
+        "opt -purge prunes translation state outside the Bare outputs",
         {
             "bmc bmc_1g bmc_64g bmc_128g bmc_xlen32 bmc_xlen72": ["opt -purge"],
         },
@@ -4937,7 +4874,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "rs_payload_twin": (
         "both copies start from the same zero state, as its harness states",
         {
-            "bmc": ["setundef -zero -init"],
+            "bmc bmc_cdb bmc_cdb_2 bmc_commit bmc_commit_2 bmc_operands": [
+                "setundef -zero -init"
+            ],
         },
     ),
     "rs_primary_payload": (
@@ -5005,269 +4944,26 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
 
 
 def sby_task_tags(sby_path: Path) -> dict[str, set[str]]:
-    """Return each task of a script with its tags, its own name among them."""
-    tags: dict[str, set[str]] = {}
-    section = ""
-    for line in sby_path.read_text().splitlines():
-        if line.startswith("["):
-            section = line.strip()
-        elif section == "[tasks]" and line.strip() and not line.startswith("#"):
-            fields = line.split(":")
-            assert len(fields) <= 2, (sby_path, line)
-            names, task_tags = (
-                (fields[0].split()[:1], fields[0].split()[1:])
-                if len(fields) == 1
-                else (fields[0].split(), fields[1].split())
-            )
-            for name in names:
-                # Pattern task names would select other tasks' tags.
-                assert not set("(?*.[]|)") & set(name), (sby_path, name)
-                tags.setdefault(name, {name}).update(
-                    t for t in task_tags if t != "default"
-                )
-    return tags
+    """Return the declared tasks and their literal group tags."""
+    return {
+        task: tags for task, tags in sby_config.source(sby_path).tasks.items() if task
+    }
 
 
 def sby_line_tag(line: str, every_tag: set[str]) -> tuple[str, str]:
-    """Split a line into the task tag SymbiYosys reads at its start and the rest.
-
-    The tag is "" for a line without one. Only one tag counts, and only at the
-    start of the line: a tag after leading whitespace keeps the line for every
-    task, and Yosys then reads the tag as a label.
-    """
-    for tag in every_tag:
-        for prefix in (tag + ":", "~" + tag + ":"):
-            if line.startswith(prefix):
-                return prefix, line[len(prefix) :].lstrip()
+    """Split a literal task selector at the start of a validated source line."""
+    match = sby_config.TAG.fullmatch(line)
+    if match and match[2] in every_tag:
+        return match[1] + match[2] + ":", match[3].lstrip()
     return "", line
 
 
-def sby_task_scripts(sby_path: Path) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """Return each task's [script] lines as SymbiYosys selects them, and the files a script can run."""
-    lines = sby_path.read_text().splitlines()
-    tags = sby_task_tags(sby_path)
-    every_tag = set().union(*tags.values())
-    scripts: dict[str, list[str]] = {}
-    for task, active in (tags or {"": set()}).items():
-        section, in_tasks, in_block, skip_block = "", False, False, False
-        script: list[str] = []
-        for line in lines:
-            # SymbiYosys runs inline Python here, which these checks cannot read.
-            assert not line.startswith("--pycode"), sby_path
-            # The [tasks] section takes no tags.
-            if in_tasks and not line.startswith("["):
-                continue
-            in_tasks = line == "[tasks]"
-            if in_tasks:
-                continue
-            if in_block and line.strip() == "--":
-                in_block = skip_block = False
-                continue
-            skip_line = False
-            tag, line = sby_line_tag(line, every_tag)
-            if tag:
-                match = (tag.strip("~:") in active) != tag.startswith("~")
-                if line:
-                    skip_line = not match
-                else:
-                    in_block, skip_block, skip_line = True, not match, True
-            if skip_line or skip_block:
-                continue
-            header = re.fullmatch(r"\s*\[(.*)\]\s*", line)
-            if header:
-                section = "[" + " ".join(header.group(1).split()) + "]"
-            elif section == "[script]":
-                script.append(line.rstrip())
-        scripts[task] = script
-    files: dict[str, str] = {}
-    section = ""
-    body: list[str] = []
-    for line in lines + ["[end]"]:
-        if line.startswith("[") and line.rstrip().endswith("]"):
-            if section.startswith("[file "):
-                files[section[len("[file ") : -1].strip()] = "\n".join(body)
-            section, body = line.strip(), []
-        elif section.startswith("[file "):
-            body.append(line)
-        elif section == "[files]" and line.split() and not line.startswith("#"):
-            words = line.split()
-            source = sby_path.parent / words[-1]
-            if source.suffix == ".ys" and source.is_file():
-                files[words[0] if len(words) > 1 else source.name] = source.read_text()
-    return scripts, files
-
-
-def yosys_token(text: str) -> tuple[str, str]:
-    """Split off the next argument as Yosys's next_token does for commands."""
-    ends = ("", " ", "\t", "\r", "\n")
-    rest = text.lstrip(" \t\r\n")
-    if rest.startswith('"'):
-        for index in range(1, len(rest)):
-            if rest[index] == '"' and rest[index + 1 : index + 2] in ends:
-                return rest[: index + 1], rest[index + 1 :]
-            if rest[index : index + 2] == '";' and rest[index + 2 : index + 3] in ends:
-                return rest[: index + 1] + ";", rest[index + 2 :]
-    match = re.match(r"[^ \t\r\n]*", rest)
-    assert match is not None
-    return match.group(), rest[match.end() :]
-
-
-def yosys_commands(
-    script: list[str], files: dict[str, str], depth: int = 0
-) -> list[list[str]]:
-    """Return the commands a Yosys script runs, as argument lists.
-
-    Follows Yosys: a trailing backslash continues a line, a first word ending in
-    ':' is a label, an argument starting with '#' starts a comment, an argument
-    ending in ';' ends a command (';;' and ';;;' add clean and clean -purge),
-    and tee, debug, trace and script are replaced by the commands they run.
-    """
-    assert depth < 8, "script files include each other"
-    lines = list(script)
-    commands: list[list[str]] = []
-    while lines:
-        line = lines.pop(0)
-        while line.endswith("\\") and lines:
-            line = line[:-1] + lines.pop(0)
-        words = line.split()
-        if (
-            words
-            and not words[0].startswith("#")
-            and len(words[0]) > 1
-            and words[0].endswith(":")
-        ):
-            line = line.lstrip(" \t")[len(words[0]) :]
-        args: list[str] = []
-        token, line = yosys_token(line)
-        while token and not token.startswith("#"):
-            if token.endswith(";"):
-                count = len(token) - len(token.rstrip(";"))
-                if token.rstrip(";"):
-                    args.append(token.rstrip(";"))
-                commands += [
-                    args,
-                    {2: ["clean"], 3: ["clean", "-purge"]}.get(count, []),
-                ]
-                args = []
-            else:
-                args.append(token)
-            token, line = yosys_token(line)
-        commands.append(args)
-    result: list[list[str]] = []
-    for args in commands:
-        while args[:1] in (["tee"], ["trace"]) or (
-            args[:1] == ["debug"] and args[1:2] not in (["-on"], ["-off"])
-        ):
-            index = 1
-            while args[0] == "tee" and index < len(args):
-                if args[index] in ("-o", "-a", "-s"):
-                    index += 2
-                elif args[index] == "-q" or re.match(r"[-+][0-9]", args[index]):
-                    index += 1
-                else:
-                    break
-            args = args[index:]
-        if not args or args[0].startswith(("#", ":")):
-            continue
-        # A shell escape, an option this reader does not know or a script
-        # language would hide the commands that run.
-        assert not args[0].startswith(("!", "-", "+")), args
-        assert args[0] not in ("tcl", "exec", "python"), args
-        if args[0] == "script":
-            assert len(args) in (2, 3) and args[1] in files, args
-            lines = files[args[1]].splitlines()
-            if len(args) == 3:
-                lines = script_block(lines, args[2])
-            result += yosys_commands(lines, files, depth + 1)
-        else:
-            result.append(args)
-    return result
-
-
-def script_block(lines: list[str], labels: str) -> list[str]:
-    """Return the lines that `script <file> <labels>` runs, as Yosys selects them.
-
-    One label runs the block from that label to the next one; "from:to" runs
-    from the line labeled from (the start when empty) up to the line labeled to
-    (the end when empty), not including it. Continued lines are joined first.
-    """
-    run_from, _, run_to = (
-        labels.partition(":") if ":" in labels else (labels, "", labels)
-    )
-    active = not run_from
-    joined: list[str] = []
-    while lines:
-        line = lines[0]
-        lines = lines[1:]
-        while line.endswith("\\") and lines:
-            line, lines = line[:-1] + lines[0], lines[1:]
-        joined.append(line)
-    selected: list[str] = []
-    for line in joined:
-        words = line.split()
-        if (
-            words
-            and not words[0].startswith("#")
-            and len(words[0]) > 1
-            and words[0].endswith(":")
-        ):
-            label = words[0][:-1]
-            line = line.lstrip(" \t")[len(words[0]) :]
-            if label == run_from:
-                active = True
-            elif label == run_to or (run_from == run_to and run_from):
-                active = False
-        if active:
-            selected.append(line)
-    return selected
-
-
-def dont_care_form_matches(form: str, args: list[str]) -> bool:
-    """Report whether a command's arguments fit one DONT_CARE_SAFE form."""
-    if form == "*":
-        return True
-    options: dict[str, tuple[int, set[str] | None]] = {}
-    required: set[str] = set()
-    prefixes: list[str] = []
-    for item in form.split():
-        optional = item.startswith("[")
-        item = item.strip("[]")
-        if item.endswith("*"):
-            prefixes.append(item[:-1])
-            continue
-        name, _, arity = item.partition(":")
-        name, _, choices = name.partition("=")
-        options[name] = (
-            int(arity or bool(choices)),
-            set(choices.split("|")) if choices else None,
-        )
-        if not optional:
-            required.add(name)
-    seen: set[str] = set()
-    index = 1
-    while index < len(args):
-        arg = args[index]
-        if arg in options:
-            taken, allowed = options[arg]
-            if taken and index + taken >= len(args):
-                return False
-            if allowed is not None and args[index + 1] not in allowed:
-                return False
-            seen.add(arg)
-            index += 1 + taken
-        elif arg.startswith("-") and not any(arg.startswith(p) for p in prefixes):
-            return False
-        else:
-            index += 1
-    return required <= seen
-
-
 def dont_care_safe(args: list[str]) -> bool:
-    """Report whether a command matches a form in DONT_CARE_SAFE."""
-    return "-share_all" not in args and any(
-        dont_care_form_matches(form, args)
-        for form, _ in DONT_CARE_SAFE.get(args[0], [])
-    )
+    """Report whether args match a don't-care-safe form in SCRIPT_FORMS."""
+    try:
+        return sby_config.match_command_form(args).is_safe
+    except sby_config.ConfigError:
+        return False
 
 
 def dont_care_optimizations(commands: list[list[str]]) -> list[str]:
@@ -5276,12 +4972,17 @@ def dont_care_optimizations(commands: list[list[str]]) -> list[str]:
 
 
 def sby_dont_care_optimizations(sby_path: Path) -> dict[str, list[str]]:
-    """Return each task's commands outside DONT_CARE_SAFE, in the order it runs them."""
-    scripts, files = sby_task_scripts(sby_path)
+    """Return each task's commands outside DONT_CARE_SAFE, in execution order."""
     return {
         task: found
-        for task, script in scripts.items()
-        if (found := dont_care_optimizations(yosys_commands(script, files)))
+        for task, cfg in sby_config.resolved(sby_path).items()
+        if (
+            found := [
+                " ".join(cmd.args)
+                for cmd in cfg.parsed(sby_path.parent)
+                if not cmd.form.is_safe
+            ]
+        )
     }
 
 
@@ -5304,10 +5005,11 @@ def dont_care_changes(sby_path: Path) -> tuple[list[str], list[str]]:
     moved one is both. A file without an entry adds every command it flags. A
     task named "-" is the one task of a file without a [tasks] section.
     """
-    found = {
-        task or "-": commands
-        for task, commands in sby_dont_care_optimizations(sby_path).items()
-    }
+    try:
+        flagged = sby_dont_care_optimizations(sby_path)
+    except sby_config.ConfigError as error:
+        return [str(error)], []
+    found = {task or "-": commands for task, commands in flagged.items()}
     pinned = dont_care_pins(sby_path.stem)
     added: list[str] = []
     missing: list[str] = []
@@ -5326,6 +5028,7 @@ def dont_care_changes(sby_path: Path) -> tuple[list[str], list[str]]:
 def test_scripts_keep_dont_cares() -> None:
     """No proof script runs a command outside DONT_CARE_SAFE beyond its open entry."""
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
     added: list[str] = []
     missing: list[str] = []
     for sby_path in sorted(formal.glob("*.sby")):
@@ -5347,24 +5050,48 @@ def test_scripts_keep_dont_cares() -> None:
 
 
 def test_dont_care_classifies_every_command() -> None:
-    """Every command a registered script runs has its forms decided."""
+    """Every form and option in SCRIPT_FORMS is classified and used on main."""
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
-    names: dict[str, str] = {}
+    sby_config.resolve_files(formal.glob("*.sby"))
+    used_forms: set[str] = set()
+    used_options: dict[str, set[str]] = {form.id: set() for form in SCRIPT_FORMS}
     for sby_path in sorted(formal.glob("*.sby")):
-        scripts, files = sby_task_scripts(sby_path)
-        for script in scripts.values():
-            for args in yosys_commands(script, files):
-                names.setdefault(args[0], sby_path.name)
-    unknown = {
-        name: path
-        for name, path in names.items()
-        if name not in DONT_CARE_SAFE and name not in DONT_CARE_REJECTED
-    }
-    assert not unknown, unknown
-    for name, forms in DONT_CARE_SAFE.items():
-        for form, reason in forms:
-            assert reason and "\n" not in reason, name
-            dont_care_form_matches(form, [name])
+        for cfg in sby_config.resolved(sby_path).values():
+            for expand in (False, True):
+                for cmd in cfg.parsed(sby_path.parent, expand_opening=expand):
+                    form = cmd.form
+                    used_forms.add(form.id)
+                    opt_map = dict(form.opt_args)
+                    idx = 1
+                    while idx < len(cmd.args):
+                        tok = cmd.args[idx]
+                        if tok in form.flags or tok in form.required_flags:
+                            used_options[form.id].add(tok)
+                            idx += 1
+                        elif tok in opt_map:
+                            used_options[form.id].add(tok)
+                            idx += 1 + len(opt_map[tok])
+                        else:
+                            for prefix, _ in form.prefix_opts:
+                                if tok.startswith(prefix) and len(tok) > len(prefix):
+                                    used_options[form.id].add(prefix)
+                                    break
+                            idx += 1
+    unused = [form.id for form in SCRIPT_FORMS if form.id not in used_forms]
+    assert not unused, unused
+    for form in SCRIPT_FORMS:
+        declared = (
+            set(form.flags)
+            | set(form.required_flags)
+            | {opt for opt, _ in form.opt_args}
+            | {prefix for prefix, _ in form.prefix_opts}
+        )
+        assert used_options[form.id] == declared, (
+            form.id,
+            declared - used_options[form.id],
+        )
+        reason = form.safe_reason or form.rejected_reason
+        assert reason and "\n" not in reason, form.id
 
 
 # Undefined constants. SymbiYosys makes them free inputs only after the script,
@@ -5406,20 +5133,19 @@ def test_dont_care_classifies_every_command() -> None:
 # place (the file's own commands are pinned to UNDEFINED_OPENING, and its
 # commands written out or held in another file are not the opening); a
 # hierarchy -top after the last source and before it; the whole design
-# selected when it runs (a select that replaces, empties or scopes the
-# selection, any select -module and a cd into a module scope it until a select
-# -clear or cd, and design -save, -stash and -push keep that scope with the
-# design for design -load and -pop to bring back, while design -reset clears
-# it); after it, another opening before the next command that acts once a
-# source is read or a parameter set again (read, read_verilog, read_slang,
-# chparam, hierarchy -chparam), the design is reset, or modules of a kept
-# design join it (design -copy-from, -import), and a design that design -load
-# or -pop brings back is opened only if it was when it was kept; the same top
-# in every later hierarchy -top and prep -top; no connect to a constant with
-# an x or z bit, in any spelling; and setundef -anyseq right after a script's
-# own async2sync or clk2fflogic, which write x where an asynchronous set and
-# clear are both active. A script file included with a label runs only that
-# block, as in Yosys.
+# selected when it runs (select -module and cd <module> scope it until select
+# -clear or cd .., design -save and -stash keep that scope with the design for
+# design -load to bring back, design -reset clears it, and free_undefined.ys
+# begins with select -clear); after it, another opening before the next
+# command that acts once a source is read, a macro is defined, or a parameter
+# is set again (read, read_verilog, read_slang, verilog_defines, chparam,
+# hierarchy -chparam), the design is reset, or a module of a kept design joins
+# it (design -copy-from), a design that design -load brings back opened only
+# if it was when it was kept, and the final design at the end of [script]
+# opened; the same top in every later hierarchy -top and prep -top; no connect
+# to a constant with an x or z bit, in any spelling; and setundef -anyseq on
+# the whole design right after a script's own async2sync, which writes x where
+# an asynchronous set and clear are both active.
 #
 # The opening does not reach undefined values that a cell computes, such as a
 # $shiftx read past its input, which the backends and the default techmap's
@@ -5428,6 +5154,7 @@ def test_dont_care_classifies_every_command() -> None:
 # setundef does) and no source has; or a memory initialized with x, which makes
 # the next pass that reads the memory stop with "Non-constant data".
 UNDEFINED_OPENING = [
+    ["select", "-clear"],
     ["proc_clean"],
     ["proc_rmdead"],
     ["proc_prune"],
@@ -5443,66 +5170,54 @@ UNDEFINED_OPENING = [
     ["proc_clean"],
     ["opt_expr", "-keepdc"],
 ]
-# Commands that may run before the opening: they read sources, set parameters,
-# elaborate, or change neither a cell nor a constant. select and cd can change
-# what the opening runs on; the check follows them.
-UNDEFINED_OPENING_BEFORE = {
-    "read",
-    "read_verilog",
-    "read_slang",
-    "verilog_defines",
-    "chparam",
-    "hierarchy",
-    "select",
-    "cd",
-    "log",
-    "echo",
-    "check",
-    "stat",
-    "write_rtlil",
-    "write_json",
-    "delete",
-    "setattr",
-    "rename",
-    "connect",
-    "cutpoint",
-    "chformal",
-    "debug",
-}
-# The opening's file. A script lists it in [files] as the single word
-# free_undefined.ys, so that SymbiYosys copies the repository's
-# formal/free_undefined.ys unchanged, and runs it with `script
-# free_undefined.ys`; the check reads that command as the opening, and the
-# file's content is pinned to UNDEFINED_OPENING.
+# File-writing forms are a direct consequence of SCRIPT_FORMS: only forms with
+# writes_file=True may write a file. btb_pending_relation, btb_tag_compare,
+# data_mem_response_mux and sc_head_query write `write_json <file>`, and
+# axi_coherent_bridge writes `write_rtlil ../model/<file>`.
+SCRIPT_FILE_WRITES = frozenset(form.id for form in SCRIPT_FORMS if form.writes_file)
+# Options that write files on commands present in SCRIPT_FORMS; checked against
+# Yosys's help so no writes_file=False form can gain a file-writing option.
+FORBIDDEN_WRITE_OPTIONS = frozenset(
+    {
+        "-o",
+        "-a",
+        "-write",
+        "-dump_vcd",
+        "-dump_json",
+        "-dump_cnf",
+        "-vcd",
+        "-fst",
+        "-aiw",
+        "-script",
+        "-vlog",
+        "-encfile",
+        "-fm_set_fsm_file",
+        "-export",
+        "--diag-json",
+        "--Mall",
+        "--all-deps",
+        "--Minclude",
+        "--include-deps",
+        "--Mmodule",
+        "--module-deps",
+    }
+)
 UNDEFINED_OPENING_FILE = "free_undefined.ys"
-UNDEFINED_OPENING_MARK = ["<free_undefined.ys>"]
-UNDEFINED_OPENING_SOURCES = {"read", "read_verilog", "read_slang", "chparam"}
-# A constant with an x or z digit, as Yosys's Verilog constant parser reads
-# connect arguments: 1'x, 1'bx, 1'X, 4'hx, 2'b0?, in a concatenation too.
-UNDEFINED_CONSTANT = re.compile(r"\d*'[sS]?[bBoOdDhH]?[0-9a-fA-F_xXzZ?]*[xXzZ?]")
+UNDEFINED_OPENING_MARK = ["script", UNDEFINED_OPENING_FILE]
 # Scripts that do not open that way yet. The list only shrinks: a listed script
 # whose every task opens fails the check.
 UNDEFINED_OPENING_PENDING = (
-    "axi_coherent_bridge",
-    "branch_prediction_alias",
     "coherence_array",
     "coherence_array_equiv",
-    "coherence_dma_ingress",
     "coherence_home",
     "coherence_l1d",
     "coherence_store_boundary",
-    "coherence_store_home",
-    "coherent_hart_cache",
     "csr_commit_cofactor",
     "csr_file",
-    "immu_bare",
     "line_client_link",
     "pm_mode_select",
     "reorder_buffer",
-    "rs_payload_twin",
     "sq_forwarding_unit",
-    "trap_unit",
-    "vec_lmul_legality_equiv",
 )
 # Scripts that compare two designs inside the script (the primitive twins and
 # the other in-script equivalence checks). Both designs hold the same undefined
@@ -5531,242 +5246,413 @@ UNDEFINED_OPENING_TWINS = (
 )
 
 
-def selection_change(args: list[str]) -> str | None:
-    """Return "scoped" or "full" when a select or cd changes the selection.
-
-    A select that lists, counts, asserts, writes or names a selection changes
-    nothing unless it has -module, which sets the active module in any form.
-    """
-    if args[0] == "cd":
-        return "full" if args[1:] in ([], ["/"]) else "scoped"
-    if args[0] != "select":
-        return None
-    if "-module" in args:
-        return "scoped"
-    if "-clear" in args:
-        return "full"
-    if "-none" in args or "-add" in args or "-del" in args or "-read" in args:
-        return "scoped"
-    passive = {
-        "-list",
-        "-list-mod",
-        "-count",
-        "-write",
-        "-set",
-        "-unset",
-        "-assert-none",
-        "-assert-any",
-        "-assert-count",
-        "-assert-max",
-        "-assert-min",
-        "-assert-mod-count",
-    }
-    if passive & set(args):
-        return None
-    return "scoped" if len(args) > 1 else None
+def script_write_gaps(sby_path: Path, cfg: sby_config.TaskConfig) -> list[str]:
+    """Return file-write violations in a task's parsed commands."""
+    try:
+        parsed = cfg.parsed(sby_path.parent, expand_opening=False)
+    except sby_config.ConfigError as error:
+        return [str(error)]
+    gaps: list[str] = []
+    copied = set(cfg.files) | set(cfg.inline_files)
+    for index, cmd in enumerate(parsed):
+        if not cmd.form.writes_file:
+            continue
+        assert cmd.form.id in SCRIPT_FILE_WRITES and len(cmd.args) == 2
+        text = " ".join(cmd.args)
+        target = cmd.args[1]
+        match = re.fullmatch(r"(\.\./model/)?([A-Za-z0-9_][A-Za-z0-9_.-]*)", target)
+        named = {
+            word
+            for other, item in enumerate(parsed)
+            if other != index
+            for word in item.args[1:]
+        }
+        if (
+            not match
+            or (match[1] and match[2].startswith("design"))
+            or (not match[1] and match[2] in copied)
+            or target in named
+            or match[2] in named
+        ):
+            gaps.append(f"{text}: writes a file the task reads or SymbiYosys owns")
+    return gaps
 
 
-def undefined_opening_gaps(commands: list[list[str]]) -> list[str]:
+@dataclass
+class DesignState:
+    """Opening and scope state of one Yosys design."""
+
+    opened: bool = False
+    early: bool = False
+    after_async: bool = False
+    scoped: bool = False
+    slang_top: str | None = None
+    elaborated: str | None = None
+    top: str | None = None
+
+
+def undefined_opening_gaps(
+    commands: list[sby_config.ParsedCommand] | list[list[str]],
+) -> list[str]:
     """Return what keeps a task's commands from opening as required, in order."""
+    parsed: list[sby_config.ParsedCommand] = []
+    for entry in commands:
+        if isinstance(entry, sby_config.ParsedCommand):
+            parsed.append(entry)
+        else:
+            try:
+                parsed.append(
+                    sby_config.ParsedCommand(
+                        tuple(entry), sby_config.match_command_form(entry)
+                    )
+                )
+            except sby_config.ConfigError as error:
+                return [str(error)]
+
     gaps: list[str] = []
     openings = 0
-    # What the check knows of the design Yosys works on: opened, it has had its
-    # opening; early, an acting command came before it; after_async, the last
-    # command was a script's own async2sync or clk2fflogic; scoped, the
-    # selection or the active module is narrower than the design; elaborated,
-    # the top named after the last source; top, the one the opening ran with.
-    # design -save, -stash and -push keep a design with its selection and
-    # active module, and -load and -pop bring both back (design.cc:344-385),
-    # so the check keeps this state with them.
-    fresh: dict = {
-        "opened": False,
-        "early": False,
-        "after_async": False,
-        "scoped": False,
-        "elaborated": None,
-        "top": None,
-    }
-    state = dict(fresh)
-    saved: dict[str, dict] = {}
-    pushed: list[dict] = []
-    for args in commands:
-        name, text = args[0], " ".join(args)
-        named_top = args[args.index("-top") + 1] if "-top" in args[:-1] else None
-        change = selection_change(args)
-        if change:
-            state["scoped"] = change == "scoped"
-            continue
-        if name == "design":
-            mode = args[1] if len(args) > 1 else ""
-            target = args[2] if len(args) > 2 else ""
-            # A design the check has not seen kept counts as unopened and scoped.
-            unknown = {**fresh, "scoped": True}
-            if mode in ("-save", "-stash"):
-                saved[target] = dict(state)
-            if mode in ("-push", "-push-copy"):
-                pushed.append(dict(state))
-            if mode in ("-reset", "-stash", "-push"):
-                state = dict(fresh)
-            elif mode == "-load":
-                state = dict(saved.get(target, unknown))
-            elif mode == "-pop":
-                state = pushed.pop() if pushed else unknown
-            elif mode in ("-copy-from", "-import"):
-                # Modules of a kept design join this one.
-                state.update(opened=False, early=False, after_async=False)
-                state["elaborated"] = None
-            elif mode == "-copy-to":
-                kept = saved.get(target, fresh)
-                saved[target] = {**kept, "opened": kept["opened"] and state["opened"]}
-            elif mode == "-delete":
-                saved.pop(target, None)
-            continue
-        if name in UNDEFINED_OPENING_SOURCES or (
-            name == "hierarchy" and "-chparam" in args
-        ):
-            state.update(opened=False, early=False, after_async=False)
-            state["elaborated"] = None
-            continue
-        if name == "hierarchy":
-            if not state["opened"]:
-                state["elaborated"] = named_top or state["elaborated"]
-            elif named_top not in (None, state["top"]):
-                gaps.append(f"{text}: another top after the opening")
-            continue
-        if args == UNDEFINED_OPENING_MARK:
-            text = f"script {UNDEFINED_OPENING_FILE}"
-            if not state["opened"]:
-                if state["scoped"]:
-                    gaps.append(
-                        f"{text}: the opening runs on a selection, not the design"
-                    )
-                if state["elaborated"] is None:
+    current = DesignState()
+    saved: dict[str, DesignState] = {}
+
+    for cmd in parsed:
+        args = cmd.args
+        text = " ".join(args)
+        transition = cmd.form.transition
+
+        if current.after_async:
+            if transition == "free_async" and not current.scoped:
+                current.after_async = False
+            else:
+                gaps.append(f"{text}: acts on what async2sync writes")
+                current.after_async = False
+
+        if transition == "open":
+            if args != tuple(UNDEFINED_OPENING_MARK):
+                gaps.append(f"{text}: expected script {UNDEFINED_OPENING_FILE}")
+                continue
+            if current.scoped:
+                gaps.append(f"{text}: the opening runs on a selection, not the design")
+            if not current.opened:
+                if current.elaborated is None:
                     gaps.append(f"{text}: no hierarchy -top after the last source")
-                state["opened"], state["top"] = True, state["elaborated"]
+                current.opened = True
+                current.top = current.elaborated
                 openings += 1
-            continue
-        if name in UNDEFINED_OPENING_BEFORE:
-            if (
-                state["opened"]
-                and name == "connect"
-                and any(UNDEFINED_CONSTANT.search(arg) for arg in args[1:])
-            ):
-                gaps.append(f"{text}: connects an undefined constant after the opening")
-            continue
-        if not state["opened"]:
-            if not state["early"]:
-                gaps.append(f"{text}: acts before the opening")
-            state["early"] = True
-            continue
-        if name == "prep" and named_top not in (None, state["top"]):
-            gaps.append(f"{text}: another top after the opening")
-        if state["after_async"] and not (
-            name == "setundef"
-            and sorted(args[1:]) in (["-anyseq"], ["-anyseq", "-undriven"])
-        ):
-            gaps.append(f"{text}: acts on what async2sync or clk2fflogic writes")
-        state["after_async"] = name in ("async2sync", "clk2fflogic")
+        elif transition == "define":
+            current.opened = False
+            current.early = False
+            current.elaborated = None
+        elif transition == "source":
+            current.opened = False
+            current.early = False
+            current.elaborated = None
+            if cmd.form.id == "read_slang":
+                slang_top = args[args.index("--top") + 1]
+                if current.slang_top not in (None, slang_top):
+                    gaps.append(
+                        f"{text}: top does not match read_slang --top {current.slang_top!r}"
+                    )
+                current.slang_top = slang_top
+        elif transition == "elaborate":
+            top_arg = args[args.index("-top") + 1]
+            if current.slang_top not in (None, top_arg):
+                gaps.append(
+                    f"{text}: top does not match read_slang --top {current.slang_top!r}"
+                )
+            if not current.opened:
+                if current.top not in (None, top_arg):
+                    gaps.append(f"{text}: another top after the opening")
+                current.elaborated = top_arg
+            elif top_arg != current.top:
+                gaps.append(f"{text}: another top after the opening")
+        elif transition == "scope_module":
+            current.scoped = True
+        elif transition == "scope_clear":
+            current.scoped = False
+        elif transition == "rename_top":
+            new_top = args[args.index("-top") + 1]
+            if not current.opened and current.elaborated is None:
+                gaps.append(f"{text}: renames top before hierarchy -top")
+            if current.opened:
+                current.top = new_top
+            if current.elaborated is not None:
+                current.elaborated = new_top
+            if current.slang_top is not None:
+                current.slang_top = new_top
+        elif transition == "passive":
+            pass
+        elif transition == "design_save":
+            slot = args[2]
+            if not current.opened:
+                gaps.append(f"{text}: the source design has no opening")
+            saved[slot] = replace(current)
+        elif transition == "design_stash":
+            slot = args[2]
+            if not current.opened:
+                gaps.append(f"{text}: the source design has no opening")
+            saved[slot] = replace(current)
+            current = DesignState()
+        elif transition == "design_load":
+            slot = args[2]
+            if slot not in saved or not saved[slot].opened:
+                gaps.append(f"{text}: saved design {slot!r} has no opening")
+            current = (
+                replace(saved[slot]) if slot in saved else DesignState(scoped=True)
+            )
+        elif transition == "design_reset":
+            current = DesignState()
+        elif transition == "design_delete":
+            saved.pop(args[2], None)
+        elif transition == "design_copy_from":
+            slot = args[args.index("-copy-from") + 1]
+            if slot not in saved or not saved[slot].opened:
+                gaps.append(f"{text}: saved design {slot!r} has no opening")
+            current.opened = False
+            current.early = False
+            current.elaborated = None
+        elif transition == "techmap_map":
+            if not current.opened:
+                if not current.early:
+                    gaps.append(f"{text}: acts before the opening")
+                current.early = True
+            slot = args[args.index("-map") + 1][1:]
+            if slot not in saved or not saved[slot].opened:
+                gaps.append(f"{text}: map '%{slot}' has no saved opening")
+        elif transition == "prep":
+            if not current.opened:
+                if not current.early:
+                    gaps.append(f"{text}: acts before the opening")
+                current.early = True
+            else:
+                top_arg = args[args.index("-top") + 1]
+                if top_arg != current.top:
+                    gaps.append(f"{text}: another top after the opening")
+        elif transition == "async":
+            if not current.opened:
+                if not current.early:
+                    gaps.append(f"{text}: acts before the opening")
+                current.early = True
+            else:
+                current.after_async = True
+        elif transition in ("free_async", "act"):
+            if not current.opened:
+                if not current.early:
+                    gaps.append(f"{text}: acts before the opening")
+                current.early = True
+        else:
+            raise AssertionError(f"unhandled form transition: {transition}")
+
     if not openings:
         gaps.append("no opening")
+    elif not current.opened:
+        gaps.append("the final design has no opening")
+    if current.after_async:
+        gaps.append("async2sync without setundef -anyseq")
     return gaps
 
 
 def sby_tag_gaps(sby_path: Path) -> list[str]:
-    """Return the task tags of a script that the checks could not follow.
-
-    SymbiYosys keeps or drops each tagged line, and each block from a tag on a
-    line of its own to "--", per task before it reads the sections. The checks
-    read [script] the same way, task by task, but [files] and [file ...] once
-    for every task, so that a tag there could give a task other files, or its
-    own text of a pinned file. So no section header may carry a tag or lie
-    inside a block, and no line of [files] or [file ...] may carry or open one.
-    """
-    every_tag = set().union(*sby_task_tags(sby_path).values())
-    gaps: list[str] = []
-    section, block = "", 0
-    for number, line in enumerate(sby_path.read_text().splitlines(), 1):
-        if section == "[tasks]" and not line.startswith("["):
-            continue
-        if block and line.strip() == "--":
-            block = 0
-            continue
-        tag, rest = sby_line_tag(line, every_tag)
-        header = re.fullmatch(r"\s*\[(.*)\]\s*", rest)
-        if header:
-            if tag:
-                gaps.append(f"line {number}: the section header carries {tag}")
-            if block:
-                gaps.append(
-                    f"line {number}: a section header in the block of line {block}"
-                )
-            section = "[" + " ".join(header.group(1).split()) + "]"
-            continue
-        if tag and (section == "[files]" or section.startswith("[file ")):
-            gaps.append(f"line {number}: {section} carries {tag}")
-        if tag and not rest:
-            block = number
-    return gaps
+    """Return syntax that cannot be read identically by all proof tools."""
+    try:
+        sby_config.source(sby_path)
+    except sby_config.ConfigError as error:
+        return [str(error)]
+    return []
 
 
-def undefined_opening_file_gaps(sby_path: Path) -> list[str]:
-    """Return why a script that names the opening's file would not run it as it is."""
+def undefined_opening_file_gaps(
+    sby_path: Path, cfg: sby_config.TaskConfig
+) -> list[str]:
+    """Check the named opening against the file SymbiYosys gives this task."""
+    name = UNDEFINED_OPENING_FILE
+    if name in cfg.inline_files:
+        return [f"[file {name}]: the opening's file is written in the script"]
+    if cfg.files.get(name) != name:
+        return [
+            f"[files]: expected the single entry {name}, got {cfg.files.get(name)!r}"
+        ]
+    copy = sby_path.parent / name
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
-    gaps: list[str] = []
-    entries: list[str] = []
-    section = ""
-    for line in sby_path.read_text().splitlines():
-        if line.startswith("[") and line.rstrip().endswith("]"):
-            section = " ".join(line.strip()[1:-1].split())
-            if section == f"file {UNDEFINED_OPENING_FILE}":
-                gaps.append(f"[{section}]: the opening's file is written in the script")
-        elif section == "files" and line.split() and not line.startswith("#"):
-            words = line.split()
-            if (words[0] if len(words) > 1 else Path(words[-1]).name) == (
-                UNDEFINED_OPENING_FILE
-            ):
-                entries.append(" ".join(words))
-    if entries and entries != [UNDEFINED_OPENING_FILE]:
-        gaps.append(
-            f"[files] {' / '.join(entries)}: not the single entry {UNDEFINED_OPENING_FILE}"
-        )
-    elif entries:
-        copy = sby_path.parent / UNDEFINED_OPENING_FILE
-        if not copy.is_file() or (
-            copy.read_bytes() != (formal / UNDEFINED_OPENING_FILE).read_bytes()
-        ):
-            gaps.append(f"{copy}: not the repository's {UNDEFINED_OPENING_FILE}")
-    return gaps
+    if not copy.is_file() or copy.read_bytes() != (formal / name).read_bytes():
+        return [f"{copy}: not the repository's {name}"]
+    return []
 
 
 def sby_undefined_opening_gaps(sby_path: Path) -> dict[str, list[str]]:
-    """Return each task's opening gaps, for the tasks that have any."""
-    scripts, files = sby_task_scripts(sby_path)
-    # `script free_undefined.ys` runs the opening when [files] gives it the
-    # repository's file; the file's commands are checked once, against
-    # UNDEFINED_OPENING.
-    marked = {**files, UNDEFINED_OPENING_FILE: UNDEFINED_OPENING_MARK[0]}
-    tag_gaps = sby_tag_gaps(sby_path)
-    named = UNDEFINED_OPENING_FILE in files or any(
-        UNDEFINED_OPENING_MARK in yosys_commands(script, marked)
-        for script in scripts.values()
-    )
-    file_gaps = undefined_opening_file_gaps(sby_path) if named else []
-    if named and UNDEFINED_OPENING_FILE not in files and not file_gaps:
-        file_gaps = [f"[files] does not list {UNDEFINED_OPENING_FILE}"]
-    return {
-        task or "-": gaps
-        for task, script in scripts.items()
-        if (
-            gaps := tag_gaps
-            + file_gaps
-            + undefined_opening_gaps(yosys_commands(script, marked))
+    """Return each task's opening gaps on its resolved SymbiYosys configuration."""
+    try:
+        configs = sby_config.resolved(sby_path)
+    except sby_config.ConfigError as error:
+        return {"-": [str(error)]}
+    result = {}
+    for task, cfg in configs.items():
+        pre_named = (
+            UNDEFINED_OPENING_FILE in cfg.files
+            or UNDEFINED_OPENING_FILE in cfg.inline_files
         )
-    }
+        gaps = undefined_opening_file_gaps(sby_path, cfg) if pre_named else []
+        try:
+            parsed = cfg.parsed(sby_path.parent, expand_opening=False)
+        except sby_config.ConfigError as error:
+            result[task or "-"] = [*gaps, str(error)]
+            continue
+        if not pre_named and any(
+            cmd.args == tuple(UNDEFINED_OPENING_MARK) for cmd in parsed
+        ):
+            gaps = undefined_opening_file_gaps(sby_path, cfg)
+        gaps += undefined_opening_gaps(parsed)
+        gaps += script_write_gaps(sby_path, cfg)
+        if gaps:
+            result[task or "-"] = gaps
+    return result
+
+
+def test_scripts_write_no_task_file() -> None:
+    """No task of any script, pending ones too, writes a file outside its list."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
+    found = [
+        f"{path.name} {task}: {gap}"
+        for path in sorted(formal.glob("*.sby"))
+        for task, cfg in sby_config.resolved(path).items()
+        for gap in script_write_gaps(path, cfg)
+    ]
+    assert found == []
+
+
+# A file a command writes while the task runs, with the reviewed cases first
+# (the opening's file rewritten by tee, a copied source overwritten, the
+# opening's file emptied by select -write, test_cell -vlog), then other writing
+# forms; each must fail the check. The controls are the forms scripts on main use.
+SCRIPT_WRITE_CASES: list[tuple[str, str]] = [
+    (
+        "flag",
+        "tee -q -o free_undefined.ys log proc\ntee -q -a free_undefined.ys log setundef -zero\n",
+    ),
+    ("flag", "tee -q -o top.sv log //\n"),
+    ("flag", "select -none\nselect -write free_undefined.ys\nselect -clear\n"),
+    ("flag", "select -none -write free_undefined.ys\nselect -clear\n"),
+    ("flag", "test_cell -s 1 -n 1 -noeval -nosat -vlog top.sv $not\n"),
+    ("flag", "write_rtlil free_undefined.ys\n"),
+    ("flag", "write_json top.sv\n"),
+    ("flag", "write_verilog out.v\n"),
+    ("flag", "write_file -a free_undefined.ys\n"),
+    ("flag", "dump -o free_undefined.ys\n"),
+    ("flag", "sat -dump_vcd trace.vcd -prove-asserts\n"),
+    ("flag", "write_json -selected model.json\n"),
+    ("flag", "write_json ../top.sv\n"),
+    ("flag", "write_rtlil ../model/design.il\n"),
+    ("flag", "write_json model.json\nread_json model.json\n"),
+    ("flag", "tee -q -o run.log stat\n"),
+    ("accept", "write_json prepared_model.json\n"),
+    ("accept", "write_rtlil ../model/unpartitioned.il\n"),
+]
+
+
+@pytest.mark.parametrize("expect,commands", SCRIPT_WRITE_CASES)
+def test_script_write_gaps(tmp_path: Path, expect: str, commands: str) -> None:
+    """A task writes a file only in a listed form and never one it reads."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    (tmp_path / UNDEFINED_OPENING_FILE).write_bytes(
+        (formal / UNDEFINED_OPENING_FILE).read_bytes()
+    )
+    (tmp_path / "top.sv").write_text(
+        "module top(input a, output y);\n  assign y = a;\nendmodule\n"
+    )
+    path = tmp_path / "writes.sby"
+    path.write_text(
+        "[options]\nmode bmc\ndepth 1\n\n[engines]\nsmtbmc boolector\n\n[script]\n"
+        "read -formal top.sv\nhierarchy -top top\n"
+        + commands
+        + "script free_undefined.ys\nprep -top top\n\n[files]\ntop.sv\nfree_undefined.ys\n"
+    )
+    (cfg,) = sby_config.resolved(path).values()
+    gaps = script_write_gaps(path, cfg)
+    assert bool(gaps) == (expect == "flag"), gaps
+    if expect == "flag":
+        assert sby_undefined_opening_gaps(path), commands
+
+
+def test_file_writes_follow_the_installed_yosys() -> None:
+    """Every command and option in SCRIPT_FORMS exists in Yosys and hides no write."""
+    listing = subprocess.run(
+        ["yosys", "-Q", "-p", "help"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    ).stdout
+    known = set(re.findall(r"^\s+([a-z_0-9]+)\s", listing, re.M))
+    assert SCRIPT_FILE_WRITES == {"write_json", "write_rtlil"}
+    help_cache: dict[str, str] = {}
+    for form in SCRIPT_FORMS:
+        assert form.command in known, form.id
+        assert form.writes_file == form.command.startswith("write_"), form.id
+        extra_help = {"read": ("read_verilog",), "opt": ("prep",)}.get(form.command, ())
+        for cmd_help in (form.command, *extra_help):
+            if cmd_help not in help_cache:
+                help_cache[cmd_help] = subprocess.run(
+                    ["yosys", "-h", cmd_help],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=120,
+                ).stdout
+        text = "\n".join(help_cache[name] for name in (form.command, *extra_help))
+        prefix_set = {prefix for prefix, _ in form.prefix_opts}
+        accepted_options = (
+            set(form.flags)
+            | set(form.required_flags)
+            | {opt for opt, _ in form.opt_args}
+            | prefix_set
+        )
+        if not form.writes_file:
+            assert not (accepted_options & FORBIDDEN_WRITE_OPTIONS), form.id
+        missing = [
+            option
+            for option in accepted_options
+            if not re.search(
+                rf"(^|[\s,|\[{{]){re.escape(option)}"
+                rf"({'[A-Za-z' if option in prefix_set else '['}\s,=<\[\]|}}]|$)",
+                text,
+                re.M,
+            )
+        ]
+        assert missing == [], (form.id, missing)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "tee -q -o x.log opt -keepdc",
+        "trace debug prep -top top",
+        "debug -on",
+        "lbl: opt -keepdc",
+        ": comment",
+        "opt -keepdc; opt_clean",
+        "opt -keepdc;;",
+        "!rm -f top.sv",
+        "tcl script.tcl",
+        "exec echo hi",
+        "python -c pass",
+        "plugin -i foo.so",
+        "read paired.sv",
+        "read -D FOO paired.sv",
+        "read_verilog paired.sv",
+        "opt -fine",
+        "delete -input -output w:a",
+    ],
+)
+def test_closed_language_refuses_wrappers_labels_and_semicolons(line: str) -> None:
+    """Wrappers, labels, semicolons and shell or interpreter escapes fail parsing."""
+    with pytest.raises(sby_config.ConfigError):
+        sby_config.parse_script_lines([line])
 
 
 def test_scripts_free_undefined_constants_first() -> None:
     """Every script outside the two pending lists opens with UNDEFINED_OPENING."""
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
     waiting = set(UNDEFINED_OPENING_PENDING) | set(UNDEFINED_OPENING_TWINS)
     lacking: list[str] = []
     opened: list[str] = []
@@ -5790,8 +5676,13 @@ def test_scripts_free_undefined_constants_first() -> None:
         assert [name for name in names if not (formal / f"{name}.sby").is_file()] == []
     assert not set(UNDEFINED_OPENING_PENDING) & set(UNDEFINED_OPENING_TWINS)
     # The opening's own file runs exactly UNDEFINED_OPENING.
-    opening = (formal / "free_undefined.ys").read_text().splitlines()
-    assert yosys_commands(opening, {}) == UNDEFINED_OPENING
+    opening = sby_config.split_lf_lines(
+        sby_config.read_checked_text(formal / "free_undefined.ys"),
+        "free_undefined.ys",
+    )
+    assert [
+        list(cmd.args) for cmd in sby_config.parse_script_lines(opening)
+    ] == UNDEFINED_OPENING
 
 
 DONT_CARE_NO_STATE = (
@@ -6313,16 +6204,16 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
         "coherent_hart_cache",
         (("covers: setundef -zero\n", "covers: setundef -zero\ncovers: opt -full\n"),),
     ),
-    # Sound edits: options in another order, tee around a listed form, debug
-    # -on with words after it (Yosys then runs nothing), ';;' and clean -purge,
-    # memory_map -keepdc -formal and setattr -unset init.
+    # Sound edits in the closed language, alongside wrappers, semicolons,
+    # unlisted flags, complex quotes and labels, which the closed language
+    # refuses.
     (
         "accept",
         "coherence_array_plru",
         (("proof: opt -fast -keepdc\n", "proof: opt -purge -fast -keepdc\n"),),
     ),
     (
-        "accept",
+        "flag",
         "coherent_local_atomic",
         (("\nopt -fast -keepdc\n", "\ntee -q -o t.log opt -keepdc -fast\n"),),
     ),
@@ -6342,17 +6233,17 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
         (("proof: techmap\n", "chformal -cover -remove c:none\nproof: techmap\n"),),
     ),
     (
-        "accept",
+        "flag",
         "vec_vmu",
         (("bmc: techmap\n", "bmc: debug -on opt -full\nbmc: techmap\n"),),
     ),
     (
-        "accept",
+        "flag",
         "coherence_array_plru",
         (("memory_map -keepdc\n", "memory_map -keepdc;;\nclean -purge\n"),),
     ),
     (
-        "accept",
+        "flag",
         "coherence_array_plru",
         (("memory_map -keepdc\n", "memory_map -keepdc -formal\n"),),
     ),
@@ -6361,8 +6252,6 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
         "coherence_home_completions",
         (("proof: techmap\n", "setattr -unset init w:*\nproof: techmap\n"),),
     ),
-    # Sound edits: a continued -keepdc, a comment, a quoted string, debug -on
-    # and a label after leading whitespace.
     (
         "accept",
         "coherence_home_completions",
@@ -6379,28 +6268,27 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
         (("proof: opt -keepdc\n", "proof: opt -keepdc # -full\n"),),
     ),
     (
-        "accept",
+        "flag",
         "coherence_array_plru",
         (("memory_map -keepdc\n", 'memory_map -keepdc\nlog "opt -full; opt"\n'),),
     ),
     (
-        "accept",
+        "flag",
         "coherence_array_plru",
         (("memory_map -keepdc\n", "memory_map -keepdc\ndebug -on opt\n"),),
     ),
     (
-        "accept",
+        "flag",
         "coherence_array_equiv",
         (("techmap\n", "  lbl: opt -keepdc\ntechmap\n"),),
     ),
-    # More forms on the list.
     (
         "accept",
         "coherence_home_completions",
         (("proof: techmap\n", "setundef -undriven -anyseq\nproof: techmap\n"),),
     ),
     (
-        "accept",
+        "flag",
         "coherence_array_plru",
         (("memory_map -keepdc\n", "memory_map -formal\n"),),
     ),
@@ -6422,16 +6310,15 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
 def test_dont_care_guard_mutations(
     tmp_path: Path, expect: str, name: str, edits: tuple[tuple[str, str], ...]
 ) -> None:
-    """The guard rejects what a mutation adds outside the list, however it is spelled."""
-    source = Path(__file__).resolve().parents[1] / FORMAL_DIR / f"{name}.sby"
-    text = source.read_text()
+    """Check the command guard on an isolated copy of each proof and its inputs."""
+    root = Path(__file__).resolve().parents[1]
+    source = root / FORMAL_DIR / f"{name}.sby"
+    mutated = sby_config.stage_proof(source, root, tmp_path)
+    text = sby_config.read_checked_text(mutated)
     for old, new in edits:
         assert text.count(old) == 1, (name, old)
         text = text.replace(old, new)
-    mutated = tmp_path / source.name
-    mutated.write_text(text)
-    for script_file in source.parent.glob("*.ys"):
-        (tmp_path / script_file.name).write_text(script_file.read_text())
+    mutated.write_bytes(text.encode("utf-8"))
     assert dont_care_changes(source) == ([], [])
     added, missing = dont_care_changes(mutated)
     if expect == "flag":
@@ -6445,7 +6332,7 @@ def test_dont_care_guard_mutations(
 
 
 def test_dont_care_guard_reads_scripts_as_yosys_does(tmp_path: Path) -> None:
-    """Tags, labels, comments, ';', script files, and assertions exempt nothing."""
+    """Tags, comments, included .ys files, and assertions exempt nothing."""
     no_state = "select -assert-none " + " ".join(
         f"t:{pattern}"
         for pattern in (
@@ -6462,22 +6349,19 @@ def test_dont_care_guard_reads_scripts_as_yosys_does(tmp_path: Path) -> None:
     )
     sby_path = tmp_path / "tags.sby"
     sby_path.write_text(
-        "[tasks]\nfirst proof\nsecond covers\nthird:\n\n[script]\nprep -top top\n"
-        "proof: opt;; opt -keepdc # opt\n~proof: tee -q -o opt.log opt -keepdc\n"
-        "covers: script extra.ys\nlog opt\n"
+        "[tasks]\nfirst proof\nsecond covers\nthird:\n\n[options]\nmode bmc\ndepth 1\n"
+        "\n[engines]\nsmtbmc boolector\n\n[script]\nprep -top top\n"
+        "proof: opt # -keepdc\n~proof: opt -keepdc\n"
+        "covers: script extra.ys\nlog -stderr opt\n"
         f"proof: {no_state}\nproof: opt -full\n"
-        "\n[file extra.ys]\nlabel: opt_expr -keepdc; memory_map -formal\nmemory -nomap\n"
+        "\n[file extra.ys]\nopt_expr -keepdc\nmemory_map -keepdc\npeepopt\n"
     )
-    scripts, files = sby_task_scripts(sby_path)
-    assert {
-        task: yosys_commands(script, files) for task, script in scripts.items()
-    } == {
+    resolved = sby_config.resolved(sby_path)
+    assert {task: cfg.commands(tmp_path) for task, cfg in resolved.items()} == {
         "first": [
             ["prep", "-top", "top"],
             ["opt"],
-            ["clean"],
-            ["opt", "-keepdc"],
-            ["log", "opt"],
+            ["log", "-stderr", "opt"],
             no_state.split(),
             ["opt", "-full"],
         ],
@@ -6485,33 +6369,30 @@ def test_dont_care_guard_reads_scripts_as_yosys_does(tmp_path: Path) -> None:
             ["prep", "-top", "top"],
             ["opt", "-keepdc"],
             ["opt_expr", "-keepdc"],
-            ["memory_map", "-formal"],
-            ["memory", "-nomap"],
-            ["log", "opt"],
+            ["memory_map", "-keepdc"],
+            ["peepopt"],
+            ["log", "-stderr", "opt"],
         ],
-        # A task line in the "name:" form is not a tag block.
-        "third": [["prep", "-top", "top"], ["opt", "-keepdc"], ["log", "opt"]],
+        "third": [
+            ["prep", "-top", "top"],
+            ["opt", "-keepdc"],
+            ["log", "-stderr", "opt"],
+        ],
     }
-    # The plain opt and, after the assertion, opt -full; memory -nomap runs
-    # opt_mem and memory_share, which resolve undefined words.
     assert sby_dont_care_optimizations(sby_path) == {
         "first": ["opt", "opt -full"],
-        "second": ["memory -nomap"],
+        "second": ["peepopt"],
     }
-    # An assertion that no state is left exempts nothing, whatever scope or
-    # selection it has, since undefined constants remain.
-    for prefix in ([], [["cd", "top"]], [["select", "-list", "-module", "sub"]]):
+    for prefix in ([], [["cd", "top"]], [["select", "-module", "sub"]]):
         assert dont_care_optimizations(
             [*prefix, no_state.split(), ["opt", "-full"]]
         ) == ["opt -full"]
     assert dont_care_optimizations(
         [no_state.split(), ["chformal", "-delay", "1"], ["opt"]]
     ) == ["chformal -delay 1", "opt"]
-    # -share_all fuses free inputs, whatever else the command says.
     assert dont_care_optimizations([["opt", "-keepdc", "-share_all"]]) == [
         "opt -keepdc -share_all"
     ]
-    # An open entry pins each task's commands in order.
     assert dont_care_pins("coherence_store_boundary")["bmc_sc"] == [
         "memory_map",
         "opt",
@@ -6798,7 +6679,7 @@ UNDEFINED_OPENING_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] 
             (UNDEFINED_OPEN_VTYPE, "script open.ys rest\n"),
             (
                 "[files]\n",
-                f"[file open.ys]\nopening:\n{UNDEFINED_OPEN_VTYPE}rest:\nlog skipped\n\n[files]\n",
+                f"[file open.ys]\n opening:\n{UNDEFINED_OPEN_VTYPE} rest:\nlog skipped\n\n[files]\n",
             ),
         ),
     ),
@@ -6854,11 +6735,11 @@ UNDEFINED_OPENING_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] 
             ),
         ),
     ),
-    # Sound variants: the opening in an included script, also entered at its
-    # label; setundef -undriven after it; a selection asserted or cleared
+    # Sound variants: the opening in an included script;
+    # setundef -undriven after it; a selection asserted or cleared
     # before it; the opening run again after a parameter is set.
     (
-        "accept",
+        "flag",
         "vec_vtype_tracker",
         (
             (
@@ -6888,13 +6769,13 @@ UNDEFINED_OPENING_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] 
         ),
     ),
     (
-        "accept",
+        "flag",
         "vec_vtype_tracker",
         (
             (UNDEFINED_OPEN_VTYPE, "script open.ys opening\n"),
             (
                 "[files]\n",
-                f"[file open.ys]\nopening:\n{UNDEFINED_OPEN_VTYPE}rest:\nlog done\n\n[files]\n",
+                f"[file open.ys]\n opening:\n{UNDEFINED_OPEN_VTYPE} rest:\nlog done\n\n[files]\n",
             ),
         ),
     ),
@@ -6924,7 +6805,8 @@ UNDEFINED_OPENING_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] 
         (
             (
                 "script free_undefined.ys\n",
-                "select -assert-min 1 t:*\nselect w:*\nselect -clear\nscript free_undefined.ys\n",
+                "select -assert-min 1 t:*\nselect -module vec_vtype_tracker_formal\n"
+                "select -clear\nscript free_undefined.ys\n",
             ),
         ),
     ),
@@ -6944,6 +6826,7 @@ UNDEFINED_OPENING_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] 
 # gets: a command dropped, moved, added or run on another selection, and also
 # a change that leaves the commands as they are. Each is refused.
 UNDEFINED_OPENING_FILE_MUTATIONS: list[tuple[str, tuple[tuple[str, str], ...]]] = [
+    ("flag", (("select -clear\n", ""),)),
     ("flag", (("setundef -anyseq t:$mux t:$pmux t:$bwmux w:*\n", ""),)),
     (
         "flag",
@@ -6986,21 +6869,21 @@ def undefined_opening_mutant(
     edits: tuple[tuple[str, str], ...],
     file_edits: tuple[tuple[str, str], ...] = (),
 ) -> Path:
-    """Write an edited copy of a script, and of the files it includes, to tmp_path."""
-    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
-    text = (formal / f"{name}.sby").read_text()
+    """Stage the proof's inputs before editing the configuration or opening."""
+    root = Path(__file__).resolve().parents[1]
+    mutated = sby_config.stage_proof(root / FORMAL_DIR / f"{name}.sby", root, tmp_path)
+    text = sby_config.read_checked_text(mutated)
     for old, new in edits:
         assert text.count(old) == 1, (name, old)
         text = text.replace(old, new)
-    for script_file in formal.glob("*.ys"):
-        body = script_file.read_text()
-        if script_file.name == "free_undefined.ys":
-            for old, new in file_edits:
-                assert body.count(old) == 1, old
-                body = body.replace(old, new)
-        (tmp_path / script_file.name).write_text(body)
-    mutated = tmp_path / f"{name}.sby"
-    mutated.write_text(text)
+    mutated.write_bytes(text.encode("utf-8"))
+    if file_edits:
+        opening = mutated.with_name(UNDEFINED_OPENING_FILE)
+        body = sby_config.read_checked_text(opening)
+        for old, new in file_edits:
+            assert body.count(old) == 1, old
+            body = body.replace(old, new)
+        opening.write_bytes(body.encode("utf-8"))
     return mutated
 
 
@@ -7101,19 +6984,441 @@ def test_sby_tag_gaps(tmp_path: Path, expect: str, body: str) -> None:
         assert sby_undefined_opening_gaps(script), body
 
 
-def test_scripts_keep_tags_off_files() -> None:
-    """No script in the repository tags its files or its section headers."""
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "hidden_.*",
+        "hidden_.+",
+        "hidden_[a-z]+",
+        "(hidden_tag)",
+        "hidden_ta[g]",
+        "hidden_tag|unused",
+        "hidden_tag$",
+    ],
+)
+def test_sby_task_groups_are_literal(tmp_path: Path, pattern: str) -> None:
+    """Refuse patterns that add another task to a group."""
+    path = tmp_path / "groups.sby"
+    path.write_text(
+        f"[tasks]\nhelper: hidden_tag\nmain_task: {pattern}\n"
+        "[script]\nread -formal top.sv\nhierarchy -top top\n"
+        "helper: script free_undefined.ys\n~hidden_tag: script free_undefined.ys\n"
+        "hidden_tag:\n~helper: proc\n~helper: setundef -zero\n--\nprep -top top\n"
+        "[files]\ntop.sv\nfree_undefined.ys\n"
+    )
+    assert pattern in sby_undefined_opening_gaps(path)["-"][0]
+    assert pattern in dont_care_changes(path)[0][0]
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        ("[file dummy.ys] # copy", "  [file free_undefined.ys]"),
+        ("[file dummy.ys]\t# copy", "[file free_undefined.ys]"),
+        (" [file dummy.ys]", "[file free_undefined.ys]"),
+        ("[file dummy.ys]", "\t[file free_undefined.ys]"),
+        ("[file dummy.ys] ", "[file free_undefined.ys]"),
+        ("[file dummy.ys]", "[file ./free_undefined.ys]"),
+        ("[file dummy.ys]", "[file free_undefined.ys] # override"),
+    ],
+)
+def test_sby_file_headers_are_literal(tmp_path: Path, first: str, second: str) -> None:
+    """Refuse an ambiguous header before it can shadow the opening file."""
+    path = tmp_path / "headers.sby"
+    path.write_text(
+        SBY_TAG_HEAD
+        + "script free_undefined.ys\nprep -top top\n[files]\ntop.sv\n"
+        + f"{first}\nfree_undefined.ys\n{second}\nproc\nsetundef -zero\n"
+    )
+    assert "file " in sby_undefined_opening_gaps(path)["-"][0]
+    assert "file " in dont_care_changes(path)[0][0]
+
+
+def test_sby_resolves_nondefault_tasks(tmp_path: Path) -> None:
+    """Check every declared task even when only one is a default."""
+    path = tmp_path / "groups.sby"
+    path.write_text(
+        "[tasks]\na: group default\nb: group\n[options]\nmode bmc\ndepth 1\n"
+        "[engines]\nsmtbmc boolector\n[script]\n"
+        "group: hierarchy -top top\na: script free_undefined.ys\nb: setundef -zero\n"
+        "[files]\nfree_undefined.ys\n"
+    )
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
-    found = {
-        sby_path.name: gaps
-        for sby_path in sorted(formal.glob("*.sby"))
-        if (gaps := sby_tag_gaps(sby_path))
+    (tmp_path / UNDEFINED_OPENING_FILE).write_bytes(
+        (formal / UNDEFINED_OPENING_FILE).read_bytes()
+    )
+    assert list(sby_config.resolved(path)) == ["a", "b"]
+    assert sby_config.resolved(path)["b"].commands(tmp_path) == [
+        ["hierarchy", "-top", "top"],
+        ["setundef", "-zero"],
+    ]
+    assert dont_care_changes(path)[0] == ["groups.sby b: setundef -zero"]
+
+
+def test_stage_proof_carries_nested_script_inputs(tmp_path: Path) -> None:
+    """A relocated proof keeps sibling RTL, nested scripts and inline inputs."""
+    root = tmp_path / "checkout"
+    proof = root / "formal/top.sby"
+    inputs = {
+        "formal/top.sby": (
+            "[script]\nscript setup.ys\nprep -top top\n"
+            "[files]\nshared/setup.ys\n../tools/read_top.ys\n../hw/top.sv\n"
+            "[file defines.ys]\nread -define FORMAL_INPUT\n"
+        ),
+        "formal/shared/setup.ys": "script defines.ys\nscript read_top.ys\n",
+        "tools/read_top.ys": "read -formal -sv top.sv\n",
+        "hw/top.sv": "module top; endmodule\n",
+        "formal/unused.ys": "log unused\n",
     }
-    assert found == {}
+    for name, content in inputs.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+
+    fixture = tmp_path / "fixture"
+    copied = sby_config.stage_proof(proof, root, fixture)
+    assert copied == fixture / "formal/top.sby"
+    assert {
+        path.relative_to(fixture).as_posix(): path.read_text()
+        for path in fixture.rglob("*")
+        if path.is_file()
+    } == {name: body for name, body in inputs.items() if name != "formal/unused.ys"}
+    assert sby_config.source(copied).task("").commands(copied.parent) == [
+        ["read", "-define", "FORMAL_INPUT"],
+        ["read", "-formal", "-sv", "top.sv"],
+        ["prep", "-top", "top"],
+    ]
+
+
+@pytest.mark.parametrize("section", ["files", "script", "options", "engines", "tasks"])
+def test_sby_sections_have_one_header(tmp_path: Path, section: str) -> None:
+    """Reject a repeated header before a reader can overwrite its first body."""
+    path = tmp_path / "repeated.sby"
+    path.write_text(
+        SBY_TAG_HEAD
+        + "script free_undefined.ys\n[files]\nfree_undefined.ys\n"
+        + f"[{section}]\n"
+    )
+    assert f"[{section}]" in sby_undefined_opening_gaps(path)["-"][0]
+
+
+def test_opening_tracks_map_sources() -> None:
+    """Every map and every saved design that supplies modules has an opening."""
+    read = [["read", "-sv", "map.sv"]]
+    opening = [["hierarchy", "-top", "template"], UNDEFINED_OPENING_MARK]
+    save = [["design", "-stash", "map"]]
+    apply = [["techmap", "-max_iter", "1", "-map", "%map"]]
+    assert not undefined_opening_gaps(read + opening + save + opening + apply)
+    assert undefined_opening_gaps(read + save + opening + apply)
+    for source in ("map.sv", "+/techmap.v", "%missing", ""):
+        assert undefined_opening_gaps(opening + [["techmap", "-map", source]])
+        assert undefined_opening_gaps(
+            opening + save + opening + [apply[0] + ["-map", source]]
+        )
+    for action in ("-load", "-import", "-copy-from", "-copy-to"):
+        assert undefined_opening_gaps(
+            opening + [["design", action, "missing"]] + opening
+        )
+    for action in ("-save", "-stash", "-push", "-push-copy"):
+        assert undefined_opening_gaps(read + [["design", action, "raw"]] + opening)
+    assert undefined_opening_gaps(opening + [["design", "-pop"]])
+    assert undefined_opening_gaps(
+        opening + save + opening + [["design", "-delete", "map"]] + apply
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "select -write sel.txt",
+        "select -read sel.txt",
+        "log -o x.log message",
+        "check -assert -noinit",
+        "read -formal -I/tmp top.sv",
+        "setattr -set foo 1 w:*",
+        "chparam -set W 4 -set",
+        "debug -on",
+        "echo on",
+        "stat",
+    ],
+)
+def test_opening_holds_commands_to_their_forms(command: str) -> None:
+    """A command before the opening runs only in a form DONT_CARE_SAFE lists."""
+    opening = [["hierarchy", "-top", "top"], UNDEFINED_OPENING_MARK]
+    commands = [["read", "-formal", "top.sv"], command.split(), *opening]
+    assert undefined_opening_gaps(commands), command
+
+
+# Configurations SymbiYosys refuses, which the checkout-only reader must
+# refuse too, and well-formed ones it must read as SymbiYosys does.
+SBY_READER_CORPUS: list[str] = [
+    "[tasks]\nbmc\n[options]\n#TODO: fix\nmode bmc\n[script]\nread -formal a.sv\n",
+    "[tasks]\nbmc\n[script]\nread -formal a.sv\n#note: here\n",
+    "[tasks]\nbmc\n[files]\n#x: y\na.sv\n",
+    "[tasks]\nbmc\n[file x.ys]\n#tag: x\n",
+    "[tasks]\nbmc\n[script]\n:\n",
+    "[tasks]\nbmc\n[script]\n: comment\n",
+    "[tasks]\n[options]\nmode bmc\n[script]\nread -formal a.sv\n",
+    "[tasks]\n# only a comment\n[options]\nmode bmc\n",
+    "[tasks]\nbmc\n[options]\nmode bmc\n[script]\nfoo: read -formal a.sv\n",
+    "[tasks]\nbmc: a: b\n[options]\nmode bmc\n",
+    "[tasks]\nbmc\n[options]\nbmc:\nmode bmc\n",
+    "[tasks]\nbmc\n[options]\nmode bmc\n--\n",
+    "[tasks]\nbmc .*\n[options]\nmode bmc\n",
+    "[tasks]\nbmc\n[options]\nmode bmc\n[options]\nmode prove\n",
+    "[tasks]\nbmc\n[script] # x\nread -formal a.sv\n",
+    "[tasks]\nbmc\n [script]\nread -formal a.sv\n",
+    "[tasks]\nbmc\n[stage x]\n",
+    "[options]\nmode bmc\n[tasks]\nbmc\n",
+    "--pycode-begin--\noutput('[options]')\n--pycode-end--\n",
+    # Well-formed: the reader must give what SymbiYosys gives.
+    "[tasks]\nbmc\nprove\n[options]\nbmc: mode bmc\nprove: mode prove\n# TODO: x\n"
+    "[script]\nread -formal a.sv\n  #note: indented\nbmc:\nprep -top a\n--\n[files]\na.sv\n",
+    "[options]\nmode bmc\n#TODO: no tasks here\n[script]\nread -formal a.sv\n",
+    "[tasks]\nbmc\n[options]\nmode bmc #comment\n[engines]\nsmtbmc\n[script]\n"
+    "read -formal a.sv; prep -top a\n[files]\na.sv\n",
+]
+
+
+def test_reader_refuses_what_sby_refuses(tmp_path: Path) -> None:
+    """Refuse each text SymbiYosys refuses, and read the others as it does."""
+    texts = {f"case{index}": text for index, text in enumerate(SBY_READER_CORPUS)}
+    outcomes = sby_config.sby_outcomes(texts)
+    refused = 0
+    for name, text in texts.items():
+        try:
+            source = sby_config.read_source(tmp_path / f"{name}.sby", text)
+        except sby_config.ConfigError:
+            source = None
+        if "error" in outcomes[name]:
+            refused += 1
+            assert source is None, (name, text, outcomes[name]["error"])
+        elif source is not None:
+            tasks = outcomes[name]["tasks"]
+            assert list(source.tasks) == list(tasks), name
+            for task, entry in tasks.items():
+                assert source.task(task) == sby_config.TaskConfig.from_raw(**entry), (
+                    name,
+                    task,
+                )
+    assert refused == 14
+
+
+def test_generated_sby_corpus_matches_symbiyosys(tmp_path: Path) -> None:
+    """Compare read_source acceptance and rejection with SymbiYosys on mutations."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    seeds = (
+        "alu_shift_hint.sby",
+        "vec_vmu.sby",
+        "coherence_home_forward_pins.sby",
+        "coherence_link.sby",
+        "nic_irq.sby",
+        "control_flow_tracker_twin.sby",
+        "axi_coherent_bridge.sby",
+        "rs_payload_twin.sby",
+    )
+    corpus: dict[str, str] = {}
+
+    def add(label: str, text: str) -> None:
+        corpus[f"m{len(corpus)}_{label}"] = text
+
+    for stem in seeds:
+        base = (formal / stem).read_text()
+        lines = base.splitlines()
+        tasks = list(sby_config.source(formal / stem).tasks)
+        first_task = tasks[0]
+
+        # Valid dialect mutations: comments, blank lines, option edits, tag blocks,
+        # negated tags, inline .ys sections, and colon-form [tasks] entries.
+        add("orig", base)
+        add("no_trailing_nl", base.rstrip("\n"))
+        add("leading_comment", "# top comment\n\n" + base)
+        add(
+            "indented_colon_comment",
+            base.replace("[script]\n", "[script]\n  #note: ok\n", 1),
+        )
+        add(
+            "option_inline_comment",
+            base.replace("[options]\n", "[options]\ntimeout 60 # sec\n", 1),
+        )
+        add(
+            "engine_inline_comment",
+            base.replace("[engines]\n", "[engines]\n# engine note\n", 1),
+        )
+        add("inline_ys", base + "\n[file helper_extra.ys]\nselect -clear\n")
+        if first_task:
+            add(
+                "tagged_block",
+                base.replace(
+                    "[script]\n",
+                    f"[script]\n{first_task}:\nselect -clear\n--\n",
+                    1,
+                ),
+            )
+            add(
+                "negated_tag",
+                base.replace(
+                    "[script]\n",
+                    f"[script]\n~{first_task}: select -clear\n",
+                    1,
+                ),
+            )
+            add(
+                "tagged_option",
+                base.replace(
+                    "[options]\n",
+                    f"[options]\n{first_task}: vcd off\n",
+                    1,
+                ),
+            )
+            add(
+                "tasks_extra_colon",
+                base.replace(
+                    "[tasks]\n",
+                    f"[tasks]\nextra_variant: {first_task} default\n",
+                    1,
+                ),
+            )
+
+        # Invalid mutations refused by SymbiYosys and/or the strict dialect.
+        add("prep_mode", base.replace("[options]\n", "[options]\nmode prep\n", 1))
+        add(
+            "smtc_option",
+            base.replace("[options]\n", "[options]\nsmtc extra.smtc\n", 1),
+        )
+        add(
+            "expect_option",
+            base.replace("[options]\n", "[options]\nexpect PASS,TIMEOUT\n", 1),
+        )
+        add(
+            "skip_prep_option",
+            base.replace("[options]\n", "[options]\nskip_prep on\n", 1),
+        )
+        add("wait_option", base.replace("[options]\n", "[options]\nwait on\n", 1))
+        add(
+            "unknown_engine",
+            base.replace("[engines]\n", "[engines]\nsmtbmc --basecase boolector\n", 1),
+        )
+        add("smtc_file", base.replace("[files]\n", "[files]\nextra.smtc\n", 1))
+        add("dup_options", base + "\n[options]\nmode bmc\n")
+        add("dup_script", base + "\n[script]\nselect -clear\n")
+        add("dup_files", base + "\n[files]\nextra_dup.sv\n")
+        add("indented_header", base.replace("[script]", "  [script]", 1))
+        add("commented_header", base.replace("[script]", "[script] # tail", 1))
+        add("unknown_header", base + "\n[setup]\ncutpoint a\n")
+        add("stage_header", base + "\n[stage s]\nmode bmc\n")
+        add("engines_arg", base.replace("[engines]", "[engines bmc]", 1))
+        add("pycode", "--pycode-begin--\noutput('[tasks]')\n--pycode-end--\n" + base)
+        add("stray_block_end", base.replace("[script]\n", "[script]\n--\n", 1))
+        add("bad_option_arity", base.replace("[options]\n", "[options]\nmode\n", 1))
+        add("two_arg_files", base.replace("[files]\n", "[files]\ndst.sv src.sv\n", 1))
+        add("dot_slash_file", base.replace("[files]\n", "[files]\n./local.sv\n", 1))
+        add("control_char", base.replace("[script]\n", "[script]\n\x0b\n", 1))
+        add(
+            "non_ascii_ws",
+            base.replace("[script]\n", "[script]\n\u00a0opt -keepdc\n", 1),
+        )
+        add("indented_comment_before_section", "  # leading comment\n" + base)
+        add("orphan_before_section", "mode bmc\n" + base)
+        if "[tasks]\n" in base:
+            after_tasks = "[options]" + base.split("[options]", 1)[1]
+            add("empty_tasks", "[tasks]\n" + after_tasks)
+            add("comment_only_tasks", "[tasks]\n# none\n" + after_tasks)
+            add(
+                "indented_comment_in_tasks",
+                base.replace("[tasks]\n", "[tasks]\n  # note\n", 1),
+            )
+            add("tasks_after_options", after_tasks + "\n[tasks]\nt1\n")
+            add(
+                "double_colon_tasks", base.replace("[tasks]\n", "[tasks]\na: b: c\n", 1)
+            )
+            add("regex_task", base.replace("[tasks]\n", "[tasks]\nt_.*: grp\n", 1))
+            add("regex_group", base.replace("[tasks]\n", "[tasks]\nt_new: grp_.*\n", 1))
+            add("dup_task", base.replace("[tasks]\n", f"[tasks]\n{first_task}\n", 1))
+            add(
+                "hash_colon_script",
+                base.replace("[script]\n", "[script]\n#TODO: x\n", 1),
+            )
+            add(
+                "hash_colon_files", base.replace("[files]\n", "[files]\n#FIXME: y\n", 1)
+            )
+            add("bare_colon_script", base.replace("[script]\n", "[script]\n:\n", 1))
+            add(
+                "colon_comment_script",
+                base.replace("[script]\n", "[script]\n: note\n", 1),
+            )
+            add(
+                "unknown_tag",
+                base.replace("[script]\n", "[script]\nno_such_tag: opt\n", 1),
+            )
+            add(
+                "unterminated_block",
+                base + f"\n[script]\n{first_task}:\n"
+                if "[script]" not in base
+                else base.replace("[files]", f"{first_task}:\n[files]", 1),
+            )
+            add(
+                "unclosed_eof_block",
+                base.replace("[script]\n", f"[script]\n{first_task}:\n", 1),
+            )
+            add(
+                "nested_block",
+                base.replace(
+                    "[script]\n",
+                    f"[script]\n{first_task}:\n{first_task}:\n--\n",
+                    1,
+                ),
+            )
+            add(
+                "tagged_files",
+                base.replace("[files]\n", f"[files]\n{first_task}: a.sv\n", 1),
+            )
+            add("tagged_header", base.replace("[files]", f"{first_task}: [files]", 1))
+        # Drop each non-blank line in turn on small seeds to exercise missing
+        # headers and structural truncations.
+        if len(lines) <= 40:
+            for idx in range(0, len(lines), 3):
+                mutated = "\n".join(lines[:idx] + lines[idx + 1 :]) + "\n"
+                add(f"drop{idx}", mutated)
+
+    outcomes = sby_config.sby_outcomes(corpus)
+    both_accepted = 0
+    sby_refused = 0
+    for name, text in corpus.items():
+        try:
+            parsed_src = sby_config.read_source(tmp_path / f"{name}.sby", text)
+        except sby_config.ConfigError:
+            parsed_src = None
+        outcome = outcomes[name]
+        if "error" in outcome:
+            sby_refused += 1
+            assert parsed_src is None, (name, text, outcome["error"])
+        elif parsed_src is not None:
+            both_accepted += 1
+            tasks = outcome["tasks"]
+            assert list(parsed_src.tasks) == list(tasks), name
+            for task, entry in tasks.items():
+                assert parsed_src.task(task) == sby_config.TaskConfig.from_raw(
+                    **entry
+                ), (name, task)
+    assert both_accepted >= 80, both_accepted
+    assert sby_refused >= 80, sby_refused
+
+
+def test_scripts_match_resolved_sby_tasks() -> None:
+    """The checkout-only reader agrees with SymbiYosys on every task and file."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
+    for path in sorted(formal.glob("*.sby")):
+        source = sby_config.source(path)
+        resolved = sby_config.resolved(path)
+        assert list(source.tasks) == list(resolved), path
+        for task, config in resolved.items():
+            assert source.task(task) == config, (path.name, task)
 
 
 def test_undefined_opening_reads_commands() -> None:
-    """Which commands may precede the opening, and what resets or scopes it."""
+    """Which commands may precede the opening, and what resets, scopes or closes it."""
     opening = [["hierarchy", "-top", "top"], UNDEFINED_OPENING_MARK]
     assert (
         undefined_opening_gaps(
@@ -7121,13 +7426,12 @@ def test_undefined_opening_reads_commands() -> None:
         )
         == []
     )
-    # A delete, a cut or a listing may come first; an optimizing pass may not.
     assert (
         undefined_opening_gaps(
             [
                 ["delete", "t:sub"],
                 ["cutpoint", "w:x"],
-                ["select", "-list", "t:*"],
+                ["select", "-assert-none", "t:$assume"],
                 *opening,
             ]
         )
@@ -7136,15 +7440,13 @@ def test_undefined_opening_reads_commands() -> None:
     assert undefined_opening_gaps([["flatten"], *opening]) == [
         "flatten: acts before the opening"
     ]
-    # A selection left in place when the opening runs.
     assert undefined_opening_gaps([["select", "-module", "sub"], *opening]) == [
         "script free_undefined.ys: the opening runs on a selection, not the design"
     ]
-    # The opening's commands written out are not the opening.
     assert undefined_opening_gaps(
         [["hierarchy", "-top", "top"], *UNDEFINED_OPENING, ["prep", "-top", "top"]]
     ) == ["proc_clean: acts before the opening", "no opening"]
-    assert undefined_opening_gaps([["cd", "sub"], ["cd"], *opening]) == []
+    assert undefined_opening_gaps([["cd", "sub"], ["cd", ".."], *opening]) == []
     assert (
         undefined_opening_gaps(
             [["cd", "sub"], ["design", "-reset"], ["read", "-formal", "a.sv"], *opening]
@@ -7153,12 +7455,22 @@ def test_undefined_opening_reads_commands() -> None:
     )
     assert undefined_opening_gaps(
         [["cd", "sub"], ["design", "-stash", "s"], ["design", "-load", "s"], *opening]
-    ) == ["script free_undefined.ys: the opening runs on a selection, not the design"]
-    # A design read after a reset needs its own opening; a further hierarchy
-    # with the same top does not.
+    ) == [
+        "design -stash s: the source design has no opening",
+        "design -load s: saved design 's' has no opening",
+        "script free_undefined.ys: the opening runs on a selection, not the design",
+    ]
     assert undefined_opening_gaps(
-        [*opening, ["design", "-reset"], ["read", "b.sv"], ["prep", "-top", "b"]]
-    ) == ["prep -top b: acts before the opening"]
+        [*opening, ["design", "-reset"], ["read", "-sv", "b.sv"], ["prep", "-top", "b"]]
+    ) == ["prep -top b: acts before the opening", "the final design has no opening"]
+    assert undefined_opening_gaps(
+        [
+            *opening,
+            ["design", "-reset"],
+            ["read", "-formal", "b.sv"],
+            ["hierarchy", "-top", "b"],
+        ]
+    ) == ["the final design has no opening"]
     assert (
         undefined_opening_gaps(
             [*opening, ["hierarchy", "-top", "top"], ["prep", "-top", "top"]]
@@ -7168,26 +7480,148 @@ def test_undefined_opening_reads_commands() -> None:
     assert undefined_opening_gaps([*opening, ["hierarchy", "-top", "sub"]]) == [
         "hierarchy -top sub: another top after the opening"
     ]
-    # clk2fflogic's undefined values are freed before the next acting command.
+    assert undefined_opening_gaps(
+        [
+            *opening,
+            ["design", "-save", "s"],
+            ["design", "-copy-from", "s", "-as", "copy", "top"],
+            ["hierarchy", "-top", "sub"],
+            UNDEFINED_OPENING_MARK,
+        ]
+    ) == ["hierarchy -top sub: another top after the opening"]
     assert (
         undefined_opening_gaps(
-            [*opening, ["clk2fflogic"], ["setundef", "-anyseq"], ["opt", "-keepdc"]]
+            [*opening, ["async2sync"], ["setundef", "-anyseq"], ["opt", "-keepdc"]]
         )
         == []
     )
-    assert undefined_opening_gaps([*opening, ["clk2fflogic"], ["opt", "-keepdc"]]) == [
-        "opt -keepdc: acts on what async2sync or clk2fflogic writes"
+    assert undefined_opening_gaps([*opening, ["async2sync"], ["opt", "-keepdc"]]) == [
+        "opt -keepdc: acts on what async2sync writes"
     ]
-    # Constants with x or z, as connect's Verilog constant parser takes them.
+    assert undefined_opening_gaps([*opening, ["async2sync"]]) == [
+        "async2sync without setundef -anyseq"
+    ]
+    assert undefined_opening_gaps(
+        [*opening, ["async2sync"], ["design", "-stash", "s"], *opening]
+    ) == ["design -stash s: acts on what async2sync writes"]
+    assert undefined_opening_gaps([*opening, ["clk2fflogic"], ["setundef", "-anyseq"]])
     for spelled in ("1'x", "1'bx", "1'X", "4'hx", "2'b0?", "{a,1'bz}", "8'hxF"):
         assert UNDEFINED_CONSTANT.search(spelled), spelled
     for spelled in ("1'b0", "8'h00", "5'b00000", "16'hDEAD", "w:x_q", "dut.x"):
         assert not UNDEFINED_CONSTANT.search(spelled), spelled
-    # A labeled include runs only its block, as Yosys runs it.
-    lines = ["a: log a", "log a2", "b: log b", "c:", "log c"]
-    assert script_block(list(lines), "b") == [" log b"]
-    assert script_block(list(lines), "a:c") == [" log a", "log a2", " log b"]
-    assert script_block(list(lines), ":b") == [" log a", "log a2"]
+
+
+@pytest.mark.parametrize(
+    ("case_id", "sby_text"),
+    [
+        # Regex RHS group tag, commented or indented [file] override, and
+        # repeated section headers.
+        (
+            "regex_group_tag",
+            "[tasks]\nhelper: hidden_tag\nmain_task: hidden_.*\n[options]\nmode bmc\n"
+            "[engines]\nsmtbmc\n[script]\nread -formal -sv top.sv\nhierarchy -top top\n"
+            "~hidden_tag: script free_undefined.ys\nhidden_tag: proc\n"
+            "hidden_tag: setundef -zero\nprep -top top\n[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+        (
+            "indented_file_override",
+            "[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+            "read -formal -sv top.sv\nhierarchy -top top\nscript free_undefined.ys\n"
+            "prep -top top\n[files]\ntop.sv\n[file dummy.ys] # comment\n"
+            "free_undefined.ys\n  [file free_undefined.ys]\nproc\nsetundef -zero\n",
+        ),
+        (
+            "repeated_files_section",
+            "[tasks]\nbmc\n[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+            "read -formal -sv top.sv\nhierarchy -top top\nscript free_undefined.ys\n"
+            "prep -top top\n[files]\ntop.sv\n[files]\nfree_undefined.ys\n",
+        ),
+        # tee -o/-a, select -write, column-one #word:, and empty [tasks].
+        (
+            "tee_override",
+            "[tasks]\nbmc\n[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+            "tee -q -o free_undefined.ys log proc\n"
+            "read -formal -sv top.sv\nhierarchy -top top\nscript free_undefined.ys\n"
+            "prep -top top\n[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+        (
+            "select_write_wipe",
+            "[tasks]\nbmc\n[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+            "read -formal -sv top.sv\nhierarchy -top top\nselect -none\n"
+            "select -write free_undefined.ys\nselect -clear\nscript free_undefined.ys\n"
+            "prep -top top\n[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+        (
+            "hash_colon_comment",
+            "[tasks]\nbmc\n[options]\n#TODO: fix\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+            "read -formal -sv top.sv\nhierarchy -top top\nscript free_undefined.ys\n"
+            "prep -top top\n[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+        (
+            "empty_tasks",
+            "[tasks]\n[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+            "read -formal -sv top.sv\nhierarchy -top top\nscript free_undefined.ys\n"
+            "prep -top top\n[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+        # design -reset leaving final design unopened, select -set -clear,
+        # bare ':' selector, indented label in [script], test_cell -vlog writer,
+        # and async2sync at end of script without setundef -anyseq.
+        (
+            "reset_unopened_tail",
+            "[tasks]\nbmc\n[options]\nmode bmc\nskip_prep on\n[engines]\n"
+            "smtbmc --syn boolector\n[script]\nread -formal -sv top.sv\n"
+            "hierarchy -top top\nscript free_undefined.ys\nprep -top top\n"
+            "design -reset\nread_slang --top top --single-unit --no-synthesis-define "
+            "-DFORMAL top.sv\nchformal -lower\nhierarchy -top top\n"
+            "[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+        (
+            "select_set_clear",
+            "[tasks]\nbmc\n[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+            "read -formal -sv top.sv\nhierarchy -top top\nselect -none\n"
+            "select -set -clear %\nscript free_undefined.ys\nselect -clear\n"
+            "prep -top top\n[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+        (
+            "bare_colon",
+            "[tasks]\nbmc\n[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+            ": comment\nread -formal -sv top.sv\nhierarchy -top top\n"
+            "script free_undefined.ys\nprep -top top\n[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+        (
+            "indented_label",
+            "[tasks]\nbmc\n[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+            "read -formal -sv top.sv\nhierarchy -top top\nscript free_undefined.ys\n"
+            "prep -top top\n  lbl: delete t:$check\n[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+        (
+            "unlisted_writer_test_cell",
+            "[tasks]\nbmc\n[options]\nmode bmc\n[engines]\nsmtbmc\n[script]\n"
+            "test_cell -s 1 -n 1 -noeval -nosat -vlog top.sv $not\n"
+            "read -formal -sv top.sv\nhierarchy -top top\nscript free_undefined.ys\n"
+            "prep -top top\n[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+        (
+            "async2sync_tail",
+            "[tasks]\nbmc\n[options]\nmode bmc\nskip_prep on\n[engines]\n"
+            "smtbmc --syn boolector\n[script]\nread -formal -sv top.sv\n"
+            "hierarchy -top top\nscript free_undefined.ys\nprep -top top\n"
+            "async2sync\n[files]\ntop.sv\nfree_undefined.ys\n",
+        ),
+    ],
+)
+def test_script_and_dialect_bypass_cases_refused(
+    tmp_path: Path, case_id: str, sby_text: str
+) -> None:
+    """Each dialect, file-write, scoping and unopened-tail bypass is refused."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    (tmp_path / UNDEFINED_OPENING_FILE).write_bytes(
+        (formal / UNDEFINED_OPENING_FILE).read_bytes()
+    )
+    (tmp_path / "top.sv").write_text("module top;\nendmodule\n")
+    path = tmp_path / f"{case_id}.sby"
+    path.write_text(sby_text)
+    assert sby_undefined_opening_gaps(path), case_id
 
 
 def test_store_home_cover_budgets() -> None:
@@ -7247,9 +7681,10 @@ def test_store_home_cover_budgets() -> None:
             "select -assert-count 1 t:$check r:FLAVOR=assume %i",
             "select -clear",
         )
-        positions = [script.index(command) for command in pipeline]
+        model = script[script.index("prep -flatten -top coherence_store_home_formal") :]
+        positions = [model.index(command) for command in pipeline]
         assert positions == sorted(positions)
-        assert positions[-1] < script.index("setundef -anyseq")
+        assert positions[-1] < model.index("setundef -anyseq")
     bounded_tasks = (
         ("bmc_siblings", 240),
         ("bmc_rows", 240),
@@ -7299,11 +7734,14 @@ def test_store_home_cover_budgets() -> None:
                 "select -assert-none t:$anyconst r:WIDTH=1 %i",
                 "select -clear",
             )
-            positions = [script.index(command) for command in partition]
+            model = script[
+                script.index("prep -flatten -top coherence_store_home_formal") :
+            ]
+            positions = [model.index(command) for command in partition]
             assert positions == sorted(positions)
-            assert positions[-1] < script.index("memory_map -keepdc")
-            assert script.index("peepopt") < script.index("techmap")
-            assert script.index("techmap") < script.index("setundef -anyseq")
+            assert positions[-1] < model.index("memory_map -keepdc")
+            assert model.index("peepopt") < model.index("techmap")
+            assert model.index("techmap") < model.index("setundef -anyseq")
             assert "select -assert-none t:$check r:FLAVOR=assume %i" in script
             assert "select -assert-none t:$assume" in script
             # The complete configurations differ only by the exhaustive watch value.
@@ -7389,6 +7827,428 @@ def l1d_task_config(task: str) -> dict[str, list[str]]:
     return formal_task_config("coherence_l1d", task)
 
 
+def normalize_axi_bridge_post_map_count(commands: list[str], task: str) -> None:
+    """Check the exact mapped-property guard before comparing partition models."""
+    # The four-burst partitions cover all 139 assertions. The eight-burst
+    # partitions check exact membership before mapping and a nonzero floor after.
+    counts = {
+        "prove_soc": ("-assert-count", 138),
+        "prove_soc_held": ("-assert-count", 1),
+        **{f"prove_soc8_{index}": ("-assert-min", 1) for index in range(9)},
+    }
+    kind, count = counts[task]
+    map_command = "techmap -max_iter 1 -map %assertion_map"
+    assert commands.count(map_command) == 1
+    after_map = commands.index(map_command) + 1
+    assert commands[after_map:] == [
+        "opt_clean",
+        "select -assert-none t:axi_coherent_bridge_checked_assert",
+        f"select {kind} {count} t:$assert",
+        "select -clear",
+    ]
+    commands[after_map + 2] = f"select {kind} <partition-count> t:$assert"
+
+
+def test_axi_bridge_post_map_count_rejects_another_selection() -> None:
+    """The count guard must still select the mapped assertions."""
+    commands = formal_task_config("axi_coherent_bridge", "prove_soc")["[script]"]
+    index = commands.index("select -assert-count 138 t:$assert")
+    commands[index] = "select -assert-count 138 t:$assume"
+    with pytest.raises(AssertionError):
+        normalize_axi_bridge_post_map_count(commands, "prove_soc")
+
+
+@pytest.mark.parametrize(
+    ("source", "old", "new"),
+    [
+        pytest.param("", "", "", id="reviewed-model"),
+        pytest.param("sby", "depth 5", "depth 5\nbmc_operands: depth 1", id="depth"),
+        pytest.param(
+            "sby",
+            "[files]",
+            "[files]\nspare.sv ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv\n\n[files]",
+            id="earlier-files-section",
+        ),
+        pytest.param(
+            "sby", "mode bmc", "mode bmc\nexpect PASS,UNKNOWN,TIMEOUT", id="expect"
+        ),
+        pytest.param(
+            "sby",
+            "[files]",
+            "bmc_cdb: delete c:p_twin_cdb\n[files]",
+            id="delete-after-count",
+        ),
+        pytest.param(
+            "sby",
+            "[files]",
+            " chformal -assert2assume c:p_twin_cdb\n[files]",
+            id="assert-to-assume",
+        ),
+        pytest.param(
+            "sby",
+            "rs_payload_twin_formal.sv\nfree_undefined.ys",
+            "other.sv\nfree_undefined.ys",
+            id="source-file",
+        ),
+        pytest.param(
+            "sv",
+            "p_twin_operand_int_src1 :",
+            "p_twin_operand_renamed :",
+            id="operand-label",
+        ),
+        pytest.param(
+            "sv",
+            "assert (o_cdb_a.valid == o_cdb_b.valid);\n    if (o_cdb_a.valid) p_twin_cdb :",
+            "p_twin_cdb : assert (o_cdb_a.valid == o_cdb_b.valid);\n    if (o_cdb_a.valid)",
+            id="packet-label-on-valid",
+        ),
+        pytest.param("sv", "o_cdb_a == o_cdb_b", "o_cdb_a == o_cdb_a", id="packet-rhs"),
+        pytest.param(
+            "sv",
+            "if (o_trap_pending_a) assert (o_trap_pc_a",
+            "assert (o_trap_pc_a",
+            id="missing-qualifier",
+        ),
+    ],
+)
+def test_rs_payload_twin_assertion_groups(
+    source: str, old: str, new: str, tmp_path: Path
+) -> None:
+    """Check six proof configurations and guarded comparisons with isolated edits."""
+    from hashlib import sha256
+
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby = formal / "rs_payload_twin.sby"
+    harness = (formal / "rs_payload_twin_formal.sv").read_text()
+    if source == "sby":
+        original = sby.read_text()
+        assert original.count(old) == 1
+        sby = sby_config.stage_proof(sby, formal.parent, tmp_path)
+        sby.write_text(original.replace(old, new))
+    elif source == "sv":
+        assert harness.count(old) == 1
+        harness = harness.replace(old, new)
+
+    packets = {
+        "bmc_cdb": "cdb",
+        "bmc_cdb_2": "cdb_2",
+        "bmc_commit": "commit_comb",
+        "bmc_commit_2": "commit_comb_2",
+    }
+    operands = """
+        bypass_value_1 bypass_value_2 bypass_value_3 bypass_value_4 bypass_value_5
+        bypass_value_6 int_src1 int_src2 fp_src1 fp_src2 fp_src3 int_src1_2
+        int_src2_2 fp_src1_2 fp_src2_2 fp_src3_2
+    """.split()
+    # Port names use the wrapper spelling before the copy suffix and any field.
+    general = {
+        "": """
+            coherent_sc_valid coherent_sc_result_ready coherent_reservation_valid
+            coherent_arm_valid coherent_read_kind coherent_read_tag coherent_write_sc
+            coherent_write_zero coherent_sq_write_tag coherent_amo_write_tag alloc_resp
+            alloc_resp_2 cdb_grant cdb.valid cdb_2.valid commit.valid vcfg_commit.valid
+            vcfg_in_flight commit_comb.valid commit_valid_raw commit_misprediction_raw
+            commit_correct_branch_raw commit_correct_branch_2_raw
+            head_commit_misprediction_candidate commit_2.valid commit_comb_2.valid
+            commit_2_valid_raw csr_start trap_pending head_is_wfi head_is_amo
+            head_mem_funct3 head_mem_rs2 head_dest_reg head_dest_rf head_dest_valid
+            head_mem_store head_mem_fp_store head_mem_atomic head_fallthrough_pc
+            head_bypass_int_we_early head_bypass_fp_we_early
+            head_next_bypass_int_we_early head_next_bypass_fp_we_early
+            head_dir_train_early head_branch_taken_early head_next_dir_train_early
+            head_next_branch_taken_early head_retired_next_pc head_next_retired_next_pc
+            head_bus_fault mret_start mret_start_is_sret mret_start_is_dret
+            tlb_invalidate tlb_flush walk_req_valid walk_hold coh_admit_ready
+            coh_admit_clean coh_inval_done fence_i_sync_req fence_i_flush
+            fence_class_flush_event translation_csr_commit_shadow sq_committed_empty
+            sq_committed_empty_trap rob_full rob_full_for_2 rob_empty rob_count head_tag
+            head_valid head_done rob_entry_done_vec ras_tos ras_valid_count ras_top
+            checkpoint_available checkpoint_alloc_id rs_full rs_issue.valid
+            rs_issue_branch_predicate_tag int_rs_full int_rs_full_for_2 rs_empty
+            rs_count mul_rs_issue.valid mul_rs_full mul_rs_full_for_2 mul_rs_empty
+            mul_rs_count mem_rs_issue.valid mem_rs_full mem_rs_full_for_2 mem_rs_empty
+            mem_rs_count fp_rs_issue.valid fp_rs_full fp_rs_full_for_2 fp_rs_empty
+            fp_rs_count sq_mem_write_en uncached_store_pending lq_mem_read_en
+            lq_mem_addr_valid lq_full lq_full_for_2 lq_empty lq_count sq_full
+            sq_full_for_2 sq_empty sq_count amo_mem_write_en perf_counter_data
+            perf_mem_rs_two_ready_one_issued perf_cdb_oversubscribed
+        """.split(),
+        "o_coherent_sc_valid_a": [
+            "coherent_sc_addr",
+            "coherent_sc_size",
+            "coherent_sc_tag",
+        ],
+        "o_coherent_reservation_valid_a": [
+            "coherent_reservation_addr",
+            "coherent_reservation_size",
+        ],
+        "o_coherent_arm_valid_a": ["coherent_arm_tag"],
+        "o_commit_a.valid": ["commit"],
+        "o_vcfg_commit_a.valid": ["vcfg_commit"],
+        "o_commit_2_a.valid": ["commit_2"],
+        "o_trap_pending_a": ["trap_pc", "trap_cause", "trap_value", "trap_insn"],
+        "o_head_bus_fault_a": ["head_bus_fault_va"],
+        "o_walk_req_valid_a": ["walk_vpn"],
+        "o_rs_issue_a.valid": ["rs_issue"],
+        "o_mul_rs_issue_a.valid": ["mul_rs_issue"],
+        "o_mem_rs_issue_a.valid": ["mem_rs_issue"],
+        "o_fp_rs_issue_a.valid": ["fp_rs_issue"],
+        "o_sq_mem_write_en_a": [
+            "sq_mem_write_addr",
+            "sq_mem_write_data",
+            "sq_mem_write_byte_en",
+            "sq_mem_write_buffered",
+            "sq_mem_write_size",
+            "sq_mem_write_is_mmio",
+            "sq_mem_write_is_cached",
+        ],
+        "o_lq_mem_read_en_a": [
+            "lq_mem_read_addr",
+            "lq_mem_read_size",
+            "lq_mem_read_id",
+            "lq_mem_read_no_merge",
+        ],
+        "o_amo_mem_write_en_a": [
+            "amo_mem_write_addr",
+            "amo_mem_write_data",
+            "amo_mem_write_is_dword",
+            "amo_mem_write_is_cached",
+        ],
+    }
+    counts = {"bmc": 152, "bmc_operands": 16, **dict.fromkeys(packets, 1)}
+    all_asserts = "t:$check r:FLAVOR=assert %i"
+    selections = {
+        "bmc": "@packets @operands",
+        "bmc_operands": f"{all_asserts} @operands %d",
+        **{task: f"{all_asserts} c:p_twin_{port} %d" for task, port in packets.items()},
+    }
+    model = [
+        "read -formal -sv riscv_pkg.sv vec_hold_rows.sv",
+        "read -formal -sv sdp_dist_ram.sv",
+        "read -formal -sv mwp_dist_ram.sv",
+        "read -formal -sv mwp_dist_ram_ohread.sv",
+        "read -sv rob_serializer.sv sfence_operand_store.sv",
+        "read -sv reorder_buffer.sv",
+        "read -sv register_alias_table.sv",
+        "read -formal -sv rs_issue2_selector.sv",
+        "read -sv coherent_rs_capacity.sv",
+        "read -sv coherent_rs_issue2_selector.sv",
+        "read -sv coherent_rs_payload_store.sv",
+        "read -formal -sv -D RS_STAGE2_PAYLOAD_HAVOC reservation_station.sv",
+        "read -sv cdb_arbiter.sv",
+        "read -sv fu_cdb_adapter.sv",
+        "read -sv int_alu_shim.sv",
+        "read -sv int_muldiv_shim.sv",
+        "read -sv load_unit.sv",
+        "read -sv coherent_l0_flags.sv",
+        "read -sv lq_l0_cache.sv",
+        "read -sv lq_issue_selector.sv",
+        "read -sv coherent_lq_issue_selector.sv",
+        "read -sv coherent_lq_candidate_select.sv",
+        "read -sv coherent_lq_address_store.sv",
+        "read -sv -DFROST_YOSYS load_queue.sv",
+        "read -sv sq_forwarding_unit.sv",
+        "read -sv store_queue.sv",
+        "read -sv dtlb.sv",
+        "read -sv dmmu.sv",
+        "read -sv tomasulo_perf_counters.sv",
+        "read -sv sq_early_addr_pipeline.sv",
+        "read -sv commit_bus_pipeline.sv",
+        "read -sv dispatch_rs_router.sv",
+        "read -sv sc_pending_unit.sv",
+        "read -sv coherent_atomic_select.sv",
+        "read -formal -sv mem_wakeup_merge.sv",
+        "read -sv lq_coherence_port.sv",
+        "read -sv divider.sv",
+        "read -sv dsp_tiled_multiplier_unsigned.sv",
+        "read -sv multiplier.sv cl_multiplier.sv",
+        "read -sv alu.sv",
+        "read -sv fp_engine.sv",
+        "read -formal -D FP_FMA_PIPE_ABSTRACT -sv fp_pipe_lzc.sv fp_fma_pipe.sv",
+        "read -sv fp_div_unit.sv",
+        "read -sv fp_shim.sv",
+        "read -formal -sv tomasulo_wrapper.sv",
+        "read -formal -sv rs_payload_twin_formal.sv",
+        "hierarchy -top rs_payload_twin_formal",
+        *(" ".join(c) for c in UNDEFINED_OPENING),
+        "chformal -assert -remove * rs_payload_twin_formal %d",
+        "prep -top rs_payload_twin_formal",
+        "setattr -mod -unset keep_hierarchy *",
+        "flatten",
+        "memory_map -keepdc",
+        "opt_clean",
+        "setundef -zero -init",
+        "select -assert-count 104 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 172 t:$check r:FLAVOR=assert %i",
+        "select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2",
+        "select -set operands c:p_twin_operand_*",
+        "select -assert-count 4 @packets",
+        "select -assert-count 16 @operands",
+    ]
+    files = [
+        "../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv",
+        "../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv",
+        "../hw/rtl/lib/ram/sdp_dist_ram.sv",
+        "../hw/rtl/lib/ram/mwp_dist_ram.sv",
+        "../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/sfence_operand_store.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_alu_shim.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv",
+        "../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv",
+        "../hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/perf/tomasulo_perf_counters.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/dispatch_routing/dispatch_rs_router.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv",
+        "../hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/coherent_atomic_select.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/wakeup/mem_wakeup_merge.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/coherence/lq_coherence_port.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_pipe_lzc.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma_pipe.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_unit.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv",
+        "../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv",
+        "rs_payload_twin_formal.sv",
+        "free_undefined.ys",
+    ]
+
+    if not source:
+        hashes = {
+            "rs_payload_twin.sby": "9b7cf0c5bb15b82e3f3e8a4ea09da740cd8b616477a8dba0196feb1e44c598a4",
+            "rs_payload_twin_formal.sv": "36efe2495150878e0b0006ef50959dba70b1ab898df382ca98066fc5564b50af",
+            "free_undefined.ys": "d9383d13eaa8e490ab3671853c1390d92160abbfa19ca0d93fdf40138549e7d6",
+        }
+        procedure = (
+            "For a deliberate edit, run python3 tests/rs_payload_twin_partition.py "
+            "in the formal image, review the compiled partition, then update the "
+            "expected comparisons and SHA-256 hashes."
+        )
+        design_rtl = formal.parent / "hw/rtl"
+        non_rtl = {
+            entry
+            for entry in files
+            if not (formal / entry).resolve().is_relative_to(design_rtl)
+        }
+        assert hashes.keys() == {sby.name, *non_rtl}, procedure
+        for name, digest in hashes.items():
+            assert sha256((formal / name).read_bytes()).hexdigest() == digest, (
+                f"{name} changed. {procedure}"
+            )
+
+    def check() -> None:
+        assert not sby_tag_gaps(sby)
+        # Check every source in the untagged file section.
+        entries = [line.strip() for line in sby_config.source(sby).sections["files"]]
+        assert [line for line in entries if line and not line.startswith("#")] == files
+        try:
+            configs = sby_config.resolved(sby)
+        except sby_config.ConfigError as error:
+            raise AssertionError(str(error)) from error
+        assert configs.keys() == counts.keys()
+        for task, count in counts.items():
+            try:
+                config = configs[task].sections(formal)
+            except sby_config.ConfigError as error:
+                raise AssertionError(str(error)) from error
+            options = ["mode bmc", "depth 5"]
+            engine = "smtbmc boolector"
+            if task in packets:
+                options.append("vcd_sim on")
+                engine = "btor btormc"
+            assert config == {
+                "[options]": options,
+                "[engines]": [engine],
+                "[script]": [
+                    *model,
+                    "chformal -assert -remove " + selections[task],
+                    f"select -assert-count {count} {all_asserts}",
+                ],
+                "[files]": files,
+            }, task
+
+        # Key by the complete property, including both sides of the comparison.
+        expected: dict[tuple[str, str, str, str], str] = {}
+
+        def record(task: str, qualifier: str, label: str, port: str) -> None:
+            name, dot, field = port.partition(".")
+            lhs = f"o_{name}_a{dot}{field}"
+            rhs = f"o_{name}_b{dot}{field}"
+            expected[qualifier, label, lhs, rhs] = task
+
+        for qualifier, ports in general.items():
+            for port in ports:
+                record("bmc", qualifier, "", port)
+        for task, port in packets.items():
+            record(task, f"o_{port}_a.valid", f"p_twin_{port}", port)
+        for port in operands:
+            record("bmc_operands", "", f"p_twin_operand_{port}", port)
+
+        # Consume complete statements so a nested condition or trailing expression
+        # cannot disappear between two matched assertions.
+        body = re.sub(r"//[^\n]*|/\*.*?\*/", " ", harness, flags=re.DOTALL)
+        assert len(re.findall(r"\bassert\s*\(", body)) == 172
+        block = re.search(
+            r"\balways_comb\s+begin\b(.*?)\bend\s+endmodule\s*:\s*rs_payload_twin_formal\s*\Z",
+            body,
+            re.DOTALL,
+        )
+        assert block is not None
+        statements = block[1].strip().split(";")
+        assert statements.pop() == ""
+        assert len(statements) == len(expected) == sum(counts.values()) == 172
+        comparison = re.compile(
+            r"(?:if\s*\(\s*([\w.]+)\s*\)\s*)?(?:(\w+)\s*:\s*)?"
+            r"assert\s*\(\s*([\w.]+)\s*==\s*([\w.]+)\s*\)"
+        )
+        owners = {
+            "": "bmc",
+            **{f"p_twin_{p}": t for t, p in packets.items()},
+            **{f"p_twin_operand_{p}": "bmc_operands" for p in operands},
+        }
+        actual: dict[tuple[str, str, str, str], str] = {}
+        for statement in statements:
+            match = comparison.fullmatch(statement.strip())
+            assert match is not None, statement
+            qualifier, label, lhs, rhs = match.groups(default="")
+            assert label in owners, label
+            actual[qualifier, label, lhs, rhs] = owners[label]
+        assert actual == expected
+        assert {task: list(actual.values()).count(task) for task in counts} == counts
+
+    if source:
+        with pytest.raises(AssertionError):
+            check()
+    else:
+        check()
+
+
 def test_axi_bridge_partitions_share_model_and_history() -> None:
     """Partitions of each configuration share one model and history contract."""
     families = [
@@ -7401,12 +8261,13 @@ def test_axi_bridge_partitions_share_model_and_history() -> None:
         (
             [f"prove_soc8_{index}" for index in range(9)],
             [f"group{index}" for index in range(9)],
-            "script axi_coherent_bridge_groups.ys",
+            "select -assert-none @remaining",
             {"timeout": "1800"},
         ),
     ]
     for tasks, groups, guard, options in families:
         reference = formal_task_config("axi_coherent_bridge", tasks[0])
+        normalize_axi_bridge_post_map_count(reference["[script]"], tasks[0])
         for task, group in zip(tasks, groups, strict=True):
             config = formal_task_config("axi_coherent_bridge", task)
             assert dict(line.split(maxsplit=1) for line in config["[options]"]) == {
@@ -7415,6 +8276,7 @@ def test_axi_bridge_partitions_share_model_and_history() -> None:
                 **options,
             }
             commands = config["[script]"]
+            normalize_axi_bridge_post_map_count(commands, task)
             choose = f"chtype -set axi_coherent_bridge_checked_assert @{group}"
             assert commands.count(choose) == 1
             assert (
@@ -7664,12 +8526,12 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
 def _zero_upper_tasks() -> dict[str, str]:
     """Map each upper-sector request exclusion task to its model's read and chparam lines."""
     root = Path(__file__).resolve().parents[1]
-    text = (root / "formal" / "coherence_l1d.sby").read_text()
-    task_lines = text.split("[tasks]", 1)[1].split("[options]", 1)[0]
-    names = re.findall(
-        r"^(coh_l1d_zero_stream_upper_ep\w+_bmc)\b", task_lines, flags=re.MULTILINE
-    )
-    assert len(names) == len(set(names))
+    tasks = sby_config.source(root / "formal" / "coherence_l1d.sby").tasks
+    names = [
+        name
+        for name in tasks
+        if re.fullmatch(r"coh_l1d_zero_stream_upper_ep\w+_bmc", name)
+    ]
     result = {}
     for name in names:
         script = l1d_task_config(name)["[script]"]
@@ -8185,12 +9047,17 @@ def test_store_buffer_contract_assertions_mirror_its_assumptions() -> None:
     assert renamed == expected
     labels = re.findall(r"\b(p_buffer_contract_\w+)\s*:", contract)
     assert len(labels) == len(set(labels)) == len(expected)
-    sby = (Path(__file__).resolve().parents[1] / "formal/coherence_l1d.sby").read_text()
-    assert (
-        f"contract: select -assert-count {len(expected)} c:*p_buffer_contract_*" in sby
+    formal_dir = Path(__file__).resolve().parents[1] / "formal"
+    task = sby_config.resolved(formal_dir / "coherence_l1d.sby")
+    commands = task["coh_l1d_buffer_contract_bmc"].commands(formal_dir)
+    assert any(
+        args[:4]
+        == ["select", "-assert-count", str(len(expected)), "c:*p_buffer_contract_*"]
+        for args in commands
     )
-    assert "contract: read -sv -D BUFFER_CONTRACT coherence_store_buffer.sv" in sby
-    assert "contract: read -formal" not in sby
+    assert [args for args in commands if "coherence_store_buffer.sv" in args] == [
+        ["read", "-sv", "-D", "BUFFER_CONTRACT", "coherence_store_buffer.sv"]
+    ]
 
 
 def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
@@ -8981,6 +9848,7 @@ def test_hart_maintenance_lemma_model_matches() -> None:
         + [
             "memory_map -keepdc",
             "async2sync",
+            "setundef -anyseq",
             "chtype -map $eqx $eq",
             "chtype -map $nex $ne",
             "sim -clock i_clk -n 1 -w",
@@ -9056,6 +9924,357 @@ def fatal_frame_completed(output: str) -> bool:
     )
 
 
+_YOSYS_SCRIPT_BANNER = re.compile(r"^-- Executing script file `([^']+)' --$")
+_YOSYS_TOP_HEADER = re.compile(r"^([1-9][0-9]*)\. (.*)$")
+
+_YOSYS_HEADER_TRACE_CC = """\
+#include "kernel/yosys.h"
+#include "kernel/log.h"
+#include <cstdlib>
+#include <fstream>
+
+USING_YOSYS_NAMESPACE
+PRIVATE_NAMESPACE_BEGIN
+
+struct HeaderTraceSink : public LogSink {
+    std::ofstream out;
+    explicit HeaderTraceSink(const char *path) : out(path, std::ios::out | std::ios::trunc) {}
+    void log(const LogMessage &msg) override {
+        if (!out.is_open()) return;
+        auto emit = [&](char tag, const std::string &body) {
+            out << tag << '\\t';
+            for (char c : body) {
+                if (c != '\\r' && c != '\\n') out << c;
+            }
+            out << '\\n';
+        };
+        if (msg.severity == LogSeverity::Header) {
+            emit('H', msg.prefix + msg.message);
+        } else if (msg.format.find("-- Executing script file ") == 0) {
+            emit('S', msg.message);
+        } else if (msg.format.find("End of script.") == 0) {
+            emit('E', msg.message);
+        }
+    }
+    void flush() override {
+        if (out.is_open()) out.flush();
+    }
+};
+
+struct HeaderTracePass : public Pass {
+    HeaderTracePass() : Pass("frost_header_trace_sink", "internal header trace sink") {}
+    void on_register() override {
+        const char *path = std::getenv("FROST_YOSYS_HEADER_TRACE");
+        if (path && *path) {
+            logger().add_sink<HeaderTraceSink>(path);
+        }
+    }
+    void execute(std::vector<std::string>, RTLIL::Design *) override {}
+} HeaderTracePass;
+
+PRIVATE_NAMESPACE_END
+"""
+
+
+def write_yosys_header_wrapper(wrapper_path: Path) -> Path:
+    """Write an executable --yosys wrapper that records LogSeverity::Header events."""
+    script = (
+        "#!/usr/bin/env python3\n"
+        "import fcntl, hashlib, os, subprocess, sys\n"
+        "from pathlib import Path\n"
+        f"CC_SRC = {_YOSYS_HEADER_TRACE_CC!r}\n"
+        "args = sys.argv[1:]\n"
+        'if "../model/design.ys" not in args:\n'
+        '    os.execvp("yosys", ["yosys", *args])\n'
+        "ver = subprocess.check_output(['yosys', '-V'], text=True)\n"
+        "digest = hashlib.sha256((ver + CC_SRC).encode()).hexdigest()[:16]\n"
+        "so_path = Path(f'/tmp/frost-yosys-trace-{digest}.so')\n"
+        "if not so_path.is_file():\n"
+        "    lock_path = Path(f'/tmp/frost-yosys-trace-{digest}.lock')\n"
+        "    with lock_path.open('w') as lock_file:\n"
+        "        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)\n"
+        "        if not so_path.is_file():\n"
+        "            cc_path = Path(f'/tmp/frost-yosys-trace-{digest}-{os.getpid()}.cc')\n"
+        "            tmp_so = Path(f'/tmp/frost-yosys-trace-{digest}-{os.getpid()}.so')\n"
+        "            cc_path.write_text(CC_SRC)\n"
+        "            try:\n"
+        "                subprocess.run(['yosys-config', '--build', str(tmp_so), str(cc_path)], check=True)\n"
+        "                os.replace(tmp_so, so_path)\n"
+        "            finally:\n"
+        "                cc_path.unlink(missing_ok=True)\n"
+        "                tmp_so.unlink(missing_ok=True)\n"
+        "idx = args.index('../model/design.ys')\n"
+        "os.environ['FROST_YOSYS_HEADER_TRACE'] = '../model/design.headers'\n"
+        "os.execvp('yosys', ['yosys', *args[:idx], '-m', str(so_path), *args[idx:]])\n"
+    )
+    wrapper_path.write_text(script)
+    wrapper_path.chmod(0o755)
+    return wrapper_path
+
+
+def yosys_log_events(
+    log_text: str, *, structured: bool = False
+) -> list[tuple[str, str]]:
+    """Extract contiguous top-level script banners and pass headers."""
+    events: list[tuple[str, str]] = []
+    expected_num = 1
+    saw_end = False
+
+    if structured:
+        for raw_line in log_text.splitlines():
+            if not raw_line:
+                continue
+            if saw_end:
+                raise ValueError(f"trailing event after End of script: {raw_line!r}")
+            tag, sep, payload = raw_line.partition("\t")
+            if not sep:
+                raise ValueError(f"malformed header trace line: {raw_line!r}")
+            if tag == "S":
+                script_match = _YOSYS_SCRIPT_BANNER.match(payload)
+                if script_match is None:
+                    raise ValueError(f"unexpected script banner: {payload!r}")
+                events.append(("script", script_match[1]))
+            elif tag == "H":
+                top_match = _YOSYS_TOP_HEADER.match(payload)
+                if top_match is None:
+                    continue
+                num = int(top_match[1])
+                rest = top_match[2]
+                if num != expected_num:
+                    raise ValueError(
+                        f"non-contiguous Yosys header number: expected {expected_num}, got {num} ({rest!r})"
+                    )
+                if not rest.startswith("Executing "):
+                    raise ValueError(f"unexpected top-level Yosys header: {payload!r}")
+                expected_num += 1
+                events.append(("exec", rest.removeprefix("Executing ")))
+            elif tag == "E":
+                if not payload.startswith("End of script."):
+                    raise ValueError(f"unexpected end banner: {payload!r}")
+                saw_end = True
+            else:
+                raise ValueError(f"unknown header trace tag {tag!r}")
+        if not saw_end:
+            raise ValueError("Yosys header trace lacks 'End of script.'")
+        return events
+
+    for line in log_text.splitlines():
+        if line.startswith("End of script."):
+            saw_end = True
+            continue
+        script_match = _YOSYS_SCRIPT_BANNER.match(line)
+        if script_match is not None:
+            events.append(("script", script_match[1]))
+            continue
+        top_match = _YOSYS_TOP_HEADER.match(line)
+        if top_match is not None:
+            num = int(top_match[1])
+            rest = top_match[2]
+            if num != expected_num:
+                raise ValueError(
+                    f"non-contiguous Yosys header number: expected {expected_num}, got {num} ({rest!r})"
+                )
+            if not rest.startswith("Executing "):
+                raise ValueError(f"unexpected top-level Yosys header: {line!r}")
+            expected_num += 1
+            events.append(("exec", rest.removeprefix("Executing ")))
+    if not saw_end:
+        raise ValueError("Yosys base log lacks 'End of script.'")
+    return events
+
+
+def check_yosys_log(
+    log_text: str,
+    parsed: list[sby_config.ParsedCommand],
+    *,
+    structured: bool = False,
+) -> None:
+    """Run an ordered header check of Yosys base execution against parsed commands."""
+    if any(cmd.included_from for cmd in parsed) and not any(
+        cmd.form.id == "script" for cmd in parsed
+    ):
+        raise AssertionError("check_yosys_log requires keep_script_entries=True")
+    events = yosys_log_events(log_text, structured=structured)
+    if not events or events[0] != ("script", "../model/design.ys"):
+        raise ValueError(f"unexpected first Yosys log event: {events[:1]!r}")
+    pos = 1
+
+    def consume_derive() -> None:
+        nonlocal pos
+        while (
+            pos < len(events)
+            and events[pos][0] == "exec"
+            and events[pos][1].startswith("AST frontend in derive mode")
+        ):
+            pos += 1
+
+    def require_prefix(prefix: str, context: str) -> str:
+        nonlocal pos
+        if (
+            pos >= len(events)
+            or events[pos][0] != "exec"
+            or not events[pos][1].startswith(prefix)
+        ):
+            got = events[pos] if pos < len(events) else "EOF"
+            raise ValueError(f"{context}: expected {prefix!r}, got {got!r}")
+        header = events[pos][1]
+        pos += 1
+        return header
+
+    for cmd in parsed:
+        kind = cmd.form.log_kind
+        context = " ".join(cmd.args)
+        if kind == "none":
+            continue
+        if kind == "script":
+            ys_name = cmd.args[1]
+            if pos >= len(events) or events[pos] != ("script", ys_name):
+                got = events[pos] if pos < len(events) else "EOF"
+                raise ValueError(f"expected included script {ys_name!r}, got {got!r}")
+            pos += 1
+            continue
+        if kind == "verilog":
+            sources: list[str] = []
+            idx = 1
+            while idx < len(cmd.args):
+                token = cmd.args[idx]
+                if token == "-D":
+                    idx += 2
+                    continue
+                if not token.startswith("-"):
+                    sources.append(token)
+                idx += 1
+            for source_arg in sources:
+                header = require_prefix("Verilog-2005 frontend: ", context)
+                logged_path = header.removeprefix("Verilog-2005 frontend: ").strip()
+                if Path(logged_path).name != Path(source_arg).name:
+                    raise ValueError(
+                        f"{context}: expected {source_arg!r}, got {logged_path!r}"
+                    )
+        elif kind == "slang":
+            require_prefix("SLANG frontend.", context)
+        elif kind == "chparam":
+            consume_derive()
+        elif kind == "hierarchy":
+            require_prefix("HIERARCHY pass", context)
+            consume_derive()
+        elif kind == "pass":
+            require_prefix(f"{cmd.form.command.upper()} pass", context)
+        elif kind == "json_backend":
+            require_prefix("JSON backend.", context)
+        elif kind == "rtlil_backend":
+            require_prefix("RTLIL backend.", context)
+        else:
+            raise AssertionError(f"unhandled log_kind: {kind}")
+
+    # SymbiYosys's base step closes model/design.ys with hierarchy -smtcheck,
+    # optional rename -witness, write_jny and write_rtlil.
+    require_prefix("HIERARCHY pass", "sby base trailer")
+    consume_derive()
+    require_prefix("jny backend.", "sby base trailer")
+    require_prefix("RTLIL backend.", "sby base trailer")
+    if pos != len(events):
+        raise ValueError(f"unexpected trailing Yosys log events: {events[pos:]!r}")
+
+
+def _solver_verdict(result: subprocess.CompletedProcess[str], workdir: Path) -> str:
+    """Return the solver's summary banner from result or staged logfile/status."""
+    output = (result.stdout or "") + (result.stderr or "")
+    for text in (
+        output,
+        (workdir / "logfile.txt").read_text(errors="replace")
+        if (workdir / "logfile.txt").is_file()
+        else "",
+    ):
+        done = [line.strip() for line in text.splitlines() if "DONE (" in line]
+        if done:
+            match = re.search(r"DONE \([^)]+\)", done[-1])
+            return match[0] if match else done[-1]
+    if (workdir / "status").is_file():
+        words = (workdir / "status").read_text(errors="replace").split()
+        if words:
+            return f"{words[0]} (rc={result.returncode})"
+    return f"rc={result.returncode}"
+
+
+def _output_has_engine_pass(output: str) -> bool:
+    """Report whether SymbiYosys output records a final engine PASS verdict."""
+    if "did not return a status" in output:
+        return False
+    done = [line.strip() for line in output.splitlines() if "DONE (" in line]
+    if not done or "DONE (PASS, rc=0)" not in done[-1]:
+        return False
+    return bool(
+        re.search(
+            r"engine_\d+(?:\.\w+)?: Status returned by engine(?: for \w+)?: pass\b"
+            r"|engine_\d+ \([^)]+\) returned pass\b"
+            r"|engine_\d+\.\w+: ##\s+[0-9:]+\s+Status: passed\b",
+            output,
+            re.I,
+        )
+    )
+
+
+def _verify_staged_engine_pass(workdir: Path, cfg: sby_config.TaskConfig) -> str | None:
+    """Return an error reason if workdir lacks a genuine engine PASS verdict."""
+    if not (workdir / "engine_0").is_dir():
+        return "missing engine_0 directory (no solver engine ran)"
+    pass_file = workdir / "PASS"
+    if not pass_file.is_file():
+        return "missing SymbiYosys PASS summary file"
+    pass_summary = pass_file.read_text(errors="replace")
+    if "did not return a status" in pass_summary:
+        return "engine did not return a status"
+    logfile = workdir / "logfile.txt"
+    if logfile.is_file():
+        log_text = logfile.read_text(errors="replace")
+        if "did not return a status" in log_text:
+            return "engine did not return a status"
+        done = [line.strip() for line in log_text.splitlines() if "DONE (" in line]
+        if not done or "DONE (PASS, rc=0)" not in done[-1]:
+            return "logfile.txt lacks final DONE (PASS, rc=0)"
+    mode = cfg.options.get("mode")
+    engine = cfg.engines[0][0] if cfg.engines else ""
+    if mode == "prove" and engine == "smtbmc":
+        for subcase in ("basecase", "induction"):
+            if not re.search(
+                rf"^engine_0 \([^)]+\) returned pass for {subcase}$",
+                pass_summary,
+                re.M | re.I,
+            ):
+                return f"PASS summary lacks engine_0 pass for {subcase}"
+    else:
+        if not re.search(
+            r"^engine_0 \([^)]+\) returned pass$",
+            pass_summary,
+            re.M | re.I,
+        ):
+            return "PASS summary lacks engine_0 returned pass"
+    return None
+
+
+class FormalArtifactError(ValueError):
+    """Post-solver artifact or model-log verification failed after sby exited 0."""
+
+    def __init__(
+        self,
+        target: str,
+        task: str,
+        solver_verdict: str,
+        reason: str,
+        result: subprocess.CompletedProcess[str],
+    ) -> None:
+        """Record the target, task, distinct solver verdict, and check failure."""
+        self.target = target
+        self.task = task
+        self.solver_verdict = solver_verdict
+        self.reason = reason
+        self.result = result
+        super().__init__(
+            f"{target}:{task}: solver {solver_verdict}; model check failed: {reason}"
+        )
+
+
 class FormalRunner:
     """Run SymbiYosys tasks from the repository's formal/ directory."""
 
@@ -9067,6 +10286,99 @@ class FormalRunner:
 
         if not self.formal_dir.exists():
             raise FileNotFoundError(f"Formal directory not found: {self.formal_dir}")
+
+    def verify_model_artifacts(
+        self,
+        workdir: Path,
+        sby_path: Path,
+        target_name: str,
+        task: str,
+        result: subprocess.CompletedProcess[str],
+        *,
+        require_engine_pass: bool = True,
+    ) -> None:
+        """Require solver pass, staged inputs, model/design.il, and header trace."""
+        verdict = _solver_verdict(result, workdir)
+
+        def fail(reason: str) -> None:
+            raise FormalArtifactError(target_name, task, verdict, reason, result)
+
+        if not workdir.is_dir():
+            fail(f"missing workdir {workdir.name}")
+        config_sby = workdir / "config.sby"
+        if not config_sby.is_file():
+            fail("missing config.sby")
+        src_dir = workdir / "src"
+        if not src_dir.is_dir():
+            fail("missing src directory")
+        design_il = workdir / "model/design.il"
+        if not design_il.is_file() or design_il.stat().st_size == 0:
+            fail("missing or empty model/design.il")
+        design_log = workdir / "model/design.log"
+        if not design_log.is_file():
+            fail("missing model/design.log")
+        design_headers = workdir / "model/design.headers"
+        if not design_headers.is_file():
+            fail("missing model/design.headers")
+
+        try:
+            staged_cfg = sby_config.read_source(
+                config_sby, sby_config.read_checked_text(config_sby)
+            ).task("")
+            checkout_cfg = sby_config.source(sby_path).task(task)
+            if (
+                staged_cfg.options != checkout_cfg.options
+                or staged_cfg.engines != checkout_cfg.engines
+                or staged_cfg.files != checkout_cfg.files
+                or set(staged_cfg._inline) != set(checkout_cfg._inline)
+            ):
+                fail("staged config.sby differs from checkout task")
+            expected_mode = registered_task_mode(task)
+            if checkout_cfg.options.get("mode") != expected_mode:
+                fail(
+                    f"[options] mode {checkout_cfg.options.get('mode')!r} "
+                    f"does not match registered mode {expected_mode!r}"
+                )
+            pair = (target_name, task)
+            if "skip" in checkout_cfg.options:
+                if SKIP_PINNED.get(pair) != int(checkout_cfg.options["skip"]):
+                    fail(f"unpinned skip option on {target_name}:{task}")
+            elif pair in SKIP_PINNED:
+                fail(f"missing pinned skip option on {target_name}:{task}")
+            uses_start = tuple(checkout_cfg.engines[0]) == (
+                "abc",
+                "bmc3",
+                "-c",
+                "-S",
+                "139",
+            )
+            if uses_start != (pair in FATAL_START_FRAME_TASKS):
+                fail(f"start-frame engine pin mismatch on {target_name}:{task}")
+            if require_engine_pass:
+                output = (result.stdout or "") + (result.stderr or "")
+                if output and not _output_has_engine_pass(output):
+                    fail("solver output lacks an engine DONE (PASS, rc=0) verdict")
+                engine_err = _verify_staged_engine_pass(workdir, staged_cfg)
+                if engine_err is not None:
+                    fail(engine_err)
+            for dest in staged_cfg.files:
+                if not (src_dir / dest).is_file():
+                    fail(f"missing staged source {dest}")
+            local_cfg = replace(
+                staged_cfg, files={dest: dest for dest in staged_cfg.files}
+            )
+            parsed = local_cfg.parsed(src_dir, keep_script_entries=True)
+            if parsed != checkout_cfg.parsed(sby_path.parent, keep_script_entries=True):
+                fail("staged script differs from checkout task")
+            check_yosys_log(
+                sby_config.read_checked_text(design_headers),
+                parsed,
+                structured=True,
+            )
+        except FormalArtifactError:
+            raise
+        except (sby_config.ConfigError, ValueError) as error:
+            fail(str(error))
 
     def run_formal(
         self,
@@ -9088,37 +10400,60 @@ class FormalRunner:
         if not sby_path.exists():
             raise FileNotFoundError(f"SBY file not found: {sby_path}")
 
-        cmd = ["sby", "-t", "-f", str(sby_path), task]
+        checkout_cfg = sby_config.source(sby_path).task(task)
+        checkout_cfg.parsed(sby_path.parent, expand_opening=True)
+        expected_mode = registered_task_mode(task)
+        if checkout_cfg.options.get("mode") != expected_mode:
+            raise sby_config.ConfigError(
+                f"{target.name}:{task}: mode {checkout_cfg.options.get('mode')!r} "
+                f"does not match registered mode {expected_mode!r}"
+            )
 
-        check_fatal_frame = target.name == "coherence_store_boundary" and task in (
-            "bmc_amo_same_fatal",
-            "bmc_amo_other_fatal",
-        )
-        if capture_output or check_fatal_frame:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=self.formal_dir,
-                timeout=formal_task_timeout_s(target.name, task),
+        check_fatal_frame = (target.name, task) in FATAL_START_FRAME_TASKS
+        with tempfile.TemporaryDirectory(prefix="frost-sby-") as tmp_dir:
+            workdir = Path(tmp_dir) / f"{target.name}_{task}"
+            yosys_wrapper = write_yosys_header_wrapper(
+                Path(tmp_dir) / "yosys_wrapper.py"
             )
-            if not capture_output:
-                print(result.stdout or "", end="")
-                print(result.stderr or "", end="", file=sys.stderr)
-            if check_fatal_frame and result.returncode == 0:
-                output = (result.stdout or "") + (result.stderr or "")
-                if not fatal_frame_completed(output):
-                    raise ValueError(
-                        "Fatal-status BMC did not complete its frame-139 check"
-                    )
+            cmd = [
+                "sby",
+                "-f",
+                "-d",
+                str(workdir),
+                "--yosys",
+                str(yosys_wrapper),
+                str(sby_path),
+                task,
+            ]
+            if capture_output or check_fatal_frame:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    cwd=self.formal_dir,
+                    timeout=formal_task_timeout_s(target.name, task),
+                )
+                if not capture_output:
+                    print(result.stdout or "", end="")
+                    print(result.stderr or "", end="", file=sys.stderr)
+                if check_fatal_frame and result.returncode == 0:
+                    output = (result.stdout or "") + (result.stderr or "")
+                    if not fatal_frame_completed(output):
+                        raise ValueError(
+                            "Fatal-status BMC did not complete its frame-139 check"
+                        )
+            else:
+                result = subprocess.run(
+                    cmd,
+                    cwd=self.formal_dir,
+                    timeout=formal_task_timeout_s(target.name, task),
+                    text=True,
+                )
+            if result.returncode == 0:
+                self.verify_model_artifacts(
+                    workdir, sby_path, target.name, task, result
+                )
             return result
-        else:
-            return subprocess.run(
-                cmd,
-                cwd=self.formal_dir,
-                timeout=formal_task_timeout_s(target.name, task),
-                text=True,
-            )
 
     def check_for_errors(
         self, result: subprocess.CompletedProcess[str]
@@ -9147,6 +10482,21 @@ class FormalRunner:
             has_error = True
             if not error_lines:
                 error_lines.append(f"sby exited with code {result.returncode}")
+
+        # Require an explicit engine PASS verdict whenever output was captured.
+        if (
+            not has_error
+            and (getattr(result, "stdout", None), getattr(result, "stderr", None))
+            != (None, None)
+            and not _output_has_engine_pass(output)
+        ):
+            has_error = True
+            done = [line.strip() for line in output.splitlines() if "DONE (" in line]
+            error_lines.append(
+                done[-1]
+                if done
+                else "sby exited 0 without an engine DONE (PASS, rc=0) verdict"
+            )
 
         return has_error, error_lines
 
@@ -9226,6 +10576,9 @@ def test_fatal_frame_validation(
         return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(
+        FormalRunner, "verify_model_artifacts", lambda *args, **kwargs: None
+    )
     target = next(t for t in FORMAL_TARGETS if t.name == "coherence_store_boundary")
     if case == "complete":
         result = FormalRunner().run_formal(target, task, capture_output=capture_output)
@@ -9316,6 +10669,9 @@ def test_formal_runner_task_timeout(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(
+        FormalRunner, "verify_model_artifacts", lambda *args, **kwargs: None
+    )
     FormalRunner().run_formal(target, task, capture_output=capture_output)
     assert calls[0]["timeout"] == expected_timeout
 
@@ -9334,6 +10690,636 @@ def test_timeout_retains_solver_progress(as_bytes: bool) -> None:
     assert len(lines) == 40
     assert lines[0] == "step 11"
     assert lines[-1] == "solver pending"
+
+
+def test_yosys_log_crosscheck(tmp_path: Path) -> None:
+    """Match Yosys pass logs in order and reject tampered or truncated logs."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    (tmp_path / UNDEFINED_OPENING_FILE).write_bytes(
+        (formal / UNDEFINED_OPENING_FILE).read_bytes()
+    )
+    for name in ("pkg.sv", "top.sv"):
+        (tmp_path / name).write_text("module top;\nendmodule\n")
+    sby = tmp_path / "check.sby"
+    sby.write_text(
+        "[options]\nmode bmc\ndepth 1\n[engines]\nsmtbmc boolector\n[script]\n"
+        "read -formal -D FLAG -sv pkg.sv top.sv\n"
+        "chparam -set W 4 top\n"
+        "hierarchy -top top\n"
+        "script free_undefined.ys\n"
+        "prep -top top\n"
+        "select -assert-none t:$mem\n"
+        "write_json dump.json\n"
+        "[files]\npkg.sv\ntop.sv\nfree_undefined.ys\n"
+    )
+    (cfg,) = sby_config.resolved(sby).values()
+    parsed = cfg.parsed(tmp_path, keep_script_entries=True)
+    opening_passes = [
+        "PROC_CLEAN pass (remove empty switches).",
+        "PROC_RMDEAD pass (remove dead branches).",
+        "PROC_PRUNE pass (remove redundant assignments).",
+        "PROC_INIT pass (extract init attributes).",
+        "PROC_ARST pass (detect async resets).",
+        "PROC_MUX pass (convert decision trees).",
+        "SETUNDEF pass (replace undef values).",
+        "PROC_DLATCH pass (convert latches).",
+        "OPT_EXPR pass (perform const folding).",
+        "SETUNDEF pass (replace undef values).",
+        "PROC_DFF pass (convert FFs).",
+        "PROC_MEMWR pass (convert memory writes).",
+        "PROC_CLEAN pass (remove empty switches).",
+        "OPT_EXPR pass (perform const folding).",
+    ]
+    body_lines = [
+        "-- Executing script file `../model/design.ys' --",
+        "1. Executing Verilog-2005 frontend: pkg.sv",
+        "2. Executing Verilog-2005 frontend: top.sv",
+        "3. Executing AST frontend in derive mode using pre-parsed AST for module `\\top'.",
+        "4. Executing HIERARCHY pass (managing design hierarchy).",
+        "4.1. Analyzing design hierarchy..",
+        "5. Executing AST frontend in derive mode using pre-parsed AST for module `\\sub'.",
+        "-- Executing script file `free_undefined.ys' --",
+        *[
+            f"{idx}. Executing {header}"
+            for idx, header in enumerate(opening_passes, start=6)
+        ],
+        "20. Executing PREP pass.",
+        "20.1. Executing HIERARCHY pass (nested).",
+        "21. Executing JSON backend.",
+        "22. Executing HIERARCHY pass (managing design hierarchy).",
+        "23. Executing jny backend.",
+        "24. Executing RTLIL backend.",
+        "End of script. Logfile hash: 0123456789",
+    ]
+    valid_log = "\n".join(body_lines) + "\n"
+    check_yosys_log(valid_log, parsed)
+
+    tampered_cases = [
+        valid_log.replace("End of script.", "Terminated early."),
+        valid_log.replace("pkg.sv", "other.sv", 1),
+        valid_log.replace("-- Executing script file `free_undefined.ys' --\n", ""),
+        valid_log.replace("20. Executing PREP pass.\n", ""),
+        valid_log.replace(
+            "20. Executing PREP pass.\n",
+            "20. Executing PREP pass.\n20b.1. note\n99. Executing OPT pass.\n",
+        ),
+        valid_log.replace(
+            "21. Executing JSON backend.\n"
+            "22. Executing HIERARCHY pass (managing design hierarchy).\n"
+            "23. Executing jny backend.\n"
+            "24. Executing RTLIL backend.\n",
+            "22. Executing JSON backend.\n"
+            "23. Executing HIERARCHY pass (managing design hierarchy).\n"
+            "24. Executing jny backend.\n"
+            "25. Executing RTLIL backend.\n",
+        ),
+        valid_log.replace(
+            "20. Executing PREP pass.\n20.1. Executing HIERARCHY pass (nested).\n"
+            "21. Executing JSON backend.\n",
+            "20. Executing JSON backend.\n21. Executing PREP pass.\n",
+        ),
+        valid_log.replace("23. Executing jny backend.\n", ""),
+    ]
+    for tampered in tampered_cases:
+        with pytest.raises(ValueError):
+            check_yosys_log(tampered, parsed)
+
+    # Comment-only, repeated back-to-back, and nested script includes.
+    nested_sby = tmp_path / "nested.sby"
+    nested_sby.write_text(
+        "[options]\nmode prove\ndepth 1\n[engines]\nsmtbmc boolector\n[script]\n"
+        "read -formal -sv top.sv\n"
+        "hierarchy -top top\n"
+        "script free_undefined.ys\n"
+        "prep -top top\n"
+        "script empty_helper.ys\n"
+        "script local_checks.ys\n"
+        "script local_checks.ys\n"
+        "script outer_helper.ys\n"
+        "[files]\ntop.sv\nfree_undefined.ys\n"
+        "[file empty_helper.ys]\n# comment-only helper\n\n"
+        "[file local_checks.ys]\ncheck -assert\n\n"
+        "[file inner_helper.ys]\nopt_clean\n\n"
+        "[file outer_helper.ys]\nscript inner_helper.ys\nscript empty_helper.ys\nscript inner_helper.ys\n"
+    )
+    (nested_cfg,) = sby_config.resolved(nested_sby).values()
+    nested_parsed = nested_cfg.parsed(tmp_path, keep_script_entries=True)
+    nested_log = (
+        "\n".join(
+            [
+                "-- Executing script file `../model/design.ys' --",
+                "1. Executing Verilog-2005 frontend: top.sv",
+                "2. Executing HIERARCHY pass (managing design hierarchy).",
+                "-- Executing script file `free_undefined.ys' --",
+                *[
+                    f"{idx}. Executing {header}"
+                    for idx, header in enumerate(opening_passes, start=3)
+                ],
+                "17. Executing PREP pass.",
+                "-- Executing script file `empty_helper.ys' --",
+                "-- Executing script file `local_checks.ys' --",
+                "18. Executing CHECK pass (checking for obvious problems).",
+                "-- Executing script file `local_checks.ys' --",
+                "19. Executing CHECK pass (checking for obvious problems).",
+                "-- Executing script file `outer_helper.ys' --",
+                "-- Executing script file `inner_helper.ys' --",
+                "20. Executing OPT_CLEAN pass (remove unused cells and wires).",
+                "-- Executing script file `empty_helper.ys' --",
+                "-- Executing script file `inner_helper.ys' --",
+                "21. Executing OPT_CLEAN pass (remove unused cells and wires).",
+                "22. Executing HIERARCHY pass (managing design hierarchy).",
+                "23. Executing jny backend.",
+                "24. Executing RTLIL backend.",
+                "End of script. Logfile hash: abcdef0123",
+            ]
+        )
+        + "\n"
+    )
+    check_yosys_log(nested_log, nested_parsed)
+    for bad_nested in (
+        nested_log.replace("-- Executing script file `empty_helper.ys' --\n", "", 1),
+        nested_log.replace(
+            "-- Executing script file `local_checks.ys' --\n"
+            "18. Executing CHECK pass (checking for obvious problems).\n",
+            "",
+            1,
+        ),
+    ):
+        with pytest.raises(ValueError):
+            check_yosys_log(bad_nested, nested_parsed)
+
+
+def _to_structured_headers(log_lines: list[str]) -> str:
+    """Convert synthetic plain log lines into HeaderTraceSink format."""
+    out: list[str] = []
+    for line in log_lines:
+        if line.startswith("-- Executing script file "):
+            out.append(f"S\t{line}")
+        elif line.startswith("End of script."):
+            out.append(f"E\t{line}")
+        else:
+            out.append(f"H\t{line}")
+    return "\n".join(out) + "\n"
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "empty_inline",
+        "repeated_inline",
+        "missing_log",
+        "missing_headers",
+        "missing_il",
+        "missing_workdir",
+        "missing_engine_pass",
+    ),
+)
+def test_formal_runner_include_and_artifact_checks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
+) -> None:
+    """Preserve solver verdicts and check includes, engine pass, and missing outputs."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    repo = tmp_path / "repo"
+    (repo / "formal").mkdir(parents=True)
+    (repo / "hw").symlink_to(formal.parent / "hw", target_is_directory=True)
+    for name in (
+        "coherence_prefetch_pause.sby",
+        "coherence_prefetch_pause_formal.sv",
+        "free_undefined.ys",
+    ):
+        (repo / "formal" / name).write_bytes((formal / name).read_bytes())
+
+    sby_path = repo / "formal/coherence_prefetch_pause.sby"
+    text = sby_config.read_checked_text(sby_path)
+    if case == "empty_inline":
+        sby_path.write_text(
+            text.replace("\n[files]", "\nscript local_checks.ys\n\n[files]")
+            + "\n[file local_checks.ys]\n# comment-only helper\n"
+        )
+    elif case == "repeated_inline":
+        sby_path.write_text(
+            text.replace(
+                "\n[files]",
+                "\nscript local_checks.ys\nscript local_checks.ys\n\n[files]",
+            )
+            + "\n[file local_checks.ys]\ncheck -assert\n"
+        )
+
+    opening_passes = [
+        "PROC_CLEAN pass.",
+        "PROC_RMDEAD pass.",
+        "PROC_PRUNE pass.",
+        "PROC_INIT pass.",
+        "PROC_ARST pass.",
+        "PROC_MUX pass.",
+        "SETUNDEF pass.",
+        "PROC_DLATCH pass.",
+        "OPT_EXPR pass.",
+        "SETUNDEF pass.",
+        "PROC_DFF pass.",
+        "PROC_MEMWR pass.",
+        "PROC_CLEAN pass.",
+        "OPT_EXPR pass.",
+    ]
+    extra_events: list[str] = []
+    next_num = 19
+    if case == "empty_inline":
+        extra_events = ["-- Executing script file `local_checks.ys' --"]
+    elif case == "repeated_inline":
+        extra_events = [
+            "-- Executing script file `local_checks.ys' --",
+            "19. Executing CHECK pass.",
+            "-- Executing script file `local_checks.ys' --",
+            "20. Executing CHECK pass.",
+        ]
+        next_num = 21
+
+    sby_stdout = (
+        (
+            "SBY 00:00:01 [t] summary: engine_0 (smtbmc boolector) did not return a status\n"
+            "SBY 00:00:01 [t] DONE (PASS, rc=0)\n"
+        )
+        if case == "missing_engine_pass"
+        else (
+            "SBY 00:00:01 [t] engine_0.basecase: Status returned by engine for basecase: pass\n"
+            "SBY 00:00:01 [t] engine_0.induction: Status returned by engine for induction: pass\n"
+            "SBY 00:00:01 [t] summary: engine_0 (smtbmc boolector) returned pass for basecase\n"
+            "SBY 00:00:01 [t] summary: engine_0 (smtbmc boolector) returned pass for induction\n"
+            "SBY 00:00:01 [t] DONE (PASS, rc=0)\n"
+        )
+    )
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        workdir = Path(command[command.index("-d") + 1])
+        if case == "missing_workdir":
+            return subprocess.CompletedProcess(command, 0, sby_stdout, "")
+        (workdir / "src").mkdir(parents=True)
+        (workdir / "model").mkdir(parents=True)
+        (workdir / "engine_0").mkdir(parents=True)
+        src_cfg = sby_config.source(sby_path).task("pf_pause_prove")
+        cfg_lines = (
+            ["[options]"]
+            + [f"{k} {v}" for k, v in src_cfg.options.items()]
+            + ["", "[engines]"]
+            + [" ".join(e) for e in src_cfg.engines]
+            + ["", "[script]"]
+            + list(src_cfg._script)
+            + ["", "[files]"]
+            + list(src_cfg.files.values())
+        )
+        for inline_name, inline_lines in src_cfg._inline.items():
+            cfg_lines += ["", f"[file {inline_name}]", *inline_lines]
+            (workdir / "src" / inline_name).write_text("\n".join(inline_lines) + "\n")
+        (workdir / "config.sby").write_text("\n".join(cfg_lines) + "\n")
+        for dest, rel in src_cfg.files.items():
+            (workdir / "src" / dest).write_bytes((repo / "formal" / rel).read_bytes())
+        (workdir / "status").write_text("PASS 0 1\n")
+        (workdir / "logfile.txt").write_text(sby_stdout)
+        if case == "missing_engine_pass":
+            (workdir / "PASS").write_text(
+                "engine_0 (smtbmc boolector) did not return a status\n"
+            )
+        else:
+            (workdir / "PASS").write_text(
+                "engine_0 (smtbmc boolector) returned pass for basecase\n"
+                "engine_0 (smtbmc boolector) returned pass for induction\n"
+            )
+        if case != "missing_il":
+            (workdir / "model/design.il").write_text("module \\top\nend\n")
+        log_lines = [
+            "-- Executing script file `../model/design.ys' --",
+            "1. Executing Verilog-2005 frontend: coherence_prefetch_pause.sv",
+            "2. Executing Verilog-2005 frontend: coherence_prefetch_pause_formal.sv",
+            "3. Executing HIERARCHY pass.",
+            "-- Executing script file `free_undefined.ys' --",
+            *[
+                f"{idx}. Executing {header}"
+                for idx, header in enumerate(opening_passes, start=4)
+            ],
+            "18. Executing PREP pass.",
+            *extra_events,
+            f"{next_num}. Executing HIERARCHY pass.",
+            f"{next_num + 1}. Executing jny backend.",
+            f"{next_num + 2}. Executing RTLIL backend.",
+            "End of script.",
+        ]
+        if case != "missing_log":
+            (workdir / "model/design.log").write_text("\n".join(log_lines) + "\n")
+        if case != "missing_headers":
+            (workdir / "model/design.headers").write_text(
+                _to_structured_headers(log_lines)
+            )
+        return subprocess.CompletedProcess(command, 0, sby_stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    runner = FormalRunner()
+    runner.root_dir = repo
+    runner.formal_dir = repo / "formal"
+    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_prefetch_pause")
+    if case in ("empty_inline", "repeated_inline"):
+        result = runner.run_formal(target, "pf_pause_prove", capture_output=True)
+        assert result.returncode == 0
+    else:
+        expected_reason = {
+            "missing_log": "missing model/design.log",
+            "missing_headers": "missing model/design.headers",
+            "missing_il": "missing or empty model/design.il",
+            "missing_workdir": "missing workdir",
+            "missing_engine_pass": "solver output lacks an engine DONE (PASS, rc=0) verdict",
+        }[case]
+        with pytest.raises(FormalArtifactError) as exc_info:
+            runner.run_formal(target, "pf_pause_prove", capture_output=True)
+        assert exc_info.value.solver_verdict == "DONE (PASS, rc=0)"
+        assert "DONE (PASS, rc=0)" in str(exc_info.value)
+        assert expected_reason in str(exc_info.value)
+
+
+def test_a5_f1_byte_rule_and_carriage_return_refused(tmp_path: Path) -> None:
+    """Refuse CR, NUL, control, and non-ASCII bytes across .sby, .ys, and [files]."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    repo = tmp_path / "repo"
+    (repo / "formal").mkdir(parents=True)
+    (repo / "hw").symlink_to(formal.parent / "hw", target_is_directory=True)
+    for name in ("rs_issue2_selector.sby", "free_undefined.ys"):
+        (repo / "formal" / name).write_bytes((formal / name).read_bytes())
+
+    # Exact F1 demonstration payload: backslash + CR inside a comment line in an
+    # included .ys file, which Python text-mode splitlines read as a comment
+    # continuation while Yosys's fgets executed `tee -q setundef -zero ...`.
+    f1_helper = repo / "formal/rs_issue2_selector_extra.ys"
+    f1_helper.write_bytes(
+        b"# Hook for local experiments. \\\r"
+        b"tee -q setundef -zero t:$mux t:$pmux t:$bwmux w:*\n"
+    )
+    sby_path = repo / "formal/rs_issue2_selector.sby"
+    orig_sby = sby_path.read_bytes()
+    sby_path.write_bytes(
+        orig_sby.replace(
+            b"hierarchy -top rs_issue2_selector\n",
+            b"hierarchy -top rs_issue2_selector\nscript rs_issue2_selector_extra.ys\n",
+        )
+        + b"rs_issue2_selector_extra.ys\n"
+    )
+
+    gaps = sby_undefined_opening_gaps(sby_path)
+    assert "bmc" in gaps and "0x0d" in gaps["bmc"][0], gaps
+    added, _ = dont_care_changes(sby_path)
+    assert added and "0x0d" in added[0], added
+    cfg = sby_config.source(sby_path).task("bmc")
+    reg_gaps = registered_task_config_gaps(
+        "rs_issue2_selector", "bmc", cfg, repo / "formal"
+    )
+    assert reg_gaps and "0x0d" in reg_gaps[0], reg_gaps
+    with pytest.raises(sby_config.ConfigError, match="0x0d"):
+        sby_config.read_checked_text(f1_helper)
+
+    # Even with pure LF, an unpinned .ys helper in a registered target is refused.
+    f1_helper.write_bytes(b"# clean ASCII LF comment\n")
+    cfg_clean = sby_config.source(sby_path).task("bmc")
+    assert any(
+        "unpinned .ys helper" in g
+        for g in registered_task_config_gaps(
+            "rs_issue2_selector", "bmc", cfg_clean, repo / "formal"
+        )
+    )
+
+    # Disallowed bytes in .sby, .ys, and .sv [files] entries are all refused.
+    for bad_byte in (b"\r", b"\r\n", b"\x00", b"\x0b", b"\x0c", b"\x7f", b"\x80"):
+        bad_sby = tmp_path / "bad.sby"
+        bad_sby.write_bytes(b"[options]\nmode bmc" + bad_byte + b"\n")
+        with pytest.raises(sby_config.ConfigError):
+            sby_config.source(bad_sby)
+
+        bad_sv_dir = tmp_path / "sv_case"
+        bad_sv_dir.mkdir(exist_ok=True)
+        (bad_sv_dir / "free_undefined.ys").write_bytes(
+            (formal / "free_undefined.ys").read_bytes()
+        )
+        (bad_sv_dir / "dut.sv").write_bytes(
+            b"module dut;\n//" + bad_byte + b"\nendmodule\n"
+        )
+        sv_sby = bad_sv_dir / "dut.sby"
+        sv_sby.write_bytes(
+            b"[options]\nmode bmc\ndepth 1\n[engines]\nsmtbmc boolector\n"
+            b"[script]\nread -formal -sv dut.sv\nhierarchy -top dut\n"
+            b"script free_undefined.ys\nprep -top dut\n"
+            b"[files]\ndut.sv\nfree_undefined.ys\n"
+        )
+        with pytest.raises(sby_config.ConfigError):
+            sby_config.source(sv_sby).task("").parsed(bad_sv_dir)
+
+
+@pytest.mark.parametrize(
+    "case_name,mutator",
+    [
+        # F2: mode prep reports PASS without running a solver.
+        ("f2_mode_prep", lambda s: s.replace("bmc: mode bmc", "bmc: mode prep")),
+        # Cross-mode downgrade: registered bmc task switched to mode cover.
+        (
+            "mode_mismatch_cover",
+            lambda s: s.replace("bmc: mode bmc", "bmc: mode cover"),
+        ),
+        # F3: smtc constraint file in [options] and [files].
+        (
+            "f3_smtc_option_and_file",
+            lambda s: (
+                s.replace(
+                    "bmc: depth 1\n",
+                    "bmc: depth 1\nbmc: smtc rs_issue2_selector.smtc\n",
+                )
+                + "rs_issue2_selector.smtc\n"
+            ),
+        ),
+        (
+            "f3_inline_smtc",
+            lambda s: s + "\n[file hidden.smtc]\nalways\nassume (= [a] #b0)\n",
+        ),
+        (
+            "f3_engine_extra_args",
+            lambda s: s.replace(
+                "smtbmc boolector", "smtbmc boolector -- --smtc hidden.smtc"
+            ),
+        ),
+        (
+            "f3_engine_basecase_only",
+            lambda s: s.replace("smtbmc boolector", "smtbmc --basecase boolector"),
+        ),
+        (
+            "f3_unpinned_skip_bmc",
+            lambda s: s.replace("bmc: depth 1\n", "bmc: depth 2\nbmc: skip 1\n"),
+        ),
+        # N1: expect PASS,TIMEOUT with timeout 1.
+        (
+            "n1_expect_timeout",
+            lambda s: s.replace(
+                "bmc: depth 1\n",
+                "bmc: depth 1\nbmc: expect PASS,TIMEOUT\nbmc: timeout 1\n",
+            ),
+        ),
+        # N3: skip_prep on removes SymbiYosys's setundef -undriven -anyseq.
+        (
+            "n3_skip_prep_on",
+            lambda s: s.replace("bmc: depth 1\n", "bmc: depth 1\nbmc: skip_prep on\n"),
+        ),
+        # Unpinned start-frame engine on another target.
+        (
+            "unpinned_abc_start_frame",
+            lambda s: s.replace("smtbmc boolector", "abc bmc3 -c -S 139"),
+        ),
+        # Omitted [options] and [engines] sections altogether.
+        (
+            "missing_options_and_engines",
+            lambda s: "[tasks]\nbmc\ncover\n" + s[s.index("[script]\n") :],
+        ),
+    ],
+)
+def test_a5_f2_f3_n1_n3_closed_options_engines_and_task_modes(
+    tmp_path: Path, case_name: str, mutator: Any
+) -> None:
+    """Refuse unlisted options/engines, mode mismatches, smtc, expect, skip_prep, and unpinned skip."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    work = tmp_path / case_name
+    work.mkdir()
+    (work / "free_undefined.ys").write_bytes(
+        (formal / "free_undefined.ys").read_bytes()
+    )
+    (work / "rs_issue2_selector.smtc").write_text("always\n")
+    orig = sby_config.read_checked_text(formal / "rs_issue2_selector.sby")
+    sby_path = work / "rs_issue2_selector.sby"
+    sby_path.write_text(mutator(orig))
+
+    refused = False
+    try:
+        src = sby_config.source(sby_path)
+        cfg = src.task("bmc")
+        gaps = registered_task_config_gaps("rs_issue2_selector", "bmc", cfg, formal)
+        if gaps:
+            refused = True
+    except sby_config.ConfigError:
+        refused = True
+    assert refused, case_name
+    if case_name == "missing_options_and_engines":
+        with pytest.raises(sby_config.ConfigError, match="missing required 'mode'"):
+            sby_config.resolved(sby_path)
+        assert sby_undefined_opening_gaps(sby_path)
+        assert dont_care_changes(sby_path)[0]
+
+    # Also check the N3 u_on.sby toy directly.
+    if case_name == "n3_skip_prep_on":
+        u_on = work / "u_on.sby"
+        u_on.write_text(
+            "[options]\nmode bmc\ndepth 1\nskip_prep on\n[engines]\nsmtbmc boolector\n"
+            "[script]\nread -formal -sv u.sv\nhierarchy -top u\ndelete u/b0\n"
+            "script free_undefined.ys\nprep -top u -flatten\n[files]\nu.sv\nfree_undefined.ys\n"
+        )
+        with pytest.raises(sby_config.ConfigError, match="skip_prep"):
+            sby_config.source(u_on)
+
+    # Verify check_for_errors rejects engine-less or non-PASS solver outputs (F2, N1).
+    runner = FormalRunner()
+    for bad_out in (
+        "SBY 00:00:01 [t] DONE (TIMEOUT, rc=0)\n",
+        "SBY 00:00:01 [t] DONE (UNKNOWN, rc=0)\n",
+        "SBY 00:00:01 [t] summary: engine_0 (smtbmc boolector) did not return a status\n"
+        "SBY 00:00:01 [t] DONE (PASS, rc=0)\n",
+        "",
+    ):
+        has_err, _ = runner.check_for_errors(
+            subprocess.CompletedProcess(["sby"], 0, bad_out, "")
+        )
+        assert has_err, bad_out
+
+
+def test_a5_n2_header_trace_neither_satisfiable_nor_breakable(tmp_path: Path) -> None:
+    """Header-shaped log -stderr commands fail grammar, and RTL $display cannot spoof or break."""
+    for spoofed_log in (
+        "log -stderr 7. Executing SETUNDEF pass",
+        "log -stderr -- Executing script file",
+        "log -stderr End of script.",
+    ):
+        with pytest.raises(sby_config.ConfigError):
+            sby_config.parse_script_lines([spoofed_log])
+
+    # Run real Yosys through write_yosys_header_wrapper on an RTL module whose
+    # initial blocks emit spoofed pass headers, script banners, and End of script.
+    wrapper = write_yosys_header_wrapper(tmp_path / "yosys_wrapper.py")
+    src_dir = tmp_path / "src"
+    model_dir = tmp_path / "model"
+    src_dir.mkdir()
+    model_dir.mkdir()
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    (src_dir / "free_undefined.ys").write_bytes(
+        (formal / "free_undefined.ys").read_bytes()
+    )
+    (src_dir / "d.sv").write_text(
+        "module d(input logic c, output logic y);\n"
+        '  initial $display("9. Executing SETUNDEF pass");\n'
+        '  initial $display("\\n4. Executing PROC_CLEAN pass.");\n'
+        '  initial $display("-- Executing script file `fake.ys\' --");\n'
+        '  initial $display("End of script. Logfile hash: deadbeef");\n'
+        "  assign y = c;\n"
+        "  always_comb assert (y == c);\n"
+        "endmodule\n"
+    )
+    sby_file = tmp_path / "d.sby"
+    sby_file.write_text(
+        "[options]\nmode bmc\ndepth 1\n[engines]\nsmtbmc boolector\n[script]\n"
+        "read -formal -sv d.sv\n"
+        "hierarchy -top d\n"
+        "script free_undefined.ys\n"
+        "prep -top d\n"
+        "[files]\nd.sv\nfree_undefined.ys\n"
+    )
+    (model_dir / "design.ys").write_text(
+        f"# running in {src_dir}/\n"
+        "read -formal -sv d.sv\n"
+        "hierarchy -top d\n"
+        "script free_undefined.ys\n"
+        "prep -top d\n"
+        "hierarchy -smtcheck\n"
+        "write_jny -no-connections ../model/design.json\n"
+        "write_rtlil ../model/design.il\n"
+    )
+    subprocess.run(
+        [str(wrapper), "-ql", "../model/design.log", "../model/design.ys"],
+        cwd=src_dir,
+        check=True,
+        timeout=60,
+    )
+    headers_text = sby_config.read_checked_text(model_dir / "design.headers")
+    parsed = (
+        sby_config.source(sby_file).task("").parsed(src_dir, keep_script_entries=True)
+    )
+
+    # Not breakable: valid script with hostile $display lines passes structured check.
+    check_yosys_log(headers_text, parsed, structured=True)
+
+    # Not satisfiable: if a pass (prep) did not run while $display printed its
+    # exact header text, the structured trace lacks the missing Header event and fails.
+    (src_dir / "d.sv").write_text(
+        "module d(input logic c, output logic y);\n"
+        '  initial $display("18. Executing PREP pass.");\n'
+        "  assign y = c;\n"
+        "endmodule\n"
+    )
+    (model_dir / "design.ys").write_text(
+        f"# running in {src_dir}/\n"
+        "read -formal -sv d.sv\n"
+        "hierarchy -top d\n"
+        "script free_undefined.ys\n"
+        "hierarchy -smtcheck\n"
+        "write_jny -no-connections ../model/design.json\n"
+        "write_rtlil ../model/design.il\n"
+    )
+    subprocess.run(
+        [str(wrapper), "-ql", "../model/design.log", "../model/design.ys"],
+        cwd=src_dir,
+        check=True,
+        timeout=60,
+    )
+    spoof_attempt_headers = sby_config.read_checked_text(model_dir / "design.headers")
+    with pytest.raises(ValueError, match="PREP pass"):
+        check_yosys_log(spoof_attempt_headers, parsed, structured=True)
 
 
 # ===========================================================================
@@ -9484,6 +11470,10 @@ class TestFormalVerification:
                 f"Formal {task_name} for {target.name} timed out after "
                 f"{error.timeout // 60} minutes\n{timeout_log_tail(error)}"
             )
+        except FormalArtifactError as error:
+            with capsys.disabled():
+                print(f"\nFormal {task_name} for {target.name} ERROR: {error}")
+            pytest.fail(str(error))
         except Exception as e:
             pytest.fail(
                 f"Unexpected error during formal {task_name} for {target.name}: {e}"
@@ -9631,6 +11621,14 @@ With pytest:
                 print(f"\n{test_id} TIMEOUT ({error.timeout // 60} minutes)")
                 if output := timeout_log_tail(error):
                     print(output)
+                failed.append(test_id)
+            except FormalArtifactError as error:
+                if not args.verbose:
+                    output = (error.result.stdout or "") + (error.result.stderr or "")
+                    for line in output.splitlines():
+                        if any(kw in line for kw in ("DONE", "Status:", "Elapsed")):
+                            print(f"  {line.strip()}")
+                print(f"\n{test_id} ERROR: {error}")
                 failed.append(test_id)
             except Exception as e:
                 print(f"\n{test_id} ERROR: {e}")

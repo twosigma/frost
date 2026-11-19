@@ -110,7 +110,7 @@ def lowered_assertions(root: Path) -> dict[str, str]:
     script = sections["[script]"]
     stop = script.index("write_rtlil ../model/unpartitioned.il")
     prefix = script[:stop]
-    if prefix[-2:] != ["async2sync", "chformal -lower"]:
+    if prefix[-3:] != ["async2sync", "setundef -anyseq", "chformal -lower"]:
         raise ValueError("The proof's assertion-freezing sequence has changed")
     with tempfile.TemporaryDirectory(prefix="axi-bridge-roster-") as directory:
         work = Path(directory)

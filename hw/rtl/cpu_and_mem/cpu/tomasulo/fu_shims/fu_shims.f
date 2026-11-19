@@ -2,7 +2,7 @@
 # Shims translate rs_issue_t into FU-specific ports, instantiate the FU,
 # and pack the result into fu_complete_t.
 
-# DSP-tiled multiplier core (used by the integer multiplier)
+# DSP-tiled multiplier core (used by the integer and scalar FP multipliers)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 
 # RAM primitive for the integer MUL/DIV shim's buffered standalone mode
