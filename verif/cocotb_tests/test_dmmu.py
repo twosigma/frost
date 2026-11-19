@@ -331,7 +331,14 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
         (base_op, replace(base_leaf, ppn=0x48200)),
         (replace(base_op, needs_sq=1, store=1), replace(base_leaf, ppn=0x48000)),
         (replace(base_op, needs_sq=1, store=1), replace(base_leaf, ppn=0x481FF)),
-        (replace(base_op, store=1), replace(base_leaf, ppn=0x7FFFF)),
+        (replace(base_op, needs_sq=1, store=1), replace(base_leaf, ppn=0x7FFFF)),
+        # At the same unmapped PA, denied writes take a page fault and a
+        # misaligned VA traps before either the permission or the PMA check.
+        (replace(base_op, needs_sq=1, store=1), replace(base_leaf, ppn=0x40031, w=0)),
+        (
+            replace(base_op, needs_sq=1, store=1, va=base_op.va + 1),
+            replace(base_leaf, ppn=0x40031, w=0),
+        ),
         (replace(base_op, atomic=1), replace(base_leaf, ppn=0x40000)),
         (replace(base_op, store=1, atomic=1), replace(base_leaf, ppn=0x44000)),
         (replace(base_op, atomic=1), replace(base_leaf, ppn=0x48000)),
