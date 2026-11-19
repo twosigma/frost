@@ -66,6 +66,95 @@ module coherence_home_control_harness #(
     completion = i_c;
     completion.addr[31:AddressBits] = '0;
   end
+`ifdef COHERENCE_HOME_CMO_WITNESS
+  `define FROST_CMO_OBSERVE(signal) signal
+  logic witness_d_ready, witness_p_valid, witness_r_ready;
+  logic witness_g_valid, witness_c_ready, witness_mem_req;
+  logic [4:0] witness_mem_req_id;
+  coh_p_t witness_p;
+  coh_g_t witness_g;
+
+  typedef enum logic [1:0] {
+    AbsentClean,
+    ResidentClean,
+    DirtyFlush,
+    DirtyInval
+  } witness_case_t;
+  (* anyconst *) witness_case_t witness_case;
+  logic witness_reset_seen = 1'b0;
+  logic [1:0] witness_demands;
+  logic witness_initial;
+  coh_d_t witness_d;
+  coh_r_t witness_r;
+  coh_c_t witness_c;
+  logic witness_r_valid, witness_c_valid, witness_mem_valid;
+  logic [4:0] witness_mem_id;
+
+  // A GetS installs clean data. GetMZero installs a modified copy.
+  always_comb begin
+    witness_initial = witness_case != AbsentClean && witness_demands == 0;
+    witness_d = '0;
+    witness_d.size = 3'd3;
+    if (witness_initial) begin
+      if (witness_case == ResidentClean) witness_d.opcode = coherence_pkg::GetS;
+      else witness_d.opcode = coherence_pkg::GetMZero;
+    end else begin
+      case (witness_case)
+        DirtyInval: witness_d.opcode = coherence_pkg::InvalBlock;
+        DirtyFlush: witness_d.opcode = coherence_pkg::FlushBlock;
+        default:    witness_d.opcode = coherence_pkg::CleanBlock;
+      endcase
+      witness_d.q.port_class = 3;
+      witness_d.q.id = 4'(coherence_pkg::CmoId);
+    end
+  end
+
+  // Reply to the home's accepted probes, grants and memory commands.
+  always_ff @(posedge i_clk) begin
+    witness_reset_seen <= 1'b1;
+    assume (i_rst == !witness_reset_seen);
+    if (i_rst) begin
+      witness_demands <= 0;
+      witness_r_valid <= 0;
+      witness_c_valid <= 0;
+      witness_mem_valid <= 0;
+      witness_mem_id <= 0;
+      witness_r <= '0;
+      witness_c <= '0;
+    end else begin
+      assume (!i_stop && !i_w_valid && i_wa_ready && i_u_ready && i_mem_ready && !i_mem_error);
+      assume (i_d_valid == (witness_demands < (witness_case == AbsentClean ? 1 : 2)));
+      assume (i_d == witness_d);
+      assume (i_p_ready == !witness_r_valid && i_r_valid == witness_r_valid);
+      assume (i_r == witness_r);
+      assume (i_g_ready == !witness_c_valid && i_c_valid == witness_c_valid);
+      assume (i_c == witness_c);
+      assume (i_mem_valid == witness_mem_valid && i_mem_id == witness_mem_id);
+      if (i_d_valid && witness_d_ready) witness_demands <= witness_demands + 1'b1;
+      if (witness_p_valid && i_p_ready) begin
+        witness_r_valid <= 1'b1;
+        witness_r <= '0;
+        witness_r.tid <= witness_p.tid;
+        witness_r.addr <= witness_p.addr;
+        witness_r.clear <= 1'b1;
+      end else if (i_r_valid && witness_r_ready) witness_r_valid <= 1'b0;
+      if (witness_g_valid && i_g_ready) begin
+        witness_c_valid <= 1'b1;
+        witness_c <= '0;
+        witness_c.q <= witness_g.q;
+        witness_c.tid <= witness_g.tid;
+        witness_c.addr <= witness_g.addr;
+        witness_c.status <= coherence_pkg::Consumed;
+        witness_c.write_done <= 1'b1;
+      end else if (i_c_valid && witness_c_ready) witness_c_valid <= 1'b0;
+      witness_mem_valid <= witness_mem_req && i_mem_ready;
+      if (witness_mem_req && i_mem_ready) witness_mem_id <= witness_mem_req_id;
+    end
+  end
+`else
+  `define FROST_CMO_OBSERVE(signal)
+`endif
+
   coherence_home #(
       .COMPLETIONS(3),
       .RESULTS(2),
@@ -81,13 +170,13 @@ module coherence_home_control_harness #(
       .i_rst,
       .i_fatal_stop(i_stop),
       .i_d_valid,
-      .o_d_ready(),
+      .o_d_ready(`FROST_CMO_OBSERVE(witness_d_ready)),
       .i_d(demand),
-      .o_p_valid(),
+      .o_p_valid(`FROST_CMO_OBSERVE(witness_p_valid)),
       .i_p_ready,
-      .o_p(),
+      .o_p(`FROST_CMO_OBSERVE(witness_p)),
       .i_r_valid,
-      .o_r_ready(),
+      .o_r_ready(`FROST_CMO_OBSERVE(witness_r_ready)),
       .i_r(reply),
       .i_w_valid,
       .o_w_ready(),
@@ -95,11 +184,11 @@ module coherence_home_control_harness #(
       .o_wa_valid(),
       .i_wa_ready,
       .o_wa(),
-      .o_g_valid(),
+      .o_g_valid(`FROST_CMO_OBSERVE(witness_g_valid)),
       .i_g_ready,
-      .o_g(),
+      .o_g(`FROST_CMO_OBSERVE(witness_g)),
       .i_c_valid,
-      .o_c_ready(),
+      .o_c_ready(`FROST_CMO_OBSERVE(witness_c_ready)),
       .i_c(completion),
       .o_u_valid(),
       .i_u_ready,
@@ -109,13 +198,13 @@ module coherence_home_control_harness #(
       .o_accepted_opcode(),
       .o_accepted_q(),
       .o_accepted_addr(),
-      .o_mem_req_valid(),
+      .o_mem_req_valid(`FROST_CMO_OBSERVE(witness_mem_req)),
       .i_mem_req_ready(i_mem_ready),
       .o_mem_req_write(),
       .o_mem_req_addr(),
       .o_mem_req_data(),
       .o_mem_req_mask(),
-      .o_mem_req_id(),
+      .o_mem_req_id(`FROST_CMO_OBSERVE(witness_mem_req_id)),
       .i_mem_resp_valid(i_mem_valid),
       .i_mem_resp_id(i_mem_id),
       .i_mem_resp_data('0),
@@ -125,4 +214,5 @@ module coherence_home_control_harness #(
       .o_fatal(),
       .o_fatal_addr()
   );
+  `undef FROST_CMO_OBSERVE
 endmodule

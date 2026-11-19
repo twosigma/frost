@@ -555,7 +555,8 @@ async def complete_request_identity_space(dut: Any) -> None:
     for hart in range(harts):
         # The cache protocol assigns each hart eight data, two fetch, two
         # walk and HartLineIds (eight) line-client identities. Line clients
-        # use DMARead/DMAWrite under the hart's source and class 3.
+        # use DMARead/DMAWrite. The next class-3 ID is the CMO requester.
+        allowed.add(pack((2, hart), (2, 3), (4, 8), (1, 0)))
         for port_class, count in ((0, 8), (1, 2), (2, 2), (3, 8)):
             allowed.update(
                 pack((2, hart), (2, port_class), (4, slot), (1, 0))
@@ -567,8 +568,12 @@ async def complete_request_identity_space(dut: Any) -> None:
         await b.set(i_epoch=epoch)
         for q in range(512):
             source, port_class = q >> 7, (q >> 5) & 3
-            opcodes = ((0, 1, 2, 3, 4, 10), (5,), (6,), (7, 8))[port_class]
-            if source == 3:
+            opcodes: tuple[int, ...] = ((0, 1, 2, 3, 4, 10), (5,), (6,), (7, 8))[
+                port_class
+            ]
+            if source < 2 and port_class == 3 and ((q >> 1) & 15) == 8:
+                opcodes = (11, 12, 13)
+            elif source == 3:
                 opcodes = (9,)
             for op in range(16):
                 await b.set(i_home_d=b.d(q=q, op=op))

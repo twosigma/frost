@@ -16,9 +16,15 @@
 
 /*
  * Zicbom directed test. cbo.clean, cbo.flush and cbo.inval name the naturally
- * aligned 64-byte block containing rs1. Every bus master in FROST is coherent,
- * so each executes as an ordered no-op: the block's data never changes, and
- * loads and stores around it keep program order.
+ * aligned 64-byte block containing rs1. Clean and flush write a dirty cached
+ * DDR block to memory and keep its data; inval (M mode, or CBIE = 11 below M)
+ * discards the cached copies, so the next load reads memory. Each DDR buffer
+ * is filled and then flushed, so memory holds the fill pattern and every op
+ * leaves the data intact; a store just before an inval is the one value an
+ * invalidate may drop (section E). A CBO_INVAL_AS_FLUSH build (CBIE 11 reads
+ * back 01) executes inval as flush. Low BRAM keeps no cached copy, so every
+ * op there is an ordered no-op. Loads and stores around each op keep program
+ * order.
  *
  * Gates (menvcfg/senvcfg): CBCFE (bit 6) enables cbo.clean and cbo.flush below
  * M (S needs menvcfg.CBCFE, U needs both). CBIE (bits 5:4) is WARL {00, 01, 11}:
@@ -96,8 +102,6 @@ static void uart_hex(unsigned long v)
 static volatile unsigned long g_cause;
 static volatile unsigned long g_tval;
 
-/* Three blocks each in low BRAM and cached DDR; tests target the middle one. */
-static volatile uint64_t g_bram_buf[3 * BLOCK / 8] __attribute__((aligned(64)));
 static volatile uint64_t g_ddr_buf[3 * BLOCK / 8]
     __attribute__((aligned(64), section(".ddr_data")));
 
@@ -155,7 +159,23 @@ static void fill(volatile uint64_t *buf, unsigned long dwords)
         buf[i] = pattern_at(i);
 }
 
-/* Every dword still holds its fill value: a coherent CMO changes no data. */
+/* Fill, then flush every block (M mode, untranslated), so memory holds the
+ * fill pattern: an invalidate then leaves the same values. */
+static void fill_flushed(volatile uint64_t *buf, unsigned long dwords)
+{
+    fill(buf, dwords);
+    for (unsigned long b = 0; b < dwords * 8; b += BLOCK)
+        __asm__ volatile("mv t1, %0\n" CBO_FLUSH_ASM("t1")
+                         :
+                         : "r"((unsigned long) buf + b)
+                         : "t1", "memory");
+    __asm__ volatile("fence rw, rw" ::: "memory");
+}
+
+/* cbo.inval executes as cbo.flush (CBO_INVAL_AS_FLUSH build). */
+static int g_inval_flushes;
+
+/* Check the target block and both neighbors against their clean baseline. */
 static int check_intact(const char *name, int op, volatile uint64_t *buf)
 {
     int ok = 1;
@@ -275,7 +295,7 @@ static unsigned long run_lower(unsigned long mpp, int op, unsigned long rs1)
                      "1:\n"
                      :
                      : "r"(mpp), "r"(body), "r"(rs1)
-                     : "t0", "a0", "memory");
+                     : "t0", "t1", "t2", "t3", "a0", "memory");
     return g_cause;
 }
 
@@ -342,25 +362,105 @@ static void spin(unsigned long n)
     }
 }
 
+/* The handler and interrupted code write distinct words of the same block. */
+#define IRQ_BLOCK ((volatile uint64_t *) 0x81420400ul)
+static volatile unsigned long irq_count;
+static volatile unsigned long irq_cause;
+
+__attribute__((interrupt("machine"), aligned(4))) static void timer_handler(void)
+{
+    irq_cause = csr_read(mcause);
+    MTIMECMP_HI = 0xffffffffu;
+    IRQ_BLOCK[5]++;
+    irq_count++;
+}
+
+static int interrupt_order(void)
+{
+    int ok = 1;
+    unsigned long saved_mstatus = disable_interrupts();
+    unsigned long saved_mie = csr_read(mie);
+    unsigned long saved_mtvec = csr_read(mtvec);
+    set_trap_handler(&timer_handler);
+    csr_write(mie, MIE_MTIE);
+    irq_count = 0;
+    IRQ_BLOCK[5] = 0;
+    for (unsigned trial = 0; trial < 12; trial++) {
+        uint64_t deadline = rdmtime() + 480 + 47 * trial;
+        set_timer_cmp(deadline);
+        enable_interrupts();
+        for (unsigned i = 0; i < 12; i++) {
+            uint64_t value = pattern_at(trial * 12 + i);
+            IRQ_BLOCK[1] = value;
+            cbo_at(OP_FLUSH, (unsigned long) IRQ_BLOCK + 63);
+            cbo_at(OP_FLUSH, (unsigned long) IRQ_BLOCK + 1);
+            ok &= IRQ_BLOCK[1] == value;
+        }
+        while (irq_count == trial && rdmtime() < deadline + 8192) {
+        }
+        disable_interrupts();
+        ok &= irq_count == trial + 1 && irq_cause == (MCAUSE_INTERRUPT_BIT | INT_MTI);
+        ok &= IRQ_BLOCK[5] == trial + 1;
+        if (!ok)
+            break;
+    }
+    set_timer_cmp(~0ull);
+    csr_write(mtvec, saved_mtvec);
+    csr_write(mie, saved_mie);
+    restore_interrupts(saved_mstatus);
+    return ok;
+}
+
+static int atomic_order(void)
+{
+    volatile uint64_t *word = &g_ddr_buf[BLOCK / 8 + 4];
+    unsigned long original, sc, old;
+    *word = 21;
+    /* The intervening flush makes this an unconstrained LR/SC sequence.
+     * Either SC outcome must agree with the bytes subsequently read. */
+    __asm__ volatile("lr.d %0, (%2)\n" CBO_FLUSH_ASM("%2") "sc.d %1, %3, (%2)"
+                     : "=&r"(original), "=&r"(sc)
+                     : "r"(word), "r"(34ul)
+                     : "memory");
+    unsigned long expected = sc ? 21 : 34;
+    if (original != 21 || *word != expected)
+        return 0;
+    __asm__ volatile("amoadd.d %0, %2, (%1)\n" CBO_CLEAN_ASM("%1") CBO_FLUSH_ASM("%1")
+                     : "=&r"(old)
+                     : "r"(word), "r"(8ul)
+                     : "memory");
+    return old == expected && *word == expected + 8;
+}
+
 int main(void)
 {
+    /* Both scalar images put the stack in low BRAM. In the DDR image even
+     * ordinary static data lives in the cacheable region. */
+    volatile uint64_t bram_buf[3 * BLOCK / 8] __attribute__((aligned(64)));
     int ok = 1;
 
     uart_puts("\r\n=== Zicbom test ===\r\n");
+    ok = (uintptr_t) bram_buf >= 0x18000 && (uintptr_t) (bram_buf + 3 * BLOCK / 8) <= 0x40000 &&
+         (uintptr_t) g_ddr_buf >= 0x80000000ul;
+    report(ok, "buffer placement", 0);
     set_trap_handler(&cbo_trap_handler);
     csr_write(medeleg, 0);
+    csr_write_num(0x30A, ENVCFG_CBIE(3));
+    g_inval_flushes = (csr_read_num(0x30A) & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(1);
+    csr_write_num(0x30A, 0);
+    uart_puts(g_inval_flushes ? "cbo.inval executes as flush\r\n" : "cbo.inval invalidates\r\n");
 
     /* A: M executes each op on cached DDR and low BRAM with an unaligned rs1,
      * retires, and changes no data. */
     for (int op = 0; op < 3; op++) {
-        fill(g_ddr_buf, 3 * BLOCK / 8);
+        fill_flushed(g_ddr_buf, 3 * BLOCK / 8);
         run_m(op, (unsigned long) &g_ddr_buf[BLOCK / 8] + 0x2B);
         ok &= expect("A ddr-m-retires", op, CAUSE_ECALL_M, 0, 0);
         ok &= check_intact("A ddr", op, g_ddr_buf);
-        fill(g_bram_buf, 3 * BLOCK / 8);
-        run_m(op, (unsigned long) &g_bram_buf[BLOCK / 8] + 0x3F);
+        fill(bram_buf, 3 * BLOCK / 8);
+        run_m(op, (unsigned long) &bram_buf[BLOCK / 8] + 0x3F);
         ok &= expect("A bram-m-retires", op, CAUSE_ECALL_M, 0, 0);
-        ok &= check_intact("A bram", op, g_bram_buf);
+        ok &= check_intact("A bram", op, bram_buf);
     }
 
     /* B: device windows are ordered no-ops; outside the map is a store access
@@ -379,11 +479,13 @@ int main(void)
     }
 
     /* C: CSR fields. CBIE is WARL {00, 01, 11}: 10 reads back 00. CBCFE and
-     * CBIE read back in both CSRs alongside PBMTE and PMM. */
+     * CBIE read back in both CSRs alongside PBMTE and PMM. A flush-only
+     * implementation also maps 11 to 01. */
     {
         int c_ok = 1;
+        unsigned long cbie_max = g_inval_flushes ? 1 : 3;
         for (unsigned long v = 0; v < 4; v++) {
-            unsigned long want = (v == 2) ? 0 : v;
+            unsigned long want = (v == 2) ? 0 : (v == 3 ? cbie_max : v);
             csr_write_num(0x30A, ENVCFG_CBIE(v));
             c_ok &= (csr_read_num(0x30A) & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(want);
             csr_write_num(0x10A, ENVCFG_CBIE(v));
@@ -392,14 +494,14 @@ int main(void)
         csr_write_num(0x30A, ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | MENVCFG_PBMTE);
         c_ok &= (csr_read_num(0x30A) &
                  (ENVCFG_CBCFE | ENVCFG_CBIE_MASK | ENVCFG_CBZE | MENVCFG_PBMTE)) ==
-                (ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | MENVCFG_PBMTE);
+                (ENVCFG_CBCFE | ENVCFG_CBIE(cbie_max) | ENVCFG_CBZE | MENVCFG_PBMTE);
         csr_write_num(0x10A, ~0ul);
         c_ok &= csr_read_num(0x10A) ==
-                (ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | SENVCFG_PMM_MASK | 1ul);
+                (ENVCFG_CBCFE | ENVCFG_CBIE(cbie_max) | ENVCFG_CBZE | SENVCFG_PMM_MASK | 1ul);
         /* A set or clear of the reserved pattern through csrs/csrc: 01 | 10 = 11. */
         csr_write_num(0x30A, ENVCFG_CBIE(1));
         __asm__ volatile("csrs 0x30A, %0" ::"r"(ENVCFG_CBIE(2)));
-        c_ok &= (csr_read_num(0x30A) & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(3);
+        c_ok &= (csr_read_num(0x30A) & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(cbie_max);
         __asm__ volatile("csrc 0x30A, %0" ::"r"(ENVCFG_CBIE(1)));
         c_ok &= (csr_read_num(0x30A) & ENVCFG_CBIE_MASK) == 0;
         csr_write_num(0x30A, 0);
@@ -408,9 +510,8 @@ int main(void)
         ok &= c_ok;
     }
 
-    /* D: gates in S and U for each op. clean/flush need CBCFE (S: menvcfg; U:
-     * both); inval needs CBIE != 00 (S: menvcfg; U: both). An executed op
-     * changes no data; an illegal one traps with cause 2. */
+    /* D: privilege gates with low BRAM and a dirty DDR block. The most
+     * restrictive applicable CBIE controls a permitted invalidate. */
     {
         static const struct {
             unsigned long mpp, menv, senv;
@@ -438,33 +539,54 @@ int main(void)
                 unsigned long want = !legal              ? CAUSE_ILLEGAL
                                      : cases[i].mpp == 1 ? CAUSE_ECALL_S
                                                          : CAUSE_ECALL_U;
-                fill(g_bram_buf, 3 * BLOCK / 8);
+                fill(bram_buf, 3 * BLOCK / 8);
                 csr_write_num(0x30A, cases[i].menv);
                 csr_write_num(0x10A, cases[i].senv);
-                run_lower(cases[i].mpp, op, (unsigned long) &g_bram_buf[BLOCK / 8] + 5);
+                run_lower(cases[i].mpp, op, (unsigned long) &bram_buf[BLOCK / 8] + 5);
                 /* Sstvala: an illegal op's mtval holds its instruction bits. */
                 ok &= expect(cases[i].name, op, want, CBO_A0_BITS(op), want == CAUSE_ILLEGAL);
-                ok &= check_intact(cases[i].name, op, g_bram_buf);
+                ok &= check_intact(cases[i].name, op, bram_buf);
+
+                volatile uint64_t *target = &g_ddr_buf[BLOCK / 8 + 2];
+                uint64_t base = pattern_at(i);
+                *target = base;
+                cbo_at(OP_FLUSH, (unsigned long) target);
+                *target = ~base;
+                run_lower(cases[i].mpp, op, (unsigned long) target + 3);
+                int flush =
+                    g_inval_flushes || (cases[i].menv & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(1) ||
+                    (cases[i].mpp == 0 && (cases[i].senv & ENVCFG_CBIE_MASK) == ENVCFG_CBIE(1));
+                int discard = legal && op == OP_INVAL && !flush;
+                int data_ok = g_cause == want && *target == (discard ? base : ~base);
+                /* M-mode inval exposes memory unless the implementation always flushes.
+                 * A faulting instruction must leave the preceding store dirty. */
+                cbo_at(OP_INVAL, (unsigned long) target);
+                data_ok &= *target == (discard || (!legal && !g_inval_flushes) ? base : ~base);
+                report(data_ok, "D cached data", op_name[op]);
+                ok &= data_ok;
             }
         }
         csr_write_num(0x30A, 0);
         csr_write_num(0x10A, 0);
         /* M ignores both CSRs. */
         for (int op = 0; op < 3; op++) {
-            run_m(op, (unsigned long) &g_bram_buf[BLOCK / 8] + 9);
+            run_m(op, (unsigned long) &bram_buf[BLOCK / 8] + 9);
             ok &= expect("D m-gates-off", op, CAUSE_ECALL_M, 0, 0);
         }
     }
 
     /* E: program order with no fence. Each op sits between a store and loads
-     * of its block in DDR and BRAM: the loads see the store, the store after
-     * the op lands, and nothing else changes. */
+     * of its block in DDR and BRAM: the loads see the store (or, after a DDR
+     * invalidate, memory's fill value), the store after the op lands, and
+     * nothing else changes. */
     for (int region = 0; region < 2; region++) {
         for (int op = 0; op < 3; op++) {
-            volatile uint64_t *buf = region ? g_bram_buf : g_ddr_buf;
+            volatile uint64_t *buf = region ? bram_buf : g_ddr_buf;
             unsigned long base = (unsigned long) &buf[BLOCK / 8];
             unsigned long seen, seen2, other;
-            fill(buf, 3 * BLOCK / 8);
+            /* An invalidate of DDR drops the store before it. */
+            int drops = region == 0 && op == OP_INVAL && !g_inval_flushes;
+            fill_flushed(buf, 3 * BLOCK / 8);
             buf[BLOCK / 8 + 3] = PATTERN;
             cbo_at(op, base + 0x11);
             seen = buf[BLOCK / 8 + 3];
@@ -472,7 +594,9 @@ int main(void)
             cbo_at(op, base + 0x30);
             seen2 = buf[BLOCK / 8 + 4];
             other = buf[BLOCK / 8 + 7];
-            int e_ok = seen == PATTERN && seen2 == ~PATTERN && other == pattern_at(BLOCK / 8 + 7);
+            int e_ok = seen == (drops ? pattern_at(BLOCK / 8 + 3) : PATTERN) &&
+                       seen2 == (drops ? pattern_at(BLOCK / 8 + 4) : ~PATTERN) &&
+                       other == pattern_at(BLOCK / 8 + 7);
             buf[BLOCK / 8 + 3] = pattern_at(BLOCK / 8 + 3);
             buf[BLOCK / 8 + 4] = pattern_at(BLOCK / 8 + 4);
             report(e_ok, region ? "E bram-order" : "E ddr-order", op_name[op]);
@@ -484,8 +608,7 @@ int main(void)
     /* F: back-to-back ops over eight blocks with stores and loads between. */
     {
         volatile uint64_t *b = (volatile uint64_t *) 0x81400000ul;
-        for (int i = 0; i < 64; i++)
-            b[i] = pattern_at((unsigned long) i);
+        fill_flushed(b, 64);
         unsigned long base = (unsigned long) b;
         cbo_at(OP_CLEAN, base);
         cbo_at(OP_FLUSH, base + BLOCK);
@@ -504,10 +627,11 @@ int main(void)
         ok &= f_ok;
     }
 
-    /* G: a DMA engine write lands while the CPU cleans and invalidates the
-     * block, and a DMA copy reads a block the CPU just wrote and cleaned. The
-     * engine is coherent, so the CPU reads the DMA bytes and the copy sees the
-     * CPU's bytes, with or without the CMO. */
+    /* G: a DMA engine write lands while the CPU cleans and flushes the block,
+     * and a DMA copy reads a block the CPU just wrote and cleaned. The engine
+     * is coherent, so its bytes live in the coherent caches: the CPU flushes
+     * (an invalidate could drop them), reads the DMA bytes, and the copy sees
+     * the CPU's bytes. */
     {
         int g_ok = 1;
         unsigned long blk = 0x81410000ul;
@@ -520,9 +644,9 @@ int main(void)
             dma_engine_setup(0, (uint32_t) blk, 64, DMA_ENGINE_MODE_FILL, pattern, 0, 0);
             dma_engine_start();
             spin((unsigned long) d * 3);
-            cbo_at(OP_INVAL, blk);
+            cbo_at(OP_FLUSH, blk);
             dma_engine_wait();
-            cbo_at(OP_INVAL, blk + 32);
+            cbo_at(OP_FLUSH, blk + 32);
             for (int i = 0; i < 16; i++)
                 g_ok &= w[i] == pattern + (uint32_t) i;
         }
@@ -535,7 +659,7 @@ int main(void)
         dma_engine_setup((uint32_t) src, (uint32_t) dst, 64, DMA_ENGINE_MODE_COPY, 0, 0, 0);
         dma_engine_start();
         dma_engine_wait();
-        cbo_at(OP_INVAL, dst);
+        cbo_at(OP_FLUSH, dst);
         for (int i = 0; i < 8; i++)
             g_ok &= ((volatile uint64_t *) dst)[i] == pattern_at((unsigned long) i + 40);
         report(g_ok, "G coherent-dma", 0);
@@ -551,7 +675,7 @@ int main(void)
         build_tables();
         for (int p = 0; p < PG_COUNT; p++)
             if (p != PG_BEYOND)
-                fill((volatile uint64_t *) FRAME(p), 3 * BLOCK / 8);
+                fill_flushed((volatile uint64_t *) FRAME(p), 3 * BLOCK / 8);
         __asm__ volatile("csrw satp, %0\n sfence.vma" : : "r"(SATP_SV39 | (PT_ROOT >> 12)));
 
         static const struct {
@@ -587,6 +711,12 @@ int main(void)
         }
         __asm__ volatile("csrw satp, zero\n sfence.vma");
     }
+
+    int atomic_ok = atomic_order();
+    report(atomic_ok, "I atomic and repeated flush", 0);
+    int irq_ok = interrupt_order();
+    report(irq_ok, "J timer and repeated flush", 0);
+    ok &= atomic_ok && irq_ok;
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {

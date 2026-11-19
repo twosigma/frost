@@ -392,9 +392,9 @@ module frost_rvfi_dii #(
       int unsigned n;
       n = event_count;
 
-      // Stores the SQ accepted at last cycle's commit, slot 1 first. A Zicbom
-      // op (cbo.clean/flush/inval) is an SQ entry that writes nothing, so its
-      // record has no memory write to wait for.
+      // Queue the scalar stores accepted at last cycle's commit, slot 1 first.
+      // A Zicbom write-back goes through the coherent home. The instruction's
+      // RVFI record carries a zero scalar store mask.
       if (i_sq_commit_valid && !insn_is_cbo_mgmt(prev_commit_index)) begin
         store_queue.push_back(prev_commit_index);
         if (prev_commit_index < MaxEvents) rvfi_record[prev_commit_index].store_pending <= 1'b1;
