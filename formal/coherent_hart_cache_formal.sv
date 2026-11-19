@@ -1278,6 +1278,17 @@ module coherent_hart_cache_formal #(
   wire f_lower_reply = r_valid && r_ready && reply.addr == 32'h80000000;
   wire f_sampled_read = !engine_idle && !f_maint_home_state[4] && !result.error &&
       f_maint_home_state[3] && result.q != 0 && address == 32'h80000000;
+  // A dirty R owns the sampled version until the home publishes it. A
+  // private copy or frozen writeback may already own a younger store.
+  wire [1:0] f_handoff_version = f_dirty && !engine_idle ? f_sample_version : f_home_version;
+  function automatic logic reader_after_drain(input logic [8:0] key);
+    reader_after_drain = (key[8:5] == 1 && f_if_swept) || (key[8:5] == 2 && walk_after_q);
+  endfunction
+  wire f_final_reader = after_q[2'(engine_tid)] || reader_after_drain(result.q);
+  wire f_credit_matches = !f_cache_current ||
+      (f_cache_flags[3] && f_owner_version == f_handoff_version);
+  wire f_latest_accounted = f_cache_flags[3] || f_cache_flags[2] ||
+      f_owner_version == f_handoff_version;
   assign f_offered_image = installed_word(f_read_version[grant_slot]);
   always_ff @(posedge i_clk) begin
     if (rst) begin
@@ -1328,7 +1339,9 @@ module coherent_hart_cache_formal #(
         assert (!f_cache_flags[3] || (!f_cache_flags[2] && !f_cache_flags[5]));
         p_maint_ledger_no_pop :
         assert (!f_cache_flags[7] || (f_cache_flags[3] && !f_cache_flags[5] && !r_valid));
-        p_maint_ledger_image : assert (update_data == {4{installed_word(f_sample_version)}});
+        p_maint_ledger_image :
+        assert (f_sample_version[0] && update_data == {4{installed_word(f_sample_version)}} &&
+            (engine_idle || f_home_version <= f_sample_version));
         if (!engine_idle && (result_valid || update_pending_q))
           p_maint_ledger_published :
           assert (f_home_version == f_sample_version &&
@@ -1404,14 +1417,13 @@ module coherent_hart_cache_formal #(
         p_maint_seq_fresh_reply : assert (reply.data_valid && reply.data[9:8] == stored_bits);
       if (fence_seen_q || fence_done) p_maint_seq_fenced : assert (f_seq_final);
       if ((|after_q) || (|if_after_q) || walk_after_q) p_maint_seq_after : assert (f_seq_final);
-      if (read_pending_q && address == 32'h80000000 && home_published_q)
-        p_maint_seq_final_read : assert (read_data_q == {4{stored_pte}});
+      if (read_pending_q && address == 32'h80000000)
+        p_maint_seq_final_read : assert (read_data_q == {4{installed_word(f_home_version)}});
       if (!engine_idle &&
           address == 32'h80000000 &&
           f_maint_home_state[1] &&
-          !f_dirty &&
-          home_published_q)
-        p_maint_seq_final_clean_image : assert (update_data == {4{stored_pte}});
+          !f_dirty)
+        p_maint_seq_final_clean_image : assert (update_data == {4{installed_word(f_home_version)}});
       if (f_sampled_read && !f_dirty && f_maint_home_state[1])
         p_maint_seq_clean_published :
         assert (update_data == {4{installed_word(f_sample_version)}} &&
@@ -1427,11 +1439,11 @@ module coherent_hart_cache_formal #(
     if (!rst)
       p_maint_seq_publish_marker :
       assert (home_data_q == {4{installed_word(f_home_version)}} &&
-          (!f_home_version[1] || home_published_q) && f_home_version <= f_owner_version &&
-          (!f_cache_current || (f_cache_flags[3] && f_owner_version ==
-          (f_dirty && !engine_idle ? f_sample_version : f_home_version))) &&
+          f_home_version[1] == home_published_q && f_home_version <= f_owner_version &&
+          f_home_version != 2'b10 && f_sample_version != 2'b10 &&
+          f_sample_version <= f_owner_version && f_credit_matches && f_latest_accounted &&
           (!f_sampled_read || (f_sample_version == f_read_version[2'(engine_tid)] &&
-          f_sample_version <= f_owner_version)));
+          (!f_final_reader || f_sample_version[1]))));
 `endif
 `ifdef COH_MAINT_OWNED
   logic f_if_request_context, f_if_upper_grants;
@@ -1485,17 +1497,17 @@ module coherent_hart_cache_formal #(
   always_comb begin
     f_if_no_install = 1;
     f_if_latest_grants = 1;
-    for (int n = 0; n < Slots; n++)
-    if ((state_q[n] == Result ||
-        state_q[n] == Granted ||
-        state_q[n] == Completed) &&
-        request_address[n] == 32'h80000000 &&
-        request_key[n] != 0 &&
-        !f_grant_error[n]) begin
-      if (f_cache_flags[5] || (f_cache_flags[7] && !f_cache_flags[3])) f_if_no_install = 0;
-      if (f_grant_data[n] != {4{installed_word(f_read_version[n])}} ||
-          (after_q[n] && !f_read_version[n][1]))
+    for (int n = 0; n < Slots; n++) begin
+      if (f_read_version[n] == 2'b10 || f_read_version[n] > f_owner_version)
         f_if_latest_grants = 0;
+      if ((state_q[n] == Result || state_q[n] == Granted || state_q[n] == Completed) &&
+          request_address[n] == 32'h80000000 && request_key[n] != 0 && !f_grant_error[n]) begin
+        if (f_cache_flags[5] || (f_cache_flags[7] && !f_cache_flags[3])) f_if_no_install = 0;
+        if (f_grant_data[n] != {4{installed_word(f_read_version[n])}} ||
+            ((after_q[n] || (state_q[n] == Result && reader_after_drain(request_key[n]))) &&
+            !f_read_version[n][1]))
+          f_if_latest_grants = 0;
+      end
     end
   end
   always_ff @(posedge i_clk)
