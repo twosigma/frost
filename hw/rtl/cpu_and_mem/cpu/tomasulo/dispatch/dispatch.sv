@@ -42,7 +42,9 @@ module dispatch #(
     parameter bit RAW_INT_RF_VALUES = 1'b0,
     // Enable vector slot-2 hardware serialization. Off by default so VECTOR=0
     // builds add zero gates to dispatch admission.
-    parameter bit VECTOR = 1'b0
+    parameter bit VECTOR = 1'b0,
+    // The decoded queue supplies same-edge station selects and registered vector restart permissions.
+    parameter bit REGISTERED_QUEUE_CLASSES = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -59,9 +61,11 @@ module dispatch #(
     // cpu_ooo registers for the decoded queue's head (vec_dispatch_legality)
     // before vector arithmetic may dispatch
     input logic                            i_vec_arith_illegal = 1'b0,
+    input logic                      [1:0] i_vec_restart_ok = '0,
+    input logic                      [3:0] i_slot1_rs_select = '0,
     // Without VECTOR: vec_lmul_legality's classes of slot 1's instruction
-    // bits, formed before the decoded queue (ID already rejects every OP-V
-    // instruction there). The defaults suit benches without vector arithmetic.
+    // bits, formed before the decoded queue. ID rejects OP-V and OP-VE in
+    // this configuration. The defaults suit benches without vector arithmetic.
     input logic                      [3:0] i_vec_lmul_illegal = 4'd0,
     // The tracker's prediction that vstart is nonzero at slot 1
     input logic                            i_vec_vstart_nonzero = 1'b0,
@@ -699,15 +703,29 @@ module dispatch #(
 
   // Keep the registered RS-route selection separate for timing.
   (* keep = "true" *) logic rs_full;
-  always_comb begin
-    case (rs_type)
-      riscv_pkg::RS_INT: rs_full = i_int_rs_full;
-      riscv_pkg::RS_MUL: rs_full = i_mul_rs_full;
-      riscv_pkg::RS_MEM: rs_full = i_mem_rs_full;
-      riscv_pkg::RS_FP: rs_full = i_fp_rs_full;
-      riscv_pkg::RS_NONE: rs_full = 1'b0;  // No RS needed
-      default: rs_full = 1'b0;
-    endcase
+  logic [3:0] slot1_rs_select;
+  if (REGISTERED_QUEUE_CLASSES) begin : gen_queue_rs_select
+    assign slot1_rs_select = i_slot1_rs_select;
+    logic [3:0] full;
+    assign full = {i_fp_rs_full, i_mem_rs_full, i_mul_rs_full, i_int_rs_full};
+    assign rs_full = |(slot1_rs_select & full);
+  end else begin : gen_local_rs_select
+    assign slot1_rs_select = {
+      rs_type == riscv_pkg::RS_FP,
+      rs_type == riscv_pkg::RS_MEM,
+      rs_type == riscv_pkg::RS_MUL,
+      rs_type == riscv_pkg::RS_INT
+    };
+    always_comb begin
+      case (rs_type)
+        riscv_pkg::RS_INT: rs_full = i_int_rs_full;
+        riscv_pkg::RS_MUL: rs_full = i_mul_rs_full;
+        riscv_pkg::RS_MEM: rs_full = i_mem_rs_full;
+        riscv_pkg::RS_FP: rs_full = i_fp_rs_full;
+        riscv_pkg::RS_NONE: rs_full = 1'b0;  // No RS needed
+        default: rs_full = 1'b0;
+      endcase
+    end
   end
 
   // ID clears queue needs for illegal instructions and fetch faults. They
@@ -736,19 +754,35 @@ module dispatch #(
   logic slot2_op_is_vector;
   logic slot2_vector_serialized;
   logic slot1_is_varith;
-  // The FP classes exist only with the vector unit (without it ID rejects
-  // every OP-V instruction), so with VECTOR=0 dispatch treats them as any
-  // other operation
+  // ID produces the vector FP and element-group classes only with VECTOR enabled.
+  logic restart_forbidden;
+  if (VECTOR && REGISTERED_QUEUE_CLASSES) begin : gen_registered_restart
+    logic arithmetic_forbidden;
+    assign arithmetic_forbidden = slot1_is_varith && op != riscv_pkg::VARITH_C &&
+        !i_vec_restart_ok[0];
+    assign restart_forbidden = arithmetic_forbidden || (op == riscv_pkg::VTOX &&
+                                                         !i_vec_restart_ok[1]);
+  end else begin : gen_local_restart
+    assign restart_forbidden = ((slot1_is_varith && !(VECTOR && ((op == riscv_pkg::VARITH_C) ||
+              ((i_from_id_to_ex.insn_bits[31:27] == 5'b00110) &&
+               (i_from_id_to_ex.insn_bits[13:12] == 2'b10)))) &&
+            !((i_from_id_to_ex.insn_bits[14:12] == 3'b011 &&
+             i_from_id_to_ex.insn_bits[31:26] == 6'h27) ||
+            ((i_from_id_to_ex.insn_bits[14:12] == 3'b110 ||
+              (VECTOR && i_from_id_to_ex.insn_bits[14:12] == 3'b101)) &&
+             i_from_id_to_ex.insn_bits[31:26] == 6'h10))) ||
+          (op == riscv_pkg::VTOX && i_from_id_to_ex.insn_bits[19:15] != 0));
+  end
   logic op_is_vtof;
   assign slot1_is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X) ||
-      (VECTOR && (op == riscv_pkg::VARITH_F));
+      (VECTOR && ((op == riscv_pkg::VARITH_F) || (op == riscv_pkg::VARITH_C)));
   assign op_is_vtof = VECTOR && (op == riscv_pkg::VTOF);
   assign slot2_fp_compute_serialized = (rs_type_2 == riscv_pkg::RS_FP);
   assign slot2_op_is_vector = (op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
       (op_2 == riscv_pkg::VSETVL) || (op_2 == riscv_pkg::VARITH) ||
       (op_2 == riscv_pkg::VARITH_X) || (op_2 == riscv_pkg::VTOX) ||
       (op_2 == riscv_pkg::VLOAD) || (op_2 == riscv_pkg::VSTORE) ||
-      (op_2 == riscv_pkg::VARITH_F) || (op_2 == riscv_pkg::VTOF);
+      (op_2 == riscv_pkg::VARITH_F) || (op_2 == riscv_pkg::VTOF) || (op_2 == riscv_pkg::VARITH_C);
   assign slot2_vector_serialized = VECTOR &&
       (SLOT2_VALID_FROM_BUNDLE ? i_slot2_is_vector : (i_slot2_is_vector || slot2_op_is_vector));
   assign dispatch_valid_2 = i_valid_2 && !i_flush &&
@@ -871,17 +905,17 @@ module dispatch #(
   (* keep = "true" *) logic [1:0] slot2_rs_blocks;
   logic slot2_other_block;
   assign slot2_rs_needs[0] = slot2_present_for_admission &&
-      rs_type_2 == riscv_pkg::RS_INT && rs_type == riscv_pkg::RS_INT;
+      rs_type_2 == riscv_pkg::RS_INT && slot1_rs_select[0];
   assign slot2_rs_needs[1] = slot2_present_for_admission &&
-      rs_type_2 == riscv_pkg::RS_INT && rs_type != riscv_pkg::RS_INT;
+      rs_type_2 == riscv_pkg::RS_INT && !slot1_rs_select[0];
   assign slot2_rs_needs[2] = slot2_present_for_admission &&
-      rs_type_2 == riscv_pkg::RS_MUL && rs_type == riscv_pkg::RS_MUL;
+      rs_type_2 == riscv_pkg::RS_MUL && slot1_rs_select[1];
   assign slot2_rs_needs[3] = slot2_present_for_admission &&
-      rs_type_2 == riscv_pkg::RS_MUL && rs_type != riscv_pkg::RS_MUL;
+      rs_type_2 == riscv_pkg::RS_MUL && !slot1_rs_select[1];
   assign slot2_rs_needs[4] = slot2_present_for_admission &&
-      rs_type_2 == riscv_pkg::RS_MEM && rs_type == riscv_pkg::RS_MEM;
+      rs_type_2 == riscv_pkg::RS_MEM && slot1_rs_select[2];
   assign slot2_rs_needs[5] = slot2_present_for_admission &&
-      rs_type_2 == riscv_pkg::RS_MEM && rs_type != riscv_pkg::RS_MEM;
+      rs_type_2 == riscv_pkg::RS_MEM && !slot1_rs_select[2];
   assign slot2_rs_blocks[0] = (slot2_rs_needs[0] && i_int_rs_full_for_2) ||
       (slot2_rs_needs[1] && i_int_rs_full) || (slot2_rs_needs[2] && i_mul_rs_full_for_2);
   assign slot2_rs_blocks[1] = (slot2_rs_needs[3] && i_mul_rs_full) ||
@@ -931,19 +965,53 @@ module dispatch #(
       .o_illegal(f_arith_illegal)
   );
   assign f_arith_illegal_ref = riscv_pkg::vector_arith_illegal(
-      i_vtype_spec, 32'(i_from_id_to_ex.instruction)
+      i_vtype_spec, 32'(i_from_id_to_ex.instruction), 256, 0, 0
   );
-  // Only whole-register moves and the scalar inserts (vmv.s.x, vfmv.s.f) have
-  // a restartable arithmetic form. Scalar extraction (vmv.x.s, vfmv.f.s)
-  // ignores vstart; population/first-set require zero.
+  // Check the registered geometry combined with the architectural bounds
+  // tested at the ROB head, including the two-register SHA-512 group.
+  (* anyseq *) logic [15:0] f_vl, f_start;
+  for (genvar width = 128; width <= 512; width *= 2) begin : gen_f_group
+    logic illegal;
+    vec_arith_legality #(
+        .VLEN(width)
+    ) geometry (
+        .i_vtype(i_vtype_spec),
+        .i_insn(32'(i_from_id_to_ex.instruction)),
+        .o_illegal(illegal)
+    );
+    always_comb begin
+      assert ((illegal || riscv_pkg::vector_partial_group(i_from_id_to_ex.instruction.opcode,
+                                                          f_vl[1:0], f_start[1:0])) ==
+              riscv_pkg::vector_arith_illegal(i_vtype_spec, 32'(i_from_id_to_ex.instruction), width,
+                                              f_vl, f_start));
+    end
+  end
+  // Whole-register moves, carry-less multiply and scalar inserts have
+  // element restart. Crypto groups check alignment at the head. Scalar
+  // extraction (vmv.x.s, vfmv.f.s) ignores vstart. Population/first-set require zero.
   always_comb begin
     f_vstart_forbidden = 1'b0;
-    if (slot1_is_varith) begin
+    if (slot1_is_varith && op != riscv_pkg::VARITH_C) begin
       f_vstart_forbidden = 1'b1;
       case ({
         i_from_id_to_ex.insn_bits[31:26], i_from_id_to_ex.insn_bits[14:12]
       })
-        {6'h27, 3'b011}, {6'h10, 3'b110}, {6'h10, 3'b101} : f_vstart_forbidden = 1'b0;
+        {
+          6'h0c, 3'b010
+        }, {
+          6'h0d, 3'b010
+        }, {
+          6'h0c, 3'b110
+        }, {
+          6'h0d, 3'b110
+        }, {
+          6'h27, 3'b011
+        }, {
+          6'h10, 3'b110
+        }, {
+          6'h10, 3'b101
+        } :
+        f_vstart_forbidden = 1'b0;
         default: ;
       endcase
     end else if (op == riscv_pkg::VTOX) begin
@@ -955,6 +1023,7 @@ module dispatch #(
       ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) || (i_vec_vstart_nonzero && f_vstart_forbidden);
   always_comb begin
     assume (i_vec_arith_illegal == f_arith_illegal_ref);
+    assume (i_vec_restart_ok == riscv_pkg::vector_restart_ok(i_from_id_to_ex.insn_bits));
     p_arith_legality_exact : assert (f_arith_illegal == f_arith_illegal_ref);
     p_vec_illegal_exact : assert (o_rob_alloc_req.vec_illegal == f_vec_illegal_ref);
     p_nonzero_vstart_traps :
@@ -974,11 +1043,17 @@ module dispatch #(
   assign f_admit_slot2 = f_admit_slot1 && dispatch_valid_2 && slot2_resources_ok;
   assign f_admit_bundle = f_admit_slot1 && (!dispatch_valid_2 || slot2_resources_ok);
   always_comb begin
+    if (REGISTERED_QUEUE_CLASSES) assume (i_slot1_rs_select == (4'b0001 << rs_type));
     if (SLOT2_VALID_FROM_BUNDLE && dispatch_valid) assume (i_valid_2 == i_from_id_to_ex_2.is_real);
     // Only FMA ops read FP source 3, and they route to FP_RS. ID and the
     // decoded queue carry both fields together, clearing source 3 use on
     // reset and flush.
     if (i_from_id_to_ex_2.uses_fp_rs3) assume (rs_type_2 == riscv_pkg::RS_FP);
+    p_slot1_station_full :
+    assert (rs_full == ((rs_type == riscv_pkg::RS_INT && i_int_rs_full) ||
+                        (rs_type == riscv_pkg::RS_MUL && i_mul_rs_full) ||
+                        (rs_type == riscv_pkg::RS_MEM && i_mem_rs_full) ||
+                        (rs_type == riscv_pkg::RS_FP && i_fp_rs_full)));
     p_slot2_no_fp_source3 : assert (!(slot2_can_fire && uses_fp_rs3_flag_2));
     p_bundle_admission_formal :
     assert (bundle_fire_ok == (slot1_can_fire && (!dispatch_valid_2 || slot2_resources_ok)));
@@ -1156,8 +1231,7 @@ module dispatch #(
       assert (!(slot2_can_fire && uses_fp_rs3_flag_2))
       else $error("dispatch: slot 2 fired with an FP source 3");
   end
-  // Predecode never pairs a vector instruction as slot 2 (OP-V and the
-  // vector loads and stores are in its slot-1-only class), so a vector-config
+  // Predecode keeps OP-V, OP-VE and vector memory in slot 1, so a vector-config
   // op or a vector load or store never fires there.
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n)
@@ -1464,20 +1538,14 @@ module dispatch #(
     // Vector arithmetic uses its registered legality (VECTOR) or its queued
     // LMUL class, and vill; VTOX uses vill, and VTOF (vfmv.f.s) the
     // arithmetic legality. Arithmetic other than whole-register moves,
-    // vmv.s.x and vfmv.s.f, and vcpop.m and vfirst.m, cannot start at a
-    // nonzero vstart.
+    // scalar inserts, carry-less multiply and element groups requires zero vstart.
+    // The same restriction applies to vcpop.m and vfirst.m.
     o_rob_alloc_req.vec_illegal = ((slot1_is_varith || (op == riscv_pkg::VTOX) || op_is_vtof) &&
                                    i_vtype_spec[8]) ||
         ((slot1_is_varith || op_is_vtof) &&
          (VECTOR ? i_vec_arith_illegal :
                    i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]])) ||
-        (i_vec_vstart_nonzero &&
-         ((slot1_is_varith && !((i_from_id_to_ex.insn_bits[14:12] == 3'b011 &&
-             i_from_id_to_ex.insn_bits[31:26] == 6'h27) ||
-            ((i_from_id_to_ex.insn_bits[14:12] == 3'b110 ||
-              (VECTOR && i_from_id_to_ex.insn_bits[14:12] == 3'b101)) &&
-             i_from_id_to_ex.insn_bits[31:26] == 6'h10))) ||
-          (op == riscv_pkg::VTOX && i_from_id_to_ex.insn_bits[19:15] != 0)));
+        (i_vec_vstart_nonzero && restart_forbidden);
     // Sstvala: raw instruction bits, the illegal-instruction xtval.
     o_rob_alloc_req.insn_bits = i_from_id_to_ex.insn_bits;
 

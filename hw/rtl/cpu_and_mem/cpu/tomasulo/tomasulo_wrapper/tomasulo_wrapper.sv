@@ -912,6 +912,7 @@ module tomasulo_wrapper #(
   riscv_pkg::fu_complete_t vcfg_adapter_to_arbiter;
   riscv_pkg::fu_complete_t mem_adapter_to_arbiter;
   riscv_pkg::fu_complete_t fp_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t fp_pipe_adapter_to_arbiter;
   riscv_pkg::fu_complete_t alu2_adapter_to_arbiter;
   riscv_pkg::fu_complete_t alu_shim_out;
   riscv_pkg::fu_complete_t alu2_shim_out;
@@ -968,9 +969,12 @@ module tomasulo_wrapper #(
     cdb_arb_in_2 = div_adapter_to_arbiter.valid ? div_adapter_to_arbiter : i_fu_complete_2;
     cdb_arb_in_3 = mem_adapter_to_arbiter.valid ? mem_adapter_to_arbiter : i_fu_complete_3;
     cdb_arb_in_4 = fp_adapter_to_arbiter.valid ? fp_adapter_to_arbiter : i_fu_complete_4;
-    // Slot 5 carries vector-config results (VECTOR); slot 6 has no unit.
+    // Slot 5 carries vector-config results (VECTOR). Slot 6 carries the
+    // pipelined FP results; cpu_ooo's slot-6 input (the vector unit's
+    // vector-to-scalar and vector-memory completions, held until granted)
+    // takes the slot first, and the FP pipeline adapter waits.
     cdb_arb_in_5 = vcfg_adapter_to_arbiter.valid ? vcfg_adapter_to_arbiter : i_fu_complete_5;
-    cdb_arb_in_6 = i_fu_complete_6;
+    cdb_arb_in_6 = i_fu_complete_6.valid ? i_fu_complete_6 : fp_pipe_adapter_to_arbiter;
     cdb_arb_in_7 = alu2_adapter_to_arbiter.valid ? alu2_adapter_to_arbiter : i_fu_complete_7;
   end
 
@@ -2393,18 +2397,29 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // FP Pipeline: FP_RS issue -> fp_shim -> adapter -> CDB arbiter slot 4
+  // FP: FP_RS issue -> fp_shim -> fp_fma_pipe -> FIFO -> adapter -> CDB slot 6
+  //                            -> fp_engine -> adapter -> CDB slot 4
   // ===========================================================================
   riscv_pkg::rs_issue_t fp_rs_issue_raw;  // FP_RS issue output (internal)
   riscv_pkg::rs_issue_t fp_rs_issue_w;  // FP_RS issue output (internal)
-  riscv_pkg::fu_complete_t fp_shim_out;  // shim -> adapter
+  riscv_pkg::fu_complete_t fp_shim_out;  // shim -> engine adapter
+  riscv_pkg::fu_complete_t fp_pipe_out;  // shim FIFO head -> pipeline adapter
   // fp_adapter_to_arbiter declared above (forward declaration)
   logic fp_adapter_result_pending;
+  logic fp_pipe_adapter_result_pending;
   logic fp_busy;
+  logic fp_pipe_busy;
+  logic fp_engine_gate_busy;
   logic fp_rs_fu_ready;
+  logic fp_fwd_wake_valid;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] fp_fwd_wake_tag;
+  logic [riscv_pkg::FLEN-1:0] fp_fwd_value;
 
-  assign fp_rs_fu_ready = i_fp_rs_fu_ready & ~fp_busy &
-                          ~fp_adapter_result_pending & ~i_backend_recovery_hold;
+  // FP_RS issues on pipeline credits (registered). It presents an engine
+  // operation only while the engine and its adapter are free (its divide
+  // gate), so the engine's one-cycle result always finds the adapter idle.
+  assign fp_rs_fu_ready = i_fp_rs_fu_ready & ~fp_pipe_busy & ~i_backend_recovery_hold;
+  assign fp_engine_gate_busy = fp_busy | fp_adapter_result_pending;
 
   riscv_pkg::rs_issue_t mem_rs_issue_raw;
   riscv_pkg::rs_issue_t mem_rs_issue_w;
@@ -3655,13 +3670,52 @@ module tomasulo_wrapper #(
   riscv_pkg::rs_dispatch_t fp_rs_dispatch_to_rs_2;
   assign fp_rs_dispatch_to_rs_2 = '0;
 
+  // FP early load wakeup: the staged load result takes an idle lane on FP_RS's
+  // inputs, as for MEM_RS and INT_RS (same enable and safety argument).
+  riscv_pkg::cdb_broadcast_t fp_rs_wakeup_0, fp_rs_wakeup_1;
+  riscv_pkg::cdb_broadcast_t fp_rs_cdb_0, fp_rs_cdb_1;
+  logic fp_rs_early_load_injected;
+  mem_wakeup_merge #(
+      .FORMAL_STANDALONE_ENV(1'b0)
+  ) u_fp_wakeup_merge (
+`ifndef SYNTHESIS
+      .i_check_enable(sc_check_armed && i_rst_n),
+`endif
+      .i_enable(mem_rs_early_wakeup_enable),
+      .i_load(lq_early_wakeup_load),
+      .i_registered_0(cdb_bus_fp_qualified),
+      .i_registered_1(cdb_bus_2_fp_qualified),
+      .o_wakeup_0(fp_rs_wakeup_0),
+      .o_wakeup_1(fp_rs_wakeup_1),
+      .o_injected(fp_rs_early_load_injected)
+  );
+  assign fp_rs_cdb_0 = EARLY_LOAD_WAKEUP ? fp_rs_wakeup_0 : cdb_bus_fp_qualified;
+  assign fp_rs_cdb_1 = EARLY_LOAD_WAKEUP ? fp_rs_wakeup_1 : cdb_bus_2_fp_qualified;
+`ifndef SYNTHESIS
+  // FP_RS's lanes carry the same valids as MEM_RS's, so the merges agree.
+  always_comb begin
+    if (sc_check_armed && i_rst_n && !$isunknown(fp_rs_early_load_injected)) begin
+      p_fp_early_load_matches_mem :
+      assert (fp_rs_early_load_injected == mem_rs_early_load_injected);
+    end
+  end
+`else
+  logic unused_fp_rs_early_load_injected;
+  assign unused_fp_rs_early_load_injected = fp_rs_early_load_injected;
+`endif
+
   reservation_station #(
       .DEPTH(riscv_pkg::FpRsDepth),
       .HAS_SRC3(1'b1),
       // Capture ROB-done repair in the pending packet before insertion; resident
       // entries use CDB wakeup. Use the integrated formal environment, as in u_int_rs.
       .FORMAL_STANDALONE_ENV(1'b0),
-      .ISSUE_REPAIR_BYPASS(1'b0)
+      .ISSUE_REPAIR_BYPASS(1'b0),
+      // Pipelined operations pass waiting engine operations; dependents of a
+      // pipelined result issue on its forward wake.
+      .DIVIDE_ISSUE_GATE(1'b1),
+      .FP_ENGINE_GATE(1'b1),
+      .FWD_WAKE(1'b1)
   ) u_fp_rs (
       .i_clk                      (i_clk),
       .i_rst_n                    (i_rst_n),
@@ -3672,12 +3726,12 @@ module tomasulo_wrapper #(
       .i_intent_1                 (fp_rs_intent_1),
       .o_full                     (fp_rs_full_raw),
       .o_full_for_2               (fp_rs_full_for_2_raw),
-      .i_cdb                      (cdb_bus_fp_qualified),
-      .i_cdb_2                    (cdb_bus_2_fp_qualified),
-      .i_issue_cdb_valid          (cdb_bus_fp_qualified.valid),
-      .i_issue_cdb_tag            (cdb_bus_fp_qualified.tag),
-      .i_issue_cdb_2_valid        (cdb_bus_2_fp_qualified.valid),
-      .i_issue_cdb_2_tag          (cdb_bus_2_fp_qualified.tag),
+      .i_cdb                      (fp_rs_cdb_0),
+      .i_cdb_2                    (fp_rs_cdb_1),
+      .i_issue_cdb_valid          (fp_rs_cdb_0.valid),
+      .i_issue_cdb_tag            (fp_rs_cdb_0.tag),
+      .i_issue_cdb_2_valid        (fp_rs_cdb_1.valid),
+      .i_issue_cdb_2_tag          (fp_rs_cdb_1.tag),
       // Repair is complete before dequeue; resident entries need only CDB snooping.
       .i_repair_valid_1           (1'b0),
       .i_repair_tag_1             ('0),
@@ -3699,7 +3753,10 @@ module tomasulo_wrapper #(
       .i_repair_value_6           ('0),
       .o_issue                    (fp_rs_issue_raw),
       .i_fu_ready                 (fp_rs_fu_ready),
-      .i_divider_busy             (1'b0),
+      .i_divider_busy             (fp_engine_gate_busy),
+      .i_fwd_wake_valid           (fp_fwd_wake_valid),
+      .i_fwd_wake_tag             (fp_fwd_wake_tag),
+      .i_fwd_value                (fp_fwd_value),
       .o_issue_writes_cdb_hint    (),
       .o_branch_predicate_tag     (),
       .o_issue_is_jalr            (),
@@ -3710,7 +3767,7 @@ module tomasulo_wrapper #(
       .o_issue_writes_cdb_hint_2  (),
       .o_issue_shift_amount_2     (),
       .o_next_issue_valid         (),
-      .o_next_issue_is_sc         (),                              // unused: no SC ops in FP_RS
+      .o_next_issue_is_sc         (),                        // unused: no SC ops in FP_RS
       .o_next_issue_needs_lq      (),
       .o_pre_issue_rob_tag        (),
       .o_pre_issue_rob_tags       (),
@@ -4963,17 +5020,25 @@ module tomasulo_wrapper #(
   // FP_RS guarantees a bubble after an issue covered by a flush.
   // The shim uses that bubble to squash a launch without delaying its enables.
   fp_shim #(
-      .LAUNCH_SQUASH(1'b1)
+      .LAUNCH_SQUASH(1'b1),
+      .PIPELINE     (1'b1)
   ) u_fp_shim (
-      .i_clk         (i_clk),
-      .i_rst_n       (i_rst_n),
-      .i_rs_issue    (fp_rs_issue_w),
-      .o_fu_complete (fp_shim_out),
-      .o_fu_busy     (fp_busy),
-      .i_flush       (speculative_flush_all),
-      .i_flush_en    (speculative_flush_en),
-      .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag)
+      .i_clk           (i_clk),
+      .i_rst_n         (i_rst_n),
+      .i_rs_issue      (fp_rs_issue_w),
+      .o_fu_complete   (fp_shim_out),
+      .o_fu_busy       (fp_busy),
+      .o_pipe_complete (fp_pipe_out),
+      // The adapter takes the FIFO head whenever it holds nothing.
+      .i_pipe_accepted (!fp_pipe_adapter_result_pending),
+      .o_pipe_busy     (fp_pipe_busy),
+      .o_fwd_wake_valid(fp_fwd_wake_valid),
+      .o_fwd_wake_tag  (fp_fwd_wake_tag),
+      .o_fwd_value     (fp_fwd_value),
+      .i_flush         (speculative_flush_all),
+      .i_flush_en      (speculative_flush_en),
+      .i_flush_tag     (i_flush_tag),
+      .i_rob_head_tag  (head_tag)
   );
 
   // ===========================================================================
@@ -4991,6 +5056,31 @@ module tomasulo_wrapper #(
       .o_held_value       (),
       .i_grant            (o_cdb_grant[4]),
       .o_result_pending   (fp_adapter_result_pending),
+      .i_flush            (speculative_flush_all),
+      .i_flush_en         (speculative_flush_en),
+      .i_flush_tag        (i_flush_tag),
+      .i_rob_head_tag     (head_tag)
+  );
+
+  // ===========================================================================
+  // FP pipeline CDB adapter: FIFO head -> CDB arbiter slot 6 (FU_FP_DIV)
+  // ===========================================================================
+  // The head comes from registers (FIFO count, flushed bits, LUTRAM), so it
+  // passes straight through; an ungranted result waits here and the FIFO
+  // holds the rest.
+  fu_cdb_adapter #(
+      .ALLOW_GRANT_REFILL(1'b0),
+      .REGISTER_OUTPUT(1'b0)
+  ) u_fp_pipe_adapter (
+      .i_clk              (i_clk),
+      .i_rst_n            (i_rst_n),
+      .i_fu_result        (fp_pipe_out),
+      .i_fu_result_younger(1'b0),
+      .o_fu_complete      (fp_pipe_adapter_to_arbiter),
+      .o_held_value       (),
+      // Slot 6's grant is the pipeline's only while cpu_ooo presents nothing there.
+      .i_grant            (o_cdb_grant[riscv_pkg::FU_FP_DIV] && !i_fu_complete_6.valid),
+      .o_result_pending   (fp_pipe_adapter_result_pending),
       .i_flush            (speculative_flush_all),
       .i_flush_en         (speculative_flush_en),
       .i_flush_tag        (i_flush_tag),

@@ -124,7 +124,19 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_unit.sv \
         $(ROOT)/hw/sim/fp_engine_equiv_harness.sv \
+        $(ROOT)/hw/sim/fp_softfloat_ref.c \
+        -CFLAGS -I/usr/local/include \
+        -LDFLAGS '-L/usr/local/lib -Wl,-rpath,/usr/local/lib -lsoftfloat'
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),fp_fma_pipe_equiv_harness)
+# Pipelined FP multiply-add against Berkeley SoftFloat, one operation per cycle.
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_pipe_lzc.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma_pipe.sv \
+        $(ROOT)/hw/sim/fp_fma_pipe_equiv_harness.sv \
         $(ROOT)/hw/sim/fp_softfloat_ref.c \
         -CFLAGS -I/usr/local/include \
         -LDFLAGS '-L/usr/local/lib -Wl,-rpath,/usr/local/lib -lsoftfloat'

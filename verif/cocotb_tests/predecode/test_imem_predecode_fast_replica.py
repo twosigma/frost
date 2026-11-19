@@ -176,6 +176,7 @@ def _expected_slot2_start_valid_lo(word: int) -> int:
         _GENERATOR.OPC_FNMSUB,
         _GENERATOR.OPC_FNMADD,
         _GENERATOR.OPC_OP_V,
+        _GENERATOR.OPC_OP_VE,
     }
     # Vector loads and stores: LOAD-FP or STORE-FP with a vector width.
     vector_mem = opcode in {0b0000111, 0b0100111} and ((lo >> 12) & 7) in {0, 5, 6, 7}

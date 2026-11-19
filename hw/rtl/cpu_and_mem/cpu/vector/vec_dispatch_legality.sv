@@ -31,12 +31,14 @@
   below states this under those two conditions; cpu_ooo checks it at every
   vector arithmetic allocation in simulation). An instruction of the vector
   arithmetic opcode other than a configuration instruction therefore takes
-  one more cycle at the queue head: the arithmetic families, the
-  vector-to-scalar moves and counts, and encodings that decode rejects.
+  one more cycle at the queue head, as does OP-VE. This covers the arithmetic
+  families, vector-to-scalar moves and counts, and encodings that decode rejects.
   Scalar instructions and vector loads, stores and configuration
   instructions do not wait.
 */
-module vec_dispatch_legality (
+module vec_dispatch_legality #(
+    parameter int unsigned VLEN = 256
+) (
     input  logic        i_clk,
     input  logic        i_rst,
     input  logic        i_head_valid,   // the decoded queue offers a bundle
@@ -46,11 +48,14 @@ module vec_dispatch_legality (
     input  logic        i_pop,          // the head bundle allocates this cycle
     input  logic        i_flush,        // the queue is flushed this cycle
     output logic        o_ready,
-    output logic        o_illegal
+    output logic        o_illegal,
+    output logic [ 1:0] o_restart_ok
 );
 
   logic illegal;
-  vec_arith_legality u_legality (
+  vec_arith_legality #(
+      .VLEN(VLEN)
+  ) u_legality (
       .i_vtype  (i_vtype),
       .i_insn   (i_head_insn),
       .o_illegal(illegal)
@@ -58,6 +63,7 @@ module vec_dispatch_legality (
 
   always_ff @(posedge i_clk) begin
     o_illegal <= illegal;
+    o_restart_ok <= riscv_pkg::vector_restart_ok(i_head_insn);
     if (i_rst) o_ready <= 1'b0;
     else o_ready <= i_head_valid && i_vtype_valid && !i_pop && !i_flush;
   end
@@ -86,8 +92,10 @@ module vec_dispatch_legality (
   end
   always_comb begin
     if (f_past_valid && o_ready && i_vtype_valid) begin
+      p_registered_restart_current :
+      assert (o_restart_ok == riscv_pkg::vector_restart_ok(i_head_insn));
       p_registered_legality_current :
-      assert (o_illegal == riscv_pkg::vector_arith_illegal(i_vtype, i_head_insn));
+      assert (o_illegal == riscv_pkg::vector_arith_illegal(i_vtype, i_head_insn, VLEN, 0, 0));
     end
     if (f_past_valid) begin
       cover_ready_illegal : cover (o_ready && i_vtype_valid && o_illegal);

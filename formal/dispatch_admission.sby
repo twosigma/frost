@@ -1,6 +1,7 @@
 [tasks]
 bmc
 bmc_queued
+bmc_queued_vector
 
 [options]
 mode bmc
@@ -13,10 +14,11 @@ smtbmc boolector
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D DISPATCH_ADMISSION_LOCAL_PROOF -sv dispatch.sv
 bmc_queued: chparam -set SLOT2_VALID_FROM_BUNDLE 1 dispatch
+bmc_queued_vector: chparam -set SLOT2_VALID_FROM_BUNDLE 1 -set VECTOR 1 -set REGISTERED_QUEUE_CLASSES 1 dispatch
 hierarchy -top dispatch
 script free_undefined.ys
 prep -top dispatch
-select -assert-count 6 t:$check r:FLAVOR=assert %i
+select -assert-count 7 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

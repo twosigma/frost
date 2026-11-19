@@ -1050,9 +1050,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "dispatch_admission.sby",
-        "Dispatch admission matches the reference; slot-2 instructions use no FP "
-        "source 3",
-        tasks=("bmc", "bmc_queued"),
+        "Bundle, station and checkpoint admission match the encoded station types "
+        "with local or registered selects, and slot 2 uses no FP source 3",
+        tasks=("bmc", "bmc_queued", "bmc_queued_vector"),
     ),
     FormalTarget(
         "instr_operand_classifier.sby",
@@ -1075,7 +1075,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_vtype_tracker.sby",
-        "A surviving vector allocation (arithmetic, FP, vector-to-scalar, load or "
+        "A surviving vector allocation (integer, FP, crypto, vector-to-scalar, load or "
         "store) clears restart state across delayed architectural reload and "
         "checkpoint recovery; the tracked vtype follows "
         "configuration allocation, flush, reload and restore",
@@ -1083,10 +1083,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_lmul_legality_equiv.sby",
-        "Vector arithmetic legality, floating point included, equals the reference "
+        "Vector arithmetic legality, including FP and cryptographic element groups at each vector length, equals the reference "
         "for every vtype and instruction; dispatch applies it with the VTOX and "
-        "nonzero-vstart rules; the registered queue-head result is current whenever "
-        "it is ready",
+        "nonzero-vstart rules. The registered legality and restart classes match "
+        "the current queue head whenever it is ready",
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
@@ -1753,6 +1753,12 @@ FORMAL_TARGETS = [
     FormalTarget(
         "fp_shim.sby",
         "FP completion tags, busy state, and cancellation",
+    ),
+    FormalTarget(
+        "fp_shim_pipe.sby",
+        "Pipelined FP tracker, forward wake, result FIFO and credits: no stale or "
+        "duplicate completion through flushes",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "fp_launch_squash.sby",
@@ -3197,6 +3203,10 @@ SBY_TASKS = [
     ("bmc_2port", "Bounded two-port arbitration equivalence"),
     ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
+    (
+        "bmc_queued_vector",
+        "Queued admission with registered vector and station classes",
+    ),
     (
         "vhold_lq_bmc",
         "Vector range holds with the load queue's address-update port, 8 frames.",
@@ -5184,7 +5194,6 @@ UNDEFINED_OPENING_PENDING = (
     "pm_mode_select",
     "reorder_buffer",
     "sq_forwarding_unit",
-    "vec_lmul_legality_equiv",
 )
 # Scripts that compare two designs inside the script (the primitive twins and
 # the other in-script equivalence checks). Both designs hold the same undefined
@@ -8031,6 +8040,8 @@ def test_rs_payload_twin_assertion_groups(
         "read -sv multiplier.sv cl_multiplier.sv",
         "read -sv alu.sv",
         "read -sv fp_engine.sv",
+        "read -formal -D FP_FMA_PIPE_ABSTRACT -sv fp_pipe_lzc.sv fp_fma_pipe.sv",
+        "read -sv fp_div_unit.sv",
         "read -sv fp_shim.sv",
         "read -formal -sv tomasulo_wrapper.sv",
         "read -formal -sv rs_payload_twin_formal.sv",
@@ -8088,6 +8099,9 @@ def test_rs_payload_twin_assertion_groups(
         "../hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv",
         "../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv",
         "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_pipe_lzc.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma_pipe.sv",
+        "../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_unit.sv",
         "../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv",
         "../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv",
         "../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv",
@@ -8103,7 +8117,7 @@ def test_rs_payload_twin_assertion_groups(
 
     if not source:
         hashes = {
-            "rs_payload_twin.sby": "e62d5bf7503bbf96df278187b90ad2d7f1eee99013be8bd3ee70290fa5b67854",
+            "rs_payload_twin.sby": "9b7cf0c5bb15b82e3f3e8a4ea09da740cd8b616477a8dba0196feb1e44c598a4",
             "rs_payload_twin_formal.sv": "36efe2495150878e0b0006ef50959dba70b1ab898df382ca98066fc5564b50af",
             "free_undefined.ys": "d9383d13eaa8e490ab3671853c1390d92160abbfa19ca0d93fdf40138549e7d6",
         }

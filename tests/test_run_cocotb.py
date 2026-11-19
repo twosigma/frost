@@ -1221,6 +1221,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         )
         for vlen in (128, 256, 512)
     },
+    **{
+        f"vec_crypto_exec_test_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="vec_crypto_exec_test",
+            nic_mac_clocks=False,
+            description=(
+                f"Crypto element groups and carry-less multiplication at VLEN {vlen}, "
+                "including restart, group capacity and reserved geometry"
+            ),
+            verilator_extra_args=("-GVECTOR=1", f"-GVLEN={vlen}"),
+            extra_env=(
+                ("EXTRA_CFLAGS", f"-DVEC_VLEN={vlen}"),
+                ("COCOTB_MAX_CYCLES", "5000000"),
+            ),
+            include_in_pytest=(vlen == 256),
+        )
+        for vlen in (128, 256, 512)
+    },
     "vec_arith_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2563,8 +2582,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         rerun_after_reset=False,
         nic_mac_clocks=False,
         description=(
-            "Cycle limits for dependent multiply, FMA and divide and independent "
-            "multiply and FMA at both precisions"
+            "Cycle limits for dependent and independent add, multiply and FMA, "
+            "dependent divide at both precisions, and double FP load-to-use"
         ),
         extra_env=(
             ("EXTRA_CFLAGS", "-DFPLAT_LIMITS"),
@@ -3033,6 +3052,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
     ),
     **{
+        f"vec_crypto_exec_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_crypto_exec",
+            hdl_toplevel_module="vec_crypto_exec",
+            description=f"Zvbc, AES, SHA-2 and GHASH results, restart and operand-independent latency at VLEN {vlen}",
+            verilator_extra_args=(f"-GVLEN={vlen}",),
+            include_in_pytest=(vlen == 256),
+        )
+        for vlen in (128, 256, 512)
+    },
+    **{
         f"vec_fp_exec_v{vlen}": CocotbRunConfig(
             python_test_module="cocotb_tests.vector.test_vec_fp_exec",
             hdl_toplevel_module="vec_fp_exec",
@@ -3318,7 +3347,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         f"vec_integer_exec_v{vlen}": CocotbRunConfig(
             python_test_module="cocotb_tests.vector.test_vec_integer_exec",
             hdl_toplevel_module="vec_engine",
-            description="Integer, fixed-point, mask and permutation execution against architectural semantics",
+            description="Integer, fixed-point, mask and permutation results, and Zvkt operand-independent latency",
             verilator_extra_args=(f"-GVLEN={vlen}",),
         )
         for vlen in (128, 256, 512)
@@ -3455,6 +3484,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "F/D, Zfhmin and Zfa results and flags against their references, "
             "including cancellation and multiply/divide boundaries, plus "
             "per-operation latency limits"
+        ),
+    ),
+    "fp_div_equiv": CocotbRunConfig(
+        python_test_module="cocotb_tests.ex_stage.test_fp_engine",
+        hdl_toplevel_module="fp_engine_equiv_harness",
+        description=(
+            "fp_engine with FDIV on the radix-16 divider matches Berkeley SoftFloat, "
+            "kills included"
+        ),
+        verilator_extra_args=("-GDIV_UNIT=1",),
+    ),
+    "fp_fma_pipe_equiv": CocotbRunConfig(
+        python_test_module="cocotb_tests.ex_stage.test_fp_fma_pipe",
+        hdl_toplevel_module="fp_fma_pipe_equiv_harness",
+        description=(
+            "Pipelined FP add, multiply and FMA match Berkeley SoftFloat bit for "
+            "bit at one operation per cycle"
         ),
     ),
     "dispatch": CocotbRunConfig(

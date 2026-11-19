@@ -27,7 +27,13 @@ def test_scalar_fp_targets_link_to_their_implementations() -> None:
     """Keep the scalar FP guide's target names and links aligned with the registry."""
     root = Path(__file__).resolve().parents[1]
     guide = (root / "tests/README.md").read_text()
-    for name in ("fp_engine_equiv", "fp_shim", "fplat_probe"):
+    for name in (
+        "fp_engine_equiv",
+        "fp_div_equiv",
+        "fp_fma_pipe_equiv",
+        "fp_shim",
+        "fplat_probe",
+    ):
         config = TEST_REGISTRY[name]
         if config.app_name is None:
             source = Path("verif", *config.python_test_module.split(".")).with_suffix(

@@ -145,8 +145,10 @@ Run the scalar floating-point checks with `./scripts/frost.py cocotb <target>`.
 | Target | Checks |
 | --- | --- |
 | [`fp_engine_equiv`](../verif/cocotb_tests/ex_stage/test_fp_engine.py) | Result bits and flags against Berkeley SoftFloat, including fused cancellation and multiply and divide rounding boundaries. A separate case measures engine latency against per-operation limits. |
+| [`fp_div_equiv`](../verif/cocotb_tests/ex_stage/test_fp_engine.py) | The same SoftFloat comparisons and kill checks with scalar division routed to the radix-16 unit. |
+| [`fp_fma_pipe_equiv`](../verif/cocotb_tests/ex_stage/test_fp_fma_pipe.py) | Single- and double-precision adds, subtracts, multiplies and fused operations streamed through the pipeline. The bench compares each result, its flags and the cycle when it becomes valid. |
 | [`fp_shim`](../verif/cocotb_tests/tomasulo/fu_shims/test_fp_shim.py) | Fast-path latency, issue after completion, result tags and flush handling. |
-| [`fplat_probe`](../sw/apps/fplat_probe) | Dependent chains and independent streams in the full processor. The registered build checks cycle limits for dependent FMUL, FMA and FDIV and independent FMUL and FMA at both precisions. |
+| [`fplat_probe`](../sw/apps/fplat_probe) | Dependent chains and independent streams in the full processor. The registered build bounds dependent and independent add, multiply and FMA, dependent divide at both precisions, and double-precision load-to-use. |
 
 `vec_operand_widths` checks EEW=1 mask-source aliases, vector versus scalar
 source fields and the old destination read by widening multiply-accumulate,
@@ -210,7 +212,7 @@ filelists.
 
 `imem_predecode_line` compares generated metadata with RTL for every 16-bit
 parcel in both halfword positions. Its slot-2 checks exclude native SYSTEM
-except funct3=100, MISC-MEM, AMO, FP-compute and OP-V instructions. Zimop
+except funct3=100, MISC-MEM, AMO, FP-compute, OP-V and OP-VE instructions. Zimop
 instructions can lead a pair or start slot 2. `imem_predecode_fast_replica`
 and `imem_predecode_capacity` apply that rule to the stored sideband and its
 scalar copies through programming writes, bank swaps and overlay boundaries.
@@ -288,9 +290,12 @@ checks that a subsequent load cannot use their stale data from L0.
 L1D hit path, then issues an older load to the same word, which reads the
 new value; a younger load that read the old value must replay instead of
 retiring.
-`cached_store_burst_test` checks cached store bursts followed by traps,
-FENCE.I, SC and AMO. Its CPU monitor requires accepted-store overlap with
-trap and fence drain waits.
+`cached_store_burst_test` checks masked stores, machine-mode ECALL,
+FENCE.I, SC and AMO. Each trap burst ends with a store to a fresh
+cached line. The stores and ECALL share one instruction-cache line.
+The program checks the stored word after trap return. Its CPU monitor
+requires accepted stores during the ECALL and FENCE.I waits and checks
+that trap entry waits for the stores to drain.
 `l2_capacity_chase_smoke` checks the dependent-load measurement program
 with 8, 16 and 32 KiB working sets and a 4 MiB L2 in the real-program shards.
 The CLI-only `l2_capacity_chase` entry retains its full-size working sets
@@ -816,19 +821,15 @@ in the DDR region (`generate_references.py --ddr-misaligned`; `--all` makes
 both sets). The `bram` and `icache` tiers, whose data is in low BRAM, compare
 them with the Spike references, which record the trap.
 
-The vector crypto tests (`rv32i_m/Zvk`, which also declare RV64) are prepared
-but not supported. Of the 37 in the pinned suite, 32 run: `vandn.vx`,
-`vrol.vx`, `vror.vx`, `vsha2ch-e32` and `vsha2cl-e32` trap on Spike (the first
-three overwrite their data pointer, the others use overlapping operands) and
-are excluded. `--extensions Zvk` builds them with a vector
-`-march` and compares them with Spike references at VLEN 128, but `Zvk` is not in `SUPPORTED_EXTENSIONS`,
-so `--all` and CI skip it until FROST has the vector unit. To turn it on, add
-`Zvk` to `SUPPORTED_EXTENSIONS` in `test_arch_compliance.py` and
-`generate_references.py`, to a job of the `test-arch-compliance` matrix in
-`ci.yml` (built with `FROST_VERILATOR_EXTRA_ARGS='-GVECTOR=1 -GVLEN=128'`), and
-remove the not-supported assertions in `test_vector_tests_prepared_but_not_supported`.
-The references are made at VLEN 128 and are for a core of that length: the suite
-skips cases whose AVL times SEW exceeds VLEN, so a few tests check little there.
+The vector crypto tests in `rv32i_m/Zvk` also declare RV64. The repository
+carries 32 Spike signatures at VLEN 128. Five cover ShangMi, and the others
+exercise bit manipulation, carry-less multiply, AES, SHA-2 and GHASH. Use
+`--test rv32i_m/Zvk/src/<name>.S --mem-config ddr` on a core built with
+`FROST_VERILATOR_EXTRA_ARGS='-GVECTOR=1 -GVLEN=128'`. The default scalar
+matrix excludes this directory. Five upstream tests have no signature:
+`vandn.vx`, `vrol.vx` and `vror.vx` overwrite their data pointer, and
+`vsha2ch-e32` and `vsha2cl-e32` use reserved overlapping registers. The
+suite skips cases whose AVL times SEW exceeds VLEN.
 
 CI skips Zifencei in BRAM, because ordinary stores cannot reach the separate
 instruction BRAM (the runner reports it as SKIP there, so `--all --mem-config
@@ -1117,7 +1118,9 @@ through scalar moves, and reserved forms, one of them right behind a legal
 form so that dispatch judges it on its own registered legality.
 `test_vector_reference.py` checks their expected images
 on Spike at the same three lengths, including a deliberately wrong expected
-bit. The `vec_integer_exec_v*` engine benches separately compare all registers,
+bit. The `vec_integer_exec_v*` engine benches compare completion times for the
+base-vector and Zvbb forms covered by Zvkt with opposite vector, mask and scalar
+operands. They separately compare all registers,
 tails, inactive elements and saturation against an element model across SEW,
 LMUL and rounding modes.
 
@@ -1139,6 +1142,16 @@ and none for one that raises none.
 `vec_fp_estimate16`, `vec_fp_estimate32` and `vec_fp_estimate64` cover every
 reciprocal-estimate table index, normal and subnormal exponent boundaries,
 special values, flags and the fixed latency.
+
+The `vec_crypto_exec_test_v*` programs run the crypto forms through the core.
+They transfer register images through cached memory and check known answers,
+partial-group traps, restart, and scalar operands. `test_vector_reference.py`
+checks the register images on Spike at the three vector lengths.
+
+The `vec_crypto_exec_v128`, `vec_crypto_exec_v256` and `vec_crypto_exec_v512`
+benches compare carry-less multiply, AES, SHA-2 and GHASH with independent
+element and group models. Each pair of runs uses different data at the same
+configuration and checks both the register image and completion time.
 
 ### `test_riscv_torture.py`
 
@@ -1823,10 +1836,11 @@ The standalone legality sweep compares the decoder and the dispatch
 legality module (`vec_arith_legality`) with the installed Spike instruction
 implementations. It covers all 231 integer arithmetic forms, and with
 `--forms fp` the 101 floating-point forms (Spike configured with Zfh and
-Zvfh), all 512 vtype encodings (reserved configurations normalize to
+Zvfh), or with `--forms crypto` the 20 Zvbc and element-group forms. It tests
+all 512 vtype encodings (reserved configurations normalize to
 vill), both mask encodings where permitted, each register field and pairwise
-alias/adjacent layouts, at VLEN 128/256/512. VL is one, vstart zero and frm a
-valid rounding mode; the tracker and dispatch proofs cover restart policy, and
+alias/adjacent layouts, at VLEN 128/256/512. The requested length is four elements for OP-VE and
+one otherwise, with vstart zero and a valid rounding mode; the tracker and dispatch proofs cover restart policy, and
 `vec_fp_test` the reserved rounding modes. Run
 `python3 tests/test_vector_legality_reference.py --vlen 256` in the image.
 The comparator source is under `hw/sim/vector_reference/` and builds against the

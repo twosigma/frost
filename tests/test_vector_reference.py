@@ -191,3 +191,23 @@ def test_fp_program_negative_control(tmp_path: Path) -> None:
             tmp_path,
             extra_cflags="-DVEC_VLEN=128 -DVEC_NEGATIVE_CONTROL",
         )
+
+
+@pytest.mark.parametrize("vlen", (128, 256, 512))
+def test_crypto_execution_program(vlen: int, tmp_path: Path) -> None:
+    """Crypto register groups and reserved geometry agree with the reference ISA."""
+    build_and_run(
+        "vec_crypto_exec_test", vlen, vlen, tmp_path, extra_cflags=f"-DVEC_VLEN={vlen}"
+    )
+
+
+def test_crypto_program_negative_control(tmp_path: Path) -> None:
+    """A wrong crypto expected result must fail the program."""
+    with pytest.raises(AssertionError, match="1 failures"):
+        build_and_run(
+            "vec_crypto_exec_test",
+            128,
+            128,
+            tmp_path,
+            extra_cflags="-DVEC_VLEN=128 -DVEC_NEGATIVE_CONTROL",
+        )
