@@ -136,7 +136,10 @@ module coherence_l1d #(
   logic f_seq_ever_pop = 0, f_seq_final = 0;
   logic [2:0] f_seq_pushed = 0, f_seq_popped = 0;
 `endif
-`ifdef COH_MAINT_FOUR
+`ifdef COH_MAINT_RETAINED
+  wire install = 1'b1;
+  wire evict = 1'b0;
+`elsif COH_MAINT_FOUR
   logic four_records_q = 0;
   wire  install = four_records_q;
   wire  evict = 1'b0;
@@ -155,7 +158,15 @@ module coherence_l1d #(
   logic [3:0][255:0] record_data;
   logic [3:0][31:0] record_mask;
   logic [7:0] mask_q;
-  logic resident_q, put_q, put_accepted_q, reply_valid_q;
+  logic resident_q, shared_q, home_current_q, reply_snapshot_q;
+  logic put_q, put_accepted_q, reply_valid_q;
+  // The original ownership proof follows a copy discarded as soon as its R
+  // transfers. The publication schedule keeps that copy for another store.
+`ifdef COH_MAINT_RETAINED
+  localparam bit KeepSnapshot = 1;
+`else
+  localparam bit KeepSnapshot = 0;
+`endif
   logic [63:0] value_q, store_q, installed_value_q, grant_image_q;
   coh_d_t request;
   coh_g_t grant_payload;
@@ -164,6 +175,10 @@ module coherence_l1d #(
   coh_w_t put;
   logic   grant_valid;
   assign probe = i_p;
+  wire private_match = probe.addr == request.addr;
+  wire snapshot = probe.opcode == coherence_pkg::ProbeSnapshot;
+  wire absorbed = private_match && put_q && !put_accepted_q;
+  wire dirty_reply = absorbed || (private_match && resident_q && !(snapshot && home_current_q));
   always_comb begin
     request = '0;
     request.opcode = coherence_pkg::GetM;
@@ -292,6 +307,9 @@ module coherence_l1d #(
       granted_q <= 0;
       written_q <= 0;
       resident_q <= 0;
+      shared_q <= 0;
+      home_current_q <= 0;
+      reply_snapshot_q <= 0;
       put_q <= 0;
       put_accepted_q <= 0;
       reply_valid_q <= 0;
@@ -337,26 +355,40 @@ module coherence_l1d #(
           value_q[8*byte_index+:8] <= grant_image_q[8*byte_index+:8];
         end
         resident_q <= 1;
-        granted_q  <= 0;
-        written_q  <= 1;
+        shared_q <= 0;
+        home_current_q <= 0;
+        granted_q <= 0;
+        written_q <= 1;
       end
-      if (resident_q && !pop && !put_q && !reply_valid_q && !i_p_valid && evict) begin
+      if ((resident_q || shared_q) && !pop && !put_q && !reply_valid_q && !i_p_valid && evict) begin
+        put_q <= resident_q && !home_current_q;
         resident_q <= 0;
-        put_q <= 1;
+        shared_q <= 0;
+        home_current_q <= 0;
       end
       if (i_p_valid && o_p_ready) begin
         reply_valid_q <= 1;
         reply_q <= '0;
+        reply_snapshot_q <= snapshot;
         reply_q.tid <= probe.tid;
+        reply_q.epoch <= probe.epoch;
         reply_q.addr <= probe.addr;
+        reply_q.opcode <= dirty_reply ? coherence_pkg::ProbeData : coherence_pkg::ProbeAck;
+        reply_q.state <= !private_match || probe.opcode == coherence_pkg::ProbeInvalidate ?
+            coherence_pkg::Invalid : snapshot && resident_q ? coherence_pkg::Modified :
+            (resident_q || shared_q) ? coherence_pkg::Shared : coherence_pkg::Invalid;
         reply_q.data <= {4{value_q}};
-        reply_q.data_valid <= (resident_q || (put_q && !put_accepted_q)) &&
-            probe.addr == request.addr;
-        reply_q.absorbed <= put_q && !put_accepted_q && probe.addr == request.addr;
+        reply_q.data_valid <= dirty_reply;
+        reply_q.absorbed <= absorbed;
+        reply_q.put_epoch <= probe.epoch;
       end
       if (o_r_valid && i_r_ready) begin
         reply_valid_q <= 0;
-        if (reply_q.data_valid) resident_q <= 0;
+        if (reply_q.addr == request.addr && !reply_q.absorbed) begin
+          resident_q <= KeepSnapshot && reply_snapshot_q && resident_q;
+          home_current_q <= KeepSnapshot && reply_snapshot_q && resident_q;
+          shared_q <= reply_q.state == coherence_pkg::Shared;
+        end
       end
       if (o_w_valid && i_w_ready) put_accepted_q <= 1;
       if (i_wa_valid && o_wa_ready) begin

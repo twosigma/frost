@@ -5,6 +5,8 @@ coh_hart_maint_owned_reset_prove owned unbounded resetstate
 coh_hart_maint_cover covers base
 coh_hart_maint_four_bmc four bounded fourbmc base
 coh_hart_maint_four_cover four covers base
+coh_hart_snapshot_bmc retained bounded base
+coh_hart_snapshot_cover retained covers base
 
 [options]
 proof: mode prove
@@ -24,6 +26,7 @@ bounded: timeout 2400
 # With every register starting free, the four-record bounded task takes
 # about 18 minutes for its 240 frames with the Glucose backend.
 fourbmc: timeout 7200
+retained: depth 220
 bounded: aigsmt boolector
 
 [engines]
@@ -46,6 +49,7 @@ unbounded: read -sv -nosynthesis -D COH_MAINT_OWNED coherence_line_bridge.sv
 read -sv coherence_cmo_agent.sv
 unbounded: read -formal -D COH_MAINT_OWNED -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 coh_hart_maint_cover: read -formal -D COH_MAINT_COVER -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
+retained: read -formal -D COH_MAINT_COVER -D COH_MAINT_RETAINED -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 four: read -formal -D COH_MAINT_COVER -D COH_MAINT_FOUR -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 covers: chparam -set COVER_MODE 1 coherent_hart_cache_formal
 bounded: chparam -set COVER_MODE 1 coherent_hart_cache_formal
@@ -64,6 +68,7 @@ proof: select -assert-count 286 t:$check r:FLAVOR=assume %i
 proof: select -assert-count 89 t:$check r:FLAVOR=assert %i
 unbounded: chformal -cover -remove
 base: chformal -cover -remove c:*flatten_home* c:*flatten_walker* c:walker.* c:*bridge* c:*endpoint* c:*arbiter*
+coh_hart_snapshot_cover: chformal -cover -remove c:* c:*c_retained_publication %d
 four: chformal -cover -remove c:* c:*p_four_records* %d
 # The unbounded pair runs a plain opt (ROADMAP.md): with every register
 # starting free its induction does not finish in its limit, and from the state
@@ -95,7 +100,9 @@ unbounded: setundef -anyseq
 bounded: techmap
 bounded: opt -fast -keepdc
 bounded: setundef -anyseq
-covers: setundef -zero
+retained: setundef -anyseq
+coh_hart_maint_cover: setundef -zero
+coh_hart_maint_four_cover: setundef -zero
 opt_clean
 
 [files]

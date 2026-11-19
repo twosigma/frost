@@ -279,6 +279,8 @@ FORMAL_TARGETS = [
             "coh_hart_maint_cover",
             "coh_hart_maint_four_bmc",
             "coh_hart_maint_four_cover",
+            "coh_hart_snapshot_bmc",
+            "coh_hart_snapshot_cover",
         ),
     ),
     FormalTarget(
@@ -2191,6 +2193,14 @@ SBY_TASKS = [
     (
         "coh_hart_maint_four_bmc",
         "Four occupied records drain before a fence and final PTE publication.",
+    ),
+    (
+        "coh_hart_snapshot_bmc",
+        "Two CPU versions reach instruction fetch and the walker.",
+    ),
+    (
+        "coh_hart_snapshot_cover",
+        "Post-fence fetch and walking after a retained M-hit store.",
     ),
     (
         "coh_hart_maint_four_cover",

@@ -47,6 +47,8 @@ uram: chparam -set ULTRA 1 coherence_array
 four: chparam -set CACHE_BYTES 256 -set WAYS 4 coherence_array
 wide: chparam -set ADDR_WIDTH 56 coherence_array
 port: chparam -set HIT_PORT 1 coherence_array
+snapshot: hierarchy -check -top coherence_array
+snapshot: script free_undefined.ys
 ~selection: prep -top coherence_array
 # Out-of-range bits of the four-way selections are unreachable constants.
 undefined: memory_map -keepdc
@@ -76,6 +78,7 @@ selection: select -assert-count 1 t:$assert
 selection: select -assert-none t:$assume
 
 [files]
+free_undefined.ys
 ../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv

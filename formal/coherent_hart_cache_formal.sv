@@ -60,13 +60,22 @@ module coherent_hart_cache_formal #(
   logic [1:0] if_owned, if_ungranted, if_tail;
   // The two RSW bits distinguish the installed PTE from its stale home copy.
   // The service-engine target proves the merge independently for every byte.
-  (* anyconst *)logic [1:0] arbitrary_stored_bits;
-  wire  [1:0] stored_bits = COVER_MODE ? 2'd1 : arbitrary_stored_bits;
+  (* anyconst *) logic [1:0] arbitrary_stored_bits;
+`ifdef COH_MAINT_RETAINED
+  logic first_install_q, first_if_q, first_walk_q, final_if_q, final_walk_q;
+  logic [2:0] snapshot_count_q;
+  logic [7:0] snapshot_cycle_q;
+  wire  [1:0] stored_bits = arbitrary_stored_bits;
+`else
+  wire [1:0] stored_bits = COVER_MODE ? 2'd1 : arbitrary_stored_bits;
+`endif
   (* anyconst *) logic stored_global, two_stores, four_stores;
 `ifdef COH_MAINT_FOUR
   wire [6:0] store_goal = 7'd67;
   logic four_records_seen_q = 0;
   always_ff @(posedge i_clk) if (!rst && &store_holds) four_records_seen_q <= 1;
+`elsif COH_MAINT_RETAINED
+  localparam logic [2:0] store_goal = 2;
 `else
   wire [2:0] store_goal = four_stores ? 3'd4 : two_stores ? 3'd2 : 3'd1;
 `endif
@@ -80,7 +89,24 @@ module coherent_hart_cache_formal #(
     logic [2:0] fetch_count_q = 0, walk_count_q = 0;
     logic fetched_q = 0, put_demand_q = 0;
     always_comb begin
-`ifdef COH_MAINT_FOUR
+`ifdef COH_MAINT_RETAINED
+      imem_done = 1;
+      accept_put = 1;
+      finish_put = 1;
+      permit_lookup = 1;
+      permit_data = 1;
+      permit_update = cover_cycle_q[0];
+      permit_c = 1;
+      permit_g = 1;
+      permit_u = 1;
+      start_store = (stores_launched_q == 0 && cover_cycle_q >= 3) || first_walk_q;
+      request_fence = first_walk_q && !fence_seen_q;
+      fetch_sector = 0;
+      fetch = (first_install_q && !before_fetch_q) || (fence_seen_q && !after_fetch_q);
+      walk = (first_if_q && !walked_q) || (final_if_q && walk_count_q == 1);
+      read_error = 0;
+      discard = 0;
+`elsif COH_MAINT_FOUR
       assume (cover_scenario == 0);
       imem_done = 1;
       accept_put = 0;
@@ -398,7 +424,11 @@ module coherent_hart_cache_formal #(
     logic requester_ready;
     if (COVER_MODE) begin : gen_cover_request
       logic sent_q = 0;
+`ifdef COH_MAINT_RETAINED
+      assign request = 0;
+`else
       assign request = cover_scenario == 3 && !sent_q;
+`endif
       always_ff @(posedge i_clk) if (request && requester_ready) sent_q <= 1;
     end else begin : gen_arbitrary_request
       (* anyseq *) logic offer;
@@ -797,6 +827,46 @@ module coherent_hart_cache_formal #(
       end
     end
   end
+`ifdef COH_MAINT_RETAINED
+  always_ff @(posedge i_clk) begin
+    if (rst) begin
+      first_install_q <= 0;
+      first_if_q <= 0;
+      first_walk_q <= 0;
+      final_if_q <= 0;
+      final_walk_q <= 0;
+      snapshot_count_q <= 0;
+      snapshot_cycle_q <= 0;
+    end else begin
+      if (!(&snapshot_cycle_q)) snapshot_cycle_q <= snapshot_cycle_q + 1'b1;
+      if (c_valid[0] && c_ready[0]) first_install_q <= 1;
+      if (first_install_q && home_d_valid && home_d_ready)
+        assert (demand.opcode != coherence_pkg::GetM);
+      if (r_valid && r_ready && reply.addr == 32'h80000000) begin
+        assert (snapshot_count_q < 4 && reply.state == coherence_pkg::Modified && !reply.absorbed);
+        assert (reply.data_valid == !snapshot_count_q[0]);
+        if (reply.data_valid)
+          assert (reply.data == {4{snapshot_count_q[1] ? stored_pte : first_pte}});
+        snapshot_count_q <= snapshot_count_q + 1'b1;
+      end
+      if (if_resp) begin
+        assert (!if_error && if_data == {4{fence_seen_q ? stored_pte : first_pte}});
+        if (fence_seen_q) final_if_q <= 1;
+        else first_if_q <= 1;
+      end
+      if (walk_resp) begin
+        assert (translation.fault_kind == riscv_pkg::DFAULT_NONE);
+        if (fence_seen_q) final_walk_q <= 1;
+        else first_walk_q <= 1;
+      end
+      if (snapshot_cycle_q >= 210)
+        p_retained_publication : assert (final_walk_q && final_if_q && snapshot_count_q == 4);
+      c_retained_publication :
+      cover (final_if_q && final_walk_q && snapshot_count_q == 4 &&
+          stored_bits == 1 && first_pte != stored_pte);
+    end
+  end
+`endif
   logic [1:0] competitors_q;
   logic delayed_g_q, delayed_c_q, delayed_u_q, absorbed_q;
   logic ptw_owned, ptw_tail;
