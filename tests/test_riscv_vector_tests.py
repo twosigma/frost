@@ -371,6 +371,7 @@ def generate_tests(
     one: bool = False,
     jobs: int = 4,
     cycle_profile: Path | None = None,
+    test_name: str | None = None,
 ) -> list[str]:
     """Generate one set of splits per matching form and retain the selection."""
     workdir = workdir.resolve()
@@ -385,12 +386,12 @@ def generate_tests(
     for config in sorted((SUITE_DIR / "configs").glob("*/*.toml")):
         if config.parent.name not in extensions:
             continue
-        if (
-            instruction_kind
-            and instruction_class(config.stem.replace(".", "_")) != instruction_kind
-        ):
+        form = config.stem.replace(".", "_")
+        if test_name is not None and form != test_name.rpartition("-")[0]:
             continue
-        forms[config.stem.replace(".", "_")].append(config)
+        if instruction_kind and instruction_class(form) != instruction_kind:
+            continue
+        forms[form].append(config)
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         groups = pool.map(
             lambda cs: generate_form(stage1, cs, vlen, march, pattern), forms.values()
@@ -398,7 +399,9 @@ def generate_tests(
         names = sorted(n for group in groups for n in group)
     if len(set(names)) != len(names):
         raise ValueError("duplicate generated test name")
-    selected = one_per_form(names, vlen) if one else names
+    selected = names if test_name is None else [n for n in names if n == test_name]
+    if one:
+        selected = one_per_form(selected, vlen)
     profile = cycle_profile.read_bytes() if cycle_profile is not None else b""
     identity = {
         "selection_sha256": selection_sha256(selected, vlen),
@@ -526,6 +529,7 @@ def prepare(
     one: bool = False,
     rtl: bool = False,
     cycle_profile: Path | None = None,
+    test_name: str | None = None,
 ) -> tuple[list[str], list[VectorTestResult]]:
     """Generate, patch and merge; return the test names and any failures."""
     workdir = workdir.resolve()
@@ -539,6 +543,7 @@ def prepare(
         one=one,
         jobs=jobs,
         cycle_profile=cycle_profile,
+        test_name=test_name,
     )
     failures: list[VectorTestResult] = []
     march = RTL_MARCH if rtl else MARCH
@@ -571,6 +576,7 @@ def run_spike_tests(
     *,
     one: bool = False,
     cycle_profile: Path | None = None,
+    test_name: str | None = None,
 ) -> list[VectorTestResult]:
     """Generate the selected tests and run each on Spike as the self-check."""
     workdir = workdir.resolve()
@@ -583,6 +589,7 @@ def run_spike_tests(
         instruction_kind,
         one=one,
         cycle_profile=cycle_profile,
+        test_name=test_name,
     )
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         results += list(pool.map(lambda n: run_on_spike(workdir, n, vlen), names))
@@ -719,6 +726,7 @@ def run_rtl_tests(
     one: bool = False,
     results_jsonl: Path | None = None,
     cycle_profile: Path | None = None,
+    test_name: str | None = None,
 ) -> list[VectorTestResult]:
     """Prepare isolated images, build the model once and run independent processes."""
     workdir = workdir.resolve()
@@ -739,6 +747,7 @@ def run_rtl_tests(
         rtl=True,
         one=one,
         cycle_profile=cycle_profile,
+        test_name=test_name,
     )
     if results_jsonl:
         results_jsonl.parent.mkdir(parents=True, exist_ok=True)
@@ -985,6 +994,17 @@ def test_shard_weights_use_cycles(tmp_path: Path) -> None:
     assert weights == {"a-0": 800, "b-0": 100, "c-0": 100, "d-0": 100}
     assert select_shard(weights, 1, 2) == ["a-0"]
     assert select_shard(weights, 2, 2) == ["b-0", "c-0", "d-0"]
+
+
+@needs_suite
+def test_exact_generated_split(tmp_path: Path) -> None:
+    """A failure command selects the named split and drops its siblings."""
+    name = "vadd_vv-2"
+    selected = generate_tests(tmp_path, 128, ".*", rtl=True, test_name=name)
+    assert selected == [name]
+    assert parse_makefrag((tmp_path / "Makefrag").read_text()) == [name]
+    assert [f.stem for f in (tmp_path / "stage1").glob("*.S")] == [name]
+    assert generate_tests(tmp_path, 128, ".*", rtl=True, test_name="vadd_vv-999") == []
 
 
 def test_one_per_form_rotation() -> None:
@@ -1289,6 +1309,9 @@ def main() -> int:
         "--vlen", type=int, choices=SUPPORTED_VLENS, default=DEFAULT_VLEN
     )
     parser.add_argument("--pattern", default=".*", help="regex on instruction names")
+    parser.add_argument(
+        "--test", help="run one exact generated name, including its split"
+    )
     parser.add_argument("--class", dest="instruction_kind", choices=INSTRUCTION_CLASSES)
     parser.add_argument(
         "--one-per-form", action="store_true", help="select one split per instruction"
@@ -1407,10 +1430,13 @@ def main() -> int:
                     one=args.one_per_form,
                     jobs=args.jobs,
                     cycle_profile=args.cycle_profile,
+                    test_name=args.test,
                 )
                 for name in names:
                     print(name)
-                return 0
+                return int(
+                    not names and (args.shard is not None or args.test is not None)
+                )
             if args.rtl:
                 results = run_rtl_tests(
                     workdir,
@@ -1428,6 +1454,7 @@ def main() -> int:
                     one=args.one_per_form,
                     results_jsonl=args.results_jsonl,
                     cycle_profile=args.cycle_profile,
+                    test_name=args.test,
                 )
             else:
                 results = run_spike_tests(
@@ -1439,6 +1466,7 @@ def main() -> int:
                     args.instruction_kind,
                     one=args.one_per_form,
                     cycle_profile=args.cycle_profile,
+                    test_name=args.test,
                 )
             return report(results)
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:

@@ -33,6 +33,17 @@ on:
         description: Prove every formal task and synthesis target again
         type: boolean
         default: false
+      slice:
+        description: Vector slice from 0 to 19 (blank uses the rotation)
+        type: string
+        required: false
+      campaign:
+        description: Generated vector programs to run
+        type: choice
+        default: rotation
+        options:
+          - rotation
+          - complete
 
 # The workflow only reads source and publishes its own artifacts.
 permissions:
@@ -49,7 +60,11 @@ permissions:
 concurrency:
   group: >-
     ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{
-    github.event.action == 'labeled' && github.event.label.name != 'run-ci' && '-label' || '' }}
+    github.event.action == 'labeled' &&
+    github.event.label.name != 'run-ci' && '-label' || '' }}${{
+    github.event_name == 'workflow_dispatch' &&
+    inputs.campaign == 'complete'
+    && format('-rvv-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -168,9 +183,21 @@ jobs:
     if: ${{ needs.gate.outputs.full == 'true' }}
     outputs:
       tools_id: ${{ steps.identity.outputs.tools_id }}
+      rvv_matrix: ${{ steps.rvv.outputs.matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+
+      - name: Select generated vector shards
+        id: rvv
+        env:
+          CAMPAIGN: ${{ inputs.campaign || 'rotation' }}
+          SLICE: ${{ inputs.slice }}
+        run: |
+          matrix=$(python3 tests/rvv_ci.py matrix \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --campaign "$CAMPAIGN" --slice "$SLICE")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.4.1
@@ -1910,6 +1937,101 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_native_sim.py --ci
+
+  test-rvv:
+    name: >-
+      Generated vectors (${{ matrix.vlen }},
+      ${{ matrix.mode }} ${{ matrix.part }})
+    runs-on: ubuntu-26.04
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build-docker.outputs.rvv_matrix) }}
+    env:
+      FROST_SKIP_SUBMODULE_INIT: "1"
+      FROST_DDR_MODEL_SEED: rvv-${{ github.run_id }}
+      NUMBER_OF_CPU_CORES: "4"
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Fetch the ISA test environment
+        run: |
+          git submodule update --init --recursive \
+            sw/apps/riscv_tests/riscv-tests
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: frost-docker-image
+          path: /tmp
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
+      - name: Run vector programs
+        env:
+          VLEN: ${{ matrix.vlen }}
+          MODE: ${{ matrix.mode }}
+          PART: ${{ matrix.part }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/rvv_ci.py run "$VLEN" "$MODE" "$PART"
+      - name: Summarize the shard
+        if: ${{ !cancelled() }}
+        run: cat rvv-results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: rvv-v${{ matrix.vlen }}-${{ strategy.job-index }}
+          path: rvv-results/
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 14
+
+  rvv-campaign-report:
+    name: Complete vector campaign results
+    runs-on: ubuntu-26.04
+    needs: [gate, build-docker, test-rvv]
+    if: >-
+      ${{ !cancelled() && needs.gate.outputs.full == 'true' &&
+      needs.build-docker.result == 'success' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.campaign == 'complete' }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: frost-docker-image
+          path: /tmp
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: rvv-v*
+          path: rvv-shards
+      - name: Verify and merge the complete selection
+        env:
+          FROST_SKIP_SUBMODULE_INIT: "1"
+          FROST_DDR_MODEL_SEED: rvv-${{ github.run_id }}
+          FROST_RVV_IMAGE_ID: ${{ needs.build-docker.outputs.tools_id }}
+          FROST_RVV_RUN_URL: ${{ env.FROST_REUSE_RUN_URL }}
+          SHARD_STATUS: ${{ needs.test-rvv.result }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/rvv_ci.py collect rvv-shards rvv-campaign \
+              --shard-status "$SHARD_STATUS"
+      - name: Summarize the campaign
+        if: ${{ !cancelled() }}
+        run: cat rvv-campaign/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: rvv-complete
+          path: rvv-campaign/
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 30
 
   # Build demo/Dockerfile as documented in README.md and run both the default
   # two-program container invocation and a single-application invocation.
