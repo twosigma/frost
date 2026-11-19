@@ -220,7 +220,7 @@ async def overlapping_ports_preserve_masked_bytes(dut: Any) -> None:
 
 @cocotb.test()
 async def masked_write_beside_a_sampled_row(dut: Any) -> None:
-    """A write can pass a sampled row and the read returns its entire old image."""
+    """Check the full old row when a masked write follows the RAM sample."""
     b = Array(dut)
     await b.reset()
     full = (1 << b.line) - 1

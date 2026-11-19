@@ -725,7 +725,9 @@ async def probe_reply(
     return reply
 
 
-async def collect_modified(b: Private, address: int, *, invalidate: bool = False) -> int:
+async def collect_modified(
+    b: Private, address: int, *, invalidate: bool = False
+) -> int:
     """Collect dirty bytes through an ordinary downgrade or invalidation."""
     reply = await probe_reply(b, address, int(invalidate))
     assert reply[0] == 1 and reply[7] == 1
@@ -767,7 +769,7 @@ async def snapshot_with_home_bytes_ready(dut: Any) -> None:
 
 @cocotb.test()
 async def retained_snapshot_between_store_installations(dut: Any) -> None:
-    """A blocked GetM and its younger store cannot change a snapshot."""
+    """Read the installed bytes while GetM blocks two pending stores."""
     b = Private(dut)
     await b.reset()
     a = 0x80000000

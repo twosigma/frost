@@ -734,7 +734,8 @@ module coherence_array #(
         !skip_data_q && |f_opposite && tag_rdata[selected][TagBits+:2] == 2'b11) begin
       c_snapshot_clean_hit : cover (hit && !select_data);
       c_snapshot_dirty_hit : cover (hit && select_data);
-      c_snapshot_dirty_victim_miss : cover (!hit && !tag_rdata[selected][TagBits+2] && !select_data);
+      c_snapshot_dirty_victim_miss :
+      cover (!hit && !tag_rdata[selected][TagBits+2] && !select_data);
     end
   end
 `endif
