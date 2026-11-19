@@ -3284,6 +3284,49 @@ def _pack_vmt_entry0(
 
 
 @cocotb.test()
+async def test_cbo_mgmt_orders_pbmt_aliases(dut: Any) -> None:
+    """A CMO orders both DDR views against younger loads and older vector sectors."""
+    dut_if, _model = await setup(dut)
+    real = 0x8000_0040
+    alias = 0xC000_0040  # Translated alias in the registered 1 GiB DDR map.
+    dut.i_vmt.value = _pack_vmt_entry0(
+        dut,
+        live=True,
+        retired=True,
+        rob_tag=0,
+        range_known=True,
+        seg0=(1, real >> 12, 3, 3),
+    )
+    await alloc_cmo(dut_if, rob_tag=1, address=alias + 4, kind=CMO_FLUSH, is_mmio=True)
+    await alloc_cmo(dut_if, rob_tag=2, address=real + CBO_BLOCK, kind=CMO_INVAL)
+    dut_if.drive_rob_head_tag(0)
+    for addr in (real + 56, alias + 1, real + CBO_BLOCK + 32, alias + CBO_BLOCK + 7):
+        dut_if.drive_sq_check(addr=addr, rob_tag=5, size=MEM_SIZE_BYTE)
+        await dut_if.step()
+        forward = dut_if.read_sq_forward()
+        assert forward.match and not forward.can_forward, (
+            f"CMO must order load at {addr:#x}"
+        )
+    dut_if.drive_sq_check(addr=alias + 2 * CBO_BLOCK, rob_tag=5, size=MEM_SIZE_BYTE)
+    await dut_if.step()
+    assert not dut_if.read_sq_forward().match
+    dut_if.clear_sq_check()
+
+    dut_if.drive_commit(1)
+    await dut_if.step()
+    dut_if.clear_commit()
+    for _ in range(10):
+        await dut_if.step()
+        assert dut_if.count == 2, (
+            "CMO passed an older vector range at the real DDR address"
+        )
+    dut.i_vmt.value = 0
+    for _ in range(10):
+        await dut_if.step()
+    assert dut_if.count == 1, "Clearing the vector range must release the committed CMO"
+
+
+@cocotb.test()
 async def test_cbo_mgmt_waits_for_vec_hold_block(dut: Any) -> None:
     """A Zicbom entry waits when its 64 B block overlaps a held vector sector.
 

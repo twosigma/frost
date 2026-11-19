@@ -65,6 +65,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
+    ("coherence_home", "coh_home_cmo_cover"): 6000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
@@ -545,6 +546,7 @@ FORMAL_TARGETS = [
             "coh_home_control4_bmc",
             "coh_home_control4_ultra_bmc",
             "coh_home_fill_cover",
+            "coh_home_cmo_cover",
             "coh_home_wb_prove",
             "coh_home_victim_cover",
             "coh_home_error_cover",
@@ -2873,6 +2875,10 @@ SBY_TASKS = [
     ),
     ("coh_home_fill_cover", "Fill installation, forward and waiter wake reachability."),
     (
+        "coh_home_cmo_cover",
+        "Reach four Zicbom grant cases and replay their inputs on the undriven home.",
+    ),
+    (
         "coh_home_dispatch_cover",
         "A dispatch-cycle lookup offer that loses the tag arbiter and wins from Lookup.",
     ),
@@ -3233,7 +3239,7 @@ SBY_TASKS = [
     ("bmc_cdb", "Compare the first valid CDB packet across wrapper copies."),
     ("bmc_cdb_2", "Compare the second valid CDB packet across wrapper copies."),
     ("bmc_commit", "Compare the first valid combinational commit packet."),
-    ("bmc_commit_2", "Compare the second valid combinational commit packet."),
+    ("bmc_commit_2", "Compare the second commit packet and the coherent CMO request."),
     (
         "bmc_operands",
         "Compare bypass and register-file operands in the Block proofs job.",
@@ -4455,7 +4461,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_home": (
         "not converted: memory_map and opt without -keepdc; no setundef",
         {
-            "coh_home_control_prove coh_home_control64_prove coh_home_control_partition_prove coh_home_control4_bmc coh_home_control4_ultra_bmc coh_home_fill_cover coh_home_wb_prove coh_home_victim_cover coh_home_error_cover coh_home_prefetch_cover coh_home_dispatch_cover": [
+            "coh_home_control_prove coh_home_control64_prove coh_home_control_partition_prove coh_home_control4_bmc coh_home_control4_ultra_bmc coh_home_fill_cover coh_home_cmo_cover coh_home_wb_prove coh_home_victim_cover coh_home_error_cover coh_home_prefetch_cover coh_home_dispatch_cover": [
                 "memory_map",
                 "opt",
             ],
@@ -5756,6 +5762,61 @@ def test_wrappers_show_their_files() -> None:
     ]
     assert yosys_commands(["trace debug prep"], {}) == [["trace"], ["debug"], ["prep"]]
     assert yosys_commands(["debug -on"], {}) == [["debug", "-on"]]
+
+
+def test_home_cmo_witness_driver_is_cover_only() -> None:
+    """Keep directed inputs out of every other home task, including BMC and induction."""
+    sby = Path(__file__).resolve().parents[1] / FORMAL_DIR / "coherence_home.sby"
+    text = sby.read_text()
+    driver = "COHERENCE_HOME_CMO_WITNESS"
+
+    def check(config: str) -> None:
+        source = sby_config.read_source(sby, config)
+        for name, tags in source.tasks.items():
+            task = source.task(name)
+            commands = [
+                cmd
+                for cmd in task.commands(sby.parent)
+                if any(driver in token for token in cmd)
+            ]
+            if name == "coh_home_cmo_cover":
+                assert "cmo_witness" in tags
+                assert task.options["mode"] == "cover"
+                assert (task.options["depth"], task.options["timeout"]) == (
+                    "40",
+                    "6000",
+                )
+                assert commands == [["verilog_defines", "-D", driver]]
+            else:
+                assert "cmo_witness" not in tags and not commands, name
+
+    check(text)
+    for tag in ("bmc4", "control"):
+        with pytest.raises(AssertionError):
+            check(
+                text.replace(
+                    "[script]", "[script]\n" + f"{tag}: verilog_defines -D {driver}"
+                )
+            )
+
+
+def test_home_cmo_replay_uses_only_complete_primary_inputs(tmp_path: Path) -> None:
+    """Leave the home's initial storage and the driver's case selection free on replay."""
+    from coherence_home_cmo_replay import primary_inputs
+
+    trace = tmp_path / "trace.smtc"
+    state = "state 0\nassume (= [i_rst] true)\nassume (= [i_stop] false)\n"
+    initial = "initial\nassume (= [home.slot] #b01)\nassume (= [witness_case] #b11)\n"
+    hidden = "assume (= [home.fill] #b10)\n"
+    trace.write_text(initial + state + hidden)
+    assert primary_inputs(trace, {"i_rst", "i_stop"}, 0) == state
+    for invalid in (
+        state.split("assume (= [i_stop]")[0],
+        state + "assume (= [i_rst] true)\n",
+    ):
+        trace.write_text(initial + invalid)
+        with pytest.raises(ValueError):
+            primary_inputs(trace, {"i_rst", "i_stop"}, 0)
 
 
 def test_scripts_free_undefined_constants_first() -> None:
@@ -7692,6 +7753,24 @@ def test_axi_bridge_post_map_count_rejects_another_selection() -> None:
             "assert (o_trap_pc_a",
             id="missing-qualifier",
         ),
+        pytest.param(
+            "sv",
+            "if (o_cmo_valid_a) p_twin_cmo_kind :",
+            "p_twin_cmo_kind :",
+            id="cmo-kind-without-valid",
+        ),
+        pytest.param(
+            "sv",
+            "o_cmo_addr_a == o_cmo_addr_b",
+            "o_cmo_addr_a == o_cmo_addr_a",
+            id="cmo-address-rhs",
+        ),
+        pytest.param(
+            "sby",
+            "bmc_commit_2: depth 6",
+            "bmc_commit_2: depth 5",
+            id="cmo-before-request",
+        ),
     ],
 )
 def test_rs_payload_twin_assertion_groups(
@@ -7798,13 +7877,22 @@ def test_rs_payload_twin_assertion_groups(
             "amo_mem_write_is_cached",
         ],
     }
-    counts = {"bmc": 152, "bmc_operands": 16, **dict.fromkeys(packets, 1)}
+    cmo = {"cmo_valid": "", "cmo_kind": "o_cmo_valid_a", "cmo_addr": "o_cmo_valid_a"}
+    counts = {
+        "bmc": 152,
+        "bmc_cdb": 1,
+        "bmc_cdb_2": 1,
+        "bmc_commit": 1,
+        "bmc_commit_2": 4,
+        "bmc_operands": 16,
+    }
     all_asserts = "t:$check r:FLAVOR=assert %i"
     selections = {
-        "bmc": "@packets @operands",
+        "bmc": "@packets @operands @cmo",
         "bmc_operands": f"{all_asserts} @operands %d",
         **{task: f"{all_asserts} c:p_twin_{port} %d" for task, port in packets.items()},
     }
+    selections["bmc_commit_2"] = f"{all_asserts} @commit_and_cmo %d"
     model = [
         "read -formal -sv riscv_pkg.sv vec_hold_rows.sv",
         "read -formal -sv sdp_dist_ram.sv",
@@ -7862,9 +7950,13 @@ def test_rs_payload_twin_assertion_groups(
         "opt_clean",
         "setundef -zero -init",
         "select -assert-count 104 t:$check r:FLAVOR=assume %i",
-        "select -assert-count 172 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 175 t:$check r:FLAVOR=assert %i",
         "select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2",
         "select -set operands c:p_twin_operand_*",
+        "select -set cmo c:p_twin_cmo_*",
+        "select -set commit_and_cmo c:p_twin_commit_comb_2 @cmo",
+        "select -assert-count 3 @cmo",
+        "select -assert-count 4 @commit_and_cmo",
         "select -assert-count 4 @packets",
         "select -assert-count 16 @operands",
     ]
@@ -7924,8 +8016,8 @@ def test_rs_payload_twin_assertion_groups(
 
     if not source:
         hashes = {
-            "rs_payload_twin.sby": "9b7cf0c5bb15b82e3f3e8a4ea09da740cd8b616477a8dba0196feb1e44c598a4",
-            "rs_payload_twin_formal.sv": "36efe2495150878e0b0006ef50959dba70b1ab898df382ca98066fc5564b50af",
+            "rs_payload_twin.sby": "f425330cbe1fe3b25a25f0892775085f7f55572149a5284e248d213a13d11eaf",
+            "rs_payload_twin_formal.sv": "bf55b92f3eb8eda22aef16b2268c2a1c1f458f946711b536cdc397fbb008ae61",
             "free_undefined.ys": "9b2c2cb8b810c89401509a3ab42db9ea522b9e80b132d5c73d5ab8d516c3fe89",
         }
         procedure = (
@@ -7954,8 +8046,14 @@ def test_rs_payload_twin_assertion_groups(
         assert scripts.keys() == counts.keys()
         for task, count in counts.items():
             config = formal_task_config(str(sby.with_suffix("")), task)
-            options = ["mode bmc", "depth 5"]
+            depth = 6 if task == "bmc_commit_2" else 5
+            options = ["mode bmc", f"depth {depth}"]
             engine = "smtbmc boolector"
+            cover_check = []
+            if task == "bmc_commit_2":
+                cover_check = [
+                    "select -assert-count 1 c:c_twin_cmo_request t:$check %i r:FLAVOR=cover %i"
+                ]
             if task in packets:
                 options.append("vcd_sim on")
                 engine = "btor btormc"
@@ -7964,6 +8062,7 @@ def test_rs_payload_twin_assertion_groups(
                 "[engines]": [engine],
                 "[script]": [
                     *model,
+                    *cover_check,
                     "chformal -assert -remove " + selections[task],
                     f"select -assert-count {count} {all_asserts}",
                 ],
@@ -7984,13 +8083,15 @@ def test_rs_payload_twin_assertion_groups(
                 record("bmc", qualifier, "", port)
         for task, port in packets.items():
             record(task, f"o_{port}_a.valid", f"p_twin_{port}", port)
+        for port, qualifier in cmo.items():
+            record("bmc_commit_2", qualifier, f"p_twin_{port}", port)
         for port in operands:
             record("bmc_operands", "", f"p_twin_operand_{port}", port)
 
         # Consume complete statements so a nested condition or trailing expression
         # cannot disappear between two matched assertions.
         body = re.sub(r"//[^\n]*|/\*.*?\*/", " ", harness, flags=re.DOTALL)
-        assert len(re.findall(r"\bassert\s*\(", body)) == 172
+        assert len(re.findall(r"\bassert\s*\(", body)) == 175
         block = re.search(
             r"\balways_comb\s+begin\b(.*?)\bend\s+endmodule\s*:\s*rs_payload_twin_formal\s*\Z",
             body,
@@ -7999,7 +8100,7 @@ def test_rs_payload_twin_assertion_groups(
         assert block is not None
         statements = block[1].strip().split(";")
         assert statements.pop() == ""
-        assert len(statements) == len(expected) == sum(counts.values()) == 172
+        assert len(statements) == len(expected) == sum(counts.values()) == 175
         comparison = re.compile(
             r"(?:if\s*\(\s*([\w.]+)\s*\)\s*)?(?:(\w+)\s*:\s*)?"
             r"assert\s*\(\s*([\w.]+)\s*==\s*([\w.]+)\s*\)"
@@ -8007,6 +8108,7 @@ def test_rs_payload_twin_assertion_groups(
         owners = {
             "": "bmc",
             **{f"p_twin_{p}": t for t, p in packets.items()},
+            **{f"p_twin_{p}": "bmc_commit_2" for p in cmo},
             **{f"p_twin_operand_{p}": "bmc_operands" for p in operands},
         }
         actual: dict[tuple[str, str, str, str], str] = {}
@@ -9522,7 +9624,7 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     proof = formal_task_config("coherent_hart_cache", "coh_hart_maint_prove")
     common = [
         "select -assert-none t:$check r:FLAVOR=assume %i",
-        "select -assert-count 373 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 375 t:$check r:FLAVOR=assert %i",
     ]
     lemmas = (
         "c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* "
@@ -9532,14 +9634,14 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     covers = "chformal -cover -remove"
     owned_commands = common + [
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %d",
-        "select -assert-count 285 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 286 t:$check r:FLAVOR=assert %i",
         covers,
     ]
     proof_commands = common + [
-        f"select -assert-count 285 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
+        f"select -assert-count 286 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
         f"chformal -assert2assume {lemmas}",
-        "select -assert-count 285 t:$check r:FLAVOR=assume %i",
-        "select -assert-count 88 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 286 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 89 t:$check r:FLAVOR=assert %i",
         covers,
     ]
 
@@ -9734,6 +9836,14 @@ class FormalRunner:
             raise FileNotFoundError(f"SBY file not found: {sby_path}")
 
         cmd = ["sby", "-t", "-f", str(sby_path), task]
+        if replay := sby_config.cmo_replay_helper(sby_path, task):
+            cmd = [
+                sys.executable,
+                str(replay),
+                str(sby_path),
+                task,
+                str(formal_task_timeout_s(target.name, task)),
+            ]
 
         check_fatal_frame = target.name == "coherence_store_boundary" and task in (
             "bmc_amo_same_fatal",

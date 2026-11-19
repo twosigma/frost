@@ -28,6 +28,7 @@ from cocotb_tests.cache.test_coherence_endpoints import pack
 FILL_TID_BASE = 24
 PREFETCH = 9
 GRANT_ACK = 4
+CMO_OPCODES = (11, 12, 13)
 
 
 def parallel_reads(dut: Any) -> bool:
@@ -282,7 +283,12 @@ class Home:
         non_alloc: int = 0,
     ) -> tuple[int, int]:
         """Encode hart or agent requests with disjoint source identities."""
-        if op in (7, 8):
+        cmo = op in CMO_OPCODES
+        size = 5 if op in (7, 8, PREFETCH) else 3
+        if cmo:
+            size = 0
+            q = pack((2, 0), (2, 3), (4, 8), (1, 0))
+        elif op in (7, 8):
             q = pack((2, 2), (2, 3), (4, (9 + slot) % 16), (1, 0))
         elif op == PREFETCH:
             q = pack((2, 3), (2, 3), (4, slot), (1, 0))
@@ -295,11 +301,11 @@ class Home:
             (9, q),
             (self.p, address),
             (5, 0),
-            (3, 5 if op in (7, 8, PREFETCH) else 3),
+            (3, size),
             (32, mask),
             (1, 0),
             (1, non_alloc),
-            (1, 0),
+            (1, int(cmo)),
             (256, data),
         )
 
@@ -1596,6 +1602,31 @@ async def prefetch_fills_absent_lines_and_leaves_resident_ones(dut: Any) -> None
     assert b.reads_of(address) == 1
     assert not b.probes
     assert not int(dut.completions.pin_valid_q.value)
+
+
+@cocotb.test()
+async def dma_reader_behind_cmo_leaves_fill_free(dut: Any) -> None:
+    """Check that a DMA fill, a CMO and a younger DMA read complete in order."""
+    b = Home(dut)
+    await b.reset()
+    b.read_delay = 120
+    for n, op in enumerate(CMO_OPCODES):
+        base = 0x80002000 + 64 * n
+        second = base + (32 if b.line == 64 else 0)
+        await b.submit(7, base, slot=0)
+        await b.fills_live(1)
+        await b.submit(op, base)
+        await b.submit(7, second, slot=1)
+        for kind, addr, slot in ((7, base, 0), (op, base, 0), (7, second, 1)):
+            grant = await b.take_grant()
+            q, _ = b.demand(kind, addr, slot=slot)
+            assert (grant[1], grant[3], grant[5]) == (q, addr, 0)
+            if kind == 7:
+                assert grant[4] == b.expected(addr)
+            else:
+                assert grant[0] == GRANT_ACK
+            await b.complete(grant)
+        assert not b.get("o_fatal")
 
 
 @cocotb.test()

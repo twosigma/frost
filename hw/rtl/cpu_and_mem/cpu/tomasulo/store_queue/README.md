@@ -51,7 +51,8 @@ frees the entry, then reads the zeros from memory. A younger store
 covering the load still forwards over the older block. A Zicbom entry
 (`cbo.clean`, `cbo.flush`, `cbo.inval`) takes the same block conflict, so a
 younger load of its block waits until the entry frees, even where a store
-between them covers the load.
+between them covers the load. The comparisons with the load and with older
+vector ranges use the physical DDR block through cacheable, NC and IO mappings.
 
 On a full-flush cycle the scan can treat a squashed store's commit as visible.
 This is harmless because the LQ discards any forwarding result captured on a
@@ -131,15 +132,21 @@ uncached beat; a cached zero write restarts it immediately.
 A precise uncached block reports its completion, and any beat's error,
 with the eighth response. A Zicbom entry keeps `rs1` and its kind and has no
 data: it never becomes data-valid, so the write launch never selects it.
-Every bus master in FROST reaches DDR through the coherent home, so the
-operations have no data effect, and the entry completes as an ordered no-op:
-committed, at the drain cursor, not held by an older vector memory entry over
-its 64-byte block, with no write in flight or on the bus and no
-L1D store record pending, it is marked sent without a write and frees on the
-next cycle from registered state, as a completed write does. Every older
-store has then completed, and the next entry drains behind it; a second
-Zicbom entry waits until the first has freed. A flush or inval pulses the
-block-wide L0 invalidation at `rs1` on the cycle it frees.
+It starts committed, at the drain cursor, not held by an older vector memory
+entry over its 64-byte block, with no write in flight or on the bus and no
+L1D store record pending, so every older store has installed in the L1D or
+completed. With `CMO_HOME` (set when the hart has the coherent hierarchy), a
+block in cached DDR goes first to the hart's Zicbom requester (`o_cmo_valid`,
+`o_cmo_kind`, `o_cmo_addr`, held until `i_cmo_ready`), and the entry proceeds
+on `i_cmo_done`: the home has recalled every L1D copy, written a dirty line to
+memory and received its B (clean, flush) or dropped it (inval). A CMO through
+an NC or IO mapping names the uncached alias of DDR and acts on the real
+block. Any other block (low BRAM, a device window, or every block without
+`CMO_HOME`) proceeds one cycle after it starts, as an ordered no-op. The entry
+is then marked sent without a write and frees on the next cycle from
+registered state, as a completed write does; the next entry drains behind it,
+and a second Zicbom entry waits until the first has freed. A flush or inval
+pulses the block-wide L0 invalidation at `rs1` on the cycle it frees.
 The ROB marks a Zicbom op done at issue wherever its block lies: cached DDR,
 low BRAM or a device window. The write outputs are registered,
 including `is_mmio` and `is_cached` flags that let the memory router steer the
