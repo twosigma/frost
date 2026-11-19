@@ -19,6 +19,9 @@ cover: depth 9
 cover_backing: depth 521
 cover_backing: skip 513
 cover_backing: timeout 420
+# The witness records every cycle of the sweep. Replaying it builds the
+# waveform without querying the solver for every internal wire on every clock.
+cover_backing: vcd_sim on
 
 [engines]
 bmc: abc bmc3
