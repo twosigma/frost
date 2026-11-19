@@ -150,7 +150,8 @@ module coherence_home_engine #(
   assign snapshot_read = request_q.opcode == coherence_pkg::ReadOnceIF ||
       request_q.opcode == coherence_pkg::ReadOncePTW || request_q.opcode == coherence_pkg::DMARead;
   assign needs_probe = snapshot_read || request_q.opcode == coherence_pkg::Atomic ||
-      request_q.opcode == coherence_pkg::StoreConditional || request_q.opcode == coherence_pkg::DMAWrite;
+      request_q.opcode == coherence_pkg::StoreConditional ||
+      request_q.opcode == coherence_pkg::DMAWrite;
   assign needs_data = request_q.opcode != coherence_pkg::DMAWrite &&
       request_q.opcode != coherence_pkg::Prefetch;
   assign o_idle = phase_q == Free;
@@ -438,7 +439,8 @@ module coherence_home_engine #(
         p_snapshot_request :
         assert ((probe_q.opcode == coherence_pkg::ProbeSnapshot) ==
             (request_q.opcode == coherence_pkg::ReadOnceIF ||
-             request_q.opcode == coherence_pkg::ReadOncePTW || request_q.opcode == coherence_pkg::DMARead));
+             request_q.opcode == coherence_pkg::ReadOncePTW ||
+             request_q.opcode == coherence_pkg::DMARead));
       end
       if (phase_q == Lookup) assert (!read_sent_q && !read_done_q && !dirty_q && !error_q);
       if (phase_q == Update || phase_q == UpdateWait || phase_q == Result)

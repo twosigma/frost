@@ -78,7 +78,7 @@ module coherent_hart_cache_formal #(
   logic four_records_seen_q = 0;
   always_ff @(posedge i_clk) if (!rst && &store_holds) four_records_seen_q <= 1;
 `elsif COH_MAINT_RETAINED
-  localparam logic [2:0] store_goal = 2;
+  wire [2:0] store_goal = 3'd2;
 `else
   wire [2:0] store_goal = four_stores ? 3'd4 : two_stores ? 3'd2 : 3'd1;
 `endif
@@ -896,7 +896,8 @@ module coherent_hart_cache_formal #(
       if (snapshot_cycle_q >= 210)
         p_retained_publication : assert (final_walk_q && final_if_q && snapshot_count_q == 4);
       c_retained_publication_repeat :
-      cover (!rewrite_early && final_if_q && final_walk_q && snapshot_count_q == 4 && stored_bits == 1);
+      cover (!rewrite_early && final_if_q && final_walk_q &&
+          snapshot_count_q == 4 && stored_bits == 1);
       c_retained_publication_overlap :
       cover (rewrite_early && installed_before_update_q && final_if_q && final_walk_q &&
           snapshot_count_q == 4 && stored_bits == 1);
