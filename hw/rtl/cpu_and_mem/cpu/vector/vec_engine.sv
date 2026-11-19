@@ -506,4 +506,26 @@ module vec_engine #(
 
   assign o_idle = (state == S_IDLE) && aux_idle && fp_idle && crypto_idle;
 
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Register file port 0 and the read ports belong to whichever executor is
+  // busy, so at most one may be.
+  logic eng_reset_seen_q = 1'b0;
+  always @(posedge i_clk) begin
+    if (i_rst) eng_reset_seen_q <= 1'b1;
+    if (eng_reset_seen_q && !i_rst) begin
+      assert ($onehot0({state != S_IDLE, !aux_idle, !fp_idle, !crypto_idle}))
+      else
+        $error(
+            "vec_engine: executors busy at once: group %0b, integer %0b, FP %0b, crypto %0b",
+            state != S_IDLE,
+            !aux_idle,
+            !fp_idle,
+            !crypto_idle
+        );
+    end
+  end
+`endif
+`endif
+
 endmodule
