@@ -1069,6 +1069,32 @@ Both simulators stop on the first UART verdict marker. A program that prints
 `<<PASS>>` before a later failing check therefore passes in both. Generated
 programs must print the pass marker after their last check.
 
+#### Generated vector programs in CI
+
+On a push to main, or a CI run requested on a pull request, three jobs
+run native RTL at VLEN 128, 256 and 512. Each runs one twentieth of
+the one-program-per-form selection. The zero-based slice is the CI
+workflow run number modulo 20. Across 20 consecutive run numbers the
+slices cover all 1,995 programs once. Manual and pull request runs
+also use run numbers. A skipped or canceled slice can be replayed.
+
+In **Run workflow**, leave `campaign` at `rotation` and enter a `slice`
+from 0 through 19 to replay it. Leave `slice` empty to use the run
+number. A new dispatch draws a DDR seed from its run ID. Rerunning the
+original job or using its printed command repeats its seed.
+For the full 9,051-program campaign, choose `complete` and
+leave `slice` empty. That run assigns 3 shards to VLEN 128, 3 to
+VLEN 256 and 14 to VLEN 512.
+
+Each shard builds a four-thread simulator, checks its executable and
+source manifest, and runs one program at a time. The job summary gives
+the slice or shard, the DDR seed and the local command. Each failure
+has a command with `--test NAME` to rerun that exact numbered split.
+An empty selection, missing results or a pass without armed assertions
+fails the shard. Its artifact holds the selected names, results and
+simulator manifest. The `rvv-complete` artifact merges and checks all
+20 shards and records the commit, tools, simulator inputs and results.
+
 The fast Python tests run a Spike sample at VLEN 128 and 256. The complete
 inventory test is marked `slow`. The cocotb sample also requires
 `FROST_RVV_TESTS_RTL=1`. `FROST_RVV_TESTS_VLEN` selects its vector length.
@@ -1654,6 +1680,7 @@ and Fast Python Tests jobs locally.
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
+| Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
@@ -1668,7 +1695,8 @@ The AXI bridge unit tests cover all eight power-of-two capacities in CI.
 The standalone `test_ddr_width_config.sv` and `test_ptw_high_addr.sv`
 harnesses are not registered with the test runners or invoked by CI.
 
-Every job that simulates the whole SoC draws DDR model timing and power-up
+The generated vector shards share a DDR seed and use a cold reset.
+The whole-SoC cocotb shards draw DDR model timing and power-up
 state. The workflow sets `FROST_DDR_MODEL_SEED` and
 `FROST_RANDOM_START_SEED` from the run ID, the job, and its matrix index.
 A failing test's output names both draws, and rerunning the job repeats

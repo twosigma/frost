@@ -290,12 +290,16 @@ on X3, and the home's stream prefetcher adds up to four requests of its own.
 
 ## Verification
 
+Regular CI runs a rotating slice of generated vector programs on the
+native RTL simulator at VLEN 128, 256 and 512. A manual CI run can
+check the full suite at all three lengths.
+
 FROST is tested with formal proofs of individual modules, unit benches, full
 programs, the RISC-V architecture tests and riscv-tests, riscv-torture
 programs against Spike, TestRIG against the Sail model in four parallel CI
-jobs, and Debian on the X3. Every CI job that simulates the whole SoC draws
-its own DDR model latency, jitter, and completion order from a seed that a
-failing test's output names. CI merges the line coverage of the
+jobs, and Debian on the X3. The whole-SoC cocotb jobs draw DDR latency,
+jitter and completion order from a seed that a failing test names.
+The native vector shards share one DDR seed. CI merges line coverage of
 simulations that contribute most to it, the toggle coverage of the unit benches, and the counts of
 cover points for microarchitectural corner cases, such as a DMA write to a
 line that an executed, unretired load has read, into one

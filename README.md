@@ -316,8 +316,9 @@ CI runs on pushes to `main`. A pull request starts no CI by itself: adding the
 `run-ci` label runs the CI workflow on it, and `run-asic` runs the OpenROAD
 flow's synthesis and floorplanning. The full run covers the RISC-V
 architecture tests and riscv-torture programs against Spike reference
-results, the riscv-tests suites, TestRIG's instruction-by-instruction
-comparison with the Sail RISC-V model, unit benches for the CPU and SoC
+results, the riscv-tests suites, a rotating slice of the generated
+vector programs at three vector lengths, TestRIG's comparison of each
+instruction with the Sail RISC-V model, unit benches for the CPU and SoC
 blocks, full programs from on-chip BRAM and from cached DDR, formal proofs,
 strict SystemVerilog elaboration and synthesis checks, the Ethernet MAC/PCS
 benches, and QEMU boots of the Linux images, and it merges the coverage of the
