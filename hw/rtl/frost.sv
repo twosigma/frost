@@ -113,7 +113,7 @@ module frost #(
     // i_jtag_* pins (simulation, portable synthesis); 0 = the DTM's BSCAN
     // bundle comes from the board's BSCANE2 primitives (i_dtm_bscan_*).
     parameter int unsigned DEBUG_JTAG_TAP = 1,
-    // Build PHY_CTRL MAC_LOOPBACK (nic_mac_wrap). Requires one shared MAC
+    // Build PHY_CTRL MAC_LOOPBACK (nic_mac_10g). Requires one shared MAC
     // clock; use 0 with independent transceiver TX and RX clocks.
     parameter int unsigned RAW_LOOPBACK = 1,
     // Optional secondary 1G SGMII NIC @ 0x4002_2000 (VCU118); 0 omits it.

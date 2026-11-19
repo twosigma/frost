@@ -1536,19 +1536,42 @@ AxilPorts
     logic [DmaAxiDataBits-1:0] dn_wdata, dn_rdata;
     logic [DmaAxiDataBits/8-1:0] dn_wstrb;
 
-    nic_top #(
+    localparam int unsigned NicLimitBits = $clog2(NicRxFifoDepth) + 1;
+    // Matches nic_pkg::NumMacTotals * 64 (kept flat for Yosys read_verilog).
+    localparam int unsigned NicMacTotalsBits = 21 * 64;
+
+    logic nic_mac_tx_tvalid, nic_mac_tx_tready, nic_mac_tx_tlast, nic_mac_tx_tuser;
+    logic [63:0] nic_mac_tx_tdata;
+    logic [ 7:0] nic_mac_tx_tkeep;
+    logic [14:0] nic_mac_tx_csum;
+    logic nic_mac_rx_tvalid, nic_mac_rx_tready, nic_mac_rx_tlast;
+    logic [63:0] nic_mac_rx_tdata;
+    logic [ 7:0] nic_mac_rx_tkeep;
+    logic nic_mac_rst, nic_mac_soft_rst, nic_mac_restart;
+    logic [1:0] nic_mac_ready;
+    logic [7:0] nic_mac_link;
+    logic nic_mac_raw_loopback_en, nic_mac_loopback;
+    logic [47:0] nic_mac_station_addr;
+    logic [ 1:0] nic_mac_pause_ctrl;
+    logic [NicLimitBits-1:0] nic_mac_pause_high_water, nic_mac_pause_low_water;
+    logic [15:0] nic_mac_pause_interval;
+    logic [NicLimitBits-1:0] nic_mac_rx_fifo_limit;
+    logic nic_mac_rx_fifo_limit_wr, nic_mac_rx_fifo_limit_busy;
+    logic nic_mac_rx_desc_starved;
+    logic [NicMacTotalsBits-1:0] nic_mac_totals;
+
+    nic_engine #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .LINE_BYTES(L1LineBytes),
         .APERTURE_BASE(64'(CACHED_BASE)),
         .APERTURE_BYTES(CACHED_SIZE_BYTES),
         .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
         .RX_FIFO_DEPTH(NicRxFifoDepth),
-        .RAW_LOOPBACK(RAW_LOOPBACK),
         .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
         .DMA_AXI_ID_BITS(DmaUpIdBits)
     ) nic (
         .i_clk(i_clk),
-        .i_rst(rst_core_next),  // registered inside nic_top; see its header
+        .i_rst(rst_core_next),  // registered inside nic_engine; see its header
         .i_reg_axil_awvalid(reg_axil_awvalid[0]),
         .o_reg_axil_awready(reg_axil_awready[0]),
         .i_reg_axil_awaddr(reg_axil_addr_q[11:0]),
@@ -1606,6 +1629,75 @@ AxilPorts
         .i_dma_axi_rdata(up_rdata[0*DmaAxiDataBits+:DmaAxiDataBits]),
         .i_dma_axi_rresp(up_rresp[0*2+:2]),
         .i_dma_axi_rlast(up_rlast[0]),
+        .o_mac_tx_tvalid(nic_mac_tx_tvalid),
+        .i_mac_tx_tready(nic_mac_tx_tready),
+        .o_mac_tx_tdata(nic_mac_tx_tdata),
+        .o_mac_tx_tkeep(nic_mac_tx_tkeep),
+        .o_mac_tx_tlast(nic_mac_tx_tlast),
+        .o_mac_tx_tuser(nic_mac_tx_tuser),
+        .o_mac_tx_csum(nic_mac_tx_csum),
+        .i_mac_rx_tvalid(nic_mac_rx_tvalid),
+        .o_mac_rx_tready(nic_mac_rx_tready),
+        .i_mac_rx_tdata(nic_mac_rx_tdata),
+        .i_mac_rx_tkeep(nic_mac_rx_tkeep),
+        .i_mac_rx_tlast(nic_mac_rx_tlast),
+        .o_mac_rst(nic_mac_rst),
+        .o_mac_soft_rst(nic_mac_soft_rst),
+        .o_mac_restart(nic_mac_restart),
+        .i_mac_ready(nic_mac_ready),
+        .i_mac_link(nic_mac_link),
+        .i_mac_raw_loopback_en(nic_mac_raw_loopback_en),
+        .o_mac_loopback(nic_mac_loopback),
+        .o_mac_station_addr(nic_mac_station_addr),
+        .o_mac_pause_ctrl(nic_mac_pause_ctrl),
+        .o_mac_pause_high_water(nic_mac_pause_high_water),
+        .o_mac_pause_low_water(nic_mac_pause_low_water),
+        .o_mac_pause_interval(nic_mac_pause_interval),
+        .o_mac_rx_fifo_limit(nic_mac_rx_fifo_limit),
+        .o_mac_rx_fifo_limit_wr(nic_mac_rx_fifo_limit_wr),
+        .i_mac_rx_fifo_limit_busy(nic_mac_rx_fifo_limit_busy),
+        .o_mac_rx_desc_starved(nic_mac_rx_desc_starved),
+        .i_mac_totals(nic_mac_totals),
+        .i_phy_status(i_nic_phy_status),
+        .i_phy_diag('0),
+        .o_phy_diag_ack(),
+        .o_phy_ctrl(o_nic_phy_ctrl)
+    );
+
+    nic_mac_10g #(
+        .RX_FIFO_DEPTH(NicRxFifoDepth),
+        .RAW_LOOPBACK (RAW_LOOPBACK)
+    ) nic_mac (
+        .i_clk(i_clk),
+        .i_rst(nic_mac_rst),
+        .i_soft_rst(nic_mac_soft_rst),
+        .i_restart(nic_mac_restart),
+        .o_ready(nic_mac_ready),
+        .o_link(nic_mac_link),
+        .o_raw_loopback_en(nic_mac_raw_loopback_en),
+        .i_mac_loopback(nic_mac_loopback),
+        .i_station_mac(nic_mac_station_addr),
+        .i_pause_ctrl(nic_mac_pause_ctrl),
+        .i_pause_high_water(nic_mac_pause_high_water),
+        .i_pause_low_water(nic_mac_pause_low_water),
+        .i_pause_interval(nic_mac_pause_interval),
+        .i_rx_fifo_limit(nic_mac_rx_fifo_limit),
+        .i_rx_fifo_limit_wr(nic_mac_rx_fifo_limit_wr),
+        .o_rx_fifo_limit_busy(nic_mac_rx_fifo_limit_busy),
+        .i_rx_desc_starved(nic_mac_rx_desc_starved),
+        .o_totals(nic_mac_totals),
+        .s_axis_tx_tvalid(nic_mac_tx_tvalid),
+        .s_axis_tx_tready(nic_mac_tx_tready),
+        .s_axis_tx_tdata(nic_mac_tx_tdata),
+        .s_axis_tx_tkeep(nic_mac_tx_tkeep),
+        .s_axis_tx_tlast(nic_mac_tx_tlast),
+        .s_axis_tx_tuser(nic_mac_tx_tuser),
+        .i_tx_csum(nic_mac_tx_csum),
+        .m_axis_rx_tvalid(nic_mac_rx_tvalid),
+        .m_axis_rx_tready(nic_mac_rx_tready),
+        .m_axis_rx_tdata(nic_mac_rx_tdata),
+        .m_axis_rx_tkeep(nic_mac_rx_tkeep),
+        .m_axis_rx_tlast(nic_mac_rx_tlast),
         .i_tx_clk(i_nic_tx_clk),
         .i_rx_clk(i_nic_rx_clk),
         .i_tx_clk_ok(i_nic_tx_clk_ok),
@@ -1615,10 +1707,6 @@ AxilPorts
         .i_rx_raw_data(i_nic_rx_raw_data),
         .i_rx_raw_valid(i_nic_rx_raw_valid),
         .i_rx_signal_ok(i_nic_rx_signal_ok),
-        .i_phy_status(i_nic_phy_status),
-        .i_phy_diag('0),
-        .o_phy_diag_ack(),
-        .o_phy_ctrl(o_nic_phy_ctrl),
         .o_rx_block_lock(o_nic_rx_block_lock)
     );
 
@@ -1693,15 +1781,38 @@ AxilPorts
     );
 
     if (ENABLE_1G_ETH != 0) begin : gen_nic_1g
-      nic_top #(
+      logic nic_1g_tx_tvalid, nic_1g_tx_tready, nic_1g_tx_tlast, nic_1g_tx_tuser;
+      logic [63:0] nic_1g_tx_tdata;
+      logic [ 7:0] nic_1g_tx_tkeep;
+      logic [14:0] nic_1g_tx_csum;
+      logic nic_1g_rx_tvalid, nic_1g_rx_tready, nic_1g_rx_tlast;
+      logic [63:0] nic_1g_rx_tdata;
+      logic [ 7:0] nic_1g_rx_tkeep;
+      logic nic_1g_mac_rst, nic_1g_mac_soft_rst, nic_1g_mac_restart;
+      logic [1:0] nic_1g_mac_ready;
+      logic [7:0] nic_1g_mac_link;
+      logic nic_1g_mac_raw_loopback_en, nic_1g_mac_loopback;
+      logic [47:0] nic_1g_mac_station_addr;
+      logic [ 1:0] nic_1g_mac_pause_ctrl;
+      logic [NicLimitBits-1:0] nic_1g_mac_pause_high_water, nic_1g_mac_pause_low_water;
+      logic [15:0] nic_1g_mac_pause_interval;
+      logic [NicLimitBits-1:0] nic_1g_mac_rx_fifo_limit;
+      logic nic_1g_mac_rx_fifo_limit_wr, nic_1g_mac_rx_fifo_limit_busy;
+      logic nic_1g_mac_rx_desc_starved;
+      logic [NicMacTotalsBits-1:0] nic_1g_mac_totals;
+      logic [7:0] nic_1g_gmii_txd;
+      logic nic_1g_gmii_tx_en, nic_1g_gmii_tx_er, nic_1g_gmii_tx_clk_en;
+      /* verilator lint_off UNUSEDSIGNAL */
+      wire nic_1g_rx_raw_unused = |i_nic_1g_rx_raw_data[63:26];
+      /* verilator lint_on UNUSEDSIGNAL */
+
+      nic_engine #(
           .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
           .LINE_BYTES(L1LineBytes),
           .APERTURE_BASE(64'(CACHED_BASE)),
           .APERTURE_BYTES(CACHED_SIZE_BYTES),
           .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
           .RX_FIFO_DEPTH(NicRxFifoDepth),
-          .RAW_LOOPBACK(1),
-          .GMII_MODE(1'b1),
           .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
           .DMA_AXI_ID_BITS(DmaUpIdBits)
       ) nic_1g (
@@ -1764,21 +1875,93 @@ AxilPorts
           .i_dma_axi_rdata(up_rdata[2*DmaAxiDataBits+:DmaAxiDataBits]),
           .i_dma_axi_rresp(up_rresp[2*2+:2]),
           .i_dma_axi_rlast(up_rlast[2]),
+          .o_mac_tx_tvalid(nic_1g_tx_tvalid),
+          .i_mac_tx_tready(nic_1g_tx_tready),
+          .o_mac_tx_tdata(nic_1g_tx_tdata),
+          .o_mac_tx_tkeep(nic_1g_tx_tkeep),
+          .o_mac_tx_tlast(nic_1g_tx_tlast),
+          .o_mac_tx_tuser(nic_1g_tx_tuser),
+          .o_mac_tx_csum(nic_1g_tx_csum),
+          .i_mac_rx_tvalid(nic_1g_rx_tvalid),
+          .o_mac_rx_tready(nic_1g_rx_tready),
+          .i_mac_rx_tdata(nic_1g_rx_tdata),
+          .i_mac_rx_tkeep(nic_1g_rx_tkeep),
+          .i_mac_rx_tlast(nic_1g_rx_tlast),
+          .o_mac_rst(nic_1g_mac_rst),
+          .o_mac_soft_rst(nic_1g_mac_soft_rst),
+          .o_mac_restart(nic_1g_mac_restart),
+          .i_mac_ready(nic_1g_mac_ready),
+          .i_mac_link(nic_1g_mac_link),
+          .i_mac_raw_loopback_en(nic_1g_mac_raw_loopback_en),
+          .o_mac_loopback(nic_1g_mac_loopback),
+          .o_mac_station_addr(nic_1g_mac_station_addr),
+          .o_mac_pause_ctrl(nic_1g_mac_pause_ctrl),
+          .o_mac_pause_high_water(nic_1g_mac_pause_high_water),
+          .o_mac_pause_low_water(nic_1g_mac_pause_low_water),
+          .o_mac_pause_interval(nic_1g_mac_pause_interval),
+          .o_mac_rx_fifo_limit(nic_1g_mac_rx_fifo_limit),
+          .o_mac_rx_fifo_limit_wr(nic_1g_mac_rx_fifo_limit_wr),
+          .i_mac_rx_fifo_limit_busy(nic_1g_mac_rx_fifo_limit_busy),
+          .o_mac_rx_desc_starved(nic_1g_mac_rx_desc_starved),
+          .i_mac_totals(nic_1g_mac_totals),
+          .i_phy_status(i_nic_1g_phy_status),
+          .i_phy_diag(i_nic_1g_phy_diag),
+          .o_phy_diag_ack(o_nic_1g_phy_diag_ack),
+          .o_phy_ctrl(o_nic_1g_phy_ctrl)
+      );
+
+      nic_mac_1g #(
+          .RX_FIFO_DEPTH(NicRxFifoDepth),
+          .RAW_LOOPBACK (1)
+      ) nic_1g_mac (
+          .i_clk(i_clk),
+          .i_rst(nic_1g_mac_rst),
+          .i_soft_rst(nic_1g_mac_soft_rst),
+          .i_restart(nic_1g_mac_restart),
+          .o_ready(nic_1g_mac_ready),
+          .o_link(nic_1g_mac_link),
+          .o_raw_loopback_en(nic_1g_mac_raw_loopback_en),
+          .i_mac_loopback(nic_1g_mac_loopback),
+          .i_station_mac(nic_1g_mac_station_addr),
+          .i_pause_ctrl(nic_1g_mac_pause_ctrl),
+          .i_pause_high_water(nic_1g_mac_pause_high_water),
+          .i_pause_low_water(nic_1g_mac_pause_low_water),
+          .i_pause_interval(nic_1g_mac_pause_interval),
+          .i_rx_fifo_limit(nic_1g_mac_rx_fifo_limit),
+          .i_rx_fifo_limit_wr(nic_1g_mac_rx_fifo_limit_wr),
+          .o_rx_fifo_limit_busy(nic_1g_mac_rx_fifo_limit_busy),
+          .i_rx_desc_starved(nic_1g_mac_rx_desc_starved),
+          .o_totals(nic_1g_mac_totals),
+          .s_axis_tx_tvalid(nic_1g_tx_tvalid),
+          .s_axis_tx_tready(nic_1g_tx_tready),
+          .s_axis_tx_tdata(nic_1g_tx_tdata),
+          .s_axis_tx_tkeep(nic_1g_tx_tkeep),
+          .s_axis_tx_tlast(nic_1g_tx_tlast),
+          .s_axis_tx_tuser(nic_1g_tx_tuser),
+          .i_tx_csum(nic_1g_tx_csum),
+          .m_axis_rx_tvalid(nic_1g_rx_tvalid),
+          .m_axis_rx_tready(nic_1g_rx_tready),
+          .m_axis_rx_tdata(nic_1g_rx_tdata),
+          .m_axis_rx_tkeep(nic_1g_rx_tkeep),
+          .m_axis_rx_tlast(nic_1g_rx_tlast),
           .i_tx_clk(i_nic_1g_tx_clk),
           .i_rx_clk(i_nic_1g_rx_clk),
           .i_tx_clk_ok(i_nic_1g_tx_clk_ok),
           .i_rx_clk_ok(i_nic_1g_rx_clk_ok),
-          .o_tx_raw_data(o_nic_1g_tx_raw_data),
-          .o_tx_raw_valid(o_nic_1g_tx_raw_valid),
-          .i_rx_raw_data(i_nic_1g_rx_raw_data),
-          .i_rx_raw_valid(i_nic_1g_rx_raw_valid),
+          .o_gmii_txd(nic_1g_gmii_txd),
+          .o_gmii_tx_en(nic_1g_gmii_tx_en),
+          .o_gmii_tx_er(nic_1g_gmii_tx_er),
+          .o_gmii_tx_clk_en(nic_1g_gmii_tx_clk_en),
+          .i_gmii_rxd(i_nic_1g_rx_raw_data[7:0]),
+          .i_gmii_rx_dv(i_nic_1g_rx_raw_data[8]),
+          .i_gmii_rx_er(i_nic_1g_rx_raw_data[9]),
+          .i_gmii_rx_clk_en(i_nic_1g_rx_raw_valid),
+          .i_pcs_status(i_nic_1g_rx_raw_data[25:10]),
           .i_rx_signal_ok(i_nic_1g_rx_signal_ok),
-          .i_phy_status(i_nic_1g_phy_status),
-          .i_phy_diag(i_nic_1g_phy_diag),
-          .o_phy_diag_ack(o_nic_1g_phy_diag_ack),
-          .o_phy_ctrl(o_nic_1g_phy_ctrl),
           .o_rx_block_lock(o_nic_1g_rx_block_lock)
       );
+      assign o_nic_1g_tx_raw_data  = {54'b0, nic_1g_gmii_tx_er, nic_1g_gmii_tx_en, nic_1g_gmii_txd};
+      assign o_nic_1g_tx_raw_valid = nic_1g_gmii_tx_clk_en;
     end else begin : gen_no_nic_1g
       assign nic_1g_irq = 1'b0;
       assign o_nic_1g_tx_raw_data = '0;

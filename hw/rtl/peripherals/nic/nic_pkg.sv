@@ -173,7 +173,7 @@ package nic_pkg;
   // + 8 * (index - NumBaseCounters).
   localparam int unsigned NumBaseCounters = 21;
   localparam logic [11:0] CounterExtBaseOffset = 12'h140;
-  // MAC-domain totals (nic_mac_wrap o_totals) are counters CntRxMacOverflow .. CntPcsRxnotintable in order.
+  // MAC-domain totals (nic_mac_cdc o_totals) are counters CntRxMacOverflow .. CntPcsRxnotintable in order.
   localparam int unsigned NumMacTotals = 21;
   // Width of the PHY management diagnostic bus into the NIC: {toggle, FCS field, RECR sample}.
   localparam int unsigned PhyDiagBits = 33;
@@ -206,6 +206,19 @@ package nic_pkg;
   localparam int unsigned BeatCodeLastBit = 3;  // bytes - 1 in [2:0]
   function automatic logic [3:0] beat_code(input logic last, input logic [3:0] bytes);
     beat_code = {last, 3'(bytes - 4'd1)};
+  endfunction
+
+  // Convert between compact 4-bit beat codes {last, bytes - 1} and 8-bit
+  // contiguous AXI4-Stream TKEEP masks (1..8 valid low bytes).
+  function automatic logic [7:0] beat_code_to_tkeep(input logic [3:0] code);
+    beat_code_to_tkeep = 8'hFF >> (3'd7 - code[2:0]);
+  endfunction
+
+  function automatic logic [3:0] tkeep_to_beat_code(input logic last, input logic [7:0] tkeep);
+    logic [2:0] bytes_m1;
+    bytes_m1 = '0;
+    for (int i = 0; i < 8; i++) if (tkeep[i]) bytes_m1 = 3'(i);
+    tkeep_to_beat_code = {last, bytes_m1};
   endfunction
 
   // Request kinds an engine hands the DMA front-end (steered back with

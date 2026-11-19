@@ -65,15 +65,15 @@ hw/rtl/net10g/eth10g_tx_gearbox.sv: o_raw_valid
 hw/rtl/net10g/eth10g_tx_reconcile.sv: if (!i_rst)
 hw/rtl/net10g/eth10g_tx_reconcile.sv: o_link_ready
 hw/rtl/peripherals/aplic/aplic.sv: o_msi_valid
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: pause_rst_rx
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: pause_rst_tx
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: tx_wr_rst
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_count.i_dst_rst
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_mac_rx_mbx.i_src_rst
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_rx_fifo.o_rst
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_rx_limit.i_src_rst
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_tx_cfg_mbx.i_src_rst
-hw/rtl/peripherals/nic/nic_reset_ctrl.sv: o_core_rst_next
+hw/rtl/peripherals/nic/nic_core_reset_ctrl.sv: o_core_rst_next
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: pause_rst_rx
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: pause_rst_tx
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: tx_wr_rst
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: u_count.i_dst_rst
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: u_mac_rx_mbx.i_src_rst
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: u_rx_fifo.o_rst
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: u_rx_limit.i_src_rst
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: u_tx_cfg_mbx.i_src_rst
 hw/rtl/soc_top/soc_axi_slave.sv: o_axi_arready
 hw/rtl/soc_top/soc_axi_slave.sv: o_axi_awready
 hw/rtl/soc_top/soc_axi_slave.sv: o_axi_bvalid

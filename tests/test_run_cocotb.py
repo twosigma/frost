@@ -5071,14 +5071,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "nic_mac_gmii": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_mac_gmii",
-        hdl_toplevel_module="nic_mac_wrap",
-        verilator_extra_args=("-GGMII_MODE=1",),
+        hdl_toplevel_module="nic_mac_1g",
         description="GMII framing, rate enables, CRC errors and receive backpressure",
     ),
     "nic_rx_fifo_limit": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_rx_fifo_limit",
-        hdl_toplevel_module="nic_mac_wrap",
-        verilator_extra_args=("-GGMII_MODE=1", "-GRX_FIFO_DEPTH=8192"),
+        hdl_toplevel_module="nic_mac_1g",
+        verilator_extra_args=("-GRX_FIFO_DEPTH=8192",),
         description=(
             "NIC RX FIFO overflows at the runtime limit (512, 2048, 8192 words) and "
             "the GMII preamble-discard and rx_er counters"
@@ -5086,9 +5085,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "nic_rx_preamble_er": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_rx_preamble_er",
-        hdl_toplevel_module="nic_mac_wrap",
+        hdl_toplevel_module="nic_mac_1g",
         verilator_extra_args=(
-            "-GGMII_MODE=1",
             "-GRX_FIFO_DEPTH=8192",
             "-GRX_PREAMBLE_ER_TOLERANT=1",
         ),
@@ -5120,15 +5118,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "nic_pause_gmii": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_pause",
-        hdl_toplevel_module="nic_mac_wrap",
-        verilator_extra_args=("-GGMII_MODE=1", "-GRX_FIFO_DEPTH=2048"),
+        hdl_toplevel_module="nic_mac_1g",
+        verilator_extra_args=("-GRX_FIFO_DEPTH=2048",),
         description="802.3x pause on the GMII path: consume, honour, pause refresh and release",
     ),
     "nic_pause_10g": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_pause",
-        hdl_toplevel_module="nic_mac_wrap",
+        hdl_toplevel_module="nic_mac_10g",
         verilator_extra_args=("-GRAW_LOOPBACK=0", "-GRX_FIFO_DEPTH=2048"),
         description="802.3x pause on the 10GBASE-R path: consume, honour, pause refresh and release",
+    ),
+    "nic_engine": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_engine",
+        hdl_toplevel_module="nic_engine",
+        description=(
+            "Standalone NIC engine over its core-clock AXI4-Stream and MAC sideband "
+            "boundary"
+        ),
     ),
     "nic_top": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_top",

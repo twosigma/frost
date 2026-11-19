@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Exercise the NIC's GMII boundary with independent Ethernet byte streams."""
+"""Exercise nic_mac_1g across its core AXI4-Stream and GMII wire boundaries."""
 
 from collections import deque
 import zlib
@@ -36,7 +36,7 @@ class GmiiPeer:
         """Bind the MAC boundary and initialize the packet queues."""
         self.dut = dut
         self.period = 1
-        # The PCS status_vector, driven on raw receive data bits 25:10 (a level)
+        # The PCS status_vector, driven on i_pcs_status (a level in i_rx_clk).
         self.status = 0
         self.symbols: deque[int] = deque()
         self.transmitted: deque[bytes] = deque()
@@ -49,35 +49,38 @@ class GmiiPeer:
         while True:
             await FallingEdge(self.dut.i_rx_clk)
             enabled = cycle % self.period == 0
-            self.dut.i_rx_raw_valid.value = int(enabled)
-            self.dut.i_rx_raw_data.value = (
-                self.symbols.popleft() if enabled and self.symbols else 0
-            ) | (self.status << 10)
+            symbol = self.symbols.popleft() if enabled and self.symbols else 0
+            self.dut.i_gmii_rx_clk_en.value = int(enabled)
+            self.dut.i_gmii_rxd.value = symbol & 0xFF
+            self.dut.i_gmii_rx_dv.value = (symbol >> 8) & 1
+            self.dut.i_gmii_rx_er.value = (symbol >> 9) & 1
+            self.dut.i_pcs_status.value = self.status
             await RisingEdge(self.dut.i_rx_clk)
             if enabled:
-                value = int(self.dut.o_tx_raw_data.value)
-                assert not value & 0x200, "unexpected GMII transmit error"
-                if value & 0x100:
-                    frame.append(value & 0xFF)
+                assert not int(self.dut.o_gmii_tx_er.value), (
+                    "unexpected GMII transmit error"
+                )
+                if int(self.dut.o_gmii_tx_en.value):
+                    frame.append(int(self.dut.o_gmii_txd.value))
                 elif frame:
                     self.transmitted.append(bytes(frame))
                     frame.clear()
             cycle += 1
 
     async def collect(self) -> None:
-        """Accept CPU-side beats with periodic backpressure."""
+        """Accept core-side AXI4-Stream RX beats with periodic backpressure."""
         cycle = 0
         frame = bytearray()
         while True:
             await FallingEdge(self.dut.i_clk)
             ready = cycle % 7 != 0
-            self.dut.i_rx_ready.value = int(ready)
+            self.dut.m_axis_rx_tready.value = int(ready)
             await RisingEdge(self.dut.i_clk)
-            if ready and int(self.dut.o_rx_valid.value):
-                code = int(self.dut.o_rx_code.value)
-                data = int(self.dut.o_rx_data.value).to_bytes(8, "little")
-                frame.extend(data[: (code & 7) + 1])
-                if code & 8:
+            if ready and int(self.dut.m_axis_rx_tvalid.value):
+                nbytes = int(self.dut.m_axis_rx_tkeep.value).bit_count()
+                data = int(self.dut.m_axis_rx_tdata.value).to_bytes(8, "little")
+                frame.extend(data[:nbytes])
+                if int(self.dut.m_axis_rx_tlast.value):
                     self.received.append(bytes(frame))
                     frame.clear()
             cycle += 1
@@ -102,18 +105,17 @@ async def _send(dut: Any, payload: bytes) -> None:
         word = payload[offset : offset + 8]
         while True:
             await FallingEdge(dut.i_clk)
-            dut.i_tx_valid.value = 1
-            dut.i_tx_data.value = int.from_bytes(word, "little")
-            dut.i_tx_code.value = (
-                len(word) - 1 + (8 if offset + 8 >= len(payload) else 0)
-            )
+            dut.s_axis_tx_tvalid.value = 1
+            dut.s_axis_tx_tdata.value = int.from_bytes(word, "little")
+            dut.s_axis_tx_tkeep.value = (1 << len(word)) - 1
+            dut.s_axis_tx_tlast.value = int(offset + 8 >= len(payload))
             await Timer(1, unit="ns")
-            ready = int(dut.o_tx_ready.value)
+            ready = int(dut.s_axis_tx_tready.value)
             await RisingEdge(dut.i_clk)
             if ready:
                 break
     await FallingEdge(dut.i_clk)
-    dut.i_tx_valid.value = 0
+    dut.s_axis_tx_tvalid.value = 0
 
 
 async def _take(queue: deque[bytes], clock: LogicObject) -> bytes:
@@ -122,21 +124,34 @@ async def _take(queue: deque[bytes], clock: LogicObject) -> bytes:
     return queue.popleft()
 
 
+async def _restart_and_wait_ready(dut: Any) -> None:
+    await FallingEdge(dut.i_clk)
+    dut.i_restart.value = 1
+    await FallingEdge(dut.i_clk)
+    dut.i_restart.value = 0
+    for _ in range(400):
+        if int(dut.o_ready.value) == 3:
+            return
+        await ClockCycles(dut.i_clk, 1)
+    raise AssertionError("MAC domains did not reach ready after restart")
+
+
 @cocotb.test()
 async def gmii_frames_and_errors(dut: Any) -> None:
     """Check each termination lane, jumbo frames, rate enables and error recovery."""
     for name, value in {
         "i_rst": 1,
         "i_soft_rst": 0,
-        "i_req": 3,
-        "i_gen": 0,
-        "i_core_rst_dom": 3,
+        "i_restart": 0,
+        "i_tx_clk_ok": 1,
+        "i_rx_clk_ok": 1,
         "i_mac_loopback": 0,
-        "i_tx_valid": 0,
-        "i_tx_data": 0,
-        "i_tx_code": 0,
+        "s_axis_tx_tvalid": 0,
+        "s_axis_tx_tdata": 0,
+        "s_axis_tx_tkeep": 0,
+        "s_axis_tx_tlast": 0,
+        "s_axis_tx_tuser": 0,
         "i_tx_csum": 0,
-        "i_tx_abort": 0,
         "i_station_mac": 0,
         "i_pause_ctrl": 0,
         "i_pause_high_water": 0,
@@ -144,9 +159,13 @@ async def gmii_frames_and_errors(dut: Any) -> None:
         "i_pause_interval": 0xFFFF,
         "i_rx_fifo_limit": int(dut.RX_FIFO_DEPTH.value),
         "i_rx_fifo_limit_wr": 0,
-        "i_rx_ready": 0,
-        "i_rx_raw_data": 0,
-        "i_rx_raw_valid": 1,
+        "i_rx_desc_starved": 0,
+        "m_axis_rx_tready": 0,
+        "i_gmii_rxd": 0,
+        "i_gmii_rx_dv": 0,
+        "i_gmii_rx_er": 0,
+        "i_gmii_rx_clk_en": 1,
+        "i_pcs_status": 0,
         "i_rx_signal_ok": 1,
     }.items():
         getattr(dut, name).value = value
@@ -155,8 +174,7 @@ async def gmii_frames_and_errors(dut: Any) -> None:
     await ClockCycles(dut.i_clk, 20)
     await FallingEdge(dut.i_clk)
     dut.i_rst.value = 0
-    dut.i_req.value = 0
-    dut.i_core_rst_dom.value = 0
+    await _restart_and_wait_ready(dut)
     peer = GmiiPeer(dut)
     cocotb.start_soon(peer.wire())
     cocotb.start_soon(peer.collect())
@@ -188,8 +206,6 @@ async def gmii_frames_and_errors(dut: Any) -> None:
     totals = int(dut.o_totals.value)
     assert (totals >> 128) & ((1 << 64) - 1), "bad FCS was not counted"
     assert (totals >> 64) & ((1 << 64) - 1), "GMII receive error was not counted"
-    # The totals past the original six: the preamble-stage discards (the frame whose
-    # preamble breaks off at its second byte) and the rx_er burst inside a frame.
     assert (totals >> (64 * 6)) & ((1 << 64) - 1) == 1
     assert (totals >> (64 * 7)) & ((1 << 64) - 1) == 1
 

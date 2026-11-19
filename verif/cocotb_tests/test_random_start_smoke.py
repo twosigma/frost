@@ -25,6 +25,7 @@ from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
     RESET_CYCLES,
     _load_imem_predecode_model,
+    _nic_engine,
     generate_divided_clock,
     prepare_program_start,
     start_clocks,
@@ -114,7 +115,7 @@ async def startup_smoke(dut: Any) -> None:
         await ClockCycles(dut.i_clk, 8)
         await ReadWrite()
         soc = platform.soc if hasattr(platform, "soc") else platform
-        nic = soc.gen_cached_tier.nic
+        nic = _nic_engine(soc.gen_cached_tier.nic)
         target = nic.u_dma_axi if control == "bridge" else nic
         cocotb.log.info("STARTUP_ASSERTION_CONTROL %s", control)
         target.sim_assertion_probe.value = 1

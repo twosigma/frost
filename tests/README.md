@@ -779,7 +779,7 @@ Register a bench in `TEST_REGISTRY`:
 Check discovery with `./scripts/frost.py cocotb --list-tests`, then run
 `./scripts/frost.py cocotb new_feature`.
 
-The NIC targets include `nic_tx_segment`, `nic_rx_fifo_limit`, `nic_top_rx_fifo`,
+The NIC targets include `nic_engine`, `nic_tx_segment`, `nic_rx_fifo_limit`, `nic_top_rx_fifo`,
 `nic_pause_gmii`, `nic_pause_10g`, and `nic_pause_rx_wire`, alongside the engine and whole-NIC benches.
 Their registered tests cover segmentation headers, FIFO capacity, pause crossings, independent
 domain restarts, wire-side PAUSE validation during congestion, and cancellation under backpressure.
@@ -1395,7 +1395,8 @@ partition fails. `XILINX_PARTITIONS` lists them:
 | Partition | Root | Synthesizes |
 | --- | --- | --- |
 | `top` | `platform_top` | `platform_top`, `soc_top` without the NIC, and `cpu_top` and `frost_hart` without the roots below |
-| `nic` | `nic_top` | The NIC with its MAC/PCS |
+| `nic_engine` | `nic_engine` | The core-domain NIC engine (CSRs, IRQs, RX/TX DMA engines, AXI bridges) |
+| `nic_mac` | `nic_mac_10g` | The 10GBASE-R MAC/PCS and its CDC crossing shell |
 | `cluster_memory` | `frost_cluster_memory` | The coherence home, prefetch agent and CPU memory fabric |
 | `hart_cache` | `coherent_hart_cache` | The hart's instruction cache and L1 data cache |
 | `core` | `cpu_ooo` | The core without its out-of-order back end |

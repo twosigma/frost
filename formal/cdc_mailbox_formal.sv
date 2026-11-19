@@ -34,7 +34,7 @@ module cdc_mailbox_formal #(
 
   // Symbolic mode selector covering direct cdc_reset_pair wiring (as in
   // soc_top's gen_debug_slice_cdc.requests) and a 1-source-clock-delayed
-  // cdc_reset_pair launch. nic_mac_wrap's nic_domain_reset (HOLD_CYCLES release
+  // cdc_reset_pair launch. nic_mac_cdc's nic_domain_reset (HOLD_CYCLES release
   // and soft per-domain resets) is not modelled here.
   (* anyconst *)logic use_nic_rst_skew;
 

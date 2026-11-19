@@ -2064,6 +2064,16 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
+        "nic_reset_split_equiv.sby",
+        "NIC reset split equivalence: core and MAC reset controllers match the monolithic FSM.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "nic_axis_boundary.sby",
+        "NIC AXI4-Stream beat-code bijection, abort code isolation and TX checksum side-FIFO framing.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "rat_checkpoint_restore.sby",
         "Register alias table: unbounded circular ROB and sequence oracle across save, restore and commit.",
         tasks=(

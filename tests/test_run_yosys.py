@@ -173,7 +173,8 @@ XILINX_PARTITIONS = [
     # platform_top, soc_top without the NIC, and cpu_top and frost_hart
     # without the cluster memory, the hart's caches and the core.
     ("top", XILINX_TOP),
-    ("nic", "nic_top"),
+    ("nic_engine", "nic_engine"),
+    ("nic_mac", "nic_mac_10g"),
     # The coherence home, prefetch agent and CPU memory fabric.
     ("cluster_memory", "frost_cluster_memory"),
     # The hart's instruction cache and L1 data cache.
@@ -638,6 +639,10 @@ def test_synthesis_filelist_includes_cached_tier_dependencies(
     assert {
         "platform_top.sv",
         "nic_pkg.sv",
+        "nic_engine.sv",
+        "nic_mac_cdc.sv",
+        "nic_mac_10g.sv",
+        "nic_mac_1g.sv",
         "nic_top.sv",
         "eth10g_crc_pkg.sv",
         "eth10g_pcs_pkg.sv",

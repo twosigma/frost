@@ -1,0 +1,28 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 4
+cover: mode cover
+cover: depth 14
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top nic_reset_split_equiv --single-unit --no-synthesis-define -DFORMAL cdc_sync.sv nic_core_reset_ctrl.sv nic_mac_reset_ctrl.sv nic_reset_ctrl.sv nic_reset_split_equiv.sv
+hierarchy -top nic_reset_split_equiv
+script free_undefined.ys
+prep -top nic_reset_split_equiv -flatten
+~cover: chformal -cover -remove
+opt_clean
+
+[files]
+../hw/rtl/lib/cdc/cdc_sync.sv
+../hw/rtl/peripherals/nic/nic_core_reset_ctrl.sv
+../hw/rtl/peripherals/nic/nic_mac_reset_ctrl.sv
+../hw/rtl/peripherals/nic/nic_reset_ctrl.sv
+nic_reset_split_equiv.sv
+free_undefined.ys
