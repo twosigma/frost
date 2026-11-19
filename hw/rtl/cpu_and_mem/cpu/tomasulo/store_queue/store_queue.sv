@@ -2511,7 +2511,7 @@ module store_queue #(
         raw < XLEN'(riscv_pkg::PbmtAliasCoverLimit + riscv_pkg::PbmtAliasOffset);
     always_comb begin
       if (i_rst_n && sq_valid[slot] && sq_addr_valid[slot]) begin
-        p_order_address : assert (sq_address_flat[slot*XLEN+:XLEN] ==
+        assert (sq_address_flat[slot*XLEN+:XLEN] ==
             (sq_is_cmo[slot] && alias_window ? raw - XLEN'(riscv_pkg::PbmtAliasOffset) : raw));
       end
     end
