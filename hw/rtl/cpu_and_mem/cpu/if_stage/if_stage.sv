@@ -32,7 +32,8 @@
  * moves on during the stall.
  */
 module if_stage #(
-    parameter int unsigned XLEN = riscv_pkg::XLEN
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
+    parameter bit USE_EXTERNAL_TAGE_FOLD = 1'b0
 ) (
     input logic i_clk,
     input logic [riscv_pkg::XLEN-1:0] i_boot_addr = '0,
@@ -228,6 +229,7 @@ module if_stage #(
     // The tagged predictor's direction history and the indirect target
     // predictor's path history (tage_history).
     input logic [riscv_pkg::TageDirHistBits-1:0] i_tage_hist,
+    input logic [riscv_pkg::TageTables-1:0][riscv_pkg::TageIndexBits-1:0] i_tage_hist_fold = '0,
     input logic [riscv_pkg::TageHistBits-1:0] i_itt_hist,
     input logic i_tage_train_valid,
     input riscv_pkg::tage_lookup_t i_tage_train_lookup,
@@ -2504,11 +2506,13 @@ module if_stage #(
   riscv_pkg::tage_lookup_t tage_bank0;
   riscv_pkg::tage_lookup_t tage_bank1;
   tage_predictor #(
-      .HIST_BITS(riscv_pkg::TageDirHistBits)
+      .HIST_BITS(riscv_pkg::TageDirHistBits),
+      .USE_EXTERNAL_FOLD_INDEX(USE_EXTERNAL_TAGE_FOLD)
   ) u_tage_predictor (
       .i_clk,
       .i_lookup_word(pc_tage_lookup),
       .i_lookup_hist(i_tage_hist),
+      .i_lookup_fold_index(i_tage_hist_fold),
       .i_lookup_capture(!if_stage_stall && fetch_progress),
       .o_lookup_word(tage_lookup_word),
       .o_lookup_word_next(tage_lookup_word_next),

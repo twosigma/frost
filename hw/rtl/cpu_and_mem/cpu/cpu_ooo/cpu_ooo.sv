@@ -514,7 +514,6 @@ module cpu_ooo #(
   logic [1:0] tage_slot_valid;
   riscv_pkg::tage_lookup_t tage_slot_lookup;
   riscv_pkg::tage_lookup_t tage_slot_lookup_2;
-  logic [1:0] pd_cond_branch;
   logic tage_train_valid;
   riscv_pkg::tage_lookup_t tage_train_lookup;
   logic tage_train_bank;
@@ -853,16 +852,18 @@ module cpu_ooo #(
   logic csr_mstatus_mie_direct;
 
   // Indirect target predictor: IF's per-slot results and saved lookups, PD's
-  // JALR decodes, and the training port from tage_history.
+  // registered-packet history outputs, and the training port from tage_history.
   logic [1:0] if_itt_hit;
   logic [1:0][riscv_pkg::PhysAddrBits-2:0] if_itt_target;
   riscv_pkg::itt_lookup_t itt_slot_lookup;
   riscv_pkg::itt_lookup_t itt_slot_lookup_2;
-  logic [1:0] pd_jalr;
-  logic [1:0] pd_jump;
-  logic [1:0] pd_pred_taken;
+  logic [1:0] pd_q_cond_branch;
+  logic [1:0] pd_q_jalr;
+  logic [1:0] pd_q_itt_eligible;
+  logic [1:0] pd_q_cf;
+  logic [1:0] pd_q_pred_taken;
   logic [riscv_pkg::TageDirHistBits-1:0] tage_dir_hist;
-  logic [1:0] pd_itt_eligible;
+  logic [riscv_pkg::TageTables-1:0][riscv_pkg::TageIndexBits-1:0] tage_dir_fold;
   logic itt_train_valid;
   riscv_pkg::itt_lookup_t itt_train_lookup;
   logic itt_train_bank;
@@ -870,7 +871,8 @@ module cpu_ooo #(
   logic itt_train_mispredicted;
 
   if_stage #(
-      .XLEN(XLEN)
+      .XLEN(XLEN),
+      .USE_EXTERNAL_TAGE_FOLD(1'b1)
   ) if_stage_inst (
       .i_clk,
       .i_boot_addr,
@@ -968,6 +970,7 @@ module cpu_ooo #(
       .o_slot1_is_indirect(if_slot1_is_indirect),
       .o_width_events(if_width_events),
       .i_tage_hist(tage_dir_hist),
+      .i_tage_hist_fold(tage_dir_fold),
       .i_itt_hist(tage_lookup_hist),
       .i_tage_train_valid(tage_train_valid),
       .i_tage_train_lookup(tage_train_lookup),
@@ -1025,16 +1028,16 @@ module cpu_ooo #(
       .o_pd_redirect_ras_link(pd_redirect_ras_link),
       .o_pd_backing_refresh(pd_backing_refresh),
       .o_pd_backing_refresh_pc(pd_backing_refresh_pc),
-      .o_cond_branch(pd_cond_branch),
-      .o_jalr(pd_jalr),
-      .o_itt_eligible(pd_itt_eligible),
-      .o_jump(pd_jump),
-      .o_pred_taken(pd_pred_taken),
-      .o_q_cond_branch(),
-      .o_q_jalr(),
-      .o_q_itt_eligible(),
-      .o_q_cf(),
-      .o_q_pred_taken()
+      .o_cond_branch(),
+      .o_jalr(),
+      .o_itt_eligible(),
+      .o_jump(),
+      .o_pred_taken(),
+      .o_q_cond_branch(pd_q_cond_branch),
+      .o_q_jalr(pd_q_jalr),
+      .o_q_itt_eligible(pd_q_itt_eligible),
+      .o_q_cf(pd_q_cf),
+      .o_q_pred_taken(pd_q_pred_taken)
   );
 
   // ===========================================================================
@@ -3761,38 +3764,17 @@ module cpu_ooo #(
   // ===========================================================================
   // PD hands ID a real packet when the PD-to-ID register loads without a
   // flush, PD redirect, or reset (the redirect's younger packet becomes a
-  // bubble). A slot carries a conditional branch when it is not a bubble or a
-  // fetch fault.
+  // bubble). Lookup metadata is captured on tage_pd_accept; PD's registered-
+  // packet decode outputs (pd_q_*) qualify the FTQ write and direction push
+  // on the following cycle.
   logic tage_pd_accept;
-  logic [1:0] tage_pd_cond_branch;
   logic [1:0] tage_slot_bank;
   logic [1:0] tage_base_taken;
   assign tage_pd_accept = !pipeline_ctrl.stall && !pipeline_ctrl.flush && !pd_redirect;
-  assign tage_pd_cond_branch[0] = pd_cond_branch[0] && !from_if_to_pd.sel_nop &&
-                                  !from_if_to_pd.fetch_fault;
-  assign tage_pd_cond_branch[1] = pd_cond_branch[1] && !from_if_to_pd_2.sel_nop &&
-                                  !from_if_to_pd_2.fetch_fault;
   assign tage_slot_bank[0] = from_if_to_pd.program_counter[2];
   assign tage_slot_bank[1] = from_if_to_pd_2.program_counter[2];
   assign tage_base_taken[0] = from_if_to_pd.btb_predicted_taken || from_if_to_pd.bp_dir_taken;
   assign tage_base_taken[1] = from_if_to_pd_2.btb_predicted_taken;
-  // JALRs take saved-lookup entries too; one that is not a return saves its
-  // indirect target lookup when the lookup covered its word.
-  logic [1:0] tage_pd_jalr;
-  logic [1:0] tage_itt_slot_valid;
-  assign tage_pd_jalr[0] = pd_jalr[0] && !from_if_to_pd.sel_nop && !from_if_to_pd.fetch_fault;
-  assign tage_pd_jalr[1] = pd_jalr[1] && !from_if_to_pd_2.sel_nop && !from_if_to_pd_2.fetch_fault;
-  assign tage_itt_slot_valid = tage_slot_valid & pd_itt_eligible;
-  // Direction history: each slot's real conditional branch or jump, and the
-  // bit it pushes (a branch's final predicted direction, a jump's predicted
-  // target bit 2).
-  logic [1:0] tage_pd_cf;
-  logic [1:0] tage_pd_pred_taken;
-  assign tage_pd_cf[0] = tage_pd_cond_branch[0] ||
-      (pd_jump[0] && !from_if_to_pd.sel_nop && !from_if_to_pd.fetch_fault);
-  assign tage_pd_cf[1] = tage_pd_cond_branch[1] ||
-      (pd_jump[1] && !from_if_to_pd_2.sel_nop && !from_if_to_pd_2.fetch_fault);
-  assign tage_pd_pred_taken = pd_pred_taken;
 
   // Dispatch's tags and branch types, and its allocations registered.
   always_ff @(posedge i_clk) begin
@@ -3858,20 +3840,21 @@ module cpu_ooo #(
       .i_fetch_pc_path_bits(tage_fetch_path_bits),
       .o_lookup_hist(tage_lookup_hist),
       .i_pd_accept(tage_pd_accept),
-      .i_pd_cond_branch(tage_pd_cond_branch),
       .i_tage_slot_valid(tage_slot_valid),
       .i_tage_slot_lookup(tage_slot_lookup),
       .i_tage_slot_lookup_2(tage_slot_lookup_2),
       .i_tage_slot_bank(tage_slot_bank),
       .i_base_taken(tage_base_taken),
       .i_tage_lookup_hist(tage_packet_hist),
-      .i_pd_jalr(tage_pd_jalr),
-      .i_pd_cf(tage_pd_cf),
-      .i_pd_pred_taken(tage_pd_pred_taken),
-      .o_lookup_dir_hist(tage_dir_hist),
-      .i_itt_slot_valid(tage_itt_slot_valid),
       .i_itt_slot_lookup(itt_slot_lookup),
       .i_itt_slot_lookup_2(itt_slot_lookup_2),
+      .i_pd_q_cond_branch(pd_q_cond_branch),
+      .i_pd_q_jalr(pd_q_jalr),
+      .i_pd_q_itt_eligible(pd_q_itt_eligible),
+      .i_pd_q_cf(pd_q_cf),
+      .i_pd_q_pred_taken(pd_q_pred_taken),
+      .o_lookup_dir_hist(tage_dir_hist),
+      .o_lookup_dir_fold(tage_dir_fold),
       .i_pd_redirect_taken(pd_redirect_taken),
       .i_early_active(early_mispredict_active),
       .i_early_tag(early_mispredict_tag),
@@ -3908,13 +3891,10 @@ module cpu_ooo #(
   // Each retiring conditional branch trains from the saved lookup PD made for
   // it: record the PD branch's PC with its entry and compare at commit.
   logic [XLEN-1:0] tage_entry_pc[2**riscv_pkg::TageFtqIdxBits];
-  logic [XLEN-1:0] tage_pd_branch_pc_q;
   always_ff @(posedge i_clk) begin
-    if (tage_pd_accept)
-      tage_pd_branch_pc_q <= tage_pd_cond_branch[0] ? from_if_to_pd.program_counter :
-                                                      from_if_to_pd_2.program_counter;
     if (u_tage_history.pd_entry_pending)
-      tage_entry_pc[u_tage_history.ftq_write_ptr] <= tage_pd_branch_pc_q;
+      tage_entry_pc[u_tage_history.ftq_write_ptr] <= pd_q_cond_branch[0] ?
+          from_pd_to_id.program_counter : from_pd_to_id_2.program_counter;
   end
   always @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin

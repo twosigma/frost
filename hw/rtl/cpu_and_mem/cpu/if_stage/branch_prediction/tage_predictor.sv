@@ -65,13 +65,17 @@ module tage_predictor #(
     parameter int unsigned INDEX_BITS = riscv_pkg::TageIndexBits,
     parameter int unsigned TAG_BITS = riscv_pkg::TageTagBits,
     // The hashes read word-address bits [LOOKUP_HI:2].
-    parameter int unsigned LOOKUP_HI = 2 + 2 * INDEX_BITS
+    parameter int unsigned LOOKUP_HI = 2 + 2 * INDEX_BITS,
+    // When set, i_lookup_fold_index supplies each table's pre-folded history
+    // index instead of folding i_lookup_hist locally.
+    parameter bit USE_EXTERNAL_FOLD_INDEX = 1'b0
 ) (
     input logic i_clk,
 
     // Lookup (fetch cycle): the lookup PC's word-address bits.
     input logic [LOOKUP_HI:2] i_lookup_word,
     input logic [HIST_BITS-1:0] i_lookup_hist,
+    input logic [TABLES-1:0][INDEX_BITS-1:0] i_lookup_fold_index = '0,
     input logic i_lookup_capture,
 
     // The newest captured lookup, from the cycle after its capture. Bank b
@@ -176,7 +180,11 @@ module tage_predictor #(
       localparam logic [HIST_BITS-1:0] Mask = (TableHist >= HIST_BITS) ? '1 :
           ((HIST_BITS'(1) << TableHist) - HIST_BITS'(1));
       logic write_enable;
-      assign lookup_index[t][b] = hash_index(bank_word, i_lookup_hist & Mask);
+      logic [INDEX_BITS-1:0] folded_index;
+      assign folded_index = USE_EXTERNAL_FOLD_INDEX ? i_lookup_fold_index[t] :
+                                                      fold_index(i_lookup_hist & Mask);
+      assign lookup_index[t][b] =
+          bank_word[3+:INDEX_BITS] ^ bank_word[3+INDEX_BITS+:INDEX_BITS] ^ folded_index;
       assign lookup_tag[t][b] = hash_tag(bank_word, i_lookup_hist & Mask);
       assign write_enable = write_any[t] && (write_bank == 1'(b));
       sdp_dist_ram #(

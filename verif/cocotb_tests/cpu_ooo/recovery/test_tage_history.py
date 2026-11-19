@@ -32,6 +32,8 @@ HIST_BITS = 64
 HIST_MASK = (1 << HIST_BITS) - 1
 PATH_BITS = 2
 FTQ_MASK = (1 << TAGE_FTQ_IDX_BITS) - 1
+TAGE_INDEX_BITS = 9
+TAGE_TABLE_HIST_BITS = (12, 24, 64, 128)
 
 # Bit positions in i_hist_restore_arm, which is indexed from arm 1.
 ARM_TRAP = 0
@@ -71,17 +73,29 @@ def _pair(values: tuple[int, int], width: int) -> int:
     return values[0] | (values[1] << width)
 
 
+def _fold_dir_tables(hist: int) -> int:
+    """Pack all four folded 9-bit direction indices (table 0 in the low bits)."""
+    packed = 0
+    for table, hist_len in enumerate(TAGE_TABLE_HIST_BITS):
+        folded = 0
+        for bit in range(hist_len):
+            if (hist >> bit) & 1:
+                folded ^= 1 << (bit % TAGE_INDEX_BITS)
+        packed |= folded << (table * TAGE_INDEX_BITS)
+    return packed
+
+
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     dut.i_hist_push.value = 0
     dut.i_hist_restore_arm.value = 0
     dut.i_fetch_pc_path_bits.value = 0
     dut.i_pd_accept.value = 0
-    dut.i_pd_cond_branch.value = 0
-    dut.i_pd_jalr.value = 0
-    dut.i_pd_cf.value = 0
-    dut.i_pd_pred_taken.value = 0
-    dut.i_itt_slot_valid.value = 0
+    dut.i_pd_q_cond_branch.value = 0
+    dut.i_pd_q_jalr.value = 0
+    dut.i_pd_q_itt_eligible.value = 0
+    dut.i_pd_q_cf.value = 0
+    dut.i_pd_q_pred_taken.value = 0
     dut.i_itt_slot_lookup.value = 0
     dut.i_itt_slot_lookup_2.value = 0
     dut.i_tage_slot_valid.value = 0
@@ -161,12 +175,13 @@ async def _accept_branch(
     bank: int = 0,
     base_taken: bool = False,
     hist: int = 0,
+    cf: bool = False,
+    pred_taken: bool = False,
 ) -> int:
     """Pass one packet with a conditional branch in `slot` to ID; return its index."""
     idx = _write_index(dut)
     packed = pack_struct(TAGE_LOOKUP_FIELDS, lookup or {})
     dut.i_pd_accept.value = 1
-    dut.i_pd_cond_branch.value = 1 << slot
     dut.i_tage_slot_valid.value = int(lookup_valid) << slot
     dut.i_tage_slot_bank.value = bank << slot
     dut.i_base_taken.value = int(base_taken) << slot
@@ -177,8 +192,12 @@ async def _accept_branch(
     dut.i_tage_lookup_hist.value = hist
     await _step(dut)
     dut.i_pd_accept.value = 0
-    dut.i_pd_cond_branch.value = 0
     dut.i_tage_slot_valid.value = 0
+    dut.i_pd_q_cond_branch.value = 1 << slot
+    dut.i_pd_q_jalr.value = 0
+    dut.i_pd_q_itt_eligible.value = 0
+    dut.i_pd_q_cf.value = int(cf) << slot
+    dut.i_pd_q_pred_taken.value = int(pred_taken) << slot
     await _settle()
     return idx
 
@@ -351,7 +370,7 @@ async def test_single_cycle_reset_during_traffic(dut: Any) -> None:
 
     dut.i_hist_push.value = 1
     dut.i_pd_accept.value = 1
-    dut.i_pd_cond_branch.value = 1
+    dut.i_pd_q_cond_branch.value = 1
     dut.i_tage_slot_valid.value = 1
     _drive_commit(
         dut,
@@ -459,9 +478,9 @@ async def test_indices_advance_per_branch_packet_and_rewind_on_recovery(
     start = _write_index(dut)
 
     # Only an accepted packet with a branch takes an entry.
-    dut.i_pd_cond_branch.value = 0b01
+    dut.i_pd_q_cond_branch.value = 0b01
     await _step(dut)  # not accepted
-    dut.i_pd_cond_branch.value = 0
+    dut.i_pd_q_cond_branch.value = 0
     dut.i_pd_accept.value = 1
     await _step(dut)  # accepted, no branch
     dut.i_pd_accept.value = 0
@@ -618,7 +637,7 @@ async def test_held_slot2_training_is_dropped_when_its_entry_is_reused(
     # packet, so the held entry's turn comes on the 65th edge.
     _drive_commit(dut, [{"valid": 1, "cond_branch": 1, "tag": 1}, None])
     dut.i_pd_accept.value = 1
-    dut.i_pd_cond_branch.value = 0b01
+    dut.i_pd_q_cond_branch.value = 0b01
     dut.i_tage_slot_valid.value = 0b01
     dut.i_tage_slot_lookup.value = pack_struct(
         TAGE_LOOKUP_FIELDS, {**LOOKUP_A, "index1": 3}
@@ -628,7 +647,7 @@ async def test_held_slot2_training_is_dropped_when_its_entry_is_reused(
         assert _train(dut)["valid"]
     _clear_commit(dut)
     dut.i_pd_accept.value = 0
-    dut.i_pd_cond_branch.value = 0
+    dut.i_pd_q_cond_branch.value = 0
     dut.i_tage_slot_valid.value = 0
 
     # The first cycle without slot-1 training would have drained the hold.
@@ -656,7 +675,6 @@ async def test_slot2_pd_veto_discards_fast_btb_push_without_pushing_fallthrough(
     # target's path bits (0b11) into the live fetch history.
     idx = _write_index(dut)
     dut.i_pd_accept.value = 1
-    dut.i_pd_cond_branch.value = 0b10
     dut.i_tage_slot_valid.value = 0b10
     dut.i_tage_slot_bank.value = 0b10
     dut.i_base_taken.value = 0b10
@@ -667,8 +685,9 @@ async def test_slot2_pd_veto_discards_fast_btb_push_without_pushing_fallthrough(
     await _step(dut)
 
     # Confirm the speculative fast-BTB push polluted hist_q before the PD veto.
+    # Cycle T+1: PD presents the registered slot-2 branch decode on i_pd_q_*.
     dut.i_pd_accept.value = 0
-    dut.i_pd_cond_branch.value = 0
+    dut.i_pd_q_cond_branch.value = 0b10
     dut.i_tage_slot_valid.value = 0
     dut.i_hist_push.value = 0
     await _settle()
@@ -681,6 +700,7 @@ async def test_slot2_pd_veto_discards_fast_btb_push_without_pushing_fallthrough(
     dut.i_hist_push.value = 1
     dut.i_fetch_pc_path_bits.value = 0b01
     await _step(dut)
+    dut.i_pd_q_cond_branch.value = 0
     dut.i_hist_push.value = 0
 
     # Cycle T+2: pc_controller asserts arm 4 (ARM_PD_REDIRECT) with fall-through
@@ -723,33 +743,37 @@ async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
     mask = (1 << width) - 1
     for taken in (0, 1):
         expected = int(dut.o_lookup_dir_hist.value)
+        assert int(dut.o_lookup_dir_fold.value) == _fold_dir_tables(expected)
         for n in range(width + 5):
             slot = n % 2
             bit = int(n % 5 in (0, 2))
             dut.i_pd_accept.value = 1
-            dut.i_pd_cf.value = 1 << slot
-            dut.i_pd_pred_taken.value = bit << slot
             await _step(dut)
+            dut.i_pd_accept.value = 0
+            dut.i_pd_q_cf.value = 1 << slot
+            dut.i_pd_q_pred_taken.value = bit << slot
+            await _settle()
             expected = ((expected << 1) | bit) & mask
             assert int(dut.o_lookup_dir_hist.value) == expected
-        dut.i_pd_cf.value = 2
-        dut.i_pd_pred_taken.value = (1 - taken) << 1
-        index = await _accept_branch(dut, slot=1, hist=0xD234)
-        dut.i_pd_cf.value = 0
+            assert int(dut.o_lookup_dir_fold.value) == _fold_dir_tables(expected)
+        index = await _accept_branch(
+            dut, slot=1, hist=0xD234, cf=True, pred_taken=bool(1 - taken)
+        )
         await _allocate(dut, 7, index, slot=1)
-        dut.i_pd_cf.value = 1
-        dut.i_pd_pred_taken.value = 1
-        await _accept_branch(dut, hist=0x21)
-        dut.i_pd_cf.value = 0
+        await _accept_branch(dut, hist=0x21, cf=True, pred_taken=True)
         dut.i_early_tag.value = 7
         dut.i_early_active.value = 1
         dut.i_early_taken.value = taken
         await _step(dut)
+        dut.i_pd_q_cf.value = 0
+        dut.i_pd_q_cond_branch.value = 0
         dut.i_early_active.value = 0
         dut.i_hist_restore_arm.value = 1 << ARM_RECOVERY
         dut.i_fetch_pc_path_bits.value = 3
         await _settle()
-        assert int(dut.o_lookup_dir_hist.value) == ((expected << 1) | taken) & mask
+        restored = ((expected << 1) | taken) & mask
+        assert int(dut.o_lookup_dir_hist.value) == restored
+        assert int(dut.o_lookup_dir_fold.value) == _fold_dir_tables(restored)
         assert _lookup_hist(dut) == (_push(0xD234, 3) if taken else 0xD234)
         await _step(dut)
         dut.i_hist_restore_arm.value = 0
@@ -789,12 +813,13 @@ async def test_full_recovery_uses_both_retirement_slots(dut: Any) -> None:
         await _commit(dut, bundle)
         # Vary pending speculative work while the restore owns the lookup.
         dut.i_pd_accept.value = 1
-        dut.i_pd_cf.value = 2
-        dut.i_pd_pred_taken.value = 2
+        dut.i_pd_q_cf.value = 2
+        dut.i_pd_q_pred_taken.value = 2
         dut.i_hist_push.value = 1
         dut.i_hist_restore_arm.value = 1 << (ARM_TRAP, ARM_FENCE, ARM_RECOVERY)[n % 3]
         await _settle()
         assert int(dut.o_lookup_dir_hist.value) == expected_dir
+        assert int(dut.o_lookup_dir_fold.value) == _fold_dir_tables(expected_dir)
         assert _lookup_hist(dut) == expected_path
 
 
@@ -806,15 +831,19 @@ async def test_indirect_training_uses_its_saved_slot_and_target(dut: Any) -> Non
     for slot, tag in enumerate((8, 19)):
         index = _write_index(dut)
         dut.i_pd_accept.value = 1
-        dut.i_pd_jalr.value = 1 << slot
-        dut.i_itt_slot_valid.value = 1 << slot
+        dut.i_tage_slot_valid.value = 1 << slot
         dut.i_tage_slot_bank.value = slot << slot
         dut.i_itt_slot_lookup.value = markers[0]
         dut.i_itt_slot_lookup_2.value = markers[1]
         await _step(dut)
         dut.i_pd_accept.value = 0
-        dut.i_pd_jalr.value = 0
+        dut.i_tage_slot_valid.value = 0
+        dut.i_pd_q_jalr.value = 1 << slot
+        dut.i_pd_q_itt_eligible.value = 1 << slot
+        await _settle()
         await _allocate(dut, tag, index, slot=slot, cond=False, jalr=True)
+        dut.i_pd_q_jalr.value = 0
+        dut.i_pd_q_itt_eligible.value = 0
     targets = [0x12345, 0x45678]
     await _commit(
         dut,
