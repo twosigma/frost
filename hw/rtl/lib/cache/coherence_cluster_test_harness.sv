@@ -134,7 +134,7 @@ module coherence_cluster_test_harness #(
     output logic [L1D_MISSES-1:0] o_live_stores,
     output logic [1:0] o_held_puts,
     output logic o_load_grant,
-`ifdef F_COH_SNAPSHOT
+`ifdef COHERENCE_SNAPSHOT_PROOF
     output logic o_probe_taken,
     output logic [1:0] o_probe_opcode,
     output logic o_reply_taken,
@@ -217,7 +217,7 @@ module coherence_cluster_test_harness #(
   if (L1D_MISSES >= 3 && HOME_FILLS < 2) begin : gen_invalid_fills
     initial $fatal(1, "coherence_cluster_test_harness: three or more L1D endpoints need two fills");
   end
-`ifdef F_COH_SNAPSHOT
+`ifdef COHERENCE_SNAPSHOT_PROOF
   assign o_probe_taken = p_valid && p_ready;
   assign o_probe_opcode = probe.opcode;
   assign o_reply_taken = r_valid && r_ready;
