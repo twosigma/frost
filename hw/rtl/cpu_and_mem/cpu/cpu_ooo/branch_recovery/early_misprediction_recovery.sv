@@ -253,6 +253,16 @@ module early_misprediction_recovery #(
     end
   end
 
+  // Sample the PC and instruction length of the not-taken issue that actually
+  // launched recovery. The redirect datapath reads the station's link address.
+  logic check_not_taken_issue_q = 1'b0;
+  logic [XLEN-1:0] check_fallthrough_pc_q;
+  always_ff @(posedge i_clk) begin
+    check_not_taken_issue_q <= early_mispredict_fire && !branch_taken_resolved;
+    if (early_mispredict_fire && !branch_taken_resolved) begin
+      check_fallthrough_pc_q <= rs_issue_int.pc + (rs_issue_int.is_compressed ? XLEN'(2) : XLEN'(4));
+    end
+  end
   logic check_redirect_inputs;
 `ifdef FORMAL
   // The standalone inputs can disagree about issue validity or link address.
@@ -267,19 +277,15 @@ module early_misprediction_recovery #(
   assign check_redirect_inputs = check_redirect_issue_q;
 `else
   assign check_redirect_inputs = check_reset_seen_q && !$isunknown(
-      {o_early_mispredict_redirect_pc, o_early_mispredict_branch_taken,
-       o_early_mispredict_branch_target, o_early_mispredict_pc,
-       o_early_mispredict_is_compressed}
+      {check_not_taken_issue_q, check_fallthrough_pc_q, o_early_mispredict_redirect_pc,
+       o_early_mispredict_branch_taken}
   );
 `endif
-  // The early redirect is the branch's architectural next PC: its resolved target when taken,
-  // its fall-through when not (sync #20 item 7).
   always_ff @(posedge i_clk) begin
     if (check_redirect_inputs && !i_rst && o_early_mispredict_active) begin
-      p_early_redirect_is_architectural_next_pc :
-      assert (o_early_mispredict_redirect_pc == (o_early_mispredict_branch_taken ?
-          o_early_mispredict_branch_target : o_early_mispredict_pc +
-          (o_early_mispredict_is_compressed ? XLEN'(2) : XLEN'(4))));
+      p_early_not_taken_redirect_falls_through :
+      assert (!check_not_taken_issue_q || (!o_early_mispredict_branch_taken &&
+              o_early_mispredict_redirect_pc == check_fallthrough_pc_q));
 `ifdef EARLY_BACKEND_HOLD_PROOF
       cover_taken_redirect : cover (o_early_mispredict_branch_taken);
       cover_compressed_fallthrough :
