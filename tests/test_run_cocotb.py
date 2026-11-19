@@ -225,8 +225,8 @@ UART_LINE_CHECK: dict[str, Any] = {
     "verilator_extra_args": ("-GCLK_FREQ_HZ=3686400",),
 }
 
-# Keep a fixed regular-CI corpus so the same programs run on both memory tiers.
-# Each boot must reach every front-end activity floor in the generated code.
+# Keep the eight original seeds as the fixed CI corpus. A qualifying seed
+# reaches every activity floor in both BRAM boots and in the DDR boot.
 FEFUZZ_SEEDS = (1, 4, 7, 11, 13, 19, 22, 23)
 
 # Single source of truth for every runnable test, keyed by test name.
