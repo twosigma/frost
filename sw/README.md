@@ -395,7 +395,7 @@ can be debugged and where each one first stops.
 | `slot2_fault_test/` | A fetch fault on the second instruction of a fetch pair, one whose bytes encode a NOP included, must trap at that instruction with exact `mepc` and `mtval` |
 | `slot2_tage_bench/` | History-correlated conditional branch in the second bundle slot with 3:1 taken and 3:1 not-taken 4-step periods, checked against `mhpmcounter3` and `mhpmcounter4` so both PD override directions must fire |
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |
-| `smc_predict_test/` | A `ret`, a direct jump, a non-return indirect jump and an always-taken `beq`, each trained and then rewritten as an `addi`, must not follow their old predictions after `fence.i` |
+| `smc_predict_test/` | A `ret`, a direct jump, a non-return indirect jump and an always-taken `beq`, each trained and then rewritten as an `addi`, must not follow their old predictions after `fence.i`. The loader places this program in cached DDR. |
 | `smc_stale_test/` | Rewritten code that is dirty in the L1D over an older L2 copy runs after `fence.i` |
 | `smc_torture/` | Random code mutation under trained predictors: leaf functions in DDR are trained, then patched in place or regenerated in a new layout, and after each `fence.i` an interpreter checks them; `-DSMC_SEED=<n>` varies the stream |
 | `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, `fence.i` in S and U, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |

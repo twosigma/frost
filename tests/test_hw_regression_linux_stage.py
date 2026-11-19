@@ -2098,6 +2098,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "ptw_coherence_test",
         "ras_stress_test",
         "ras_test",
+        "smc_predict_test",
         "smode_test",
         "spanning_test",
         "sprintf_test",
