@@ -181,8 +181,9 @@ module tage_predictor #(
           ((HIST_BITS'(1) << TableHist) - HIST_BITS'(1));
       logic write_enable;
       logic [INDEX_BITS-1:0] folded_index;
-      assign folded_index = USE_EXTERNAL_FOLD_INDEX ? i_lookup_fold_index[t] :
-                                                      fold_index(i_lookup_hist & Mask);
+      assign folded_index = USE_EXTERNAL_FOLD_INDEX ? i_lookup_fold_index[t] : fold_index(
+          i_lookup_hist & Mask
+      );
       assign lookup_index[t][b] =
           bank_word[3+:INDEX_BITS] ^ bank_word[3+INDEX_BITS+:INDEX_BITS] ^ folded_index;
       assign lookup_tag[t][b] = hash_tag(bank_word, i_lookup_hist & Mask);

@@ -507,23 +507,25 @@ module tage_predictor #(
     parameter int unsigned TABLES = riscv_pkg::TageTables,
     parameter int unsigned INDEX_BITS = riscv_pkg::TageIndexBits,
     parameter int unsigned TAG_BITS = riscv_pkg::TageTagBits,
-    parameter int unsigned LOOKUP_HI = 2 + 2 * INDEX_BITS
+    parameter int unsigned LOOKUP_HI = 2 + 2 * INDEX_BITS,
+    parameter bit USE_EXTERNAL_FOLD_INDEX = 1'b0
 ) (
-    input  logic                                    i_clk,
-    input  logic                    [  LOOKUP_HI:2] i_lookup_word,
-    input  logic                    [HIST_BITS-1:0] i_lookup_hist,
-    input  logic                                    i_lookup_capture,
-    output logic                    [  LOOKUP_HI:2] o_lookup_word,
-    output logic                    [  LOOKUP_HI:2] o_lookup_word_next,
-    output logic                    [HIST_BITS-1:0] o_lookup_hist,
-    output riscv_pkg::tage_lookup_t                 o_bank0,
-    output riscv_pkg::tage_lookup_t                 o_bank1,
-    input  logic                                    i_train_valid,
-    input  riscv_pkg::tage_lookup_t                 i_train_lookup,
-    input  logic                                    i_train_bank,
-    input  logic                                    i_train_alt_taken,
-    input  logic                                    i_train_taken,
-    input  logic                                    i_train_mispredicted
+    input  logic                                                    i_clk,
+    input  logic                    [  LOOKUP_HI:2]                 i_lookup_word,
+    input  logic                    [HIST_BITS-1:0]                 i_lookup_hist,
+    input  logic                    [   TABLES-1:0][INDEX_BITS-1:0] i_lookup_fold_index = '0,
+    input  logic                                                    i_lookup_capture,
+    output logic                    [  LOOKUP_HI:2]                 o_lookup_word,
+    output logic                    [  LOOKUP_HI:2]                 o_lookup_word_next,
+    output logic                    [HIST_BITS-1:0]                 o_lookup_hist,
+    output riscv_pkg::tage_lookup_t                                 o_bank0,
+    output riscv_pkg::tage_lookup_t                                 o_bank1,
+    input  logic                                                    i_train_valid,
+    input  riscv_pkg::tage_lookup_t                                 i_train_lookup,
+    input  logic                                                    i_train_bank,
+    input  logic                                                    i_train_alt_taken,
+    input  logic                                                    i_train_taken,
+    input  logic                                                    i_train_mispredicted
 );
   (* anyseq *)logic [  LOOKUP_HI:2] f_word;
   (* anyseq *)logic [HIST_BITS-1:0] f_hist;

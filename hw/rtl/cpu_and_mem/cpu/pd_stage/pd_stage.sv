@@ -839,7 +839,7 @@ module pd_stage #(
   // muxing. Compare the indirect target against the fast BTB target in 2-bit
   // chunks before the edge and reduce the chunk bits after the edge.
   localparam int unsigned IttTargetBits = riscv_pkg::PhysAddrBits - 1;
-  localparam int unsigned IttEqChunks = (IttTargetBits + 1) / 2;
+  localparam int unsigned IttEqChunks   = (IttTargetBits + 1) / 2;
 
   logic pd_dir_taken_raw_next;
   logic pd_dir_not_taken_raw_next;
@@ -924,24 +924,24 @@ module pd_stage #(
   // staying aligned with the registered PD-to-ID packets across stalls.
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall) begin
-      pd_backing_compressed_r         <= i_backing_compressed;
-      pd_backing_return_r             <= i_backing_return;
-      pd_backing_target_r             <= i_backing_target;
-      pd_itt_slot_target_r            <= i_itt_target;
-      pd_itt_fast_taken_r             <= {
+      pd_backing_compressed_r <= i_backing_compressed;
+      pd_backing_return_r <= i_backing_return;
+      pd_backing_target_r <= i_backing_target;
+      pd_itt_slot_target_r <= i_itt_target;
+      pd_itt_fast_taken_r <= {
         i_from_if_to_pd_2.btb_predicted_taken, i_from_if_to_pd.btb_predicted_taken
       };
-      pd_itt_eq_chunk_r               <= pd_itt_eq_chunk_next;
-      pd_s1_native_low_r              <= i_from_if_to_pd.pd_target_native_low;
-      pd_s1_comp_low_r                <= i_from_if_to_pd.pd_target_compressed_low;
-      pd_s1_native_hs_r               <= i_from_if_to_pd.pd_target_native_high_select;
-      pd_s1_comp_hs_r                 <= i_from_if_to_pd.pd_target_compressed_high_select;
-      pd_s2_native_low_r              <= i_from_if_to_pd_2.pd_target_native_low;
-      pd_s2_comp_low_r                <= i_from_if_to_pd_2.pd_target_compressed_low;
-      pd_s2_native_hs_r               <= i_from_if_to_pd_2.pd_target_native_high_select;
-      pd_s2_comp_hs_r                 <= i_from_if_to_pd_2.pd_target_compressed_high_select;
-      pd_redirect_pc_high_r           <= i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit];
-      pd_redirect_pc_high_plus_one_r  <= pd_pc_high_plus_one;
+      pd_itt_eq_chunk_r <= pd_itt_eq_chunk_next;
+      pd_s1_native_low_r <= i_from_if_to_pd.pd_target_native_low;
+      pd_s1_comp_low_r <= i_from_if_to_pd.pd_target_compressed_low;
+      pd_s1_native_hs_r <= i_from_if_to_pd.pd_target_native_high_select;
+      pd_s1_comp_hs_r <= i_from_if_to_pd.pd_target_compressed_high_select;
+      pd_s2_native_low_r <= i_from_if_to_pd_2.pd_target_native_low;
+      pd_s2_comp_low_r <= i_from_if_to_pd_2.pd_target_compressed_low;
+      pd_s2_native_hs_r <= i_from_if_to_pd_2.pd_target_native_high_select;
+      pd_s2_comp_hs_r <= i_from_if_to_pd_2.pd_target_compressed_high_select;
+      pd_redirect_pc_high_r <= i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit];
+      pd_redirect_pc_high_plus_one_r <= pd_pc_high_plus_one;
       pd_redirect_pc_high_minus_one_r <= pd_pc_high_minus_one;
     end
   end
@@ -979,8 +979,7 @@ module pd_stage #(
   for (genvar s = 0; s < 2; s++) begin : gen_reg_decode
     // OPC_BRANCH = 7'b1100011, OPC_JALR = 7'b1100111, OPC_JAL = 7'b1101111
     // all share [6:4]=3'b110 and [1:0]=2'b11.
-    assign pd_reg_op_cf_hi[s] = (pd_reg_instr[s][6:4] == 3'b110) &&
-                                (pd_reg_instr[s][1:0] == 2'b11);
+    assign pd_reg_op_cf_hi[s] = (pd_reg_instr[s][6:4] == 3'b110) && (pd_reg_instr[s][1:0] == 2'b11);
     assign pd_reg_f3_br_ok[s] = (pd_reg_instr[s][3:2] == 2'b00) &&
                                 (pd_reg_instr[s][14:13] != 2'b01);
     assign pd_reg_f3_jalr_ok[s] = (pd_reg_instr[s][3:2] == 2'b01) &&
@@ -991,8 +990,7 @@ module pd_stage #(
     assign pd_reg_ret_imm_lo[s] = (pd_reg_instr[s][25:20] == 6'd0);
     assign pd_reg_ret_imm_hi[s] = (pd_reg_instr[s][31:26] == 6'd0);
     assign pd_reg_ret_rs1_ra[s] = (pd_reg_instr[s][19:15] == 5'd1);
-    assign pd_reg_ret_rd_ok[s] = (pd_reg_instr[s][11:7] == 5'd0) ||
-                                 (pd_reg_instr[s][11:7] == 5'd5);
+    assign pd_reg_ret_rd_ok[s] = (pd_reg_instr[s][11:7] == 5'd0) || (pd_reg_instr[s][11:7] == 5'd5);
     assign pd_reg_itt_eligible_raw[s] = pd_reg_op_cf_hi[s] && pd_reg_f3_jalr_ok[s] &&
         !(pd_reg_ret_imm_lo[s] && pd_reg_ret_imm_hi[s] &&
           pd_reg_ret_rs1_ra[s] && pd_reg_ret_rd_ok[s]);
@@ -1090,7 +1088,9 @@ module pd_stage #(
   assign pd_s2_br_hs_raw = o_from_pd_to_id_2.is_compressed ? pd_s2_comp_hs_r : pd_s2_native_hs_r;
   assign pd_s2_br_hs = pd_dir_not_taken_2_raw_r ?
       {1'b0, pd_s2_ft_sum[PdTargetSplit] | pd_reg_s2_pc_carry} :
-      fold_slot2_pc_carry(pd_reg_s2_pc_carry, pd_s2_br_hs_raw);
+      fold_slot2_pc_carry(
+      pd_reg_s2_pc_carry, pd_s2_br_hs_raw
+  );
 
   assign pd_sel_s2_br = pd_dir_redirect_2_raw_r && !pd_dir_redirect_1_r;
   assign pd_br_target_low = pd_sel_s2_br ? pd_s2_br_low : pd_s1_br_low;
@@ -1223,14 +1223,14 @@ module pd_stage #(
     if (!i_pipeline_ctrl.stall) begin
       pd_s1_taken_low_ref_r <= pd_sel_compressed ?
           pd_target_compressed_low_candidate : pd_target_native_low_candidate;
-      pd_s1_ft_low_ref_r    <= pd_fall_through_sum[PdTargetSplit-1:0];
+      pd_s1_ft_low_ref_r <= pd_fall_through_sum[PdTargetSplit-1:0];
       pd_s1_taken_hs_ref_r  <= pd_sel_compressed ?
           pd_target_compressed_high_select : pd_target_native_high_select;
-      pd_s1_ft_hs_ref_r     <= {1'b0, pd_fall_through_sum[PdTargetSplit]};
+      pd_s1_ft_hs_ref_r <= {1'b0, pd_fall_through_sum[PdTargetSplit]};
       pd_s2_taken_low_ref_r <= pd_slot2_target_selected_low;
-      pd_s2_ft_low_ref_r    <= pd_slot2_fall_through_sum[PdTargetSplit-1:0];
-      pd_s2_taken_hs_ref_r  <= pd_slot2_target_selected_high_select;
-      pd_s2_ft_hs_ref_r     <= {1'b0, pd_slot2_fall_through_sum[PdTargetSplit] | pd_slot2_pc_carry};
+      pd_s2_ft_low_ref_r <= pd_slot2_fall_through_sum[PdTargetSplit-1:0];
+      pd_s2_taken_hs_ref_r <= pd_slot2_target_selected_high_select;
+      pd_s2_ft_hs_ref_r <= {1'b0, pd_slot2_fall_through_sum[PdTargetSplit] | pd_slot2_pc_carry};
     end
   end
   assign pd_s1_br_low_reference_r = pd_dir_not_taken_raw_r ?
@@ -1480,11 +1480,7 @@ module pd_stage #(
     end else begin
       if (pd_sim_reset_seen_q && pd_redirect_target_reference_armed &&
           pd_redirect_reference_armed && !$isunknown(
-              {
-                pd_redirect_r,
-                o_pd_redirect_target,
-                pd_redirect_target_reference
-              }
+              {pd_redirect_r, o_pd_redirect_target, pd_redirect_target_reference}
           )) begin
         p_pd_redirect_target_boundary_exact :
         assert (!pd_redirect_r || (o_pd_redirect_target == pd_redirect_target_reference));
@@ -1806,7 +1802,7 @@ module pd_stage #(
         formal_q_cf_ref_q[1]           <= (pd_cond_branch_2 || pd_slot2_jump) &&
                                           !i_from_if_to_pd_2.sel_nop &&
                                           !i_from_if_to_pd_2.fetch_fault;
-        formal_q_pred_taken_ref_q      <= o_pred_taken;
+        formal_q_pred_taken_ref_q <= o_pred_taken;
       end
     end
   end

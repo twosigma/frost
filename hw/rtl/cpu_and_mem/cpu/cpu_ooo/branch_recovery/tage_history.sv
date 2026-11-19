@@ -91,27 +91,27 @@ module tage_history #(
     // Lookup metadata is sampled on the i_pd_accept edge; the per-slot decode
     // and direction flags (i_pd_q_*) arrive the following cycle from PD's
     // registered packet. Bit s of each per-slot vector is slot s + 1.
-    input  logic                                    i_pd_accept,
-    input  logic                    [          1:0] i_tage_slot_valid,
-    input  riscv_pkg::tage_lookup_t                 i_tage_slot_lookup,
-    input  riscv_pkg::tage_lookup_t                 i_tage_slot_lookup_2,
-    input  logic                    [          1:0] i_tage_slot_bank,
+    input  logic                                                           i_pd_accept,
+    input  logic                    [            1:0]                      i_tage_slot_valid,
+    input  riscv_pkg::tage_lookup_t                                        i_tage_slot_lookup,
+    input  riscv_pkg::tage_lookup_t                                        i_tage_slot_lookup_2,
+    input  logic                    [            1:0]                      i_tage_slot_bank,
     // The BTB and bimodal direction each slot's branch had before PD.
-    input  logic                    [          1:0] i_base_taken,
-    input  logic                    [HIST_BITS-1:0] i_tage_lookup_hist,
-    input  riscv_pkg::itt_lookup_t                  i_itt_slot_lookup,
-    input  riscv_pkg::itt_lookup_t                  i_itt_slot_lookup_2,
+    input  logic                    [            1:0]                      i_base_taken,
+    input  logic                    [  HIST_BITS-1:0]                      i_tage_lookup_hist,
+    input  riscv_pkg::itt_lookup_t                                         i_itt_slot_lookup,
+    input  riscv_pkg::itt_lookup_t                                         i_itt_slot_lookup_2,
     // Registered-packet decode and direction-history bits from PD, valid the
     // cycle after i_pd_accept (when pd_accept_q is asserted).
-    input  logic                    [          1:0] i_pd_q_cond_branch,
-    input  logic                    [          1:0] i_pd_q_jalr,
-    input  logic                    [          1:0] i_pd_q_itt_eligible,
-    input  logic                    [          1:0] i_pd_q_cf,
-    input  logic                    [          1:0] i_pd_q_pred_taken,
+    input  logic                    [            1:0]                      i_pd_q_cond_branch,
+    input  logic                    [            1:0]                      i_pd_q_jalr,
+    input  logic                    [            1:0]                      i_pd_q_itt_eligible,
+    input  logic                    [            1:0]                      i_pd_q_cf,
+    input  logic                    [            1:0]                      i_pd_q_pred_taken,
     // The direction history and its incrementally folded per-table indices
     // for the tagged predictor's lookup.
-    output logic                    [ DIR_BITS-1:0] o_lookup_dir_hist,
-    output logic [TAGE_TABLES-1:0][TAGE_INDEX_BITS-1:0] o_lookup_dir_fold,
+    output logic                    [   DIR_BITS-1:0]                      o_lookup_dir_hist,
+    output logic                    [TAGE_TABLES-1:0][TAGE_INDEX_BITS-1:0] o_lookup_dir_fold,
 
     // The PD redirect's direction, sampled in its redirect cycle.
     input logic i_pd_redirect_taken,
@@ -195,8 +195,8 @@ module tage_history #(
     endcase
   endfunction
 
-  function automatic logic [TAGE_INDEX_BITS-1:0] fold_dir_table(
-      input logic [DIR_BITS-1:0] hist, input int unsigned hist_len);
+  function automatic logic [TAGE_INDEX_BITS-1:0] fold_dir_table(input logic [DIR_BITS-1:0] hist,
+                                                                input int unsigned hist_len);
     fold_dir_table = '0;
     for (int b = 0; b < DIR_BITS; b++) begin
       if (b < int'(hist_len))
@@ -407,8 +407,8 @@ module tage_history #(
     early_dir_hist_q <= ftq_read_early.dir_hist;
     for (int t = 0; t < TAGE_TABLES; t++)
     early_dir_fold_q[t] <= fold_dir_table(ftq_read_early.dir_hist, table_hist_bits(t));
-    early_q          <= i_early_active;
-    early_taken_q    <= i_early_taken;
+    early_q       <= i_early_active;
+    early_taken_q <= i_early_taken;
   end
 
   // Arms, highest priority first: 1 trap or xRET, 2 FENCE-class flush,
@@ -454,10 +454,9 @@ module tage_history #(
   ) : retired_dir_hist;
   for (genvar t = 0; t < TAGE_TABLES; t++) begin : gen_retired_fold
     localparam int unsigned HistLen = table_hist_bits(t);
-    assign retired_dir_fold_after_slot1[t] = (i_commit_valid[0] && i_commit_cf[0]) ?
-        push_dir_fold(
-            retired_dir_fold_q[t], retired_dir_hist[HistLen-1], retired_dir_bit[0], HistLen
-        ) : retired_dir_fold_q[t];
+    assign retired_dir_fold_after_slot1[t] = (i_commit_valid[0] && i_commit_cf[0]) ? push_dir_fold(
+        retired_dir_fold_q[t], retired_dir_hist[HistLen-1], retired_dir_bit[0], HistLen
+    ) : retired_dir_fold_q[t];
   end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -468,9 +467,12 @@ module tage_history #(
       for (int t = 0; t < TAGE_TABLES; t++) begin
         retired_dir_fold_q[t] <= push_dir_fold(
             retired_dir_fold_after_slot1[t],
-            retired_dir_after_slot1[table_hist_bits(t)-1],
+            retired_dir_after_slot1[table_hist_bits(
+                t
+            )-1],
             retired_dir_bit[1],
-            table_hist_bits(t)
+            table_hist_bits(
+                t)
         );
       end
     end else begin
