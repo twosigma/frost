@@ -17,17 +17,21 @@
 /*
  * Early misprediction recovery.
  *
- * When branch_resolution flags a checkpointed conditional-branch misprediction,
- * this two-phase FSM starts recovery in the cycle after the branch resolves
- * instead of waiting for the branch to reach the ROB head:
+ * When branch_resolution flags a checkpointed conditional-branch or JALR
+ * misprediction, this two-phase FSM starts recovery in the cycle after the
+ * branch resolves instead of waiting for the branch to reach the ROB head:
  *   cycle N   : capture the mispredicting branch's redirect/BTB/checkpoint data;
  *   cycle N+1 : early_mispredict_active -> front-end redirect + RAT restore,
  *               with dispatch and issue held (early_backend_recovery_hold);
  *   cycle N+2 : early_backend_recovery_pending -> backend partial flush.
- * JALR mispredictions recover at commit. The wide payload registers capture
- * on an issue-local superset of the fire condition, but only the
- * checkpoint-qualified misprediction launches a recovery, and only one
- * recovery runs at a time.
+ * A JALR (indirect jump, indirect call or return) recovers here too when
+ * riscv_pkg::EarlyJalrRecovery is set: its redirect is its resolved target,
+ * and the payload keeps its call, return and JALR bits for the BTB, RAS and
+ * history repair. The RAT keeps a call's own link-register mapping across the
+ * restore (register_alias_table). JAL mispredictions recover at commit. The
+ * wide payload registers capture on an issue-local superset of the fire
+ * condition, but only the checkpoint-qualified misprediction launches a
+ * recovery, and only one recovery runs at a time.
  */
 
 module early_misprediction_recovery #(
@@ -68,6 +72,10 @@ module early_misprediction_recovery #(
     output logic [                            XLEN-1:0] o_early_mispredict_pc,
     output logic [                            XLEN-1:0] o_early_mispredict_branch_target,
     output logic                                        o_early_mispredict_branch_taken,
+    // The recovering instruction is a JALR, and its return stack class.
+    output logic                                        o_early_mispredict_is_jalr,
+    output logic                                        o_early_mispredict_is_call,
+    output logic                                        o_early_mispredict_is_return,
     output logic                                        o_early_recovery_en,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_early_recovery_tag,
     output logic                                        o_early_backend_recovery_hold,
@@ -119,25 +127,34 @@ module early_misprediction_recovery #(
   logic [XLEN-1:0] early_mispredict_pc;
   logic [XLEN-1:0] early_mispredict_branch_target;
   logic early_mispredict_branch_taken;
+  logic early_mispredict_is_jalr;
+  logic early_mispredict_is_call;
+  logic early_mispredict_is_return;
 
-  // Only conditional branches recover at execute; JALR recovers at commit.
-  // For non-JALR updates, the mux below equals the direction-or-target
-  // mismatch in branch_update.mispredicted. The later fire gate excludes JALR.
+  // Conditional branches, and JALRs when EarlyJalrRecovery is set, recover at
+  // execute. For a conditional branch the direct form below equals the
+  // direction-or-target mismatch in branch_update.mispredicted; a JALR takes
+  // the full flag (its computed target against the predicted one).
   logic branch_mispredicted_direct;
+  logic jalr_admitted;
+  logic issue_mispredicted;
   assign branch_mispredicted_direct = branch_update.valid && (branch_taken_resolved ?
       !(rs_issue_int.predicted_taken && rs_issue_int.predicted_target_ok) :
       rs_issue_int.predicted_taken);
-  assign early_mispredict_capture = branch_mispredicted_direct && !early_mispredict_pending &&
+  assign jalr_admitted = riscv_pkg::EarlyJalrRecovery || !rs_issue_int.is_jalr;
+  assign issue_mispredicted = rs_issue_int.is_jalr ?
+      (riscv_pkg::EarlyJalrRecovery && branch_update.mispredicted) : branch_mispredicted_direct;
+  assign early_mispredict_capture = issue_mispredicted && !early_mispredict_pending &&
                                     !early_backend_recovery_pending;
-  // Capture checkpointed conditional-branch payloads while recovery can
-  // launch. This includes every fire on the same edge. Extra captures are
+  // Capture checkpointed conditional-branch and JALR payloads while recovery
+  // can launch. This includes every fire on the same edge. Extra captures are
   // inert because only early_mispredict_pending exposes the payload.
   assign early_mispredict_payload_capture =
       rs_issue_int.valid && rs_issue_int.is_branch_class && rs_issue_int.has_checkpoint &&
-      !rs_issue_int.is_jal && !rs_issue_int.is_jalr &&
+      !rs_issue_int.is_jal && jalr_admitted &&
       !early_mispredict_pending && !early_backend_recovery_pending;
   assign early_mispredict_fire = early_mispredict_capture &&
-                                  rs_issue_int.has_checkpoint && !rs_issue_int.is_jalr &&
+                                  rs_issue_int.has_checkpoint && jalr_admitted &&
                                   !fence_i_flush && !mispredict_recovery_pending;
 
   always_ff @(posedge i_clk) begin
@@ -185,7 +202,8 @@ module early_misprediction_recovery #(
       early_mispredict_tag <= branch_update.tag;
 
       // Redirect to the taken target or fallthrough (link_addr). The INT
-      // station reads pc and link_addr from its tag-indexed side RAM.
+      // station reads pc and link_addr from its tag-indexed side RAM. A JALR
+      // resolves taken, so it redirects to its computed target.
       early_mispredict_redirect_pc <= branch_taken_resolved ?
           branch_target_resolved : rs_issue_int.link_addr;
 
@@ -196,6 +214,9 @@ module early_misprediction_recovery #(
       early_mispredict_branch_target <= branch_target_resolved;
       early_mispredict_branch_taken <= branch_taken_resolved;
       early_mispredict_is_compressed <= rs_issue_int.is_compressed;
+      early_mispredict_is_jalr <= rs_issue_int.is_jalr;
+      early_mispredict_is_call <= rs_issue_int.is_call;
+      early_mispredict_is_return <= rs_issue_int.is_return;
     end
   end
 
@@ -226,6 +247,9 @@ module early_misprediction_recovery #(
   assign o_early_mispredict_pc = early_mispredict_pc;
   assign o_early_mispredict_branch_target = early_mispredict_branch_target;
   assign o_early_mispredict_branch_taken = early_mispredict_branch_taken;
+  assign o_early_mispredict_is_jalr = early_mispredict_is_jalr;
+  assign o_early_mispredict_is_call = early_mispredict_is_call;
+  assign o_early_mispredict_is_return = early_mispredict_is_return;
   assign o_early_recovery_en = early_recovery_en;
   assign o_early_recovery_tag = early_recovery_tag;
   assign o_early_backend_recovery_hold = early_backend_recovery_hold;
@@ -266,6 +290,25 @@ module early_misprediction_recovery #(
     end
   end
 `else
+  // The early redirect is the branch's architectural next PC: its resolved target when taken,
+  // its fall-through when not (sync #20 item 7).
+  always_ff @(posedge i_clk) begin
+    if (
+`ifndef FORMAL
+        check_reset_seen_q &&
+`endif
+        !i_rst && o_early_mispredict_active && !$isunknown(
+            {o_early_mispredict_redirect_pc, o_early_mispredict_branch_taken,
+             o_early_mispredict_branch_target, o_early_mispredict_pc,
+             o_early_mispredict_is_compressed}
+        )) begin
+      p_early_redirect_is_architectural_next_pc :
+      assert (o_early_mispredict_redirect_pc == (o_early_mispredict_branch_taken ?
+          o_early_mispredict_branch_target : o_early_mispredict_pc +
+          (o_early_mispredict_is_compressed ? XLEN'(2) : XLEN'(4))));
+    end
+  end
+
   // Compare against the full misprediction flag and qualified JALR bit.
   // A misprediction requires a valid branch update, where the raw and
   // qualified JALR bits agree.
@@ -273,7 +316,8 @@ module early_misprediction_recovery #(
   assign early_mispredict_fire_reference = branch_update.mispredicted &&
                                             !early_mispredict_pending &&
                                             !early_backend_recovery_pending &&
-                                            rs_issue_int.has_checkpoint && !is_jalr_issue &&
+                                            rs_issue_int.has_checkpoint &&
+                                            (riscv_pkg::EarlyJalrRecovery || !is_jalr_issue) &&
                                             !fence_i_flush && !mispredict_recovery_pending;
 
   always_ff @(posedge i_clk) begin

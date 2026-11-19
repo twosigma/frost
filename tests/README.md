@@ -160,6 +160,13 @@ overlaps of those forms.
 blocks, directed CPU tests, and applications from `sw/apps/`, which the
 runner compiles first. A failing RTL assertion fails the simulation.
 
+| Branch prediction test | What it checks |
+|---|---|
+| `ittage_predictor` | Indirect target allocation, provider confidence, lookup capture and convergence of independently initialized table copies. |
+| `bpred_probe` | Reports mispredictions and cycles for calls, returns, slot-2 conditionals, a jump table and correlated branches. |
+| `pd_itt_slot2` | Checks that a slot-1 branch veto keeps its fall-through when a killed slot-2 JALR has a trained target. The callee checks its return address and call count. |
+
+
 `vec_vtype_tracker` checks register and immediate configuration allocation,
 the delayed ROB in-flight indication, architectural reload, full flushes
 and checkpoint restore. `vec_vtype_handoff_test_v128/v256/v512` execute a

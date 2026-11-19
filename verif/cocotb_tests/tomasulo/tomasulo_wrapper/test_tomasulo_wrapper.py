@@ -1372,7 +1372,11 @@ async def test_slot2_rename_wins_same_register_through_wrapper(dut: Any) -> None
 
 @cocotb.test()
 async def test_slot2_branch_checkpoint_overlay_through_wrapper(dut: Any) -> None:
-    """A slot-2 branch checkpoint restores slot 1's rename but not slot 2's."""
+    """A slot-2 branch checkpoint restores slot 1's rename and the branch's own.
+
+    The live branch keeps its own destination (a call's link register, as
+    after an early JALR recovery); the younger rename is dropped.
+    """
     cocotb.log.info("=== Test: Slot-2 Branch Checkpoint Overlay Through Wrapper ===")
     dut_if, _ = await setup_test(dut)
 
@@ -1416,10 +1420,14 @@ async def test_slot2_branch_checkpoint_overlay_through_wrapper(dut: Any) -> None
     restored = dut_if.read_int_src1()
     assert restored.renamed and restored.tag == tag_1
 
-    for reg in (6, 7):
-        dut_if.set_int_src1(reg, 0)
-        await RisingEdge(dut_if.clock)
-        assert not dut_if.read_int_src1().renamed
+    dut_if.set_int_src1(6, 0)
+    await RisingEdge(dut_if.clock)
+    own = dut_if.read_int_src1()
+    assert own.renamed and own.tag == tag_branch
+
+    dut_if.set_int_src1(7, 0)
+    await RisingEdge(dut_if.clock)
+    assert not dut_if.read_int_src1().renamed
 
     cocotb.log.info("=== Test Passed ===")
 

@@ -275,6 +275,18 @@ module if_prediction_walk_past_formal (
       .o_slot1_has_control_flow(),
       .o_slot1_is_indirect(),
       .o_width_events(),
+      // Each predictor stub supplies independent responses. The walk-past
+      // contract has no training source and does not consume the saved lookups.
+      .i_itt_hist('0),
+      .i_itt_train_valid(1'b0),
+      .i_itt_train_lookup('0),
+      .i_itt_train_bank(1'b0),
+      .i_itt_train_target('0),
+      .i_itt_train_mispredicted(1'b0),
+      .o_itt_slot_lookup(),
+      .o_itt_slot_lookup_2(),
+      .o_itt_hit(),
+      .o_itt_target(),
       .i_tage_hist('0),
       .i_tage_train_valid(1'b0),
       .i_tage_train_lookup('0),
@@ -459,6 +471,7 @@ module backing_btb #(
 ) (
     input  logic                                             i_clk,
     input  logic                                             i_reset,
+    input  logic                                             i_redirect,
     input  logic [$clog2(ENTRIES/WAYS)-1:0]                  i_lookup_index,
     input  logic [                XLEN-1:0]                  i_packet_pc,
     input  logic                                             i_packet_compressed,
@@ -490,8 +503,8 @@ endmodule : backing_btb
 
 // verilog_lint: waive module-filename
 module tage_predictor #(
-    parameter int unsigned HIST_BITS = riscv_pkg::TageHistBits,
-    parameter int unsigned T1_HIST_BITS = riscv_pkg::TageT1HistBits,
+    parameter int unsigned HIST_BITS = riscv_pkg::TageDirHistBits,
+    parameter int unsigned TABLES = riscv_pkg::TageTables,
     parameter int unsigned INDEX_BITS = riscv_pkg::TageIndexBits,
     parameter int unsigned TAG_BITS = riscv_pkg::TageTagBits,
     parameter int unsigned LOOKUP_HI = 2 + 2 * INDEX_BITS
@@ -521,6 +534,45 @@ module tage_predictor #(
   assign o_bank0 = f_b0;
   assign o_bank1 = f_b1;
 endmodule : tage_predictor
+
+// verilog_lint: waive module-filename
+module ittage_predictor #(
+    parameter int unsigned HIST_BITS = riscv_pkg::TageHistBits,
+    parameter int unsigned HIST1 = riscv_pkg::IttHist1Bits,
+    parameter int unsigned HIST2 = riscv_pkg::IttHist2Bits,
+    parameter int unsigned HIST3 = riscv_pkg::IttHist3Bits,
+    parameter int unsigned INDEX_BITS = riscv_pkg::IttIndexBits,
+    parameter int unsigned TAG_BITS = riscv_pkg::IttTagBits,
+    parameter int unsigned TARGET_BITS = riscv_pkg::PhysAddrBits,
+    parameter int unsigned LOOKUP_HI = riscv_pkg::TageLookupHiBit
+) (
+    input  logic                                                      i_clk,
+    input  logic                   [    LOOKUP_HI:2]                  i_lookup_word,
+    input  logic                   [  HIST_BITS-1:0]                  i_lookup_hist,
+    input  logic                                                      i_lookup_capture,
+    output logic                   [  HIST_BITS-1:0]                  o_lookup_hist,
+    output riscv_pkg::itt_lookup_t                                    o_bank0,
+    output riscv_pkg::itt_lookup_t                                    o_bank1,
+    output logic                   [            1:0]                  o_hit,
+    output logic                   [            1:0][TARGET_BITS-2:0] o_target,
+    input  logic                                                      i_train_valid,
+    input  riscv_pkg::itt_lookup_t                                    i_train_lookup,
+    input  logic                                                      i_train_bank,
+    input  logic                   [TARGET_BITS-2:0]                  i_train_target,
+    input  logic                                                      i_train_mispredicted
+);
+  // The indirect target predictor's outputs are free: the walk-past checks
+  // do not depend on its predictions.
+  (* anyseq *) logic [HIST_BITS-1:0] f_hist;
+  (* anyseq *) riscv_pkg::itt_lookup_t f_b0, f_b1;
+  (* anyseq *) logic [1:0] f_hit;
+  (* anyseq *) logic [1:0][TARGET_BITS-2:0] f_target;
+  assign o_lookup_hist = f_hist;
+  assign o_bank0 = f_b0;
+  assign o_bank1 = f_b1;
+  assign o_hit = f_hit;
+  assign o_target = f_target;
+endmodule : ittage_predictor
 
 // verilog_lint: waive module-filename
 module immu #(

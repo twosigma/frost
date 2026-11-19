@@ -225,8 +225,26 @@ UART_LINE_CHECK: dict[str, Any] = {
     "verilator_extra_args": ("-GCLK_FREQ_HZ=3686400",),
 }
 
+# Front-end fuzzer seeds (sw/apps/fefuzz): each seed is one generated program that checks its own
+# signature, with cpu_ooo's retire-order assertion and the PD assertions active in simulation.
+FEFUZZ_SEEDS = (1, 4, 7, 11, 13, 19, 22, 23)
+
 # Single source of truth for every runnable test, keyed by test name.
 TEST_REGISTRY: dict[str, CocotbRunConfig] = {
+    **{
+        f"fefuzz_{seed}": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="fefuzz",
+            nic_mac_clocks=False,
+            description=(
+                f"Front-end fuzzer seed {seed}: random branch, call, indirect call and "
+                "jump mixes that check their own signature"
+            ),
+            extra_env=(("FE_SEED", str(seed)), ("COCOTB_MAX_CYCLES", "3000000")),
+        )
+        for seed in FEFUZZ_SEEDS
+    },
     "exec_latency_probe": CocotbRunConfig(
         python_test_module="cocotb_tests.test_exec_latency_probe",
         hdl_toplevel_module="frost",
@@ -308,6 +326,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="cf_ext_test",
         nic_mac_clocks=False,
         description="Compressed double-precision floating-point loads and stores (Zcd)",
+    ),
+    "pd_itt_slot2": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="pd_itt_slot2",
+        nic_mac_clocks=False,
+        description=(
+            "A not-taken PD redirect keeps its fall-through when the killed slot 2 "
+            "behind the branch holds a trained indirect call"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
     ),
     "call_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -606,12 +635,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Random code mutation under trained predictors, self-checking",
         extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),
     ),
+    "bpred_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="bpred_probe",
+        nic_mac_clocks=False,
+        description=(
+            "Mispredictions for first-packet returns and jumps, slot-2 branches, "
+            "jump tables and history-correlated branches"
+        ),
+    ),
+    "mispen_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mispen_probe",
+        nic_mac_clocks=False,
+        description=(
+            "Misprediction penalty per class: conditional branch, indirect jump, "
+            "indirect call, return and BTB-missing jump"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "1500000"),),
+    ),
     "smc_predict_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="smc_predict_test",
         nic_mac_clocks=False,
-        description="Rewritten code does not follow stale branch predictions",
+        description="Rewritten ALU instructions ignore trained return, direct, indirect and branch targets",
     ),
     "btb_mode_alias_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -5644,6 +5694,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_tage_predictor",
         hdl_toplevel_module="tage_predictor",
         description="Tagged branch-direction prediction, allocation, and training",
+    ),
+    "ittage_predictor": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.branch_prediction.test_ittage_predictor",
+        hdl_toplevel_module="ittage_predictor",
+        description="Indirect target prediction, allocation, confidence and replacement",
     ),
     "branch_prediction_controller": CocotbRunConfig(
         python_test_module=(

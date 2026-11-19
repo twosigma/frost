@@ -299,6 +299,8 @@ def _clear_inputs(dut: Any) -> None:
     _drive_if_packet(dut, {})
     _drive_if_packet(dut, {}, slot2=True)
     _drive_backing(dut)
+    dut.i_itt_hit.value = 0
+    dut.i_itt_target.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -2086,3 +2088,56 @@ async def test_slot2_tage_bubble_fault_and_slot1_jal_priority(dut: Any) -> None:
     redirect, taken, target, slot2 = await _backing_redirect(dut)
     assert redirect and not slot2 and taken
     assert target == (pc + 24) & MASK_XLEN
+
+
+@cocotb.test()
+async def test_slot2_backing_target_owns_a_two_hit_packet(dut: Any) -> None:
+    """A stale slot-1 hit on ADDI cannot supply the target of a live slot-2 jump."""
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    stale = 0x8000_0C40
+    target = 0x8000_0F44
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    _drive_if_packet(dut, _packet(pc, addi))
+    _drive_if_packet(dut, _packet(pc + 4, _pack_jal(imm=0x40, rd=0)), slot2=True)
+    _drive_backing(dut, 1, target=target)
+    width = len(dut.i_backing_target) // 2
+    dut.i_backing_target.value = ((target >> 1) << width) | (stale >> 1)
+    dut.i_backing_hit.value = 3
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) and bool(dut.o_pd_redirect_slot2.value)
+    assert int(dut.o_pd_redirect_target.value) == target
+    assert int(dut.o_pd_backing_refresh_pc.value) == pc + 4
+
+
+@cocotb.test()
+async def test_itt_hit_requires_a_live_nonreturn_jalr_in_its_slot(dut: Any) -> None:
+    """In either slot a stale ITT target for replaced, faulting or killed bytes is ignored."""
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    jalr = _pack_i(imm=0, rs1=6, funct3=0, rd=0, opcode=OPC_JALR)
+    ret = _pack_i(imm=0, rs1=1, funct3=0, rd=0, opcode=OPC_JALR)
+    targets = [0x8000_0624, 0x8000_0788]
+    width = len(dut.i_itt_target) // 2
+    for slot in range(2):
+        for insn, bubble, fault, redirects in (
+            (addi, False, False, False),
+            (ret, False, False, False),
+            (jalr, True, False, False),
+            (jalr, False, True, False),
+            (jalr, False, False, True),
+        ):
+            first = _packet(pc, addi)
+            second = _packet(pc + 4, addi, sel_nop=True)
+            candidate = _packet(pc + slot * 4, insn, sel_nop=bubble, fetch_fault=fault)
+            _drive_if_packet(dut, first if slot else candidate)
+            _drive_if_packet(dut, candidate if slot else second, slot2=True)
+            dut.i_itt_hit.value = 3
+            dut.i_itt_target.value = (targets[0] >> 1) | (targets[1] >> 1) << width
+            if redirects:
+                _drive_backing(dut, slot, target=0x8000_0350)
+            fire, taken, target, second_slot = await _backing_redirect(dut)
+            assert fire == redirects
+            if fire:
+                assert taken and second_slot == bool(slot) and target == targets[slot]

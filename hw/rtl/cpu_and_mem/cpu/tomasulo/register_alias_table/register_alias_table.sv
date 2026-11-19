@@ -26,7 +26,10 @@
  * dependencies; RAT lookups read the current state.
  *
  * Eight checkpoints each save both RATs and the RAS state; a misprediction
- * restores one in a single cycle. The active RATs are flip-flops, for
+ * restores one in a single cycle. A checkpoint holds the state before its
+ * branch's own rename, plus that rename's integer destination: while the
+ * branch is still in flight (an early-recovered JALR call), restore maps the
+ * destination back to the branch. The active RATs are flip-flops, for
  * parallel lookup, per-entry commit clear, and bulk restore; snapshots live
  * in sdp_dist_ram. Struct arrays are avoided for Yosys compatibility.
  */
@@ -205,9 +208,10 @@ module register_alias_table (
   // Combined RAT snapshot for single wide RAM
   localparam int unsigned RatSnapshotWidth = IntRatSnapshotWidth + FpRatSnapshotWidth;
   // Metadata: branch_tag(5) + branch_epoch(1) + ras_tos(3) + ras_valid_count(4)
-  // + ras_top(64) = 77
-  localparam int unsigned CheckpointMetaWidth =
+  // + ras_top(64) + own_dest_valid(1) + own_dest_reg(5) = 83
+  localparam int unsigned CheckpointMetaRasEnd =
       ReorderBufferTagWidth + 1 + RasPtrBits + (RasPtrBits + 1) + XLEN;
+  localparam int unsigned CheckpointMetaWidth = CheckpointMetaRasEnd + 1 + RegAddrWidth;
 
   // ===========================================================================
   // Active RAT Storage (FF-based, plain arrays for Yosys compatibility)
@@ -350,8 +354,23 @@ module register_alias_table (
   // The branch allocates with the checkpoint; save its post-allocation epoch.
   logic checkpoint_branch_epoch_next;
   assign checkpoint_branch_epoch_next = ~i_rob_entry_epoch[i_checkpoint_branch_tag];
+  // The branch's own integer rename (a JAL or JALR link register), slot 2's
+  // when the saving branch is in slot 2.
+  logic                    checkpoint_own_dest_valid;
+  logic [RegAddrWidth-1:0] checkpoint_own_dest_reg;
+  assign checkpoint_own_dest_valid = i_checkpoint_slot2_candidate ?
+      (i_alloc_has_dest_2 && !i_alloc_dest_rf_2 && (i_alloc_dest_reg_2 != '0)) :
+      (i_alloc_has_dest && !i_alloc_dest_rf && (i_alloc_dest_reg != '0));
+  assign checkpoint_own_dest_reg = i_checkpoint_slot2_candidate ? i_alloc_dest_reg_2 :
+                                                                  i_alloc_dest_reg;
   assign ckpt_meta_wr_data = {
-    i_ras_top, i_ras_valid_count, i_ras_tos, checkpoint_branch_epoch_next, i_checkpoint_branch_tag
+    checkpoint_own_dest_reg,
+    checkpoint_own_dest_valid,
+    i_ras_top,
+    i_ras_valid_count,
+    i_ras_tos,
+    checkpoint_branch_epoch_next,
+    i_checkpoint_branch_tag
   };
 
   // Read side: checkpoint restore
@@ -396,6 +415,10 @@ module register_alias_table (
       ckpt_meta_rd_data[ReorderBufferTagWidth+1+RasPtrBits+:(RasPtrBits+1)];
   assign restored_ras_top =
       ckpt_meta_rd_data[ReorderBufferTagWidth+1+RasPtrBits+(RasPtrBits+1)+:XLEN];
+  logic                    restored_own_dest_valid;
+  logic [RegAddrWidth-1:0] restored_own_dest_reg;
+  assign restored_own_dest_valid = ckpt_meta_rd_data[CheckpointMetaRasEnd];
+  assign restored_own_dest_reg   = ckpt_meta_rd_data[CheckpointMetaRasEnd+1+:RegAddrWidth];
 
   function automatic logic restored_tag_still_live(
       input logic [ReorderBufferTagWidth-1:0] restored_tag, input logic restored_epoch);
@@ -418,6 +441,20 @@ module register_alias_table (
           (tag_age < branch_age);
     end
   endfunction
+
+  // The restoring branch's own destination maps back to the branch while the
+  // branch is in flight (early recovery). After it retires (commit-time
+  // recovery) the register file holds its value and the mapping stays clear.
+  logic restored_branch_live;
+  assign restored_branch_live = i_rob_entry_valid[restored_branch_tag] &&
+      (i_rob_entry_epoch[restored_branch_tag] == restored_branch_epoch);
+  logic [NumIntRegs-1:0] restored_own_dest_hit;
+  always_comb begin
+    for (int i = 0; i < NumIntRegs; i++) begin
+      restored_own_dest_hit[i] = restored_own_dest_valid &&
+          (restored_own_dest_reg == RegAddrWidth'(i));
+    end
+  end
 
   // Restored RAS state, meaningful only during the restore cycle.
   assign o_ras_tos = restored_ras_tos;
@@ -586,10 +623,15 @@ module register_alias_table (
       // them from coinciding in the core. Filter stale snapshot mappings with
       // restored_tag_still_live before making them visible.
       for (int i = 0; i < NumIntRegs; i++) begin
-        int_rat_valid[i] <= restored_int_valid[i] && restored_tag_still_live(
-            restored_int_tag[i], restored_int_epoch[i]
-        );
-        int_rat_tag[i] <= restored_int_tag[i];
+        if (restored_own_dest_hit[i]) begin
+          int_rat_valid[i] <= restored_branch_live;
+          int_rat_tag[i]   <= restored_branch_tag;
+        end else begin
+          int_rat_valid[i] <= restored_int_valid[i] && restored_tag_still_live(
+              restored_int_tag[i], restored_int_epoch[i]
+          );
+          int_rat_tag[i] <= restored_int_tag[i];
+        end
       end
       for (int i = 0; i < NumFpRegs; i++) begin
         fp_rat_valid[i] <= restored_fp_valid[i] && restored_tag_still_live(

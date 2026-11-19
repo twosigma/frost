@@ -1031,8 +1031,11 @@ module rat_checkpoint_restore_formal #(
 
       wire ok_ckpt_live_used = env_ckpt_in_use[c] &&
           (SeqWidth'(br_seq - rob_head_seq) < rob_count) && !other_live_same_seq;
+      // The branch's own-destination bit is set only for a branch saved with a
+      // destination.
       wire ok_ckpt_meta_br = (dut.u_ckpt_metadata.ram[c][TagWidth-1:0] == br_tag) &&
-          (dut.u_ckpt_metadata.ram[c][TagWidth] == rob_entry_epoch[br_tag]);
+          (dut.u_ckpt_metadata.ram[c][TagWidth] == rob_entry_epoch[br_tag]) &&
+          (env_ckpt_branch_has_dest[c] || !dut.u_ckpt_metadata.ram[c][MetaRasLsb+MetaRasWidth]);
       wire ok_ckpt_x0 = !dut.u_ckpt_rat_snapshot.ram[c][TagWidth+1];
       wire ok_ckpt_int_live = (SeqWidth'(p_seq - rob_head_seq) < br_dist) &&
           (snap_int == {1'b1, rob_entry_epoch[p_tag], p_tag}) && rob_writes_watch_int[p_tag];

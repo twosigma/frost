@@ -782,6 +782,9 @@ module cpu_ooo #(
   logic [XLEN-1:0] early_mispredict_pc;
   logic [XLEN-1:0] early_mispredict_branch_target;
   logic early_mispredict_branch_taken;
+  logic early_mispredict_is_jalr;
+  logic early_mispredict_is_call;
+  logic early_mispredict_is_return;
   logic early_recovery_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_recovery_tag;
   logic early_backend_recovery_hold;
@@ -851,6 +854,23 @@ module cpu_ooo #(
   logic trap_save_m, trap_save_s, trap_enter_d;  // csr_file's entry enables
   logic [2:0] trap_dbg_cause;
   logic csr_mstatus_mie_direct;
+
+  // Indirect target predictor: IF's per-slot results and saved lookups, PD's
+  // JALR decodes, and the training port from tage_history.
+  logic [1:0] if_itt_hit;
+  logic [1:0][riscv_pkg::PhysAddrBits-2:0] if_itt_target;
+  riscv_pkg::itt_lookup_t itt_slot_lookup;
+  riscv_pkg::itt_lookup_t itt_slot_lookup_2;
+  logic [1:0] pd_jalr;
+  logic [1:0] pd_jump;
+  logic [1:0] pd_pred_taken;
+  logic [riscv_pkg::TageDirHistBits-1:0] tage_dir_hist;
+  logic [1:0] pd_itt_eligible;
+  logic itt_train_valid;
+  riscv_pkg::itt_lookup_t itt_train_lookup;
+  logic itt_train_bank;
+  logic [riscv_pkg::PhysAddrBits-2:0] itt_train_target;
+  logic itt_train_mispredicted;
 
   if_stage #(
       .XLEN(XLEN)
@@ -950,7 +970,8 @@ module cpu_ooo #(
       .o_slot1_has_control_flow(if_slot1_has_control_flow),
       .o_slot1_is_indirect(if_slot1_is_indirect),
       .o_width_events(if_width_events),
-      .i_tage_hist(tage_lookup_hist),
+      .i_tage_hist(tage_dir_hist),
+      .i_itt_hist(tage_lookup_hist),
       .i_tage_train_valid(tage_train_valid),
       .i_tage_train_lookup(tage_train_lookup),
       .i_tage_train_bank(tage_train_bank),
@@ -963,7 +984,16 @@ module cpu_ooo #(
       .o_tage_slot_valid(tage_slot_valid),
       .o_tage_slot_lookup(tage_slot_lookup),
       .o_tage_slot_lookup_2(tage_slot_lookup_2),
-      .o_tage_lookup_hist(tage_packet_hist)
+      .o_tage_lookup_hist(tage_packet_hist),
+      .i_itt_train_valid(itt_train_valid),
+      .i_itt_train_lookup(itt_train_lookup),
+      .i_itt_train_bank(itt_train_bank),
+      .i_itt_train_target(itt_train_target),
+      .i_itt_train_mispredicted(itt_train_mispredicted),
+      .o_itt_slot_lookup(itt_slot_lookup),
+      .o_itt_slot_lookup_2(itt_slot_lookup_2),
+      .o_itt_hit(if_itt_hit),
+      .o_itt_target(if_itt_target)
   );
 
   // ===========================================================================
@@ -987,6 +1017,8 @@ module cpu_ooo #(
       .i_backing_target(if_backing_target),
       .i_backing_slot2_return_by_size(if_backing_slot2_return_by_size),
       .i_backing_slot2_target_by_size(if_backing_slot2_target_by_size),
+      .i_itt_hit(if_itt_hit & {2{!i_disable_branch_prediction}}),
+      .i_itt_target(if_itt_target),
       .o_pd_redirect(pd_redirect),
       .o_pd_redirect_taken(pd_redirect_taken),
       .o_pd_redirect_target(pd_redirect_target),
@@ -996,7 +1028,11 @@ module cpu_ooo #(
       .o_pd_redirect_ras_link(pd_redirect_ras_link),
       .o_pd_backing_refresh(pd_backing_refresh),
       .o_pd_backing_refresh_pc(pd_backing_refresh_pc),
-      .o_cond_branch(pd_cond_branch)
+      .o_cond_branch(pd_cond_branch),
+      .o_jalr(pd_jalr),
+      .o_itt_eligible(pd_itt_eligible),
+      .o_jump(pd_jump),
+      .o_pred_taken(pd_pred_taken)
   );
 
   // ===========================================================================
@@ -3418,9 +3454,9 @@ module cpu_ooo #(
   // ===========================================================================
   // Early Misprediction Recovery
   // ===========================================================================
-  // A mispredicted conditional branch that holds a checkpoint starts recovery
-  // as soon as it resolves, unless another recovery or flush is in progress,
-  // instead of at commit (JAL and JALR mispredictions recover at commit):
+  // A mispredicted conditional branch or JALR that holds a checkpoint starts
+  // recovery as soon as it resolves, unless another recovery or flush is in
+  // progress, instead of at commit (JAL mispredictions recover at commit):
   //   Cycle N:   branch_update reports the misprediction; capture its data
   //   Cycle N+1: early_mispredict_active: redirect fetch, restore the RAT,
   //              hold dispatch and issue (early_backend_recovery_hold)
@@ -3471,6 +3507,9 @@ module cpu_ooo #(
       .o_early_mispredict_pc(early_mispredict_pc),
       .o_early_mispredict_branch_target(early_mispredict_branch_target),
       .o_early_mispredict_branch_taken(early_mispredict_branch_taken),
+      .o_early_mispredict_is_jalr(early_mispredict_is_jalr),
+      .o_early_mispredict_is_call(early_mispredict_is_call),
+      .o_early_mispredict_is_return(early_mispredict_is_return),
       .o_early_recovery_en(early_recovery_en),
       .o_early_recovery_tag(early_recovery_tag),
       .o_early_backend_recovery_hold(early_backend_recovery_hold),
@@ -3738,6 +3777,23 @@ module cpu_ooo #(
   assign tage_slot_bank[1] = from_if_to_pd_2.program_counter[2];
   assign tage_base_taken[0] = from_if_to_pd.btb_predicted_taken || from_if_to_pd.bp_dir_taken;
   assign tage_base_taken[1] = from_if_to_pd_2.btb_predicted_taken;
+  // JALRs take saved-lookup entries too; one that is not a return saves its
+  // indirect target lookup when the lookup covered its word.
+  logic [1:0] tage_pd_jalr;
+  logic [1:0] tage_itt_slot_valid;
+  assign tage_pd_jalr[0] = pd_jalr[0] && !from_if_to_pd.sel_nop && !from_if_to_pd.fetch_fault;
+  assign tage_pd_jalr[1] = pd_jalr[1] && !from_if_to_pd_2.sel_nop && !from_if_to_pd_2.fetch_fault;
+  assign tage_itt_slot_valid = tage_slot_valid & pd_itt_eligible;
+  // Direction history: each slot's real conditional branch or jump, and the
+  // bit it pushes (a branch's final predicted direction, a jump's predicted
+  // target bit 2).
+  logic [1:0] tage_pd_cf;
+  logic [1:0] tage_pd_pred_taken;
+  assign tage_pd_cf[0] = tage_pd_cond_branch[0] ||
+      (pd_jump[0] && !from_if_to_pd.sel_nop && !from_if_to_pd.fetch_fault);
+  assign tage_pd_cf[1] = tage_pd_cond_branch[1] ||
+      (pd_jump[1] && !from_if_to_pd_2.sel_nop && !from_if_to_pd_2.fetch_fault);
+  assign tage_pd_pred_taken = pd_pred_taken;
 
   // Dispatch's tags and branch types, and its allocations registered.
   always_ff @(posedge i_clk) begin
@@ -3756,6 +3812,9 @@ module cpu_ooo #(
                                      !rob_alloc_req.is_jalr;
   assign tage_alloc_cond_branch[1] = rob_alloc_req_2.is_branch && !rob_alloc_req_2.is_jal &&
                                      !rob_alloc_req_2.is_jalr;
+  logic [1:0] tage_alloc_jalr;
+  assign tage_alloc_jalr[0] = rob_alloc_req.is_branch && rob_alloc_req.is_jalr;
+  assign tage_alloc_jalr[1] = rob_alloc_req_2.is_branch && rob_alloc_req_2.is_jalr;
 
   // The registered commit bus: retired conditional branches train, and every
   // retired taken control-flow instruction extends the retirement history.
@@ -3782,6 +3841,15 @@ module cpu_ooo #(
   assign tage_commit_mispredicted[1] = rob_commit_2.misprediction;
   assign tage_commit_target_bits[0] = rob_commit.branch_target[3:2];
   assign tage_commit_target_bits[1] = rob_commit_2.branch_target[3:2];
+  logic [1:0] tage_commit_jalr;
+  logic [1:0] tage_commit_cf;
+  assign tage_commit_cf[0] = rob_commit.is_branch;
+  assign tage_commit_cf[1] = rob_commit_2.is_branch;
+  logic [1:0][riscv_pkg::PhysAddrBits-2:0] tage_commit_target;
+  assign tage_commit_jalr[0]   = rob_commit.is_branch && rob_commit.is_jalr;
+  assign tage_commit_jalr[1]   = rob_commit_2.is_branch && rob_commit_2.is_jalr;
+  assign tage_commit_target[0] = rob_commit.branch_target[riscv_pkg::PhysAddrBits-1:1];
+  assign tage_commit_target[1] = rob_commit_2.branch_target[riscv_pkg::PhysAddrBits-1:1];
 
   tage_history u_tage_history (
       .i_clk,
@@ -3798,14 +3866,24 @@ module cpu_ooo #(
       .i_tage_slot_bank(tage_slot_bank),
       .i_base_taken(tage_base_taken),
       .i_tage_lookup_hist(tage_packet_hist),
+      .i_pd_jalr(tage_pd_jalr),
+      .i_pd_cf(tage_pd_cf),
+      .i_pd_pred_taken(tage_pd_pred_taken),
+      .o_lookup_dir_hist(tage_dir_hist),
+      .i_itt_slot_valid(tage_itt_slot_valid),
+      .i_itt_slot_lookup(itt_slot_lookup),
+      .i_itt_slot_lookup_2(itt_slot_lookup_2),
       .i_pd_redirect_taken(pd_redirect_taken),
       .i_early_active(early_mispredict_active),
       .i_early_tag(early_mispredict_tag),
       .i_early_taken(early_mispredict_branch_taken),
+      .i_early_dir_bit(early_mispredict_is_jalr ? early_mispredict_branch_target[2] :
+                                                  early_mispredict_branch_taken),
       .i_flush_full(flush_all || mispredict_recovery_pending),
       .i_alloc_q(rob_alloc_q),
       .i_alloc_tag(tage_alloc_tag),
       .i_alloc_cond_branch(tage_alloc_cond_branch),
+      .i_alloc_jalr(tage_alloc_jalr),
       .i_commit_valid(tage_commit_valid),
       .i_commit_tag(tage_commit_tag),
       .i_commit_cond_branch(tage_commit_cond_branch),
@@ -3813,12 +3891,20 @@ module cpu_ooo #(
       .i_commit_taken(tage_commit_taken),
       .i_commit_mispredicted(tage_commit_mispredicted),
       .i_commit_target_bits(tage_commit_target_bits),
+      .i_commit_jalr(tage_commit_jalr),
+      .i_commit_cf(tage_commit_cf),
+      .i_commit_target(tage_commit_target),
       .o_train_valid(tage_train_valid),
       .o_train_lookup(tage_train_lookup),
       .o_train_bank(tage_train_bank),
       .o_train_alt_taken(tage_train_alt_taken),
       .o_train_taken(tage_train_taken),
-      .o_train_mispredicted(tage_train_mispredicted)
+      .o_train_mispredicted(tage_train_mispredicted),
+      .o_itt_train_valid(itt_train_valid),
+      .o_itt_train_lookup(itt_train_lookup),
+      .o_itt_train_bank(itt_train_bank),
+      .o_itt_train_target(itt_train_target),
+      .o_itt_train_mispredicted(itt_train_mispredicted)
   );
 
 `ifndef SYNTHESIS
@@ -3903,6 +3989,9 @@ module cpu_ooo #(
       .i_early_mispredict_branch_target(early_mispredict_branch_target),
       .i_early_mispredict_branch_taken(early_mispredict_branch_taken),
       .i_early_mispredict_is_compressed(early_mispredict_is_compressed),
+      .i_early_mispredict_is_jalr(early_mispredict_is_jalr),
+      .i_early_mispredict_is_call(early_mispredict_is_call),
+      .i_early_mispredict_is_return(early_mispredict_is_return),
       .i_restored_ras_tos(restored_ras_tos),
       .i_restored_ras_valid_count(restored_ras_valid_count),
       .i_restored_ras_top(restored_ras_top),

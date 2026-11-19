@@ -140,7 +140,7 @@ module pd_redirect_next #(
 
   // The backing target: the stack's top for an entry trained on a return
   // while the stack holds an entry, otherwise the entry's target in slot 1's
-  // 4 GiB region. Slot 1's hit takes slot 1's entry; otherwise slot 2's, at
+  // 4 GiB region. A live slot-1 backing candidate takes its entry; otherwise slot 2's, at
   // the packet's size.
   (* keep = "true" *) logic stack_holds_entry;
   (* keep = "true", max_fanout = 32 *) logic backing_return_select;

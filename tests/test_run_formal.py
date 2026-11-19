@@ -1565,7 +1565,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "backing_btb.sby",
         "Backing BTB lookups match a mirror of its sets, every set holds each "
-        "valid tag once, and requests in training hold their set's current "
+        "valid tag once, a redirect drops held and outstanding reads, and training holds current "
         "entries, at two and four ways; slot 2's fields formed for each slot-1 "
         "size and selected by the packet's size equal the single reduction they "
         "replace, for any register state",
@@ -1580,6 +1580,24 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "branch_prediction_resolution.sby",
+        "Two arbitrary predictions leave the resolved branch outcome, target and ROB update "
+        "identity equal; each wrong direction or taken target requests recovery",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "ittage_training.sby",
+        "Indirect prediction holds the captured lookup; each table uses the retiring lookup's "
+        "bank and index, forwards a colliding write, and repairs an unowned provider",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "tage_history_recovery.sby",
+        "Both lookup histories follow accepted predictions, ordered retirement, "
+        "saved early-recovery histories and every PC restore arm; only retired lookups train",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "tage_copy_convergence.sby",
         "Tagged predictor training: with a table entry's two copies equal, "
         "each copy's next value matches the write without the provider "
@@ -1588,10 +1606,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
-        "PD backing-BTB jump redirects and slot-1/slot-2 TAGE conditional-branch "
-        "overrides fire only with their vetoes clear, stack operations and "
-        "refreshes follow them, and redirect directions and targets match PD's "
-        "reference models",
+        "PD backing, indirect and direction redirects require a live slot; each "
+        "indirect candidate, target selection and history bit matches the "
+        "compare-before-register equations, and stack operations, refreshes, "
+        "directions and targets match PD's reference models",
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
