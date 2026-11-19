@@ -33,6 +33,7 @@ from typing import Any
 import pytest
 
 import ci_reuse
+from coherence_home_cmo_replay import primary_inputs
 import sby_config
 from sby_config import commands as yosys_commands
 from sby_config import script_block
@@ -2870,7 +2871,7 @@ SBY_TASKS = [
     ("coh_home_fill_cover", "Fill installation, forward and waiter wake reachability."),
     (
         "coh_home_cmo_cover",
-        "Zicbom fills: write-back, clean, inval and absent-line grants.",
+        "Reach four Zicbom grant cases and replay their inputs on the undriven home.",
     ),
     (
         "coh_home_dispatch_cover",
@@ -5753,6 +5754,59 @@ def test_wrappers_show_their_files() -> None:
     ]
     assert yosys_commands(["trace debug prep"], {}) == [["trace"], ["debug"], ["prep"]]
     assert yosys_commands(["debug -on"], {}) == [["debug", "-on"]]
+
+
+def test_home_cmo_witness_driver_is_cover_only() -> None:
+    """Keep directed inputs out of every other home task, including BMC and induction."""
+    sby = Path(__file__).resolve().parents[1] / FORMAL_DIR / "coherence_home.sby"
+    text = sby.read_text()
+    driver = "COHERENCE_HOME_CMO_WITNESS"
+
+    def check(config: str) -> None:
+        source = sby_config.read_source(sby, config)
+        for name, tags in source.tasks.items():
+            task = source.task(name)
+            commands = [
+                cmd
+                for cmd in task.commands(sby.parent)
+                if any(driver in token for token in cmd)
+            ]
+            if name == "coh_home_cmo_cover":
+                assert "cmo_witness" in tags
+                assert task.options["mode"] == "cover"
+                assert (task.options["depth"], task.options["timeout"]) == (
+                    "40",
+                    "6000",
+                )
+                assert commands == [["verilog_defines", "-D", driver]]
+            else:
+                assert "cmo_witness" not in tags and not commands, name
+
+    check(text)
+    for tag in ("bmc4", "control"):
+        with pytest.raises(AssertionError):
+            check(
+                text.replace(
+                    "[script]", "[script]\n" + f"{tag}: verilog_defines -D {driver}"
+                )
+            )
+
+
+def test_home_cmo_replay_uses_only_complete_primary_inputs(tmp_path: Path) -> None:
+    """Leave the home's initial storage and the driver's case selection free on replay."""
+    trace = tmp_path / "trace.smtc"
+    state = "state 0\nassume (= [i_rst] true)\nassume (= [i_stop] false)\n"
+    initial = "initial\nassume (= [home.slot] #b01)\nassume (= [witness_case] #b11)\n"
+    hidden = "assume (= [home.fill] #b10)\n"
+    trace.write_text(initial + state + hidden)
+    assert primary_inputs(trace, {"i_rst", "i_stop"}, 0) == state
+    for invalid in (
+        state.split("assume (= [i_stop]")[0],
+        state + "assume (= [i_rst] true)\n",
+    ):
+        trace.write_text(initial + invalid)
+        with pytest.raises(ValueError):
+            primary_inputs(trace, {"i_rst", "i_stop"}, 0)
 
 
 def test_scripts_free_undefined_constants_first() -> None:
@@ -9767,6 +9821,14 @@ class FormalRunner:
             raise FileNotFoundError(f"SBY file not found: {sby_path}")
 
         cmd = ["sby", "-t", "-f", str(sby_path), task]
+        if (target.name, task) == ("coherence_home", "coh_home_cmo_cover"):
+            cmd = [
+                sys.executable,
+                str(self.test_dir / "coherence_home_cmo_replay.py"),
+                str(sby_path),
+                task,
+                str(formal_task_timeout_s(target.name, task)),
+            ]
 
         check_fatal_frame = target.name == "coherence_store_boundary" and task in (
             "bmc_amo_same_fatal",
