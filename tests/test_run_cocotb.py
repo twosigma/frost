@@ -1221,6 +1221,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         )
         for vlen in (128, 256, 512)
     },
+    **{
+        f"vec_crypto_exec_test_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="vec_crypto_exec_test",
+            nic_mac_clocks=False,
+            description=(
+                f"Crypto element groups and carry-less multiplication at VLEN {vlen}, "
+                "including restart, group capacity and reserved geometry"
+            ),
+            verilator_extra_args=("-GVECTOR=1", f"-GVLEN={vlen}"),
+            extra_env=(
+                ("EXTRA_CFLAGS", f"-DVEC_VLEN={vlen}"),
+                ("COCOTB_MAX_CYCLES", "5000000"),
+            ),
+            include_in_pytest=(vlen == 256),
+        )
+        for vlen in (128, 256, 512)
+    },
     "vec_arith_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3033,6 +3052,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
     ),
     **{
+        f"vec_crypto_exec_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_crypto_exec",
+            hdl_toplevel_module="vec_crypto_exec",
+            description=f"Zvbc, AES, SHA-2 and GHASH results, restart and operand-independent latency at VLEN {vlen}",
+            verilator_extra_args=(f"-GVLEN={vlen}",),
+            include_in_pytest=(vlen == 256),
+        )
+        for vlen in (128, 256, 512)
+    },
+    **{
         f"vec_fp_exec_v{vlen}": CocotbRunConfig(
             python_test_module="cocotb_tests.vector.test_vec_fp_exec",
             hdl_toplevel_module="vec_fp_exec",
@@ -3318,7 +3347,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         f"vec_integer_exec_v{vlen}": CocotbRunConfig(
             python_test_module="cocotb_tests.vector.test_vec_integer_exec",
             hdl_toplevel_module="vec_engine",
-            description="Integer, fixed-point, mask and permutation execution against architectural semantics",
+            description="Integer, fixed-point, mask and permutation results, and Zvkt operand-independent latency",
             verilator_extra_args=(f"-GVLEN={vlen}",),
         )
         for vlen in (128, 256, 512)

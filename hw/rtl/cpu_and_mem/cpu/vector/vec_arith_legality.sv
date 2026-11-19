@@ -17,7 +17,7 @@
 
 /*
   Legality of a vector arithmetic instruction under one vtype. o_illegal
-  equals riscv_pkg::vector_arith_illegal(i_vtype, i_insn) for every input
+  equals riscv_pkg::vector_arith_illegal(i_vtype, i_insn, VLEN, 0, 0) for every input
   (formal/vec_lmul_legality_equiv.sby). vec_dispatch_legality evaluates it
   for the instruction at the decoded queue's head and registers the result.
 
@@ -37,7 +37,9 @@
   floating-point encodings (OPFVV, OPFVF) have their own rule set, built the
   same way from the same tables and register-field tests.
 */
-module vec_arith_legality (
+module vec_arith_legality #(
+    parameter int unsigned VLEN = 256
+) (
     input  logic [ 8:0] i_vtype,   // {vill, vma, vta, vsew[2:0], vlmul[2:0]}
     input  logic [31:0] i_insn,
     output logic        o_illegal
@@ -418,10 +420,40 @@ module vec_arith_legality (
       falign_bad || fv0_bad || fsrc_bad || fwfma_bad || flow_bad || fhigh_bad ||
       (fslideup && eq_da[p0]);
 
-  assign o_illegal = fp_ok ? fp_bad : whole ? whole_bad : arith_bad;
+  // AES, GHASH and SHA-2 use four-element groups. A scalar AES key uses
+  // one register at these vector lengths and may start at any register.
+  logic group_op, clmul, scalar_key, sha, crypto_uses_b, crypto_encoding, capacity_bad;
+  assign group_op = i_insn[6:0] == riscv_pkg::OPC_OP_VE;
+  assign clmul = i_insn[6:0] == riscv_pkg::OPC_OP_V && mv && (f6[5:1] == 5'b00110);
+  assign scalar_key = group_op && (f6 == 6'h29);
+  assign sha = group_op && ((f6 == 6'h2d) || (f6[5:1] == 5'b10111));
+  assign crypto_uses_b = group_op ? (sha || (f6 == 6'h2c)) : mvv;
+  assign crypto_encoding = mvv && vm &&
+      ((f6 == 6'h22) || (f6 == 6'h2a) || (f6[5:2] == 4'b1011) ||
+       ((f6 == 6'h28) && ((vs1[4:2] == 0) || (vs1 == 17))) ||
+       (scalar_key && ((vs1[4:2] == 0) || (vs1 == 7))));
+  // At SEW 32 only mf2 or larger is a valid vtype; at SEW 64 only m1
+  // or larger. The remaining combinations large enough for four elements
+  // follow directly from VLEN, including when vl is zero.
+  assign capacity_bad = (VLEN == 128) && (lmul[2] || ((sew == 3) && (lmul == 0)));
 
-  // The opcode is OP-V by construction; vma and vta never affect legality
+  logic crypto_bad, crypto_width_bad;
+  assign crypto_width_bad = group_op ? (sha ? !sew[1] : (sew != 2)) : (sew != 3);
+  assign crypto_bad = vtype_bad ||
+      crypto_width_bad || (group_op && (!crypto_encoding || capacity_bad)) ||
+      misaligned(
+      vd[2:0], p0
+  ) || (!scalar_key && misaligned(
+      vs2[2:0], p0
+  )) || (crypto_uses_b && misaligned(
+      vs1[2:0], p0
+  )) || (clmul && !vm && ((vd == 0) || (vs2 == 0) || (mvv && (vs1 == 0)))) ||
+      ((scalar_key || sha) && eq_da[p0]) || (sha && eq_db[p0]);
+
+  assign o_illegal = (group_op || clmul) ? crypto_bad :
+      fp_ok ? fp_bad : whole ? whole_bad : arith_bad;
+
   logic unused;
-  assign unused = &{1'b0, i_vtype[7:6], i_insn[6:0]};
+  assign unused = &{1'b0, i_vtype[7:6]};
 
 endmodule

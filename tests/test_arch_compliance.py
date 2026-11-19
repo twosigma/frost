@@ -68,14 +68,9 @@ EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
     "Zfh": ("rv32i_m",),
 }
 
-# Extensions whose tests need the vector unit: the vector crypto tests. They
-# are left out of SUPPORTED_EXTENSIONS, and so out of CI, until FROST has one;
-# run them with `--extensions Zvk` on a core built with
-# FROST_VERILATOR_EXTRA_ARGS='-GVECTOR=1 -GVLEN=128' (the references are for
-# VLEN 128), and to include them, add Zvk to SUPPORTED_EXTENSIONS here and in
-# generate_references.py, to a job of the test-arch-compliance matrix in ci.yml
-# (a fast test checks that CI covers every supported extension), and drop the
-# not-supported assertions in test_vector_tests_prepared_but_not_supported.
+# The Zvk directory includes ShangMi as well as AES, SHA-2, GHASH and bit
+# operations. Its references require VECTOR=1 and VLEN=128. Select individual
+# tests with --test and --mem-config ddr; the default scalar matrix skips Zvk.
 # Each test turns on mstatus.VS itself. VECTOR_ARCH replaces the Makefile's
 # ARCH; keep it equal to FROST_VECTOR_MARCH in generate_references.py.
 VECTOR_EXTENSIONS = {"Zvk"}
@@ -651,11 +646,10 @@ def _print_result(result: TestResult) -> None:
 # =============================================================================
 
 
-def test_vector_tests_prepared_but_not_supported() -> None:
+def test_optional_vector_suite_matches_references() -> None:
     """The vector crypto tests have references and a matching reference build.
 
-    Zvk stays out of SUPPORTED_EXTENSIONS, and so out of CI, until FROST has the
-    vector unit; its Spike references and build settings are ready for then.
+    The default scalar matrix skips the vector directory, which includes ShangMi.
     """
     import importlib.util
 
@@ -670,8 +664,8 @@ def test_vector_tests_prepared_but_not_supported() -> None:
     assert EXTENSION_SUITES == generator.EXTENSION_SUITES
     assert EXTENSION_TEST_EXCLUDES == generator.EXTENSION_TEST_EXCLUDES
     for extension in VECTOR_EXTENSIONS:
-        assert extension not in SUPPORTED_EXTENSIONS  # remove to turn Zvk on
-        assert extension not in generator.SUPPORTED_EXTENSIONS  # remove to turn Zvk on
+        assert extension not in SUPPORTED_EXTENSIONS
+        assert extension not in generator.SUPPORTED_EXTENSIONS
     if not SUITE_ROOT.is_dir():
         pytest.skip("riscv-arch-test submodule is not checked out")
     for extension in VECTOR_EXTENSIONS:

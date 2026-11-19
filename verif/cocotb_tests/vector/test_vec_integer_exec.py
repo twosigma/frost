@@ -22,7 +22,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge
 
-from .test_vec_engine import Model, signed
+from .test_vec_engine import OPS, UNARY, Model, signed
 
 # Mnemonic, funct6, operand class, unary selector (when present).
 SPECS: list[tuple[str, int, int, int | None]] = []
@@ -547,3 +547,125 @@ async def integer_families(dut: Any) -> None:
                 raise AssertionError(f"{ctx} v{r}: {got:#x} != {model.regs[r]:#x}")
         checked += 1
     dut._log.info("%d instruction/width/rounding cases matched", checked)
+
+
+def zvkt_arithmetic_forms() -> list[tuple[str, int, int]]:
+    """Return the encodings and SEWs of the base-vector and Zvbb forms listed by Zvkt."""
+    forms = []
+
+    def add(
+        name: str,
+        f6: int,
+        f3: int,
+        *,
+        field: int = 24,
+        vm: int = 1,
+        vs2: int = 8,
+        sew: int = 32,
+    ) -> None:
+        insn = f6 << 26 | vm << 25 | vs2 << 20 | field << 15 | f3 << 12 | 16 << 7 | 0x57
+        forms.append((name, insn, sew))
+
+    for f6, (name, suffixes) in OPS.items():
+        if name in {"min", "minu", "max", "maxu"}:
+            continue
+        for suffix in suffixes.split():
+            f3 = {"vv": 0, "vx": 4, "vi": 3}[suffix]
+            add(name, f6, f3, vm=int(name != "merge"))
+            if name == "merge":
+                add("mv", f6, f3, vs2=0)
+            if name == "ror" and suffix == "vi":
+                add("ror", f6 | 1, f3, sew=64)
+    for field, name in UNARY.items():
+        add(name, 0x12, 2, field=field)
+
+    for name, f6, f3, selector in SPECS:
+        if not (
+            name.startswith(
+                (
+                    "wadd",
+                    "wsub",
+                    "wmul",
+                    "wmacc",
+                    "mul",
+                    "mv",
+                    "slide",
+                    "rgather",
+                    "sext",
+                    "zext",
+                    "nsr",
+                    "mand",
+                    "mor",
+                    "mxor",
+                    "mnand",
+                    "mnor",
+                    "mxnor",
+                )
+            )
+            or name
+            in {"adc", "madc", "sbc", "msbc", "wsll", "madd", "nmsub", "macc", "nmsac"}
+        ):
+            continue
+        field = 24 if selector is None else selector
+        add(
+            name,
+            f6,
+            f3,
+            field=field,
+            vm=int(name not in {"adc", "madc", "sbc", "msbc"}),
+            vs2=0 if name == "mv_s_x" else 8,
+            sew=64 if "ext" in name else 32,
+        )
+        if name in {"madc", "msbc"}:
+            add(name, f6, f3, field=field)
+    for f6 in (0x0E, 0x0F):
+        add("vfslide1", f6, 5)
+    return forms
+
+
+@cocotb.test()
+async def zvkt_arithmetic_latency(dut: Any) -> None:
+    """Compare execution times for opposite operands at the same vector configuration."""
+    vlen = len(dut.i_xw_data)
+    Clock(dut.i_clk, 10, unit="ns").start()
+    dut.i_rst.value = 1
+    dut.i_valid.value = 0
+    dut.i_xw_en.value = 0
+    dut.i_xr_addr.value = 0
+    dut.i_frm.value = 0
+    dut.i_vxrm.value = 0
+    for _ in range(3):
+        await FallingEdge(dut.i_clk)
+    dut.i_rst.value = 0
+    dut.i_vlmul.value = 0
+    dut.i_vl.value = 2
+    dut.i_vstart.value = 0
+    dut.i_xw_be.value = (1 << (vlen // 8)) - 1
+
+    forms = zvkt_arithmetic_forms()
+    for name, insn, sew in forms:
+        dut.i_insn.value = insn
+        dut.i_vsew.value = sew.bit_length() - 4
+        cycles = []
+        for bit in (0, 1):
+            dut.i_xw_en.value = 1
+            dut.i_xw_data.value = ((1 << vlen) - 1) * bit
+            for r in range(32):
+                dut.i_xw_addr.value = r
+                await FallingEdge(dut.i_clk)
+            dut.i_xw_en.value = 0
+            dut.i_rs1.value = ((1 << 64) - 1) * bit
+            dut.i_valid.value = 1
+            await FallingEdge(dut.i_clk)
+            dut.i_valid.value = 0
+            for cycle in range(8192):
+                assert not int(dut.o_unsupported.value), f"{name} {insn:#x}"
+                if int(dut.o_idle.value):
+                    break
+                await FallingEdge(dut.i_clk)
+            else:
+                raise AssertionError(f"{name} {insn:#x} timeout")
+            assert cycle, f"{name} {insn:#x} did not execute"
+            cycles.append(cycle)
+        assert cycles[0] == cycles[1], f"{name} {insn:#x} latency {cycles}"
+    dut._log.info("%d base-vector and Zvbb forms matched paired latencies", len(forms))

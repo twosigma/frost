@@ -87,9 +87,9 @@ async def configuration_handoff(dut: Any) -> None:
     dut.i_ckpt_save.value = 1
     await FallingEdge(dut.i_clk)
     dut.i_ckpt_save.value = 0
-    # Arithmetic (integer and FP, with or without a scalar) and the
+    # Arithmetic (integer, FP and cryptographic groups) and the
     # vector-to-scalar moves each clear vstart when they retire.
-    for operation in ("VARITH", "VARITH_X", "VARITH_F", "VTOX", "VTOF"):
+    for operation in ("VARITH", "VARITH_X", "VARITH_F", "VARITH_C", "VTOX", "VTOF"):
         dut.i_alloc.value = 1
         dut.i_alloc_op.value = ops[operation]
         await FallingEdge(dut.i_clk)

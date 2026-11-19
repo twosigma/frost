@@ -14,7 +14,9 @@
  *    limitations under the License.
  */
 
-module vec_legality_reference (
+module vec_legality_reference #(
+    parameter int unsigned VLEN = 256
+) (
     input logic [31:0] i_insn,
     input logic [8:0] i_vtype,
     output logic o_illegal
@@ -30,7 +32,9 @@ module vec_legality_reference (
       .o_illegal(decode_illegal)
   );
   logic arith_illegal;
-  vec_arith_legality legality (
+  vec_arith_legality #(
+      .VLEN(VLEN)
+  ) legality (
       .i_vtype  (i_vtype),
       .i_insn   (i_insn),
       .o_illegal(arith_illegal)
@@ -38,7 +42,8 @@ module vec_legality_reference (
   always_comb begin
     o_illegal = decode_illegal;
     case (op)
-      riscv_pkg::VARITH, riscv_pkg::VARITH_X, riscv_pkg::VARITH_F, riscv_pkg::VTOF:
+      riscv_pkg::VARITH, riscv_pkg::VARITH_X, riscv_pkg::VARITH_F, riscv_pkg::VARITH_C,
+      riscv_pkg::VTOF:
       o_illegal |= arith_illegal;
       riscv_pkg::VTOX: o_illegal |= i_vtype[8];
       default: o_illegal = 1'b1;
