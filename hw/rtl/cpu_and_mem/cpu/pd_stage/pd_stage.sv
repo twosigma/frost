@@ -1552,6 +1552,46 @@ module pd_stage #(
     end
   end
 
+  // The redirecting slot's registered instruction, decoded independently of the target logic.
+  logic [31:0] pd_chk_instr;
+  logic [XLEN-1:0] pd_chk_pc;
+  logic [XLEN-1:0] pd_chk_imm_b;
+  assign pd_chk_instr = o_pd_redirect_slot2 ? 32'(o_from_pd_to_id_2.instruction) :
+                                              32'(o_from_pd_to_id.instruction);
+  assign pd_chk_pc = o_pd_redirect_slot2 ? o_from_pd_to_id_2.program_counter :
+                                           o_from_pd_to_id.program_counter;
+  assign pd_chk_imm_b = {
+    {(XLEN - 13) {pd_chk_instr[31]}},
+    pd_chk_instr[31],
+    pd_chk_instr[7],
+    pd_chk_instr[30:25],
+    pd_chk_instr[11:8],
+    1'b0
+  };
+  logic pd_chk_redirect_known;
+  logic pd_chk_aligned_inputs;
+`ifdef FORMAL
+  // The standalone model can supply an odd fetch PC or return-stack address.
+  // Keep those packets free for the source and decoded-target properties.
+  assign pd_chk_aligned_inputs = !pd_chk_pc[0] &&
+      (o_from_pd_to_id.ras_checkpoint_valid_count == '0 || !o_from_pd_to_id.ras_checkpoint_top[0]);
+  assign pd_chk_redirect_known = 1'b1;
+`else
+  assign pd_chk_aligned_inputs = 1'b1;
+  assign pd_chk_redirect_known = !$isunknown(
+      {
+        o_pd_redirect_target,
+        o_pd_redirect_slot2,
+        o_pd_redirect_taken,
+        pd_itt_target_select_r,
+        pd_backing_redirect_r,
+        pd_backing_redirect_2_r,
+        pd_chk_instr,
+        pd_chk_pc
+      }
+  );
+`endif
+
   // A full-width reference sampled on the same enabled edges checks target
   // alignment, stall hold, and the target, fall-through, and format
   // selection.
@@ -1600,6 +1640,27 @@ module pd_stage #(
                 XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit)) :
             o_from_pd_to_id.program_counter + (o_from_pd_to_id.is_compressed ?
                 XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit))));
+      end
+      // Source consistency of every redirect target (sync #20 item 7). A redirect that takes the
+      // indirect target predictor's target belongs to a taken JALR; a taken redirect that is
+      // neither an indirect-target nor a backing-BTB one is a conditional branch to its decoded
+      // target; every target is halfword aligned.
+      if (pd_sim_reset_seen_q && o_pd_redirect && pd_chk_redirect_known) begin
+        // Backing and indirect sources may both recognize one JALR. Only one
+        // slot may contribute a redirect after direction priority is applied.
+        p_pd_redirect_sources_share_one_slot :
+        assert (!((pd_dir_redirect_1_r || pd_backing_redirect_r || pd_itt_redirect_r) &&
+                  (pd_dir_redirect_2_r || pd_backing_redirect_2_r || pd_itt_redirect_2_r)));
+        p_pd_redirect_target_halfword_aligned :
+        assert (!pd_chk_aligned_inputs || !o_pd_redirect_target[0]);
+        p_pd_itt_redirect_is_a_jalr :
+        assert (!pd_itt_target_select_r ||
+                (o_pd_redirect_taken && pd_chk_instr[6:0] == riscv_pkg::OPC_JALR));
+        p_pd_direction_redirect_is_its_branch_target :
+        assert (!o_pd_redirect_taken || pd_itt_target_select_r || pd_backing_redirect_r ||
+                pd_backing_redirect_2_r ||
+                (pd_chk_instr[6:0] == riscv_pkg::OPC_BRANCH &&
+                 o_pd_redirect_target == pd_chk_pc + pd_chk_imm_b));
       end
       if (!i_pipeline_ctrl.stall) begin
         pd_slot1_redirect_target_reference_q <= pd_slot1_redirect_target_next_reference;
@@ -2231,6 +2292,15 @@ module pd_stage #(
 
   always_ff @(posedge i_clk) begin
     if (formal_past_valid && !i_pipeline_ctrl.reset) begin
+      if (o_pd_redirect && pd_chk_aligned_inputs) begin
+        c_aligned_itt_slot1 : cover (pd_itt_target_select_r && !o_pd_redirect_slot2);
+        c_aligned_itt_slot2 : cover (pd_itt_target_select_r && o_pd_redirect_slot2);
+        if (o_pd_redirect_taken && !pd_itt_target_select_r &&
+            !pd_backing_redirect_r && !pd_backing_redirect_2_r) begin
+          c_taken_direction_slot1 : cover (!o_pd_redirect_slot2);
+          c_taken_direction_slot2 : cover (o_pd_redirect_slot2);
+        end
+      end
       cover (pd_itt_redirect_r && pd_backing_redirect_r);
       cover (pd_itt_redirect_2_r && pd_backing_redirect_2_r);
       cover (pd_backing_redirect_r && !o_pd_redirect_ras_push && !o_pd_redirect_ras_pop);

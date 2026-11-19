@@ -116,6 +116,7 @@ package pd_history_twin_pkg;
     logic [riscv_pkg::TageDirHistBits-1:0] early_dir_hist_q;
     logic early_q;
     logic early_taken_q;
+    logic early_dir_bit_q;
     logic held_valid;
     logic [riscv_pkg::TageFtqIdxBits-1:0] held_idx;
     logic held_taken;
