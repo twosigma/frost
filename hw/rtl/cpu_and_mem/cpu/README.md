@@ -141,8 +141,9 @@ otherwise). Any other JALR, such as an indirect call through a function
 pointer or a `switch` jump table, predicts the target it had when it last
 trained the BTB, unless the indirect target predictor has an entry for it
 (see below). A JALR always takes its computed target. A missing prediction or a
-wrong target starts checkpoint recovery the cycle after execution resolves it.
-With `EarlyJalrRecovery` cleared, the JALR recovers at commit. While an
+wrong target starts checkpoint recovery the cycle after execution resolves it
+when the recovery unit is idle. A surviving JALR that resolved during another
+recovery, or with `EarlyJalrRecovery` cleared, redirects at commit. While an
 unpredicted JALR is in the front end (slot 1 of IF, PD, or
 ID, or the decoded queue) and a conditional branch or JALR is unresolved,
 `ooo_pipeline_control` stalls the front end to limit wrong-path fetch.

@@ -224,7 +224,9 @@ starts recovery one cycle after a checkpointed conditional branch or JALR
 resolves as mispredicted. It marks the entry `early_recovered`
 (`i_early_recovery_en`, `i_early_recovery_tag`) so it can retire without
 redirecting again. A JALR recovers at retirement when `EarlyJalrRecovery`
-is cleared or an older recovery prevented its execute-time recovery.
+is cleared. If a younger instruction is already recovering, an older JALR
+still records its resolved target and misprediction in the ROB. It redirects
+at retirement if it survives until then.
 
 ## Serializing instructions
 
