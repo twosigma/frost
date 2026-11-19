@@ -60,6 +60,8 @@ module early_misprediction_recovery #(
 
     output logic                                        o_early_mispredict_active,
     output logic                                        o_early_mispredict_pending,
+    // Capture request before the synchronous reset and full-flush veto.
+    output logic                                        o_early_mispredict_fire,
     output logic                                        o_early_backend_recovery_pending,
     // Next state of o_early_backend_recovery_pending, for the flush
     // controller's registered flush_en.
@@ -237,6 +239,7 @@ module early_misprediction_recovery #(
   // --- Output wiring.
   assign o_early_mispredict_active = early_mispredict_active;
   assign o_early_mispredict_pending = early_mispredict_pending;
+  assign o_early_mispredict_fire = early_mispredict_fire;
   assign o_early_backend_recovery_pending = early_backend_recovery_pending;
   assign o_early_backend_recovery_pending_next = early_backend_recovery_pending_next;
   assign o_early_backend_flush_tag = early_backend_flush_tag;

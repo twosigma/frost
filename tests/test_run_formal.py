@@ -942,7 +942,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "mispredict_capture.sby",
-        "Recovery payload, pulse copies and frontend flush match their references",
+        "Recovery payload, pulse copies, frontend flush and registered fetch flush "
+        "match their references",
         tasks=("bmc", "prove"),
     ),
     FormalTarget(

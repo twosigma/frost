@@ -331,7 +331,7 @@ module cpu_ooo #(
   // ooo_pipeline_control builds pipeline_ctrl for IF/PD/ID. The stall comes
   // from dispatch back-pressure (with a decoded queue, from the queue being
   // full), CSR and control-flow serialization, and the fetch translation
-  // hold; the flush is flush_pipeline from misprediction_flush_controller.
+  // hold. The flush controller registers the fetch flush alongside recovery.
 
   riscv_pkg::pipeline_ctrl_t pipeline_ctrl;
   logic dispatch_stall;
@@ -342,6 +342,7 @@ module cpu_ooo #(
   logic decoded_queue_valid;
   logic decoded_queue_indirect_pending;
   (* max_fanout = 32 *) logic flush_pipeline;
+  logic fetch_flush;
   logic dispatch_flush;
   logic full_flush_side_effect_kill;
   logic flush_for_trap;
@@ -456,7 +457,7 @@ module cpu_ooo #(
       .i_front_end_indirect_control_flow_pending(
           front_end_indirect_control_flow_pending || decoded_queue_indirect_pending),
       .i_disable_branch_prediction(i_disable_branch_prediction),
-      .i_flush_pipeline(flush_pipeline),
+      .i_flush_pipeline(fetch_flush),
       .i_fetch_pa_hold(fetch_pa_hold),
       .o_pipeline_ctrl(pipeline_ctrl),
       .o_serializing_alloc_fire(serializing_alloc_fire),
@@ -772,6 +773,7 @@ module cpu_ooo #(
 
   logic early_mispredict_active;
   logic early_mispredict_pending;
+  logic early_mispredict_fire;
   logic early_backend_recovery_pending;
   logic early_backend_recovery_pending_next;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
@@ -939,7 +941,7 @@ module cpu_ooo #(
       .i_btb_late_update_pc(btb_late_update_pc),
       .i_btb_late_update_taken(btb_late_update_taken),
       .i_trap_ctrl(trap_ctrl),
-      .i_frontend_state_flush(frontend_state_flush),
+      .i_frontend_state_flush(fetch_flush),
       .i_flush_all(flush_all),
       .i_fence_i_flush(fence_i_flush),
       .i_fence_i_target(fence_i_target_pc),
@@ -1320,7 +1322,7 @@ module cpu_ooo #(
       .i_dispatch_flush(dispatch_flush),
       .i_id_stall_q(id_stall_q),
       .i_replay_after_dispatch_stall_q(replay_after_dispatch_stall_q),
-      .i_flush_pipeline(flush_pipeline),
+      .i_flush_pipeline(frontend_state_flush),
       .o_if_valid_q(if_valid_q),
       .o_pd_valid_q(pd_valid_q),
       .o_id_valid_preflush(direct_id_valid_preflush),
@@ -3497,6 +3499,7 @@ module cpu_ooo #(
       .i_mret_taken_reg(early_recovery_mret_taken_reg),
       .o_early_mispredict_active(early_mispredict_active),
       .o_early_mispredict_pending(early_mispredict_pending),
+      .o_early_mispredict_fire(early_mispredict_fire),
       .o_early_backend_recovery_pending(early_backend_recovery_pending),
       .o_early_backend_recovery_pending_next(early_backend_recovery_pending_next),
       .o_early_backend_flush_tag(early_backend_flush_tag),
@@ -3712,6 +3715,7 @@ module cpu_ooo #(
       .i_rob_commit_comb_2(rob_commit_comb_2),
       .i_early_mispredict_active(early_mispredict_active),
       .i_early_mispredict_pending(early_mispredict_pending),
+      .i_early_mispredict_fire(early_mispredict_fire),
       .i_early_backend_recovery_pending(early_backend_recovery_pending),
       .i_early_backend_recovery_pending_next(early_backend_recovery_pending_next),
       .i_head_tag(head_tag),
@@ -3744,6 +3748,7 @@ module cpu_ooo #(
       .o_dispatch_flush(dispatch_flush),
       .o_full_flush_side_effect_kill(full_flush_side_effect_kill),
       .o_frontend_state_flush(frontend_state_flush),
+      .o_fetch_flush(fetch_flush),
       .o_flush_en(flush_en),
       .o_flush_tag(flush_tag),
       .o_flush_all(flush_all),
@@ -3756,6 +3761,15 @@ module cpu_ooo #(
       .o_checkpoint_free(checkpoint_free),
       .o_checkpoint_free_id(checkpoint_free_id)
   );
+
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && !i_rst) begin
+      p_fetch_flush_matches_recovery :
+      assert (fetch_flush == frontend_state_flush && fetch_flush == flush_pipeline);
+    end
+  end
+`endif
 
   // ===========================================================================
   // Tagged Direction Predictor History and Training

@@ -3521,7 +3521,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "misprediction_flush_controller": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_misprediction_flush_controller",
         hdl_toplevel_module="misprediction_flush_controller",
-        description="Misprediction flush control and checkpoint release",
+        description="Registered fetch flush, recovery priority, and checkpoint release",
     ),
     "tage_history": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_tage_history",

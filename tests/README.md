@@ -520,6 +520,11 @@ without them. Registry entries default to keeping the clocks.
 `FROST_NIC_MAC_CLOCKS=1` overrides a clock-free default for comparisons;
 `FROST_NIC_MAC_CLOCKS=0` selects the guarded clock-free mode explicitly.
 
+`misprediction_flush_controller` checks that the registered fetch flush
+matches the individual recovery pulses on every edge. It exercises early and
+retired mispredictions together with traps, xRETs, native and translation
+fences, and reset.
+
 `debug_fetch_barrier` checks invalidation before GO, retained targets, request
 withdrawal, acknowledgement without replay, and reset in each request phase.
 Its fetch-provider composition checks cached windows and old responses arriving
