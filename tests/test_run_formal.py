@@ -3815,6 +3815,8 @@ SKIP_PINNED: dict[tuple[str, str], int] = {
     ("coherence_l1d", "coh_l1d_zero_progress_cover"): 128,
     ("coherence_l1d", "coh_l1d_zero_request_cover"): 159,
     ("coherence_l1d", "coh_l1d_withdraw_full_cover"): 48,
+    # One reset clock and 512 backing set clears precede the first hit.
+    ("predictor_fetch_contract", "cover_backing"): 513,
 }
 
 FATAL_START_FRAME_TASKS: frozenset[tuple[str, str]] = frozenset(
