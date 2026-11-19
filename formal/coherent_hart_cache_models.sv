@@ -588,12 +588,19 @@ module coherence_l1d #(
   end
 `endif
 `ifdef COH_MAINT_OWNED
+  wire f_matching_owner = reply_valid_q && reply_q.addr == request.addr &&
+      (resident_q || (put_q && !put_accepted_q));
+  wire f_shared_reply = reply_valid_q && reply_q.state == coherence_pkg::Shared;
   always_ff @(posedge i_clk)
-    if (!i_rst && reply_valid_q && reply_q.addr == request.addr && (resident_q ||
-        (put_q && !put_accepted_q)))
+    if (!i_rst)
       p_maint_seq_reply_owner :
-      assert (reply_q.data_valid == !(reply_snapshot_q && resident_q && home_current_q) &&
-          (reply_q.data_valid || reply_q.state == coherence_pkg::Modified));
+      assert ($onehot0(
+          {resident_q, shared_q, put_q}
+      ) && (!home_current_q || resident_q) && (!put_accepted_q || put_q) &&
+          (!f_shared_reply || shared_q || (resident_q && !reply_snapshot_q)) &&
+          (!f_matching_owner ||
+           (reply_q.data_valid == !(reply_snapshot_q && resident_q && home_current_q) &&
+            (reply_q.data_valid || reply_q.state == coherence_pkg::Modified))));
 `endif
 endmodule
 // verilog_lint: waive module-filename
