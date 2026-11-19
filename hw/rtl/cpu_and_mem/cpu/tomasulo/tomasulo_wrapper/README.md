@@ -511,6 +511,11 @@ top-level and cache counter blocks. See the
   composition, INT_RS's side-RAM tag rule against the real ROB, and the SC and
   CDB-copy assertions above, with translation off; its `fp_repair_bmc` task
   checks the FP buffer's repair timing and values.
+- The FP forward checker follows each live offer through the pipeline tail,
+  result FIFO, adapter and registered CDB. It checks the forwarded word on
+  either result lane, tag allocation, and recovery of its consumers. FP_RS
+  checks all three source selects against both of its wakeup lanes. These
+  checks run after reset in simulation and in the composed formal target.
 - In Verilator simulation, the wrapper logs CDB broadcasts that target a free
   ROB entry, naming the FU that produced each, to help track down results
   that escaped a flush.

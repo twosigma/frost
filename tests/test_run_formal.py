@@ -1436,9 +1436,21 @@ FORMAL_TARGETS = [
         tasks=("bmc16", "bmc8", "bmc4", "prove"),
     ),
     FormalTarget(
+        "fp_forward_wake.sby",
+        "FP forward offers, ROB tag ownership and both station wakeup lanes in the wrapper",
+        tasks=(
+            "bmc",
+            "delivery_bmc",
+            "cover",
+            "fifo_prove",
+            "route_prove",
+            "route_cover",
+        ),
+    ),
+    FormalTarget(
         "rs_divide_gate.sby",
-        "The MUL station issues a divide only while the divider is idle",
-        tasks=("prove", "cover"),
+        "The MUL and FP stations gate engine issues while pipelined operations may pass",
+        tasks=("prove", "cover", "fp_gate_prove", "fp_gate_cover"),
     ),
     FormalTarget(
         "cdb_arbiter.sby",
@@ -2078,6 +2090,24 @@ SBY_TASKS = [
         "prove_indirect",
         "Unbounded pre-decode indirect target, eligibility and trap isolation.",
     ),
+    (
+        "delivery_bmc",
+        "Check delivery or recovery of a pipelined result through the registered CDB.",
+    ),
+    (
+        "route_cover",
+        "Reach a stalled FP result and its grant on each registered CDB lane.",
+    ),
+    (
+        "route_prove",
+        "The FP adapter retains a stalled FIFO head and a slot-6 grant registers its word.",
+    ),
+    (
+        "fifo_prove",
+        "A selected forward word stays in its physical FIFO slot until delivery or recovery.",
+    ),
+    ("fp_gate_prove", "FP station engine issue, opcode and busy interlock."),
+    ("fp_gate_cover", "FP pipeline bypass, engine release and squashed launch."),
     ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),

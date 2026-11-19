@@ -1,35 +1,50 @@
 [tasks]
-prove
-cover
+prove mul
+cover mul
+fp_gate_prove fp
+fp_gate_cover fp
 
 [options]
 prove: mode prove
 prove: depth 8
 cover: mode cover
 cover: depth 10
+fp_gate_prove: mode prove
+fp_gate_prove: depth 8
+fp_gate_cover: mode cover
+fp_gate_cover: depth 14
 
 [engines]
 smtbmc boolector
 
 [script]
-read -sv riscv_pkg.sv rs_issue2_selector.sv
-read -sv coherent_rs_capacity.sv
-read -sv coherent_rs_issue2_selector.sv
-read -sv coherent_rs_payload_store.sv
-read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -D RS_DIVIDE_GATE_LOCAL_PROOF -sv reservation_station.sv
+mul: read -sv riscv_pkg.sv rs_issue2_selector.sv
+mul: read -sv coherent_rs_capacity.sv
+mul: read -sv coherent_rs_issue2_selector.sv
+mul: read -sv coherent_rs_payload_store.sv
+mul: read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -D RS_DIVIDE_GATE_LOCAL_PROOF -sv reservation_station.sv
 # Exercise the MUL station's divide gate.
-chparam -set DEPTH 4 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set SPECULATIVE_DATA_WRITES 1 -set DIVIDE_ISSUE_GATE 1 reservation_station
+mul: chparam -set DEPTH 4 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set SPECULATIVE_DATA_WRITES 1 -set DIVIDE_ISSUE_GATE 1 reservation_station
+# FP_RS uses the stored opcode, three sources and the pipelined-operation bypass.
+fp: read_slang --top reservation_station --single-unit -DSYNTHESIS -DRS_PRETAG_LOCAL_PROOF -DRS_DIVIDE_GATE_LOCAL_PROOF -DRS_FP_GATE_ROWS -GDEPTH=6 -GHAS_SRC3=1 -GISSUE_REPAIR_BYPASS=0 -GFORMAL_STANDALONE_ENV=0 -GDIVIDE_ISSUE_GATE=1 -GFP_ENGINE_GATE=1 -GFWD_WAKE=1 riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv reservation_station.sv
 hierarchy -top reservation_station
 # The gate proof holds whatever the payload RAMs return, initial contents included.
-delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread
+mul: delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread
 script free_undefined.ys
 setundef -undriven -anyseq
 # Drop output ports so opt can prune logic unused by the properties.
 delete -port reservation_station/o:*
 opt_clean -purge
-opt
+mul: opt
+fp: opt -keepdc
 prep -top reservation_station -flatten
-select -assert-count 3 t:$check r:FLAVOR=assert %i
+mul: select -assert-count 3 t:$check r:FLAVOR=assert %i
+
+fp: memory_map -keepdc
+fp: opt_clean
+fp: select -assert-count 11 t:$check r:FLAVOR=assert %i
+fp: select -assert-count 4 t:$check r:FLAVOR=cover %i
+fp: select -assert-count 3 t:$check r:FLAVOR=assume %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
@@ -39,3 +54,6 @@ select -assert-count 3 t:$check r:FLAVOR=assert %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
 free_undefined.ys
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
