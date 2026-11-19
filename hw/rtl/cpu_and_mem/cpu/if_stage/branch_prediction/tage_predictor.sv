@@ -277,13 +277,39 @@ module tage_predictor #(
   // Training
   // ===========================================================================
   // Read stage: the branch's bank of each table at the saved indices, or the
-  // entry the write stage is writing this cycle.
+  // entry the write stage is writing this cycle. Precompute provider, above,
+  // tag ownership, and usefulness-update qualifiers here so the write stage
+  // feeds the distributed RAM write ports with minimal logic.
   logic [TABLES-1:0][EntryBits-1:0] read_entry;
   logic [TABLES-1:0][EntryBits-1:0] cur;  // the saved entries
+  logic [TABLES-1:0] read_provider;
+  logic [TABLES-1:0] read_above;
+  logic [TABLES-1:0] read_owned;
+  logic read_useful_update;
+  logic read_useful_value;
+  logic read_found;
   for (genvar t = 0; t < TABLES; t++) begin : gen_train_read
+    entry_t read_entry_s;
     assign read_entry[t] = (write_any[t] && (write_bank == i_train_bank) &&
                             (write_index[t] == i_train_lookup.index[t])) ? write_entry[t] :
                            i_train_bank ? train_entry[t][1] : train_entry[t][0];
+    assign read_entry_s = read_entry[t];
+    assign read_owned[t] = read_entry_s.valid && (read_entry_s.tag == i_train_lookup.tag[t]);
+  end
+  assign read_useful_update = i_train_lookup.taken != i_train_alt_taken;
+  assign read_useful_value  = i_train_lookup.taken == i_train_taken;
+  always_comb begin
+    read_provider = '0;
+    read_above    = '0;
+    read_found    = 1'b0;
+    for (int t = TABLES - 1; t >= 0; t--) begin
+      if (!read_found && i_train_lookup.hit[t]) begin
+        read_provider[t] = 1'b1;
+        read_found       = 1'b1;
+      end else if (!read_found) begin
+        read_above[t] = 1'b1;
+      end
+    end
   end
 
   // Training is idle during reset. A power-up write can only change
@@ -296,55 +322,45 @@ module tage_predictor #(
 
   logic train_valid_q = RandomStart ? 'x : 1'b0;
   riscv_pkg::tage_lookup_t train_lookup_q;
-  logic train_alt_taken_q;
   logic train_taken_q;
   logic train_mispredicted_q;
+  logic [TABLES-1:0] provider;
+  logic [TABLES-1:0] above;
+  logic [TABLES-1:0] owned;  // the saved entry still holds the branch
+  logic useful_update;
+  logic useful_value;
   always_ff @(posedge i_clk) begin
     train_valid_q        <= i_train_valid;
     train_lookup_q       <= i_train_lookup;
     write_bank           <= i_train_bank;
-    train_alt_taken_q    <= i_train_alt_taken;
     train_taken_q        <= i_train_taken;
     train_mispredicted_q <= i_train_mispredicted;
     cur                  <= read_entry;
+    provider             <= read_provider;
+    above                <= read_above;
+    owned                <= read_owned;
+    useful_update        <= read_useful_update;
+    useful_value         <= read_useful_value;
   end
   assign write_index = train_lookup_q.index;
 
-  // Write stage: the provider (the longest saved match), the tables above
-  // it, and the allocation among them.
-  logic [TABLES-1:0] provider;
-  logic [TABLES-1:0] above;
+  // Write stage: allocation and update from the registered qualifiers.
   logic [TABLES-1:0] useful;
-  logic [TABLES-1:0] owned;  // the saved entry still holds the branch
   logic [TABLES-1:0] alloc;
   logic [TABLES-1:0] useful_down;
-  logic useful_update;
-  logic useful_value;
-  assign useful_update = train_lookup_q.taken != train_alt_taken_q;
-  assign useful_value  = train_lookup_q.taken == train_taken_q;
-  logic found;
   always_comb begin
-    provider = '0;
-    above    = '0;
-    found    = 1'b0;
-    for (int t = TABLES - 1; t >= 0; t--) begin
-      if (!found && train_lookup_q.hit[t]) begin
-        provider[t] = 1'b1;
-        found = 1'b1;
-      end else if (!found) begin
-        above[t] = 1'b1;
-      end
-    end
     // The shortest free table above the provider; if none, every candidate
     // counts its usefulness down.
     alloc = '0;
     for (int t = 0; t < TABLES; t++) begin
-      if (train_mispredicted_q && above[t] && !owned[t] && !useful[t] && (alloc == '0))
+      if (train_mispredicted_q && above[t] && !provider[t] && !owned[t] && !useful[t] &&
+          (alloc == '0))
         alloc[t] = 1'b1;
     end
     useful_down = '0;
     if (alloc == '0) begin
-      for (int t = 0; t < TABLES; t++) useful_down[t] = train_mispredicted_q && above[t];
+      for (int t = 0; t < TABLES; t++)
+      useful_down[t] = train_mispredicted_q && above[t] && !provider[t];
     end
   end
 
@@ -353,14 +369,15 @@ module tage_predictor #(
     entry_t updated;
     assign entry = cur[t];
     assign useful[t] = |entry.useful;
-    assign owned[t] = entry.valid && (entry.tag == train_lookup_q.tag[t]);
     always_comb begin
       updated = entry;
-      if (provider[t] && owned[t]) begin
-        updated.ctr = counter_step(entry.ctr, train_taken_q);
-        if (useful_update) begin
-          if (useful_value) updated.useful = (&entry.useful) ? entry.useful : entry.useful + 1'b1;
-          else updated.useful = (entry.useful == '0) ? entry.useful : entry.useful - 1'b1;
+      if (provider[t]) begin
+        if (owned[t]) begin
+          updated.ctr = counter_step(entry.ctr, train_taken_q);
+          if (useful_update) begin
+            if (useful_value) updated.useful = (&entry.useful) ? entry.useful : entry.useful + 1'b1;
+            else updated.useful = (entry.useful == '0) ? entry.useful : entry.useful - 1'b1;
+          end
         end
       end else if (alloc[t]) begin
         updated.valid  = 1'b1;

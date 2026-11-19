@@ -255,20 +255,43 @@ module ittage_predictor #(
   // Training
   // ===========================================================================
   // Read stage: the JALR's bank of each table at the saved indices, or the
-  // entry the write stage is writing this cycle.
+  // entry the write stage is writing this cycle. Precompute provider, above,
+  // tag ownership, and target match here so the write stage drives the
+  // distributed RAM write ports without wide comparators.
   logic [Tables-1:0][EntryBits-1:0] read_entry;
   logic [Tables-1:0][EntryBits-1:0] cur;
+  logic [Tables-1:0] read_provider;
+  logic [Tables-1:0] read_above;
+  logic [Tables-1:0] read_owned;
+  logic [Tables-1:0] read_correct;
   for (genvar t = 0; t < Tables; t++) begin : gen_train_read
+    entry_t read_entry_s;
     assign train_read_index[t] = i_train_lookup.index[t];
     assign read_entry[t] = (write_any[t] && (write_bank == i_train_bank) &&
                             (write_index[t] == i_train_lookup.index[t])) ? write_entry[t] :
                            i_train_bank ? train_entry[t][1] : train_entry[t][0];
+    assign read_entry_s = read_entry[t];
+    assign read_owned[t] = read_entry_s.valid && (read_entry_s.tag == i_train_lookup.tag[t]);
+    assign read_correct[t] = read_entry_s.target == i_train_target;
+  end
+  always_comb begin
+    read_provider = '0;
+    if (i_train_lookup.hit[2]) read_provider[2] = 1'b1;
+    else if (i_train_lookup.hit[1]) read_provider[1] = 1'b1;
+    else if (i_train_lookup.hit[0]) read_provider[0] = 1'b1;
+    read_above[0] = !(|i_train_lookup.hit);
+    read_above[1] = !i_train_lookup.hit[1] && !i_train_lookup.hit[2];
+    read_above[2] = !i_train_lookup.hit[2];
   end
 
   logic train_valid_q = 1'b0;
   riscv_pkg::itt_lookup_t train_lookup_q;
   logic [TARGET_BITS-2:0] train_target_q;
   logic train_mispredicted_q;
+  logic [Tables-1:0] provider;
+  logic [Tables-1:0] above;  // tables above the provider
+  logic [Tables-1:0] owned;
+  logic [Tables-1:0] correct_q;
   always_ff @(posedge i_clk) begin
     train_valid_q        <= i_train_valid;
     train_lookup_q       <= i_train_lookup;
@@ -276,32 +299,26 @@ module ittage_predictor #(
     train_target_q       <= i_train_target;
     train_mispredicted_q <= i_train_mispredicted;
     cur                  <= read_entry;
+    provider             <= read_provider;
+    above                <= read_above;
+    owned                <= read_owned;
+    correct_q            <= read_correct;
   end
   for (genvar t = 0; t < Tables; t++) begin : gen_write_index
     assign write_index[t] = train_lookup_q.index[t];
   end
 
   // Write stage: the provider's update, then the allocation above it.
-  logic [Tables-1:0] provider;
   logic [Tables-1:0] useful;
-  logic [Tables-1:0] owned;
-  logic [Tables-1:0] above;  // tables above the provider
   logic [Tables-1:0] alloc;
   logic [Tables-1:0] useful_clear;
   always_comb begin
-    provider = '0;
-    if (train_lookup_q.hit[2]) provider[2] = 1'b1;
-    else if (train_lookup_q.hit[1]) provider[1] = 1'b1;
-    else if (train_lookup_q.hit[0]) provider[0] = 1'b1;
-    above[0] = !(|train_lookup_q.hit);
-    above[1] = !train_lookup_q.hit[1] && !train_lookup_q.hit[2];
-    above[2] = !train_lookup_q.hit[2];
     // The shortest table above the provider that is free, and the useful
     // entries passed before it.
     alloc = '0;
     useful_clear = '0;
     for (int t = 0; t < Tables; t++) begin
-      if (train_mispredicted_q && above[t] && !(|alloc)) begin
+      if (train_mispredicted_q && above[t] && !provider[t] && !(|alloc)) begin
         if (!owned[t] && !useful[t]) alloc[t] = 1'b1;
         else if (useful[t]) useful_clear[t] = 1'b1;
       end
@@ -313,19 +330,18 @@ module ittage_predictor #(
     entry_t updated;
     assign entry = cur[t];
     assign useful[t] = |entry.useful;
-    assign owned[t] = entry.valid && (entry.tag == train_lookup_q.tag[t]);
-    logic correct;
-    assign correct = entry.target == train_target_q;
     always_comb begin
       updated = entry;
-      if (provider[t] && owned[t]) begin
-        if (correct) begin
-          updated.conf   = (&entry.conf) ? entry.conf : entry.conf + 2'd1;
-          updated.useful = 1'b1;
-        end else if (entry.conf != 2'd0) begin
-          updated.conf = entry.conf - 2'd1;
-        end else begin
-          updated.target = train_target_q;
+      if (provider[t]) begin
+        if (owned[t]) begin
+          if (correct_q[t]) begin
+            updated.conf   = (&entry.conf) ? entry.conf : entry.conf + 2'd1;
+            updated.useful = 1'b1;
+          end else if (entry.conf != 2'd0) begin
+            updated.conf = entry.conf - 2'd1;
+          end else begin
+            updated.target = train_target_q;
+          end
         end
       end else if (alloc[t]) begin
         updated.valid  = 1'b1;
