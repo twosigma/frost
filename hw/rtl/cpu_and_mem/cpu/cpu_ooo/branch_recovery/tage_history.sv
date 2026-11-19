@@ -45,7 +45,8 @@
  * passes its packet to ID; the push is applied to the lookup the cycle after
  * (registered), so a lookup sees every packet PD passed up to two fetches
  * before it. Early recovery restores the branch's saved PD-time direction
- * history and shifts in its outcome; a trap, xRET, FENCE-class flush, or a
+ * history and shifts in its bit (a conditional branch's outcome, a JALR's
+ * target bit 2); a trap, xRET, FENCE-class flush, or a
  * misprediction recovered at commit takes the retired direction history
  * (each retired branch's outcome and each jump's target bit 2), with the
  * same registered arms as the path history. A PD redirect needs no restore:
@@ -55,19 +56,18 @@
  * Saved lookups. When PD passes a packet with a conditional branch or a JALR
  * to ID, the instruction's lookup goes to the next entry of a circular
  * buffer: for a branch, whether the tagged lookup covered its word, the bank,
- * the indices, tags, matches, provider direction, the alternate direction,
- * and the lookup history; for a JALR that is not a return, the indirect
- * target predictor's lookup (indices, tags, matches); a return keeps only its
- * place. Dispatch
- * gives the branch the same index from a pointer of its own, since both see
- * the branches in program order, and records it by ROB tag. Early recovery
- * reads the branch's history from the entry; retirement trains the tagged
- * predictor, or for a JALR the indirect target predictor with its target,
- * from it, one instruction per cycle, holding a slot-2 branch for a cycle in which
- * slot 1 does not train (a newer one replaces it, and it is dropped if its
- * entry is reused first). Both pointers rewind past the recovered branch on
- * early recovery, and to the entry after the youngest retired branch on any
- * other pipeline flush, so live entries never exceed the branches in flight.
+ * the indices, tags, matches, provider direction and alternate direction. A
+ * non-return JALR can save the indirect predictor's lookup (indices, tags,
+ * matches). Every entry saves both prediction histories, including returns
+ * that have no indirect predictor lookup.
+ * Dispatch gives the instruction the same index from a pointer of its own
+ * and records it by ROB tag. Early recovery reads both histories from that
+ * entry. Retirement trains the tagged predictor or an eligible JALR's
+ * indirect predictor entry, one instruction per cycle, holding a slot-2
+ * branch for a cycle in which slot 1 does not train. A newer slot-2 branch
+ * replaces a held one, and reusing its entry drops it. Both pointers rewind
+ * past the recovered branch on early recovery and past the youngest retired
+ * branch on any other pipeline flush.
  */
 module tage_history #(
     parameter int unsigned HIST_BITS = riscv_pkg::TageHistBits,
@@ -120,13 +120,15 @@ module tage_history #(
     input logic                                        i_early_active,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_tag,
     input logic                                        i_early_taken,
+    // Its direction-history bit: the outcome, or a JALR's target bit 2.
+    input logic                                        i_early_dir_bit,
     // A flush of every in-flight instruction: a trap, xRET, or FENCE-class
     // flush, or a misprediction recovered at commit.
     input logic                                        i_flush_full,
 
-    // Dispatch: each slot's ROB tag and whether it is a conditional branch
-    // (at most one per bundle), and, registered a cycle later, which slots
-    // were allocated.
+    // Dispatch supplies each slot's ROB tag and conditional-branch and JALR
+    // flags. At most one slot owns an FTQ entry. The allocation strobes
+    // follow one cycle later.
     input logic [1:0][riscv_pkg::ReorderBufferTagWidth-1:0] i_alloc_tag,
     input logic [1:0]                                       i_alloc_cond_branch,
     input logic [1:0]                                       i_alloc_jalr,
@@ -321,8 +323,8 @@ module tage_history #(
       .o_read_data(ftq_read_train_raw)
   );
 
-  // Dispatch gives each conditional branch the next index from its own
-  // pointer and records it by ROB tag. PD and dispatch see the same branches
+  // Dispatch gives each conditional branch or JALR the next index from its
+  // own pointer and records it by ROB tag. PD and dispatch see the same owners
   // in the same order, and every flush that drops branches between them
   // rewinds both pointers to the same entry (below). Dispatch's data is
   // registered and acts the next cycle with the registered allocation, which
@@ -398,6 +400,7 @@ module tage_history #(
   logic [TAGE_TABLES-1:0][TAGE_INDEX_BITS-1:0] early_dir_fold_q;
   logic early_q;
   logic early_taken_q;
+  logic early_dir_bit_q;
   ftq_entry_t ftq_read_early;
   assign ftq_read_early = ftq_read_early_raw;
   always_ff @(posedge i_clk) begin
@@ -407,8 +410,9 @@ module tage_history #(
     early_dir_hist_q <= ftq_read_early.dir_hist;
     for (int t = 0; t < TAGE_TABLES; t++)
     early_dir_fold_q[t] <= fold_dir_table(ftq_read_early.dir_hist, table_hist_bits(t));
-    early_q       <= i_early_active;
-    early_taken_q <= i_early_taken;
+    early_q         <= i_early_active;
+    early_taken_q   <= i_early_taken;
+    early_dir_bit_q <= i_early_dir_bit;
   end
 
   // Arms, highest priority first: 1 trap or xRET, 2 FENCE-class flush,
@@ -512,7 +516,7 @@ module tage_history #(
     end else if (i_hist_restore_arm[3]) begin
       dir_event_base = early_q ? DirBaseEarly : DirBaseRetired;
       dir_event_push = early_q;
-      dir_event_bit  = early_taken_q;
+      dir_event_bit  = early_dir_bit_q;
     end
   end
 
@@ -804,7 +808,7 @@ module tage_history #(
         assert (o_lookup_dir_hist == {$past(
             ftq_read_early.dir_hist[DIR_BITS-2:0]
         ), $past(
-            i_early_taken
+            i_early_dir_bit
         )});
       end else begin
         if (pd_accept_q && (|i_pd_q_cf)) begin
@@ -843,6 +847,10 @@ module tage_history #(
       cover (i_hist_restore_arm == 4'b0100 && !$past(i_early_active) && f_dir != '0);
       cover (i_hist_restore_arm == 4'b0100 && $past(i_early_active && i_early_taken));
       cover (i_hist_restore_arm == 4'b0100 && $past(i_early_active && !i_early_taken));
+      c_taken_with_clear_direction_bit :
+      cover (i_hist_restore_arm == 4'b0100 && $past(
+          i_early_active && i_early_taken && !i_early_dir_bit
+      ) && !o_lookup_dir_hist[0]);
       cover (i_hist_restore_arm == 4'b1000 && f_pd_path_known && $past(i_pd_redirect_taken));
       cover ($past(i_commit_valid == 2'b11 && i_commit_cf == 2'b11) && f_dir[1:0] == 2'b10);
       cover (pd_accept_q && i_pd_q_cf == 2'b10 && o_lookup_dir_hist[0]);

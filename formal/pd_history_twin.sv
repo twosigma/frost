@@ -134,6 +134,7 @@ module pd_history_twin (
       p_state_early_dir_hist_q : assert (ref_state.early_dir_hist_q == new_state.early_dir_hist_q);
       p_state_early_q : assert (ref_state.early_q == new_state.early_q);
       p_state_early_taken_q : assert (ref_state.early_taken_q == new_state.early_taken_q);
+      p_state_early_dir_bit_q : assert (ref_state.early_dir_bit_q == new_state.early_dir_bit_q);
       p_state_held_valid : assert (ref_state.held_valid == new_state.held_valid);
       p_state_held_idx : assert (ref_state.held_idx == new_state.held_idx);
       p_state_held_taken : assert (ref_state.held_taken == new_state.held_taken);

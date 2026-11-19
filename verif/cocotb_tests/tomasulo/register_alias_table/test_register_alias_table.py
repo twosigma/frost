@@ -1429,7 +1429,12 @@ async def test_rename_over_slot2_commit_same_cycle(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_save_for_slot2_overlays_slot1_rename(dut: Any) -> None:
-    """Slot-2 branch checkpoint includes slot 1's rename but not slot 2's."""
+    """Slot-2 branch checkpoint includes slot 1's rename and the branch's own.
+
+    The branch (slot 2, ROB tag 4) is still in flight at the restore, so its
+    own destination maps back to it (a call's link register after an early
+    JALR recovery); the younger rename is dropped.
+    """
     cocotb.log.info("=== Test: Checkpoint Save for Slot-2 Overlay ===")
 
     dut_if, model = await setup_test(dut)
@@ -1473,13 +1478,17 @@ async def test_checkpoint_save_for_slot2_overlays_slot1_rename(dut: Any) -> None
     check_lookup(result, expected, "slot-1 rename restored from slot-2 checkpoint")
     assert result.renamed and result.tag == 3, "x5 should restore slot-1 rename"
 
-    for reg in (6, 7):
-        dut_if.set_int_src1(reg, 0)
-        await RisingEdge(dut_if.clock)
-        result = dut_if.read_int_src1()
-        expected = model.lookup_int(reg, 0)
-        check_lookup(result, expected, f"INT x{reg} after slot-2 checkpoint restore")
-        assert not result.renamed, f"x{reg} should not survive slot-2 restore"
+    dut_if.set_int_src1(6, 0)
+    await RisingEdge(dut_if.clock)
+    result = dut_if.read_int_src1()
+    assert result.renamed and result.tag == 4, "x6 should map back to the live branch"
+
+    dut_if.set_int_src1(7, 0)
+    await RisingEdge(dut_if.clock)
+    result = dut_if.read_int_src1()
+    expected = model.lookup_int(7, 0)
+    check_lookup(result, expected, "INT x7 after slot-2 checkpoint restore")
+    assert not result.renamed, "x7 should not survive slot-2 restore"
 
     cocotb.log.info("=== Test Passed ===")
 

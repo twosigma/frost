@@ -25,22 +25,23 @@ sees that case.
 
 Every branch, JAL, or JALR reserves a checkpoint at dispatch. The checkpoint
 snapshots the full INT and FP RATs, the RAS state (top-of-stack pointer,
-valid count, and top entry), and the branch's own ROB tag and generation bit
-(see below). On a misprediction, the snapshot replaces the active RAT in one
-cycle.
+valid count, and top entry), the branch's own ROB tag and generation bit,
+and its integer destination register and write-enable bit. On a misprediction,
+the snapshot replaces the active RAT in one cycle.
 
 There are eight checkpoint slots. While all are occupied, a bundle that
 contains a branch or jump waits at dispatch; other bundles still dispatch.
-Snapshots live in distributed RAM: 8 slots × (64 entries × 7 bits + 77
-metadata bits), 4,200 bits that would otherwise be flip-flops. An entry is a
+Each distributed RAM slot holds 64 seven-bit entries and 83 metadata bits,
+for a total of 4,248 bits across the eight slots. An entry is a
 valid bit, a generation bit, and the 5-bit tag. The active RATs stay in
 flip-flops because they need parallel lookup, per-entry commit clear, and a
 bulk overwrite on restore.
 
 If slot 2 is the branch or jump that takes the checkpoint, the snapshot
-includes slot 1's same-cycle rename, so recovery returns to the state just
-before slot 2. Rename writes decode dispatch's pre-fire destination signals
-and apply the bundle fire (`i_alloc_fire`) last (see the
+includes slot 1's same-cycle rename. Early recovery of a JALR that writes
+an integer destination restores the JALR as that register's producer,
+including when both slots write the same register. Rename writes decode
+dispatch's pre-fire destination signals and apply the bundle fire (`i_alloc_fire`) last (see the
 [dispatch guide](../dispatch/README.md)).
 
 ## Stale rename detection
@@ -57,7 +58,7 @@ repair-valid flags qualify every consumer. INT x0 always returns all zeros.
 Restoring a checkpoint needs a stronger test, since tags a snapshot names may
 have been reallocated by then. cpu_ooo flips a per-entry generation bit
 (`rob_entry_epoch`) on every ROB allocation, and a snapshot records it for
-each entry and for the branch. A restored mapping stays renamed only
+each entry and for the branch. An older snapshot mapping stays renamed only
 if the branch is still in the ROB with its saved generation, the mapped
 entry is still valid with its saved generation, and that entry is strictly
 older than the branch.

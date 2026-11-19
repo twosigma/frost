@@ -43,14 +43,17 @@ static void set_const(unsigned k, double v)
 }
 
 /* 64 ring nodes, 64 bytes apart. */
-static unsigned long ring[64 * 8] __attribute__((aligned(64)));
+#define RING_NODES 64
+static unsigned long ring[RING_NODES * 8] __attribute__((aligned(64)));
 
 #define GROUPS 6
 
-/* Cycles per operation in hundredths: ops per group = 16 bodies x per_body. */
-static unsigned long measure(loop_fn fn, const void *arg, unsigned per_body, unsigned long id)
+/* Cycles per operation in hundredths: ops per group = 16 bodies x per_body.
+ * warm_groups runs before timing to warm instructions and working data. */
+static unsigned long
+measure(loop_fn fn, const void *arg, unsigned per_body, unsigned long warm_groups, unsigned long id)
 {
-    fn(1, arg, 0); /* warm */
+    fn(warm_groups, arg, 0); /* warm */
     unsigned long c = fn(GROUPS, arg, id);
     return c * 100 / (GROUPS * 16ul * per_body);
 }
@@ -107,8 +110,8 @@ int main(void)
     set_const(6, -0.5 / 1.1);
     set_const(7, 0.25);
     set_const(8, 1.5);
-    for (unsigned i = 0; i < 64; i++)
-        ring[i * 8] = (unsigned long) &ring[((i * 37 + 11) % 64) * 8];
+    for (unsigned i = 0; i < RING_NODES; i++)
+        ring[i * 8] = (unsigned long) &ring[((i * 37 + 11) % RING_NODES) * 8];
 
     static const struct test tests[] = {
         {"fadd_dep_s", fadd_dep_s, 2, LIM_DEP},
@@ -133,10 +136,11 @@ int main(void)
     uart_puts("FPLAT begin\n");
     for (unsigned i = 0; i < sizeof tests / sizeof tests[0]; i++)
         report(tests[i].name,
-               measure(tests[i].fn, &konst, tests[i].per_body, 0x7800 + i),
+               measure(tests[i].fn, &konst, tests[i].per_body, 1, 0x7800 + i),
                tests[i].limit);
-    report("fld_fmv_node", measure(fld_chase, &ring[0], 1, 0x7880), LIM_FLD_NODE);
-    report("ld_node", measure(ld_chase, &ring[0], 2, 0x7881), 0);
+    /* Warm every ring node so the timed chase measures load-to-use. */
+    report("fld_fmv_node", measure(fld_chase, &ring[0], 1, RING_NODES / 16, 0x7880), LIM_FLD_NODE);
+    report("ld_node", measure(ld_chase, &ring[0], 2, RING_NODES / 32, 0x7881), 0);
     if (failures) {
         uart_printf("<<FAIL>> %d FP figures over their limits\n", failures);
         return 1;

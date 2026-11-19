@@ -290,7 +290,14 @@ FORMAL_TARGETS = [
     FormalTarget(
         "early_backend_hold.sby",
         "Combined backend hold equals early recovery or independently sampled fatal "
-        "stop through reset and flush",
+        "stop through reset and flush. A coherent not-taken launch redirects to "
+        "its issued PC plus the instruction length",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "early_redirect_completion.sby",
+        "An accepted early redirect flushes younger entries by tag on the next "
+        "edge or an older full flush supersedes it",
         tasks=("prove", "cover"),
     ),
     FormalTarget(
@@ -946,7 +953,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "mispredict_capture.sby",
-        "Recovery payload, pulse copies and frontend flush match their references",
+        "Recovery payload, pulse copies, frontend flush and registered fetch flush "
+        "match their references",
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
@@ -1041,6 +1049,11 @@ FORMAL_TARGETS = [
         "ras_checkpoint.sby",
         "Return-stack outputs and state updates match the checkpoint reference",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "ras_flush_checkpoint.sby",
+        "A full flush restores the return stack to the oldest discarded checkpoint",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "low_bram_presenter_tier.sby",
@@ -1675,7 +1688,10 @@ FORMAL_TARGETS = [
         "equations, both history outputs match the branch direction or jump target bit, "
         "a reserved compressed jump preserves only its trap, and stack operations, "
         "refreshes, directions and targets match PD's reference models across address regions; induction checks "
-        "indirect eligibility, payloads and reserved traps",
+        "indirect eligibility, payloads and reserved traps. "
+        "Each redirect has sources in only one slot. Redirects from aligned inputs "
+        "are aligned, indirect targets select a taken "
+        "JALR, and taken direction redirects select the decoded branch target",
         tasks=("bmc", "cover", "prove_indirect"),
     ),
     FormalTarget(
@@ -8027,7 +8043,9 @@ def test_store_home_cover_budgets() -> None:
                 "aigsmt": "boolector",
             }
             assert formal_task_timeout_s(target.name, task) == 900
-            engine = "abc bmc3 -c" if base.startswith("link_") else "abc bmc3"
+            engine = "abc bmc3"
+            if base == "link_bmc_siblings":
+                engine = "abc bmc3 -c"
             assert bounded["[engines]"] == [engine]
             script = bounded["[script]"]
             assert "abc" not in script

@@ -14,6 +14,7 @@
 
 """Keep every collected real program in one appropriately sized CI shard."""
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -32,6 +33,22 @@ from test_run_cocotb import (
 
 
 VECTOR_SHARD = "Real Programs (Vector programs)"
+
+
+def test_front_end_fuzzer_seeds_match_the_program_guides() -> None:
+    """Each documented seed selects its own generator input in the registry."""
+    root = Path(__file__).resolve().parents[1]
+    guide = (root / "tests/README.md").read_text()
+    documented = set(re.findall(r"`(fefuzz_\d+)`", guide))
+    registered = {
+        name for name, config in TEST_REGISTRY.items() if config.app_name == "fefuzz"
+    }
+    assert registered
+    assert registered == documented
+    for name in registered:
+        seed = dict(TEST_REGISTRY[name].extra_env)["FE_SEED"]
+        assert name == f"fefuzz_{seed}"
+    assert "| `fefuzz/` |" in (root / "sw/README.md").read_text()
 
 
 def test_registered_programs_have_one_ci_shard() -> None:

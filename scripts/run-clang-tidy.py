@@ -16,17 +16,20 @@
 
 """Run clang-tidy with each RISC-V source file's build flags.
 
-Make supplies the ABI, defines, and include paths. Compiler diagnostics are
-errors; other checks are advisory. Report advisory counts per file, or set
-``FROST_CLANG_TIDY_SHOW_ADVISORIES=1`` to print the findings.
+Make supplies the ABI, defines, and include paths. A clean fefuzz checkout
+uses its generator in a temporary directory for the expected signature header.
+Compiler diagnostics fail the hook. Other checks report advisory counts per
+file. Set ``FROST_CLANG_TIDY_SHOW_ADVISORIES=1`` to print the findings.
 """
 
+from contextlib import ExitStack
 import os
 import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 _MAKE_VALUE_PREFIX = "__FROST_CLANG_TIDY_MAKE_VALUE__"
@@ -268,7 +271,7 @@ def get_riscv_sysroot(root_dir: Path) -> str:
 
 def run_clang_tidy(
     file_path: str,
-    _root_dir: Path,
+    root_dir: Path,
     riscv_flags: str,
     fpga_clk_freq: str,
 ) -> bool:
@@ -289,12 +292,31 @@ def run_clang_tidy(
     ] + clang_tidy_flags
 
     try:
-        result = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
+        with ExitStack() as resources:
+            app_dir = (root_dir / "sw/apps/fefuzz").resolve()
+            source = (root_dir / file_path).resolve()
+            header = app_dir / "fe_expect.h"
+            if source == app_dir / "main.c" and not header.is_file():
+                output = Path(resources.enter_context(TemporaryDirectory()))
+                subprocess.run(
+                    [
+                        sys.executable,
+                        str(app_dir / "fe_gen.py"),
+                        os.environ.get("FE_SEED", "1"),
+                        str(output / "fe_gen.S"),
+                        str(output / "fe_expect.h"),
+                    ],
+                    capture_output=True,
+                    check=True,
+                    text=True,
+                )
+                cmd.append(f"-I{output}")
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    except subprocess.CalledProcessError as error:
+        print(
+            f"Could not generate fe_expect.h: {error.stderr.strip()}", file=sys.stderr
         )
+        return False
     except OSError as error:
         print(f"clang-tidy could not run for {file_path}: {error}", file=sys.stderr)
         return False

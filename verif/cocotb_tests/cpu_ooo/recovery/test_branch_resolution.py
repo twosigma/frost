@@ -484,6 +484,35 @@ async def test_partial_recovery_suppresses_only_flushed_entries(dut: Any) -> Non
 
 
 @cocotb.test()
+async def test_older_jalr_resolves_during_either_recovery_phase(dut: Any) -> None:
+    """A surviving JALR still reports its target and miss to the ROB."""
+    await _setup_test(dut)
+    for phase in (dut.i_early_mispredict_active, dut.i_early_backend_recovery_pending):
+        _clear_inputs(dut)
+        dut.i_head_tag.value = 29
+        dut.i_early_mispredict_tag.value = 1
+        dut.i_checkpoint_in_use.value = 1 << 4
+        dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({4: 31})
+        phase.value = 1
+        _drive_issue(
+            dut,
+            {
+                "op": OP_JALR,
+                "rob_tag": 31,
+                "has_checkpoint": True,
+                "checkpoint_id": 4,
+                "src1_value": 0x801,
+                "jalr_imm": 4,
+                "predicted_target": 0x800,
+            },
+        )
+        await _settle()
+        update = _read_branch_update(dut)
+        assert update["valid"] and update["mispredicted"] and update["taken"]
+        assert update["tag"] == 31 and update["target"] == 0x804
+
+
+@cocotb.test()
 async def test_commit_recovery_suppresses_all_branch_resolution(dut: Any) -> None:
     """Commit-time recovery suppresses every branch issue; its branch was the oldest."""
     await _setup_test(dut)
