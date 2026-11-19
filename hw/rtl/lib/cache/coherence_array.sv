@@ -51,9 +51,9 @@ module coherence_array #(
     // A snapshot needs a Modified hit's bytes until the home has a copy.
     input logic i_req_snapshot,
     // These lookups need data only on a hit, or only on a miss whose selected
-    // victim has Modified bytes owed to the home. Otherwise they reply in the first data-read cycle,
-    // from the registered tag result, and the data read goes unused. A
-    // maintenance visit always waits for its data.
+    // victim has Modified bytes owed to the home. Otherwise they reply in the
+    // first data-read cycle from the registered tag result. A maintenance
+    // visit always waits for its data.
     input logic i_req_data_if_hit,
     input logic i_req_data_if_victim_modified,
     // A hit of this lookup leaves replacement state unchanged.
@@ -721,6 +721,23 @@ module coherence_array #(
       end
     end
   end
+`ifdef F_COH_ARRAY_SNAPSHOT_COVER
+  // Two distinct resident tags in one set owe different versions to the home.
+  for (genvar other = 0; other < WAYS; other++) begin : gen_snapshot_cover
+    wire opposite = tag_rdata[other][TagBits+:2] == 2'b11 &&
+        tag_rdata[other][TagBits-1:0] != tag_rdata[selected][TagBits-1:0] &&
+        tag_rdata[other][TagBits+2] != tag_rdata[selected][TagBits+2];
+    always_ff @(posedge i_clk) begin
+      if (!i_rst && select_valid && modified_data_q && snapshot_q && !visit_q &&
+          !tags_only_q && !skip_data_q && opposite && tag_rdata[selected][TagBits+:2] == 2'b11) begin
+        c_snapshot_clean_hit : cover (hit && !select_data);
+        c_snapshot_dirty_hit : cover (hit && select_data);
+        c_snapshot_dirty_victim_miss :
+        cover (!hit && !tag_rdata[selected][TagBits+2] && !select_data);
+      end
+    end
+  end
+`endif
   // The hit port's covers exist only with the port, so the covers of an array
   // without it have nothing to reach.
   if (HIT_PORT) begin : gen_hp_covers

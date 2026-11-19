@@ -434,7 +434,7 @@ module coherence_home_engine #(
         assert ((phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q);
       if (i_updated) assert (phase_q == UpdateWait);
       if (o_r_ready) assert (probe_matches);
-      if (o_p_valid) begin
+      if (phase_q == Service) begin
         p_snapshot_request :
         assert ((probe_q.opcode == coherence_pkg::ProbeSnapshot) ==
             (request_q.opcode == coherence_pkg::ReadOnceIF ||

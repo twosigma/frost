@@ -80,20 +80,27 @@ class ResetArray:
         assert self.get("o_req_ready") and self.get("o_update_ready")
 
     async def update(
-        self, address: int, way: int, data: int, drain: bool = True, state: int = 3
+        self,
+        address: int,
+        way: int,
+        data: int,
+        drain: bool = True,
+        state: int = 3,
+        current: bool = False,
+        tag_only: bool = False,
     ) -> None:
-        """Write a complete row without touching replacement state."""
+        """Update a tag and optionally its bytes without touching replacement state."""
         fields = dict(
             i_update_addr=address,
             i_update_way=way,
             i_update_state=state,
-            i_update_mask=(1 << self.line) - 1,
+            i_update_mask=0 if tag_only else (1 << self.line) - 1,
             i_update_data=data,
         )
         if self.home:
             fields.update(i_update_tag=1, i_update_has_data=1)
         else:
-            fields.update(i_update_insert=0)
+            fields.update(i_update_insert=0, i_update_home_current=int(current))
         await self.drive(**fields)
         await self.wait("o_update_ready")
         await self.drive(i_update_valid=1)
@@ -111,6 +118,8 @@ class ResetArray:
         skip: bool = False,
         hold: int = 0,
         modified: bool = False,
+        snapshot: bool = False,
+        current: bool | None = None,
         no_touch: bool = False,
         data_valid: bool | None = None,
         available: bool | None = None,
@@ -127,6 +136,7 @@ class ResetArray:
                 i_req_way=visit or 0,
                 i_req_skip_data_on_hit=int(skip),
                 i_req_data_if_modified=int(modified),
+                i_req_snapshot=int(snapshot),
                 i_req_no_touch=int(no_touch),
             )
         await self.drive(**fields)
@@ -146,6 +156,9 @@ class ResetArray:
         payload = self.get("o_resp_tags" if self.home else "o_resp_data")
         captured_available = self.get("o_resp_available")
         valid = None if self.home else self.get("o_resp_data_valid")
+        captured_current = None if self.home else self.get("o_resp_home_current")
+        if current is not None:
+            assert captured_current == int(current)
         if data_valid is not None:
             assert valid == int(data_valid)
         if available is not None:
@@ -169,6 +182,7 @@ class ResetArray:
             assert self.get("o_resp_tags" if self.home else "o_resp_data") == payload
             if not self.home:
                 assert self.get("o_resp_data_valid") == valid
+                assert self.get("o_resp_home_current") == captured_current
         await self.drive(i_resp_ready=1)
         await self.tick()
         return (*result, payload)
@@ -272,6 +286,58 @@ async def hit_touches_precede_following_lookups(dut: Any) -> None:
         assert (await b.lookup(3 * b.sets * b.line, no_touch=no_touch))[0] == 1
         hit, selected, _, _, _ = await b.lookup(0)
         assert (hit, selected) == (0, victim)
+
+
+@cocotb.test()
+async def snapshot_credit_selects_the_matching_way(dut: Any) -> None:
+    """Select independent versions of four same-set tags across tag-only writes."""
+    b = ResetArray(dut)
+    if b.home:
+        return
+    await b.reset()
+    rows = [(way + 1) * b.sets * b.line for way in range(b.ways)]
+    data = [
+        int.from_bytes(bytes([0x31 + way]) * b.line, "little") for way in range(b.ways)
+    ]
+    tag_latency, data_latency = (3, 6) if b.ultra else (1, 2)
+    for way, address in enumerate(rows):
+        await b.update(address, way, data[way])
+    for credited in (0b0101, 0b1010):
+        for way, address in enumerate(rows):
+            await b.update(
+                address, way, 0, current=bool(credited & (1 << way)), tag_only=True
+            )
+        for way, address in enumerate(rows):
+            current = bool(credited & (1 << way))
+            result = await b.lookup(
+                address,
+                modified=True,
+                snapshot=True,
+                current=current,
+                hold=2,
+                data_valid=not current,
+                latency=tag_latency if current else data_latency,
+            )
+            assert result[:4] == (1, way, address, 3)
+            if not current:
+                assert result[4] == data[way]
+            ordinary = await b.lookup(
+                address, modified=True, current=current, data_valid=True
+            )
+            assert ordinary == (1, way, address, 3, data[way])
+            miss = await b.lookup(
+                0,
+                exclude=15 ^ (1 << way),
+                modified=True,
+                snapshot=True,
+                current=current,
+                data_valid=False,
+                latency=tag_latency,
+            )
+            assert miss[:4] == (0, way, address, 3)
+    await b.reset()
+    for way in range(b.ways):
+        assert (await b.lookup(0, visit=way, current=False))[3] == 0
 
 
 @cocotb.test()

@@ -605,6 +605,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_snapshot.sby",
+        "A four-way L1D and the home retain and publish successive store versions.",
+        tasks=("coh_snapshot_versions_bmc", "coh_snapshot_versions_cover"),
+    ),
+    FormalTarget(
         "coherence_array.sby",
         "Serialized array byte values and exact conditional data selection.",
         tasks=(
@@ -621,6 +626,8 @@ FORMAL_TARGETS = [
             "coh_array_cover",
             "coh_array_uram_cover",
             "coh_array4_port_cover",
+            "coh_array4_snapshot_cover",
+            "coh_array4_uram_snapshot_cover",
         ),
     ),
     FormalTarget(
@@ -2893,6 +2900,14 @@ SBY_TASKS = [
         for lane in range(64)
     ],
     ("coh_home_array_cover", "Tag, read and update ports operate concurrently."),
+    (
+        "coh_snapshot_versions_bmc",
+        "Snapshot bytes across a later M-hit store and DMA write.",
+    ),
+    (
+        "coh_snapshot_versions_cover",
+        "A held first grant, a changed byte and both publications.",
+    ),
     ("coh_array_bmc", "Coherent array byte values and held responses."),
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     ("coh_array4_bmc", "Coherent array byte values and held responses with four ways."),
@@ -2900,6 +2915,8 @@ SBY_TASKS = [
     ("coh_array_port_bmc", "Hit-port tags and byte values beside lookups, one way."),
     ("coh_array4_port_bmc", "Hit-port tags and byte values beside lookups, four ways."),
     ("coh_array4_port_cover", "Hit-port hits beside lookups and after writes."),
+    ("coh_array4_snapshot_cover", "Same-set Modified tags with different home copies."),
+    ("coh_array4_uram_snapshot_cover", "Same-set snapshot selection in packed tags."),
     ("coh_array_equiv_bmc", "Cycle equivalence with the reference array, one way."),
     ("coh_array_equiv_data0_bmc", "One-way response data equivalence in byte lane 0."),
     (
