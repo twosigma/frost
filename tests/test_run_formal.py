@@ -33,7 +33,6 @@ from typing import Any
 import pytest
 
 import ci_reuse
-from coherence_home_cmo_replay import primary_inputs
 import sby_config
 from sby_config import commands as yosys_commands
 from sby_config import script_block
@@ -5794,6 +5793,8 @@ def test_home_cmo_witness_driver_is_cover_only() -> None:
 
 def test_home_cmo_replay_uses_only_complete_primary_inputs(tmp_path: Path) -> None:
     """Leave the home's initial storage and the driver's case selection free on replay."""
+    from coherence_home_cmo_replay import primary_inputs
+
     trace = tmp_path / "trace.smtc"
     state = "state 0\nassume (= [i_rst] true)\nassume (= [i_stop] false)\n"
     initial = "initial\nassume (= [home.slot] #b01)\nassume (= [witness_case] #b11)\n"
@@ -9821,10 +9822,10 @@ class FormalRunner:
             raise FileNotFoundError(f"SBY file not found: {sby_path}")
 
         cmd = ["sby", "-t", "-f", str(sby_path), task]
-        if (target.name, task) == ("coherence_home", "coh_home_cmo_cover"):
+        if replay := sby_config.cmo_replay_helper(sby_path, task):
             cmd = [
                 sys.executable,
-                str(self.test_dir / "coherence_home_cmo_replay.py"),
+                str(replay),
                 str(sby_path),
                 task,
                 str(formal_task_timeout_s(target.name, task)),

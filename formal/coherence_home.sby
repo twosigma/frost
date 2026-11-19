@@ -101,4 +101,3 @@ opt
 coherence_home_harness.sv
 coherence_home_control_harness.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
-../tests/coherence_home_cmo_replay.py
