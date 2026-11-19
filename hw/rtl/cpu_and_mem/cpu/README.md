@@ -376,7 +376,7 @@ shift ordinals (an insertion among the word shifts or a deletion ahead of
 
 Operations use one `instr_op_e` value per operation across widths and CSR
 source forms when width, sign or CSR operation travels in fields already
-carried to the consumer (`mem_size`, `mem_signed`, `rm`, `imm`, the ROB's
+carried to the consumer (`mem_size`, `mem_signed`, the ROB's
 `csr_op` field, or `vec_unit`'s per-tag instruction copy). Scalar integer and
 floating-point loads and stores, load-reserved, store-conditional and each
 atomic read-modify-write function share one operation across widths and

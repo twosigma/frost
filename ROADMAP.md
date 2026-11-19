@@ -114,6 +114,8 @@ Supervisor and user modes decode no non-standard instructions or CSRs
 
 Svpbmt: a platform with devices that have read side effects outside the physical device quadrant would need the page type to control request parking, committed-store draining and interrupt shielding.
 
+Svpbmt: NC and IO mappings over DDR reach it through an alias region, which the VCU118's 2 GiB map lacks. An internal uncached attribute that keeps the real address would remove the alias and that limitation; it is deferred.
+
 ## SMP
 
 Two harts on the X3 first, sharing one L2, with RVWMO litmus tests and Debian
@@ -593,6 +595,9 @@ and targeted microbenchmarks give these items:
    superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
    Svnapot 64 KiB ranges use ordinary 4 KiB TLB entries. Coalescing those
    entries and extending 4 KiB-page reach beyond 2 MiB would be next steps.
+   A selective `sfence.vma` that reaches the second-level TLB while it is
+   still running an earlier flush becomes a full flush: correct, but it
+   discards entries the selective form would have kept.
 4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
    predicts the jumps, calls and returns it misses through a PD redirect, at
@@ -663,10 +668,17 @@ and targeted microbenchmarks give these items:
 10. Compressed code. Linux and its user space are built with the C
     extension. CoreMark's score uses a build without compressed instructions;
     built with them (`COREMARK_COMPRESSED=1`) it takes about 10% more cycles
-    in simulation. How much of that comes from fetch and prediction on 16-bit
-    instructions and how much from different code generation has not been
-    separated. Measuring fetch coverage, packet formation and prediction on
-    compressed code, then improving them, is open.
+    in simulation. Both builds retire the same instructions, so the extra
+    cycles are not code generation. Of the 22,240 extra cycles, dispatch
+    width accounts for 19,592 (one-wide instead of two-wide cycles, mostly a
+    32-bit instruction that spans the fetch window and leaves no room for the
+    second slot), front-end bubbles for 6,148 (redirects after pre-decode,
+    pending-prediction and halfword-target holdoffs), and back-end stalls
+    take back 3,500. Fetch and prediction on 16-bit instructions are the
+    cause, and improving them is open. Two further options are open: a staged
+    target-buffer lookahead for a 16-bit instruction at the start of a fetch
+    word that does not pair with the next one, and alignment flags
+    (`-falign-loops`, `-falign-jumps`) for self-built software.
 
 ## Core area
 
