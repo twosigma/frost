@@ -353,7 +353,7 @@ table registers. A word-level engine is slower still: in twenty minutes
 smtbmc with Boolector checks the sound load BMC's first 38 steps, where
 CaDiCaL checks 75 frames and main's script all 80 in seven minutes. From
 the state after the reset cycle with every other register free, the hart
-maintenance lemma induction passes in about two minutes
+maintenance lemma induction before retained reads passed in about two minutes
 (`coh_hart_maint_owned_reset_prove` keeps that check), but the PDR proof
 that assumes its lemmas leaves one property unresolved in two hours.
 Fifty-four other `.sby` files run such an optimization after their own
@@ -374,7 +374,8 @@ capture checks run `abc` after cutting every flip-flop; and the AXI
 bridge's partitions map their assertions with a file of their own. In
 files named above, the L1D conflict proofs run `opt -full` and `sat` after
 cutting every flip-flop, the hart reset-state task starts from `sim`'s
-state after the reset cycle, and the hart covers zero undefined constants.
+state after the reset cycle. The original two hart maintenance covers
+zero undefined constants. The retained-snapshot cover leaves them free.
 
 No list of forms keeps undefined constants, which SymbiYosys also makes
 free only after the script. Passes inside the forms the check accepts fuse

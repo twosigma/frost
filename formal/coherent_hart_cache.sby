@@ -6,7 +6,7 @@ coh_hart_maint_cover covers base
 coh_hart_maint_four_bmc four bounded fourbmc base
 coh_hart_maint_four_cover four covers base
 coh_hart_snapshot_bmc retained bounded base
-coh_hart_snapshot_cover retained covers base
+coh_hart_snapshot_cover retained snapshot_cover base
 
 [options]
 proof: mode prove
@@ -20,6 +20,9 @@ covers: depth 160
 covers: vcd_sim on
 proof: timeout 7200
 covers: timeout 1200
+snapshot_cover: mode cover
+snapshot_cover: vcd_sim on
+snapshot_cover: timeout 1200
 four: depth 240
 bounded: mode bmc
 bounded: timeout 2400
@@ -33,6 +36,7 @@ bounded: aigsmt boolector
 proof: abc pdr -r
 owned: smtbmc boolector
 covers: btor btormc
+snapshot_cover: btor btormc
 bounded: abc bmc3 -g
 
 [script]
@@ -52,6 +56,7 @@ coh_hart_maint_cover: read -formal -D COH_MAINT_COVER -sv coherent_hart_cache_mo
 retained: read -formal -D COH_MAINT_COVER -D COH_MAINT_RETAINED -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 four: read -formal -D COH_MAINT_COVER -D COH_MAINT_FOUR -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 covers: chparam -set COVER_MODE 1 coherent_hart_cache_formal
+snapshot_cover: chparam -set COVER_MODE 1 coherent_hart_cache_formal
 bounded: chparam -set COVER_MODE 1 coherent_hart_cache_formal
 hierarchy -top coherent_hart_cache_formal
 script free_undefined.ys
@@ -76,9 +81,9 @@ four: chformal -cover -remove c:* c:*p_four_records* %d
 # after the reset cycle its PDR proof leaves one assertion unresolved.
 plain: memory_map
 ~plain: memory_map -keepdc
-# coh_hart_maint_owned_reset_prove proves the pair's 286 facts by the same
-# induction from the state after the reset cycle, where it finishes in its
-# limit, and no task assumes them from it. A register that the reset cycle
+# coh_hart_maint_owned_reset_prove checks the same 286 facts by induction
+# from the state after the reset cycle. It supplies no assumptions to the
+# other tasks. A register that the reset cycle
 # defines (by its reset or a constant load) starts with that value, and opt
 # -keepdc folds it when that is the only value it can hold; every other
 # register starts free. async2sync also lowers the properties, as sim
@@ -102,8 +107,7 @@ bounded: techmap
 bounded: opt -fast -keepdc
 bounded: setundef -anyseq
 retained: setundef -anyseq
-coh_hart_maint_cover: setundef -zero
-coh_hart_maint_four_cover: setundef -zero
+covers: setundef -zero
 opt_clean
 
 [files]

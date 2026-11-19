@@ -26,7 +26,6 @@ prep -flatten -top coherence_snapshot_formal
 check -assert
 memory_map -keepdc
 opt -keepdc
-bounded: peepopt
 bounded: techmap
 bounded: opt -fast -keepdc
 bounded: select -assert-none t:$check r:FLAVOR=assume %i
