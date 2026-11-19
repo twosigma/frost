@@ -753,12 +753,11 @@ module pd_stage #(
   logic [1:0] pd_itt_available_r;
   logic [1:0] pd_itt_fast_taken_r;
   logic [1:0][riscv_pkg::PhysAddrBits-2:0] pd_itt_slot_target_r;
-  (* keep = "true" *) logic [1:0] pd_itt_override_r;
+  logic [1:0] pd_itt_override_r;
   logic pd_itt_candidate_r;
   logic pd_itt_candidate_2_r;
   logic pd_itt_redirect_r;
   logic pd_itt_redirect_2_r;
-  logic [XLEN-1:0] pd_itt_target_r;
   assign pd_jalr[0] = !pd_slot1_illegal_rvc && is_jalr(instruction_non_nop_predecoded_rs2);
   assign pd_jalr[1] = pd_slot2_predictable && is_jalr(i_from_if_to_pd_2.effective_instr);
   assign pd_itt_eligible[0] = pd_jalr[0] && !is_return(instruction_non_nop_predecoded_rs2);
@@ -834,12 +833,31 @@ module pd_stage #(
   // ===========================================================================
   // Raw Per-Source Redirect Capture (Pre-Flop)
   // ===========================================================================
-  // Register each predictor source and branch-target candidate directly at the
-  // PD edge without pre-flop instruction decode or cross-source priority
-  // muxing. Compare the indirect target against the fast BTB target in 2-bit
-  // chunks before the edge and reduce the chunk bits after the edge.
+  // Register each predictor source, each slot's unqualified control-flow class,
+  // and each branch-target candidate directly at the PD edge without bubble,
+  // fault, or cross-source priority muxing. Compare the indirect target
+  // against the fast BTB target in 2-bit chunks before the edge and reduce
+  // the chunk bits after the edge.
   localparam int unsigned IttTargetBits = riscv_pkg::PhysAddrBits - 1;
   localparam int unsigned IttEqChunks   = (IttTargetBits + 1) / 2;
+
+  logic [1:0][31:0] pd_raw_instr;
+  logic [1:0] pd_raw_op_cf_hi;
+  logic [1:0] pd_raw_f3_br_ok;
+  logic [1:0] pd_raw_f3_jalr_ok;
+  logic [1:0] pd_raw_op_jump_f3;
+  logic [1:0] pd_raw_ret_imm_lo;
+  logic [1:0] pd_raw_ret_imm_hi;
+  logic [1:0] pd_raw_ret_rs1_ra;
+  logic [1:0] pd_raw_ret_rd_ok;
+  logic [1:0] pd_cond_branch_raw_next;
+  logic [1:0] pd_jalr_raw_next;
+  logic [1:0] pd_jump_raw_next;
+  logic [1:0] pd_itt_eligible_raw_next;
+  logic [1:0] pd_cond_branch_raw_r;
+  logic [1:0] pd_jalr_raw_r;
+  logic [1:0] pd_jump_raw_r;
+  logic [1:0] pd_itt_eligible_raw_r;
 
   logic pd_dir_taken_raw_next;
   logic pd_dir_not_taken_raw_next;
@@ -872,6 +890,35 @@ module pd_stage #(
   (* keep = "true", equivalent_register_removal = "no" *)
   logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_minus_one_r;
 
+  // Unqualified pre-flop instruction bits matching the registered packets on
+  // every live edge (before bubble, fault, or redirect invalidation).
+  assign pd_raw_instr[0] = instruction_non_nop_predecoded_rs2;
+  assign pd_raw_instr[1] = {
+    instruction_non_nop_2[31:25], source_reg_2_2, source_reg_1_2, instruction_non_nop_2[14:0]
+  };
+  for (genvar s = 0; s < 2; s++) begin : gen_raw_decode
+    // OPC_BRANCH = 7'b1100011, OPC_JALR = 7'b1100111, OPC_JAL = 7'b1101111
+    // all share [6:4]=3'b110 and [1:0]=2'b11.
+    assign pd_raw_op_cf_hi[s] = (pd_raw_instr[s][6:4] == 3'b110) && (pd_raw_instr[s][1:0] == 2'b11);
+    assign pd_raw_f3_br_ok[s] = (pd_raw_instr[s][3:2] == 2'b00) &&
+                                (pd_raw_instr[s][14:13] != 2'b01);
+    assign pd_raw_f3_jalr_ok[s] = (pd_raw_instr[s][3:2] == 2'b01) &&
+                                  (pd_raw_instr[s][14:12] == 3'b000);
+    assign pd_raw_op_jump_f3[s] = ((pd_raw_instr[s][3:2] == 2'b01) &&
+                                   (pd_raw_instr[s][14:12] == 3'b000)) ||
+                                  (pd_raw_instr[s][3:2] == 2'b11);
+    assign pd_raw_ret_imm_lo[s] = (pd_raw_instr[s][25:20] == 6'd0);
+    assign pd_raw_ret_imm_hi[s] = (pd_raw_instr[s][31:26] == 6'd0);
+    assign pd_raw_ret_rs1_ra[s] = (pd_raw_instr[s][19:15] == 5'd1);
+    assign pd_raw_ret_rd_ok[s] = (pd_raw_instr[s][11:7] == 5'd0) || (pd_raw_instr[s][11:7] == 5'd5);
+    assign pd_cond_branch_raw_next[s] = pd_raw_op_cf_hi[s] && pd_raw_f3_br_ok[s];
+    assign pd_jalr_raw_next[s] = pd_raw_op_cf_hi[s] && pd_raw_f3_jalr_ok[s];
+    assign pd_jump_raw_next[s] = pd_raw_op_cf_hi[s] && pd_raw_op_jump_f3[s];
+    assign pd_itt_eligible_raw_next[s] = pd_raw_op_cf_hi[s] && pd_raw_f3_jalr_ok[s] &&
+        !(pd_raw_ret_imm_lo[s] && pd_raw_ret_imm_hi[s] &&
+          pd_raw_ret_rs1_ra[s] && pd_raw_ret_rd_ok[s]);
+  end
+
   assign pd_dir_taken_raw_next = i_from_if_to_pd.tage_valid ?
       i_from_if_to_pd.tage_taken : i_from_if_to_pd.bp_dir_taken;
   assign pd_dir_not_taken_raw_next = i_from_if_to_pd.tage_valid && !i_from_if_to_pd.tage_taken;
@@ -890,6 +937,22 @@ module pd_stage #(
           i_from_if_to_pd.btb_predicted_target[1+2*c] == i_itt_target[0][2*c];
       assign pd_itt_eq_chunk_next[1][c] =
           i_from_if_to_pd_2.btb_predicted_target[1+2*c] == i_itt_target[1][2*c];
+    end
+  end
+
+  // Unqualified control-flow class registers reset to non-control-flow and
+  // load on every unstalled edge alongside the packet instructions.
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      pd_cond_branch_raw_r  <= 2'b00;
+      pd_jalr_raw_r         <= 2'b00;
+      pd_jump_raw_r         <= 2'b00;
+      pd_itt_eligible_raw_r <= 2'b00;
+    end else if (!i_pipeline_ctrl.stall) begin
+      pd_cond_branch_raw_r  <= pd_cond_branch_raw_next;
+      pd_jalr_raw_r         <= pd_jalr_raw_next;
+      pd_jump_raw_r         <= pd_jump_raw_next;
+      pd_itt_eligible_raw_r <= pd_itt_eligible_raw_next;
     end
   end
 
@@ -947,53 +1010,34 @@ module pd_stage #(
   end
 
   // ===========================================================================
-  // Post-Flop Parallel Decode, Redirect Qualification, and Target Selection
+  // Post-Flop Redirect Qualification, Target Selection, and History Outputs
   // ===========================================================================
-  // Decode control-flow classes directly from the registered instructions in a
-  // balanced two-level tree, in parallel with the two-level reduction of the
-  // 2-bit indirect-target equality chunks.
-  logic [1:0][31:0] pd_reg_instr;
+  // Combine the registered control-flow classes with packet liveness and the
+  // reduced indirect-target equality chunks in parallel. Dedicated output
+  // copies separate external redirect control, the 64-bit target mux, and
+  // PD's internal wrong-path squash.
   logic [1:0] pd_reg_live;
-  (* keep = "true" *) logic [1:0] pd_reg_op_cf_hi;
-  (* keep = "true" *) logic [1:0] pd_reg_f3_br_ok;
-  (* keep = "true" *) logic [1:0] pd_reg_f3_jalr_ok;
-  (* keep = "true" *) logic [1:0] pd_reg_op_jump_f3;
-  (* keep = "true" *) logic [1:0] pd_reg_ret_imm_lo;
-  (* keep = "true" *) logic [1:0] pd_reg_ret_imm_hi;
-  (* keep = "true" *) logic [1:0] pd_reg_ret_rs1_ra;
-  (* keep = "true" *) logic [1:0] pd_reg_ret_rd_ok;
-  (* keep = "true" *) logic [1:0] pd_reg_itt_eligible_raw;
   (* keep = "true" *) logic [1:0] pd_itt_eq_g0;
   (* keep = "true" *) logic [1:0] pd_itt_eq_g1;
   (* keep = "true" *) logic [1:0] pd_itt_eq_g2;
-  logic [1:0] pd_reg_dir_mismatch;
-  logic [1:0] pd_reg_backing_qual;
+  (* keep = "true" *) logic [1:0] pd_itt_qual_r;
+  logic [1:0] pd_dir_cand_r;
+  logic [1:0] pd_backing_cand_r;
+  (* keep = "true" *) logic pd_itt_redirect_ctrl_0;
+  (* keep = "true" *) logic pd_itt_redirect_ctrl_1;
+  (* keep = "true" *) logic pd_non_itt_redirect_ctrl_0;
+  (* keep = "true" *) logic pd_non_itt_redirect_ctrl_1;
+  (* keep = "true" *) logic pd_redirect_out_fast;
+  (* keep = "true" *) logic pd_itt_redirect_tgt_0;
+  (* keep = "true" *) logic pd_itt_redirect_tgt_1;
+  logic pd_non_itt_dir_slot2_r;
 
-  assign pd_reg_instr[0] = o_from_pd_to_id.instruction;
-  assign pd_reg_instr[1] = o_from_pd_to_id_2.instruction;
   assign pd_reg_live[0] = !o_from_pd_to_id.inject_nop && !o_from_pd_to_id.fetch_fault &&
                           !o_from_pd_to_id.illegal_instruction;
   assign pd_reg_live[1] = !o_from_pd_to_id_2.inject_nop && !o_from_pd_to_id_2.fetch_fault &&
                           !o_from_pd_to_id_2.illegal_instruction;
 
-  for (genvar s = 0; s < 2; s++) begin : gen_reg_decode
-    // OPC_BRANCH = 7'b1100011, OPC_JALR = 7'b1100111, OPC_JAL = 7'b1101111
-    // all share [6:4]=3'b110 and [1:0]=2'b11.
-    assign pd_reg_op_cf_hi[s] = (pd_reg_instr[s][6:4] == 3'b110) && (pd_reg_instr[s][1:0] == 2'b11);
-    assign pd_reg_f3_br_ok[s] = (pd_reg_instr[s][3:2] == 2'b00) &&
-                                (pd_reg_instr[s][14:13] != 2'b01);
-    assign pd_reg_f3_jalr_ok[s] = (pd_reg_instr[s][3:2] == 2'b01) &&
-                                  (pd_reg_instr[s][14:12] == 3'b000);
-    assign pd_reg_op_jump_f3[s] = ((pd_reg_instr[s][3:2] == 2'b01) &&
-                                   (pd_reg_instr[s][14:12] == 3'b000)) ||
-                                  (pd_reg_instr[s][3:2] == 2'b11);
-    assign pd_reg_ret_imm_lo[s] = (pd_reg_instr[s][25:20] == 6'd0);
-    assign pd_reg_ret_imm_hi[s] = (pd_reg_instr[s][31:26] == 6'd0);
-    assign pd_reg_ret_rs1_ra[s] = (pd_reg_instr[s][19:15] == 5'd1);
-    assign pd_reg_ret_rd_ok[s] = (pd_reg_instr[s][11:7] == 5'd0) || (pd_reg_instr[s][11:7] == 5'd5);
-    assign pd_reg_itt_eligible_raw[s] = pd_reg_op_cf_hi[s] && pd_reg_f3_jalr_ok[s] &&
-        !(pd_reg_ret_imm_lo[s] && pd_reg_ret_imm_hi[s] &&
-          pd_reg_ret_rs1_ra[s] && pd_reg_ret_rd_ok[s]);
+  for (genvar s = 0; s < 2; s++) begin : gen_itt_eq_reduce
     assign pd_itt_eq_g0[s] = &pd_itt_eq_chunk_r[s][5:0];
     assign pd_itt_eq_g1[s] = &pd_itt_eq_chunk_r[s][11:6];
     assign pd_itt_eq_g2[s] = &pd_itt_eq_chunk_r[s][IttEqChunks-1:12];
@@ -1001,53 +1045,71 @@ module pd_stage #(
         !(pd_itt_eq_g0[s] && pd_itt_eq_g1[s] && pd_itt_eq_g2[s]);
   end
 
-  assign pd_reg_dir_mismatch[0] =
-      (pd_dir_taken_raw_r && !o_from_pd_to_id.btb_predicted_taken) ||
-      (pd_dir_not_taken_raw_r && o_from_pd_to_id.btb_predicted_taken);
-  assign pd_reg_dir_mismatch[1] =
-      (pd_dir_taken_2_raw_r && !o_from_pd_to_id_2.btb_predicted_taken) ||
-      (pd_dir_not_taken_2_raw_r && o_from_pd_to_id_2.btb_predicted_taken);
-  assign pd_reg_backing_qual[0] = pd_backing_hit_r[0] &&
+  assign pd_itt_qual_r[0] = pd_itt_eligible_raw_r[0] && pd_itt_hit_r[0] &&
+                            !o_from_pd_to_id.inject_nop && !o_from_pd_to_id.fetch_fault &&
+                            !o_from_pd_to_id.illegal_instruction;
+  assign pd_itt_qual_r[1] = pd_itt_eligible_raw_r[1] && pd_itt_hit_r[1] &&
+                            !o_from_pd_to_id_2.inject_nop && !o_from_pd_to_id_2.fetch_fault &&
+                            !o_from_pd_to_id_2.illegal_instruction;
+
+  assign pd_dir_cand_r[0] = pd_cond_branch_raw_r[0] &&
+      ((pd_dir_taken_raw_r && !o_from_pd_to_id.btb_predicted_taken) ||
+       (pd_dir_not_taken_raw_r && o_from_pd_to_id.btb_predicted_taken));
+  assign pd_dir_cand_r[1] = pd_cond_branch_raw_r[1] &&
+      ((pd_dir_taken_2_raw_r && !o_from_pd_to_id_2.btb_predicted_taken) ||
+       (pd_dir_not_taken_2_raw_r && o_from_pd_to_id_2.btb_predicted_taken));
+  assign pd_backing_cand_r[0] = pd_jump_raw_r[0] && pd_backing_hit_r[0] &&
       (pd_backing_compressed_r[0] == o_from_pd_to_id.is_compressed) &&
       !o_from_pd_to_id.btb_predicted_taken;
-  assign pd_reg_backing_qual[1] = pd_backing_hit_r[1] &&
+  assign pd_backing_cand_r[1] = pd_jump_raw_r[1] && pd_backing_hit_r[1] &&
       (pd_backing_compressed_r[1] == o_from_pd_to_id_2.is_compressed) &&
       !o_from_pd_to_id_2.btb_predicted_taken;
 
   // Registered-packet candidate views (used by checks and debug probes).
-  assign pd_taken_candidate_r = pd_reg_op_cf_hi[0] && pd_reg_f3_br_ok[0] && pd_dir_taken_raw_r;
-  assign pd_not_taken_candidate_r = pd_reg_op_cf_hi[0] && pd_reg_f3_br_ok[0] &&
-                                    pd_dir_not_taken_raw_r;
-  assign pd_taken_candidate_2_r = pd_reg_op_cf_hi[1] && pd_reg_f3_br_ok[1] && pd_dir_taken_2_raw_r;
-  assign pd_not_taken_candidate_2_r = pd_reg_op_cf_hi[1] && pd_reg_f3_br_ok[1] &&
-                                      pd_dir_not_taken_2_raw_r;
-  assign pd_backing_candidate_r = pd_reg_op_cf_hi[0] && pd_reg_op_jump_f3[0] &&
-      pd_backing_hit_r[0] && (pd_backing_compressed_r[0] == o_from_pd_to_id.is_compressed);
-  assign pd_backing_candidate_2_r = pd_reg_op_cf_hi[1] && pd_reg_op_jump_f3[1] &&
-      pd_backing_hit_r[1] && (pd_backing_compressed_r[1] == o_from_pd_to_id_2.is_compressed);
-  assign pd_itt_available_r = pd_reg_itt_eligible_raw & pd_itt_hit_r;
+  assign pd_taken_candidate_r = pd_cond_branch_raw_r[0] && pd_dir_taken_raw_r;
+  assign pd_not_taken_candidate_r = pd_cond_branch_raw_r[0] && pd_dir_not_taken_raw_r;
+  assign pd_taken_candidate_2_r = pd_cond_branch_raw_r[1] && pd_dir_taken_2_raw_r;
+  assign pd_not_taken_candidate_2_r = pd_cond_branch_raw_r[1] && pd_dir_not_taken_2_raw_r;
+  assign pd_backing_candidate_r = pd_jump_raw_r[0] && pd_backing_hit_r[0] &&
+      (pd_backing_compressed_r[0] == o_from_pd_to_id.is_compressed);
+  assign pd_backing_candidate_2_r = pd_jump_raw_r[1] && pd_backing_hit_r[1] &&
+      (pd_backing_compressed_r[1] == o_from_pd_to_id_2.is_compressed);
+  assign pd_itt_available_r = pd_itt_eligible_raw_r & pd_itt_hit_r;
   assign pd_itt_candidate_r = pd_itt_available_r[0] && pd_itt_override_r[0];
   assign pd_itt_candidate_2_r = pd_itt_available_r[1] && pd_itt_override_r[1];
 
-  // Qualified redirects.
-  assign pd_dir_redirect_1_r = pd_reg_op_cf_hi[0] && pd_reg_f3_br_ok[0] &&
-                               pd_reg_dir_mismatch[0] && pd_reg_live[0];
-  assign pd_dir_redirect_2_raw_r = pd_reg_op_cf_hi[1] && pd_reg_f3_br_ok[1] &&
-                                   pd_reg_dir_mismatch[1] && pd_reg_live[1];
-  assign pd_backing_redirect_r = pd_reg_op_cf_hi[0] && pd_reg_op_jump_f3[0] &&
-                                 pd_reg_backing_qual[0] && pd_reg_live[0];
-  assign pd_backing_redirect_2_r = pd_reg_op_cf_hi[1] && pd_reg_op_jump_f3[1] &&
-                                   pd_reg_backing_qual[1] && pd_reg_live[1];
-  assign pd_itt_redirect_r = pd_reg_itt_eligible_raw[0] && pd_itt_hit_r[0] &&
-                             pd_itt_override_r[0] && pd_reg_live[0];
-  assign pd_itt_redirect_2_r = pd_reg_itt_eligible_raw[1] && pd_itt_hit_r[1] &&
-                               pd_itt_override_r[1] && pd_reg_live[1];
-  assign pd_dir_redirect_2_r = pd_dir_redirect_2_raw_r && !pd_dir_redirect_1_r &&
-                               !pd_backing_redirect_r && !pd_itt_redirect_r;
+  // Qualified redirects (internal copy for PD squashes, RAS, and checks).
+  assign pd_dir_redirect_1_r = pd_dir_cand_r[0] && pd_reg_live[0];
+  assign pd_dir_redirect_2_raw_r = pd_dir_cand_r[1] && pd_reg_live[1];
+  assign pd_backing_redirect_r = pd_backing_cand_r[0] && pd_reg_live[0];
+  assign pd_backing_redirect_2_r = pd_backing_cand_r[1] && pd_reg_live[1];
+  assign pd_itt_redirect_r = pd_itt_qual_r[0] &&
+      (!pd_itt_fast_taken_r[0] || !(pd_itt_eq_g0[0] && pd_itt_eq_g1[0] && pd_itt_eq_g2[0]));
+  assign pd_itt_redirect_2_r = pd_itt_qual_r[1] &&
+      (!pd_itt_fast_taken_r[1] || !(pd_itt_eq_g0[1] && pd_itt_eq_g1[1] && pd_itt_eq_g2[1]));
+  assign pd_non_itt_dir_slot2_r = pd_dir_redirect_2_raw_r && !pd_dir_redirect_1_r &&
+                                  !pd_backing_redirect_r;
+  assign pd_dir_redirect_2_r = pd_non_itt_dir_slot2_r && !pd_itt_redirect_r;
   assign pd_redirect_r =
       pd_dir_redirect_1_r || pd_dir_redirect_2_raw_r ||
       pd_backing_redirect_r || pd_backing_redirect_2_r ||
       pd_itt_redirect_r || pd_itt_redirect_2_r;
+
+  // Dedicated output copy for o_pd_redirect.
+  assign pd_itt_redirect_ctrl_0 = pd_itt_qual_r[0] &&
+      (!pd_itt_fast_taken_r[0] || !(pd_itt_eq_g0[0] && pd_itt_eq_g1[0] && pd_itt_eq_g2[0]));
+  assign pd_itt_redirect_ctrl_1 = pd_itt_qual_r[1] &&
+      (!pd_itt_fast_taken_r[1] || !(pd_itt_eq_g0[1] && pd_itt_eq_g1[1] && pd_itt_eq_g2[1]));
+  assign pd_non_itt_redirect_ctrl_0 = pd_reg_live[0] && (pd_dir_cand_r[0] || pd_backing_cand_r[0]);
+  assign pd_non_itt_redirect_ctrl_1 = pd_reg_live[1] && (pd_dir_cand_r[1] || pd_backing_cand_r[1]);
+  assign pd_redirect_out_fast = pd_itt_redirect_ctrl_0 || pd_itt_redirect_ctrl_1 ||
+                                pd_non_itt_redirect_ctrl_0 || pd_non_itt_redirect_ctrl_1;
+
+  // Dedicated target-select copies for the 64-bit indirect target mux.
+  assign pd_itt_redirect_tgt_0 = pd_itt_qual_r[0] &&
+      (!pd_itt_fast_taken_r[0] || !(pd_itt_eq_g0[0] && pd_itt_eq_g1[0] && pd_itt_eq_g2[0]));
+  assign pd_itt_redirect_tgt_1 = pd_itt_qual_r[1] &&
+      (!pd_itt_fast_taken_r[1] || !(pd_itt_eq_g0[1] && pd_itt_eq_g1[1] && pd_itt_eq_g2[1]));
 
   // Parallel post-flop target formation for branches (both slots and their
   // fall-throughs), backing BTB, and indirect target predictor.
@@ -1066,8 +1128,11 @@ module pd_stage #(
   logic pd_reg_ras_valid;
   logic pd_backing_use_ras;
   logic [XLEN-1:0] pd_backing_redirect_target_r;
+  logic [XLEN-1:0] pd_itt_target_0_r;
+  logic [XLEN-1:0] pd_itt_target_1_r;
   logic pd_itt_target_select_r;
-  logic pd_backing_target_select_r;
+  logic pd_non_itt_backing_sel_r;
+  logic [XLEN-1:0] pd_non_itt_target_r;
 
   assign pd_s1_ft_sum = {1'b0, o_from_pd_to_id.program_counter[PdTargetSplit-1:0]} +
       (o_from_pd_to_id.is_compressed ? (PdTargetSplit + 1)'(riscv_pkg::PcIncrementCompressed) :
@@ -1111,29 +1176,32 @@ module pd_stage #(
     1'b0
   };
 
-  assign pd_itt_target_r = pd_itt_redirect_r ?
-      {o_from_pd_to_id.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
-       pd_itt_slot_target_r[0], 1'b0} :
-      {o_from_pd_to_id_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
-       pd_itt_slot_target_r[1], 1'b0};
-
+  assign pd_itt_target_0_r = {
+    o_from_pd_to_id.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], pd_itt_slot_target_r[0], 1'b0
+  };
+  assign pd_itt_target_1_r = {
+    o_from_pd_to_id_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], pd_itt_slot_target_r[1], 1'b0
+  };
   assign pd_itt_target_select_r = pd_itt_redirect_r || pd_itt_redirect_2_r;
-  assign pd_backing_target_select_r = !pd_itt_target_select_r &&
-      (pd_backing_redirect_r ||
-       (!pd_dir_redirect_1_r && !pd_dir_redirect_2_raw_r && pd_backing_redirect_2_r));
+  assign pd_non_itt_backing_sel_r = pd_backing_redirect_r ||
+      (!pd_dir_redirect_1_r && !pd_dir_redirect_2_raw_r && pd_backing_redirect_2_r);
+  assign pd_non_itt_target_r = pd_non_itt_backing_sel_r ?
+      pd_backing_redirect_target_r : {pd_br_target_high, pd_br_target_low};
 
-  assign o_pd_redirect = pd_redirect_r;
-  assign o_pd_redirect_taken = !((pd_dir_redirect_1_r && pd_dir_not_taken_raw_r) ||
-                                 (pd_dir_redirect_2_r && pd_dir_not_taken_2_raw_r));
-  assign o_pd_redirect_target = pd_itt_target_select_r ? pd_itt_target_r :
-      pd_backing_target_select_r ? pd_backing_redirect_target_r :
-                                   {pd_br_target_high, pd_br_target_low};
-  assign o_pd_redirect_slot2 = pd_backing_redirect_2_r || pd_dir_redirect_2_r ||
-                               pd_itt_redirect_2_r;
+  assign o_pd_redirect = pd_redirect_out_fast;
+  assign o_pd_redirect_taken = !(
+      (pd_dir_redirect_1_r && pd_dir_not_taken_raw_r) ||
+      (pd_non_itt_dir_slot2_r && !pd_itt_redirect_r && pd_dir_not_taken_2_raw_r));
+  assign o_pd_redirect_target = pd_itt_redirect_tgt_0 ? pd_itt_target_0_r :
+      pd_itt_redirect_tgt_1 ? pd_itt_target_1_r :
+                              pd_non_itt_target_r;
+  assign o_pd_redirect_slot2 = pd_backing_redirect_2_r ||
+      (pd_non_itt_dir_slot2_r && !pd_itt_redirect_r) || pd_itt_redirect_2_r;
 
   // Registered-packet history outputs for consumers acting the cycle after PD
   // accepts a packet (e.g. tage_history).
   logic [1:0] pd_reg_backing_bit;
+  (* keep = "true" *) logic pd_hist_backing_slot1;
   logic pd_reg_backing_target_bit2;
   logic [1:0] pd_reg_br_dir;
   logic [1:0] pd_reg_jump_dir;
@@ -1141,34 +1209,31 @@ module pd_stage #(
       o_from_pd_to_id.ras_checkpoint_top[2] : pd_backing_target_r[0][1];
   assign pd_reg_backing_bit[1] = (pd_backing_return_r[1] && pd_reg_ras_valid) ?
       o_from_pd_to_id.ras_checkpoint_top[2] : pd_backing_target_r[1][1];
-  assign pd_reg_backing_target_bit2 = pd_backing_redirect_r ?
+  assign pd_hist_backing_slot1 = pd_backing_cand_r[0] && pd_reg_live[0];
+  assign pd_reg_backing_target_bit2 = pd_hist_backing_slot1 ?
       pd_reg_backing_bit[0] : pd_reg_backing_bit[1];
   assign pd_reg_br_dir[0] = pd_dir_taken_raw_r ||
       (!pd_dir_not_taken_raw_r && o_from_pd_to_id.btb_predicted_taken);
   assign pd_reg_br_dir[1] = pd_dir_taken_2_raw_r ||
       (!pd_dir_not_taken_2_raw_r && o_from_pd_to_id_2.btb_predicted_taken);
-  assign pd_reg_jump_dir[0] = (pd_reg_itt_eligible_raw[0] && pd_itt_hit_r[0]) ?
+  assign pd_reg_jump_dir[0] = (pd_itt_eligible_raw_r[0] && pd_itt_hit_r[0]) ?
       pd_itt_slot_target_r[0][1] :
       (o_from_pd_to_id.btb_predicted_taken ? o_from_pd_to_id.btb_predicted_target[2] :
                                              pd_reg_backing_target_bit2);
-  assign pd_reg_jump_dir[1] = (pd_reg_itt_eligible_raw[1] && pd_itt_hit_r[1]) ?
+  assign pd_reg_jump_dir[1] = (pd_itt_eligible_raw_r[1] && pd_itt_hit_r[1]) ?
       pd_itt_slot_target_r[1][1] :
       (o_from_pd_to_id_2.btb_predicted_taken ? o_from_pd_to_id_2.btb_predicted_target[2] :
                                                pd_reg_backing_target_bit2);
-  assign o_q_cond_branch[0] = pd_reg_op_cf_hi[0] && pd_reg_f3_br_ok[0] && pd_reg_live[0];
-  assign o_q_cond_branch[1] = pd_reg_op_cf_hi[1] && pd_reg_f3_br_ok[1] && pd_reg_live[1];
-  assign o_q_jalr[0] = pd_reg_op_cf_hi[0] && pd_reg_f3_jalr_ok[0] && pd_reg_live[0];
-  assign o_q_jalr[1] = pd_reg_op_cf_hi[1] && pd_reg_f3_jalr_ok[1] && pd_reg_live[1];
-  assign o_q_itt_eligible[0] = pd_reg_itt_eligible_raw[0] && pd_reg_live[0];
-  assign o_q_itt_eligible[1] = pd_reg_itt_eligible_raw[1] && pd_reg_live[1];
-  assign o_q_cf[0] = pd_reg_op_cf_hi[0] && (pd_reg_f3_br_ok[0] || pd_reg_op_jump_f3[0]) &&
-                     pd_reg_live[0];
-  assign o_q_cf[1] = pd_reg_op_cf_hi[1] && (pd_reg_f3_br_ok[1] || pd_reg_op_jump_f3[1]) &&
-                     pd_reg_live[1];
-  assign o_q_pred_taken[0] = (pd_reg_op_cf_hi[0] && pd_reg_op_jump_f3[0]) ?
-      pd_reg_jump_dir[0] : pd_reg_br_dir[0];
-  assign o_q_pred_taken[1] = (pd_reg_op_cf_hi[1] && pd_reg_op_jump_f3[1]) ?
-      pd_reg_jump_dir[1] : pd_reg_br_dir[1];
+  assign o_q_cond_branch[0] = pd_cond_branch_raw_r[0] && pd_reg_live[0];
+  assign o_q_cond_branch[1] = pd_cond_branch_raw_r[1] && pd_reg_live[1];
+  assign o_q_jalr[0] = pd_jalr_raw_r[0] && pd_reg_live[0];
+  assign o_q_jalr[1] = pd_jalr_raw_r[1] && pd_reg_live[1];
+  assign o_q_itt_eligible[0] = pd_itt_eligible_raw_r[0] && pd_reg_live[0];
+  assign o_q_itt_eligible[1] = pd_itt_eligible_raw_r[1] && pd_reg_live[1];
+  assign o_q_cf[0] = (pd_cond_branch_raw_r[0] || pd_jump_raw_r[0]) && pd_reg_live[0];
+  assign o_q_cf[1] = (pd_cond_branch_raw_r[1] || pd_jump_raw_r[1]) && pd_reg_live[1];
+  assign o_q_pred_taken[0] = pd_jump_raw_r[0] ? pd_reg_jump_dir[0] : pd_reg_br_dir[0];
+  assign o_q_pred_taken[1] = pd_jump_raw_r[1] ? pd_reg_jump_dir[1] : pd_reg_br_dir[1];
 
   logic pd_registered_call, pd_registered_call_2;
   logic pd_registered_return, pd_registered_return_2;
@@ -2048,6 +2113,7 @@ module pd_stage #(
       // and each backing redirect's decoded-rule target.
       if (pd_redirect_reference_armed) begin
         p_formal_redirect_matches_reference : assert (pd_redirect_r == pd_redirect_reference_q);
+        p_formal_o_pd_redirect_matches_internal : assert (o_pd_redirect == pd_redirect_r);
         p_formal_dir_redirect_2_matches_reference :
         assert (pd_dir_redirect_2_r == pd_dir_redirect_2_reference_q);
         p_formal_direction_matches_reference :
