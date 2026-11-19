@@ -30,6 +30,7 @@ import pytest
 import yaml  # type: ignore[import-untyped]
 
 import ci_reuse
+import sby_config
 import test_run_formal
 import test_run_yosys
 
@@ -262,6 +263,32 @@ def test_formal_key_ignores_everything_else(tmp_path: Path, change: str) -> None
     else:
         (root / "hw/rtl/unrelated.sv").write_text("module unrelated; endmodule\n")
     assert formal_key(root) == before
+
+
+def test_home_cmo_replay_staging_and_key(tmp_path: Path) -> None:
+    """Stage the replay separately and invalidate only its cover when it changes."""
+    root = formal_tree(tmp_path / "repo")
+    sby = ROOT / "formal/coherence_home.sby"
+    staged = sby_config.stage_proof(sby, ROOT, root)
+    helper = root / "tests/coherence_home_cmo_replay.py"
+    assert helper.read_bytes() == (ROOT / "tests" / helper.name).read_bytes()
+    assert helper.resolve() not in {
+        p.resolve() for p in sby_config.proof_inputs(staged)
+    }
+    assert sby_config.cmo_replay_helper(staged, "coh_home_cmo_cover") == helper
+    assert sby_config.cmo_replay_helper(staged, "coh_home_control_prove") is None
+
+    cover = "coherence_home_coh_home_cmo_cover"
+    control = "coherence_home_coh_home_control_prove"
+    cover_key, control_key = formal_key(root, cover), formal_key(root, control)
+    with helper.open("a") as stream:
+        stream.write("# changed replay\n")
+    assert formal_key(root, cover) != cover_key
+    assert formal_key(root, control) == control_key
+    helper.unlink()
+    with pytest.raises(ci_reuse.ReuseKeyError, match="missing formal replay helper"):
+        formal_key(root, cover)
+    assert formal_key(root, control) == control_key
 
 
 def test_formal_key_file_list_is_order_independent() -> None:

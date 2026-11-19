@@ -1708,7 +1708,9 @@ computes a key for each one, a SHA-256 over:
   resolves includes and `$readmemh` names;
 - the task's timeout, and the source of `tests/test_run_formal.py` or
   `tests/test_run_yosys.py` without its top-level `test_*` functions and the
-  registry tables, whose entries for the task enter the key by value;
+  registry tables, whose entries for the task enter the key by value. The
+  `coh_home_cmo_cover` key also includes its Python replay helper. Private
+  proof fixtures copy the helper into their `tests/` directory;
 - `tests/conftest.py`, the pytest settings in `pyproject.toml`, other pytest
   configuration files (present or absent), and `scripts/frost.py`;
 - the identity of the tool image (a digest of its layers and environment,
