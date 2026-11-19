@@ -62,7 +62,7 @@ design -copy-from candidate -as pd_history_candidate pd_history_twin_side
 hierarchy -check -top pd_history_twin
 script free_undefined.ys
 prep -top pd_history_twin -flatten
-select -assert-count 66 t:$check r:FLAVOR=assert %i
+select -assert-count 67 t:$check r:FLAVOR=assert %i
 select -assert-count 21 t:$check r:FLAVOR=assume %i
 select -assert-count 4 t:$check r:FLAVOR=cover %i
 bmc: chformal -cover -remove
