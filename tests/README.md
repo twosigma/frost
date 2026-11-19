@@ -1454,9 +1454,10 @@ selections cover every property, and each task runs in exactly one CI job.
 The scripted stream checks also use complementary property groups:
 `coh_l1d_stream_bmc` retains every assertion except four wide payload identity
 and hold assertions, checked by `coh_l1d_stream_hold_bmc` in a parallel
-75-minute job. Both keep the same scripted model, interface assumptions,
-42-cycle depth and 3,600-second limit, with no assumptions between groups.
-Fast tests enforce the model match and complete property coverage.
+75-minute job. Both use the same scripted model and interface assumptions
+through 42 cycles. The control task has 5,100 seconds and includes the
+three snapshot checks. The hold task has 3,600 seconds. Fast tests enforce
+the model match and complete property coverage.
 
 The free-input no-store stream model uses the same partition at depth 24.
 `coh_l1d_stream_free_nostore_hold_bmc` checks the four payload holds in its
