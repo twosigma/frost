@@ -12,7 +12,7 @@ cover: depth 8
 smtbmc boolector
 
 [script]
-read_slang --top ras_flush_checkpoint_formal --single-unit -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv ras_flush_checkpoint.sv ras_flush_checkpoint_formal.sv
+read_slang --top ras_flush_checkpoint_formal --single-unit -DSYNTHESIS riscv_pkg.sv sdp_dist_ram.sv ras_flush_checkpoint.sv ras_flush_checkpoint_formal.sv
 hierarchy -top ras_flush_checkpoint_formal
 script free_undefined.ys
 prep -top ras_flush_checkpoint_formal -flatten
