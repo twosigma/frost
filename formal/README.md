@@ -17,6 +17,11 @@ undefined unless `-D FORMAL` is passed explicitly, so inline `ifdef FORMAL`
 blocks (such as `async_fifo`'s startup reset assumptions and initial-zero block)
 are omitted unless requested.
 
+The predictor comparisons use the `predictor_reference/` sources from commit
+`89670c4757ebcc7c2d84491b28caebd02a1ff4a8`. The reference keeps its own
+instruction definitions, decoder and target helpers. A fast test checks the
+Git blob ID of each copy without needing repository history.
+
 Run through the pinned Docker image:
 
 ```bash

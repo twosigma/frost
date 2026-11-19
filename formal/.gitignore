@@ -1,3 +1,4 @@
 # SymbiYosys run output directories (e.g., trap_unit_bmc/, trap_unit_cover/).
-# Source files (.sby, .sv, README.md) are all at the top level, not in subdirs.
+# The predictor reference directory holds the original RTL used by the twins.
 */
+!predictor_reference/

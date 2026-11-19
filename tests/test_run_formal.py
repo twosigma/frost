@@ -23,6 +23,7 @@ in formal/.
 """
 
 import difflib
+import hashlib
 import re
 import subprocess
 import sys
@@ -3847,6 +3848,28 @@ def registered_task_config_gaps(
     if extra_ys:
         gaps.append(f"unpinned .ys helper in [files]: {extra_ys}")
     return gaps
+
+
+def test_predictor_reference_sources_are_frozen() -> None:
+    """The reference side is the exact source tree before the predictor register changes."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR / "predictor_reference"
+    blobs = {
+        "backing_btb.sv": "921c71bb493a2d40eb0fef1d4b01e84f528e365b",
+        "ittage_predictor.sv": "734034d46cb89c457287816e80fa522351afa982",
+        "pd_redirect_next.sv": "fc147c9b68002a4e9b24eac60c911f44665f72f0",
+        "pd_stage.sv": "951b0b09da7021e2f90bee2849c3aaa033560827",
+        "pd_target_high_precompute.sv": "2867ccea13165eaed9f78cc11289af9d1b00cf63",
+        "riscv_pkg.sv": "c57a8b22aecde88af5c7038440854363b50f766a",
+        "rvc_decompressor.sv": "b0cd92a276ccc22482b921ec07ff60483bf7d9a6",
+        "tage_history.sv": "1af737016740dd859e164fe8351d19902b92717d",
+        "tage_predictor.sv": "4a14696c3a70f50a4946fd2bfb7d182140cc66c2",
+    }
+    for filename, expected in blobs.items():
+        source = (formal / filename).read_bytes()
+        git_object = f"blob {len(source)}\0".encode() + source
+        assert (
+            hashlib.sha1(git_object, usedforsecurity=False).hexdigest() == expected
+        ), filename
 
 
 def test_formal_target_tasks_are_registered() -> None:
