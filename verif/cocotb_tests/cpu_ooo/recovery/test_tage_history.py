@@ -108,6 +108,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_active.value = 0
     dut.i_early_tag.value = 0
     dut.i_early_taken.value = 0
+    dut.i_early_dir_bit.value = 0
     dut.i_flush_full.value = 0
     _clear_alloc(dut)
     _clear_commit(dut)
@@ -175,10 +176,11 @@ async def _accept_branch(
     bank: int = 0,
     base_taken: bool = False,
     hist: int = 0,
+    jalr: bool = False,
     cf: bool = False,
     pred_taken: bool = False,
 ) -> int:
-    """Pass one packet with a conditional branch in `slot` to ID; return its index."""
+    """Pass a conditional branch or JALR in the selected slot and return its FTQ index."""
     idx = _write_index(dut)
     packed = pack_struct(TAGE_LOOKUP_FIELDS, lookup or {})
     dut.i_pd_accept.value = 1
@@ -193,8 +195,8 @@ async def _accept_branch(
     await _step(dut)
     dut.i_pd_accept.value = 0
     dut.i_tage_slot_valid.value = 0
-    dut.i_pd_q_cond_branch.value = 1 << slot
-    dut.i_pd_q_jalr.value = 0
+    dut.i_pd_q_cond_branch.value = int(not jalr) << slot
+    dut.i_pd_q_jalr.value = int(jalr) << slot
     dut.i_pd_q_itt_eligible.value = 0
     dut.i_pd_q_cf.value = int(cf) << slot
     dut.i_pd_q_pred_taken.value = int(pred_taken) << slot
@@ -456,6 +458,7 @@ async def test_early_recovery_restores_the_saved_history(dut: Any) -> None:
         dut.i_early_active.value = 1
         dut.i_early_tag.value = tag
         dut.i_early_taken.value = int(taken)
+        dut.i_early_dir_bit.value = int(taken)
         dut.i_fetch_pc_path_bits.value = 0b01
         await _step(dut)
         dut.i_early_active.value = 0
@@ -737,11 +740,20 @@ async def test_slot2_pd_veto_discards_fast_btb_push_without_pushing_fallthrough(
 async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
     dut: Any,
 ) -> None:
-    """An early recovery restores the saved pre-branch bits at the branch's ROB tag."""
+    """Recover both full-width histories for branches and returns in either slot."""
     await _setup_test(dut)
     width = len(dut.o_lookup_dir_hist)
     mask = (1 << width) - 1
-    for taken in (0, 1):
+    full_path = 0xD234_8901_BCDE_52A7
+    for recovering_slot, taken, path_bits, jalr, saved_path in (
+        (1, 0, 3, False, 0xD234),
+        (1, 1, 3, False, 0xD234),
+        (0, 0, 3, False, full_path),
+        (1, 1, 0, False, full_path),
+        (0, 1, 2, True, full_path),
+        (1, 1, 3, True, full_path),
+    ):
+        direction_bit = path_bits & 1 if jalr else taken
         expected = int(dut.o_lookup_dir_hist.value)
         assert int(dut.o_lookup_dir_fold.value) == _fold_dir_tables(expected)
         for n in range(width + 5):
@@ -756,25 +768,35 @@ async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
             expected = ((expected << 1) | bit) & mask
             assert int(dut.o_lookup_dir_hist.value) == expected
             assert int(dut.o_lookup_dir_fold.value) == _fold_dir_tables(expected)
+        # A return owns an FTQ entry even without an indirect predictor lookup.
         index = await _accept_branch(
-            dut, slot=1, hist=0xD234, cf=True, pred_taken=bool(1 - taken)
+            dut,
+            slot=recovering_slot,
+            hist=saved_path,
+            jalr=jalr,
+            cf=True,
+            pred_taken=bool(1 - direction_bit),
         )
-        await _allocate(dut, 7, index, slot=1)
+        await _allocate(dut, 7, index, slot=recovering_slot, cond=not jalr, jalr=jalr)
         await _accept_branch(dut, hist=0x21, cf=True, pred_taken=True)
         dut.i_early_tag.value = 7
         dut.i_early_active.value = 1
         dut.i_early_taken.value = taken
+        dut.i_early_dir_bit.value = direction_bit
         await _step(dut)
         dut.i_pd_q_cf.value = 0
         dut.i_pd_q_cond_branch.value = 0
+        dut.i_pd_q_jalr.value = 0
         dut.i_early_active.value = 0
         dut.i_hist_restore_arm.value = 1 << ARM_RECOVERY
-        dut.i_fetch_pc_path_bits.value = 3
+        dut.i_fetch_pc_path_bits.value = path_bits
         await _settle()
-        restored = ((expected << 1) | taken) & mask
+        restored = ((expected << 1) | direction_bit) & mask
         assert int(dut.o_lookup_dir_hist.value) == restored
         assert int(dut.o_lookup_dir_fold.value) == _fold_dir_tables(restored)
-        assert _lookup_hist(dut) == (_push(0xD234, 3) if taken else 0xD234)
+        assert _lookup_hist(dut) == (
+            _push(saved_path, path_bits) if taken else saved_path
+        )
         await _step(dut)
         dut.i_hist_restore_arm.value = 0
         await _settle()

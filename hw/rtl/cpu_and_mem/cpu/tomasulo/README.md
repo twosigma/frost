@@ -83,16 +83,19 @@ snapshot of both RATs plus the return-address stack's top-of-stack pointer,
 valid count, and top entry. While all eight are in use, a branch or jump
 waits at dispatch; other instructions still dispatch.
 
-Conditional-branch mispredictions recover early. When `branch_jump_unit`
+Conditional-branch and JALR mispredictions can recover early. When `branch_jump_unit`
 resolves one, `early_misprediction_recovery` (in `cpu_ooo/branch_recovery/`)
 captures it. The next cycle it redirects the front end and restores the RAT,
 and the cycle after that it removes younger back-end work with an age-based
 partial flush.
 
-JALR mispredictions recover at commit instead. The JALR retires first, so
-every uncommitted instruction left in the back end is younger, and the back
-end flushes all of them. Exceptions go to the trap logic at commit and cause a
-full flush; trap entry also applies the privilege and delegation rules.
+An early JALR restore maps its integer link register to the jump's ROB tag
+and replays its return-stack operation. A JAL, a JALR with
+`EarlyJalrRecovery` cleared, or a misprediction that could not start early
+recovery recovers at commit. After the jump or branch retires, every
+uncommitted instruction in the back end is younger and is flushed.
+Exceptions cause a full flush at commit under the trap unit's privilege
+and delegation rules.
 
 ### Serializing instructions
 

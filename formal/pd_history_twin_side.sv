@@ -129,6 +129,9 @@ module pd_history_twin_side (
       .i_early_active(i.early_active),
       .i_early_tag(i.early_tag),
       .i_early_taken(i.early_taken),
+`ifndef PREDICTOR_TWIN_REFERENCE
+      .i_early_dir_bit(i.early_taken),
+`endif
       .i_flush_full(i.flush_full),
       .i_alloc_tag(i.alloc_tag),
       .i_alloc_cond_branch(i.alloc_cond_branch),
@@ -206,6 +209,11 @@ module pd_history_twin_side (
   assign state.early_dir_hist_q = history.early_dir_hist_q;
   assign state.early_q = history.early_q;
   assign state.early_taken_q = history.early_taken_q;
+`ifdef PREDICTOR_TWIN_REFERENCE
+  assign state.early_dir_bit_q = history.early_taken_q;
+`else
+  assign state.early_dir_bit_q = history.early_dir_bit_q;
+`endif
   assign state.held_valid = history.held_valid;
   assign state.held_idx = history.held_idx;
   assign state.held_taken = history.held_taken;

@@ -662,6 +662,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "jump tables and history-correlated branches"
         ),
     ),
+    "mispen_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mispen_probe",
+        nic_mac_clocks=False,
+        description=(
+            "Misprediction penalty per class: conditional branch, indirect jump, "
+            "indirect call, return and BTB-missing jump"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "1500000"),),
+    ),
     "smc_predict_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3649,7 +3660,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "ex_comb_synthesizer": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_ex_comb_synthesizer",
         hdl_toplevel_module="ex_comb_synthesizer",
-        description=("Recovery output priority and independent BTB update selection"),
+        description=(
+            "Recovery priority, independent BTB update selection, and early JALR "
+            "training and return-stack replay"
+        ),
     ),
     "early_misprediction_recovery": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_early_misprediction_recovery",
@@ -3660,7 +3674,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "misprediction_flush_controller": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_misprediction_flush_controller",
         hdl_toplevel_module="misprediction_flush_controller",
-        description="Misprediction flush control and checkpoint release",
+        description="Registered fetch flush, recovery priority, and checkpoint release",
     ),
     "tage_history": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_tage_history",

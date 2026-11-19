@@ -37,6 +37,10 @@ module ex_comb_synthesizer #(
     input logic [                 XLEN-1:0] i_early_mispredict_branch_target,
     input logic                             i_early_mispredict_branch_taken,
     input logic                             i_early_mispredict_is_compressed,
+    // The early recovery is a JALR, and its return stack class.
+    input logic                             i_early_mispredict_is_jalr,
+    input logic                             i_early_mispredict_is_call,
+    input logic                             i_early_mispredict_is_return,
     input logic [riscv_pkg::RasPtrBits-1:0] i_restored_ras_tos,
     input logic [  riscv_pkg::RasPtrBits:0] i_restored_ras_valid_count,
     input logic [                 XLEN-1:0] i_restored_ras_top,
@@ -180,22 +184,36 @@ module ex_comb_synthesizer #(
     from_ex_comb_synth = late_from_ex_comb;
 
     if (early_mispredict_active) begin
-      from_ex_comb_synth                         = '0;
-      from_ex_comb_synth.branch_taken            = 1'b1;
-      from_ex_comb_synth.branch_target_address   = early_mispredict_redirect_pc;
+      from_ex_comb_synth = '0;
+      from_ex_comb_synth.branch_taken = 1'b1;
+      from_ex_comb_synth.branch_target_address = early_mispredict_redirect_pc;
 
-      // Early recovery only handles checkpointed conditional branches, so the
-      // BTB update and RAS restore are unconditional on this path.
-      from_ex_comb_synth.btb_update              = 1'b1;
-      from_ex_comb_synth.btb_update_pc           = early_mispredict_pc;
-      from_ex_comb_synth.btb_update_target       = early_mispredict_branch_target;
-      from_ex_comb_synth.btb_update_taken        = early_mispredict_branch_taken;
-      from_ex_comb_synth.btb_update_compressed   = early_mispredict_is_compressed;
+      // Early recovery only handles checkpointed conditional branches and
+      // JALRs, so the BTB update and RAS restore are unconditional on this
+      // path. A JALR trains like one recovered at commit: the jump bit for the
+      // backing BTB, the call and return bits for the stack action, and the
+      // restore replays its own pop, push or swap (the checkpoint holds the
+      // stack from before the JALR).
+      from_ex_comb_synth.btb_update = 1'b1;
+      from_ex_comb_synth.btb_update_pc = early_mispredict_pc;
+      from_ex_comb_synth.btb_update_target = early_mispredict_branch_target;
+      from_ex_comb_synth.btb_update_taken = early_mispredict_branch_taken;
+      from_ex_comb_synth.btb_update_compressed = early_mispredict_is_compressed;
+      from_ex_comb_synth.btb_update_jump = i_early_mispredict_is_jalr;
+      from_ex_comb_synth.btb_update_call = i_early_mispredict_is_jalr && i_early_mispredict_is_call;
+      from_ex_comb_synth.btb_update_return       = i_early_mispredict_is_jalr &&
+                                                   i_early_mispredict_is_return;
 
-      from_ex_comb_synth.ras_misprediction       = 1'b1;
-      from_ex_comb_synth.ras_restore_tos         = restored_ras_tos;
+      from_ex_comb_synth.ras_misprediction = 1'b1;
+      from_ex_comb_synth.ras_restore_tos = restored_ras_tos;
       from_ex_comb_synth.ras_restore_valid_count = restored_ras_valid_count;
-      from_ex_comb_synth.ras_restore_top         = restored_ras_top;
+      from_ex_comb_synth.ras_restore_top = restored_ras_top;
+      if (i_early_mispredict_is_jalr) begin
+        from_ex_comb_synth.ras_pop_after_restore = i_early_mispredict_is_return;
+        from_ex_comb_synth.ras_push_after_restore = i_early_mispredict_is_call;
+        from_ex_comb_synth.ras_push_address_after_restore = early_mispredict_pc +
+            (early_mispredict_is_compressed ? 64'd2 : 64'd4);
+      end
     end
 
     // Compute redirect fields directly for timing. Early recovery has priority.
