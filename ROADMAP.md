@@ -290,9 +290,10 @@ on X3, and the home's stream prefetcher adds up to four requests of its own.
 
 ## Verification
 
-Regular CI runs a rotating slice of generated vector programs on the
-native RTL simulator at VLEN 128, 256 and 512. A manual CI run can
-check the full suite at all three lengths.
+Each started main CI run checks one generated vector program per form
+on the native RTL simulator at VLEN 128, 256 and 512. Pull requests
+with the `run-ci` label check one twentieth of that selection. A
+manual CI run can check the full suite at all three lengths.
 
 FROST is tested with formal proofs of individual modules, unit benches, full
 programs, the RISC-V architecture tests and riscv-tests, riscv-torture

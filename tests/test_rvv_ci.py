@@ -17,8 +17,12 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
+import sys
+import textwrap
 from collections import Counter
+from graphlib import TopologicalSorter
 from pathlib import Path
 
 import pytest
@@ -41,8 +45,8 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert inputs["slice"]["type"] == "string"
     jobs = workflow["jobs"]
     job = jobs["test-rvv"]
-    assert set(job["needs"]) == {"gate", "build-docker"}
-    assert "needs.gate.outputs.full == 'true'" in job["if"]
+    assert job["needs"] == "build-docker"
+    assert job["if"] == "${{ !cancelled() && needs.build-docker.result == 'success' }}"
     assert job["strategy"]["fail-fast"] is False
     assert "needs.build-docker.outputs.rvv_matrix" in job["strategy"]["matrix"]
     assert (
@@ -50,7 +54,32 @@ def test_vector_workflow(tmp_path: Path) -> None:
         == "${{ steps.rvv.outputs.matrix }}"
     )
     step = next(s for s in jobs["build-docker"]["steps"] if s.get("id") == "rvv")
-    for event, part in [("rotation", ""), ("rotation", "0"), ("complete", "")]:
+    assert step["env"]["MAIN_RUN"] == "${{ needs.gate.outputs.main_run }}"
+    assert step["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number }}"
+    default = step["env"]["SLICES_PER_MAIN_RUN"]
+    assert 1 <= int(default) <= ci.SLICES
+    default_mode = "forms" if int(default) == ci.SLICES else "slice"
+    for event, campaign, part, count, per_run, mode, parts in [
+        (
+            "push",
+            "rotation",
+            "",
+            "0",
+            default,
+            default_mode,
+            [str(i) for i in range(int(default))],
+        ),
+        ("push", "rotation", "", "7", "20", "forms", []),
+        ("push", "rotation", "", "", "20", "forms", []),
+        ("push", "rotation", "", "7", "1", "slice", ["7"]),
+        ("push", "rotation", "", "0", "1", "slice", ["0"]),
+        ("push", "rotation", "", "", "1", "slice", ["19"]),
+        ("push", "rotation", "", "6", "3", "slice", ["18", "19", "0"]),
+        ("pull_request", "rotation", "", "", default, "slice", ["4"]),
+        ("workflow_dispatch", "rotation", "", "", default, "slice", ["19"]),
+        ("workflow_dispatch", "rotation", "0", "", default, "slice", ["0"]),
+        ("workflow_dispatch", "complete", "", "", default, "complete", []),
+    ]:
         output = tmp_path / "outputs"
         output.write_text("")
         subprocess.run(
@@ -61,20 +90,33 @@ def test_vector_workflow(tmp_path: Path) -> None:
                 **os.environ,
                 "GITHUB_OUTPUT": str(output),
                 "GITHUB_RUN_NUMBER": "59",
+                "GITHUB_EVENT_NAME": event,
+                "MAIN_RUN": count,
+                "PR_NUMBER": "424" if event == "pull_request" else "",
+                "SLICES_PER_MAIN_RUN": per_run,
                 "SLICE": part,
-                "CAMPAIGN": event,
+                "CAMPAIGN": campaign,
             },
         )
         key, data = output.read_text().strip().split("=", 1)
         assert key == "matrix"
         rows = json.loads(data)["include"]
-        if event == "complete":
-            assert len(rows) == 20
-            assert {r["mode"] for r in rows} == {"complete"}
-            assert Counter(r["vlen"] for r in rows) == {128: 3, 256: 3, 512: 14}
+        assert {r["mode"] for r in rows} == {mode}
+        if mode == "slice":
+            assert [(r["part"], r["vlen"]) for r in rows] == [
+                (p, v) for p in parts for v in (128, 256, 512)
+            ]
         else:
-            assert [r["vlen"] for r in rows] == [128, 256, 512]
-            assert {r["part"] for r in rows} == {part or "19"}
+            widths = (
+                {128: 3, 256: 3, 512: 14}
+                if mode == "complete"
+                else {128: 4, 256: 4, 512: 12}
+            )
+            assert Counter(r["vlen"] for r in rows) == widths
+            for vlen, n in widths.items():
+                assert {r["part"] for r in rows if r["vlen"] == vlen} == {
+                    f"{i}/{n}" for i in range(1, n + 1)
+                }
     run = next(s for s in job["steps"] if s.get("name") == "Run vector programs")
     assert 'tests/rvv_ci.py run "$VLEN" "$MODE" "$PART"' in run["run"]
     assert run["env"] == {
@@ -82,6 +124,39 @@ def test_vector_workflow(tmp_path: Path) -> None:
         "MODE": "${{ matrix.mode }}",
         "PART": "${{ matrix.part }}",
     }
+
+    def timeouts(step: dict) -> dict[str, int]:
+        match = re.fullmatch(
+            r"\$\{\{ matrix.mode == 'complete' && (\d+) \|\| (\d+) \}\}",
+            step["timeout-minutes"],
+        )
+        assert match
+        return {
+            "complete": int(match[1]),
+            "slice": int(match[2]),
+            "forms": int(match[2]),
+        }
+
+    setup = sum(
+        step["timeout-minutes"] for step in job["steps"][: job["steps"].index(run)]
+    )
+    for mode, seconds in ci.SHARD_SECONDS.items():
+        assert seconds / 60 < timeouts(run)[mode]
+        assert setup + timeouts(run)[mode] < timeouts(job)[mode] <= 360
+    summarize, upload = job["steps"][job["steps"].index(run) + 1 :]
+    assert summarize["if"] == upload["if"] == "${{ !cancelled() }}"
+    assert "rvv-results/summary.md" in summarize["run"]
+    assert upload["with"]["path"] == "rvv-results/"
+    assert summarize["env"]["OUTCOME"] == "${{ steps.programs.outcome }}"
+    summary = tmp_path / "step-summary"
+    subprocess.run(
+        ["bash", "-eu", "-c", summarize["run"]],
+        cwd=tmp_path,
+        check=True,
+        env={**os.environ, "OUTCOME": "failure", "GITHUB_STEP_SUMMARY": str(summary)},
+    )
+    assert "failure" in summary.read_text()
+    assert (tmp_path / "rvv-results/summary.md").read_text() == summary.read_text()
     assert any(
         s.get("with", {}).get("name") == "frost-docker-image" for s in job["steps"]
     )
@@ -99,6 +174,138 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert any(s.get("with", {}).get("name") == "rvv-complete" for s in report["steps"])
 
 
+VECTOR_JOBS = {"build-docker", "test-rvv"}
+CAMPAIGN_JOBS = VECTOR_JOBS | {"rvv-campaign-report"}
+REGULAR_CI = VECTOR_JOBS | {
+    "gate",
+    "lint",
+    "test-python",
+    "test-verilator",
+    "test-pa-width",
+    "test-net10g",
+    "test-arch-compliance",
+    "test-riscv-tests",
+    "test-riscv-benchmarks",
+    "test-riscv-torture",
+    "test-testrig",
+    "coverage-report",
+    "test-synthesis",
+    "test-slang-frontend",
+    "test-pa-synthesis-width",
+    "test-formal",
+    "test-native",
+    "test-demo-image",
+    "build-frost-linux-mmu",
+    "linux-boot-qemu-mmu",
+}
+
+
+def job_condition(condition: str, context: dict[str, str]) -> bool:
+    """Evaluate the job guard for an uncanceled workflow."""
+
+    def compare(match: re.Match[str]) -> str:
+        equal = context[match[1]].casefold() == match[3].casefold()
+        return str(equal if match[2] == "==" else not equal).lower()
+
+    expression = condition.removeprefix("${{").removesuffix("}}").strip()
+    expression = re.sub(
+        r"\b((?:github|inputs|needs)\.[\w.-]+)\s*(==|!=)\s*'([^']*)'",
+        compare,
+        expression,
+    ).replace("!cancelled()", "true")
+    assert re.fullmatch(r"(?:true|false|&&|\|\||[()\s])+", expression), condition
+    result = subprocess.run(["bash", "-c", expression])
+    assert result.returncode in (0, 1), condition
+    return result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("event", "inputs", "labels", "expected"),
+    [
+        ("workflow_dispatch", {"campaign": "complete"}, (), CAMPAIGN_JOBS),
+        (
+            "workflow_dispatch",
+            {"campaign": "complete", "reprove": True},
+            (),
+            CAMPAIGN_JOBS,
+        ),
+        ("workflow_dispatch", {"slice": "0", "reprove": True}, (), VECTOR_JOBS),
+        ("workflow_dispatch", {"slice": "19"}, (), VECTOR_JOBS),
+        ("workflow_dispatch", {}, (), REGULAR_CI),
+        ("workflow_dispatch", {"reprove": True}, (), REGULAR_CI),
+        ("push", {}, (), REGULAR_CI),
+        ("pull_request", {}, ("run-ci",), REGULAR_CI),
+        ("pull_request", {}, ("documentation",), {"gate"}),
+        ("pull_request", {}, ("run-ci", "documentation"), {"gate"}),
+    ],
+)
+def test_ci_job_scope(
+    tmp_path: Path,
+    event: str,
+    inputs: dict[str, str | bool],
+    labels: tuple[str, ...],
+    expected: set[str],
+) -> None:
+    """Check which jobs the selector, guards and dependencies enable."""
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    jobs = workflow["jobs"]
+    assert set(jobs) == REGULAR_CI | CAMPAIGN_JOBS
+    needs = {}
+    for name, job in jobs.items():
+        deps = job.get("needs", [])
+        needs[name] = [deps] if isinstance(deps, str) else deps
+
+    context = {
+        "github.event_name": event,
+        "github.event.action": "labeled" if labels else "",
+        "github.event.label.name": labels[-1] if labels else "",
+        "contains(github.event.pull_request.labels.*.name, 'run-ci')": str(
+            "run-ci" in labels
+        ).lower(),
+        "needs.gate.outputs.full": "",
+    }
+    for key, spec in workflow[True]["workflow_dispatch"]["inputs"].items():
+        value = (
+            inputs.get(key, spec.get("default", ""))
+            if event == "workflow_dispatch"
+            else ""
+        )
+        context[f"inputs.{key}"] = (
+            str(value).lower() if isinstance(value, bool) else value
+        )
+    group = workflow["concurrency"]["group"]
+    guard, suffix = group.rsplit("${{", 1)[1].rsplit("&& format", 1)
+    assert suffix == "('-rvv-{0}', github.run_id) || '' }}"
+    assert job_condition(guard, context) == (expected in (VECTOR_JOBS, CAMPAIGN_JOBS))
+    enabled: set[str] = set()
+    for name in TopologicalSorter(needs).static_order():
+        guard = jobs[name].get("if", "")
+        assert set(re.findall(r"\bneeds\.([\w-]+)\.", guard)) <= set(needs[name])
+        # Without a status function, Actions requires successful needs.
+        ready = "!cancelled()" in guard or enabled.issuperset(needs[name])
+        runs = ready and (not guard or job_condition(guard, context))
+        context[f"needs.{name}.result"] = "success" if runs else "skipped"
+        if runs:
+            enabled.add(name)
+        if runs and name == "gate":
+            step = next(s for s in jobs[name]["steps"] if s.get("id") == "select")
+            env = {
+                k: context[v.removeprefix("${{").removesuffix("}}").strip()]
+                for k, v in step["env"].items()
+            }
+            output = tmp_path / "gate"
+            subprocess.run(
+                ["bash", "-eu", "-c", step["run"]],
+                check=True,
+                env={**os.environ, **env, "GITHUB_OUTPUT": str(output)},
+            )
+            assert jobs[name]["outputs"]["full"] == "${{ steps.select.outputs.full }}"
+            context["needs.gate.outputs.full"] = dict(
+                line.split("=", 1) for line in output.read_text().splitlines()
+            )["full"]
+    assert enabled == expected
+
+
 def test_rotation_and_manual_replay() -> None:
     """Every residue maps to the same one-based shard as its manual replay."""
     for run in range(37, 57):
@@ -114,6 +321,23 @@ def test_rotation_and_manual_replay() -> None:
             ci.matrix("rotation", 1, invalid)
     with pytest.raises(ValueError, match="either"):
         ci.matrix("complete", 1, "0")
+
+    for count in range(1, ci.SLICES):
+        seen = []
+        for run in range((ci.SLICES + count - 1) // count):
+            rows = ci.matrix("rotation", run, "", count)
+            parts = [int(row["part"]) for row in rows if row["vlen"] == 128]
+            assert len(set(parts)) == count
+            assert len(rows) == 3 * count
+            seen.extend(parts)
+        assert seen == [i % ci.SLICES for i in range(len(seen))]
+        assert len(set(seen)) == ci.SLICES
+    for count in (0, 21):
+        with pytest.raises(ValueError, match="slices per run"):
+            ci.matrix("rotation", 0, "", count)
+    assert ci.matrix("rotation", 99, "19", 20) == ci.matrix("rotation", 0, "19")
+    assert ci.shard_options("forms", "2/4") == ["--one-per-form", "--shard", "2/4"]
+    assert ci.shard_options("complete", "2/3") == ["--shard", "2/3"]
 
 
 def result(name: str) -> dict:
@@ -140,7 +364,7 @@ def test_shard_failures_and_reproduction(
     assert ci.check_rows(names, [result(names[0])] * 2, 128)[2]
     monkeypatch.setenv("FROST_DDR_MODEL_SEED", "rvv-42")
 
-    def simulate(command: list[str]) -> subprocess.CompletedProcess:
+    def simulate(command: list[str], deadline: float, transcript: object) -> int:
         if "--build-sim" in command:
             path = Path(command[command.index("--build-sim") + 1])
             path.parent.mkdir()
@@ -150,17 +374,125 @@ def test_shard_failures_and_reproduction(
             assert command[command.index("--shard") + 1] == "1/20"
             workdir = Path(command[command.index("--workdir") + 1])
             (workdir / "Makefrag").write_text("tests =\n" + "\n".join(names))
-            rows = [result(names[0]), {**result(names[1]), "assertions_armed": False}]
+            (workdir / "selection.json").write_text('{"selection_count":665}')
+            log = workdir / "images" / names[1] / "native.log"
+            log.parent.mkdir(parents=True)
+            log.write_text("partial UART output\n")
+            rows = [
+                result(names[0]),
+                {
+                    **result(names[1]),
+                    "assertions_armed": False,
+                    "message": f"assertions disarmed ({log})",
+                },
+            ]
             dest = Path(command[command.index("--results-jsonl") + 1])
             dest.write_text("".join(json.dumps(r) + "\n" for r in rows))
-        return subprocess.CompletedProcess(command, 0)
+        return 0
 
-    monkeypatch.setattr(subprocess, "run", simulate)
+    monkeypatch.setattr(ci, "run_until", simulate)
     assert ci.run_shard(128, "slice", "0", tmp_path, None) == 1
     summary = (tmp_path / "summary.md").read_text()
     assert "VLEN 128, slice 0" in summary and "2 selected, 2 ran, 1 failed" in summary
     assert "FROST_DDR_MODEL_SEED=rvv-42 ./scripts/frost.py run" in summary
     assert "--vlen 128 --test vsub_vx-2" in summary
+    assert "assertions disarmed" in summary
+    assert (tmp_path / "failures/vsub_vx-2.log").read_text() == "partial UART output\n"
+    assert ci.read_rows(tmp_path / "results.jsonl")[1]["message"] == (
+        "assertions disarmed (failures/vsub_vx-2.log)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "part", "total"),
+    [("slice", "0", 665), ("forms", "1/4", 665), ("complete", "1/3", 3017)],
+)
+def test_shard_requires_full_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, part: str, total: int
+) -> None:
+    """All passes in a shard still require the full selection at that width."""
+    selection = {"selection_count": total}
+    suffix = ""
+    model = tmp_path / "model"
+    Path(f"{model}.json").write_text("{}")
+
+    def simulate(command: list[str], deadline: float, transcript: object) -> int:
+        work = Path(command[command.index("--workdir") + 1])
+        (work / "Makefrag").write_text("tests =\nvadd_vv-0\n")
+        (work / "selection.json").write_text(json.dumps(selection))
+        (tmp_path / "results.jsonl").write_text(
+            json.dumps(result("vadd_vv-0")) + "\n" + suffix
+        )
+        return 0
+
+    monkeypatch.setattr(ci, "run_until", simulate)
+    assert ci.run_shard(128, mode, part, tmp_path, model) == 0
+    selection["selection_count"] -= 1
+    assert ci.run_shard(128, mode, part, tmp_path, model) == 1
+    summary = (tmp_path / "summary.md").read_text()
+    assert f"Expected {total} programs before sharding, found {total - 1}" in summary
+    selection["selection_count"] = total
+    suffix = '{"name":'
+    assert ci.run_shard(128, mode, part, tmp_path, model) == 1
+    summary = (tmp_path / "summary.md").read_text()
+    assert "1 selected, 1 ran" in summary and "results.jsonl:2:" in summary
+    assert (tmp_path / "results.jsonl").read_text().endswith(suffix)
+
+
+def test_shard_deadline_keeps_partial_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stalled subprocess leaves its output, completed rows and a failed summary."""
+    model = tmp_path / "model"
+    model.write_text(
+        f"#!{sys.executable}\n"
+        "import fcntl, time\n"
+        f"with open({str(tmp_path / 'active')!r}, 'w') as lock:\n"
+        "    fcntl.flock(lock, fcntl.LOCK_EX)\n"
+        "    print('UART before stall', flush=True)\n"
+        "    time.sleep(120)\n"
+    )
+    model.chmod(0o755)
+    Path(f"{model}.json").write_text("{}")
+    driver = tmp_path / "stall.py"
+    completed = json.dumps(result("vadd_vv-0")) + "\n"
+    driver.write_text(
+        textwrap.dedent(f"""\
+        import sys
+        from concurrent.futures import ThreadPoolExecutor
+        from pathlib import Path
+        from rvv_simulator import IMAGE_FILES, VectorSimulator
+
+        work = Path(sys.argv[sys.argv.index("--workdir") + 1])
+        out = Path(sys.argv[sys.argv.index("--results-jsonl") + 1])
+        (work / "Makefrag").write_text("tests =\\nvadd_vv-0\\nvsub_vv-0\\n")
+        (work / "selection.json").write_text('{{"selection_count":665}}')
+        out.write_text({completed!r})
+        image = work / "images/vsub_vv-0"
+        image.mkdir(parents=True)
+        for name in IMAGE_FILES:
+            (image / name).touch()
+        sim = VectorSimulator("native", 128, 4096, 100)
+        sim.binary = Path(sys.argv[sys.argv.index("--prebuilt-sim") + 1])
+        print("running vsub_vv-0", flush=True)
+        with ThreadPoolExecutor(1) as pool:
+            pool.submit(sim.run, image).result()
+        """)
+    )
+    monkeypatch.setattr(ci, "SUITE", str(driver))
+    monkeypatch.setenv("PYTHONPATH", str(ROOT / "tests"))
+    monkeypatch.setitem(ci.SHARD_SECONDS, "slice", 5)
+    assert ci.run_shard(128, "slice", "0", tmp_path, model) == 1
+    summary = (tmp_path / "summary.md").read_text()
+    assert "5-second deadline" in summary and "2 selected, 1 ran, 1 failed" in summary
+    assert "--test vsub_vv-0" in summary
+    assert "running vsub_vv-0" in (tmp_path / "shard.log").read_text()
+    assert (tmp_path / "failures/vsub_vv-0.log").read_text() == "UART before stall\n"
+    assert [r["name"] for r in ci.read_rows(tmp_path / "results.jsonl")] == [
+        "vadd_vv-0"
+    ]
+    assert (tmp_path / "active").is_file()
+    subprocess.run(["flock", "-w", "2", str(tmp_path / "active"), "true"], check=True)
 
 
 @suite.needs_suite

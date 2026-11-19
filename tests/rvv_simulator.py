@@ -292,21 +292,33 @@ class VectorSimulator:
                 "results.xml",
             ]
         start = time.monotonic()
-        try:
-            sim = run_in_process_group(command, env=env, timeout=7200)
-        except subprocess.TimeoutExpired as exc:
-            result.message = "simulation timed out"
-            with log.open("wb") as stream:
+        with log.open("wb") as stream:
+            try:
+                if self.backend == "native":
+                    # The native executable has no child processes. Keep it
+                    # in the shard's group and save its output as it runs.
+                    sim = subprocess.run(
+                        command,
+                        env=env,
+                        stdout=stream,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        timeout=7200,
+                    )
+                else:
+                    sim = run_in_process_group(command, env=env, timeout=7200)
+                    stream.write((sim.stdout + sim.stderr).encode())
+            except subprocess.TimeoutExpired as exc:
+                result.message = "simulation timed out"
                 for value in (exc.stdout, exc.stderr, result.message):
                     if value:
                         stream.write(
                             value if isinstance(value, bytes) else value.encode()
                         )
-            return result
-        finally:
-            result.wall_seconds = time.monotonic() - start
-        output = sim.stdout + sim.stderr
-        log.write_text(output)
+                return result
+            finally:
+                result.wall_seconds = time.monotonic() - start
+        output = log.read_text(errors="replace")
         if self.backend == "native":
             if summary.is_file():
                 info = json.loads(summary.read_text())
