@@ -70,8 +70,8 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
 | Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction, permutation and floating-point execution; all load and store forms; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` (one generated program per form, and a sample of the suite's FP programs), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
-| Zvfhmin | Implemented with `VECTOR=1` (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at SEW 16; unadvertised) | `vec_fp_test`, `test_vec_fcvt.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` (one generated program per FP form at VLEN 128, 256 and 512) |
+| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction, permutation and floating-point execution; all load and store forms; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy) at three vector lengths), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
+| Zvfhmin | Implemented with `VECTOR=1` (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at SEW 16; unadvertised) | `vec_fp_test`, `test_vec_fcvt.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy), one program per form at three vector lengths) |
 | Zvbb | Implemented with `VECTOR=1` (including `vwsll`; unadvertised) | `test_vec_int_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py` |
 | Zvkt | Partial (fixed-latency integer and bitmanip lanes in place; vector unit unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py` |
 | Zihintntl | Implemented (hints execute as no-ops) | `riscv-arch-test` (`hints`), `rvc_predecode.sby`, TestRIG (`--zcb`) |
@@ -100,7 +100,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Ssu64xl | Implemented | `smode_test`, `umode_test`, TestRIG (`mstatus`, `sstatus`, `ssu64xl_uxl.S`), `csr_file.sby` |
 | Zbc (optional) | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzbc`), TestRIG, `cl_multiplier.sby` |
 | Svvptc (optional) | Implemented | `vm_test`, `asid_test`, TestRIG, `ptw.sby`, `immu_memo.sby`, `dmmu_twin.sby` |
-| Zvfh (optional) | Implemented with `VECTOR=1` (every vector floating-point instruction at SEW 16; optional in the profile; unadvertised) | `vec_fp_test`, `test_vec_fma.py`, `test_vec_fcvt.py`, `test_vec_fdivsqrt.py`, `test_vec_fp_misc.py`, `test_vec_fp_estimate.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` (one generated program per FP form at VLEN 128, 256 and 512, and 50 of the suite's FP programs chosen by instruction group) |
+| Zvfh (optional) | Implemented with `VECTOR=1` (every vector floating-point instruction at SEW 16; optional in the profile; unadvertised) | `vec_fp_test`, `test_vec_fma.py`, `test_vec_fcvt.py`, `test_vec_fdivsqrt.py`, `test_vec_fp_misc.py`, `test_vec_fp_estimate.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy), one program per form at three vector lengths and 50 programs chosen by group) |
 | Zvbc (optional) | Partial (carry-less multiply lane block in place; core execution not connected) | `test_vec_clmul_lane.py` |
 | Zvkng (optional) | Partial (AES, SHA-2 and GHASH group blocks in place; core execution not connected) | `test_vec_aes_group.py`, `test_vec_sha2_group.py`, `test_vec_ghash_group.py` |
 
@@ -604,14 +604,14 @@ and targeted microbenchmarks give these items:
    additions runs at 0.6 IPC with translation off; those small-loop costs
    come from fetch coverage and packet formation, not BTB capacity.
 5. Floating point. One engine executes F and D instructions one at a time.
-   Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
-   and sign injection use two-cycle paths. Integer-to-FP conversion takes
-   four cycles, or two for zero. Pipelined add and multiply units would let
-   FP_RS issue independent arithmetic while earlier operations execute. A
-   pipelined multiplier for both precisions, about 14 cycles instead of 66,
-   and a pipelined adder, 13 cycles instead of 15 to 20, are designed;
-   fused multiply-add would stay on the iterative engine at first. The first
-   multiplier implementation needs rework to fit the target clock.
+   Multiply and fused multiply-add share a three-stage significand multiplier.
+   In [`fplat_probe`](sw/apps/fplat_probe/), dependent multiplies take about
+   14 cycles in both precisions. Divide uses radix 4 and square root uses
+   radix 2. The engine shares an adder for addition, subtraction and fused
+   accumulation. Comparisons, moves, min/max, FCLASS and sign injection use
+   two-cycle paths. Integer-to-FP conversion takes four cycles, or two for
+   zero. A pipelined adder has been designed. Issuing independent arithmetic
+   from FP_RS while an earlier operation executes remains future work.
 6. Integer multiply and divide. The full-width multiplier has six stages;
    its integrated completion bypasses the result FIFO. The CDB and
    reservation station each contribute a cycle, giving eight cycles to a

@@ -128,3 +128,4 @@
 - Advertised Ssu64xl in the device tree and boot image, with a TestRIG trace that checks the read-only UXL and SXL fields against Sail
 - Gave each quarter of the integer reservation station's entries its own register copy of the CDB issue tags, with a simulation check, an induction proof that each copy equals its tag and an equivalence proof that the copies leave the station's behavior unchanged from reset
 - Installed fully written 64-byte store blocks without fill through paired `GetMZero` acquisitions and data twins, and overlapped cached plain writes in the store queue with gathering and same-sector combining hints, with their formal checks, benchmarks, and directed tests
+- Implemented pipelined DSP multiplication and radix-4 division for single- and double-precision floating-point operations and added a regression for the latency of arithmetic operations

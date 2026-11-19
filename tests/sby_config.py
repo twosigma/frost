@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from collections.abc import Iterable
@@ -233,6 +235,32 @@ def read_source(path: Path, text: str) -> Source:
 def source(path: Path) -> Source:
     """Read and validate a checkout configuration."""
     return read_source(path, path.read_text())
+
+
+def proof_inputs(path: Path) -> list[Path]:
+    """List a proof and the source paths it declares relative to its directory."""
+    definition = source(path)
+    # The repository's [files] section is shared by every task.
+    files = definition.task(next(iter(definition.tasks))).files
+    return [path, *(path.parent / name for name in files.values())]
+
+
+def stage_proof(path: Path, root: Path, fixture: Path) -> Path:
+    """Copy a proof and all its inputs into a private checkout layout.
+
+    SymbiYosys stages every external input from [files], including sources
+    read by nested Yosys scripts. Inline [file] bodies travel with the proof.
+    """
+    root = Path(os.path.abspath(root))
+    sources = proof_inputs(path)
+    destinations = [
+        fixture / Path(os.path.abspath(source_file)).relative_to(root)
+        for source_file in sources
+    ]
+    for source_file, destination in zip(sources, destinations, strict=True):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_file, destination)
+    return destinations[0]
 
 
 # Only configurations are cached. The checks read the mapped files on each use.
