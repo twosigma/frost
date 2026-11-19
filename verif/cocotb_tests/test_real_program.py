@@ -30,6 +30,7 @@ import os
 import random
 from pathlib import Path
 import re
+import subprocess
 from collections import Counter
 from collections.abc import Callable, Coroutine
 import cocotb
@@ -1077,6 +1078,88 @@ async def ddr_write_watch(dut: Any) -> None:
                     return
 
 
+async def bp_trace(dut: Any) -> None:
+    """Log the front end each cycle from the first packet IF serves in a PC window.
+
+    FROST_BP_TRACE_LO/FROST_BP_TRACE_HI (hex) bound the window; after
+    FROST_BP_TRACE_SKIP (default 0) packets in the window the watcher logs
+    FROST_BP_TRACE_CYCLES (default 300) consecutive cycles.
+    """
+    lo_env = os.environ.get("FROST_BP_TRACE_LO", "")
+    hi_env = os.environ.get("FROST_BP_TRACE_HI", "")
+    if not lo_env or not hi_env:
+        return
+    lo, hi = int(lo_env, 16), int(hi_env, 16)
+    limit = int(os.environ.get("FROST_BP_TRACE_CYCLES", "300"))
+    skip = int(os.environ.get("FROST_BP_TRACE_SKIP", "0"))
+    cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
+    ifs = f"{cpu}.if_stage_inst"
+    pds = f"{cpu}.pd_stage_inst"
+    bpc = f"{ifs}.branch_prediction_controller_inst"
+    flags = {
+        "phold": f"{ifs}.prediction_holdoff",
+        "ahold": f"{ifs}.any_holdoff_safe",
+        "cfhold": f"{ifs}.control_flow_holdoff",
+        "nop": f"{ifs}.sel_nop",
+        "nop2": f"{ifs}.sel_nop_2",
+        "used": f"{bpc}.o_prediction_used",
+        "used2": f"{bpc}.o_slot2_prediction_used",
+        "pdcand": f"{pds}.pd_backing_candidate_r",
+        "pdcand2": f"{pds}.pd_backing_candidate_2_r",
+        "pdbr": f"{pds}.pd_backing_redirect_r",
+        "pdbr2": f"{pds}.pd_backing_redirect_2_r",
+        "pdr": f"{pds}.pd_redirect_r",
+        "j1": f"{pds}.pd_slot1_jump",
+        "j2": f"{pds}.pd_slot2_jump",
+    }
+    vals = {
+        "pc": f"{ifs}.pc_reg",
+        "opc": f"{ifs}.o_pc",
+        "tw": f"{ifs}.pc_tage_lookup",
+        "bhl": f"{ifs}.backing_hit_live",
+        "bh": f"{pds}.i_backing_hit",
+        "bc": f"{pds}.i_backing_compressed",
+    }
+    fsig = {}
+    vsig = {}
+    for k, path in flags.items():
+        sig = _get_signal(dut, path)
+        if sig is None:
+            cocotb.log.warning(f"bp_trace: {path} not resolvable")
+        else:
+            fsig[k] = sig
+    for k, path in vals.items():
+        sig = _get_signal(dut, path)
+        if sig is None:
+            cocotb.log.warning(f"bp_trace: {path} not resolvable")
+        else:
+            vsig[k] = sig
+    pc_sig = vsig.get("pc")
+    if pc_sig is None:
+        return
+    cocotb.log.info(f"bp_trace: armed for [{lo:#x}, {hi:#x}]")
+    cycle = 0
+    seen = 0
+    logged = 0
+    while logged < limit:
+        await RisingEdge(cpu_clock(dut))
+        cycle += 1
+        pc = _read_int(pc_sig)
+        if logged == 0:
+            if pc is None or not (lo <= pc <= hi):
+                continue
+            seen += 1
+            if seen <= skip:
+                continue
+        logged += 1
+        on = " ".join(k for k, sig in fsig.items() if _read_bool(sig))
+        vv = " ".join(
+            f"{k}={(_read_int(sig) if _read_int(sig) is None else hex(_read_int(sig) or 0))}"
+            for k, sig in vsig.items()
+        )
+        cocotb.log.info(f"BPTRACE c={cycle} {vv} | {on}")
+
+
 async def l0_hit_watch(dut: Any) -> None:
     """Log every L0 fast-path hit served inside a watched absolute window.
 
@@ -1111,6 +1194,84 @@ async def l0_hit_watch(dut: Any) -> None:
                 if hits > 6000:
                     cocotb.log.warning("l0_hit_watch: hit cap reached; muting")
                     return
+
+
+class FefuzzActivity:
+    """Count accepted front-end events originating in the generated program."""
+
+    def __init__(self, dut: Any) -> None:
+        """Bind the two fetch slots and the linked range of fe_run and its callees."""
+        self.cpu = dut.cpu_and_memory_subsystem.cpu.hart.cpu_inst
+        self.pd = self.cpu.pd_stage_inst
+        self.pc = self.cpu.if_stage_inst.pc_controller_inst
+        base = "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_stage_inst."
+        self.fetch_packets = [
+            _packed_struct(dut, base + name, IF_TO_PD_FIELDS, "fefuzz ITT hit")
+            for name in ("i_from_if_to_pd", "i_from_if_to_pd_2")
+        ]
+        elf = Path(__file__).resolve().parents[2] / "sw/apps/fefuzz/sw.elf"
+        nm = os.environ.get("RISCV_PREFIX", "riscv64-linux-") + "nm"
+        symbols = subprocess.check_output([nm, "-S", str(elf)], text=True, timeout=15)
+        span = re.search(r"^([\da-f]+)\s+([\da-f]+)\s+T fe_run$", symbols, re.M)
+        assert span and int(span[2], 16), f"Missing generated fe_run range in {elf}"
+        self.start = int(span[1], 16)
+        self.end = self.start + int(span[2], 16)
+        self.counts = dict.fromkeys(
+            (
+                "itt_hit",
+                "direction_slot1",
+                "direction_slot2",
+                "backing",
+                "indirect",
+                "early",
+            ),
+            0,
+        )
+
+    def sample(self) -> None:
+        """Sample the transaction consumed at this CPU edge, once per acceptance."""
+        if int(self.cpu.i_rst.value):
+            return
+        if int(self.cpu.tage_pd_accept.value):
+            hits = int(self.pd.i_itt_hit.value) & int(self.pd.o_itt_eligible.value)
+            for slot, packet in enumerate(self.fetch_packets):
+                if hits & (1 << slot):
+                    value = packet.read()
+                    assert value is not None, "Unresolved PC on an accepted ITT hit"
+                    if self.start <= packet.field(value, "program_counter") < self.end:
+                        self.counts["itt_hit"] += 1
+        if (
+            int(self.pd.o_pd_redirect.value)
+            and int(self.pc.o_pc_update_en.value)
+            and int(self.pc.o_npc_sel.value) & (1 << 4)
+            and self.start <= int(self.pd.pd_chk_pc.value) < self.end
+        ):
+            if int(self.pd.pd_itt_target_select_r.value):
+                self.counts["indirect"] += 1
+            elif int(self.pd.o_pd_backing_refresh.value):
+                self.counts["backing"] += 1
+            elif int(self.pd.pd_dir_redirect_1_r.value):
+                self.counts["direction_slot1"] += 1
+            elif int(self.pd.pd_dir_redirect_2_r.value):
+                self.counts["direction_slot2"] += 1
+        if (
+            int(self.cpu.early_mispredict_active.value)
+            and self.start <= int(self.cpu.early_mispredict_pc.value) < self.end
+        ):
+            self.counts["early"] += 1
+
+    def verify(self, run_number: int, output: str) -> None:
+        """Require the requested seed and at least one event in each class per boot."""
+        seed = int(os.environ.get("FE_SEED", "1"), 0)
+        counts = " ".join(f"{name}={count}" for name, count in self.counts.items())
+        cocotb.log.info(f"Run {run_number} fefuzz seed {seed} activity: {counts}")
+        assert re.search(rf"^fefuzz seed {seed} rounds ", output, re.M), (
+            f"UART did not identify requested fefuzz seed {seed}"
+        )
+        missing = [name for name, count in self.counts.items() if count < 1]
+        assert not missing, (
+            f"fefuzz seed {seed} run {run_number} missing {', '.join(missing)}"
+        )
 
 
 class PointerMaskingInterruptCoverage:
@@ -1159,6 +1320,40 @@ class PointerMaskingInterruptCoverage:
         cocotb.log.info(
             f"PMM U-mode IRQ with stores queued, run {run_number}: {self.hits} cycles"
         )
+
+
+class CmoTimerCoverage:
+    """Check for a timer interrupt arriving while a flush awaits the home."""
+
+    def __init__(self, dut: Any) -> None:
+        """Resolve the timer and the store queue issuing the flush."""
+        self.dut = dut
+        self.timer = dut.cpu_and_memory_subsystem.soc.mtip_registered
+        self.sq = dut.cpu_and_memory_subsystem.cpu.hart.cpu_inst.u_tomasulo.u_sq
+        self.hits = 0
+
+    def clear(self) -> None:
+        """Start a new program run."""
+        self.hits = 0
+
+    async def run(self) -> None:
+        """Sample only active edges of the timer interrupt."""
+        while True:
+            await RisingEdge(self.timer)
+            await ReadOnly()
+            if (
+                int(self.dut.i_rst_n.value)
+                and int(self.sq.cmo_state_q.value) == 2  # CmoWait
+                and int(self.sq.cmo_kind_q.value) == 2  # CMO_FLUSH
+            ):
+                self.hits += 1
+
+    def verify(self, run_number: int) -> None:
+        """Require an actual overlap in each reset-to-pass interval."""
+        assert self.hits, (
+            f"run {run_number}: no timer arrival during an outstanding flush"
+        )
+        cocotb.log.info(f"run {run_number}: {self.hits} timer arrivals during a flush")
 
 
 class WfiRecoveryWatch:
@@ -2074,6 +2269,7 @@ async def run_until_complete(
     retired_count = 0
     last_progress_retired = 0
     is_coremark_like = app_name is not None and app_name.startswith("coremark")
+    fefuzz_activity = FefuzzActivity(dut) if app_name == "fefuzz" else None
     progress_interval = 0
     if os.environ.get("COCOTB_PROGRESS_INTERVAL") is not None:
         progress_interval = int(os.environ["COCOTB_PROGRESS_INTERVAL"])
@@ -3737,6 +3933,8 @@ async def run_until_complete(
     clock_edge = RisingEdge(cpu_clock(dut))
     for cycle in range(max_cycles):
         await clock_edge
+        if fefuzz_activity is not None:
+            fefuzz_activity.sample()
         if external_irq_enabled and hasattr(dut, "i_external_interrupt"):
             if external_irq_active:
                 if external_irq_hold_remaining > 0:
@@ -4702,6 +4900,8 @@ async def run_until_complete(
     print("\n")  # Newline after UART output
     cocotb.log.info(f"Run {run_number} completed after {cycle + 1} cycles")
 
+    if test_passed and fefuzz_activity is not None:
+        fefuzz_activity.verify(run_number, uart_monitor.get_output())
     if not test_failed and os.environ.get("FROST_EXPECT_PERF_COUNTERS") == "1":
         # Profiling entries (-GPERF_COUNTERS=1) must not pass on zero data:
         # the report's presence line carries the hardware's mperfcount.
@@ -4946,7 +5146,13 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = RESTORE_WINDOW_STRESS_MAX_CYCLES
     elif app_name == "amo_irq_torture":
         max_cycles = AMO_IRQ_TORTURE_MAX_CYCLES
-    elif app_name in ("nic_loopback", "nic_sg_loopback", "nic_rate", "nic_echo"):
+    elif app_name in (
+        "nic_loopback",
+        "nic_cmo_loopback",
+        "nic_sg_loopback",
+        "nic_rate",
+        "nic_echo",
+    ):
         max_cycles = NIC_LOOPBACK_MAX_CYCLES
     elif app_name == "tick_torture":
         max_cycles = TICK_TORTURE_MAX_CYCLES
@@ -4999,6 +5205,7 @@ async def test_real_program(dut: Any) -> None:
         cocotb.start_soon(hang_probe(dut, cpu_clock(dut)))
     cocotb.start_soon(ddr_write_watch(dut))
     cocotb.start_soon(l0_hit_watch(dut))
+    cocotb.start_soon(bp_trace(dut))
 
     uart_driver = None
     debug_monitor = None
@@ -5029,6 +5236,14 @@ async def test_real_program(dut: Any) -> None:
             dut, FULL_LINE_TEST_EVENTS if app_name == "full_line_test" else ()
         )
         cocotb.start_soon(full_line_watch.run())
+    # FROST_CMO_DDR_CHECK=1: the program brackets Zicbom operations with
+    # sscratch windows whose DDR write-backs are checked (cache/cmo_ddr_watch).
+    cmo_watch = None
+    if os.environ.get("FROST_CMO_DDR_CHECK") == "1":
+        from cocotb_tests.cache.cmo_ddr_watch import CmoDdrWatch
+
+        cmo_watch = CmoDdrWatch(dut)
+        cocotb.start_soon(cmo_watch.run())
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
     ecc_driver = EccReportDriver(dut) if app_name == "memerr_test" else None
     if app_name == "memerr_readback":
@@ -5039,6 +5254,8 @@ async def test_real_program(dut: Any) -> None:
     coverage = (
         DelayedBranchFetchCoverage(dut)
         if app_name == "served_window_resteer"
+        else CmoTimerCoverage(dut)
+        if app_name == "cbo_mgmt_test"
         else PointerMaskingInterruptCoverage(dut)
         if app_name == "pm_test"
         else None
@@ -5061,6 +5278,8 @@ async def test_real_program(dut: Any) -> None:
     for run_number in range(1, NUM_RUNS + 1):
         if coverage is not None:
             coverage.clear()
+        if cmo_watch is not None:
+            cmo_watch.clear()
         if run_number > 1:
             cocotb.log.info(f"=== Asserting reset for {RESET_CYCLES} cycles ===")
             uart_monitor.clear()
@@ -5142,6 +5361,8 @@ async def test_real_program(dut: Any) -> None:
             full_line_watch.verify(cocotb.log)
         if vector_watch is not None:
             vector_watch.verify()
+        if cmo_watch is not None:
+            cmo_watch.verify()
 
     uart_monitor.stop()
     if line_monitor is not None:

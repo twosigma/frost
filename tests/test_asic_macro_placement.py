@@ -225,3 +225,44 @@ def test_home_array_sram_macro_names_match_floorplan(tmp_path: Path) -> None:
     assert "TAGS 4" in lines, tcl_run.stdout
     slices = [int(line.split()[1]) for line in lines if line.startswith("SLICE ")]
     assert slices == list(range(8))
+
+
+@pytest.mark.parametrize(
+    "source,rows,width,copies",
+    [
+        ("if_stage/branch_prediction/ittage_predictor", 128, 46, 12),
+        ("if_stage/branch_prediction/tage_predictor", 512, 16, 16),
+        ("cpu_ooo/branch_recovery/tage_history", 64, 337, 2),
+    ],
+)
+def test_predictor_memories_reach_asic_size_selection(
+    tmp_path: Path, source: str, rows: int, width: int, copies: int
+) -> None:
+    """The ASIC flow receives the asynchronous memories at their full dimensions."""
+    yosys = shutil.which("yosys")
+    if yosys is None:
+        pytest.skip("yosys is missing")
+    top = source.rsplit("/", 1)[1]
+    cpu = ROOT / "hw/rtl/cpu_and_mem/cpu"
+    netlist = tmp_path / "predictor.json"
+    script = [
+        f"read_verilog -sv -DSYNTHESIS -DFROST_SRAM_MACROS {cpu}/riscv_pkg.sv "
+        f"{ROOT}/hw/rtl/lib/ram/sdp_dist_ram.sv {cpu}/{source}.sv",
+        f"hierarchy -check -top {top}",
+        "proc",
+        "flatten",
+        "opt_clean",
+        "memory_collect",
+        f"write_json {netlist}",
+    ]
+    subprocess.run([yosys, "-q", "-p", "; ".join(script)], check=True, timeout=120)
+    cells = json.loads(netlist.read_text())["modules"][top]["cells"]
+    large = []
+    for cell in cells.values():
+        if cell["type"] == "$mem_v2":
+            params = cell["parameters"]
+            size = int(params["SIZE"], 2)
+            bits = int(params["WIDTH"], 2)
+            if size * bits > 4096:
+                large.append((size, bits, int(params["RD_CLK_ENABLE"], 2)))
+    assert sorted(large) == [(rows, width, 0)] * copies

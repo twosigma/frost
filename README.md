@@ -7,7 +7,7 @@ SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
 and Sv39 virtual memory. The AMD Alveo X3522PV configuration targets 322 MHz
 and boots Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
 filesystem over NFS through its own 10 Gigabit Ethernet NIC. It runs
-[CoreMark](sw/apps/coremark/README.md) at 4.77 CoreMark/MHz.
+[CoreMark](sw/apps/coremark/README.md) at 4.87 CoreMark/MHz.
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
 
@@ -196,7 +196,7 @@ every supported extension and privilege mode.
 | **Zimop**        | May-be-operations `mop.r.n`/`mop.rr.n`, which write zero to rd |
 | **Zawrs**        | `wrs.nto`/`wrs.sto` retire at once; `wrs.nto` traps below M with `mstatus.TW` set |
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
-| **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks), ordered no-ops while every bus master is coherent; the device tree lists it with `riscv,cbom-block-size = <64>` |
+| **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks): clean and flush write a dirty L1D or L2 line to DDR before they complete, flush and inval remove every cached copy, inval discards dirty data (or flushes with `CBO_INVAL_AS_FLUSH`), through cacheable, NC and IO mappings alike; the device tree lists it with `riscv,cbom-block-size = <64>` |
 | **Zicbop**       | Cache-block prefetch hints (`prefetch.i/r/w`), executed as no-ops |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |

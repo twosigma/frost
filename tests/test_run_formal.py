@@ -23,10 +23,12 @@ in formal/.
 """
 
 import difflib
+import hashlib
 import re
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -65,6 +67,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
+    ("coherence_home", "coh_home_cmo_cover"): 6000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
@@ -287,7 +290,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "early_backend_hold.sby",
         "Combined backend hold equals early recovery or independently sampled fatal "
-        "stop through reset and flush",
+        "stop through reset and flush. A coherent not-taken launch redirects to "
+        "its issued PC plus the instruction length",
         tasks=("prove", "cover"),
     ),
     FormalTarget(
@@ -545,6 +549,7 @@ FORMAL_TARGETS = [
             "coh_home_control4_bmc",
             "coh_home_control4_ultra_bmc",
             "coh_home_fill_cover",
+            "coh_home_cmo_cover",
             "coh_home_wb_prove",
             "coh_home_victim_cover",
             "coh_home_error_cover",
@@ -1399,6 +1404,7 @@ FORMAL_TARGETS = [
             "bmc_commit",
             "bmc_commit_2",
             "bmc_operands",
+            "cover_cmo_request",
         ),
     ),
     FormalTarget(
@@ -1572,7 +1578,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "backing_btb.sby",
         "Backing BTB lookups match a mirror of its sets, every set holds each "
-        "valid tag once, and requests in training hold their set's current "
+        "valid tag once, a redirect drops held and outstanding reads, and training holds current "
         "entries, at two and four ways; slot 2's fields formed for each slot-1 "
         "size and selected by the packet's size equal the single reduction they "
         "replace, for any register state",
@@ -1587,6 +1593,64 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "branch_prediction_resolution.sby",
+        "Two arbitrary predictions leave the resolved branch outcome, target and ROB update "
+        "identity equal; each wrong direction or taken target requests recovery",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "predictor_fetch_contract.sby",
+        "The real fetch stage supplies PD packet order, PC and backing fields, source "
+        "register and target data, and the PC controller's registered recovery arm",
+        tasks=(
+            "bmc",
+            "prove_order",
+            "prove_addresses",
+            "prove_buffer_source",
+            "prove_slot1_sources",
+            "prove_slot2_sources",
+            "prove_targets",
+            "cover",
+            "cover_backing",
+        ),
+    ),
+    FormalTarget(
+        "backing_btb_twin.sby",
+        "Every backing lookup result, including misses, held and shifted reads, "
+        "and the pins of all five RAMs match the original backing BTB",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "pd_history_twin.sby",
+        "Both full decode packets, fetch redirects, return stack operations, history "
+        "folds, training and FTQ RAM pins match the original PD and history stages together",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "tage_predictor_twin.sby",
+        "Both direction banks, captured lookup, and every table RAM pin match "
+        "the original direction predictor with the index folded outside the predictor",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "ittage_predictor_twin.sby",
+        "Both indirect banks, target selection, captured lookup, and every "
+        "table RAM pin match the original indirect predictor",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "ittage_training.sby",
+        "Indirect prediction holds the captured lookup; each table uses the retiring lookup's "
+        "bank and index, forwards a colliding write, and repairs an unowned provider",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "tage_history_recovery.sby",
+        "Both lookup histories follow accepted predictions, ordered retirement, "
+        "saved early-recovery histories and every PC restore arm; only retired lookups train",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "tage_copy_convergence.sby",
         "Tagged predictor training: with a table entry's two copies equal, "
         "each copy's next value matches the write without the provider "
@@ -1595,18 +1659,22 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pd_backing_redirect.sby",
-        "PD backing-BTB jump redirects and slot-1/slot-2 TAGE conditional-branch "
-        "overrides fire only with their vetoes clear, stack operations and "
-        "refreshes follow them, and redirect directions and targets match PD's "
-        "reference models",
-        tasks=("bmc", "cover"),
+        "PD backing, indirect and direction redirects require a live slot; each "
+        "indirect candidate and target selection matches the compare-before-register "
+        "equations, both history outputs match the branch direction or jump target bit, "
+        "a reserved compressed jump preserves only its trap, and stack operations, "
+        "refreshes, directions and targets match PD's reference models across address regions; induction checks "
+        "indirect eligibility, payloads and reserved traps. "
+        "Each redirect has sources in only one slot. Redirects from aligned inputs "
+        "are aligned, indirect targets select a taken "
+        "JALR, and taken direction redirects select the decoded branch target",
+        tasks=("bmc", "cover", "prove_indirect"),
     ),
     FormalTarget(
         "pd_redirect_next_equiv.sby",
-        "PD's redirect target registers' next values, with every candidate formed "
-        "before the slot selects and slot 1's size picked last, equal the form "
-        "they replace for any decode, packet, candidates, backing BTB result and "
-        "stack state",
+        "PD's redirect target fields equal the direct expressions for any packet, "
+        "candidates, backing BTB result and stack state. The slot-1 backing owner "
+        "selects between independent address candidates after capture",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -1742,7 +1810,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "if_prediction_walk_past.sby",
         "Fetch stage preserves pc_reg continuity and emits no real packet while "
-        "post-prediction holdoff holds pc_reg, including walked-past pending predictions",
+        "post-prediction holdoff holds pc_reg, including walked-past pending predictions; "
+        "covers real slot-2 packets, an indirect hit after a reserved compressed parcel, and a hit across the target-address region",
         tasks=("bmc", "continuity", "cover"),
     ),
     FormalTarget(
@@ -1987,6 +2056,32 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "cover_backing",
+        "Reach a real second-slot backing hit after the full reset sweep",
+    ),
+    (
+        "prove_order",
+        "Prove fetch slot order, fault propagation and the registered PD restore",
+    ),
+    (
+        "prove_addresses",
+        "Prove the slot PC step and backing target region and size selection",
+    ),
+    (
+        "prove_buffer_source",
+        "Prove a live buffered first slot reads a paired instruction and sideband",
+    ),
+    (
+        "prove_slot1_sources",
+        "Prove first-slot expansion and source fields with the buffer source lemma",
+    ),
+    ("prove_slot2_sources", "Prove second-slot expansion, class and source fields"),
+    ("prove_targets", "Prove the target sums and high selectors used by fetch"),
+    (
+        "prove_indirect",
+        "Unbounded pre-decode indirect target, eligibility and trap isolation.",
+    ),
     ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
@@ -2873,6 +2968,10 @@ SBY_TASKS = [
     ),
     ("coh_home_fill_cover", "Fill installation, forward and waiter wake reachability."),
     (
+        "coh_home_cmo_cover",
+        "Reach four Zicbom grant cases and replay their inputs on the undriven home.",
+    ),
+    (
         "coh_home_dispatch_cover",
         "A dispatch-cycle lookup offer that loses the tag arbiter and wins from Lookup.",
     ),
@@ -3233,7 +3332,11 @@ SBY_TASKS = [
     ("bmc_cdb", "Compare the first valid CDB packet across wrapper copies."),
     ("bmc_cdb_2", "Compare the second valid CDB packet across wrapper copies."),
     ("bmc_commit", "Compare the first valid combinational commit packet."),
-    ("bmc_commit_2", "Compare the second valid combinational commit packet."),
+    ("bmc_commit_2", "Compare the second commit packet and the coherent CMO request."),
+    (
+        "cover_cmo_request",
+        "Reach both wrappers' first coherent CMO request in six frames.",
+    ),
     (
         "bmc_operands",
         "Compare bypass and register-file operands in the Block proofs job.",
@@ -3731,6 +3834,8 @@ SKIP_PINNED: dict[tuple[str, str], int] = {
     ("coherence_l1d", "coh_l1d_zero_progress_cover"): 128,
     ("coherence_l1d", "coh_l1d_zero_request_cover"): 159,
     ("coherence_l1d", "coh_l1d_withdraw_full_cover"): 48,
+    # One reset clock and 512 backing set clears precede the first hit.
+    ("predictor_fetch_contract", "cover_backing"): 513,
 }
 
 FATAL_START_FRAME_TASKS: frozenset[tuple[str, str]] = frozenset(
@@ -3823,6 +3928,98 @@ def registered_task_config_gaps(
     if extra_ys:
         gaps.append(f"unpinned .ys helper in [files]: {extra_ys}")
     return gaps
+
+
+def test_predictor_twins_use_the_core_connections() -> None:
+    """Check the register boundary and external fold wiring used by the twins."""
+    root = Path(__file__).resolve().parents[1]
+    cpu = root / "hw/rtl/cpu_and_mem/cpu"
+
+    def source(path: Path) -> str:
+        return re.sub(r"//[^\n]*|/\*.*?\*/", "", path.read_text(), flags=re.S)
+
+    def body(text: str, instance: str) -> str:
+        match = re.search(rf"\b{instance}\s*\((.*?)\);", text, re.S)
+        assert match, instance
+        return re.sub(r"\s+", "", match[1])
+
+    def pin(body_text: str, name: str) -> str:
+        match = re.search(rf"\.{name}\(([^()]*)\)", body_text)
+        assert match, name
+        return match[1]
+
+    def expr(text: str, name: str) -> str:
+        match = re.search(rf"\b{re.escape(name)}\s*=\s*([^;]+);", text)
+        assert match, name
+        return re.sub(r"\s+", "", match[1])
+
+    core = source(cpu / "cpu_ooo/cpu_ooo.sv")
+    fetch = source(cpu / "if_stage/if_stage.sv")
+    twin = source(root / "formal/pd_history_twin_side.sv")
+    core_pd, core_hist = body(core, "pd_stage_inst"), body(core, "u_tage_history")
+    twin_pd, twin_hist = body(twin, "pd"), body(twin, "history")
+    for field in ("cond_branch", "jalr", "itt_eligible", "cf", "pred_taken"):
+        for pd, history in ((core_pd, core_hist), (twin_pd, twin_hist)):
+            assert pin(pd, "o_q_" + field) == pin(history, "i_pd_q_" + field), field
+
+    core_if = body(core, "if_stage_inst")
+    table = body(fetch, "u_tage_predictor")
+    for output, input_name in (
+        ("o_lookup_dir_fold", "i_tage_hist_fold"),
+        ("o_lookup_dir_hist", "i_tage_hist"),
+        ("o_lookup_hist", "i_itt_hist"),
+    ):
+        assert pin(core_hist, output) == pin(core_if, input_name)
+    assert pin(table, "i_lookup_fold_index") == "i_tage_hist_fold"
+    assert pin(table, "i_lookup_hist") == "i_tage_hist"
+    for text, module, instance, parameter, value in (
+        (core, "if_stage", "if_stage_inst", "USE_EXTERNAL_TAGE_FOLD", "1'b1"),
+        (
+            fetch,
+            "tage_predictor",
+            "u_tage_predictor",
+            "USE_EXTERNAL_FOLD_INDEX",
+            "USE_EXTERNAL_TAGE_FOLD",
+        ),
+    ):
+        parameters = re.search(
+            rf"\b{module}\s*#\s*\((.*?)\)\s*{instance}\b", text, re.S
+        )
+        assert parameters, module
+        assert pin(re.sub(r"\s+", "", parameters[1]), parameter) == value
+
+    assert pin(core_pd, "o_pd_redirect_taken") == pin(core_hist, "i_pd_redirect_taken")
+    assert pin(twin_pd, "o_pd_redirect_taken") == pin(twin_hist, "i_pd_redirect_taken")
+    assert expr(twin, "accept").replace("i.", "").replace("o.", "") == expr(
+        core, pin(core_hist, "i_pd_accept")
+    )
+    for bus, name in (("i_tage_slot_bank", "bank"), ("i_base_taken", "base_taken")):
+        core_name = pin(core_hist, bus)
+        assert pin(twin_hist, bus) == name
+        expected = "{" + ",".join(expr(core, f"{core_name}[{s}]") for s in (1, 0)) + "}"
+        assert expr(twin, name).replace("i.", "") == expected
+
+
+def test_predictor_reference_sources_are_frozen() -> None:
+    """The reference side is the exact source tree before the predictor register changes."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR / "predictor_reference"
+    blobs = {
+        "backing_btb.original.sv": "921c71bb493a2d40eb0fef1d4b01e84f528e365b",
+        "ittage_predictor.original.sv": "734034d46cb89c457287816e80fa522351afa982",
+        "pd_redirect_next.original.sv": "fc147c9b68002a4e9b24eac60c911f44665f72f0",
+        "pd_stage.original.sv": "951b0b09da7021e2f90bee2849c3aaa033560827",
+        "pd_target_high_precompute.original.sv": "2867ccea13165eaed9f78cc11289af9d1b00cf63",
+        "riscv_pkg.original.sv": "c57a8b22aecde88af5c7038440854363b50f766a",
+        "rvc_decompressor.original.sv": "b0cd92a276ccc22482b921ec07ff60483bf7d9a6",
+        "tage_history.original.sv": "1af737016740dd859e164fe8351d19902b92717d",
+        "tage_predictor.original.sv": "4a14696c3a70f50a4946fd2bfb7d182140cc66c2",
+    }
+    for filename, expected in blobs.items():
+        source = (formal / filename).read_bytes()
+        git_object = f"blob {len(source)}\0".encode() + source
+        assert (
+            hashlib.sha1(git_object, usedforsecurity=False).hexdigest() == expected
+        ), filename
 
 
 def test_formal_target_tasks_are_registered() -> None:
@@ -3948,6 +4145,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     root = Path(__file__).resolve().parents[1]
     registered = [name for name, _ in SBY_TASKS]
     required = {
+        "predictor_fetch_contract": ["prove_buffer_source", "prove_slot1_sources"],
         "axi_coherent_bridge": [
             "prove_soc",
             "prove_soc_held",
@@ -4412,7 +4610,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_home": (
         "not converted: memory_map and opt without -keepdc; no setundef",
         {
-            "coh_home_control_prove coh_home_control64_prove coh_home_control_partition_prove coh_home_control4_bmc coh_home_control4_ultra_bmc coh_home_fill_cover coh_home_wb_prove coh_home_victim_cover coh_home_error_cover coh_home_prefetch_cover coh_home_dispatch_cover": [
+            "coh_home_control_prove coh_home_control64_prove coh_home_control_partition_prove coh_home_control4_bmc coh_home_control4_ultra_bmc coh_home_fill_cover coh_home_cmo_cover coh_home_wb_prove coh_home_victim_cover coh_home_error_cover coh_home_prefetch_cover coh_home_dispatch_cover": [
                 "memory_map",
                 "opt",
             ],
@@ -4850,7 +5048,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "rs_payload_twin": (
         "both copies start from the same zero state, as its harness states",
         {
-            "bmc bmc_cdb bmc_cdb_2 bmc_commit bmc_commit_2 bmc_operands": [
+            "bmc bmc_cdb bmc_cdb_2 bmc_commit bmc_commit_2 bmc_operands cover_cmo_request": [
                 "setundef -zero -init"
             ],
         },
@@ -5623,6 +5821,124 @@ def test_closed_language_refuses_wrappers_labels_and_semicolons(line: str) -> No
     """Wrappers, labels, semicolons and shell or interpreter escapes fail parsing."""
     with pytest.raises(sby_config.ConfigError):
         sby_config.parse_script_lines([line])
+
+
+def test_home_cmo_witness_driver_is_cover_only() -> None:
+    """Keep directed inputs out of every other home task, including BMC and induction."""
+    sby = Path(__file__).resolve().parents[1] / FORMAL_DIR / "coherence_home.sby"
+    text = sby.read_text()
+    driver = "COHERENCE_HOME_CMO_WITNESS"
+
+    def check(config: str) -> None:
+        source = sby_config.read_source(sby, config)
+        for name, tags in source.tasks.items():
+            task = source.task(name)
+            commands = [
+                cmd
+                for cmd in task.commands(sby.parent)
+                if any(driver in token for token in cmd)
+            ]
+            if name == "coh_home_cmo_cover":
+                assert "cmo_witness" in tags
+                assert task.options["mode"] == "cover"
+                assert (task.options["depth"], task.options["timeout"]) == (
+                    "40",
+                    "6000",
+                )
+                assert commands == [["verilog_defines", "-D", driver]]
+            else:
+                assert "cmo_witness" not in tags and not commands, name
+
+    check(text)
+    for tag in ("bmc4", "control"):
+        with pytest.raises(AssertionError):
+            check(
+                text.replace(
+                    "[script]", "[script]\n" + f"{tag}: verilog_defines -D {driver}"
+                )
+            )
+
+
+@pytest.mark.parametrize("capture_output", (False, True))
+@pytest.mark.parametrize(
+    "case", ("pass", "solver failure", "artifact failure", "replay failure")
+)
+def test_home_cmo_replays_verified_run(
+    monkeypatch: pytest.MonkeyPatch, capture_output: bool, case: str
+) -> None:
+    """Only the verified guided run supplies witnesses and the remaining time."""
+    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_home")
+    task = "coh_home_cmo_cover"
+    runner = FormalRunner()
+    events: list[str] = []
+    guided_dir: Path | None = None
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal guided_dir
+        if command[0] == "sby":
+            assert "--yosys" in command and command[-1] == task
+            guided_dir = Path(command[command.index("-d") + 1])
+            assert kwargs["timeout"] == 6000
+            events.append("guided")
+            return subprocess.CompletedProcess(
+                command, int(case == "solver failure"), "guided\n", ""
+            )
+        assert events == ["guided", "artifacts"] and guided_dir is not None
+        helper = sby_config.cmo_replay_helper(runner.formal_dir / target.sby_file, task)
+        assert command[:4] == [
+            sys.executable,
+            str(helper),
+            "--replay-verified",
+            str(guided_dir),
+        ]
+        assert 0 < kwargs["timeout"] <= 6000 and kwargs["timeout"] == float(command[4])
+        assert kwargs["capture_output"] is capture_output
+        events.append("replay")
+        return subprocess.CompletedProcess(
+            command, int(case == "replay failure"), "replay\n", ""
+        )
+
+    def verify(work: Path, sby: Path, name: str, selected: str, result: Any) -> None:
+        assert work == guided_dir and sby == runner.formal_dir / target.sby_file
+        assert name == target.name and selected == task and result.returncode == 0
+        events.append("artifacts")
+        if case == "artifact failure":
+            raise ValueError("invalid guided model")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(runner, "verify_model_artifacts", verify)
+    if case == "artifact failure":
+        with pytest.raises(ValueError, match="invalid guided model"):
+            runner.run_formal(target, task, capture_output=capture_output)
+        assert events == ["guided", "artifacts"]
+        return
+    result = runner.run_formal(target, task, capture_output=capture_output)
+    if case == "solver failure":
+        assert events == ["guided"]
+    else:
+        assert events == ["guided", "artifacts", "replay"]
+        if capture_output:
+            assert result.stdout == "guided\nreplay\n"
+    assert result.returncode == int(case != "pass")
+
+
+def test_home_cmo_replay_uses_only_complete_primary_inputs(tmp_path: Path) -> None:
+    """Leave the home's initial storage and the driver's case selection free on replay."""
+    from coherence_home_cmo_replay import primary_inputs
+
+    trace = tmp_path / "trace.smtc"
+    state = "state 0\nassume (= [i_rst] true)\nassume (= [i_stop] false)\n"
+    initial = "initial\nassume (= [home.slot] #b01)\nassume (= [witness_case] #b11)\n"
+    hidden = "assume (= [home.fill] #b10)\n"
+    trace.write_text(initial + state + hidden)
+    assert primary_inputs(trace, {"i_rst", "i_stop"}, 0) == state
+    for invalid in (
+        state.split("assume (= [i_stop]")[0],
+        state + "assume (= [i_rst] true)\n",
+    ):
+        trace.write_text(initial + invalid)
+        with pytest.raises(ValueError):
+            primary_inputs(trace, {"i_rst", "i_stop"}, 0)
 
 
 def test_scripts_free_undefined_constants_first() -> None:
@@ -7885,12 +8201,48 @@ def test_axi_bridge_post_map_count_rejects_another_selection() -> None:
             "assert (o_trap_pc_a",
             id="missing-qualifier",
         ),
+        pytest.param(
+            "sv",
+            "if (o_cmo_valid_a) p_twin_cmo_kind :",
+            "p_twin_cmo_kind :",
+            id="cmo-kind-without-valid",
+        ),
+        pytest.param(
+            "sv",
+            "o_cmo_addr_a == o_cmo_addr_b",
+            "o_cmo_addr_a == o_cmo_addr_a",
+            id="cmo-address-rhs",
+        ),
+        pytest.param(
+            "sby",
+            "cmo: depth 6",
+            "cmo: depth 5",
+            id="cmo-before-request",
+        ),
+        pytest.param(
+            "sby",
+            "cover_cmo_request: mode cover",
+            "cover_cmo_request: mode bmc",
+            id="request-cover-mode",
+        ),
+        pytest.param(
+            "sby",
+            "cover_cmo_request cmo\n",
+            "",
+            id="request-cover-missing-task",
+        ),
+        pytest.param(
+            "sv",
+            "cover (o_cmo_valid_a && o_cmo_valid_b)",
+            "cover (o_cmo_valid_a || o_cmo_valid_b)",
+            id="request-cover-requires-both-copies",
+        ),
     ],
 )
 def test_rs_payload_twin_assertion_groups(
     source: str, old: str, new: str, tmp_path: Path
 ) -> None:
-    """Check six proof configurations and guarded comparisons with isolated edits."""
+    """Check the six assertion groups, the request cover and their guarded properties."""
     from hashlib import sha256
 
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
@@ -7991,13 +8343,22 @@ def test_rs_payload_twin_assertion_groups(
             "amo_mem_write_is_cached",
         ],
     }
-    counts = {"bmc": 152, "bmc_operands": 16, **dict.fromkeys(packets, 1)}
+    cmo = {"cmo_valid": "", "cmo_kind": "o_cmo_valid_a", "cmo_addr": "o_cmo_valid_a"}
+    counts = {
+        "bmc": 152,
+        "bmc_cdb": 1,
+        "bmc_cdb_2": 1,
+        "bmc_commit": 1,
+        "bmc_commit_2": 4,
+        "bmc_operands": 16,
+    }
     all_asserts = "t:$check r:FLAVOR=assert %i"
     selections = {
-        "bmc": "@packets @operands",
+        "bmc": "@packets @operands @cmo",
         "bmc_operands": f"{all_asserts} @operands %d",
         **{task: f"{all_asserts} c:p_twin_{port} %d" for task, port in packets.items()},
     }
+    selections["bmc_commit_2"] = f"{all_asserts} @commit_and_cmo %d"
     model = [
         "read -formal -sv riscv_pkg.sv vec_hold_rows.sv",
         "read -formal -sv sdp_dist_ram.sv",
@@ -8055,9 +8416,13 @@ def test_rs_payload_twin_assertion_groups(
         "opt_clean",
         "setundef -zero -init",
         "select -assert-count 104 t:$check r:FLAVOR=assume %i",
-        "select -assert-count 172 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 175 t:$check r:FLAVOR=assert %i",
         "select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2",
         "select -set operands c:p_twin_operand_*",
+        "select -set cmo c:p_twin_cmo_*",
+        "select -set commit_and_cmo c:p_twin_commit_comb_2 @cmo",
+        "select -assert-count 3 @cmo",
+        "select -assert-count 4 @commit_and_cmo",
         "select -assert-count 4 @packets",
         "select -assert-count 16 @operands",
     ]
@@ -8117,8 +8482,8 @@ def test_rs_payload_twin_assertion_groups(
 
     if not source:
         hashes = {
-            "rs_payload_twin.sby": "9b7cf0c5bb15b82e3f3e8a4ea09da740cd8b616477a8dba0196feb1e44c598a4",
-            "rs_payload_twin_formal.sv": "36efe2495150878e0b0006ef50959dba70b1ab898df382ca98066fc5564b50af",
+            "rs_payload_twin.sby": "1e0b82aeab6501b385f689282c457e55c0d49e12d3ed446b75ecb25227f95b14",
+            "rs_payload_twin_formal.sv": "bf55b92f3eb8eda22aef16b2268c2a1c1f458f946711b536cdc397fbb008ae61",
             "free_undefined.ys": "d9383d13eaa8e490ab3671853c1390d92160abbfa19ca0d93fdf40138549e7d6",
         }
         procedure = (
@@ -8147,14 +8512,33 @@ def test_rs_payload_twin_assertion_groups(
             configs = sby_config.resolved(sby)
         except sby_config.ConfigError as error:
             raise AssertionError(str(error)) from error
-        assert configs.keys() == counts.keys()
+        cover_task = "cover_cmo_request"
+        assert configs.keys() == {*counts, cover_task}
+        cover = configs[cover_task].sections(formal)
+        second_commit = configs["bmc_commit_2"].sections(formal)
+        assert cover == {
+            "[options]": ["mode cover", "depth 6"],
+            "[engines]": ["smtbmc boolector"],
+            "[script]": [
+                *second_commit["[script]"],
+                "chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_twin_cmo_request %d",
+                "select -assert-count 1 t:$check r:FLAVOR=cover %i",
+            ],
+            "[files]": files,
+        }
         for task, count in counts.items():
             try:
                 config = configs[task].sections(formal)
             except sby_config.ConfigError as error:
                 raise AssertionError(str(error)) from error
-            options = ["mode bmc", "depth 5"]
+            depth = 6 if task == "bmc_commit_2" else 5
+            options = ["mode bmc", f"depth {depth}"]
             engine = "smtbmc boolector"
+            cover_check = []
+            if task == "bmc_commit_2":
+                cover_check = [
+                    "select -assert-count 1 c:c_twin_cmo_request t:$check %i r:FLAVOR=cover %i"
+                ]
             if task in packets:
                 options.append("vcd_sim on")
                 engine = "btor btormc"
@@ -8163,6 +8547,7 @@ def test_rs_payload_twin_assertion_groups(
                 "[engines]": [engine],
                 "[script]": [
                     *model,
+                    *cover_check,
                     "chformal -assert -remove " + selections[task],
                     f"select -assert-count {count} {all_asserts}",
                 ],
@@ -8183,13 +8568,18 @@ def test_rs_payload_twin_assertion_groups(
                 record("bmc", qualifier, "", port)
         for task, port in packets.items():
             record(task, f"o_{port}_a.valid", f"p_twin_{port}", port)
+        for port, qualifier in cmo.items():
+            record("bmc_commit_2", qualifier, f"p_twin_{port}", port)
         for port in operands:
             record("bmc_operands", "", f"p_twin_operand_{port}", port)
 
         # Consume complete statements so a nested condition or trailing expression
         # cannot disappear between two matched assertions.
         body = re.sub(r"//[^\n]*|/\*.*?\*/", " ", harness, flags=re.DOTALL)
-        assert len(re.findall(r"\bassert\s*\(", body)) == 172
+        assert re.findall(
+            r"\bc_twin_cmo_request\s*:\s*cover\s*\(([^;]+)\)\s*;", body
+        ) == ["o_cmo_valid_a && o_cmo_valid_b"]
+        assert len(re.findall(r"\bassert\s*\(", body)) == 175
         block = re.search(
             r"\balways_comb\s+begin\b(.*?)\bend\s+endmodule\s*:\s*rs_payload_twin_formal\s*\Z",
             body,
@@ -8198,7 +8588,7 @@ def test_rs_payload_twin_assertion_groups(
         assert block is not None
         statements = block[1].strip().split(";")
         assert statements.pop() == ""
-        assert len(statements) == len(expected) == sum(counts.values()) == 172
+        assert len(statements) == len(expected) == sum(counts.values()) == 175
         comparison = re.compile(
             r"(?:if\s*\(\s*([\w.]+)\s*\)\s*)?(?:(\w+)\s*:\s*)?"
             r"assert\s*\(\s*([\w.]+)\s*==\s*([\w.]+)\s*\)"
@@ -8206,6 +8596,7 @@ def test_rs_payload_twin_assertion_groups(
         owners = {
             "": "bmc",
             **{f"p_twin_{p}": t for t, p in packets.items()},
+            **{f"p_twin_{p}": "bmc_commit_2" for p in cmo},
             **{f"p_twin_operand_{p}": "bmc_operands" for p in operands},
         }
         actual: dict[tuple[str, str, str, str], str] = {}
@@ -9721,7 +10112,7 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     proof = formal_task_config("coherent_hart_cache", "coh_hart_maint_prove")
     common = [
         "select -assert-none t:$check r:FLAVOR=assume %i",
-        "select -assert-count 373 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 375 t:$check r:FLAVOR=assert %i",
     ]
     lemmas = (
         "c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* "
@@ -9731,14 +10122,14 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     covers = "chformal -cover -remove"
     owned_commands = common + [
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %d",
-        "select -assert-count 285 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 286 t:$check r:FLAVOR=assert %i",
         covers,
     ]
     proof_commands = common + [
-        f"select -assert-count 285 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
+        f"select -assert-count 286 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
         f"chformal -assert2assume {lemmas}",
-        "select -assert-count 285 t:$check r:FLAVOR=assume %i",
-        "select -assert-count 88 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 286 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 89 t:$check r:FLAVOR=assert %i",
         covers,
     ]
 
@@ -10385,6 +10776,8 @@ class FormalRunner:
                 f"does not match registered mode {expected_mode!r}"
             )
 
+        timeout = formal_task_timeout_s(target.name, task)
+        deadline = time.monotonic() + timeout
         check_fatal_frame = (target.name, task) in FATAL_START_FRAME_TASKS
         with tempfile.TemporaryDirectory(prefix="frost-sby-") as tmp_dir:
             workdir = Path(tmp_dir) / f"{target.name}_{task}"
@@ -10407,7 +10800,7 @@ class FormalRunner:
                     capture_output=True,
                     text=True,
                     cwd=self.formal_dir,
-                    timeout=formal_task_timeout_s(target.name, task),
+                    timeout=timeout,
                 )
                 if not capture_output:
                     print(result.stdout or "", end="")
@@ -10422,13 +10815,35 @@ class FormalRunner:
                 result = subprocess.run(
                     cmd,
                     cwd=self.formal_dir,
-                    timeout=formal_task_timeout_s(target.name, task),
+                    timeout=timeout,
                     text=True,
                 )
             if result.returncode == 0:
                 self.verify_model_artifacts(
                     workdir, sby_path, target.name, task, result
                 )
+                if helper := sby_config.cmo_replay_helper(sby_path, task):
+                    remaining = deadline - time.monotonic()
+                    replay_cmd = [
+                        sys.executable,
+                        str(helper),
+                        "--replay-verified",
+                        str(workdir),
+                        str(remaining),
+                    ]
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(replay_cmd, timeout)
+                    replay = subprocess.run(
+                        replay_cmd,
+                        cwd=self.formal_dir,
+                        capture_output=capture_output,
+                        text=True,
+                        timeout=remaining,
+                    )
+                    if capture_output:
+                        result.stdout = (result.stdout or "") + (replay.stdout or "")
+                        result.stderr = (result.stderr or "") + (replay.stderr or "")
+                    result.returncode = replay.returncode
             return result
 
     def check_for_errors(

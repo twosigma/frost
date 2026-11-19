@@ -1378,6 +1378,8 @@ async def test_slot2_is_cond_branch_covers_all_positions_and_encodings(
     c_beqz = (0b110 << 13) | (1 << 7) | 0b01
     c_bnez = (0b111 << 13) | (1 << 7) | 0b01
     native_beq = 0x00208463  # beq x1, x2, +8
+    native_res_br2 = 0x0020A463  # OPC_BRANCH funct3=010 (reserved)
+    native_res_br3 = 0x0020B463  # OPC_BRANCH funct3=011 (reserved)
     native_jal = 0x0080006F  # jal x0, +8
     native_addi = 0x00108093  # addi x1, x1, 1
     slot1_addi = 0x00B50533  # add x10, x10, x11
@@ -1428,6 +1430,22 @@ async def test_slot2_is_cond_branch_covers_all_positions_and_encodings(
         ),
         (
             PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=native_res_br2 & 0xFFFF),
+            native_res_br2 >> 16,
+            _sideband(compressed_lo=True),
+            _sideband(),
+            False,
+        ),
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=native_res_br3 & 0xFFFF),
+            native_res_br3 >> 16,
+            _sideband(compressed_lo=True),
+            _sideband(),
+            False,
+        ),
+        (
+            PC_LO,
             _word(lo=COMPRESSED_NOP, hi=native_jal & 0xFFFF),
             native_jal >> 16,
             _sideband(compressed_lo=True),
@@ -1458,6 +1476,22 @@ async def test_slot2_is_cond_branch_covers_all_positions_and_encodings(
             _sideband(native_pairable_lo=True),
             _sideband(),
             True,
+        ),
+        (
+            PC_LO,
+            slot1_addi,
+            native_res_br2,
+            _sideband(native_pairable_lo=True),
+            _sideband(),
+            False,
+        ),
+        (
+            PC_LO,
+            slot1_addi,
+            native_res_br3,
+            _sideband(native_pairable_lo=True),
+            _sideband(),
+            False,
         ),
         (
             PC_LO,
@@ -1544,7 +1578,7 @@ async def test_slot2_is_cond_branch_covers_all_positions_and_encodings(
             sel_nop_2 = bool(dut.o_sel_nop_2.value)
             eff_2 = int(dut.o_effective_instr_2.value)
             observed = bool(dut.o_slot2_is_cond_branch.value)
-            expected = (eff_2 & 0x7F) == OPC_BRANCH
+            expected = (eff_2 & 0x7F) == OPC_BRANCH and ((eff_2 >> 13) & 0x3) != 0b01
             assert observed is expected, (swapped, hex(pc), hex(current), hex(eff_2))
             assert observed is expect_branch, (swapped, hex(pc), hex(current))
             if not swapped:

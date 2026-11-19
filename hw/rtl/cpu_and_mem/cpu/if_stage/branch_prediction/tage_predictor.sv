@@ -15,13 +15,15 @@
  */
 
 /*
- * Tagged direction predictor for conditional branches, after TAGE. Two tagged
- * tables are indexed by a hash of a branch's word address and the global path
- * history: T1 hashes the newest T1_HIST_BITS of history and T2 all
- * HIST_BITS. An entry holds a valid bit, a partial tag, a 3-bit counter whose
- * top bit predicts taken, and a usefulness bit. The longer-history table whose
- * tag matches provides the direction. With no match there is no prediction,
- * and the BTB and bimodal directions stand.
+ * Tagged direction predictor for conditional branches, after TAGE.
+ * riscv_pkg::TageTables (four) tagged tables are indexed by a hash of a
+ * branch's word address and the global direction history: table t hashes the
+ * newest riscv_pkg::TageHist<t+1>Bits bits of history, a geometric series. An entry
+ * holds a valid bit, a partial tag, a 3-bit counter whose top bit predicts
+ * taken, and a 2-bit usefulness counter. The longest-history table whose tag
+ * matches provides the direction, and the next shorter match is the
+ * alternate. With no match there is no prediction, and the BTB and bimodal
+ * directions stand.
  *
  * Each table is two banks split by word-address parity (PC[2]), so one lookup
  * reads both words of a fetch window, word(PC) and word(PC) + 1. Those hold a
@@ -41,8 +43,8 @@
  * of an entry being written takes the new value, so trainings in consecutive
  * cycles see each other. The write:
  *   - The provider's counter moves toward the outcome if its tag still
- *     matches. Its usefulness bit sets when the provider was right and the
- *     alternate wrong, and clears in the opposite case.
+ *     matches. Its usefulness counts up when the provider was right and the
+ *     alternate wrong, and down in the opposite case.
  *   - A provider whose entry in the training copy does not hold the branch has
  *     that entry written back as read. Both copies of a bank take every
  *     write, so while they hold equal contents this rewrites the value both
@@ -50,25 +52,30 @@
  *     at an entry no training writes; the write-back gives the lookup copy
  *     the training copy's entry, so no prediction keeps coming from an entry
  *     that training does not see.
- *   - A mispredicted branch whose provider was not T2 allocates a weak entry
- *     in the shortest table above its provider whose entry is not useful and
- *     does not already hold the branch. If every candidate is useful, their
- *     usefulness bits clear instead.
+ *   - A mispredicted branch whose provider was not the longest table
+ *     allocates a weak entry in the shortest table above its provider whose
+ *     entry is not useful and does not already hold the branch. If every
+ *     candidate is useful, their usefulness counts down instead, so entries
+ *     that stop being useful age out.
  * Each training writes each table at most once.
  */
 module tage_predictor #(
-    parameter int unsigned HIST_BITS = riscv_pkg::TageHistBits,
-    parameter int unsigned T1_HIST_BITS = riscv_pkg::TageT1HistBits,
+    parameter int unsigned HIST_BITS = riscv_pkg::TageDirHistBits,
+    parameter int unsigned TABLES = riscv_pkg::TageTables,
     parameter int unsigned INDEX_BITS = riscv_pkg::TageIndexBits,
     parameter int unsigned TAG_BITS = riscv_pkg::TageTagBits,
     // The hashes read word-address bits [LOOKUP_HI:2].
-    parameter int unsigned LOOKUP_HI = 2 + 2 * INDEX_BITS
+    parameter int unsigned LOOKUP_HI = 2 + 2 * INDEX_BITS,
+    // When set, i_lookup_fold_index supplies each table's pre-folded history
+    // index instead of folding i_lookup_hist locally.
+    parameter bit USE_EXTERNAL_FOLD_INDEX = 1'b0
 ) (
     input logic i_clk,
 
     // Lookup (fetch cycle): the lookup PC's word-address bits.
     input logic [LOOKUP_HI:2] i_lookup_word,
     input logic [HIST_BITS-1:0] i_lookup_hist,
+    input logic [TABLES-1:0][INDEX_BITS-1:0] i_lookup_fold_index = '0,
     input logic i_lookup_capture,
 
     // The newest captured lookup, from the cycle after its capture. Bank b
@@ -89,19 +96,16 @@ module tage_predictor #(
 );
 
   localparam int unsigned CtrBits = 3;
-  localparam int unsigned EntryBits = 1 + TAG_BITS + CtrBits + 1;
+  localparam int unsigned UsefulBits = 2;
+  localparam int unsigned EntryBits = 1 + TAG_BITS + CtrBits + UsefulBits;
   localparam logic [CtrBits-1:0] CtrWeakTaken = {1'b1, {(CtrBits - 1) {1'b0}}};
   localparam logic [CtrBits-1:0] CtrWeakNotTaken = {1'b0, {(CtrBits - 1) {1'b1}}};
-  // T1 hashes only the newest T1_HIST_BITS of history.
-  localparam logic [HIST_BITS-1:0] T1HistMask = {
-    {(HIST_BITS - T1_HIST_BITS) {1'b0}}, {T1_HIST_BITS{1'b1}}
-  };
 
   typedef struct packed {
-    logic                valid;
-    logic [TAG_BITS-1:0] tag;
-    logic [CtrBits-1:0]  ctr;
-    logic                useful;
+    logic                  valid;
+    logic [TAG_BITS-1:0]   tag;
+    logic [CtrBits-1:0]    ctr;
+    logic [UsefulBits-1:0] useful;
   } entry_t;
 
   // XOR-fold the history into an index-wide, tag-wide, or one-bit-narrower
@@ -142,41 +146,47 @@ module tage_predictor #(
   // ===========================================================================
   // Lookup
   // ===========================================================================
-  logic [  LOOKUP_HI:2] word0;  // the lookup word
-  logic [  LOOKUP_HI:2] word1;  // the lookup word + 1
-  logic [HIST_BITS-1:0] lookup_hist_t1;
+  logic [LOOKUP_HI:2] word0;  // the lookup word
+  logic [LOOKUP_HI:2] word1;  // the lookup word + 1
   assign word0 = i_lookup_word;
   assign word1 = word0 + 1'b1;
-  assign lookup_hist_t1 = i_lookup_hist & T1HistMask;
 
   // [table][bank]
-  logic [1:0][1:0][INDEX_BITS-1:0] lookup_index;
-  logic [1:0][1:0][TAG_BITS-1:0] lookup_tag;
-  logic [1:0][1:0][EntryBits-1:0] lookup_entry;
+  logic [TABLES-1:0][1:0][INDEX_BITS-1:0] lookup_index;
+  logic [TABLES-1:0][1:0][TAG_BITS-1:0] lookup_tag;
+  logic [TABLES-1:0][1:0][EntryBits-1:0] lookup_entry;
 
   // ===========================================================================
   // Tables: per table and bank, a lookup read copy and a training read copy
   // sharing the training write.
   // ===========================================================================
-  logic [1:0][INDEX_BITS-1:0] train_read_index;  // [table]
-  logic [1:0][1:0][EntryBits-1:0] train_entry;  // [table][bank]
-  logic [1:0] write_any;  // [table]
+  logic [TABLES-1:0][INDEX_BITS-1:0] train_read_index;
+  logic [TABLES-1:0][1:0][EntryBits-1:0] train_entry;
+  logic [TABLES-1:0] write_any;
   logic write_bank;
-  logic [1:0][INDEX_BITS-1:0] write_index;  // [table]
-  logic [1:0][EntryBits-1:0] write_entry;  // [table]
-  assign train_read_index[0] = i_train_lookup.index1;
-  assign train_read_index[1] = i_train_lookup.index2;
+  logic [TABLES-1:0][INDEX_BITS-1:0] write_index;
+  logic [TABLES-1:0][EntryBits-1:0] write_entry;
+  assign train_read_index = i_train_lookup.index;
 
   for (genvar b = 0; b < 2; b++) begin : gen_bank
     logic [LOOKUP_HI:2] bank_word;
     assign bank_word = (word0[2] == 1'(b)) ? word0 : word1;
-    assign lookup_index[0][b] = hash_index(bank_word, lookup_hist_t1);
-    assign lookup_index[1][b] = hash_index(bank_word, i_lookup_hist);
-    assign lookup_tag[0][b] = hash_tag(bank_word, lookup_hist_t1);
-    assign lookup_tag[1][b] = hash_tag(bank_word, i_lookup_hist);
 
-    for (genvar t = 0; t < 2; t++) begin : gen_table
+    for (genvar t = 0; t < TABLES; t++) begin : gen_table
+      // Table t hashes only the newest riscv_pkg::TageHist<t+1>Bits bits.
+      localparam int unsigned TableHist = (t == 0) ? riscv_pkg::TageHist1Bits :
+          (t == 1) ? riscv_pkg::TageHist2Bits : (t == 2) ? riscv_pkg::TageHist3Bits :
+          riscv_pkg::TageHist4Bits;
+      localparam logic [HIST_BITS-1:0] Mask = (TableHist >= HIST_BITS) ? '1 :
+          ((HIST_BITS'(1) << TableHist) - HIST_BITS'(1));
       logic write_enable;
+      logic [INDEX_BITS-1:0] folded_index;
+      assign folded_index = USE_EXTERNAL_FOLD_INDEX ? i_lookup_fold_index[t] : fold_index(
+          i_lookup_hist & Mask
+      );
+      assign lookup_index[t][b] =
+          bank_word[3+:INDEX_BITS] ^ bank_word[3+INDEX_BITS+:INDEX_BITS] ^ folded_index;
+      assign lookup_tag[t][b] = hash_tag(bank_word, i_lookup_hist & Mask);
       assign write_enable = write_any[t] && (write_bank == 1'(b));
       sdp_dist_ram #(
           .ADDR_WIDTH(INDEX_BITS),
@@ -208,7 +218,7 @@ module tage_predictor #(
   // whether it was captured: the presented lookup is the fresh one after a
   // capture and otherwise the one presented the cycle before.
   localparam int unsigned LookupRegBits = 2 * (LOOKUP_HI - 1) + HIST_BITS +
-      4 * (EntryBits + INDEX_BITS + TAG_BITS);
+      2 * TABLES * (EntryBits + INDEX_BITS + TAG_BITS);
   logic capture_q;
   logic [LookupRegBits-1:0] lookup_live;
   logic [LookupRegBits-1:0] lookup_fresh_q;
@@ -222,9 +232,9 @@ module tage_predictor #(
   end
   assign lookup_presented = capture_q ? lookup_fresh_q : lookup_held_q;
 
-  logic [1:0][1:0][ EntryBits-1:0] lookup_entry_q;
-  logic [1:0][1:0][INDEX_BITS-1:0] lookup_index_q;
-  logic [1:0][1:0][  TAG_BITS-1:0] lookup_tag_q;
+  logic [TABLES-1:0][1:0][ EntryBits-1:0] lookup_entry_q;
+  logic [TABLES-1:0][1:0][INDEX_BITS-1:0] lookup_index_q;
+  logic [TABLES-1:0][1:0][  TAG_BITS-1:0] lookup_tag_q;
   assign {o_lookup_word, o_lookup_word_next, o_lookup_hist, lookup_entry_q, lookup_index_q,
           lookup_tag_q} = lookup_presented;
 
@@ -232,28 +242,38 @@ module tage_predictor #(
   // Prediction (cycle after the lookup)
   // ===========================================================================
   for (genvar b = 0; b < 2; b++) begin : gen_predict
-    entry_t entry1;
-    entry_t entry2;
-    logic hit1;
-    logic hit2;
+    logic [TABLES-1:0] hit;
+    logic [TABLES-1:0] ctr_taken;
     riscv_pkg::tage_lookup_t result;
-    assign entry1 = lookup_entry_q[0][b];
-    assign entry2 = lookup_entry_q[1][b];
-    assign hit1   = entry1.valid && (entry1.tag == lookup_tag_q[0][b]);
-    assign hit2   = entry2.valid && (entry2.tag == lookup_tag_q[1][b]);
+    for (genvar t = 0; t < TABLES; t++) begin : gen_hit
+      entry_t entry;
+      assign entry = lookup_entry_q[t][b];
+      assign hit[t] = entry.valid && (entry.tag == lookup_tag_q[t][b]);
+      assign ctr_taken[t] = entry.ctr[CtrBits-1];
+    end
+    // The provider is the longest matching table and the alternate the next
+    // shorter match; with no shorter match the consumer supplies the BTB and
+    // bimodal direction as the alternate.
+    logic provider_found;
     always_comb begin
       result = '0;
-      result.index1 = lookup_index_q[0][b];
-      result.index2 = lookup_index_q[1][b];
-      result.tag1 = lookup_tag_q[0][b];
-      result.tag2 = lookup_tag_q[1][b];
-      result.hit1 = hit1;
-      result.hit2 = hit2;
-      result.taken = hit2 ? entry2.ctr[CtrBits-1] : entry1.ctr[CtrBits-1];
-      // T1 is the alternate only behind a T2 provider; otherwise the BTB and
-      // bimodal direction is (the consumer supplies it).
-      result.alt_tagged = hit1 && hit2;
-      result.alt_tagged_taken = entry1.ctr[CtrBits-1];
+      for (int t = 0; t < TABLES; t++) begin
+        result.index[t] = lookup_index_q[t][b];
+        result.tag[t]   = lookup_tag_q[t][b];
+      end
+      result.hit = hit;
+      provider_found = 1'b0;
+      for (int t = TABLES - 1; t >= 0; t--) begin
+        if (hit[t]) begin
+          if (!provider_found) begin
+            provider_found = 1'b1;
+            result.taken   = ctr_taken[t];
+          end else if (!result.alt_tagged) begin
+            result.alt_tagged       = 1'b1;
+            result.alt_tagged_taken = ctr_taken[t];
+          end
+        end
+      end
     end
     if (b == 0) begin : gen_out0
       assign o_bank0 = result;
@@ -266,17 +286,40 @@ module tage_predictor #(
   // Training
   // ===========================================================================
   // Read stage: the branch's bank of each table at the saved indices, or the
-  // entry the write stage is writing this cycle.
-  entry_t read1;
-  entry_t read2;
-  entry_t write1;
-  entry_t write2;
-  assign read1 = (write_any[0] && (write_bank == i_train_bank) &&
-                  (write_index[0] == i_train_lookup.index1)) ? write1 :
-                 i_train_bank ? train_entry[0][1] : train_entry[0][0];
-  assign read2 = (write_any[1] && (write_bank == i_train_bank) &&
-                  (write_index[1] == i_train_lookup.index2)) ? write2 :
-                 i_train_bank ? train_entry[1][1] : train_entry[1][0];
+  // entry the write stage is writing this cycle. Precompute provider, above,
+  // tag ownership, and usefulness-update qualifiers here so the write stage
+  // feeds the distributed RAM write ports with minimal logic.
+  logic [TABLES-1:0][EntryBits-1:0] read_entry;
+  logic [TABLES-1:0][EntryBits-1:0] cur;  // the saved entries
+  logic [TABLES-1:0] read_provider;
+  logic [TABLES-1:0] read_above;
+  logic [TABLES-1:0] read_owned;
+  logic read_useful_update;
+  logic read_useful_value;
+  logic read_found;
+  for (genvar t = 0; t < TABLES; t++) begin : gen_train_read
+    entry_t read_entry_s;
+    assign read_entry[t] = (write_any[t] && (write_bank == i_train_bank) &&
+                            (write_index[t] == i_train_lookup.index[t])) ? write_entry[t] :
+                           i_train_bank ? train_entry[t][1] : train_entry[t][0];
+    assign read_entry_s = read_entry[t];
+    assign read_owned[t] = read_entry_s.valid && (read_entry_s.tag == i_train_lookup.tag[t]);
+  end
+  assign read_useful_update = i_train_lookup.taken != i_train_alt_taken;
+  assign read_useful_value  = i_train_lookup.taken == i_train_taken;
+  always_comb begin
+    read_provider = '0;
+    read_above    = '0;
+    read_found    = 1'b0;
+    for (int t = TABLES - 1; t >= 0; t--) begin
+      if (!read_found && i_train_lookup.hit[t]) begin
+        read_provider[t] = 1'b1;
+        read_found       = 1'b1;
+      end else if (!read_found) begin
+        read_above[t] = 1'b1;
+      end
+    end
+  end
 
   // Training is idle during reset. A power-up write can only change
   // speculative predictions; branch resolution corrects any wrong prediction.
@@ -288,83 +331,142 @@ module tage_predictor #(
 
   logic train_valid_q = RandomStart ? 'x : 1'b0;
   riscv_pkg::tage_lookup_t train_lookup_q;
-  logic train_alt_taken_q;
   logic train_taken_q;
   logic train_mispredicted_q;
-  entry_t cur1;  // the saved T1 and T2 entries
-  entry_t cur2;
+  logic [TABLES-1:0] provider;
+  logic [TABLES-1:0] above;
+  logic [TABLES-1:0] owned;  // the saved entry still holds the branch
+  logic useful_update;
+  logic useful_value;
   always_ff @(posedge i_clk) begin
     train_valid_q        <= i_train_valid;
     train_lookup_q       <= i_train_lookup;
     write_bank           <= i_train_bank;
-    train_alt_taken_q    <= i_train_alt_taken;
     train_taken_q        <= i_train_taken;
     train_mispredicted_q <= i_train_mispredicted;
-    cur1                 <= read1;
-    cur2                 <= read2;
+    cur                  <= read_entry;
+    provider             <= read_provider;
+    above                <= read_above;
+    owned                <= read_owned;
+    useful_update        <= read_useful_update;
+    useful_value         <= read_useful_value;
   end
-  assign write_index[0] = train_lookup_q.index1;
-  assign write_index[1] = train_lookup_q.index2;
+  assign write_index = train_lookup_q.index;
 
-  // Write stage
-  logic provider1, provider2;  // which table provided
-  logic owned1, owned2;  // the saved entry still holds the branch
-  logic useful_update;
-  logic useful_value;
-  logic candidate1, candidate2;
-  logic alloc1, alloc2;
-  logic useful_clear1, useful_clear2;
-
-  assign provider2 = train_lookup_q.hit2;
-  assign provider1 = train_lookup_q.hit1 && !train_lookup_q.hit2;
-  assign owned1 = cur1.valid && (cur1.tag == train_lookup_q.tag1);
-  assign owned2 = cur2.valid && (cur2.tag == train_lookup_q.tag2);
-  assign useful_update = train_lookup_q.taken != train_alt_taken_q;
-  assign useful_value = train_lookup_q.taken == train_taken_q;
-
-  // Allocation above the provider: T1 only without a provider, T2 unless T2
-  // provided.
-  assign candidate1 = train_mispredicted_q && !provider1 && !provider2;
-  assign candidate2 = train_mispredicted_q && !provider2;
-  assign alloc1 = candidate1 && !owned1 && !cur1.useful;
-  assign alloc2 = candidate2 && !alloc1 && !owned2 && !cur2.useful;
-  assign useful_clear1 = candidate1 && !alloc1 && !alloc2;
-  assign useful_clear2 = candidate2 && !alloc1 && !alloc2;
-
+  // Write stage: allocation and update from the registered qualifiers.
+  logic [TABLES-1:0] useful;
+  logic [TABLES-1:0] alloc;
+  logic [TABLES-1:0] useful_down;
   always_comb begin
-    write1 = cur1;
-    if (provider1 && owned1) begin
-      write1.ctr = counter_step(cur1.ctr, train_taken_q);
-      if (useful_update) write1.useful = useful_value;
-    end else if (alloc1) begin
-      write1.valid = 1'b1;
-      write1.tag = train_lookup_q.tag1;
-      write1.ctr = train_taken_q ? CtrWeakTaken : CtrWeakNotTaken;
-      write1.useful = 1'b0;
-    end else if (useful_clear1) begin
-      write1.useful = 1'b0;
+    // The shortest free table above the provider; if none, every candidate
+    // counts its usefulness down.
+    alloc = '0;
+    for (int t = 0; t < TABLES; t++) begin
+      if (train_mispredicted_q && above[t] && !provider[t] && !owned[t] && !useful[t] &&
+          (alloc == '0))
+        alloc[t] = 1'b1;
+    end
+    useful_down = '0;
+    if (alloc == '0) begin
+      for (int t = 0; t < TABLES; t++)
+      useful_down[t] = train_mispredicted_q && above[t] && !provider[t];
     end
   end
+
+  for (genvar t = 0; t < TABLES; t++) begin : gen_write
+    entry_t entry;
+    entry_t updated;
+    assign entry = cur[t];
+    assign useful[t] = |entry.useful;
+    always_comb begin
+      updated = entry;
+      if (provider[t]) begin
+        if (owned[t]) begin
+          updated.ctr = counter_step(entry.ctr, train_taken_q);
+          if (useful_update) begin
+            if (useful_value) updated.useful = (&entry.useful) ? entry.useful : entry.useful + 1'b1;
+            else updated.useful = (entry.useful == '0) ? entry.useful : entry.useful - 1'b1;
+          end
+        end
+      end else if (alloc[t]) begin
+        updated.valid  = 1'b1;
+        updated.tag    = train_lookup_q.tag[t];
+        updated.ctr    = train_taken_q ? CtrWeakTaken : CtrWeakNotTaken;
+        updated.useful = '0;
+      end else if (useful_down[t] && (entry.useful != '0)) begin
+        updated.useful = entry.useful - 1'b1;
+      end
+    end
+    assign write_entry[t] = updated;
+    // A provider that does not own its entry writes the entry back as read
+    // (next keeps cur then: no allocation or usefulness change happens in a
+    // table that provided).
+    assign write_any[t] = train_valid_q && (provider[t] || alloc[t] ||
+                                            (useful_down[t] && (entry.useful != '0)));
+  end
+
+`ifndef SYNTHESIS
+  initial begin
+    if (EntryBits != $bits(entry_t)) $error("tage_predictor: EntryBits does not match entry_t");
+    if (TABLES != 4 || riscv_pkg::TageHist4Bits > HIST_BITS)
+      $error("tage_predictor: expects four tables within HIST_BITS of history");
+  end
+`ifndef FORMAL
+  // Defining-expression checks on registered training qualifiers (active in
+  // simulation builds). The external fold-index contract is checked in
+  // if_stage under its reset-seen and non-reset gate.
+  logic train_qualifiers_armed_q = 1'b0;
+  logic train_alt_taken_sim_q;
+  logic [TABLES-1:0] ref_provider;
+  logic [TABLES-1:0] ref_above;
+  logic [TABLES-1:0] ref_owned;
+  logic ref_found;
   always_comb begin
-    write2 = cur2;
-    if (provider2 && owned2) begin
-      write2.ctr = counter_step(cur2.ctr, train_taken_q);
-      if (useful_update) write2.useful = useful_value;
-    end else if (alloc2) begin
-      write2.valid = 1'b1;
-      write2.tag = train_lookup_q.tag2;
-      write2.ctr = train_taken_q ? CtrWeakTaken : CtrWeakNotTaken;
-      write2.useful = 1'b0;
-    end else if (useful_clear2) begin
-      write2.useful = 1'b0;
+    ref_provider = '0;
+    ref_above    = '0;
+    ref_found    = 1'b0;
+    for (int t = TABLES - 1; t >= 0; t--) begin
+      if (!ref_found && train_lookup_q.hit[t]) begin
+        ref_provider[t] = 1'b1;
+        ref_found       = 1'b1;
+      end else if (!ref_found) begin
+        ref_above[t] = 1'b1;
+      end
+    end
+    for (int t = 0; t < TABLES; t++) begin
+      entry_t cur_s;
+      cur_s = cur[t];
+      ref_owned[t] = cur_s.valid && (cur_s.tag == train_lookup_q.tag[t]);
     end
   end
-  // A provider that does not own its entry writes the entry back as read
-  // (write1/write2 keep cur1/cur2 then: no allocation or usefulness clear
-  // happens in a table that provided).
-  assign write_entry[0] = write1;
-  assign write_entry[1] = write2;
-  assign write_any[0]   = train_valid_q && (provider1 || alloc1 || useful_clear1);
-  assign write_any[1]   = train_valid_q && (provider2 || alloc2 || useful_clear2);
+  always_ff @(posedge i_clk) begin
+    train_qualifiers_armed_q <= 1'b1;
+    train_alt_taken_sim_q    <= i_train_alt_taken;
+    if (train_qualifiers_armed_q && train_valid_q && !$isunknown(
+            {
+              provider,
+              above,
+              owned,
+              useful_update,
+              useful_value,
+              ref_provider,
+              ref_above,
+              ref_owned,
+              train_lookup_q.taken,
+              train_alt_taken_sim_q,
+              train_taken_q
+            }
+        )) begin
+      p_train_provider_matches_lookup : assert (provider == ref_provider);
+      p_train_above_matches_lookup : assert (above == ref_above);
+      p_train_owned_matches_row : assert (owned == ref_owned);
+      p_train_useful_update_matches :
+      assert (useful_update == (train_lookup_q.taken != train_alt_taken_sim_q));
+      p_train_useful_value_matches :
+      assert (useful_value == (train_lookup_q.taken == train_taken_q));
+    end
+  end
+`endif
+`endif
 
 endmodule : tage_predictor

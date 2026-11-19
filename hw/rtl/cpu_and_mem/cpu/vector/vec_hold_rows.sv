@@ -34,8 +34,8 @@
   The entry's first and last 32-byte sector are captured from the queue's
   address update, or, with DIRECT_ADDR, registered every cycle from per-entry
   address, size and address-valid inputs (the store queue keeps those in
-  registers; an entry with its block bit set, cbo.zero, is widened to its
-  aligned block). The overlap of each (entry, table entry) pair and whether it
+  registers; cbo.zero and Zicbom use the full aligned physical block).
+  The overlap of each (entry, table entry) pair and whether it
   is valid (entry address and table range both known) are registered together
   from the same registered sectors and known bit, so a hold never uses an
   overlap computed from older ones. An entry's address is written once (both
@@ -51,8 +51,8 @@ module vec_hold_rows #(
     parameter bit DIRECT_ADDR = 1'b0,
     // Table entries (riscv_pkg::VmtDepth; fewer only in proofs)
     parameter int unsigned VMT = riscv_pkg::VmtDepth,
-    // DIRECT_ADDR: log2 of the block an entry with its i_block_flat bit set
-    // writes (cbo.zero), at least 5 and at most 12
+    // DIRECT_ADDR: log2 of the block compared for cbo.zero and Zicbom when
+    // i_block_flat is set, at least 5 and at most 12
     parameter int unsigned BLOCK_LSB = 6,
     localparam int unsigned TagW = riscv_pkg::ReorderBufferTagWidth,
     localparam int unsigned XLEN = riscv_pkg::XLEN,

@@ -169,10 +169,10 @@ module sq_forwarding_unit_formal #(
   logic [         3:0] ref_conflict_count;
 
   always_comb begin
-    logic [ReorderBufferTagWidth:0] load_age;
-    logic [ReorderBufferTagWidth:0] entry_age;
+    logic [  ReorderBufferTagWidth:0] load_age;
+    logic [  ReorderBufferTagWidth:0] entry_age;
     logic [ReorderBufferTagWidth-1:0] entry_tag;
-    logic [XLEN-1:0] entry_addr;
+    logic [XLEN-1:0] entry_addr, probe_block_addr;
     logic [1:0] entry_size_bits;
     logic [7:0] store_mask;
     logic entry_committed;
@@ -180,6 +180,7 @@ module sq_forwarding_unit_formal #(
     logic addr_match;
     logic [IdxWidth-1:0] slot;
 
+    probe_block_addr    = i_sq_check_addr;
     ref_all_older_known = 1'b1;
     ref_match           = 1'b0;
     ref_can_forward     = 1'b0;
@@ -212,8 +213,13 @@ module sq_forwarding_unit_formal #(
         if (!sq_addr_valid[slot]) begin
           ref_all_older_known = 1'b0;
         end else begin
+          probe_block_addr = i_sq_check_addr;
+          if (sq_is_cmo[slot] && riscv_pkg::PbmtAliasEnabled &&
+              i_sq_check_addr >= XLEN'(riscv_pkg::DdrBase + riscv_pkg::PbmtAliasOffset) &&
+              i_sq_check_addr < XLEN'(riscv_pkg::PbmtAliasCoverLimit + riscv_pkg::PbmtAliasOffset))
+            probe_block_addr = i_sq_check_addr - XLEN'(riscv_pkg::PbmtAliasOffset);
           addr_match = sq_is_zero[slot] ?
-              (entry_addr[XLEN-1:6] == i_sq_check_addr[XLEN-1:6]) :
+              (entry_addr[XLEN-1:6] == probe_block_addr[XLEN-1:6]) :
               (entry_addr[XLEN-1:3] == i_sq_check_addr[XLEN-1:3]);
           store_mask = sq_is_zero[slot] ? 8'hff : ref_byte_mask(entry_size_bits, entry_addr[2:0]);
 
@@ -360,6 +366,13 @@ module sq_forwarding_unit_formal #(
       c_cmo_vetoes_younger_covering_store :
       cover (o_sq_forward.match && !o_sq_forward.can_forward && $past(
           i_sq_check_capture_valid && ref_cmo_conflict && (ref_conflict_count >= 4'd2)
+      ));
+
+      c_cmo_blocks_pbmt_alias :
+      cover (o_sq_forward.match && !o_sq_forward.can_forward && $past(
+          i_sq_check_capture_valid && ref_cmo_conflict && riscv_pkg::pma_pbmt_alias_ok(
+              i_sq_check_addr
+          )
       ));
 
       // cbo.zero blocks a load to a different dword within the same 64-byte block.

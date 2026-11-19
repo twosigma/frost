@@ -60,6 +60,7 @@ def _target_bits(dut: Any) -> int:
 def _clear_inputs(dut: Any) -> None:
     """Drive every input idle."""
     dut.i_reset.value = 0
+    dut.i_redirect.value = 0
     dut.i_lookup_index.value = 0
     dut.i_packet_pc.value = 0
     dut.i_packet_compressed.value = 0
@@ -497,3 +498,21 @@ async def test_update_right_behind_a_refresh_lands(dut: Any) -> None:
     assert hit[0] and target[0] == _low(dut, TARGET_B)
     hit, _, target = await _lookup(dut, PC_A)
     assert hit[0] and target[0] == _low(dut, TARGET_A)
+
+
+@cocotb.test()
+async def test_held_read_only_answers_its_fetch_path(dut: Any) -> None:
+    """Both aligned and shifted results survive a stall and expire on a redirect."""
+    await _setup(dut)
+    await _update(dut, PC_A, TARGET_A, compressed=True)
+    for source_pc in (PC_A, PC_A - 4):
+        hit, _, target = await _lookup(dut, PC_A, compressed=True, index_pc=source_pc)
+        assert hit[0] and target[0] == _low(dut, TARGET_A)
+        hit, _, target = await _lookup(dut, PC_A, compressed=True, index_pc=PC_A + 16)
+        assert hit[0] and target[0] == _low(dut, TARGET_A)
+        dut.i_redirect.value = 1
+        await _cycle(dut)
+        assert int(dut.o_hit.value) == 0
+        dut.i_redirect.value = 0
+        await _cycle(dut)
+        assert int(dut.o_hit.value) == 0

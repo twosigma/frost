@@ -1,35 +1,35 @@
 {
   "aggregate": {
     "l2_mshr_12": {
-      "geomean_cycle_ratio_to_baseline": 0.9194549348085641,
+      "geomean_cycle_ratio_to_baseline": 0.9930330506167986,
       "mean_cycles": 38730,
       "mean_ipc": 0.2527918943858459,
       "total_l1d_mshr_backpressure": 0,
       "total_l2_mshr_backpressure": 0
     },
     "l2_mshr_12_wb_4": {
-      "geomean_cycle_ratio_to_baseline": 0.9194549348085641,
+      "geomean_cycle_ratio_to_baseline": 0.9930330506167986,
       "mean_cycles": 38730,
       "mean_ipc": 0.2527918943858459,
       "total_l1d_mshr_backpressure": 0,
       "total_l2_mshr_backpressure": 0
     },
     "l2_mshr_8": {
-      "geomean_cycle_ratio_to_baseline": 0.9259056727643322,
+      "geomean_cycle_ratio_to_baseline": 1.0,
       "mean_cycles": 38864.5,
       "mean_ipc": 0.2518532818135751,
       "total_l1d_mshr_backpressure": 1,
       "total_l2_mshr_backpressure": 1556
     },
     "l2_mshr_8_prefetch_off": {
-      "geomean_cycle_ratio_to_baseline": 0.9585348868959981,
+      "geomean_cycle_ratio_to_baseline": 1.035240322088372,
       "mean_cycles": 39195.833333333336,
       "mean_ipc": 0.2130460287681092,
       "total_l1d_mshr_backpressure": 4,
       "total_l2_mshr_backpressure": 1553
     },
     "l2_mshr_8_wb_4": {
-      "geomean_cycle_ratio_to_baseline": 0.9259056727643322,
+      "geomean_cycle_ratio_to_baseline": 1.0,
       "mean_cycles": 38864.5,
       "mean_ipc": 0.2518532818135751,
       "total_l1d_mshr_backpressure": 1,
@@ -37,10 +37,10 @@
     },
     "rtl_baseline": {
       "geomean_cycle_ratio_to_baseline": 1.0,
-      "mean_cycles": 40617.333333333336,
-      "mean_ipc": 0.23504131723506214,
+      "mean_cycles": 38864.5,
+      "mean_ipc": 0.2518532818135751,
       "total_l1d_mshr_backpressure": 1,
-      "total_l2_mshr_backpressure": 45690
+      "total_l2_mshr_backpressure": 1556
     }
   },
   "model_version": "1.0",
@@ -108,7 +108,7 @@
           "l2_data_cycles": 6,
           "l2_id_bits": 5,
           "l2_line_bytes": 64,
-          "l2_mshrs": 4,
+          "l2_mshrs": 8,
           "l2_prefetch": true,
           "l2_prefetch_distance": 8,
           "l2_prefetch_inflight": 3,
@@ -144,7 +144,7 @@
         "cpu_top": {
           "axi_master": {
             "inflight_cycles": 43840,
-            "max_inflight": 4,
+            "max_inflight": 6,
             "read_beats": 548,
             "responses": 548
           },
@@ -155,21 +155,17 @@
               "writeback_slots": 0
             },
             "stats": {
-              "bimodal_untouched_allocations": 389,
-              "controller_busy_cycles": 4827,
-              "downstream_backpressure": 3215,
+              "bimodal_untouched_allocations": 387,
+              "controller_busy_cycles": 4829,
               "fills_issued": 401,
-              "hit_path_hits": 1,
               "hit_path_offers": 384,
-              "hit_path_refused": 195,
-              "hit_path_stream_reports": 1,
-              "hit_path_takes": 189,
+              "hit_path_refused": 270,
+              "hit_path_takes": 114,
               "hits": 2,
               "installations": 401,
               "misses": 402,
-              "mru_allocations": 13,
-              "shadow_lookups": 116,
-              "shadow_skips": 1,
+              "mru_allocations": 15,
+              "shadow_lookups": 39,
               "store_acquisitions": 20,
               "store_records": 20,
               "store_records_installed": 19
@@ -181,12 +177,12 @@
               "writeback_slots": 0
             },
             "stats": {
-              "downstream_backpressure": 162,
+              "downstream_backpressure": 9,
               "fills_issued": 243,
-              "input_backpressure": 21,
+              "input_backpressure": 24,
               "misses": 243,
               "mru_allocations": 243,
-              "mshr_backpressure": 1384
+              "mshr_backpressure": 1539
             }
           },
           "l2": {
@@ -196,17 +192,16 @@
             },
             "stats": {
               "fills_issued": 548,
-              "hits": 67,
-              "input_backpressure": 30,
+              "hits": 70,
+              "input_backpressure": 9,
               "misses": 548,
               "mru_allocations": 548,
-              "mshr_backpressure": 3347,
-              "mshr_merges": 29
+              "mshr_merges": 26
             }
           },
           "line_size_adapter": {
-            "backpressure": 3377,
-            "requests": 4021,
+            "backpressure": 9,
+            "requests": 653,
             "sector_0": 331,
             "sector_1": 313
           },
@@ -222,19 +217,19 @@
             "stats": {
               "branch_mispredicts": 6,
               "completed": 980,
-              "dispatch_stall_lq": 11930,
-              "dispatch_stall_rob": 1342,
+              "dispatch_stall_lq": 10773,
+              "dispatch_stall_rob": 1855,
               "dispatched": 980,
               "early_load_tokens": 384,
               "fetch_requests": 243,
-              "frontend_fetch_stall": 2094,
+              "frontend_fetch_stall": 2621,
               "frontend_recovery_stall": 12,
               "l0_fills": 384,
               "l0_misses": 384,
-              "l1i_request_backpressure": 1405,
-              "load_store_disambiguation_stall": 9369,
+              "l1i_request_backpressure": 1563,
+              "load_store_disambiguation_stall": 9716,
               "loads_issued": 384,
-              "retire_head_not_ready": 15824,
+              "retire_head_not_ready": 15728,
               "retired": 980,
               "stores_drained": 20
             }
@@ -244,12 +239,12 @@
             "streams_allocated": 401
           }
         },
-        "cycles": 16198,
-        "ipc": 0.06050129645635264,
+        "cycles": 16103,
+        "ipc": 0.06085822517543315,
         "memory": {
           "axi": {
             "inflight_cycles": 43840,
-            "max_inflight": 4,
+            "max_inflight": 6,
             "read_beats": 548,
             "responses": 548
           },
@@ -285,21 +280,17 @@
               "writeback_slots": 0
             },
             "stats": {
-              "bimodal_untouched_allocations": 389,
-              "controller_busy_cycles": 4827,
-              "downstream_backpressure": 3215,
+              "bimodal_untouched_allocations": 387,
+              "controller_busy_cycles": 4829,
               "fills_issued": 401,
-              "hit_path_hits": 1,
               "hit_path_offers": 384,
-              "hit_path_refused": 195,
-              "hit_path_stream_reports": 1,
-              "hit_path_takes": 189,
+              "hit_path_refused": 270,
+              "hit_path_takes": 114,
               "hits": 2,
               "installations": 401,
               "misses": 402,
-              "mru_allocations": 13,
-              "shadow_lookups": 116,
-              "shadow_skips": 1,
+              "mru_allocations": 15,
+              "shadow_lookups": 39,
               "store_acquisitions": 20,
               "store_records": 20,
               "store_records_installed": 19
@@ -311,12 +302,12 @@
               "writeback_slots": 0
             },
             "stats": {
-              "downstream_backpressure": 162,
+              "downstream_backpressure": 9,
               "fills_issued": 243,
-              "input_backpressure": 21,
+              "input_backpressure": 24,
               "misses": 243,
               "mru_allocations": 243,
-              "mshr_backpressure": 1384
+              "mshr_backpressure": 1539
             }
           },
           "l2": {
@@ -326,17 +317,16 @@
             },
             "stats": {
               "fills_issued": 548,
-              "hits": 67,
-              "input_backpressure": 30,
+              "hits": 70,
+              "input_backpressure": 9,
               "misses": 548,
               "mru_allocations": 548,
-              "mshr_backpressure": 3347,
-              "mshr_merges": 29
+              "mshr_merges": 26
             }
           },
           "line_size_adapter": {
-            "backpressure": 3377,
-            "requests": 4021,
+            "backpressure": 9,
+            "requests": 653,
             "sector_0": 331,
             "sector_1": 313
           },
@@ -390,7 +380,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 4400,
+        "micro_ops_per_second": 2255,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -404,26 +394,26 @@
           "stats": {
             "branch_mispredicts": 6,
             "completed": 980,
-            "dispatch_stall_lq": 11930,
-            "dispatch_stall_rob": 1342,
+            "dispatch_stall_lq": 10773,
+            "dispatch_stall_rob": 1855,
             "dispatched": 980,
             "early_load_tokens": 384,
             "fetch_requests": 243,
-            "frontend_fetch_stall": 2094,
+            "frontend_fetch_stall": 2621,
             "frontend_recovery_stall": 12,
             "l0_fills": 384,
             "l0_misses": 384,
-            "l1i_request_backpressure": 1405,
-            "load_store_disambiguation_stall": 9369,
+            "l1i_request_backpressure": 1563,
+            "load_store_disambiguation_stall": 9716,
             "loads_issued": 384,
-            "retire_head_not_ready": 15824,
+            "retire_head_not_ready": 15728,
             "retired": 980,
             "stores_drained": 20
           }
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 72729,
+        "simulated_cycles_per_second": 37054,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -468,15 +458,15 @@
             "ddr_reads_forwarded": 548
           }
         },
-        "wall_time_seconds": 0.222717,
+        "wall_time_seconds": 0.434572,
         "workload": "redis_kv"
       },
       "score": {
         "axi_controller_backpressure": 0,
-        "cycles": 16198,
+        "cycles": 16103,
         "l1d_mshr_backpressure": 0,
-        "l2_mshr_backpressure": 3347,
-        "retire_head_not_ready": 15824
+        "l2_mshr_backpressure": 0,
+        "retire_head_not_ready": 15728
       },
       "workload": "redis_kv"
     },
@@ -541,7 +531,7 @@
           "l2_data_cycles": 6,
           "l2_id_bits": 5,
           "l2_line_bytes": 64,
-          "l2_mshrs": 4,
+          "l2_mshrs": 8,
           "l2_prefetch": true,
           "l2_prefetch_distance": 8,
           "l2_prefetch_inflight": 3,
@@ -576,10 +566,10 @@
         },
         "cpu_top": {
           "axi_master": {
-            "inflight_cycles": 53040,
-            "max_inflight": 4,
-            "read_beats": 663,
-            "responses": 663
+            "inflight_cycles": 53200,
+            "max_inflight": 7,
+            "read_beats": 665,
+            "responses": 665
           },
           "l1d": {
             "occupancy": {
@@ -590,7 +580,6 @@
             "stats": {
               "bimodal_untouched_allocations": 505,
               "controller_busy_cycles": 6857,
-              "downstream_backpressure": 71,
               "fills_issued": 551,
               "hit_path_hits": 83,
               "hit_path_offers": 539,
@@ -615,12 +604,11 @@
               "writeback_slots": 0
             },
             "stats": {
-              "downstream_backpressure": 16,
               "fills_issued": 384,
               "input_backpressure": 2,
               "misses": 384,
               "mru_allocations": 384,
-              "mshr_backpressure": 1748
+              "mshr_backpressure": 1751
             }
           },
           "l2": {
@@ -629,21 +617,18 @@
               "writeback_slots": 0
             },
             "stats": {
-              "fills_issued": 663,
-              "hits": 234,
-              "input_backpressure": 3,
-              "misses": 663,
-              "mru_allocations": 663,
-              "mshr_backpressure": 84,
-              "mshr_merges": 50,
-              "prefetch_fills": 12,
+              "fills_issued": 665,
+              "hits": 237,
+              "misses": 665,
+              "mru_allocations": 665,
+              "mshr_merges": 51,
+              "prefetch_fills": 18,
               "prefetch_resident": 6,
-              "useful_prefetches": 4
+              "useful_prefetches": 8
             }
           },
           "line_size_adapter": {
-            "backpressure": 87,
-            "requests": 1022,
+            "requests": 935,
             "sector_0": 465,
             "sector_1": 470
           },
@@ -659,42 +644,42 @@
             "stats": {
               "branch_mispredicts": 6,
               "completed": 1536,
-              "dispatch_stall_lq": 27808,
-              "dispatch_stall_mem_rs": 5924,
+              "dispatch_stall_lq": 27514,
+              "dispatch_stall_mem_rs": 5802,
               "dispatched": 1536,
               "early_load_tokens": 576,
               "fetch_requests": 384,
-              "frontend_fetch_stall": 2643,
+              "frontend_fetch_stall": 2688,
               "frontend_recovery_stall": 12,
               "l0_fills": 539,
               "l0_hits": 37,
               "l0_misses": 539,
               "l0_store_updates": 7,
-              "l1i_request_backpressure": 1750,
-              "load_store_disambiguation_stall": 43673,
+              "l1i_request_backpressure": 1753,
+              "load_store_disambiguation_stall": 43074,
               "loads_issued": 576,
-              "retire_head_not_ready": 37292,
+              "retire_head_not_ready": 36921,
               "retired": 1536,
               "stores_drained": 96
             }
           },
           "prefetcher": {
-            "completed": 18,
-            "identity_stall": 8,
-            "issued": 18,
+            "completed": 24,
+            "identity_stall": 12,
+            "issued": 24,
             "observations": 551,
-            "room_stall": 357,
+            "room_stall": 169,
             "streams_allocated": 548
           }
         },
-        "cycles": 37488,
-        "ipc": 0.040973111395646605,
+        "cycles": 37117,
+        "ipc": 0.04138265484818277,
         "memory": {
           "axi": {
-            "inflight_cycles": 53040,
-            "max_inflight": 4,
-            "read_beats": 663,
-            "responses": 663
+            "inflight_cycles": 53200,
+            "max_inflight": 7,
+            "read_beats": 665,
+            "responses": 665
           },
           "ddr": {
             "configuration": {
@@ -715,10 +700,10 @@
             "inflight_writes": 0,
             "kind": "frost_single_channel_axi_ddr",
             "stats": {
-              "accepted": 663,
-              "completed": 663,
-              "read_completed": 663,
-              "reads": 663
+              "accepted": 665,
+              "completed": 665,
+              "read_completed": 665,
+              "reads": 665
             }
           },
           "l1d": {
@@ -730,7 +715,6 @@
             "stats": {
               "bimodal_untouched_allocations": 505,
               "controller_busy_cycles": 6857,
-              "downstream_backpressure": 71,
               "fills_issued": 551,
               "hit_path_hits": 83,
               "hit_path_offers": 539,
@@ -755,12 +739,11 @@
               "writeback_slots": 0
             },
             "stats": {
-              "downstream_backpressure": 16,
               "fills_issued": 384,
               "input_backpressure": 2,
               "misses": 384,
               "mru_allocations": 384,
-              "mshr_backpressure": 1748
+              "mshr_backpressure": 1751
             }
           },
           "l2": {
@@ -769,30 +752,27 @@
               "writeback_slots": 0
             },
             "stats": {
-              "fills_issued": 663,
-              "hits": 234,
-              "input_backpressure": 3,
-              "misses": 663,
-              "mru_allocations": 663,
-              "mshr_backpressure": 84,
-              "mshr_merges": 50,
-              "prefetch_fills": 12,
+              "fills_issued": 665,
+              "hits": 237,
+              "misses": 665,
+              "mru_allocations": 665,
+              "mshr_merges": 51,
+              "prefetch_fills": 18,
               "prefetch_resident": 6,
-              "useful_prefetches": 4
+              "useful_prefetches": 8
             }
           },
           "line_size_adapter": {
-            "backpressure": 87,
-            "requests": 1022,
+            "requests": 935,
             "sector_0": 465,
             "sector_1": 470
           },
           "prefetcher": {
-            "completed": 18,
-            "identity_stall": 8,
-            "issued": 18,
+            "completed": 24,
+            "identity_stall": 12,
+            "issued": 24,
             "observations": 551,
-            "room_stall": 357,
+            "room_stall": 169,
             "streams_allocated": 548
           },
           "soc": {
@@ -828,20 +808,20 @@
               "inflight_writes": 0,
               "kind": "frost_single_channel_axi_ddr",
               "stats": {
-                "accepted": 663,
-                "completed": 663,
-                "read_completed": 663,
-                "reads": 663
+                "accepted": 665,
+                "completed": 665,
+                "read_completed": 665,
+                "reads": 665
               }
             },
             "kind": "frost_soc_top",
             "stats": {
-              "ddr_reads_forwarded": 663
+              "ddr_reads_forwarded": 665
             }
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 3574,
+        "micro_ops_per_second": 2005,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -855,28 +835,28 @@
           "stats": {
             "branch_mispredicts": 6,
             "completed": 1536,
-            "dispatch_stall_lq": 27808,
-            "dispatch_stall_mem_rs": 5924,
+            "dispatch_stall_lq": 27514,
+            "dispatch_stall_mem_rs": 5802,
             "dispatched": 1536,
             "early_load_tokens": 576,
             "fetch_requests": 384,
-            "frontend_fetch_stall": 2643,
+            "frontend_fetch_stall": 2688,
             "frontend_recovery_stall": 12,
             "l0_fills": 539,
             "l0_hits": 37,
             "l0_misses": 539,
             "l0_store_updates": 7,
-            "l1i_request_backpressure": 1750,
-            "load_store_disambiguation_stall": 43673,
+            "l1i_request_backpressure": 1753,
+            "load_store_disambiguation_stall": 43074,
             "loads_issued": 576,
-            "retire_head_not_ready": 37292,
+            "retire_head_not_ready": 36921,
             "retired": 1536,
             "stores_drained": 96
           }
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 87251,
+        "simulated_cycles_per_second": 48461,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -910,26 +890,26 @@
             "inflight_writes": 0,
             "kind": "frost_single_channel_axi_ddr",
             "stats": {
-              "accepted": 663,
-              "completed": 663,
-              "read_completed": 663,
-              "reads": 663
+              "accepted": 665,
+              "completed": 665,
+              "read_completed": 665,
+              "reads": 665
             }
           },
           "kind": "frost_soc_top",
           "stats": {
-            "ddr_reads_forwarded": 663
+            "ddr_reads_forwarded": 665
           }
         },
-        "wall_time_seconds": 0.429656,
+        "wall_time_seconds": 0.765912,
         "workload": "http_api"
       },
       "score": {
         "axi_controller_backpressure": 0,
-        "cycles": 37488,
+        "cycles": 37117,
         "l1d_mshr_backpressure": 0,
-        "l2_mshr_backpressure": 84,
-        "retire_head_not_ready": 37292
+        "l2_mshr_backpressure": 0,
+        "retire_head_not_ready": 36921
       },
       "workload": "http_api"
     },
@@ -994,7 +974,7 @@
           "l2_data_cycles": 6,
           "l2_id_bits": 5,
           "l2_line_bytes": 64,
-          "l2_mshrs": 4,
+          "l2_mshrs": 8,
           "l2_prefetch": true,
           "l2_prefetch_distance": 8,
           "l2_prefetch_inflight": 3,
@@ -1029,13 +1009,13 @@
         },
         "cpu_top": {
           "axi_master": {
-            "controller_backpressure": 5,
-            "inflight_cycles": 173687,
-            "max_inflight": 6,
-            "read_beats": 2083,
-            "read_channel_backpressure": 3,
-            "responses": 2170,
-            "write_beats": 87
+            "controller_backpressure": 2,
+            "inflight_cycles": 173446,
+            "max_inflight": 7,
+            "read_beats": 2081,
+            "read_channel_backpressure": 1,
+            "responses": 2167,
+            "write_beats": 86
           },
           "l1d": {
             "occupancy": {
@@ -1044,22 +1024,22 @@
               "writeback_slots": 1
             },
             "stats": {
-              "bimodal_untouched_allocations": 1087,
-              "controller_busy_cycles": 13874,
-              "dirty_evictions": 148,
-              "downstream_backpressure": 303,
+              "bimodal_untouched_allocations": 1085,
+              "controller_busy_cycles": 13871,
+              "dirty_evictions": 147,
+              "downstream_backpressure": 146,
               "fills_issued": 1119,
               "hit_path_offers": 960,
               "hit_path_refused": 117,
               "hit_path_takes": 843,
               "installations": 1119,
               "misses": 1120,
-              "mru_allocations": 33,
+              "mru_allocations": 35,
               "shadow_lookups": 798,
               "store_acquisitions": 160,
               "store_records": 160,
               "store_records_installed": 159,
-              "writebacks_completed": 147
+              "writebacks_completed": 146
             }
           },
           "l1i": {
@@ -1068,7 +1048,7 @@
               "writeback_slots": 0
             },
             "stats": {
-              "downstream_backpressure": 330,
+              "downstream_backpressure": 256,
               "fills_issued": 1080,
               "input_backpressure": 96,
               "misses": 1080,
@@ -1082,23 +1062,22 @@
               "writeback_slots": 0
             },
             "stats": {
-              "dirty_evictions": 87,
-              "downstream_backpressure": 8,
-              "fills_issued": 2083,
-              "hits": 262,
-              "input_backpressure": 404,
-              "misses": 2083,
-              "mru_allocations": 2083,
-              "mshr_backpressure": 229,
+              "dirty_evictions": 86,
+              "downstream_backpressure": 3,
+              "fills_issued": 2081,
+              "hits": 263,
+              "input_backpressure": 402,
+              "misses": 2081,
+              "mru_allocations": 2081,
               "mshr_merges": 1,
-              "writebacks_completed": 87
+              "writebacks_completed": 86
             }
           },
           "line_size_adapter": {
-            "backpressure": 633,
-            "requests": 2979,
+            "backpressure": 402,
+            "requests": 2747,
             "sector_0": 1443,
-            "sector_1": 903
+            "sector_1": 902
           },
           "pipeline": {
             "max_occupancy": {
@@ -1112,8 +1091,8 @@
             "stats": {
               "branch_mispredicts": 40,
               "completed": 2240,
-              "dispatch_stall_lq": 15032,
-              "dispatch_stall_mem_rs": 75651,
+              "dispatch_stall_lq": 14962,
+              "dispatch_stall_mem_rs": 75572,
               "dispatched": 2240,
               "early_load_tokens": 960,
               "fetch_requests": 1080,
@@ -1122,9 +1101,9 @@
               "l0_fills": 960,
               "l0_misses": 960,
               "l1i_request_backpressure": 1138,
-              "load_store_disambiguation_stall": 22405,
+              "load_store_disambiguation_stall": 22335,
               "loads_issued": 960,
-              "retire_head_not_ready": 92916,
+              "retire_head_not_ready": 92767,
               "retired": 2240,
               "stores_drained": 160
             }
@@ -1134,17 +1113,17 @@
             "streams_allocated": 1119
           }
         },
-        "cycles": 93045,
-        "ipc": 0.02407437261540115,
+        "cycles": 92896,
+        "ipc": 0.02411298656562177,
         "memory": {
           "axi": {
-            "controller_backpressure": 5,
-            "inflight_cycles": 173687,
-            "max_inflight": 6,
-            "read_beats": 2083,
-            "read_channel_backpressure": 3,
-            "responses": 2170,
-            "write_beats": 87
+            "controller_backpressure": 2,
+            "inflight_cycles": 173446,
+            "max_inflight": 7,
+            "read_beats": 2081,
+            "read_channel_backpressure": 1,
+            "responses": 2167,
+            "write_beats": 86
           },
           "ddr": {
             "configuration": {
@@ -1165,12 +1144,12 @@
             "inflight_writes": 0,
             "kind": "frost_single_channel_axi_ddr",
             "stats": {
-              "accepted": 2170,
-              "completed": 2170,
-              "read_completed": 2083,
-              "reads": 2083,
-              "write_completed": 87,
-              "writes": 87
+              "accepted": 2167,
+              "completed": 2167,
+              "read_completed": 2081,
+              "reads": 2081,
+              "write_completed": 86,
+              "writes": 86
             }
           },
           "l1d": {
@@ -1180,22 +1159,22 @@
               "writeback_slots": 1
             },
             "stats": {
-              "bimodal_untouched_allocations": 1087,
-              "controller_busy_cycles": 13874,
-              "dirty_evictions": 148,
-              "downstream_backpressure": 303,
+              "bimodal_untouched_allocations": 1085,
+              "controller_busy_cycles": 13871,
+              "dirty_evictions": 147,
+              "downstream_backpressure": 146,
               "fills_issued": 1119,
               "hit_path_offers": 960,
               "hit_path_refused": 117,
               "hit_path_takes": 843,
               "installations": 1119,
               "misses": 1120,
-              "mru_allocations": 33,
+              "mru_allocations": 35,
               "shadow_lookups": 798,
               "store_acquisitions": 160,
               "store_records": 160,
               "store_records_installed": 159,
-              "writebacks_completed": 147
+              "writebacks_completed": 146
             }
           },
           "l1i": {
@@ -1204,7 +1183,7 @@
               "writeback_slots": 0
             },
             "stats": {
-              "downstream_backpressure": 330,
+              "downstream_backpressure": 256,
               "fills_issued": 1080,
               "input_backpressure": 96,
               "misses": 1080,
@@ -1218,23 +1197,22 @@
               "writeback_slots": 0
             },
             "stats": {
-              "dirty_evictions": 87,
-              "downstream_backpressure": 8,
-              "fills_issued": 2083,
-              "hits": 262,
-              "input_backpressure": 404,
-              "misses": 2083,
-              "mru_allocations": 2083,
-              "mshr_backpressure": 229,
+              "dirty_evictions": 86,
+              "downstream_backpressure": 3,
+              "fills_issued": 2081,
+              "hits": 263,
+              "input_backpressure": 402,
+              "misses": 2081,
+              "mru_allocations": 2081,
               "mshr_merges": 1,
-              "writebacks_completed": 87
+              "writebacks_completed": 86
             }
           },
           "line_size_adapter": {
-            "backpressure": 633,
-            "requests": 2979,
+            "backpressure": 402,
+            "requests": 2747,
             "sector_0": 1443,
-            "sector_1": 903
+            "sector_1": 902
           },
           "prefetcher": {
             "observations": 1119,
@@ -1273,24 +1251,24 @@
               "inflight_writes": 0,
               "kind": "frost_single_channel_axi_ddr",
               "stats": {
-                "accepted": 2170,
-                "completed": 2170,
-                "read_completed": 2083,
-                "reads": 2083,
-                "write_completed": 87,
-                "writes": 87
+                "accepted": 2167,
+                "completed": 2167,
+                "read_completed": 2081,
+                "reads": 2081,
+                "write_completed": 86,
+                "writes": 86
               }
             },
             "kind": "frost_soc_top",
             "stats": {
-              "ddr_reads_forwarded": 2083,
-              "ddr_writes_forwarded": 87,
-              "soc_aw_slot_backpressure": 5
+              "ddr_reads_forwarded": 2081,
+              "ddr_writes_forwarded": 86,
+              "soc_aw_slot_backpressure": 2
             }
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 2188,
+        "micro_ops_per_second": 1188,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -1304,8 +1282,8 @@
           "stats": {
             "branch_mispredicts": 40,
             "completed": 2240,
-            "dispatch_stall_lq": 15032,
-            "dispatch_stall_mem_rs": 75651,
+            "dispatch_stall_lq": 14962,
+            "dispatch_stall_mem_rs": 75572,
             "dispatched": 2240,
             "early_load_tokens": 960,
             "fetch_requests": 1080,
@@ -1314,16 +1292,16 @@
             "l0_fills": 960,
             "l0_misses": 960,
             "l1i_request_backpressure": 1138,
-            "load_store_disambiguation_stall": 22405,
+            "load_store_disambiguation_stall": 22335,
             "loads_issued": 960,
-            "retire_head_not_ready": 92916,
+            "retire_head_not_ready": 92767,
             "retired": 2240,
             "stores_drained": 160
           }
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 90913,
+        "simulated_cycles_per_second": 49295,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -1357,30 +1335,30 @@
             "inflight_writes": 0,
             "kind": "frost_single_channel_axi_ddr",
             "stats": {
-              "accepted": 2170,
-              "completed": 2170,
-              "read_completed": 2083,
-              "reads": 2083,
-              "write_completed": 87,
-              "writes": 87
+              "accepted": 2167,
+              "completed": 2167,
+              "read_completed": 2081,
+              "reads": 2081,
+              "write_completed": 86,
+              "writes": 86
             }
           },
           "kind": "frost_soc_top",
           "stats": {
-            "ddr_reads_forwarded": 2083,
-            "ddr_writes_forwarded": 87,
-            "soc_aw_slot_backpressure": 5
+            "ddr_reads_forwarded": 2081,
+            "ddr_writes_forwarded": 86,
+            "soc_aw_slot_backpressure": 2
           }
         },
-        "wall_time_seconds": 1.023442,
+        "wall_time_seconds": 1.88446,
         "workload": "faas_cold"
       },
       "score": {
-        "axi_controller_backpressure": 5,
-        "cycles": 93045,
+        "axi_controller_backpressure": 2,
+        "cycles": 92896,
         "l1d_mshr_backpressure": 0,
-        "l2_mshr_backpressure": 229,
-        "retire_head_not_ready": 92916
+        "l2_mshr_backpressure": 0,
+        "retire_head_not_ready": 92767
       },
       "workload": "faas_cold"
     },
@@ -1445,7 +1423,7 @@
           "l2_data_cycles": 6,
           "l2_id_bits": 5,
           "l2_line_bytes": 64,
-          "l2_mshrs": 4,
+          "l2_mshrs": 8,
           "l2_prefetch": true,
           "l2_prefetch_distance": 8,
           "l2_prefetch_inflight": 3,
@@ -1725,7 +1703,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 2342,
+        "micro_ops_per_second": 1403,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -1760,7 +1738,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 91658,
+        "simulated_cycles_per_second": 54919,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -1805,7 +1783,7 @@
             "ddr_reads_forwarded": 888
           }
         },
-        "wall_time_seconds": 0.648836,
+        "wall_time_seconds": 1.082875,
         "workload": "linux_service"
       },
       "score": {
@@ -1878,7 +1856,7 @@
           "l2_data_cycles": 6,
           "l2_id_bits": 5,
           "l2_line_bytes": 64,
-          "l2_mshrs": 4,
+          "l2_mshrs": 8,
           "l2_prefetch": true,
           "l2_prefetch_distance": 8,
           "l2_prefetch_inflight": 3,
@@ -1914,7 +1892,7 @@
         "cpu_top": {
           "axi_master": {
             "inflight_cycles": 92640,
-            "max_inflight": 4,
+            "max_inflight": 8,
             "read_beats": 1158,
             "responses": 1158
           },
@@ -1925,17 +1903,17 @@
               "writeback_slots": 0
             },
             "stats": {
-              "bimodal_untouched_allocations": 1056,
+              "bimodal_untouched_allocations": 1061,
               "controller_busy_cycles": 13196,
               "dirty_evictions": 9,
-              "downstream_backpressure": 40894,
+              "downstream_backpressure": 1562,
               "fills_issued": 1097,
               "hit_path_offers": 960,
               "hit_path_refused": 273,
               "hit_path_takes": 687,
               "installations": 1097,
               "misses": 1098,
-              "mru_allocations": 42,
+              "mru_allocations": 37,
               "shadow_lookups": 1,
               "store_acquisitions": 138,
               "store_records": 138,
@@ -1949,7 +1927,6 @@
               "writeback_slots": 0
             },
             "stats": {
-              "downstream_backpressure": 1620,
               "fills_issued": 121,
               "misses": 121,
               "mru_allocations": 121
@@ -1963,15 +1940,15 @@
             "stats": {
               "fills_issued": 1158,
               "hits": 69,
-              "input_backpressure": 1088,
+              "input_backpressure": 9,
               "misses": 1158,
               "mru_allocations": 1158,
-              "mshr_backpressure": 41426
+              "mshr_backpressure": 1553
             }
           },
           "line_size_adapter": {
-            "backpressure": 42514,
-            "requests": 43741,
+            "backpressure": 1562,
+            "requests": 2789,
             "sector_0": 1167,
             "sector_1": 60
           },
@@ -1985,16 +1962,16 @@
             },
             "stats": {
               "completed": 1098,
-              "dispatch_stall_lq": 28842,
+              "dispatch_stall_lq": 19630,
               "dispatched": 1098,
               "early_load_tokens": 960,
               "fetch_requests": 121,
-              "frontend_fetch_stall": 628,
+              "frontend_fetch_stall": 511,
               "l0_fills": 960,
               "l0_misses": 960,
-              "load_store_disambiguation_stall": 83941,
+              "load_store_disambiguation_stall": 43767,
               "loads_issued": 960,
-              "retire_head_not_ready": 29781,
+              "retire_head_not_ready": 20365,
               "retired": 1098,
               "stores_drained": 138
             }
@@ -2004,12 +1981,12 @@
             "streams_allocated": 1097
           }
         },
-        "cycles": 29871,
-        "ipc": 0.03675805965652305,
+        "cycles": 20455,
+        "ipc": 0.05367880713761916,
         "memory": {
           "axi": {
             "inflight_cycles": 92640,
-            "max_inflight": 4,
+            "max_inflight": 8,
             "read_beats": 1158,
             "responses": 1158
           },
@@ -2045,17 +2022,17 @@
               "writeback_slots": 0
             },
             "stats": {
-              "bimodal_untouched_allocations": 1056,
+              "bimodal_untouched_allocations": 1061,
               "controller_busy_cycles": 13196,
               "dirty_evictions": 9,
-              "downstream_backpressure": 40894,
+              "downstream_backpressure": 1562,
               "fills_issued": 1097,
               "hit_path_offers": 960,
               "hit_path_refused": 273,
               "hit_path_takes": 687,
               "installations": 1097,
               "misses": 1098,
-              "mru_allocations": 42,
+              "mru_allocations": 37,
               "shadow_lookups": 1,
               "store_acquisitions": 138,
               "store_records": 138,
@@ -2069,7 +2046,6 @@
               "writeback_slots": 0
             },
             "stats": {
-              "downstream_backpressure": 1620,
               "fills_issued": 121,
               "misses": 121,
               "mru_allocations": 121
@@ -2083,15 +2059,15 @@
             "stats": {
               "fills_issued": 1158,
               "hits": 69,
-              "input_backpressure": 1088,
+              "input_backpressure": 9,
               "misses": 1158,
               "mru_allocations": 1158,
-              "mshr_backpressure": 41426
+              "mshr_backpressure": 1553
             }
           },
           "line_size_adapter": {
-            "backpressure": 42514,
-            "requests": 43741,
+            "backpressure": 1562,
+            "requests": 2789,
             "sector_0": 1167,
             "sector_1": 60
           },
@@ -2145,7 +2121,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 1554,
+        "micro_ops_per_second": 1928,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -2157,23 +2133,23 @@
           },
           "stats": {
             "completed": 1098,
-            "dispatch_stall_lq": 28842,
+            "dispatch_stall_lq": 19630,
             "dispatched": 1098,
             "early_load_tokens": 960,
             "fetch_requests": 121,
-            "frontend_fetch_stall": 628,
+            "frontend_fetch_stall": 511,
             "l0_fills": 960,
             "l0_misses": 960,
-            "load_store_disambiguation_stall": 83941,
+            "load_store_disambiguation_stall": 43767,
             "loads_issued": 960,
-            "retire_head_not_ready": 29781,
+            "retire_head_not_ready": 20365,
             "retired": 1098,
             "stores_drained": 138
           }
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 42283,
+        "simulated_cycles_per_second": 35929,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -2218,15 +2194,15 @@
             "ddr_reads_forwarded": 1158
           }
         },
-        "wall_time_seconds": 0.706441,
+        "wall_time_seconds": 0.569314,
         "workload": "memory_stress"
       },
       "score": {
         "axi_controller_backpressure": 0,
-        "cycles": 29871,
+        "cycles": 20455,
         "l1d_mshr_backpressure": 0,
-        "l2_mshr_backpressure": 41426,
-        "retire_head_not_ready": 29781
+        "l2_mshr_backpressure": 1553,
+        "retire_head_not_ready": 20365
       },
       "workload": "memory_stress"
     },
@@ -2291,7 +2267,7 @@
           "l2_data_cycles": 6,
           "l2_id_bits": 5,
           "l2_line_bytes": 64,
-          "l2_mshrs": 4,
+          "l2_mshrs": 8,
           "l2_prefetch": true,
           "l2_prefetch_distance": 8,
           "l2_prefetch_inflight": 3,
@@ -2326,10 +2302,10 @@
         },
         "cpu_top": {
           "axi_master": {
-            "inflight_cycles": 9840,
-            "max_inflight": 4,
-            "read_beats": 123,
-            "responses": 123
+            "inflight_cycles": 10640,
+            "max_inflight": 8,
+            "read_beats": 133,
+            "responses": 133
           },
           "l1d": {
             "occupancy": {
@@ -2338,26 +2314,26 @@
               "writeback_slots": 0
             },
             "stats": {
-              "bimodal_untouched_allocations": 149,
-              "controller_busy_cycles": 6157,
-              "downstream_backpressure": 619,
+              "bimodal_untouched_allocations": 151,
+              "controller_busy_cycles": 6153,
+              "downstream_backpressure": 15,
               "fills_issued": 186,
-              "hit_path_hits": 857,
+              "hit_path_hits": 853,
               "hit_path_offers": 1022,
-              "hit_path_refused": 78,
-              "hit_path_stream_reports": 857,
-              "hit_path_takes": 944,
+              "hit_path_refused": 89,
+              "hit_path_stream_reports": 853,
+              "hit_path_takes": 933,
               "hit_path_touch_drops": 47,
               "hits": 917,
               "installations": 186,
               "lookahead_attached": 11,
               "lookahead_issued": 49,
               "misses": 154,
-              "mru_allocations": 5,
+              "mru_allocations": 3,
               "mshr_backpressure": 1,
               "mshr_merges": 11,
-              "shadow_lookups": 426,
-              "shadow_skips": 412,
+              "shadow_lookups": 416,
+              "shadow_skips": 405,
               "store_acquisitions": 30,
               "store_hits": 267,
               "store_lookaheads": 2,
@@ -2380,28 +2356,28 @@
               "writeback_slots": 0
             },
             "stats": {
-              "fills_issued": 123,
-              "hits": 113,
-              "input_backpressure": 15,
-              "misses": 123,
-              "mru_allocations": 123,
-              "mshr_backpressure": 604,
-              "mshr_merges": 18,
-              "prefetch_fills": 68,
-              "prefetch_in_flight": 3,
-              "prefetch_resident": 7,
-              "useful_prefetches": 40
+              "fills_issued": 133,
+              "hits": 146,
+              "input_backpressure": 12,
+              "misses": 133,
+              "mru_allocations": 133,
+              "mshr_backpressure": 3,
+              "mshr_merges": 16,
+              "prefetch_fills": 109,
+              "prefetch_in_flight": 4,
+              "prefetch_resident": 68,
+              "useful_prefetches": 76
             }
           },
           "line_size_adapter": {
-            "backpressure": 619,
-            "requests": 805,
+            "backpressure": 15,
+            "requests": 201,
             "sector_0": 133,
             "sector_1": 53
           },
           "pipeline": {
             "max_occupancy": {
-              "int_rs": 15,
+              "int_rs": 16,
               "lq": 8,
               "mem_rs": 7,
               "rob": 32,
@@ -2412,39 +2388,40 @@
               "branch_mispredicts": 3,
               "cdb_contention": 3779,
               "completed": 9328,
-              "dispatch_stall_lq": 1967,
-              "dispatch_stall_rob": 1105,
+              "dispatch_stall_int_rs": 10,
+              "dispatch_stall_lq": 1896,
+              "dispatch_stall_rob": 674,
               "dispatched": 9328,
-              "early_load_tokens": 793,
+              "early_load_tokens": 792,
               "frontend_recovery_stall": 6,
               "l0_fills": 1022,
               "l0_hits": 2594,
               "l0_misses": 1022,
               "l0_store_updates": 149,
-              "load_store_disambiguation_stall": 3752,
+              "load_store_disambiguation_stall": 2784,
               "loads_issued": 3616,
-              "retire_head_not_ready": 3148,
+              "retire_head_not_ready": 2665,
               "retired": 9328,
               "stores_drained": 299
             }
           },
           "prefetcher": {
-            "completed": 78,
-            "identity_stall": 12,
-            "issued": 78,
+            "completed": 181,
+            "identity_stall": 95,
+            "issued": 181,
             "observations": 186,
-            "room_stall": 2588,
-            "streams_allocated": 45
+            "room_stall": 949,
+            "streams_allocated": 55
           }
         },
-        "cycles": 7631,
-        "ipc": 1.2223823876294064,
+        "cycles": 7145,
+        "ipc": 1.3055283414975507,
         "memory": {
           "axi": {
-            "inflight_cycles": 9840,
-            "max_inflight": 4,
-            "read_beats": 123,
-            "responses": 123
+            "inflight_cycles": 10640,
+            "max_inflight": 8,
+            "read_beats": 133,
+            "responses": 133
           },
           "ddr": {
             "configuration": {
@@ -2465,10 +2442,10 @@
             "inflight_writes": 0,
             "kind": "frost_single_channel_axi_ddr",
             "stats": {
-              "accepted": 123,
-              "completed": 123,
-              "read_completed": 123,
-              "reads": 123
+              "accepted": 133,
+              "completed": 133,
+              "read_completed": 133,
+              "reads": 133
             }
           },
           "l1d": {
@@ -2478,26 +2455,26 @@
               "writeback_slots": 0
             },
             "stats": {
-              "bimodal_untouched_allocations": 149,
-              "controller_busy_cycles": 6157,
-              "downstream_backpressure": 619,
+              "bimodal_untouched_allocations": 151,
+              "controller_busy_cycles": 6153,
+              "downstream_backpressure": 15,
               "fills_issued": 186,
-              "hit_path_hits": 857,
+              "hit_path_hits": 853,
               "hit_path_offers": 1022,
-              "hit_path_refused": 78,
-              "hit_path_stream_reports": 857,
-              "hit_path_takes": 944,
+              "hit_path_refused": 89,
+              "hit_path_stream_reports": 853,
+              "hit_path_takes": 933,
               "hit_path_touch_drops": 47,
               "hits": 917,
               "installations": 186,
               "lookahead_attached": 11,
               "lookahead_issued": 49,
               "misses": 154,
-              "mru_allocations": 5,
+              "mru_allocations": 3,
               "mshr_backpressure": 1,
               "mshr_merges": 11,
-              "shadow_lookups": 426,
-              "shadow_skips": 412,
+              "shadow_lookups": 416,
+              "shadow_skips": 405,
               "store_acquisitions": 30,
               "store_hits": 267,
               "store_lookaheads": 2,
@@ -2520,32 +2497,32 @@
               "writeback_slots": 0
             },
             "stats": {
-              "fills_issued": 123,
-              "hits": 113,
-              "input_backpressure": 15,
-              "misses": 123,
-              "mru_allocations": 123,
-              "mshr_backpressure": 604,
-              "mshr_merges": 18,
-              "prefetch_fills": 68,
-              "prefetch_in_flight": 3,
-              "prefetch_resident": 7,
-              "useful_prefetches": 40
+              "fills_issued": 133,
+              "hits": 146,
+              "input_backpressure": 12,
+              "misses": 133,
+              "mru_allocations": 133,
+              "mshr_backpressure": 3,
+              "mshr_merges": 16,
+              "prefetch_fills": 109,
+              "prefetch_in_flight": 4,
+              "prefetch_resident": 68,
+              "useful_prefetches": 76
             }
           },
           "line_size_adapter": {
-            "backpressure": 619,
-            "requests": 805,
+            "backpressure": 15,
+            "requests": 201,
             "sector_0": 133,
             "sector_1": 53
           },
           "prefetcher": {
-            "completed": 78,
-            "identity_stall": 12,
-            "issued": 78,
+            "completed": 181,
+            "identity_stall": 95,
+            "issued": 181,
             "observations": 186,
-            "room_stall": 2588,
-            "streams_allocated": 45
+            "room_stall": 949,
+            "streams_allocated": 55
           },
           "soc": {
             "configuration": {
@@ -2580,24 +2557,24 @@
               "inflight_writes": 0,
               "kind": "frost_single_channel_axi_ddr",
               "stats": {
-                "accepted": 123,
-                "completed": 123,
-                "read_completed": 123,
-                "reads": 123
+                "accepted": 133,
+                "completed": 133,
+                "read_completed": 133,
+                "reads": 133
               }
             },
             "kind": "frost_soc_top",
             "stats": {
-              "ddr_reads_forwarded": 123
+              "ddr_reads_forwarded": 133
             }
           }
         },
         "micro_ops": 9328,
-        "micro_ops_per_second": 59789,
+        "micro_ops_per_second": 30434,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
-            "int_rs": 15,
+            "int_rs": 16,
             "lq": 8,
             "mem_rs": 7,
             "rob": 32,
@@ -2608,25 +2585,26 @@
             "branch_mispredicts": 3,
             "cdb_contention": 3779,
             "completed": 9328,
-            "dispatch_stall_lq": 1967,
-            "dispatch_stall_rob": 1105,
+            "dispatch_stall_int_rs": 10,
+            "dispatch_stall_lq": 1896,
+            "dispatch_stall_rob": 674,
             "dispatched": 9328,
-            "early_load_tokens": 793,
+            "early_load_tokens": 792,
             "frontend_recovery_stall": 6,
             "l0_fills": 1022,
             "l0_hits": 2594,
             "l0_misses": 1022,
             "l0_store_updates": 149,
-            "load_store_disambiguation_stall": 3752,
+            "load_store_disambiguation_stall": 2784,
             "loads_issued": 3616,
-            "retire_head_not_ready": 3148,
+            "retire_head_not_ready": 2665,
             "retired": 9328,
             "stores_drained": 299
           }
         },
         "retired": 9328,
         "seed": 16,
-        "simulated_cycles_per_second": 48912,
+        "simulated_cycles_per_second": 23311,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -2660,26 +2638,26 @@
             "inflight_writes": 0,
             "kind": "frost_single_channel_axi_ddr",
             "stats": {
-              "accepted": 123,
-              "completed": 123,
-              "read_completed": 123,
-              "reads": 123
+              "accepted": 133,
+              "completed": 133,
+              "read_completed": 133,
+              "reads": 133
             }
           },
           "kind": "frost_soc_top",
           "stats": {
-            "ddr_reads_forwarded": 123
+            "ddr_reads_forwarded": 133
           }
         },
-        "wall_time_seconds": 0.156014,
+        "wall_time_seconds": 0.306496,
         "workload": "coremark"
       },
       "score": {
         "axi_controller_backpressure": 0,
-        "cycles": 7631,
+        "cycles": 7145,
         "l1d_mshr_backpressure": 1,
-        "l2_mshr_backpressure": 604,
-        "retire_head_not_ready": 3148
+        "l2_mshr_backpressure": 3,
+        "retire_head_not_ready": 2665
       },
       "workload": "coremark"
     },
@@ -3016,7 +2994,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 4652,
+        "micro_ops_per_second": 2206,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -3049,7 +3027,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 76447,
+        "simulated_cycles_per_second": 36262,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -3094,7 +3072,7 @@
             "ddr_reads_forwarded": 548
           }
         },
-        "wall_time_seconds": 0.210642,
+        "wall_time_seconds": 0.444069,
         "workload": "redis_kv"
       },
       "score": {
@@ -3457,7 +3435,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 3314,
+        "micro_ops_per_second": 1634,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -3492,7 +3470,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 80090,
+        "simulated_cycles_per_second": 39489,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -3537,7 +3515,7 @@
             "ddr_reads_forwarded": 665
           }
         },
-        "wall_time_seconds": 0.463439,
+        "wall_time_seconds": 0.939926,
         "workload": "http_api"
       },
       "score": {
@@ -3904,7 +3882,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 2101,
+        "micro_ops_per_second": 1214,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -3937,7 +3915,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 87161,
+        "simulated_cycles_per_second": 50386,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -3986,7 +3964,7 @@
             "soc_aw_slot_backpressure": 2
           }
         },
-        "wall_time_seconds": 1.065791,
+        "wall_time_seconds": 1.843657,
         "workload": "faas_cold"
       },
       "score": {
@@ -4339,7 +4317,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 2453,
+        "micro_ops_per_second": 1157,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -4374,7 +4352,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 95975,
+        "simulated_cycles_per_second": 45294,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -4419,7 +4397,7 @@
             "ddr_reads_forwarded": 888
           }
         },
-        "wall_time_seconds": 0.619649,
+        "wall_time_seconds": 1.312972,
         "workload": "linux_service"
       },
       "score": {
@@ -4757,7 +4735,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 4333,
+        "micro_ops_per_second": 3135,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -4785,7 +4763,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 80738,
+        "simulated_cycles_per_second": 58413,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -4830,7 +4808,7 @@
             "ddr_reads_forwarded": 1158
           }
         },
-        "wall_time_seconds": 0.253348,
+        "wall_time_seconds": 0.350179,
         "workload": "memory_stress"
       },
       "score": {
@@ -5206,7 +5184,7 @@
           }
         },
         "micro_ops": 9328,
-        "micro_ops_per_second": 75891,
+        "micro_ops_per_second": 52894,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -5240,7 +5218,7 @@
         },
         "retired": 9328,
         "seed": 16,
-        "simulated_cycles_per_second": 58131,
+        "simulated_cycles_per_second": 40515,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -5285,7 +5263,7 @@
             "ddr_reads_forwarded": 133
           }
         },
-        "wall_time_seconds": 0.122912,
+        "wall_time_seconds": 0.176352,
         "workload": "coremark"
       },
       "score": {
@@ -5630,7 +5608,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 5058,
+        "micro_ops_per_second": 3673,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -5663,7 +5641,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 83119,
+        "simulated_cycles_per_second": 60368,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -5708,7 +5686,7 @@
             "ddr_reads_forwarded": 548
           }
         },
-        "wall_time_seconds": 0.193733,
+        "wall_time_seconds": 0.266746,
         "workload": "redis_kv"
       },
       "score": {
@@ -6071,7 +6049,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 3500,
+        "micro_ops_per_second": 2708,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -6106,7 +6084,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 84591,
+        "simulated_cycles_per_second": 65441,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -6151,7 +6129,7 @@
             "ddr_reads_forwarded": 665
           }
         },
-        "wall_time_seconds": 0.438781,
+        "wall_time_seconds": 0.56718,
         "workload": "http_api"
       },
       "score": {
@@ -6518,7 +6496,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 2238,
+        "micro_ops_per_second": 1256,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -6551,7 +6529,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 92818,
+        "simulated_cycles_per_second": 52102,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -6600,7 +6578,7 @@
             "soc_aw_slot_backpressure": 2
           }
         },
-        "wall_time_seconds": 1.00084,
+        "wall_time_seconds": 1.782962,
         "workload": "faas_cold"
       },
       "score": {
@@ -6953,7 +6931,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 2387,
+        "micro_ops_per_second": 1242,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -6988,7 +6966,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 93414,
+        "simulated_cycles_per_second": 48610,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -7033,7 +7011,7 @@
             "ddr_reads_forwarded": 888
           }
         },
-        "wall_time_seconds": 0.636634,
+        "wall_time_seconds": 1.22341,
         "workload": "linux_service"
       },
       "score": {
@@ -7371,7 +7349,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 4387,
+        "micro_ops_per_second": 3221,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -7399,7 +7377,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 81739,
+        "simulated_cycles_per_second": 60014,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -7444,7 +7422,7 @@
             "ddr_reads_forwarded": 1158
           }
         },
-        "wall_time_seconds": 0.250246,
+        "wall_time_seconds": 0.340834,
         "workload": "memory_stress"
       },
       "score": {
@@ -7820,7 +7798,7 @@
           }
         },
         "micro_ops": 9328,
-        "micro_ops_per_second": 58321,
+        "micro_ops_per_second": 56220,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -7854,7 +7832,7 @@
         },
         "retired": 9328,
         "seed": 16,
-        "simulated_cycles_per_second": 44672,
+        "simulated_cycles_per_second": 43063,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -7899,7 +7877,7 @@
             "ddr_reads_forwarded": 133
           }
         },
-        "wall_time_seconds": 0.159941,
+        "wall_time_seconds": 0.165917,
         "workload": "coremark"
       },
       "score": {
@@ -8238,7 +8216,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 5615,
+        "micro_ops_per_second": 4418,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -8271,7 +8249,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 92265,
+        "simulated_cycles_per_second": 72611,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -8316,7 +8294,7 @@
             "ddr_reads_forwarded": 548
           }
         },
-        "wall_time_seconds": 0.174528,
+        "wall_time_seconds": 0.221771,
         "workload": "redis_kv"
       },
       "score": {
@@ -8659,7 +8637,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 3828,
+        "micro_ops_per_second": 3614,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -8694,7 +8672,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 93610,
+        "simulated_cycles_per_second": 88376,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -8739,7 +8717,7 @@
             "ddr_reads_forwarded": 655
           }
         },
-        "wall_time_seconds": 0.401216,
+        "wall_time_seconds": 0.424976,
         "workload": "http_api"
       },
       "score": {
@@ -9100,7 +9078,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 2359,
+        "micro_ops_per_second": 2268,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -9133,7 +9111,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 97844,
+        "simulated_cycles_per_second": 94063,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -9182,7 +9160,7 @@
             "soc_aw_slot_backpressure": 2
           }
         },
-        "wall_time_seconds": 0.949426,
+        "wall_time_seconds": 0.987585,
         "workload": "faas_cold"
       },
       "score": {
@@ -9529,7 +9507,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 2456,
+        "micro_ops_per_second": 1678,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -9564,7 +9542,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 96108,
+        "simulated_cycles_per_second": 65684,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -9609,7 +9587,7 @@
             "ddr_reads_forwarded": 888
           }
         },
-        "wall_time_seconds": 0.618789,
+        "wall_time_seconds": 0.905401,
         "workload": "linux_service"
       },
       "score": {
@@ -9941,7 +9919,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 4343,
+        "micro_ops_per_second": 3315,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -9969,7 +9947,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 80919,
+        "simulated_cycles_per_second": 61773,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -10014,7 +9992,7 @@
             "ddr_reads_forwarded": 1158
           }
         },
-        "wall_time_seconds": 0.252783,
+        "wall_time_seconds": 0.331132,
         "workload": "memory_stress"
       },
       "score": {
@@ -10359,7 +10337,7 @@
           }
         },
         "micro_ops": 9328,
-        "micro_ops_per_second": 62961,
+        "micro_ops_per_second": 52288,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -10392,7 +10370,7 @@
         },
         "retired": 9328,
         "seed": 16,
-        "simulated_cycles_per_second": 58669,
+        "simulated_cycles_per_second": 48723,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -10437,7 +10415,7 @@
             "ddr_reads_forwarded": 100
           }
         },
-        "wall_time_seconds": 0.148153,
+        "wall_time_seconds": 0.178393,
         "workload": "coremark"
       },
       "score": {
@@ -10782,7 +10760,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 4783,
+        "micro_ops_per_second": 4026,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -10815,7 +10793,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 78598,
+        "simulated_cycles_per_second": 66160,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -10860,7 +10838,7 @@
             "ddr_reads_forwarded": 548
           }
         },
-        "wall_time_seconds": 0.204876,
+        "wall_time_seconds": 0.243395,
         "workload": "redis_kv"
       },
       "score": {
@@ -11223,7 +11201,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 3164,
+        "micro_ops_per_second": 2817,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -11258,7 +11236,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 76469,
+        "simulated_cycles_per_second": 68074,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -11303,7 +11281,7 @@
             "ddr_reads_forwarded": 665
           }
         },
-        "wall_time_seconds": 0.48538,
+        "wall_time_seconds": 0.545238,
         "workload": "http_api"
       },
       "score": {
@@ -11670,7 +11648,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 2051,
+        "micro_ops_per_second": 1673,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -11703,7 +11681,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 85091,
+        "simulated_cycles_per_second": 69405,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -11752,7 +11730,7 @@
             "soc_aw_slot_backpressure": 2
           }
         },
-        "wall_time_seconds": 1.091719,
+        "wall_time_seconds": 1.338444,
         "workload": "faas_cold"
       },
       "score": {
@@ -12105,7 +12083,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 2193,
+        "micro_ops_per_second": 1834,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -12140,7 +12118,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 85824,
+        "simulated_cycles_per_second": 71771,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -12185,7 +12163,7 @@
             "ddr_reads_forwarded": 888
           }
         },
-        "wall_time_seconds": 0.692934,
+        "wall_time_seconds": 0.828613,
         "workload": "linux_service"
       },
       "score": {
@@ -12521,7 +12499,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 4334,
+        "micro_ops_per_second": 3415,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -12549,7 +12527,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 77638,
+        "simulated_cycles_per_second": 61172,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -12594,7 +12572,7 @@
             "ddr_reads_forwarded": 1158
           }
         },
-        "wall_time_seconds": 0.253315,
+        "wall_time_seconds": 0.321498,
         "workload": "memory_stress"
       },
       "score": {
@@ -12966,7 +12944,7 @@
           }
         },
         "micro_ops": 9328,
-        "micro_ops_per_second": 65875,
+        "micro_ops_per_second": 53735,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -13000,7 +12978,7 @@
         },
         "retired": 9328,
         "seed": 16,
-        "simulated_cycles_per_second": 50324,
+        "simulated_cycles_per_second": 41050,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -13045,7 +13023,7 @@
             "ddr_reads_forwarded": 133
           }
         },
-        "wall_time_seconds": 0.1416,
+        "wall_time_seconds": 0.173592,
         "workload": "coremark"
       },
       "score": {
@@ -13390,7 +13368,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 4602,
+        "micro_ops_per_second": 3968,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -13423,7 +13401,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 75630,
+        "simulated_cycles_per_second": 65205,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -13468,7 +13446,7 @@
             "ddr_reads_forwarded": 548
           }
         },
-        "wall_time_seconds": 0.212917,
+        "wall_time_seconds": 0.246957,
         "workload": "redis_kv"
       },
       "score": {
@@ -13831,7 +13809,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 3272,
+        "micro_ops_per_second": 2743,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -13866,7 +13844,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 79086,
+        "simulated_cycles_per_second": 66286,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -13911,7 +13889,7 @@
             "ddr_reads_forwarded": 665
           }
         },
-        "wall_time_seconds": 0.469319,
+        "wall_time_seconds": 0.559952,
         "workload": "http_api"
       },
       "score": {
@@ -14278,7 +14256,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 2032,
+        "micro_ops_per_second": 1404,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -14311,7 +14289,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 84304,
+        "simulated_cycles_per_second": 58239,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -14360,7 +14338,7 @@
             "soc_aw_slot_backpressure": 2
           }
         },
-        "wall_time_seconds": 1.101905,
+        "wall_time_seconds": 1.595079,
         "workload": "faas_cold"
       },
       "score": {
@@ -14713,7 +14691,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 1980,
+        "micro_ops_per_second": 1631,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -14748,7 +14726,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 77475,
+        "simulated_cycles_per_second": 63839,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -14793,7 +14771,7 @@
             "ddr_reads_forwarded": 888
           }
         },
-        "wall_time_seconds": 0.767607,
+        "wall_time_seconds": 0.931574,
         "workload": "linux_service"
       },
       "score": {
@@ -15129,7 +15107,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 4145,
+        "micro_ops_per_second": 3555,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -15157,7 +15135,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 74255,
+        "simulated_cycles_per_second": 63688,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -15202,7 +15180,7 @@
             "ddr_reads_forwarded": 1158
           }
         },
-        "wall_time_seconds": 0.264856,
+        "wall_time_seconds": 0.308801,
         "workload": "memory_stress"
       },
       "score": {
@@ -15574,7 +15552,7 @@
           }
         },
         "micro_ops": 9328,
-        "micro_ops_per_second": 55582,
+        "micro_ops_per_second": 39529,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -15608,7 +15586,7 @@
         },
         "retired": 9328,
         "seed": 16,
-        "simulated_cycles_per_second": 42461,
+        "simulated_cycles_per_second": 30198,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -15653,7 +15631,7 @@
             "ddr_reads_forwarded": 133
           }
         },
-        "wall_time_seconds": 0.167822,
+        "wall_time_seconds": 0.235974,
         "workload": "coremark"
       },
       "score": {

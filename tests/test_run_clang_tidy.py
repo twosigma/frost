@@ -206,6 +206,35 @@ include ../../common/common.mk
     assert clock == "300000000"
 
 
+def test_fefuzz_tidy_from_a_clean_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Lint the selected seed without creating generated files in the app."""
+    app = Path("sw/apps/fefuzz")
+    dest = tmp_path / app
+    dest.mkdir(parents=True)
+    (tmp_path / ".clang-tidy").symlink_to(REPO_ROOT / ".clang-tidy")
+    for name in ("common", "lib"):
+        (tmp_path / "sw" / name).symlink_to(REPO_ROOT / "sw" / name)
+    for name in ("Makefile", "fe_gen.py", "main.c"):
+        (dest / name).write_bytes((REPO_ROOT / app / name).read_bytes())
+    source = dest / "main.c"
+    with source.open("a") as out:
+        out.write('\n_Static_assert(FE_SEED == 4, "wrong fuzzer seed");\n')
+    monkeypatch.setenv("FE_SEED", "4")
+    monkeypatch.delenv("FE_TARGET", raising=False)
+    monkeypatch.setattr(wrapper, "get_root_dir", lambda: tmp_path)
+    monkeypatch.setattr(wrapper.sys, "argv", [str(SCRIPT_PATH), str(source)])
+
+    assert wrapper.main() == 0
+    assert not (dest / "fe_expect.h").exists()
+    assert not (dest / "fe_gen.S").exists()
+
+    monkeypatch.setenv("FE_TARGET", "1")
+    assert wrapper.main() == 1
+    assert "no program within budget" in capsys.readouterr().err
+
+
 def test_extract_flags_for_shared_code_uses_the_building_app(tmp_path: Path) -> None:
     """Shared vector-test code has no Makefile; it takes vec_smoke's flags."""
     _write_common_mk(tmp_path)

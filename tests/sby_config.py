@@ -508,14 +508,6 @@ SCRIPT_FORMS: tuple[CommandForm, ...] = (
         log_kind="pass",
     ),
     CommandForm(
-        "opt_merge",
-        "opt_merge",
-        required_flags=frozenset({"-keepdc"}),
-        safe_reason="with -keepdc it merges no register without a defined initial value",
-        transition="act",
-        log_kind="pass",
-    ),
-    CommandForm(
         "opt_muxtree",
         "opt_muxtree",
         safe_reason="removes multiplexer ports that cannot be selected",
@@ -1526,14 +1518,27 @@ def proof_inputs(path: Path) -> list[Path]:
     return [path, *(path.parent / name for name in files.values())]
 
 
+def cmo_replay_helper(path: Path, task: str | None = None) -> Path | None:
+    """Locate the Python runner needed by the CMO cover or its whole-script fixture."""
+    if path.name != "coherence_home.sby":
+        return None
+    cover = "coh_home_cmo_cover"
+    if task == cover or (task is None and cover in source(path).tasks):
+        return path.parent.parent / "tests" / "coherence_home_cmo_replay.py"
+    return None
+
+
 def stage_proof(path: Path, root: Path, fixture: Path) -> Path:
     """Copy a proof and all its inputs into a private checkout layout.
 
     SymbiYosys stages every external input from [files], including sources
     read by nested Yosys scripts. Inline [file] bodies travel with the proof.
+    A registered Python replay travels with the fixture in its tests directory.
     """
     root = Path(os.path.abspath(root))
     sources = proof_inputs(path)
+    if replay := cmo_replay_helper(path):
+        sources.append(replay)
     destinations = [
         fixture / Path(os.path.abspath(source_file)).relative_to(root)
         for source_file in sources
