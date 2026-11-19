@@ -22,34 +22,58 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 SUITE = "tests/test_riscv_vector_tests.py"
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ["--rtl", "--simulator", "native"]
 SLICES = 20
 # The wider programs account for most of the simulation cycles.
+FORM_SHARDS = {128: 4, 256: 4, 512: 12}
 COMPLETE_SHARDS = {128: 3, 256: 3, 512: 14}
 PROGRAMS_PER_WIDTH = 3017
+FORMS_PER_WIDTH = 665
+SHARD_SECONDS = {"slice": 90 * 60, "forms": 90 * 60, "complete": 300 * 60}
 
 
-def matrix(campaign: str, run_number: int, requested: str) -> list[dict]:
+def matrix(
+    campaign: str, run_number: int, requested: str, slices_per_run: int = 1
+) -> list[dict]:
     """Return one row per runner that will simulate programs."""
-    if campaign == "complete":
-        if requested:
+    if not 1 <= slices_per_run <= SLICES:
+        raise ValueError(f"slices per run must be between 1 and {SLICES}")
+    if requested:
+        if campaign == "complete":
             raise ValueError("choose either a slice or the complete campaign")
+        shard_options("slice", requested)
+        parts = [requested]
+    elif campaign == "complete" or slices_per_run == SLICES:
+        mode, shards = (
+            ("complete", COMPLETE_SHARDS)
+            if campaign == "complete"
+            else ("forms", FORM_SHARDS)
+        )
         return [
-            {"vlen": width, "mode": "complete", "part": f"{k}/{count}"}
-            for width, count in COMPLETE_SHARDS.items()
+            {"vlen": width, "mode": mode, "part": f"{k}/{count}"}
+            for width, count in shards.items()
             for k in range(1, count + 1)
         ]
-    part = requested if requested else str(run_number % SLICES)
-    shard_options("slice", part)
-    return [{"vlen": width, "mode": "slice", "part": part} for width in COMPLETE_SHARDS]
+    else:
+        start = run_number * slices_per_run
+        parts = [str((start + offset) % SLICES) for offset in range(slices_per_run)]
+    return [
+        {"vlen": width, "mode": "slice", "part": part}
+        for part in parts
+        for width in COMPLETE_SHARDS
+    ]
 
 
 def shard_options(mode: str, part: str) -> list[str]:
@@ -58,7 +82,7 @@ def shard_options(mode: str, part: str) -> list[str]:
         if part not in {str(k) for k in range(SLICES)}:
             raise ValueError("slice must be an integer from 0 to 19")
         return ["--one-per-form", "--shard", f"{int(part) + 1}/{SLICES}"]
-    return ["--shard", part]
+    return ["--one-per-form", "--shard", part] if mode == "forms" else ["--shard", part]
 
 
 def reproduce(vlen: int, selection: list[str]) -> str:
@@ -80,15 +104,22 @@ def reproduce(vlen: int, selection: list[str]) -> str:
     return prefix + shlex.join(command)
 
 
+def iter_rows(path: Path) -> Iterator[dict]:
+    """Yield completed results up to the first unreadable record."""
+    with path.open("rb") as stream:
+        for number, line in enumerate(stream, 1):
+            try:
+                row = json.loads(line)
+            except ValueError as exc:
+                raise ValueError(f"{path.name}:{number}: {exc}") from exc
+            if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+                raise ValueError(f"{path.name}:{number}: result needs a program name")
+            yield row
+
+
 def read_rows(path: Path) -> list[dict]:
-    """Read all completed results from one shard."""
-    rows = []
-    for line in path.read_text().splitlines():
-        row = json.loads(line)
-        if not isinstance(row, dict) or not isinstance(row.get("name"), str):
-            raise ValueError(f"{path}: result needs a program name")
-        rows.append(row)
-    return rows
+    """Require the entire shard results file to be readable."""
+    return list(iter_rows(path))
 
 
 def check_rows(
@@ -137,6 +168,47 @@ def check_rows(
     return ran, sorted(expected - passed), errors
 
 
+def run_until(command: list[str], deadline: float, transcript: TextIO) -> int:
+    """Stop the suite and its active tools when the shard budget expires."""
+    print(shlex.join(command), file=transcript, flush=True)
+    with subprocess.Popen(
+        command, start_new_session=True, stdout=transcript, stderr=subprocess.STDOUT
+    ) as process:
+        try:
+            return process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            # Let a model build release its make process group first.
+            process.send_signal(signal.SIGINT)
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=2)
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            raise
+
+
+def save_failure(work: Path, output: Path, name: str, row: dict) -> str:
+    """Keep the native output or build diagnostic and describe it in the summary."""
+    if Path(name).name != name or name in {".", ".."}:
+        return "Invalid program name."
+    source = work / "images" / name / "native.log"
+    log = Path("failures") / f"{name}.log"
+    message = row.get("message")
+    if not isinstance(message, str):
+        message = ""
+    reason = message.removesuffix(f" ({source})")
+    if source.is_file() or message:
+        (output / log).parent.mkdir(exist_ok=True)
+        if source.is_file():
+            shutil.copyfile(source, output / log)
+        else:
+            (output / log).write_text(message + "\n")
+        if message:
+            row["message"] = f"{reason} ({log})"
+        detail = reason.splitlines()[0] if reason else "No verified pass"
+        return f"{detail}. See `{log}` in the shard artifact."
+    return "No verified pass." if row else "No result recorded."
+
+
 def run_shard(
     vlen: int, mode: str, part: str, output: Path, prebuilt: Path | None
 ) -> int:
@@ -144,72 +216,115 @@ def run_shard(
     from test_riscv_vector_tests import parse_makefrag
 
     selection = shard_options(mode, part)
-    if mode == "complete" and part not in {
-        f"{k}/{COMPLETE_SHARDS[vlen]}" for k in range(1, COMPLETE_SHARDS[vlen] + 1)
-    }:
-        raise ValueError(f"invalid complete shard for VLEN {vlen}: {part}")
+    if mode != "slice":
+        total = (FORM_SHARDS if mode == "forms" else COMPLETE_SHARDS)[vlen]
+        if part not in {f"{k}/{total}" for k in range(1, total + 1)}:
+            raise ValueError(f"invalid {mode} shard for VLEN {vlen}: {part}")
 
     output.mkdir(parents=True, exist_ok=True)
     results = output / "results.jsonl"
     manifest = output / "simulator.json"
     selected = output / "selected.txt"
-    for old in (results, manifest, selected):
+    for old in (results, manifest, selected, *(output / "failures").glob("*.log")):
         old.unlink(missing_ok=True)
     summary = output / "summary.md"
     summary.write_text(
         f"### Generated vectors at VLEN {vlen}, {mode} {part}\n\n"
         f"```sh\n{reproduce(vlen, selection)}\n```\n"
     )
-    command = [sys.executable, str(ROOT / SUITE), *NATIVE, "--vlen", str(vlen)]
-    with tempfile.TemporaryDirectory(prefix="rvv-ci-") as tmp, summary.open("a") as log:
+    seconds = SHARD_SECONDS[mode]
+    deadline = time.monotonic() + seconds
+    with (
+        tempfile.TemporaryDirectory(prefix="rvv-ci-") as tmp,
+        summary.open("a") as log,
+        (output / "shard.log").open("w") as transcript,
+    ):
         work = Path(tmp)
-        if prebuilt is None:
-            prebuilt = work / "model/frost-native"
-            build = subprocess.run(
-                [*command, "--sim-threads", "4", "--build-sim", str(prebuilt)]
-            )
-            if build.returncode:
-                print("\nSimulator build failed. Zero programs ran.", file=log)
-                return 1
+        command = [
+            sys.executable,
+            "-u",
+            str(ROOT / SUITE),
+            *NATIVE,
+            "--vlen",
+            str(vlen),
+            "--workdir",
+            str(work),
+        ]
         try:
+            if prebuilt is None:
+                prebuilt = work / "model/frost-native"
+                build = [*command, "--sim-threads", "4", "--build-sim", str(prebuilt)]
+                if run_until(build, deadline, transcript):
+                    print(
+                        "\nSimulator build failed. Zero programs ran. See `shard.log`.",
+                        file=log,
+                    )
+                    return 1
             shutil.copyfile(f"{prebuilt}.json", manifest)
-            run = subprocess.run(
+            status = run_until(
                 [
                     *command,
                     "--prebuilt-sim",
                     str(prebuilt),
                     *selection,
-                    "--workdir",
-                    str(work),
                     "--results-jsonl",
                     str(results),
-                ]
+                ],
+                deadline,
+                transcript,
             )
-            makefrag = work / "Makefrag"
-            if not makefrag.exists():
-                print("\nThe suite stopped before recording its selection.", file=log)
-                return 1
-            names = parse_makefrag(makefrag.read_text())
-            selected.write_text("".join(f"{name}\n" for name in names))
-            try:
-                rows = read_rows(results)
-            except (OSError, ValueError) as exc:
-                print(f"\nCould not read the results: {exc}", file=log)
-                rows = []
-            ran, failed, errors = check_rows(names, rows, vlen)
+        except subprocess.TimeoutExpired:
             print(
-                f"\n{len(names)} selected, {ran} ran, {len(failed)} failed or unverified.",
+                f"\nShard exceeded its {seconds:g}-second deadline. See `shard.log`.",
                 file=log,
             )
-            for error in errors:
-                print(f"\n{error}.", file=log)
-            for name in failed:
-                print(f"\n`{name}` at VLEN {vlen}\n", file=log)
-                print(f"```sh\n{reproduce(vlen, ['--test', name])}\n```", file=log)
-            return int(bool(run.returncode or errors or failed))
-        except (OSError, ValueError, KeyError) as exc:
-            print(f"\nCould not verify shard results: {exc}", file=log)
+            status = 1
+        except OSError as exc:
+            print(f"\nCould not run the suite: {exc}", file=log)
             return 1
+        makefrag = work / "Makefrag"
+        if not makefrag.exists():
+            print(
+                "\nThe suite stopped before recording its selection. See `shard.log`.",
+                file=log,
+            )
+            return 1
+        names = parse_makefrag(makefrag.read_text())
+        selected.write_text("".join(f"{name}\n" for name in names))
+        rows: list[dict] = []
+        read_error = ""
+        try:
+            rows.extend(iter_rows(results))
+        except (OSError, ValueError) as exc:
+            read_error = f"Could not read the results: {exc}"
+        ran, failed, errors = check_rows(names, rows, vlen)
+        if read_error:
+            errors.append(read_error)
+        expected = PROGRAMS_PER_WIDTH if mode == "complete" else FORMS_PER_WIDTH
+        try:
+            count = json.loads((work / "selection.json").read_text())["selection_count"]
+            if type(count) is not int or count != expected:
+                errors.append(
+                    f"Expected {expected} programs before sharding, found {count}"
+                )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            errors.append(f"Could not read the selection count: {exc}")
+        print(
+            f"\n{len(names)} selected, {ran} ran, {len(failed)} failed or unverified.",
+            file=log,
+        )
+        for error in errors:
+            print(f"\n{error}.", file=log)
+        by_name = {row["name"]: row for row in rows}
+        for name in failed:
+            detail = save_failure(work, output, name, by_name.get(name, {}))
+            print(f"\n`{name}` at VLEN {vlen}: {detail}\n", file=log)
+            print(f"```sh\n{reproduce(vlen, ['--test', name])}\n```", file=log)
+        if failed and rows and not read_error:
+            temp = results.with_suffix(".tmp")
+            temp.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            temp.replace(results)
+        return int(bool(status or errors or failed))
 
 
 def collect(artifacts: Path, output: Path, shard_status: str = "success") -> int:
@@ -316,10 +431,11 @@ def main() -> int:
         "--campaign", choices=("rotation", "complete"), default="rotation"
     )
     plan.add_argument("--run-number", type=int, required=True)
+    plan.add_argument("--slices-per-run", type=int, default=1)
     plan.add_argument("--slice", default="")
     run = commands.add_parser("run")
     run.add_argument("vlen", type=int, choices=COMPLETE_SHARDS)
-    run.add_argument("mode", choices=("slice", "complete"))
+    run.add_argument("mode", choices=("slice", "forms", "complete"))
     run.add_argument("part")
     run.add_argument("--output", type=Path, default=Path("rvv-results"))
     run.add_argument("--prebuilt-sim", type=Path)
@@ -330,7 +446,9 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.command == "matrix":
-            rows = matrix(args.campaign, args.run_number, args.slice)
+            rows = matrix(
+                args.campaign, args.run_number, args.slice, args.slices_per_run
+            )
             print(json.dumps({"include": rows}, separators=(",", ":")))
             return 0
         if args.command == "collect":

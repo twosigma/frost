@@ -404,6 +404,7 @@ def generate_tests(
         selected = one_per_form(selected, vlen)
     profile = cycle_profile.read_bytes() if cycle_profile is not None else b""
     identity = {
+        "selection_count": len(selected),
         "selection_sha256": selection_sha256(selected, vlen),
         "profile_sha256": hashlib.sha256(profile).hexdigest(),
     }
@@ -1182,6 +1183,7 @@ def test_sample_shard_changes_selection(tmp_path: Path) -> None:
     )
     assert first and second and not set(first) & set(second)
     expected = {
+        "selection_count": len(first) + len(second),
         "selection_sha256": selection_sha256(first + second, 128),
         "profile_sha256": hashlib.sha256(profile.read_bytes()).hexdigest(),
     }

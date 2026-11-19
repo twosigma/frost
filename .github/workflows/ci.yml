@@ -25,20 +25,20 @@ on:
   pull_request:
     branches: [main]
     types: [labeled]
-  # A manual run on a branch can prove every formal task and synthesis target
-  # again instead of reusing earlier passes (tests/README.md).
+  # A manual run can replay a vector slice, run the complete vector
+  # campaign or run regular CI with optional fresh proofs.
   workflow_dispatch:
     inputs:
       reprove:
-        description: Prove every formal task and synthesis target again
+        description: Reprove formal and synthesis targets in regular CI
         type: boolean
         default: false
       slice:
-        description: Vector slice from 0 to 19 (blank uses the rotation)
+        description: Run only one vector slice (0 to 19)
         type: string
         required: false
       campaign:
-        description: Generated vector programs to run
+        description: Select complete to run only the vector campaign
         type: choice
         default: rotation
         options:
@@ -56,14 +56,15 @@ permissions:
 # request keeps one run: adding run-ci again cancels the run an earlier
 # labelling started. The ASIC flow in asic.yml follows the same rule. Adding a
 # label other than run-ci starts a run in a group of its own, so it does not
-# cancel the pull request's run.
+# cancel the pull request's run. Each manual vector replay or complete
+# campaign has its own group so it can finish alongside a main run.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{
     github.event.action == 'labeled' &&
     github.event.label.name != 'run-ci' && '-label' || '' }}${{
     github.event_name == 'workflow_dispatch' &&
-    inputs.campaign == 'complete'
+    (inputs.campaign == 'complete' || inputs.slice != '')
     && format('-rvv-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -74,20 +75,21 @@ env:
   SBY_VERSION: "0.70"
   # Settings of the formal and synthesis jobs that reuse earlier passes
   # (tests/README.md#reusing-formal-and-synthesis-results). A push to main
-  # whose head commit message contains [reprove], or a manual run with
-  # reprove set, proves everything again.
+  # whose head commit message contains [reprove], or a full manual CI
+  # run with reprove set, proves everything again.
   FROST_REUSE_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.reprove) || contains(github.event.head_commit.message, '[reprove]') }}
   FROST_REUSE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
   FROST_REUSE_COMMIT: ${{ github.sha }}
   FROST_REUSE_REF: ${{ github.ref_name }}
 
 jobs:
-  # A pull request's run does its jobs only when the label that started it is
-  # run-ci. Every other job depends on this one, directly or through the image
-  # build, and tests its output; pushes to main and manual runs always run
-  # everything.
+  # A vector campaign or replay goes directly to the shared image.
+  # Regular CI runs on main, on demand or for the run-ci label.
   gate:
     name: Select jobs
+    if: >-
+      ${{ github.event_name != 'workflow_dispatch' ||
+      (inputs.campaign != 'complete' && inputs.slice == '') }}
     runs-on: ubuntu-26.04
     outputs:
       full: ${{ steps.select.outputs.full }}
@@ -180,7 +182,10 @@ jobs:
     name: Build Docker Image
     runs-on: ubuntu-26.04
     needs: gate
-    if: ${{ needs.gate.outputs.full == 'true' }}
+    if: >-
+      ${{ !cancelled() && (needs.gate.result == 'skipped' ||
+      (needs.gate.result == 'success' &&
+      needs.gate.outputs.full == 'true')) }}
     outputs:
       tools_id: ${{ steps.identity.outputs.tools_id }}
       rvv_matrix: ${{ steps.rvv.outputs.matrix }}
@@ -193,9 +198,18 @@ jobs:
         env:
           CAMPAIGN: ${{ inputs.campaign || 'rotation' }}
           SLICE: ${{ inputs.slice }}
+          MAIN_RUN: ${{ needs.gate.outputs.main_run }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SLICES_PER_MAIN_RUN: "20"
         run: |
+          number=${MAIN_RUN:-$GITHUB_RUN_NUMBER}
+          slices=1
+          case "$GITHUB_EVENT_NAME" in
+            push) slices=$SLICES_PER_MAIN_RUN ;;
+            pull_request) number=$PR_NUMBER ;;
+          esac
           matrix=$(python3 tests/rvv_ci.py matrix \
-            --run-number "$GITHUB_RUN_NUMBER" \
+            --run-number "$number" --slices-per-run "$slices" \
             --campaign "$CAMPAIGN" --slice "$SLICE")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
@@ -1838,7 +1852,8 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -1874,7 +1889,8 @@ jobs:
   test-python:
     name: Fast Python Tests
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -1943,9 +1959,9 @@ jobs:
       Generated vectors (${{ matrix.vlen }},
       ${{ matrix.mode }} ${{ matrix.part }})
     runs-on: ubuntu-26.04
-    needs: [build-docker, gate]
-    if: ${{ needs.gate.outputs.full == 'true' }}
-    timeout-minutes: 360
+    needs: build-docker
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' }}
+    timeout-minutes: ${{ matrix.mode == 'complete' && 360 || 140 }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.build-docker.outputs.rvv_matrix) }}
@@ -1955,19 +1971,25 @@ jobs:
       NUMBER_OF_CPU_CORES: "4"
     steps:
       - uses: actions/checkout@v7.0.1
+        timeout-minutes: 5
       - name: Fetch the ISA test environment
+        timeout-minutes: 5
         run: |
           git submodule update --init --recursive \
             sw/apps/riscv_tests/riscv-tests
       - uses: actions/download-artifact@v8.0.2
+        timeout-minutes: 15
         with:
           name: frost-docker-image
           path: /tmp
       - name: Load Docker image
+        timeout-minutes: 5
         run: |
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
       - name: Run vector programs
+        id: programs
+        timeout-minutes: ${{ matrix.mode == 'complete' && 310 || 100 }}
         env:
           VLEN: ${{ matrix.vlen }}
           MODE: ${{ matrix.mode }}
@@ -1977,7 +1999,14 @@ jobs:
             python3 tests/rvv_ci.py run "$VLEN" "$MODE" "$PART"
       - name: Summarize the shard
         if: ${{ !cancelled() }}
-        run: cat rvv-results/summary.md >> "$GITHUB_STEP_SUMMARY"
+        env:
+          OUTCOME: ${{ steps.programs.outcome }}
+        run: |
+          mkdir -p rvv-results
+          if [ "$OUTCOME" != success ]; then
+            printf '\nVector step outcome: %s.\n' "$OUTCOME" >> rvv-results/summary.md
+          fi
+          cat rvv-results/summary.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7.0.2
         if: ${{ !cancelled() }}
         with:
@@ -1990,10 +2019,9 @@ jobs:
   rvv-campaign-report:
     name: Complete vector campaign results
     runs-on: ubuntu-26.04
-    needs: [gate, build-docker, test-rvv]
+    needs: [build-docker, test-rvv]
     if: >-
-      ${{ !cancelled() && needs.gate.outputs.full == 'true' &&
-      needs.build-docker.result == 'success' &&
+      ${{ !cancelled() && needs.build-docker.result == 'success' &&
       github.event_name == 'workflow_dispatch' &&
       inputs.campaign == 'complete' }}
     steps:

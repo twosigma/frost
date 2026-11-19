@@ -320,9 +320,9 @@ CI runs on pushes to `main`. A pull request starts no CI by itself: adding the
 `run-ci` label runs the CI workflow on it, and `run-asic` runs the OpenROAD
 flow's synthesis and floorplanning. The full run covers the RISC-V
 architecture tests and riscv-torture programs against Spike reference
-results, the riscv-tests suites, a rotating slice of the generated
-vector programs at three vector lengths, TestRIG's comparison of each
-instruction with the Sail RISC-V model, unit benches for the CPU and SoC
+results, the riscv-tests suites, generated vector programs at three
+vector lengths, TestRIG's comparison of each instruction with the Sail
+RISC-V model, unit benches for the CPU and SoC
 blocks, full programs from on-chip BRAM and from cached DDR, formal proofs,
 strict SystemVerilog elaboration and synthesis checks, the Ethernet MAC/PCS
 benches, and QEMU boots of the Linux images, and it merges the coverage of the
@@ -330,6 +330,15 @@ simulations that contribute most to it, cover points included, into one report. 
 its own workflow, so a newer push to `main` does not cancel it.
 The [test guide](tests/README.md#ci-integration) has the details and the commands
 for each suite.
+
+Each started main push checks all 1,995 one-per-form vector programs.
+Pull requests labeled `run-ci` check one slice chosen by PR number. A
+regular manual run checks one slice chosen by workflow run number. A
+manual slice replay runs only the image build and three vector shards. A
+complete manual campaign runs the image build, all 9,051 programs and
+a report. Estimated vector costs after the shared image build are
+11 runner-hours for main, 0.85 per slice and 56 for the campaign.
+See the [test guide](tests/README.md#generated-vector-programs-in-ci).
 
 ### Building Software
 

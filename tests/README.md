@@ -1071,29 +1071,58 @@ programs must print the pass marker after their last check.
 
 #### Generated vector programs in CI
 
-On a push to main, or a CI run requested on a pull request, three jobs
-run native RTL at VLEN 128, 256 and 512. Each runs one twentieth of
-the one-program-per-form selection. The zero-based slice is the CI
-workflow run number modulo 20. Across 20 consecutive run numbers the
-slices cover all 1,995 programs once. Manual and pull request runs
-also use run numbers. A skipped or canceled slice can be replayed.
+Every push to main that starts CI runs one program per instruction
+form at VLEN 128, 256 and 512, all 1,995 programs. The workflow sets
+`SLICES_PER_MAIN_RUN` to 20 for this selection. Its 4, 4 and 12
+shards at those widths cost an estimated 11 runner-hours in total.
+These estimates use local vector results and a hosted CoreMark run.
+They cover the vector jobs after the shared image build.
 
-In **Run workflow**, leave `campaign` at `rotation` and enter a `slice`
-from 0 through 19 to replay it. Leave `slice` empty to use the run
-number. A new dispatch draws a DDR seed from its run ID. Rerunning the
-original job or using its printed command repeats its seed.
-For the full 9,051-program campaign, choose `complete` and
-leave `slice` empty. That run assigns 3 shards to VLEN 128, 3 to
-VLEN 256 and 14 to VLEN 512.
+With a setting of N from 1 through 19, each started main run takes N
+consecutive slices out of 20. Its first zero-based slice is the
+gate's count of started main runs times N, modulo 20. Pending runs
+that get superseded take no count. A rerun keeps its count, a lost
+count restarts at zero, and an empty count uses the workflow run
+number. Each slice costs three jobs and an estimated 0.85 runner-hours,
+so a setting of 5 costs 15 jobs and about 4.25 runner-hours per start.
+Twenty consecutive slices cover all 1,995 programs once.
+
+Adding the `run-ci` label to a pull request runs one slice, the PR
+number modulo 20. In **Run workflow**, leaving `campaign` at
+`rotation` and `slice` empty runs regular CI with one slice, the
+workflow run number modulo 20. Both check 99 to 102 programs in three
+vector jobs. Selecting `reprove` on regular manual CI forces fresh
+formal and synthesis checks.
+
+To replay one slice, keep `rotation` and set `slice` to 0 through 19.
+Only the image build and three vector shards run. To run all 9,051
+programs, choose `complete` and leave `slice` empty. Only the image
+build, 3, 3 and 14 vector shards by width, and the campaign report
+run, at an estimated 56 vector runner-hours. Both manual vector
+runs get their own concurrency group and skip regular CI jobs,
+including lint, fast Python tests, formal and synthesis, even with
+`reprove` selected. Each dispatch draws a DDR seed from its run ID.
+Rerunning failed jobs repeats that seed while the shared image
+artifact is available (one day). After it expires, check out the
+tested commit and run the command in the shard summary.
 
 Each shard builds a four-thread simulator, checks its executable and
-source manifest, and runs one program at a time. The job summary gives
-the slice or shard, the DDR seed and the local command. Each failure
-has a command with `--test NAME` to rerun that exact numbered split.
-An empty selection, missing results or a pass without armed assertions
-fails the shard. Its artifact holds the selected names, results and
-simulator manifest. The `rvv-complete` artifact merges and checks all
-20 shards and records the commit, tools, simulator inputs and results.
+source manifest, and runs one program at a time. Before sharding, the
+selection must contain 665 programs per width for one per form or
+3,017 for the complete suite. An empty shard, missing results or a
+pass without armed assertions fails the job. Each program has a
+20,000,000-cycle limit and a 7,200-second process timeout. The build
+and run together have 90 minutes for one-per-form shards and 300 for
+complete shards. The workflow reserves time to publish the results
+after a deadline.
+
+The shard summary gives the DDR seed and local command. Each failed
+or unfinished program has a command with `--test NAME` for its exact
+split. The shard artifact retains the summary, selected names,
+completed results, simulator manifest, suite log and available output
+from failed or interrupted programs. The `rvv-complete` artifact
+merges and checks all complete shards and records the commit, tools,
+simulator inputs and results.
 
 The fast Python tests run a Spike sample at VLEN 128 and 256. The complete
 inventory test is marked `slow`. The cocotb sample also requires
@@ -1666,8 +1695,8 @@ request's run checks out. Adding any other label starts a run of each workflow
 in which only its job selection runs. Adding a label again cancels the
 workflow's run in progress on the pull request. To run again after a later
 push, remove the label and add it again, or start a manual run of the workflow
-on the branch. Pushes to `main` run every job of the CI workflow and the ASIC
-flow's synthesis and floorplanning. `./scripts/frost.py check` runs the Lint
+on the branch. Pushes to `main` run regular CI and the ASIC flow's
+synthesis and floorplanning. `./scripts/frost.py check` runs the Lint
 and Fast Python Tests jobs locally.
 
 | Suite | Configurations |
@@ -1843,8 +1872,8 @@ one; a missed input is bounded three ways:
   next runs: a stale pass is reported by at most nine consecutive `main` runs.
   A lost count starts again at 0 with a new lifetime (the run that restarted
   it); markers of an earlier lifetime are not reused.
-- **Forcing.** Run the workflow manually on a branch with `reprove` set, or
-  push to `main` a head commit whose message contains `[reprove]` (a pull
+- **Forcing.** Start a full manual CI run on a branch with `reprove`
+  set, or push to `main` a head commit that contains `[reprove]` (a pull
   request's commits do not carry it to the run). Changing `SALT` in
   `tests/ci_reuse.py` makes every key new; change `SCHEMA` when the meaning of
   a key or a marker changes.
