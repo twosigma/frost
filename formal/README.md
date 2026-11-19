@@ -142,9 +142,11 @@ its measured time.
 
 These three cover depths leave twenty frames beyond the first depths
 that reach the cover, 213, 215 and 230. The bounded checks canonicalize
-packed word selections before bit mapping. They use ABC BMC3's default
-solver for direct connections and CaDiCaL for one-stage links. Each
-bounded schedule checks the two values of the one-bit watched-byte
+packed word selections before bit mapping. The linked sibling tasks use
+ABC BMC3 with CaDiCaL. The direct tasks and linked pressure tasks use
+its default solver.
+
+Each bounded schedule checks the two values of the one-bit watched-byte
 choice in two tasks: the task without a suffix checks the first byte,
 and its `_second` task checks the second. Together they cover every
 watch value. The byte values are arbitrary, and reset and the initial
