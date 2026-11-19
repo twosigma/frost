@@ -528,6 +528,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC frame loopback through DDR rings, with completion and interrupt checks"
         ),
     ),
+    "nic_cmo_loopback": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_cmo_loopback",
+        description="Check transmitted payloads and DMA completions while cleaning packet blocks",
+    ),
     "nic_sg_loopback": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1567,14 +1573,49 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
         verilator_extra_args=("--assert", "-GL2_LINE_BYTES=32"),
     ),
+    "svpbmt_cmo_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_cmo_test",
+        nic_mac_clocks=False,
+        description=(
+            "cbo.clean, cbo.flush and cbo.inval through cacheable, NC and IO views of "
+            "a DDR line whose cacheable copy is dirty: no trap; clean and flush write the "
+            "line to DDR inside the CBO's window and keep the data in every view; inval "
+            "writes nothing and exposes the DDR baseline. Adjacent CMO/load pairs exercise "
+            "all nine PMA, NC and IO mapping combinations"
+        ),
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "3000000"),
+            ("FROST_CMO_DDR_CHECK", "1"),
+            ("FROST_CMO_DDR_MIN_WINDOWS", "27"),
+        ),
+        verilator_extra_args=("--assert",),
+    ),
+    "svpbmt_cmo_test_inval_flush": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_cmo_test",
+        nic_mac_clocks=False,
+        description=(
+            "svpbmt_cmo_test in a CBO_INVAL_AS_FLUSH build: cbo.inval in M mode writes the "
+            "dirty line to DDR and keeps the data, as cbo.flush"
+        ),
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "3000000"),
+            ("FROST_CMO_DDR_CHECK", "1"),
+            ("FROST_CMO_DDR_MIN_WINDOWS", "27"),
+        ),
+        verilator_extra_args=("--assert", "-DFROST_CBO_INVAL_AS_FLUSH=1"),
+    ),
     "cbo_mgmt_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="cbo_mgmt_test",
         nic_mac_clocks=False,
         description=(
-            "Zicbom cbo.clean/flush/inval as ordered no-ops: CBCFE and CBIE gates in S and U, "
-            "CBIE WARL, load-permission translation, store faults with mtval = rs1, device no-op"
+            "Zicbom dirty-line write-back and invalidate, CBCFE and CBIE gates in S and U, "
+            "CBIE WARL, translation faults, device access, atomic and interrupt ordering"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
@@ -3004,8 +3045,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "store_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue",
         hdl_toplevel_module="store_queue",
-        description="Store-queue allocation, forwarding, committed writes, and "
-        "recovery",
+        description="Store-queue allocation, forwarding, committed writes, recovery, "
+        "and Zicbom load and vector ordering across Svpbmt aliases",
     ),
     "store_queue_axi": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue_axi",
@@ -4078,6 +4119,32 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Line-scope cbo.zero with 32-byte home lines: two zero-filled lines "
         "per block",
     ),
+    "coherence_cbo_mgmt": CocotbRunConfig(
+        verilator_extra_args=("--assert",),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_mgmt",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Zicbom write-back: clean and flush write dirty L1D or L2 blocks to "
+        "memory before done, inval discards them, absent and clean blocks write nothing, "
+        "no eviction rewrites a cleaned block, DMA races and program order",
+    ),
+    "coherence_cbo_mgmt_misses": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3"),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_mgmt",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Zicbom write-back with three L1D request endpoints and look-ahead",
+    ),
+    "coherence_cbo_mgmt_equal_lines": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3", "-GLINE_BYTES=32"),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_mgmt",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Zicbom write-back with 32-byte home lines: two home requests per block",
+    ),
+    "coherence_cbo_mgmt_links": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3", "-GLINK_STAGES=2"),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_mgmt",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Zicbom write-back with link stages between the L1D and the home",
+    ),
     "coherence_full_line": CocotbRunConfig(
         verilator_extra_args=("--assert",),
         python_test_module="cocotb_tests.cache.test_coherence_full_line",
@@ -4355,7 +4422,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Independent completions, parallel way reads, dispatch-cycle lookup "
             "offers, dirty recalls, way pins, victim locks, prefetches, grants "
-            "forwarded from fills, and streaming placement"
+            "forwarded from fills, CMO ordering between DMA readers, and streaming placement"
         ),
         verilator_extra_args=(
             "--assert",

@@ -80,6 +80,7 @@ module sq_forwarding_unit #(
     input logic [DEPTH-1:0] sq_is_cmo = '0,
     input logic [DEPTH-1:0] sq_committed,
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] sq_rob_tag_flat,
+    // A Zicbom entry supplies the physical DDR address underlying its mapping.
     input logic [(DEPTH*riscv_pkg::XLEN)-1:0] sq_address_flat,
     input logic [(DEPTH*2)-1:0] sq_size_flat,
     input logic [(DEPTH*riscv_pkg::FLEN)-1:0] sq_data_fwd_flat,
@@ -224,6 +225,7 @@ module sq_forwarding_unit #(
     // Each quarter uses an identical registered address copy for fanout.
     logic [XLEN-1:0] sq_check_addr_for_entry;
     logic [DwordAddrWidth-1:0] sq_check_dword_for_entry;
+    logic [XLEN-1:0] block_probe_addr;
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
       same_dword = 1'b0;
@@ -247,6 +249,10 @@ module sq_forwarding_unit #(
         sq_check_addr_for_entry = i_sq_check_addr_d;
       end
       sq_check_dword_for_entry = sq_check_addr_for_entry[XLEN-1:3];
+      // A CMO entry carries the real DDR address. A younger load via the
+      // translated NC or IO window refers to the same physical block.
+      block_probe_addr = sq_is_cmo[i] && riscv_pkg::pma_pbmt_alias_ok(sq_check_addr_for_entry) ?
+          riscv_pkg::pbmt_alias_real(sq_check_addr_for_entry) : sq_check_addr_for_entry;
       fwd_entry_age[i] = {1'b0, entry_rob_tag} - {1'b0, rob_head_tag_q};
       // Program-order rank for winner selection: ring distance from the SQ
       // head.  DEPTH is a power of two, so the subtraction wraps modulo DEPTH.
@@ -278,7 +284,7 @@ module sq_forwarding_unit #(
         // matching L1D record to install.
         if (sq_addr_valid[i]) begin
           same_dword = sq_is_zero[i] ?
-              block_addr_eq(entry_address[XLEN-1:3], sq_check_dword_for_entry) :
+              block_addr_eq(entry_address[XLEN-1:3], block_probe_addr[XLEN-1:3]) :
               dword_addr_eq(entry_address[XLEN-1:3], sq_check_dword_for_entry);
           store_byte_mask = sq_is_zero[i] ? '1 : gen_byte_en(entry_address[2:0], entry_size);
 

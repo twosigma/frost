@@ -278,7 +278,7 @@ def formal_task_key(
     The key holds the .sby text (with its [files] lines in sorted order, as
     SymbiYosys copies the files by name) and the path and content of every
     [files] entry. An entry must be one path to a regular file inside the
-    repository.
+    repository. A task that replays its witnesses also keys its Python runner.
     """
     if not tools_id:
         raise ReuseKeyError("no tool image identity given")
@@ -290,6 +290,15 @@ def formal_task_key(
     formal_dir = root / registry.formal_dir
     sby_path = formal_dir / task.sby_file
     name = task.sby_file
+    runner = registry.runner
+    if replay := sby_config.cmo_replay_helper(sby_path, task.task):
+        replay_name = relative(replay, root)
+        replay_digest = cache.digest(replay)
+        if replay_digest is None:
+            raise ReuseKeyError(f"missing formal replay helper: {replay_name}")
+        runner = canonical_digest(
+            {"main": runner, "replay": {replay_name: replay_digest}}
+        )
     try:
         sections = dict(sby_config.source(sby_path).sections)
     except sby_config.ConfigError as error:
@@ -323,7 +332,7 @@ def formal_task_key(
             "sby": {"path": relative(sby_path, root), "sections": sections},
             "files": sorted(files, key=lambda f: (f["path"], f["entry"])),
             "timeout": registry.timeout(task),
-            "runner": registry.runner,
+            "runner": runner,
             "harness": harness_digests(root, cache),
         }
     )

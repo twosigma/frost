@@ -19,6 +19,8 @@ module rs_payload_twin_formal #(
     parameter int unsigned VLEN = 256,
     parameter bit REGISTERED_SECTOR_MATCH = 1'b0
 ) (
+    input logic i_cmo_ready,
+    input logic i_cmo_done,
     input logic i_coherent_store_pending,
     input logic i_coherent_store_ready,
     input logic i_coherent_sc_pending,
@@ -220,6 +222,9 @@ module rs_payload_twin_formal #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag_b;
   logic o_coherent_write_sc_a;
   logic o_coherent_write_sc_b;
+  logic o_cmo_valid_a, o_cmo_valid_b;
+  riscv_pkg::cmo_kind_e o_cmo_kind_a, o_cmo_kind_b;
+  logic [riscv_pkg::XLEN-1:0] o_cmo_addr_a, o_cmo_addr_b;
   logic o_coherent_write_zero_a;
   logic o_coherent_write_zero_b;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_sq_write_tag_a;
@@ -518,6 +523,7 @@ module rs_payload_twin_formal #(
   logic o_perf_cdb_oversubscribed_b;
   tomasulo_wrapper #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
+      .CMO_HOME(1'b1),
       .SPLIT_RS_DISPATCH(SPLIT_RS_DISPATCH),
       .ENABLE_DISPATCH_DONE_REPAIR(ENABLE_DISPATCH_DONE_REPAIR),
       .MEM_RESPONSE_ERRORS(MEM_RESPONSE_ERRORS),
@@ -562,6 +568,11 @@ module rs_payload_twin_formal #(
       .o_coherent_read_kind(o_coherent_read_kind_a),
       .o_coherent_read_tag(o_coherent_read_tag_a),
       .o_coherent_write_sc(o_coherent_write_sc_a),
+      .o_cmo_valid(o_cmo_valid_a),
+      .o_cmo_kind(o_cmo_kind_a),
+      .o_cmo_addr(o_cmo_addr_a),
+      .i_cmo_ready(i_cmo_ready),
+      .i_cmo_done(i_cmo_done),
       .o_coherent_write_zero(o_coherent_write_zero_a),
       .o_coherent_sq_write_tag(o_coherent_sq_write_tag_a),
       .o_coherent_amo_write_tag(o_coherent_amo_write_tag_a),
@@ -871,6 +882,7 @@ module rs_payload_twin_formal #(
   );
   tomasulo_wrapper #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
+      .CMO_HOME(1'b1),
       .SPLIT_RS_DISPATCH(SPLIT_RS_DISPATCH),
       .ENABLE_DISPATCH_DONE_REPAIR(ENABLE_DISPATCH_DONE_REPAIR),
       .MEM_RESPONSE_ERRORS(MEM_RESPONSE_ERRORS),
@@ -915,6 +927,11 @@ module rs_payload_twin_formal #(
       .o_coherent_read_kind(o_coherent_read_kind_b),
       .o_coherent_read_tag(o_coherent_read_tag_b),
       .o_coherent_write_sc(o_coherent_write_sc_b),
+      .o_cmo_valid(o_cmo_valid_b),
+      .o_cmo_kind(o_cmo_kind_b),
+      .o_cmo_addr(o_cmo_addr_b),
+      .i_cmo_ready(i_cmo_ready),
+      .i_cmo_done(i_cmo_done),
       .o_coherent_write_zero(o_coherent_write_zero_b),
       .o_coherent_sq_write_tag(o_coherent_sq_write_tag_b),
       .o_coherent_amo_write_tag(o_coherent_amo_write_tag_b),
@@ -1222,6 +1239,8 @@ module rs_payload_twin_formal #(
       .o_perf_mem_rs_two_ready_one_issued(o_perf_mem_rs_two_ready_one_issued_b),
       .o_perf_cdb_oversubscribed(o_perf_cdb_oversubscribed_b)
   );
+  always_comb c_twin_cmo_request : cover (o_cmo_valid_a && o_cmo_valid_b);
+
   always_comb begin
     assert (o_coherent_sc_valid_a == o_coherent_sc_valid_b);
     if (o_coherent_sc_valid_a) assert (o_coherent_sc_addr_a == o_coherent_sc_addr_b);
@@ -1238,6 +1257,9 @@ module rs_payload_twin_formal #(
     assert (o_coherent_read_kind_a == o_coherent_read_kind_b);
     assert (o_coherent_read_tag_a == o_coherent_read_tag_b);
     assert (o_coherent_write_sc_a == o_coherent_write_sc_b);
+    p_twin_cmo_valid : assert (o_cmo_valid_a == o_cmo_valid_b);
+    if (o_cmo_valid_a) p_twin_cmo_kind : assert (o_cmo_kind_a == o_cmo_kind_b);
+    if (o_cmo_valid_a) p_twin_cmo_addr : assert (o_cmo_addr_a == o_cmo_addr_b);
     assert (o_coherent_write_zero_a == o_coherent_write_zero_b);
     assert (o_coherent_sq_write_tag_a == o_coherent_sq_write_tag_b);
     assert (o_coherent_amo_write_tag_a == o_coherent_amo_write_tag_b);
