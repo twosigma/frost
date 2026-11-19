@@ -1126,9 +1126,10 @@ execute every floating-point instruction form through the core at SEW 16, 32
 and 64, reading register images through scalar moves and `fflags` after each
 instruction, and check f-register scalar operands, `vfmv.f.s` boxing and
 `vstart`, active-only flags and their order against `fflags` clears, VS
-dirtying, FS dirtying only by a raised flag or `vfmv.f.s` (instructions that
-raise no flag leave FS Clean or Initial), FS Off, VS Off and a reserved `frm`
-trapping, and reserved widths and geometry. `test_vector_reference.py` checks
+dirtying, FS updates from raised vector flags and `vfmv.f.s`, FS Off, VS Off
+and a reserved `frm` trapping, and reserved widths and geometry. They also
+check that scalar FP CSR reads preserve Initial and Clean and that writes
+set Dirty even when the value is unchanged. `test_vector_reference.py` checks
 their expected images, flags and FS states on Spike at the same lengths, with
 a deliberately wrong expected bit.
 The `vec_fp_exec_v*` engine benches compare every FP form, width and rounding

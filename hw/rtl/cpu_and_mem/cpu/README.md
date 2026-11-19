@@ -674,6 +674,11 @@ rule. Trap entry updates the CSRs through one-hot enables from `trap_unit` (an
 M-side save, an S-side save, or Debug Mode entry), which it builds beside the
 take decision rather than from it.
 
+A write to `fflags`, `frm`, or `fcsr` sets `mstatus.FS` to Dirty even if
+the stored value stays the same. CSRRS and CSRRC with `rs1=x0`, and CSRRSI
+and CSRRCI with a zero immediate, read these registers and preserve FS.
+When FS is Off, accesses to all three registers trap.
+
 Fetch translation is registered from the next `satp` mode and privilege,
 so it changes on the same edge as a CSR write, trap or return. In the integrated
 profile, the CSR file prepares that complete flag for MRET, SRET and neither
