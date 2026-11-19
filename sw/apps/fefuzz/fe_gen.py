@@ -17,7 +17,7 @@ The IR mixes the control flow the fetch predictors learn and the PD stage redire
     through a register, jump tables (jr), early returns, loop breaks, nested calls;
   - compressed and 32-bit encodings in random mixes plus random padding, so branches and
     jalr instructions land in slot 1 and slot 2 packet positions at varied alignments;
-  - loops whose body behaviour is slow-changing (trained, then different) and phase flips.
+  - loops whose body behavior is slow-changing (trained, then different) and phase flips.
 The program returns the final 64-bit value of s0. The path through the program determines
 which instructions update s0. Paths that differ only in padding have the same signature.
 s1 holds the xorshift state, s2-s4 are loop counters saved per function, and a0-a2 are
