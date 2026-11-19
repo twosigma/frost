@@ -25,7 +25,7 @@ setundef -undriven -anyseq
 # writes after reset keeps a free value too.
 opt -noff -keepdc
 prep -top store_queue
-select -assert-count 1 t:$check
+select -assert-count 2 t:$check
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
 

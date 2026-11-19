@@ -761,7 +761,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "sq_next_same.sby",
-        "Store-queue same-sector claim matches the reference after launch and allocation",
+        "Store-queue sent bits and same-sector claim match the reference updates",
         tasks=("bmc", "bmc_cpu"),
     ),
     FormalTarget(

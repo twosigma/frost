@@ -779,11 +779,7 @@ module store_queue #(
   logic             drain_complete_fire_next;
   (* keep = "true" *)logic             write_inflight_special_hold;
   logic             write_inflight_special_next;
-  (* keep = "true" *)logic [DEPTH-1:0] sq_sent_hold;
-  logic [DEPTH-1:0] sq_sent_next;
-`ifdef FROST_XILINX_PRIMS
-  (* keep = "true" *) logic [DEPTH-1:0] sq_sent_launch_local;
-`endif
+  logic [DEPTH-1:0] sq_sent_d;
 
   // Compute the next cursor both with and without a launch, then select with
   // drain_complete_fire_next for timing. The post-fire mask excludes only
@@ -1340,30 +1336,22 @@ module store_queue #(
   end
 `endif
 
-  // Allocation clears the previous owner's sent bit. A completing launch
-  // takes priority, with its cursor and completion checks prepared first.
-  always_comb begin
-    sq_sent_hold = sq_sent;
-    for (int slot = 0; slot < DEPTH; slot++) if (alloc_oh[slot]) sq_sent_hold[slot] = 1'b0;
-  end
+  // A completing write or Zicbom drain sets the cursor entry. Each other
+  // entry keeps its sent bit unless an allocation clears it.
+  for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_sent
+    wire at_cursor = drain_idx_q == IdxWidth'(slot);
 `ifdef FROST_XILINX_PRIMS
-  for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_sent_select
-    assign sq_sent_launch_local[slot] = mem_write_completes_next && drain_idx_q == IdxWidth'(slot);
-    (* dont_touch = "true" *) LUT3 #(
-        .INIT(8'hea)
-    ) u_select (
-        .I0(sq_sent_hold[slot]),
-        .I1(sq_sent_launch_local[slot]),
-        .I2(mem_write_fire_next),
-        .O (sq_sent_next[slot])
+    (* dont_touch = "true" *) LUT6 #(.INIT(64'hccc0cc00eeeaeeaa)) u_sent (
+        .I0(sq_sent[slot]), .I1(at_cursor), .I2(mem_write_completes_next),
+        .I3(cmo_drain_fire), .I4(mem_write_fire_next), .I5(alloc_oh[slot]), .O(sq_sent_d[slot])
     );
-  end
 `else
-  always_comb begin
-    sq_sent_next = sq_sent_hold;
-    if (mem_write_fire_next) if (mem_write_completes_next) sq_sent_next[drain_idx_q] = 1'b1;
-  end
+    assign sq_sent_d[slot] =
+        (at_cursor &&
+         (cmo_drain_fire || (mem_write_completes_next && mem_write_fire_next))) ||
+        (sq_sent[slot] && !alloc_oh[slot]);
 `endif
+  end
 
   // Staging register for write_entry_idx and write_completes_entry, captured
   // alongside the write interface so they stay aligned with o_mem_write_en.
@@ -1507,6 +1495,16 @@ module store_queue #(
 `define SQ_NEXT_SAME_REFERENCE
 `endif
 `ifdef SQ_NEXT_SAME_REFERENCE
+  // The look-ahead uses the sent bits after allocation and write launch.
+  // The registered sent bits also include a Zicbom drain at the cursor.
+  logic [DEPTH-1:0] sq_sent_next, sq_sent_reference;
+  always_comb begin
+    sq_sent_next = sq_sent & ~alloc_oh;
+    if (mem_write_fire_next && mem_write_completes_next) sq_sent_next[drain_idx_q] = 1'b1;
+    sq_sent_reference = sq_sent_next;
+    if (cmo_drain_fire) sq_sent_reference[drain_idx_q] = 1'b1;
+  end
+
   // Reference: the cursor entry, sent marks and last write after this
   // cycle's launch and allocation, as one expression.
   logic next_same_reference;
@@ -1517,7 +1515,10 @@ module store_queue #(
 `undef SQ_NEXT_SAME_REFERENCE
 `endif
 `ifdef SQ_NEXT_SAME_LOCAL_PROOF
-  always_comb assert (next_same_d == next_same_reference);
+  always_comb begin
+    assert (next_same_d == next_same_reference);
+    assert (sq_sent_d == sq_sent_reference);
+  end
 `endif
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
@@ -1819,10 +1820,7 @@ module store_queue #(
       write_inflight_special <= write_inflight_special_next;
       // The class of the latest launch is the class of every write in flight.
       if (mem_write_fire_next) write_inflight_cached <= mem_write_cached_plain_next;
-      sq_sent <= sq_sent_next;
-      // A Zicbom entry is sent as it fires (no write follows) and frees on
-      // the next cycle.
-      if (cmo_drain_fire) sq_sent[drain_idx_q] <= 1'b1;
+      sq_sent <= sq_sent_d;
 
       // -----------------------------------------------------------------
       // Head Advancement
@@ -2165,6 +2163,7 @@ module store_queue #(
         assert (1'b0) else
 `endif
         $error("SQ: expanded slot-2 allocation enable differs from the reference");
+      assert (sq_sent_d == sq_sent_reference);
       if (slot2_alloc_oh != slot2_alloc_oh_reference)
 `ifdef FROST_SIM_ASSERTIONS
         assert (1'b0) else
@@ -2261,6 +2260,15 @@ module store_queue #(
       p_no_alloc_during_flush : assert (!slot1_alloc_en && !slot2_alloc_en);
     end
   end
+
+`ifndef SYNTHESIS
+  always @(posedge i_clk) begin
+    if (f_past_valid) begin
+      p_sent_register : assert (sq_sent == ($past(i_rst_n && !i_flush_all) ?
+          $past(sq_sent_reference) : '0));
+    end
+  end
+`endif
 
   // The expanded allocation pulses are exactly the enable-then-steer form.
   always_comb begin
