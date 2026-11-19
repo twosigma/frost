@@ -12,10 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Print the payload twin's guarded assertions and their compiled task partition.
+"""Check the payload twin's assertion groups and reach its first CMO request.
 
 Run from the repository root in the formal image with
-python3 tests/rs_payload_twin_partition.py. The table goes to standard output.
+python3 tests/rs_payload_twin_partition.py. The assertion table goes to standard
+output and the bounded request-cover result goes to standard error.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from test_run_formal import formal_task_config
+from test_run_formal import formal_task_config, formal_task_timeout_s
 
 FORMAL = Path(__file__).resolve().parents[1] / "formal"
 TARGET = "rs_payload_twin"
@@ -38,9 +39,14 @@ TARGET = "rs_payload_twin"
 def compile_groups(work: Path) -> list[str]:
     """Compile the shared model, then apply each task's resolved group commands."""
     sby = TARGET + ".sby"
-    tasks = subprocess.check_output(
+    registered = subprocess.check_output(
         ["sby", "--dumptasks", sby], cwd=FORMAL, text=True
     ).split()
+    tasks = [
+        task
+        for task in registered
+        if "mode bmc" in formal_task_config(TARGET, task)["[options]"]
+    ]
     subprocess.run(
         ["sby", "--setup", "-d", str(work / "setup"), sby, tasks[0]],
         cwd=FORMAL,
@@ -222,7 +228,20 @@ def report(work: Path, tasks: list[str]) -> None:
     )
 
 
+def check_cmo_request(work: Path) -> None:
+    """Run the registered cover on the second commit group's bounded model."""
+    task = "cover_cmo_request"
+    subprocess.run(
+        ["sby", "-f", "-d", str(work / "cmo_request"), TARGET + ".sby", task],
+        cwd=FORMAL,
+        stdout=sys.stderr,
+        check=True,
+        timeout=formal_task_timeout_s(TARGET, task),
+    )
+
+
 if __name__ == "__main__":
     with TemporaryDirectory() as directory:
         work = Path(directory)
         report(work, compile_groups(work))
+        check_cmo_request(work)

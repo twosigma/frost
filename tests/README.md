@@ -204,12 +204,24 @@ fields, and reserved stores preserve the entire range they could write. The
 `verif/testrig/vector_source_widths_memory.S` trace checks those encodings
 against the architectural reference.
 
+The Zicbom programs and cluster benches run the following cases.
+
+| Registry entry | Checks |
+| --- | --- |
+| `cbo_mgmt_test`, `cbo_mgmt_test_assert` | Cacheable DDR, low BRAM and device accesses, S/U privilege gates, dirty-line policy, translation faults, ordering with stores, atomics, DMA and timer interrupts. |
+| `svpbmt_cmo_test`, `svpbmt_cmo_test_inval_flush` | Cacheable, NC and IO mappings of the same physical block, with per-operation DDR write checks in the default and flush-only configurations. Adjacent CMO/load pairs exercise every combination of the two mappings with a dirty cached line. |
+| `nic_cmo_loopback` | Eight transmitted payloads and descriptor completions while the CPU cleans packet blocks that DMA is reading, in both memory tiers. |
+| `coherence_home`, `coherence_home_equal` | An older DMA fill, a management request and a younger DMA read complete in order with 64-byte and 32-byte home lines. |
+| `coherence_cbo_mgmt` | Dirty private and home copies, either dirty sector, absent or clean lines, DMA and write-backs in flight. |
+| `coherence_cbo_mgmt_misses`, `coherence_cbo_mgmt_equal_lines`, `coherence_cbo_mgmt_links` | The same data and ordering checks with three miss endpoints, 32-byte home lines or registered links. |
+
 The `coherence_endpoints`, `coherence_endpoints_single`, and
 `coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
 identity reuse, independent probe queues, keyed PutAck cancellation, errors,
 and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
 identities. Admission checks cover every request identity and opcode in both
-epochs, including each hart's two class-3 line-client identities.
+epochs, including each hart's eight class-3 line-client identities and its
+dedicated Zicbom identity.
 The `coherence_endpoints_local` and
 `coherence_endpoints_local_wide` benches apply the same checks to request
 endpoints with separate phase occupancy registers.
@@ -272,7 +284,9 @@ prefetch enabled or disabled.
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
 and CPU observation cuts; `coherence_home_rowread` runs the UltraRAM home with `PARALLEL_READ=0` so row reads after the decision and probe replies ahead of row data are exercised, and `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
 requests execute, preserve waiter order across an older writer, and check
-current data on waiter reentry. Streaming cases check way-0 miss placement,
+current data on waiter reentry. Two DMA reads with an intervening clean,
+flush or invalidate check that the later reader leaves the fill's way
+available to the management request. Streaming cases check way-0 miss placement,
 CPU line residency, dirty hits in other ways and progress after a pinned
 way is released, including a live prefetch fill in another way. Prefetch
 cases check the completion slots
@@ -734,7 +748,7 @@ The NIC targets include `nic_tx_segment`, `nic_rx_fifo_limit`, `nic_top_rx_fifo`
 `nic_pause_gmii`, `nic_pause_10g`, and `nic_pause_rx_wire`, alongside the engine and whole-NIC benches.
 Their registered tests cover segmentation headers, FIFO capacity, pause crossings, independent
 domain restarts, wire-side PAUSE validation during congestion, and cancellation under backpressure.
-`nic_sg_loopback` and `nic_rate` are
+`nic_cmo_loopback`, `nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
 `nic_bench` also runs in both tiers with `NIC_BENCH_QUICK`: eight-entry rings,
@@ -1388,6 +1402,8 @@ proves, and its assumptions.
 
 Each target and task is a separate pytest case. Fast checks compare every SBY
 task list with the runner registration; selecting no matching task is an error.
+The Primitive forms job runs `rs_payload_twin:cover_cmo_request` to require a
+simultaneous CMO request from both copies at the second commit comparison’s depth.
 
 `test_pa_bridge_mutation.py` runs the 64 GiB proof on a private fixture for
 each AXI address channel and requires a counterexample at that channel's
@@ -1843,7 +1859,9 @@ computes a key for each one, a SHA-256 over:
   resolves includes and `$readmemh` names;
 - the task's timeout, and the source of `tests/test_run_formal.py` or
   `tests/test_run_yosys.py` without its top-level `test_*` functions and the
-  registry tables, whose entries for the task enter the key by value;
+  registry tables, whose entries for the task enter the key by value. The
+  `coh_home_cmo_cover` key also includes its Python replay helper. Private
+  proof fixtures copy the helper into their `tests/` directory;
 - `tests/conftest.py`, the pytest settings in `pyproject.toml`, other pytest
   configuration files (present or absent), and `scripts/frost.py`;
 - the identity of the tool image (a digest of its layers and environment,

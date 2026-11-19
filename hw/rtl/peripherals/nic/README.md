@@ -610,6 +610,7 @@ final scan.
 | `vcu118_phy_mdio` | Management framing, receive-counter clearing, missing-PHY rejection and held transfers |
 | `nic_top` | Whole NIC with three clocks and raw loopback, AXI4-Lite register accesses with channel skew and response stalls, its AXI4 master against a reordering slave, and SLVERR on buffer reads and writes |
 | `nic_top_unrelated_clocks` | Independent TX and RX clocks with `RAW_LOOPBACK=0` |
+| `nic_cmo_loopback` | Eight loopback frames while CPU cleans overlap packet DMA reads |
 | `nic_loopback`, `nic_echo` | Full-system software tests in both memory tiers |
 | `nic_sg_loopback`, `nic_rate` | Full-system scatter-gather, checksum, segmentation and TX rate applications |
 | `nic_dma_stress` | Two rounds of 15 queued 1518- and 64-byte loopback frames per mode, each overlapping a 4 KiB DMA copy, in plain and burst modes, in both memory tiers; DMA must be busy at the first RX completion, every frame byte and copied word is checked, and MAC RX overflow must stay zero |

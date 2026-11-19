@@ -1161,6 +1161,40 @@ class PointerMaskingInterruptCoverage:
         )
 
 
+class CmoTimerCoverage:
+    """Check for a timer interrupt arriving while a flush awaits the home."""
+
+    def __init__(self, dut: Any) -> None:
+        """Resolve the timer and the store queue issuing the flush."""
+        self.dut = dut
+        self.timer = dut.cpu_and_memory_subsystem.soc.mtip_registered
+        self.sq = dut.cpu_and_memory_subsystem.cpu.hart.cpu_inst.u_tomasulo.u_sq
+        self.hits = 0
+
+    def clear(self) -> None:
+        """Start a new program run."""
+        self.hits = 0
+
+    async def run(self) -> None:
+        """Sample only active edges of the timer interrupt."""
+        while True:
+            await RisingEdge(self.timer)
+            await ReadOnly()
+            if (
+                int(self.dut.i_rst_n.value)
+                and int(self.sq.cmo_state_q.value) == 2  # CmoWait
+                and int(self.sq.cmo_kind_q.value) == 2  # CMO_FLUSH
+            ):
+                self.hits += 1
+
+    def verify(self, run_number: int) -> None:
+        """Require an actual overlap in each reset-to-pass interval."""
+        assert self.hits, (
+            f"run {run_number}: no timer arrival during an outstanding flush"
+        )
+        cocotb.log.info(f"run {run_number}: {self.hits} timer arrivals during a flush")
+
+
 class WfiRecoveryWatch:
     """Check the resume PC around a wrong-path WFI at the ROB head.
 
@@ -4946,7 +4980,13 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = RESTORE_WINDOW_STRESS_MAX_CYCLES
     elif app_name == "amo_irq_torture":
         max_cycles = AMO_IRQ_TORTURE_MAX_CYCLES
-    elif app_name in ("nic_loopback", "nic_sg_loopback", "nic_rate", "nic_echo"):
+    elif app_name in (
+        "nic_loopback",
+        "nic_cmo_loopback",
+        "nic_sg_loopback",
+        "nic_rate",
+        "nic_echo",
+    ):
         max_cycles = NIC_LOOPBACK_MAX_CYCLES
     elif app_name == "tick_torture":
         max_cycles = TICK_TORTURE_MAX_CYCLES
@@ -5029,6 +5069,14 @@ async def test_real_program(dut: Any) -> None:
             dut, FULL_LINE_TEST_EVENTS if app_name == "full_line_test" else ()
         )
         cocotb.start_soon(full_line_watch.run())
+    # FROST_CMO_DDR_CHECK=1: the program brackets Zicbom operations with
+    # sscratch windows whose DDR write-backs are checked (cache/cmo_ddr_watch).
+    cmo_watch = None
+    if os.environ.get("FROST_CMO_DDR_CHECK") == "1":
+        from cocotb_tests.cache.cmo_ddr_watch import CmoDdrWatch
+
+        cmo_watch = CmoDdrWatch(dut)
+        cocotb.start_soon(cmo_watch.run())
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
     ecc_driver = EccReportDriver(dut) if app_name == "memerr_test" else None
     if app_name == "memerr_readback":
@@ -5039,6 +5087,8 @@ async def test_real_program(dut: Any) -> None:
     coverage = (
         DelayedBranchFetchCoverage(dut)
         if app_name == "served_window_resteer"
+        else CmoTimerCoverage(dut)
+        if app_name == "cbo_mgmt_test"
         else PointerMaskingInterruptCoverage(dut)
         if app_name == "pm_test"
         else None
@@ -5061,6 +5111,8 @@ async def test_real_program(dut: Any) -> None:
     for run_number in range(1, NUM_RUNS + 1):
         if coverage is not None:
             coverage.clear()
+        if cmo_watch is not None:
+            cmo_watch.clear()
         if run_number > 1:
             cocotb.log.info(f"=== Asserting reset for {RESET_CYCLES} cycles ===")
             uart_monitor.clear()
@@ -5142,6 +5194,8 @@ async def test_real_program(dut: Any) -> None:
             full_line_watch.verify(cocotb.log)
         if vector_watch is not None:
             vector_watch.verify()
+        if cmo_watch is not None:
+            cmo_watch.verify()
 
     uart_monitor.stop()
     if line_monitor is not None:
