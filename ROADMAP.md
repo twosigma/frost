@@ -605,15 +605,13 @@ and targeted microbenchmarks give these items:
    microbenchmarks a taken branch costs about 5 cycles, and a loop of four
    additions runs at 0.6 IPC with translation off; those small-loop costs
    come from fetch coverage and packet formation, not BTB capacity.
-5. Floating point. One engine executes F and D instructions one at a time.
-   Multiply and fused multiply-add share a three-stage significand multiplier.
-   In [`fplat_probe`](sw/apps/fplat_probe/), dependent multiplies take about
-   14 cycles in both precisions. Divide uses radix 4 and square root uses
-   radix 2. The engine shares an adder for addition, subtraction and fused
-   accumulation. Comparisons, moves, min/max, FCLASS and sign injection use
-   two-cycle paths. Integer-to-FP conversion takes four cycles, or two for
-   zero. A pipelined adder has been designed. Issuing independent arithmetic
-   from FP_RS while an earlier operation executes remains future work.
+5. Floating point. A six-entry station issues independent single- and
+   double-precision add, subtract, multiply and fused multiply-add operations
+   to a seven-stage pipeline. A dependent operation can take its operand
+   directly from the final stage. A radix-16 divider handles scalar division.
+   Independent pipelined operations can issue during a divide or square root.
+   The scalar engine handles square root, comparisons, moves, min/max,
+   classification, sign injection and conversions.
 6. Integer multiply and divide. The full-width multiplier has six stages;
    its integrated completion bypasses the result FIFO. The CDB and
    reservation station each contribute a cycle, giving eight cycles to a

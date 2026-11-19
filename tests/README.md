@@ -145,8 +145,10 @@ Run the scalar floating-point checks with `./scripts/frost.py cocotb <target>`.
 | Target | Checks |
 | --- | --- |
 | [`fp_engine_equiv`](../verif/cocotb_tests/ex_stage/test_fp_engine.py) | Result bits and flags against Berkeley SoftFloat, including fused cancellation and multiply and divide rounding boundaries. A separate case measures engine latency against per-operation limits. |
+| [`fp_div_equiv`](../verif/cocotb_tests/ex_stage/test_fp_engine.py) | The same SoftFloat comparisons and kill checks with scalar division routed to the radix-16 unit. |
+| [`fp_fma_pipe_equiv`](../verif/cocotb_tests/ex_stage/test_fp_fma_pipe.py) | Single- and double-precision adds, subtracts, multiplies and fused operations streamed through the pipeline. The bench compares each result, its flags and the cycle when it becomes valid. |
 | [`fp_shim`](../verif/cocotb_tests/tomasulo/fu_shims/test_fp_shim.py) | Fast-path latency, issue after completion, result tags and flush handling. |
-| [`fplat_probe`](../sw/apps/fplat_probe) | Dependent chains and independent streams in the full processor. The registered build checks cycle limits for dependent FMUL, FMA and FDIV and independent FMUL and FMA at both precisions. |
+| [`fplat_probe`](../sw/apps/fplat_probe) | Dependent chains and independent streams in the full processor. The registered build bounds dependent and independent add, multiply and FMA, dependent divide at both precisions, and double-precision load-to-use. |
 
 `vec_operand_widths` checks EEW=1 mask-source aliases, vector versus scalar
 source fields and the old destination read by widening multiply-accumulate,
@@ -288,9 +290,12 @@ checks that a subsequent load cannot use their stale data from L0.
 L1D hit path, then issues an older load to the same word, which reads the
 new value; a younger load that read the old value must replay instead of
 retiring.
-`cached_store_burst_test` checks cached store bursts followed by traps,
-FENCE.I, SC and AMO. Its CPU monitor requires accepted-store overlap with
-trap and fence drain waits.
+`cached_store_burst_test` checks masked stores, machine-mode ECALL,
+FENCE.I, SC and AMO. Each trap burst ends with a store to a fresh
+cached line. The stores and ECALL share one instruction-cache line.
+The program checks the stored word after trap return. Its CPU monitor
+requires accepted stores during the ECALL and FENCE.I waits and checks
+that trap entry waits for the stores to drain.
 `l2_capacity_chase_smoke` checks the dependent-load measurement program
 with 8, 16 and 32 KiB working sets and a 4 MiB L2 in the real-program shards.
 The CLI-only `l2_capacity_chase` entry retains its full-size working sets

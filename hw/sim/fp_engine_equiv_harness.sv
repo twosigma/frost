@@ -40,7 +40,9 @@ module fp_engine_equiv_harness #(
     // FROST_VERILATOR_EXTRA_ARGS=-GVECTOR_TARGET=<n>.
     parameter int unsigned VECTOR_TARGET = 100000,
     // Cycles a single operation may take before it is counted as a timeout.
-    parameter int unsigned WAIT_LIMIT = 1024
+    parameter int unsigned WAIT_LIMIT = 1024,
+    // Route FDIV.S and FDIV.D to fp_div_unit, as fp_shim does with PIPELINE.
+    parameter bit DIV_UNIT = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -687,10 +689,16 @@ module fp_engine_equiv_harness #(
   // ===========================================================================
   // Units
   // ===========================================================================
+  logic is_div_op;
+  assign is_div_op = DIV_UNIT && (cur_op == riscv_pkg::FDIV_S || cur_op == riscv_pkg::FDIV_D);
+  logic e_idle, e_done, d_idle, d_done;
+  logic [63:0] e_result, d_result;
+  riscv_pkg::fp_flags_t e_flags, d_flags;
+
   fp_engine u_engine (
       .i_clk      (i_clk),
       .i_rst_n    (i_rst_n),
-      .i_start    (eng_start),
+      .i_start    (eng_start && !is_div_op),
       .i_op       (cur_op),
       .i_rm       (cur_rm),
       .i_src1     (cur_a),
@@ -698,10 +706,37 @@ module fp_engine_equiv_harness #(
       .i_src3     (cur_c),
       .i_fli_index(cur_a[4:0]),
       .i_kill     (eng_kill),
-      .o_idle     (eng_idle),
-      .o_done     (eng_done),
-      .o_result   (eng_result),
-      .o_flags    (eng_flags)
+      .o_idle     (e_idle),
+      .o_done     (e_done),
+      .o_result   (e_result),
+      .o_flags    (e_flags)
   );
+
+  if (DIV_UNIT) begin : g_div_unit
+    fp_div_unit u_div (
+        .i_clk   (i_clk),
+        .i_rst_n (i_rst_n),
+        .i_start (eng_start && is_div_op),
+        .i_op    (cur_op),
+        .i_rm    (cur_rm),
+        .i_src1  (cur_a),
+        .i_src2  (cur_b),
+        .i_kill  (eng_kill),
+        .o_idle  (d_idle),
+        .o_done  (d_done),
+        .o_result(d_result),
+        .o_flags (d_flags)
+    );
+  end else begin : g_no_div_unit
+    assign d_idle   = 1'b1;
+    assign d_done   = 1'b0;
+    assign d_result = '0;
+    assign d_flags  = '0;
+  end
+
+  assign eng_idle   = e_idle && d_idle;
+  assign eng_done   = e_done || d_done;
+  assign eng_result = d_done ? d_result : e_result;
+  assign eng_flags  = d_done ? d_flags : e_flags;
 
 endmodule : fp_engine_equiv_harness

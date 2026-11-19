@@ -24,7 +24,7 @@ cover: read -formal -D SYNTHESIS -D RS_STAGE2_PAYLOAD_EQUIV_LOCAL_PROOF -D RS_ST
 int: chparam -set DEPTH 16 -set PREPARE_ISSUE_CONTROLS 1 -set DUAL_ISSUE 1 -set ISSUE2_WINDOW 8 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 -set TAG_INDEXED_BRANCH_PAYLOAD 1 reservation_station
 mul: chparam -set DEPTH 4 -set PREPARE_ISSUE_CONTROLS 1 -set DUAL_ISSUE 0 -set HAS_SRC3 0 -set DIVIDE_ISSUE_GATE 1 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set SPECULATIVE_DATA_WRITES 1 -set TRUST_DISPATCH_VALID 1 reservation_station
 mem: chparam -set DEPTH 8 -set DUAL_ISSUE 0 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set SPECULATIVE_DATA_WRITES 1 -set TRUST_DISPATCH_VALID 1 -set PREISSUE_VALID_COFACTOR 1 -set PREISSUE_RAW_WAKEUP 1 -set PREISSUE_READY_EXPORT 1 reservation_station
-fp: chparam -set DEPTH 8 -set DUAL_ISSUE 0 -set HAS_SRC3 1 -set ISSUE_REPAIR_BYPASS 0 reservation_station
+fp: chparam -set DEPTH 6 -set DUAL_ISSUE 0 -set HAS_SRC3 1 -set ISSUE_REPAIR_BYPASS 0 -set DIVIDE_ISSUE_GATE 1 -set FP_ENGINE_GATE 1 -set FWD_WAKE 1 -set FORMAL_STANDALONE_ENV 0 reservation_station
 hierarchy -top reservation_station
 # Abstract payload RAMs: equivalence holds for arbitrary RAM outputs.
 delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread t:coherent_rs_payload_store
@@ -32,10 +32,14 @@ script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top reservation_station -flatten
+# The forward select reads a tag from the selected row. Map the register
+# arrays so the solver can distinguish their independent read ports.
+fp: memory_map -keepdc
+fp: opt_clean
 int_prove: select -assert-count 3 t:$check r:FLAVOR=assert %i
 mul_prove: select -assert-count 4 t:$check r:FLAVOR=assert %i
 mem_prove: select -assert-count 3 t:$check r:FLAVOR=assert %i
-fp_prove: select -assert-count 4 t:$check r:FLAVOR=assert %i
+fp_prove: select -assert-count 13 t:$check r:FLAVOR=assert %i
 int_cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
 
 [files]

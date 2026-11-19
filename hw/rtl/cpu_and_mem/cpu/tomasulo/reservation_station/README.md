@@ -14,7 +14,7 @@ second issue port for a second ALU.
 | INT_RS | 16 (`INT_RS_DEPTH`) | `int_alu_shim` on port 0, a second `int_alu_shim` (ALU2) on port 1 |
 | MUL_RS | 4 | `int_muldiv_shim` |
 | MEM_RS | 8 | Address generation for the LQ and SQ, through the data MMU when translation is on |
-| FP_RS | 2 (`riscv_pkg::FpRsDepth`) | `fp_shim` (three sources, for FMA) |
+| FP_RS | 6 (`riscv_pkg::FpRsDepth`) | `fp_shim` (three sources, for FMA) |
 
 The [routing table](../README.md#reservation-station-routing)
 lists which instructions go to which station.
@@ -173,6 +173,25 @@ entries, so a station full of divides stops dispatch.
 unready entry cannot raise the shim's busy output. Any station that feeds that
 shim must set the parameter.
 
+## Forward wake (FP_RS)
+
+FP_RS uses `FWD_WAKE=1`. The FP pipeline names an operation (`i_fwd_wake_*`)
+one cycle before its result is in the pipeline's tail register
+(`i_fwd_value`). A source whose tag matches counts as ready that cycle, like a
+CDB bypass, and an entry issued on it records a per-source forward mask in
+stage 2. In the next cycle, when `o_issue` presents the packet, the operand
+comes from `i_fwd_value`; a packet still held after that cycle uses a copy
+captured at its end. A matching entry that does not issue captures
+`i_fwd_value` on the next edge and is ready one cycle later. The wake comes
+from registers, and its producer is never squashed unless the consumer is too
+(the consumer is younger), so a stale wake cannot reach a reused tag. Entries
+that miss a wake, such as one dispatched in the wake cycle, wake on the CDB
+broadcast, which always follows. `FWD_WAKE` requires the generic station form.
+
+`FP_ENGINE_GATE` makes the divide gate's class the FP operations the pipeline
+does not execute, so pipelined operations issue past a waiting divide, square
+root or conversion.
+
 ## Dual issue (INT_RS)
 
 INT_RS uses `DUAL_ISSUE=1`. Its second issue port
@@ -330,7 +349,9 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |
 | `LANE1_ISSUE_BYPASS` | 1 | Default everywhere | CDB lane 1 feeds the same-cycle issue bypass; off, a lane-1 result wakes consumers a cycle later |
 | `TAG_INDEXED_BRANCH_PAYLOAD` | 0 | 1 on INT | Branch side RAM; off, port 0 drives `pc`, `link_addr`, and `predicted_target` to zero |
-| `DIVIDE_ISSUE_GATE` | 0 | 1 on MUL | A divide entry is not ready while `i_divider_busy` is high or stage 2 holds a divide; `stage2_op` loads only on issue, for `int_muldiv_shim`; requires `DUAL_ISSUE=0` |
+| `FWD_WAKE` | 0 | 1 on FP | Forward wake from the FP pipeline (above) |
+| `FP_ENGINE_GATE` | 0 | 1 on FP | The divide gate's class is every non-pipelined FP operation |
+| `DIVIDE_ISSUE_GATE` | 0 | 1 on MUL, FP | A divide entry is not ready while `i_divider_busy` is high or stage 2 holds a divide; `stage2_op` loads only on issue, for `int_muldiv_shim`; requires `DUAL_ISSUE=0` |
 | `TRACK_INT_WRITEBACK_HINT` | 0 | 1 on INT | Drives `o_issue_writes_cdb_hint`, set for every op except conditional branches; `int_alu_shim` raises a completion only when it is set |
 | `ALLOC_INDEXED_REPAIR` | 0 | 1 on INT, MUL, MEM | Done repair by allocation instead of tag match |
 | `DISPATCH_REPAIR_BYPASS` | 1 | 0 on INT, MUL, MEM | Tag-matched repair applies as the entry is written |
