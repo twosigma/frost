@@ -1589,6 +1589,88 @@ module reservation_station #(
           rs_src3_tag[i] == i_fwd_wake_tag;
     end
   end
+  // The stage-2 operand mux ORs the CDB and forward arms. Check the actual
+  // per-row enables, including lane 1 and source 3, before they form a mask.
+`ifndef SYNTHESIS
+`ifndef FORMAL
+`define FP_STATION_CHECKS_PROOF
+`endif
+`endif
+`ifdef FP_FORWARD_WAKE_PROOF
+`define FP_STATION_CHECKS_PROOF
+`endif
+`ifdef FP_STATION_CHECKS_PROOF
+  if (FWD_WAKE) begin : gen_forward_source_checks
+`ifdef FP_FORWARD_WAKE_PROOF
+    logic armed = 1'b0;
+    always @(posedge i_clk) if (!i_rst_n) armed <= 1'b1;
+`define FP_STATION_CHECK(name, condition) name: assert (condition);
+`else
+    wire armed = reset_seen_q;
+`define FP_STATION_CHECK(name, condition) begin : name if (!(condition)) $error("%m"); end
+`endif
+    wire [DEPTH-1:0] forward_rows = src1_fwd_wake | src2_fwd_wake | src3_fwd_wake;
+    always @(posedge i_clk) if (i_rst_n && armed) begin
+      `FP_STATION_CHECK(p_src1_exclusive,
+                        !(|(src1_fwd_wake & (src1_cdb_bypass | src1_cdb_bypass_l1))))
+      `FP_STATION_CHECK(p_src2_exclusive,
+                        !(|(src2_fwd_wake & (src2_cdb_bypass | src2_cdb_bypass_l1))))
+      `FP_STATION_CHECK(p_src3_exclusive,
+                        !(|(src3_fwd_wake & (src3_cdb_bypass | src3_cdb_bypass_l1))))
+    end
+
+    // A consumer can leave the station before its producer broadcasts. Keep
+    // its ROB tag across issue, and remove only the consumers a flush covers.
+    logic [riscv_pkg::ReorderBufferDepth-1:0] consumers, killed;
+    always_comb begin
+      consumers = '0;
+      for (int row = 0; row < DEPTH; row++)
+        if (forward_rows[row]) consumers[rs_rob_tag[row]] = 1'b1;
+      for (int t = 0; t < riscv_pkg::ReorderBufferDepth; t++)
+        killed[t] = i_flush_all || (i_flush_en &&
+            should_flush_entry(ReorderBufferTagWidth'(t), i_flush_tag, i_rob_head_tag));
+    end
+`ifdef FP_FORWARD_WAKE_PROOF
+    (* anyseq *) logic [ReorderBufferTagWidth-1:0] reset_choice;
+    logic [ReorderBufferTagWidth-1:0] watched_producer;
+    always @(posedge i_clk) if (!i_rst_n) watched_producer <= reset_choice;
+    localparam int Watches = 1;
+`else
+    localparam int Watches = riscv_pkg::ReorderBufferDepth;
+`endif
+    for (genvar k = 0; k < Watches; k++) begin : gen_producer
+`ifdef FP_FORWARD_WAKE_PROOF
+      wire [ReorderBufferTagWidth-1:0] tag = watched_producer;
+`else
+      wire [ReorderBufferTagWidth-1:0] tag = ReorderBufferTagWidth'(k);
+`endif
+      logic [riscv_pkg::ReorderBufferDepth-1:0] consumers_q;
+      wire broadcast = (i_cdb.valid && i_cdb.tag == tag) || (i_cdb_2.valid && i_cdb_2.tag == tag);
+      always @(posedge i_clk) begin
+        if (!i_rst_n) consumers_q <= '0;
+        else begin
+          if (armed && killed[tag]) begin
+            `FP_STATION_CHECK(p_flush_covers_consumers, (consumers_q & ~killed) == '0)
+          end
+          if (killed[tag] || broadcast) consumers_q <= '0;
+          else if (i_flush_en) consumers_q <= consumers_q & ~killed;
+          else if (i_fwd_wake_valid && i_fwd_wake_tag == tag)
+            consumers_q <= consumers_q | consumers;
+        end
+      end
+`ifdef FP_FORWARD_WAKE_PROOF
+      always @(posedge i_clk) if (armed && i_rst_n) begin
+        c_consumer_forward :
+        cover (|consumers && i_fwd_wake_tag == tag && !i_flush_en && !i_flush_all);
+        c_flush_forwarded_consumer : cover (|consumers_q && killed[tag] && !i_flush_all);
+      end
+`endif
+    end
+  end
+`undef FP_STATION_CHECK
+`undef FP_STATION_CHECKS_PROOF
+`endif
+
   // --- Divide gate (DIVIDE_ISSUE_GATE) ---
   // Only load a divide into stage2 while both stage2 and the divider are
   // free of divides. Since stage2 is the divider's only source, it remains
@@ -3249,8 +3331,8 @@ module reservation_station #(
   // finishes on an arbitrary later cycle. Payload and other inputs are free.
   // stage2_is_divide represents the opcode decode; its consistency is checked
   // separately. A staged divide must imply an idle divider until it issues.
-  initial assume (!i_rst_n);
   logic f_gate_past_valid = 1'b0;
+  always_comb if (!f_gate_past_valid) assume (!i_rst_n);
   (* anyseq *)logic f_divider_finish;
   logic f_divider_busy;
   always @(posedge i_clk) begin
@@ -3267,8 +3349,46 @@ module reservation_station #(
       assert (!(o_issue.valid && stage2_is_divide && i_divider_busy));
     end
   end
+  if (FP_ENGINE_GATE) begin : gen_fp_engine_gate_check
+`ifdef RS_FP_GATE_ROWS
+    // An arbitrary induction state may contain a row which has never won in
+    // the induction window. Relate its cached class to the actual opcode in
+    // the last writer's payload bank, including throughout a long ready stall.
+    for (genvar row = 0; row < DEPTH; row++) begin : gen_gate_row
+      wire bank = gen_primary_payload_binary.u_payload_ram.lvt_eff[row];
+      wire [riscv_pkg::InstrOpWidth-1:0] op0 =
+          gen_primary_payload_binary.u_payload_ram.g_banks[0].u_bank.ram[row]
+              [PayloadWidth-1 -: riscv_pkg::InstrOpWidth];
+      wire [riscv_pkg::InstrOpWidth-1:0] op1 =
+          gen_primary_payload_binary.u_payload_ram.g_banks[1].u_bank.ram[row]
+              [PayloadWidth-1 -: riscv_pkg::InstrOpWidth];
+      always @(posedge i_clk) if (i_rst_n && rs_valid[row])
+        p_row_opcode : assert (rs_is_divide[row] ==
+            rs_is_divide_op(riscv_pkg::instr_op_e'(bank ? op1 : op0)));
+    end
+`endif
+    // The issued opcode comes from the payload RAM. Check it independently
+    // of the resident divide bit used to filter the issue candidates.
+    always @(posedge i_clk) begin
+      if (i_rst_n && stage2_valid) begin
+        p_fp_gate_payload : assert (stage2_is_divide == rs_is_divide_op(stage2_op));
+        p_fp_engine_issue_idle :
+        assert (!(o_issue.valid && rs_is_divide_op(o_issue.op) && i_divider_busy));
+      end
+      if (i_rst_n) begin
+        c_fma_passes_busy_engine :
+        cover (i_divider_busy && |(rs_valid & rs_is_divide) &&
+               o_issue.valid && o_issue.op == riscv_pkg::FMADD_D);
+        c_divide_after_engine_release :
+        cover (f_gate_past_valid && $past(i_divider_busy) && !i_divider_busy &&
+               |(rs_valid & rs_is_divide));
+        c_flushed_engine_launch :
+        cover (o_issue.valid && stage2_is_divide && stage2_should_flush);
+      end
+    end
+  end
   always @(posedge i_clk) begin
-    // A multiply issues while a divide waits behind the busy divider.
+    // A pipeline operation issues while an engine operation waits.
     if (i_rst_n)
       cover (i_divider_busy && |(rs_valid & rs_is_divide) && o_issue.valid && !stage2_is_divide);
   end
