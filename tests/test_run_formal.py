@@ -1594,6 +1594,22 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
+        "predictor_fetch_contract.sby",
+        "The real fetch stage supplies PD packet order, PC and backing fields, source "
+        "register and target data, and the PC controller's registered recovery arm",
+        tasks=(
+            "bmc",
+            "prove_order",
+            "prove_addresses",
+            "prove_buffer_source",
+            "prove_slot1_sources",
+            "prove_slot2_sources",
+            "prove_targets",
+            "cover",
+            "cover_backing",
+        ),
+    ),
+    FormalTarget(
         "backing_btb_twin.sby",
         "Every backing lookup result, including misses, held and shifted reads, "
         "and the pins of all five RAMs match the original backing BTB",
@@ -2032,6 +2048,25 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("cover_backing", "Reach a real second-slot backing hit after the full reset sweep"),
+    (
+        "prove_order",
+        "Prove fetch slot order, fault propagation and the registered PD restore",
+    ),
+    (
+        "prove_addresses",
+        "Prove the slot PC step and backing target region and size selection",
+    ),
+    (
+        "prove_buffer_source",
+        "Prove a live buffered first slot reads a paired instruction and sideband",
+    ),
+    (
+        "prove_slot1_sources",
+        "Prove first-slot expansion and source fields with the buffer source lemma",
+    ),
+    ("prove_slot2_sources", "Prove second-slot expansion, class and source fields"),
+    ("prove_targets", "Prove the target sums and high selectors used by fetch"),
     (
         "prove_indirect",
         "Unbounded pre-decode indirect target, eligibility and trap isolation.",
@@ -4089,6 +4124,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     root = Path(__file__).resolve().parents[1]
     registered = [name for name, _ in SBY_TASKS]
     required = {
+        "predictor_fetch_contract": ["prove_buffer_source", "prove_slot1_sources"],
         "axi_coherent_bridge": [
             "prove_soc",
             "prove_soc_held",

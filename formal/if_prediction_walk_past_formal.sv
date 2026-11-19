@@ -64,9 +64,11 @@ module if_prediction_walk_past_formal (
   (* anyseq *) logic i_instr_fault1;
   (* anyseq *) logic i_instr_fault1_page;
 
+`ifndef PREDICTOR_FETCH_CONTRACT
   initial begin
     assume (i_reset);
   end
+`endif
 
   logic stall_q = 1'b0;
   logic pd_redirect_r = 1'b0;
@@ -186,6 +188,26 @@ module if_prediction_walk_past_formal (
   assign bram_instr_by_parity = fetch_bank[0] ? {fetch_instr[0][31:0], fetch_instr[0][63:32]} :
                                                 fetch_instr[0];
 
+  logic [4:1] restore_arm;
+  logic [1:0] backing_hit, backing_return, backing_return_by_size;
+  logic [1:0][riscv_pkg::PhysAddrBits-2:0] backing_target, backing_target_by_size;
+
+`ifdef PREDICTOR_FETCH_CONTRACT
+  predictor_fetch_contract contract (
+      .i_clk,
+      .i_reset,
+      .i_pd_redirect(pd_redirect),
+      .i_restore_arm(restore_arm),
+      .s1(from_if_to_pd),
+      .s2(from_if_to_pd_2),
+      .i_backing_hit(backing_hit),
+      .i_backing_return(backing_return),
+      .i_by_size_return(backing_return_by_size),
+      .i_backing_target(backing_target),
+      .i_by_size_target(backing_target_by_size)
+  );
+`endif
+
   if_stage #(
       .XLEN(XLEN)
   ) u_if_stage (
@@ -268,10 +290,12 @@ module if_prediction_walk_past_formal (
       .i_walk_resp('0),
       .o_from_if_to_pd(from_if_to_pd),
       .o_from_if_to_pd_2(from_if_to_pd_2),
-      .o_backing_hit(),
+      .o_backing_hit(backing_hit),
       .o_backing_compressed(),
-      .o_backing_return(),
-      .o_backing_target(),
+      .o_backing_return(backing_return),
+      .o_backing_target(backing_target),
+      .o_backing_slot2_return_by_size(backing_return_by_size),
+      .o_backing_slot2_target_by_size(backing_target_by_size),
       .o_slot1_has_control_flow(),
       .o_slot1_is_indirect(),
       .o_width_events(),
@@ -295,13 +319,100 @@ module if_prediction_walk_past_formal (
       .i_tage_train_taken(1'b0),
       .i_tage_train_mispredicted(1'b0),
       .o_tage_hist_push(),
-      .o_tage_hist_restore_arm(),
+      .o_tage_hist_restore_arm(restore_arm),
       .o_tage_fetch_path_bits(),
       .o_tage_slot_valid(),
       .o_tage_slot_lookup(),
       .o_tage_slot_lookup_2(),
       .o_tage_lookup_hist()
   );
+
+`ifdef PREDICTOR_FETCH_CONTRACT
+  // Relate the bytes and their sideband at each place that can keep slot 1
+  // across clocks, including the parked packet while fetch is stalled.
+  logic checked_edge = 1'b0;
+  logic [31:0] snapshot_word, buffer_word, saved_expansion, decoded_saved;
+  logic [riscv_pkg::ImemSidebandWidth-1:0] snapshot_sideband, buffer_sideband;
+  logic [15:0] saved_parcel;
+  logic [31:0] saved_instruction;
+  logic snapshot_valid, buffer_live, packet_valid, saved_illegal, decoded_illegal;
+  logic buffer_has_live_source = 1'b0;
+  logic snapshot_has_live_source = 1'b0;
+  logic capture_snapshot;
+  logic buffer_write, use_saved, preserve_pending;
+  assign snapshot_valid = u_if_stage.c_ext_state_inst.saved_values_valid;
+  assign snapshot_word = u_if_stage.c_ext_state_inst.effective_instr_saved;
+  assign snapshot_sideband = u_if_stage.c_ext_state_inst.sideband_saved;
+  assign capture_snapshot = u_if_stage.c_ext_state_inst.capture_valid_stall_values;
+  assign buffer_live = u_if_stage.use_instr_buffer && !u_if_stage.sel_nop &&
+                       !u_if_stage.fetch_fault_live[2];
+  assign use_saved = u_if_stage.c_ext_state_inst.use_saved_values;
+  assign preserve_pending = u_if_stage.c_ext_state_inst.capture_pending_prediction_buffer;
+  assign buffer_write = !u_if_stage.c_ext_state_inst.i_stall &&
+      (u_if_stage.c_ext_state_inst.i_fetch_progress || use_saved) &&
+      u_if_stage.c_ext_state_inst.buffer_word_is_pc_reg &&
+      (!u_if_stage.c_ext_state_inst.i_any_holdoff_safe || preserve_pending) &&
+      !u_if_stage.c_ext_state_inst.i_flush &&
+      !u_if_stage.c_ext_state_inst.pending_prediction_target_holdoff_needs_buffer &&
+      (!u_if_stage.c_ext_state_inst.i_prediction_holdoff || preserve_pending) &&
+      !u_if_stage.c_ext_state_inst.prediction_reset_buffer_state &&
+      (!u_if_stage.c_ext_state_inst.i_pending_prediction_active || preserve_pending);
+  assign buffer_word = u_if_stage.instr_buffer;
+  assign buffer_sideband = u_if_stage.instr_buffer_sideband;
+  assign packet_valid = u_if_stage.if_stage_stall_registered && !u_if_stage.sel_nop_saved &&
+                        !u_if_stage.u_fetch_fault_sc.saved[2];
+  assign saved_parcel = u_if_stage.u_raw_parcel_sc.saved;
+  assign saved_instruction = saved_parcel[1:0] != 2'b11 ? decoded_saved :
+                             u_if_stage.u_assembled_instr_sc.saved;
+  assign saved_illegal = u_if_stage.rvc_extra_saved[22];
+  assign saved_expansion = {
+    u_if_stage.rvc_extra_saved[21:15],
+    u_if_stage.bits24_20_predecoded_saved,
+    u_if_stage.rs1_rest_predecoded_saved[2:1],
+    u_if_stage.source_hot_predecoded_saved[1:0],
+    u_if_stage.rs1_rest_predecoded_saved[0],
+    u_if_stage.rvc_extra_saved[14:0]
+  };
+  rvc_decompressor saved_decoder (
+      .i_instr_compressed(saved_parcel),
+      .o_instr_expanded(decoded_saved),
+      .o_is_compressed(),
+      .o_illegal(decoded_illegal)
+  );
+  always @(posedge i_clk) begin
+    checked_edge <= 1'b1;
+    if (i_reset) begin
+      snapshot_has_live_source <= 1'b0;
+      buffer_has_live_source   <= 1'b0;
+    end else begin
+      if (capture_snapshot) snapshot_has_live_source <= !u_if_stage.use_instr_buffer;
+      if (buffer_write)
+        buffer_has_live_source <= use_saved ?
+          snapshot_has_live_source : !u_if_stage.use_instr_buffer;
+    end
+    if (checked_edge) begin
+      if (snapshot_valid && snapshot_has_live_source)
+        p_snapshot_sideband :
+        assert (snapshot_sideband == riscv_pkg::imem_make_sideband(snapshot_word));
+      c_buffered_compressed : cover (buffer_live && u_if_stage.raw_parcel[1:0] != 2'b11);
+      c_parked_compressed : cover (packet_valid && saved_parcel[1:0] != 2'b11);
+      p_buffer_source_on_use : assert (!buffer_live || buffer_has_live_source);
+      if (buffer_has_live_source)
+        p_buffer_sideband : assert (buffer_sideband == riscv_pkg::imem_make_sideband(buffer_word));
+      if (packet_valid) begin
+        p_parked_sources :
+        assert ({
+            u_if_stage.source_hot_predecoded_saved, u_if_stage.rs1_rest_predecoded_saved,
+            u_if_stage.bits24_20_predecoded_saved
+        } == {saved_instruction[21], saved_instruction[17:16], saved_instruction[19:18],
+              saved_instruction[15], saved_instruction[24:20]});
+      end
+      if (packet_valid && saved_parcel[1:0] != 2'b11)
+        p_parked_expansion :
+        assert ({saved_expansion, saved_illegal} == {decoded_saved, decoded_illegal});
+    end
+  end
+`endif
 
 endmodule : if_prediction_walk_past_formal
 
@@ -462,6 +573,7 @@ module return_address_stack #(
   assign o_valid_count = f_valid_count;
 endmodule : return_address_stack
 
+`ifndef PREDICTOR_FETCH_CONTRACT
 // verilog_lint: waive module-filename
 module backing_btb #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -500,6 +612,7 @@ module backing_btb #(
   assign o_slot2_return_by_size = f_ret_by_size;
   assign o_slot2_target_by_size = f_target_by_size;
 endmodule : backing_btb
+`endif
 
 // verilog_lint: waive module-filename
 module tage_predictor #(

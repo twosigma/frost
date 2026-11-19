@@ -34,6 +34,11 @@ select -set target_sums a:src=pd_stage.original.sv:1754.* a:src=pd_stage.origina
 select -assert-count 8 @target_sums t:$check %i r:FLAVOR=assume %i
 chformal -assume -remove @target_sums
 select -assert-count 19 t:$check r:FLAVOR=assume %i
+# The separately exposed source-register fields on the first slot may also vary.
+select -set source_fields a:src=pd_stage.original.sv:1734.* a:src=pd_stage.original.sv:1736.* a:src=pd_stage.original.sv:1738.*
+select -assert-count 3 @source_fields t:$check %i r:FLAVOR=assume %i
+chformal -assume -remove @source_fields
+select -assert-count 16 t:$check r:FLAVOR=assume %i
 design -stash contract
 design -reset
 read_slang --top pd_history_twin_side --single-unit -DSYNTHESIS -DPREDICTOR_TWIN_REFERENCE riscv_pkg.original.sv predictor_twin_fold_pkg.sv pd_history_twin_pkg.sv rvc_decompressor.original.sv pd_target_high_precompute.original.sv pd_redirect_next.original.sv pd_stage.original.sv tage_history.original.sv sdp_dist_ram.sv pd_history_twin_side.sv
@@ -58,7 +63,7 @@ hierarchy -check -top pd_history_twin
 script free_undefined.ys
 prep -top pd_history_twin -flatten
 select -assert-count 66 t:$check r:FLAVOR=assert %i
-select -assert-count 24 t:$check r:FLAVOR=assume %i
+select -assert-count 21 t:$check r:FLAVOR=assume %i
 select -assert-count 4 t:$check r:FLAVOR=cover %i
 bmc: chformal -cover -remove
 prove: chformal -cover -remove

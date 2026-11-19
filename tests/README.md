@@ -1351,6 +1351,8 @@ targets compare every prediction and RAM port with the original predictors.
 The `pd_history_twin` target compares PD and history together across the register
 boundary, including both decode packets and all training outputs.
 The `backing_btb_twin` target covers held and shifted reads and all five RAM interfaces.
+The `predictor_fetch_contract` target checks the real fetch stage’s packet and
+registered PC outputs against the conditions used by the PD comparison.
 
 ```bash
 ./scripts/frost.py formal                          # every task of every target
