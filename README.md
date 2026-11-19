@@ -223,10 +223,14 @@ every supported extension and privilege mode.
   cycles to a dependent use. The radix-4 divider takes up to 35 cycles,
   or 19 for W forms. A load result can wake dependent integer and memory
   operations a cycle before the common data bus broadcasts it.
-- A single- and double-precision FP engine with iterative arithmetic and
-  dedicated paths for compares, moves, min/max, FCLASS and sign injection
-  that take two cycles. Integer-to-FP conversion takes four cycles, or two
-  for zero.
+- Single- and double-precision floating point on three units. A seven-stage
+  pipeline runs add, subtract, multiply, and fused multiply-add and accepts
+  one operation per cycle. It wakes dependents a cycle before the result
+  reaches the final register, so they can read the operand from that register.
+  For normal operands, a radix-16 divider takes 12 cycles in single precision
+  and 19 in double precision. An engine handles square root and conversions,
+  with dedicated two-cycle paths for compares, moves, min/max, FCLASS, and
+  sign injection. Integer-to-FP conversion takes four cycles, or two for zero.
 - Branch prediction with a 256-entry BTB, a 1024-entry two-way backing BTB
   whose jump, call and return predictions redirect fetch from predecode, a
   bimodal and a tagged path-history direction predictor, and an 8-entry

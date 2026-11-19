@@ -12,7 +12,7 @@ depends on how many operations its unit can have in flight.
 |------|----|-------|-----------------------|-----------|
 | `int_alu_shim` (two copies) | INT_RS | ALU | 0 (combinational) | n/a |
 | `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; radix-4 divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 2 to 35, word DIV/REM 2 to 19 | Up to 4 multiplies, 1 divide |
-| `fp_shim` | FP_RS | `fp_fma_pipe` (FADD, FSUB, FMUL, FMA), `fp_div_unit` (FDIV) and `fp_engine` (the rest) | 7 pipelined; 12 / 19 for FDIV; 2 to about 90 on the engine (see below) | 1 pipelined, engine and divider one at a time |
+| `fp_shim` | FP_RS | `fp_fma_pipe` (FADD, FSUB, FMUL, FMA), `fp_div_unit` (FDIV) and `fp_engine` (the rest) | 7 pipelined; 12 / 19 for FDIV; 2 to about 90 on the engine (see below) | Up to 16 across the pipeline and result FIFO, plus one on the engine or divider |
 
 The wrapper sets `int_muldiv_shim.DIRECT_MUL=1`. Each multiply result reaches
 the adapter in the cycle its arithmetic unit produces it. The registered CDB
@@ -119,17 +119,18 @@ one of three units:
   operation is one fused multiply-add with one rounding. A tracker as deep as
   the pipeline carries each operation's valid bit, ROB tag and flushed bit;
   unflushed results enter a 16-entry FIFO whose head goes to its own CDB adapter
-  on slot 6 (`FU_FP_DIV`), which outranks slot 5 and the engine's slot 4. `o_pipe_busy` is a registered credit: tracker plus
-  FIFO entries never exceed the FIFO depth, so the tail always finds room.
+  on slot 6 (`FU_FP_DIV`), which outranks slot 5 and the engine's slot 4.
+  `o_pipe_busy` limits the tracker and FIFO to 16 entries combined, so the
+  tail always finds room. The adapter can hold one more completed result.
 - [`fp_div_unit`](../../ex_stage/fpu/fp_div_unit.sv): FDIV.S and FDIV.D, radix 16
   (four quotient bits per cycle against fifteen precomputed multiples of the
   divisor), 12 cycles single and 19 double for normal operands.
 - `fp_engine`, for everything else, as below.
 
 The divider and the engine share one tag register, the kill and the completion
-on slot 4; one of them holds an operation at a time. FP_RS gates them with
-MUL_RS's divide gate (`DIVIDE_ISSUE_GATE` with `FP_ENGINE_GATE`), so pipelined
-operations pass a running divide or square root.
+on slot 4. FP_RS uses `DIVIDE_ISSUE_GATE` with `FP_ENGINE_GATE` to hold back
+engine and divider operations until both units and their shared adapter are
+idle. Pipelined operations can issue during a divide or square root.
 
 The shim also drives a forward wake: in the cycle before an operation's result
 reaches the pipeline's tail register it presents the operation's tag
@@ -146,10 +147,8 @@ share an iterative adder. Multiplies and FMAs take their significand product
 from a pipelined DSP-tiled multiplier, and divides run a radix-4 recurrence
 (two quotient bits per cycle). Moves, comparisons, min/max, classification, sign
 injection and integer-to-FP conversion have dedicated paths. One tag register
-tracks the operation in the engine. `o_fu_busy` is high
-while a nonsquashed operation occupies the engine, its result cycle included,
-and the wrapper also stops FP_RS while the adapter holds a result, so the
-engine's one-cycle result always finds the adapter free.
+tracks the operation in the engine. `o_fu_busy` is high while a nonsquashed
+operation occupies the engine, its result cycle included.
 
 The engine's latency, from issue to the result cycle, depends on the operation
 and its operands. Moves, sign injection, FCLASS, comparisons and min/max take
