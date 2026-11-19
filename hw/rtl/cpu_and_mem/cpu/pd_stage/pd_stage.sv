@@ -1646,6 +1646,11 @@ module pd_stage #(
       // neither an indirect-target nor a backing-BTB one is a conditional branch to its decoded
       // target; every target is halfword aligned.
       if (pd_sim_reset_seen_q && o_pd_redirect && pd_chk_redirect_known) begin
+        // Backing and indirect sources may both recognize one JALR. Only one
+        // slot may contribute a redirect after direction priority is applied.
+        p_pd_redirect_sources_share_one_slot :
+        assert (!((pd_dir_redirect_1_r || pd_backing_redirect_r || pd_itt_redirect_r) &&
+                  (pd_dir_redirect_2_r || pd_backing_redirect_2_r || pd_itt_redirect_2_r)));
         p_pd_redirect_target_halfword_aligned :
         assert (!pd_chk_aligned_inputs || !o_pd_redirect_target[0]);
         p_pd_itt_redirect_is_a_jalr :

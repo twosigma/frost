@@ -1665,7 +1665,8 @@ FORMAL_TARGETS = [
         "a reserved compressed jump preserves only its trap, and stack operations, "
         "refreshes, directions and targets match PD's reference models across address regions; induction checks "
         "indirect eligibility, payloads and reserved traps. "
-        "Redirects from aligned inputs are aligned, indirect targets select a taken "
+        "Each redirect has sources in only one slot. Redirects from aligned inputs "
+        "are aligned, indirect targets select a taken "
         "JALR, and taken direction redirects select the decoded branch target",
         tasks=("bmc", "cover", "prove_indirect"),
     ),
