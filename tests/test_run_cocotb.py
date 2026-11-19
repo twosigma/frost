@@ -2299,8 +2299,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="wfi_seed_recovery",
         nic_mac_clocks=False,
         description=(
-            "A wrong-path WFI cannot set the interrupt resume PC during recovery"
+            "With prediction disabled, a direct JAL exposes its fall-through WFI "
+            "at the ROB head during recovery. Each run checks that the interrupt "
+            "resume PC holds the JAL target until it retires."
         ),
+        verilator_extra_args=("../verif/cocotb_tests/wfi_seed_recovery.vlt",),
     ),
     "wfi_drain_mepc_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

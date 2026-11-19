@@ -424,7 +424,7 @@ can be debugged and where each one first stops.
 | `wfi_drain_mepc_test/` | A timer interrupt at `wfi` while a cached store drains must set `mepc` past the `wfi` |
 | `wfi_lost_tick/` | The Linux idle loop (`wfi` with MIE toggling and CLINT re-arm) must not lose timer ticks; a 24..535-cycle deadline sweep covers immediate re-entry and return after AXI handler accesses |
 | `wfi_mepc_test/` | A timer interrupt at `wfi` must set `mepc` to the next instruction |
-| `wfi_seed_recovery/` | Mispredicted `jr` jumps with `wfi` on the wrong path; the bench checks that a wrong-path `wfi` at the ROB head during recovery does not set the interrupt resume PC |
+| `wfi_seed_recovery/` | An older WFI holds a direct JAL and its fall-through WFI in the ROB. The bench wakes the older WFI and checks that the interrupt resume PC holds the JAL target while the younger WFI is flushed |
 | `walk_past_test/` | Overlapping odd and even instruction starts preserve a non-idempotent successor and its fall-through after BTB training |
 | `window_skip_repro/` | After a branch trained taken resolves not-taken, fetch must not skip the fall-through window; all 6,000 calls run with a 4M-cycle simulation budget (8M with fetch-latency fuzzing) |
 | `writecount_probe/` | `lr.w` sign extension on both dword halves in the Linux `i_writecount` sequence, with `sc.w` and `amoadd.w` |

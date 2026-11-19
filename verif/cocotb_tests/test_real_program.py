@@ -35,7 +35,7 @@ from collections import Counter
 from collections.abc import Callable, Coroutine
 import cocotb
 from cocotb.clock import Clock
-from cocotb.handle import Immediate
+from cocotb.handle import Force, Immediate
 from cocotb.triggers import (
     ClockCycles,
     FallingEdge,
@@ -1357,55 +1357,109 @@ class CmoTimerCoverage:
 
 
 class WfiRecoveryWatch:
-    """Check the resume PC around a wrong-path WFI at the ROB head.
-
-    For the wfi_seed_recovery app. In a cycle where commit-time recovery is
-    pending and the ROB head is a legal WFI, that WFI is on the wrong path, and
-    the recovery flush removes it at the end of the cycle. cpu_ooo must not
-    seed interrupt_resume_pc from it, so the next cycle's resume PC must not
-    be the WFI's PC + 4. The program's jump targets are further on, so the
-    resume PC left by the jump never equals it.
-    """
-
-    SIGNALS = (
-        "rob_head_is_wfi",
-        "head_valid",
-        "rob_trap_cause",
-        "mispredict_recovery_pending",
-        "rob_trap_pc",
-        "interrupt_resume_pc",
-    )
+    """Wake the older WFI when the JAL and its fall-through WFI are in the ROB."""
 
     def __init__(self, dut: Any) -> None:
-        """Resolve the cpu_ooo signals the check reads."""
+        """Use the program's linked target as the architectural resume-PC oracle."""
+        assert NUM_RUNS > 0, "wfi_seed_recovery requires at least one program run"
         self.dut = dut
-        cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
-        self.sig = {name: _get_signal(dut, f"{cpu}.{name}") for name in self.SIGNALS}
-        missing = [name for name, sig in self.sig.items() if sig is None]
-        assert not missing, f"WfiRecoveryWatch: unresolvable {missing}"
+        cpu_top = dut.cpu_and_memory_subsystem.cpu
+        # The platform ties the CPU's verification input low.
+        cpu_top.i_disable_branch_prediction.value = Force(1)
+        self.cpu = cpu_top.hart.cpu_inst
+        self.rob = self.cpu.u_tomasulo.u_rob
+        symbols = _load_symbol_ranges(
+            ["wfi_recovery_gate", "wfi_recovery_target"], "wfi_seed_recovery"
+        )
+        self.gate_pc = symbols["wfi_recovery_gate"][0]
+        # The inline assembly uses four-byte instructions throughout the sequence.
+        self.jal_pc = self.gate_pc + 4
+        self.wfi_pc = self.jal_pc + 4
+        self.target = symbols["wfi_recovery_target"][0]
+        assert self.target != self.wfi_pc + 4, "WFI seed would equal the JAL target"
+        self.clear()
+
+    def clear(self) -> None:
+        """Require a fresh wakeup and recovery after each reset."""
+        self.wake_requested = False
         self.hits = 0
 
     async def run(self) -> None:
-        """Watch every cycle; fail at once on a seeded resume PC."""
-        seeded_pc = None
+        """Sample between active edges and drive only the external interrupt pin."""
+        cpu, rob = self.cpu, self.rob
+        clock = cpu_clock(self.dut)
         while True:
-            await RisingEdge(cpu_clock(self.dut))
-            await ReadOnly()
-            if seeded_pc is not None:
-                resume = _read_int(self.sig["interrupt_resume_pc"])
-                assert resume != seeded_pc, (
-                    f"interrupt_resume_pc was seeded from the wrong-path WFI at "
-                    f"{seeded_pc - 4:#x}"
-                )
-                seeded_pc = None
-            if (
-                _read_bool(self.sig["rob_head_is_wfi"])
-                and _read_bool(self.sig["head_valid"])
-                and _read_int(self.sig["rob_trap_cause"]) == 0
-                and _read_bool(self.sig["mispredict_recovery_pending"])
-            ):
-                self.hits += 1
-                seeded_pc = (_read_int(self.sig["rob_trap_pc"]) or 0) + 4
+            await FallingEdge(clock)
+            if not int(self.dut.i_rst_n.value) or int(cpu.i_rst.value):
+                continue
+            if not int(cpu.head_valid.value):
+                continue
+            pc = int(cpu.rob_trap_pc.value)
+            if pc == self.gate_pc and not self.wake_requested:
+                assert int(cpu.i_disable_branch_prediction.value)
+                assert int(cpu.rob_head_is_wfi.value)
+                assert not int(cpu.rob_trap_cause.value)
+                assert not int(cpu.interrupt_pending.value), "older WFI woke early"
+                slot = (int(rob.head_idx.value) + 2) % len(rob.rob_valid)
+                live_wfis = int(rob.rob_valid.value) & int(rob.rob_f_is_wfi.value)
+                if (
+                    int(rob.head_next_valid.value)
+                    and int(rob.head_next_pc.value) == self.jal_pc
+                    and live_wfis & (1 << slot)
+                ):
+                    cocotb.log.info(
+                        f"Waking WFI {pc:#x} with JAL {self.jal_pc:#x} "
+                        f"and WFI {self.wfi_pc:#x} queued"
+                    )
+                    self.dut.i_external_interrupt.value = 1
+                    self.wake_requested = True
+            if pc == self.jal_pc and int(cpu.rob_commit_valid_raw.value):
+                assert self.wake_requested, "JAL retired before both WFIs were queued"
+                self.dut.i_external_interrupt.value = 0
+                self.wake_requested = False
+                await self._check_recovery(clock)
+
+    async def _check_recovery(self, clock: Any) -> None:
+        """Follow the JAL from retirement through the target's first retirement."""
+        cpu = self.cpu
+        await FallingEdge(clock)
+        assert int(cpu.mispredict_recovery_pending.value), "JAL missed commit recovery"
+        assert int(cpu.head_valid.value) and int(cpu.rob_head_is_wfi.value)
+        assert int(cpu.rob_trap_pc.value) == self.wfi_pc
+        assert not int(cpu.rob_trap_cause.value)
+        assert not int(cpu.rob_commit_valid_raw.value)
+        assert not int(cpu.rob_commit_2_valid_raw.value)
+        assert not int(cpu.trap_or_xret_taken.value)
+        assert int(cpu.interrupt_resume_pc.value) == self.target
+        seed = int(cpu.wfi_resume_seed.value)
+        slot = int(self.rob.head_idx.value)
+
+        await FallingEdge(clock)
+        assert int(self.rob.rob_valid.value) & (1 << slot) == 0, "WFI survived recovery"
+        while True:
+            resume = int(cpu.interrupt_resume_pc.value)
+            assert resume == self.target, (
+                f"interrupt resume PC {resume:#x}, expected JAL target {self.target:#x} "
+                f"after wrong-path WFI {self.wfi_pc:#x} (seed={seed})"
+            )
+            assert not int(cpu.trap_or_xret_taken.value)
+            if int(cpu.rob_commit_valid_raw.value):
+                assert int(cpu.dbg_commit_pc.value) == self.target
+                break
+            await FallingEdge(clock)
+        # Report any corrupted PC before checking its source.
+        assert not seed, "wrong-path WFI selected the resume-PC seed"
+        self.hits += 1
+
+    def verify(self, run_number: int) -> None:
+        """Require a checked wrong-path head in each reset-to-pass interval."""
+        assert self.hits > 0, (
+            f"run {run_number}: no wrong-path WFI reached the ROB head in recovery"
+        )
+        cocotb.log.info(
+            f"run {run_number}: {self.hits} wrong-path WFI head(s) at {self.wfi_pc:#x}, "
+            f"interrupt resume PC held at JAL target {self.target:#x}"
+        )
 
 
 class DelayedBranchFetchCoverage:
@@ -5248,9 +5302,6 @@ async def test_real_program(dut: Any) -> None:
     ecc_driver = EccReportDriver(dut) if app_name == "memerr_test" else None
     if app_name == "memerr_readback":
         cocotb.start_soon(EccReportDriver(dut).poll())
-    wfi_watch = WfiRecoveryWatch(dut) if app_name == "wfi_seed_recovery" else None
-    if wfi_watch is not None:
-        cocotb.start_soon(wfi_watch.run())
     coverage = (
         DelayedBranchFetchCoverage(dut)
         if app_name == "served_window_resteer"
@@ -5258,6 +5309,8 @@ async def test_real_program(dut: Any) -> None:
         if app_name == "cbo_mgmt_test"
         else PointerMaskingInterruptCoverage(dut)
         if app_name == "pm_test"
+        else WfiRecoveryWatch(dut)
+        if app_name == "wfi_seed_recovery"
         else None
     )
     if coverage is not None:
@@ -5369,12 +5422,5 @@ async def test_real_program(dut: Any) -> None:
         line_monitor.stop()
     if debug_monitor:
         debug_monitor.stop()
-
-    if wfi_watch is not None:
-        # Require the program to exercise the case under test.
-        assert wfi_watch.hits > 0, "no wrong-path WFI reached the ROB head in recovery"
-        cocotb.log.info(
-            f"wrong-path WFI at the ROB head in recovery: {wfi_watch.hits} cycles"
-        )
 
     cocotb.log.info(f"=== All {NUM_RUNS} run(s) completed successfully ===")
