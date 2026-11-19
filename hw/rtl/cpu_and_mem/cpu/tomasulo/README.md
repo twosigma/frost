@@ -10,12 +10,13 @@ and Zicbop (see the
 [ISA table](../../../../../README.md#supported-risc-v-extensions)).
 
 Dispatch, rename, the common data bus (CDB), and commit are all two wide. Four
-reservation stations feed six functional-unit (FU) slots. The integer station
-issues two operations per cycle to two ALUs, with branches and JALR only on
-the first; every other station issues one. Up to five operations can
-therefore start in one cycle. A result on either CDB lane can wake a waiting
-RS entry and let it issue in the same cycle. INT_RS and MEM_RS also accept a
-staged load result through an idle lane before its registered CDB broadcast.
+reservation stations feed seven functional-unit (FU) slots, or eight with
+the vector unit. The integer station issues two operations per cycle to two
+ALUs, with branches and JALR only on the first. Every other station issues
+one. Up to five operations can therefore start in one cycle. A result on
+either CDB lane can wake a waiting RS entry and let it issue in the same
+cycle. INT_RS and MEM_RS also accept a staged load result through an idle
+lane before its registered CDB broadcast.
 
 ![FROST Tomasulo back-end showing parallel allocation, independent arithmetic and translated-memory execution, two-lane completion, and precise retirement](../../../../../docs/diagrams/tomasulo-backend.svg)
 
@@ -130,8 +131,8 @@ AXI response faults; a failed device transaction is never automatically retried.
 
 ### CDB priority and tag reuse
 
-Up to six completions compete for the two CDB lanes each cycle, and
-[`cdb_arbiter`](cdb_arbiter/README.md) grants them in fixed priority:
+[`cdb_arbiter`](cdb_arbiter/README.md) grants up to two completions each
+cycle in fixed priority.
 
 ```
 MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD

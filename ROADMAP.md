@@ -379,7 +379,7 @@ or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
 `opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
 `prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). Fourteen scripts open with `hierarchy -top` and
+each case). Of the 224 scripts, 194 open with `hierarchy -top` and
 `script free_undefined.ys`, which lowers processes pass by pass, frees the
 undefined inputs of every multiplexer and the undefined bits of every
 connection with `setundef -anyseq` before `proc_dlatch` and every other
@@ -388,15 +388,16 @@ undefined bit before `proc_dff`, and then runs `proc`'s own closing
 port, a connection or a register when those passes run. Commands that a
 script's open entry pins are the exception: a plain `memory_map`, for one,
 writes x for words that nothing writes, and a plain `opt` after it can read
-them before SymbiYosys frees them. Every task of each of the fourteen
-scripts passes with that opening. The fast check of the scripts requires
-that opening of every script that `UNDEFINED_OPENING_PENDING` and
-`UNDEFINED_OPENING_TWINS` in `tests/test_run_formal.py` do not list.
+them before SymbiYosys frees them. The fast check requires the shared
+opening for every task of those 194 scripts.
 
-Open: the other 190 scripts, each to be opened with every task rerun, and
-the 19 scripts that compare two designs inside the script, which need an
-opening of their own because both designs hold the same undefined
-constants. Before the opening, a dump of every registered task's model
+Open: the 11 scripts listed in `UNDEFINED_OPENING_PENDING` in
+`tests/test_run_formal.py`, each to be opened with every task rerun. The 19
+scripts listed in `UNDEFINED_OPENING_TWINS` compare two designs inside the
+script and need an opening of their own because both designs hold the same
+undefined constants.
+
+Before the opening, a dump of every registered task's model
 before the first two `opt_muxtree` steps of each `opt` without `-fast` and
 each `prep`, and before every other `opt_muxtree`, found no constant-x
 multiplexer select; it did not reach the comparison design that

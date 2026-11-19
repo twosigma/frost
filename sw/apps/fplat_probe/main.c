@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 John Goodacre.
  *
- * FP latency probe, the bare-metal form of the board's fplat test. Prints
+ * This bare-metal floating-point latency and throughput probe prints
  * cycles per operation, in hundredths, for dependent add/subtract, multiply,
  * FMA (through the addend and through the multiplicand), and divide chains,
  * for a square-root/add pair, and for independent add, multiply and FMA

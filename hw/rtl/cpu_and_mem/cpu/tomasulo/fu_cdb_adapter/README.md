@@ -2,12 +2,12 @@
 
 `fu_cdb_adapter` is a one-entry holding register between a functional unit
 (FU) and the [CDB arbiter](../cdb_arbiter/README.md). The wrapper instantiates
-one per FU slot that has a unit, six in all. If the arbiter grants a result on
-either lane in the cycle it arrives, the adapter passes it straight through
-with no added latency. Otherwise the adapter latches it and presents it every
-cycle until it is granted. `o_result_pending` tells the wrapper a result is
-waiting. The MUL and MEM instances use `ALWAYS_GRANTED` to keep the pending
-flag constant and remove unreachable holding logic.
+one per populated FU slot, seven in the default core and eight with the
+vector unit. A pass-through adapter forwards a result granted in the cycle
+it arrives. An ungranted result waits in the adapter until a lane is
+available. `o_result_pending` tells the wrapper a result is waiting. The MUL
+and MEM instances use `ALWAYS_GRANTED` to keep the pending flag constant and
+remove unreachable holding logic.
 
 ## Behavior
 
@@ -45,7 +45,8 @@ The wrapper's settings:
 |----------|-------------------|----------------------|------------------------------------|------------------|
 | ALU, ALU2 | 0 | 1 | 0 | 0 |
 | MUL, MEM | 0 | 0 | 1 | 1 |
-| DIV, FP | 1 | 0 | 1 | 0 |
+| DIV, FP engine and divider, vector configuration | 1 | 0 | 1 | 0 |
+| FP pipeline | 0 | 0 | 1 | 0 |
 
 The ALU2 and MEM adapters set `INPUT_YOUNGER_PRECOMPUTED`. ALU2's input tag
 follows the late choice between INT RS ports 0 and 1, so the wrapper compares
@@ -60,13 +61,14 @@ retain their original values.
 `REGISTER_OUTPUT` suits the long-latency units, where one more cycle costs
 little and the pass-through valid path hurts timing.
 
-With refill disabled, the producers follow a matching rule: a result counts
-as taken only when the adapter is idle. The MUL and DIV paths and the LQ hand
-over a result only while their adapter is idle (a squashed result is dropped
-without waiting), and FP_RS stops issuing while the FP adapter is pending. A
-granted adapter therefore drains first and takes the next result the
-following cycle. The two sides must change together: an adapter that
-refilled while its producer waited for idle would take the same result twice.
+With refill disabled, a result counts as taken only when the adapter is idle.
+The MUL and DIV paths, vector-config unit, and LQ hand over a result only
+while their adapter is idle, or drop a squashed result without waiting.
+FP_RS holds back engine and divider operations while their shared adapter is
+pending. The FP pipeline's result FIFO hands over a live result only while
+the pipeline adapter is idle. A granted adapter therefore drains first and
+can take the next result the following cycle. An adapter that refilled while
+its producer waited for idle would take the same result twice.
 The MEM slot's store-fault and SC registers do not wait; they rely on the MEM
 adapter never being pending (see the
 [CDB arbiter](../cdb_arbiter/README.md#priority)).
@@ -97,8 +99,8 @@ consumer must qualify them with `valid`; the arbiter never grants or selects
 an invalid input.
 
 A full flush (`i_flush`) clears `result_pending` on the next edge but leaves
-the output alone in the flush cycle. The arbiter's `i_kill` suppresses the
-broadcast instead, once for all six adapters.
+the output alone in the flush cycle. The arbiter's `i_kill` suppresses both
+CDB lanes in that cycle.
 
 ## Held payload
 
