@@ -4182,6 +4182,17 @@ module coherence_l1d #(
       if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&
           array_hit && array_state == coherence_pkg::Modified)
         p_probe_data : assert (array_data_valid == !(probe_snapshot && array_home_current));
+      if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&
+          probe_snapshot && probe_absorbed_q)
+        p_snapshot_put_owner : assert (!(array_hit && array_state == coherence_pkg::Modified));
+      if (active && phase_q == Update && operation_q == ProbeOp && probe_snapshot)
+        p_snapshot_credit_image :
+        assert (state_q == coherence_pkg::Modified && update_mask_q == 0 &&
+            reply_q.addr == update_addr_q && reply_q.state == coherence_pkg::Modified &&
+            reply_q.data_valid && !reply_q.absorbed && reply_q.data == image_q);
+      if (active && o_r_valid && probe_snapshot)
+        p_snapshot_hold :
+        assert (probe_valid_q && !o_p_ready && !store_pop && !o_cut_hold && phase_q == Idle);
       if (active && phase_q == LookupWait && array_valid &&
           (operation_q == GrantOp || operation_q == TwinOp) &&
           !array_hit && array_state == coherence_pkg::Modified)
