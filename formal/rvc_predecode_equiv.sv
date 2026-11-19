@@ -39,6 +39,7 @@ module rvc_predecode_equiv;
     if (parcel[1:0] != 2'b11) begin
       assert (riscv_pkg::imem_rvc_bits24_20(parcel, rd_is_x2) == expanded[24:20]);
       assert (source_fields == {expanded[21], expanded[19:15]});
+      assert ((expanded[6] && expanded[4]) == (parcel == 16'h9002));
     end
     if (parcel[6:0] == 7'h73) begin
       assert (paired_sideband[riscv_pkg::ImemSbNativeSerializeLo] == (parcel[14:12] != 3'b100));

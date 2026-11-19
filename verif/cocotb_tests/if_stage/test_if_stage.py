@@ -30,6 +30,8 @@ from cocotb_tests.cpu_structs import (
     PIPELINE_CTRL_FIELDS,
     IF_TO_PD_FIELDS,
     FROM_EX_FIELDS,
+    TAGE_LOOKUP_FIELDS,
+    TAGE_TABLES,
 )
 from utils.packed_structs import (
     pack_struct as _pack_struct,
@@ -4114,6 +4116,17 @@ async def test_slot2_tage_valid_positions_spanning_fault_and_replay(dut: Any) ->
             bank_sel=(pc >> 2) & 1,
         )
         await _redirect_to(dut, pc)
+        # Training a known row lets this test check the selected fetch slot.
+        # The two physical copies can power up with different valid and useful bits.
+        lookup = _unpack_struct(TAGE_LOOKUP_FIELDS, int(dut.o_tage_slot_lookup_2.value))
+        bank = (slot2_pc >> 2) & 1
+        for table in range(TAGE_TABLES):
+            storage = dut.u_tage_predictor.gen_bank[bank].gen_table[table]
+            index = int(lookup[f"index{table + 1}"])
+            for copy in (storage.u_lookup_copy, storage.u_train_copy):
+                row = copy.ram[index]
+                row.value = int(row.value) & (((1 << (len(row) - 1)) - 1) & ~3)
+        await _redirect_to(dut, pc)
         lookup_bits = int(dut.o_tage_slot_lookup_2.value)
         dut.i_tage_train_valid.value = 1
         dut.i_tage_train_lookup.value = lookup_bits
@@ -4268,3 +4281,27 @@ async def test_slot2_tage_valid_positions_spanning_fault_and_replay(dut: Any) ->
     assert replayed_pkt2["is_cond_branch"] is True
     assert replayed_pkt2["pd_target_native_low"] == ((slot2_pc + imm) & 0x1FFF)
     assert bool(int(dut.o_tage_slot_valid.value) & 0b10)
+
+
+@cocotb.test()
+async def test_redirect_during_holdoff_discards_backing_reads(dut: Any) -> None:
+    """A second redirect during holdoff cancels both prior backing read images."""
+    await _setup_test(dut)
+    backing = dut.u_backing_btb
+    for _ in range(2048):
+        if not backing.sweep_active.value and backing.held_valid_q.value:
+            break
+        await _advance_cycle(dut)
+    assert backing.held_valid_q.value
+    for offset in (0x100, 0x200):
+        _drive_from_ex(
+            dut, {"branch_taken": True, "branch_target_address": BASE_PC + offset}
+        )
+        await _advance_cycle(dut)
+        assert int(dut.o_pc.value) == BASE_PC + offset
+        assert dut.control_flow_holdoff.value
+    assert not backing.held_valid_q.value, "a prior-path backing read survived recovery"
+    assert not backing.request_valid_q.value, "the redirect edge read the old fetch PC"
+    _drive_from_ex(dut, {})
+    await _advance_cycle(dut)
+    assert backing.request_valid_q.value

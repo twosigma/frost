@@ -28,6 +28,7 @@
  *              ret (skips the 100)
  *   branch  A: addi; beq x0,x0,+8;    B: addi; addi; addi; ret     want x+3
  *              addi 100; ret
+ *   indirect A jumps through t0 over the addi 100. B replaces the JALR with an addi.
  */
 
 #include <stdint.h>
@@ -40,6 +41,8 @@
 #define INSN_ADDI_A0_1 0x00150513u   /* addi a0, a0, 1 */
 #define INSN_ADDI_A0_100 0x06450513u /* addi a0, a0, 100 */
 #define INSN_RET 0x00008067u         /* jalr x0, 0(ra) */
+#define INSN_AUIPC_T0 0x00000297u    /* auipc t0, 0 */
+#define INSN_JALR_T0_12 0x00c28067u  /* jalr x0, 12(t0) */
 #define INSN_J_8 0x0080006fu         /* jal x0, +8 */
 #define INSN_BEQ_8 0x00000463u       /* beq x0, x0, +8 */
 
@@ -94,9 +97,13 @@ int main(void)
     static const uint32_t a_jump[] = {INSN_ADDI_A0_1, INSN_J_8, INSN_ADDI_A0_100, INSN_RET};
     static const uint32_t a_branch[] = {INSN_ADDI_A0_1, INSN_BEQ_8, INSN_ADDI_A0_100, INSN_RET};
 
+    static const uint32_t a_indirect[] = {
+        INSN_AUIPC_T0, INSN_JALR_T0_12, INSN_ADDI_A0_100, INSN_RET};
+
     run_case("ret", a_ret, 2, 1);
     run_case("jump", a_jump, 4, 1);
     run_case("branch", a_branch, 4, 1);
+    run_case("indirect", a_indirect, 4, 0);
 
     if (failures == 0) {
         uart_printf("<<PASS>>\n");

@@ -309,6 +309,28 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Compressed double-precision floating-point loads and stores (Zcd)",
     ),
+    "pd_itt_slot2": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="pd_itt_slot2",
+        nic_mac_clocks=False,
+        description=(
+            "A not-taken PD redirect keeps its fall-through when the killed slot 2 "
+            "behind the branch holds a trained indirect call"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+    ),
+    "bpred_trap_pair_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="bpred_trap_pair_test",
+        nic_mac_clocks=False,
+        description=(
+            "Fetch pairing and branch prediction around trap, trap-return, WFI "
+            "and reserved encodings across both slots and predictor tables"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+    ),
     "call_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -612,12 +634,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Random code mutation under trained predictors, self-checking",
         extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),
     ),
+    "bpred_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="bpred_probe",
+        nic_mac_clocks=False,
+        description=(
+            "Mispredictions for first-packet returns and jumps, slot-2 branches, "
+            "jump tables and history-correlated branches"
+        ),
+    ),
     "smc_predict_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="smc_predict_test",
         nic_mac_clocks=False,
-        description="Rewritten code does not follow stale branch predictions",
+        description="Rewritten ALU instructions ignore trained return, direct, indirect and branch targets",
     ),
     "btb_mode_alias_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -5809,6 +5841,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_tage_predictor",
         hdl_toplevel_module="tage_predictor",
         description="Tagged branch-direction prediction, allocation, and training",
+    ),
+    "ittage_predictor": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.branch_prediction.test_ittage_predictor",
+        hdl_toplevel_module="ittage_predictor",
+        description="Indirect target prediction, allocation, confidence and replacement",
     ),
     "branch_prediction_controller": CocotbRunConfig(
         python_test_module=(

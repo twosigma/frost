@@ -1,0 +1,55 @@
+[tasks]
+bmc
+prove
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 5
+prove: mode prove
+prove: depth 2
+cover: mode cover
+cover: depth 5
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top predictor_table_twin_side --single-unit -DSYNTHESIS -DPREDICTOR_TWIN_DIRECTION -DPREDICTOR_TWIN_REFERENCE riscv_pkg.original.sv predictor_twin_fold_pkg.sv predictor_table_twin_pkg.sv tage_predictor.original.sv sdp_dist_ram.sv predictor_table_twin_side.sv
+hierarchy -top predictor_table_twin_side
+script free_undefined.ys
+prep -top predictor_table_twin_side -flatten
+select -assert-none t:$mem_v2
+design -stash reference
+design -reset
+read_slang --top predictor_table_twin_side --single-unit -DSYNTHESIS -DPREDICTOR_TWIN_DIRECTION riscv_pkg.sv predictor_twin_fold_pkg.sv predictor_table_twin_pkg.sv tage_predictor.sv sdp_dist_ram.sv predictor_table_twin_side.sv
+hierarchy -top predictor_table_twin_side
+script free_undefined.ys
+prep -top predictor_table_twin_side -flatten
+select -assert-none t:$mem_v2
+design -stash candidate
+design -reset
+read_slang --top predictor_table_twin --single-unit -DSYNTHESIS -DPREDICTOR_TWIN_DIRECTION riscv_pkg.sv predictor_table_twin_pkg.sv predictor_table_twin.sv
+design -copy-from reference -as table_reference predictor_table_twin_side
+design -copy-from candidate -as table_candidate predictor_table_twin_side
+hierarchy -check -top predictor_table_twin
+script free_undefined.ys
+prep -flatten -top predictor_table_twin
+select -assert-count 10 t:$check r:FLAVOR=assert %i
+select -assert-count 1 t:$check r:FLAVOR=assume %i
+select -assert-count 2 t:$check r:FLAVOR=cover %i
+bmc: chformal -cover -remove
+prove: chformal -cover -remove
+cover: chformal -assert -remove
+
+[files]
+predictor_reference/riscv_pkg.original.sv
+predictor_reference/tage_predictor.original.sv
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/tage_predictor.sv
+predictor_twin_ram/sdp_dist_ram.sv
+predictor_twin_fold_pkg.sv
+predictor_table_twin_pkg.sv
+predictor_table_twin_side.sv
+predictor_table_twin.sv
+free_undefined.ys

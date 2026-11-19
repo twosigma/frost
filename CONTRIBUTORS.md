@@ -131,3 +131,4 @@
 - Implemented pipelined DSP multiplication and radix-4 division for single- and double-precision floating-point operations and added a regression for the latency of arithmetic operations
 - Implemented pipelined scalar floating-point arithmetic, radix-16 division and early wakeup of dependent operations.
 - Implemented Zicbom clean, flush and invalidate through the coherent cache hierarchy.
+- Extended the backing branch target buffer, added tagged indirect target

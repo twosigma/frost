@@ -171,6 +171,14 @@ overlaps of those forms.
 blocks, directed CPU tests, and applications from `sw/apps/`, which the
 runner compiles first. A failing RTL assertion fails the simulation.
 
+| Branch prediction test | What it checks |
+|---|---|
+| `ittage_predictor` | Indirect target allocation, provider confidence, lookup capture and convergence of independently initialized table copies. |
+| `bpred_probe` | Reports mispredictions and cycles for calls, returns, slot-2 conditionals, a jump table and correlated branches. |
+| `pd_itt_slot2` | Checks that a slot-1 branch veto keeps its fall-through when a killed slot-2 JALR has a trained target. The callee checks its return address and call count. |
+| `bpred_trap_pair_test` | Checks fetch pairing, PD redirect suppression, and exact trap/return state across `ebreak`, `c.ebreak`, `ecall`, `xret`, trapping `wfi`, and reserved compressed and 32-bit encodings in both slots and both orders under primary BTB, backing BTB, ITTAGE and TAGE hits. |
+
+
 `vec_vtype_tracker` checks register and immediate configuration allocation,
 the delayed ROB in-flight indication, architectural reload, full flushes
 and checkpoint restore. `vec_vtype_handoff_test_v128/v256/v512` execute a
@@ -1391,12 +1399,19 @@ The standalone Ethernet MAC/PCS has its own
 ### `test_run_formal.py`
 
 See the [formal guide](../formal/README.md) for the targets, what each one
-proves, and its assumptions.
+proves, and its assumptions. The `tage_predictor_twin` and `ittage_predictor_twin`
+targets compare every prediction and RAM port with the original predictors.
+The `pd_history_twin` target compares PD and history together across the register
+boundary, including both decode packets and all training outputs.
+The `backing_btb_twin` target covers held and shifted reads and all five RAM interfaces.
+The `predictor_fetch_contract` target checks the real fetch stage’s packet and
+registered PC outputs against the conditions used by the PD comparison.
 
 ```bash
 ./scripts/frost.py formal                          # every task of every target
 ./scripts/frost.py formal --list-targets           # targets and their tasks
 ./scripts/frost.py formal --target reorder_buffer  # one target
+./scripts/frost.py formal --target pd_backing_redirect --task prove_indirect  # both indirect slots
 ./scripts/frost.py formal --task bmc               # one task on every target that declares it
 ```
 

@@ -202,11 +202,11 @@ __asm__(".section .text\n"
     "    sd   a0, " #v "*8(s1)\n"                                                                  \
     "    sd   t1, " #w "*8(s1)\n"
 
-/* CALL(v, w): call the code page at s3 (a0 = its constant) and store the value
- * and the ITLB walks (hpmcounter5) the call caused. */
-#define CALL(v, w)                                                                                 \
-    "    csrr t0, 0xC05\n"                                                                         \
-    "    jalr t6, 0(s3)\n"                                                                         \
+/* Include the translation change in the counter window: a predicted call can
+ * fetch its target before the instruction preceding the JALR retires. The
+ * caller and return site share a global mapping in every address space. */
+#define CALL_AFTER(change, v, w)                                                                   \
+    "    csrr t0, 0xC05\n" change "    jalr t6, 0(s3)\n"                                           \
     "    csrr t1, 0xC05\n"                                                                         \
     "    sub  t1, t1, t0\n"                                                                        \
     "    sd   a0, " #v "*8(s1)\n"                                                                  \
@@ -301,14 +301,17 @@ __asm__(".section .text\n"
         "    sd   a0, 44*8(s1)\n"
         /* The ITLB follows the same rules: a per-ASID code page. */
         "    csrw satp, s4\n"
-        "    sfence.vma\n"
-        CALL(45, 46)
-        "    csrw satp, s5\n"
-        CALL(47, 48)
-        "    csrw satp, s4\n"
-        CALL(49, 50)
-        "    sfence.vma zero, a6\n"
-        CALL(51, 52)
+        /* Invalidate only the code page, leaving the caller's translation hot. */
+        CALL_AFTER("    sfence.vma s3, zero\n", 45, 46)
+        /* Train the non-return JALR at VA_CODE + 4 in A. The same PC in B
+         * holds an addi, and the old target in B produces a different result. */
+        "    li t3, 64\n"
+        "8:  jalr t6, 0(s3)\n"
+        "    addi t3, t3, -1\n"
+        "    bnez t3, 8b\n"
+        CALL_AFTER("    csrw satp, s5\n", 47, 48)
+        CALL_AFTER("    csrw satp, s4\n", 49, 50)
+        CALL_AFTER("    sfence.vma zero, a6\n", 51, 52)
         /* Context switches: two address spaces of 32 pages each, entered by ASID
          * alone, then with the SFENCE.VMA an ASID-less kernel would run. */
         "    li   s10, 0xC0008000\n"
@@ -551,11 +554,19 @@ int main(void)
     *(volatile unsigned long *) PA_XA2 = 0xA3;
     *(volatile unsigned long *) PA_G = 0x6C;
     *(volatile unsigned long *) PA_SD = 0x5D;
-    /* li a0, 0x11 ; jr t6, li a0, 0x22 ; jr t6, and li a0, 0x33 ; jr t6 */
-    ((volatile uint32_t *) PA_CA)[0] = 0x01100513;
-    ((volatile uint32_t *) PA_CA)[1] = 0x000F8067;
-    ((volatile uint32_t *) PA_CB)[0] = 0x02200513;
-    ((volatile uint32_t *) PA_CB)[1] = 0x000F8067;
+    /* Two images of VA_CODE. At +4, A jumps to +12; B increments a0. */
+    volatile uint32_t *code_a = (volatile uint32_t *) PA_CA;
+    volatile uint32_t *code_b = (volatile uint32_t *) PA_CB;
+    code_a[0] = 0x00000e97; /* auipc t4, 0 */
+    code_a[1] = 0x00ce8067; /* jalr zero, 12(t4) */
+    code_a[2] = 0x000f8067; /* jr t6 */
+    code_a[3] = 0x01100513; /* li a0, 0x11 */
+    code_a[4] = 0x000f8067; /* jr t6 */
+    code_b[0] = 0x02100513; /* li a0, 0x21 */
+    code_b[1] = 0x00150513; /* addi a0, a0, 1 */
+    code_b[2] = 0x000f8067; /* jr t6 */
+    code_b[3] = 0x01100513; /* li a0, 0x11 */
+    code_b[4] = 0x000f8067; /* jr t6 */
     ((volatile uint32_t *) PA_SI)[0] = 0x03300513;
     ((volatile uint32_t *) PA_SI)[1] = 0x000F8067;
     g_svvptc_pte[0] = PTE_PPN(PA_SD) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
