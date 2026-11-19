@@ -109,7 +109,12 @@ module pd_id_slot2_redirect_formal #(
       .o_pd_redirect_ras_link (pd_redirect_ras_link),
       .o_pd_backing_refresh   (pd_backing_refresh),
       .o_pd_backing_refresh_pc(pd_backing_refresh_pc),
-      .o_cond_branch          (pd_cond_branch)
+      .o_cond_branch          (pd_cond_branch),
+      .o_q_cond_branch        (),
+      .o_q_jalr               (),
+      .o_q_itt_eligible       (),
+      .o_q_cf                 (),
+      .o_q_pred_taken         ()
   );
 
   id_stage #(

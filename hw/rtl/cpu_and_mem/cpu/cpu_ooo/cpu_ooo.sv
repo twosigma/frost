@@ -1029,7 +1029,12 @@ module cpu_ooo #(
       .o_jalr(pd_jalr),
       .o_itt_eligible(pd_itt_eligible),
       .o_jump(pd_jump),
-      .o_pred_taken(pd_pred_taken)
+      .o_pred_taken(pd_pred_taken),
+      .o_q_cond_branch(),
+      .o_q_jalr(),
+      .o_q_itt_eligible(),
+      .o_q_cf(),
+      .o_q_pred_taken()
   );
 
   // ===========================================================================
