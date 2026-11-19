@@ -288,9 +288,12 @@ checks that a subsequent load cannot use their stale data from L0.
 L1D hit path, then issues an older load to the same word, which reads the
 new value; a younger load that read the old value must replay instead of
 retiring.
-`cached_store_burst_test` checks cached store bursts followed by traps,
-FENCE.I, SC and AMO. Its CPU monitor requires accepted-store overlap with
-trap and fence drain waits.
+`cached_store_burst_test` checks masked stores, machine-mode ECALL,
+FENCE.I, SC and AMO. Each trap burst ends with a store to a fresh
+cached line. The stores and ECALL share one instruction-cache line.
+The program checks the stored word after trap return. Its CPU monitor
+requires accepted stores during the ECALL and FENCE.I waits and checks
+that trap entry waits for the stores to drain.
 `l2_capacity_chase_smoke` checks the dependent-load measurement program
 with 8, 16 and 32 KiB working sets and a 4 MiB L2 in the real-program shards.
 The CLI-only `l2_capacity_chase` entry retains its full-size working sets
