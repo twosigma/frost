@@ -122,7 +122,7 @@ module coherence_l1d #(
 `ifdef COH_MAINT_OWNED
     input logic [63:0] i_maint_first,
     i_maint_final,
-    output logic [8+8+7+3*64-1:0] o_maint_view,
+    output logic [8+8+7+3*64:0] o_maint_view,
 `endif
     output cache_perf_pkg::cache_instance_perf_events_t o_perf_events,
     output logic o_fatal,
@@ -160,12 +160,14 @@ module coherence_l1d #(
   logic [7:0] mask_q;
   logic resident_q, shared_q, home_current_q, reply_snapshot_q;
   logic put_q, put_accepted_q, reply_valid_q;
-  // The original ownership proof follows a copy discarded as soon as its R
-  // transfers. The publication schedule keeps that copy for another store.
+  // The unbounded schedule may keep or evict a snapshot owner. The older
+  // directed schedules discard the copy to exercise their PutM histories.
 `ifdef COH_MAINT_RETAINED
-  localparam bit KeepSnapshot = 1;
+  wire keep_snapshot = 1'b1;
+`elsif COH_MAINT_OWNED
+  wire keep_snapshot = !evict;
 `else
-  localparam bit KeepSnapshot = 0;
+  wire keep_snapshot = 1'b0;
 `endif
   logic [63:0] value_q, store_q, installed_value_q, grant_image_q;
   coh_d_t request;
@@ -385,8 +387,8 @@ module coherence_l1d #(
       if (o_r_valid && i_r_ready) begin
         reply_valid_q <= 0;
         if (reply_q.addr == request.addr && !reply_q.absorbed) begin
-          resident_q <= KeepSnapshot && reply_snapshot_q && resident_q;
-          home_current_q <= KeepSnapshot && reply_snapshot_q && resident_q;
+          resident_q <= keep_snapshot && reply_snapshot_q && resident_q;
+          home_current_q <= keep_snapshot && reply_snapshot_q && resident_q;
           shared_q <= reply_q.state == coherence_pkg::Shared;
         end
       end
@@ -465,6 +467,7 @@ module coherence_l1d #(
 `endif
 `ifdef COH_MAINT_OWNED
   assign o_maint_view = {
+    home_current_q,
     f_seq_ever_pop,
     f_seq_final,
     f_seq_pushed,
@@ -588,7 +591,9 @@ module coherence_l1d #(
   always_ff @(posedge i_clk)
     if (!i_rst && reply_valid_q && reply_q.addr == request.addr && (resident_q ||
         (put_q && !put_accepted_q)))
-      p_maint_seq_reply_owner : assert (reply_q.data_valid);
+      p_maint_seq_reply_owner :
+      assert (reply_q.data_valid == !(reply_snapshot_q && resident_q && home_current_q) &&
+          (reply_q.data_valid || reply_q.state == coherence_pkg::Modified));
 `endif
 endmodule
 // verilog_lint: waive module-filename
@@ -653,6 +658,7 @@ module frost_cache #(
 `ifdef COH_MAINT_OWNED
     input logic [63:0] i_maint_final,
     input logic i_maint_final_seen,
+    input logic [63:0] i_maint_response_image,
     output logic o_maint_swept,
     output logic [1:0] o_maint_if_waiting,
     output logic [1:0][ADDR_WIDTH-1:0] o_maint_if_address,
@@ -821,11 +827,10 @@ module frost_cache #(
       p_maint_if_final_fills : assert (f_if_final_fills);
       if (f_if_swept_final && valid_q[0])
         p_maint_if_final_cached : assert (data_q[0] == {4{i_maint_final}});
-      if (i_down_resp_valid &&
-          !address_q[i_down_resp_id[0]][5] &&
-          !i_down_resp_error &&
-          i_maint_final_seen)
-        p_maint_if_final_input : assert (i_down_resp_rdata == {4{i_maint_final}});
+      if (i_down_resp_valid && !address_q[i_down_resp_id[0]][5] && !i_down_resp_error)
+        p_maint_if_final_input :
+        assert (i_down_resp_rdata == {4{i_maint_response_image}} &&
+            (!f_if_swept_final || i_maint_response_image == i_maint_final));
       if (f_if_swept_final && o_up_resp_valid && !o_up_resp_id[0] && !o_up_resp_error)
         p_maint_if_final_output : assert (o_up_resp_rdata == {4{i_maint_final}});
     end
