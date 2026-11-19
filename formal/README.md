@@ -323,8 +323,13 @@ passes the placeholder design in `prim_twin_done.sv` to SymbiYosys after the
 comparison, because the comparison itself runs in the Yosys script and ends in
 `equiv_status -assert`.
 
-`tests/test_prim_twins.py` lists every `FROST_XILINX_PRIMS` block in `hw/rtl` and
-fails on one that no registered check covers.
+`tests/test_prim_twins.py` lists every `FROST_XILINX_PRIMS` block in `hw/rtl`,
+fails on one that no registered check covers, and requires each covering file
+to pass `-D FROST_XILINX_PRIMS` directly on the `read`, `read_verilog` or
+`read_slang` command that reads the covered source alongside
+`read_verilog -formal +/xilinx/cells_sim.v` in a design whose elaborated top
+retains a module from that source (or compares a stashed copy of that top in
+`equiv_make`).
 
 CI runs these comparisons in a formal shard of their own, `Primitive forms`,
 which takes the `*_twin` targets and the read select's `xilinx` tasks, and also
@@ -756,19 +761,25 @@ cycles, which clears arbitrary memory history.
    is not in the key. Includes, `$readmemh` names and script reads name
    listed files without a directory. SymbiYosys gives a register without an
    initial value a free starting value, and makes undefined constants and
-   undriven nets free inputs, only after the whole script. Every command a
-   script runs is one of the forms that `DONT_CARE_SAFE` in
-   `tests/test_run_formal.py` lists, each with the reason the Yosys source
-   gives. Among them are `opt`, `opt_expr`, `opt_dff`, `opt_merge` and
-   `wreduce` with `-keepdc`, `memory_map -keepdc`, `setundef -anyseq`, the
-   default `techmap`, and the commands that read sources, select or rename.
-   The plain forms, `-full`, `-mux_undef`, `-undriven` and `-fine`,
-   `memory` in any form, `opt_mem`, `memory_share`, `synth`, `abc`,
-   `peepopt`, `sim -w`, `setundef -zero`, `techmap -map`, and
-   `chformal -delay` and `-skip` are not, and an option `-share_all` is
-   rejected anywhere, since it merges free inputs. The fast Python tests
-   reject every other command, except, for each script they list as open,
-   the commands pinned in order for each of its tasks. Without `-keepdc`,
+   undriven nets free inputs, only after the whole script. Every command line
+   of every task's `[script]`, every inline `[file <name>.ys]` script, and
+   every included `.ys` file must parse completely (command, every option, and
+   every argument) into one of the forms in `SCRIPT_FORMS` in
+   `tests/sby_config.py`. Semicolons, labels, wrappers (`tee`, `trace`,
+   `debug`), shell or interpreter escapes, and any unlisted command, option or
+   argument shape are refused. Each form in `SCRIPT_FORMS` is classified with
+   the reason from Yosys's source into `DONT_CARE_SAFE` or
+   `DONT_CARE_REJECTED` in `tests/test_run_formal.py`. Among the safe forms
+   are `opt`, `opt_expr` and `opt_merge` with `-keepdc`, `memory_map -keepdc`,
+   `setundef -anyseq`, the default `techmap`, `prep -top`, and the listed
+   commands that read sources, scope, select, edit properties or manage
+   designs. Plain `opt`, `opt` with `-fast`, `-full` or `-purge`,
+   `opt -keepdc -mux_bool -fine`,
+   plain `memory_map`, `setundef -zero`, `abc`, `peepopt`,
+   `sim -clock ... -n 1 -w`, `chtype`, `techmap -max_iter 1 -map %<name>`,
+   `sat`, `equiv_simple` and `equiv_struct -icells` are in
+   `DONT_CARE_REJECTED` and run only where pinned in order for a task in
+   `DONT_CARE_OPEN`. Without `-keepdc`,
    Yosys treats the unknown starting value of such a register as a
    don't-care: it may fix the register to the constant it loads, turn one
    that never loads into a constant x that each reader resolves separately,
@@ -776,10 +787,10 @@ cycles, which clears arbitrary memory history.
    memory that is never written into constant x. The proof then checks a
    model that can miss behaviors of the hardware or combine values that the
    hardware cannot produce. Apart from the edits a script names itself,
-   such as `connect` and `delete`, the listed forms keep the unknown
+   such as `connect` and `delete`, the safe forms keep the unknown
    starting value of registers and memories and never merge two free
    inputs. No list of forms keeps undefined constants. Passes that the
-   listed forms run fuse or fix them before SymbiYosys makes them free:
+   safe forms run fuse or fix them before SymbiYosys makes them free:
 
    - `opt_muxtree`, in `opt` without `-fast` and in `prep`, reads a
      constant-x multiplexer select as 0.
@@ -817,13 +828,14 @@ cycles, which clears arbitrary memory history.
    script free_undefined.ys
    ```
 
-   `hierarchy` derives every module the top uses. `free_undefined.ys` runs
-   `proc` pass by pass, without `proc_rom`, and frees the undefined bits
-   with `setundef -anyseq` in two steps: every multiplexer input and every
-   connection before `proc_dlatch`, and everything else before `proc_dff`,
-   so that an undefined asynchronous reset value becomes a free asynchronous
-   load. An `opt_expr` on memory initializations alone writes their
-   constants into the cells, which `setundef` needs, and `proc`'s own
+   `hierarchy` derives every module the top uses. `free_undefined.ys` starts
+   with `select -clear` so it resets any selection or module scope to the
+   whole design, then runs `proc` pass by pass, without `proc_rom`, and frees
+   the undefined bits with `setundef -anyseq` in two steps: every multiplexer
+   input and every connection before `proc_dlatch`, and everything else before
+   `proc_dff`, so that an undefined asynchronous reset value becomes a free
+   asynchronous load. An `opt_expr` on memory initializations alone writes
+   their constants into the cells, which `setundef` needs, and `proc`'s own
    closing `opt_expr -keepdc` runs last, once nothing undefined is left, so
    that the commands after the opening see the netlist plain `proc` gives
    them, apart from case tables kept as multiplexers, the free values and
@@ -839,13 +851,20 @@ cycles, which clears arbitrary memory history.
    x only where nothing uses the value (`opt_dff` on the feedback path of a
    register it gives an enable, `wreduce` on bits nothing reads).
 
-   After the opening a script reads no further sources, sets no parameters,
-   connects no net to a constant with an x or z bit and names no other top,
-   and a script that runs `async2sync` or `clk2fflogic` itself, which write
-   x where an asynchronous set and clear are both active, runs
-   `setundef -anyseq` right after it. The opening runs on the whole design:
-   no `select` or `cd`, and no design that `design -load` or `-pop` brings
-   back, may leave a narrower selection or active module in place before it.
+   If a script reads sources (`read`, `read_verilog`, `read_slang`), defines
+   macros (`read -define`, `verilog_defines`), sets parameters (`chparam`,
+   `hierarchy -chparam`), resets the design (`design -reset`) or copies a
+   module (`design -copy-from`), it must run `hierarchy -top` and
+   `script free_undefined.ys` on that design before any command acts on it,
+   and the design handed to the solver at the end of `[script]` must be
+   opened. `connect -set` accepts only signal expressions without `x`, `z` or
+   `?` constant bits, later `hierarchy -top` and `prep -top` commands must
+   keep the opened top, and `async2sync`, which writes x where an
+   asynchronous set and clear are both active, must be followed immediately by
+   `setundef -anyseq` on the whole design rather than another command or the
+   end of `[script]`. No `select -module` or `cd <module>`, and no design that
+   `design -load` brings back, may leave a narrower scope in place before
+   `script free_undefined.ys`.
 
    The opening does not reach undefined values that a cell computes, such as
    a `$shiftx` read past its input, which the backends and the shift
@@ -862,31 +881,52 @@ cycles, which clears arbitrary memory history.
    `UNDEFINED_OPENING_PENDING` and `UNDEFINED_OPENING_TWINS` do not list,
    including that the script runs this repository's `free_undefined.ys`
    itself: listed in `[files]` as that one name, never a changed copy,
-   another path, a `[file]` section or the opening's commands written out,
-   and that no command of the task writes a file that SymbiYosys copies into
-   `src/` or that another command of the task names. Before the opening a
-   command runs only in a form that `DONT_CARE_SAFE` lists, with no option
-   the form does not name. Every task of every script may write a file
-   only with `write_json <file>` or `write_rtlil <file>`, the forms the
-   scripts need (`SCRIPT_FILE_WRITES`); `YOSYS_FILE_WRITES` lists the forms of
-   the image's Yosys that write a file, from its help. `tee`, `trace` and
-   `debug` with a command count as commands of their own, so that the checks
-   see their options too.
-   The fast tests resolve every task with SymbiYosys and check its script and
-   source files. They compare the checkout-only reader used by the reuse and
-   frontend tools with each resolved configuration, and check that the reader
-   refuses each text of a corpus that SymbiYosys refuses. Section headers
-   occupy a full line starting in column one. Task names and group tags use
-   ASCII letters, digits and underscores. Once `[tasks]` names a task, no
-   other line, comments included, may begin with a word that ends in a colon
-   and is not a tag, and a `[tasks]` section must name a task. A tag can
-   select a command or a block inside `[options]`, `[engines]` or
-   `[script]`; section headers, `[tasks]` lines, `[files]` entries and
-   `[file]` bodies take none.
-   Each copied file has one source path and a unique destination basename.
-   Designs saved, transferred or used as mapping templates must have their
-   own opening. An explicit `techmap -map` must name an opened, saved design
-   with `%name`.
+   another path, a `[file]` section or the opening's commands written out.
+   Before the opening a command runs only in a passive, scoping or source
+   form from `SCRIPT_FORMS`. Every task of every script may write a file only
+   with `write_json <file>` or `write_rtlil <file>` /
+   `write_rtlil ../model/<file>` (`SCRIPT_FILE_WRITES`, derived from
+   `SCRIPT_FORMS`), never overwriting a copied file, a `model/design*` file
+   owned by SymbiYosys, or a path another command of the task names; the fast
+   tests check every `SCRIPT_FORMS` entry against the installed Yosys's help
+   so no non-writing form carries a file-writing option.
+   The fast tests resolve every task with SymbiYosys and check its parsed
+   commands and source files. They compare the single-grammar checkout reader
+   (`read_source` in `tests/sby_config.py`, used by the reuse and frontend
+   tools) with SymbiYosys on every checkout script and on a generated mutation
+   corpus. Configuration files, `.ys` scripts and `[files]` sources are read as
+   raw bytes and may contain only printable ASCII (`0x20..0x7E`), horizontal tab
+   (`0x09`) and line feed (`0x0A`), with lines split on LF only; carriage
+   return (`0x0D`), NUL, other control bytes and non-ASCII bytes are refused.
+   Section headers occupy a full line starting in column one, `[tasks]`
+   precedes other sections and names at least one task, comments before or
+   inside `[tasks]` start in column one, and task names and group tags use
+   ASCII letters, digits and underscores. Once `[tasks]` names a task, no other
+   line, comments included, may begin in column one with a word that ends in a
+   colon and is not a tag. A tag can select a line or a `--`-closed block
+   inside `[options]`, `[engines]` or `[script]`; section headers, `[tasks]`
+   lines, `[files]` entries and `[file <name>.ys]` bodies take none.
+   `[options]` keys and values (`OPTION_SPECS`) and `[engines]` entries
+   (`ENGINE_FORMS`) are closed lists in `tests/sby_config.py`: `mode` must be
+   `bmc`, `prove` or `cover` matching the registered task's mode, `skip` and
+   start-frame `-S` engines are allowed only where pinned, and `[files]` accepts
+   only `.sv`, `.v`, `.svh`, `.vh` and pinned `.ys` files, with one source path
+   and a unique destination basename per entry.
+   Designs saved (`design -save`), stashed (`design -stash`), loaded
+   (`design -load`), copied from (`design -copy-from`) or used as mapping
+   templates (`techmap -max_iter 1 -map %<name>`) must have their own opening.
+   During formal runs, `FormalRunner` requires an explicit engine
+   `DONE (PASS, rc=0)` solver verdict, the staged configuration, compiled base
+   RTLIL (`model/design.il`), `model/design.log` and a structured Yosys
+   `LogSink` header trace (`model/design.headers`). It checks contiguous
+   top-level `LogSeverity::Header` numbers, script-include banners and
+   end-of-script completion in `model/design.headers` against the task's parsed
+   command list so output from `log -stderr` or RTL `$display` can neither
+   satisfy nor break the cross-check; the 29 headerless forms (`select`,
+   `setattr`, `connect`, `delete`, `chformal`, `chtype`, `rename`, `design`,
+   `cd`, `log`, `verilog_defines` and `read -define`), `chparam` without
+   derived AST elaboration, individual files inside `read_slang`, and pass
+   flags emit no separate header.
    The [roadmap](../ROADMAP.md#verification) says what is left.
 3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
    `tasks` when the `.sby` defines it. Register any new task names in
