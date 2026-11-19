@@ -26,8 +26,15 @@
  * this file.
  */
 
+// A simulation build selects CBO_INVAL_AS_FLUSH with
+// -DFROST_CBO_INVAL_AS_FLUSH=1 (cbo.inval then always executes as cbo.flush).
+`ifndef FROST_CBO_INVAL_AS_FLUSH
+`define FROST_CBO_INVAL_AS_FLUSH 0
+`endif
 module cpu_ooo #(
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
+    // Zicbom CMOs of cached DDR go to the hierarchy (store_queue CMO_HOME).
+    parameter bit CMO_HOME = 1'b0,
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 16,
     parameter bit VARIABLE_UNCACHED = 1'b0,
@@ -68,7 +75,7 @@ module cpu_ooo #(
     // Its sector requests leave through the o_ma_line_* port.
     parameter bit MISALIGNED_HW = 1'b0,
     // Zicbom: execute cbo.inval as cbo.flush at every privilege (csr_file).
-    parameter bit CBO_INVAL_AS_FLUSH = 1'b0,
+    parameter bit CBO_INVAL_AS_FLUSH = 1'(`FROST_CBO_INVAL_AS_FLUSH),
     // The walker's line port carries the L1s' 32-byte lines.
     localparam int unsigned WalkLineBytes = 32
 ) (
@@ -104,6 +111,12 @@ module cpu_ooo #(
     output logic o_coherent_write_sc,
     // A cached cbo.zero write (see coherence_l1d).
     output logic o_coherent_write_zero,
+    // Zicbom requests for the coherent hierarchy (store_queue CMO_HOME).
+    output logic o_cmo_valid,
+    output riscv_pkg::cmo_kind_e o_cmo_kind,
+    output logic [riscv_pkg::XLEN-1:0] o_cmo_addr,
+    input logic i_cmo_ready = 1'b0,
+    input logic i_cmo_done = 1'b0,
     output logic o_coherent_write_more,
     output logic o_coherent_next_same,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
@@ -2545,6 +2558,7 @@ module cpu_ooo #(
       i_coherent_twin_push;
   tomasulo_wrapper #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
+      .CMO_HOME(CMO_HOME),
       .MEM_RESPONSE_ERRORS(VARIABLE_UNCACHED),
       .SPLIT_RS_DISPATCH(1'b1),
       .ENABLE_DISPATCH_DONE_REPAIR(1'b1),
@@ -2594,6 +2608,11 @@ module cpu_ooo #(
       .o_coherent_read_tag(coherent_lq_tag),
       .o_coherent_write_sc(coherent_sq_sc),
       .o_coherent_write_zero(coherent_sq_zero),
+      .o_cmo_valid(o_cmo_valid),
+      .o_cmo_kind(o_cmo_kind),
+      .o_cmo_addr(o_cmo_addr),
+      .i_cmo_ready(i_cmo_ready),
+      .i_cmo_done(i_cmo_done),
       .o_coherent_write_more(coherent_sq_more),
       .o_coherent_next_same(coherent_sq_next_same),
       .o_coherent_sq_write_tag(coherent_sq_tag),

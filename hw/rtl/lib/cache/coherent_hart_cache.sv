@@ -93,6 +93,15 @@ module coherent_hart_cache #(
     output logic o_cut_inval_valid,
     input logic i_cut_inval_done,
     output logic o_cut_release,
+    // Zicbom: one 64-byte block from the store queue (coherence_cmo_agent),
+    // presented after every older store has installed. o_cmo_done pulses
+    // after the home's release; a failed memory write raises the home's
+    // fatal stop.
+    input logic i_cmo_valid = 1'b0,
+    output logic o_cmo_ready,
+    input logic [1:0] i_cmo_kind = 2'd0,
+    input logic [ADDR_WIDTH-1:0] i_cmo_addr = '0,
+    output logic o_cmo_done,
     output logic o_d_valid,
     input logic i_d_ready,
     output logic [ADDR_WIDTH+311:0] o_d,
@@ -170,13 +179,15 @@ module coherent_hart_cache #(
   logic [1:0] f_if_cache_waiting;
   logic [1:0][ADDR_WIDTH-1:0] f_if_cache_address;
 `endif
-  // D and C ports: the L1D's endpoints first, then two IF slots and two PTW
-  // slots. G and U route by port class.
-  localparam int unsigned Ports   = L1D_MISSES + 4;
+  // D and C ports: the L1D's endpoints first, then two IF slots, two PTW
+  // slots and the Zicbom requester. G and U route by port class (3: Zicbom).
+  localparam int unsigned Ports   = L1D_MISSES + 5;
   localparam int unsigned IfPort  = L1D_MISSES;
   localparam int unsigned PtwPort = L1D_MISSES + 2;
+  localparam int unsigned CmoPort = L1D_MISSES + 4;
+  logic cmo_idle;
   logic [Ports-1:0] d_valid, d_ready, c_valid, c_ready;
-  logic [2:0] g_ready, u_ready;
+  logic [3:0] g_ready, u_ready;
   // Per-requester packets are plain vectors, read whole by the arbiters.
   logic [Ports-1:0][ADDR_WIDTH+311:0] demand;
   coh_g_t grant;
@@ -534,6 +545,40 @@ module coherent_hart_cache #(
         .i_u(i_u)
     );
   end
+  coherence_cmo_agent #(
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .HOME_LINE_BYTES(HOME_LINE_BYTES),
+      .SOURCE(0)
+  ) cmo_agent (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_fatal_stop(i_fatal_stop),
+      .i_req_valid(i_cmo_valid),
+      .o_req_ready(o_cmo_ready),
+      .i_req_kind(i_cmo_kind),
+      .i_req_addr(i_cmo_addr),
+      .o_done(o_cmo_done),
+      .o_error(),
+      .o_idle(cmo_idle),
+      .o_d_valid(d_valid[CmoPort]),
+      .i_d_ready(d_ready[CmoPort]),
+      .o_d(demand[CmoPort]),
+      .i_g_valid(i_g_valid && grant.q[6:5] == 3 && int'(grant.q.id) == coherence_pkg::CmoId),
+      .o_g_ready(g_ready[3]),
+      .i_g(i_g),
+      .o_c_valid(c_valid[CmoPort]),
+      .i_c_ready(c_ready[CmoPort]),
+      .o_c(completion[CmoPort]),
+      .i_u_valid(i_u_valid && release_message.q[6:5] == 3 &&
+          int'(release_message.q.id) == coherence_pkg::CmoId),
+      .o_u_ready(u_ready[3]),
+      .i_u(i_u)
+  );
+`ifdef COH_MAINT_OWNED
+  // The maintenance composition presents no Zicbom request, so the
+  // requester stays idle and sends nothing to the home.
+  always_ff @(posedge i_clk) if (!i_rst) p_maint_owned_cmo_idle : assert (cmo_idle && !i_cmo_valid);
+`endif
   // The serializer drains committed stores before requesting synchronization.
   // IF and PTW reads obtain dirty L1D bytes through the home's probes.
   assign l1i_invalidate = maint_state_q == FenceInvalidate;

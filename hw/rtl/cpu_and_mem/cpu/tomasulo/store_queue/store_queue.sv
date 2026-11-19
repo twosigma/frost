@@ -47,8 +47,22 @@ module store_queue #(
     // Stores in [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) use the cached tier.
     // Register the tier flag with the write enable for router timing.
     parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
-    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
+    // Zicbom through the coherent hierarchy: a CMO of a cached DDR block
+    // (through a PMA, NC or IO mapping) goes to the hart's Zicbom requester
+    // and frees on its done, after the home has written a dirty line to
+    // memory (clean, flush) or dropped it (inval). 0 keeps every CMO an
+    // ordered no-op, for benches without the hierarchy.
+    parameter bit CMO_HOME = 1'b0
 ) (
+    // The Zicbom request: the real 64-byte block, its kind
+    // (riscv_pkg::cmo_kind_e), held until i_cmo_ready; i_cmo_done pulses when
+    // the hierarchy has finished it.
+    output logic o_cmo_valid,
+    output riscv_pkg::cmo_kind_e o_cmo_kind,
+    output logic [riscv_pkg::XLEN-1:0] o_cmo_addr,
+    input logic i_cmo_ready = 1'b0,
+    input logic i_cmo_done = 1'b0,
     input logic i_coherent_store_pending = 1'b0,
     input logic i_coherent_store_ready = 1'b1,
     input logic i_coherent_sc_pending = 1'b0,
@@ -320,8 +334,8 @@ module store_queue #(
   // cbo.zero: write the 64-byte block containing sq_address, through the L1D
   // for cached memory or as eight zero beats for uncached memory.
   logic                 [                DEPTH-1:0] sq_is_zero;
-  // cbo.clean/flush/inval: name the 64-byte block containing sq_address; the
-  // entry writes nothing (see Zicbom entries below).
+  // cbo.clean/flush/inval name the 64-byte block containing sq_address.
+  // The entry supplies the operation and address for any home write-back.
   logic                 [                DEPTH-1:0] sq_is_cmo;
   riscv_pkg::cmo_kind_e                             sq_cmo_kind                       [DEPTH];
 
@@ -696,7 +710,12 @@ module store_queue #(
   for (genvar g_sq_flat = 0; g_sq_flat < DEPTH; g_sq_flat++) begin : gen_sq_flat
     assign sq_rob_tag_flat[g_sq_flat*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
         sq_rob_tag[g_sq_flat];
-    assign sq_address_flat[g_sq_flat*XLEN+:XLEN] = sq_address[g_sq_flat];
+    // The forwarding CAM and vector range check order a CMO by the real
+    // physical block. Keep the bus address in the entry for the drain.
+    wire [XLEN-1:0] raw_addr = sq_address[g_sq_flat];
+    assign sq_address_flat[g_sq_flat*XLEN+:XLEN] =
+        sq_is_cmo[g_sq_flat] && riscv_pkg::pma_pbmt_alias_ok(raw_addr) ?
+        riscv_pkg::pbmt_alias_real(raw_addr) : raw_addr;
     assign sq_size_flat[g_sq_flat*MemSizeWidth+:MemSizeWidth] = sq_size[g_sq_flat];
   end
 
@@ -1093,17 +1112,20 @@ module store_queue #(
   assign zero_beat_local_next = mem_write_launch_qualified && drain_is_zero ?
       zero_beat_advance : zero_beat_q;
 
-  // Zicbom entries. Every bus master in the SoC reaches DDR through the
-  // coherent home, so cbo.clean, cbo.flush and cbo.inval have no data effect
-  // to perform and complete as ordered no-ops (DESIGN D1, D4): a committed
-  // entry at the drain cursor frees itself, without a bus write, once every
+  // Zicbom entries. A committed entry at the drain cursor starts once every
   // older write has completed (empty write pipeline) and the L1D holds no
-  // pending store record. Every older entry has then freed, so the operation
-  // follows all older stores, and younger loads of its block wait for it
-  // (the forwarding conflict above). FENCE and device accesses wait for it
-  // like any committed store. Flush and inval pulse the block-wide L0
-  // invalidation, so no L0 dword of the block outlives them (BRAM is the
-  // only L0-cached memory with no coherent invalidation of its own).
+  // pending store record, so every older store has installed in the L1D or
+  // reached memory. With CMO_HOME, a block in cached DDR goes to the hart's
+  // Zicbom requester first, and the entry fires only on its done: the home has
+  // recalled every L1D copy, written a dirty line to memory and received B
+  // (clean, flush) or dropped it (inval). A CMO through an NC or IO mapping
+  // names the uncached alias of DDR; it acts on the real block (the CMO ignores
+  // PBMT). Every other block (BRAM, device windows, and every block without
+  // CMO_HOME) fires one cycle after it starts, as an ordered no-op (DESIGN D1,
+  // D4). Younger stores wait behind the cursor and younger loads of the block
+  // wait for the entry (the forwarding conflict above); FENCE and device
+  // accesses wait for it like any committed store. Flush and inval pulse the
+  // block-wide L0 invalidation (BRAM has no coherent invalidation of its own).
   // A Zicbom entry has no data and never sets sq_data_valid, so drain_ready,
   // the write launch and the precise uncached path never select it.
   // The entry is sent and the drain cursor passes it on the cycle it
@@ -1115,11 +1137,53 @@ module store_queue #(
   logic cmo_inval_pulse_q;
   logic cmo_free_q;
   logic [IdxWidth-1:0] cmo_free_idx_q;
+  logic cmo_start_ready;
+  logic [XLEN-1:0] cmo_target;
+  logic cmo_target_home;
+  typedef enum logic [1:0] {
+    CmoIdle,
+    CmoRequest,
+    CmoWait,
+    CmoRelease
+  } cmo_state_e;
+  cmo_state_e cmo_state_q;
+  riscv_pkg::cmo_kind_e cmo_kind_q;
+  logic [XLEN-1:0] cmo_addr_q;
   assign drain_is_cmo = sq_is_cmo[drain_idx_q];
-  assign cmo_drain_fire = drain_is_cmo && sq_valid[drain_idx_q] && sq_committed[drain_idx_q] &&
+  assign cmo_start_ready = drain_is_cmo && sq_valid[drain_idx_q] && sq_committed[drain_idx_q] &&
       sq_addr_valid[drain_idx_q] && !sq_sent[drain_idx_q] && !vec_hold_q[drain_idx_q] &&
       (write_inflight_cnt == 2'd0) && !o_mem_write_en &&
       !i_coherent_store_pending && !i_coherent_sc_pending && !cmo_free_q;
+  always_comb begin
+    cmo_target = sq_address[drain_idx_q];
+    if (riscv_pkg::pma_pbmt_alias_ok(cmo_target))
+      cmo_target = riscv_pkg::pbmt_alias_real(cmo_target);
+    cmo_target[5:0] = '0;
+  end
+  assign cmo_target_home = CMO_HOME && riscv_pkg::pma_cached_ok(cmo_target);
+  assign cmo_drain_fire = cmo_start_ready && cmo_state_q == CmoRelease;
+  assign o_cmo_valid = cmo_state_q == CmoRequest;
+  assign o_cmo_kind = cmo_kind_q;
+  assign o_cmo_addr = cmo_addr_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      cmo_state_q <= CmoIdle;
+      cmo_kind_q  <= riscv_pkg::CMO_INVAL;
+      cmo_addr_q  <= '0;
+    end else begin
+      unique case (cmo_state_q)
+        CmoIdle:
+        if (cmo_start_ready && !i_flush_all) begin
+          cmo_kind_q  <= sq_cmo_kind[drain_idx_q];
+          cmo_addr_q  <= cmo_target;
+          cmo_state_q <= cmo_target_home ? CmoRequest : CmoRelease;
+        end
+        CmoRequest: if (i_cmo_ready) cmo_state_q <= CmoWait;
+        CmoWait: if (i_cmo_done) cmo_state_q <= CmoRelease;
+        default: cmo_state_q <= CmoIdle;
+      endcase
+    end
+  end
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       cmo_inval_pulse_q <= 1'b0;
@@ -2438,6 +2502,21 @@ module store_queue #(
     end
   end
 
+  // Check the physical address handed to both ordering consumers directly
+  // from the defined translated window and the original SQ operand.
+  for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_cmo_order_address_check
+    wire [XLEN-1:0] raw = sq_address[slot];
+    wire alias_window = riscv_pkg::PbmtAliasEnabled &&
+        raw >= XLEN'(riscv_pkg::DdrBase + riscv_pkg::PbmtAliasOffset) &&
+        raw < XLEN'(riscv_pkg::PbmtAliasCoverLimit + riscv_pkg::PbmtAliasOffset);
+    always_comb begin
+      if (i_rst_n && sq_valid[slot] && sq_addr_valid[slot]) begin
+        assert (sq_address_flat[slot*XLEN+:XLEN] ==
+            (sq_is_cmo[slot] && alias_window ? raw - XLEN'(riscv_pkg::PbmtAliasOffset) : raw));
+      end
+    end
+  end
+
   // Completion source of each write in the pipeline: the staged write on the
   // bus and the two FIFO slots, mirrored from the FIFO's own updates.
   logic f_cached_stg, f_cached0, f_cached1;
@@ -2611,6 +2690,19 @@ module store_queue #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  // A full flush waits for this committed entry and its home transaction.
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && i_rst_n) begin
+      if (cmo_state_q == CmoRequest || cmo_state_q == CmoWait) begin
+        a_cmo_cursor_ready : assert (cmo_start_ready);
+        a_cmo_no_full_flush : assert (!i_flush_all);
+      end
+      if (o_cmo_valid) begin
+        a_cmo_home_address : assert (CMO_HOME && riscv_pkg::pma_cached_ok(o_cmo_addr));
+      end
+    end
+  end
+
   // Check that tail allocations use free slots and never overlap flush or
   // deferred pullback. Yosys does not parse assert-else actions; formal checks
   // flush rejection and free slots above, and assumes dispatch idle at pullback.

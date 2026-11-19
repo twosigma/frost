@@ -5,6 +5,7 @@ coh_home_control_partition_prove control ctl partition
 coh_home_control4_bmc bmc4 ctl four
 coh_home_control4_ultra_bmc bmc4 ctl four ultra
 coh_home_fill_cover control ctl fill_covers
+coh_home_cmo_cover control ctl cmo_covers cmo_witness
 coh_home_wb_prove wb unit
 coh_home_victim_cover covers
 coh_home_error_cover covers error
@@ -30,6 +31,9 @@ fill_covers: mode cover
 fill_covers: depth 30
 dispatch_covers: mode cover
 dispatch_covers: depth 30
+cmo_covers: mode cover
+cmo_covers: depth 40
+cmo_covers: timeout 6000
 
 [engines]
 control: smtbmc boolector
@@ -45,6 +49,9 @@ error: verilog_defines -D COHERENCE_HOME_COVER_ERROR
 pfcover: verilog_defines -D COHERENCE_HOME_PREFETCH_COVER
 fill_covers: verilog_defines -D COHERENCE_HOME_FILL_COVER
 dispatch_covers: verilog_defines -D COHERENCE_HOME_DISPATCH_COVER
+cmo_covers: verilog_defines -D COHERENCE_HOME_CMO_COVER
+# Drive the grant witnesses because the undirected cover search exceeds the task budget.
+cmo_witness: verilog_defines -D COHERENCE_HOME_CMO_WITNESS
 read -sv coherence_pkg.sv
 ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_endpoint.sv
 wb: read -sv coherence_home_endpoint.sv

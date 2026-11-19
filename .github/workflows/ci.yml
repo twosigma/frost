@@ -392,7 +392,7 @@ jobs:
             coverage: [bram]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
-              [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [memerr_test] or
+              [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [nic_cmo_loopback] or [memerr_test] or
               [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
           - name: Real Programs (Self-modifying code and fence.i)
             coverage: [bram]
@@ -455,7 +455,7 @@ jobs:
               or [l1i_set_test_l1i32] or [l1i_set_test_l1i32_hw_sweep]
               or [nic_bench] or [nic_sg_loopback] or [nic_rate]
               or [l2_capacity_chase_capacity] or [l2_capacity_chase_smoke]
-              or [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [misaligned_test]
+              or [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [nic_cmo_loopback] or [misaligned_test]
               or [memerr_test] or [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
               or [sstvala_fault_test] or [ddr_reset_distribution] or [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
               or [pause_test] or [ras_slot_bench] or [ras_repair_bench]
@@ -1483,10 +1483,10 @@ jobs:
               coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
             timeout_minutes: 300
-          # Home task limits total 219 minutes; image setup has twenty more.
+          # Home task limits total 319 minutes plus twenty minutes for image setup.
           - shard: Coherence home
             pytest_filter: coherence_home_coh_home_
-            timeout_minutes: 240
+            timeout_minutes: 340
           # The coherent array's equivalence with its reference array: the
           # one-way, UltraRAM and hit-port tasks with the cover, and the
           # four-way tasks, each about an hour of BMC tasks.

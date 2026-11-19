@@ -20,7 +20,7 @@ fault paths), Zawrs (wrs.sto and wrs.nto), WFI, device-window loads and stores
 interleaved with cached DDR and low-BRAM stores, and Sstvala fault values
 across M, S, and U modes under both Bare and Sv39 translation.
 
-Two model limits shape what these tests emit:
+The reference model shapes the generated instruction sequences.
 1. Sail 0.16's RVFI-DII write recorder asserts a maximum write width of 16
    bytes (core/rvfi_dii.sail:214), so a retiring 64-byte cbo.zero aborts the
    reference model. cbo.zero is therefore emitted on privilege-gated and
@@ -37,6 +37,8 @@ Two model limits shape what these tests emit:
    in S-mode with TW set and wrs.sto/wrs.nto inside active LR/SC reservation
    windows), while zawrs_test and sstvala_test cover S-mode TW=1 traps on
    wrs.nto and WFI.
+3. The reference model retains stores across cache invalidation. A clean before
+   a leading invalidate makes the following load deterministic on dirty DDR.
 """
 
 import random
@@ -364,16 +366,19 @@ class Generator:
 
         # Cached DDR and low BRAM: store -> unaligned Zicbom -> Zicbop -> load,
         # including back-to-back Zicbom ops on the same 64-byte block.
-        for region_pa in (
-            PA_DDR_BUF + 64 * rng.randrange(8),
-            PA_BRAM_BUF + 64 * rng.randrange(8),
+        for region_pa, cached in (
+            (PA_DDR_BUF + 64 * rng.randrange(8), True),
+            (PA_BRAM_BUF + 64 * rng.randrange(8), False),
         ):
             unaligned = region_pa + rng.randrange(1, 64)
             insns += load_u64(TMP_A, region_pa)
             insns += load_u64(TMP_B, rng.getrandbits(64))
             insns.append(store("sd", TMP_B, TMP_A, 8 * rng.randrange(8)))
             insns += load_u64(TMP_A, unaligned)
-            for op in rng.sample(("cbo.clean", "cbo.flush", "cbo.inval"), 2):
+            ops = rng.sample(("cbo.clean", "cbo.flush", "cbo.inval"), 2)
+            if cached and ops[0] == "cbo.inval":
+                ops.insert(0, "cbo.clean")
+            for op in ops:
                 extra_retire.append(len(insns))
                 insns.append(cbo(op, TMP_A))
             pref_off = 32 * rng.randrange(-8, 9)
