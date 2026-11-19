@@ -611,6 +611,9 @@ module frost_rvfi_platform #(
   logic data_memory_cached_read_ready;
   logic data_memory_cached_write_done;
   logic data_memory_cached_write_inflight;
+  logic cmo_valid, cmo_ready, cmo_done;
+  riscv_pkg::cmo_kind_e cmo_kind;
+  logic [riscv_pkg::XLEN-1:0] cmo_addr;
   // Source-registered cache events cross into cpu_ooo as one packed observer
   // bundle. The hierarchy supplies the per-level fields; the fetch provider
   // adds the front-end-progress qualifier for the L1I miss-stall counter.
@@ -799,6 +802,7 @@ module frost_rvfi_platform #(
   logic [7:0] dbg_bram_store_strb;
 
   cpu_ooo #(
+      .CMO_HOME(ENABLE_CACHED_TIER != 0),
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),
       .CACHED_BASE(64'(CACHED_BASE)),
@@ -843,6 +847,11 @@ module frost_rvfi_platform #(
       .o_coherent_write_atomic(coherent_write_atomic),
       .o_coherent_write_sc(coherent_write_sc),
       .o_coherent_write_zero(coherent_write_zero),
+      .o_cmo_valid(cmo_valid),
+      .o_cmo_kind(cmo_kind),
+      .o_cmo_addr(cmo_addr),
+      .i_cmo_ready(cmo_ready),
+      .i_cmo_done(cmo_done),
       .o_coherent_write_more(coherent_write_more),
       .o_coherent_next_same(coherent_next_same),
       .o_coherent_write_tag(coherent_write_tag),
@@ -2042,6 +2051,11 @@ module frost_rvfi_platform #(
         .i_write_atomic(coherent_write_atomic),
         .i_write_sc(coherent_write_sc),
         .i_write_zero(coherent_write_zero),
+        .i_cmo_valid(cmo_valid),
+        .o_cmo_ready(cmo_ready),
+        .i_cmo_kind(cmo_kind),
+        .i_cmo_addr(cmo_addr[riscv_pkg::PhysAddrBits-1:0]),
+        .o_cmo_done(cmo_done),
         .i_write_more(coherent_write_more),
         .i_next_same(coherent_next_same),
         .i_write_tag(coherent_write_tag),
@@ -2818,6 +2832,8 @@ module frost_rvfi_platform #(
       assign axi_rlast = i_ddr_axi_rlast;
     end
   end else begin : gen_no_cached_tier
+    assign cmo_ready = 1'b0;
+    assign cmo_done = 1'b0;
     assign coherent_store_pending = '0;
     assign coherent_store_ready = 1;
     assign coherent_twin_push = '0;

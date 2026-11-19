@@ -348,10 +348,12 @@ module frost_cluster_memory #(
         .i_ready(home_d_ready),
         .o_payload(home_d)
     );
-    // Source 0 class 3 names the hart's line client, whose G and U are
-    // always taken.
-    wire grant_line = grant.q.port_class == 3;
-    wire release_line = release_message.q.port_class == 3;
+    // Source 0 class 3 with an ID below HartLineIds names the hart's line
+    // client, whose G and U are always taken; class 3 ID CmoId is the hart's
+    // Zicbom requester, inside the hart cache's port.
+    wire grant_line = grant.q.port_class == 3 && int'(grant.q.id) < coherence_pkg::HartLineIds;
+    wire release_line = release_message.q.port_class == 3 &&
+        int'(release_message.q.id) < coherence_pkg::HartLineIds;
     assign o_coherent_g_valid = g_valid && grant.q.src == 0 && !grant_line;
     assign o_coherent_g = grant;
     assign o_line_g_valid = g_valid && grant.q.src == 0 && grant_line;
