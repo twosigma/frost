@@ -431,12 +431,17 @@ module backing_btb #(
   assign held_last_set = &held_index_q;
 
   // The newest read is held whenever it covers the packet, aligned or
-  // shifted. A redirect discards reads from the previous fetch path.
+  // shifted. A redirect discards reads from the previous fetch path; only the
+  // valid flag needs that kill, keeping redirect logic off the data enables.
   always_ff @(posedge i_clk) begin
     if (i_reset || sweep_active || i_redirect) begin
       held_valid_q <= 1'b0;
     end else if (aligned || shifted) begin
-      held_valid_q   <= 1'b1;
+      held_valid_q <= 1'b1;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (aligned || shifted) begin
       held_index_q   <= request_index_q;
       held_tags_q    <= tags_q;
       held_payload_q <= payload_rows;
