@@ -5,6 +5,7 @@ coh_snapshot_versions_cover covers
 [options]
 bounded: mode bmc
 covers: mode cover
+covers: vcd_sim on
 depth 290
 timeout 900
 bounded: aigsmt boolector
