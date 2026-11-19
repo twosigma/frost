@@ -1397,6 +1397,14 @@ the store queue can free the entry. Younger stores wait behind it, and younger
 loads of its block wait for it to free. The L1D holds no CMO state: the home reaches every
 L1D copy with probes, as it does for DMA.
 
+For a DDR operand translated through an NC or IO alias, the requester sends
+the real physical block to the home. A flush or invalidate probes each
+32-byte sector at that address, even on an L2 miss. A matching LR reservation
+or L0 copy makes the CPU report the sector held. The L1D waits for the CPU
+to invalidate it before replying to the home. The later store-queue
+invalidation pulse uses the operand's bus address. By that cycle the home
+has already removed the DDR copies and cleared any matching reservation.
+
 **Home.** A CMO holds its home line in the completion table, including
 both sectors when the home line is 64 bytes. Both hits and misses allocate a
 fill control for the target line and a write-back slot. The request parks on
