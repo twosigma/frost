@@ -1402,6 +1402,7 @@ FORMAL_TARGETS = [
             "bmc_commit",
             "bmc_commit_2",
             "bmc_operands",
+            "cover_cmo_request",
         ),
     ),
     FormalTarget(
@@ -3242,6 +3243,10 @@ SBY_TASKS = [
     ("bmc_commit", "Compare the first valid combinational commit packet."),
     ("bmc_commit_2", "Compare the second commit packet and the coherent CMO request."),
     (
+        "cover_cmo_request",
+        "Reach both wrappers' first coherent CMO request in six frames.",
+    ),
+    (
         "bmc_operands",
         "Compare bypass and register-file operands in the Block proofs job.",
     ),
@@ -4857,7 +4862,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "rs_payload_twin": (
         "both copies start from the same zero state, as its harness states",
         {
-            "bmc bmc_cdb bmc_cdb_2 bmc_commit bmc_commit_2 bmc_operands": [
+            "bmc bmc_cdb bmc_cdb_2 bmc_commit bmc_commit_2 bmc_operands cover_cmo_request": [
                 "setundef -zero -init"
             ],
         },
@@ -8024,16 +8029,34 @@ def test_axi_bridge_post_map_count_rejects_another_selection() -> None:
         ),
         pytest.param(
             "sby",
-            "bmc_commit_2: depth 6",
-            "bmc_commit_2: depth 5",
+            "cmo: depth 6",
+            "cmo: depth 5",
             id="cmo-before-request",
+        ),
+        pytest.param(
+            "sby",
+            "cover_cmo_request: mode cover",
+            "cover_cmo_request: mode bmc",
+            id="request-cover-mode",
+        ),
+        pytest.param(
+            "sby",
+            "cover_cmo_request cmo\n",
+            "",
+            id="request-cover-missing-task",
+        ),
+        pytest.param(
+            "sv",
+            "cover (o_cmo_valid_a && o_cmo_valid_b)",
+            "cover (o_cmo_valid_a || o_cmo_valid_b)",
+            id="request-cover-requires-both-copies",
         ),
     ],
 )
 def test_rs_payload_twin_assertion_groups(
     source: str, old: str, new: str, tmp_path: Path
 ) -> None:
-    """Check six proof configurations and guarded comparisons with isolated edits."""
+    """Check the six assertion groups, the request cover and their guarded properties."""
     from hashlib import sha256
 
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
@@ -8273,7 +8296,7 @@ def test_rs_payload_twin_assertion_groups(
 
     if not source:
         hashes = {
-            "rs_payload_twin.sby": "f425330cbe1fe3b25a25f0892775085f7f55572149a5284e248d213a13d11eaf",
+            "rs_payload_twin.sby": "1e0b82aeab6501b385f689282c457e55c0d49e12d3ed446b75ecb25227f95b14",
             "rs_payload_twin_formal.sv": "bf55b92f3eb8eda22aef16b2268c2a1c1f458f946711b536cdc397fbb008ae61",
             "free_undefined.ys": "d9383d13eaa8e490ab3671853c1390d92160abbfa19ca0d93fdf40138549e7d6",
         }
@@ -8303,7 +8326,20 @@ def test_rs_payload_twin_assertion_groups(
             configs = sby_config.resolved(sby)
         except sby_config.ConfigError as error:
             raise AssertionError(str(error)) from error
-        assert configs.keys() == counts.keys()
+        cover_task = "cover_cmo_request"
+        assert configs.keys() == {*counts, cover_task}
+        cover = configs[cover_task].sections(formal)
+        second_commit = configs["bmc_commit_2"].sections(formal)
+        assert cover == {
+            "[options]": ["mode cover", "depth 6"],
+            "[engines]": ["smtbmc boolector"],
+            "[script]": [
+                *second_commit["[script]"],
+                "chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_twin_cmo_request %d",
+                "select -assert-count 1 t:$check r:FLAVOR=cover %i",
+            ],
+            "[files]": files,
+        }
         for task, count in counts.items():
             try:
                 config = configs[task].sections(formal)
@@ -8354,6 +8390,9 @@ def test_rs_payload_twin_assertion_groups(
         # Consume complete statements so a nested condition or trailing expression
         # cannot disappear between two matched assertions.
         body = re.sub(r"//[^\n]*|/\*.*?\*/", " ", harness, flags=re.DOTALL)
+        assert re.findall(
+            r"\bc_twin_cmo_request\s*:\s*cover\s*\(([^;]+)\)\s*;", body
+        ) == ["o_cmo_valid_a && o_cmo_valid_b"]
         assert len(re.findall(r"\bassert\s*\(", body)) == 175
         block = re.search(
             r"\balways_comb\s+begin\b(.*?)\bend\s+endmodule\s*:\s*rs_payload_twin_formal\s*\Z",

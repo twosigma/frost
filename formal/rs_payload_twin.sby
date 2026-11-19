@@ -3,13 +3,15 @@ bmc
 bmc_cdb packet packet_only
 bmc_cdb_2 packet packet_only
 bmc_commit packet packet_only
-bmc_commit_2 packet
+bmc_commit_2 packet cmo
 bmc_operands
+cover_cmo_request cmo
 
 [options]
-mode bmc
-~bmc_commit_2: depth 5
-bmc_commit_2: depth 6
+~cover_cmo_request: mode bmc
+cover_cmo_request: mode cover
+~cmo: depth 5
+cmo: depth 6
 packet: vcd_sim on
 
 [engines]
@@ -101,17 +103,19 @@ select -assert-count 3 @cmo
 select -assert-count 4 @commit_and_cmo
 select -assert-count 4 @packets
 select -assert-count 16 @operands
-bmc_commit_2: select -assert-count 1 c:c_twin_cmo_request t:$check %i r:FLAVOR=cover %i
+cmo: select -assert-count 1 c:c_twin_cmo_request t:$check %i r:FLAVOR=cover %i
 bmc: chformal -assert -remove @packets @operands @cmo
 bmc_cdb: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_cdb %d
 bmc_cdb_2: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_cdb_2 %d
 bmc_commit: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_commit_comb %d
-bmc_commit_2: chformal -assert -remove t:$check r:FLAVOR=assert %i @commit_and_cmo %d
+cmo: chformal -assert -remove t:$check r:FLAVOR=assert %i @commit_and_cmo %d
 bmc_operands: chformal -assert -remove t:$check r:FLAVOR=assert %i @operands %d
 bmc: select -assert-count 152 t:$check r:FLAVOR=assert %i
 packet_only: select -assert-count 1 t:$check r:FLAVOR=assert %i
-bmc_commit_2: select -assert-count 4 t:$check r:FLAVOR=assert %i
+cmo: select -assert-count 4 t:$check r:FLAVOR=assert %i
 bmc_operands: select -assert-count 16 t:$check r:FLAVOR=assert %i
+cover_cmo_request: chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_twin_cmo_request %d
+cover_cmo_request: select -assert-count 1 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

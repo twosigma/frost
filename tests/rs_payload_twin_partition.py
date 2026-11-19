@@ -30,7 +30,6 @@ from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import sby_config
 from test_run_formal import formal_task_config, formal_task_timeout_s
 
 FORMAL = Path(__file__).resolve().parents[1] / "formal"
@@ -40,9 +39,14 @@ TARGET = "rs_payload_twin"
 def compile_groups(work: Path) -> list[str]:
     """Compile the shared model, then apply each task's resolved group commands."""
     sby = TARGET + ".sby"
-    tasks = subprocess.check_output(
+    registered = subprocess.check_output(
         ["sby", "--dumptasks", sby], cwd=FORMAL, text=True
     ).split()
+    tasks = [
+        task
+        for task in registered
+        if "mode bmc" in formal_task_config(TARGET, task)["[options]"]
+    ]
     subprocess.run(
         ["sby", "--setup", "-d", str(work / "setup"), sby, tasks[0]],
         cwd=FORMAL,
@@ -225,38 +229,11 @@ def report(work: Path, tasks: list[str]) -> None:
 
 
 def check_cmo_request(work: Path) -> None:
-    """Reach the named request cover on the second commit task's exact model."""
-    task = "bmc_commit_2"
-    config = formal_task_config(TARGET, task)
-    source = sby_config.source(FORMAL / (TARGET + ".sby"))
-    files = source.task(task).files
-    depth = next(
-        option for option in config["[options]"] if option.startswith("depth ")
-    )
-    # The partition's script checks the selected assertions and the named cover.
-    # Solve only that cover, retaining its state, initial values and assumptions.
-    config_file = work / "cmo_request.sby"
-    config_file.write_text(
-        "\n".join(
-            [
-                "[options]",
-                "mode cover",
-                depth,
-                "[engines]",
-                "smtbmc boolector",
-                "[script]",
-                *config["[script]"],
-                "chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_twin_cmo_request %d",
-                "select -assert-count 1 t:$check r:FLAVOR=cover %i",
-                "[files]",
-                *(f"{name} setup/src/{name}" for name in files),
-                "",
-            ]
-        )
-    )
+    """Run the registered cover on the second commit group's bounded model."""
+    task = "cover_cmo_request"
     subprocess.run(
-        ["sby", "-f", config_file.name],
-        cwd=work,
+        ["sby", "-f", "-d", str(work / "cmo_request"), TARGET + ".sby", task],
+        cwd=FORMAL,
         stdout=sys.stderr,
         check=True,
         timeout=formal_task_timeout_s(TARGET, task),

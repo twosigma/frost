@@ -1363,6 +1363,8 @@ proves, and its assumptions.
 
 Each target and task is a separate pytest case. Fast checks compare every SBY
 task list with the runner registration; selecting no matching task is an error.
+The Primitive forms job runs `rs_payload_twin:cover_cmo_request` to require a
+simultaneous CMO request from both copies at the second commit comparison’s depth.
 
 `test_pa_bridge_mutation.py` runs the 64 GiB proof on a private fixture for
 each AXI address channel and requires a counterexample at that channel's
