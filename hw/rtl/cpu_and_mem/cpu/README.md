@@ -1239,10 +1239,13 @@ IF accepts no packet, so the stack sees it one cycle later than a typed
 BTB prediction's; the packets in IF and PD in the meantime are wrong-path
 ones that the redirect drops. The operation happens once even when a stall
 holds the redirect. A flush in that first cycle drops it. An older
-mispredicted branch restores its own stack checkpoint. A trap that stays
-in the same privilege mode can leave the stack pointing to a link replayed
-by an early indirect call, even when the trap squashes that call. The
-architectural link register retains its value from before the call.
+mispredicted branch restores its own stack checkpoint. With early JALR recovery enabled,
+dispatch saves each instruction's stack checkpoint under its ROB tag. On
+a full flush with a live head, the stack restores the head's pointer,
+valid count and full return address, without replaying the discarded
+head's operation. Adjacent tags use opposite banks so both dispatch slots
+can save their checkpoints on the same edge. The restore takes the existing
+recovery register and does not stall fetch.
 
 The restore also writes the recovery point's top entry back. A wrong path
 that pops and then pushes overwrites that entry: a mispredicted branch just
@@ -1281,7 +1284,9 @@ update in the stage ahead of it is dropped, which costs accuracy only.
 
 An indirect jump can train the backing BTB when it resolves. If an older
 instruction subsequently traps in the same privilege mode, the trained
-target can remain in the table after the jump is squashed.
+target can remain in the table after the jump is squashed. The backing
+table has no privilege tag. A matching jump in a later privilege mode can
+use the entry, as it can for a target trained at retirement.
 
 ### 4 GiB target limit
 

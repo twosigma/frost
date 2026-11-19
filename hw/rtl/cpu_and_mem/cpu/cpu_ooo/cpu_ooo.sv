@@ -646,6 +646,7 @@ module cpu_ooo #(
 
   // Synthesized from_ex_comb for IF stage (branch redirect, BTB update, RAS restore)
   riscv_pkg::from_ex_comb_t                     from_ex_comb_synth;
+  riscv_pkg::from_ex_comb_t                     from_ex_branch_recovery;
   logic                              [XLEN-1:0] btb_late_update_pc;
   logic                                         btb_late_update_taken;
 
@@ -4020,8 +4021,33 @@ module cpu_ooo #(
       .i_correct_branch_commit_q_2(correct_branch_commit_q_2),
       .o_btb_late_update_pc(btb_late_update_pc),
       .o_btb_late_update_taken(btb_late_update_taken),
-      .o_from_ex_comb(from_ex_comb_synth)
+      .o_from_ex_comb(from_ex_branch_recovery)
   );
+
+  if (riscv_pkg::EarlyJalrRecovery) begin : gen_full_flush_ras
+    ras_flush_checkpoint u_ras_flush_checkpoint (
+        .i_clk,
+        .i_allocate({
+          rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready,
+          rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready
+        }),
+        .i_alloc_tag({rob_alloc_resp_2.alloc_tag, rob_alloc_resp.alloc_tag}),
+        .i_snapshot({
+          from_id_to_ex_2.ras_checkpoint_tos,
+          from_id_to_ex_2.ras_checkpoint_valid_count,
+          from_id_to_ex_2.ras_checkpoint_top,
+          from_id_to_ex.ras_checkpoint_tos,
+          from_id_to_ex.ras_checkpoint_valid_count,
+          from_id_to_ex.ras_checkpoint_top
+        }),
+        .i_restore_head(flush_all && head_valid),
+        .i_head_tag(head_tag),
+        .i_recovery(from_ex_branch_recovery),
+        .o_recovery(from_ex_comb_synth)
+    );
+  end else begin : gen_commit_ras
+    assign from_ex_comb_synth = from_ex_branch_recovery;
+  end
 
   // ===========================================================================
   // Memory Interface

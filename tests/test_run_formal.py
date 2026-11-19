@@ -1040,6 +1040,11 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "ras_flush_checkpoint.sby",
+        "A full flush restores the return stack to the oldest discarded checkpoint",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "low_bram_presenter_tier.sby",
         "Low-BRAM fetch responses match with separate address retargeting on or off",
         tasks=("bmc", "prove"),

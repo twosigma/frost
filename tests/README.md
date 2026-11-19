@@ -525,6 +525,10 @@ matches the individual recovery pulses on every edge. It exercises early and
 retired mispredictions together with traps, xRETs, native and translation
 fences, and reset.
 
+The `ras_flush_checkpoint` formal target checks the return stack on a full
+flush against the latest snapshot dispatched to the ROB head. Its covers
+exercise both allocation slots and a head tag that wrapped to zero.
+
 `ex_comb_synthesizer` checks the selected BTB update and return-stack
 operation for an early indirect jump, call, return, or coroutine swap. It
 checks both instruction lengths and the full link address for a push.
@@ -536,7 +540,9 @@ on or after the invalidation edge.
 `debug_module` checks DMI replies and registered command/resume GO requests,
 including waiting for slice completion, stable targets, acknowledgement, reset and
 module deactivation.
-`debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
+`debug_test` drives the JTAG debug module directly. Its older-load-fault
+case checks both the return stack and the architectural state of a younger
+indirect call discarded by the trap. `debug_openocd_test` runs
 OpenOCD and GDB sessions through `remote_bitbang`, and `cache_counters_openocd`
 reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.
 Without OpenOCD installed those targets log a warning and pass; set
