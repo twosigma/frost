@@ -91,6 +91,26 @@ def section_names(path: Path) -> set[str]:
     }
 
 
+def test_fefuzz_build_uses_the_requested_seed(tmp_path: Path) -> None:
+    """A failed generation must fail the build even with a working ELF in place."""
+    app_dir = scratch_app(tmp_path, "fefuzz")
+    elf = app_dir / "sw.elf"
+    header = app_dir / "fe_expect.h"
+    first = build(app_dir, "sw.elf", "FE_SEED=1")
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert "#define FE_SEED 1u" in header.read_text()
+    first_image = elf.read_bytes()
+
+    failed = build(app_dir, "sw.elf", "FE_SEED=4", "FE_TARGET=1")
+    assert failed.returncode != 0
+    assert "no program within budget" in failed.stderr
+
+    second = build(app_dir, "sw.elf", "FE_SEED=4")
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "#define FE_SEED 4u" in header.read_text()
+    assert elf.read_bytes() != first_image
+
+
 @pytest.mark.parametrize("app", ["branch_pred_test", "coremark_pro"])
 def test_custom_backends_rebuild_on_debug_profile_changes(
     tmp_path: Path, app: str

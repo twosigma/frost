@@ -232,7 +232,9 @@ module early_misprediction_recovery #(
   assign o_backend_recovery_hold = backend_recovery_hold_q;
 
 `ifndef SYNTHESIS
-`ifndef FORMAL
+`ifdef FORMAL
+  wire check_reset_seen_q = 1'b1;
+`else
   // Random-start simulation must observe reset before checking recovery state.
   logic check_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) check_reset_seen_q <= 1'b1;
@@ -245,13 +247,52 @@ module early_misprediction_recovery #(
     backend_hold_reference_valid_q <= 1'b1;
     if (i_rst) fatal_hold_reference_q <= 1'b0;
     else fatal_hold_reference_q <= i_fatal_stop;
-    if (
-`ifndef FORMAL
-        check_reset_seen_q &&
-`endif
-        backend_hold_reference_valid_q) begin
+    if (check_reset_seen_q && backend_hold_reference_valid_q) begin
       p_backend_hold_exact :
       assert (o_backend_recovery_hold == (o_early_backend_recovery_hold || fatal_hold_reference_q));
+    end
+  end
+
+  // Sample the PC and instruction length of the not-taken issue that actually
+  // launched recovery. The redirect datapath reads the station's link address.
+  logic check_not_taken_issue_q = 1'b0;
+  logic [XLEN-1:0] check_fallthrough_q;
+  always_ff @(posedge i_clk) begin
+    check_not_taken_issue_q <= early_mispredict_fire && !branch_taken_resolved;
+    if (early_mispredict_fire && !branch_taken_resolved) begin
+      check_fallthrough_q <= rs_issue_int.pc + (rs_issue_int.is_compressed ? XLEN'(2) : XLEN'(4));
+    end
+  end
+  logic check_redirect_inputs;
+`ifdef FORMAL
+  // The standalone inputs can disagree about issue validity or link address.
+  // Qualify the property with the issue packet that launched the redirect.
+  logic check_redirect_issue_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    check_redirect_issue_q <= early_mispredict_fire && rs_issue_int.valid &&
+        rs_issue_int.is_branch_class && !rs_issue_int.is_jal &&
+        (branch_taken_resolved || rs_issue_int.link_addr == rs_issue_int.pc +
+         (rs_issue_int.is_compressed ? XLEN'(2) : XLEN'(4)));
+  end
+  assign check_redirect_inputs = check_redirect_issue_q;
+`else
+  assign check_redirect_inputs = check_reset_seen_q && !$isunknown(
+      {check_not_taken_issue_q, check_fallthrough_q, o_early_mispredict_redirect_pc,
+       o_early_mispredict_branch_taken}
+  );
+`endif
+  always_ff @(posedge i_clk) begin
+    if (check_redirect_inputs && !i_rst && o_early_mispredict_active) begin
+      p_early_not_taken_redirect_falls_through :
+      assert (!check_not_taken_issue_q || (!o_early_mispredict_branch_taken &&
+              o_early_mispredict_redirect_pc == check_fallthrough_q));
+`ifdef EARLY_BACKEND_HOLD_PROOF
+      cover_taken_redirect : cover (o_early_mispredict_branch_taken);
+      cover_compressed_fallthrough :
+      cover (!o_early_mispredict_branch_taken && o_early_mispredict_is_compressed);
+      cover_native_fallthrough :
+      cover (!o_early_mispredict_branch_taken && !o_early_mispredict_is_compressed);
+`endif
     end
   end
 
@@ -277,11 +318,7 @@ module early_misprediction_recovery #(
                                             !fence_i_flush && !mispredict_recovery_pending;
 
   always_ff @(posedge i_clk) begin
-    if (
-`ifndef FORMAL
-        check_reset_seen_q &&
-`endif
-        !i_rst && !$isunknown(
+    if (check_reset_seen_q && !i_rst && !$isunknown(
             {branch_update.mispredicted, is_jalr_issue,
                               rs_issue_int.is_jalr, early_mispredict_fire,
                               early_mispredict_fire_reference,

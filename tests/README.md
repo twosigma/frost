@@ -177,6 +177,7 @@ runner compiles first. A failing RTL assertion fails the simulation.
 | `bpred_probe` | Reports mispredictions and cycles for calls, returns, slot-2 conditionals, a jump table and correlated branches. |
 | `pd_itt_slot2` | Checks that a slot-1 branch veto keeps its fall-through when a killed slot-2 JALR has a trained target. The callee checks its return address and call count. |
 | `bpred_trap_pair_test` | Checks fetch pairing, PD redirect suppression, and exact trap/return state across `ebreak`, `c.ebreak`, `ecall`, `xret`, trapping `wfi`, and reserved compressed and 32-bit encodings in both slots and both orders under primary BTB, backing BTB, ITTAGE and TAGE hits. |
+| `fefuzz_1`, `fefuzz_4`, `fefuzz_7`, `fefuzz_11`, `fefuzz_13`, `fefuzz_19`, `fefuzz_22`, `fefuzz_23` | Front-end fuzzer, one generated program per seed: conditional branches, direct and indirect calls, jump tables, returns and loops in mixed encodings and alignments. The UART seed and signature must match the requested program. Each boot requires at least one accepted indirect-target hit, one fetch redirect each from direction slot 1, direction slot 2, backing BTB and indirect prediction, and one early recovery inside the generated code. Reset separates the two BRAM counts. The generator does not exercise traps, interrupts or FENCE.I, or compare restored direction history or return-stack contents. |
 
 
 `vec_vtype_tracker` checks register and immediate configuration allocation,
