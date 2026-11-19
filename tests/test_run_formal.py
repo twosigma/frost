@@ -2960,7 +2960,10 @@ SBY_TASKS = [
         "coh_completions_partition2_prove",
         "Two kept prefetch slots sharing one place in the work rotation.",
     ),
-    ("coh_completions_cover", "Concurrent results and independent release."),
+    (
+        "coh_completions_cover",
+        "Concurrent results, independent release and a suppressed DMA read through release.",
+    ),
     (
         "coh_completions_partition_cover",
         "A full prefetch partition and a prefetch slot's G taken.",

@@ -76,7 +76,7 @@ home: select -assert-count 3 t:$check r:FLAVOR=assert %i
 array: select -assert-count 5 t:$check r:FLAVOR=assert %i
 endpoint: select -assert-count 3 t:$check r:FLAVOR=assert %i
 arbiter: select -assert-count 1 t:$check r:FLAVOR=assert %i
-completions: select -assert-count 8 t:$check r:FLAVOR=assert %i
+completions: select -assert-count 9 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
