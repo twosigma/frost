@@ -32,6 +32,10 @@
 #include "trap.h"
 #include "uart.h"
 
+#ifndef NIC_CMO_LOOPBACK
+#define NIC_CMO_LOOPBACK 0
+#endif
+
 #ifndef MCAUSE_INTERRUPT_BIT
 #define MCAUSE_INTERRUPT_BIT (1ul << 63)
 #endif
@@ -143,6 +147,14 @@ static uint32_t send_tx(uint32_t len, const uint8_t *da, uint32_t seed)
     g_tx_posted++;
     __asm__ volatile("fence w, o" ::: "memory"); /* memory writes before the I/O doorbell */
     nic_write(NIC_TX_TAIL, g_tx_posted % ENTRIES);
+#if NIC_CMO_LOOPBACK
+    /* Clean progressively later sectors while DMA reads the transmitted frame. */
+    const uintptr_t first_block = (uintptr_t) addr & ~(uintptr_t) 63;
+    const uintptr_t target = first_block + (g_tx_posted - 1) * 64;
+    for (unsigned repeat = 0; repeat < 20; repeat++) {
+        __asm__ volatile(".insn i 0x0f, 2, x0, %0, 1" ::"r"(target) : "memory");
+    }
+#endif
     return i;
 }
 
@@ -300,7 +312,11 @@ static int bringup(int loopback)
 /* ---- Loopback frame sizes and padding ---- */
 static void test_frames(void)
 {
+#if NIC_CMO_LOOPBACK
+    static const uint32_t lengths[] = {120u, 224u, 336u, 448u, 640u, 896u, 1152u, 1518u};
+#else
     static const uint32_t lengths[] = {60u, 61u, 100u, 1518u, 9000u, 20u, 200u, 64u};
+#endif
     int ok = 1;
     uint32_t bytes = 0;
     for (uint32_t k = 0; k < sizeof(lengths) / sizeof(lengths[0]); k++) {
@@ -523,9 +539,11 @@ int main(void)
     }
     uart_printf("bringup OK\n");
     test_frames();
-    test_irq();
-    test_filter();
-    test_reset();
+    if (!NIC_CMO_LOOPBACK) {
+        test_irq();
+        test_filter();
+        test_reset();
+    }
     if (g_failures == 0) {
         uart_printf("<<PASS>>\n");
     } else {
