@@ -311,8 +311,13 @@ module frost_hart #(
     assign debug_fetch_invalidate = 1'b0;
   end
 
+  // Zicbom requests from the store queue to the hart cache's requester.
+  logic cmo_valid, cmo_ready, cmo_done;
+  riscv_pkg::cmo_kind_e cmo_kind;
+  logic [riscv_pkg::XLEN-1:0] cmo_addr;
   cpu_ooo #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
+      .CMO_HOME(ENABLE_CACHED_TIER != 0),
       .MEM_BYTE_ADDR_WIDTH(riscv_pkg::LowBramAddrBits),
       .VARIABLE_UNCACHED(1'b1),
       .MMIO_ADDR(riscv_pkg::MmioWindowAddr),
@@ -359,6 +364,11 @@ module frost_hart #(
       .o_coherent_write_atomic(coherent_write_atomic),
       .o_coherent_write_sc(coherent_write_sc),
       .o_coherent_write_zero(coherent_write_zero),
+      .o_cmo_valid(cmo_valid),
+      .o_cmo_kind(cmo_kind),
+      .o_cmo_addr(cmo_addr),
+      .i_cmo_ready(cmo_ready),
+      .i_cmo_done(cmo_done),
       .o_coherent_write_more(coherent_write_more),
       .o_coherent_next_same(coherent_next_same),
       .o_coherent_write_tag(coherent_write_tag),
@@ -710,6 +720,11 @@ module frost_hart #(
         .i_write_atomic(coherent_write_atomic),
         .i_write_sc(coherent_write_sc),
         .i_write_zero(coherent_write_zero),
+        .i_cmo_valid(cmo_valid),
+        .o_cmo_ready(cmo_ready),
+        .i_cmo_kind(cmo_kind),
+        .i_cmo_addr(cmo_addr[riscv_pkg::PhysAddrBits-1:0]),
+        .o_cmo_done(cmo_done),
         .i_write_more(coherent_write_more),
         .i_next_same(coherent_next_same),
         .i_write_tag(coherent_write_tag),
@@ -796,6 +811,9 @@ module frost_hart #(
         .o_fatal_addr(hart_cache_fatal_addr)
     );
   end else begin : gen_no_cached_tier
+    // Without the hierarchy the store queue completes every CMO itself.
+    assign cmo_ready = 1'b0;
+    assign cmo_done = 1'b0;
     assign hart_cache_fatal = 1'b0;
     assign hart_cache_fatal_addr = '0;
     assign o_l1d_perf_events = '0;

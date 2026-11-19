@@ -10,7 +10,7 @@ uncached data and instruction ports.
 
 | Module | Contents |
 | --- | --- |
-| `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the instruction fetch providers; `coherent_hart_cache` with the S/M L1D, L1I, walker bridges and FENCE.I sequencing; the line client; and `cpu_uncached_adapter` |
+| `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the instruction fetch providers; `coherent_hart_cache` with the S/M L1D, L1I, walker bridges, Zicbom requester and FENCE.I sequencing; the line client; and `cpu_uncached_adapter` |
 | `frost_cluster_memory` | The DMA ingress queue; `coherence_home` with independent completions, the L2 array and victim ownership; and `cpu_memory_fabric` with its AXI master |
 
 The line client is a `coherence_dma_ingress` under the hart's own source and
@@ -20,8 +20,10 @@ vector memory unit). It makes sector reads and masked sector writes that the
 home serves as it serves DMA: it probes the hart's own L1D, merges dirty data
 and applies the byte mask. It has its own D, G, C and U channels. In
 `frost_cluster_memory` its D and C take the last port of the home's arbiters,
-so while it is idle the other ports' rotation is unchanged, and the home's G
-and U of source 0 class 3 go to it rather than to the L1D. With `MISALIGNED_HW`
+so while it is idle the other ports' rotation is unchanged. G and U for
+hart source 0, class 3, IDs below `HartLineIds` return to the line client.
+Class 3 ID `CmoId` returns to the Zicbom requester on the hart's coherent
+link. With `MISALIGNED_HW`
 or `VECTOR` set, the misaligned-access engine and the vector memory unit issue
 their sector reads and writes on it (never concurrently). A registered owner
 selects the requester after older vector memory drains and before the

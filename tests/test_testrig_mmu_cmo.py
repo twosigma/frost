@@ -226,6 +226,17 @@ def test_cmo_batch_covers_zicbom_zicboz_zicbop_and_zawrs() -> None:
         assert token in joined, token
 
 
+def test_bare_cmo_compares_a_cleaned_value_after_invalidation() -> None:
+    """Seed 5 reloads the same DDR word after an invalidate-first pair."""
+    strands = cmo.Generator(random.Random(5)).test(300)
+    strand = next(s for s in strands if s.check and s.check.kind == "bare_cmo_device")
+    mnemonics = [inst.text.split()[0] for inst in strand.instructions]
+    end = next(i for i, op in enumerate(mnemonics) if op.startswith("prefetch."))
+    ops = [op for op in mnemonics[mnemonics.index("sd") : end] if op.startswith("cbo.")]
+    assert "cbo.inval" in ops
+    assert ops[0] in ("cbo.clean", "cbo.flush")
+
+
 def test_cli_flags_for_mmu_and_cmo() -> None:
     """test_testrig parses --mmu and --cmo and rejects conflicting mode combinations."""
     mmu_args = test_testrig.parse_arguments(["--mmu", "25", "--seed", "7"])
