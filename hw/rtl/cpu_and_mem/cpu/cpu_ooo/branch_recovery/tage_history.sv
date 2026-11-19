@@ -439,90 +439,107 @@ module tage_history #(
   // Direction history and incremental folded table indices
   // ===========================================================================
   // Retired: each retired conditional branch's outcome and each jump's
-  // target bit 2, slot 1 then slot 2.
+  // target bit 2, slot 1 then slot 2. Both the full history and the four
+  // folded table indices derive from one per-slot event description.
   logic [DIR_BITS-1:0] retired_dir_hist;
   logic [DIR_BITS-1:0] retired_dir_after_slot1;
+  logic [DIR_BITS-1:0] retired_dir_next;
   logic [TAGE_TABLES-1:0][TAGE_INDEX_BITS-1:0] retired_dir_fold_q;
   logic [TAGE_TABLES-1:0][TAGE_INDEX_BITS-1:0] retired_dir_fold_after_slot1;
+  logic [TAGE_TABLES-1:0][TAGE_INDEX_BITS-1:0] retired_dir_fold_next;
+  logic [1:0] retired_dir_push;
   logic [1:0] retired_dir_bit;
+  assign retired_dir_push[0] = i_commit_valid[0] && i_commit_cf[0];
+  assign retired_dir_push[1] = i_commit_valid[1] && i_commit_cf[1];
   assign retired_dir_bit[0] = i_commit_cond_branch[0] ? i_commit_taken[0] :
                                                          i_commit_target_bits[0][0];
   assign retired_dir_bit[1] = i_commit_cond_branch[1] ? i_commit_taken[1] :
                                                          i_commit_target_bits[1][0];
-  assign retired_dir_after_slot1 = (i_commit_valid[0] && i_commit_cf[0]) ? push_dir(
+  assign retired_dir_after_slot1 = retired_dir_push[0] ? push_dir(
       retired_dir_hist, retired_dir_bit[0]
   ) : retired_dir_hist;
+  assign retired_dir_next = retired_dir_push[1] ? push_dir(
+      retired_dir_after_slot1, retired_dir_bit[1]
+  ) : retired_dir_after_slot1;
   for (genvar t = 0; t < TAGE_TABLES; t++) begin : gen_retired_fold
     localparam int unsigned HistLen = table_hist_bits(t);
-    assign retired_dir_fold_after_slot1[t] = (i_commit_valid[0] && i_commit_cf[0]) ? push_dir_fold(
+    assign retired_dir_fold_after_slot1[t] = retired_dir_push[0] ? push_dir_fold(
         retired_dir_fold_q[t], retired_dir_hist[HistLen-1], retired_dir_bit[0], HistLen
     ) : retired_dir_fold_q[t];
+    assign retired_dir_fold_next[t] = retired_dir_push[1] ? push_dir_fold(
+        retired_dir_fold_after_slot1[t],
+        retired_dir_after_slot1[HistLen-1],
+        retired_dir_bit[1],
+        HistLen
+    ) : retired_dir_fold_after_slot1[t];
   end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       retired_dir_hist   <= '0;
       retired_dir_fold_q <= '0;
-    end else if (i_commit_valid[1] && i_commit_cf[1]) begin
-      retired_dir_hist <= push_dir(retired_dir_after_slot1, retired_dir_bit[1]);
-      for (int t = 0; t < TAGE_TABLES; t++) begin
-        retired_dir_fold_q[t] <= push_dir_fold(
-            retired_dir_fold_after_slot1[t],
-            retired_dir_after_slot1[table_hist_bits(
-                t
-            )-1],
-            retired_dir_bit[1],
-            table_hist_bits(
-                t)
-        );
-      end
     end else begin
-      retired_dir_hist   <= retired_dir_after_slot1;
-      retired_dir_fold_q <= retired_dir_fold_after_slot1;
+      retired_dir_hist   <= retired_dir_next;
+      retired_dir_fold_q <= retired_dir_fold_next;
     end
   end
 
-  // Speculative: the packet PD passed (pd_accept_q, i_pd_q_*) pushes its
-  // control-flow instruction's bit; the restore arms override it.
+  // Speculative: describe the cycle's single direction-history event once
+  // (base history selector, push enable, pushed bit) and derive both the full
+  // direction history and all four folded table indices from that event.
+  typedef enum logic [1:0] {
+    DirBaseSpec    = 2'd0,
+    DirBaseRetired = 2'd1,
+    DirBaseEarly   = 2'd2
+  } dir_base_sel_e;
+
   logic pd_dir_push;
   logic pd_dir_bit;
-  logic [DIR_BITS-1:0] dir_base;
-  logic dir_push;
+  dir_base_sel_e dir_event_base;
+  logic dir_event_push;
+  logic dir_event_bit;
+  logic [DIR_BITS-1:0] dir_base_hist;
   logic [TAGE_TABLES-1:0][TAGE_INDEX_BITS-1:0] dir_fold_q;
-  logic [TAGE_TABLES-1:0][TAGE_INDEX_BITS-1:0] dir_fold_base;
-  logic [TAGE_TABLES-1:0][TAGE_INDEX_BITS-1:0] dir_fold_pushed;
-  logic [TAGE_TABLES-1:0][TAGE_INDEX_BITS-1:0] early_dir_fold_pushed;
+
   assign pd_dir_push = pd_accept_q && (i_pd_q_cf[0] || i_pd_q_cf[1]);
   assign pd_dir_bit  = i_pd_q_cf[0] ? i_pd_q_pred_taken[0] : i_pd_q_pred_taken[1];
   always_comb begin
-    dir_base = dir_hist_q;
-    dir_push = pd_dir_push;
+    dir_event_base = DirBaseSpec;
+    dir_event_push = pd_dir_push;
+    dir_event_bit  = pd_dir_bit;
     if (i_hist_restore_arm[1] || i_hist_restore_arm[2]) begin
-      dir_base = retired_dir_hist;
-      dir_push = 1'b0;
+      dir_event_base = DirBaseRetired;
+      dir_event_push = 1'b0;
     end else if (i_hist_restore_arm[3]) begin
-      dir_base = early_q ? push_dir(early_dir_hist_q, early_taken_q) : retired_dir_hist;
-      dir_push = 1'b0;
+      dir_event_base = early_q ? DirBaseEarly : DirBaseRetired;
+      dir_event_push = early_q;
+      dir_event_bit  = early_taken_q;
     end
   end
-  assign o_lookup_dir_hist = dir_push ? push_dir(dir_base, pd_dir_bit) : dir_base;
+
+  always_comb begin
+    case (dir_event_base)
+      DirBaseRetired: dir_base_hist = retired_dir_hist;
+      DirBaseEarly:   dir_base_hist = early_dir_hist_q;
+      default:        dir_base_hist = dir_hist_q;
+    endcase
+  end
+  assign o_lookup_dir_hist = dir_event_push ? push_dir(
+      dir_base_hist, dir_event_bit
+  ) : dir_base_hist;
 
   for (genvar t = 0; t < TAGE_TABLES; t++) begin : gen_dir_fold
     localparam int unsigned HistLen = table_hist_bits(t);
-    assign early_dir_fold_pushed[t] = push_dir_fold(
-        early_dir_fold_q[t], early_dir_hist_q[HistLen-1], early_taken_q, HistLen
-    );
-    assign dir_fold_pushed[t] = push_dir_fold(
-        dir_fold_q[t], dir_hist_q[HistLen-1], pd_dir_bit, HistLen
-    );
+    logic [TAGE_INDEX_BITS-1:0] base_fold;
     always_comb begin
-      dir_fold_base[t] = dir_fold_q[t];
-      if (i_hist_restore_arm[1] || i_hist_restore_arm[2]) begin
-        dir_fold_base[t] = retired_dir_fold_q[t];
-      end else if (i_hist_restore_arm[3]) begin
-        dir_fold_base[t] = early_q ? early_dir_fold_pushed[t] : retired_dir_fold_q[t];
-      end
+      case (dir_event_base)
+        DirBaseRetired: base_fold = retired_dir_fold_q[t];
+        DirBaseEarly:   base_fold = early_dir_fold_q[t];
+        default:        base_fold = dir_fold_q[t];
+      endcase
     end
-    assign o_lookup_dir_fold[t] = dir_push ? dir_fold_pushed[t] : dir_fold_base[t];
+    assign o_lookup_dir_fold[t] = dir_event_push ? push_dir_fold(
+        base_fold, dir_base_hist[HistLen-1], dir_event_bit, HistLen
+    ) : base_fold;
   end
 
   always_ff @(posedge i_clk) begin
@@ -537,10 +554,30 @@ module tage_history #(
 
 `ifndef SYNTHESIS
   always @(posedge i_clk) begin
-    if (reset_seen_q && !i_rst && !$isunknown({o_lookup_dir_hist, o_lookup_dir_fold})) begin
-      for (int t = 0; t < TAGE_TABLES; t++) begin
-        p_lookup_dir_fold_matches_hist :
-        assert (o_lookup_dir_fold[t] == fold_dir_table(o_lookup_dir_hist, table_hist_bits(t)));
+    if (reset_seen_q && !i_rst) begin
+      if (!$isunknown({o_lookup_dir_hist, o_lookup_dir_fold})) begin
+        for (int t = 0; t < TAGE_TABLES; t++) begin
+          p_lookup_dir_fold_matches_hist :
+          assert (o_lookup_dir_fold[t] == fold_dir_table(o_lookup_dir_hist, table_hist_bits(t)));
+        end
+      end
+      if (!$isunknown({dir_hist_q, dir_fold_q})) begin
+        for (int t = 0; t < TAGE_TABLES; t++) begin
+          p_spec_dir_fold_matches_hist :
+          assert (dir_fold_q[t] == fold_dir_table(dir_hist_q, table_hist_bits(t)));
+        end
+      end
+      if (!$isunknown({retired_dir_hist, retired_dir_fold_q})) begin
+        for (int t = 0; t < TAGE_TABLES; t++) begin
+          p_retired_dir_fold_matches_hist :
+          assert (retired_dir_fold_q[t] == fold_dir_table(retired_dir_hist, table_hist_bits(t)));
+        end
+      end
+      if (!$isunknown({early_dir_hist_q, early_dir_fold_q})) begin
+        for (int t = 0; t < TAGE_TABLES; t++) begin
+          p_early_dir_fold_matches_hist :
+          assert (early_dir_fold_q[t] == fold_dir_table(early_dir_hist_q, table_hist_bits(t)));
+        end
       end
     end
   end

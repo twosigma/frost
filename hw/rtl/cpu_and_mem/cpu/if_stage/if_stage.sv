@@ -3263,9 +3263,66 @@ module if_stage #(
   always_ff @(posedge i_clk) begin
     if (coverage_reset_seen_q && !i_pipeline_ctrl.reset) begin
       // PD derives slot 1's size from its raw parcel and shares its high PC
-      // with slot 2. Check the memory-sideband contracts on the final packet,
-      // including stall replay, before PD consumes it.
-      if (!o_from_if_to_pd_2.sel_nop && !o_from_if_to_pd_2.fetch_fault && !$isunknown(
+      // with slot 2. Check the memory-sideband and fetch-to-PD contracts on
+      // the final packet, including stall replay, before PD consumes it.
+      if (!$isunknown({o_from_if_to_pd.sel_nop, o_from_if_to_pd_2.sel_nop})) begin
+        p_if_slot1_nop_implies_slot2_nop :
+        assert (!o_from_if_to_pd.sel_nop || o_from_if_to_pd_2.sel_nop);
+      end
+      if (!$isunknown(
+              {
+                o_from_if_to_pd.fetch_fault,
+                o_from_if_to_pd_2.sel_nop,
+                o_from_if_to_pd_2.fetch_fault
+              }
+          )) begin
+        p_if_slot1_fault_implies_slot2_fault_or_nop :
+        assert (o_from_if_to_pd_2.sel_nop || !o_from_if_to_pd.fetch_fault ||
+                o_from_if_to_pd_2.fetch_fault);
+      end
+      if (!$isunknown(
+              {
+                o_from_if_to_pd.program_counter,
+                o_from_if_to_pd.sel_compressed,
+                o_from_if_to_pd_2.program_counter
+              }
+          )) begin
+        p_if_slot2_pc_step_exact :
+        assert (o_from_if_to_pd_2.program_counter ==
+                (o_from_if_to_pd.program_counter +
+                 (o_from_if_to_pd.sel_compressed ? riscv_pkg::PcIncrementCompressed :
+                                                   riscv_pkg::PcIncrement32bit)));
+      end
+      if (!$isunknown(
+              {
+                o_backing_hit[1],
+                o_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
+                o_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]
+              }
+          )) begin
+        p_if_slot2_backing_hit_same_region :
+        assert (!o_backing_hit[1] ||
+                (o_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits] ==
+                 o_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]));
+      end
+      if (!$isunknown(
+              {
+                o_from_if_to_pd.sel_compressed,
+                o_backing_return[1],
+                o_backing_target[1],
+                o_backing_slot2_return_by_size,
+                o_backing_slot2_target_by_size
+              }
+          )) begin
+        p_if_backing_slot2_by_size_exact :
+        assert ({o_backing_return[1], o_backing_target[1]} ==
+                {o_backing_slot2_return_by_size[o_from_if_to_pd.sel_compressed],
+                 o_backing_slot2_target_by_size[o_from_if_to_pd.sel_compressed]});
+      end
+      if (!$isunknown(o_from_if_to_pd.is_cond_branch)) begin
+        p_if_slot1_is_cond_branch_clear : assert (!o_from_if_to_pd.is_cond_branch);
+      end
+      if (!o_from_if_to_pd_2.sel_nop && !o_from_if_to_pd.fetch_fault && !$isunknown(
               {o_from_if_to_pd.sel_compressed, o_from_if_to_pd.raw_parcel,
                o_from_if_to_pd.effective_instr[6:0]}
           )) begin
@@ -3277,6 +3334,50 @@ module if_stage #(
         ) : !riscv_pkg::imem_native_control(
             o_from_if_to_pd.effective_instr[6:0]
         ));
+      end
+      if (!o_from_if_to_pd_2.sel_nop && !o_from_if_to_pd_2.fetch_fault && !$isunknown(
+              {o_from_if_to_pd_2.sel_compressed, o_from_if_to_pd_2.raw_parcel[1:0]}
+          )) begin
+        p_if_slot2_size_matches_raw_parcel :
+        assert (o_from_if_to_pd_2.sel_compressed == (o_from_if_to_pd_2.raw_parcel[1:0] != 2'b11));
+      end
+      if (!$isunknown(
+              {
+                o_from_if_to_pd.program_counter,
+                o_from_if_to_pd.effective_instr,
+                o_from_if_to_pd.pd_target_native_low,
+                o_from_if_to_pd.pd_target_native_high_select
+              }
+          )) begin
+        p_if_slot1_pd_target_native_exact :
+        assert ({o_from_if_to_pd.pd_target_native_high_select[1],
+                 o_from_if_to_pd.pd_target_native_high_select[0],
+                 o_from_if_to_pd.pd_target_native_low} ==
+                {o_from_if_to_pd.effective_instr[31],
+                 (riscv_pkg::PdTargetSplit + 1)'(
+                     o_from_if_to_pd.program_counter[riscv_pkg::PdTargetSplit-1:0] +
+                     native_branch_imm_low(
+            o_from_if_to_pd.effective_instr
+        ))});
+      end
+      if (!$isunknown(
+              {
+                o_from_if_to_pd.program_counter,
+                o_from_if_to_pd.raw_parcel,
+                o_from_if_to_pd.pd_target_compressed_low,
+                o_from_if_to_pd.pd_target_compressed_high_select
+              }
+          )) begin
+        p_if_slot1_pd_target_compressed_exact :
+        assert ({o_from_if_to_pd.pd_target_compressed_high_select[1],
+                 o_from_if_to_pd.pd_target_compressed_high_select[0],
+                 o_from_if_to_pd.pd_target_compressed_low} ==
+                {o_from_if_to_pd.raw_parcel[12],
+                 (riscv_pkg::PdTargetSplit + 1)'(
+                     o_from_if_to_pd.program_counter[riscv_pkg::PdTargetSplit-1:0] +
+                     compressed_branch_imm_low(
+            o_from_if_to_pd.raw_parcel
+        ))});
       end
       if (!$isunknown({o_tage_slot_valid[1], tage_slot2_cov_ref})) begin
         p_if_slot2_tage_cov_exact : assert (o_tage_slot_valid[1] == tage_slot2_cov_ref);
