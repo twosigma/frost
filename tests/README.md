@@ -314,6 +314,59 @@ run in the unit shard. The program shards
 exercise the coherent hierarchy in both memory configurations. Whole-L1D
 maintenance is active in simulation. Synthesis checks cover both line sizes
 at 32-bit and 56-bit physical widths.
+
+The coherence cluster stress and fill cases run in Cocotb Unit Tests B.
+The stress cases vary memory response order and delay, grant and release
+backpressure, and masked CPU and DMA writes. They check that every DMA read
+matches a whole installed prefix of the CPU store stream, and check CPU
+loads, store acknowledgements, contributor counts and final sector data.
+A hart load can see a DMA write's merged bytes from write acceptance onward.
+A load issued after the write's grant must include that write, subject to
+later overlapping writes. The array update occurs between acceptance and
+grant. Release retires the DMA request.
+A DMA request orders later hart and DMA requests to the same 32-byte sector
+at its result, after probe service and the array update, as described in the
+[cache README](../hw/rtl/lib/cache/README.md#coherent-one-hart-cache-path).
+
+Each profile requires DMA reads during the store stream, including reads
+whose acceptance-to-grant window contains an installed store to the same
+sector. Each seed ends with a masked DMA write and three hart reads of
+the written doubleword while release is held. Each profile requires a
+hart read issued to the same sector strictly between write grant and
+release. The profiles also require combined stores, held younger grants
+and store installs from borrowed endpoints. The direct-mapped and wide
+profiles require two simultaneously live write-backs. The wide profile
+also requires AMOs and non-allocating DMA reads.
+
+| Registry entry | Seed | Scalar writes | Configuration |
+| --- | ---: | ---: | --- |
+| `coherence_cluster_stress` | 1 | 1200 | Three L1D endpoints and four home fills |
+| `coherence_cluster_stress_direct_mapped` | 11 | 1500 | Three L1D endpoints and direct-mapped caches |
+| `coherence_cluster_stress_wide` | 41 | 1500 | Eight L1D endpoints, a larger address range, AMOs and non-allocating DMA |
+
+```sh
+./scripts/frost.py cocotb coherence_cluster_stress
+FROST_CLUSTER_STRESS_SEEDS=1,2 ./scripts/frost.py cocotb coherence_cluster_stress
+./scripts/frost.py cocotb coherence_cluster_fill_cycle_2
+./scripts/frost.py cocotb coherence_cluster_fill_cycle_4
+./scripts/frost.py cocotb coherence_cluster --testcase stores_combine_behind_a_held_grant
+```
+
+`FROST_CLUSTER_STRESS_SEEDS` selects a comma-separated list of seeds and
+`FROST_CLUSTER_STRESS_STORES` sets the scalar write count. Each seed must
+meet its profile's coverage floors.
+`FROST_CLUSTER_STRESS_TRACE` writes the L1D state before each rising edge to
+a path inside the container. Relative paths start in `tests/`. The
+[read-turn trace](fixtures/coherence_cluster_read_turn_trace.txt) records
+the seed-1 sequence in which an installed load grant must discharge the
+read debt before the next store lookup.
+
+The directed fill cases hold a younger store grant and seat a DMA reader
+in its fill. The head store takes a second fill, both stores drain, and the
+reader observes the younger store's data. The cluster combining case holds
+a store grant and checks the performance events and data for two stores
+that combine behind it.
+
 `coherence_l1d` holds a probe reply across a grant and checks single grant
 application, ordered read errors and installation of the following store.
 Its buffered-store cases check overlapping byte masks, same-sector order,
