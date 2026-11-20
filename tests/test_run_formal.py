@@ -761,7 +761,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "sq_next_same.sby",
-        "Store-queue same-sector claim matches the reference after launch and allocation",
+        "Store-queue sent bits and same-sector claim match the reference updates",
         tasks=("bmc", "bmc_cpu"),
     ),
     FormalTarget(
@@ -4492,10 +4492,11 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
 #   opt_reduce (opt without -fast, prep): equal output bits of a multiplexer
 #     that drives a memory write enable, constant x included, become one bit,
 #     as do repeated constant-x select bits of a $bmux or $demux.
-#   proc_rom (proc unless -norom, prep): a case of constants becomes a ROM;
-#     after memory_collect (in prep) or memory_map -keepdc its x words, such as
-#     an x default, hold one value for the whole trace, not a free value in
-#     every cycle.
+#   proc_rom (proc unless -norom, prep): a case of constants becomes a ROM.
+#     After memory_collect (in prep) or memory_map -keepdc, each x word, such
+#     as an x default, holds one value for the whole trace. Yosys's global-clock
+#     memory_map -formal implies -keepdc. FROST scripts accept only the
+#     -keepdc form and pinned plain memory_map.
 #   proc_dlatch (proc, prep): in a latch's fan-in, all-x cases are dropped and
 #     an all-x default is replaced by a defined case; when it decides in which
 #     cases a latch holds, it reads multiplexer inputs through connections, so
@@ -4521,14 +4522,12 @@ for _form in SCRIPT_FORMS:
         DONT_CARE_REJECTED.setdefault(_form.command, []).append(
             (_form.id, _form.rejected_reason)
         )
-# Targets whose scripts run a command outside DONT_CARE_SAFE, each with a
-# one-line reason and, for each group of tasks, the commands outside the list
-# that each of those tasks runs, in the order it runs them. The checks fail
-# when a task runs such a command a further time, drops one, runs them in
-# another order, or moves one to another task, without the entry changing. A
-# pinned command moved only past listed commands keeps its pin, and so does
-# every pin when a listed command next to a pinned one is added, removed or
-# edited. ROADMAP.md's verification items describe the open work.
+# Each open entry gives a reason and the ordered list of rejected commands
+# for each task. The pin check catches additions, repetitions, removals,
+# reordering and moves between tasks that change these lists. Adding,
+# removing or editing commands in safe forms leaves the pins intact when the
+# rejected lists stay the same, as does moving a pinned command past safe
+# commands. ROADMAP.md's verification items describe the open work.
 DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "axi_cdc": (
         "not converted: memory_map and opt -full; no setundef",

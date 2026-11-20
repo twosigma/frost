@@ -770,6 +770,154 @@ async def test_rejected_segment_aborts_the_open_frame(dut: Any) -> None:
     env.stop()
 
 
+def _fifo_offer(dut: Any) -> tuple[int, int, int, int, int]:
+    return (
+        int(dut.o_fifo_valid.value),
+        int(dut.o_fifo_data.value),
+        int(dut.o_fifo_code.value),
+        int(dut.o_fifo_csum.value),
+        int(dut.o_fifo_abort.value),
+    )
+
+
+async def _wait_fifo_valid(dut: Any) -> None:
+    for _ in range(500):
+        if int(dut.o_fifo_valid.value):
+            return
+        await FallingEdge(dut.i_clk)
+    raise AssertionError("TX beat never offered")
+
+
+@cocotb.test()
+@cocotb.parametrize(prefix_beats=[0, 1])
+async def test_reject_holds_stalled_beat(dut: Any, prefix_beats: int) -> None:
+    """Reject a continuation with the first or second beat already offered to the FIFO."""
+    env = await _setup(dut, 101)
+    env.sink.stop()
+    payload = bytes(range(8 * (prefix_beats + 1)))
+    env.mem.write_bytes(BUF, payload)
+    request = (6 << 25) | (3 << 18)
+    post_desc(env.mem, RING, 0, BUF, FIRST | request | len(payload))
+    post_desc(env.mem, RING, 1, 0x1000, LAST | 8)
+    good = env.place(2, BUF + 64, 7)
+
+    await env.doorbell(1)
+    for index in range(prefix_beats + 1):
+        await _wait_fifo_valid(dut)
+        word = int.from_bytes(payload[index * 8 : index * 8 + 8], "little")
+        held = (1, word, 7, (6 << 8) | (3 << 1) | 1, 0)
+        assert _fifo_offer(dut) == held
+        if index < prefix_beats:
+            dut.i_fifo_ready.value = 1
+            await FallingEdge(dut.i_clk)
+            dut.i_fifo_ready.value = 0
+
+    # Admit the invalid continuation while READY stays low. Check through its
+    # status write and until the edge that finally accepts the original offer.
+    dut.i_tail.value = 3
+    for _ in range(96):
+        await FallingEdge(dut.i_clk)
+        assert _fifo_offer(dut) == held, (
+            f"stalled TX offer changed: {_fifo_offer(dut)} != {held}"
+        )
+    assert desc_status(env.mem, RING, 1) == DONE | ERR | ABORT
+    dut.i_fifo_ready.value = 1
+    await FallingEdge(dut.i_clk)
+    dut.i_fifo_ready.value = 0
+    await _wait_fifo_valid(dut)
+    abort = _fifo_offer(dut)
+    assert abort[2] == 8 and abort[4] == 1
+    for _ in range(8):
+        await FallingEdge(dut.i_clk)
+        assert _fifo_offer(dut) == abort
+
+    dut.i_fifo_ready.value = 1
+    await FallingEdge(dut.i_clk)
+    await _wait_fifo_valid(dut)
+    valid, data, code, csum, aborted = _fifo_offer(dut)
+    assert (valid, code, csum, aborted) == (1, 14, 0, 0)
+    assert data.to_bytes(8, "little")[:7] == good
+    for _ in range(40):
+        await FallingEdge(dut.i_clk)
+        assert not int(dut.o_fifo_valid.value)
+    assert env.completions == [(0, len(payload)), (6, 8), (0, 7)]
+    assert not env.model.violations, env.model.violations
+    env.stop()
+
+
+@cocotb.test()
+async def test_reject_holds_segment_last(dut: Any) -> None:
+    """A held TCP segment tail closes the FIFO frame without a second closing beat."""
+    from cocotb_tests.nic.test_nic_tx_segment import Packet
+
+    env = await _setup(dut, 102)
+    env.sink.stop()
+    pkt = Packet(env.rng, payload_len=256, mss=64)
+    word0, word1 = _param_words(pkt)
+    post_desc(env.mem, RING, 0, word0, word1)
+    # Enough data to produce one whole TCP segment and start the next one.
+    chunk = pkt.frame[:144]
+    env.mem.write_bytes(BUF, chunk)
+    post_desc(env.mem, RING, 1, BUF, FIRST | len(chunk))
+    post_desc(env.mem, RING, 2, 0x1000, LAST | 8)
+    good = env.place(3, BUF + 512, 7)
+    await env.doorbell(2)
+    dut.i_fifo_ready.value = 1
+    received = bytearray()
+    for _ in range(1000):
+        await FallingEdge(dut.i_clk)
+        valid, data, code, _, abort = _fifo_offer(dut)
+        if valid:
+            assert not abort
+            received.extend(data.to_bytes(8, "little")[: (code & 7) + 1])
+            if code & 8:
+                break
+    assert received == pkt.segments()[0]
+
+    held = _fifo_offer(dut)
+    dut.i_fifo_ready.value = 0
+    dut.i_tail.value = 4
+    for _ in range(96):
+        await FallingEdge(dut.i_clk)
+        assert _fifo_offer(dut) == held
+    assert desc_status(env.mem, RING, 2) == DONE | ERR | ABORT
+    dut.i_fifo_ready.value = 1
+    await FallingEdge(dut.i_clk)
+    await _wait_fifo_valid(dut)
+    _, data, code, csum, aborted = _fifo_offer(dut)
+    assert (code, csum, aborted) == (14, 0, 0)
+    assert data.to_bytes(8, "little")[:7] == good
+    await env.wait_completions(4)
+    assert not env.model.violations, env.model.violations
+    env.stop()
+
+
+@cocotb.test()
+@cocotb.parametrize(reset_fifo=[False, True])
+async def test_stop_preserves_offer_until_transfer_or_reset(
+    dut: Any, reset_fifo: bool
+) -> None:
+    """The software reset drain leaves an offered beat intact until the FIFO takes or resets it."""
+    env = await _setup(dut, 103)
+    env.sink.stop()
+    env.place(0, BUF, 32)
+    await env.doorbell(1)
+    await _wait_fifo_valid(dut)
+    held = _fifo_offer(dut)
+    await FallingEdge(dut.i_clk)
+    dut.i_stop.value = 1
+    for _ in range(8):
+        await FallingEdge(dut.i_clk)
+        assert _fifo_offer(dut) == held
+    if reset_fifo:
+        dut.i_abort.value = 1
+    else:
+        dut.i_fifo_ready.value = 1
+    await FallingEdge(dut.i_clk)
+    assert not int(dut.o_fifo_valid.value)
+    env.stop()
+
+
 @cocotb.test()
 async def test_rejected_segment_with_nothing_downstream(dut: Any) -> None:
     """When the open frame has put no beat in the FIFO yet, the flush alone suffices."""

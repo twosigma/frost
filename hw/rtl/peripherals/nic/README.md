@@ -252,14 +252,13 @@ acknowledged, and each direction has one status write in flight at a time.
 DONE therefore becomes visible in ring order, and a reader that sees DONE and
 then reads the buffer sees the data.
 
-`nic_tx_engine` validates a descriptor: length 1 to 9216, FIRST and LAST both
-set (a frame occupies exactly one descriptor), and the buffer inside cached
-DDR. An invalid one completes with DONE|ERR and sends nothing. A valid one's
-buffer is read line by line in address order, with up to four reads in flight
-or waiting in a reorder buffer, and `nic_byte_unpack` turns the lines into
-beats, the last carrying the remaining bytes. The status write is issued when
-the last beat has entered the FIFO: DONE means the buffer has been read, not
-that the frame reached the wire.
+`nic_tx_engine` checks the descriptor length, FIRST flag and cached DDR
+aperture. It reads each valid buffer in address order, with up to four lines
+in flight or in the reorder buffer. `nic_byte_unpack` turns the lines into
+beats. The engine issues the status write once the descriptor's last beat
+enters the merge stage. DONE tells software it can reuse the buffer.
+An invalid descriptor received with no frame open completes with
+DONE|ERR and sends nothing.
 
 **Segments and abandoned frames.** A frame may span several descriptors (FIRST on the first,
 LAST on the last). The first takes at most 9216 bytes unless a parameter descriptor precedes
@@ -268,12 +267,19 @@ is bounded by the MAC's maximum frame (an oversize frame is dropped and counted)
 segmentation stage. ABI_CTRL bit 6 reads one when the hardware has these limits and the abort below; the
 Linux driver then stops splitting segments at 9216 bytes. If a descriptor inside an open
 frame is rejected (length 0 or out of range, buffer outside DDR, duplicate FIRST), the engine
-abandons the frame: it flushes the merge and segmentation stages, closes any beat of the frame already
-in the TX FIFO with a one-byte last beat that carries an abort flag (`tuser` at the MAC, which
-drops the frame and counts it in TX_MAC_DROP), completes the rejected descriptor with
-DONE|ERR|ABORT (counted in TX_ABORTED), and never joins the frame's bytes to the next one.
+honors any outstanding FIFO offer and discards the remaining buffered bytes. If the FIFO
+then holds an unfinished frame, the engine sends a separate one-byte final beat with the
+abort flag (`tuser` at the MAC). The MAC drops that frame and counts it in TX_MAC_DROP.
+The rejected descriptor completes with DONE|ERR|ABORT (counted in TX_ABORTED).
 The segments before it keep their clean DONE; the remaining segments of the frame arrive with
 no frame open and complete with DONE|ERR.
+
+**TX stream handshake.** The MAC wrapper accepts a beat on a core clock edge with both
+VALID and READY high. After an edge with VALID high and READY low, the engine holds
+VALID, all 64 data bits, the last/byte-count code, checksum request and abort flag
+unchanged through the accepting edge. This includes a stalled first beat, final beat
+or abort. Descriptor rejection and the software reset drain preserve an outstanding
+offer. Core reset or loss of TX-domain readiness resets the stream and cancels it.
 
 The TX FIFO stores 68 bits per beat: data and the four-bit beat code. A 32-entry
 side FIFO holds one checksum request per frame. A first beat is accepted only

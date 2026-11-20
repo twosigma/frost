@@ -174,9 +174,9 @@ miss does not hold up the drain for the line fill.
 The in-flight class resolves completion of the previous write before launch
 credit arrives. A new launch selects its class last and takes priority over
 a simultaneous completion, without adding state or cycles.
-The sent bits likewise prepare allocation clearing, cursor selection and entry
-completion before launch arrives. A completing launch takes priority over a
-same-entry allocation clear.
+Launching the last write for an entry or draining a Zicbom operation sets
+the sent bit at the drain cursor. Either takes priority over an allocation
+that clears the previous owner's sent bit on the same edge.
 
 Each cached write carries `o_coherent_write_more` when another unsent store
 (not SC, cbo.zero or Zicbom) waits behind it, a hint that lets the L1D keep a
