@@ -509,8 +509,8 @@ Block benches ignore this setting, and so do applications with a fixed
 layout, such as `opensbi_smoke`. In the DDR tier, pytest skips the programs
 in `DDR_TIER_EXCLUDE`: the DDR probes (`ddr_*`), which already target DDR,
 the fetch fuzzers (`*_fetch_fuzz`), which use their own build, and
-`ecc_scrub_test` and `cache_counters_openocd`, whose programs run from BRAM
-in either tier.
+`ecc_scrub_test`, `cache_counters_openocd` and `hw_debug_check_openocd`, whose
+programs run from BRAM in either tier.
 `served_window_resteer_fetch_fuzz` turns off the optional Normal read caches
 so that its loop meets the SoC's AXI instruction-delay model. Each reset run
 must see both injected AXI delays and predicted-target fetch waits and finish
@@ -650,8 +650,11 @@ module deactivation.
 `debug_test` drives the JTAG debug module directly. Its older-load-fault
 case checks both the return stack and the architectural state of a younger
 indirect call discarded by the trap. `debug_openocd_test` runs
-OpenOCD and GDB sessions through `remote_bitbang`, and `cache_counters_openocd`
-reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.
+OpenOCD and GDB sessions through `remote_bitbang`, `cache_counters_openocd`
+reads the cache profiling counters that way with `fpga/debug/cache_counters.py`,
+and `hw_debug_check_openocd` runs the debug-port check and confirmation
+procedures of `hw_regression.py` (`fpga/debug/hw_debug_check.tcl`: dtmcs, halt,
+dpc, resume, and separate running-state confirmation) on the simulated core.
 Without OpenOCD installed those targets log a warning and pass; set
 `FROST_REQUIRE_OPENOCD=1`, as CI does, to make them fail instead. The GDB
 session also requires `${RISCV_PREFIX}gdb` and checks registers, memory,

@@ -2081,6 +2081,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL2_CACHE_BYTES=4096",
         ),
     ),
+    # The debug-port check of fpga/hw_regression.py (fpga/debug/hw_debug_check.tcl)
+    # through OpenOCD against the simulated core.
+    "hw_debug_check_openocd": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_hw_debug_check_openocd",
+        hdl_toplevel_module="frost",
+        app_name="cache_counter_target",
+        description=(
+            "Debug-port check (halt, dpc, resume) of fpga/hw_regression.py on the "
+            "simulated core (optional unless FROST_REQUIRE_OPENOCD=1)"
+        ),
+        verilator_extra_args=(
+            "-GPERF_COUNTERS=1",
+            "-GL1_CACHE_BYTES=4096",
+            "-GL2_CACHE_BYTES=4096",
+        ),
+    ),
     "satp_drain_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -6689,14 +6705,20 @@ UNIT_TEST_PARAMS = [
 #     program in BRAM, so the write-error plusarg counts only its writebacks.
 #   - fencei_jit_bench: the BRAM driver already executes its generated code
 #     in cached DDR; moving the driver does not add an invalidation case.
-#   - cache_counters_openocd: its program runs from low BRAM in either tier,
-#     so a ddr-tier run would repeat the bram-tier one.
+#   - cache_counters_openocd, hw_debug_check_openocd: their program runs from
+#     low BRAM in either tier, so a ddr-tier run would repeat the bram-tier one.
 DDR_TIER_EXCLUDE = {
     name
     for name in REAL_PROGRAM_TESTS
     if name.endswith("_fetch_fuzz")
     or name.startswith("ddr_")
-    or name in {"ecc_scrub_test", "cache_counters_openocd", "fencei_jit_bench"}
+    or name
+    in {
+        "ecc_scrub_test",
+        "cache_counters_openocd",
+        "fencei_jit_bench",
+        "hw_debug_check_openocd",
+    }
 }
 
 

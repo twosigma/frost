@@ -455,7 +455,8 @@ jobs:
               [opensbi_smoke_no_misaligned_hw] or [opensbi_reset_cold] or [opensbi_reset_warm]
               or [isa_test_sram_macros] or [ddr_test_sram_macros]
               or [ddr_exec_test_sram_macros] or
-              [nic_loopback_sram_macros] or [cache_counters_openocd] or [async_hello_world]
+              [nic_loopback_sram_macros] or [cache_counters_openocd] or [hw_debug_check_openocd]
+              or [async_hello_world]
               or [async_nic_loopback] or [async_dma_torture]
               or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
               or [cbo_zero_pages] or [cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]
@@ -562,14 +563,15 @@ jobs:
               coverage: [bram]
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_reset_warm]"
-          # The OpenOCD session that reads the cache counters is long, and its
-          # program runs from low BRAM in either tier.
+          # The OpenOCD sessions that read the cache counters and run the
+          # debug-port check are long, and their program runs from low BRAM
+          # in either tier.
           - mem_config: bram
             shard:
               name: Real Programs (Cache counters over OpenOCD)
               coverage: []
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[cache_counters_openocd]"
+              pytest_filter: "[cache_counters_openocd] or [hw_debug_check_openocd]"
           # The unit benches run serially in two jobs of about equal duration;
           # tests/test_run_cocotb.py assigns each bench to one of them.
           - mem_config: bram
