@@ -786,6 +786,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "bare M-mode fetch, or the reverse, does not follow the other mode's BTB entry"
         ),
     ),
+    "fast_btb_contract_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fast_btb_contract_test",
+        nic_mac_clocks=False,
+        description=(
+            "Flushed BTB entries survive same-side traps and status writes with "
+            "cycle-only effect, walk-past delivers overlapped 32-bit instructions "
+            "unchanged, SFENCE.VMA and satp clear the BTB, and stale backing BTB "
+            "entries stay safe after FENCE.I"
+        ),
+    ),
     "odd_halfword_pred_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

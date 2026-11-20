@@ -49,6 +49,7 @@ def _dir_idx(pc: int) -> int:
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs except reset to idle values."""
     dut.i_metadata_check_valid.value = 1
+    dut.i_btb_invalidate.value = 0
     dut.i_stall.value = 0
     dut.i_stall_registered.value = 0
     dut.i_fetch_progress.value = 1
@@ -1295,3 +1296,87 @@ async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> 
     assert dut.o_slot2_prediction_used.value
     assert dut.o_slot2_prediction_used_for_pc.value
     assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2_ALT
+
+
+@cocotb.test()
+async def test_btb_invalidate_holds_four_cycles_and_drops_in_flight_updates(
+    dut: Any,
+) -> None:
+    """i_btb_invalidate holds for four cycles, dropping every update arriving during the hold."""
+    await _setup_test(dut)
+    await _btb_update(dut, pc=PC_A, target=TARGET_A, taken=True)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2, taken=True)
+
+    # Confirm both slot-1 and slot-2 entries hit before invalidation.
+    await _stage_slot2_images(dut, SLOT2_PC - 4)
+    dut.i_pc.value = PC_A
+    dut.i_pc_2_alt.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 4
+    dut.i_slot2_plus4_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
+    await _settle()
+    assert dut.btb_hit.value
+    assert _slot2_btb_hit(dut)
+
+    # Stage an in-flight update one cycle BEFORE i_btb_invalidate (so it lands in
+    # btb_update_q on the invalidate pulse cycle), then continue presenting
+    # updates on cycles 0, 1, and 2 of the four-cycle hold. Every one must be
+    # dropped by btb_invalidate_active.
+    _clear_inputs(dut)
+    in_flight_pcs = (PC_B, PC_B + 4, PC_B + 8, PC_B + 12)
+    post_hold_pc = PC_B + 16
+
+    def _drive_update(pc: int, target: int) -> None:
+        dut.i_btb_update.value = 1
+        dut.i_btb_update_pc.value = pc
+        dut.i_btb_update_target.value = target
+        dut.i_btb_update_taken.value = 1
+        dut.i_btb_late_update_pc.value = pc
+        dut.i_btb_late_update_taken.value = 1
+
+    # Cycle t-1: pre-invalidate update enters btb_update_q at t.
+    _drive_update(in_flight_pcs[0], TARGET_A)
+    await _advance_cycle(dut)
+
+    # Cycle t (hold cycle 1): pulse i_btb_invalidate; drive update for t+1.
+    dut.i_btb_invalidate.value = 1
+    _drive_update(in_flight_pcs[1], TARGET_A)
+    await _settle()
+    assert dut.btb_invalidate_active.value
+    await _advance_cycle(dut)
+    dut.i_btb_invalidate.value = 0
+
+    # Cycles t+1, t+2 (hold cycles 2 and 3): hold remains high and drops updates.
+    for hold_idx, pc_drop in enumerate(in_flight_pcs[2:], start=2):
+        _drive_update(pc_drop, TARGET_A)
+        await _settle()
+        assert dut.btb_invalidate_active.value, (
+            f"hold dropped early at cycle {hold_idx}"
+        )
+        await _advance_cycle(dut)
+
+    # Cycle t+3 (hold cycle 4): hold still active, dropping the t+2 update;
+    # drive post_hold_pc so it registers into btb_update_q for t+4 (after hold).
+    _drive_update(post_hold_pc, TARGET_SLOT2)
+    await _settle()
+    assert dut.btb_invalidate_active.value, "hold must remain active on cycle 4"
+    await _advance_cycle(dut)
+
+    # Cycle t+4: hold has now expired; all prior entries and dropped updates miss.
+    _clear_inputs(dut)
+    await _settle()
+    assert not dut.btb_invalidate_active.value
+    for pc_check in (PC_A, SLOT2_PC, *in_flight_pcs):
+        dut.i_pc.value = pc_check
+        await _settle()
+        assert not dut.btb_hit.value, f"stale/dropped entry survived at {pc_check:#x}"
+
+    # Advance edge t+4 -> t+5: post_hold_pc (presented at t+3, registered into
+    # btb_update_q at t+4 when hold was clear) installs normally.
+    await _advance_cycle(dut)
+    dut.i_pc.value = post_hold_pc
+    await _settle()
+    assert dut.btb_hit.value
+    assert dut.btb_predicted_taken.value
+    assert int(dut.o_predicted_target.value) == TARGET_SLOT2

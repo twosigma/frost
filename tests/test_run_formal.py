@@ -1853,6 +1853,12 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "btb_invalidate_hold.sby",
+        "BTB invalidate holds for four cycles, clears every slot-1 and slot-2 valid "
+        "array and staged valid flop, and drops updates arriving during the hold",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "prediction_handoff.sby",
         "Pending-prediction handoff preserves slot-2 veto and state masking",
         tasks=("bmc", "cover", "prove"),

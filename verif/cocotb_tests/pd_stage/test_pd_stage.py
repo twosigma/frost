@@ -2283,3 +2283,86 @@ async def test_slot2_indirect_target_uses_its_own_pc_region(dut: Any) -> None:
         redirect, taken, target, second = await _backing_redirect(dut)
         assert redirect and taken and second
         assert target == region + low_target
+
+
+@cocotb.test()
+async def test_stale_backing_btb_hit_vetoed_for_non_jumps_and_mismatched_size_in_both_slots(
+    dut: Any,
+) -> None:
+    """Backing BTB has no clear-all; PD vetoes stale hits on non-jumps, bad funct3, wrong size, or faults in both slots."""
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    target = 0x8000_0F40
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    branch = _pack_b(imm=8, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    jalr = _pack_i(imm=0, rs1=5, funct3=0, rd=0, opcode=OPC_JALR)
+    bad_jalr = _pack_i(imm=0, rs1=5, funct3=1, rd=0, opcode=OPC_JALR)
+    jal = _pack_jal(imm=0x40, rd=0)
+    c_j = 0xA001  # c.j +0
+    c_jr = 0x8282  # c.jr t0 (rs1=5)
+
+    for slot in (0, 1):
+        slot_pc = pc + (4 if slot else 0)
+        c_j_pkt = {
+            "program_counter": slot_pc,
+            "raw_parcel": c_j,
+            "sel_nop": False,
+            "sel_compressed": True,
+            "effective_instr": _pack_jal(imm=0, rd=0),
+        }
+        c_jr_pkt = {
+            "program_counter": slot_pc,
+            "raw_parcel": c_jr,
+            "sel_nop": False,
+            "sel_compressed": True,
+            "effective_instr": jalr,
+        }
+
+        # Positive controls: matching-size valid native and compressed jumps redirect.
+        for pos_pkt, entry_compressed in (
+            (_packet(slot_pc, jalr), False),
+            (c_jr_pkt, True),
+        ):
+            if slot:
+                _drive_if_packet(dut, _packet(pc, addi))
+                _drive_if_packet(dut, pos_pkt, slot2=True)
+            else:
+                _drive_if_packet(dut, pos_pkt)
+            _drive_backing(dut, slot, target=target, compressed=entry_compressed)
+            redirect, taken, redir_target, redir_slot2 = await _backing_redirect(dut)
+            assert redirect and taken, (slot, pos_pkt, entry_compressed)
+            assert redir_target == target
+            assert redir_slot2 == bool(slot)
+
+        # Veto matrix in both slot 1 and slot 2: non-jump ALU, conditional branch,
+        # illegal JALR, wrong-size native JAL/JALR, wrong-size compressed C.J/C.JR,
+        # fetch fault, bubble, and already fast-BTB-taken jump must all be vetoed.
+        veto_cases = [
+            (_packet(slot_pc, addi), False),
+            (_packet(slot_pc, branch), False),
+            (_packet(slot_pc, bad_jalr), False),
+            (_packet(slot_pc, jal), True),  # native JAL with compressed backing entry
+            (_packet(slot_pc, jalr), True),  # native JALR with compressed backing entry
+            (c_j_pkt, False),  # compressed C.J with native backing entry
+            (c_jr_pkt, False),  # compressed C.JR with native backing entry
+            (_packet(slot_pc, jal, fetch_fault=True), False),
+            (_packet(slot_pc, jal, sel_nop=True), False),
+            (
+                _packet(
+                    slot_pc,
+                    jal,
+                    btb_predicted_taken=True,
+                    btb_predicted_target=target,
+                ),
+                False,
+            ),
+        ]
+        for pkt, entry_compressed in veto_cases:
+            if slot:
+                _drive_if_packet(dut, _packet(pc, addi))
+                _drive_if_packet(dut, pkt, slot2=True)
+            else:
+                _drive_if_packet(dut, pkt)
+            _drive_backing(dut, slot, target=target, compressed=entry_compressed)
+            redirect, _, _, _ = await _backing_redirect(dut)
+            assert not redirect, (slot, pkt, entry_compressed)
