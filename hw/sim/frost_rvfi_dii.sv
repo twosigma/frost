@@ -532,7 +532,7 @@ module frost_rvfi_dii #(
 
       if (event_commit && i_early_mispredict_active) error_flags[6] <= 1'b1;
       // Arms 7 to 10 and 12 follow branch predictions, which this build
-      // disables. Arm 11 (halfword catch-up) is sequential and allowed.
+      // disables. Arm 11 (lower-parcel resteer catch-up) is sequential and allowed.
       if (i_pc_update_en && (|i_npc_sel[10:7] || i_npc_sel[12])) error_flags[5] <= 1'b1;
       if (i_npc_sel[3] && !i_pc_update_en) error_flags[8] <= 1'b1;
       if (pd_branch_outside_layout) error_flags[9] <= 1'b1;

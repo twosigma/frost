@@ -103,11 +103,14 @@ module pc_increment_calculator #(
   // pc_controller clears i_any_holdoff_safe while it releases a pending
   // branch's predecessor as a real packet (pending_predecessor_release_wcs0).
   //
-  // The two holdoffs treat a halfword PC differently. After a prediction, +2
-  // from a halfword PC reaches the next word boundary without letting o_pc get
-  // two instructions ahead of pc_reg. After a redirect or reset, +4 is needed
-  // even from a halfword PC: +2 leaves the fetch lead too small, and the
-  // window for the next word-aligned instruction arrives a cycle late.
+  // The two holdoffs start from different o_pc/pc_reg leads, so they treat a
+  // halfword o_pc differently. On a slot-1 prediction holdoff, o_pc jumped to
+  // the target a cycle ahead of pc_reg; stepping o_pc by +2 from a halfword
+  // target reaches the next word boundary while pc_reg catches up, keeping o_pc
+  // one window ahead rather than two. After a redirect or reset (as on
+  // pc_controller's non-crossing pending-target holdoff), o_pc and pc_reg both
+  // sit at the target together: +4 is needed even from a halfword target so the
+  // next window covers the following two words and maintains the four-byte lead.
   logic pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2;
   assign pc_inc_sel_redirect_holdoff = i_any_holdoff_safe;
   assign pc_inc_sel_prediction_holdoff = !i_any_holdoff_safe && i_prediction_holdoff;
