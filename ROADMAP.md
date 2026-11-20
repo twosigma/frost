@@ -732,11 +732,12 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   transceivers, so that Linux finds NVMe drives and other devices with its
   standard drivers. The X3's PCIe lanes go to its host connector, where
   FROST is the device rather than the root, so hardware tests of the root
-  complex need a board with a downstream slot or connector. Its
-  configuration space and device memory windows would sit in `soc_top`'s
-  device decode, and the devices' DMA would be another master on the AXI4
-  mux that carries the NIC's and the DMA engine's DMA into `cpu_top`'s
-  coherent ingress.
+  complex need a board with a downstream slot or connector. `soc_top` exposes
+  external coherent AXI4 DMA slave ports behind register slices
+  (`EXT_DMA_PORTS`) on the DMA mux into `cpu_top`'s coherent ingress and an
+  external 16 KiB AXI4-Lite peripheral window (`EXT_AXIL_WINDOW` at
+  `0x4002_4000`–`0x4002_7FFF`); the root complex itself and wider PCIe
+  configuration and device BAR apertures belong to this item.
 - Storage beyond the NFS root: NVMe drives through the root complex, a block
   device that the host serves through the X3's PCIe Gen4 x8 host interface
   with FROST as the endpoint, or iSCSI with ext4. NFS is the supported root
