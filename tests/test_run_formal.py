@@ -1232,9 +1232,9 @@ FORMAL_TARGETS = [
     FormalTarget(
         "ptw.sby",
         "Page-table walk state matches reference PTE classification, including the "
-        "Svnapot PPN substitution, Svpbmt reserved encodings, PBMTE and the uncached "
-        "alias, and the walk "
-        "cache holds only valid pointers that memory holds, cleared by every discard",
+        "Svnapot PPN substitution, Svpbmt reserved encodings, PBMTE and the uncached alias. "
+        "The walk cache holds only valid pointers and clears on every discard. "
+        "Covers reach a successful Svnapot response with the substituted PPN and leaf permissions.",
         tasks=(
             "bmc",
             "cover",

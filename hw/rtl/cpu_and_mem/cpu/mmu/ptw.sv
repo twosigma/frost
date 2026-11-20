@@ -756,6 +756,14 @@ module ptw #(
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE && o_resp.level == 2'd2);
       c_ok_4k :
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE && o_resp.level == 2'd0);
+      // The supervisor RWXAD leaf in svnapot_leaf.S maps VPN 0x13 to PPN
+      // 0x80013, replacing the encoded low nibble 8 with 3.
+      c_ok_napot :
+      cover (f_pte_seen && f_g_napot && f_pte == 64'h8000_0000_2000_60cf && f_req_vpn == 27'h13 &&
+             o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE && o_resp.level == 2'd0 &&
+             o_resp.vpn == f_req_vpn && o_resp.ppn == 44'h80013 &&
+             o_resp.pbmt == riscv_pkg::PbmtPma && o_resp.perm_r && o_resp.perm_w &&
+             o_resp.perm_x && !o_resp.perm_u && o_resp.perm_d);
       c_page : cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE);
       c_access : cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS);
       // Alias-return covers apply only to maps that have an alias.
