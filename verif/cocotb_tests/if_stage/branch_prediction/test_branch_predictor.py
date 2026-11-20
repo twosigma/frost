@@ -55,6 +55,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_update_taken.value = 0
     dut.i_late_update_pc.value = 0
     dut.i_late_update_taken.value = 0
+    dut.i_invalidate_all.value = 0
 
 
 async def _settle() -> None:
@@ -1160,3 +1161,57 @@ async def test_pending_relation_matches_unqualified_targets(dut: Any) -> None:
                         )
                     )
                     assert relation == expected
+
+
+@cocotb.test()
+async def test_invalidate_all_clears_slot1_and_slot2_and_beats_same_cycle_update(
+    dut: Any,
+) -> None:
+    """i_invalidate_all clears all valid arrays and staged slot-2 valids, beating i_update."""
+    await _setup_test(dut)
+
+    await _update(dut, pc=PC_A, target=TARGET_A, taken=True, compressed=True)
+    await _update(dut, pc=PC_B, target=TARGET_B, taken=True, compressed=False)
+
+    # Confirm both slot-1 and staged slot-2 lookups hit before invalidation.
+    await _lookup(dut, PC_A)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_A, compressed=True)
+    await _lookup(dut, PC_A, slot2=True)
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_A, compressed=True)
+    await _lookup_slot2_alt(dut, PC_B - 4)
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_B, compressed=False)
+
+    # Stage a slot-2 read for PC_A while asserting both i_invalidate_all and a
+    # same-cycle update to PC_B. Invalidation must win and clear every table.
+    dut.i_pc_2_lookup_base.value = (PC_A - 2) & MASK_XLEN
+    dut.i_invalidate_all.value = 1
+    dut.i_update.value = 1
+    dut.i_update_pc.value = PC_B
+    dut.i_update_target.value = TARGET_B
+    dut.i_update_taken.value = 1
+    dut.i_late_update_pc.value = PC_B
+    dut.i_late_update_taken.value = 1
+    await _advance_cycle(dut)
+    dut.i_invalidate_all.value = 0
+    dut.i_update.value = 0
+    dut.i_pc_2_base.value = (PC_A - 2) & MASK_XLEN
+    dut.i_pc_2_use_alt.value = 0
+    await _settle()
+
+    # The staged slot-2 valid copy from the clear cycle must also be cleared.
+    assert not dut.o_btb_hit_2.value
+    assert not dut.o_predicted_taken_2.value
+
+    for pc in (PC_A, PC_B):
+        await _lookup(dut, pc)
+        assert not dut.o_btb_hit.value
+        assert not dut.o_predicted_taken.value
+        await _lookup(dut, pc, slot2=True)
+        assert not dut.o_btb_hit_2.value
+        await _lookup_slot2_alt(dut, pc - 4)
+        assert not dut.o_btb_hit_2.value
+
+    # Once i_invalidate_all drops, subsequent updates install normally.
+    await _update(dut, pc=PC_A, target=TARGET_B, taken=True, compressed=True)
+    await _lookup(dut, PC_A)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_B, compressed=True)

@@ -1335,6 +1335,272 @@ class PointerMaskingInterruptCoverage:
         )
 
 
+class FastBtbContractCoverage:
+    """Assert that every case of fast_btb_contract_test actually reaches its scenario.
+
+    Tracks the microarchitectural reach milestones that software alone cannot
+    distinguish from a trivially vacuous pass: speculative training before a
+    flush, BTB survival across same-side trap/mret and mstatus writes, live hits
+    on surviving entries and their EX recoveries, interior-halfword walk-past,
+    Sv39 SFENCE.VMA and satp-write BTB clears, and stale backing-BTB hits after
+    FENCE.I on both a rewritten addi (vetoed by PD) and a rewritten JALR.
+    """
+
+    _SYMBOLS = (
+        "fbc_mh_nop",
+        "fbc_mh_jalr",
+        "fbc_mh_real",
+        "fbc_mm_nop",
+        "fbc_mm_jalr",
+        "fbc_mm_real",
+        "fbc_mm_stale",
+        "fbc_ms_jalr",
+        "fbc_ms_stale",
+        "fbc_ms_real",
+        "fbc_inner_p",
+        "fbc_inner_mid",
+        "fbc_page_alu",
+        "fbc_ddr_buf",
+    )
+    _ADDI_A0_1 = 0x00150513
+
+    def __init__(self, dut: Any) -> None:
+        """Resolve the predictor, fetch and predecode handles and the ELF symbols."""
+        self.dut = dut
+        self.cpu = dut.cpu_and_memory_subsystem.cpu.hart.cpu_inst
+        self.ifs = self.cpu.if_stage_inst
+        self.bpc = self.ifs.branch_prediction_controller_inst
+        self.bp = self.bpc.branch_predictor_inst
+        self.bbtb = self.ifs.u_backing_btb
+        self.pd = self.cpu.pd_stage_inst
+        base = "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_stage_inst."
+        self.fetch_packets = [
+            _packed_struct(dut, base + name, IF_TO_PD_FIELDS, "fast_btb_contract")
+            for name in ("i_from_if_to_pd", "i_from_if_to_pd_2")
+        ]
+        elf = (
+            Path(__file__).resolve().parents[2]
+            / "sw/apps/fast_btb_contract_test/sw.elf"
+        )
+        nm = os.environ.get("RISCV_PREFIX", "riscv64-linux-") + "nm"
+        symbols = subprocess.check_output([nm, str(elf)], text=True, timeout=15)
+        self.sym: dict[str, int] = {}
+        for line in symbols.splitlines():
+            parts = line.split()
+            if len(parts) == 3 and parts[2] in self._SYMBOLS:
+                self.sym[parts[2]] = int(parts[0], 16)
+        missing = [s for s in self._SYMBOLS if s not in self.sym]
+        assert not missing, f"fast_btb_contract_test missing ELF symbols: {missing}"
+        self.counts: dict[str, int] = {}
+        self._await_c4_clear = False
+        self.clear()
+
+    def clear(self) -> None:
+        """Reset every reach counter for a new run."""
+        self._await_c4_clear = False
+        self.counts = dict.fromkeys(
+            (
+                "c1_early_train_hit",
+                "c1_early_train_miss",
+                "c1_trap_keeps_hit",
+                "c1_mret_keeps_hit",
+                "c1_surviving_hit_real",
+                "c1_trap_keeps_miss",
+                "c1_mret_keeps_miss",
+                "c1_surviving_hit_stale",
+                "c1_stale_recovered",
+                "c2_early_train",
+                "c2_mstatus_keeps_btb",
+                "c2_surviving_hit_stale",
+                "c2_stale_recovered",
+                "c3_inner_early_train",
+                "c3_inner_btb_hit",
+                "c3_walk_past",
+                "c4_inv_while_valid",
+                "c4_cleared_after_inv",
+                "c5_backing_hit_vetoed_on_addi",
+                "c5_backing_redir_on_jalr",
+                "c5_jalr_recovered",
+            ),
+            0,
+        )
+
+    def _btb_valid(self, pc: int) -> int:
+        return int(self.bp.btb_valid[(pc >> 2) & 0xFF].value)
+
+    async def run(self) -> None:
+        """Sample the core each clock and count the reach events of every case."""
+        s = self.sym
+        va_branch_pc = s["fbc_page_alu"] + 0x10
+        ddr_site = s["fbc_ddr_buf"] + 4
+        ddr_tgt_old = s["fbc_ddr_buf"] + 12
+        ddr_tgt_new = s["fbc_ddr_buf"] + 8
+        while True:
+            await RisingEdge(cpu_clock(self.dut))
+            await ReadOnly()
+            if not int(self.dut.i_rst_n.value) or int(self.cpu.i_rst.value):
+                continue
+
+            em = int(self.cpu.early_mispredict_active.value)
+            em_pc = int(self.cpu.early_mispredict_pc.value)
+            em_tgt = int(self.cpu.early_mispredict_redirect_pc.value)
+            trap = int(self.cpu.trap_taken_reg.value)
+            mret = int(self.cpu.mret_taken_reg.value)
+            fence_flush = int(self.cpu.o_fence_i_flush.value)
+            btb_inv = int(self.cpu.btb_invalidate.value)
+            o_pc = int(self.ifs.o_pc.value)
+            pc_reg = int(self.ifs.pc_reg.value)
+            pu = int(self.ifs.prediction_used.value)
+            pt = int(self.bpc.o_predicted_target.value)
+            s2u = int(self.ifs.slot2_prediction_used.value)
+            s2t = int(self.ifs.slot2_predicted_target_for_pc.value)
+
+            # Case 1: M->M trap and mret survival (hit body and miss body)
+            if em and em_pc == s["fbc_mh_jalr"] and em_tgt == s["fbc_mh_real"]:
+                self.counts["c1_early_train_hit"] += 1
+            if em and em_pc == s["fbc_mm_jalr"] and em_tgt == s["fbc_mm_stale"]:
+                self.counts["c1_early_train_miss"] += 1
+            if (
+                self.counts["c1_early_train_hit"]
+                and not self.counts["c1_surviving_hit_real"]
+            ):
+                if trap and not btb_inv and self._btb_valid(s["fbc_mh_jalr"]):
+                    self.counts["c1_trap_keeps_hit"] += 1
+                if (
+                    self.counts["c1_trap_keeps_hit"]
+                    and mret
+                    and not btb_inv
+                    and self._btb_valid(s["fbc_mh_jalr"])
+                ):
+                    self.counts["c1_mret_keeps_hit"] += 1
+            if self.counts["c1_mret_keeps_hit"] and (
+                (s2u and pc_reg == s["fbc_mh_nop"] and s2t == s["fbc_mh_real"])
+                or (pu and o_pc == s["fbc_mh_jalr"] and pt == s["fbc_mh_real"])
+            ):
+                self.counts["c1_surviving_hit_real"] += 1
+            if (
+                self.counts["c1_early_train_miss"]
+                and not self.counts["c1_surviving_hit_stale"]
+            ):
+                if trap and not btb_inv and self._btb_valid(s["fbc_mm_jalr"]):
+                    self.counts["c1_trap_keeps_miss"] += 1
+                if (
+                    self.counts["c1_trap_keeps_miss"]
+                    and mret
+                    and not btb_inv
+                    and self._btb_valid(s["fbc_mm_jalr"])
+                ):
+                    self.counts["c1_mret_keeps_miss"] += 1
+            if self.counts["c1_mret_keeps_miss"] and (
+                (s2u and pc_reg == s["fbc_mm_nop"] and s2t == s["fbc_mm_stale"])
+                or (pu and o_pc == s["fbc_mm_jalr"] and pt == s["fbc_mm_stale"])
+            ):
+                self.counts["c1_surviving_hit_stale"] += 1
+            if (
+                self.counts["c1_surviving_hit_stale"]
+                and em
+                and em_pc == s["fbc_mm_jalr"]
+                and em_tgt == s["fbc_mm_real"]
+            ):
+                self.counts["c1_stale_recovered"] += 1
+
+            # Case 2: same-side mstatus write survival
+            if em and em_pc == s["fbc_ms_jalr"] and em_tgt == s["fbc_ms_stale"]:
+                self.counts["c2_early_train"] += 1
+            if (
+                self.counts["c2_early_train"]
+                and not self.counts["c2_surviving_hit_stale"]
+                and fence_flush
+                and not btb_inv
+                and self._btb_valid(s["fbc_ms_jalr"])
+            ):
+                self.counts["c2_mstatus_keeps_btb"] += 1
+            if self.counts["c2_mstatus_keeps_btb"] and (
+                (pu and o_pc == s["fbc_ms_jalr"] and pt == s["fbc_ms_stale"])
+                or (s2u and pc_reg == s["fbc_ms_jalr"] - 4 and s2t == s["fbc_ms_stale"])
+            ):
+                self.counts["c2_surviving_hit_stale"] += 1
+            if (
+                self.counts["c2_surviving_hit_stale"]
+                and em
+                and em_pc == s["fbc_ms_jalr"]
+                and em_tgt == s["fbc_ms_real"]
+            ):
+                self.counts["c2_stale_recovered"] += 1
+
+            # Case 3: flushed interior halfword walk-past
+            if em and em_pc == s["fbc_inner_p"] and em_tgt == s["fbc_inner_mid"]:
+                self.counts["c3_inner_early_train"] += 1
+            if (
+                self.counts["c3_inner_early_train"]
+                and pu
+                and o_pc == s["fbc_inner_p"]
+                and pt == s["fbc_inner_mid"]
+            ):
+                self.counts["c3_inner_btb_hit"] += 1
+            if (
+                self.counts["c3_inner_btb_hit"]
+                and int(self.ifs.pending_prediction_walk_past.value)
+                and int(self.ifs.pending_prediction_pc.value) == s["fbc_inner_p"]
+            ):
+                self.counts["c3_walk_past"] += 1
+
+            # Case 4: Sv39 SFENCE.VMA and satp BTB clear (both clear a valid entry)
+            va_valid = self._btb_valid(va_branch_pc)
+            if self._await_c4_clear and not va_valid:
+                self.counts["c4_cleared_after_inv"] += 1
+                self._await_c4_clear = False
+            if (
+                btb_inv
+                and va_valid
+                and int(self.cpu.csr_fetch_translation_active.value)
+            ):
+                self.counts["c4_inv_while_valid"] += 1
+                self._await_c4_clear = True
+
+            # Case 5: backing BTB no clear-all across FENCE.I
+            bbtb_hits = int(self.bbtb.o_hit.value)
+            if bbtb_hits:
+                for slot, pkt in enumerate(self.fetch_packets):
+                    if bbtb_hits & (1 << slot):
+                        raw = pkt.read()
+                        if (
+                            raw is not None
+                            and not pkt.field(raw, "sel_nop")
+                            and pkt.field(raw, "program_counter") == ddr_site
+                            and pkt.field(raw, "effective_instr") == self._ADDI_A0_1
+                        ):
+                            self.counts["c5_backing_hit_vetoed_on_addi"] += 1
+            if (
+                self.counts["c5_backing_hit_vetoed_on_addi"]
+                and int(self.pd.o_pd_redirect.value)
+                and int(self.pd.o_pd_redirect_target.value) == ddr_tgt_old
+            ):
+                self.counts["c5_backing_redir_on_jalr"] += 1
+            if (
+                self.counts["c5_backing_redir_on_jalr"]
+                and em
+                and em_pc == ddr_site
+                and em_tgt == ddr_tgt_new
+            ):
+                self.counts["c5_jalr_recovered"] += 1
+
+    def verify(self, run_number: int) -> None:
+        """Fail unless every reach event occurred its required number of times."""
+        mins = {"c4_inv_while_valid": 2, "c4_cleared_after_inv": 2}
+        summary = " ".join(f"{k}={v}" for k, v in self.counts.items())
+        cocotb.log.info(f"Run {run_number} fast_btb_contract reach: {summary}")
+        missing = [
+            f"{k}={v}<{mins.get(k, 1)}"
+            for k, v in self.counts.items()
+            if v < mins.get(k, 1)
+        ]
+        assert not missing, (
+            f"fast_btb_contract_test run {run_number} missed reach events: "
+            f"{', '.join(missing)}"
+        )
+
+
 class CmoTimerCoverage:
     """Check for a timer interrupt arriving while a flush awaits the home."""
 
@@ -5463,6 +5729,8 @@ async def test_real_program(dut: Any) -> None:
         if app_name == "pm_test"
         else WfiRecoveryWatch(dut)
         if app_name == "wfi_seed_recovery"
+        else FastBtbContractCoverage(dut)
+        if app_name == "fast_btb_contract_test"
         else OddHalfwordPredictionCoverage(dut)
         if app_name == "odd_halfword_pred_test"
         else None
