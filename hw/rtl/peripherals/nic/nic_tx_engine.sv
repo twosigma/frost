@@ -30,10 +30,11 @@
  * While beats remain, i_abort (the MAC domain is resetting) abandons the
  * frame: stop pushing beats, wait for outstanding reads, then complete with
  * DONE|ERR|ABORT. i_stop (the RESET drain) abandons it without completion.
- * A descriptor rejected inside an open frame abandons that frame too: the merge and segment
- * stages are flushed, a last beat flagged o_fifo_abort closes whatever the FIFO already
- * holds of it, and the descriptor completes with DONE|ERR|ABORT. A frame's first segment is
- * at most MaxFrameBytes (65535 after a parameter descriptor); later segments may carry 65535.
+ * A descriptor rejected inside an open frame abandons that frame too. Any outstanding FIFO
+ * offer transfers first. The remaining buffered bytes are discarded and a last beat flagged
+ * o_fifo_abort closes an open FIFO frame. The descriptor completes with DONE|ERR|ABORT.
+ * A frame's first segment is at most MaxFrameBytes (65535 after a parameter descriptor);
+ * later segments may carry 65535.
  * i_enable low stops admission and descriptor fetching only; an admitted
  * descriptor finishes. BASE/SIZE change only while disabled and idle.
  */
@@ -70,8 +71,8 @@ module nic_tx_engine #(
     output logic [ 3:0] o_fifo_code,
     // The frame's checksum request {offset/2, start/2, enable}, from the upper
     // bits of its FIRST descriptor's length word. It holds from the FIRST segment's
-    // admission until the next FIRST segment, so it is valid on every beat of the
-    // frame. Offset zero means no checksum.
+    // admission through the frame's data beats. The synthetic abort carries zero.
+    // Offset zero means no checksum.
     output logic [14:0] o_fifo_csum,
     // Set on the one-byte last beat that closes a frame the engine abandoned mid-way.
     output logic        o_fifo_abort,
@@ -206,10 +207,13 @@ module nic_tx_engine #(
   logic [63:0] mg_out_data;
   logic [ 3:0] mg_out_code;
   logic mg_flush, mg_busy, seg_busy;
-  // A rejected descriptor inside an open frame abandons it: kill_q flushes the merge and segment
-  // stages for a cycle, and inj_q closes the frame the FIFO already holds with an abort beat.
+  // kill_q discards unsent bytes after a rejected continuation. The segment
+  // output already holds a stalled beat, so defer its flush until acceptance.
+  // inj_q then closes any frame left open at the FIFO.
   logic kill_q, fifo_open_q, inj_q;
+  logic stalled_q, can_flush_segment;
   assign mg_flush = i_stop || i_abort || kill_q;
+  assign can_flush_segment = !stalled_q || i_fifo_ready;
   nic_tx_beat_merge u_merge (
       .i_clk      (i_clk),
       .i_rst      (i_rst),
@@ -269,7 +273,7 @@ module nic_tx_engine #(
   // Retain the current frame until the entire pipeline drains. Continuations may proceed
   // while that same frame is buffered, but a new frame's cancellation must not flush its predecessor.
   assign consider = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort &&
-      !mg_busy && (in_frame_q || !seg_busy) && df_desc_valid;
+      !kill_q && !inj_q && !mg_busy && (in_frame_q || !seg_busy) && df_desc_valid;
   assign admit = (state_q == S_ADMIT) && i_enable && !i_stop && !i_abort && df_desc_valid;
   assign df_take = admit;
   assign up_start = admit && desc_ok_q;
@@ -305,7 +309,7 @@ module nic_tx_engine #(
   nic_tx_segment u_segment (
       .i_clk        (i_clk),
       .i_rst        (i_rst),
-      .i_flush      (mg_flush),
+      .i_flush      (i_abort || (mg_flush && can_flush_segment)),
       .i_cfg_segment(fseg_en_q),
       .i_cfg_mss    (fseg_mss_q),
       .i_cfg_payload(fseg_payload_q),
@@ -326,8 +330,8 @@ module nic_tx_engine #(
       .o_err        (o_segment_err),
       .o_busy       (seg_busy)
   );
-  assign o_fifo_csum   = seg_out_csum;
-  assign o_fifo_valid  = inj_q || (seg_out_valid && !mg_flush);
+  assign o_fifo_csum   = inj_q ? 15'b0 : seg_out_csum;
+  assign o_fifo_valid  = !i_abort && (inj_q || seg_out_valid) && (!mg_flush || stalled_q);
   assign o_fifo_data   = inj_q ? 64'b0 : seg_out_data;
   assign o_fifo_code   = inj_q ? 4'b1000 : seg_out_code;
   assign o_fifo_abort  = inj_q;
@@ -410,19 +414,26 @@ module nic_tx_engine #(
       param_pending_q  <= 1'b0;
       fseg_en_q        <= 1'b0;
       kill_q           <= 1'b0;
+      stalled_q        <= 1'b0;
       fifo_open_q      <= 1'b0;
       inj_q            <= 1'b0;
     end else begin
       o_complete <= 1'b0;
-      kill_q <= 1'b0;
+      stalled_q <= o_fifo_valid && !i_fifo_ready;
       if (o_fifo_valid && i_fifo_ready) fifo_open_q <= !o_fifo_code[3];
       if (inj_q && i_fifo_ready) inj_q <= 1'b0;
-      if (kill_q && fifo_open_q) inj_q <= 1'b1;
-      // A stop or abort drops any open frame; the ring's driver resubmits it.
+      if (kill_q && can_flush_segment) begin
+        kill_q <= 1'b0;
+        // A held beat transfers on this edge and can itself open or close the frame.
+        inj_q  <= stalled_q ? !o_fifo_code[3] : fifo_open_q;
+      end
+      // RESET drain preserves an outstanding offer. Loss of MAC readiness
+      // resets the FIFO itself and cancels both sides of the transfer.
       if (i_stop || i_abort) begin
         in_frame_q      <= 1'b0;
         param_pending_q <= 1'b0;
-        inj_q           <= 1'b0;
+        kill_q          <= 1'b0;
+        if (i_abort || can_flush_segment) inj_q <= 1'b0;
         fifo_open_q     <= 1'b0;
       end
       outstanding_q <= outstanding_q + (SlotBits + 1)'(rd_fire) - (SlotBits + 1)'(data_resp);
@@ -544,9 +555,21 @@ module nic_tx_engine #(
 `ifndef SYNTHESIS
 `ifndef FORMAL
   bit reset_seen_q = 1'b0;
+  logic check_stall_q;
+  logic [83:0] fifo_beat, previous_beat_q;
+  assign fifo_beat = {o_fifo_data, o_fifo_code, o_fifo_csum, o_fifo_abort};
   always_ff @(posedge i_clk) begin
     if (i_rst) reset_seen_q <= 1'b1;
+    check_stall_q <= reset_seen_q && !i_sim_hold && !i_rst && !i_abort &&
+        o_fifo_valid && !i_fifo_ready;
+    previous_beat_q <= fifo_beat;
     if (!i_sim_hold) begin
+      if (reset_seen_q && check_stall_q && !i_rst && !i_abort &&
+          (o_fifo_valid !== 1'b1 || fifo_beat !== previous_beat_q))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("nic_tx_engine: stalled TX FIFO offer changed before acceptance");
       if (reset_seen_q && !i_rst && data_resp && (outstanding_q == '0) && !rd_fire)
 `ifdef FROST_SIM_ASSERTIONS
         assert (1'b0) else
