@@ -257,6 +257,8 @@ aperture. It reads each valid buffer in address order, with up to four lines
 in flight or in the reorder buffer. `nic_byte_unpack` turns the lines into
 beats. The engine issues the status write once the descriptor's last beat
 enters the merge stage. DONE tells software it can reuse the buffer.
+An invalid descriptor received with no frame open completes with
+DONE|ERR and sends nothing.
 
 **Segments and abandoned frames.** A frame may span several descriptors (FIRST on the first,
 LAST on the last). The first takes at most 9216 bytes unless a parameter descriptor precedes
