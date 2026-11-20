@@ -2104,6 +2104,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "nic_tx_hold.sby",
+        "NIC TX FIFO offer stability through acceptance, with rejection and reset-drain covers.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "rat_checkpoint_restore.sby",
         "Register alias table: unbounded circular ROB and sequence oracle across save, restore and commit.",
         tasks=(
@@ -4454,6 +4459,11 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     assert len(selected_by_shard["Coherence L1D zero control"]) == 1
     assert len(selected_by_shard["Coherence L1D zero cover"]) == 1
     assert len(selected_by_shard["Coherence L1D local holds"]) == 1
+    for task in ("prove", "cover"):
+        assert any(
+            node.endswith(f"[nic_tx_hold_{task}]")
+            for node in selected_by_shard["Other tasks"]
+        )
     check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
 
 
