@@ -128,7 +128,23 @@ to coherent home probes. Stop the Vivado `hw_server` first;
 ```bash
 ./fpga/debug/cache_counters.py window -- ssh root@192.0.2.2 'dd if=/root/big of=/dev/null bs=1M'
 ./fpga/debug/cache_counters.py window --seconds 30
+./fpga/debug/cache_counters.py window --load-waits --seconds 30
 ```
+
+`window --load-waits` can also bracket `-- COMMAND`. At each boundary a
+single capture freezes indices 79, 80 and 120 together. The reader samples
+the `time` CSR after the request and saves it with the three values before
+resuming the hart. The `FROST_LOAD_START` and `FROST_LOAD_END` lines contain
+those values, and `FROST_LOAD_WINDOW` contains their deltas and the elapsed
+core cycles.
+Indices 79 and 80 split the cycles with an incomplete load at the head of
+the reorder buffer by whether the load queue has any memory response
+outstanding. Index 120 sums occupied home fill slots, so multiple fills
+can contribute in one cycle. The elapsed cycles include the debugger halts
+between captures. An absent bank or missing index yields
+`FROST_LOAD_WINDOW unavailable` and exit status 1.
+An isolated decrease suggests a 64-bit wrap. Multiple decreases suggest a
+reset. Either case invalidates the window.
 
 An OpenOCD run stopped between its halt and its resume, by a timeout or
 Ctrl-C, can leave the hart halted; `cache_counters.py resume` resumes it.
