@@ -178,6 +178,49 @@ def _load_symbol_ranges(
     return symbol_ranges
 
 
+def _load_symbol_address(symbol_name: str, app_name: str | None = None) -> int | None:
+    """Return the byte address of symbol_name from sw.elf, or None if absent."""
+    elf_path: Path | None = None
+
+    sw_mem_path = Path("sw.mem")
+    if sw_mem_path.is_symlink():
+        candidate = sw_mem_path.resolve().with_name("sw.elf")
+        if candidate.exists():
+            elf_path = candidate
+
+    if elf_path is None and app_name is not None:
+        repo_root = Path(__file__).resolve().parents[2]
+        candidate = repo_root / "sw" / "apps" / app_name / "sw.elf"
+        if candidate.exists():
+            elf_path = candidate
+
+    if elf_path is None:
+        return None
+
+    nm = os.environ.get("RISCV_PREFIX", "riscv64-linux-") + "nm"
+    try:
+        symbols = subprocess.check_output([nm, str(elf_path)], text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(rf"^([0-9a-f]+)\s+\S\s+{re.escape(symbol_name)}$", symbols, re.M)
+    return int(match.group(1), 16) if match else None
+
+
+_VEC_MEM_DDR_CASE_LOG_ADDR = 0x00018000
+
+
+def _format_vec_mem_active_case(dut: Any, app_name: str | None) -> str | None:
+    """Read the last recorded encoding and case index for vec_mem_reserved_forms_test."""
+    if app_name != "vec_mem_reserved_forms_test":
+        return None
+    addr = _load_symbol_address("vec_mem_active_case", app_name)
+    if addr is None:
+        return None
+    bram_addr = addr if addr < 0x40000 else _VEC_MEM_DDR_CASE_LOG_ADDR
+    insn, case_num = read_low_bram_words(dut, bram_addr, 2)
+    return f"stopped while executing encoding 0x{insn:08x} (case {case_num})"
+
+
 def start_clocks(signals: tuple[Any, ...], period_ps: int) -> None:
     """Drive 50% clocks that rise together at the call time and every period.
 
@@ -5031,8 +5074,12 @@ async def run_until_complete(
                 "RAS_stress_test BTB update trace:\n" + "\n".join(btb_update_events)
             )
         cocotb.log.error(f"UART output:\n{uart_monitor.get_output()}")
+        case_note = _format_vec_mem_active_case(dut, app_name)
+        if case_note is not None:
+            cocotb.log.error(case_note)
+        suffix = f"; {case_note}" if case_note is not None else ""
         raise AssertionError(
-            f"Run {run_number} failed: program printed <<FAIL>> marker"
+            f"Run {run_number} failed: program printed <<FAIL>> marker{suffix}"
         )
 
     if not test_passed:
@@ -5077,15 +5124,19 @@ async def run_until_complete(
         cocotb.log.error(f"UART output:\n{uart_monitor.get_output()}")
         if on_timeout is not None:
             on_timeout(run_number, max_cycles)
+        case_note = _format_vec_mem_active_case(dut, app_name)
+        if case_note is not None:
+            cocotb.log.error(case_note)
+        suffix = f"; {case_note}" if case_note is not None else ""
         if has_defined_endpoint:
             raise AssertionError(
                 f"Run {run_number} failed: program did not print success marker "
-                f"'{success_marker}' within {max_cycles} cycles"
+                f"'{success_marker}' within {max_cycles} cycles{suffix}"
             )
         else:
             raise AssertionError(
                 f"Run {run_number} failed: program did not print expected text "
-                f"'{initial_text}' within {max_cycles} cycles"
+                f"'{initial_text}' within {max_cycles} cycles{suffix}"
             )
 
     if coremark_if_check_enabled:
@@ -5242,6 +5293,11 @@ async def test_real_program(dut: Any) -> None:
         # faults, and the timer-interrupt section take ~1.28M cycles (1,275,934
         # in DDR at DDR_MODEL_LATENCY=160); 2M leaves ~57% headroom.
         max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
+    elif app_name == "vec_mem_reserved_forms_test":
+        # Exhaustive 8,192 unit-stride + 256 whole-register-alignment sweeps
+        # take ~548k cycles in BRAM (~8,114 precise illegal-instruction traps);
+        # 1.5M leaves headroom for DDR and latency variants.
+        max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 1500000))
     elif app_name == "linux_irq_active_ddr_test":
         # Allow for timer ticks and sentinel spin-waits.
         max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))

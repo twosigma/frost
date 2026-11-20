@@ -2123,6 +2123,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
                 "vec_fp_test",
                 "vec_index_test",
                 "vec_integer_test",
+                "vec_mem_reserved_forms_test",
                 "vec_mem_source_eew_test",
                 "vec_mem_test",
                 "vec_order_test",
