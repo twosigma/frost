@@ -31,6 +31,7 @@ repository root:
     ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
     ./scripts/frost.py run python3 tests/test_testrig.py --mmu 100
     ./scripts/frost.py run python3 tests/test_testrig.py --cmo 100
+    ./scripts/frost.py run python3 tests/test_testrig.py --wfi
     ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf
 
 The image provides sail_riscv_sim and QCVEngine. Counterexamples go to
@@ -53,11 +54,14 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from test_run_cocotb import TEST_REGISTRY, CocotbRunner
+
+if TYPE_CHECKING:
+    from testrig.wfi import WfiStrand
 
 TESTS_DIR = Path(__file__).parent.resolve()
 REPO_ROOT = TESTS_DIR.parent
@@ -73,7 +77,9 @@ vector = importlib.import_module("testrig.vector")
 compressed_mops = importlib.import_module("testrig.compressed_mops")
 fp_ext = importlib.import_module("testrig.fp_ext")
 svinval = importlib.import_module("testrig.svinval")
-TraceMonitor = importlib.import_module("testrig.run_stats").TraceMonitor
+wfi = importlib.import_module("testrig.wfi")
+run_stats = importlib.import_module("testrig.run_stats")
+TraceMonitor = run_stats.TraceMonitor
 SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 DEFAULT_VECTOR_LENGTH = 128
 SAVED_TRACES_DIR = REPO_ROOT / "verif" / "testrig" / "traces"
@@ -174,8 +180,9 @@ def write_sail_config(
     *,
     sscofpmf: bool = False,
     vlen: int | None = None,
+    wfi_mode: bool = False,
 ) -> Path:
-    """Match DDR capacity, and enable the vector unit when asked.
+    """Match DDR capacity and apply the selected test-mode overlays.
 
     `sscofpmf` selects the dedicated Sscofpmf control config filename suffix;
     the vector unit at `vlen` is for the --vector traces, which FROST must be
@@ -186,6 +193,10 @@ def write_sail_config(
     config = load_sail_json(SAIL_CONFIG)
     if vlen is not None:
         merge_settings(config, load_sail_json(sail_vector_overlay(vlen)))
+    if wfi_mode:
+        merge_settings(
+            config, load_sail_json(SAIL_CONFIG.with_name("sail_frost_wfi.json"))
+        )
     ddr_regions = [
         region
         for region in config["memory"]["regions"]
@@ -196,6 +207,8 @@ def write_sail_config(
         raise ValueError("Sail configuration must contain exactly one FROST DDR region")
     ddr_regions[0]["size"]["value"] = f"0x{1 << capacity_log2_bytes:x}"
     suffix = ("_sscofpmf" if sscofpmf else "") + (f"_v{vlen}" if vlen else "")
+    if wfi_mode:
+        suffix += "_wfi"
     path = work_dir / f"sail_frost_ddr{capacity_log2_bytes}{suffix}.json"
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     return path
@@ -217,22 +230,28 @@ def write_empty_images() -> list[Path]:
     return images
 
 
-def load_rvfi_records_log(path: Path) -> dict[str, list[Any]]:
-    """Read compact per-trace RVFI summaries written by test_rvfi_dii."""
-    records_by_digest: dict[str, list[Any]] = {}
+def read_rvfi_log(path: Path) -> dict[str, dict[str, Any]]:
+    """Read the per-trace observations written by test_rvfi_dii."""
     if not path.exists():
-        return records_by_digest
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        entry = json.loads(line)
-        records_by_digest[entry["digest"]] = [
+        return {}
+    with path.open(encoding="utf-8") as stream:
+        return {
+            entry["digest"]: entry
+            for entry in (json.loads(line) for line in stream if line.strip())
+        }
+
+
+def load_rvfi_records_log(path: Path) -> dict[str, list[Any]]:
+    """Decode compact per-trace RVFI summaries for the MMU and CMO checks."""
+    return {
+        digest: [
             rvfi_dii.RvfiRecord(
                 mode=mode, trap=trap, rd_addr=rd_addr, rd_wdata=rd_wdata
             )
             for mode, trap, rd_addr, rd_wdata in entry["records"]
         ]
-    return records_by_digest
+        for digest, entry in read_rvfi_log(path).items()
+    }
 
 
 def start_frost(
@@ -242,6 +261,8 @@ def start_frost(
     capacity_log2_bytes: int,
     vlen: int | None = None,
     records_log: Path | None = None,
+    *,
+    wfi_timeout_cycles: int = 0,
 ) -> tuple[subprocess.Popen, Callable[[], None]]:
     """Build (if needed) and start the frost RVFI-DII simulation.
 
@@ -250,12 +271,18 @@ def start_frost(
     """
     base_config = TEST_REGISTRY["rvfi_dii"]
     vector_args = ("-GVECTOR=1", f"-GVLEN={vlen}") if vlen else ()
+    wfi_args = (
+        (f"-DFROST_RVFI_DII_WFI_TIMEOUT={wfi_timeout_cycles}",)
+        if wfi_timeout_cycles
+        else ()
+    )
     config = replace(
         base_config,
         verilator_extra_args=(
             *base_config.verilator_extra_args,
             f"-DFROST_DDR_CAPACITY_LOG2_BYTES={capacity_log2_bytes}",
             *vector_args,
+            *wfi_args,
         ),
     )
     runner = CocotbRunner.from_config(config)
@@ -267,6 +294,7 @@ def start_frost(
     environment["FROST_RVFI_DII_READY_FILE"] = str(ready_file)
     if records_log is not None:
         environment["FROST_RVFI_DII_RECORDS_LOG"] = str(records_log)
+    environment["FROST_RVFI_DII_WFI_OBSERVE"] = "1" if wfi_timeout_cycles else "0"
     if runner._verilator_needs_rebuild(sim_build_dir):
         subprocess.run(["make", "clean"], cwd=TESTS_DIR, check=False)
     command = (
@@ -312,6 +340,7 @@ class TracePlan:
     instructions: int
     generated: bool = False
     mode_check: tuple[str, tuple[str, ...], int, list[list[Any]]] | None = None
+    wfi_strands: tuple["WfiStrand", ...] = ()
 
 
 def prepare_inputs(
@@ -320,12 +349,21 @@ def prepare_inputs(
     """Generate or discover replay inputs before starting implementations."""
     command: list[str] = []
     mode_check = None
+    wfi_strands = ()
     if arguments.trace is not None:
         command += ["-t", str(Path(arguments.trace).resolve())]
     elif arguments.sscofpmf:
         command += ["-t", str(SSCOFPMF_TRACE)]
     elif arguments.trace_dir is not None:
         command += ["-d", str(Path(arguments.trace_dir).resolve())]
+    elif arguments.wfi:
+        trace_dir = work_dir / "wfi"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        wfi_strands = wfi.write_tests(trace_dir)
+        print(
+            f"Wrote {len(wfi_strands)} directed WFI traces to {trace_dir}", flush=True
+        )
+        command += ["-d", str(trace_dir)]
     elif arguments.zcb:
         seed = (
             arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
@@ -476,7 +514,7 @@ def prepare_inputs(
                 )
                 if count is not None
             ),
-            max(1, len(paths)),
+            max(1, len(paths), len(wfi_strands)),
         )
         if not directory.is_dir() or len(paths) < requested:
             raise ValueError(
@@ -498,7 +536,9 @@ def prepare_inputs(
         if count == 0:
             raise ValueError(f"expected at least 1 instruction in {path}; found 0")
         instructions += count
-    return TracePlan(command, requested, instructions, mode_check=mode_check)
+    return TracePlan(
+        command, requested, instructions, mode_check=mode_check, wfi_strands=wfi_strands
+    )
 
 
 def comparison_counts(
@@ -567,6 +607,7 @@ def run(arguments: argparse.Namespace) -> int:
         work_dir,
         sscofpmf=arguments.sscofpmf,
         vlen=arguments.vlen,
+        wfi_mode=arguments.wfi,
     )
     try:
         plan = prepare_inputs(arguments, work_dir, sail_config)
@@ -579,7 +620,9 @@ def run(arguments: argparse.Namespace) -> int:
     frost_log = work_dir / "frost.log"
     sail_log = work_dir / "sail.log"
     records_log = (
-        work_dir / "rvfi_records.jsonl" if (arguments.mmu or arguments.cmo) else None
+        work_dir / "rvfi_records.jsonl"
+        if (arguments.mmu or arguments.cmo or arguments.wfi)
+        else None
     )
     if records_log is not None:
         records_log.unlink(missing_ok=True)
@@ -628,6 +671,7 @@ def run(arguments: argparse.Namespace) -> int:
             arguments.ddr_capacity_log2_bytes,
             arguments.vlen,
             records_log=records_log,
+            wfi_timeout_cycles=wfi.DUT_TIMEOUT_CYCLES if arguments.wfi else 0,
         )
         print(f"Building and starting the frost RVFI-DII simulation (log: {frost_log})")
         deadline = time.monotonic() + arguments.startup_timeout
@@ -646,8 +690,9 @@ def run(arguments: argparse.Namespace) -> int:
                 )
             time.sleep(0.5)
 
+        sail_monitor = run_stats.WfiTraceMonitor if arguments.wfi else TraceMonitor
         monitors = [
-            TraceMonitor("Sail", sail_port, arguments.response_timeout),
+            sail_monitor("Sail", sail_port, arguments.response_timeout),
             TraceMonitor("FROST", frost_port, arguments.response_timeout),
         ]
         command = [
@@ -744,6 +789,18 @@ def run(arguments: argparse.Namespace) -> int:
                 for err in summary.errors[:20]:
                     print(f"RVFI strand check failed: {err}")
                 status = 1
+        if plan.wfi_strands and records_log is not None:
+            observations = read_rvfi_log(records_log)
+            for strand in plan.wfi_strands:
+                observation = observations.get(strand.digest, {})
+                errors = wfi.verify(strand, observation)
+                checks = observation.get("wfi", {})
+                counts = ", ".join(f"{key}={value}" for key, value in checks.items())
+                print(f"WFI {strand.name}: {'FAIL' if errors else 'PASS'} {counts}")
+                for error_message in errors:
+                    print(f"WFI {strand.name}: {error_message}")
+                if errors:
+                    status = status or 1
         traces, instructions, expected_traces, expected_instructions, error = (
             comparison_counts(monitors, plan, engine_log, arguments.tests)
         )
@@ -837,6 +894,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--trace-dir", type=nonempty_path, help="replay every .S trace in a directory"
+    )
+    parser.add_argument(
+        "--wfi",
+        action="store_true",
+        help="replay directed WFI wait, wake and trap traces",
     )
     parser.add_argument(
         "--sscofpmf",
@@ -953,6 +1015,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         for mode in (
             arguments.trace,
             arguments.trace_dir,
+            arguments.wfi,
             arguments.sscofpmf,
             arguments.atomics,
             arguments.crypto,
@@ -968,7 +1031,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         active_modes == 2 and arguments.sscofpmf and arguments.trace
     ):
         parser.error(
-            "--trace, --trace-dir, --sscofpmf, --atomics, --crypto, --zcb, "
+            "--trace, --trace-dir, --wfi, --sscofpmf, --atomics, --crypto, --zcb, "
             "--fp-ext, --svinval, --mmu, --cmo and --vector are mutually exclusive "
             "(except --sscofpmf --trace)"
         )

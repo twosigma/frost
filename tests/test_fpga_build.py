@@ -5417,18 +5417,52 @@ def test_live_parent_session_with_trailing_child_exit_line_is_not_killed(
     """A live parent session is not killed when a child exit line sits at EOF."""
     if not Path("/proc").is_dir():
         pytest.skip("requires /proc process inspection")
+    child_exit = "INFO: [Common 17-206] Exiting Vivado at child end...\n"
+    release = tmp_path / "release"
     script = tmp_path / "parent_session.py"
     script.write_text(
-        "import sys, time\n"
+        "import signal, sys, time\n"
+        "from pathlib import Path\n"
+        "signal.alarm(120)\n"
         "with open('vivado.log', 'w') as log:\n"
-        "    log.write('INFO: [Common 17-206] Exiting Vivado at child end...\\n')\n"
+        f"    log.write({child_exit!r})\n"
         "    log.flush()\n"
-        "    time.sleep(0.25)\n"
+        f"    while not Path({release.name!r}).exists():\n"
+        "        time.sleep(0.02)\n"
         "    log.write('** DONE\\nINFO: [Common 17-206] Exiting Vivado at parent end...\\n')\n"
         "    log.flush()\n"
         "sys.exit(7)\n"
     )
-    monkeypatch.setattr(fpga_build, "VIVADO_EXIT_GRACE_S", 0.05)
+    session_is_alive = fpga_build._vivado_session_is_alive
+    grace: float = fpga_build.VIVADO_EXIT_GRACE_S
+    observations = 0
+
+    def observe_session(
+        process: subprocess.Popen[bytes], log_path: Path
+    ) -> bool | None:
+        nonlocal observations
+        at_child_exit = (
+            observations < 3
+            and log_path.is_file()
+            and log_path.read_text() == child_exit
+        )
+        alive: bool | None = session_is_alive(process, log_path)
+        if at_child_exit:
+            observations += 1
+            if observations == 3:
+                release.touch()
+        return alive
+
+    # Leave the child marker at EOF through two checks a grace period apart.
+    # After release, the watchdog's clock advances at its normal rate.
+    monkeypatch.setattr(fpga_build, "_vivado_session_is_alive", observe_session)
+    monkeypatch.setattr(
+        fpga_build,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: time.monotonic() + (grace + 1) * observations
+        ),
+    )
     monkeypatch.setattr(fpga_build, "VIVADO_POLL_S", 0.02)
     assert fpga_build.run_vivado_step([sys.executable, str(script)], tmp_path) == 7
 

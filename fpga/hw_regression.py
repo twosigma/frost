@@ -18,10 +18,18 @@
 
 Apps rebuild and load through JTAG; UART checks and score gates determine pass.
 Debugger-driven apps and apps needing a 10G link partner are excluded.
+The ``debug_port`` stage exercises the debug transport through OpenOCD (halt,
+read dpc, resume), confirms the hart is running in a separate OpenOCD process,
+and runs only when ``FROST_JTAG_SERIAL`` names the JTAG cable; otherwise it is
+reported as skipped.
 ``perf_off_test`` requires a bitstream built without ``--perf-counters``.
 
 Linux preflight reads ``fpga/site.env`` and environment overrides before board
-access. Setup errors report ``ENV_FAIL``. ECC is checked after all traffic.
+access, unpacks the initramfs with ``unmkinitramfs``, and requires every
+``frost_net10g`` module copy inside it to report this tree's version via
+``modinfo -F version``. Setup errors report ``ENV_FAIL``. Where the
+controller has a JTAG ECC window, the last stage checks it after all
+traffic.
 
 Run natively: ``./fpga/hw_regression.py --board x3 [stage ...]``.
 See ``fpga/README.md`` and ``docs/debian_nfsroot.md`` for setup and limits.
@@ -29,18 +37,22 @@ See ``fpga/README.md`` and ``docs/debian_nfsroot.md`` for setup and limits.
 
 import argparse
 import collections
+import fcntl
 import ipaddress
 import os
 import re
 import select
+import shlex
 import shutil
+import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,6 +65,7 @@ sys.path.insert(0, str(SCRIPT_DIR / "common"))
 sys.path.insert(0, str(SCRIPT_DIR / "load_software"))
 sys.path.insert(0, str(REPO_DEFAULT / "sw" / "apps"))
 sys.path.insert(0, str(REPO_DEFAULT / "linux"))
+from ddr_ecc.ddr_ecc_status import ECC_WINDOW_DESIGNS  # noqa: E402
 from debian_kernel import (  # noqa: E402
     INITRAMFS_COUNTER_TOKEN,
     KERNEL_BANNER,
@@ -62,6 +75,7 @@ from debian_kernel import (  # noqa: E402
     kernel_image,
 )
 from hw_defaults import (  # noqa: E402
+    CPU_ECC_READER_BOARDS,
     DEFAULT_SERIALS,
     DEFAULT_TARGETS,
     DEFAULT_TIMEOUTS,
@@ -96,6 +110,26 @@ DEFAULT_SCORE_TOLERANCE_PCT = 1.0
 SWEEP_STAGE = "coremark_pro"
 LINUX_STAGE = "linux_boot"
 ECC_STAGE = "ddr_ecc"
+DEBUG_STAGE = "debug_port"
+
+# The debug transport check runs OpenOCD against the board's JTAG cable and
+# needs the cable's serial number (the two FT4232H bridges on the X3 look
+# alike), so it runs only when FROST_JTAG_SERIAL is set and is reported as
+# skipped otherwise. OpenOCD and Vivado's hw_server cannot share the cable;
+# hw_server exits on its own a while after its last client.
+JTAG_SERIAL_ENV = "FROST_JTAG_SERIAL"
+OPENOCD_ENV = "OPENOCD"
+DEBUG_CONFIGS = {"x3": Path("fpga/debug/openocd_x3.cfg")}
+DEBUG_SCRIPT = Path("fpga/debug/hw_debug_check.tcl")
+DEBUG_TIMEOUT_S = 60.0
+DEBUG_RECOVERY_TIMEOUT_S = 30.0
+DEBUG_CABLE_WAIT_S = 180.0
+DEBUG_LOCK = Path(tempfile.gettempdir()) / "frost_cache_counters.lock"
+SKIP_STATUS = "SKIPPED"
+# dtmcs: version 1 (spec 0.13/1.0 DTM), 7 address bits, no sticky DMI error.
+DTMCS_EXPECTED = (1, 7, 0)
+# hartinfo: nscratch 2, dataaccess 0, datasize 1, dataaddr 0x7b4 (debug_module.sv).
+HARTINFO_EXPECTED = 0x002017B4
 
 # Read the DDR4 controller over JTAG after all application traffic. A clean
 # report means checking is enabled and no ECC errors are recorded. A dirty
@@ -215,8 +249,13 @@ class LinuxEnvironmentError(RuntimeError):
     """The operator's NFS root cannot be booted from this host.
 
     Raised by ``linux_root_from_env`` and ``linux_root_preflight``; the message
-    starts with ``ENV_NOT_READY`` and names the fix.
+    starts with ``ENV_NOT_READY`` and names the fix. The message never carries
+    the configured JTAG cable serial.
     """
+
+    def __init__(self, message: object = "", *args: object) -> None:
+        """Store the message with the cable serial masked."""
+        super().__init__(mask_serial(str(message)), *args)
 
 
 # Strip terminal escapes before matching console output: bracketed-paste
@@ -248,6 +287,21 @@ LINUX_SHELL_PROMPT = "# "
 # as the load check before login. It does not identify the kernel release;
 # CONFIG_MODVERSIONS permits ABI-compatible modules, so also check the banner.
 LINUX_DRIVER_LINE = "FROST net10g, IRQ "
+# Authoritative runtime driver check: read /sys/module/frost_net10g/version from
+# the booted system after the prompt and before the network test. printf keeps
+# ``FROST_DRIVER_VERSION=`` out of the echoed command so terminal wraps never
+# match it.
+LINUX_DRIVER_VERSION_PATH = "/sys/module/frost_net10g/version"
+LINUX_DRIVER_VERSION_TOKEN = "FROST_DRIVER_VERSION"
+LINUX_DRIVER_VERSION_MISSING = "MISSING"
+LINUX_DRIVER_VERSION_COMMAND = (
+    f"v=$(cat {LINUX_DRIVER_VERSION_PATH} 2>/dev/null) && "
+    f'printf "%s=%s\\n" {LINUX_DRIVER_VERSION_TOKEN} "$v" || '
+    f'printf "%s={LINUX_DRIVER_VERSION_MISSING}\\n" {LINUX_DRIVER_VERSION_TOKEN}'
+)
+LINUX_DRIVER_VERSION_RE = re.compile(
+    r"^\r*" + LINUX_DRIVER_VERSION_TOKEN + r"=([^\r\n]*)\r*\n", re.MULTILINE
+)
 
 # The stress payload. Debian's root does not start it, so the stage types it at
 # the shell and requires the token after the login prompt. Absolute path: the
@@ -374,6 +428,9 @@ LINUX_MEMERR_RE = re.compile(
 LINUX_NET_COMMAND = "frost_nettest"
 LINUX_NET_TOKEN = "FROST_NET_LOOPBACK_PASS"
 LINUX_NET_TOKEN_FAIL = "FROST_NET_LOOPBACK_FAIL"
+LINUX_NET_INTERFACE_RE = re.compile(
+    r"^\r*FROST_NET_LOOPBACK: ([^\s:]+): driver frost_net10g,", re.MULTILINE
+)
 # For diagnosis, FROST_HW_NETTEST_REPEAT=<n> runs the test n times in one
 # boot. Every repetition but the last prints its verdict under this marker,
 # which ends no capture, so the log keeps every repetition's output.
@@ -647,7 +704,7 @@ def nfs_interface(ip_spec: str) -> str:
     The kernel's syntax is
     ``<client>:<server>:<gateway>:<netmask>:<hostname>:<device>:<autoconf>``.
     ``dhcp``, and a spec that leaves the device field empty, let the initramfs
-    choose; the board has one NIC, so that is the kernel's first Ethernet name.
+    choose, which selects the kernel's first Ethernet interface.
     """
     fields = ip_spec.split(":")
     if len(fields) >= 6 and fields[5]:
@@ -666,6 +723,7 @@ def linux_root_from_env(
     Default the kernel and export's initramfs to the pinned release; both paths
     can be overridden.
     """
+    remember_serial(environment)
     site = read_site_env() if site is None else site
     values = {
         name: (environment.get(name, "") or site.get(name, "")).strip()
@@ -986,16 +1044,21 @@ def memerr_values(serial_buf: str) -> dict[str, int] | None:
     return result
 
 
-def memerr_problems(values: Mapping[str, int]) -> list[str]:
+def memerr_problems(
+    values: Mapping[str, int], *, has_ecc_reader: bool = True
+) -> list[str]:
     """Return what the memory error readback shows wrong."""
     problems = []
-    if values["active"] != 1:
-        problems.append("the ECC reader is not active")
-    if values["polls_after"] <= values["polls_before"]:
-        problems.append(
-            f"ECC polls did not advance ({values['polls_before']} then "
-            f"{values['polls_after']})"
-        )
+    if has_ecc_reader:
+        if values["active"] != 1:
+            problems.append("the ECC reader is not active")
+        if values["polls_after"] <= values["polls_before"]:
+            problems.append(
+                f"ECC polls did not advance ({values['polls_before']} then "
+                f"{values['polls_after']})"
+            )
+    elif values["active"] or values["polls_before"] or values["polls_after"]:
+        problems.append("unexpected CPU-visible ECC reader activity")
     for name, label in (
         ("ce", "corrected errors"),
         ("ue", "uncorrectable errors"),
@@ -1062,6 +1125,300 @@ def initrd_driver_note(initrd: Path, limit: int = 8 << 20) -> list[str]:
     return []
 
 
+DRIVER_SOURCE = Path("linux/frost-net10g/frost_net10g.c")
+DRIVER_VERSION_RE = re.compile(r'MODULE_VERSION\("([^"]+)"\)')
+DRIVER_REBUILD_REMEDY = (
+    "rebuild it from this tree: docs/debian_nfsroot.md, step 3 (dkms add, "
+    "build and install frost-net10g/<version> for the root's kernel, then "
+    "update-initramfs -u -k <kernel>)"
+)
+DRIVER_MODULE_FILENAMES = frozenset(
+    {
+        f"{DRIVER_MODULE}.ko",
+        f"{DRIVER_MODULE}.ko.xz",
+        f"{DRIVER_MODULE}.ko.zst",
+        f"{DRIVER_MODULE}.ko.gz",
+    }
+)
+UNMKINITRAMFS_TOOL = "unmkinitramfs"
+MODINFO_TOOL = "modinfo"
+UNMKINITRAMFS_TIMEOUT_S = 120.0
+MODINFO_TIMEOUT_S = 30.0
+MAX_REPORTED_VERSION_LEN = 80
+
+
+def source_driver_version(repo: Path) -> str:
+    """Return the ``MODULE_VERSION`` the tree's NIC driver is built with."""
+    source = repo / DRIVER_SOURCE
+    try:
+        text = source.read_text(errors="replace")
+    except OSError as error:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: cannot read the driver source {source}: {error}"
+        ) from error
+    found = DRIVER_VERSION_RE.search(text)
+    if found is None:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {source} has no MODULE_VERSION line"
+        )
+    return found.group(1)
+
+
+_SEEN_SERIALS: set[str] = set()
+
+
+def remember_serial(environment: Mapping[str, str] | None) -> None:
+    """Note the cable serial of an environment mapping, to be masked everywhere."""
+    if environment is not None:
+        serial = environment.get(JTAG_SERIAL_ENV, "").strip()
+        if serial:
+            _SEEN_SERIALS.add(serial)
+
+
+def mask_serial(text: str, environment: Mapping[str, str] | None = None) -> str:
+    """Replace every known JTAG cable serial in text meant for a log.
+
+    Known serials are the process environment's, those of any environment the
+    runner was given, and the one passed here. Matching is case-insensitive.
+    """
+    remember_serial(environment)
+    serials = set(_SEEN_SERIALS)
+    serials.add(os.environ.get(JTAG_SERIAL_ENV, "").strip())
+    for serial in sorted(serials - {""}, key=len, reverse=True):
+        text = re.sub(re.escape(serial), "<cable serial>", text, flags=re.IGNORECASE)
+    return text
+
+
+def _remove_tree(path: Path) -> None:
+    """Remove a temporary directory tree even if unpacked entries are read-only."""
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+        return
+    except PermissionError:
+        pass
+    for root, dirs, _ in os.walk(path, topdown=True, followlinks=False):
+        root_path = Path(root)
+        if not root_path.is_symlink():
+            try:
+                os.chmod(root_path, 0o700)
+            except OSError:
+                pass
+        for name in dirs:
+            entry = root_path / name
+            if not entry.is_symlink():
+                try:
+                    os.chmod(entry, 0o700)
+                except OSError:
+                    pass
+    shutil.rmtree(path)
+
+
+def _raise_oserror(error: OSError) -> None:
+    """Fail closed when walking an unpacked initramfs directory fails."""
+    raise error
+
+
+def _format_version_token(version: str, limit: int = MAX_REPORTED_VERSION_LEN) -> str:
+    """Return a length-bounded, escaped rendering of a tool-reported version."""
+    if len(version) > limit:
+        return f"{version[:limit]!r}... ({len(version)} chars)"
+    if version != version.strip() or any(ord(c) < 32 or ord(c) >= 127 for c in version):
+        return repr(version)
+    return version
+
+
+def _last_nonempty_line(text: str, limit: int = 160) -> str:
+    """Return the last non-empty line in text, bounded and escaped if needed."""
+    for line in reversed(text.splitlines()):
+        cleaned = line.strip()
+        if cleaned:
+            return _format_version_token(cleaned, limit=limit)
+    return ""
+
+
+def _run_initrd_tool(
+    tool: str,
+    args: Sequence[str],
+    timeout_s: float,
+    target: str,
+    wanted: str,
+    rebuild: str,
+) -> str:
+    """Run ``unmkinitramfs`` or ``modinfo`` without a shell and return stdout."""
+    executable = shutil.which(tool)
+    if executable is None:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {tool} is not installed on PATH (needed to check "
+            f"{DRIVER_MODULE} in {target}; this tree's driver is version {wanted}); "
+            f"install {tool} or {rebuild}."
+        )
+    try:
+        done = subprocess.run(
+            [executable, *args],
+            capture_output=True,
+            check=False,
+            timeout=timeout_s,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {tool} timed out after {timeout_s:g}s while checking "
+            f"{target} (this tree's driver is version {wanted}); {rebuild}."
+        ) from error
+    except OSError as error:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: cannot run {tool} while checking {target}: {error} "
+            f"(this tree's driver is version {wanted}); {rebuild}."
+        ) from error
+    stdout = (done.stdout or b"").decode("utf-8", errors="replace")
+    stderr = (done.stderr or b"").decode("utf-8", errors="replace")
+    if done.returncode != 0:
+        detail = _last_nonempty_line(stderr) or _last_nonempty_line(stdout)
+        suffix = f": {detail}" if detail else ""
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {tool} exited {done.returncode} while checking "
+            f"{target}{suffix} (this tree's driver is version {wanted}); {rebuild}."
+        )
+    return stdout
+
+
+def _parse_modinfo_version(stdout: str, target: str, wanted: str, rebuild: str) -> str:
+    """Return the single newline-ended version line from ``modinfo -F version``."""
+    if not stdout or not stdout.strip():
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {MODINFO_TOOL} printed no version for {target} "
+            f"(version unknown), and this tree's driver (MODULE_VERSION in "
+            f"{DRIVER_SOURCE}) is version {wanted}; {rebuild}."
+        )
+    if not stdout.endswith("\n"):
+        shown = _format_version_token(stdout)
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {MODINFO_TOOL} output for {target} did not end with "
+            f"a newline ({shown}), and this tree's driver (MODULE_VERSION in "
+            f"{DRIVER_SOURCE}) is version {wanted}; {rebuild}."
+        )
+    lines = stdout[:-1].split("\n")
+    if len(lines) != 1:
+        sample = [
+            _format_version_token(line) if line else repr("") for line in lines[:3]
+        ]
+        reported = ", ".join(sample)
+        if len(lines) > 3:
+            reported += f", ... ({len(lines)} lines total)"
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {MODINFO_TOOL} reported multiple versions "
+            f"({reported}) for {target}, and this tree's driver "
+            f"(MODULE_VERSION in {DRIVER_SOURCE}) is version {wanted}; {rebuild}."
+        )
+    return lines[0]
+
+
+def check_initrd_driver_version(initrd: Path, repo: Path) -> list[str]:
+    """Fail unless every unpacked ``frost_net10g`` module matches the tree.
+
+    Unpacks the initramfs into a private temporary directory with
+    ``unmkinitramfs`` (which extracts the early section and the first
+    compressed archive, the layout produced by ``update-initramfs``), finds
+    every regular file named ``frost_net10g.ko`` (or with ``.xz``, ``.zst``,
+    or ``.gz``), and reads each copy's version with ``modinfo -F version``.
+    Passes only if at least one copy exists and every copy reports the tree's
+    exact ``MODULE_VERSION``. The Linux stage also verifies the loaded
+    driver's version directly from ``/sys/module/frost_net10g/version`` after
+    boot.
+    """
+    wanted = source_driver_version(repo)
+    rebuild = DRIVER_REBUILD_REMEDY
+    for tool in (UNMKINITRAMFS_TOOL, MODINFO_TOOL):
+        if shutil.which(tool) is None:
+            raise LinuxEnvironmentError(
+                f"{ENV_NOT_READY}: {tool} is not installed on PATH (needed to check "
+                f"{DRIVER_MODULE} in {initrd}; this tree's driver is version "
+                f"{wanted}); install {tool} or {rebuild}."
+            )
+    tmpdir: Path | None = None
+    try:
+        tmpdir = Path(tempfile.mkdtemp(prefix="frost-initrd-"))
+        _run_initrd_tool(
+            UNMKINITRAMFS_TOOL,
+            [os.path.abspath(initrd), str(tmpdir)],
+            UNMKINITRAMFS_TIMEOUT_S,
+            str(initrd),
+            wanted,
+            rebuild,
+        )
+        modules: list[Path] = []
+        for root, dirs, files in os.walk(
+            tmpdir, followlinks=False, onerror=_raise_oserror
+        ):
+            dirs.sort()
+            files.sort()
+            root_path = Path(root)
+            for name in dirs:
+                if name in DRIVER_MODULE_FILENAMES and (root_path / name).is_symlink():
+                    rel = (root_path / name).relative_to(tmpdir).as_posix()
+                    raise LinuxEnvironmentError(
+                        f"{ENV_NOT_READY}: {initrd} ({rel}) is a symbolic link, not "
+                        f"a regular {DRIVER_MODULE} module; this tree's driver "
+                        f"(MODULE_VERSION in {DRIVER_SOURCE}) is version {wanted}; "
+                        f"{rebuild}."
+                    )
+            for name in files:
+                if name not in DRIVER_MODULE_FILENAMES:
+                    continue
+                entry = root_path / name
+                if not stat.S_ISREG(entry.lstat().st_mode):
+                    rel = entry.relative_to(tmpdir).as_posix()
+                    raise LinuxEnvironmentError(
+                        f"{ENV_NOT_READY}: {initrd} ({rel}) is not a regular "
+                        f"{DRIVER_MODULE} module; this tree's driver "
+                        f"(MODULE_VERSION in {DRIVER_SOURCE}) is version {wanted}; "
+                        f"{rebuild}."
+                    )
+                modules.append(entry)
+        if not modules:
+            raise LinuxEnvironmentError(
+                f"{ENV_NOT_READY}: {initrd} carries no {DRIVER_MODULE} module, and "
+                f"this tree's driver (MODULE_VERSION in {DRIVER_SOURCE}) is version "
+                f"{wanted}; {rebuild}."
+            )
+        for module_path in modules:
+            rel = module_path.relative_to(tmpdir).as_posix()
+            target = f"{initrd} ({rel})"
+            stdout = _run_initrd_tool(
+                MODINFO_TOOL,
+                ["-F", "version", str(module_path)],
+                MODINFO_TIMEOUT_S,
+                target,
+                wanted,
+                rebuild,
+            )
+            found_version = _parse_modinfo_version(stdout, target, wanted, rebuild)
+            if found_version != wanted:
+                shown = _format_version_token(found_version)
+                raise LinuxEnvironmentError(
+                    f"{ENV_NOT_READY}: {target} has {DRIVER_MODULE} version {shown}, "
+                    f"and this tree's driver (MODULE_VERSION in {DRIVER_SOURCE}) is "
+                    f"version {wanted}; {rebuild}."
+                )
+        return [
+            f"the initramfs carries {DRIVER_MODULE} version {wanted} "
+            "(checked: the early section and the first compressed archive)"
+        ]
+    except LinuxEnvironmentError:
+        raise
+    except Exception as error:  # noqa: BLE001 - one boundary for any check failure
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: cannot check the {DRIVER_MODULE} version in "
+            f"{initrd}: {type(error).__name__}: {error}. The initramfs has to carry "
+            f"version {wanted}; {rebuild}."
+        ) from error
+    finally:
+        if tmpdir is not None:
+            _remove_tree(tmpdir)
+
+
 def subnet_note(root: LinuxRoot) -> list[str]:
     """Report whether the NFS server shares the board's subnet.
 
@@ -1122,8 +1479,26 @@ def linux_root_preflight(
     """Check the NFS root, install test programs, and return diagnostic notes.
 
     Raise ``LinuxEnvironmentError`` with an ``ENV_NOT_READY`` message for setup
-    failures so they are not reported as RTL regressions.
+    failures so they are not reported as RTL regressions. This is the one
+    boundary of the preflight: any other exception from inside it becomes the
+    same error, with its message masked, so no traceback reaches the user.
     """
+    remember_serial(environment)
+    try:
+        return _linux_root_preflight(root, repo, environment)
+    except LinuxEnvironmentError:
+        raise
+    except Exception as error:  # noqa: BLE001
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: the preflight failed unexpectedly "
+            f"({type(error).__name__}: {error})"
+        ) from None
+
+
+def _linux_root_preflight(
+    root: LinuxRoot, repo: Path, environment: Mapping[str, str]
+) -> list[str]:
+    """Run the preflight checks; see ``linux_root_preflight``."""
     notes = []
     if not root.export.is_dir():
         raise LinuxEnvironmentError(
@@ -1170,6 +1545,7 @@ def linux_root_preflight(
         f"({initrd_mib:.1f} MiB)"
     )
     notes.extend(initrd_driver_note(root.initrd))
+    notes.extend(check_initrd_driver_version(root.initrd, repo))
     notes.extend(subnet_note(root))
     consoles = console_autologin_files(root.export)
     if not consoles:
@@ -1268,8 +1644,12 @@ def nettest_command(interface: str, repeat: int = 1, poke_s: int = 0) -> str:
     drop, by ``nettest_poke_command``: an NFS request ``poke_s`` seconds into
     the test, inside its link hold-down.
     """
-    sysfs = f"/sys/class/net/{interface}"
-    ipv6 = f"/proc/sys/net/ipv6/conf/{interface}/disable_ipv6"
+    sysfs = shlex.quote(f"/sys/class/net/{interface}")
+    ipv6 = shlex.quote(f"/proc/sys/net/ipv6/conf/{interface}/disable_ipv6")
+    run_nettest = (
+        f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {LINUX_TMPFS}/{LINUX_NET_COMMAND} "
+        f"{shlex.quote(interface)}"
+    )
     if repeat > 1:
         poke = nettest_poke_command(poke_s, "$$.$r") if poke_s else ""
         return (
@@ -1281,7 +1661,7 @@ def nettest_command(interface: str, repeat: int = 1, poke_s: int = 0) -> str:
             "{ if echo 2 > /proc/sys/vm/drop_caches; then "
             f"{poke}"
             f"FROST_NETTEST_REPETITION=$r/{repeat} "
-            f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {LINUX_TMPFS}/{LINUX_NET_COMMAND}; "
+            f"{run_nettest}; "
             'else echo "$t"_FAIL"$d" drop_caches; fi; '
             "echo $m >&3; echo $f >&4; echo 0 >&5; "
             f"}} 3> {sysfs}/mtu 4> {sysfs}/flags 5> {ipv6}; "
@@ -1297,7 +1677,7 @@ def nettest_command(interface: str, repeat: int = 1, poke_s: int = 0) -> str:
         f"cp {LINUX_ROOT_BIN}/{LINUX_NET_COMMAND} {LINUX_TMPFS}/; "
         "{ if echo 2 > /proc/sys/vm/drop_caches; then "
         f"{poke}"
-        f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {LINUX_TMPFS}/{LINUX_NET_COMMAND}; "
+        f"{run_nettest}; "
         "else echo FROST_NET_LOOPBACK'_'FAIL drop_caches; fi; "
         "echo $m >&3; echo $f >&4; echo 0 >&5; "
         f"}} 3> {sysfs}/mtu 4> {sysfs}/flags 5> {ipv6}; "
@@ -1417,20 +1797,72 @@ def nettest_diag_problems(serial_buf: str, repeat: int) -> list[str]:
     return problems
 
 
-def linux_stage(root: LinuxRoot, net_repeat: int = 1, net_poke_s: int = 0) -> UartStage:
+def driver_version_verdict(serial_buf: str, expected: str) -> tuple[bool, str]:
+    """Require ``/sys/module/frost_net10g/version`` to equal ``expected``."""
+    prompt_at = serial_buf.find(LINUX_LOGIN_PROMPT)
+    region = serial_buf[prompt_at:] if prompt_at >= 0 else serial_buf
+    matches = LINUX_DRIVER_VERSION_RE.findall(region)
+    if not matches:
+        return (
+            False,
+            f"{LINUX_DRIVER_VERSION_PATH}: no {LINUX_DRIVER_VERSION_TOKEN}= line "
+            f"after login; expected {DRIVER_MODULE} version {expected}; "
+            f"{DRIVER_REBUILD_REMEDY}",
+        )
+    if len(matches) != 1:
+        return (
+            False,
+            f"{LINUX_DRIVER_VERSION_PATH}: multiple {LINUX_DRIVER_VERSION_TOKEN}= "
+            f"lines after login; expected {DRIVER_MODULE} version {expected}; "
+            f"{DRIVER_REBUILD_REMEDY}",
+        )
+    got = matches[0]
+    if not got or got == LINUX_DRIVER_VERSION_MISSING:
+        return (
+            False,
+            f"{LINUX_DRIVER_VERSION_PATH} is missing or unreadable on the running "
+            f"system; expected {DRIVER_MODULE} version {expected}; "
+            f"{DRIVER_REBUILD_REMEDY}",
+        )
+    if got != expected:
+        shown = _format_version_token(got)
+        return (
+            False,
+            f"loaded {DRIVER_MODULE} ({LINUX_DRIVER_VERSION_PATH}) is version "
+            f"{shown}, and this tree's driver (MODULE_VERSION in {DRIVER_SOURCE}) "
+            f"is version {expected}; {DRIVER_REBUILD_REMEDY}",
+        )
+    return True, f"NIC driver {expected}"
+
+
+def linux_stage(
+    root: LinuxRoot,
+    net_repeat: int = 1,
+    net_poke_s: int = 0,
+    driver_version: str | None = None,
+    *,
+    board: str = "x3",
+) -> UartStage:
     """Build UART checks for Debian booting from the NFS root.
 
     Require the pinned kernel and driver before login. After login, check the
-    NFSv3 mount, systemd startup (allowing only session scope resource failures),
-    stress result, nonzero counters, the memory error readback, scrub self-test,
-    RAM patrol, and loopback with root access
-    restored. Explicit failures end capture immediately.
+    NFSv3 mount, the loaded ``frost_net10g`` module version from
+    ``/sys/module/frost_net10g/version``, systemd startup (allowing only
+    session scope resource failures), stress result, nonzero counters, the
+    selected board's memory error readback, scrub self-test, RAM patrol,
+    and loopback with root access restored. Explicit failures end capture
+    immediately.
 
     ``net_repeat`` above 1 runs the network test that many times (see
     ``nettest_command``); a failed earlier repetition fails the stage too.
     ``net_poke_s`` above 0 schedules an NFS request inside each run's link
     hold-down (see ``nettest_poke_command``).
     """
+    expected_driver = (
+        source_driver_version(REPO_DEFAULT)
+        if driver_version is None
+        else driver_version
+    )
     failure_markers = LINUX_FAILURE_MARKERS + (
         LINUX_TOKEN_FAIL,
         LINUX_NET_TOKEN_FAIL,
@@ -1438,6 +1870,7 @@ def linux_stage(root: LinuxRoot, net_repeat: int = 1, net_poke_s: int = 0) -> Ua
     # Debian's initramfs does not run this tree's init scripts. Require the
     # driver's own probe message before login.
     boot_lines = ((LINUX_DRIVER_LINE, re.compile(re.escape(LINUX_DRIVER_LINE))),)
+    has_ecc_reader = board in CPU_ECC_READER_BOARDS
 
     def lx_login(serial_buf: str) -> bool:
         """Return True once the kernel and login markers have been captured."""
@@ -1453,6 +1886,11 @@ def linux_stage(root: LinuxRoot, net_repeat: int = 1, net_poke_s: int = 0) -> Ua
         for token in ("FROST_MEMERR_SELFTEST_FAIL", "FROST_MEMERR_LOAD_FAIL"):
             if re.search(r"^\r*" + token + r"[ \t\r]*\n", serial_buf, re.MULTILINE):
                 hit.append(token)
+        prompt_at = serial_buf.find(LINUX_LOGIN_PROMPT)
+        if prompt_at >= 0 and LINUX_DRIVER_VERSION_RE.search(serial_buf[prompt_at:]):
+            driver_ok, driver_note = driver_version_verdict(serial_buf, expected_driver)
+            if not driver_ok:
+                hit.append(driver_note)
         state = systemd_state(serial_buf)
         if state is not None and state != LINUX_SYSTEMD_RUNNING:
             hit.append(f"systemd is {state}, not {LINUX_SYSTEMD_RUNNING}")
@@ -1465,9 +1903,11 @@ def linux_stage(root: LinuxRoot, net_repeat: int = 1, net_poke_s: int = 0) -> Ua
         return hit
 
     def lx_success(raw_buf: str) -> bool:
-        """Login, an accepted systemd state, counters, loopback, and root access."""
+        """Login, driver version, systemd, counters, loopback, and root access."""
         serial_buf = console_text(raw_buf)
         if not lx_login(serial_buf):
+            return False
+        if not driver_version_verdict(serial_buf, expected_driver)[0]:
             return False
         if systemd_state(serial_buf) != LINUX_SYSTEMD_RUNNING:
             return False
@@ -1510,6 +1950,9 @@ def linux_stage(root: LinuxRoot, net_repeat: int = 1, net_poke_s: int = 0) -> Ua
         mounted, mount_note = root_mount_verdict(serial_buf, root.nfsroot)
         if not mounted:
             return False, mount_note
+        driver_ok, driver_note = driver_version_verdict(serial_buf, expected_driver)
+        if not driver_ok:
+            return False, driver_note
         if systemd_state(serial_buf) != LINUX_SYSTEMD_RUNNING:
             return False, (
                 f"systemctl is-system-running: no {LINUX_SYSTEMD_RUNNING!r} line"
@@ -1534,7 +1977,7 @@ def linux_stage(root: LinuxRoot, net_repeat: int = 1, net_poke_s: int = 0) -> Ua
                 f"no {LINUX_MEMERR_TOKEN} line with counts: {MEMERR.name} did not "
                 "load or bind"
             )
-        memerr_bad = memerr_problems(memerr)
+        memerr_bad = memerr_problems(memerr, has_ecc_reader=has_ecc_reader)
         if memerr_bad:
             return False, f"{LINUX_MEMERR_TOKEN}: " + "; ".join(memerr_bad)
         if LINUX_NET_TOKEN not in serial_buf:
@@ -1553,17 +1996,28 @@ def linux_stage(root: LinuxRoot, net_repeat: int = 1, net_poke_s: int = 0) -> Ua
                     f"{net_repeat}, but " + "; ".join(problems)
                 )
             net_note = f"{LINUX_NET_COMMAND} {net_repeat} times"
+        net_end = serial_buf.rindex(LINUX_NET_TOKEN)
+        interfaces = LINUX_NET_INTERFACE_RE.findall(serial_buf, prompt_at, net_end)
+        if interfaces != [root.interface] * net_repeat:
+            reported = ", ".join(interfaces) or "none"
+            return False, (
+                f"{LINUX_NET_COMMAND}: expected {net_repeat} run(s) on "
+                f"{root.interface}, found {reported}"
+            )
         summary = " ".join(f"{event}={counts[event]}" for event in LINUX_COUNTER_EVENTS)
-        polls = memerr["polls_after"] - memerr["polls_before"]
+        memory_note = "no DDR AXI error responses"
+        if has_ecc_reader:
+            polls = memerr["polls_after"] - memerr["polls_before"]
+            memory_note = f"no memory errors ({polls} ECC polls)"
         patrol = memerr["patrol_after"] - memerr["patrol_before"]
         tolerated = tolerated_systemd_units(serial_buf)
         systemd_note = LINUX_SYSTEMD_RUNNING
         if tolerated:
             systemd_note += f" (tolerated {', '.join(tolerated)}: resources)"
         return True, (
-            f"{KERNEL_RELEASE}, NIC driver, {mount_note}, systemd "
+            f"{KERNEL_RELEASE}, {driver_note}, {mount_note}, systemd "
             f"{systemd_note}, login, stress token, counters "
-            f"{summary}, no memory errors ({polls} ECC polls), scrub self-test, "
+            f"{summary}, {memory_note}, scrub self-test, "
             f"RAM patrol ({patrol} lines, a full pass), "
             f"{net_note}, root alive"
         )
@@ -1576,6 +2030,7 @@ def linux_stage(root: LinuxRoot, net_repeat: int = 1, net_poke_s: int = 0) -> Ua
         stimuli=(
             (LINUX_LOGIN_PROMPT, "root\r"),
             (LINUX_SHELL_PROMPT, LINUX_ROOT_MOUNT_COMMAND + "\r"),
+            (LINUX_SHELL_PROMPT, LINUX_DRIVER_VERSION_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, LINUX_SYSTEMD_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, LINUX_STRESS_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, LINUX_COUNTER_COMMAND + "\r"),
@@ -1627,20 +2082,570 @@ def run_ecc_stage(
     print(output, end="", flush=True)
     if proc.returncode == 0:
         note = ""
-    elif proc.returncode == ECC_DIRTY_EXIT:
-        note = "; ".join(
-            line.strip()
-            for line in output.splitlines()
-            if line.strip().startswith("Not clean:")
-        )
     else:
-        note = f"{ECC_STAGE_SCRIPT} exited {proc.returncode}"
+        prefix = (
+            "Not clean:" if proc.returncode == ECC_DIRTY_EXIT else "ECC read failed:"
+        )
+        note = (
+            "; ".join(
+                line.strip()
+                for line in output.splitlines()
+                if line.strip().startswith(prefix)
+            )
+            or f"{ECC_STAGE_SCRIPT} exited {proc.returncode}"
+        )
     return {
         "stage": ECC_STAGE,
         "status": "PASS" if proc.returncode == 0 else "FAIL",
         "elapsed": time.monotonic() - started,
         "note": note,
     }
+
+
+DEBUG_PREFIX = "FROST_DEBUG"
+DEBUG_END = "FROST_DEBUG_DONE"
+_HEX8 = r"0x[0-9a-f]{8}"
+# The transcript of hw_debug_check.tcl's frost_debug_check, line by line: the
+# key and the exact form of its value. Nothing else is accepted.
+DEBUG_SEQUENCE: tuple[tuple[str, str], ...] = (
+    ("dtmcs", _HEX8),
+    ("dmstatus", _HEX8),
+    ("hartinfo", _HEX8),
+    ("state_before", r"[a-z]+"),
+    ("state_halted", r"[a-z]+"),
+    ("dmstatus_halted", _HEX8),
+    ("dpc", r"0x[0-9a-f]{1,16}"),
+    ("state_after_resume", r"[a-z]+"),
+    ("dmstatus_running", _HEX8),
+    ("dtmcs_after", _HEX8),
+    ("hartinfo_after", _HEX8),
+    ("state_left", r"[a-z]+"),
+)
+# The confirmation procedure's transcript: only running is accepted.
+RECOVERY_SEQUENCE = (("state_left", "running"),)
+RECOVERY_COMMAND = "./fpga/debug/cache_counters.py resume"
+
+
+def _find_error_marker(text: str) -> str | None:
+    """Return the last OpenOCD or script error marker in text, or None."""
+    found: str | None = None
+    for line in text.split("\n"):
+        stripped = line.rstrip("\r")
+        if stripped.startswith("Error:"):
+            detail = stripped[len("Error:") :].strip()
+            found = detail or "Error:"
+        elif stripped.startswith("FROST_DEBUG_ERR:"):
+            detail = stripped[len("FROST_DEBUG_ERR:") :].strip()
+            found = detail or "FROST_DEBUG_ERR:"
+    return found
+
+
+def _quote(line: str) -> str:
+    """Return a line shortened and quoted for a message (masked by the caller)."""
+    return repr(line[:80])
+
+
+def parse_transcript(
+    output: str, sequence: Sequence[tuple[str, str]] = DEBUG_SEQUENCE
+) -> tuple[dict[str, str] | None, str]:
+    """Match output against a transcript sequence exactly.
+
+    Return the values by key and an empty string when the whole output is that
+    sequence followed by the end marker, each line ending in a newline and
+    nothing before, between or after. Otherwise return None and a message
+    quoting the first offending line.
+    """
+    lines = output.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    elif lines:
+        return None, f"the output does not end with a newline after {_quote(lines[-1])}"
+    patterns = [
+        re.compile(rf"{DEBUG_PREFIX} {key}=({pattern})") for key, pattern in sequence
+    ]
+    values: dict[str, str] = {}
+    for index, pattern in enumerate(patterns):
+        if index >= len(lines):
+            return None, f"the output ends before the {sequence[index][0]} line"
+        match = pattern.fullmatch(lines[index])
+        if match is None:
+            return None, f"unexpected line {_quote(lines[index])}"
+        values[sequence[index][0]] = match.group(1)
+    if len(lines) == len(patterns):
+        return None, f"the output ends before {DEBUG_END}"
+    if lines[len(patterns)] != DEBUG_END:
+        return None, f"unexpected line {_quote(lines[len(patterns)])}"
+    if len(lines) > len(patterns) + 1:
+        return None, f"text after {DEBUG_END}: {_quote(lines[len(patterns) + 1])}"
+    return values, ""
+
+
+def debug_values(output: str) -> dict[str, str]:
+    """Return the key/value pairs of every well-formed ``FROST_DEBUG`` line."""
+    found = {}
+    for line in output.split("\n"):
+        match = re.fullmatch(rf"{DEBUG_PREFIX} (\w+)=([0-9a-z]+)", line)
+        if match:
+            found[match.group(1)] = match.group(2)
+    return found
+
+
+def _is_state(dmstatus: int, halted: bool) -> bool:
+    """Return whether dmstatus says halted (or running) and nothing else odd.
+
+    This target has one hart, so anyhalted/allhalted (bits 8, 9) and
+    anyrunning/allrunning (bits 10, 11) must agree and exclude each other, no
+    hart is unavailable or nonexistent (bits 12 to 15), the version is 2, the
+    debugger is authenticated, and the reserved bits are zero.
+    """
+    halted_bits, running_bits = (dmstatus >> 8) & 0x3, (dmstatus >> 10) & 0x3
+    if (halted_bits, running_bits) != ((3, 0) if halted else (0, 3)):
+        return False
+    if (dmstatus >> 12) & 0xF:
+        return False
+    if dmstatus & 0xF != 2 or not (dmstatus >> 7) & 1:
+        return False
+    return not (dmstatus & DMSTATUS_RESERVED)
+
+
+# dmstatus bits 21:20 and 31:25 are reserved (debug spec 1.0, section 3.12.2).
+DMSTATUS_RESERVED = 0x00300000 | 0xFE000000
+# dmstatus bits that describe the debug module, not the hart's moment: impebreak
+# and the low byte.
+DMSTATUS_STATIC = 0x004000FF
+# dtmcs bits 31:15 read as zero here (dmireset and dmihardreset are write-only).
+DTMCS_RESERVED = 0xFFFF8000
+
+
+def judge_debug_output(output: str) -> tuple[bool, str]:
+    """Judge the output of ``frost_debug_check``.
+
+    Return whether the debug transport passed and a one-line note. The first
+    transcript never decides whether the hart was left running; a separate
+    confirmation process always checks that.
+    """
+    ok, note = _judge(output)
+    return ok, mask_serial(note)
+
+
+def _judge(output: str) -> tuple[bool, str]:
+    values, problem = parse_transcript(output)
+    if values is None:
+        errors = [
+            line[len("FROST_DEBUG_ERR: ") :]
+            for line in output.split("\n")
+            if line.startswith("FROST_DEBUG_ERR: ")
+        ]
+        detail = f"; the script reported: {_quote(errors[-1])}" if errors else ""
+        if not output.strip():
+            return False, "no output from OpenOCD"
+        return False, f"{problem}{detail}"
+
+    def number(key: str) -> int:
+        return int(values[key], 16)
+
+    dtmcs = number("dtmcs")
+    got = (dtmcs & 0xF, (dtmcs >> 4) & 0x3F, (dtmcs >> 10) & 0x3)
+    if got != DTMCS_EXPECTED or dtmcs & DTMCS_RESERVED:
+        return (
+            False,
+            f"unexpected dtmcs=0x{dtmcs:08x} (version {got[0]}, abits {got[1]}, "
+            f"status {got[2]}; expected {DTMCS_EXPECTED}, reserved bits zero)",
+        )
+    if number("dtmcs_after") != dtmcs:
+        return (
+            False,
+            f"dtmcs changed from 0x{dtmcs:08x} to 0x{number('dtmcs_after'):08x}",
+        )
+    hartinfo = number("hartinfo")
+    if hartinfo != HARTINFO_EXPECTED:
+        return (
+            False,
+            f"unexpected hartinfo=0x{hartinfo:08x}, expected 0x{HARTINFO_EXPECTED:08x}",
+        )
+    if number("hartinfo_after") != hartinfo:
+        return False, "hartinfo changed during the run"
+    before = values["state_before"]
+    if before not in ("running", "halted"):
+        return False, f"the hart was {before} before the check"
+    dmstatus = number("dmstatus")
+    if not _is_state(dmstatus, halted=before == "halted"):
+        return False, f"dmstatus=0x{dmstatus:08x} does not report the hart {before}"
+    if values["state_halted"] != "halted":
+        return False, f"halt was refused or timed out (state {values['state_halted']})"
+    halted_status = number("dmstatus_halted")
+    if not _is_state(halted_status, halted=True):
+        return (
+            False,
+            f"dmstatus=0x{halted_status:08x} does not report the hart halted",
+        )
+    if values["state_after_resume"] != "running":
+        return False, "the hart did not resume"
+    running_status = number("dmstatus_running")
+    if not _is_state(running_status, halted=False):
+        return (
+            False,
+            f"dmstatus=0x{running_status:08x} does not report the hart running",
+        )
+    if (
+        len({d & DMSTATUS_STATIC for d in (dmstatus, halted_status, running_status)})
+        != 1
+    ):
+        return False, "dmstatus changed in its static bits during the run"
+    left = values["state_left"]
+    if left != "running":
+        return False, f"the hart was left {left}"
+    dpc = number("dpc")
+    return (
+        True,
+        f"dtmcs 0x{dtmcs:08x}, dpc 0x{dpc:x}, hart {before} then halted, "
+        "resumed and running",
+    )
+
+
+def judge_debug_recovery(
+    stdout: str, stderr: str, timed_out: bool, exit_code: int | None
+) -> tuple[bool, str]:
+    """Judge the separate confirmation run (``frost_debug_recover``).
+
+    Confirmation counts only when the process finished within its time limit,
+    exited 0, printed no error marker on stdout or stderr, and printed exactly
+    the single running line followed by ``DEBUG_END``.
+    """
+    if timed_out:
+        return (
+            False,
+            f"confirmation timed out after {DEBUG_RECOVERY_TIMEOUT_S:.0f}s",
+        )
+    if exit_code != 0:
+        err = _find_error_marker(stderr) or _find_error_marker(stdout)
+        detail = f": {mask_serial(err)}" if err is not None else ""
+        return False, f"confirmation exited {exit_code}{detail}"
+    err = _find_error_marker(stderr) or _find_error_marker(stdout)
+    if err is not None:
+        return False, f"confirmation reported an error: {mask_serial(err)}"
+    values, problem = parse_transcript(stdout, RECOVERY_SEQUENCE)
+    if values is None:
+        return False, f"confirmation output invalid: {mask_serial(problem)}"
+    return True, "hart confirmed running"
+
+
+def hw_server_running() -> bool:
+    """Return whether Vivado's hw_server (which owns the JTAG cable) is running."""
+    try:
+        done = subprocess.run(
+            ["pgrep", "-x", "hw_server"], capture_output=True, check=False
+        )
+    except OSError:
+        return False
+    return done.returncode == 0
+
+
+def wait_for_cable(
+    timeout_s: float,
+    running: Callable[[], bool] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    poll_s: float = 3.0,
+) -> bool:
+    """Wait for hw_server to exit; it never is stopped here. Return whether it did."""
+    running = running or hw_server_running
+    waited = 0.0
+    while running():
+        if waited >= timeout_s:
+            return False
+        sleep(poll_s)
+        waited += poll_s
+    return True
+
+
+def debug_openocd_command(
+    openocd: str,
+    repo: Path,
+    config: Path,
+    procedure: str,
+    setup: Sequence[str] = (),
+) -> list[str]:
+    """Return the OpenOCD command line that runs one hw_debug_check.tcl procedure.
+
+    ``setup`` commands run before the configuration (the simulation bench's
+    server port, for one).
+    """
+    command = [openocd, "-s", str(repo)]
+    for text in ("gdb_port disabled", "telnet_port disabled", "tcl_port disabled"):
+        command += ["-c", text]
+    for text in setup:
+        command += ["-c", text]
+    command += ["-f", str(repo / config), "-f", str(repo / DEBUG_SCRIPT)]
+    command += ["-c", "init", "-c", procedure, "-c", "shutdown"]
+    return command
+
+
+def run_openocd_procedure(
+    command: list[str], timeout_s: float, environment: Mapping[str, str]
+) -> tuple[str, str, bool, int | None]:
+    """Run OpenOCD and return its stdout, stderr, timeout flag and exit status.
+
+    The flag says whether the timeout stopped it. The script's transcript is on
+    stdout and OpenOCD's own log is on stderr; both are decoded with
+    replacement, so no byte can raise. ``OSError`` from starting the program is
+    the caller's to report.
+    """
+    try:
+        done = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=timeout_s,
+            check=False,
+            env=dict(environment),
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired as expired:
+        return (
+            (expired.stdout or b"").decode("utf-8", errors="replace"),
+            (expired.stderr or b"").decode("utf-8", errors="replace"),
+            True,
+            None,
+        )
+    return (
+        (done.stdout or b"").decode("utf-8", errors="replace"),
+        (done.stderr or b"").decode("utf-8", errors="replace"),
+        False,
+        done.returncode,
+    )
+
+
+class _StageTerminated(BaseException):
+    """Raised inside ``run_debug_stage`` when SIGTERM arrives."""
+
+
+def _install_sigterm_handler() -> tuple[bool, Any]:
+    """Turn SIGTERM into ``_StageTerminated`` on the main thread."""
+
+    def _handle(signum: int, frame: Any) -> None:
+        raise _StageTerminated("terminated by SIGTERM")
+
+    try:
+        previous = signal.signal(signal.SIGTERM, _handle)
+    except ValueError:
+        return False, None
+    return True, previous
+
+
+def run_debug_stage(
+    repo: Path,
+    board: str,
+    environment: Mapping[str, str] = os.environ,
+    cable_wait_s: float = DEBUG_CABLE_WAIT_S,
+) -> dict[str, Any]:
+    """Check the debug transport through OpenOCD and confirm the core runs.
+
+    Read dtmcs and DMI registers, halt, read dpc and resume. Skipped unless
+    ``FROST_JTAG_SERIAL`` names the cable.
+
+    Whenever OpenOCD was started, the stage always ends by running a separate
+    ``frost_debug_recover`` process under the board lock to resume the hart if
+    needed and confirm it is running. The first transcript never decides the
+    hart's state. Anything short of a clean confirmation reports ``FAIL`` with
+    the hart's state ``UNKNOWN`` and the manual recovery command. Interrupts
+    (``SIGINT``/``KeyboardInterrupt``) and ``SIGTERM`` still run the
+    confirmation under the lock and re-raise afterwards; if confirmation itself
+    is interrupted, a single masked line reports the hart state as ``UNKNOWN``
+    with the manual recovery command. Non-signal exceptions become ``FAIL``
+    with a masked message.
+    """
+    started = time.monotonic()
+    run_env = {
+        **environment,
+        JTAG_SERIAL_ENV: environment.get(JTAG_SERIAL_ENV, "").strip(),
+    }
+
+    def result(status: str, note: str) -> dict[str, Any]:
+        return {
+            "stage": DEBUG_STAGE,
+            "status": status,
+            "elapsed": time.monotonic() - started,
+            "note": mask_serial(note, environment),
+        }
+
+    def show(text: str) -> None:
+        print(mask_serial(text, run_env), end="", flush=True)
+
+    installed_sigterm, previous_sigterm = _install_sigterm_handler()
+    try:
+        remember_serial(environment)
+        return _debug_stage(
+            repo, board, environment, run_env, cable_wait_s, result, show
+        )
+    except Exception as error:  # noqa: BLE001 - the stage's one boundary
+        return result("FAIL", f"unexpected {type(error).__name__}: {error}")
+    finally:
+        if installed_sigterm:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+
+
+def _debug_stage(
+    repo: Path,
+    board: str,
+    environment: Mapping[str, str],
+    run_env: Mapping[str, str],
+    cable_wait_s: float,
+    result: Callable[[str, str], dict[str, Any]],
+    show: Callable[[str], None],
+) -> dict[str, Any]:
+    """Run the stage body that ``run_debug_stage`` guards."""
+    if not run_env[JTAG_SERIAL_ENV]:
+        return result(
+            SKIP_STATUS,
+            f"{JTAG_SERIAL_ENV} is not set; it selects the JTAG cable for OpenOCD",
+        )
+    config = DEBUG_CONFIGS.get(board)
+    if config is None:
+        return result(SKIP_STATUS, f"no OpenOCD configuration for {board}")
+    openocd = environment.get(OPENOCD_ENV, "").strip() or "openocd"
+    if shutil.which(openocd) is None:
+        return result(
+            ENV_FAIL_STATUS,
+            f"{ENV_NOT_READY}: {openocd} is not installed ({OPENOCD_ENV} names it)",
+        )
+    if not wait_for_cable(cable_wait_s):
+        return result(
+            "FAIL",
+            f"hw_server still owns the JTAG cable after {cable_wait_s:.0f}s; "
+            "OpenOCD needs the cable to itself",
+        )
+
+    def command(procedure: str) -> list[str]:
+        return debug_openocd_command(openocd, repo, config, procedure)
+
+    def report_unknown(reason: str) -> None:
+        """Print one masked line saying the hart state is UNKNOWN and how to recover."""
+        line = (
+            f"{DEBUG_STAGE}: hart state UNKNOWN ({reason}); "
+            f"recover by hand with: {RECOVERY_COMMAND}"
+        )
+        print(mask_serial(line, run_env), file=sys.stderr, flush=True)
+
+    def confirm() -> tuple[bool, str]:
+        """Run the separate confirmation process and judge its result."""
+        try:
+            rec_out, rec_err, rec_timed_out, rec_exit = run_openocd_procedure(
+                command("frost_debug_recover"), DEBUG_RECOVERY_TIMEOUT_S, run_env
+            )
+        except Exception as error:  # noqa: BLE001
+            return (
+                False,
+                f"confirmation could not run ({type(error).__name__}: {error})",
+            )
+        try:
+            show(rec_out + rec_err)
+        except Exception as error:  # noqa: BLE001
+            return (
+                False,
+                f"confirmation output failed ({type(error).__name__}: {error})",
+            )
+        try:
+            return judge_debug_recovery(rec_out, rec_err, rec_timed_out, rec_exit)
+        except Exception as error:  # noqa: BLE001
+            return (
+                False,
+                f"confirmation judge failed ({type(error).__name__}: {error})",
+            )
+
+    try:
+        lock = DEBUG_LOCK.open("a")
+    except OSError as error:
+        return result(
+            ENV_FAIL_STATUS,
+            f"{ENV_NOT_READY}: cannot open the host lock {DEBUG_LOCK}: {error}",
+        )
+    with lock:
+        # Runs on one host take turns, as cache_counters.py's do.
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        except OSError as error:
+            return result(
+                ENV_FAIL_STATUS,
+                f"{ENV_NOT_READY}: cannot lock the host lock {DEBUG_LOCK}: {error}",
+            )
+        started = False
+        interrupted = False
+        primary_status = "FAIL"
+        note = ""
+        confirmed = False
+        confirm_note = ""
+        try:
+            started = True
+            try:
+                stdout, stderr, timed_out, exit_code = run_openocd_procedure(
+                    command("frost_debug_check"), DEBUG_TIMEOUT_S, run_env
+                )
+            except OSError as error:
+                started = False
+                return result(
+                    ENV_FAIL_STATUS,
+                    f"{ENV_NOT_READY}: cannot run {openocd} ({OPENOCD_ENV} names "
+                    f"it): {error}",
+                )
+            except Exception as error:  # noqa: BLE001
+                primary_status = "FAIL"
+                note = f"unexpected {type(error).__name__}: {error}"
+            else:
+                try:
+                    show(stdout + stderr)
+                    ok, note = judge_debug_output(stdout)
+                    err_marker = _find_error_marker(stderr)
+                    if timed_out:
+                        primary_status = "TIMEOUT"
+                        note = f"OpenOCD did not finish in {DEBUG_TIMEOUT_S:.0f}s"
+                    elif exit_code != 0:
+                        primary_status = "FAIL"
+                        exited = f"OpenOCD exited {exit_code}"
+                        if err_marker is not None:
+                            exited += f": {err_marker}"
+                        note = exited if ok else f"{exited}; {note}"
+                    elif err_marker is not None:
+                        primary_status = "FAIL"
+                        err_note = f"OpenOCD reported an error: {err_marker}"
+                        note = err_note if ok else f"{err_note}; {note}"
+                    elif ok:
+                        primary_status = "PASS"
+                    else:
+                        primary_status = "FAIL"
+                except Exception as error:  # noqa: BLE001
+                    primary_status = "FAIL"
+                    note = f"unexpected {type(error).__name__}: {error}"
+        except BaseException:
+            interrupted = True
+            raise
+        finally:
+            # Whenever OpenOCD was started, a separate process always confirms
+            # the hart is running while the board lock is still held, including
+            # when interrupted by SIGINT or SIGTERM.
+            if started:
+                try:
+                    confirmed, confirm_note = confirm()
+                except BaseException:
+                    report_unknown("confirmation interrupted")
+                    raise
+                if interrupted:
+                    if confirmed:
+                        print(
+                            mask_serial(
+                                f"{DEBUG_STAGE}: interrupted; {confirm_note}",
+                                run_env,
+                            ),
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    else:
+                        report_unknown(confirm_note)
+    if confirmed:
+        return result(primary_status, f"{note}; {confirm_note}")
+    return result(
+        "FAIL",
+        f"{note}; hart state UNKNOWN ({confirm_note}); "
+        f"recover by hand with: {RECOVERY_COMMAND}",
+    )
 
 
 def finish_line(serial_fd: int, serial_buf: str, grace_s: float) -> str:
@@ -1913,12 +2918,18 @@ DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
 # use nic_loopback for unattended regression.
 EXTERNAL_LINK_APPS = frozenset({"nic_bench", "nic_echo"})
 
+# These applications report observations without an acceptance limit on VCU118.
+VCU118_MEASUREMENT_APPS = frozenset(
+    {"bpred_probe", "fplat_probe", "mispen_probe", "print_clock_speed", "tomasulo_perf"}
+)
+
 
 def regression_stages(board: str) -> list[str]:
-    """Return board stages: hello_world, other apps, PRO, Linux, then ECC.
+    """Return the selected board's stages in order.
 
+    Start with hello_world and the debug port where configured.
     Exclude apps for other boards, debugger-driven apps and those needing an
-    external link partner.
+    external link partner. VCU118 omits measurement-only applications.
     Keep ECC last so it covers all earlier traffic.
     """
     phase1 = [
@@ -1928,13 +2939,58 @@ def regression_stages(board: str) -> list[str]:
         and app not in COREMARK_PRO_APP_NAMES
         and app not in DEBUGGER_DRIVEN_APPS
         and app not in EXTERNAL_LINK_APPS
+        and (board != "vcu118" or app not in VCU118_MEASUREMENT_APPS)
     ]
     phase1.remove("hello_world")
     phase1.insert(0, "hello_world")
-    return [*phase1, SWEEP_STAGE, LINUX_STAGE, ECC_STAGE]
+    if board in DEBUG_CONFIGS:
+        phase1.insert(1, DEBUG_STAGE)
+    stages = [*phase1, SWEEP_STAGE, LINUX_STAGE]
+    if board in ECC_WINDOW_DESIGNS:
+        stages.append(ECC_STAGE)
+    return stages
+
+
+class _MaskedStream:
+    """Write to a text stream with the configured cable serial masked."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        return self._stream.write(mask_serial(text))
+
+    def writelines(self, lines: Any) -> None:
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
 
 
 def main() -> int:
+    """Run the selected stages; everything printed or raised masks the serial.
+
+    This is the one place that guarantees it: stdout and stderr are wrapped,
+    and an exception that escapes is printed masked instead of as a traceback
+    that could carry the serial.
+    """
+    import traceback
+
+    real_out, real_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _MaskedStream(real_out), _MaskedStream(real_err)
+    try:
+        return _main()
+    except SystemExit:
+        raise
+    except Exception:  # noqa: BLE001
+        print(traceback.format_exc(), file=sys.stderr)
+        return 1
+    finally:
+        sys.stdout, sys.stderr = real_out, real_err
+
+
+def _main() -> int:
     """Run the selected stages in order and print the final summary."""
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -2012,8 +3068,8 @@ def main() -> int:
         nargs="*",
         help=(
             "Optional subset of stages to run, always in regression order (app "
-            f"names plus '{SWEEP_STAGE}', '{LINUX_STAGE}' and 'ddr_ecc'; "
-            "default: all)"
+            f"names plus '{DEBUG_STAGE}', '{SWEEP_STAGE}', '{LINUX_STAGE}' and "
+            f"'{ECC_STAGE}' where supported. Default: all for the selected board)"
         ),
     )
     args = parser.parse_args()
@@ -2050,7 +3106,9 @@ def main() -> int:
     else:
         selected = all_stages
 
-    holders = serial_holders(serial)
+    # The debug and ECC stages use JTAG only; the UART check matters to the rest.
+    uses_uart = any(stage not in (DEBUG_STAGE, ECC_STAGE) for stage in selected)
+    holders = serial_holders(serial) if uses_uart else []
     if holders:
         print(
             f"ERROR: {serial} is already open in another process, which would "
@@ -2070,10 +3128,10 @@ def main() -> int:
         try:
             linux_root = linux_root_from_env()
             for note in linux_root_preflight(linux_root, args.repo):
-                print(f"[hw_regression] Linux root: {note}", flush=True)
-        except (LinuxEnvironmentError, OSError) as error:
+                print(f"[hw_regression] Linux root: {mask_serial(note)}", flush=True)
+        except Exception as error:  # noqa: BLE001
             # Host or export I/O errors are setup failures, not tracebacks.
-            linux_env_error = (
+            linux_env_error = mask_serial(
                 str(error)
                 if isinstance(error, LinuxEnvironmentError)
                 else f"{ENV_NOT_READY}: {error}"
@@ -2099,6 +3157,8 @@ def main() -> int:
                 }
             elif stage_name == ECC_STAGE:
                 result = run_ecc_stage(args.repo, board, target, ECC_STAGE_TIMEOUT_S)
+            elif stage_name == DEBUG_STAGE:
+                result = run_debug_stage(args.repo, board)
             elif stage_name == SWEEP_STAGE:
                 # Release the UART before the sweep requests exclusive access.
                 if serial_fd is not None:
@@ -2119,7 +3179,13 @@ def main() -> int:
                 loader_env = None
                 if stage_name == LINUX_STAGE:
                     assert linux_root is not None
-                    stage = linux_stage(linux_root, net_repeat, net_poke_s)
+                    stage = linux_stage(
+                        linux_root,
+                        net_repeat,
+                        net_poke_s,
+                        driver_version=source_driver_version(args.repo),
+                        board=board,
+                    )
                     stage_timeout = args.linux_timeout
                     loader_env = linux_loader_env(linux_root)
                 else:
@@ -2151,14 +3217,15 @@ def main() -> int:
                 print("loader tail:", flush=True)
                 print("\n".join(result["loader_tail"]), flush=True)
 
-            if result["status"] != "PASS" and not args.keep_going:
+            if result["status"] not in ("PASS", SKIP_STATUS) and not args.keep_going:
                 break
     finally:
         if serial_fd is not None:
             os.close(serial_fd)
 
     skipped = selected[len(results) :]
-    bad = [r for r in results if r["status"] != "PASS"]
+    bad = [r for r in results if r["status"] not in ("PASS", SKIP_STATUS)]
+    not_run = [r for r in results if r["status"] == SKIP_STATUS]
 
     print(f"\nSUMMARY ({board})")
     name_width = max(len(r["stage"]) for r in results) if results else 12
@@ -2170,9 +3237,11 @@ def main() -> int:
     if skipped:
         print(f"  skipped after failure: {', '.join(skipped)}")
 
-    passed = len(results) - len(bad)
-    verdict = "PASS" if not bad and not skipped else "FAIL"
-    print(f"\nREGRESSION {verdict}: {passed}/{len(selected)} stages passed")
+    passed = len(results) - len(bad) - len(not_run)
+    # A skipped stage is neither a pass nor a failure; all-skipped checked nothing.
+    verdict = "PASS" if passed and not bad and not skipped else "FAIL"
+    tail = f", {len(not_run)} skipped" if not_run else ""
+    print(f"\nREGRESSION {verdict}: {passed}/{len(selected)} stages passed{tail}")
     return 0 if verdict == "PASS" else 1
 
 

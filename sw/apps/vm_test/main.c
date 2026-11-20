@@ -280,6 +280,7 @@ static void build_tables(void)
     l0_a[12] = PTE_PPN(FRAME(12)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;       /* K rewrite */
     l0_a[13] = PTE_PPN(FRAME(13)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;       /* LR/SC ok */
     l0_a[14] = PTE_PPN(0x40100000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;    /* unserved */
+    l0_a[16] = PTE_PPN(0x40101000ul) | PTE_V | PTE_R | PTE_A;                    /* R-only hole */
 #if FROST_DDR_CAPACITY_LOG2_BYTES >= 32
     l0_a[15] = PTE_PPN(DDR_LIMIT - 4096ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
 #endif
@@ -288,6 +289,38 @@ static void build_tables(void)
     root_b[0] = PTE_PPN(PT_L1_B) | PTE_V;
     l1_b[2] = PTE_PPN(PT_L0_B) | PTE_V;
     l0_b[0] = PTE_PPN(FRAME(14)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+}
+
+/* The UART scratch register and the hole have the same low address bits.
+ * The older scratch write must complete and the younger one must be flushed. */
+static int check_device_store(int translated)
+{
+    const unsigned long base = translated ? VA_1G_DEVICE : 0x40000000ul;
+    const unsigned long scratch = base + 0x101c;
+    const unsigned long hole = base + 0x10101c;
+    volatile uint32_t *physical_scratch = (volatile uint32_t *) 0x4000101cul;
+    *physical_scratch = 0;
+    mstatus_clear(0x1800ul);
+    mstatus_set(0x0800ul); /* MPP=S for the MPRV access. */
+    RUN_CASE("la   t0, 2f\n"
+             "la   t1, g_val\n"
+             "sd   t0, 0(t1)\n"
+             "csrs mstatus, %2\n"
+             "li   t2, 0x5a\n"
+             "sw   t2, 0(%0)\n"
+             "li   t2, 0xa5\n"
+             "2: sw t2, 0(%1)\n"
+             "sw   t2, 0(%0)\n" WIN_END,
+             "r"(scratch),
+             "r"(hole),
+             "r"(translated ? 1ul << 17 : 0));
+    int ok = report3(
+        translated ? "X9 Sv39 device-hole store" : "X8 bare device-hole store", 7, hole, g_val, 1);
+    if (*physical_scratch != 0x5a) {
+        uart_puts("[FAIL] UART scratch after device-hole store\r\n");
+        ok = 0;
+    }
+    return ok;
 }
 
 int main(void)
@@ -747,6 +780,12 @@ int main(void)
     all_ok &= report3("X6 unserved-1g-store-hit", 7, VA_1G_DEVICE + 0x31000, 0, 0);
     RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0xFFFFFFF8\n" LREG " t2, 0(t1)");
     all_ok &= report3("X7 unserved-1g-load-walk", 5, 0xFFFFFFF8ul, 0, 0);
+
+    all_ok &= check_device_store(0);
+    all_ok &= check_device_store(1);
+    RUN_CASE(WIN_S "li t1, 0x0041001c\n"
+                   "sw zero, 0(t1)");
+    all_ok &= report3("X10 read-only device-hole store", 15, VA_4K(16) + 0x1c, 0, 0);
 
     /* Turn translation off before the exit path. */
     write_satp(0);
