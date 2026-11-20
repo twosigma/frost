@@ -3519,6 +3519,13 @@ Examples:
         "clock divider)",
     )
     parser.add_argument(
+        "--misaligned-hw",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include hardware support for plain misaligned loads and stores to "
+        "cached DDR at synthesis (default: on). Only vcu118 supports disabling it",
+    )
+    parser.add_argument(
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
@@ -3543,6 +3550,10 @@ Examples:
         args.build_dir = args.build_dir.resolve()
 
     board_name = args.board_name
+    if board_name == "vcu118":
+        os.environ["FROST_MISALIGNED_HW"] = "1" if args.misaligned_hw else "0"
+    elif not args.misaligned_hw:
+        parser.error("--no-misaligned-hw is only supported for vcu118")
     if args.start_at == "bitstream":
         if args.stop_after is not None:
             parser.error("--start-at bitstream cannot be combined with --stop-after")

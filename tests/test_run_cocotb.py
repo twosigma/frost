@@ -1959,7 +1959,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="vm_test",
         nic_mac_clocks=False,
         description=(
-            "Sv39 data translation, permissions, and precise faults through MPRV"
+            "Sv39 translation and permissions, including precise Bare and Sv39 device-hole stores"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
@@ -2031,9 +2031,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_debug_partial",
         hdl_toplevel_module="frost",
         app_name="debug_target",
-        description="Debug Mode partial vector load dirties mstatus.VS",
+        description="Debug Mode partial unit-stride and strided vector loads dirty mstatus.VS",
         verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
-        include_in_pytest=False,
     ),
     "debug_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug",
@@ -2075,6 +2074,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Cache profiling counters read over JTAG while a program runs "
             "(optional unless FROST_REQUIRE_OPENOCD=1)"
+        ),
+        verilator_extra_args=(
+            "-GPERF_COUNTERS=1",
+            "-GL1_CACHE_BYTES=4096",
+            "-GL2_CACHE_BYTES=4096",
+        ),
+    ),
+    # The debug-port check of fpga/hw_regression.py (fpga/debug/hw_debug_check.tcl)
+    # through OpenOCD against the simulated core.
+    "hw_debug_check_openocd": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_hw_debug_check_openocd",
+        hdl_toplevel_module="frost",
+        app_name="cache_counter_target",
+        description=(
+            "Debug-port check (halt, dpc, resume) of fpga/hw_regression.py on the "
+            "simulated core (optional unless FROST_REQUIRE_OPENOCD=1)"
         ),
         verilator_extra_args=(
             "-GPERF_COUNTERS=1",
@@ -5350,7 +5365,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "cpu_top_strict_map": CocotbRunConfig(
         python_test_module="cocotb_tests.integration.test_cpu_top_strict_map",
         hdl_toplevel_module="cpu_top",
-        description="Strict PMA rejects legacy FROST device-quadrant holes before AXI",
+        description="Generic PMA decode rejects unmapped device stores before AXI",
         verilator_extra_args=(
             "-GSIM_FAST_MAINT=1",
             "-GL1_CACHE_BYTES=2048",
@@ -5411,7 +5426,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
     ),
     "cpu_top_boundary": CocotbRunConfig(
-        python_test_module="cocotb_tests.integration.test_cpu_top",
+        python_test_module=(
+            "cocotb_tests.integration.test_cpu_top,"
+            "cocotb_tests.integration.test_cpu_top_strict_map"
+        ),
         hdl_toplevel_module="cpu_top",
         description="Standalone CPU boot, cached/narrow traffic, fences, errors, and inactive coherence",
         verilator_extra_args=(
@@ -5501,6 +5519,35 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="NIC-access guard with the cached tier disabled",
         verilator_extra_args=("-GENABLE_CACHED_TIER=0", "-GUSE_BEHAVIORAL_DDR=0"),
         extra_env=(("COCOTB_TEST_FILTER", "nic_access_guard$"),),
+    ),
+    "soc_ext_plugins": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_soc_ext_plugins",
+        hdl_toplevel_module="soc_top",
+        description=(
+            "Two external AXI4 DMA ports (4-bit IDs) with internal DMA contention, "
+            "exported external MAC AXI4-Stream/ready-bit isolation, APLIC source 2 "
+            "sharing with 1G NIC, and external 16 KiB AXI4-Lite window on soc_top"
+        ),
+        verilator_extra_args=(
+            "-GENABLE_CACHED_TIER=1",
+            "-GUSE_BEHAVIORAL_DDR=0",
+            "-GENABLE_1G_ETH=1",
+            "-GEXT_DMA_PORTS=2",
+            "-GEXT_DMA_ID_BITS=4",
+            "-GEXTERNAL_MAC=1",
+            "-GEXT_AXIL_WINDOW=1",
+        ),
+    ),
+    "soc_ext_axil_bram": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_soc_ext_plugins",
+        hdl_toplevel_module="soc_top",
+        description="External 16 KiB AXI4-Lite window with the cached tier disabled",
+        verilator_extra_args=(
+            "-GENABLE_CACHED_TIER=0",
+            "-GUSE_BEHAVIORAL_DDR=0",
+            "-GEXT_AXIL_WINDOW=1",
+        ),
+        extra_env=(("COCOTB_TEST_FILTER", "ext_axil_window$"),),
     ),
     "soc_axi_slave": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_soc_axi_slave",
@@ -5629,6 +5676,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.axi.test_axil_reg_bridge",
         hdl_toplevel_module="axil_reg_bridge",
         description="AXI4-Lite independent channels, register mapping, stalls and reset",
+    ),
+    "axi_register_slice": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axi_register_slice",
+        hdl_toplevel_module="axi_register_slice",
+        description="AXI4 five-channel register slice: zero feedthrough, full rate, stalls and reset",
+    ),
+    "axil_register_slice": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axi_register_slice",
+        hdl_toplevel_module="axil_register_slice",
+        description="AXI4-Lite five-channel register slice: zero feedthrough, full rate, stalls and reset",
     ),
     "axi_checker": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_axi_checker",
@@ -6579,6 +6636,8 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "soc_axi_slave",
         "soc_axil",
         "soc_axil_no_cached_tier",
+        "soc_ext_axil_bram",
+        "soc_ext_plugins",
         "sram_macros_btb_payload",
         "sram_macros_imem_lanes",
         "sram_macros_l2_data",
@@ -6649,14 +6708,20 @@ UNIT_TEST_PARAMS = [
 #     program in BRAM, so the write-error plusarg counts only its writebacks.
 #   - fencei_jit_bench: the BRAM driver already executes its generated code
 #     in cached DDR; moving the driver does not add an invalidation case.
-#   - cache_counters_openocd: its program runs from low BRAM in either tier,
-#     so a ddr-tier run would repeat the bram-tier one.
+#   - cache_counters_openocd, hw_debug_check_openocd: their program runs from
+#     low BRAM in either tier, so a ddr-tier run would repeat the bram-tier one.
 DDR_TIER_EXCLUDE = {
     name
     for name in REAL_PROGRAM_TESTS
     if name.endswith("_fetch_fuzz")
     or name.startswith("ddr_")
-    or name in {"ecc_scrub_test", "cache_counters_openocd", "fencei_jit_bench"}
+    or name
+    in {
+        "ecc_scrub_test",
+        "cache_counters_openocd",
+        "fencei_jit_bench",
+        "hw_debug_check_openocd",
+    }
 }
 
 

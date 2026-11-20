@@ -369,10 +369,12 @@ module vec_hold_rows_formal #(
   always_comb begin
     if (!rst) begin
       c_range_reuse : cover (freed_known_q && v_live[0] && v_known[0] && rng_lo0[0] != freed_lo_q);
+      // A neighboring sector in the cache block is the sole cause of the hold.
       if (DIRECT_ADDR)
         c_block_neighbor :
         cover (s_block[0] && hold[0] && !s_atomic[0] && ak_settled[0] && v_known_p[0] &&
-          older[0][0] && rng_v0[0] && addr_c[0][PA-1:12] == rng_p0[0] &&
+          older[0][0] && !older[0][1] && rng_v0[0] && !rng_v1[0] &&
+          addr_c[0][PA-1:12] == rng_p0[0] &&
           (addr_c[0][11:5] ^ 7'd1) == rng_lo0[0] && rng_lo0[0] == rng_hi0[0] &&
           !seg_hit(
             addr_c[0], size_c[0], 1'b0, rng_v0[0], rng_p0[0], rng_lo0[0], rng_hi0[0]

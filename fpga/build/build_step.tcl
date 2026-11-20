@@ -623,6 +623,15 @@ if {$step eq "synth"} {
         lappend synth_args -generic PERF_COUNTERS=1
         puts "Profiling counters included (generic PERF_COUNTERS)"
     }
+    if {$board_name eq "vcu118"} {
+        set misaligned_hw [getenv_default FROST_MISALIGNED_HW 1]
+        if {$misaligned_hw ni {0 1}} {
+            error "FROST_MISALIGNED_HW must be 0 or 1 (got '$misaligned_hw')"
+        }
+        if {$misaligned_hw eq "0"} {
+            lappend synth_args -generic MISALIGNED_HW=0
+        }
+    }
     # A name used before its declaration becomes an implicit net. Verilator
     # binds the later declaration, but inside a generate block Vivado gives the
     # use its own net, so either the use or the declaration is left undriven.

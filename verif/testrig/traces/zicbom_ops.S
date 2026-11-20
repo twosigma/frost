@@ -36,6 +36,7 @@
 .4byte 0x0004200f # cbo.inval (x8)
 .4byte 0x44000737 # lui x14, 0x44000
 .4byte 0x0027200f # cbo.flush (x14)
+# First page past MMIO: store access fault.
 .4byte 0x40031737 # lui x14, 0x40031
 .4byte 0x0017200f # cbo.clean (x14)
 .4byte 0x0007200f # cbo.inval (x14)
