@@ -93,7 +93,7 @@ def test_regions_follow_the_memory_map() -> None:
     assert allowed(atomics.BRAM, 8) == every
     assert allowed(0, 8) == every
     assert allowed(atomics.DEVICE, 8) == {"load", "store"}
-    assert allowed(atomics.QUADRANT, 8) == {"store"}
+    assert allowed(atomics.QUADRANT, 8) == set()
     assert allowed(atomics.UNMAPPED, 8) == set()
     assert allowed(atomics.DDR + 4, 8) == set()
     assert allowed(atomics.DDR + 4, 4) == every
@@ -118,8 +118,7 @@ def test_device_windows(base: int, size: int) -> None:
 
     for address in (base - 8, base + size):
         allowed = {k for k in kinds if atomics.allows(regions, address, 8, k)}
-        expected = {"store"} if address >= 0x4000_0000 else set()
-        assert allowed == expected, hex(address)
+        assert not allowed, hex(address)
 
 
 def _access(text: str, bases: dict[int, int]) -> tuple[int, int, str] | None:

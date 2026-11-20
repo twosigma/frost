@@ -1403,17 +1403,13 @@ module soc_top #(
   assign local_fire = local_state_q == 4 && !soc_axi_rst && debug_store_room &&
       (!ASYNC_CPU_CLOCK || !local_imsic_pending || soc_cpu_rst || msi_ready);
   assign local_bram = 64'(local_addr) < 64'(MEM_SIZE_BYTES);
-  // The alias window is outside the PMA map: it is never a register, BRAM or
-  // device-quadrant store, only the DMA transfer of state 6.
+  // The alias window is served by the DMA transfer of state 6.
   assign local_device = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'(local_addr)) && !local_pbmt_alias;
   assign local_alias = (ENABLE_CACHED_TIER != 0) && local_pbmt_alias;
   assign local_instruction = local_prot[2];
   assign local_ok = !local_error &&
       (local_instruction ? !local_write && 64'(local_addr) < (64'd1 << ImemByteAddrWidth) :
-       local_bram || local_device || local_alias ||
-       (local_write && !local_pbmt_alias && riscv_pkg::pma_device_quadrant(
-      riscv_pkg::XLEN'(local_addr)
-  )));
+       local_bram || local_device || local_alias);
   wire [riscv_pkg::PhysAddrBits-1:0] local_lane_addr = local_line ?
       {local_addr[riscv_pkg::PhysAddrBits-1:5], local_dword_q, 3'b0} : local_addr;
   // A fast BRAM access is accepted only in state 0 and a staged access runs
