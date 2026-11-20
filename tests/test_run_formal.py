@@ -68,6 +68,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
+    ("rob_retire_successor", "bmc"): 3600,
     ("coherence_home", "coh_home_cmo_cover"): 6000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
@@ -1247,6 +1248,10 @@ FORMAL_TARGETS = [
     FormalTarget(
         "reorder_buffer.sby",
         "In-order ROB commit and instruction serialization",
+    ),
+    FormalTarget(
+        "rob_retire_successor.sby",
+        "Each ROB commit is at the architectural next PC of the one before it",
     ),
     FormalTarget(
         "rob_start_cofactor.sby",
@@ -4311,6 +4316,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         shard["shard"]: Expression.compile(shard["pytest_filter"]) for shard in shards
     }
     dedicated_shards = {
+        "rob_retire_successor_bmc": "ROB retirement successor",
+        "rob_retire_successor_cover": "ROB retirement successor",
         "coherent_hart_cache_coh_hart_maint_prove": "Hart maintenance",
         "coherent_hart_cache_coh_hart_maint_owned_prove": "Hart maintenance",
         "coherence_l1d_coh_l1d_stream_bmc": "Hart maintenance",
@@ -4425,6 +4432,12 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     shard_timeouts_s = {
         shard["shard"]: shard["timeout_minutes"] * 60 for shard in shards
     }
+    retire_limits = sby_timeouts["rob_retire_successor"]
+    assert retire_limits == {"bmc": 3600, "cover": 300}
+    assert formal_task_timeout_s("rob_retire_successor", "bmc") == retire_limits["bmc"]
+    assert shard_timeouts_s["ROB retirement successor"] == 10 * 60 + sum(
+        retire_limits.values()
+    )
     selected_by_shard: dict[str, list[str]] = {name: [] for name in filters}
     selected_limits_s: dict[str, list[int]] = {name: [] for name in filters}
     for node in nodes:

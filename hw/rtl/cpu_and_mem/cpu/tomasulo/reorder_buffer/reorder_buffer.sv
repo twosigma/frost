@@ -4035,6 +4035,250 @@ module reorder_buffer #(
   always_comb assert (head_done_eff == (head_done || head_cdb_bypass));
 `endif
 
+`ifdef ROB_RETIRE_SUCCESSOR_PROOF
+  // Retirement successor (formal/rob_retire_successor.sby, read with FORMAL,
+  // so the dispatch, CDB and flush contracts above hold too). Every commit is
+  // at the architectural next PC of the commit before it, and slot 2 at slot
+  // 1's, for any allocation stream that follows its predictions, across
+  // commit-time misprediction recovery. A full flush (a trap, an xRET or a
+  // FENCE-class recovery in the core) and an xRET commit end the chain: the
+  // next PC is then the trap unit's redirect, which cpu_ooo's simulation
+  // next-PC check follows. Early misprediction recovery is left out: the
+  // early recovery strobe is held low and every partial flush is a
+  // commit-time recovery.
+  //
+  // The assumptions are checked in simulation in cpu_ooo, on this module's
+  // ports, or proved elsewhere:
+  //  - an allocation is at the predicted next PC of the allocation before it,
+  //    and the first allocation after a partial flush at the resolved next PC
+  //    of the flush's tag, until a barrier (p_rob_alloc_follows_prediction,
+  //    p_rob_alloc_slot2_follows_slot1). The front end keeps allocating
+  //    behind an instruction that traps or carries a fetch fault, and those
+  //    allocations need not follow it: a slot-1 allocation away from the
+  //    predicted next PC is allowed when the allocation before it is a valid
+  //    entry that has not completed without an exception, and that entry is
+  //    then the barrier. No completion without an exception reaches the
+  //    barrier while it is valid (p_rob_barrier_never_completes), and every
+  //    allocation until the next flush is free. The proof checks that no
+  //    entry allocated behind a barrier retires (p_retire_successor_barrier);
+  //  - each link address is the fall-through PC (the slot-1 and slot-2
+  //    link_addr checks in this module);
+  //  - a branch update reaches only a conditional branch or JALR, once, and
+  //    one without its misprediction flag resolves to the predicted next PC
+  //    (p_rob_branch_update_targets_branch,
+  //    p_rob_branch_update_matches_prediction);
+  //  - no CDB write without an exception, and no store completion, reaches a
+  //    conditional branch or JALR until the cycle after its branch update
+  //    (p_rob_branch_completed_by_update). The head+1 CDB bypass does not
+  //    exclude branches, so a same-cycle write would retire one in slot 2
+  //    before its misprediction flag is written;
+  //  - a commit-time misprediction is followed in the next cycle by a partial
+  //    flush after the head, tagged with the branch, unless a full flush wins,
+  //    and no other partial flush happens (misprediction_flush_controller's
+  //    p_flush_en_exact and p_flush_tag_exact_when_enabled, with early
+  //    recovery idle).
+  function automatic logic [XLEN-1:0] f_rs_fall_through(input logic [XLEN-1:0] pc,
+                                                       input logic is_compressed);
+    f_rs_fall_through = pc + (is_compressed ? XLEN'(2) : XLEN'(4));
+  endfunction
+  function automatic logic [XLEN-1:0] f_rs_predicted_next(
+      input riscv_pkg::reorder_buffer_alloc_req_t req);
+    f_rs_predicted_next =
+        (req.is_branch && req.predicted_taken) ? req.predicted_target : req.link_addr;
+  endfunction
+  function automatic logic [XLEN-1:0] f_rs_retired_next(
+      input riscv_pkg::reorder_buffer_commit_t commit);
+    f_rs_retired_next = (commit.is_branch || commit.is_mret) ? commit.redirect_pc :
+        f_rs_fall_through(commit.pc, commit.is_compressed);
+  endfunction
+
+  // Allocation stream and per-entry shadows, written from this module's
+  // inputs only.
+  logic f_rs_chain_q;
+  logic [XLEN-1:0] f_rs_chain_pc_q;
+  logic [ReorderBufferDepth-1:0] f_rs_needs_update_q, f_rs_updated_q;
+  // f_rs_next_q holds an entry's resolved next PC: the fall-through, a JAL's
+  // target, or its branch update's outcome.
+  logic [ReorderBufferDepth-1:0][XLEN-1:0] f_rs_pred_next_q, f_rs_next_q;
+  logic f_rs_recovery_q;
+  logic [ReorderBufferTagWidth-1:0] f_rs_recovery_tag_q;
+  // The last allocation, whether it allocated done without a fault or has
+  // completed without an exception, and the barrier state.
+  logic f_rs_last_valid_q, f_rs_last_normal_q, f_rs_broken_q;
+  logic [ReorderBufferTagWidth-1:0] f_rs_last_tag_q, f_rs_barrier_tag_q;
+  logic [ReorderBufferDepth-1:0] f_rs_behind_q;
+  logic [ReorderBufferDepth-1:0] f_rs_normal_done;
+  logic f_rs_off_chain, f_rs_free;
+  always_comb begin
+    for (int i = 0; i < ReorderBufferDepth; i++) begin
+      f_rs_normal_done[i] =
+          (i_cdb_write.valid && !i_cdb_write.exception &&
+           (i_cdb_write.tag == ReorderBufferTagWidth'(i))) ||
+          (i_cdb_write_2.valid && !i_cdb_write_2.exception &&
+           (i_cdb_write_2.tag == ReorderBufferTagWidth'(i))) ||
+          (i_store_complete_valid && (i_store_complete_tag == ReorderBufferTagWidth'(i))) ||
+          (branch_wr_en && (i_branch_update.tag == ReorderBufferTagWidth'(i)));
+    end
+  end
+  assign f_rs_off_chain = alloc_en && f_rs_chain_q && !f_rs_broken_q &&
+      (i_alloc_req.pc != f_rs_chain_pc_q);
+  // Allocations this cycle are free of the chain.
+  assign f_rs_free = f_rs_broken_q || f_rs_off_chain;
+  logic [XLEN-1:0] f_rs_update_next;
+  assign f_rs_update_next = i_branch_update.taken ? i_branch_update.target :
+      f_rs_next_q[i_branch_update.tag];
+
+  always_comb begin
+    assume (!i_early_recovery_en);
+    if (alloc_en) begin
+      assume (i_alloc_req.link_addr ==
+              f_rs_fall_through(i_alloc_req.pc, i_alloc_req.is_compressed));
+      if (f_rs_off_chain)
+        assume (f_rs_last_valid_q && rob_valid[f_rs_last_tag_q] && !f_rs_last_normal_q &&
+                !f_rs_normal_done[f_rs_last_tag_q]);
+    end
+    if (alloc_en_2) begin
+      assume (i_alloc_req_2.link_addr ==
+              f_rs_fall_through(i_alloc_req_2.pc, i_alloc_req_2.is_compressed));
+      if (!f_rs_free) assume (i_alloc_req_2.pc == f_rs_predicted_next(i_alloc_req));
+    end
+    if (f_rs_broken_q && rob_valid[f_rs_barrier_tag_q] && !i_flush_all)
+      assume (!f_rs_normal_done[f_rs_barrier_tag_q]);
+    if (branch_wr_en) begin
+      assume (f_rs_needs_update_q[i_branch_update.tag] && !f_rs_updated_q[i_branch_update.tag]);
+      if (!i_branch_update.mispredicted)
+        assume (f_rs_update_next == f_rs_pred_next_q[i_branch_update.tag]);
+    end
+    for (int i = 0; i < ReorderBufferDepth; i++) begin
+      if (rob_valid[i] && !i_flush_all && f_rs_needs_update_q[i] && !f_rs_updated_q[i]) begin
+        assume (!(i_cdb_write.valid && !i_cdb_write.exception &&
+                  (i_cdb_write.tag == ReorderBufferTagWidth'(i))));
+        assume (!(i_cdb_write_2.valid && !i_cdb_write_2.exception &&
+                  (i_cdb_write_2.tag == ReorderBufferTagWidth'(i))));
+        assume (!(i_store_complete_valid && (i_store_complete_tag == ReorderBufferTagWidth'(i))));
+      end
+    end
+    if (i_rst_n) begin
+      if (i_flush_en)
+        assume (f_rs_recovery_q && i_flush_after_head_commit &&
+                (i_flush_tag == f_rs_recovery_tag_q));
+      if (f_rs_recovery_q) assume (i_flush_en || i_flush_all);
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      f_rs_chain_q <= 1'b0;
+    end else if (i_flush_en) begin
+      f_rs_chain_q <= 1'b1;
+      f_rs_chain_pc_q <= f_rs_next_q[i_flush_tag];
+    end else if (alloc_en_2) begin
+      f_rs_chain_q <= 1'b1;
+      f_rs_chain_pc_q <= f_rs_predicted_next(i_alloc_req_2);
+    end else if (alloc_en) begin
+      f_rs_chain_q <= 1'b1;
+      f_rs_chain_pc_q <= f_rs_predicted_next(i_alloc_req);
+    end
+    if (!i_rst_n || i_flush_all || i_flush_en) begin
+      f_rs_last_valid_q <= 1'b0;
+      f_rs_broken_q <= 1'b0;
+    end else begin
+      if (f_rs_off_chain) begin
+        f_rs_broken_q <= 1'b1;
+        f_rs_barrier_tag_q <= f_rs_last_tag_q;
+      end
+      if (alloc_en) begin
+        f_rs_last_valid_q <= 1'b1;
+        f_rs_last_tag_q <= alloc_en_2 ? tail_idx_2 : tail_idx;
+        f_rs_last_normal_q <= alloc_en_2 ? (alloc_done_value_2 && !alloc_legality_fault_data_2) :
+            (alloc_done_value && !alloc_legality_fault_data);
+      end else if (f_rs_normal_done[f_rs_last_tag_q]) begin
+        f_rs_last_normal_q <= 1'b1;
+      end
+    end
+    if (alloc_en) f_rs_behind_q[tail_idx] <= f_rs_free;
+    if (alloc_en_2) f_rs_behind_q[tail_idx_2] <= f_rs_free;
+    if (!i_rst_n) f_rs_recovery_q <= 1'b0;
+    else f_rs_recovery_q <= o_commit_misprediction_raw;
+    f_rs_recovery_tag_q <= o_commit_comb.tag;
+    if (alloc_en) begin
+      f_rs_needs_update_q[tail_idx] <= i_alloc_req.is_branch && !i_alloc_req.is_jal;
+      f_rs_updated_q[tail_idx] <= 1'b0;
+      f_rs_pred_next_q[tail_idx] <= f_rs_predicted_next(i_alloc_req);
+      f_rs_next_q[tail_idx] <= i_alloc_req.is_jal ? i_alloc_req.branch_target :
+          i_alloc_req.link_addr;
+    end
+    if (alloc_en_2) begin
+      f_rs_needs_update_q[tail_idx_2] <= i_alloc_req_2.is_branch && !i_alloc_req_2.is_jal;
+      f_rs_updated_q[tail_idx_2] <= 1'b0;
+      f_rs_pred_next_q[tail_idx_2] <= f_rs_predicted_next(i_alloc_req_2);
+      f_rs_next_q[tail_idx_2] <= i_alloc_req_2.is_jal ? i_alloc_req_2.branch_target :
+          i_alloc_req_2.link_addr;
+    end
+    if (branch_wr_en) begin
+      f_rs_updated_q[i_branch_update.tag] <= 1'b1;
+      f_rs_next_q[i_branch_update.tag] <= f_rs_update_next;
+    end
+  end
+
+  // The property: the expected PC of the next commit.
+  logic f_rs_expect_q;
+  logic [XLEN-1:0] f_rs_expect_pc_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      f_rs_expect_q <= 1'b0;
+    end else if (o_commit_comb_2.valid) begin
+      f_rs_expect_q <= 1'b1;
+      f_rs_expect_pc_q <= f_rs_retired_next(o_commit_comb_2);
+    end else if (o_commit_comb.valid) begin
+      f_rs_expect_q <= !o_commit_comb.is_mret;
+      f_rs_expect_pc_q <= f_rs_retired_next(o_commit_comb);
+    end
+  end
+  always_comb begin
+    if (i_rst_n) begin
+      p_retire_successor :
+      assert (!(o_commit_comb.valid && f_rs_expect_q) || (o_commit_comb.pc == f_rs_expect_pc_q));
+      p_retire_successor_barrier :
+      assert (!(o_commit_comb.valid && f_rs_behind_q[o_commit_comb.tag]) &&
+              !(o_commit_comb_2.valid && f_rs_behind_q[o_commit_comb_2.tag]));
+      p_retire_successor_slot2 :
+      assert (!o_commit_comb_2.valid || (o_commit_comb.valid && !o_commit_comb.is_mret &&
+              (o_commit_comb_2.pc == f_rs_retired_next(o_commit_comb))));
+    end
+  end
+
+  // Covers: a checked two-wide retirement behind a taken branch, a checked
+  // commit after commit-time recovery, and one after an exception at the
+  // head was flushed (a trap in the core), and a barrier: an allocation off
+  // the chain behind an excepting entry, flushed by its trap.
+  logic f_rs_recovered_q, f_rs_trapped_q, f_rs_barrier_flushed_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      f_rs_recovered_q <= 1'b0;
+      f_rs_trapped_q   <= 1'b0;
+      f_rs_barrier_flushed_q <= 1'b0;
+    end else begin
+      if (f_rs_broken_q && head_valid && head_exception && i_flush_all)
+        f_rs_barrier_flushed_q <= 1'b1;
+      if (i_flush_en) f_rs_recovered_q <= 1'b1;
+      if (head_valid && head_exception && i_flush_all) f_rs_trapped_q <= 1'b1;
+    end
+  end
+  always_comb begin
+    if (i_rst_n) begin
+      p_retire_successor_cover_two_wide_taken :
+      cover (o_commit_comb.valid && o_commit_comb_2.valid && f_rs_expect_q &&
+             o_commit_comb.is_branch && o_commit_comb.branch_taken);
+      p_retire_successor_cover_recovery :
+      cover (o_commit_comb.valid && f_rs_expect_q && f_rs_recovered_q);
+      p_retire_successor_cover_trap :
+      cover (o_commit_comb.valid && f_rs_expect_q && f_rs_trapped_q);
+      p_retire_successor_cover_barrier : cover (o_commit_comb.valid && f_rs_barrier_flushed_q);
+    end
+  end
+`endif
+
 `ifdef ROB_RETIRE_READY_LOCAL_PROOF
   initial assume (!i_rst_n);
   // Check masks and read equations together from reset, without assumptions
