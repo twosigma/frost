@@ -104,7 +104,7 @@ module vcu118_ddr_init #(
   assign o_busy = !done_q;
   assign o_done = done_q;
 
-  always_ff @(posedge i_clk) begin
+  always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
       aw_q         <= '0;
       w_q          <= '0;
@@ -136,5 +136,40 @@ module vcu118_ddr_init #(
         done_q <= 1'b1;
     end
   end
+
+`ifndef SYNTHESIS
+  initial begin
+    if ((REGION_BYTES % BytesPerBurst) != 0)
+      $fatal(1, "vcu118_ddr_init: region does not contain whole bursts");
+    if (OutstandingCap == 0) $fatal(1, "vcu118_ddr_init: the outstanding cap is zero");
+  end
+
+  // Random-start simulation can clock the board before its first reset.
+  bit reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) reset_seen_q <= 1'b1;
+  end
+
+  always @(posedge i_clk) begin
+    if (reset_seen_q && i_rst_n) begin
+      if (b_q > aw_q || b_q > w_q)
+        $error("vcu118_ddr_init: response without an accepted address and data burst");
+      if ((aw_q - b_q) > BurstBits'(OutstandingCap) || (w_q - b_q) > BurstBits'(OutstandingCap))
+        $error("vcu118_ddr_init: too many outstanding writes");
+      if (aw_q > BurstBits'(TotalBursts) || w_q > BurstBits'(TotalBursts))
+        $error("vcu118_ddr_init: write ran past the region");
+      if (done_q && (aw_q != BurstBits'(TotalBursts) || w_q != BurstBits'(TotalBursts) ||
+                     b_q != BurstBits'(TotalBursts) || resp_error_q || o_awvalid || o_wvalid))
+        $error("vcu118_ddr_init: completed without a clean, acknowledged sweep");
+    end
+  end
+
+  wire reset_quiet = !o_done && o_busy && !o_awvalid && !o_wvalid && !o_bready;
+  assert property (@(posedge i_clk) reset_seen_q && !i_rst_n |=> reset_quiet);
+  // Check even a pulse that started and ended between clock edges.
+  always @(posedge i_rst_n) begin
+    if (reset_seen_q) assert (reset_quiet);
+  end
+`endif
 
 endmodule

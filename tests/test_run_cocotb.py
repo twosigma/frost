@@ -5834,12 +5834,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "vcu118_ddr_init": CocotbRunConfig(
         python_test_module="cocotb_tests.test_x3_ddr_init",
         hdl_toplevel_module="vcu118_ddr_init",
-        description="VCU118 DDR initialization coverage, stalls and error responses",
-        verilator_extra_args=("-GREGION_BYTES=4096", "-GMAX_OUTSTANDING=4"),
+        description="VCU118 DDR sweep, stalls, errors and asynchronous restart",
+        verilator_extra_args=("--assert", "-GREGION_BYTES=4096", "-GMAX_OUTSTANDING=4"),
         extra_env=(
             ("DDR_INIT_REGION_BYTES", "4096"),
             ("DDR_INIT_MAX_OUTSTANDING", "4"),
+            ("DDR_INIT_ASYNC_RESET", "1"),
         ),
+    ),
+    "vcu118_ddr_init_reset": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_vcu118_ddr_init_reset",
+        hdl_toplevel_module="vcu118_frost",
+        description=(
+            "VCU118 controller reset, ECC rescrub, calibration-only interruption "
+            "and core and JTAG release with running or stopped clocks"
+        ),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=31", "--assert"),
     ),
     "x3_ddr_init_two_beats": CocotbRunConfig(
         python_test_module="cocotb_tests.test_x3_ddr_init",
