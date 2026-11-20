@@ -1975,7 +1975,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs: build-docker
     if: ${{ !cancelled() && needs.build-docker.result == 'success' }}
-    timeout-minutes: ${{ matrix.mode == 'complete' && 360 || 140 }}
+    timeout-minutes: ${{ matrix.job_minutes || (matrix.mode == 'complete' && 360 || 140) }}
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -2004,7 +2004,7 @@ jobs:
           rm -f /tmp/frost-dev.tar
       - name: Run vector programs
         id: programs
-        timeout-minutes: ${{ matrix.mode == 'complete' && 310 || 100 }}
+        timeout-minutes: ${{ matrix.step_minutes || (matrix.mode == 'complete' && 310 || 100) }}
         env:
           VLEN: ${{ matrix.vlen }}
           MODE: ${{ matrix.mode }}
