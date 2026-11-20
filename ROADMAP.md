@@ -578,8 +578,11 @@ and targeted microbenchmarks give these items:
    sectors use masked writes, and waiting reads share array service with
    buffered hits. In simulation (`store_fill_bench`, 64 KiB, with the DDR
    model's fixed 80-cycle latency) a sequential `sd` stream takes about 28
-   cycles per 64 bytes cold and 15.3 cycles L2-resident. Taking ownership of a single 32-byte sector without fetching
-   its 64-byte home line would still need per-sector L2 validity tracking.
+   cycles per 64 bytes cold and 15.3 cycles L2-resident. A streaming copy
+   spends about 24% of its cycles stalled on store-queue capacity;
+   streaming scale, add and triad loops spend less than 0.3%. Taking
+   ownership of a single 32-byte sector without fetching its 64-byte home
+   line would still need per-sector L2 validity tracking.
 2. Data translation. A last-page bypass sends eligible translated accesses
    directly to DMMU stage S2. Other translated accesses use S1 and S2.
    Reducing that path would improve cross-page translation latency.
@@ -588,10 +591,13 @@ and targeted microbenchmarks give these items:
    walker cache of upper-level page-table pointers. In simulation a
    dependent load that misses the DTLB and hits the second-level TLB takes 7
    cycles against 5 on a DTLB hit, and an instruction page visit that misses
-   the ITLB and hits it takes 23 against 20. A miss in both walks, and the
-   walker cache takes the walk to one dependent read; the second-level lookup
-   comes first, so a dependent load that walks takes 30 cycles, one more than
-   without the array. Starting the walk in parallel with the second-level
+   the ITLB and hits it takes 23 against 20. During decompression the
+   instruction TLB misses about eight times per thousand retired
+   instructions, and the shared page walker is busy about 11% of cycles.
+   A miss in both walks, and the walker cache takes the walk to one
+   dependent read; the second-level lookup comes first, so a dependent
+   load that walks takes 30 cycles, one more than without the array.
+   Starting the walk in parallel with the second-level
    lookup and cancelling it on a hit would remove that cycle. A 32-entry
    superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
    Svnapot 64 KiB ranges use ordinary 4 KiB TLB entries. Coalescing those
@@ -599,7 +605,9 @@ and targeted microbenchmarks give these items:
    A selective `sfence.vma` that reaches the second-level TLB while it is
    still running an earlier flush becomes a full flush: correct, but it
    discards entries the selective form would have kept.
-4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
+4. Branch prediction. A misprediction costs about 7 cycles. Graph search
+   incurs about 21 to 28 branch mispredictions per thousand retired
+   instructions, and decompression about 19 to 20. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
    predicts the jumps, calls and returns it misses through a PD redirect, at
    that redirect's cost of two bubbles. In Linux-like traces the 256-entry
@@ -650,22 +658,26 @@ and targeted microbenchmarks give these items:
    flight or one read slot per line for loads to the same line would let one
    stream keep more lines in flight. Dependent loads are also slower than
    through the previous hierarchy: in simulation an L2 hit takes 28 cycles
-   against 23 and a DRAM miss about 4 cycles more. The L1D answers a load
-   from its grant, and registered stages
-   and arbitration add the rest. The home grants the load or store that misses
+   against 23 and a DRAM miss about 4 cycles more. In a serial pointer
+   chase, a working set that overflows the L1D into the L2 adds about 22
+   cycles per step, and one that overflows the L2 adds about 36 more. The
+   L1D answers a load from its grant, and registered stages and arbitration
+   add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
    line installs.
-9. L1D read hits. A hit path beside the coherent L1D's controller answers
-   loads that hit. Its answers still wait a cycle in the read slots' response
-   registers, which answering from its last stage would remove, and a variant
-   without that stage would be shorter again. It refuses a load whose arrival
-   meets a lookup that reads data, a probe or a holder of its sector;
-   retrying refused loads, and refusing only for probes to the load's sector,
-   would answer more of them. The controller still shadows a load that it
-   selects while the hit path holds it, which starting misses from the hit
-   path's tag result would avoid, and tags-only lookups would keep stores,
-   look-ahead stores and prefetch hints out of the data banks.
+9. L1D read hits. A dependent load that hits in the L1D takes about nine
+   cycles from one load launch to the next. A hit path beside the coherent
+   L1D's controller answers loads that hit. Its answers still wait a cycle in
+   the read slots' response registers, which answering from its last stage
+   would remove, and a variant without that stage would be shorter again. It
+   refuses a load whose arrival meets a lookup that reads data, a probe or a
+   holder of its sector; retrying refused loads, and refusing only for probes
+   to the load's sector, would answer more of them. The controller still
+   shadows a load that it selects while the hit path holds it, which starting
+   misses from the hit path's tag result would avoid, and tags-only lookups
+   would keep stores, look-ahead stores and prefetch hints out of the data
+   banks.
 10. Compressed code. Linux and its user space are built with the C
     extension. CoreMark's score uses a build without compressed instructions;
     built with them (`COREMARK_COMPRESSED=1`) it takes about 10% more cycles
