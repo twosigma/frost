@@ -30,18 +30,32 @@ import time
 from collections.abc import Iterator
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, NamedTuple, TextIO
+
+
+class FormPlan(NamedTuple):
+    """Main shard count and its hosted execution and job limits."""
+
+    shards: int
+    deadline_minutes: int
+    job_minutes: int
+
 
 SUITE = "tests/test_riscv_vector_tests.py"
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ["--rtl", "--simulator", "native"]
 SLICES = 20
 CYCLE_PROFILE = Path("tests/fixtures/rvv_ci_profile.csv")
-FORM_SHARDS = {128: 2, 256: 4, 512: 11}
+FORM_PROFILE = Path("tests/fixtures/rvv_ci_form_times.csv")
+FORM_PLANS = {
+    128: FormPlan(4, 92, 130),
+    256: FormPlan(7, 92, 130),
+    512: FormPlan(13, 96, 134),
+}
 COMPLETE_SHARDS = {128: 6, 256: 12, 512: 32}
 PROGRAMS_PER_WIDTH = 3017
 FORMS_PER_WIDTH = 665
-SHARD_SECONDS = {"slice": 90 * 60, "forms": 90 * 60, "complete": 300 * 60}
+SHARD_SECONDS = {"slice": 90 * 60, "complete": 300 * 60}
 
 
 def matrix(
@@ -55,16 +69,23 @@ def matrix(
             raise ValueError("choose either a slice or the complete campaign")
         shard_options("slice", requested)
         parts = [requested]
-    elif campaign == "complete" or slices_per_run == SLICES:
-        mode, shards = (
-            ("complete", COMPLETE_SHARDS)
-            if campaign == "complete"
-            else ("forms", FORM_SHARDS)
-        )
+    elif campaign == "complete":
         return [
-            {"vlen": width, "mode": mode, "part": f"{k}/{count}"}
-            for width, count in shards.items()
+            {"vlen": width, "mode": "complete", "part": f"{k}/{count}"}
+            for width, count in COMPLETE_SHARDS.items()
             for k in range(1, count + 1)
+        ]
+    elif slices_per_run == SLICES:
+        return [
+            {
+                "vlen": width,
+                "mode": "forms",
+                "part": f"{k}/{plan.shards}",
+                "step_minutes": plan.deadline_minutes + 3,
+                "job_minutes": plan.job_minutes,
+            }
+            for width, plan in FORM_PLANS.items()
+            for k in range(1, plan.shards + 1)
         ]
     else:
         start = run_number * slices_per_run
@@ -82,8 +103,15 @@ def shard_options(mode: str, part: str, *, root: Path = Path(".")) -> list[str]:
         if part not in {str(k) for k in range(SLICES)}:
             raise ValueError("slice must be an integer from 0 to 19")
         return ["--one-per-form", "--shard", f"{int(part) + 1}/{SLICES}"]
-    options = ["--cycle-profile", str(root / CYCLE_PROFILE), "--shard", part]
-    return ["--one-per-form", *options] if mode == "forms" else options
+    if mode == "forms":
+        return [
+            "--one-per-form",
+            "--shard-profile",
+            str(root / FORM_PROFILE),
+            "--shard",
+            part,
+        ]
+    return ["--cycle-profile", str(root / CYCLE_PROFILE), "--shard", part]
 
 
 def reproduce(vlen: int, selection: list[str]) -> str:
@@ -218,7 +246,7 @@ def run_shard(
 
     selection = shard_options(mode, part)
     if mode != "slice":
-        total = (FORM_SHARDS if mode == "forms" else COMPLETE_SHARDS)[vlen]
+        total = FORM_PLANS[vlen].shards if mode == "forms" else COMPLETE_SHARDS[vlen]
         if part not in {f"{k}/{total}" for k in range(1, total + 1)}:
             raise ValueError(f"invalid {mode} shard for VLEN {vlen}: {part}")
 
@@ -233,7 +261,11 @@ def run_shard(
         f"### Generated vectors at VLEN {vlen}, {mode} {part}\n\n"
         f"```sh\n{reproduce(vlen, selection)}\n```\n"
     )
-    seconds = SHARD_SECONDS[mode]
+    seconds = (
+        FORM_PLANS[vlen].deadline_minutes * 60
+        if mode == "forms"
+        else SHARD_SECONDS[mode]
+    )
     deadline = time.monotonic() + seconds
     with (
         tempfile.TemporaryDirectory(prefix="rvv-ci-") as tmp,

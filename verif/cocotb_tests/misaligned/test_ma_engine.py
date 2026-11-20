@@ -59,13 +59,11 @@ def device_ok(pa: int) -> bool:
     )
 
 
-def region(pa: int, quadrant_store: bool) -> str:
+def region(pa: int) -> str:
     """Return a part's region verdict: ok, misalign or access (ma_pkg::region)."""
     if DDR_BASE <= pa < DDR_LIMIT:
         return "ok"
     if pa < BRAM_LIMIT or device_ok(pa):
-        return "misalign"
-    if quadrant_store and (pa >> 32) == 0 and (pa >> 30) == 1:
         return "misalign"
     return "access"
 
@@ -236,7 +234,7 @@ def canonical(va: int) -> bool:
 def translate_part(a: Access, va: int) -> tuple[str, int]:
     """Return (verdict, pa) for one part under the access's translation."""
     if not a.translate:
-        return region(va, a.store), va
+        return region(va), va
     if not canonical(va):
         return "page", 0
     vpn = (va >> 12) & ((1 << 27) - 1)
@@ -264,7 +262,7 @@ def translate_part(a: Access, va: int) -> tuple[str, int]:
     else:
         ppn = leaf.ppn
     pa = (ppn << 12) | (va & 0xFFF)
-    return region(pa, False), pa
+    return region(pa), pa
 
 
 def cause_of(verdict: str, store: bool) -> int:
@@ -288,7 +286,7 @@ def reference(a: Access) -> tuple[str, int, int, list[tuple[int, int]]]:
     if split:
         if a.translate and (upper >> 12) == (va >> 12):
             upper_pa = (lower_pa & ~0xFFF) | (upper & 0xFFF)
-            upper_v = region(upper_pa, False)
+            upper_v = region(upper_pa)
         else:
             upper_v, upper_pa = translate_part(a, upper)
         if upper_v != "ok":

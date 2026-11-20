@@ -1,0 +1,41 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 8
+cover: mode cover
+cover: depth 24
+multiclock on
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top nic_diag_formal --single-unit -DSYNTHESIS nic_pkg.sv eth10g_crc_pkg.sv eth10g_pcs_pkg.sv cdc_sync.sv cdc_reset_sync.sv cdc_mailbox.sv cdc_gray_count.sv sdp_block_ram_dc.sv async_fifo.sv nic_domain_reset.sv nic_mac_reset_ctrl.sv nic_pause_rx.sv nic_pause_rx_wire.sv nic_pause_tx.sv nic_mac_cdc.sv nic_csr.sv nic_diag_formal.sv
+hierarchy -top nic_diag_formal
+script free_undefined.ys
+prep -top nic_diag_formal -flatten
+~cover: chformal -cover -remove
+opt_clean
+
+[files]
+../hw/rtl/peripherals/nic/nic_pkg.sv
+../hw/rtl/net10g/eth10g_crc_pkg.sv
+../hw/rtl/net10g/eth10g_pcs_pkg.sv
+../hw/rtl/lib/cdc/cdc_sync.sv
+../hw/rtl/lib/cdc/cdc_reset_sync.sv
+../hw/rtl/lib/cdc/cdc_mailbox.sv
+../hw/rtl/lib/cdc/cdc_gray_count.sv
+../hw/rtl/lib/ram/sdp_block_ram_dc.sv
+../hw/rtl/lib/fifo/async_fifo.sv
+../hw/rtl/peripherals/nic/nic_domain_reset.sv
+../hw/rtl/peripherals/nic/nic_mac_reset_ctrl.sv
+../hw/rtl/peripherals/nic/nic_pause_rx.sv
+../hw/rtl/peripherals/nic/nic_pause_rx_wire.sv
+../hw/rtl/peripherals/nic/nic_pause_tx.sv
+../hw/rtl/peripherals/nic/nic_mac_cdc.sv
+../hw/rtl/peripherals/nic/nic_csr.sv
+nic_diag_formal.sv
+free_undefined.ys

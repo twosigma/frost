@@ -36,6 +36,7 @@ sys.path.insert(0, str(SCRIPT_DIR.parent / "common"))
 sys.path.insert(0, str(PROJECT_ROOT / "sw" / "apps"))
 sys.path.insert(0, str(PROJECT_ROOT / "linux"))
 from debian_kernel import kernel_image  # noqa: E402
+from hw_defaults import CPU_ECC_READER_BOARDS  # noqa: E402
 from hw_target import add_target_args, select_target, validate_target_args  # noqa: E402
 from riscv_toolchain import default_riscv_prefix  # noqa: E402
 from software_registry import (  # noqa: E402
@@ -96,11 +97,13 @@ VALID_APPS = [
     "nic_cmo_loopback",
     "nic_echo",
     "nic_loopback",
+    "odd_halfword_pred_test",
     "opensbi_smoke",
     "packet_parser",
     "pd_itt_slot2",
     "pde_return_hazard",
     "perf_off_test",
+    "pma_fault_test",
     "print_clock_speed",
     "ptw_coherence_test",
     "ras_stress_test",
@@ -126,6 +129,7 @@ VALID_APPS = [
     "vec_fp_test",
     "vec_index_test",
     "vec_integer_test",
+    "vec_mem_reserved_forms_test",
     "vec_mem_source_eew_test",
     "vec_mem_test",
     "vec_order_test",
@@ -138,21 +142,23 @@ VALID_APPS = [
     "vm_test",
 ]
 
-# The vector test programs need the vector unit and misaligned_test the
-# misaligned-access engine (MISALIGNED_HW), which only the X3 build has.
+# The vector test programs need the X3's vector unit.
 # vec_crypto_exec_test, vec_fp_test, vec_integer_test, vec_source_eew_test,
 # vec_vstart_reload_test and vec_vtype_handoff_test also check the vector length they are built for:
 # VEC_VLEN, 256 by default, the X3 build's VLEN.
 BOARD_SPECIFIC_APPS = {
     "bootrom": frozenset({"vcu118"}),
-    "misaligned_test": frozenset({"x3"}),
+    "memerr_readback": CPU_ECC_READER_BOARDS,
     "nic_bench": frozenset({"vcu118"}),
+    # This test uses cacheable, NC and IO mappings of the same DDR memory.
+    "svpbmt_cmo_test": frozenset({"x3"}),
     "vec_arith_test": frozenset({"x3"}),
     "vec_crypto_exec_test": frozenset({"x3"}),
     "vec_ff_test": frozenset({"x3"}),
     "vec_fp_test": frozenset({"x3"}),
     "vec_index_test": frozenset({"x3"}),
     "vec_integer_test": frozenset({"x3"}),
+    "vec_mem_reserved_forms_test": frozenset({"x3"}),
     "vec_mem_source_eew_test": frozenset({"x3"}),
     "vec_mem_test": frozenset({"x3"}),
     "vec_order_test": frozenset({"x3"}),
@@ -267,8 +273,10 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "store_fill_bench",
     "svpbmt_cmo_test",
     "tick_torture",
+    "vec_crypto_exec_test",
     "vec_ff_test",
     "vec_index_test",
+    "vec_mem_reserved_forms_test",
     "vec_mem_source_eew_test",
     "vec_mem_test",
     "vec_order_test",

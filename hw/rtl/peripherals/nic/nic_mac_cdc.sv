@@ -584,7 +584,6 @@ module nic_mac_cdc #(
 
   localparam int unsigned NumEv = nic_pkg::NumMacTotals;
   logic [NumEv-1:0] ev_pulse;
-  logic [NumEv-1:0] ev_clk, ev_rst, ev_rebase;
   assign ev_pulse = {
     i_pcs_event,
     overflow_no_desc,
@@ -613,27 +612,48 @@ module nic_mac_cdc #(
     {2{1'b0}},  // tx_bad_block, tx_drop
     {4{1'b1}}  // rx_bad_block, rx_bad_fcs, rx_bad_frame, rx_overflow
   };
+  localparam int unsigned MacBase = nic_pkg::CntRxMacOverflow;
+  localparam int unsigned GmiiBaseStart = nic_pkg::CntRxGmiiPreambleDrop - MacBase;
+  localparam int unsigned PauseStart = nic_pkg::CntRxPauseFrames - MacBase;
+  localparam int unsigned GmiiExtStart = nic_pkg::CntRxGmiiErPreamble - MacBase;
+  localparam int unsigned OverflowNoDesc = nic_pkg::CntRxMacOverflowNoDesc - MacBase;
+  localparam int unsigned PcsStart = nic_pkg::CntPcsSyncLoss - MacBase;
+
   logic rx_rebase, tx_rebase;
   assign {rx_rebase, tx_rebase} = core_rst_dom;
-  for (genvar e = 0; e < NumEv; e++) begin : g_events
+  // Skip GMII-only ranges while keeping the event indices used by the board Gray-bus constraints.
+  for (
+      genvar e = 0;
+      e < NumEv;
+      e = GMII_MODE ? e + 1 :
+          (e + 1 == GmiiBaseStart) ? PauseStart :
+          (e + 1 == GmiiExtStart) ? OverflowNoDesc :
+          (e + 1 == PcsStart) ? NumEv : e + 1
+  ) begin : g_events
+    logic ev_clk, ev_rst, ev_rebase;
     if (EvIsRx[e]) begin : g_rx
-      assign ev_clk[e] = i_rx_clk;
-      assign ev_rst[e] = rx_rst;
-      assign ev_rebase[e] = rx_rebase;
+      assign ev_clk = i_rx_clk;
+      assign ev_rst = rx_rst;
+      assign ev_rebase = rx_rebase;
     end else begin : g_tx
-      assign ev_clk[e] = i_tx_clk;
-      assign ev_rst[e] = tx_rst;
-      assign ev_rebase[e] = tx_rebase;
+      assign ev_clk = i_tx_clk;
+      assign ev_rst = tx_rst;
+      assign ev_rebase = tx_rebase;
     end
     cdc_gray_count u_count (
-        .i_src_clk   (ev_clk[e]),
-        .i_src_rst   (ev_rst[e]),
+        .i_src_clk   (ev_clk),
+        .i_src_rst   (ev_rst),
         .i_src_event (ev_pulse[e]),
         .i_dst_clk   (i_clk),
         // A soft reset clears the totals at run time.
         .i_dst_rst   (i_rst || i_soft_rst),
-        .i_dst_rebase(ev_rebase[e]),
+        .i_dst_rebase(ev_rebase),
         .o_dst_total (o_totals[e*64+:64])
     );
+  end
+  if (!GMII_MODE) begin : g_no_gmii_totals
+    assign o_totals[GmiiBaseStart*64+:(PauseStart-GmiiBaseStart)*64] = '0;
+    assign o_totals[GmiiExtStart*64+:(OverflowNoDesc-GmiiExtStart)*64] = '0;
+    assign o_totals[PcsStart*64+:(NumEv-PcsStart)*64] = '0;
   end
 endmodule : nic_mac_cdc

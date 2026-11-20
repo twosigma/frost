@@ -68,6 +68,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
+    ("rob_retire_successor", "bmc"): 3600,
     ("coherence_home", "coh_home_cmo_cover"): 6000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
@@ -595,7 +596,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_home_array.sby",
         "Independent L2 ports and one-way parallel reads preserve byte values, tokens "
-        "and physical-row exclusions.",
+        "and physical-row exclusions. An open read at the output follows a stalled reply.",
         tasks=(
             "coh_home_array_prove",
             *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
@@ -956,6 +957,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
+        "if_fault_ras_veto.sby",
+        "Fetch-faulted IF packets never carry a predicted-taken flag or operate "
+        "the return-address stack",
+        tasks=("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
         "mispredict_capture.sby",
         "Recovery payload, pulse copies, frontend flush and registered fetch flush "
         "match their references",
@@ -1136,9 +1143,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_hold_rows.sby",
-        "Vector range holds: a scalar entry is held exactly while an older live "
-        "vector memory table entry overlaps it or has an unknown range",
-        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "cover"),
+        "Vector range holds: an older live vector memory table entry holds an "
+        "atomic scalar entry or one with an unknown address, unknown vector range, "
+        "or overlap. A settled hold has such a cause in either queue",
+        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "vhold_lq_cover", "cover"),
     ),
     FormalTarget(
         "vec_vmt.sby",
@@ -1245,6 +1253,10 @@ FORMAL_TARGETS = [
         "In-order ROB commit and instruction serialization",
     ),
     FormalTarget(
+        "rob_retire_successor.sby",
+        "Each ROB commit is at the architectural next PC of the one before it",
+    ),
+    FormalTarget(
         "rob_start_cofactor.sby",
         "ROB CSR/return start signals match the reference and exclude completion "
         "bypass",
@@ -1276,6 +1288,8 @@ FORMAL_TARGETS = [
         "home_capture_equiv.sby",
         "Consumed home payloads match handshake-only captures, and registered "
         "fill flags match their phase decodes across arbitrary reset and stalls. "
+        "Array covers reach hit and row captures in every configuration and kept "
+        "parallel captures in both banked configurations. "
         "The parked next-state function preserves event priority; selected-slot "
         "parking, the one-hot selection, dispatch and waiter eligibility match a "
         "slot-table reference.",
@@ -1288,6 +1302,11 @@ FORMAL_TARGETS = [
             "array_uram",
             "array_uram32",
             "array_uram_row",
+            "array_bram_cover",
+            "array_bram_four_cover",
+            "array_uram_cover",
+            "array_uram32_cover",
+            "array_uram_row_cover",
             "endpoint32",
             "endpoint56",
             "arbiter_default",
@@ -2085,6 +2104,21 @@ FORMAL_TARGETS = [
     FormalTarget(
         "nic_axis_boundary.sby",
         "NIC AXI4-Stream beat-code bijection, abort code isolation and TX checksum side-FIFO framing.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "axi_register_slice.sby",
+        "AXI4 and AXI4-Lite five-channel register slices: hold rules, FIFO ordering, full rate and reset.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "nic_diag.sby",
+        "NIC diagnostic CDC pin and register mapping, disabled slots, and PHY sample equivalence.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "nic_tx_hold.sby",
+        "NIC TX FIFO offer stability through acceptance, with rejection and reset-drain covers.",
         tasks=("prove", "cover"),
     ),
     FormalTarget(
@@ -3385,6 +3419,10 @@ SBY_TASKS = [
         "Vector range holds with the store queue's per-entry addresses, 8 frames.",
     ),
     (
+        "vhold_lq_cover",
+        "Vector range-hold reachability with the load queue's address-update port, 16 frames.",
+    ),
+    (
         "vmt_bmc",
         "Vector memory table lifecycle against a ghost reorder buffer, 14 frames.",
     ),
@@ -3433,6 +3471,17 @@ SBY_TASKS = [
         "array_uram_row",
         "Folded selection and single-array captures with short read latency.",
     ),
+    ("array_bram_cover", "Tag hit and row data capture with one BRAM way."),
+    ("array_bram_four_cover", "Tag hit and row data capture with four BRAM ways."),
+    (
+        "array_uram_cover",
+        "Hit, row and kept parallel captures with 64-byte URAM lines.",
+    ),
+    (
+        "array_uram32_cover",
+        "Hit, row and kept parallel captures with 32-byte URAM lines.",
+    ),
+    ("array_uram_row_cover", "Tag hit and row data capture in the single-array URAM."),
     ("endpoint32", "Demand and grant captures with 32-bit addresses."),
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),
@@ -4277,6 +4326,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         shard["shard"]: Expression.compile(shard["pytest_filter"]) for shard in shards
     }
     dedicated_shards = {
+        "rob_retire_successor_bmc": "ROB retirement successor",
+        "rob_retire_successor_cover": "ROB retirement successor",
         "coherent_hart_cache_coh_hart_maint_prove": "Hart maintenance",
         "coherent_hart_cache_coh_hart_maint_owned_prove": "Hart maintenance",
         "coherence_l1d_coh_l1d_stream_bmc": "Hart maintenance",
@@ -4391,6 +4442,12 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     shard_timeouts_s = {
         shard["shard"]: shard["timeout_minutes"] * 60 for shard in shards
     }
+    retire_limits = sby_timeouts["rob_retire_successor"]
+    assert retire_limits == {"bmc": 3600, "cover": 300}
+    assert formal_task_timeout_s("rob_retire_successor", "bmc") == retire_limits["bmc"]
+    assert shard_timeouts_s["ROB retirement successor"] == 10 * 60 + sum(
+        retire_limits.values()
+    )
     selected_by_shard: dict[str, list[str]] = {name: [] for name in filters}
     selected_limits_s: dict[str, list[int]] = {name: [] for name in filters}
     for node in nodes:
@@ -4425,6 +4482,11 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     assert len(selected_by_shard["Coherence L1D zero control"]) == 1
     assert len(selected_by_shard["Coherence L1D zero cover"]) == 1
     assert len(selected_by_shard["Coherence L1D local holds"]) == 1
+    for task in ("prove", "cover"):
+        assert any(
+            node.endswith(f"[nic_tx_hold_{task}]")
+            for node in selected_by_shard["Other tasks"]
+        )
     check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
 
 

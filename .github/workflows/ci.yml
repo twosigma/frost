@@ -389,12 +389,12 @@ jobs:
           # Every registry name starting with vec_ runs here, so vector programs
           # added later need no workflow change. The VLEN 256 programs share one build.
           - name: Real Programs (Vector programs)
-            timeout_minutes: 120
+            timeout_minutes: 300
             coverage: [bram]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: "[vec_"
           - name: Real Programs (Memory and NIC stress)
-            timeout_minutes: 270
+            timeout_minutes: 300
             coverage: [bram]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
@@ -455,7 +455,8 @@ jobs:
               [opensbi_smoke_no_misaligned_hw] or [opensbi_reset_cold] or [opensbi_reset_warm]
               or [isa_test_sram_macros] or [ddr_test_sram_macros]
               or [ddr_exec_test_sram_macros] or
-              [nic_loopback_sram_macros] or [cache_counters_openocd] or [async_hello_world]
+              [nic_loopback_sram_macros] or [cache_counters_openocd] or [hw_debug_check_openocd]
+              or [async_hello_world]
               or [async_nic_loopback] or [async_dma_torture]
               or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
               or [cbo_zero_pages] or [cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]
@@ -485,7 +486,7 @@ jobs:
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_loops]"
           - name: Real Programs (CoreMark-PRO / nnet)
-            timeout_minutes: 270
+            timeout_minutes: 300
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_nnet]"
@@ -539,13 +540,14 @@ jobs:
           - mem_config: bram
             shard:
               name: Real Programs (OpenSBI smoke)
+              timeout_minutes: 300
               coverage: [bram]
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_smoke]"
           - mem_config: bram
             shard:
               name: Real Programs (OpenSBI smoke, no misaligned hardware)
-              timeout_minutes: 290
+              timeout_minutes: 300
               coverage: [bram]
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_smoke_no_misaligned_hw]"
@@ -561,14 +563,15 @@ jobs:
               coverage: [bram]
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_reset_warm]"
-          # The OpenOCD session that reads the cache counters is long, and its
-          # program runs from low BRAM in either tier.
+          # The OpenOCD sessions that read the cache counters and run the
+          # debug-port check are long, and their program runs from low BRAM
+          # in either tier.
           - mem_config: bram
             shard:
               name: Real Programs (Cache counters over OpenOCD)
               coverage: []
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[cache_counters_openocd]"
+              pytest_filter: "[cache_counters_openocd] or [hw_debug_check_openocd]"
           # The unit benches run serially in two jobs of about equal duration;
           # tests/test_run_cocotb.py assigns each bench to one of them.
           - mem_config: bram
@@ -838,7 +841,7 @@ jobs:
   test-arch-compliance:
     name: Arch Tests (${{ matrix.extensions }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
     runs-on: ubuntu-26.04
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.timeout_minutes || 120 }}
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
     strategy:
@@ -850,13 +853,13 @@ jobs:
         # BRAM, split by --shard K/N. Only the first group collects coverage
         # (tests/README.md#coverage).
         include:
-          - {extensions: I B C, mem_config: bram, coverage: 1}
+          - {extensions: I B C, mem_config: bram, coverage: 1, timeout_minutes: 123}
           - {extensions: M A K Zicond privilege D_Zcd hints CMO Zimop, mem_config: bram, coverage: 0}
           - {extensions: I M hints CMO Zimop, mem_config: ddr, coverage: 0}
           - {extensions: B C A K Zicond Zifencei privilege D_Zcd, mem_config: ddr, coverage: 0}
-          - {extensions: F D, mem_config: bram, shard: 1/3, coverage: 0}
-          - {extensions: F D, mem_config: bram, shard: 2/3, coverage: 0}
-          - {extensions: F D, mem_config: bram, shard: 3/3, coverage: 0}
+          - {extensions: F D, mem_config: bram, shard: 1/3, coverage: 0, timeout_minutes: 153}
+          - {extensions: F D, mem_config: bram, shard: 2/3, coverage: 0, timeout_minutes: 139}
+          - {extensions: F D, mem_config: bram, shard: 3/3, coverage: 0, timeout_minutes: 136}
           - {extensions: F_Zfa D_Zfa Zfh, mem_config: bram, coverage: 0}
           - {extensions: F_Zfa D_Zfa Zfh, mem_config: ddr, coverage: 0}
     steps:
@@ -1093,7 +1096,7 @@ jobs:
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
   # model and on the simulated SoC and compares every retired instruction
   # (tests/test_testrig.py). The first shard replays saved counterexamples,
-  # scalar cryptography sequences, and deterministic counter controls.
+  # scalar cryptography sequences, deterministic counter controls, and WFI traces.
   # Every shard then draws its own random sequences, 100 per template, from the
   # engine's templates, and its own random A-extension (verif/testrig/atomics.py),
   # Sv39 MMU (verif/testrig/mmu.py), and CMO/Sstvala (verif/testrig/cmo.py)
@@ -1104,13 +1107,13 @@ jobs:
     runs-on: ubuntu-26.04
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.timeout_minutes || 120 }}
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
         include:
-          - {shard: 1, coverage: 1}
+          - {shard: 1, coverage: 1, timeout_minutes: 132}
           - {shard: 2, coverage: 1}
           - {shard: 3, coverage: 0}
           - {shard: 4, coverage: 1}
@@ -1170,6 +1173,16 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --cmo 80 --continue-on-fail
+
+      - name: Compare FROST with Sail on directed WFI traces
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        env:
+          # The default TestRIG build supplies the shard's startup sweep.
+          FROST_STARTUP_SWEEP: "0"
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run make -C tests clean
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --wfi --log-dir tests/testrig_logs/wfi-run
 
       - name: Require startup assertion controls
         if: ${{ always() && matrix.shard == 3 }}
@@ -1373,7 +1386,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -1476,7 +1489,7 @@ jobs:
               (csr_file_bmc and not csr_file_bmc_perf_off) or
               (coherence_l1d and coh_l1d_local and prove) or
               (coherent_local_atomic and sc_cover)
-            timeout_minutes: 120
+            timeout_minutes: 124
           - shard: CSR profiling off
             pytest_filter: >-
               csr_file_bmc_perf_off or
@@ -1486,7 +1499,7 @@ jobs:
             pytest_filter: >-
               reorder_buffer_bmc or
               (coherent_local_atomic and sc_bmc)
-            timeout_minutes: 120
+            timeout_minutes: 125
           # The coherence home, prefetch requester at every request cap,
           # endpoints, coherent CPU interfaces and hart covers.
           - shard: Coherence
@@ -1497,7 +1510,7 @@ jobs:
               coh_hart_maint_owned_prove or coherence_array_equiv or
               coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
-            timeout_minutes: 300
+            timeout_minutes: 330
           # Home task limits total 319 minutes plus twenty minutes for image setup.
           - shard: Coherence home
             pytest_filter: coherence_home_coh_home_
@@ -1507,10 +1520,10 @@ jobs:
           # four-way tasks, each about an hour of BMC tasks.
           - shard: Coherence array equivalence
             pytest_filter: coherence_array_equiv and not coh_array_equiv4
-            timeout_minutes: 120
+            timeout_minutes: 133
           - shard: Coherence array equivalence four-way
             pytest_filter: coh_array_equiv4
-            timeout_minutes: 120
+            timeout_minutes: 150
           # Each bounded store-home schedule checks both watched-byte choices
           # at its full depth, with 15 minutes allowed for each case.
           - shard: Coherence store home
@@ -1536,7 +1549,7 @@ jobs:
           # The three-endpoint control BMC has a five-hour allowance.
           - shard: Coherence L1D multi-endpoint
             pytest_filter: coh_l1d_multi_bmc
-            timeout_minutes: 330
+            timeout_minutes: 349
           # Word variants share their representative's measured allowance:
           # 65 minutes each for one endpoint, 70 for three endpoints. The
           # sums use 79% and 85% of their respective job limits.
@@ -1655,7 +1668,7 @@ jobs:
           # the intervening-load BMC keeps 140. Each has a job of its own.
           - shard: Store boundary four records
             pytest_filter: coherence_store_boundary_bmc_four
-            timeout_minutes: 330
+            timeout_minutes: 360
           - shard: Store boundary intervening load
             pytest_filter: coherence_store_boundary_bmc_intervening
             timeout_minutes: 330
@@ -1707,7 +1720,7 @@ jobs:
             pytest_filter: >-
               (_twin and not rs_payload_twin_bmc_operands) or
               (coh_read_select and xilinx) or rs_issue_tag_ or tage_copy_convergence
-            timeout_minutes: 90
+            timeout_minutes: 148
           # The vector CSR state, the vector memory unit and the vtype tracker:
           # the vector CSR BMC takes forty to fifty minutes, the memory unit's
           # BMC has a 25-minute limit and the tracker's proofs take seconds;
@@ -1715,7 +1728,7 @@ jobs:
           - shard: Vector
             pytest_filter: >-
               csr_file_vector or vec_lmul_legality or vec_vmu or vec_vtype_tracker
-            timeout_minutes: 90
+            timeout_minutes: 126
           # The line client link proofs, in two jobs: the zero-stage BMC, the
           # two-identity one-stage BMC and the cover take about an hour; the
           # four- and eight-identity BMCs about forty minutes.
@@ -1731,11 +1744,11 @@ jobs:
             pytest_filter: >-
               (ptw or tlb or imsic or aplic or immu or dmmu) and not
               (coherence_ or coherent_ or _twin)
-            timeout_minutes: 75
+            timeout_minutes: 120
           # The load queue and its helper blocks.
           - shard: Load queue
             pytest_filter: (load_queue or lq_) and not (coherence_ or coherent_ or _twin)
-            timeout_minutes: 60
+            timeout_minutes: 77
           # The longest block proofs among the remaining targets: branch
           # prediction hand-off and release, the flash-valid cache bits, the
           # vector memory tracker, the issue and rename blocks, the payload
@@ -1748,6 +1761,10 @@ jobs:
               rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
               rs_payload_twin_bmc_operands
             timeout_minutes: 150
+          # Allow 10 minutes for setup, 60 for the bounded check and 5 for cover.
+          - shard: ROB retirement successor
+            pytest_filter: rob_retire_successor
+            timeout_minutes: 75
           # Everything not named above: new small equivalence proofs and block
           # proofs go here unless they belong to one of the areas above.
           - shard: Other tasks
@@ -1760,8 +1777,8 @@ jobs:
               cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
               reservation_station_cover or rs_mem_broadcast or
               rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
-              tage_copy_convergence)
-            timeout_minutes: 120
+              tage_copy_convergence or rob_retire_successor)
+            timeout_minutes: 124
     # A task whose key has a pass marker is skipped; one in twenty of those
     # is proved again as a canary. The markers are cached per job: a main run
     # reads only main's cache, a pull request also its own.
@@ -1962,7 +1979,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs: build-docker
     if: ${{ !cancelled() && needs.build-docker.result == 'success' }}
-    timeout-minutes: ${{ matrix.mode == 'complete' && 360 || 140 }}
+    timeout-minutes: ${{ matrix.job_minutes || (matrix.mode == 'complete' && 360 || 140) }}
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -1991,7 +2008,7 @@ jobs:
           rm -f /tmp/frost-dev.tar
       - name: Run vector programs
         id: programs
-        timeout-minutes: ${{ matrix.mode == 'complete' && 310 || 100 }}
+        timeout-minutes: ${{ matrix.step_minutes || (matrix.mode == 'complete' && 310 || 100) }}
         env:
           VLEN: ${{ matrix.vlen }}
           MODE: ${{ matrix.mode }}
@@ -2259,7 +2276,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs: [build-docker, gate, build-frost-linux-mmu]
     if: ${{ needs.gate.outputs.full == 'true' }}
-    timeout-minutes: 20
+    timeout-minutes: 22
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1

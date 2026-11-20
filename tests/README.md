@@ -34,7 +34,11 @@ concurrent reads and writes, response backpressure, and reset cancellation.
 The `soc_axil` bench drives the CPU-facing SoC AXI port to check both
 register banks, ignored partial wide stores, error responses, CPU
 backpressure, and subsystem reset during reads and writes. Both `soc_axil`
-and `soc_axil_no_cached_tier` check the NIC-access guard.
+and `soc_axil_no_cached_tier` check the NIC-access guard. The
+`axi_register_slice` and `axil_register_slice` benches check full-rate
+streaming, stalls and reset clearing across all five channels, and
+`soc_ext_plugins` and `soc_ext_axil_bram` exercise `EXT_DMA_PORTS`,
+`EXTERNAL_MAC` and `EXT_AXIL_WINDOW` on `soc_top`.
 
 The `mops` bench executes every Zimop and Zcmop variant in M, S and U modes,
 checks dependent consumers and unchanged register, CSR and memory state, and
@@ -220,6 +224,22 @@ Reserved loads preserve every destination register, including both segment
 fields, and reserved stores preserve the entire range they could write. The
 `verif/testrig/vector_source_widths_memory.S` trace checks those encodings
 against the architectural reference.
+`vec_mem_reserved_forms_test_v128/v256/v512` exhaustively enumerate the 8,192
+unit-stride-class (`mop = 00`) vector load and store encodings across both
+opcodes, all 32 `lumop`/`sumop` values, all 8 `nf` values, both `mew` values,
+all four vector widths and both `vm` values against the specification's table
+of 214 defined combinations (checking illegal-instruction cause and `mtval` for
+all 7,978 reserved encodings and execution for all 214 defined ones), enumerate
+all 256 whole-register load and store alignments across all 32 register numbers
+and defined `nf` values under `vill = 1`, and verify unchanged memory,
+destination registers, `vstart` and `mstatus.VS` for every reserved class
+beside legal data transfers. Because `instr_decoder` has no `VLEN` parameter
+and `vec_head_mmu`'s legality predicate reads only the instruction fields and
+`vtype`, legality of these encodings cannot depend on `VLEN`; CI's vector
+real-program shard therefore runs `vec_mem_reserved_forms_test_v256` alone
+while the 128- and 512-bit entries remain CLI targets, and
+`tests/test_vector_reference.py` checks the program at all three vector lengths
+on both Spike and Sail.
 
 The Zicbom programs and cluster benches run the following cases.
 
@@ -505,8 +525,8 @@ Block benches ignore this setting, and so do applications with a fixed
 layout, such as `opensbi_smoke`. In the DDR tier, pytest skips the programs
 in `DDR_TIER_EXCLUDE`: the DDR probes (`ddr_*`), which already target DDR,
 the fetch fuzzers (`*_fetch_fuzz`), which use their own build, and
-`ecc_scrub_test` and `cache_counters_openocd`, whose programs run from BRAM
-in either tier.
+`ecc_scrub_test`, `cache_counters_openocd` and `hw_debug_check_openocd`, whose
+programs run from BRAM in either tier.
 `served_window_resteer_fetch_fuzz` turns off the optional Normal read caches
 so that its loop meets the SoC's AXI instruction-delay model. Each reset run
 must see both injected AXI delays and predicted-target fetch waits and finish
@@ -646,8 +666,11 @@ module deactivation.
 `debug_test` drives the JTAG debug module directly. Its older-load-fault
 case checks both the return stack and the architectural state of a younger
 indirect call discarded by the trap. `debug_openocd_test` runs
-OpenOCD and GDB sessions through `remote_bitbang`, and `cache_counters_openocd`
-reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.
+OpenOCD and GDB sessions through `remote_bitbang`, `cache_counters_openocd`
+reads the cache profiling counters that way with `fpga/debug/cache_counters.py`,
+and `hw_debug_check_openocd` runs the debug-port check and confirmation
+procedures of `hw_regression.py` (`fpga/debug/hw_debug_check.tcl`: dtmcs, halt,
+dpc, resume, and separate running-state confirmation) on the simulated core.
 Without OpenOCD installed those targets log a warning and pass; set
 `FROST_REQUIRE_OPENOCD=1`, as CI does, to make them fail instead. The GDB
 session also requires `${RISCV_PREFIX}gdb` and checks registers, memory,
@@ -838,6 +861,9 @@ The NIC targets include `nic_engine`, `nic_tx_segment`, `nic_rx_fifo_limit`, `ni
 `nic_pause_gmii`, `nic_pause_10g`, and `nic_pause_rx_wire`, alongside the engine and whole-NIC benches.
 Their registered tests cover segmentation headers, FIFO capacity, pause crossings, independent
 domain restarts, wire-side PAUSE validation during congestion, and cancellation under backpressure.
+`nic_top` and `nic_top_unrelated_clocks` check the zeroed 10G diagnostic slots and
+descriptor-starved MAC overflow. `nic_top_gmii_diag` checks GMII and PHY event
+counts at the same register offsets.
 `nic_cmo_loopback`, `nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
@@ -1013,7 +1039,7 @@ It distinguishes each pairing of vector loads/stores with DMA reads/writes.
 DMA writes racing vector loads must return a complete old or new sector image;
 the observer requires concurrent requests to a shared sector for this case.
 The reverse race checks the DMA's sector images while a vector store runs.
-The VLEN 256 memory and ordering programs run in the vector program CI shard.
+The VLEN 256 memory and ordering programs run in the Vector programs CI shard.
 `FROST_VEC_ORDER_CHECK_WAITS=0` disables only the observer's wait assertions
 for negative tests; the program still checks all three architectural results.
 The `vec_vmu_v*` and `vec_head_mmu_v*` unit benches check sector byte masks,
@@ -1022,9 +1048,10 @@ partial-fault descriptors, including an enabled suffix whose first element
 straddles the faulting page, and strided, indexed and segment element runs
 (one descriptor per element, or per field of a segment, in order, index reads,
 precise faults with the faulting element's `vstart` and address, pointer
-masking and the VS-dirty report). `vec_debug_partial` runs a
-partial vector load in Debug Mode, which changes vector registers before its
-exception re-parks the hart, and checks that `mstatus.VS` reads Dirty.
+masking and the VS-dirty report). `vec_debug_partial` runs in the Vector programs
+CI shard in both BRAM and DDR tiers. It checks that partial unit-stride and
+strided vector loads in Debug Mode write the completed elements before a page
+fault re-parks the hart and leave `mstatus.VS` Dirty.
 
 The `vec_stride_test_v128`, `vec_stride_test_v256`, and `vec_stride_test_v512`
 programs check strided vector loads and stores: every element width and EMUL
@@ -1114,15 +1141,16 @@ and register overlap.
 the class and pattern first. `--one-per-form` picks a numbered split using
 the form's checksum and the vector length. The split order follows the
 generator's register-group sweep. `--shard K/N` assigns the most expensive
-remaining split to the shard with the fewest estimated cycles. The estimate
+remaining split to the shard with the least assigned work. The default estimate
 counts setup lines and the register words checked by Spike. To use measured
 cycles, give each shard the same `--cycle-profile previous.jsonl`. Passing
 records at the requested VLEN supply exact weights and calibrate estimates
 for the other splits.
 
-The checked-in CI profile also works with `--cycle-profile`. It records
-separate weights for the one-per-form and complete selections, as described
-under [Generated vector programs in CI](#generated-vector-programs-in-ci).
+Main CI uses `--shard-profile` with measured program wall times. The complete
+campaign uses `--cycle-profile` with calibrated cycle estimates. Both
+profiles and their cost units are described under
+[Generated vector programs in CI](#generated-vector-programs-in-ci).
 
 Each result records the SHA-256 of the exact profile bytes (empty input for
 estimates alone) and the SHA-256 of the complete selection before sharding.
@@ -1187,41 +1215,75 @@ programs must print the pass marker after their last check.
 
 #### Generated vector programs in CI
 
-Every started main push runs one program per instruction form at VLEN
-128, 256 and 512, all 1,995 programs. Its 17 shards fit in the 20-job
-pool and cost an estimated 14.0 runner-hours. A complete campaign runs
-9,051 programs in 50 shards for an estimated 92.3 runner-hours. Both
-estimates include each shard's image setup, simulator build, guest
-preparation and artifact upload. The shared image build and campaign
-report are additional.
+Every started main push runs all 1,995 one-per-form programs, 665 at each
+VLEN. Its 24 vector jobs share a pool of 20 runners and require at least
+two waves. The projected cost is 24.9 vector runner-hours including setup
+and upload. The shared image build is additional.
 
-The hosted run used for calibration ran all 1,995 main programs in 20
-vector jobs and consumed 14.26 runner-hours. The complete campaign's
-cost is a projection from those measurements and local split checks.
+Main assigns the longest measured program to the lightest shard first.
+The table gives the longest modeled main shard in minutes at each width.
+The inner time includes model build and guest preparation. Whole-job
+time also includes runner setup, image download and load, and upload.
 
-The table gives projected wall minutes for the longest job at each width.
-The last column uses the actual partition with one fewer job. The slow-case
-targets are 75 minutes on main and 210 minutes for complete.
+| VLEN | Jobs | Model build (s) | Guest preparation (s) | Inner time (min) | Whole job (min) | Inner / step / job limits (min) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 | 4 | 260 | 211 | 50.93 | 60.93 | 92 / 95 / 130 |
+| 256 | 7 | 307 | 271 | 50.79 | 60.79 | 92 / 95 / 130 |
+| 512 | 13 | 382 | 368 | 53.23 | 63.23 | 96 / 99 / 134 |
 
-| Selection | VLEN | Jobs | Typical longest | Slow longest | Slow with one fewer |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Main | 128 | 2 | 49.44 | 74.24 | 142.92 |
-| Main | 256 | 4 | 50.95 | 70.33 | 91.78 |
-| Main | 512 | 11 | 48.91 | 72.56 | 78.98 |
-| Complete | 128 | 6 | 109.30 | 209.98 | 250.87 |
-| Complete | 256 | 12 | 114.56 | 199.17 | 216.96 |
-| Complete | 512 | 32 | 112.87 | 208.96 | 215.42 |
+To refresh the main profile, download the vector artifacts from the
+calibration runs and verify their published SHA-256, revision, native
+invocation, VLEN and DDR seed. For each one-per-form program, take its
+assertion-armed PASS row from each run that finished it. Check the image
+SHA-256 when both runs have the same program. Round each `wall_seconds`
+up to integer milliseconds and write the two observations to `main_ms`
+and `complete_ms` in VLEN and name order. Leave an unavailable observation
+empty. Each program uses its larger available measurement. A selected
+program without a measurement fails sharding. For a form awaiting its first
+hosted measurement, enter a passing local native run's wall time rounded up
+to whole milliseconds in `main_ms`, then replace that provisional value with
+the hosted measurement in its run's column. See the
+[main run](https://github.com/twosigma/frost/actions/runs/44695684644),
+[complete run](https://github.com/twosigma/frost/actions/runs/44655272352)
+and [main wall-time profile](fixtures/rvv_ci_form_times.csv).
 
-Main balances the programs by their measured cycles. For complete, the
-profile converts each hosted program's measured wall time to cycles at
-its job's aggregate execution rate. Other splits inherit a weight from
-the same instruction form and width in proportion to their source
-weights. Measured work has a 15% allowance and estimated work has a 50%
-allowance. For a split also measured locally, the profile takes the
-larger of the two estimates with their allowances. These weights apply
-after the suite has selected the program names. See the
-[hosted measurements](https://github.com/twosigma/frost/actions/runs/44490257076)
-and the [cycle profile](fixtures/rvv_ci_profile.csv).
+Model build time runs from the start of the vector step to publication
+of its simulator manifest. Guest preparation uses the largest remaining
+step time after model build and program execution on shards that finished.
+Each width uses the two separate maxima rounded up, plus two seconds each
+for artifact timestamp resolution. The layout uses the fewest shards
+whose measured inner time stays below 54 minutes at each width.
+Outside the vector step, the six measured phases (startup, checkout, ISA
+fetch, image download, image load and publication) add 10 minutes when
+each maximum is rounded up to a whole minute. Each width's inner deadline
+is 1.8 times its longest modeled inner time, rounded up to a whole minute.
+The vector step gets three additional minutes for container startup and
+saving partial results. The job limit is the vector step limit plus 30
+minutes for the four setup steps (5, 5, 15 and 5 minutes) and five
+minutes for the summary and artifact upload. Actual times depend on the
+runner and DDR seed.
+
+The complete campaign runs all 9,051 programs in 50 jobs, with 6, 12
+and 32 jobs at VLEN 128, 256 and 512. Its original 92.3 runner-hour
+projection used a 1,995-program hosted run and local split measurements.
+The complete profile converts hosted program wall time to cycles at
+each job's aggregate rate. Other splits inherit a weight from their
+instruction form and width in proportion to source weight. Measured
+work has a 15% allowance and estimated work has a 50% allowance. For
+a split also measured locally, the profile uses the larger estimate
+with its allowance. See the [original hosted run](https://github.com/twosigma/frost/actions/runs/44490257076)
+and [complete cycle profile](fixtures/rvv_ci_profile.csv).
+
+The original complete estimates below are wall minutes. Typical times
+use each width's aggregate rate and mean setup. The slow case uses the
+slowest observed rate and larger of the raw and wall-adjusted workloads,
+with preparation scaled for larger batches.
+
+| Complete VLEN | Jobs | Typical longest | Slow longest | Slow with one fewer |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 6 | 109.30 | 209.98 | 250.87 |
+| 256 | 12 | 114.56 | 199.17 | 216.96 |
+| 512 | 32 | 112.87 | 208.96 | 215.42 |
 
 In the profile, `cycles` is the program's measured cycle count. Complete shard
 weights use hundredths of a cycle. For a hosted program, `shard_weight`
@@ -1231,12 +1293,6 @@ divided by the hosted program's `source_weight`. A locally timed split
 has its own `shard_weight`.
 For the calibration inputs and calculations, see
 [Regenerating the cycle profile](#regenerating-the-cycle-profile).
-
-Typical times use each width's aggregate program rate and mean setup.
-The slow projection uses the slowest observed rate at that width, the
-larger workload from raw and wall-time-adjusted cycles, and the largest
-setup allowance. Larger guest batches receive proportionally more
-preparation time. Actual times depend on the runner and DDR seed.
 
 `SLICES_PER_MAIN_RUN` in `.github/workflows/ci.yml` is set to 20, which
 selects the full one-per-form layout above. A value N from 1 through 19
@@ -1250,7 +1306,8 @@ Adding the `run-ci` label to a pull request runs one slice, the PR
 number modulo 20. In **Run workflow**, leaving `campaign` at
 `rotation` and `slice` empty runs regular CI with one slice, the
 workflow run number modulo 20. Both check 99 to 102 programs in three
-vector jobs at an estimated 0.90 to 1.08 runner-hours per slice. The
+vector jobs at an estimated 0.90 to 1.08 runner-hours per slice in the
+original hosted calibration. The
 20 slices partition the one-per-form selection using source weights.
 Selecting `reprove` on regular manual CI forces fresh
 formal and synthesis checks.
@@ -1271,9 +1328,10 @@ source manifest, and runs one program at a time. Before sharding, the
 selection must contain 665 programs per width for one per form or
 3,017 for the complete suite. An empty shard, missing results or a
 pass without armed assertions fails the job. Each program has a
-20,000,000-cycle limit and a 7,200-second process timeout. The build
-and run together have 90 minutes for one-per-form shards and 300 for
-complete shards. The workflow reserves time to publish the results
+20,000,000-cycle limit and a 7,200-second process timeout. Main uses the
+limits in the table above. Slice replays and rotations have a 90-minute inner deadline, a 100-minute step and a 140-minute job limit.
+The complete campaign has a 300-minute inner deadline, a 310-minute step
+and a 360-minute job limit. Each job reserves time to publish results
 after a deadline.
 
 The shard summary gives the DDR seed and local command. Each failed
@@ -1480,6 +1538,7 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --crypto 50
 ./scripts/frost.py run python3 tests/test_testrig.py --vector 100 --vlen 256
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
+./scripts/frost.py run python3 tests/test_testrig.py --wfi
 ```
 
 `--vector N` replays random vector-instruction tests from `verif/testrig/vector.py`
@@ -1491,6 +1550,9 @@ seed the runner prints. A mismatch is shrunk to a short counterexample
 in `tests/testrig_failures/`, which `--trace` replays; the logs and the
 engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
 replays the saved counterexamples in `verif/testrig/traces/`.
+`--wfi` replays directed wait, wake, and trap cases with a simulation-only
+wake timeout and compares them with Sail's normalised WFI replies. See the
+[WFI checks and limits](../verif/testrig/README.md#wfi).
 Each successful session ends with `TestRIG PASS: compared <traces> traces
 and <instructions> instructions`, followed by the required minimum counts
 and log directory. The runner counts instruction requests and both peers'
@@ -1715,7 +1777,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_REUSE_REPORT` | File that collects one JSON line per task: proved, reused, canary, failed |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
 | `MEMORY_LINK_STAGES` | Register stages between the hart and the cluster memory in `frost` builds (default 0). The `*_link1` registry entries run the memory-system programs with one stage |
-| `MISALIGNED_HW` | Builds `frost` with the misaligned-access engine, as the X3 has it: plain misaligned loads and stores to cached DDR are performed in hardware (default 1, and 0 when `ENABLE_CACHED_TIER=0`). The registry entries that disable the cached tier also set it to 0 |
+| `MISALIGNED_HW` | Enables hardware completion of plain misaligned loads and stores to cached DDR. Defaults to 1 with the cached tier and 0 without it. Set to 0 to exercise firmware handling with either memory layout |
 | `SIM_FAST_MAINT` | Clears coherent-array tags, coherence states and replacement bits in one simulation cycle and bulk-clears the L1I tag and replacement RAMs on reset and every invalidate-all (default 1). L1I invalidate-all clears valid flip-flops in one cycle in either mode. Data RAM is not cleared. Hardware uses 0. Coherent fences leave dirty L1D data available to home probes. The Physical address aperture (1 GiB / Bare access) CI job uses 0 with randomized start values to cover the real reset sweep |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
@@ -1764,11 +1826,8 @@ assertions. They pulse fabric reset with the SoC clock stopped and repeat
 the request during release. With a common clock, fabric reset asserts
 immediately, the CPU reset register holds its value until the first resumed
 edge, and the cycle counter clears on the next edge. The fourth resumed
-edge releases fabric reset and the fifth releases CPU reset. The cycle
-counter starts on the sixth edge. Core reset and CPU reset assert together,
-and CPU reset releases one edge after core reset.
-These checks use idle external DDR AXI ports. The master and bridge unit
-benches check active transactions across CPU-only and fabric reset.
+edge releases fabric reset, the fifth releases bridge reset and the sixth
+releases CPU reset. The cycle counter starts on the seventh edge.
 
 `platform_dma_reset` and `platform_dma_reset_async` run a DMA copy from
 BRAM firmware with the external DDR transport active. Each interrupts a
@@ -1777,6 +1836,18 @@ clock. The common-clock test also straddles a single edge with a 2 ps
 pulse. The independent-clock test pulses reset for one simulation tick
 entirely between edges. Both check the bridge and ingress reset edges, reuse the read and
 write IDs after release, and check the copied byte and the returned credits.
+The independent-clock bench also interrupts a live read or write with a
+DDR-only pulse between clock edges and checks reset in both domains.
+
+`ddr_dma_reset` and `ddr_dma_reset_link` interrupt a coherent read or write
+when its completion is due, or a fresh DMA request when the bridge offers it.
+They use external DDR, zero or one coherent link stage, and pulses of one,
+two, three and eight clocks. Each checks the old owner and credits, then
+requires restarted firmware to copy a new byte through the same IDs.
+They also exercise an outstanding request, a stalled DMA register read
+and the hart's translated Svpbmt non-cacheable loads and stores.
+`ddr_dma_reset_stopped` exercises those paths through `frost` with a
+reset pulse entirely inside a clock stop and checks the first resumed edges.
 
 ## Coverage
 
@@ -1960,7 +2031,7 @@ and Fast Python Tests jobs locally.
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
-| TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
+| TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | Formal verification | The 51 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue, block proofs, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
@@ -2030,11 +2101,17 @@ their shared builds. Vector programs selects every registry name that starts
 with `vec_`, so a vector program added later joins it without a workflow
 change; "Runtime and other" excludes the same prefix. Each real-program job
 has a four-hour timeout, including setup and coverage uploads, unless its
-shard sets `timeout_minutes`. A shard's limit is 1.8 times its slowest
-measured time, rounded up, so that a slow runner still finishes it; keep
-shards under about 165 minutes so the limit stays at or below 300. The one
-program that cannot be split further, CoreMark-PRO loops, has a 340-minute
-limit.
+shard sets `timeout_minutes`. Size each shard's allowance at 1.8 times its
+slowest measured hosted job time, rounded up to whole minutes. The
+real-program ceiling is 300 minutes. Vector programs, Memory and NIC stress,
+Runtime and other, CoreMark-PRO nnet, and both OpenSBI smoke variants use that
+ceiling. CoreMark-PRO loops has a 340-minute exception because it cannot be
+split further.
+
+The other job families have a ceiling of 360 minutes, which is also the
+default for jobs without a configured timeout. The two cocotb unit jobs,
+the complete generated-vector campaign shards, and the Store boundary
+four records proof use 360-minute limits.
 
 Give each program that boots OpenSBI its own BRAM-only shard with coverage,
 including variants that disable a hardware feature or exercise reset through

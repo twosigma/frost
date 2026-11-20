@@ -215,9 +215,10 @@ __asm__(".section .text\n"
     "    sd   a0, " #v "*8(s1)\n"                                                                  \
     "    sd   t1, " #w "*8(s1)\n"
 
-#define CALL(v, w)                                                                                 \
-    "    csrr t0, 0xC05\n"                                                                         \
-    "    jalr t6, 0(s3)\n"                                                                         \
+/* Sample the ITLB walk counter before a fetch restart. A predicted JALR can
+ * fetch the code page before the instruction preceding the JALR retires. */
+#define CALL_AFTER(change, v, w)                                                                   \
+    "    csrr t0, 0xC05\n" change "    jalr t6, 0(s3)\n"                                           \
     "    csrr t1, 0xC05\n"                                                                         \
     "    sub  t1, t1, t0\n"                                                                        \
     "    sd   a0, " #v "*8(s1)\n"                                                                  \
@@ -318,20 +319,20 @@ __asm__(".section .text\n"
          *    entry stays resident while A walks and fetches the new code page. */
         "    csrw satp, s4\n"
         WORD_INSN(SINVAL_ALL_BITS)
-        CALL(62, 63)
-        "    csrw satp, s5\n"
-        CALL(64, 65)
+        /* Evict A's code page inside the window while keeping the caller's
+         * global translation resident. */
+        CALL_AFTER(WORD_INSN(SINVAL_S3_A6_BITS), 62, 63)
+        CALL_AFTER("    csrw satp, s5\n", 64, 65)
         "    csrw satp, s4\n"
-        CALL(66, 67)
+        CALL_AFTER("", 66, 67)
         "    li   t2, 0x20485C4B\n" /* PTE_PPN(PA_CA2) | V R X A */
         "    sd   t2, 16(s9)\n"
         WORD_INSN(SFENCE_W_INVAL_BITS)
         WORD_INSN(SINVAL_S3_A6_BITS)
         WORD_INSN(SFENCE_INVAL_IR_BITS)
         "    csrw satp, s5\n"
-        CALL(68, 69)
-        "    csrw satp, s4\n"
-        CALL(70, 71)
+        CALL_AFTER("", 68, 69)
+        CALL_AFTER("    csrw satp, s4\n", 70, 71)
         /* 9. sinval.vma x0, x0 flushes all resident entries (A, B, global).
          *    Warm VA_X and VA_G first (step 8 started with sinval.vma x0, x0). */
         "    ld   t0, 0(s0)\n"
