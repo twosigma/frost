@@ -246,7 +246,7 @@ different implementation choice:
 | Setting | FROST |
 |---------|-------|
 | Extensions | RV64IMAFDC, B, Zfa, Zfhmin, Zcb, Zcmop, Zihintntl, Zimop, Zicond, Zbc, Zbkb, Zbkc, Zkt, Zihintpause, Zicntr, Zihpm, Zic64b, Ziccif, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svinval, Svnapot, Svpbmt, Ssnpm, Svvptc, Sstc, Sscofpmf, Sscounterenw, Sstvala, Sstvecd; `misa` read-only |
-| Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
+| Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check; `Zicclsm` is left off because TestRIG builds omit the misaligned-access engine |
 | `mtval` | The faulting instruction's bits for illegal instructions (Sstvala) |
@@ -359,8 +359,8 @@ them out, and `--atomics N` replays N tests from
 
 Each test mixes LR, SC, and AMOs of both widths and every ordering bit with
 loads, stores, integer operations, branches, jumps, fences, `ecall`, and
-accesses that fault: misaligned ones and ones to device memory, to the
-store-only part of the device quadrant, and outside the memory map. Between
+accesses that fault: misaligned ones and ones to device memory, and to unmapped
+addresses, including device-quadrant gaps. Between
 an LR and the SC that closes it go only operations that cannot trap or flush:
 integer operations, branches, JAL and JALR, FENCE, another LR, and loads,
 stores, and AMOs to valid aligned addresses, some to the reserved line.
@@ -472,11 +472,9 @@ Several architectural and harness rules keep the comparison deterministic:
   `cmo.py` exercises `cbo.zero` across `CBZE` privilege gates and Bare and Sv39
   access and page faults; retiring 64-byte zeroing is checked by the Zicboz
   cocotb benches.
-- Under Sv39, FROST rejects mappings to the store-only gaps of the device
-  quadrant (`StoreAccessFault`) and checks alignment before the page-table
-  walk, whereas Sail permits stores to those gaps and walks page tables before
-  alignment checks. Translated strands keep device mappings inside the MMIO,
-  APLIC, and IMSIC windows and place misaligned checks on valid pages.
+- Under Sv39, FROST checks alignment before the page-table walk. Sail walks
+  the page tables before checking alignment. Translated strands place
+  misaligned checks on valid pages.
 
 ## Saved counterexamples
 
@@ -485,7 +483,7 @@ CI's TestRIG jobs replays all of them before its random run.
 
 | Trace | Checks |
 |-------|--------|
-| [`access_fault_tval.S`](traces/access_fault_tval.S) | Access faults outside the physical map (load, store, AMO, LR, a misaligned load) write the faulting virtual address to `mtval` |
+| [`access_fault_tval.S`](traces/access_fault_tval.S) | Access faults on loads, stores, AMOs and LR write the faulting address to `mtval`, including Bare and Sv39 stores into a device-quadrant gap |
 | [`clint_window_load.S`](traces/clint_window_load.S) | A load just below 2^35 faults at the 1 GiB default and reaches DDR with a 64 GiB configuration; Sail disables its CLINT in both configurations |
 | [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM`, `senvcfg.FIOM` and both CBZE bits are writable |
 | [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires |

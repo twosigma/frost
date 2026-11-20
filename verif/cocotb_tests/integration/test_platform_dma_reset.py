@@ -25,6 +25,7 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 
 from cocotb_tests.axi.axi_models import AxiSlaveMemory
 from cocotb_tests.bram_programmer import program_bram_image
+from cocotb_tests.test_real_program import generate_divided_clock, prepare_program_start
 from encoders.instruction_encode import enc_b, enc_i, enc_i_load, enc_j, enc_lui, enc_s
 
 
@@ -56,7 +57,18 @@ def _dma_copy_program() -> list[int]:
     ]
 
 
-async def _start_dma(dut: Any, core_clk: Any) -> AxiSlaveMemory:
+async def _start_dma(
+    dut: Any,
+    core_clk: Any,
+    *,
+    clock: Clock | None = None,
+    image: list[tuple[int, int]] | None = None,
+    reset_ddr: bool = False,
+) -> AxiSlaveMemory:
+    wrapped = hasattr(dut, "i_ddr_axi_rst_n")
+    platform = dut.cpu_and_memory_subsystem if wrapped else dut
+    reset = dut.i_rst_n if wrapped else dut.i_rst
+    ddr_reset = dut.i_ddr_axi_rst_n if wrapped else dut.i_ddr_axi_rst
     for pin in (
         "i_clk",
         "i_cpu_clk",
@@ -66,24 +78,32 @@ async def _start_dma(dut: Any, core_clk: Any) -> AxiSlaveMemory:
         "i_dtm_bscan_tck",
         "i_instr_mem_en",
         "i_instr_mem_we",
-        "i_rst",
-        "i_ddr_axi_rst",
         "i_power_on_rst",
         "i_nic_tx_clk",
         "i_nic_rx_clk",
         "i_nic_tx_clk_ok",
         "i_nic_rx_clk_ok",
-        "i_uart_rx_valid",
     ):
         getattr(dut, pin).value = Immediate(0)
+    if wrapped:
+        await prepare_program_start(dut)
+        dut.i_uart_rx.value = 1
+    else:
+        dut.i_uart_rx_valid.value = 0
+        dut.i_uart_tx_ready.value = 1
+        reset.value = 0
+    ddr_reset.value = int(wrapped)
     await Timer(1, unit="ps")
-    dut.i_uart_tx_ready.value = 1
-    dut.i_rst.value = 1
-    dut.i_ddr_axi_rst.value = 1
-    dut.i_power_on_rst.value = 1
+    reset.value = int(not wrapped)
+    ddr_reset.value = int(not wrapped)
+    if not wrapped:
+        dut.i_power_on_rst.value = 1
     await Timer(1, unit="ps")
-    Clock(dut.i_clk, 10, unit="ns").start()
-    Clock(dut.i_clk_div4, 40, unit="ns").start()
+    (clock or Clock(dut.i_clk, 10, unit="ns")).start()
+    if wrapped:
+        cocotb.start_soon(generate_divided_clock(dut, image_loader=lambda _: None))
+    else:
+        Clock(dut.i_clk_div4, 40, unit="ns").start()
     if CPU_PERIOD_PS:
         await Timer(500, unit="ps")
         Clock(core_clk, CPU_PERIOD_PS, unit="ps").start()
@@ -97,19 +117,21 @@ async def _start_dma(dut: Any, core_clk: Any) -> AxiSlaveMemory:
         len(dut.o_ddr_axi_wstrb),
         memory,
         random.Random(21),
+        reset=platform.soc.soc_axi_rst if reset_ddr else None,
     )
     for _ in range(4):
         await RisingEdge(dut.i_clk_div4)
-    dut.i_power_on_rst.value = 0
+    if not wrapped:
+        dut.i_power_on_rst.value = 0
     for _ in range(4):
         await RisingEdge(dut.i_clk_div4)
-    assert not int(dut.soc.power_on_rst_div4.value)
-    await program_bram_image(
-        dut, [(pc * 4, word) for pc, word in enumerate(_dma_copy_program())]
-    )
+    assert not int(platform.soc.power_on_rst_div4.value)
+    if image is None:
+        image = [(pc * 4, word) for pc, word in enumerate(_dma_copy_program())]
+    await program_bram_image(dut, image)
     await FallingEdge(dut.i_clk)
-    dut.i_ddr_axi_rst.value = 0
-    dut.i_rst.value = 0
+    ddr_reset.value = int(wrapped)
+    reset.value = int(wrapped)
 
     return ram
 
@@ -175,6 +197,49 @@ async def _check_restarted_copy(
     assert not int(ingress.occupied_q.value) and not int(ingress.count_q.value)
     assert not ram.violations, ram.violations
     dut._log.info("Recovered request/response IDs %s, fresh UART byte 0xa5", replies)
+
+
+@cocotb.test(skip=CPU_PERIOD_PS == 0)
+@cocotb.parametrize(write=[False, True])
+async def independent_ddr_pulse(dut: Any, write: bool) -> None:
+    """Cancel a live DMA line with a DDR pulse between independent clock edges."""
+    soc, core_clk = dut.soc, dut.i_cpu_clk
+    bridge = soc.gen_cached_tier.dma_bridge
+    ingress = dut.cpu.cluster_memory.gen_coherent_tier.gen_dma_ingress.ingress
+    ram = await _start_dma(dut, core_clk, reset_ddr=True)
+    await _wait_for_completion(core_clk, bridge, ingress, write)
+    assert int(ingress.occupied_q.value) & (1 << (0 if write else 8))
+    await Timer(1, unit="ps")
+    ram.mem[0] = 0xA5
+    dut.i_ddr_axi_rst.value = 1
+    await Timer(1, unit="ps")
+    assert int(soc.soc_axi_rst.value) and int(dut.cpu.i_axi_rst.value)
+    assert int(ingress.i_rst.value) and int(bridge.i_rst.value)
+    assert not int(soc.rst_core.value)
+    dut.i_ddr_axi_rst.value = 0
+
+    async def reset_samples(clock: Any, reset: Any, cpu_side: bool) -> int:
+        for edge in range(32):
+            await RisingEdge(clock)
+            if not int(reset.value):
+                return edge
+            await Timer(1, unit="ps")
+            if edge == 0 and cpu_side:
+                assert not int(ingress.occupied_q.value)
+                assert not int(bridge.r_id_busy_q.value)
+                assert not int(bridge.w_id_busy_q.value)
+            if edge == 0 and not cpu_side:
+                assert int(soc.gen_cached_tier.dma_engine.i_rst.value)
+        raise AssertionError("Paired reset did not release")
+
+    soc_edges = cocotb.start_soon(reset_samples(dut.i_clk, soc.soc_axi_rst, False))
+    cpu_edges = await reset_samples(core_clk, ingress.i_rst, True)
+    fabric_edges = await soc_edges
+    assert fabric_edges >= 2 and cpu_edges >= 2
+    dut._log.info(
+        "DDR-only pulse sampled on %d SoC and %d CPU edges", fabric_edges, cpu_edges
+    )
+    await _check_restarted_copy(dut, core_clk, bridge, ingress, ram)
 
 
 @cocotb.test()

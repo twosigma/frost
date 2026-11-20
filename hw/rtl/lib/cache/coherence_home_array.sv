@@ -69,8 +69,8 @@ module coherence_home_array #(
     // The response's parallel read is in flight. Kept, its row (the
     // response's way) arrives on the read output with the response's token.
     output logic o_resp_spec,
-    // With the response's handshake: keep the parallel read for o_resp_way.
-    // A read that is not kept is dropped.
+    // The response handshake can keep an open stage before the output stage
+    // for o_resp_way. An open stage at the output has no successor and drops.
     input logic i_resp_keep,
     input logic i_read_valid,
     // i_read_valid before the consumer's stop qualification. It decides the
@@ -443,7 +443,11 @@ module coherence_home_array #(
       load_data |= {8 * LINE_BYTES{load_ways_q[way]}} & bank_rdata[way];
     end
 `ifdef HOME_CAPTURE_LOCAL_PROOF
-    assign f_capture_read_source = load_data;
+    // At the capture edge, the stage carries its resolved way or takes the
+    // way from Reply on that edge. Index the bank directly.
+    wire [WayBits-1:0] f_capture_bank = read_open_q[DATA_READ_LATENCY-1] ? o_resp_way :
+        read_way_q[DATA_READ_LATENCY-1];
+    assign f_capture_read_source = int'(f_capture_bank) < WAYS ? bank_rdata[f_capture_bank] : '0;
 `endif
     always_ff @(posedge i_clk) begin
       for (int way = 0; way < WAYS; way++) load_ways_q[way] <= load_way_next == WayBits'(way);
@@ -603,7 +607,10 @@ module coherence_home_array #(
     initial $fatal(1, "coherence_home_array: invalid parameters");
   end
 `ifndef SYNTHESIS
+  logic resp_stalled_q;
   always_ff @(posedge i_clk) begin
+    if (i_rst) resp_stalled_q <= 1'b0;
+    else resp_stalled_q <= o_resp_valid && !i_resp_ready;
     if (sim_reset_seen_q && !i_rst) begin
       // The held tag register still holds the selection's tags in the response.
       if (FoldSelect && phase_q == Reply)
@@ -622,6 +629,13 @@ module coherence_home_array #(
       if (spec_fire) assert (!(update_fire && i_update_has_data && write_set == set_q));
       assert ($countones(read_open_q) <= 1);
       assert ((read_open_q & ~read_valid_q) == '0);
+      // The first Reply meets the open read before its output stage.
+      p_final_open_after_stall : assert (!read_open_q[DATA_READ_LATENCY] || resp_stalled_q);
+`ifdef COHERENCE_HOME_CONTROL
+      // The home drives ready with run. Once Reply stalls, the home stays
+      // stopped until reset clears the read pipeline.
+      p_keep_before_final : assert (!(resolve && i_resp_keep && read_open_q[DATA_READ_LATENCY]));
+`endif
     end
   end
 `endif
@@ -763,38 +777,57 @@ module coherence_home_array #(
 `endif
 `endif
 `ifdef HOME_CAPTURE_LOCAL_PROOF
-  // The reference captures a response under reset-qualified selecting,
-  // including the last tag-read cycle when selection is folded. Its read
-  // data follows the banked or single-array capture without reset.
+  // Compare the response payload throughout Reply. Sample the inputs to
+  // the flag and data captures at their specified edges.
   logic f_capture_reset_seen_q = 1'b0;
   logic [WayBits-1:0] f_capture_way_q;
   logic [ADDR_WIDTH-1:0] f_capture_addr_q;
   logic [1:0] f_capture_state_q;
-  logic [2:0] f_capture_flags_q;
-  logic [8*LINE_BYTES-1:0] f_capture_data_q;
+  logic [WAYS-1:0] f_capture_matches;
+  logic [2:0] f_capture_flags;
+  wire f_capture_select = FoldSelect ? phase_q == Tags && count_q == 1 : phase_q == Select;
+  wire f_capture_row = read_valid_q[DATA_READ_LATENCY-1] && !read_open_q[DATA_READ_LATENCY-1];
+  wire f_capture_keep = read_valid_q[DATA_READ_LATENCY-1] && read_open_q[DATA_READ_LATENCY-1] &&
+      o_resp_valid && i_resp_ready && i_resp_keep;
+  for (genvar way = 0; way < WAYS; way++) begin : gen_capture_match
+    assign f_capture_matches[way] = select_tags[way][TagBits+:2] != 0 &&
+        select_tags[way][TagBits-1:0] == tag_q;
+  end
+  assign f_capture_flags = {|f_capture_matches, (|f_capture_matches) || i_exclude != '1,
+      WAYS - $countones(i_exclude) >= 2};
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       f_capture_reset_seen_q <= 1'b1;
       f_capture_way_q <= '0;
       f_capture_addr_q <= '0;
       f_capture_state_q <= '0;
-      f_capture_flags_q <= '0;
-    end else if (selecting) begin
+    end else if (f_capture_select) begin
       f_capture_way_q <= selected;
       f_capture_addr_q <= {select_tags[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
       f_capture_state_q <= select_tags[selected][TagBits+:2];
-      f_capture_flags_q <= {hit, hit || !(&i_exclude), $countones(~i_exclude) >= 2};
     end
-    if (read_valid_q[DATA_READ_LATENCY-1]) f_capture_data_q <= f_capture_read_source;
-    if (f_capture_reset_seen_q && !i_rst) begin
-      if (o_resp_valid) begin
+    if (f_capture_reset_seen_q) begin
+      // With the parallel-read latency constraint, Reply has started by the
+      // edge that registers the bank selection for an open read.
+      if (SpecRead)
+        p_capture_bank_phase : assert (!read_open_q[DATA_READ_LATENCY-2] || o_resp_valid);
+      if (!i_rst && o_resp_valid) begin
         p_capture_way : assert (o_resp_way == f_capture_way_q);
         p_capture_addr : assert (o_resp_addr == f_capture_addr_q);
         p_capture_state : assert (o_resp_state == f_capture_state_q);
-        p_capture_flags : assert ({o_resp_hit, o_resp_available, o_resp_two_available} ==
-            f_capture_flags_q);
       end
-      if (o_read_valid) p_capture_data : assert (o_read_data == f_capture_data_q);
+      if ($past(!i_rst && f_capture_select)) begin
+        p_capture_flags : assert (o_resp_valid &&
+            {o_resp_hit, o_resp_available, o_resp_two_available} == $past(f_capture_flags));
+        p_capture_cover_flags : cover (o_resp_valid && o_resp_hit && o_resp_available);
+      end
+      if ($past(!i_rst && (f_capture_row || f_capture_keep))) begin
+        p_capture_data : assert (o_read_valid && o_read_data == $past(f_capture_read_source));
+        p_capture_cover_row : cover (o_read_valid && |o_read_data &&
+            $past(read_fire, DATA_READ_LATENCY + 1));
+        if (SpecRead)
+          p_capture_cover_keep : cover (o_read_valid && |o_read_data && $past(f_capture_keep));
+      end
     end
   end
 `endif

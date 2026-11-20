@@ -34,7 +34,11 @@ concurrent reads and writes, response backpressure, and reset cancellation.
 The `soc_axil` bench drives the CPU-facing SoC AXI port to check both
 register banks, ignored partial wide stores, error responses, CPU
 backpressure, and subsystem reset during reads and writes. Both `soc_axil`
-and `soc_axil_no_cached_tier` check the NIC-access guard.
+and `soc_axil_no_cached_tier` check the NIC-access guard. The
+`axi_register_slice` and `axil_register_slice` benches check full-rate
+streaming, stalls and reset clearing across all five channels, and
+`soc_ext_plugins` and `soc_ext_axil_bram` exercise `EXT_DMA_PORTS`,
+`EXTERNAL_MAC` and `EXT_AXIL_WINDOW` on `soc_top`.
 
 The `mops` bench executes every Zimop and Zcmop variant in M, S and U modes,
 checks dependent consumers and unchanged register, CSR and memory state, and
@@ -220,6 +224,22 @@ Reserved loads preserve every destination register, including both segment
 fields, and reserved stores preserve the entire range they could write. The
 `verif/testrig/vector_source_widths_memory.S` trace checks those encodings
 against the architectural reference.
+`vec_mem_reserved_forms_test_v128/v256/v512` exhaustively enumerate the 8,192
+unit-stride-class (`mop = 00`) vector load and store encodings across both
+opcodes, all 32 `lumop`/`sumop` values, all 8 `nf` values, both `mew` values,
+all four vector widths and both `vm` values against the specification's table
+of 214 defined combinations (checking illegal-instruction cause and `mtval` for
+all 7,978 reserved encodings and execution for all 214 defined ones), enumerate
+all 256 whole-register load and store alignments across all 32 register numbers
+and defined `nf` values under `vill = 1`, and verify unchanged memory,
+destination registers, `vstart` and `mstatus.VS` for every reserved class
+beside legal data transfers. Because `instr_decoder` has no `VLEN` parameter
+and `vec_head_mmu`'s legality predicate reads only the instruction fields and
+`vtype`, legality of these encodings cannot depend on `VLEN`; CI's vector
+real-program shard therefore runs `vec_mem_reserved_forms_test_v256` alone
+while the 128- and 512-bit entries remain CLI targets, and
+`tests/test_vector_reference.py` checks the program at all three vector lengths
+on both Spike and Sail.
 
 The Zicbom programs and cluster benches run the following cases.
 
@@ -505,8 +525,8 @@ Block benches ignore this setting, and so do applications with a fixed
 layout, such as `opensbi_smoke`. In the DDR tier, pytest skips the programs
 in `DDR_TIER_EXCLUDE`: the DDR probes (`ddr_*`), which already target DDR,
 the fetch fuzzers (`*_fetch_fuzz`), which use their own build, and
-`ecc_scrub_test` and `cache_counters_openocd`, whose programs run from BRAM
-in either tier.
+`ecc_scrub_test`, `cache_counters_openocd` and `hw_debug_check_openocd`, whose
+programs run from BRAM in either tier.
 `served_window_resteer_fetch_fuzz` turns off the optional Normal read caches
 so that its loop meets the SoC's AXI instruction-delay model. Each reset run
 must see both injected AXI delays and predicted-target fetch waits and finish
@@ -646,8 +666,11 @@ module deactivation.
 `debug_test` drives the JTAG debug module directly. Its older-load-fault
 case checks both the return stack and the architectural state of a younger
 indirect call discarded by the trap. `debug_openocd_test` runs
-OpenOCD and GDB sessions through `remote_bitbang`, and `cache_counters_openocd`
-reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.
+OpenOCD and GDB sessions through `remote_bitbang`, `cache_counters_openocd`
+reads the cache profiling counters that way with `fpga/debug/cache_counters.py`,
+and `hw_debug_check_openocd` runs the debug-port check and confirmation
+procedures of `hw_regression.py` (`fpga/debug/hw_debug_check.tcl`: dtmcs, halt,
+dpc, resume, and separate running-state confirmation) on the simulated core.
 Without OpenOCD installed those targets log a warning and pass; set
 `FROST_REQUIRE_OPENOCD=1`, as CI does, to make them fail instead. The GDB
 session also requires `${RISCV_PREFIX}gdb` and checks registers, memory,
@@ -1013,7 +1036,7 @@ It distinguishes each pairing of vector loads/stores with DMA reads/writes.
 DMA writes racing vector loads must return a complete old or new sector image;
 the observer requires concurrent requests to a shared sector for this case.
 The reverse race checks the DMA's sector images while a vector store runs.
-The VLEN 256 memory and ordering programs run in the vector program CI shard.
+The VLEN 256 memory and ordering programs run in the Vector programs CI shard.
 `FROST_VEC_ORDER_CHECK_WAITS=0` disables only the observer's wait assertions
 for negative tests; the program still checks all three architectural results.
 The `vec_vmu_v*` and `vec_head_mmu_v*` unit benches check sector byte masks,
@@ -1022,9 +1045,10 @@ partial-fault descriptors, including an enabled suffix whose first element
 straddles the faulting page, and strided, indexed and segment element runs
 (one descriptor per element, or per field of a segment, in order, index reads,
 precise faults with the faulting element's `vstart` and address, pointer
-masking and the VS-dirty report). `vec_debug_partial` runs a
-partial vector load in Debug Mode, which changes vector registers before its
-exception re-parks the hart, and checks that `mstatus.VS` reads Dirty.
+masking and the VS-dirty report). `vec_debug_partial` runs in the Vector programs
+CI shard in both BRAM and DDR tiers. It checks that partial unit-stride and
+strided vector loads in Debug Mode write the completed elements before a page
+fault re-parks the hart and leave `mstatus.VS` Dirty.
 
 The `vec_stride_test_v128`, `vec_stride_test_v256`, and `vec_stride_test_v512`
 programs check strided vector loads and stores: every element width and EMUL
@@ -1719,7 +1743,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_REUSE_REPORT` | File that collects one JSON line per task: proved, reused, canary, failed |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
 | `MEMORY_LINK_STAGES` | Register stages between the hart and the cluster memory in `frost` builds (default 0). The `*_link1` registry entries run the memory-system programs with one stage |
-| `MISALIGNED_HW` | Builds `frost` with the misaligned-access engine, as the X3 has it: plain misaligned loads and stores to cached DDR are performed in hardware (default 1, and 0 when `ENABLE_CACHED_TIER=0`). The registry entries that disable the cached tier also set it to 0 |
+| `MISALIGNED_HW` | Enables hardware completion of plain misaligned loads and stores to cached DDR. Defaults to 1 with the cached tier and 0 without it. Set to 0 to exercise firmware handling with either memory layout |
 | `SIM_FAST_MAINT` | Clears coherent-array tags, coherence states and replacement bits in one simulation cycle and bulk-clears the L1I tag and replacement RAMs on reset and every invalidate-all (default 1). L1I invalidate-all clears valid flip-flops in one cycle in either mode. Data RAM is not cleared. Hardware uses 0. Coherent fences leave dirty L1D data available to home probes. The Physical address aperture (1 GiB / Bare access) CI job uses 0 with randomized start values to cover the real reset sweep |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
@@ -1768,11 +1792,8 @@ assertions. They pulse fabric reset with the SoC clock stopped and repeat
 the request during release. With a common clock, fabric reset asserts
 immediately, the CPU reset register holds its value until the first resumed
 edge, and the cycle counter clears on the next edge. The fourth resumed
-edge releases fabric reset and the fifth releases CPU reset. The cycle
-counter starts on the sixth edge. Core reset and CPU reset assert together,
-and CPU reset releases one edge after core reset.
-These checks use idle external DDR AXI ports. The master and bridge unit
-benches check active transactions across CPU-only and fabric reset.
+edge releases fabric reset, the fifth releases bridge reset and the sixth
+releases CPU reset. The cycle counter starts on the seventh edge.
 
 `platform_dma_reset` and `platform_dma_reset_async` run a DMA copy from
 BRAM firmware with the external DDR transport active. Each interrupts a
@@ -1781,6 +1802,18 @@ clock. The common-clock test also straddles a single edge with a 2 ps
 pulse. The independent-clock test pulses reset for one simulation tick
 entirely between edges. Both check the bridge and ingress reset edges, reuse the read and
 write IDs after release, and check the copied byte and the returned credits.
+The independent-clock bench also interrupts a live read or write with a
+DDR-only pulse between clock edges and checks reset in both domains.
+
+`ddr_dma_reset` and `ddr_dma_reset_link` interrupt a coherent read or write
+when its completion is due, or a fresh DMA request when the bridge offers it.
+They use external DDR, zero or one coherent link stage, and pulses of one,
+two, three and eight clocks. Each checks the old owner and credits, then
+requires restarted firmware to copy a new byte through the same IDs.
+They also exercise an outstanding request, a stalled DMA register read
+and the hart's translated Svpbmt non-cacheable loads and stores.
+`ddr_dma_reset_stopped` exercises those paths through `frost` with a
+reset pulse entirely inside a clock stop and checks the first resumed edges.
 
 ## Coverage
 
@@ -2034,11 +2067,17 @@ their shared builds. Vector programs selects every registry name that starts
 with `vec_`, so a vector program added later joins it without a workflow
 change; "Runtime and other" excludes the same prefix. Each real-program job
 has a four-hour timeout, including setup and coverage uploads, unless its
-shard sets `timeout_minutes`. A shard's limit is 1.8 times its slowest
-measured time, rounded up, so that a slow runner still finishes it; keep
-shards under about 165 minutes so the limit stays at or below 300. The one
-program that cannot be split further, CoreMark-PRO loops, has a 340-minute
-limit.
+shard sets `timeout_minutes`. Size each shard's allowance at 1.8 times its
+slowest measured hosted job time, rounded up to whole minutes. The
+real-program ceiling is 300 minutes. Vector programs, Memory and NIC stress,
+Runtime and other, CoreMark-PRO nnet, and both OpenSBI smoke variants use that
+ceiling. CoreMark-PRO loops has a 340-minute exception because it cannot be
+split further.
+
+The other job families have a ceiling of 360 minutes, which is also the
+default for jobs without a configured timeout. The two cocotb unit jobs,
+the complete generated-vector campaign shards, and the Store boundary
+four records proof use 360-minute limits.
 
 Give each program that boots OpenSBI its own BRAM-only shard with coverage,
 including variants that disable a hardware feature or exercise reset through

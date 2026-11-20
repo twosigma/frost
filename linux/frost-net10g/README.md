@@ -165,7 +165,13 @@ build the module before the initramfs. Check with
 `lsinitramfs /boot/initrd.img-<version> | grep frost_net10g`. If a kernel's
 headers arrive in a later apt run than the kernel, DKMS builds the module only
 then, after that kernel's initramfs was made; run
-`update-initramfs -u -k <version>` again.
+`update-initramfs -u -k <version>` again. The Linux preflight of
+`hw_regression.py` unpacks the initramfs's early section and first compressed
+archive with `unmkinitramfs`, reads every unpacked `frost_net10g` copy with
+`modinfo -F version`, and requires every copy to match `MODULE_VERSION`; the
+Linux stage then checks the loaded module's `/sys/module/frost_net10g/version`
+after boot before the network test, so a driver change needs a matching version
+bump.
 
 ### Upgrading the package
 

@@ -38,11 +38,11 @@ pieces come before the second hart:
   stack objects, works there; in the BRAM layout, its static data and stack are
   in the low BRAM.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
-  engine performs plain misaligned loads and stores to cached DDR in the X3
-  build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
-  address-misaligned exception. TestRIG does not check the engine yet: its
-  build leaves the engine out until its RVFI-DII recorder reports the
-  engine's retirements and writes.
+  engine performs plain misaligned loads and stores to cached DDR by default
+  on the X3 and VCU118 and in simulation (`MISALIGNED_HW`). Misaligned
+  accesses to low BRAM raise the address-misaligned exception. TestRIG
+  leaves the engine out until its RVFI-DII recorder reports the engine's
+  retirements and writes.
 
 The table below lists the mandatory extensions of RVA23U64 and RVA23S64
 (excluding Sha, the hypervisor profile extension) and the RVA23 optional
@@ -63,7 +63,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Ziccif | Implemented | `ifread_test`, `ddr_exec_test`, `smc_fencei_test`, `coherent_hart_cache.sby`, `immu_twin.sby` |
 | Ziccrse | Implemented | `rv64_amo_test`, `ddr_atomic_test`, TestRIG (`--atomics`), `coherence_l1d.sby`, `coherence_home.sby` |
 | Ziccamoa | Implemented | `riscv-arch-test` (`A`), `riscv-tests` (`rv64ua`), `rv64_amo_test`, TestRIG (`--atomics`), `load_queue_amo_compute.sby`, `coherence_l1d.sby` |
-| Zicclsm | Implemented (in hardware on the X3 and in simulation; emulated by firmware on the VCU118; TestRIG builds leave the engine out) | `misaligned_test`, `riscv-tests` (`ma_data`), `test_ma_engine.py`, `ma_engine.sby`, `ma_pkg.sby` |
+| Zicclsm | Implemented in hardware by default on the X3 and VCU118 and in simulation. TestRIG builds leave the engine out | `misaligned_test`, `riscv-tests` (`ma_data`), `test_ma_engine.py`, `ma_engine.sby`, `ma_pkg.sby` |
 | Za64rs | Implemented | Verified by construction (32-byte sector and 64-byte line reservations); LR/SC functional tests in `rv64_amo_test`, `ddr_atomic_test`, `coherence_l1d.sby`, `coherence_home.sby` |
 | Zihintpause | Implemented | `riscv-arch-test` (`hints`), `pause_test`, TestRIG |
 | Zic64b | Implemented | `cbo_zero_test`, `cbo_mgmt_test`, `riscv-arch-test` (`CMO`), TestRIG (`Zicboz`, `Zicbom`), `store_queue.sby` |
@@ -732,11 +732,12 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   transceivers, so that Linux finds NVMe drives and other devices with its
   standard drivers. The X3's PCIe lanes go to its host connector, where
   FROST is the device rather than the root, so hardware tests of the root
-  complex need a board with a downstream slot or connector. Its
-  configuration space and device memory windows would sit in `soc_top`'s
-  device decode, and the devices' DMA would be another master on the AXI4
-  mux that carries the NIC's and the DMA engine's DMA into `cpu_top`'s
-  coherent ingress.
+  complex need a board with a downstream slot or connector. `soc_top` exposes
+  external coherent AXI4 DMA slave ports behind register slices
+  (`EXT_DMA_PORTS`) on the DMA mux into `cpu_top`'s coherent ingress and an
+  external 16 KiB AXI4-Lite peripheral window (`EXT_AXIL_WINDOW` at
+  `0x4002_4000`–`0x4002_7FFF`); the root complex itself and wider PCIe
+  configuration and device BAR apertures belong to this item.
 - Storage beyond the NFS root: NVMe drives through the root complex, a block
   device that the host serves through the X3's PCIe Gen4 x8 host interface
   with FROST as the endpoint, or iSCSI with ext4. NFS is the supported root

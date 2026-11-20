@@ -28,7 +28,9 @@ module vcu118_frost #(
     // RAMs as the 16 KiB default.
     parameter int unsigned L1I_CACHE_BYTES = 32 * 1024,
     // The VCU118 L2 is 4 MiB, with the shared four-way geometry.
-    parameter int unsigned L2_CACHE_BYTES = 4 * 1024 * 1024
+    parameter int unsigned L2_CACHE_BYTES = 4 * 1024 * 1024,
+    // Complete plain misaligned loads and stores in cached DDR.
+    parameter bit MISALIGNED_HW = 1'b1
 ) (
     // Differential system clock SYSCLK1_300 (G31 / F31, Bank 47 in SLR1)
     input logic sysclk1_300_p,
@@ -125,13 +127,14 @@ module vcu118_frost #(
   logic cpu_side_aresetn;
   assign cpu_side_aresetn = cpu_clock_locked && !cpu_reset;
 
+  logic mem_ok_synced;
   // Active-low synchronous reset for FROST
   logic [3:0] rst_sync_q = '0;
   always_ff @(posedge main_clock or negedge cpu_clock_locked) begin
     if (!cpu_clock_locked) begin
       rst_sync_q <= '0;
     end else begin
-      rst_sync_q <= {rst_sync_q[2:0], !(cpu_reset || !ddr_init_done)};
+      rst_sync_q <= {rst_sync_q[2:0], !cpu_reset && ddr_init_done && mem_ok_synced};
     end
   end
   logic frost_rst_n;
@@ -244,10 +247,13 @@ module vcu118_frost #(
   logic [3:0] startup_di;
   logic       mem_ok;
   (* ASYNC_REG = "TRUE" *)logic [1:0] mem_ok_synchronizer;
-  always_ff @(posedge main_clock) begin
-    mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};
+  always_ff @(posedge main_clock or negedge cpu_clock_locked) begin
+    if (!cpu_clock_locked) begin
+      mem_ok_synchronizer <= '0;
+    end else begin
+      mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};
+    end
   end
-  logic mem_ok_synced;
   assign mem_ok_synced = mem_ok_synchronizer[1];
 
   assign spi_miso = startup_di[1];
@@ -282,6 +288,7 @@ module vcu118_frost #(
       .L1I_CACHE_BYTES   (L1I_CACHE_BYTES),
       .L2_CACHE_BYTES    (L2_CACHE_BYTES),
       .PERF_COUNTERS     (PERF_COUNTERS),
+      .MISALIGNED_HW     (MISALIGNED_HW && (ENABLE_CACHED_TIER != 0)),
       .RAW_LOOPBACK      (0),
       .ENABLE_1G_ETH     (1)
   ) u_frost_subsystem (
@@ -443,7 +450,7 @@ module vcu118_frost #(
       assign ddr4_sdram_c0_odt     = '0;
       assign ddr4_sdram_c0_reset_n = 1'b0;
     end else begin : gen_real_ddr
-      assign ddr_axi_rst_n = mem_ok_synced;
+      assign ddr_axi_rst_n = cpu_side_aresetn;
 
       vcu118_ddr_init #(
           .ADDR_BITS   (31),

@@ -1444,7 +1444,7 @@ def test_each_clock_has_an_io_copy_at_one_pin(tmp_path: Path) -> None:
         "the 10G PCS instance name in nic_mac_10g must stay stable"
     )
     for direction in ("tx", "rx"):
-        expected = f".nic_mac.u_mac.{direction}_gearbox.reservoir[0]"
+        expected = f".gen_nic_mac_10g.nic_mac.u_mac.{direction}_gearbox.reservoir[0]"
         assert expected in generated[f"nic_{direction}_clk_io"][2][0]
 
     missing = _evaluate_sdc(tmp_path, find_pins=False)

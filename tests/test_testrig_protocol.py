@@ -75,7 +75,7 @@ def test_server_ports_survive_immediate_reuse(monkeypatch: pytest.MonkeyPatch) -
     (
         (
             "parameter",
-            r"\bparameter\s+((?:int unsigned|longint unsigned|bit|logic)"
+            r"\b((?:parameter|localparam)\s+(?:int unsigned|longint unsigned|bit|logic)"
             r"(?:\s*\[[^\]]+\])?)\s+(\w+)",
             {"ASYNC_CPU_CLOCK", "CACHE_NORMAL_MEMORY", "BOOT_ADDR"},
         ),
