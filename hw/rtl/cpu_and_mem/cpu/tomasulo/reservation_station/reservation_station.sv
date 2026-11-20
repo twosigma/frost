@@ -1274,9 +1274,11 @@ module reservation_station #(
   // valids may change between edges. Full flush is exempt: it clears valid
   // state and count regardless of a stale dispatch packet.
   always_ff @(posedge i_clk) begin
-    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !i_flush_all && !$isunknown(
-            {dispatch_valid, dispatch_valid_2, full, full_for_2}
-        )) begin
+    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !i_flush_all
+`ifndef FORMAL
+        && !$isunknown({dispatch_valid, dispatch_valid_2, full, full_for_2})
+`endif
+        ) begin
       p_trusted_dispatch_fire_exact : assert (dispatch_fire == (dispatch_valid && !full));
       p_trusted_dispatch_fire_2_exact :
       assert (dispatch_fire_2 ==
@@ -1284,9 +1286,11 @@ module reservation_station #(
     end
     // Exported status must conservatively cover live occupancy for trusted
     // valids. A reserve of one entry is insufficient for two-slot dispatch.
-    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
-            {full, full_for_2, dispatch_full_q, dispatch_full_for_2_q}
-        )) begin
+    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n
+`ifndef FORMAL
+        && !$isunknown({full, full_for_2, dispatch_full_q, dispatch_full_for_2_q})
+`endif
+        ) begin
       p_trusted_status_conservative : assert (!full || dispatch_full_q);
       p_trusted_status_for_2_conservative : assert (!full_for_2 || dispatch_full_for_2_q);
     end
@@ -1880,7 +1884,9 @@ module reservation_station #(
   end
 `ifndef SYNTHESIS
   always_comb begin
-    if (any_ready && !$isunknown(
+    if (any_ready
+`ifndef FORMAL
+        && !$isunknown(
             {
               issue_idx,
               src1_cdb_bypass,
@@ -1892,7 +1898,9 @@ module reservation_station #(
               issue_src2_bypass,
               issue_src2_bypass_l1
             }
-        )) begin
+        )
+`endif
+        ) begin
       p_issue_bypass_flags_match_index :
       assert (issue_src1_bypass == src1_cdb_bypass[issue_idx] &&
               issue_src1_bypass_l1 == src1_cdb_bypass_l1[issue_idx] &&
@@ -1906,7 +1914,11 @@ module reservation_station #(
                 issue_src2_resident === src2_resident[issue_idx]);
       end
     end
-    if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS && !$isunknown(entry_ready)) begin
+    if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS
+`ifndef FORMAL
+        && !$isunknown(entry_ready)
+`endif
+        ) begin
       p_issue_idx_matches_scan : assert (issue_idx == issue_idx_scan);
     end
   end
@@ -4888,6 +4900,20 @@ module reservation_station #(
           cover_stage2_flush : cover (stage2_should_flush);
 
           cover_stage2_blocked : cover (stage2_valid && !i_fu_ready && !stage2_should_flush);
+
+          // The per-entry checks above reach the last entry: a wakeup, a
+          // partial flush it survives, and a pend captured at dispatch.
+          cover_last_entry_cdb_wakeup :
+          cover (i_cdb.valid && rs_valid[DEPTH-1] && !i_flush_all && !i_flush_en &&
+                 !rs_src1_ready[DEPTH-1] && rs_src1_tag[DEPTH-1] == i_cdb.tag);
+          cover_last_entry_survives_partial_flush :
+          cover (i_flush_en && !i_flush_all && rs_valid[DEPTH-1] &&
+                 !should_flush_entry(rs_rob_tag[DEPTH-1], i_flush_tag, i_rob_head_tag));
+          cover_last_entry_pend_capture :
+          cover (dispatch_fire && !i_flush_all && !i_flush_en &&
+                 free_idx == $clog2(DEPTH)'(DEPTH - 1) &&
+                 dispatch_src1_cdb0_match && !dispatch_src1_repair_match);
+          cover_last_entry_pend_delivery : cover (src1_cdb_pend[DEPTH-1]);
         end
       end
     end

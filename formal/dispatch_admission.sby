@@ -18,7 +18,7 @@ bmc_queued_vector: chparam -set SLOT2_VALID_FROM_BUNDLE 1 -set VECTOR 1 -set REG
 hierarchy -top dispatch
 script free_undefined.ys
 prep -top dispatch
-select -assert-count 7 t:$check r:FLAVOR=assert %i
+select -assert-count 11 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

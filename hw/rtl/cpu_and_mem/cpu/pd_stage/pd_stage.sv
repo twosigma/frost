@@ -266,7 +266,9 @@ module pd_stage #(
 
     // Fetch-fault bytes are undefined (from_if_to_pd_t.fetch_fault) and need
     // not match the bypass fields: decode substitutes a fault pseudo-op.
-    if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
+    if (source_hot_checks_armed && !i_pipeline_ctrl.reset
+`ifndef FORMAL
+        && !$isunknown(
             {
               i_from_if_to_pd.sel_nop,
               i_from_if_to_pd.fetch_fault,
@@ -275,7 +277,9 @@ module pd_stage #(
               i_from_if_to_pd.rs1_rest_predecoded,
               instruction_non_nop
             }
-        ) && !i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault) begin
+        )
+`endif
+         && !i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault) begin
       p_slot1_source_hot_matches_instruction :
       assert (
           i_from_if_to_pd.source_hot_predecoded ==
@@ -291,7 +295,9 @@ module pd_stage #(
       p_slot1_bits24_20_match_instruction :
       assert (i_from_if_to_pd.bits24_20_predecoded == instruction_non_nop[24:20]);
     end
-    if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
+    if (source_hot_checks_armed && !i_pipeline_ctrl.reset
+`ifndef FORMAL
+        && !$isunknown(
             {
               i_from_if_to_pd_2.sel_nop,
               i_from_if_to_pd_2.fetch_fault,
@@ -303,7 +309,9 @@ module pd_stage #(
               pd_sel_compressed_2,
               instruction_non_nop_2
             }
-        ) && !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault) begin
+        )
+`endif
+         && !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault) begin
       p_slot2_sel_compressed_matches_parcel :
       assert (pd_sel_compressed_2 == (i_from_if_to_pd_2.raw_parcel[1:0] != 2'b11));
       p_slot2_rvc_expansion_matches_reference :
@@ -325,9 +333,13 @@ module pd_stage #(
     // IF tags slot 2 with every fault of the words it shares with slot 1, so
     // a valid slot 2 behind a faulting slot 1 faults too, and its own veto
     // keeps it from a backing redirect.
-    if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
+    if (source_hot_checks_armed && !i_pipeline_ctrl.reset
+`ifndef FORMAL
+        && !$isunknown(
             {i_from_if_to_pd.fetch_fault, i_from_if_to_pd_2.sel_nop, i_from_if_to_pd_2.fetch_fault}
-        )) begin
+        )
+`endif
+        ) begin
       p_slot2_faults_behind_a_faulting_slot1 :
       assert (!i_from_if_to_pd.fetch_fault || i_from_if_to_pd_2.sel_nop ||
               i_from_if_to_pd_2.fetch_fault);
@@ -591,7 +603,9 @@ module pd_stage #(
   };
 
   always_ff @(posedge i_clk) begin
-    if (pd_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
+    if (pd_reset_seen_q && !i_pipeline_ctrl.reset
+`ifndef FORMAL
+        && !$isunknown(
             {
               i_from_if_to_pd.program_counter,
               pd_imm_b_native,
@@ -601,7 +615,9 @@ module pd_stage #(
               pd_target_selected_split,
               pd_backward_target_reference
             }
-        )) begin
+        )
+`endif
+        ) begin
       p_pd_native_target_candidate_exact :
       assert (pd_target_native_split == pd_target_native_reference);
       p_pd_compressed_target_candidate_exact :
@@ -609,7 +625,9 @@ module pd_stage #(
       p_pd_target_split_exact : assert (pd_target_selected_split == pd_backward_target_reference);
     end
     if (pd_reset_seen_q && !i_pipeline_ctrl.reset &&
-        !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault && !$isunknown(
+        !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault
+`ifndef FORMAL
+        && !$isunknown(
             {
               i_from_if_to_pd_2.program_counter,
               pd_sel_compressed_2,
@@ -620,7 +638,9 @@ module pd_stage #(
               pd_slot2_target_split,
               pd_slot2_target_reference
             }
-        )) begin
+        )
+`endif
+        ) begin
       p_pd_slot2_native_target_candidate_exact :
       assert (pd_sel_compressed_2 ||
               (pd_slot2_target_native_split == pd_slot2_target_native_reference));
@@ -629,17 +649,25 @@ module pd_stage #(
       p_pd_slot2_target_split_exact : assert (pd_slot2_target_split == pd_slot2_target_reference);
     end
     if (pd_reset_seen_q && !i_pipeline_ctrl.reset &&
-        !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault && !$isunknown(
+        !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault
+`ifndef FORMAL
+        && !$isunknown(
             {i_from_if_to_pd.program_counter, i_from_if_to_pd_2.program_counter,
              i_from_if_to_pd.raw_parcel[1:0]}
-        )) begin
+        )
+`endif
+        ) begin
       p_pd_slot2_pc_matches_raw_slot1_step : assert (pd_slot2_pc_matches_slot1_step);
     end
     if (pd_reset_seen_q && !i_pipeline_ctrl.reset &&
-        !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault && !$isunknown(
+        !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault
+`ifndef FORMAL
+        && !$isunknown(
             {i_from_if_to_pd_2.is_cond_branch, instruction_non_nop_2[14:13],
              instruction_non_nop_2[6:0]}
-        )) begin
+        )
+`endif
+        ) begin
       p_pd_slot2_cond_branch_predecode_exact :
       assert (i_from_if_to_pd_2.is_cond_branch ==
               ((instruction_non_nop_2[6:0] == riscv_pkg::OPC_BRANCH) &&
@@ -1307,8 +1335,9 @@ module pd_stage #(
   assign pd_s2_br_hs_reference_r = pd_dir_not_taken_2_raw_r ?
       pd_s2_ft_hs_ref_r : pd_s2_taken_hs_ref_r;
   always_ff @(posedge i_clk) begin
-    if (pd_reset_seen_q && !i_pipeline_ctrl.reset && pd_redirect_target_reference_armed &&
-        !$isunknown(
+    if (pd_reset_seen_q && !i_pipeline_ctrl.reset && pd_redirect_target_reference_armed
+`ifndef FORMAL
+        && !$isunknown(
             {
               pd_reg_live,
               pd_s1_br_low_reference_r,
@@ -1325,7 +1354,9 @@ module pd_stage #(
               o_from_pd_to_id_2.btb_predicted_target,
               pd_itt_slot_target_r
             }
-        )) begin
+        )
+`endif
+        ) begin
       p_pd_s1_br_target_capture_exact :
       assert (!pd_reg_live[0] ||
               ((pd_s1_br_low == pd_s1_br_low_reference_r) &&
@@ -1342,7 +1373,9 @@ module pd_stage #(
                    (o_from_pd_to_id_2.btb_predicted_target[riscv_pkg::PhysAddrBits-1:1] !=
                     pd_itt_slot_target_r[1]))));
     end
-    if (pd_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
+    if (pd_reset_seen_q && !i_pipeline_ctrl.reset
+`ifndef FORMAL
+        && !$isunknown(
             {
               pd_reg_live,
               pd_cond_branch_raw_r,
@@ -1352,7 +1385,9 @@ module pd_stage #(
               o_from_pd_to_id.instruction,
               o_from_pd_to_id_2.instruction
             }
-        )) begin
+        )
+`endif
+        ) begin
       p_pd_raw_class_matches_registered_instr :
       assert ((!pd_reg_live[0] ||
                ((pd_cond_branch_raw_r[0] ==
@@ -1404,7 +1439,9 @@ module pd_stage #(
       pd_not_taken_candidate_2_payload_reference_q <= 1'b0;
       pd_redirect_candidate_payload_reference_armed <= 1'b0;
     end else begin
-      if (pd_sim_reset_seen_q && pd_redirect_candidate_payload_reference_armed && !$isunknown(
+      if (pd_sim_reset_seen_q && pd_redirect_candidate_payload_reference_armed
+`ifndef FORMAL
+        && !$isunknown(
               {
                 pd_reg_live,
                 pd_taken_candidate_r,
@@ -1416,7 +1453,9 @@ module pd_stage #(
                 pd_taken_candidate_2_payload_reference_q,
                 pd_not_taken_candidate_2_payload_reference_q
               }
-          )) begin
+          )
+`endif
+        ) begin
         p_pd_taken_candidate_payload_exact :
         assert (!pd_reg_live[0] ||
                 (pd_taken_candidate_r == pd_taken_candidate_payload_reference_q));
@@ -1524,11 +1563,15 @@ module pd_stage #(
       pd_dir_redirect_2_reference_q <= 1'b0;
       pd_redirect_reference_armed <= 1'b1;
     end else begin
-      if (pd_sim_reset_seen_q && pd_redirect_reference_armed && !$isunknown(
+      if (pd_sim_reset_seen_q && pd_redirect_reference_armed
+`ifndef FORMAL
+        && !$isunknown(
               {pd_redirect_r, pd_redirect_reference_q, pd_dir_redirect_2_r,
                pd_dir_redirect_2_reference_q, o_pd_redirect_taken,
                pd_redirect_taken_reference_q}
-          )) begin
+          )
+`endif
+        ) begin
         p_pd_redirect_registered_veto_exact : assert (pd_redirect_r == pd_redirect_reference_q);
         p_pd_dir_redirect_2_registered_veto_exact :
         assert (pd_dir_redirect_2_r == pd_dir_redirect_2_reference_q);
@@ -1622,18 +1665,26 @@ module pd_stage #(
       pd_redirect_target_reference_armed <= 1'b0;
     end else begin
       if (pd_sim_reset_seen_q && pd_redirect_target_reference_armed &&
-          pd_redirect_reference_armed && !$isunknown(
+          pd_redirect_reference_armed
+`ifndef FORMAL
+        && !$isunknown(
               {pd_redirect_r, o_pd_redirect_target, pd_redirect_target_reference}
-          )) begin
+          )
+`endif
+        ) begin
         p_pd_redirect_target_boundary_exact :
         assert (!pd_redirect_r || (o_pd_redirect_target == pd_redirect_target_reference));
       end
       // Independent of the reference: a not-taken redirect goes to the
       // redirecting instruction's fall-through.
-      if (pd_sim_reset_seen_q && o_pd_redirect && !o_pd_redirect_taken && !$isunknown(
+      if (pd_sim_reset_seen_q && o_pd_redirect && !o_pd_redirect_taken
+`ifndef FORMAL
+        && !$isunknown(
               {o_pd_redirect_target, o_pd_redirect_slot2, o_from_pd_to_id.program_counter,
                o_from_pd_to_id_2.program_counter}
-          )) begin
+          )
+`endif
+        ) begin
         p_pd_not_taken_redirect_falls_through :
         assert (o_pd_redirect_target == (o_pd_redirect_slot2 ?
             o_from_pd_to_id_2.program_counter + (o_from_pd_to_id_2.is_compressed ?
@@ -1695,14 +1746,18 @@ module pd_stage #(
     if (i_pipeline_ctrl.reset) begin
       pd_backing_decoded_reference_armed <= 1'b0;
     end else begin
-      if (pd_sim_reset_seen_q && pd_backing_decoded_reference_armed && !$isunknown(
+      if (pd_sim_reset_seen_q && pd_backing_decoded_reference_armed
+`ifndef FORMAL
+        && !$isunknown(
               {
                 pd_backing_redirect_r,
                 pd_backing_redirect_2_r,
                 pd_backing_decoded_reference_valid_q,
                 pd_backing_decoded_reference_valid_2_q
               }
-          )) begin
+          )
+`endif
+        ) begin
         p_pd_backing_slot1_target_matches_decode :
         assert (!(pd_backing_redirect_r && pd_backing_decoded_reference_valid_q &&
                   !pd_itt_target_select_r) ||

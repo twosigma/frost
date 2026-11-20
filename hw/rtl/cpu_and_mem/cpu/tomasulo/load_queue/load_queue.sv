@@ -3686,7 +3686,11 @@ module load_queue #(
 
   // Sample on the clock edge to avoid intermediate delta-cycle tree values.
   always_ff @(posedge i_clk) if (sim_reset_seen_q) begin
-    if (!$isunknown(lq_free_rotated)) begin
+    // Proofs have no unknown bits, so they check these in every state.
+`ifndef FORMAL
+    if (!$isunknown(lq_free_rotated))
+`endif
+    begin
       p_lq_first_free_tree_found_exact :
       assert (lq_first_free_found == lq_first_free_found_reference);
       p_lq_second_free_tree_found_exact :
@@ -4805,7 +4809,10 @@ module load_queue #(
   end
 `ifndef SYNTHESIS
   always_comb if (sim_reset_seen_q) begin
-    if (!$isunknown({amo_launch, mem_read_en, sq_check_is_amo_q})) begin
+`ifndef FORMAL
+    if (!$isunknown({amo_launch, mem_read_en, sq_check_is_amo_q}))
+`endif
+    begin
       p_amo_launch_is_the_amo_launch : assert (amo_launch == (mem_read_en && sq_check_is_amo_q));
     end
   end
@@ -4862,9 +4869,11 @@ module load_queue #(
 `ifndef SYNTHESIS
   // The selected relation equals comparing the addressed word itself.
   always_ff @(posedge i_clk) if (sim_reset_seen_q) begin
-    if (amo_response_capture && !$isunknown(
-            {i_mem_read_data, issued_amo_rs2[31:0], issued_addr[2]}
-        )) begin
+    if (amo_response_capture
+`ifndef FORMAL
+        && !$isunknown({i_mem_read_data, issued_amo_rs2[31:0], issued_addr[2]})
+`endif
+        ) begin
       p_amo_relation_w_select_exact :
       assert (amo_response_minmax_relation_w ==
               {amo_beat_word[31:0] == issued_amo_rs2[31:0],
@@ -5535,10 +5544,16 @@ module load_queue #(
     end
   end
 
-  // Slot-2 must respect capacity given whether slot-1 is also firing.
+  // Dispatch allocates only while the registered flags it reads show room:
+  // slot 1 against o_dispatch_full, slot 2 against o_dispatch_full_for_2 when
+  // slot 1 also allocates. dispatch_admission proves this of dispatch
+  // (p_lq_alloc_has_room, p_lq_alloc_2_has_room); the wrapper and router only
+  // pass the packets on or drop them. The exact-occupancy rules follow from
+  // p_dispatch_full_never_understates and its for-2 twin below.
   always_comb begin
-    if (i_alloc.valid && full_for_2) assume (!i_alloc_2.valid);
-    if (!i_alloc.valid && full) assume (!i_alloc_2.valid);
+    if (dispatch_full_q) assume (!i_alloc.valid);
+    if (i_alloc.valid && dispatch_full_for_2_q) assume (!i_alloc_2.valid);
+    if (!i_alloc.valid && dispatch_full_q) assume (!i_alloc_2.valid);
   end
 
   // Address updates may overlap flush. The CAM reads pre-edge validity, so a
@@ -5564,11 +5579,6 @@ module load_queue #(
         end
       end
     end
-  end
-
-  // No allocation when full
-  always_comb begin
-    if (full) assume (!i_alloc.valid);
   end
 
   // The ROB tag uniqueness assumption extends to slot-2 alloc.
@@ -5918,10 +5928,15 @@ module load_queue #(
     end
   end
 
-  // No allocation request when full (the same condition assumed above)
+  // No allocation request reaches a full queue: dispatch reads only the
+  // registered flags, so this fails if those flags ever show room the queue
+  // does not have.
   always_comb begin
-    if (full) begin
+    if (i_rst_n && full) begin
       p_no_alloc_when_full : assert (!i_alloc.valid);
+    end
+    if (i_rst_n && (i_alloc.valid ? full_for_2 : full)) begin
+      p_no_alloc_2_when_full : assert (!i_alloc_2.valid);
     end
   end
 

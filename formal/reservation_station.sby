@@ -10,9 +10,10 @@ bmc: depth 12
 cover: mode cover
 cover: depth 20
 bmc_tag_indexed: mode bmc
-# Limit the larger INT_RS model to seven cycles for runtime. This covers
-# dispatch, two-cycle deferred CDB delivery, and tag reuse checks.
-bmc_tag_indexed: depth 7
+# Eight cycles: the last entry first fills, wakes, survives a partial flush
+# or captures a deferred CDB delivery at step 6 (cover_last_entry_*), and the
+# per-entry checks judge it one cycle later.
+bmc_tag_indexed: depth 8
 cover_tag_indexed: mode cover
 cover_tag_indexed: depth 20
 

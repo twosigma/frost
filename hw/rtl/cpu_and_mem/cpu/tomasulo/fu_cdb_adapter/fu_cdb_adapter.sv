@@ -231,16 +231,13 @@ module fu_cdb_adapter #(
   // ===========================================================================
 `ifdef FORMAL
 
+  // Reset is asserted on the first cycle and is free afterwards, so it can
+  // also arrive while a result is held or passing through.
   initial assume (!i_rst_n);
-  initial assume (!result_pending);
 
   reg f_past_valid;
   initial f_past_valid = 1'b0;
   always @(posedge i_clk) f_past_valid <= 1'b1;
-
-  always @(posedge i_clk) begin
-    if (f_past_valid) assume (i_rst_n);
-  end
 
   // -------------------------------------------------------------------------
   // Structural constraints (assumes)
@@ -254,6 +251,24 @@ module fu_cdb_adapter #(
       // The caller must establish this invariant. In tomasulo_wrapper, each
       // pending ALU adapter blocks its RS issue-ready input.
       a_no_input_while_pending : assume (!(result_pending && i_fu_result.valid));
+    end
+  end
+
+  // A precomputed age compare equals the tag compare whenever it is used.
+  // The producer forms it; simulation checks p_input_younger_matches_tag in
+  // the core, and coherent_local_atomic checks the memory adapter's.
+  always_comb begin
+    if (INPUT_YOUNGER_PRECOMPUTED && i_fu_result.valid && i_flush_en) begin
+      a_input_younger_matches_tag :
+      assume (i_fu_result_younger == is_younger(i_fu_result.tag, i_flush_tag, i_rob_head_tag));
+    end
+  end
+
+  // The arbiter grants every valid output of an always-granted adapter
+  // unless a full flush discards it, which mul_adapter_grant proves.
+  always_comb begin
+    if (ALWAYS_GRANTED && o_fu_complete.valid && !i_flush) begin
+      a_always_granted : assume (i_grant);
     end
   end
 
@@ -288,6 +303,25 @@ module fu_cdb_adapter #(
     end
     if (REGISTER_OUTPUT && !result_pending) begin
       p_registered_idle_output_invalid : assert (!o_fu_complete.valid);
+    end
+  end
+
+  // A completion is never offered for a result that a partial flush kills in
+  // this cycle, whether held or passing through.
+  always_comb begin
+    if (result_pending && partial_flush_held) begin
+      p_partial_flush_held_suppresses_valid : assert (!o_fu_complete.valid);
+    end
+    if (!REGISTER_OUTPUT && !result_pending && partial_flush_input) begin
+      p_partial_flush_input_suppresses_valid : assert (!o_fu_complete.valid);
+    end
+  end
+
+  // Without grant refill, a grant always empties the adapter: a result
+  // arriving with the grant is not captured.
+  always @(posedge i_clk) begin
+    if (f_past_valid && !ALLOW_GRANT_REFILL && $past(result_pending && i_grant)) begin
+      p_no_grant_refill : assert (!result_pending);
     end
   end
 
@@ -429,9 +463,9 @@ module fu_cdb_adapter #(
     end
   end
 
-  // Reset idle
+  // A reset edge leaves the adapter idle, whatever it held.
   always @(posedge i_clk) begin
-    if (f_past_valid && !i_rst_n) begin
+    if (f_past_valid && !$past(i_rst_n)) begin
       p_reset_idle : assert (!result_pending);
     end
   end
@@ -457,7 +491,22 @@ module fu_cdb_adapter #(
 
       cover_partial_flush_passthrough : cover (partial_flush_input);
     end
+    if (f_past_valid && !i_rst_n) begin
+      cover_reset_while_pending : cover (result_pending);
+    end
+    if (i_rst_n) begin
+      cover_partial_flush_held_offered : cover (result_pending && partial_flush_held);
+    end
   end
+
+  generate
+    if (REGISTER_OUTPUT) begin : gen_registered_output_cover
+      // A captured result reaches the registered output.
+      always @(posedge i_clk) begin
+        if (i_rst_n) cover_registered_output_valid : cover (o_fu_complete.valid);
+      end
+    end
+  endgenerate
 
   // -------------------------------------------------------------------------
   // A tag squashed in held state or an incoming refill must not reappear on a

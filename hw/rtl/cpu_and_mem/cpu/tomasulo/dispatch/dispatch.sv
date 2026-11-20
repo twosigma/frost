@@ -1076,6 +1076,22 @@ module dispatch #(
     p_checkpoint_admission_reference_formal :
     assert (o_checkpoint_save == ((f_admit_bundle && need_checkpoint) ||
                                   (f_admit_slot2 && need_checkpoint_2)));
+    // The load and store queues allocate from these packets and assume that
+    // no allocation arrives while their registered full flags are set (slot
+    // 1), or the for-2 flag when slot 1 also allocates (slot 2). Each queue
+    // proves that its registered flags never understate its occupancy.
+    p_lq_alloc_has_room :
+    assert (!(o_mem_rs_dispatch.valid && o_mem_rs_dispatch.mem_needs_lq && i_lq_full));
+    p_lq_alloc_2_has_room :
+    assert (!(o_mem_rs_dispatch_2.valid && o_mem_rs_dispatch_2.mem_needs_lq &&
+              ((o_mem_rs_dispatch.valid && o_mem_rs_dispatch.mem_needs_lq) ?
+                   i_lq_full_for_2 : i_lq_full)));
+    p_sq_alloc_has_room :
+    assert (!(o_mem_rs_dispatch.valid && o_mem_rs_dispatch.mem_needs_sq && i_sq_full));
+    p_sq_alloc_2_has_room :
+    assert (!(o_mem_rs_dispatch_2.valid && o_mem_rs_dispatch_2.mem_needs_sq &&
+              ((o_mem_rs_dispatch.valid && o_mem_rs_dispatch.mem_needs_sq) ?
+                   i_sq_full_for_2 : i_sq_full)));
   end
 `endif
 
@@ -2046,6 +2062,31 @@ module dispatch #(
               !(o_rob_alloc_req_2.is_jal || o_rob_alloc_req_2.is_jalr ||
                 o_rob_alloc_req_2.is_fence || o_rob_alloc_req_2.is_fence_i ||
                 o_rob_alloc_req_2.is_wfi || o_rob_alloc_req_2.is_mret));
+    end
+  end
+
+  // Each allocation carries at most one serializing class, and a branch or
+  // jump none: the ROB's serializer relies on it, and reorder_buffer's proof
+  // assumes it.
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && i_rst_n && o_rob_alloc_req.alloc_valid) begin
+      p_rob_alloc_one_serializing_class :
+      assert ($onehot0(
+          {o_rob_alloc_req.is_wfi, o_rob_alloc_req.is_csr, o_rob_alloc_req.is_fence,
+                        o_rob_alloc_req.is_fence_i, o_rob_alloc_req.is_mret}
+      ) && !(o_rob_alloc_req.is_branch &&
+             (o_rob_alloc_req.is_wfi || o_rob_alloc_req.is_csr || o_rob_alloc_req.is_fence ||
+              o_rob_alloc_req.is_fence_i || o_rob_alloc_req.is_mret)));
+    end
+    if (reset_seen_q && i_rst_n && o_rob_alloc_req_2.alloc_valid) begin
+      p_rob_alloc_2_one_serializing_class :
+      assert ($onehot0(
+          {o_rob_alloc_req_2.is_wfi, o_rob_alloc_req_2.is_csr,
+                        o_rob_alloc_req_2.is_fence, o_rob_alloc_req_2.is_fence_i,
+                        o_rob_alloc_req_2.is_mret}
+      ) && !(o_rob_alloc_req_2.is_branch &&
+             (o_rob_alloc_req_2.is_wfi || o_rob_alloc_req_2.is_csr || o_rob_alloc_req_2.is_fence ||
+              o_rob_alloc_req_2.is_fence_i || o_rob_alloc_req_2.is_mret)));
     end
   end
 `endif
