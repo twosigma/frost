@@ -62,6 +62,7 @@ def test_metadata_matches_current_loader_and_uart_default() -> None:
     assert metadata["defaultSerial"] == defaults["DEFAULT_SERIALS"]["x3"]
     assert set(metadata["coremarkProApps"]) == set(loader["COREMARK_PRO_APP_NAMES"])
     assert set(metadata["ddrApps"]) == set(loader["DDR_APPS"])
+    assert "vec_crypto_exec_test" in metadata["ddrApps"]
     assert metadata["hasDdr"] == loader["BOARD_CONFIG"]["x3"]["has_ddr"]
     assert set(metadata["debugApps"]) == loader["DEBUG_APPS"] & set(x3_apps)
     assert metadata["debugUnsupported"] == loader["DEBUG_UNSUPPORTED"]

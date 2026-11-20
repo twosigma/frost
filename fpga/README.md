@@ -242,6 +242,10 @@ HALT messages, validation failures and trap diagnostics fail the stage.
 Its timeout is at least 600 seconds, including compilation, loading, DDR
 preparation and flash reads. A larger `--timeout` extends that budget.
 
+On X3, `vec_crypto_exec_test` uses cached DDR for its vector operands.
+To place the program in cached DDR as well, select the stage with
+`./fpga/hw_regression.py --board x3 --loader-extra=--ddr vec_crypto_exec_test`.
+
 The interactive `debug_target` and external-link `nic_echo` and `nic_bench`
 applications are excluded from the default sequence.
 `perf_off_test` checks that the profiling counters are absent, so it fails
