@@ -2090,6 +2090,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "mispen_probe",
         "nic_cmo_loopback",
         "nic_loopback",
+        "odd_halfword_pred_test",
         "opensbi_smoke",
         "packet_parser",
         "pd_itt_slot2",
