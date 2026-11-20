@@ -905,6 +905,9 @@ A repeat snapshot of that version acknowledges M without reading private
 data. Each local data installation clears the bit. A displaced M sector
 needs a PutM only if its installed bytes are owed to the home. A matching
 frozen PutM supplies its full image and keeps its identity through WA.
+Keeping M saves a later successful SC a permission request and can
+delay a home replacement while the L1D returns the victim's data and
+downgrades it to S.
 A ProbeRead of M merges dirty bytes and leaves S. ProbeInvalidate leaves I
 after the CPU cut. CheckSC returns the selected reservation result.
 An ordinary probe starts its tag request on P capture when the array is ready.
