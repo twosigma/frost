@@ -249,8 +249,8 @@ filelists.
 parcel in both halfword positions. Its slot-2 checks exclude native SYSTEM
 except funct3=100, MISC-MEM, AMO, FP-compute, OP-V and OP-VE instructions. Zimop
 instructions can lead a pair or start slot 2. `imem_predecode_fast_replica`
-and `imem_predecode_capacity` apply that rule to the stored sideband and its
-scalar copies through programming writes, bank swaps and overlay boundaries.
+and `imem_predecode_capacity` enable the optional metadata banks and apply
+that rule through programming writes, bank swaps and overlay boundaries.
 
 `coherence_dma_ingress` and `coherence_dma_ingress_8` issue all four or eight credits before G and check reordered
 G/C/U, full identities, streaming hints and reset at response presentation. The

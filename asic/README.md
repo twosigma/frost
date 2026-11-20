@@ -21,9 +21,8 @@ Arrays of 4,096 bits or less, such as the L1I's tags and the caches'
 replacement state, become flip-flops. Memories larger than 4,096 bits
 without a matching macro are mocked: each keeps a single row, built from
 flip-flops. These include arrays read without a clock, such as the BTB tags,
-the TAGE tables, the instruction memory's PC-metadata overlays, and banks of
-the ROB and the INT RS. The MAC's registered packet-length memory also lacks
-a matching macro. An ASIC would build
+the TAGE tables, and banks of the ROB and the INT RS. The MAC's registered
+packet-length memory also lacks a matching macro. An ASIC would build
 those asynchronous arrays from flip-flops or latches rather than SRAM.
 Their area and the paths through them are therefore missing. The summary
 lists the macros and every mocked memory with its dimensions.
@@ -83,9 +82,8 @@ docker ps --all --quiet --filter label=org.frost.asic-flow | xargs --no-run-if-e
 1. In the frost image, `orfs.py prepare` converts the NIC and MAC/PCS
    sources with sv2v as [`tests/test_run_yosys.py`](../tests/test_run_yosys.py)
    does, and writes the source list from [`hw/rtl/frost.f`](../hw/rtl/frost.f)
-   and header directories to `asic/build/sources.mk`. No memory reads a
-   `$readmemh` image here: the SRAM macros have no initial contents, and the instruction memory's
-   PC-metadata overlays read their images only outside Yosys.
+   and header directories to `asic/build/sources.mk`. The SRAM macros have
+   no initial contents, and the synthesis view reads no memory images.
 2. In the ORFS image, ORFS's Makefile runs the flow with
    [`config.mk`](config.mk). Make reruns only the stages whose input files
    changed since the last run. It does not track `config.mk`, so delete
@@ -215,9 +213,7 @@ differ from the block RAMs they replace in these cases:
   instruction memory every cycle, and the CPU fetches a written word only
   after the program loader releases the CPU's reset or after the debug slice
   writer reports the write done, four core cycles after the macros complete
-  it. For readers of `imem_predecode`'s readiness flag, its write quarantine
-  lets through a read one and a half core cycles after that, with the
-  quarter-rate clock phase-locked to the core's, as on the X3.
+  it.
 - The MAC's frame and packet buffers have both ports on their direction's
   clock, TX or RX. TX sets `buffer_full` on the edge that writes the final
   beat, so its first read starts at least one rising edge later, after the
@@ -376,12 +372,11 @@ to 3, one for each way.
 | `soc.gen_cached_tier.nic_mac.u_mac.mac_tx.u_frame_memory` | `sdp_block_ram_dc_init` | 4,096 x 64 | 1 `sram_1w1r_4096x64_m8` |
 | `soc.gen_cached_tier.nic_mac.u_mac.mac_rx.g_memory_lane[0..7].u_packet_memory` | `sdp_block_ram_dc_init` | 4,096 x 8 each | 1 `sram_1w1r_4096x8` each |
 
-The instruction memory's sideband banks, `u_even_sideband` and
-`u_odd_sideband`, are `sdp_block_ram_dc_init` instances that only simulation
-reads, so synthesis removes them; simulations of the macros build them from
-`sram_1w1r_8192x4` macros too. The wrappers of distributed RAMs, such as the
-instruction memory's PC-metadata overlays (`sdp_dist_ram_init`), keep
-behavioral arrays. The asynchronous predictor memories below exceed the
+The SoC's instruction memory uses the data-only configuration. The narrow
+`u_even_compressed` and `u_odd_compressed` banks use their three instruction
+bits and share the four-bit macro geometry of the frontend-hot banks.
+
+The asynchronous predictor memories below exceed the
 4,096-bit limit and contribute one row each to the default design. The
 32-by-6 tag-to-queue-index array stays at its full depth.
 

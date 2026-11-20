@@ -341,7 +341,7 @@ def _write_instruction_bank(bank: Any, words: list[int]) -> None:
 
 
 def _load_instruction_image(memory: Any) -> None:
-    """Load instruction words and metadata while programming writes are idle."""
+    """Load instruction banks while programming writes are idle."""
     assert not int(memory.i_port_a_write_enable.value)
     assert not int(memory.port_a_write_even.value)
     assert not int(memory.port_a_write_odd.value)
@@ -352,25 +352,33 @@ def _load_instruction_image(memory: Any) -> None:
         1 << int(memory.ADDR_WIDTH.value),
         1 << int(memory.INIT_ADDR_WIDTH.value),
     )
-    sidebands = {
-        word: model.make_sideband(word) for bank in banks for word in set(bank)
-    }
+    metadata = getattr(memory, "gen_fetch_metadata", None)
+    sidebands = {}
+    if metadata is not None:
+        sidebands = {
+            word: model.make_sideband(word) for bank in banks for word in set(bank)
+        }
     for parity, bank_words in zip(("even", "odd"), banks):
         packed = {
             "cold": [model.pack_cold_data(word) for word in bank_words],
             "frontend_hot": [model.pack_frontend_hot(word) for word in bank_words],
-            "sideband": [sidebands[word] for word in bank_words],
             "compressed": [
-                model.make_fast_replica(word, sidebands[word]) for word in bank_words
+                model.make_fast_replica(word, sidebands.get(word, 0))
+                for word in bank_words
             ],
         }
         for name, values in packed.items():
             _write_instruction_bank(getattr(memory, f"u_{parity}_{name}"), values)
-        for name, bit in model.SCALAR_REPLICA_BITS:
-            array = getattr(memory, f"u_{parity}_{name}_bank").u_ram.ram
-            array.value = Immediate(
-                [(sidebands[word] >> bit) & 1 for word in bank_words[: len(array)]]
+        if metadata is not None:
+            _write_instruction_bank(
+                getattr(metadata, f"u_{parity}_sideband"),
+                [sidebands[word] for word in bank_words],
             )
+            for name, bit in model.SCALAR_REPLICA_BITS:
+                array = getattr(metadata, f"u_{parity}_{name}_bank").u_ram.ram
+                array.value = Immediate(
+                    [(sidebands[word] >> bit) & 1 for word in bank_words[: len(array)]]
+                )
 
 
 def load_program_images(dut: Any) -> None:

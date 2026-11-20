@@ -25,9 +25,8 @@ final.dcp.
 Full-rate X3 placement compares local guidance with a placer sweep. Candidates
 must pass timing and congestion checks; quick-route probes rank the survivors
 by congestion warning, WNS, then TNS. Placement and route sweeps are scored at
-zero added setup uncertainty. Temporary PC-tail groups must pass an audit on a
-clean reopen. Later stages use checkpoint sidecars to verify that their inputs
-descend from the current qualified placement.
+zero added setup uncertainty. Later stages use checkpoint sidecars to
+verify that their inputs descend from the qualified placement.
 
 Run natively; see ``fpga/README.md`` and ``--help`` for commands and tuning.
 """
@@ -167,13 +166,6 @@ X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
 )
 # Synthesis-time netlist options recorded beside the checkpoints they produced.
 X3_NETLIST_CONFIG_NAME = "netlist_config.json"
-# Only these directive/uncertainty pairs receive PC-tail guidance.
-X3_PC_TAIL_GUIDED_CANDIDATES = (
-    ("ExtraNetDelay_high", X3_PLACE_BASELINE_UNCERTAINTY_NS),
-    ("ExtraPostPlacementOpt", 0.450),
-    ("ExtraPostPlacementOpt", 0.425),
-)
-
 # The off-grid seed competes under the same veto, probe, and rescoring
 # rules as grid seeds.
 X3_PLACE_EXTRA_SEED_CANDIDATES = (("ExtraPostPlacementOpt", 0.425),)
@@ -303,17 +295,6 @@ def make_x3_place_sweep_candidates(
                     )
                 )
     return candidates
-
-
-def x3_place_uses_pc_tail_guidance(
-    directive: str, setup_uncertainty_ns: float | None
-) -> bool:
-    """Return whether this X3 placement candidate gets PC-tail guidance."""
-    return setup_uncertainty_ns is not None and any(
-        directive == guided_directive
-        and abs(setup_uncertainty_ns - guided_uncertainty_ns) < 1.0e-9
-        for guided_directive, guided_uncertainty_ns in X3_PC_TAIL_GUIDED_CANDIDATES
-    )
 
 
 ROUTER_DIRECTIVES = [
@@ -550,7 +531,6 @@ class DirectiveSweepRun:
     quick_route_returncode: int | None = None
     quick_route_elapsed_s: float | None = None
     quick_route_error: str | None = None
-    pc_tail_guided: bool = False
     # Per-candidate pre-place physical settings.
     cell_bloat_factor: str | None = None
     cell_bloat_cells: str | None = None
@@ -646,9 +626,7 @@ def x3_place_cell_bloat_override_is_valid(
     )
 
 
-# Predecode sideband predicates mirrored into pinned low-address scalar LUTRAM
-# overlays on both IMEM parities (imem_predecode.sv,
-# generate_imem_predecode_init.py); every one launches the guided PC tail.
+# Scalar overlay image names emitted by the program image generator.
 IMEM_SCALAR_REPLICA_NAMES = (
     "is_compressed_lo",
     "is_compressed_hi",
@@ -658,7 +636,6 @@ IMEM_SCALAR_REPLICA_NAMES = (
     "pairable_native_hi",
     "slot2_start_valid_lo",
 )
-X3_PC_TAIL_SCALAR_LAUNCH_COUNT = 2 * len(IMEM_SCALAR_REPLICA_NAMES)
 # Obsolete IMEM init images, deleted from reused build directories.
 IMEM_OBSOLETE_INIT_IMAGE_NAMES = (
     "sw_imem_even_pc_compressed.mem",
@@ -672,169 +649,6 @@ IMEM_OBSOLETE_INIT_IMAGE_NAMES = (
     "sw_imem_even_pc_metadata_bit3.mem",
     "sw_imem_odd_pc_metadata_bit3.mem",
 )
-
-
-def x3_pc_tail_group_audit_is_valid(
-    audit_path: Path,
-    expected_directive: str,
-    expected_setup_uncertainty_ns: float,
-) -> bool:
-    """Return whether a guided placement's PC-tail audit passes for this seed.
-
-    Placement may change replicas or merge canonical endpoints into them.
-    Require unchanged launch names, a canonical endpoint per bit before
-    placement, an endpoint per bit after it, and no new canonical names.
-    The clean reopen must preserve all endpoint names. ``COMPRESSED_*`` covers
-    the fourteen predecode scalar-overlay launches.
-    """
-    if not x3_place_uses_pc_tail_guidance(
-        expected_directive, expected_setup_uncertainty_ns
-    ):
-        return False
-
-    try:
-        fields: dict[str, str] = {}
-        for line in audit_path.read_text().splitlines():
-            if "=" not in line:
-                return False
-            key, value = line.split("=", 1)
-            if not key or key in fields:
-                return False
-            fields[key] = value
-
-        required_fields = {
-            "DIRECTIVE",
-            "PLACE_UNCERTAINTY_NS",
-            "SCORE_UNCERTAINTY_NS",
-            "PRE_COMPRESSED_STARTS",
-            "PRE_ENDS",
-            "PRE_PC_BITS",
-            "PRE_STATE_ENDS",
-            "PRE_STATE_PC_BITS",
-            "PRE_SEQ_ENDS",
-            "PRE_SEQ_PC_BITS",
-            "PRE_PENDING_ENDS",
-            "PRE_PENDING_CANONICAL",
-            "PRE_UNION_ENDS",
-            "POST_COMPRESSED_STARTS",
-            "POST_ENDS",
-            "POST_PC_BITS",
-            "POST_STATE_ENDS",
-            "POST_STATE_PC_BITS",
-            "POST_SEQ_ENDS",
-            "POST_SEQ_PC_BITS",
-            "POST_PENDING_ENDS",
-            "POST_PENDING_CANONICAL",
-            "POST_UNION_ENDS",
-            "PRE_COMPRESSED_START_NAMES_MATCH_POST",
-            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE",
-            "POST_STATE_CANONICAL_NAMES_WITHIN_PRE",
-            "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE",
-            "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE",
-            "SCORE_COMPRESSED_STARTS",
-            "SCORE_ENDS",
-            "SCORE_PC_BITS",
-            "SCORE_STATE_ENDS",
-            "SCORE_STATE_PC_BITS",
-            "SCORE_SEQ_ENDS",
-            "SCORE_SEQ_PC_BITS",
-            "SCORE_PENDING_ENDS",
-            "SCORE_PENDING_CANONICAL",
-            "SCORE_UNION_ENDS",
-            "SCORE_COMPRESSED_START_NAMES_MATCH_POST",
-            "SCORE_ENDPOINT_NAMES_MATCH_POST",
-            "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST",
-            "LINGERING_CUSTOM_PATHS",
-            "COMPRESSED_SCORED_GROUPS",
-        }
-        if set(fields) != required_fields:
-            return False
-
-        integer_field_names = {
-            field_name
-            for field_name in required_fields
-            if field_name.startswith(("PRE_", "POST_", "SCORE_"))
-            and not field_name.endswith(
-                (
-                    "NAMES_MATCH_POST",
-                    "NAMES_WITHIN_PRE",
-                    "ENDPOINT_NAMES_MATCH_POST",
-                    "SCORED_GROUPS",
-                    "UNCERTAINTY_NS",
-                )
-            )
-        }
-        counts = {name: int(fields[name]) for name in integer_field_names}
-    except (OSError, UnicodeError, ValueError):
-        return False
-
-    for phase in ("PRE", "POST", "SCORE"):
-        if counts[f"{phase}_COMPRESSED_STARTS"] != X3_PC_TAIL_SCALAR_LAUNCH_COUNT:
-            return False
-        # Selected and state PC families cover all 64 architectural bits.
-        # The sequential PC register holds 63 bits.
-        if counts[f"{phase}_PC_BITS"] != 64:
-            return False
-        if counts[f"{phase}_STATE_PC_BITS"] != 64:
-            return False
-        if counts[f"{phase}_SEQ_PC_BITS"] != 63:
-            return False
-        # Placement may merge the canonical pending-valid register into a
-        # replica, so only the pre-place scope must still have it.
-        if counts[f"{phase}_PENDING_CANONICAL"] not in (
-            (1,) if phase == "PRE" else (0, 1)
-        ):
-            return False
-        if counts[f"{phase}_ENDS"] < 64:
-            return False
-        if counts[f"{phase}_STATE_ENDS"] < 64:
-            return False
-        if counts[f"{phase}_SEQ_ENDS"] < 63:
-            return False
-        if counts[f"{phase}_PENDING_ENDS"] < 1:
-            return False
-        expected_union = (
-            counts[f"{phase}_ENDS"]
-            + counts[f"{phase}_STATE_ENDS"]
-            + counts[f"{phase}_SEQ_ENDS"]
-            + counts[f"{phase}_PENDING_ENDS"]
-        )
-        if counts[f"{phase}_UNION_ENDS"] != expected_union:
-            return False
-
-    # Replica counts may change during placement, but the audited clean reopen
-    # must preserve the complete post-place topology.
-    for endpoint_field in (
-        "ENDS",
-        "STATE_ENDS",
-        "SEQ_ENDS",
-        "PENDING_ENDS",
-        "PENDING_CANONICAL",
-    ):
-        if counts[f"SCORE_{endpoint_field}"] != counts[f"POST_{endpoint_field}"]:
-            return False
-    if counts["SCORE_UNION_ENDS"] != counts["POST_UNION_ENDS"]:
-        return False
-
-    proof_fields = (
-        "PRE_COMPRESSED_START_NAMES_MATCH_POST",
-        "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE",
-        "POST_STATE_CANONICAL_NAMES_WITHIN_PRE",
-        "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE",
-        "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE",
-        "SCORE_COMPRESSED_START_NAMES_MATCH_POST",
-        "SCORE_ENDPOINT_NAMES_MATCH_POST",
-        "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST",
-    )
-    return (
-        fields.get("DIRECTIVE") == expected_directive
-        and fields.get("PLACE_UNCERTAINTY_NS") == f"{expected_setup_uncertainty_ns:.3f}"
-        and fields.get("SCORE_UNCERTAINTY_NS")
-        == f"{X3_PLACE_REPORT_UNCERTAINTY_NS:.3f}"
-        and all(fields.get(field_name) == "1" for field_name in proof_fields)
-        and fields.get("LINGERING_CUSTOM_PATHS") == "0"
-        and fields.get("COMPRESSED_SCORED_GROUPS") == "clock_from_mmcm"
-    )
 
 
 def extract_timing_from_report(timing_rpt_path: Path) -> TimingSummary:
@@ -1721,11 +1535,12 @@ def copy_results_to_main_work(
         source_gate = work_dir / "post_place_gate.txt"
         if checkpoint_promoted and source_gate.is_file():
             shutil.copy2(source_gate, destination)
-        # Audits from the diagnostic pin-swap and flush-guidance helpers cannot
-        # describe this placement.
+        # Drop obsolete audit files from reused build directories.
         for retired_audit in (
             "post_place_flush_guidance_audit.tcldict",
             "post_place_pin_swap_audit.txt",
+            "post_place_group_audit.txt",
+            "post_place_pc_compressed_tail_timing.rpt",
         ):
             (main_work / retired_audit).unlink(missing_ok=True)
         for suffix in ("worst", "cpu", "below"):
@@ -1742,8 +1557,6 @@ def copy_results_to_main_work(
         "_high_fanout.rpt",
         "_failing_paths.csv",
         "_congestion.rpt",
-        "_group_audit.txt",
-        "_pc_compressed_tail_timing.rpt",
     ]:
         dst = main_work / f"{report_prefix}{suffix}"
         # Never leave diagnostics from an older promoted DCP.
@@ -2386,9 +2199,6 @@ def run_x3_step_directive_sweep(
                 next_candidate += 1
                 directive = candidate.directive
                 uncertainty_ns = candidate.setup_uncertainty_ns
-                pc_tail_guided = x3_place_uses_pc_tail_guidance(
-                    directive, uncertainty_ns
-                )
                 label = candidate.label
                 job_env = (
                     candidate.environment(os.environ)
@@ -2423,7 +2233,6 @@ def run_x3_step_directive_sweep(
                     work_dir=work_dir,
                     stdout_path=stdout_path,
                     setup_uncertainty_ns=uncertainty_ns,
-                    pc_tail_guided=pc_tail_guided,
                     cell_bloat_factor=candidate.cell_bloat_factor,
                     cell_bloat_cells=candidate.cell_bloat_cells,
                 )
@@ -2488,21 +2297,6 @@ def run_x3_step_directive_sweep(
                     sys.stdout.flush()
 
                 timing_rpt = run.work_dir / f"{tcl_report_prefix}_timing.rpt"
-                if returncode == 0 and run.pc_tail_guided:
-                    audit_path = run.work_dir / "post_place_group_audit.txt"
-                    if run.setup_uncertainty_ns is None or not (
-                        x3_pc_tail_group_audit_is_valid(
-                            audit_path,
-                            run.directive,
-                            run.setup_uncertainty_ns,
-                        )
-                    ):
-                        returncode = -1
-                        run.returncode = returncode
-                        run.launch_error = (
-                            "missing or invalid clean-reopen PC-tail group audit"
-                        )
-
                 if returncode == 0 and run.cell_bloat_factor is not None:
                     if run.cell_bloat_cells is None or not (
                         x3_place_cell_bloat_override_is_valid(

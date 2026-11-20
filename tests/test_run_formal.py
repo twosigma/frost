@@ -48,6 +48,7 @@ SBY_TASK_TIMEOUT_S = 2400
 # SBY files and separate CI jobs. Keep the runner's backstops in sync with
 # those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("imem_predecode_twin", "imem_predecode_live"): 60,
     ("coherence_dma_ingress", "coh_dma_ingress_soc_prove"): 3120,
     ("coherence_home_twin", "home_twin_small"): 600,
     ("coherence_home_twin", "home_twin_four"): 600,
@@ -1059,6 +1060,11 @@ FORMAL_TARGETS = [
         "low_bram_presenter_tier.sby",
         "Low-BRAM fetch responses match with separate address retargeting on or off",
         tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
+        "imem_predecode_twin.sby",
+        "IMEM fetch data and registered bank select match the frozen live cone",
+        tasks=("imem_predecode_live",),
     ),
     FormalTarget(
         "rvc_predecode.sby",
@@ -3626,6 +3632,10 @@ SBY_TASKS = [
         "Decoded bundle queue primitive form equals its portable form with the split shadow stall.",
     ),
     (
+        "imem_predecode_live",
+        "Fetch data, bank select and live IMEM state agree with the reference.",
+    ),
+    (
         "dmmu_twin",
         "Data MMU primitive form equals its portable form.",
     ),
@@ -3821,6 +3831,7 @@ SBY_TASK_MODE_OVERRIDES: dict[str, str] = {
     "csr_twin": "bmc",
     "csr_twin_vector": "bmc",
     "dbq_twin": "bmc",
+    "imem_predecode_live": "bmc",
     "dmmu_twin": "bmc",
     "endpoint32": "prove",
     "endpoint56": "prove",
@@ -4878,6 +4889,10 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         {
             "if_slot2_precompute_bmc if_slot2_precompute_cover": ["opt"],
         },
+    ),
+    "imem_predecode_twin": (
+        "equiv_simple runs after opening undefined constants in both IMEM forms",
+        {"imem_predecode_live": ["equiv_simple"]},
     ),
     "immu_bare": (
         "opt -purge prunes translation state outside the Bare outputs",

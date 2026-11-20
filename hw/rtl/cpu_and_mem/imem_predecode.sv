@@ -23,11 +23,9 @@
  * repeats the request (imem_predecode withholds ready until the predicates
  * line up).
  *
- * keep_hierarchy preserves independently placeable copies. All banks use the
- * same staged programming writes. The parent withholds fetch readiness around
- * writes because the slow fallback trails the BRAM response by one cycle.
+ * Banks use the same staged programming writes. The parent withholds fetch
+ * readiness around writes because the fallback trails the BRAM response.
  */
-(* keep_hierarchy = "yes" *)
 module imem_sideband_scalar_bank #(
     parameter int unsigned SIDEBAND_BIT = riscv_pkg::ImemSbIsCompressedLo,
     // Width of the parent parity-bank address presented at the ports.
@@ -115,7 +113,7 @@ module imem_sideband_scalar_bank #(
 `endif  // YOSYS
 
   // Register the asynchronous read to match the BRAM latency and enable hold.
-  (* keep = "true" *) logic read_q;
+  logic read_q;
 
   always_ff @(posedge i_read_clk) begin
     if (i_read_enable) begin
@@ -128,48 +126,23 @@ module imem_sideband_scalar_bank #(
 endmodule : imem_sideband_scalar_bank
 
 /*
- * Instruction memory and predecode sideband for a 64-bit fetch window.
- * Two interleaved banks provide consecutive 32-bit words, eliminating the
- * C-extension spanning penalty for PC[1]=1.
+ * Instruction memory for a 64-bit fetch window. Interleaved banks provide
+ * consecutive 32-bit words, including instructions that cross a word
+ * boundary. Each parity stores cold bits, four frontend bits and narrow
+ * copies of word[31] and word[29:28]. Registered PC[2] selects the current
+ * and next words.
  *
- * Each parity has four block-RAM banks, cold, frontend_hot, sideband, and
- * compressed, each an sdp_block_ram_dc_init (hw/rtl/lib/ram):
- *   u_even_*: words 0, 2, 4, ...
- *   u_odd_*:  words 1, 3, 5, ...
+ * The optional fetch metadata interface serves the fixed-latency presenter
+ * and its tests. It stores write-time sideband in full-depth banks and
+ * scalar predicates in low-address overlays. Requests outside the overlay
+ * repeat to align predicates decoded from the previous read. Vivado loads
+ * the bank images from sw/common/generate_imem_predecode_init.py. Other
+ * simulations load the combined word image or initialize the banks directly.
  *
- * Both banks read in parallel. For word index W:
- *   even W: EVEN[W>>1] = W,   ODD[W>>1] = W+1
- *   odd W:  ODD[W>>1] = W,    EVEN[(W>>1)+1] = W+1
- * Registered PC[2] swaps the outputs into {W+1, W}.
- *
- * Each word is stored with its predecode sideband from
- * riscv_pkg::imem_make_sideband (fetch-control bits and each halfword's RVC
- * expansion), computed on every programming write and at simulation init.
- * Vivado builds load init files written by
- * sw/common/generate_imem_predecode_init.py, which mirrors that function. The
- * L1I fill path uses the same function.
- *
- * Each data bank splits 28 cold bits from four frontend bits {15,10,7,6},
- * for timing. At the production depth of 16K entries per parity (128 KiB),
- * each RAMB36 holds two lanes, so this split adds no BRAM. Four more lanes
- * replicate C[15], C[13], C[12], and AllowsSlot2AfterHi.
- *
- * PC predicates use registered LUTRAM overlays (imem_sideband_scalar_bank),
- * covering [0, 64 KiB) by default. Outside that range, repeat the window
- * while predicates are redecoded into the same output flops. The full-depth
- * sideband is the simulation reference; its unused hardware predicate lanes
- * can be trimmed.
- *
- * Port A programs and reads on the slow clock. Its write path is registered,
- * so writes commit one port-A cycle after presentation. Port B is the
- * read-only fast-clock fetch port. Keeping fetch live during a Port-A write
- * relies on the production phase-related div4 clock: at least three Port-B
- * edges separate the staged write enable from the array commit, allowing the
- * two-flop quarantine synchronizer to land first. A different clock ratio
- * requires holding fetch externally or adding a write handshake. The ASIC
- * flow's SRAM macros complete a write two Port-B cycles after the block RAM
- * does, at the div4 clock's falling edge; the first read that the
- * quarantine lets through comes a cycle and a half after that.
+ * Port A stages programming writes on the slow clock. Port B fetches on the
+ * fast clock. Metadata clients need phase-related clocks: the staged write
+ * enable must cross the two-flop quarantine before the array write commits.
+ * The SRAM macros complete the write at the falling edge of the slow clock.
  */
 module imem_predecode #(
     parameter int unsigned ADDR_WIDTH = 14,
@@ -213,7 +186,8 @@ module imem_predecode #(
     parameter bit [319:0] INIT_FILE_EVEN_SLOT2_START_VALID_LO =
         "sw_imem_even_slot2_start_valid_lo.mem",
     parameter bit [319:0] INIT_FILE_ODD_SLOT2_START_VALID_LO =
-        "sw_imem_odd_slot2_start_valid_lo.mem"
+        "sw_imem_odd_slot2_start_valid_lo.mem",
+    parameter bit ENABLE_FETCH_METADATA = 1'b0
 ) (
     // Port A: Programming interface (slow clock)
     input  logic        i_port_a_clk,
@@ -235,6 +209,7 @@ module imem_predecode #(
     output logic [63:0] o_port_b_read_data,  // {next_word, current_word}
     // Physical {odd, even} order; IF selects the current word by pc_reg[2].
     output logic [63:0] o_port_b_read_data_by_parity,
+    // Metadata outputs are zero when ENABLE_FETCH_METADATA is clear.
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_port_b_sideband,
     // Copy of the PC-advance bits, ordered like o_port_b_read_data. Each
     // word is {pairable_native_hi, pairable_compressed_hi,
@@ -245,9 +220,8 @@ module imem_predecode #(
     // response_ready marks alignment with the payload; overlay_hit distinguishes
     // one-cycle overlay reads from the repeated-request fallback.
     output logic [7:0] o_port_b_pc_metadata_by_parity,  // {odd[3:0], even[3:0]}
-    // The two remaining word-local pairability predicates used by live PC
-    // advance, in {odd[native-lo,even-local], even[native-lo,even-local]}
-    // order.
+    // Word-local pairability in {odd[native-lo,even-local],
+    // even[native-lo,even-local]} order.
     output logic [3:0] o_port_b_pc_pairability_by_parity,
     output logic [1:0] o_port_b_slot2_start_valid_lo_by_parity,  // {odd, even}
     // Registered with the raw BRAM response. Both physical word addresses
@@ -276,21 +250,8 @@ module imem_predecode #(
   localparam int unsigned FastLaneAllowsSlot2AfterHi = 3;
   localparam int unsigned FastLaneWidth = 4;
 
-  function automatic logic pc_metadata_overlay_contains(input logic [31:0] byte_address);
-    // One parity row covers two 32-bit words, hence the three low byte-address
-    // bits below the scalar bank's stored row index.
-    pc_metadata_overlay_contains = (byte_address >> (PC_METADATA_OVERLAY_ADDR_WIDTH + 3)) == '0;
-  endfunction
-
 `ifndef SYNTHESIS
   initial begin
-    p_pc_metadata_overlay_width_valid :
-`ifdef FROST_SIM_ASSERTIONS
-    if (!(PC_METADATA_OVERLAY_ADDR_WIDTH > 0 && PC_METADATA_OVERLAY_ADDR_WIDTH <= ADDR_WIDTH - 1))
-      $fatal(1, "imem_predecode: invalid static configuration");
-`else
-    assert (PC_METADATA_OVERLAY_ADDR_WIDTH > 0 && PC_METADATA_OVERLAY_ADDR_WIDTH <= ADDR_WIDTH - 1);
-`endif
     p_init_image_covers_memory :
 `ifdef FROST_SIM_ASSERTIONS
     if (!(INIT_ADDR_WIDTH >= ADDR_WIDTH)) $fatal(1, "imem_predecode: invalid static configuration");
@@ -335,9 +296,9 @@ module imem_predecode #(
     };
   endfunction
 
-  function automatic logic [FastLaneWidth-1:0] pack_fast_lanes(
-      input logic [DataWidth-1:0] word, input logic [SidebandWidth-1:0] sideband);
-    pack_fast_lanes = {sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi], word[29:28], word[31]};
+  function automatic logic [FastLaneWidth-1:0] pack_fast_lanes(input logic [DataWidth-1:0] word,
+                                                               input logic allows_slot2_after_hi);
+    pack_fast_lanes = {allows_slot2_after_hi, word[29:28], word[31]};
   endfunction
 
   // =========================================================================
@@ -361,6 +322,13 @@ module imem_predecode #(
 `ifndef YOSYS
 `ifndef FROST_VIVADO_SYNTH
 `ifndef FROST_SRAM_MACROS
+  function automatic logic [FastLaneWidth-1:0] pack_initial_fast_lanes(
+      input logic [DataWidth-1:0] word);
+    logic [SidebandWidth-1:0] sideband;
+    sideband = ENABLE_FETCH_METADATA ? riscv_pkg::imem_make_sideband(word) : '0;
+    pack_initial_fast_lanes = pack_fast_lanes(word, sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi]);
+  endfunction
+
   logic [DataWidth-1:0] init_mem[2**INIT_ADDR_WIDTH];
 
   initial begin
@@ -372,13 +340,11 @@ module imem_predecode #(
         if (i[0] == 1'b0) begin
           u_even_cold.ram[i>>1] = pack_cold_data(init_mem[i]);
           u_even_frontend_hot.ram[i>>1] = pack_frontend_hot(init_mem[i]);
-          u_even_sideband.ram[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
-          u_even_compressed.ram[i>>1] = pack_fast_lanes(init_mem[i], u_even_sideband.ram[i>>1]);
+          u_even_compressed.ram[i>>1] = pack_initial_fast_lanes(init_mem[i]);
         end else begin
           u_odd_cold.ram[i>>1] = pack_cold_data(init_mem[i]);
           u_odd_frontend_hot.ram[i>>1] = pack_frontend_hot(init_mem[i]);
-          u_odd_sideband.ram[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
-          u_odd_compressed.ram[i>>1] = pack_fast_lanes(init_mem[i], u_odd_sideband.ram[i>>1]);
+          u_odd_compressed.ram[i>>1] = pack_initial_fast_lanes(init_mem[i]);
         end
       end
     end else begin
@@ -392,10 +358,8 @@ module imem_predecode #(
         u_odd_cold.ram[i] = pack_cold_data(odd_default_word);
         u_even_frontend_hot.ram[i] = pack_frontend_hot(even_default_word);
         u_odd_frontend_hot.ram[i] = pack_frontend_hot(odd_default_word);
-        u_even_sideband.ram[i] = riscv_pkg::imem_make_sideband(even_default_word);
-        u_odd_sideband.ram[i] = riscv_pkg::imem_make_sideband(odd_default_word);
-        u_even_compressed.ram[i] = pack_fast_lanes(even_default_word, u_even_sideband.ram[i]);
-        u_odd_compressed.ram[i] = pack_fast_lanes(odd_default_word, u_odd_sideband.ram[i]);
+        u_even_compressed.ram[i] = pack_initial_fast_lanes(even_default_word);
+        u_odd_compressed.ram[i] = pack_initial_fast_lanes(odd_default_word);
       end
 `endif
     end
@@ -408,8 +372,8 @@ module imem_predecode #(
   // Port A: Programming interface (write to one bank per cycle)
   // =========================================================================
   // Same-address programming/fetch collisions return unspecified data.
-  // Bulk loading holds image_load_reset; live debug writes use the readiness
-  // quarantine below until the banks realign and a fresh response arrives.
+  // Bulk loading holds image_load_reset. Metadata clients wait for a fresh
+  // response after live writes.
   //
   // Registered programming inputs add one div4 cycle before array writes,
   // for fanout. Synthesized readback is a pass-through.
@@ -429,25 +393,19 @@ module imem_predecode #(
   localparam bit RandomStart = 1'b0;
 `endif
 
-  (* max_fanout = 512 *) logic port_a_write_even_q = RandomStart ? 'x : 1'b0;
-  (* max_fanout = 512 *) logic port_a_write_odd_q = RandomStart ? 'x : 1'b0;
-
-  // Live writes must invalidate repeated-address history: slow predicates
-  // trail the changed BRAM word by one read. Staged write enables precede
-  // array commit by a div4 cycle, allowing this synchronizer to block readiness
-  // first. This requires the clock relationship documented above.
-  (* ASYNC_REG = "TRUE" *) logic [1:0] port_a_write_active_sync_q = RandomStart ? 'x : 2'b00;
-  logic port_a_write_quarantine;
-  always_ff @(posedge i_port_b_clk) begin
-    if (i_port_b_rst) port_a_write_active_sync_q <= '0;
-    else
-      port_a_write_active_sync_q <= {
-        port_a_write_active_sync_q[0], port_a_write_even_q || port_a_write_odd_q
-      };
-  end
-  // Only the second stage drives functional logic; stage 0 is the
-  // metastability-catching flop.
-  assign port_a_write_quarantine = port_a_write_active_sync_q[1];
+`ifdef FROST_RANDOM_START
+`ifdef SYNTHESIS
+  // The arbitrary-start synthesis view has no initial write enable.
+  (* max_fanout = 512 *)logic port_a_write_even_q;
+  (* max_fanout = 512 *)logic port_a_write_odd_q;
+`else
+  (* max_fanout = 512 *)logic port_a_write_even_q = RandomStart ? 'x : 1'b0;
+  (* max_fanout = 512 *)logic port_a_write_odd_q = RandomStart ? 'x : 1'b0;
+`endif
+`else
+  (* max_fanout = 512 *)logic port_a_write_even_q = RandomStart ? 'x : 1'b0;
+  (* max_fanout = 512 *)logic port_a_write_odd_q = RandomStart ? 'x : 1'b0;
+`endif
 
   always_ff @(posedge i_port_a_clk) begin
     port_a_half_address_q <= port_a_half_address;
@@ -467,16 +425,14 @@ module imem_predecode #(
   assign port_a_write_even = port_a_write_even_q && !i_port_a_rst;
   assign port_a_write_odd  = port_a_write_odd_q && !i_port_a_rst;
 
-  // Compute sideband from the staged write data at write time. The staged
-  // enables write one parity's four banks (below) together.
-  logic [SidebandWidth-1:0] write_sideband;
+  // One staged write updates the selected parity's data banks.
+  logic write_allows_slot2_after_hi;
   logic [ColdDataWidth-1:0] write_cold;
   logic [FrontendHotWidth-1:0] write_frontend_hot;
   logic [FastLaneWidth-1:0] write_fast_lanes;
-  assign write_sideband = riscv_pkg::imem_make_sideband(port_a_write_data_q);
   assign write_cold = pack_cold_data(port_a_write_data_q);
   assign write_frontend_hot = pack_frontend_hot(port_a_write_data_q);
-  assign write_fast_lanes = pack_fast_lanes(port_a_write_data_q, write_sideband);
+  assign write_fast_lanes = pack_fast_lanes(port_a_write_data_q, write_allows_slot2_after_hi);
 
 `ifndef SYNTHESIS
 `ifndef FROST_SRAM_MACROS
@@ -534,362 +490,14 @@ module imem_predecode #(
   logic [FrontendHotWidth-1:0] even_read_data_frontend_hot;
   logic [FrontendHotWidth-1:0] odd_read_data_frontend_hot;
   logic [DataWidth-1:0] even_read_data, odd_read_data;
-  logic [SidebandWidth-1:0] even_sideband, odd_sideband;
   logic [FastLaneWidth-1:0] even_compressed;
   logic [FastLaneWidth-1:0] odd_compressed;
-  // Timing metadata launches only from the scalar banks' fabric FFs. Each FF
-  // captures its overlay bit on a hit or a reconstructed slow bit on a miss.
-  logic even_is_compressed_lo, odd_is_compressed_lo;
-  logic even_is_compressed_hi, odd_is_compressed_hi;
-  logic even_even_local_pair_valid, odd_even_local_pair_valid;
-  logic even_pairable_native_lo, odd_pairable_native_lo;
-  logic even_pairable_compressed_hi, odd_pairable_compressed_hi;
-  logic even_pairable_native_hi, odd_pairable_native_hi;
-  logic even_slot2_start_valid_lo, odd_slot2_start_valid_lo;
-  logic [SidebandWidth-1:0] even_sideband_redecoded;
-  logic [SidebandWidth-1:0] odd_sideband_redecoded;
-  logic pc_metadata_overlay_window_hit;
-  logic pc_metadata_overlay_window_hit_q = RandomStart ? 'x : 1'b0;
-  logic pc_metadata_response_ready_q = RandomStart ? 'x : 1'b0;
-  logic pc_metadata_response_history_valid_q = RandomStart ? 'x : 1'b0;
-  logic [31:0] pc_metadata_response_address_q;
-  logic [31:0] pc_metadata_response_next_address_q;
-  logic [3:0] even_pc_metadata;
-  logic [3:0] odd_pc_metadata;
-
-  assign pc_metadata_overlay_window_hit = pc_metadata_overlay_contains(
-      i_port_b_byte_address
-  ) && pc_metadata_overlay_contains(
-      i_port_b_next_byte_address
-  );
-
-  // Scalar banks share their parity's staged write and fetch addresses.
-  // Writes outside the overlay are ignored; each parity is independently placed.
-  (* dont_touch = "yes" *)
-  imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedLo),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_EVEN_IS_COMPRESSED_LO),
-      .IS_ODD_BANK(1'b0)
-  ) u_even_is_compressed_lo_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedLo]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(even_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbIsCompressedLo]),
-      .o_read_data(even_is_compressed_lo)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedLo),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_ODD_IS_COMPRESSED_LO),
-      .IS_ODD_BANK(1'b1)
-  ) u_odd_is_compressed_lo_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedLo]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(odd_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbIsCompressedLo]),
-      .o_read_data(odd_is_compressed_lo)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedHi),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_EVEN_IS_COMPRESSED_HI),
-      .IS_ODD_BANK(1'b0)
-  ) u_even_is_compressed_hi_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedHi]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(even_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbIsCompressedHi]),
-      .o_read_data(even_is_compressed_hi)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedHi),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_ODD_IS_COMPRESSED_HI),
-      .IS_ODD_BANK(1'b1)
-  ) u_odd_is_compressed_hi_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedHi]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(odd_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbIsCompressedHi]),
-      .o_read_data(odd_is_compressed_hi)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbEvenLocalPairValid),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_EVEN_EVEN_LOCAL_PAIR_VALID),
-      .IS_ODD_BANK(1'b0)
-  ) u_even_even_local_pair_valid_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbEvenLocalPairValid]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(even_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbEvenLocalPairValid]),
-      .o_read_data(even_even_local_pair_valid)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbEvenLocalPairValid),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_ODD_EVEN_LOCAL_PAIR_VALID),
-      .IS_ODD_BANK(1'b1)
-  ) u_odd_even_local_pair_valid_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbEvenLocalPairValid]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(odd_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbEvenLocalPairValid]),
-      .o_read_data(odd_even_local_pair_valid)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeLo),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_NATIVE_LO),
-      .IS_ODD_BANK(1'b0)
-  ) u_even_pairable_native_lo_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeLo]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(even_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbPairableNativeLo]),
-      .o_read_data(even_pairable_native_lo)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeLo),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_NATIVE_LO),
-      .IS_ODD_BANK(1'b1)
-  ) u_odd_pairable_native_lo_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeLo]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(odd_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbPairableNativeLo]),
-      .o_read_data(odd_pairable_native_lo)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbPairableCompressedHi),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_COMPRESSED_HI),
-      .IS_ODD_BANK(1'b0)
-  ) u_even_pairable_compressed_hi_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbPairableCompressedHi]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(even_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbPairableCompressedHi]),
-      .o_read_data(even_pairable_compressed_hi)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbPairableCompressedHi),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_COMPRESSED_HI),
-      .IS_ODD_BANK(1'b1)
-  ) u_odd_pairable_compressed_hi_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbPairableCompressedHi]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(odd_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbPairableCompressedHi]),
-      .o_read_data(odd_pairable_compressed_hi)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeHi),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_NATIVE_HI),
-      .IS_ODD_BANK(1'b0)
-  ) u_even_pairable_native_hi_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeHi]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(even_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbPairableNativeHi]),
-      .o_read_data(even_pairable_native_hi)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeHi),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_NATIVE_HI),
-      .IS_ODD_BANK(1'b1)
-  ) u_odd_pairable_native_hi_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeHi]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(odd_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbPairableNativeHi]),
-      .o_read_data(odd_pairable_native_hi)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbSlot2StartValidLo),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_EVEN_SLOT2_START_VALID_LO),
-      .IS_ODD_BANK(1'b0)
-  ) u_even_slot2_start_valid_lo_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbSlot2StartValidLo]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(even_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbSlot2StartValidLo]),
-      .o_read_data(even_slot2_start_valid_lo)
-  );
-
-  (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
-      .SIDEBAND_BIT(riscv_pkg::ImemSbSlot2StartValidLo),
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
-      .USE_INIT_FILE(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE),
-      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
-      .BANK_INIT_FILE(INIT_FILE_ODD_SLOT2_START_VALID_LO),
-      .IS_ODD_BANK(1'b1)
-  ) u_odd_slot2_start_valid_lo_bank (
-      .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband[riscv_pkg::ImemSbSlot2StartValidLo]),
-      .i_read_clk(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(odd_read_addr),
-      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
-      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbSlot2StartValidLo]),
-      .o_read_data(odd_slot2_start_valid_lo)
-  );
-
-  assign even_pc_metadata = {
-    even_pairable_native_hi,
-    even_pairable_compressed_hi,
-    even_is_compressed_hi,
-    even_is_compressed_lo
-  };
-  assign odd_pc_metadata = {
-    odd_pairable_native_hi, odd_pairable_compressed_hi, odd_is_compressed_hi, odd_is_compressed_lo
-  };
-
   // =========================================================================
   // Even/odd interleaved memory banks
   // =========================================================================
   // The even banks hold the words whose full word index is 2*k, the odd banks
-  // those at 2*k+1. The staged port-A enables write one parity's four banks
-  // together, and each enabled port-B cycle reads all eight.
+  // those at 2*k+1. A staged port-A write updates one parity. The enabled
+  // port-B read returns both parities.
   //
   // Fetch takes word[31] from the compressed banks' C15 lane, so only
   // simulation checks read the cold banks' copy of it, their top bit. Read
@@ -975,44 +583,8 @@ module imem_predecode #(
       .o_read_data(odd_read_data_frontend_hot)
   );
 
-  // Full-depth sideband uses BRAM for timing.
-  sdp_block_ram_dc_init #(
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .DATA_WIDTH(SidebandWidth),
-      .USE_INIT_FILE(LoadBankImages),
-      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE_EVEN_SIDEBAND)
-  ) u_even_sideband (
-      .i_write_clock(i_port_a_clk),
-      .i_write_enable(port_a_write_even),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband),
-      .i_read_clock(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(even_read_addr),
-      .o_read_data(even_sideband)
-  );
-
-  sdp_block_ram_dc_init #(
-      .ADDR_WIDTH(ADDR_WIDTH - 1),
-      .DATA_WIDTH(SidebandWidth),
-      .USE_INIT_FILE(LoadBankImages),
-      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
-      .INIT_FILE(INIT_FILE_ODD_SIDEBAND)
-  ) u_odd_sideband (
-      .i_write_clock(i_port_a_clk),
-      .i_write_enable(port_a_write_odd),
-      .i_write_address(port_a_half_address_q),
-      .i_write_data(write_sideband),
-      .i_read_clock(i_port_b_clk),
-      .i_read_enable(i_port_b_enable),
-      .i_read_address(odd_read_addr),
-      .o_read_data(odd_sideband)
-  );
-
-  // Same-edge high-parcel copies, for timing. The *_compressed.mem images
-  // pack {allows_slot2_after_hi, word[29], word[28], word[31]}; instruction-size
-  // bits live in the scalar overlay. Each RAMB36 holds two lanes at 16K depth.
+  // Same-edge copies of the high-parcel bits. The fourth lane supplies an
+  // optional metadata predicate. The image packs it above word[29:28,31].
   sdp_block_ram_dc_init #(
       .ADDR_WIDTH(ADDR_WIDTH - 1),
       .DATA_WIDTH(FastLaneWidth),
@@ -1065,9 +637,6 @@ module imem_predecode #(
   logic [DataWidth-1:0] current_word_wide, next_word_wide;
   logic [DataWidth-1:0] even_read_data_with_fast_rvc_fields;
   logic [DataWidth-1:0] odd_read_data_with_fast_rvc_fields;
-  logic [SidebandWidth-1:0] current_sideband, next_sideband;
-  logic [SidebandWidth-1:0] even_sideband_with_fast_metadata;
-  logic [SidebandWidth-1:0] odd_sideband_with_fast_metadata;
   always_comb begin
     even_read_data_with_fast_rvc_fields = even_read_data;
     odd_read_data_with_fast_rvc_fields = odd_read_data;
@@ -1075,198 +644,662 @@ module imem_predecode #(
     odd_read_data_with_fast_rvc_fields[31] = odd_compressed[FastLaneC15];
     even_read_data_with_fast_rvc_fields[29:28] = even_compressed[FastLaneC13:FastLaneC12];
     odd_read_data_with_fast_rvc_fields[29:28] = odd_compressed[FastLaneC13:FastLaneC12];
-    // PC predicates come from scalar output flops. Overlay pairability is
-    // fully evaluated at initialization or write time.
-    even_sideband_with_fast_metadata = even_sideband;
-    odd_sideband_with_fast_metadata = odd_sideband;
-    even_sideband_with_fast_metadata[1:0] = even_pc_metadata[1:0];
-    odd_sideband_with_fast_metadata[1:0] = odd_pc_metadata[1:0];
-    even_sideband_with_fast_metadata[riscv_pkg::ImemSbEvenLocalPairValid] =
-        even_even_local_pair_valid;
-    odd_sideband_with_fast_metadata[riscv_pkg::ImemSbEvenLocalPairValid] =
-        odd_even_local_pair_valid;
-    even_sideband_with_fast_metadata[riscv_pkg::ImemSbPairableNativeLo] = even_pairable_native_lo;
-    odd_sideband_with_fast_metadata[riscv_pkg::ImemSbPairableNativeLo] = odd_pairable_native_lo;
-    even_sideband_with_fast_metadata[riscv_pkg::ImemSbAllowsSlot2AfterHi] =
-        even_compressed[FastLaneAllowsSlot2AfterHi];
-    odd_sideband_with_fast_metadata[riscv_pkg::ImemSbAllowsSlot2AfterHi] =
-        odd_compressed[FastLaneAllowsSlot2AfterHi];
-    even_sideband_with_fast_metadata[riscv_pkg::ImemSbPairableCompressedHi] = even_pc_metadata[2];
-    odd_sideband_with_fast_metadata[riscv_pkg::ImemSbPairableCompressedHi] = odd_pc_metadata[2];
-    even_sideband_with_fast_metadata[riscv_pkg::ImemSbPairableNativeHi] = even_pc_metadata[3];
-    odd_sideband_with_fast_metadata[riscv_pkg::ImemSbPairableNativeHi] = odd_pc_metadata[3];
-    even_sideband_with_fast_metadata[riscv_pkg::ImemSbSlot2StartValidLo] =
-        even_slot2_start_valid_lo;
-    odd_sideband_with_fast_metadata[riscv_pkg::ImemSbSlot2StartValidLo] = odd_slot2_start_valid_lo;
-  end
-
-  // Repeating the physical word pair aligns redecoded predicates with the
-  // raw BRAM payload. Reconstruct the words first so C[15], C[13], and C[12]
-  // still come from the narrow banks.
-  assign even_sideband_redecoded = riscv_pkg::imem_make_sideband(
-      even_read_data_with_fast_rvc_fields
-  );
-  assign odd_sideband_redecoded = riscv_pkg::imem_make_sideband(odd_read_data_with_fast_rvc_fields);
-
-  // Check both full physical addresses: mixed windows are slow, and high
-  // addresses aliasing the finite memory pins must not hit the overlay.
-  always_ff @(posedge i_port_b_clk) begin
-    if (i_port_b_rst || port_a_write_quarantine) begin
-      // Block responses until the write commits and fresh history is captured.
-      pc_metadata_overlay_window_hit_q <= 1'b0;
-      pc_metadata_response_ready_q <= 1'b0;
-      pc_metadata_response_history_valid_q <= 1'b0;
-    end else if (i_port_b_enable) begin
-      pc_metadata_overlay_window_hit_q <= pc_metadata_overlay_window_hit;
-      pc_metadata_response_ready_q <= pc_metadata_overlay_window_hit ||
-          (pc_metadata_response_history_valid_q &&
-             i_port_b_byte_address == pc_metadata_response_address_q &&
-             i_port_b_next_byte_address == pc_metadata_response_next_address_q);
-      pc_metadata_response_history_valid_q <= 1'b1;
-      pc_metadata_response_address_q <= i_port_b_byte_address;
-      pc_metadata_response_next_address_q <= i_port_b_next_byte_address;
-    end else begin
-      // A disabled read can bracket programming or another discontinuity.
-      // Force the next miss to rebuild its fallback predicates instead of
-      // accepting a stale same-address comparison.
-      pc_metadata_response_history_valid_q <= 1'b0;
-    end
   end
 
   assign current_word_wide   = bank_sel_r ? odd_read_data_with_fast_rvc_fields :
                                            even_read_data_with_fast_rvc_fields;
   assign next_word_wide = bank_sel_r ? even_read_data_with_fast_rvc_fields :
                                        odd_read_data_with_fast_rvc_fields;
-  assign current_sideband    = bank_sel_r ? odd_sideband_with_fast_metadata :
-                                           even_sideband_with_fast_metadata;
-  assign next_sideband       = bank_sel_r ? even_sideband_with_fast_metadata :
-                                           odd_sideband_with_fast_metadata;
-
   assign o_port_b_read_data = {next_word_wide, current_word_wide};
   assign o_port_b_read_data_by_parity = {
     odd_read_data_with_fast_rvc_fields, even_read_data_with_fast_rvc_fields
   };
-  assign o_port_b_sideband = {next_sideband, current_sideband};
-  assign o_port_b_pc_metadata = bank_sel_r ?
-      {even_pc_metadata, odd_pc_metadata} : {odd_pc_metadata, even_pc_metadata};
-  assign o_port_b_pc_metadata_by_parity = {odd_pc_metadata, even_pc_metadata};
-  assign o_port_b_pc_pairability_by_parity = {
-    odd_pairable_native_lo,
-    odd_even_local_pair_valid,
-    even_pairable_native_lo,
-    even_even_local_pair_valid
-  };
-  assign o_port_b_slot2_start_valid_lo_by_parity = {
-    odd_slot2_start_valid_lo, even_slot2_start_valid_lo
-  };
-  assign o_port_b_window_overlay_hit = pc_metadata_overlay_window_hit_q;
-  assign o_port_b_response_ready = pc_metadata_response_ready_q;
   assign o_port_b_bank_sel_r = bank_sel_r;
 
-`ifndef SYNTHESIS
-  // Compare ready metadata with the same-edge full-depth banks. Skip
-  // unready windows, whose slow predicates may still be stale. The check
-  // samples at the clock edge, where the registers that read the banks do:
-  // the ASIC flow's SRAM macro models change their read data mid-cycle.
-  logic pc_metadata_reset_seen_q = 1'b0;
-  logic pc_metadata_compare_valid_q = 1'b0;
-  always_ff @(posedge i_port_b_clk) begin
-    if (i_port_b_rst) pc_metadata_reset_seen_q <= 1'b1;
-    pc_metadata_compare_valid_q <= pc_metadata_reset_seen_q && !i_port_b_rst && i_port_b_enable;
-  end
+  if (ENABLE_FETCH_METADATA) begin : gen_fetch_metadata
+    function automatic logic pc_metadata_overlay_contains(input logic [31:0] byte_address);
+      // One parity row covers two 32-bit words, hence the three low byte-address
+      // bits below the scalar bank's stored row index.
+      pc_metadata_overlay_contains = (byte_address >> (PC_METADATA_OVERLAY_ADDR_WIDTH + 3)) == '0;
+    endfunction
 
-  always @(posedge i_port_b_clk) begin
-    if (!i_port_b_rst && pc_metadata_compare_valid_q && pc_metadata_response_ready_q && !$isunknown(
-            {
-              even_read_data,
-              odd_read_data,
-              even_sideband,
-              odd_sideband,
-              even_compressed,
-              odd_compressed,
-              even_pc_metadata,
-              odd_pc_metadata,
-              even_even_local_pair_valid,
-              odd_even_local_pair_valid,
-              even_pairable_native_lo,
-              odd_pairable_native_lo,
-              even_slot2_start_valid_lo,
-              odd_slot2_start_valid_lo
-            }
-        )) begin
-      p_even_fast_c15_matches_bram : assert (even_compressed[FastLaneC15] == even_read_data[31]);
-      p_odd_fast_c15_matches_bram : assert (odd_compressed[FastLaneC15] == odd_read_data[31]);
-      p_even_fast_c13_c12_matches_bram :
-      assert (even_compressed[FastLaneC13:FastLaneC12] == even_read_data[29:28]);
-      p_odd_fast_c13_c12_matches_bram :
-      assert (odd_compressed[FastLaneC13:FastLaneC12] == odd_read_data[29:28]);
-      p_even_fast_allows_slot2_after_hi_matches_bram :
-      assert (even_compressed[FastLaneAllowsSlot2AfterHi] ==
-              even_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi]);
-      p_odd_fast_allows_slot2_after_hi_matches_bram :
-      assert (odd_compressed[FastLaneAllowsSlot2AfterHi] ==
-              odd_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi]);
-      p_even_pc_metadata_matches_canonical :
-      assert (even_pc_metadata == {
-        even_sideband[riscv_pkg::ImemSbPairableNativeHi],
-        even_sideband[riscv_pkg::ImemSbPairableCompressedHi],
-        even_sideband[riscv_pkg::ImemSbIsCompressedHi],
-        even_sideband[riscv_pkg::ImemSbIsCompressedLo]
-      });
-      p_odd_pc_metadata_matches_canonical :
-      assert (odd_pc_metadata == {
-        odd_sideband[riscv_pkg::ImemSbPairableNativeHi],
-        odd_sideband[riscv_pkg::ImemSbPairableCompressedHi],
-        odd_sideband[riscv_pkg::ImemSbIsCompressedHi],
-        odd_sideband[riscv_pkg::ImemSbIsCompressedLo]
-      })
-      else
-        $error(
-            "imem_predecode: odd word %h metadata %h at %h / %h",
-            odd_read_data,
-            odd_pc_metadata,
-            pc_metadata_response_address_q,
-            pc_metadata_response_next_address_q
-        );
-      p_even_pc_pairable_compressed_hi_matches_fast_fields :
-      assert ((even_pc_metadata[1] && even_compressed[FastLaneAllowsSlot2AfterHi]) ==
-              even_pc_metadata[2]);
-      p_odd_pc_pairable_compressed_hi_matches_fast_fields :
-      assert ((odd_pc_metadata[1] && odd_compressed[FastLaneAllowsSlot2AfterHi]) ==
-              odd_pc_metadata[2]);
-      p_even_pc_pairable_native_hi_matches_fast_fields :
-      assert ((!even_pc_metadata[1] && even_compressed[FastLaneAllowsSlot2AfterHi]) ==
-              even_pc_metadata[3]);
-      p_odd_pc_pairable_native_hi_matches_fast_fields :
-      assert ((!odd_pc_metadata[1] && odd_compressed[FastLaneAllowsSlot2AfterHi]) ==
-              odd_pc_metadata[3]);
-      p_even_even_local_pair_valid_matches_bram :
-      assert (even_even_local_pair_valid == even_sideband[riscv_pkg::ImemSbEvenLocalPairValid]);
-      p_odd_even_local_pair_valid_matches_bram :
-      assert (odd_even_local_pair_valid == odd_sideband[riscv_pkg::ImemSbEvenLocalPairValid]);
-      p_even_pairable_native_lo_matches_bram :
-      assert (even_pairable_native_lo == even_sideband[riscv_pkg::ImemSbPairableNativeLo]);
-      p_odd_pairable_native_lo_matches_bram :
-      assert (odd_pairable_native_lo == odd_sideband[riscv_pkg::ImemSbPairableNativeLo]);
-      p_even_slot2_start_valid_lo_matches_bram :
-      assert (even_slot2_start_valid_lo == even_sideband[riscv_pkg::ImemSbSlot2StartValidLo]);
-      p_odd_slot2_start_valid_lo_matches_bram :
-      assert (odd_slot2_start_valid_lo == odd_sideband[riscv_pkg::ImemSbSlot2StartValidLo]);
-      p_pc_metadata_parity_port_matches_banks :
-      assert (o_port_b_pc_metadata_by_parity == {odd_pc_metadata, even_pc_metadata});
-      p_pc_pairability_parity_port_matches_banks :
-      assert (o_port_b_pc_pairability_by_parity == {
-        odd_pairable_native_lo,
-        odd_even_local_pair_valid,
-        even_pairable_native_lo,
-        even_even_local_pair_valid
-      });
-      p_slot2_start_valid_lo_parity_port_matches_banks :
-      assert (o_port_b_slot2_start_valid_lo_by_parity == {
-        odd_slot2_start_valid_lo, even_slot2_start_valid_lo
-      });
-    end
-  end
+`ifndef SYNTHESIS
+    localparam bit OverlayWidthValid =
+        PC_METADATA_OVERLAY_ADDR_WIDTH > 0 && PC_METADATA_OVERLAY_ADDR_WIDTH <= ADDR_WIDTH - 1;
+    initial begin
+      p_pc_metadata_overlay_width_valid :
+`ifdef FROST_SIM_ASSERTIONS
+      if (!OverlayWidthValid) $fatal(1, "imem_predecode: invalid static configuration");
+`else
+      assert (OverlayWidthValid);
 `endif
+    end
+`endif
+
+    logic [SidebandWidth-1:0] write_sideband;
+    logic [SidebandWidth-1:0] even_sideband, odd_sideband;
+
+    assign write_sideband = riscv_pkg::imem_make_sideband(port_a_write_data_q);
+    assign write_allows_slot2_after_hi = write_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi];
+
+    // Live writes must invalidate repeated-address history: slow predicates
+    // trail the changed BRAM word by one read. Staged write enables precede
+    // array commit by a div4 cycle, allowing this synchronizer to block readiness
+    // first. This requires the clock relationship documented above.
+    (* ASYNC_REG = "TRUE" *) logic [1:0] port_a_write_active_sync_q = RandomStart ? 'x : 2'b00;
+    logic port_a_write_quarantine;
+    always_ff @(posedge i_port_b_clk) begin
+      if (i_port_b_rst) port_a_write_active_sync_q <= '0;
+      else
+        port_a_write_active_sync_q <= {
+          port_a_write_active_sync_q[0], port_a_write_even_q || port_a_write_odd_q
+        };
+    end
+    // Only the second stage drives functional logic; stage 0 is the
+    // metastability-catching flop.
+    assign port_a_write_quarantine = port_a_write_active_sync_q[1];
+
+    // Full-depth sideband supplies the fields outside the scalar overlays.
+    sdp_block_ram_dc_init #(
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .DATA_WIDTH(SidebandWidth),
+        .USE_INIT_FILE(LoadBankImages),
+        .SIM_EXTERNAL_INIT(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE_EVEN_SIDEBAND)
+    ) u_even_sideband (
+        .i_write_clock(i_port_a_clk),
+        .i_write_enable(port_a_write_even),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband),
+        .i_read_clock(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(even_read_addr),
+        .o_read_data(even_sideband)
+    );
+
+    sdp_block_ram_dc_init #(
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .DATA_WIDTH(SidebandWidth),
+        .USE_INIT_FILE(LoadBankImages),
+        .SIM_EXTERNAL_INIT(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE_ODD_SIDEBAND)
+    ) u_odd_sideband (
+        .i_write_clock(i_port_a_clk),
+        .i_write_enable(port_a_write_odd),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband),
+        .i_read_clock(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(odd_read_addr),
+        .o_read_data(odd_sideband)
+    );
+
+`ifndef YOSYS
+`ifndef FROST_VIVADO_SYNTH
+`ifndef FROST_SRAM_MACROS
+    logic [DataWidth-1:0] sideband_init_mem[2**INIT_ADDR_WIDTH];
+
+    initial begin
+      if (USE_INIT_FILE) begin
+        for (int i = 0; i < FullDepth; i++) sideband_init_mem[i] = '0;
+        $readmemh(INIT_FILE, sideband_init_mem);
+        for (int i = 0; i < HalfDepth; i++) begin
+          u_even_sideband.ram[i] = riscv_pkg::imem_make_sideband(sideband_init_mem[2*i]);
+          u_odd_sideband.ram[i]  = riscv_pkg::imem_make_sideband(sideband_init_mem[2*i+1]);
+        end
+      end else begin
+`ifndef FROST_RANDOM_START
+        for (int i = 0; i < HalfDepth; i++) begin
+          u_even_sideband.ram[i] = riscv_pkg::imem_make_sideband(DataWidth'(2 * i));
+          u_odd_sideband.ram[i]  = riscv_pkg::imem_make_sideband(DataWidth'(2 * i + 1));
+        end
+`endif
+      end
+    end
+`endif
+`endif
+`endif  // YOSYS
+
+    // Each scalar bank registers its overlay bit on a hit or a predicate
+    // from the previous data read on a miss.
+    logic even_is_compressed_lo, odd_is_compressed_lo;
+    logic even_is_compressed_hi, odd_is_compressed_hi;
+    logic even_even_local_pair_valid, odd_even_local_pair_valid;
+    logic even_pairable_native_lo, odd_pairable_native_lo;
+    logic even_pairable_compressed_hi, odd_pairable_compressed_hi;
+    logic even_pairable_native_hi, odd_pairable_native_hi;
+    logic even_slot2_start_valid_lo, odd_slot2_start_valid_lo;
+    logic [SidebandWidth-1:0] even_sideband_redecoded;
+    logic [SidebandWidth-1:0] odd_sideband_redecoded;
+    logic pc_metadata_overlay_window_hit;
+    logic pc_metadata_overlay_window_hit_q = RandomStart ? 'x : 1'b0;
+    logic pc_metadata_response_ready_q = RandomStart ? 'x : 1'b0;
+    logic pc_metadata_response_history_valid_q = RandomStart ? 'x : 1'b0;
+    logic [31:0] pc_metadata_response_address_q;
+    logic [31:0] pc_metadata_response_next_address_q;
+    logic [3:0] even_pc_metadata;
+    logic [3:0] odd_pc_metadata;
+
+    assign pc_metadata_overlay_window_hit = pc_metadata_overlay_contains(
+        i_port_b_byte_address
+    ) && pc_metadata_overlay_contains(
+        i_port_b_next_byte_address
+    );
+
+    // Scalar banks share their parity's staged write and fetch addresses.
+    // Writes outside the overlay leave it unchanged.
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedLo),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_EVEN_IS_COMPRESSED_LO),
+        .IS_ODD_BANK(1'b0)
+    ) u_even_is_compressed_lo_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_even),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedLo]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(even_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbIsCompressedLo]),
+        .o_read_data(even_is_compressed_lo)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedLo),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_ODD_IS_COMPRESSED_LO),
+        .IS_ODD_BANK(1'b1)
+    ) u_odd_is_compressed_lo_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_odd),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedLo]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(odd_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbIsCompressedLo]),
+        .o_read_data(odd_is_compressed_lo)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedHi),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_EVEN_IS_COMPRESSED_HI),
+        .IS_ODD_BANK(1'b0)
+    ) u_even_is_compressed_hi_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_even),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedHi]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(even_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbIsCompressedHi]),
+        .o_read_data(even_is_compressed_hi)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedHi),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_ODD_IS_COMPRESSED_HI),
+        .IS_ODD_BANK(1'b1)
+    ) u_odd_is_compressed_hi_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_odd),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedHi]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(odd_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbIsCompressedHi]),
+        .o_read_data(odd_is_compressed_hi)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbEvenLocalPairValid),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_EVEN_EVEN_LOCAL_PAIR_VALID),
+        .IS_ODD_BANK(1'b0)
+    ) u_even_even_local_pair_valid_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_even),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbEvenLocalPairValid]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(even_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbEvenLocalPairValid]),
+        .o_read_data(even_even_local_pair_valid)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbEvenLocalPairValid),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_ODD_EVEN_LOCAL_PAIR_VALID),
+        .IS_ODD_BANK(1'b1)
+    ) u_odd_even_local_pair_valid_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_odd),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbEvenLocalPairValid]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(odd_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbEvenLocalPairValid]),
+        .o_read_data(odd_even_local_pair_valid)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeLo),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_NATIVE_LO),
+        .IS_ODD_BANK(1'b0)
+    ) u_even_pairable_native_lo_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_even),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeLo]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(even_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbPairableNativeLo]),
+        .o_read_data(even_pairable_native_lo)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeLo),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_NATIVE_LO),
+        .IS_ODD_BANK(1'b1)
+    ) u_odd_pairable_native_lo_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_odd),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeLo]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(odd_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbPairableNativeLo]),
+        .o_read_data(odd_pairable_native_lo)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbPairableCompressedHi),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_COMPRESSED_HI),
+        .IS_ODD_BANK(1'b0)
+    ) u_even_pairable_compressed_hi_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_even),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbPairableCompressedHi]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(even_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbPairableCompressedHi]),
+        .o_read_data(even_pairable_compressed_hi)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbPairableCompressedHi),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_COMPRESSED_HI),
+        .IS_ODD_BANK(1'b1)
+    ) u_odd_pairable_compressed_hi_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_odd),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbPairableCompressedHi]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(odd_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbPairableCompressedHi]),
+        .o_read_data(odd_pairable_compressed_hi)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeHi),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_NATIVE_HI),
+        .IS_ODD_BANK(1'b0)
+    ) u_even_pairable_native_hi_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_even),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeHi]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(even_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbPairableNativeHi]),
+        .o_read_data(even_pairable_native_hi)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeHi),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_NATIVE_HI),
+        .IS_ODD_BANK(1'b1)
+    ) u_odd_pairable_native_hi_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_odd),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeHi]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(odd_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbPairableNativeHi]),
+        .o_read_data(odd_pairable_native_hi)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbSlot2StartValidLo),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_EVEN_SLOT2_START_VALID_LO),
+        .IS_ODD_BANK(1'b0)
+    ) u_even_slot2_start_valid_lo_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_even),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbSlot2StartValidLo]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(even_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbSlot2StartValidLo]),
+        .o_read_data(even_slot2_start_valid_lo)
+    );
+
+    imem_sideband_scalar_bank #(
+        .SIDEBAND_BIT(riscv_pkg::ImemSbSlot2StartValidLo),
+        .ADDR_WIDTH(ADDR_WIDTH - 1),
+        .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
+        .USE_INIT_FILE(USE_INIT_FILE),
+        .INIT_FILE(INIT_FILE),
+        .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
+        .BANK_INIT_FILE(INIT_FILE_ODD_SLOT2_START_VALID_LO),
+        .IS_ODD_BANK(1'b1)
+    ) u_odd_slot2_start_valid_lo_bank (
+        .i_write_clk(i_port_a_clk),
+        .i_write_enable(port_a_write_odd),
+        .i_write_address(port_a_half_address_q),
+        .i_write_data(write_sideband[riscv_pkg::ImemSbSlot2StartValidLo]),
+        .i_read_clk(i_port_b_clk),
+        .i_read_enable(i_port_b_enable),
+        .i_read_address(odd_read_addr),
+        .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+        .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbSlot2StartValidLo]),
+        .o_read_data(odd_slot2_start_valid_lo)
+    );
+
+    assign even_pc_metadata = {
+      even_pairable_native_hi,
+      even_pairable_compressed_hi,
+      even_is_compressed_hi,
+      even_is_compressed_lo
+    };
+    assign odd_pc_metadata = {
+      odd_pairable_native_hi, odd_pairable_compressed_hi, odd_is_compressed_hi, odd_is_compressed_lo
+    };
+
+    logic [SidebandWidth-1:0] current_sideband, next_sideband;
+    logic [SidebandWidth-1:0] even_fetch_sideband;
+    logic [SidebandWidth-1:0] odd_fetch_sideband;
+    always_comb begin
+      // The scalar and fast banks supply their corresponding sideband fields.
+      even_fetch_sideband = even_sideband;
+      odd_fetch_sideband = odd_sideband;
+      even_fetch_sideband[1:0] = even_pc_metadata[1:0];
+      odd_fetch_sideband[1:0] = odd_pc_metadata[1:0];
+      even_fetch_sideband[riscv_pkg::ImemSbEvenLocalPairValid] = even_even_local_pair_valid;
+      odd_fetch_sideband[riscv_pkg::ImemSbEvenLocalPairValid] = odd_even_local_pair_valid;
+      even_fetch_sideband[riscv_pkg::ImemSbPairableNativeLo] = even_pairable_native_lo;
+      odd_fetch_sideband[riscv_pkg::ImemSbPairableNativeLo] = odd_pairable_native_lo;
+      even_fetch_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi] =
+          even_compressed[FastLaneAllowsSlot2AfterHi];
+      odd_fetch_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi] =
+          odd_compressed[FastLaneAllowsSlot2AfterHi];
+      even_fetch_sideband[riscv_pkg::ImemSbPairableCompressedHi] = even_pc_metadata[2];
+      odd_fetch_sideband[riscv_pkg::ImemSbPairableCompressedHi] = odd_pc_metadata[2];
+      even_fetch_sideband[riscv_pkg::ImemSbPairableNativeHi] = even_pc_metadata[3];
+      odd_fetch_sideband[riscv_pkg::ImemSbPairableNativeHi] = odd_pc_metadata[3];
+      even_fetch_sideband[riscv_pkg::ImemSbSlot2StartValidLo] = even_slot2_start_valid_lo;
+      odd_fetch_sideband[riscv_pkg::ImemSbSlot2StartValidLo] = odd_slot2_start_valid_lo;
+    end
+
+    // Repeating the physical word pair aligns redecoded predicates with the
+    // raw BRAM payload. Reconstruct the words first so C[15], C[13], and C[12]
+    // still come from the narrow banks.
+    assign even_sideband_redecoded = riscv_pkg::imem_make_sideband(
+        even_read_data_with_fast_rvc_fields
+    );
+    assign odd_sideband_redecoded = riscv_pkg::imem_make_sideband(
+        odd_read_data_with_fast_rvc_fields
+    );
+
+    // Check both full physical addresses: mixed windows are slow, and high
+    // addresses aliasing the finite memory pins must not hit the overlay.
+    always_ff @(posedge i_port_b_clk) begin
+      if (i_port_b_rst || port_a_write_quarantine) begin
+        // Block responses until the write commits and fresh history is captured.
+        pc_metadata_overlay_window_hit_q <= 1'b0;
+        pc_metadata_response_ready_q <= 1'b0;
+        pc_metadata_response_history_valid_q <= 1'b0;
+      end else if (i_port_b_enable) begin
+        pc_metadata_overlay_window_hit_q <= pc_metadata_overlay_window_hit;
+        pc_metadata_response_ready_q <= pc_metadata_overlay_window_hit ||
+            (pc_metadata_response_history_valid_q &&
+               i_port_b_byte_address == pc_metadata_response_address_q &&
+               i_port_b_next_byte_address == pc_metadata_response_next_address_q);
+        pc_metadata_response_history_valid_q <= 1'b1;
+        pc_metadata_response_address_q <= i_port_b_byte_address;
+        pc_metadata_response_next_address_q <= i_port_b_next_byte_address;
+      end else begin
+        // A disabled read can bracket programming or another discontinuity.
+        // Force the next miss to rebuild its fallback predicates instead of
+        // accepting a stale same-address comparison.
+        pc_metadata_response_history_valid_q <= 1'b0;
+      end
+    end
+
+    assign current_sideband = bank_sel_r ? odd_fetch_sideband : even_fetch_sideband;
+    assign next_sideband = bank_sel_r ? even_fetch_sideband : odd_fetch_sideband;
+
+
+    assign o_port_b_sideband = {next_sideband, current_sideband};
+    assign o_port_b_pc_metadata = bank_sel_r ?
+        {even_pc_metadata, odd_pc_metadata} : {odd_pc_metadata, even_pc_metadata};
+    assign o_port_b_pc_metadata_by_parity = {odd_pc_metadata, even_pc_metadata};
+    assign o_port_b_pc_pairability_by_parity = {
+      odd_pairable_native_lo,
+      odd_even_local_pair_valid,
+      even_pairable_native_lo,
+      even_even_local_pair_valid
+    };
+    assign o_port_b_slot2_start_valid_lo_by_parity = {
+      odd_slot2_start_valid_lo, even_slot2_start_valid_lo
+    };
+    assign o_port_b_window_overlay_hit = pc_metadata_overlay_window_hit_q;
+    assign o_port_b_response_ready = pc_metadata_response_ready_q;
+
+`ifndef SYNTHESIS
+    // Compare ready metadata with the same-edge full-depth banks. Skip
+    // unready windows, whose slow predicates may still be stale. The check
+    // samples at the clock edge, where the registers that read the banks do:
+    // the ASIC flow's SRAM macro models change their read data mid-cycle.
+    logic pc_metadata_reset_seen_q = 1'b0;
+    logic pc_metadata_compare_valid_q = 1'b0;
+    always_ff @(posedge i_port_b_clk) begin
+      if (i_port_b_rst) pc_metadata_reset_seen_q <= 1'b1;
+      pc_metadata_compare_valid_q <= pc_metadata_reset_seen_q && !i_port_b_rst && i_port_b_enable;
+    end
+
+    always @(posedge i_port_b_clk) begin
+      if (!i_port_b_rst && pc_metadata_compare_valid_q && o_port_b_response_ready && !$isunknown(
+              {
+                even_read_data,
+                odd_read_data,
+                even_sideband,
+                odd_sideband,
+                even_compressed,
+                odd_compressed,
+                even_pc_metadata,
+                odd_pc_metadata,
+                even_even_local_pair_valid,
+                odd_even_local_pair_valid,
+                even_pairable_native_lo,
+                odd_pairable_native_lo,
+                even_slot2_start_valid_lo,
+                odd_slot2_start_valid_lo
+              }
+          )) begin
+        p_even_fast_c15_matches_bram : assert (even_compressed[FastLaneC15] == even_read_data[31]);
+        p_odd_fast_c15_matches_bram : assert (odd_compressed[FastLaneC15] == odd_read_data[31]);
+        p_even_fast_c13_c12_matches_bram :
+        assert (even_compressed[FastLaneC13:FastLaneC12] == even_read_data[29:28]);
+        p_odd_fast_c13_c12_matches_bram :
+        assert (odd_compressed[FastLaneC13:FastLaneC12] == odd_read_data[29:28]);
+        p_even_fast_allows_slot2_after_hi_matches_bram :
+        assert (even_compressed[FastLaneAllowsSlot2AfterHi] ==
+                even_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi]);
+        p_odd_fast_allows_slot2_after_hi_matches_bram :
+        assert (odd_compressed[FastLaneAllowsSlot2AfterHi] ==
+                odd_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi]);
+        p_even_pc_metadata_matches_canonical :
+        assert (even_pc_metadata == {
+          even_sideband[riscv_pkg::ImemSbPairableNativeHi],
+          even_sideband[riscv_pkg::ImemSbPairableCompressedHi],
+          even_sideband[riscv_pkg::ImemSbIsCompressedHi],
+          even_sideband[riscv_pkg::ImemSbIsCompressedLo]
+        });
+        p_odd_pc_metadata_matches_canonical :
+        assert (odd_pc_metadata == {
+          odd_sideband[riscv_pkg::ImemSbPairableNativeHi],
+          odd_sideband[riscv_pkg::ImemSbPairableCompressedHi],
+          odd_sideband[riscv_pkg::ImemSbIsCompressedHi],
+          odd_sideband[riscv_pkg::ImemSbIsCompressedLo]
+        })
+        else
+          $error(
+              "imem_predecode: odd word %h metadata %h at %h / %h",
+              odd_read_data,
+              odd_pc_metadata,
+              pc_metadata_response_address_q,
+              pc_metadata_response_next_address_q
+          );
+        p_even_pc_pairable_compressed_hi_matches_fast_fields :
+        assert ((even_pc_metadata[1] && even_compressed[FastLaneAllowsSlot2AfterHi]) ==
+                even_pc_metadata[2]);
+        p_odd_pc_pairable_compressed_hi_matches_fast_fields :
+        assert ((odd_pc_metadata[1] && odd_compressed[FastLaneAllowsSlot2AfterHi]) ==
+                odd_pc_metadata[2]);
+        p_even_pc_pairable_native_hi_matches_fast_fields :
+        assert ((!even_pc_metadata[1] && even_compressed[FastLaneAllowsSlot2AfterHi]) ==
+                even_pc_metadata[3]);
+        p_odd_pc_pairable_native_hi_matches_fast_fields :
+        assert ((!odd_pc_metadata[1] && odd_compressed[FastLaneAllowsSlot2AfterHi]) ==
+                odd_pc_metadata[3]);
+        p_even_even_local_pair_valid_matches_bram :
+        assert (even_even_local_pair_valid == even_sideband[riscv_pkg::ImemSbEvenLocalPairValid]);
+        p_odd_even_local_pair_valid_matches_bram :
+        assert (odd_even_local_pair_valid == odd_sideband[riscv_pkg::ImemSbEvenLocalPairValid]);
+        p_even_pairable_native_lo_matches_bram :
+        assert (even_pairable_native_lo == even_sideband[riscv_pkg::ImemSbPairableNativeLo]);
+        p_odd_pairable_native_lo_matches_bram :
+        assert (odd_pairable_native_lo == odd_sideband[riscv_pkg::ImemSbPairableNativeLo]);
+        p_even_slot2_start_valid_lo_matches_bram :
+        assert (even_slot2_start_valid_lo == even_sideband[riscv_pkg::ImemSbSlot2StartValidLo]);
+        p_odd_slot2_start_valid_lo_matches_bram :
+        assert (odd_slot2_start_valid_lo == odd_sideband[riscv_pkg::ImemSbSlot2StartValidLo]);
+        p_pc_metadata_parity_port_matches_banks :
+        assert (o_port_b_pc_metadata_by_parity == {odd_pc_metadata, even_pc_metadata});
+        p_pc_pairability_parity_port_matches_banks :
+        assert (o_port_b_pc_pairability_by_parity == {
+          odd_pairable_native_lo,
+          odd_even_local_pair_valid,
+          even_pairable_native_lo,
+          even_even_local_pair_valid
+        });
+        p_slot2_start_valid_lo_parity_port_matches_banks :
+        assert (o_port_b_slot2_start_valid_lo_by_parity == {
+          odd_slot2_start_valid_lo, even_slot2_start_valid_lo
+        });
+      end
+    end
+`endif
+  end else begin : gen_data_only
+    assign write_allows_slot2_after_hi = 1'b0;
+    assign o_port_b_sideband = '0;
+    assign o_port_b_pc_metadata = '0;
+    assign o_port_b_pc_metadata_by_parity = '0;
+    assign o_port_b_pc_pairability_by_parity = '0;
+    assign o_port_b_slot2_start_valid_lo_by_parity = '0;
+    assign o_port_b_window_overlay_hit = 1'b0;
+    assign o_port_b_response_ready = 1'b0;
+  end
 
 endmodule : imem_predecode

@@ -242,24 +242,6 @@ HOOK_MODEL = r"""
 proc trace {cmd args} {
     set f [open $::env(HOOK_TRACE) a]; puts $f [list $cmd {*}$args]; close $f
 }
-rename proc original_proc
-original_proc proc {name arguments body} {
-    if {$name eq "validate_x3_pc_compressed_tail_scope"} {
-        set body {
-            trace validate_scope
-            set r [dict create compressed_starts start compressed_start_names start]
-            foreach family {selected state seq pending union} {
-                dict set r ${family}_ends end_$family
-                dict set r ${family}_end_names end_$family
-                dict set r ${family}_canonical_end_names end_$family
-                dict set r ${family}_bits 32
-            }
-            dict set r pending_canonical 1
-            return $r
-        }
-    }
-    uplevel 1 [list original_proc $name $arguments $body]
-}
 rename source original_source
 proc source {path} {
     if {[file tail $path] eq "x3_flush_guidance.tcl"} {
@@ -297,16 +279,7 @@ proc unknown {cmd args} {
     switch -- $cmd {
         get_clocks {return clock_from_mmcm}
         get_cells {return subsystem/u_tomasulo/u_int_rs}
-        get_timing_paths {
-            if {"-from" in $args && "-to" in $args} {return path}
-            return {}
-        }
-        get_path_groups {return {}}
-        get_property {
-            if {[lindex $args 0] eq "GROUP"} {return clock_from_mmcm}
-            error "Unexpected property request $args"
-        }
-        group_path - report_timing {return {}}
+        get_timing_paths {return {}}
         open_checkpoint - close_design - read_checkpoint - set_param -
         set_property - set_clock_uncertainty - place_design -
         write_checkpoint - report_timing_summary - report_utilization -
@@ -314,7 +287,7 @@ proc unknown {cmd args} {
         default {error "Unexpected command $cmd $args"}
     }
 }
-set argv [list x3 place ExtraNetDelay_high fresh_post_opt.dcp 0]
+set argv [list x3 place ExtraNetDelay_high fresh_input.dcp 0]
 set argc [llength $argv]
 source $::env(HOOK_SOURCE)
 """
@@ -379,7 +352,7 @@ if {$::env(PLACE_MODE) eq "verify_place"} {
     }
 """
     source = HOOK_MODEL.replace(
-        "set argv [list x3 place ExtraNetDelay_high fresh_post_opt.dcp 0]", model
+        "set argv [list x3 place ExtraNetDelay_high fresh_input.dcp 0]", model
     ).replace("proc source {path} {", "proc source {path} {" + helper)
     script = tmp_path / "hook.tcl"
     script.write_text(source)
@@ -462,18 +435,22 @@ if {$::env(PLACE_MODE) eq "verify_place"} {
 
 
 @pytest.mark.parametrize("mode", (None, "", "auto", "0", "1", "invalid"))
-@pytest.mark.parametrize("guided", [False, True])
+@pytest.mark.parametrize(
+    ("directive", "uncertainty", "reopen"),
+    (
+        ("ExtraNetDelay_high", "0.350", False),
+        ("ExtraNetDelay_high", "0.500", True),
+        ("ExtraPostPlacementOpt", "0.500", False),
+        ("ExtraPostPlacementOpt", "0.450", True),
+        ("ExtraPostPlacementOpt", "0.425", True),
+    ),
+)
 def test_production_places_once_and_runs_no_diagnostic_helper(
-    tmp_path: Path, mode: str | None, guided: bool
+    tmp_path: Path, mode: str | None, directive: str, uncertainty: str, reopen: bool
 ) -> None:
-    """Place once, then score at zero uncertainty, checkpoint, report, and gate.
-
-    No post-place cell, net, or property edits are allowed. Guided seeds add and
-    remove a temporary path group around placement and reopen the design once.
-    Delete stale audits; FROST_X3_PD_TARGET_PIN_SWAPS must have no effect.
-    """
+    """Place once and use the thread count and reopen sequence of each seed."""
     script = tmp_path / "hook.tcl"
-    script.write_text(HOOK_MODEL)
+    script.write_text(HOOK_MODEL.replace("ExtraNetDelay_high", directive))
     trace = tmp_path / "trace.txt"
     trace.touch()
     stale = [
@@ -488,7 +465,7 @@ def test_production_places_once_and_runs_no_diagnostic_helper(
     env.update(
         HOOK_TRACE=str(trace),
         HOOK_SOURCE=str(REPO_ROOT / "fpga/build/build_step.tcl"),
-        FROST_PLACE_SETUP_UNCERTAINTY="0.500" if guided else "0.350",
+        FROST_PLACE_SETUP_UNCERTAINTY=uncertainty,
         FROST_PLACE_CELL_BLOAT="LOW",
         FROST_PLACE_FLUSH_INCREMENTAL="1",
     )
@@ -511,16 +488,27 @@ def test_production_places_once_and_runs_no_diagnostic_helper(
     ]
     assert len(placements) == 1
     place = placements[0]
-    assert commands[place] == "place_design -directive ExtraNetDelay_high"
+    assert commands[place] == f"place_design -directive {directive}"
     bloat = next(
         i
         for i, command in enumerate(commands)
         if command.startswith("set_property CELL_BLOAT_FACTOR")
     )
     assert bloat < place
+    assert any(
+        command.startswith("set_clock_uncertainty ")
+        and f"{uncertainty} -setup" in command
+        for command in commands[:place]
+    )
     assert not any(
         command.startswith(
-            ("apply_helper", "prepare_flush", "verify_flush", "read_checkpoint")
+            (
+                "apply_helper",
+                "prepare_flush",
+                "verify_flush",
+                "read_checkpoint",
+                "group_path",
+            )
         )
         for command in commands
     )
@@ -537,11 +525,11 @@ def test_production_places_once_and_runs_no_diagnostic_helper(
         )
         for command in commands[place + 1 :]
     )
-    score = next(
+    scores = [
         i
         for i, command in enumerate(commands)
         if command.startswith("set_clock_uncertainty ") and "0.0 -setup" in command
-    )
+    ]
     checkpoints = [
         i
         for i, command in enumerate(commands)
@@ -554,39 +542,45 @@ def test_production_places_once_and_runs_no_diagnostic_helper(
     )
     reports = [i for i, command in enumerate(commands) if command.startswith("report_")]
     gate = commands.index(f"write_gate {tmp_path}")
-    assert (
-        place
-        < score
-        < min(checkpoints)
-        <= max(checkpoints)
-        < timing
-        <= max(reports)
-        < gate
-    )
+    opens = [
+        i
+        for i, command in enumerate(commands)
+        if command.startswith("open_checkpoint ")
+    ]
+    threads = [
+        i
+        for i, command in enumerate(commands)
+        if command.startswith("set_param general.maxThreads ")
+    ]
+    assert commands[opens[0]] == "open_checkpoint fresh_input.dcp"
+    if reopen:
+        assert len(threads) == 1
+        assert commands[threads[0]] == "set_param general.maxThreads 8"
+        assert len(opens) == len(checkpoints) == len(scores) == 2
+        assert commands.count("close_design") == 1
+        close = commands.index("close_design")
+        assert commands[opens[1]] == f"open_checkpoint {tmp_path}/post_place.dcp"
+        assert (
+            opens[0]
+            < threads[0]
+            < place
+            < scores[0]
+            < checkpoints[0]
+            < close
+            < opens[1]
+            < scores[1]
+            < checkpoints[1]
+        )
+    else:
+        assert not threads
+        assert "close_design" not in commands
+        assert len(opens) == len(checkpoints) == len(scores) == 1
+        assert opens[0] < place < scores[0] < checkpoints[0]
+    assert checkpoints[-1] < timing <= max(reports) < gate
     assert sum(command.startswith("write_gate ") for command in commands) == 1
     assert result.stdout.index("HOOK_GATE_WRITTEN") < result.stdout.index(
         "** DONE — place_design complete"
     )
-    groups = [
-        i for i, command in enumerate(commands) if command.startswith("group_path")
-    ]
-    if guided:
-        assert len(groups) == 2 and groups[0] < place < groups[1] < score
-        assert commands.count("close_design") == 1
-        assert (
-            len(
-                [
-                    command
-                    for command in commands
-                    if command.startswith("open_checkpoint")
-                ]
-            )
-            == 2
-        )
-        assert (tmp_path / "post_place_group_audit.txt").is_file()
-    else:
-        assert not groups
-        assert commands.count("close_design") == 0
 
 
 def test_place_arm_has_no_second_placement_or_post_place_edit_commands() -> None:
@@ -622,7 +616,7 @@ def test_checkpoint_constraint_reload_is_board_scoped(
         "open_checkpoint - close_design - read_checkpoint - set_param -",
         "read_xdc - opt_design - open_checkpoint - close_design - read_checkpoint - set_param -",
     ).replace(
-        "set argv [list x3 place ExtraNetDelay_high fresh_post_opt.dcp 0]",
+        "set argv [list x3 place ExtraNetDelay_high fresh_input.dcp 0]",
         f"set argv [list {board} {step} Explore checkpoint.dcp 0]",
     )
     script = tmp_path / "hook.tcl"

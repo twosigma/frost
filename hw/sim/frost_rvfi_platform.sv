@@ -1830,6 +1830,7 @@ module frost_rvfi_platform #(
   // execute. Port A programs on div4; port B fetches on the main clock.
   imem_predecode #(
       .ADDR_WIDTH(ImemWordAddrWidth),
+      .ENABLE_FETCH_METADATA(1'b1),
       .USE_INIT_FILE(1'b1),
       .INIT_FILE("sw.mem"),
       .INIT_ADDR_WIDTH(MemWordAddrWidth)
