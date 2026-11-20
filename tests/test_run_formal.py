@@ -2080,6 +2080,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "axi_register_slice.sby",
+        "AXI4 and AXI4-Lite five-channel register slices: hold rules, FIFO ordering, full rate and reset.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "rat_checkpoint_restore.sby",
         "Register alias table: unbounded circular ROB and sequence oracle across save, restore and commit.",
         tasks=(

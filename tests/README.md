@@ -34,7 +34,11 @@ concurrent reads and writes, response backpressure, and reset cancellation.
 The `soc_axil` bench drives the CPU-facing SoC AXI port to check both
 register banks, ignored partial wide stores, error responses, CPU
 backpressure, and subsystem reset during reads and writes. Both `soc_axil`
-and `soc_axil_no_cached_tier` check the NIC-access guard.
+and `soc_axil_no_cached_tier` check the NIC-access guard. The
+`axi_register_slice` and `axil_register_slice` benches check full-rate
+streaming, stalls and reset clearing across all five channels, and
+`soc_ext_plugins` and `soc_ext_axil_bram` exercise `EXT_DMA_PORTS`,
+`EXTERNAL_MAC` and `EXT_AXIL_WINDOW` on `soc_top`.
 
 The `mops` bench executes every Zimop and Zcmop variant in M, S and U modes,
 checks dependent consumers and unchanged register, CSR and memory state, and
