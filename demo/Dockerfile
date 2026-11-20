@@ -12,9 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Standalone runtime image for running FROST RTL on hello_world and CoreMark.
-# Compiles checked, portable baseline x86-64 Verilator models (-march=x86-64)
-# and copies only the compiled binaries and memory images into ubuntu:26.04.
+# Standalone runtime image for running FROST RTL: the demonstration
+# (frost-show: the ray tracer, then CoreMark), and hello_world and CoreMark
+# unfiltered. Compiles checked, portable baseline x86-64 Verilator models
+# (-march=x86-64) and copies only the compiled binaries and memory images into
+# ubuntu:26.04.
 
 ARG BUILD_IMAGE=frost:latest
 FROM ${BUILD_IMAGE} AS build
@@ -30,7 +32,8 @@ COPY sw/lib /src/sw/lib
 COPY sw/apps/compile_app.py sw/apps/riscv_toolchain.py sw/apps/software_registry.py /src/sw/apps/
 COPY sw/apps/hello_world /src/sw/apps/hello_world
 COPY sw/apps/coremark /src/sw/apps/coremark
-COPY demo/run_demo.sh /src/demo/run_demo.sh
+COPY sw/apps/raytrace /src/sw/apps/raytrace
+COPY demo/run_demo.sh demo/frost_show.cpp demo/make_regions.py /src/demo/
 
 RUN set -eux; \
     jobs="${BUILD_JOBS}"; \
@@ -66,7 +69,28 @@ RUN set -eux; \
     make -C /src/hw/sim/native stage-app APP=hello_world MEM_CONFIG=bram; \
     make -C /src/hw/sim/native stage-app APP=hello_world MEM_CONFIG=ddr; \
     make -C /src/hw/sim/native stage-app APP=coremark MEM_CONFIG=bram; \
+    regions() { \
+        python3 /src/demo/make_regions.py "$1" "$2" /src/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+            --prefix "${RISCV_PREFIX:-riscv64-linux-}" > "$3/regions.txt"; \
+    }; \
+    regions coremark /src/sw/apps/coremark/sw.elf /src/hw/sim/native/sim_build/apps/coremark_bram; \
     make -C /src/hw/sim/native stage-app APP=coremark MEM_CONFIG=ddr; \
+    stage_variant() { \
+        name="$1"; app="$2"; shift 2; \
+        make -C "/src/sw/apps/$app" clean >/dev/null; \
+        RISCV_PREFIX="${RISCV_PREFIX:-riscv64-linux-}" make -C "/src/sw/apps/$app" "$@"; \
+        mkdir -p "/src/hw/sim/native/sim_build/apps/$name"; \
+        cp "/src/sw/apps/$app/sw.mem" "/src/sw/apps/$app/sw64.mem" "/src/sw/apps/$app/sw_ddr.mem" \
+            "/src/hw/sim/native/sim_build/apps/$name/"; \
+        regions "$app" "/src/sw/apps/$app/sw.elf" "/src/hw/sim/native/sim_build/apps/$name"; \
+        make -C "/src/sw/apps/$app" clean >/dev/null; \
+    }; \
+    stage_variant raytrace_bram raytrace RAYTRACE_SIZE=full MEM_CONFIG=bram; \
+    stage_variant raytrace_small_bram raytrace RAYTRACE_SIZE=small MEM_CONFIG=bram; \
+    mkdir -p /out/opt/frost-demo/bin; \
+    g++ -std=c++17 -O2 -march=x86-64 -Wall -Wextra -static-libstdc++ -static-libgcc \
+        -o /out/opt/frost-demo/bin/frost-show /src/demo/frost_show.cpp; \
+    strip --strip-unneeded /out/opt/frost-demo/bin/frost-show; \
     for t in 1 4 8; do \
         make -C /src/hw/sim/native build \
             THREADS="$t" \

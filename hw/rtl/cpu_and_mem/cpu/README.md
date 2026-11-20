@@ -119,8 +119,8 @@ picks the next fetch PC in this priority: trap or xRET, FENCE-class flush
 (FENCE.I, SFENCE.VMA, or a
 [translation-changing CSR write](#csr-writes)), misprediction recovery, PD
 redirect, served-window resteer, hold while no window arrives, slot-2
-prediction, slot-1 prediction, the pending-prediction and halfword catch-up
-cases, then the sequential PC.
+prediction, slot-1 prediction, the pending-prediction arms, lower-parcel
+resteer catch-up, then the sequential PC.
 
 ### Branch prediction
 
@@ -149,7 +149,11 @@ ID, or the decoded queue) and a conditional branch or JALR is unresolved,
 
 The BTB is indexed by PC[9:2]. Its tags include PC[1], so a lookup at one
 halfword of a word never hits an entry trained for the other. A hit predicts
-taken when the upper counter bit is set. The slot-1 lookup reads the fetch PC.
+taken when the upper counter bit is set. The slot-1 lookup reads the fetch PC
+and accepts both compressed and 32-bit entries at a halfword PC: every slot-1
+prediction at an odd PC pends so only the packet at that PC takes it one-wide,
+and served-window coverage refuses an upper-half 32-bit packet until its second
+word is present.
 To track a pending prediction, slot-2 raw rows and the forwarded payload each form their five-bit
 PC relation and apply return typing before coverage selects a row. An uncovered
 row relates a zero low target in the served PC's upper region. The controller
@@ -161,9 +165,11 @@ next word). They are read a cycle ahead, so the lookup adds no fetch cycle,
 but a taken slot-2 prediction costs one bubble because fetch has already
 requested the next sequential window (plus PD's redirect bubbles if a tagged
 match vetoes it there). At a halfword PC, a slot-2 hit predicts
-only if the entry was trained for an instruction of the same size. A JAL that
-misses both the BTB and the backing BTB mispredicts once; training at commit
-makes its next execution hit.
+only if the entry was trained for an instruction of the same size: slot 2
+redirects both PCs immediately without a pending handoff, and a 32-bit
+instruction in the second word's upper half does not fit the 64-bit window. A
+JAL that misses both the BTB and the backing BTB mispredicts once; training at
+commit makes its next execution hit.
 
 BTB tags are fetch PCs, with no ASID or translation mode, and nothing
 corrects a taken hit on an instruction that is not control flow: PD and the
@@ -1161,15 +1167,27 @@ site have the details.
 ### Pending-prediction handoff
 
 A slot-1 prediction is made at the fetch PC, before `pc_reg` reaches the
-branch. When the branch sits in the upper half of a word, the target is a
-halfword address, or `pc_reg` would otherwise step past the branch, the
-prediction must wait for that exact packet through stalls, bubbles, and slow
-windows, or it attaches to a neighbor. `pc_controller` holds a one-deep
-pending {branch PC, target} pair and `prediction_metadata_tracker` holds the
-metadata. Only the packet at the saved PC consumes them; it is emitted
-one-wide, and its bimodal index is recomputed from that PC. A prediction made
-while the branch's own packet is already being emitted, which happens when
-variable latency closes the gap between the two PCs, never pends.
+branch. When the branch sits in the upper half of a word (including a 32-bit
+branch or call that spans into the next word across a word, line, or page
+boundary), the target is a halfword address, or `pc_reg` would otherwise step
+past the branch, the prediction must wait for that exact packet through stalls,
+bubbles, and slow windows, or it attaches to a neighbor. `pc_controller` holds
+a one-deep pending {branch PC, target} pair and `prediction_metadata_tracker`
+holds the metadata. Only the packet at the saved PC consumes them; it is
+emitted one-wide, and its bimodal index is recomputed from that PC. After a
+non-crossing handoff, target holdoff steps the fetch PC to `target + 4`,
+preserving halfword parity so fetch keeps a four-byte lead at halfword targets
+too. A prediction made while the branch's own packet is already being emitted,
+which happens when variable latency closes the gap between the two PCs, never
+pends.
+
+IF disables prediction on served-window faults and on a fault on the fetch PC's
+first word, keeping second-word faults off the next-PC path. An upper-half
+32-bit branch or call whose second word faults in an unmapped or inaccessible
+page can therefore predict at fetch time and later arrive at `pc_reg` as a
+fetch fault (`fetch_fault_hi`, `xtval = PC + 2`). Packet assembly clears
+`btb_predicted_taken` whenever `fetch_fault` is set, so PD and the return
+address stack take no prediction side effect from a faulted packet.
 
 Instruction streams can overlap: a 32-bit instruction at `P-2` contains the
 halfword at `P`, which another path through the same bytes can execute as an

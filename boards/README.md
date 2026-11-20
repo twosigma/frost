@@ -205,5 +205,23 @@ Before the first build, check that:
 - the I/O standards match the board's bank voltages;
 - the DDR controller IP matches the board's soldered or SODIMM memory.
 
-A non-Xilinx FPGA would need a new subsystem, because
+A non-Xilinx FPGA would need a different subsystem, because
 `xilinx_frost_subsystem` uses Xilinx IP and `BSCANE2` primitives.
+
+## Board-level AXI and MAC plug-in ports
+
+`frost` exposes three compile-time integration parameters (all zero by default,
+which `xilinx_frost_subsystem` keeps for X3 and VCU118) together with the
+core-domain synchronous reset output `o_soc_rst`:
+
+- `EXT_DMA_PORTS` (with `EXT_DMA_ID_BITS`) appends coherent 256-bit AXI4 DMA
+  slave ports to `dma_interconnect`, each isolated by an `axi_register_slice`.
+- `EXTERNAL_MAC=1` omits the internal `nic_mac_10g` block and exports the
+  primary `nic_engine`'s core-clock 64-bit AXI4-Stream TX/RX and MAC sideband
+  ports so a board wrapper can attach a different MAC.
+- `EXT_AXIL_WINDOW=1` exposes a 16 KiB 64-bit AXI4-Lite master window at
+  `0x4002_4000`-`0x4002_7FFF` behind an `axil_register_slice` in both cached
+  and BRAM-only builds.
+
+See [hw/rtl/lib/axi/README.md](../hw/rtl/lib/axi/README.md#integrating-board-level-blocks)
+for port widths, coherence aperture rules, and reset contracts.
