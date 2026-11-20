@@ -1383,7 +1383,13 @@ the integrated core; the `*_fetch_fuzz` variants, such as
 `branch_pred_test_fetch_fuzz`, add random fetch gaps with `FETCH_VALID_FUZZ=1`.
 The `if_stage` tests also cover a PD redirect arriving during a fetch gap
 after a BTB prediction: the redirect bubble must survive the gap and stalls,
-and the first target bundle must be emitted exactly once.
+and the first target bundle must be emitted exactly once. Both the
+`pc_controller` and `if_stage` benches cover walk-past orderings across both
+instruction slots, including a flush in a walk-past cycle, a fetch gap during
+walk-past, an even-address slot-2 redirect to `P`, a slot-2 redirect to
+`P - 2`, a stall inside the slot-2 redirect bubble, a stall-replayed
+slot-2 prediction retiring a pending entry, and an odd-address predecessor
+release blocking a live slot-1 BTB hit at `P - 2`.
 Formal targets cover the PC muxes and holdoffs, the pending-prediction
 handoff, predictor aliasing, RV64C predecode (`rvc_predecode` checks every
 16-bit parcel against the reference decompressor), the TLBs and walker, and the
