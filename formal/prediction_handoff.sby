@@ -20,7 +20,7 @@ prove: smtbmc boolector
 read -formal -sv riscv_pkg.sv
 read -sv control_flow_tracker.sv
 read -sv prediction_release_pc_increment.sv
-read -formal -D SYNTHESIS -D PC_PENDING_CAPTURE_LOCAL_PROOF -sv pc_controller.sv
+read -formal -D SYNTHESIS -D PC_PENDING_CAPTURE_LOCAL_PROOF -D PC_HANDOFF_LEAD_PROOF -sv pc_controller.sv
 read -formal -D SYNTHESIS -sv c_ext_state.sv
 read -formal -sv slot2_prediction_capture.sv
 read -formal -sv prediction_release_formal.sv

@@ -105,6 +105,13 @@ FROST_CPU_CLK_HZ=161132812 ./fpga/load_software/load_software.py x3 hello_world
 FROST_CPU_CLK_HZ=161132812 ./fpga/hw_regression.py --board x3 hello_world itlb_test
 ```
 
+## Misaligned accesses
+
+X3 and VCU118 perform plain misaligned loads and stores to cached DDR in
+hardware by default. `./fpga/build/build.py vcu118 --no-misaligned-hw`
+disables the engine at synthesis. Those accesses then trap for firmware
+to handle. The `misaligned_test` program requires the engine.
+
 ## Profiling counters
 
 `--perf-counters` includes the `mperf*` profiling counters. They are left out
@@ -193,8 +200,9 @@ image after a debugger crash, or when initialized DDR data must be restored.
 
 ## Hardware regression
 
-`hw_regression.py` runs the bare-metal applications, all nine CoreMark-PRO
-workloads, and Debian from an NFS root, then checks for DDR ECC errors.
+`hw_regression.py` runs the bare-metal applications, a debug-port check, all
+nine CoreMark-PRO workloads, and Debian from an NFS root, then checks for DDR
+ECC errors.
 Prepare the [Debian export](../docs/debian_nfsroot.md#hardware-regression) and
 describe it in the Git-ignored `fpga/site.env`:
 
@@ -222,6 +230,90 @@ counters. With `patrol_seconds=10`, it requires patrol progress and a full
 pass within 150 one-second waits, then reloads the module at the daily default.
 `FROST_MEMERR_MODULE` names a prebuilt module instead.
 
+The `debug_port` stage, which follows `hello_world`, checks the debug
+transport through OpenOCD (`debug/hw_debug_check.tcl`): it reads `dtmcs` over
+JTAG and `dmstatus` and `hartinfo` over the debug module interface, halts the
+running hart, reads `dpc`, resumes it, and reads `dtmcs` (without clearing
+sticky status) and `hartinfo` again. OpenOCD's background polling is switched
+off for the whole script (a poll between a raw scan's instruction and data
+steps would read another register) and switched on again on every path.
+
+The script prints one fixed sequence of `FROST_DEBUG key=value` lines on
+stdout and then `FROST_DEBUG_DONE`; OpenOCD's own log is on stderr. The check
+transcript passes only if OpenOCD exits 0 with no `Error:` or
+`FROST_DEBUG_ERR:` line on stderr, stdout is exactly that sequence (any text
+before, between or after, a missing, repeated, reordered or malformed line
+fails, and the message quotes the first offending line), both readings of
+`dtmcs` and of `hartinfo` agree, `dtmcs` has version 1, 7 address bits, no
+sticky error and zero reserved bits, `hartinfo` is the debug module's constant,
+`dmstatus` reports the halted and then the running state of a single available
+hart with nothing else set, and `state_left` is `running`.
+
+Whenever the OpenOCD check process was started, the stage always ends by
+running a separate OpenOCD process (`frost_debug_recover`, 30-second limit)
+while the host cable lock is still held, including when the stage is
+interrupted by `SIGINT` (Ctrl-C) or `SIGTERM`. During the stage, `SIGTERM` is
+converted to an interrupt exception and the previous handler is restored on
+exit; after confirmation finishes, the interrupt is re-raised. That second
+process resumes the hart if it is halted and prints its state. Confirmation
+succeeds only if the second process finishes in time, exits 0, prints no error
+marker on stdout or stderr, and prints exactly `FROST_DEBUG state_left=running`
+followed by `FROST_DEBUG_DONE`. The first transcript never decides the hart's
+state on any path. Any other confirmation outcome, or an interrupt during
+confirmation itself, reports the hart state as `UNKNOWN` (`FAIL` on normal
+return) and prints the manual recovery command:
+
+```bash
+FROST_JTAG_SERIAL=<cable serial> ./fpga/debug/cache_counters.py resume
+```
+
+Stop Vivado's `hw_server` before running that manual recovery command.
+
+The `debug_port` stage outcomes are `PASS` (primary check passed and the
+separate process confirmed the hart running), `SKIPPED` (`FROST_JTAG_SERIAL`
+is unset; neither pass nor failure, though a selection of only skipped stages
+fails), `ENV_FAIL` (`OPENOCD` is missing or cannot start, or the host lock file
+cannot be opened), `TIMEOUT` (the primary check exceeded 60 seconds and the
+confirmation process confirmed the hart running), and `FAIL` (`hw_server` held
+the cable past three minutes, the primary check failed, an unexpected exception
+occurred, or confirmation did not prove the hart running). Any non-signal
+exception inside the stage becomes `FAIL` with a masked message, never a
+traceback. The stage does not use the UART, so a selection of only `debug_port`
+and `ddr_ecc` does not check that the UART is free. `OPENOCD` names the OpenOCD
+executable if it is not `openocd` on `PATH`. OpenOCD and Vivado's `hw_server`
+cannot share the cable, so the stage waits up to three minutes for `hw_server`
+to exit, which it does on its own shortly after its last client, and fails if
+it does not. Everything the runner prints, and the text of every setup failure
+it raises, masks the cable serial case-insensitively as `<cable serial>`,
+because logs get pasted into issues.
+
+The Linux preflight also checks the version of `frost_net10g` inside the
+initramfs against `MODULE_VERSION` in `linux/frost-net10g/frost_net10g.c`. The
+regression host requires `unmkinitramfs` (from `initramfs-tools-core`) and
+`modinfo` (from `kmod`) on `PATH`. The preflight unpacks the initramfs into a
+private temporary directory with `unmkinitramfs`, finds every regular file
+named `frost_net10g.ko`, `frost_net10g.ko.xz`, `frost_net10g.ko.zst`, or
+`frost_net10g.ko.gz`, reads each copy's version with `modinfo -F version`, and
+always removes the temporary directory. `unmkinitramfs` unpacks only the early
+section and the first compressed archive (the layout produced by
+`update-initramfs`); the preflight success line notes this scope. The preflight
+passes only when at least one copy exists in what `unmkinitramfs` unpacks and
+every copy reports the tree's exact version. A missing tool, a tool that exits
+nonzero, times out, or prints no version, no trailing newline, or multiple
+versions, a non-regular entry under a module name, an initramfs without the
+module, a version mismatch, or any unexpected preflight error reports an
+environment failure naming the tool or file, both versions, and the rebuild
+steps in `docs/debian_nfsroot.md` step 3. Without `--keep-going`, the run
+prints that message as `ERROR: linux_boot: ...` and exits 1 before any stage;
+with `--keep-going`, the other stages run and `linux_boot` appears in the
+summary as `ENV_FAIL`.
+
+As the authoritative check of the module actually loaded by the kernel, the
+Linux stage reads `/sys/module/frost_net10g/version` after reaching its shell
+prompt and before running the network test, and requires an exact match against
+the tree's `MODULE_VERSION`. A mismatch, missing file, or unreadable output
+fails the stage immediately with the same step 3 rebuild instructions.
+
 The Linux stage accepts systemd `running`, or `degraded` when every failed
 unit is a `session-N.scope` with `Result=resources`. It logs the tolerated
 scopes. Any other failed unit or result fails the stage.
@@ -241,6 +333,10 @@ silence. Progress belongs to the most recent ROM startup.
 HALT messages, validation failures and trap diagnostics fail the stage.
 Its timeout is at least 600 seconds, including compilation, loading, DDR
 preparation and flash reads. A larger `--timeout` extends that budget.
+
+On X3, `vec_crypto_exec_test` uses cached DDR for its vector operands.
+To place the program in cached DDR as well, select the stage with
+`./fpga/hw_regression.py --board x3 --loader-extra=--ddr vec_crypto_exec_test`.
 
 The interactive `debug_target` and external-link `nic_echo` and `nic_bench`
 applications are excluded from the default sequence.
