@@ -92,6 +92,7 @@ CNT_RX_FRAMES, CNT_RX_BYTES, CNT_RX_FILTERED, CNT_TX_FRAMES, CNT_TX_BYTES = (
 )
 CNT_RX_MAC_OVERFLOW, CNT_RX_MAC_BAD_FRAME, CNT_RX_MAC_BAD_FCS = 10, 11, 12
 CNT_TX_ABORTED, CNT_TX_MAC_DROP = 9, 14
+CNT_RX_MAC_OVERFLOW_NO_DESC = 25
 
 RX_RING, TX_RING = 0x8010_0000, 0x8011_0000
 RX_SIZE_LOG2, TX_SIZE_LOG2 = 4, 4
@@ -487,6 +488,7 @@ async def _start(
         dut.i_dma_axi_rvalid,
         dut.i_rx_raw_data,
         dut.i_rx_raw_valid,
+        dut.i_phy_diag,
     ):
         sig.value = 0
     dut.i_tx_clk_ok.value = 1
@@ -575,11 +577,14 @@ async def test_extended_address_descriptor(dut: Any) -> None:
 PAUSE_HIGH_WATER_OFF, PAUSE_LOW_WATER_OFF, PAUSE_INTERVAL_OFF = 0x130, 0x134, 0x138
 
 
-@cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
 @cocotb.test()
 async def test_counter_map_leaves_the_pause_registers_alone(dut: Any) -> None:
-    """Counters 21 and up continue at 0x140; the pause registers at 0x130 read as registers."""
+    """Check the pause registers and zeroed diagnostic slots on the 10G port."""
     nic = await _start(dut, 1, loopback=False)
+    await FallingEdge(dut.i_clk)
+    dut.i_phy_diag.value = (1 << 32) | (3 << 16) | 7
+    await nic.cycles(12)
+    assert int(dut.o_phy_diag_ack.value) == 0
     for index in range(NUM_COUNTERS):
         offset = (
             COUNTERS + 8 * index
@@ -590,6 +595,34 @@ async def test_counter_map_leaves_the_pause_registers_alone(dut: Any) -> None:
     assert await nic.rd(PAUSE_INTERVAL_OFF) == 0xFFFF
     assert await nic.rd(PAUSE_HIGH_WATER_OFF) == 0
     assert await nic.rd(PAUSE_LOW_WATER_OFF) == 0
+    nic.stop()
+
+
+@cocotb.test()
+async def test_descriptor_starved_overflow_on_10g(dut: Any) -> None:
+    """Without RX descriptors, MAC overflows count in both overflow registers."""
+    nic = await _start(dut, 13, loopback=False)
+    await nic.program_rings()
+    await nic.wr(RX_FIFO_LIMIT, RX_FIFO_LIMIT_DEFAULT)
+    await nic.cycles(40)
+    await nic.wr(CTRL, CTRL_RX_EN)
+    assert await nic.rd(CTRL) & CTRL_RX_EN
+    await nic.wait_carrier()
+    frame = nic.frame(1514, STATION)
+    nic.wire.send([frame] * 32)
+    for _ in range(200):
+        if not nic.wire.words:
+            break
+        await nic.cycles(100)
+    else:
+        raise AssertionError("wire model did not send the overflow burst")
+    await nic.cycles(100)
+    overflow = await nic.rd64(COUNTERS + 8 * CNT_RX_MAC_OVERFLOW)
+    offset = COUNTERS_EXT + 8 * (CNT_RX_MAC_OVERFLOW_NO_DESC - NUM_BASE_COUNTERS)
+    starved = await nic.rd64(offset)
+    assert overflow > 0
+    assert starved == overflow
+    nic.stop()
 
 
 @cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
