@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import cocotb
-from cocotb.triggers import Event, FallingEdge, ReadOnly
+from cocotb.triggers import Event, FallingEdge, ReadOnly, RisingEdge
 
 FIXED, INCR, WRAP = 0, 1, 2
 OKAY, EXOKAY, SLVERR, DECERR = 0, 1, 2, 3
@@ -534,6 +534,8 @@ class AxiSlaveMemory:
     different ids may pass each other. Lines (32-byte addresses) in
     `error_lines` answer SLVERR. VALID and payload stability on the DUT's
     channels, WLAST, and legal burst forms are checked into `violations`.
+    When supplied, reset cancels handshake and response state at the
+    rising edge. Bytes already written to memory survive.
     """
 
     def __init__(
@@ -548,6 +550,7 @@ class AxiSlaveMemory:
         ready_bias: float = 0.8,
         max_latency: int = 12,
         reorder: bool = True,
+        reset: Any | None = None,
     ) -> None:
         """Start the slave's task."""
         self._dut = dut
@@ -556,6 +559,7 @@ class AxiSlaveMemory:
         self._out = outputs
         self.bus_bytes = bus_bytes
         self.mem = mem
+        self._reset = reset
         self.rng = rng
         self.ready_bias = ready_bias
         self.max_latency = max_latency
@@ -610,9 +614,10 @@ class AxiSlaveMemory:
             await FallingEdge(self._clk)
             self.cycle += 1
             rng = self.rng
-            awready = rng.random() < self.ready_bias
-            wready = rng.random() < self.ready_bias and bool(self._aw)
-            arready = rng.random() < self.ready_bias
+            active = self._reset is None or not int(self._reset.value)
+            awready = active and rng.random() < self.ready_bias
+            wready = active and rng.random() < self.ready_bias and bool(self._aw)
+            arready = active and rng.random() < self.ready_bias
             self._sig(self._in, "awready").value = int(awready)
             self._sig(self._in, "wready").value = int(wready)
             self._sig(self._in, "arready").value = int(arready)
@@ -621,7 +626,9 @@ class AxiSlaveMemory:
                 if entry is not None:
                     self._b.remove(entry)
                     self._b_cur = (entry[1], entry[2])
-            self._sig(self._in, "bvalid").value = int(self._b_cur is not None)
+            self._sig(self._in, "bvalid").value = int(
+                active and self._b_cur is not None
+            )
             if self._b_cur is not None:
                 self._sig(self._in, "bid").value = self._b_cur[0]
                 self._sig(self._in, "bresp").value = self._b_cur[1]
@@ -630,7 +637,9 @@ class AxiSlaveMemory:
                 if entry is not None:
                     self._r.remove(entry)
                     self._r_cur = (entry[1], list(entry[2]))
-            self._sig(self._in, "rvalid").value = int(self._r_cur is not None)
+            self._sig(self._in, "rvalid").value = int(
+                active and self._r_cur is not None
+            )
             if self._r_cur is not None:
                 data, resp, last = self._r_cur[1][0]
                 self._sig(self._in, "rid").value = self._r_cur[0]
@@ -638,7 +647,22 @@ class AxiSlaveMemory:
                 self._sig(self._in, "rresp").value = resp
                 self._sig(self._in, "rlast").value = last
 
-            await ReadOnly()
+            if self._reset is None:
+                await ReadOnly()
+            else:
+                await RisingEdge(self._clk)
+                if int(self._reset.value):
+                    self._aw.clear()
+                    self._w.clear()
+                    self._b.clear()
+                    self._r.clear()
+                    self._r_cur = None
+                    self._b_cur = None
+                    for channel in self._held:
+                        self._held[channel] = None
+                    continue
+                if not active:
+                    continue
             out = self._out
             self._check(
                 "aw",

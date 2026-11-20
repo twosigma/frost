@@ -861,6 +861,9 @@ The NIC targets include `nic_engine`, `nic_tx_segment`, `nic_rx_fifo_limit`, `ni
 `nic_pause_gmii`, `nic_pause_10g`, and `nic_pause_rx_wire`, alongside the engine and whole-NIC benches.
 Their registered tests cover segmentation headers, FIFO capacity, pause crossings, independent
 domain restarts, wire-side PAUSE validation during congestion, and cancellation under backpressure.
+`nic_top` and `nic_top_unrelated_clocks` check the zeroed 10G diagnostic slots and
+descriptor-starved MAC overflow. `nic_top_gmii_diag` checks GMII and PHY event
+counts at the same register offsets.
 `nic_cmo_loopback`, `nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
@@ -1535,6 +1538,7 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --crypto 50
 ./scripts/frost.py run python3 tests/test_testrig.py --vector 100 --vlen 256
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
+./scripts/frost.py run python3 tests/test_testrig.py --wfi
 ```
 
 `--vector N` replays random vector-instruction tests from `verif/testrig/vector.py`
@@ -1546,6 +1550,9 @@ seed the runner prints. A mismatch is shrunk to a short counterexample
 in `tests/testrig_failures/`, which `--trace` replays; the logs and the
 engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
 replays the saved counterexamples in `verif/testrig/traces/`.
+`--wfi` replays directed wait, wake, and trap cases with a simulation-only
+wake timeout and compares them with Sail's normalised WFI replies. See the
+[WFI checks and limits](../verif/testrig/README.md#wfi).
 Each successful session ends with `TestRIG PASS: compared <traces> traces
 and <instructions> instructions`, followed by the required minimum counts
 and log directory. The runner counts instruction requests and both peers'
@@ -1819,11 +1826,8 @@ assertions. They pulse fabric reset with the SoC clock stopped and repeat
 the request during release. With a common clock, fabric reset asserts
 immediately, the CPU reset register holds its value until the first resumed
 edge, and the cycle counter clears on the next edge. The fourth resumed
-edge releases fabric reset and the fifth releases CPU reset. The cycle
-counter starts on the sixth edge. Core reset and CPU reset assert together,
-and CPU reset releases one edge after core reset.
-These checks use idle external DDR AXI ports. The master and bridge unit
-benches check active transactions across CPU-only and fabric reset.
+edge releases fabric reset, the fifth releases bridge reset and the sixth
+releases CPU reset. The cycle counter starts on the seventh edge.
 
 `platform_dma_reset` and `platform_dma_reset_async` run a DMA copy from
 BRAM firmware with the external DDR transport active. Each interrupts a
@@ -1832,6 +1836,18 @@ clock. The common-clock test also straddles a single edge with a 2 ps
 pulse. The independent-clock test pulses reset for one simulation tick
 entirely between edges. Both check the bridge and ingress reset edges, reuse the read and
 write IDs after release, and check the copied byte and the returned credits.
+The independent-clock bench also interrupts a live read or write with a
+DDR-only pulse between clock edges and checks reset in both domains.
+
+`ddr_dma_reset` and `ddr_dma_reset_link` interrupt a coherent read or write
+when its completion is due, or a fresh DMA request when the bridge offers it.
+They use external DDR, zero or one coherent link stage, and pulses of one,
+two, three and eight clocks. Each checks the old owner and credits, then
+requires restarted firmware to copy a new byte through the same IDs.
+They also exercise an outstanding request, a stalled DMA register read
+and the hart's translated Svpbmt non-cacheable loads and stores.
+`ddr_dma_reset_stopped` exercises those paths through `frost` with a
+reset pulse entirely inside a clock stop and checks the first resumed edges.
 
 ## Coverage
 
@@ -2015,7 +2031,7 @@ and Fast Python Tests jobs locally.
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
-| TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
+| TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | Formal verification | The 51 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue, block proofs, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |

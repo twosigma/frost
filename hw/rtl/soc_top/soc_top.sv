@@ -382,7 +382,7 @@ module soc_top #(
     output logic [AXI_USER_BITS-1:0] o_axi_ruser
 );
   logic local_fire, local_ok, local_bram, local_device, local_instruction;
-  // Registered core reset combines external reset, ndmreset and SYSRESET.
+  // Registered core reset covers external reset, fabric loss, ndmreset and SYSRESET.
   // Debug logic uses external reset alone so it survives both core-reset
   // requests. Cache tags are swept on core reset; dirty lines are discarded.
   wire  core_clk = ASYNC_CPU_CLOCK ? i_cpu_clk : i_clk;
@@ -423,7 +423,7 @@ module soc_top #(
     assign soc_axi_rst = fabric_reset_request;
     assign o_cpu_axi_rst = soc_axi_rst;
     assign o_cpu_rst = soc_cpu_rst;
-    assign reset_request_soc = i_rst || dbg_ndmreset || sysreset_q;
+    assign reset_request_soc = i_rst || dbg_ndmreset || sysreset_q || fabric_reset_request;
     assign debug_cpu_rst = i_rst;
     assign debug_soc_rst = i_rst;
   end
@@ -911,7 +911,7 @@ module soc_top #(
   end else begin : gen_soc_cpu_reset_common
     // Assert with the DMA bridge and keep the ingress in reset for the
     // following edge, even when the core request lasts only one cycle.
-    always_ff @(posedge i_clk) soc_cpu_rst <= rst_core_next || rst_core || soc_axi_rst;
+    always_ff @(posedge i_clk) soc_cpu_rst <= rst_core_next || rst_core;
   end
   if (ASYNC_CPU_CLOCK) begin : gen_cpu_controls
     cdc_sync #(
@@ -1554,8 +1554,8 @@ module soc_top #(
   // EXT_AXIL_WINDOW != 0) is the external 16 KiB window at 0x4002_4000.
   // Only their windows enter state 5. Request payloads and each channel VALID
   // hold until the corresponding handshake, and completion waits for B or R.
-  // The register slaves take rst_core and this state soc_axi_rst, so each side
-  // answers for the other's reset.
+  // Request presentation shares rst_core with the register slaves. The
+  // local transaction state takes fabric reset and can abort on core reset.
   wire local_axil_cached = (ENABLE_CACHED_TIER != 0) &&
       ((local_addr[31:12] == NicBase[31:12]) ||
        (local_addr[31:8] == DmaEngineBase[31:8]) ||
@@ -1583,7 +1583,7 @@ AxilPorts
        (|(reg_axil_rvalid & reg_axil_rready)));
   assign reg_axil_read_capture = reg_axil_done && !local_write;
   always_ff @(posedge i_clk) begin
-    if (soc_axi_rst || rst_core) begin
+    if (rst_core) begin
       reg_axil_awvalid <= '0;
       reg_axil_wvalid  <= '0;
       reg_axil_arvalid <= '0;
@@ -1692,7 +1692,8 @@ AxilPorts
         .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
         .RX_FIFO_DEPTH(NicRxFifoDepth),
         .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
-        .DMA_AXI_ID_BITS(DmaUpIdBits)
+        .DMA_AXI_ID_BITS(DmaUpIdBits),
+        .ENABLE_PHY_DIAG(1'b0)
     ) nic (
         .i_clk(i_clk),
         .i_rst(rst_core_next),  // registered inside nic_engine; see its header
@@ -1992,7 +1993,8 @@ AxilPorts
           .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
           .RX_FIFO_DEPTH(NicRxFifoDepth),
           .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
-          .DMA_AXI_ID_BITS(DmaUpIdBits)
+          .DMA_AXI_ID_BITS(DmaUpIdBits),
+          .ENABLE_PHY_DIAG(1'b1)
       ) nic_1g (
           .i_clk(i_clk),
           .i_rst(rst_core_next),
@@ -2176,7 +2178,7 @@ AxilPorts
       else if (!alias_wait) alias_aborted_q <= 1'b0;
     end
     always_ff @(posedge i_clk) begin
-      if (soc_axi_rst || rst_core) begin
+      if (rst_core) begin
         alias_aw_q <= 1'b0;
         alias_w_q  <= 1'b0;
         alias_ar_q <= 1'b0;
