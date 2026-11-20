@@ -1749,6 +1749,10 @@ jobs:
               rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
               rs_payload_twin_bmc_operands
             timeout_minutes: 150
+          # Allow 10 minutes for setup, 60 for the bounded check and 5 for cover.
+          - shard: ROB retirement successor
+            pytest_filter: rob_retire_successor
+            timeout_minutes: 75
           # Everything not named above: new small equivalence proofs and block
           # proofs go here unless they belong to one of the areas above.
           - shard: Other tasks
@@ -1761,7 +1765,7 @@ jobs:
               cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
               reservation_station_cover or
               rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
-              tage_copy_convergence)
+              tage_copy_convergence or rob_retire_successor)
             timeout_minutes: 124
     # A task whose key has a pass marker is skipped; one in twenty of those
     # is proved again as a canary. The markers are cached per job: a main run

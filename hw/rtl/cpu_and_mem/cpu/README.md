@@ -1407,5 +1407,40 @@ handoff, predictor aliasing, RV64C predecode (`rvc_predecode` checks every
 16-bit parcel against the reference decompressor), the TLBs and walker, and the
 CSR file and trap unit.
 
+A simulation check in `cpu_ooo` follows the architectural PC across every
+retirement, so it runs in every whole-program test. Each instruction that
+retires must sit at the next PC of the one before it: the sequential PC, or
+the resolved target of a taken branch or jump. Slot 2 must sit at slot 1's
+next PC. A trap, interrupt or Debug Mode entry must save that next PC, and an
+xRET must sit at it. The trap or xRET target then becomes the next PC, and
+reset restarts the check. Two takes save a different PC: an interrupt or halt
+request taken while a legal WFI waits at the head saves the PC past the WFI,
+and a fault of the misaligned-access engine saves the PC of the instruction
+its assist took. The check tracks both cases itself rather than reading the
+core's own state for them. A Debug Mode go discards its saved PC and is not
+checked. The first wrong retirement stops the simulation with the PC that
+retired, the expected PC, and the last retirements.
+
+The same block checks the contracts that the `rob_retire_successor` proof
+assumes on the ROB's ports: each allocation is at the predicted next PC of
+the one before it until a barrier, each branch entry gets one branch update whose
+misprediction flag matches the prediction the entry was allocated with, and
+the other port rules listed in the [formal guide](../../../../formal/README.md).
+The proof is bounded: it checks six cycles from reset, and it holds early
+misprediction recovery off. CI allows 60 minutes for the bounded check and
+5 minutes for cover, with 10 minutes for setup in the 75-minute job.
+Retirement order across early recovery, and across longer sequences, rests
+on the simulation check alone.
+
+The front end keeps allocating behind an instruction that traps or carries a
+fetch fault, and those allocations need not follow the predicted next PC: an
+illegal or `c.ebreak` compressed slot 1 drops its slot-2 partner, and a
+faulting fetch steps a whole word. An allocation may leave the order when the
+allocation before it has not completed without an exception. That entry is
+the barrier: the check requires that it never completes without an exception
+while it is valid, so it traps, and every allocation behind it is free until
+the flush that removes it. The proof shows that nothing allocated behind a
+barrier retires.
+
 See the [test runner](../../../../tests/README.md) for commands and the
 [formal guide](../../../../formal/README.md) for proof scope and assumptions.
