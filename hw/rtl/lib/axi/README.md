@@ -130,7 +130,7 @@ a first reset cycle, when the masters and the ingress on that reset ignore it.
 The bridge resets with its AXI masters, and each reset of the ingress, which
 drops the requests it holds, must overlap one of the bridge. In the
 common-clock `soc_top` configuration, the masters, mux and bridge
-reset with `rst_core`. A one-cycle core reset reaches the bridge and ingress
+reset with `rst_core`. A one-cycle core or DDR transport reset reaches the bridge and ingress
 on the same edge. The bridge discards any reply already presented on that
 edge, and the ingress clears its response valid before the bridge can accept
 another reply. The optional
@@ -249,6 +249,9 @@ along with `o_soc_rst`, the core-domain synchronous active-high reset on
 `i_clk`. Board-level blocks that attach to any of these ports run on `i_clk`
 and reset with `o_soc_rst` (or cross from their own clock through `axi_cdc`
 or a dual-clock FIFO before reaching these ports).
+An external master or slave samples `o_soc_rst` directly at its flops on
+`i_clk`. An extra reset pipeline register would reset it one edge after the
+port slices.
 
 ### 1. External coherent AXI4 DMA masters (`EXT_DMA_PORTS`)
 
@@ -278,9 +281,9 @@ accelerator, to `dma_interconnect`.
   way); setting the allocation bit allows normal L2 allocation.
 - Reset contract: `o_soc_rst` asserts whenever `soc_top` resets the DMA mux,
   slices and coherent bridge (including core reset, SYSRESET and `ndmreset`,
-  plus DDR interconnect reset when `ASYNC_CPU_CLOCK = 1`). External masters
-  must drop pending transactions on `o_soc_rst` and wait for `o_soc_rst == 0`
-  before issuing requests.
+  plus DDR interconnect reset with either common or independent CPU clocks).
+  External masters must drop pending transactions on `o_soc_rst` and wait for
+  `o_soc_rst == 0` before issuing requests.
 
 ### 2. External Ethernet MAC (`EXTERNAL_MAC`)
 

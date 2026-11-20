@@ -372,14 +372,15 @@ synchronizer. A stopped SoC clock keeps the reset asserted. CPU owners and
 the fabric share this reset; CPU-only reset leaves presented AXI requests
 to drain through the fabric.
 
-With a common CPU and SoC clock, a core reset request sampled on one rising
-edge asserts both the DMA bridge reset and the CPU reset pin. The pin stays
-high for one more edge after the bridge reset drops, giving the CPU and its
-coherent ingress two reset edges. With the clock stopped, the CPU reset pin
+With a common CPU and SoC clock, a core or DDR transport reset request
+sampled on one rising edge asserts both the DMA bridge and CPU reset pins.
+The CPU pin stays high for one more edge after the bridge reset drops, giving
+the CPU and its coherent ingress two reset edges. With the clock stopped, the CPU reset pin
 holds its value. An external DDR reset pulse during the stop holds fabric
-reset high until the clock resumes. The first rising edge asserts CPU reset
-and the next edge resets the CPU state. CPU reset releases one edge after
-fabric reset clears if the core reset is also clear.
+reset high until the clock resumes. The first rising edge asserts the
+registered resets. The next edge discards the CPU and DMA owners together.
+After the fabric reset clears, the bridge reset drops on the next edge
+and the CPU reset drops on the following edge if all requests are clear.
 
 Reset belongs at the flop, as `if (rst) ... else ...`. Combinational outputs
 can stay live in a first reset cycle, when every receiver on the same reset
