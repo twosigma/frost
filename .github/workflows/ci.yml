@@ -407,7 +407,8 @@ jobs:
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
               [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [nic_cmo_loopback] or [memerr_test] or
-              [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
+              [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test] or
+              [fatal_stop_irq] or [fatal_stop_irq_with_engine]
           - name: Real Programs (Self-modifying code and fence.i)
             coverage: [bram]
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
@@ -472,6 +473,7 @@ jobs:
               or [l2_capacity_chase_capacity] or [l2_capacity_chase_smoke]
               or [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [nic_cmo_loopback] or [misaligned_test]
               or [memerr_test] or [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
+              or [fatal_stop_irq] or [fatal_stop_irq_with_engine]
               or [sstvala_fault_test] or [ddr_reset_distribution] or [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
               or [pause_test] or [ras_slot_bench] or [ras_repair_bench]
               or [smc_stale_test] or [smc_torture] or [smc_predict_test] or [fencei_bench]

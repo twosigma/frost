@@ -6398,6 +6398,32 @@ TEST_REGISTRY["memerr_test_seeded"] = replace(
     ),
 )
 
+TEST_REGISTRY["fatal_stop_irq"] = replace(
+    TEST_REGISTRY["memerr_test"],
+    description=(
+        "Fatal writeback stop and machine interrupts with the misaligned engine omitted"
+    ),
+    verilator_extra_args=(
+        "../verif/cocotb_tests/fatal_stop_irq.vlt",
+        "-GMISALIGNED_HW=0",
+    ),
+    extra_env=(
+        *TEST_REGISTRY["memerr_test"].extra_env,
+        ("EXTRA_CFLAGS", "-DFROST_TEST_FATAL_STOP_IRQ"),
+        ("FROST_TEST_FATAL_STOP_IRQ", "1"),
+        ("COCOTB_MAX_CYCLES", "250000"),
+        ("FROST_DDR_MODEL_SEED", ""),
+    ),
+)
+
+TEST_REGISTRY["fatal_stop_irq_with_engine"] = replace(
+    TEST_REGISTRY["fatal_stop_irq"],
+    description=(
+        "Fatal writeback stop and machine interrupts with the misaligned engine built"
+    ),
+    verilator_extra_args=("../verif/cocotb_tests/fatal_stop_irq.vlt",),
+)
+
 # The vector bring-up programs (sw/apps/vec_*) on a core built with the vector
 # unit, at each supported vector length. They run once in each tier. They are
 # registered but left out of pytest and CI: they need the vector unit, which the

@@ -5806,7 +5806,17 @@ async def test_real_program(dut: Any) -> None:
     # file to write them to (tests/test_arch_compliance.py).
     arch_signature = os.environ.get("FROST_ARCH_SIGNATURE")
 
-    for run_number in range(1, NUM_RUNS + 1):
+    fatal_stop_irq_test = (
+        app_name == "memerr_test" and os.environ.get("FROST_TEST_FATAL_STOP_IRQ") == "1"
+    )
+    fatal_stop_errors: list[str] = []
+    num_runs = NUM_RUNS
+    if fatal_stop_irq_test:
+        from cocotb_tests.fatal_stop_irq import IRQ_CASES, check_fatal_stop_irq
+
+        num_runs = len(IRQ_CASES)
+
+    for run_number in range(1, num_runs + 1):
         if coverage is not None:
             coverage.clear()
         if cmo_watch is not None:
@@ -5845,7 +5855,7 @@ async def test_real_program(dut: Any) -> None:
 
         if run_number == 1 and os.environ.get("FROST_MIDRESET") == "1":
             await _mid_traffic_reset(dut, uart_monitor, line_monitor)
-        cocotb.log.info(f"=== Starting run {run_number} of {NUM_RUNS} ===")
+        cocotb.log.info(f"=== Starting run {run_number} of {num_runs} ===")
 
         if app_name == "uart_echo":
             assert uart_driver is not None
@@ -5857,6 +5867,17 @@ async def test_real_program(dut: Any) -> None:
                 max_cycles,
                 run_number=run_number,
             )
+        elif fatal_stop_irq_test:
+            error = await check_fatal_stop_irq(
+                dut,
+                uart_monitor,
+                cpu_clock(dut),
+                run_number,
+                max_cycles,
+                FATAL_WRITEBACK_LINES["memerr_test"],
+            )
+            if error is not None:
+                fatal_stop_errors.append(error)
         else:
             if nic_peer is not None:
                 nic_peer.start_run()
@@ -5906,4 +5927,5 @@ async def test_real_program(dut: Any) -> None:
     if debug_monitor:
         debug_monitor.stop()
 
-    cocotb.log.info(f"=== All {NUM_RUNS} run(s) completed successfully ===")
+    assert not fatal_stop_errors, "\n".join(fatal_stop_errors)
+    cocotb.log.info(f"=== All {num_runs} run(s) completed successfully ===")
