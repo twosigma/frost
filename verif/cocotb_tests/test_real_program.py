@@ -1394,7 +1394,7 @@ class WfiRecoveryWatch:
 
     def clear(self) -> None:
         """Require a fresh wakeup and recovery after each reset."""
-        self.wake_requested = False
+        self.wake_in_progress = False
         self.hits = 0
 
     async def run(self) -> None:
@@ -1408,7 +1408,7 @@ class WfiRecoveryWatch:
             if not int(cpu.head_valid.value):
                 continue
             pc = int(cpu.rob_trap_pc.value)
-            if pc == self.gate_pc and not self.wake_requested:
+            if pc == self.gate_pc and not self.wake_in_progress:
                 assert int(cpu.i_disable_branch_prediction.value)
                 assert int(cpu.rob_head_is_wfi.value)
                 assert not int(cpu.rob_trap_cause.value)
@@ -1425,12 +1425,12 @@ class WfiRecoveryWatch:
                         f"and WFI {self.wfi_pc:#x} queued"
                     )
                     self.dut.i_external_interrupt.value = 1
-                    self.wake_requested = True
+                    self.wake_in_progress = True
             if pc == self.jal_pc and int(cpu.rob_commit_valid_raw.value):
-                assert self.wake_requested, "JAL retired before both WFIs were queued"
+                assert self.wake_in_progress, "JAL retired before both WFIs were queued"
                 self.dut.i_external_interrupt.value = 0
-                self.wake_requested = False
                 await self._check_recovery(clock)
+                self.wake_in_progress = False
 
     async def _check_recovery(self, clock: Any) -> None:
         """Follow the JAL from retirement through the target's first retirement."""
@@ -1463,6 +1463,14 @@ class WfiRecoveryWatch:
         # Report any corrupted PC before checking its source.
         assert not seed, "wrong-path WFI selected the resume-PC seed"
         self.hits += 1
+
+    def check_wake(self, run_number: int, max_cycles: int) -> None:
+        """On timeout, distinguish a missing wake from a stall after the wake."""
+        assert self.wake_in_progress or self.hits > 0, (
+            f"Run {run_number} timed out after {max_cycles} cycles waiting to wake "
+            f"WFI {self.gate_pc:#x} at the ROB head with direct JAL {self.jal_pc:#x} "
+            f"and fall-through WFI {self.wfi_pc:#x} queued behind it"
+        )
 
     def verify(self, run_number: int) -> None:
         """Require a checked wrong-path head in each reset-to-pass interval."""
@@ -2322,13 +2330,15 @@ async def run_until_complete(
     max_cycles: int,
     run_number: int,
     app_name: str | None = None,
+    on_timeout: Callable[[int, int], None] | None = None,
 ) -> None:
     """Run until a UART success marker, failure marker, or timeout.
 
     uart_monitor must already be running. Open-ended tests use initial_text
     instead of success_marker. max_cycles bounds the run; run_number is a
     1-based log index, and app_name selects tracing and diagnostics.
-    Raise AssertionError on failure or timeout.
+    On timeout, call on_timeout with the run number and cycle budget before
+    raising the UART timeout. Raise AssertionError on failure or timeout.
     """
     test_passed = False
     test_failed = False
@@ -5065,6 +5075,8 @@ async def run_until_complete(
                 f"x8/s0={last_x8_commit} x18/s2={last_x18_commit}"
             )
         cocotb.log.error(f"UART output:\n{uart_monitor.get_output()}")
+        if on_timeout is not None:
+            on_timeout(run_number, max_cycles)
         if has_defined_endpoint:
             raise AssertionError(
                 f"Run {run_number} failed: program did not print success marker "
@@ -5407,6 +5419,11 @@ async def test_real_program(dut: Any) -> None:
                 max_cycles,
                 run_number=run_number,
                 app_name=app_name,
+                on_timeout=(
+                    coverage.check_wake
+                    if isinstance(coverage, WfiRecoveryWatch)
+                    else None
+                ),
             )
             if nic_peer is not None:
                 nic_peer.verify()

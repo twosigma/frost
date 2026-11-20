@@ -2301,9 +2301,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "With prediction disabled, a direct JAL exposes its fall-through WFI "
             "at the ROB head during recovery. Each run checks that the interrupt "
-            "resume PC holds the JAL target until it retires."
+            "resume PC holds the JAL target until it retires. A timeout reports "
+            "if the JAL and fall-through WFI never queued behind the waiting WFI."
         ),
         verilator_extra_args=("../verif/cocotb_tests/wfi_seed_recovery.vlt",),
+        extra_env=(("COCOTB_MAX_CYCLES", "20000"),),
     ),
     "wfi_drain_mepc_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

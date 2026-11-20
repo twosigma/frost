@@ -184,7 +184,9 @@ runner compiles first. A failing RTL assertion fails the simulation.
 WFI. The bench raises the external interrupt once the direct JAL and its
 fall-through WFI are both in the ROB. Each run must see the younger WFI at
 the valid head during commit recovery and see it flushed. The interrupt
-resume PC must hold the linked JAL target until that target retires.
+resume PC must hold the linked JAL target until that target retires. Each
+run has a 20,000-cycle limit. If the bench never wakes the older WFI, the
+timeout reports the expected ROB sequence with all three instruction PCs.
 
 `vec_vtype_tracker` checks register and immediate configuration allocation,
 the delayed ROB in-flight indication, architectural reload, full flushes
