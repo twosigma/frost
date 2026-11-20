@@ -62,6 +62,10 @@ for extra in (
     if str(extra) not in sys.path:
         sys.path.insert(0, str(extra))
 
+load_software = importlib.import_module("load_software")
+sweep_coremark_pro = importlib.import_module("sweep_coremark_pro")
+ddr_ecc_status = importlib.import_module("ddr_ecc.ddr_ecc_status")
+
 
 def _load_hw_regression() -> ModuleType:
     """Import fpga/hw_regression.py by path (it is a script, not a package)."""
@@ -742,6 +746,53 @@ def test_memerr_readback_parses_progress_and_rejects_an_old_selftest() -> None:
     assert "no FROST_MEMERR_SELFTEST_PASS line" in hw.memerr_problems(latest)
 
 
+def test_vcu118_linux_checks_memory_errors_without_cpu_ecc_polling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Require the selected VCU118 memory contract and repository's driver."""
+    driver_version = "0.0-integration"
+    driver_source = tmp_path / hw.DRIVER_SOURCE
+    driver_source.parent.mkdir(parents=True)
+    driver_source.write_text(f'MODULE_VERSION("{driver_version}");\n')
+    seen = _stub_board(monkeypatch)
+    monkeypatch.setattr(hw, "linux_root_from_env", lambda: ROOT)
+    monkeypatch.setattr(hw, "linux_root_preflight", lambda *args: [])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["runner", "--repo", str(tmp_path), "--board", "vcu118", "linux_boot"],
+    )
+    assert hw.main() == 0
+    linux = seen[hw.LINUX_STAGE]["stage"]
+    console = FULL_TRANSCRIPT.replace(
+        DRIVER_LINE, f"{hw.LINUX_DRIVER_VERSION_TOKEN}={driver_version}\r\r\n{PROMPT}"
+    )
+    transcript = console.replace("active=1 polls=4113,5342", "active=0 polls=0,0")
+    ok, note = linux.judge(transcript)
+    assert ok and "no DDR AXI error responses" in note
+    assert f"NIC driver {driver_version}" in note
+    assert linux.judge(console)[0] is False
+    assert (
+        hw.linux_stage(ROOT, driver_version=driver_version).judge(transcript)[0]
+        is False
+    )
+    ok, note = linux.judge(transcript.replace(driver_version, "0.0-stale"))
+    assert not ok and "is version 0.0-stale" in note
+    for before, after, reason in (
+        ("active=0", "active=1", "unexpected CPU-visible ECC reader activity"),
+        ("polls=0,0", "polls=1,0", "unexpected CPU-visible ECC reader activity"),
+        ("polls=0,0", "polls=0,1", "unexpected CPU-visible ECC reader activity"),
+        ("ce=0", "ce=1", "1 corrected errors"),
+        ("ue=0", "ue=1", "1 uncorrectable errors"),
+        ("rd=0", "rd=1", "1 DDR read error responses"),
+        ("wr=0", "wr=1", "1 DDR write error responses"),
+        (MEMERR_SELFTEST_LINE, "", "no FROST_MEMERR_SELFTEST_PASS line"),
+        ("passes=0,1", "passes=0,0", "RAM patrol did not complete a pass"),
+    ):
+        ok, note = linux.judge(transcript.replace(before, after))
+        assert not ok and reason in note
+
+
 @pytest.mark.parametrize(
     "token", ["FROST_MEMERR_SELFTEST_FAIL", "FROST_MEMERR_LOAD_FAIL"]
 )
@@ -881,14 +932,15 @@ def test_nettest_runs_from_tmpfs_and_gives_the_roots_link_back() -> None:
     command = hw.nettest_command("enp1s0")
     sysfs = "/sys/class/net/enp1s0"
     ipv6 = "/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
-    run_at = command.index(f"{hw.LINUX_TMPFS}/frost_nettest;")
+    run_at = command.index(f"{hw.LINUX_TMPFS}/frost_nettest enp1s0;")
     assert f"cp {hw.LINUX_ROOT_BIN}/frost_nettest {hw.LINUX_TMPFS}/" in command
     assert command.index(f"cat {sysfs}/mtu") < run_at
     assert command.index(f"cat {sysfs}/flags") < run_at
     assert command.index(f"echo 1 > {ipv6}") < run_at
     assert "{ if echo 2 > /proc/sys/vm/drop_caches; then " in command[:run_at]
     assert (
-        f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {hw.LINUX_TMPFS}/frost_nettest;" in command
+        f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {hw.LINUX_TMPFS}/frost_nettest enp1s0;"
+        in command
     )
     assert command.index("echo $m >&3") > run_at
     assert command.index("echo $f >&4") > command.index("echo $m >&3")
@@ -1697,7 +1749,7 @@ def _stub_board(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         loader_env: Any = None,
     ) -> dict[str, Any]:
         """Record what the stage was given and report a pass."""
-        seen[stage.app] = {"env": loader_env, "timeout": timeout_s}
+        seen[stage.app] = {"env": loader_env, "timeout": timeout_s, "stage": stage}
         return {"stage": stage.app, "status": "PASS", "elapsed": 1.0, "note": ""}
 
     monkeypatch.setattr(hw, "run_uart_stage", fake_run_uart_stage)
@@ -2247,7 +2299,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         *board_apps,
         "amo_irq_torture",
         "asid_test",
-        "bpred_probe",
+        *(["bpred_probe"] if board == "x3" else []),
         "bpred_trap_pair_test",
         "branch_pred_test",
         "c_ext_test",
@@ -2267,7 +2319,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "ddr_test",
         "dma_torture",
         "fencei_jit_bench",
-        "fplat_probe",
+        *(["fplat_probe"] if board == "x3" else []),
         "freertos_demo",
         "fpu_assembly_test",
         "fpu_test",
@@ -2280,10 +2332,10 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "linux_irq_ddr_test",
         "linux_irq_stack_slot_test",
         "lq_stale_slot_probe",
-        "memerr_readback",
+        *(["memerr_readback"] if board == "x3" else []),
         "memory_test",
         "misaligned_test",
-        "mispen_probe",
+        *(["mispen_probe"] if board == "x3" else []),
         "nic_cmo_loopback",
         "nic_loopback",
         "odd_halfword_pred_test",
@@ -2293,7 +2345,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "pde_return_hazard",
         "perf_off_test",
         "pma_fault_test",
-        "print_clock_speed",
+        *(["print_clock_speed"] if board == "x3" else []),
         "ptw_coherence_test",
         "ras_stress_test",
         "ras_test",
@@ -2305,10 +2357,10 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "store_fill_bench",
         "strings_test",
         "sum_toggle_test",
-        "svpbmt_cmo_test",
+        *(["svpbmt_cmo_test"] if board == "x3" else []),
         "sysreset_test",
         "tick_torture",
-        "tomasulo_perf",
+        *(["tomasulo_perf"] if board == "x3" else []),
         "tomasulo_test",
         "uart_echo",
         "umode_test",
@@ -2321,6 +2373,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
                 "vec_fp_test",
                 "vec_index_test",
                 "vec_integer_test",
+                "vec_mem_reserved_forms_test",
                 "vec_mem_source_eew_test",
                 "vec_mem_test",
                 "vec_order_test",
@@ -2351,6 +2404,13 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
     assert len(stages) == len(set(stages))
 
 
+def test_ecc_stage_requires_a_design_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Select controller ECC only where the target has a defined window."""
+    monkeypatch.delitem(hw.ECC_WINDOW_DESIGNS, "vcu118")
+    assert hw.ECC_STAGE not in hw.regression_stages("vcu118")
+    assert hw.regression_stages("x3")[-1] == hw.ECC_STAGE
+
+
 @pytest.mark.parametrize("board", ["x3", "vcu118"])
 def test_default_stage_dispatch_uses_selected_board(
     monkeypatch: pytest.MonkeyPatch, board: str
@@ -2373,7 +2433,106 @@ def test_default_stage_dispatch_uses_selected_board(
 
 
 @pytest.mark.parametrize(
-    "board,app", [("x3", "bootrom"), ("x3", "fsbl"), ("vcu118", "fsbl")]
+    "board,stage_name",
+    [
+        (board, stage)
+        for board in hw.BOARD_CONFIG
+        for stage in hw.regression_stages(board)
+    ],
+)
+def test_selected_stage_helper_accepts_the_board(
+    monkeypatch: pytest.MonkeyPatch, board: str, stage_name: str
+) -> None:
+    """Run the emitted commands through their CLI checks up to JTAG discovery."""
+    target_pattern = "test cable"
+    loader_apps: list[str] = []
+
+    class TargetDiscoveryReachedError(Exception):
+        """Signal that a helper accepted the arguments before discovering cables."""
+
+    def select_target(*_args: Any, **kwargs: Any) -> None:
+        assert kwargs["board"] == board
+        assert kwargs["target_pattern"] == target_pattern
+        raise TargetDiscoveryReachedError
+
+    def invoke_helper(command: list[str], **_kwargs: Any) -> Any:
+        script = Path(command[0]).name
+        with monkeypatch.context() as invocation:
+            invocation.setattr(sys, "argv", command)
+            if script == "sweep_coremark_pro.py":
+                assert stage_name == hw.SWEEP_STAGE
+                assert command[command.index("--board") + 1] == board
+                # The mock loaders stop at discovery, before a UART result.
+                assert sweep_coremark_pro.main() == 1
+                raise TargetDiscoveryReachedError
+            elif script == "ddr_ecc_status.py":
+                assert stage_name == hw.ECC_STAGE
+                assert "--non-interactive" in command
+                ddr_ecc_status.main()
+            else:
+                assert script == "load_software.py"
+                loader_apps.append(command[2])
+                if stage_name == hw.SWEEP_STAGE:
+                    with pytest.raises(TargetDiscoveryReachedError):
+                        load_software.main()
+                    return SimpleNamespace(stdout=None, returncode=1, poll=lambda: 1)
+                assert command[2] == stage_name
+                load_software.main()
+        pytest.fail(f"{script} returned before target discovery")
+
+    def check_debug_helper(_repo: Path, selected_board: str) -> None:
+        assert stage_name == hw.DEBUG_STAGE
+        assert selected_board == board == "x3"
+        raise TargetDiscoveryReachedError
+
+    monkeypatch.setattr(hw, "run_debug_stage", check_debug_helper)
+    monkeypatch.delenv("FROST_CPU_CLK_HZ", raising=False)
+    monkeypatch.setattr(load_software, "_linux_boot_preflight", lambda: None)
+    monkeypatch.setattr(load_software, "compile_app_for_board", lambda *a, **kw: True)
+    monkeypatch.setattr(load_software, "validate_prebuilt_app", lambda *a, **kw: {})
+    monkeypatch.setattr(load_software, "select_target", select_target)
+    monkeypatch.setattr(ddr_ecc_status, "select_target", select_target)
+    monkeypatch.setattr(hw, "linux_root_from_env", lambda: ROOT)
+    monkeypatch.setattr(hw, "linux_root_preflight", lambda *args: [])
+    for runner in (hw, sweep_coremark_pro):
+        monkeypatch.setattr(runner, "serial_holders", lambda _serial: [])
+        monkeypatch.setattr(
+            runner, "configure_serial", lambda _serial: os.open(os.devnull, os.O_RDONLY)
+        )
+        monkeypatch.setattr(runner, "drain", lambda _fd: None)
+    monkeypatch.setattr(hw.subprocess, "Popen", invoke_helper)
+    monkeypatch.setattr(hw.subprocess, "run", invoke_helper)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "runner",
+            "--board",
+            board,
+            "--serial",
+            "test",
+            "--target",
+            target_pattern,
+            stage_name,
+        ],
+    )
+    # The outer CLI exception reporter handles errors that escape dispatch.
+    with pytest.raises(TargetDiscoveryReachedError):
+        hw._main()
+    if stage_name == hw.SWEEP_STAGE:
+        assert tuple(loader_apps) == sweep_coremark_pro.HW_APPS
+
+
+@pytest.mark.parametrize(
+    "board,app",
+    [
+        ("x3", "bootrom"),
+        ("x3", "fsbl"),
+        ("vcu118", "fsbl"),
+        ("vcu118", "memerr_readback"),
+        ("vcu118", "svpbmt_cmo_test"),
+        ("vcu118", "bpred_probe"),
+    ],
 )
 def test_unsupported_stage_is_rejected_before_board_access(
     monkeypatch: pytest.MonkeyPatch,
@@ -2439,8 +2598,10 @@ def test_ecc_stage_verdict_follows_the_script_exit(monkeypatch: Any) -> None:
 
     # A read that failed is not a clean report either.
     reply["returncode"] = 1
-    reply["stdout"] = "ECC read failed\n"
-    assert hw.run_ecc_stage(ROOT, "x3", "some:target", 60.0)["status"] == "FAIL"
+    reply["stdout"] = "ECC read failed: missing final FROST_ECC_DONE line\n"
+    result = hw.run_ecc_stage(ROOT, "x3", "some:target", 60.0)
+    assert result["status"] == "FAIL"
+    assert "missing final FROST_ECC_DONE line" in result["note"]
 
 
 def test_uart_echo_stage_keeps_its_single_probe() -> None:
@@ -2513,14 +2674,13 @@ def test_counters_absent_stage_runs_at_every_clock(
 
 # --- The network test's diagnostic repetitions ---------------------------------
 
-# The single-run command as the stage typed it before the repetition option
-# existed. Without FROST_HW_NETTEST_REPEAT the stage must type exactly this.
+# The default command runs once with the root interface passed to the test.
 NETTEST_COMMAND_ETH0 = (
     "m=$(cat /sys/class/net/eth0/mtu); f=$(cat /sys/class/net/eth0/flags); "
     "echo 1 > /proc/sys/net/ipv6/conf/eth0/disable_ipv6; "
     "cp /usr/local/bin/frost_nettest /dev/shm/; "
     "{ if echo 2 > /proc/sys/vm/drop_caches; then "
-    "FROST_NETTEST_EXPIRE_NFS_CACHE=1 /dev/shm/frost_nettest; "
+    "FROST_NETTEST_EXPIRE_NFS_CACHE=1 /dev/shm/frost_nettest eth0; "
     "else echo FROST_NET_LOOPBACK'_'FAIL drop_caches; fi; "
     "echo $m >&3; echo $f >&4; echo 0 >&5; } "
     "3> /sys/class/net/eth0/mtu 4> /sys/class/net/eth0/flags "
@@ -2533,9 +2693,13 @@ NETTEST_COMMAND_ETH0 = (
 # repetition: the repetition line, then its verdict under the marker the
 # repetition gets. FAKE_FAIL_REP names a repetition that fails.
 FAKE_NETTEST = r"""#!/bin/sh
-rep=${FROST_NETTEST_REPETITION%/*}
-reps=${FROST_NETTEST_REPETITION#*/}
-echo "FROST_NET_LOOPBACK: repetition $rep of $reps"
+if [ "$#" != 1 ]; then exit 1; fi
+if [ -n "$FROST_NETTEST_REPETITION" ]; then
+  rep=${FROST_NETTEST_REPETITION%/*}
+  reps=${FROST_NETTEST_REPETITION#*/}
+  echo "FROST_NET_LOOPBACK: repetition $rep of $reps"
+else rep=1; reps=1; fi
+echo "FROST_NET_LOOPBACK: $1: driver frost_net10g, address 02:11:22:33:44:55"
 echo "FROST_NET_LOOPBACK: capture idle-jumbo t=70100..70300: own out 0 in 0, kernel out 1 in 1, foreign 2, enetdown 1, drops 0"
 if [ "$rep" -lt "$reps" ]; then marker=FROST_NET_DIAG; tag=" rep=$rep"; else marker=FROST_NET_LOOPBACK; tag=; fi
 if [ "$rep" = "${FAKE_FAIL_REP:-0}" ]; then
@@ -2589,6 +2753,7 @@ def _run_repeated(
     drop_caches_fails: bool = False,
     alive_status: int = 0,
     poke_s: int = 0,
+    interface: str = "eth0",
 ) -> tuple[str, Path, Path]:
     """Run the repeated command in sh against stand-in files and programs."""
     sysfs = tmp_path / "sysfs"
@@ -2621,9 +2786,9 @@ def _run_repeated(
     monkeypatch.setattr(hw, "LINUX_ROOT_BIN", str(source))
     monkeypatch.setattr(hw, "LINUX_TMPFS", str(target))
     command = (
-        hw.nettest_command("eth0", repeat, poke_s)
-        .replace("/sys/class/net/eth0", str(sysfs))
-        .replace("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", str(ipv6))
+        hw.nettest_command(interface, repeat, poke_s)
+        .replace(f"/sys/class/net/{interface}", str(sysfs))
+        .replace(f"/proc/sys/net/ipv6/conf/{interface}/disable_ipv6", str(ipv6))
         .replace("/proc/sys/vm/drop_caches", str(drop))
     )
     done = hw.subprocess.run(
@@ -2634,6 +2799,32 @@ def _run_repeated(
     assert (sysfs / "flags").read_text() == "0x1003\n"
     assert ipv6.read_text() == "0\n"
     return done.stdout.replace("\n", "\r\r\n"), sysfs, ipv6
+
+
+@pytest.mark.parametrize("repeat", [1, 3])
+def test_vcu118_linux_loopback_exercises_the_rj45_root_interface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repeat: int
+) -> None:
+    """Pass eth1 to the executable and require each run to report that interface."""
+    root = dataclasses.replace(
+        ROOT, interface="eth1", ip=ROOT.ip.replace("eth0", "eth1")
+    )
+    linux = hw.linux_stage(root, repeat, board="vcu118")
+    output, _, _ = _run_repeated(
+        tmp_path, monkeypatch, repeat, interface=root.interface
+    )
+    before_loopback = MEMERR_TRANSCRIPT.replace(
+        "active=1 polls=4113,5342", "active=0 polls=0,0"
+    )
+    transcript = (
+        before_loopback + hw.nettest_command(root.interface, repeat) + "\r\r\n" + output
+    )
+    assert output.count("eth1: driver frost_net10g") == repeat
+    ok, note = linux.judge(transcript)
+    assert ok, note
+    ok, note = linux.judge(transcript.replace("eth1: driver", "eth0: driver", 1))
+    assert not ok
+    assert f"expected {repeat} run(s) on eth1, found eth0" in note
 
 
 def test_every_repetition_is_logged_and_only_the_last_ends_the_capture(

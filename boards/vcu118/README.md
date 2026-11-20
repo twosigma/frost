@@ -71,12 +71,14 @@ The board has two physical 80-bit DDR4 interfaces. This target uses one
 interface in banks 71–73 with 64 data bits and eight ECC bits, exposing
 2 GiB at CPU address `0x80000000`. The CPU bridge uses 512-bit AXI data,
 31-bit region offsets and five-bit IDs. The CPU and JTAG loader share the
-controller through SmartConnect. The JTAG master can also access ECC
-control registers at region offset `0x80000000`; the CPU port cannot.
+controller through SmartConnect. The `ddr_ecc` stage reads the controller's
+ECC registers through a JTAG control window at region offset `0x80000000`.
+The CPU's memory error unit reports DDR AXI errors.
 
 Svpbmt NC and IO mappings of DDR raise an access fault on this 2 GiB map:
 its 32-bit physical address space has no room for an uncached DDR alias.
 Device mappings support NC and IO attributes.
+The `svpbmt_cmo_test` application requires the DDR aliases.
 
 The CPU performs plain misaligned loads and stores to cached DDR in hardware
 by default. Misaligned accesses to low BRAM or mapped device registers raise

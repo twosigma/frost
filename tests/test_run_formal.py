@@ -592,7 +592,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_home_array.sby",
         "Independent L2 ports and one-way parallel reads preserve byte values, tokens "
-        "and physical-row exclusions.",
+        "and physical-row exclusions. An open read at the output follows a stalled reply.",
         tasks=(
             "coh_home_array_prove",
             *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
@@ -1280,6 +1280,8 @@ FORMAL_TARGETS = [
         "home_capture_equiv.sby",
         "Consumed home payloads match handshake-only captures, and registered "
         "fill flags match their phase decodes across arbitrary reset and stalls. "
+        "Array covers reach hit and row captures in every configuration and kept "
+        "parallel captures in both banked configurations. "
         "The parked next-state function preserves event priority; selected-slot "
         "parking, the one-hot selection, dispatch and waiter eligibility match a "
         "slot-table reference.",
@@ -1292,6 +1294,11 @@ FORMAL_TARGETS = [
             "array_uram",
             "array_uram32",
             "array_uram_row",
+            "array_bram_cover",
+            "array_bram_four_cover",
+            "array_uram_cover",
+            "array_uram32_cover",
+            "array_uram_row_cover",
             "endpoint32",
             "endpoint56",
             "arbiter_default",
@@ -3440,6 +3447,17 @@ SBY_TASKS = [
         "array_uram_row",
         "Folded selection and single-array captures with short read latency.",
     ),
+    ("array_bram_cover", "Tag hit and row data capture with one BRAM way."),
+    ("array_bram_four_cover", "Tag hit and row data capture with four BRAM ways."),
+    (
+        "array_uram_cover",
+        "Hit, row and kept parallel captures with 64-byte URAM lines.",
+    ),
+    (
+        "array_uram32_cover",
+        "Hit, row and kept parallel captures with 32-byte URAM lines.",
+    ),
+    ("array_uram_row_cover", "Tag hit and row data capture in the single-array URAM."),
     ("endpoint32", "Demand and grant captures with 32-bit addresses."),
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),

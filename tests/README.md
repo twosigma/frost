@@ -224,6 +224,22 @@ Reserved loads preserve every destination register, including both segment
 fields, and reserved stores preserve the entire range they could write. The
 `verif/testrig/vector_source_widths_memory.S` trace checks those encodings
 against the architectural reference.
+`vec_mem_reserved_forms_test_v128/v256/v512` exhaustively enumerate the 8,192
+unit-stride-class (`mop = 00`) vector load and store encodings across both
+opcodes, all 32 `lumop`/`sumop` values, all 8 `nf` values, both `mew` values,
+all four vector widths and both `vm` values against the specification's table
+of 214 defined combinations (checking illegal-instruction cause and `mtval` for
+all 7,978 reserved encodings and execution for all 214 defined ones), enumerate
+all 256 whole-register load and store alignments across all 32 register numbers
+and defined `nf` values under `vill = 1`, and verify unchanged memory,
+destination registers, `vstart` and `mstatus.VS` for every reserved class
+beside legal data transfers. Because `instr_decoder` has no `VLEN` parameter
+and `vec_head_mmu`'s legality predicate reads only the instruction fields and
+`vtype`, legality of these encodings cannot depend on `VLEN`; CI's vector
+real-program shard therefore runs `vec_mem_reserved_forms_test_v256` alone
+while the 128- and 512-bit entries remain CLI targets, and
+`tests/test_vector_reference.py` checks the program at all three vector lengths
+on both Spike and Sail.
 
 The Zicbom programs and cluster benches run the following cases.
 
