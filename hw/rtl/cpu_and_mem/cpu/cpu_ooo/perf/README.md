@@ -214,7 +214,9 @@ same-cycle alignment with other counters shifts.
 
 The IF 2-wide rate is 24 / 23. Counters 25–30 are mutually exclusive. Their
 sum equals the 1-wide handoffs (23 − 24), except for handoffs held 1-wide by a
-pending slot-1 prediction, which can go uncounted.
+pending slot-1 prediction (such as a released predecessor whose slot-2 branch,
+compressed or 32-bit at an odd halfword, waits for its own slot-1 handoff),
+which go uncounted.
 
 The dispatch 2-wide rate is 32 / 0, and the number of instructions
 dispatched is 0 + 32.

@@ -953,6 +953,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
+        "if_fault_ras_veto.sby",
+        "Fetch-faulted IF packets never carry a predicted-taken flag or operate "
+        "the return-address stack",
+        tasks=("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
         "mispredict_capture.sby",
         "Recovery payload, pulse copies, frontend flush and registered fetch flush "
         "match their references",
