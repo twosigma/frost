@@ -127,13 +127,14 @@ module vcu118_frost #(
   logic cpu_side_aresetn;
   assign cpu_side_aresetn = cpu_clock_locked && !cpu_reset;
 
+  logic mem_ok_synced;
   // Active-low synchronous reset for FROST
   logic [3:0] rst_sync_q = '0;
   always_ff @(posedge main_clock or negedge cpu_clock_locked) begin
     if (!cpu_clock_locked) begin
       rst_sync_q <= '0;
     end else begin
-      rst_sync_q <= {rst_sync_q[2:0], !(cpu_reset || !ddr_init_done)};
+      rst_sync_q <= {rst_sync_q[2:0], !cpu_reset && ddr_init_done && mem_ok_synced};
     end
   end
   logic frost_rst_n;
@@ -246,10 +247,13 @@ module vcu118_frost #(
   logic [3:0] startup_di;
   logic       mem_ok;
   (* ASYNC_REG = "TRUE" *)logic [1:0] mem_ok_synchronizer;
-  always_ff @(posedge main_clock) begin
-    mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};
+  always_ff @(posedge main_clock or negedge cpu_clock_locked) begin
+    if (!cpu_clock_locked) begin
+      mem_ok_synchronizer <= '0;
+    end else begin
+      mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};
+    end
   end
-  logic mem_ok_synced;
   assign mem_ok_synced = mem_ok_synchronizer[1];
 
   assign spi_miso = startup_di[1];
@@ -446,7 +450,7 @@ module vcu118_frost #(
       assign ddr4_sdram_c0_odt     = '0;
       assign ddr4_sdram_c0_reset_n = 1'b0;
     end else begin : gen_real_ddr
-      assign ddr_axi_rst_n = mem_ok_synced;
+      assign ddr_axi_rst_n = cpu_side_aresetn;
 
       vcu118_ddr_init #(
           .ADDR_BITS   (31),

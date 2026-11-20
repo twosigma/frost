@@ -287,7 +287,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         f"platform_dma_reset{suffix}": CocotbRunConfig(
             python_test_module="cocotb_tests.integration.test_platform_dma_reset",
             hdl_toplevel_module="platform_top",
-            description=f"One-cycle core reset at coherent DMA read and write completion with {mode} clocks",
+            description=(
+                f"Core reset at coherent DMA read and write completion with {mode} clocks"
+                + (" and DDR-only reset between clock edges" if period_ps else "")
+            ),
             verilator_extra_args=(
                 "--assert",
                 "+define+FROST_SIM_ASSERTIONS",
@@ -306,6 +309,75 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("", "common", 0),
             ("_async", "independent", 7000),
         )
+    },
+    **{
+        name: CocotbRunConfig(
+            python_test_module="cocotb_tests.integration.test_ddr_dma_reset",
+            hdl_toplevel_module=top,
+            description=description,
+            verilator_extra_args=(
+                "--assert",
+                "+define+FROST_SIM_ASSERTIONS",
+                "-GUSE_BEHAVIORAL_DDR=0",
+                "-GENABLE_CACHED_TIER=1",
+                "-GSIM_FAST_MAINT=1",
+                "-GL2_PREFETCH=0",
+                "-GL1_CACHE_BYTES=4096",
+                "-GL1I_CACHE_BYTES=4096",
+                "-GL2_CACHE_BYTES=16384",
+                f"-GMEMORY_LINK_STAGES={stages}",
+            ),
+            extra_env=(("FROST_DDR_RESET_LINK_STAGES", str(stages)),),
+        )
+        for name, top, stages, description in (
+            (
+                "ddr_dma_reset",
+                "platform_top",
+                0,
+                "DDR reset at DMA request and completion edges",
+            ),
+            (
+                "ddr_dma_reset_link",
+                "platform_top",
+                1,
+                "DDR reset with a staged coherent DMA link",
+            ),
+            (
+                "ddr_dma_reset_stopped",
+                "frost",
+                0,
+                "Active DMA and alias recovery across a stopped clock",
+            ),
+        )
+    },
+    **{
+        f"platform_ext_ddr_reset{suffix}": CocotbRunConfig(
+            python_test_module="cocotb_tests.integration.test_platform_ext_ddr_reset",
+            hdl_toplevel_module="platform_top",
+            extra_env=(("FROST_CPU_PERIOD_PS", "0"),),
+            description=(
+                "DDR-only reset with external DMA and AXI4-Lite requests in flight "
+                f"at MEMORY_LINK_STAGES={stages}"
+            ),
+            verilator_extra_args=(
+                "--assert",
+                "+define+FROST_SIM_ASSERTIONS",
+                "-GUSE_BEHAVIORAL_DDR=0",
+                "-GENABLE_CACHED_TIER=1",
+                "-GSIM_FAST_MAINT=1",
+                "-GL2_PREFETCH=0",
+                "-GL1_CACHE_BYTES=4096",
+                "-GL1I_CACHE_BYTES=4096",
+                "-GL2_CACHE_BYTES=16384",
+                "-GASYNC_CPU_CLOCK=0",
+                f"-GMEMORY_LINK_STAGES={stages}",
+                "-GEXT_DMA_PORTS=2",
+                "-GEXT_DMA_ID_BITS=4",
+                "-GEXT_AXIL_WINDOW=1",
+                "-GEXTERNAL_MAC=1",
+            ),
+        )
+        for suffix, stages in (("", 0), ("_link", 1))
     },
     "soc_async_reset": CocotbRunConfig(
         python_test_module="cocotb_tests.test_async_boundary",
@@ -1677,6 +1749,39 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=512"),),
         include_in_pytest=False,
     ),
+    "vec_mem_reserved_forms_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_mem_reserved_forms_test",
+        nic_mac_clocks=False,
+        description=(
+            "Exhaustive unit-stride vector load/store legality and state preservation; VLEN 128"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
+        include_in_pytest=False,
+    ),
+    "vec_mem_reserved_forms_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_mem_reserved_forms_test",
+        nic_mac_clocks=False,
+        description=(
+            "Exhaustive unit-stride vector load/store legality and state preservation; VLEN 256"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+        include_in_pytest=True,
+    ),
+    "vec_mem_reserved_forms_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_mem_reserved_forms_test",
+        nic_mac_clocks=False,
+        description=(
+            "Exhaustive unit-stride vector load/store legality and state preservation; VLEN 512"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
+        include_in_pytest=False,
+    ),
     "vec_mem_source_eew_test_v128": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1959,7 +2064,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="vm_test",
         nic_mac_clocks=False,
         description=(
-            "Sv39 data translation, permissions, and precise faults through MPRV"
+            "Sv39 translation and permissions, including precise Bare and Sv39 device-hole stores"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
@@ -2074,6 +2179,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Cache profiling counters read over JTAG while a program runs "
             "(optional unless FROST_REQUIRE_OPENOCD=1)"
+        ),
+        verilator_extra_args=(
+            "-GPERF_COUNTERS=1",
+            "-GL1_CACHE_BYTES=4096",
+            "-GL2_CACHE_BYTES=4096",
+        ),
+    ),
+    # The debug-port check of fpga/hw_regression.py (fpga/debug/hw_debug_check.tcl)
+    # through OpenOCD against the simulated core.
+    "hw_debug_check_openocd": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_hw_debug_check_openocd",
+        hdl_toplevel_module="frost",
+        app_name="cache_counter_target",
+        description=(
+            "Debug-port check (halt, dpc, resume) of fpga/hw_regression.py on the "
+            "simulated core (optional unless FROST_REQUIRE_OPENOCD=1)"
         ),
         verilator_extra_args=(
             "-GPERF_COUNTERS=1",
@@ -5245,8 +5366,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
         description=(
-            "NIC registers, DMA allocation hints, and frame traffic through "
-            "raw loopback and a simulated wire"
+            "10G NIC registers, diagnostic slots, descriptor-starved overflow, "
+            "DMA allocation hints, and frame traffic"
         ),
     ),
     "nic_top_64g": CocotbRunConfig(
@@ -5285,7 +5406,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
         description=(
-            "NIC wire traffic with independent TX/RX clocks and raw loopback disabled"
+            "10G NIC wire traffic and descriptor-starved overflow "
+            "with independent TX/RX clocks"
         ),
         verilator_extra_args=("-GRAW_LOOPBACK=0",),
     ),
@@ -5349,7 +5471,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "cpu_top_strict_map": CocotbRunConfig(
         python_test_module="cocotb_tests.integration.test_cpu_top_strict_map",
         hdl_toplevel_module="cpu_top",
-        description="Strict PMA rejects legacy FROST device-quadrant holes before AXI",
+        description="Generic PMA decode rejects unmapped device stores before AXI",
         verilator_extra_args=(
             "-GSIM_FAST_MAINT=1",
             "-GL1_CACHE_BYTES=2048",
@@ -5410,7 +5532,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
     ),
     "cpu_top_boundary": CocotbRunConfig(
-        python_test_module="cocotb_tests.integration.test_cpu_top",
+        python_test_module=(
+            "cocotb_tests.integration.test_cpu_top,"
+            "cocotb_tests.integration.test_cpu_top_strict_map"
+        ),
         hdl_toplevel_module="cpu_top",
         description="Standalone CPU boot, cached/narrow traffic, fences, errors, and inactive coherence",
         verilator_extra_args=(
@@ -6689,14 +6814,20 @@ UNIT_TEST_PARAMS = [
 #     program in BRAM, so the write-error plusarg counts only its writebacks.
 #   - fencei_jit_bench: the BRAM driver already executes its generated code
 #     in cached DDR; moving the driver does not add an invalidation case.
-#   - cache_counters_openocd: its program runs from low BRAM in either tier,
-#     so a ddr-tier run would repeat the bram-tier one.
+#   - cache_counters_openocd, hw_debug_check_openocd: their program runs from
+#     low BRAM in either tier, so a ddr-tier run would repeat the bram-tier one.
 DDR_TIER_EXCLUDE = {
     name
     for name in REAL_PROGRAM_TESTS
     if name.endswith("_fetch_fuzz")
     or name.startswith("ddr_")
-    or name in {"ecc_scrub_test", "cache_counters_openocd", "fencei_jit_bench"}
+    or name
+    in {
+        "ecc_scrub_test",
+        "cache_counters_openocd",
+        "fencei_jit_bench",
+        "hw_debug_check_openocd",
+    }
 }
 
 
