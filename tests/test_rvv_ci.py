@@ -24,6 +24,7 @@ import sys
 import textwrap
 from collections import Counter
 from graphlib import TopologicalSorter
+from math import ceil
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,15 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert step["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number }}"
     default = step["env"]["SLICES_PER_MAIN_RUN"]
     assert int(default) == ci.SLICES == 20
+    run = next(s for s in job["steps"] if s.get("name") == "Run vector programs")
+    setup = [s["timeout-minutes"] for s in job["steps"][: job["steps"].index(run)]]
+    assert setup == [5, 5, 15, 5]
+    setup_minutes = sum(setup)
+    assert ci.FORM_PLANS == {
+        128: ci.FormPlan(4, 92, 130),
+        256: ci.FormPlan(7, 92, 130),
+        512: ci.FormPlan(13, 96, 134),
+    }
     for event, campaign, part, count, per_run, mode, parts in [
         ("push", "rotation", "", "0", default, "forms", []),
         ("push", "rotation", "", "7", "20", "forms", []),
@@ -104,14 +114,28 @@ def test_vector_workflow(tmp_path: Path) -> None:
             widths = (
                 {128: 6, 256: 12, 512: 32}
                 if mode == "complete"
-                else {128: 2, 256: 4, 512: 11}
+                else {width: plan.shards for width, plan in ci.FORM_PLANS.items()}
             )
             assert Counter(r["vlen"] for r in rows) == widths
             for vlen, n in widths.items():
                 assert {r["part"] for r in rows if r["vlen"] == vlen} == {
                     f"{i}/{n}" for i in range(1, n + 1)
                 }
-    run = next(s for s in job["steps"] if s.get("name") == "Run vector programs")
+        for row in rows:
+            if mode == "forms":
+                plan = ci.FORM_PLANS[row["vlen"]]
+                step_minutes = row["step_minutes"]
+                job_minutes = row["job_minutes"]
+                assert step_minutes == plan.deadline_minutes + 3
+                assert job_minutes == plan.job_minutes
+                assert job_minutes == setup_minutes + step_minutes + 5
+            else:
+                assert "step_minutes" not in row and "job_minutes" not in row
+                step_minutes, job_minutes = (
+                    (310, 360) if mode == "complete" else (100, 140)
+                )
+                assert ci.SHARD_SECONDS[mode] < step_minutes * 60
+            assert setup_minutes + step_minutes < job_minutes <= 360
     assert 'tests/rvv_ci.py run "$VLEN" "$MODE" "$PART"' in run["run"]
     assert run["env"] == {
         "VLEN": "${{ matrix.vlen }}",
@@ -119,24 +143,12 @@ def test_vector_workflow(tmp_path: Path) -> None:
         "PART": "${{ matrix.part }}",
     }
 
-    def timeouts(step: dict) -> dict[str, int]:
-        match = re.fullmatch(
-            r"\$\{\{ matrix.mode == 'complete' && (\d+) \|\| (\d+) \}\}",
-            step["timeout-minutes"],
-        )
-        assert match
-        return {
-            "complete": int(match[1]),
-            "slice": int(match[2]),
-            "forms": int(match[2]),
-        }
-
-    setup = sum(
-        step["timeout-minutes"] for step in job["steps"][: job["steps"].index(run)]
+    assert run["timeout-minutes"] == (
+        "${{ matrix.step_minutes || (matrix.mode == 'complete' && 310 || 100) }}"
     )
-    for mode, seconds in ci.SHARD_SECONDS.items():
-        assert seconds / 60 < timeouts(run)[mode]
-        assert setup + timeouts(run)[mode] < timeouts(job)[mode] <= 360
+    assert job["timeout-minutes"] == (
+        "${{ matrix.job_minutes || (matrix.mode == 'complete' && 360 || 140) }}"
+    )
     summarize, upload = job["steps"][job["steps"].index(run) + 1 :]
     assert summarize["if"] == upload["if"] == "${{ !cancelled() }}"
     assert "rvv-results/summary.md" in summarize["run"]
@@ -331,11 +343,12 @@ def test_rotation_and_manual_replay() -> None:
             ci.matrix("rotation", 0, "", count)
     assert ci.matrix("rotation", 99, "19", 20) == ci.matrix("rotation", 0, "19")
     profile = ["--cycle-profile", "tests/fixtures/rvv_ci_profile.csv"]
-    assert ci.shard_options("forms", "2/2") == [
+    assert ci.shard_options("forms", "2/4") == [
         "--one-per-form",
-        *profile,
+        "--shard-profile",
+        "tests/fixtures/rvv_ci_form_times.csv",
         "--shard",
-        "2/2",
+        "2/4",
     ]
     assert ci.shard_options("complete", "2/6") == [*profile, "--shard", "2/6"]
 
@@ -363,7 +376,7 @@ def test_rotation_and_manual_replay() -> None:
 def test_ci_profile_matches_hosted_selection(
     width: int, cycles: int, selection: str
 ) -> None:
-    """The main weights cover every program in the hosted calibration run."""
+    """The cycle calibration covers the original hosted selection."""
     profile = (ROOT / ci.CYCLE_PROFILE).read_bytes()
     source = {
         r["name"]: int(r["source_weight"])
@@ -374,6 +387,67 @@ def test_ci_profile_matches_hosted_selection(
     assert len(measured) == ci.FORMS_PER_WIDTH
     assert suite.selection_sha256(list(measured), width) == selection
     assert sum(measured.values()) == cycles
+
+
+@pytest.mark.parametrize(
+    ("width", "build_s", "prepare_s", "observed_ms"),
+    [
+        (128, 260, 211, (9856268, 8915170)),
+        (256, 307, 271, (13752334, 13835697)),
+        (512, 382, 368, (30383066, 10942091)),
+    ],
+)
+def test_main_shards_fit_measured_time(
+    tmp_path: Path,
+    width: int,
+    build_s: int,
+    prepare_s: int,
+    observed_ms: tuple[int, int],
+) -> None:
+    """Each actual partition must fit with model build and guest preparation."""
+    with (ROOT / ci.CYCLE_PROFILE).open() as stream:
+        names = sorted(
+            r["name"]
+            for r in csv.DictReader(stream)
+            if int(r["vlen"]) == width and r["form_weight"]
+        )
+    profile = (ROOT / ci.FORM_PROFILE).read_bytes()
+    rows = [
+        r
+        for r in csv.DictReader(profile.decode().splitlines())
+        if int(r["vlen"]) == width
+    ]
+    assert sorted(r["name"] for r in rows) == names
+    assert len(names) == ci.FORMS_PER_WIDTH
+    assert (
+        tuple(sum(int(r[k] or 0) for r in rows) for k in ("main_ms", "complete_ms"))
+        == observed_ms
+    )
+    observed = {
+        r["name"]: max(int(r["main_ms"] or 0), int(r["complete_ms"] or 0)) for r in rows
+    }
+    weights = suite.shard_weights(tmp_path, names, width, profile, one=True)
+    assert weights == observed
+    plan = ci.FORM_PLANS[width]
+    setup_ms = 1000 * (build_s + prepare_s)
+    seen = []
+    peak_ms = 0
+    for index in range(1, plan.shards + 1):
+        batch = suite.select_shard(weights, index, plan.shards)
+        assert batch
+        seen.extend(batch)
+        inner_ms = sum(observed[n] for n in batch) + setup_ms
+        assert 5 * inner_ms < 3 * plan.deadline_minutes * 60_000, (
+            width,
+            index,
+            inner_ms,
+        )
+        peak_ms = max(peak_ms, inner_ms)
+    assert sorted(seen) == names
+    target_ms = 54 * 60_000
+    assert peak_ms < target_ms
+    assert sum(observed.values()) >= (plan.shards - 1) * (target_ms - setup_ms)
+    assert plan.deadline_minutes == ceil(1.8 * peak_ms / 60_000)
 
 
 def result(name: str) -> dict:
@@ -441,7 +515,7 @@ def test_shard_failures_and_reproduction(
 
 @pytest.mark.parametrize(
     ("mode", "part", "total"),
-    [("slice", "0", 665), ("forms", "1/2", 665), ("complete", "1/6", 3017)],
+    [("slice", "0", 665), ("forms", "1/4", 665), ("complete", "1/6", 3017)],
 )
 def test_shard_requires_full_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, part: str, total: int
@@ -451,10 +525,22 @@ def test_shard_requires_full_inventory(
     suffix = ""
     model = tmp_path / "model"
     Path(f"{model}.json").write_text("{}")
+    monkeypatch.setattr(ci.time, "monotonic", lambda: 123.0)
+    seconds = (
+        ci.FORM_PLANS[128].deadline_minutes * 60
+        if mode == "forms"
+        else ci.SHARD_SECONDS[mode]
+    )
 
     def simulate(command: list[str], deadline: float, transcript: object) -> int:
+        assert deadline == 123.0 + seconds
         if mode == "slice":
-            assert "--cycle-profile" not in command
+            assert "--cycle-profile" not in command and "--shard-profile" not in command
+        elif mode == "forms":
+            assert (
+                Path(command[command.index("--shard-profile") + 1])
+                == ROOT / ci.FORM_PROFILE
+            )
         else:
             assert (
                 Path(command[command.index("--cycle-profile") + 1])

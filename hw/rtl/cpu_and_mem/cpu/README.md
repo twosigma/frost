@@ -173,17 +173,81 @@ commit makes its next execution hit.
 
 BTB tags are fetch PCs, with no ASID or translation mode, and nothing
 corrects a taken hit on an instruction that is not control flow: PD and the
-branch unit check only branches and jumps. So the BTB clears every entry in
-the full-flush cycle of each event after which the code or the address space
-under an entry may differ: FENCE.I, SFENCE.VMA, a `satp` write, a trap, xRET
-or Debug Mode entry that switches fetch between bare (M-mode) and Sv39
+branch unit check only branches and jumps.
+
+#### Fast-lookup training, flushes, and safety guards
+
+The BTB learns from three prioritized sources selected by
+`ex_comb_synthesizer` and registered one cycle in
+`branch_prediction_controller`: execute-time early misprediction recovery
+(conditional branches, and JALRs when `EarlyJalrRecovery` is set),
+commit-time misprediction recovery (conditional branches, JALs, and JALRs),
+and correctly predicted conditional branches at commit. Whenever the
+selected update trains a JAL or JALR, it also trains the backing BTB.
+Training before retirement is by design: an early recovery writes the BTB
+(and, for a JALR, the backing BTB) as soon as execution resolves the
+instruction, while older instructions in the reorder buffer are still
+uncommitted.
+
+A later redirect from an older branch or jump does not clear the BTB or
+cancel an update already registered for it, so an entry trained by an
+instruction that is later flushed remains in the table. A full flush
+cancels any early recovery still waiting to fire, and clears every BTB
+entry only on the events after which the code or address space under an
+entry may differ: FENCE.I, SFENCE.VMA, a `satp` write, a trap, xRET, or
+Debug Mode entry that switches fetch between bare (M-mode) and Sv39
 addresses, and every take into or within Debug Mode, since a go runs
 program-buffer and abstract-command words the debug module may have
-rewritten. The clear lasts four cycles, which drops training still in flight
-from the old code.
-`mstatus` and `sstatus` writes, and takes that stay on one side of that
-switch, keep the BTB. Code changed without FENCE.I, or a valid executable
-mapping replaced without SFENCE.VMA, is not covered (see the
+rewritten. The clear holds for four cycles, dropping any training write
+still in flight from the old code. `mstatus` and `sstatus` writes, and
+traps or returns that stay on one side of the bare-versus-Sv39 switch
+(same-side M-to-M, S-to-S, S-and-U under one `satp`, or bare S/U-to-M),
+keep the BTB, so an entry written by a flushed instruction before such a
+flush remains live.
+
+An entry left in the BTB by a flushed instruction can cost cycles only,
+never architectural correctness, because four guards hold:
+
+- **Decode admission and branch resolution**: Only fault-free, legally
+  decoded conditional branches and JALRs can enter early recovery, and
+  branch resolution checks the direction and full target of every matching
+  control-flow instruction, turning any stale direction or indirect target
+  into a recovery redirect.
+- **Walk-past handling**: If wrong-path fetch trains an entry at the
+  interior halfword of a 32-bit instruction that is not control flow
+  (compressed, or at an odd halfword also 32-bit), the slot-1 prediction
+  pends and fetch walk-past squashes the stale target window and resteers
+  fetch once the architectural PC steps past that halfword, delivering the
+  32-bit instruction unchanged.
+- **Fault suppression**: Under Sv39 without a `satp` change, supervisor and
+  user execute permissions are disjoint. At lookup time, fetch suppresses
+  BTB predictions whenever either word of the served fetch window faults,
+  when the live fetch PC's first word faults, or while an unresolved
+  translation holds fetch, and `immu` and `fetch_provider` restrict
+  physical instruction reads to executable PMA memory (`pma_fetch_ok`,
+  excluding device and MMIO regions), delivering a fault-tagged window
+  without issuing a bus read for any non-executable or unmapped target.
+  At packet assembly, `if_stage` also clears `btb_predicted_taken` in both
+  slots whenever `fetch_fault` is set (including an upper-half 32-bit
+  instruction whose second word faults across a page boundary), so PD and
+  the return address stack take no prediction side effect from a faulted
+  packet.
+- **Invalidation events with four-cycle hold**: Every architecturally
+  fenced code or translation-space change clears every BTB valid array and
+  holds the clear for four cycles so no in-flight pre-flush update can
+  reinstall an entry from old code.
+
+The backing BTB has no clear-all input (only reset sweeps it) and can keep
+entries across redirects, traps, and fences; that is safe because PD acts
+on a backing hit only when the live, non-faulting, legally decoded
+instruction in that slot is a JAL or JALR of the same size, and branch
+resolution or commit recovery checks every jump target.
+
+This rule does not change the existing limitation: after code is rewritten
+without FENCE.I or a valid executable mapping is replaced without
+SFENCE.VMA, a stale taken BTB hit on an instruction that is no longer a
+branch or jump is not corrected, whether that entry came from early
+recovery or retirement (see the
 [roadmap](../../../../ROADMAP.md#possible-future-work)).
 
 PD can change the direction fetch followed for a conditional branch in either
@@ -937,7 +1001,14 @@ one to eight fields), the fault-only-first loads, and the whole-register and
 mask loads and stores as `VLOAD` and `VSTORE` (illegal with VS Off); they
 dispatch in slot 1 only with `RS_NONE` and take an entry in the vector memory
 table (`vector/vec_vmt.sv`), holding the next one while all four entries are
-live. Without the unit, ID decodes only the one-field unit-stride, the
+live. In `id_stage/instr_decoder.sv`, `vector_mem_ok` rejects `mew = 1`,
+reserved `lumop`/`sumop` values, masked (`vm = 0`) whole-register and mask
+forms, whole-register field counts other than 1, 2, 4 or 8 (`nf` outside
+`{0, 1, 3, 7}`), nonzero `nf` on mask forms, and nonzero widths on
+whole-register stores and mask forms before dispatch; only legal bit encodings
+of those forms reach `vec_head_mmu`, which checks register-group alignment and
+`vtype`. Neither `instr_decoder` nor `vec_head_mmu`'s legality predicate
+depends on `VLEN`. Without the unit, ID decodes only the one-field unit-stride, the
 whole-register and the mask forms that way, and the others are illegal there.
 The table lists the vector memory instructions in flight in program order for
 the load and store queues' range holds (including 64-byte block holds on
@@ -1334,11 +1405,14 @@ the BTB writes; a refresh that misses writes nothing. A request that reads
 the set being written takes the written set, and one to the same set as an
 update in the stage ahead of it is dropped, which costs accuracy only.
 
-An indirect jump can train the backing BTB when it resolves. If an older
-instruction subsequently traps in the same privilege mode, the trained
-target can remain in the table after the jump is squashed. The backing
-table has no privilege tag. A matching jump in a later privilege mode can
-use the entry, as it can for a target trained at retirement.
+An indirect jump can train both the BTB and the backing BTB when it
+resolves before retirement. If an older instruction subsequently traps on
+the same side of bare-versus-Sv39 fetch, the trained target remains in both
+tables after the jump is squashed (see
+[Fast-lookup training, flushes, and safety guards](#fast-lookup-training-flushes-and-safety-guards)).
+Neither table carries a privilege tag; a matching jump can use a surviving
+entry and recover if its target differs, just as for an entry trained at
+retirement.
 
 ### 4 GiB target limit
 
@@ -1393,6 +1467,35 @@ interface. The programs reach them in the whole SoC and check the architectural 
 and the [coverage report](../../../../tests/README.md#coverage) shows
 whether they still reach them.
 
+The fast-lookup training contract is pinned per mechanism:
+
+- **Decode admission and branch resolution**: `early_redirect_completion` and
+  `branch_prediction_resolution` formal proofs, plus `fast_btb_contract_test`
+  (entries surviving same-side M-to-M traps/returns and `mstatus` writes, with
+  the retired-PC check `next_pc_expected_q` armed and per-case reach
+  assertions).
+- **Walk-past handling**: `if_prediction_walk_past` formal proof, the
+  `pc_controller` and `if_stage` walk-past benches (including flushed
+  compressed and 32-bit interior-halfword entries with a covering phantom
+  target), live `p_held_post_prediction_pc_emits_no_real_packet` in
+  `if_stage`, `odd_halfword_pred_test`, and `fast_btb_contract_test`.
+- **Fault suppression and fault-packet veto**: `if_fault_ras_veto` formal
+  proof, `if_stage` (`test_faulting_fetch_suppresses_trained_btb_redirect`,
+  including spanning second-word faults), `odd_halfword_pred_test`, and live
+  `p_prediction_pma_fault_cofactor_exact` in `if_stage`.
+- **Invalidation events and four-cycle hold**: `btb_invalidate_hold` formal
+  proof, `branch_predictor` and `branch_prediction_controller` benches (hold
+  length and clear-over-update priority), `btb_mode_alias_test` (bare/Sv39
+  switch), `smc_predict_test` (`FENCE.I`), `debug_progbuf_btb_test` (Debug
+  Mode), and `fast_btb_contract_test` (`SFENCE.VMA` and `satp` writes, with
+  the retired-PC check `next_pc_expected_q` and reach assertions).
+- **Backing BTB no-clear-all vetoes**: `pd_backing_redirect` formal proof
+  (`prove_indirect`), `pd_stage` bench (non-jump, illegal, fault, bubble, and
+  size-mismatch vetoes in both slots), live
+  `p_pd_redirect_registered_veto_exact` and
+  `p_pd_redirect_target_boundary_exact` in `pd_stage`, and
+  `fast_btb_contract_test`.
+
 Most front-end modules and `cpu_ooo` glue submodules have their own cocotb
 bench, such as `branch_predictor`, `pc_controller`, `instruction_aligner`,
 `fetch_provider`, `immu`, and `decoded_bundle_queue`. Whole-program tests run
@@ -1400,11 +1503,52 @@ the integrated core; the `*_fetch_fuzz` variants, such as
 `branch_pred_test_fetch_fuzz`, add random fetch gaps with `FETCH_VALID_FUZZ=1`.
 The `if_stage` tests also cover a PD redirect arriving during a fetch gap
 after a BTB prediction: the redirect bubble must survive the gap and stalls,
-and the first target bundle must be emitted exactly once.
+and the first target bundle must be emitted exactly once. Both the
+`pc_controller` and `if_stage` benches cover walk-past orderings across both
+instruction slots, including a flush in a walk-past cycle, a fetch gap during
+walk-past, an even-address slot-2 redirect to `P`, a slot-2 redirect to
+`P - 2`, a stall inside the slot-2 redirect bubble, a stall-replayed
+slot-2 prediction retiring a pending entry, and an odd-address predecessor
+release blocking a live slot-1 BTB hit at `P - 2`.
 Formal targets cover the PC muxes and holdoffs, the pending-prediction
 handoff, predictor aliasing, RV64C predecode (`rvc_predecode` checks every
 16-bit parcel against the reference decompressor), the TLBs and walker, and the
 CSR file and trap unit.
+
+A simulation check in `cpu_ooo` follows the architectural PC across every
+retirement, so it runs in every whole-program test. Each instruction that
+retires must sit at the next PC of the one before it: the sequential PC, or
+the resolved target of a taken branch or jump. Slot 2 must sit at slot 1's
+next PC. A trap, interrupt or Debug Mode entry must save that next PC, and an
+xRET must sit at it. The trap or xRET target then becomes the next PC, and
+reset restarts the check. Two takes save a different PC: an interrupt or halt
+request taken while a legal WFI waits at the head saves the PC past the WFI,
+and a fault of the misaligned-access engine saves the PC of the instruction
+its assist took. The check tracks both cases itself rather than reading the
+core's own state for them. A Debug Mode go discards its saved PC and is not
+checked. The first wrong retirement stops the simulation with the PC that
+retired, the expected PC, and the last retirements.
+
+The same block checks the contracts that the `rob_retire_successor` proof
+assumes on the ROB's ports: each allocation is at the predicted next PC of
+the one before it until a barrier, each branch entry gets one branch update whose
+misprediction flag matches the prediction the entry was allocated with, and
+the other port rules listed in the [formal guide](../../../../formal/README.md).
+The proof is bounded: it checks six cycles from reset, and it holds early
+misprediction recovery off. CI allows 60 minutes for the bounded check and
+5 minutes for cover, with 10 minutes for setup in the 75-minute job.
+Retirement order across early recovery, and across longer sequences, rests
+on the simulation check alone.
+
+The front end keeps allocating behind an instruction that traps or carries a
+fetch fault, and those allocations need not follow the predicted next PC: an
+illegal or `c.ebreak` compressed slot 1 drops its slot-2 partner, and a
+faulting fetch steps a whole word. An allocation may leave the order when the
+allocation before it has not completed without an exception. That entry is
+the barrier: the check requires that it never completes without an exception
+while it is valid, so it traps, and every allocation behind it is free until
+the flush that removes it. The proof shows that nothing allocated behind a
+barrier retires.
 
 See the [test runner](../../../../tests/README.md) for commands and the
 [formal guide](../../../../formal/README.md) for proof scope and assumptions.

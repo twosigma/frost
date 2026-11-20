@@ -68,6 +68,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc_perf_off"): 5400,
     ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
+    ("rob_retire_successor", "bmc"): 3600,
     ("coherence_home", "coh_home_cmo_cover"): 6000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
@@ -148,6 +149,9 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("rs_issue_tag_banks", "int_equiv"): 600,
     ("rs_issue_tag_banks", "int_equiv_prims"): 600,
     ("rs_issue_tag_copies", "prove"): 600,
+    ("rs_mem_broadcast", "prove"): 300,
+    ("rs_mem_broadcast", "prove_prims"): 300,
+    ("rs_mem_broadcast", "cover"): 90,
 }
 
 
@@ -592,7 +596,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_home_array.sby",
         "Independent L2 ports and one-way parallel reads preserve byte values, tokens "
-        "and physical-row exclusions.",
+        "and physical-row exclusions. An open read at the output follows a stalled reply.",
         tasks=(
             "coh_home_array_prove",
             *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
@@ -1249,6 +1253,10 @@ FORMAL_TARGETS = [
         "In-order ROB commit and instruction serialization",
     ),
     FormalTarget(
+        "rob_retire_successor.sby",
+        "Each ROB commit is at the architectural next PC of the one before it",
+    ),
+    FormalTarget(
         "rob_start_cofactor.sby",
         "ROB CSR/return start signals match the reference and exclude completion "
         "bypass",
@@ -1280,6 +1288,8 @@ FORMAL_TARGETS = [
         "home_capture_equiv.sby",
         "Consumed home payloads match handshake-only captures, and registered "
         "fill flags match their phase decodes across arbitrary reset and stalls. "
+        "Array covers reach hit and row captures in every configuration and kept "
+        "parallel captures in both banked configurations. "
         "The parked next-state function preserves event priority; selected-slot "
         "parking, the one-hot selection, dispatch and waiter eligibility match a "
         "slot-table reference.",
@@ -1292,6 +1302,11 @@ FORMAL_TARGETS = [
             "array_uram",
             "array_uram32",
             "array_uram_row",
+            "array_bram_cover",
+            "array_bram_four_cover",
+            "array_uram_cover",
+            "array_uram32_cover",
+            "array_uram_row_cover",
             "endpoint32",
             "endpoint56",
             "arbiter_default",
@@ -1373,6 +1388,11 @@ FORMAL_TARGETS = [
         "Indexed RS deferred delivery and repair preserve write enables and selected "
         "data",
         tasks=("prove_int", "prove_mem", "prove_mul", "prove_src3", "cover_int"),
+    ),
+    FormalTarget(
+        "rs_mem_broadcast.sby",
+        "Memory station operand broadcasts preserve live rows, issue and LQ prematch",
+        tasks=("prove", "prove_prims", "cover"),
     ),
     FormalTarget(
         "rob_alloc_lvt.sby",
@@ -1833,6 +1853,12 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "btb_invalidate_hold.sby",
+        "BTB invalidate holds for four cycles, clears every slot-1 and slot-2 valid "
+        "array and staged valid flop, and drops updates arriving during the hold",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "prediction_handoff.sby",
         "Pending-prediction handoff preserves slot-2 veto and state masking",
         tasks=("bmc", "cover", "prove"),
@@ -2092,6 +2118,16 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "nic_diag.sby",
+        "NIC diagnostic CDC pin and register mapping, disabled slots, and PHY sample equivalence.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "nic_tx_hold.sby",
+        "NIC TX FIFO offer stability through acceptance, with rejection and reset-drain covers.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "rat_checkpoint_restore.sby",
         "Register alias table: unbounded circular ROB and sequence oracle across save, restore and commit.",
         tasks=(
@@ -2152,6 +2188,7 @@ SBY_TASKS = [
     ),
     ("fp_gate_prove", "FP station engine issue, opcode and busy interlock."),
     ("fp_gate_cover", "FP pipeline bypass, engine release and squashed launch."),
+    ("prove_prims", "Prove the memory station equivalence with Xilinx LUTs."),
     ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
@@ -3440,6 +3477,17 @@ SBY_TASKS = [
         "array_uram_row",
         "Folded selection and single-array captures with short read latency.",
     ),
+    ("array_bram_cover", "Tag hit and row data capture with one BRAM way."),
+    ("array_bram_four_cover", "Tag hit and row data capture with four BRAM ways."),
+    (
+        "array_uram_cover",
+        "Hit, row and kept parallel captures with 64-byte URAM lines.",
+    ),
+    (
+        "array_uram32_cover",
+        "Hit, row and kept parallel captures with 32-byte URAM lines.",
+    ),
+    ("array_uram_row_cover", "Tag hit and row data capture in the single-array URAM."),
     ("endpoint32", "Demand and grant captures with 32-bit addresses."),
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),
@@ -4228,6 +4276,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     registered = [name for name, _ in SBY_TASKS]
     required = {
         "predictor_fetch_contract": ["prove_buffer_source", "prove_slot1_sources"],
+        "rs_mem_broadcast": ["prove", "prove_prims", "cover"],
         "axi_coherent_bridge": [
             "prove_soc",
             "prove_soc_held",
@@ -4283,6 +4332,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         shard["shard"]: Expression.compile(shard["pytest_filter"]) for shard in shards
     }
     dedicated_shards = {
+        "rob_retire_successor_bmc": "ROB retirement successor",
+        "rob_retire_successor_cover": "ROB retirement successor",
         "coherent_hart_cache_coh_hart_maint_prove": "Hart maintenance",
         "coherent_hart_cache_coh_hart_maint_owned_prove": "Hart maintenance",
         "coherence_l1d_coh_l1d_stream_bmc": "Hart maintenance",
@@ -4397,6 +4448,12 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     shard_timeouts_s = {
         shard["shard"]: shard["timeout_minutes"] * 60 for shard in shards
     }
+    retire_limits = sby_timeouts["rob_retire_successor"]
+    assert retire_limits == {"bmc": 3600, "cover": 300}
+    assert formal_task_timeout_s("rob_retire_successor", "bmc") == retire_limits["bmc"]
+    assert shard_timeouts_s["ROB retirement successor"] == 10 * 60 + sum(
+        retire_limits.values()
+    )
     selected_by_shard: dict[str, list[str]] = {name: [] for name in filters}
     selected_limits_s: dict[str, list[int]] = {name: [] for name in filters}
     for node in nodes:
@@ -4431,6 +4488,11 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     assert len(selected_by_shard["Coherence L1D zero control"]) == 1
     assert len(selected_by_shard["Coherence L1D zero cover"]) == 1
     assert len(selected_by_shard["Coherence L1D local holds"]) == 1
+    for task in ("prove", "cover"):
+        assert any(
+            node.endswith(f"[nic_tx_hold_{task}]")
+            for node in selected_by_shard["Other tasks"]
+        )
     check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
 
 

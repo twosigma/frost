@@ -45,6 +45,9 @@ DEFAULT_TARGETS = {
     "vcu118": "localhost:3121/xilinx_tcf/Digilent",
 }
 
+# The X3 top connects the DDR ECC reader to the CPU memory error unit.
+CPU_ECC_READER_BOARDS = frozenset({"x3"})
+
 # Default UART device per board (override with --serial, or --uart in
 # linux_boot_soak.py). Resolves by-id for VCU118 to select CP2105 interface 1.
 DEFAULT_SERIALS = _BoardSerials(

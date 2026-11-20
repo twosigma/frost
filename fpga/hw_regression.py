@@ -27,8 +27,9 @@ reported as skipped.
 Linux preflight reads ``fpga/site.env`` and environment overrides before board
 access, unpacks the initramfs with ``unmkinitramfs``, and requires every
 ``frost_net10g`` module copy inside it to report this tree's version via
-``modinfo -F version``. Setup errors report ``ENV_FAIL``. ECC is checked after
-all traffic.
+``modinfo -F version``. Setup errors report ``ENV_FAIL``. Where the
+controller has a JTAG ECC window, the last stage checks it after all
+traffic.
 
 Run natively: ``./fpga/hw_regression.py --board x3 [stage ...]``.
 See ``fpga/README.md`` and ``docs/debian_nfsroot.md`` for setup and limits.
@@ -41,6 +42,7 @@ import ipaddress
 import os
 import re
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -63,6 +65,7 @@ sys.path.insert(0, str(SCRIPT_DIR / "common"))
 sys.path.insert(0, str(SCRIPT_DIR / "load_software"))
 sys.path.insert(0, str(REPO_DEFAULT / "sw" / "apps"))
 sys.path.insert(0, str(REPO_DEFAULT / "linux"))
+from ddr_ecc.ddr_ecc_status import ECC_WINDOW_DESIGNS  # noqa: E402
 from debian_kernel import (  # noqa: E402
     INITRAMFS_COUNTER_TOKEN,
     KERNEL_BANNER,
@@ -72,6 +75,7 @@ from debian_kernel import (  # noqa: E402
     kernel_image,
 )
 from hw_defaults import (  # noqa: E402
+    CPU_ECC_READER_BOARDS,
     DEFAULT_SERIALS,
     DEFAULT_TARGETS,
     DEFAULT_TIMEOUTS,
@@ -424,6 +428,9 @@ LINUX_MEMERR_RE = re.compile(
 LINUX_NET_COMMAND = "frost_nettest"
 LINUX_NET_TOKEN = "FROST_NET_LOOPBACK_PASS"
 LINUX_NET_TOKEN_FAIL = "FROST_NET_LOOPBACK_FAIL"
+LINUX_NET_INTERFACE_RE = re.compile(
+    r"^\r*FROST_NET_LOOPBACK: ([^\s:]+): driver frost_net10g,", re.MULTILINE
+)
 # For diagnosis, FROST_HW_NETTEST_REPEAT=<n> runs the test n times in one
 # boot. Every repetition but the last prints its verdict under this marker,
 # which ends no capture, so the log keeps every repetition's output.
@@ -697,7 +704,7 @@ def nfs_interface(ip_spec: str) -> str:
     The kernel's syntax is
     ``<client>:<server>:<gateway>:<netmask>:<hostname>:<device>:<autoconf>``.
     ``dhcp``, and a spec that leaves the device field empty, let the initramfs
-    choose; the board has one NIC, so that is the kernel's first Ethernet name.
+    choose, which selects the kernel's first Ethernet interface.
     """
     fields = ip_spec.split(":")
     if len(fields) >= 6 and fields[5]:
@@ -1037,16 +1044,21 @@ def memerr_values(serial_buf: str) -> dict[str, int] | None:
     return result
 
 
-def memerr_problems(values: Mapping[str, int]) -> list[str]:
+def memerr_problems(
+    values: Mapping[str, int], *, has_ecc_reader: bool = True
+) -> list[str]:
     """Return what the memory error readback shows wrong."""
     problems = []
-    if values["active"] != 1:
-        problems.append("the ECC reader is not active")
-    if values["polls_after"] <= values["polls_before"]:
-        problems.append(
-            f"ECC polls did not advance ({values['polls_before']} then "
-            f"{values['polls_after']})"
-        )
+    if has_ecc_reader:
+        if values["active"] != 1:
+            problems.append("the ECC reader is not active")
+        if values["polls_after"] <= values["polls_before"]:
+            problems.append(
+                f"ECC polls did not advance ({values['polls_before']} then "
+                f"{values['polls_after']})"
+            )
+    elif values["active"] or values["polls_before"] or values["polls_after"]:
+        problems.append("unexpected CPU-visible ECC reader activity")
     for name, label in (
         ("ce", "corrected errors"),
         ("ue", "uncorrectable errors"),
@@ -1632,8 +1644,12 @@ def nettest_command(interface: str, repeat: int = 1, poke_s: int = 0) -> str:
     drop, by ``nettest_poke_command``: an NFS request ``poke_s`` seconds into
     the test, inside its link hold-down.
     """
-    sysfs = f"/sys/class/net/{interface}"
-    ipv6 = f"/proc/sys/net/ipv6/conf/{interface}/disable_ipv6"
+    sysfs = shlex.quote(f"/sys/class/net/{interface}")
+    ipv6 = shlex.quote(f"/proc/sys/net/ipv6/conf/{interface}/disable_ipv6")
+    run_nettest = (
+        f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {LINUX_TMPFS}/{LINUX_NET_COMMAND} "
+        f"{shlex.quote(interface)}"
+    )
     if repeat > 1:
         poke = nettest_poke_command(poke_s, "$$.$r") if poke_s else ""
         return (
@@ -1645,7 +1661,7 @@ def nettest_command(interface: str, repeat: int = 1, poke_s: int = 0) -> str:
             "{ if echo 2 > /proc/sys/vm/drop_caches; then "
             f"{poke}"
             f"FROST_NETTEST_REPETITION=$r/{repeat} "
-            f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {LINUX_TMPFS}/{LINUX_NET_COMMAND}; "
+            f"{run_nettest}; "
             'else echo "$t"_FAIL"$d" drop_caches; fi; '
             "echo $m >&3; echo $f >&4; echo 0 >&5; "
             f"}} 3> {sysfs}/mtu 4> {sysfs}/flags 5> {ipv6}; "
@@ -1661,7 +1677,7 @@ def nettest_command(interface: str, repeat: int = 1, poke_s: int = 0) -> str:
         f"cp {LINUX_ROOT_BIN}/{LINUX_NET_COMMAND} {LINUX_TMPFS}/; "
         "{ if echo 2 > /proc/sys/vm/drop_caches; then "
         f"{poke}"
-        f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {LINUX_TMPFS}/{LINUX_NET_COMMAND}; "
+        f"{run_nettest}; "
         "else echo FROST_NET_LOOPBACK'_'FAIL drop_caches; fi; "
         "echo $m >&3; echo $f >&4; echo 0 >&5; "
         f"}} 3> {sysfs}/mtu 4> {sysfs}/flags 5> {ipv6}; "
@@ -1824,6 +1840,8 @@ def linux_stage(
     net_repeat: int = 1,
     net_poke_s: int = 0,
     driver_version: str | None = None,
+    *,
+    board: str = "x3",
 ) -> UartStage:
     """Build UART checks for Debian booting from the NFS root.
 
@@ -1831,8 +1849,9 @@ def linux_stage(
     NFSv3 mount, the loaded ``frost_net10g`` module version from
     ``/sys/module/frost_net10g/version``, systemd startup (allowing only
     session scope resource failures), stress result, nonzero counters, the
-    memory error readback, scrub self-test, RAM patrol, and loopback with root
-    access restored. Explicit failures end capture immediately.
+    selected board's memory error readback, scrub self-test, RAM patrol,
+    and loopback with root access restored. Explicit failures end capture
+    immediately.
 
     ``net_repeat`` above 1 runs the network test that many times (see
     ``nettest_command``); a failed earlier repetition fails the stage too.
@@ -1851,6 +1870,7 @@ def linux_stage(
     # Debian's initramfs does not run this tree's init scripts. Require the
     # driver's own probe message before login.
     boot_lines = ((LINUX_DRIVER_LINE, re.compile(re.escape(LINUX_DRIVER_LINE))),)
+    has_ecc_reader = board in CPU_ECC_READER_BOARDS
 
     def lx_login(serial_buf: str) -> bool:
         """Return True once the kernel and login markers have been captured."""
@@ -1957,7 +1977,7 @@ def linux_stage(
                 f"no {LINUX_MEMERR_TOKEN} line with counts: {MEMERR.name} did not "
                 "load or bind"
             )
-        memerr_bad = memerr_problems(memerr)
+        memerr_bad = memerr_problems(memerr, has_ecc_reader=has_ecc_reader)
         if memerr_bad:
             return False, f"{LINUX_MEMERR_TOKEN}: " + "; ".join(memerr_bad)
         if LINUX_NET_TOKEN not in serial_buf:
@@ -1976,8 +1996,19 @@ def linux_stage(
                     f"{net_repeat}, but " + "; ".join(problems)
                 )
             net_note = f"{LINUX_NET_COMMAND} {net_repeat} times"
+        net_end = serial_buf.rindex(LINUX_NET_TOKEN)
+        interfaces = LINUX_NET_INTERFACE_RE.findall(serial_buf, prompt_at, net_end)
+        if interfaces != [root.interface] * net_repeat:
+            reported = ", ".join(interfaces) or "none"
+            return False, (
+                f"{LINUX_NET_COMMAND}: expected {net_repeat} run(s) on "
+                f"{root.interface}, found {reported}"
+            )
         summary = " ".join(f"{event}={counts[event]}" for event in LINUX_COUNTER_EVENTS)
-        polls = memerr["polls_after"] - memerr["polls_before"]
+        memory_note = "no DDR AXI error responses"
+        if has_ecc_reader:
+            polls = memerr["polls_after"] - memerr["polls_before"]
+            memory_note = f"no memory errors ({polls} ECC polls)"
         patrol = memerr["patrol_after"] - memerr["patrol_before"]
         tolerated = tolerated_systemd_units(serial_buf)
         systemd_note = LINUX_SYSTEMD_RUNNING
@@ -1986,7 +2017,7 @@ def linux_stage(
         return True, (
             f"{KERNEL_RELEASE}, {driver_note}, {mount_note}, systemd "
             f"{systemd_note}, login, stress token, counters "
-            f"{summary}, no memory errors ({polls} ECC polls), scrub self-test, "
+            f"{summary}, {memory_note}, scrub self-test, "
             f"RAM patrol ({patrol} lines, a full pass), "
             f"{net_note}, root alive"
         )
@@ -2051,14 +2082,18 @@ def run_ecc_stage(
     print(output, end="", flush=True)
     if proc.returncode == 0:
         note = ""
-    elif proc.returncode == ECC_DIRTY_EXIT:
-        note = "; ".join(
-            line.strip()
-            for line in output.splitlines()
-            if line.strip().startswith("Not clean:")
-        )
     else:
-        note = f"{ECC_STAGE_SCRIPT} exited {proc.returncode}"
+        prefix = (
+            "Not clean:" if proc.returncode == ECC_DIRTY_EXIT else "ECC read failed:"
+        )
+        note = (
+            "; ".join(
+                line.strip()
+                for line in output.splitlines()
+                if line.strip().startswith(prefix)
+            )
+            or f"{ECC_STAGE_SCRIPT} exited {proc.returncode}"
+        )
     return {
         "stage": ECC_STAGE,
         "status": "PASS" if proc.returncode == 0 else "FAIL",
@@ -2883,12 +2918,18 @@ DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
 # use nic_loopback for unattended regression.
 EXTERNAL_LINK_APPS = frozenset({"nic_bench", "nic_echo"})
 
+# These applications report observations without an acceptance limit on VCU118.
+VCU118_MEASUREMENT_APPS = frozenset(
+    {"bpred_probe", "fplat_probe", "mispen_probe", "print_clock_speed", "tomasulo_perf"}
+)
+
 
 def regression_stages(board: str) -> list[str]:
-    """Return board stages: hello_world, debug port, other apps, PRO, Linux, ECC.
+    """Return the selected board's stages in order.
 
+    Start with hello_world and the debug port where configured.
     Exclude apps for other boards, debugger-driven apps and those needing an
-    external link partner.
+    external link partner. VCU118 omits measurement-only applications.
     Keep ECC last so it covers all earlier traffic.
     """
     phase1 = [
@@ -2898,12 +2939,16 @@ def regression_stages(board: str) -> list[str]:
         and app not in COREMARK_PRO_APP_NAMES
         and app not in DEBUGGER_DRIVEN_APPS
         and app not in EXTERNAL_LINK_APPS
+        and (board != "vcu118" or app not in VCU118_MEASUREMENT_APPS)
     ]
     phase1.remove("hello_world")
     phase1.insert(0, "hello_world")
     if board in DEBUG_CONFIGS:
         phase1.insert(1, DEBUG_STAGE)
-    return [*phase1, SWEEP_STAGE, LINUX_STAGE, ECC_STAGE]
+    stages = [*phase1, SWEEP_STAGE, LINUX_STAGE]
+    if board in ECC_WINDOW_DESIGNS:
+        stages.append(ECC_STAGE)
+    return stages
 
 
 class _MaskedStream:
@@ -3024,8 +3069,7 @@ def _main() -> int:
         help=(
             "Optional subset of stages to run, always in regression order (app "
             f"names plus '{DEBUG_STAGE}', '{SWEEP_STAGE}', '{LINUX_STAGE}' and "
-            "'ddr_ecc'; "
-            "default: all)"
+            f"'{ECC_STAGE}' where supported. Default: all for the selected board)"
         ),
     )
     args = parser.parse_args()
@@ -3140,6 +3184,7 @@ def _main() -> int:
                         net_repeat,
                         net_poke_s,
                         driver_version=source_driver_version(args.repo),
+                        board=board,
                     )
                     stage_timeout = args.linux_timeout
                     loader_env = linux_loader_env(linux_root)

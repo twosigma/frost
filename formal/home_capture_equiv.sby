@@ -2,11 +2,16 @@
 home_small home small
 home_four home four
 home_default home
-array_bram array bram
-array_bram_four array bram bram_four
-array_uram array uram
-array_uram32 array uram uram32
-array_uram_row array uram row_read
+array_bram array array_proof single bram
+array_bram_four array array_proof single bram bram_four
+array_uram array array_proof banked uram
+array_uram32 array array_proof banked uram uram32
+array_uram_row array array_proof single uram row_read
+array_bram_cover array array_cover single bram row_cover
+array_bram_four_cover array array_cover single bram bram_four row_cover
+array_uram_cover array array_cover banked uram banked_cover
+array_uram32_cover array array_cover banked uram uram32 banked_cover
+array_uram_row_cover array array_cover single uram row_read row_cover
 endpoint32 endpoint
 endpoint56 endpoint wide
 arbiter_default arbiter
@@ -19,6 +24,8 @@ completions_default completions
 mode prove
 depth 6
 timeout 120
+array_cover: mode cover
+array_cover: depth 20
 
 [engines]
 smtbmc boolector
@@ -56,6 +63,7 @@ setattr -mod -unset keep_hierarchy
 setattr -unset keep
 flatten
 chformal -remove t:$check c:*p_capture* %d
+array_proof: chformal -cover -remove
 home: cutpoint w:memory_payload w:memory_pick w:memory_found w:run w:update_selected w:update_request_ready w:gen_fill*.allocate w:gen_fill*.fill_phase_hold
 # The selector retains its legal slot encoding. Eligibility, ready priority,
 # buffer availability and forward events are arbitrary in the capture model.
@@ -73,7 +81,10 @@ arbiter: prep -top coherence_d_arbiter
 completions: prep -top coherence_home_completions
 select -assert-none t:$check r:FLAVOR=assume %i
 home: select -assert-count 3 t:$check r:FLAVOR=assert %i
-array: select -assert-count 5 t:$check r:FLAVOR=assert %i
+single: select -assert-count 5 t:$check r:FLAVOR=assert %i
+banked: select -assert-count 6 t:$check r:FLAVOR=assert %i
+row_cover: select -assert-count 2 t:$check r:FLAVOR=cover %i
+banked_cover: select -assert-count 3 t:$check r:FLAVOR=cover %i
 endpoint: select -assert-count 3 t:$check r:FLAVOR=assert %i
 arbiter: select -assert-count 1 t:$check r:FLAVOR=assert %i
 completions: select -assert-count 9 t:$check r:FLAVOR=assert %i

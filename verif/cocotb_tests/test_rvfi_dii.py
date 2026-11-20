@@ -58,6 +58,7 @@ from testrig.rvfi_dii import (
     version_ack,
     version_query_response,
 )
+from testrig.wfi import COUNTERS as WFI_COUNTERS
 
 # frost_rvfi_dii's capacities (MaxInsns, MaxEvents).
 MAX_STREAM_WORDS = 8192
@@ -120,6 +121,11 @@ class FrostRvfiDii:
         self.harness = dut.cpu_and_memory_subsystem.u_rvfi_dii
         self.preamble = reset_preamble()
         self.errors: list[str] = []
+        self.wfi_probe = (
+            dut.cpu_and_memory_subsystem.cpu_inst.g_dii_wfi
+            if os.environ.get("FROST_RVFI_DII_WFI_OBSERVE") == "1"
+            else None
+        )
 
     async def run(self, trace: list[int]) -> list[RvfiRecord]:
         """Reset, run the preamble and the trace, and return the trace's records.
@@ -265,15 +271,18 @@ async def test_rvfi_dii(dut: Any) -> None:
             elif packet.cmd == CMD_END_OF_TRACE:
                 records = await frost.run(trace) if trace else []
                 if trace and records_log is not None:
-                    json.dump(
-                        {
-                            "digest": trace_digest(trace),
-                            "records": [
-                                [r.mode, r.trap, r.rd_addr, r.rd_wdata] for r in records
-                            ],
-                        },
-                        records_log,
-                    )
+                    entry: dict[str, object] = {
+                        "digest": trace_digest(trace),
+                        "records": [
+                            [r.mode, r.trap, r.rd_addr, r.rd_wdata] for r in records
+                        ],
+                    }
+                    if frost.wfi_probe is not None:
+                        entry["wfi"] = {
+                            name: int(getattr(frost.wfi_probe, f"{name}_q").value)
+                            for name in WFI_COUNTERS
+                        }
+                    json.dump(entry, records_log)
                     records_log.write("\n")
                     records_log.flush()
                 records.append(RvfiRecord.halt_token())
