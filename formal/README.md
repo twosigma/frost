@@ -801,8 +801,11 @@ cycles, which clears arbitrary memory history.
    plain `memory_map`, `setundef -zero`, `abc`, `peepopt`,
    `sim -clock ... -n 1 -w`, `chtype`, `techmap -max_iter 1 -map %<name>`,
    `sat`, `equiv_simple` and `equiv_struct -icells` are in
-   `DONT_CARE_REJECTED` and run only where pinned in order for a task in
-   `DONT_CARE_OPEN`. Without `-keepdc`,
+   `DONT_CARE_REJECTED` and run only where pinned in `DONT_CARE_OPEN`.
+   The pin check compares each task's rejected commands in execution order.
+   Adding, removing or editing safe commands leaves the pins intact when
+   the rejected list stays the same, as does moving a pinned command past
+   safe commands. Without `-keepdc`,
    Yosys treats the unknown starting value of such a register as a
    don't-care: it may fix the register to the constant it loads, turn one
    that never loads into a constant x that each reader resolves separately,
@@ -826,9 +829,11 @@ cycles, which clears arbitrary memory history.
      constant x included, and repeated constant-x select bits of a `$bmux`
      or `$demux`.
    - `proc_rom`, in `proc` and `prep`, turns a case of constants into a
-     ROM; once `memory_collect` (in `prep`), `memory_map -keepdc` or
-     `memory_map -formal` runs, its x words, such as an x default, hold one
-     value for a whole trace instead of a free value in every cycle.
+     ROM. After `memory_collect` (in `prep`) or `memory_map -keepdc`, each
+     x word, such as an x default, holds one value for the whole trace.
+     Yosys's global-clock mode `memory_map -formal` implies `-keepdc`.
+     FROST scripts accept only `memory_map -keepdc` and pinned plain
+     `memory_map`.
    - `proc_dlatch` drops all-x cases, and replaces an all-x default with a
      defined case, in a latch's fan-in. When it decides in which cases a latch
      holds, it reads multiplexer inputs through connections, so an x that a
