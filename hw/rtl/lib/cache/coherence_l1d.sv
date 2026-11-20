@@ -2723,8 +2723,10 @@ module coherence_l1d #(
     logic controller_capture, capture_valid;
     (* keep = "true" *) logic [3:0] capture_select;
     logic [63:0] capture_data, capture_next;
+    // UpdateWait cannot offer an update. The array's idle output then
+    // gives the same answer as lookup readiness for this read capture.
     assign grant_capture = grant_answer_slots[slot] ||
-        (active && phase_q == UpdateWait && array_ready && operation_q == GrantOp &&
+        (active && phase_q == UpdateWait && update_ready && operation_q == GrantOp &&
          grant_ep_q == '0 && !selected_grant_store && !acquisition_sc_q &&
          acquisition_read_q == 3'(slot));
     assign array_capture = active && phase_q == LookupWait && array_valid &&

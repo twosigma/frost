@@ -398,9 +398,6 @@ module coherence_home_array #(
   assign o_read_ready = o_init_done && !read_hazard && !(row_contended && !read_turn_q) &&
       !spec_cycle;
   assign read_fire = i_read_valid && o_read_ready;
-  // An open stage that reaches the output was never resolved (the response
-  // stalled behind a stop): it is dropped.
-  assign o_read_valid = read_valid_q[DATA_READ_LATENCY] && !read_open_q[DATA_READ_LATENCY];
   assign o_read_token = read_token_q[DATA_READ_LATENCY];
   assign o_updated = write_valid_q[DATA_WRITE_LATENCY];
   assign o_updated_token = write_token_q[DATA_WRITE_LATENCY];
@@ -487,6 +484,7 @@ module coherence_home_array #(
     if (i_rst) begin
       read_valid_q  <= '0;
       read_open_q   <= '0;
+      o_read_valid  <= 1'b0;
       write_valid_q <= '0;
       write_data_q  <= '0;
       read_turn_q   <= 1'b0;
@@ -497,6 +495,10 @@ module coherence_home_array #(
       read_token_q[0] <= spec_cycle ? token_q : i_read_token;
       read_set_q[0]   <= spec_cycle ? set_q : read_set;
       read_way_q[0]   <= i_read_way;
+      // Capture validity with the returned word. An open read returns
+      // only if its response keeps the way by this edge.
+      o_read_valid <= read_valid_q[DATA_READ_LATENCY-1] &&
+          (!read_open_q[DATA_READ_LATENCY-1] || (resolve && i_resp_keep));
       // The response keeps its open stage for its way or drops it.
       for (int stage = 1; stage <= DATA_READ_LATENCY; stage++) begin
         read_valid_q[stage] <= read_valid_q[stage-1] &&
@@ -790,6 +792,9 @@ module coherence_home_array #(
       f_capture_flags_q <= {hit, hit || !(&i_exclude), $countones(~i_exclude) >= 2};
     end
     if (read_valid_q[DATA_READ_LATENCY-1]) f_capture_data_q <= f_capture_read_source;
+    if (f_capture_reset_seen_q)
+      p_capture_read_valid : assert (o_read_valid == (read_valid_q[DATA_READ_LATENCY] &&
+          !read_open_q[DATA_READ_LATENCY]));
     if (f_capture_reset_seen_q && !i_rst) begin
       if (o_resp_valid) begin
         p_capture_way : assert (o_resp_way == f_capture_way_q);

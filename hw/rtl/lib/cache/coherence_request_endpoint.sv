@@ -125,8 +125,25 @@ module coherence_request_endpoint #(
   ) && i_done_status == coherence_pkg::Consumed && !grant_q.error &&
       grant_q.opcode != coherence_pkg::GrantFail && !i_write_done);
   assign o_c_valid = send_c_phase;
-  assign o_u_ready = wait_u_phase && release_in.q == demand_q.q &&
-      release_in.tid == grant_q.tid && release_in.addr == demand_q.addr;
+  // U readiness returns to every predecessor mask at the home. Compare
+  // the held identity, transaction and address together in parallel.
+  localparam int unsigned ReleaseKeyBits = ADDR_WIDTH + 15;
+  localparam int unsigned ReleaseParts = (ReleaseKeyBits + 2) / 3;
+  localparam int unsigned ReleaseGroups = (ReleaseParts + 5) / 6;
+  wire [ReleaseKeyBits-1:0] release_key = {release_in.q, release_in.tid, release_in.addr};
+  wire [ReleaseKeyBits-1:0] held_key = {demand_q.q, grant_q.tid, demand_q.addr};
+  (* keep = "true" *) logic [ReleaseParts-1:0] release_parts;
+  (* keep = "true" *) logic [ReleaseGroups-1:0] release_groups;
+  for (genvar part = 0; part < ReleaseParts; part++) begin : gen_release_part
+    localparam int unsigned Bits = ReleaseKeyBits - 3 * part < 3 ? ReleaseKeyBits - 3 * part : 3;
+    assign release_parts[part] = release_key[3*part+:Bits] == held_key[3*part+:Bits];
+  end
+  for (genvar group_idx = 0; group_idx < ReleaseGroups; group_idx++) begin : gen_release_group
+    localparam int unsigned Parts = ReleaseParts - 6 * group_idx < 6 ?
+        ReleaseParts - 6 * group_idx : 6;
+    assign release_groups[group_idx] = &release_parts[6*group_idx+:Parts];
+  end
+  assign o_u_ready = wait_u_phase && (&release_groups);
   if (LOCAL_PHASE_UPDATES) begin : gen_local_phases
     always_ff @(posedge i_clk) begin
       if (i_rst) begin

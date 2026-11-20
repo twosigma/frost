@@ -672,7 +672,9 @@ module coherence_home_completions #(
 
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 15),
-      .PORTS(SLOTS)
+      .PORTS(SLOTS),
+      // A selected endpoint holds SendU until this arbiter accepts U.
+      .HOLD_VALID(1)
   ) release_arbiter (
       .i_clk,
       .i_rst,
@@ -1309,6 +1311,8 @@ module coherence_home_completions #(
         end
       end
     end
+    if (f_past_valid)
+      p_release_held_offer : assert (o_u_valid == (|(release_selected & release_valid)));
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
       for (int slot = 0; slot < SLOTS; slot++) begin
         if ($past(live[slot]) && !live[slot]) assert ($past(release_fire[slot]));

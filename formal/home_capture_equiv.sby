@@ -73,7 +73,7 @@ arbiter: prep -top coherence_d_arbiter
 completions: prep -top coherence_home_completions
 select -assert-none t:$check r:FLAVOR=assume %i
 home: select -assert-count 3 t:$check r:FLAVOR=assert %i
-array: select -assert-count 5 t:$check r:FLAVOR=assert %i
+array: select -assert-count 6 t:$check r:FLAVOR=assert %i
 endpoint: select -assert-count 3 t:$check r:FLAVOR=assert %i
 arbiter: select -assert-count 1 t:$check r:FLAVOR=assert %i
 completions: select -assert-count 9 t:$check r:FLAVOR=assert %i
