@@ -1965,6 +1965,7 @@ jobs:
     timeout-minutes: ${{ matrix.mode == 'complete' && 360 || 140 }}
     strategy:
       fail-fast: false
+      max-parallel: 20
       matrix: ${{ fromJSON(needs.build-docker.outputs.rvv_matrix) }}
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"

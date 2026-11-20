@@ -1067,6 +1067,10 @@ cycles, give each shard the same `--cycle-profile previous.jsonl`. Passing
 records at the requested VLEN supply exact weights and calibrate estimates
 for the other splits.
 
+The checked-in CI profile also works with `--cycle-profile`. It records
+separate weights for the one-per-form and complete selections, as described
+under [Generated vector programs in CI](#generated-vector-programs-in-ci).
+
 Each result records the SHA-256 of the exact profile bytes (empty input for
 estimates alone) and the SHA-256 of the complete selection before sharding.
 The latter hashes the compact JSON array of VLEN and sorted test names.
@@ -1130,35 +1134,79 @@ programs must print the pass marker after their last check.
 
 #### Generated vector programs in CI
 
-Every push to main that starts CI runs one program per instruction
-form at VLEN 128, 256 and 512, all 1,995 programs. The workflow sets
-`SLICES_PER_MAIN_RUN` to 20 for this selection. Its 4, 4 and 12
-shards at those widths cost an estimated 11 runner-hours in total.
-These estimates use local vector results and a hosted CoreMark run.
-They cover the vector jobs after the shared image build.
+Every started main push runs one program per instruction form at VLEN
+128, 256 and 512, all 1,995 programs. Its 17 shards fit in the 20-job
+pool and cost an estimated 14.0 runner-hours. A complete campaign runs
+9,051 programs in 50 shards for an estimated 92.3 runner-hours. Both
+estimates include each shard's image setup, simulator build, guest
+preparation and artifact upload. The shared image build and campaign
+report are additional.
 
-With a setting of N from 1 through 19, each started main run takes N
-consecutive slices out of 20. Its first zero-based slice is the
-gate's count of started main runs times N, modulo 20. Pending runs
-that get superseded take no count. A rerun keeps its count, a lost
-count restarts at zero, and an empty count uses the workflow run
-number. Each slice costs three jobs and an estimated 0.85 runner-hours,
-so a setting of 5 costs 15 jobs and about 4.25 runner-hours per start.
-Twenty consecutive slices cover all 1,995 programs once.
+The hosted run used for calibration ran all 1,995 main programs in 20
+vector jobs and consumed 14.26 runner-hours. The complete campaign's
+cost is a projection from those measurements and local split checks.
+
+The table gives projected wall minutes for the longest job at each width.
+The last column uses the actual partition with one fewer job. The slow-case
+targets are 75 minutes on main and 210 minutes for complete.
+
+| Selection | VLEN | Jobs | Typical longest | Slow longest | Slow with one fewer |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Main | 128 | 2 | 49.44 | 74.24 | 142.92 |
+| Main | 256 | 4 | 50.95 | 70.33 | 91.78 |
+| Main | 512 | 11 | 48.91 | 72.56 | 78.98 |
+| Complete | 128 | 6 | 109.30 | 209.98 | 250.87 |
+| Complete | 256 | 12 | 114.56 | 199.17 | 216.96 |
+| Complete | 512 | 32 | 112.87 | 208.96 | 215.42 |
+
+Main balances the programs by their measured cycles. For complete, the
+profile converts each hosted program's measured wall time to cycles at
+its job's aggregate execution rate. Other splits inherit a weight from
+the same instruction form and width in proportion to their source
+weights. Measured work has a 15% allowance and estimated work has a 50%
+allowance. For a split also measured locally, the profile takes the
+larger of the two estimates with their allowances. These weights apply
+after the suite has selected the program names. See the
+[hosted measurements](https://github.com/twosigma/frost/actions/runs/44490257076)
+and the [cycle profile](fixtures/rvv_ci_profile.csv).
+
+In the profile, `cycles` is the program's measured cycle count. Complete shard
+weights use hundredths of a cycle. For a hosted program, `shard_weight`
+and `form_weight` are 115 and 150 times its rounded wall-time-adjusted
+cycles. An unmeasured split uses `form_weight` times its source weight
+divided by the hosted program's `source_weight`. A locally timed split
+has its own `shard_weight`.
+For the calibration inputs and calculations, see
+[Regenerating the cycle profile](#regenerating-the-cycle-profile).
+
+Typical times use each width's aggregate program rate and mean setup.
+The slow projection uses the slowest observed rate at that width, the
+larger workload from raw and wall-time-adjusted cycles, and the largest
+setup allowance. Larger guest batches receive proportionally more
+preparation time. Actual times depend on the runner and DDR seed.
+
+`SLICES_PER_MAIN_RUN` in `.github/workflows/ci.yml` is set to 20, which
+selects the full one-per-form layout above. A value N from 1 through 19
+runs N consecutive slices in three vector jobs per slice. The first
+zero-based slice is `(main_run * N) % 20`, wrapping after slice 19. The
+gate counts main pushes that start, keeps the count on a rerun and
+restarts at zero if its cached count is lost. If the gate supplies no
+count, the workflow uses its run number.
 
 Adding the `run-ci` label to a pull request runs one slice, the PR
 number modulo 20. In **Run workflow**, leaving `campaign` at
 `rotation` and `slice` empty runs regular CI with one slice, the
 workflow run number modulo 20. Both check 99 to 102 programs in three
-vector jobs. Selecting `reprove` on regular manual CI forces fresh
+vector jobs at an estimated 0.90 to 1.08 runner-hours per slice. The
+20 slices partition the one-per-form selection using source weights.
+Selecting `reprove` on regular manual CI forces fresh
 formal and synthesis checks.
 
 To replay one slice, keep `rotation` and set `slice` to 0 through 19.
 Only the image build and three vector shards run. To run all 9,051
 programs, choose `complete` and leave `slice` empty. Only the image
-build, 3, 3 and 14 vector shards by width, and the campaign report
-run, at an estimated 56 vector runner-hours. Both manual vector
-runs get their own concurrency group and skip regular CI jobs,
+build, the complete vector shards and the campaign report run. Both
+manual vector runs get their own concurrency group and skip regular CI jobs,
 including lint, fast Python tests, formal and synthesis, even with
 `reprove` selected. Each dispatch draws a DDR seed from its run ID.
 Rerunning failed jobs repeats that seed while the shared image
@@ -1198,6 +1246,52 @@ ordinary `-split=10000`, cocotb ran 50 programs chosen by instruction group,
 fused operations, divide and square root, estimates, min/max, sign injection,
 compares, classify, merges and moves, conversions including FP16, reductions
 and widening arithmetic. Both selections excluded bfloat16.
+
+##### Regenerating the cycle profile
+
+Download the `rvv-v*` artifacts from a successful full one-per-form
+main run. Keep each shard's `results.jsonl` separate to calculate its
+rate. Use the run's revision and matching frost image to generate a source
+directory for each VLEN.
+
+```bash
+for vlen in 128 256 512; do
+    ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
+        --rtl --list --vlen "$vlen" --workdir "profile-v$vlen" > /dev/null
+done
+```
+
+For each program, get its source weight from `cycle_weight(path, vlen)`
+in `tests/test_riscv_vector_tests.py`, with `path` pointing to
+`profile-v<VLEN>/stage1/<name>.S`.
+
+1. Use one passing, assertion-armed hosted result per form and VLEN.
+   For each shard, `shard_rate` is the sum of `cycles` divided by the
+   sum of `wall_seconds`. For each result, let `u` be Python's
+   `round(wall_seconds * shard_rate)`. Write its VLEN, name, measured
+   cycles, `115 * u`, `150 * u` and source weight, in that column order.
+2. Rows with an empty `form_weight` store the raw `cycles` for additional
+   measured splits. To refresh those counts, use the hosted run's
+   `FROST_DDR_MODEL_SEED` with `--rtl --simulator native --vlen VLEN`,
+   `--test NAME` and `--results-jsonl FILE`. For each split that passes
+   with assertions armed, find the hosted row for the same VLEN and form
+   (the name before the final hyphen). Write the split's VLEN, name and
+   measured cycles. Its `shard_weight` is the larger of
+   `host.form_weight * split_source_weight // host.source_weight` and
+   `host.shard_weight * split_cycles // host.cycles`. Leave the final two
+   columns empty.
+3. Write `tests/fixtures/rvv_ci_profile.csv` with its column header and
+   LF line endings. Sort by numeric VLEN, then by program name. When
+   refreshing the calibration, verify each width's `selection_sha256`
+   and cycle sum from the hosted rows before updating their expected
+   values in `tests/test_rvv_ci.py::test_ci_profile_matches_hosted_selection`.
+
+The suite selects program names before reading their weights. A recorded
+name keeps its weight even if its execution time changes, so a stale
+profile can produce uneven jobs. Obsolete names stay out of the
+selection. A split without a row uses its form's scale at that VLEN.
+Sharding fails if the split has neither a row nor a form scale. A
+zero-byte profile uses source estimates for every split.
 
 ### `test_vector_reference.py`
 
