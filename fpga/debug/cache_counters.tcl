@@ -19,7 +19,7 @@
 #   openocd -f fpga/debug/openocd_x3.cfg -f fpga/debug/cache_counters.tcl \
 #       -c init -c frost_cache_snapshot -c shutdown
 #
-# The two snapshot procedures halt a running hart, take a profiling-counter
+# The snapshot procedures halt a running hart, take a profiling-counter
 # snapshot, and resume it. The cache block keeps the snapshot before the current one
 # (mperfctl bit 1 selects it), so a window needs only a short halt at its
 # start:
@@ -31,9 +31,12 @@
 #                         from the preceding one, and resumes:
 #                           FROST_CACHE_SNAPSHOT time=<n> 106=<n> ...
 #                           FROST_CACHE_PREVIOUS 106=<n> ...
+#   frost_load_snapshot   takes one snapshot and reads the time CSR and all
+#                         three load-window counters from that snapshot.
+#                           FROST_LOAD_SNAPSHOT time=<n> 79=<n> 80=<n> 120=<n>
 #
-# Both print "absent" in place of the fields when the core has no profiling
-# counters. The time CSR reads the CLINT's mtime, which counts core cycles;
+# The snapshot procedures print "absent" when their counters are unavailable.
+# The time CSR reads the CLINT's mtime, which counts core cycles;
 # Linux's perf support can stop and preload mcycle, so it is no clock here. A
 # program that takes snapshots itself moves the same banks, so measure such a
 # program either itself or with these, not both.
@@ -71,20 +74,24 @@ proc frost_time {} {
     return [expr {[dict get [get_reg -force time] time]}]
 }
 
+# One counter from the selected snapshot.
+proc frost_perf_counter {index} {
+    # Verify that the selector reached the hart before reading the value.
+    frost_set_csr 1984 $index
+    if {[frost_csr 1984] != $index} {
+        error "mperfsel did not take $index"
+    }
+    set low [expr {[frost_csr 4032] & 0xffffffff}]
+    set high [expr {[frost_csr 4033] & 0xffffffff}]
+    return [expr {($high << 32) | $low}]
+}
+
 # The selected bank's cache block, as " <index>=<value>" fields.
 proc frost_cache_bank {} {
     set fields ""
     set count [frost_csr 4034]
     for {set index 106} {$index < $count} {incr index} {
-        # A selector write that did not reach the hart would return another
-        # counter's value.
-        frost_set_csr 1984 $index
-        if {[frost_csr 1984] != $index} {
-            error "mperfsel did not take $index"
-        }
-        set low [expr {[frost_csr 4032] & 0xffffffff}]
-        set high [expr {[frost_csr 4033] & 0xffffffff}]
-        append fields " $index=[expr {($high << 32) | $low}]"
+        append fields " $index=[frost_perf_counter $index]"
     }
     return $fields
 }
@@ -143,6 +150,23 @@ proc frost_cache_snapshot {} {
             frost_set_csr 1985 0
             list "FROST_CACHE_SNAPSHOT time=$time$current" \
                 "FROST_CACHE_PREVIOUS$previous"
+        }
+    }
+}
+
+proc frost_load_snapshot {} {
+    frost_cache_halted {
+        set indices {79 80 120}
+        if {[frost_csr 4034] <= [lindex $indices end]} {
+            list "FROST_LOAD_SNAPSHOT absent"
+        } else {
+            # Capture all counters and select the current bank in one write.
+            frost_set_csr 1985 1
+            set fields [format "time=0x%016x" [frost_time]]
+            foreach index $indices {
+                append fields [format " %d=0x%016x" $index [frost_perf_counter $index]]
+            }
+            list "FROST_LOAD_SNAPSHOT $fields"
         }
     }
 }
