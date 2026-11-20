@@ -156,7 +156,10 @@ and store-free eight-endpoint L1D stream control BMCs, and their independent
 unbounded payload proof share a job with a 335-minute limit.
 Hart snapshot ownership runs two additional PDR tasks on the same
 free-state model. The first proves all 286 ownership facts without
-assumptions. The second uses those facts to prove the other 89 assertions.
+assumptions. The read-request fact pairs each IF or PTW bridge with its
+home entry from D acceptance to U release. It checks their request key,
+address and phases across G and C. The second task uses the ownership
+facts to prove the other 89 assertions.
 Their two 120-minute task limits and ten minutes for setup fit the
 250-minute job.
 The free-input stream BMC with stores shares a 330-minute job with the

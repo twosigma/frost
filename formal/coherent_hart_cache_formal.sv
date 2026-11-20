@@ -1457,23 +1457,32 @@ module coherent_hart_cache_formal #(
                                (!f_final_reader || f_sample_version[1]))));
 `endif
 `ifdef COH_MAINT_OWNED
+  localparam logic [2:0] BridgeGrant = 3, BridgeComplete = 4, BridgeRelease = 5;
   logic f_if_request_context, f_if_upper_grants;
   always_comb begin
     f_if_request_context = 1;
     f_if_upper_grants = 1;
     for (int n = 0; n < 4; n++) begin
-      if (f_if_read_requests[n][AddrWidth+:3] >= 3) begin
-        if (!home_live_q[n < 2 ? n : 2] ||
-            request_address[n < 2 ? n : 2] != f_if_read_requests[n][AddrWidth-1:0] ||
-            request_key[n < 2 ? n : 2] != (n < 2 ? 9'h020 | (9'(n) << 1) : 9'h040 | (9'(n-2) << 1)))
-          f_if_request_context = 0;
-        if (f_if_read_requests[n][AddrWidth+:3] == 3) begin
-          if (state_q[n < 2 ? n : 2] != Queued &&
-              state_q[n < 2 ? n : 2] != Serving &&
-              state_q[n < 2 ? n : 2] != Result)
+      logic [1:0] slot;
+      logic [8:0] key;
+      logic [2:0] phase;
+      slot = n < 2 ? 2'(n) : 2'd2;
+      key = n < 2 ? 9'h020 : 9'h040;
+      key[1] = n[0];
+      phase = f_if_read_requests[n][AddrWidth+:3];
+      // The bridge and the home accept D on one edge and retire U together.
+      if ((phase >= BridgeGrant) != (home_live_q[slot] && request_key[slot] == key))
+        f_if_request_context = 0;
+      if (phase >= BridgeGrant) begin
+        if (request_address[slot] != f_if_read_requests[n][AddrWidth-1:0]) f_if_request_context = 0;
+        case (phase)
+          BridgeGrant:
+          if (state_q[slot] != Queued && state_q[slot] != Serving && state_q[slot] != Result)
             f_if_request_context = 0;
-        end else if (state_q[n < 2 ? n : 2] != Granted && state_q[n < 2 ? n : 2] != Completed)
-          f_if_request_context = 0;
+          BridgeComplete: if (state_q[slot] != Granted) f_if_request_context = 0;
+          BridgeRelease: if (state_q[slot] != Completed) f_if_request_context = 0;
+          default: f_if_request_context = 0;
+        endcase
       end
     end
     for (int n = 0; n < Slots; n++)
