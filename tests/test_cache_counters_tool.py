@@ -16,6 +16,7 @@
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from typing import Any
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PROFILE_HEADER = REPO_ROOT / "sw/lib/include/tomasulo_profile.h"
 
 
 def _load_tool() -> Any:
@@ -65,13 +67,17 @@ def _args(**overrides: Any) -> Any:
     return type("Args", (), fields)()
 
 
-def test_names_follow_the_profile_header() -> None:
-    """The tool names the cache block's counters as tomasulo_profile.h does."""
-    header = (REPO_ROOT / "sw/lib/include/tomasulo_profile.h").read_text()
-    enum = {
+def _counter_names(header: str) -> dict[int, str]:
+    return {
         int(index): name
         for name, index in re.findall(r"TOMASULO_PERF_(\w+) = (\d+),", header)
     }
+
+
+def test_names_follow_the_profile_header() -> None:
+    """The tool names the cache block's counters as tomasulo_profile.h does."""
+    header = PROFILE_HEADER.read_text()
+    enum = _counter_names(header)
     match = re.search(r"TOMASULO_PROFILE_COUNTER_COUNT (\d+)U", header)
     assert match is not None
     assert {i: enum[i] for i in range(106, int(match.group(1)))} == tool.CACHE_COUNTERS
@@ -97,6 +103,73 @@ def test_snapshot_reads_the_profiling_csrs() -> None:
     # ebreak stays with the hart's trap handlers after a snapshot.
     for mode in ("m", "s", "u"):
         assert f"riscv set_ebreak{mode} off" in tcl
+
+
+@pytest.mark.parametrize("count", [0, 120, 121, 134])
+def test_tcl_load_snapshot_uses_one_capture(tmp_path: Path, count: int) -> None:
+    """Tcl captures once and reads the Python tuple's profile indices."""
+    enum = _counter_names(PROFILE_HEADER.read_text())
+    indices = tool.LOAD_WAIT_INDICES
+    assert tuple(enum[i] for i in indices) == (
+        "HEAD_WAIT_LOAD_OUTSTANDING",
+        "HEAD_WAIT_LOAD_NO_OUTSTANDING",
+        "L2_MISS_CYCLES_SUM",
+    )
+    harness = tmp_path / "snapshot.tcl"
+    harness.write_text(
+        """
+proc riscv {args} {}
+proc poll {} {}
+proc target {args} { return mock_target }
+proc mock_target {args} { return halted }
+
+set count [lindex $argv 1]
+set selector 0
+set captures 0
+proc get_reg {force name} {
+    puts "read $name"
+    set values [dict create csr4034 $::count time 1000 \
+        csr1984 $::selector csr4032 $::selector csr4033 $::captures]
+    return [dict create $name [dict get $values $name]]
+}
+proc set_reg {pair} {
+    lassign $pair name value
+    puts "write $name $value"
+    switch -- $name {
+        csr1984 { set ::selector $value }
+        csr1985 { incr ::captures }
+        default { error "unexpected CSR write to $name" }
+    }
+}
+source [lindex $argv 0]
+frost_load_snapshot
+"""
+    )
+    result = subprocess.run(
+        ["tclsh", str(harness), str(tool.SNAPSHOT_TCL), str(count)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    *operations, reply = result.stdout.splitlines()
+    if count <= max(indices):
+        assert operations == ["read csr4034"]
+        assert reply == "FROST_LOAD_SNAPSHOT absent"
+        return
+    expected = ["read csr4034", "write csr1985 1", "read time"]
+    for index in indices:
+        expected += [
+            f"write csr1984 {index}",
+            "read csr1984",
+            "read csr4032",
+            "read csr4033",
+        ]
+    assert operations == expected
+    assert reply.startswith("FROST_LOAD_SNAPSHOT ")
+    assert tool.parse_fields(
+        reply.removeprefix("FROST_LOAD_SNAPSHOT "), required_indices=indices
+    ) == {"time": 1000, **{index: (1 << 32) + index for index in indices}}
 
 
 def test_parse_fields() -> None:
@@ -377,3 +450,142 @@ def test_window_needs_seconds_or_a_command() -> None:
         tool.main(["window"])
     with pytest.raises(SystemExit):
         tool.main(["window", "--seconds", "1", "--", "true"])
+
+
+def test_load_wait_window_keeps_both_endpoints(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Each endpoint reads the same three indices from one capture."""
+    events: list[str] = []
+    snapshots = iter(
+        [
+            "FROST_LOAD_SNAPSHOT time=1000 79=32 80=20 120=0x8000000000000000\n",
+            "FROST_LOAD_SNAPSHOT time=1043 79=44 80=29 120=0x8000000000000033\n",
+        ]
+    )
+
+    def fake_openocd(args: Any, procedure: str) -> str:
+        events.append(procedure)
+        return next(snapshots)
+
+    def fake_run(command: list[str], **kwargs: Any) -> Any:
+        events.append(" ".join(command))
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(tool, "run_openocd", fake_openocd)
+    monkeypatch.setattr(tool.subprocess, "run", fake_run)
+    monkeypatch.setattr(tool, "LOCK_PATH", tmp_path / "lock")
+    assert tool.main(["window", "--load-waits", "--", "run", "workload"]) == 0
+    assert events == ["frost_load_snapshot", "run workload", "frost_load_snapshot"]
+    assert capsys.readouterr().out.splitlines() == [
+        "FROST_LOAD_WINDOW cycles=43 79=12 80=9 120=51",
+        "FROST_LOAD_START time=1000 79=32 80=20 120=9223372036854775808",
+        "FROST_LOAD_END time=1043 79=44 80=29 120=9223372036854775859",
+    ]
+
+
+def test_load_wait_window_unavailable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """An absent bank yields one unavailable result and skips the workload."""
+    calls = _fake_openocd(monkeypatch, "FROST_LOAD_SNAPSHOT absent\n")
+    monkeypatch.setattr(tool, "LOCK_PATH", tmp_path / "lock")
+    assert tool.main(["window", "--load-waits", "--", "run", "workload"]) == 1
+    assert len(calls) == 1
+    assert "frost_load_snapshot" in calls[0]
+    assert capsys.readouterr().out == "FROST_LOAD_WINDOW unavailable\n"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    ["79=4 80=5 120=15", "time=1000 79=4 120=15", "time=1000 79=4 80=5 120=15 121=0"],
+)
+def test_load_snapshot_requires_all_fields(
+    monkeypatch: pytest.MonkeyPatch, fields: str
+) -> None:
+    """An incomplete or extra field makes a snapshot invalid."""
+    _fake_openocd(monkeypatch, f"FROST_LOAD_SNAPSHOT {fields}\n")
+    with pytest.raises(RuntimeError, match="requires time and counters"):
+        tool.take_load_snapshot(_args())
+
+
+@pytest.mark.parametrize("first", ["", "absent", "time=1 79=2 80=3 120=4"])
+def test_load_snapshot_rejects_two_replies(
+    monkeypatch: pytest.MonkeyPatch, first: str
+) -> None:
+    """One OpenOCD invocation must return exactly one snapshot line."""
+    _fake_openocd(
+        monkeypatch,
+        f"FROST_LOAD_SNAPSHOT {first}\nFROST_LOAD_SNAPSHOT time=5 79=6 80=7 120=8\n",
+    )
+    with pytest.raises(RuntimeError, match="must print one result"):
+        tool.take_load_snapshot(_args())
+
+
+@pytest.mark.parametrize(
+    "value", ["-1", "1_0", "0x1_0", "18446744073709551616", "0x10000000000000000"]
+)
+@pytest.mark.parametrize("field", ["time", "80"])
+def test_load_snapshot_rejects_invalid_counter_values(
+    monkeypatch: pytest.MonkeyPatch, value: str, field: str
+) -> None:
+    """Counter fields carry ordinary unsigned 64-bit integers."""
+    fields = {"time": "1", "79": "2", "80": "3", "120": "4"}
+    fields[field] = value
+    reply = "FROST_LOAD_SNAPSHOT " + " ".join(f"{k}={v}" for k, v in fields.items())
+    _fake_openocd(monkeypatch, reply + "\n")
+    with pytest.raises(RuntimeError, match="invalid unsigned 64-bit value"):
+        tool.take_load_snapshot(_args())
+
+
+def test_load_snapshot_accepts_unsigned_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both decimal and hex cover the full unsigned 64-bit range."""
+    _fake_openocd(
+        monkeypatch,
+        "FROST_LOAD_SNAPSHOT time=1 79=0 80=18446744073709551615 120=0xffffffffffffffff\n",
+    )
+    assert tool.take_load_snapshot(_args()) == {
+        "time": 1,
+        79: 0,
+        80: (1 << 64) - 1,
+        120: (1 << 64) - 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("end", "message"),
+    [
+        (
+            "time=1030 79=2 80=16 120=141",
+            "79 went down: an isolated decrease suggests a 64-bit wrap",
+        ),
+        (
+            "time=1030 79=2 80=1 120=141",
+            "79, 80 went down: multiple decreases suggest a reset",
+        ),
+        (
+            "time=3 79=2 80=16 120=141",
+            "cycles, 79 went down: multiple decreases suggest a reset",
+        ),
+    ],
+)
+def test_load_window_diagnoses_decreases(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    end: str,
+    message: str,
+) -> None:
+    """Other values distinguish an isolated wrap from concurrent decreases."""
+    replies = iter(
+        [
+            "FROST_LOAD_SNAPSHOT time=1000 79=18446744073709551614 80=15 120=120\n",
+            f"FROST_LOAD_SNAPSHOT {end}\n",
+        ]
+    )
+    monkeypatch.setattr(tool, "run_openocd", lambda args, procedure: next(replies))
+    monkeypatch.setattr(tool, "LOCK_PATH", tmp_path / "lock")
+    assert tool.main(["window", "--load-waits", "--seconds", "0"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert message in captured.err

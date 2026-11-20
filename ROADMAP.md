@@ -680,18 +680,21 @@ and targeted microbenchmarks give these items:
    banks.
 10. Compressed code. Linux and its user space are built with the C
     extension. CoreMark's score uses a build without compressed instructions;
-    built with them (`COREMARK_COMPRESSED=1`) it takes about 10% more cycles
-    in simulation. Both builds retire the same instructions, so the extra
-    cycles are not code generation. Of the 22,240 extra cycles, dispatch
-    width accounts for 19,592 (one-wide instead of two-wide cycles, mostly a
-    32-bit instruction that spans the fetch window and leaves no room for the
-    second slot), front-end bubbles for 6,148 (redirects after pre-decode,
-    pending-prediction and halfword-target holdoffs), and back-end stalls
-    take back 3,500. Fetch and prediction on 16-bit instructions are the
-    cause, and improving them is open. Two further options are open: a staged
-    target-buffer lookahead for a 16-bit instruction at the start of a fetch
-    word that does not pair with the next one, and alignment flags
-    (`-falign-loops`, `-falign-jumps`) for self-built software.
+    built with them (`COREMARK_COMPRESSED=1`) it takes about 8% more cycles
+    in BRAM simulation (230,538 vs 213,390 ticks) and about 7% more in DDR
+    (292,579 vs 273,302 ticks). Both builds retire the same instructions, so
+    the extra cycles are not code generation. Slot-1 fast-BTB prediction
+    serves 32-bit branches and calls at odd halfword addresses and keeps a
+    four-byte fetch lead on non-crossing pending handoffs to odd targets. The
+    remaining gap is fetch and dispatch width on mixed 16-bit and 32-bit
+    code: a 32-bit instruction starting at an odd halfword spans both words
+    of the 64-bit fetch window, leaving only one 16-bit parcel for slot 2 so
+    a following 32-bit instruction cannot pair. Widening fetch or adding a
+    parcel queue between fetch and pre-decode is open. Two further options
+    are open: a staged target-buffer lookahead for a 16-bit instruction at
+    the start of a fetch word that does not pair with the next one, and
+    alignment flags (`-falign-loops`, `-falign-jumps`) for self-built
+    software.
 
 ## Core area
 

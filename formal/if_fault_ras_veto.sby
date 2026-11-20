@@ -1,0 +1,41 @@
+[tasks]
+bmc
+cover
+prove
+
+[options]
+bmc: mode bmc
+bmc: depth 10
+cover: mode cover
+cover: depth 10
+prove: mode prove
+prove: depth 4
+
+[engines]
+bmc: smtbmc boolector
+cover: smtbmc boolector
+prove: smtbmc boolector
+
+[script]
+read_verilog -D SYNTHESIS -sv riscv_pkg.sv
+read_verilog -D SYNTHESIS -sv stall_capture_reg.sv
+read_verilog -D SYNTHESIS -sv prediction_metadata_tracker.sv
+read_verilog -D SYNTHESIS -sv slot2_prediction_capture.sv
+read_verilog -formal -D SYNTHESIS -D IF_FAULT_RAS_VETO_PROOF -sv if_stage.sv
+hierarchy -top if_stage
+delete t:branch_prediction_controller t:pc_controller t:immu t:fetch_redirect t:c_ext_state t:instruction_aligner t:served_window_coverage t:pd_target_candidate t:backing_btb t:tage_predictor t:ittage_predictor
+script free_undefined.ys
+setattr -unset dont_touch *
+setattr -mod -unset keep_hierarchy *
+setundef -undriven -anyseq
+prep -flatten -top if_stage
+select -assert-count 8 t:$check r:FLAVOR=assert %i
+select -assert-count 4 t:$check r:FLAVOR=cover %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/stall_capture_reg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/slot2_prediction_capture.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv
+free_undefined.ys

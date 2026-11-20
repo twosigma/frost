@@ -714,6 +714,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "bare M-mode fetch, or the reverse, does not follow the other mode's BTB entry"
         ),
     ),
+    "odd_halfword_pred_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="odd_halfword_pred_test",
+        nic_mac_clocks=False,
+        description=(
+            "Odd-halfword slot-1 fast-BTB predictions, +4 odd-target handoffs, "
+            "line/page-end spanning calls with a faulting second page, and overlapping encodings"
+        ),
+    ),
     "ifread_test": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_ifread_program",
         hdl_toplevel_module="frost",
@@ -2021,9 +2031,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_debug_partial",
         hdl_toplevel_module="frost",
         app_name="debug_target",
-        description="Debug Mode partial vector load dirties mstatus.VS",
+        description="Debug Mode partial unit-stride and strided vector loads dirty mstatus.VS",
         verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
-        include_in_pytest=False,
     ),
     "debug_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug",
@@ -2786,6 +2795,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Hello World output reaches the serial TX pin",
         **UART_LINE_CHECK,
     ),
+    "raytrace": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="raytrace",
+        nic_mac_clocks=False,
+        description=(
+            "Fixed-point ray tracer (the demonstration image's first program): "
+            "streams a 24x12 sunset picture and checks its CRC against the host reference"
+        ),
+    ),
     "isa_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2996,6 +3015,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="walk_past_test",
         nic_mac_clocks=False,
         description="Overlapping BTB entries preserve program results across fetch-valid gaps",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    "odd_halfword_pred_test_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="odd_halfword_pred_test",
+        nic_mac_clocks=False,
+        description=(
+            "Odd-halfword slot-1 fast-BTB predictions, spanning page faults, and "
+            "overlapping encodings with randomized fetch latency"
+        ),
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
     "fetch_lead_repro": CocotbRunConfig(
