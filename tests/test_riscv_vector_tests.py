@@ -261,7 +261,26 @@ def calibrated_shard_weights(
 def shard_weights(
     stage1: Path, names: list[str], vlen: int, profile: bytes, *, one: bool = False
 ) -> dict[str, int]:
-    """Use matching measured cycles and scale estimates for the unmeasured splits."""
+    """Read wall times for a measured selection, or estimate work in cycles."""
+    if profile.startswith(b"vlen,name,main_ms,complete_ms"):
+        weights = {}
+        selected = set(names)
+        for row in csv.DictReader(profile.decode().splitlines()):
+            name = row["name"]
+            if int(row["vlen"]) != vlen or name not in selected:
+                continue
+            times = [int(row[key]) for key in ("main_ms", "complete_ms") if row[key]]
+            if name in weights or not times or min(times) <= 0:
+                raise ValueError(
+                    f"wall-time profile: invalid or duplicate time for {name}"
+                )
+            weights[name] = max(times)
+        missing = selected - weights.keys()
+        if missing:
+            raise ValueError(
+                f"wall-time profile: missing VLEN {vlen} time for {min(missing)}"
+            )
+        return weights
     weights = {name: cycle_weight(stage1 / f"{name}.S", vlen) for name in names}
     if profile.startswith(b"vlen,name,cycles,shard_weight,form_weight,source_weight"):
         return calibrated_shard_weights(weights, vlen, profile, one)
@@ -1035,6 +1054,23 @@ def test_shard_weights_use_cycles(tmp_path: Path) -> None:
     assert select_shard(weights, 2, 2) == ["b-0", "c-0", "d-0"]
 
 
+def test_shard_weights_use_wall_time(tmp_path: Path) -> None:
+    """Both runs have independent observations and every selected name needs one."""
+    header = b"vlen,name,main_ms,complete_ms\n"
+    profile = header + b"128,a,10,20\n128,b,30,22\n128,c,,40\n128,d,15,\n256,a,90,105\n"
+    assert shard_weights(tmp_path, ["a", "b", "c", "d"], 128, profile) == {
+        "a": 20,
+        "b": 30,
+        "c": 40,
+        "d": 15,
+    }
+    with pytest.raises(ValueError, match="missing VLEN 256 time for b"):
+        shard_weights(tmp_path, ["a", "b"], 256, profile)
+    for invalid in (b"128,a,1,2\n", b"128,e,,\n", b"128,e,0,10\n"):
+        with pytest.raises(ValueError, match="invalid or duplicate"):
+            shard_weights(tmp_path, ["a", "e"], 128, profile + invalid)
+
+
 def test_calibrated_shard_weights() -> None:
     """Check measured and estimated splits even when the reference is filtered out."""
     profile = (
@@ -1387,12 +1423,13 @@ def main() -> int:
         "--one-per-form", action="store_true", help="select one split per instruction"
     )
     parser.add_argument(
-        "--shard", type=parse_shard, help="cycle-weighted shard K/N (1-based)"
+        "--shard", type=parse_shard, help="weighted shard K/N (1-based)"
     )
     parser.add_argument(
         "--cycle-profile",
+        "--shard-profile",
         type=Path,
-        help="balance shards using prior JSONL results or the calibrated CI profile",
+        help="balance shards using prior JSONL results or a CI cycle or wall-time profile",
     )
     parser.add_argument(
         "--jobs",
@@ -1461,14 +1498,14 @@ def main() -> int:
     ):
         parser.error("RTL execution options require --rtl")
     if args.cycle_profile and not args.shard:
-        parser.error("--cycle-profile requires --shard")
+        parser.error("--shard-profile/--cycle-profile requires --shard")
     if (
         args.results_jsonl
         and args.cycle_profile
         and args.results_jsonl.resolve() == args.cycle_profile.resolve()
     ):
         parser.error(
-            "use a separate output file for --results-jsonl and --cycle-profile"
+            "use a separate output file for --results-jsonl and the shard profile"
         )
     if not args.build_sim and not suite_available():
         parser.error(

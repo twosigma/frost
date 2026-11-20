@@ -519,6 +519,8 @@ Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent
 permitted by applicable law.
 [?2004hroot@frost:~# findmnt -rno FSTYPE,SOURCE,OPTIONS /
 [?2004lnfs 192.168.77.1:/srv/frost/debian rw,relatime,vers=3,rsize=1048576,wsize=1048576,namlen=255,hard,nolock,proto=tcp,port=2049,timeo=600,retrans=3,sec=sys,local_lock=all,addr=192.168.77.1
+[?2004hroot@frost:~# v=$(cat /sys/module/frost_net10g/version 2>/dev/null) && printf "%s=%s\n" FROST_DRIVER_VERSION "$v" || printf "%s=MISSING\n" FROST_DRIVER_VERSION
+[?2004lFROST_DRIVER_VERSION=1.3
 [?2004hroot@frost:~# timeout 300 systemctl is-system-running --wait >/dev/null; systemc tl --failed --no-legend --plain --no-pager; echo state=$(systemctl is-system-run ning)
 [?2004lstate=running
 [?2004hroot@frost:~# /usr/local/bin/frost_stress --boot

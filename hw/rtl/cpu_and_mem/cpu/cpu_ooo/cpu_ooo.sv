@@ -2391,6 +2391,12 @@ module cpu_ooo #(
   logic mret_start, mret_done_ack;
   logic [XLEN-1:0] mepc_value;
   logic interrupt_pending;
+`ifdef FROST_RVFI_DII
+`ifdef FROST_RVFI_DII_WFI_TIMEOUT
+  logic dii_wfi_wake;
+  localparam int unsigned DiiWfiTimeoutCycles = `FROST_RVFI_DII_WFI_TIMEOUT;
+`endif
+`endif
 
   // Memory interfaces
   logic sq_mem_write_en;
@@ -2788,10 +2794,13 @@ module cpu_ooo #(
       // step, where WFI executes as a nop (interrupts are masked there, so a
       // real wait would deadlock the debugger).
 `ifdef FROST_RVFI_DII
-      // TestRIG (hw/sim/frost_rvfi_dii.sv): interrupts are off, so WFI always
-      // completes, as the reference model's does, and misaligned accesses
-      // trap whatever mtvec holds.
+      // TestRIG selects a bounded WFI wait at build time.
+`ifdef FROST_RVFI_DII_WFI_TIMEOUT
+      .i_interrupt_pending(dii_wfi_wake),
+`else
       .i_interrupt_pending(1'b1),
+`endif
+      // Misaligned accesses trap whatever mtvec holds.
       .i_trap_misaligned_accesses(1'b1),
 `else
       .i_interrupt_pending(interrupt_pending || csr_debug_mode || step_armed_q),
@@ -5023,6 +5032,71 @@ module cpu_ooo #(
   // separately decides whether to take the interrupt.
   assign interrupt_pending = file_interrupts.meip || file_interrupts.mtip || file_interrupts.msip ||
       (|csr_s_pending) || csr_lcof_pending;
+
+`ifdef FROST_RVFI_DII
+`ifdef FROST_RVFI_DII_WFI_TIMEOUT
+  if (DiiWfiTimeoutCycles != 0) begin : g_dii_wfi
+    logic [31:0] wait_cycles_q;
+    logic in_wait, in_wait_q, timeout_due, waking, woke_q, wfi_commit;
+    logic [31:0] wait_entries_q  /* verilator public_flat_rd */;
+    logic [31:0] source_wakes_q  /* verilator public_flat_rd */;
+    logic [31:0] timeout_wakes_q  /* verilator public_flat_rd */;
+    logic [31:0] retired_after_wake_q  /* verilator public_flat_rd */;
+    logic [31:0] commit_while_waiting_q  /* verilator public_flat_rd */;
+    logic [ 2:0] pending_q  /* verilator public_flat_rd */;
+
+    // Observe the serializer state directly to distinguish wait entry from
+    // other stalls at the head.
+    assign in_wait = u_tomasulo.u_rob.serial_state == riscv_pkg::SERIAL_WFI_WAIT;
+    assign timeout_due = wait_cycles_q == DiiWfiTimeoutCycles;
+    assign dii_wfi_wake = interrupt_pending || csr_debug_mode || step_armed_q || timeout_due;
+    assign waking = in_wait && dii_wfi_wake && !flush_all;
+    assign wfi_commit = rob_commit_valid_raw && rob_head_is_wfi &&
+        (rob_commit_comb.pc == rob_trap_pc);
+
+    // The harness resets these observations for each trace. Keep a timeout
+    // asserted through retirement, even if another condition holds commit.
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        in_wait_q <= 1'b0;
+        woke_q <= 1'b0;
+        wait_cycles_q <= '0;
+        wait_entries_q <= '0;
+        source_wakes_q <= '0;
+        timeout_wakes_q <= '0;
+        retired_after_wake_q <= '0;
+        commit_while_waiting_q <= '0;
+        pending_q <= '0;
+      end else begin
+        in_wait_q <= in_wait;
+        if (in_wait && !in_wait_q) wait_entries_q <= wait_entries_q + 1'b1;
+        if (waking) begin
+          woke_q <= 1'b1;
+          pending_q <= csr_s_pending;
+          if (interrupt_pending) source_wakes_q <= source_wakes_q + 1'b1;
+          else if (timeout_due) timeout_wakes_q <= timeout_wakes_q + 1'b1;
+        end
+        if ((in_wait || woke_q) && (rob_commit_valid_raw || rob_commit_2_valid_raw) &&
+            !(wfi_commit && (waking || woke_q))) begin
+          commit_while_waiting_q <= commit_while_waiting_q + 1'b1;
+        end
+        if (wfi_commit) begin
+          if (woke_q || waking) retired_after_wake_q <= retired_after_wake_q + 1'b1;
+          else pending_q <= csr_s_pending;
+        end
+        if (flush_all || wfi_commit) begin
+          woke_q <= 1'b0;
+          wait_cycles_q <= '0;
+        end else if (in_wait && !dii_wfi_wake) begin
+          wait_cycles_q <= wait_cycles_q + 1'b1;
+        end
+      end
+    end
+  end else begin : g_dii_wfi_nop
+    assign dii_wfi_wake = 1'b1;
+  end
+`endif
+`endif
 
   function automatic logic [XLEN-1:0] retired_next_pc(
       input riscv_pkg::reorder_buffer_commit_t commit);

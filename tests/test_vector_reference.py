@@ -201,6 +201,64 @@ def test_crypto_execution_program(vlen: int, tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("vlen", (128, 256, 512))
+def test_mem_reserved_forms_program(vlen: int, tmp_path: Path) -> None:
+    """Exhaustive unit-stride legality matches Spike at each vector length."""
+    output = build_and_run("vec_mem_reserved_forms_test", vlen, vlen, tmp_path)
+    assert " 0 failures" in output
+
+
+@pytest.mark.skipif(
+    shutil.which("sail_riscv_sim") is None,
+    reason="needs sail_riscv_sim (the frost image)",
+)
+@pytest.mark.parametrize("vlen", (128, 256, 512))
+def test_mem_reserved_forms_on_sail(vlen: int, tmp_path: Path) -> None:
+    """Exhaustive unit-stride legality matches the Sail RISC-V model."""
+    build = subprocess.run(
+        [
+            "make",
+            "-s",
+            "-f",
+            SPIKE_MAKEFILE,
+            f"VLEN={vlen}",
+            f"BUILD={tmp_path}",
+            f"EXTS={SPIKE_EXTENSIONS}",
+        ],
+        cwd=APPS_DIR / "vec_mem_reserved_forms_test",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert build.returncode == 0, f"build failed:\n{build.stderr[-2000:]}"
+    term_log = tmp_path / f"sail_vlen{vlen}.log"
+    testrig = REPO_ROOT / "verif" / "testrig"
+    run = subprocess.run(
+        [
+            "sail_riscv_sim",
+            # The sweep triggers 8,114 deliberate illegal-instruction traps
+            # through a non-mret M-mode handler, which trips Sail's heuristic.
+            "--disable-trap-loop-detection",
+            "--config-override",
+            str(testrig / "sail_frost.json"),
+            "--config-override",
+            str(testrig / f"sail_frost_vlen{vlen}.json"),
+            "--terminal-log",
+            str(term_log),
+            str(tmp_path / f"sw_vlen{vlen}.elf"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=SPIKE_TIMEOUT_SECONDS,
+        check=False,
+    )
+    term = term_log.read_text(encoding="utf-8") if term_log.exists() else ""
+    assert run.returncode == 0 and "<<PASS>>" in term and " 0 failures" in term, (
+        f"sail_riscv_sim (VLEN {vlen}) exit {run.returncode}:\n"
+        f"{run.stdout[-1000:]}\n{term[-1000:]}"
+    )
+
+
 def test_crypto_program_negative_control(tmp_path: Path) -> None:
     """A wrong crypto expected result must fail the program."""
     with pytest.raises(AssertionError, match="1 failures"):

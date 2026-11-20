@@ -593,7 +593,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_home_array.sby",
         "Independent L2 ports and one-way parallel reads preserve byte values, tokens "
-        "and physical-row exclusions.",
+        "and physical-row exclusions. An open read at the output follows a stalled reply.",
         tasks=(
             "coh_home_array_prove",
             *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
@@ -1285,6 +1285,8 @@ FORMAL_TARGETS = [
         "home_capture_equiv.sby",
         "Consumed home payloads match handshake-only captures, and registered "
         "fill flags match their phase decodes across arbitrary reset and stalls. "
+        "Array covers reach hit and row captures in every configuration and kept "
+        "parallel captures in both banked configurations. "
         "The parked next-state function preserves event priority; selected-slot "
         "parking, the one-hot selection, dispatch and waiter eligibility match a "
         "slot-table reference.",
@@ -1297,6 +1299,11 @@ FORMAL_TARGETS = [
             "array_uram",
             "array_uram32",
             "array_uram_row",
+            "array_bram_cover",
+            "array_bram_four_cover",
+            "array_uram_cover",
+            "array_uram32_cover",
+            "array_uram_row_cover",
             "endpoint32",
             "endpoint56",
             "arbiter_default",
@@ -2089,6 +2096,21 @@ FORMAL_TARGETS = [
     FormalTarget(
         "nic_axis_boundary.sby",
         "NIC AXI4-Stream beat-code bijection, abort code isolation and TX checksum side-FIFO framing.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "axi_register_slice.sby",
+        "AXI4 and AXI4-Lite five-channel register slices: hold rules, FIFO ordering, full rate and reset.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "nic_diag.sby",
+        "NIC diagnostic CDC pin and register mapping, disabled slots, and PHY sample equivalence.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "nic_tx_hold.sby",
+        "NIC TX FIFO offer stability through acceptance, with rejection and reset-drain covers.",
         tasks=("prove", "cover"),
     ),
     FormalTarget(
@@ -3440,6 +3462,17 @@ SBY_TASKS = [
         "array_uram_row",
         "Folded selection and single-array captures with short read latency.",
     ),
+    ("array_bram_cover", "Tag hit and row data capture with one BRAM way."),
+    ("array_bram_four_cover", "Tag hit and row data capture with four BRAM ways."),
+    (
+        "array_uram_cover",
+        "Hit, row and kept parallel captures with 64-byte URAM lines.",
+    ),
+    (
+        "array_uram32_cover",
+        "Hit, row and kept parallel captures with 32-byte URAM lines.",
+    ),
+    ("array_uram_row_cover", "Tag hit and row data capture in the single-array URAM."),
     ("endpoint32", "Demand and grant captures with 32-bit addresses."),
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),
@@ -4439,6 +4472,11 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     assert len(selected_by_shard["Coherence L1D zero control"]) == 1
     assert len(selected_by_shard["Coherence L1D zero cover"]) == 1
     assert len(selected_by_shard["Coherence L1D local holds"]) == 1
+    for task in ("prove", "cover"):
+        assert any(
+            node.endswith(f"[nic_tx_hold_{task}]")
+            for node in selected_by_shard["Other tasks"]
+        )
     check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
 
 

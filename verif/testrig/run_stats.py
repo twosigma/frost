@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Count injected instructions and RVFI replies without altering their bytes."""
+"""Forward and count RVFI replies, with an opt-in Sail WFI normaliser."""
 
 import queue
 import socket
@@ -20,16 +20,24 @@ import struct
 import threading
 import time
 from dataclasses import dataclass
+from io import BytesIO
 
 from testrig.rvfi_dii import (
     CMD_END_OF_TRACE,
     CMD_INSTRUCTION,
     CMD_SET_VERSION,
     DII_PACKET_BYTES,
+    MODE_MACHINE,
+    MODE_SUPERVISOR,
+    MODE_USER,
     V1_PACKET_BYTES,
     V2_HEADER_BYTES,
+    WFI_INSN,
     DiiPacket,
     PacketReader,
+    RvfiRecord,
+    decode_v2,
+    version_ack,
 )
 
 
@@ -39,6 +47,15 @@ class TraceCounts:
 
     requested: int
     received: int
+
+
+def _read_v2(reader: PacketReader) -> bytes:
+    """Read a bounded version-2 reply and preserve its wire representation."""
+    raw = reader.read(V2_HEADER_BYTES)
+    size = struct.unpack_from("<Q", raw, 8)[0]
+    if raw[:8] != b"trace-v2" or not 64 <= size <= 192:
+        raise ValueError("invalid trace-v2 header")
+    return raw + reader.read(size - V2_HEADER_BYTES)
 
 
 class TraceMonitor:
@@ -90,7 +107,6 @@ class TraceMonitor:
         raise OSError("monitor stopped")
 
     def _serve(self) -> None:
-        replies = None
         try:
             while not self._stopping.is_set():
                 try:
@@ -105,10 +121,19 @@ class TraceMonitor:
             self._sockets.append(backend)
             for sock in (engine, backend):
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            replies = threading.Thread(
-                target=self._forward_replies, args=(backend, engine), daemon=True
-            )
-            replies.start()
+            self._forward(engine, backend)
+        except (EOFError, OSError, ValueError, struct.error) as error:
+            self._error(error)
+        finally:
+            for sock in self._sockets:
+                sock.close()
+
+    def _forward(self, engine: socket.socket, backend: socket.socket) -> None:
+        replies = threading.Thread(
+            target=self._forward_replies, args=(backend, engine), daemon=True
+        )
+        replies.start()
+        try:
             reader = PacketReader(engine)
             instructions = 0
             while not self._stopping.is_set():
@@ -135,10 +160,7 @@ class TraceMonitor:
             self._error(error)
         finally:
             self._requests.put(None)
-            if replies is not None:
-                replies.join()
-            for sock in self._sockets:
-                sock.close()
+            replies.join()
 
     def _forward_replies(self, backend: socket.socket, engine: socket.socket) -> None:
         try:
@@ -161,12 +183,8 @@ class TraceMonitor:
                             raw = reader.read(V1_PACKET_BYTES)
                             halt = raw[86]
                         else:
-                            raw = reader.read(V2_HEADER_BYTES)
-                            size = struct.unpack("<Q", raw[8:16])[0]
-                            if raw[:8] != b"trace-v2" or not 64 <= size <= 192:
-                                raise ValueError("invalid trace-v2 header")
+                            raw = _read_v2(reader)
                             halt = raw[33]
-                            raw += reader.read(size - V2_HEADER_BYTES)
                         if halt:
                             self.traces.append(TraceCounts(instructions, received))
                         else:
@@ -192,3 +210,118 @@ class TraceMonitor:
         self._thread.join(timeout=2)
         if self._thread.is_alive() and not self.errors:
             self.errors.append(f"{self.name}: monitor did not stop")
+
+
+def _wfi_wait_reply(raw: bytes, reply: RvfiRecord) -> bool:
+    """Recognise a wait entry or the immediate U-mode illegal-instruction trap."""
+    waits = reply.trap == 0 and reply.mode in (MODE_MACHINE, MODE_SUPERVISOR)
+    user_trap = reply.trap == 1 and reply.mode == MODE_USER
+    if (
+        not (waits or user_trap)
+        or raw[37:40] != b"\0\0\0"
+        or len(raw) != V2_HEADER_BYTES
+        or reply.pc_rdata & 1
+        or reply.pc_wdata & 1
+        or reply
+        != RvfiRecord(
+            order=reply.order,
+            insn=WFI_INSN,
+            mode=reply.mode,
+            trap=reply.trap,
+            pc_rdata=reply.pc_rdata,
+            pc_wdata=0 if waits else reply.pc_wdata,
+        )
+    ):
+        raise ValueError("unexpected Sail WFI reply")
+    return waits
+
+
+def _finish_wfi(first: bytes, raw: bytes) -> bytes:
+    """Fold Sail's single synthetic wake or TW trap into the WFI reply."""
+    start = decode_v2(BytesIO(first))
+    end = decode_v2(BytesIO(raw))
+    falls_through = end.trap == 0 and end.pc_wdata == (start.pc_rdata + 4) % (1 << 64)
+    tw_trap = end.trap == 1 and start.mode == MODE_SUPERVISOR and end.pc_wdata % 2 == 0
+    if (
+        not (falls_through or tw_trap)
+        or raw[37:40] != b"\0\0\0"
+        or len(raw) != V2_HEADER_BYTES
+        or end != RvfiRecord(mode=0, ixl=0, pc_wdata=end.pc_wdata, trap=end.trap)
+    ):
+        raise ValueError("unexpected Sail WFI completion reply")
+    # Replace only trap and pc_wdata. Keep the original header and valid bit.
+    return first[:32] + raw[32:33] + first[33:48] + raw[48:56] + first[56:]
+
+
+class WfiTraceMonitor(TraceMonitor):
+    """Normalise Sail 0.16's version-2 WFI replies with max_time_to_wait=0.
+
+    Sail consumes one instruction packet to finish the wait. Forward that
+    packet a second time so it executes after WFI. At most one WFI reply
+    is held back, and the synthetic reply is excluded from trace counts.
+    """
+
+    def _forward(self, engine: socket.socket, backend: socket.socket) -> None:
+        backend.settimeout(self.timeout)
+        requests, replies = PacketReader(engine), PacketReader(backend)
+        version_set = False
+        requested = received = 0
+        waiting = None
+        while not self._stopping.is_set():
+            try:
+                raw = requests.read(DII_PACKET_BYTES)
+            except EOFError:
+                if requested:
+                    raise ValueError(
+                        "instructions without an end-of-trace command"
+                    ) from None
+                return
+            packet = DiiPacket.decode(raw)
+            if packet.is_version_query and not version_set:
+                backend.sendall(raw)
+                reply = replies.read(V1_PACKET_BYTES)
+                if reply[86] != 3:
+                    raise ValueError("WFI normalisation requires RVFI-DII version 2")
+                engine.sendall(reply)
+                continue
+            if packet.cmd == CMD_SET_VERSION and not version_set and packet.insn == 2:
+                backend.sendall(raw)
+                reply = replies.read(16)
+                if reply != version_ack(2):
+                    raise ValueError("invalid version 2 acknowledgement")
+                engine.sendall(reply)
+                version_set = True
+                continue
+            if not version_set:
+                raise ValueError("WFI normalisation requires RVFI-DII version 2")
+            if packet.cmd == CMD_END_OF_TRACE and not packet.is_version_query:
+                if waiting is not None:
+                    raise ValueError("a waiting WFI must be followed by an instruction")
+                backend.sendall(raw)
+                reply = _read_v2(replies)
+                if reply != RvfiRecord.halt_token().encode_v2():
+                    raise ValueError("expected Sail halt token at end of WFI trace")
+                self.traces.append(TraceCounts(requested, received))
+                requested = received = 0
+                engine.sendall(reply)
+                continue
+            if packet.cmd != CMD_INSTRUCTION:
+                raise ValueError(f"unexpected DII command {packet.cmd:#x} in WFI mode")
+
+            requested += 1
+            backend.sendall(raw)
+            reply = _read_v2(replies)
+            if waiting is not None:
+                engine.sendall(_finish_wfi(waiting, reply))
+                received += 1
+                waiting = None
+                backend.sendall(raw)
+                reply = _read_v2(replies)
+            record = decode_v2(BytesIO(reply))
+            if record.halt or record.insn != packet.insn:
+                raise ValueError("unexpected Sail instruction reply in WFI mode")
+            if packet.insn == WFI_INSN and _wfi_wait_reply(reply, record):
+                waiting = reply
+            else:
+                engine.sendall(reply)
+                received += 1

@@ -531,6 +531,10 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/axi/axil_checker.sv \
         $(ROOT)/hw/rtl/lib/axi/axil_reg_bridge.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),axi_register_slice)
+VERILOG_SOURCES := $(ROOT)/hw/rtl/lib/axi/axi_register_slice.sv
+else ifeq ($(TOPLEVEL),axil_register_slice)
+VERILOG_SOURCES := $(ROOT)/hw/rtl/lib/axi/axil_register_slice.sv
 else ifeq ($(TOPLEVEL),axi_checker)
 VERILOG_SOURCES := $(ROOT)/hw/rtl/lib/axi/axi_checker.sv
 
@@ -783,9 +787,8 @@ SIM_FAST_MAINT ?= 1
 # stage:
 #   MEMORY_LINK_STAGES=1 ./scripts/frost.py cocotb ddr_bench
 MEMORY_LINK_STAGES ?= 0
-# Misaligned loads and stores to cached DDR in hardware (frost MISALIGNED_HW),
-# as the X3 build has them. The engine needs the cached tier, so the default
-# follows ENABLE_CACHED_TIER.
+# Perform plain misaligned loads and stores to cached DDR in hardware.
+# The engine needs the cached tier, so the default follows ENABLE_CACHED_TIER.
 MISALIGNED_HW ?= $(if $(filter 0,$(ENABLE_CACHED_TIER)),0,1)
 ifeq ($(TOPLEVEL),frost)
 ifneq ($(strip $(FROST_CPU_PERIOD_PS)),)
