@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-r"""Read FROST's cache profiling counters over JTAG and report the L2's write costs.
+r"""Read FROST's cache and load-wait profiling counters over JTAG.
 
 The profiling counters are machine-mode CSRs, which software in S or U mode,
 Linux among it, cannot read. This tool reads them through the debug module
@@ -30,6 +30,8 @@ cable, so stop Vivado's hw_server first.
                         second snapshot
     window -- COMMAND   the same around COMMAND, run on this machine (an ssh
                         to the board, for example)
+    window --load-waits report indices 79, 80 and 120 with both snapshots
+                        around --seconds S or -- COMMAND
     summarize LOG...    the same for each FROST_CACHE_COUNTERS line in the
                         logs, such as those of a CoreMark-PRO sweep built with
                         COREMARK_PRO_CACHE_COUNTERS=1
@@ -37,15 +39,16 @@ cable, so stop Vivado's hw_server first.
 For example:
 
     ./fpga/debug/cache_counters.py window --seconds 30
+    ./fpga/debug/cache_counters.py window --load-waits --seconds 30
     ./fpga/debug/cache_counters.py window -- ssh root@192.0.2.2 \
         'dd if=/root/big of=/dev/null bs=1M'
     ./fpga/debug/cache_counters.py summarize sweep.log
 
-A window starts with a snapshot alone, which halts the hart only briefly, and
+A cache window starts with a snapshot alone, which halts the hart briefly, and
 ends with one that reads both it and the cache block's preceding snapshot,
-the window's start, so the counter reads fall outside the window. The window
-includes the second OpenOCD run's start, during which the hart is halted
-briefly; DMA traffic, such as a NIC's, continues meanwhile. Elapsed cycles
+the window's start. With --load-waits, each halt sends one snapshot request
+and saves all three values from the current bank. Both modes include the
+halts between captures, during which DMA traffic can continue. Elapsed cycles
 come from the time CSR, the CLINT's mtime, which counts core cycles. The Tcl
 helper requests riscv autofence off when supported. A resume FENCE.I drains
 committed stores, invalidates L1I and synchronizes instruction-copy writes.
@@ -108,10 +111,13 @@ FIRST_CACHE_COUNTER = min(CACHE_COUNTERS)
 INDEX = {name: index for index, name in CACHE_COUNTERS.items()}
 NAME_WIDTH = max(len(name) for name in CACHE_COUNTERS.values())
 L2_LINE_BYTES = 64
+LOAD_WAIT_INDICES = (79, 80, 120)
 
 SNAPSHOT_RE = re.compile(r"^FROST_CACHE_SNAPSHOT((?: [^ \r\n]+)+)[ \t\r]*$", re.M)
 PREVIOUS_RE = re.compile(r"^FROST_CACHE_PREVIOUS((?: [^ \r\n]+)+)[ \t\r]*$", re.M)
 MARK_RE = re.compile(r"^FROST_CACHE_MARK((?: [^ \r\n]+)+)[ \t\r]*$", re.M)
+LOAD_SNAPSHOT_RE = re.compile(r"^FROST_LOAD_SNAPSHOT(?:[ \t]+([^\r\n]*))?\r?$", re.M)
+LOAD_VALUE_RE = re.compile(r"(?:[0-9]{1,20}|0[xX][0-9a-fA-F]{1,16})")
 RESUME_RE = re.compile(r"^FROST_CACHE_HART (\w+)[ \t\r]*$", re.M)
 COUNTERS_RE = re.compile(r"FROST_CACHE_COUNTERS((?: [^ \r\n]+)+)")
 SECTION_RE = re.compile(r"^===== (.+) =====[ \t\r]*$")
@@ -123,10 +129,18 @@ RESULT_RE = re.compile(r"^RESULT \S+ (\S+) \S+: (\w+)")
 Counters = dict[int | str, int]
 
 
-def parse_fields(text: str) -> Counters | None:
+class LoadCountersUnavailableError(RuntimeError):
+    """The core lacks one or more load-window counters."""
+
+
+def parse_fields(
+    text: str, *, required_indices: Sequence[int] | None = None
+) -> Counters | None:
     """Return the fields of a snapshot or counters line, or None for "absent".
 
-    The counters must run without gaps from the cache block's first one.
+    With required indices, require them and a time field as unsigned 64-bit
+    values. Otherwise the indices run without gaps from the first cache
+    counter.
     """
     fields = text.split()
     if fields == ["absent"]:
@@ -139,7 +153,19 @@ def parse_fields(text: str) -> Counters | None:
         name: int | str = int(key) if key.isdigit() else key
         if name in values:
             raise ValueError(f"counter field {key} repeats")
-        values[name] = int(value, 0)
+        if required_indices is None:
+            values[name] = int(value, 0)
+            continue
+        if not LOAD_VALUE_RE.fullmatch(value):
+            raise ValueError(f"invalid unsigned 64-bit value {value!r} for {key}")
+        number = int(value, 16 if value.lower().startswith("0x") else 10)
+        if number >= 1 << 64:
+            raise ValueError(f"invalid unsigned 64-bit value {value!r} for {key}")
+        values[name] = number
+    if required_indices is not None:
+        if values.keys() != {"time", *required_indices}:
+            raise ValueError(f"snapshot requires time and counters {required_indices}")
+        return values
     indices = sorted(k for k in values if isinstance(k, int))
     expected = list(range(FIRST_CACHE_COUNTER, FIRST_CACHE_COUNTER + len(indices)))
     if indices != expected:
@@ -219,6 +245,21 @@ def take_snapshot(args: argparse.Namespace) -> tuple[Counters, Counters]:
     return current, previous
 
 
+def take_load_snapshot(args: argparse.Namespace) -> Counters:
+    """Take one snapshot and return its load-window counters and time CSR."""
+    procedure = "frost_load_snapshot"
+    found = LOAD_SNAPSHOT_RE.findall(run_openocd(args, procedure))
+    if len(found) != 1:
+        raise RuntimeError(f"OpenOCD must print one result in {procedure}")
+    try:
+        values = parse_fields(found[0], required_indices=LOAD_WAIT_INDICES)
+    except ValueError as error:
+        raise RuntimeError(f"invalid load snapshot: {error}") from error
+    if values is None:
+        raise LoadCountersUnavailableError("the core lacks the load-window counters")
+    return values
+
+
 def resume_hart(args: argparse.Namespace) -> str:
     """Resume the hart if it is halted, and say which it was."""
     found = RESUME_RE.findall(run_openocd(args, "frost_cache_resume"))
@@ -229,10 +270,13 @@ def resume_hart(args: argparse.Namespace) -> str:
     return f"the hart is {found[-1]}; nothing to resume"
 
 
-def deltas(start: Counters, end: Counters) -> Counters:
+def deltas(
+    start: Counters, end: Counters, *, distinguish_wrap: bool = False
+) -> Counters:
     """Return each counter's change from start to end, with "cycles" from time.
 
-    A counter that went down means the core was reset in between.
+    Reject a decrease. An isolated decrease in the load window suggests a
+    wrap, while simultaneous decreases suggest a reset.
     """
     indices = sorted(k for k in end if isinstance(k, int))
     if indices != sorted(k for k in start if isinstance(k, int)):
@@ -242,21 +286,25 @@ def deltas(start: Counters, end: Counters) -> Counters:
         change[key] = end[key] - start[key]
     fell = [CACHE_COUNTERS.get(k, str(k)) for k, v in change.items() if v < 0]
     if fell:
-        raise RuntimeError(
-            f"{', '.join(str(name) for name in fell)} went down: the core was reset "
-            "during the window"
-        )
+        reason = "the core was reset during the window"
+        if distinguish_wrap:
+            reason = (
+                "an isolated decrease suggests a 64-bit wrap"
+                if len(fell) == 1
+                else "multiple decreases suggest a reset"
+            )
+        raise RuntimeError(f"{', '.join(fell)} went down: {reason}")
     return change
 
 
-def counters_line(change: Counters) -> str:
-    """Return the FROST_CACHE_COUNTERS line that CoreMark-PRO also prints."""
-    fields = [f"cycles={change['cycles']}"]
+def counter_line(prefix: str, values: Counters, clock_field: str) -> str:
+    """Print a clock field followed by the counters in index order."""
+    fields = [prefix, f"{clock_field}={values[clock_field]}"]
     fields += [
-        f"{key}={change[key]}"
-        for key in sorted(k for k in change if isinstance(k, int))
+        f"{key}={values[key]}"
+        for key in sorted(k for k in values if isinstance(k, int))
     ]
-    return "FROST_CACHE_COUNTERS " + " ".join(fields)
+    return " ".join(fields)
 
 
 def _share(part: int, whole: int) -> str:
@@ -300,7 +348,7 @@ def write_cost_lines(change: Counters) -> list[str]:
 def report_lines(change: Counters) -> list[str]:
     """Return the counters line, each counter by name, and the write costs."""
     lines = [
-        counters_line(change),
+        counter_line("FROST_CACHE_COUNTERS", change, "cycles"),
         f"  {'cycles':<{NAME_WIDTH + 4}} {change['cycles']:>16}",
     ]
     for key in sorted(k for k in change if isinstance(k, int)):
@@ -312,12 +360,7 @@ def report_lines(change: Counters) -> list[str]:
 
 def snapshot_lines(values: Counters) -> list[str]:
     """Return a snapshot as its OpenOCD line and each counter by name."""
-    fields = [f"time={values['time']}"]
-    fields += [
-        f"{key}={values[key]}"
-        for key in sorted(k for k in values if isinstance(k, int))
-    ]
-    lines = ["FROST_CACHE_SNAPSHOT " + " ".join(fields)]
+    lines = [counter_line("FROST_CACHE_SNAPSHOT", values, "time")]
     for key in sorted(k for k in values if isinstance(k, int)):
         name = CACHE_COUNTERS.get(key, f"counter {key}")
         lines.append(f"  {key} {name:<{NAME_WIDTH}} {values[key]:>16}")
@@ -397,6 +440,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "window", help="print the deltas over a wait or a command"
     )
     window.add_argument(
+        "--load-waits",
+        action="store_true",
+        help="read head load waits and home fill occupancy at both ends",
+    )
+    window.add_argument(
         "--seconds", type=float, help="wait this long between snapshots"
     )
     window.add_argument(
@@ -447,7 +495,9 @@ def measure(args: argparse.Namespace, command: list[str]) -> int:
         if args.action == "sample":
             print("\n".join(snapshot_lines(take_snapshot(args)[0])))
             return 0
-        start_time = take_mark(args)
+        start: Counters = (
+            take_load_snapshot(args) if args.load_waits else {"time": take_mark(args)}
+        )
         if command:
             try:
                 status = subprocess.run(
@@ -459,13 +509,25 @@ def measure(args: argparse.Namespace, command: list[str]) -> int:
                 failure = f"the command ran past {args.run_timeout:g} s and was stopped"
         else:
             time.sleep(args.seconds)
-        end, start = take_snapshot(args)
-        change = deltas({**start, "time": start_time}, end)
+        if args.load_waits:
+            end = take_load_snapshot(args)
+        else:
+            end, previous = take_snapshot(args)
+            start = {**previous, **start}
+        change = deltas(start, end, distinguish_wrap=args.load_waits)
+    except LoadCountersUnavailableError:
+        print("FROST_LOAD_WINDOW unavailable")
+        return 1
     except RuntimeError as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    print("\n".join(report_lines(change)))
-    print(snapshot_lines(end)[0])
+    if args.load_waits:
+        print(counter_line("FROST_LOAD_WINDOW", change, "cycles"))
+        print(counter_line("FROST_LOAD_START", start, "time"))
+        print(counter_line("FROST_LOAD_END", end, "time"))
+    else:
+        print("\n".join(report_lines(change)))
+        print(counter_line("FROST_CACHE_SNAPSHOT", end, "time"))
     if failure:
         print(f"Error: {failure}", file=sys.stderr)
     return 1 if failure else 0
