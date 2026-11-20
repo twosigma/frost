@@ -2063,8 +2063,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # Build demo/Dockerfile as documented in README.md and run both the default
-  # two-program container invocation and a single-application invocation.
+  # Build demo/Dockerfile as documented in README.md and run the quick
+  # demonstration, the unfiltered two-program run (--raw), and a
+  # single-application invocation.
   test-demo-image:
     name: Demo Docker Image (build and run)
     runs-on: ubuntu-26.04
@@ -2095,34 +2096,68 @@ jobs:
         run: |
           docker build -f demo/Dockerfile -t frost-demo:local .
 
-      - name: Run default and single-application demo containers
+      - name: Run the quick demonstration, raw and single-application containers
         run: |
           set -euo pipefail
-          docker run --rm frost-demo:local 2>&1 | tee /tmp/frost-demo-default.log
-          grep -Fq "Frost: Hello, world!" /tmp/frost-demo-default.log
-          grep -Fq "seedcrc          : 0xe9f5" /tmp/frost-demo-default.log
-          grep -Fq "[0]crclist       : 0xe714" /tmp/frost-demo-default.log
-          grep -Fq "[0]crcmatrix     : 0x1fd7" /tmp/frost-demo-default.log
-          grep -Fq "[0]crcstate      : 0x8e3a" /tmp/frost-demo-default.log
-          grep -Fq "[0]crcfinal      : 0xe714" /tmp/frost-demo-default.log
-          grep -Fq "Correct operation validated." /tmp/frost-demo-default.log
-          grep -Fq "<<PASS>>" /tmp/frost-demo-default.log
-          grep -Fq "RTL assertions   : enabled after reset" /tmp/frost-demo-default.log
-          grep -Fq "Demonstration finished: hello_world and CoreMark completed on the FROST RTL." /tmp/frost-demo-default.log
-          if grep -Fq "<<FAIL>>" /tmp/frost-demo-default.log; then
-            echo "Unexpected <<FAIL>> in default demo output" >&2
+          # Every check stops the step by itself: no `&&` list, no bare negation.
+          require() {
+            if ! grep -Fq -- "$2" "$1"; then
+              echo "Missing from $1: $2" >&2
+              exit 1
+            fi
+          }
+          forbid() {
+            if grep -Fq -- "$2" "$1"; then
+              echo "Unexpected in $1: $2" >&2
+              exit 1
+            fi
+          }
+          start=$(date +%s)
+          docker run --rm frost-demo:local --quick 2>&1 | tee /tmp/frost-demo-quick.log
+          echo "Quick demonstration: $(( $(date +%s) - start )) s"
+          require /tmp/frost-demo-quick.log "clock cycles, checksum verified."
+          require /tmp/frost-demo-quick.log "every CRC correct (validated by CoreMark)"
+          require /tmp/frost-demo-quick.log "Both programs verified their own results."
+          # The closing table counts CoreMark's timed loop, so its cycles are the
+          # iteration's cycles CoreMark reports, and the table is labeled and sized.
+          require /tmp/frost-demo-quick.log "What the core did"
+          require /tmp/frost-demo-quick.log "Counted while rendering and inside CoreMark's timed loop"
+          require /tmp/frost-demo-quick.log "reorder-buffer entries (of 32)"
+          require /tmp/frost-demo-quick.log "clock cycles for this first iteration"
+          iteration=$(sed -n -E 's/^ *([0-9,]+) clock cycles for this first iteration.*/\1/p' /tmp/frost-demo-quick.log)
+          column=$(sed -n -E 's/^ *Clock cycles +[0-9,]+ +([0-9,]+) *$/\1/p' /tmp/frost-demo-quick.log)
+          if [ -z "$iteration" ]; then
+            echo "No iteration cycle count in the quick output" >&2
+            exit 1
+          fi
+          if [ -z "$column" ]; then
+            echo "No CoreMark cycle count in the closing table" >&2
+            exit 1
+          fi
+          if [ "$iteration" != "$column" ]; then
+            echo "Table says $column cycles, CoreMark says $iteration" >&2
             exit 1
           fi
 
+          docker run --rm frost-demo:local --raw 2>&1 | tee /tmp/frost-demo-raw.log
+          require /tmp/frost-demo-raw.log "Frost: Hello, world!"
+          require /tmp/frost-demo-raw.log "seedcrc          : 0xe9f5"
+          require /tmp/frost-demo-raw.log "[0]crclist       : 0xe714"
+          require /tmp/frost-demo-raw.log "[0]crcmatrix     : 0x1fd7"
+          require /tmp/frost-demo-raw.log "[0]crcstate      : 0x8e3a"
+          require /tmp/frost-demo-raw.log "[0]crcfinal      : 0xe714"
+          require /tmp/frost-demo-raw.log "Correct operation validated."
+          require /tmp/frost-demo-raw.log "<<PASS>>"
+          require /tmp/frost-demo-raw.log "RTL assertions   : enabled after reset"
+          require /tmp/frost-demo-raw.log "Demonstration finished: hello_world and CoreMark completed on the FROST RTL."
+          forbid /tmp/frost-demo-raw.log "<<FAIL>>"
+
           docker run --rm frost-demo:local --threads 1 --app hello_world 2>&1 | tee /tmp/frost-demo-single.log
-          grep -Fq "Simulator threads: 1" /tmp/frost-demo-single.log
-          grep -Fq "Frost: Hello, world!" /tmp/frost-demo-single.log
-          grep -Fq "to stop marker + 10,000 drain" /tmp/frost-demo-single.log
-          grep -Fq "RTL assertions   : enabled after reset" /tmp/frost-demo-single.log
-          if grep -Fq "<<FAIL>>" /tmp/frost-demo-single.log; then
-            echo "Unexpected <<FAIL>> in single-application demo output" >&2
-            exit 1
-          fi
+          require /tmp/frost-demo-single.log "Simulator threads: 1"
+          require /tmp/frost-demo-single.log "Frost: Hello, world!"
+          require /tmp/frost-demo-single.log "to stop marker + 10,000 drain"
+          require /tmp/frost-demo-single.log "RTL assertions   : enabled after reset"
+          forbid /tmp/frost-demo-single.log "<<FAIL>>"
 
   # ---------------------------------------------------------------------------
   # Build OpenSBI and musl userspace through the FROST BR2_EXTERNAL tree.
