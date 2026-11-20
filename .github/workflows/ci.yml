@@ -1757,7 +1757,7 @@ jobs:
             pytest_filter: >-
               prediction_release or prediction_handoff or if_prediction_walk_past or
               cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
-              reservation_station_cover or
+              reservation_station_cover or rs_mem_broadcast or
               rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
               rs_payload_twin_bmc_operands
             timeout_minutes: 150
@@ -1775,7 +1775,7 @@ jobs:
               tlb or imsic or aplic or immu or dmmu or load_queue or lq_ or rs_issue_tag_ or
               prediction_release or prediction_handoff or if_prediction_walk_past or
               cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
-              reservation_station_cover or
+              reservation_station_cover or rs_mem_broadcast or
               rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
               tage_copy_convergence or rob_retire_successor)
             timeout_minutes: 124

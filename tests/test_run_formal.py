@@ -149,6 +149,9 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("rs_issue_tag_banks", "int_equiv"): 600,
     ("rs_issue_tag_banks", "int_equiv_prims"): 600,
     ("rs_issue_tag_copies", "prove"): 600,
+    ("rs_mem_broadcast", "prove"): 300,
+    ("rs_mem_broadcast", "prove_prims"): 300,
+    ("rs_mem_broadcast", "cover"): 90,
 }
 
 
@@ -1387,6 +1390,11 @@ FORMAL_TARGETS = [
         tasks=("prove_int", "prove_mem", "prove_mul", "prove_src3", "cover_int"),
     ),
     FormalTarget(
+        "rs_mem_broadcast.sby",
+        "Memory station operand broadcasts preserve live rows, issue and LQ prematch",
+        tasks=("prove", "prove_prims", "cover"),
+    ),
+    FormalTarget(
         "rob_alloc_lvt.sby",
         "Packed ROB allocation memories match separate field memories",
         tasks=("prove",),
@@ -2174,6 +2182,7 @@ SBY_TASKS = [
     ),
     ("fp_gate_prove", "FP station engine issue, opcode and busy interlock."),
     ("fp_gate_cover", "FP pipeline bypass, engine release and squashed launch."),
+    ("prove_prims", "Prove the memory station equivalence with Xilinx LUTs."),
     ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
@@ -4261,6 +4270,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     registered = [name for name, _ in SBY_TASKS]
     required = {
         "predictor_fetch_contract": ["prove_buffer_source", "prove_slot1_sources"],
+        "rs_mem_broadcast": ["prove", "prove_prims", "cover"],
         "axi_coherent_bridge": [
             "prove_soc",
             "prove_soc_held",
