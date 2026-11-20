@@ -29,7 +29,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 
 CLOCK_PERIOD_NS = 10
 
@@ -200,14 +200,16 @@ def _idle_inputs(dut: Any) -> None:
     dut.i_bresp.value = RESP_OKAY
 
 
-async def _reset(dut: Any) -> None:
-    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
+async def _reset(dut: Any) -> Clock:
+    clock = Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns")
+    clock.start()
     _idle_inputs(dut)
     for _ in range(5):
         await RisingEdge(dut.i_clk)
     await FallingEdge(dut.i_clk)
     dut.i_rst_n.value = 1
     await FallingEdge(dut.i_clk)
+    return clock
 
 
 async def _run_to_done(dut: Any) -> int:
@@ -394,3 +396,63 @@ async def test_a_refused_write_never_completes(dut: Any) -> None:
         assert not int(dut.o_done.value), "done was reported after a refused write"
         assert int(dut.o_busy.value), "busy dropped after a refused write"
     slave.stop()
+
+
+@cocotb.test(skip=os.environ.get("DDR_INIT_ASYNC_RESET") != "1")
+@cocotb.parametrize(pulse=("between_edges", "stopped_clock", "mid_sweep"))
+async def test_async_restart(dut: Any, pulse: str) -> None:
+    """A clockless reset drops DONE or outstanding work and restarts at zero."""
+    clock = await _reset(dut)
+    slave = WriteSlave(dut, random.Random(53), b_delay=12)
+    if pulse == "mid_sweep":
+        dut.i_start.value = 1
+        for _ in range(32):
+            await RisingEdge(dut.i_clk)
+            await ReadOnly()
+            if (
+                slave.addresses
+                and not slave.responses_sent
+                and int(dut.o_awvalid.value)
+                and int(dut.o_wvalid.value)
+            ):
+                break
+        else:
+            raise AssertionError("did not reach an outstanding write with both VALIDs")
+    else:
+        await _run_to_done(dut)
+        _check_coverage(slave)
+        assert slave.responses_sent == TOTAL_BURSTS
+
+    await FallingEdge(dut.i_clk)
+    slave.stop()
+    if pulse == "stopped_clock":
+        clock.stop()
+    await Timer(1, unit="ns")
+    _idle_inputs(dut)
+    await Timer(1 if pulse != "stopped_clock" else 100, unit="ns")
+    assert not int(dut.i_clk.value)
+    assert int(dut.o_busy.value)
+    for name in (
+        "o_done",
+        "o_awvalid",
+        "o_wvalid",
+        "o_bready",
+        "aw_q",
+        "w_q",
+        "b_q",
+        "addr_q",
+        "beat_q",
+        "resp_error_q",
+        "started_q",
+    ):
+        assert int(getattr(dut, name).value) == 0, name
+    dut.i_rst_n.value = 1
+    if pulse == "stopped_clock":
+        clock.start(start_high=False)
+    fresh = WriteSlave(
+        dut, random.Random(59), aw_ready_p=0.65, w_ready_p=0.5, b_delay=4
+    )
+    await _run_to_done(dut)
+    _check_coverage(fresh)
+    assert fresh.responses_sent == TOTAL_BURSTS
+    fresh.stop()

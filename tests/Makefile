@@ -612,6 +612,15 @@ else ifeq ($(TOPLEVEL),vcu118_ddr_init)
 COMPILE_ARGS := \
 	$(ROOT)/boards/vcu118/vcu118_ddr_init.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),vcu118_frost)
+# Exercise the board itself. Cocotb drives the clock, CPU and DDR IP ports.
+# The omitted Ethernet and configuration primitives are outside this cone.
+VCU118_CONE := $(SIM_BUILD)/vcu118_ddr_cone.sv
+COMPILE_ARGS := -Wno-MODMISSING -Wno-WIDTHTRUNC \
+    $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+    $(ROOT)/boards/vcu118/vcu118_ddr_init.sv \
+    $(ROOT)/tests/fixtures/vcu118/ddr_subsys_wrapper.sv
+VERILOG_SOURCES := $(VCU118_CONE)
 else ifeq ($(TOPLEVEL),x3_ecc_reader)
 # X3 DDR4 ECC register poller unit bench (AXI4-Lite master only)
 COMPILE_ARGS := \
@@ -843,3 +852,11 @@ clean:: clean-local
 .PHONY: clean-local
 clean-local:
 	@rm -rf dump.vcd dump.fst sw.mem sw64.mem sw_ddr.mem results.xml sim_build
+
+ifneq ($(VCU118_CONE),)
+# Keep the physical board top and its port connections. Only shorten the
+# sweep, and use the production clock and subsystem interfaces as test ports.
+$(VCU118_CONE): $(ROOT)/boards/vcu118/vcu118_frost.sv $(ROOT)/boards/vcu118/vcu118_clock.sv $(ROOT)/boards/xilinx_frost_subsystem.sv | $(SIM_BUILD)
+	sed "s/\.REGION_BYTES(32'h8000_0000)/.REGION_BYTES(256)/" $< > $@
+	for src in $(wordlist 2,3,$^); do sed '/^);/q' $$src; echo endmodule; done >> $@
+endif

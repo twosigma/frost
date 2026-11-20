@@ -128,10 +128,12 @@ module vcu118_frost #(
   assign cpu_side_aresetn = cpu_clock_locked && !cpu_reset;
 
   logic mem_ok_synced;
-  // Active-low synchronous reset for FROST
-  logic [3:0] rst_sync_q = '0;
-  always_ff @(posedge main_clock or negedge cpu_clock_locked) begin
-    if (!cpu_clock_locked) begin
+  // The button resets the interconnect immediately. Hold the core, initializer
+  // and JTAG loader on the same assertion so a requester cannot outlive its
+  // transport. The core releases on the fourth qualified clock edge.
+  (* ASYNC_REG = "TRUE" *) logic [3:0] rst_sync_q = '0;
+  always_ff @(posedge main_clock or negedge cpu_side_aresetn) begin
+    if (!cpu_side_aresetn) begin
       rst_sync_q <= '0;
     end else begin
       rst_sync_q <= {rst_sync_q[2:0], !cpu_reset && ddr_init_done && mem_ok_synced};
@@ -416,8 +418,10 @@ module vcu118_frost #(
   assign s00_bready  = init_busy ? init_bready  : ddr_axi_bready;
 
   (* ASYNC_REG = "TRUE" *) logic [1:0] jtag_aresetn_synchronizer = '0;
-  always_ff @(posedge divided_clock_by_4) begin
-    jtag_aresetn_synchronizer <= {jtag_aresetn_synchronizer[0], cpu_side_aresetn & ddr_init_done};
+  always_ff @(posedge divided_clock_by_4 or negedge cpu_side_aresetn) begin
+    if (!cpu_side_aresetn) jtag_aresetn_synchronizer <= '0;
+    else
+      jtag_aresetn_synchronizer <= {jtag_aresetn_synchronizer[0], mem_ok_synced && ddr_init_done};
   end
 
   // DDR subsystem integration: tie off if in BRAM-only mode, or instantiate ddr_subsys
@@ -452,6 +456,14 @@ module vcu118_frost #(
     end else begin : gen_real_ddr
       assign ddr_axi_rst_n = cpu_side_aresetn;
 
+      // Reset with SmartConnect even when the MMCM stops both clocks.
+      // Release after the two-stage calibration synchronizer can flush.
+      (* ASYNC_REG = "TRUE" *) logic [2:0] ddr_init_rst_sync_q = '0;
+      always_ff @(posedge main_clock or negedge cpu_side_aresetn) begin
+        if (!cpu_side_aresetn) ddr_init_rst_sync_q <= '0;
+        else ddr_init_rst_sync_q <= {ddr_init_rst_sync_q[1:0], 1'b1};
+      end
+
       vcu118_ddr_init #(
           .ADDR_BITS   (31),
           .DATA_BITS   (512),
@@ -459,7 +471,7 @@ module vcu118_frost #(
           .REGION_BYTES(32'h8000_0000)
       ) u_ddr_init (
           .i_clk    (main_clock),
-          .i_rst_n  (cpu_clock_locked),
+          .i_rst_n  (ddr_init_rst_sync_q[2]),
           .i_start  (cpu_clock_locked && mem_ok_synced),
           .o_busy   (init_busy),
           .o_done   (ddr_init_done),

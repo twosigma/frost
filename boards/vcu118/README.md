@@ -87,19 +87,27 @@ build with `fpga/build/build.py vcu118 --no-misaligned-hw`. This sets the
 top-level `MISALIGNED_HW` parameter to 0. Disabling the cached tier also
 leaves the engine out.
 
-After calibration, `vcu118_ddr_init` writes zeros across the mapped region
-using full controller words. The address and data valid signals are
-registered independently and hold their payloads until accepted. Each
-channel inserts an idle cycle after an accepted transfer. The initializer
-waits for write responses before releasing the CPU and DDR loader from reset.
-An error response prevents initialization from completing.
+Power-up, a press of SW5 or loss of CPU clock lock resets the DDR
+controller and discards the contents of the mapped 2 GiB. The core,
+initializer and JTAG DDR loader enter reset at the same instant as
+SmartConnect and FROST's DDR transport, even when both clocks stop.
+Loss of lock also clears the calibration-ready synchronizer. The transport
+releases when the clock is locked and SW5 is released. The initializer
+leaves reset after three CPU clock edges. Once synchronized calibration
+is ready, it starts at offset zero and writes a full 64-byte word of zeros
+to every address in the region to establish its ECC bits.
 
-FROST's DDR transport and the CPU-facing interconnect share the reset
-from the button and clock lock. They release before the initializer starts.
-The core release shift register also requires synchronized calibration
-ready and initialization complete. Loss of clock lock clears the ready
-synchronizer even when the clock stops. Loss of calibration alone holds
-the core in reset and leaves the transport running to drain accepted requests.
+The address and data channels hold their payloads until accepted and insert
+an idle cycle after each transfer. The CPU and JTAG loader wait for the
+entire sweep, including the last OKAY write response. A write error holds
+them in reset until the next controller reset starts another sweep. The
+release takes four CPU clocks for the core and two CPU/4 clocks for JTAG
+once initialization and synchronized calibration are both ready.
+
+Loss of calibration alone holds the core and JTAG loader in reset. It
+preserves the completed sweep and leaves the transport and its write mux
+running so that accepted requests can drain. Recalibration then releases
+the requesters without clearing memory again.
 The controller provides ECC, but this wrapper does not forward its error
 telemetry to the CPU memory error unit.
 
