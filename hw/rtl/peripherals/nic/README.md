@@ -279,9 +279,9 @@ no frame open and complete with DONE|ERR.
 **TX stream handshake.** The MAC wrapper accepts a beat on a core clock edge with both
 VALID and READY high. After an edge with VALID high and READY low, the engine holds
 VALID, all 64 data bits, the last/byte-count code, checksum request and abort flag
-unchanged through the accepting edge. This includes a stalled first beat, final beat
-or abort. Descriptor rejection and the software reset drain preserve an outstanding
-offer. Core reset or loss of TX-domain readiness resets the stream and cancels it.
+unchanged through the accepting edge. This includes stalled first, middle, final,
+and abort beats. Descriptor rejection and the software reset drain preserve an
+outstanding offer. Core reset or loss of TX-domain readiness cancels the offer.
 
 The TX FIFO stores 68 bits per beat: data and the four-bit beat code. A 32-entry
 side FIFO holds one checksum request per frame. A first beat is accepted only
@@ -625,7 +625,7 @@ final scan.
 | `nic_irq`, `nic_reset` | Interrupt moderation, reset and drain, and absent or lost clocks |
 | `nic_dma_front` | Tagged responses, fairness, aperture errors, drain, and the same-line order guard with its bound on waiting |
 | `nic_byte_pack`, `nic_byte_unpack` | Byte placement, alignment, truncation, and backpressure |
-| `nic_rx_engine`, `nic_tx_engine` | Rings, filtering, buffer and status ordering, malformed descriptors, aborts, and disables |
+| `nic_rx_engine`, `nic_tx_engine` | Rings, filtering, buffer and status ordering, malformed descriptors, aborts, disables, and TX offers stalled across rejection and the reset drain |
 | `nic_tx_segment` | IPv4/IPv6 and VLAN segmentation, header and checksum updates, short or excess input, and stalled frame boundaries |
 | `nic_pause_rx_wire` | Both XGMII starts, all termination lanes, enable gaps, CRC, length, header validation and partial-frame reset |
 | `nic_pause_gmii`, `nic_pause_10g` | Pause reception through blocked RX and MAC overflow, timer duration, generation, refresh, release, and publication of the interval with its completed-frame event |
@@ -650,12 +650,13 @@ The `async_fifo` formal target checks bounded ordering and occupancy under
 unrelated clocks; `nic_dma_front` and `nic_irq` check the DMA front end and
 interrupt moderation and mask non-interference; `nic_reset_split_equiv` proves
 that `nic_core_reset_ctrl` and `nic_mac_reset_ctrl` match a monolithic reset
-controller; `nic_axis_boundary` proves the core-clock AXI4-Stream beat-code
-bijection and TX checksum side-FIFO framing; and `cdc_mailbox` checks the
-two-phase CDC mailbox primitive under `cdc_reset_pair` (`nic_mac_cdc`'s
-`nic_domain_reset` coupling is outside that harness; see the
-[formal guide](../../../../formal/README.md) for proof scope and reset-model
-limits). Linux driver testing uses `frost_nettest`; see the
+controller. `nic_axis_boundary` proves the core-clock AXI4-Stream beat-code
+bijection and TX checksum side-FIFO framing. `nic_tx_hold` proves the hold
+rule at the engine's FIFO boundary and covers rejection and the reset drain.
+`cdc_mailbox` checks the two-phase CDC mailbox primitive under `cdc_reset_pair`.
+For the proof scope and the reset model's treatment of `nic_mac_cdc`'s
+`nic_domain_reset` coupling, see the [formal guide](../../../../formal/README.md).
+Linux driver testing uses `frost_nettest`. See the
 [driver guide](../../../../linux/frost-net10g/README.md).
 
 The `nic_diag` proof checks the counter-to-register map and each live event

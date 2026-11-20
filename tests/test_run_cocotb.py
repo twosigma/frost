@@ -5161,7 +5161,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.nic.test_nic_tx_engine",
         hdl_toplevel_module="nic_tx_engine",
         description=(
-            "NIC transmit descriptors produce the right frame bytes and completions"
+            "NIC transmit frame bytes, completions and stalled offers across rejection and reset"
         ),
     ),
     "nic_tx_segment": CocotbRunConfig(
