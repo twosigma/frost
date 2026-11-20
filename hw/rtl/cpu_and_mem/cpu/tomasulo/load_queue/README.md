@@ -427,6 +427,9 @@ replace newer L0 store data. Each invalidation source has its own port:
 | DMA write | 32-byte line (four entries, tag-blind) | On the coherence port's invalidation edge; a same-cycle hit is suppressed |
 
 A Normal write-through store updates a matching dword using its byte enables.
+The wrapper qualifies the byte enables with the SQ's registered write-through
+permission. A standalone LQ with `STORE_STRB_PMA_CHECKED=0` checks the
+invalidate address itself.
 A full-dword store may allocate a new entry; a partial miss cannot allocate
 unknown bytes. Store updates take the RAM port ahead of a simultaneous read
 fill, while AMO and DMA invalidation take priority over both.

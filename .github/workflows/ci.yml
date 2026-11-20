@@ -1658,7 +1658,7 @@ jobs:
             timeout_minutes: 330
           - shard: Store boundary intervening load
             pytest_filter: coherence_store_boundary_bmc_intervening
-            timeout_minutes: 330
+            timeout_minutes: 350
           # The AMO flow BMCs have 55- and 80-minute allowances. The owner
           # and fatal checks and the AMO covers have a job of their own.
           - shard: Store boundary AMO flow

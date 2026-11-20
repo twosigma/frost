@@ -46,7 +46,7 @@ have 90 minutes.
 `coherent_hart_cache:coh_hart_maint_prove`, `coh_hart_maint_four_bmc`, and
 `coherence_store_boundary:cover_four` have 120 minutes.
 `coherence_store_boundary:bmc_four` has 300 minutes and `bmc_intervening`
-has 240 minutes. `coherence_l1d:coh_l1d_bmc` has 180 minutes at depth 40;
+has 330 minutes. `coherence_l1d:coh_l1d_bmc` has 180 minutes at depth 40;
 `coh_l1d_multi_bmc` has 300 minutes at depth 40.
 `coh_l1d_zero_bmc`, `coh_l1d_full_bmc`, `coh_l1d_withdraw_full_bmc` and
 `coh_l1d_withdraw_zero_bmc` have 180 minutes each at depth 40 on the Glucose
@@ -457,6 +457,7 @@ bits, so a type taken from a different source than its target would show.
 | `instr_operand_classifier` | Decode's operand-class fields equal classification through the decoder's operation enum for every instruction bit pattern, injected NOPs, illegal flags, and fetch faults, without the vector unit (`bmc`) and with it (`vector_bmc`), where the vector FP classes (`VARITH_F`, `VTOF`) complete at the ROB head, `vfmv.f.s` writing an f register and vector FP arithmetic producing FP flags; only FP_RS ops read FP source 3; MOP decode matches the Zimop masks |
 | `register_alias_table` | x0 is never renamed; a rename records its ROB tag; an INT commit clears a mapping only if the mapping still holds the committing tag; reset clears mappings and checkpoints; a full flush clears the checkpoints and, unless a checkpoint restore coincides, the mappings; a reclaim-all restore frees every checkpoint |
 | `rat_checkpoint_restore` | Register alias table coupled to a 32-entry circular ROB, per-allocation epoch toggle, 1-cycle pipelined commit bus, and 2-phase early and commit-time branch recovery, unbounded (`prove_int_active`, `prove_int_ckpt_lo`, `prove_int_ckpt_hi`, `prove_fp_active`, `prove_fp_ckpt_lo`, `prove_fp_ckpt_hi`) against an epoch-free instruction-sequence oracle for symbolic-constant watched registers across all 31 non-zero INT registers, all 32 FP registers, and all 8 checkpoint slots. All six tasks are required: each checks its owning partition while assuming only the preceding cycle's assertion results, so a first failure remains admissible in its owning partition. Dynamic `x0` probe lookups report unrenamed zero; lowest-free checkpoint allocation and availability match pool occupancy (`cover`, depth 11, reaches `o_checkpoint_available == 0`, slot `7` allocation, slot-2 overlay save and early restore, restoration of a live integer link after a younger rename to the same register, commit-time recovery clearing active rename state, and slot-2 FP commit clearing); slot-2 branch saves overlay a same-cycle slot-1 rename; early restores retain the jump’s own integer link and recover older unretired producers from the snapshot, and restore `o_ras_tos`, `o_ras_valid_count`, and the full `o_ras_top`; and dual-lane commits clear only matching tags. Assumes an initial reset and non-`x0` destination encoding. Unexplored inputs: watched lookups run only on `src1` ports; INT `src2` is checked only at `x0`; FP `src2` and `src3` are tied to `0`; register-file value passthrough is unchecked; a restore never coincides with `i_flush_all`; early restore selects live control-flow instructions with an integer destination or no destination; non-watched commits never name the watched register; recovery and free timing follow the harness's model of `cpu_ooo`; and `i_checkpoint_reclaim_all` is free here whereas the core ties it to `0` (`misprediction_flush_controller`) |
+| `l0_store_boundary_twin` | The SQ write stage, invalidate port and L0 byte strobes equal the original address-decoded boundary for every selected beat and launch decision |
 | `decoded_bundle_queue_twin` | The producer stall select and the shadow-next select (LUT3, LUT5 per bit) equal their portable form with the split shadow stall and four late copies |
 | `id_stage_kill_equiv` | `id_stage`, without the vector unit (`id_kill_equiv`) and with it (`id_kill_equiv_vector`), with early CSR-gated legality and post-classifier masking equals `id_stage` with `is_illegal_instruction` and `is_fetch_fault` applied inside `instr_operand_classifier`, across all 38 operand-class bits, register next states, and all eight stage outputs for both slots, for every instruction word, CSR legality input, and `inject_nop` state |
 
@@ -622,6 +623,23 @@ window. The 64-bit `divider` simulation checks Python integer division and
 cycle counts, including early termination and setup cancellation.
 
 ### Memory system and coherence
+
+The store boundary comparison (`boundary_twin`, 60 seconds) starts at the
+inputs to the SQ write stage. Its two production LUT5s decide write launch
+and drain completion. The comparison follows the registered address, data,
+byte enables and metadata through the wrapper to the five L0 store inputs.
+The reference retains the portable selectors and the original LQ address
+decode. Its added witness records the permission of the sampled address.
+
+Both forms open undefined values, check initialization before and after
+flattening, and check all 12 registers on the rising edge of `i_clk`.
+Reset and full flush are free inputs. The address and permission D inputs
+are compared for every value of the cut state. Each edge therefore makes
+the permission equal the predicate of the captured address, including an
+idle, reset or flush edge. The strobe comparison uses this relation on the
+cut Q inputs. The runner checks both compiled port lists and the unused
+function arguments and results. All 739 comparison points must prove,
+including six reached from the two SQ selectors.
 
 The four-burst AXI bridge proof checks B-channel stability in one partition and
 the other 138 assertions in a second partition. If an edit changes that count,

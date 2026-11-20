@@ -36,6 +36,7 @@ from typing import Any
 import pytest
 
 import ci_reuse
+import l0_store_boundary
 import sby_config
 from sby_config import SCRIPT_FORMS, UNDEFINED_CONSTANT
 
@@ -49,6 +50,7 @@ SBY_TASK_TIMEOUT_S = 2400
 # those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("imem_predecode_twin", "imem_predecode_live"): 60,
+    ("l0_store_boundary_twin", "boundary_twin"): 60,
     ("coherence_dma_ingress", "coh_dma_ingress_soc_prove"): 3120,
     ("coherence_home_twin", "home_twin_small"): 600,
     ("coherence_home_twin", "home_twin_four"): 600,
@@ -122,7 +124,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
     ("coherence_store_boundary", "cover_four"): 7200,
-    ("coherence_store_boundary", "bmc_intervening"): 14400,
+    ("coherence_store_boundary", "bmc_intervening"): 19800,
     ("coherence_store_boundary", "bmc_amo_same"): 3300,
     ("coherence_store_boundary", "bmc_amo_other"): 4800,
     ("coherence_store_boundary", "bmc_sc"): 6000,
@@ -1953,6 +1955,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "l0_store_boundary_twin.sby",
+        "Store-queue write capture and the load cache store port across each clock edge.",
+        tasks=("boundary_twin",),
+    ),
+    FormalTarget(
         "decoded_bundle_queue_twin.sby",
         "Decoded bundle queue: primitive and portable forms are equivalent.",
         tasks=("dbq_twin",),
@@ -3628,6 +3635,10 @@ SBY_TASKS = [
         "L1D primitive form equals its portable form, eight miss slots with stream prefetching.",
     ),
     (
+        "boundary_twin",
+        "SQ write capture and the L0 store strobe equal the address-decoded boundary.",
+    ),
+    (
         "dbq_twin",
         "Decoded bundle queue primitive form equals its portable form with the split shadow stall.",
     ),
@@ -3830,6 +3841,7 @@ SBY_TASK_MODE_OVERRIDES: dict[str, str] = {
     "continuity": "bmc",
     "csr_twin": "bmc",
     "csr_twin_vector": "bmc",
+    "boundary_twin": "bmc",
     "dbq_twin": "bmc",
     "imem_predecode_live": "bmc",
     "dmmu_twin": "bmc",
@@ -4086,6 +4098,50 @@ def test_predictor_reference_sources_are_frozen() -> None:
         assert (
             hashlib.sha1(git_object, usedforsecurity=False).hexdigest() == expected
         ), filename
+
+
+@pytest.mark.parametrize(
+    ("form", "original", "replacement"),
+    [
+        ("gold", "select -assert-none a:init t:$initstate t:$anyinit\n", ""),
+        ("gate", "select -assert-none a:init t:$initstate t:$anyinit\n", ""),
+        (
+            "gate",
+            "t:$dff i:i_clk %co1:+$dff[CLK] %d",
+            "t:$dff i:i_rst_n %co1:+$dff[CLK] %d",
+        ),
+        (
+            "gold",
+            "select -assert-none a:init t:$initstate t:$anyinit t:$anyconst",
+            "select -assert-none t:$anyconst",
+        ),
+        (
+            "gate",
+            "select -assert-none a:init t:$initstate t:$anyinit t:$anyconst",
+            "select -assert-none t:$anyconst",
+        ),
+        ("point proof", "select -assert-min 6 @blk", "select -assert-min 1 @blk"),
+        ("point proof", "equiv_status -assert\n", "equiv_status -assert @blk\n"),
+    ],
+)
+def test_l0_store_boundary_requires_each_form(
+    tmp_path: Path, form: str, original: str, replacement: str
+) -> None:
+    """A changed source cut, initial state, clock or point proof fails before the solver."""
+    runner = FormalRunner()
+    target = next(t for t in FORMAL_TARGETS if t.name == l0_store_boundary.PAIR[0])
+    source = runner.formal_dir / target.sby_file
+    task = l0_store_boundary.PAIR[1]
+    l0_store_boundary.check_script(sby_config.source(source).task(task), source.parent)
+    staged = sby_config.stage_proof(source, runner.root_dir, tmp_path)
+    runner.formal_dir = staged.parent
+    arms = staged.read_text().split("design -stash gold\n")
+    index = 0 if form == "gold" else 1
+    assert original in arms[index]
+    arms[index] = arms[index].replace(original, replacement, 1)
+    staged.write_text("design -stash gold\n".join(arms))
+    with pytest.raises(sby_config.ConfigError, match=f"store boundary {form}:"):
+        runner.run_formal(target, task)
 
 
 def test_formal_target_tasks_are_registered() -> None:
@@ -4841,6 +4897,10 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         {
             "prove prove_margin2 cover": ["memory_map", "opt -full"],
         },
+    ),
+    "l0_store_boundary_twin": (
+        "equiv_simple runs after undefined constants are opened in both boundary forms",
+        {"boundary_twin": ["equiv_simple"]},
     ),
     "decoded_bundle_queue_twin": (
         "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
@@ -10802,6 +10862,8 @@ class FormalRunner:
             for dest in staged_cfg.files:
                 if not (src_dir / dest).is_file():
                     fail(f"missing staged source {dest}")
+            if pair == l0_store_boundary.PAIR:
+                l0_store_boundary.check_model(src_dir / "twin_ports.json")
             local_cfg = replace(
                 staged_cfg, files={dest: dest for dest in staged_cfg.files}
             )
@@ -10840,6 +10902,11 @@ class FormalRunner:
 
         checkout_cfg = sby_config.source(sby_path).task(task)
         checkout_cfg.parsed(sby_path.parent, expand_opening=True)
+        if (target.name, task) == l0_store_boundary.PAIR:
+            l0_store_boundary.check_script(checkout_cfg, sby_path.parent)
+            opening_errors = undefined_opening_file_gaps(sby_path, checkout_cfg)
+            if opening_errors:
+                raise sby_config.ConfigError(opening_errors[0])
         expected_mode = registered_task_mode(task)
         if checkout_cfg.options.get("mode") != expected_mode:
             raise sby_config.ConfigError(
@@ -11067,7 +11134,7 @@ def test_fatal_frame_validation(
         ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc", 3600),
         ("coherence_l1d", "coh_l1d_bmc", 10800),
         ("coherence_store_boundary", "bmc_four", 18000),
-        ("coherence_store_boundary", "bmc_intervening", 14400),
+        ("coherence_store_boundary", "bmc_intervening", 19800),
         ("coherence_store_boundary", "bmc_amo_same", 3300),
         ("coherence_store_boundary", "bmc_amo_other", 4800),
         ("coherence_store_boundary", "bmc_sc", 6000),

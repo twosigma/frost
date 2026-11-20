@@ -818,6 +818,7 @@ module coherence_store_boundary_formal #(
       .o_cache_invalidate_valid(sq_cache_invalidate_valid),
       .o_cache_invalidate_addr(sq_cache_invalidate_addr),
       .o_cache_invalidate_block(sq_cache_invalidate_block),
+      .o_cache_store_writethrough(),
       .i_rob_head_tag(head),
       .i_flush_en('0),
       .i_flush_tag('0),

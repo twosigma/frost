@@ -14,6 +14,7 @@
  *    limitations under the License.
  */
 
+`ifndef L0_STORE_BOUNDARY_PROOF
 /*
  * Load queue. Each load, LR and AMO holds an entry from dispatch until its
  * result enters cdb_stage, the one-entry register in front of the MEM CDB
@@ -55,7 +56,9 @@ module load_queue #(
     // With the coherent L1D's holder protocol (a record takes its line from
     // the store pushed the cycle before; holder zero changes only when an
     // atomic starts or ends), register each entry's same-sector match.
-    parameter bit REGISTERED_SECTOR_MATCH = 1'b0
+    parameter bit REGISTERED_SECTOR_MATCH = 1'b0,
+    // The producer qualifies i_cache_store_strb with the store address's PMA.
+    parameter bit STORE_STRB_PMA_CHECKED = 1'b0
 ) (
     input logic i_coherent_cut_hold = 1'b0,
     input logic [riscv_pkg::XLEN-1:0] i_coherent_cut_addr = '0,
@@ -2710,7 +2713,14 @@ module load_queue #(
   (* keep = "true" *) logic          cache_fill_pre, cache_fill_cut;
   logic [                  XLEN-1:0] cache_fill_addr;
   logic [riscv_pkg::MemDataBits-1:0] cache_fill_data;
+`endif
+  wire [7:0] cache_store_strb = CACHE_NORMAL_MEMORY &&
+      (STORE_STRB_PMA_CHECKED || riscv_pkg::pma_writethrough_ok(i_cache_invalidate_addr)) ?
+      i_cache_store_strb : 8'b0;
 
+`ifdef L0_STORE_BOUNDARY_PROOF
+  l0_store_observation observe (
+`else
   lq_l0_cache #(
       .DEPTH(L0_CACHE_DEPTH),
       .XLEN (XLEN)
@@ -2732,13 +2742,17 @@ module load_queue #(
 
       // SQ launch and AMO completion use separate invalidate ports for timing.
       // AMO serialization makes them exclusive; the cache does not require it.
+`endif
       .i_invalidate_valid(i_cache_invalidate_valid),
       .i_invalidate_addr(i_cache_invalidate_addr),
       .i_invalidate_block(i_cache_invalidate_block),
       .i_store_data(i_cache_store_data),
-      .i_store_strb((CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
-          i_cache_invalidate_addr
-      )) ? i_cache_store_strb : 8'b0),
+      .i_store_strb(cache_store_strb),
+
+`ifdef L0_STORE_BOUNDARY_PROOF
+      .o_port_valid, .o_port_addr, .o_port_block, .o_port_data, .o_port_strb
+  );
+`else
       .i_invalidate2_valid(amo_cache_inv),
       .i_invalidate2_addr(amo_write_addr_q),
 
@@ -6700,3 +6714,4 @@ module lq_staged_candidate_select #(
       ((i_head_stored || i_head_update) ? i_head_write : i_merged_write);
 `endif
 endmodule
+`endif
