@@ -1067,7 +1067,14 @@ async def test_unrelated_mac_clocks(dut: Any) -> None:
 
 @cocotb.test()
 async def test_reject_with_full_tx_fifo(dut: Any) -> None:
-    """Use PAUSE to fill the TX FIFO and follow a rejected frame through the MAC."""
+    """Use PAUSE to fill the TX FIFO and follow a rejected frame through the MAC.
+
+    Sample the engine's offer at the CDC slave's AXI4-Stream inputs. The
+    former beat code 7 is TKEEP=0xFF with TLAST low. The closing code 8
+    is TKEEP=0x01 with TLAST high, and TUSER carries the abort bit.
+    The checksum request is still on i_tx_csum. The MAC drop pulse
+    enters the CDC at i_tx_drop.
+    """
     from cocotb_tests.nic.test_nic_pause import CTRL_RX, pause_frame
 
     nic = await _start(dut, 101, loopback=False)
@@ -1075,7 +1082,11 @@ async def test_reject_with_full_tx_fifo(dut: Any) -> None:
     await nic.wr(PAUSE_CTRL, CTRL_RX)
     await nic.wr(CTRL, CTRL_TX_EN | CTRL_RX_EN)
     await nic.wait_carrier()
-    mac = dut.u_mac
+    mac = (
+        dut.gen_mac_1g.u_mac.u_cdc
+        if hasattr(dut, "gen_mac_1g")
+        else dut.gen_mac_10g.u_mac.u_cdc
+    )
     fifo = mac.u_tx_fifo
     nic.wire.send([pause_frame(0xFFFF)])
     for _ in range(4000):
@@ -1091,25 +1102,32 @@ async def test_reject_with_full_tx_fifo(dut: Any) -> None:
     last_word = int.from_bytes(partial[-8:], "little")
     for _ in range(20000):
         await RisingEdge(dut.i_clk)
-        if int(mac.i_tx_valid.value) and not int(mac.o_tx_ready.value):
+        if int(mac.s_axis_tx_tvalid.value) and not int(mac.s_axis_tx_tready.value):
             break
     assert int(fifo.o_occupancy.value) == limit
-    assert int(mac.tx_paused.value) and not int(mac.o_tx_ready.value)
+    assert int(mac.tx_paused.value) and not int(mac.s_axis_tx_tready.value)
 
     async def check_fifo_offer() -> None:
         accepted = False
         for _ in range(20000):
             await RisingEdge(dut.i_clk)
             if not accepted:
-                assert int(mac.i_tx_valid.value), "withdrew the stalled data beat"
-                assert int(mac.i_tx_data.value) == last_word
-                assert int(mac.i_tx_code.value) == 7
-                assert int(mac.i_tx_csum.value) == 0 and not int(mac.i_tx_abort.value)
-                accepted = bool(mac.o_tx_ready.value)
+                assert int(mac.s_axis_tx_tvalid.value), "withdrew the stalled data beat"
+                assert int(mac.s_axis_tx_tdata.value) == last_word
+                assert int(mac.s_axis_tx_tkeep.value) == 0xFF
+                assert not int(mac.s_axis_tx_tlast.value)
+                assert int(mac.i_tx_csum.value) == 0 and not int(
+                    mac.s_axis_tx_tuser.value
+                )
+                accepted = bool(mac.s_axis_tx_tready.value)
                 if accepted:
                     dut._log.info("TX FIFO accepted held data %016x", last_word)
-            elif int(mac.i_tx_valid.value) and int(mac.o_tx_ready.value):
-                assert int(mac.i_tx_abort.value) and int(mac.i_tx_code.value) == 8
+            elif int(mac.s_axis_tx_tvalid.value) and int(mac.s_axis_tx_tready.value):
+                assert int(mac.s_axis_tx_tuser.value)
+                assert (
+                    int(mac.s_axis_tx_tlast.value)
+                    and int(mac.s_axis_tx_tkeep.value) == 0x01
+                )
                 dut._log.info("TX FIFO accepted closing abort")
                 return
         raise AssertionError("TX FIFO did not accept held data followed by abort")
@@ -1129,7 +1147,7 @@ async def test_reject_with_full_tx_fifo(dut: Any) -> None:
                 else:
                     assert code == 7
                     data.extend((word & ((1 << 64) - 1)).to_bytes(8, "little"))
-            if int(mac.tx_drop.value):
+            if int(mac.i_tx_drop.value):
                 assert closed
                 dut._log.info("MAC dropped %d data bytes followed by abort", len(data))
                 return
