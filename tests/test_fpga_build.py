@@ -2209,6 +2209,61 @@ def test_perf_counters_cli_default_overrides_stale_environment(
     assert observed == [(322_265_625, "0")]
 
 
+@pytest.mark.parametrize(
+    "options,inherited,expected",
+    [
+        ([], "0", "1"),
+        (["--misaligned-hw"], "0", "1"),
+        (["--no-misaligned-hw"], "1", "0"),
+    ],
+)
+def test_vcu118_misaligned_hw_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    options: list[str],
+    inherited: str,
+    expected: str,
+) -> None:
+    """The VCU118 CLI selects the synthesis setting even in a stale environment."""
+    monkeypatch.setenv("FROST_MISALIGNED_HW", inherited)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "vcu118",
+            "--build-dir",
+            str(tmp_path),
+            "--stop-after",
+            "synth",
+            *options,
+        ],
+    )
+    monkeypatch.setattr(fpga_build, "compile_hello_world", lambda *args, **kwargs: True)
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+
+    def check_synthesis(*args: Any, **kwargs: Any) -> tuple[bool, float, str]:
+        assert args[1:3] == ("vcu118", "synth")
+        assert os.environ["FROST_MISALIGNED_HW"] == expected
+        return True, 0.0, "post_synth"
+
+    monkeypatch.setattr(fpga_build, "run_step", check_synthesis)
+    fpga_build.main()
+
+
+def test_x3_rejects_disabling_misaligned_hw(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The X3 always includes the misaligned-access engine."""
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--no-misaligned-hw"])
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+    assert "--no-misaligned-hw is only supported for vcu118" in capsys.readouterr().err
+
+
 def test_read_log_tail_streams_appended_text_and_survives_truncation(
     tmp_path: Path,
 ) -> None:
@@ -5362,18 +5417,52 @@ def test_live_parent_session_with_trailing_child_exit_line_is_not_killed(
     """A live parent session is not killed when a child exit line sits at EOF."""
     if not Path("/proc").is_dir():
         pytest.skip("requires /proc process inspection")
+    child_exit = "INFO: [Common 17-206] Exiting Vivado at child end...\n"
+    release = tmp_path / "release"
     script = tmp_path / "parent_session.py"
     script.write_text(
-        "import sys, time\n"
+        "import signal, sys, time\n"
+        "from pathlib import Path\n"
+        "signal.alarm(120)\n"
         "with open('vivado.log', 'w') as log:\n"
-        "    log.write('INFO: [Common 17-206] Exiting Vivado at child end...\\n')\n"
+        f"    log.write({child_exit!r})\n"
         "    log.flush()\n"
-        "    time.sleep(0.25)\n"
+        f"    while not Path({release.name!r}).exists():\n"
+        "        time.sleep(0.02)\n"
         "    log.write('** DONE\\nINFO: [Common 17-206] Exiting Vivado at parent end...\\n')\n"
         "    log.flush()\n"
         "sys.exit(7)\n"
     )
-    monkeypatch.setattr(fpga_build, "VIVADO_EXIT_GRACE_S", 0.05)
+    session_is_alive = fpga_build._vivado_session_is_alive
+    grace: float = fpga_build.VIVADO_EXIT_GRACE_S
+    observations = 0
+
+    def observe_session(
+        process: subprocess.Popen[bytes], log_path: Path
+    ) -> bool | None:
+        nonlocal observations
+        at_child_exit = (
+            observations < 3
+            and log_path.is_file()
+            and log_path.read_text() == child_exit
+        )
+        alive: bool | None = session_is_alive(process, log_path)
+        if at_child_exit:
+            observations += 1
+            if observations == 3:
+                release.touch()
+        return alive
+
+    # Leave the child marker at EOF through two checks a grace period apart.
+    # After release, the watchdog's clock advances at its normal rate.
+    monkeypatch.setattr(fpga_build, "_vivado_session_is_alive", observe_session)
+    monkeypatch.setattr(
+        fpga_build,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: time.monotonic() + (grace + 1) * observations
+        ),
+    )
     monkeypatch.setattr(fpga_build, "VIVADO_POLL_S", 0.02)
     assert fpga_build.run_vivado_step([sys.executable, str(script)], tmp_path) == 7
 

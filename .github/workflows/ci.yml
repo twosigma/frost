@@ -455,7 +455,8 @@ jobs:
               [opensbi_smoke_no_misaligned_hw] or [opensbi_reset_cold] or [opensbi_reset_warm]
               or [isa_test_sram_macros] or [ddr_test_sram_macros]
               or [ddr_exec_test_sram_macros] or
-              [nic_loopback_sram_macros] or [cache_counters_openocd] or [async_hello_world]
+              [nic_loopback_sram_macros] or [cache_counters_openocd] or [hw_debug_check_openocd]
+              or [async_hello_world]
               or [async_nic_loopback] or [async_dma_torture]
               or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
               or [cbo_zero_pages] or [cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]
@@ -562,14 +563,15 @@ jobs:
               coverage: [bram]
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_reset_warm]"
-          # The OpenOCD session that reads the cache counters is long, and its
-          # program runs from low BRAM in either tier.
+          # The OpenOCD sessions that read the cache counters and run the
+          # debug-port check are long, and their program runs from low BRAM
+          # in either tier.
           - mem_config: bram
             shard:
               name: Real Programs (Cache counters over OpenOCD)
               coverage: []
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[cache_counters_openocd]"
+              pytest_filter: "[cache_counters_openocd] or [hw_debug_check_openocd]"
           # The unit benches run serially in two jobs of about equal duration;
           # tests/test_run_cocotb.py assigns each bench to one of them.
           - mem_config: bram
@@ -1094,7 +1096,7 @@ jobs:
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
   # model and on the simulated SoC and compares every retired instruction
   # (tests/test_testrig.py). The first shard replays saved counterexamples,
-  # scalar cryptography sequences, and deterministic counter controls.
+  # scalar cryptography sequences, deterministic counter controls, and WFI traces.
   # Every shard then draws its own random sequences, 100 per template, from the
   # engine's templates, and its own random A-extension (verif/testrig/atomics.py),
   # Sv39 MMU (verif/testrig/mmu.py), and CMO/Sstvala (verif/testrig/cmo.py)
@@ -1171,6 +1173,16 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --cmo 80 --continue-on-fail
+
+      - name: Compare FROST with Sail on directed WFI traces
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        env:
+          # The default TestRIG build supplies the shard's startup sweep.
+          FROST_STARTUP_SWEEP: "0"
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run make -C tests clean
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --wfi --log-dir tests/testrig_logs/wfi-run
 
       - name: Require startup assertion controls
         if: ${{ always() && matrix.shard == 3 }}
@@ -1745,10 +1757,14 @@ jobs:
             pytest_filter: >-
               prediction_release or prediction_handoff or if_prediction_walk_past or
               cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
-              reservation_station_cover or
+              reservation_station_cover or rs_mem_broadcast or
               rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
               rs_payload_twin_bmc_operands
             timeout_minutes: 150
+          # Allow 10 minutes for setup, 60 for the bounded check and 5 for cover.
+          - shard: ROB retirement successor
+            pytest_filter: rob_retire_successor
+            timeout_minutes: 75
           # Everything not named above: new small equivalence proofs and block
           # proofs go here unless they belong to one of the areas above.
           - shard: Other tasks
@@ -1759,9 +1775,9 @@ jobs:
               tlb or imsic or aplic or immu or dmmu or load_queue or lq_ or rs_issue_tag_ or
               prediction_release or prediction_handoff or if_prediction_walk_past or
               cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
-              reservation_station_cover or
+              reservation_station_cover or rs_mem_broadcast or
               rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
-              tage_copy_convergence)
+              tage_copy_convergence or rob_retire_successor)
             timeout_minutes: 124
     # A task whose key has a pass marker is skipped; one in twenty of those
     # is proved again as a canary. The markers are cached per job: a main run
@@ -1963,7 +1979,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs: build-docker
     if: ${{ !cancelled() && needs.build-docker.result == 'success' }}
-    timeout-minutes: ${{ matrix.mode == 'complete' && 360 || 140 }}
+    timeout-minutes: ${{ matrix.job_minutes || (matrix.mode == 'complete' && 360 || 140) }}
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -1992,7 +2008,7 @@ jobs:
           rm -f /tmp/frost-dev.tar
       - name: Run vector programs
         id: programs
-        timeout-minutes: ${{ matrix.mode == 'complete' && 310 || 100 }}
+        timeout-minutes: ${{ matrix.step_minutes || (matrix.mode == 'complete' && 310 || 100) }}
         env:
           VLEN: ${{ matrix.vlen }}
           MODE: ${{ matrix.mode }}

@@ -686,13 +686,12 @@ are access faults, and so is an instruction fetch (PMA overrides the Svpbmt
 chapter permits). The walk cache holds only pointers, whose PBMT field must be
 zero.
 
-On the X3, a misaligned NC/IO load or store to a DDR alias raises a load or
-store access fault (cause 5 or 7); one to low BRAM or device registers raises
-an address-misaligned exception (cause 4 or 6). The VCU118 has no hardware
-misaligned-access engine:
-misaligned loads and stores raise cause 4 or 6 before translation, including
-NC/IO accesses, for firmware to handle. Aligned NC/IO DDR accesses on its
-2 GiB map raise cause 5 or 7 because the map has no alias.
+With the misaligned-access engine, a misaligned load or store to a permitted
+NC/IO DDR page raises an access fault (cause 5 or 7). The X3 has an uncached
+DDR alias. The VCU118's 2 GiB map has no alias, so aligned NC/IO DDR accesses
+also raise access faults. Misaligned NC/IO accesses to low BRAM or mapped
+device registers raise an address-misaligned exception (cause 4 or 6).
+Without the engine, misaligned NC/IO loads and stores trap before translation.
 
 The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
 (the level-0 table of a 2 MiB region) and 4 root pointers (the level-1 table
@@ -718,9 +717,9 @@ walker's port into the cache hierarchy.
 
 `misaligned/ma_engine.sv` performs one misaligned plain load or store in
 cacheable DDR as one or two 32-byte sector transactions. `cpu_ooo`
-instantiates it when the `MISALIGNED_HW` parameter is set (default off; the
-X3 build and the simulation default set it), which needs the cached tier;
-elaboration rejects it without one.
+instantiates it when the `MISALIGNED_HW` parameter is set. The parameter
+defaults to 0 at the core and requires the cached tier. The X3, VCU118 and
+simulation builds enable it by default.
 Without the engine, every misaligned access raises the address-misaligned
 exception.
 
@@ -1002,7 +1001,14 @@ one to eight fields), the fault-only-first loads, and the whole-register and
 mask loads and stores as `VLOAD` and `VSTORE` (illegal with VS Off); they
 dispatch in slot 1 only with `RS_NONE` and take an entry in the vector memory
 table (`vector/vec_vmt.sv`), holding the next one while all four entries are
-live. Without the unit, ID decodes only the one-field unit-stride, the
+live. In `id_stage/instr_decoder.sv`, `vector_mem_ok` rejects `mew = 1`,
+reserved `lumop`/`sumop` values, masked (`vm = 0`) whole-register and mask
+forms, whole-register field counts other than 1, 2, 4 or 8 (`nf` outside
+`{0, 1, 3, 7}`), nonzero `nf` on mask forms, and nonzero widths on
+whole-register stores and mask forms before dispatch; only legal bit encodings
+of those forms reach `vec_head_mmu`, which checks register-group alignment and
+`vtype`. Neither `instr_decoder` nor `vec_head_mmu`'s legality predicate
+depends on `VLEN`. Without the unit, ID decodes only the one-field unit-stride, the
 whole-register and the mask forms that way, and the others are illegal there.
 The table lists the vector memory instructions in flight in program order for
 the load and store queues' range holds (including 64-byte block holds on
@@ -1497,11 +1503,52 @@ the integrated core; the `*_fetch_fuzz` variants, such as
 `branch_pred_test_fetch_fuzz`, add random fetch gaps with `FETCH_VALID_FUZZ=1`.
 The `if_stage` tests also cover a PD redirect arriving during a fetch gap
 after a BTB prediction: the redirect bubble must survive the gap and stalls,
-and the first target bundle must be emitted exactly once.
+and the first target bundle must be emitted exactly once. Both the
+`pc_controller` and `if_stage` benches cover walk-past orderings across both
+instruction slots, including a flush in a walk-past cycle, a fetch gap during
+walk-past, an even-address slot-2 redirect to `P`, a slot-2 redirect to
+`P - 2`, a stall inside the slot-2 redirect bubble, a stall-replayed
+slot-2 prediction retiring a pending entry, and an odd-address predecessor
+release blocking a live slot-1 BTB hit at `P - 2`.
 Formal targets cover the PC muxes and holdoffs, the pending-prediction
 handoff, predictor aliasing, RV64C predecode (`rvc_predecode` checks every
 16-bit parcel against the reference decompressor), the TLBs and walker, and the
 CSR file and trap unit.
+
+A simulation check in `cpu_ooo` follows the architectural PC across every
+retirement, so it runs in every whole-program test. Each instruction that
+retires must sit at the next PC of the one before it: the sequential PC, or
+the resolved target of a taken branch or jump. Slot 2 must sit at slot 1's
+next PC. A trap, interrupt or Debug Mode entry must save that next PC, and an
+xRET must sit at it. The trap or xRET target then becomes the next PC, and
+reset restarts the check. Two takes save a different PC: an interrupt or halt
+request taken while a legal WFI waits at the head saves the PC past the WFI,
+and a fault of the misaligned-access engine saves the PC of the instruction
+its assist took. The check tracks both cases itself rather than reading the
+core's own state for them. A Debug Mode go discards its saved PC and is not
+checked. The first wrong retirement stops the simulation with the PC that
+retired, the expected PC, and the last retirements.
+
+The same block checks the contracts that the `rob_retire_successor` proof
+assumes on the ROB's ports: each allocation is at the predicted next PC of
+the one before it until a barrier, each branch entry gets one branch update whose
+misprediction flag matches the prediction the entry was allocated with, and
+the other port rules listed in the [formal guide](../../../../formal/README.md).
+The proof is bounded: it checks six cycles from reset, and it holds early
+misprediction recovery off. CI allows 60 minutes for the bounded check and
+5 minutes for cover, with 10 minutes for setup in the 75-minute job.
+Retirement order across early recovery, and across longer sequences, rests
+on the simulation check alone.
+
+The front end keeps allocating behind an instruction that traps or carries a
+fetch fault, and those allocations need not follow the predicted next PC: an
+illegal or `c.ebreak` compressed slot 1 drops its slot-2 partner, and a
+faulting fetch steps a whole word. An allocation may leave the order when the
+allocation before it has not completed without an exception. That entry is
+the barrier: the check requires that it never completes without an exception
+while it is valid, so it traps, and every allocation behind it is free until
+the flush that removes it. The proof shows that nothing allocated behind a
+barrier retires.
 
 See the [test runner](../../../../tests/README.md) for commands and the
 [formal guide](../../../../formal/README.md) for proof scope and assumptions.

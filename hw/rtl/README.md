@@ -113,12 +113,10 @@ unmapped: a fetch, load, store, or AMO there raises a precise access fault
 remain valid when they are inside the configured aperture. At the default
 1 GiB capacity, `0xc000_0000` and higher addresses fault (the Svpbmt alias
 above DDR is reached only through an NC or IO page). Fetch also faults
-in the low BRAM above its 128 KiB code region `[0, 0x2_0000)`. The one
-exception is a store to the rest of the device quadrant with translation off: the
-store-issue check covers the whole quadrant, so the store issues and the
-device bus ignores it. Under Sv39, a misaligned-address or page fault takes priority over the
-access fault; for an untranslated access, the access fault takes priority
-over misalignment.
+in the low BRAM above its 128 KiB code region `[0, 0x2_0000)`. Under Sv39
+the data MMU checks alignment before translation and page permissions before
+the physical address. For an untranslated access, the access fault takes
+priority over misalignment.
 
 The ROM, DEBUG, and RAM regions divide the 256 KiB low BRAM as the unified
 linker script (`sw/common/link.ld`) does. Low BRAM holds separate instruction
@@ -297,13 +295,12 @@ stores; partial writes to those dwords have no effect. The NIC and DMA
 register windows use 64-bit AXI4-Lite. Each block's register bridge buffers
 AW and W independently, applies the register access once, and holds its
 registered OKAY response until accepted. Other windows use the local MMIO
-sequence. Devices take loads and stores only, and
-only inside the MMIO, APLIC and IMSIC windows. A load or store elsewhere in the device
-quadrant raises an access fault (cause 5 or 7), and so does an AMO, LR, or SC
-anywhere in the quadrant (cause 7, 5, or 7); the one exception is an
-untranslated store, which the device bus ignores. The device sees neither a read
-nor a write, and the [memory map](#memory-map) gives how these faults rank
-against misaligned-address and page faults.
+sequence. Devices take loads and stores only inside the MMIO, APLIC and
+IMSIC windows. A load or store elsewhere in the device quadrant raises an
+access fault (cause 5 or 7). An AMO, LR or SC anywhere in the quadrant
+raises cause 7, 5 or 7, respectively. These faults reach the ROB without
+issuing a device read or write. The [memory map](#memory-map) gives the
+fault priority.
 
 IMSIC pages accept only aligned 32-bit stores, at offset 0 for little-endian
 identity data or offset 4 for big-endian data. Other sizes and offsets are
@@ -375,14 +372,15 @@ synchronizer. A stopped SoC clock keeps the reset asserted. CPU owners and
 the fabric share this reset; CPU-only reset leaves presented AXI requests
 to drain through the fabric.
 
-With a common CPU and SoC clock, a core reset request sampled on one rising
-edge asserts both the DMA bridge reset and the CPU reset pin. The pin stays
-high for one more edge after the bridge reset drops, giving the CPU and its
-coherent ingress two reset edges. With the clock stopped, the CPU reset pin
+With a common CPU and SoC clock, a core or DDR transport reset request
+sampled on one rising edge asserts both the DMA bridge and CPU reset pins.
+The CPU pin stays high for one more edge after the bridge reset drops, giving
+the CPU and its coherent ingress two reset edges. With the clock stopped, the CPU reset pin
 holds its value. An external DDR reset pulse during the stop holds fabric
-reset high until the clock resumes. The first rising edge asserts CPU reset
-and the next edge resets the CPU state. CPU reset releases one edge after
-fabric reset clears if the core reset is also clear.
+reset high until the clock resumes. The first rising edge asserts the
+registered resets. The next edge discards the CPU and DMA owners together.
+After the fabric reset clears, the bridge reset drops on the next edge
+and the CPU reset drops on the following edge if all requests are clear.
 
 Reset belongs at the flop, as `if (rst) ... else ...`. Combinational outputs
 can stay live in a first reset cycle, when every receiver on the same reset
@@ -486,7 +484,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
 | `frost.sv` | `VECTOR` / `VLEN` | `0` / `256` | 1 builds the vector state: `mstatus.VS` and the vector CSRs; `VLEN` is the vector register width, 128, 256 or 512 bits ([CPU README](cpu_and_mem/cpu/README.md#vector-state)) |
 | `frost.sv` | `VECTOR_ADVERTISE` | `0` | 1 would set `misa.V`; elaboration rejects it while the vector instructions are not implemented, and software enables the vector state through `mstatus.VS` |
-| `frost.sv` | `MISALIGNED_HW` | `0` | 1 builds the misaligned-access engine: plain misaligned loads and stores to cached DDR are performed in hardware instead of raising the address-misaligned exception; needs `ENABLE_CACHED_TIER`. The X3 build and the simulation default set it ([CPU README](cpu_and_mem/cpu/README.md#misaligned-accesses)) |
+| `frost.sv` | `MISALIGNED_HW` | `0` | Enables hardware completion of plain misaligned loads and stores to cached DDR. Requires `ENABLE_CACHED_TIER`. The X3, VCU118 and simulation defaults enable it ([CPU README](cpu_and_mem/cpu/README.md#misaligned-accesses)) |
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
 | `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |
 | `frost.sv` | `ENABLE_1G_ETH` | `0` | 1 instantiates the secondary 1 Gb/s GMII NIC (`nic_engine` + `nic_mac_1g`) at `0x4002_2000` (VCU118); 0 omits it |

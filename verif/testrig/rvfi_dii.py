@@ -30,6 +30,7 @@ command with the requested version, and the server acknowledges with
 import socket
 import struct
 from dataclasses import dataclass
+from io import BytesIO
 
 # DII commands (instruction packet byte 6).
 CMD_END_OF_TRACE = 0
@@ -51,6 +52,7 @@ MODE_SUPERVISOR = 1
 MODE_MACHINE = 3
 # rvfi_ixl: 2 means XLEN 64.
 IXL_64 = 2
+WFI_INSN = 0x10500073
 
 
 @dataclass(frozen=True)
@@ -198,7 +200,7 @@ def version_ack(version: int) -> bytes:
     return b"version=" + struct.pack("<Q", version)
 
 
-def decode_v2(stream: "PacketReader") -> RvfiRecord:
+def decode_v2(stream: "PacketReader | BytesIO") -> RvfiRecord:
     """Read one version-2 trace packet (header plus its extension blocks)."""
     header = stream.read(V2_HEADER_BYTES)
     if header[:8] != b"trace-v2":

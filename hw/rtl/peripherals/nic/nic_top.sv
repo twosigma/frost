@@ -154,7 +154,8 @@ module nic_top #(
       .RX_FIFO_DEPTH(RX_FIFO_DEPTH),
       .STARVATION_LIMIT(STARVATION_LIMIT),
       .DMA_AXI_ADDR_BITS(DMA_AXI_ADDR_BITS),
-      .DMA_AXI_ID_BITS(DMA_AXI_ID_BITS)
+      .DMA_AXI_ID_BITS(DMA_AXI_ID_BITS),
+      .ENABLE_PHY_DIAG(GMII_MODE)
   ) u_engine (
       .i_clk                   (i_clk),
       .i_rst                   (i_rst),

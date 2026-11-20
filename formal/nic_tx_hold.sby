@@ -1,0 +1,35 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 4
+prove: timeout 120
+cover: mode cover
+cover: depth 72
+cover: timeout 300
+
+[engines]
+smtbmc boolector
+
+[script]
+cover: read_slang --top nic_tx_hold_formal --single-unit --no-synthesis-define -DFORMAL -DNIC_TX_HOLD_COVER nic_pkg.sv nic_desc_fetch.sv nic_byte_unpack.sv nic_tx_beat_merge.sv nic_tx_segment.sv nic_tx_engine.sv nic_tx_hold_formal.sv
+prove: read_slang --top nic_tx_hold_formal --single-unit --no-synthesis-define -DFORMAL nic_pkg.sv nic_desc_fetch.sv nic_byte_unpack.sv nic_tx_beat_merge.sv nic_tx_segment.sv nic_tx_engine.sv nic_tx_hold_formal.sv
+hierarchy -top nic_tx_hold_formal
+script free_undefined.ys
+prep -top nic_tx_hold_formal -flatten
+# Map the small arrays to registers for the SMT model's read and write dependencies.
+memory_map -keepdc
+opt -fast -keepdc
+opt_clean
+
+[files]
+../hw/rtl/peripherals/nic/nic_pkg.sv
+../hw/rtl/peripherals/nic/nic_desc_fetch.sv
+../hw/rtl/peripherals/nic/nic_byte_unpack.sv
+../hw/rtl/peripherals/nic/nic_tx_beat_merge.sv
+../hw/rtl/peripherals/nic/nic_tx_segment.sv
+../hw/rtl/peripherals/nic/nic_tx_engine.sv
+nic_tx_hold_formal.sv
+free_undefined.ys

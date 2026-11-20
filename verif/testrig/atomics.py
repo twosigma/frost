@@ -52,7 +52,7 @@ SAIL_CONFIG = Path(__file__).with_name("sail_frost.json")
 DDR = 0x8020_0000  # cached DDR, away from the test's instruction addresses
 BRAM = 0x0003_0000  # low BRAM
 DEVICE = 0x4000_0100  # a device page: loads and stores, no atomics
-QUADRANT = 0x4010_0000  # the rest of the device quadrant: stores only
+QUADRANT = 0x4010_0000  # unmapped page in the device quadrant
 UNMAPPED = 0x2000_0000  # outside every region
 
 # Base registers and their addresses. Nothing but a setup strand writes them.

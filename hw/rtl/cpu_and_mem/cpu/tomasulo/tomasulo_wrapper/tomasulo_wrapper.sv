@@ -1821,9 +1821,8 @@ module tomasulo_wrapper #(
 
   // Store immediates are sign-extended S-immediates or zero (SC, cbo.zero), so
   // they can move the base by at most one 4 KiB page. The low 13-bit sum
-  // supplies the page carry and alignment bits. Legal store pages are [0, 0x3f], the
-  // device quadrant, and [DdrBase, DdrLimit), as in riscv_pkg::pma_store_ok. The device quadrant
-  // includes unserved addresses, whose writes the device bus ignores.
+  // supplies the page carry and alignment bits. Stores can reach low BRAM,
+  // cached DDR, and the MMIO, APLIC and IMSIC device windows.
   //
   // A one-page move changes membership only at interval boundaries. The
   // boundary checks in the decoder compute pma_store_ok(src1 + sext12(imm)). SC and
@@ -3437,6 +3436,7 @@ module tomasulo_wrapper #(
       .ISSUE_REPAIR_BYPASS(1'b0),
       .ALLOC_INDEXED_REPAIR(1'b1),
       .SPECULATIVE_DATA_WRITES(1'b1),
+      .BROADCAST_FREE_SOURCE_VALUES(1'b1),
       // Dispatch checks MEM_RS full and full_for_2 before asserting valid.
       // Use the integrated formal environment, as in u_int_rs.
       .FORMAL_STANDALONE_ENV(1'b0),
@@ -6420,19 +6420,14 @@ module coherent_store_pma (
 );
   logic store_cmp_base_z18;
   logic store_cmp_base_z19;
-  logic store_cmp_base_z30;
   logic store_cmp_base_z32;
   logic store_cmp_base_ddr_ok;
   logic store_cmp_base_page_lo6_zero;
   logic store_cmp_base_page_lo6_ones;
-  logic store_cmp_base_page_tail_zero;
-  logic store_cmp_base_page_tail_ones;
-  logic store_cmp_base_pma_ok;
+  logic store_cmp_base_memory_ok;
   logic store_cmp_base_page_eq_0;
   logic store_cmp_base_page_eq_3f;
   logic store_cmp_base_page_eq_40;
-  logic store_cmp_base_page_eq_3ffff;
-  logic store_cmp_base_page_eq_40000;
   logic store_cmp_base_page_eq_ddr_before;
   logic store_cmp_base_page_eq_ddr_first;
   logic store_cmp_base_page_eq_ddr_last;
@@ -6458,26 +6453,17 @@ module coherent_store_pma (
 
   assign store_cmp_base_z18 = !(|store_pma_compare_address[riscv_pkg::XLEN-1:18]);
   assign store_cmp_base_z19 = !(|store_pma_compare_address[riscv_pkg::XLEN-1:19]);
-  assign store_cmp_base_z30 = !(|store_pma_compare_address[riscv_pkg::XLEN-1:30]);
   assign store_cmp_base_z32 = !(|store_pma_compare_address[riscv_pkg::XLEN-1:32]);
   assign store_cmp_base_ddr_ok = riscv_pkg::pma_cached_ok(
       store_pma_compare_address[riscv_pkg::XLEN-1:0]
   );
   assign store_cmp_base_page_lo6_zero = !(|store_pma_compare_address[17:12]);
   assign store_cmp_base_page_lo6_ones = &store_pma_compare_address[17:12];
-  assign store_cmp_base_page_tail_zero = !(|store_pma_compare_address[29:12]);
-  assign store_cmp_base_page_tail_ones = &store_pma_compare_address[29:12];
-
-  assign store_cmp_base_pma_ok = store_cmp_base_z18 || store_cmp_base_ddr_ok ||
-      (store_cmp_base_z32 && (store_pma_compare_address[31:30] == 2'b01) &&
-       !i_atomic);
+  assign store_cmp_base_memory_ok = store_cmp_base_z18 || store_cmp_base_ddr_ok;
   assign store_cmp_base_page_eq_0 = store_cmp_base_z18 && store_cmp_base_page_lo6_zero;
   assign store_cmp_base_page_eq_3f = store_cmp_base_z18 && store_cmp_base_page_lo6_ones;
   assign store_cmp_base_page_eq_40 = store_cmp_base_z19 && store_pma_compare_address[18] &&
       store_cmp_base_page_lo6_zero;
-  assign store_cmp_base_page_eq_3ffff = store_cmp_base_z30 && store_cmp_base_page_tail_ones;
-  assign store_cmp_base_page_eq_40000 = store_cmp_base_z32 &&
-      (store_pma_compare_address[31:30] == 2'b01) && store_cmp_base_page_tail_zero;
   assign store_cmp_base_page_eq_ddr_before =
       store_pma_compare_address[riscv_pkg::XLEN-1:12] ==
       (riscv_pkg::XLEN-12)'((riscv_pkg::DdrBase - 4096) >> 12);
@@ -6492,18 +6478,34 @@ module coherent_store_pma (
       (riscv_pkg::XLEN-12)'(riscv_pkg::DdrLimit >> 12);
   assign store_cmp_base_page_eq_max = &store_pma_compare_address[riscv_pkg::XLEN-1:12];
 
+  // Memory changes permission only at the first and last pages of BRAM and DDR.
   assign store_cmp_page_inc_toggle = store_cmp_base_page_eq_max || store_cmp_base_page_eq_3f ||
-      (!i_atomic && store_cmp_base_page_eq_3ffff) || store_cmp_base_page_eq_ddr_last ||
-      (i_atomic && store_cmp_base_page_eq_ddr_before);
+      store_cmp_base_page_eq_ddr_last || store_cmp_base_page_eq_ddr_before;
   assign store_cmp_page_dec_toggle = store_cmp_base_page_eq_0 || store_cmp_base_page_eq_40 ||
-      (!i_atomic && store_cmp_base_page_eq_40000) || store_cmp_base_page_eq_ddr_end ||
-      (i_atomic && store_cmp_base_page_eq_ddr_first);
-  // Without a carry, only a negative immediate changes the page. With a
-  // carry, only a nonnegative immediate does. Select between both cases.
-  assign store_cmp_pma_no_carry = store_cmp_base_pma_ok ^
-      (i_imm_negative && store_cmp_page_dec_toggle);
-  assign store_cmp_pma_carry = store_cmp_base_pma_ok ^
-      (!i_imm_negative && store_cmp_page_inc_toggle);
+      store_cmp_base_page_eq_ddr_end || store_cmp_base_page_eq_ddr_first;
+
+  // A signed store offset moves the base by at most one page. Shift the
+  // constant window bounds so the device and memory decodes run in parallel
+  // from the base, with the low sum's carry selecting the verdict last.
+  function automatic logic device_after_step(input logic [19:0] page, input logic [19:0] step);
+    device_after_step =
+        ((page >= riscv_pkg::MmioFirstPage - step) && (page <= riscv_pkg::MmioLastPage - step)) ||
+        ((page >= riscv_pkg::AplicFirstPage - step) && (page <= riscv_pkg::AplicLastPage - step)) ||
+        ((page >= riscv_pkg::ImsicFirstPage - step) && (page <= riscv_pkg::ImsicLastPage - step));
+  endfunction
+  logic [19:0] base_page;
+  logic device_allowed, device_same, device_prev, device_next;
+  assign base_page = store_pma_compare_address[31:12];
+  assign device_allowed = store_cmp_base_z32 && !i_atomic;
+  assign device_same = riscv_pkg::pma_device_page_ok(base_page);
+  assign device_prev = device_after_step(base_page, -20'd1);
+  assign device_next = device_after_step(base_page, 20'd1);
+  assign store_cmp_pma_no_carry = (store_cmp_base_memory_ok ^
+      (i_imm_negative && store_cmp_page_dec_toggle)) ||
+      (device_allowed && (i_imm_negative ? device_prev : device_same));
+  assign store_cmp_pma_carry = (store_cmp_base_memory_ok ^
+      (!i_imm_negative && store_cmp_page_inc_toggle)) ||
+      (device_allowed && (i_imm_negative ? device_same : device_next));
   // The reduced page-carry decoder is specific to FROST's map. Other
   // integrations use the full configured PMA predicate on the effective PA.
   assign store_pma_compared_ok = riscv_pkg::PmaUsesFrostMap ?
