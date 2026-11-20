@@ -47,12 +47,7 @@ if {![file isfile $bitstream_file] || ![file readable $bitstream_file] ||
 source [file join [file dirname [info script]] .. common hw_session.tcl]
 frost_hw_session [lindex $argv 3] [lindex $argv 5] $hw_target {
     set device [lindex [get_hw_devices] 0]
-    if {$board_name eq "vcu118"} {
-        set dev_part [get_property PART $device]
-        if {![string match "xcvu9p*" $dev_part]} {
-            error "Expected xcvu9p for board vcu118, but found $dev_part"
-        }
-    }
+    frost_check_hw_part $board_name $device
     set_property PROGRAM.FILE $bitstream_file $device
     program_hw_devices $device
     puts "FROST_PROGRAM_COMPLETE"

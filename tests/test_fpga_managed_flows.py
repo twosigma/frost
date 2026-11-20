@@ -746,12 +746,21 @@ def test_normal_coremark_pro_load_preserves_inherited_diagnostics(
 
 @pytest.mark.parametrize("failure", [False, True])
 @pytest.mark.parametrize(
-    "board,part", [("x3", "xcux35"), ("vcu118", "xcvu9p"), ("vcu118", "xcux35")]
+    "board,part,mismatch",
+    [
+        ("x3", "xcu26_ux35", None),
+        ("vcu118", "xcvu9p", None),
+        ("vcu118", "xcvu9p-flga2104-2L-e", None),
+        ("x3", "xcvu9p", "xcu26_ux35"),
+        ("vcu118", "xcu26_ux35", "xcvu9p*"),
+        ("x3", "xcux35", "xcu26_ux35"),
+        ("vcu118", "xcux35", "xcvu9p*"),
+    ],
 )
 def test_tcl_program_connection_cleanup(
-    tmp_path: Path, failure: bool, board: str, part: str
+    tmp_path: Path, failure: bool, board: str, part: str, mismatch: str | None
 ) -> None:
-    """program_bitstream.tcl uses the given server and disconnects, pass or fail.
+    """The programmer checks the device and disconnects, pass or fail.
 
     Stub Vivado commands stand in for the hardware manager.
     """
@@ -769,7 +778,6 @@ proc current_hw_target {target} {puts "TARGET:$target"}
 proc open_hw_target {} {puts OPEN_TARGET}
 proc get_hw_devices {} {return device0}
 proc get_property {key object} {
-    if {$::env(TEST_BOARD) eq "x3"} {error "X3 must not query the device part"}
     if {$key ne "PART"} {error "Unexpected property $key"}
     return $::env(TEST_PART)
 }
@@ -785,7 +793,6 @@ source $actual_script
 """)
     env = os.environ.copy()
     env["TEST_PROGRAM_FAIL"] = str(int(failure))
-    env["TEST_BOARD"] = board
     env["TEST_PART"] = part
     result = subprocess.run(
         [
@@ -804,13 +811,16 @@ source $actual_script
         env=env,
         timeout=10,
     )
-    wrong_part = board == "vcu118" and part != "xcvu9p"
-    failed = failure or wrong_part
+    failed = failure or mismatch is not None
     assert result.returncode == int(failed), result.stderr
-    if wrong_part:
+    if mismatch is not None:
         assert "PROGRAM\n" not in result.stdout
         assert "PROPERTY:PROGRAM.FILE" not in result.stdout
-        assert "Expected xcvu9p" in result.stderr
+        assert (
+            f"Expected FPGA part {mismatch} for {board}, found {part}" in result.stderr
+        )
+    else:
+        assert "PROGRAM\n" in result.stdout
     assert "CONNECT:-url 127.0.0.1:3219" in result.stdout
     assert result.stdout.endswith("CLOSE_TARGET\nDISCONNECT_SERVER\nCLOSE_MANAGER\n")
     assert ("FROST_PROGRAM_COMPLETE" in result.stdout) is not failed
@@ -1085,7 +1095,8 @@ def run_ecc_with_tcl_harness(
 @pytest.mark.parametrize(
     "board,base,part",
     [
-        ("x3", 0x40000000, "xcux35"),
+        ("x3", 0x40000000, "xcu26_ux35"),
+        ("vcu118", 0x80000000, "xcvu9p"),
         ("vcu118", 0x80000000, "xcvu9p-flga2104-2L-e"),
     ],
 )
@@ -1138,30 +1149,43 @@ def test_ecc_cli_uses_board_window_for_jtag_transactions(
     assert transactions == (reads + writes + reads if clear else reads)
 
 
+@pytest.mark.parametrize(
+    "board,vendor,part,expected",
+    [
+        ("x3", "Xilinx", "xcvu9p", "xcu26_ux35"),
+        ("x3", "Xilinx", "xcvu9p-flga2104-2L-e", "xcu26_ux35"),
+        ("vcu118", "Digilent", "xcu26_ux35", "xcvu9p*"),
+        ("x3", "Xilinx", "xcux35", "xcu26_ux35"),
+    ],
+)
 @pytest.mark.parametrize("clear", [False, True])
 def test_ecc_checks_actual_fpga_part_before_transactions(
     ecc_tcl_harness: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    board: str,
+    vendor: str,
+    part: str,
+    expected: str,
     clear: bool,
 ) -> None:
-    """An X3 selection over a Xilinx cable must reject a VCU118 device."""
-    cable = "localhost:3121/xilinx_tcf/Xilinx/888"
+    """Cable discovery can succeed while the attached FPGA is wrong."""
+    cable = f"localhost:3121/xilinx_tcf/{vendor}/888"
     monkeypatch.setitem(
         ecc.select_target.__globals__, "get_available_targets", lambda *a, **kw: [cable]
     )
     monkeypatch.setattr(
         sys,
         "argv",
-        ["ddr_ecc_status.py", "x3", "--target", cable, "--non-interactive"]
+        ["ddr_ecc_status.py", board, "--target", cable, "--non-interactive"]
         + (["--clear"] if clear else []),
     )
-    monkeypatch.setenv("TEST_ECC_PART", "xcvu9p-flga2104-2L-e")
+    monkeypatch.setenv("TEST_ECC_PART", part)
     monkeypatch.setenv("TEST_ECC_WRONG_WINDOW", "1")
     results = run_ecc_with_tcl_harness(monkeypatch, ecc_tcl_harness)
     assert ecc.main() == 1
     capture = capsys.readouterr()
-    assert "Expected FPGA part xcux35 for x3, found xcvu9p-flga2104-2L-e" in capture.err
+    assert f"Expected FPGA part {expected} for {board}, found {part}" in capture.err
     assert "Clean:" not in capture.out
     assert "TXN " not in results[0].stdout
 
@@ -1235,7 +1259,7 @@ foreach name {PYTHONHOME PYTHONPATH PYTHON} {
             **python_env,
             "TEST_ECC_CHILD_ENV": str(child_env),
             "TEST_ECC_HOST_PYTHON": sys.executable,
-            "TEST_ECC_PART": "xcux35",
+            "TEST_ECC_PART": "xcu26_ux35",
         },
         timeout=10,
     )

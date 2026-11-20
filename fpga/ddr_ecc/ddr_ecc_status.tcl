@@ -56,9 +56,9 @@ if {[catch {
     puts stderr "Error: could not read the ECC window for $board: $spec"
     exit 1
 }
-lassign $spec part design_base
+set design_base [lindex $spec 0]
 set registers {}
-foreach entry [lrange $spec 2 end] {
+foreach entry [lrange $spec 1 end] {
     lassign [split $entry ":"] name offset
     set address [expr {$ecc_window_base + $offset}]
     if {$address + 4 > 0x100000000} {
@@ -122,10 +122,7 @@ proc ecc_write {axi address value} {
 
 frost_hw_session $remote_host $server_url $hw_target {
     set device [lindex [get_hw_devices] 0]
-    set dev_part [get_property PART $device]
-    if {![string match -nocase $part $dev_part] && ![string match -nocase "$part-*" $dev_part]} {
-        error "Expected FPGA part $part for $board, found $dev_part"
-    }
+    frost_check_hw_part $board $device
     refresh_hw_device -update_hw_probes false $device
     set ddr_axi [find_ddr_hw_axi]
     if {$ddr_axi eq ""} {

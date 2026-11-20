@@ -361,8 +361,10 @@ It applies the score thresholds to X3 with its standard clock configuration.
 
 `ddr_ecc/ddr_ecc_status.py [x3|vcu118]` reads the DDR controller's ECC
 registers. It takes the DDR JTAG window from the selected board's DDR block
-design and checks the detected FPGA part before issuing transactions. A
-report requires a complete set of 32-bit values at the expected addresses.
+design. The ECC helper and JTAG programmer check the Hardware Manager
+device name before issuing transactions. The X3 name is `xcu26_ux35`.
+VCU118 device names start with `xcvu9p`. An ECC report requires a complete
+set of 32-bit values at the expected addresses.
 The regression stage checks ECC enable, status, and the correctable error
 count after application traffic. Use `--clear` to report, clear the status
 and count, and read them again. `linux_boot_soak.py` boots the Buildroot test

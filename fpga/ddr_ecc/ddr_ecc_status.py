@@ -57,7 +57,6 @@ ECC_WINDOW_DESIGNS = {
     "x3": PROJECT_ROOT / "fpga/build/x3_ddr_bd.tcl",
     "vcu118": PROJECT_ROOT / "fpga/build/vcu118_ddr_bd.tcl",
 }
-BUILD_CONFIG = PROJECT_ROOT / "fpga/build/build_step.tcl"
 CONTROL_SEGMENT = "C0_DDR4_MEMORY_MAP_CTRL/C0_REG"
 DATA_SEGMENT = "C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK"
 JTAG_ASSIGNMENT = re.compile(
@@ -130,18 +129,6 @@ def ecc_window_base(board: str) -> int:
     if max(base, data_base) < min(base + size, data_base + data_size):
         raise ValueError(f"{design}: ECC window overlaps the DDR data window")
     return base
-
-
-def part_family(board: str) -> str:
-    """Return the FPGA device name from the build's board configuration."""
-    parts = re.findall(
-        rf"^[ \t]*{re.escape(board)}\s+\[dict create part_number\s+([\w-]+)\s",
-        BUILD_CONFIG.read_text(),
-        re.MULTILINE,
-    )
-    if len(parts) != 1:
-        raise ValueError(f"{BUILD_CONFIG}: expected one FPGA part for {board}")
-    return parts[0].split("-", 1)[0]
 
 
 def parse_sample(
@@ -281,12 +268,11 @@ def main() -> int:
         # Tcl reads the same design before accepting an address or issuing AXI traffic.
         try:
             window_base = ecc_window_base(args.board)
-            part = part_family(args.board)
         except (OSError, ValueError) as error:
             print(f"ECC read failed: {error}", file=sys.stderr)
             return 1
         registers = " ".join(f"{name}:{offset:#05x}" for name, offset in ECC_REGISTERS)
-        print(f"{part} {window_base:#010x} {registers}")
+        print(f"{window_base:#010x} {registers}")
         return 0
 
     target_options = dict(
