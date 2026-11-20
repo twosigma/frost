@@ -205,7 +205,7 @@ module ma_engine #(
         if (!walk_perm_ok) walk_verdict = ma_pkg::MaPartPage;
         else if (ma_pkg::leaf_ppn_out_of_range(i_walk_resp.ppn))
           walk_verdict = ma_pkg::MaPartAccess;
-        else walk_verdict = ma_pkg::region(walk_pa, 1'b0);
+        else walk_verdict = ma_pkg::region(walk_pa);
       end
     endcase
   end
@@ -219,12 +219,12 @@ module ma_engine #(
     xlate_direct = 1'b1;
     direct_pa = part_va;
     if (!translate_q) begin
-      direct_verdict = ma_pkg::region(part_va, store_q);
+      direct_verdict = ma_pkg::region(part_va);
     end else if (!riscv_pkg::sv39_va_canonical(part_va)) begin
       direct_verdict = ma_pkg::MaPartPage;
     end else if (part_q && (upper_va[XLEN-1:12] == va_q[XLEN-1:12])) begin
       direct_pa = {lower_pa_q[XLEN-1:12], upper_va[11:0]};
-      direct_verdict = ma_pkg::region(direct_pa, 1'b0);
+      direct_verdict = ma_pkg::region(direct_pa);
     end else begin
       xlate_direct   = 1'b0;
       direct_verdict = ma_pkg::MaPartOk;

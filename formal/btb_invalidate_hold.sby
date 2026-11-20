@@ -1,0 +1,36 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 4
+cover: mode cover
+cover: depth 10
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top btb_invalidate_hold_formal --single-unit -DSYNTHESIS riscv_pkg.sv branch_predictor.sv direction_predictor.sv return_address_stack.sv branch_prediction_controller.sv btb_invalidate_hold_formal.sv
+hierarchy -top btb_invalidate_hold_formal
+script free_undefined.ys
+setattr -unset keep
+setattr -unset keep_hierarchy
+setattr -mod -unset keep
+setattr -mod -unset keep_hierarchy
+prep -top btb_invalidate_hold_formal -flatten
+select -assert-count 5 t:$check r:FLAVOR=assert %i
+select -assert-count 5 t:$check r:FLAVOR=cover %i
+select -assert-none t:$check r:FLAVOR=assume %i
+prove: chformal -cover -remove
+cover: chformal -assert -remove
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
+btb_invalidate_hold_formal.sv
+free_undefined.ys

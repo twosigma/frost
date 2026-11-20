@@ -4088,6 +4088,957 @@ async def test_walk_past_native_predecessor_slot2_redirect_at_pending(
     )
 
 
+async def _invalidate_and_train_btb_entry(
+    dut: Any, *, pc: int, target: int, compressed: bool = True, invalidate: bool = True
+) -> None:
+    """Optionally clear BTB state, then install one strongly-taken BTB and dir entry."""
+    if invalidate:
+        dut.i_disable_branch_prediction.value = 1
+        dut.i_btb_invalidate.value = 1
+        await _advance_cycle(dut)
+        dut.i_btb_invalidate.value = 0
+        for _ in range(4):
+            await _advance_cycle(dut)
+    await _train_btb(dut, pc=pc, target=target, compressed=compressed)
+    await _train_btb(dut, pc=pc, target=target, compressed=compressed)
+    dut.i_dir_update_idx.value = (pc >> 1) & ((1 << BP_DIR_IDX_BITS) - 1)
+    dut.i_dir_update_taken.value = 1
+    dut.i_dir_update_valid.value = 1
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
+    dut.i_dir_update_valid.value = 0
+
+
+def _drive_post_recovery_pair(dut: Any, *, start_pc: int) -> int:
+    """Present a clean 2-wide pair at ``start_pc`` and return expected slot-2 PC."""
+    model = _predecode_model()
+    if start_pc & 2:
+        w0 = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_NOP)
+        w1 = ADD_INSTR_A
+        slot2_pc = start_pc + 2
+    else:
+        w0 = ADD_INSTR_A
+        w1 = ADD_INSTR_B
+        slot2_pc = start_pc + 4
+    _drive_fetch(
+        dut,
+        current_word=w0,
+        next_word=w1,
+        current_sb=model.make_sideband(w0),
+        next_sb=model.make_sideband(w1),
+        bank_sel=(start_pc >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, start_pc >> 2)
+    return slot2_pc
+
+
+async def _enter_capture_cycle_walk_past(dut: Any, *, odd: bool) -> tuple[int, int]:
+    """Enter a capture-cycle walk-past in if_stage for odd or even pending PC P."""
+    stale_target = BASE_PC + 0x400
+    owner_pc = BASE_PC + (6 if odd else 4)
+    model = _predecode_model()
+
+    await _invalidate_and_train_btb_entry(
+        dut, pc=owner_pc, target=stale_target, compressed=True, invalidate=True
+    )
+    await _redirect_to(dut, owner_pc - 4)
+    assert int(dut.pc_reg.value) == owner_pc - 4
+    assert int(dut.o_pc.value) == owner_pc
+
+    # Emit a 2-wide bundle (C.NOP at P-4 in slot 1, 32-bit LUI at P-2 in slot 2)
+    # while o_pc == P hits the BTB, stepping pc_reg straight to P+2.
+    if odd:
+        w_cur = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_NOP)
+        w_nxt = _word(lo=0x0637, hi=COMPRESSED_J)
+    else:
+        w_cur = _word(lo=COMPRESSED_NOP, hi=0x0637)
+        w_nxt = _word(lo=COMPRESSED_J, hi=COMPRESSED_NOP)
+    dut.i_disable_branch_prediction.value = 0
+    _drive_fetch(
+        dut,
+        current_word=w_cur,
+        next_word=w_nxt,
+        current_sb=model.make_sideband(w_cur),
+        next_sb=model.make_sideband(w_nxt),
+        bank_sel=((owner_pc - 4) >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, (owner_pc - 4) >> 2)
+    await _settle()
+    cap_pkt1 = _read_if_packet(dut)
+    cap_pkt2 = _read_if_packet(dut, slot2=True)
+    assert not cap_pkt1["sel_nop"] and cap_pkt1["program_counter"] == owner_pc - 4
+    assert cap_pkt1["sel_compressed"] is True
+    assert not cap_pkt2["sel_nop"] and cap_pkt2["program_counter"] == owner_pc - 2
+    assert cap_pkt2["sel_compressed"] is False
+    assert int(dut.prediction_used.value) == 1
+
+    await _advance_cycle(dut)
+    assert int(dut.pc_reg.value) == owner_pc + 2
+    assert int(dut.o_pc.value) == stale_target
+    assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+    assert int(dut.pc_controller_inst.pc_reg_after_pending.value) == 1
+    assert int(dut.pending_prediction_walk_past.value) == 1
+    assert int(dut.prediction_holdoff.value) == 1
+    assert int(dut.sel_prediction_r.value) == 1
+    assert (
+        int(dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value)
+        == 0
+    )
+    return owner_pc, stale_target
+
+
+async def _arm_if_carve_out_with_slot2_branch(
+    dut: Any,
+    *,
+    odd: bool,
+    target_kind: str,
+    stall_on_release: bool = False,
+) -> tuple[int, int, int]:
+    """Present a released 32-bit predecessor at P-2 paired with a taken slot-2 branch at P+2."""
+    stale_target = BASE_PC + 0x400
+    owner_pc = BASE_PC + (6 if odd else 4)
+    slot2_pc = owner_pc + 2
+    slot2_target = {
+        "below": BASE_PC,
+        "pred": owner_pc - 2,
+        "at": owner_pc,
+    }[target_kind]
+    model = _predecode_model()
+    c_bnez_a0 = 0xE101  # c.bnez x10, +0 (compressed control flow -> 1-wide)
+
+    await _invalidate_and_train_btb_entry(
+        dut, pc=owner_pc, target=stale_target, compressed=True, invalidate=True
+    )
+    await _redirect_to(dut, owner_pc - 4)
+    assert int(dut.pc_reg.value) == owner_pc - 4
+    assert int(dut.o_pc.value) == owner_pc
+
+    if odd:
+        w_pre = _word(lo=COMPRESSED_NOP, hi=c_bnez_a0)
+        w_after = _word(lo=0x0637, hi=COMPRESSED_J)
+    else:
+        w_pre = _word(lo=c_bnez_a0, hi=0x0637)
+        w_after = _word(lo=COMPRESSED_J, hi=COMPRESSED_J)
+    dut.i_disable_branch_prediction.value = 0
+    _drive_fetch(
+        dut,
+        current_word=w_pre,
+        next_word=w_after,
+        current_sb=model.make_sideband(w_pre),
+        next_sb=model.make_sideband(w_after),
+        bank_sel=((owner_pc - 4) >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, (owner_pc - 4) >> 2)
+    await _settle()
+    assert int(dut.prediction_used.value) == 1
+    await _advance_cycle(dut)
+
+    assert int(dut.pc_reg.value) == owner_pc - 2
+    assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+    assert int(dut.prediction_holdoff.value) == 1
+
+    # Miss the served window on the holdoff cycle so carve_out_engaged_q sets
+    # and o_pc resteers to (P - 2)'s word.
+    _drive_served_word_tags(dut, stale_target >> 2)
+    await _settle()
+    assert int(dut.window_cannot_serve_pc_reg.value) == 1
+    await _advance_cycle(dut)
+
+    assert int(dut.pc_reg.value) == owner_pc - 2
+    assert int(dut.o_pc.value) == ((owner_pc - 2) & ~3)
+    assert int(dut.pc_controller_inst.carve_out_engaged_q.value) == 1
+    assert (
+        int(dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value)
+        == 1
+    )
+    assert int(dut.prediction_holdoff.value) == 0
+
+    # Train slot 2 at P + 2 during fetch-wait cycles (commit-time BTB updates
+    # without a branch flush). Because even P = 4k and P + 2 = 4k + 2 share the
+    # direct-mapped BTB word index, training P + 2 after P is captured lets
+    # both odd and even P exercise a real staged T4 slot-2 hit.
+    dut.i_instr_valid.value = 0
+    await _invalidate_and_train_btb_entry(
+        dut, pc=slot2_pc, target=slot2_target, compressed=True, invalidate=False
+    )
+    # Wait two fetch-invalid cycles for the registered BTB write and the
+    # synchronous slot-2 T4 row read at o_pc = (P - 2) & ~3 to settle.
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
+    assert int(dut.pc_reg.value) == owner_pc - 2
+    assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+    assert (
+        int(dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value)
+        == 1
+    )
+
+    # Present the covering window [P - 2, P + 2] on release.
+    dut.i_instr_valid.value = 1
+    if odd:
+        w_cur = _word(lo=0x0637, hi=COMPRESSED_J)
+        w_nxt = _word(lo=COMPRESSED_J, hi=COMPRESSED_NOP)
+    else:
+        w_cur = _word(lo=COMPRESSED_NOP, hi=0x0637)
+        w_nxt = _word(lo=COMPRESSED_J, hi=COMPRESSED_J)
+    _drive_fetch(
+        dut,
+        current_word=w_cur,
+        next_word=w_nxt,
+        current_sb=model.make_sideband(w_cur),
+        next_sb=model.make_sideband(w_nxt),
+        bank_sel=((owner_pc - 2) >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, (owner_pc - 2) >> 2)
+    if stall_on_release:
+        _drive_pipeline_ctrl(dut, {"stall": True})
+    await _settle()
+    return owner_pc, slot2_pc, slot2_target
+
+
+@cocotb.test()
+async def test_walk_past_flush_in_walk_past_cycle(dut: Any) -> None:
+    """A flush during a walk-past cycle squashes both slots and redirects cleanly.
+
+    In if_stage, flush and redirect arms outrank pc_reg_land_on_pending_wcs0 and
+    pending_prediction_effective in pc_controller, while window_cannot_serve_pc_reg
+    and o_pending_prediction_redirect_kill mask those walk-past terms on non-flush
+    cycles; test_pc_controller exercises those pc_controller gates directly.
+    """
+    await _setup_test(dut)
+    for odd in (False, True):
+        owner_pc, _ = await _enter_capture_cycle_walk_past(dut, odd=odd)
+        target = BRANCH_TARGET + (0x10 if odd else 0)
+
+        dut.i_frontend_state_flush.value = 1
+        _drive_pipeline_ctrl(dut, {"flush": True})
+        _drive_from_ex(dut, {"branch_taken": True, "branch_target_address": target})
+        await _settle()
+        flush_pkt1 = _read_if_packet(dut)
+        flush_pkt2 = _read_if_packet(dut, slot2=True)
+        assert int(dut.pending_prediction_walk_past.value) == 1
+        assert int(dut.window_resteer_pc_reg.value) == 0
+        assert flush_pkt1["sel_nop"] and flush_pkt2["sel_nop"]
+
+        await _advance_cycle(dut)
+        pending_after_flush = int(dut.pc_controller_inst.pending_prediction_valid.value)
+        saved_after_flush = int(
+            dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value
+        )
+        assert int(dut.o_pc.value) == target
+        assert int(dut.pc_reg.value) == target
+        assert int(dut.pending_prediction_walk_past.value) == 0
+        assert int(dut.sel_prediction_r.value) == 0
+
+        # Drain the redirect holdoff bubble (both slots must be NOP), then
+        # verify clean dual-slot emission at the flush target.
+        dut.i_frontend_state_flush.value = 0
+        _drive_pipeline_ctrl(dut, {})
+        _drive_from_ex(dut, {})
+        dut.i_disable_branch_prediction.value = 1
+        await _settle()
+        holdoff_pkt1 = _read_if_packet(dut)
+        holdoff_pkt2 = _read_if_packet(dut, slot2=True)
+        assert holdoff_pkt1["sel_nop"] and holdoff_pkt2["sel_nop"]
+        await _advance_cycle(dut)
+
+        expected_s2 = _drive_post_recovery_pair(dut, start_pc=target)
+        await _settle()
+        rec_pkt1 = _read_if_packet(dut)
+        rec_pkt2 = _read_if_packet(dut, slot2=True)
+        dut._log.info(
+            "if_stage walk-past-flush odd=%d owner=%#x target=%#x "
+            "pending=%d saved=%d rec_s1=%#x rec_s2=%#x",
+            int(odd),
+            owner_pc,
+            target,
+            pending_after_flush,
+            saved_after_flush,
+            rec_pkt1["program_counter"],
+            rec_pkt2["program_counter"],
+        )
+        assert pending_after_flush == 0
+        assert saved_after_flush == 0
+        assert not rec_pkt1["sel_nop"] and rec_pkt1["program_counter"] == target
+        assert not rec_pkt1["btb_predicted_taken"]
+        assert not rec_pkt2["sel_nop"] and rec_pkt2["program_counter"] == expected_s2
+        assert not rec_pkt2["btb_predicted_taken"]
+
+
+@cocotb.test()
+async def test_walk_past_fetch_gap_holds_mask_and_resteers_on_progress(
+    dut: Any,
+) -> None:
+    """A fetch gap in a walk-past cycle preserves the redirect mask until progress returns.
+
+    In if_stage, window_cannot_serve_pc_reg (ORing pending_prediction_walk_past)
+    drives window_resteer_pc_reg and sel_nop whenever fetch progresses, keeping
+    pc_reg_load_en and fetch_advances low (masking !pc_reg_after_pending on
+    pending_mux_valid), disabling slot-1 lookup on walk-past (masking the
+    pc_reg_after_pending arm of o_pending_prediction_blocks_slot1), and clearing
+    c_ext_state.buffer_word_is_pc_reg so i_prediction_holdoff clears any
+    transient odd-P gap buffer flag before pc_reg leaves pc_reg[1]=0. Together
+    with o_pending_prediction_redirect_kill overriding pending_prediction_capture
+    in prediction_metadata_tracker and explicit !pc_reg_after_pending and stale
+    checks in pc_controller, these stage guards make omitting
+    !pc_reg_after_pending from pending_mux_valid or pending_prediction_effective
+    unobservable at if_stage outputs; test_pc_controller pins them directly.
+    """
+    await _setup_test(dut)
+    for odd in (False, True):
+        owner_pc, stale_target = await _enter_capture_cycle_walk_past(dut, odd=odd)
+
+        # Two cycles of fetch gap (i_instr_valid == 0, stall == 0): both slots
+        # are bubbles, pending_prediction_valid stays 1 so pc_controller masks
+        # sel_prediction_r, and neither PC moves.
+        for _ in range(2):
+            dut.i_instr_valid.value = 0
+            await _settle()
+            gap_pkt1 = _read_if_packet(dut)
+            gap_pkt2 = _read_if_packet(dut, slot2=True)
+            assert gap_pkt1["sel_nop"] and gap_pkt2["sel_nop"]
+            assert int(dut.pending_prediction_walk_past.value) == 1
+            assert int(dut.pc_controller_inst.sel_prediction_r.value) == 0
+            assert int(dut.window_cannot_serve_pc_reg.value) == 0
+            await _advance_cycle(dut)
+            assert int(dut.pc_reg.value) == owner_pc + 2
+            assert int(dut.o_pc.value) == stale_target
+            assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+            assert int(dut.pending_prediction_walk_past.value) == 1
+
+        # End the fetch gap with a window whose tags cover pc_reg = P + 2: the
+        # walk-past override still forces WCS squash on both slots and resteers
+        # o_pc to (P + 2)'s word while retiring pending state and sel_prediction_r.
+        dut.i_instr_valid.value = 1
+        _drive_post_recovery_pair(dut, start_pc=owner_pc + 2)
+        await _settle()
+        resteer_pkt1 = _read_if_packet(dut)
+        resteer_pkt2 = _read_if_packet(dut, slot2=True)
+        assert int(dut.served_window_covers_pc_reg.value) == 1
+        assert int(dut.window_cannot_serve_pc_reg.value) == 1
+        assert int(dut.window_resteer_pc_reg.value) == 1
+        assert int(dut.pc_controller_inst.sel_prediction_r.value) == 0
+        assert resteer_pkt1["sel_nop"] and resteer_pkt2["sel_nop"]
+
+        await _advance_cycle(dut)
+        resteer_word = (owner_pc + 2) & ~3
+        pc_after_resteer = int(dut.o_pc.value)
+        pc_reg_after_resteer = int(dut.pc_reg.value)
+        pending_after_resteer = int(
+            dut.pc_controller_inst.pending_prediction_valid.value
+        )
+        assert pc_after_resteer == resteer_word
+        assert pc_reg_after_resteer == owner_pc + 2
+        assert pending_after_resteer == 0
+        assert int(dut.pending_prediction_walk_past.value) == 0
+        assert int(dut.sel_prediction_r.value) == 0
+
+        # On the cycle after resteer, both instruction slots emit cleanly at P + 2.
+        dut.i_disable_branch_prediction.value = 1
+        expected_s2 = _drive_post_recovery_pair(dut, start_pc=owner_pc + 2)
+        await _settle()
+        rec_pkt1 = _read_if_packet(dut)
+        rec_pkt2 = _read_if_packet(dut, slot2=True)
+        dut._log.info(
+            "if_stage walk-past-gap odd=%d owner=%#x resteer_pc=%#x "
+            "pending=%d rec_s1=%#x rec_s2=%#x",
+            int(odd),
+            owner_pc,
+            pc_after_resteer,
+            pending_after_resteer,
+            rec_pkt1["program_counter"],
+            rec_pkt2["program_counter"],
+        )
+        assert not rec_pkt1["sel_nop"] and rec_pkt1["program_counter"] == owner_pc + 2
+        assert not rec_pkt1["btb_predicted_taken"]
+        assert not rec_pkt2["sel_nop"] and rec_pkt2["program_counter"] == expected_s2
+        assert not rec_pkt2["btb_predicted_taken"]
+
+
+@cocotb.test()
+async def test_walk_past_native_predecessor_even_owner_slot2_redirect_at_pending(
+    dut: Any,
+) -> None:
+    """An even-P slot-2 redirect to T2 == P retires pending state and saved metadata."""
+    await _setup_test(dut)
+    owner_pc, slot2_pc, slot2_target = await _arm_if_carve_out_with_slot2_branch(
+        dut, odd=False, target_kind="at"
+    )
+    assert slot2_target == owner_pc
+    assert int(dut.pc_controller_inst.pending_prediction_allow_cross.value) == 0
+
+    pkt1 = _read_if_packet(dut)
+    pkt2 = _read_if_packet(dut, slot2=True)
+    assert not pkt1["sel_nop"] and pkt1["program_counter"] == owner_pc - 2
+    assert not pkt1["sel_compressed"] and not pkt1["btb_predicted_taken"]
+    assert not pkt2["sel_nop"] and pkt2["program_counter"] == slot2_pc
+    assert pkt2["btb_predicted_taken"] and pkt2["btb_predicted_target"] == owner_pc
+    assert int(dut.slot2_prediction_used.value) == 1
+    assert int(dut.pc_controller_inst.o_pending_prediction_redirect_kill.value) == 1
+
+    await _advance_cycle(dut)
+    assert int(dut.pc_reg.value) == owner_pc
+    assert int(dut.o_pc.value) == owner_pc
+    assert int(dut.slot2_redirect_q.value) == 1
+    pending_after_slot2 = int(dut.pc_controller_inst.pending_prediction_valid.value)
+    saved_after_slot2 = int(
+        dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value
+    )
+    ready_after_slot2 = int(dut.pc_controller_inst.pending_prediction_pc_ready_q.value)
+
+    # Bubble cycle at P: both slots are NOP, pc_reg holds at P, and pc_ready_q stays 0.
+    dut.i_disable_branch_prediction.value = 1
+    _drive_post_recovery_pair(dut, start_pc=owner_pc)
+    await _settle()
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+    await _advance_cycle(dut)
+
+    pc_reg_after_bubble = int(dut.pc_reg.value)
+    ready_after_bubble = int(dut.pc_controller_inst.pending_prediction_pc_ready_q.value)
+    expected_s2 = _drive_post_recovery_pair(dut, start_pc=owner_pc)
+    await _settle()
+    rec_pkt1 = _read_if_packet(dut)
+    rec_pkt2 = _read_if_packet(dut, slot2=True)
+    dut._log.info(
+        "if_stage slot2-at-even owner=%#x pending=%d saved=%d ready=%d "
+        "pc_reg_after_bubble=%#x rec_s1=%#x rec_s2=%#x s1_taken=%d s2_taken=%d",
+        owner_pc,
+        pending_after_slot2,
+        saved_after_slot2,
+        ready_after_bubble,
+        pc_reg_after_bubble,
+        rec_pkt1["program_counter"],
+        rec_pkt2["program_counter"],
+        int(rec_pkt1["btb_predicted_taken"]),
+        int(rec_pkt2["btb_predicted_taken"]),
+    )
+    assert pending_after_slot2 == 0
+    assert saved_after_slot2 == 0
+    assert ready_after_slot2 == 0
+    assert ready_after_bubble == 0
+    assert pc_reg_after_bubble == owner_pc
+    assert not rec_pkt1["sel_nop"] and rec_pkt1["program_counter"] == owner_pc
+    assert not rec_pkt1["btb_predicted_taken"]
+    assert not rec_pkt2["sel_nop"] and rec_pkt2["program_counter"] == expected_s2
+    assert not rec_pkt2["btb_predicted_taken"]
+
+
+@cocotb.test()
+async def test_walk_past_native_predecessor_slot2_redirect_to_predecessor(
+    dut: Any,
+) -> None:
+    """A slot-2 redirect targeting P - 2 retires pending state for odd and even P."""
+    await _setup_test(dut)
+    for odd in (False, True):
+        owner_pc, slot2_pc, slot2_target = await _arm_if_carve_out_with_slot2_branch(
+            dut, odd=odd, target_kind="pred"
+        )
+        assert slot2_target == owner_pc - 2
+
+        pkt1 = _read_if_packet(dut)
+        pkt2 = _read_if_packet(dut, slot2=True)
+        assert not pkt1["sel_nop"] and pkt1["program_counter"] == owner_pc - 2
+        assert not pkt1["btb_predicted_taken"]
+        assert not pkt2["sel_nop"] and pkt2["program_counter"] == slot2_pc
+        assert (
+            pkt2["btb_predicted_taken"] and pkt2["btb_predicted_target"] == slot2_target
+        )
+        assert int(dut.slot2_prediction_used.value) == 1
+
+        await _advance_cycle(dut)
+        assert int(dut.pc_reg.value) == slot2_target
+        assert int(dut.o_pc.value) == slot2_target
+        assert int(dut.slot2_redirect_q.value) == 1
+        pending_after_slot2 = int(dut.pc_controller_inst.pending_prediction_valid.value)
+        saved_after_slot2 = int(
+            dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value
+        )
+        pim_after_slot2 = int(dut.pc_controller_inst.pim_base.value)
+
+        dut.i_disable_branch_prediction.value = 1
+        _drive_post_recovery_pair(dut, start_pc=slot2_target)
+        await _settle()
+        assert _read_if_packet(dut)["sel_nop"]
+        assert _read_if_packet(dut, slot2=True)["sel_nop"]
+        await _advance_cycle(dut)
+
+        pc_reg_after_bubble = int(dut.pc_reg.value)
+        expected_s2 = _drive_post_recovery_pair(dut, start_pc=slot2_target)
+        await _settle()
+        rec_pkt1 = _read_if_packet(dut)
+        rec_pkt2 = _read_if_packet(dut, slot2=True)
+        dut._log.info(
+            "if_stage slot2-pred odd=%d owner=%#x t2=%#x pending=%d saved=%d "
+            "pim=%d pc_reg_after_bubble=%#x rec_s1=%#x rec_s2=%#x",
+            int(odd),
+            owner_pc,
+            slot2_target,
+            pending_after_slot2,
+            saved_after_slot2,
+            pim_after_slot2,
+            pc_reg_after_bubble,
+            rec_pkt1["program_counter"],
+            rec_pkt2["program_counter"],
+        )
+        assert pending_after_slot2 == 0
+        assert saved_after_slot2 == 0
+        assert pim_after_slot2 == 0
+        assert pc_reg_after_bubble == slot2_target
+        assert not rec_pkt1["sel_nop"] and rec_pkt1["program_counter"] == slot2_target
+        assert not rec_pkt1["btb_predicted_taken"]
+        assert not rec_pkt2["sel_nop"] and rec_pkt2["program_counter"] == expected_s2
+        assert not rec_pkt2["btb_predicted_taken"]
+
+
+@cocotb.test()
+async def test_walk_past_native_predecessor_slot2_bubble_stall(dut: Any) -> None:
+    """Stalling inside the slot-2 redirect bubble keeps both slots NOP until release."""
+    await _setup_test(dut)
+    cases = (
+        (True, "below"),
+        (True, "at"),
+        (False, "at"),
+        (False, "pred"),
+    )
+    for odd, target_kind in cases:
+        owner_pc, slot2_pc, slot2_target = await _arm_if_carve_out_with_slot2_branch(
+            dut, odd=odd, target_kind=target_kind
+        )
+        pkt1 = _read_if_packet(dut)
+        pkt2 = _read_if_packet(dut, slot2=True)
+        assert not pkt1["sel_nop"] and pkt1["program_counter"] == owner_pc - 2
+        assert not pkt2["sel_nop"] and pkt2["program_counter"] == slot2_pc
+        assert (
+            pkt2["btb_predicted_taken"] and pkt2["btb_predicted_target"] == slot2_target
+        )
+        assert int(dut.slot2_prediction_used.value) == 1
+
+        await _advance_cycle(dut)
+        assert int(dut.pc_reg.value) == slot2_target
+        assert int(dut.o_pc.value) == slot2_target
+        assert int(dut.slot2_redirect_q.value) == 1
+        assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 0
+        assert (
+            int(
+                dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value
+            )
+            == 0
+        )
+
+        # Stall for two cycles inside the slot-2 redirect bubble.
+        dut.i_disable_branch_prediction.value = 1
+        _drive_post_recovery_pair(dut, start_pc=slot2_target)
+        _drive_pipeline_ctrl(dut, {"stall": True})
+        await _settle()
+        assert _read_if_packet(dut)["sel_nop"]
+        assert _read_if_packet(dut, slot2=True)["sel_nop"]
+        await _advance_cycle(dut)
+        assert int(dut.slot2_redirect_q.value) == 1
+        assert int(dut.pc_reg.value) == slot2_target
+
+        _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+        await _settle()
+        assert _read_if_packet(dut)["sel_nop"]
+        assert _read_if_packet(dut, slot2=True)["sel_nop"]
+        await _advance_cycle(dut)
+        assert int(dut.slot2_redirect_q.value) == 1
+        assert int(dut.pc_reg.value) == slot2_target
+
+        # Release the stall: replay must stay suppressed because sel_nop_saved
+        # captured the bubble, and both slots stay NOP on the drain cycle.
+        _drive_pipeline_ctrl(dut, {"stall_registered": True})
+        await _settle()
+        assert int(dut.replay_saved_if_outputs.value) == 0
+        assert _read_if_packet(dut)["sel_nop"]
+        assert _read_if_packet(dut, slot2=True)["sel_nop"]
+        await _advance_cycle(dut)
+
+        pc_reg_after_bubble = int(dut.pc_reg.value)
+        slot2_q_after_bubble = int(dut.slot2_redirect_q.value)
+        _drive_pipeline_ctrl(dut, {})
+        expected_s2 = _drive_post_recovery_pair(dut, start_pc=slot2_target)
+        await _settle()
+        rec_pkt1 = _read_if_packet(dut)
+        rec_pkt2 = _read_if_packet(dut, slot2=True)
+        dut._log.info(
+            "if_stage slot2-bubble-stall odd=%d kind=%s owner=%#x t2=%#x "
+            "slot2_q=%d pc_reg_after_bubble=%#x rec_s1=%#x rec_s2=%#x",
+            int(odd),
+            target_kind,
+            owner_pc,
+            slot2_target,
+            slot2_q_after_bubble,
+            pc_reg_after_bubble,
+            rec_pkt1["program_counter"],
+            rec_pkt2["program_counter"],
+        )
+        assert slot2_q_after_bubble == 0
+        assert pc_reg_after_bubble == slot2_target
+        assert not rec_pkt1["sel_nop"] and rec_pkt1["program_counter"] == slot2_target
+        assert not rec_pkt1["btb_predicted_taken"]
+        assert not rec_pkt2["sel_nop"] and rec_pkt2["program_counter"] == expected_s2
+        assert not rec_pkt2["btb_predicted_taken"]
+
+
+@cocotb.test()
+async def test_walk_past_native_predecessor_replayed_slot2_retires_pending(
+    dut: Any,
+) -> None:
+    """A stall-replayed slot-2 candidate at P+2 retires pending P and saved metadata."""
+    await _setup_test(dut)
+    cases = (
+        (True, "below"),
+        (True, "at"),
+        (False, "at"),
+        (False, "pred"),
+    )
+    for odd, target_kind in cases:
+        owner_pc, slot2_pc, slot2_target = await _arm_if_carve_out_with_slot2_branch(
+            dut, odd=odd, target_kind=target_kind, stall_on_release=True
+        )
+        # First stall cycle captures the staged slot-2 candidate while holding
+        # pending state and saved metadata live.
+        cap_pkt1 = _read_if_packet(dut)
+        cap_pkt2 = _read_if_packet(dut, slot2=True)
+        assert not cap_pkt1["sel_nop"] and cap_pkt1["program_counter"] == owner_pc - 2
+        assert not cap_pkt2["sel_nop"] and cap_pkt2["program_counter"] == slot2_pc
+        assert not cap_pkt2["btb_predicted_taken"]
+        assert int(dut.slot2_staged_prediction_used_for_capture.value) == 1
+        assert int(dut.slot2_prediction_used.value) == 0
+        assert int(dut.pc_controller_inst.o_pending_prediction_redirect_kill.value) == 0
+
+        await _advance_cycle(dut)
+        assert int(dut.u_slot2_prediction_capture.valid_q.value) == 1
+        assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+        assert (
+            int(
+                dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value
+            )
+            == 1
+        )
+        assert int(dut.pc_reg.value) == owner_pc - 2
+        assert int(dut.slot2_redirect_q.value) == 0
+
+        # Hold the stall with live fetch invalid and overwritten with NOPs so
+        # only the captured candidate can redirect on release.
+        _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+        dut.i_instr_valid.value = 0
+        _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
+        for _ in range(2):
+            await _advance_cycle(dut)
+            assert int(dut.u_slot2_prediction_capture.valid_q.value) == 1
+            assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+            assert (
+                int(
+                    dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value
+                )
+                == 1
+            )
+            assert int(dut.pc_reg.value) == owner_pc - 2
+            assert int(dut.slot2_replay_consumed.value) == 0
+            assert not _read_if_packet(dut, slot2=True)["btb_predicted_taken"]
+
+        # Release the stall while i_instr_valid remains low: replay drives
+        # slot 1, slot 2, and the slot-2 redirect that retires pending P.
+        _drive_pipeline_ctrl(dut, {"stall_registered": True})
+        await _settle()
+        rep_pkt1 = _read_if_packet(dut)
+        rep_pkt2 = _read_if_packet(dut, slot2=True)
+        assert int(dut.replay_saved_if_outputs.value) == 1
+        assert (
+            int(dut.branch_prediction_controller_inst.o_slot2_prediction_used.value)
+            == 0
+        )
+        assert int(dut.slot2_replay_request.value) == 1
+        assert int(dut.slot2_replay_consumed.value) == 1
+        assert int(dut.slot2_prediction_used.value) == 1
+        assert int(dut.pc_controller_inst.o_pending_prediction_redirect_kill.value) == 1
+        assert not rep_pkt1["sel_nop"] and rep_pkt1["program_counter"] == owner_pc - 2
+        assert not rep_pkt1["btb_predicted_taken"]
+        assert not rep_pkt2["sel_nop"] and rep_pkt2["program_counter"] == slot2_pc
+        assert (
+            rep_pkt2["btb_predicted_taken"]
+            and rep_pkt2["btb_predicted_target"] == slot2_target
+        )
+
+        await _advance_cycle(dut)
+        pending_after_replay = int(
+            dut.pc_controller_inst.pending_prediction_valid.value
+        )
+        saved_after_replay = int(
+            dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value
+        )
+        assert int(dut.pc_reg.value) == slot2_target
+        assert int(dut.o_pc.value) == slot2_target
+        assert int(dut.slot2_redirect_q.value) == 1
+        assert int(dut.u_slot2_prediction_capture.valid_q.value) == 0
+        assert int(dut.pc_controller_inst.pending_prediction_pc_ready_q.value) == 0
+
+        # Drain the slot-2 redirect bubble, then verify clean dual-slot recovery.
+        _drive_pipeline_ctrl(dut, {})
+        dut.i_instr_valid.value = 1
+        dut.i_disable_branch_prediction.value = 1
+        _drive_post_recovery_pair(dut, start_pc=slot2_target)
+        await _settle()
+        assert _read_if_packet(dut)["sel_nop"]
+        assert _read_if_packet(dut, slot2=True)["sel_nop"]
+        await _advance_cycle(dut)
+
+        pc_reg_after_bubble = int(dut.pc_reg.value)
+        expected_s2 = _drive_post_recovery_pair(dut, start_pc=slot2_target)
+        await _settle()
+        rec_pkt1 = _read_if_packet(dut)
+        rec_pkt2 = _read_if_packet(dut, slot2=True)
+        dut._log.info(
+            "if_stage slot2-replay odd=%d kind=%s owner=%#x t2=%#x "
+            "pending=%d saved=%d pc_reg_after_bubble=%#x rec_s1=%#x rec_s2=%#x",
+            int(odd),
+            target_kind,
+            owner_pc,
+            slot2_target,
+            pending_after_replay,
+            saved_after_replay,
+            pc_reg_after_bubble,
+            rec_pkt1["program_counter"],
+            rec_pkt2["program_counter"],
+        )
+        assert pending_after_replay == 0
+        assert saved_after_replay == 0
+        assert pc_reg_after_bubble == slot2_target
+        assert not rec_pkt1["sel_nop"] and rec_pkt1["program_counter"] == slot2_target
+        assert not rec_pkt1["btb_predicted_taken"]
+        assert not rec_pkt2["sel_nop"] and rec_pkt2["program_counter"] == expected_s2
+        assert not rec_pkt2["btb_predicted_taken"]
+
+
+@cocotb.test()
+async def test_walk_past_odd_predecessor_release_blocks_slot1_prediction(
+    dut: Any,
+) -> None:
+    """An odd-P predecessor release at P - 2 blocks a live slot-1 BTB hit there.
+
+    After a served-window miss on an odd pending branch P = 4k + 2 sets
+    carve_out_engaged_q and resteers o_pc to P - 2 = 4k, prediction_common is
+    open on the release cycle (pc_reg[1]=0, holdoffs clear, covering window).
+    o_pending_prediction_blocks_slot1 is the sole stage guard preventing a
+    trained slot-1 BTB entry at P - 2 from hijacking fetch while P is pending.
+    """
+    await _setup_test(dut)
+    model = _predecode_model()
+    c_bnez_a0 = 0xE101  # c.bnez x10, +0 (compressed control flow -> 1-wide)
+    owner_pc = BASE_PC + 6
+    pred_pc = owner_pc - 2
+    stale_target = BASE_PC + 0x400
+    pred_target = BASE_PC + 0x500
+
+    for native_pred in (True, False):
+        await _invalidate_and_train_btb_entry(
+            dut, pc=owner_pc, target=stale_target, compressed=True, invalidate=True
+        )
+        await _redirect_to(dut, owner_pc - 4)
+        assert int(dut.pc_reg.value) == owner_pc - 4
+        assert int(dut.o_pc.value) == owner_pc
+
+        # Arm odd pending P = 4k + 2 while emitting a 1-wide compressed control
+        # instruction at P - 4 so pc_reg steps to the word-aligned predecessor P - 2.
+        w_pre = _word(lo=COMPRESSED_NOP, hi=c_bnez_a0)
+        w_after = _word(lo=0x0637, hi=COMPRESSED_J)
+        dut.i_disable_branch_prediction.value = 0
+        _drive_fetch(
+            dut,
+            current_word=w_pre,
+            next_word=w_after,
+            current_sb=model.make_sideband(w_pre),
+            next_sb=model.make_sideband(w_after),
+            bank_sel=((owner_pc - 4) >> 2) & 1,
+        )
+        _drive_served_word_tags(dut, (owner_pc - 4) >> 2)
+        await _settle()
+        assert int(dut.prediction_used.value) == 1
+        await _advance_cycle(dut)
+
+        assert int(dut.pc_reg.value) == pred_pc
+        assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+        assert int(dut.pc_controller_inst.pending_prediction_allow_cross.value) == 1
+        assert int(dut.prediction_holdoff.value) == 1
+
+        # Miss the served window on the holdoff cycle so carve_out_engaged_q sets
+        # and o_pc resteers to pred_pc = P - 2 = 4k.
+        _drive_served_word_tags(dut, stale_target >> 2)
+        await _settle()
+        assert int(dut.window_cannot_serve_pc_reg.value) == 1
+        await _advance_cycle(dut)
+
+        assert int(dut.pc_reg.value) == pred_pc
+        assert int(dut.o_pc.value) == pred_pc
+        assert int(dut.pc_controller_inst.carve_out_engaged_q.value) == 1
+        assert int(dut.prediction_holdoff.value) == 0
+        assert (
+            int(
+                dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value
+            )
+            == 1
+        )
+
+        # Train a strongly-taken BTB and direction entry at pred_pc = P - 2 during
+        # fetch-invalid cycles (without a branch flush), then let the lookup settle.
+        dut.i_instr_valid.value = 0
+        await _invalidate_and_train_btb_entry(
+            dut,
+            pc=pred_pc,
+            target=pred_target,
+            compressed=not native_pred,
+            invalidate=False,
+        )
+        await _advance_cycle(dut)
+        await _advance_cycle(dut)
+        assert int(dut.pc_reg.value) == pred_pc
+        assert int(dut.o_pc.value) == pred_pc
+        assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+
+        # Present the covering window at pred_pc = P - 2 with branch prediction enabled.
+        dut.i_instr_valid.value = 1
+        dut.i_disable_branch_prediction.value = 0
+        if native_pred:
+            w_cur = ADD_INSTR_A
+            w_nxt = ADD_INSTR_B
+        else:
+            w_cur = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_J)
+            w_nxt = ADD_INSTR_A
+        _drive_fetch(
+            dut,
+            current_word=w_cur,
+            next_word=w_nxt,
+            current_sb=model.make_sideband(w_cur),
+            next_sb=model.make_sideband(w_nxt),
+            bank_sel=(pred_pc >> 2) & 1,
+        )
+        _drive_served_word_tags(dut, pred_pc >> 2)
+        await _settle()
+
+        rel_pkt1 = _read_if_packet(dut)
+        rel_pkt2 = _read_if_packet(dut, slot2=True)
+        assert int(dut.window_cannot_serve_pc_reg.value) == 0
+        assert int(dut.pending_prediction_holdoff.value) == 0
+        assert int(dut.fetch_lookup_is_lower_parcel.value) == 0
+        assert int(dut.branch_prediction_controller_inst.prediction_common.value) == 1
+        assert int(dut.branch_prediction_controller_inst.btb_hit.value) == 1
+        assert int(dut.branch_prediction_controller_inst.dir_predicted_taken.value) == 1
+        assert not rel_pkt1["sel_nop"] and rel_pkt1["program_counter"] == pred_pc
+        assert not rel_pkt1["btb_predicted_taken"]
+        if native_pred:
+            assert rel_pkt1["sel_compressed"] is False
+            assert (
+                not rel_pkt2["sel_nop"] and rel_pkt2["program_counter"] == owner_pc + 2
+            )
+            assert not rel_pkt2["btb_predicted_taken"]
+        else:
+            assert rel_pkt1["sel_compressed"] is True
+            assert rel_pkt2["sel_nop"]
+
+        await _advance_cycle(dut)
+        pc_after_rel = int(dut.o_pc.value)
+        pc_reg_after_rel = int(dut.pc_reg.value)
+        expected_pc_after_rel = owner_pc + 6 if native_pred else owner_pc
+        assert pc_after_rel == expected_pc_after_rel, (
+            f"slot-1 BTB hit at P-2 hijacked o_pc to {pc_after_rel:#x} "
+            f"(pred_target={pred_target:#x}, expected={expected_pc_after_rel:#x})"
+        )
+        assert int(dut.o_fetch_redirect.value) == 0
+        assert int(dut.prediction_already_emitted_q.value) == 0
+        assert int(dut.prediction_holdoff.value) == 0
+        assert int(dut.sel_prediction_r.value) == 0
+
+        if native_pred:
+            # The 2-wide native bundle stepped pc_reg past P to P + 6 without a
+            # spurious slot-1 redirect; walk-past resteers o_pc and recovers cleanly.
+            walk_pc = owner_pc + 6
+            assert pc_reg_after_rel == walk_pc
+            assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+            assert int(dut.pending_prediction_walk_past.value) == 1
+            dut.i_disable_branch_prediction.value = 1
+            _drive_post_recovery_pair(dut, start_pc=walk_pc)
+            await _settle()
+            assert int(dut.window_resteer_pc_reg.value) == 1
+            assert _read_if_packet(dut)["sel_nop"]
+            assert _read_if_packet(dut, slot2=True)["sel_nop"]
+            await _advance_cycle(dut)
+
+            assert int(dut.o_pc.value) == walk_pc
+            assert int(dut.pc_reg.value) == walk_pc
+            assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 0
+            assert (
+                int(
+                    dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value
+                )
+                == 0
+            )
+            expected_s2 = _drive_post_recovery_pair(dut, start_pc=walk_pc)
+            await _settle()
+            rec_pkt1 = _read_if_packet(dut)
+            rec_pkt2 = _read_if_packet(dut, slot2=True)
+            dut._log.info(
+                "if_stage odd-pred-slot1-block native=1 owner=%#x pred=%#x "
+                "pc_after_rel=%#x rec_s1=%#x rec_s2=%#x",
+                owner_pc,
+                pred_pc,
+                pc_after_rel,
+                rec_pkt1["program_counter"],
+                rec_pkt2["program_counter"],
+            )
+            assert not rec_pkt1["sel_nop"] and rec_pkt1["program_counter"] == walk_pc
+            assert not rec_pkt1["btb_predicted_taken"]
+            assert (
+                not rec_pkt2["sel_nop"] and rec_pkt2["program_counter"] == expected_s2
+            )
+            assert not rec_pkt2["btb_predicted_taken"]
+        else:
+            # Compressed predecessor at P - 2 stepped pc_reg to P without a
+            # spurious slot-1 redirect; P then completes its pending handoff.
+            assert pc_reg_after_rel == owner_pc
+            assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+            assert int(dut.pending_prediction_walk_past.value) == 0
+            dut.i_disable_branch_prediction.value = 1
+            _drive_fetch(
+                dut,
+                current_word=w_cur,
+                next_word=w_nxt,
+                current_sb=model.make_sideband(w_cur),
+                next_sb=model.make_sideband(w_nxt),
+                bank_sel=(pred_pc >> 2) & 1,
+            )
+            _drive_served_word_tags(dut, pred_pc >> 2)
+            await _settle()
+            owner_pkt1 = _read_if_packet(dut)
+            owner_pkt2 = _read_if_packet(dut, slot2=True)
+            assert int(dut.pending_prediction_target_handoff.value) == 1
+            assert (
+                not owner_pkt1["sel_nop"] and owner_pkt1["program_counter"] == owner_pc
+            )
+            assert owner_pkt1["btb_predicted_taken"]
+            assert owner_pkt1["btb_predicted_target"] == stale_target
+            assert owner_pkt2["sel_nop"]
+            await _advance_cycle(dut)
+
+            assert int(dut.pc_reg.value) == stale_target
+            assert int(dut.o_pc.value) == stale_target
+            assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 0
+            assert (
+                int(
+                    dut.prediction_metadata_tracker_inst.prediction_pending_saved_valid.value
+                )
+                == 0
+            )
+            dut._log.info(
+                "if_stage odd-pred-slot1-block native=0 owner=%#x pred=%#x "
+                "pc_after_rel=%#x handoff_target=%#x",
+                owner_pc,
+                pred_pc,
+                pc_after_rel,
+                stale_target,
+            )
+
+
 @cocotb.test()
 async def test_slot2_tage_valid_positions_spanning_fault_and_replay(dut: Any) -> None:
     """Slot-2 TAGE coverage, branch flag, and PD target candidates cover all positions and replay."""
@@ -4305,3 +5256,401 @@ async def test_redirect_during_holdoff_discards_backing_reads(dut: Any) -> None:
     _drive_from_ex(dut, {})
     await _advance_cycle(dut)
     assert backing.request_valid_q.value
+
+
+@cocotb.test()
+async def test_flushed_interior_halfword_entry_delivers_native_instruction_unchanged(
+    dut: Any,
+) -> None:
+    """A flushed early-recovery entry at P inside a 32-bit instruction at P-2 delivers it unchanged.
+
+    Tests both a far phantom target and a same-word phantom target whose window
+    covers pc_reg = P + 2 (so served_window_covers_pc_reg is 1 on the walk-past
+    cycle). Only module outputs (o_from_if_to_pd, o_from_if_to_pd_2, o_pc) are
+    asserted: without walk-past, the same-word target delivers P + 2 early and
+    corrupts the following PC stream.
+    """
+    await _setup_test(dut)
+    model = _predecode_model()
+    c_bnez_zero = 0xE101  # c.bnez a0, +0 (compressed control-flow parcel)
+    c_bnez_plus4 = 0xE111  # c.bnez a0, +4 (compressed control-flow parcel)
+    fence_instr = 0x0000000F  # serializing 32-bit FENCE (never pairs in slot 2)
+
+    for odd in (False, True):
+        owner_pc = BASE_PC + (6 if odd else 4)
+        c_parcel = c_bnez_plus4 if odd else c_bnez_zero
+        # 32-bit LUI a2 whose upper halfword at P is c_parcel.
+        lui_word = (c_parcel << 16) | 0x0637
+        same_word_target = owner_pc + 4 if odd else owner_pc
+        for trained_compressed in (True, False):
+            for same_word in (False, True):
+                stale_target = same_word_target if same_word else (BASE_PC + 0x400)
+                for two_wide in (False, True):
+                    # Start from a clean BTB so only the flushed early-recovery entry exists.
+                    dut.i_disable_branch_prediction.value = 1
+                    dut.i_btb_invalidate.value = 1
+                    await _advance_cycle(dut)
+                    dut.i_btb_invalidate.value = 0
+                    for _ in range(4):
+                        await _advance_cycle(dut)
+
+                    # Train interior halfword P through the execute-time early-recovery path
+                    # (both compressed and 32-bit entries predict at odd P in slot 1).
+                    _drive_from_ex(
+                        dut,
+                        {
+                            "btb_update": True,
+                            "btb_update_pc": owner_pc,
+                            "btb_update_target": stale_target,
+                            "btb_update_taken": True,
+                            "btb_update_compressed": trained_compressed,
+                        },
+                    )
+                    dut.i_btb_early_update_active.value = 1
+                    dut.i_btb_early_update_pc.value = owner_pc
+                    dut.i_btb_early_update_taken.value = 1
+                    await _advance_cycle(dut)
+                    dut.i_btb_early_update_active.value = 0
+
+                    # Flush the speculative path with a non-invalidating older-branch
+                    # redirect to P - 4 (i_btb_invalidate stays 0). The BTB write lands
+                    # through btb_update_q during this redirect and must persist.
+                    _drive_from_ex(
+                        dut,
+                        {"branch_taken": True, "branch_target_address": owner_pc - 4},
+                    )
+                    _drive_pipeline_ctrl(dut, {"flush": True})
+                    dut.i_frontend_state_flush.value = 1
+                    await _advance_cycle(dut)
+                    _drive_from_ex(dut, {})
+                    _drive_pipeline_ctrl(dut, {})
+                    dut.i_frontend_state_flush.value = 0
+                    await _advance_cycle(dut)
+                    assert int(dut.o_pc.value) == owner_pc
+
+                    # Build the correct-path fetch stream across P - 4, P - 2 (32-bit LUI),
+                    # P + 2 (successor), and P + 6 (ADD_INSTR_B).
+                    if two_wide:
+                        # 2-wide capture-cycle walk-past: c.nop at P-4 pairs with 32-bit LUI at P-2.
+                        if odd:
+                            w0 = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_NOP)
+                            w1 = _word(lo=0x0637, hi=c_parcel)
+                        else:
+                            w0 = _word(lo=COMPRESSED_NOP, hi=0x0637)
+                            w1 = _word(lo=c_parcel, hi=COMPRESSED_NOP)
+                    else:
+                        # 1-wide sequential walk-past: compressed branch at P-4 prevents pairing,
+                        # so P-2 (32-bit LUI) is emitted on its own cycle after P arms pending.
+                        if odd:
+                            w0 = _word(lo=COMPRESSED_NOP, hi=c_parcel)
+                            w1 = _word(lo=0x0637, hi=c_parcel)
+                        else:
+                            w0 = _word(lo=c_parcel, hi=0x0637)
+                            w1 = _word(lo=c_parcel, hi=COMPRESSED_NOP)
+
+                    dut.i_disable_branch_prediction.value = 0
+                    _drive_fetch(
+                        dut,
+                        current_word=w0,
+                        next_word=w1,
+                        current_sb=model.make_sideband(w0),
+                        next_sb=model.make_sideband(w1),
+                        bank_sel=((owner_pc - 4) >> 2) & 1,
+                    )
+                    _drive_served_word_tags(dut, (owner_pc - 4) >> 2)
+                    await _settle()
+
+                    emitted_lui = False
+                    if two_wide:
+                        pkt2 = _read_if_packet(dut, slot2=True)
+                        assert not pkt2["sel_nop"]
+                        assert pkt2["program_counter"] == owner_pc - 2
+                        assert pkt2["sel_compressed"] is False
+                        assert pkt2["effective_instr"] == lui_word
+                        assert pkt2["btb_predicted_taken"] is False
+                        emitted_lui = True
+
+                    # Advance across the prediction edge: o_pc redirects to stale_target.
+                    await _advance_cycle(dut)
+                    assert int(dut.o_pc.value) == stale_target
+
+                    if not two_wide:
+                        if not odd and same_word:
+                            # For even P = 4k with stale_target = P, the lower half of the
+                            # 32-bit LUI at P - 2 (4k - 2) is already buffered and word P
+                            # supplies its upper half directly without a resteer cycle.
+                            w_span0 = _word(lo=c_parcel, hi=ADD_INSTR_A & 0xFFFF)
+                            w_span1 = _word(
+                                lo=(ADD_INSTR_A >> 16) & 0xFFFF, hi=COMPRESSED_NOP
+                            )
+                            _drive_fetch(
+                                dut,
+                                current_word=w_span0,
+                                next_word=w_span1,
+                                current_sb=model.make_sideband(w_span0),
+                                next_sb=model.make_sideband(w_span1),
+                                bank_sel=(stale_target >> 2) & 1,
+                            )
+                            _drive_served_word_tags(dut, stale_target >> 2)
+                            await _settle()
+                            pkt1 = _read_if_packet(dut)
+                            assert not pkt1["sel_nop"]
+                            assert pkt1["program_counter"] == owner_pc - 2
+                            assert pkt1["sel_compressed"] is False
+                            assert pkt1["effective_instr"] == lui_word
+                            assert pkt1["btb_predicted_taken"] is False
+                            emitted_lui = True
+                            await _advance_cycle(dut)
+                        else:
+                            # First post-prediction cycle: stale target window does not cover
+                            # P - 2, so IF squashes it and resteers o_pc to P - 2's word.
+                            _drive_served_word_tags(dut, stale_target >> 2)
+                            await _settle()
+                            assert _read_if_packet(dut)["sel_nop"]
+                            assert _read_if_packet(dut, slot2=True)["sel_nop"]
+                            await _advance_cycle(dut)
+                            assert int(dut.o_pc.value) == ((owner_pc - 2) & ~3)
+
+                            # Present the covering window for P - 2 (32-bit LUI) and P + 2.
+                            # Use a serializing FENCE at P + 2 when P is odd so slot 2 does
+                            # not pair with LUI and the next PC is P + 2.
+                            if odd:
+                                w_lui0 = _word(lo=0x0637, hi=c_parcel)
+                                w_lui1 = fence_instr
+                            else:
+                                w_lui0 = _word(lo=c_parcel, hi=0x0637)
+                                w_lui1 = _word(lo=c_parcel, hi=ADD_INSTR_A & 0xFFFF)
+                            _drive_fetch(
+                                dut,
+                                current_word=w_lui0,
+                                next_word=w_lui1,
+                                current_sb=model.make_sideband(w_lui0),
+                                next_sb=model.make_sideband(w_lui1),
+                                bank_sel=((owner_pc - 2) >> 2) & 1,
+                            )
+                            _drive_served_word_tags(dut, (owner_pc - 2) >> 2)
+                            await _settle()
+                            pkt1 = _read_if_packet(dut)
+                            assert not pkt1["sel_nop"]
+                            assert pkt1["program_counter"] == owner_pc - 2
+                            assert pkt1["sel_compressed"] is False
+                            assert pkt1["effective_instr"] == lui_word
+                            assert pkt1["btb_predicted_taken"] is False
+                            emitted_lui = True
+                            await _advance_cycle(dut)
+
+                    assert emitted_lui
+
+                    # Prepare the successor window at P + 2 (use FENCE as word 1 when P is
+                    # odd so slot 2 does not pair and P + 6 emits cleanly on the next cycle).
+                    expected_succ = (
+                        fence_instr if (odd and not two_wide) else ADD_INSTR_A
+                    )
+                    if odd:
+                        w_succ0 = expected_succ
+                        w_succ1 = fence_instr
+                    else:
+                        w_succ0 = _word(lo=c_parcel, hi=expected_succ & 0xFFFF)
+                        w_succ1 = _word(
+                            lo=(expected_succ >> 16) & 0xFFFF, hi=ADD_INSTR_B & 0xFFFF
+                        )
+
+                    # Walk-past cycle: present the phantom target window. When same_word
+                    # is True, this window covers P + 2 with real bytes; walk-past must
+                    # still squash both slots to NOP and resteer o_pc to (P + 2)'s word.
+                    if same_word:
+                        _drive_fetch(
+                            dut,
+                            current_word=w_succ0,
+                            next_word=w_succ1,
+                            current_sb=model.make_sideband(w_succ0),
+                            next_sb=model.make_sideband(w_succ1),
+                            bank_sel=((owner_pc + 2) >> 2) & 1,
+                        )
+                    _drive_served_word_tags(dut, stale_target >> 2)
+                    await _settle()
+                    assert _read_if_packet(dut)["sel_nop"], (
+                        "walk-past failed to squash slot 1 "
+                        f"(odd={odd}, compressed={trained_compressed}, "
+                        f"same_word={same_word}, two_wide={two_wide})"
+                    )
+                    assert _read_if_packet(dut, slot2=True)["sel_nop"], (
+                        "walk-past failed to squash slot 2 "
+                        f"(odd={odd}, compressed={trained_compressed}, "
+                        f"same_word={same_word}, two_wide={two_wide})"
+                    )
+                    await _advance_cycle(dut)
+                    assert int(dut.o_pc.value) == ((owner_pc + 2) & ~3)
+
+                    # Serve the successor at P + 2 and confirm single, exact delivery.
+                    dut.i_disable_branch_prediction.value = 1
+                    _drive_fetch(
+                        dut,
+                        current_word=w_succ0,
+                        next_word=w_succ1,
+                        current_sb=model.make_sideband(w_succ0),
+                        next_sb=model.make_sideband(w_succ1),
+                        bank_sel=((owner_pc + 2) >> 2) & 1,
+                    )
+                    _drive_served_word_tags(dut, (owner_pc + 2) >> 2)
+                    await _settle()
+                    succ = _read_if_packet(dut)
+                    assert not succ["sel_nop"]
+                    assert succ["program_counter"] == owner_pc + 2
+                    assert succ["effective_instr"] == expected_succ
+                    assert succ["btb_predicted_taken"] is False
+                    await _advance_cycle(dut)
+
+                    # Confirm the following instruction at P + 6 emits cleanly (not a
+                    # duplicate of P + 2, not P, and not mid-instruction P + 4).
+                    if odd:
+                        w_next0 = ADD_INSTR_B
+                        w_next1 = NOP_INSTR
+                    else:
+                        w_next0 = _word(
+                            lo=(expected_succ >> 16) & 0xFFFF, hi=ADD_INSTR_B & 0xFFFF
+                        )
+                        w_next1 = _word(
+                            lo=(ADD_INSTR_B >> 16) & 0xFFFF, hi=COMPRESSED_NOP
+                        )
+                    _drive_fetch(
+                        dut,
+                        current_word=w_next0,
+                        next_word=w_next1,
+                        current_sb=model.make_sideband(w_next0),
+                        next_sb=model.make_sideband(w_next1),
+                        bank_sel=((owner_pc + 6) >> 2) & 1,
+                    )
+                    _drive_served_word_tags(dut, (owner_pc + 6) >> 2)
+                    await _settle()
+                    nxt = _read_if_packet(dut)
+                    assert not nxt["sel_nop"]
+                    assert nxt["program_counter"] == owner_pc + 6
+                    assert nxt["effective_instr"] == ADD_INSTR_B
+                    assert nxt["btb_predicted_taken"] is False
+
+
+@cocotb.test()
+async def test_faulting_fetch_suppresses_trained_btb_redirect(dut: Any) -> None:
+    """A faulting fetch window blocks a trained fast-BTB entry in both slots."""
+    await _setup_test(dut)
+    model = _predecode_model()
+    target = BASE_PC + 0x200
+    pc_slot1 = BASE_PC + 0x20
+    pc_slot2 = pc_slot1 + 4
+
+    # Train strongly-taken BTB entries at both pc_slot1 and pc_slot2.
+    dut.i_disable_branch_prediction.value = 1
+    for train_pc in (pc_slot1, pc_slot2):
+        await _train_btb(dut, pc=train_pc, target=target)
+        await _train_btb(dut, pc=train_pc, target=target)
+
+    # First-word fault (i_instr_fault0=1) at pc_slot1 must suppress both slot-1
+    # and slot-2 fast-BTB predictions and keep o_pc from redirecting to target.
+    await _redirect_to(dut, pc_slot1 - 4)
+    assert int(dut.o_pc.value) == pc_slot1
+
+    dut.i_disable_branch_prediction.value = 0
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=ADD_INSTR_B,
+        current_sb=model.make_sideband(ADD_INSTR_A),
+        next_sb=model.make_sideband(ADD_INSTR_B),
+        bank_sel=((pc_slot1 - 4) >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, (pc_slot1 - 4) >> 2)
+    dut.i_instr_fault0.value = 1
+    dut.i_instr_fault0_page.value = 1
+    await _settle()
+    pkt1 = _read_if_packet(dut)
+    assert pkt1["fetch_fault"] is True
+    assert pkt1["fetch_fault_page"] is True
+    assert pkt1["btb_predicted_taken"] is False
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) != target
+
+    # Second-word fault (i_instr_fault1=1) on a window whose slot-2 PC has a
+    # trained taken entry must also suppress prediction.
+    dut.i_instr_fault0.value = 0
+    dut.i_instr_fault0_page.value = 0
+    dut.i_disable_branch_prediction.value = 1
+    await _redirect_to(dut, pc_slot1)
+    assert int(dut.o_pc.value) == pc_slot2
+
+    dut.i_disable_branch_prediction.value = 0
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=ADD_INSTR_B,
+        current_sb=model.make_sideband(ADD_INSTR_A),
+        next_sb=model.make_sideband(ADD_INSTR_B),
+        bank_sel=(pc_slot1 >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, pc_slot1 >> 2)
+    dut.i_instr_fault1.value = 1
+    dut.i_instr_fault1_page.value = 1
+    await _settle()
+    pkt2 = _read_if_packet(dut, slot2=True)
+    assert pkt2["btb_predicted_taken"] is False
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) != target
+    dut.i_instr_fault1.value = 0
+    dut.i_instr_fault1_page.value = 0
+
+    # Spanning second-word fetch fault on a predicted odd-halfword 32-bit call:
+    # the odd-PC 32-bit entry predicts at fetch time and pends, then arrives at
+    # pc_reg with i_instr_fault1=1 (fetch_fault_hi). Packet assembly must clear
+    # btb_predicted_taken and leave the RAS unchanged.
+    pc_span = BASE_PC + 0x46
+    dut.i_disable_branch_prediction.value = 1
+    await _train_btb(dut, pc=pc_span, target=target, compressed=False, call=True)
+    await _train_btb(dut, pc=pc_span, target=target, compressed=False, call=True)
+    await _redirect_to(dut, pc_span - 4)
+    assert int(dut.o_pc.value) == pc_span
+
+    w_pre0 = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_NOP)
+    w_pre1 = _word(lo=COMPRESSED_NOP, hi=CALL_RA_INSTR & 0xFFFF)
+    dut.i_disable_branch_prediction.value = 0
+    _drive_fetch(
+        dut,
+        current_word=w_pre0,
+        next_word=w_pre1,
+        current_sb=model.make_sideband(w_pre0),
+        next_sb=model.make_sideband(w_pre1),
+        bank_sel=((pc_span - 4) >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, (pc_span - 4) >> 2)
+    await _settle()
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == target
+
+    # Next cycle delivers the word requested when o_pc was pc_span (pc_span >> 2),
+    # now with a faulting second word (i_instr_fault1=1): fetch_fault and
+    # fetch_fault_hi assert, btb_predicted_taken is cleared, and the RAS
+    # receives no push from the faulted call packet.
+    _drive_fetch(
+        dut,
+        current_word=w_pre1,
+        next_word=NOP_INSTR,
+        current_sb=model.make_sideband(w_pre1),
+        next_sb=model.make_sideband(NOP_INSTR),
+        bank_sel=(pc_span >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, pc_span >> 2)
+    dut.i_instr_fault1.value = 1
+    dut.i_instr_fault1_page.value = 1
+    await _settle()
+    pkt_span = _read_if_packet(dut)
+    assert not pkt_span["sel_nop"]
+    assert pkt_span["program_counter"] == pc_span
+    assert pkt_span["fetch_fault"] is True
+    assert pkt_span["fetch_fault_hi"] is True
+    assert pkt_span["fetch_fault_page"] is True
+    assert pkt_span["btb_predicted_taken"] is False
+    assert pkt_span["ras_checkpoint_valid_count"] == 0
+    await _advance_cycle(dut)
+    dut.i_instr_fault1.value = 0
+    dut.i_instr_fault1_page.value = 0
+    await _settle()
+    assert _read_if_packet(dut)["ras_checkpoint_valid_count"] == 0

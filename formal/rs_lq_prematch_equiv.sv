@@ -65,6 +65,7 @@ module rs_lq_prematch_equiv (
       .ISSUE_REPAIR_BYPASS(1'b0),
       .ALLOC_INDEXED_REPAIR(1'b1),
       .SPECULATIVE_DATA_WRITES(1'b1),
+      .BROADCAST_FREE_SOURCE_VALUES(1'b1),
       .FORMAL_STANDALONE_ENV(1'b0),
       .TRUST_DISPATCH_VALID(1'b1)
   ) station (

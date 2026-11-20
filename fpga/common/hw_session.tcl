@@ -12,6 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+# Match the device name from the Hardware Manager's PART property.
+proc frost_check_hw_part {board device} {
+    set pattern [dict get {x3 xcu26_ux35 vcu118 xcvu9p*} $board]
+    set part [get_property PART $device]
+    if {![string match $pattern $part]} {
+        error "Expected FPGA part $pattern for $board, found $part"
+    }
+}
+
 # Open a Hardware Manager session, run body in the caller's scope, then close
 # the target, the server connection, and the Hardware Manager, even when body
 # fails. With a target, open exactly that target and require one FPGA on it.

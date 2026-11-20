@@ -140,10 +140,8 @@ class Bench:
         )
 
     def set_fabric_reset(self, value: int) -> None:
-        """Drive fabric reset and the common-clock subsystem reset."""
+        """Pulse the DDR transport independently of the external core reset."""
         self.dut.i_ddr_axi_rst.value = value
-        if not self.cpu_period:
-            self.dut.i_rst.value = value
 
     async def expected_reset_read(self, value: int) -> int:
         """Predict data from register response acceptance or reset cancellation."""

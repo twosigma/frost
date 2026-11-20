@@ -49,6 +49,7 @@ module nic_engine #(
     // from ADDR_WIDTH and ids from IdBits.
     parameter int unsigned DMA_AXI_ADDR_BITS = 64,
     parameter int unsigned DMA_AXI_ID_BITS = 3,
+    parameter bit ENABLE_PHY_DIAG = 1'b0,
     localparam int unsigned IdBits = 3,
     localparam int unsigned LimitBits = $clog2(RX_FIFO_DEPTH) + 1
 ) (
@@ -318,7 +319,8 @@ module nic_engine #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .APERTURE_BASE(APERTURE_BASE),
       .APERTURE_BYTES(APERTURE_BYTES),
-      .RX_FIFO_DEPTH(RX_FIFO_DEPTH)
+      .RX_FIFO_DEPTH(RX_FIFO_DEPTH),
+      .ENABLE_PHY_DIAG(ENABLE_PHY_DIAG)
   ) u_csr (
       .i_clk(i_clk),
       .i_rst(rst_q),

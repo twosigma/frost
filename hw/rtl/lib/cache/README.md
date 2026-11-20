@@ -786,13 +786,22 @@ ports. Each request carries a response token. With `ULTRA` and without
 `FROST_SRAM_MACROS`, and with `TAG_READ_LATENCY + 2 <= DATA_READ_LATENCY`,
 the data array has a bank per way, indexed by set, and a
 lookup with `i_req_spec` reads every way of its set on its first tag-read
-cycle while no data write of that set is in the write pipeline or on offer; an
-unresolved parallel-read stage blocks data writes to its set until the
-response keeps the selected way (`i_resp_keep`) or drops it. In `ULTRA` builds
-without `FROST_SRAM_MACROS`, way selection reads the tag RAM's fabric output
-register on the final tag-read cycle and presents the response on the
-following cycle; block-RAM and SRAM-macro builds use a single `{way, set}`
-data array read after the decision and a registered `Select` cycle.
+cycle while no data write of that set is in the write pipeline or on offer.
+An unresolved parallel-read stage blocks data writes to its set until the
+response keeps the selected way (`i_resp_keep`), drops the read, or the stage
+expires.
+An open parallel read can be kept only before stage `DATA_READ_LATENCY`.
+An open read at that output stage has no successor and produces no valid
+data. Reaching it open requires a stalled Reply. The home drives response
+ready with `run`, which stays low after a stop until reset clears the read
+pipeline. A clocked assertion checks that the home never keeps an open read
+at the output stage.
+The home control proofs check the keep invariant with `p_keep_before_final`
+in the composed home, where a stop holds until reset.
+In `ULTRA` builds without `FROST_SRAM_MACROS`, way selection reads the tag
+RAM's fabric output register on the final tag-read cycle and presents the
+response on the following cycle. Block-RAM and SRAM-macro builds use a single
+`{way, set}` data array read after the decision and a registered `Select` cycle.
 Replacement state changes when the consumer claims a tag decision. An
 available miss response selects an unpinned way. Way claims enter through the
 tag response port. Put and writeback address hazards are checked at response
@@ -801,6 +810,8 @@ packed row. A pending tag update blocks further lookups to that row until the
 update is accepted. Data hazards cover the read sample and the write input
 registers through completion. Contending reads and writes alternate service
 while prior operations drain. Masked updates preserve sibling sectors.
+The capture proofs leave RAM outputs free, so the array's byte proofs cover
+row and bank addresses by checking the returned bytes.
 
 The D channel's `non_alloc` hint restricts miss replacement to way 0.
 A streaming request that needs a replacement waits while way 0 is pinned.
