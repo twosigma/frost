@@ -1788,11 +1788,8 @@ assertions. They pulse fabric reset with the SoC clock stopped and repeat
 the request during release. With a common clock, fabric reset asserts
 immediately, the CPU reset register holds its value until the first resumed
 edge, and the cycle counter clears on the next edge. The fourth resumed
-edge releases fabric reset and the fifth releases CPU reset. The cycle
-counter starts on the sixth edge. Core reset and CPU reset assert together,
-and CPU reset releases one edge after core reset.
-These checks use idle external DDR AXI ports. The master and bridge unit
-benches check active transactions across CPU-only and fabric reset.
+edge releases fabric reset, the fifth releases bridge reset and the sixth
+releases CPU reset. The cycle counter starts on the seventh edge.
 
 `platform_dma_reset` and `platform_dma_reset_async` run a DMA copy from
 BRAM firmware with the external DDR transport active. Each interrupts a
@@ -1801,6 +1798,18 @@ clock. The common-clock test also straddles a single edge with a 2 ps
 pulse. The independent-clock test pulses reset for one simulation tick
 entirely between edges. Both check the bridge and ingress reset edges, reuse the read and
 write IDs after release, and check the copied byte and the returned credits.
+The independent-clock bench also interrupts a live read or write with a
+DDR-only pulse between clock edges and checks reset in both domains.
+
+`ddr_dma_reset` and `ddr_dma_reset_link` interrupt a coherent read or write
+when its completion is due, or a fresh DMA request when the bridge offers it.
+They use external DDR, zero or one coherent link stage, and pulses of one,
+two, three and eight clocks. Each checks the old owner and credits, then
+requires restarted firmware to copy a new byte through the same IDs.
+They also exercise an outstanding request, a stalled DMA register read
+and the hart's translated Svpbmt non-cacheable loads and stores.
+`ddr_dma_reset_stopped` exercises those paths through `frost` with a
+reset pulse entirely inside a clock stop and checks the first resumed edges.
 
 ## Coverage
 
