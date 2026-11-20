@@ -355,10 +355,14 @@ tests. Systemd must report `running`, or `degraded` with only failed
 `session-N.scope` units whose `Result` is `resources`. These logind session
 races are logged as tolerated. Every other failed unit or result fails the
 stage. It loads the memory error driver, requires its scrub self-test and an
-accelerated RAM patrol pass with zero hardware errors, and reloads it at the
-daily default. The patrol check allows 150 one-second waits. It then runs the
-NIC loopback test from `/dev/shm`, with dentry and inode caches dropped before
-the test. Sysfs counters and carrier are opened before the link goes down.
+accelerated RAM patrol pass with zero memory error counts, and reloads it at
+the daily default. The X3 checks require advancing CPU-visible ECC polls.
+VCU118 reports the controller's ECC state separately through JTAG in the
+`ddr_ecc` stage. The patrol check allows 150 one-second waits. The stage runs
+the NIC loopback test from `/dev/shm` on the interface named in the kernel
+`ip=` parameter and checks the interface reported by each run. It drops
+dentry and inode caches before the test. Sysfs counters and carrier are
+opened before the link goes down.
 The test holds the interface down for 65 seconds before reading counters,
 exceeding NFS's default directory attribute cache lifetime.
 It verifies a queued burst at MTU 1500, including frame lengths around the

@@ -12,33 +12,67 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Read the DDR4 controller's ECC registers over the JTAG DDR-load master, at
-# the ECC management window (region offset 0x4000_0000, assigned in
-# fpga/build/x3_ddr_bd.tcl). FROST's ECC reader (boards/x3/x3_ecc_reader.sv)
-# polls the same window. ddr_ecc_status.py passes the register names and
-# offsets. These reads have no side effects; this script writes the registers
-# only when the caller asks to clear them.
+# Read the DDR4 controller's ECC registers over the DDR JTAG master.
+# The status helper supplies the window. Check it against the design and the
+# FPGA part before issuing any transaction.
+# Writes occur only when the caller asks to clear the registers.
 
-if {$argc < 3} {
-    puts stderr "Usage: vivado -source ddr_ecc_status.tcl -tclargs <target> <clear> <register-list> \[remote_host\] \[hw_server_url\]"
+if {$argc < 4} {
+    puts stderr "Usage: vivado -source ddr_ecc_status.tcl -tclargs <target> <clear> <window-base> <board> \[remote_host\] \[hw_server_url\] \[python\]"
     exit 1
 }
 set hw_target [lindex $argv 0]
 set do_clear [lindex $argv 1]
-set register_list [lindex $argv 2]
-set remote_host [lindex $argv 3]
-set server_url [lindex $argv 4]
+set ecc_window_base [lindex $argv 2]
+set board [lindex $argv 3]
+set remote_host [lindex $argv 4]
+set server_url [lindex $argv 5]
+set python [lindex $argv 6]
+if {$python eq ""} {set python python3}
 
 if {$hw_target eq ""} {
     puts stderr "Error: a nonempty exact hardware target is required"
     exit 1
 }
+if {![regexp {^0x[0-9a-fA-F]{8}$} $ecc_window_base]} {
+    puts stderr "Error: a 32-bit hexadecimal ECC window base is required"
+    exit 1
+}
+if {$ecc_window_base % 4 != 0} {
+    puts stderr "Error: ECC window base must align to a 32-bit word"
+    exit 1
+}
+if {$do_clear ni {0 1} || ![regexp {^[a-z][a-z0-9_]*$} $board]} {
+    puts stderr "Error: expected a clear flag (0 or 1) and a board name"
+    exit 1
+}
 
-# The controller's ECC window, relative to the DDR master's address space.
-set ECC_WINDOW_BASE 0x40000000
+set script_dir [file dirname [info script]]
+# Keep Vivado's bundled Python settings in its own process.
+if {[catch {
+    exec env -u PYTHONHOME -u PYTHONPATH -u PYTHON -- \
+        $python [file join $script_dir ddr_ecc_status.py] $board --window-spec
+} spec]} {
+    puts stderr "Error: could not read the ECC window for $board: $spec"
+    exit 1
+}
+set design_base [lindex $spec 0]
+set registers {}
+foreach entry [lrange $spec 1 end] {
+    lassign [split $entry ":"] name offset
+    set address [expr {$ecc_window_base + $offset}]
+    if {$address + 4 > 0x100000000} {
+        puts stderr "Error: $name exceeds the 32-bit JTAG address space"
+        exit 1
+    }
+    dict set registers $name [format 0x%08x $address]
+}
+if {$ecc_window_base != $design_base} {
+    puts stderr "Error: ECC window for $board is $design_base, got $ecc_window_base"
+    exit 1
+}
 
-source [file join [file dirname [info script]] .. common hw_session.tcl]
-
+source [file join $script_dir .. common hw_session.tcl]
 # Find the DDR master by cell name, as load_software.tcl does, or else as the
 # only full AXI4 master (the BRAM loader is AXI4-Lite). Never probe with a
 # write: this script must not disturb memory to find its master.
@@ -64,20 +98,21 @@ proc find_ddr_hw_axi {} {
     return ""
 }
 
-proc ecc_read {axi offset} {
-    global ECC_WINDOW_BASE
-    set address [format 0x%08x [expr {$ECC_WINDOW_BASE + $offset}]]
-    catch {delete_hw_axi_txn [get_hw_axi_txns eccrd]}
-    create_hw_axi_txn eccrd [get_hw_axis $axi] -type read -address $address -len 1
-    run_hw_axi [get_hw_axi_txns eccrd]
-    set data [get_property DATA [get_hw_axi_txns eccrd]]
-    delete_hw_axi_txn [get_hw_axi_txns eccrd]
-    return $data
+proc report_ecc {axi registers marker} {
+    dict for {name address} $registers {
+        catch {delete_hw_axi_txn [get_hw_axi_txns eccrd]}
+        create_hw_axi_txn eccrd [get_hw_axis $axi] -type read -address $address -len 1
+        run_hw_axi [get_hw_axi_txns eccrd]
+        set data [string trim [get_property DATA [get_hw_axi_txns eccrd]]]
+        delete_hw_axi_txn [get_hw_axi_txns eccrd]
+        if {![regexp {^[0-9a-fA-F]{8}$} $data]} {
+            error "$name at $address did not return a 32-bit hexadecimal word"
+        }
+        puts "$marker $name@$address=$data"
+    }
 }
 
-proc ecc_write {axi offset value} {
-    global ECC_WINDOW_BASE
-    set address [format 0x%08x [expr {$ECC_WINDOW_BASE + $offset}]]
+proc ecc_write {axi address value} {
     catch {delete_hw_axi_txn [get_hw_axi_txns eccwr]}
     create_hw_axi_txn eccwr [get_hw_axis $axi] \
         -type write -address $address -len 1 -data $value
@@ -86,7 +121,9 @@ proc ecc_write {axi offset value} {
 }
 
 frost_hw_session $remote_host $server_url $hw_target {
-    refresh_hw_device -update_hw_probes false [lindex [get_hw_devices] 0]
+    set device [lindex [get_hw_devices] 0]
+    frost_check_hw_part $board $device
+    refresh_hw_device -update_hw_probes false $device
     set ddr_axi [find_ddr_hw_axi]
     if {$ddr_axi eq ""} {
         puts stderr "Error: could not identify the DDR JTAG-AXI master"
@@ -94,28 +131,16 @@ frost_hw_session $remote_host $server_url $hw_target {
     }
     puts "FROST_ECC_MASTER $ddr_axi"
 
-    # register_list is "name:offset name:offset ...", built by the Python side
-    # so both ends name the registers identically.
-    foreach entry $register_list {
-        set parts [split $entry ":"]
-        set name [lindex $parts 0]
-        set offset [lindex $parts 1]
-        puts "FROST_ECC $name=[ecc_read $ddr_axi $offset]"
-    }
+    report_ecc $ddr_axi $registers FROST_ECC
 
     if {$do_clear eq "1"} {
         # A one written to a latched ECC_STATUS bit clears it, and CE_CNT takes
         # the written value. The failing-address and data captures are
         # read-only; clearing the status re-arms them for the next error.
-        ecc_write $ddr_axi 0x00C 00000000
-        ecc_write $ddr_axi 0x000 00000003
+        ecc_write $ddr_axi [dict get $registers CE_CNT] 00000000
+        ecc_write $ddr_axi [dict get $registers ECC_STATUS] 00000003
         puts "FROST_ECC_CLEARED"
-        foreach entry $register_list {
-            set parts [split $entry ":"]
-            set name [lindex $parts 0]
-            set offset [lindex $parts 1]
-            puts "FROST_ECC_AFTER $name=[ecc_read $ddr_axi $offset]"
-        }
+        report_ecc $ddr_axi $registers FROST_ECC_AFTER
     }
     puts "FROST_ECC_DONE"
     flush stdout
