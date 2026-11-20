@@ -19,6 +19,7 @@ import json
 import math
 import os
 import re
+import select
 import signal
 import subprocess
 import sys
@@ -282,20 +283,21 @@ def test_asic_workflow_run_step_passes_the_runners_signals_to_orfs(
     The step runs as the runner runs it, with bash -e, and with a stand-in
     for asic/orfs.py that records the signal it receives.
     """
+    timeout = 120
     received, pid_file = tmp_path / "received", tmp_path / "pid"
     driver = tmp_path / "asic" / "orfs.py"
     driver.parent.mkdir()
     driver.write_text(
         f"#!{sys.executable}\n"
-        "import os, signal, sys, time\n"
+        "import os, signal, sys\n"
+        "signals = {signal.SIGINT, signal.SIGTERM}\n"
+        "signal.pthread_sigmask(signal.SIG_BLOCK, signals)\n"
+        f"signal.alarm({2 * timeout})\n"
         f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
-        "def stop(number, frame):\n"
-        f"    open({str(received)!r}, 'w').write(f'{{number}} {{os.getpid()}}')\n"
-        "    sys.exit(128 + number)\n"
-        "signal.signal(signal.SIGINT, stop)\n"
-        "signal.signal(signal.SIGTERM, stop)\n"
         "print('ready', flush=True)\n"
-        "time.sleep(60)\n"
+        "number = signal.sigwait(signals)\n"
+        f"open({str(received)!r}, 'w').write(f'{{number}} {{os.getpid()}}')\n"
+        "sys.exit(128 + number)\n"
     )
     driver.chmod(0o755)
     step = tmp_path / "step.sh"
@@ -307,15 +309,19 @@ def test_asic_workflow_run_step_passes_the_runners_signals_to_orfs(
     )
     try:
         assert process.stdout is not None
+        readable, _, _ = select.select([process.stdout], [], [], timeout)
+        assert readable, "the ORFS stand-in did not report readiness"
         assert process.stdout.readline() == "ready\n"
         os.kill(process.pid, number)
-        process.wait(timeout=20)
+        process.wait(timeout=timeout)
     finally:
         process.kill()
         process.wait()
         if pid_file.exists():
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            driver_pid = int(pid_file.read_text())
+            if driver_pid != process.pid:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(driver_pid, signal.SIGKILL)
     assert received.read_text() == f"{number} {process.pid}"
     assert process.returncode == 128 + number
 
