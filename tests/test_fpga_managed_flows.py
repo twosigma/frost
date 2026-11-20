@@ -1007,6 +1007,330 @@ source $actual_script
 # The hardware regression consumes these ECC offsets and verdict() results.
 
 
+@pytest.fixture
+def ecc_tcl_harness(tmp_path: Path) -> Path:
+    """Run the production Tcl with mock device and transaction commands."""
+    harness = tmp_path / "mock-ecc.tcl"
+    harness.write_text("""
+set actual_script [lindex $argv 0]
+set argv [lrange $argv 1 end]
+set argc [llength $argv]
+set txn_count 0
+proc open_hw_manager {} {puts OPEN_MANAGER}
+proc connect_hw_server {args} {puts "CONNECT:$args"}
+proc get_hw_targets {} {return [list [lindex $::argv 0]]}
+proc current_hw_target {target} {}
+proc open_hw_target {} {}
+proc get_hw_devices {} {return device0}
+proc refresh_hw_device {args} {}
+proc get_hw_axis {args} {
+    if {[llength $args]} {return [lindex $args 0]}
+    return {bram ddr}
+}
+proc get_property {key object} {
+    switch -- $key {
+        PART {return $::env(TEST_ECC_PART)}
+        CELL_NAME {return [dict get {bram jtag_to_axi_bridge ddr ddr_subsys/jtag_axi_ddr} $object]}
+        NAME {return $object}
+        DATA {
+            if {[info exists ::env(TEST_ECC_WRONG_WINDOW)]} {
+                switch -- $::address {
+                    0x80000000 {return 00000003}
+                    0x8000000c {return 00000009}
+                }
+            }
+            return [format %08x [expr {($::address & 0x7fff) == 8}]]
+        }
+        default {error "unexpected property $key"}
+    }
+}
+proc create_hw_axi_txn {name axi args} {
+    incr ::txn_count
+    set ::address [dict get $args -address]
+    puts "TXN $axi $args"
+}
+proc get_hw_axi_txns {name} {return $name}
+proc delete_hw_axi_txn {args} {}
+proc run_hw_axi {args} {
+    if {[info exists ::env(TEST_ECC_FAIL_TXN)] && $::txn_count == $::env(TEST_ECC_FAIL_TXN)} {
+        error "injected ECC transaction failure"
+    }
+}
+proc close_hw_target {} {}
+proc disconnect_hw_server {} {}
+proc close_hw_manager {} {}
+source $actual_script
+""")
+    return harness
+
+
+def run_ecc_with_tcl_harness(
+    monkeypatch: pytest.MonkeyPatch, harness: Path
+) -> list[subprocess.CompletedProcess[str]]:
+    """Replace Vivado's process with tclsh while keeping the emitted argv."""
+    run = subprocess.run
+    results: list[subprocess.CompletedProcess[str]] = []
+
+    def run_tcl(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        script = command[command.index("-source") + 1]
+        args = command[command.index("-tclargs") + 1 :]
+        result = run(["tclsh", str(harness), script, *args], timeout=10, **kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(ecc.subprocess, "run", run_tcl)
+    return results
+
+
+@pytest.mark.parametrize(
+    "board,base,part",
+    [
+        ("x3", 0x40000000, "xcux35"),
+        ("vcu118", 0x80000000, "xcvu9p-flga2104-2L-e"),
+    ],
+)
+@pytest.mark.parametrize("clear", [False, True])
+def test_ecc_cli_uses_board_window_for_jtag_transactions(
+    ecc_tcl_harness: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    board: str,
+    base: int,
+    part: str,
+    clear: bool,
+) -> None:
+    """Run the Python and Tcl helpers with a model of the DDR JTAG master."""
+    board_args = [board] if board != "x3" or clear else []
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ddr_ecc_status.py",
+            *board_args,
+            "--json",
+            "--hw-server-url",
+            "127.0.0.1:3219",
+            *(["--clear"] if clear else []),
+        ],
+    )
+    monkeypatch.setenv("TEST_ECC_PART", part)
+    monkeypatch.setattr(ecc, "select_target", lambda *a, **kw: TARGET)
+    results = run_ecc_with_tcl_harness(monkeypatch, ecc_tcl_harness)
+    assert ecc.main() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["master"] == "ddr" and report["clean"]
+    assert report["registers"]["ECC_ON_OFF"] == 1
+    assert report["after_clear"] == (report["registers"] if clear else {})
+    assert len(results) == 1
+    assert "CONNECT:-url 127.0.0.1:3219" in results[0].stdout
+    transactions = [
+        line for line in results[0].stdout.splitlines() if line.startswith("TXN ")
+    ]
+
+    reads = [
+        f"TXN ddr -type read -address {base + offset:#010x} -len 1"
+        for _, offset in ecc.ECC_REGISTERS
+    ]
+    writes = [
+        f"TXN ddr -type write -address {base + 0x00C:#010x} -len 1 -data 00000000",
+        f"TXN ddr -type write -address {base:#010x} -len 1 -data 00000003",
+    ]
+    assert transactions == (reads + writes + reads if clear else reads)
+
+
+@pytest.mark.parametrize("clear", [False, True])
+def test_ecc_checks_actual_fpga_part_before_transactions(
+    ecc_tcl_harness: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    clear: bool,
+) -> None:
+    """An X3 selection over a Xilinx cable must reject a VCU118 device."""
+    cable = "localhost:3121/xilinx_tcf/Xilinx/888"
+    monkeypatch.setitem(
+        ecc.select_target.__globals__, "get_available_targets", lambda *a, **kw: [cable]
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ddr_ecc_status.py", "x3", "--target", cable, "--non-interactive"]
+        + (["--clear"] if clear else []),
+    )
+    monkeypatch.setenv("TEST_ECC_PART", "xcvu9p-flga2104-2L-e")
+    monkeypatch.setenv("TEST_ECC_WRONG_WINDOW", "1")
+    results = run_ecc_with_tcl_harness(monkeypatch, ecc_tcl_harness)
+    assert ecc.main() == 1
+    capture = capsys.readouterr()
+    assert "Expected FPGA part xcux35 for x3, found xcvu9p-flga2104-2L-e" in capture.err
+    assert "Clean:" not in capture.out
+    assert "TXN " not in results[0].stdout
+
+
+@pytest.mark.parametrize(
+    "board,base,reason",
+    [
+        ("vcu118", "0x80000001", "must align to a 32-bit word"),
+        ("vcu118", "0xfffffff0", "exceeds the 32-bit JTAG address space"),
+        ("vcu118", "nothex", "32-bit hexadecimal ECC window base is required"),
+        ("vcu118", "0x40000000", "ECC window for vcu118 is 0x80000000"),
+        ("x3", "0x80000000", "ECC window for x3 is 0x40000000"),
+    ],
+)
+def test_ecc_tcl_rejects_invalid_base_before_opening_manager(
+    ecc_tcl_harness: Path, board: str, base: str, reason: str
+) -> None:
+    """Direct Tcl calls validate the supplied address against the board design."""
+    result = subprocess.run(
+        ["tclsh", str(ecc_tcl_harness), str(ecc.TCL_SCRIPT), TARGET, "1", base, board],
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert reason in result.stderr
+    assert "OPEN_MANAGER" not in result.stdout
+    assert "TXN " not in result.stdout
+
+
+def test_ecc_tcl_starts_host_python_without_vivado_environment(
+    ecc_tcl_harness: Path, tmp_path: Path
+) -> None:
+    """Remove Vivado's Python settings from the child process only."""
+    python_env = {
+        "PYTHONHOME": str(tmp_path / "fake_vivado_python_3_13_0"),
+        "PYTHONPATH": str(tmp_path / "vivado modules"),
+        "PYTHON": str(tmp_path / "vivado python"),
+    }
+    child_env = tmp_path / "child-env"
+    host_python = tmp_path / "host python"
+    host_python.write_text(r"""#!/bin/sh
+printf '%s\n' "${PYTHONHOME-unset}" "${PYTHONPATH-unset}" "${PYTHON-unset}" \
+    > "$TEST_ECC_CHILD_ENV"
+exec "$TEST_ECC_HOST_PYTHON" "$@"
+""")
+    host_python.chmod(0o755)
+    with ecc_tcl_harness.open("a") as harness:
+        harness.write("""
+foreach name {PYTHONHOME PYTHONPATH PYTHON} {
+    puts "PARENT_ENV $name=$::env($name)"
+}
+""")
+    result = subprocess.run(
+        [
+            "tclsh",
+            str(ecc_tcl_harness),
+            str(ecc.TCL_SCRIPT),
+            TARGET,
+            "0",
+            "0x40000000",
+            "x3",
+            "",
+            "",
+            str(host_python),
+        ],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            **python_env,
+            "TEST_ECC_CHILD_ENV": str(child_env),
+            "TEST_ECC_HOST_PYTHON": sys.executable,
+            "TEST_ECC_PART": "xcux35",
+        },
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert child_env.read_text().splitlines() == ["unset"] * len(python_env)
+    output = result.stdout.splitlines()
+    assert "FROST_ECC_DONE" in output
+    for name, value in python_env.items():
+        assert f"PARENT_ENV {name}={value}" in output
+
+
+@pytest.mark.parametrize("txn", [11, 12, 13])
+def test_ecc_clear_reports_tool_failure_at_each_phase(
+    ecc_tcl_harness: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    txn: int,
+) -> None:
+    """A failure during either clear write or the after sample fails the CLI."""
+    monkeypatch.setenv("TEST_ECC_PART", "xcvu9p")
+    monkeypatch.setenv("TEST_ECC_FAIL_TXN", str(txn))
+    monkeypatch.setattr(sys, "argv", ["ddr_ecc_status.py", "vcu118", "--clear"])
+    monkeypatch.setattr(ecc, "select_target", lambda *a, **kw: TARGET)
+    results = run_ecc_with_tcl_harness(monkeypatch, ecc_tcl_harness)
+    assert ecc.main() == 1
+    capture = capsys.readouterr()
+    assert "injected ECC transaction failure" in capture.err
+    assert "Clean:" not in capture.out
+    assert results[0].stdout.count("TXN ") == txn
+
+
+def test_ecc_window_follows_jtag_assignment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The JTAG C0_REG offset comes from the selected design recipe."""
+    x3 = ecc.ECC_WINDOW_DESIGNS["x3"].read_text()
+    design = tmp_path / "x3_ddr_bd.tcl"
+    # Leave the first 1 GiB DDR segment and the ECC_AXI C0_REG segment in place.
+    design.write_text(
+        x3.replace("0x40000000 -range 0x00008000", "0x60000000 -range 0x00008000", 1)
+    )
+    monkeypatch.setitem(ecc.ECC_WINDOW_DESIGNS, "x3", design)
+    assert ecc.ecc_window_base("x3") == 0x60000000
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_ecc_cli_rejects_missing_or_ambiguous_window_before_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    count: int,
+) -> None:
+    """Only one JTAG assignment can authorize an ECC address."""
+    design = tmp_path / "vcu118_ddr_bd.tcl"
+    design.write_text(ecc.ECC_WINDOW_DESIGNS["vcu118"].read_text() * count)
+    monkeypatch.setitem(ecc.ECC_WINDOW_DESIGNS, "vcu118", design)
+    monkeypatch.setattr(sys, "argv", ["ddr_ecc_status.py", "vcu118"])
+    monkeypatch.setattr(
+        ecc, "select_target", lambda *a, **kw: pytest.fail("JTAG discovery")
+    )
+    assert ecc.main() == 1
+    assert f"expected one C0_REG assignment for jtag_axi_ddr/Data, found {count}" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize(
+    "assignment,reason",
+    [
+        ("0x00000000 -range 0x00008000", "overlaps the DDR data window"),
+        ("0x80000001 -range 0x00008000", "must cover aligned 32-bit registers"),
+        ("0x80000000 -range 0x000002c4", "must cover aligned 32-bit registers"),
+        ("0xfffffff0 -range 0x00008000", "exceeds the 32-bit JTAG address space"),
+    ],
+)
+def test_ecc_cli_rejects_invalid_design_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    assignment: str,
+    reason: str,
+) -> None:
+    """Invalid JTAG control windows fail before target discovery."""
+    design = tmp_path / "vcu118_ddr_bd.tcl"
+    original = ecc.ECC_WINDOW_DESIGNS["vcu118"].read_text()
+    design.write_text(original.replace("0x80000000 -range 0x00008000", assignment))
+    monkeypatch.setitem(ecc.ECC_WINDOW_DESIGNS, "vcu118", design)
+    monkeypatch.setattr(sys, "argv", ["ddr_ecc_status.py", "vcu118"])
+    monkeypatch.setattr(
+        ecc, "select_target", lambda *a, **kw: pytest.fail("JTAG discovery")
+    )
+    assert ecc.main() == 1
+    assert reason in capsys.readouterr().err
+
+
 def test_ecc_register_offsets_match_the_controller() -> None:
     """ECC_REGISTERS has the controller's offsets and every register verdict() reads."""
     offsets = dict(ecc.ECC_REGISTERS)
@@ -1023,18 +1347,198 @@ def test_ecc_register_offsets_match_the_controller() -> None:
 
 def test_ecc_parse_splits_before_and_after_clearing() -> None:
     """The transcript carries the master, the read values, and the cleared ones."""
+    base = 0x40000000
     before, after, master = ecc.parse_report(
         "FROST_ECC_MASTER hw_axi_1\n"
-        "FROST_ECC ECC_STATUS=00000003\n"
-        "FROST_ECC CE_CNT=000000ff\n"
-        "FROST_ECC_CLEARED\n"
-        "FROST_ECC_AFTER ECC_STATUS=00000000\n"
-        "FROST_ECC_AFTER CE_CNT=00000000\n"
-        "FROST_ECC_DONE\n"
+        + ecc_sample(base, ECC_STATUS="00000003", CE_CNT="000000ff")
+        + "FROST_ECC_CLEARED\n"
+        + ecc_sample(base, marker="FROST_ECC_AFTER")
+        + "FROST_ECC_DONE\n",
+        base,
+        clear=True,
     )
     assert master == "hw_axi_1"
-    assert before == {"ECC_STATUS": 0x3, "CE_CNT": 0xFF}
-    assert after == {"ECC_STATUS": 0, "CE_CNT": 0}
+    assert before == {**after, "ECC_STATUS": 0x3, "CE_CNT": 0xFF}
+    assert after == {name: int(name == "ECC_ON_OFF") for name, _ in ecc.ECC_REGISTERS}
+
+
+def ecc_sample(base: int, marker: str = "FROST_ECC", **values: str) -> str:
+    """Build a complete addressed transcript with optional word overrides."""
+    lines = []
+    for name, offset in ecc.ECC_REGISTERS:
+        data = values.get(name, "00000001" if name == "ECC_ON_OFF" else "00000000")
+        lines.append(f"{marker} {name}@{base + offset:#010x}={data}\n")
+    return "".join(lines)
+
+
+@pytest.mark.parametrize(
+    "values,exit_code,reason",
+    [
+        ({"ECC_STATUS": "0", "ECC_ON_OFF": "1", "CE_CNT": "0"}, 1, "malformed"),
+        (
+            {"ECC_STATUS": "0000", "ECC_ON_OFF": "0001", "CE_CNT": "0000"},
+            1,
+            "malformed",
+        ),
+        ({"ECC_ON_OFF": "100000001"}, 1, "100000001"),
+        ({"ECC_STATUS": ""}, 1, "ECC_STATUS"),
+        ({"ECC_STATUS": "ZZZZZZZZ"}, 1, "ZZZZZZZZ"),
+        ({"CE_FFA_31_00": ""}, 1, "CE_FFA_31_00"),
+        ({"CE_FFA_31_00": "NOT_HEX!"}, 1, "NOT_HEX!"),
+        ({"ECC_ON_OFF": "deadbee1"}, 1, "ECC_ON_OFF has nonzero reserved bits"),
+        ({"ECC_STATUS": "deadbee0"}, 1, "ECC_STATUS has nonzero reserved bits"),
+        ({"ECC_ON_OFF": "00000000"}, 2, "ECC checking is disabled"),
+        ({"CE_CNT": "00000001"}, 2, "CE_CNT is 1"),
+        ({"ECC_STATUS": "00000002", "CE_CNT": "00000007"}, 2, "CE_CNT is 7"),
+        ({"ECC_STATUS": "00000001"}, 2, "an uncorrectable error is latched"),
+    ],
+    ids=[
+        "short_hex_1digit",
+        "short_hex_4digit",
+        "oversized_hex_9digit",
+        "empty_verdict_value",
+        "malformed_verdict_value",
+        "empty_capture_value",
+        "malformed_capture_value",
+        "garbage_upper_bits_on_off",
+        "garbage_upper_bits_status",
+        "checking_disabled",
+        "ce_cnt_only",
+        "ce_cnt_and_status",
+        "ue_status_bit",
+    ],
+)
+def test_ecc_cli_rejects_bad_words_and_reports_dirty_samples(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    values: dict[str, str],
+    exit_code: int,
+    reason: str,
+) -> None:
+    """Reject malformed data and report valid samples with a recorded error."""
+    output = "FROST_ECC_MASTER ddr\n" + ecc_sample(0x80000000, **values)
+    mock_ecc_reply(monkeypatch, output + "FROST_ECC_DONE\n")
+    assert ecc.main() == exit_code
+    capture = capsys.readouterr()
+    assert reason in (capture.err if exit_code == 1 else capture.out)
+    assert "Clean:" not in capture.out
+
+
+def mock_ecc_reply(
+    monkeypatch: pytest.MonkeyPatch, output: str, *, clear: bool = False
+) -> None:
+    """Return a complete or partial transcript from a successful vendor process."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ddr_ecc_status.py", "vcu118"] + (["--clear"] if clear else []),
+    )
+    monkeypatch.setattr(ecc, "select_target", lambda *a, **kw: TARGET)
+    monkeypatch.setattr(
+        ecc.subprocess,
+        "run",
+        lambda command, **kw: subprocess.CompletedProcess(command, 0, output, ""),
+    )
+
+
+@pytest.mark.parametrize(
+    "output,reason",
+    [
+        ("", "missing final FROST_ECC_DONE"),
+        ("FROST_ECC_DONE\n", "missing FROST_ECC_MASTER"),
+    ],
+    ids=["empty_output", "only_done"],
+)
+def test_ecc_cli_requires_registers_even_when_the_tool_exits_successfully(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    output: str,
+    reason: str,
+) -> None:
+    """A zero exit or a standalone completion marker alone cannot pass."""
+    mock_ecc_reply(monkeypatch, output)
+    assert ecc.main() == 1
+    assert reason in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "previous,replacement,reason",
+    [
+        (
+            "FROST_ECC_DONE\n",
+            "WARNING: FROST_ECC_DONE was never reached\n",
+            "missing final",
+        ),
+        (
+            "ECC_STATUS@0x80000000=00000000\n",
+            "ECC_STATUS@0x80000000=00000001\nFROST_ECC ECC_STATUS@0x80000000=00000000\n",
+            "duplicate ECC_STATUS",
+        ),
+        (
+            "@0x80000008=",
+            "@0x40000008=",
+            "reported address 0x40000008, expected 0x80000008",
+        ),
+        (
+            "FROST_ECC CE_CNT@0x8000000c=00000000\n",
+            "",
+            "missing FROST_ECC register replies: CE_CNT",
+        ),
+        (
+            "FROST_ECC CE_FFA_31_00@0x800001c0=00000000\n",
+            "",
+            "missing FROST_ECC register replies: CE_FFA_31_00",
+        ),
+    ],
+)
+def test_ecc_cli_rejects_incomplete_or_misdirected_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    previous: str,
+    replacement: str,
+    reason: str,
+) -> None:
+    """A transcript needs a completion line and one observation per address."""
+    output = "FROST_ECC_MASTER ddr\n" + ecc_sample(0x80000000) + "FROST_ECC_DONE\n"
+    assert previous in output
+    mock_ecc_reply(monkeypatch, output.replace(previous, replacement, 1))
+    assert ecc.main() == 1
+    capture = capsys.readouterr()
+    assert reason in capture.err
+    assert "Clean:" not in capture.out
+
+
+@pytest.mark.parametrize("marker", ["", "FROST_ECC_CLEARED\n"])
+def test_ecc_clear_requires_confirmation_and_all_after_reads(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], marker: str
+) -> None:
+    """A clean first sample cannot stand in for a completed clear."""
+    output = "FROST_ECC_MASTER ddr\n" + ecc_sample(0x80000000)
+    mock_ecc_reply(monkeypatch, output + marker + "FROST_ECC_DONE\n", clear=True)
+    assert ecc.main() == 1
+    capture = capsys.readouterr()
+    reason = "missing FROST_ECC_AFTER" if marker else "expected one FROST_ECC_CLEARED"
+    assert reason in capture.err
+    assert "Clean:" not in capture.out
+
+
+def test_ecc_clear_keeps_the_original_dirty_verdict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A completed clear reports the original error and the second sample."""
+    base = 0x80000000
+    output = (
+        "FROST_ECC_MASTER ddr\n"
+        + ecc_sample(base, CE_CNT="00000001")
+        + "FROST_ECC_CLEARED\n"
+        + ecc_sample(base, marker="FROST_ECC_AFTER")
+        + "FROST_ECC_DONE\n"
+    )
+    mock_ecc_reply(monkeypatch, output, clear=True)
+    assert ecc.main() == 2
+    report = capsys.readouterr().out
+    assert "After clearing:" in report
+    assert "Not clean: CE_CNT is 1" in report
 
 
 def test_ecc_verdict_named_every_way_the_board_can_be_dirty() -> None:
@@ -1087,6 +1591,25 @@ def test_board_loader_configuration(board: str, capacity: int, clock: int) -> No
     if board == "vcu118":
         with pytest.raises(ValueError, match="fixed CPU clock"):
             loader.board_clock_freq(board, {"FROST_CPU_CLK_HZ": "250000000"})
+
+
+@pytest.mark.parametrize("app", ["memerr_readback", "svpbmt_cmo_test"])
+def test_loader_refuses_apps_requiring_x3_memory_features(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], app: str
+) -> None:
+    """Reject incompatible applications before building or selecting a target."""
+    monkeypatch.setattr(sys, "argv", ["load_software.py", "vcu118", app])
+    monkeypatch.setattr(
+        loader, "compile_app_for_board", lambda *a, **kw: pytest.fail("app build")
+    )
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **kw: pytest.fail("JTAG discovery")
+    )
+    with pytest.raises(SystemExit) as rejected:
+        loader.main()
+    assert rejected.value.code == 2
+    assert f"{app} is not supported on vcu118" in capsys.readouterr().err
+    assert app in loader.valid_apps_for_board("x3")
 
 
 @pytest.mark.parametrize("interface_one", [False, True])
