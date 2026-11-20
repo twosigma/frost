@@ -5464,7 +5464,10 @@ module cpu_ooo #(
       .i_device_read_at_head(device_read_shield_q),
       .o_int_take_armed(int_take_armed),
       .i_mstatus(csr_mstatus),
-      .i_mie(csr_mie),
+      // The engine's terminal state shields interrupts when built. Use the
+      // registered hart stop to inhibit interrupt entry in the other
+      // configuration. The CSR retains its enables and pending bits.
+      .i_mie((MISALIGNED_HW || !i_fatal_stop) ? csr_mie : '0),
       .i_mtvec(csr_mtvec),
       .i_mepc(csr_mepc),
       .i_stvec(csr_stvec),

@@ -535,15 +535,16 @@ holds its delayed request, the program does not require a stale-window
 resteer; the `if_stage` bench supplies stale window tags directly and checks
 rejection, retry, and delayed-target handling.
 
-In the BRAM tier an application runs twice, with a reset in between. The
-second run starts from what the first leaves for the reset to clear, such as
+In the BRAM tier the default is two boots with a reset in between. The
+second boot starts from what the first leaves for the reset to clear, such as
 dirty L1D and L2 lines, interrupt enables and pending interrupts, a CLINT
 compare, the NIC or the DMA test engine set up, a fatal writeback stop with
 the memory-error log set, and FPU state, and with the branch predictor's
-tables trained, which the reset does not clear. The DDR tier runs each
-application once, because its first run changes its image in DDR. Entries
-with `rerun_after_reset=False` run once in both tiers; a new entry keeps the
-two runs.
+tables trained, which the reset does not clear. The DDR tier defaults to
+one boot because the application changes its image in DDR. Entries with
+`rerun_after_reset=False` run once in both tiers. The `fatal_stop_irq` and
+`fatal_stop_irq_with_engine` tests boot once per combination of machine
+external, timer, or software interrupt and arrival at or after the fatal stop.
 
 `fencei_jit_bench` has its own regular-CI shard and runs once in the BRAM
 tier, with `SIM_FAST_MAINT=0` and an eleven-million-cycle budget (about twice

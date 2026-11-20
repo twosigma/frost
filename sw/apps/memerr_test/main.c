@@ -88,6 +88,10 @@ static volatile uint32_t g_status_seen;
 static volatile uint32_t g_other_claims;
 static volatile uint32_t g_expected_read_fault;
 static volatile uint32_t g_read_faults;
+#ifdef FROST_TEST_FATAL_STOP_IRQ
+#define EXTERNAL_IRQ_SOURCE 2u
+static volatile uint32_t g_test_irqs;
+#endif
 
 __attribute__((noinline, used)) void memerr_irq_c(void)
 {
@@ -108,12 +112,22 @@ __attribute__((noinline, used)) void memerr_irq_c(void)
         for (;;) {
         }
     }
+#ifdef FROST_TEST_FATAL_STOP_IRQ
+    if (cause == (MCAUSE_INTERRUPT_BIT | 7ul) || cause == (MCAUSE_INTERRUPT_BIT | 3ul)) {
+        g_test_irqs++;
+        return;
+    }
+#endif
     uint32_t claim = aplic_claim_machine();
     if (claim == MEMORY_ERROR_APLIC_SOURCE) {
         uint32_t status = memory_error_read32(MEMORY_ERROR_STATUS);
         g_status_seen |= status;
         memory_error_write32(MEMORY_ERROR_STATUS, status); /* drops the level */
         g_irq_count++;
+#ifdef FROST_TEST_FATAL_STOP_IRQ
+    } else if (claim == EXTERNAL_IRQ_SOURCE) {
+        g_test_irqs++;
+#endif
     } else {
         g_other_claims++;
     }
@@ -208,6 +222,22 @@ int main(void)
     memory_error_write32(MEMORY_ERROR_STATUS, MEMORY_ERROR_ALL);
     check("status-cleared", memory_error_read32(MEMORY_ERROR_STATUS), 0);
     check("other-claims", g_other_claims, 0);
+
+#ifdef FROST_TEST_FATAL_STOP_IRQ
+    /* Service a bench interrupt before the writeback error and leave the
+     * machine interrupt classes enabled for the stopped-hart check. */
+    aplic_enable_machine_source(EXTERNAL_IRQ_SOURCE);
+    APLIC_SOURCECFG(APLIC_M_BASE, EXTERNAL_IRQ_SOURCE) = APLIC_SOURCE_EDGE_RISE;
+    enable_timer_interrupt();
+    enable_software_interrupt();
+    enable_interrupts();
+    uart_puts("\r\n<<EXPECT_IRQ>>\r\n");
+    for (int i = 0; i < WAIT_LOOPS && !g_test_irqs; i++) {
+    }
+    check("irq-handler", g_test_irqs, 1);
+    csr_write(mcause, 0);
+    csr_write(mepc, 0);
+#endif
 
     if (!g_ok) {
         uart_puts("\r\n<<FAIL>>\r\n");

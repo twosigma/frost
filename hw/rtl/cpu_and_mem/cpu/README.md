@@ -695,6 +695,9 @@ as the engine, so neither dispatch slot allocates in that terminal state.
 `lib/line_align.sv` moves the access between register order and the two
 sectors.
 
+A fatal stop holds issue, commit, normal front-end progress, and machine
+and supervisor interrupt entry with or without the misaligned-access engine.
+
 ## Debug Mode
 
 FROST implements Debug Mode from the RISC-V Debug Specification 0.13.2. The
