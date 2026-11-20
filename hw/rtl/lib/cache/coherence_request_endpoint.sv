@@ -128,12 +128,12 @@ module coherence_request_endpoint #(
   // U readiness returns to every predecessor mask at the home. Compare
   // the held identity, transaction and address together in parallel.
   localparam int unsigned ReleaseKeyBits = ADDR_WIDTH + 15;
-  localparam int unsigned ReleaseParts = (ReleaseKeyBits + 2) / 3;
-  localparam int unsigned ReleaseGroups = (ReleaseParts + 5) / 6;
-  wire [ReleaseKeyBits-1:0] release_key = {release_in.q, release_in.tid, release_in.addr};
-  wire [ReleaseKeyBits-1:0] held_key = {demand_q.q, grant_q.tid, demand_q.addr};
-  (* keep = "true" *) logic [ReleaseParts-1:0] release_parts;
-  (* keep = "true" *) logic [ReleaseGroups-1:0] release_groups;
+  localparam int unsigned ReleaseParts   = (ReleaseKeyBits + 2) / 3;
+  localparam int unsigned ReleaseGroups  = (ReleaseParts + 5) / 6;
+  wire  [ReleaseKeyBits-1:0] release_key = {release_in.q, release_in.tid, release_in.addr};
+  wire  [ReleaseKeyBits-1:0] held_key = {demand_q.q, grant_q.tid, demand_q.addr};
+  (* keep = "true" *)logic [  ReleaseParts-1:0] release_parts;
+  (* keep = "true" *)logic [ ReleaseGroups-1:0] release_groups;
   for (genvar part = 0; part < ReleaseParts; part++) begin : gen_release_part
     localparam int unsigned Bits = ReleaseKeyBits - 3 * part < 3 ? ReleaseKeyBits - 3 * part : 3;
     assign release_parts[part] = release_key[3*part+:Bits] == held_key[3*part+:Bits];
