@@ -102,7 +102,7 @@ PA_BRAM_BUF = 0x0002_0000
 PA_MMIO = 0x4000_0200
 PA_APLIC = 0x4400_1000
 PA_IMSIC = 0x4800_1000
-PA_QUADRANT_STORE = 0x4003_1000
+PA_DEVICE_HOLE = 0x4003_1000
 PA_UNMAPPED_LOW = 0x2000_0000
 PA_UNMAPPED_HIGH = 0xC000_0000
 
@@ -387,8 +387,7 @@ class Generator:
             insns += load_u64(TMP_A, region_pa)
             insns.append(load("ld", self._res(), TMP_A, 8 * rng.randrange(8)))
 
-        # Device windows (MMIO, APLIC, IMSIC) and store-only quadrant interleaved
-        # with cached DDR stores, Zicbom, FENCE, and WFI.
+        # Interleave mapped device accesses with cached DDR stores, Zicbom, FENCE and WFI.
         dev_pa = rng.choice((PA_MMIO, PA_APLIC, PA_IMSIC)) + 8 * rng.randrange(16)
         insns += load_u64(TMP_A, PA_DDR_BUF + 0x200)
         insns += load_u64(TMP_B, 0xCAFE_BABE_0000_0000 | rng.randrange(1 << 16))
@@ -399,10 +398,6 @@ class Generator:
         insns.append(cbo(rng.choice(("cbo.clean", "cbo.flush", "cbo.inval")), TMP_A))
         extra_retire.append(len(insns))
         insns.append(load("ld", self._res(), TMP_A, 0))
-        insns += load_u64(TMP_A, PA_QUADRANT_STORE + 8 * rng.randrange(16))
-        insns.append(store("sd", TMP_B, TMP_A, 0))
-        extra_retire.append(len(insns))
-        insns.append(cbo("cbo.flush", TMP_A))
         wfi_idx = len(insns) + 1
         extra_retire.extend((wfi_idx, wfi_idx + 1))
         insns += [FENCE, WFI, WRS_STO, WRS_NTO]
@@ -675,10 +670,10 @@ class Generator:
             op = rng.choice(("cbo.clean", "cbo.flush", "cbo.inval", "cbo.zero"))
             if op == "cbo.zero":
                 pa = rng.choice(
-                    (PA_MMIO, PA_APLIC, PA_IMSIC, PA_QUADRANT_STORE, PA_UNMAPPED_LOW)
+                    (PA_MMIO, PA_APLIC, PA_IMSIC, PA_DEVICE_HOLE, PA_UNMAPPED_LOW)
                 )
             else:
-                pa = rng.choice((PA_UNMAPPED_LOW, PA_UNMAPPED_HIGH))
+                pa = rng.choice((PA_DEVICE_HOLE, PA_UNMAPPED_LOW, PA_UNMAPPED_HIGH))
             pa += rng.randrange(1, 64)
             insns = [alu_imm("addi", TMP_A, 0, 0), csrw("satp", TMP_A)]
             insns += load_u64(TMP_A, pa)
@@ -916,17 +911,17 @@ class Generator:
                 PA_DDR_BUF + 3,  # mapped misaligned -> 4/6
                 PA_MMIO + 5,  # device misaligned -> 4/6
                 PA_UNMAPPED_LOW + 3,  # unmapped misaligned -> access fault 5/7 first
-                PA_QUADRANT_STORE + 8,  # store-only quadrant load -> access fault 5
+                PA_DEVICE_HOLE + 8,  # unmapped device page -> access fault 5/7
             )
         )
         insns += load_u64(TMP_A, addr)
-        is_load = addr == PA_QUADRANT_STORE + 8 or rng.random() < 0.5
+        is_load = rng.random() < 0.5
         mem_idx = len(insns)
         if is_load:
             insns.append(load("ld", self._res(), TMP_A, 0))
         else:
             insns.append(store("sd", TMP_A, TMP_A, 0))
-        if addr in (PA_UNMAPPED_LOW + 3, PA_QUADRANT_STORE + 8):
+        if addr in (PA_UNMAPPED_LOW + 3, PA_DEVICE_HOLE + 8):
             expected_cause = 5 if is_load else 7
         else:
             expected_cause = 4 if is_load else 6

@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Reject holes in an otherwise default FROST map when compatibility is disabled."""
+"""Check unmapped device stores at the CPU AXI boundary."""
 
 from typing import Any
 
@@ -30,5 +30,6 @@ async def unmapped_device_store_faults_without_an_axi_transaction(dut: Any) -> N
     values = {addr: value for _, addr, value in s.effects}
     assert values[0x40000010] == 7
     assert values[0x40000018] == fault_pc
+    assert values[0x40000020] == 0x40100000
     assert 0x40000008 not in values
     assert not any(addr == 0x40100000 for _, _, addr, *_ in s.transactions)

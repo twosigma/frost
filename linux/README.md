@@ -111,15 +111,15 @@ remove power: the SBI shutdown request returns unsupported and Linux halts.
 
 The PMA map has five regions: the BRAM, the MMIO register window
 `[0x4000_0000, 0x4003_1000)`, the APLIC window `[0x4400_0000, 0x4440_0000)`,
-the IMSIC window `[0x4800_0000, 0x4820_0000)`, and cached DDR. An access anywhere else, including the rest of the device
-quadrant `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set,
-raises a precise access fault (cause 1, 5, or 7 for a fetch, load, or store)
-with the exact address in `mtval`, except that an untranslated store to the
-rest of the device quadrant (from M-mode firmware, say) is ignored instead.
-Under Sv39, a misaligned-address or page fault takes priority over it; for an
-untranslated access, the access fault takes priority over misalignment. Instruction fetch from the device windows
-also faults, and so does an AMO, LR, or SC to them (cause 7, 5, or 7):
-devices take loads and stores only. Addresses outside the map never alias
+the IMSIC window `[0x4800_0000, 0x4820_0000)`, and the configured cached
+DDR aperture. An access outside these regions, including the gaps in the
+device quadrant `[0x4000_0000, 0x8000_0000)`, raises a precise access
+fault (cause 1, 5, or 7 for a fetch, load, or store) with the faulting
+address in the trap value register. Under Sv39 the data MMU checks alignment
+before translation and page permissions before the physical address. For an
+untranslated access, the access fault takes priority over misalignment.
+Device windows permit loads and stores. Fetch, AMO, LR and SC to those
+windows raise causes 1, 7, 5 and 7, respectively. Addresses outside the map never alias
 onto it.
 
 The image packer lays out DDR as follows, with offsets from `0x8000_0000`:
