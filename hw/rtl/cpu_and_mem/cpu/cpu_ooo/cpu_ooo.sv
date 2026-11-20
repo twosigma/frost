@@ -3461,9 +3461,15 @@ module cpu_ooo #(
         $error("cpu_ooo: device request pending without the interrupt shield");
 `endif
       // An interrupt must never be taken inside the shielded window.
-      // (trap_pending is the trap unit's exception input; exceptions stay
-      // ungated by both shields, so only an interrupt take is a violation.)
-      if (device_read_shield_q && trap_taken && !trap_pending)
+      // Exceptions stay ungated by both shields, so only an interrupt take is
+      // a violation. The trap unit takes an exception from its own latch
+      // (exception_pending), which can outlive the ROB's trap_pending: when a
+      // partial flush coincides with the faulting head becoming ready, the
+      // ROB raises trap_pending for that cycle but stays in SERIAL_IDLE, and
+      // the commit hold the pulse raises clears it on the next edge, the edge
+      // on which the trap unit takes the latched exception. Qualify with the
+      // latch, as trap_unit's p_device_shield_blocks_interrupt does.
+      if (device_read_shield_q && trap_taken && !trap_unit_inst.exception_pending)
 `ifdef FROST_SIM_ASSERTIONS
         assert (1'b0)
         else $error("cpu_ooo: interrupt taken inside the device-read shield window");
