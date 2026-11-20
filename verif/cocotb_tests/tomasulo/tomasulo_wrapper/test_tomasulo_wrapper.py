@@ -816,9 +816,15 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
     dut_if, _model = await setup_test(dut)
 
     def pma_store_ok(addr: int) -> bool:
-        """Mirror riscv_pkg::pma_store_ok: BRAM, the device quadrant and DDR."""
+        """Return whether the physical address lies in a writable region."""
         addr &= MASK_XLEN
-        return addr < 0x0004_0000 or 0x4000_0000 <= addr < DDR_LIMIT
+        return (
+            addr < 0x0004_0000
+            or 0x4000_0000 <= addr < 0x4003_1000
+            or 0x4400_0000 <= addr < 0x4440_0000
+            or 0x4800_0000 <= addr < 0x4820_0000
+            or 0x8000_0000 <= addr < DDR_LIMIT
+        )
 
     page_max = (1 << (XLEN - 12)) - 1
     page_cases = [
@@ -832,10 +838,18 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
         ("dec-enters-bram", 0x40, 0, -1, True),
         ("dec-exits-device", 0x40000, 0, -1, False),
         ("dec-enters-ddr", DDR_LIMIT >> 12, 0, -1, True),
-        # The whole device quadrant is legal for a store, so stepping past a
-        # device window does not change the result.
-        ("inc-past-mmio-window", 0x40030, 0xFFF, 1, True),
-        ("dec-into-aplic-gap", 0x44000, 0, -1, True),
+        ("inc-exits-mmio", 0x40030, 0xFFF, 1, False),
+        ("dec-enters-mmio", 0x40031, 0, -1, True),
+        ("inc-enters-aplic", 0x43FFF, 0xFFF, 1, True),
+        ("dec-exits-aplic", 0x44000, 0, -1, False),
+        ("inc-exits-aplic", 0x443FF, 0xFFF, 1, False),
+        ("dec-enters-aplic", 0x44400, 0, -1, True),
+        ("inc-enters-imsic", 0x47FFF, 0xFFF, 1, True),
+        ("dec-exits-imsic", 0x48000, 0, -1, False),
+        ("inc-exits-imsic", 0x481FF, 0xFFF, 1, False),
+        ("dec-enters-imsic", 0x48200, 0, -1, True),
+        ("inc-enters-ddr", 0x7FFFF, 0xFFF, 1, True),
+        ("dec-exits-ddr", 0x80000, 0, -1, False),
         # Sign controls with no page movement: carry/borrow gating is required.
         ("positive-no-carry", 0x3F, 0, 1, True),
         ("negative-no-borrow", 0x40000, 1, -1, True),

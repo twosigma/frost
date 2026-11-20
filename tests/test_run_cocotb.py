@@ -1959,7 +1959,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="vm_test",
         nic_mac_clocks=False,
         description=(
-            "Sv39 data translation, permissions, and precise faults through MPRV"
+            "Sv39 translation and permissions, including precise Bare and Sv39 device-hole stores"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
@@ -5365,7 +5365,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "cpu_top_strict_map": CocotbRunConfig(
         python_test_module="cocotb_tests.integration.test_cpu_top_strict_map",
         hdl_toplevel_module="cpu_top",
-        description="Strict PMA rejects legacy FROST device-quadrant holes before AXI",
+        description="Generic PMA decode rejects unmapped device stores before AXI",
         verilator_extra_args=(
             "-GSIM_FAST_MAINT=1",
             "-GL1_CACHE_BYTES=2048",
@@ -5426,7 +5426,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
     ),
     "cpu_top_boundary": CocotbRunConfig(
-        python_test_module="cocotb_tests.integration.test_cpu_top",
+        python_test_module=(
+            "cocotb_tests.integration.test_cpu_top,"
+            "cocotb_tests.integration.test_cpu_top_strict_map"
+        ),
         hdl_toplevel_module="cpu_top",
         description="Standalone CPU boot, cached/narrow traffic, fences, errors, and inactive coherence",
         verilator_extra_args=(

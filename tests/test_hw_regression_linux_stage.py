@@ -2292,6 +2292,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "pd_itt_slot2",
         "pde_return_hazard",
         "perf_off_test",
+        "pma_fault_test",
         "print_clock_speed",
         "ptw_coherence_test",
         "ras_stress_test",

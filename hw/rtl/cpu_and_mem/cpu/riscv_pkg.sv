@@ -1703,10 +1703,9 @@ package riscv_pkg;
   //   [0x0002_0000, 0x0004_0000)  128 KiB BRAM      loads, stores, atomics
   //   [0x4000_0000, 0x4003_1000)  MMIO registers    loads and stores
   //   [0x4400_0000, 0x4440_0000)  APLIC             loads and stores
+  //   [0x4800_0000, 0x4820_0000)  IMSIC             loads and stores
   //   [DdrBase, DdrLimit)          configured cached DDR
-  // Other addresses fault, except untranslated stores anywhere in the device
-  // quadrant [0x4000_0000, 0x8000_0000); the bus ignores unserved addresses.
-  // See pma_store_ok. Devices support neither AMOs nor reservations
+  // Other addresses fault. Devices support neither AMOs nor reservations
   // (privileged spec AMONone/RsrvNone); AMO/LR/SC faults use causes 7/5/7.
   //
   // Failed PMA checks never launch: fetch supplies a fault-tagged bundle;
@@ -1831,8 +1830,8 @@ package riscv_pkg;
         ((PmaDevice2Bytes != 0) && ((addr - PmaDevice2Base) <= PmaDevice2Bytes - 1));
   endfunction
 
-  // The enabled FROST compatibility mode admits untranslated device-quadrant stores. The
-  // upper-bit check is essential once DDR extends above the first 4 GiB.
+  // Coarse device classification for ordering. The upper bits distinguish
+  // the device quadrant from DDR above 4 GiB.
   function automatic logic pma_device_quadrant(input logic [XLEN-1:0] addr);
     pma_device_quadrant = PmaUsesFrostMap ?
         (addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01) : pma_device_ok(addr);
@@ -1843,11 +1842,9 @@ package riscv_pkg;
     pma_data_ok = pma_memory_ok(addr) || pma_device_ok(addr);
   endfunction
 
-  // Untranslated stores permit BRAM, DDR, and the whole device quadrant,
-  // for timing; the bus ignores unserved device addresses. Translated
-  // stores use the data MMU's exact window check.
+  // Ordinary stores use the same physical map as loads.
   function automatic logic pma_store_ok(input logic [XLEN-1:0] addr);
-    pma_store_ok = pma_memory_ok(addr) || pma_device_quadrant(addr);
+    pma_store_ok = pma_data_ok(addr);
   endfunction
 
   // AMO, LR and SC: BRAM and cached DDR only.

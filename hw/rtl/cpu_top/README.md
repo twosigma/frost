@@ -198,12 +198,12 @@ The CPU map is a build configuration shared by all modules using `riscv_pkg`. Su
 | `FROST_PMA_DEVICE0_BASE` / `..._BYTES` | `0x40000000` / `0x31000` | First Device region |
 | `FROST_PMA_DEVICE1_BASE` / `..._BYTES` | `0x44000000` / `0x400000` | Second Device region |
 | `FROST_PMA_DEVICE2_BASE` / `..._BYTES` | `0x48000000` / `0x200000` | Third Device region |
-| `FROST_PMA_LEGACY_DEVICE_STORES` | 1 | Allow the legacy untranslated device-quadrant stores only with the FROST map; set 0 for strict configured regions |
+| `FROST_PMA_LEGACY_DEVICE_STORES` | 1 | Select FROST-specific decoding on the default map, including the DDR alias for supported apertures. Set 0 for generic region decoding |
 | `FROST_CPU_DEBUG_BASE` | `0x17c00` | Debug execution slice; when debug is used, place it in executable memory below 4 GiB |
 
 Regions use nonoverlapping, page-aligned half-open intervals; elaboration checks alignment, overflow and overlap. A zero size disables an uncached or Device region. The cached region always has its configured power-of-two size. The executable uncached prefix must fit within its data region. Physical width is derived from the highest region limit, with a minimum of 32 bits and a maximum of 56 bits. Device addresses may be above 4 GiB. There is one cached region and one uncached memory region in this implementation; it is not a runtime-programmable PMA table.
 
-Only the exact default FROST map with `FROST_PMA_LEGACY_DEVICE_STORES=1` allows untranslated stores anywhere in `0x40000000..0x80000000`; FROST's SoC ignores writes to unimplemented registers there. Other maps, and builds setting this definition to 0, admit only their configured regions. The optimized FROST store-PMA decoder is bypassed for a different map. Devices permit loads/stores, prohibit instruction fetch and atomics, and bypass every cache including L0. Page tables must reside in the configured cached region; the walker coherently probes L1D and reads through L2.
+Bare and translated stores to unmapped physical addresses raise a store access fault before issuing an AXI write. Devices permit loads/stores, prohibit instruction fetch and atomics, and bypass every cache including L0. Page tables must reside in the configured cached region; the walker coherently probes L1D and reads through L2.
 
 The generic CPU has no knowledge of UART/FIFO/APLIC register offsets. The FROST SoC's register map and programming interface are platform-specific. Changing the standalone CPU configuration does not automatically readdress FROST's peripherals or linker scripts.
 
@@ -339,7 +339,7 @@ The standalone bench executes real instructions while an external AXI model vari
 | Interrupts | `cpu_top_boundary` asserts an interrupt during side-effecting reads and writes and checks that it waits for completion without replaying the access |
 | Reset and boot address | `cpu_top_boundary`, `cpu_axi_master`, and `cpu_memory_fabric` distinguish queued cancellation from draining presented transactions, check retained external RAM, and boot at a new address |
 | Disabled DMA ingress | `cpu_top_boundary` checks that the disabled ingress remains inactive while outgoing traffic runs |
-| Configurable PMA | `cpu_top_custom_map` and `cpu_top_strict_map` check relocated regions and rejection outside the configured device windows |
+| Configurable PMA | `cpu_top_custom_map` checks relocated regions. `cpu_top_boundary` and `cpu_top_strict_map` check rejection outside the device windows with both address decoders |
 | Optional Normal read caching | `cpu_top_writethrough` repeats the standalone boundary cases and checks FENCE.I, read faults, precise SC/AMO errors, and fatal buffered writes; `cpu_top_writethrough_custom_map` relocates the regions above 4 GiB |
 | Read-cache coherence and fills | `load_queue_writethrough` prevents stale responses from replacing newer store data; `lq_l0_cache_128` / `256` / `512` check byte updates and invalidation priority; `fetch_provider_direct` checks hits, conflicts, straddles, late fills and executable-region limits |
 

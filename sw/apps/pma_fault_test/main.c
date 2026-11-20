@@ -18,16 +18,13 @@
  * PMA access-fault tests. Invalid physical addresses, including any with
  * bits above the configured physical width set, must fault with exact mepc
  * and mtval rather than alias.
- * Aligned, untranslated stores to unserved addresses in the device quadrant
- * [0x4000_0000, 0x8000_0000) are ignored without trapping (misalignment
- * checks still apply).
  *
  * Physical map:
  *   [0, 128 KiB) BRAM and the configured DDR aperture support fetch,
  *   loads, stores and atomics. BRAM [128 KiB, 256 KiB) supports loads, stores
  *   and atomics, but no fetch.
- *   MMIO [0x4000_0000, 0x4003_1000) and APLIC [0x4400_0000, 0x4440_0000)
- *   support loads and stores, but no fetch or atomics.
+ *   MMIO [0x4000_0000, 0x4003_1000), APLIC [0x4400_0000, 0x4440_0000)
+ *   and IMSIC [0x4800_0000, 0x4820_0000) support loads and stores.
  *
  * The M-mode handler records the first trap and returns to the continuation
  * in mscratch. An ecall after each data-access trigger records cause 11 if
@@ -367,20 +364,20 @@ int main(void)
              "li   t2, -1\n"
              "sw   t2, 0(t1)",
              "r"(unserved));
-    all_ok &= report3("N3 unserved-sw-ignored", 11u, 0, 0, 0);
+    all_ok &= report3("N3 unserved-sw", 7u, 0, unserved, 0);
     RUN_CASE("mv   t1, %0\n"
              "li   t2, -1\n"
              "sd   t2, 0(t1)",
              "r"(unserved));
-    all_ok &= report3("N4 unserved-sd-ignored", 11u, 0, 0, 0);
+    all_ok &= report3("N4 unserved-sd", 7u, 0, unserved, 0);
     all_ok &= check_value("N4 bram-unchanged", bram_word, 0x0123456789ABCDEFull);
 
     /* N5: the base is in the MMIO window's last page and the immediate
-     * carries the store into the first unserved page, which ignores it. */
+     * carries the store into the first unserved page. */
     RUN_CASE("mv   t1, %0\n"
              "sw   t2, 8(t1)",
              "r"(0x40030FF8ul));
-    all_ok &= report3("N5 store-past-mmio-ignored", 11u, 0, 0, 0);
+    all_ok &= report3("N5 store-past-mmio", 7u, 0, 0x40031000ul, 0);
 
     /* N6: loads at the edges of the served windows. */
     for (unsigned i = 0; i < sizeof(k_unserved_loads) / sizeof(k_unserved_loads[0]); i++) {
@@ -389,6 +386,9 @@ int main(void)
                  "r"(k_unserved_loads[i]));
         all_ok &= report3("N6 unserved-edge-lw", 5u, 0, k_unserved_loads[i], 0);
     }
+
+    RUN_CASE("sw   zero, 1(%0)", "r"(unserved));
+    all_ok &= report3("N7 misaligned-unserved-sw", 7u, 0, unserved + 1, 0);
 
     uart_puts(all_ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {
