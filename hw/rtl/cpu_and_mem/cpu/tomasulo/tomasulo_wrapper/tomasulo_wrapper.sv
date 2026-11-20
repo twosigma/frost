@@ -3704,7 +3704,11 @@ module tomasulo_wrapper #(
 `ifndef SYNTHESIS
   // FP_RS's lanes carry the same valids as MEM_RS's, so the merges agree.
   always_comb begin
-    if (sc_check_armed && i_rst_n && !$isunknown(fp_rs_early_load_injected)) begin
+    if (sc_check_armed && i_rst_n
+`ifndef FORMAL
+        && !$isunknown(fp_rs_early_load_injected)
+`endif
+        ) begin
       p_fp_early_load_matches_mem :
       assert (fp_rs_early_load_injected == mem_rs_early_load_injected);
     end
@@ -5963,6 +5967,18 @@ module tomasulo_wrapper #(
     end
   end
 
+  // Slot 2's rename and registered commit act on the same RAT edge as slot
+  // 1's; a slot-2 rename of a register wins over slot 1's.
+  logic f_slot2_renames_int_track;
+  logic f_slot2_renames_fp_track;
+  logic f_slot2_commit_int_track;
+  assign f_slot2_renames_int_track =
+      i_rat_alloc_valid_2 && !i_rat_alloc_dest_rf_2 && i_rat_alloc_dest_reg_2 == f_int_track;
+  assign f_slot2_renames_fp_track =
+      i_rat_alloc_valid_2 && i_rat_alloc_dest_rf_2 && i_rat_alloc_dest_reg_2 == f_fp_track;
+  assign f_slot2_commit_int_track = commit_bus_2_q_valid && commit_q_2_dest_valid &&
+      !commit_q_2_dest_rf && commit_q_2_dest_reg == f_int_track;
+
   // -------------------------------------------------------------------------
   // Sequential: commit propagation and flush
   // -------------------------------------------------------------------------
@@ -6017,7 +6033,9 @@ module tomasulo_wrapper #(
               i_rat_alloc_dest_rf
           ) && $past(
               i_rat_alloc_dest_reg
-          ) == f_int_track)) begin
+          ) == f_int_track) && !$past(
+              f_slot2_renames_int_track
+          )) begin
         p_commit_clears_int_via_bus : assert (!o_int_src1.renamed);
       end
 
@@ -6046,7 +6064,13 @@ module tomasulo_wrapper #(
               i_rat_alloc_dest_rf
           ) && $past(
               i_rat_alloc_dest_reg
-          ) == f_int_track)) begin
+          ) == f_int_track) && !($past(
+              f_slot2_commit_int_track
+          ) && $past(
+              commit_q_2_tag
+          ) == $past(
+              o_int_src1.tag
+          ))) begin
         p_waw_preserves_newer_int : assert (o_int_src1.renamed);
       end
 
@@ -6075,7 +6099,9 @@ module tomasulo_wrapper #(
               i_rat_alloc_dest_rf
           ) && $past(
               i_rat_alloc_dest_reg
-          ) == f_fp_track)) begin
+          ) == f_fp_track) && !$past(
+              f_slot2_renames_fp_track
+          )) begin
         p_commit_clears_fp_via_bus : assert (!o_fp_src1.renamed);
       end
 
@@ -6109,7 +6135,9 @@ module tomasulo_wrapper #(
               i_checkpoint_restore
           )) begin
         p_rename_wins_over_commit :
-        assert (o_int_src1.renamed && o_int_src1.tag == $past(i_rat_alloc_rob_tag));
+        assert (o_int_src1.renamed &&
+                o_int_src1.tag == ($past(f_slot2_renames_int_track) ? $past(i_rat_alloc_rob_tag_2) :
+                                                                      $past(i_rat_alloc_rob_tag)));
       end
     end
   end

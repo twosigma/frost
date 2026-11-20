@@ -600,10 +600,14 @@ module data_mem_request_router #(
 
 `ifndef SYNTHESIS
   always_comb begin
-    if (sim_reset_seen_q && !$isunknown(
+    if (sim_reset_seen_q
+`ifndef FORMAL
+        && !$isunknown(
             {lq_mem_request_valid, lq_mem_read_en, o_data_mem_cached_read_enable,
                      o_data_mem_cached_read_if_sel, o_data_mem_cached_read_if_clear}
-        ) && !(lq_mem_request_valid && lq_mem_read_en)) begin
+        )
+`endif
+         && !(lq_mem_request_valid && lq_mem_read_en)) begin
       p_cached_read_split_exact :
       assert (o_data_mem_cached_read_enable ==
               (o_data_mem_cached_read_sel ? o_data_mem_cached_read_if_sel :

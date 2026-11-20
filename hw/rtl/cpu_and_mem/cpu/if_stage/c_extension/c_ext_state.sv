@@ -199,9 +199,12 @@ module c_ext_state #(
 
 `ifndef SYNTHESIS
   always_comb begin
+`ifndef FORMAL
     if (!$isunknown(
             {i_pending_prediction_target_handoff, capture_pending_prediction_buffer_state}
-        )) begin
+        ))
+`endif
+    begin
       // A target handoff must override old-path buffer preservation, or its
       // wrong-path upper sibling could become the first target instruction.
       p_pending_handoff_excludes_old_path_buffer_valid :
@@ -276,13 +279,16 @@ module c_ext_state #(
       prev_was_compressed_at_lo_priority_ref =
           is_compressed_for_buffer && !i_pc_reg[1] && !i_slot2_valid;
     end
+`ifndef FORMAL
     if (!$isunknown(
             {
               prev_was_compressed_at_lo_priority_ref,
               prev_was_compressed_at_lo_without_handoff,
               i_pending_prediction_target_handoff
             }
-        )) begin
+        ))
+`endif
+    begin
       p_buffer_handoff_cofactor_matches_priority :
       assert (prev_was_compressed_at_lo_priority_ref ==
               (prev_was_compressed_at_lo_without_handoff &&

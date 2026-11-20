@@ -152,7 +152,10 @@ module decoded_bundle_queue #(
     end
 `ifndef SYNTHESIS
     always_comb begin
-      if (!$isunknown({o_shadow_next, nonempty_next, head_shadow_next, i_shadow_next})) begin
+`ifndef FORMAL
+      if (!$isunknown({o_shadow_next, nonempty_next, head_shadow_next, i_shadow_next}))
+`endif
+      begin
         p_split_shadow_next_exact :
         assert (o_shadow_next == (nonempty_next ? head_shadow_next : i_shadow_next));
       end

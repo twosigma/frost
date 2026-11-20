@@ -346,13 +346,17 @@ module early_misprediction_recovery #(
                                             !fence_i_flush && !mispredict_recovery_pending;
 
   always_ff @(posedge i_clk) begin
-    if (check_reset_seen_q && !i_rst && !$isunknown(
+    if (check_reset_seen_q && !i_rst
+`ifndef FORMAL
+        && !$isunknown(
             {branch_update.mispredicted, is_jalr_issue,
                               rs_issue_int.is_jalr, early_mispredict_fire,
                               early_mispredict_fire_reference,
                               branch_mispredicted_direct,
                               early_mispredict_payload_capture}
-        )) begin
+        )
+`endif
+        ) begin
       p_qualified_jalr_matches_raw_on_mispredict :
       assert (!branch_update.mispredicted || is_jalr_issue == rs_issue_int.is_jalr);
       p_raw_jalr_fire_substitution_exact :

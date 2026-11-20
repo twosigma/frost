@@ -561,10 +561,18 @@ module immu #(
     endcase
   end
   always_comb begin
-    if (!$isunknown({super_next_ok, res0.clean_hit, ref_super_end})) begin
+    // Proofs have no unknown bits, so they check these in every state.
+`ifndef FORMAL
+    if (!$isunknown({super_next_ok, res0.clean_hit, ref_super_end}))
+`endif
+    begin
       p_super_next_eligibility_exact : assert (super_next_ok == (res0.clean_hit && !ref_super_end));
     end
+`ifdef FORMAL
+    if (super_next_ok) begin
+`else
     if (super_next_ok && !$isunknown({super_next_pma_bad, super_next_ppn})) begin
+`endif
       p_super_next_ppn_exact : assert (super_next_ppn == ref_super_ppn);
       p_super_next_pma_exact :
       assert (super_next_pma_bad == !riscv_pkg::pma_fetch_ok(

@@ -106,6 +106,12 @@ module prediction_metadata_tracker_formal (
 
     // A reset cycle inserts a NOP and uses neither saved nor live metadata.
     assume (!i_reset || (i_sel_nop && !i_use_saved_values && !i_live_prediction_for_output));
+
+    // A pending prediction starts the cycle after the taken prediction that
+    // creates it registers, so its metadata is the registered metadata until
+    // the tracker saves it. The tracker's simulation check
+    // p_unsaved_pending_has_registered_metadata checks this in the core.
+    assume (!i_pending_prediction_active || formal_pending_valid || i_prediction_used_r);
   end
 
   prediction_metadata_tracker #(

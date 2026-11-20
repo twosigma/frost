@@ -1,12 +1,18 @@
 [tasks]
 bmc
 cover
+bmc_trusted
+cover_trusted
 
 [options]
 bmc: mode bmc
-bmc: depth 8
+bmc: depth 10
 cover: mode cover
 cover: depth 20
+bmc_trusted: mode bmc
+bmc_trusted: depth 10
+cover_trusted: mode cover
+cover_trusted: depth 20
 
 [engines]
 smtbmc boolector
@@ -16,6 +22,10 @@ read -formal -sv riscv_pkg.sv vec_hold_rows.sv
 read -sv sdp_dist_ram.sv
 read -formal -sv sq_forwarding_unit.sv
 read -formal -sv store_queue.sv
+# The core's settings: allocation trusted to dispatch, cached Normal
+# memory, precise uncached stores and Zicbom handed to the hierarchy.
+bmc_trusted: chparam -set TRUST_DISPATCH_VALID 1 -set CACHE_NORMAL_MEMORY 1 -set PRECISE_UNCACHED 1 -set CMO_HOME 1 store_queue
+cover_trusted: chparam -set TRUST_DISPATCH_VALID 1 -set CACHE_NORMAL_MEMORY 1 -set PRECISE_UNCACHED 1 -set CMO_HOME 1 store_queue
 hierarchy -top store_queue
 script free_undefined.ys
 prep -top store_queue

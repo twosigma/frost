@@ -15,29 +15,18 @@ cover: depth 7
 smtbmc boolector
 
 [script]
-# Extract only the original fetch assumptions. The old and new datapaths expose
-# their real outputs independently of these input restrictions.
-read -formal -sv riscv_pkg.original.sv rvc_decompressor.original.sv pd_target_high_precompute.original.sv pd_redirect_next.original.sv pd_stage.original.sv
-hierarchy -check -top pd_stage
+# The original fetch-input contract: the sixteen assumptions this twin keeps,
+# copied verbatim from the frozen PD into pd_fetch_contract.sv, so the frozen
+# file's simulation checks are never compiled here. The old and new datapaths
+# expose their real outputs independently of these input restrictions.
+read -formal -sv riscv_pkg.original.sv rvc_decompressor.original.sv pd_target_high_precompute.original.sv pd_fetch_contract.sv
+hierarchy -check -top pd_fetch_contract
 setattr -unset dont_touch *
 setattr -mod -unset keep_hierarchy *
-hierarchy -top pd_stage
+hierarchy -top pd_fetch_contract
 script free_undefined.ys
-chformal -assert -remove
-chformal -cover -remove
-delete -output pd_stage/o:*
-prep -top pd_stage -flatten
-select -assert-count 27 t:$check r:FLAVOR=assume %i
-# These eight checks constrain input sums even when the corresponding target
-# field is unused. Compare the outputs with all eight input fields free.
-select -set target_sums a:src=pd_stage.original.sv:1754.* a:src=pd_stage.original.sv:1755.* a:src=pd_stage.original.sv:1757.* a:src=pd_stage.original.sv:1758.* a:src=pd_stage.original.sv:1760.* a:src=pd_stage.original.sv:1761.* a:src=pd_stage.original.sv:1763.* a:src=pd_stage.original.sv:1765.*
-select -assert-count 8 @target_sums t:$check %i r:FLAVOR=assume %i
-chformal -assume -remove @target_sums
-select -assert-count 19 t:$check r:FLAVOR=assume %i
-# The separately exposed source-register fields on the first slot may also vary.
-select -set source_fields a:src=pd_stage.original.sv:1734.* a:src=pd_stage.original.sv:1736.* a:src=pd_stage.original.sv:1738.*
-select -assert-count 3 @source_fields t:$check %i r:FLAVOR=assume %i
-chformal -assume -remove @source_fields
+prep -top pd_fetch_contract -flatten
+select -assert-none t:$check r:FLAVOR=assert %i
 select -assert-count 16 t:$check r:FLAVOR=assume %i
 design -stash contract
 design -reset
@@ -56,7 +45,7 @@ select -assert-none t:$assume t:$check r:FLAVOR=assume %i
 design -stash candidate
 design -reset
 read_slang --top pd_history_twin --single-unit -DSYNTHESIS riscv_pkg.sv pd_history_twin_pkg.sv pd_history_twin.sv
-design -copy-from contract -as pd_fetch_contract pd_stage
+design -copy-from contract -as pd_fetch_contract pd_fetch_contract
 design -copy-from reference -as pd_history_reference pd_history_twin_side
 design -copy-from candidate -as pd_history_candidate pd_history_twin_side
 hierarchy -check -top pd_history_twin
@@ -70,6 +59,7 @@ prove: chformal -cover -remove
 cover: chformal -assert -remove
 
 [files]
+pd_fetch_contract.sv
 predictor_reference/riscv_pkg.original.sv
 predictor_reference/rvc_decompressor.original.sv
 predictor_reference/pd_target_high_precompute.original.sv

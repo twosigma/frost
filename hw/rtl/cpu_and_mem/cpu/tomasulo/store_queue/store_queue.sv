@@ -593,9 +593,11 @@ module store_queue #(
   // Check trusted allocation against the room-qualified form to prevent live
   // slot overwrites. Sample at the edge, where all allocation consumers act.
   always_ff @(posedge i_clk) begin
-    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
-            {i_alloc.valid, i_alloc_2.valid, full, full_for_2, alloc_flush_ok}
-        )) begin
+    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n
+`ifndef FORMAL
+        && !$isunknown({i_alloc.valid, i_alloc_2.valid, full, full_for_2, alloc_flush_ok})
+`endif
+        ) begin
       p_trusted_sq_alloc_exact :
       assert (slot1_alloc_en == (i_alloc.valid && !full && alloc_flush_ok));
       p_trusted_sq_alloc_2_exact :
@@ -607,9 +609,11 @@ module store_queue #(
     // The registered dispatch back-pressure must stay conservative w.r.t.
     // the live window (no same-cycle reclaim ever shrinks it early); the
     // trusted alloc enables depend on this invariant.
-    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
-            {full, full_for_2, dispatch_full_q, dispatch_full_for_2_q}
-        )) begin
+    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n
+`ifndef FORMAL
+        && !$isunknown({full, full_for_2, dispatch_full_q, dispatch_full_for_2_q})
+`endif
+        ) begin
       p_trusted_sq_status_conservative : assert (!full || dispatch_full_q);
       p_trusted_sq_status_for_2_conservative : assert (!full_for_2 || dispatch_full_for_2_q);
     end
@@ -937,9 +941,15 @@ module store_queue #(
       drain_idx_legacy = ref_found ?
           IdxWidth'((32'(head_ptr[IdxWidth-1:0]) + 32'(drain_first_offset)) % DEPTH) :
           head_idx;
+      // Proofs have no unknown bits; they check these from reset on.
+`ifdef FORMAL
+      if (reset_seen_q && i_rst_n)
+`else
       if (!$isunknown(
               {drain_mask_base, drain_complete_fire_next, drain_idx_q, head_ptr, drain_idx_d}
-          )) begin
+          ))
+`endif
+      begin
         p_parallel_drain_scans_match_legacy : assert (drain_idx_d == drain_idx_legacy);
         if (drain_complete_fire_next) begin
           p_drain_fire_entry_is_in_base_mask : assert (drain_mask_base[drain_idx_q]);
@@ -1315,6 +1325,66 @@ module store_queue #(
   assign mem_write_precommit_fire_next = precommit_shared_ready && precise_launch_qualified;
   assign mem_write_launch_qualified = cached_launch_qualified || committed_uncached_launch ||
       mem_write_precommit_fire_next;
+
+`ifndef SYNTHESIS
+  // From a precise uncached store's launch at the ROB head until the queue
+  // reports it complete, the store is the undone ROB head, so the ROB commits
+  // nothing: the head tag stays, and cpu_ooo's device shield, which only a
+  // commit or a full flush clears, stays up. Nothing flushes the queue in
+  // that window either: the shield holds interrupts and Debug Mode, and every
+  // other full flush follows a commit; a partial flush names a younger
+  // instruction, never the undone head, and a flush after a head commit
+  // needs a commit. The proof assumes this rule;
+  // simulation of the core checks it.
+  logic f_uncached_inflight_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] f_uncached_head_tag_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      f_uncached_inflight_q <= 1'b0;
+    end else if (uncached_done_precommit && write_completes_entry) begin
+      f_uncached_inflight_q <= 1'b0;
+    end else if (mem_write_precommit_fire_next && !f_uncached_inflight_q) begin
+      f_uncached_inflight_q <= 1'b1;
+      f_uncached_head_tag_q <= i_rob_head_tag;
+    end
+  end
+  logic f_uncached_killed;
+  assign f_uncached_killed = i_flush_en && (i_flush_after_head_commit ||
+      is_younger(f_uncached_head_tag_q, i_flush_tag, i_rob_head_tag));
+  // An SC resolves once, as a success or a failure: neither the SC whose
+  // success the queue holds as a permit nor the store in flight at the head
+  // is ever discarded as a failed SC.
+  logic f_sc_discard_hits_permit;
+  assign f_sc_discard_hits_permit = i_sc_discard &&
+      ((uncached_sc_permit_q && i_sc_discard_rob_tag == uncached_sc_tag_q) ||
+       (i_uncached_sc_success && i_sc_discard_rob_tag == i_uncached_sc_tag) ||
+       (f_uncached_inflight_q && i_sc_discard_rob_tag == f_uncached_head_tag_q));
+`ifdef FORMAL
+  always_comb begin
+    if (PRECISE_UNCACHED && i_rst_n && f_uncached_inflight_q) begin
+      a_uncached_no_flush : assume (!i_flush_all);
+      a_uncached_not_killed : assume (!f_uncached_killed);
+      a_uncached_head_holds : assume (i_rob_head_tag == f_uncached_head_tag_q);
+      a_uncached_shield_holds : assume (i_uncached_store_shield);
+    end
+    if (PRECISE_UNCACHED && i_rst_n) begin
+      a_sc_discard_not_permitted : assume (!f_sc_discard_hits_permit);
+    end
+  end
+`else
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && PRECISE_UNCACHED && i_rst_n && f_uncached_inflight_q) begin
+      p_uncached_no_flush : assert (!i_flush_all);
+      p_uncached_not_killed : assert (!f_uncached_killed);
+      p_uncached_head_holds : assert (i_rob_head_tag == f_uncached_head_tag_q);
+      p_uncached_shield_holds : assert (i_uncached_store_shield);
+    end
+    if (reset_seen_q && PRECISE_UNCACHED && i_rst_n) begin
+      p_sc_discard_not_permitted : assert (!f_sc_discard_hits_permit);
+    end
+  end
+`endif
+`endif
   assign mem_write_complete_qualified = cached_launch_qualified || committed_uncached_complete ||
       (precommit_shared_ready && precise_complete_qualified);
   // Coherent credit arrives after local qualification and applies only to
@@ -2376,21 +2446,22 @@ endmodule
     end
   end
 
-  // Slot-2 must respect capacity given whether slot-1 is also firing.
+  // Dispatch allocates only while the registered flags it reads show room:
+  // slot 1 against o_dispatch_full, slot 2 against o_dispatch_full_for_2 when
+  // slot 1 also allocates. dispatch_admission proves this of dispatch
+  // (p_sq_alloc_has_room, p_sq_alloc_2_has_room). With TRUST_DISPATCH_VALID,
+  // as the core builds it, the queue relies on it and proves its flags
+  // conservative (p_trusted_sq_status_conservative and its for-2 twin).
   always_comb begin
-    if (i_alloc.valid && full_for_2) assume (!i_alloc_2.valid);
-    if (!i_alloc.valid && full) assume (!i_alloc_2.valid);
+    if (dispatch_full_q) assume (!i_alloc.valid);
+    if (i_alloc.valid && dispatch_full_for_2_q) assume (!i_alloc_2.valid);
+    if (!i_alloc.valid && dispatch_full_q) assume (!i_alloc_2.valid);
     if (i_alloc.valid && i_alloc_2.valid) assume (i_alloc.rob_tag != i_alloc_2.rob_tag);
   end
 
   // Address/data updates may overlap flush. A full flush clears control flags;
   // a partial flush clears killed entries' validity. Payload writes to those
   // entries stay hidden.
-
-  // No allocation when full
-  always_comb begin
-    if (full) assume (!i_alloc.valid);
-  end
 
   // Memory write done only when at least one write is in flight
   always_comb begin
@@ -2745,6 +2816,18 @@ endmodule
       cover_cached_overlap :
       cover (o_mem_write_en && o_mem_write_is_cached &&
           write_inflight_cnt != 2'd0 && write_inflight_cached);
+      // A precise uncached store reports its completion before it commits.
+      cover_uncached_precise_complete :
+      cover (!PRECISE_UNCACHED || o_uncached_store_complete.valid);
+
+      // The antecedents of p_dead_window_collapses and, for the two highest
+      // slots, p_committed_survives_flush.
+      cover_dead_window :
+      cover (o_full && o_empty && !i_flush_en && !i_flush_all && !flush_pullback_pending);
+      cover_committed_survives_slot6 :
+      cover (i_flush_en && !i_flush_all && sq_valid[DEPTH-2] && sq_committed[DEPTH-2]);
+      cover_committed_survives_slot7 :
+      cover (i_flush_en && !i_flush_all && sq_valid[DEPTH-1] && sq_committed[DEPTH-1]);
     end
   end
 

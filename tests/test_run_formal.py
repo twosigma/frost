@@ -1507,6 +1507,16 @@ FORMAL_TARGETS = [
     FormalTarget(
         "fu_cdb_adapter.sby",
         "FU completion buffering, backpressure, and flush handling",
+        tasks=(
+            "bmc",
+            "cover",
+            "bmc_registered",
+            "cover_registered",
+            "bmc_no_refill",
+            "cover_no_refill",
+            "bmc_precomputed",
+            "bmc_always_granted",
+        ),
     ),
     FormalTarget(
         "fu_cdb_adapter_payload_no_refill.sby",
@@ -1623,6 +1633,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "store_queue.sby",
         "Store-queue capacity, forwarding, and committed-write preservation",
+        tasks=("bmc", "cover", "bmc_trusted", "cover_trusted"),
     ),
     FormalTarget(
         "lq_l0_cache.sby",
@@ -3656,6 +3667,38 @@ SBY_TASKS = [
     ("prove_width64", "Unbounded invariant proof at 64 bits"),
     ("bmc_256", "Bounded checking with a 256-entry L0 cache"),
     ("cover_256", "Cover checking with a 256-entry L0 cache"),
+    (
+        "bmc_trusted",
+        "Bounded checking with allocation trusted to dispatch, as the core builds it",
+    ),
+    (
+        "cover_trusted",
+        "Cover checking with allocation trusted to dispatch, as the core builds it",
+    ),
+    (
+        "bmc_registered",
+        "Bounded checking with the registered output, as the core builds it",
+    ),
+    (
+        "bmc_no_refill",
+        "Bounded checking without grant refill, as the FP pipe's adapter",
+    ),
+    (
+        "cover_no_refill",
+        "Cover checking without grant refill, as the FP pipe's adapter",
+    ),
+    (
+        "bmc_precomputed",
+        "Bounded checking with a precomputed age compare, as the second ALU's adapter",
+    ),
+    (
+        "bmc_always_granted",
+        "Bounded checking of an always-granted adapter, as the memory adapter",
+    ),
+    (
+        "cover_registered",
+        "Cover checking with the registered output, as the core builds it",
+    ),
     (
         "prove_one_hart",
         "Unbounded proof with one source, one hart, and one priority bit",

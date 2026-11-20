@@ -369,46 +369,60 @@ module prediction_metadata_tracker #(
   // Compare at the clock boundary: pending validity, PC, and payload update
   // in separate nonblocking assignments and can disagree during delta cycles.
   always_ff @(posedge i_clk) begin
-    if (reset_seen_q && !i_reset && !$isunknown(
-            {o_btb_predicted_taken, btb_predicted_taken_legacy}
-        )) begin
+    if (reset_seen_q && !i_reset
+`ifndef FORMAL
+        && !$isunknown({o_btb_predicted_taken, btb_predicted_taken_legacy})
+`endif
+        ) begin
       p_prediction_validity_matches_legacy :
       assert (o_btb_predicted_taken == btb_predicted_taken_legacy);
     end
 
-    if (reset_seen_q && !i_reset && !$isunknown(
+    if (reset_seen_q && !i_reset
+`ifndef FORMAL
+        && !$isunknown(
             {
               o_btb_predicted_taken,
               o_btb_predicted_target,
               btb_predicted_taken_legacy,
               btb_predicted_target_legacy
             }
-        )) begin
+        )
+`endif
+        ) begin
       p_valid_prediction_target_matches_legacy :
       assert (!btb_predicted_taken_legacy ||
               (o_btb_predicted_target == btb_predicted_target_legacy));
     end
-    if (reset_seen_q && !i_reset && !$isunknown(
+    if (reset_seen_q && !i_reset
+`ifndef FORMAL
+        && !$isunknown(
             {
               btb_predicted_taken_legacy,
               o_btb_predicted_is_call,
               o_btb_predicted_is_return,
               btb_predicted_kind_legacy
             }
-        )) begin
+        )
+`endif
+        ) begin
       p_valid_prediction_types_match_legacy :
       assert (!btb_predicted_taken_legacy ||
               ({o_btb_predicted_is_call, o_btb_predicted_is_return} ==
                btb_predicted_kind_legacy));
     end
-    if (reset_seen_q && !i_reset && !$isunknown(
+    if (reset_seen_q && !i_reset
+`ifndef FORMAL
+        && !$isunknown(
             {
               o_btb_predicted_taken,
               o_btb_predicted_target,
               btb_predicted_taken_legacy,
               btb_predicted_target_legacy
             }
-        )) begin
+        )
+`endif
+        ) begin
       p_invalid_prediction_payload_is_ignored :
       assert (({XLEN{o_btb_predicted_taken}} & o_btb_predicted_target) ==
               ({XLEN{btb_predicted_taken_legacy}} & btb_predicted_target_legacy));
@@ -416,7 +430,9 @@ module prediction_metadata_tracker #(
   end
 
   always_comb begin
-    if (reset_seen_q && !i_reset && !$isunknown(
+    if (reset_seen_q && !i_reset
+`ifndef FORMAL
+        && !$isunknown(
             {
               i_live_prediction_for_output,
               i_live_target_aligned_with_output,
@@ -425,7 +441,9 @@ module prediction_metadata_tracker #(
               prediction_pending_saved_valid,
               i_pending_prediction_active
             }
-        )) begin
+        )
+`endif
+        ) begin
       p_live_valid_has_live_payload_provenance :
       assert (!i_live_prediction_for_output ||
               (i_live_target_aligned_with_output && !i_stall_registered));
@@ -441,7 +459,9 @@ module prediction_metadata_tracker #(
   // Check PC matching and consumption at capture, after the independent
   // combinational selections settle.
   always_ff @(posedge i_clk) begin
-    if (reset_seen_q && !i_reset && !$isunknown(
+    if (reset_seen_q && !i_reset
+`ifndef FORMAL
+        && !$isunknown(
             {
               pending_saved_active,
               prediction_pending_saved_valid,
@@ -457,7 +477,9 @@ module prediction_metadata_tracker #(
               i_pending_prediction_fetch_holdoff,
               o_btb_predicted_taken
             }
-        )) begin
+        )
+`endif
+        ) begin
       p_pending_metadata_emits_only_for_exact_owner :
       assert (!pending_saved_active || !o_btb_predicted_taken ||
               pending_prediction_owner_matches_output);
@@ -480,6 +502,21 @@ module prediction_metadata_tracker #(
               pending_prediction_live_owner_matches_output || !o_btb_predicted_taken);
     end
   end
+
+`ifndef FORMAL
+  // Until the tracker saves a pending prediction, its metadata is the
+  // registered metadata of the taken prediction that created it. The formal
+  // harness assumes this, so only simulation of the core checks it.
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && !i_reset && !$isunknown(
+            {i_pending_prediction_active, prediction_pending_saved_valid, i_prediction_used_r}
+        )) begin
+      p_unsaved_pending_has_registered_metadata :
+      assert (!i_pending_prediction_active || prediction_pending_saved_valid ||
+              i_prediction_used_r);
+    end
+  end
+`endif
 `endif
 
 endmodule : prediction_metadata_tracker
