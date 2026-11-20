@@ -340,6 +340,7 @@ module if_stage #(
   logic [XLEN-1:0] ras_pending_push_address;
   // Types of the BTB entry behind each output packet's prediction, through the
   // same live, registered, pending, and stall-replay selection as its target.
+  logic slot1_btb_predicted_taken_raw;
   logic slot1_packet_is_call;
   logic slot1_packet_is_return;
   logic slot2_packet_is_call;
@@ -634,11 +635,14 @@ module if_stage #(
   // i_pd_redirect is omitted from prediction gating for timing. Its
   // wrong-path hits are cleared by redirect_kill_pending_q and pd_redirect_q.
   //
-  // Faulted or non-covering windows must not predict, update the RAS, or
-  // arm a pending prediction. Check served faults and the fetch-PC fault.
-  // Check pc_reg's PMA only without translation: a virtual address has no
-  // physical PMA meaning. Unresolved translations stall IF, blocking
-  // predictions.
+  // Served-window faults, non-covering windows, and first-word fetch faults
+  // disable prediction and pending-prediction arming. Second-word faults stay
+  // off the lookup path so they do not gate next_pc: an upper-parcel native
+  // entry whose second word faults can redirect fetch, and packet assembly
+  // clears btb_predicted_taken (blocking RAS updates) on any packet carrying
+  // fetch_fault. Check pc_reg's PMA only without translation: a virtual
+  // address has no physical PMA meaning. Unresolved translations stall IF,
+  // blocking predictions.
   logic pc_pma_bad;
   logic served_fault_any;
   assign served_fault_any = i_instr_valid && (i_instr_fault0 || i_instr_fault1);
@@ -786,7 +790,6 @@ module if_stage #(
       .i_mret_taken(i_trap_ctrl.mret_taken),
       .i_branch_taken(i_from_ex_comb.branch_taken),
       .i_any_holdoff_safe(any_holdoff_safe),
-      .i_is_32bit_spanning(1'b0),
       // This select omits the FENCE-class term, which already blocks
       // prediction. The packet uses use_instr_buffer.
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
@@ -927,7 +930,6 @@ module if_stage #(
       .i_mret_taken (i_trap_ctrl.mret_taken),
       .i_trap_target(i_trap_ctrl.trap_target),
 
-      .i_is_compressed(is_compressed_fast),
       // Replay the captured bundle advance with the packet.
       .i_pc_fetch_advance_sel(pc_fetch_advance_sel),
       .i_pc_reg_advance_sel(pc_reg_advance_sel),
@@ -2686,12 +2688,15 @@ module if_stage #(
       .i_sel_nop_saved(sel_nop_saved),
       .i_use_saved_values(replay_saved_if_outputs),
 
-      // Outputs to PD stage
-      .o_btb_predicted_taken(o_from_if_to_pd.btb_predicted_taken),
+      // Outputs to PD stage. A faulted packet's bytes carry no executable
+      // control-flow instruction, so clear its taken marker before PD and RAS.
+      .o_btb_predicted_taken(slot1_btb_predicted_taken_raw),
       .o_btb_predicted_target(o_from_if_to_pd.btb_predicted_target),
       .o_btb_predicted_is_call(slot1_packet_is_call),
       .o_btb_predicted_is_return(slot1_packet_is_return)
   );
+  assign o_from_if_to_pd.btb_predicted_taken =
+      slot1_btb_predicted_taken_raw && !o_from_if_to_pd.fetch_fault;
 
 `ifndef SYNTHESIS
   logic bp_dir_taken_before_pending_valid_q;
@@ -2760,7 +2765,7 @@ module if_stage #(
       assert (bp_dir_taken_before_pending_valid_q);
     end
     if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_active &&
-        !sel_nop_effective &&
+        !sel_nop_effective && !o_from_if_to_pd.fetch_fault &&
         (o_from_if_to_pd.program_counter == pending_prediction_pc) && !$isunknown(
             o_from_if_to_pd.btb_predicted_taken
         )) begin
@@ -3214,12 +3219,12 @@ module if_stage #(
   end
 `endif
 
-  // Clear the slot-2 taken flag when slot 2 is a NOP.
+  // Clear the slot-2 taken flag when slot 2 is a NOP or carries a fetch fault.
   logic slot2_sel_nop_effective;
   assign slot2_sel_nop_effective = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
-  assign o_from_if_to_pd_2.btb_predicted_taken = slot2_sel_nop_effective ? 1'b0 :
-                                     (replay_saved_if_outputs ? slot2_replay_consumed :
-                                      slot2_predicted_taken);
+  assign o_from_if_to_pd_2.btb_predicted_taken =
+      (slot2_sel_nop_effective || o_from_if_to_pd_2.fetch_fault) ? 1'b0 :
+      (replay_saved_if_outputs ? slot2_replay_consumed : slot2_predicted_taken);
   assign o_from_if_to_pd_2.btb_predicted_target = replay_saved_if_outputs ?
                                                   slot2_predicted_target_sc :
                                                   slot2_predicted_target;
@@ -3926,8 +3931,7 @@ module if_stage #(
         end else if (f_wp_s2_real && o_from_if_to_pd_2.btb_predicted_taken) begin
           f_wp_expected_pc_reg_q      <= o_from_if_to_pd_2.btb_predicted_target;
           f_wp_deferred_s1_redirect_q <= 1'b0;
-        end else if (f_wp_s1_real && o_from_if_to_pd.btb_predicted_taken &&
-                     f_wp_s1_pred_matches_pc) begin
+        end else if (f_wp_s1_real && slot1_btb_predicted_taken_raw && f_wp_s1_pred_matches_pc) begin
           if (live_prediction_emits_with_output) begin
             f_wp_expected_pc_reg_q      <= pc_reg + f_wp_bundle_bytes;
             f_wp_deferred_s1_redirect_q <= 1'b1;
@@ -3945,6 +3949,67 @@ module if_stage #(
       end
     end
 `endif
+  end
+`endif
+
+`ifdef IF_FAULT_RAS_VETO_PROOF
+  logic f_fault_past_valid = 1'b0;
+  logic f_prev_slot1_fault_no_pd_ras_q;
+  logic f_prev_slot2_fault_q;
+  logic f_prev_slot2_nop_q;
+  initial assume (i_pipeline_ctrl.reset);
+
+  always_comb begin
+    p_fault_packet_clears_slot1_taken :
+    assert (!o_from_if_to_pd.fetch_fault || !o_from_if_to_pd.btb_predicted_taken);
+    p_fault_packet_clears_slot2_taken :
+    assert (!o_from_if_to_pd_2.fetch_fault || !o_from_if_to_pd_2.btb_predicted_taken);
+    p_fault_packet_clears_slot1_ras_op : assert (!o_from_if_to_pd.fetch_fault || !ras_op_slot1);
+    p_fault_packet_clears_slot2_ras_op : assert (!o_from_if_to_pd_2.fetch_fault || !ras_op_slot2);
+    p_fault_bundle_clears_ras_push_pop :
+    assert (!(o_from_if_to_pd.fetch_fault &&
+              (o_from_if_to_pd_2.sel_nop || o_from_if_to_pd_2.fetch_fault)) ||
+            (!ras_push && !ras_pop));
+  end
+
+  always_ff @(posedge i_clk) begin
+    f_fault_past_valid <= 1'b1;
+    f_prev_slot1_fault_no_pd_ras_q <=
+        !i_pipeline_ctrl.reset && o_from_if_to_pd.fetch_fault && !pd_ras_operation;
+    f_prev_slot2_fault_q <= !i_pipeline_ctrl.reset && o_from_if_to_pd_2.fetch_fault;
+    f_prev_slot2_nop_q <= !i_pipeline_ctrl.reset && o_from_if_to_pd_2.sel_nop;
+    if (f_fault_past_valid) begin
+      p_fault_packet_clears_slot1_ras_op_q :
+      assert (!f_prev_slot1_fault_no_pd_ras_q || !ras_op_slot1_q);
+      p_fault_packet_clears_slot2_ras_op_q : assert (!f_prev_slot2_fault_q || !ras_op_slot2_q);
+      p_fault_bundle_clears_ras_push_pop_q :
+      assert (!(f_prev_slot1_fault_no_pd_ras_q &&
+                (f_prev_slot2_nop_q || f_prev_slot2_fault_q)) ||
+              (!ras_push_q && !ras_pop_q));
+      cover_spanning_second_word_fault_vetoes_call_ras :
+      cover (!i_pipeline_ctrl.reset && !replay_saved_if_outputs &&
+             pc_reg[1] && !is_compressed && !cur_fault_pair[1] && next_fault_pair[1] &&
+             o_from_if_to_pd.fetch_fault && o_from_if_to_pd.fetch_fault_hi &&
+             slot1_btb_predicted_taken_raw && slot1_packet_is_call &&
+             ras_packet_accepted && !ras_push);
+      cover_replayed_second_word_fault_vetoes_return_ras :
+      cover (!i_pipeline_ctrl.reset && replay_saved_if_outputs &&
+             o_from_if_to_pd.fetch_fault && o_from_if_to_pd.fetch_fault_hi &&
+             slot1_btb_predicted_taken_raw && slot1_packet_is_return &&
+             ras_packet_accepted && !ras_pop);
+      cover_slot2_fault_vetoes_call_ras :
+      cover (!i_pipeline_ctrl.reset && !replay_saved_if_outputs &&
+             !slot2_sel_nop_effective && o_from_if_to_pd_2.fetch_fault &&
+             slot2_predicted_taken && slot2_packet_is_call &&
+             ras_packet_accepted && !o_from_if_to_pd_2.btb_predicted_taken &&
+             !ras_op_slot2 && !ras_push);
+      cover_replayed_slot2_fault_vetoes_return_ras :
+      cover (!i_pipeline_ctrl.reset && replay_saved_if_outputs &&
+             !slot2_sel_nop_effective && o_from_if_to_pd_2.fetch_fault &&
+             slot2_replay_consumed && slot2_packet_is_return &&
+             ras_packet_accepted && !o_from_if_to_pd_2.btb_predicted_taken &&
+             !ras_op_slot2 && !ras_pop);
+    end
   end
 `endif
 

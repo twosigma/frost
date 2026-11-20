@@ -19,6 +19,9 @@ module vec_legality_reference #(
 ) (
     input logic [31:0] i_insn,
     input logic [8:0] i_vtype,
+    // Architectural vl and vstart, judged for element groups at the ROB head
+    input logic [15:0] i_vl,
+    input logic [15:0] i_vstart,
     output logic o_illegal
 );
   riscv_pkg::instr_op_e op;
@@ -44,7 +47,9 @@ module vec_legality_reference #(
     case (op)
       riscv_pkg::VARITH, riscv_pkg::VARITH_X, riscv_pkg::VARITH_F, riscv_pkg::VARITH_C,
       riscv_pkg::VTOF:
-      o_illegal |= arith_illegal;
+      o_illegal |= arith_illegal || riscv_pkg::vector_partial_group(
+          i_insn[6:0], i_vl[1:0], i_vstart[1:0]
+      );
       riscv_pkg::VTOX: o_illegal |= i_vtype[8];
       default: o_illegal = 1'b1;
     endcase

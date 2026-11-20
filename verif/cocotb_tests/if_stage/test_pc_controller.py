@@ -54,7 +54,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_trap_taken.value = 0
     dut.i_mret_taken.value = 0
     dut.i_trap_target.value = 0
-    dut.i_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
     dut.i_pc_fetch_advance_sel_two.value = PC_ADV_PLUS4
     dut.i_pc_fetch_advance_sel_one.value = PC_ADV_PLUS4
@@ -235,7 +234,6 @@ async def test_pending_relations_wait_for_reset(dut: Any) -> None:
         "pending_prediction_valid": 1,
         "pending_prediction_pc_ready_q": 1,
         "pending_prediction_target_holdoff_q": 0,
-        "pending_prediction_target_holdoff_prev_q": 0,
         "redirect_kill_pending_q": 0,
         "lower_parcel_window_resteer_q": 0,
         "carve_out_engaged_q": 0,
@@ -534,7 +532,6 @@ async def test_two_wide_bundle_inputs_advance_pc_controller_outputs(
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
 
-    dut.i_is_compressed.value = 1
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
     dut.i_pc_fetch_advance_sel_two.value = PC_ADV_PLUS6
     dut.i_pc_fetch_advance_sel_one.value = PC_ADV_PLUS6
@@ -747,8 +744,85 @@ async def test_halfword_prediction_holds_fetch_until_pc_reg_reaches_branch(
 
     await _advance_cycle(dut)
 
-    _assert_pc(dut, pc=HALFWORD_PRED_TARGET + 2, pc_reg=HALFWORD_PRED_TARGET)
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET + 4, pc_reg=HALFWORD_PRED_TARGET)
     assert not dut.o_pending_prediction_target_holdoff.value
+
+
+@cocotb.test()
+async def test_even_branch_to_odd_target_holdoff_survives_stall_and_gap(
+    dut: Any,
+) -> None:
+    """Non-crossing handoffs to an odd target step o_pc to target+4 after stall and gap.
+
+    Exercises both a 16-bit and a 32-bit instruction at the odd target, holding
+    through a pipeline stall and a fetch-progress gap during target holdoff and
+    verifying o_pc == target + 4 and o_pc[1] == o_pc_reg[1] afterwards.
+    """
+    for adv_sel, step_bytes in (
+        (PC_ADV_PLUS2, 2),
+        (PC_ADV_PLUS4, 4),
+    ):
+        await _setup_test(dut)
+        await _clear_reset_holdoff(dut)
+        await _start_word_stream_at(dut, BASE_PC)
+
+        branch_pc = BASE_PC + 4
+        _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+        await _advance_cycle(dut)
+        _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=branch_pc)
+        assert dut.o_pending_prediction_active.value
+
+        _clear_inputs(dut)
+        await _advance_cycle(dut)
+        _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
+
+        await _advance_cycle(dut)
+        _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
+        assert dut.pending_prediction_target_handoff.value
+
+        # Consume the non-crossing handoff: both PCs land on HALFWORD_PRED_TARGET
+        # and o_pending_prediction_target_holdoff asserts.
+        await _advance_cycle(dut)
+        _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=HALFWORD_PRED_TARGET)
+        assert dut.o_pending_prediction_target_holdoff.value
+
+        # Pipeline stall during target holdoff: holdoff and both PCs hold.
+        dut.i_stall.value = 1
+        dut.i_sel_nop_wcs0.value = 1
+        await _advance_cycle(dut)
+        _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=HALFWORD_PRED_TARGET)
+        assert dut.o_pending_prediction_target_holdoff.value
+
+        # Fetch gap (!i_fetch_progress) during target holdoff: holdoff and both PCs hold.
+        dut.i_stall.value = 0
+        dut.i_fetch_progress.value = 0
+        await _advance_cycle(dut)
+        _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=HALFWORD_PRED_TARGET)
+        assert dut.o_pending_prediction_target_holdoff.value
+
+        # Release target holdoff: o_pc advances to target + 4 while pc_reg holds
+        # at target, keeping o_pc[1] == o_pc_reg[1].
+        dut.i_fetch_progress.value = 1
+        await _advance_cycle(dut)
+        _assert_pc(dut, pc=HALFWORD_PRED_TARGET + 4, pc_reg=HALFWORD_PRED_TARGET)
+        assert not dut.o_pending_prediction_target_holdoff.value
+        assert ((int(dut.o_pc.value) >> 1) & 1) == ((int(dut.o_pc_reg.value) >> 1) & 1)
+
+        # Emit the 16-bit or 32-bit target packet and check parity stays aligned.
+        _clear_inputs(dut)
+        dut.i_pc_fetch_advance_sel.value = adv_sel
+        dut.i_pc_fetch_advance_sel_one.value = adv_sel
+        dut.i_pc_fetch_advance_sel_two.value = adv_sel
+        dut.i_pc_reg_advance_sel.value = adv_sel
+        dut.i_pc_reg_advance_sel_one.value = adv_sel
+        dut.i_pc_reg_advance_sel_two.value = adv_sel
+        await _advance_cycle(dut)
+        _assert_pc(
+            dut,
+            pc=HALFWORD_PRED_TARGET + 4 + step_bytes,
+            pc_reg=HALFWORD_PRED_TARGET + step_bytes,
+        )
+        assert ((int(dut.o_pc.value) >> 1) & 1) == ((int(dut.o_pc_reg.value) >> 1) & 1)
 
 
 @cocotb.test()
@@ -953,7 +1027,6 @@ async def _capture_walk_past(dut: Any, *, odd: bool = True) -> int:
     owner = BASE_PC + (6 if odd else 4)
     _assert_pc(dut, pc=owner, pc_reg=owner - 4)
     _clear_inputs(dut)
-    dut.i_is_compressed.value = 1
     dut.i_slot2_valid.value = 1
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS6
     dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS6
@@ -1056,7 +1129,6 @@ async def test_walk_past_can_capture_the_next_prediction(dut: Any) -> None:
     assert not dut.o_pending_prediction_holdoff.value
 
     # A compressed output precedes the next lookup, so it is not a slot-2 alias.
-    dut.i_is_compressed.value = 1
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
     dut.i_prediction_requires_pc_reg_handoff.value = 1
@@ -1097,7 +1169,6 @@ async def _arm_carve_out_at_predecessor(dut: Any, *, odd: bool) -> int:
     _assert_pc(dut, pc=owner, pc_reg=owner - 4)
 
     _clear_inputs(dut)
-    dut.i_is_compressed.value = 1
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2

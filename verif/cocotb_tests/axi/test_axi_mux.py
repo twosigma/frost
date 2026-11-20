@@ -25,7 +25,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge
+from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 from cocotb_tests.axi.axi_models import (
     FIXED,
@@ -268,6 +268,70 @@ async def test_late_write_data(dut: Any) -> None:
     bench = await _start(dut, seed=12, gap_bias=0.8, ready_bias=0.5)
     await _traffic(bench, rounds=2, per_port=15)
     bench.check_clean()
+
+
+@cocotb.test()
+async def test_reset_edge_offers(dut: Any) -> None:
+    """Reset drops a W owner and stalled AW/AR grants together."""
+    dut.i_rst.value = 1
+    for port in range(PORTS):
+        for channel in ("aw", "w", "ar"):
+            getattr(dut, f"i_up{port}_{channel}valid").value = 0
+    dut.i_dn_awready.value = 1
+    dut.i_dn_wready.value = 0
+    dut.i_dn_arready.value = 0
+    dut.i_dn_bvalid.value = 0
+    dut.i_dn_rvalid.value = 0
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start(start_high=False)
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    dut.i_rst.value = 0
+    dut.i_up0_awvalid.value = 1
+    dut.i_up0_awlen.value = 0
+    dut.i_up0_wvalid.value = 1
+    dut.i_up0_wlast.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.o_up0_awready.value)
+    assert not int(dut.o_dn_wvalid.value)
+    await FallingEdge(dut.i_clk)
+    dut.i_up0_awvalid.value = 0
+    dut.i_dn_awready.value = 0
+    dut.i_up1_awvalid.value = 1
+    dut.i_up1_wvalid.value = 1
+    dut.i_up1_arvalid.value = 1
+    await FallingEdge(dut.i_clk)
+    dut.i_rst.value = 1
+    dut.i_dn_awready.value = 1
+    dut.i_dn_wready.value = 1
+    dut.i_dn_arready.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.o_dn_awvalid.value) and int(dut.o_up1_awready.value)
+    assert int(dut.o_dn_wvalid.value) and int(dut.o_up0_wready.value)
+    assert int(dut.o_dn_arvalid.value) and int(dut.o_up1_arready.value)
+    await FallingEdge(dut.i_clk)
+    dut.i_up1_awvalid.value = 0
+    dut.i_up1_arvalid.value = 0
+    await Timer(1, unit="ns")
+    assert not int(dut.o_dn_awvalid.value)
+    assert not int(dut.o_dn_wvalid.value)
+    assert not int(dut.o_dn_arvalid.value)
+    dut.i_rst.value = 0
+    dut.i_up2_awvalid.value = 1
+    dut.i_up2_awlen.value = 0
+    dut.i_up2_wvalid.value = 1
+    dut.i_up2_wlast.value = 1
+    dut.i_up2_arvalid.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.o_up2_awready.value) and int(dut.o_up2_arready.value)
+    assert not int(dut.o_dn_wvalid.value)
+    await FallingEdge(dut.i_clk)
+    dut.i_up2_awvalid.value = 0
+    dut.i_up2_arvalid.value = 0
+    await Timer(1, unit="ns")
+    assert int(dut.o_up2_wready.value)
+    assert not int(dut.o_up0_wready.value) and not int(dut.o_up1_wready.value)
+    await FallingEdge(dut.i_clk)
+    assert not int(dut.o_dn_wvalid.value)
 
 
 @cocotb.test()

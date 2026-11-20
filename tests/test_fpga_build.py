@@ -453,7 +453,6 @@ def test_hello_world_compile_replaces_obsolete_init_images(
         "pairable_native_hi",
         "slot2_start_valid_lo",
     )
-    assert fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT == 2 * len(scalar_replicas)
     new_init_names = tuple(
         f"sw_imem_{parity}_{name}.mem"
         for name in scalar_replicas
@@ -517,38 +516,6 @@ def test_hello_world_compile_replaces_obsolete_init_images(
         assert obsolete_name not in build_tcl
 
 
-def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
-    """Include guided seeds from both the 50 ps grid and the off-grid seed list."""
-    uncertainties = fpga_build.make_x3_place_setup_uncertainties_ns(
-        fpga_build.X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT
-    )
-
-    assert fpga_build.X3_PC_TAIL_GUIDED_CANDIDATES == (
-        ("ExtraNetDelay_high", 0.500),
-        ("ExtraPostPlacementOpt", 0.450),
-        ("ExtraPostPlacementOpt", 0.425),
-    )
-    assert fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES == (
-        ("ExtraPostPlacementOpt", 0.425),
-    )
-    for directive, uncertainty in fpga_build.X3_PC_TAIL_GUIDED_CANDIDATES:
-        assert directive in fpga_build.X3_PLACER_SWEEP_DIRECTIVES
-        assert (
-            uncertainty in uncertainties
-            or (directive, uncertainty) in fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES
-        )
-        assert fpga_build.x3_place_uses_pc_tail_guidance(directive, uncertainty)
-    # Extra seeds must not duplicate grid points.
-    for _, uncertainty in fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES:
-        assert uncertainty not in uncertainties
-
-    assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraPostPlacementOpt", 0.500)
-    assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraNetDelay_high", 0.450)
-    assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraNetDelay_high", 0.425)
-    assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraTimingOpt", 0.450)
-    assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraPostPlacementOpt", None)
-
-
 def test_default_x3_place_sweep_retains_controls_and_adds_low_variants() -> None:
     """Give each LOW variant its own directory while retaining every control."""
     directives = fpga_build.X3_PLACER_SWEEP_DIRECTIVES
@@ -577,12 +544,6 @@ def test_default_x3_place_sweep_retains_controls_and_adds_low_variants() -> None
     for variant in variants:
         assert variant.cell_bloat_factor == "LOW"
         assert variant.cell_bloat_cells == "*u_tomasulo/u_int_rs"
-    assert not fpga_build.x3_place_uses_pc_tail_guidance(
-        variants[0].directive, variants[0].setup_uncertainty_ns
-    )
-    assert fpga_build.x3_place_uses_pc_tail_guidance(
-        variants[1].directive, variants[1].setup_uncertainty_ns
-    )
 
 
 @pytest.mark.parametrize(
@@ -779,7 +740,6 @@ def test_x3_place_worker_isolates_and_validates_bloat_environment(
     main_work.mkdir(parents=True)
     (main_work / "post_opt.dcp").write_text("input checkpoint\n")
     launches: list[tuple[Path, dict[str, str]]] = []
-    audits: list[tuple[str, float]] = []
 
     def fake_popen(_command: list[str], **kwargs: Any) -> Any:
         work_dir = kwargs["cwd"]
@@ -795,12 +755,7 @@ def test_x3_place_worker_isolates_and_validates_bloat_environment(
             )
         return SimpleNamespace(pid=len(launches), poll=lambda: 0)
 
-    def fake_audit(_path: Path, directive: str, uncertainty: float) -> bool:
-        audits.append((directive, uncertainty))
-        return True
-
     monkeypatch.setattr(fpga_build.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(fpga_build, "x3_pc_tail_group_audit_is_valid", fake_audit)
     monkeypatch.setattr(
         fpga_build,
         "extract_timing_from_report",
@@ -826,7 +781,6 @@ def test_x3_place_worker_isolates_and_validates_bloat_environment(
         else:
             assert "FROST_PLACE_CELL_BLOAT" not in environment
             assert "FROST_PLACE_CELL_BLOAT_CELLS" not in environment
-    assert audits == [("ExtraPostPlacementOpt", 0.425)]
     assert "FROST_PLACE_CELL_BLOAT" not in fpga_build.os.environ
     assert "FROST_PLACE_CELL_BLOAT_CELLS" not in fpga_build.os.environ
     promoted = (main_work / "post_place.dcp").read_text()
@@ -834,218 +788,20 @@ def test_x3_place_worker_isolates_and_validates_bloat_environment(
     assert wns == (-0.1 if bloat_match_valid else -0.15)
 
 
-def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
-    """Accept a guided seed's audit only with complete, unique, well-formed fields.
-
-    Replica counts may change and canonical endpoints may merge into replicas
-    after placement. Pre-place scope must contain every canonical endpoint.
-    """
-    audit = tmp_path / "post_place_group_audit.txt"
-    valid_audit = (
-        "\n".join(
-            (
-                "DIRECTIVE=ExtraNetDelay_high",
-                "PLACE_UNCERTAINTY_NS=0.500",
-                "SCORE_UNCERTAINTY_NS=0.000",
-                "PRE_COMPRESSED_STARTS=14",
-                "PRE_ENDS=104",
-                "PRE_PC_BITS=64",
-                "PRE_STATE_ENDS=93",
-                "PRE_STATE_PC_BITS=64",
-                "PRE_SEQ_ENDS=63",
-                "PRE_SEQ_PC_BITS=63",
-                "PRE_PENDING_ENDS=1",
-                "PRE_PENDING_CANONICAL=1",
-                "PRE_UNION_ENDS=261",
-                "POST_COMPRESSED_STARTS=14",
-                "POST_ENDS=183",
-                "POST_PC_BITS=64",
-                "POST_STATE_ENDS=92",
-                "POST_STATE_PC_BITS=64",
-                "POST_SEQ_ENDS=66",
-                "POST_SEQ_PC_BITS=63",
-                "POST_PENDING_ENDS=2",
-                "POST_PENDING_CANONICAL=1",
-                "POST_UNION_ENDS=343",
-                "PRE_COMPRESSED_START_NAMES_MATCH_POST=1",
-                "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1",
-                "POST_STATE_CANONICAL_NAMES_WITHIN_PRE=1",
-                "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=1",
-                "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=1",
-                "SCORE_COMPRESSED_STARTS=14",
-                "SCORE_ENDS=183",
-                "SCORE_PC_BITS=64",
-                "SCORE_STATE_ENDS=92",
-                "SCORE_STATE_PC_BITS=64",
-                "SCORE_SEQ_ENDS=66",
-                "SCORE_SEQ_PC_BITS=63",
-                "SCORE_PENDING_ENDS=2",
-                "SCORE_PENDING_CANONICAL=1",
-                "SCORE_UNION_ENDS=343",
-                "SCORE_COMPRESSED_START_NAMES_MATCH_POST=1",
-                "SCORE_ENDPOINT_NAMES_MATCH_POST=1",
-                "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST=1",
-                "LINGERING_CUSTOM_PATHS=0",
-                "COMPRESSED_SCORED_GROUPS=clock_from_mmcm",
-            )
-        )
-        + "\n"
-    )
-    audit.write_text(valid_audit)
-
-    # Removing a noncanonical replica is valid if both PC families still
-    # cover all 64 bits and no canonical name is new.
-    assert fpga_build.x3_pc_tail_group_audit_is_valid(
-        audit, "ExtraNetDelay_high", 0.500
-    )
-
-    # Equivalent-driver rewiring merged the canonical pending-valid register
-    # into its replica: every scope still has a pending-valid endpoint.
-    merged_pending_audit = valid_audit.replace(
-        "POST_PENDING_CANONICAL=1", "POST_PENDING_CANONICAL=0"
-    ).replace("SCORE_PENDING_CANONICAL=1", "SCORE_PENDING_CANONICAL=0")
-    audit.write_text(merged_pending_audit)
-    assert fpga_build.x3_pc_tail_group_audit_is_valid(
-        audit, "ExtraNetDelay_high", 0.500
-    )
-
-    alternate_valid_audit = valid_audit.replace(
-        "DIRECTIVE=ExtraNetDelay_high\nPLACE_UNCERTAINTY_NS=0.500",
-        "DIRECTIVE=ExtraPostPlacementOpt\nPLACE_UNCERTAINTY_NS=0.450",
-    )
-    audit.write_text(alternate_valid_audit)
-    assert fpga_build.x3_pc_tail_group_audit_is_valid(
-        audit, "ExtraPostPlacementOpt", 0.450
-    )
-    assert not fpga_build.x3_pc_tail_group_audit_is_valid(
-        audit, "ExtraNetDelay_high", 0.500
-    )
-
-    invalid_audits = (
-        valid_audit.replace(
-            "DIRECTIVE=ExtraNetDelay_high", "DIRECTIVE=ExtraPostPlacementOpt"
-        ),
-        valid_audit.replace("PLACE_UNCERTAINTY_NS=0.500", "PLACE_UNCERTAINTY_NS=0.450"),
-        valid_audit.replace("PLACE_UNCERTAINTY_NS=0.500", "PLACE_UNCERTAINTY_NS=0.5"),
-        valid_audit.replace("SCORE_UNCERTAINTY_NS=0.000", "SCORE_UNCERTAINTY_NS=0.450"),
-        valid_audit.replace("SCORE_UNCERTAINTY_NS=0.000\n", ""),
-        valid_audit.replace("POST_ENDS=183", "POST_ENDS=31"),
-        valid_audit.replace("SCORE_ENDS=183", "SCORE_ENDS=103"),
-        valid_audit.replace("SCORE_ENDS=183", "SCORE_ENDS=184"),
-        valid_audit.replace("POST_STATE_ENDS=92", "POST_STATE_ENDS=31"),
-        valid_audit.replace("SCORE_SEQ_ENDS=66", "SCORE_SEQ_ENDS=65"),
-        valid_audit.replace("PRE_UNION_ENDS=261", "PRE_UNION_ENDS=260"),
-        valid_audit.replace("POST_PENDING_CANONICAL=1", "POST_PENDING_CANONICAL=2"),
-        valid_audit.replace("PRE_PENDING_CANONICAL=1", "PRE_PENDING_CANONICAL=0"),
-        valid_audit.replace("POST_PENDING_CANONICAL=1", "POST_PENDING_CANONICAL=0"),
-        valid_audit.replace("SCORE_PENDING_CANONICAL=1", "SCORE_PENDING_CANONICAL=0"),
-        valid_audit.replace("SCORE_COMPRESSED_STARTS=14", "SCORE_COMPRESSED_STARTS=13"),
-        valid_audit.replace("PRE_COMPRESSED_STARTS=14", "PRE_COMPRESSED_STARTS=15"),
-        valid_audit.replace("SCORE_PC_BITS=64", "SCORE_PC_BITS=63"),
-        valid_audit.replace("SCORE_SEQ_PC_BITS=63", "SCORE_SEQ_PC_BITS=62"),
-        valid_audit + "START_SETS_DISJOINT=1\n",
-        valid_audit.replace(
-            "PRE_COMPRESSED_START_NAMES_MATCH_POST=1",
-            "PRE_COMPRESSED_START_NAMES_MATCH_POST=0",
-        ),
-        valid_audit.replace(
-            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1",
-            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=0",
-        ),
-        valid_audit.replace(
-            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1",
-            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1",
-        ),
-        valid_audit.replace(
-            "POST_STATE_CANONICAL_NAMES_WITHIN_PRE=1",
-            "POST_STATE_CANONICAL_NAMES_WITHIN_PRE=0",
-        ),
-        valid_audit.replace(
-            "POST_STATE_CANONICAL_NAMES_WITHIN_PRE=1",
-            "PRE_STATE_CANONICAL_NAMES_MATCH_POST=1",
-        ),
-        valid_audit.replace(
-            "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=1",
-            "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=0",
-        ),
-        valid_audit.replace(
-            "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=1",
-            "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1",
-        ),
-        valid_audit.replace(
-            "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=1",
-            "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=0",
-        ),
-        valid_audit.replace(
-            "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=1",
-            "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1",
-        ),
-        valid_audit.replace(
-            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1",
-            "PRE_ENDPOINTS_SUBSET_POST=1",
-        ),
-        valid_audit.replace(
-            "SCORE_COMPRESSED_START_NAMES_MATCH_POST=1",
-            "SCORE_COMPRESSED_START_NAMES_MATCH_POST=0",
-        ),
-        valid_audit.replace(
-            "SCORE_ENDPOINT_NAMES_MATCH_POST=1",
-            "SCORE_ENDPOINT_NAMES_MATCH_POST=0",
-        ),
-        valid_audit.replace(
-            "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST=1",
-            "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST=0",
-        ),
-        valid_audit.replace(
-            "COMPRESSED_SCORED_GROUPS=clock_from_mmcm",
-            "COMPRESSED_SCORED_GROUPS=frost_pc_compressed_tail",
-        ),
-        valid_audit.replace("PRE_PC_BITS=64\n", ""),
-        valid_audit + "PRE_ENDS=104\n",
-        valid_audit.replace("PRE_SEQ_ENDS=63", "PRE_SEQ_ENDS=not-an-int"),
-        valid_audit.replace("LINGERING_CUSTOM_PATHS=0", "LINGERING_CUSTOM_PATHS=1"),
-    )
-    for invalid_audit in invalid_audits:
-        audit.write_text(invalid_audit)
-        assert not fpga_build.x3_pc_tail_group_audit_is_valid(
-            audit, "ExtraNetDelay_high", 0.500
-        )
-
-    audit.write_bytes(b"\xff")
-    assert not fpga_build.x3_pc_tail_group_audit_is_valid(
-        audit, "ExtraNetDelay_high", 0.500
-    )
-    assert not fpga_build.x3_pc_tail_group_audit_is_valid(
-        audit, "ExtraTimingOpt", 0.450
-    )
-
-
-def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
-    """Promote guidance and gate reports with placement; exclude pin-swap audits."""
+def test_place_gate_evidence_is_promoted(tmp_path: Path) -> None:
+    """Promote the gate report from the selected placement."""
     seed_work = tmp_path / "seed"
     main_work = tmp_path / "main"
     seed_work.mkdir()
     main_work.mkdir()
     (seed_work / "post_place.dcp").write_bytes(b"checkpoint")
     (seed_work / "post_place_gate_cpu.rpt").write_text("CPU control\n")
-    (seed_work / "post_place_group_audit.txt").write_text("audit\n")
-    (seed_work / "post_place_pin_swap_audit.txt").write_text("pin audit\n")
-    (seed_work / "post_place_pc_compressed_tail_timing.rpt").write_text(
-        "compressed timing\n"
-    )
-
     fpga_build.copy_results_to_main_work(
         seed_work,
         main_work,
         "post_place.dcp",
         "post_place",
         source_report_prefix="post_place",
-    )
-
-    assert (main_work / "post_place_group_audit.txt").read_text() == "audit\n"
-    assert not (main_work / "post_place_pin_swap_audit.txt").exists()
-    assert (main_work / "post_place_pc_compressed_tail_timing.rpt").read_text() == (
-        "compressed timing\n"
     )
 
     assert (main_work / "post_place_gate_cpu.rpt").read_text() == "CPU control\n"
@@ -1118,131 +874,6 @@ def test_post_opt_promotion_clears_stale_audits(tmp_path: Path) -> None:
     )
 
 
-def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
-    """Use PC-tail groups only during placement.
-
-    Remove them before writing, reopening, and scoring the checkpoint.
-    """
-    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
-    trigger = tcl.index("set use_x3_pc_tail_group")
-    place = tcl.index("place_design -directive $directive", trigger)
-    add_compressed_group = tcl.index(
-        "group_path -name frost_pc_compressed_tail", trigger
-    )
-    assert "group_path -name frost_pc_tail " not in tcl
-    remove_compressed_group = tcl.index(
-        "group_path -default -from $x3_pc_compressed_tail_starts_after", place
-    )
-    assert "x3_pc_tail_starts_after" not in tcl
-    restore_scoring_uncertainty = tcl.index(
-        "set_x3_setup_uncertainty $board_name "
-        '$x3_place_baseline_uncertainty "real post-place scoring',
-        remove_compressed_group,
-    )
-    temporary_checkpoint = tcl.index(
-        "write_checkpoint -force $work_directory/post_place.dcp",
-        restore_scoring_uncertainty,
-    )
-    close_design = tcl.index("close_design", temporary_checkpoint)
-    reopen = tcl.index("open_checkpoint $work_directory/post_place.dcp", close_design)
-    restore_reopen_uncertainty = tcl.index(
-        "set_x3_setup_uncertainty $board_name "
-        '$x3_place_baseline_uncertainty "clean-reopen place scoring',
-        reopen,
-    )
-    canonical_checkpoint = tcl.index(
-        "write_checkpoint -force $work_directory/post_place.dcp", reopen
-    )
-    timing_summary = tcl.index("report_timing_summary", canonical_checkpoint)
-
-    trigger_text = tcl[trigger:place]
-    assert '$board_name eq "x3"' in trigger_text
-    assert '$directive eq "ExtraNetDelay_high"' in trigger_text
-    assert '$directive eq "ExtraPostPlacementOpt"' in trigger_text
-    assert "abs(double($x3_place_uncertainty)" in trigger_text
-    assert "abs(double($x3_place_uncertainty) - 0.450)" in trigger_text
-    assert 'validate_x3_pc_compressed_tail_scope "pre-place"]' in trigger_text
-    assert "broad endpoint family is not the selected/state disjoint union" in tcl
-    assert "broad endpoint namespace contains an unexpected family" in tcl
-    assert "pending_prediction_valid_reg(_rep.*)?/D" in tcl
-    assert "PC-metadata tail endpoint families overlap" in tcl
-    assert "validate_x3_pc_tail_start_connectivity" in tcl
-    assert "launch has no timing path to its endpoint family" in tcl
-    # Every guided launch is a pinned scalar-overlay output FF: no block-RAM
-    # clock pin may be a launch, and every predicate/parity key is enumerated.
-    assert (
-        "u_(even|odd)_(is_compressed_lo|is_compressed_hi|even_local_pair_valid|"
-        "pairable_native_lo|pairable_compressed_hi|pairable_native_hi|"
-        "slot2_start_valid_lo)_bank/read_q_reg/C$"
-    ) in tcl
-    assert "CLKBWRCLK" not in tcl
-    assert "pc_metadata_bank" not in tcl
-    assert "slot2_start_valid_lo_reg_bram" not in tcl
-    assert "memory_odd_sideband_reg" not in tcl
-    assert '"$predicate:$parity"' in tcl
-    assert "legacy" not in tcl[trigger:]
-    assert "does not have exactly one canonical non-replica endpoint" in tcl
-    assert "expected at least one endpoint and exactly one canonical endpoint" in tcl
-    assert "has more than one canonical non-replica endpoint" in tcl
-    assert "if {$require_canonical && $canonical_count != 1}" in tcl
-    assert "is not clocked exactly by clock_from_mmcm" in tcl
-    assert "-filter {IS_CLOCK == 1}" in tcl
-    assert "PRE_ENDS=112" not in tcl
-    assert "PC-metadata tail start names differ" in tcl[place:remove_compressed_group]
-    # After placement a bit may have lost its canonical endpoint to
-    # equivalent-driver rewiring, but no canonical name may be new.
-    post_place_checks = tcl[place:remove_compressed_group]
-    assert 'validate_x3_pc_compressed_tail_scope "post-place" 0]' in post_place_checks
-    for family in ("selected", "state", "sequential", "pending"):
-        assert (
-            f'require_x3_pc_tail_canonical_names_within "{family} PC-tail"'
-            in post_place_checks
-        )
-    assert "canonical endpoint names differ" not in tcl
-    assert "is not a pre-place canonical endpoint" in tcl
-    assert "FROST_PC_TAIL_MERGED_CANONICAL" in tcl
-    assert 'validate_x3_pc_compressed_tail_scope "clean-reopen" 0]' in tcl[reopen:]
-    assert "require_x3_pc_tail_name_subset" not in tcl
-    assert "start names differ from the post-place scope" in tcl
-    assert "endpoint names differ from the post-place scope" in tcl
-    assert '"PRE_PC_BITS=$x3_pc_tail_pre_bit_count"' in tcl
-    assert '"PRE_STATE_PC_BITS=$x3_pc_tail_pre_state_bit_count"' in tcl
-    assert '"PRE_SEQ_PC_BITS=$x3_pc_tail_pre_seq_bit_count"' in tcl
-    assert '"PRE_PENDING_CANONICAL=$x3_pc_tail_pre_pending_canonical"' in tcl
-    assert "PRE_STARTS=" not in tcl
-    assert "START_SETS_DISJOINT" not in tcl
-    assert '"PRE_START_NAMES_MATCH_POST=1"' not in tcl
-    assert '"PRE_COMPRESSED_START_NAMES_MATCH_POST=1"' in tcl
-    assert '"POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1"' in tcl
-    assert "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST" not in tcl
-    assert '"POST_STATE_CANONICAL_NAMES_WITHIN_PRE=1"' in tcl
-    assert "PRE_STATE_CANONICAL_NAMES_MATCH_POST" not in tcl
-    assert '"POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=1"' in tcl
-    assert "PRE_SEQ_CANONICAL_NAMES_MATCH_POST" not in tcl
-    assert '"POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=1"' in tcl
-    assert "PRE_PENDING_CANONICAL_NAMES_MATCH_POST" not in tcl
-    assert '"SCORE_PC_BITS=$x3_pc_tail_score_bit_count"' in tcl
-    assert '"SCORE_START_NAMES_MATCH_POST=1"' not in tcl
-    assert '"SCORED_GROUPS=' not in tcl
-    assert '"SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST=1"' in tcl
-    assert '"DIRECTIVE=$directive"' in tcl
-    assert '"PLACE_UNCERTAINTY_NS=[format %.3f $x3_place_uncertainty]"' in tcl
-    assert '"SCORE_UNCERTAINTY_NS=[format %.3f $x3_place_baseline_uncertainty]"' in tcl
-    assert add_compressed_group < place
-    assert place < remove_compressed_group < temporary_checkpoint
-    assert remove_compressed_group < restore_scoring_uncertainty
-    assert restore_scoring_uncertainty < temporary_checkpoint
-    assert temporary_checkpoint < close_design < reopen < canonical_checkpoint
-    assert reopen < restore_reopen_uncertainty < canonical_checkpoint
-    assert canonical_checkpoint < timing_summary
-    assert "set x3_pc_tail_group_name frost_pc_compressed_tail" in tcl[reopen:]
-    assert "temporary $x3_pc_tail_group_name still owns timing paths" in tcl[reopen:]
-    assert "noncanonical X3 PC-tail scoring groups" not in tcl
-    assert "noncanonical X3 PC-metadata tail scoring groups" in tcl[reopen:]
-    assert "post_place_pc_tail_timing.rpt" not in tcl
-    assert "post_place_pc_compressed_tail_timing.rpt" in tcl[canonical_checkpoint:]
-
-
 def test_x3_opt_does_not_except_fence_deassertion() -> None:
     """FENCE deassertion remains timed through the served-window comparators."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
@@ -1250,8 +881,8 @@ def test_x3_opt_does_not_except_fence_deassertion() -> None:
     assert "apply_x3_fence_coverage_exception" not in tcl
 
 
-def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
-    """Check the low-BRAM predicate overlay, fallback, and fetch integration.
+def test_optional_predecode_metadata_uses_scalar_overlay() -> None:
+    """Check the optional low-BRAM overlay and its fallback.
 
     Each predicate has a LUTRAM copy per parity in the low 64 KiB. Full-depth
     sideband BRAM provides the simulation reference. Outside the overlay, a
@@ -1261,8 +892,10 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert len(re.findall(r"^module ", imem, re.M)) == 2
     assert "module imem_sideband_scalar_bank #(" in imem
     assert "parameter int unsigned PC_METADATA_OVERLAY_ADDR_WIDTH" in imem
+    assert "parameter bit ENABLE_FETCH_METADATA = 1'b0" in imem
+    assert "if (ENABLE_FETCH_METADATA) begin : gen_fetch_metadata" in imem
+    assert "dont_touch" not in imem
     assert "(ADDR_WIDTH > 14) ? 13 : ADDR_WIDTH - 1" in imem
-    assert '(* keep = "true" *) logic read_q;' in imem
     assert "input logic i_read_overlay_hit" in imem
     assert "input logic i_slow_read_data" in imem
     assert re.search(
@@ -1270,6 +903,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
         r"memory_read_data\[0\]\s*:\s*i_slow_read_data;",
         imem,
     )
+    scalar_banks = 2 * len(fpga_build.IMEM_SCALAR_REPLICA_NAMES)
     for predicate in fpga_build.IMEM_SCALAR_REPLICA_NAMES:
         sideband_name = "ImemSb" + "".join(
             word.capitalize() for word in predicate.split("_")
@@ -1288,22 +922,25 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
                 rf'"sw_imem_{parity}_{predicate}\.mem"',
                 imem,
             )
-    assert len(
-        re.findall(
-            r"^\s*(?:\(\* dont_touch = \"yes\" \*\) )?imem_sideband_scalar_bank #\(",
-            imem,
-            re.M,
+    assert (
+        len(
+            re.findall(
+                r"^\s*(?:\(\* dont_touch = \"yes\" \*\) )?imem_sideband_scalar_bank #\(",
+                imem,
+                re.M,
+            )
         )
-    ) == (fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT)
+        == scalar_banks
+    )
     assert (
         imem.count(".STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH)")
-        == fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT
+        == scalar_banks
     )
     assert (
         imem.count(".i_read_overlay_hit(pc_metadata_overlay_window_hit)")
-        == fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT
+        == scalar_banks
     )
-    assert imem.count(".i_slow_read_data(") == fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT
+    assert imem.count(".i_slow_read_data(") == scalar_banks
     assert "pc_metadata_overlay_window_hit_q <= pc_metadata_overlay_window_hit;" in imem
     assert "pc_metadata_response_ready_q <=" in imem
     assert "i_port_b_byte_address == pc_metadata_response_address_q" in imem
@@ -1337,8 +974,8 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
             imem,
         )
     assert "localparam int unsigned FastLaneWidth = 4;" in imem
-    assert "even_sideband_with_fast_metadata[1:0] = even_pc_metadata[1:0];" in imem
-    assert "odd_sideband_with_fast_metadata[1:0] = odd_pc_metadata[1:0];" in imem
+    assert "even_fetch_sideband[1:0] = even_pc_metadata[1:0];" in imem
+    assert "odd_fetch_sideband[1:0] = odd_pc_metadata[1:0];" in imem
     overwritten_predicates = {
         "ImemSbEvenLocalPairValid": "even_local_pair_valid",
         "ImemSbPairableNativeLo": "pairable_native_lo",
@@ -1349,7 +986,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     for parity in ("even", "odd"):
         for sideband_name, source_name in overwritten_predicates.items():
             assert re.search(
-                rf"{parity}_sideband_with_fast_metadata"
+                rf"{parity}_fetch_sideband"
                 rf"\[riscv_pkg::{sideband_name}\]\s*=\s*"
                 rf"{parity}_{re.escape(source_name)};",
                 imem,
@@ -2570,6 +2207,61 @@ def test_perf_counters_cli_default_overrides_stale_environment(
         fpga_build.main()
     assert stopped.value.code == 1
     assert observed == [(322_265_625, "0")]
+
+
+@pytest.mark.parametrize(
+    "options,inherited,expected",
+    [
+        ([], "0", "1"),
+        (["--misaligned-hw"], "0", "1"),
+        (["--no-misaligned-hw"], "1", "0"),
+    ],
+)
+def test_vcu118_misaligned_hw_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    options: list[str],
+    inherited: str,
+    expected: str,
+) -> None:
+    """The VCU118 CLI selects the synthesis setting even in a stale environment."""
+    monkeypatch.setenv("FROST_MISALIGNED_HW", inherited)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "vcu118",
+            "--build-dir",
+            str(tmp_path),
+            "--stop-after",
+            "synth",
+            *options,
+        ],
+    )
+    monkeypatch.setattr(fpga_build, "compile_hello_world", lambda *args, **kwargs: True)
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+
+    def check_synthesis(*args: Any, **kwargs: Any) -> tuple[bool, float, str]:
+        assert args[1:3] == ("vcu118", "synth")
+        assert os.environ["FROST_MISALIGNED_HW"] == expected
+        return True, 0.0, "post_synth"
+
+    monkeypatch.setattr(fpga_build, "run_step", check_synthesis)
+    fpga_build.main()
+
+
+def test_x3_rejects_disabling_misaligned_hw(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The X3 always includes the misaligned-access engine."""
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--no-misaligned-hw"])
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+    assert "--no-misaligned-hw is only supported for vcu118" in capsys.readouterr().err
 
 
 def test_read_log_tail_streams_appended_text_and_survives_truncation(
@@ -3837,7 +3529,6 @@ def test_unused_placement_switches_do_not_launch_an_extra_worker(
     monkeypatch.setenv("FROST_PLACE_CELL_BLOAT", "LOW")
     monkeypatch.setenv("FROST_PLACE_CELL_BLOAT_CELLS", "manual_target")
     monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
-    monkeypatch.setattr(fpga_build, "x3_pc_tail_group_audit_is_valid", lambda *_: True)
     fleet = _VivadoFleet(monkeypatch, 1)
     popen = fleet.popen
     launches = []

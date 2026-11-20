@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""RX ingress FIFO limit and the GMII receive-error counters of nic_mac_wrap.
+"""RX ingress FIFO limit and the GMII receive-error counters of nic_mac_1g.
 
 The wrap is built in GMII mode with an 8192-word RX FIFO. With the core side
 stalled, back-to-back frames fill the FIFO until its occupancy reaches the
@@ -27,7 +27,11 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
 
-from cocotb_tests.nic.test_nic_mac_gmii import GmiiPeer, _wire_frame
+from cocotb_tests.nic.test_nic_mac_gmii import (
+    GmiiPeer,
+    _restart_and_wait_ready,
+    _wire_frame,
+)
 
 BUILT_DEPTH = 8192
 # A 60-byte payload is eight FIFO words.
@@ -64,13 +68,13 @@ class StalledPeer(GmiiPeer):
         while True:
             await FallingEdge(self.dut.i_clk)
             ready = self.ready
-            self.dut.i_rx_ready.value = int(ready)
+            self.dut.m_axis_rx_tready.value = int(ready)
             await RisingEdge(self.dut.i_clk)
-            if ready and int(self.dut.o_rx_valid.value):
-                code = int(self.dut.o_rx_code.value)
-                data = int(self.dut.o_rx_data.value).to_bytes(8, "little")
-                frame.extend(data[: (code & 7) + 1])
-                if code & 8:
+            if ready and int(self.dut.m_axis_rx_tvalid.value):
+                nbytes = int(self.dut.m_axis_rx_tkeep.value).bit_count()
+                data = int(self.dut.m_axis_rx_tdata.value).to_bytes(8, "little")
+                frame.extend(data[:nbytes])
+                if int(self.dut.m_axis_rx_tlast.value):
                     self.received.append(bytes(frame))
                     frame.clear()
 
@@ -97,23 +101,27 @@ async def _start(dut: Any) -> StalledPeer:
     for name, value in {
         "i_rst": 1,
         "i_soft_rst": 0,
-        "i_req": 3,
-        "i_gen": 0,
-        "i_core_rst_dom": 3,
+        "i_restart": 0,
+        "i_tx_clk_ok": 1,
+        "i_rx_clk_ok": 1,
         "i_mac_loopback": 0,
-        "i_tx_valid": 0,
-        "i_tx_data": 0,
-        "i_tx_code": 0,
+        "s_axis_tx_tvalid": 0,
+        "s_axis_tx_tdata": 0,
+        "s_axis_tx_tkeep": 0,
+        "s_axis_tx_tlast": 0,
+        "s_axis_tx_tuser": 0,
         "i_tx_csum": 0,
-        "i_tx_abort": 0,
         "i_station_mac": 0,
         "i_pause_ctrl": 0,
         "i_pause_high_water": 0,
         "i_pause_low_water": 0,
         "i_pause_interval": 0xFFFF,
-        "i_rx_ready": 0,
-        "i_rx_raw_data": 0,
-        "i_rx_raw_valid": 1,
+        "m_axis_rx_tready": 0,
+        "i_gmii_rxd": 0,
+        "i_gmii_rx_dv": 0,
+        "i_gmii_rx_er": 0,
+        "i_gmii_rx_clk_en": 1,
+        "i_pcs_status": 0,
         "i_rx_signal_ok": 1,
         "i_rx_fifo_limit": 0,
         "i_rx_fifo_limit_wr": 0,
@@ -125,8 +133,7 @@ async def _start(dut: Any) -> StalledPeer:
     await ClockCycles(dut.i_clk, 20)
     await FallingEdge(dut.i_clk)
     dut.i_rst.value = 0
-    dut.i_req.value = 0
-    dut.i_core_rst_dom.value = 0
+    await _restart_and_wait_ready(dut)
     peer = StalledPeer(dut)
     cocotb.start_soon(peer.wire())
     cocotb.start_soon(peer.collect())

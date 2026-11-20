@@ -142,7 +142,6 @@ NON_LOGIC: dict[str, str] = {
     'cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv::nonlogic:(* keep_hierarchy = "yes" *)': "module attribute under the macro",
     'cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv::nonlogic:(* keep_hierarchy = "yes" *)#2': "module attribute under the macro",
     'cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv::nonlogic:(* keep_hierarchy = "yes" *)': "module attribute under the macro",
-    'cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv::nonlogic:(* keep = "true" *) logic [DEPTH-1:0] sq_sent_la': "signal declaration used by the covered LUT blocks",
     'cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv::nonlogic:(* keep_hierarchy = "yes" *)': "module attribute under the macro",
     'lib/cache/coherence_l1d.sv::nonlogic:(* extract_enable = "no", extract_reset = "yes",': "register attributes under the macro",
     'lib/cache/coherence_read_select.sv::nonlogic:(* keep_hierarchy = "yes" *)': "module attribute under the macro",

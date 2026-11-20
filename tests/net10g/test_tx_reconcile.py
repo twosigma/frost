@@ -59,6 +59,8 @@ class ReconcileBench:
         output = (int(dut.o_xgmii_data.value), int(dut.o_xgmii_ctrl.value))
         if expected is not None:
             assert output == expected, f"wire {output}, expected {expected}"
+        if reset:
+            assert not int(dut.o_link_ready.value)
         if enable and not reset:
             self.starts += int(output == START)
             self.fault_words += int(output == REMOTE_FAULT)
@@ -77,7 +79,7 @@ class ReconcileBench:
 async def startup_and_normal_packets(dut: Any) -> None:
     """Require an enabled complete idle word before initial traffic passes."""
     bench = ReconcileBench(dut)
-    await bench.step(START, reset=True, expected=IDLE)
+    await bench.step(START, reset=True)
     await bench.step(START, expected=IDLE)
     await bench.step(PAYLOAD, expected=IDLE)
     await bench.step(IDLE, enable=False, expected=IDLE)
@@ -146,7 +148,8 @@ async def disabled_word_cadence_remembers_fault_and_holds_recovery(dut: Any) -> 
     assert bench.starts == 2
     assert bench.fault_words == 0
     # Reset during a frame suppresses its remainder with enable low as well.
-    await bench.step(PAYLOAD, enable=False, reset=True, expected=IDLE)
+    await bench.step(PAYLOAD, enable=False, reset=True, expected=PAYLOAD)
+    await bench.step(PAYLOAD, local=True, reset=True, expected=REMOTE_FAULT)
     await bench.step(PAYLOAD, expected=IDLE)
     await bench.step(IDLE, expected=IDLE)
     await bench.step(START, expected=START)

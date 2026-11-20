@@ -121,15 +121,46 @@ and restore against live unseeded cocotb runs:
 With the `frost` development image built first (`docker build -t frost .`, see
 [Quick Start](#quick-start)) and the CoreMark submodule initialized,
 `demo/Dockerfile` packages baseline x86-64 simulator binaries (`1`, `4`, and `8`
-threads) and prebuilt `hello_world` and CoreMark images into a small standalone
-runtime container (`frost-demo:local`), which CI builds and runs in
-`test-demo-image`:
+threads) and prebuilt programs into a small standalone runtime container
+(`frost-demo:local`), which CI builds and runs in `test-demo-image`:
 
 ```bash
 git submodule update --init --recursive sw/apps/coremark/coremark
 docker build -f demo/Dockerfile -t frost-demo:local .
-docker run --rm -it frost-demo:local
+docker run --rm -it -e COLORTERM frost-demo:local
 ```
+
+The container runs for about five minutes on four cores. A
+[ray tracer](sw/apps/raytrace) draws its picture (a glossy red sphere and a
+glossy blue sphere on a tiled floor under a sunset) in the terminal row by row as
+the simulated CPU computes it, while a status line shows the rows done, the
+time left, and the core at work (instructions per cycle, branch predictions
+that hit, reorder-buffer entries in use, cycles that retire two instructions).
+One CoreMark iteration follows, reported as passed and in how many cycles,
+then a table of what the core did in each program, counted over the ray
+tracer's rendering and CoreMark's timed loop. Both
+programs check their own results. A computer too slow to draw the full picture
+in about six minutes gets the small one and says so (`--full` keeps the full
+one). `--quick` runs the small picture; `--raw` and `--app`
+print the unfiltered UART output of `hello_world` and CoreMark;
+`--help` lists the rest.
+
+The picture is drawn in 24-bit color when the terminal advertises it and in the
+256-color palette (nearest color, no dithering) otherwise. `frost-show` decides
+only from these, in order: `--truecolor` or `--256`; `NO_COLOR` (plain text);
+the `COLORTERM` variable (`truecolor` or `24bit`); a `TERM` that names direct
+color; else 256 colors, with one line under the picture saying how to get full
+color. It never queries the terminal. `-e COLORTERM` (no value) forwards your
+shell's variable, which modern terminals set; `-e COLORTERM=truecolor` states
+it outright; `--truecolor` or `--256` forces either mode (`docker run` sets
+`TERM=xterm` inside the container unless you pass `-e TERM`). `NO_COLOR`
+set, a `TERM` that is not a known cursor-addressable type, or output that is
+not a terminal gives plain text with no cursor or color codes. Known types are
+xterm and its relatives, screen, tmux, rxvt, vt100 and later, linux, alacritty,
+kitty, foot, wezterm, ghostty, konsole, gnome, st and iterm; anything else
+(`tty33`, `dumb`, `unknown`, unset) gets plain lines. On a terminal narrower than
+the picture (77 columns for the full one) the picture is scaled down by a
+whole factor, and below 39 columns it is not drawn.
 
 Every clock cycle evaluates the hardware model in software; RTL simulation is
 far slower than hardware. See [hw/sim/native/README.md](hw/sim/native/README.md)
@@ -278,21 +309,21 @@ See the [board guide](boards/README.md) for pinouts, clocking, and adding a boar
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; post-route report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; post-synthesis report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 164,531 | 1,029,600 | 16.0% |
-|   LUT as Logic | 145,078 | 1,029,600 | 14.1% |
-|   LUT as Distributed RAM | 18,718 | — | — |
-|   LUT as Shift Register | 735 | — | — |
-| CLB Registers | 103,332 | 2,059,200 | 5.0% |
-| Block RAM Tile | 263 | 2,112 | 12.4% |
-| URAM | 68 | 352 | 19.3% |
-| DSPs | 27 | 1,320 | 2.0% |
-| CARRY8 | 1,997 | 128,700 | 1.6% |
-| F7 Muxes | 1,970 | 514,800 | 0.4% |
-| F8 Muxes | 930 | 257,400 | 0.4% |
+| CLB LUTs | 405,631 | 1,029,600 | 39.4% |
+|   LUT as Logic | 373,451 | 1,029,600 | 36.3% |
+|   LUT as Distributed RAM | 30,562 | — | — |
+|   LUT as Shift Register | 1,618 | — | — |
+| CLB Registers | 225,950 | 2,059,200 | 11.0% |
+| Block RAM Tile | 288 | 2,112 | 13.6% |
+| URAM | 66 | 352 | 18.8% |
+| DSPs | 87 | 1,320 | 6.6% |
+| CARRY8 | 5,604 | 128,700 | 4.3% |
+| F7 Muxes | 2,095 | 514,800 | 0.4% |
+| F8 Muxes | 961 | 257,400 | 0.4% |
 | Bonded IOB | 132 | 364 | 36.3% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 3 | 22 | 13.6% |
@@ -331,22 +362,19 @@ its own workflow, so a newer push to `main` does not cancel it.
 The [test guide](tests/README.md#ci-integration) has the details and the commands
 for each suite.
 
-In the CI workflow's **Run workflow** menu, enable `toggle_coverage` to add
-Verilator toggle coverage to the Cocotb jobs that collect coverage. The input
-defaults to off. The opted-in whole-SoC jobs allow 40 minutes for startup
-sweeps within their job limits. In a local BRAM Runtime benchmarks shard,
-the program simulations took 3.1 times as long and the compressed job
-coverage grew from 0.26 MB to 3.63 MB with toggles enabled. Costs vary by
-shard. See the [coverage guide](tests/README.md#coverage) for what the report includes.
+In the CI workflow's **Run workflow** menu, enable `toggle_coverage` to run
+only the Cocotb coverage shards with Verilator toggles, the shared image
+build, and the Coverage Report. The input defaults to off and takes
+precedence over the vector and proof inputs. The whole-SoC coverage shards
+allow 40 minutes for startup sweeps within their job limits. In a local BRAM
+Runtime benchmarks shard, enabling toggles made program simulation take
+3.1 times as long and increased the compressed coverage artifact from 0.26 MB
+to 3.63 MB. Costs vary by shard. See the [coverage guide](tests/README.md#coverage).
 
-Each started main push checks all 1,995 one-per-form vector programs.
-Pull requests labeled `run-ci` check one slice chosen by PR number. A
-regular manual run checks one slice chosen by workflow run number. A
-manual slice replay runs only the image build and three vector shards. A
-complete manual campaign runs the image build, all 9,051 programs and
-a report. Estimated vector costs after the shared image build are
-11 runner-hours for main, 0.85 per slice and 56 for the campaign.
-See the [test guide](tests/README.md#generated-vector-programs-in-ci).
+Every started main push checks a vector program for each instruction form,
+and pull requests labeled `run-ci` and regular manual runs check a slice.
+A manual vector run can replay a chosen slice or run the complete campaign,
+as described in the [test guide](tests/README.md#generated-vector-programs-in-ci).
 
 ### Building Software
 
@@ -367,7 +395,7 @@ For native builds outside the container, initialize the submodules first with
 |-----------|----------|
 | [hw/rtl/](hw/rtl/README.md) | CPU, caches, peripherals, and reusable hardware blocks |
 | [hw/sim/native/](hw/sim/native/README.md) | Standalone C++ Verilator runner for the SoC RTL |
-| [demo/](demo/Dockerfile) | Runtime Docker image for running `hello_world` and CoreMark on the RTL |
+| [demo/](demo/Dockerfile) | Runtime Docker image: the ray tracer and CoreMark on the RTL, presented by `frost-show`, and `hello_world` and CoreMark unfiltered |
 | [sw/](sw/README.md) | Bare-metal libraries, applications, and benchmarks |
 | [linux/](linux/README.md) | Linux boot images, firmware, and NIC driver |
 | [fpga/](fpga/README.md) | FPGA build, programming, and software-loading tools |

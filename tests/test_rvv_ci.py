@@ -14,6 +14,7 @@
 
 """Check the vector workflow's dispatch, selection and evidence."""
 
+import csv
 import hashlib
 import json
 import os
@@ -46,8 +47,11 @@ def test_vector_workflow(tmp_path: Path) -> None:
     jobs = workflow["jobs"]
     job = jobs["test-rvv"]
     assert job["needs"] == "build-docker"
-    assert job["if"] == "${{ !cancelled() && needs.build-docker.result == 'success' }}"
+    assert job["if"] == (
+        "${{ !cancelled() && needs.build-docker.result == 'success' && !inputs.toggle_coverage }}"
+    )
     assert job["strategy"]["fail-fast"] is False
+    assert job["strategy"]["max-parallel"] == 20
     assert "needs.build-docker.outputs.rvv_matrix" in job["strategy"]["matrix"]
     assert (
         jobs["build-docker"]["outputs"]["rvv_matrix"]
@@ -57,18 +61,9 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert step["env"]["MAIN_RUN"] == "${{ needs.gate.outputs.main_run }}"
     assert step["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number }}"
     default = step["env"]["SLICES_PER_MAIN_RUN"]
-    assert 1 <= int(default) <= ci.SLICES
-    default_mode = "forms" if int(default) == ci.SLICES else "slice"
+    assert int(default) == ci.SLICES == 20
     for event, campaign, part, count, per_run, mode, parts in [
-        (
-            "push",
-            "rotation",
-            "",
-            "0",
-            default,
-            default_mode,
-            [str(i) for i in range(int(default))],
-        ),
+        ("push", "rotation", "", "0", default, "forms", []),
         ("push", "rotation", "", "7", "20", "forms", []),
         ("push", "rotation", "", "", "20", "forms", []),
         ("push", "rotation", "", "7", "1", "slice", ["7"]),
@@ -78,6 +73,7 @@ def test_vector_workflow(tmp_path: Path) -> None:
         ("pull_request", "rotation", "", "", default, "slice", ["4"]),
         ("workflow_dispatch", "rotation", "", "", default, "slice", ["19"]),
         ("workflow_dispatch", "rotation", "0", "", default, "slice", ["0"]),
+        ("workflow_dispatch", "rotation", "19", "", default, "slice", ["19"]),
         ("workflow_dispatch", "complete", "", "", default, "complete", []),
     ]:
         output = tmp_path / "outputs"
@@ -108,9 +104,9 @@ def test_vector_workflow(tmp_path: Path) -> None:
             ]
         else:
             widths = (
-                {128: 3, 256: 3, 512: 14}
+                {128: 6, 256: 12, 512: 32}
                 if mode == "complete"
-                else {128: 4, 256: 4, 512: 12}
+                else {128: 2, 256: 4, 512: 11}
             )
             assert Counter(r["vlen"] for r in rows) == widths
             for vlen, n in widths.items():
@@ -176,6 +172,7 @@ def test_vector_workflow(tmp_path: Path) -> None:
 
 VECTOR_JOBS = {"build-docker", "test-rvv"}
 CAMPAIGN_JOBS = VECTOR_JOBS | {"rvv-campaign-report"}
+TOGGLE_JOBS = {"build-docker", "test-verilator", "coverage-report"}
 REGULAR_CI = VECTOR_JOBS | {
     "gate",
     "lint",
@@ -213,6 +210,11 @@ def job_condition(condition: str, context: dict[str, str]) -> bool:
         compare,
         expression,
     ).replace("!cancelled()", "true")
+    expression = re.sub(
+        r"(!?)\b(inputs\.\w+)\b",
+        lambda match: str((context[match[2]] == "true") != bool(match[1])).lower(),
+        expression,
+    )
     assert re.fullmatch(r"(?:true|false|&&|\|\||[()\s])+", expression), condition
     result = subprocess.run(["bash", "-c", expression])
     assert result.returncode in (0, 1), condition
@@ -233,13 +235,20 @@ def job_condition(condition: str, context: dict[str, str]) -> bool:
         ("workflow_dispatch", {"slice": "19"}, (), VECTOR_JOBS),
         ("workflow_dispatch", {}, (), REGULAR_CI),
         ("workflow_dispatch", {"reprove": True}, (), REGULAR_CI),
-        ("workflow_dispatch", {"toggle_coverage": True}, (), REGULAR_CI),
-        ("workflow_dispatch", {"slice": "0", "toggle_coverage": True}, (), VECTOR_JOBS),
+        ("workflow_dispatch", {"toggle_coverage": False}, (), REGULAR_CI),
+        ("workflow_dispatch", {"toggle_coverage": True}, (), TOGGLE_JOBS),
+        (
+            "workflow_dispatch",
+            {"reprove": True, "toggle_coverage": True},
+            (),
+            TOGGLE_JOBS,
+        ),
+        ("workflow_dispatch", {"slice": "0", "toggle_coverage": True}, (), TOGGLE_JOBS),
         (
             "workflow_dispatch",
             {"campaign": "complete", "toggle_coverage": True},
             (),
-            CAMPAIGN_JOBS,
+            TOGGLE_JOBS,
         ),
         ("push", {}, (), REGULAR_CI),
         ("pull_request", {}, ("run-ci",), REGULAR_CI),
@@ -271,6 +280,7 @@ def test_ci_job_scope(
             "run-ci" in labels
         ).lower(),
         "needs.gate.outputs.full": "",
+        "needs.build-docker.outputs.verilator_matrix": "",
     }
     for key, spec in workflow[True]["workflow_dispatch"]["inputs"].items():
         value = (
@@ -282,9 +292,15 @@ def test_ci_job_scope(
             str(value).lower() if isinstance(value, bool) else value
         )
     group = workflow["concurrency"]["group"]
-    guard, suffix = group.rsplit("${{", 1)[1].rsplit("&& format", 1)
-    assert suffix == "('-rvv-{0}', github.run_id) || '' }}"
-    assert job_condition(guard, context) == (expected in (VECTOR_JOBS, CAMPAIGN_JOBS))
+    _, toggle_group, vector_group = group.rsplit("${{", 2)
+    toggle_guard, toggle_suffix = toggle_group.rsplit("&&", 1)
+    vector_guard, vector_suffix = vector_group.rsplit("&& format", 1)
+    assert toggle_suffix == " '-toggle' || '' }}"
+    assert vector_suffix == "('-rvv-{0}', github.run_id) || '' }}"
+    assert job_condition(toggle_guard, context) == (expected == TOGGLE_JOBS)
+    assert job_condition(vector_guard, context) == (
+        expected in (VECTOR_JOBS, CAMPAIGN_JOBS)
+    )
     enabled: set[str] = set()
     for name in TopologicalSorter(needs).static_order():
         guard = jobs[name].get("if", "")
@@ -311,6 +327,15 @@ def test_ci_job_scope(
             context["needs.gate.outputs.full"] = dict(
                 line.split("=", 1) for line in output.read_text().splitlines()
             )["full"]
+        if runs and name == "build-docker":
+            steps = {s.get("id"): s for s in jobs[name]["steps"]}
+            has_verilator = job_condition(steps["verilator"]["if"], context)
+            assert has_verilator == ("test-verilator" in expected)
+            assert job_condition(steps["rvv"]["if"], context) == (
+                "test-rvv" in expected
+            )
+            if has_verilator:
+                context["needs.build-docker.outputs.verilator_matrix"] = "planned"
     assert enabled == expected
 
 
@@ -344,8 +369,50 @@ def test_rotation_and_manual_replay() -> None:
         with pytest.raises(ValueError, match="slices per run"):
             ci.matrix("rotation", 0, "", count)
     assert ci.matrix("rotation", 99, "19", 20) == ci.matrix("rotation", 0, "19")
-    assert ci.shard_options("forms", "2/4") == ["--one-per-form", "--shard", "2/4"]
-    assert ci.shard_options("complete", "2/3") == ["--shard", "2/3"]
+    profile = ["--cycle-profile", "tests/fixtures/rvv_ci_profile.csv"]
+    assert ci.shard_options("forms", "2/2") == [
+        "--one-per-form",
+        *profile,
+        "--shard",
+        "2/2",
+    ]
+    assert ci.shard_options("complete", "2/6") == [*profile, "--shard", "2/6"]
+
+
+@pytest.mark.parametrize(
+    ("width", "cycles", "selection"),
+    [
+        (
+            128,
+            98445694,
+            "5881ecf6d7bc560f12cbda17043cf5cb6d254624f61f69be2ec686ffd5e88583",
+        ),
+        (
+            256,
+            188047010,
+            "975b7c57e8a5d84d7f5ffdfb45b2851527f80143c32457c638d6a3d9fd97634d",
+        ),
+        (
+            512,
+            340151701,
+            "7142a2f20a72d44f31b6cb29bda4ab0c6d494e1eacf47e9698d3e8064f274183",
+        ),
+    ],
+)
+def test_ci_profile_matches_hosted_selection(
+    width: int, cycles: int, selection: str
+) -> None:
+    """The main weights cover every program in the hosted calibration run."""
+    profile = (ROOT / ci.CYCLE_PROFILE).read_bytes()
+    source = {
+        r["name"]: int(r["source_weight"])
+        for r in csv.DictReader(profile.decode().splitlines())
+        if int(r["vlen"]) == width and r["form_weight"]
+    }
+    measured = suite.calibrated_shard_weights(source, width, profile, one=True)
+    assert len(measured) == ci.FORMS_PER_WIDTH
+    assert suite.selection_sha256(list(measured), width) == selection
+    assert sum(measured.values()) == cycles
 
 
 def result(name: str) -> dict:
@@ -413,7 +480,7 @@ def test_shard_failures_and_reproduction(
 
 @pytest.mark.parametrize(
     ("mode", "part", "total"),
-    [("slice", "0", 665), ("forms", "1/4", 665), ("complete", "1/3", 3017)],
+    [("slice", "0", 665), ("forms", "1/2", 665), ("complete", "1/6", 3017)],
 )
 def test_shard_requires_full_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, part: str, total: int
@@ -425,6 +492,13 @@ def test_shard_requires_full_inventory(
     Path(f"{model}.json").write_text("{}")
 
     def simulate(command: list[str], deadline: float, transcript: object) -> int:
+        if mode == "slice":
+            assert "--cycle-profile" not in command
+        else:
+            assert (
+                Path(command[command.index("--cycle-profile") + 1])
+                == ROOT / ci.CYCLE_PROFILE
+            )
         work = Path(command[command.index("--workdir") + 1])
         (work / "Makefrag").write_text("tests =\nvadd_vv-0\n")
         (work / "selection.json").write_text(json.dumps(selection))

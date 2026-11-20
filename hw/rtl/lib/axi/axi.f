@@ -3,8 +3,10 @@
 # uses sdp_dist_ram from ram.f, which an including list supplies; the mux's
 # bench harness is listed by tests/Makefile only.
 $(ROOT)/hw/rtl/lib/axi/axi_checker.sv
+$(ROOT)/hw/rtl/lib/axi/axi_register_slice.sv
 $(ROOT)/hw/rtl/lib/axi/axi_mux.sv
 $(ROOT)/hw/rtl/lib/axi/axi_coherent_bridge.sv
 $(ROOT)/hw/rtl/lib/axi/axil_checker.sv
+$(ROOT)/hw/rtl/lib/axi/axil_register_slice.sv
 $(ROOT)/hw/rtl/lib/axi/axil_reg_bridge.sv
 $(ROOT)/hw/rtl/lib/axi/axi_cdc.sv

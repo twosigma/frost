@@ -15,7 +15,10 @@
 """Check which CI jobs collect coverage and that their steps agree."""
 
 import itertools
+import json
+import os
 import re
+import subprocess
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
@@ -23,9 +26,11 @@ from typing import Any
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+from ci_verilator import VERILATOR_MATRIX
 from test_rvv_ci import job_condition
 
-WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github/workflows/ci.yml"
 
 # Jobs that collect coverage: every one of these has a `coverage` field in its
 # matrix, and the rest of the matrix entries have it switched off.
@@ -77,7 +82,10 @@ def test_coverage_is_selected_by_the_matrix() -> None:
     for name in selecting:
         job = jobs[name]
         steps = {s.get("name"): s for s in job["steps"]}
-        for index, combo in enumerate(_expand(job["strategy"]["matrix"])):
+        matrix = (
+            VERILATOR_MATRIX if name == "test-verilator" else job["strategy"]["matrix"]
+        )
+        for index, combo in enumerate(_expand(matrix)):
             if name in ("test-verilator", "test-pa-width"):
                 assert "coverage" in combo["shard"], (name, combo)
             else:
@@ -131,6 +139,40 @@ def _env_value(expression: str, event: str, predicates: dict[str, bool]) -> str:
     )
 
 
+@pytest.mark.parametrize("toggle", (False, True))
+def test_cocotb_matrix_output(tmp_path: Path, toggle: bool) -> None:
+    """The image job emits the full or coverage-only matrix in order."""
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    build = jobs["build-docker"]
+    planner = next(s for s in build["steps"] if s.get("id") == "verilator")
+    assert planner["env"]["TOGGLE_COVERAGE"] == "${{ inputs.toggle_coverage }}"
+    assert (
+        build["outputs"]["verilator_matrix"] == "${{ steps.verilator.outputs.matrix }}"
+    )
+    assert jobs["test-verilator"]["strategy"]["matrix"] == (
+        "${{ fromJSON(needs.build-docker.outputs.verilator_matrix) }}"
+    )
+    output = tmp_path / "github-output"
+    subprocess.run(
+        ["bash", "-eu", "-c", planner["run"]],
+        check=True,
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(output),
+            "TOGGLE_COVERAGE": str(toggle).lower(),
+        },
+        timeout=30,
+    )
+    key, data = output.read_text().strip().split("=", 1)
+    assert key == "matrix"
+    full = _expand(VERILATOR_MATRIX)
+    covered = [row for row in full if _collects("test-verilator", row)]
+    assert len(covered) == 19
+    assert sum(row["shard"]["name"].startswith("Unit Tests") for row in covered) == 2
+    assert json.loads(data) == {"include": covered if toggle else full}
+
+
 @pytest.mark.parametrize(
     ("event", "requested"),
     [
@@ -148,7 +190,7 @@ def test_verilator_toggle_coverage_expansion(event: str, requested: bool) -> Non
     job = workflow["jobs"]["test-verilator"]
     step = next(s for s in job["steps"] if s.get("name", "").startswith("Run Cocotb"))
     env = step["env"]
-    for combo in _expand(job["strategy"]["matrix"]):
+    for combo in _expand(VERILATOR_MATRIX):
         shard = combo["shard"]
         covered = _collects("test-verilator", combo)
         unit = shard["name"].startswith("Unit Tests")

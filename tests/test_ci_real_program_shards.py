@@ -19,9 +19,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml  # type: ignore[import-untyped]
 from _pytest.mark.expression import Expression
 
+from ci_verilator import VERILATOR_MATRIX
 from test_run_cocotb import (
     COREMARK_PRO_TESTS,
     DDR_TIER_EXCLUDE,
@@ -85,8 +85,7 @@ def test_registered_programs_have_one_ci_shard() -> None:
     ]
     assert not missing, f"Program configurations omitted from pytest: {missing}"
 
-    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
-    matrix = workflow["jobs"]["test-verilator"]["strategy"]["matrix"]
+    matrix = VERILATOR_MATRIX
     jobs = [
         (tier, shard) for tier in matrix["mem_config"] for shard in matrix["shard"]
     ] + [(job["mem_config"], job["shard"]) for job in matrix["include"]]
@@ -144,12 +143,9 @@ def test_registered_programs_have_one_ci_shard() -> None:
 
 def test_long_programs_have_named_ci_shards() -> None:
     """OpenSBI and budgets above 10 million cycles require explicit shards."""
-    root = Path(__file__).resolve().parents[1]
-    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
-    matrix = workflow["jobs"]["test-verilator"]["strategy"]["matrix"]
     complements = [
         shard
-        for shard in matrix["shard"]
+        for shard in VERILATOR_MATRIX["shard"]
         if shard["pytest_filter"].lstrip().startswith("not (")
     ]
     assert len(complements) == 1, "Keep one complement for unlisted programs"
@@ -194,12 +190,9 @@ def test_long_programs_have_named_ci_shards() -> None:
 
 def test_every_unit_bench_is_in_exactly_one_unit_job() -> None:
     """Require each unit bench to select one of the two unit-test CI jobs."""
-    root = Path(__file__).resolve().parents[1]
-    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
-    matrix = workflow["jobs"]["test-verilator"]["strategy"]["matrix"]
     jobs = [
         job["shard"]
-        for job in matrix["include"]
+        for job in VERILATOR_MATRIX["include"]
         if job["shard"]["name"].startswith("Unit Tests")
     ]
     assert [job["name"] for job in jobs] == ["Unit Tests A", "Unit Tests B"]
@@ -239,9 +232,7 @@ def test_every_unit_bench_is_in_exactly_one_unit_job() -> None:
 
 def test_shard_time_limits_stay_within_github_and_policy() -> None:
     """Only the unsplittable CoreMark-PRO loops program may exceed 300 minutes."""
-    root = Path(__file__).resolve().parents[1]
-    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
-    matrix = workflow["jobs"]["test-verilator"]["strategy"]["matrix"]
+    matrix = VERILATOR_MATRIX
     shards = list(matrix["shard"]) + [job["shard"] for job in matrix["include"]]
     too_long = {
         shard["name"]: shard["timeout_minutes"]

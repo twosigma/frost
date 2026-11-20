@@ -34,6 +34,8 @@ static unsigned long setvl(unsigned long avl, unsigned long vt)
 struct register_images {
     uint64_t source[32][VEC_VLEN / 64];
     uint64_t result[2][VEC_VLEN / 64];
+    uint64_t reference[2][VEC_VLEN / 64];
+    uint64_t follower[2][VEC_VLEN / 64];
 };
 #ifdef VT_SPIKE
 static volatile struct register_images backing __attribute__((aligned(64)));
@@ -687,6 +689,196 @@ static void special_cases(void)
     VT_EQ(images->result[0][0], xor_word, "VS-off traps preserve the prior AES result");
 }
 
+#define VT_E32M2 0x11u
+#define VSETIVLI(d, avl, vt)                                                                       \
+    ((3u << 30) | ((uint32_t) (vt) << 20) | ((avl) << 15) | (7u << 12) | ((d) << 7) | 0x57)
+#define LOAD2(vd, src)                                                                             \
+    __asm__ volatile(".insn r 0x07, 0, 0x11, x" #vd ", %0, x8" ::"r"(src) : "memory")
+#define STORE2(vs, dst)                                                                            \
+    __asm__ volatile(".insn r 0x27, 0, 0x11, x" #vs ", %0, x8" ::"r"(dst) : "memory")
+
+/* Element e (SEW 32) of the two-register group whose first image is regs[0]. */
+static uint32_t element32(volatile uint64_t (*regs)[VEC_VLEN / 64], unsigned e)
+{
+    const unsigned per_reg = VEC_VLEN / 32;
+    uint64_t word = regs[e / per_reg][(e % per_reg) / 2];
+    return (uint32_t) (word >> (32 * (e & 1)));
+}
+
+static void expect_group_trap(unsigned long pc, uint32_t word, unsigned long vstart)
+{
+    VT_EQ(vt_trap_count, 1, "partial group traps");
+    VT_EQ(vt_trap_cause, 2, "partial group cause");
+    VT_EQ(vt_trap_tval, word, "partial group instruction word");
+    VT_EQ(vt_trap_epc, pc, "partial group instruction address");
+    VT_EQ(vt_trap_vstart, vstart, "partial group keeps vstart");
+}
+
+static void expect_destination_unchanged(void)
+{
+    setvl(~0ul, 24);
+    store_result();
+    for (unsigned r = 0; r < 2; r++)
+        for (unsigned w = 0; w < VEC_VLEN / 64; w++)
+            VT_EQ(images->result[r][w], images->source[16 + r][w], "trap preserves destination");
+}
+
+/* vaesz.vs v16, v8 at e32/m2: elements [start, vl) take the round key. */
+static void expect_round_zero(unsigned start, unsigned vl)
+{
+    setvl(~0ul, 24);
+    store_result();
+    for (unsigned e = 0; e < 2 * VEC_VLEN / 32; e++) {
+        uint32_t initial = element32(&images->source[16], e);
+        uint32_t want =
+            e >= start && e < vl ? initial ^ element32(&images->source[8], e % 4) : initial;
+        VT_EQ(element32(&images->result[0], e), want, "round-zero group");
+    }
+}
+
+/* Scalar work long enough for the whole-register loads before it to finish,
+ * so the next element-group instruction meets an idle vector unit at the ROB
+ * head and is judged as early as possible after the instruction before it. */
+static void settle(void)
+{
+    for (volatile unsigned i = 0; i < 64; i++) {
+    }
+}
+
+/* Each writer of vl or vstart directly before an element-group instruction:
+ * the ROB head must judge the value that instruction executes under. */
+static void back_to_back_cases(void)
+{
+    const uint32_t em = OPG(0x28, 8, 2, 16), z = OPG(0x29, 8, 7, 16);
+    unsigned long pc;
+    /* vsetivli to vl = 8: legal at once. */
+    setvl(~0ul, 24);
+    load_sources();
+    settle();
+    vt_trap_clear();
+    __asm__ volatile(".word %0\n"
+                     ".word %1\n" ::"i"(VSETIVLI(0, 8, VT_E32M2)),
+                     "i"(z)
+                     : "memory");
+    VT_EQ(vt_trap_count, 0, "whole groups after vsetivli");
+    expect_round_zero(0, 8);
+    /* vsetivli to vl = 6. */
+    load_sources();
+    settle();
+    vt_trap_clear();
+    __asm__ volatile("lla %0, 1f\n"
+                     ".word %1\n"
+                     "1: .word %2\n"
+                     : "=&r"(pc)
+                     : "i"(VSETIVLI(0, 6, VT_E32M2)), "i"(em)
+                     : "memory");
+    VT_EQ(VT_CSR_READ(vl), 6, "vsetivli sets vl");
+    expect_group_trap(pc, em, 0);
+    expect_destination_unchanged();
+    /* csrw vstart, 2. */
+    load_sources();
+    setvl(8, VT_E32M2);
+    settle();
+    vt_trap_clear();
+    __asm__ volatile("lla %0, 1f\n"
+                     "csrw vstart, %1\n"
+                     "1: .word %2\n"
+                     : "=&r"(pc)
+                     : "r"(2ul), "i"(em)
+                     : "memory");
+    expect_group_trap(pc, em, 2);
+    expect_destination_unchanged();
+#ifndef VT_SPIKE
+    /* csrw vstart, 4: the second group only. */
+    load_sources();
+    setvl(8, VT_E32M2);
+    settle();
+    vt_trap_clear();
+    __asm__ volatile("csrw vstart, %0\n"
+                     ".word %1\n" ::"r"(4ul),
+                     "i"(z)
+                     : "memory");
+    VT_EQ(vt_trap_count, 0, "group restart after csrw");
+    VT_EQ(VT_CSR_READ(vstart), 0, "group restart after csrw clears vstart");
+    expect_round_zero(4, 8);
+#endif
+    /* A fault-only-first load trims vl to 6. */
+    load_sources();
+    setvl(8, VT_E32M2);
+    settle();
+    vt_trap_clear();
+    __asm__ volatile("lla %0, 1f\n"
+                     ".insn r 0x07, 6, 0x01, x4, %1, x16\n"
+                     "1: .word %2\n"
+                     : "=&r"(pc)
+                     : "r"(VT_FF_END - 24), "i"(em)
+                     : "memory");
+    VT_EQ(VT_CSR_READ(vl), 6, "fault-only-first trims vl");
+    expect_group_trap(pc, em, 0);
+    expect_destination_unchanged();
+}
+
+/* Destination groups that alias a source, at e32/m2 with two or more element
+ * groups. The first word executes with aliased registers, the second with
+ * v20, v24 and v28 holding copies of the same images; a vector add follows
+ * the aliased instruction directly. */
+#define OVERLAP_CASES(X)                                                                           \
+    X(OPG(0x28, 16, 0, 16), OPG(0x28, 24, 0, 20), 16, 16, 8)                                       \
+    X(OPG(0x28, 16, 1, 16), OPG(0x28, 24, 1, 20), 16, 16, 8)                                       \
+    X(OPG(0x28, 16, 2, 16), OPG(0x28, 24, 2, 20), 16, 16, 8)                                       \
+    X(OPG(0x28, 16, 3, 16), OPG(0x28, 24, 3, 20), 16, 16, 8)                                       \
+    X(OPG(0x28, 16, 17, 16), OPG(0x28, 24, 17, 20), 16, 16, 8)                                     \
+    X(OPG(0x22, 16, 1, 16), OPG(0x22, 24, 1, 20), 16, 16, 8)                                       \
+    X(OPG(0x2a, 16, 2, 16), OPG(0x2a, 24, 2, 20), 16, 16, 8)                                       \
+    X(OPG(0x2c, 16, 8, 16), OPG(0x2c, 24, 28, 20), 16, 16, 8)                                      \
+    X(OPG(0x2c, 8, 16, 16), OPG(0x2c, 24, 28, 20), 16, 8, 16)                                      \
+    X(OPG(0x2c, 16, 16, 16), OPG(0x2c, 24, 28, 20), 16, 16, 16)                                    \
+    X(OPG(0x2c, 8, 8, 16), OPG(0x2c, 24, 28, 20), 16, 8, 8)
+#define VADD_VI_V4 OPV(0x00, 1, 4, 1, 3, 4)
+
+static void overlap_cases(void)
+{
+    static const unsigned images_of[][3] = {
+#define IMAGES(o, r, d, a, b) {d, a, b},
+        OVERLAP_CASES(IMAGES)
+#undef IMAGES
+    };
+    for (unsigned k = 0; k < sizeof(images_of) / sizeof(images_of[0]); k++) {
+        setvl(~0ul, 24);
+        load_sources();
+        LOAD2(20, images->source[images_of[k][0]]);
+        LOAD2(24, images->source[images_of[k][1]]);
+        LOAD2(28, images->source[images_of[k][2]]);
+        setvl(~0ul, VT_E32M2);
+        vt_trap_clear();
+        unsigned n = 0;
+#define RUN(o, r, d, a, b)                                                                         \
+    if (n++ == k) {                                                                                \
+        __asm__ volatile(".word %0\n.word %1\n.word %2\n" ::"i"(r), "i"(o), "i"(VADD_VI_V4)        \
+                         : "memory");                                                              \
+    }
+        OVERLAP_CASES(RUN)
+#undef RUN
+        VT_EQ(vt_trap_count, 0, "aliased groups are legal");
+        VT_EQ(VT_CSR_READ(vstart), 0, "aliased groups clear vstart");
+        setvl(~0ul, 24);
+        store_result();
+        STORE2(20, images->reference[0]);
+        STORE2(4, images->follower[0]);
+        unsigned changed = 0;
+        for (unsigned r = 0; r < 2; r++)
+            for (unsigned w = 0; w < VEC_VLEN / 64; w++) {
+                VT_EQ(images->result[r][w], images->reference[r][w], "aliased group result");
+                changed += images->result[r][w] != images->source[16 + r][w];
+            }
+        VT_TRUE(changed != 0, "aliased group writes its destination");
+        for (unsigned e = 0; e < 2 * VEC_VLEN / 32; e++)
+            VT_EQ(element32(&images->follower[0], e),
+                  element32(&images->source[4], e) + 1,
+                  "vector add after an element group");
+    }
+}
+
 int main(void)
 {
     vt_enable_vector();
@@ -716,5 +908,7 @@ int main(void)
         VT_EQ(vt_trap_count, 0, "legal crypto does not trap");
     }
     special_cases();
+    back_to_back_cases();
+    overlap_cases();
     return vt_finish("vec_crypto_exec_test");
 }

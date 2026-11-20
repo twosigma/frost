@@ -21,7 +21,7 @@
   priority: trap or xRET, FENCE-class flush,
   misprediction recovery, PD redirect, served-window resteer, hold while no
   window arrives, slot-2 prediction, slot-1 prediction, the pending-prediction
-  and halfword catch-up arms, then the sequential PC. pc_reg takes a slot-1
+  arms, lower-parcel resteer catch-up, then the sequential PC. pc_reg takes a slot-1
   prediction one cycle later, after the branch itself is emitted. See
   hw/rtl/cpu_and_mem/cpu/README.md, "Pending-prediction handoff" and
   "Served-window check and retries". "Raw WCS" below means
@@ -75,9 +75,6 @@ module pc_controller #(
     input logic            i_trap_taken,
     input logic            i_mret_taken,
     input logic [XLEN-1:0] i_trap_target,
-
-    // C-extension state
-    input logic i_is_compressed,  // Slot-1 size; used by the halfword catch-up arm
 
     // Bundle advance: +2 or +4 for one instruction, +4, +6, or +8 for two.
     // if_stage folds the slot-2 valid and size into these selects.
@@ -455,7 +452,6 @@ module pc_controller #(
   logic            hold_pending_prediction_fetch_pc_mux;
   (* max_fanout = 16 *)logic            pending_wcs_seq_override_pc_mux;
   logic            pending_prediction_target_holdoff_q;
-  logic            pending_prediction_target_holdoff_prev_q;
   logic            pending_prediction_pc_ready_q;
   logic [XLEN-2:0] pending_prediction_pc_hw;
   logic [XLEN-1:0] pending_prediction_target_next_word;
@@ -467,27 +463,24 @@ module pc_controller #(
   logic            pc_reg_at_pending_predecessor;
   logic            pending_predecessor_needs_emit;
   logic [XLEN-2:0] seq_next_pc_reg_hw_q;
-  logic            halfword_target_lead_catchup;
-  logic            fetch_is_halfword_ahead;
   logic            lower_parcel_window_resteer_q;
   logic            same_word_lower_parcel_catchup;
   logic            clear_pending_prediction_state;
 
   assign pending_prediction_pc_hw = pending_prediction_pc[XLEN-1:1];
+  // On a non-crossing pending-target holdoff, o_pc and o_pc_reg both sit at
+  // the target (lead 0, target bubble active), just as after a redirect or
+  // reset. Stepping o_pc by +4 preserves pending_prediction_target[1] so the
+  // next fetch window covers the following two words and keeps the four-byte
+  // lead (unlike slot-1 prediction holdoff in pc_increment_calculator, where
+  // o_pc is at the target a cycle ahead of o_pc_reg and steps +2 to the next
+  // word boundary).
   assign pending_prediction_target_next_word =
-      {pending_prediction_target[XLEN-1:2], 2'b00} + riscv_pkg::PcIncrement32bit;
+      pending_prediction_target + riscv_pkg::PcIncrement32bit;
   assign pc_reg_hw = o_pc_reg[XLEN-1:1];
   // pc_reg's relations to the pending branch PC (pc_reg_at_pending and the
   // rest) and seq_reaches_pending are registered; see "Registered pending
   // relations" below.
-  // A == B + 2 (mod 2^XLEN) exactly when A ^ B is 2'b10 in bits [1:0] and,
-  // in each higher bit k, the carry into bit k, B[k-1] & !A[k-1]. Comparing
-  // this pattern avoids an incrementer before the comparison.
-  logic [XLEN-1:0] fetch_arch_pc_xor;
-  logic [XLEN-2:0] fetch_arch_pc_carry;
-  assign fetch_arch_pc_xor = o_pc ^ o_pc_reg;
-  assign fetch_arch_pc_carry = o_pc_reg[XLEN-2:0] & ~o_pc[XLEN-2:0];
-  assign fetch_is_halfword_ahead = fetch_arch_pc_xor == {fetch_arch_pc_carry[XLEN-2:1], 2'b10};
   assign pending_predecessor_needs_emit =
       i_window_cannot_serve_raw || carve_out_engaged_q || i_prediction_holdoff;
 
@@ -748,14 +741,6 @@ module pc_controller #(
   assign o_pending_prediction_fetch_holdoff_wcs =
       pending_prediction_effective && pending_prediction_fetch_holdoff_wcs_without_effective;
   assign o_pending_prediction_target_holdoff = pending_prediction_target_holdoff_q;
-  assign halfword_target_lead_catchup =
-      pending_prediction_target_holdoff_prev_q &&
-      !pending_prediction_target_holdoff_q &&
-      !pending_prediction_effective &&
-      !sel_nop &&
-      i_is_compressed &&
-      o_pc_reg[1] &&
-      fetch_is_halfword_ahead;
   // A served-window resteer from a pc_reg in the upper half of a word moves
   // the fetch PC back one parcel, to the start of the word. IF ignores that
   // parcel's BTB entry, and once the real packet is emitted the catch-up arm
@@ -770,22 +755,13 @@ module pc_controller #(
         i_pd_redirect || i_fence_i_flush) begin
       pending_prediction_target_holdoff_q <= 1'b0;
     end else if (!fetch_stall) begin
-      // One target bubble follows a non-crossing pending handoff. With fetch
-      // going no further than the word after the target, that gives the
-      // target word time to arrive while keeping the usual one-word fetch
-      // lead. A crossing handoff gets no bubble: when pc_reg lands on the
-      // branch PC, IF must still emit the branch itself.
+      // One target bubble follows a non-crossing pending handoff. Stepping
+      // o_pc by +4 from the target gives the target word time to arrive while
+      // establishing the four-byte fetch lead. A crossing handoff gets no
+      // bubble: when pc_reg lands on the branch PC, IF must emit the branch
+      // itself.
       pending_prediction_target_holdoff_q <=
           pending_prediction_target_handoff_applies && !pending_prediction_allow_cross;
-    end
-  end
-
-  always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
-        i_pd_redirect || i_fence_i_flush) begin
-      pending_prediction_target_holdoff_prev_q <= 1'b0;
-    end else if (!fetch_stall) begin
-      pending_prediction_target_holdoff_prev_q <= pending_prediction_target_holdoff_q;
     end
   end
 
@@ -1043,7 +1019,7 @@ module pc_controller #(
     npc_cond[8] = i_prediction_used_for_pc;
     npc_cond[9] = o_pending_prediction_target_holdoff;
     npc_cond[10] = use_pending_prediction_for_pc_reg_pc_mux;
-    npc_cond[11] = halfword_target_lead_catchup || same_word_lower_parcel_catchup;
+    npc_cond[11] = same_word_lower_parcel_catchup;
     npc_cond[12] = hold_pending_prediction_fetch_pc_mux;
     npc_cond[13] = 1'b1;  // default arm: sequential
 
@@ -1268,10 +1244,7 @@ module pc_controller #(
   logic npc_catchup_request_without_slot1;
   assign npc_catchup_permission_without_nop_or_wcs =
       !(|npc_cond[4:1]) && !npc_cond[9] && !pending_prediction_effective &&
-      (o_fetch_lookup_is_lower_parcel ||
-       (pending_prediction_target_holdoff_prev_q &&
-        !pending_prediction_target_holdoff_q && i_is_compressed && o_pc_reg[1] &&
-        fetch_is_halfword_ahead));
+      o_fetch_lookup_is_lower_parcel;
   assign npc_catchup_request_without_slot1 = npc_catchup_permission_without_nop_or_wcs && !sel_nop;
   // Combine sequential consumption and default advance before catch-up and
   // raw-WCS overrides. Catch-up chooses +2 when both it and ordinary advance
@@ -2152,8 +2125,7 @@ module pc_controller #(
     else if (o_pending_prediction_target_holdoff)
       npc_ref = pending_prediction_fetch_at_target ? pending_prediction_target_next_word : o_pc;
     else if (use_pending_prediction_for_pc_reg_pc_mux) npc_ref = npc_consume_val;
-    else if (halfword_target_lead_catchup || same_word_lower_parcel_catchup)
-      npc_ref = seq_next_pc_plus_2;
+    else if (same_word_lower_parcel_catchup) npc_ref = seq_next_pc_plus_2;
     else if (pending_hold_fetch_pc_mux_ref)
       npc_ref = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
           pending_prediction_pc;
@@ -2469,10 +2441,6 @@ module pc_controller #(
 
 `ifdef FETCH_MUX_LOCAL_PROOF
   // Compare next_pc with a one-hot reduction and a serial priority chain.
-  always_comb begin
-    p_catchup_increment_equality :
-    assert (fetch_is_halfword_ahead == (o_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed)));
-  end
   logic [XLEN-1:0] fetch_mux_onehot_reference;
   logic [XLEN-1:0] fetch_ref;
   logic fetch_mux_original_pending_hold;
@@ -2495,10 +2463,10 @@ module pc_controller #(
     else if (i_slot2_prediction_used_for_pc) fetch_ref = i_slot2_predicted_target;
     else if (i_prediction_used_for_pc) fetch_ref = i_predicted_target;
     else if (o_pending_prediction_target_holdoff)
-      fetch_ref = pending_prediction_fetch_at_target ? pending_prediction_target_next_word : o_pc;
+      fetch_ref = pending_prediction_fetch_at_target ?
+          (pending_prediction_target + riscv_pkg::PcIncrement32bit) : o_pc;
     else if (use_pending_prediction_for_pc_reg_pc_mux) fetch_ref = npc_consume_val;
-    else if (halfword_target_lead_catchup || same_word_lower_parcel_catchup)
-      fetch_ref = seq_next_pc_plus_2;
+    else if (same_word_lower_parcel_catchup) fetch_ref = seq_next_pc_plus_2;
     else if (fetch_mux_original_pending_hold)
       fetch_ref = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
           pending_prediction_pc;
@@ -2509,6 +2477,25 @@ module pc_controller #(
     p_fetch_mux_matches_onehot_original : assert (next_pc == fetch_mux_onehot_reference);
     p_fetch_mux_matches_priority_original : assert (next_pc == fetch_ref);
     p_fetch_mux_preserves_onehot_winner : assert ($onehot(npc_sel));
+  end
+`endif
+
+`ifdef PC_HANDOFF_LEAD_PROOF
+  logic f_handoff_past_valid = 1'b0;
+  logic f_handoff_reset_q = 1'b1;
+  always_ff @(posedge i_clk) begin
+    f_handoff_past_valid <= 1'b1;
+    f_handoff_reset_q <= i_reset;
+    if (f_handoff_past_valid && !f_handoff_reset_q && !i_reset) begin
+      p_pending_allow_cross_copies_match :
+      assert (!pending_prediction_valid ||
+              (pending_prediction_allow_cross == pending_prediction_allow_cross_pc_mux_q));
+      p_target_holdoff_excludes_pending :
+      assert (!(pending_prediction_target_holdoff_q && pending_prediction_valid));
+      p_target_holdoff_holds_both_pcs_at_target :
+      assert (!pending_prediction_target_holdoff_q ||
+              ((o_pc == o_pc_reg) && (o_pc == pending_prediction_target)));
+    end
   end
 `endif
 

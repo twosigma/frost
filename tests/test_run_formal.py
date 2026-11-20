@@ -48,6 +48,7 @@ SBY_TASK_TIMEOUT_S = 2400
 # SBY files and separate CI jobs. Keep the runner's backstops in sync with
 # those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("imem_predecode_twin", "imem_predecode_live"): 60,
     ("coherence_dma_ingress", "coh_dma_ingress_soc_prove"): 3120,
     ("coherence_home_twin", "home_twin_small"): 600,
     ("coherence_home_twin", "home_twin_four"): 600,
@@ -760,7 +761,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "sq_next_same.sby",
-        "Store-queue same-sector claim matches the reference after launch and allocation",
+        "Store-queue sent bits and same-sector claim match the reference updates",
         tasks=("bmc", "bmc_cpu"),
     ),
     FormalTarget(
@@ -952,6 +953,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
+        "if_fault_ras_veto.sby",
+        "Fetch-faulted IF packets never carry a predicted-taken flag or operate "
+        "the return-address stack",
+        tasks=("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
         "mispredict_capture.sby",
         "Recovery payload, pulse copies, frontend flush and registered fetch flush "
         "match their references",
@@ -1061,6 +1068,11 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
+        "imem_predecode_twin.sby",
+        "IMEM fetch data and registered bank select match the frozen live cone",
+        tasks=("imem_predecode_live",),
+    ),
+    FormalTarget(
         "rvc_predecode.sby",
         "RV64C/Zcb/Zcmop expansion and source metadata match every parcel; MOPs permit pairing",
         tasks=("bmc",),
@@ -1127,9 +1139,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_hold_rows.sby",
-        "Vector range holds: a scalar entry is held exactly while an older live "
-        "vector memory table entry overlaps it or has an unknown range",
-        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "cover"),
+        "Vector range holds: an older live vector memory table entry holds an "
+        "atomic scalar entry or one with an unknown address, unknown vector range, "
+        "or overlap. A settled hold has such a cause in either queue",
+        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "vhold_lq_cover", "cover"),
     ),
     FormalTarget(
         "vec_vmt.sby",
@@ -1449,9 +1462,21 @@ FORMAL_TARGETS = [
         tasks=("bmc16", "bmc8", "bmc4", "prove"),
     ),
     FormalTarget(
+        "fp_forward_wake.sby",
+        "FP forward offers, ROB tag ownership and both station wakeup lanes in the wrapper",
+        tasks=(
+            "bmc",
+            "delivery_bmc",
+            "cover",
+            "fifo_prove",
+            "route_prove",
+            "route_cover",
+        ),
+    ),
+    FormalTarget(
         "rs_divide_gate.sby",
-        "The MUL station issues a divide only while the divider is idle",
-        tasks=("prove", "cover"),
+        "The MUL and FP stations gate engine issues while pipelined operations may pass",
+        tasks=("prove", "cover", "fp_gate_prove", "fp_gate_cover"),
     ),
     FormalTarget(
         "cdb_arbiter.sby",
@@ -1534,8 +1559,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "axi_coherent_bridge.sby",
-        "AXI4 safety: response ordering and conservation, burst bytes to line "
-        "requests and back, error bursts, and "
+        "AXI4 safety with arbitrary AXI offers and ingress replies at reset, response ordering and "
+        "conservation, burst bytes to line requests and back, error bursts, and "
         "the coherent ingress's request rules, unbounded on narrow and line-wide "
         "buses with up to eight bursts and eight line IDs per direction; "
         "a four-burst proof pair and nine explicit eight-burst partitions",
@@ -1565,8 +1590,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "axi_mux.sby",
-        "AXI4 rules on every port, W in AW-grant order, and B and R steered by port, "
-        "unbounded",
+        "AXI4 rules on every port, reset with active offers, W in AW-grant order, "
+        "and B and R steered by port, unbounded",
         tasks=("prove", "prove_soc", "prove_soc4", "cover"),
     ),
     FormalTarget(
@@ -2052,6 +2077,21 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
+        "nic_reset_split_equiv.sby",
+        "NIC reset split equivalence: core and MAC reset controllers match the monolithic FSM.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "nic_axis_boundary.sby",
+        "NIC AXI4-Stream beat-code bijection, abort code isolation and TX checksum side-FIFO framing.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "axi_register_slice.sby",
+        "AXI4 and AXI4-Lite five-channel register slices: hold rules, FIFO ordering, full rate and reset.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "rat_checkpoint_restore.sby",
         "Register alias table: unbounded circular ROB and sequence oracle across save, restore and commit.",
         tasks=(
@@ -2094,6 +2134,24 @@ SBY_TASKS = [
         "prove_indirect",
         "Unbounded pre-decode indirect target, eligibility and trap isolation.",
     ),
+    (
+        "delivery_bmc",
+        "Check delivery or recovery of a pipelined result through the registered CDB.",
+    ),
+    (
+        "route_cover",
+        "Reach a stalled FP result and its grant on each registered CDB lane.",
+    ),
+    (
+        "route_prove",
+        "The FP adapter retains a stalled FIFO head and a slot-6 grant registers its word.",
+    ),
+    (
+        "fifo_prove",
+        "A selected forward word stays in its physical FIFO slot until delivery or recovery.",
+    ),
+    ("fp_gate_prove", "FP station engine issue, opcode and busy interlock."),
+    ("fp_gate_cover", "FP pipeline bypass, engine release and squashed launch."),
     ("pm_mode_bmc", "Registered pointer-masking mode and legal PMM states, 20 frames."),
     ("link_zero_prove", "A link with no stages is wires."),
     ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
@@ -2930,7 +2988,10 @@ SBY_TASKS = [
         "coh_completions_partition2_prove",
         "Two kept prefetch slots sharing one place in the work rotation.",
     ),
-    ("coh_completions_cover", "Concurrent results and independent release."),
+    (
+        "coh_completions_cover",
+        "Concurrent results, independent release and a suppressed DMA read through release.",
+    ),
     (
         "coh_completions_partition_cover",
         "A full prefetch partition and a prefetch slot's G taken.",
@@ -3327,6 +3388,10 @@ SBY_TASKS = [
         "Vector range holds with the store queue's per-entry addresses, 8 frames.",
     ),
     (
+        "vhold_lq_cover",
+        "Vector range-hold reachability with the load queue's address-update port, 16 frames.",
+    ),
+    (
         "vmt_bmc",
         "Vector memory table lifecycle against a ghost reorder buffer, 14 frames.",
     ),
@@ -3583,6 +3648,10 @@ SBY_TASKS = [
         "Decoded bundle queue primitive form equals its portable form with the split shadow stall.",
     ),
     (
+        "imem_predecode_live",
+        "Fetch data, bank select and live IMEM state agree with the reference.",
+    ),
+    (
         "dmmu_twin",
         "Data MMU primitive form equals its portable form.",
     ),
@@ -3778,6 +3847,7 @@ SBY_TASK_MODE_OVERRIDES: dict[str, str] = {
     "csr_twin": "bmc",
     "csr_twin_vector": "bmc",
     "dbq_twin": "bmc",
+    "imem_predecode_live": "bmc",
     "dmmu_twin": "bmc",
     "endpoint32": "prove",
     "endpoint56": "prove",
@@ -4438,10 +4508,11 @@ def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
 #   opt_reduce (opt without -fast, prep): equal output bits of a multiplexer
 #     that drives a memory write enable, constant x included, become one bit,
 #     as do repeated constant-x select bits of a $bmux or $demux.
-#   proc_rom (proc unless -norom, prep): a case of constants becomes a ROM;
-#     after memory_collect (in prep) or memory_map -keepdc its x words, such as
-#     an x default, hold one value for the whole trace, not a free value in
-#     every cycle.
+#   proc_rom (proc unless -norom, prep): a case of constants becomes a ROM.
+#     After memory_collect (in prep) or memory_map -keepdc, each x word, such
+#     as an x default, holds one value for the whole trace. Yosys's global-clock
+#     memory_map -formal implies -keepdc. FROST scripts accept only the
+#     -keepdc form and pinned plain memory_map.
 #   proc_dlatch (proc, prep): in a latch's fan-in, all-x cases are dropped and
 #     an all-x default is replaced by a defined case; when it decides in which
 #     cases a latch holds, it reads multiplexer inputs through connections, so
@@ -4467,14 +4538,12 @@ for _form in SCRIPT_FORMS:
         DONT_CARE_REJECTED.setdefault(_form.command, []).append(
             (_form.id, _form.rejected_reason)
         )
-# Targets whose scripts run a command outside DONT_CARE_SAFE, each with a
-# one-line reason and, for each group of tasks, the commands outside the list
-# that each of those tasks runs, in the order it runs them. The checks fail
-# when a task runs such a command a further time, drops one, runs them in
-# another order, or moves one to another task, without the entry changing. A
-# pinned command moved only past listed commands keeps its pin, and so does
-# every pin when a listed command next to a pinned one is added, removed or
-# edited. ROADMAP.md's verification items describe the open work.
+# Each open entry gives a reason and the ordered list of rejected commands
+# for each task. The pin check catches additions, repetitions, removals,
+# reordering and moves between tasks that change these lists. Adding,
+# removing or editing commands in safe forms leaves the pins intact when the
+# rejected lists stay the same, as does moving a pinned command past safe
+# commands. ROADMAP.md's verification items describe the open work.
 DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "axi_cdc": (
         "not converted: memory_map and opt -full; no setundef",
@@ -4835,6 +4904,10 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         {
             "if_slot2_precompute_bmc if_slot2_precompute_cover": ["opt"],
         },
+    ),
+    "imem_predecode_twin": (
+        "equiv_simple runs after opening undefined constants in both IMEM forms",
+        {"imem_predecode_live": ["equiv_simple"]},
     ),
     "immu_bare": (
         "opt -purge prunes translation state outside the Bare outputs",
@@ -8013,7 +8086,9 @@ def test_store_home_cover_budgets() -> None:
                 "aigsmt": "boolector",
             }
             assert formal_task_timeout_s(target.name, task) == 900
-            engine = "abc bmc3 -c" if base.startswith("link_") else "abc bmc3"
+            engine = "abc bmc3"
+            if base == "link_bmc_siblings":
+                engine = "abc bmc3 -c"
             assert bounded["[engines]"] == [engine]
             script = bounded["[script]"]
             assert "abc" not in script

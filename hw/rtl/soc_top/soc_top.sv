@@ -48,7 +48,18 @@ module soc_top #(
     parameter int unsigned POWER_ON_RESET_ENABLE = 1,
     parameter int unsigned CLK_FREQ_HZ = 322265625,
     parameter int unsigned RAW_LOOPBACK = 1,
-    parameter int unsigned ENABLE_1G_ETH = 0
+    parameter int unsigned ENABLE_1G_ETH = 0,
+    // External AXI4 DMA slave ports into dma_interconnect, each behind an
+    // axi_register_slice; 0 omits them.
+    parameter int unsigned EXT_DMA_PORTS = 0,
+    parameter int unsigned EXT_DMA_ID_BITS = 3,
+    // 1 exports the primary NIC engine's core-clock AXI4-Stream and MAC
+    // sideband ports and omits the internal nic_mac_10g; 0 keeps it.
+    parameter int unsigned EXTERNAL_MAC = 0,
+    // 1 exposes a 16 KiB external AXI4-Lite master window at
+    // 0x4002_4000-0x4002_7FFF behind an axil_register_slice; 0 omits it.
+    parameter int unsigned EXT_AXIL_WINDOW = 0,
+    localparam int unsigned ExtDmaPortCount = (EXT_DMA_PORTS > 0) ? EXT_DMA_PORTS : 1
 ) (
     input logic i_clk,
     input logic i_cpu_clk = 1'b0,
@@ -161,119 +172,214 @@ module soc_top #(
     // presence levels, the raw PMA interface, the board's PHY lines and the
     // PCS block lock (synchronized to i_clk). The NIC lives with the cached
     // tier (its DMA port); without the tier its window reads zero.
-    input  logic                                                i_nic_tx_clk,
-    input  logic                                                i_nic_rx_clk,
-    input  logic                                                i_nic_tx_clk_ok,
-    input  logic                                                i_nic_rx_clk_ok,
-    output logic                  [                       63:0] o_nic_tx_raw_data,
-    output logic                                                o_nic_tx_raw_valid,
-    input  logic                  [                       63:0] i_nic_rx_raw_data,
-    input  logic                                                i_nic_rx_raw_valid,
-    input  logic                                                i_nic_rx_signal_ok,
-    input  logic                  [                        4:0] i_nic_phy_status,
-    output logic                  [                        3:1] o_nic_phy_ctrl,
-    output logic                                                o_nic_rx_block_lock,
+    input logic i_nic_tx_clk,
+    input logic i_nic_rx_clk,
+    input logic i_nic_tx_clk_ok,
+    input logic i_nic_rx_clk_ok,
+    output logic [63:0] o_nic_tx_raw_data,
+    output logic o_nic_tx_raw_valid,
+    input logic [63:0] i_nic_rx_raw_data,
+    input logic i_nic_rx_raw_valid,
+    input logic i_nic_rx_signal_ok,
+    input logic [4:0] i_nic_phy_status,
+    output logic [3:1] o_nic_phy_ctrl,
+    output logic o_nic_rx_block_lock,
     // Optional 1G GMII NIC (ENABLE_1G_ETH=1, VCU118 only).
-    input  logic                                                i_nic_1g_tx_clk = 1'b0,
-    input  logic                                                i_nic_1g_rx_clk = 1'b0,
-    input  logic                                                i_nic_1g_tx_clk_ok = 1'b1,
-    input  logic                                                i_nic_1g_rx_clk_ok = 1'b1,
-    output logic                  [                       63:0] o_nic_1g_tx_raw_data,
-    output logic                                                o_nic_1g_tx_raw_valid,
-    input  logic                  [                       63:0] i_nic_1g_rx_raw_data = '0,
-    input  logic                                                i_nic_1g_rx_raw_valid = 1'b0,
-    input  logic                                                i_nic_1g_rx_signal_ok = 1'b0,
-    input  logic                  [                        4:0] i_nic_1g_phy_status = 5'b01111,
-    input  logic                  [                       32:0] i_nic_1g_phy_diag = '0,
-    output logic                                                o_nic_1g_phy_diag_ack,
-    output logic                  [                        3:1] o_nic_1g_phy_ctrl,
-    output logic                                                o_nic_1g_rx_block_lock,
+    input logic i_nic_1g_tx_clk = 1'b0,
+    input logic i_nic_1g_rx_clk = 1'b0,
+    input logic i_nic_1g_tx_clk_ok = 1'b1,
+    input logic i_nic_1g_rx_clk_ok = 1'b1,
+    output logic [63:0] o_nic_1g_tx_raw_data,
+    output logic o_nic_1g_tx_raw_valid,
+    input logic [63:0] i_nic_1g_rx_raw_data = '0,
+    input logic i_nic_1g_rx_raw_valid = 1'b0,
+    input logic i_nic_1g_rx_signal_ok = 1'b0,
+    input logic [4:0] i_nic_1g_phy_status = 5'b01111,
+    input logic [32:0] i_nic_1g_phy_diag = '0,
+    output logic o_nic_1g_phy_diag_ack,
+    output logic [3:1] o_nic_1g_phy_ctrl,
+    output logic o_nic_1g_rx_block_lock,
     // Optional VCU118 SPI flash & boot status (ENABLE_1G_ETH=1).
-    output logic                                                o_spi_cs_n,
-    output logic                                                o_spi_sck,
-    output logic                                                o_spi_mosi,
-    input  logic                                                i_spi_miso = 1'b0,
-    input  logic                  [                        1:0] i_ddr_status = 2'b11,
-    output logic                                                o_cpu_rst,
-    output logic                                                o_cpu_axi_rst,
-    output riscv_pkg::interrupt_t                               o_cpu_interrupts,
-    output logic                  [              NUM_HARTS-1:0] o_cpu_msi_valid,
-    output logic                  [              NUM_HARTS-1:0] o_cpu_msi_level,
-    output logic                  [                       10:0] o_cpu_msi_id,
-    output logic                                                o_cpu_seip,
-    output logic                  [                       63:0] o_cpu_mtime,
-    output logic                                                o_imem_sync_done,
-    output logic                                                o_dbg_haltreq,
-    output logic                                                o_dbg_go,
-    output logic                  [                       31:0] o_dbg_go_addr,
-    output logic                  [                       63:0] o_dbg_data,
-    input  logic                                                i_dbg_data_we,
-    input  logic                  [                       63:0] i_dbg_data_wdata,
-    input  logic                                                i_debug_mode,
-    input  logic                                                i_dbg_parked,
-    input  logic                                                i_dbg_cmd_err,
-    input  logic                                                i_dbg_go_taken,
-    input  logic                                                i_commit_valid,
-    input  logic                  [                        5:0] i_debug_irq_status,
-    input  logic                  [                       63:0] i_debug_commit_pc,
-    input  logic                  [                       63:0] i_debug_commit_2_pc,
-    input  logic                  [                        1:0] i_debug_commit_valid,
-    output logic                                                o_coherent_req_valid,
-    input  logic                                                i_coherent_req_ready,
-    output logic                                                o_coherent_req_write,
-    output logic                  [riscv_pkg::PhysAddrBits-1:0] o_coherent_req_addr,
-    output logic                  [                      255:0] o_coherent_req_wdata,
-    output logic                  [                       31:0] o_coherent_req_wstrb,
-    output logic                  [                        3:0] o_coherent_req_id,
-    output logic                                                o_coherent_req_non_alloc,
-    input  logic                                                i_coherent_resp_valid,
-    input  logic                  [                        3:0] i_coherent_resp_id,
-    input  logic                  [                      255:0] i_coherent_resp_rdata,
-    input  logic                                                i_coherent_resp_error,
-    input  logic                                                i_axi_awvalid,
-    output logic                                                o_axi_awready,
-    input  logic                  [            AXI_ID_BITS-1:0] i_axi_awid,
-    input  logic                  [riscv_pkg::PhysAddrBits-1:0] i_axi_awaddr,
-    input  logic                  [                        7:0] i_axi_awlen,
-    input  logic                  [                        2:0] i_axi_awsize,
-    input  logic                  [                        1:0] i_axi_awburst,
-    input  logic                                                i_axi_awlock,
-    input  logic                  [                        3:0] i_axi_awcache,
-    input  logic                  [                        2:0] i_axi_awprot,
-    input  logic                  [                        3:0] i_axi_awqos,
-    input  logic                  [                        3:0] i_axi_awregion,
-    input  logic                  [          AXI_USER_BITS-1:0] i_axi_awuser,
-    input  logic                                                i_axi_wvalid,
-    output logic                                                o_axi_wready,
-    input  logic                  [        L2_LINE_BYTES*8-1:0] i_axi_wdata,
-    input  logic                  [          L2_LINE_BYTES-1:0] i_axi_wstrb,
-    input  logic                                                i_axi_wlast,
-    input  logic                  [          AXI_USER_BITS-1:0] i_axi_wuser,
-    output logic                                                o_axi_bvalid,
-    input  logic                                                i_axi_bready,
-    output logic                  [            AXI_ID_BITS-1:0] o_axi_bid,
-    output logic                  [                        1:0] o_axi_bresp,
-    output logic                  [          AXI_USER_BITS-1:0] o_axi_buser,
-    input  logic                                                i_axi_arvalid,
-    output logic                                                o_axi_arready,
-    input  logic                  [            AXI_ID_BITS-1:0] i_axi_arid,
-    input  logic                  [riscv_pkg::PhysAddrBits-1:0] i_axi_araddr,
-    input  logic                  [                        7:0] i_axi_arlen,
-    input  logic                  [                        2:0] i_axi_arsize,
-    input  logic                  [                        1:0] i_axi_arburst,
-    input  logic                                                i_axi_arlock,
-    input  logic                  [                        3:0] i_axi_arcache,
-    input  logic                  [                        2:0] i_axi_arprot,
-    input  logic                  [                        3:0] i_axi_arqos,
-    input  logic                  [                        3:0] i_axi_arregion,
-    input  logic                  [          AXI_USER_BITS-1:0] i_axi_aruser,
-    output logic                                                o_axi_rvalid,
-    input  logic                                                i_axi_rready,
-    output logic                  [            AXI_ID_BITS-1:0] o_axi_rid,
-    output logic                  [        L2_LINE_BYTES*8-1:0] o_axi_rdata,
-    output logic                  [                        1:0] o_axi_rresp,
-    output logic                                                o_axi_rlast,
-    output logic                  [          AXI_USER_BITS-1:0] o_axi_ruser
+    output logic o_spi_cs_n,
+    output logic o_spi_sck,
+    output logic o_spi_mosi,
+    input logic i_spi_miso = 1'b0,
+    input logic [1:0] i_ddr_status = 2'b11,
+    // Core-domain synchronous active-high reset for external board blocks
+    // sharing i_clk.
+    output logic o_soc_rst,
+    // Optional external AXI4 DMA slave ports (EXT_DMA_PORTS > 0). Flat
+    // per-port vectors: port p occupies [p*W +: W]. Each port enters
+    // dma_interconnect through an axi_register_slice on i_clk / o_soc_rst.
+    input logic [ExtDmaPortCount-1:0] i_ext_dma_awvalid = '0,
+    output logic [ExtDmaPortCount-1:0] o_ext_dma_awready,
+    input logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] i_ext_dma_awid = '0,
+    input logic [ExtDmaPortCount*64-1:0] i_ext_dma_awaddr = '0,
+    input logic [ExtDmaPortCount*8-1:0] i_ext_dma_awlen = '0,
+    input logic [ExtDmaPortCount*3-1:0] i_ext_dma_awsize = '0,
+    input logic [ExtDmaPortCount*2-1:0] i_ext_dma_awburst = '0,
+    input logic [ExtDmaPortCount-1:0] i_ext_dma_awlock = '0,
+    input logic [ExtDmaPortCount*4-1:0] i_ext_dma_awcache = '0,
+    input logic [ExtDmaPortCount*3-1:0] i_ext_dma_awprot = '0,
+    input logic [ExtDmaPortCount*4-1:0] i_ext_dma_awqos = '0,
+    input logic [ExtDmaPortCount-1:0] i_ext_dma_wvalid = '0,
+    output logic [ExtDmaPortCount-1:0] o_ext_dma_wready,
+    input logic [ExtDmaPortCount*256-1:0] i_ext_dma_wdata = '0,
+    input logic [ExtDmaPortCount*32-1:0] i_ext_dma_wstrb = '0,
+    input logic [ExtDmaPortCount-1:0] i_ext_dma_wlast = '0,
+    output logic [ExtDmaPortCount-1:0] o_ext_dma_bvalid,
+    input logic [ExtDmaPortCount-1:0] i_ext_dma_bready = '0,
+    output logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] o_ext_dma_bid,
+    output logic [ExtDmaPortCount*2-1:0] o_ext_dma_bresp,
+    input logic [ExtDmaPortCount-1:0] i_ext_dma_arvalid = '0,
+    output logic [ExtDmaPortCount-1:0] o_ext_dma_arready,
+    input logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] i_ext_dma_arid = '0,
+    input logic [ExtDmaPortCount*64-1:0] i_ext_dma_araddr = '0,
+    input logic [ExtDmaPortCount*8-1:0] i_ext_dma_arlen = '0,
+    input logic [ExtDmaPortCount*3-1:0] i_ext_dma_arsize = '0,
+    input logic [ExtDmaPortCount*2-1:0] i_ext_dma_arburst = '0,
+    input logic [ExtDmaPortCount-1:0] i_ext_dma_arlock = '0,
+    input logic [ExtDmaPortCount*4-1:0] i_ext_dma_arcache = '0,
+    input logic [ExtDmaPortCount*3-1:0] i_ext_dma_arprot = '0,
+    input logic [ExtDmaPortCount*4-1:0] i_ext_dma_arqos = '0,
+    output logic [ExtDmaPortCount-1:0] o_ext_dma_rvalid,
+    input logic [ExtDmaPortCount-1:0] i_ext_dma_rready = '0,
+    output logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] o_ext_dma_rid,
+    output logic [ExtDmaPortCount*256-1:0] o_ext_dma_rdata,
+    output logic [ExtDmaPortCount*2-1:0] o_ext_dma_rresp,
+    output logic [ExtDmaPortCount-1:0] o_ext_dma_rlast,
+    // Optional external MAC boundary (EXTERNAL_MAC != 0): core-clock 64-bit
+    // AXI4-Stream TX/RX and MAC sideband ports directly from nic_engine.
+    output logic o_ext_mac_tx_tvalid,
+    input logic i_ext_mac_tx_tready = 1'b0,
+    output logic [63:0] o_ext_mac_tx_tdata,
+    output logic [7:0] o_ext_mac_tx_tkeep,
+    output logic o_ext_mac_tx_tlast,
+    output logic o_ext_mac_tx_tuser,
+    output logic [14:0] o_ext_mac_tx_csum,
+    input logic i_ext_mac_rx_tvalid = 1'b0,
+    output logic o_ext_mac_rx_tready,
+    input logic [63:0] i_ext_mac_rx_tdata = '0,
+    input logic [7:0] i_ext_mac_rx_tkeep = '0,
+    input logic i_ext_mac_rx_tlast = 1'b0,
+    output logic o_ext_mac_rst,
+    output logic o_ext_mac_soft_rst,
+    output logic o_ext_mac_restart,
+    input logic [1:0] i_ext_mac_ready = '0,
+    input logic [7:0] i_ext_mac_link = '0,
+    input logic i_ext_mac_raw_loopback_en = 1'b0,
+    output logic o_ext_mac_loopback,
+    output logic [47:0] o_ext_mac_station_addr,
+    output logic [1:0] o_ext_mac_pause_ctrl,
+    output logic [13:0] o_ext_mac_pause_high_water,
+    output logic [13:0] o_ext_mac_pause_low_water,
+    output logic [15:0] o_ext_mac_pause_interval,
+    output logic [13:0] o_ext_mac_rx_fifo_limit,
+    output logic o_ext_mac_rx_fifo_limit_wr,
+    input logic i_ext_mac_rx_fifo_limit_busy = 1'b0,
+    output logic o_ext_mac_rx_desc_starved,
+    input logic [21*64-1:0] i_ext_mac_totals = '0,
+    // Optional external AXI4-Lite master window at 0x4002_4000-0x4002_7FFF
+    // (16 KiB, EXT_AXIL_WINDOW != 0), behind an axil_register_slice.
+    output logic o_ext_axil_awvalid,
+    input logic i_ext_axil_awready = 1'b0,
+    output logic [13:0] o_ext_axil_awaddr,
+    output logic [2:0] o_ext_axil_awprot,
+    output logic o_ext_axil_wvalid,
+    input logic i_ext_axil_wready = 1'b0,
+    output logic [63:0] o_ext_axil_wdata,
+    output logic [7:0] o_ext_axil_wstrb,
+    input logic i_ext_axil_bvalid = 1'b0,
+    output logic o_ext_axil_bready,
+    input logic [1:0] i_ext_axil_bresp = '0,
+    output logic o_ext_axil_arvalid,
+    input logic i_ext_axil_arready = 1'b0,
+    output logic [13:0] o_ext_axil_araddr,
+    output logic [2:0] o_ext_axil_arprot,
+    input logic i_ext_axil_rvalid = 1'b0,
+    output logic o_ext_axil_rready,
+    input logic [63:0] i_ext_axil_rdata = '0,
+    input logic [1:0] i_ext_axil_rresp = '0,
+    output logic o_cpu_rst,
+    output logic o_cpu_axi_rst,
+    output riscv_pkg::interrupt_t o_cpu_interrupts,
+    output logic [NUM_HARTS-1:0] o_cpu_msi_valid,
+    output logic [NUM_HARTS-1:0] o_cpu_msi_level,
+    output logic [10:0] o_cpu_msi_id,
+    output logic o_cpu_seip,
+    output logic [63:0] o_cpu_mtime,
+    output logic o_imem_sync_done,
+    output logic o_dbg_haltreq,
+    output logic o_dbg_go,
+    output logic [31:0] o_dbg_go_addr,
+    output logic [63:0] o_dbg_data,
+    input logic i_dbg_data_we,
+    input logic [63:0] i_dbg_data_wdata,
+    input logic i_debug_mode,
+    input logic i_dbg_parked,
+    input logic i_dbg_cmd_err,
+    input logic i_dbg_go_taken,
+    input logic i_commit_valid,
+    input logic [5:0] i_debug_irq_status,
+    input logic [63:0] i_debug_commit_pc,
+    input logic [63:0] i_debug_commit_2_pc,
+    input logic [1:0] i_debug_commit_valid,
+    output logic o_coherent_req_valid,
+    input logic i_coherent_req_ready,
+    output logic o_coherent_req_write,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_coherent_req_addr,
+    output logic [255:0] o_coherent_req_wdata,
+    output logic [31:0] o_coherent_req_wstrb,
+    output logic [3:0] o_coherent_req_id,
+    output logic o_coherent_req_non_alloc,
+    input logic i_coherent_resp_valid,
+    input logic [3:0] i_coherent_resp_id,
+    input logic [255:0] i_coherent_resp_rdata,
+    input logic i_coherent_resp_error,
+    input logic i_axi_awvalid,
+    output logic o_axi_awready,
+    input logic [AXI_ID_BITS-1:0] i_axi_awid,
+    input logic [riscv_pkg::PhysAddrBits-1:0] i_axi_awaddr,
+    input logic [7:0] i_axi_awlen,
+    input logic [2:0] i_axi_awsize,
+    input logic [1:0] i_axi_awburst,
+    input logic i_axi_awlock,
+    input logic [3:0] i_axi_awcache,
+    input logic [2:0] i_axi_awprot,
+    input logic [3:0] i_axi_awqos,
+    input logic [3:0] i_axi_awregion,
+    input logic [AXI_USER_BITS-1:0] i_axi_awuser,
+    input logic i_axi_wvalid,
+    output logic o_axi_wready,
+    input logic [L2_LINE_BYTES*8-1:0] i_axi_wdata,
+    input logic [L2_LINE_BYTES-1:0] i_axi_wstrb,
+    input logic i_axi_wlast,
+    input logic [AXI_USER_BITS-1:0] i_axi_wuser,
+    output logic o_axi_bvalid,
+    input logic i_axi_bready,
+    output logic [AXI_ID_BITS-1:0] o_axi_bid,
+    output logic [1:0] o_axi_bresp,
+    output logic [AXI_USER_BITS-1:0] o_axi_buser,
+    input logic i_axi_arvalid,
+    output logic o_axi_arready,
+    input logic [AXI_ID_BITS-1:0] i_axi_arid,
+    input logic [riscv_pkg::PhysAddrBits-1:0] i_axi_araddr,
+    input logic [7:0] i_axi_arlen,
+    input logic [2:0] i_axi_arsize,
+    input logic [1:0] i_axi_arburst,
+    input logic i_axi_arlock,
+    input logic [3:0] i_axi_arcache,
+    input logic [2:0] i_axi_arprot,
+    input logic [3:0] i_axi_arqos,
+    input logic [3:0] i_axi_arregion,
+    input logic [AXI_USER_BITS-1:0] i_axi_aruser,
+    output logic o_axi_rvalid,
+    input logic i_axi_rready,
+    output logic [AXI_ID_BITS-1:0] o_axi_rid,
+    output logic [L2_LINE_BYTES*8-1:0] o_axi_rdata,
+    output logic [1:0] o_axi_rresp,
+    output logic o_axi_rlast,
+    output logic [AXI_USER_BITS-1:0] o_axi_ruser
 );
   logic local_fire, local_ok, local_bram, local_device, local_instruction;
   // Registered core reset combines external reset, ndmreset and SYSRESET.
@@ -327,6 +433,7 @@ module soc_top #(
   // Limit reset fanout per replica.
   (* max_fanout = 256 *) logic rst_core;
   always_ff @(posedge i_clk) rst_core <= rst_core_next;
+  assign o_soc_rst = rst_core;
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
@@ -422,6 +529,9 @@ module soc_top #(
   // (memory_error_unit.sv): counts of DDR ECC errors and of the DDR bridge's
   // AXI error responses; its interrupt is APLIC source 5.
   localparam int unsigned MemErrBase = 32'h4002_1000;
+  // Optional external AXI4-Lite device window @ 0x4002_4000-0x4002_7FFF
+  // (16 KiB, active when EXT_AXIL_WINDOW != 0).
+  localparam int unsigned ExtAxilBase = 32'h4002_4000;
 
   // mtimecmp resets to all-ones so no timer interrupt fires until software
   // programs it.
@@ -472,6 +582,12 @@ module soc_top #(
         (riscv_pkg::AplicLastPage + 20'd1 >= riscv_pkg::ImsicFirstPage) ||
         (riscv_pkg::MmioLastPage + 20'd1 >= riscv_pkg::ImsicFirstPage))
       $fatal(1, "soc_top: IMSIC pages break the device-window layout");
+    if (EXT_DMA_PORTS > 0 && ENABLE_CACHED_TIER == 0)
+      $fatal(1, "soc_top: EXT_DMA_PORTS requires ENABLE_CACHED_TIER != 0");
+    if (EXT_DMA_PORTS > 0 && EXT_DMA_ID_BITS == 0)
+      $fatal(1, "soc_top: EXT_DMA_ID_BITS must be nonzero");
+    if (EXTERNAL_MAC != 0 && ENABLE_CACHED_TIER == 0)
+      $fatal(1, "soc_top: EXTERNAL_MAC requires ENABLE_CACHED_TIER != 0");
   end
 
   // Peripheral-local views of the single accepted AXI access and passive
@@ -558,14 +674,17 @@ module soc_top #(
       ((data_memory_byte_write_enable_registered == 8'h0F) ||
        (data_memory_byte_write_enable_registered == 8'hF0));
   logic [63:0] aplic_rd_pair;
-  localparam int unsigned AxilPorts = (ENABLE_1G_ETH != 0) ? 3 : 2;
+  localparam int unsigned BaseAxilPorts = (ENABLE_1G_ETH != 0) ? 3 : 2;
+  localparam int unsigned ExtAxilPort = BaseAxilPorts;
+  localparam int unsigned AxilPorts = BaseAxilPorts + ((EXT_AXIL_WINDOW != 0) ? 1 : 0);
+  localparam int unsigned RegAxilAddrBits = (EXT_AXIL_WINDOW != 0) ? 14 : 12;
   logic dma_engine_irq, nic_irq, nic_1g_irq;
   logic [AxilPorts-1:0] reg_axil_awvalid, reg_axil_awready, reg_axil_wvalid, reg_axil_wready;
   logic [AxilPorts-1:0] reg_axil_bvalid, reg_axil_bready, reg_axil_arvalid, reg_axil_arready;
   logic [AxilPorts-1:0] reg_axil_rvalid, reg_axil_rready;
-  logic [AxilPorts-1:0][1:0] reg_axil_bresp, reg_axil_rresp;
-  logic [AxilPorts-1:0][63:0] reg_axil_rdata;
-  logic [11:0] reg_axil_addr_q;
+  logic [AxilPorts*2-1:0] reg_axil_bresp, reg_axil_rresp;
+  logic [AxilPorts*64-1:0] reg_axil_rdata;
+  logic [RegAxilAddrBits-1:0] reg_axil_addr_q;
   logic [2:0] reg_axil_prot_q;
   logic [63:0] reg_axil_wdata_q;
   logic [7:0] reg_axil_wstrb_q;
@@ -790,10 +909,9 @@ module soc_top #(
   if (ASYNC_CPU_CLOCK) begin : gen_soc_cpu_reset_async
     assign soc_cpu_rst = rst_core || soc_axi_rst;
   end else begin : gen_soc_cpu_reset_common
-    wire reset_request = rst_core || soc_axi_rst;
-    always_ff @(posedge i_clk or posedge reset_request)
-      if (reset_request) soc_cpu_rst <= 1'b1;
-      else soc_cpu_rst <= 1'b0;
+    // Assert with the DMA bridge and keep the ingress in reset for the
+    // following edge, even when the core request lasts only one cycle.
+    always_ff @(posedge i_clk) soc_cpu_rst <= rst_core_next || rst_core || soc_axi_rst;
   end
   if (ASYNC_CPU_CLOCK) begin : gen_cpu_controls
     cdc_sync #(
@@ -1165,11 +1283,12 @@ module soc_top #(
       (i_instr_mem_en ? (|i_instr_mem_we) : slice_imem_we);
   assign prog_port_dmem_we = i_instr_mem_en ? i_instr_mem_we : {4{slice_dmem_we}};
 
-  // Instruction memory: code-region words with write-time predecode bits.
+  // Instruction memory: code-region words for the local AXI responder.
   // Fetches above this region carry an access fault, so aliased data cannot
   // execute. Port A programs on div4; port B fetches on the main clock.
   imem_predecode #(
       .ADDR_WIDTH(ImemWordAddrWidth),
+      .ENABLE_FETCH_METADATA(1'b0),
       .USE_INIT_FILE(1'b1),
       .INIT_FILE("sw.mem"),
       .INIT_ADDR_WIDTH(MemWordAddrWidth)
@@ -1183,8 +1302,8 @@ module soc_top #(
       .i_port_a_write_data(prog_port_data),
       .i_port_a_write_enable(prog_port_imem_we),
       .o_port_a_read_data(  /* unused - write only */),
-      // Port B: Instruction fetch (main clock, read only), at the request's
-      // physical word pair (derived directly from the VA in Bare mode).
+      // Port B: Instruction fetch (main clock, read only), at the local
+      // request's physical word pair.
       .i_port_b_clk(i_clk),
       .i_port_b_enable(1'b1),
       .i_port_b_byte_address(fetch_pa_word0),
@@ -1316,8 +1435,8 @@ module soc_top #(
   assign data_memory_read_enable = local_fire && !local_write && local_ok && !local_instruction &&
       !local_alias;
   // Instruction reads always use the registered local request. The fast
-  // acceptance path serves data only; its arbitration must not retarget the
-  // instruction RAM and its legacy metadata banks on unused read cycles.
+  // acceptance path serves data only; its arbitration leaves the
+  // instruction RAM address to the registered instruction request.
   // Once the first dword is in the synchronous RAM output, request its
   // successor while capturing the current one. A line then delivers one
   // dword per clock; only the final response waits for optional fetch fuzz.
@@ -1403,7 +1522,7 @@ module soc_top #(
       end else if (reg_axil_done) begin
         local_state_q <= 1;
         local_resp_status <= rst_core ? 2'b00 : local_write ?
-            reg_axil_bresp[reg_axil_port_q] : reg_axil_rresp[reg_axil_port_q];
+            reg_axil_bresp[reg_axil_port_q*2+:2] : reg_axil_rresp[reg_axil_port_q*2+:2];
       end else if (local_state_q == 1 && debug_store_done) begin
         local_state_q <= fast_bram_q ? 3 : 2;
         if (fast_bram_q) local_resp_valid <= 1'b1;
@@ -1435,19 +1554,24 @@ module soc_top #(
     end
   end
   // Port 0 is the NIC; port 1 is the DMA test engine; port 2 (when
-  // ENABLE_1G_ETH != 0) is the 1G SGMII NIC. Only their windows enter state 5.
-  // Request payloads and each channel VALID hold until the corresponding
-  // handshake, and completion waits for B or R.
+  // ENABLE_1G_ETH != 0) is the 1G SGMII NIC; ExtAxilPort (when
+  // EXT_AXIL_WINDOW != 0) is the external 16 KiB window at 0x4002_4000.
+  // Only their windows enter state 5. Request payloads and each channel VALID
+  // hold until the corresponding handshake, and completion waits for B or R.
   // The register slaves take rst_core and this state soc_axi_rst, so each side
   // answers for the other's reset.
-  assign local_axil = ENABLE_CACHED_TIER != 0 && !rst_core && local_ok &&
-      local_device && !local_instruction &&
+  wire local_axil_cached = (ENABLE_CACHED_TIER != 0) &&
       ((local_addr[31:12] == NicBase[31:12]) ||
        (local_addr[31:8] == DmaEngineBase[31:8]) ||
        ((ENABLE_1G_ETH != 0) && (local_addr[31:12] == Nic1gBase[31:12])));
+  wire local_axil_ext = (EXT_AXIL_WINDOW != 0) && (local_addr[31:14] == ExtAxilBase[31:14]);
+  assign local_axil = !rst_core && local_ok && local_device && !local_instruction &&
+      (local_axil_cached || local_axil_ext);
   wire [$clog2(
 AxilPorts
-)-1:0] local_axil_port = (local_addr[31:12] == NicBase[31:12]) ?
+)-1:0] local_axil_port = local_axil_ext ? $clog2(
+      AxilPorts
+  )'(ExtAxilPort) : (local_addr[31:12] == NicBase[31:12]) ?
       '0 : ((ENABLE_1G_ETH != 0) && (local_addr[31:12] == Nic1gBase[31:12])) ? $clog2(
       AxilPorts
   )'(2) : $clog2(
@@ -1473,7 +1597,7 @@ AxilPorts
       reg_axil_wvalid  <= reg_axil_wvalid & ~reg_axil_wready;
       reg_axil_arvalid <= reg_axil_arvalid & ~reg_axil_arready;
       if (local_fire && local_axil) begin
-        reg_axil_addr_q  <= local_addr[11:0];
+        reg_axil_addr_q  <= local_addr[RegAxilAddrBits-1:0];
         reg_axil_prot_q  <= local_prot;
         reg_axil_wdata_q <= data_memory_write_data;
         reg_axil_wstrb_q <= local_wstrb;
@@ -1496,14 +1620,18 @@ AxilPorts
     // zero-extended at the ingress. The bridge uses the CPU clock
     // when ASYNC_CPU_CLOCK is set. Paired resets cover both DMA domains.
     // The common-clock profile resets all four blocks with rst_core.
-    // The last port carries the hart's Svpbmt NC and IO accesses to DDR.
-    localparam int unsigned DmaPorts = (ENABLE_1G_ETH != 0) ? 4 : 3;
-    localparam int unsigned AliasPort = DmaPorts - 1;
+    // AliasPort carries the hart's Svpbmt NC and IO accesses to DDR; any
+    // external DMA ports follow it, each behind an axi_register_slice.
+    localparam int unsigned BaseDmaPorts = (ENABLE_1G_ETH != 0) ? 4 : 3;
+    localparam int unsigned AliasPort = BaseDmaPorts - 1;
+    localparam int unsigned DmaPorts = BaseDmaPorts + EXT_DMA_PORTS;
     localparam int unsigned DmaAxiAddrBits = 64;
     localparam int unsigned DmaAxiDataBits = 8 * L1LineBytes;
     localparam int unsigned DmaStrbBits = DmaAxiDataBits / 8;
-    // The NIC's ids, 3 bits; the engine's 2-bit ids are zero-extended.
-    localparam int unsigned DmaUpIdBits = 3;
+    // The NIC's ids are 3 bits; the engine's 2-bit ids are zero-extended.
+    // Widen if external DMA ports carry wider IDs.
+    localparam int unsigned DmaUpIdBits =
+        (EXT_DMA_PORTS > 0 && EXT_DMA_ID_BITS > 3) ? EXT_DMA_ID_BITS : 3;
     localparam int unsigned DmaDownIdBits = DmaUpIdBits + $clog2(DmaPorts);
     // Eight read and eight write line IDs, the coherent line ID's full width.
     localparam int unsigned DmaLineIdBits = 4;
@@ -1536,19 +1664,42 @@ AxilPorts
     logic [DmaAxiDataBits-1:0] dn_wdata, dn_rdata;
     logic [DmaAxiDataBits/8-1:0] dn_wstrb;
 
-    nic_top #(
+    localparam int unsigned NicLimitBits = $clog2(NicRxFifoDepth) + 1;
+    // Matches nic_pkg::NumMacTotals * 64 (kept flat for Yosys read_verilog).
+    localparam int unsigned NicMacTotalsBits = 21 * 64;
+
+    logic nic_mac_tx_tvalid, nic_mac_tx_tready, nic_mac_tx_tlast, nic_mac_tx_tuser;
+    logic [63:0] nic_mac_tx_tdata;
+    logic [ 7:0] nic_mac_tx_tkeep;
+    logic [14:0] nic_mac_tx_csum;
+    logic nic_mac_rx_tvalid, nic_mac_rx_tready, nic_mac_rx_tlast;
+    logic [63:0] nic_mac_rx_tdata;
+    logic [ 7:0] nic_mac_rx_tkeep;
+    logic nic_mac_rst, nic_mac_soft_rst, nic_mac_restart;
+    logic [1:0] nic_mac_ready;
+    logic [7:0] nic_mac_link;
+    logic nic_mac_raw_loopback_en, nic_mac_loopback;
+    logic [47:0] nic_mac_station_addr;
+    logic [ 1:0] nic_mac_pause_ctrl;
+    logic [NicLimitBits-1:0] nic_mac_pause_high_water, nic_mac_pause_low_water;
+    logic [15:0] nic_mac_pause_interval;
+    logic [NicLimitBits-1:0] nic_mac_rx_fifo_limit;
+    logic nic_mac_rx_fifo_limit_wr, nic_mac_rx_fifo_limit_busy;
+    logic nic_mac_rx_desc_starved;
+    logic [NicMacTotalsBits-1:0] nic_mac_totals;
+
+    nic_engine #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .LINE_BYTES(L1LineBytes),
         .APERTURE_BASE(64'(CACHED_BASE)),
         .APERTURE_BYTES(CACHED_SIZE_BYTES),
         .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
         .RX_FIFO_DEPTH(NicRxFifoDepth),
-        .RAW_LOOPBACK(RAW_LOOPBACK),
         .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
         .DMA_AXI_ID_BITS(DmaUpIdBits)
     ) nic (
         .i_clk(i_clk),
-        .i_rst(rst_core_next),  // registered inside nic_top; see its header
+        .i_rst(rst_core_next),  // registered inside nic_engine; see its header
         .i_reg_axil_awvalid(reg_axil_awvalid[0]),
         .o_reg_axil_awready(reg_axil_awready[0]),
         .i_reg_axil_awaddr(reg_axil_addr_q[11:0]),
@@ -1559,15 +1710,15 @@ AxilPorts
         .i_reg_axil_wstrb(reg_axil_wstrb_q),
         .o_reg_axil_bvalid(reg_axil_bvalid[0]),
         .i_reg_axil_bready(reg_axil_bready[0]),
-        .o_reg_axil_bresp(reg_axil_bresp[0]),
+        .o_reg_axil_bresp(reg_axil_bresp[0*2+:2]),
         .i_reg_axil_arvalid(reg_axil_arvalid[0]),
         .o_reg_axil_arready(reg_axil_arready[0]),
         .i_reg_axil_araddr(reg_axil_addr_q[11:0]),
         .i_reg_axil_arprot(reg_axil_prot_q),
         .o_reg_axil_rvalid(reg_axil_rvalid[0]),
         .i_reg_axil_rready(reg_axil_rready[0]),
-        .o_reg_axil_rdata(reg_axil_rdata[0]),
-        .o_reg_axil_rresp(reg_axil_rresp[0]),
+        .o_reg_axil_rdata(reg_axil_rdata[0*64+:64]),
+        .o_reg_axil_rresp(reg_axil_rresp[0*2+:2]),
         .o_irq(nic_irq),
         .o_dma_axi_awvalid(up_awvalid[0]),
         .o_dma_axi_awid(up_awid[0*DmaUpIdBits+:DmaUpIdBits]),
@@ -1606,21 +1757,140 @@ AxilPorts
         .i_dma_axi_rdata(up_rdata[0*DmaAxiDataBits+:DmaAxiDataBits]),
         .i_dma_axi_rresp(up_rresp[0*2+:2]),
         .i_dma_axi_rlast(up_rlast[0]),
-        .i_tx_clk(i_nic_tx_clk),
-        .i_rx_clk(i_nic_rx_clk),
-        .i_tx_clk_ok(i_nic_tx_clk_ok),
-        .i_rx_clk_ok(i_nic_rx_clk_ok),
-        .o_tx_raw_data(o_nic_tx_raw_data),
-        .o_tx_raw_valid(o_nic_tx_raw_valid),
-        .i_rx_raw_data(i_nic_rx_raw_data),
-        .i_rx_raw_valid(i_nic_rx_raw_valid),
-        .i_rx_signal_ok(i_nic_rx_signal_ok),
+        .o_mac_tx_tvalid(nic_mac_tx_tvalid),
+        .i_mac_tx_tready(nic_mac_tx_tready),
+        .o_mac_tx_tdata(nic_mac_tx_tdata),
+        .o_mac_tx_tkeep(nic_mac_tx_tkeep),
+        .o_mac_tx_tlast(nic_mac_tx_tlast),
+        .o_mac_tx_tuser(nic_mac_tx_tuser),
+        .o_mac_tx_csum(nic_mac_tx_csum),
+        .i_mac_rx_tvalid(nic_mac_rx_tvalid),
+        .o_mac_rx_tready(nic_mac_rx_tready),
+        .i_mac_rx_tdata(nic_mac_rx_tdata),
+        .i_mac_rx_tkeep(nic_mac_rx_tkeep),
+        .i_mac_rx_tlast(nic_mac_rx_tlast),
+        .o_mac_rst(nic_mac_rst),
+        .o_mac_soft_rst(nic_mac_soft_rst),
+        .o_mac_restart(nic_mac_restart),
+        .i_mac_ready(nic_mac_ready),
+        .i_mac_link(nic_mac_link),
+        .i_mac_raw_loopback_en(nic_mac_raw_loopback_en),
+        .o_mac_loopback(nic_mac_loopback),
+        .o_mac_station_addr(nic_mac_station_addr),
+        .o_mac_pause_ctrl(nic_mac_pause_ctrl),
+        .o_mac_pause_high_water(nic_mac_pause_high_water),
+        .o_mac_pause_low_water(nic_mac_pause_low_water),
+        .o_mac_pause_interval(nic_mac_pause_interval),
+        .o_mac_rx_fifo_limit(nic_mac_rx_fifo_limit),
+        .o_mac_rx_fifo_limit_wr(nic_mac_rx_fifo_limit_wr),
+        .i_mac_rx_fifo_limit_busy(nic_mac_rx_fifo_limit_busy),
+        .o_mac_rx_desc_starved(nic_mac_rx_desc_starved),
+        .i_mac_totals(nic_mac_totals),
         .i_phy_status(i_nic_phy_status),
         .i_phy_diag('0),
         .o_phy_diag_ack(),
-        .o_phy_ctrl(o_nic_phy_ctrl),
-        .o_rx_block_lock(o_nic_rx_block_lock)
+        .o_phy_ctrl(o_nic_phy_ctrl)
     );
+
+    if (EXTERNAL_MAC == 0) begin : gen_nic_mac_10g
+      nic_mac_10g #(
+          .RX_FIFO_DEPTH(NicRxFifoDepth),
+          .RAW_LOOPBACK (RAW_LOOPBACK)
+      ) nic_mac (
+          .i_clk(i_clk),
+          .i_rst(nic_mac_rst),
+          .i_soft_rst(nic_mac_soft_rst),
+          .i_restart(nic_mac_restart),
+          .o_ready(nic_mac_ready),
+          .o_link(nic_mac_link),
+          .o_raw_loopback_en(nic_mac_raw_loopback_en),
+          .i_mac_loopback(nic_mac_loopback),
+          .i_station_mac(nic_mac_station_addr),
+          .i_pause_ctrl(nic_mac_pause_ctrl),
+          .i_pause_high_water(nic_mac_pause_high_water),
+          .i_pause_low_water(nic_mac_pause_low_water),
+          .i_pause_interval(nic_mac_pause_interval),
+          .i_rx_fifo_limit(nic_mac_rx_fifo_limit),
+          .i_rx_fifo_limit_wr(nic_mac_rx_fifo_limit_wr),
+          .o_rx_fifo_limit_busy(nic_mac_rx_fifo_limit_busy),
+          .i_rx_desc_starved(nic_mac_rx_desc_starved),
+          .o_totals(nic_mac_totals),
+          .s_axis_tx_tvalid(nic_mac_tx_tvalid),
+          .s_axis_tx_tready(nic_mac_tx_tready),
+          .s_axis_tx_tdata(nic_mac_tx_tdata),
+          .s_axis_tx_tkeep(nic_mac_tx_tkeep),
+          .s_axis_tx_tlast(nic_mac_tx_tlast),
+          .s_axis_tx_tuser(nic_mac_tx_tuser),
+          .i_tx_csum(nic_mac_tx_csum),
+          .m_axis_rx_tvalid(nic_mac_rx_tvalid),
+          .m_axis_rx_tready(nic_mac_rx_tready),
+          .m_axis_rx_tdata(nic_mac_rx_tdata),
+          .m_axis_rx_tkeep(nic_mac_rx_tkeep),
+          .m_axis_rx_tlast(nic_mac_rx_tlast),
+          .i_tx_clk(i_nic_tx_clk),
+          .i_rx_clk(i_nic_rx_clk),
+          .i_tx_clk_ok(i_nic_tx_clk_ok),
+          .i_rx_clk_ok(i_nic_rx_clk_ok),
+          .o_tx_raw_data(o_nic_tx_raw_data),
+          .o_tx_raw_valid(o_nic_tx_raw_valid),
+          .i_rx_raw_data(i_nic_rx_raw_data),
+          .i_rx_raw_valid(i_nic_rx_raw_valid),
+          .i_rx_signal_ok(i_nic_rx_signal_ok),
+          .o_rx_block_lock(o_nic_rx_block_lock)
+      );
+      assign o_ext_mac_tx_tvalid = 1'b0;
+      assign o_ext_mac_tx_tdata = '0;
+      assign o_ext_mac_tx_tkeep = '0;
+      assign o_ext_mac_tx_tlast = 1'b0;
+      assign o_ext_mac_tx_tuser = 1'b0;
+      assign o_ext_mac_tx_csum = '0;
+      assign o_ext_mac_rx_tready = 1'b0;
+      assign o_ext_mac_rst = 1'b0;
+      assign o_ext_mac_soft_rst = 1'b0;
+      assign o_ext_mac_restart = 1'b0;
+      assign o_ext_mac_loopback = 1'b0;
+      assign o_ext_mac_station_addr = '0;
+      assign o_ext_mac_pause_ctrl = '0;
+      assign o_ext_mac_pause_high_water = '0;
+      assign o_ext_mac_pause_low_water = '0;
+      assign o_ext_mac_pause_interval = '0;
+      assign o_ext_mac_rx_fifo_limit = '0;
+      assign o_ext_mac_rx_fifo_limit_wr = 1'b0;
+      assign o_ext_mac_rx_desc_starved = 1'b0;
+    end else begin : gen_ext_mac
+      assign o_ext_mac_tx_tvalid = nic_mac_tx_tvalid;
+      assign nic_mac_tx_tready = i_ext_mac_tx_tready;
+      assign o_ext_mac_tx_tdata = nic_mac_tx_tdata;
+      assign o_ext_mac_tx_tkeep = nic_mac_tx_tkeep;
+      assign o_ext_mac_tx_tlast = nic_mac_tx_tlast;
+      assign o_ext_mac_tx_tuser = nic_mac_tx_tuser;
+      assign o_ext_mac_tx_csum = nic_mac_tx_csum;
+      assign nic_mac_rx_tvalid = i_ext_mac_rx_tvalid;
+      assign o_ext_mac_rx_tready = nic_mac_rx_tready;
+      assign nic_mac_rx_tdata = i_ext_mac_rx_tdata;
+      assign nic_mac_rx_tkeep = i_ext_mac_rx_tkeep;
+      assign nic_mac_rx_tlast = i_ext_mac_rx_tlast;
+      assign o_ext_mac_rst = nic_mac_rst;
+      assign o_ext_mac_soft_rst = nic_mac_soft_rst;
+      assign o_ext_mac_restart = nic_mac_restart;
+      assign nic_mac_ready = i_ext_mac_ready;
+      assign nic_mac_link = i_ext_mac_link;
+      assign nic_mac_raw_loopback_en = i_ext_mac_raw_loopback_en;
+      assign o_ext_mac_loopback = nic_mac_loopback;
+      assign o_ext_mac_station_addr = nic_mac_station_addr;
+      assign o_ext_mac_pause_ctrl = nic_mac_pause_ctrl;
+      assign o_ext_mac_pause_high_water = nic_mac_pause_high_water;
+      assign o_ext_mac_pause_low_water = nic_mac_pause_low_water;
+      assign o_ext_mac_pause_interval = nic_mac_pause_interval;
+      assign o_ext_mac_rx_fifo_limit = nic_mac_rx_fifo_limit;
+      assign o_ext_mac_rx_fifo_limit_wr = nic_mac_rx_fifo_limit_wr;
+      assign nic_mac_rx_fifo_limit_busy = i_ext_mac_rx_fifo_limit_busy;
+      assign o_ext_mac_rx_desc_starved = nic_mac_rx_desc_starved;
+      assign nic_mac_totals = i_ext_mac_totals;
+      assign o_nic_tx_raw_data = '0;
+      assign o_nic_tx_raw_valid = 1'b0;
+      assign o_nic_rx_block_lock = i_ext_mac_link[0];
+    end
 
     dma_test_engine_axi #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
@@ -1643,15 +1913,15 @@ AxilPorts
         .i_reg_axil_wstrb(reg_axil_wstrb_q),
         .o_reg_axil_bvalid(reg_axil_bvalid[1]),
         .i_reg_axil_bready(reg_axil_bready[1]),
-        .o_reg_axil_bresp(reg_axil_bresp[1]),
+        .o_reg_axil_bresp(reg_axil_bresp[1*2+:2]),
         .i_reg_axil_arvalid(reg_axil_arvalid[1]),
         .o_reg_axil_arready(reg_axil_arready[1]),
         .i_reg_axil_araddr(reg_axil_addr_q[7:0]),
         .i_reg_axil_arprot(reg_axil_prot_q),
         .o_reg_axil_rvalid(reg_axil_rvalid[1]),
         .i_reg_axil_rready(reg_axil_rready[1]),
-        .o_reg_axil_rdata(reg_axil_rdata[1]),
-        .o_reg_axil_rresp(reg_axil_rresp[1]),
+        .o_reg_axil_rdata(reg_axil_rdata[1*64+:64]),
+        .o_reg_axil_rresp(reg_axil_rresp[1*2+:2]),
         .o_irq(dma_engine_irq),
         .o_dma_axi_awvalid(up_awvalid[1]),
         .o_dma_axi_awid(up_awid[1*DmaUpIdBits+:DmaUpIdBits]),
@@ -1693,15 +1963,38 @@ AxilPorts
     );
 
     if (ENABLE_1G_ETH != 0) begin : gen_nic_1g
-      nic_top #(
+      logic nic_1g_tx_tvalid, nic_1g_tx_tready, nic_1g_tx_tlast, nic_1g_tx_tuser;
+      logic [63:0] nic_1g_tx_tdata;
+      logic [ 7:0] nic_1g_tx_tkeep;
+      logic [14:0] nic_1g_tx_csum;
+      logic nic_1g_rx_tvalid, nic_1g_rx_tready, nic_1g_rx_tlast;
+      logic [63:0] nic_1g_rx_tdata;
+      logic [ 7:0] nic_1g_rx_tkeep;
+      logic nic_1g_mac_rst, nic_1g_mac_soft_rst, nic_1g_mac_restart;
+      logic [1:0] nic_1g_mac_ready;
+      logic [7:0] nic_1g_mac_link;
+      logic nic_1g_mac_raw_loopback_en, nic_1g_mac_loopback;
+      logic [47:0] nic_1g_mac_station_addr;
+      logic [ 1:0] nic_1g_mac_pause_ctrl;
+      logic [NicLimitBits-1:0] nic_1g_mac_pause_high_water, nic_1g_mac_pause_low_water;
+      logic [15:0] nic_1g_mac_pause_interval;
+      logic [NicLimitBits-1:0] nic_1g_mac_rx_fifo_limit;
+      logic nic_1g_mac_rx_fifo_limit_wr, nic_1g_mac_rx_fifo_limit_busy;
+      logic nic_1g_mac_rx_desc_starved;
+      logic [NicMacTotalsBits-1:0] nic_1g_mac_totals;
+      logic [7:0] nic_1g_gmii_txd;
+      logic nic_1g_gmii_tx_en, nic_1g_gmii_tx_er, nic_1g_gmii_tx_clk_en;
+      /* verilator lint_off UNUSEDSIGNAL */
+      wire nic_1g_rx_raw_unused = |i_nic_1g_rx_raw_data[63:26];
+      /* verilator lint_on UNUSEDSIGNAL */
+
+      nic_engine #(
           .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
           .LINE_BYTES(L1LineBytes),
           .APERTURE_BASE(64'(CACHED_BASE)),
           .APERTURE_BYTES(CACHED_SIZE_BYTES),
           .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
           .RX_FIFO_DEPTH(NicRxFifoDepth),
-          .RAW_LOOPBACK(1),
-          .GMII_MODE(1'b1),
           .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
           .DMA_AXI_ID_BITS(DmaUpIdBits)
       ) nic_1g (
@@ -1717,15 +2010,15 @@ AxilPorts
           .i_reg_axil_wstrb(reg_axil_wstrb_q),
           .o_reg_axil_bvalid(reg_axil_bvalid[2]),
           .i_reg_axil_bready(reg_axil_bready[2]),
-          .o_reg_axil_bresp(reg_axil_bresp[2]),
+          .o_reg_axil_bresp(reg_axil_bresp[2*2+:2]),
           .i_reg_axil_arvalid(reg_axil_arvalid[2]),
           .o_reg_axil_arready(reg_axil_arready[2]),
           .i_reg_axil_araddr(reg_axil_addr_q[11:0]),
           .i_reg_axil_arprot(reg_axil_prot_q),
           .o_reg_axil_rvalid(reg_axil_rvalid[2]),
           .i_reg_axil_rready(reg_axil_rready[2]),
-          .o_reg_axil_rdata(reg_axil_rdata[2]),
-          .o_reg_axil_rresp(reg_axil_rresp[2]),
+          .o_reg_axil_rdata(reg_axil_rdata[2*64+:64]),
+          .o_reg_axil_rresp(reg_axil_rresp[2*2+:2]),
           .o_irq(nic_1g_irq),
           .o_dma_axi_awvalid(up_awvalid[2]),
           .o_dma_axi_awid(up_awid[2*DmaUpIdBits+:DmaUpIdBits]),
@@ -1764,21 +2057,93 @@ AxilPorts
           .i_dma_axi_rdata(up_rdata[2*DmaAxiDataBits+:DmaAxiDataBits]),
           .i_dma_axi_rresp(up_rresp[2*2+:2]),
           .i_dma_axi_rlast(up_rlast[2]),
+          .o_mac_tx_tvalid(nic_1g_tx_tvalid),
+          .i_mac_tx_tready(nic_1g_tx_tready),
+          .o_mac_tx_tdata(nic_1g_tx_tdata),
+          .o_mac_tx_tkeep(nic_1g_tx_tkeep),
+          .o_mac_tx_tlast(nic_1g_tx_tlast),
+          .o_mac_tx_tuser(nic_1g_tx_tuser),
+          .o_mac_tx_csum(nic_1g_tx_csum),
+          .i_mac_rx_tvalid(nic_1g_rx_tvalid),
+          .o_mac_rx_tready(nic_1g_rx_tready),
+          .i_mac_rx_tdata(nic_1g_rx_tdata),
+          .i_mac_rx_tkeep(nic_1g_rx_tkeep),
+          .i_mac_rx_tlast(nic_1g_rx_tlast),
+          .o_mac_rst(nic_1g_mac_rst),
+          .o_mac_soft_rst(nic_1g_mac_soft_rst),
+          .o_mac_restart(nic_1g_mac_restart),
+          .i_mac_ready(nic_1g_mac_ready),
+          .i_mac_link(nic_1g_mac_link),
+          .i_mac_raw_loopback_en(nic_1g_mac_raw_loopback_en),
+          .o_mac_loopback(nic_1g_mac_loopback),
+          .o_mac_station_addr(nic_1g_mac_station_addr),
+          .o_mac_pause_ctrl(nic_1g_mac_pause_ctrl),
+          .o_mac_pause_high_water(nic_1g_mac_pause_high_water),
+          .o_mac_pause_low_water(nic_1g_mac_pause_low_water),
+          .o_mac_pause_interval(nic_1g_mac_pause_interval),
+          .o_mac_rx_fifo_limit(nic_1g_mac_rx_fifo_limit),
+          .o_mac_rx_fifo_limit_wr(nic_1g_mac_rx_fifo_limit_wr),
+          .i_mac_rx_fifo_limit_busy(nic_1g_mac_rx_fifo_limit_busy),
+          .o_mac_rx_desc_starved(nic_1g_mac_rx_desc_starved),
+          .i_mac_totals(nic_1g_mac_totals),
+          .i_phy_status(i_nic_1g_phy_status),
+          .i_phy_diag(i_nic_1g_phy_diag),
+          .o_phy_diag_ack(o_nic_1g_phy_diag_ack),
+          .o_phy_ctrl(o_nic_1g_phy_ctrl)
+      );
+
+      nic_mac_1g #(
+          .RX_FIFO_DEPTH(NicRxFifoDepth),
+          .RAW_LOOPBACK (1)
+      ) nic_1g_mac (
+          .i_clk(i_clk),
+          .i_rst(nic_1g_mac_rst),
+          .i_soft_rst(nic_1g_mac_soft_rst),
+          .i_restart(nic_1g_mac_restart),
+          .o_ready(nic_1g_mac_ready),
+          .o_link(nic_1g_mac_link),
+          .o_raw_loopback_en(nic_1g_mac_raw_loopback_en),
+          .i_mac_loopback(nic_1g_mac_loopback),
+          .i_station_mac(nic_1g_mac_station_addr),
+          .i_pause_ctrl(nic_1g_mac_pause_ctrl),
+          .i_pause_high_water(nic_1g_mac_pause_high_water),
+          .i_pause_low_water(nic_1g_mac_pause_low_water),
+          .i_pause_interval(nic_1g_mac_pause_interval),
+          .i_rx_fifo_limit(nic_1g_mac_rx_fifo_limit),
+          .i_rx_fifo_limit_wr(nic_1g_mac_rx_fifo_limit_wr),
+          .o_rx_fifo_limit_busy(nic_1g_mac_rx_fifo_limit_busy),
+          .i_rx_desc_starved(nic_1g_mac_rx_desc_starved),
+          .o_totals(nic_1g_mac_totals),
+          .s_axis_tx_tvalid(nic_1g_tx_tvalid),
+          .s_axis_tx_tready(nic_1g_tx_tready),
+          .s_axis_tx_tdata(nic_1g_tx_tdata),
+          .s_axis_tx_tkeep(nic_1g_tx_tkeep),
+          .s_axis_tx_tlast(nic_1g_tx_tlast),
+          .s_axis_tx_tuser(nic_1g_tx_tuser),
+          .i_tx_csum(nic_1g_tx_csum),
+          .m_axis_rx_tvalid(nic_1g_rx_tvalid),
+          .m_axis_rx_tready(nic_1g_rx_tready),
+          .m_axis_rx_tdata(nic_1g_rx_tdata),
+          .m_axis_rx_tkeep(nic_1g_rx_tkeep),
+          .m_axis_rx_tlast(nic_1g_rx_tlast),
           .i_tx_clk(i_nic_1g_tx_clk),
           .i_rx_clk(i_nic_1g_rx_clk),
           .i_tx_clk_ok(i_nic_1g_tx_clk_ok),
           .i_rx_clk_ok(i_nic_1g_rx_clk_ok),
-          .o_tx_raw_data(o_nic_1g_tx_raw_data),
-          .o_tx_raw_valid(o_nic_1g_tx_raw_valid),
-          .i_rx_raw_data(i_nic_1g_rx_raw_data),
-          .i_rx_raw_valid(i_nic_1g_rx_raw_valid),
+          .o_gmii_txd(nic_1g_gmii_txd),
+          .o_gmii_tx_en(nic_1g_gmii_tx_en),
+          .o_gmii_tx_er(nic_1g_gmii_tx_er),
+          .o_gmii_tx_clk_en(nic_1g_gmii_tx_clk_en),
+          .i_gmii_rxd(i_nic_1g_rx_raw_data[7:0]),
+          .i_gmii_rx_dv(i_nic_1g_rx_raw_data[8]),
+          .i_gmii_rx_er(i_nic_1g_rx_raw_data[9]),
+          .i_gmii_rx_clk_en(i_nic_1g_rx_raw_valid),
+          .i_pcs_status(i_nic_1g_rx_raw_data[25:10]),
           .i_rx_signal_ok(i_nic_1g_rx_signal_ok),
-          .i_phy_status(i_nic_1g_phy_status),
-          .i_phy_diag(i_nic_1g_phy_diag),
-          .o_phy_diag_ack(o_nic_1g_phy_diag_ack),
-          .o_phy_ctrl(o_nic_1g_phy_ctrl),
           .o_rx_block_lock(o_nic_1g_rx_block_lock)
       );
+      assign o_nic_1g_tx_raw_data  = {54'b0, nic_1g_gmii_tx_er, nic_1g_gmii_tx_en, nic_1g_gmii_txd};
+      assign o_nic_1g_tx_raw_valid = nic_1g_gmii_tx_clk_en;
     end else begin : gen_no_nic_1g
       assign nic_1g_irq = 1'b0;
       assign o_nic_1g_tx_raw_data = '0;
@@ -1865,6 +2230,153 @@ AxilPorts
     assign alias_rdata = alias_aborted_q ? 64'd0 :
         64'(up_rdata[AliasPort*DmaAxiDataBits+:DmaAxiDataBits] >>
             {local_addr[AliasLaneMsb:AliasLaneLsb], 6'b000000});
+
+    if (EXT_DMA_PORTS > 0) begin : gen_ext_dma
+      for (genvar p = 0; p < EXT_DMA_PORTS; p++) begin : gen_port
+        localparam int unsigned PortIdx = BaseDmaPorts + p;
+        logic [EXT_DMA_ID_BITS-1:0] slice_awid, slice_bid, slice_arid, slice_rid;
+        axi_register_slice #(
+            .ADDR_WIDTH(DmaAxiAddrBits),
+            .DATA_WIDTH(DmaAxiDataBits),
+            .ID_WIDTH  (EXT_DMA_ID_BITS)
+        ) u_slice (
+            .i_clk(i_clk),
+            .i_rst(rst_core),
+            .i_s_awvalid(i_ext_dma_awvalid[p]),
+            .o_s_awready(o_ext_dma_awready[p]),
+            .i_s_awid(i_ext_dma_awid[p*EXT_DMA_ID_BITS+:EXT_DMA_ID_BITS]),
+            .i_s_awaddr(i_ext_dma_awaddr[p*DmaAxiAddrBits+:DmaAxiAddrBits]),
+            .i_s_awlen(i_ext_dma_awlen[p*8+:8]),
+            .i_s_awsize(i_ext_dma_awsize[p*3+:3]),
+            .i_s_awburst(i_ext_dma_awburst[p*2+:2]),
+            .i_s_awlock(i_ext_dma_awlock[p]),
+            .i_s_awcache(i_ext_dma_awcache[p*4+:4]),
+            .i_s_awprot(i_ext_dma_awprot[p*3+:3]),
+            .i_s_awqos(i_ext_dma_awqos[p*4+:4]),
+            .i_s_wvalid(i_ext_dma_wvalid[p]),
+            .o_s_wready(o_ext_dma_wready[p]),
+            .i_s_wdata(i_ext_dma_wdata[p*DmaAxiDataBits+:DmaAxiDataBits]),
+            .i_s_wstrb(i_ext_dma_wstrb[p*DmaStrbBits+:DmaStrbBits]),
+            .i_s_wlast(i_ext_dma_wlast[p]),
+            .o_s_bvalid(o_ext_dma_bvalid[p]),
+            .i_s_bready(i_ext_dma_bready[p]),
+            .o_s_bid(o_ext_dma_bid[p*EXT_DMA_ID_BITS+:EXT_DMA_ID_BITS]),
+            .o_s_bresp(o_ext_dma_bresp[p*2+:2]),
+            .i_s_arvalid(i_ext_dma_arvalid[p]),
+            .o_s_arready(o_ext_dma_arready[p]),
+            .i_s_arid(i_ext_dma_arid[p*EXT_DMA_ID_BITS+:EXT_DMA_ID_BITS]),
+            .i_s_araddr(i_ext_dma_araddr[p*DmaAxiAddrBits+:DmaAxiAddrBits]),
+            .i_s_arlen(i_ext_dma_arlen[p*8+:8]),
+            .i_s_arsize(i_ext_dma_arsize[p*3+:3]),
+            .i_s_arburst(i_ext_dma_arburst[p*2+:2]),
+            .i_s_arlock(i_ext_dma_arlock[p]),
+            .i_s_arcache(i_ext_dma_arcache[p*4+:4]),
+            .i_s_arprot(i_ext_dma_arprot[p*3+:3]),
+            .i_s_arqos(i_ext_dma_arqos[p*4+:4]),
+            .o_s_rvalid(o_ext_dma_rvalid[p]),
+            .i_s_rready(i_ext_dma_rready[p]),
+            .o_s_rid(o_ext_dma_rid[p*EXT_DMA_ID_BITS+:EXT_DMA_ID_BITS]),
+            .o_s_rdata(o_ext_dma_rdata[p*DmaAxiDataBits+:DmaAxiDataBits]),
+            .o_s_rresp(o_ext_dma_rresp[p*2+:2]),
+            .o_s_rlast(o_ext_dma_rlast[p]),
+            .o_m_awvalid(up_awvalid[PortIdx]),
+            .i_m_awready(up_awready[PortIdx]),
+            .o_m_awid(slice_awid),
+            .o_m_awaddr(up_awaddr[PortIdx*DmaAxiAddrBits+:DmaAxiAddrBits]),
+            .o_m_awlen(up_awlen[PortIdx*8+:8]),
+            .o_m_awsize(up_awsize[PortIdx*3+:3]),
+            .o_m_awburst(up_awburst[PortIdx*2+:2]),
+            .o_m_awlock(up_awlock[PortIdx]),
+            .o_m_awcache(up_awcache[PortIdx*4+:4]),
+            .o_m_awprot(up_awprot[PortIdx*3+:3]),
+            .o_m_awqos(up_awqos[PortIdx*4+:4]),
+            .o_m_wvalid(up_wvalid[PortIdx]),
+            .i_m_wready(up_wready[PortIdx]),
+            .o_m_wdata(up_wdata[PortIdx*DmaAxiDataBits+:DmaAxiDataBits]),
+            .o_m_wstrb(up_wstrb[PortIdx*DmaStrbBits+:DmaStrbBits]),
+            .o_m_wlast(up_wlast[PortIdx]),
+            .i_m_bvalid(up_bvalid[PortIdx]),
+            .o_m_bready(up_bready[PortIdx]),
+            .i_m_bid(slice_bid),
+            .i_m_bresp(up_bresp[PortIdx*2+:2]),
+            .o_m_arvalid(up_arvalid[PortIdx]),
+            .i_m_arready(up_arready[PortIdx]),
+            .o_m_arid(slice_arid),
+            .o_m_araddr(up_araddr[PortIdx*DmaAxiAddrBits+:DmaAxiAddrBits]),
+            .o_m_arlen(up_arlen[PortIdx*8+:8]),
+            .o_m_arsize(up_arsize[PortIdx*3+:3]),
+            .o_m_arburst(up_arburst[PortIdx*2+:2]),
+            .o_m_arlock(up_arlock[PortIdx]),
+            .o_m_arcache(up_arcache[PortIdx*4+:4]),
+            .o_m_arprot(up_arprot[PortIdx*3+:3]),
+            .o_m_arqos(up_arqos[PortIdx*4+:4]),
+            .i_m_rvalid(up_rvalid[PortIdx]),
+            .o_m_rready(up_rready[PortIdx]),
+            .i_m_rid(slice_rid),
+            .i_m_rdata(up_rdata[PortIdx*DmaAxiDataBits+:DmaAxiDataBits]),
+            .i_m_rresp(up_rresp[PortIdx*2+:2]),
+            .i_m_rlast(up_rlast[PortIdx])
+        );
+        assign up_awid[PortIdx*DmaUpIdBits+:DmaUpIdBits] = DmaUpIdBits'(slice_awid);
+        assign up_arid[PortIdx*DmaUpIdBits+:DmaUpIdBits] = DmaUpIdBits'(slice_arid);
+        assign slice_bid = up_bid[PortIdx*DmaUpIdBits+:EXT_DMA_ID_BITS];
+        assign slice_rid = up_rid[PortIdx*DmaUpIdBits+:EXT_DMA_ID_BITS];
+`ifndef SYNTHESIS
+        axi_checker #(
+            .ADDR_WIDTH(DmaAxiAddrBits),
+            .DATA_WIDTH(DmaAxiDataBits),
+            .ID_WIDTH(EXT_DMA_ID_BITS),
+            .PORT(DmaPorts + 1 + p)
+        ) u_ext_check (
+            .i_clk(i_clk),
+            .i_rst(rst_core),
+            .i_awvalid(i_ext_dma_awvalid[p]),
+            .i_awready(o_ext_dma_awready[p]),
+            .i_awid(i_ext_dma_awid[p*EXT_DMA_ID_BITS+:EXT_DMA_ID_BITS]),
+            .i_awaddr(i_ext_dma_awaddr[p*DmaAxiAddrBits+:DmaAxiAddrBits]),
+            .i_awlen(i_ext_dma_awlen[p*8+:8]),
+            .i_awsize(i_ext_dma_awsize[p*3+:3]),
+            .i_awburst(i_ext_dma_awburst[p*2+:2]),
+            .i_awlock(i_ext_dma_awlock[p]),
+            .i_wvalid(i_ext_dma_wvalid[p]),
+            .i_wready(o_ext_dma_wready[p]),
+            .i_wdata(i_ext_dma_wdata[p*DmaAxiDataBits+:DmaAxiDataBits]),
+            .i_wstrb(i_ext_dma_wstrb[p*DmaStrbBits+:DmaStrbBits]),
+            .i_wlast(i_ext_dma_wlast[p]),
+            .i_bvalid(o_ext_dma_bvalid[p]),
+            .i_bready(i_ext_dma_bready[p]),
+            .i_bid(o_ext_dma_bid[p*EXT_DMA_ID_BITS+:EXT_DMA_ID_BITS]),
+            .i_bresp(o_ext_dma_bresp[p*2+:2]),
+            .i_arvalid(i_ext_dma_arvalid[p]),
+            .i_arready(o_ext_dma_arready[p]),
+            .i_arid(i_ext_dma_arid[p*EXT_DMA_ID_BITS+:EXT_DMA_ID_BITS]),
+            .i_araddr(i_ext_dma_araddr[p*DmaAxiAddrBits+:DmaAxiAddrBits]),
+            .i_arlen(i_ext_dma_arlen[p*8+:8]),
+            .i_arsize(i_ext_dma_arsize[p*3+:3]),
+            .i_arburst(i_ext_dma_arburst[p*2+:2]),
+            .i_arlock(i_ext_dma_arlock[p]),
+            .i_rvalid(o_ext_dma_rvalid[p]),
+            .i_rready(i_ext_dma_rready[p]),
+            .i_rid(o_ext_dma_rid[p*EXT_DMA_ID_BITS+:EXT_DMA_ID_BITS]),
+            .i_rdata(o_ext_dma_rdata[p*DmaAxiDataBits+:DmaAxiDataBits]),
+            .i_rresp(o_ext_dma_rresp[p*2+:2]),
+            .i_rlast(o_ext_dma_rlast[p])
+        );
+`endif
+      end
+    end else begin : gen_no_ext_dma
+      assign o_ext_dma_awready = '0;
+      assign o_ext_dma_wready  = '0;
+      assign o_ext_dma_bvalid  = '0;
+      assign o_ext_dma_bid     = '0;
+      assign o_ext_dma_bresp   = '0;
+      assign o_ext_dma_arready = '0;
+      assign o_ext_dma_rvalid  = '0;
+      assign o_ext_dma_rid     = '0;
+      assign o_ext_dma_rdata   = '0;
+      assign o_ext_dma_rresp   = '0;
+      assign o_ext_dma_rlast   = '0;
+    end
 
     axi_mux #(
         .NUM_PORTS(DmaPorts),
@@ -2298,17 +2810,19 @@ AxilPorts
 `endif
   end else begin : gen_no_dma
     // No DMA port: local_alias is never set, so state 6 is never entered.
-    assign alias_done = 1'b0;
+    assign alias_done   = 1'b0;
     assign alias_status = 2'b11;
-    assign alias_rdata = '0;
-    assign reg_axil_awready = '0;
-    assign reg_axil_wready = '0;
-    assign reg_axil_bvalid = '0;
-    assign reg_axil_bresp = '0;
-    assign reg_axil_arready = '0;
-    assign reg_axil_rvalid = '0;
-    assign reg_axil_rresp = '0;
-    assign reg_axil_rdata = '0;
+    assign alias_rdata  = '0;
+    for (genvar a = 0; a < BaseAxilPorts; a++) begin : gen_no_dma_axil
+      assign reg_axil_awready[a] = 1'b0;
+      assign reg_axil_wready[a] = 1'b0;
+      assign reg_axil_bvalid[a] = 1'b0;
+      assign reg_axil_bresp[a*2+:2] = 2'b00;
+      assign reg_axil_arready[a] = 1'b0;
+      assign reg_axil_rvalid[a] = 1'b0;
+      assign reg_axil_rresp[a*2+:2] = 2'b00;
+      assign reg_axil_rdata[a*64+:64] = 64'b0;
+    end
     assign o_coherent_req_valid = 1'b0;
     assign o_coherent_req_write = 1'b0;
     assign o_coherent_req_addr = '0;
@@ -2328,6 +2842,123 @@ AxilPorts
     assign o_nic_1g_phy_diag_ack = 1'b0;
     assign o_nic_1g_phy_ctrl = '0;
     assign o_nic_1g_rx_block_lock = 1'b0;
+    assign o_ext_dma_awready = '0;
+    assign o_ext_dma_wready = '0;
+    assign o_ext_dma_bvalid = '0;
+    assign o_ext_dma_bid = '0;
+    assign o_ext_dma_bresp = '0;
+    assign o_ext_dma_arready = '0;
+    assign o_ext_dma_rvalid = '0;
+    assign o_ext_dma_rid = '0;
+    assign o_ext_dma_rdata = '0;
+    assign o_ext_dma_rresp = '0;
+    assign o_ext_dma_rlast = '0;
+    assign o_ext_mac_tx_tvalid = 1'b0;
+    assign o_ext_mac_tx_tdata = '0;
+    assign o_ext_mac_tx_tkeep = '0;
+    assign o_ext_mac_tx_tlast = 1'b0;
+    assign o_ext_mac_tx_tuser = 1'b0;
+    assign o_ext_mac_tx_csum = '0;
+    assign o_ext_mac_rx_tready = 1'b0;
+    assign o_ext_mac_rst = 1'b0;
+    assign o_ext_mac_soft_rst = 1'b0;
+    assign o_ext_mac_restart = 1'b0;
+    assign o_ext_mac_loopback = 1'b0;
+    assign o_ext_mac_station_addr = '0;
+    assign o_ext_mac_pause_ctrl = '0;
+    assign o_ext_mac_pause_high_water = '0;
+    assign o_ext_mac_pause_low_water = '0;
+    assign o_ext_mac_pause_interval = '0;
+    assign o_ext_mac_rx_fifo_limit = '0;
+    assign o_ext_mac_rx_fifo_limit_wr = 1'b0;
+    assign o_ext_mac_rx_desc_starved = 1'b0;
+  end
+
+  if (EXT_AXIL_WINDOW != 0) begin : gen_ext_axil
+    axil_register_slice #(
+        .ADDR_WIDTH(14),
+        .DATA_WIDTH(64)
+    ) u_ext_axil_slice (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_s_awvalid(reg_axil_awvalid[ExtAxilPort]),
+        .o_s_awready(reg_axil_awready[ExtAxilPort]),
+        .i_s_awaddr(14'(reg_axil_addr_q)),
+        .i_s_awprot(reg_axil_prot_q),
+        .i_s_wvalid(reg_axil_wvalid[ExtAxilPort]),
+        .o_s_wready(reg_axil_wready[ExtAxilPort]),
+        .i_s_wdata(reg_axil_wdata_q),
+        .i_s_wstrb(reg_axil_wstrb_q),
+        .o_s_bvalid(reg_axil_bvalid[ExtAxilPort]),
+        .i_s_bready(reg_axil_bready[ExtAxilPort]),
+        .o_s_bresp(reg_axil_bresp[ExtAxilPort*2+:2]),
+        .i_s_arvalid(reg_axil_arvalid[ExtAxilPort]),
+        .o_s_arready(reg_axil_arready[ExtAxilPort]),
+        .i_s_araddr(14'(reg_axil_addr_q)),
+        .i_s_arprot(reg_axil_prot_q),
+        .o_s_rvalid(reg_axil_rvalid[ExtAxilPort]),
+        .i_s_rready(reg_axil_rready[ExtAxilPort]),
+        .o_s_rdata(reg_axil_rdata[ExtAxilPort*64+:64]),
+        .o_s_rresp(reg_axil_rresp[ExtAxilPort*2+:2]),
+        .o_m_awvalid(o_ext_axil_awvalid),
+        .i_m_awready(i_ext_axil_awready),
+        .o_m_awaddr(o_ext_axil_awaddr),
+        .o_m_awprot(o_ext_axil_awprot),
+        .o_m_wvalid(o_ext_axil_wvalid),
+        .i_m_wready(i_ext_axil_wready),
+        .o_m_wdata(o_ext_axil_wdata),
+        .o_m_wstrb(o_ext_axil_wstrb),
+        .i_m_bvalid(i_ext_axil_bvalid),
+        .o_m_bready(o_ext_axil_bready),
+        .i_m_bresp(i_ext_axil_bresp),
+        .o_m_arvalid(o_ext_axil_arvalid),
+        .i_m_arready(i_ext_axil_arready),
+        .o_m_araddr(o_ext_axil_araddr),
+        .o_m_arprot(o_ext_axil_arprot),
+        .i_m_rvalid(i_ext_axil_rvalid),
+        .o_m_rready(o_ext_axil_rready),
+        .i_m_rdata(i_ext_axil_rdata),
+        .i_m_rresp(i_ext_axil_rresp)
+    );
+`ifndef SYNTHESIS
+    axil_checker #(
+        .ADDR_BITS(14)
+    ) u_ext_axil_check (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_awvalid(o_ext_axil_awvalid),
+        .i_awready(i_ext_axil_awready),
+        .i_awaddr(o_ext_axil_awaddr),
+        .i_awprot(o_ext_axil_awprot),
+        .i_wvalid(o_ext_axil_wvalid),
+        .i_wready(i_ext_axil_wready),
+        .i_wdata(o_ext_axil_wdata),
+        .i_wstrb(o_ext_axil_wstrb),
+        .i_bvalid(i_ext_axil_bvalid),
+        .i_bready(o_ext_axil_bready),
+        .i_bresp(i_ext_axil_bresp),
+        .i_arvalid(o_ext_axil_arvalid),
+        .i_arready(i_ext_axil_arready),
+        .i_araddr(o_ext_axil_araddr),
+        .i_arprot(o_ext_axil_arprot),
+        .i_rvalid(i_ext_axil_rvalid),
+        .i_rready(o_ext_axil_rready),
+        .i_rdata(i_ext_axil_rdata),
+        .i_rresp(i_ext_axil_rresp)
+    );
+`endif
+  end else begin : gen_no_ext_axil
+    assign o_ext_axil_awvalid = 1'b0;
+    assign o_ext_axil_awaddr  = '0;
+    assign o_ext_axil_awprot  = '0;
+    assign o_ext_axil_wvalid  = 1'b0;
+    assign o_ext_axil_wdata   = '0;
+    assign o_ext_axil_wstrb   = '0;
+    assign o_ext_axil_bready  = 1'b0;
+    assign o_ext_axil_arvalid = 1'b0;
+    assign o_ext_axil_araddr  = '0;
+    assign o_ext_axil_arprot  = '0;
+    assign o_ext_axil_rready  = 1'b0;
   end
   logic axi_awvalid, axi_awready, axi_wvalid, axi_wready, axi_bvalid, axi_bready;
   logic axi_arvalid, axi_arready, axi_rvalid, axi_rready, axi_rlast, axi_wlast;
@@ -2764,7 +3395,7 @@ AxilPorts
   wire alias_read_capture = alias_done && !local_write;
   assign mmio_response_capture = mmio_read_capture || reg_axil_read_capture || alias_read_capture;
   assign mmio_response_data = reg_axil_read_capture ?
-      (rst_core ? 64'b0 : reg_axil_rdata[reg_axil_port_q]) :
+      (rst_core ? 64'b0 : reg_axil_rdata[reg_axil_port_q*64+:64]) :
       alias_read_capture ? alias_rdata : mmio_read_data_comb;
 
   // Capture the performed MMIO read on mmio_read_pulse. Each case selects

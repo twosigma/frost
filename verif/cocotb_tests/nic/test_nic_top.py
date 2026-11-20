@@ -17,7 +17,7 @@
 The DMA memory model answers the NIC's AXI4 master, reordering responses
 across ids. Register accesses use AXI4-Lite with independent AW and W
 timing, 32-bit write lanes and aligned 64-bit read pairs. Frames use
-nic_mac_wrap's raw loopback or the independent net10g 64b/66b wire model.
+nic_mac_10g's raw loopback or the independent net10g 64b/66b wire model.
 
 RAW_LOOPBACK=1 uses aligned TX and RX clocks. RAW_LOOPBACK=0 runs the
 unrelated-clock case, reports no shared clock in PHY_STATUS, and exchanges
@@ -34,6 +34,7 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 
 from cocotb_tests.axi.axil_model import AxilMaster
 from cocotb_tests.nic.dma_model import (
+    ABORT,
     DONE,
     ERR,
     FIRST,
@@ -90,6 +91,7 @@ CNT_RX_FRAMES, CNT_RX_BYTES, CNT_RX_FILTERED, CNT_TX_FRAMES, CNT_TX_BYTES = (
     7,
 )
 CNT_RX_MAC_OVERFLOW, CNT_RX_MAC_BAD_FRAME, CNT_RX_MAC_BAD_FCS = 10, 11, 12
+CNT_TX_ABORTED, CNT_TX_MAC_DROP = 9, 14
 
 RX_RING, TX_RING = 0x8010_0000, 0x8011_0000
 RX_SIZE_LOG2, TX_SIZE_LOG2 = 4, 4
@@ -107,7 +109,11 @@ def _raw_loopback_built() -> bool:
     no top, and the default build is assumed.
     """
     top: Any = getattr(cocotb, "top", None)
-    return top is None or int(top.RAW_LOOPBACK.value) != 0
+    return (
+        top is None
+        or not hasattr(top, "RAW_LOOPBACK")
+        or int(top.RAW_LOOPBACK.value) != 0
+    )
 
 
 RAW_LOOPBACK = _raw_loopback_built()
@@ -957,7 +963,11 @@ async def test_rx_domain_restart_replays_fifo_and_pause_configuration(dut: Any) 
     for offset, value in settings:
         await nic.wr(offset, value)
     await nic.cycles(100)
-    mac = dut.u_mac
+    mac = (
+        dut.gen_mac_1g.u_mac.u_cdc
+        if hasattr(dut, "gen_mac_1g")
+        else dut.gen_mac_10g.u_mac.u_cdc
+    )
 
     def applied() -> tuple[int, ...]:
         return tuple(
@@ -1052,4 +1062,123 @@ async def test_unrelated_mac_clocks(dut: Any) -> None:
     assert await nic.rd64(COUNTERS + 8 * CNT_TX_FRAMES) == len(outgoing)
     assert await nic.rd64(COUNTERS + 8 * CNT_RX_BYTES) == sum(map(len, incoming))
     assert await nic.rd64(COUNTERS + 8 * CNT_TX_BYTES) == sum(map(len, outgoing))
+    nic.stop()
+
+
+@cocotb.test()
+async def test_reject_with_full_tx_fifo(dut: Any) -> None:
+    """Use PAUSE to fill the TX FIFO and follow a rejected frame through the MAC.
+
+    Sample the engine's offer at the CDC slave's AXI4-Stream inputs. The
+    former beat code 7 is TKEEP=0xFF with TLAST low. The closing code 8
+    is TKEEP=0x01 with TLAST high, and TUSER carries the abort bit.
+    The checksum request is still on i_tx_csum. The MAC drop pulse
+    enters the CDC at i_tx_drop.
+    """
+    from cocotb_tests.nic.test_nic_pause import CTRL_RX, pause_frame
+
+    nic = await _start(dut, 101, loopback=False)
+    await nic.program_rings()
+    await nic.wr(PAUSE_CTRL, CTRL_RX)
+    await nic.wr(CTRL, CTRL_TX_EN | CTRL_RX_EN)
+    await nic.wait_carrier()
+    mac = (
+        dut.gen_mac_1g.u_mac.u_cdc
+        if hasattr(dut, "gen_mac_1g")
+        else dut.gen_mac_10g.u_mac.u_cdc
+    )
+    fifo = mac.u_tx_fifo
+    nic.wire.send([pause_frame(0xFFFF)])
+    for _ in range(4000):
+        await RisingEdge(dut.i_tx_clk)
+        if int(mac.tx_paused.value):
+            break
+    assert int(mac.tx_paused.value)
+
+    # The read-side skid prefetches two entries while PAUSE blocks the drain.
+    limit = int(fifo.stop_at.value)
+    partial = nic.frame(8 * (limit + 2 + 1))
+    await nic.send_tx(partial, FIRST)
+    last_word = int.from_bytes(partial[-8:], "little")
+    for _ in range(20000):
+        await RisingEdge(dut.i_clk)
+        if int(mac.s_axis_tx_tvalid.value) and not int(mac.s_axis_tx_tready.value):
+            break
+    assert int(fifo.o_occupancy.value) == limit
+    assert int(mac.tx_paused.value) and not int(mac.s_axis_tx_tready.value)
+
+    async def check_fifo_offer() -> None:
+        accepted = False
+        for _ in range(20000):
+            await RisingEdge(dut.i_clk)
+            if not accepted:
+                assert int(mac.s_axis_tx_tvalid.value), "withdrew the stalled data beat"
+                assert int(mac.s_axis_tx_tdata.value) == last_word
+                assert int(mac.s_axis_tx_tkeep.value) == 0xFF
+                assert not int(mac.s_axis_tx_tlast.value)
+                assert int(mac.i_tx_csum.value) == 0 and not int(
+                    mac.s_axis_tx_tuser.value
+                )
+                accepted = bool(mac.s_axis_tx_tready.value)
+                if accepted:
+                    dut._log.info("TX FIFO accepted held data %016x", last_word)
+            elif int(mac.s_axis_tx_tvalid.value) and int(mac.s_axis_tx_tready.value):
+                assert int(mac.s_axis_tx_tuser.value)
+                assert (
+                    int(mac.s_axis_tx_tlast.value)
+                    and int(mac.s_axis_tx_tkeep.value) == 0x01
+                )
+                dut._log.info("TX FIFO accepted closing abort")
+                return
+        raise AssertionError("TX FIFO did not accept held data followed by abort")
+
+    async def check_mac_drop() -> None:
+        data = bytearray()
+        closed = False
+        for _ in range(20000):
+            await RisingEdge(dut.i_tx_clk)
+            if int(mac.t_valid.value) and int(mac.t_ready.value):
+                word = int(mac.t_word.value)
+                code = (word >> 64) & 15
+                assert not closed
+                if word >> 83:
+                    assert code == 8 and data == partial
+                    closed = True
+                else:
+                    assert code == 7
+                    data.extend((word & ((1 << 64) - 1)).to_bytes(8, "little"))
+            if int(mac.i_tx_drop.value):
+                assert closed
+                dut._log.info("MAC dropped %d data bytes followed by abort", len(data))
+                return
+        raise AssertionError("MAC never dropped the aborted frame")
+
+    dut._log.info("TX FIFO reached its RAM limit of %d with the drain paused", limit)
+    core_check = cocotb.start_soon(check_fifo_offer())
+    mac_check = cocotb.start_soon(check_mac_drop())
+    post_desc(nic.mem, TX_RING, 1, 0x1000, LAST | 8)
+    nic.tx_posted += 1
+    await nic.wr(TX_TAIL, nic.tx_posted)
+    assert await nic.wait_done(TX_RING, 1) == DONE | ERR | ABORT
+    assert desc_status(nic.mem, TX_RING, 0) == DONE
+    await nic.cycles(64)
+    assert int(mac.tx_paused.value) and int(fifo.o_occupancy.value) == limit
+    assert await nic.rd64(COUNTERS + 8 * CNT_TX_MAC_DROP) == 0
+    nic.wire.send([pause_frame(0)])
+    await core_check
+    await mac_check
+    await nic.cycles(1200)
+    assert await nic.rd64(COUNTERS + 8 * CNT_TX_MAC_DROP) == 1
+    assert await nic.rd64(COUNTERS + 8 * CNT_TX_ABORTED) == 1
+    assert not nic.wire.frames and nic.wire.receiver.active is None
+
+    good = nic.frame(80)
+    index = await nic.send_tx(good)
+    assert await nic.wait_done(TX_RING, index) == DONE
+    await nic.cycles(1200)
+    assert nic.wire.frames == [good] and nic.wire.receiver.active is None
+    assert await nic.rd64(COUNTERS + 8 * CNT_TX_MAC_DROP) == 1
+    dut._log.info(
+        "TX_MAC_DROP 0 -> 1, TX_ABORTED 1, wire captured only the 80-byte successor"
+    )
     nic.stop()

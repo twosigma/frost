@@ -4,7 +4,12 @@
 
 `soc_axi_slave` receives the CPU's full physical-address AXI master. Cached DDR addresses go to the board DDR port after base subtraction. That private port is five ID bits wide and uses whole-line beats; requests that cannot be represented there are rejected instead of truncating an ID or address. Other requests pass through a local request/response interface. Each local access executes once, with response buffering independent of AXI backpressure. `LOCAL_USER_ENABLE=1` carries the captured AWUSER field with local writes. The default value is zero and the local user output is zero. A request rejected by the decoder or an instruction fetch to device memory produces no peripheral side effect.
 
-Local instruction reads select the instruction BRAM copy using AxPROT[2]; data reads select the data copy. Programming writes both copies through the div4 interface, and debug stores use the slice writer to mirror data into instruction memory. The CPU performs fetch predecode after the AXI response. Normal CPU stores do not silently rewrite the separate instruction copy.
+Local instruction reads select the instruction BRAM copy using AxPROT[2].
+Data reads select the data copy. Programming writes both copies through the
+div4 interface, and debug stores use the slice writer to mirror data into
+instruction memory. The SoC instantiates the instruction memory in data-only
+mode. The CPU performs fetch predecode after the AXI response. Normal CPU
+stores do not silently rewrite the separate instruction copy.
 
 Coherent builds capture the debug mirror address while its hold slot is empty.
 An occupied slot holds its address until the slice writer accepts it. The held
@@ -19,17 +24,21 @@ between the prepared count and the held count.
 
 When an address slot is empty, an accepted AXI address can pass directly to the local port; a stalled request waits in that slot with its owner and payload. Device requests are then registered before address decoding and execution, separating AXI arbitration from peripheral side-effect controls. Completions wait until the memory access or peripheral write/read-consume pulse has executed. Narrow transfers keep their byte enables; the boundary rebuilds the register files' replicated-word write view from AXI's addressed lanes. Device response data is captured before a destructive read consumes UART/FIFO/APLIC state, and holding RVALID does not consume a second item.
 
-The NIC and DMA test engine expose 64-bit AXI4-Lite register slaves.
+The NIC, DMA test engine and optional external peripheral window
+(`EXT_AXIL_WINDOW=1`, 16 KiB at `0x4002_4000`-`0x4002_7FFF`) use 64-bit
+AXI4-Lite register ports.
 The local device decoder launches registered AW/W or AR channels for their
 windows and waits for B or R. The returned status reaches the CPU response,
 and RDATA enters the MMIO read-data register once. Other device windows use
 the local side-effect sequence. With the cached tier disabled, the NIC and
-DMA windows read zero and writes have no effect.
+DMA windows read zero and writes have no effect, while `EXT_AXIL_WINDOW=1`
+operates in both cached and BRAM-only builds behind an `axil_register_slice`.
 
-The AXI4-Lite master and both register bridges use `i_clk` and the SoC-side
-resets. With `ASYNC_CPU_CLOCK=1`, CPU requests cross the memory AXI FIFOs
-before reaching this register path, and completions return through the
-same boundary. The AXI4-Lite channels stay within the SoC clock domain.
+The AXI4-Lite master, register bridges and external AXI4-Lite slice use `i_clk`
+and `o_soc_rst` (the SoC-side core reset). With `ASYNC_CPU_CLOCK=1`, CPU
+requests cross the memory AXI FIFOs before reaching this register path, and
+completions return through the same boundary. The AXI4-Lite channels stay
+within the SoC clock domain.
 
 Each block's `axil_reg_bridge` selects 32-bit write lanes and aligned read
 pairs. Complete eight-byte stores at the NIC's RX_BASE64/TX_BASE64 offsets
@@ -45,6 +54,11 @@ A core-only reset leaves the AXI decoder running so it can drain transactions fr
 the optional CPU clock are outside `cpu_top`.
 
 `ASYNC_CPU_CLOCK=0` connects the CPU and SoC on `i_clk` with direct wires.
+The CPU reset register samples the core request, `rst_core` and the fabric
+reset on each rising edge. A one-edge core request asserts CPU reset with
+`rst_core` and holds CPU reset for one more edge after `rst_core` drops.
+The external DDR reset synchronizer in `frost` captures a request while
+this clock is stopped and holds it until the clock advances.
 `ASYNC_CPU_CLOCK=1` selects `i_cpu_clk` for the CPU, the coherent bridge,
 IMSIC decoder, Debug Module and the core side of the JTAG transport. The
 programming port and UART use `i_clk_div4`, derived from `i_clk`.
@@ -69,8 +83,9 @@ address is constant throughout reset and execution.
 The memory FIFOs reset with the fabric. CPU-only reset leaves those FIFOs
 and the SoC slave running while the CPU master drains its requests. The
 DMA FIFOs, mux, coherent bridge, NIC and engine reset with the CPU epoch.
-Each domain leaves reset only after both clocks have advanced their reset
-chains. The two domains can leave reset on different edges.
+With independent clocks, each domain leaves reset only after both clocks
+have advanced their reset chains. The two domains can leave reset on
+different edges.
 MSI writes that execute while `soc_cpu_rst` is asserted complete without
 posting an interrupt. Presented AXI transactions can execute after reset
 release and have device side effects, as specified by the CPU's reset-drain
@@ -114,13 +129,20 @@ override these bounds.
 The NIC and the DMA test engine are AXI4 masters with 256-bit data. Each
 moves a 32-byte line per beat, except in the engine's burst mode, which uses
 four narrow beats per line ([AXI library](../lib/axi/README.md)).
+Setting `EXT_DMA_PORTS` above zero appends external 256-bit AXI4 DMA slave
+ports (with `EXT_DMA_ID_BITS`-wide IDs) to `axi_mux`, each behind an
+`axi_register_slice` on `i_clk` and `o_soc_rst`. Setting `EXTERNAL_MAC=1`
+omits the internal `nic_mac_10g` block and exports the primary `nic_engine`'s
+core-clock 64-bit AXI4-Stream TX/RX and MAC sideband ports to the SoC
+boundary.
 `axi_mux` joins the masters, round-robin per burst, and
 `axi_coherent_bridge` turns their bursts into line requests on `cpu_top`'s
 coherent ingress ([lib/axi](../lib/axi/README.md)). A burst outside cached
 DDR is answered DECERR and an illegal one SLVERR, without a line request.
 With `ASYNC_CPU_CLOCK=0`, the NIC, engine, mux and bridge reset with
-`rst_core`. The ingress resets with `o_cpu_rst`, which also includes the DDR
-interconnect reset. This configuration requires `i_rst` whenever that reset
+`rst_core`. The ingress samples the same core-reset assertion as the bridge
+and discards its pending response before the bridge can reuse the line ID.
+Its reset, `o_cpu_rst`, also includes the DDR interconnect reset. This configuration requires `i_rst` whenever that reset
 is held, so a dropped ingress request cannot strand a DMA master. With
 `ASYNC_CPU_CLOCK=1`, the paired core reset includes the DDR interconnect
 reset and resets both sides of the DMA path.

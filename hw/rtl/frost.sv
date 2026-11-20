@@ -113,11 +113,22 @@ module frost #(
     // i_jtag_* pins (simulation, portable synthesis); 0 = the DTM's BSCAN
     // bundle comes from the board's BSCANE2 primitives (i_dtm_bscan_*).
     parameter int unsigned DEBUG_JTAG_TAP = 1,
-    // Build PHY_CTRL MAC_LOOPBACK (nic_mac_wrap). Requires one shared MAC
+    // Build PHY_CTRL MAC_LOOPBACK (nic_mac_10g). Requires one shared MAC
     // clock; use 0 with independent transceiver TX and RX clocks.
     parameter int unsigned RAW_LOOPBACK = 1,
     // Optional secondary 1G SGMII NIC @ 0x4002_2000 (VCU118); 0 omits it.
-    parameter int unsigned ENABLE_1G_ETH = 0
+    parameter int unsigned ENABLE_1G_ETH = 0,
+    // External AXI4 DMA slave ports into the coherent DMA interconnect, each
+    // behind an axi_register_slice; 0 omits them.
+    parameter int unsigned EXT_DMA_PORTS = 0,
+    parameter int unsigned EXT_DMA_ID_BITS = 3,
+    // 1 exports the primary NIC engine's core-clock AXI4-Stream and MAC
+    // sideband ports and omits the internal nic_mac_10g; 0 keeps it.
+    parameter int unsigned EXTERNAL_MAC = 0,
+    // 1 exposes a 16 KiB external AXI4-Lite master window at
+    // 0x4002_4000-0x4002_7FFF behind an axil_register_slice; 0 omits it.
+    parameter int unsigned EXT_AXIL_WINDOW = 0,
+    localparam int unsigned ExtDmaPortCount = (EXT_DMA_PORTS > 0) ? EXT_DMA_PORTS : 1
 ) (
     input logic i_clk,
     input logic i_cpu_clk = 1'b0,
@@ -235,7 +246,7 @@ module frost #(
     input  logic        i_nic_1g_rx_signal_ok = 1'b0,
     input  logic [ 4:0] i_nic_1g_phy_status = '0,
     input  logic [32:0] i_nic_1g_phy_diag = '0,
-    output logic o_nic_1g_phy_diag_ack,
+    output logic        o_nic_1g_phy_diag_ack,
     output logic [ 3:1] o_nic_1g_phy_ctrl,
     output logic        o_nic_1g_rx_block_lock,
 
@@ -244,7 +255,104 @@ module frost #(
     output logic       o_spi_sck,
     output logic       o_spi_mosi,
     input  logic       i_spi_miso = 1'b0,
-    input  logic [1:0] i_ddr_status = 2'b11
+    input  logic [1:0] i_ddr_status = 2'b11,
+
+    // Core-domain synchronous active-high reset for external board blocks
+    // sharing i_clk.
+    output logic o_soc_rst,
+
+    // Optional external AXI4 DMA slave ports (EXT_DMA_PORTS > 0). Flat
+    // per-port vectors: port p occupies [p*W +: W].
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_awvalid = '0,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_awready,
+    input  logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] i_ext_dma_awid = '0,
+    input  logic [             ExtDmaPortCount*64-1:0] i_ext_dma_awaddr = '0,
+    input  logic [              ExtDmaPortCount*8-1:0] i_ext_dma_awlen = '0,
+    input  logic [              ExtDmaPortCount*3-1:0] i_ext_dma_awsize = '0,
+    input  logic [              ExtDmaPortCount*2-1:0] i_ext_dma_awburst = '0,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_awlock = '0,
+    input  logic [              ExtDmaPortCount*4-1:0] i_ext_dma_awcache = '0,
+    input  logic [              ExtDmaPortCount*3-1:0] i_ext_dma_awprot = '0,
+    input  logic [              ExtDmaPortCount*4-1:0] i_ext_dma_awqos = '0,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_wvalid = '0,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_wready,
+    input  logic [            ExtDmaPortCount*256-1:0] i_ext_dma_wdata = '0,
+    input  logic [             ExtDmaPortCount*32-1:0] i_ext_dma_wstrb = '0,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_wlast = '0,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_bvalid,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_bready = '0,
+    output logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] o_ext_dma_bid,
+    output logic [              ExtDmaPortCount*2-1:0] o_ext_dma_bresp,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_arvalid = '0,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_arready,
+    input  logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] i_ext_dma_arid = '0,
+    input  logic [             ExtDmaPortCount*64-1:0] i_ext_dma_araddr = '0,
+    input  logic [              ExtDmaPortCount*8-1:0] i_ext_dma_arlen = '0,
+    input  logic [              ExtDmaPortCount*3-1:0] i_ext_dma_arsize = '0,
+    input  logic [              ExtDmaPortCount*2-1:0] i_ext_dma_arburst = '0,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_arlock = '0,
+    input  logic [              ExtDmaPortCount*4-1:0] i_ext_dma_arcache = '0,
+    input  logic [              ExtDmaPortCount*3-1:0] i_ext_dma_arprot = '0,
+    input  logic [              ExtDmaPortCount*4-1:0] i_ext_dma_arqos = '0,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_rvalid,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_rready = '0,
+    output logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] o_ext_dma_rid,
+    output logic [            ExtDmaPortCount*256-1:0] o_ext_dma_rdata,
+    output logic [              ExtDmaPortCount*2-1:0] o_ext_dma_rresp,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_rlast,
+
+    // Optional external MAC boundary (EXTERNAL_MAC != 0).
+    output logic             o_ext_mac_tx_tvalid,
+    input  logic             i_ext_mac_tx_tready = 1'b0,
+    output logic [     63:0] o_ext_mac_tx_tdata,
+    output logic [      7:0] o_ext_mac_tx_tkeep,
+    output logic             o_ext_mac_tx_tlast,
+    output logic             o_ext_mac_tx_tuser,
+    output logic [     14:0] o_ext_mac_tx_csum,
+    input  logic             i_ext_mac_rx_tvalid = 1'b0,
+    output logic             o_ext_mac_rx_tready,
+    input  logic [     63:0] i_ext_mac_rx_tdata = '0,
+    input  logic [      7:0] i_ext_mac_rx_tkeep = '0,
+    input  logic             i_ext_mac_rx_tlast = 1'b0,
+    output logic             o_ext_mac_rst,
+    output logic             o_ext_mac_soft_rst,
+    output logic             o_ext_mac_restart,
+    input  logic [      1:0] i_ext_mac_ready = '0,
+    input  logic [      7:0] i_ext_mac_link = '0,
+    input  logic             i_ext_mac_raw_loopback_en = 1'b0,
+    output logic             o_ext_mac_loopback,
+    output logic [     47:0] o_ext_mac_station_addr,
+    output logic [      1:0] o_ext_mac_pause_ctrl,
+    output logic [     13:0] o_ext_mac_pause_high_water,
+    output logic [     13:0] o_ext_mac_pause_low_water,
+    output logic [     15:0] o_ext_mac_pause_interval,
+    output logic [     13:0] o_ext_mac_rx_fifo_limit,
+    output logic             o_ext_mac_rx_fifo_limit_wr,
+    input  logic             i_ext_mac_rx_fifo_limit_busy = 1'b0,
+    output logic             o_ext_mac_rx_desc_starved,
+    input  logic [21*64-1:0] i_ext_mac_totals = '0,
+
+    // Optional external AXI4-Lite master window at 0x4002_4000-0x4002_7FFF
+    // (16 KiB, EXT_AXIL_WINDOW != 0).
+    output logic        o_ext_axil_awvalid,
+    input  logic        i_ext_axil_awready = 1'b0,
+    output logic [13:0] o_ext_axil_awaddr,
+    output logic [ 2:0] o_ext_axil_awprot,
+    output logic        o_ext_axil_wvalid,
+    input  logic        i_ext_axil_wready = 1'b0,
+    output logic [63:0] o_ext_axil_wdata,
+    output logic [ 7:0] o_ext_axil_wstrb,
+    input  logic        i_ext_axil_bvalid = 1'b0,
+    output logic        o_ext_axil_bready,
+    input  logic [ 1:0] i_ext_axil_bresp = '0,
+    output logic        o_ext_axil_arvalid,
+    input  logic        i_ext_axil_arready = 1'b0,
+    output logic [13:0] o_ext_axil_araddr,
+    output logic [ 2:0] o_ext_axil_arprot,
+    input  logic        i_ext_axil_rvalid = 1'b0,
+    output logic        o_ext_axil_rready,
+    input  logic [63:0] i_ext_axil_rdata = '0,
+    input  logic [ 1:0] i_ext_axil_rresp = '0
 );
 
   /*
@@ -401,7 +509,11 @@ module frost #(
       .DECODED_QUEUE_DEPTH(DECODED_QUEUE_DEPTH),
       .CLK_FREQ_HZ(CLK_FREQ_HZ),
       .RAW_LOOPBACK(RAW_LOOPBACK),
-      .ENABLE_1G_ETH(ENABLE_1G_ETH)
+      .ENABLE_1G_ETH(ENABLE_1G_ETH),
+      .EXT_DMA_PORTS(EXT_DMA_PORTS),
+      .EXT_DMA_ID_BITS(EXT_DMA_ID_BITS),
+      .EXTERNAL_MAC(EXTERNAL_MAC),
+      .EXT_AXIL_WINDOW(EXT_AXIL_WINDOW)
   ) cpu_and_memory_subsystem (
 `ifdef SYNTHESIS
       .i_power_on_rst(1'b0),
@@ -528,7 +640,94 @@ module frost #(
       .o_spi_sck,
       .o_spi_mosi,
       .i_spi_miso,
-      .i_ddr_status
+      .i_ddr_status,
+      // Core-domain reset and optional external plug-in ports
+      .o_soc_rst,
+      .i_ext_dma_awvalid,
+      .o_ext_dma_awready,
+      .i_ext_dma_awid,
+      .i_ext_dma_awaddr,
+      .i_ext_dma_awlen,
+      .i_ext_dma_awsize,
+      .i_ext_dma_awburst,
+      .i_ext_dma_awlock,
+      .i_ext_dma_awcache,
+      .i_ext_dma_awprot,
+      .i_ext_dma_awqos,
+      .i_ext_dma_wvalid,
+      .o_ext_dma_wready,
+      .i_ext_dma_wdata,
+      .i_ext_dma_wstrb,
+      .i_ext_dma_wlast,
+      .o_ext_dma_bvalid,
+      .i_ext_dma_bready,
+      .o_ext_dma_bid,
+      .o_ext_dma_bresp,
+      .i_ext_dma_arvalid,
+      .o_ext_dma_arready,
+      .i_ext_dma_arid,
+      .i_ext_dma_araddr,
+      .i_ext_dma_arlen,
+      .i_ext_dma_arsize,
+      .i_ext_dma_arburst,
+      .i_ext_dma_arlock,
+      .i_ext_dma_arcache,
+      .i_ext_dma_arprot,
+      .i_ext_dma_arqos,
+      .o_ext_dma_rvalid,
+      .i_ext_dma_rready,
+      .o_ext_dma_rid,
+      .o_ext_dma_rdata,
+      .o_ext_dma_rresp,
+      .o_ext_dma_rlast,
+      .o_ext_mac_tx_tvalid,
+      .i_ext_mac_tx_tready,
+      .o_ext_mac_tx_tdata,
+      .o_ext_mac_tx_tkeep,
+      .o_ext_mac_tx_tlast,
+      .o_ext_mac_tx_tuser,
+      .o_ext_mac_tx_csum,
+      .i_ext_mac_rx_tvalid,
+      .o_ext_mac_rx_tready,
+      .i_ext_mac_rx_tdata,
+      .i_ext_mac_rx_tkeep,
+      .i_ext_mac_rx_tlast,
+      .o_ext_mac_rst,
+      .o_ext_mac_soft_rst,
+      .o_ext_mac_restart,
+      .i_ext_mac_ready,
+      .i_ext_mac_link,
+      .i_ext_mac_raw_loopback_en,
+      .o_ext_mac_loopback,
+      .o_ext_mac_station_addr,
+      .o_ext_mac_pause_ctrl,
+      .o_ext_mac_pause_high_water,
+      .o_ext_mac_pause_low_water,
+      .o_ext_mac_pause_interval,
+      .o_ext_mac_rx_fifo_limit,
+      .o_ext_mac_rx_fifo_limit_wr,
+      .i_ext_mac_rx_fifo_limit_busy,
+      .o_ext_mac_rx_desc_starved,
+      .i_ext_mac_totals,
+      .o_ext_axil_awvalid,
+      .i_ext_axil_awready,
+      .o_ext_axil_awaddr,
+      .o_ext_axil_awprot,
+      .o_ext_axil_wvalid,
+      .i_ext_axil_wready,
+      .o_ext_axil_wdata,
+      .o_ext_axil_wstrb,
+      .i_ext_axil_bvalid,
+      .o_ext_axil_bready,
+      .i_ext_axil_bresp,
+      .o_ext_axil_arvalid,
+      .i_ext_axil_arready,
+      .o_ext_axil_araddr,
+      .o_ext_axil_arprot,
+      .i_ext_axil_rvalid,
+      .o_ext_axil_rready,
+      .i_ext_axil_rdata,
+      .i_ext_axil_rresp
   );
 
   // Memory-mapped I/O FIFO 0 - used for general-purpose data buffering
@@ -601,14 +800,18 @@ module frost #(
   always_ff @(posedge i_clk)
     if (ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized)
       uart_reset_seen_q <= 1'b1;
-  always_ff @(posedge i_clk)
+  always_ff @(posedge i_clk) begin
     if (uart_reset_seen_q && uart_tx_drop_check != 0 &&
         !(ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized) &&
-        uart_write_enable_from_cpu && !uart_fifo_input_ready)
+        uart_write_enable_from_cpu && !uart_fifo_input_ready) begin
 `ifdef FROST_SIM_ASSERTIONS
-      assert (1'b0) else
-`endif
+      assert (1'b0)
+      else $error("frost: UART TX byte dropped: the transmit FIFO was full");
+`else
       $error("frost: UART TX byte dropped: the transmit FIFO was full");
+`endif
+    end
+  end
 `endif
 
   // UART transmitter - converts valid/ready handshake to serial UART protocol

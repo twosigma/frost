@@ -113,7 +113,12 @@ module frost_rvfi_platform #(
     // shared by both directions, 0 for independent TX and RX clocks.
     parameter int unsigned RAW_LOOPBACK = 1,
     // Board peripherals use shadow RAM in this fixture.
-    parameter int unsigned ENABLE_1G_ETH = 0
+    parameter int unsigned ENABLE_1G_ETH = 0,
+    parameter int unsigned EXT_DMA_PORTS = 0,
+    parameter int unsigned EXT_DMA_ID_BITS = 3,
+    parameter int unsigned EXTERNAL_MAC = 0,
+    parameter int unsigned EXT_AXIL_WINDOW = 0,
+    localparam int unsigned ExtDmaPortCount = (EXT_DMA_PORTS > 0) ? EXT_DMA_PORTS : 1
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for the low-BRAM programming port
@@ -239,25 +244,111 @@ module frost_rvfi_platform #(
     output logic        o_nic_rx_block_lock,
 
     // Board peripheral ports are idle in the TestRIG platform.
-    input  logic        i_nic_1g_tx_clk = 1'b0,
-    input  logic        i_nic_1g_rx_clk = 1'b0,
-    input  logic        i_nic_1g_tx_clk_ok = 1'b0,
-    input  logic        i_nic_1g_rx_clk_ok = 1'b0,
-    output logic [63:0] o_nic_1g_tx_raw_data,
-    output logic        o_nic_1g_tx_raw_valid,
-    input  logic [63:0] i_nic_1g_rx_raw_data = '0,
-    input  logic        i_nic_1g_rx_raw_valid = 1'b0,
-    input  logic        i_nic_1g_rx_signal_ok = 1'b0,
-    input  logic [ 4:0] i_nic_1g_phy_status = '0,
-    input  logic [32:0] i_nic_1g_phy_diag = '0,
-    output logic        o_nic_1g_phy_diag_ack,
-    output logic [ 3:1] o_nic_1g_phy_ctrl,
-    output logic        o_nic_1g_rx_block_lock,
-    output logic        o_spi_cs_n,
-    output logic        o_spi_sck,
-    output logic        o_spi_mosi,
-    input  logic        i_spi_miso = 1'b0,
-    input  logic [ 1:0] i_ddr_status = 2'b11
+    input  logic                                       i_nic_1g_tx_clk = 1'b0,
+    input  logic                                       i_nic_1g_rx_clk = 1'b0,
+    input  logic                                       i_nic_1g_tx_clk_ok = 1'b0,
+    input  logic                                       i_nic_1g_rx_clk_ok = 1'b0,
+    output logic [                               63:0] o_nic_1g_tx_raw_data,
+    output logic                                       o_nic_1g_tx_raw_valid,
+    input  logic [                               63:0] i_nic_1g_rx_raw_data = '0,
+    input  logic                                       i_nic_1g_rx_raw_valid = 1'b0,
+    input  logic                                       i_nic_1g_rx_signal_ok = 1'b0,
+    input  logic [                                4:0] i_nic_1g_phy_status = '0,
+    input  logic [                               32:0] i_nic_1g_phy_diag = '0,
+    output logic                                       o_nic_1g_phy_diag_ack,
+    output logic [                                3:1] o_nic_1g_phy_ctrl,
+    output logic                                       o_nic_1g_rx_block_lock,
+    output logic                                       o_spi_cs_n,
+    output logic                                       o_spi_sck,
+    output logic                                       o_spi_mosi,
+    input  logic                                       i_spi_miso = 1'b0,
+    input  logic [                                1:0] i_ddr_status = 2'b11,
+    output logic                                       o_soc_rst,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_awvalid = '0,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_awready,
+    input  logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] i_ext_dma_awid = '0,
+    input  logic [             ExtDmaPortCount*64-1:0] i_ext_dma_awaddr = '0,
+    input  logic [              ExtDmaPortCount*8-1:0] i_ext_dma_awlen = '0,
+    input  logic [              ExtDmaPortCount*3-1:0] i_ext_dma_awsize = '0,
+    input  logic [              ExtDmaPortCount*2-1:0] i_ext_dma_awburst = '0,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_awlock = '0,
+    input  logic [              ExtDmaPortCount*4-1:0] i_ext_dma_awcache = '0,
+    input  logic [              ExtDmaPortCount*3-1:0] i_ext_dma_awprot = '0,
+    input  logic [              ExtDmaPortCount*4-1:0] i_ext_dma_awqos = '0,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_wvalid = '0,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_wready,
+    input  logic [            ExtDmaPortCount*256-1:0] i_ext_dma_wdata = '0,
+    input  logic [             ExtDmaPortCount*32-1:0] i_ext_dma_wstrb = '0,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_wlast = '0,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_bvalid,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_bready = '0,
+    output logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] o_ext_dma_bid,
+    output logic [              ExtDmaPortCount*2-1:0] o_ext_dma_bresp,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_arvalid = '0,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_arready,
+    input  logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] i_ext_dma_arid = '0,
+    input  logic [             ExtDmaPortCount*64-1:0] i_ext_dma_araddr = '0,
+    input  logic [              ExtDmaPortCount*8-1:0] i_ext_dma_arlen = '0,
+    input  logic [              ExtDmaPortCount*3-1:0] i_ext_dma_arsize = '0,
+    input  logic [              ExtDmaPortCount*2-1:0] i_ext_dma_arburst = '0,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_arlock = '0,
+    input  logic [              ExtDmaPortCount*4-1:0] i_ext_dma_arcache = '0,
+    input  logic [              ExtDmaPortCount*3-1:0] i_ext_dma_arprot = '0,
+    input  logic [              ExtDmaPortCount*4-1:0] i_ext_dma_arqos = '0,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_rvalid,
+    input  logic [                ExtDmaPortCount-1:0] i_ext_dma_rready = '0,
+    output logic [ExtDmaPortCount*EXT_DMA_ID_BITS-1:0] o_ext_dma_rid,
+    output logic [            ExtDmaPortCount*256-1:0] o_ext_dma_rdata,
+    output logic [              ExtDmaPortCount*2-1:0] o_ext_dma_rresp,
+    output logic [                ExtDmaPortCount-1:0] o_ext_dma_rlast,
+    output logic                                       o_ext_mac_tx_tvalid,
+    input  logic                                       i_ext_mac_tx_tready = 1'b0,
+    output logic [                               63:0] o_ext_mac_tx_tdata,
+    output logic [                                7:0] o_ext_mac_tx_tkeep,
+    output logic                                       o_ext_mac_tx_tlast,
+    output logic                                       o_ext_mac_tx_tuser,
+    output logic [                               14:0] o_ext_mac_tx_csum,
+    input  logic                                       i_ext_mac_rx_tvalid = 1'b0,
+    output logic                                       o_ext_mac_rx_tready,
+    input  logic [                               63:0] i_ext_mac_rx_tdata = '0,
+    input  logic [                                7:0] i_ext_mac_rx_tkeep = '0,
+    input  logic                                       i_ext_mac_rx_tlast = 1'b0,
+    output logic                                       o_ext_mac_rst,
+    output logic                                       o_ext_mac_soft_rst,
+    output logic                                       o_ext_mac_restart,
+    input  logic [                                1:0] i_ext_mac_ready = '0,
+    input  logic [                                7:0] i_ext_mac_link = '0,
+    input  logic                                       i_ext_mac_raw_loopback_en = 1'b0,
+    output logic                                       o_ext_mac_loopback,
+    output logic [                               47:0] o_ext_mac_station_addr,
+    output logic [                                1:0] o_ext_mac_pause_ctrl,
+    output logic [                               13:0] o_ext_mac_pause_high_water,
+    output logic [                               13:0] o_ext_mac_pause_low_water,
+    output logic [                               15:0] o_ext_mac_pause_interval,
+    output logic [                               13:0] o_ext_mac_rx_fifo_limit,
+    output logic                                       o_ext_mac_rx_fifo_limit_wr,
+    input  logic                                       i_ext_mac_rx_fifo_limit_busy = 1'b0,
+    output logic                                       o_ext_mac_rx_desc_starved,
+    input  logic [                          21*64-1:0] i_ext_mac_totals = '0,
+    output logic                                       o_ext_axil_awvalid,
+    input  logic                                       i_ext_axil_awready = 1'b0,
+    output logic [                               13:0] o_ext_axil_awaddr,
+    output logic [                                2:0] o_ext_axil_awprot,
+    output logic                                       o_ext_axil_wvalid,
+    input  logic                                       i_ext_axil_wready = 1'b0,
+    output logic [                               63:0] o_ext_axil_wdata,
+    output logic [                                7:0] o_ext_axil_wstrb,
+    input  logic                                       i_ext_axil_bvalid = 1'b0,
+    output logic                                       o_ext_axil_bready,
+    input  logic [                                1:0] i_ext_axil_bresp = '0,
+    output logic                                       o_ext_axil_arvalid,
+    input  logic                                       i_ext_axil_arready = 1'b0,
+    output logic [                               13:0] o_ext_axil_araddr,
+    output logic [                                2:0] o_ext_axil_arprot,
+    input  logic                                       i_ext_axil_rvalid = 1'b0,
+    output logic                                       o_ext_axil_rready,
+    input  logic [                               63:0] i_ext_axil_rdata = '0,
+    input  logic [                                1:0] i_ext_axil_rresp = '0
 );
 
   assign o_nic_1g_tx_raw_data = '0;
@@ -268,6 +359,47 @@ module frost_rvfi_platform #(
   assign o_spi_cs_n = 1'b1;
   assign o_spi_sck = 1'b0;
   assign o_spi_mosi = 1'b0;
+  assign o_ext_dma_awready = '0;
+  assign o_ext_dma_wready = '0;
+  assign o_ext_dma_bvalid = '0;
+  assign o_ext_dma_bid = '0;
+  assign o_ext_dma_bresp = '0;
+  assign o_ext_dma_arready = '0;
+  assign o_ext_dma_rvalid = '0;
+  assign o_ext_dma_rid = '0;
+  assign o_ext_dma_rdata = '0;
+  assign o_ext_dma_rresp = '0;
+  assign o_ext_dma_rlast = '0;
+  assign o_ext_mac_tx_tvalid = 1'b0;
+  assign o_ext_mac_tx_tdata = '0;
+  assign o_ext_mac_tx_tkeep = '0;
+  assign o_ext_mac_tx_tlast = 1'b0;
+  assign o_ext_mac_tx_tuser = 1'b0;
+  assign o_ext_mac_tx_csum = '0;
+  assign o_ext_mac_rx_tready = 1'b0;
+  assign o_ext_mac_rst = 1'b0;
+  assign o_ext_mac_soft_rst = 1'b0;
+  assign o_ext_mac_restart = 1'b0;
+  assign o_ext_mac_loopback = 1'b0;
+  assign o_ext_mac_station_addr = '0;
+  assign o_ext_mac_pause_ctrl = '0;
+  assign o_ext_mac_pause_high_water = '0;
+  assign o_ext_mac_pause_low_water = '0;
+  assign o_ext_mac_pause_interval = '0;
+  assign o_ext_mac_rx_fifo_limit = '0;
+  assign o_ext_mac_rx_fifo_limit_wr = 1'b0;
+  assign o_ext_mac_rx_desc_starved = 1'b0;
+  assign o_ext_axil_awvalid = 1'b0;
+  assign o_ext_axil_awaddr = '0;
+  assign o_ext_axil_awprot = '0;
+  assign o_ext_axil_wvalid = 1'b0;
+  assign o_ext_axil_wdata = '0;
+  assign o_ext_axil_wstrb = '0;
+  assign o_ext_axil_bready = 1'b0;
+  assign o_ext_axil_arvalid = 1'b0;
+  assign o_ext_axil_araddr = '0;
+  assign o_ext_axil_arprot = '0;
+  assign o_ext_axil_rready = 1'b0;
 
   // Registered core reset combines external reset and ndmreset, for fanout.
   // Debug logic uses external reset alone so it survives debugger-requested
@@ -279,6 +411,7 @@ module frost_rvfi_platform #(
   // Limit reset fanout per replica.
   (* max_fanout = 256 *) logic rst_core;
   always_ff @(posedge i_clk) rst_core <= rst_core_next;
+  assign o_soc_rst = rst_core;
   // CPU and cache ownership reset on the first asserted reset edge.
   wire cpu_cache_rst = rst_core || rst_core_next;
 `ifndef SYNTHESIS
@@ -1830,6 +1963,7 @@ module frost_rvfi_platform #(
   // execute. Port A programs on div4; port B fetches on the main clock.
   imem_predecode #(
       .ADDR_WIDTH(ImemWordAddrWidth),
+      .ENABLE_FETCH_METADATA(1'b1),
       .USE_INIT_FILE(1'b1),
       .INIT_FILE("sw.mem"),
       .INIT_ADDR_WIDTH(MemWordAddrWidth)

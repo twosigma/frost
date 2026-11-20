@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,6 +47,7 @@ TESTS_DIR = REPO_ROOT / "tests"
 TESTS_MAKEFILE = TESTS_DIR / "Makefile"
 DEMO_DOCKERFILE = REPO_ROOT / "demo" / "Dockerfile"
 DEMO_SCRIPT = REPO_ROOT / "demo" / "run_demo.sh"
+DEMO_SHOW_CPP = REPO_ROOT / "demo" / "frost_show.cpp"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 COREMARK_MAIN_C = REPO_ROOT / "sw" / "apps" / "coremark" / "coremark" / "core_main.c"
 
@@ -128,6 +129,14 @@ EXPECTED_EXPOSED_SIGNALS = {
     ("public_flat_rw", "frost", "reset_synchronized"),
     ("public_flat_rw", "frost", "reset_div4_synchronizer_shift_register"),
     ("public_flat_rw", "reorder_buffer", "retire_trace_fd"),
+    # --stats activity counters.
+    ("public_flat_rd", "cpu_ooo", "instruction_retired_count"),
+    ("public_flat_rd", "cpu_ooo", "commit_branch_retired_count"),
+    ("public_flat_rd", "cpu_ooo", "commit_branch_mispredict_count"),
+    ("public_flat_rd", "reorder_buffer", "count"),
+    # --regions: the PCs of the instructions at the head of the reorder buffer.
+    ("public_flat_rd", "reorder_buffer", "head_pc"),
+    ("public_flat_rd", "reorder_buffer", "head_next_pc"),
 }
 
 UNSEEDED_COCOTB_STRIP_ENV = (
@@ -1167,6 +1176,12 @@ module reorder_buffer (
     input logic i_clk
 );
   integer retire_trace_fd;
+  // --stats reads the occupancy; this harness keeps three entries in flight.
+  logic [5:0] count = 6'd3;
+  // --regions reads the head PCs; two instructions retire every cycle, as in the
+  // activity signals below.
+  logic [63:0] head_pc = 64'h100;
+  logic [63:0] head_next_pc = 64'h104;
   initial begin
     retire_trace_fd = $fopen("retire_trace.log", "w");
   end
@@ -1181,12 +1196,17 @@ module sub_tomasulo (input logic i_clk);
   reorder_buffer u_rob (.i_clk(i_clk));
 endmodule
 
-module sub_cpu_inst (input logic i_clk);
+// --stats activity signals: two instructions and one branch retire every
+// cycle.
+module cpu_ooo (input logic i_clk);
+  logic [1:0] instruction_retired_count = 2'd2;
+  logic [1:0] commit_branch_retired_count = 2'd1;
+  logic [1:0] commit_branch_mispredict_count = 2'd0;
   sub_tomasulo u_tomasulo (.i_clk(i_clk));
 endmodule
 
 module sub_hart (input logic i_clk);
-  sub_cpu_inst cpu_inst (.i_clk(i_clk));
+  cpu_ooo cpu_inst (.i_clk(i_clk));
 endmodule
 
 module sub_cpu (input logic i_clk);
@@ -1470,6 +1490,42 @@ def verify_runner_assertion_finish_and_split_fail(work_dir: Path) -> None:
     assert boundary_summary["failed"] is False
     assert boundary_summary["assertions_compiled"] is True
     assert boundary_summary["assertions_armed"] is True
+
+    # --stats: cumulative counts every --stats-interval cycles from reset
+    # release (cycle 20) and a final line.
+    stats_path = work_dir / "activity.stats"
+    subprocess.run(
+        [
+            str(bin_path),
+            "--mem-dir",
+            str(mem_dir),
+            "--max-cycles",
+            "70",
+            "--stop",
+            "",
+            "--quiet-summary",
+            "--stats",
+            str(stats_path),
+            "--stats-interval",
+            "30",
+        ],
+        cwd=work_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stats_lines = stats_path.read_text(encoding="utf-8").splitlines()
+    assert [line.split()[0] for line in stats_lines] == [
+        "cycle=30",
+        "cycle=60",
+        "cycle=70",
+    ]
+    final_stats = dict(item.split("=") for item in stats_lines[-1].split())
+    assert final_stats["final"] == "1"
+    assert final_stats["instructions"] == str(2 * 50)
+    assert final_stats["retired2"] == "50" and final_stats["retired0"] == "0"
+    assert final_stats["branches"] == "50" and final_stats["mispredicts"] == "0"
+    assert final_stats["rob_occupancy_sum"] == str(3 * 50)
 
     # Right after edge 17 arms checks, an assertion on edge 18 (still in reset
     # before i_rst_n releases on edge 19) trips immediately.
@@ -2435,12 +2491,24 @@ def test_ci_workflow_runs_native_and_demo_image_jobs() -> None:
     assert "docker load --input /tmp/frost-dev.tar" in demo_cmds
     assert "docker tag frost-dev:latest frost:latest" in demo_cmds
     assert "docker build -f demo/Dockerfile -t frost-demo:local ." in demo_cmds
-    assert "docker run --rm frost-demo:local " in demo_cmds
+    assert "docker run --rm frost-demo:local --quick" in demo_cmds
+    assert "docker run --rm frost-demo:local --raw" in demo_cmds
     assert "docker run --rm frost-demo:local --threads 1 --app hello_world" in demo_cmds
     assert "Frost: Hello, world!" in demo_cmds
+    # The closing table's CoreMark cycles must equal the iteration's cycles it reports.
+    assert "Counted while rendering and inside CoreMark's timed loop" in demo_cmds
+    assert "clock cycles for this first iteration" in demo_cmds
+    # The step's shell is executed against inputs in tests/test_demo_show.py.
     assert "Correct operation validated." in demo_cmds
-    assert "<<PASS>>" in demo_cmds
     assert "Demonstration finished:" in demo_cmds
+    # The quick demonstration's self-checks, as frost-show prints them.
+    for phrase in (
+        "clock cycles, checksum verified.",
+        "every CRC correct (validated by CoreMark)",
+        "Both programs verified their own results.",
+    ):
+        assert phrase in demo_cmds
+        assert phrase in DEMO_SHOW_CPP.read_text(encoding="utf-8")
     assert "docker push" not in demo_cmds
 
 
@@ -2496,3 +2564,215 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# A scripted retirement timeline for the --regions counters. As in the RTL, the
+# head PCs are valid in the clock in which an instruction commits and the
+# retirement counts are registered one clock later. Events (clock: PCs): 100: 0x10;
+# 103: 0x14 and 0x18 together; 104: 0x1c, a branch; 108: 0x20; 109: 0x24 and 0x28
+# together; 112: 0x2c; 116: 0x30 and 0x34, both branches.
+_REGION_TIMELINE_SV = """\
+module reorder_buffer (
+    input  logic        i_clk,
+    output logic [ 1:0] o_retire_now,
+    output logic [ 1:0] o_branch_now
+);
+  integer retire_trace_fd;
+  logic [ 5:0] count = 6'd3;
+  logic [63:0] head_pc;
+  logic [63:0] head_next_pc;
+  int unsigned k = 0;
+  initial retire_trace_fd = $fopen("retire_trace.log", "w");
+  always_ff @(posedge i_clk) k <= k + 1;
+  always_comb begin
+    o_retire_now = 2'd0;
+    o_branch_now = 2'd0;
+    head_pc = 64'h0;
+    head_next_pc = 64'h0;
+    case (k)
+      100: begin o_retire_now = 2'd1; head_pc = 64'h10; end
+      103: begin o_retire_now = 2'd2; head_pc = 64'h14; head_next_pc = 64'h18; end
+      104: begin o_retire_now = 2'd1; head_pc = 64'h1c; o_branch_now = 2'd1; end
+      108: begin o_retire_now = 2'd1; head_pc = 64'h20; end
+      109: begin o_retire_now = 2'd2; head_pc = 64'h24; head_next_pc = 64'h28; end
+      112: begin o_retire_now = 2'd1; head_pc = 64'h2c; end
+      116: begin
+        o_retire_now = 2'd2; head_pc = 64'h30; head_next_pc = 64'h34; o_branch_now = 2'd2;
+      end
+      default: ;
+    endcase
+  end
+endmodule
+
+module sub_tomasulo (
+    input  logic       i_clk,
+    output logic [1:0] o_retire_now,
+    output logic [1:0] o_branch_now
+);
+  reorder_buffer u_rob (.i_clk(i_clk), .o_retire_now(o_retire_now), .o_branch_now(o_branch_now));
+endmodule
+
+module cpu_ooo (input logic i_clk);
+  logic [1:0] now_count;
+  logic [1:0] now_branch;
+  logic [1:0] instruction_retired_count = 2'd0;
+  logic [1:0] commit_branch_retired_count = 2'd0;
+  logic [1:0] commit_branch_mispredict_count = 2'd0;
+  always_ff @(posedge i_clk) begin
+    instruction_retired_count <= now_count;
+    commit_branch_retired_count <= now_branch;
+  end
+  sub_tomasulo u_tomasulo (.i_clk(i_clk), .o_retire_now(now_count), .o_branch_now(now_branch));
+endmodule
+
+"""
+
+
+@pytest.fixture(scope="module")
+def region_runner(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Callable[..., dict[str, int]]:
+    """Build the scripted-timeline runner once; return a function that counts a region."""
+    if shutil.which("verilator") is None:
+        pytest.skip("verilator is not installed in this environment")
+    tmp_path = tmp_path_factory.mktemp("region_runner")
+    head = _SYNTHETIC_FROST_HARNESS_SV[
+        : _SYNTHETIC_FROST_HARNESS_SV.index("module reorder_buffer")
+    ]
+    tail = _SYNTHETIC_FROST_HARNESS_SV[
+        _SYNTHETIC_FROST_HARNESS_SV.index("module sub_hart") :
+    ]
+    harness_sv = tmp_path / "region_harness.sv"
+    harness_sv.write_text(head + _REGION_TIMELINE_SV + tail, encoding="utf-8")
+    mdir = tmp_path / "obj_dir"
+    _run_checked(
+        [
+            "verilator",
+            "--cc",
+            "--exe",
+            "--top-module",
+            "frost",
+            "--prefix",
+            "Vtop",
+            "-o",
+            "frost-native-region-test",
+            "--Mdir",
+            str(mdir),
+            str(NATIVE_VLT),
+            str(harness_sv),
+            "--timescale",
+            "1ns/1ps",
+            "-Wno-UNUSED",
+            "-Wno-UNDRIVEN",
+            "-CFLAGS",
+            "-std=c++17 -Wall -Wextra -DFROST_COMPILED_THREADS=1",
+            str(NATIVE_MAIN_CPP),
+            str(SIM_ASSERTIONS_CPP),
+        ],
+        cwd=tmp_path,
+    )
+    cores = max(1, min(4, _effective_cpu_count()))
+    _run_checked(["make", "-C", str(mdir), "-f", "Vtop.mk", f"-j{cores}"], cwd=tmp_path)
+    mem_dir = tmp_path / "mem"
+    mem_dir.mkdir()
+    (mem_dir / "sw.mem").write_text("00000000\n", encoding="utf-8")
+    (mem_dir / "sw64.mem").write_text("0000000000000000\n", encoding="utf-8")
+    (mem_dir / "sw_ddr.mem").write_text("00000000\n", encoding="utf-8")
+
+    def counted(
+        start: int, end: int, skips: tuple[tuple[int, int], ...] = ()
+    ) -> dict[str, int]:
+        regions = tmp_path / f"regions_{start:x}_{end:x}.txt"
+        regions.write_text(
+            f"start {start:#x}\nend {end:#x}\n"
+            + "".join(f"skip {lo:#x} {hi:#x}\n" for lo, hi in skips)
+            + "rob_depth 32\n",
+            encoding="utf-8",
+        )
+        stats = tmp_path / f"stats_{start:x}_{end:x}.txt"
+        subprocess.run(
+            [
+                str(mdir / "frost-native-region-test"),
+                "--mem-dir",
+                str(mem_dir),
+                "--max-cycles",
+                "400",
+                "--stop",
+                "",
+                "--stats",
+                str(stats),
+                "--stats-interval",
+                "100",
+                "--regions",
+                str(regions),
+                "--quiet-summary",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        last = stats.read_text(encoding="utf-8").splitlines()[-1]
+        return {k: int(v) for k, v in (f.split("=") for f in last.split() if "=" in f)}
+
+    return counted
+
+
+def test_region_counts_follow_the_retirement_clock(
+    region_runner: Callable[..., dict[str, int]],
+) -> None:
+    """--regions charges width and branches to the instructions that retired them."""
+    # From the first retirement to the last: 12 clocks; 7 instructions retire in
+    # five clocks (two retire two together, three retire one); the branch is one.
+    whole = region_runner(0x10, 0x2C)
+    assert whole["region_cycles"] == 12
+    assert whole["region_instructions"] == 7
+    assert whole["region_retired2"] == 2
+    assert whole["region_retired1"] == 3
+    assert whole["region_retired0"] == 7
+    assert whole["region_branches"] == 1
+    assert whole["rob_depth"] == 32
+    # The second instruction of a dual retirement starts it; the branch alone
+    # follows one clock later.
+    branch = region_runner(0x18, 0x1C)
+    assert (branch["region_cycles"], branch["region_instructions"]) == (1, 1)
+    assert (branch["region_retired1"], branch["region_retired2"]) == (1, 0)
+    assert branch["region_branches"] == 1
+    # A dual retirement in the region is charged as dual, not split across clocks.
+    dual = region_runner(0x20, 0x28)
+    assert (dual["region_cycles"], dual["region_instructions"]) == (1, 2)
+    assert (dual["region_retired2"], dual["region_retired1"]) == (1, 0)
+
+
+def test_region_with_start_and_end_on_the_same_retirement_is_empty(
+    region_runner: Callable[..., dict[str, int]],
+) -> None:
+    """A start and an end that retire together bound a region of zero cycles."""
+    empty = region_runner(0x14, 0x18)
+    assert (empty["region_cycles"], empty["region_instructions"]) == (0, 0)
+    assert empty["region_branches"] == 0
+    assert (
+        empty["region_retired0"]
+        == empty["region_retired1"]
+        == empty["region_retired2"]
+        == 0
+    )
+
+
+def test_region_leaves_out_cycles_that_end_in_skipped_instructions(
+    region_runner: Callable[..., dict[str, int]],
+) -> None:
+    """Cycles that end in a skipped instruction are left out with that instruction."""
+    skipped = region_runner(0x10, 0x2C, skips=((0x1C, 0x20),))
+    assert skipped["region_cycles"] == 12 - 1
+    assert skipped["region_instructions"] == 6
+    assert skipped["region_branches"] == 0
+
+
+def test_region_splits_the_branches_of_a_pair_that_straddles_a_skipped_range(
+    region_runner: Callable[..., dict[str, int]],
+) -> None:
+    """Two branch events in a pair with one skipped instruction count one."""
+    straddle = region_runner(0x2C, 0x34, skips=((0x34, 0x38),))
+    assert (straddle["region_cycles"], straddle["region_instructions"]) == (4, 1)
+    assert straddle["region_branches"] == 1

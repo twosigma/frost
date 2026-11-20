@@ -35,7 +35,7 @@ from collections import Counter
 from collections.abc import Callable, Coroutine
 import cocotb
 from cocotb.clock import Clock
-from cocotb.handle import Immediate
+from cocotb.handle import Force, Immediate
 from cocotb.triggers import (
     ClockCycles,
     FallingEdge,
@@ -302,15 +302,20 @@ def _program_soc(dut: Any) -> Any:
     return getattr(platform, "soc", platform)
 
 
+def _nic_engine(nic: Any) -> Any:
+    """Return the NIC engine directly or inside a nic_top wrapper."""
+    return getattr(nic, "u_engine", nic)
+
+
 def _nic_reset_history(dut: Any) -> tuple[Any, ...]:
     """Return checker history without changing its reset evidence."""
     soc = _program_soc(dut)
     if not hasattr(soc, "gen_cached_tier"):
         return ()
     tier = soc.gen_cached_tier
-    fronts = [tier.nic.u_front]
+    fronts = [_nic_engine(tier.nic).u_front]
     if hasattr(tier, "gen_nic_1g"):
-        fronts.append(tier.gen_nic_1g.nic_1g.u_front)
+        fronts.append(_nic_engine(tier.gen_nic_1g.nic_1g).u_front)
     return tuple(front.reset_seen_q for front in fronts)
 
 
@@ -336,7 +341,7 @@ def _write_instruction_bank(bank: Any, words: list[int]) -> None:
 
 
 def _load_instruction_image(memory: Any) -> None:
-    """Load instruction words and metadata while programming writes are idle."""
+    """Load instruction banks while programming writes are idle."""
     assert not int(memory.i_port_a_write_enable.value)
     assert not int(memory.port_a_write_even.value)
     assert not int(memory.port_a_write_odd.value)
@@ -347,25 +352,33 @@ def _load_instruction_image(memory: Any) -> None:
         1 << int(memory.ADDR_WIDTH.value),
         1 << int(memory.INIT_ADDR_WIDTH.value),
     )
-    sidebands = {
-        word: model.make_sideband(word) for bank in banks for word in set(bank)
-    }
+    metadata = getattr(memory, "gen_fetch_metadata", None)
+    sidebands = {}
+    if metadata is not None:
+        sidebands = {
+            word: model.make_sideband(word) for bank in banks for word in set(bank)
+        }
     for parity, bank_words in zip(("even", "odd"), banks):
         packed = {
             "cold": [model.pack_cold_data(word) for word in bank_words],
             "frontend_hot": [model.pack_frontend_hot(word) for word in bank_words],
-            "sideband": [sidebands[word] for word in bank_words],
             "compressed": [
-                model.make_fast_replica(word, sidebands[word]) for word in bank_words
+                model.make_fast_replica(word, sidebands.get(word, 0))
+                for word in bank_words
             ],
         }
         for name, values in packed.items():
             _write_instruction_bank(getattr(memory, f"u_{parity}_{name}"), values)
-        for name, bit in model.SCALAR_REPLICA_BITS:
-            array = getattr(memory, f"u_{parity}_{name}_bank").u_ram.ram
-            array.value = Immediate(
-                [(sidebands[word] >> bit) & 1 for word in bank_words[: len(array)]]
+        if metadata is not None:
+            _write_instruction_bank(
+                getattr(metadata, f"u_{parity}_sideband"),
+                [sidebands[word] for word in bank_words],
             )
+            for name, bit in model.SCALAR_REPLICA_BITS:
+                array = getattr(metadata, f"u_{parity}_{name}_bank").u_ram.ram
+                array.value = Immediate(
+                    [(sidebands[word] >> bit) & 1 for word in bank_words[: len(array)]]
+                )
 
 
 def load_program_images(dut: Any) -> None:
@@ -1357,55 +1370,117 @@ class CmoTimerCoverage:
 
 
 class WfiRecoveryWatch:
-    """Check the resume PC around a wrong-path WFI at the ROB head.
-
-    For the wfi_seed_recovery app. In a cycle where commit-time recovery is
-    pending and the ROB head is a legal WFI, that WFI is on the wrong path, and
-    the recovery flush removes it at the end of the cycle. cpu_ooo must not
-    seed interrupt_resume_pc from it, so the next cycle's resume PC must not
-    be the WFI's PC + 4. The program's jump targets are further on, so the
-    resume PC left by the jump never equals it.
-    """
-
-    SIGNALS = (
-        "rob_head_is_wfi",
-        "head_valid",
-        "rob_trap_cause",
-        "mispredict_recovery_pending",
-        "rob_trap_pc",
-        "interrupt_resume_pc",
-    )
+    """Wake the older WFI when the JAL and its fall-through WFI are in the ROB."""
 
     def __init__(self, dut: Any) -> None:
-        """Resolve the cpu_ooo signals the check reads."""
+        """Use the program's linked target as the architectural resume-PC oracle."""
+        assert NUM_RUNS > 0, "wfi_seed_recovery requires at least one program run"
         self.dut = dut
-        cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
-        self.sig = {name: _get_signal(dut, f"{cpu}.{name}") for name in self.SIGNALS}
-        missing = [name for name, sig in self.sig.items() if sig is None]
-        assert not missing, f"WfiRecoveryWatch: unresolvable {missing}"
+        cpu_top = dut.cpu_and_memory_subsystem.cpu
+        # The platform ties the CPU's verification input low.
+        cpu_top.i_disable_branch_prediction.value = Force(1)
+        self.cpu = cpu_top.hart.cpu_inst
+        self.rob = self.cpu.u_tomasulo.u_rob
+        symbols = _load_symbol_ranges(
+            ["wfi_recovery_gate", "wfi_recovery_target"], "wfi_seed_recovery"
+        )
+        self.gate_pc = symbols["wfi_recovery_gate"][0]
+        # The inline assembly uses four-byte instructions throughout the sequence.
+        self.jal_pc = self.gate_pc + 4
+        self.wfi_pc = self.jal_pc + 4
+        self.target = symbols["wfi_recovery_target"][0]
+        assert self.target != self.wfi_pc + 4, "WFI seed would equal the JAL target"
+        self.clear()
+
+    def clear(self) -> None:
+        """Require a fresh wakeup and recovery after each reset."""
+        self.wake_in_progress = False
         self.hits = 0
 
     async def run(self) -> None:
-        """Watch every cycle; fail at once on a seeded resume PC."""
-        seeded_pc = None
+        """Sample between active edges and drive only the external interrupt pin."""
+        cpu, rob = self.cpu, self.rob
+        clock = cpu_clock(self.dut)
         while True:
-            await RisingEdge(cpu_clock(self.dut))
-            await ReadOnly()
-            if seeded_pc is not None:
-                resume = _read_int(self.sig["interrupt_resume_pc"])
-                assert resume != seeded_pc, (
-                    f"interrupt_resume_pc was seeded from the wrong-path WFI at "
-                    f"{seeded_pc - 4:#x}"
-                )
-                seeded_pc = None
-            if (
-                _read_bool(self.sig["rob_head_is_wfi"])
-                and _read_bool(self.sig["head_valid"])
-                and _read_int(self.sig["rob_trap_cause"]) == 0
-                and _read_bool(self.sig["mispredict_recovery_pending"])
-            ):
-                self.hits += 1
-                seeded_pc = (_read_int(self.sig["rob_trap_pc"]) or 0) + 4
+            await FallingEdge(clock)
+            if not int(self.dut.i_rst_n.value) or int(cpu.i_rst.value):
+                continue
+            if not int(cpu.head_valid.value):
+                continue
+            pc = int(cpu.rob_trap_pc.value)
+            if pc == self.gate_pc and not self.wake_in_progress:
+                assert int(cpu.i_disable_branch_prediction.value)
+                assert int(cpu.rob_head_is_wfi.value)
+                assert not int(cpu.rob_trap_cause.value)
+                assert not int(cpu.interrupt_pending.value), "older WFI woke early"
+                slot = (int(rob.head_idx.value) + 2) % len(rob.rob_valid)
+                live_wfis = int(rob.rob_valid.value) & int(rob.rob_f_is_wfi.value)
+                if (
+                    int(rob.head_next_valid.value)
+                    and int(rob.head_next_pc.value) == self.jal_pc
+                    and live_wfis & (1 << slot)
+                ):
+                    cocotb.log.info(
+                        f"Waking WFI {pc:#x} with JAL {self.jal_pc:#x} "
+                        f"and WFI {self.wfi_pc:#x} queued"
+                    )
+                    self.dut.i_external_interrupt.value = 1
+                    self.wake_in_progress = True
+            if pc == self.jal_pc and int(cpu.rob_commit_valid_raw.value):
+                assert self.wake_in_progress, "JAL retired before both WFIs were queued"
+                self.dut.i_external_interrupt.value = 0
+                await self._check_recovery(clock)
+                self.wake_in_progress = False
+
+    async def _check_recovery(self, clock: Any) -> None:
+        """Follow the JAL from retirement through the target's first retirement."""
+        cpu = self.cpu
+        await FallingEdge(clock)
+        assert int(cpu.mispredict_recovery_pending.value), "JAL missed commit recovery"
+        assert int(cpu.head_valid.value) and int(cpu.rob_head_is_wfi.value)
+        assert int(cpu.rob_trap_pc.value) == self.wfi_pc
+        assert not int(cpu.rob_trap_cause.value)
+        assert not int(cpu.rob_commit_valid_raw.value)
+        assert not int(cpu.rob_commit_2_valid_raw.value)
+        assert not int(cpu.trap_or_xret_taken.value)
+        assert int(cpu.interrupt_resume_pc.value) == self.target
+        seed = int(cpu.wfi_resume_seed.value)
+        slot = int(self.rob.head_idx.value)
+
+        await FallingEdge(clock)
+        assert int(self.rob.rob_valid.value) & (1 << slot) == 0, "WFI survived recovery"
+        while True:
+            resume = int(cpu.interrupt_resume_pc.value)
+            assert resume == self.target, (
+                f"interrupt resume PC {resume:#x}, expected JAL target {self.target:#x} "
+                f"after wrong-path WFI {self.wfi_pc:#x} (seed={seed})"
+            )
+            assert not int(cpu.trap_or_xret_taken.value)
+            if int(cpu.rob_commit_valid_raw.value):
+                assert int(cpu.dbg_commit_pc.value) == self.target
+                break
+            await FallingEdge(clock)
+        # Report any corrupted PC before checking its source.
+        assert not seed, "wrong-path WFI selected the resume-PC seed"
+        self.hits += 1
+
+    def check_wake(self, run_number: int, max_cycles: int) -> None:
+        """On timeout, distinguish a missing wake from a stall after the wake."""
+        assert self.wake_in_progress or self.hits > 0, (
+            f"Run {run_number} timed out after {max_cycles} cycles waiting to wake "
+            f"WFI {self.gate_pc:#x} at the ROB head with direct JAL {self.jal_pc:#x} "
+            f"and fall-through WFI {self.wfi_pc:#x} queued behind it"
+        )
+
+    def verify(self, run_number: int) -> None:
+        """Require a checked wrong-path head in each reset-to-pass interval."""
+        assert self.hits > 0, (
+            f"run {run_number}: no wrong-path WFI reached the ROB head in recovery"
+        )
+        cocotb.log.info(
+            f"run {run_number}: {self.hits} wrong-path WFI head(s) at {self.wfi_pc:#x}, "
+            f"interrupt resume PC held at JAL target {self.target:#x}"
+        )
 
 
 class DelayedBranchFetchCoverage:
@@ -1477,6 +1552,133 @@ class DelayedBranchFetchCoverage:
         )
         assert self.fuzz_waits > 0, "no AXI instruction completion was delayed by fuzz"
         assert self.target_waits > 0, "no predicted branch target waited for fetch"
+
+
+class OddHalfwordPredictionCoverage:
+    """Check odd-halfword front-end prediction invariants on odd_halfword_pred_test.
+
+    Require odd-halfword slot-1 BTB predictions, +4 odd-target handoffs,
+    second-word fault RAS vetoes, and overlapping stale-pending drops on each
+    reset run.
+    """
+
+    def __init__(self, dut: Any) -> None:
+        """Resolve passive observation points by explicit path; never drive state."""
+        self.dut = dut
+        cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
+        stage = f"{cpu}.if_stage_inst"
+        bpc = f"{stage}.branch_prediction_controller_inst"
+        pcc = f"{stage}.pc_controller_inst"
+        paths = {
+            "reset": f"{cpu}.i_rst",
+            "pred_used": f"{bpc}.o_prediction_used",
+            "pred_pc": f"{bpc}.i_pc",
+            "btb_compressed": f"{bpc}.btb_compressed",
+            "pred_is_call": f"{bpc}.o_predicted_is_call",
+            "target_holdoff": f"{pcc}.o_pending_prediction_target_holdoff",
+            "pc_reg": f"{pcc}.o_pc_reg",
+            "next_pc": f"{pcc}.next_pc",
+            "if_stall": f"{stage}.if_stage_stall",
+            "sel_nop_eff": f"{stage}.sel_nop_effective",
+            "is_compressed": f"{stage}.is_compressed",
+            "slot1_taken_raw": f"{stage}.slot1_btb_predicted_taken_raw",
+            "fetch_fault_eff": f"{stage}.fetch_fault_effective",
+            "ras_push": f"{stage}.ras_push",
+            "ras_pop": f"{stage}.ras_pop",
+            "stale_pending": f"{pcc}.stale_pending_prediction",
+        }
+        self.signals = {name: _get_signal(dut, path) for name, path in paths.items()}
+        _require_signals("odd-halfword prediction coverage", self.signals)
+        self.clear()
+
+    def clear(self) -> None:
+        """Start independent coverage counts for the next program run."""
+        self.odd_slot1_native_btb = 0
+        self.odd_slot1_native_call = 0
+        self.even_to_odd_plus4_native_target = 0
+        self.fault_vetoed_btb_pred = 0
+        self.stale_pending_drops = 0
+        self._armed_odd_target: int | None = None
+
+    async def run(self) -> None:
+        """Count front-end odd-halfword prediction and fault-veto events."""
+        s = self.signals
+        clk = cpu_clock(self.dut)
+        while True:
+            await RisingEdge(clk)
+            await ReadOnly()
+            if _read_bool(s["reset"]):
+                self._armed_odd_target = None
+                continue
+            pred_pc = _read_int(s["pred_pc"]) or 0
+            if (
+                _read_bool(s["pred_used"])
+                and (pred_pc & 0x2) != 0
+                and not _read_bool(s["btb_compressed"])
+            ):
+                self.odd_slot1_native_btb += 1
+                if _read_bool(s["pred_is_call"]):
+                    self.odd_slot1_native_call += 1
+
+            pc_reg = _read_int(s["pc_reg"]) or 0
+            next_pc = _read_int(s["next_pc"]) or 0
+            if (
+                _read_bool(s["target_holdoff"])
+                and (pc_reg & 0x2) != 0
+                and next_pc == ((pc_reg + 4) & ((1 << 64) - 1))
+            ):
+                self._armed_odd_target = pc_reg
+            elif not _read_bool(s["if_stall"]) and not _read_bool(s["sel_nop_eff"]):
+                if self._armed_odd_target is not None:
+                    if (
+                        pc_reg == self._armed_odd_target
+                        and pred_pc == ((pc_reg + 4) & ((1 << 64) - 1))
+                        and not _read_bool(s["is_compressed"])
+                    ):
+                        self.even_to_odd_plus4_native_target += 1
+                    self._armed_odd_target = None
+
+            fault_eff = _read_int(s["fetch_fault_eff"]) or 0
+            if (
+                not _read_bool(s["if_stall"])
+                and not _read_bool(s["sel_nop_eff"])
+                and _read_bool(s["slot1_taken_raw"])
+                and (fault_eff & 0x4) != 0
+            ):
+                assert not _read_bool(s["ras_push"]) and not _read_bool(s["ras_pop"]), (
+                    "faulted packet with slot-1 BTB prediction updated the RAS"
+                )
+                if (fault_eff & 0x1) != 0:
+                    self.fault_vetoed_btb_pred += 1
+
+            if _read_bool(s["stale_pending"]):
+                self.stale_pending_drops += 1
+
+    def verify(self, run_number: int) -> None:
+        """Require every odd-halfword front-end path to fire on each reset run."""
+        cocotb.log.info(
+            f"Run {run_number} odd-halfword prediction coverage: "
+            f"odd_slot1_native_btb={self.odd_slot1_native_btb}, "
+            f"odd_slot1_native_call={self.odd_slot1_native_call}, "
+            f"even_to_odd_plus4_native_target={self.even_to_odd_plus4_native_target}, "
+            f"fault_vetoed_btb_pred={self.fault_vetoed_btb_pred}, "
+            f"stale_pending_drops={self.stale_pending_drops}"
+        )
+        assert self.odd_slot1_native_btb > 0, (
+            "no slot-1 native 32-bit fast-BTB prediction fired at an odd halfword"
+        )
+        assert self.odd_slot1_native_call > 0, (
+            "no slot-1 native 32-bit call fast-BTB prediction fired at an odd halfword"
+        )
+        assert self.even_to_odd_plus4_native_target > 0, (
+            "no non-crossing handoff to an odd 32-bit target stepped o_pc to target+4"
+        )
+        assert self.fault_vetoed_btb_pred > 0, (
+            "no spanning second-word fetch fault vetoed a predicted slot-1 packet"
+        )
+        assert self.stale_pending_drops > 0, (
+            "no overlapping 32-bit predecessor dropped a pending odd-PC prediction"
+        )
 
 
 async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
@@ -2255,13 +2457,15 @@ async def run_until_complete(
     max_cycles: int,
     run_number: int,
     app_name: str | None = None,
+    on_timeout: Callable[[int, int], None] | None = None,
 ) -> None:
     """Run until a UART success marker, failure marker, or timeout.
 
     uart_monitor must already be running. Open-ended tests use initial_text
     instead of success_marker. max_cycles bounds the run; run_number is a
     1-based log index, and app_name selects tracing and diagnostics.
-    Raise AssertionError on failure or timeout.
+    On timeout, call on_timeout with the run number and cycle budget before
+    raising the UART timeout. Raise AssertionError on failure or timeout.
     """
     test_passed = False
     test_failed = False
@@ -4998,6 +5202,8 @@ async def run_until_complete(
                 f"x8/s0={last_x8_commit} x18/s2={last_x18_commit}"
             )
         cocotb.log.error(f"UART output:\n{uart_monitor.get_output()}")
+        if on_timeout is not None:
+            on_timeout(run_number, max_cycles)
         if has_defined_endpoint:
             raise AssertionError(
                 f"Run {run_number} failed: program did not print success marker "
@@ -5248,9 +5454,6 @@ async def test_real_program(dut: Any) -> None:
     ecc_driver = EccReportDriver(dut) if app_name == "memerr_test" else None
     if app_name == "memerr_readback":
         cocotb.start_soon(EccReportDriver(dut).poll())
-    wfi_watch = WfiRecoveryWatch(dut) if app_name == "wfi_seed_recovery" else None
-    if wfi_watch is not None:
-        cocotb.start_soon(wfi_watch.run())
     coverage = (
         DelayedBranchFetchCoverage(dut)
         if app_name == "served_window_resteer"
@@ -5258,6 +5461,10 @@ async def test_real_program(dut: Any) -> None:
         if app_name == "cbo_mgmt_test"
         else PointerMaskingInterruptCoverage(dut)
         if app_name == "pm_test"
+        else WfiRecoveryWatch(dut)
+        if app_name == "wfi_seed_recovery"
+        else OddHalfwordPredictionCoverage(dut)
+        if app_name == "odd_halfword_pred_test"
         else None
     )
     if coverage is not None:
@@ -5341,6 +5548,11 @@ async def test_real_program(dut: Any) -> None:
                 max_cycles,
                 run_number=run_number,
                 app_name=app_name,
+                on_timeout=(
+                    coverage.check_wake
+                    if isinstance(coverage, WfiRecoveryWatch)
+                    else None
+                ),
             )
             if nic_peer is not None:
                 nic_peer.verify()
@@ -5369,12 +5581,5 @@ async def test_real_program(dut: Any) -> None:
         line_monitor.stop()
     if debug_monitor:
         debug_monitor.stop()
-
-    if wfi_watch is not None:
-        # Require the program to exercise the case under test.
-        assert wfi_watch.hits > 0, "no wrong-path WFI reached the ROB head in recovery"
-        cocotb.log.info(
-            f"wrong-path WFI at the ROB head in recovery: {wfi_watch.hits} cycles"
-        )
 
     cocotb.log.info(f"=== All {NUM_RUNS} run(s) completed successfully ===")

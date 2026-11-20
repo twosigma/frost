@@ -1,5 +1,5 @@
 # Ignore everything except the RTL, native runner, software libraries, and
-# the two applications packaged into the standalone RTL demonstration image.
+# the applications packaged into the standalone RTL demonstration image.
 **
 !demo/
 !demo/**
@@ -21,3 +21,5 @@ hw/sim/native/sim_build/**
 !sw/apps/hello_world/**
 !sw/apps/coremark/
 !sw/apps/coremark/**
+!sw/apps/raytrace/
+!sw/apps/raytrace/**

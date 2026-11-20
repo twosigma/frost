@@ -38,11 +38,11 @@ pieces come before the second hart:
   stack objects, works there; in the BRAM layout, its static data and stack are
   in the low BRAM.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
-  engine performs plain misaligned loads and stores to cached DDR in the X3
-  build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
-  address-misaligned exception. TestRIG does not check the engine yet: its
-  build leaves the engine out until its RVFI-DII recorder reports the
-  engine's retirements and writes.
+  engine performs plain misaligned loads and stores to cached DDR by default
+  on the X3 and VCU118 and in simulation (`MISALIGNED_HW`). Misaligned
+  accesses to low BRAM raise the address-misaligned exception. TestRIG
+  leaves the engine out until its RVFI-DII recorder reports the engine's
+  retirements and writes.
 
 The table below lists the mandatory extensions of RVA23U64 and RVA23S64
 (excluding Sha, the hypervisor profile extension) and the RVA23 optional
@@ -63,7 +63,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Ziccif | Implemented | `ifread_test`, `ddr_exec_test`, `smc_fencei_test`, `coherent_hart_cache.sby`, `immu_twin.sby` |
 | Ziccrse | Implemented | `rv64_amo_test`, `ddr_atomic_test`, TestRIG (`--atomics`), `coherence_l1d.sby`, `coherence_home.sby` |
 | Ziccamoa | Implemented | `riscv-arch-test` (`A`), `riscv-tests` (`rv64ua`), `rv64_amo_test`, TestRIG (`--atomics`), `load_queue_amo_compute.sby`, `coherence_l1d.sby` |
-| Zicclsm | Implemented (in hardware on the X3 and in simulation; emulated by firmware on the VCU118; TestRIG builds leave the engine out) | `misaligned_test`, `riscv-tests` (`ma_data`), `test_ma_engine.py`, `ma_engine.sby`, `ma_pkg.sby` |
+| Zicclsm | Implemented in hardware by default on the X3 and VCU118 and in simulation. TestRIG builds leave the engine out | `misaligned_test`, `riscv-tests` (`ma_data`), `test_ma_engine.py`, `ma_engine.sby`, `ma_pkg.sby` |
 | Za64rs | Implemented | Verified by construction (32-byte sector and 64-byte line reservations); LR/SC functional tests in `rv64_amo_test`, `ddr_atomic_test`, `coherence_l1d.sby`, `coherence_home.sby` |
 | Zihintpause | Implemented | `riscv-arch-test` (`hints`), `pause_test`, TestRIG |
 | Zic64b | Implemented | `cbo_zero_test`, `cbo_mgmt_test`, `riscv-arch-test` (`CMO`), TestRIG (`Zicboz`, `Zicbom`), `store_queue.sby` |
@@ -578,8 +578,11 @@ and targeted microbenchmarks give these items:
    sectors use masked writes, and waiting reads share array service with
    buffered hits. In simulation (`store_fill_bench`, 64 KiB, with the DDR
    model's fixed 80-cycle latency) a sequential `sd` stream takes about 28
-   cycles per 64 bytes cold and 15.3 cycles L2-resident. Taking ownership of a single 32-byte sector without fetching
-   its 64-byte home line would still need per-sector L2 validity tracking.
+   cycles per 64 bytes cold and 15.3 cycles L2-resident. A streaming copy
+   spends about 24% of its cycles stalled on store-queue capacity;
+   streaming scale, add and triad loops spend less than 0.3%. Taking
+   ownership of a single 32-byte sector without fetching its 64-byte home
+   line would still need per-sector L2 validity tracking.
 2. Data translation. A last-page bypass sends eligible translated accesses
    directly to DMMU stage S2. Other translated accesses use S1 and S2.
    Reducing that path would improve cross-page translation latency.
@@ -588,10 +591,13 @@ and targeted microbenchmarks give these items:
    walker cache of upper-level page-table pointers. In simulation a
    dependent load that misses the DTLB and hits the second-level TLB takes 7
    cycles against 5 on a DTLB hit, and an instruction page visit that misses
-   the ITLB and hits it takes 23 against 20. A miss in both walks, and the
-   walker cache takes the walk to one dependent read; the second-level lookup
-   comes first, so a dependent load that walks takes 30 cycles, one more than
-   without the array. Starting the walk in parallel with the second-level
+   the ITLB and hits it takes 23 against 20. During decompression the
+   instruction TLB misses about eight times per thousand retired
+   instructions, and the shared page walker is busy about 11% of cycles.
+   A miss in both walks, and the walker cache takes the walk to one
+   dependent read; the second-level lookup comes first, so a dependent
+   load that walks takes 30 cycles, one more than without the array.
+   Starting the walk in parallel with the second-level
    lookup and cancelling it on a hit would remove that cycle. A 32-entry
    superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
    Svnapot 64 KiB ranges use ordinary 4 KiB TLB entries. Coalescing those
@@ -599,7 +605,9 @@ and targeted microbenchmarks give these items:
    A selective `sfence.vma` that reaches the second-level TLB while it is
    still running an earlier flush becomes a full flush: correct, but it
    discards entries the selective form would have kept.
-4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
+4. Branch prediction. A misprediction costs about 7 cycles. Graph search
+   incurs about 21 to 28 branch mispredictions per thousand retired
+   instructions, and decompression about 19 to 20. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
    predicts the jumps, calls and returns it misses through a PD redirect, at
    that redirect's cost of two bubbles. In Linux-like traces the 256-entry
@@ -650,36 +658,43 @@ and targeted microbenchmarks give these items:
    flight or one read slot per line for loads to the same line would let one
    stream keep more lines in flight. Dependent loads are also slower than
    through the previous hierarchy: in simulation an L2 hit takes 28 cycles
-   against 23 and a DRAM miss about 4 cycles more. The L1D answers a load
-   from its grant, and registered stages
-   and arbitration add the rest. The home grants the load or store that misses
+   against 23 and a DRAM miss about 4 cycles more. In a serial pointer
+   chase, a working set that overflows the L1D into the L2 adds about 22
+   cycles per step, and one that overflows the L2 adds about 36 more. The
+   L1D answers a load from its grant, and registered stages and arbitration
+   add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
    line installs.
-9. L1D read hits. A hit path beside the coherent L1D's controller answers
-   loads that hit. Its answers still wait a cycle in the read slots' response
-   registers, which answering from its last stage would remove, and a variant
-   without that stage would be shorter again. It refuses a load whose arrival
-   meets a lookup that reads data, a probe or a holder of its sector;
-   retrying refused loads, and refusing only for probes to the load's sector,
-   would answer more of them. The controller still shadows a load that it
-   selects while the hit path holds it, which starting misses from the hit
-   path's tag result would avoid, and tags-only lookups would keep stores,
-   look-ahead stores and prefetch hints out of the data banks.
+9. L1D read hits. A dependent load that hits in the L1D takes about nine
+   cycles from one load launch to the next. A hit path beside the coherent
+   L1D's controller answers loads that hit. Its answers still wait a cycle in
+   the read slots' response registers, which answering from its last stage
+   would remove, and a variant without that stage would be shorter again. It
+   refuses a load whose arrival meets a lookup that reads data, a probe or a
+   holder of its sector; retrying refused loads, and refusing only for probes
+   to the load's sector, would answer more of them. The controller still
+   shadows a load that it selects while the hit path holds it, which starting
+   misses from the hit path's tag result would avoid, and tags-only lookups
+   would keep stores, look-ahead stores and prefetch hints out of the data
+   banks.
 10. Compressed code. Linux and its user space are built with the C
     extension. CoreMark's score uses a build without compressed instructions;
-    built with them (`COREMARK_COMPRESSED=1`) it takes about 10% more cycles
-    in simulation. Both builds retire the same instructions, so the extra
-    cycles are not code generation. Of the 22,240 extra cycles, dispatch
-    width accounts for 19,592 (one-wide instead of two-wide cycles, mostly a
-    32-bit instruction that spans the fetch window and leaves no room for the
-    second slot), front-end bubbles for 6,148 (redirects after pre-decode,
-    pending-prediction and halfword-target holdoffs), and back-end stalls
-    take back 3,500. Fetch and prediction on 16-bit instructions are the
-    cause, and improving them is open. Two further options are open: a staged
-    target-buffer lookahead for a 16-bit instruction at the start of a fetch
-    word that does not pair with the next one, and alignment flags
-    (`-falign-loops`, `-falign-jumps`) for self-built software.
+    built with them (`COREMARK_COMPRESSED=1`) it takes about 8% more cycles
+    in BRAM simulation (230,538 vs 213,390 ticks) and about 7% more in DDR
+    (292,579 vs 273,302 ticks). Both builds retire the same instructions, so
+    the extra cycles are not code generation. Slot-1 fast-BTB prediction
+    serves 32-bit branches and calls at odd halfword addresses and keeps a
+    four-byte fetch lead on non-crossing pending handoffs to odd targets. The
+    remaining gap is fetch and dispatch width on mixed 16-bit and 32-bit
+    code: a 32-bit instruction starting at an odd halfword spans both words
+    of the 64-bit fetch window, leaving only one 16-bit parcel for slot 2 so
+    a following 32-bit instruction cannot pair. Widening fetch or adding a
+    parcel queue between fetch and pre-decode is open. Two further options
+    are open: a staged target-buffer lookahead for a 16-bit instruction at
+    the start of a fetch word that does not pair with the next one, and
+    alignment flags (`-falign-loops`, `-falign-jumps`) for self-built
+    software.
 
 ## Core area
 
@@ -717,11 +732,12 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   transceivers, so that Linux finds NVMe drives and other devices with its
   standard drivers. The X3's PCIe lanes go to its host connector, where
   FROST is the device rather than the root, so hardware tests of the root
-  complex need a board with a downstream slot or connector. Its
-  configuration space and device memory windows would sit in `soc_top`'s
-  device decode, and the devices' DMA would be another master on the AXI4
-  mux that carries the NIC's and the DMA engine's DMA into `cpu_top`'s
-  coherent ingress.
+  complex need a board with a downstream slot or connector. `soc_top` exposes
+  external coherent AXI4 DMA slave ports behind register slices
+  (`EXT_DMA_PORTS`) on the DMA mux into `cpu_top`'s coherent ingress and an
+  external 16 KiB AXI4-Lite peripheral window (`EXT_AXIL_WINDOW` at
+  `0x4002_4000`–`0x4002_7FFF`); the root complex itself and wider PCIe
+  configuration and device BAR apertures belong to this item.
 - Storage beyond the NFS root: NVMe drives through the root complex, a block
   device that the host serves through the X3's PCIe Gen4 x8 host interface
   with FROST as the endpoint, or iSCSI with ext4. NFS is the supported root

@@ -96,6 +96,7 @@ VALID_APPS = [
     "nic_cmo_loopback",
     "nic_echo",
     "nic_loopback",
+    "odd_halfword_pred_test",
     "opensbi_smoke",
     "packet_parser",
     "pd_itt_slot2",
@@ -138,14 +139,12 @@ VALID_APPS = [
     "vm_test",
 ]
 
-# The vector test programs need the vector unit and misaligned_test the
-# misaligned-access engine (MISALIGNED_HW), which only the X3 build has.
+# The vector test programs need the X3's vector unit.
 # vec_crypto_exec_test, vec_fp_test, vec_integer_test, vec_source_eew_test,
 # vec_vstart_reload_test and vec_vtype_handoff_test also check the vector length they are built for:
 # VEC_VLEN, 256 by default, the X3 build's VLEN.
 BOARD_SPECIFIC_APPS = {
     "bootrom": frozenset({"vcu118"}),
-    "misaligned_test": frozenset({"x3"}),
     "nic_bench": frozenset({"vcu118"}),
     "vec_arith_test": frozenset({"x3"}),
     "vec_crypto_exec_test": frozenset({"x3"}),
@@ -267,6 +266,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "store_fill_bench",
     "svpbmt_cmo_test",
     "tick_torture",
+    "vec_crypto_exec_test",
     "vec_ff_test",
     "vec_index_test",
     "vec_mem_source_eew_test",

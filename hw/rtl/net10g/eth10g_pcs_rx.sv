@@ -103,9 +103,8 @@ module eth10g_pcs_rx #(
       if (i_block_valid) header_reg <= i_block[1:0];
     end
   end
-  // The 10G block keeps its handshakes quiet in reset.
   // Local fault also aborts an unfinished MAC frame when the input disappears.
-  assign o_xgmii_valid = !i_rst && (pcs_ok ? checked_valid : (valid_reg || !i_signal_ok));
+  assign o_xgmii_valid = pcs_ok ? checked_valid : (valid_reg || !i_signal_ok);
   assign o_xgmii_data  = pcs_ok ? checked_data : 64'h0100009c0100009c;
   assign o_xgmii_ctrl  = pcs_ok ? checked_ctrl : 8'h11;
   assign o_bad_block   = pcs_ok && checked_valid && bad_sequence;

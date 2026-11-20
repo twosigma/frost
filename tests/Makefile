@@ -501,8 +501,8 @@ COMPILE_ARGS := $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
         $(ROOT)/hw/rtl/lib/cdc/cdc_sync.sv \
         $(ROOT)/boards/vcu118/vcu118_eth1g.sv
 VERILOG_SOURCES :=
-else ifneq ($(filter $(TOPLEVEL),nic_top nic_mac_wrap nic_pause_rx_wire),)
-# The whole NIC: MAC/PCS in its domains, FIFOs, engines, registers
+else ifneq ($(filter $(TOPLEVEL),nic_top nic_engine nic_mac_10g nic_mac_1g nic_pause_rx_wire),)
+# The whole NIC, its core engine, or a pluggable MAC block
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
@@ -521,6 +521,8 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/fifo/fifo.f \
         $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_domain_reset.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_core_reset_ctrl.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_mac_reset_ctrl.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_reset_ctrl.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_reset_test_harness.sv
 VERILOG_SOURCES :=
@@ -529,6 +531,10 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/axi/axil_checker.sv \
         $(ROOT)/hw/rtl/lib/axi/axil_reg_bridge.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),axi_register_slice)
+VERILOG_SOURCES := $(ROOT)/hw/rtl/lib/axi/axi_register_slice.sv
+else ifeq ($(TOPLEVEL),axil_register_slice)
+VERILOG_SOURCES := $(ROOT)/hw/rtl/lib/axi/axil_register_slice.sv
 else ifeq ($(TOPLEVEL),axi_checker)
 VERILOG_SOURCES := $(ROOT)/hw/rtl/lib/axi/axi_checker.sv
 
@@ -781,9 +787,8 @@ SIM_FAST_MAINT ?= 1
 # stage:
 #   MEMORY_LINK_STAGES=1 ./scripts/frost.py cocotb ddr_bench
 MEMORY_LINK_STAGES ?= 0
-# Misaligned loads and stores to cached DDR in hardware (frost MISALIGNED_HW),
-# as the X3 build has them. The engine needs the cached tier, so the default
-# follows ENABLE_CACHED_TIER.
+# Perform plain misaligned loads and stores to cached DDR in hardware.
+# The engine needs the cached tier, so the default follows ENABLE_CACHED_TIER.
 MISALIGNED_HW ?= $(if $(filter 0,$(ENABLE_CACHED_TIER)),0,1)
 ifeq ($(TOPLEVEL),frost)
 ifneq ($(strip $(FROST_CPU_PERIOD_PS)),)

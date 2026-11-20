@@ -25,8 +25,8 @@ on:
   pull_request:
     branches: [main]
     types: [labeled]
-  # A manual run can replay a vector slice, run the complete vector
-  # campaign or run regular CI with optional fresh proofs and toggle coverage.
+  # A manual run can collect toggles, replay a vector slice, run the complete
+  # vector campaign or run regular CI with optional fresh proofs.
   workflow_dispatch:
     inputs:
       reprove:
@@ -34,7 +34,7 @@ on:
         type: boolean
         default: false
       toggle_coverage:
-        description: Add toggle coverage to Cocotb jobs that collect coverage
+        description: Run only the Cocotb coverage jobs with toggles, the image build and the coverage report
         type: boolean
         default: false
       slice:
@@ -61,13 +61,15 @@ permissions:
 # labelling started. The ASIC flow in asic.yml follows the same rule. Adding a
 # label other than run-ci starts a run in a group of its own, so it does not
 # cancel the pull request's run. Each manual vector replay or complete
-# campaign has its own group so it can finish alongside a main run.
+# campaign has its own group so it can finish alongside a main run. Toggle
+# coverage runs have a separate group per ref.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{
     github.event.action == 'labeled' &&
     github.event.label.name != 'run-ci' && '-label' || '' }}${{
-    github.event_name == 'workflow_dispatch' &&
+    github.event_name == 'workflow_dispatch' && inputs.toggle_coverage && '-toggle' || '' }}${{
+    github.event_name == 'workflow_dispatch' && !inputs.toggle_coverage &&
     (inputs.campaign == 'complete' || inputs.slice != '')
     && format('-rvv-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -87,13 +89,13 @@ env:
   FROST_REUSE_REF: ${{ github.ref_name }}
 
 jobs:
-  # A vector campaign or replay goes directly to the shared image.
+  # Toggle coverage and manual vector runs go directly to the shared image.
   # Regular CI runs on main, on demand or for the run-ci label.
   gate:
     name: Select jobs
     if: >-
       ${{ github.event_name != 'workflow_dispatch' ||
-      (inputs.campaign != 'complete' && inputs.slice == '') }}
+      (!inputs.toggle_coverage && inputs.campaign != 'complete' && inputs.slice == '') }}
     runs-on: ubuntu-26.04
     outputs:
       full: ${{ steps.select.outputs.full }}
@@ -192,13 +194,24 @@ jobs:
       needs.gate.outputs.full == 'true')) }}
     outputs:
       tools_id: ${{ steps.identity.outputs.tools_id }}
+      verilator_matrix: ${{ steps.verilator.outputs.matrix }}
       rvv_matrix: ${{ steps.rvv.outputs.matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
 
+      - name: Select Cocotb jobs
+        id: verilator
+        if: ${{ needs.gate.outputs.full == 'true' || inputs.toggle_coverage }}
+        env:
+          TOGGLE_COVERAGE: ${{ inputs.toggle_coverage }}
+        run: |
+          matrix=$(python3 tests/ci_verilator.py)
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
       - name: Select generated vector shards
         id: rvv
+        if: ${{ !inputs.toggle_coverage }}
         env:
           CAMPAIGN: ${{ inputs.campaign || 'rotation' }}
           SLICE: ${{ inputs.slice }}
@@ -255,338 +268,17 @@ jobs:
   test-verilator:
     name: Cocotb ${{ matrix.shard.name }} (Verilator / ${{ matrix.mem_config }})
     runs-on: ubuntu-26.04
-    needs: [build-docker, gate]
-    if: ${{ needs.gate.outputs.full == 'true' }}
+    needs: build-docker
+    if: >-
+      ${{ !cancelled() && needs.build-docker.result == 'success' &&
+      needs.build-docker.outputs.verilator_matrix != '' }}
     # Real-program jobs allow four hours, including setup and coverage uploads,
     # unless the shard sets timeout_minutes. A shard's limit is 1.8 times its
     # slowest measured time, rounded up, so a slow runner still finishes it.
     timeout-minutes: ${{ matrix.shard.timeout_minutes || (startsWith(matrix.shard.name, 'Unit Tests') && 360 || 240) }}
     strategy:
       fail-fast: false
-      matrix:
-        mem_config: [bram, ddr]
-        shard:
-          - name: Real Programs (CoreMark)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[coremark] or [coremark_profile]"
-            # In the BRAM tier, the run of this test also records a
-            # calibration trace for the performance model's check.
-            calibration_test: coremark
-          - name: Real Programs (AMO and timer torture)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[amo_irq_torture_sim] or [tick_torture_sim]"
-          - name: Real Programs (Cache stress)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [drain_trapframe_test] or [restore_window_stress] or [mret_drain_deadlock] or
-              [linux_clksrc_faithful] or [trap_s2l_fwd] or [pde_return_hazard] or [nic_dma_stress]
-          - name: Real Programs (Privilege and MMU)
-            timeout_minutes: 280
-            coverage: [ddr]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [csr_test] or [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or
-              [satp_drain_test] or [ad_fault_test] or [smode_test] or [csr_rmw_test] or
-              [ptw_bus_fault_test] or [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or
-              [svinval_test] or
-              [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error]
-          - name: Real Programs (Interrupts)
-            coverage: [ddr]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [imsic_csr_test] or [imsic_msi_test] or [imsic_collision_test] or
-              [timer_replay_test] or [imsic_aplic_coexist_test] or [aplic_test] or [sstc_test] or
-              [sscofpmf_test] or
-              [ns16550_irq_console_test] or [wfi_mepc_test] or
-              [wfi_drain_mepc_test] or [mret_timer_resume_test] or [mtimer_stress] or
-              [wfi_lost_tick] or [irq_mie_window] or [irq_take_hold_test] or [ns16550_test] or
-              [clint_test] or
-              [linux_irq_ddr_test] or [linux_irq_active_ddr_test] or [linux_irq_stack_slot_test] or
-              [linux_irq_find_next_slot_test]
-          - name: Real Programs (CPU and fetch)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [branch_pred_test] or [c_ext_test] or [cf_ext_test] or [call_stress] or [fpu_test] or
-              [fpu_assembly_test] or [isa_test] or [rv64_smoke] or [rv64_amo_test] or
-              [spanning_test] or [ras_test] or [ras_stress_test] or [tomasulo_test] or
-              [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
-              [window_skip_repro] or [l1i_set_test]
-          - name: Real Programs (32 KiB L1I)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [smc_fencei_test_l1i32] or [ifread_test_l1i32] or [l1i_set_test_l1i32] or
-              [l1i_set_test_l1i32_hw_sweep]
-          - name: Real Programs (Load queue slots)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[lq_stale_slot_probe]"
-          - name: Real Programs (C library and RTOS)
-            coverage: [ddr]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [sprintf_test] or [strings_test] or [memory_test] or [freertos_demo] or
-              [packet_parser]
-          - name: Real Programs (DMA, NIC and coherence)
-            coverage: [ddr]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [nic_loopback] or [nic_echo] or [dma_torture] or [cached_store_burst_test] or [dma_torture_equal_lines] or
-              [ptw_coherence_test] or [ptw_coherence_test_equal_lines] or [ifread_test] or [ifread_test_equal_lines] or [smc_fencei_test] or
-              [smc_fencei_test_equal_lines] or [ddr_test_equal_lines] or [ddr_exec_test_equal_lines]
-              or [ddr_atomic_test_equal_lines] or [async_hello_world] or [async_nic_loopback]
-              or [async_dma_torture]
-          - name: Real Programs (Debug and UART)
-            coverage: [bram]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [debug_test] or [debug_fence_test] or [debug_openocd_test] or [bram_reload] or [instret_test] or
-              [hello_world] or [uart_burst] or [uart_echo] or [print_clock_speed] or [sysreset_test]
-          - name: Real Programs (Zicboz)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
-          - name: Real Programs (Zicboz pages)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[cbo_zero_pages]"
-          - name: Real Programs (Zicboz eviction)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]"
-          - name: Real Programs (Full-line stores)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[full_line_test]"
-          - name: Real Programs (Store-stream benchmark)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[store_fill_bench]"
-          # One register stage between the hart and the cluster memory, as
-          # the X3 builds it (MEMORY_LINK_STAGES=1).
-          - name: Real Programs (Memory link stage, DDR programs)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [ddr_bench_link1] or [ddr_atomic_test_link1] or [ddr_mlp_test_link1]
-          - name: Real Programs (Memory link stage, other programs)
-            coverage: [ddr]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [coremark_link1] or [csr_test_link1] or [dma_torture_link1] or
-              [ptw_coherence_test_link1] or [cached_store_burst_test_link1] or
-              [cbo_zero_test_link1] or [cbo_zero_pages_link1]
-          - name: Real Programs (Memory link stage, full-line stores)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[full_line_test_link1]"
-          # The PAUSE and RAS benchmarks share profiling builds.
-          - name: Real Programs (Runtime benchmarks)
-            coverage: [bram]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[pause_test] or [ras_slot_bench] or [ras_repair_bench]"
-          # Every registry name starting with vec_ runs here, so vector programs
-          # added later need no workflow change. The VLEN 256 programs share one build.
-          - name: Real Programs (Vector programs)
-            timeout_minutes: 120
-            coverage: [bram]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[vec_"
-          - name: Real Programs (Memory and NIC stress)
-            timeout_minutes: 270
-            coverage: [bram]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [nic_bench] or [nic_sg_loopback] or [nic_rate] or
-              [l2_capacity_chase_capacity] or [l2_capacity_chase_smoke] or
-              [misaligned_test] or [sstvala_fault_test] or [ddr_reset_distribution] or
-              [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
-          - name: Real Programs (Cache management and memory errors)
-            coverage: [bram]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [nic_cmo_loopback] or [memerr_test] or
-              [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
-          - name: Real Programs (Self-modifying code and fence.i)
-            coverage: [bram]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[smc_stale_test] or [smc_torture] or [smc_predict_test] or [fencei_bench]"
-          # The complement keeps unlisted non-CoreMark-PRO programs in CI.
-          # OpenSBI and registry budgets above 10 million cycles need named
-          # shards; give each OpenSBI boot its own BRAM-only include entry.
-          # Keep the exclusions in sync with every named shard.
-          - name: Real Programs (Runtime and other)
-            timeout_minutes: 300
-            coverage: [bram]
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: >-
-              not ([coremark] or [coremark_profile] or [amo_irq_torture_sim] or [tick_torture_sim]
-              or [drain_trapframe_test] or [restore_window_stress] or [mret_drain_deadlock] or
-              [linux_clksrc_faithful] or [trap_s2l_fwd] or [pde_return_hazard] or [nic_dma_stress]
-              or [csr_test] or
-              [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or [satp_drain_test] or
-              [ad_fault_test] or [smode_test] or [csr_rmw_test] or [ptw_bus_fault_test] or
-              [ptw_recovery_test] or [sum_toggle_test] or [asid_test] or [svinval_test] or
-              [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error] or
-              [imsic_csr_test] or [imsic_msi_test] or
-              [imsic_collision_test] or [timer_replay_test] or [imsic_aplic_coexist_test] or
-              [aplic_test] or [sstc_test] or [sscofpmf_test] or
-              [ns16550_irq_console_test] or [wfi_mepc_test] or [wfi_drain_mepc_test] or
-              [mret_timer_resume_test] or [mtimer_stress] or [wfi_lost_tick] or [irq_mie_window] or
-              [irq_take_hold_test] or [ns16550_test] or [clint_test] or [linux_irq_ddr_test]
-              or [linux_irq_active_ddr_test]
-              or [linux_irq_stack_slot_test] or [linux_irq_find_next_slot_test] or
-              [branch_pred_test] or [c_ext_test] or [cf_ext_test] or [call_stress] or [fpu_test] or
-              [fpu_assembly_test] or [isa_test] or [rv64_smoke] or [rv64_amo_test] or
-              [spanning_test] or [ras_test] or [ras_stress_test] or [tomasulo_test] or
-              [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
-              [window_skip_repro] or [lq_stale_slot_probe] or [sprintf_test] or [strings_test] or
-              [memory_test] or [freertos_demo] or [packet_parser] or [nic_loopback] or [nic_echo] or
-              [dma_torture] or [cached_store_burst_test] or [dma_torture_equal_lines] or [ptw_coherence_test] or
-              [ptw_coherence_test_equal_lines] or [ifread_test] or [ifread_test_equal_lines] or [smc_fencei_test] or [smc_fencei_test_equal_lines]
-              or [ddr_test_equal_lines] or [ddr_exec_test_equal_lines] or
-              [ddr_atomic_test_equal_lines] or [debug_test] or [debug_fence_test] or [debug_openocd_test] or [bram_reload]
-              or [instret_test] or [hello_world] or [uart_burst] or [uart_echo] or
-              [print_clock_speed] or [sysreset_test] or [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or
-              [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [ddr_bench] or
-              [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz]
-              or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
-              [opensbi_smoke_no_misaligned_hw] or [opensbi_reset_cold] or [opensbi_reset_warm]
-              or [isa_test_sram_macros] or [ddr_test_sram_macros]
-              or [ddr_exec_test_sram_macros] or
-              [nic_loopback_sram_macros] or [cache_counters_openocd] or [async_hello_world]
-              or [async_nic_loopback] or [async_dma_torture]
-              or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
-              or [cbo_zero_pages] or [cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]
-              or [cbo_zero_pages_board] or [cbo_zero_pages_board_ddr] or [cbo_zero_bench]
-              or [full_line_test] or [store_fill_bench] or [fencei_jit_bench]
-              or [ddr_bench_link1] or [ddr_atomic_test_link1] or [ddr_mlp_test_link1]
-              or [coremark_link1] or [csr_test_link1] or [dma_torture_link1]
-              or [ptw_coherence_test_link1] or [cached_store_burst_test_link1]
-              or [cbo_zero_test_link1] or [cbo_zero_pages_link1] or [full_line_test_link1]
-              or [l1i_set_test] or [smc_fencei_test_l1i32] or [ifread_test_l1i32]
-              or [l1i_set_test_l1i32] or [l1i_set_test_l1i32_hw_sweep]
-              or [nic_bench] or [nic_sg_loopback] or [nic_rate]
-              or [l2_capacity_chase_capacity] or [l2_capacity_chase_smoke]
-              or [cbo_mgmt_test] or [cbo_mgmt_test_assert] or [nic_cmo_loopback] or [misaligned_test]
-              or [memerr_test] or [memerr_test_seeded] or [memerr_readback] or [ecc_scrub_test]
-              or [sstvala_fault_test] or [ddr_reset_distribution] or [ddr_reset_distribution_async] or [ddr_hpm_refill_test]
-              or [pause_test] or [ras_slot_bench] or [ras_repair_bench]
-              or [smc_stale_test] or [smc_torture] or [smc_predict_test] or [fencei_bench]
-              or [vec_)
-          - name: Real Programs (CoreMark-PRO / core)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: "[coremark_pro_core]"
-          - name: Real Programs (CoreMark-PRO / loops)
-            timeout_minutes: 340
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: "[coremark_pro_loops]"
-          - name: Real Programs (CoreMark-PRO / nnet)
-            timeout_minutes: 270
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: "[coremark_pro_nnet]"
-          - name: Real Programs (CoreMark-PRO / cjpeg, linear_alg, parser, radix2, sha, zip)
-            coverage: []
-            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: >-
-              [coremark_pro_cjpeg] or [coremark_pro_linear_alg] or [coremark_pro_parser] or
-              [coremark_pro_radix2] or [coremark_pro_sha] or [coremark_pro_zip]
-        include:
-          # These configurations already select their program layout and DDR
-          # geometry. Keep the long runs separate from the other programs.
-          - mem_config: bram
-            shard:
-              name: Real Programs (Zicboz large cache)
-              coverage: []
-              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[cbo_zero_pages_board] or [cbo_zero_pages_board_ddr]"
-          - mem_config: bram
-            shard:
-              name: Real Programs (Zicboz clearing benchmark)
-              coverage: []
-              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[cbo_zero_bench]"
-          - mem_config: bram
-            shard:
-              name: Real Programs (Fence.i JIT benchmark)
-              coverage: []
-              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[fencei_jit_bench]"
-          - mem_config: bram
-            shard:
-              name: Real Programs (DDR probes and fetch fuzz)
-              coverage: []
-              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: >-
-                [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or [ddr_heap_test] or [ddr_mlp_test]
-                or [ddr_atomic_test] or [ddr_bench] or [hello_world_fetch_fuzz] or
-                [branch_pred_test_fetch_fuzz] or
-                [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz]
-          # The SoC built from the ASIC flow's SRAM macros (asic/README.md).
-          - mem_config: bram
-            shard:
-              name: Real Programs (SRAM macros)
-              coverage: [bram]
-              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: >-
-                [isa_test_sram_macros] or [ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or
-                [nic_loopback_sram_macros]
-          # Each OpenSBI boot has a fixed image layout and its own long-running job.
-          - mem_config: bram
-            shard:
-              name: Real Programs (OpenSBI smoke)
-              coverage: [bram]
-              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[opensbi_smoke]"
-          - mem_config: bram
-            shard:
-              name: Real Programs (OpenSBI smoke, no misaligned hardware)
-              timeout_minutes: 290
-              coverage: [bram]
-              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[opensbi_smoke_no_misaligned_hw]"
-          - mem_config: bram
-            shard:
-              name: Real Programs (OpenSBI cold reset)
-              coverage: [bram]
-              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[opensbi_reset_cold]"
-          - mem_config: bram
-            shard:
-              name: Real Programs (OpenSBI warm reset)
-              coverage: [bram]
-              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[opensbi_reset_warm]"
-          # The OpenOCD session that reads the cache counters is long, and its
-          # program runs from low BRAM in either tier.
-          - mem_config: bram
-            shard:
-              name: Real Programs (Cache counters over OpenOCD)
-              coverage: []
-              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-              pytest_filter: "[cache_counters_openocd]"
-          # The unit benches run serially in two jobs of about equal duration;
-          # tests/test_run_cocotb.py assigns each bench to one of them.
-          - mem_config: bram
-            shard:
-              name: Unit Tests A
-              coverage: [bram]
-              pytest_mark: "cocotb and cocotb_unit and cocotb_unit_a"
-              pytest_filter: test_unit
-          - mem_config: bram
-            shard:
-              name: Unit Tests B
-              coverage: [bram]
-              pytest_mark: "cocotb and cocotb_unit and cocotb_unit_b"
-              pytest_filter: test_unit
+      matrix: ${{ fromJSON(needs.build-docker.outputs.verilator_matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -624,7 +316,7 @@ jobs:
               (github.event_name == 'workflow_dispatch' && inputs.toggle_coverage &&
               contains(matrix.shard.coverage, matrix.mem_config))) && '1' || '0' }}
           # 39 seeds and three controls at 41 seconds per start take about 29
-          # minutes. Allow 40 minutes within the shortest affected job (120).
+          # minutes. Allow 40 minutes within the shortest affected job (240).
           FROST_STARTUP_TIMEOUT_SEC: >-
             ${{ github.event_name == 'workflow_dispatch' && inputs.toggle_coverage &&
               contains(matrix.shard.coverage, matrix.mem_config) &&
@@ -851,7 +543,7 @@ jobs:
   test-arch-compliance:
     name: Arch Tests (${{ matrix.extensions }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
     runs-on: ubuntu-26.04
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.timeout_minutes || 120 }}
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
     strategy:
@@ -863,13 +555,13 @@ jobs:
         # BRAM, split by --shard K/N. Only the first group collects coverage
         # (tests/README.md#coverage).
         include:
-          - {extensions: I B C, mem_config: bram, coverage: 1}
+          - {extensions: I B C, mem_config: bram, coverage: 1, timeout_minutes: 123}
           - {extensions: M A K Zicond privilege D_Zcd hints CMO Zimop, mem_config: bram, coverage: 0}
           - {extensions: I M hints CMO Zimop, mem_config: ddr, coverage: 0}
           - {extensions: B C A K Zicond Zifencei privilege D_Zcd, mem_config: ddr, coverage: 0}
-          - {extensions: F D, mem_config: bram, shard: 1/3, coverage: 0}
-          - {extensions: F D, mem_config: bram, shard: 2/3, coverage: 0}
-          - {extensions: F D, mem_config: bram, shard: 3/3, coverage: 0}
+          - {extensions: F D, mem_config: bram, shard: 1/3, coverage: 0, timeout_minutes: 153}
+          - {extensions: F D, mem_config: bram, shard: 2/3, coverage: 0, timeout_minutes: 139}
+          - {extensions: F D, mem_config: bram, shard: 3/3, coverage: 0, timeout_minutes: 136}
           - {extensions: F_Zfa D_Zfa Zfh, mem_config: bram, coverage: 0}
           - {extensions: F_Zfa D_Zfa Zfh, mem_config: ddr, coverage: 0}
     steps:
@@ -1117,13 +809,13 @@ jobs:
     runs-on: ubuntu-26.04
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.timeout_minutes || 120 }}
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
         include:
-          - {shard: 1, coverage: 1}
+          - {shard: 1, coverage: 1, timeout_minutes: 132}
           - {shard: 2, coverage: 1}
           - {shard: 3, coverage: 0}
           - {shard: 4, coverage: 1}
@@ -1230,7 +922,6 @@ jobs:
     runs-on: ubuntu-26.04
     needs:
       - build-docker
-      - gate
       - test-verilator
       - test-pa-width
       - test-arch-compliance
@@ -1238,7 +929,9 @@ jobs:
       - test-riscv-torture
       - test-testrig
     # Report what the finished jobs reached even when some of them failed.
-    if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.gate.outputs.full == 'true' }}
+    if: >-
+      ${{ !cancelled() && needs.build-docker.result == 'success' &&
+      needs.build-docker.outputs.verilator_matrix != '' }}
     timeout-minutes: 30
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
@@ -1312,7 +1005,8 @@ jobs:
           - shard: Xilinx core, hart caches and NIC
             pytest_filter: >-
               test_xilinx_partition[core] or test_xilinx_partition[core_backend] or
-              test_xilinx_partition[hart_cache] or test_xilinx_partition[nic]
+              test_xilinx_partition[hart_cache] or test_xilinx_partition[nic_engine] or
+              test_xilinx_partition[nic_mac]
             timeout_minutes: 180
           - shard: Xilinx top and cluster memory
             pytest_filter: >-
@@ -1385,7 +1079,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -1488,7 +1182,7 @@ jobs:
               (csr_file_bmc and not csr_file_bmc_perf_off) or
               (coherence_l1d and coh_l1d_local and prove) or
               (coherent_local_atomic and sc_cover)
-            timeout_minutes: 120
+            timeout_minutes: 124
           - shard: CSR profiling off
             pytest_filter: >-
               csr_file_bmc_perf_off or
@@ -1498,7 +1192,7 @@ jobs:
             pytest_filter: >-
               reorder_buffer_bmc or
               (coherent_local_atomic and sc_bmc)
-            timeout_minutes: 120
+            timeout_minutes: 125
           # The coherence home, prefetch requester at every request cap,
           # endpoints, coherent CPU interfaces and hart covers.
           - shard: Coherence
@@ -1509,7 +1203,7 @@ jobs:
               coh_hart_maint_owned_prove or coherence_array_equiv or
               coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
-            timeout_minutes: 300
+            timeout_minutes: 330
           # Home task limits total 319 minutes plus twenty minutes for image setup.
           - shard: Coherence home
             pytest_filter: coherence_home_coh_home_
@@ -1519,10 +1213,10 @@ jobs:
           # four-way tasks, each about an hour of BMC tasks.
           - shard: Coherence array equivalence
             pytest_filter: coherence_array_equiv and not coh_array_equiv4
-            timeout_minutes: 120
+            timeout_minutes: 133
           - shard: Coherence array equivalence four-way
             pytest_filter: coh_array_equiv4
-            timeout_minutes: 120
+            timeout_minutes: 150
           # Each bounded store-home schedule checks both watched-byte choices
           # at its full depth, with 15 minutes allowed for each case.
           - shard: Coherence store home
@@ -1548,7 +1242,7 @@ jobs:
           # The three-endpoint control BMC has a five-hour allowance.
           - shard: Coherence L1D multi-endpoint
             pytest_filter: coh_l1d_multi_bmc
-            timeout_minutes: 330
+            timeout_minutes: 349
           # Word variants share their representative's measured allowance:
           # 65 minutes each for one endpoint, 70 for three endpoints. The
           # sums use 79% and 85% of their respective job limits.
@@ -1667,7 +1361,7 @@ jobs:
           # the intervening-load BMC keeps 140. Each has a job of its own.
           - shard: Store boundary four records
             pytest_filter: coherence_store_boundary_bmc_four
-            timeout_minutes: 330
+            timeout_minutes: 360
           - shard: Store boundary intervening load
             pytest_filter: coherence_store_boundary_bmc_intervening
             timeout_minutes: 330
@@ -1719,7 +1413,7 @@ jobs:
             pytest_filter: >-
               (_twin and not rs_payload_twin_bmc_operands) or
               (coh_read_select and xilinx) or rs_issue_tag_ or tage_copy_convergence
-            timeout_minutes: 90
+            timeout_minutes: 148
           # The vector CSR state, the vector memory unit and the vtype tracker:
           # the vector CSR BMC takes forty to fifty minutes, the memory unit's
           # BMC has a 25-minute limit and the tracker's proofs take seconds;
@@ -1727,7 +1421,7 @@ jobs:
           - shard: Vector
             pytest_filter: >-
               csr_file_vector or vec_lmul_legality or vec_vmu or vec_vtype_tracker
-            timeout_minutes: 90
+            timeout_minutes: 126
           # The line client link proofs, in two jobs: the zero-stage BMC, the
           # two-identity one-stage BMC and the cover take about an hour; the
           # four- and eight-identity BMCs about forty minutes.
@@ -1743,11 +1437,11 @@ jobs:
             pytest_filter: >-
               (ptw or tlb or imsic or aplic or immu or dmmu) and not
               (coherence_ or coherent_ or _twin)
-            timeout_minutes: 75
+            timeout_minutes: 120
           # The load queue and its helper blocks.
           - shard: Load queue
             pytest_filter: (load_queue or lq_) and not (coherence_ or coherent_ or _twin)
-            timeout_minutes: 60
+            timeout_minutes: 77
           # The longest block proofs among the remaining targets: branch
           # prediction hand-off and release, the flash-valid cache bits, the
           # vector memory tracker, the issue and rename blocks, the payload
@@ -1773,7 +1467,7 @@ jobs:
               reservation_station_cover or
               rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
               tage_copy_convergence)
-            timeout_minutes: 120
+            timeout_minutes: 124
     # A task whose key has a pass marker is skipped; one in twenty of those
     # is proved again as a canary. The markers are cached per job: a main run
     # reads only main's cache, a pull request also its own.
@@ -1973,10 +1667,11 @@ jobs:
       ${{ matrix.mode }} ${{ matrix.part }})
     runs-on: ubuntu-26.04
     needs: build-docker
-    if: ${{ !cancelled() && needs.build-docker.result == 'success' }}
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' && !inputs.toggle_coverage }}
     timeout-minutes: ${{ matrix.mode == 'complete' && 360 || 140 }}
     strategy:
       fail-fast: false
+      max-parallel: 20
       matrix: ${{ fromJSON(needs.build-docker.outputs.rvv_matrix) }}
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
@@ -2036,7 +1731,7 @@ jobs:
     if: >-
       ${{ !cancelled() && needs.build-docker.result == 'success' &&
       github.event_name == 'workflow_dispatch' &&
-      inputs.campaign == 'complete' }}
+      !inputs.toggle_coverage && inputs.campaign == 'complete' }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/download-artifact@v8.0.2
@@ -2074,8 +1769,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # Build demo/Dockerfile as documented in README.md and run both the default
-  # two-program container invocation and a single-application invocation.
+  # Build demo/Dockerfile as documented in README.md and run the quick
+  # demonstration, the unfiltered two-program run (--raw), and a
+  # single-application invocation.
   test-demo-image:
     name: Demo Docker Image (build and run)
     runs-on: ubuntu-26.04
@@ -2106,34 +1802,68 @@ jobs:
         run: |
           docker build -f demo/Dockerfile -t frost-demo:local .
 
-      - name: Run default and single-application demo containers
+      - name: Run the quick demonstration, raw and single-application containers
         run: |
           set -euo pipefail
-          docker run --rm frost-demo:local 2>&1 | tee /tmp/frost-demo-default.log
-          grep -Fq "Frost: Hello, world!" /tmp/frost-demo-default.log
-          grep -Fq "seedcrc          : 0xe9f5" /tmp/frost-demo-default.log
-          grep -Fq "[0]crclist       : 0xe714" /tmp/frost-demo-default.log
-          grep -Fq "[0]crcmatrix     : 0x1fd7" /tmp/frost-demo-default.log
-          grep -Fq "[0]crcstate      : 0x8e3a" /tmp/frost-demo-default.log
-          grep -Fq "[0]crcfinal      : 0xe714" /tmp/frost-demo-default.log
-          grep -Fq "Correct operation validated." /tmp/frost-demo-default.log
-          grep -Fq "<<PASS>>" /tmp/frost-demo-default.log
-          grep -Fq "RTL assertions   : enabled after reset" /tmp/frost-demo-default.log
-          grep -Fq "Demonstration finished: hello_world and CoreMark completed on the FROST RTL." /tmp/frost-demo-default.log
-          if grep -Fq "<<FAIL>>" /tmp/frost-demo-default.log; then
-            echo "Unexpected <<FAIL>> in default demo output" >&2
+          # Every check stops the step by itself: no `&&` list, no bare negation.
+          require() {
+            if ! grep -Fq -- "$2" "$1"; then
+              echo "Missing from $1: $2" >&2
+              exit 1
+            fi
+          }
+          forbid() {
+            if grep -Fq -- "$2" "$1"; then
+              echo "Unexpected in $1: $2" >&2
+              exit 1
+            fi
+          }
+          start=$(date +%s)
+          docker run --rm frost-demo:local --quick 2>&1 | tee /tmp/frost-demo-quick.log
+          echo "Quick demonstration: $(( $(date +%s) - start )) s"
+          require /tmp/frost-demo-quick.log "clock cycles, checksum verified."
+          require /tmp/frost-demo-quick.log "every CRC correct (validated by CoreMark)"
+          require /tmp/frost-demo-quick.log "Both programs verified their own results."
+          # The closing table counts CoreMark's timed loop, so its cycles are the
+          # iteration's cycles CoreMark reports, and the table is labeled and sized.
+          require /tmp/frost-demo-quick.log "What the core did"
+          require /tmp/frost-demo-quick.log "Counted while rendering and inside CoreMark's timed loop"
+          require /tmp/frost-demo-quick.log "reorder-buffer entries (of 32)"
+          require /tmp/frost-demo-quick.log "clock cycles for this first iteration"
+          iteration=$(sed -n -E 's/^ *([0-9,]+) clock cycles for this first iteration.*/\1/p' /tmp/frost-demo-quick.log)
+          column=$(sed -n -E 's/^ *Clock cycles +[0-9,]+ +([0-9,]+) *$/\1/p' /tmp/frost-demo-quick.log)
+          if [ -z "$iteration" ]; then
+            echo "No iteration cycle count in the quick output" >&2
+            exit 1
+          fi
+          if [ -z "$column" ]; then
+            echo "No CoreMark cycle count in the closing table" >&2
+            exit 1
+          fi
+          if [ "$iteration" != "$column" ]; then
+            echo "Table says $column cycles, CoreMark says $iteration" >&2
             exit 1
           fi
 
+          docker run --rm frost-demo:local --raw 2>&1 | tee /tmp/frost-demo-raw.log
+          require /tmp/frost-demo-raw.log "Frost: Hello, world!"
+          require /tmp/frost-demo-raw.log "seedcrc          : 0xe9f5"
+          require /tmp/frost-demo-raw.log "[0]crclist       : 0xe714"
+          require /tmp/frost-demo-raw.log "[0]crcmatrix     : 0x1fd7"
+          require /tmp/frost-demo-raw.log "[0]crcstate      : 0x8e3a"
+          require /tmp/frost-demo-raw.log "[0]crcfinal      : 0xe714"
+          require /tmp/frost-demo-raw.log "Correct operation validated."
+          require /tmp/frost-demo-raw.log "<<PASS>>"
+          require /tmp/frost-demo-raw.log "RTL assertions   : enabled after reset"
+          require /tmp/frost-demo-raw.log "Demonstration finished: hello_world and CoreMark completed on the FROST RTL."
+          forbid /tmp/frost-demo-raw.log "<<FAIL>>"
+
           docker run --rm frost-demo:local --threads 1 --app hello_world 2>&1 | tee /tmp/frost-demo-single.log
-          grep -Fq "Simulator threads: 1" /tmp/frost-demo-single.log
-          grep -Fq "Frost: Hello, world!" /tmp/frost-demo-single.log
-          grep -Fq "to stop marker + 10,000 drain" /tmp/frost-demo-single.log
-          grep -Fq "RTL assertions   : enabled after reset" /tmp/frost-demo-single.log
-          if grep -Fq "<<FAIL>>" /tmp/frost-demo-single.log; then
-            echo "Unexpected <<FAIL>> in single-application demo output" >&2
-            exit 1
-          fi
+          require /tmp/frost-demo-single.log "Simulator threads: 1"
+          require /tmp/frost-demo-single.log "Frost: Hello, world!"
+          require /tmp/frost-demo-single.log "to stop marker + 10,000 drain"
+          require /tmp/frost-demo-single.log "RTL assertions   : enabled after reset"
+          forbid /tmp/frost-demo-single.log "<<FAIL>>"
 
   # ---------------------------------------------------------------------------
   # Build OpenSBI and musl userspace through the FROST BR2_EXTERNAL tree.
@@ -2235,7 +1965,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs: [build-docker, gate, build-frost-linux-mmu]
     if: ${{ needs.gate.outputs.full == 'true' }}
-    timeout-minutes: 20
+    timeout-minutes: 22
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1

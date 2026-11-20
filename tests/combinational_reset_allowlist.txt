@@ -28,9 +28,6 @@ hw/rtl/lib/axi/axi_cdc.sv: o_src_bvalid
 hw/rtl/lib/axi/axi_cdc.sv: o_src_rvalid
 hw/rtl/lib/axi/axi_cdc.sv: r_fifo.i_ready
 hw/rtl/lib/axi/axi_cdc.sv: w_fifo.i_ready
-hw/rtl/lib/axi/axi_mux.sv: o_dn_arvalid
-hw/rtl/lib/axi/axi_mux.sv: o_dn_awvalid
-hw/rtl/lib/axi/axi_mux.sv: o_dn_wvalid
 # Hit-port touches write the same unreset replacement RAM as plru_we; the
 # array's RAM-write comment documents why reset gates both write sources.
 hw/rtl/lib/cache/coherence_array.sv: hp_touch_we
@@ -50,30 +47,24 @@ hw/rtl/lib/cache/line_port_axi_bridge.sv: o_req_ready
 hw/rtl/lib/cdc/cdc_mailbox.sv: o_dst_valid
 hw/rtl/lib/cdc/cdc_mailbox.sv: o_src_ready
 hw/rtl/lib/fifo/async_fifo.sv: o_ready
-hw/rtl/net10g/eth10g_block_lock.sv: o_slip
 hw/rtl/net10g/eth10g_mac_pcs.sv: rx_gearbox.i_rst
 hw/rtl/net10g/eth10g_mac_rx.sv: u_packet_memory.i_write_enable
-hw/rtl/net10g/eth10g_mac_tx.sv: s_axis_tready
 hw/rtl/net10g/eth10g_mac_tx.sv: u_frame_memory.i_write_enable
-hw/rtl/net10g/eth10g_pcs_rx.sv: o_xgmii_valid
 hw/rtl/net10g/eth10g_pcs_rx.sv: reset_path
 hw/rtl/net10g/eth10g_pcs_rx.sv: sequence_check.i_rst
-hw/rtl/net10g/eth10g_pcs_tx.sv: o_xgmii_ready
 hw/rtl/net10g/eth10g_rx_gearbox.sv: o_block_valid
-hw/rtl/net10g/eth10g_tx_gearbox.sv: o_block_ready
 hw/rtl/net10g/eth10g_tx_gearbox.sv: o_raw_valid
-hw/rtl/net10g/eth10g_tx_reconcile.sv: if (!i_rst)
 hw/rtl/net10g/eth10g_tx_reconcile.sv: o_link_ready
 hw/rtl/peripherals/aplic/aplic.sv: o_msi_valid
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: pause_rst_rx
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: pause_rst_tx
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: tx_wr_rst
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_count.i_dst_rst
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_mac_rx_mbx.i_src_rst
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_rx_fifo.o_rst
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_rx_limit.i_src_rst
-hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_tx_cfg_mbx.i_src_rst
-hw/rtl/peripherals/nic/nic_reset_ctrl.sv: o_core_rst_next
+hw/rtl/peripherals/nic/nic_core_reset_ctrl.sv: o_core_rst_next
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: pause_rst_rx
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: pause_rst_tx
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: tx_wr_rst
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: u_count.i_dst_rst
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: u_mac_rx_mbx.i_src_rst
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: u_rx_fifo.o_rst
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: u_rx_limit.i_src_rst
+hw/rtl/peripherals/nic/nic_mac_cdc.sv: u_tx_cfg_mbx.i_src_rst
 hw/rtl/soc_top/soc_axi_slave.sv: o_axi_arready
 hw/rtl/soc_top/soc_axi_slave.sv: o_axi_awready
 hw/rtl/soc_top/soc_axi_slave.sv: o_axi_bvalid
@@ -100,7 +91,6 @@ hw/rtl/soc_top/soc_top.sv: o_cpu_rst
 hw/rtl/soc_top/soc_top.sv: reg_axil_bready
 hw/rtl/soc_top/soc_top.sv: reg_axil_done
 hw/rtl/soc_top/soc_top.sv: reg_axil_rready
-hw/rtl/soc_top/soc_top.sv: reset_request
 hw/rtl/soc_top/soc_top.sv: reset_request_soc
 hw/rtl/soc_top/soc_top.sv: soc_cpu_rst
 hw/rtl/soc_top/soc_top.sv: u_debug_module.i_core_in_reset

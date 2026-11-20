@@ -13,12 +13,15 @@ driver ([`frost_net10g`](../../../../linux/frost-net10g/README.md)) follows.
 | Module | Domain | Responsibility |
 | --- | --- | --- |
 | `nic_pkg.sv` | - | Register map, interrupt bits, beat codes, request kinds, and descriptor bits, shared with the benches and `sw/lib/include/nic.h` |
-| `nic_top.sv` | all | The NIC: the core-domain blocks below around `nic_mac_wrap`, and a `line_port_axi_bridge` (from `hw/rtl/lib/cache`) that carries the DMA front end's line requests over AXI4. Faces the SoC with a 64-bit AXI4-Lite register slave through `axil_reg_bridge`, the AXI4 DMA master, and the interrupt, and the board with the MAC clocks, the raw PMA interface, and the PCS block lock |
+| `nic_top.sv` | all | Structural wrapper composing `nic_engine` with either `nic_mac_10g` (`GMII_MODE=0`) or `nic_mac_1g` (`GMII_MODE=1`) for single-block benches |
+| `nic_engine.sv` | core | MAC-agnostic NIC core: AXI4-Lite register slave (`axil_reg_bridge`), CSRs, interrupt controller, RX/TX descriptor engines, DMA front end, AXI4 DMA master (`line_port_axi_bridge`), and `nic_core_reset_ctrl`, facing the attached MAC block over core-clock 64-bit AXI4-Stream TX/RX and sideband ports |
 | `nic_csr.sv` | core | Register file: control, status, station address, rings, link and PHY registers, 64-bit counters |
 | `nic_irq.sv` | core | Interrupt status, mask, and per-direction completion moderation |
 | `nic_pause_rx.sv`, `nic_pause_tx.sv` | MAC | 802.3x flow control around the MACs (see Registers) |
 | `nic_pause_rx_wire.sv` | RX MAC | Validates PAUSE on decoded XGMII before packet storage, independently of host backpressure |
-| `nic_mac_wrap.sv` | MAC + core | The MAC/PCS in its two domains, the packet FIFOs, the domain resets, status synchronizers, event counters, and the raw loopback (`RAW_LOOPBACK`) |
+| `nic_mac_cdc.sv` | MAC + core | Shared core-to-MAC crossing shell: core-clock 64-bit AXI4-Stream TX/RX to 68-bit packet FIFOs and TX checksum side FIFO, `nic_mac_reset_ctrl` and `nic_domain_reset`, 802.3x pause control, status synchronizers, and event counters |
+| `nic_mac_10g.sv` | MAC + core | Pluggable 10GBASE-R MAC/PCS block (`eth10g_mac_pcs` behind `nic_mac_cdc`) with raw 64-bit PMA ports and optional raw loopback (`RAW_LOOPBACK`) |
+| `nic_mac_1g.sv` | MAC + core | Pluggable 1 Gb/s GMII MAC block behind `nic_mac_cdc` with native GMII TX/RX ports, 1G PCS status-vector diagnostics, and optional preamble error tolerance (`RX_PREAMBLE_ER_TOLERANT`) |
 | `nic_dma_front.sv` | core | Both engines' requests onto the one DMA line port: eight entries with at most six per side, an order guard for a read and a write of one line, RX priority with a grant-counted bound, response steering, aperture refusal, and the RESET drain |
 | `nic_desc_fetch.sv` | core | One ring's descriptor supply: prefetch cursor, two-line cache, eligibility fixed when the read is requested |
 | `nic_rx_engine.sv` | core | Frames from the RX FIFO into ring buffers: filter, `nic_byte_pack`, truncation, status writes |
@@ -27,7 +30,9 @@ driver ([`frost_net10g`](../../../../linux/frost-net10g/README.md)) follows.
 | `nic_tx_segment.sv` | core | Frame stream segmentation stage: cuts large frames at segment limits with header updates |
 | `nic_byte_pack.sv` | core | 8-byte beats to strobed 32-byte line writes at any byte address |
 | `nic_byte_unpack.sv` | core | 32-byte lines to 8-byte beats from any byte offset |
-| `nic_reset_ctrl.sv` | core | The RESET sequence and the per-domain reset generation handshake |
+| `nic_core_reset_ctrl.sv` | core | Core-domain RESET drain and reset pulse sequencer, emitting a single-cycle `o_mac_restart` pulse |
+| `nic_mac_reset_ctrl.sv` | core | Per-domain reset generation handshake for a MAC block's TX and RX clock domains |
+| `nic_reset_ctrl.sv` | core | Structural composition of `nic_core_reset_ctrl` and `nic_mac_reset_ctrl` |
 | `nic_domain_reset.sv` | MAC (one per domain) | Applies the domain reset and acknowledges the generation |
 | `nic_reset_test_harness.sv` | bench | Controller, two domains, two `async_fifo`s, and a `cdc_gray_count` across three clocks |
 
@@ -36,18 +41,27 @@ The crossing primitives live in `hw/rtl/lib/cdc` (`cdc_sync`,
 
 ## Integration
 
-`soc_top.sv` instantiates `nic_top`:
+`soc_top.sv` instantiates `nic_engine` beside `nic_mac_10g` for the 10GBASE-R
+port (or omits `nic_mac_10g` and exports `nic_engine`'s core-clock AXI4-Stream
+and sideband ports up to `frost.sv` when `EXTERNAL_MAC != 0`), and when
+`ENABLE_1G_ETH != 0` instantiates a second `nic_engine` beside
+`nic_mac_1g` for the 1 Gb/s GMII port. Each pair connects in the core clock
+domain (`i_clk`) over 64-bit AXI4-Stream TX/RX ports plus reset, flow-control,
+link-status, and counter-total sideband signals. A different MAC block that
+implements this boundary attaches to `nic_engine` without changing the engine.
+Beat-code/TKEEP conversion at the boundary (`nic_pkg::beat_code_to_tkeep` and
+`nic_pkg::tkeep_to_beat_code`) is purely combinational and adds zero registers.
 
 | Interface | Connection |
 | --- | --- |
-| Registers | A 4 KiB window at `0x4003_0000`, inside the strongly ordered MMIO range |
-| Interrupt | APLIC source 4 |
-| DMA | An AXI4 master with 256-bit data, 3-bit ids and 64-bit addresses. Each line request is one 32-byte beat (AxLEN 0, AxSIZE 5, INCR) at its full physical address, and an SLVERR or DECERR response fails it. `soc_top` connects it to port 0 of the `axi_mux` it shares with the DMA test engine, round-robin per burst, and `axi_coherent_bridge` takes the bursts to the cache hierarchy's coherent DMA port ([AXI library](../../lib/axi/README.md)) |
+| Registers | A 4 KiB window at `0x4003_0000` (and `0x4002_2000` for the optional 1G port), inside the strongly ordered MMIO range |
+| Interrupt | APLIC source 4 (and source 2 for the optional 1G port) |
+| DMA | An AXI4 master with 256-bit data, 3-bit ids and 64-bit addresses. Each line request is one 32-byte beat (AxLEN 0, AxSIZE 5, INCR) at its full physical address, and an SLVERR or DECERR response fails it. `soc_top` connects it to `axi_mux` alongside the DMA test engine, round-robin per burst, and `axi_coherent_bridge` takes the bursts to the cache hierarchy's coherent DMA port ([AXI library](../../lib/axi/README.md)) |
 | MAC clocks | `frost.sv` brings in the TX and RX clocks separately, each with a presence level (`i_nic_tx_clk`, `i_nic_rx_clk`, `i_nic_tx_clk_ok`, `i_nic_rx_clk_ok`), and gives the PHY inputs defaults |
 | Block lock | `o_nic_rx_block_lock` exports the PCS block lock (LINK's RX_LOCKED, already synchronized to the core clock) for a board's transceiver supervisor |
 
 `RAW_LOOPBACK` (a `frost.sv` parameter, default 1, passed down to
-`nic_mac_wrap`) builds the raw loopback behind PHY_CTRL's MAC_LOOPBACK. That
+`nic_mac_10g`) builds the raw loopback behind PHY_CTRL's MAC_LOOPBACK. That
 path feeds the raw TX word into the RX PCS with no crossing logic, so it
 needs one clock on both MAC clock ports, as simulation provides. With
 `RAW_LOOPBACK=0`, for a transceiver's independent TX and RX clocks, the
@@ -130,7 +144,9 @@ The NIC has three clock domains: the core clock and the MAC's TX and RX
 clocks (one shared clock in simulation, the transceiver's two clocks on the
 X3). Each MAC domain's reset comes from a handshake:
 
-- `nic_reset_ctrl` raises a request with a generation bit per domain.
+- `nic_core_reset_ctrl` runs the core drain and reset pulse and emits a
+  one-cycle `o_mac_restart` pulse; `nic_mac_reset_ctrl` inside `nic_mac_cdc`
+  raises a request with a generation bit per MAC domain.
 - `nic_domain_reset` asserts the domain's reset through `cdc_reset_sync`
   without waiting for a clock edge, so a domain whose clock is absent still
   sits in reset. Once its own clock has held the reset for at least
@@ -238,14 +254,13 @@ acknowledged, and each direction has one status write in flight at a time.
 DONE therefore becomes visible in ring order, and a reader that sees DONE and
 then reads the buffer sees the data.
 
-`nic_tx_engine` validates a descriptor: length 1 to 9216, FIRST and LAST both
-set (a frame occupies exactly one descriptor), and the buffer inside cached
-DDR. An invalid one completes with DONE|ERR and sends nothing. A valid one's
-buffer is read line by line in address order, with up to four reads in flight
-or waiting in a reorder buffer, and `nic_byte_unpack` turns the lines into
-beats, the last carrying the remaining bytes. The status write is issued when
-the last beat has entered the FIFO: DONE means the buffer has been read, not
-that the frame reached the wire.
+`nic_tx_engine` checks the descriptor length, FIRST flag and cached DDR
+aperture. It reads each valid buffer in address order, with up to four lines
+in flight or in the reorder buffer. `nic_byte_unpack` turns the lines into
+beats. The engine issues the status write once the descriptor's last beat
+enters the merge stage. DONE tells software it can reuse the buffer.
+An invalid descriptor received with no frame open completes with
+DONE|ERR and sends nothing.
 
 **Segments and abandoned frames.** A frame may span several descriptors (FIRST on the first,
 LAST on the last). The first takes at most 9216 bytes unless a parameter descriptor precedes
@@ -254,12 +269,19 @@ is bounded by the MAC's maximum frame (an oversize frame is dropped and counted)
 segmentation stage. ABI_CTRL bit 6 reads one when the hardware has these limits and the abort below; the
 Linux driver then stops splitting segments at 9216 bytes. If a descriptor inside an open
 frame is rejected (length 0 or out of range, buffer outside DDR, duplicate FIRST), the engine
-abandons the frame: it flushes the merge and segmentation stages, closes any beat of the frame already
-in the TX FIFO with a one-byte last beat that carries an abort flag (`tuser` at the MAC, which
-drops the frame and counts it in TX_MAC_DROP), completes the rejected descriptor with
-DONE|ERR|ABORT (counted in TX_ABORTED), and never joins the frame's bytes to the next one.
+honors any outstanding FIFO offer and discards the remaining buffered bytes. If the FIFO
+then holds an unfinished frame, the engine sends a separate one-byte final beat with the
+abort flag (`tuser` at the MAC). The MAC drops that frame and counts it in TX_MAC_DROP.
+The rejected descriptor completes with DONE|ERR|ABORT (counted in TX_ABORTED).
 The segments before it keep their clean DONE; the remaining segments of the frame arrive with
 no frame open and complete with DONE|ERR.
+
+**TX stream handshake.** The MAC wrapper accepts a beat on a core clock edge with both
+VALID and READY high. After an edge with VALID high and READY low, the engine holds
+VALID, all 64 data bits, the last/byte-count code, checksum request and abort flag
+unchanged through the accepting edge. This includes a stalled first beat, final beat
+or abort. Descriptor rejection and the software reset drain preserve an outstanding
+offer. Core reset or loss of TX-domain readiness resets the stream and cancels it.
 
 The TX FIFO stores 68 bits per beat: data and the four-bit beat code. A 32-entry
 side FIFO holds one checksum request per frame. A first beat is accepted only
@@ -608,6 +630,7 @@ final scan.
 | `nic_rx_preamble_er`, `nic_mac_gmii` | Strict and tolerant preamble symbol classes, shortened preambles, errored delimiters and recovery |
 | `nic_top_gmii_diag` | Diagnostic register offsets, event counts, PHY payload transfer and reset |
 | `vcu118_phy_mdio` | Management framing, receive-counter clearing, missing-PHY rejection and held transfers |
+| `nic_engine` | Standalone core-domain NIC engine against a core-clock AXI4-Stream MAC model: every TKEEP termination lane, sideband controls, CLK_SHARED masking, MAC counter totals, CTRL.RESET restart pulses, and TX abort signalling |
 | `nic_top` | Whole NIC with three clocks and raw loopback, AXI4-Lite register accesses with channel skew and response stalls, its AXI4 master against a reordering slave, and SLVERR on buffer reads and writes |
 | `nic_top_unrelated_clocks` | Independent TX and RX clocks with `RAW_LOOPBACK=0` |
 | `nic_cmo_loopback` | Eight loopback frames while CPU cleans overlap packet DMA reads |
@@ -622,8 +645,11 @@ Run with `./scripts/frost.py cocotb <target>`. The
 [NIC benches](../../../../verif/cocotb_tests/nic/) contain the detailed cases.
 The `async_fifo` formal target checks bounded ordering and occupancy under
 unrelated clocks; `nic_dma_front` and `nic_irq` check the DMA front end and
-interrupt moderation and mask non-interference, and `cdc_mailbox` checks the
-two-phase CDC mailbox primitive under `cdc_reset_pair` (`nic_mac_wrap`'s
+interrupt moderation and mask non-interference; `nic_reset_split_equiv` proves
+that `nic_core_reset_ctrl` and `nic_mac_reset_ctrl` match a monolithic reset
+controller; `nic_axis_boundary` proves the core-clock AXI4-Stream beat-code
+bijection and TX checksum side-FIFO framing; and `cdc_mailbox` checks the
+two-phase CDC mailbox primitive under `cdc_reset_pair` (`nic_mac_cdc`'s
 `nic_domain_reset` coupling is outside that harness; see the
 [formal guide](../../../../formal/README.md) for proof scope and reset-model
 limits). Linux driver testing uses `frost_nettest`; see the

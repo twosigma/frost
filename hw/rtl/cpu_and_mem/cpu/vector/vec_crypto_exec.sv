@@ -231,4 +231,52 @@ module vec_crypto_exec #(
         default: state <= IDLE;
       endcase
   end
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // The element index above takes its low two bits from the word counter, so
+  // an OP-VE accepted with vl or vstart off a four-element boundary would write
+  // a whole group across the boundary. The ROB head traps that case; these
+  // checks catch an operand that reaches the engine without passing it.
+  logic crypto_reset_seen_q = 1'b0;
+  logic [15:0] vstart_chk_q, write_element;
+  logic [5:0] f6_in;
+  assign f6_in = i_insn[31:26];
+  assign write_element = clmul ? idx_q : {idx_q[15:2], word_q};
+  always @(posedge i_clk) begin
+    if (i_rst) crypto_reset_seen_q <= 1'b1;
+    if (state == IDLE && i_valid) vstart_chk_q <= i_vstart;
+    if (crypto_reset_seen_q && !i_rst) begin
+      if (state == IDLE && i_valid) begin
+        if (i_insn[6:0] == 7'h57) begin
+          assert (i_sew == 2'd3)
+          else $error("vec_crypto_exec: carry-less multiply accepted at SEW %0d", 8 << i_sew);
+        end else begin
+          assert (i_vl[1:0] == 2'b00 && i_vstart[1:0] == 2'b00)
+          else
+            $error(
+                "vec_crypto_exec: element group accepted with vl %0d, vstart %0d", i_vl, i_vstart
+            );
+          assert ((f6_in >= 6'h2d) ? (i_sew >= 2'd2) : (i_sew == 2'd2))
+          else $error("vec_crypto_exec: funct6 %0h accepted at SEW %0d", f6_in, 8 << i_sew);
+        end
+      end
+      if (o_we) begin
+        assert (write_element >= vstart_chk_q && write_element < vl_q)
+        else
+          $error(
+              "vec_crypto_exec: element %0d written outside vstart %0d to vl %0d",
+              write_element,
+              vstart_chk_q,
+              vl_q
+          );
+        // Dispatch rejects a .vs or vaesz.vs destination group that holds the
+        // key register; each group reads the key again.
+        assert (!scalar_key || o_waddr != vs2)
+        else $error("vec_crypto_exec: write to key register v%0d", vs2);
+      end
+    end
+  end
+`endif
+`endif
 endmodule

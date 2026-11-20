@@ -94,6 +94,9 @@ async def block_acquisition_gating_slip_and_signal_loss(dut: Any) -> None:
     """Lock on 64 valid headers in a row; slip on a bad one; unlock on signal loss."""
     bench = LinkBench(dut)
     await bench.reset()
+    assert await bench.step(rst=1, block_valid=1, header=0) == 1
+    assert not int(dut.locked.value)
+    await bench.step(rst=0, block_valid=0)
     for index in range(63):
         assert await bench.step(block_valid=1, header=1 + index % 2) == 0
         assert not int(dut.locked.value)

@@ -70,7 +70,7 @@ entry.
 | `cpu_top/` | Standalone CPU: one hart (`frost_hart.sv`), the shared L2 and outgoing AXI master (`frost_cluster_memory.sv`), and their composition (`cpu_top.sv`) |
 | `soc_top/` | FROST memory, peripheral and debug integration |
 | `cpu_and_mem/` | Shared pipeline and platform component implementations |
-| `cpu_and_mem/imem_predecode.sv` | Low-BRAM instruction memory and predecode metadata |
+| `cpu_and_mem/imem_predecode.sv` | Low-BRAM instruction memory with optional fetch metadata |
 | `cpu_and_mem/low_bram_fetch_presenter.sv` | Fixed-latency TestRIG and unit-bench fetch presenter |
 | `cpu_and_mem/fetch_provider.sv` | Cached and uncached instruction fetch buffers |
 | `cpu_and_mem/dma_test_engine.sv`, `dma_test_engine_axi.sv` | Coherent DMA copy/fill engine, and its AXI4 master |
@@ -84,7 +84,7 @@ entry.
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | Integer and FP register files |
 | `cpu_and_mem/cpu/ex_stage/` | ALU, multiply/divide, FPU, and branch execution |
 | [lib/cache/](lib/cache/README.md) | Coherent L1 caches in `coherent_hart_cache.sv`, the shared L2 home in `coherence_home.sv`, DDR bridge, and simulation DDR model |
-| [lib/axi/](lib/axi/README.md) | AXI4 DMA interconnect, coherent ingress bridge and AXI4-Lite register bridge |
+| [lib/axi/](lib/axi/README.md) | AXI4 DMA interconnect, coherent ingress bridge, register slices and AXI4-Lite register bridge |
 | `lib/` | RAM, FIFO, and clock-domain-crossing primitives; `line_align.sv`, which moves an access between register order and a pair of cache lines |
 | [peripherals/imsic/](peripherals/imsic/README.md) | AIA IMSIC with machine and supervisor interrupt files in each CPU, with SoC MSI store decode |
 | [peripherals/nic/](peripherals/nic/README.md) | Ethernet NIC with coherent DMA |
@@ -183,6 +183,7 @@ MMIO registers:
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
 | `0x4002_0000`–`0057` | DMA test engine | Legacy CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES plus versioned ABI_CTRL and SRC64/DST64/STATUS_ADDR64 (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
 | `0x4002_1000`–`1038` | Memory error unit | CAPS/STATUS/IRQ_EN/CE_COUNT/UE_COUNT/AXI_RD_ERRS/AXI_WR_ERRS/CE_ADDR/UE_ADDR/AXI_ERR/ECC_POLLS (`memory_error_unit.sv`, `sw/lib/include/memory_error.h`) |
+| `0x4002_4000`–`7FFF` | External AXI4-Lite window | Optional 16 KiB board peripheral window (`EXT_AXIL_WINDOW=1`) behind an `axil_register_slice` ([AXI integration guide](lib/axi/README.md#integrating-board-level-blocks)) |
 | `0x4002_F000` | SYSRESET | Stores at this address with both low byte strobes set and low 16 bits `0x7777` reset the core domain like `ndmreset`, including doubleword stores; upper data bits are ignored and reads return zero. The CPU restarts at the boot address. BRAM and DDR storage survive, but dirty cache lines are discarded. OpenSBI uses it through `syscon-reboot` (see [reset contract](soc_top/README.md)). |
 | `0x4003_0000`–`0FFF` | NIC | 4 KiB window: control and status, station address, rings, link and PHY, 64-bit counters (`peripherals/nic/nic_pkg.sv`, `sw/lib/include/nic.h`) |
 
@@ -374,9 +375,14 @@ synchronizer. A stopped SoC clock keeps the reset asserted. CPU owners and
 the fabric share this reset; CPU-only reset leaves presented AXI requests
 to drain through the fabric.
 
-With common CPU and SoC clocks, a separate CPU reset register asserts
-asynchronously with fabric reset or the registered core reset. CPU reset
-releases on the SoC clock edge after both requests clear.
+With a common CPU and SoC clock, a core reset request sampled on one rising
+edge asserts both the DMA bridge reset and the CPU reset pin. The pin stays
+high for one more edge after the bridge reset drops, giving the CPU and its
+coherent ingress two reset edges. With the clock stopped, the CPU reset pin
+holds its value. An external DDR reset pulse during the stop holds fabric
+reset high until the clock resumes. The first rising edge asserts CPU reset
+and the next edge resets the CPU state. CPU reset releases one edge after
+fabric reset clears if the core reset is also clear.
 
 Reset belongs at the flop, as `if (rst) ... else ...`. Combinational outputs
 can stay live in a first reset cycle, when every receiver on the same reset
@@ -480,9 +486,13 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
 | `frost.sv` | `VECTOR` / `VLEN` | `0` / `256` | 1 builds the vector state: `mstatus.VS` and the vector CSRs; `VLEN` is the vector register width, 128, 256 or 512 bits ([CPU README](cpu_and_mem/cpu/README.md#vector-state)) |
 | `frost.sv` | `VECTOR_ADVERTISE` | `0` | 1 would set `misa.V`; elaboration rejects it while the vector instructions are not implemented, and software enables the vector state through `mstatus.VS` |
-| `frost.sv` | `MISALIGNED_HW` | `0` | 1 builds the misaligned-access engine: plain misaligned loads and stores to cached DDR are performed in hardware instead of raising the address-misaligned exception; needs `ENABLE_CACHED_TIER`. The X3 build and the simulation default set it ([CPU README](cpu_and_mem/cpu/README.md#misaligned-accesses)) |
+| `frost.sv` | `MISALIGNED_HW` | `0` | Enables hardware completion of plain misaligned loads and stores to cached DDR. Requires `ENABLE_CACHED_TIER`. The X3, VCU118 and simulation defaults enable it ([CPU README](cpu_and_mem/cpu/README.md#misaligned-accesses)) |
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
 | `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |
+| `frost.sv` | `ENABLE_1G_ETH` | `0` | 1 instantiates the secondary 1 Gb/s GMII NIC (`nic_engine` + `nic_mac_1g`) at `0x4002_2000` (VCU118); 0 omits it |
+| `frost.sv` | `EXT_DMA_PORTS` / `EXT_DMA_ID_BITS` | `0` / `3` | Number and ID width of optional external 256-bit coherent AXI4 DMA slave ports, each behind an `axi_register_slice` ([AXI integration guide](lib/axi/README.md#integrating-board-level-blocks)) |
+| `frost.sv` | `EXTERNAL_MAC` | `0` | 1 omits `nic_mac_10g` and exports the primary `nic_engine`'s core-clock AXI4-Stream TX/RX and MAC sideband ports |
+| `frost.sv` | `EXT_AXIL_WINDOW` | `0` | 1 exposes a 16 KiB 64-bit AXI4-Lite master window at `0x4002_4000`–`0x4002_7FFF` behind an `axil_register_slice` |
 | `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` (`riscv_pkg::MmioWindowAddr`) | MMIO window base; the UART RX data and FIFO pop registers are fixed offsets from it |
 
 The compile-time aperture is an address-transport limit, not a claim that a

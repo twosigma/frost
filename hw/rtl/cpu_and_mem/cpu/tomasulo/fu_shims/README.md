@@ -249,8 +249,9 @@ and same-cycle flush contract with the arbiter.
 The `fp_shim` target replaces the engine with a model of arbitrary latency
 and result. `fp_shim_pipe` proves that the pipeline tracker matches a ghost
 issue history, a wake precedes its tail entry, and tracker and FIFO occupancy
-stay within the credit limit. Live tags stay distinct. After a squash the tag
-cannot complete or wake until reuse, and each live issue completes at most once.
+stay within the credit limit. The wrapper checks the shim's fresh-tag and
+credit requirements at issue. After a squash the tag cannot complete or wake
+until reuse, and each live issue completes at most once.
 `fp_launch_squash` checks both launch modes of the engine-only shim against a
 launch-gated reference. It uses arbitrary combinational tile products and the
 RTL multiplier pipeline and checks the valid bit when the engine captures a

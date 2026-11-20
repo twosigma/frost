@@ -25,6 +25,7 @@ from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
     RESET_CYCLES,
     _load_imem_predecode_model,
+    _nic_engine,
     generate_divided_clock,
     prepare_program_start,
     start_clocks,
@@ -45,12 +46,10 @@ def load_startup_loop(dut: Any) -> None:
     memory = soc.instruction_memory
     model = _load_imem_predecode_model()
     word = 0x0000006F  # jal x0, 0
-    sideband = model.make_sideband(word)
     packed = {
         "cold": model.pack_cold_data(word),
         "frontend_hot": model.pack_frontend_hot(word),
-        "sideband": sideband,
-        "compressed": model.make_fast_replica(word, sideband),
+        "compressed": model.make_fast_replica(word, 0),
     }
     for parity in ("even", "odd"):
         for name, value in packed.items():
@@ -68,9 +67,6 @@ def load_startup_loop(dut: Any) -> None:
                     array[0].value = Immediate(
                         (value >> (column_index * width)) & ((1 << width) - 1)
                     )
-        for name, bit in model.SCALAR_REPLICA_BITS:
-            bank = getattr(memory, f"u_{parity}_{name}_bank").u_ram.ram
-            bank[0].value = Immediate((sideband >> bit) & 1)
 
 
 @cocotb.test()
@@ -114,7 +110,7 @@ async def startup_smoke(dut: Any) -> None:
         await ClockCycles(dut.i_clk, 8)
         await ReadWrite()
         soc = platform.soc if hasattr(platform, "soc") else platform
-        nic = soc.gen_cached_tier.nic
+        nic = _nic_engine(soc.gen_cached_tier.nic)
         target = nic.u_dma_axi if control == "bridge" else nic
         cocotb.log.info("STARTUP_ASSERTION_CONTROL %s", control)
         target.sim_assertion_probe.value = 1

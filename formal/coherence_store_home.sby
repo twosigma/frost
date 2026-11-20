@@ -13,8 +13,8 @@ bmc_pressure_second bmc pressure deep second_watch direct_bmc
 cover_pressure covers pressure deep compact_covers
 link_bmc_siblings bmc siblings linked ordinary_link first_watch linked_bmc
 link_bmc_siblings_second bmc siblings linked ordinary_link second_watch linked_bmc
-link_bmc_pressure bmc pressure deep_link linked first_watch linked_bmc
-link_bmc_pressure_second bmc pressure deep_link linked second_watch linked_bmc
+link_bmc_pressure bmc pressure deep_link linked first_watch
+link_bmc_pressure_second bmc pressure deep_link linked second_watch
 link_cover_pressure covers pressure deep_link linked compact_covers
 
 [options]
@@ -36,6 +36,8 @@ bmc: aigsmt boolector
 [engines]
 direct_bmc: abc bmc3
 linked_bmc: abc bmc3 -c
+link_bmc_pressure: abc bmc3
+link_bmc_pressure_second: abc bmc3
 covers: btor btormc
 
 [script]

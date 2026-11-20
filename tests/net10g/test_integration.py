@@ -146,6 +146,12 @@ async def initialize(dut: Any) -> None:
         dut.i_tx_clk.value = 1
         dut.i_rx_clk.value = 1
         await Timer(3, unit="ns")
+        assert int(dut.o_tx_word_tick.value)
+        assert int(dut.o_rx_xgmii_valid.value)
+        assert not int(dut.o_tx_link_ready.value)
+        assert not int(dut.s_axis_tready.value)
+        assert not int(dut.o_tx_raw_valid.value)
+        assert not int(dut.m_axis_tvalid.value)
     dut.i_tx_clk.value = 0
     dut.i_rx_clk.value = 0
     dut.i_tx_rst.value = 0

@@ -269,7 +269,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             python_test_module="cocotb_tests.test_ddr_reset_distribution",
             hdl_toplevel_module="frost",
             app_name="hello_world",
-            description=f"DDR reset assertion and release with {clock_mode} CPU clocks",
+            description=f"Stopped-clock DDR reset pulses and CPU reset edges with {clock_mode} clocks",
             extra_env=clock_env,
             verilator_extra_args=(
                 "--assert",
@@ -281,6 +281,30 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         for suffix, clock_mode, clock_env in (
             ("", "common", ()),
             ("_async", "independent", (("FROST_CPU_PERIOD_PS", "7000"),)),
+        )
+    },
+    **{
+        f"platform_dma_reset{suffix}": CocotbRunConfig(
+            python_test_module="cocotb_tests.integration.test_platform_dma_reset",
+            hdl_toplevel_module="platform_top",
+            description=f"One-cycle core reset at coherent DMA read and write completion with {mode} clocks",
+            verilator_extra_args=(
+                "--assert",
+                "+define+FROST_SIM_ASSERTIONS",
+                "-GUSE_BEHAVIORAL_DDR=0",
+                "-GENABLE_CACHED_TIER=1",
+                "-GSIM_FAST_MAINT=1",
+                "-GL2_PREFETCH=0",
+                "-GL1_CACHE_BYTES=4096",
+                "-GL1I_CACHE_BYTES=4096",
+                "-GL2_CACHE_BYTES=16384",
+                f"-GASYNC_CPU_CLOCK={int(period_ps != 0)}",
+            ),
+            extra_env=(("FROST_CPU_PERIOD_PS", str(period_ps)),),
+        )
+        for suffix, mode, period_ps in (
+            ("", "common", 0),
+            ("_async", "independent", 7000),
         )
     },
     "soc_async_reset": CocotbRunConfig(
@@ -301,7 +325,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="hello_world",
         include_in_pytest=False,
-        description="Power-on reset and paired reset with stopped CPU or SoC clocks",
+        description="Power-on reset, stopped peers and the first two resumed CPU edges",
         extra_env=(("FROST_CPU_PERIOD_PS", "7000"),),
         verilator_extra_args=("-GENABLE_CACHED_TIER=0", "-GMISALIGNED_HW=0"),
     ),
@@ -688,6 +712,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "An address that holds a branch under Sv39 S-mode fetch and an addi under "
             "bare M-mode fetch, or the reverse, does not follow the other mode's BTB entry"
+        ),
+    ),
+    "odd_halfword_pred_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="odd_halfword_pred_test",
+        nic_mac_clocks=False,
+        description=(
+            "Odd-halfword slot-1 fast-BTB predictions, +4 odd-target handoffs, "
+            "line/page-end spanning calls with a faulting second page, and overlapping encodings"
         ),
     ),
     "ifread_test": CocotbRunConfig(
@@ -1296,13 +1330,34 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             nic_mac_clocks=False,
             description=(
                 f"Crypto element groups and carry-less multiplication at VLEN {vlen}, "
-                "including restart, group capacity and reserved geometry"
+                "including restart, group capacity, reserved geometry, a vl or vstart "
+                "write directly before a group, and aliased source and destination groups"
             ),
             verilator_extra_args=("-GVECTOR=1", f"-GVLEN={vlen}"),
             extra_env=(
                 ("EXTRA_CFLAGS", f"-DVEC_VLEN={vlen}"),
                 ("COCOTB_MAX_CYCLES", "5000000"),
             ),
+            # VLEN 128 alone has SHA-512 groups across two registers and
+            # groups too wide for a fractional or e64/m1 register group.
+            include_in_pytest=(vlen != 512),
+        )
+        for vlen in (128, 256, 512)
+    },
+    **{
+        f"vec_crypto_irq_test_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="vec_crypto_irq_test",
+            nic_mac_clocks=False,
+            description=(
+                f"Timer interrupts in each cycle of a crypto instruction's ROB-head service "
+                f"and engine execution at VLEN {vlen}, with a handler that saves, changes "
+                "and restores vector state"
+            ),
+            verilator_extra_args=("-GVECTOR=1", f"-GVLEN={vlen}"),
+            extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+            rerun_after_reset=False,
             include_in_pytest=(vlen == 256),
         )
         for vlen in (128, 256, 512)
@@ -1976,9 +2031,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_debug_partial",
         hdl_toplevel_module="frost",
         app_name="debug_target",
-        description="Debug Mode partial vector load dirties mstatus.VS",
+        description="Debug Mode partial unit-stride and strided vector loads dirty mstatus.VS",
         verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
-        include_in_pytest=False,
     ),
     "debug_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug",
@@ -2278,8 +2332,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="wfi_seed_recovery",
         nic_mac_clocks=False,
         description=(
-            "A wrong-path WFI cannot set the interrupt resume PC during recovery"
+            "With prediction disabled, a direct JAL exposes its fall-through WFI "
+            "at the ROB head during recovery. Each run checks that the interrupt "
+            "resume PC holds the JAL target until it retires. A timeout reports "
+            "if the JAL and fall-through WFI never queued behind the waiting WFI."
         ),
+        verilator_extra_args=("../verif/cocotb_tests/wfi_seed_recovery.vlt",),
+        extra_env=(("COCOTB_MAX_CYCLES", "20000"),),
     ),
     "wfi_drain_mepc_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -2736,6 +2795,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Hello World output reaches the serial TX pin",
         **UART_LINE_CHECK,
     ),
+    "raytrace": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="raytrace",
+        nic_mac_clocks=False,
+        description=(
+            "Fixed-point ray tracer (the demonstration image's first program): "
+            "streams a 24x12 sunset picture and checks its CRC against the host reference"
+        ),
+    ),
     "isa_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2946,6 +3015,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="walk_past_test",
         nic_mac_clocks=False,
         description="Overlapping BTB entries preserve program results across fetch-valid gaps",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    "odd_halfword_pred_test_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="odd_halfword_pred_test",
+        nic_mac_clocks=False,
+        description=(
+            "Odd-halfword slot-1 fast-BTB predictions, spanning page faults, and "
+            "overlapping encodings with randomized fetch latency"
+        ),
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
     "fetch_lead_repro": CocotbRunConfig(
@@ -3194,8 +3274,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             python_test_module="cocotb_tests.vector.test_vec_crypto_exec",
             hdl_toplevel_module="vec_crypto_exec",
             description=f"Zvbc, AES, SHA-2 and GHASH results, restart and operand-independent latency at VLEN {vlen}",
-            verilator_extra_args=(f"-GVLEN={vlen}",),
-            include_in_pytest=(vlen == 256),
+            verilator_extra_args=("--assert", f"-GVLEN={vlen}"),
         )
         for vlen in (128, 256, 512)
     },
@@ -4217,6 +4296,55 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="The cluster with three L1D request endpoints: loads in flight beside "
         "stores, probes and DMA",
     ),
+    "coherence_cluster_stress": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3", "-GHOME_FILLS=4"),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster_stress",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Seeded store visibility, read service, and DMA with three L1D endpoints",
+        extra_env=(("FROST_CLUSTER_STRESS_PROFILE", "three_endpoints"),),
+    ),
+    # The four-fill case shares the preceding Verilator build.
+    **{
+        f"coherence_cluster_fill_cycle_{fills}": CocotbRunConfig(
+            verilator_extra_args=(
+                "--assert",
+                "-GL1D_MISSES=3",
+                f"-GHOME_FILLS={fills}",
+            ),
+            python_test_module="cocotb_tests.cache.test_coherence_cluster_fill_cycle",
+            hdl_toplevel_module="coherence_cluster_test_harness",
+            description=f"Store and seated DMA reader progress with {fills} home fills",
+        )
+        for fills in (4, 2)
+    },
+    "coherence_cluster_stress_direct_mapped": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GL1D_MISSES=3",
+            "-GHOME_FILLS=4",
+            "-GL1D_CACHE_BYTES=256",
+            "-GL1D_WAYS=1",
+            "-GHOME_CACHE_BYTES=1024",
+            "-GHOME_WAYS=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster_stress",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Seeded store visibility and replacement in direct-mapped caches",
+        extra_env=(("FROST_CLUSTER_STRESS_PROFILE", "direct_mapped"),),
+    ),
+    "coherence_cluster_stress_wide": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GL1D_MISSES=8",
+            "-GHOME_FILLS=4",
+            "-GL1D_CACHE_BYTES=2048",
+            "-GHOME_CACHE_BYTES=4096",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster_stress",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Seeded store visibility, AMOs and non-allocating DMA with eight L1D endpoints",
+        extra_env=(("FROST_CLUSTER_STRESS_PROFILE", "wide"),),
+    ),
     "coherence_stale_line_prefetch_l2": CocotbRunConfig(
         verilator_extra_args=(
             "--assert",
@@ -5048,14 +5176,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "nic_mac_gmii": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_mac_gmii",
-        hdl_toplevel_module="nic_mac_wrap",
-        verilator_extra_args=("-GGMII_MODE=1",),
+        hdl_toplevel_module="nic_mac_1g",
         description="GMII framing, rate enables, CRC errors and receive backpressure",
     ),
     "nic_rx_fifo_limit": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_rx_fifo_limit",
-        hdl_toplevel_module="nic_mac_wrap",
-        verilator_extra_args=("-GGMII_MODE=1", "-GRX_FIFO_DEPTH=8192"),
+        hdl_toplevel_module="nic_mac_1g",
+        verilator_extra_args=("-GRX_FIFO_DEPTH=8192",),
         description=(
             "NIC RX FIFO overflows at the runtime limit (512, 2048, 8192 words) and "
             "the GMII preamble-discard and rx_er counters"
@@ -5063,9 +5190,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "nic_rx_preamble_er": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_rx_preamble_er",
-        hdl_toplevel_module="nic_mac_wrap",
+        hdl_toplevel_module="nic_mac_1g",
         verilator_extra_args=(
-            "-GGMII_MODE=1",
             "-GRX_FIFO_DEPTH=8192",
             "-GRX_PREAMBLE_ER_TOLERANT=1",
         ),
@@ -5097,15 +5223,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "nic_pause_gmii": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_pause",
-        hdl_toplevel_module="nic_mac_wrap",
-        verilator_extra_args=("-GGMII_MODE=1", "-GRX_FIFO_DEPTH=2048"),
+        hdl_toplevel_module="nic_mac_1g",
+        verilator_extra_args=("-GRX_FIFO_DEPTH=2048",),
         description="802.3x pause on the GMII path: consume, honour, pause refresh and release",
     ),
     "nic_pause_10g": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_pause",
-        hdl_toplevel_module="nic_mac_wrap",
+        hdl_toplevel_module="nic_mac_10g",
         verilator_extra_args=("-GRAW_LOOPBACK=0", "-GRX_FIFO_DEPTH=2048"),
         description="802.3x pause on the 10GBASE-R path: consume, honour, pause refresh and release",
+    ),
+    "nic_engine": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_engine",
+        hdl_toplevel_module="nic_engine",
+        description=(
+            "Standalone NIC engine over its core-clock AXI4-Stream and MAC sideband "
+            "boundary"
+        ),
     ),
     "nic_top": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_top",
@@ -5367,6 +5501,35 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GENABLE_CACHED_TIER=0", "-GUSE_BEHAVIORAL_DDR=0"),
         extra_env=(("COCOTB_TEST_FILTER", "nic_access_guard$"),),
     ),
+    "soc_ext_plugins": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_soc_ext_plugins",
+        hdl_toplevel_module="soc_top",
+        description=(
+            "Two external AXI4 DMA ports (4-bit IDs) with internal DMA contention, "
+            "exported external MAC AXI4-Stream/ready-bit isolation, APLIC source 2 "
+            "sharing with 1G NIC, and external 16 KiB AXI4-Lite window on soc_top"
+        ),
+        verilator_extra_args=(
+            "-GENABLE_CACHED_TIER=1",
+            "-GUSE_BEHAVIORAL_DDR=0",
+            "-GENABLE_1G_ETH=1",
+            "-GEXT_DMA_PORTS=2",
+            "-GEXT_DMA_ID_BITS=4",
+            "-GEXTERNAL_MAC=1",
+            "-GEXT_AXIL_WINDOW=1",
+        ),
+    ),
+    "soc_ext_axil_bram": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_soc_ext_plugins",
+        hdl_toplevel_module="soc_top",
+        description="External 16 KiB AXI4-Lite window with the cached tier disabled",
+        verilator_extra_args=(
+            "-GENABLE_CACHED_TIER=0",
+            "-GUSE_BEHAVIORAL_DDR=0",
+            "-GEXT_AXIL_WINDOW=1",
+        ),
+        extra_env=(("COCOTB_TEST_FILTER", "ext_axil_window$"),),
+    ),
     "soc_axi_slave": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_soc_axi_slave",
         hdl_toplevel_module="soc_axi_slave",
@@ -5495,6 +5658,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="axil_reg_bridge",
         description="AXI4-Lite independent channels, register mapping, stalls and reset",
     ),
+    "axi_register_slice": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axi_register_slice",
+        hdl_toplevel_module="axi_register_slice",
+        description="AXI4 five-channel register slice: zero feedthrough, full rate, stalls and reset",
+    ),
+    "axil_register_slice": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axi_register_slice",
+        hdl_toplevel_module="axil_register_slice",
+        description="AXI4-Lite five-channel register slice: zero feedthrough, full rate, stalls and reset",
+    ),
     "axi_checker": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_axi_checker",
         hdl_toplevel_module="axi_checker",
@@ -5505,7 +5678,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="axi_mux_test_harness",
         description=(
             "Three AXI4 masters through the mux: W follows the AW grants, B and R "
-            "return by port, and reset abandons transfers in flight"
+            "return by port, and a reset edge discards simultaneous AW, W and AR offers"
         ),
     ),
     "x3_ddr_init": CocotbRunConfig(
@@ -5753,6 +5926,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=(
             "-GADDR_WIDTH=4",
+            "-GENABLE_FETCH_METADATA=1",
             "-GPC_METADATA_OVERLAY_ADDR_WIDTH=2",
             "-GUSE_INIT_FILE=0",
         ),
@@ -5760,10 +5934,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "imem_predecode_capacity": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_capacity",
         hdl_toplevel_module="imem_predecode",
-        description=(
-            "Predecode coverage and fetch rate at the production 128 KiB IMEM size"
+        description="Optional predecode coverage at the 128 KiB IMEM size",
+        verilator_extra_args=(
+            "-GADDR_WIDTH=15",
+            "-GENABLE_FETCH_METADATA=1",
+            "-GUSE_INIT_FILE=0",
         ),
-        verilator_extra_args=("-GADDR_WIDTH=15", "-GUSE_INIT_FILE=0"),
     ),
     "low_bram_fetch_presenter": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_low_bram_fetch_presenter",
@@ -6320,7 +6496,12 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "coherence_array_reset_uram_sweep",
         "coherence_cbo_zero_misses",
         "coherence_cluster",
+        "coherence_cluster_fill_cycle_2",
+        "coherence_cluster_fill_cycle_4",
         "coherence_cluster_misses",
+        "coherence_cluster_stress",
+        "coherence_cluster_stress_direct_mapped",
+        "coherence_cluster_stress_wide",
         "coherence_cluster_stream",
         "coherence_dma_ingress",
         "coherence_dma_ingress_8",
@@ -6436,6 +6617,8 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "soc_axi_slave",
         "soc_axil",
         "soc_axil_no_cached_tier",
+        "soc_ext_axil_bram",
+        "soc_ext_plugins",
         "sram_macros_btb_payload",
         "sram_macros_imem_lanes",
         "sram_macros_l2_data",

@@ -1348,6 +1348,48 @@ module coherence_home_completions #(
       cover (accept_forward && accept_result);
     end
   end
+  if (PREFETCH_SLOTS == 0 && SLOTS >= 2) begin : gen_cmo_reader_cover
+    // Slot 1 is suppressed while the older CMO in slot 0 takes its grant.
+    // Follow the read through the CMO's release to its own grant and release.
+    // Reusing the reader's slot ends the history.
+    typedef enum logic [2:0] {
+      AwaitSuppression,
+      AwaitCmoRelease,
+      AwaitEligibility,
+      AwaitGrant,
+      AwaitRelease
+    } reader_phase_t;
+    reader_phase_t phase_q;
+    wire [3:0] older_opcode = request_opcode(work[0]);
+    wire [3:0] reader_opcode = request_opcode(work[1]);
+    wire blocked_reader = live[0] && coherence_pkg::is_cmo(
+        older_opcode
+    ) && predecessors_q[1][0] && work_valid[1] && reader_opcode == coherence_pkg::DMARead &&
+        !issued_q[1] && !parked_q[1] && !ready_q[1] && !work_selected_slots_q[1] && !o_waiting[1];
+    always_ff @(posedge i_clk) begin
+      if (i_rst) phase_q <= AwaitSuppression;
+      else begin
+        if (release_fire[1] || (accept_request && free_slot_index == 1))
+          phase_q <= AwaitSuppression;
+        else begin
+          case (phase_q)
+            AwaitSuppression:
+            if (blocked_reader && accept_grant && grant_slot_q == 0 &&
+                grant_q.opcode == coherence_pkg::GrantAck && !grant_q.error)
+              phase_q <= AwaitCmoRelease;
+            AwaitCmoRelease: if (release_fire[0]) phase_q <= AwaitEligibility;
+            AwaitEligibility: if (predecessors_q[1] == '0 && o_waiting[1]) phase_q <= AwaitGrant;
+            AwaitGrant:
+            if (accept_grant && grant_slot_q == 1 && !grant_q.error &&
+                grant_q.opcode == coherence_pkg::GrantData)
+              phase_q <= AwaitRelease;
+            default: ;
+          endcase
+        end
+        c_suppressed_reader_completes : cover (phase_q == AwaitRelease && release_fire[1]);
+      end
+    end
+  end
   if (PREFETCH_SLOTS != 0) begin : gen_prefetch_slot_cover
     // A prefetch slot's G taken.
     always_ff @(posedge i_clk)
@@ -1359,16 +1401,65 @@ module coherence_home_completions #(
 `ifdef HOME_CAPTURE_LOCAL_PROOF
   // Reference parking and selection use the slot table on the dispatch
   // cycle. All event inputs remain free, including simultaneous events.
+  // A slot admitted behind a live clean, flush or invalidate of its home
+  // block must leave the fill seat free until all its predecessors clear.
+  // At that point, or if no such request was live at admission, the usual
+  // valid, issued, parked, ready and selected bits decide waiter eligibility.
+  // Prefetches impose no order. A DMA predecessor hands off at its result.
+  // Other predecessors leave the set on release.
   logic f_capture_reset_seen_q = 1'b0;
   logic [SLOTS-1:0] f_capture_parked_q;
   logic f_capture_selected_q;
   logic [SlotBits-1:0] f_capture_slot_q;
+  logic [SLOTS-1:0] f_capture_cmo_match, f_capture_ordered;
+  logic [SLOTS-1:0] f_capture_after_cmo_q, f_capture_dma_done_q;
+  logic [SLOTS-1:0] f_capture_pending_q[SLOTS];
+  logic [SLOTS-1:0] f_capture_order_matches;
+  wire [SLOTS-1:0] f_capture_remaining = ~(release_fire | f_capture_dma_done_q);
   logic [SLOTS-1:0] f_capture_waiting;
   logic [SLOTS-1:0] f_capture_parked_next;
   wire f_capture_valid = !i_fatal_stop && f_capture_selected_q &&
       !f_capture_parked_q[f_capture_slot_q];
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_capture_waiting
-    assign f_capture_waiting[slot] = work_valid[slot] && !issued_q[slot] &&
+    coh_d_t resident;
+    assign resident = work[slot];
+    wire same_block = (resident.addr >> OffsetBits) == (incoming.addr >> OffsetBits);
+    wire same_sector = resident.addr[ADDR_WIDTH-1:5] == incoming.addr[ADDR_WIDTH-1:5];
+    wire block_order = coherence_pkg::holds_line(
+        resident.opcode
+    ) || coherence_pkg::holds_line(
+        incoming.opcode
+    );
+    wire prefetch = PREFETCH_SLOTS == 0 ? resident.q.src == 2'd3 : slot >= SLOTS - PREFETCH_SLOTS;
+    assign f_capture_cmo_match[slot] = live[slot] && same_block && coherence_pkg::is_cmo(
+        resident.opcode
+    );
+    assign f_capture_ordered[slot] = live[slot] && !prefetch && incoming.q.src != 2'd3 &&
+        (same_sector || (same_block && block_order));
+
+    // Record the ordering obligations at admission. Each predecessor leaves
+    // on its release or after handing off an accepted DMA result.
+    wire admitted = accept_request && free_slot_index == SlotBits'(slot);
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        f_capture_after_cmo_q[slot] <= 1'b0;
+        f_capture_pending_q[slot]   <= '0;
+        f_capture_dma_done_q[slot]  <= 1'b0;
+      end else begin
+        if (admitted) begin
+          f_capture_after_cmo_q[slot] <= |f_capture_cmo_match;
+          f_capture_pending_q[slot]   <= f_capture_ordered & f_capture_remaining;
+        end else f_capture_pending_q[slot] <= f_capture_pending_q[slot] & f_capture_remaining;
+        if (release_fire[slot]) f_capture_dma_done_q[slot] <= 1'b0;
+        else if (accept_result && result.tid == 6'(slot) && result.q.src == 2'd2)
+          f_capture_dma_done_q[slot] <= 1'b1;
+      end
+    end
+    assign f_capture_order_matches[slot] =
+        f_capture_pending_q[slot] == predecessors_q[slot] &&
+        pred_clear_q[slot] == (f_capture_pending_q[slot] == '0);
+    wire suppressed = f_capture_after_cmo_q[slot] && (|f_capture_pending_q[slot]);
+    assign f_capture_waiting[slot] = !suppressed && work_valid[slot] && !issued_q[slot] &&
         !f_capture_parked_q[slot] && !ready_q[slot] &&
         !(f_capture_selected_q && f_capture_slot_q == SlotBits'(slot));
     assign f_capture_parked_next[slot] = forwarded[slot] ? 1'b0 :
@@ -1405,6 +1496,10 @@ module coherence_home_completions #(
       p_capture_slot : assert (work_slot_q == f_capture_slot_q);
       p_capture_dispatch : assert (o_work_valid == f_capture_valid);
       p_capture_waiting : assert (o_waiting == f_capture_waiting);
+      // Keep the histories aligned for induction even when no slot offers work.
+      p_capture_order_history :
+      assert (f_capture_after_cmo_q == follows_cmo_q && f_capture_dma_done_q == handed_q &&
+          (&f_capture_order_matches));
       p_capture_selected_slots :
       assert (work_selected_slots_q == (f_capture_selected_q ? SLOTS'(1) << f_capture_slot_q : '0));
       if (work_selected_q)

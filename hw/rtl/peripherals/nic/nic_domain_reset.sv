@@ -18,7 +18,7 @@
  * nic_domain_reset: the far side of the NIC's reset handshake, one per MAC
  * clock domain (TX, RX).
  *
- * nic_reset_ctrl sends a request and generation bit. cdc_reset_sync asserts
+ * nic_mac_reset_ctrl sends a request and generation bit. cdc_reset_sync asserts
  * o_domain_rst without a clock edge. Reset stays high through the request
  * and for HOLD_CYCLES clocks after its synchronized release.
  *
