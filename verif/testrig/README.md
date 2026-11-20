@@ -118,8 +118,8 @@ The fixture uses `i_clk` for the CPU and SoC and requires
 
 CI runs four TestRIG jobs in parallel. Each draws its own 100 sequences per
 template, 200 A-extension tests, 40 Sv39 MMU tests, and 80 CMO and Sstvala
-tests, and each simulates the SoC with
-its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
+tests. The first job also runs the directed `--wfi` traces. Each job simulates
+the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 [tests/README.md](../../tests/README.md#environment-and-output)).
 
 | Option | Default | Meaning |
@@ -257,7 +257,7 @@ different implementation choice:
 | Delegation | `medeleg` mask 0xB3FF; `mideleg` mask 0x2222 |
 | PMP | None |
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
-| WFI | The default configuration completes legal WFI at once. The directed `--wfi` comparison checks legal M-mode and S-mode WFI, the S-mode `mstatus.TW` trap, and the U-mode illegal-instruction trap |
+| WFI | The default configuration completes legal WFI at once. Sail treats WFI as a nop in this configuration and skips the S-mode `mstatus.TW` check. The directed `--wfi` comparison checks legal M-mode and S-mode WFI, the S-mode TW trap, and the U-mode illegal-instruction trap |
 | Zawrs | `wrs.nto` and `wrs.sto` complete at once; `wrs.nto` below M with `mstatus.TW` set raises illegal-instruction. Sail 0.16's non-nop wait loop enters `Step_Waiting` in RVFI-DII mode with `pc_wdata = 0` and consumes an extra packet, so `sail_frost.json` sets `nto.is_nop` true; `zawrs_test` and `sstvala_test` cover the `mstatus.TW` traps on `wrs.nto` and `wfi` |
 | Sail's CLINT | At 0x2B6D_93F1_0000, outside FROST's map at an address random sequences do not form; Sail requires one for Zicntr |
 
@@ -333,6 +333,9 @@ also uses that two-reply sequence. The Sail-side monitor folds the
 completion's next PC and trap bit into the WFI reply and resends the
 consumed instruction packet. Unexpected replies and a trace ending on a
 waiting WFI fail the comparison. Zawrs uses the model's nop settings.
+An interrupt taken by Sail from S-mode has the same `insn=0`, `trap=1`,
+`intr=0` completion shape as a TW trap, so only the comparison with the
+DUT detects the difference.
 
 The engine compares the normalised WFI and the following instructions.
 The DUT also records wait entry, one wake due to a pending source or the

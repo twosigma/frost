@@ -247,19 +247,31 @@ def _sail_header(record: Any) -> bytes:
 
 
 @pytest.mark.parametrize(
-    "case", ("wake", "tw", "u-trap", "trailing", "extra-tick", "interrupt", "nop")
+    "case",
+    (
+        "wake",
+        "tw",
+        "u-trap",
+        "trailing",
+        "extra-tick",
+        "interrupt",
+        "nop",
+        "m-trap",
+        "wrong-insn",
+        "bad-padding",
+    ),
 )
 def test_sail_wfi_monitor(case: str) -> None:
     """Only the bounded Sail wait is folded, replaying the consumed packet once."""
     wire = rvfi_dii
     stats = test_testrig.run_stats
     pc = 0x8000_0100
-    successor = pc + 4 if case == "wake" else 0x8000_0400
+    successor = pc + 4 if case in ("wake", "bad-padding") else 0x8000_0400
     start = wire.RvfiRecord(
         order=17,
         insn=wire.WFI_INSN,
         pc_rdata=pc,
-        mode=wire.MODE_MACHINE if case == "wake" else wire.MODE_SUPERVISOR,
+        mode=wire.MODE_MACHINE if case in ("wake", "m-trap") else wire.MODE_SUPERVISOR,
     )
     if case == "u-trap":
         start.mode, start.trap, start.pc_wdata = wire.MODE_USER, 1, successor
@@ -270,11 +282,13 @@ def test_sail_wfi_monitor(case: str) -> None:
         wire.RvfiRecord(
             mode=0,
             ixl=0,
-            trap=int(case in ("tw", "interrupt")),
+            trap=int(case in ("tw", "interrupt", "m-trap")),
             intr=int(case == "interrupt"),
             pc_wdata=0 if case == "extra-tick" else successor,
         )
     )
+    if case == "bad-padding":
+        second = second[:38] + b"\x01" + second[39:]
     instruction = wire.DiiPacket(0x00100513, 19, wire.CMD_INSTRUCTION).encode()
     after = wire.RvfiRecord(
         order=18,
@@ -290,12 +304,14 @@ def test_sail_wfi_monitor(case: str) -> None:
     end = wire.DiiPacket(0, 0, wire.CMD_END_OF_TRACE).encode()
     halt = wire.RvfiRecord.halt_token().encode_v2()
     success = case in ("wake", "tw", "u-trap")
+    first_request = instruction if case == "wrong-insn" else wfi
+    send_followup = case not in ("trailing", "nop", "wrong-insn")
     exchange = [
         (query, wire.version_query_response()),
         (version, wire.version_ack(2)),
-        (wfi, first),
+        (first_request, first),
     ]
-    if case not in ("trailing", "nop", "u-trap"):
+    if send_followup and case != "u-trap":
         exchange.append((instruction, second))
     if success:
         exchange.extend(((instruction, after), (end, halt)))
@@ -330,9 +346,7 @@ def test_sail_wfi_monitor(case: str) -> None:
                 assert reader.read(88) == wire.version_query_response()
                 assert reader.read(16) == wire.version_ack(2)
                 engine.sendall(
-                    wfi
-                    + (instruction if case not in ("trailing", "nop") else b"")
-                    + end
+                    first_request + (instruction if send_followup else b"") + end
                 )
                 if success:
                     start.trap, start.pc_wdata = int(case != "wake"), successor
@@ -356,8 +370,32 @@ def test_sail_wfi_monitor(case: str) -> None:
             "nop": "unexpected Sail WFI reply",
             "extra-tick": "unexpected Sail WFI completion reply",
             "interrupt": "unexpected Sail WFI completion reply",
+            "m-trap": "unexpected Sail WFI completion reply",
+            "wrong-insn": "unexpected Sail instruction reply in WFI mode",
+            "bad-padding": "unexpected Sail WFI completion reply",
         }[case]
         assert expected_error in monitor.errors[0]
+
+
+@pytest.mark.parametrize("timeout_wakes", (0, 1))
+def test_wfi_short_trace_diagnoses_missing_wake(
+    tmp_path: Path, timeout_wakes: int
+) -> None:
+    """Report an unfinished wait from the DUT counters and partial trace."""
+    strand = test_testrig.wfi.write_tests(tmp_path)[0]
+    observation = {
+        "wfi": {
+            "wait_entries": 1,
+            "source_wakes": 0,
+            "timeout_wakes": timeout_wakes,
+            "retired_after_wake": 0,
+            "commit_while_waiting": 0,
+            "pending": 0,
+        },
+        "records": [[rvfi_dii.MODE_MACHINE, 0, 5, 0]] * (strand.target_index - 1),
+    }
+    errors = test_testrig.wfi.verify(strand, observation)
+    assert ("WFI never woke" in errors) == (timeout_wakes == 0)
 
 
 def test_default_csr_view_keeps_absent_hpm_aliases() -> None:

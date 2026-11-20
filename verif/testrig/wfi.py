@@ -172,6 +172,12 @@ def verify(strand: WfiStrand, observation: dict[str, Any]) -> list[str]:
     ]
     records = observation["records"]
     if len(records) != len(strand.instructions):
+        if (
+            len(records) <= strand.target_index
+            and observed.get("wait_entries", 0) > 0
+            and observed.get("source_wakes") == observed.get("timeout_wakes") == 0
+        ):
+            errors.append("WFI never woke")
         errors.append(
             f"expected {len(strand.instructions)} RVFI records, got {len(records)}"
         )
