@@ -842,6 +842,9 @@ The NIC targets include `nic_engine`, `nic_tx_segment`, `nic_rx_fifo_limit`, `ni
 `nic_pause_gmii`, `nic_pause_10g`, and `nic_pause_rx_wire`, alongside the engine and whole-NIC benches.
 Their registered tests cover segmentation headers, FIFO capacity, pause crossings, independent
 domain restarts, wire-side PAUSE validation during congestion, and cancellation under backpressure.
+`nic_top` and `nic_top_unrelated_clocks` check the zeroed 10G diagnostic slots and
+descriptor-starved MAC overflow. `nic_top_gmii_diag` checks GMII and PHY event
+counts at the same register offsets.
 `nic_cmo_loopback`, `nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.

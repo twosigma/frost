@@ -2092,6 +2092,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "nic_diag.sby",
+        "NIC diagnostic CDC pin and register mapping, disabled slots, and PHY sample equivalence.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "rat_checkpoint_restore.sby",
         "Register alias table: unbounded circular ROB and sequence oracle across save, restore and commit.",
         tasks=(

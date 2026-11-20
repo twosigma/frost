@@ -41,7 +41,8 @@ module nic_csr #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter logic [63:0] APERTURE_BASE = 64'h8000_0000,
     parameter logic [63:0] APERTURE_BYTES = 64'h4000_0000,
-    parameter int unsigned RX_FIFO_DEPTH = 512
+    parameter int unsigned RX_FIFO_DEPTH = 512,
+    parameter bit ENABLE_PHY_DIAG = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -465,36 +466,41 @@ module nic_csr #(
   // The source holds the payload and toggle until the acknowledgement returns.
   // Capture the payload after the two-stage toggle synchronizer, then accumulate locally.
   // During reset the toggle is followed and acknowledged without counting the sample.
-  logic diag_tog_s, diag_tog_q;
-  logic [31:0] phy_diag_sample_q;
-  logic phy_diag_valid_q;
-  assign o_phy_diag_ack = diag_tog_q;
   logic [63:0] phy_rxerr_last_q, phy_rxerr_sum_q, phy_fcs_last_q, phy_fcs_sum_q, phy_polls_q;
-  cdc_sync u_diag_tog_sync (
-      .i_clk  (i_clk),
-      .i_rst  (1'b0),
-      .i_async(i_phy_diag[nic_pkg::PhyDiagBits-1]),
-      .o_sync (diag_tog_s)
-  );
-  always_ff @(posedge i_clk) begin
-    diag_tog_q <= diag_tog_s;
-    phy_diag_valid_q <= diag_tog_s != diag_tog_q;
-    if (diag_tog_s != diag_tog_q) phy_diag_sample_q <= i_phy_diag[31:0];
-    if (i_rst || i_soft_rst) begin
-      phy_diag_valid_q  <= 1'b0;
-      phy_diag_sample_q <= '0;
-      phy_rxerr_last_q  <= '0;
-      phy_rxerr_sum_q   <= '0;
-      phy_fcs_last_q    <= '0;
-      phy_fcs_sum_q     <= '0;
-      phy_polls_q       <= '0;
-    end else if (phy_diag_valid_q) begin
-      phy_rxerr_last_q <= 64'(phy_diag_sample_q[15:0]);
-      phy_rxerr_sum_q  <= phy_rxerr_sum_q + 64'(phy_diag_sample_q[15:0]);
-      phy_fcs_last_q   <= 64'(phy_diag_sample_q[31:16]);
-      phy_fcs_sum_q    <= phy_fcs_sum_q + 64'(phy_diag_sample_q[31:16]);
-      phy_polls_q      <= phy_polls_q + 64'd1;
+  if (ENABLE_PHY_DIAG) begin : g_phy_diag
+    logic diag_tog_s, diag_tog_q;
+    logic [31:0] phy_diag_sample_q;
+    logic phy_diag_valid_q;
+    assign o_phy_diag_ack = diag_tog_q;
+    cdc_sync u_diag_tog_sync (
+        .i_clk  (i_clk),
+        .i_rst  (1'b0),
+        .i_async(i_phy_diag[nic_pkg::PhyDiagBits-1]),
+        .o_sync (diag_tog_s)
+    );
+    always_ff @(posedge i_clk) begin
+      diag_tog_q <= diag_tog_s;
+      phy_diag_valid_q <= diag_tog_s != diag_tog_q;
+      if (diag_tog_s != diag_tog_q) phy_diag_sample_q <= i_phy_diag[31:0];
+      if (i_rst || i_soft_rst) begin
+        phy_diag_valid_q  <= 1'b0;
+        phy_diag_sample_q <= '0;
+        phy_rxerr_last_q  <= '0;
+        phy_rxerr_sum_q   <= '0;
+        phy_fcs_last_q    <= '0;
+        phy_fcs_sum_q     <= '0;
+        phy_polls_q       <= '0;
+      end else if (phy_diag_valid_q) begin
+        phy_rxerr_last_q <= 64'(phy_diag_sample_q[15:0]);
+        phy_rxerr_sum_q  <= phy_rxerr_sum_q + 64'(phy_diag_sample_q[15:0]);
+        phy_fcs_last_q   <= 64'(phy_diag_sample_q[31:16]);
+        phy_fcs_sum_q    <= phy_fcs_sum_q + 64'(phy_diag_sample_q[31:16]);
+        phy_polls_q      <= phy_polls_q + 64'd1;
+      end
     end
+  end else begin : g_no_phy_diag
+    assign o_phy_diag_ack = 1'b0;
+    assign {phy_rxerr_last_q, phy_rxerr_sum_q, phy_fcs_last_q, phy_fcs_sum_q, phy_polls_q} = '0;
   end
 
   logic [63:0] counters[nic_pkg::NumCounters];

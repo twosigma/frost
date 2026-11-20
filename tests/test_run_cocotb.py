@@ -5245,8 +5245,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
         description=(
-            "NIC registers, DMA allocation hints, and frame traffic through "
-            "raw loopback and a simulated wire"
+            "10G NIC registers, diagnostic slots, descriptor-starved overflow, "
+            "DMA allocation hints, and frame traffic"
         ),
     ),
     "nic_top_64g": CocotbRunConfig(
@@ -5285,7 +5285,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
         description=(
-            "NIC wire traffic with independent TX/RX clocks and raw loopback disabled"
+            "10G NIC wire traffic and descriptor-starved overflow "
+            "with independent TX/RX clocks"
         ),
         verilator_extra_args=("-GRAW_LOOPBACK=0",),
     ),

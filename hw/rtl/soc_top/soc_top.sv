@@ -1696,7 +1696,8 @@ AxilPorts
         .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
         .RX_FIFO_DEPTH(NicRxFifoDepth),
         .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
-        .DMA_AXI_ID_BITS(DmaUpIdBits)
+        .DMA_AXI_ID_BITS(DmaUpIdBits),
+        .ENABLE_PHY_DIAG(1'b0)
     ) nic (
         .i_clk(i_clk),
         .i_rst(rst_core_next),  // registered inside nic_engine; see its header
@@ -1996,7 +1997,8 @@ AxilPorts
           .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
           .RX_FIFO_DEPTH(NicRxFifoDepth),
           .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
-          .DMA_AXI_ID_BITS(DmaUpIdBits)
+          .DMA_AXI_ID_BITS(DmaUpIdBits),
+          .ENABLE_PHY_DIAG(1'b1)
       ) nic_1g (
           .i_clk(i_clk),
           .i_rst(rst_core_next),
