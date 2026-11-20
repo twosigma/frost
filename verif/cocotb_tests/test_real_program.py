@@ -30,11 +30,12 @@ import os
 import random
 from pathlib import Path
 import re
+import subprocess
 from collections import Counter
 from collections.abc import Callable, Coroutine
 import cocotb
 from cocotb.clock import Clock
-from cocotb.handle import Immediate
+from cocotb.handle import Force, Immediate
 from cocotb.triggers import (
     ClockCycles,
     FallingEdge,
@@ -301,15 +302,20 @@ def _program_soc(dut: Any) -> Any:
     return getattr(platform, "soc", platform)
 
 
+def _nic_engine(nic: Any) -> Any:
+    """Return the NIC engine directly or inside a nic_top wrapper."""
+    return getattr(nic, "u_engine", nic)
+
+
 def _nic_reset_history(dut: Any) -> tuple[Any, ...]:
     """Return checker history without changing its reset evidence."""
     soc = _program_soc(dut)
     if not hasattr(soc, "gen_cached_tier"):
         return ()
     tier = soc.gen_cached_tier
-    fronts = [tier.nic.u_front]
+    fronts = [_nic_engine(tier.nic).u_front]
     if hasattr(tier, "gen_nic_1g"):
-        fronts.append(tier.gen_nic_1g.nic_1g.u_front)
+        fronts.append(_nic_engine(tier.gen_nic_1g.nic_1g).u_front)
     return tuple(front.reset_seen_q for front in fronts)
 
 
@@ -335,7 +341,7 @@ def _write_instruction_bank(bank: Any, words: list[int]) -> None:
 
 
 def _load_instruction_image(memory: Any) -> None:
-    """Load instruction words and metadata while programming writes are idle."""
+    """Load instruction banks while programming writes are idle."""
     assert not int(memory.i_port_a_write_enable.value)
     assert not int(memory.port_a_write_even.value)
     assert not int(memory.port_a_write_odd.value)
@@ -346,25 +352,33 @@ def _load_instruction_image(memory: Any) -> None:
         1 << int(memory.ADDR_WIDTH.value),
         1 << int(memory.INIT_ADDR_WIDTH.value),
     )
-    sidebands = {
-        word: model.make_sideband(word) for bank in banks for word in set(bank)
-    }
+    metadata = getattr(memory, "gen_fetch_metadata", None)
+    sidebands = {}
+    if metadata is not None:
+        sidebands = {
+            word: model.make_sideband(word) for bank in banks for word in set(bank)
+        }
     for parity, bank_words in zip(("even", "odd"), banks):
         packed = {
             "cold": [model.pack_cold_data(word) for word in bank_words],
             "frontend_hot": [model.pack_frontend_hot(word) for word in bank_words],
-            "sideband": [sidebands[word] for word in bank_words],
             "compressed": [
-                model.make_fast_replica(word, sidebands[word]) for word in bank_words
+                model.make_fast_replica(word, sidebands.get(word, 0))
+                for word in bank_words
             ],
         }
         for name, values in packed.items():
             _write_instruction_bank(getattr(memory, f"u_{parity}_{name}"), values)
-        for name, bit in model.SCALAR_REPLICA_BITS:
-            array = getattr(memory, f"u_{parity}_{name}_bank").u_ram.ram
-            array.value = Immediate(
-                [(sidebands[word] >> bit) & 1 for word in bank_words[: len(array)]]
+        if metadata is not None:
+            _write_instruction_bank(
+                getattr(metadata, f"u_{parity}_sideband"),
+                [sidebands[word] for word in bank_words],
             )
+            for name, bit in model.SCALAR_REPLICA_BITS:
+                array = getattr(metadata, f"u_{parity}_{name}_bank").u_ram.ram
+                array.value = Immediate(
+                    [(sidebands[word] >> bit) & 1 for word in bank_words[: len(array)]]
+                )
 
 
 def load_program_images(dut: Any) -> None:
@@ -1077,6 +1091,88 @@ async def ddr_write_watch(dut: Any) -> None:
                     return
 
 
+async def bp_trace(dut: Any) -> None:
+    """Log the front end each cycle from the first packet IF serves in a PC window.
+
+    FROST_BP_TRACE_LO/FROST_BP_TRACE_HI (hex) bound the window; after
+    FROST_BP_TRACE_SKIP (default 0) packets in the window the watcher logs
+    FROST_BP_TRACE_CYCLES (default 300) consecutive cycles.
+    """
+    lo_env = os.environ.get("FROST_BP_TRACE_LO", "")
+    hi_env = os.environ.get("FROST_BP_TRACE_HI", "")
+    if not lo_env or not hi_env:
+        return
+    lo, hi = int(lo_env, 16), int(hi_env, 16)
+    limit = int(os.environ.get("FROST_BP_TRACE_CYCLES", "300"))
+    skip = int(os.environ.get("FROST_BP_TRACE_SKIP", "0"))
+    cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
+    ifs = f"{cpu}.if_stage_inst"
+    pds = f"{cpu}.pd_stage_inst"
+    bpc = f"{ifs}.branch_prediction_controller_inst"
+    flags = {
+        "phold": f"{ifs}.prediction_holdoff",
+        "ahold": f"{ifs}.any_holdoff_safe",
+        "cfhold": f"{ifs}.control_flow_holdoff",
+        "nop": f"{ifs}.sel_nop",
+        "nop2": f"{ifs}.sel_nop_2",
+        "used": f"{bpc}.o_prediction_used",
+        "used2": f"{bpc}.o_slot2_prediction_used",
+        "pdcand": f"{pds}.pd_backing_candidate_r",
+        "pdcand2": f"{pds}.pd_backing_candidate_2_r",
+        "pdbr": f"{pds}.pd_backing_redirect_r",
+        "pdbr2": f"{pds}.pd_backing_redirect_2_r",
+        "pdr": f"{pds}.pd_redirect_r",
+        "j1": f"{pds}.pd_slot1_jump",
+        "j2": f"{pds}.pd_slot2_jump",
+    }
+    vals = {
+        "pc": f"{ifs}.pc_reg",
+        "opc": f"{ifs}.o_pc",
+        "tw": f"{ifs}.pc_tage_lookup",
+        "bhl": f"{ifs}.backing_hit_live",
+        "bh": f"{pds}.i_backing_hit",
+        "bc": f"{pds}.i_backing_compressed",
+    }
+    fsig = {}
+    vsig = {}
+    for k, path in flags.items():
+        sig = _get_signal(dut, path)
+        if sig is None:
+            cocotb.log.warning(f"bp_trace: {path} not resolvable")
+        else:
+            fsig[k] = sig
+    for k, path in vals.items():
+        sig = _get_signal(dut, path)
+        if sig is None:
+            cocotb.log.warning(f"bp_trace: {path} not resolvable")
+        else:
+            vsig[k] = sig
+    pc_sig = vsig.get("pc")
+    if pc_sig is None:
+        return
+    cocotb.log.info(f"bp_trace: armed for [{lo:#x}, {hi:#x}]")
+    cycle = 0
+    seen = 0
+    logged = 0
+    while logged < limit:
+        await RisingEdge(cpu_clock(dut))
+        cycle += 1
+        pc = _read_int(pc_sig)
+        if logged == 0:
+            if pc is None or not (lo <= pc <= hi):
+                continue
+            seen += 1
+            if seen <= skip:
+                continue
+        logged += 1
+        on = " ".join(k for k, sig in fsig.items() if _read_bool(sig))
+        vv = " ".join(
+            f"{k}={(_read_int(sig) if _read_int(sig) is None else hex(_read_int(sig) or 0))}"
+            for k, sig in vsig.items()
+        )
+        cocotb.log.info(f"BPTRACE c={cycle} {vv} | {on}")
+
+
 async def l0_hit_watch(dut: Any) -> None:
     """Log every L0 fast-path hit served inside a watched absolute window.
 
@@ -1111,6 +1207,84 @@ async def l0_hit_watch(dut: Any) -> None:
                 if hits > 6000:
                     cocotb.log.warning("l0_hit_watch: hit cap reached; muting")
                     return
+
+
+class FefuzzActivity:
+    """Count accepted front-end events originating in the generated program."""
+
+    def __init__(self, dut: Any) -> None:
+        """Bind the two fetch slots and the linked range of fe_run and its callees."""
+        self.cpu = dut.cpu_and_memory_subsystem.cpu.hart.cpu_inst
+        self.pd = self.cpu.pd_stage_inst
+        self.pc = self.cpu.if_stage_inst.pc_controller_inst
+        base = "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_stage_inst."
+        self.fetch_packets = [
+            _packed_struct(dut, base + name, IF_TO_PD_FIELDS, "fefuzz ITT hit")
+            for name in ("i_from_if_to_pd", "i_from_if_to_pd_2")
+        ]
+        elf = Path(__file__).resolve().parents[2] / "sw/apps/fefuzz/sw.elf"
+        nm = os.environ.get("RISCV_PREFIX", "riscv64-linux-") + "nm"
+        symbols = subprocess.check_output([nm, "-S", str(elf)], text=True, timeout=15)
+        span = re.search(r"^([\da-f]+)\s+([\da-f]+)\s+T fe_run$", symbols, re.M)
+        assert span and int(span[2], 16), f"Missing generated fe_run range in {elf}"
+        self.start = int(span[1], 16)
+        self.end = self.start + int(span[2], 16)
+        self.counts = dict.fromkeys(
+            (
+                "itt_hit",
+                "direction_slot1",
+                "direction_slot2",
+                "backing",
+                "indirect",
+                "early",
+            ),
+            0,
+        )
+
+    def sample(self) -> None:
+        """Sample the transaction consumed at this CPU edge, once per acceptance."""
+        if int(self.cpu.i_rst.value):
+            return
+        if int(self.cpu.tage_pd_accept.value):
+            hits = int(self.pd.i_itt_hit.value) & int(self.pd.o_itt_eligible.value)
+            for slot, packet in enumerate(self.fetch_packets):
+                if hits & (1 << slot):
+                    value = packet.read()
+                    assert value is not None, "Unresolved PC on an accepted ITT hit"
+                    if self.start <= packet.field(value, "program_counter") < self.end:
+                        self.counts["itt_hit"] += 1
+        if (
+            int(self.pd.o_pd_redirect.value)
+            and int(self.pc.o_pc_update_en.value)
+            and int(self.pc.o_npc_sel.value) & (1 << 4)
+            and self.start <= int(self.pd.pd_chk_pc.value) < self.end
+        ):
+            if int(self.pd.pd_itt_target_select_r.value):
+                self.counts["indirect"] += 1
+            elif int(self.pd.o_pd_backing_refresh.value):
+                self.counts["backing"] += 1
+            elif int(self.pd.pd_dir_redirect_1_r.value):
+                self.counts["direction_slot1"] += 1
+            elif int(self.pd.pd_dir_redirect_2_r.value):
+                self.counts["direction_slot2"] += 1
+        if (
+            int(self.cpu.early_mispredict_active.value)
+            and self.start <= int(self.cpu.early_mispredict_pc.value) < self.end
+        ):
+            self.counts["early"] += 1
+
+    def verify(self, run_number: int, output: str) -> None:
+        """Require the requested seed and at least one event in each class per boot."""
+        seed = int(os.environ.get("FE_SEED", "1"), 0)
+        counts = " ".join(f"{name}={count}" for name, count in self.counts.items())
+        cocotb.log.info(f"Run {run_number} fefuzz seed {seed} activity: {counts}")
+        assert re.search(rf"^fefuzz seed {seed} rounds ", output, re.M), (
+            f"UART did not identify requested fefuzz seed {seed}"
+        )
+        missing = [name for name, count in self.counts.items() if count < 1]
+        assert not missing, (
+            f"fefuzz seed {seed} run {run_number} missing {', '.join(missing)}"
+        )
 
 
 class PointerMaskingInterruptCoverage:
@@ -1196,55 +1370,117 @@ class CmoTimerCoverage:
 
 
 class WfiRecoveryWatch:
-    """Check the resume PC around a wrong-path WFI at the ROB head.
-
-    For the wfi_seed_recovery app. In a cycle where commit-time recovery is
-    pending and the ROB head is a legal WFI, that WFI is on the wrong path, and
-    the recovery flush removes it at the end of the cycle. cpu_ooo must not
-    seed interrupt_resume_pc from it, so the next cycle's resume PC must not
-    be the WFI's PC + 4. The program's jump targets are further on, so the
-    resume PC left by the jump never equals it.
-    """
-
-    SIGNALS = (
-        "rob_head_is_wfi",
-        "head_valid",
-        "rob_trap_cause",
-        "mispredict_recovery_pending",
-        "rob_trap_pc",
-        "interrupt_resume_pc",
-    )
+    """Wake the older WFI when the JAL and its fall-through WFI are in the ROB."""
 
     def __init__(self, dut: Any) -> None:
-        """Resolve the cpu_ooo signals the check reads."""
+        """Use the program's linked target as the architectural resume-PC oracle."""
+        assert NUM_RUNS > 0, "wfi_seed_recovery requires at least one program run"
         self.dut = dut
-        cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
-        self.sig = {name: _get_signal(dut, f"{cpu}.{name}") for name in self.SIGNALS}
-        missing = [name for name, sig in self.sig.items() if sig is None]
-        assert not missing, f"WfiRecoveryWatch: unresolvable {missing}"
+        cpu_top = dut.cpu_and_memory_subsystem.cpu
+        # The platform ties the CPU's verification input low.
+        cpu_top.i_disable_branch_prediction.value = Force(1)
+        self.cpu = cpu_top.hart.cpu_inst
+        self.rob = self.cpu.u_tomasulo.u_rob
+        symbols = _load_symbol_ranges(
+            ["wfi_recovery_gate", "wfi_recovery_target"], "wfi_seed_recovery"
+        )
+        self.gate_pc = symbols["wfi_recovery_gate"][0]
+        # The inline assembly uses four-byte instructions throughout the sequence.
+        self.jal_pc = self.gate_pc + 4
+        self.wfi_pc = self.jal_pc + 4
+        self.target = symbols["wfi_recovery_target"][0]
+        assert self.target != self.wfi_pc + 4, "WFI seed would equal the JAL target"
+        self.clear()
+
+    def clear(self) -> None:
+        """Require a fresh wakeup and recovery after each reset."""
+        self.wake_in_progress = False
         self.hits = 0
 
     async def run(self) -> None:
-        """Watch every cycle; fail at once on a seeded resume PC."""
-        seeded_pc = None
+        """Sample between active edges and drive only the external interrupt pin."""
+        cpu, rob = self.cpu, self.rob
+        clock = cpu_clock(self.dut)
         while True:
-            await RisingEdge(cpu_clock(self.dut))
-            await ReadOnly()
-            if seeded_pc is not None:
-                resume = _read_int(self.sig["interrupt_resume_pc"])
-                assert resume != seeded_pc, (
-                    f"interrupt_resume_pc was seeded from the wrong-path WFI at "
-                    f"{seeded_pc - 4:#x}"
-                )
-                seeded_pc = None
-            if (
-                _read_bool(self.sig["rob_head_is_wfi"])
-                and _read_bool(self.sig["head_valid"])
-                and _read_int(self.sig["rob_trap_cause"]) == 0
-                and _read_bool(self.sig["mispredict_recovery_pending"])
-            ):
-                self.hits += 1
-                seeded_pc = (_read_int(self.sig["rob_trap_pc"]) or 0) + 4
+            await FallingEdge(clock)
+            if not int(self.dut.i_rst_n.value) or int(cpu.i_rst.value):
+                continue
+            if not int(cpu.head_valid.value):
+                continue
+            pc = int(cpu.rob_trap_pc.value)
+            if pc == self.gate_pc and not self.wake_in_progress:
+                assert int(cpu.i_disable_branch_prediction.value)
+                assert int(cpu.rob_head_is_wfi.value)
+                assert not int(cpu.rob_trap_cause.value)
+                assert not int(cpu.interrupt_pending.value), "older WFI woke early"
+                slot = (int(rob.head_idx.value) + 2) % len(rob.rob_valid)
+                live_wfis = int(rob.rob_valid.value) & int(rob.rob_f_is_wfi.value)
+                if (
+                    int(rob.head_next_valid.value)
+                    and int(rob.head_next_pc.value) == self.jal_pc
+                    and live_wfis & (1 << slot)
+                ):
+                    cocotb.log.info(
+                        f"Waking WFI {pc:#x} with JAL {self.jal_pc:#x} "
+                        f"and WFI {self.wfi_pc:#x} queued"
+                    )
+                    self.dut.i_external_interrupt.value = 1
+                    self.wake_in_progress = True
+            if pc == self.jal_pc and int(cpu.rob_commit_valid_raw.value):
+                assert self.wake_in_progress, "JAL retired before both WFIs were queued"
+                self.dut.i_external_interrupt.value = 0
+                await self._check_recovery(clock)
+                self.wake_in_progress = False
+
+    async def _check_recovery(self, clock: Any) -> None:
+        """Follow the JAL from retirement through the target's first retirement."""
+        cpu = self.cpu
+        await FallingEdge(clock)
+        assert int(cpu.mispredict_recovery_pending.value), "JAL missed commit recovery"
+        assert int(cpu.head_valid.value) and int(cpu.rob_head_is_wfi.value)
+        assert int(cpu.rob_trap_pc.value) == self.wfi_pc
+        assert not int(cpu.rob_trap_cause.value)
+        assert not int(cpu.rob_commit_valid_raw.value)
+        assert not int(cpu.rob_commit_2_valid_raw.value)
+        assert not int(cpu.trap_or_xret_taken.value)
+        assert int(cpu.interrupt_resume_pc.value) == self.target
+        seed = int(cpu.wfi_resume_seed.value)
+        slot = int(self.rob.head_idx.value)
+
+        await FallingEdge(clock)
+        assert int(self.rob.rob_valid.value) & (1 << slot) == 0, "WFI survived recovery"
+        while True:
+            resume = int(cpu.interrupt_resume_pc.value)
+            assert resume == self.target, (
+                f"interrupt resume PC {resume:#x}, expected JAL target {self.target:#x} "
+                f"after wrong-path WFI {self.wfi_pc:#x} (seed={seed})"
+            )
+            assert not int(cpu.trap_or_xret_taken.value)
+            if int(cpu.rob_commit_valid_raw.value):
+                assert int(cpu.dbg_commit_pc.value) == self.target
+                break
+            await FallingEdge(clock)
+        # Report any corrupted PC before checking its source.
+        assert not seed, "wrong-path WFI selected the resume-PC seed"
+        self.hits += 1
+
+    def check_wake(self, run_number: int, max_cycles: int) -> None:
+        """On timeout, distinguish a missing wake from a stall after the wake."""
+        assert self.wake_in_progress or self.hits > 0, (
+            f"Run {run_number} timed out after {max_cycles} cycles waiting to wake "
+            f"WFI {self.gate_pc:#x} at the ROB head with direct JAL {self.jal_pc:#x} "
+            f"and fall-through WFI {self.wfi_pc:#x} queued behind it"
+        )
+
+    def verify(self, run_number: int) -> None:
+        """Require a checked wrong-path head in each reset-to-pass interval."""
+        assert self.hits > 0, (
+            f"run {run_number}: no wrong-path WFI reached the ROB head in recovery"
+        )
+        cocotb.log.info(
+            f"run {run_number}: {self.hits} wrong-path WFI head(s) at {self.wfi_pc:#x}, "
+            f"interrupt resume PC held at JAL target {self.target:#x}"
+        )
 
 
 class DelayedBranchFetchCoverage:
@@ -2094,13 +2330,15 @@ async def run_until_complete(
     max_cycles: int,
     run_number: int,
     app_name: str | None = None,
+    on_timeout: Callable[[int, int], None] | None = None,
 ) -> None:
     """Run until a UART success marker, failure marker, or timeout.
 
     uart_monitor must already be running. Open-ended tests use initial_text
     instead of success_marker. max_cycles bounds the run; run_number is a
     1-based log index, and app_name selects tracing and diagnostics.
-    Raise AssertionError on failure or timeout.
+    On timeout, call on_timeout with the run number and cycle budget before
+    raising the UART timeout. Raise AssertionError on failure or timeout.
     """
     test_passed = False
     test_failed = False
@@ -2108,6 +2346,7 @@ async def run_until_complete(
     retired_count = 0
     last_progress_retired = 0
     is_coremark_like = app_name is not None and app_name.startswith("coremark")
+    fefuzz_activity = FefuzzActivity(dut) if app_name == "fefuzz" else None
     progress_interval = 0
     if os.environ.get("COCOTB_PROGRESS_INTERVAL") is not None:
         progress_interval = int(os.environ["COCOTB_PROGRESS_INTERVAL"])
@@ -3771,6 +4010,8 @@ async def run_until_complete(
     clock_edge = RisingEdge(cpu_clock(dut))
     for cycle in range(max_cycles):
         await clock_edge
+        if fefuzz_activity is not None:
+            fefuzz_activity.sample()
         if external_irq_enabled and hasattr(dut, "i_external_interrupt"):
             if external_irq_active:
                 if external_irq_hold_remaining > 0:
@@ -4736,6 +4977,8 @@ async def run_until_complete(
     print("\n")  # Newline after UART output
     cocotb.log.info(f"Run {run_number} completed after {cycle + 1} cycles")
 
+    if test_passed and fefuzz_activity is not None:
+        fefuzz_activity.verify(run_number, uart_monitor.get_output())
     if not test_failed and os.environ.get("FROST_EXPECT_PERF_COUNTERS") == "1":
         # Profiling entries (-GPERF_COUNTERS=1) must not pass on zero data:
         # the report's presence line carries the hardware's mperfcount.
@@ -4832,6 +5075,8 @@ async def run_until_complete(
                 f"x8/s0={last_x8_commit} x18/s2={last_x18_commit}"
             )
         cocotb.log.error(f"UART output:\n{uart_monitor.get_output()}")
+        if on_timeout is not None:
+            on_timeout(run_number, max_cycles)
         if has_defined_endpoint:
             raise AssertionError(
                 f"Run {run_number} failed: program did not print success marker "
@@ -5039,6 +5284,7 @@ async def test_real_program(dut: Any) -> None:
         cocotb.start_soon(hang_probe(dut, cpu_clock(dut)))
     cocotb.start_soon(ddr_write_watch(dut))
     cocotb.start_soon(l0_hit_watch(dut))
+    cocotb.start_soon(bp_trace(dut))
 
     uart_driver = None
     debug_monitor = None
@@ -5081,9 +5327,6 @@ async def test_real_program(dut: Any) -> None:
     ecc_driver = EccReportDriver(dut) if app_name == "memerr_test" else None
     if app_name == "memerr_readback":
         cocotb.start_soon(EccReportDriver(dut).poll())
-    wfi_watch = WfiRecoveryWatch(dut) if app_name == "wfi_seed_recovery" else None
-    if wfi_watch is not None:
-        cocotb.start_soon(wfi_watch.run())
     coverage = (
         DelayedBranchFetchCoverage(dut)
         if app_name == "served_window_resteer"
@@ -5091,6 +5334,8 @@ async def test_real_program(dut: Any) -> None:
         if app_name == "cbo_mgmt_test"
         else PointerMaskingInterruptCoverage(dut)
         if app_name == "pm_test"
+        else WfiRecoveryWatch(dut)
+        if app_name == "wfi_seed_recovery"
         else None
     )
     if coverage is not None:
@@ -5174,6 +5419,11 @@ async def test_real_program(dut: Any) -> None:
                 max_cycles,
                 run_number=run_number,
                 app_name=app_name,
+                on_timeout=(
+                    coverage.check_wake
+                    if isinstance(coverage, WfiRecoveryWatch)
+                    else None
+                ),
             )
             if nic_peer is not None:
                 nic_peer.verify()
@@ -5202,12 +5452,5 @@ async def test_real_program(dut: Any) -> None:
         line_monitor.stop()
     if debug_monitor:
         debug_monitor.stop()
-
-    if wfi_watch is not None:
-        # Require the program to exercise the case under test.
-        assert wfi_watch.hits > 0, "no wrong-path WFI reached the ROB head in recovery"
-        cocotb.log.info(
-            f"wrong-path WFI at the ROB head in recovery: {wfi_watch.hits} cycles"
-        )
 
     cocotb.log.info(f"=== All {NUM_RUNS} run(s) completed successfully ===")

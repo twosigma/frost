@@ -1,3 +1,5 @@
 # SymbiYosys run output directories (e.g., trap_unit_bmc/, trap_unit_cover/).
-# Source files (.sby, .sv, README.md) are all at the top level, not in subdirs.
+# The predictor reference and RAM model directories hold proof sources.
 */
+!predictor_reference/
+!predictor_twin_ram/

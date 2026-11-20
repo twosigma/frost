@@ -387,7 +387,7 @@ or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
 `opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
 `prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). Of the 225 scripts, 195 open with `hierarchy -top` and
+each case). Of the 239 scripts, 209 open with `hierarchy -top` and
 `script free_undefined.ys`, which lowers processes pass by pass, frees the
 undefined inputs of every multiplexer and the undefined bits of every
 connection with `setundef -anyseq` before `proc_dlatch` and every other
@@ -477,7 +477,7 @@ an ASIC, the RTL also needs:
 
 ## Single-core performance
 
-FROST runs CoreMark at 4.77 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
+FROST runs CoreMark at 4.88 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
 The next goal is 5 CoreMark/MHz. Work toward it is paused while memory
 performance on the coherent hierarchy and timing margin at the target clock
 are restored. A score counts only from a run of at least ten seconds that
@@ -485,7 +485,7 @@ passes the CRC checks for both official seed sets, with the compiler flags,
 the `sw.bin` hash, and memory and cache settings recorded; see the
 [CoreMark README](sw/apps/coremark/README.md).
 
-5 CoreMark/MHz is 200,000 cycles per iteration, against about 210,000 today.
+5 CoreMark/MHz is 200,000 cycles per iteration, against about 205,000 today.
 A model driven by the CoreMark instruction trace gives these estimates for
 each change on its own, for the design before load results woke integer
 consumers early and before Zbc. It treats the BRAM as attached directly to
@@ -516,14 +516,15 @@ of the load-latency cut.
 Priorities, guided by the performance counters and timing reports:
 
 1. Branch prediction. PD overrides conditional-branch directions in both
-   slots when the tagged predictor matches (slot 1 also keeps the bimodal
-   fallback).
+   slots when the four-table direction predictor matches (slot 1 also keeps
+   the bimodal fallback). PD also predicts non-return indirect jumps from
+   three tables indexed with path history.
 2. Pairing across fetch windows. The front end pairs two instructions only
    when both fit in one 64-bit fetch window, and after a redirect the fetch
    address advances four and eight bytes in turn, so straight-line code
    alternates two-instruction and one-instruction packets. The instruction in
-   such a one-instruction packet is the window's second word, which no BTB
-   lookup covers, so calls and returns there recover at commit. Removing the
+   such a one-instruction packet is the window's second word. A held backing
+   BTB read or its second image can now cover that word. Removing the
    limit lets any two consecutive instructions pair. Then measure compressed
    code across different code layouts: CoreMark runs without compressed
    instructions, and should use them once throughput is stable across link
@@ -612,10 +613,10 @@ and targeted microbenchmarks give these items:
    direction predictor disagrees with the BTB (and, in slot 1, when the
    bimodal fallback predicts taken on a BTB miss or not-taken entry), at the
    same two-bubble cost; a slot-2 branch without a tagged match keeps the
-   BTB's direction and recovers from execution if wrong. Using the backing
-   BTB's second lookup image when a one-instruction packet lands in the word
-   after the looked-up one is next; an indirect-target predictor and longer
-   tagged-history tables remain possible later work. A backing hit served
+   BTB's direction and recovers from execution if wrong. The backing BTB
+   uses its second image for a packet one word beyond the read. PD uses
+   8, 24 and 64 bits of path history for non-return indirect targets and
+   12, 24, 64 and 128 bits of direction history for conditional branches. A backing hit served
    from IF would save a bubble, but its correction would sit on the fetch
    loop, one of the hardest paths at the target clock. In bare-metal
    microbenchmarks a taken branch costs about 5 cycles, and a loop of four

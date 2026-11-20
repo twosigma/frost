@@ -1,0 +1,95 @@
+[tasks]
+imem_predecode_live
+
+[options]
+mode bmc
+depth 1
+timeout 60
+
+[engines]
+smtbmc boolector
+
+[script]
+# The read ports and every named state update agree on arbitrary paired state.
+read -sv -D SYNTHESIS sdp_block_ram_dc_init.sv
+read -sv -D SYNTHESIS -D FROST_RANDOM_START -D FROST_VIVADO_SYNTH imem_predecode_reference.sv imem_predecode_boundary.sv
+hierarchy -check -top imem_predecode_boundary
+script free_undefined.ys
+select -assert-none a:init t:$initstate t:$anyinit
+setattr -mod -unset keep_hierarchy *
+flatten
+memory_map -keepdc
+dffunmap
+setundef -undriven -anyseq
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+check -assert
+select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
+select -assert-none i:* o:* %i
+select -assert-count 35 t:$dff
+select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
+expose -dff -cut imem_predecode_boundary/w:*
+select -assert-none imem_predecode_boundary/t:$dff %co:+[Q] imem_predecode_boundary/w:* %i %co1 imem_predecode_boundary/t:* %i
+select -assert-count 22 t:$anyseq
+rename -top gold
+design -stash gold
+design -reset
+read_verilog -formal +/xilinx/cells_sim.v
+read -sv -D SYNTHESIS sdp_block_ram_dc_init.sv
+read -sv -D SYNTHESIS -D FROST_RANDOM_START -D FROST_VIVADO_SYNTH -D IMEM_PREDECODE_CANDIDATE riscv_pkg.sv imem_predecode.sv imem_predecode_boundary.sv
+hierarchy -check -top imem_predecode_boundary
+script free_undefined.ys
+select -assert-none a:init t:$initstate t:$anyinit
+setattr -mod -unset keep_hierarchy *
+setattr -set from_prim 1 $paramod*LUT*/* $paramod*MUXF*/* $paramod*CARRY*/* $paramod*FD*/* LUT*/* MUXF*/* CARRY*/* FD*/*
+flatten
+memory_map -keepdc
+dffunmap
+setundef -undriven -anyseq
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+check -assert
+select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
+select -assert-none i:* o:* %i
+select -assert-count 35 t:$dff
+select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
+expose -dff -cut imem_predecode_boundary/w:*
+select -assert-none imem_predecode_boundary/t:$dff %co:+[Q] imem_predecode_boundary/w:* %i %co1 imem_predecode_boundary/t:* %i
+select -assert-count 25 t:$anyseq
+rename -top gate
+design -stash gate
+design -reset
+read -sv twin_both.sv
+design -copy-from gold -as gold gold
+design -copy-from gate -as gate gate
+hierarchy -top twin_both
+script free_undefined.ys
+write_json twin_ports.json
+equiv_make gold gate equiv
+delete gold gate twin_both
+setundef -anyseq
+select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate
+select -assert-count 47 t:$anyseq
+select -assert-count 22 t:$anyseq n:*_gold %i
+select -assert-count 25 t:$anyseq n:*_gate %i
+select -set prim t:* a:from_prim %i
+select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
+select -assert-min 64 @blk
+select -assert-min 1317 t:$equiv
+equiv_simple
+equiv_status -assert
+design -reset
+read -formal -sv prim_twin_done.sv
+hierarchy -top prim_twin_done
+script free_undefined.ys
+prep -top prim_twin_done
+
+[files]
+imem_predecode_reference.sv
+imem_predecode_boundary.sv
+twin_both.sv
+free_undefined.ys
+prim_twin_done.sv
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/imem_predecode.sv
+../hw/rtl/lib/ram/sdp_block_ram_dc_init.sv

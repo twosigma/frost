@@ -48,9 +48,9 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `ooo_register_files` | `register_files/` | INT and FP architectural register files, two write ports each for two-wide commit, and a bypass that forwards a same-cycle commit to dispatch; with `EXTRA_READ_PORT`, one more read port on each file for the misaligned-access engine |
 | `commit_actions` | `commit/` | Register writes at commit, the delayed CSR writeback, the misaligned-access engine's load result on port 0, the retire valid, and the instret increment |
 | `branch_resolution` | `branch_recovery/` | Resolves conditional branches and JALRs from INT_RS with `branch_jump_unit` and reports them to the ROB, ignoring a branch whose checkpoint was reused. A JAL resolves when the ROB allocates it |
-| `early_misprediction_recovery` | `branch_recovery/` | For a mispredicted conditional branch that holds a checkpoint, redirects fetch and restores the RAT the cycle after it resolves, instead of at commit |
-| `misprediction_flush_controller` | `branch_recovery/` | Commit-time mispredictions, full and partial flush priority, checkpoint restore and free |
-| `tage_history` | `branch_recovery/` | The tagged direction predictor's path history and its restores, the saved lookup of each conditional branch, and training at commit |
+| `early_misprediction_recovery` | `branch_recovery/` | Redirects fetch and restores the RAT one cycle after a checkpointed conditional branch or enabled JALR resolves as mispredicted |
+| `misprediction_flush_controller` | `branch_recovery/` | Commit-time mispredictions, full and partial flush priority, checkpoint restore and free. Fetch samples the combined flush on the same edge as the individual recovery pulses |
+| `tage_history` | `branch_recovery/` | Path and direction history recovery, conditional-branch and JALR lookup snapshots, and training at commit |
 | `ex_comb_synthesizer` | `recovery/` | Builds IF's redirect, BTB-update, and RAS-restore bus from early recovery, commit-time recovery, and correct-branch commits, in that priority |
 | `data_mem_request_router` | `memory_if/` | Data-port arbitration (SQ writes, then AMO writes, then LQ reads), staged device reads, tagged completion for the cached tier; see the [data-tier bus rules](../../README.md#data-tier-bus-contract) |
 | `perf_counter_aggregator` | `perf/` | Top-level and cache profiling counters and the counter read mux, present only with `PERF_COUNTERS=1` ([counter reference](cpu_ooo/perf/README.md)) |
@@ -90,10 +90,9 @@ in `frost_hart.sv`.
 IF receives a 64-bit window each cycle: the 32-bit word at the fetch PC and
 the word after it. It cuts up to two instructions from the window, assembling
 a 32-bit instruction that starts in the upper half of a word from both words
-in the same cycle. Compressed instructions are expanded when their words are
-written to instruction memory or filled into the L1I (see
-[Instruction fetch providers](#instruction-fetch-providers)): IF builds slot 2
-from that predecoded RV64C expansion, PD does the same for slot 1 and extracts
+in the same cycle. Fetch providers expand compressed instructions as part of
+predecode (see [Instruction fetch providers](#instruction-fetch-providers)).
+IF builds slot 2 from the RV64C expansion, PD does the same for slot 1 and extracts
 source registers early, and ID decodes both slots. Decoded bundles wait in the
 [decoded bundle queue](cpu_ooo/frontend_control/README.md) until dispatch
 renames them. While `mstatus.FS` is Off, ID decodes every F/D instruction as
@@ -128,18 +127,23 @@ cases, then the sequential PC.
 | Structure | Size | Predicts | Trained by |
 |-----------|------|----------|------------|
 | BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches, JALs and JALRs; an entry is typed as a call, a return, or both | Mispredicted conditional branches, JALs and JALRs; correctly predicted conditional branches at commit |
-| Backing BTB | 1024 entries, two-way set-associative | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | Mispredicted JALs and JALRs at commit; each PD redirect it serves refreshes its entry's replacement state |
+| Backing BTB | 1024 entries, two-way set-associative | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | Mispredicted JALs and JALRs at recovery. A PD redirect that uses an entry refreshes its replacement state |
 | Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`), and of a backing BTB redirect for one | IF, when it hands PD a packet predicted from a typed entry, and for a backing BTB redirect: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
-| Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of conditional branches in either slot whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
+| Tagged direction predictor | Four tables of 1024 entries, hashed with 12, 24, 64 and 128 bits of direction history; 10-bit tags, 3-bit counters, 2-bit usefulness | Direction of conditional branches in either slot whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
+| Indirect target predictor | Three tables of 256 entries, hashed with 8, 24 and 64 bits of path history; 11-bit tags, 2-bit confidence | Target of a JALR that is not a return, in either slot, through a PD redirect when it differs from the BTB's | Each JALR at commit, at the entries its lookup read |
 
 A return is predicted like any BTB hit, from the lookup at its fetch PC, but
 its entry is typed, so its target is the top of the return address stack
 while the stack holds an entry (the BTB target, the return's last target,
 otherwise). Any other JALR, such as an indirect call through a function
-pointer, predicts the target it had when it last trained the BTB. A JALR that
-is not predicted resolves as mispredicted, because a JALR is always taken, and
-recovers when it commits, as does a JALR predicted with the wrong target. While an unpredicted JALR is in the front end (slot 1 of IF, PD, or
+pointer or a `switch` jump table, predicts the target it had when it last
+trained the BTB, unless the indirect target predictor has an entry for it
+(see below). A JALR always takes its computed target. A missing prediction or a
+wrong target starts checkpoint recovery the cycle after execution resolves it
+when the recovery unit is idle. A surviving JALR that resolved during another
+recovery, or with `EarlyJalrRecovery` cleared, redirects at commit. While an
+unpredicted JALR is in the front end (slot 1 of IF, PD, or
 ID, or the decoded queue) and a conditional branch or JALR is unresolved,
 `ooo_pipeline_control` stalls the front end to limit wrong-path fetch.
 
@@ -195,13 +199,21 @@ read the predictor can differ from the branch PC after a stall replay or at
 a halfword boundary. A slot-2 branch's training waits, one deep, for a cycle
 in which slot 1 does not train; a newer one replaces it.
 
-The tagged predictor (`tage_predictor`) follows TAGE. T1 hashes the branch's
-word address with the newest 16 bits of the global path history, T2 with all
-64. Each table is two 512-entry banks split by PC[2], so one lookup reads both
-words of the fetch window; the lookup registers and is compared with the tags
-the next cycle. The longer-history table whose tag matches provides the
-direction. Every taken control-flow instruction shifts bits [3:2] of its
-target into the history. The lookup history follows fetch: `tage_history`
+The tagged predictor (`tage_predictor`) follows TAGE. Four tables hash the
+branch's word address with the newest 12, 24, 64 and 128 bits of the global
+direction history (described below). Each table is two 512-entry banks split
+by PC[2], so one lookup reads both words of the fetch window; the lookup
+registers and is compared with the tags the next cycle. The longest-history
+table whose tag matches provides the direction, and the next shorter match
+is the alternate. An entry has a 10-bit tag, a 3-bit counter and a 2-bit
+usefulness counter; a mispredicted branch allocates in the shortest table
+above its provider whose entry is not useful, and when every candidate is
+useful each counts down, which ages out entries that stop being useful (a
+periodic halving of every counter changed no workload by more than 0.04
+mispredictions per 1,000 instructions in the trace model, so there is none).
+The path history: every taken control-flow instruction shifts bits [3:2] of
+its target into a 64-bit history, which the indirect target predictor
+hashes. Its lookup history follows fetch: `tage_history`
 pushes the target the cycle after `pc_controller` loads a predicted one, and
 each redirect restores the history to its point in the program. The
 controller captures push and restore events with the PC load and captures
@@ -213,17 +225,61 @@ leaves the history unchanged, so when one returns fetch to a branch already
 predicted taken, the branch is looked up again with its own target in the
 history. That costs accuracy, not correctness.
 
-When PD passes a conditional branch to ID, its lookup (indices, tags, which
-tables matched, the alternate direction, and the history) goes to a 64-entry
-circular buffer. Dispatch sees the branches in the same order, so it gives the
+The tagged predictor hashes a global direction history rather than the path
+history: each conditional branch shifts in one bit, its final predicted
+direction, taken or not, and each jump its predicted target's bit 2. PD forms the
+possible history bits for each slot before the fast prediction chooses between them.
+`tage_history` pushes a packet's bit when PD passes the packet to ID, from a
+register, so a lookup sees every packet PD passed up to two fetches before
+it. A not-taken branch now reaches the history, which is what loop exits and
+correlated branches need. Early recovery restores the instruction's PD-time
+direction history and shifts in the resolved conditional outcome or bit 2 of
+the resolved JALR target. Each of the four folded table indices shifts in that
+same bit, using the instruction's saved direction history. A trap, xRET, FENCE-class flush or commit-time
+recovery takes the retired direction history (each retired branch's outcome
+and each jump's target bit 2), with the same registered arms as the path history. A PD redirect needs no restore: the redirecting
+branch was pushed with its new direction, and nothing younger was passed.
+The path history above stays for the indirect target predictor and its
+saved-lookup restores. In the trace model this takes CoreMark-PRO loops from
+9.96 to 0.18 mispredictions per 1,000 instructions, nnet from 3.18 to 0.54
+and radix2 from 1.08 to 0.59; core rises from 2.10 to 2.87 with two tables,
+which the four tables recover (0.92).
+
+The indirect target predictor (`ittage_predictor`) follows ITTAGE. Three
+tables hash a JALR's word address with the newest 8, 24 and 64 bits of the
+tagged predictor's lookup history; each table is two 128-entry banks split by
+PC[2] and is looked up, registered and checked together with the tagged
+predictor, so the same coverage check applies. An entry holds a tag, the
+target's low bits. The upper bits come from the JALR's own PC, including
+when the second slot starts in the next virtual address region. The entry also holds a
+2-bit confidence and a usefulness bit, and the longest-history match
+provides the target. PD redirects a JALR that is not a return to that target
+when its lookup matched and the BTB did not already predict the same target,
+like a backing BTB redirect: two bubbles, a push for an indirect call the
+BTB did not predict, and ID gives the JALR the target to check. PD compares
+the two targets after registering them with the packet. An eligible hit
+supplies the jump's history bit directly because equal targets share that
+bit. At commit a
+correct target raises the provider's confidence; a wrong one lowers it or,
+at zero, replaces the target; and a mispredicted JALR allocates in the
+shortest table above its provider whose entry is not useful. If the training
+row belongs to another tag, both copies receive that row. Before this, a
+`switch` on a state variable (CoreMark-PRO core's state machine) mispredicted
+nearly every time, since the BTB keeps only the last target.
+
+When PD passes a conditional branch or a JALR to ID, its lookup (for a branch
+the indices, tags, which tables matched, the alternate direction, and the
+history; for a JALR that is not a return the indirect target lookup) goes to
+a 64-entry circular buffer. Dispatch sees the branches in the same order, so it gives the
 branch the same index from a pointer of its own and records it by ROB tag;
 every flush that drops branches in between rewinds both pointers to the same
 entry. Commit trains from that entry, one branch per cycle with the same
-slot-2 hold. The provider's counter moves toward the outcome, and when the
-provider and the alternate direction disagree, its usefulness bit records
-whether the provider was right. A mispredicted branch allocates a weak entry
-in the first table above its provider (T1, then T2) whose entry is not useful,
-or clears those usefulness bits when every candidate is useful. Slot-2
+slot-2 hold. The provider's direction counter moves toward the outcome. When
+the provider and alternate disagree, the two-bit usefulness counter moves up
+for a correct provider and down for an incorrect one, saturating at either
+end. A misprediction allocates a weak entry in the shortest eligible table
+above the provider whose row is free. If allocation fails, each candidate’s
+nonzero usefulness counter decreases by one. Slot-2
 branches are trained the same way, from the prediction left after any PD
 override. Each table bank keeps two copies, one read by lookups and one by
 training, and every write goes to both. When the provider's entry in the
@@ -240,7 +296,7 @@ measurement, through `riscv_pkg::BackingBtbWays`). It holds jumps, calls and
 returns only: the BTB updates of JALs and JALRs train it, so it holds every
 jump that has mispredicted unless replacement has since taken it, or an
 update was dropped because the update one stage ahead writes the same set.
-Every hit predicts taken. A correctly predicted jump sends no update, so a
+An illegal compressed parcel reaches ID with its trap and cannot steer or allocate history. When an illegal compressed parcel or `c.ebreak` is in slot 1, PD also discards slot 2, including when reserved `C.JR x0` expands to a JALR; reserved 32-bit `OPC_BRANCH` `funct3` encodings (`010` and `011`) are excluded from conditional-branch prediction in both slots. A backing hit can redirect a live jump of the stored size. When both slots hit, a stale entry on a slot-1 ALU instruction leaves the slot-2 jump’s target and return type in control. A correctly predicted jump sends no update, so a
 PD redirect that the backing BTB serves refreshes its entry instead, making
 it the most recently used way of its set. Its sets are indexed
 by the PC's word, like the BTB. An entry's tag holds the PC bits above the
@@ -256,12 +312,28 @@ When IF serves that window the next cycle, the registered tags are compared
 with the packet's PC, so a packet whose set was not read gets no backing hit,
 and neither does a slot 2 in the word after the last set. The hit, size and
 type come from the registered tags, and the target from the target array
-read on the same edge. IF passes PD each slot's hit, size, type and target,
-kept across stall replay like the packet. Slot 2's type and target also come
-for each size of slot 1, formed from the tags and the packet's PC alone; PD
-picks between them by slot 1's size where it forms the backing target, so
-the redirect target registers select between finished values (see
-`pd_redirect_next`). PD registers a candidate for a
+read on the same edge. The backing BTB also holds the last read whose set
+was the served packet's (its tags, targets and set index). When the newest
+read is for another set and the held one is for the packet's set, the held
+read answers, compared with the packet's PC in the same way. The first packet
+after a redirect often waits in the holdoff while `o_pc` has already moved on
+to the next window, so without the held read a jump or return in that packet
+lost the hit it had in its first cycle and mispredicted (from cached DDR,
+every such return did). A fetch retarget discards the outstanding and held reads. Within a fetch path,
+a held read can predate training writes made since;
+an entry it still shows costs at most a misprediction. The fetch PC also often
+sits at a halfword of the word before the window IF then serves (in compressed
+code, `o_pc` 0x902 and then `pc_reg` 0x904), so the read is for the set before
+the packet's word. The second image holds the set after the read one, which is
+the packet word's set, so slot 1 and a slot 2 in the same word are served
+from it; before this the backing BTB never hit in that case, and in
+CoreMark-PRO core the JALs it should have caught were a third of the
+mispredictions left after the indirect target predictor. IF passes PD each
+slot's hit, size, type and target, kept across stall replay like the packet.
+Slot 2's type and target also come for each size of slot 1, formed from the
+answering read's tags and the packet's PC alone. PD uses slot 1's size to form the slot-2
+backing address. It captures the slot-1 backing address beside the branch or slot-2
+address, then chooses between them with the registered owner. PD registers a candidate for a
 slot-1 or slot-2 JAL or JALR whose backing entry has the instruction's size.
 When the slot's BTB prediction was not taken, the candidate fires the PD
 redirect, which costs the PD redirect's two bubbles instead of a
@@ -355,10 +427,10 @@ bits (instruction size, pairing, and slot-2 eligibility) and, for each
 halfword, the full RV64C expansion with its illegal flag and whether an
 indirect jump (JALR, C.JR, C.JALR) starts there. The expansion's
 source-register fields are stored separately, and PD takes a compressed
-instruction's register fields from them. CPU fetch fills compute the metadata with
-`riscv_pkg::imem_make_sideband`, and
-`sw/common/generate_imem_predecode_init.py` mirrors it for the
-instruction-memory metadata arrays that component tests use.
+instruction's register fields from them. CPU fetch fills compute the metadata
+with `riscv_pkg::imem_make_sideband`. The generator
+`sw/common/generate_imem_predecode_init.py` mirrors that function for the
+optional instruction-memory metadata banks used by component tests.
 
 ### Operation encoding
 
@@ -818,7 +890,10 @@ and `vfmv.s.f` write element zero when `vstart < vl`, including
 `vstart`, `vxrm` and `frm`, and the engine executes it after commit; the CSR
 file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
-result on CDB slot 6. Retiring these scalar-result instructions clears
+registered result on CDB slot 6. Only `vcpop.m` and `vfirst.m` take an extra
+cycle to combine the counts or first-set indices from the 64-bit blocks.
+Scalar integer programs, including CoreMark, do not enter these states.
+Retiring these scalar-result instructions clears
 `vstart`, dirtying VS only if that changes it. Saturation from active,
 committed elements sets sticky `vxsat`. Every CSR access waits for the vector
 engine and its retirement queue to drain, so reads and writes observe
@@ -1198,8 +1273,14 @@ operation takes the same registers in the redirect's first cycle, in which
 IF accepts no packet, so the stack sees it one cycle later than a typed
 BTB prediction's; the packets in IF and PD in the meantime are wrong-path
 ones that the redirect drops. The operation happens once even when a stall
-holds the redirect, and a flush in that first cycle drops it; a later flush
-that squashes the instruction leaves its recovery restore to undo it.
+holds the redirect. A flush in that first cycle drops it. An older
+mispredicted branch restores its own stack checkpoint. With early JALR recovery enabled,
+dispatch saves each instruction's stack checkpoint under its ROB tag. On
+a full flush with a live head, the stack restores the head's pointer,
+valid count and full return address, without replaying the discarded
+head's operation. Adjacent tags use opposite banks so both dispatch slots
+can save their checkpoints on the same edge. The restore takes the existing
+recovery register and does not stall fetch.
 
 The restore also writes the recovery point's top entry back. A wrong path
 that pops and then pushes overwrites that entry: a mispredicted branch just
@@ -1235,6 +1316,12 @@ refresh, reads its set, finds its way, and writes the set two cycles after
 the BTB writes; a refresh that misses writes nothing. A request that reads
 the set being written takes the written set, and one to the same set as an
 update in the stage ahead of it is dropped, which costs accuracy only.
+
+An indirect jump can train the backing BTB when it resolves. If an older
+instruction subsequently traps in the same privilege mode, the trained
+target can remain in the table after the jump is squashed. The backing
+table has no privilege tag. A matching jump in a later privilege mode can
+use the entry, as it can for a target trained at retirement.
 
 ### 4 GiB target limit
 

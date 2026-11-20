@@ -1,0 +1,126 @@
+[tasks]
+bmc wrapper abc_frames
+delivery_bmc wrapper abc_frames
+cover wrapper
+fifo_prove fifo
+route_prove route
+route_cover route
+
+[options]
+route_prove: mode prove
+route_prove: depth 3
+route_cover: mode cover
+route_cover: depth 6
+cover: vcd off
+fifo: mode prove
+fifo: depth 4
+bmc: mode bmc
+bmc: depth 15
+delivery_bmc: mode bmc
+delivery_bmc: depth 20
+cover: mode cover
+cover: depth 22
+
+[engines]
+abc_frames: abc bmc3 -c
+cover: smtbmc boolector
+fifo: smtbmc boolector
+route: smtbmc boolector
+
+[script]
+# Read the production wrapper, including the packed struct arrays in the SQ.
+# Only the arithmetic word and engine latency are abstract. No shim issue,
+# freshness, dispatch, grant, or station lane assumptions enter these tasks.
+bmc: read_slang --top fp_forward_wake_formal --single-unit -DSYNTHESIS -DFP_SHIM_ABSTRACT_PROOF -DFP_FORWARD_WAKE_PROOF riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rob_serializer.sv sfence_operand_store.sv reorder_buffer.sv register_alias_table.sv rs_issue2_selector.sv reservation_station.sv cdb_arbiter.sv fu_cdb_adapter.sv int_alu_shim.sv int_muldiv_shim.sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv load_queue.sv sq_forwarding_unit.sv store_queue.sv dtlb.sv dmmu.sv tomasulo_perf_counters.sv sq_early_addr_pipeline.sv commit_bus_pipeline.sv dispatch_rs_router.sv sc_pending_unit.sv coherent_atomic_select.sv mem_wakeup_merge.sv lq_coherence_port.sv divider.sv dsp_tiled_multiplier_unsigned.sv multiplier.sv cl_multiplier.sv alu.sv fp_shim.sv tomasulo_wrapper.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv coherent_lq_address_store.sv coherent_l0_flags.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv fp_forward_wake_formal.sv
+delivery_bmc: read_slang --top fp_forward_wake_formal --single-unit -DSYNTHESIS -DFP_SHIM_ABSTRACT_PROOF -DFP_FORWARD_WAKE_PROOF -DFP_FORWARD_DELIVERY riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rob_serializer.sv sfence_operand_store.sv reorder_buffer.sv register_alias_table.sv rs_issue2_selector.sv reservation_station.sv cdb_arbiter.sv fu_cdb_adapter.sv int_alu_shim.sv int_muldiv_shim.sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv load_queue.sv sq_forwarding_unit.sv store_queue.sv dtlb.sv dmmu.sv tomasulo_perf_counters.sv sq_early_addr_pipeline.sv commit_bus_pipeline.sv dispatch_rs_router.sv sc_pending_unit.sv coherent_atomic_select.sv mem_wakeup_merge.sv lq_coherence_port.sv divider.sv dsp_tiled_multiplier_unsigned.sv multiplier.sv cl_multiplier.sv alu.sv fp_shim.sv tomasulo_wrapper.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv coherent_lq_address_store.sv coherent_l0_flags.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv fp_forward_wake_formal.sv
+cover: read_slang --top fp_forward_wake_formal --single-unit -DSYNTHESIS -DFP_SHIM_ABSTRACT_PROOF -DFP_FORWARD_WAKE_PROOF -DFP_FORWARD_WITNESS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rob_serializer.sv sfence_operand_store.sv reorder_buffer.sv register_alias_table.sv rs_issue2_selector.sv reservation_station.sv cdb_arbiter.sv fu_cdb_adapter.sv int_alu_shim.sv int_muldiv_shim.sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv load_queue.sv sq_forwarding_unit.sv store_queue.sv dtlb.sv dmmu.sv tomasulo_perf_counters.sv sq_early_addr_pipeline.sv commit_bus_pipeline.sv dispatch_rs_router.sv sc_pending_unit.sv coherent_atomic_select.sv mem_wakeup_merge.sv lq_coherence_port.sv divider.sv dsp_tiled_multiplier_unsigned.sv multiplier.sv cl_multiplier.sv alu.sv fp_shim.sv tomasulo_wrapper.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv coherent_lq_address_store.sv coherent_l0_flags.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv fp_forward_wake_formal.sv
+route: read_slang --top tomasulo_wrapper --single-unit -DSYNTHESIS -DFP_SHIM_ABSTRACT_PROOF -DFP_FORWARD_ROUTE_PROOF riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rob_serializer.sv sfence_operand_store.sv reorder_buffer.sv register_alias_table.sv rs_issue2_selector.sv reservation_station.sv cdb_arbiter.sv fu_cdb_adapter.sv int_alu_shim.sv int_muldiv_shim.sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv load_queue.sv sq_forwarding_unit.sv store_queue.sv dtlb.sv dmmu.sv tomasulo_perf_counters.sv sq_early_addr_pipeline.sv commit_bus_pipeline.sv dispatch_rs_router.sv sc_pending_unit.sv coherent_atomic_select.sv mem_wakeup_merge.sv lq_coherence_port.sv divider.sv dsp_tiled_multiplier_unsigned.sv multiplier.sv cl_multiplier.sv alu.sv fp_shim.sv tomasulo_wrapper.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv coherent_lq_address_store.sv coherent_l0_flags.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv
+wrapper: hierarchy -top fp_forward_wake_formal
+wrapper: script free_undefined.ys
+wrapper: setattr -mod -unset keep_hierarchy *
+wrapper: setattr -unset keep_hierarchy */c:*
+wrapper: flatten
+wrapper: setattr -unset keep */w:* */c:*
+wrapper: opt_clean -purge
+wrapper: opt -keepdc
+wrapper: prep -top fp_forward_wake_formal
+wrapper: select -assert-count 0 t:$check r:FLAVOR=assume %i
+wrapper: select -assert-count 20 t:$check r:FLAVOR=assert %i
+wrapper: select -assert-count 10 t:$check r:FLAVOR=cover %i
+abc_frames: memory_map -keepdc
+abc_frames: opt -keepdc
+abc_frames: techmap
+abc_frames: opt -fast -keepdc
+abc_frames: setundef -anyseq
+abc_frames: opt_clean
+# Prove the response path with arbitrary FIFO outputs, arbitration competitors
+# and recovery. The adapter, slot-6 mux, arbiter and both output registers stay.
+route: hierarchy -top tomasulo_wrapper
+route: script free_undefined.ys
+route: setattr -mod -unset keep_hierarchy *
+route: flatten
+route: cutpoint w:cdb_arb_in_0 w:cdb_arb_in_1 w:cdb_arb_in_2 w:cdb_arb_in_3 w:cdb_arb_in_4 w:cdb_arb_in_5 w:cdb_arb_in_7 w:head_tag w:alu_value_is_live w:alu2_value_is_live w:alu_tree_fallback_value w:alu2_tree_fallback_value w:alu_adapter_held_value w:alu2_adapter_held_value
+route: delete -port tomasulo_wrapper/o:*
+route: setattr -unset keep */w:* */c:*
+route: opt_clean -purge
+route: opt -keepdc
+route: prep -top tomasulo_wrapper
+route: select -assert-count 4 t:$check r:FLAVOR=assert %i
+route: select -assert-count 3 t:$check r:FLAVOR=cover %i
+route: select -assert-count 0 t:$check r:FLAVOR=assume %i
+fifo: read_slang --top fp_forward_fifo_formal --single-unit -DSYNTHESIS -DFP_SHIM_ABSTRACT_PROOF riscv_pkg.sv sdp_dist_ram.sv fp_shim.sv fp_forward_fifo_formal.sv
+fifo: hierarchy -top fp_forward_fifo_formal
+fifo: script free_undefined.ys
+fifo: prep -top fp_forward_fifo_formal -flatten
+fifo: select -assert-count 8 t:$check r:FLAVOR=assert %i
+fifo: select -assert-count 0 t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/sfence_operand_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_alu_shim.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/perf/tomasulo_perf_counters.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/dispatch_routing/dispatch_rs_router.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/coherent_atomic_select.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/wakeup/mem_wakeup_merge.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/coherence/lq_coherence_port.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+free_undefined.ys
+fp_forward_wake_formal.sv
+fp_forward_fifo_formal.sv

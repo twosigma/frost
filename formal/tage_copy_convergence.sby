@@ -22,22 +22,17 @@ equal: read_slang --top tage_copy_convergence_formal --single-unit -GEQUAL_START
 unequal: read_slang --top tage_copy_convergence_formal --single-unit -GEQUAL_START=0 riscv_pkg.sv sdp_dist_ram.sv tage_predictor.sv tage_copy_convergence_formal.sv
 hierarchy -top tage_copy_convergence_formal
 script free_undefined.ys
+# Keep each physical copy as an independent SMT array with unconstrained
+# power-up data. The memory declarations and both read ports stay in the
+# model; only the simulation's initial writes of zero are removed.
+select -assert-min 1 t:$meminit t:$meminit_v2
+delete t:$meminit t:$meminit_v2
 prep -top tage_copy_convergence_formal -flatten
 prove_mode: chformal -cover -remove
 bmc_mode: chformal -cover -remove
 cover_mode: chformal -assert -remove
-# The two copies of a bank have the same write port, so a plain opt_merge
-# would fold each lookup-copy word into its training-copy word and the model
-# could not hold copies that differ. opt passes -keepdc to opt_expr and
-# opt_dff only, so the passes run one by one.
-memory_map -keepdc
-# Table contents start arbitrary: sdp_dist_ram's zero initializer, which the
-# FPGA image and simulations without random power-up start from, is removed.
-# Each task constrains only the watched entry.
-setattr -unset init w:*_copy.ram*
-opt_expr -keepdc
-opt_merge -keepdc
-opt_clean -purge
+# Two banks of four tables with separate lookup and training arrays.
+select -assert-count 16 t:$mem_v2
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

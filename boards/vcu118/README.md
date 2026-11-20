@@ -91,12 +91,15 @@ telemetry to the CPU memory error unit.
 
 ## Ethernet and boot controller
 
-The RJ-45 port uses the DP83867 PHY and an SGMII PCS/PMA connected to the
-NIC's GMII adapter in full-duplex mode. Its registers occupy `0x40022000`
+The RJ-45 port uses the DP83867 PHY and an SGMII PCS/PMA connected to a
+pluggable 1G GMII MAC block (`nic_mac_1g`) paired with its own `nic_engine`
+in full-duplex mode. Its registers occupy `0x40022000`
 and use APLIC source 2. The PHY reports the negotiated copper link through
-SGMII. QSFP1 lane 0 uses a GTY channel and the shared 10GBASE-R MAC/PCS. Its NIC
-registers occupy `0x40030000` and use APLIC source 4. Both NICs use coherent
-DMA through the shared memory hierarchy.
+SGMII. QSFP1 lane 0 uses a GTY channel and a 10GBASE-R MAC block (`nic_mac_10g`)
+paired with its own `nic_engine`. Its NIC
+registers occupy `0x40030000` and use APLIC source 4. Both NIC engines use coherent
+DMA through the shared memory hierarchy and talk to their MAC blocks across the
+same core-clock 64-bit AXI4-Stream and sideband boundary.
 
 The PHY management sequencer completes the existing bootstrap before polling
 DP83867 RECR. Each acknowledged read is followed by a dummy write to clear the

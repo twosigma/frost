@@ -36,9 +36,9 @@ SUITE = "tests/test_riscv_vector_tests.py"
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ["--rtl", "--simulator", "native"]
 SLICES = 20
-# The wider programs account for most of the simulation cycles.
-FORM_SHARDS = {128: 4, 256: 4, 512: 12}
-COMPLETE_SHARDS = {128: 3, 256: 3, 512: 14}
+CYCLE_PROFILE = Path("tests/fixtures/rvv_ci_profile.csv")
+FORM_SHARDS = {128: 2, 256: 4, 512: 11}
+COMPLETE_SHARDS = {128: 6, 256: 12, 512: 32}
 PROGRAMS_PER_WIDTH = 3017
 FORMS_PER_WIDTH = 665
 SHARD_SECONDS = {"slice": 90 * 60, "forms": 90 * 60, "complete": 300 * 60}
@@ -76,13 +76,14 @@ def matrix(
     ]
 
 
-def shard_options(mode: str, part: str) -> list[str]:
-    """Translate a zero-based slice into the suite's one-based shard."""
+def shard_options(mode: str, part: str, *, root: Path = Path(".")) -> list[str]:
+    """Keep slice numbering stable and balance the full selections by profile."""
     if mode == "slice":
         if part not in {str(k) for k in range(SLICES)}:
             raise ValueError("slice must be an integer from 0 to 19")
         return ["--one-per-form", "--shard", f"{int(part) + 1}/{SLICES}"]
-    return ["--one-per-form", "--shard", part] if mode == "forms" else ["--shard", part]
+    options = ["--cycle-profile", str(root / CYCLE_PROFILE), "--shard", part]
+    return ["--one-per-form", *options] if mode == "forms" else options
 
 
 def reproduce(vlen: int, selection: list[str]) -> str:
@@ -266,7 +267,7 @@ def run_shard(
                     *command,
                     "--prebuilt-sim",
                     str(prebuilt),
-                    *selection,
+                    *shard_options(mode, part, root=ROOT),
                     "--results-jsonl",
                     str(results),
                 ],

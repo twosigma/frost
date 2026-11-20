@@ -5101,6 +5101,258 @@ module tomasulo_wrapper #(
       .i_rob_head_tag     (head_tag)
   );
 
+  // The FIFO removes its head as soon as the adapter is empty. Check both
+  // outcomes of that transfer at the real adapter and registered CDB. With
+  // a stalled grant the same word must remain present on every later edge.
+`ifndef SYNTHESIS
+`ifndef FORMAL
+`define FP_ROUTE_CHECKS_PROOF
+`endif
+`endif
+`ifdef FP_FORWARD_ROUTE_PROOF
+`define FP_ROUTE_CHECKS_PROOF
+`endif
+`ifdef FP_ROUTE_CHECKS_PROOF
+  if (1'b1) begin : gen_forward_route
+    localparam int TagWidth = riscv_pkg::ReorderBufferTagWidth;
+    wire pending = fp_pipe_adapter_result_pending;
+    wire grant = o_cdb_grant[riscv_pkg::FU_FP_DIV] && !i_fu_complete_6.valid;
+    riscv_pkg::fu_complete_t source;
+    assign source = pending ? fp_pipe_adapter_to_arbiter : fp_pipe_out;
+    wire killed = speculative_flush_all || (speculative_flush_en &&
+        is_younger(source.tag, i_flush_tag, head_tag));
+    logic expect_hold_q, expect_cdb_q;
+    logic [TagWidth-1:0] tag_q;
+    logic [riscv_pkg::FLEN-1:0] value_q;
+    wire hold_killed = speculative_flush_all || (speculative_flush_en &&
+        is_younger(tag_q, i_flush_tag, head_tag));
+    wire lane0 = cdb_bus_valid && cdb_bus.fu_type == riscv_pkg::FU_FP_DIV &&
+                 cdb_bus.tag == tag_q && cdb_bus.value == value_q;
+    wire lane1 = cdb_bus_2_valid && cdb_bus_2.fu_type == riscv_pkg::FU_FP_DIV &&
+                 cdb_bus_2.tag == tag_q && cdb_bus_2.value == value_q;
+`ifdef FP_FORWARD_ROUTE_PROOF
+    logic armed = 1'b0;
+    always @(posedge i_clk) if (!i_rst_n) armed <= 1'b1;
+`define FP_ROUTE_CHECK(name, condition) name: assert (condition);
+`else
+    wire armed = sc_check_armed;
+`define FP_ROUTE_CHECK(name, condition) begin : name if (!(condition)) $error("%m"); end
+`endif
+    always @(posedge i_clk) begin
+      if (!i_rst_n) begin
+        expect_hold_q <= 1'b0;
+        expect_cdb_q <= 1'b0;
+      end else begin
+        expect_hold_q <= source.valid && !killed && !grant;
+        expect_cdb_q <= source.valid && !killed && grant;
+        tag_q <= source.tag;
+        value_q <= source.value;
+        if (armed) begin
+          `FP_ROUTE_CHECK(p_fifo_accept, u_fp_shim.i_pipe_accepted == !pending)
+          if (expect_hold_q && !hold_killed) begin
+            `FP_ROUTE_CHECK(p_adapter_retains_offer, pending && fp_pipe_adapter_to_arbiter.valid &&
+                           fp_pipe_adapter_to_arbiter.tag == tag_q &&
+                           fp_pipe_adapter_to_arbiter.value == value_q)
+          end
+`ifdef FP_FORWARD_ROUTE_PROOF
+          c_held_grant : cover (expect_hold_q && !hold_killed && grant && pending);
+          c_grant_lane0 : cover (expect_cdb_q && lane0 && |value_q);
+          c_grant_lane1 : cover (expect_cdb_q && lane1 && |value_q);
+`endif
+          if (expect_cdb_q) begin
+            `FP_ROUTE_CHECK(p_grant_registers_offer, lane0 ^ lane1)
+          end
+          // If slot 6 is available, failure to request service could otherwise
+          // leave a correctly held result waiting forever.
+          if (source.valid && !killed && !i_fu_complete_6.valid &&
+              $onehot0({cdb_arb_in_1.valid, cdb_arb_in_3.valid, cdb_arb_in_0.valid,
+                        cdb_arb_in_7.valid, cdb_arb_in_2.valid})) begin
+            `FP_ROUTE_CHECK(p_available_slot_grants, grant)
+          end
+        end
+      end
+    end
+  end
+`undef FP_ROUTE_CHECK
+`undef FP_ROUTE_CHECKS_PROOF
+`endif
+
+  // A forward offer is made one edge before its data. Keep it until the
+  // registered CDB delivers it or recovery kills this generation of the tag.
+  // Standalone cocotb tops also run the checks when Verilator assertions are off.
+`ifndef SYNTHESIS
+`ifndef FORMAL
+`define FP_WRAPPER_CHECKS_PROOF
+`endif
+`endif
+`ifdef FP_FORWARD_WAKE_PROOF
+`define FP_WRAPPER_CHECKS_PROOF
+`endif
+`ifdef FP_WRAPPER_CHECKS_PROOF
+  if (1'b1) begin : gen_forward_contract
+    localparam int TagWidth = riscv_pkg::ReorderBufferTagWidth;
+`ifdef FP_FORWARD_WAKE_PROOF
+    (* anyseq *) logic [TagWidth-1:0] reset_choice;
+    logic [TagWidth-1:0] watched_tag;
+    always @(posedge i_clk) if (!i_rst_n) watched_tag <= reset_choice;
+    localparam int Watches = 1;
+    logic armed = 1'b0;
+    always @(posedge i_clk) if (!i_rst_n) armed <= 1'b1;
+`define FP_WRAPPER_CHECK(name, condition) name: assert (condition);
+`else
+    localparam int Watches = riscv_pkg::ReorderBufferDepth;
+    wire armed = sc_check_armed;
+`define FP_WRAPPER_CHECK(name, condition) begin : name if (!(condition)) $error("%m %d", tag); end
+`endif
+    // rs_divide_gate allows an arbitrary finish while busy. An unsquashed
+    // engine issue must set busy on the next edge and is its only way to rise.
+    wire engine_busy = u_fp_rs.i_divider_busy;
+    logic engine_busy_q, engine_launch_q;
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) begin
+        engine_busy_q   <= 1'b0;
+        engine_launch_q <= 1'b0;
+      end else begin
+        engine_busy_q   <= engine_busy;
+        engine_launch_q <= u_fp_rs.o_issue.valid && u_fp_rs.stage2_is_divide &&
+                           !u_fp_rs.stage2_should_flush;
+        if (armed && (engine_launch_q || !engine_busy_q)) begin
+`ifdef FP_FORWARD_WAKE_PROOF
+          p_engine_busy_transition : assert (engine_busy == engine_launch_q);
+`else
+          if (engine_busy !== engine_launch_q)
+            $error("%m: FP station busy=%b after busy=%b, unsquashed engine issue=%b",
+                   engine_busy, engine_busy_q, engine_launch_q);
+`endif
+        end
+      end
+    end
+
+    // A slot-6 service opportunity is independent of the pipeline request:
+    // the vector input is idle and at most one higher-priority FU requests.
+    wire service = !i_fu_complete_6.valid && $onehot0({
+      cdb_arb_in_1.valid, cdb_arb_in_3.valid, cdb_arb_in_0.valid,
+      cdb_arb_in_7.valid, cdb_arb_in_2.valid
+    });
+    // At most 16 FIFO entries and one held result can be ahead. A held grant
+    // cannot refill on the same edge. Allow two service edges per result,
+    // plus the tail capture and registered broadcast edges.
+    localparam int ServiceLimit = 2 * (16 + 1) + 2;
+    for (genvar k = 0; k < Watches; k++) begin : gen_tag
+`ifdef FP_FORWARD_WAKE_PROOF
+      wire [TagWidth-1:0] tag = watched_tag;
+`else
+      wire [TagWidth-1:0] tag = TagWidth'(k);
+`endif
+      wire killed = speculative_flush_all ||
+          (speculative_flush_en && is_younger(tag, i_flush_tag, head_tag));
+      wire wake = fp_fwd_wake_valid && fp_fwd_wake_tag == tag;
+      wire issue = fp_rs_issue_w.valid && fp_rs_issue_w.rob_tag == tag;
+      wire allocated = (i_alloc_req.alloc_valid && o_alloc_resp.alloc_ready &&
+                        o_alloc_resp.alloc_tag == tag) ||
+                       (i_alloc_req_2.alloc_valid && o_alloc_resp_2.alloc_ready &&
+                        o_alloc_resp_2.alloc_tag == tag);
+      wire bus0 = cdb_bus_valid && cdb_bus.tag == tag;
+      wire bus1 = cdb_bus_2_valid && cdb_bus_2.tag == tag;
+      wire station0 = fp_rs_cdb_0.valid && fp_rs_cdb_0.tag == tag;
+      wire station1 = fp_rs_cdb_1.valid && fp_rs_cdb_1.tag == tag;
+      wire held = fp_pipe_adapter_result_pending && fp_pipe_adapter_to_arbiter.valid &&
+                  fp_pipe_adapter_to_arbiter.tag == tag;
+      logic issued_q, offer_q, wake_q, take_word_q;
+`ifdef FP_FORWARD_WAKE_PROOF
+      logic killed_offer_q;
+      always_ff @(posedge i_clk) begin
+        if (!i_rst_n || allocated) killed_offer_q <= 1'b0;
+        else if (offer_q && killed) killed_offer_q <= 1'b1;
+      end
+`endif
+      logic [riscv_pkg::FLEN-1:0] word_q;
+      logic [$clog2(ServiceLimit+1)-1:0] services_q;
+
+      always_ff @(posedge i_clk) begin
+        if (!i_rst_n) begin
+          issued_q <= 1'b0;
+          offer_q <= 1'b0;
+          wake_q <= 1'b0;
+          take_word_q <= 1'b0;
+          services_q <= '0;
+        end else begin
+          // Keep the raw previous wake for the two-cycle exclusion, including
+          // a wake coincident with a flush. Only surviving offers capture data.
+          wake_q <= wake;
+          take_word_q <= wake && !killed;
+          if (take_word_q) word_q <= fp_fwd_value;
+          if (killed || bus0 || bus1) begin
+            issued_q <= 1'b0;
+            offer_q <= 1'b0;
+          end else begin
+            if (issue) issued_q <= 1'b1;
+            if (wake) offer_q <= 1'b1;
+          end
+          if (!offer_q || killed || bus0 || bus1) services_q <= '0;
+          else if (service) services_q <= services_q + 1'b1;
+
+          if (armed) begin
+            if (issue) begin
+              `FP_WRAPPER_CHECK(p_fresh_fp_issue, !issued_q)
+              `FP_WRAPPER_CHECK(p_pipeline_credit, !fp_pipe_busy)
+              `FP_WRAPPER_CHECK(p_engine_class, u_fp_rs.stage2_is_divide == u_fp_shim.eng_issue)
+              if (u_fp_shim.eng_issue) begin
+                `FP_WRAPPER_CHECK(p_engine_available, !fp_busy && !fp_adapter_result_pending)
+              end
+            end
+            if (allocated) begin
+              `FP_WRAPPER_CHECK(p_no_reallocation, !(issued_q || wake || offer_q))
+            end
+            if (wake) begin
+              `FP_WRAPPER_CHECK(p_wake_has_issuer, issued_q)
+            end
+            if (wake || wake_q) begin
+              `FP_WRAPPER_CHECK(p_wake_excludes_lane0, !station0)
+              `FP_WRAPPER_CHECK(p_wake_excludes_lane1, !station1)
+            end
+            if (offer_q && !killed) begin
+              `FP_WRAPPER_CHECK(p_offer_rob_owner, rob_entry_valid[tag])
+              `FP_WRAPPER_CHECK(p_offer_retained,
+                                u_fp_shim.g_pipe.forward_resident[tag] || held || bus0 || bus1)
+              `FP_WRAPPER_CHECK(p_station_offer_owner, !(station0 || station1) || bus0 || bus1)
+              if (bus0) begin
+                `FP_WRAPPER_CHECK(p_forward_word_lane0,
+                                  cdb_bus.fu_type == riscv_pkg::FU_FP_DIV &&
+                                  cdb_bus.value == word_q)
+              end
+              if (bus1) begin
+                `FP_WRAPPER_CHECK(p_forward_word_lane1,
+                                  cdb_bus_2.fu_type == riscv_pkg::FU_FP_DIV &&
+                                  cdb_bus_2.value == word_q)
+              end
+              `FP_WRAPPER_CHECK(p_forward_service, int'(services_q) < ServiceLimit)
+            end
+          end
+        end
+      end
+`ifdef FP_FORWARD_WAKE_PROOF
+      always @(posedge i_clk) if (armed && i_rst_n) begin
+        c_wake : cover (wake && !killed);
+        c_word_lane0 :
+        cover (offer_q && !killed && bus0 && |word_q &&
+               cdb_bus.fu_type == riscv_pkg::FU_FP_DIV && cdb_bus.value == word_q);
+        c_word_lane1 :
+        cover (offer_q && !killed && bus1 && |word_q &&
+               cdb_bus_2.fu_type == riscv_pkg::FU_FP_DIV && cdb_bus_2.value == word_q);
+        c_wake_with_early_load : cover (wake && fp_rs_early_load_injected && !killed);
+        c_reuse_after_killed_offer : cover (killed_offer_q && allocated);
+        c_offer_full_kill : cover (offer_q && speculative_flush_all);
+        c_offer_partial_kill : cover (offer_q && killed && !speculative_flush_all);
+        c_offer_survives_partial : cover (offer_q && speculative_flush_en && !killed);
+      end
+`endif
+    end
+  end
+`undef FP_WRAPPER_CHECK
+`undef FP_WRAPPER_CHECKS_PROOF
+`endif
+
   // ===========================================================================
   // Backend Profiling Counters
   // ===========================================================================

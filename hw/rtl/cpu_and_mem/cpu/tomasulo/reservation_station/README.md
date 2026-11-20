@@ -185,8 +185,10 @@ captured at its end. A matching entry that does not issue captures
 `i_fwd_value` on the next edge and is ready one cycle later. The wake comes
 from registers, and its producer is never squashed unless the consumer is too
 (the consumer is younger), so a stale wake cannot reach a reused tag. Entries
-that miss a wake, such as one dispatched in the wake cycle, wake on the CDB
-broadcast, which always follows. `FWD_WAKE` requires the generic station form.
+that miss a wake, such as one dispatched in the wake cycle, use the surviving
+producer's CDB broadcast. The station checks that each source's forward and
+CDB selects are mutually exclusive. The wrapper checks both FP station lanes
+in the wake cycle and the next cycle. `FWD_WAKE` requires the generic station form.
 
 `FP_ENGINE_GATE` makes the divide gate's class the FP operations the pipeline
 does not execute, so pipelined operations issue past a waiting divide, square
@@ -389,9 +391,10 @@ station does:
   primary opcode selection through stalls, row reuse, and full flushes.
 - The `reservation_station` formal target checks the module defaults and the
   INT configuration; the `tomasulo_wrapper` target checks the 16-entry INT
-  station against the real allocator; `rs_divide_gate` checks MUL_RS's divide
-  gate against a divider model. Smaller targets check the restructured
-  select, repair, and look-ahead logic against plain references.
+  station against the real allocator. `rs_divide_gate` checks the MUL and FP
+  gates against a busy engine. The FP check uses the actual opcode RAM.
+  Smaller targets check the restructured select, repair, and look-ahead
+  logic against plain references.
 - `rs_stage2_payload_equiv` proves, without a bound and for each station's
   configuration, that a valid stage-2 or stage-2b packet's payload equals a
   copy loaded only on issue. `rs_payload_twin` checks two wrappers whose idle

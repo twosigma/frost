@@ -1,0 +1,4022 @@
+/*
+ *    Copyright 2026 Two Sigma Open Source, LLC
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
+
+/*
+ * Shared types, constants, helpers, and pipeline payloads for FROST RV64GCB.
+ *
+ * Keep these definitions in one package: Yosys does not support the
+ * inter-package references they require.
+ */
+package riscv_pkg;
+
+  // The core's architectural width, fixed at 64. Module-level XLEN parameters
+  // default to it; overriding them is supported only in standalone unit
+  // benches, since package payload widths stay 64.
+  localparam int unsigned XLEN = 64;
+
+  // ===========================================================================
+  // Section 1: Instruction Opcodes
+  // ===========================================================================
+  // Primary opcode field (bits [6:0]) identifies instruction category.
+  // These map directly to the RISC-V base instruction encoding.
+
+  typedef enum bit [6:0] {
+    OPC_LUI       = 7'b0110111,
+    OPC_AUIPC     = 7'b0010111,
+    OPC_JAL       = 7'b1101111,
+    OPC_JALR      = 7'b1100111,
+    OPC_BRANCH    = 7'b1100011,
+    OPC_LOAD      = 7'b0000011,
+    OPC_STORE     = 7'b0100011,
+    OPC_OP_IMM    = 7'b0010011,
+    OPC_OP        = 7'b0110011,
+    // W-form opcodes
+    OPC_OP_IMM_32 = 7'b0011011,  // ADDIW, SLLIW, SRLIW, SRAIW
+    OPC_OP_32     = 7'b0111011,  // ADDW, SUBW, SLLW, SRLW, SRAW
+    OPC_MISC_MEM  = 7'b0001111,  // FENCE, FENCE.I (Zifencei)
+    OPC_CSR       = 7'b1110011,
+    OPC_AMO       = 7'b0101111,  // A extension (atomics)
+    // Shared F/D opcodes
+    OPC_LOAD_FP   = 7'b0000111,  // FLW, FLD, FLH, vector loads
+    OPC_STORE_FP  = 7'b0100111,  // FSW, FSD, FSH, vector stores
+    OPC_FMADD     = 7'b1000011,  // FMADD.S/D
+    OPC_FMSUB     = 7'b1000111,  // FMSUB.S/D
+    OPC_FNMSUB    = 7'b1001011,  // FNMSUB.S/D
+    OPC_FNMADD    = 7'b1001111,  // FNMADD.S/D
+    OPC_OP_FP     = 7'b1010011,  // Scalar FP operations (S/D)
+    OPC_OP_V      = 7'b1010111   // Vector operations (vsetvl* decoded so far)
+  } opc_e;
+
+  // Instruction-memory predecode sideband bits, stored per 32-bit word.
+  // The fetch interface returns two words, so its sideband bus is twice this
+  // width: {next_word_sideband, current_word_sideband}.
+  localparam int unsigned ImemSidebandWidth = 80;
+  // {illegal, expanded[31:25], expanded[14:0]}; source fields are stored below.
+  localparam int unsigned ImemSbRvcExtraLoLsb = 32;
+  localparam int unsigned ImemSbRvcExtraHiLsb = 55;
+  localparam int unsigned ImemFetchSidebandWidth = 2 * ImemSidebandWidth;
+  localparam int unsigned ImemSbIsCompressedLo = 0;
+  localparam int unsigned ImemSbIsCompressedHi = 1;
+  // Bundle predicates; compressed-control and FP-class intermediates are
+  // computed in imem_make_sideband but are not stored.
+  localparam int unsigned ImemSbEvenLocalPairValid = 2;
+  localparam int unsigned ImemSbPairableNativeLo = 3;
+  localparam int unsigned ImemSbNativeSerializeLo = 4;
+  localparam int unsigned ImemSbNativeSerializeHi = 5;
+  localparam int unsigned ImemSbPairableCompressedHi = 6;
+  localparam int unsigned ImemSbPairableNativeHi = 7;
+  localparam int unsigned ImemSbAllowsSlot2AfterLo = 8;
+  localparam int unsigned ImemSbAllowsSlot2AfterHi = 9;
+  localparam int unsigned ImemSbSlot2StartValidLo = 10;
+  localparam int unsigned ImemSbSlot2StartValidHi = 11;
+  // rs1[2:1] for each halfword start. rs2[1] comes from Bits24To20 below.
+  localparam int unsigned ImemSbRvcSourceHotLoLsb = 12;
+  localparam int unsigned ImemSbRvcSourceHotHiLsb = 14;
+  // Expanded bits [24:20] at each halfword start: rs2 in register formats,
+  // immediate bits otherwise. Both slots use these without decompression.
+  localparam int unsigned ImemSbRvcBits24To20LoLsb = 16;
+  localparam int unsigned ImemSbRvcBits24To20HiLsb = 21;
+  // The other three rs1 bits; rs1[2:1] already live in SourceHot.
+  localparam int unsigned ImemSbRvcRs1RestLoLsb = 26;
+  localparam int unsigned ImemSbRvcRs1RestHiLsb = 29;
+  // Each halfword start's indirect-jump class (imem_indirect_parcel), read by
+  // the frontend validity tracker instead of decoding the fetched parcel.
+  localparam int unsigned ImemSbIsIndirectLo = 78;
+  localparam int unsigned ImemSbIsIndirectHi = 79;
+
+  // Predecode is word-local: each halfword's fields depend only on that
+  // halfword; native classes use its opcode and funct3.
+  // imem_predecode and the L1I fill path use these functions. The mirror is
+  // sw/common/generate_imem_predecode_init.py, for Vivado power-up images.
+  // Use opcode literals because Yosys cannot resolve package-function enums.
+
+  // Compressed control flow: C.J/C.BEQZ/C.BNEZ (quadrant 01; the RV32
+  // C.JAL slot is C.ADDIW on RV64, not control flow) and C.JR/C.JALR
+  // (quadrant 10 with rs2=0, rs1!=0).
+  function automatic logic imem_compressed_control(input logic [15:0] parcel);
+    logic [2:0] funct3;
+    logic [3:0] funct4;
+    logic [4:0] rs1;
+    logic [4:0] rs2;
+    logic [1:0] op;
+    begin
+      funct3 = parcel[15:13];
+      funct4 = parcel[15:12];
+      rs1 = parcel[11:7];
+      rs2 = parcel[6:2];
+      op = parcel[1:0];
+      imem_compressed_control =
+          ((op == 2'b01) &&
+           ((funct3 == 3'b101) ||
+            (funct3 == 3'b110) || (funct3 == 3'b111))) ||
+          ((op == 2'b10) &&
+           (rs2 == 5'b00000) &&
+           (rs1 != 5'b00000) &&
+           ((funct4 == 4'b1000) || (funct4 == 4'b1001)));
+    end
+  endfunction
+
+  // Indirect jump starting at this halfword: native JALR (the low 7 bits are
+  // the JALR opcode) or C.JR/C.JALR (quadrant 10, funct4 100x, rs1 != 0,
+  // rs2 = 0).
+  function automatic logic imem_indirect_parcel(input logic [15:0] parcel);
+    begin
+      imem_indirect_parcel = (parcel[6:0] == 7'b1100111) ||
+          ((parcel[1:0] == 2'b10) &&
+           (parcel[6:2] == 5'b00000) &&
+           (parcel[11:7] != 5'b00000) &&
+           ((parcel[15:12] == 4'b1000) || (parcel[15:12] == 4'b1001)));
+    end
+  endfunction
+
+  // Native serializing class, which never pairs in a fetch bundle: SYSTEM
+  // except funct3=100 (Zimop), MISC-MEM, and AMO. The first parcel contains
+  // both the opcode and funct3, including instructions spanning words.
+  function automatic logic imem_native_serialize(input logic [15:0] parcel);
+    begin
+      imem_native_serialize = ((parcel[6:0] == 7'b1110011) &&
+                               (parcel[14:12] != 3'b100)) ||
+      (parcel[6:0] == 7'b0001111) ||  // OPC_MISC_MEM
+      (parcel[6:0] == 7'b0101111);  // OPC_AMO
+    end
+  endfunction
+
+  // Native control flow: BRANCH, JAL, JALR.  A control-flow slot-1
+  // terminates its bundle (mirrors the compressed-control exclusion).
+  function automatic logic imem_native_control(input logic [6:0] opcode);
+    begin
+      imem_native_control = (opcode == 7'b1100011) ||  // OPC_BRANCH
+      (opcode == 7'b1101111) ||  // OPC_JAL
+      (opcode == 7'b1100111);  // OPC_JALR
+    end
+  endfunction
+
+  // A vector load or store: LOAD-FP or STORE-FP with a vector width (funct3
+  // 000, 101, 110 or 111; the scalar FP widths are 001 to 100).
+  function automatic logic is_vector_mem(input logic [6:0] opcode, input logic [2:0] funct3);
+    begin
+      is_vector_mem = ((opcode == 7'b0000111) || (opcode == 7'b0100111)) &&
+          ((funct3 == 3'b000) || (funct3[2] && (funct3[1:0] != 2'b00)));
+    end
+  endfunction
+
+  // Native instructions that never pair as slot 2: those that use an FP
+  // compute unit (OP-FP and the four FMAs) and vector instructions (OP-V).
+  // Vector loads and stores are excluded by their width as well
+  // (is_vector_mem, in imem_make_sideband).
+  function automatic logic imem_native_fp_compute(input logic [6:0] opcode);
+    begin
+      imem_native_fp_compute = (opcode == 7'b1010011) ||  // OPC_OP_FP
+      (opcode == 7'b1000011) ||  // OPC_FMADD
+      (opcode == 7'b1000111) ||  // OPC_FMSUB
+      (opcode == 7'b1001011) ||  // OPC_FNMSUB
+      (opcode == 7'b1001111) ||  // OPC_FNMADD
+      (opcode == 7'b1010111);  // OPC_OP_V
+    end
+  endfunction
+
+  // Bits [24:20] of a Zcb unary expansion (quadrant 1, bits [15:10]=100111,
+  // [6:5]=11), selected by bits [4:2]: the C.ZEXT.B and C.NOT immediates
+  // (0xff, -1), the SEXT.B/SEXT.H funct12 low bits, and x0 for ZEXT.H and
+  // ZEXT.W. The reserved [4:2]=110/111 expand to zero.
+  function automatic logic [4:0] imem_rvc_zcb_unary_bits24_20(input logic [2:0] sel);
+    unique case (sel)
+      3'b000, 3'b101: imem_rvc_zcb_unary_bits24_20 = 5'b11111;
+      3'b001: imem_rvc_zcb_unary_bits24_20 = 5'b00100;
+      3'b011: imem_rvc_zcb_unary_bits24_20 = 5'b00101;
+      default: imem_rvc_zcb_unary_bits24_20 = 5'b00000;
+    endcase
+  endfunction
+
+  // Return {expanded instruction[21], expanded instruction[19:15]}, i.e.
+  // {rs2[1], rs1}, for one RVC parcel. These bits match the literal expansion,
+  // including unused fields, illegal encodings and hints. The two wrappers
+  // below split rs1 into the stored SourceHot bits (rs1[2:1]) and Rs1Rest
+  // bits ({rs1[4:3], rs1[0]}), from which PD builds its early rs1.
+  function automatic logic [5:0] imem_rvc_source_fields(input logic [15:0] parcel,
+                                                        input logic rd_is_x2);
+    logic [ 4:0] rs1;
+    logic [ 4:0] rs2;
+    logic [ 4:0] rd_full;
+    logic [ 4:0] rs2_full;
+    logic [ 4:0] rs1_prime;
+    logic [ 4:0] rs2_prime;
+    logic [ 4:0] shamt;
+    logic [11:0] imm_addi4spn;
+    logic [11:0] imm_lw_sw;
+    logic [11:0] imm_ld_sd;
+    logic [11:0] imm_ci;
+    logic [11:0] imm_addi16sp;
+    logic [19:0] imm_lui;
+    logic [11:0] imm_j;
+    logic [11:0] imm_lwsp;
+    logic [11:0] imm_ldsp;
+    begin
+      rd_full = parcel[11:7];
+      rs2_full = parcel[6:2];
+      rs1_prime = {2'b01, parcel[9:7]};
+      rs2_prime = {2'b01, parcel[4:2]};
+      shamt = parcel[6:2];
+      imm_addi4spn = {2'b0, parcel[10:7], parcel[12:11], parcel[5], parcel[6], 2'b00};
+      imm_lw_sw = {5'b0, parcel[5], parcel[12:10], parcel[6], 2'b00};
+      imm_ld_sd = {4'b0, parcel[6:5], parcel[12:10], 3'b000};
+      imm_ci = {{6{parcel[12]}}, parcel[12], parcel[6:2]};
+      imm_addi16sp = {
+        {2{parcel[12]}}, parcel[12], parcel[4:3], parcel[5], parcel[2], parcel[6], 4'b0000
+      };
+      imm_lui = {{14{parcel[12]}}, parcel[12], parcel[6:2]};
+      imm_j = {
+        parcel[12],
+        parcel[8],
+        parcel[10:9],
+        parcel[6],
+        parcel[7],
+        parcel[2],
+        parcel[11],
+        parcel[5:3],
+        1'b0
+      };
+      imm_lwsp = {4'b0, parcel[3:2], parcel[12], parcel[6:4], 2'b00};
+      imm_ldsp = {3'b0, parcel[4:2], parcel[12], parcel[6:5], 3'b000};
+
+      rs1 = 5'd0;
+      rs2 = 5'd0;
+      unique case (parcel[1:0])
+        2'b00: begin
+          unique case (parcel[15:13])
+            3'b000: begin  // C.ADDI4SPN
+              rs1 = 5'd2;
+              rs2 = imm_addi4spn[4:0];
+            end
+            3'b010, 3'b011: begin  // C.LW / C.LD: C.LD can share C.LW's form
+              // because only rs2[1] survives into the hot encoding and bit 1
+              // of both the 4- and 8-scaled immediates is zero
+              rs1 = rs1_prime;
+              rs2 = imm_lw_sw[4:0];
+            end
+            3'b001: begin  // C.FLD
+              rs1 = rs1_prime;
+              rs2 = imm_ld_sd[4:0];
+            end
+            3'b101, 3'b110, 3'b111: begin  // C.FSD / C.SW / C.SD
+              rs1 = rs1_prime;
+              rs2 = rs2_prime;
+            end
+            3'b100: begin  // Zcb; reserved forms expand to zero
+              if (!parcel[12] && !parcel[11]) begin  // C.LBU / C.LHU / C.LH
+                rs1 = rs1_prime;
+                rs2 = {3'b000, parcel[5], parcel[6] && !parcel[10]};
+              end else if (!parcel[12] && (!parcel[10] || !parcel[6])) begin  // C.SB / C.SH
+                rs1 = rs1_prime;
+                rs2 = rs2_prime;
+              end
+            end
+            default: begin  // Reserved encoding expands to zero.
+              rs1 = 5'd0;
+              rs2 = 5'd0;
+            end
+          endcase
+        end
+        2'b01: begin
+          unique case (parcel[15:13])
+            3'b000: begin  // C.ADDI / C.NOP
+              rs1 = rd_full;
+              rs2 = imm_ci[4:0];
+            end
+            3'b001: begin  // C.ADDIW (rd is also rs1)
+              rs1 = rd_full;
+              rs2 = imm_ci[4:0];
+            end
+            3'b101: begin  // C.J
+              rs1 = {5{imm_j[11]}};
+              rs2 = {imm_j[4:1], imm_j[11]};
+            end
+            3'b010: begin  // C.LI
+              rs1 = 5'd0;
+              rs2 = imm_ci[4:0];
+            end
+            3'b011: begin
+              if (rd_is_x2) begin  // C.ADDI16SP
+                rs1 = 5'd2;
+                rs2 = imm_addi16sp[4:0];
+              end else begin  // C.LUI
+                rs1 = imm_lui[7:3];
+                rs2 = imm_lui[12:8];
+              end
+            end
+            3'b100: begin
+              unique case (parcel[11:10])
+                2'b00, 2'b01, 2'b10: begin  // C.SRLI / C.SRAI / C.ANDI
+                  rs1 = rs1_prime;
+                  rs2 = shamt;
+                end
+                default: begin  // C.SUB/XOR/OR/AND, C.SUBW/ADDW, Zcb C.MUL and unary
+                  if (!parcel[12] || !parcel[6] || !parcel[5]) begin
+                    rs1 = rs1_prime;
+                    rs2 = rs2_prime;
+                  end else if (!(parcel[4] && parcel[3])) begin
+                    // Zcb unary forms: rs1 = rd'; bits [24:20] hold the
+                    // immediate or the funct12 low bits.
+                    rs1 = rs1_prime;
+                    rs2 = imem_rvc_zcb_unary_bits24_20(parcel[4:2]);
+                  end
+                  // With parcel[12]=1, [6:5]=11 and [4:2]=110/111 stay
+                  // reserved (zero expansion).
+                end
+              endcase
+            end
+            3'b110, 3'b111: begin  // C.BEQZ / C.BNEZ
+              rs1 = rs1_prime;
+              rs2 = 5'd0;
+            end
+            default: begin
+              rs1 = 5'd0;
+              rs2 = 5'd0;
+            end
+          endcase
+        end
+        2'b10: begin
+          unique case (parcel[15:13])
+            3'b000: begin  // C.SLLI
+              rs1 = rd_full;
+              rs2 = shamt;
+            end
+            3'b010, 3'b011: begin  // C.LWSP / C.LDSP: C.LDSP can share
+              // C.LWSP's form because bit 1 of both scaled immediates is zero
+              rs1 = 5'd2;
+              rs2 = imm_lwsp[4:0];
+            end
+            3'b001: begin  // C.FLDSP
+              rs1 = 5'd2;
+              rs2 = imm_ldsp[4:0];
+            end
+            3'b100: begin
+              if (!parcel[12]) begin
+                if (rs2_full == 5'd0) begin  // C.JR
+                  rs1 = rd_full;
+                  rs2 = 5'd0;
+                end else begin  // C.MV
+                  rs1 = 5'd0;
+                  rs2 = rs2_full;
+                end
+              end else if (rs2_full == 5'd0) begin
+                if (rd_full == 5'd0) begin  // C.EBREAK
+                  rs1 = 5'd0;
+                  rs2 = 5'd1;
+                end else begin  // C.JALR
+                  rs1 = rd_full;
+                  rs2 = 5'd0;
+                end
+              end else begin  // C.ADD
+                rs1 = rd_full;
+                rs2 = rs2_full;
+              end
+            end
+            3'b101, 3'b110, 3'b111: begin  // C.FSDSP / C.SWSP / C.SDSP
+              rs1 = 5'd2;
+              rs2 = rs2_full;
+            end
+            default: begin
+              rs1 = 5'd0;
+              rs2 = 5'd0;
+            end
+          endcase
+        end
+        default: begin
+          // Quadrant 3 is native and never consumes the RVC metadata.
+          rs1 = 5'd0;
+          rs2 = 5'd0;
+        end
+      endcase
+      imem_rvc_source_fields = {rs2[1], rs1};
+    end
+  endfunction
+
+  function automatic logic [2:0] imem_rvc_source_hot(input logic [15:0] parcel,
+                                                     input logic rd_is_x2);
+    logic [5:0] fields;
+    fields = imem_rvc_source_fields(parcel, rd_is_x2);
+    imem_rvc_source_hot = {fields[5], fields[2:1]};
+  endfunction
+
+  function automatic logic [2:0] imem_rvc_rs1_rest(input logic [15:0] parcel, input logic rd_is_x2);
+    logic [5:0] fields;
+    fields = imem_rvc_source_fields(parcel, rd_is_x2);
+    imem_rvc_rs1_rest = {fields[4:3], fields[0]};
+  endfunction
+
+  // Bits [24:20] of the RVC expansion of one parcel, equal to those of
+  // rvc_decompressor's expansion, including reserved encodings; a quadrant-3
+  // (native) parcel returns zero.
+  function automatic logic [4:0] imem_rvc_bits24_20(input logic [15:0] c, input logic rd_is_x2);
+    logic zcb_unary;
+    logic ebreak;
+    begin
+      zcb_unary = c[12] && (&c[11:10]) && (&c[6:5]);
+      ebreak = c[12] && (c[11:7] == 5'd0) && (c[6:2] == 5'd0);
+      imem_rvc_bits24_20 = 5'd0;
+      unique case (c[1:0])
+        2'b00: begin
+          unique case (c[15:13])
+            3'b000: imem_rvc_bits24_20 = {c[11], c[5], c[6], 2'b00};
+            3'b001, 3'b011: imem_rvc_bits24_20 = {c[11:10], 3'b000};
+            3'b010: imem_rvc_bits24_20 = {c[11:10], c[6], 2'b00};
+            3'b101, 3'b110, 3'b111: imem_rvc_bits24_20 = {2'b01, c[4:2]};
+            // Zcb: C.LBU/C.LHU/C.LH uimm, C.SB/C.SH rs2'; reserved forms zero
+            3'b100:
+            imem_rvc_bits24_20 = c[12] ? 5'd0 :
+                !c[11] ? {3'b000, c[5], c[6] && !c[10]} :
+                (!c[10] || !c[6]) ? {2'b01, c[4:2]} : 5'd0;
+            default: imem_rvc_bits24_20 = 5'd0;
+          endcase
+        end
+        2'b01: begin
+          unique case (c[15:13])
+            3'b000, 3'b001, 3'b010: imem_rvc_bits24_20 = c[6:2];
+            3'b011: imem_rvc_bits24_20 = rd_is_x2 ? {c[6], 4'b0000} : {5{c[12]}};
+            3'b100:
+            imem_rvc_bits24_20 = zcb_unary ?
+                imem_rvc_zcb_unary_bits24_20(c[4:2]) : ((&c[11:10]) ? {2'b01, c[4:2]} : c[6:2]);
+            3'b101: imem_rvc_bits24_20 = {c[11], c[5:3], c[12]};
+            default: imem_rvc_bits24_20 = 5'd0;
+          endcase
+        end
+        2'b10: begin
+          unique case (c[15:13])
+            3'b001, 3'b011: imem_rvc_bits24_20 = {c[6:5], 3'b000};
+            3'b010: imem_rvc_bits24_20 = {c[6:4], 2'b00};
+            3'b100: imem_rvc_bits24_20 = {c[6:3], c[2] || ebreak};
+            default: imem_rvc_bits24_20 = c[6:2];
+          endcase
+        end
+        default: imem_rvc_bits24_20 = 5'd0;
+      endcase
+    end
+  endfunction
+
+  // Full RV64C expansion: {illegal, instruction[31:0]}. Must match
+  // rvc_decompressor, including reserved encodings and hints.
+  function automatic logic [32:0] imem_rvc_expand(input logic [15:0] i_instr_compressed);
+    logic i_rd_is_x2;
+    logic [31:0] o_instr_expanded;
+    logic o_illegal;
+    logic [1:0] quadrant;
+    logic [2:0] funct3;
+    localparam logic [6:0] OpcLui = 7'b0110111;
+    localparam logic [6:0] OpcJal = 7'b1101111;
+    localparam logic [6:0] OpcJalr = 7'b1100111;
+    localparam logic [6:0] OpcBranch = 7'b1100011;
+    localparam logic [6:0] OpcLoad = 7'b0000011;
+    localparam logic [6:0] OpcLoadFp = 7'b0000111;
+    localparam logic [6:0] OpcStore = 7'b0100011;
+    localparam logic [6:0] OpcStoreFp = 7'b0100111;
+    localparam logic [6:0] OpcOpImm = 7'b0010011;
+    localparam logic [6:0] OpcOp = 7'b0110011;
+    localparam logic [6:0] OpcOpImm32 = 7'b0011011;
+    localparam logic [6:0] OpcOp32 = 7'b0111011;
+    logic [4:0] rd_full, rs1_full, rs2_full;
+    logic [4:0] rd_prime, rs1_prime, rs2_prime;
+    logic [11:0] imm_addi4spn;
+    logic [11:0] imm_lw_sw;
+    logic [11:0] imm_ld_sd;
+    logic [11:0] imm_ci;
+    logic [11:0] imm_addi16sp;
+    logic [19:0] imm_lui;
+    logic [11:0] imm_j;
+    logic [ 8:0] imm_b;
+    logic [11:0] imm_lwsp;
+    logic [11:0] imm_ldsp;
+    logic [ 7:0] imm_swsp;
+    logic [11:0] imm_sdsp;
+    logic [ 5:0] shamt6;
+    logic [11:0] imm_lb;
+    logic [11:0] imm_lh;
+    begin
+      i_rd_is_x2 = (i_instr_compressed[11:7] == 5'd2);
+      quadrant = i_instr_compressed[1:0];
+      funct3 = i_instr_compressed[15:13];
+      rd_full = i_instr_compressed[11:7];
+      rs1_full = i_instr_compressed[11:7];
+      rs2_full = i_instr_compressed[6:2];
+      rd_prime = {2'b01, i_instr_compressed[4:2]};
+      rs1_prime = {2'b01, i_instr_compressed[9:7]};
+      rs2_prime = {2'b01, i_instr_compressed[4:2]};
+      imm_addi4spn = {
+        2'b0,
+        i_instr_compressed[10:7],
+        i_instr_compressed[12:11],
+        i_instr_compressed[5],
+        i_instr_compressed[6],
+        2'b00
+      };
+      imm_lw_sw = {
+        5'b0, i_instr_compressed[5], i_instr_compressed[12:10], i_instr_compressed[6], 2'b00
+      };
+      imm_ld_sd = {4'b0, i_instr_compressed[6:5], i_instr_compressed[12:10], 3'b000};
+      imm_ci = {{6{i_instr_compressed[12]}}, i_instr_compressed[12], i_instr_compressed[6:2]};
+      imm_addi16sp = {
+        {2{i_instr_compressed[12]}},
+        i_instr_compressed[12],
+        i_instr_compressed[4:3],
+        i_instr_compressed[5],
+        i_instr_compressed[2],
+        i_instr_compressed[6],
+        4'b0000
+      };
+      imm_lui = {{14{i_instr_compressed[12]}}, i_instr_compressed[12], i_instr_compressed[6:2]};
+      imm_j = {
+        i_instr_compressed[12],
+        i_instr_compressed[8],
+        i_instr_compressed[10:9],
+        i_instr_compressed[6],
+        i_instr_compressed[7],
+        i_instr_compressed[2],
+        i_instr_compressed[11],
+        i_instr_compressed[5:3],
+        1'b0
+      };
+      imm_b = {
+        i_instr_compressed[12],
+        i_instr_compressed[6:5],
+        i_instr_compressed[2],
+        i_instr_compressed[11:10],
+        i_instr_compressed[4:3],
+        1'b0
+      };
+      imm_lwsp = {
+        4'b0, i_instr_compressed[3:2], i_instr_compressed[12], i_instr_compressed[6:4], 2'b00
+      };
+      imm_ldsp = {
+        3'b0, i_instr_compressed[4:2], i_instr_compressed[12], i_instr_compressed[6:5], 3'b000
+      };
+      imm_swsp = {i_instr_compressed[8:7], i_instr_compressed[12:9], 2'b00};
+      imm_sdsp = {3'b0, i_instr_compressed[9:7], i_instr_compressed[12:10], 3'b000};
+      shamt6 = {i_instr_compressed[12], i_instr_compressed[6:2]};
+      imm_lb = {10'b0, i_instr_compressed[5], i_instr_compressed[6]};
+      imm_lh = {10'b0, i_instr_compressed[5], 1'b0};
+      // Default outputs: zero instruction for reserved encodings.
+      o_instr_expanded = 32'b0;
+      o_illegal = 1'b0;
+
+      unique case (quadrant)
+        // -----------------------------------------------------------------------
+        // Quadrant 0 (00)
+        // -----------------------------------------------------------------------
+        2'b00: begin
+          unique case (funct3)
+            3'b000: begin  // C.ADDI4SPN
+              o_instr_expanded = {imm_addi4spn, 5'd2, 3'b000, rd_prime, OpcOpImm};
+              if (imm_addi4spn == 12'b0) o_illegal = 1'b1;
+            end
+            3'b010: o_instr_expanded = {imm_lw_sw, rs1_prime, 3'b010, rd_prime, OpcLoad};  // C.LW
+            3'b001:
+            o_instr_expanded = {imm_ld_sd, rs1_prime, 3'b011, rd_prime, OpcLoadFp};  // C.FLD
+            3'b011: o_instr_expanded = {imm_ld_sd, rs1_prime, 3'b011, rd_prime, OpcLoad};  // C.LD
+            3'b110:
+            o_instr_expanded = {
+              imm_lw_sw[11:5], rs2_prime, rs1_prime, 3'b010, imm_lw_sw[4:0], OpcStore
+            };  // C.SW
+            3'b101:
+            o_instr_expanded = {
+              imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStoreFp
+            };  // C.FSD
+            3'b111:
+            o_instr_expanded = {
+              imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStore
+            };  // C.SD
+            3'b100: begin  // Zcb loads and stores; reserved forms expand to zero
+              unique case (i_instr_compressed[12:10])
+                3'b000: o_instr_expanded = {imm_lb, rs1_prime, 3'b100, rd_prime, OpcLoad};  // C.LBU
+                3'b001:  // C.LHU (bit 6 = 0) / C.LH (bit 6 = 1)
+                o_instr_expanded = {
+                  imm_lh, rs1_prime, i_instr_compressed[6] ? 3'b001 : 3'b101, rd_prime, OpcLoad
+                };
+                3'b010:
+                o_instr_expanded = {
+                  7'b0, rs2_prime, rs1_prime, 3'b000, imm_lb[4:0], OpcStore
+                };  // C.SB
+                3'b011: begin  // C.SH (bit 6 = 1 is reserved)
+                  if (!i_instr_compressed[6])
+                    o_instr_expanded = {7'b0, rs2_prime, rs1_prime, 3'b001, imm_lh[4:0], OpcStore};
+                  else o_illegal = 1'b1;
+                end
+                default: o_illegal = 1'b1;
+              endcase
+            end
+            default: o_illegal = 1'b1;  // Reserved encoding
+          endcase
+        end
+
+        // -----------------------------------------------------------------------
+        // Quadrant 1 (01)
+        // -----------------------------------------------------------------------
+        2'b01: begin
+          unique case (funct3)
+            3'b000: o_instr_expanded = {imm_ci, rd_full, 3'b000, rd_full, OpcOpImm};  // C.ADDI/NOP
+            3'b001: begin  // C.ADDIW (rd=0 reserved)
+              o_instr_expanded = {imm_ci, rd_full, 3'b000, rd_full, OpcOpImm32};
+              if (rd_full == 5'd0) o_illegal = 1'b1;
+            end
+            3'b010: o_instr_expanded = {imm_ci, 5'd0, 3'b000, rd_full, OpcOpImm};  // C.LI
+            3'b011: begin
+              if (i_rd_is_x2) begin  // C.ADDI16SP
+                o_instr_expanded = {imm_addi16sp, 5'd2, 3'b000, 5'd2, OpcOpImm};
+                if (imm_addi16sp == 12'b0) o_illegal = 1'b1;
+              end else begin  // C.LUI (rd=0 is a HINT: lui x0)
+                o_instr_expanded = {imm_lui, rd_full, OpcLui};
+                if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) begin
+                  // Zcmop C.MOP.n: rd = n odd in 1..15; writes no register.
+                  if (!rd_full[4] && rd_full[0]) o_instr_expanded = 32'h0000_0013;
+                  else o_illegal = 1'b1;
+                end
+              end
+            end
+            3'b100: begin
+              unique case (i_instr_compressed[11:10])
+                2'b00:  // C.SRLI (bit12 = shamt[5])
+                o_instr_expanded = {6'b000000, shamt6, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
+                2'b01:  // C.SRAI (bit12 = shamt[5])
+                o_instr_expanded = {6'b010000, shamt6, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
+                2'b10: begin  // C.ANDI
+                  o_instr_expanded = {imm_ci, rs1_prime, 3'b111, rs1_prime, OpcOpImm};
+                end
+                2'b11: begin  // C.SUB/C.XOR/C.OR/C.AND; bit12=1: RV64 C.SUBW/C.ADDW
+                  if (i_instr_compressed[12]) begin
+                    unique case (i_instr_compressed[6:5])
+                      2'b00:
+                      o_instr_expanded = {
+                        7'b0100000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
+                      };  // C.SUBW
+                      2'b01:
+                      o_instr_expanded = {
+                        7'b0000000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
+                      };  // C.ADDW
+                      2'b10:
+                      o_instr_expanded = {
+                        7'b0000001, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp
+                      };  // Zcb C.MUL
+                      2'b11: begin  // Zcb unary forms; [4:2]=110/111 stay reserved
+                        unique case (i_instr_compressed[4:2])
+                          3'b000:  // C.ZEXT.B = andi rd', rd', 0xff
+                          o_instr_expanded = {12'h0ff, rs1_prime, 3'b111, rs1_prime, OpcOpImm};
+                          3'b001:  // C.SEXT.B
+                          o_instr_expanded = {12'h604, rs1_prime, 3'b001, rs1_prime, OpcOpImm};
+                          3'b010:  // C.ZEXT.H = zext.h (RV64 encoding)
+                          o_instr_expanded = {12'h080, rs1_prime, 3'b100, rs1_prime, OpcOp32};
+                          3'b011:  // C.SEXT.H
+                          o_instr_expanded = {12'h605, rs1_prime, 3'b001, rs1_prime, OpcOpImm};
+                          3'b100:  // C.ZEXT.W = add.uw rd', rd', x0
+                          o_instr_expanded = {12'h080, rs1_prime, 3'b000, rs1_prime, OpcOp32};
+                          3'b101:  // C.NOT = xori rd', rd', -1
+                          o_instr_expanded = {12'hfff, rs1_prime, 3'b100, rs1_prime, OpcOpImm};
+                          default: o_illegal = 1'b1;
+                        endcase
+                      end
+                    endcase
+                  end else begin
+                    unique case (i_instr_compressed[6:5])
+                      2'b00:
+                      o_instr_expanded = {
+                        7'b0100000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp
+                      };  // C.SUB
+                      2'b01:
+                      o_instr_expanded = {
+                        7'b0000000, rs2_prime, rs1_prime, 3'b100, rs1_prime, OpcOp
+                      };  // C.XOR
+                      2'b10:
+                      o_instr_expanded = {
+                        7'b0000000, rs2_prime, rs1_prime, 3'b110, rs1_prime, OpcOp
+                      };  // C.OR
+                      2'b11:
+                      o_instr_expanded = {
+                        7'b0000000, rs2_prime, rs1_prime, 3'b111, rs1_prime, OpcOp
+                      };  // C.AND
+                    endcase
+                  end
+                end
+              endcase
+            end
+            3'b101:
+            o_instr_expanded = {imm_j[11], imm_j[10:1], imm_j[11], {8{imm_j[11]}}, 5'd0, OpcJal};
+            3'b110: begin
+              o_instr_expanded = {
+                imm_b[8],
+                {3{imm_b[8]}},
+                imm_b[7:5],
+                5'd0,
+                rs1_prime,
+                3'b000,
+                imm_b[4:1],
+                imm_b[8],
+                OpcBranch
+              };  // C.BEQZ
+            end
+            3'b111: begin
+              o_instr_expanded = {
+                imm_b[8],
+                {3{imm_b[8]}},
+                imm_b[7:5],
+                5'd0,
+                rs1_prime,
+                3'b001,
+                imm_b[4:1],
+                imm_b[8],
+                OpcBranch
+              };  // C.BNEZ
+            end
+            default: o_illegal = 1'b1;  // Reserved encoding
+          endcase
+        end
+
+        // -----------------------------------------------------------------------
+        // Quadrant 2 (10)
+        // -----------------------------------------------------------------------
+        2'b10: begin
+          unique case (funct3)
+            3'b000:  // C.SLLI (rd=0 is a HINT; bit12 = shamt[5])
+            o_instr_expanded = {6'b000000, shamt6, rd_full, 3'b001, rd_full, OpcOpImm};
+            3'b010: begin  // C.LWSP
+              o_instr_expanded = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoad};
+              if (rd_full == 5'd0) o_illegal = 1'b1;
+            end
+            3'b001: begin  // C.FLDSP
+              o_instr_expanded = {imm_ldsp, 5'd2, 3'b011, rd_full, OpcLoadFp};
+            end
+            3'b011: begin  // C.LDSP (integer, rd=0 reserved)
+              o_instr_expanded = {imm_ldsp, 5'd2, 3'b011, rd_full, OpcLoad};
+              if (rd_full == 5'd0) o_illegal = 1'b1;
+            end
+            3'b100: begin
+              if (!i_instr_compressed[12]) begin
+                if (rs2_full == 5'd0) begin  // C.JR
+                  o_instr_expanded = {12'b0, rs1_full, 3'b000, 5'd0, OpcJalr};
+                  if (rd_full == 5'd0) o_illegal = 1'b1;
+                end else begin  // C.MV (rd=0 is a HINT)
+                  o_instr_expanded = {7'b0, rs2_full, 5'd0, 3'b000, rd_full, OpcOp};
+                end
+              end else begin
+                if (rs2_full == 5'd0) begin
+                  if (rd_full == 5'd0) begin
+                    o_instr_expanded = 32'h0010_0073;  // C.EBREAK
+                  end else begin
+                    o_instr_expanded = {12'b0, rs1_full, 3'b000, 5'd1, OpcJalr};  // C.JALR
+                  end
+                end else begin
+                  // C.ADD (rd=0 is a HINT)
+                  o_instr_expanded = {7'b0, rs2_full, rd_full, 3'b000, rd_full, OpcOp};
+                end
+              end
+            end
+            3'b110:
+            o_instr_expanded = {
+              4'b0, imm_swsp[7:5], rs2_full, 5'd2, 3'b010, imm_swsp[4:0], OpcStore
+            };  // C.SWSP
+            3'b101:
+            o_instr_expanded = {
+              imm_sdsp[11:5], rs2_full, 5'd2, 3'b011, imm_sdsp[4:0], OpcStoreFp
+            };  // C.FSDSP
+            3'b111:  // C.SDSP (integer, 8-scaled)
+            o_instr_expanded = {imm_sdsp[11:5], rs2_full, 5'd2, 3'b011, imm_sdsp[4:0], OpcStore};
+            default: o_illegal = 1'b1;  // Reserved encoding
+          endcase
+        end
+
+        // -----------------------------------------------------------------------
+        // Quadrant 3 (11): not compressed, passthrough
+        // -----------------------------------------------------------------------
+        default: o_instr_expanded = {16'b0, i_instr_compressed};
+      endcase
+      imem_rvc_expand = {o_illegal, o_instr_expanded};
+    end
+  endfunction
+
+  function automatic logic [ImemSidebandWidth-1:0] imem_make_sideband(input logic [31:0] word);
+    logic [ImemSidebandWidth-1:0] sb;
+    logic [32:0] expanded_lo, expanded_hi;
+    logic compressed_control_lo;
+    logic compressed_control_hi;
+    logic native_fp_compute_lo;
+    logic native_fp_compute_hi;
+    logic allows_slot2_after_lo;
+    logic allows_slot2_after_hi;
+    logic slot2_start_valid_lo;
+    logic slot2_start_valid_hi;
+    begin
+      sb = '0;
+      sb[ImemSbIsCompressedLo] = (word[1:0] != 2'b11);
+      sb[ImemSbIsCompressedHi] = (word[17:16] != 2'b11);
+      compressed_control_lo = imem_compressed_control(word[15:0]);
+      compressed_control_hi = imem_compressed_control(word[31:16]);
+      sb[ImemSbNativeSerializeLo] = imem_native_serialize(word[15:0]);
+      sb[ImemSbNativeSerializeHi] = imem_native_serialize(word[31:16]);
+      native_fp_compute_lo = imem_native_fp_compute(word[6:0]) ||
+          is_vector_mem(word[6:0], word[14:12]);
+      native_fp_compute_hi = imem_native_fp_compute(word[22:16]) ||
+          is_vector_mem(word[22:16], word[30:28]);
+      // Control flow terminates the bundle; serializing instructions cannot
+      // pair. CSR results are read at commit, while the CDB carries only the
+      // write operand, so a slot-2 partner could bypass the CSR dispatch hold.
+      // Native slot 1 pairs via NEXT_LO/NEXT_HI; FP compute can use slot 1.
+      allows_slot2_after_lo =
+          (sb[ImemSbIsCompressedLo] && !compressed_control_lo) ||
+          (!sb[ImemSbIsCompressedLo] && !imem_native_control(word[6:0]) &&
+          !sb[ImemSbNativeSerializeLo]);
+      allows_slot2_after_hi =
+          (sb[ImemSbIsCompressedHi] && !compressed_control_hi) ||
+          (!sb[ImemSbIsCompressedHi] && !imem_native_control(word[22:16]) &&
+          !sb[ImemSbNativeSerializeHi]);
+      slot2_start_valid_lo =
+          sb[ImemSbIsCompressedLo] ||
+          !(sb[ImemSbNativeSerializeLo] || native_fp_compute_lo);
+      slot2_start_valid_hi =
+          sb[ImemSbIsCompressedHi] ||
+          !(sb[ImemSbNativeSerializeHi] || native_fp_compute_hi);
+
+      sb[ImemSbAllowsSlot2AfterLo] = allows_slot2_after_lo;
+      sb[ImemSbAllowsSlot2AfterHi] = allows_slot2_after_hi;
+      sb[ImemSbSlot2StartValidLo] = slot2_start_valid_lo;
+      sb[ImemSbSlot2StartValidHi] = slot2_start_valid_hi;
+
+      // Only a low-halfword RVC has slot 2 in the same word, allowing full
+      // eligibility predecode. Other shapes still need the next word's size
+      // and start-valid bits in the aligner.
+      sb[ImemSbEvenLocalPairValid] =
+          sb[ImemSbIsCompressedLo] && allows_slot2_after_lo && slot2_start_valid_hi;
+      sb[ImemSbPairableNativeLo] = !sb[ImemSbIsCompressedLo] && allows_slot2_after_lo;
+      sb[ImemSbPairableCompressedHi] = sb[ImemSbIsCompressedHi] && allows_slot2_after_hi;
+      sb[ImemSbPairableNativeHi] = !sb[ImemSbIsCompressedHi] && allows_slot2_after_hi;
+      sb[ImemSbRvcSourceHotLoLsb+:2] = 2'(imem_rvc_source_hot(word[15:0], word[11:7] == 5'd2));
+      sb[ImemSbRvcSourceHotHiLsb+:2] = 2'(imem_rvc_source_hot(word[31:16], word[27:23] == 5'd2));
+      sb[ImemSbRvcBits24To20LoLsb+:5] = imem_rvc_bits24_20(word[15:0], word[11:7] == 5'd2);
+      sb[ImemSbRvcBits24To20HiLsb+:5] = imem_rvc_bits24_20(word[31:16], word[27:23] == 5'd2);
+      sb[ImemSbRvcRs1RestLoLsb+:3] = imem_rvc_rs1_rest(word[15:0], word[11:7] == 5'd2);
+      sb[ImemSbRvcRs1RestHiLsb+:3] = imem_rvc_rs1_rest(word[31:16], word[27:23] == 5'd2);
+      expanded_lo = imem_rvc_expand(word[15:0]);
+      expanded_hi = imem_rvc_expand(word[31:16]);
+      sb[ImemSbRvcExtraLoLsb+:23] = {expanded_lo[32:25], expanded_lo[14:0]};
+      sb[ImemSbRvcExtraHiLsb+:23] = {expanded_hi[32:25], expanded_hi[14:0]};
+      sb[ImemSbIsIndirectLo] = imem_indirect_parcel(word[15:0]);
+      sb[ImemSbIsIndirectHi] = imem_indirect_parcel(word[31:16]);
+      imem_make_sideband = sb;
+    end
+  endfunction
+
+  // ===========================================================================
+  // Section 2: Instruction Operations
+  // ===========================================================================
+  // Every instruction operation, grouped by extension. The decoder passes one
+  // of these to the ALU and the other execution units.
+
+  // Explicit anchors (ROL = 8'd76, ADDIW = 8'd170) hold ROL..RORI and
+  // SLLIW..RORIW at the ordinals projected_shift_controls decodes by bit
+  // position (SLL..SRAI sit ahead of any folded member); alu.sv checks the
+  // table in simulation and formal verification (alu_shift_hint). Append
+  // new members after the last member so none of the shift ordinals move.
+  // Operations carry one enum member per operation across widths and CSR
+  // source forms when width, sign or CSR operation travels in other fields
+  // (scalar integer and FP loads and stores, LR/SC, AMO W/D pairs, CSR
+  // reg/imm forms). The unsigned 8-bit base bounds payload width and keeps
+  // values >=128 nonnegative.
+  localparam int unsigned InstrOpWidth = 8;
+  typedef enum bit [InstrOpWidth-1:0] {
+    // base-ISA integer ops
+    ADD,
+    SUB,
+    AND,
+    OR,
+    XOR,
+    SLL,
+    SRL,
+    SRA,
+    SLT,
+    SLTU,
+    ADDI,
+    ANDI,
+    ORI,
+    XORI,
+    SLTI,
+    SLTIU,
+    SLLI,
+    SRLI,
+    SRAI,
+    // base-ISA upper-imm/jumps
+    LUI,
+    AUIPC,
+    JAL,
+    JALR,
+    // base-ISA branches
+    BEQ,
+    BNE,
+    BLT,
+    BGE,
+    BLTU,
+    BGEU,
+    // Scalar integer loads and stores (width/sign carried in funct3)
+    LOAD,
+    STORE,
+    // M-extension for multiply/divide
+    MUL,
+    MULH,
+    MULHSU,
+    MULHU,
+    DIV,
+    DIVU,
+    REM,
+    REMU,
+    // Fences (base ISA and Zifencei)
+    FENCE,
+    FENCE_I,
+    // Zicsr extension (CSR op carried in funct3)
+    CSR_REG,
+    CSR_IMM,
+    // Zba extension (address generation)
+    SH1ADD,
+    SH2ADD,
+    SH3ADD,
+    // Zbs extension (single-bit operations)
+    BSET,
+    BCLR,
+    BINV,
+    BEXT,
+    BSETI,
+    BCLRI,
+    BINVI,
+    BEXTI,
+    // Zbb extension (basic bit manipulation)
+    ANDN,
+    ORN,
+    XNOR,
+    CLZ,
+    CTZ,
+    CPOP,
+    MAX,
+    MAXU,
+    MIN,
+    MINU,
+    SEXT_B,
+    SEXT_H,
+    // Non-shift operations placed before ROL = 8'd76 to preserve shift ordinals
+    CLZW,                       // Zbb: count leading zeros in word
+    CTZW,                       // Zbb: count trailing zeros in word
+    CPOPW,                      // Zbb: population count of word
+    PACKW,                      // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
+    MULW,                       // Multiply word (sext32 of low-32 product)
+    DIVW,                       // Divide word signed (sext32 result)
+    DIVUW,                      // Divide word unsigned (sext32 result)
+    REMW,                       // Remainder word signed (sext32 result)
+    REMUW,                      // Remainder word unsigned (sext32 result)
+    ILLEGAL,                    // Illegal instruction trap marker
+    // Zbb shifts/rotates (pinned at 8'd76..8'd78 for projected_shift_controls)
+    ROL              = 8'd76,
+    ROR,
+    RORI,
+    ORC_B,
+    REV8,
+    // Zicond extension (conditional operations)
+    CZERO_EQZ,
+    CZERO_NEZ,
+    // Zbkb extension (bit manipulation for crypto)
+    PACK,
+    PACKH,
+    BREV8,
+    SRET,                       // Return from supervisor-mode trap
+    SFENCE_VMA,                 // Supervisor fence.vma with address and ASID filters
+    // Zihintpause extension
+    PAUSE,
+    // Privileged instructions (trap handling)
+    MRET,                       // Return from machine-mode trap
+    WFI,                        // Wait for interrupt
+    ECALL,                      // Environment call (system call)
+    EBREAK,                     // Breakpoint exception
+    // A extension atomics (W/D width carried in funct3 / mem_size)
+    LR,                         // Load-reserved (word or doubleword)
+    SC,                         // Store-conditional (word or doubleword)
+    AMOSWAP,                    // Atomic swap
+    AMOADD,                     // Atomic add
+    AMOXOR,                     // Atomic XOR
+    AMOAND,                     // Atomic AND
+    AMOOR,                      // Atomic OR
+    AMOMIN,                     // Atomic minimum (signed)
+    AMOMAX,                     // Atomic maximum (signed)
+    AMOMINU,                    // Atomic minimum (unsigned)
+    AMOMAXU,                    // Atomic maximum (unsigned)
+    // Scalar FP loads and stores (width carried in funct3)
+    LOAD_FP,                    // Load floating-point scalar
+    STORE_FP,                   // Store floating-point scalar
+    // F extension (single-precision floating-point)
+    FADD_S,                     // FP add
+    FSUB_S,                     // FP subtract
+    FMUL_S,                     // FP multiply
+    FDIV_S,                     // FP divide
+    FSQRT_S,                    // FP square root
+    FMADD_S,                    // FP fused multiply-add
+    FMSUB_S,                    // FP fused multiply-subtract
+    FNMADD_S,                   // FP negated fused multiply-add
+    FNMSUB_S,                   // FP negated fused multiply-subtract
+    FSGNJ_S,                    // FP sign inject
+    FSGNJN_S,                   // FP sign inject negated
+    FSGNJX_S,                   // FP sign inject XOR
+    FMIN_S,                     // FP minimum
+    FMAX_S,                     // FP maximum
+    FCVT_W_S,                   // FP to signed int
+    FCVT_WU_S,                  // FP to unsigned int
+    FCVT_S_W,                   // Signed int to FP
+    FCVT_S_WU,                  // Unsigned int to FP
+    FMV_X_W,                    // Move FP bits to int reg
+    FMV_W_X,                    // Move int bits to FP reg
+    FEQ_S,                      // FP equal
+    FLT_S,                      // FP less than
+    FLE_S,                      // FP less than or equal
+    FCLASS_S,                   // FP classify
+    // D extension (double-precision floating-point)
+    FADD_D,                     // FP add (double)
+    FSUB_D,                     // FP subtract (double)
+    FMUL_D,                     // FP multiply (double)
+    FDIV_D,                     // FP divide (double)
+    FSQRT_D,                    // FP square root (double)
+    FMADD_D,                    // FP fused multiply-add (double)
+    FMSUB_D,                    // FP fused multiply-subtract (double)
+    FNMADD_D,                   // FP negated fused multiply-add (double)
+    FNMSUB_D,                   // FP negated fused multiply-subtract (double)
+    FSGNJ_D,                    // FP sign inject (double)
+    FSGNJN_D,                   // FP sign inject negated (double)
+    FSGNJX_D,                   // FP sign inject XOR (double)
+    FMIN_D,                     // FP minimum (double)
+    FMAX_D,                     // FP maximum (double)
+    FCVT_W_D,                   // FP to signed int (double)
+    FCVT_WU_D,                  // FP to unsigned int (double)
+    FCVT_D_W,                   // Signed int to FP (double)
+    FCVT_D_WU,                  // Unsigned int to FP (double)
+    FCVT_S_D,                   // Convert double to single
+    FCVT_D_S,                   // Convert single to double
+    FEQ_D,                      // FP equal (double)
+    FLT_D,                      // FP less than (double)
+    FLE_D,                      // FP less than or equal (double)
+    FCLASS_D,                   // FP classify (double)
+    // Fault, debug, carry-less multiply, CMO, and vector control/arith ops
+    FETCH_FAULT,                // Fetch access-fault pseudo-op (cause 1)
+    FETCH_PAGE_FAULT,           // Fetch page-fault pseudo-op (cause 12)
+    DRET,                       // Return from Debug Mode
+    CLMUL,                      // Zbc/Zbkc: low polynomial product
+    CLMULH,                     // Zbc/Zbkc: high polynomial product
+    CLMULR,                     // Zbc: reversed polynomial product
+    CBO_ZERO,                   // Zicboz: zero the 64-byte block containing rs1
+    // Zicbom: clean, flush or invalidate the 64-byte block containing rs1.
+    // id_stage decodes cbo.inval as CBO_FLUSH while CBIE selects a flush, so
+    // CBO_INVAL always means an invalidate.
+    CBO_CLEAN,
+    CBO_FLUSH,
+    CBO_INVAL,
+    VSETVLI,                    // V: set vl and vtype; AVL in rs1, vtype immediate
+    VSETIVLI,                   // V: set vl and vtype; AVL and vtype immediates
+    VSETVL,                     // V: set vl and vtype; AVL in rs1, vtype in rs2
+    VARITH,                     // V: vector arithmetic with no scalar operand; the engine
+                                // executes it after commit, INT_RS only completes it
+    VARITH_X,                   // V: vector arithmetic with rs1 as its scalar operand, which
+                                // INT_RS passes to the ROB for the engine
+    VTOX,                       // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
+                                // once the engine is idle; no reservation station
+    // RV64I and B-extension word shifts/ops (pinned at 8'd170 for projected_shift_controls)
+    ADDIW            = 8'd170,  // Add immediate word (sext32 result)
+    SLLIW,                      // Shift left logical immediate word
+    SRLIW,                      // Shift right logical immediate word
+    SRAIW,                      // Shift right arithmetic immediate word
+    ADDW,                       // Add word
+    SUBW,                       // Subtract word
+    SLLW,                       // Shift left logical word
+    SRLW,                       // Shift right logical word
+    SRAW,                       // Shift right arithmetic word
+    ADD_UW,                     // Zba: add unsigned word (zext32(rs1) + rs2)
+    SH1ADD_UW,                  // Zba: shift-add unsigned word
+    SH2ADD_UW,                  // Zba: shift-add unsigned word
+    SH3ADD_UW,                  // Zba: shift-add unsigned word
+    SLLI_UW,                    // Zba: shift-left immediate unsigned word (6-bit shamt)
+    ROLW,                       // Zbb: rotate left word (sext32 result)
+    RORW,                       // Zbb: rotate right word (sext32 result)
+    RORIW,                      // Zbb: rotate right immediate word (5-bit shamt)
+    // RV64 F/D conversions and moves.
+    FCVT_L_S,                   // FP to signed 64-bit int (single)
+    FCVT_LU_S,                  // FP to unsigned 64-bit int (single)
+    FCVT_S_L,                   // Signed 64-bit int to FP (single)
+    FCVT_S_LU,                  // Unsigned 64-bit int to FP (single)
+    FCVT_L_D,                   // FP to signed 64-bit int (double)
+    FCVT_LU_D,                  // FP to unsigned 64-bit int (double)
+    FCVT_D_L,                   // Signed 64-bit int to FP (double)
+    FCVT_D_LU,                  // Unsigned 64-bit int to FP (double)
+    FMV_X_D,                    // Move double bits to int reg
+    FMV_D_X,                    // Move int bits to double reg
+    VLOAD,                      // V: every vector load form: translated at the ROB head once
+                                // older vector work drains; no RS
+    VSTORE,                     // V: the same forms of stores; as VLOAD
+    // Zfhmin: half-precision moves and conversions (loads/stores use LOAD_FP/STORE_FP).
+    FMV_X_H,                    // Move half bits to int reg (sign-extended)
+    FMV_H_X,                    // Move int bits to half reg (NaN-boxed)
+    FCVT_S_H,                   // Convert half to single
+    FCVT_H_S,                   // Convert single to half
+    FCVT_D_H,                   // Convert half to double
+    FCVT_H_D,                   // Convert double to half
+    // Zfa with F and D. FLI.H needs Zfh or Zvfh; D high-half moves need RV32.
+    FLI_S,                      // Load one of 32 single-precision constants
+    FLI_D,                      // Load one of 32 double-precision constants
+    FMINM_S,                    // Minimum, NaN if either operand is NaN
+    FMAXM_S,                    // Maximum, NaN if either operand is NaN
+    FMINM_D,
+    FMAXM_D,
+    FROUND_S,                   // Round to integral value, no NX
+    FROUNDNX_S,                 // Round to integral value, NX when inexact
+    FROUND_D,
+    FROUNDNX_D,
+    FCVTMOD_W_D,                // Double to 32-bit int, modular (RTZ)
+    FLEQ_S,                     // Quiet less than or equal
+    FLTQ_S,                     // Quiet less than
+    FLEQ_D,
+    FLTQ_D,
+    // Zimop MOP.R.n / MOP.RR.n: no extension redefines them, so each writes
+    // zero to rd. It reads no register and selects no ALU result group.
+    MOP,
+    VARITH_F,                   // V: vector FP arithmetic with an f-register scalar operand,
+                                // read at the ROB head; the engine executes it after commit
+    VTOF                        // V: vfmv.f.s, executed at the ROB head; no reservation station
+  } instr_op_e;
+
+  // Barrel-shifter controls decoded from operation bits:
+  // {full_left, full_rotate, full_arithmetic, word_left, word_rotate,
+  //  word_arithmetic, immediate_amount}.
+  // Each bit is valid only for the shift/rotate operations that consume it.
+  // alu.sv checks the encoding. INT issue port 2 uses immediate_amount,
+  // rather than use_imm, to capture the shift amount.
+  function automatic logic [6:0] projected_shift_controls(input instr_op_e op_bits);
+    projected_shift_controls[6] = !op_bits[1] && (op_bits[0] ^ (op_bits[4] || op_bits[6]));
+    projected_shift_controls[5] = op_bits[6];
+    projected_shift_controls[4] = op_bits[1] && (op_bits[0] || op_bits[4]);
+    projected_shift_controls[3] = !op_bits[2] && (op_bits[0] ~^ op_bits[1]);
+    projected_shift_controls[2] = op_bits[3] && op_bits[4];
+    projected_shift_controls[1] = (!op_bits[3] && op_bits[1]) || (op_bits[2] && op_bits[0]);
+    projected_shift_controls[0] = (op_bits[3] && op_bits[1]) ||
+        (op_bits[7] ? (op_bits[3] && op_bits[2]) : !op_bits[2]);
+  endfunction
+
+  // ===========================================================================
+  // Section 3: CSR Definitions
+  // ===========================================================================
+  // Control and Status Register addresses, bit positions, and cause codes.
+  // Includes Zicsr instruction encodings and M/S/U-mode trap support.
+
+  // CSR instruction funct3 encoding
+  typedef enum bit [2:0] {
+    CSR_RW  = 3'b001,  // CSRRW  - read/write
+    CSR_RS  = 3'b010,  // CSRRS  - read/set bits
+    CSR_RC  = 3'b011,  // CSRRC  - read/clear bits
+    CSR_RWI = 3'b101,  // CSRRWI - read/write immediate
+    CSR_RSI = 3'b110,  // CSRRSI - read/set bits immediate
+    CSR_RCI = 3'b111   // CSRRCI - read/clear bits immediate
+  } csr_op_e;
+
+  // Zicntr counters use one 64-bit CSR each. ROB allocation rejects RV32
+  // high-half addresses.
+  localparam bit [11:0] CsrCycle = 12'hC00;  // Cycle counter
+  localparam bit [11:0] CsrTime = 12'hC01;  // Timer (mtime)
+  localparam bit [11:0] CsrInstret = 12'hC02;  // Instructions retired
+  localparam bit [11:0] CsrHpmcounter3 = 12'hC03;  // Retired branches
+  localparam bit [11:0] CsrHpmcounter4 = 12'hC04;  // Branch mispredictions
+  localparam bit [11:0] CsrHpmcounter5 = 12'hC05;  // ITLB misses
+  localparam bit [11:0] CsrHpmcounter6 = 12'hC06;  // DTLB misses
+  localparam bit [11:0] CsrHpmcounter7 = 12'hC07;  // L1D permission misses
+  localparam bit [11:0] CsrHpmcounter8 = 12'hC08;  // Store-queue full stall cycles
+  localparam bit [11:0] CsrHpmcounter9 = 12'hC09;  // Cycles, mode-filtered
+  localparam bit [11:0] CsrHpmcounter10 = 12'hC0A;  // Instructions retired, mode-filtered
+  localparam bit [11:0] CsrCycleH = 12'hC80;  // cycleh (RV32 only)
+  localparam bit [11:0] CsrTimeH = 12'hC81;  // timeh (RV32 only)
+  localparam bit [11:0] CsrInstretH = 12'hC82;  // instreth (RV32 only)
+
+  // Machine-mode counter CSRs (aliases for the same physical counters)
+  localparam bit [11:0] CsrMcycle = 12'hB00;  // mcycle
+  localparam bit [11:0] CsrMcycleH = 12'hB80;  // mcycleh (RV32 only)
+  localparam bit [11:0] CsrMinstret = 12'hB02;  // minstret
+  localparam bit [11:0] CsrMinstretH = 12'hB82;  // minstreth (RV32 only)
+  localparam bit [11:0] CsrMhpmcounter3 = 12'hB03;  // mhpmcounter3
+  localparam bit [11:0] CsrMhpmcounter4 = 12'hB04;  // mhpmcounter4
+  localparam bit [11:0] CsrMhpmcounter5 = 12'hB05;  // mhpmcounter5
+  localparam bit [11:0] CsrMhpmcounter6 = 12'hB06;  // mhpmcounter6
+  localparam bit [11:0] CsrMhpmcounter7 = 12'hB07;  // mhpmcounter7
+  localparam bit [11:0] CsrMhpmcounter8 = 12'hB08;  // mhpmcounter8
+  localparam bit [11:0] CsrMhpmevent3 = 12'h323;  // mhpmevent3
+  localparam bit [11:0] CsrMhpmevent4 = 12'h324;  // mhpmevent4
+  localparam bit [11:0] CsrMhpmevent5 = 12'h325;  // mhpmevent5
+  localparam bit [11:0] CsrMhpmevent6 = 12'h326;  // mhpmevent6
+  localparam bit [11:0] CsrMhpmevent7 = 12'h327;  // mhpmevent7
+  localparam bit [11:0] CsrMhpmevent8 = 12'h328;  // mhpmevent8
+  localparam bit [11:0] CsrMhpmcounter9 = 12'hB09;  // mhpmcounter9
+  localparam bit [11:0] CsrMhpmcounter10 = 12'hB0A;  // mhpmcounter10
+  localparam bit [11:0] CsrMhpmevent9 = 12'h329;  // mhpmevent9
+  localparam bit [11:0] CsrMhpmevent10 = 12'h32A;  // mhpmevent10
+  // Sscofpmf: scountovf shadows mhpmevent3..31.OF (read-only, S-level).
+  localparam bit [11:0] CsrScountovf = 12'hDA0;
+  // Sscofpmf mhpmevent fields. VSINH (59) and VUINH (58) are read-only zero
+  // without the H extension; 57:56 are WPRI; 55:0 select the event.
+  localparam int unsigned MhpmeventOfBit = 63;
+  localparam int unsigned MhpmeventMinhBit = 62;
+  localparam int unsigned MhpmeventSinhBit = 61;
+  localparam int unsigned MhpmeventUinhBit = 60;
+  localparam int unsigned MhpmeventSelectBits = 56;
+  // Implemented HPM counters 3..HpmCounterLast; counter-enable and inhibit
+  // masks are HpmCounterLast+1 bits wide.
+  localparam int unsigned HpmCounterLast = 10;
+  localparam int unsigned CounterMaskBits = HpmCounterLast + 1;
+
+  // Machine-mode CSR addresses (for trap/interrupt handling)
+  localparam bit [11:0] CsrMstatus = 12'h300;  // Machine status register
+  localparam bit [11:0] CsrMisa = 12'h301;  // Machine ISA register (read-only)
+  localparam bit [11:0] CsrMedeleg = 12'h302;  // Machine exception delegation
+  localparam bit [11:0] CsrMideleg = 12'h303;  // Machine interrupt delegation
+  localparam bit [11:0] CsrMie = 12'h304;  // Machine interrupt enable
+  localparam bit [11:0] CsrMtvec = 12'h305;  // Machine trap vector base
+  localparam bit [11:0] CsrMcounteren = 12'h306;  // S/U counter enable (CY/TM/IR/HPM3..10)
+  // mcountinhibit.CY/IR and HPM3..10 inhibit their counters; TM and bits 31:11 read zero.
+  // OpenSBI probes this v1.11 CSR before using v1.12 menvcfg to enable Sstc.
+  localparam bit [11:0] CsrMcountinhibit = 12'h320;
+  localparam bit [11:0] CsrMenvcfg = 12'h30A;  // Machine environment configuration
+  // menvcfg.STCE (bit 63, Sstc): S-mode stimecmp enable. WARL {0,1}.
+  localparam int unsigned MenvcfgStceBit = 63;
+  // FIOM (bit 0 of menvcfg and senvcfg): WARL {0,1}, required writable
+  // because satp can leave Bare. Stored only: FENCE ignores its predecessor
+  // and successor bits, so it already treats I/O like memory, and atomics to
+  // devices fault.
+  localparam int unsigned EnvcfgFiomBit = 0;
+  // CBZE (bit 7 of menvcfg and senvcfg, Zicboz): WARL {0,1}. cbo.zero is
+  // legal in M, in S with menvcfg.CBZE, and in U with both bits set.
+  localparam int unsigned EnvcfgCbzeBit = 7;
+  // Zicboz cache-block size in bytes: one L2 line, two L1D sectors.
+  localparam int unsigned CboZeroBlockBytes = 64;
+  // Zicbom (menvcfg and senvcfg). CBIE (bits 5:4) is WARL {00, 01, 11}: 00
+  // makes cbo.inval illegal below the CSR's level, 01 executes it as a flush
+  // and 11 as an invalidate. A write of the reserved 10 stores 00, as Spike
+  // does. CBCFE (bit 6) enables cbo.clean and cbo.flush below M.
+  localparam int unsigned EnvcfgCbieLsb = 4;
+  localparam int unsigned EnvcfgCbcfeBit = 6;
+  localparam bit [1:0] EnvcfgCbieIllegal = 2'b00;
+  localparam bit [1:0] EnvcfgCbieFlush = 2'b01;
+  localparam bit [1:0] EnvcfgCbieInval = 2'b11;
+  // Zicbom cache-block size in bytes: the Zicboz block, one L2 line.
+  localparam int unsigned CboMgmtBlockBytes = CboZeroBlockBytes;
+  // A Zicbom operation's kind: the low bits of its funct12.
+  typedef enum logic [1:0] {
+    CMO_INVAL = 2'b00,
+    CMO_CLEAN = 2'b01,
+    CMO_FLUSH = 2'b10
+  } cmo_kind_e;
+  // menvcfg.PBMTE (bit 62, Svpbmt): WARL {0,1}. csr_file exports it to the
+  // page-table walker, which accepts a nonzero PTE PBMT field only while it
+  // is set (see ptw.sv and "Svpbmt" below).
+  localparam int unsigned MenvcfgPbmteBit = 62;
+  // senvcfg.PMM (bits 33:32, Ssnpm): pointer masking for U-mode. WARL
+  // {00, 10, 11}: 00 off, 10 PMLEN=7, 11 PMLEN=16 (while SsnpmPmlen16 below
+  // holds). A write of the reserved 01, or of an unsupported PMLEN, keeps the
+  // old value, as the Sail model does. See "Pointer masking" below.
+  localparam int unsigned EnvcfgPmmLsb = 32;
+  localparam bit [1:0] EnvcfgPmmOff = 2'b00;
+  localparam bit [1:0] EnvcfgPmmPmlen7 = 2'b10;
+  localparam bit [1:0] EnvcfgPmmPmlen16 = 2'b11;
+  localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
+  localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
+  localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
+  localparam bit [11:0] CsrMtval = 12'h343;  // Machine trap value
+  localparam bit [11:0] CsrMiselect = 12'h350;  // Machine indirect select
+  localparam bit [11:0] CsrMireg = 12'h351;  // Machine indirect register
+  localparam bit [11:0] CsrMtopei = 12'h35C;  // Machine top external interrupt
+  localparam bit [11:0] CsrMtopi = 12'hFB0;  // Machine top interrupt (read-only)
+  localparam bit [11:0] CsrMvien = 12'h308;  // Virtual interrupt enables (read-only zero)
+  localparam bit [11:0] CsrMvip = 12'h309;  // Virtual interrupt pending aliases
+  localparam bit [11:0] CsrSiselect = 12'h150;  // Supervisor indirect select
+  localparam bit [11:0] CsrSireg = 12'h151;  // Supervisor indirect register
+  localparam bit [11:0] CsrStopei = 12'h15C;  // Supervisor top external interrupt
+  localparam bit [11:0] CsrStopi = 12'hDB0;  // Supervisor top interrupt (read-only)
+  localparam bit [11:0] CsrMip = 12'h344;  // Machine interrupt pending
+
+  // Supervisor-mode CSR addresses. sstatus/sie/sip are
+  // restricted views of the mstatus/mie/mip storage (mideleg gates the
+  // sie/sip visibility); the rest are dedicated registers.
+  localparam bit [11:0] CsrSstatus = 12'h100;  // Supervisor status (mstatus view)
+  localparam bit [11:0] CsrSie = 12'h104;  // Supervisor interrupt enable (mie view)
+  localparam bit [11:0] CsrStvec = 12'h105;  // Supervisor trap vector base
+  localparam bit [11:0] CsrScounteren = 12'h106;  // U-mode counter enable below S
+  localparam bit [11:0] CsrSenvcfg = 12'h10A;  // Supervisor environment configuration
+  localparam bit [11:0] CsrSscratch = 12'h140;  // Supervisor scratch register
+  localparam bit [11:0] CsrSepc = 12'h141;  // Supervisor exception PC
+  localparam bit [11:0] CsrScause = 12'h142;  // Supervisor trap cause
+  localparam bit [11:0] CsrStval = 12'h143;  // Supervisor trap value
+  localparam bit [11:0] CsrSip = 12'h144;  // Supervisor interrupt pending (mip view)
+  localparam bit [11:0] CsrStimecmp = 12'h14D;  // Supervisor timer compare (Sstc)
+  localparam bit [11:0] CsrSatp = 12'h180;  // Supervisor address translation and protection
+  // Machine information CSRs (read-only)
+  localparam bit [11:0] CsrMhartid = 12'hF14;  // Hardware thread ID (always 0 for single-core)
+  // Debug CSRs (RISC-V Debug Spec 0.13.2) require Debug Mode; the ROB rejects
+  // other accesses at allocation. Custom ddata exposes the debug module's
+  // {data1, data0} through one CSR (hartinfo dataaccess=0, dataaddr=0x7B4).
+  localparam bit [11:0] CsrDcsr = 12'h7B0;
+  localparam bit [11:0] CsrDpc = 12'h7B1;
+  localparam bit [11:0] CsrDscratch0 = 12'h7B2;
+  localparam bit [11:0] CsrDscratch1 = 12'h7B3;
+  localparam bit [11:0] CsrDdata = 12'h7B4;
+  // dcsr fields. xdebugver=4 (0.13); stepie/stopcount/stoptime hardwired 0;
+  // mprven hardwired 1 (MPRV keeps its M-mode meaning in Debug Mode).
+  localparam int unsigned DcsrEbreakMBit = 15;
+  localparam int unsigned DcsrEbreakSBit = 13;
+  localparam int unsigned DcsrEbreakUBit = 12;
+  localparam int unsigned DcsrCauseLo = 6;  // [8:6]
+  localparam int unsigned DcsrStepBit = 2;
+  localparam int unsigned DcsrPrvLo = 0;  // [1:0]
+  // dcsr.cause values (spec priority for coinciding causes: ebreak > haltreq > step).
+  localparam bit [2:0] DcsrCauseEbreak = 3'd1;
+  localparam bit [2:0] DcsrCauseHaltreq = 3'd3;
+  localparam bit [2:0] DcsrCauseStep = 3'd4;
+  // Custom machine CSRs for Tomasulo performance profiling
+  localparam bit [11:0] CsrMperfSel = 12'h7C0;  // Profiling counter selector
+  // Profiling control: bit 0 captures; bit 1 selects the preceding cache snapshot.
+  localparam bit [11:0] CsrMperfCtl = 12'h7C1;
+  localparam bit [11:0] CsrMperfData = 12'hFC0;  // Selected counter low 32 bits
+  localparam bit [11:0] CsrMperfDataH = 12'hFC1;  // Selected counter high 32 bits
+  localparam bit [11:0] CsrMperfCount = 12'hFC2;  // Number of profiling counters
+
+  // F extension: Floating-point CSRs
+  localparam bit [11:0] CsrFflags = 12'h001;  // FP exception flags (NV, DZ, OF, UF, NX)
+  localparam bit [11:0] CsrFrm = 12'h002;  // FP rounding mode
+  localparam bit [11:0] CsrFcsr = 12'h003;  // FP control/status (frm[7:5] + fflags[4:0])
+
+  // V extension: vector CSRs (present only in builds with the vector unit)
+  localparam bit [11:0] CsrVstart = 12'h008;  // First element to execute
+  localparam bit [11:0] CsrVxsat = 12'h009;  // Fixed-point saturation flag
+  localparam bit [11:0] CsrVxrm = 12'h00A;  // Fixed-point rounding mode
+  localparam bit [11:0] CsrVcsr = 12'h00F;  // vxrm[2:1] + vxsat[0]
+  localparam bit [11:0] CsrVl = 12'hC20;  // Vector length (read-only)
+  localparam bit [11:0] CsrVtype = 12'hC21;  // Vector type (read-only)
+  localparam bit [11:0] CsrVlenb = 12'hC22;  // VLEN/8 (read-only)
+
+  // F extension: Rounding modes
+  typedef enum bit [2:0] {
+    FRM_RNE = 3'b000,  // Round to Nearest, ties to Even
+    FRM_RTZ = 3'b001,  // Round towards Zero
+    FRM_RDN = 3'b010,  // Round Down (towards -inf)
+    FRM_RUP = 3'b011,  // Round Up (towards +inf)
+    FRM_RMM = 3'b100,  // Round to Nearest, ties to Max Magnitude
+    FRM_DYN = 3'b111   // Dynamic (use frm CSR)
+  } fp_rounding_mode_e;
+
+  // F extension: Exception flags (sticky, accumulated in fflags CSR)
+  typedef struct packed {
+    logic nv;  // [4] Invalid operation (e.g., sqrt(-1), 0/0, inf-inf)
+    logic dz;  // [3] Divide by zero
+    logic of;  // [2] Overflow (result too large for format)
+    logic uf;  // [1] Underflow (tiny and inexact)
+    logic nx;  // [0] Inexact result
+  } fp_flags_t;
+
+  // IEEE 754 special values
+  localparam bit [31:0] FpPosZero = 32'h0000_0000;  // +0.0
+  localparam bit [31:0] FpNegZero = 32'h8000_0000;  // -0.0
+  localparam bit [31:0] FpPosInf = 32'h7F80_0000;  // +infinity
+  localparam bit [31:0] FpNegInf = 32'hFF80_0000;  // -infinity
+  localparam bit [31:0] FpCanonicalNan = 32'h7FC0_0000;  // Canonical quiet NaN (single)
+  localparam bit [63:0] FpCanonicalNan64 = 64'h7FF8_0000_0000_0000;  // Canonical quiet NaN (double)
+
+  // IEEE 754 rounding decision: returns 1 if the mantissa should be incremented.
+  function automatic logic fp_compute_round_up(input logic [2:0] rounding_mode, input logic guard,
+                                               input logic round_bit, input logic sticky,
+                                               input logic lsb, input logic sign);
+    case (rounding_mode)
+      3'b000:  fp_compute_round_up = guard & (round_bit | sticky | lsb);  // RNE
+      3'b001:  fp_compute_round_up = 1'b0;  // RTZ
+      3'b010:  fp_compute_round_up = sign & (guard | round_bit | sticky);  // RDN
+      3'b011:  fp_compute_round_up = ~sign & (guard | round_bit | sticky);  // RUP
+      3'b100:  fp_compute_round_up = guard;  // RMM
+      default: fp_compute_round_up = guard & (round_bit | sticky | lsb);
+    endcase
+  endfunction
+
+  // Tininess after rounding (IEEE 754-2008 section 7.5, the RISC-V choice): a
+  // nonzero result is tiny when rounding it to full precision with an
+  // unbounded exponent leaves it below the minimum normal. The caller passes
+  // the normalized value before the subnormal shift: exp_le_zero and
+  // exp_is_zero describe its biased exponent (1 is the minimum normal), and
+  // guard, round_bit and sticky are its full-precision rounding bits. Only an
+  // all-ones mantissa at exponent 0 can round up to the minimum normal.
+  function automatic logic fp_is_tiny(input logic exp_le_zero, input logic exp_is_zero,
+                                      input logic mant_all_ones, input logic [2:0] rounding_mode,
+                                      input logic guard, input logic round_bit, input logic sticky,
+                                      input logic sign);
+    fp_is_tiny = exp_le_zero && !(exp_is_zero && mant_all_ones && fp_compute_round_up(
+                                  rounding_mode, guard, round_bit, sticky, 1'b1, sign));
+  endfunction
+
+  // mstatus bit positions (low word)
+  localparam int unsigned MstatusSieBit = 1;  // Supervisor Interrupt Enable
+  localparam int unsigned MstatusMieBit = 3;  // Machine Interrupt Enable
+  localparam int unsigned MstatusSpieBit = 5;  // Supervisor Previous Interrupt Enable
+  localparam int unsigned MstatusMpieBit = 7;  // Machine Previous Interrupt Enable
+  localparam int unsigned MstatusSppBit = 8;  // Supervisor Previous Privilege (1 bit: U/S)
+  // mstatus.VS occupies [10:9] and mstatus.FS [14:13].
+  localparam int unsigned MstatusVsLo = 9;
+  // mstatus.MPP occupies [12:11]; mstatus.MPRV is bit 17.
+  localparam int unsigned MstatusMppLo = 11;
+  localparam int unsigned MstatusMprvBit = 17;
+  // Translation-permission and trap-virtualization fields.
+  localparam int unsigned MstatusSumBit = 18;  // permit Supervisor User Memory access
+  localparam int unsigned MstatusMxrBit = 19;  // Make eXecutable Readable
+  localparam int unsigned MstatusTvmBit = 20;  // Trap Virtual Memory (satp/sfence.vma in S)
+  localparam int unsigned MstatusTwBit = 21;  // Timeout Wait (WFI below M)
+  localparam int unsigned MstatusTsrBit = 22;  // Trap SRET (sret in S)
+
+  // Privilege modes (RISC-V encoding). FROST implements M, S, and U.
+  localparam logic [1:0] PrivU = 2'b00;
+  localparam logic [1:0] PrivS = 2'b01;
+  localparam logic [1:0] PrivM = 2'b11;
+
+  // mie/mip bit positions
+  localparam int unsigned MieSsiBit = 1;  // Supervisor Software Interrupt
+  localparam int unsigned MieMsiBit = 3;  // Machine Software Interrupt
+  localparam int unsigned MieStiBit = 5;  // Supervisor Timer Interrupt
+  localparam int unsigned MieMtiBit = 7;  // Machine Timer Interrupt
+  localparam int unsigned MieSeiBit = 9;  // Supervisor External Interrupt
+  localparam int unsigned MieMeiBit = 11;  // Machine External Interrupt
+  localparam int unsigned MieLcofBit = 13;  // Local Counter Overflow Interrupt (Sscofpmf)
+
+  // Exception cause codes (mcause values when the interrupt bit is clear),
+  // XLEN-wide.
+  localparam bit [XLEN-1:0] ExcInstrAccessFault = XLEN'(1);
+  localparam bit [XLEN-1:0] ExcIllegalInstr = XLEN'(2);
+  localparam bit [XLEN-1:0] ExcBreakpoint = XLEN'(3);
+  localparam bit [XLEN-1:0] ExcLoadAddrMisalign = XLEN'(4);
+  localparam bit [XLEN-1:0] ExcLoadAccessFault = XLEN'(5);
+  localparam bit [XLEN-1:0] ExcStoreAddrMisalign = XLEN'(6);
+  localparam bit [XLEN-1:0] ExcStoreAccessFault = XLEN'(7);
+  localparam bit [XLEN-1:0] ExcEcallUmode = XLEN'(8);
+  localparam bit [XLEN-1:0] ExcEcallSmode = XLEN'(9);
+  localparam bit [XLEN-1:0] ExcEcallMmode = XLEN'(11);
+  // Sv39 page faults, all delegable (MedelegMask bits 12, 13, and 15).
+  localparam bit [XLEN-1:0] ExcInstrPageFault = XLEN'(12);
+  localparam bit [XLEN-1:0] ExcLoadPageFault = XLEN'(13);
+  localparam bit [XLEN-1:0] ExcStorePageFault = XLEN'(15);
+  // Internal DMA-coherence replay: restart an unretired load at its PC after
+  // an external write to its line. trap_unit changes no CSR or privilege
+  // state; this custom-use cause is never architecturally visible.
+  localparam bit [XLEN-1:0] ExcMemReplay = XLEN'(24);
+
+  // medeleg implemented-bit mask (WARL): causes 0-9, 12, 13, and 15 are
+  // delegable. Cause 11 (ecall from M) is read-only zero per the privileged
+  // spec, and FROST raises no architectural cause 10, 14, or 16 and above.
+  localparam bit [XLEN-1:0] MedelegMask = XLEN'(64'h0000_B3FF);
+  // mideleg implemented-bit mask (WARL): the supervisor interrupt classes
+  // (SSI/STI/SEI) and the local counter-overflow interrupt (LCOFI). The
+  // machine classes are read-only zero per the spec.
+  localparam bit [XLEN-1:0] MidelegMask =
+      XLEN'((64'h1 << MieSsiBit) | (64'h1 << MieStiBit) | (64'h1 << MieSeiBit) |
+            (64'h1 << MieLcofBit));
+
+  // Interrupt causes include mcause[XLEN-1]. Compare at full width; a
+  // 32-bit slice loses the interrupt bit on RV64.
+  localparam bit [XLEN-1:0] IntSupervisorSoftware = {1'b1, {(XLEN - 4) {1'b0}}, 3'd1};
+  localparam bit [XLEN-1:0] IntMachineSoftware = {1'b1, {(XLEN - 4) {1'b0}}, 3'd3};
+  localparam bit [XLEN-1:0] IntSupervisorTimer = {1'b1, {(XLEN - 4) {1'b0}}, 3'd5};
+  localparam bit [XLEN-1:0] IntMachineTimer = {1'b1, {(XLEN - 4) {1'b0}}, 3'd7};
+  localparam bit [XLEN-1:0] IntSupervisorExternal = {1'b1, {(XLEN - 5) {1'b0}}, 4'd9};
+  localparam bit [XLEN-1:0] IntMachineExternal = {1'b1, {(XLEN - 5) {1'b0}}, 4'd11};
+  localparam bit [XLEN-1:0] IntLocalCounterOverflow = {1'b1, {(XLEN - 5) {1'b0}}, 4'd13};
+
+  // ===========================================================================
+  // Section 4: Control Enumerations
+  // ===========================================================================
+  // Branch condition encoding for resolution.
+
+  typedef enum bit [2:0] {
+    BREQ,
+    BRNE,
+    BRLT,
+    BRGE,
+    BRLTU,
+    BRGEU,
+    JUMP,
+    NULL
+  } branch_taken_op_e;
+
+  // ===========================================================================
+  // Section 5: Instruction Format
+  // ===========================================================================
+  // Packed struct matching the RISC-V R-type instruction format.
+  // Other formats (I, S, B, U, J) reuse the same fields differently.
+
+  typedef struct packed {
+    logic [6:0] funct7;        // Operation variant
+    logic [4:0] source_reg_2;  // Second source register (rs2)
+    logic [4:0] source_reg_1;  // First source register (rs1)
+    logic [2:0] funct3;        // Operation class
+    logic [4:0] dest_reg;      // Destination register (rd)
+    logic [6:0] opcode;        // Primary opcode
+  } instr_t;
+
+  localparam bit [31:0] NOP = 32'h0000_0013;  // addi x0, x0, 0
+
+  // Static CPU integration configuration. Define settings on the compiler
+  // command line or in FROST_CPU_CONFIG (a quoted include-file path). All
+  // users of riscv_pkg in one build share this configuration. FROST's SoC
+  // uses the defaults; an independent SoC supplies its own map.
+`ifdef FROST_CPU_CONFIG
+  `include `FROST_CPU_CONFIG
+`endif
+`ifndef FROST_DDR_CAPACITY_LOG2_BYTES
+  `define FROST_DDR_CAPACITY_LOG2_BYTES 30
+`endif
+`ifndef FROST_PMA_CACHED_BASE
+  `define FROST_PMA_CACHED_BASE 64'h0000_0000_8000_0000
+`endif
+`ifndef FROST_PMA_UNCACHED_BASE
+  `define FROST_PMA_UNCACHED_BASE 64'd0
+`endif
+`ifndef FROST_PMA_UNCACHED_BYTES
+  `define FROST_PMA_UNCACHED_BYTES 64'd262144
+`endif
+`ifndef FROST_PMA_UNCACHED_EXEC_BYTES
+  `define FROST_PMA_UNCACHED_EXEC_BYTES 64'd131072
+`endif
+`ifndef FROST_PMA_DEVICE0_BASE
+  `define FROST_PMA_DEVICE0_BASE 64'h0000_0000_4000_0000
+`endif
+`ifndef FROST_PMA_DEVICE0_BYTES
+  `define FROST_PMA_DEVICE0_BYTES 64'h0000_0000_0003_1000
+`endif
+`ifndef FROST_PMA_DEVICE1_BASE
+  `define FROST_PMA_DEVICE1_BASE 64'h0000_0000_4400_0000
+`endif
+`ifndef FROST_PMA_DEVICE1_BYTES
+  `define FROST_PMA_DEVICE1_BYTES 64'h0000_0000_0040_0000
+`endif
+`ifndef FROST_PMA_DEVICE2_BASE
+  `define FROST_PMA_DEVICE2_BASE 64'h0000_0000_4800_0000
+`endif
+`ifndef FROST_PMA_DEVICE2_BYTES
+  `define FROST_PMA_DEVICE2_BYTES 64'h0000_0000_0020_0000
+`endif
+`ifndef FROST_PMA_LEGACY_DEVICE_STORES
+  `define FROST_PMA_LEGACY_DEVICE_STORES 1
+`endif
+`ifndef FROST_CPU_DEBUG_BASE
+  `define FROST_CPU_DEBUG_BASE 32'h0001_7C00
+`endif
+  localparam int unsigned DdrCapacityLog2Bytes = `FROST_DDR_CAPACITY_LOG2_BYTES;
+  localparam longint unsigned DdrBase = `FROST_PMA_CACHED_BASE;
+  localparam longint unsigned DdrCapacityBytes = 64'(1) << DdrCapacityLog2Bytes;
+  localparam int unsigned DdrAxiAddrBits = DdrCapacityLog2Bytes;
+  localparam longint unsigned DdrLimit = DdrBase + DdrCapacityBytes;
+  localparam longint unsigned PmaUncachedBase = `FROST_PMA_UNCACHED_BASE;
+  localparam longint unsigned PmaUncachedBytes = `FROST_PMA_UNCACHED_BYTES;
+  localparam longint unsigned PmaUncachedLimit =
+      PmaUncachedBytes == 0 ? 0 : PmaUncachedBase + PmaUncachedBytes;
+  localparam longint unsigned PmaUncachedExecBytes = `FROST_PMA_UNCACHED_EXEC_BYTES;
+  localparam longint unsigned PmaUncachedExecLimit = PmaUncachedBase + PmaUncachedExecBytes;
+  localparam longint unsigned PmaDevice0Base = `FROST_PMA_DEVICE0_BASE;
+  localparam longint unsigned PmaDevice0Bytes = `FROST_PMA_DEVICE0_BYTES;
+  localparam longint unsigned PmaDevice0Limit =
+      PmaDevice0Bytes == 0 ? 0 : PmaDevice0Base + PmaDevice0Bytes;
+  localparam longint unsigned PmaDevice1Base = `FROST_PMA_DEVICE1_BASE;
+  localparam longint unsigned PmaDevice1Bytes = `FROST_PMA_DEVICE1_BYTES;
+  localparam longint unsigned PmaDevice1Limit =
+      PmaDevice1Bytes == 0 ? 0 : PmaDevice1Base + PmaDevice1Bytes;
+  localparam longint unsigned PmaDevice2Base = `FROST_PMA_DEVICE2_BASE;
+  localparam longint unsigned PmaDevice2Bytes = `FROST_PMA_DEVICE2_BYTES;
+  localparam longint unsigned PmaDevice2Limit =
+      PmaDevice2Bytes == 0 ? 0 : PmaDevice2Base + PmaDevice2Bytes;
+  localparam longint unsigned PmaMemoryLimit =
+      DdrLimit > PmaUncachedLimit ? DdrLimit : PmaUncachedLimit;
+  localparam longint unsigned PmaDevice01Limit =
+      PmaDevice0Limit > PmaDevice1Limit ? PmaDevice0Limit : PmaDevice1Limit;
+  localparam longint unsigned PmaDeviceLimit =
+      PmaDevice01Limit > PmaDevice2Limit ? PmaDevice01Limit : PmaDevice2Limit;
+  localparam longint unsigned PmaAddressLimit =
+      PmaMemoryLimit > PmaDeviceLimit ? PmaMemoryLimit : PmaDeviceLimit;
+  // At least 32 bits keeps the fixed-width ISA/debug and legacy SoC ports
+  // available; an external map can grow the physical fabric up to 56 bits.
+  localparam int unsigned PhysAddrBits = $clog2(
+      PmaAddressLimit
+  ) > 32 ? $clog2(
+      PmaAddressLimit
+  ) : 32;
+  localparam bit PmaUsesFrostMap = (`FROST_PMA_LEGACY_DEVICE_STORES != 0) &&
+      DdrBase == 64'h8000_0000 &&
+      PmaUncachedBase == 0 && PmaUncachedBytes == 262144 && PmaUncachedExecBytes == 131072 &&
+      PmaDevice0Base == 64'h4000_0000 && PmaDevice0Bytes == 64'h31000 &&
+      PmaDevice1Base == 64'h4400_0000 && PmaDevice1Bytes == 64'h400000 &&
+      PmaDevice2Base == 64'h4800_0000 && PmaDevice2Bytes == 64'h200000;
+  // Low BRAM: loads, stores and atomics reach all 2**LowBramAddrBits bytes;
+  // instruction fetch reaches only the first 2**LowBramCodeAddrBits, the
+  // code region the instruction memory holds (soc_top sizes it from
+  // this constant). Fetch above the code region raises an instruction
+  // access fault.
+  localparam int unsigned LowBramAddrBits = 18;
+  localparam int unsigned LowBramCodeAddrBits = 17;
+
+  // Debug execution occupies the top 1 KiB of the first 96 KiB of BRAM.
+  // Low-BRAM linker scripts reserve it between ROM and RAM; the debug
+  // module fills it through the programming port. Word offsets:
+  //   0x00 park (jal x0,0)   0x04 nop (the parked window's word 1)
+  //   0x08..0x10 abstract a0..a2   0x14..0x30 progbuf[0..7]
+  //   0x34 ebreak (impebreak)   0x38 dret (resume)   0x3C ebreak
+  // Fits MEM_SIZE_BYTES >= 96 KiB and uses fixed physical address bits.
+  localparam bit [31:0] DebugSliceBase = `FROST_CPU_DEBUG_BASE;
+  localparam int unsigned DebugSliceBytes = 1024;
+  localparam bit [31:0] DebugParkAddr = DebugSliceBase + 32'h00;
+  localparam bit [31:0] DebugAbstractAddr = DebugSliceBase + 32'h08;
+  localparam bit [31:0] DebugProgbufAddr = DebugSliceBase + 32'h14;
+  localparam bit [31:0] DebugImpebreakAddr = DebugSliceBase + 32'h34;
+  localparam bit [31:0] DebugResumeAddr = DebugSliceBase + 32'h38;
+  localparam int unsigned DebugProgbufWords = 8;
+
+  // Data-tier beat width (hw/rtl/README.md, "Data-tier bus contract"), a
+  // separate constant from XLEN. Every data-side bus carries the aligned
+  // dword selected by the configured physical address bits above bit 2;
+  // byte lane i has the same beat address and byte offset i.
+  // Sub-beat writes replicate their data across the beat and select lanes
+  // with the strobe; reads return the full beat and consumers extract by
+  // addr[2:0].
+  localparam int unsigned MemDataBits = 64;
+  localparam int unsigned MemStrbBits = MemDataBits / 8;
+
+  // Maximum cached loads in flight, tagged by slot ID through the router
+  // and adapter. Matches the L1D miss-status slot count, so every load in
+  // flight can miss on its own line.
+  localparam int unsigned CachedLoadSlots = 8;
+  localparam int unsigned CachedLoadSlotBits = 3;
+
+  // Entries in the load queue's direct-mapped L0 cache, eight bytes each.
+  // Default when Normal read caching is disabled. L0_CACHE_DEPTH can override
+  // this capacity without changing the queue or coherence-table capacity.
+  localparam int unsigned LqL0Depth = 128;
+  // Normal AXI reads have a longer miss path than the legacy local port.
+  // The optional read-cache policy defaults to 4 KiB of clean data.
+  localparam int unsigned NormalLqL0Depth = 512;
+
+  // DMA sequencer lock count (frost_cluster_cache NUM_DMA_LOCK), mirrored
+  // by lq_coherence_port. A write holds a lock from admission until the
+  // shared cache level orders it.
+  localparam int unsigned DmaCoherenceLocks = 3;
+  localparam int unsigned DmaCoherenceLockBits = 2;
+  // Line offset width for 32-byte cache lines ($clog2(LINE_BYTES)).
+  // All core DMA comparisons must use this split, including LQ invalidate,
+  // block/query checks, lq_coherence_port, and sc_pending_unit.
+  localparam int unsigned DmaCoherenceLineLsb = 5;
+
+  // 8-lane strobe for a sub-beat access at the given offset (see the
+  // contract above; DOUBLE covers the whole beat).
+  function automatic logic [MemStrbBits-1:0] mem_strobe_for(input logic [1:0] size_bits,
+                                                            input logic [2:0] offset);
+    unique case (size_bits)
+      2'b00:   mem_strobe_for = MemStrbBits'(8'h01) << offset;  // byte
+      2'b01:   mem_strobe_for = MemStrbBits'(8'h03) << {offset[2:1], 1'b0};  // half
+      2'b10:   mem_strobe_for = offset[2] ? 8'hF0 : 8'h0F;  // word
+      default: mem_strobe_for = 8'hFF;  // double
+    endcase
+  endfunction
+
+  // Zero-extended physical address. Use only at physical consumers:
+  // IF's served-window PC and LQ store-forwarding checks. Keep architectural
+  // PCs, targets, and AGU outputs full-width until PMA checks reject faults.
+  function automatic logic [XLEN-1:0] canonical_paddr(input logic [XLEN-1:0] addr);
+    canonical_paddr = XLEN'(addr[PhysAddrBits-1:0]);
+  endfunction
+
+  // PMA map:
+  //   [0x0000_0000, 0x0002_0000)  128 KiB BRAM code fetch, loads, stores, atomics
+  //   [0x0002_0000, 0x0004_0000)  128 KiB BRAM      loads, stores, atomics
+  //   [0x4000_0000, 0x4003_1000)  MMIO registers    loads and stores
+  //   [0x4400_0000, 0x4440_0000)  APLIC             loads and stores
+  //   [DdrBase, DdrLimit)          configured cached DDR
+  // Other addresses fault, except untranslated stores anywhere in the device
+  // quadrant [0x4000_0000, 0x8000_0000); the bus ignores unserved addresses.
+  // See pma_store_ok. Devices support neither AMOs nor reservations
+  // (privileged spec AMONone/RsrvNone); AMO/LR/SC faults use causes 7/5/7.
+  //
+  // Failed PMA checks never launch: fetch supplies a fault-tagged bundle;
+  // LQ/SQ issue checks fault beside misalignment checks. Under Sv39, the
+  // data MMU checks the translated PA exactly. Physical consumers must retain
+  // all PhysAddrBits, including the high DDR address bits.
+  //
+  // Device windows use whole 4 KiB pages. Keep them aligned with the register
+  // decode in soc_top.sv (hw/rtl/README.md, "Memory Map"). Its startup
+  // checks validate the layout used by the store-issue and DTLB page decodes.
+  localparam logic [19:0] MmioFirstPage  = 20'h4_0000;
+  localparam logic [19:0] MmioLastPage   = 20'h4_0030;
+  localparam logic [19:0] AplicFirstPage = 20'h4_4000;
+  localparam logic [19:0] AplicLastPage  = 20'h4_43FF;
+  localparam logic [19:0] ImsicFirstPage = 20'h4_8000;
+  localparam logic [19:0] ImsicLastPage  = 20'h4_81FF;
+
+  // Eligible private Normal memory for the optional read-cache/write-through
+  // profile. Debug data bypasses L0 to observe transport updates immediately.
+  function automatic logic pma_writethrough_ok(input logic [XLEN-1:0] addr);
+    pma_writethrough_ok = PmaUncachedBytes != 0 &&
+        ((addr - PmaUncachedBase) < PmaUncachedBytes) &&
+        ((addr >> 12) != (XLEN'(DebugSliceBase) >> 12));
+  endfunction
+
+  // Cached DDR, the same for fetch and data.
+  function automatic logic pma_cached_ok(input logic [XLEN-1:0] addr);
+    pma_cached_ok = (addr >= XLEN'(DdrBase)) && (addr < XLEN'(DdrLimit));
+  endfunction
+
+  // Instruction fetch: configured executable Normal memory regions.
+  function automatic logic pma_fetch_ok(input logic [XLEN-1:0] addr);
+    pma_fetch_ok = ((PmaUncachedExecBytes != 0) &&
+        ((addr - PmaUncachedBase) <= PmaUncachedExecBytes - 1)) ||
+        pma_cached_ok(addr);
+  endfunction
+
+  // Data accesses: configured uncached and cached Normal memory.
+  function automatic logic pma_memory_ok(input logic [XLEN-1:0] addr);
+    pma_memory_ok = ((PmaUncachedBytes != 0) &&
+        ((addr - PmaUncachedBase) <= PmaUncachedBytes - 1)) ||
+        pma_cached_ok(addr);
+  endfunction
+
+  // Device-page check for PA[31:12]. MMIO occupies part of one aligned
+  // 64-page block; APLIC occupies 1024 pages and IMSIC 512 pages. Match the
+  // block, then look up the MMIO page offset in MmioBlockPages, for timing.
+  localparam logic [63:0] MmioBlockPages =
+      ~(64'hFFFF_FFFF_FFFF_FFFF << (MmioLastPage[5:0] + 1)) &
+      (64'hFFFF_FFFF_FFFF_FFFF << MmioFirstPage[5:0]);
+  function automatic logic pma_device_page_ok(input logic [19:0] page);
+    pma_device_page_ok = ((page[19:6] == MmioFirstPage[19:6]) && MmioBlockPages[page[5:0]]) ||
+                         (page[19:10] == AplicFirstPage[19:10]) ||
+                         (page[19:9] == 11'h240);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Svpbmt: the uncached alias of DDR
+  // ---------------------------------------------------------------------------
+  // A page whose leaf PTE has PBMT = NC or IO over cached DDR must not be
+  // cached. The walker gives such a leaf the PPN of its alias: the same DDR
+  // byte with bit PbmtAliasBit set, in an otherwise unused part of the
+  // physical space. The window is not part of the PMA map: an untranslated
+  // access to it, or a PMA leaf over it, is an access fault as before (none of
+  // the pma_* decodes below contain it). Only an NC or IO leaf reaches it, and
+  // the MMUs classify that access as MMIO. NC/IO loads over the alias or low
+  // BRAM issue at the ROB head and bypass caches and store forwarding. The
+  // router uses the physical device quadrant for parking, committed-store
+  // draining and interrupt shielding. Memory loads do not get those three
+  // protections: an interrupt or debug halt can flush an accepted load and
+  // cause a second read after resumption. These targets are idempotent memory.
+  // Alias stores retire after their bus response; NC/IO low-BRAM stores are
+  // buffered and can retire before it. Device registers use the full device
+  // mechanism regardless of PBMT. The load queue's PMA check accepts the alias
+  // for MMIO entries. soc_top turns an alias access into one single-beat transfer
+  // of the real DDR address through the coherent DMA port, so it is coherent
+  // with cacheable copies of the same bytes (the L1D is probed, dirty data
+  // merged) and leaves nothing in the hart's caches.
+  // The window sits in the unused top of the physical space, so the physical
+  // width does not grow:
+  //   DDR of 2**c bytes, c <= 30: bit 30; DDR [2**31, 2**31 + 2**c) aliases
+  //     to [0xC000_0000, 0xC000_0000 + 2**c), all of DDR.
+  //   c >= 32 (PhysAddrBits = c + 1): bit c; DDR below 2**c aliases to
+  //     [2**c + 2**31, 2**(c+1)). The top 2 GiB of the DDR window,
+  //     [2**c, 2**c + 2**31), has no alias: the walker answers an NC or IO
+  //     leaf there with an access fault (an implementation PMA override,
+  //     norm:Svpbmt_impl_may_override_pmas). For example, a 64 GiB window
+  //     (c = 36) aliases its first 62 GiB.
+  //   c = 31, or a map other than FROST's: no alias; every NC or IO leaf
+  //     over DDR is an access fault.
+  localparam bit PbmtAliasEnabled = PmaUsesFrostMap && (DdrCapacityLog2Bytes != 31);
+  localparam int unsigned PbmtAliasBit = (DdrCapacityLog2Bytes <= 30) ? 30 : DdrCapacityLog2Bytes;
+  // DDR addresses in [DdrBase, PbmtAliasCoverLimit) have an alias.
+  localparam longint unsigned PbmtAliasCoverLimit = !PbmtAliasEnabled ? DdrBase :
+      (DdrCapacityLog2Bytes <= 30) ? DdrLimit : (64'(1) << DdrCapacityLog2Bytes);
+  localparam longint unsigned PbmtAliasOffset = 64'(1) << PbmtAliasBit;
+
+  // The alias window: bit PbmtAliasBit set and the address without it inside
+  // the covered DDR range (which also bounds every higher bit).
+  function automatic logic pma_pbmt_alias_ok(input logic [XLEN-1:0] addr);
+    if (!PbmtAliasEnabled) pma_pbmt_alias_ok = 1'b0;
+    else if (DdrCapacityLog2Bytes <= 30) begin
+      // The whole alias is one aligned DDR-sized window.
+      pma_pbmt_alias_ok = (addr & XLEN'(~(DdrCapacityBytes - 1))) == (DdrBase | PbmtAliasOffset);
+    end else begin
+      // Only the alias bit may be set above the covered range. At least one
+      // bit between the DDR base and that bit must be set to exclude the gap.
+      pma_pbmt_alias_ok = ((addr & XLEN'(~(PbmtAliasOffset - 1))) == XLEN'(PbmtAliasOffset)) &&
+          ((addr & XLEN'(PbmtAliasOffset - DdrBase)) != '0);
+    end
+  endfunction
+  // The DDR address an alias names.
+  function automatic logic [XLEN-1:0] pbmt_alias_real(input logic [XLEN-1:0] addr);
+    pbmt_alias_real = addr;
+    pbmt_alias_real[PbmtAliasBit] = 1'b0;
+  endfunction
+
+  function automatic logic pma_device_ok(input logic [XLEN-1:0] addr);
+    pma_device_ok = PmaUsesFrostMap ? (addr[XLEN-1:32] == '0) && pma_device_page_ok(addr[31:12]) :
+        ((PmaDevice0Bytes != 0) && ((addr - PmaDevice0Base) <= PmaDevice0Bytes - 1)) ||
+        ((PmaDevice1Bytes != 0) && ((addr - PmaDevice1Base) <= PmaDevice1Bytes - 1)) ||
+        ((PmaDevice2Bytes != 0) && ((addr - PmaDevice2Base) <= PmaDevice2Bytes - 1));
+  endfunction
+
+  // The enabled FROST compatibility mode admits untranslated device-quadrant stores. The
+  // upper-bit check is essential once DDR extends above the first 4 GiB.
+  function automatic logic pma_device_quadrant(input logic [XLEN-1:0] addr);
+    pma_device_quadrant = PmaUsesFrostMap ?
+        (addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01) : pma_device_ok(addr);
+  endfunction
+
+  // Loads and stores.
+  function automatic logic pma_data_ok(input logic [XLEN-1:0] addr);
+    pma_data_ok = pma_memory_ok(addr) || pma_device_ok(addr);
+  endfunction
+
+  // Untranslated stores permit BRAM, DDR, and the whole device quadrant,
+  // for timing; the bus ignores unserved device addresses. Translated
+  // stores use the data MMU's exact window check.
+  function automatic logic pma_store_ok(input logic [XLEN-1:0] addr);
+    pma_store_ok = pma_memory_ok(addr) || pma_device_quadrant(addr);
+  endfunction
+
+  // AMO, LR and SC: BRAM and cached DDR only.
+  function automatic logic pma_atomic_ok(input logic [XLEN-1:0] addr);
+    pma_atomic_ok = pma_memory_ok(addr);
+  endfunction
+
+  // The MMIO window base: the default MMIO_ADDR of cpu_ooo and
+  // data_mem_request_router.
+  localparam int unsigned MmioWindowAddr = {MmioFirstPage, 12'h000};
+
+  // PMA of the page after va's, without a wide next-page incrementer on the
+  // fetch path. Compare the *current* page with each fetchable range shifted
+  // down by one page. The all-ones VA page wraps to low BRAM page zero.
+  function automatic logic pma_fetch_next_page_ok(input logic [XLEN-1:0] va);
+    logic [XLEN-1:0] page_base;
+    page_base = {va[XLEN-1:12], 12'b0};
+    pma_fetch_next_page_ok = !PmaUsesFrostMap ? pma_fetch_ok(page_base + XLEN'(4096)) :
+        (page_base < XLEN'((64'(1) << LowBramCodeAddrBits) - 4096)) || (&va[XLEN-1:12]) ||
+        ((page_base >= XLEN'(DdrBase - 4096)) && (page_base < XLEN'(DdrLimit - 4096)));
+  endfunction
+
+  // VA-only facts for a fetch window {va, aligned-word-after-va}: whether it
+  // straddles a 4 KiB page, the Bare PMA faults of its two words (word 1 is
+  // the next page's base when straddling), and whether the line after word
+  // 0's line stays in-page (1 when word 1 starts the next line, where the
+  // fetch provider uses word 1's own fault flag instead). The IMMU evaluates
+  // this directly on registered i_pc for its Bare bypass.
+  typedef struct packed {
+    logic straddle;
+    logic bare_fault0;
+    logic bare_fault1;
+    logic line_after_in_page;
+  } fetch_verdict_t;
+
+  function automatic fetch_verdict_t fetch_verdict(input logic [XLEN-1:0] va);
+    fetch_verdict_t v;
+    v.straddle = &va[11:2];
+    v.bare_fault0 = !pma_fetch_ok(va);
+    v.bare_fault1 = v.straddle ? !pma_fetch_next_page_ok(va) : v.bare_fault0;
+    v.line_after_in_page = (va[11:5] != 7'h7F) || (va[4:2] == 3'b111);
+    fetch_verdict = v;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Sv39 data and instruction translation
+  // ---------------------------------------------------------------------------
+  // A virtual address is 39 bits: three 9-bit VPN levels over a 4 KiB page
+  // offset. Bits [63:39] must equal bit 38 (canonical form); a non-canonical
+  // data address raises the access-type page fault without walking.
+  localparam int unsigned Sv39VaBits = 39;
+  localparam int unsigned Sv39PageOffsetBits = 12;
+  localparam int unsigned Sv39VpnFieldBits = 9;
+  localparam int unsigned Sv39Levels = 3;
+  localparam int unsigned Sv39VpnBits = Sv39Levels * Sv39VpnFieldBits;  // 27
+
+  // PTE layout (RV64): PPN in [53:10], flags in [7:0], Svpbmt's PBMT in
+  // [62:61], Svnapot's N in 63. N is legal only in a level-0 leaf whose
+  // PPN[3:0] is 1000 (a 64 KiB range, see ptw.sv); set anywhere else, and
+  // bits [60:54] set anywhere, raise a page fault. PBMT must be zero in a non-leaf
+  // PTE, must not be 3 in a leaf, and must be zero in a leaf while
+  // menvcfg.PBMTE is clear; each of these raises a page fault too.
+  localparam int unsigned PtePpnBits = 44;
+  localparam int unsigned PtePbmtLsb = 61;
+  localparam int unsigned PteNapotBit = 63;
+  // PBMT encodings (Svpbmt): 0 PMA, 1 NC (non-cacheable, idempotent, weakly
+  // ordered main memory), 2 IO (non-cacheable, non-idempotent, strongly
+  // ordered I/O), 3 reserved. FROST uses the same uncached classification
+  // for NC and IO. The ordering and retry behavior for each physical address
+  // range are described above with the alias map.
+  localparam bit [1:0] PbmtPma = 2'd0;
+  localparam bit [1:0] PbmtNc = 2'd1;
+  localparam bit [1:0] PbmtIo = 2'd2;
+  localparam bit [1:0] PbmtReserved = 2'd3;
+  localparam int unsigned PteFlagV = 0;
+  localparam int unsigned PteFlagR = 1;
+  localparam int unsigned PteFlagW = 2;
+  localparam int unsigned PteFlagX = 3;
+  localparam int unsigned PteFlagU = 4;
+  localparam int unsigned PteFlagG = 5;
+  localparam int unsigned PteFlagA = 6;
+  localparam int unsigned PteFlagD = 7;
+
+  function automatic logic sv39_va_canonical(input logic [XLEN-1:0] va);
+    sv39_va_canonical = (va[XLEN-1:Sv39VaBits-1] == '0) || (va[XLEN-1:Sv39VaBits-1] == '1);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Pointer masking (Ssnpm: senvcfg.PMM for U-mode)
+  // ---------------------------------------------------------------------------
+  // The ignore transformation replaces an explicit access's top PMLEN address
+  // bits with the sign extension of bit XLEN-PMLEN-1 under Sv39 and with
+  // zeros under Bare. csr_file registers the mode in force for data accesses
+  // (pm_mode_t: off, PMLEN 7 or PMLEN 16; nonzero only at effective data
+  // privilege U, with mstatus.MXR clear).
+  //
+  // FROST applies one transform for both translation modes, to the base
+  // register at MEM_RS issue: pm_base_transform sign-extends the base from
+  // bit XLEN-PMLEN-1, before the address adders. Every consumer of the address
+  // (data MMU, PMA decoders, LQ/SQ, forwarding) is then unchanged:
+  //   Let W = XLEN-PMLEN. base' lies in [-2**(W-1), 2**(W-1)) and every
+  //   immediate here is a 12-bit signed value (zero for AMO, LR/SC and CBO),
+  //   so s = base' + imm leaves that range by at most 2048. Bits [W-1:0] of s
+  //   equal those of the effective address.
+  //   - Sv39: inside the range s is its own sign extension from bit W-1, the
+  //     transformed address. Outside it, bit W-1 of s differs from bits
+  //     [W-2:38], so s and the transformed address are both non-canonical.
+  //   - Bare: the transformed address is s mod 2**W. Inside [0, 2**(W-1)) the
+  //     two are equal. Otherwise s is negative or at least 2**(W-1), and
+  //     s mod 2**W is at least 2**(W-1) - 2048. With every PMA region below
+  //     2**(W-2) (SsnpmPmlen7, SsnpmPmlen16) both fail the PMA map.
+  // A fault's xtval is the transformed address (norm:pm_csr_hw_apply):
+  // pm_tval applies the exact transform to the faulting base' + imm.
+  // Instruction fetch, page-table walks and SFENCE.VMA are never masked.
+  typedef logic [1:0] pm_mode_t;  // EnvcfgPmm* encoding; 01 is never produced
+
+  // Offer each PMLEN only when every configured physical region lies below
+  // 2**(XLEN-PMLEN-2), as required by the equivalence argument above.
+  localparam bit SsnpmPmlen7  = PmaAddressLimit <= (64'(1) << (XLEN - 7 - 2));
+  localparam bit SsnpmPmlen16 = PmaAddressLimit <= (64'(1) << (XLEN - 16 - 2));
+
+  // senvcfg.PMM write legalization: an unsupported value keeps the old one.
+  function automatic logic [1:0] pmm_warl(input logic [1:0] written, input logic [1:0] old);
+    pmm_warl = ((written == EnvcfgPmmOff) || (SsnpmPmlen7 && (written == EnvcfgPmmPmlen7)) ||
+                (SsnpmPmlen16 && (written == EnvcfgPmmPmlen16))) ? written : old;
+  endfunction
+
+  // The base-register transform at MEM_RS issue (sign extension from bit
+  // XLEN-PMLEN-1). Only bits [XLEN-1:XLEN-16] can change.
+  function automatic logic [XLEN-1:0] pm_base_transform(input logic [XLEN-1:0] base,
+                                                        input pm_mode_t mode);
+    pm_base_transform = (mode == EnvcfgPmmPmlen7) ? {{7{base[XLEN-8]}}, base[XLEN-8:0]} :
+        (mode == EnvcfgPmmPmlen16) ? {{16{base[XLEN-17]}}, base[XLEN-17:0]} : base;
+  endfunction
+
+  // xtval of a data fault: the ignore transformation of the faulting address,
+  // sign extension under Sv39 (virt), zero extension under Bare.
+  function automatic logic [XLEN-1:0] pm_tval(input logic [XLEN-1:0] addr, input pm_mode_t mode,
+                                              input logic virt);
+    pm_tval = (mode == EnvcfgPmmPmlen7) ? {{7{virt && addr[XLEN-8]}}, addr[XLEN-8:0]} :
+        (mode == EnvcfgPmmPmlen16) ? {{16{virt && addr[XLEN-17]}}, addr[XLEN-17:0]} : addr;
+  endfunction
+
+  // Data-side translation fault classification, carried from the translation
+  // stage into the LQ entry (loads/AMOs/LR) or the store fault strobe. The
+  // faulting op parks its virtual address for xtval and never launches; the
+  // cause is derived from {kind, is_amo/is_store} at completion.
+  typedef enum logic [1:0] {
+    DFAULT_NONE = 2'd0,
+    DFAULT_MISALIGN = 2'd1,  // VA-domain misalignment (checked before translation)
+    DFAULT_PAGE = 2'd2,  // page fault: walk-refused, non-canonical, or permission
+    DFAULT_ACCESS = 2'd3  // access fault: PTE address or leaf PA outside the PMA map
+  } data_fault_kind_e;
+
+  // Page-table walk response (ptw -> requesting MMU). fault_kind NONE means a
+  // leaf PTE with A=1 was found: install {ppn, level, flags} for the echoed
+  // vpn. PAGE/ACCESS deliver the walk's refusal to the op that asked
+  // (matched by the vpn echo: the requester may have been flushed and
+  // replaced since it asked). ACCESS with nonzero PBMT carries a valid
+  // no-alias leaf: its page permissions take priority over the PMA refusal.
+  // Other refused walks have PBMT zero. DFAULT_MISALIGN never occurs here.
+  //
+  // pbmt is the leaf's PBMT field (never 3). A successful NC/IO DDR
+  // translation uses the alias PPN (pbmt_leaf_ppn); a no-alias refusal keeps
+  // the original PPN. TLB fills store the PPN and field together. PBMT
+  // occupies the most significant bits of the packed response.
+  typedef struct packed {
+    logic [1:0] pbmt;
+    data_fault_kind_e fault_kind;
+    logic [Sv39VpnBits-1:0] vpn;  // echo of the request
+    logic [PtePpnBits-1:0] ppn;
+    logic [1:0] level;  // 0 = 4 KiB leaf, 1 = 2 MiB, 2 = 1 GiB
+    logic perm_r;
+    logic perm_w;
+    logic perm_x;
+    logic perm_u;
+    logic perm_d;  // D=0 install is legal; a store to it faults at lookup
+    // Global mapping: the leaf's G bit, or G on any non-leaf PTE above it
+    // (which makes every mapping below it global). Not matched by ASID.
+    logic perm_g;
+  } ptw_resp_t;
+
+  // Svpbmt leaf classification of a clean leaf's PPN (the base of its page:
+  // DDR and its alias boundaries are 1 GiB aligned, so a superpage is wholly
+  // inside or outside each range). A nonzero PBMT over cached DDR takes the
+  // alias PPN when the alias exists; without one the leaf is an access fault.
+  function automatic logic pbmt_ddr_leaf(input logic [PtePpnBits-1:0] ppn);
+    pbmt_ddr_leaf = ({ppn, 12'h000} >= (PtePpnBits + 12)'(DdrBase)) &&
+        ({ppn, 12'h000} < (PtePpnBits + 12)'(DdrLimit));
+  endfunction
+  function automatic logic pbmt_alias_covered(input logic [PtePpnBits-1:0] ppn);
+    pbmt_alias_covered = PbmtAliasEnabled &&
+        ({ppn, 12'h000} < (PtePpnBits + 12)'(PbmtAliasCoverLimit));
+  endfunction
+  function automatic logic [PtePpnBits-1:0] pbmt_leaf_ppn(input logic [PtePpnBits-1:0] ppn,
+                                                          input logic [1:0] pbmt);
+    pbmt_leaf_ppn = ((pbmt != PbmtPma) && pbmt_ddr_leaf(ppn) && pbmt_alias_covered(ppn)) ?
+        (ppn | PtePpnBits'(PbmtAliasOffset >> 12)) : ppn;
+  endfunction
+  function automatic logic pbmt_leaf_access_fault(input logic [PtePpnBits-1:0] ppn,
+                                                  input logic [1:0] pbmt);
+    pbmt_leaf_access_fault = (pbmt != PbmtPma) && pbmt_ddr_leaf(ppn) && !pbmt_alias_covered(ppn);
+  endfunction
+
+  // satp.ASID is 9 bits (ASIDLEN = 9). Linux discovers it by writing all ones
+  // to satp.ASID and reading back; satp[59:53] stay zero.
+  localparam int unsigned AsidBits = 9;
+
+  // SFENCE.VMA, as the TLBs see it, for the cycles of its serialized window,
+  // or one cycle for a CSR-requested flush (use_va = use_asid = 0: everything).
+  //   use_va = 0, use_asid = 0: every entry.
+  //   use_va = 0, use_asid = 1: every non-global entry of that ASID.
+  //   use_va = 1, use_asid = 0: every entry (any ASID, global too) whose page
+  //                             covers vpn, of any size.
+  //   use_va = 1, use_asid = 1: every non-global entry of that ASID whose
+  //                             page covers vpn.
+  typedef struct packed {
+    logic en;
+    logic use_va;
+    logic [Sv39VpnBits-1:0] vpn;
+    logic use_asid;
+    logic [AsidBits-1:0] asid;
+  } tlb_flush_t;
+  // FP register width: 64-bit to support the D extension.
+  localparam int unsigned FpWidth = 64;
+  localparam int unsigned FpSingleWidth = 32;
+  localparam int unsigned FpDoubleWidth = 64;
+
+  // PC increment constants for instruction length handling
+  localparam logic [XLEN-1:0] PcIncrementCompressed = 2;  // 16-bit compressed instruction
+  localparam logic [XLEN-1:0] PcIncrement32bit = 4;  // 32-bit standard instruction
+  localparam int unsigned PcAdvanceSelWidth = 2;
+  // Arms of pc_controller's next-PC priority selector. if_stage uses the
+  // one-hot winner and sequential-arm mask to classify provider retargets;
+  // translation itself starts from the selected, registered PC.
+  localparam int unsigned PcNextArms = 14;
+  localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus2 = 2'd0;
+  localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus4 = 2'd1;
+  localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus6 = 2'd2;
+  localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus8 = 2'd3;
+
+  // How a PC candidate v relates to a pending branch PC P, as pc_controller
+  // registers it: v == P, v[XLEN-1:1] below or above P[XLEN-1:1], and the
+  // compressed and 32-bit predecessor tags v == P - 2 and v == P - 4.
+  typedef struct packed {
+    logic at;
+    logic below;
+    logic above;
+    logic pred;
+    logic pred_native;
+  } pc_pending_rel_t;
+
+  // XLEN-wide DIV/REM special-case values (overflow and divide-by-zero).
+  // The RV64M W forms need no 32-bit variants: int_muldiv_shim shares the
+  // XLEN divider with sign/zero-extended operands.
+  localparam bit [XLEN-1:0] SignedIntMin = {1'b1, {(XLEN - 1) {1'b0}}};  // -2^(XLEN-1)
+  localparam bit [XLEN-1:0] SignedIntMax = {1'b0, {(XLEN - 1) {1'b1}}};  // 2^(XLEN-1) - 1
+  localparam bit [XLEN-1:0] UnsignedIntMax = '1;  // All ones
+  localparam bit [XLEN-1:0] NegativeOne = '1;  // -1 in two's complement
+
+  // ===========================================================================
+  // Section 6: Pipeline Control
+  // ===========================================================================
+  // Control signals distributed through the pipeline control bundle.
+  typedef struct packed {
+    logic reset;
+    logic stall;  // Freeze pipeline (don't advance)
+    logic stall_registered;  // Stall signal from previous cycle
+    logic stall_for_trap_check;  // Stall conditions for trap unit (before trap/mret gating)
+    logic flush;  // Clear pipeline (insert bubble/NOP)
+    // Registered recovery pulses, for timing.
+    logic trap_taken_registered;  // trap_taken from previous cycle
+    logic mret_taken_registered;  // mret_taken from previous cycle
+  } pipeline_ctrl_t;
+
+  // ===========================================================================
+  // Section 7: Inter-Stage Data Structures
+  // ===========================================================================
+  // Packed structs for passing data between pipeline stages.
+  // Named as from_<source>_to_<dest>_t (e.g., from_if_to_pd_t).
+  // These are registered at stage boundaries (pipeline registers).
+
+  // RAS (Return Address Stack) constants
+  localparam int unsigned RasDepth = 8;
+  localparam int unsigned RasPtrBits = $clog2(RasDepth);
+
+  // Backing BTB (if_stage/branch_prediction/backing_btb.sv): entries and
+  // ways. Two or four ways.
+  localparam int unsigned BackingBtbEntries = 1024;
+  localparam int unsigned BackingBtbWays = 2;
+
+  // Bimodal index width; must match direction_predictor.BIM_BITS.
+  // Branches carry the prediction-time index through commit for training.
+  localparam int unsigned BpDirIdxBits = 10;
+
+  // Tagged direction predictor (tage_predictor): global path-history length,
+  // the history its short table hashes, per-bank index and tag widths, and
+  // the history bits each taken control-flow instruction shifts in.
+  localparam int unsigned TageHistBits = 64;
+  // Tables and each table's history length, a geometric series over the
+  // direction history.
+  localparam int unsigned TageTables = 4;
+  localparam int unsigned TageHist1Bits = 12;
+  localparam int unsigned TageHist2Bits = 24;
+  localparam int unsigned TageHist3Bits = 64;
+  localparam int unsigned TageHist4Bits = 128;
+  localparam int unsigned TageIndexBits = 9;
+  localparam int unsigned TageTagBits = 10;
+  localparam int unsigned TagePathBits = 2;
+  // The predictor hashes word-address bits [TageLookupHiBit:2] of the lookup
+  // PC: the index's two slices end there and the tag's begins at bit 2.
+  localparam int unsigned TageLookupHiBit = 2 + 2 * TageIndexBits;
+  // Index width of the saved-lookup buffer (cpu_ooo/branch_recovery/
+  // tage_history.sv). Its entries outnumber the conditional branches the
+  // front end and ROB can hold.
+  localparam int unsigned TageFtqIdxBits = 6;
+  // Direction history the tagged predictor hashes (tage_history): one bit per
+  // conditional branch and per jump, pushed as PD passes the packet to ID.
+  localparam int unsigned TageDirHistBits = 128;
+  // Indirect target predictor (ittage_predictor): per-bank index and tag
+  // widths, and each table's history length in bits of the tagged
+  // predictor's lookup history.
+  localparam int unsigned IttIndexBits = 7;
+  localparam int unsigned IttTagBits = 11;
+  localparam int unsigned IttHist1Bits = 8;
+  localparam int unsigned IttHist2Bits = 24;
+  localparam int unsigned IttHist3Bits = 64;
+
+  // One bank's registered tagged lookup: each table's index and tag, which
+  // tables matched, the provider's direction (meaningful when any matched),
+  // and the next shorter match as the alternate behind it. Saved with a
+  // conditional branch to train the same entries at commit.
+  typedef struct packed {
+    logic [TageTables-1:0][TageIndexBits-1:0] index;
+    logic [TageTables-1:0][TageTagBits-1:0] tag;
+    logic [TageTables-1:0] hit;
+    logic taken;
+    logic alt_tagged;
+    logic alt_tagged_taken;
+  } tage_lookup_t;
+  localparam int unsigned TageLookupBits = TageTables * (TageIndexBits + TageTagBits + 1) + 3;
+
+  // One bank's registered indirect-target lookup: each table's index and tag
+  // and whether it matched. Saved with a JALR to train the same entries at
+  // commit.
+  typedef struct packed {
+    logic [2:0][IttIndexBits-1:0] index;
+    logic [2:0][IttTagBits-1:0] tag;
+    logic [2:0] hit;
+  } itt_lookup_t;
+  localparam int unsigned IttLookupBits = 3 * IttIndexBits + 3 * IttTagBits + 3;
+
+  // IF-to-PD payload. IF assembles spanning instructions in one cycle.
+  // PD expands compressed slot 1 from its selected sideband fields;
+  // IF's aligner expands slot 2 (see decomp_illegal).
+  // PdTargetSplit divides the redirect addition: add low PC/offset bits,
+  // then select PC-high, PC-high+1, or PC-high-1. Both branch offsets fit.
+  localparam int unsigned PdTargetSplit = 13;
+
+  typedef struct packed {
+    logic [XLEN-1:0] program_counter;
+    // Raw 16-bit parcel at the instruction's start. PD takes slot 1's size and
+    // compressed branch offset from it, and expands it only in simulation, as
+    // the reference for its checks.
+    logic [15:0] raw_parcel;
+    // Selection signals for final instruction mux (computed in IF, used in PD)
+    logic sel_nop;
+    logic sel_compressed;  // True if raw_parcel is a compressed instruction
+    // Effective 32-bit instruction word (aligned or spanning-assembled)
+    instr_t effective_instr;
+    // {rs2[1], rs1[2:1]} of the selected instruction, from the sideband
+    // for RVC or effective_instr for native code. PD uses these with the
+    // other predecoded fields to build source registers.
+    logic [2:0] source_hot_predecoded;
+    // The selected instruction's bits [24:20]: the IMEM sideband's RVC
+    // expansion, or the native instruction's own bits.
+    logic [4:0] bits24_20_predecoded;
+    // Remaining rs1 field bits {instruction[19:18], instruction[15]}.
+    logic [2:0] rs1_rest_predecoded;
+    // Slot 1 only (0 for slot 2): the IMEM sideband's
+    // {illegal, expanded[31:25], expanded[14:0]} for the selected parcel.
+    logic [22:0] rvc_extra_predecoded;
+    // Branch prediction metadata (from BTB)
+    logic btb_predicted_taken;  // BTB predicts taken
+    // Valid only with btb_predicted_taken; unspecified for invalid/NOP packets.
+    logic [XLEN-1:0] btb_predicted_target;
+    // Return address stack state for this packet: after every older push and
+    // pop and before this packet's own, for recovery. The top entry lets the
+    // restore undo a wrong-path overwrite of it.
+    logic [RasPtrBits-1:0] ras_checkpoint_tos;
+    logic [RasPtrBits:0] ras_checkpoint_valid_count;
+    logic [XLEN-1:0] ras_checkpoint_top;
+    // Bimodal prediction, independent of BTB hit, consumed in PD. If no
+    // tagged entry matched (tage_valid low), PD can redirect slot 1 when this
+    // predicts taken without a taken BTB prediction, for either offset sign.
+    logic bp_dir_taken;
+    // Prediction-time index carried to commit to train the same entry.
+    logic [BpDirIdxBits-1:0] bp_dir_idx;
+    // Tagged-predictor direction for this instruction, valid only when a
+    // tagged entry matched. For a conditional branch in either slot it
+    // replaces the BTB direction (and, for slot 1, the bimodal direction) in
+    // PD, which then redirects IF to the branch target or the fall-through as
+    // needed. Consumed in PD.
+    logic tage_valid;
+    logic tage_taken;
+    // The instruction bytes could not be fetched; the payload is invalid.
+    // Decode substitutes FETCH_FAULT (cause 1) or FETCH_PAGE_FAULT (cause 12).
+    // IF/PD suppress prediction and redirect use so invalid bytes cannot
+    // redirect execution. fetch_fault_hi marks a fault only in the second
+    // halfword of a page-straddling instruction; xtval is then PC+2.
+    logic fetch_fault;
+    logic fetch_fault_page;
+    logic fetch_fault_hi;
+    // Slot-2 only: illegal-RVC flag for the expanded effective_instr (the
+    // aligner takes each candidate's flag from its sideband; see
+    // instruction_aligner). 0 for slot 1, whose illegal flag PD takes from
+    // rvc_extra_predecoded.
+    logic decomp_illegal;
+    // Slot-2 only: conditional-branch opcode flag (effective_instr[6:0] ==
+    // OPC_BRANCH), predecoded per slot-2 start position in instruction_aligner
+    // before the position select. Zero for slot 1.
+    logic is_cond_branch;
+    // Redirect candidates from pd_target_candidate: low PC+offset bits for
+    // native and compressed branches in this slot, with {offset sign, carry}
+    // selecting PC-high. PD registers these and decodes the high select
+    // afterward.
+    logic [PdTargetSplit-1:0] pd_target_native_low;
+    logic [1:0] pd_target_native_high_select;
+    logic [PdTargetSplit-1:0] pd_target_compressed_low;
+    logic [1:0] pd_target_compressed_high_select;
+  } from_if_to_pd_t;
+
+  // Clocked signals passed from Pre-Decode (PD) stage to Instruction Decode (ID) stage
+  typedef struct packed {
+    logic [XLEN-1:0] program_counter;
+    instr_t instruction;
+    // Bubble marker: id_stage treats instruction as NOP. Also consumed by
+    // frontend_validity_tracker for slot 1. Separate from instruction data
+    // for timing.
+    logic inject_nop;
+    // Original instruction size before RVC decompression.
+    logic is_compressed;
+    // Source registers from IF's predecoded fields. pd_stage builds slot 2's
+    // registered instruction from rs1 and rs2 here.
+    logic [4:0] source_reg_1_early;
+    logic [4:0] source_reg_2_early;
+    logic illegal_instruction;  // Illegal compressed instruction (predecoded illegal-RVC flag)
+    logic fetch_fault;  // Fetch fault (overrides decode with FETCH_[PAGE_]FAULT)
+    logic fetch_fault_page;  // ...page fault (cause 12) rather than access fault (1)
+    logic fetch_fault_hi;  // ...on the second halfword only (xtval = PC + 2)
+    // Branch prediction metadata (passed through from IF)
+    logic btb_predicted_taken;
+    logic [XLEN-1:0] btb_predicted_target;  // Valid only with btb_predicted_taken
+    // Return address stack recovery point (passed through from IF)
+    logic [RasPtrBits-1:0] ras_checkpoint_tos;
+    logic [RasPtrBits:0] ras_checkpoint_valid_count;
+    logic [XLEN-1:0] ras_checkpoint_top;
+    // Predict-time bimodal index carried to commit for training.
+    logic [BpDirIdxBits-1:0] bp_dir_idx;
+    // The raw 16-bit parcel at the instruction's start; ID forms Sstvala's
+    // insn_bits from it for a compressed instruction.
+    logic [15:0] raw_parcel;
+  } from_pd_to_id_t;
+
+  // Clocked signals passed from Instruction Decode (ID) stage to Execute (EX) stage
+  typedef struct packed {
+    logic [XLEN-1:0] program_counter;
+    // Immediate values decoded from instruction (different formats),
+    // sign-extended to XLEN by immediate_decoder.
+    logic [XLEN-1:0] immediate_i_type;  // I-type: 12-bit sign-extended
+    logic [XLEN-1:0] immediate_s_type;  // S-type: for stores
+    logic [XLEN-1:0] immediate_u_type;  // U-type: upper 20 bits
+    // Instruction type flags
+    logic is_load_instruction;
+    logic is_load_unsigned;
+    instr_op_e instruction_operation;
+    // Pre-decoded reservation-station route. Stored as raw bits because
+    // rs_type_e is declared later in this package.
+    logic [2:0] rs_type;
+    logic is_int_store;
+    logic is_branch_or_jump;
+    logic is_fence;
+    logic is_fence_i;
+    logic is_csr_imm;
+    logic has_fp_flags;
+    // The instruction takes a load-queue or store-queue entry (the operand
+    // classifier's class, clear for an illegal instruction or fetch fault).
+    logic needs_lq;
+    logic needs_sq;
+    logic is_jump_and_link;  // JAL instruction
+    logic is_jump_and_link_register;  // JALR instruction
+    // CSR instruction fields (Zicsr)
+    logic is_csr_instruction;
+    logic [11:0] csr_address;
+    logic [4:0] csr_imm;  // Zero-extended immediate for CSRRWI/CSRRSI/CSRRCI
+    // A extension (atomics)
+    logic is_amo_instruction;  // Any AMO operation (LR, SC, or AMO*)
+    logic is_lr;  // Load-reserved
+    logic is_sc;  // Store-conditional
+    // Privileged instructions (trap handling)
+    logic is_mret;  // Any xRET: MRET, SRET or DRET (the latter two ride the MRET machinery)
+    logic is_sret;  // Qualifies is_mret as SRET (sepc/SPP/SPIE side, S-priv gate)
+    logic is_dret;  // Qualifies is_mret as DRET (dpc/dcsr side, Debug-Mode gate)
+    logic is_sfence_vma;  // Qualifies is_fence_i as SFENCE.VMA (TVM/U-priv gate)
+    logic is_wfi;  // WFI instruction
+    logic is_illegal_instruction;  // Illegal instruction (unknown opcode or illegal compressed)
+    logic is_fetch_fault;  // Fetch fault pseudo-op (cause 1 or 12 at the FU shim)
+    logic is_fetch_fault_page;  // ...FETCH_PAGE_FAULT (cause 12) instead of FETCH_FAULT
+    // F extension fields
+    logic is_fp_instruction;  // Any FP instruction
+    logic is_fp_load;  // FLW, FLD or FLH: data goes to the FP regfile
+    logic is_fp_store;  // FSW, FSD or FSH
+    logic [2:0] fp_rm;  // Rounding mode from instruction (funct3)
+    // Pre-computed link address, PC+2 or PC+4 by compression: rd for
+    // JAL/JALR, and the ROB's fall-through PC for every instruction
+    logic [XLEN-1:0] link_address;
+    // Original instruction size before RVC decompression.
+    logic is_compressed;
+    // ID computes PC-relative targets. JALR waits for rs1 at execute.
+    logic [XLEN-1:0] branch_target_precomputed;  // PC + imm_b (for conditional branches)
+    logic [XLEN-1:0] jal_target_precomputed;  // PC + imm_j (for JAL)
+    instr_t instruction;
+    // Branch prediction metadata (passed through from IF via PD/ID)
+    logic btb_predicted_taken;
+    logic [XLEN-1:0] btb_predicted_target;  // Valid only with btb_predicted_taken
+    // Return address stack recovery point (passed through from IF via PD/ID)
+    logic [RasPtrBits-1:0] ras_checkpoint_tos;
+    logic [RasPtrBits:0] ras_checkpoint_valid_count;
+    logic [XLEN-1:0] ras_checkpoint_top;
+    // Predict-time bimodal index carried to commit for training.
+    logic [BpDirIdxBits-1:0] bp_dir_idx;
+    // ID computes RAS actions for commit-time replay after checkpoint
+    // restore (ex_comb_synthesizer). Both bits set encode a coroutine swap.
+    // Plain returns require rd=x0; calls require rd in {x1,x5}, so these
+    // actions are otherwise exclusive. See instruction_type_decoder.sv.
+    logic is_ras_return;  // JALR with rs1=x1, rd=x0, imm=0
+    logic is_ras_call;  // JAL/JALR with rd in {x1,x5}
+    // BTB check for JAL and branches: their target is PC-relative and known
+    // in ID, so ID compares it with btb_predicted_target directly.
+    logic btb_correct_non_jalr;  // True if non-JALR target matches BTB prediction
+    // PC-relative value for the ops whose execute-time result is a pure
+    // function of the PC and the instruction: PC + imm_u for AUIPC, PC + the
+    // faulting-halfword offset (the xtval) for the fetch-fault pseudo-ops.
+    // Dispatch carries it in the RS immediate, so the stations need no PC.
+    logic [XLEN-1:0] pc_relative_precomputed;
+    // Registered operand classification for dispatch, for timing. Clear on
+    // flush/reset and for illegal instructions, matching dispatch's ILLEGAL
+    // override.
+    logic has_int_dest;
+    logic has_fp_dest;
+    logic uses_int_rs1;
+    logic uses_int_rs2;
+    logic uses_fp_rs1;
+    logic uses_fp_rs2;
+    logic uses_fp_rs3;
+    // Set for program instructions, including NOP; clear for PD bubbles.
+    // Used by dispatch validity and slot-2 presence checks.
+    logic is_real;
+    // Sstvala: the raw instruction bits ({16'b0, parcel} for a compressed
+    // instruction), carried to the ROB for illegal-instruction xtval.
+    logic [31:0] insn_bits;
+  } from_id_to_ex_t;
+
+  // Control fields of from_id_to_ex_t, with matching names and types.
+  // The decoded-bundle queue registers the next dispatch view from ID's
+  // next-edge values, for timing. btb_correct_non_jalr is left out: ID's
+  // target compare sets it late in the cycle, and dispatch only stores it,
+  // so it comes from the queue's packet.
+  typedef struct packed {
+    logic is_load_instruction;
+    logic is_load_unsigned;
+    instr_op_e instruction_operation;
+    logic [2:0] rs_type;
+    logic is_int_store;
+    logic is_branch_or_jump;
+    logic is_fence;
+    logic is_fence_i;
+    logic is_csr_imm;
+    logic has_fp_flags;
+    // The instruction takes a load-queue or store-queue entry (the operand
+    // classifier's class, clear for an illegal instruction or fetch fault).
+    logic needs_lq;
+    logic needs_sq;
+    logic is_jump_and_link;
+    logic is_jump_and_link_register;
+    logic is_csr_instruction;
+    logic is_amo_instruction;
+    logic is_lr;
+    logic is_sc;
+    logic is_mret;
+    logic is_sret;
+    logic is_dret;
+    logic is_sfence_vma;
+    logic is_wfi;
+    logic is_illegal_instruction;
+    logic is_fetch_fault;
+    logic is_fetch_fault_page;
+    logic is_fp_instruction;
+    logic is_fp_load;
+    logic is_fp_store;
+    logic is_compressed;
+    instr_t instruction;
+    logic btb_predicted_taken;
+    logic is_ras_return;
+    logic is_ras_call;
+    logic has_int_dest;
+    logic has_fp_dest;
+    logic uses_int_rs1;
+    logic uses_int_rs2;
+    logic uses_fp_rs1;
+    logic uses_fp_rs2;
+    logic uses_fp_rs3;
+    logic is_real;
+    // Vector arithmetic (OP-V other than vsetvl*), for the hold while the
+    // vtype at dispatch is unknown
+    logic is_varith;
+    // A vector load or store encoding (is_vector_mem), for the hold while the
+    // vector memory table is full
+    logic is_vmem;
+  } id_dispatch_ctrl_t;
+
+  // Control-flow feedback consumed by the front-end.
+  typedef struct packed {
+    logic branch_taken;  // Whether branch or jump should be taken
+    logic [XLEN-1:0] branch_target_address;  // Target address for branch/jump
+    // BTB update signals (for branch prediction)
+    logic btb_update;  // Update BTB entry
+    logic [XLEN-1:0] btb_update_pc;  // PC of branch instruction
+    logic [XLEN-1:0] btb_update_target;  // Actual branch target
+    logic btb_update_taken;  // Actual branch outcome (taken/not-taken)
+    logic btb_update_compressed;  // Branch was a compressed (16-bit) instruction
+    // The trained instruction is a call or a return (both for a coroutine
+    // swap), so a later hit takes its target from the return address stack
+    // or pushes onto it.
+    logic btb_update_call;
+    logic btb_update_return;
+    // The trained instruction is a JAL or JALR, which also trains the
+    // backing BTB.
+    logic btb_update_jump;
+    // RAS misprediction recovery signals
+    logic ras_misprediction;  // Restore the mispredicted instruction's recovery point
+    logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction
+    logic [RasPtrBits:0] ras_restore_valid_count;  // Valid count to restore
+    logic [XLEN-1:0] ras_restore_top;  // Top entry to write back at the restored TOS
+    // Both bits set == coroutine swap replay (pop then push): replaces the
+    // restored top entry and leaves the depth unchanged.  Mirrors the
+    // {is_ras_return, is_ras_call} == 2'b11 encoding that carries it here.
+    logic ras_pop_after_restore;  // Pop RAS after restoring (for returns that triggered restore)
+    logic ras_push_after_restore;  // Push after restoring (for mispredicted calls)
+    logic [XLEN-1:0] ras_push_address_after_restore;  // Link address to push after restore
+  } from_ex_comb_t;
+
+  // ===========================================================================
+  // Section 8: Trap/Exception Handling
+  // ===========================================================================
+  // Trap-control structures for M/S/U-mode exception and interrupt handling.
+  // Trap and xRET redirect to IF (the trap unit's outputs, registered in
+  // ooo_pipeline_control).
+  typedef struct packed {
+    logic            trap_taken;   // Trap is being taken this cycle
+    logic            mret_taken;   // Any xRET (MRET, SRET, DRET) is being taken
+    logic [XLEN-1:0] trap_target;  // Trap vector, xRET return PC, Debug Mode address, or replay PC
+  } trap_ctrl_t;
+
+  // Interrupt pending signals (from peripherals to CPU)
+  typedef struct packed {
+    logic meip;  // Machine external interrupt pending
+    logic mtip;  // Machine timer interrupt pending
+    logic msip;  // Machine software interrupt pending
+  } interrupt_t;
+
+  // ===========================================================================
+  // Section 9: Bit Manipulation Helper Functions (Zbb Extension)
+  // ===========================================================================
+  // Bit counts use byte priority scans or parallel addition trees.
+
+  // 8-bit CLZ: returns 0-8 (8 means all zeros).
+  function automatic [3:0] clz8(input logic [7:0] val);
+    if (val[7]) clz8 = 4'd0;
+    else if (val[6]) clz8 = 4'd1;
+    else if (val[5]) clz8 = 4'd2;
+    else if (val[4]) clz8 = 4'd3;
+    else if (val[3]) clz8 = 4'd4;
+    else if (val[2]) clz8 = 4'd5;
+    else if (val[1]) clz8 = 4'd6;
+    else if (val[0]) clz8 = 4'd7;
+    else clz8 = 4'd8;
+  endfunction
+
+  // 32-bit CLZ from byte counts.
+  function automatic [31:0] clz32(input logic [31:0] val);
+    logic [3:0] clz_byte[4];  // CLZ result for each byte
+    logic       nz_byte [4];  // Non-zero flag for each byte
+
+    for (int i = 0; i < 4; i++) begin
+      clz_byte[i] = clz8(val[i*8+:8]);
+      nz_byte[i]  = |val[i*8+:8];
+    end
+
+    // Scan bytes from MSB to LSB; add the preceding byte count (0, 8, 16, 24).
+    if (nz_byte[3]) clz32 = {28'd0, clz_byte[3]};
+    else if (nz_byte[2]) clz32 = {28'd0, clz_byte[2]} + 32'd8;
+    else if (nz_byte[1]) clz32 = {28'd0, clz_byte[1]} + 32'd16;
+    else if (nz_byte[0]) clz32 = {28'd0, clz_byte[0]} + 32'd24;
+    else clz32 = 32'd32;  // All zeros
+  endfunction
+
+  // 8-bit CTZ: returns 0-8 (8 means all zeros).
+  function automatic [3:0] ctz8(input logic [7:0] val);
+    if (val[0]) ctz8 = 4'd0;
+    else if (val[1]) ctz8 = 4'd1;
+    else if (val[2]) ctz8 = 4'd2;
+    else if (val[3]) ctz8 = 4'd3;
+    else if (val[4]) ctz8 = 4'd4;
+    else if (val[5]) ctz8 = 4'd5;
+    else if (val[6]) ctz8 = 4'd6;
+    else if (val[7]) ctz8 = 4'd7;
+    else ctz8 = 4'd8;
+  endfunction
+
+  // 32-bit CTZ from byte counts.
+  function automatic [31:0] ctz32(input logic [31:0] val);
+    logic [3:0] ctz_byte[4];  // CTZ result for each byte
+    logic       nz_byte [4];  // Non-zero flag for each byte
+
+    for (int i = 0; i < 4; i++) begin
+      ctz_byte[i] = ctz8(val[i*8+:8]);
+      nz_byte[i]  = |val[i*8+:8];
+    end
+
+    // Scan bytes from LSB to MSB; add the preceding byte count (0, 8, 16, 24).
+    if (nz_byte[0]) ctz32 = {28'd0, ctz_byte[0]};
+    else if (nz_byte[1]) ctz32 = {28'd0, ctz_byte[1]} + 32'd8;
+    else if (nz_byte[2]) ctz32 = {28'd0, ctz_byte[2]} + 32'd16;
+    else if (nz_byte[3]) ctz32 = {28'd0, ctz_byte[3]} + 32'd24;
+    else ctz32 = 32'd32;  // All zeros
+  endfunction
+
+  // 4-bit popcount (LUT-friendly: 16 input values).
+  function automatic [2:0] cpop4(input logic [3:0] val);
+    cpop4 = 3'd0;
+    for (int i = 0; i < 4; i++) begin
+      cpop4 = cpop4 + {2'b0, val[i]};
+    end
+  endfunction
+
+  // 32-bit CPOP as an addition tree: 8x 4-bit -> 4x 8-bit -> 2x 16-bit ->
+  // 1x 32-bit result.
+  function automatic [31:0] cpop32(input logic [31:0] val);
+    logic [2:0] pop4 [8];  // 8 groups of 4-bit popcounts
+    logic [3:0] pop8 [4];  // 4 groups of 8-bit popcounts
+    logic [4:0] pop16[2];  // 2 groups of 16-bit popcounts
+
+    // Level 1: 8 parallel 4-bit popcounts
+    for (int i = 0; i < 8; i++) begin
+      pop4[i] = cpop4(val[i*4+:4]);
+    end
+
+    // Level 2: Combine pairs into 8-bit counts
+    for (int i = 0; i < 4; i++) begin
+      pop8[i] = {1'b0, pop4[2*i]} + {1'b0, pop4[2*i+1]};
+    end
+
+    // Level 3: Combine pairs into 16-bit counts
+    for (int i = 0; i < 2; i++) begin
+      pop16[i] = {1'b0, pop8[2*i]} + {1'b0, pop8[2*i+1]};
+    end
+
+    cpop32 = {26'd0, pop16[0]} + {26'd0, pop16[1]};
+  endfunction
+
+  // 64-bit CLZ from byte counts; returns 0-64.
+  function automatic [6:0] clz64(input logic [63:0] val);
+    logic [3:0] clz_byte[8];  // CLZ result for each byte
+    logic       nz_byte [8];  // Non-zero flag for each byte
+
+    for (int i = 0; i < 8; i++) begin
+      clz_byte[i] = clz8(val[i*8+:8]);
+      nz_byte[i]  = |val[i*8+:8];
+    end
+
+    // Scan from MSB to LSB; add eight for each preceding zero byte.
+    if (nz_byte[7]) clz64 = {3'd0, clz_byte[7]};
+    else if (nz_byte[6]) clz64 = {3'd0, clz_byte[6]} + 7'd8;
+    else if (nz_byte[5]) clz64 = {3'd0, clz_byte[5]} + 7'd16;
+    else if (nz_byte[4]) clz64 = {3'd0, clz_byte[4]} + 7'd24;
+    else if (nz_byte[3]) clz64 = {3'd0, clz_byte[3]} + 7'd32;
+    else if (nz_byte[2]) clz64 = {3'd0, clz_byte[2]} + 7'd40;
+    else if (nz_byte[1]) clz64 = {3'd0, clz_byte[1]} + 7'd48;
+    else if (nz_byte[0]) clz64 = {3'd0, clz_byte[0]} + 7'd56;
+    else clz64 = 7'd64;  // All zeros
+  endfunction
+
+  // ==========================================================================
+  // Shared multiplier depth for dsp_tiled_multiplier_unsigned and
+  // int_muldiv_shim's in-flight tracker (MulPipeDepth).
+  // ==========================================================================
+  function automatic int unsigned dsp_tiled_stages(
+      input int unsigned a_width, input int unsigned b_width, input int unsigned a_tile_width,
+      input int unsigned b_tile_width);
+    int unsigned num_terms;
+    int unsigned reduce_stages;
+    int unsigned staged;
+    num_terms = (((a_width + a_tile_width - 1) / a_tile_width) *
+                 ((b_width + b_tile_width - 1) / b_tile_width));
+    reduce_stages = (num_terms <= 1) ? 0 : $clog2(num_terms);
+    staged = reduce_stages + 1;
+    // Floor of 3 stages: a single-tile product (FP single precision) takes
+    // as long as the double-precision multiply.
+    dsp_tiled_stages = (staged < 3) ? 3 : staged;
+  endfunction
+
+  // Integer multiplier wrapper latency: operand stage + tiled unit + signed
+  // correction stage. The core multiplies the operands' low XLEN bits with the
+  // default tiling.
+  localparam int unsigned MulAWidth = XLEN;
+  // Fetch hold copies for the decoded-queue shadow select, for fanout.
+  localparam int unsigned FetchPaHoldCopies = 4;
+  localparam int unsigned MulPipeDepth = 1 + dsp_tiled_stages(MulAWidth, MulAWidth, 27, 35) + 1;
+
+  // 64-bit CTZ from byte counts, scanning from LSB to MSB; returns 0-64.
+  function automatic [6:0] ctz64(input logic [63:0] val);
+    logic [3:0] ctz_byte[8];  // CTZ result for each byte
+    logic       nz_byte [8];  // Non-zero flag for each byte
+
+    for (int i = 0; i < 8; i++) begin
+      ctz_byte[i] = ctz8(val[i*8+:8]);
+      nz_byte[i]  = |val[i*8+:8];
+    end
+
+    if (nz_byte[0]) ctz64 = {3'd0, ctz_byte[0]};
+    else if (nz_byte[1]) ctz64 = {3'd0, ctz_byte[1]} + 7'd8;
+    else if (nz_byte[2]) ctz64 = {3'd0, ctz_byte[2]} + 7'd16;
+    else if (nz_byte[3]) ctz64 = {3'd0, ctz_byte[3]} + 7'd24;
+    else if (nz_byte[4]) ctz64 = {3'd0, ctz_byte[4]} + 7'd32;
+    else if (nz_byte[5]) ctz64 = {3'd0, ctz_byte[5]} + 7'd40;
+    else if (nz_byte[6]) ctz64 = {3'd0, ctz_byte[6]} + 7'd48;
+    else if (nz_byte[7]) ctz64 = {3'd0, ctz_byte[7]} + 7'd56;
+    else ctz64 = 7'd64;  // All zeros
+  endfunction
+
+  // 64-bit population count as the sum of two 32-bit tree popcounts.
+  function automatic [6:0] cpop64(input logic [63:0] val);
+    cpop64 = 7'(cpop32(val[31:0])) + 7'(cpop32(val[63:32]));
+  endfunction
+
+  // ===========================================================================
+  // Section 10: Tomasulo Out-of-Order Execution Structures
+  // ===========================================================================
+  // Parameters, types, and data structures for the Tomasulo OOO execution engine.
+  // Includes Reorder Buffer, Reservation Stations, Load/Store Queues, CDB, RAT.
+
+  // ---------------------------------------------------------------------------
+  // Tomasulo Core Parameters
+  // ---------------------------------------------------------------------------
+  // Configurable depths for all major structures. Power-of-2 sizes simplify
+  // circular buffer pointer arithmetic.
+
+  // Reorder Buffer parameters
+  localparam int unsigned ReorderBufferDepth = 32;  // Number of Reorder Buffer entries (power of 2)
+  localparam int unsigned ReorderBufferTagWidth = $clog2(
+      ReorderBufferDepth
+  );  // 5 bits for 32-entry Reorder Buffer
+
+  // Shared CPU defaults for board builds, simulation and synthesis checks.
+  localparam bit EarlyLoadWakeup = 1'b1;
+  localparam bit PrepareLoadWhileBusy = 1'b1;
+  localparam int unsigned DecodedQueueDepth = 4;  // Two-instruction bundles
+
+  // Reservation Station depths (per RS type). The second integer issue port
+  // scans only the lowest eight entries, independently of the total capacity.
+  localparam int unsigned IntRsDepth = 16;  // Integer ALU operations
+  localparam int unsigned IntRsIssue2Window = 8;
+  localparam int unsigned MulRsDepth = 4;  // Multiply/divide operations
+  localparam int unsigned MemRsDepth = 8;  // Load/store operations
+  localparam int unsigned FpRsDepth = 2;  // Every FP compute operation (3 sources)
+
+  // Memory queue depths
+  localparam int unsigned LqDepth = 8;  // Load queue entries
+  localparam int unsigned SqDepth = 8;  // Store queue entries
+
+  // Checkpoint parameters
+  localparam int unsigned NumCheckpoints = 8;  // For branch speculation recovery
+  localparam int unsigned CheckpointIdWidth = $clog2(NumCheckpoints);  // 3 bits
+
+  // Register file sizes
+  localparam int unsigned NumIntRegs = 32;  // x0-x31
+  localparam int unsigned NumFpRegs = 32;  // f0-f31
+  localparam int unsigned RegAddrWidth = 5;  // $clog2(32)
+
+  // Alias for FP register width (FLEN) - uses FpWidth from Section 5
+  localparam int unsigned FLEN = FpWidth;  // 64 bits for D extension
+
+  // CDB parameters
+  localparam int unsigned NumFus = 8;  // ALU, MUL, DIV, MEM, FP, two spare slots, ALU2
+
+  // ---------------------------------------------------------------------------
+  // Functional Unit Enumeration and RS Assignment
+  // ---------------------------------------------------------------------------
+  // Identifies the functional unit behind a completion. The CDB arbiter
+  // indexes its grants by it and tags each broadcast with it; dispatch
+  // routes by rs_type_e instead.
+
+  typedef enum logic [2:0] {
+    FU_ALU    = 3'd0,  // Integer ALU pipe 0 (ADD, SUB, AND, OR, XOR, SLT, branches)
+    FU_MUL    = 3'd1,  // Integer multiplier
+    FU_DIV    = 3'd2,  // Integer divider
+    FU_MEM    = 3'd3,  // Load/store unit (both INT and FP)
+    FU_FP_ADD = 3'd4,  // FP engine (every FP compute operation)
+    FU_FP_MUL = 3'd5,  // Spare: only the wrapper's test-injection input
+    FU_FP_DIV = 3'd6,  // Spare: only the wrapper's test-injection input
+    FU_ALU2   = 3'd7   // Integer ALU pipe 1 (plain ALU ops only; branches stay on pipe 0)
+  } fu_type_e;
+
+  // Reservation station type (for dispatch routing)
+  typedef enum logic [2:0] {
+    RS_INT  = 3'd0,  // INT_RS: Integer ALU ops, branches, CSR
+    RS_MUL  = 3'd1,  // MUL_RS: integer and carry-less multiply, divide
+    RS_MEM  = 3'd2,  // MEM_RS: All loads/stores (INT and FP)
+    RS_FP   = 3'd3,  // FP_RS: every FP compute operation (3 sources)
+    RS_NONE = 3'd6   // No RS needed (JAL, WFI, MRET/SRET/DRET; ROB only)
+  } rs_type_e;
+
+  // ---------------------------------------------------------------------------
+  // Reorder Buffer Interface Structures
+  // ---------------------------------------------------------------------------
+  // Low five bits of Exc* (ExcBreakpoint -> 3, ExcStorePageFault -> 15).
+  // Also holds internal ExcMemReplay (24), substituted at the ROB head.
+  // The ROB tracks synchronous exceptions; trap_unit handles interrupts.
+  // cpu_ooo zero-extends this cause for trap_unit.
+  localparam int unsigned ExcCauseWidth = 5;
+
+  typedef logic [ExcCauseWidth-1:0] exc_cause_t;
+
+  // xtval of a synchronous exception at the ROB head; cpu_ooo ("xtval for
+  // synchronous exceptions") says where each source comes from. A data
+  // misaligned, page or access fault reports its address after the
+  // pointer-masking transform (pm_tval) under mode and virt.
+  function automatic logic [XLEN-1:0] exception_tval(
+      input exc_cause_t cause, input logic [XLEN-1:0] pc, input logic [XLEN-1:0] value,
+      input logic bus_fault, input logic [XLEN-1:0] bus_fault_va, input logic [31:0] insn,
+      input pm_mode_t mode, input logic virt);
+    unique case (cause)
+      // Breakpoint: the breakpoint instruction's own (virtual) address.
+      ExcBreakpoint[ExcCauseWidth-1:0]: exception_tval = pc;
+      // Instruction access and page faults: the address of the faulting
+      // portion of the instruction, parked in the entry's value slot.
+      ExcInstrAccessFault[ExcCauseWidth-1:0], ExcInstrPageFault[ExcCauseWidth-1:0]:
+      exception_tval = value;
+      // Misaligned and data page faults: the faulting data address, parked
+      // in the entry's value slot.
+      ExcLoadAddrMisalign[ExcCauseWidth-1:0], ExcStoreAddrMisalign[ExcCauseWidth-1:0],
+          ExcLoadPageFault[ExcCauseWidth-1:0], ExcStorePageFault[ExcCauseWidth-1:0]:
+      exception_tval = pm_tval(value, mode, virt);
+      // Data access faults: a bus-response fault takes the issue address
+      // from the bus-fault table, which holds it after the base transform.
+      ExcLoadAccessFault[ExcCauseWidth-1:0], ExcStoreAccessFault[ExcCauseWidth-1:0]:
+      exception_tval = pm_tval(bus_fault ? bus_fault_va : value, mode, virt);
+      ExcIllegalInstr[ExcCauseWidth-1:0]: exception_tval = XLEN'(insn);
+      default: exception_tval = '0;
+    endcase
+  endfunction
+
+  // The pointer-masking mode exception_tval applies for a cause, Off for a
+  // cause that reports no data address. pm_tval under Off is the identity,
+  // so pm_tval(exception_tval(cause, ..., EnvcfgPmmOff, virt),
+  // exception_tval_pm_mode(cause, mode), virt) equals exception_tval(cause,
+  // ..., mode, virt): the trap unit registers the untransformed value with
+  // this mode and applies the transform after its register.
+  function automatic logic [1:0] exception_tval_pm_mode(input exc_cause_t cause,
+                                                        input pm_mode_t mode);
+    unique case (cause)
+      ExcLoadAddrMisalign[ExcCauseWidth-1:0], ExcStoreAddrMisalign[ExcCauseWidth-1:0],
+          ExcLoadPageFault[ExcCauseWidth-1:0], ExcStorePageFault[ExcCauseWidth-1:0],
+          ExcLoadAccessFault[ExcCauseWidth-1:0], ExcStoreAccessFault[ExcCauseWidth-1:0]:
+      exception_tval_pm_mode = mode;
+      default: exception_tval_pm_mode = EnvcfgPmmOff;
+    endcase
+  endfunction
+
+  // Reorder Buffer interface signals (for module ports)
+  typedef struct packed {
+    logic alloc_valid;  // Request Reorder Buffer allocation
+    logic [XLEN-1:0] pc;
+    rs_type_e rs_type;
+    logic dest_rf;
+    logic [RegAddrWidth-1:0] dest_reg;
+    logic dest_valid;
+    logic is_store;
+    logic is_fp_store;
+    // Any F/D instruction, including flagless integer results (FMV.X/FCLASS).
+    // ROB allocation checks FS==Off; FP CSRs are classified by csr_addr.
+    logic is_fp_instruction;
+    // An F/D instruction whose rm field selects the dynamic rounding mode
+    // (rm = 111). The ROB marks it illegal at allocation while frm holds a
+    // reserved value (5 to 7).
+    logic fp_dyn_rm;
+    logic is_branch;
+    logic predicted_taken;
+    logic [XLEN-1:0] predicted_target;  // BTB/RAS predicted target
+    logic [XLEN-1:0] branch_target;  // Architectural taken target when known at dispatch
+    logic is_call;
+    logic is_return;
+    // PC+2/PC+4, stored as fall-through for every instruction and as the
+    // FLEN-wide result for JAL/JALR at allocation. JAL is done immediately;
+    // JALR waits for execute to resolve its target.
+    logic [XLEN-1:0] link_addr;
+    logic is_jal;  // JAL: can mark done=1 at dispatch
+    logic is_jalr;  // JALR: must wait for execute to resolve target
+    logic is_csr;
+    logic is_fence;
+    logic is_fence_i;
+    logic is_wfi;
+    logic is_mret;  // Any xRET (SRET and DRET set this too and ride the MRET machinery)
+    // SRET/DRET use is_mret; SFENCE.VMA uses is_fence_i. Allocation records
+    // legality faults; these qualifiers select the return/synchronization path.
+    logic is_sret;
+    logic is_dret;
+    logic is_sfence_vma;
+    logic is_amo;
+    logic is_lr;
+    logic is_sc;
+    logic is_compressed;  // Compressed (16-bit) instruction
+    // CSR info (stored in ROB entry for commit-time serialized execution)
+    // Write intent per the Zicsr rules: CSRRW/CSRRWI always write; the
+    // set/clear forms write only when the rs1/uimm field is nonzero. A
+    // write-intending access to a read-only CSR (addr[11:10] == 2'b11) is
+    // an illegal instruction, folded into the ROB exception state at
+    // allocation.
+    logic csr_write_intent;
+    logic [11:0] csr_addr;
+    logic [2:0] csr_op;  // funct3; [1:0] cleared for a CSR with no write intent
+    logic [XLEN-1:0] csr_write_data;  // rs1 value or zero-ext immediate
+    // FP flags validity
+    logic has_fp_flags;  // Instruction produces FP flags
+    // vsetvli/vsetivli/vsetvl: retires alone (never beside a second entry)
+    // and updates vl and vtype at commit
+    logic is_vcfg;
+    // Vector arithmetic: retires alone and goes to the
+    // vector engine at commit; vec_illegal: illegal under the vtype in
+    // effect at its place in program order (decided at dispatch)
+    logic is_varith;
+    logic vec_illegal;
+    // Sstvala: the instruction's raw bits (a compressed parcel zero-extended),
+    // xtval for an illegal-instruction exception.
+    logic [31:0] insn_bits;
+  } reorder_buffer_alloc_req_t;
+
+  typedef struct packed {
+    logic                             alloc_ready;  // Reorder Buffer can accept allocation
+    logic [ReorderBufferTagWidth-1:0] alloc_tag;    // Allocated Reorder Buffer entry index
+    logic                             full;         // Reorder Buffer is full
+  } reorder_buffer_alloc_resp_t;
+
+  // CDB write to Reorder Buffer for ALU, FPU and load results. Branch/jump
+  // completion uses reorder_buffer_branch_update_t instead.
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] tag;
+    logic [FLEN-1:0]                  value;      // Result value to write to Reorder Buffer entry
+    logic                             exception;
+    exc_cause_t                       exc_cause;
+    fp_flags_t                        fp_flags;
+  } reorder_buffer_cdb_write_t;
+
+  // Completes conditional branches and JALRs independently of the CDB.
+  // Conditional branches never broadcast. JALR broadcasts its link to wake
+  // dependents; the ROB already holds that value from allocation.
+  typedef struct packed {
+    logic                             valid;         // Branch resolution valid
+    logic [ReorderBufferTagWidth-1:0] tag;           // Reorder Buffer entry of the branch
+    logic                             taken;         // Actual branch outcome
+    logic [XLEN-1:0]                  target;        // Actual branch target
+    // Computed by branch_resolution:
+    //   taken != predicted_taken, or
+    //   taken && predicted_taken && target != predicted_target.
+    // The target comparison matters only when both predict and resolve taken.
+    logic                             mispredicted;
+    // JAL never sends this update: allocation records its outcome/target
+    // and marks it done. This update completes JALR and conditional branches.
+  } reorder_buffer_branch_update_t;
+
+  // Reorder Buffer commit signals. Exposes the serializing-instruction flags
+  // so outer control logic can react.
+  typedef struct packed {
+    logic valid;  // Commit this cycle
+    logic [ReorderBufferTagWidth-1:0] tag;  // Reorder Buffer entry being committed
+    logic dest_rf;  // 0=INT, 1=FP
+    logic [RegAddrWidth-1:0] dest_reg;
+    logic dest_valid;  // Has destination register to write
+    logic [FLEN-1:0] value;
+    logic is_store;
+    logic is_fp_store;
+    logic exception;
+    logic [XLEN-1:0] pc;  // PC of the retiring instruction
+    exc_cause_t exc_cause;
+    fp_flags_t fp_flags;  // FP flags to accumulate
+    logic has_fp_flags;  // FP flags are valid (FP compute op, not FP load)
+    // Branch misprediction recovery
+    logic misprediction;  // Branch mispredicted (raw, not gated by early recovery)
+    logic early_recovered;  // Misprediction already handled by early execute-time recovery
+    logic has_checkpoint;
+    logic [CheckpointIdWidth-1:0] checkpoint_id;
+    logic [XLEN-1:0] redirect_pc;  // Correct target on misprediction
+    // Branch info (for BTB update and RAS restore at commit)
+    logic predicted_taken;  // Front-end predicted this control flow as taken
+    logic branch_taken;  // Actual branch outcome
+    logic [XLEN-1:0] branch_target;  // Actual branch target
+    logic is_branch;  // Conditional branch or jump
+    logic is_call;  // Call instruction (for RAS update)
+    logic is_return;  // Return instruction (for RAS restore)
+    logic is_jal;  // JAL instruction
+    logic is_jalr;  // JALR instruction
+    // CSR info (for commit-time CSR execution)
+    logic [11:0] csr_addr;  // CSR address
+    logic [2:0] csr_op;  // funct3; for a CSR, [1:0] = 0 marks a pure read
+    logic [XLEN-1:0] csr_write_data;  // CSR write data (rs1 or zero-ext imm)
+    // Serializing instruction flags (for outer control logic)
+    logic is_csr;  // CSR instruction (Reorder Buffer executes at commit)
+    logic is_fence;  // FENCE (SQ must be drained)
+    logic is_fence_i;  // FENCE.I (SQ drained, pipeline flush)
+    logic is_wfi;  // WFI (stall until interrupt)
+    logic is_mret;  // Any xRET (restore status, redirect to mepc/sepc/dpc)
+    // Atomic operation flags (for memory ordering and reservation handling)
+    logic is_amo;  // AMO instruction (executed at head with SQ empty)
+    logic is_lr;  // LR (load-reserved, sets reservation)
+    logic is_sc;  // SC (store-conditional, checks reservation)
+    logic is_compressed;  // Compressed (16-bit) instruction (for BTB update)
+  } reorder_buffer_commit_t;
+
+  typedef struct packed {
+    logic rob_empty;
+    logic head_wait_total;
+    logic head_wait_int;
+    logic head_wait_branch;
+    logic head_wait_mul;
+    logic head_wait_mem_load;
+    logic head_wait_mem_store;
+    logic head_wait_mem_amo;
+    logic head_wait_fp;
+    logic commit_blocked_csr;
+    logic commit_blocked_fence;
+    logic commit_blocked_wfi;
+    logic commit_blocked_mret;
+    logic commit_blocked_trap;
+    // Commit fires and head+1 is valid and done: an upper bound on two-wide
+    // retirement opportunities.
+    logic head_and_next_done;
+    // Head+1 is valid and done, with no full flush. Subtract head_and_next_done
+    // to count cycles where finished work waits behind a noncommitting head.
+    logic head_plus_one_done;
+    // Both head entries pass the two-wide readiness and hazard checks,
+    // before applying the widening enable and slot-2 permission.
+    logic commit_2_opportunity;
+    // An actual two-wide commit, including the widening enable and
+    // i_widen_commit_ok (clear during a Debug Mode single step).
+    logic commit_2_fire_actual;
+    // These mutually exclusive blockers sum to
+    // head_and_next_done - commit_2_opportunity:
+    //   HeadSerial: head is serial, exceptional, or mispredicted.
+    //   NextSerial: head is eligible; head+1 is serial or exceptional, not a branch.
+    //   NextBranchMispred: head+1 mispredicted, including early recovery.
+    //   NextBranchCorrect: head+1 is a correct branch but remains blocked.
+    // Correct branches may retire in slot 2; a persistent NextBranchCorrect
+    // count indicates a problem with that path.
+    logic commit_2_blocked_head_serial;
+    logic commit_2_blocked_next_serial;
+    logic commit_2_blocked_next_branch_mispred;
+    logic commit_2_blocked_next_branch_correct;
+  } rob_perf_events_t;
+
+  // ---------------------------------------------------------------------------
+  // RAT Lookup Structure
+  // ---------------------------------------------------------------------------
+
+  // RAT lookup result (returned on source register read)
+  typedef struct packed {
+    logic                             renamed;  // Source is renamed (wait for Reorder Buffer tag)
+    logic [ReorderBufferTagWidth-1:0] tag;      // Meaningful only if renamed; otherwise unspecified
+    logic [FLEN-1:0]                  value;    // Value from regfile if not renamed
+  } rat_lookup_t;
+
+  // ---------------------------------------------------------------------------
+  // Memory Operation Size Encoding
+  // ---------------------------------------------------------------------------
+  // Size encoding for memory operations.
+
+  typedef enum logic [1:0] {
+    MEM_SIZE_BYTE   = 2'b00,  // 8-bit
+    MEM_SIZE_HALF   = 2'b01,  // 16-bit
+    MEM_SIZE_WORD   = 2'b10,  // 32-bit
+    MEM_SIZE_DOUBLE = 2'b11   // 64-bit (FLD/FSD and RV64 LD/SD/LR.D/SC.D/AMO*.D)
+  } mem_size_e;
+
+  // ---------------------------------------------------------------------------
+  // Reservation Station Interface Structures
+  // ---------------------------------------------------------------------------
+
+  // RS dispatch request (from dispatch unit to RS)
+  typedef struct packed {
+    logic                             valid;                // Dispatch request valid
+    rs_type_e                         rs_type;              // Which RS to dispatch to
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    instr_op_e                        op;
+    // Source 1
+    logic                             src1_ready;
+    logic [ReorderBufferTagWidth-1:0] src1_tag;
+    logic [FLEN-1:0]                  src1_value;
+    // Source 2
+    logic                             src2_ready;
+    logic [ReorderBufferTagWidth-1:0] src2_tag;
+    logic [FLEN-1:0]                  src2_value;
+    // Source 3 (FMA only)
+    logic                             src3_ready;
+    logic [ReorderBufferTagWidth-1:0] src3_tag;
+    logic [FLEN-1:0]                  src3_value;
+    // Immediate or precomputed PC value: branch target, AUIPC result,
+    // fetch-fault xtval, or JALR link address. JAL's target is also carried
+    // here at dispatch, but JAL never enters a station.
+    logic [XLEN-1:0]                  imm;
+    logic                             use_imm;
+    // JALR's 12-bit I-immediate for the execute-time target add, since imm
+    // carries its link address.  Unused by every other op.
+    logic [11:0]                      jalr_imm;
+    // FP rounding mode
+    logic [2:0]                       rm;
+    // Branch info (the precomputed target itself travels in imm, above)
+    logic                             predicted_taken;
+    logic [XLEN-1:0]                  predicted_target;     // BTB/RAS predicted target
+    // ID's target-match result for direct branches. JALR compares its
+    // execute-time target against predicted_target instead.
+    logic                             predicted_target_ok;
+    // Original instruction size before RVC decompression (BTB training image
+    // of an early-recovered branch).
+    logic                             is_compressed;
+    // Memory info
+    logic                             is_fp_mem;
+    logic                             mem_needs_lq;
+    logic                             mem_needs_sq;
+    mem_size_e                        mem_size;
+    logic                             mem_signed;
+    // CSR info
+    logic [11:0]                      csr_addr;
+    logic [4:0]                       csr_imm;
+    // PC and PC+2/PC+4 link. INT stores these and predicted_target in a
+    // ROB-tag-indexed side RAM. AUIPC and fetch-fault ALU results use imm.
+    logic [XLEN-1:0]                  pc;
+    logic [XLEN-1:0]                  link_addr;
+    // Early misprediction recovery: checkpoint info and branch type
+    logic                             has_checkpoint;
+    logic [CheckpointIdWidth-1:0]     checkpoint_id;
+    logic                             is_call;
+    logic                             is_return;
+  } rs_dispatch_t;
+
+  // RS issue signals (from RS to functional unit)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    instr_op_e                        op;
+    logic [FLEN-1:0]                  src1_value;
+    logic [FLEN-1:0]                  src2_value;
+    logic [FLEN-1:0]                  src3_value;           // For FMA
+    logic [XLEN-1:0]                  imm;                  // See rs_dispatch_t.imm
+    logic                             use_imm;
+    logic [11:0]                      jalr_imm;             // JALR's I-immediate
+    logic [2:0]                       rm;                   // Rounding mode
+    // Direct branches use predicted_target_ok from ID. predicted_target
+    // is valid only on INT port 0, read by stage2 tag from the side RAM
+    // for JALR's target comparison. The actual PC-relative target uses imm.
+    logic                             predicted_taken;
+    logic [XLEN-1:0]                  predicted_target;
+    logic                             predicted_target_ok;
+    logic                             is_compressed;
+    // Memory info (for MEM_RS)
+    logic                             is_fp_mem;
+    logic                             mem_needs_lq;
+    logic                             mem_needs_sq;
+    mem_size_e                        mem_size;
+    logic                             mem_signed;
+    // CSR info
+    logic [11:0]                      csr_addr;
+    logic [4:0]                       csr_imm;
+    // PC and link for early recovery and BTB training, valid only on INT
+    // port 0; zero on port 1 and other stations. JALR's CDB result uses imm,
+    // so it does not depend on the side RAM.
+    logic [XLEN-1:0]                  pc;
+    logic [XLEN-1:0]                  link_addr;
+    // Early misprediction recovery: checkpoint info and branch type
+    logic                             has_checkpoint;
+    logic [CheckpointIdWidth-1:0]     checkpoint_id;
+    logic                             is_call;
+    logic                             is_return;
+    // Branch class registered through dispatch and issue for branch_resolution,
+    // for timing.
+    logic                             is_branch_class;      // BEQ..BGEU | JAL | JALR
+    logic                             is_jal;
+    logic                             is_jalr;
+    branch_taken_op_e                 branch_op;
+  } rs_issue_t;
+
+  // ---------------------------------------------------------------------------
+  // Load Queue Interface Structures
+  // ---------------------------------------------------------------------------
+
+  // LQ allocation request (from MEM_RS)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic                             is_fp;
+    mem_size_e                        size;
+    logic                             sign_ext;
+    logic                             is_lr;     // Load-reserved
+    logic                             is_amo;    // AMO instruction
+    instr_op_e                        amo_op;    // AMO operation type
+  } lq_alloc_req_t;
+
+  // LQ address update. With translation active, address is the PA. The
+  // lookup and result stages take at least two cycles; queued work and
+  // walks can add delay. The pre-issue lookahead follows the same delay.
+  // A fault carries the VA for xtval and uses the misalignment bypass without
+  // launching. With translation off, the raw AGU address passes through
+  // in the same cycle with DFAULT_NONE; LQ checks misalignment and PMA.
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic [XLEN-1:0]                  address;
+    logic                             is_mmio;
+    data_fault_kind_e                 fault_kind;
+    logic [XLEN-1:0]                  amo_rs2;     // AMO rs2 operand value
+  } lq_addr_update_t;
+
+  // ---------------------------------------------------------------------------
+  // Store Queue Interface Structures
+  // ---------------------------------------------------------------------------
+
+  // SQ allocation request (from MEM_RS)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic                             is_fp;
+    mem_size_e                        size;
+    logic                             is_sc;       // Store-conditional
+    // cbo.zero: the entry keeps rs1 and writes the 64-byte block containing it
+    logic                             is_zero;
+    // cbo.clean/flush/inval: the entry keeps rs1, names the 64-byte block
+    // containing it and writes no data (see store_queue)
+    logic                             is_cmo;
+    cmo_kind_e                        cmo_kind;
+    logic                             addr_valid;  // Address already known at dispatch
+    logic [XLEN-1:0]                  address;
+    logic                             is_mmio;
+  } sq_alloc_req_t;
+
+  // SQ address update (from address calculation)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic [XLEN-1:0]                  address;
+    logic                             is_mmio;
+  } sq_addr_update_t;
+
+  // SQ data update (from RS operand becoming ready)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic [FLEN-1:0]                  data;
+  } sq_data_update_t;
+
+  // Store-to-load forwarding check result
+  typedef struct packed {
+    logic            match;        // Address match found
+    logic            can_forward;  // Size compatible, can forward
+    logic [FLEN-1:0] data;         // Forwarded data
+  } sq_forward_result_t;
+
+  // ---------------------------------------------------------------------------
+  // CDB (Common Data Bus) Structures
+  // ---------------------------------------------------------------------------
+  // FLEN-wide CDB to support FP double precision results.
+
+  // CDB broadcast (from functional unit to RS/Reorder Buffer/RAT)
+  typedef struct packed {
+    logic                             valid;      // Broadcast valid
+    logic [ReorderBufferTagWidth-1:0] tag;        // Reorder Buffer tag of producing instruction
+    logic [FLEN-1:0]                  value;      // Result value (FLEN for FP double)
+    logic                             exception;  // Exception occurred
+    exc_cause_t                       exc_cause;  // Exception cause
+    fp_flags_t                        fp_flags;   // FP exception flags
+    fu_type_e                         fu_type;    // Which FU produced this result
+  } cdb_broadcast_t;
+
+  // FU completion request (from FU to CDB arbiter)
+  typedef struct packed {
+    logic                             valid;      // FU has result ready
+    logic [ReorderBufferTagWidth-1:0] tag;
+    logic [FLEN-1:0]                  value;
+    logic                             exception;
+    exc_cause_t                       exc_cause;
+    fp_flags_t                        fp_flags;
+  } fu_complete_t;
+
+  // The vector memory table as the load and store queues see it: one entry
+  // per vector memory instruction in flight, in program order. An entry is
+  // live from dispatch until the instruction completes; retired entries are
+  // older than anything in the ROB; until its range is known an entry overlaps
+  // everything. A range is up to two segments (one per page): a physical page
+  // number and the first and last 32-byte sector index in that page.
+  localparam int unsigned VmtDepth   = 4;
+  localparam int unsigned VmtPpnBits = PhysAddrBits - 12;
+  typedef struct packed {
+    logic                  valid;
+    logic [VmtPpnBits-1:0] ppn;
+    logic [6:0]            s_lo;
+    logic [6:0]            s_hi;
+  } vmt_seg_t;
+  typedef struct packed {
+    logic                             live;
+    logic                             retired;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic                             range_known;
+    // Two named segments: Yosys does not select within packed arrays of
+    // structs.
+    vmt_seg_t                         seg1;
+    vmt_seg_t                         seg0;
+  } vmt_entry_t;
+  // The table as a flat vector, entry t at [VmtEntryBits*t +: VmtEntryBits]
+  // (Yosys does not select members of packed arrays of structs).
+  localparam int unsigned VmtEntryBits = 3 + ReorderBufferTagWidth + 2 * (1 + VmtPpnBits + 14);
+  typedef logic [VmtDepth*VmtEntryBits-1:0] vmt_view_t;
+
+  // Vector-config completion: what the CSR file needs at commit, kept per ROB
+  // tag in the wrapper's side record. vl and VLMAX are element counts.
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] tag;
+    logic                             vill;
+    logic [7:0]                       vtype;   // vma, vta, vsew, vlmul (0 when vill)
+    logic                             rs1_x0;  // vsetvli/vsetvl with rs1 = x0
+    logic [15:0]                      vlmax;
+    logic [15:0]                      vl;
+  } vcfg_record_t;
+
+  // Commit update of vl and vtype for the CSR file, one per retired
+  // vector-config instruction. keep: rs1 = rd = x0 with a legal vtype, so
+  // the CSR file sets vl to min(vl, vlmax) instead of vl.
+  typedef struct packed {
+    logic        valid;
+    logic        vill;
+    logic [7:0]  vtype;
+    logic        keep;
+    logic [15:0] vlmax;
+    logic [15:0] vl;
+  } vcfg_commit_t;
+
+  // ---------------------------------------------------------------------------
+  // Dispatch Interface Structures
+  // ---------------------------------------------------------------------------
+
+  // Dispatch status (from dispatch to front-end)
+  typedef struct packed {
+    logic dispatch_valid;
+    logic stall;                  // Stall decode (Reorder Buffer/RS/LQ/SQ full)
+    logic reorder_buffer_full;
+    logic int_rs_full;
+    logic mul_rs_full;
+    logic mem_rs_full;
+    logic fp_rs_full;
+    logic lq_full;
+    logic sq_full;
+    logic checkpoint_full;        // All checkpoints in use (branch)
+    // Slot-2 profiling. block_* fires only when slot 1 could dispatch but
+    // slot 2 holds the whole bundle. Multiple capacity checks may fail together.
+    logic slot2_present;          // Real slot-2 instruction at the dispatch input
+    logic slot2_fp_serialized;    // Slot-2 targets FP_RS (FP compute never dispatches as slot-2)
+    logic slot2_block_s1_branch;  // Slot-2 refused: slot-1 is a branch/jump (bundle terminates)
+    logic slot2_block_rob_full2;  // Slot-2 refused: no ROB room for 2
+    logic slot2_block_rs_full2;   // Slot-2 refused: slot-2's RS room check failed
+    logic slot2_block_lsq_full2;  // Slot-2 refused: LQ/SQ room check for slot-2 failed
+    logic slot2_block_ckpt;       // Slot-2 refused: no checkpoint for a slot-2 branch
+  } dispatch_status_t;
+
+  // IF-stage 2-wide delivery events (perf counters only).  deliver1/deliver2
+  // pulse exactly once per accepted IF->PD handoff (stall-qualified inside
+  // if_stage); the kill_* causes are mutually exclusive and meaningful only
+  // on deliver1 && !deliver2 cycles, replaying the stall-captured aligner
+  // classification so they describe the bundle PD received. A handoff held
+  // one-wide by a pending slot-1 prediction can have no cause set.
+  // slot2_pred_taken is an independent event pulse, not a kill cause.
+  typedef struct packed {
+    logic deliver1;  // IF handed PD a real slot-1 instruction
+    logic deliver2;  // ...and a real slot-2 instruction with it
+    logic kill_s1_native_ctrl;  // No slot-2: slot-1 is native 32-bit control flow
+    logic kill_s1_native_serialize;  // No slot-2: slot-1 is a native serializing-class op
+    logic kill_slot1_ctrl;  // No slot-2: slot-1 is compressed control flow
+    logic kill_class;  // No slot-2: slot-2 starts a serialize/FP-compute class op
+    logic kill_window_limit;  // No slot-2: 32-bit slot-2 at NEXT_HI exceeds the 64-bit window
+    logic kill_transient;  // No slot-2: aligner buffer/BRAM transient state
+    logic slot2_pred_taken;  // Slot-2 BTB predicted-taken accepted (the 1-bubble redirect)
+  } if_width_events_t;
+
+  // Integer arithmetic served by the element sequencer in vec_int_exec.
+  // Width, register-group, overlap and vstart rules are checked separately.
+  function automatic logic vector_int_extra_ok(input logic [31:0] insn);
+    logic [5:0] f6;
+    logic [2:0] f3;
+    logic [4:0] vs1, vs2;
+    logic vm, iv, mv, vv, vx, vi;
+    f6 = insn[31:26];
+    f3 = insn[14:12];
+    vs1 = insn[19:15];
+    vs2 = insn[24:20];
+    vm = insn[25];
+    vv = f3 == 0;
+    vx = f3 == 4;
+    vi = f3 == 3;
+    iv = vv || vx || vi;
+    mv = (f3 == 2) || (f3 == 6);
+    vector_int_extra_ok = 1'b0;
+    if (insn[6:0] == 7'h57) begin
+      if (iv) begin
+        case (f6)
+          6'h0c, 6'h0e, 6'h0f: vector_int_extra_ok = (f6 != 6'h0f) || !vv;
+          6'h10: vector_int_extra_ok = !vm;
+          6'h11: vector_int_extra_ok = 1'b1;
+          6'h12: vector_int_extra_ok = !vi && !vm;
+          6'h13: vector_int_extra_ok = !vi;
+          6'h20, 6'h21: vector_int_extra_ok = 1'b1;
+          6'h22, 6'h23: vector_int_extra_ok = !vi;
+          6'h27:
+          vector_int_extra_ok = !vi || (vm &&
+              ((vs1 == 0) || (vs1 == 1) || (vs1 == 3) || (vs1 == 7)));
+          6'h2a, 6'h2b, 6'h2c, 6'h2d, 6'h2e, 6'h2f, 6'h35: vector_int_extra_ok = 1'b1;
+          6'h30, 6'h31: vector_int_extra_ok = vv;
+          default: ;
+        endcase
+      end else if (mv) begin
+        case (f6)
+          6'h00, 6'h01, 6'h02, 6'h03, 6'h04, 6'h05, 6'h06, 6'h07: vector_int_extra_ok = f3 == 2;
+          6'h08, 6'h09, 6'h0a, 6'h0b: vector_int_extra_ok = 1'b1;
+          6'h0e, 6'h0f: vector_int_extra_ok = f3 == 6;
+          6'h10: vector_int_extra_ok = (f3 == 6) && vm && (vs2 == 0);
+          6'h12: vector_int_extra_ok = (f3 == 2) && (vs1 >= 2) && (vs1 <= 7);
+          6'h14:
+          vector_int_extra_ok = (f3 == 2) &&
+              ((vs1 == 1) || (vs1 == 2) || (vs1 == 3) || (vs1 == 16) ||
+               ((vs1 == 17) && (vs2 == 0)));
+          6'h17, 6'h18, 6'h19, 6'h1a, 6'h1b, 6'h1c, 6'h1d, 6'h1e, 6'h1f:
+          vector_int_extra_ok = (f3 == 2) && vm;
+          6'h20, 6'h21, 6'h22, 6'h23, 6'h24, 6'h25, 6'h26, 6'h27,
+          6'h29, 6'h2b, 6'h2d, 6'h2f,
+          6'h30, 6'h31, 6'h32, 6'h33, 6'h34, 6'h35, 6'h36, 6'h37,
+          6'h38, 6'h3a, 6'h3b, 6'h3c, 6'h3d, 6'h3f:
+          vector_int_extra_ok = 1'b1;
+          6'h3e: vector_int_extra_ok = f3 == 6;
+          default: ;
+        endcase
+      end
+    end
+  endfunction
+
+  // Register counts for a signed log2(EMUL). A fractional group occupies
+  // the low part of one register, while alignment concerns whole registers.
+  function automatic int vector_group_regs(input int emul);
+    vector_group_regs = (emul > 0) ? (1 << emul) : 1;
+  endfunction
+
+  function automatic logic vector_groups_overlap(input int a, input int an, input int b,
+                                                 input int bn);
+    vector_groups_overlap = (a < b + bn) && (b < a + an);
+  endfunction
+
+  function automatic logic vector_overlap_illegal(input int d, input int dn, input int deew,
+                                                  input int s, input int sn, input int seew,
+                                                  input int semul);
+    vector_overlap_illegal = 1'b0;
+    if (vector_groups_overlap(d, dn, s, sn)) begin
+      if (deew < seew) vector_overlap_illegal = d != s;
+      else if (deew > seew) vector_overlap_illegal = (semul < 0) || ((s + sn) != (d + dn));
+    end
+  endfunction
+
+  // SEW=16 floating-point arithmetic (Zvfh). Without it, an instruction with a
+  // 16-bit FP operand is reserved except the two Zvfhmin conversions,
+  // vfwcvt.f.f.v and vfncvt.f.f.w; vec_arith_legality applies the same rule,
+  // and vec_fp_lane builds its FP16 arithmetic and integer-conversion
+  // instances only with it.
+  localparam bit VectorZvfh = 1'b1;
+
+  // The FP encodings the vector unit executes (OPFVV and OPFVF). Element
+  // widths, register groups and overlaps are checked against vtype by
+  // vector_fp_illegal.
+  function automatic logic vector_fp_ok(input logic [31:0] insn);
+    logic [5:0] f6;
+    logic vf, vv, vm;
+    logic [4:0] sub;
+    f6 = insn[31:26];
+    vf = insn[14:12] == 5;
+    vv = insn[14:12] == 1;
+    vm = insn[25];
+    sub = insn[19:15];
+    vector_fp_ok = 1'b0;
+    if (vf || vv) begin
+      case (f6)
+        6'h00, 6'h02, 6'h04, 6'h06, 6'h08, 6'h09, 6'h0a, 6'h18, 6'h19, 6'h1b, 6'h1c, 6'h20, 6'h24,
+        6'h28, 6'h29, 6'h2a, 6'h2b, 6'h2c, 6'h2d, 6'h2e, 6'h2f, 6'h30, 6'h32, 6'h34, 6'h36,
+        6'h38, 6'h3c, 6'h3d, 6'h3e, 6'h3f:
+        vector_fp_ok = 1'b1;
+        6'h01, 6'h03, 6'h05, 6'h07, 6'h31, 6'h33: vector_fp_ok = vv;
+        6'h0e, 6'h0f, 6'h1d, 6'h1f, 6'h21, 6'h27: vector_fp_ok = vf;
+        6'h10: vector_fp_ok = vm && (vf ? insn[24:20] == 0 : sub == 0);
+        6'h17: vector_fp_ok = vf && (!vm || insn[24:20] == 0);
+        6'h12:
+        vector_fp_ok = vv && (sub == 0 || sub == 1 || sub == 2 || sub == 3 || sub == 6 ||
+            sub == 7 || sub == 8 || sub == 9 || sub == 10 || sub == 11 || sub == 12 ||
+            sub == 14 || sub == 15 || sub == 16 || sub == 17 || sub == 18 || sub == 19 ||
+            sub == 20 || sub == 21 || sub == 22 || sub == 23);
+        6'h13: vector_fp_ok = vv && (sub == 0 || sub == 4 || sub == 5 || sub == 16);
+        default: ;
+      endcase
+    end
+  endfunction
+
+  // Geometry of an accepted FP instruction: FP element widths of 16 to 64
+  // bits (conversions check their integer and FP sides separately), EEW and
+  // EMUL, aligned groups, permitted source/destination overlaps and the
+  // implicit EEW1 mask versus data-source widths, as for integer arithmetic.
+  // Reductions, vfmv.s.f and vfmv.f.s use one register independently of
+  // LMUL; vfslide1up's destination may not overlap its source.
+  function automatic logic vector_fp_illegal(input logic [8:0] vt, input logic [31:0] insn);
+    int ml, sew, de, ae, be, dm, am, bm, nd, na, nb, da, sa, sb;
+    logic [5:0] f6;
+    logic vf, cvt, red, wide, narrow, mask_dest, scalar_move, scalar_read, uses_a, uses_b, bad;
+    logic int_src, fp_dst, fp16;
+    f6 = insn[31:26];
+    vf = insn[14:12] == 5;
+    da = int'(insn[11:7]);
+    sa = int'(insn[24:20]);
+    sb = int'(insn[19:15]);
+    ml = int'($signed(vt[2:0]));
+    sew = int'(vt[5:3]);
+    cvt = f6 == 6'h12;
+    red = !vf && (f6 == 1 || f6 == 3 || f6 == 5 || f6 == 7 || f6 == 6'h31 || f6 == 6'h33);
+    wide = f6 >= 6'h30 || (cvt && sb >= 8 && sb < 16);
+    narrow = cvt && sb >= 16;
+    mask_dest = f6 >= 6'h18 && f6 <= 6'h1f;
+    scalar_move = f6 == 6'h10 && vf;
+    scalar_read = f6 == 6'h10 && !vf;
+    uses_a = !scalar_move && !(f6 == 6'h17 && insn[25]);
+    uses_b = !vf && !cvt && f6 != 6'h13 && !scalar_read;
+    de = sew + int'(wide);
+    ae = sew + int'(narrow || f6 == 6'h34 || f6 == 6'h36);
+    be = red ? de : sew;
+    dm = ml + de - sew;
+    am = ml + ae - sew;
+    bm = red ? 0 : ml;
+    // Conversion subopcodes with sb[2:1] = 1 read an integer; with
+    // sb[2:1] = 1 or 2 they write FP
+    int_src = cvt && ((sb & 7) == 2 || (sb & 7) == 3);
+    fp_dst = cvt && ((sb & 7) == 2 || (sb & 7) == 3 || (sb & 7) == 4 || (sb & 7) == 5);
+    bad = vt[8] || sew > 3 || ml == -4 || ml < sew - 3 || ae > 3 || de > 3;
+    if (cvt) begin
+      if (!int_src) bad |= ae < 1;
+      if (fp_dst) bad |= de < 1;
+    end else bad |= sew < 1;
+    // A 16-bit FP operand outside vfwcvt.f.f.v and vfncvt.f.f.w
+    fp16 = cvt ? ((!int_src && ae == 1) || (fp_dst && de == 1)) && sb != 12 && sb != 20 : sew == 1;
+    bad |= !VectorZvfh && fp16;
+    if (red || scalar_move) dm = 0;
+    if (scalar_read) am = 0;
+    if (mask_dest) begin
+      dm = 0;
+      de = -3;
+    end
+    nd = vector_group_regs(dm);
+    na = vector_group_regs(am);
+    nb = vector_group_regs(bm);
+    bad |= dm > 3 || dm < -3 || (uses_a && (am > 3 || am < -3));
+    bad |= !scalar_read && (da & (nd - 1)) != 0;
+    bad |= uses_a && (sa & (na - 1)) != 0;
+    bad |= uses_b && (sb & (nb - 1)) != 0;
+    bad |= !insn[25] && da == 0 && !mask_dest && !red;
+    // The mask has EEW=1 and cannot also be a data source at another EEW.
+    bad |= !insn[25] && ((uses_a && sa == 0) || (uses_b && sb == 0));
+    if (uses_a && uses_b && ae != be && vector_groups_overlap(sa, na, sb, nb)) bad = 1'b1;
+    // A widening fused operation reads old vd at the destination EEW.
+    if (f6 >= 6'h3c && (vector_groups_overlap(
+            da, nd, sa, na
+        ) || (uses_b && vector_groups_overlap(
+            da, nd, sb, nb
+        ))))
+      bad = 1'b1;
+    if (!red && !scalar_read && !scalar_move) begin
+      if (uses_a) bad |= vector_overlap_illegal(da, nd, de, sa, na, ae, am);
+      if (uses_b) bad |= vector_overlap_illegal(da, nd, de, sb, nb, be, bm);
+    end
+    if (f6 == 6'h0e && vector_groups_overlap(da, nd, sa, na)) bad = 1'b1;
+    vector_fp_illegal = bad;
+  endfunction
+
+  // Geometry of accepted integer arithmetic: EEW and EMUL, aligned groups,
+  // permitted source/destination overlaps, including the implicit EEW1 mask
+  // versus data-source widths, and instructions using masks or
+  // scalar vector elements independently of LMUL. Whole-register moves ignore
+  // vl and LMUL but still use SEW and require a supported vtype. FP
+  // encodings take vector_fp_illegal's rules.
+  function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
+    int ml, sew, da, sa, sb, nd, na, nb, de, ae, be, dm, am, bm;
+    logic [5:0] f6;
+    logic [2:0] f3;
+    logic vm, vv, mv, whole, red, wred, masks, scan, iota, id_op, ext;
+    logic uses_a, uses_b, mask_dest, scalar_move, widen, narrow, gather, slideup, compress;
+    logic illegal;
+    f6 = insn[31:26];
+    f3 = insn[14:12];
+    vm = insn[25];
+    da = int'(insn[11:7]);
+    sa = int'(insn[24:20]);
+    sb = int'(insn[19:15]);
+    ml = int'($signed(vt[2:0]));
+    sew = int'(vt[5:3]);
+    vv = (f3 == 0) || (f3 == 2);
+    mv = (f3 == 2) || (f3 == 6);
+    whole = (f3 == 3) && (f6 == 6'h27);
+    wred = (f3 == 0) && (f6 == 6'h30 || f6 == 6'h31);
+    red = wred || (f3 == 2 && f6 < 8);
+    masks = (f3 == 2) && (f6[5:3] == 3'b011);
+    scan = (f3 == 2) && (f6 == 6'h14) && sb < 16;
+    iota = (f3 == 2) && (f6 == 6'h14) && sb == 16;
+    id_op = (f3 == 2) && (f6 == 6'h14) && sb == 17;
+    ext = (f3 == 2) && (f6 == 6'h12) && sb < 8;
+    scalar_move = (f3 == 6) && (f6 == 6'h10);
+    widen = (mv && f6 >= 6'h30) || (!mv && f6 == 6'h35);
+    narrow = !mv && (f6 >= 6'h2c) && (f6 <= 6'h2f);
+    gather = !mv && (f6 == 6'h0c || (f3 == 0 && f6 == 6'h0e));
+    slideup = f6 == 6'h0e && !gather;
+    compress = (f3 == 2) && (f6 == 6'h17);
+    mask_dest = masks || scan || (!mv && ((f6[5:3] == 3'b011) || f6 == 6'h11 || f6 == 6'h13));
+    uses_a = !id_op && !scalar_move && !(f6 == 6'h17 && !mv && vm);
+    uses_b = vv && !ext && !(f3 == 2 && (f6 == 6'h12 || f6 == 6'h14));
+    de = sew + int'(widen || wred);
+    ae = sew + int'(narrow || (mv && f6 >= 6'h34 && f6 <= 6'h37));
+    be = red ? de : (gather && f6 == 6'h0e) ? 1 : sew;
+    if (ext) ae = sew - (4 - (sb >> 1));
+    dm = ml + de - sew;
+    am = ml + ae - sew;
+    bm = red ? 0 : ml + be - sew;
+    if (red || scalar_move) dm = 0;
+    if (mask_dest) begin
+      de = -3;
+      dm = 0;
+    end
+    if (masks || scan || iota) begin
+      ae = -3;
+      am = 0;
+    end
+    if (masks || compress) begin
+      be = -3;
+      bm = 0;
+    end
+    nd = vector_group_regs(dm);
+    na = vector_group_regs(am);
+    nb = vector_group_regs(bm);
+    illegal = vt[8] || sew > 3 || ml == -4 || (ml < sew - 3) ||
+        dm > 3 || dm < -3 ||
+        (uses_a && (am > 3 || am < -3 || (ae < 0 && !(masks || scan || iota)) || ae > 3)) ||
+        (uses_b && (bm > 3 || bm < -3 || be > 3)) || de > 3 ||
+        ((da & (nd - 1)) != 0) ||
+        (uses_a && (sa & (na - 1)) != 0) || (uses_b && (sb & (nb - 1)) != 0) ||
+        (!vm && da == 0 && !mask_dest && !red);
+    // Explicit sources and the implicit EEW=1 mask must agree on EEW
+    // wherever their register groups overlap, including reduction seeds.
+    illegal |= !vm && ((uses_a && sa == 0 && ae != -3) || (uses_b && sb == 0 && be != -3));
+    if (uses_a && uses_b && ae != be && vector_groups_overlap(sa, na, sb, nb)) illegal = 1'b1;
+    // Widening multiply-accumulate also reads its double-width destination.
+    // A narrow input overlapping it would read one register at two EEWs.
+    if (mv && f6 >= 6'h3c && (vector_groups_overlap(
+            da, nd, sa, na
+        ) || (uses_b && vector_groups_overlap(
+            da, nd, sb, nb
+        ))))
+      illegal = 1'b1;
+    if (!red && !scalar_move) begin
+      if (uses_a) illegal |= vector_overlap_illegal(da, nd, de, sa, na, ae, am);
+      if (uses_b) illegal |= vector_overlap_illegal(da, nd, de, sb, nb, be, bm);
+    end
+    if ((gather || slideup || compress || scan || iota) && vector_groups_overlap(da, nd, sa, na))
+      illegal = 1'b1;
+    if ((gather || compress) && uses_b && vector_groups_overlap(da, nd, sb, nb)) illegal = 1'b1;
+    if (scan && !vm && da == 0) illegal = 1'b1;
+    if (whole) begin
+      nd = sb + 1;
+      illegal = vt[8] || sew > 3 || ml == -4 || (ml < sew - 3) ||
+          !(sb == 0 || sb == 1 || sb == 3 || sb == 7) ||
+          ((da & (nd - 1)) != 0) || ((sa & (nd - 1)) != 0);
+    end
+    vector_arith_illegal = vector_fp_ok(insn) ? vector_fp_illegal(vt, insn) : illegal;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Instruction Routing Table
+  // ---------------------------------------------------------------------------
+  // RS assignment for each instruction operation.
+  // Guarded from synthesis because Yosys cannot resolve enum values inside
+  // package functions.  Modules that need these during synthesis must inline
+  // equivalent logic using fully-qualified riscv_pkg:: enum references.
+`ifndef SYNTHESIS
+
+  function automatic rs_type_e get_rs_type(instr_op_e op);
+    case (op)
+      // Integer ALU operations -> INT_RS
+      ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
+      ADDI, ANDI, ORI, XORI, SLTI, SLTIU, SLLI, SRLI, SRAI,
+      LUI, AUIPC, JALR,
+      BEQ, BNE, BLT, BGE, BLTU, BGEU,
+      // Zba/Zbb/Zbs/Zbkb/Zicond -> INT_RS (all 1-cycle ALU ops)
+      SH1ADD, SH2ADD, SH3ADD,
+      BSET, BCLR, BINV, BEXT, BSETI, BCLRI, BINVI, BEXTI,
+      ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MAX, MAXU, MIN, MINU,
+      SEXT_B, SEXT_H, ROL, ROR, RORI, ORC_B, REV8,
+      CZERO_EQZ, CZERO_NEZ,
+      PACK, PACKH, BREV8,
+      // RV64 W-form ALU ops -> INT_RS
+      ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
+      ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
+      ROLW, RORW, RORIW, CLZW, CTZW, CPOPW, PACKW,
+      // CSR instructions -> INT_RS (execute at Reorder Buffer head)
+      CSR_REG, CSR_IMM,
+      // Privileged (exceptions) -> INT_RS
+      ECALL, EBREAK, FETCH_FAULT, FETCH_PAGE_FAULT,
+      // Zihintpause: a no-operand NOP that completes through INT_RS
+      PAUSE:
+      get_rs_type = RS_INT;
+
+      // Integer and carry-less multiply, divide, vector configuration -> MUL_RS
+      CLMUL, CLMULH, CLMULR,
+      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
+      VSETVLI, VSETIVLI, VSETVL:
+      get_rs_type = RS_MUL;
+
+      // Memory operations -> MEM_RS (both INT and FP)
+      LOAD, STORE,
+      LOAD_FP, STORE_FP,
+      LR, SC,
+      AMOSWAP, AMOADD, AMOXOR, AMOAND, AMOOR,
+      AMOMIN, AMOMAX, AMOMINU, AMOMAXU,
+      FENCE, FENCE_I, SFENCE_VMA,
+      // Zicboz: a store-queue entry that writes a whole block. Zicbom: a
+      // store-queue entry that names a block
+      CBO_ZERO, CBO_CLEAN, CBO_FLUSH, CBO_INVAL:
+      get_rs_type = RS_MEM;
+
+      // Every FP compute operation -> FP_RS
+      FADD_S, FSUB_S, FADD_D, FSUB_D,
+      FMUL_S, FMUL_D, FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S, FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D,
+      FDIV_S, FSQRT_S, FDIV_D, FSQRT_D,
+      FMIN_S, FMAX_S, FMIN_D, FMAX_D,
+      FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
+      FCVT_W_S, FCVT_WU_S, FCVT_S_W, FCVT_S_WU,
+      FCVT_W_D, FCVT_WU_D, FCVT_D_W, FCVT_D_WU,
+      FCVT_L_S, FCVT_LU_S, FCVT_S_L, FCVT_S_LU,
+      FCVT_L_D, FCVT_LU_D, FCVT_D_L, FCVT_D_LU,
+      FCVT_S_D, FCVT_D_S,
+      FCVT_S_H, FCVT_H_S, FCVT_D_H, FCVT_H_D,
+      FMV_X_W, FMV_W_X, FMV_X_D, FMV_D_X, FMV_X_H, FMV_H_X,
+      FLI_S, FLI_D, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D,
+      FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D,
+      FCVTMOD_W_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D,
+      FCLASS_S, FCLASS_D,
+      FSGNJ_S, FSGNJN_S, FSGNJX_S,
+      FSGNJ_D, FSGNJN_D, FSGNJX_D:
+      get_rs_type = RS_FP;
+
+      // Instructions that don't need RS (dispatch directly to Reorder Buffer).
+      // SRET and DRET ride the MRET machinery.
+      // VTOX, VTOF, VARITH_F, VLOAD and VSTORE complete from the vector unit at
+      // the ROB head.
+      JAL, WFI, MRET, SRET, DRET, VTOX, VTOF, VARITH_F, VLOAD, VSTORE: get_rs_type = RS_NONE;
+
+      default: get_rs_type = RS_INT;  // Default fallback
+    endcase
+  endfunction
+
+  // Instructions with an integer destination (rd).
+  function automatic logic has_int_dest(instr_op_e op);
+    case (op)
+      // Integer ALU ops with rd
+      ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
+      ADDI, ANDI, ORI, XORI, SLTI, SLTIU, SLLI, SRLI, SRAI,
+      LUI, AUIPC, JAL, JALR,
+      // B-extension
+      SH1ADD, SH2ADD, SH3ADD,
+      BSET, BCLR, BINV, BEXT, BSETI, BCLRI, BINVI, BEXTI,
+      ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MAX, MAXU, MIN, MINU,
+      SEXT_B, SEXT_H, ROL, ROR, RORI, ORC_B, REV8,
+      CZERO_EQZ, CZERO_NEZ, PACK, PACKH, BREV8,
+      // RV64 W-form ALU ops
+      ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
+      ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
+      ROLW, RORW, RORIW, CLZW, CTZW, CPOPW, PACKW,
+      // Integer and carry-less multiplication, division
+      CLMUL, CLMULH, CLMULR,
+      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
+      // Vector configuration writes the new vl to rd; vector-to-scalar ops
+      // write their result
+      VSETVLI, VSETIVLI, VSETVL, VTOX,
+      // Integer loads
+      LOAD,
+      // LR/AMO return memory data; SC returns success/failure status.
+      LR, SC, AMOSWAP, AMOADD, AMOXOR, AMOAND, AMOOR, AMOMIN, AMOMAX, AMOMINU, AMOMAXU,
+      // CSR (return old CSR value to rd)
+      CSR_REG, CSR_IMM,
+      // FP compare -> INT rd
+      FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
+      // FP classify -> INT rd
+      FCLASS_S, FCLASS_D,
+      // FP to INT conversion -> INT rd
+      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
+      // Zimop: writes zero to rd
+      MOP,
+      // FP to INT bit move -> INT rd
+      FMV_X_W, FMV_X_D, FMV_X_H,
+      // Zfa
+      FCVTMOD_W_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D:
+      has_int_dest = 1'b1;
+
+      default: has_int_dest = 1'b0;
+    endcase
+  endfunction
+
+  // Instructions with an FP destination (fd).
+  function automatic logic has_fp_dest(instr_op_e op);
+    case (op)
+      // FP loads and the vector-to-FP move
+      LOAD_FP, VTOF,
+      // FP compute ops
+      FADD_S, FSUB_S, FMUL_S, FDIV_S, FSQRT_S,
+      FADD_D, FSUB_D, FMUL_D, FDIV_D, FSQRT_D,
+      FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S,
+      FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D,
+      FMIN_S, FMAX_S, FMIN_D, FMAX_D,
+      FSGNJ_S, FSGNJN_S, FSGNJX_S,
+      FSGNJ_D, FSGNJN_D, FSGNJX_D,
+      // INT to FP conversion -> FP fd
+      FCVT_S_W, FCVT_S_WU, FCVT_D_W, FCVT_D_WU, FCVT_S_L, FCVT_S_LU, FCVT_D_L, FCVT_D_LU,
+      // FP format conversion
+      FCVT_S_D, FCVT_D_S, FCVT_S_H, FCVT_H_S, FCVT_D_H, FCVT_H_D,
+      // INT to FP bit move -> FP fd
+      FMV_W_X, FMV_D_X, FMV_H_X,
+      // Zfa
+      FLI_S, FLI_D, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D:
+      has_fp_dest = 1'b1;
+
+      default: has_fp_dest = 1'b0;
+    endcase
+  endfunction
+
+  // Instructions that read FP rs1.
+  function automatic logic uses_fp_rs1(instr_op_e op);
+    case (op)
+      // FP compute ops (fs1)
+      FADD_S, FSUB_S, FMUL_S, FDIV_S, FSQRT_S,
+      FADD_D, FSUB_D, FMUL_D, FDIV_D, FSQRT_D,
+      FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S,
+      FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D,
+      FMIN_S, FMAX_S, FMIN_D, FMAX_D,
+      FSGNJ_S, FSGNJN_S, FSGNJX_S,
+      FSGNJ_D, FSGNJN_D, FSGNJX_D,
+      // FP compare (fs1, fs2) -> INT rd
+      FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
+      // FP classify (fs1) -> INT rd
+      FCLASS_S, FCLASS_D,
+      // FP to INT conversion (fs1) -> INT rd
+      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
+      // FP to INT bit move (fs1) -> INT rd
+      FMV_X_W, FMV_X_D, FMV_X_H,
+      // FP format conversion
+      FCVT_S_D, FCVT_D_S, FCVT_S_H, FCVT_H_S, FCVT_D_H, FCVT_H_D,
+      // Zfa (FLI reads no register)
+      FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D,
+      FCVTMOD_W_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D:
+      uses_fp_rs1 = 1'b1;
+
+      default: uses_fp_rs1 = 1'b0;
+    endcase
+  endfunction
+
+  // Instructions that read FP rs2.
+  function automatic logic uses_fp_rs2(instr_op_e op);
+    case (op)
+      // FP compute ops with 2+ sources
+      FADD_S, FSUB_S, FMUL_S, FDIV_S,
+      FADD_D, FSUB_D, FMUL_D, FDIV_D,
+      FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S,
+      FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D,
+      FMIN_S, FMAX_S, FMIN_D, FMAX_D,
+      FSGNJ_S, FSGNJN_S, FSGNJX_S,
+      FSGNJ_D, FSGNJN_D, FSGNJX_D,
+      // FP compare (fs1, fs2)
+      FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
+      // FP stores (base=INT rs1, data=FP rs2)
+      STORE_FP,
+      // Zfa
+      FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D:
+      uses_fp_rs2 = 1'b1;
+
+      default: uses_fp_rs2 = 1'b0;
+    endcase
+  endfunction
+
+  // Instructions that read FP rs3 (FMA only).
+  function automatic logic uses_fp_rs3(instr_op_e op);
+    case (op)
+      FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S, FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D:
+      uses_fp_rs3 = 1'b1;
+
+      default: uses_fp_rs3 = 1'b0;
+    endcase
+  endfunction
+
+  // Integer rs1 use, excluding FP sources, immediate-only fields, and
+  // operations with no source. SFENCE.VMA reads rs1 (address filter) and rs2
+  // (ASID filter); x0 reads as zero and selects "all".
+  function automatic logic uses_int_rs1(instr_op_e op);
+    if (uses_fp_rs1(op)) begin
+      uses_int_rs1 = 1'b0;
+    end else begin
+      case (op)
+        LUI, AUIPC, JAL, ECALL, EBREAK, FENCE, FENCE_I, WFI, MRET, SRET, DRET, PAUSE, CSR_IMM, MOP,
+        // Zfa FLI: rs1 is the constant index, not a register
+        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI,
+        VARITH, VARITH_F, VTOX, VTOF, VLOAD, VSTORE:
+        uses_int_rs1 = 1'b0;
+        default: uses_int_rs1 = 1'b1;
+      endcase
+    end
+  endfunction
+
+  // Instructions that read integer rs2: branches, R-type integer ALU,
+  // integer stores, AMO/SC. FP stores (STORE_FP) read FP rs2 for their data
+  // instead.
+  function automatic logic uses_int_rs2(instr_op_e op);
+    if (uses_fp_rs2(op)) begin
+      uses_int_rs2 = 1'b0;
+    end else begin
+      case (op)
+        // Conditional branches
+        BEQ, BNE, BLT, BGE, BLTU, BGEU,
+        // R-type integer ALU (have rs2)
+        ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
+        // Integer and carry-less multiplication, division
+        CLMUL, CLMULH, CLMULR,
+        MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
+        // vsetvl's vtype
+        VSETVL,
+        // B-extension with rs2
+        SH1ADD, SH2ADD, SH3ADD,
+        BSET, BCLR, BINV, BEXT,
+        ANDN, ORN, XNOR,
+        MAX, MAXU, MIN, MINU,
+        ROL, ROR,
+        CZERO_EQZ, CZERO_NEZ,
+        PACK, PACKH,
+        // SFENCE.VMA: rs2 is the ASID filter
+        SFENCE_VMA,
+        // RV64 W-form R-type ops
+        ADDW, SUBW, SLLW, SRLW, SRAW, ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, ROLW, RORW, PACKW,
+        // Integer stores
+        STORE,
+        // Atomics (rs2 is source value for AMO/SC)
+        SC, AMOSWAP, AMOADD, AMOXOR, AMOAND, AMOOR, AMOMIN, AMOMAX, AMOMINU, AMOMAXU:
+        uses_int_rs2 = 1'b1;
+        default: uses_int_rs2 = 1'b0;
+      endcase
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Control Flow Classification Helpers
+  // ---------------------------------------------------------------------------
+
+  // Control flow that can mispredict and use a checkpoint.
+  function automatic logic is_branch_or_jump_op(instr_op_e op);
+    case (op)
+      BEQ, BNE, BLT, BGE, BLTU, BGEU,  // Conditional branches
+      JAL, JALR:  // Unconditional jumps
+      is_branch_or_jump_op = 1'b1;
+      default: is_branch_or_jump_op = 1'b0;
+    endcase
+  endfunction
+
+  // JAL's target is known at decode; allocation can mark it done.
+  function automatic logic is_jal_op(instr_op_e op);
+    is_jal_op = (op == JAL);
+  endfunction
+
+  // JALR waits for rs1 and resolves at execute.
+  function automatic logic is_jalr_op(instr_op_e op);
+    is_jalr_op = (op == JALR);
+  endfunction
+
+  // Potential RAS push; the caller must also check rd.
+  function automatic logic is_potential_call_op(instr_op_e op);
+    is_potential_call_op = (op == JAL) || (op == JALR);
+  endfunction
+
+  // Potential RAS pop; the caller must also check rs1, rd, and imm.
+  function automatic logic is_potential_return_op(instr_op_e op);
+    is_potential_return_op = (op == JALR);
+  endfunction
+
+  // Conditional branches, excluding jumps.
+  function automatic logic is_conditional_branch_op(instr_op_e op);
+    case (op)
+      BEQ, BNE, BLT, BGE, BLTU, BGEU: is_conditional_branch_op = 1'b1;
+      default: is_conditional_branch_op = 1'b0;
+    endcase
+  endfunction
+
+`endif  // SYNTHESIS
+
+  // ---------------------------------------------------------------------------
+  // cpu_ooo-internal recovery capture structs
+  // ---------------------------------------------------------------------------
+  // Shared recovery payloads. Keep these in riscv_pkg: Yosys read_verilog -sv
+  // cannot resolve another package's members inside a typedef.
+
+  // Mispredicting ROB-head data for commit-time redirect, BTB update,
+  // and RAS restore.
+  typedef struct packed {
+    logic [ReorderBufferTagWidth-1:0] tag;
+    logic has_checkpoint;
+    logic [CheckpointIdWidth-1:0] checkpoint_id;
+    logic [XLEN-1:0] redirect_pc;
+    logic [XLEN-1:0] pc;
+    logic [XLEN-1:0] branch_target;
+    logic branch_taken;
+    logic is_branch;
+    logic is_call;
+    logic is_return;
+    logic is_jal;
+    logic is_jalr;
+    logic is_compressed;
+  } mispredict_commit_capture_t;
+
+  // Captured for a correctly-predicted branch commit; drives the BTB update
+  // (no PC redirect) using registered commit data.
+  typedef struct packed {
+    logic [ReorderBufferTagWidth-1:0] tag;
+    logic [CheckpointIdWidth-1:0] checkpoint_id;
+    logic [XLEN-1:0] pc;
+    logic [XLEN-1:0] branch_target;
+    logic branch_taken;
+    logic is_branch;
+    logic is_jal;
+    logic is_jalr;
+    logic is_compressed;
+  } correct_branch_commit_capture_t;
+
+
+  // Reorder-buffer serializing-instruction FSM state, shared by
+  // reorder_buffer and its rob_serializer submodule.
+  typedef enum logic [2:0] {
+    SERIAL_IDLE,                  // No serializing instruction at head
+    SERIAL_WAIT_SQ,               // Waiting for SQ to drain (FENCE/FENCE.I)
+    SERIAL_CSR_EXEC,              // CSR executing
+    SERIAL_MRET_EXEC,             // xRET (MRET, SRET, DRET) executing
+    SERIAL_WFI_WAIT,              // WFI waiting for interrupt
+    SERIAL_TRAP_WAIT,             // Exception waiting for trap unit
+    SERIAL_FENCE_I_SYNC,          // FENCE.I/SFENCE.VMA waiting for cache/TLB sync
+    SERIAL_CSR_TRANSLATION_DRAIN  // Translation-class CSR completed its
+                                  // handshake and is waiting for committed
+                                  // stores to drain before retirement
+  } serial_state_e;
+endpackage : riscv_pkg

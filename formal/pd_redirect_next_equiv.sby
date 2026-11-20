@@ -16,6 +16,8 @@ hierarchy -top pd_redirect_next_equiv
 script free_undefined.ys
 prep -top pd_redirect_next_equiv
 select -assert-count 9 t:$check r:FLAVOR=assert %i
+# The slot-1 owner may choose an address only after its PD capture.
+select -assert-none */i_backing_hit %co* */o_target_native_low */o_pc_high %u */o_slot1_backing_target %u %i
 
 [files]
 pd_redirect_next_equiv.sv

@@ -28,7 +28,8 @@ CHECKPOINT_ID_WIDTH = 3
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
 TAGE_INDEX_BITS = 9
-TAGE_TAG_BITS = 9
+TAGE_TAG_BITS = 10
+TAGE_TABLES = 4
 TAGE_FTQ_IDX_BITS = 6
 MEM_SIZE_WIDTH = 2
 PD_TARGET_SPLIT = 13
@@ -49,13 +50,12 @@ PIPELINE_CTRL_FIELDS = [
 ]
 
 # tage_lookup_t
+# Table n (1 = shortest history) is element n - 1 of each packed array, so the
+# highest table's field comes first.
 TAGE_LOOKUP_FIELDS = [
-    ("index1", TAGE_INDEX_BITS),
-    ("index2", TAGE_INDEX_BITS),
-    ("tag1", TAGE_TAG_BITS),
-    ("tag2", TAGE_TAG_BITS),
-    ("hit1", 1),
-    ("hit2", 1),
+    *[(f"index{n}", TAGE_INDEX_BITS) for n in range(TAGE_TABLES, 0, -1)],
+    *[(f"tag{n}", TAGE_TAG_BITS) for n in range(TAGE_TABLES, 0, -1)],
+    *[(f"hit{n}", 1) for n in range(TAGE_TABLES, 0, -1)],
     ("taken", 1),
     ("alt_tagged", 1),
     ("alt_tagged_taken", 1),

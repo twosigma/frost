@@ -1,0 +1,29 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 3
+cover: mode cover
+cover: depth 4
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top ittage_predictor --single-unit -DSYNTHESIS -DITTAGE_TRAINING_PROOF riscv_pkg.sv sdp_dist_ram.sv ittage_predictor.sv
+hierarchy -top ittage_predictor
+script free_undefined.ys
+# Power-up contents are independent, including in the lookup and training copies.
+delete t:$meminit t:$meminit_v2
+prep -top ittage_predictor -flatten
+select -assert-count 12 t:$mem_v2
+prove: chformal -cover -remove
+cover: chformal -assert -remove
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ittage_predictor.sv
+free_undefined.ys

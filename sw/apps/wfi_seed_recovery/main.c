@@ -14,48 +14,35 @@
  *    limitations under the License.
  */
 
-/*
- * Delay an indirect jump's target through a divide so wrong-path WFIs can
- * dispatch behind it. When the jump retires with recovery pending, a WFI
- * may reach the ROB head. It must not seed the interrupt resume PC: a trap
- * before the target's first retirement would otherwise resume on the wrong
- * path. A second divide runs at the target.
- *
- * This program supplies the sequence; verif/cocotb_tests/test_real_program.py
- * checks the WFI head and resume PC.
- */
-
-#include <stdint.h>
-
+/* The first WFI holds retirement while the direct JAL and its fall-through
+ * WFI enter the ROB. The bench wakes the first WFI through APLIC source 2.
+ * A timer also lets the program finish when run without the bench. */
+#include "aplic.h"
+#include "trap.h"
 #include "uart.h"
-
-#define ITERATIONS 64u
 
 int main(void)
 {
-    uint64_t one = 1;
+    unsigned int fell_through = 0;
 
-    uart_printf("\n=== wrong-path WFI recovery test ===\n");
-    for (uint32_t i = 0; i < ITERATIONS; i++) {
-        uint64_t target = 0;
-        uint64_t scratch = 0;
-        __asm__ volatile(".option push\n.option norvc\n"
-                         "la    %[tgt], 1f\n"
-                         "div   %[tgt], %[tgt], %[one]\n"
-                         "jr    %[tgt]\n"
-                         "wfi\n"
-                         "wfi\n"
-                         "wfi\n"
-                         "1:\n"
-                         "div   %[scr], %[tgt], %[one]\n"
-                         ".option pop\n"
-                         : [tgt] "=&r"(target), [scr] "=&r"(scratch)
-                         : [one] "r"(one)
-                         : "memory");
-        (void) scratch;
-    }
-    uart_printf("jumps: %u\n<<PASS>>\n", ITERATIONS);
+    disable_interrupts();
+    aplic_enable_machine_source(2);
+    enable_external_interrupt();
+    enable_timer_interrupt();
+    set_timer_cmp(rdmtime() + 1000000);
+
+    __asm__ volatile(".option push\n.option norvc\n"
+                     "wfi_recovery_gate: wfi\n"
+                     "jal zero, wfi_recovery_target\n"
+                     "wfi\n"
+                     "li %0, 1\n"
+                     "wfi_recovery_target:\n"
+                     ".option pop\n"
+                     : "+r"(fell_through)
+                     :
+                     : "memory");
+
+    uart_puts(fell_through ? "<<FAIL>> JAL fell through\n" : "<<PASS>>\n");
     for (;;) {
     }
-    return 0;
 }

@@ -58,6 +58,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/commit/commit_actions.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/branch_resolution.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/misprediction_flush_controller.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/ras_flush_checkpoint.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/tage_history.sv
 
 # OOO CPU top-level integration

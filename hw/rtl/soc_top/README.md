@@ -4,7 +4,12 @@
 
 `soc_axi_slave` receives the CPU's full physical-address AXI master. Cached DDR addresses go to the board DDR port after base subtraction. That private port is five ID bits wide and uses whole-line beats; requests that cannot be represented there are rejected instead of truncating an ID or address. Other requests pass through a local request/response interface. Each local access executes once, with response buffering independent of AXI backpressure. `LOCAL_USER_ENABLE=1` carries the captured AWUSER field with local writes. The default value is zero and the local user output is zero. A request rejected by the decoder or an instruction fetch to device memory produces no peripheral side effect.
 
-Local instruction reads select the instruction BRAM copy using AxPROT[2]; data reads select the data copy. Programming writes both copies through the div4 interface, and debug stores use the slice writer to mirror data into instruction memory. The CPU performs fetch predecode after the AXI response. Normal CPU stores do not silently rewrite the separate instruction copy.
+Local instruction reads select the instruction BRAM copy using AxPROT[2].
+Data reads select the data copy. Programming writes both copies through the
+div4 interface, and debug stores use the slice writer to mirror data into
+instruction memory. The SoC instantiates the instruction memory in data-only
+mode. The CPU performs fetch predecode after the AXI response. Normal CPU
+stores do not silently rewrite the separate instruction copy.
 
 Coherent builds capture the debug mirror address while its hold slot is empty.
 An occupied slot holds its address until the slice writer accepts it. The held

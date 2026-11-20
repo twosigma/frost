@@ -7,7 +7,7 @@ SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
 and Sv39 virtual memory. The AMD Alveo X3522PV configuration targets 322 MHz
 and boots Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
 filesystem over NFS through its own 10 Gigabit Ethernet NIC. It runs
-[CoreMark](sw/apps/coremark/README.md) at 4.77 CoreMark/MHz.
+[CoreMark](sw/apps/coremark/README.md) at 4.88 CoreMark/MHz.
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
 
@@ -278,21 +278,21 @@ See the [board guide](boards/README.md) for pinouts, clocking, and adding a boar
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; post-route report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; post-synthesis report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 164,531 | 1,029,600 | 16.0% |
-|   LUT as Logic | 145,078 | 1,029,600 | 14.1% |
-|   LUT as Distributed RAM | 18,718 | — | — |
-|   LUT as Shift Register | 735 | — | — |
-| CLB Registers | 103,332 | 2,059,200 | 5.0% |
-| Block RAM Tile | 263 | 2,112 | 12.4% |
-| URAM | 68 | 352 | 19.3% |
-| DSPs | 27 | 1,320 | 2.0% |
-| CARRY8 | 1,997 | 128,700 | 1.6% |
-| F7 Muxes | 1,970 | 514,800 | 0.4% |
-| F8 Muxes | 930 | 257,400 | 0.4% |
+| CLB LUTs | 405,631 | 1,029,600 | 39.4% |
+|   LUT as Logic | 373,451 | 1,029,600 | 36.3% |
+|   LUT as Distributed RAM | 30,562 | — | — |
+|   LUT as Shift Register | 1,618 | — | — |
+| CLB Registers | 225,950 | 2,059,200 | 11.0% |
+| Block RAM Tile | 288 | 2,112 | 13.6% |
+| URAM | 66 | 352 | 18.8% |
+| DSPs | 87 | 1,320 | 6.6% |
+| CARRY8 | 5,604 | 128,700 | 4.3% |
+| F7 Muxes | 2,095 | 514,800 | 0.4% |
+| F8 Muxes | 961 | 257,400 | 0.4% |
 | Bonded IOB | 132 | 364 | 36.3% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 3 | 22 | 13.6% |
@@ -331,14 +331,10 @@ its own workflow, so a newer push to `main` does not cancel it.
 The [test guide](tests/README.md#ci-integration) has the details and the commands
 for each suite.
 
-Each started main push checks all 1,995 one-per-form vector programs.
-Pull requests labeled `run-ci` check one slice chosen by PR number. A
-regular manual run checks one slice chosen by workflow run number. A
-manual slice replay runs only the image build and three vector shards. A
-complete manual campaign runs the image build, all 9,051 programs and
-a report. Estimated vector costs after the shared image build are
-11 runner-hours for main, 0.85 per slice and 56 for the campaign.
-See the [test guide](tests/README.md#generated-vector-programs-in-ci).
+Every started main push checks a vector program for each instruction form,
+and pull requests labeled `run-ci` and regular manual runs check a slice.
+A manual vector run can replay a chosen slice or run the complete campaign,
+as described in the [test guide](tests/README.md#generated-vector-programs-in-ci).
 
 ### Building Software
 
