@@ -315,11 +315,13 @@ def _check_rtl_images_match_generator(dut: Any, words: list[int]) -> None:
     """
     images = _generator_images(words)
     overlay_rows = OVERLAY_WORD_COUNT // 2
+    metadata = dut.gen_fetch_metadata
     for parity in ("even", "odd"):
         for row in range(len(words) // 2):
             for bank_suffix, image in BLOCK_RAM_IMAGES:
                 bank = f"u_{parity}_{bank_suffix}"
-                got = int(getattr(dut, bank).ram[row].value)
+                owner = metadata if bank_suffix == "sideband" else dut
+                got = int(getattr(owner, bank).ram[row].value)
                 want = images[f"{parity}-{image}"][row]
                 assert got == want, (
                     f"{bank}.ram[{row}] = 0x{got:x}, generator image 0x{want:x}"
@@ -328,7 +330,7 @@ def _check_rtl_images_match_generator(dut: Any, words: list[int]) -> None:
                 continue
             for name in SCALAR_REPLICA_BITS:
                 bank = f"u_{parity}_{name}_bank"
-                got = int(getattr(dut, bank).u_ram.ram[row].value)
+                got = int(getattr(metadata, bank).u_ram.ram[row].value)
                 want = images[f"{parity}-{name.replace('_', '-')}"][row]
                 assert got == want, (
                     f"{bank}.u_ram.ram[{row}] = {got}, generator image {want}"
@@ -338,12 +340,14 @@ def _check_rtl_images_match_generator(dut: Any, words: list[int]) -> None:
 def _memory_snapshot(dut: Any) -> tuple[int, ...]:
     """Capture every physical row to detect writes during power-on reset."""
     contents: list[int] = []
+    metadata = dut.gen_fetch_metadata
     for parity in ("even", "odd"):
         for suffix, _ in BLOCK_RAM_IMAGES:
-            ram = getattr(dut, f"u_{parity}_{suffix}").ram
+            owner = metadata if suffix == "sideband" else dut
+            ram = getattr(owner, f"u_{parity}_{suffix}").ram
             contents.extend(int(row.value) for row in ram)
         for name in SCALAR_REPLICA_BITS:
-            ram = getattr(dut, f"u_{parity}_{name}_bank").u_ram.ram
+            ram = getattr(metadata, f"u_{parity}_{name}_bank").u_ram.ram
             contents.extend(int(row.value) for row in ram)
     return tuple(contents)
 

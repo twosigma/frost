@@ -5782,6 +5782,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=(
             "-GADDR_WIDTH=4",
+            "-GENABLE_FETCH_METADATA=1",
             "-GPC_METADATA_OVERLAY_ADDR_WIDTH=2",
             "-GUSE_INIT_FILE=0",
         ),
@@ -5789,10 +5790,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "imem_predecode_capacity": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_capacity",
         hdl_toplevel_module="imem_predecode",
-        description=(
-            "Predecode coverage and fetch rate at the production 128 KiB IMEM size"
+        description="Optional predecode coverage at the 128 KiB IMEM size",
+        verilator_extra_args=(
+            "-GADDR_WIDTH=15",
+            "-GENABLE_FETCH_METADATA=1",
+            "-GUSE_INIT_FILE=0",
         ),
-        verilator_extra_args=("-GADDR_WIDTH=15", "-GUSE_INIT_FILE=0"),
     ),
     "low_bram_fetch_presenter": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_low_bram_fetch_presenter",

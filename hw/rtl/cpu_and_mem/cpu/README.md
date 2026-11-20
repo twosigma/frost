@@ -90,10 +90,9 @@ in `frost_hart.sv`.
 IF receives a 64-bit window each cycle: the 32-bit word at the fetch PC and
 the word after it. It cuts up to two instructions from the window, assembling
 a 32-bit instruction that starts in the upper half of a word from both words
-in the same cycle. Compressed instructions are expanded when their words are
-written to instruction memory or filled into the L1I (see
-[Instruction fetch providers](#instruction-fetch-providers)): IF builds slot 2
-from that predecoded RV64C expansion, PD does the same for slot 1 and extracts
+in the same cycle. Fetch providers expand compressed instructions as part of
+predecode (see [Instruction fetch providers](#instruction-fetch-providers)).
+IF builds slot 2 from the RV64C expansion, PD does the same for slot 1 and extracts
 source registers early, and ID decodes both slots. Decoded bundles wait in the
 [decoded bundle queue](cpu_ooo/frontend_control/README.md) until dispatch
 renames them. While `mstatus.FS` is Off, ID decodes every F/D instruction as
@@ -428,10 +427,10 @@ bits (instruction size, pairing, and slot-2 eligibility) and, for each
 halfword, the full RV64C expansion with its illegal flag and whether an
 indirect jump (JALR, C.JR, C.JALR) starts there. The expansion's
 source-register fields are stored separately, and PD takes a compressed
-instruction's register fields from them. CPU fetch fills compute the metadata with
-`riscv_pkg::imem_make_sideband`, and
-`sw/common/generate_imem_predecode_init.py` mirrors it for the
-instruction-memory metadata arrays that component tests use.
+instruction's register fields from them. CPU fetch fills compute the metadata
+with `riscv_pkg::imem_make_sideband`. The generator
+`sw/common/generate_imem_predecode_init.py` mirrors that function for the
+optional instruction-memory metadata banks used by component tests.
 
 ### Operation encoding
 

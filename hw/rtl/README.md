@@ -70,7 +70,7 @@ entry.
 | `cpu_top/` | Standalone CPU: one hart (`frost_hart.sv`), the shared L2 and outgoing AXI master (`frost_cluster_memory.sv`), and their composition (`cpu_top.sv`) |
 | `soc_top/` | FROST memory, peripheral and debug integration |
 | `cpu_and_mem/` | Shared pipeline and platform component implementations |
-| `cpu_and_mem/imem_predecode.sv` | Low-BRAM instruction memory and predecode metadata |
+| `cpu_and_mem/imem_predecode.sv` | Low-BRAM instruction memory with optional fetch metadata |
 | `cpu_and_mem/low_bram_fetch_presenter.sv` | Fixed-latency TestRIG and unit-bench fetch presenter |
 | `cpu_and_mem/fetch_provider.sv` | Cached and uncached instruction fetch buffers |
 | `cpu_and_mem/dma_test_engine.sv`, `dma_test_engine_axi.sv` | Coherent DMA copy/fill engine, and its AXI4 master |

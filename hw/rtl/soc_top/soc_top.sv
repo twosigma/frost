@@ -1165,11 +1165,12 @@ module soc_top #(
       (i_instr_mem_en ? (|i_instr_mem_we) : slice_imem_we);
   assign prog_port_dmem_we = i_instr_mem_en ? i_instr_mem_we : {4{slice_dmem_we}};
 
-  // Instruction memory: code-region words with write-time predecode bits.
+  // Instruction memory: code-region words for the local AXI responder.
   // Fetches above this region carry an access fault, so aliased data cannot
   // execute. Port A programs on div4; port B fetches on the main clock.
   imem_predecode #(
       .ADDR_WIDTH(ImemWordAddrWidth),
+      .ENABLE_FETCH_METADATA(1'b0),
       .USE_INIT_FILE(1'b1),
       .INIT_FILE("sw.mem"),
       .INIT_ADDR_WIDTH(MemWordAddrWidth)
@@ -1183,8 +1184,8 @@ module soc_top #(
       .i_port_a_write_data(prog_port_data),
       .i_port_a_write_enable(prog_port_imem_we),
       .o_port_a_read_data(  /* unused - write only */),
-      // Port B: Instruction fetch (main clock, read only), at the request's
-      // physical word pair (derived directly from the VA in Bare mode).
+      // Port B: Instruction fetch (main clock, read only), at the local
+      // request's physical word pair.
       .i_port_b_clk(i_clk),
       .i_port_b_enable(1'b1),
       .i_port_b_byte_address(fetch_pa_word0),
@@ -1316,8 +1317,8 @@ module soc_top #(
   assign data_memory_read_enable = local_fire && !local_write && local_ok && !local_instruction &&
       !local_alias;
   // Instruction reads always use the registered local request. The fast
-  // acceptance path serves data only; its arbitration must not retarget the
-  // instruction RAM and its legacy metadata banks on unused read cycles.
+  // acceptance path serves data only; its arbitration leaves the
+  // instruction RAM address to the registered instruction request.
   // Once the first dword is in the synchronous RAM output, request its
   // successor while capturing the current one. A line then delivers one
   // dword per clock; only the final response waits for optional fetch fuzz.
