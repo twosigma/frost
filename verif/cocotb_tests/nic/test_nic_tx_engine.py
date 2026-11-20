@@ -26,7 +26,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 
 from cocotb_tests.nic.dma_model import (
     ABORT,
@@ -789,9 +789,11 @@ async def _wait_fifo_valid(dut: Any) -> None:
 
 
 @cocotb.test()
-@cocotb.parametrize(prefix_beats=[0, 1])
-async def test_reject_holds_stalled_beat(dut: Any, prefix_beats: int) -> None:
-    """Reject a continuation with the first or second beat already offered to the FIFO."""
+@cocotb.parametrize(prefix_beats=[0, 1], stop_on_abort=[False, True])
+async def test_reject_holds_stalled_beat(
+    dut: Any, prefix_beats: int, stop_on_abort: bool
+) -> None:
+    """Reject a continuation behind a held data beat and stall the closing abort."""
     env = await _setup(dut, 101)
     env.sink.stop()
     payload = bytes(range(8 * (prefix_beats + 1)))
@@ -822,17 +824,27 @@ async def test_reject_holds_stalled_beat(dut: Any, prefix_beats: int) -> None:
         )
     assert desc_status(env.mem, RING, 1) == DONE | ERR | ABORT
     dut.i_fifo_ready.value = 1
+    await ReadOnly()
+    assert _fifo_offer(dut) == held
     await FallingEdge(dut.i_clk)
     dut.i_fifo_ready.value = 0
     await _wait_fifo_valid(dut)
     abort = _fifo_offer(dut)
     assert abort[2] == 8 and abort[4] == 1
+    await FallingEdge(dut.i_clk)
+    if stop_on_abort:
+        dut.i_stop.value = 1
     for _ in range(8):
         await FallingEdge(dut.i_clk)
         assert _fifo_offer(dut) == abort
 
     dut.i_fifo_ready.value = 1
+    await ReadOnly()
+    assert _fifo_offer(dut) == abort
     await FallingEdge(dut.i_clk)
+    if stop_on_abort:
+        assert not int(dut.o_fifo_valid.value)
+        dut.i_stop.value = 0
     await _wait_fifo_valid(dut)
     valid, data, code, csum, aborted = _fifo_offer(dut)
     assert (valid, code, csum, aborted) == (1, 14, 0, 0)
@@ -875,6 +887,7 @@ async def test_reject_holds_segment_last(dut: Any) -> None:
     assert received == pkt.segments()[0]
 
     held = _fifo_offer(dut)
+    assert (held[0], held[2] & 8, held[4]) == (1, 8, 0)
     dut.i_fifo_ready.value = 0
     dut.i_tail.value = 4
     for _ in range(96):
@@ -882,6 +895,8 @@ async def test_reject_holds_segment_last(dut: Any) -> None:
         assert _fifo_offer(dut) == held
     assert desc_status(env.mem, RING, 2) == DONE | ERR | ABORT
     dut.i_fifo_ready.value = 1
+    await ReadOnly()
+    assert _fifo_offer(dut) == held
     await FallingEdge(dut.i_clk)
     await _wait_fifo_valid(dut)
     _, data, code, csum, aborted = _fifo_offer(dut)
@@ -893,9 +908,9 @@ async def test_reject_holds_segment_last(dut: Any) -> None:
 
 
 @cocotb.test()
-@cocotb.parametrize(reset_fifo=[False, True])
+@cocotb.parametrize(release=["accept", "core_reset", "tx_reset"])
 async def test_stop_preserves_offer_until_transfer_or_reset(
-    dut: Any, reset_fifo: bool
+    dut: Any, release: str
 ) -> None:
     """The software reset drain leaves an offered beat intact until the FIFO takes or resets it."""
     env = await _setup(dut, 103)
@@ -909,10 +924,14 @@ async def test_stop_preserves_offer_until_transfer_or_reset(
     for _ in range(8):
         await FallingEdge(dut.i_clk)
         assert _fifo_offer(dut) == held
-    if reset_fifo:
-        dut.i_abort.value = 1
-    else:
+    if release == "accept":
         dut.i_fifo_ready.value = 1
+        await ReadOnly()
+        assert _fifo_offer(dut) == held
+    elif release == "core_reset":
+        dut.i_rst.value = 1
+    else:
+        dut.i_abort.value = 1
     await FallingEdge(dut.i_clk)
     assert not int(dut.o_fifo_valid.value)
     env.stop()

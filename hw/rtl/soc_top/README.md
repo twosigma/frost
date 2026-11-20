@@ -54,8 +54,8 @@ A core-only reset leaves the AXI decoder running so it can drain transactions fr
 the optional CPU clock are outside `cpu_top`.
 
 `ASYNC_CPU_CLOCK=0` connects the CPU and SoC on `i_clk` with direct wires.
-The CPU reset register samples the core request, `rst_core` and the fabric
-reset on each rising edge. A one-edge core request asserts CPU reset with
+The core and NIC reset registers sample the core and fabric reset requests
+on each rising edge. A one-edge request asserts CPU reset with
 `rst_core` and holds CPU reset for one more edge after `rst_core` drops.
 The external DDR reset synchronizer in `frost` captures a request while
 this clock is stopped and holds it until the clock advances.
@@ -142,8 +142,13 @@ DDR is answered DECERR and an illegal one SLVERR, without a line request.
 With `ASYNC_CPU_CLOCK=0`, the NIC, engine, mux and bridge reset with
 `rst_core`. The ingress samples the same core-reset assertion as the bridge
 and discards its pending response before the bridge can reuse the line ID.
-Its reset, `o_cpu_rst`, also includes the DDR interconnect reset. This configuration requires `i_rst` whenever that reset
-is held, so a dropped ingress request cannot strand a DMA master. With
+An external DDR interconnect reset asserts both registered resets.
+Any unfinished DMA transaction, including a request accepted on the
+first transport reset edge, is discarded when the owners sample reset.
+The SoC cannot undo a completed external write. The memory controller and
+its initialization logic determine which bytes survive a board reset.
+The alias and peripheral register masters hold presented requests until
+acceptance or the reset edge shared with their receivers. With
 `ASYNC_CPU_CLOCK=1`, the paired core reset includes the DDR interconnect
 reset and resets both sides of the DMA path.
 

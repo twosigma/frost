@@ -287,7 +287,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         f"platform_dma_reset{suffix}": CocotbRunConfig(
             python_test_module="cocotb_tests.integration.test_platform_dma_reset",
             hdl_toplevel_module="platform_top",
-            description=f"One-cycle core reset at coherent DMA read and write completion with {mode} clocks",
+            description=(
+                f"Core reset at coherent DMA read and write completion with {mode} clocks"
+                + (" and DDR-only reset between clock edges" if period_ps else "")
+            ),
             verilator_extra_args=(
                 "--assert",
                 "+define+FROST_SIM_ASSERTIONS",
@@ -306,6 +309,75 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("", "common", 0),
             ("_async", "independent", 7000),
         )
+    },
+    **{
+        name: CocotbRunConfig(
+            python_test_module="cocotb_tests.integration.test_ddr_dma_reset",
+            hdl_toplevel_module=top,
+            description=description,
+            verilator_extra_args=(
+                "--assert",
+                "+define+FROST_SIM_ASSERTIONS",
+                "-GUSE_BEHAVIORAL_DDR=0",
+                "-GENABLE_CACHED_TIER=1",
+                "-GSIM_FAST_MAINT=1",
+                "-GL2_PREFETCH=0",
+                "-GL1_CACHE_BYTES=4096",
+                "-GL1I_CACHE_BYTES=4096",
+                "-GL2_CACHE_BYTES=16384",
+                f"-GMEMORY_LINK_STAGES={stages}",
+            ),
+            extra_env=(("FROST_DDR_RESET_LINK_STAGES", str(stages)),),
+        )
+        for name, top, stages, description in (
+            (
+                "ddr_dma_reset",
+                "platform_top",
+                0,
+                "DDR reset at DMA request and completion edges",
+            ),
+            (
+                "ddr_dma_reset_link",
+                "platform_top",
+                1,
+                "DDR reset with a staged coherent DMA link",
+            ),
+            (
+                "ddr_dma_reset_stopped",
+                "frost",
+                0,
+                "Active DMA and alias recovery across a stopped clock",
+            ),
+        )
+    },
+    **{
+        f"platform_ext_ddr_reset{suffix}": CocotbRunConfig(
+            python_test_module="cocotb_tests.integration.test_platform_ext_ddr_reset",
+            hdl_toplevel_module="platform_top",
+            extra_env=(("FROST_CPU_PERIOD_PS", "0"),),
+            description=(
+                "DDR-only reset with external DMA and AXI4-Lite requests in flight "
+                f"at MEMORY_LINK_STAGES={stages}"
+            ),
+            verilator_extra_args=(
+                "--assert",
+                "+define+FROST_SIM_ASSERTIONS",
+                "-GUSE_BEHAVIORAL_DDR=0",
+                "-GENABLE_CACHED_TIER=1",
+                "-GSIM_FAST_MAINT=1",
+                "-GL2_PREFETCH=0",
+                "-GL1_CACHE_BYTES=4096",
+                "-GL1I_CACHE_BYTES=4096",
+                "-GL2_CACHE_BYTES=16384",
+                "-GASYNC_CPU_CLOCK=0",
+                f"-GMEMORY_LINK_STAGES={stages}",
+                "-GEXT_DMA_PORTS=2",
+                "-GEXT_DMA_ID_BITS=4",
+                "-GEXT_AXIL_WINDOW=1",
+                "-GEXTERNAL_MAC=1",
+            ),
+        )
+        for suffix, stages in (("", 0), ("_link", 1))
     },
     "soc_async_reset": CocotbRunConfig(
         python_test_module="cocotb_tests.test_async_boundary",
@@ -712,6 +784,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "An address that holds a branch under Sv39 S-mode fetch and an addi under "
             "bare M-mode fetch, or the reverse, does not follow the other mode's BTB entry"
+        ),
+    ),
+    "fast_btb_contract_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fast_btb_contract_test",
+        nic_mac_clocks=False,
+        description=(
+            "Flushed BTB entries survive same-side traps and status writes with "
+            "cycle-only effect, walk-past delivers overlapped 32-bit instructions "
+            "unchanged, SFENCE.VMA and satp clear the BTB, and stale backing BTB "
+            "entries stay safe after FENCE.I"
         ),
     ),
     "odd_halfword_pred_test": CocotbRunConfig(
@@ -5210,7 +5294,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.nic.test_nic_tx_engine",
         hdl_toplevel_module="nic_tx_engine",
         description=(
-            "NIC transmit descriptors produce the right frame bytes and completions"
+            "NIC transmit frame bytes, completions and stalled offers across rejection and reset"
         ),
     ),
     "nic_tx_segment": CocotbRunConfig(
@@ -5294,8 +5378,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
         description=(
-            "NIC registers, DMA allocation hints, and frame traffic through "
-            "raw loopback and a simulated wire"
+            "10G NIC registers, diagnostic slots, descriptor-starved overflow, "
+            "DMA allocation hints, and frame traffic"
         ),
     ),
     "nic_top_64g": CocotbRunConfig(
@@ -5334,7 +5418,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
         description=(
-            "NIC wire traffic with independent TX/RX clocks and raw loopback disabled"
+            "10G NIC wire traffic and descriptor-starved overflow "
+            "with independent TX/RX clocks"
         ),
         verilator_extra_args=("-GRAW_LOOPBACK=0",),
     ),

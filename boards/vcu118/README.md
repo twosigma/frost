@@ -92,7 +92,14 @@ using full controller words. The address and data valid signals are
 registered independently and hold their payloads until accepted. Each
 channel inserts an idle cycle after an accepted transfer. The initializer
 waits for write responses before releasing the CPU and DDR loader from reset.
-An error response prevents completion.
+An error response prevents initialization from completing.
+
+FROST's DDR transport and the CPU-facing interconnect share the reset
+from the button and clock lock. They release before the initializer starts.
+The core release shift register also requires synchronized calibration
+ready and initialization complete. Loss of clock lock clears the ready
+synchronizer even when the clock stops. Loss of calibration alone holds
+the core in reset and leaves the transport running to drain accepted requests.
 The controller provides ECC, but this wrapper does not forward its error
 telemetry to the CPU memory error unit.
 

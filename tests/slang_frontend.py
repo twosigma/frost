@@ -327,7 +327,11 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
                         if word.startswith(("-D", "-I")):
                             options.append(word)
                         elif word == "+/xilinx/cells_sim.v":
-                            sources.append(str(root / PRIMITIVES.relative_to(ROOT)))
+                            # A Slang unit may already have read the pin declarations
+                            # before Yosys supplies their implementations.
+                            pins = str(root / PRIMITIVES.relative_to(ROOT))
+                            if not any(pins in unit.sources for unit in units):
+                                sources.append(pins)
                         elif word in filemap:
                             sources.append(str(filemap[word]))
                         elif word not in (

@@ -27,7 +27,7 @@
 .4byte 0x0cf30313 # addi x6, x6, 207
 .4byte 0x00436333 # or x6, x6, x4
 .4byte 0x0061b423 # sd x6, 8(x3)
-# Level 0: slots 16, 19 and 31 = NAPOT PTE (PPN 0x80018, R W A D V, N); slot 32 = N with PPN 0x80021.
+# Level 0: slots 16, 19 and 31 = NAPOT PTE (PPN 0x80018, R W X A D V, N); slot 32 = N with PPN 0x80021.
 .4byte 0x800033b7 # lui x7, 0x80003
 .4byte 0x02039393 # slli x7, x7, 32
 .4byte 0x0203d393 # srli x7, x7, 32

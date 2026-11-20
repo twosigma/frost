@@ -371,7 +371,7 @@ station does:
 |-----------|---------|-----------------|--------|
 | `TRUST_DISPATCH_VALID` | 0 | 1 on INT, MUL, MEM | Skip the local room check; dispatch valids already include it (simulation asserts the two agree) |
 | `SPECULATIVE_DATA_WRITES` | 0 | 1 on INT, MUL, MEM | Write tags and values into the target free entry before dispatch is confirmed; only `rs_valid` commits the entry |
-| `BROADCAST_FREE_SOURCE_VALUES` | 0 | 1 on INT | Write slot 1's source values into every free entry and slot 2's into its target; requires speculative writes |
+| `BROADCAST_FREE_SOURCE_VALUES` | 0 | 1 on INT, MEM | Write slot 1's source values into every free entry and slot 2's into its target; requires speculative writes |
 | `ISSUE_CDB_TAG_SHADOW` | 0 | 1 on INT | A second src1/src2 tag bank used only by the same-cycle bypass; equal to the main tags for every valid entry |
 | `ISSUE_CDB_META_ANCHORS` | 0 | 1 on INT | The issue compares use separate valid/tag inputs (`i_issue_cdb_*`); the wrapper merges early loads into copies of the registered lanes |
 | `ISSUE_CDB_TAG_BANKS` | 1 | 4 on INT | With `ISSUE_CDB_META_ANCHORS`, entry e's issue compares read copy `e * ISSUE_CDB_TAG_BANKS / DEPTH` of the issue tags (`i_issue_cdb_tag_bank`, `i_issue_cdb_2_tag_bank`), so each copy serves one contiguous group of entries, an equal share when `ISSUE_CDB_TAG_BANKS` divides `DEPTH`; each `i_issue_cdb_tag_bank` copy must equal `i_issue_cdb_tag` and each `i_issue_cdb_2_tag_bank` copy `i_issue_cdb_2_tag` (simulation asserts both). 1 uses the single tags |
@@ -386,6 +386,13 @@ station does:
   repair, wakeup, issue, stalls, flushes, and tag reuse. The capacity case
   exercises port 1 alone and both ports together. The bench leaves
   `TRUST_DISPATCH_VALID` and `ISSUE_CDB_META_ANCHORS` off.
+- The `rs_mem_broadcast` formal target compares two copies of the eight-entry
+  MEM station with free-entry operand broadcasts enabled and disabled. The
+  operands of every occupied row and every staged packet agree, including
+  while the functional unit stalls. The load queue's ready vectors, entry
+  tags, candidate tags and selector agree on every cycle. Covers follow a
+  surplus dispatch write to a free row through allocation and issue, flushes
+  and dual dispatch.
 - `rs_issue2_selector` (cocotb and formal) checks port 1's selector against a
   serial reference. The `rs_issue2_shamt` bench checks the shift amount and
   primary opcode selection through stalls, row reuse, and full flushes.
