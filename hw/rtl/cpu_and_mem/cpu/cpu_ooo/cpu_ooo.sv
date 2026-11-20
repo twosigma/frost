@@ -2391,6 +2391,12 @@ module cpu_ooo #(
   logic mret_start, mret_done_ack;
   logic [XLEN-1:0] mepc_value;
   logic interrupt_pending;
+`ifdef FROST_RVFI_DII
+`ifdef FROST_RVFI_DII_WFI_TIMEOUT
+  logic dii_wfi_wake;
+  localparam int unsigned DiiWfiTimeoutCycles = `FROST_RVFI_DII_WFI_TIMEOUT;
+`endif
+`endif
 
   // Memory interfaces
   logic sq_mem_write_en;
@@ -2788,10 +2794,13 @@ module cpu_ooo #(
       // step, where WFI executes as a nop (interrupts are masked there, so a
       // real wait would deadlock the debugger).
 `ifdef FROST_RVFI_DII
-      // TestRIG (hw/sim/frost_rvfi_dii.sv): interrupts are off, so WFI always
-      // completes, as the reference model's does, and misaligned accesses
-      // trap whatever mtvec holds.
+      // TestRIG selects a bounded WFI wait at build time.
+`ifdef FROST_RVFI_DII_WFI_TIMEOUT
+      .i_interrupt_pending(dii_wfi_wake),
+`else
       .i_interrupt_pending(1'b1),
+`endif
+      // Misaligned accesses trap whatever mtvec holds.
       .i_trap_misaligned_accesses(1'b1),
 `else
       .i_interrupt_pending(interrupt_pending || csr_debug_mode || step_armed_q),
@@ -5024,6 +5033,71 @@ module cpu_ooo #(
   assign interrupt_pending = file_interrupts.meip || file_interrupts.mtip || file_interrupts.msip ||
       (|csr_s_pending) || csr_lcof_pending;
 
+`ifdef FROST_RVFI_DII
+`ifdef FROST_RVFI_DII_WFI_TIMEOUT
+  if (DiiWfiTimeoutCycles != 0) begin : g_dii_wfi
+    logic [31:0] wait_cycles_q;
+    logic in_wait, in_wait_q, timeout_due, waking, woke_q, wfi_commit;
+    logic [31:0] wait_entries_q  /* verilator public_flat_rd */;
+    logic [31:0] source_wakes_q  /* verilator public_flat_rd */;
+    logic [31:0] timeout_wakes_q  /* verilator public_flat_rd */;
+    logic [31:0] retired_after_wake_q  /* verilator public_flat_rd */;
+    logic [31:0] commit_while_waiting_q  /* verilator public_flat_rd */;
+    logic [ 2:0] pending_q  /* verilator public_flat_rd */;
+
+    // Observe the serializer state directly to distinguish wait entry from
+    // other stalls at the head.
+    assign in_wait = u_tomasulo.u_rob.serial_state == riscv_pkg::SERIAL_WFI_WAIT;
+    assign timeout_due = wait_cycles_q == DiiWfiTimeoutCycles;
+    assign dii_wfi_wake = interrupt_pending || csr_debug_mode || step_armed_q || timeout_due;
+    assign waking = in_wait && dii_wfi_wake && !flush_all;
+    assign wfi_commit = rob_commit_valid_raw && rob_head_is_wfi &&
+        (rob_commit_comb.pc == rob_trap_pc);
+
+    // The harness resets these observations for each trace. Keep a timeout
+    // asserted through retirement, even if another condition holds commit.
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        in_wait_q <= 1'b0;
+        woke_q <= 1'b0;
+        wait_cycles_q <= '0;
+        wait_entries_q <= '0;
+        source_wakes_q <= '0;
+        timeout_wakes_q <= '0;
+        retired_after_wake_q <= '0;
+        commit_while_waiting_q <= '0;
+        pending_q <= '0;
+      end else begin
+        in_wait_q <= in_wait;
+        if (in_wait && !in_wait_q) wait_entries_q <= wait_entries_q + 1'b1;
+        if (waking) begin
+          woke_q <= 1'b1;
+          pending_q <= csr_s_pending;
+          if (interrupt_pending) source_wakes_q <= source_wakes_q + 1'b1;
+          else if (timeout_due) timeout_wakes_q <= timeout_wakes_q + 1'b1;
+        end
+        if ((in_wait || woke_q) && (rob_commit_valid_raw || rob_commit_2_valid_raw) &&
+            !(wfi_commit && (waking || woke_q))) begin
+          commit_while_waiting_q <= commit_while_waiting_q + 1'b1;
+        end
+        if (wfi_commit) begin
+          if (woke_q || waking) retired_after_wake_q <= retired_after_wake_q + 1'b1;
+          else pending_q <= csr_s_pending;
+        end
+        if (flush_all || wfi_commit) begin
+          woke_q <= 1'b0;
+          wait_cycles_q <= '0;
+        end else if (in_wait && !dii_wfi_wake) begin
+          wait_cycles_q <= wait_cycles_q + 1'b1;
+        end
+      end
+    end
+  end else begin : g_dii_wfi_nop
+    assign dii_wfi_wake = 1'b1;
+  end
+`endif
+`endif
+
   function automatic logic [XLEN-1:0] retired_next_pc(
       input riscv_pkg::reorder_buffer_commit_t commit);
     logic [XLEN-1:0] step;
@@ -5134,6 +5208,17 @@ module cpu_ooo #(
   // fails here, whatever the front end did to reach it: a stale prediction,
   // a lost redirect, or a fetch that skipped or repeated code.
   //
+  // A take is checked the same way through the PC it acts on: an xRET's own
+  // PC, and the PC a trap or Debug Mode entry saves (the trapping
+  // instruction, or the interrupted or halted successor) must equal the
+  // architectural next PC, with two exceptions. An interrupt or halt request
+  // taken while a legal WFI waits at the head saves the PC past the WFI: this
+  // check tracks the waiting WFI in a register of its own and requires the
+  // core's resume-past-WFI flag to agree with it at every take. A
+  // misaligned-access engine fault saves the PC of the instruction its assist
+  // took, the PC before the assist's redirect, and only while that assist is
+  // the last take. A Debug Mode go discards its saved PC and is not checked.
+  //
   // These checks require local reset history. System assertions arm after
   // the testbench's driven reset reaches the active clock domains. The
   // next-PC check then arms at the first retirement; WFI seeding does not
@@ -5142,6 +5227,21 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) if (i_rst) next_pc_reset_seen_q <= 1'b1;
   logic next_pc_check_armed_q;
   logic [XLEN-1:0] next_pc_expected_q;
+  // The PC of the instruction the last misaligned-access assist took, valid
+  // until the engine finishes or another retirement or take.
+  logic next_pc_assist_valid_q;
+  logic [XLEN-1:0] next_pc_assist_pc_q;
+  // A legal WFI at the architectural next PC waits at the ROB head.
+  logic next_pc_wfi_waiting_q;
+  // The take is an M or S interrupt or a Debug Mode halt request.
+  logic next_pc_take_async;
+  assign next_pc_take_async = (trap_cause_internal[XLEN-1] && !trap_to_d && !trap_no_csr) ||
+      (trap_to_d && (trap_dbg_cause == riscv_pkg::DcsrCauseHaltreq));
+  logic [XLEN-1:0] next_pc_take_expected;
+  assign next_pc_take_expected = (ma_fault_pending_q && next_pc_assist_valid_q) ?
+      next_pc_assist_pc_q :
+      (next_pc_wfi_waiting_q && next_pc_take_async) ? next_pc_expected_q + 64'd4 :
+      next_pc_expected_q;
   // The last retirements, printed when the check fails.
   localparam int unsigned NextPcHistory = 8;
   logic [NextPcHistory-1:0][XLEN-1:0] next_pc_hist_pc_q;
@@ -5156,7 +5256,9 @@ module cpu_ooo #(
   endtask
   always_ff @(posedge i_clk) begin
     if (i_rst || !next_pc_reset_seen_q) begin
-      next_pc_check_armed_q <= 1'b0;
+      next_pc_check_armed_q  <= 1'b0;
+      next_pc_assist_valid_q <= 1'b0;
+      next_pc_wfi_waiting_q  <= 1'b0;
     end else begin
       if (next_pc_check_armed_q && rob_commit_valid_raw &&
           rob_commit_comb.pc != next_pc_expected_q) begin
@@ -5189,6 +5291,67 @@ module cpu_ooo #(
         $error("cpu_ooo: slot-2 retired pc %016x, slot-1 next pc %016x", rob_commit_comb_2.pc,
                rob_head_retired_next_pc);
 `endif
+      end
+      if (next_pc_check_armed_q && trap_taken) begin
+        p_take_counts_waiting_wfi :
+        assert ((resume_pc_past_wfi_q && !trap_no_csr) ==
+                (next_pc_wfi_waiting_q && next_pc_take_async))
+        else
+          $error(
+              "cpu_ooo: take at %0t: resume-past-WFI flag %0d, waiting WFI %0d, async take %0d",
+              $time,
+              resume_pc_past_wfi_q,
+              next_pc_wfi_waiting_q,
+              next_pc_take_async
+          );
+      end
+      if (next_pc_check_armed_q && trap_taken && !dbg_go_taken &&
+          trap_pc_internal != next_pc_take_expected) begin
+        next_pc_dump();
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: trap at %0t saved pc %016x, architectural next pc %016x",
+              $time,
+              trap_pc_internal,
+              next_pc_take_expected
+          );
+`else
+        $error("cpu_ooo: trap at %0t saved pc %016x, architectural next pc %016x", $time,
+               trap_pc_internal, next_pc_take_expected);
+`endif
+      end
+      if (next_pc_check_armed_q && xret_taken && rob_trap_pc != next_pc_expected_q) begin
+        next_pc_dump();
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0)
+        else
+          $error(
+              "cpu_ooo: xRET at %0t at pc %016x, architectural next pc %016x",
+              $time,
+              rob_trap_pc,
+              next_pc_expected_q
+          );
+`else
+        $error("cpu_ooo: xRET at %0t at pc %016x, architectural next pc %016x", $time, rob_trap_pc,
+               next_pc_expected_q);
+`endif
+      end
+      if (trap_taken && ma_assist_start) begin
+        next_pc_assist_valid_q <= 1'b1;
+        next_pc_assist_pc_q <= trap_pc_internal;
+      end else if (ma_done || rob_commit_valid_raw || xret_taken || trap_taken) begin
+        next_pc_assist_valid_q <= 1'b0;
+      end
+      // Mirrors the seeding rule independently, with the head at the
+      // architectural next PC.
+      if (trap_or_xret_taken || rob_commit_2_valid_raw || rob_commit_valid_raw) begin
+        next_pc_wfi_waiting_q <= 1'b0;
+      end else if (rob_head_is_wfi && head_valid && (rob_trap_cause == '0) && !flush_all &&
+                   !mispredict_recovery_pending && !csr_debug_mode && !step_armed_q &&
+                   next_pc_check_armed_q && (rob_trap_pc == next_pc_expected_q)) begin
+        next_pc_wfi_waiting_q <= 1'b1;
       end
       if (rob_commit_valid_raw) begin
         next_pc_hist_pc_q <= {next_pc_hist_pc_q[NextPcHistory-2:0], rob_commit_comb.pc};
@@ -5225,6 +5388,222 @@ module cpu_ooo #(
         next_pc_check_armed_q <= 1'b1;
         next_pc_expected_q <= rob_head_retired_next_pc;
       end
+    end
+  end
+
+  // The reorder buffer's side of the next-PC check is proved by
+  // formal/rob_retire_successor.sby, which assumes these contracts on the
+  // ROB's own ports:
+  //  - each allocation is at the predicted next PC of the allocation before
+  //    it: the predicted target of a branch predicted taken, otherwise the
+  //    fall-through. The first allocation after a partial flush is at the
+  //    resolved next PC of the entry the flush keeps last, and a full flush
+  //    leaves the next allocation free. The front end keeps allocating
+  //    behind an instruction that traps or carries a fetch fault (an illegal
+  //    or ebreak compressed slot 1 drops its slot-2 partner, and a faulting
+  //    fetch steps by a word whatever its parcel decodes to), so a slot-1
+  //    allocation may leave this order when the allocation before it is a
+  //    valid entry that has not completed without an exception. That entry is
+  //    then a barrier: it never completes without an exception while it is
+  //    valid, and every allocation until the next flush is free;
+  //  - a branch update completes a conditional branch or JALR, once, and sets its
+  //    misprediction flag exactly when the outcome, or the taken target,
+  //    differs from the prediction the entry was allocated with;
+  //  - no CDB write without an exception, and no store completion, reaches a
+  //    conditional branch or JALR until the cycle after its branch update.
+  //    The head+1 CDB bypass would otherwise retire it in slot 2 before its
+  //    misprediction flag is written.
+  // It also checks the two contracts of the ROB's own formal block that no
+  // other check covers: the private CDB match tags equal the shared tags, and
+  // a memory-order replay never flags a serializing head.
+  localparam int unsigned RobDepth = riscv_pkg::ReorderBufferDepth;
+  localparam int unsigned RobTagWidth = riscv_pkg::ReorderBufferTagWidth;
+  function automatic logic [XLEN-1:0] alloc_predicted_next_pc(
+      input riscv_pkg::reorder_buffer_alloc_req_t req);
+    alloc_predicted_next_pc =
+        (req.is_branch && req.predicted_taken) ? req.predicted_target : req.link_addr;
+  endfunction
+  // The ROB's own allocation, update and completion signals.
+  riscv_pkg::reorder_buffer_alloc_req_t rob_chk_req, rob_chk_req_2;
+  riscv_pkg::reorder_buffer_branch_update_t rob_chk_update;
+  riscv_pkg::reorder_buffer_cdb_write_t rob_chk_cdb, rob_chk_cdb_2;
+  logic rob_chk_alloc, rob_chk_alloc_2, rob_chk_update_en, rob_chk_flush_all, rob_chk_flush_en;
+  logic [RobTagWidth-1:0] rob_chk_tail, rob_chk_tail_2, rob_chk_flush_tag;
+  logic [XLEN-1:0] rob_chk_pred_next, rob_chk_pred_next_2;
+  assign rob_chk_req = u_tomasulo.u_rob.i_alloc_req;
+  assign rob_chk_req_2 = u_tomasulo.u_rob.i_alloc_req_2;
+  assign rob_chk_alloc = u_tomasulo.u_rob.alloc_en;
+  assign rob_chk_alloc_2 = u_tomasulo.u_rob.alloc_en_2;
+  assign rob_chk_tail = u_tomasulo.u_rob.tail_idx;
+  assign rob_chk_tail_2 = u_tomasulo.u_rob.tail_idx_2;
+  assign rob_chk_update = u_tomasulo.u_rob.i_branch_update;
+  assign rob_chk_update_en = u_tomasulo.u_rob.branch_wr_en;
+  assign rob_chk_cdb = u_tomasulo.u_rob.i_cdb_write;
+  assign rob_chk_cdb_2 = u_tomasulo.u_rob.i_cdb_write_2;
+  assign rob_chk_flush_all = u_tomasulo.u_rob.i_flush_all;
+  assign rob_chk_flush_en = u_tomasulo.u_rob.i_flush_en;
+  assign rob_chk_flush_tag = u_tomasulo.u_rob.i_flush_tag;
+  assign rob_chk_pred_next = alloc_predicted_next_pc(rob_chk_req);
+  assign rob_chk_pred_next_2 = alloc_predicted_next_pc(rob_chk_req_2);
+  logic rob_chain_valid_q;
+  logic [XLEN-1:0] rob_chain_pc_q;
+  logic [RobDepth-1:0] rob_shadow_pred_taken_q, rob_shadow_needs_update_q, rob_shadow_updated_q;
+  logic [RobDepth-1:0][XLEN-1:0] rob_shadow_pred_target_q, rob_shadow_link_q, rob_shadow_next_q;
+  logic [RobDepth-1:0] rob_chk_completes;
+  // The last allocation and whether it allocated done without a fault or
+  // has completed without an exception; the barrier, and the number of
+  // allocations it frees from the chain.
+  logic rob_last_valid_q, rob_last_normal_q, rob_broken_q;
+  logic [RobTagWidth-1:0] rob_last_tag_q, rob_barrier_tag_q;
+  logic [RobDepth-1:0] rob_chk_normal_done;
+  logic rob_chk_off_chain;
+  int unsigned rob_barrier_count_q = 0, rob_barrier_free_count_q = 0, rob_barrier_off_count_q = 0;
+  assign rob_chk_off_chain = rob_chk_alloc && rob_chain_valid_q && !rob_broken_q &&
+      (rob_chk_req.pc != rob_chain_pc_q);
+  always_comb begin
+    for (int i = 0; i < RobDepth; i++) begin
+      rob_chk_normal_done[i] = rob_chk_completes[i] ||
+          (rob_chk_update_en && (rob_chk_update.tag == RobTagWidth'(i)));
+    end
+  end
+  final begin
+    if (rob_barrier_count_q != 0)
+      $display(
+          "cpu_ooo: %0d ROB barriers behind a trap or fetch fault freed %0d allocations, %0d off",
+          rob_barrier_count_q,
+          rob_barrier_free_count_q,
+          rob_barrier_off_count_q
+      );
+  end
+  always_comb begin
+    for (int i = 0; i < RobDepth; i++) begin
+      rob_chk_completes[i] =
+          (rob_chk_cdb.valid && !rob_chk_cdb.exception && (rob_chk_cdb.tag == RobTagWidth'(i))) ||
+          (rob_chk_cdb_2.valid && !rob_chk_cdb_2.exception &&
+           (rob_chk_cdb_2.tag == RobTagWidth'(i))) ||
+          (u_tomasulo.u_rob.i_store_complete_valid &&
+           (u_tomasulo.u_rob.i_store_complete_tag == RobTagWidth'(i)));
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst || !next_pc_reset_seen_q) begin
+      rob_chain_valid_q <= 1'b0;
+      rob_last_valid_q  <= 1'b0;
+      rob_broken_q      <= 1'b0;
+    end else begin
+      if (rob_chk_off_chain) begin
+        p_rob_alloc_follows_prediction :
+        assert (rob_last_valid_q && u_tomasulo.u_rob.rob_valid[rob_last_tag_q] &&
+                !rob_last_normal_q && !rob_chk_normal_done[rob_last_tag_q])
+        else
+          $error(
+              "cpu_ooo: ROB allocation at %0t at pc %016x, predicted next pc %016x",
+              $time,
+              rob_chk_req.pc,
+              rob_chain_pc_q
+          );
+      end
+      if (rob_broken_q && u_tomasulo.u_rob.rob_valid[rob_barrier_tag_q] && !rob_chk_flush_all) begin
+        p_rob_barrier_never_completes : assert (!rob_chk_normal_done[rob_barrier_tag_q]);
+      end
+      if (rob_chk_off_chain) rob_barrier_count_q <= rob_barrier_count_q + 1;
+      if (rob_chk_alloc && (rob_broken_q || rob_chk_off_chain))
+        rob_barrier_free_count_q <= rob_barrier_free_count_q + (rob_chk_alloc_2 ? 2 : 1);
+      if (rob_chk_alloc && (rob_broken_q || rob_chk_off_chain) && rob_chain_valid_q &&
+          (rob_chk_req.pc != rob_chain_pc_q))
+        rob_barrier_off_count_q <= rob_barrier_off_count_q + 1;
+      if (rob_chk_flush_all || rob_chk_flush_en) begin
+        rob_last_valid_q <= 1'b0;
+        rob_broken_q <= 1'b0;
+      end else begin
+        if (rob_chk_off_chain) begin
+          rob_broken_q <= 1'b1;
+          rob_barrier_tag_q <= rob_last_tag_q;
+        end
+        if (rob_chk_alloc) begin
+          rob_last_valid_q <= 1'b1;
+          rob_last_tag_q <= rob_chk_alloc_2 ? rob_chk_tail_2 : rob_chk_tail;
+          rob_last_normal_q <= rob_chk_alloc_2 ?
+              (u_tomasulo.u_rob.alloc_done_value_2 &&
+               !u_tomasulo.u_rob.alloc_legality_fault_data_2) :
+              (u_tomasulo.u_rob.alloc_done_value && !u_tomasulo.u_rob.alloc_legality_fault_data);
+        end else if (rob_chk_normal_done[rob_last_tag_q]) begin
+          rob_last_normal_q <= 1'b1;
+        end
+      end
+      if (rob_chk_alloc_2 && !rob_broken_q && !rob_chk_off_chain) begin
+        p_rob_alloc_slot2_follows_slot1 :
+        assert (rob_chk_req_2.pc == rob_chk_pred_next)
+        else
+          $error(
+              "cpu_ooo: slot-2 ROB allocation at %0t at pc %016x, predicted next pc %016x",
+              $time,
+              rob_chk_req_2.pc,
+              rob_chk_pred_next
+          );
+      end
+      if (rob_chk_update_en) begin
+        p_rob_branch_update_targets_branch :
+        assert (rob_shadow_needs_update_q[rob_chk_update.tag] &&
+                !rob_shadow_updated_q[rob_chk_update.tag]);
+        p_rob_branch_update_matches_prediction :
+        assert (rob_chk_update.mispredicted ==
+                ((rob_chk_update.taken != rob_shadow_pred_taken_q[rob_chk_update.tag]) ||
+                 (rob_chk_update.taken &&
+                  (rob_chk_update.target != rob_shadow_pred_target_q[rob_chk_update.tag]))));
+      end
+      if (!rob_chk_flush_all) begin
+        p_rob_branch_completed_by_update :
+        assert ((u_tomasulo.u_rob.rob_valid & rob_shadow_needs_update_q & ~rob_shadow_updated_q &
+                 rob_chk_completes) == '0);
+      end
+      p_rob_cdb_match_tags_equal :
+      assert ((u_tomasulo.u_rob.i_cdb_match_tag == rob_chk_cdb.tag) &&
+              (u_tomasulo.u_rob.i_cdb_match_tag_2 == rob_chk_cdb_2.tag));
+      p_rob_replay_spares_serial_head :
+      assert (!(|(u_tomasulo.u_rob.i_replay_set_mask & u_tomasulo.u_rob.head_clear_mask) &&
+                (u_tomasulo.u_rob.head_f_is_csr || u_tomasulo.u_rob.head_f_is_mret ||
+                 u_tomasulo.u_rob.head_f_is_fence || u_tomasulo.u_rob.head_f_is_fence_i ||
+                 u_tomasulo.u_rob.head_f_is_wfi)));
+      if (rob_chk_flush_all) begin
+        rob_chain_valid_q <= 1'b0;
+      end else if (rob_chk_flush_en) begin
+        rob_chain_valid_q <= 1'b1;
+        rob_chain_pc_q <= rob_shadow_next_q[rob_chk_flush_tag];
+      end else if (rob_chk_alloc_2) begin
+        rob_chain_valid_q <= 1'b1;
+        rob_chain_pc_q <= rob_chk_pred_next_2;
+      end else if (rob_chk_alloc) begin
+        rob_chain_valid_q <= 1'b1;
+        rob_chain_pc_q <= rob_chk_pred_next;
+      end
+    end
+  end
+  // Per-entry shadows, written at allocation and branch update.
+  always_ff @(posedge i_clk) begin
+    if (rob_chk_alloc) begin
+      rob_shadow_pred_taken_q[rob_chk_tail] <= rob_chk_req.is_branch && rob_chk_req.predicted_taken;
+      rob_shadow_pred_target_q[rob_chk_tail] <= rob_chk_req.predicted_target;
+      rob_shadow_needs_update_q[rob_chk_tail] <= rob_chk_req.is_branch && !rob_chk_req.is_jal;
+      rob_shadow_updated_q[rob_chk_tail] <= 1'b0;
+      rob_shadow_link_q[rob_chk_tail] <= rob_chk_req.link_addr;
+      rob_shadow_next_q[rob_chk_tail] <=
+          rob_chk_req.is_jal ? rob_chk_req.branch_target : rob_chk_req.link_addr;
+    end
+    if (rob_chk_alloc_2) begin
+      rob_shadow_pred_taken_q[rob_chk_tail_2] <=
+          rob_chk_req_2.is_branch && rob_chk_req_2.predicted_taken;
+      rob_shadow_pred_target_q[rob_chk_tail_2] <= rob_chk_req_2.predicted_target;
+      rob_shadow_needs_update_q[rob_chk_tail_2] <= rob_chk_req_2.is_branch && !rob_chk_req_2.is_jal;
+      rob_shadow_updated_q[rob_chk_tail_2] <= 1'b0;
+      rob_shadow_link_q[rob_chk_tail_2] <= rob_chk_req_2.link_addr;
+      rob_shadow_next_q[rob_chk_tail_2] <=
+          rob_chk_req_2.is_jal ? rob_chk_req_2.branch_target : rob_chk_req_2.link_addr;
+    end
+    if (rob_chk_update_en) begin
+      rob_shadow_updated_q[rob_chk_update.tag] <= 1'b1;
+      rob_shadow_next_q[rob_chk_update.tag] <= rob_chk_update.taken ? rob_chk_update.target :
+          rob_shadow_link_q[rob_chk_update.tag];
     end
   end
 
@@ -5464,7 +5843,10 @@ module cpu_ooo #(
       .i_device_read_at_head(device_read_shield_q),
       .o_int_take_armed(int_take_armed),
       .i_mstatus(csr_mstatus),
-      .i_mie(csr_mie),
+      // The engine's terminal state shields interrupts when built. Use the
+      // registered hart stop to inhibit interrupt entry in the other
+      // configuration. The CSR retains its enables and pending bits.
+      .i_mie((MISALIGNED_HW || !i_fatal_stop) ? csr_mie : '0),
       .i_mtvec(csr_mtvec),
       .i_mepc(csr_mepc),
       .i_stvec(csr_stvec),

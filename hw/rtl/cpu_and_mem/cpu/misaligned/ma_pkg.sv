@@ -129,18 +129,10 @@ package ma_pkg;
     leaf_pa = XLEN'(pa);
   endfunction
 
-  // Region class of a physical address. quadrant_store marks an untranslated
-  // store, which the core admits anywhere in the device quadrant.
-  function automatic ma_part_e region(input logic [XLEN-1:0] pa, input logic quadrant_store);
+  // Only cached memory supports misaligned transfers.
+  function automatic ma_part_e region(input logic [XLEN-1:0] pa);
     if (riscv_pkg::pma_cached_ok(pa)) region = MaPartOk;
-    else if (riscv_pkg::pma_memory_ok(
-            pa
-        ) || riscv_pkg::pma_device_ok(
-            pa
-        ) || (quadrant_store && riscv_pkg::pma_device_quadrant(
-            pa
-        )))
-      region = MaPartMisalign;
+    else if (riscv_pkg::pma_data_ok(pa)) region = MaPartMisalign;
     else region = MaPartAccess;
   endfunction
 

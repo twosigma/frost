@@ -44,7 +44,6 @@
  *
  * Addresses have passed the configured PMA. Memory and device classification
  * retains full physical addresses; relocated device regions may exceed 4 GiB.
- * The FROST map alone keeps its legacy untranslated device-quadrant stores.
  */
 
 module data_mem_request_router #(
