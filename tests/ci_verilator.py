@@ -296,6 +296,7 @@ VERILATOR_MATRIX: dict[str, Any] = {
                 "[opensbi_reset_warm] or [isa_test_sram_macros] or "
                 "[ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or "
                 "[nic_loopback_sram_macros] or [cache_counters_openocd] or "
+                "[hw_debug_check_openocd] or "
                 "[async_hello_world] or [async_nic_loopback] or [async_dma_torture] or "
                 "[cbo_zero_test] or [cbo_zero_test_assert] or "
                 "[cbo_zero_test_equal_lines] or [cbo_zero_pages] or "
@@ -448,7 +449,7 @@ VERILATOR_MATRIX: dict[str, Any] = {
                 "pytest_filter": "[opensbi_reset_warm]",
             },
         },
-        # The OpenOCD session reads the cache counters. Its program runs
+        # The OpenOCD checks of the cache counters and the debug port run
         # from low BRAM in either tier.
         {
             "mem_config": "bram",
@@ -456,7 +457,7 @@ VERILATOR_MATRIX: dict[str, Any] = {
                 "name": "Real Programs (Cache counters over OpenOCD)",
                 "coverage": [],
                 "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
-                "pytest_filter": "[cache_counters_openocd]",
+                "pytest_filter": "[cache_counters_openocd] or [hw_debug_check_openocd]",
             },
         },
         # The unit benches run serially in two jobs of about equal duration.
