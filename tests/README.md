@@ -1504,6 +1504,7 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --crypto 50
 ./scripts/frost.py run python3 tests/test_testrig.py --vector 100 --vlen 256
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
+./scripts/frost.py run python3 tests/test_testrig.py --wfi
 ```
 
 `--vector N` replays random vector-instruction tests from `verif/testrig/vector.py`
@@ -1515,6 +1516,9 @@ seed the runner prints. A mismatch is shrunk to a short counterexample
 in `tests/testrig_failures/`, which `--trace` replays; the logs and the
 engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
 replays the saved counterexamples in `verif/testrig/traces/`.
+`--wfi` replays directed wait, wake, and trap cases with a simulation-only
+wake timeout and compares them with Sail's normalised WFI replies. See the
+[WFI checks and limits](../verif/testrig/README.md#wfi).
 Each successful session ends with `TestRIG PASS: compared <traces> traces
 and <instructions> instructions`, followed by the required minimum counts
 and log directory. The runner counts instruction requests and both peers'
@@ -1993,7 +1997,7 @@ and Fast Python Tests jobs locally.
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
-| TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
+| TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | Formal verification | The 51 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue, block proofs, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |

@@ -1096,7 +1096,7 @@ jobs:
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
   # model and on the simulated SoC and compares every retired instruction
   # (tests/test_testrig.py). The first shard replays saved counterexamples,
-  # scalar cryptography sequences, and deterministic counter controls.
+  # scalar cryptography sequences, deterministic counter controls, and WFI traces.
   # Every shard then draws its own random sequences, 100 per template, from the
   # engine's templates, and its own random A-extension (verif/testrig/atomics.py),
   # Sv39 MMU (verif/testrig/mmu.py), and CMO/Sstvala (verif/testrig/cmo.py)
@@ -1173,6 +1173,16 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --cmo 80 --continue-on-fail
+
+      - name: Compare FROST with Sail on directed WFI traces
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        env:
+          # The default TestRIG build supplies the shard's startup sweep.
+          FROST_STARTUP_SWEEP: "0"
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run make -C tests clean
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --wfi --log-dir tests/testrig_logs/wfi-run
 
       - name: Require startup assertion controls
         if: ${{ always() && matrix.shard == 3 }}
