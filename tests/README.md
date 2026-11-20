@@ -1480,6 +1480,7 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --crypto 50
 ./scripts/frost.py run python3 tests/test_testrig.py --vector 100 --vlen 256
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
+./scripts/frost.py run python3 tests/test_testrig.py --wfi
 ```
 
 `--vector N` replays random vector-instruction tests from `verif/testrig/vector.py`
@@ -1491,6 +1492,9 @@ seed the runner prints. A mismatch is shrunk to a short counterexample
 in `tests/testrig_failures/`, which `--trace` replays; the logs and the
 engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
 replays the saved counterexamples in `verif/testrig/traces/`.
+`--wfi` replays directed wait, wake, and trap cases with a simulation-only
+wake timeout and compares them with Sail's normalised WFI replies. See the
+[WFI checks and limits](../verif/testrig/README.md#wfi).
 Each successful session ends with `TestRIG PASS: compared <traces> traces
 and <instructions> instructions`, followed by the required minimum counts
 and log directory. The runner counts instruction requests and both peers'

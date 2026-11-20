@@ -58,6 +58,7 @@ repository root:
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200         # A-extension tests
 ./scripts/frost.py run python3 tests/test_testrig.py --mmu 40              # Sv39 MMU, ASID, and SFENCE.VMA tests
 ./scripts/frost.py run python3 tests/test_testrig.py --cmo 80              # CMO, prefetch, Zawrs, and Sstvala tests
+./scripts/frost.py run python3 tests/test_testrig.py --wfi                 # Directed WFI waits, wakes, and traps
 ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf           # deterministic counter controls
 ./scripts/frost.py run python3 tests/test_testrig.py --ddr-capacity-log2-bytes 37 --trace-dir verif/testrig/traces
 ```
@@ -129,6 +130,7 @@ its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--atomics` | off | Replay this many random A-extension tests instead of the templates |
 | `--mmu` | off | Replay this many random Sv39 MMU, ASID, SFENCE.VMA, and Sstvala tests instead of the templates |
 | `--cmo` | off | Replay this many random Zicbom, Zicboz, Zicbop, Zawrs, device-window, and Sstvala tests instead of the templates |
+| `--wfi` | off | Replay directed WFI traces with a bounded DUT wait and Sail reply normalisation |
 | `--crypto` | off | Replay this many scalar cryptography tests |
 | `--zcb` | off | Replay this many Zcb, Zcmop, Zimop, and Zihintntl tests |
 | `--fp-ext` | off | Replay this many Zfhmin and Zfa tests |
@@ -220,7 +222,9 @@ simulation only:
   once `mtvec` has a nonzero base, and performs plain ones to cached DDR in
   its misaligned-access engine (`MISALIGNED_HW`), which this build leaves out
   because the recorder sees no retirement for them;
-- WFI completes at once, and no interrupt is ever taken;
+- Legal WFI completes at once with the default build. `--wfi` enables the
+  ROB wait and a simulation-only wake timeout. All TestRIG modes suppress
+  interrupt delivery to the trap unit.
 - loads and stores to the MMIO, APLIC and IMSIC windows read and write a RAM
   instead of the devices; the PMA admits loads throughout all three windows,
   including the full 2 MiB IMSIC window, and rejects atomics and reservations;
@@ -253,7 +257,7 @@ different implementation choice:
 | Delegation | `medeleg` mask 0xB3FF; `mideleg` mask 0x2222 |
 | PMP | None |
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
-| WFI | Completes at once; FROST traps `wfi` in S-mode when `mstatus.TW` is set and always in U-mode, whereas Sail's `wfi_is_nop` skips the S-mode `TW` check while keeping U-mode `wfi` illegal |
+| WFI | The default configuration completes legal WFI at once. The directed `--wfi` comparison checks legal M-mode and S-mode WFI, the S-mode `mstatus.TW` trap, and the U-mode illegal-instruction trap |
 | Zawrs | `wrs.nto` and `wrs.sto` complete at once; `wrs.nto` below M with `mstatus.TW` set raises illegal-instruction. Sail 0.16's non-nop wait loop enters `Step_Waiting` in RVFI-DII mode with `pc_wdata = 0` and consumes an extra packet, so `sail_frost.json` sets `nto.is_nop` true; `zawrs_test` and `sstvala_test` cover the `mstatus.TW` traps on `wrs.nto` and `wfi` |
 | Sail's CLINT | At 0x2B6D_93F1_0000, outside FROST's map at an address random sequences do not form; Sail requires one for Zicntr |
 
@@ -269,7 +273,8 @@ assigns local counter overflow interrupt number 13 and specifies that
 
 Replay a saved counterexample directly with `--trace <file>` (or
 `--sscofpmf --trace <file>`); `--sscofpmf` cannot be combined with
-`--trace-dir`, `--atomics`, `--crypto`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval` or `--vector`.
+`--trace-dir`, `--atomics`, `--crypto`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`,
+`--svinval`, `--vector` or `--wfi`.
 
 ## What the comparison leaves out
 
@@ -305,6 +310,38 @@ exercise both rules.
 An LR launches at the ROB head after committed stores drain. The trace
 [`lrsc_older_store.S`](traces/lrsc_older_store.S) places an older store in
 the other word of the reserved doubleword and checks the following SC.
+
+## WFI
+
+`--wfi` runs one reset-isolated trace per case in [`wfi.py`](wfi.py). Legal
+WFI waits with no interrupt pending in M-mode with TW clear or set and in
+S-mode with TW clear. A build-time timeout wakes those waits. The default
+value of `FROST_RVFI_DII_WFI_TIMEOUT` is zero, which lets legal WFI complete
+without waiting. `--wfi` builds the TestRIG simulation with a 4096-cycle
+limit. With SSIP already pending, S-mode WFI completes without entering the
+wait whether the corresponding `mie` bit is set or clear. With Sstc armed
+and STIP initially clear, S-mode WFI enters the wait and wakes when STIP
+pends. MIE and SIE stay clear. The S-mode TW trap and U-mode traps with TW
+clear and set check `mcause`, `mepc`, and `mtval` in the handler.
+
+Run `--wfi` again to reproduce a directed WFI failure. The case files and
+their expected wait and wake observations are deterministic.
+
+The Sail overlay sets `wfi_is_nop=false` and `max_time_to_wait=0`. A legal
+WFI emits a wait entry and one synthetic completion. The S-mode TW trap
+also uses that two-reply sequence. The Sail-side monitor folds the
+completion's next PC and trap bit into the WFI reply and resends the
+consumed instruction packet. Unexpected replies and a trace ending on a
+waiting WFI fail the comparison. Zawrs uses the model's nop settings.
+
+The engine compares the normalised WFI and the following instructions.
+The DUT also records wait entry, one wake due to a pending source or the
+timeout, and WFI retirement at or after wake. The check requires that no
+younger instruction retire before WFI wakes and retires. `mip` and `sip`
+readbacks, the wait length, the timer's exact expiry, wake from M-level
+interrupt lines, interrupt delivery on wake, and the debug and single-step
+wake paths are outside this comparison. SEIP and local counter-overflow
+sources have no directed WFI cases.
 
 ## The A extension
 

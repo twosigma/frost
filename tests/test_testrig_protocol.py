@@ -22,6 +22,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -219,6 +220,144 @@ def test_sail_ddr_capacity_matches_frost(
         "require_exact_reservation_addr": False,
         "invalidate_on_same_hart_store": True,
     }
+
+
+def test_sail_wfi_overlay_is_opt_in(tmp_path: Path) -> None:
+    """The WFI configuration changes only the WFI model settings."""
+    base = test_testrig.write_sail_config(30, tmp_path)
+    directed = test_testrig.write_sail_config(30, tmp_path, wfi_mode=True)
+    assert base != directed
+    expected = test_testrig.load_sail_json(base)
+    assert expected["platform"]["wfi_is_nop"] is True
+    expected["platform"].update(wfi_is_nop=False, max_time_to_wait=0)
+    assert test_testrig.load_sail_json(directed) == expected
+
+
+def _sail_header(record: Any) -> bytes:
+    """Use Sail's header-only reply with no valid bit or extension blocks."""
+    encoded = record.encode_v2()
+    return (
+        encoded[:8]
+        + rvfi_dii.V2_HEADER_BYTES.to_bytes(8, "little")
+        + encoded[16:37]
+        + bytes(3)
+        + encoded[40:56]
+        + bytes(8)
+    )
+
+
+@pytest.mark.parametrize(
+    "case", ("wake", "tw", "u-trap", "trailing", "extra-tick", "interrupt", "nop")
+)
+def test_sail_wfi_monitor(case: str) -> None:
+    """Only the bounded Sail wait is folded, replaying the consumed packet once."""
+    wire = rvfi_dii
+    stats = test_testrig.run_stats
+    pc = 0x8000_0100
+    successor = pc + 4 if case == "wake" else 0x8000_0400
+    start = wire.RvfiRecord(
+        order=17,
+        insn=wire.WFI_INSN,
+        pc_rdata=pc,
+        mode=wire.MODE_MACHINE if case == "wake" else wire.MODE_SUPERVISOR,
+    )
+    if case == "u-trap":
+        start.mode, start.trap, start.pc_wdata = wire.MODE_USER, 1, successor
+    if case == "nop":
+        start.pc_wdata = pc + 4
+    first = _sail_header(start)
+    second = _sail_header(
+        wire.RvfiRecord(
+            mode=0,
+            ixl=0,
+            trap=int(case in ("tw", "interrupt")),
+            intr=int(case == "interrupt"),
+            pc_wdata=0 if case == "extra-tick" else successor,
+        )
+    )
+    instruction = wire.DiiPacket(0x00100513, 19, wire.CMD_INSTRUCTION).encode()
+    after = wire.RvfiRecord(
+        order=18,
+        insn=0x00100513,
+        pc_rdata=successor,
+        pc_wdata=successor + 4,
+        rd_addr=10,
+        rd_wdata=1,
+    ).encode_v2()
+    query = wire.DiiPacket(wire.VERSION_QUERY_WORD, 0, wire.CMD_END_OF_TRACE).encode()
+    version = wire.DiiPacket(2, 0, wire.CMD_SET_VERSION).encode()
+    wfi = wire.DiiPacket(wire.WFI_INSN, 1, wire.CMD_INSTRUCTION).encode()
+    end = wire.DiiPacket(0, 0, wire.CMD_END_OF_TRACE).encode()
+    halt = wire.RvfiRecord.halt_token().encode_v2()
+    success = case in ("wake", "tw", "u-trap")
+    exchange = [
+        (query, wire.version_query_response()),
+        (version, wire.version_ack(2)),
+        (wfi, first),
+    ]
+    if case not in ("trailing", "nop", "u-trap"):
+        exchange.append((instruction, second))
+    if success:
+        exchange.extend(((instruction, after), (end, halt)))
+
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        listener.settimeout(3)
+        failures: list[Exception] = []
+
+        def serve() -> None:
+            try:
+                with listener.accept()[0] as peer:
+                    peer.settimeout(3)
+                    reader = wire.PacketReader(peer)
+                    for request, response in exchange:
+                        assert reader.read(wire.DII_PACKET_BYTES) == request
+                        peer.sendall(response)
+                    # In particular, a trailing WFI never forwards the end
+                    # command, and an invalid wait reply never resends a word.
+                    assert peer.recv(1) == b""
+            except Exception as error:
+                failures.append(error)
+
+        worker = threading.Thread(target=serve, daemon=True)
+        worker.start()
+        monitor = stats.WfiTraceMonitor("Sail", listener.getsockname()[1], 3)
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", monitor.port), timeout=3
+            ) as engine:
+                reader = wire.PacketReader(engine)
+                engine.sendall(query + version)
+                assert reader.read(88) == wire.version_query_response()
+                assert reader.read(16) == wire.version_ack(2)
+                engine.sendall(
+                    wfi
+                    + (instruction if case not in ("trailing", "nop") else b"")
+                    + end
+                )
+                if success:
+                    start.trap, start.pc_wdata = int(case != "wake"), successor
+                    expected = _sail_header(start) + after + halt
+                    assert reader.read(len(expected)) == expected
+                else:
+                    assert engine.recv(1) == b""
+            worker.join(timeout=3)
+            assert not worker.is_alive()
+        finally:
+            monitor.close()
+            worker.join(timeout=3)
+    assert not failures
+    if success:
+        assert monitor.traces == [stats.TraceCounts(2, 2)]
+        assert not monitor.errors
+    else:
+        assert not monitor.traces
+        expected_error = {
+            "trailing": "must be followed by an instruction",
+            "nop": "unexpected Sail WFI reply",
+            "extra-tick": "unexpected Sail WFI completion reply",
+            "interrupt": "unexpected Sail WFI completion reply",
+        }[case]
+        assert expected_error in monitor.errors[0]
 
 
 def test_default_csr_view_keeps_absent_hpm_aliases() -> None:

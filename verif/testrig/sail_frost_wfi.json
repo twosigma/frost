@@ -1,0 +1,8 @@
+// Sail overrides for the directed WFI traces. The zero wait limit gives
+// exactly one synthetic reply when a WFI enters the wait.
+{
+  "platform": {
+    "wfi_is_nop": false,
+    "max_time_to_wait": 0
+  }
+}
