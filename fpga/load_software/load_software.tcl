@@ -51,7 +51,7 @@ set valid_apps [list bootrom amo_irq_torture asid_test bpred_probe bpred_trap_pa
                      memory_test misaligned_test mispen_probe sysreset_test nic_bench nic_cmo_loopback nic_echo nic_loopback odd_halfword_pred_test opensbi_smoke packet_parser pd_itt_slot2 pde_return_hazard perf_off_test pma_fault_test print_clock_speed ptw_coherence_test ras_stress_test ras_test \
                      smc_predict_test smode_test spanning_test sprintf_test sscofpmf_test store_fill_bench strings_test sum_toggle_test svpbmt_cmo_test tick_torture tomasulo_perf \
                      tomasulo_test uart_echo umode_test vec_arith_test vec_crypto_exec_test vec_ff_test vec_fp_test \
-                     vec_index_test vec_integer_test vec_mem_source_eew_test vec_mem_test vec_order_test vec_segment_test \
+                     vec_index_test vec_integer_test vec_mem_reserved_forms_test vec_mem_source_eew_test vec_mem_test vec_order_test vec_segment_test \
                      vec_source_eew_test vec_stride_test vec_vsetvl_test vec_vstart_reload_test \
                      vec_vtype_handoff_test vm_test]
 
