@@ -592,7 +592,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_home_array.sby",
         "Independent L2 ports and one-way parallel reads preserve byte values, tokens "
-        "and physical-row exclusions.",
+        "and physical-row exclusions. An open read at the output follows a stalled reply.",
         tasks=(
             "coh_home_array_prove",
             *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
@@ -953,6 +953,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
+        "if_fault_ras_veto.sby",
+        "Fetch-faulted IF packets never carry a predicted-taken flag or operate "
+        "the return-address stack",
+        tasks=("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
         "mispredict_capture.sby",
         "Recovery payload, pulse copies, frontend flush and registered fetch flush "
         "match their references",
@@ -1133,9 +1139,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_hold_rows.sby",
-        "Vector range holds: a scalar entry is held exactly while an older live "
-        "vector memory table entry overlaps it or has an unknown range",
-        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "cover"),
+        "Vector range holds: an older live vector memory table entry holds an "
+        "atomic scalar entry or one with an unknown address, unknown vector range, "
+        "or overlap. A settled hold has such a cause in either queue",
+        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "vhold_lq_cover", "cover"),
     ),
     FormalTarget(
         "vec_vmt.sby",
@@ -1273,6 +1280,8 @@ FORMAL_TARGETS = [
         "home_capture_equiv.sby",
         "Consumed home payloads match handshake-only captures, and registered "
         "fill flags match their phase decodes across arbitrary reset and stalls. "
+        "Array covers reach hit and row captures in every configuration and kept "
+        "parallel captures in both banked configurations. "
         "The parked next-state function preserves event priority; selected-slot "
         "parking, the one-hot selection, dispatch and waiter eligibility match a "
         "slot-table reference.",
@@ -1285,6 +1294,11 @@ FORMAL_TARGETS = [
             "array_uram",
             "array_uram32",
             "array_uram_row",
+            "array_bram_cover",
+            "array_bram_four_cover",
+            "array_uram_cover",
+            "array_uram32_cover",
+            "array_uram_row_cover",
             "endpoint32",
             "endpoint56",
             "arbiter_default",
@@ -2077,6 +2091,11 @@ FORMAL_TARGETS = [
     FormalTarget(
         "nic_axis_boundary.sby",
         "NIC AXI4-Stream beat-code bijection, abort code isolation and TX checksum side-FIFO framing.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "axi_register_slice.sby",
+        "AXI4 and AXI4-Lite five-channel register slices: hold rules, FIFO ordering, full rate and reset.",
         tasks=("prove", "cover"),
     ),
     FormalTarget(
@@ -3376,6 +3395,10 @@ SBY_TASKS = [
         "Vector range holds with the store queue's per-entry addresses, 8 frames.",
     ),
     (
+        "vhold_lq_cover",
+        "Vector range-hold reachability with the load queue's address-update port, 16 frames.",
+    ),
+    (
         "vmt_bmc",
         "Vector memory table lifecycle against a ghost reorder buffer, 14 frames.",
     ),
@@ -3424,6 +3447,17 @@ SBY_TASKS = [
         "array_uram_row",
         "Folded selection and single-array captures with short read latency.",
     ),
+    ("array_bram_cover", "Tag hit and row data capture with one BRAM way."),
+    ("array_bram_four_cover", "Tag hit and row data capture with four BRAM ways."),
+    (
+        "array_uram_cover",
+        "Hit, row and kept parallel captures with 64-byte URAM lines.",
+    ),
+    (
+        "array_uram32_cover",
+        "Hit, row and kept parallel captures with 32-byte URAM lines.",
+    ),
+    ("array_uram_row_cover", "Tag hit and row data capture in the single-array URAM."),
     ("endpoint32", "Demand and grant captures with 32-bit addresses."),
     ("endpoint56", "Demand and grant captures with 56-bit addresses."),
     ("arbiter_default", "Selected payloads with handshake-only loading."),

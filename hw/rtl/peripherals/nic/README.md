@@ -42,7 +42,9 @@ The crossing primitives live in `hw/rtl/lib/cdc` (`cdc_sync`,
 ## Integration
 
 `soc_top.sv` instantiates `nic_engine` beside `nic_mac_10g` for the 10GBASE-R
-port, and when `ENABLE_1G_ETH != 0` instantiates a second `nic_engine` beside
+port (or omits `nic_mac_10g` and exports `nic_engine`'s core-clock AXI4-Stream
+and sideband ports up to `frost.sv` when `EXTERNAL_MAC != 0`), and when
+`ENABLE_1G_ETH != 0` instantiates a second `nic_engine` beside
 `nic_mac_1g` for the 1 Gb/s GMII port. Each pair connects in the core clock
 domain (`i_clk`) over 64-bit AXI4-Stream TX/RX ports plus reset, flow-control,
 link-status, and counter-total sideband signals. A different MAC block that

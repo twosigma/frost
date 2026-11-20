@@ -317,12 +317,21 @@ Beyond a root that boots by hand, the stage needs:
 | NFSv3 over TCP | Step 4. The preflight sends the server an NFSv3 NULL call. |
 | A server on the board's own subnet | `frost_nettest` takes the root's interface down and loops it back. The kernel may send ARP requests for the server meanwhile; the test captures them and accounts for them in its counter checks. When the interface comes back, the kernel restores its connected route but not a route through a gateway, so a server behind a gateway can leave the root stranded. The preflight reports which case applies. |
 | An executable `/dev/shm` | `frost_nettest` runs from a copy in `/dev/shm` while the root's link is down, so that tmpfs must not be mounted `noexec`. |
-| A fresh initramfs after driver changes | The initramfs carries the DKMS build from step 3. After editing `linux/frost-net10g`, repeat step 3, or the run tests the old module. |
+| A fresh initramfs after driver changes | The initramfs carries the DKMS build from step 3. After editing `linux/frost-net10g`, repeat step 3. The preflight unpacks the early section and first compressed archive of the initramfs with `unmkinitramfs`, reads every unpacked `frost_net10g.ko` (or `.xz`, `.zst`, `.gz`) copy with `modinfo -F version`, and fails, naming the file and both versions, unless at least one copy exists and every copy matches `MODULE_VERSION` in `linux/frost-net10g/frost_net10g.c`. Because `unmkinitramfs` unpacks only the early section and first compressed archive (what `update-initramfs` writes), the Linux stage also performs the authoritative check after boot by reading `/sys/module/frost_net10g/version` before the network test. Raise `MODULE_VERSION` and `PACKAGE_VERSION` in `dkms.conf` with every driver change. |
+| `unmkinitramfs` and `modinfo` on the loading host | Required on `PATH` (`initramfs-tools-core` and `kmod`) so the preflight can unpack the initramfs (early section and first compressed archive) and check every unpacked copy of `frost_net10g`. |
 
 Before any stage touches the board, a preflight checks the export, the NFS
-server, the kernel and initramfs files, the autologin, and the cross build. It
-reports a problem as `ENV_FAIL`, not as a board failure. Without
-`--keep-going`, an `ENV_FAIL` stops the run before the first stage.
+server, the kernel and initramfs files, the driver version in the initramfs,
+the autologin, and the cross build. It reports a problem as `ENV_FAIL`, not as
+a failure of the design under test. Without `--keep-going`, the run prints the
+problem as `ERROR: linux_boot: ...` and stops before the first stage, with no
+summary. With `--keep-going`, the other stages run, and the summary lists
+`linux_boot` with the status `ENV_FAIL`. Missing, timed-out, or failing
+`unmkinitramfs` or `modinfo` tools report the same environment failure with the
+tool name and the step 3 rebuild steps. After boot reaches its shell prompt and
+before `frost_nettest`, the Linux stage reads `/sys/module/frost_net10g/version`
+and fails with the same step 3 rebuild instructions if the loaded driver
+version differs, is missing, or is unreadable.
 
 `--linux-timeout` (default 1200 seconds) covers the build, the JTAG load, the
 boot, and the tests. Raise it for a divided-clock bitstream, or for a first
@@ -346,10 +355,14 @@ tests. Systemd must report `running`, or `degraded` with only failed
 `session-N.scope` units whose `Result` is `resources`. These logind session
 races are logged as tolerated. Every other failed unit or result fails the
 stage. It loads the memory error driver, requires its scrub self-test and an
-accelerated RAM patrol pass with zero hardware errors, and reloads it at the
-daily default. The patrol check allows 150 one-second waits. It then runs the
-NIC loopback test from `/dev/shm`, with dentry and inode caches dropped before
-the test. Sysfs counters and carrier are opened before the link goes down.
+accelerated RAM patrol pass with zero memory error counts, and reloads it at
+the daily default. The X3 checks require advancing CPU-visible ECC polls.
+VCU118 reports the controller's ECC state separately through JTAG in the
+`ddr_ecc` stage. The patrol check allows 150 one-second waits. The stage runs
+the NIC loopback test from `/dev/shm` on the interface named in the kernel
+`ip=` parameter and checks the interface reported by each run. It drops
+dentry and inode caches before the test. Sysfs counters and carrier are
+opened before the link goes down.
 The test holds the interface down for 65 seconds before reading counters,
 exceeding NFS's default directory attribute cache lifetime.
 It verifies a queued burst at MTU 1500, including frame lengths around the

@@ -21,18 +21,29 @@ console CRLF pairs. Counter and findmnt output is constructed; captured board
 transcripts live in tests/fixtures.
 
 Preflight tests use temporary export trees, a stub NFSv3 RPC server, and a
-stub cross compiler. No board or NFS export is required.
+stub cross compiler. The initramfs driver-version check uses stand-in
+``unmkinitramfs`` and ``modinfo`` executables on PATH (plus one integration
+test against the real tools when installed), and the debug_port stage uses
+canned OpenOCD transcripts, a stand-in OpenOCD executable, and OpenOCD Jim Tcl
+mocks. No board or NFS export is required.
 """
 
 import dataclasses
+import gzip
 import importlib.util
+import json
 import os
+import random
 import re
+import shutil
+import signal
 import socket
+import stat
 import struct
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -50,6 +61,10 @@ for extra in (
 ):
     if str(extra) not in sys.path:
         sys.path.insert(0, str(extra))
+
+load_software = importlib.import_module("load_software")
+sweep_coremark_pro = importlib.import_module("sweep_coremark_pro")
+ddr_ecc_status = importlib.import_module("ddr_ecc.ddr_ecc_status")
 
 
 def _load_hw_regression() -> ModuleType:
@@ -129,6 +144,11 @@ MOUNT_LINE = (
     "hard,nolock,proto=tcp,timeo=600,retrans=2,sec=sys,"
     f"mountaddr=192.0.2.1,mountvers=3,mountproto=tcp,addr=192.0.2.1\r\r\n{PROMPT}"
 )
+DRIVER_ECHO = hw.LINUX_DRIVER_VERSION_COMMAND + "\r\r\n"
+DRIVER_LINE = (
+    f"{hw.LINUX_DRIVER_VERSION_TOKEN}={hw.source_driver_version(REPO_ROOT)}"
+    f"\r\r\n{PROMPT}"
+)
 SYSTEMD_ECHO = hw.LINUX_SYSTEMD_COMMAND + "\r\r\n"
 SYSTEMD_RUNNING = f"state=running\r\r\n{PROMPT}"
 SYSTEMD_DEGRADED = (
@@ -181,7 +201,8 @@ NET_FAIL = (
 
 TO_SHELL = BOOT_TO_LOGIN + LOGIN_TO_SHELL
 TO_MOUNT = TO_SHELL + MOUNT_ECHO + MOUNT_LINE
-TO_SYSTEMD = TO_MOUNT + SYSTEMD_ECHO + SYSTEMD_RUNNING
+TO_DRIVER = TO_MOUNT + DRIVER_ECHO + DRIVER_LINE
+TO_SYSTEMD = TO_DRIVER + SYSTEMD_ECHO + SYSTEMD_RUNNING
 TO_STRESS = TO_SYSTEMD + STRESS_ECHO + STRESS_OUT
 COUNTER_TRANSCRIPT = TO_STRESS + COUNTER_ECHO + COUNTER_LINE
 MEMERR_TRANSCRIPT = COUNTER_TRANSCRIPT + MEMERR_ECHO + MEMERR_LINE
@@ -204,6 +225,7 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
     ok, note = linux.judge(FULL_TRANSCRIPT)
     assert ok, note
     assert hw.KERNEL_RELEASE in note
+    assert f"NIC driver {hw.source_driver_version(REPO_ROOT)}" in note
     assert NFSROOT in note and "vers=3" in note
     assert "systemd running" in note
     assert "cycles=4433680" in note and "instret=3275440" in note
@@ -215,7 +237,8 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
     "transcript,expected",
     [
         (BOOT_TO_LOGIN, "no nfs line"),
-        (TO_MOUNT, "no 'running' line"),
+        (TO_MOUNT, f"no {hw.LINUX_DRIVER_VERSION_TOKEN}= line"),
+        (TO_DRIVER, "no 'running' line"),
         (TO_SYSTEMD, "no 'FROST_USERSPACE_STRESS_PASS' after the login"),
         (TO_STRESS, "no FROST_COUNTERS: count"),
         (COUNTER_TRANSCRIPT, f"no {hw.LINUX_MEMERR_TOKEN} line"),
@@ -228,6 +251,7 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
     ids=[
         "at-login",
         "after-findmnt",
+        "after-driver-version",
         "after-systemctl",
         "after-stress",
         "after-counters",
@@ -534,6 +558,8 @@ def test_the_stress_token_must_follow_the_login() -> None:
         + LOGIN_TO_SHELL
         + MOUNT_ECHO
         + MOUNT_LINE
+        + DRIVER_ECHO
+        + DRIVER_LINE
         + SYSTEMD_ECHO
         + SYSTEMD_RUNNING
         + COUNTER_ECHO
@@ -720,6 +746,53 @@ def test_memerr_readback_parses_progress_and_rejects_an_old_selftest() -> None:
     assert "no FROST_MEMERR_SELFTEST_PASS line" in hw.memerr_problems(latest)
 
 
+def test_vcu118_linux_checks_memory_errors_without_cpu_ecc_polling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Require the selected VCU118 memory contract and repository's driver."""
+    driver_version = "0.0-integration"
+    driver_source = tmp_path / hw.DRIVER_SOURCE
+    driver_source.parent.mkdir(parents=True)
+    driver_source.write_text(f'MODULE_VERSION("{driver_version}");\n')
+    seen = _stub_board(monkeypatch)
+    monkeypatch.setattr(hw, "linux_root_from_env", lambda: ROOT)
+    monkeypatch.setattr(hw, "linux_root_preflight", lambda *args: [])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["runner", "--repo", str(tmp_path), "--board", "vcu118", "linux_boot"],
+    )
+    assert hw.main() == 0
+    linux = seen[hw.LINUX_STAGE]["stage"]
+    console = FULL_TRANSCRIPT.replace(
+        DRIVER_LINE, f"{hw.LINUX_DRIVER_VERSION_TOKEN}={driver_version}\r\r\n{PROMPT}"
+    )
+    transcript = console.replace("active=1 polls=4113,5342", "active=0 polls=0,0")
+    ok, note = linux.judge(transcript)
+    assert ok and "no DDR AXI error responses" in note
+    assert f"NIC driver {driver_version}" in note
+    assert linux.judge(console)[0] is False
+    assert (
+        hw.linux_stage(ROOT, driver_version=driver_version).judge(transcript)[0]
+        is False
+    )
+    ok, note = linux.judge(transcript.replace(driver_version, "0.0-stale"))
+    assert not ok and "is version 0.0-stale" in note
+    for before, after, reason in (
+        ("active=0", "active=1", "unexpected CPU-visible ECC reader activity"),
+        ("polls=0,0", "polls=1,0", "unexpected CPU-visible ECC reader activity"),
+        ("polls=0,0", "polls=0,1", "unexpected CPU-visible ECC reader activity"),
+        ("ce=0", "ce=1", "1 corrected errors"),
+        ("ue=0", "ue=1", "1 uncorrectable errors"),
+        ("rd=0", "rd=1", "1 DDR read error responses"),
+        ("wr=0", "wr=1", "1 DDR write error responses"),
+        (MEMERR_SELFTEST_LINE, "", "no FROST_MEMERR_SELFTEST_PASS line"),
+        ("passes=0,1", "passes=0,0", "RAM patrol did not complete a pass"),
+    ):
+        ok, note = linux.judge(transcript.replace(before, after))
+        assert not ok and reason in note
+
+
 @pytest.mark.parametrize(
     "token", ["FROST_MEMERR_SELFTEST_FAIL", "FROST_MEMERR_LOAD_FAIL"]
 )
@@ -752,13 +825,14 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
     assert [text for _, text in linux.stimuli] == [
         "root\r",
         hw.LINUX_ROOT_MOUNT_COMMAND + "\r",
+        hw.LINUX_DRIVER_VERSION_COMMAND + "\r",
         hw.LINUX_SYSTEMD_COMMAND + "\r",
         hw.LINUX_STRESS_COMMAND + "\r",
         hw.LINUX_COUNTER_COMMAND + "\r",
         hw.LINUX_MEMERR_COMMAND + "\r",
         hw.nettest_command("eth0") + "\r",
     ]
-    assert [trigger for trigger, _ in linux.stimuli[1:]] == [hw.LINUX_SHELL_PROMPT] * 6
+    assert [trigger for trigger, _ in linux.stimuli[1:]] == [hw.LINUX_SHELL_PROMPT] * 7
     # Nothing to type before the prompt, even though "# " could occur in a log.
     assert hw.next_stimulus(linux, "[    0.1] # not a prompt\r\n", 0, 0) is None
     text, after = hw.next_stimulus(linux, BOOT_TO_LOGIN, 0, 0)
@@ -769,7 +843,8 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
     sent = 1
     for transcript, expected in (
         (TO_SHELL, hw.LINUX_ROOT_MOUNT_COMMAND),
-        (TO_MOUNT, hw.LINUX_SYSTEMD_COMMAND),
+        (TO_MOUNT, hw.LINUX_DRIVER_VERSION_COMMAND),
+        (TO_DRIVER, hw.LINUX_SYSTEMD_COMMAND),
         (TO_SYSTEMD, hw.LINUX_STRESS_COMMAND),
         (TO_STRESS, hw.LINUX_COUNTER_COMMAND),
         (COUNTER_TRANSCRIPT, hw.LINUX_MEMERR_COMMAND),
@@ -800,10 +875,19 @@ def test_the_autologin_stray_command_does_not_break_the_chain() -> None:
         boot,
         boot,  # the stray command's own prompt fires the next stimulus early
         boot + MOUNT_ECHO + MOUNT_LINE,
-        boot + MOUNT_ECHO + MOUNT_LINE + SYSTEMD_ECHO + SYSTEMD_RUNNING,
+        boot + MOUNT_ECHO + MOUNT_LINE + DRIVER_ECHO + DRIVER_LINE,
         boot
         + MOUNT_ECHO
         + MOUNT_LINE
+        + DRIVER_ECHO
+        + DRIVER_LINE
+        + SYSTEMD_ECHO
+        + SYSTEMD_RUNNING,
+        boot
+        + MOUNT_ECHO
+        + MOUNT_LINE
+        + DRIVER_ECHO
+        + DRIVER_LINE
         + SYSTEMD_ECHO
         + SYSTEMD_RUNNING
         + STRESS_ECHO
@@ -811,6 +895,8 @@ def test_the_autologin_stray_command_does_not_break_the_chain() -> None:
         boot
         + MOUNT_ECHO
         + MOUNT_LINE
+        + DRIVER_ECHO
+        + DRIVER_LINE
         + SYSTEMD_ECHO
         + SYSTEMD_RUNNING
         + STRESS_ECHO
@@ -846,14 +932,15 @@ def test_nettest_runs_from_tmpfs_and_gives_the_roots_link_back() -> None:
     command = hw.nettest_command("enp1s0")
     sysfs = "/sys/class/net/enp1s0"
     ipv6 = "/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
-    run_at = command.index(f"{hw.LINUX_TMPFS}/frost_nettest;")
+    run_at = command.index(f"{hw.LINUX_TMPFS}/frost_nettest enp1s0;")
     assert f"cp {hw.LINUX_ROOT_BIN}/frost_nettest {hw.LINUX_TMPFS}/" in command
     assert command.index(f"cat {sysfs}/mtu") < run_at
     assert command.index(f"cat {sysfs}/flags") < run_at
     assert command.index(f"echo 1 > {ipv6}") < run_at
     assert "{ if echo 2 > /proc/sys/vm/drop_caches; then " in command[:run_at]
     assert (
-        f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {hw.LINUX_TMPFS}/frost_nettest;" in command
+        f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {hw.LINUX_TMPFS}/frost_nettest enp1s0;"
+        in command
     )
     assert command.index("echo $m >&3") > run_at
     assert command.index("echo $f >&4") > command.index("echo $m >&3")
@@ -1209,6 +1296,156 @@ def test_the_nfsv3_probe_reports_a_server_that_is_not_there() -> None:
     assert reason is not None and "did not answer" in reason
 
 
+MODULE_PATH = "usr/lib/modules/6.12/updates/dkms/frost_net10g.ko"
+
+
+def _driver_version() -> str:
+    """Return the driver version this tree builds."""
+    return hw.source_driver_version(REPO_ROOT)
+
+
+def _install_initrd_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    files: dict[str, str] | None = None,
+    symlinks: dict[str, str] | None = None,
+    dirs: dict[str, int] | None = None,
+    unmk_exit: int = 0,
+    unmk_stderr: bytes = b"",
+    unmk_hang: bool = False,
+    unmk_present: bool = True,
+    unmk_enoexec: bool = False,
+    modinfo_versions: dict[str, str] | None = None,
+    modinfo_stdout: bytes | None = None,
+    modinfo_stderr: bytes = b"",
+    modinfo_exit: int = 0,
+    modinfo_hang: bool = False,
+    modinfo_present: bool = True,
+    modinfo_enoexec: bool = False,
+) -> Path:
+    """Put stand-in ``unmkinitramfs`` and ``modinfo`` executables on PATH.
+
+    Each tool records its command-line arguments as JSON lines in
+    ``tool_dir/<tool>_calls.jsonl``. ``PATH`` is set to ``tool_dir`` alone so
+    host binaries cannot mask missing-tool tests.
+    """
+    tool_dir = tmp_path / "initrd_tools"
+    tool_dir.mkdir(exist_ok=True)
+    if files is None and symlinks is None and dirs is None:
+        files = {MODULE_PATH + ".xz": "stub-ko"}
+    if modinfo_versions is None and modinfo_stdout is None:
+        modinfo_versions = {"*": f"{_driver_version()}\n"}
+
+    unmk_spec = {
+        "files": files or {},
+        "symlinks": symlinks or {},
+        "dirs": dirs or {},
+        "exit": unmk_exit,
+        "stderr_hex": unmk_stderr.hex(),
+        "hang": unmk_hang,
+    }
+    (tool_dir / "unmk_spec.json").write_text(json.dumps(unmk_spec))
+
+    modinfo_spec = {
+        "versions": modinfo_versions or {},
+        "stdout_hex": None if modinfo_stdout is None else modinfo_stdout.hex(),
+        "stderr_hex": modinfo_stderr.hex(),
+        "exit": modinfo_exit,
+        "hang": modinfo_hang,
+    }
+    (tool_dir / "modinfo_spec.json").write_text(json.dumps(modinfo_spec))
+
+    unmk_path = tool_dir / "unmkinitramfs"
+    if unmk_path.exists():
+        unmk_path.unlink()
+    if unmk_present:
+        if unmk_enoexec:
+            unmk_path.write_bytes(b"\x00\x01 not an executable\n")
+        else:
+            unmk_path.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, sys, time\n"
+                "from pathlib import Path\n"
+                f"tool_dir = Path({str(tool_dir)!r})\n"
+                "with (tool_dir / 'unmkinitramfs_calls.jsonl').open('a') as log:\n"
+                "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                "spec = json.loads((tool_dir / 'unmk_spec.json').read_text())\n"
+                "if spec['hang']:\n"
+                "    time.sleep(30)\n"
+                "if spec['stderr_hex']:\n"
+                "    sys.stderr.buffer.write(bytes.fromhex(spec['stderr_hex']))\n"
+                "    sys.stderr.buffer.flush()\n"
+                "if spec['exit'] != 0:\n"
+                "    raise SystemExit(spec['exit'])\n"
+                "dest = Path(sys.argv[2])\n"
+                "for rel, text in spec['files'].items():\n"
+                "    target = dest / rel\n"
+                "    target.parent.mkdir(parents=True, exist_ok=True)\n"
+                "    target.write_text(text)\n"
+                "for rel, link_target in spec['symlinks'].items():\n"
+                "    target = dest / rel\n"
+                "    target.parent.mkdir(parents=True, exist_ok=True)\n"
+                "    os.symlink(link_target, target)\n"
+                "for rel, mode in spec['dirs'].items():\n"
+                "    target = dest / rel\n"
+                "    target.mkdir(parents=True, exist_ok=True)\n"
+                "for rel, mode in sorted(spec['dirs'].items(), key=lambda i: -len(i[0])):\n"
+                "    os.chmod(dest / rel, mode)\n"
+            )
+        unmk_path.chmod(0o755)
+
+    modinfo_path = tool_dir / "modinfo"
+    if modinfo_path.exists():
+        modinfo_path.unlink()
+    if modinfo_present:
+        if modinfo_enoexec:
+            modinfo_path.write_bytes(b"\x00\x01 not an executable\n")
+        else:
+            modinfo_path.write_text(
+                f"#!{sys.executable}\n"
+                "import json, sys, time\n"
+                "from pathlib import Path\n"
+                f"tool_dir = Path({str(tool_dir)!r})\n"
+                "with (tool_dir / 'modinfo_calls.jsonl').open('a') as log:\n"
+                "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                "spec = json.loads((tool_dir / 'modinfo_spec.json').read_text())\n"
+                "if spec['hang']:\n"
+                "    time.sleep(30)\n"
+                "if spec['stderr_hex']:\n"
+                "    sys.stderr.buffer.write(bytes.fromhex(spec['stderr_hex']))\n"
+                "    sys.stderr.buffer.flush()\n"
+                "if spec['exit'] != 0:\n"
+                "    raise SystemExit(spec['exit'])\n"
+                "if spec['stdout_hex'] is not None:\n"
+                "    sys.stdout.buffer.write(bytes.fromhex(spec['stdout_hex']))\n"
+                "    sys.stdout.buffer.flush()\n"
+                "    raise SystemExit(0)\n"
+                "target = sys.argv[-1]\n"
+                "versions = spec['versions']\n"
+                "out = versions.get('*')\n"
+                "for suffix, val in versions.items():\n"
+                "    if suffix != '*' and target.endswith(suffix):\n"
+                "        out = val\n"
+                "        break\n"
+                "if out is not None:\n"
+                "    sys.stdout.write(out)\n"
+                "    sys.stdout.flush()\n"
+            )
+        modinfo_path.chmod(0o755)
+
+    monkeypatch.setenv("PATH", str(tool_dir))
+    return tool_dir
+
+
+def _tool_calls(tool_dir: Path, tool: str) -> list[list[str]]:
+    """Return the recorded argv lists for a stand-in tool."""
+    log = tool_dir / f"{tool}_calls.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line]
+
+
 def _fake_export(tmp_path: Path, kernel_release: str = hw.KERNEL_RELEASE) -> Path:
     """Build an export tree the preflight accepts: console, bin, kernel, initrd."""
     export = tmp_path / "export"
@@ -1223,7 +1460,9 @@ def _fake_export(tmp_path: Path, kernel_release: str = hw.KERNEL_RELEASE) -> Pat
     (boot / f"vmlinux-{kernel_release}").write_bytes(
         b"\x00" * 64 + b"Linux version " + kernel_release.encode() + b" (deb) #1\n"
     )
-    (boot / f"initrd.img-{kernel_release}").write_bytes(b"07070100000000" * 16)
+    (boot / f"initrd.img-{kernel_release}").write_bytes(
+        b"\x1f\x8b\x08\x00stub-initrd\n"
+    )
     return export
 
 
@@ -1283,9 +1522,10 @@ def test_the_preflight_accepts_a_prepared_export_and_installs_the_programs(
 def prepared(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Any, dict[str, str]]:
-    """Return a prepared export and stub toolchain with a successful RPC probe."""
+    """Return a prepared export, stub toolchain, RPC probe, and initrd tools."""
     export = _fake_export(tmp_path)
     _, environment = _fake_cross(tmp_path)
+    _install_initrd_tools(tmp_path, monkeypatch)
     module = tmp_path / f"{hw.MEMERR.name}.ko"
     module.write_bytes(b"stub module")
     environment[hw.MEMERR.env] = str(module)
@@ -1410,14 +1650,15 @@ def test_the_preflight_notes_the_drivers_module_and_the_servers_subnet(
     root.initrd.write_bytes(
         b"07070100000000usr/lib/modules/x/updates/dkms/frost_net10g.ko.xz\0"
     )
+    assert hw.initrd_driver_note(root.initrd) == ["the initramfs names frost_net10g"]
     notes = hw.linux_root_preflight(root, REPO_ROOT, environment)
-    assert any("names frost_net10g" in note for note in notes)
+    assert any("carries frost_net10g version" in note for note in notes)
     assert any("shares the board's subnet" in note for note in notes)
     # The docs' example server is on the board's subnet; another one is not.
     elsewhere = dataclasses.replace(root, server="198.51.100.9")
     assert "may not" in hw.subnet_note(elsewhere)[0]
-    # An initramfs whose members are compressed says nothing either way.
-    root.initrd.write_bytes(b"\x28\xb5\x2f\xfd" + b"\x00" * 512)
+    # An initramfs whose members are compressed says nothing about its names.
+    root.initrd.write_bytes(b"\x1f\x8b\x08\x00compressed-stub\n")
     assert hw.initrd_driver_note(root.initrd) == []
     assert hw.linux_root_preflight(root, REPO_ROOT, environment)
 
@@ -1508,7 +1749,7 @@ def _stub_board(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         loader_env: Any = None,
     ) -> dict[str, Any]:
         """Record what the stage was given and report a pass."""
-        seen[stage.app] = {"env": loader_env, "timeout": timeout_s}
+        seen[stage.app] = {"env": loader_env, "timeout": timeout_s, "stage": stage}
         return {"stage": stage.app, "status": "PASS", "elapsed": 1.0, "note": ""}
 
     monkeypatch.setattr(hw, "run_uart_stage", fake_run_uart_stage)
@@ -1624,23 +1865,28 @@ def test_recorded_console_with_pinned_release_passes_the_stage() -> None:
 def test_the_fixture_still_carries_the_escapes_it_is_here_for() -> None:
     """Preserve the fixture's bracketed-paste escapes, colored greeting, and CRs."""
     console = board_console()
-    assert console.count("\x1b[?2004l") == 6
+    assert console.count("\x1b[?2004l") == 7
     assert "\x1b[?2004l\rnfs " in console
+    assert f"\x1b[?2004l\r{hw.LINUX_DRIVER_VERSION_TOKEN}=" in console
     assert f"\x1b[?2004l\rstate={hw.LINUX_SYSTEMD_RUNNING}" in console
     assert "Welcome to \x1b[0m\x1b[1mDebian GNU/Linux" in console
     assert "\r\n" in console
 
 
 def test_the_anchored_patterns_need_the_escapes_removed() -> None:
-    """Match mount and state lines only after console_text removes their escapes."""
+    """Match mount, driver, and state lines only after console_text removes escapes."""
     raw = board_console()
     assert hw.LINUX_ROOT_MOUNT_RE.search(raw) is None
+    assert hw.LINUX_DRIVER_VERSION_RE.search(raw) is None
     assert hw.LINUX_SYSTEMD_STATE_RE.search(raw) is None
     clean = hw.console_text(raw)
     assert hw.LINUX_ROOT_MOUNT_RE.search(clean) is not None
+    assert hw.LINUX_DRIVER_VERSION_RE.search(clean) is not None
     assert hw.LINUX_SYSTEMD_STATE_RE.search(clean) is not None
     assert hw.systemd_state(clean) == hw.LINUX_SYSTEMD_RUNNING
     ok, note = hw.root_mount_verdict(clean, BOARD_NFSROOT)
+    assert ok, note
+    ok, note = hw.driver_version_verdict(clean, hw.source_driver_version(REPO_ROOT))
     assert ok, note
     # The one value that did read raw: bash turns bracketed paste off once per
     # typed line, so a later command's output on that line starts clean.
@@ -2031,6 +2277,7 @@ def test_x3_app_verdicts_use_their_application_markers() -> None:
         "coremark_pro",
         "linux_boot",
         "ddr_ecc",
+        "debug_port",
     }
     for app in hw.regression_stages("x3"):
         if app in special:
@@ -2048,10 +2295,11 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
     stages = hw.regression_stages(board)
     assert stages == [
         "hello_world",
+        *(["debug_port"] if board == "x3" else []),
         *board_apps,
         "amo_irq_torture",
         "asid_test",
-        "bpred_probe",
+        *(["bpred_probe"] if board == "x3" else []),
         "bpred_trap_pair_test",
         "branch_pred_test",
         "c_ext_test",
@@ -2071,7 +2319,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "ddr_test",
         "dma_torture",
         "fencei_jit_bench",
-        "fplat_probe",
+        *(["fplat_probe"] if board == "x3" else []),
         "freertos_demo",
         "fpu_assembly_test",
         "fpu_test",
@@ -2084,18 +2332,20 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "linux_irq_ddr_test",
         "linux_irq_stack_slot_test",
         "lq_stale_slot_probe",
-        "memerr_readback",
+        *(["memerr_readback"] if board == "x3" else []),
         "memory_test",
-        *(["misaligned_test"] if board == "x3" else []),
-        "mispen_probe",
+        "misaligned_test",
+        *(["mispen_probe"] if board == "x3" else []),
         "nic_cmo_loopback",
         "nic_loopback",
+        "odd_halfword_pred_test",
         "opensbi_smoke",
         "packet_parser",
         "pd_itt_slot2",
         "pde_return_hazard",
         "perf_off_test",
-        "print_clock_speed",
+        "pma_fault_test",
+        *(["print_clock_speed"] if board == "x3" else []),
         "ptw_coherence_test",
         "ras_stress_test",
         "ras_test",
@@ -2107,10 +2357,10 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "store_fill_bench",
         "strings_test",
         "sum_toggle_test",
-        "svpbmt_cmo_test",
+        *(["svpbmt_cmo_test"] if board == "x3" else []),
         "sysreset_test",
         "tick_torture",
-        "tomasulo_perf",
+        *(["tomasulo_perf"] if board == "x3" else []),
         "tomasulo_test",
         "uart_echo",
         "umode_test",
@@ -2154,6 +2404,13 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
     assert len(stages) == len(set(stages))
 
 
+def test_ecc_stage_requires_a_design_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Select controller ECC only where the target has a defined window."""
+    monkeypatch.delitem(hw.ECC_WINDOW_DESIGNS, "vcu118")
+    assert hw.ECC_STAGE not in hw.regression_stages("vcu118")
+    assert hw.regression_stages("x3")[-1] == hw.ECC_STAGE
+
+
 @pytest.mark.parametrize("board", ["x3", "vcu118"])
 def test_default_stage_dispatch_uses_selected_board(
     monkeypatch: pytest.MonkeyPatch, board: str
@@ -2169,13 +2426,113 @@ def test_default_stage_dispatch_uses_selected_board(
 
     monkeypatch.setattr(hw, "run_sweep_stage", lambda *args: finish(hw.SWEEP_STAGE))
     monkeypatch.setattr(hw, "run_ecc_stage", lambda *args: finish(hw.ECC_STAGE))
+    monkeypatch.setattr(hw, "run_debug_stage", lambda *args: finish(hw.DEBUG_STAGE))
     monkeypatch.setattr(hw.sys, "argv", ["runner", "--board", board])
     assert hw.main() == 0
     assert list(seen) == hw.regression_stages(board)
 
 
 @pytest.mark.parametrize(
-    "board,app", [("x3", "bootrom"), ("x3", "fsbl"), ("vcu118", "fsbl")]
+    "board,stage_name",
+    [
+        (board, stage)
+        for board in hw.BOARD_CONFIG
+        for stage in hw.regression_stages(board)
+    ],
+)
+def test_selected_stage_helper_accepts_the_board(
+    monkeypatch: pytest.MonkeyPatch, board: str, stage_name: str
+) -> None:
+    """Run the emitted commands through their CLI checks up to JTAG discovery."""
+    target_pattern = "test cable"
+    loader_apps: list[str] = []
+
+    class TargetDiscoveryReachedError(Exception):
+        """Signal that a helper accepted the arguments before discovering cables."""
+
+    def select_target(*_args: Any, **kwargs: Any) -> None:
+        assert kwargs["board"] == board
+        assert kwargs["target_pattern"] == target_pattern
+        raise TargetDiscoveryReachedError
+
+    def invoke_helper(command: list[str], **_kwargs: Any) -> Any:
+        script = Path(command[0]).name
+        with monkeypatch.context() as invocation:
+            invocation.setattr(sys, "argv", command)
+            if script == "sweep_coremark_pro.py":
+                assert stage_name == hw.SWEEP_STAGE
+                assert command[command.index("--board") + 1] == board
+                # The mock loaders stop at discovery, before a UART result.
+                assert sweep_coremark_pro.main() == 1
+                raise TargetDiscoveryReachedError
+            elif script == "ddr_ecc_status.py":
+                assert stage_name == hw.ECC_STAGE
+                assert "--non-interactive" in command
+                ddr_ecc_status.main()
+            else:
+                assert script == "load_software.py"
+                loader_apps.append(command[2])
+                if stage_name == hw.SWEEP_STAGE:
+                    with pytest.raises(TargetDiscoveryReachedError):
+                        load_software.main()
+                    return SimpleNamespace(stdout=None, returncode=1, poll=lambda: 1)
+                assert command[2] == stage_name
+                load_software.main()
+        pytest.fail(f"{script} returned before target discovery")
+
+    def check_debug_helper(_repo: Path, selected_board: str) -> None:
+        assert stage_name == hw.DEBUG_STAGE
+        assert selected_board == board == "x3"
+        raise TargetDiscoveryReachedError
+
+    monkeypatch.setattr(hw, "run_debug_stage", check_debug_helper)
+    monkeypatch.delenv("FROST_CPU_CLK_HZ", raising=False)
+    monkeypatch.setattr(load_software, "_linux_boot_preflight", lambda: None)
+    monkeypatch.setattr(load_software, "compile_app_for_board", lambda *a, **kw: True)
+    monkeypatch.setattr(load_software, "validate_prebuilt_app", lambda *a, **kw: {})
+    monkeypatch.setattr(load_software, "select_target", select_target)
+    monkeypatch.setattr(ddr_ecc_status, "select_target", select_target)
+    monkeypatch.setattr(hw, "linux_root_from_env", lambda: ROOT)
+    monkeypatch.setattr(hw, "linux_root_preflight", lambda *args: [])
+    for runner in (hw, sweep_coremark_pro):
+        monkeypatch.setattr(runner, "serial_holders", lambda _serial: [])
+        monkeypatch.setattr(
+            runner, "configure_serial", lambda _serial: os.open(os.devnull, os.O_RDONLY)
+        )
+        monkeypatch.setattr(runner, "drain", lambda _fd: None)
+    monkeypatch.setattr(hw.subprocess, "Popen", invoke_helper)
+    monkeypatch.setattr(hw.subprocess, "run", invoke_helper)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "runner",
+            "--board",
+            board,
+            "--serial",
+            "test",
+            "--target",
+            target_pattern,
+            stage_name,
+        ],
+    )
+    # The outer CLI exception reporter handles errors that escape dispatch.
+    with pytest.raises(TargetDiscoveryReachedError):
+        hw._main()
+    if stage_name == hw.SWEEP_STAGE:
+        assert tuple(loader_apps) == sweep_coremark_pro.HW_APPS
+
+
+@pytest.mark.parametrize(
+    "board,app",
+    [
+        ("x3", "bootrom"),
+        ("x3", "fsbl"),
+        ("vcu118", "fsbl"),
+        ("vcu118", "memerr_readback"),
+        ("vcu118", "svpbmt_cmo_test"),
+        ("vcu118", "bpred_probe"),
+    ],
 )
 def test_unsupported_stage_is_rejected_before_board_access(
     monkeypatch: pytest.MonkeyPatch,
@@ -2241,8 +2598,10 @@ def test_ecc_stage_verdict_follows_the_script_exit(monkeypatch: Any) -> None:
 
     # A read that failed is not a clean report either.
     reply["returncode"] = 1
-    reply["stdout"] = "ECC read failed\n"
-    assert hw.run_ecc_stage(ROOT, "x3", "some:target", 60.0)["status"] == "FAIL"
+    reply["stdout"] = "ECC read failed: missing final FROST_ECC_DONE line\n"
+    result = hw.run_ecc_stage(ROOT, "x3", "some:target", 60.0)
+    assert result["status"] == "FAIL"
+    assert "missing final FROST_ECC_DONE line" in result["note"]
 
 
 def test_uart_echo_stage_keeps_its_single_probe() -> None:
@@ -2315,14 +2674,13 @@ def test_counters_absent_stage_runs_at_every_clock(
 
 # --- The network test's diagnostic repetitions ---------------------------------
 
-# The single-run command as the stage typed it before the repetition option
-# existed. Without FROST_HW_NETTEST_REPEAT the stage must type exactly this.
+# The default command runs once with the root interface passed to the test.
 NETTEST_COMMAND_ETH0 = (
     "m=$(cat /sys/class/net/eth0/mtu); f=$(cat /sys/class/net/eth0/flags); "
     "echo 1 > /proc/sys/net/ipv6/conf/eth0/disable_ipv6; "
     "cp /usr/local/bin/frost_nettest /dev/shm/; "
     "{ if echo 2 > /proc/sys/vm/drop_caches; then "
-    "FROST_NETTEST_EXPIRE_NFS_CACHE=1 /dev/shm/frost_nettest; "
+    "FROST_NETTEST_EXPIRE_NFS_CACHE=1 /dev/shm/frost_nettest eth0; "
     "else echo FROST_NET_LOOPBACK'_'FAIL drop_caches; fi; "
     "echo $m >&3; echo $f >&4; echo 0 >&5; } "
     "3> /sys/class/net/eth0/mtu 4> /sys/class/net/eth0/flags "
@@ -2335,9 +2693,13 @@ NETTEST_COMMAND_ETH0 = (
 # repetition: the repetition line, then its verdict under the marker the
 # repetition gets. FAKE_FAIL_REP names a repetition that fails.
 FAKE_NETTEST = r"""#!/bin/sh
-rep=${FROST_NETTEST_REPETITION%/*}
-reps=${FROST_NETTEST_REPETITION#*/}
-echo "FROST_NET_LOOPBACK: repetition $rep of $reps"
+if [ "$#" != 1 ]; then exit 1; fi
+if [ -n "$FROST_NETTEST_REPETITION" ]; then
+  rep=${FROST_NETTEST_REPETITION%/*}
+  reps=${FROST_NETTEST_REPETITION#*/}
+  echo "FROST_NET_LOOPBACK: repetition $rep of $reps"
+else rep=1; reps=1; fi
+echo "FROST_NET_LOOPBACK: $1: driver frost_net10g, address 02:11:22:33:44:55"
 echo "FROST_NET_LOOPBACK: capture idle-jumbo t=70100..70300: own out 0 in 0, kernel out 1 in 1, foreign 2, enetdown 1, drops 0"
 if [ "$rep" -lt "$reps" ]; then marker=FROST_NET_DIAG; tag=" rep=$rep"; else marker=FROST_NET_LOOPBACK; tag=; fi
 if [ "$rep" = "${FAKE_FAIL_REP:-0}" ]; then
@@ -2391,6 +2753,7 @@ def _run_repeated(
     drop_caches_fails: bool = False,
     alive_status: int = 0,
     poke_s: int = 0,
+    interface: str = "eth0",
 ) -> tuple[str, Path, Path]:
     """Run the repeated command in sh against stand-in files and programs."""
     sysfs = tmp_path / "sysfs"
@@ -2423,9 +2786,9 @@ def _run_repeated(
     monkeypatch.setattr(hw, "LINUX_ROOT_BIN", str(source))
     monkeypatch.setattr(hw, "LINUX_TMPFS", str(target))
     command = (
-        hw.nettest_command("eth0", repeat, poke_s)
-        .replace("/sys/class/net/eth0", str(sysfs))
-        .replace("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", str(ipv6))
+        hw.nettest_command(interface, repeat, poke_s)
+        .replace(f"/sys/class/net/{interface}", str(sysfs))
+        .replace(f"/proc/sys/net/ipv6/conf/{interface}/disable_ipv6", str(ipv6))
         .replace("/proc/sys/vm/drop_caches", str(drop))
     )
     done = hw.subprocess.run(
@@ -2436,6 +2799,32 @@ def _run_repeated(
     assert (sysfs / "flags").read_text() == "0x1003\n"
     assert ipv6.read_text() == "0\n"
     return done.stdout.replace("\n", "\r\r\n"), sysfs, ipv6
+
+
+@pytest.mark.parametrize("repeat", [1, 3])
+def test_vcu118_linux_loopback_exercises_the_rj45_root_interface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repeat: int
+) -> None:
+    """Pass eth1 to the executable and require each run to report that interface."""
+    root = dataclasses.replace(
+        ROOT, interface="eth1", ip=ROOT.ip.replace("eth0", "eth1")
+    )
+    linux = hw.linux_stage(root, repeat, board="vcu118")
+    output, _, _ = _run_repeated(
+        tmp_path, monkeypatch, repeat, interface=root.interface
+    )
+    before_loopback = MEMERR_TRANSCRIPT.replace(
+        "active=1 polls=4113,5342", "active=0 polls=0,0"
+    )
+    transcript = (
+        before_loopback + hw.nettest_command(root.interface, repeat) + "\r\r\n" + output
+    )
+    assert output.count("eth1: driver frost_net10g") == repeat
+    ok, note = linux.judge(transcript)
+    assert ok, note
+    ok, note = linux.judge(transcript.replace("eth1: driver", "eth0: driver", 1))
+    assert not ok
+    assert f"expected {repeat} run(s) on eth1, found eth0" in note
 
 
 def test_every_repetition_is_logged_and_only_the_last_ends_the_capture(
@@ -2704,3 +3093,1957 @@ def test_the_poke_is_scheduled_before_each_test_run_and_does_not_block(
     transcript = MEMERR_TRANSCRIPT + repeated + "\r\r\n" + output
     ok, note = linux.judge(transcript + PROMPT)
     assert ok, note
+
+
+# ---------------------------------------------------------------------------
+# The initramfs driver version (system tools: unmkinitramfs and modinfo)
+# ---------------------------------------------------------------------------
+
+
+def test_the_tree_defines_one_driver_version() -> None:
+    """The source's MODULE_VERSION and the DKMS package version are the same."""
+    dkms = (REPO_ROOT / "linux/frost-net10g/dkms.conf").read_text()
+    package = re.search(r'^PACKAGE_VERSION="([^"]+)"', dkms, re.MULTILINE)
+    assert package is not None
+    assert _driver_version() == package.group(1)
+
+
+@pytest.mark.parametrize("suffix", ["", ".xz", ".zst", ".gz"])
+def test_a_matching_driver_version_passes_for_every_supported_suffix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    """Each kernel-loadable suffix passes, args are fixed, and tmpdir is removed."""
+    good = _driver_version()
+    rel = MODULE_PATH + suffix
+    tool_dir = _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={
+            "early/kernel/x86/microcode/test.bin": "ucode",
+            f"main/{rel}": "stub-ko",
+            "main/init": "#!/bin/sh\n",
+        },
+        modinfo_versions={"*": f"{good}\n"},
+    )
+    image = tmp_path / "initrd.img"
+    image.write_bytes(b"stub-initrd")
+    notes = hw.check_initrd_driver_version(image, REPO_ROOT)
+    assert notes == [
+        f"the initramfs carries frost_net10g version {good} "
+        "(checked: the early section and the first compressed archive)"
+    ]
+    unmk_calls = _tool_calls(tool_dir, "unmkinitramfs")
+    assert len(unmk_calls) == 1
+    assert unmk_calls[0][0] == str(image.resolve())
+    tmpdir = Path(unmk_calls[0][1])
+    assert not tmpdir.exists(), "temporary unpack directory was not removed"
+    modinfo_calls = _tool_calls(tool_dir, "modinfo")
+    assert modinfo_calls == [["-F", "version", str(tmpdir / "main" / rel)]]
+
+
+def test_a_stale_driver_fails_the_preflight_before_any_stage(
+    prepared: tuple[Any, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The message names the file, both versions, and the rebuild; nothing installs."""
+    root, environment = prepared
+    tool_dir = _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={MODULE_PATH + ".xz": "stub-ko"},
+        modinfo_versions={"*": "0.9\n"},
+    )
+    monkeypatch.setattr(
+        hw, "install_root_programs", lambda *a: pytest.fail("installed programs")
+    )
+    with pytest.raises(hw.LinuxEnvironmentError) as stale:
+        hw.linux_root_preflight(root, REPO_ROOT, environment)
+    message = str(stale.value)
+    assert message.startswith(hw.ENV_NOT_READY)
+    assert MODULE_PATH + ".xz" in message
+    assert "version 0.9" in message and f"version {_driver_version()}" in message
+    assert "docs/debian_nfsroot.md" in message and "update-initramfs" in message
+    tmpdir = Path(_tool_calls(tool_dir, "unmkinitramfs")[0][1])
+    assert not tmpdir.exists()
+
+
+def test_a_stale_driver_is_an_env_fail_for_the_cli(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """main() stops before the first stage, or records ENV_FAIL with --keep-going."""
+    seen = _stub_board(monkeypatch)
+    export = _fake_export(tmp_path)
+    root = _fake_root(export)
+    _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={MODULE_PATH + ".xz": "stub-ko"},
+        modinfo_versions={"*": "0.9\n"},
+    )
+    _, environment = _fake_cross(tmp_path)
+    monkeypatch.setattr(hw, "probe_nfs3_tcp", lambda *a, **k: None)
+    monkeypatch.setattr(hw, "linux_root_from_env", lambda: root)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    argv = ["hw_regression.py", "--board", "x3", "linux_boot"]
+    monkeypatch.setattr(hw.sys, "argv", argv)
+    assert hw.main() == 1
+    assert not seen
+    err = capsys.readouterr().err
+    assert "version 0.9" in err and f"version {_driver_version()}" in err
+    monkeypatch.setattr(hw.sys, "argv", [*argv, "--keep-going"])
+    assert hw.main() == 1
+    assert not seen
+    captured = capsys.readouterr()
+    assert hw.ENV_FAIL_STATUS in captured.out and "version 0.9" in captured.err
+
+
+def test_every_unpacked_copy_must_match_the_tree_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Multiple copies pass only if every copy matches; any stale copy fails."""
+    good = _driver_version()
+    first = "early/lib/modules/6.12/updates/dkms/frost_net10g.ko"
+    second = "main/usr/lib/modules/6.12/updates/dkms/frost_net10g.ko.xz"
+    image = tmp_path / "initrd.img"
+    image.write_bytes(b"stub")
+
+    # Both copies match -> PASS.
+    tool_dir = _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={first: "ko1", second: "ko2"},
+        modinfo_versions={first: f"{good}\n", second: f"{good}\n"},
+    )
+    assert hw.check_initrd_driver_version(image, REPO_ROOT)
+    assert len(_tool_calls(tool_dir, "modinfo")) == 2
+    assert not Path(_tool_calls(tool_dir, "unmkinitramfs")[-1][1]).exists()
+
+    # First copy stale, second current -> FAIL naming first copy and both versions.
+    _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={first: "ko1", second: "ko2"},
+        modinfo_versions={first: "0.8\n", second: f"{good}\n"},
+    )
+    with pytest.raises(hw.LinuxEnvironmentError) as err1:
+        hw.check_initrd_driver_version(image, REPO_ROOT)
+    assert (
+        first in str(err1.value)
+        and "0.8" in str(err1.value)
+        and good in str(err1.value)
+    )
+
+    # First copy current, second stale -> FAIL naming second copy and both versions.
+    _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={first: "ko1", second: "ko2"},
+        modinfo_versions={first: f"{good}\n", second: "0.9\n"},
+    )
+    with pytest.raises(hw.LinuxEnvironmentError) as err2:
+        hw.check_initrd_driver_version(image, REPO_ROOT)
+    assert (
+        second in str(err2.value)
+        and "0.9" in str(err2.value)
+        and good in str(err2.value)
+    )
+
+
+def test_only_the_supported_module_file_names_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backup names, non-regular entries, and directory symlinks cannot fool the check."""
+    good = _driver_version()
+    image = tmp_path / "initrd.img"
+    image.write_bytes(b"stub")
+
+    # Lookalike filenames and a directory named frost_net10g.ko are not modules.
+    _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={
+            MODULE_PATH + ".bak": "stub",
+            MODULE_PATH + ".lz4": "stub",
+            MODULE_PATH + ".bz2": "stub",
+            MODULE_PATH + ".orig": "stub",
+            "usr/lib/modules/6.12/other_frost_net10g.ko": "stub",
+        },
+        dirs={"usr/lib/modules/6.12/frost_net10g.ko": 0o755},
+        modinfo_versions={"*": f"{good}\n"},
+    )
+    with pytest.raises(hw.LinuxEnvironmentError, match="carries no frost_net10g"):
+        hw.check_initrd_driver_version(image, REPO_ROOT)
+
+    # A stale backup name does not block a current module, and a usrmerge dir
+    # symlink (lib -> usr/lib) is not followed.
+    tool_dir = _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={MODULE_PATH + ".bak": "stale", MODULE_PATH: "current"},
+        symlinks={"lib": "usr/lib"},
+        modinfo_versions={MODULE_PATH + ".bak": "0.9\n", MODULE_PATH: f"{good}\n"},
+    )
+    assert hw.check_initrd_driver_version(image, REPO_ROOT)
+    assert len(_tool_calls(tool_dir, "modinfo")) == 1
+
+    # A symlink named frost_net10g.ko (file target, broken target, or dir target)
+    # is rejected fail-closed rather than followed.
+    external = tmp_path / "host_decoy.ko"
+    external.write_text("host-file")
+    for link_target in (str(external), "missing_target", str(tmp_path)):
+        _install_initrd_tools(
+            tmp_path,
+            monkeypatch,
+            files={"init": "x"},
+            symlinks={MODULE_PATH: link_target},
+            modinfo_versions={"*": f"{good}\n"},
+        )
+        with pytest.raises(
+            hw.LinuxEnvironmentError, match="not a regular|symbolic link"
+        ):
+            hw.check_initrd_driver_version(image, REPO_ROOT)
+
+
+@pytest.mark.parametrize(
+    "case,tool_name",
+    [
+        ("missing_unmk", "unmkinitramfs"),
+        ("missing_modinfo", "modinfo"),
+        ("enoexec_unmk", "unmkinitramfs"),
+        ("enoexec_modinfo", "modinfo"),
+    ],
+)
+def test_missing_or_unexecutable_initrd_tools_are_env_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, tool_name: str
+) -> None:
+    """A missing or unlaunchable host tool is an ENV_FAIL naming that tool."""
+    image = tmp_path / "initrd.img"
+    image.write_bytes(b"stub")
+    _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        unmk_present=(case != "missing_unmk"),
+        modinfo_present=(case != "missing_modinfo"),
+        unmk_enoexec=(case == "enoexec_unmk"),
+        modinfo_enoexec=(case == "enoexec_modinfo"),
+    )
+    with pytest.raises(hw.LinuxEnvironmentError) as raised:
+        hw.check_initrd_driver_version(image, REPO_ROOT)
+    message = str(raised.value)
+    assert message.startswith(hw.ENV_NOT_READY)
+    assert tool_name in message and f"version {_driver_version()}" in message
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["nonzero", "non_utf8_stderr", "timeout"],
+)
+def test_a_failing_or_timed_out_unmkinitramfs_is_an_env_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Unmkinitramfs errors and timeouts name the tool, clean up, and never crash."""
+    export = _fake_export(tmp_path)
+    root = _fake_root(export)
+    if case == "timeout":
+        monkeypatch.setattr(hw, "UNMKINITRAMFS_TIMEOUT_S", 0.3)
+    tool_dir = _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        unmk_exit=2 if case != "timeout" else 0,
+        unmk_stderr=b"bad header \xff\xfe\n"
+        if case == "non_utf8_stderr"
+        else b"corrupt archive\n",
+        unmk_hang=(case == "timeout"),
+    )
+    with pytest.raises(hw.LinuxEnvironmentError) as raised:
+        hw.check_initrd_driver_version(root.initrd, REPO_ROOT)
+    message = str(raised.value)
+    assert message.startswith(hw.ENV_NOT_READY) and "unmkinitramfs" in message
+    if case == "timeout":
+        assert "timed out" in message
+    else:
+        assert "exited 2" in message
+    calls = _tool_calls(tool_dir, "unmkinitramfs")
+    assert len(calls) == 1 and not Path(calls[0][1]).exists()
+
+    # Also through main() with and without --keep-going (no traceback).
+    if case == "nonzero":
+        seen = _stub_board(monkeypatch)
+        _, environment = _fake_cross(tmp_path)
+        monkeypatch.setattr(hw, "probe_nfs3_tcp", lambda *a, **k: None)
+        monkeypatch.setattr(hw, "linux_root_from_env", lambda: root)
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+        for extra in ([], ["--keep-going"]):
+            monkeypatch.setattr(
+                hw.sys,
+                "argv",
+                ["hw_regression.py", "--board", "x3", "linux_boot", *extra],
+            )
+            assert hw.main() == 1
+        assert not seen
+
+
+@pytest.mark.parametrize(
+    "case,kwargs,expected_fragment",
+    [
+        (
+            "nonzero",
+            {"modinfo_exit": 1, "modinfo_stderr": b"ELF error\n"},
+            "modinfo exited 1",
+        ),
+        ("empty", {"modinfo_stdout": b""}, "printed no version"),
+        ("blank_newline", {"modinfo_stdout": b"\n"}, "printed no version"),
+        ("whitespace_only", {"modinfo_stdout": b"   \n"}, "printed no version"),
+        ("multiple_versions", {"modinfo_stdout": b"1.3\n0.9\n"}, "multiple versions"),
+        ("no_final_newline", {"modinfo_stdout": b"1.3"}, "did not end with a newline"),
+        ("trailing_space", {"modinfo_stdout": b"1.3 \n"}, "version '1.3 '"),
+        ("crlf", {"modinfo_stdout": b"1.3\r\n"}, "version '1.3\\r'"),
+        ("non_utf8", {"modinfo_stdout": b"\xff\xfe\n"}, "version "),
+        (
+            "huge_version",
+            {"modinfo_stdout": b"v" * 200_000 + b"\n"},
+            "200000 chars",
+        ),
+        (
+            "many_lines",
+            {"modinfo_stdout": b"0.9\n" * 1000},
+            "1000 lines total",
+        ),
+        (
+            "escaped_ansi_version",
+            {"modinfo_stdout": b"\x1b[31m0.9\x1b[0m\n"},
+            "\\x1b[31m0.9\\x1b[0m",
+        ),
+        ("timeout", {"modinfo_hang": True}, "modinfo timed out"),
+    ],
+)
+def test_a_failing_lying_or_timed_out_modinfo_is_an_env_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    kwargs: dict[str, Any],
+    expected_fragment: str,
+) -> None:
+    """Every modinfo failure mode fails closed, names tool/file, and cleans tmpdir."""
+    image = tmp_path / "initrd.img"
+    image.write_bytes(b"stub")
+    if case == "timeout":
+        monkeypatch.setattr(hw, "MODINFO_TIMEOUT_S", 0.3)
+    tool_dir = _install_initrd_tools(
+        tmp_path, monkeypatch, files={MODULE_PATH: "stub-ko"}, **kwargs
+    )
+    with pytest.raises(hw.LinuxEnvironmentError) as raised:
+        hw.check_initrd_driver_version(image, REPO_ROOT)
+    message = str(raised.value)
+    assert message.startswith(hw.ENV_NOT_READY)
+    assert expected_fragment in message
+    assert len(message) < 1000, f"unbounded message length: {len(message)}"
+    assert "\x1b" not in message
+    assert MODULE_PATH in message and f"version {_driver_version()}" in message
+    unmk_calls = _tool_calls(tool_dir, "unmkinitramfs")
+    assert len(unmk_calls) == 1 and not Path(unmk_calls[0][1]).exists()
+
+
+def test_the_temp_dir_is_removed_even_with_readonly_unpacked_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read-only (0555) and unreadable (0000) unpacked dirs are cleaned up cleanly."""
+    good = _driver_version()
+    image = tmp_path / "initrd.img"
+    image.write_bytes(b"stub")
+
+    # 0555 directory containing a valid module passes and still removes tmpdir.
+    tool_dir = _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={"readonly_dir/frost_net10g.ko": "stub"},
+        dirs={"readonly_dir": 0o555},
+        modinfo_versions={"*": f"{good}\n"},
+    )
+    assert hw.check_initrd_driver_version(image, REPO_ROOT)
+    assert not Path(_tool_calls(tool_dir, "unmkinitramfs")[-1][1]).exists()
+
+    # 0000 directory fails closed (cannot silently hide a stale module) and cleans up.
+    tool_dir = _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={MODULE_PATH: "good", "locked_dir/frost_net10g.ko": "hidden"},
+        dirs={"locked_dir": 0o000},
+        modinfo_versions={"*": f"{good}\n"},
+    )
+    with pytest.raises(hw.LinuxEnvironmentError, match="cannot check"):
+        hw.check_initrd_driver_version(image, REPO_ROOT)
+    assert not Path(_tool_calls(tool_dir, "unmkinitramfs")[-1][1]).exists()
+
+
+def test_a_driver_source_without_a_version_is_an_env_fail(tmp_path: Path) -> None:
+    """A tree whose version cannot be read does not pass by default."""
+    with pytest.raises(hw.LinuxEnvironmentError, match="cannot read the driver"):
+        hw.source_driver_version(tmp_path)
+    source = tmp_path / hw.DRIVER_SOURCE
+    source.parent.mkdir(parents=True)
+    source.write_text("int x;\n")
+    with pytest.raises(hw.LinuxEnvironmentError, match="no MODULE_VERSION"):
+        hw.source_driver_version(tmp_path)
+
+
+def test_real_unmkinitramfs_and_modinfo_check_a_real_initramfs(tmp_path: Path) -> None:
+    """Integration test using the host's real unmkinitramfs and modinfo when present."""
+    missing = [
+        tool
+        for tool in (hw.UNMKINITRAMFS_TOOL, hw.MODINFO_TOOL)
+        if shutil.which(tool) is None
+    ]
+    if missing:
+        pytest.skip(f"{', '.join(missing)} not installed on PATH")
+
+    def tiny_elf(version: str, *, rodata: bytes = b"") -> bytes:
+        # Minimal ELF64 relocatable object with .rodata, .modinfo, and a 64 KiB
+        # SHT_NOBITS .bss section larger than the file (exercises real modinfo).
+        info = f"license=GPL\0version={version}\0".encode()
+        names = b"\0.rodata\0.modinfo\0.bss\0.shstrtab\0"
+        rodata_at = 64
+        info_at = rodata_at + len(rodata)
+        names_at = info_at + len(info)
+        table_at = (names_at + len(names) + 7) & ~7
+        body = rodata + info + names + b"\0" * (table_at - names_at - len(names))
+
+        def shdr(name: int, kind: int, offset: int, size: int) -> bytes:
+            return struct.pack(
+                "<IIQQQQIIQQ", name, kind, 0, 0, offset, size, 0, 0, 1, 0
+            )
+
+        table = (
+            shdr(0, 0, 0, 0)
+            + shdr(1, 1, rodata_at, len(rodata))
+            + shdr(9, 1, info_at, len(info))
+            + shdr(18, 8, names_at, 65536)  # SHT_NOBITS .bss
+            + shdr(23, 3, names_at, len(names))
+        )
+        hdr = (
+            b"\x7fELF\x02\x01\x01"
+            + b"\0" * 9
+            + struct.pack(
+                "<HHIQQQIHHHHHH", 1, 243, 1, 0, 0, table_at, 0, 64, 0, 0, 64, 5, 4
+            )
+        )
+        return hdr + body + table
+
+    def tiny_cpio(files: list[tuple[str, bytes]]) -> bytes:
+        entries: list[tuple[str, int, bytes]] = []
+        seen_dirs: set[str] = set()
+        for rel, data in files:
+            parts = rel.split("/")
+            for i in range(1, len(parts)):
+                parent = "/".join(parts[:i])
+                if parent not in seen_dirs:
+                    seen_dirs.add(parent)
+                    entries.append((parent, 0o040755, b""))
+            entries.append((rel, 0o100644, data))
+        entries.append(("TRAILER!!!", 0, b""))
+        out = b""
+        for name, mode, data in entries:
+            enc = name.encode() + b"\0"
+            fields = [1, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(enc), 0]
+            out += b"070701" + b"".join(f"{val:08x}".encode() for val in fields)
+            out += enc + b"\0" * (-(110 + len(enc)) % 4)
+            out += data + b"\0" * (-len(data) % 4)
+        return out
+
+    good = _driver_version()
+    early = tiny_cpio([("kernel/x86/microcode/test.bin", b"\x01" * 16)])
+    early += b"\0" * (-len(early) % 512)
+
+    # Matching real initramfs (early cpio + gzip cpio + ELF with SHT_NOBITS .bss).
+    good_img = tmp_path / "good.img"
+    good_img.write_bytes(
+        early + gzip.compress(tiny_cpio([(MODULE_PATH, tiny_elf(good))]))
+    )
+    assert hw.check_initrd_driver_version(good_img, REPO_ROOT) == [
+        f"the initramfs carries frost_net10g version {good} "
+        "(checked: the early section and the first compressed archive)"
+    ]
+
+    # Stale .modinfo with matching decoy in .rodata must fail with both versions.
+    decoy = f"\0version={good}\0".encode()
+    stale_img = tmp_path / "stale.img"
+    stale_img.write_bytes(
+        early + gzip.compress(tiny_cpio([(MODULE_PATH, tiny_elf("0.9", rodata=decoy))]))
+    )
+    with pytest.raises(hw.LinuxEnvironmentError) as stale:
+        hw.check_initrd_driver_version(stale_img, REPO_ROOT)
+    assert "version 0.9" in str(stale.value) and f"version {good}" in str(stale.value)
+
+    # Corrupt initramfs fails naming unmkinitramfs.
+    corrupt_img = tmp_path / "corrupt.img"
+    corrupt_img.write_bytes(b"not an initramfs at all")
+    with pytest.raises(hw.LinuxEnvironmentError, match="unmkinitramfs"):
+        hw.check_initrd_driver_version(corrupt_img, REPO_ROOT)
+
+
+# ---------------------------------------------------------------------------
+# The debug_port stage
+# ---------------------------------------------------------------------------
+
+GOOD_ITEMS = [
+    ("dtmcs", "0x00003071"),
+    ("dmstatus", "0x00430c82"),
+    ("hartinfo", "0x002017b4"),
+    ("state_before", "running"),
+    ("state_halted", "halted"),
+    ("dmstatus_halted", "0x00430382"),
+    ("dpc", "0x80001234"),
+    ("state_after_resume", "running"),
+    ("dmstatus_running", "0x00430c82"),
+    ("dtmcs_after", "0x00003071"),
+    ("hartinfo_after", "0x002017b4"),
+    ("state_left", "running"),
+]
+DEBUG_GOOD = (
+    "".join(f"FROST_DEBUG {key}={value}\n" for key, value in GOOD_ITEMS)
+    + "FROST_DEBUG_DONE\n"
+)
+RECOVER_GOOD = "FROST_DEBUG state_left=running\nFROST_DEBUG_DONE\n"
+
+
+def _transcript(**changes: str | None) -> str:
+    """Return DEBUG_GOOD with each named value replaced (None removes the line)."""
+    out = ""
+    for key, value in GOOD_ITEMS:
+        if key in changes:
+            if changes[key] is None:
+                continue
+            value = changes[key]  # type: ignore[assignment]
+        out += f"FROST_DEBUG {key}={value}\n"
+    return out + "FROST_DEBUG_DONE\n"
+
+
+def _within(seconds: float, call: Callable[[], Any]) -> Any:
+    """Run a call and fail the test if it does not return in time."""
+
+    def alarm(signum: int, frame: Any) -> None:
+        raise TimeoutError("the call did not return in time")
+
+    previous = signal.signal(signal.SIGALRM, alarm)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        return call()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_a_good_debug_transcript_passes() -> None:
+    """Exactly the expected sequence, every value right, hart running."""
+    ok, note = hw.judge_debug_output(DEBUG_GOOD)
+    assert ok
+    assert "dtmcs 0x00003071" in note and "dpc 0x80001234" in note
+    # A hart that was halted before the check, and is resumed, passes too.
+    halted_first = _transcript(state_before="halted", dmstatus="0x00430382")
+    assert hw.judge_debug_output(halted_first)[0]
+
+
+@pytest.mark.parametrize(
+    "output,reason",
+    [
+        (_transcript(dtmcs="0x00000061"), "unexpected dtmcs=0x00000061"),
+        (_transcript(dtmcs="0x00000c71", dtmcs_after="0x00000c71"), "status 3"),
+        (_transcript(dtmcs="0xffff3071", dtmcs_after="0xffff3071"), "reserved"),
+        (_transcript(dtmcs_after="0x010c3208"), "dtmcs changed"),
+        (_transcript(dtmcs_after="0x00003c71"), "dtmcs changed"),
+        (_transcript(dmstatus="0x00430c01"), "does not report the hart running"),
+        (_transcript(dmstatus="0x00430f82"), "does not report the hart running"),
+        (_transcript(dmstatus="0x00430082"), "does not report the hart running"),
+        (_transcript(dmstatus="0x00430382"), "does not report the hart running"),
+        (_transcript(hartinfo="0x00000000"), "unexpected hartinfo=0x00000000"),
+        (_transcript(hartinfo_after="0x002017b5"), "hartinfo changed"),
+        (_transcript(state_before="unavailable"), "unavailable before"),
+        (_transcript(state_halted="running"), "halt was refused"),
+        (_transcript(dmstatus_halted="0x00000c82"), "does not report the hart halted"),
+        (_transcript(dmstatus_halted="0x00430f82"), "does not report the hart halted"),
+        (_transcript(dmstatus_halted="0x00433382"), "does not report the hart halted"),
+        (_transcript(dmstatus_halted="0x00531382"), "does not report the hart halted"),
+        (
+            _transcript(dmstatus_running="0x0043cc82"),
+            "does not report the hart running",
+        ),
+        (_transcript(dmstatus_running="0x00030c82"), "static bits"),
+        (
+            _transcript(dmstatus_running="0x00430f82"),
+            "does not report the hart running",
+        ),
+        (_transcript(state_after_resume="halted"), "did not resume"),
+        (
+            _transcript(dmstatus_running="0x00430382"),
+            "does not report the hart running",
+        ),
+        (_transcript(state_left="halted"), "left halted"),
+    ],
+)
+def test_wrong_values_fail_with_their_reason(output: str, reason: str) -> None:
+    """Each value check names what was wrong."""
+    ok, note = hw.judge_debug_output(output)
+    assert not ok and reason in note, note
+
+
+def _structure_cases() -> list[tuple[str, str]]:
+    lines = DEBUG_GOOD.splitlines()
+    cases: list[tuple[str, str]] = [
+        ("empty", ""),
+        ("reversed", "\n".join(reversed(lines)) + "\n"),
+        ("swapped", "\n".join([lines[0], lines[2], lines[1], *lines[3:]]) + "\n"),
+        ("state_left first", "\n".join([lines[11], *lines[:11], lines[12]]) + "\n"),
+        ("dpc early", "\n".join([lines[6], *lines[:6], *lines[7:]]) + "\n"),
+        ("no end", "\n".join(lines[:-1]) + "\n"),
+        ("no final newline", DEBUG_GOOD[:-1]),
+        ("end twice", DEBUG_GOOD + "FROST_DEBUG_DONE\n"),
+        ("end corrupted", DEBUG_GOOD.replace("DONE\n", "DONE corrupted\n")),
+        ("text before", "Open On-Chip Debugger\n" + DEBUG_GOOD),
+        ("text after", DEBUG_GOOD + "Info : done\n"),
+        ("text between", DEBUG_GOOD.replace("dmstatus=", "x\nFROST_DEBUG dmstatus=")),
+        (
+            "blank line",
+            DEBUG_GOOD.replace("FROST_DEBUG hartinfo", "\nFROST_DEBUG hartinfo"),
+        ),
+        ("error no space", DEBUG_GOOD + "FROST_DEBUG_ERR:\n"),
+        ("error no space text", DEBUG_GOOD + "FROST_DEBUG_ERR:halt failed\n"),
+        ("error with space", DEBUG_GOOD + "FROST_DEBUG_ERR: halt failed\n"),
+        ("openocd error", DEBUG_GOOD + "Error: JTAG communication error\n"),
+        ("crlf", DEBUG_GOOD.replace("\n", "\r\n")),
+        ("trailing space", DEBUG_GOOD.replace("running\n", "running \n", 1)),
+        ("leading space", " " + DEBUG_GOOD),
+        ("uppercase hex", DEBUG_GOOD.replace("0x00003071", "0x0000307F", 1)),
+        ("hex digit upper", DEBUG_GOOD.replace("0x00430c82", "0x00430C82", 1)),
+        ("short hex", DEBUG_GOOD.replace("0x00003071", "0x3071", 1)),
+        ("unknown key", DEBUG_GOOD.replace("FROST_DEBUG dpc", "FROST_DEBUG dpd")),
+        (
+            "duplicate key",
+            DEBUG_GOOD.replace(
+                "FROST_DEBUG dpc=", "FROST_DEBUG dtmcs=0x00003071\nFROST_DEBUG dpc="
+            ),
+        ),
+        (
+            "duplicate state_left",
+            DEBUG_GOOD.replace(
+                "FROST_DEBUG_DONE", "FROST_DEBUG state_left=halted\nFROST_DEBUG_DONE"
+            ),
+        ),
+        ("equals missing", DEBUG_GOOD.replace("dpc=", "dpc ")),
+    ]
+    for key, _ in GOOD_ITEMS:
+        cases.append((f"missing {key}", _transcript(**{key: None})))
+    return cases
+
+
+@pytest.mark.parametrize("name,output", _structure_cases())
+def test_anything_but_the_exact_sequence_fails(name: str, output: str) -> None:
+    """Text before, between or after, and any reordering, is a FAIL."""
+    ok, note = hw.judge_debug_output(output)
+    assert not ok, name
+    assert note and "\n" not in note
+
+
+def test_the_first_offending_line_is_quoted_and_masked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The message quotes the line, and the serial in it is masked."""
+    monkeypatch.setenv(hw.JTAG_SERIAL_ENV, "SER777")
+    ok, note = hw.judge_debug_output(
+        DEBUG_GOOD.replace(
+            "FROST_DEBUG dmstatus=", "Info : SER777\nFROST_DEBUG dmstatus="
+        )
+    )
+    assert not ok
+    assert "Info : <cable serial>" in note and "SER777" not in note
+
+
+def test_a_script_error_is_quoted_in_the_failure() -> None:
+    """The script's own error line is reported, with what the sequence lacked."""
+    cut = (
+        "".join(f"FROST_DEBUG {k}={v}\n" for k, v in GOOD_ITEMS[:5])
+        + "FROST_DEBUG_ERR: Timed out waiting for target to halt\n"
+        + "FROST_DEBUG state_left=running\nFROST_DEBUG_DONE\n"
+    )
+    ok, note = hw.judge_debug_output(cut)
+    assert not ok and "Timed out waiting" in note
+
+
+def _fake_openocd(
+    tmp_path: Path, checks: str | bytes, recovery: str | bytes = RECOVER_GOOD
+) -> Path:
+    """Return a stand-in OpenOCD that prints a canned transcript per procedure.
+
+    Transcript goes to stdout and log lines to stderr, as OpenOCD does. Records
+    argv and ``FROST_JTAG_SERIAL``. Optional control files under ``tmp_path``:
+    ``stderr.txt``, ``exit.txt``, ``hang``, ``kill`` for ``frost_debug_check``;
+    ``recover_stderr.txt``, ``recover_exit.txt``, ``hang_recover``,
+    ``kill_recover``, and ``probe_lock`` (probing ``tmp_path / 'lock'``) for
+    ``frost_debug_recover``.
+    """
+    (tmp_path / "check.txt").write_bytes(
+        checks if isinstance(checks, bytes) else checks.encode()
+    )
+    (tmp_path / "recover.txt").write_bytes(
+        recovery if isinstance(recovery, bytes) else recovery.encode()
+    )
+    script = tmp_path / "openocd"
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import fcntl, os, signal, sys, time\n"
+        "from pathlib import Path\n"
+        f"root = Path({str(tmp_path)!r})\n"
+        "with (root / 'calls.txt').open('a') as f:\n"
+        "    f.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "with (root / 'serials.txt').open('a') as f:\n"
+        "    f.write(os.environ.get('FROST_JTAG_SERIAL', '') + '\\n')\n"
+        "if 'frost_debug_recover' in sys.argv[1:]:\n"
+        "    if (root / 'probe_lock').exists():\n"
+        "        with (root / 'lock').open('a') as lf:\n"
+        "            try:\n"
+        "                fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "                state = 'UNLOCKED'\n"
+        "            except BlockingIOError:\n"
+        "                state = 'LOCKED'\n"
+        "        with (root / 'lock_states.txt').open('a') as ls:\n"
+        "            ls.write(state + '\\n')\n"
+        "    (root / 'recover_started').touch()\n"
+        "    sys.stdout.buffer.write((root / 'recover.txt').read_bytes())\n"
+        "    sys.stdout.buffer.flush()\n"
+        "    if (root / 'recover_stderr.txt').exists():\n"
+        "        sys.stderr.buffer.write((root / 'recover_stderr.txt').read_bytes())\n"
+        "        sys.stderr.buffer.flush()\n"
+        "    if (root / 'kill_recover').exists():\n"
+        "        os.kill(os.getpid(), signal.SIGKILL)\n"
+        "    if (root / 'hang_recover').exists():\n"
+        "        time.sleep(30)\n"
+        "    if (root / 'recover_exit.txt').exists():\n"
+        "        raise SystemExit(int((root / 'recover_exit.txt').read_text().strip()))\n"
+        "    raise SystemExit(0)\n"
+        "(root / 'primary_started').touch()\n"
+        "sys.stdout.buffer.write((root / 'check.txt').read_bytes())\n"
+        "sys.stdout.buffer.flush()\n"
+        "if (root / 'stderr.txt').exists():\n"
+        "    sys.stderr.buffer.write((root / 'stderr.txt').read_bytes())\n"
+        "    sys.stderr.buffer.flush()\n"
+        "if (root / 'kill').exists():\n"
+        "    os.kill(os.getpid(), signal.SIGKILL)\n"
+        "if (root / 'hang').exists():\n"
+        "    time.sleep(30)\n"
+        "if (root / 'exit.txt').exists():\n"
+        "    raise SystemExit(int((root / 'exit.txt').read_text().strip()))\n"
+        "raise SystemExit(0)\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return script
+
+
+@pytest.fixture
+def debug_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Callable[..., dict[str, str]]:
+    """Return a builder of stage environments around a stand-in OpenOCD."""
+    monkeypatch.setattr(hw, "DEBUG_LOCK", tmp_path / "lock")
+    monkeypatch.setattr(hw, "hw_server_running", lambda: False)
+
+    def build(
+        checks: str | bytes, recovery: str | bytes = RECOVER_GOOD
+    ) -> dict[str, str]:
+        script = _fake_openocd(tmp_path, checks, recovery)
+        return {hw.JTAG_SERIAL_ENV: "TESTSERIAL", hw.OPENOCD_ENV: str(script)}
+
+    return build
+
+
+def _calls(tmp_path: Path) -> list[str]:
+    path = tmp_path / "calls.txt"
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def test_the_stage_always_confirms_the_hart_even_on_a_passing_run(
+    tmp_path: Path, debug_env: Any
+) -> None:
+    """PASS always runs frost_debug_check followed by a separate confirmation."""
+    environment = debug_env(DEBUG_GOOD)
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert result["status"] == "PASS" and result["stage"] == hw.DEBUG_STAGE
+    calls = _calls(tmp_path)
+    assert len(calls) == 2
+    assert "hart confirmed running" in result["note"]
+    assert "-f " + str(REPO_ROOT / "fpga/debug/openocd_x3.cfg") in calls[0]
+    assert "-f " + str(REPO_ROOT / "fpga/debug/hw_debug_check.tcl") in calls[0]
+    assert calls[0].endswith("-c init -c frost_debug_check -c shutdown")
+    assert calls[1].endswith("-c init -c frost_debug_recover -c shutdown")
+    assert (tmp_path / "serials.txt").read_text().split() == [
+        "TESTSERIAL",
+        "TESTSERIAL",
+    ]
+
+
+def test_r0_nonzero_exit_and_contradictory_dmstatus_fail_and_confirm(
+    tmp_path: Path, debug_env: Any
+) -> None:
+    """Review 1: nonzero exit and contradictory dmstatus both FAIL and confirm."""
+    # Nonzero exit with valid transcript + shutdown error.
+    environment = debug_env(DEBUG_GOOD)
+    (tmp_path / "exit.txt").write_text("7")
+    (tmp_path / "stderr.txt").write_text("Error: shutdown failed on TESTSERIAL\n")
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert result["status"] == "FAIL", result
+    calls = _calls(tmp_path)
+    assert len(calls) == 2 and calls[1].endswith("-c frost_debug_recover -c shutdown")
+    assert "OpenOCD exited 7" in result["note"]
+    assert "hart confirmed running" in result["note"]
+    assert "TESTSERIAL" not in result["note"]
+
+    # Contradictory dmstatus (both halted and running bits set) in valid sequence.
+    (tmp_path / "calls.txt").unlink()
+    (tmp_path / "exit.txt").unlink()
+    (tmp_path / "stderr.txt").unlink()
+    environment = debug_env(_transcript(dmstatus_running="0x00430f82"))
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert result["status"] == "FAIL", result
+    calls = _calls(tmp_path)
+    assert len(calls) == 2 and calls[1].endswith("-c frost_debug_recover -c shutdown")
+    assert "hart confirmed running" in result["note"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "sigkill_empty_stdout",
+        "sigkill_partial_stdout",
+        "sigkill_after_full_stdout",
+        "duplicate_state_left",
+        "non_utf8_and_sigkill",
+    ],
+)
+def test_d1_sigkill_and_duplicate_state_left_always_confirm(
+    tmp_path: Path, debug_env: Any, case: str
+) -> None:
+    """D1: SIGKILL (even after full output) and duplicate state_left always confirm."""
+    partial = "".join(f"FROST_DEBUG {k}={v}\n" for k, v in GOOD_ITEMS[:5])
+    payloads: dict[str, str | bytes] = {
+        "sigkill_empty_stdout": "",
+        "sigkill_partial_stdout": partial,
+        "sigkill_after_full_stdout": DEBUG_GOOD,
+        "duplicate_state_left": _transcript().replace(
+            "FROST_DEBUG state_left=running",
+            "FROST_DEBUG state_left=halted\nFROST_DEBUG state_left=running",
+        ),
+        "non_utf8_and_sigkill": partial.encode() + b"\xff\xfe\n",
+    }
+    environment = debug_env(payloads[case])
+    if "sigkill" in case:
+        (tmp_path / "kill").touch()
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert result["status"] == "FAIL", result
+    calls = _calls(tmp_path)
+    assert len(calls) == 2 and calls[1].endswith("-c frost_debug_recover -c shutdown")
+    assert "hart confirmed running" in result["note"]
+
+
+def test_d2_dtmcs_after_does_not_clear_sticky_error_and_polling_is_restored() -> None:
+    """D2: hw_debug_check.tcl switches polling off/on and keeps dtmcs_after raw."""
+    openocd = shutil.which("openocd")
+    if openocd is None:
+        pytest.skip("openocd is not installed")
+    script = REPO_ROOT / hw.DEBUG_SCRIPT
+
+    def run_tcl(mode: str) -> tuple[int, str, str]:
+        harness = f"""
+set mode "{mode}"
+set poll_state "on"
+set poll_history {{}}
+set cur_state "running"
+set last_ir 0
+set dtmcs_reads 0
+set dmireset_writes 0
+set raw_scan_poll_states {{}}
+set dmireset_had_ir {{}}
+
+proc poll {{args}} {{
+    global poll_state poll_history
+    if {{[llength $args] == 1}} {{
+        set arg [lindex $args 0]
+        if {{$arg eq "on" || $arg eq "off"}} {{
+            set poll_state $arg
+            lappend poll_history $arg
+        }}
+    }}
+}}
+proc target {{sub}} {{ return "mock.cpu" }}
+proc mock.cpu {{args}} {{
+    global cur_state
+    if {{[lindex $args 0] eq "cget"}} {{ return "frost.fpga" }}
+    if {{[lindex $args 0] eq "curstate"}} {{ return $cur_state }}
+    return ""
+}}
+proc irscan {{tap ir}} {{
+    global last_ir poll_state raw_scan_poll_states
+    set last_ir $ir
+    lappend raw_scan_poll_states $poll_state
+}}
+proc drscan {{tap bits val}} {{
+    global last_ir dtmcs_reads dmireset_writes mode poll_state raw_scan_poll_states dmireset_had_ir
+    lappend raw_scan_poll_states $poll_state
+    if {{$val == 0x10000}} {{
+        incr dmireset_writes
+        lappend dmireset_had_ir $last_ir
+        set last_ir 0
+        return "00003071"
+    }}
+    incr dtmcs_reads
+    set last_ir 0
+    if {{$mode eq "initial_sticky" && $dtmcs_reads == 1}} {{
+        return "00003c71"
+    }}
+    if {{$mode eq "after_sticky" && $dtmcs_reads == 2}} {{
+        return "00003c71"
+    }}
+    return "00003071"
+}}
+proc riscv {{args}} {{
+    global cur_state
+    if {{[lindex $args 0] eq "dmi_read"}} {{
+        set addr [lindex $args 1]
+        if {{$addr == 0x11}} {{
+            return [expr {{$cur_state eq "halted" ? 0x00430382 : 0x00430c82}}]
+        }}
+        if {{$addr == 0x12}} {{ return 0x002017b4 }}
+    }}
+    return ""
+}}
+proc halt {{}} {{
+    global cur_state
+    set cur_state "halted"
+}}
+proc wait_halt {{ms}} {{}}
+proc get_reg {{args}} {{
+    global mode
+    if {{$mode eq "fail_dpc"}} {{ error "dpc read failed" }}
+    return [dict create dpc 0x80001234]
+}}
+proc resume {{}} {{
+    global cur_state mode
+    if {{$mode eq "fail_recover_resume"}} {{ error "resume failed" }}
+    set cur_state "running"
+}}
+source "{script}"
+if {{$mode eq "fail_recover_resume"}} {{
+    set cur_state "halted"
+    frost_debug_recover
+}} else {{
+    frost_debug_check
+}}
+puts stderr "META poll_end=$poll_state poll_hist=$poll_history dmireset=$dmireset_writes dmireset_ir=$dmireset_had_ir scan_polls=$raw_scan_poll_states state=$cur_state"
+"""
+        done = hw.subprocess.run(
+            [
+                openocd,
+                "-c",
+                "gdb_port disabled",
+                "-c",
+                "telnet_port disabled",
+                "-c",
+                "tcl_port disabled",
+                "-c",
+                harness,
+                "-c",
+                "shutdown",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return done.returncode, done.stdout, done.stderr
+
+    # 1. Sticky busy on dtmcs_after: NOT cleared (dmireset=0), reported raw, fails.
+    rc, out, err = run_tcl("after_sticky")
+    assert rc == 0, err
+    assert "dmireset=0" in err
+    assert "FROST_DEBUG dtmcs_after=0x00003c71\n" in out
+    ok, note = hw.judge_debug_output(out)
+    assert not ok and "dtmcs changed" in note
+
+    # 2. Sticky busy on initial dtmcs: cleared with irscan+drscan under poll off;
+    #    poll restored on; transcript passes.
+    rc, out, err = run_tcl("initial_sticky")
+    assert rc == 0, err
+    assert "poll_end=on poll_hist=off on dmireset=1 dmireset_ir=34" in err
+    assert "scan_polls=off off off off off off off off" in err
+    ok, note = hw.judge_debug_output(out)
+    assert ok, f"{note}\n{out}\n{err}"
+
+    # 3. Error during dpc read: poll still restored to on, hart resumed.
+    rc, out, err = run_tcl("fail_dpc")
+    assert rc == 0, err
+    assert "poll_end=on" in err and "state=running" in err
+    ok, note = hw.judge_debug_output(out)
+    assert not ok and "dpc read failed" in note
+
+    # 4. frost_debug_recover emits FROST_DEBUG_ERR when resume throws.
+    rc, out, err = run_tcl("fail_recover_resume")
+    assert rc == 0, err
+    assert "FROST_DEBUG_ERR: resume failed\n" in out
+    ok, note = hw.judge_debug_recovery(out, "", False, 0)
+    assert not ok and "resume failed" in note
+
+
+@pytest.mark.parametrize(
+    "stderr_text",
+    [
+        "Error: JTAG communication error\n",
+        "Error: \n",
+        "Error:\n",
+        "FROST_DEBUG_ERR: late failure\n",
+        "FROST_DEBUG_ERR:\n",
+    ],
+)
+def test_d3_bare_error_line_on_stderr_fails_and_confirms(
+    tmp_path: Path, debug_env: Any, stderr_text: str
+) -> None:
+    """D3: any Error: or FROST_DEBUG_ERR: marker (even empty) fails and confirms."""
+    environment = debug_env(DEBUG_GOOD)
+    (tmp_path / "stderr.txt").write_text(stderr_text)
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert result["status"] == "FAIL", result
+    calls = _calls(tmp_path)
+    assert len(calls) == 2 and calls[1].endswith("-c frost_debug_recover -c shutdown")
+    assert "hart confirmed running" in result["note"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "dmstatus_running_halted",
+        "state_after_resume_halted",
+        "dtmcs_after_dmi_word",
+        "exit_nonzero_with_error",
+        "sigkill_after_full_stdout",
+        "timeout_after_full_stdout",
+    ],
+)
+def test_r1_d1_failing_runs_with_state_left_running_always_confirm(
+    tmp_path: Path, debug_env: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """R1-D1: state_left=running in a failing/killed/timed-out run never skips confirm."""
+    transcripts = {
+        "dmstatus_running_halted": _transcript(dmstatus_running="0x00430382"),
+        "state_after_resume_halted": _transcript(
+            state_after_resume="halted", dmstatus_running="0x00430382"
+        ),
+        "dtmcs_after_dmi_word": _transcript(dtmcs_after="0x010c3208"),
+        "exit_nonzero_with_error": DEBUG_GOOD,
+        "sigkill_after_full_stdout": DEBUG_GOOD,
+        "timeout_after_full_stdout": DEBUG_GOOD,
+    }
+    environment = debug_env(transcripts[case])
+    if case == "exit_nonzero_with_error":
+        (tmp_path / "exit.txt").write_text("7")
+        (tmp_path / "stderr.txt").write_text("Error: target failed\n")
+    elif case == "sigkill_after_full_stdout":
+        (tmp_path / "kill").touch()
+    elif case == "timeout_after_full_stdout":
+        (tmp_path / "hang").touch()
+        monkeypatch.setattr(hw, "DEBUG_TIMEOUT_S", 0.3)
+
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    expected = "TIMEOUT" if case == "timeout_after_full_stdout" else "FAIL"
+    assert result["status"] == expected, result
+    calls = _calls(tmp_path)
+    assert len(calls) == 2 and calls[1].endswith("-c frost_debug_recover -c shutdown")
+    assert "hart confirmed running" in result["note"]
+
+
+@pytest.mark.parametrize("primary_kind", ["pass", "fail", "timeout"])
+@pytest.mark.parametrize(
+    "confirm_failure",
+    [
+        "exit_nonzero_with_good_stdout",
+        "timeout_with_good_stdout",
+        "stderr_error_with_good_stdout",
+        "stderr_bare_error_with_good_stdout",
+        "arbitrary_state_word",
+        "still_halted",
+        "extra_stdout_line",
+        "empty_stdout",
+        "script_err_line",
+        "killed_recover",
+    ],
+)
+def test_r1_d2_confirmation_requires_clean_exit_no_errors_and_exact_running_line(
+    tmp_path: Path,
+    debug_env: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    primary_kind: str,
+    confirm_failure: str,
+) -> None:
+    """R1-D2 & Part B: any imperfect confirmation reports FAIL, UNKNOWN, and recovery cmd."""
+    partial = "".join(f"FROST_DEBUG {k}={v}\n" for k, v in GOOD_ITEMS[:5])
+    primary_out = DEBUG_GOOD if primary_kind == "pass" else partial
+    recover_outputs = {
+        "exit_nonzero_with_good_stdout": RECOVER_GOOD,
+        "timeout_with_good_stdout": RECOVER_GOOD,
+        "stderr_error_with_good_stdout": RECOVER_GOOD,
+        "stderr_bare_error_with_good_stdout": RECOVER_GOOD,
+        "arbitrary_state_word": "FROST_DEBUG state_left=banana\nFROST_DEBUG_DONE\n",
+        "still_halted": "FROST_DEBUG state_left=halted\nFROST_DEBUG_DONE\n",
+        "extra_stdout_line": RECOVER_GOOD + "extra\n",
+        "empty_stdout": "",
+        "script_err_line": "FROST_DEBUG_ERR: resume failed\n" + RECOVER_GOOD,
+        "killed_recover": RECOVER_GOOD,
+    }
+    environment = debug_env(primary_out, recover_outputs[confirm_failure])
+    if primary_kind == "timeout":
+        (tmp_path / "hang").touch()
+        monkeypatch.setattr(hw, "DEBUG_TIMEOUT_S", 0.3)
+    if confirm_failure == "exit_nonzero_with_good_stdout":
+        (tmp_path / "recover_exit.txt").write_text("7")
+        (tmp_path / "recover_stderr.txt").write_text(
+            "Error: JTAG failed on TESTSERIAL\n"
+        )
+    elif confirm_failure == "timeout_with_good_stdout":
+        (tmp_path / "hang_recover").touch()
+        monkeypatch.setattr(hw, "DEBUG_RECOVERY_TIMEOUT_S", 0.3)
+    elif confirm_failure == "stderr_error_with_good_stdout":
+        (tmp_path / "recover_stderr.txt").write_text(
+            "Error: JTAG failed on TESTSERIAL\n"
+        )
+    elif confirm_failure == "stderr_bare_error_with_good_stdout":
+        (tmp_path / "recover_stderr.txt").write_text("Error: \n")
+    elif confirm_failure == "killed_recover":
+        (tmp_path / "kill_recover").touch()
+
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert result["status"] == "FAIL", result
+    assert "UNKNOWN" in result["note"], result
+    assert hw.RECOVERY_COMMAND in result["note"], result
+    assert "TESTSERIAL" not in result["note"], result
+
+
+@pytest.mark.parametrize("path", ["pass", "fail", "exc_show", "exc_judge", "exc_parse"])
+def test_r1_d2_confirmation_holds_board_lock_on_normal_and_exception_paths(
+    tmp_path: Path, debug_env: Any, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """R1-D2 & Part B: DEBUG_LOCK remains held while frost_debug_recover runs."""
+    partial = "".join(f"FROST_DEBUG {k}={v}\n" for k, v in GOOD_ITEMS[:5])
+    environment = debug_env(DEBUG_GOOD if path != "fail" else partial)
+    (tmp_path / "probe_lock").touch()
+    if path.startswith("exc_"):
+        target = {
+            "exc_show": "mask_serial",
+            "exc_judge": "judge_debug_output",
+            "exc_parse": "parse_transcript",
+        }[path]
+        real = getattr(hw, target)
+        fired: list[int] = []
+
+        def fail_once(*args: Any, **kwargs: Any) -> Any:
+            if not fired:
+                fired.append(1)
+                raise RuntimeError("injected")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(hw, target, fail_once)
+
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    expected = "PASS" if path == "pass" else "FAIL"
+    assert result["status"] == expected, result
+    assert (tmp_path / "lock_states.txt").read_text().splitlines() == ["LOCKED"]
+
+
+@pytest.mark.parametrize(
+    "step", ["run", "print", "judge", "parse", "mask", "confirm_judge"]
+)
+def test_an_exception_at_any_step_is_a_fail_after_a_confirmation(
+    tmp_path: Path, debug_env: Any, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    """Whatever raises once the process has started, the hart is confirmed."""
+    partial = "".join(f"FROST_DEBUG {k}={v}\n" for k, v in GOOD_ITEMS[:5])
+    environment = debug_env(partial)
+    target = {
+        "run": "run_openocd_procedure",
+        "print": "mask_serial",
+        "judge": "judge_debug_output",
+        "parse": "parse_transcript",
+        "mask": "remember_serial",
+        "confirm_judge": "judge_debug_recovery",
+    }[step]
+    real = getattr(hw, target)
+    fired: list[int] = []
+
+    def once(*args: Any, **kwargs: Any) -> Any:
+        if not fired:
+            fired.append(1)
+            raise RuntimeError("injected")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(hw, target, once)
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert fired and result["status"] == "FAIL", result
+    if step == "mask":
+        assert not _calls(tmp_path)
+        return
+    calls = _calls(tmp_path)
+    assert calls and calls[-1].endswith("-c frost_debug_recover -c shutdown")
+    if step == "confirm_judge":
+        assert "UNKNOWN" in result["note"] and hw.RECOVERY_COMMAND in result["note"]
+    else:
+        assert "unexpected RuntimeError" in result["note"]
+        assert "hart confirmed running" in result["note"]
+
+
+def test_an_unwritable_lock_is_an_environment_failure(
+    tmp_path: Path, debug_env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shared lock file cannot be opened: setup problem, no traceback."""
+    environment = debug_env(DEBUG_GOOD)
+    monkeypatch.setattr(hw, "DEBUG_LOCK", tmp_path)  # a directory
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert result["status"] == hw.ENV_FAIL_STATUS and "lock" in result["note"]
+    assert not _calls(tmp_path)
+
+
+def test_a_launch_failure_starts_nothing_and_is_not_confirmed(
+    tmp_path: Path, debug_env: Any
+) -> None:
+    """An OpenOCD that cannot start never touched the hart."""
+    environment = debug_env(DEBUG_GOOD)
+    broken = tmp_path / "broken"
+    broken.write_bytes(b"\x00\x01 not a program\n")
+    broken.chmod(0o755)
+    environment[hw.OPENOCD_ENV] = str(broken)
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert result["status"] == hw.ENV_FAIL_STATUS and "cannot run" in result["note"]
+    assert result["note"].startswith(hw.ENV_NOT_READY)
+    assert not _calls(tmp_path)
+
+
+def test_the_stage_is_skipped_without_a_cable_serial(
+    tmp_path: Path, debug_env: Any
+) -> None:
+    """Skipped is neither passed nor failed, and OpenOCD is never started."""
+    environment = debug_env(DEBUG_GOOD)
+    del environment[hw.JTAG_SERIAL_ENV]
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert result["status"] == hw.SKIP_STATUS
+    assert "FROST_JTAG_SERIAL is not set" in result["note"]
+    assert "\n" not in result["note"]
+    assert not (tmp_path / "calls.txt").exists()
+    environment[hw.JTAG_SERIAL_ENV] = "  "
+    assert hw.run_debug_stage(REPO_ROOT, "x3", environment)["status"] == hw.SKIP_STATUS
+
+
+def test_the_stage_reports_a_missing_openocd_as_the_environment(
+    debug_env: Any,
+) -> None:
+    """No OpenOCD is a setup problem, not a board failure."""
+    environment = debug_env(DEBUG_GOOD)
+    environment[hw.OPENOCD_ENV] = "/nonexistent/openocd"
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    assert result["status"] == hw.ENV_FAIL_STATUS
+    assert result["note"].startswith(hw.ENV_NOT_READY)
+
+
+def test_the_stage_waits_for_hw_server_and_never_stops_it(
+    tmp_path: Path, debug_env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cable that stays busy fails the stage without starting OpenOCD."""
+    environment = debug_env(DEBUG_GOOD)
+    monkeypatch.setattr(hw, "hw_server_running", lambda: True)
+    result = hw.run_debug_stage(REPO_ROOT, "x3", environment, cable_wait_s=0.0)
+    assert result["status"] == "FAIL" and "hw_server" in result["note"]
+    assert not (tmp_path / "calls.txt").exists()
+    states = iter([True, True, False])
+    slept: list[float] = []
+    assert hw.wait_for_cable(30.0, lambda: next(states), slept.append, 3.0)
+    assert slept == [3.0, 3.0]
+    assert not hw.wait_for_cable(6.0, lambda: True, lambda s: None, 3.0)
+
+
+def test_a_skipped_stage_does_not_fail_the_regression(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The summary counts it as skipped, and the run goes on and passes."""
+    seen = _stub_board(monkeypatch)
+    monkeypatch.delenv(hw.JTAG_SERIAL_ENV, raising=False)
+    monkeypatch.setattr(
+        hw.sys,
+        "argv",
+        ["hw_regression.py", "--board", "x3", "hello_world", "debug_port", "csr_test"],
+    )
+    assert hw.main() == 0
+    assert list(seen) == ["hello_world", "csr_test"]
+    out = capsys.readouterr().out
+    assert "debug_port" in out and "SKIPPED" in out
+    assert "REGRESSION PASS: 2/3 stages passed, 1 skipped" in out
+
+
+def test_a_run_of_only_skipped_stages_is_not_a_pass(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing was checked, so the verdict is not PASS."""
+    _stub_board(monkeypatch)
+    monkeypatch.delenv(hw.JTAG_SERIAL_ENV, raising=False)
+    monkeypatch.setattr(
+        hw.sys, "argv", ["hw_regression.py", "--board", "x3", "debug_port"]
+    )
+    assert hw.main() == 1
+    assert "REGRESSION FAIL: 0/1 stages passed, 1 skipped" in capsys.readouterr().out
+
+
+def test_a_failed_debug_stage_stops_the_run_unless_keep_going(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """debug_port follows --keep-going like every other stage."""
+    seen = _stub_board(monkeypatch)
+    failed = {"stage": hw.DEBUG_STAGE, "status": "FAIL", "elapsed": 0.0, "note": "x"}
+    monkeypatch.setattr(hw, "run_debug_stage", lambda *args: failed)
+    argv = [
+        "hw_regression.py",
+        "--board",
+        "x3",
+        "hello_world",
+        "debug_port",
+        "csr_test",
+    ]
+    monkeypatch.setattr(hw.sys, "argv", argv)
+    assert hw.main() == 1
+    assert list(seen) == ["hello_world"]
+    seen.clear()
+    monkeypatch.setattr(hw.sys, "argv", [*argv, "--keep-going"])
+    assert hw.main() == 1
+    assert list(seen) == ["hello_world", "csr_test"]
+
+
+def test_a_debug_only_selection_does_not_need_the_uart(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Another process holding the UART does not stop a JTAG-only selection."""
+    _stub_board(monkeypatch)
+    monkeypatch.setattr(hw, "serial_holders", lambda path: ["some other process"])
+    monkeypatch.delenv(hw.JTAG_SERIAL_ENV, raising=False)
+    monkeypatch.setattr(
+        hw.sys, "argv", ["hw_regression.py", "--board", "x3", "debug_port"]
+    )
+    hw.main()
+    captured = capsys.readouterr()
+    assert "already open" not in captured.err and "SKIPPED" in captured.out
+    monkeypatch.setattr(
+        hw.sys, "argv", ["hw_regression.py", "--board", "x3", "hello_world"]
+    )
+    assert hw.main() == 1
+    assert "already open" in capsys.readouterr().err
+
+
+def test_the_debug_script_loads_in_openocd() -> None:
+    """OpenOCD parses the Tcl and defines every procedure (no board needed)."""
+    openocd = shutil.which("openocd")
+    if openocd is None:
+        pytest.skip("openocd is not installed")
+    done = hw.subprocess.run(
+        [
+            openocd,
+            "-c",
+            "gdb_port disabled",
+            "-c",
+            "telnet_port disabled",
+            "-c",
+            "tcl_port disabled",
+            "-c",
+            f"source {REPO_ROOT / hw.DEBUG_SCRIPT}",
+            "-c",
+            'puts "DEFINED [info commands frost_debug_check] '
+            "[info commands frost_debug_check_steps] "
+            "[info commands frost_debug_read_dtmcs] "
+            "[info commands frost_debug_clean_dtmcs] "
+            '[info commands frost_debug_recover]"',
+            "-c",
+            "shutdown",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (
+        "DEFINED frost_debug_check frost_debug_check_steps "
+        "frost_debug_read_dtmcs frost_debug_clean_dtmcs frost_debug_recover"
+    ) in done.stdout + done.stderr
+
+
+# ---------------------------------------------------------------------------
+# Serial masking and preflight error boundary
+# ---------------------------------------------------------------------------
+
+SECRET = "SECRETSER42"
+
+
+def test_the_cable_serial_never_appears_anywhere(
+    tmp_path: Path,
+    debug_env: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Across failure fixtures the serial is in no output, note or exception."""
+    texts: list[str] = []
+    environment = debug_env(DEBUG_GOOD)
+    environment[hw.JTAG_SERIAL_ENV] = SECRET
+
+    # An OPENOCD path that names the serial and does not exist, or cannot run.
+    for name, content in ((f"openocd-{SECRET}", None), (f"broken-{SECRET}", b"\x00 x")):
+        env = {**environment, hw.OPENOCD_ENV: str(tmp_path / name)}
+        if content is not None:
+            (tmp_path / name).write_bytes(content)
+            (tmp_path / name).chmod(0o755)
+        texts.append(str(hw.run_debug_stage(REPO_ROOT, "x3", env)))
+
+    # OpenOCD log text, nonzero exit, garbled transcript, and confirmation error.
+    (tmp_path / "stderr.txt").write_text(f"Error: no device {SECRET}\n")
+    (tmp_path / "exit.txt").write_text("3")
+    (tmp_path / "recover_stderr.txt").write_text(f"Error: recover {SECRET}\n")
+    texts.append(str(hw.run_debug_stage(REPO_ROOT, "x3", environment)))
+    (tmp_path / "check.txt").write_text(f"Info : {SECRET}\n" + DEBUG_GOOD)
+    texts.append(str(hw.run_debug_stage(REPO_ROOT, "x3", environment)))
+
+    # The initramfs path and tool stderr in a preflight failure, directly & via main().
+    monkeypatch.setenv(hw.JTAG_SERIAL_ENV, SECRET)
+    initrd = tmp_path / f"initrd-{SECRET}"
+    initrd.write_bytes(b"stub-initrd")
+    _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={MODULE_PATH: "stub"},
+        modinfo_versions={"*": "0.9\n"},
+    )
+    with pytest.raises(hw.LinuxEnvironmentError) as raised:
+        hw.check_initrd_driver_version(initrd, REPO_ROOT)
+    texts.append(str(raised.value))
+    assert "<cable serial>" in str(raised.value)
+    _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        unmk_exit=1,
+        unmk_stderr=f"cannot open {SECRET}\n".encode(),
+    )
+    with pytest.raises(hw.LinuxEnvironmentError) as tool_raised:
+        hw.check_initrd_driver_version(initrd, REPO_ROOT)
+    texts.append(str(tool_raised.value))
+    assert "<cable serial>" in str(tool_raised.value)
+    _install_initrd_tools(
+        tmp_path,
+        monkeypatch,
+        files={MODULE_PATH: "stub"},
+        modinfo_versions={"*": "0.9\n"},
+    )
+
+    export = _fake_export(tmp_path / "x")
+    root = dataclasses.replace(_fake_root(export), initrd=initrd)
+    _stub_board(monkeypatch)
+    monkeypatch.setattr(hw, "probe_nfs3_tcp", lambda *a, **k: None)
+    real_from_env = hw.linux_root_from_env
+    monkeypatch.setattr(hw, "linux_root_from_env", lambda: root)
+    for tail in ([], ["--keep-going"]):
+        monkeypatch.setattr(
+            hw.sys, "argv", ["hw_regression.py", "--board", "x3", "linux_boot", *tail]
+        )
+        hw.main()
+
+    # An exception that escapes a stage and carries the serial.
+    def boom(*args: Any) -> Any:
+        raise RuntimeError(f"unexpected {SECRET}")
+
+    monkeypatch.setattr(hw, "run_debug_stage", boom)
+    monkeypatch.setattr(
+        hw.sys, "argv", ["hw_regression.py", "--board", "x3", "debug_port"]
+    )
+    assert hw.main() == 1
+
+    # writelines, case-insensitive masking, and a serial only in explicit env.
+    hw._MaskedStream(hw.sys.stdout).writelines(
+        [f"serial={SECRET}\n", f"lower={SECRET.lower()}\n", "mixed=sEcReTsEr42\n"]
+    )
+    assert (
+        hw.mask_serial(
+            f"up={SECRET} lo={SECRET.lower()} mix=SeCrEtSeR42",
+            {hw.JTAG_SERIAL_ENV: SECRET},
+        )
+        == "up=<cable serial> lo=<cable serial> mix=<cable serial>"
+    )
+    monkeypatch.delenv(hw.JTAG_SERIAL_ENV)
+    hw._SEEN_SERIALS.clear()
+    with pytest.raises(hw.LinuxEnvironmentError) as custom:
+        real_from_env(
+            {
+                hw.LINUX_NFSROOT_ENV: f"bad{SECRET.lower()}",
+                hw.LINUX_IP_ENV: "dhcp",
+                hw.JTAG_SERIAL_ENV: SECRET,
+            },
+            site={},
+        )
+    texts.append(str(custom.value))
+    captured = capsys.readouterr()
+    texts += [captured.out, captured.err]
+    assert all(text for text in texts)
+    assert not [text for text in texts if SECRET.lower() in text.lower()]
+
+
+def test_an_unexpected_error_in_the_preflight_is_an_env_fail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The preflight is one boundary: any exception becomes the same outcome."""
+    root = _fake_root(_fake_export(tmp_path))
+    monkeypatch.setattr(
+        hw, "probe_nfs3_tcp", lambda *a, **k: (_ for _ in ()).throw(KeyError("boom"))
+    )
+    with pytest.raises(hw.LinuxEnvironmentError, match="failed unexpectedly"):
+        hw.linux_root_preflight(root, REPO_ROOT, {})
+    seen = _stub_board(monkeypatch)
+    monkeypatch.setattr(hw, "linux_root_from_env", lambda: root)
+    for tail in ([], ["--keep-going"]):
+        monkeypatch.setattr(
+            hw.sys, "argv", ["hw_regression.py", "--board", "x3", "linux_boot", *tail]
+        )
+        assert hw.main() == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "failed unexpectedly" in err and not seen
+
+
+# ---------------------------------------------------------------------------
+# Seeded mutation tests: transcripts and confirmation outputs
+# ---------------------------------------------------------------------------
+
+MUTATION_SEED = 20261119
+MARKER = "MARKERSER99"
+
+
+def _mutate_lines(rng: Any, text: str) -> str:
+    """Return a mutation of a transcript: lines or characters changed."""
+    lines = text.split("\n")
+    ops = [
+        "flip",
+        "delete",
+        "duplicate",
+        "insert",
+        "reorder",
+        "truncate",
+        "digit",
+        "cr",
+        "marker",
+    ]
+    for _ in range(rng.randint(1, 3)):
+        if not lines:
+            lines = [""]
+        op = rng.choice(ops)
+        index = rng.randrange(len(lines))
+        if op == "flip" and lines[index]:
+            at = rng.randrange(len(lines[index]))
+            lines[index] = (
+                lines[index][:at] + chr(rng.randrange(32, 127)) + lines[index][at + 1 :]
+            )
+        elif op == "delete":
+            del lines[index]
+        elif op == "duplicate":
+            lines.insert(index, lines[index])
+        elif op == "insert":
+            lines.insert(
+                index,
+                rng.choice(
+                    [
+                        "",
+                        "Info : x",
+                        "FROST_DEBUG",
+                        "FROST_DEBUG_ERR:",
+                        "FROST_DEBUG_ERR: e",
+                        "FROST_DEBUG_DONE",
+                        "Error: e",
+                        "Error:",
+                    ]
+                ),
+            )
+        elif op == "marker":
+            lines.insert(
+                index,
+                rng.choice(
+                    [
+                        f"Info : {MARKER}",
+                        f"FROST_DEBUG note={MARKER}",
+                        f"FROST_DEBUG_ERR: {MARKER}",
+                    ]
+                ),
+            )
+        elif op == "reorder":
+            other = rng.randrange(len(lines))
+            lines[index], lines[other] = lines[other], lines[index]
+        elif op == "truncate":
+            lines = lines[: index + 1]
+        elif op == "digit":
+            hexdigits = [
+                i for i, c in enumerate(lines[index]) if c in "0123456789abcdef"
+            ]
+            if hexdigits:
+                at = rng.choice(hexdigits)
+                lines[index] = (
+                    lines[index][:at] + rng.choice("xg-+ .Z") + lines[index][at + 1 :]
+                )
+        elif op == "cr":
+            lines[index] += "\r"
+    return "\n".join(lines)
+
+
+def _canonical(text: str) -> str:
+    """Return the transcript with dpc, which may be any address, fixed."""
+    return re.sub(r"^(FROST_DEBUG dpc=)0x[0-9a-f]{1,16}$", r"\g<1>X", text, flags=re.M)
+
+
+def test_mutated_transcripts_never_pass_unless_still_valid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seeded mutants: no exception, quick return, PASS only if exactly valid."""
+    monkeypatch.setenv(hw.JTAG_SERIAL_ENV, MARKER)
+    rng = random.Random(MUTATION_SEED)
+    started = time.monotonic()
+    for _ in range(600):
+        mutant = _mutate_lines(rng, DEBUG_GOOD)
+        ok, note = _within(2, lambda: hw.judge_debug_output(mutant))
+        assert MARKER not in note
+        if ok:
+            assert _canonical(mutant) == _canonical(DEBUG_GOOD), mutant
+        else:
+            assert note
+    assert time.monotonic() - started < 5
+
+
+def test_mutated_confirmation_outputs_never_confirm_unless_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seeded confirmation mutants: confirmed ONLY on clean exit 0 and exact output."""
+    monkeypatch.setenv(hw.JTAG_SERIAL_ENV, MARKER)
+    rng = random.Random(MUTATION_SEED + 2)
+    started = time.monotonic()
+    stderr_choices = [
+        "",
+        f"Info : connected {MARKER}\n",
+        f"Error: {MARKER}\n",
+        "Error: \n",
+        "Error:\n",
+        f"FROST_DEBUG_ERR: {MARKER}\n",
+        "FROST_DEBUG_ERR:\n",
+    ]
+    confirmed_count = 0
+    for _ in range(600):
+        stdout = (
+            RECOVER_GOOD if rng.random() < 0.25 else _mutate_lines(rng, RECOVER_GOOD)
+        )
+        stderr = rng.choice(stderr_choices)
+        timed_out = rng.random() < 0.1
+        exit_code = None if timed_out else rng.choice([0, 0, 0, 1, 7, -9])
+        ok, note = _within(
+            2, lambda: hw.judge_debug_recovery(stdout, stderr, timed_out, exit_code)
+        )
+        assert MARKER not in note
+        has_err = any(
+            line.rstrip("\r").startswith(("Error:", "FROST_DEBUG_ERR:"))
+            for line in stderr.split("\n")
+        )
+        expected_ok = (
+            not timed_out and exit_code == 0 and not has_err and stdout == RECOVER_GOOD
+        )
+        assert ok == expected_ok, (stdout, stderr, timed_out, exit_code, note)
+        if ok:
+            confirmed_count += 1
+    assert 0 < confirmed_count < 600
+    assert time.monotonic() - started < 5
+
+
+def test_mutated_transcripts_through_the_whole_stage(
+    tmp_path: Path,
+    debug_env: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Whole-stage seeded mutants: 2 processes always run, UNKNOWN on bad confirm."""
+    rng = random.Random(MUTATION_SEED + 1)
+    environment = debug_env(DEBUG_GOOD)
+    environment[hw.JTAG_SERIAL_ENV] = MARKER
+    stderr_pool = ["", f"Info : {MARKER}\n", f"Error: {MARKER}\n", "Error:\n"]
+    for _ in range(30):
+        if (tmp_path / "calls.txt").exists():
+            (tmp_path / "calls.txt").unlink()
+        primary = DEBUG_GOOD if rng.random() < 0.3 else _mutate_lines(rng, DEBUG_GOOD)
+        recover = (
+            RECOVER_GOOD if rng.random() < 0.5 else _mutate_lines(rng, RECOVER_GOOD)
+        )
+        p_err = rng.choice(stderr_pool)
+        r_err = rng.choice(stderr_pool)
+        r_exit = rng.choice([0, 0, 0, 5])
+        (tmp_path / "check.txt").write_text(primary)
+        (tmp_path / "stderr.txt").write_text(p_err)
+        (tmp_path / "recover.txt").write_text(recover)
+        (tmp_path / "recover_stderr.txt").write_text(r_err)
+        (tmp_path / "recover_exit.txt").write_text(str(r_exit))
+
+        result = _within(30, lambda: hw.run_debug_stage(REPO_ROOT, "x3", environment))
+        calls = _calls(tmp_path)
+        assert len(calls) == 2, calls
+        assert result["status"] in {"PASS", "FAIL"}
+        assert MARKER not in result["note"]
+        r_has_err = any(
+            line.rstrip("\r").startswith(("Error:", "FROST_DEBUG_ERR:"))
+            for line in r_err.split("\n")
+        )
+        p_has_err = any(
+            line.rstrip("\r").startswith(("Error:", "FROST_DEBUG_ERR:"))
+            for line in p_err.split("\n")
+        )
+        confirm_ok = r_exit == 0 and not r_has_err and recover == RECOVER_GOOD
+        if not confirm_ok:
+            assert result["status"] == "FAIL"
+            assert "UNKNOWN" in result["note"]
+            assert hw.RECOVERY_COMMAND in result["note"]
+        if result["status"] == "PASS":
+            assert _canonical(primary) == _canonical(DEBUG_GOOD)
+            assert not p_has_err and confirm_ok
+    captured = capsys.readouterr()
+    assert MARKER not in captured.out + captured.err
+
+
+# ---------------------------------------------------------------------------
+# F1: SIGINT / SIGTERM confirmation under lock at every step
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
+@pytest.mark.parametrize(
+    "step",
+    [
+        "before_launch",
+        "during_primary",
+        "during_show",
+        "during_judge",
+        "during_confirm",
+        "during_primary_and_confirm",
+        "during_primary_with_failing_confirm",
+    ],
+)
+def test_f1_interrupt_and_sigterm_confirm_under_lock_at_every_step(
+    tmp_path: Path,
+    debug_env: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    sig: signal.Signals,
+    step: str,
+) -> None:
+    """SIGINT and SIGTERM confirm under DEBUG_LOCK, restore SIGTERM, and re-raise."""
+    environment = debug_env(DEBUG_GOOD)
+    environment[hw.JTAG_SERIAL_ENV] = SECRET
+    (tmp_path / "probe_lock").touch()
+    expected_exc = KeyboardInterrupt if sig == signal.SIGINT else hw._StageTerminated
+
+    def sentinel_handler(signum: int, frame: Any) -> None:
+        pass
+
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, sentinel_handler)
+
+    threads: list[threading.Thread] = []
+
+    def send_when_file(marker: Path) -> None:
+        deadline = time.monotonic() + 10.0
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if marker.exists():
+            os.kill(os.getpid(), sig)
+
+    try:
+        if step == "before_launch":
+
+            def wait_and_signal(*args: Any, **kwargs: Any) -> bool:
+                os.kill(os.getpid(), sig)
+                return True
+
+            monkeypatch.setattr(hw, "wait_for_cable", wait_and_signal)
+        elif step in {
+            "during_primary",
+            "during_primary_and_confirm",
+            "during_primary_with_failing_confirm",
+        }:
+            (tmp_path / "hang").touch()
+            t1 = threading.Thread(
+                target=send_when_file, args=(tmp_path / "primary_started",), daemon=True
+            )
+            t1.start()
+            threads.append(t1)
+            if step == "during_primary_and_confirm":
+                (tmp_path / "hang_recover").touch()
+                t2 = threading.Thread(
+                    target=send_when_file,
+                    args=(tmp_path / "recover_started",),
+                    daemon=True,
+                )
+                t2.start()
+                threads.append(t2)
+            elif step == "during_primary_with_failing_confirm":
+                (tmp_path / "recover_exit.txt").write_text("5")
+                (tmp_path / "recover_stderr.txt").write_text(
+                    f"Error: cable {SECRET.lower()} lost\n"
+                )
+        elif step == "during_show":
+            real_mask = hw.mask_serial
+            fired: list[int] = []
+
+            def interrupt_once(text: str, env: Any = None) -> str:
+                if not fired:
+                    fired.append(1)
+                    os.kill(os.getpid(), sig)
+                return real_mask(text, env)
+
+            monkeypatch.setattr(hw, "mask_serial", interrupt_once)
+        elif step == "during_judge":
+
+            def interrupt_judge(out: str) -> Any:
+                os.kill(os.getpid(), sig)
+
+            monkeypatch.setattr(hw, "judge_debug_output", interrupt_judge)
+        elif step == "during_confirm":
+            (tmp_path / "hang_recover").touch()
+            t = threading.Thread(
+                target=send_when_file, args=(tmp_path / "recover_started",), daemon=True
+            )
+            t.start()
+            threads.append(t)
+
+        with pytest.raises(expected_exc):
+            hw.run_debug_stage(REPO_ROOT, "x3", environment)
+    finally:
+        for t in threads:
+            t.join(timeout=2.0)
+        restored_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGINT, prev_sigint)
+        signal.signal(signal.SIGTERM, prev_sigterm)
+
+    assert restored_sigterm is sentinel_handler
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert SECRET.lower() not in combined.lower()
+    calls = _calls(tmp_path)
+    if step == "before_launch":
+        assert calls == []
+        return
+    assert len(calls) == 2, calls
+    assert calls[1].endswith("-c frost_debug_recover -c shutdown")
+    assert (tmp_path / "lock_states.txt").read_text().splitlines() == ["LOCKED"]
+    if step in {
+        "during_confirm",
+        "during_primary_and_confirm",
+        "during_primary_with_failing_confirm",
+    }:
+        err_lines = [line for line in captured.err.splitlines() if line.strip()]
+        assert len(err_lines) == 1, err_lines
+        assert "UNKNOWN" in err_lines[0] and hw.RECOVERY_COMMAND in err_lines[0]
+    else:
+        assert "hart confirmed running" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# F2(b): authoritative runtime /sys/module/frost_net10g/version check
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line,expected_reason",
+    [
+        (f"{hw.LINUX_DRIVER_VERSION_TOKEN}=0.9\r\r\n", "version 0.9"),
+        (
+            f"{hw.LINUX_DRIVER_VERSION_TOKEN}={hw.LINUX_DRIVER_VERSION_MISSING}\r\r\n",
+            "missing or unreadable",
+        ),
+        (f"{hw.LINUX_DRIVER_VERSION_TOKEN}=\r\r\n", "missing or unreadable"),
+        (f"{hw.LINUX_DRIVER_VERSION_TOKEN}=1.3 \r\r\n", "version '1.3 '"),
+        (f"{hw.LINUX_DRIVER_VERSION_TOKEN}=1.3-dirty\r\r\n", "version 1.3-dirty"),
+        (
+            f"{hw.LINUX_DRIVER_VERSION_TOKEN}=1.3\r\r\n"
+            f"{hw.LINUX_DRIVER_VERSION_TOKEN}=0.9\r\r\n",
+            "multiple",
+        ),
+    ],
+)
+def test_f2_runtime_driver_version_mismatch_or_missing_fails_immediately(
+    line: str, expected_reason: str
+) -> None:
+    """A stale, missing, or unreadable runtime sysfs version fails with the remedy."""
+    linux = hw.linux_stage(ROOT, driver_version="1.3")
+    bad = TO_MOUNT + DRIVER_ECHO + line + PROMPT
+    assert linux.failure_done(bad), bad
+    assert not linux.success_done(bad)
+    ok, note = linux.judge(bad)
+    assert not ok
+    assert expected_reason in note, note
+    assert hw.LINUX_DRIVER_VERSION_PATH in note
+    assert "docs/debian_nfsroot.md" in note and "update-initramfs" in note
+
+
+def test_f2_runtime_driver_version_before_login_cannot_satisfy_the_check() -> None:
+    """A line printed before the login prompt does not satisfy the runtime check."""
+    linux = hw.linux_stage(ROOT, driver_version="1.3")
+    spoofed = (
+        BOOT_TO_LOGIN.replace(
+            "login: ", f"{hw.LINUX_DRIVER_VERSION_TOKEN}=1.3\r\r\nlogin: "
+        )
+        + LOGIN_TO_SHELL
+        + MOUNT_ECHO
+        + MOUNT_LINE
+        + SYSTEMD_ECHO
+        + SYSTEMD_RUNNING
+        + STRESS_ECHO
+        + STRESS_OUT
+        + COUNTER_ECHO
+        + COUNTER_LINE
+        + MEMERR_ECHO
+        + MEMERR_LINE
+        + NET_ECHO
+        + NET_START
+        + NET_PASS
+        + NET_ALIVE
+    )
+    assert not linux.success_done(spoofed)
+    ok, note = linux.judge(spoofed)
+    assert not ok and f"no {hw.LINUX_DRIVER_VERSION_TOKEN}= line" in note
+
+
+def test_f2_driver_version_echo_never_matches_at_any_wrap_offset() -> None:
+    """The typed command omits ``FROST_DRIVER_VERSION=`` so wraps cannot match it."""
+    assert f"{hw.LINUX_DRIVER_VERSION_TOKEN}=" not in DRIVER_ECHO
+    for wrap in range(len(DRIVER_ECHO)):
+        wrapped = f"{DRIVER_ECHO[:wrap]}\r\r\n{DRIVER_ECHO[wrap:]}"
+        assert hw.LINUX_DRIVER_VERSION_RE.search(TO_MOUNT + wrapped) is None, wrap
+
+
+def test_f2_driver_version_shell_command_handles_present_empty_and_missing(
+    tmp_path: Path,
+) -> None:
+    """The real shell command prints exact version, empty line, or MISSING."""
+    ver_file = tmp_path / "version"
+    cmd = hw.LINUX_DRIVER_VERSION_COMMAND.replace(
+        hw.LINUX_DRIVER_VERSION_PATH, str(ver_file)
+    )
+    for content, expected in (
+        ("1.3\n", f"{hw.LINUX_DRIVER_VERSION_TOKEN}=1.3\n"),
+        ("0.9\n", f"{hw.LINUX_DRIVER_VERSION_TOKEN}=0.9\n"),
+        ("", f"{hw.LINUX_DRIVER_VERSION_TOKEN}=\n"),
+        (None, f"{hw.LINUX_DRIVER_VERSION_TOKEN}=MISSING\n"),
+    ):
+        if content is None:
+            ver_file.unlink()
+        else:
+            ver_file.write_text(content)
+        done = hw.subprocess.run(
+            ["sh", "-c", cmd], capture_output=True, text=True, check=True, timeout=10
+        )
+        assert done.stdout == expected

@@ -42,9 +42,7 @@ if {$mode eq "prepare" && $argc == 4} {
     source [file join [file dirname [info script]] .. common hw_session.tcl]
     frost_hw_session "" $url $target {
         set device [lindex [get_hw_devices] 0]
-        if {![string match "xcvu9p*" [get_property PART $device]]} {
-            error "Expected xcvu9p on the selected target"
-        }
+        frost_check_hw_part vcu118 $device
         set part [lsort -unique [get_cfgmem_parts mt25qu01g-spi-x1_x2_x4]]
         if {[llength $part] != 1} {error "Expected the VCU118 configuration flash part"}
         create_hw_cfgmem -hw_device $device $part

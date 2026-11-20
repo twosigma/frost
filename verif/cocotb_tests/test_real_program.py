@@ -1597,6 +1597,133 @@ class DelayedBranchFetchCoverage:
         assert self.target_waits > 0, "no predicted branch target waited for fetch"
 
 
+class OddHalfwordPredictionCoverage:
+    """Check odd-halfword front-end prediction invariants on odd_halfword_pred_test.
+
+    Require odd-halfword slot-1 BTB predictions, +4 odd-target handoffs,
+    second-word fault RAS vetoes, and overlapping stale-pending drops on each
+    reset run.
+    """
+
+    def __init__(self, dut: Any) -> None:
+        """Resolve passive observation points by explicit path; never drive state."""
+        self.dut = dut
+        cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
+        stage = f"{cpu}.if_stage_inst"
+        bpc = f"{stage}.branch_prediction_controller_inst"
+        pcc = f"{stage}.pc_controller_inst"
+        paths = {
+            "reset": f"{cpu}.i_rst",
+            "pred_used": f"{bpc}.o_prediction_used",
+            "pred_pc": f"{bpc}.i_pc",
+            "btb_compressed": f"{bpc}.btb_compressed",
+            "pred_is_call": f"{bpc}.o_predicted_is_call",
+            "target_holdoff": f"{pcc}.o_pending_prediction_target_holdoff",
+            "pc_reg": f"{pcc}.o_pc_reg",
+            "next_pc": f"{pcc}.next_pc",
+            "if_stall": f"{stage}.if_stage_stall",
+            "sel_nop_eff": f"{stage}.sel_nop_effective",
+            "is_compressed": f"{stage}.is_compressed",
+            "slot1_taken_raw": f"{stage}.slot1_btb_predicted_taken_raw",
+            "fetch_fault_eff": f"{stage}.fetch_fault_effective",
+            "ras_push": f"{stage}.ras_push",
+            "ras_pop": f"{stage}.ras_pop",
+            "stale_pending": f"{pcc}.stale_pending_prediction",
+        }
+        self.signals = {name: _get_signal(dut, path) for name, path in paths.items()}
+        _require_signals("odd-halfword prediction coverage", self.signals)
+        self.clear()
+
+    def clear(self) -> None:
+        """Start independent coverage counts for the next program run."""
+        self.odd_slot1_native_btb = 0
+        self.odd_slot1_native_call = 0
+        self.even_to_odd_plus4_native_target = 0
+        self.fault_vetoed_btb_pred = 0
+        self.stale_pending_drops = 0
+        self._armed_odd_target: int | None = None
+
+    async def run(self) -> None:
+        """Count front-end odd-halfword prediction and fault-veto events."""
+        s = self.signals
+        clk = cpu_clock(self.dut)
+        while True:
+            await RisingEdge(clk)
+            await ReadOnly()
+            if _read_bool(s["reset"]):
+                self._armed_odd_target = None
+                continue
+            pred_pc = _read_int(s["pred_pc"]) or 0
+            if (
+                _read_bool(s["pred_used"])
+                and (pred_pc & 0x2) != 0
+                and not _read_bool(s["btb_compressed"])
+            ):
+                self.odd_slot1_native_btb += 1
+                if _read_bool(s["pred_is_call"]):
+                    self.odd_slot1_native_call += 1
+
+            pc_reg = _read_int(s["pc_reg"]) or 0
+            next_pc = _read_int(s["next_pc"]) or 0
+            if (
+                _read_bool(s["target_holdoff"])
+                and (pc_reg & 0x2) != 0
+                and next_pc == ((pc_reg + 4) & ((1 << 64) - 1))
+            ):
+                self._armed_odd_target = pc_reg
+            elif not _read_bool(s["if_stall"]) and not _read_bool(s["sel_nop_eff"]):
+                if self._armed_odd_target is not None:
+                    if (
+                        pc_reg == self._armed_odd_target
+                        and pred_pc == ((pc_reg + 4) & ((1 << 64) - 1))
+                        and not _read_bool(s["is_compressed"])
+                    ):
+                        self.even_to_odd_plus4_native_target += 1
+                    self._armed_odd_target = None
+
+            fault_eff = _read_int(s["fetch_fault_eff"]) or 0
+            if (
+                not _read_bool(s["if_stall"])
+                and not _read_bool(s["sel_nop_eff"])
+                and _read_bool(s["slot1_taken_raw"])
+                and (fault_eff & 0x4) != 0
+            ):
+                assert not _read_bool(s["ras_push"]) and not _read_bool(s["ras_pop"]), (
+                    "faulted packet with slot-1 BTB prediction updated the RAS"
+                )
+                if (fault_eff & 0x1) != 0:
+                    self.fault_vetoed_btb_pred += 1
+
+            if _read_bool(s["stale_pending"]):
+                self.stale_pending_drops += 1
+
+    def verify(self, run_number: int) -> None:
+        """Require every odd-halfword front-end path to fire on each reset run."""
+        cocotb.log.info(
+            f"Run {run_number} odd-halfword prediction coverage: "
+            f"odd_slot1_native_btb={self.odd_slot1_native_btb}, "
+            f"odd_slot1_native_call={self.odd_slot1_native_call}, "
+            f"even_to_odd_plus4_native_target={self.even_to_odd_plus4_native_target}, "
+            f"fault_vetoed_btb_pred={self.fault_vetoed_btb_pred}, "
+            f"stale_pending_drops={self.stale_pending_drops}"
+        )
+        assert self.odd_slot1_native_btb > 0, (
+            "no slot-1 native 32-bit fast-BTB prediction fired at an odd halfword"
+        )
+        assert self.odd_slot1_native_call > 0, (
+            "no slot-1 native 32-bit call fast-BTB prediction fired at an odd halfword"
+        )
+        assert self.even_to_odd_plus4_native_target > 0, (
+            "no non-crossing handoff to an odd 32-bit target stepped o_pc to target+4"
+        )
+        assert self.fault_vetoed_btb_pred > 0, (
+            "no spanning second-word fetch fault vetoed a predicted slot-1 packet"
+        )
+        assert self.stale_pending_drops > 0, (
+            "no overlapping 32-bit predecessor dropped a pending odd-PC prediction"
+        )
+
+
 async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
     """Sample trap, MRET, flush, IRQ, and store-drain state to debug a hang.
 
@@ -5392,6 +5519,8 @@ async def test_real_program(dut: Any) -> None:
         if app_name == "pm_test"
         else WfiRecoveryWatch(dut)
         if app_name == "wfi_seed_recovery"
+        else OddHalfwordPredictionCoverage(dut)
+        if app_name == "odd_halfword_pred_test"
         else None
     )
     if coverage is not None:
