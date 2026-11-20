@@ -16,24 +16,41 @@
 set -euo pipefail
 
 DEMO_ROOT="${FROST_DEMO_ROOT:-/opt/frost-demo}"
-MEM_CONFIG="bram"
-TARGET_APP="all"
+MEM_CONFIG=""
+TARGET_APP=""
 MAX_CYCLES=""
+QUICK=0
+FULL=0
+COLOR_MODE="auto"
 REQUESTED_THREADS="${FROST_THREADS:-}"
 CHILD_PID=""
 
 usage() {
     cat <<'EOF'
-Usage: docker run --rm -it frost-demo:local [options]
+Usage: docker run --rm -it -e COLORTERM frost-demo:local [options]
 
-Runs FROST's SystemVerilog CPU and SoC RTL in Verilator on prebuilt RISC-V
-programs (hello_world followed by a single-iteration CoreMark correctness run).
+Runs FROST's SystemVerilog CPU and SoC RTL in Verilator, clock cycle by clock
+cycle: a ray tracer that draws its picture as the simulated CPU computes it,
+then CoreMark, then a table of what the core did. A few minutes.
 
 Options:
+  --quick                 The small picture (about a minute)
+  --full                  Keep the full picture even on a slow computer (by default
+                          a computer that would need over six minutes for it gets
+                          the small picture)
   --threads <1|4|8>       Simulator thread count (default: 4 when >=4 CPUs, else 1)
-  --mem-config <bram|ddr> Memory configuration: bram (default) or ddr
-  --app <name>            all (default), hello_world, or coremark
-  --max-cycles <N>        Optional cycle limit override
+  --truecolor             Draw in 24-bit color
+  --256                   Draw in the 256-color palette
+  --color <mode>          auto (default), truecolor, 256 or none. auto uses the
+                          COLORTERM variable (docker run -e COLORTERM ...), then
+                          a TERM that names direct color, else 256 colors (with a
+                          line under the picture on how to get full color); the
+                          terminal is never queried
+  --raw                   Unfiltered UART output of hello_world and CoreMark
+  --app <name>            Unfiltered UART output of one program: all, hello_world
+                          or coremark
+  --mem-config <bram|ddr> Memory configuration with --raw or --app (default: bram)
+  --max-cycles <N>        Optional cycle limit with --raw or --app
   -h, --help              Show this help message
 EOF
 }
@@ -123,6 +140,34 @@ while [ $# -gt 0 ]; do
             TARGET_APP="$2"
             shift 2
             ;;
+        --raw)
+            TARGET_APP="all"
+            shift
+            ;;
+        --quick)
+            QUICK=1
+            shift
+            ;;
+        --full)
+            FULL=1
+            shift
+            ;;
+        --truecolor)
+            COLOR_MODE="truecolor"
+            shift
+            ;;
+        --256)
+            COLOR_MODE="256"
+            shift
+            ;;
+        --color)
+            if [ $# -lt 2 ]; then
+                echo "Error: --color requires a value" >&2
+                exit 2
+            fi
+            COLOR_MODE="$2"
+            shift 2
+            ;;
         --max-cycles)
             if [ $# -lt 2 ]; then
                 echo "Error: --max-cycles requires a value" >&2
@@ -139,6 +184,29 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [ -z "$TARGET_APP" ]; then
+    # The demonstration (default): frost-show runs and presents both programs.
+    if [ -n "$MEM_CONFIG" ] || [ -n "$MAX_CYCLES" ]; then
+        echo "Error: --mem-config and --max-cycles apply to --raw and --app" >&2
+        exit 2
+    fi
+    case "$COLOR_MODE" in
+        auto|truecolor|256|none) ;;
+        *)
+            echo "Error: --color must be auto, truecolor, 256 or none (got '$COLOR_MODE')" >&2
+            exit 2
+            ;;
+    esac
+    if [ "$QUICK" -ne 0 ] && [ "$FULL" -ne 0 ]; then
+        echo "Error: --quick and --full exclude each other" >&2
+        exit 2
+    fi
+elif [ "$QUICK" -ne 0 ] || [ "$FULL" -ne 0 ]; then
+    echo "Error: --quick and --full apply to the demonstration, not to --raw or --app" >&2
+    exit 2
+fi
+MEM_CONFIG="${MEM_CONFIG:-bram}"
+
 case "$MEM_CONFIG" in
     bram|ddr) ;;
     *)
@@ -148,7 +216,7 @@ case "$MEM_CONFIG" in
 esac
 
 case "$TARGET_APP" in
-    all|hello_world|coremark) ;;
+    ''|all|hello_world|coremark) ;;
     *)
         echo "Error: --app must be all, hello_world, or coremark (got '$TARGET_APP')" >&2
         exit 2
@@ -179,6 +247,19 @@ else
 fi
 
 MODEL_BIN="${DEMO_ROOT}/bin/frost-native-t${ACTIVE_THREADS}"
+
+if [ -z "$TARGET_APP" ]; then
+    SHOW_ARGS=(--bin-dir "${DEMO_ROOT}/bin" --apps-dir "${DEMO_ROOT}/apps"
+        --threads "$ACTIVE_THREADS" --color "$COLOR_MODE")
+    if [ "$QUICK" -ne 0 ]; then
+        SHOW_ARGS+=(--quick)
+    fi
+    if [ "$FULL" -ne 0 ]; then
+        SHOW_ARGS+=(--full)
+    fi
+    exec "${DEMO_ROOT}/bin/frost-show" "${SHOW_ARGS[@]}"
+fi
+
 EXTRA_ARGS=()
 if [ -n "$MAX_CYCLES" ]; then
     EXTRA_ARGS+=(--max-cycles "$MAX_CYCLES")

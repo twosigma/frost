@@ -2796,6 +2796,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Hello World output reaches the serial TX pin",
         **UART_LINE_CHECK,
     ),
+    "raytrace": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="raytrace",
+        nic_mac_clocks=False,
+        description=(
+            "Fixed-point ray tracer (the demonstration image's first program): "
+            "streams a 24x12 sunset picture and checks its CRC against the host reference"
+        ),
+    ),
     "isa_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

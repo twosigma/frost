@@ -17,12 +17,13 @@ loads the compiled `sw.mem`, `sw64.mem`, and `sw_ddr.mem` images at time zero
 through the RTL `$readmemh` blocks, drives the clocks and cold-reset sequence,
 and writes UART bytes to standard output as the CPU produces them.
 
-[`frost_native.vlt`](frost_native.vlt) exposes only the six internal signals
-that [`main.cpp`](main.cpp) accesses: the CPU UART write strobe and byte, three
-reset-synchronizer registers, and the reorder buffer's retirement-log file
-descriptor. Keeping the rest of the hierarchy internal lets Verilator inline
-and partition combinational and sequential logic across C++ translation units
-without VPI signal tables.
+[`frost_native.vlt`](frost_native.vlt) exposes only the internal signals that
+[`main.cpp`](main.cpp) accesses: the CPU UART write strobe and byte, three
+reset-synchronizer registers, the reorder buffer's retirement-log file
+descriptor, and, for `--stats`, four read-only activity signals (below).
+Keeping the rest of the hierarchy internal lets Verilator inline and partition
+combinational and sequential logic across C++ translation units without VPI
+signal tables.
 
 `frost-native` matches unseeded cocotb runs of the same tree cycle for cycle and
 byte for byte on `hello_world` and CoreMark in both memory tiers. On every CI
@@ -150,7 +151,7 @@ configured drain window.
 | `SAVABLE` | `0` | Compile Verilator `--savable` checkpoint support (`1` or `0`) |
 | `PORTABLE` | `0` | Use baseline `-march=x86-64` (`1`) instead of `-march=native` (`0`) |
 | `STATIC_RUNTIME` | `0` | Link `libstdc++`, `libgcc`, and `libatomic` statically (`1` or `0`) |
-| `EXTRA_RUN_ARGS` | empty | Extra flags forwarded to `frost-native` (`--uart-out`, `--summary-json`, `--save`, `--restore`, `--retire-trace`, `--no-assert`) |
+| `EXTRA_RUN_ARGS` | empty | Extra flags forwarded to `frost-native` (`--uart-out`, `--summary-json`, `--save`, `--restore`, `--retire-trace`, `--stats`, `--stats-interval`, `--regions`, `--no-assert`) |
 
 Verilator embeds the thread partition count into each generated model
 (`Vtop::threads()`), so `Makefile` keys each build directory by thread count,
@@ -197,10 +198,11 @@ is the simulated CPU's cycle count for that iteration.
 ## Standalone Demo Image
 
 [`demo/Dockerfile`](../../../demo/Dockerfile) packages checked, portable
-`frost-native` binaries (`1`, `4`, and `8` threads) and prebuilt `hello_world`
-and `coremark` images (`bram` and `ddr`) into a small `ubuntu:26.04` container
-with no compiler, Python runtime, or repository checkout inside the runtime
-stage. The demo runs bare-metal programs only: Linux boots in this simulator,
+`frost-native` binaries (`1`, `4`, and `8` threads), the presenter `frost-show`
+([`demo/frost_show.cpp`](../../../demo/frost_show.cpp)), prebuilt `hello_world`
+and `coremark` images (`bram` and `ddr`), the ray tracer
+([`sw/apps/raytrace`](../../../sw/apps/raytrace), 76x44 and 24x12 pixels) into a small `ubuntu:26.04` container with
+no compiler, Python runtime, or repository checkout inside the runtime stage. The demo runs bare-metal programs only: Linux boots in this simulator,
 but reaching a shell prompt takes tens of millions of simulated cycles and each
 shell command then takes minutes, so an interactive Linux session is not
 offered as part of the demo.
@@ -211,25 +213,82 @@ Building `frost-demo:local` requires the local `frost` development image
 ```bash
 git submodule update --init --recursive sw/apps/coremark/coremark
 docker build -f demo/Dockerfile -t frost-demo:local .
-docker run --rm -it frost-demo:local
+docker run --rm -it -e COLORTERM frost-demo:local
 ```
 
-By default, [`demo/run_demo.sh`](../../../demo/run_demo.sh) selects 4 simulator
-threads when at least 4 effective CPUs are available after CPU affinity and
-cgroup `--cpus` limits (`1` otherwise), runs `hello_world` on the RTL, explains
-the single-iteration CoreMark output, and runs CRC-checked `coremark`. Options
-select the thread partition, memory tier, or workload:
+[`demo/run_demo.sh`](../../../demo/run_demo.sh) selects 4 simulator threads
+when at least 4 effective CPUs are available after CPU affinity and cgroup
+`--cpus` limits (`1` otherwise). By default it starts `frost-show`, which runs
+two programs in BRAM, each in its own `frost-native` process with `--stats`:
+
+1. The ray tracer (a glossy red sphere and a glossy blue sphere on a cream and teal
+   tiled floor under a sunset, one ray a pixel, 8 bits a color channel, in the scene
+   header `scene_sunset.inc`) draws its 76x44-pixel picture in the terminal as the
+   simulated CPU sends it over the UART: a coarse pass of one pixel in every
+   4x4 block first, redrawn in place row by row in full detail when the
+   terminal is tall enough, and checks the frame's CRC-32 against its host
+   reference. On a terminal a status line under the
+   picture, redrawn in place and cut to the terminal's width, shows the pixel
+   rows received, an estimate of the time left from the measured simulation
+   rate, and, over a recent window of cycles, instructions per cycle, the share
+   of branches predicted correctly, reorder-buffer occupancy, and cycles that
+   retired two instructions. If the rate measured in the first seconds means
+   the full picture would take more than six minutes, `frost-show` says so,
+   stops it, and runs the small picture instead; `--full` keeps the full
+   picture.
+2. CoreMark runs one iteration; once CoreMark has validated its results,
+   `frost-show` prints the iteration count, that every CRC was correct, and
+   the cycle count by CoreMark's own tick count. It computes no score: the
+   published score is in the top-level README.
+
+A table of what the core did in each program (instructions, cycles,
+instructions per cycle, dual-retirement share, average reorder-buffer
+occupancy of the 32 entries as built, branches and the share predicted
+correctly) closes the run. It counts the ray tracer's rendering (without
+start-up and without sending the picture's characters) and CoreMark's timed
+loop, whose cycles are the ones CoreMark reports; the totals for the whole
+programs stay in the lines above and below it. Every figure comes from the
+run itself: the UART output or the `--stats` counters. A
+failed self-check ends the run with exit status 1 and one sentence.
+`frost-show` draws in 24-bit color or in the 256-color palette (the nearest of
+the 6x6x6 cube and the gray ramp in CIELAB, no dithering). It decides only from
+these, in order: `--truecolor` or `--256` (also accepted by `run_demo.sh`;
+`--color auto|truecolor|256|none` is the long form); `NO_COLOR`; the
+`COLORTERM` variable (`truecolor` or `24bit`, forwarded into the container by
+`docker run -e COLORTERM`); a `TERM` that names direct color (such as
+`xterm-direct`); otherwise 256 colors, and on a terminal it then prints one
+line under the picture saying how to get full color (not with `--256`). It
+never queries the terminal and never changes the terminal's modes. It prints
+plain text with no status line, cursor or erase commands, and no color, when
+`NO_COLOR` is set (to any non-empty value), `TERM` is not one of the known
+cursor-addressable types (xterm and relatives, screen, tmux, rxvt, vt100 and
+later, linux, alacritty, kitty, foot, wezterm, ghostty, konsole, gnome, st,
+iterm; the terminfo database is not consulted), or the output is not a
+terminal. A picture wider than the terminal is scaled down by
+a whole factor (averaging blocks of pixels) and all prose is wrapped to the
+terminal's width; below the least width a picture can be drawn at (39 columns
+for 76x44) one sentence replaces it. A run counts as passed only when the
+simulator exited 0, no failure marker appeared and every CoreMark CRC matched;
+otherwise `frost-show` says the run failed and exits 1. `--quick` runs
+the 24x12 picture instead. `--raw` runs `hello_world`
+and the single-iteration CoreMark with their unfiltered UART output and the
+runner's summaries, and `--app` runs one of them; `--mem-config` and
+`--max-cycles` apply to those:
 
 ```bash
-docker run --rm -it frost-demo:local --threads 8
+docker run --rm -it -e COLORTERM frost-demo:local --quick
+docker run --rm -it -e COLORTERM=truecolor frost-demo:local --threads 8
+docker run --rm -it frost-demo:local --256
+docker run --rm -it frost-demo:local --raw
 docker run --rm -it frost-demo:local --threads 1 --app hello_world
 docker run --rm -it frost-demo:local --mem-config ddr --app coremark
 docker run --rm frost-demo:local --help
 ```
 
-The demo entry point joins simulator standard error to standard output before
-launching the simulator. UART bytes and summaries share one container output
-pipe, so log readers receive the complete UART marker before the summary.
+With `--raw` or `--app`, the entry point joins simulator standard error to
+standard output before launching the simulator. UART bytes and summaries share
+one container output pipe, so log readers receive the complete UART marker
+before the summary.
 
 The demo binaries are compiled with `ASSERTIONS=1`, `PORTABLE=1`
 (`-march=x86-64` across all C++ files, with `-O3` on hot model files and C++
@@ -244,6 +303,7 @@ statically for baseline 64-bit x86 Linux hosts.
 | --- | --- |
 | Assertions (`ASSERTIONS=1`) | Default for `hw/sim/native/Makefile`, `./scripts/frost.py native`, `demo/Dockerfile`, and `tests/test_native_sim.py`. Verilator compiles immediate and concurrent SystemVerilog assertions (`--assert +define+FROST_SIM_ASSERTIONS`) and links [`hw/sim/sim_assertions.cpp`](../sim_assertions.cpp), matching `tests/Makefile` (`TOPLEVEL=frost`). `main.cpp` starts every run with `VerilatedContext::assertOn(false)` before model construction and time-zero evaluation so uninitialized state during cold reset cannot trip assertions, then calls `frost_sim_assertions_enable()` after the 18th rising edge of `i_clk` (rising edge `17`, matching `verif/cocotb_tests/test_real_program.py` and `verif/cocotb_tests/sim_assertions.py`), two `i_clk` cycles before `i_rst_n` releases on cycle 20. Pass `--no-assert` or `+verilator+noassert` to keep runtime assertions disabled in a checked build; in an `ASSERTIONS=0` build, assertions are neither compiled nor enabled. |
 | Retirement trace | Outside synthesis, `reorder_buffer.sv` opens `retire_trace.log` in an `initial` block and calls `$fwrite(retire_trace_fd, ...)` on each retired instruction. `main.cpp` constructs the model inside a private temporary staging directory, closes `retire_trace_fd` and sets it to `0` before cycle 0 (for descriptor `0`, Verilator discards `$fwrite` output without writing a file), and removes the temporary directory. No `retire_trace.log` is written unless `--retire-trace <path>` is passed; when combined with `--restore`, the trace file is opened after checkpoint deserialization. |
+| Activity counters (`--stats <path>`) | Once per `i_clk` cycle after reset releases, `main.cpp` adds up `cpu_ooo`'s retired-instruction, retired-branch and misprediction counts (the inputs of HPM counters 10, 3 and 4) and the reorder buffer's occupancy (`count`). These are existing RTL signals; `frost_native.vlt` makes them readable and nothing in the RTL changes for them. Every `--stats-interval` cycles (default 10,000) and when the run ends it writes one line of cumulative counts: `cycle`, `instructions`, `branches`, `mispredicts`, `rob_occupancy_sum`, `retired0`, `retired1`, `retired2` (cycles that retired zero, one, or two or more instructions), `uart_bytes`, and `final=1` on the last line. The counts start at zero in every process, after `--restore` too. With `--regions <file>` the same counts are also kept over one region of the run and written as `region_cycles`, `region_instructions`, `region_branches`, `region_mispredicts`, `region_rob_occupancy_sum` and `region_retired0` to `region_retired2`, together with `rob_depth` (the reorder buffer's size). The file holds `start <pc>` (counting begins after the cycle in which that PC retires), `end <pc>` (the cycle in which that PC retires is the last one counted; a start and an end that retire in the same cycle bound an empty region), `skip <lo> <hi>` (cycles that end in the retirement of an instruction in the range are left out, the stall before an instruction being charged to it) and `rob_depth <N>`. `frost_native.vlt` also exposes the reorder buffer's head PCs for this (sampled one clock before the registered retirement count they are charged to, so the width, the branch events and the PCs that select the region all come from the same retirement; when the two instructions of a pair fall on different sides of a skipped range, two branch events count one and a single event goes with the first); the program and its timing are not touched. [`demo/make_regions.py`](../../../demo/make_regions.py) writes the file from a program's ELF symbols at image build. The demonstration image's `frost-show` reads these lines for its status line and closing table. |
 | Checkpoints (`SAVABLE=1`) | Building with `SAVABLE=1` enables `--save <path>`, `--save-at <cycle>`, and `--restore <path>`. A checkpoint stores the cycle count, simulation time, stop-marker state, accumulated UART bytes, and the serialized `Vtop` model (including BRAM and behavioral AXI memory contents). `--restore <path>` resumes simulation from that cycle without needing `.mem` files on disk. If `--save-at <cycle>` is not reached before simulation stops, `frost-native` exits nonzero. |
 
 Example checkpoint save and restore run inside the `frost` image:
@@ -281,9 +341,10 @@ with no stored cycle counts, tick counts, or output hashes:
   operation validated."`, `<<PASS>>`, and a present non-zero tick count) and
   summary invariants, and exercises `demo/run_demo.sh` (`--app hello_world`).
   Alongside `test-native`, `test-demo-image` builds `demo/Dockerfile` into
-  `frost-demo:local` and runs both the default two-program demo (`hello_world`
-  and `coremark`) and a single-application invocation (`--threads 1 --app
-  hello_world`). Neither CI job runs DDR `coremark` or `SAVABLE=1` checkpoints.
+  `frost-demo:local` and runs the quick demonstration (`--quick`, checking
+  its self-check sentences), the unfiltered two-program run (`--raw`, with
+  CoreMark's CRC lines) and a single-application invocation (`--threads 1
+  --app hello_world`). Neither CI job runs DDR `coremark` or `SAVABLE=1` checkpoints.
 - **Full comparison mode (`--all`, the CLI default and the `slow` pytest
   target):** runs live unseeded cocotb simulations of `hello_world` and
   `coremark` in both `bram` and `ddr`, builds the checked native runner,

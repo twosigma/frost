@@ -68,10 +68,12 @@ repos:
         types_or: [c, c++]
         # Buildroot programs need their Linux build flags; frost-net10g and
         # frost-memerr need kernel headers. pgo_dump.c needs GCC's gcov.h and __gcov_info_*
-        # symbols. hw/sim/ uses host libraries for DPI-C. The wrapper's FROST
-        # software flags do not support these contexts.
+        # symbols. hw/sim/ uses host libraries for DPI-C, and demo/ holds the
+        # demonstration image's host C++ program. The wrapper's FROST software
+        # flags do not support these contexts.
         exclude: |
           (?x)^(
+            demo/.*|
             hw/sim/.*|
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
