@@ -2031,11 +2031,17 @@ their shared builds. Vector programs selects every registry name that starts
 with `vec_`, so a vector program added later joins it without a workflow
 change; "Runtime and other" excludes the same prefix. Each real-program job
 has a four-hour timeout, including setup and coverage uploads, unless its
-shard sets `timeout_minutes`. A shard's limit is 1.8 times its slowest
-measured time, rounded up, so that a slow runner still finishes it; keep
-shards under about 165 minutes so the limit stays at or below 300. The one
-program that cannot be split further, CoreMark-PRO loops, has a 340-minute
-limit.
+shard sets `timeout_minutes`. Size each shard's allowance at 1.8 times its
+slowest measured hosted job time, rounded up to whole minutes. The
+real-program ceiling is 300 minutes. Vector programs, Memory and NIC stress,
+Runtime and other, CoreMark-PRO nnet, and both OpenSBI smoke variants use that
+ceiling. CoreMark-PRO loops has a 340-minute exception because it cannot be
+split further.
+
+The other job families have a ceiling of 360 minutes, which is also the
+default for jobs without a configured timeout. The two cocotb unit jobs,
+the complete generated-vector campaign shards, and the Store boundary
+four records proof use 360-minute limits.
 
 Give each program that boots OpenSBI its own BRAM-only shard with coverage,
 including variants that disable a hardware feature or exercise reset through
