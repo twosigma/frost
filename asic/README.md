@@ -367,10 +367,10 @@ to 3, one for each way.
 | `soc.data_memory` | `tdp_bram_dc_byte_en` | 16,384 x 64, byte lanes, two ports | 4 rows of 1 `sram_2rw_4096x64_m8` |
 | `soc.instruction_memory.u_even_cold` and `u_odd_cold` | `sdp_block_ram_dc_init` | 16,384 x 28 | 2 rows of 1 `sram_1w1r_8192x28` each |
 | `soc.instruction_memory.u_even_frontend_hot`, `u_odd_frontend_hot`, `u_even_compressed`, and `u_odd_compressed` | `sdp_block_ram_dc_init` | 16,384 x 4 | 2 rows of 1 `sram_1w1r_8192x4` each |
-| `soc.gen_cached_tier.nic_mac.u_cdc.u_rx_fifo.storage` | `sdp_block_ram_dc` | 8,192 x 68 | 16 `sram_1w1r_512x68` |
-| `soc.gen_cached_tier.nic_mac.u_cdc.u_tx_fifo.storage` | `sdp_block_ram_dc` | 512 x 68 | 1 `sram_1w1r_512x68` |
-| `soc.gen_cached_tier.nic_mac.u_mac.mac_tx.u_frame_memory` | `sdp_block_ram_dc_init` | 4,096 x 64 | 1 `sram_1w1r_4096x64_m8` |
-| `soc.gen_cached_tier.nic_mac.u_mac.mac_rx.g_memory_lane[0..7].u_packet_memory` | `sdp_block_ram_dc_init` | 4,096 x 8 each | 1 `sram_1w1r_4096x8` each |
+| `soc.gen_cached_tier.gen_nic_mac_10g.nic_mac.u_cdc.u_rx_fifo.storage` | `sdp_block_ram_dc` | 8,192 x 68 | 16 `sram_1w1r_512x68` |
+| `soc.gen_cached_tier.gen_nic_mac_10g.nic_mac.u_cdc.u_tx_fifo.storage` | `sdp_block_ram_dc` | 512 x 68 | 1 `sram_1w1r_512x68` |
+| `soc.gen_cached_tier.gen_nic_mac_10g.nic_mac.u_mac.mac_tx.u_frame_memory` | `sdp_block_ram_dc_init` | 4,096 x 64 | 1 `sram_1w1r_4096x64_m8` |
+| `soc.gen_cached_tier.gen_nic_mac_10g.nic_mac.u_mac.mac_rx.g_memory_lane[0..7].u_packet_memory` | `sdp_block_ram_dc_init` | 4,096 x 8 each | 1 `sram_1w1r_4096x8` each |
 
 The SoC's instruction memory uses the data-only configuration. The narrow
 `u_even_compressed` and `u_odd_compressed` banks use their three instruction

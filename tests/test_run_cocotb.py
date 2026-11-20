@@ -5501,6 +5501,35 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GENABLE_CACHED_TIER=0", "-GUSE_BEHAVIORAL_DDR=0"),
         extra_env=(("COCOTB_TEST_FILTER", "nic_access_guard$"),),
     ),
+    "soc_ext_plugins": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_soc_ext_plugins",
+        hdl_toplevel_module="soc_top",
+        description=(
+            "Two external AXI4 DMA ports (4-bit IDs) with internal DMA contention, "
+            "exported external MAC AXI4-Stream/ready-bit isolation, APLIC source 2 "
+            "sharing with 1G NIC, and external 16 KiB AXI4-Lite window on soc_top"
+        ),
+        verilator_extra_args=(
+            "-GENABLE_CACHED_TIER=1",
+            "-GUSE_BEHAVIORAL_DDR=0",
+            "-GENABLE_1G_ETH=1",
+            "-GEXT_DMA_PORTS=2",
+            "-GEXT_DMA_ID_BITS=4",
+            "-GEXTERNAL_MAC=1",
+            "-GEXT_AXIL_WINDOW=1",
+        ),
+    ),
+    "soc_ext_axil_bram": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_soc_ext_plugins",
+        hdl_toplevel_module="soc_top",
+        description="External 16 KiB AXI4-Lite window with the cached tier disabled",
+        verilator_extra_args=(
+            "-GENABLE_CACHED_TIER=0",
+            "-GUSE_BEHAVIORAL_DDR=0",
+            "-GEXT_AXIL_WINDOW=1",
+        ),
+        extra_env=(("COCOTB_TEST_FILTER", "ext_axil_window$"),),
+    ),
     "soc_axi_slave": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_soc_axi_slave",
         hdl_toplevel_module="soc_axi_slave",
@@ -5628,6 +5657,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.axi.test_axil_reg_bridge",
         hdl_toplevel_module="axil_reg_bridge",
         description="AXI4-Lite independent channels, register mapping, stalls and reset",
+    ),
+    "axi_register_slice": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axi_register_slice",
+        hdl_toplevel_module="axi_register_slice",
+        description="AXI4 five-channel register slice: zero feedthrough, full rate, stalls and reset",
+    ),
+    "axil_register_slice": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axi_register_slice",
+        hdl_toplevel_module="axil_register_slice",
+        description="AXI4-Lite five-channel register slice: zero feedthrough, full rate, stalls and reset",
     ),
     "axi_checker": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_axi_checker",
@@ -6578,6 +6617,8 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "soc_axi_slave",
         "soc_axil",
         "soc_axil_no_cached_tier",
+        "soc_ext_axil_bram",
+        "soc_ext_plugins",
         "sram_macros_btb_payload",
         "sram_macros_imem_lanes",
         "sram_macros_l2_data",
