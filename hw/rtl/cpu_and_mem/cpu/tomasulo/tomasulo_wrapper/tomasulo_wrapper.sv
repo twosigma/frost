@@ -3437,6 +3437,7 @@ module tomasulo_wrapper #(
       .ISSUE_REPAIR_BYPASS(1'b0),
       .ALLOC_INDEXED_REPAIR(1'b1),
       .SPECULATIVE_DATA_WRITES(1'b1),
+      .BROADCAST_FREE_SOURCE_VALUES(1'b1),
       // Dispatch checks MEM_RS full and full_for_2 before asserting valid.
       // Use the integrated formal environment, as in u_int_rs.
       .FORMAL_STANDALONE_ENV(1'b0),

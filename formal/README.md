@@ -250,6 +250,11 @@ unless they belong to one of the named areas; the fast test that requires
 exactly one job per task checks the placement.
 Job limits include image setup.
 
+In Block proofs, the `rs_mem_broadcast` portable proof (`prove`) took 53
+seconds and the Xilinx LUT proof (`prove_prims`) took 52. Both use depth-2
+induction and allow 300 seconds each. The eight-frame `cover` reached all
+five witnesses in 21 seconds and allows 90. The SBY and runner limits match.
+
 `coherence_store_boundary:bmc_four` runs to depth **114** with the L1D hit
 path. The depth-120 sizing run reached frame 117 before its 18,000-second
 timeout; frame 113 took about four hours beside one other formal job.
@@ -480,6 +485,7 @@ cycle; simulation asserts the last three. The split shadow select that
 | `rs_dispatch_defer` | Dispatch's six CDB-deferral decisions equal the reference equations, with and without insertion-time repair (`bmc_repair`) |
 | `rs_issue2_selector` | The second issue port's balanced selector equals a serial scan at 16 entries |
 | `rs_indexed_deferred_fold` | In allocation-indexed stations, the allocation tokens are one-hot and cover every pending delivery, and the shared repair/deferred buses and factored selects give the same write enables and data as the serial priority; unbounded at the INT, MEM, and MUL sizes and with three sources. It removes the payload RAMs and output logic, so it covers the write decisions, not the whole station |
+| `rs_mem_broadcast` | Two eight-entry MEM stations with both dispatch ports and raw LQ prematch expose all 26 outputs. With `BROADCAST_FREE_SOURCE_VALUES` on and off, all state agrees except for the two operands of a free row or an empty issue stage. Only the two operands of an empty primary issue packet are masked at the interface. Dispatch obeys capacity and slot-1 intent on allocation edges. Reset, flush, wakeups, repair and FU backpressure are free. The portable and Xilinx LUT forms use unbounded induction. Covers from reset follow a surplus slot-1 write until that row is allocated and issued, through intervening full and partial flushes, on dual dispatch, and during simultaneous dispatch and issue. |
 | `rob_link_value_ram` | The three-bank ROB value memory equals the four-bank one under the one-branch-allocation rule and, for head ports, one-hot read addresses; unbounded at 32 x 64; `prove_copy` checks that both staged allocation addresses equal the preceding input after every edge without assumptions |
 | `rob_link_dispatch` | Dispatch never allocates slot 2 behind a slot-1 branch, the rule the shared link bank needs, in all four bundle-valid and register-value configurations |
 | `sq_live_result_select` | The early store address and MMIO flag equal the reference priority with the live CDB sums selected last |
