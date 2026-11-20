@@ -129,7 +129,9 @@ and must change together:
 5. `sw/lib/src/tomasulo_profile_cache.c` (the `CACHE_DELTA` indices, which
    follow the cache block's order)
 6. `fpga/debug/cache_counters.py` (`CACHE_COUNTERS`, the cache block's names
-   by global index)
+   by global index, and `LOAD_WAIT_INDICES`, the load window's indices)
+7. `fpga/debug/cache_counters.tcl` (the first cache index and the load window's
+   indices)
 
 ## Counter reference
 
@@ -520,14 +522,15 @@ indexed by the `TOMASULO_PERF_*` enum.
 
 Software below M-mode, Linux among it, cannot read the counters. Over JTAG,
 [`fpga/debug/cache_counters.py`](../../../../../../fpga/debug/cache_counters.py)
-takes a snapshot through the debug module, resuming the hart at once, runs a
-command or waits, then takes another and reads it and the preceding bank,
-and prints the deltas with the L2's write costs (see the
-[FPGA guide](../../../../../../fpga/README.md#profiling-counters)). Its
-snapshots replace the preceding cache bank, so a program that reads the
-counters itself is measured either way, not both. CoreMark-PRO built with
-`COREMARK_PRO_CACHE_COUNTERS=1` snapshots at both ends of its timed region and
-prints each cache counter's delta on one `FROST_CACHE_COUNTERS` line.
+takes snapshots through the debug module around a command or wait. The cache
+window reads the current and preceding cache banks and prints the deltas
+with the L2's write costs. `window --load-waits` reads indices 79, 80 and 120
+and the `time` CSR at each capture (see the
+[FPGA guide](../../../../../../fpga/README.md#profiling-counters)). Every capture
+advances the same snapshot banks, so use one snapshot reader per window.
+CoreMark-PRO built with `COREMARK_PRO_CACHE_COUNTERS=1` snapshots at both ends
+of its timed region and prints each cache counter's delta on one
+`FROST_CACHE_COUNTERS` line.
 
 `tomasulo_profile_print_report()` prints the full breakdown: front-end
 progress, the 2-wide width funnel, dispatch stalls, retirement, back-end

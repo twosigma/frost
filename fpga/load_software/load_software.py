@@ -267,6 +267,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "store_fill_bench",
     "svpbmt_cmo_test",
     "tick_torture",
+    "vec_crypto_exec_test",
     "vec_ff_test",
     "vec_index_test",
     "vec_mem_source_eew_test",
