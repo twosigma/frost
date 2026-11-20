@@ -99,9 +99,9 @@ class TxBench:
         dut.s_axis_tuser.value = user
         await Timer(5, unit="ns")
         ready = int(dut.s_axis_tready.value)
-        if not enable or reset:
-            assert not ready, "AXIS handshake advertised while disabled/reset"
-        accepted = beat is not None and bool(ready)
+        if not enable:
+            assert not ready, "AXIS handshake advertised while disabled"
+        accepted = not reset and beat is not None and bool(ready)
         self.stalled += int(beat is not None and enable and not ready and not reset)
         dut.i_clk.value = 1
         await Timer(5, unit="ns")
@@ -110,6 +110,7 @@ class TxBench:
         if reset:
             assert output == (IDLE_WORD, 0xFF)
             assert not drop
+            assert int(dut.s_axis_tready.value) == int(enable)
             self.partial = None
             self.idle_bytes = 100
         elif enable:
@@ -321,7 +322,7 @@ async def reset_discards_partial_queued_and_transmitting_frames(
     await bench.reset()
     # Reset with an unfinished AXIS packet.
     await bench.beat(0x1234567890ABCDEF)
-    await bench.cycle(reset=True, enable=False)
+    assert not await bench.cycle((0xBADC0DE, 0xFF, 1, 0), reset=True, enable=True)
     for _ in range(30):
         await bench.cycle()
     assert not bench.frames

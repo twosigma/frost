@@ -1754,18 +1754,29 @@ CPU boundary at those CPU periods in ps, with a SoC period of 3000 ps. The
 7000 ps configuration runs in the unit-test CI job.
 `soc_async_reset` checks retained writes and interrupted debug mirrors.
 `frost_async_reset` checks paired system reset with a stopped CPU or SoC
-clock and power-on reset with a stopped SoC clock. Both targets check that
+clock, CPU state on the first two resumed CPU edges, and power-on reset
+with a stopped SoC clock. Both targets check that
 cold reset waits for a delayed CPU clock while programming clocks continue.
 
 `ddr_reset_distribution` and `ddr_reset_distribution_async` check the external
 DDR reset with common and independent CPU clocks. Both entries enable RTL
-assertions. They check asynchronous
-assertion from released state, held release with a stopped SoC clock, and
-repeated requests during release. The common-clock case checks CPU reset
-release after fabric reset, assertion with the registered core reset, and
-release one edge after the core reset clears.
+assertions. They pulse fabric reset with the SoC clock stopped and repeat
+the request during release. With a common clock, fabric reset asserts
+immediately, the CPU reset register holds its value until the first resumed
+edge, and the cycle counter clears on the next edge. The fourth resumed
+edge releases fabric reset and the fifth releases CPU reset. The cycle
+counter starts on the sixth edge. Core reset and CPU reset assert together,
+and CPU reset releases one edge after core reset.
 These checks use idle external DDR AXI ports. The master and bridge unit
 benches check active transactions across CPU-only and fabric reset.
+
+`platform_dma_reset` and `platform_dma_reset_async` run a DMA copy from
+BRAM firmware with the external DDR transport active. Each interrupts a
+pending coherent read or write with a core-only reset lasting one SoC
+clock. The common-clock test also straddles a single edge with a 2 ps
+pulse. The independent-clock test pulses reset for one simulation tick
+entirely between edges. Both check the bridge and ingress reset edges, reuse the read and
+write IDs after release, and check the copied byte and the returned credits.
 
 ## Coverage
 

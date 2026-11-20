@@ -21,10 +21,9 @@
 // from lane zero and nonempty. Invalid, aborted and oversized packets are drained
 // through tlast and generate one o_drop pulse without emitting a partial frame.
 //
-// i_enable advances one XGMII word and gates AXIS handshakes. Both interfaces
-// share i_clk; i_enable is a clock enable, not wire-side flow control. XGMII data
-// and control hold while disabled, except in reset. o_drop is a single i_clk-cycle
-// event.
+// Outside reset, i_enable advances one XGMII word and gates AXIS handshakes.
+// Both interfaces share i_clk. XGMII data and control hold while disabled,
+// except in reset. o_drop is a single i_clk-cycle event.
 //
 // /S/ always occupies lane zero; short packets are padded to 60 bytes, followed
 // by little-endian Ethernet FCS. One or two complete idle words follow /T/,
@@ -113,8 +112,7 @@ module eth10g_mac_tx #(
   logic bad_beat;
   logic [63:0] payload_word;
 
-  // The MAC bench checks that no beat is taken in reset.
-  assign s_axis_tready = i_enable && !i_rst && !buffer_full[write_buffer];
+  assign s_axis_tready = i_enable && !buffer_full[write_buffer];
 
   always_comb begin
     input_bytes = 0;

@@ -21,8 +21,8 @@
 // The MAC may finish a packet internally during a fault. After a fault clears,
 // idles continue until an enabled, complete MAC idle word is observed, so a
 // suppressed packet never resumes on the wire halfway through. Faults
-// are remembered on every i_clk edge, including disabled XGMII clocks. Reset
-// similarly suppresses output until an enabled idle word establishes a boundary.
+// are remembered on every i_clk edge, including disabled XGMII clocks. A
+// reset edge suppresses frame data until an enabled idle establishes a boundary.
 module eth10g_tx_reconcile (
     input logic i_clk,
     input logic i_rst,
@@ -55,15 +55,12 @@ module eth10g_tx_reconcile (
   always_comb begin
     o_xgmii_data = IdleWord;
     o_xgmii_ctrl = 8'hff;
-    // Reset sends idle words, which the reconcile bench checks.
-    if (!i_rst) begin
-      if (i_local_fault) begin
-        o_xgmii_data = RemoteFaultWord;
-        o_xgmii_ctrl = 8'h11;
-      end else if (!i_remote_fault && !suppress_frame) begin
-        o_xgmii_data = i_xgmii_data;
-        o_xgmii_ctrl = i_xgmii_ctrl;
-      end
+    if (i_local_fault) begin
+      o_xgmii_data = RemoteFaultWord;
+      o_xgmii_ctrl = 8'h11;
+    end else if (!i_remote_fault && !suppress_frame) begin
+      o_xgmii_data = i_xgmii_data;
+      o_xgmii_ctrl = i_xgmii_ctrl;
     end
   end
 endmodule

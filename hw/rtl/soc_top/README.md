@@ -50,6 +50,11 @@ A core-only reset leaves the AXI decoder running so it can drain transactions fr
 the optional CPU clock are outside `cpu_top`.
 
 `ASYNC_CPU_CLOCK=0` connects the CPU and SoC on `i_clk` with direct wires.
+The CPU reset register samples the core request, `rst_core` and the fabric
+reset on each rising edge. A one-edge core request asserts CPU reset with
+`rst_core` and holds CPU reset for one more edge after `rst_core` drops.
+The external DDR reset synchronizer in `frost` captures a request while
+this clock is stopped and holds it until the clock advances.
 `ASYNC_CPU_CLOCK=1` selects `i_cpu_clk` for the CPU, the coherent bridge,
 IMSIC decoder, Debug Module and the core side of the JTAG transport. The
 programming port and UART use `i_clk_div4`, derived from `i_clk`.
@@ -74,8 +79,9 @@ address is constant throughout reset and execution.
 The memory FIFOs reset with the fabric. CPU-only reset leaves those FIFOs
 and the SoC slave running while the CPU master drains its requests. The
 DMA FIFOs, mux, coherent bridge, NIC and engine reset with the CPU epoch.
-Each domain leaves reset only after both clocks have advanced their reset
-chains. The two domains can leave reset on different edges.
+With independent clocks, each domain leaves reset only after both clocks
+have advanced their reset chains. The two domains can leave reset on
+different edges.
 MSI writes that execute while `soc_cpu_rst` is asserted complete without
 posting an interrupt. Presented AXI transactions can execute after reset
 release and have device side effects, as specified by the CPU's reset-drain
@@ -124,8 +130,9 @@ four narrow beats per line ([AXI library](../lib/axi/README.md)).
 coherent ingress ([lib/axi](../lib/axi/README.md)). A burst outside cached
 DDR is answered DECERR and an illegal one SLVERR, without a line request.
 With `ASYNC_CPU_CLOCK=0`, the NIC, engine, mux and bridge reset with
-`rst_core`. The ingress resets with `o_cpu_rst`, which also includes the DDR
-interconnect reset. This configuration requires `i_rst` whenever that reset
+`rst_core`. The ingress samples the same core-reset assertion as the bridge
+and discards its pending response before the bridge can reuse the line ID.
+Its reset, `o_cpu_rst`, also includes the DDR interconnect reset. This configuration requires `i_rst` whenever that reset
 is held, so a dropped ingress request cannot strand a DMA master. With
 `ASYNC_CPU_CLOCK=1`, the paired core reset includes the DDR interconnect
 reset and resets both sides of the DMA path.

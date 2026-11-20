@@ -21,7 +21,50 @@ from cocotb.clock import Clock
 from cocotb.handle import Immediate
 from cocotb.triggers import FallingEdge, RisingEdge, Timer, with_timeout
 
-from cocotb_tests.test_real_program import generate_divided_clock
+from cocotb_tests.test_real_program import generate_divided_clock, prepare_program_start
+
+
+async def _start_reset_test(dut: Any) -> None:
+    """Drive the reset, clock and transaction inputs used by the boundary bench."""
+    dut.i_jtag_trst_n.value = Immediate(0)
+    if hasattr(dut, "i_rst_n"):
+        await prepare_program_start(dut)
+        return
+    for name in (
+        "i_clk",
+        "i_cpu_clk",
+        "i_clk_div4",
+        "i_jtag_tck",
+        "i_dtm_bscan_tck",
+        "i_nic_tx_clk",
+        "i_nic_rx_clk",
+        "i_instr_mem_en",
+        "i_instr_mem_we",
+        "i_power_on_rst",
+        "i_rst",
+        "i_ddr_axi_rst",
+        "i_axi_awvalid",
+        "i_axi_wvalid",
+        "i_axi_arvalid",
+        "i_axi_awlen",
+        "i_axi_awlock",
+        "i_axi_awuser",
+        "i_axi_bready",
+        "i_axi_rready",
+        "i_ddr_axi_awready",
+        "i_ddr_axi_wready",
+        "i_ddr_axi_bvalid",
+        "i_ddr_axi_bresp",
+        "i_ddr_axi_rvalid",
+        "i_debug_mode",
+        "i_dbg_data_we",
+        "i_dbg_go_taken",
+        "i_dbg_cmd_err",
+        "i_dbg_parked",
+        "i_coherent_resp_valid",
+    ):
+        getattr(dut, name).value = Immediate(0)
+    await Timer(1, unit="ps")
 
 
 async def _write(
@@ -219,6 +262,15 @@ async def _stopped_soc(dut: Any) -> None:
     await Timer(100, unit="ns")
     assert int(platform.cpu.i_rst.value)
     assert int(soc.soc_cpu_rst.value)
+    cycles = platform.cpu.hart.cpu_inst.csr_file_inst.cycle_counter
+    for edge in (1, 2):
+        assert int(platform.cpu.i_rst.value)
+        dut.i_cpu_clk.value = 1
+        await Timer(1, unit="ps")
+        assert int(cycles.value) == 0
+        assert int(platform.cpu.i_rst.value) == int(edge == 1)
+        dut.i_cpu_clk.value = 0
+        await Timer(7, unit="ns")
     Clock(dut.i_cpu_clk, 7, unit="ns").start()
     await Timer(250, unit="ns")
     assert not int(platform.cpu.i_rst.value)
@@ -237,10 +289,7 @@ def _check_debug_ownership(soc: Any) -> None:
 @cocotb.test()
 async def reset_boundary(dut: Any) -> None:
     """Reset drains old writes and reaches the CPU with a stopped SoC clock."""
-    for signal in dut:
-        if signal._name.startswith("i_"):
-            signal.value = Immediate(0)
-    await Timer(1, unit="ps")
+    await _start_reset_test(dut)
     if hasattr(dut, "i_rst_n"):
         await _stopped_soc(dut)
     else:
@@ -250,10 +299,7 @@ async def reset_boundary(dut: Any) -> None:
 @cocotb.test()
 async def power_on_waits_for_cpu(dut: Any) -> None:
     """Cold reset spans a delayed CPU clock while programming clocks continue."""
-    for signal in dut:
-        if signal._name.startswith("i_"):
-            signal.value = Immediate(0)
-    await Timer(1, unit="ps")
+    await _start_reset_test(dut)
     is_frost = hasattr(dut, "i_rst_n")
     if is_frost:
         dut.i_rst_n.value = 0
