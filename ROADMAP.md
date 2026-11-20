@@ -387,7 +387,7 @@ or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
 `opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
 `prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). Of the 224 scripts, 194 open with `hierarchy -top` and
+each case). Of the 225 scripts, 195 open with `hierarchy -top` and
 `script free_undefined.ys`, which lowers processes pass by pass, frees the
 undefined inputs of every multiplexer and the undefined bits of every
 connection with `setundef -anyseq` before `proc_dlatch` and every other
@@ -397,7 +397,7 @@ port, a connection or a register when those passes run. Commands that a
 script's open entry pins are the exception: a plain `memory_map`, for one,
 writes x for words that nothing writes, and a plain `opt` after it can read
 them before SymbiYosys frees them. The fast check requires the shared
-opening for every task of those 194 scripts.
+opening for every task in those scripts.
 
 Open: the 11 scripts listed in `UNDEFINED_OPENING_PENDING` in
 `tests/test_run_formal.py`, each to be opened with every task rerun. The 19
