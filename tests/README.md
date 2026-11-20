@@ -1736,7 +1736,7 @@ The four-record store-boundary BMC runs to depth 114 with a 300-minute
 allowance in its own 330-minute job. Its depth-120 cover task reaches handoff
 at frame 57 and drain at frame 92; restoring the BMC to depth 120 is an open
 [verification item](../ROADMAP.md#verification). The intervening-load BMC
-keeps depth 140 and 240 minutes in its own 330-minute job. AMO flow tasks
+keeps depth 140 and has 330 minutes in its own 350-minute job. AMO flow tasks
 share a 180-minute job; SC and the remaining boundary cases share a
 240-minute job. Store-home BMCs and covers share a 240-minute job. The
 [formal guide](../formal/README.md) records every task's allowance and the

@@ -1,5 +1,6 @@
 # SymbiYosys run output directories (e.g., trap_unit_bmc/, trap_unit_cover/).
-# The predictor reference and RAM model directories hold proof sources.
+# Reference designs and RAM models are proof sources.
 */
+!l0_store_reference/
 !predictor_reference/
 !predictor_twin_ram/

@@ -154,7 +154,8 @@ write without decoding the address again. `o_mem_write_buffered` identifies
 an ordinary Normal store that has already retired; this distinguishes its
 late fatal AXI error from a precise SC/AMO failure. Launching a write also
 invalidates its L0 dword, or updates its selected bytes when the optional
-Normal read-cache policy applies.
+Normal read-cache policy applies. The SQ registers the beat address and
+its write-through PMA together on every clock edge.
 
 With `PRECISE_UNCACHED=0`, plain BRAM stores complete one
 cycle after launch with up to two writes in flight. In `cpu_top`, every

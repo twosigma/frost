@@ -34,6 +34,37 @@
  */
 
 module store_queue #(
+`ifdef L0_STORE_BOUNDARY_PROOF
+// Inputs to the write stage, including the two launch/complete selectors.
+    parameter bit CACHE_NORMAL_MEMORY = 1,
+    parameter bit PRECISE_UNCACHED = 1
+) (
+    input logic i_clk,
+    input logic i_rst_n,
+    input logic i_flush_all,
+    input logic [63:0] mem_write_addr_next,
+    input logic [63:0] mem_write_data_next,
+    input logic [7:0] mem_write_byte_en_next,
+    input riscv_pkg::mem_size_e mem_write_size_next,
+    input logic mem_write_is_mmio_next,
+    input logic mem_write_is_cached_next,
+    input logic drain_zero_cached,
+    input logic drain_is_cmo,
+    input logic [7:0] sq_is_sc,
+    input logic [2:0] drain_idx_q,
+    input logic mem_write_completes_next,
+    input logic cmo_inval_pulse_q,
+    input logic launch_without_store_ready,
+    input logic precise_launch_qualified,
+    input logic cached_launch_qualified,
+    input logic precommit_shared_ready,
+    input logic i_coherent_store_ready,
+    input logic complete_without_store_ready,
+    input logic precise_complete_qualified,
+    output logic [2:0] held_entry,
+    output logic held_completes,
+    output logic fire,
+`else
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 8
     // Rely on dispatch to check SQ room. Its conservative registered full flags
@@ -176,6 +207,7 @@ module store_queue #(
     // =========================================================================
     // Memory Write Interface (to data memory bus)
     // =========================================================================
+`endif
     output logic o_mem_write_en,
     output logic [riscv_pkg::XLEN-1:0] o_mem_write_addr,
     output logic [riscv_pkg::MemDataBits-1:0] o_mem_write_data,
@@ -187,6 +219,8 @@ module store_queue #(
     // Registered cached-tier flag of the write on the bus (parallels is_mmio).
     // The router steers the store's byte-write enables to the cached tier when set.
     output logic o_mem_write_is_cached,
+
+`ifndef L0_STORE_BOUNDARY_PROOF
     input logic i_mem_write_done,
     input logic i_mem_write_error = 1'b0,
     // Raised before any uncached side effect. The core holds its interrupt /
@@ -203,12 +237,18 @@ module store_queue #(
     // =========================================================================
     // L0 Cache Invalidation (to LQ)
     // =========================================================================
+`endif
     output logic                       o_cache_invalidate_valid,
     output logic [riscv_pkg::XLEN-1:0] o_cache_invalidate_addr,
     // With o_cache_invalidate_valid: invalidate the 64-byte block at the
     // address, a cached cbo.zero, instead of its dword.
     output logic                       o_cache_invalidate_block,
+    // Write-through PMA of the registered invalidate address.
+    output logic                       o_cache_store_writethrough,
 
+`ifdef L0_STORE_BOUNDARY_PROOF
+    output logic complete
+`else
     // =========================================================================
     // ROB Head Tag (for age comparisons)
     // =========================================================================
@@ -243,7 +283,13 @@ module store_queue #(
     output logic o_committed_empty_lq,
     output logic [$clog2(DEPTH+1)-1:0] o_count,
     output logic [$clog2(DEPTH+1)-1:0] o_dispatch_count
+`endif
 );
+
+`ifdef L0_STORE_BOUNDARY_PROOF
+  localparam int unsigned IdxWidth = 3;
+  wire mem_write_fire_next, drain_complete_fire_next;
+`else
 
   // ===========================================================================
   // Local Parameters
@@ -1281,6 +1327,7 @@ module store_queue #(
   // (cmo_drain_fire) and frees on the next cycle (cmo_free_q).
   assign complete_without_store_ready = committed_uncached_complete || cmo_drain_fire ||
       (cached_launch_qualified && (!mem_write_addr_cached_for_plain_next || coherent_selected_sc));
+`endif
 `ifdef FROST_XILINX_PRIMS
   // The two shared permissions enter the final five-input selection directly.
   (* dont_touch = "true" *)
@@ -1313,6 +1360,7 @@ module store_queue #(
       (cached_launch_qualified && i_coherent_store_ready);
 `endif
 
+`ifndef L0_STORE_BOUNDARY_PROOF
   // Resolve completion of the previous write independently of launch credit.
   // A new launch wins over a simultaneous completion and supplies its class.
   always_comb begin
@@ -1355,8 +1403,10 @@ module store_queue #(
 
   // Staging register for write_entry_idx and write_completes_entry, captured
   // alongside the write interface so they stay aligned with o_mem_write_en.
+`endif
   logic [IdxWidth-1:0] mem_write_entry_idx_stg;
   logic                mem_write_completes_stg;
+  wire mem_write_writethrough_next = riscv_pkg::pma_writethrough_ok(mem_write_addr_next);
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
@@ -1366,15 +1416,13 @@ module store_queue #(
     end
 
     o_mem_write_addr <= mem_write_addr_next;
+    o_cache_store_writethrough <= mem_write_writethrough_next;
     o_mem_write_data <= mem_write_data_next;
     o_mem_write_byte_en <= mem_write_byte_en_next;
     o_mem_write_size <= mem_write_size_next;
     o_mem_write_is_mmio <= mem_write_is_mmio_next;
     o_mem_write_buffered <= PRECISE_UNCACHED && CACHE_NORMAL_MEMORY &&
-        !sq_is_sc[drain_idx_q] && !mem_write_is_mmio_next &&
-        riscv_pkg::pma_writethrough_ok(
-        mem_write_addr_next
-    );
+        !sq_is_sc[drain_idx_q] && !mem_write_is_mmio_next && mem_write_writethrough_next;
     o_mem_write_is_cached <= mem_write_is_cached_next;
     o_cache_invalidate_block <= drain_zero_cached || drain_is_cmo;
 
@@ -1384,6 +1432,7 @@ module store_queue #(
     end
   end
 
+`ifndef L0_STORE_BOUNDARY_PROOF
   logic [DEPTH-1:0] flush_kill_base;
   // The beat count restarts after the last beat, a full flush, or a partial
   // flush that removes the cursor entry (a precise entry is uncommitted while
@@ -1549,9 +1598,17 @@ module store_queue #(
   // A cached zero write's pulse covers its whole block (o_cache_invalidate_block).
   // A cbo.flush or cbo.inval pulses the same block invalidation, without a
   // write, on the cycle after it fires, as it frees (o_mem_write_en is low then).
+`endif
   assign o_cache_invalidate_valid = o_mem_write_en || cmo_inval_pulse_q;
   assign o_cache_invalidate_addr = o_mem_write_addr;
 
+`ifdef L0_STORE_BOUNDARY_PROOF
+  assign held_entry = mem_write_entry_idx_stg;
+  assign held_completes = mem_write_completes_stg;
+  assign fire = mem_write_fire_next;
+  assign complete = drain_complete_fire_next;
+endmodule
+`else
   // ===========================================================================
   // Allocation (pure ring tail)
   // ===========================================================================
@@ -2740,3 +2797,4 @@ module store_queue #(
 
 
 endmodule
+`endif

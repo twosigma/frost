@@ -14,6 +14,7 @@
  *    limitations under the License.
  */
 
+`ifndef L0_STORE_BOUNDARY_PROOF
 /*
  * Tomasulo Integration Wrapper
  *
@@ -1670,6 +1671,7 @@ module tomasulo_wrapper #(
 
   logic sq_cache_invalidate_valid;
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
+  logic                       sq_cache_store_writethrough;
   logic sq_cache_invalidate_block;
 
   // ===========================================================================
@@ -4166,8 +4168,15 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Load Queue Instance
   // ===========================================================================
+`endif
   load_queue #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
+      .STORE_STRB_PMA_CHECKED(1'b1),
+
+`ifdef L0_STORE_BOUNDARY_PROOF
+      .MEM_RESPONSE_ERRORS(1'b1)
+  ) u_lq (
+`else
       .MEM_RESPONSE_ERRORS(MEM_RESPONSE_ERRORS),
       .CACHE_UNCACHED_DATA(!MEM_RESPONSE_ERRORS),
       .PREISSUE_CANDIDATES(EARLY_LOAD_WAKEUP),
@@ -4304,12 +4313,18 @@ module tomasulo_wrapper #(
       .i_amo_mem_write_error(i_amo_mem_write_error),
 
       // L0 cache invalidation (from SQ)
+`endif
       .i_cache_invalidate_valid(sq_cache_invalidate_valid),
       .i_cache_invalidate_addr(sq_cache_invalidate_addr),
       .i_cache_invalidate_block(sq_cache_invalidate_block),
       .i_cache_store_data(o_sq_mem_write_data),
-      .i_cache_store_strb(o_sq_mem_write_byte_en),
+      .i_cache_store_strb(sq_cache_store_writethrough ? o_sq_mem_write_byte_en : '0),
 
+`ifdef L0_STORE_BOUNDARY_PROOF
+      .o_port_valid, .o_port_addr, .o_port_block, .o_port_data, .o_port_strb(effective_store_strb)
+  );
+  store_queue u_sq (
+`else
       // DMA coherence (lq_coherence_port)
       .i_coh_inval_valid(coh_lq_inval_valid),
       .i_coh_inval_addr(coh_lq_inval_addr),
@@ -4980,6 +4995,7 @@ module tomasulo_wrapper #(
       .o_sq_forward              (sq_forward),
 
       // Memory write interface (external)
+`endif
       .o_mem_write_en               (o_sq_mem_write_en),
       .o_mem_write_addr             (o_sq_mem_write_addr),
       .o_mem_write_data             (o_sq_mem_write_data),
@@ -4988,6 +5004,8 @@ module tomasulo_wrapper #(
       .o_mem_write_size             (o_sq_mem_write_size),
       .o_mem_write_is_mmio          (o_sq_mem_write_is_mmio),
       .o_mem_write_is_cached        (o_sq_mem_write_is_cached),
+
+`ifndef L0_STORE_BOUNDARY_PROOF
       .i_mem_write_done             (i_sq_mem_write_done),
       .i_mem_write_error            (i_sq_mem_write_error),
       .o_uncached_store_pending,
@@ -4999,10 +5017,16 @@ module tomasulo_wrapper #(
       .i_uncached_store_result_ready(uncached_store_result_ready),
 
       // L0 cache invalidation (to LQ)
+`endif
       .o_cache_invalidate_valid(sq_cache_invalidate_valid),
       .o_cache_invalidate_addr (sq_cache_invalidate_addr),
       .o_cache_invalidate_block(sq_cache_invalidate_block),
+      .o_cache_store_writethrough(sq_cache_store_writethrough),
 
+`ifdef L0_STORE_BOUNDARY_PROOF
+      .*
+  );
+`else
       // SC discard (pipelined: uses commit_bus_q)
       .i_sc_discard        (sc_discard),
       .i_sc_discard_rob_tag(commit_q_tag),
@@ -6718,3 +6742,4 @@ module coherent_store_pm_select #(
   end
   assign o_complete = complete_without_pma && o_pma_ok;
 endmodule
+`endif

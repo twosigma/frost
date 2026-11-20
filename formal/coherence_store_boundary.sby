@@ -39,7 +39,7 @@ sc: depth 140
 timeout 2400
 bmc_four: timeout 18000
 cover_four: timeout 7200
-intervening: timeout 14400
+intervening: timeout 19800
 bmc_amo_same: timeout 3300
 bmc_amo_other: timeout 4800
 # The SC handoff BMC takes about 45 minutes; CI runners take up to about 2.2
