@@ -96,6 +96,7 @@ VALID_APPS = [
     "nic_cmo_loopback",
     "nic_echo",
     "nic_loopback",
+    "odd_halfword_pred_test",
     "opensbi_smoke",
     "packet_parser",
     "pd_itt_slot2",

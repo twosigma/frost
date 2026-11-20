@@ -104,6 +104,7 @@ module prediction_release_formal #(
 
   logic [XLEN-1:0] pc;
   logic [XLEN-1:0] pc_reg;
+  logic [XLEN-1:0] next_pc;
   logic pc_reg_high_for_coverage;
   logic fetch_lookup_is_lower_parcel;
   logic control_flow_holdoff;
@@ -137,11 +138,25 @@ module prediction_release_formal #(
   // These are wiring identities in the production integration, expressed as
   // logic instead of assumptions: every FENCE-class event is part of the full
   // frontend flush, a resteer is a qualification of the raw mismatch, and
-  // IF's packet squash includes the raw mismatch (if_stage's sel_nop).
+  // IF's packet squash includes the raw mismatch (if_stage's sel_nop). With
+  // PENDING_HANDOFF_EXCLUDES_SLOT2 (if_stage's setting), the squash, resteer,
+  // and already-emitted gates carry IF's pending-holdoff and pc == pc_reg
+  // terms as well.
   assign i_flush = i_frontend_flush_request || i_fence_i_flush;
-  assign i_window_cannot_serve = i_window_cannot_serve_raw && i_window_resteer_qualifier;
   logic sel_nop;
-  assign sel_nop = i_sel_nop || i_window_cannot_serve_raw;
+  logic sel_nop_wcs0_for_pc;
+  logic prediction_already_emitted_for_pc;
+  assign sel_nop_wcs0_for_pc = i_sel_nop_wcs0_for_pc ||
+      (PENDING_HANDOFF_EXCLUDES_SLOT2 &&
+       (pending_prediction_target_holdoff || pending_prediction_fetch_holdoff_wcs0));
+  assign sel_nop = i_sel_nop || i_window_cannot_serve_raw ||
+      (PENDING_HANDOFF_EXCLUDES_SLOT2 &&
+       (pending_prediction_target_holdoff || pending_prediction_fetch_holdoff));
+  assign i_window_cannot_serve = i_window_cannot_serve_raw && i_window_resteer_qualifier &&
+      !(PENDING_HANDOFF_EXCLUDES_SLOT2 &&
+        (pending_prediction_target_holdoff || pending_prediction_fetch_holdoff_wcs));
+  assign prediction_already_emitted_for_pc = i_prediction_already_emitted &&
+      !(PENDING_HANDOFF_EXCLUDES_SLOT2 && (sel_nop || stall_registered || (pc != pc_reg)));
   assign replay_saved_packet = stall_registered && saved_values_valid && !sel_nop_saved && !i_flush;
   assign fetch_progress = i_fetch_progress || replay_saved_packet;
   always_ff @(posedge i_clk) begin
@@ -160,23 +175,26 @@ module prediction_release_formal #(
   // omitted, which only admits extra requests. As in IF, a window that cannot
   // serve pc_reg (raw WCS) blocks the slot-1 request; pc_controller relies on
   // that when a walked-past entry meets a served-window resteer. With
-  // PENDING_HANDOFF_EXCLUDES_SLOT2, the slot-2 request gets IF's
+  // PENDING_HANDOFF_EXCLUDES_SLOT2, both prediction sources get IF's
   // pending-holdoff mask when the window can serve (WCS=0; WCS is
-  // i_window_cannot_serve_raw). When it cannot (WCS=1), IF disables
-  // prediction outright; the harness applies the WCS=1 pending holdoff,
-  // which admits more requests.
+  // i_window_cannot_serve_raw), slot 1 keeps its pending-block gate, and slot 2
+  // is gated by the squash. When the window cannot serve (WCS=1), IF disables
+  // prediction outright; the harness applies the WCS=1 pending holdoff to
+  // slot 2, which admits more requests.
   assign prediction_used_for_pc =
       i_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff &&
       !i_window_cannot_serve_raw &&
-      (!PENDING_HANDOFF_EXCLUDES_SLOT2 || !pending_prediction_blocks_slot1);
+      (!PENDING_HANDOFF_EXCLUDES_SLOT2 ||
+       (!pending_prediction_blocks_slot1 && !pending_prediction_holdoff_wcs0));
   assign prediction_used = prediction_used_for_pc && !i_branch_taken && !i_stall;
   assign slot2_live_request =
       i_slot2_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff &&
       (!PENDING_HANDOFF_EXCLUDES_SLOT2 ||
-       !(i_window_cannot_serve_raw ? pending_prediction_holdoff_wcs :
-                                    pending_prediction_holdoff_wcs0));
+       (!(i_window_cannot_serve_raw ? pending_prediction_holdoff_wcs :
+                                     pending_prediction_holdoff_wcs0) &&
+        !sel_nop_wcs0_for_pc));
   assign slot2_live_consumed = slot2_live_request && !i_branch_taken && !i_stall;
   assign slot2_prediction_used_for_pc = slot2_live_request || slot2_replay_request;
   assign slot2_prediction_used = slot2_live_consumed || slot2_replay_consumed;
@@ -308,10 +326,6 @@ module prediction_release_formal #(
       .i_trap_taken,
       .i_mret_taken,
       .i_trap_target,
-      // IF gives pc_controller its own fast size and PC squash, which can
-      // differ from the c_ext_state inputs, so each pair is an independent
-      // input here.
-      .i_is_compressed(i_is_compressed_fast),
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,
       // The per-shape copies of the selects and the slot-2 validity only
@@ -330,10 +344,10 @@ module prediction_release_formal #(
       .i_sel_prediction_r(sel_prediction_r),
       .i_prediction_requires_pc_reg_handoff,
       .i_prediction_holdoff(prediction_holdoff),
-      .i_prediction_already_emitted,
+      .i_prediction_already_emitted(prediction_already_emitted_for_pc),
       // pc_controller adds raw WCS to this squash itself, as IF's sel_nop
       // does.
-      .i_sel_nop_wcs0(i_sel_nop_wcs0_for_pc),
+      .i_sel_nop_wcs0(sel_nop_wcs0_for_pc),
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_pc),
@@ -378,8 +392,7 @@ module prediction_release_formal #(
       .o_pending_prediction_redirect_kill(),
       .o_pending_prediction_walk_past(pending_prediction_walk_past),
       .o_pending_prediction_blocks_slot1(pending_prediction_blocks_slot1),
-      // Translation uses registered o_pc; next-PC observations are unused.
-      .o_next_pc(),
+      .o_next_pc(next_pc),
       .o_next_pc_holds(),
       .o_pc_update_en(),
       .o_npc_cond(),
@@ -458,5 +471,113 @@ module prediction_release_formal #(
       cover (buffer_from_snapshot_q && window_uncovered_q);
     end
   end
+
+`ifndef PREDICTION_RELEASE_WORD_OWNERSHIP
+  if (PENDING_HANDOFF_EXCLUDES_SLOT2) begin : gen_handoff_lead_proof
+    logic f_fetch_stall;
+    logic f_redirect_any;
+    logic f_no_npc_redirect;
+    logic f_target_holdoff_step;
+    logic f_target_holdoff_prev_q;
+    logic f_post_holdoff_armed_pending_q;
+    logic f_post_holdoff_odd_armed_pending_q;
+    logic f_stepped_from_target_holdoff_q;
+    logic f_holdoff_saw_stall_q;
+    logic f_holdoff_saw_gap_q;
+    logic f_stepped_saw_stall_q;
+    logic f_stepped_saw_gap_q;
+    logic [XLEN-1:0] f_stepped_target_q;
+
+    assign f_fetch_stall = i_stall || !fetch_progress;
+    assign f_redirect_any = i_flush || i_trap_taken || i_mret_taken ||
+        i_branch_taken || i_pd_redirect || i_fence_i_flush;
+    assign f_no_npc_redirect = !(i_trap_taken || i_mret_taken || i_fence_i_flush ||
+        i_branch_taken || i_pd_redirect);
+    assign f_target_holdoff_step = pending_prediction_target_holdoff &&
+        !i_reset && !f_redirect_any && !f_fetch_stall &&
+        !i_window_cannot_serve && !slot2_prediction_used_for_pc &&
+        !prediction_used_for_pc;
+
+    always_ff @(posedge i_clk) begin
+      if (i_reset || f_redirect_any) begin
+        f_target_holdoff_prev_q <= 1'b0;
+        f_post_holdoff_armed_pending_q <= 1'b0;
+        f_post_holdoff_odd_armed_pending_q <= 1'b0;
+        f_stepped_from_target_holdoff_q <= 1'b0;
+        f_holdoff_saw_stall_q <= 1'b0;
+        f_holdoff_saw_gap_q <= 1'b0;
+        f_stepped_saw_stall_q <= 1'b0;
+        f_stepped_saw_gap_q <= 1'b0;
+      end else begin
+        if (!f_fetch_stall) begin
+          f_target_holdoff_prev_q <= pending_prediction_target_holdoff;
+          f_post_holdoff_armed_pending_q <=
+              pending_prediction_target_holdoff && prediction_used_for_pc;
+          f_post_holdoff_odd_armed_pending_q <=
+              pending_prediction_target_holdoff && prediction_used_for_pc && pc_reg[1];
+        end
+        f_stepped_from_target_holdoff_q <= f_target_holdoff_step;
+        if (f_target_holdoff_step) begin
+          f_stepped_target_q <= pc_reg;
+          f_stepped_saw_stall_q <= f_holdoff_saw_stall_q;
+          f_stepped_saw_gap_q <= f_holdoff_saw_gap_q;
+        end
+        if (!pending_prediction_target_holdoff) begin
+          f_holdoff_saw_stall_q <= 1'b0;
+          f_holdoff_saw_gap_q   <= 1'b0;
+        end else begin
+          if (i_stall) f_holdoff_saw_stall_q <= 1'b1;
+          if (!fetch_progress) f_holdoff_saw_gap_q <= 1'b1;
+        end
+      end
+
+      if (f_past_valid && !reset_q && !i_reset) begin
+        p_target_holdoff_holds_equal_pcs :
+        assert (!pending_prediction_target_holdoff || (pc == pc_reg));
+        p_target_holdoff_saved_nop :
+        assert (!(stall_registered && pending_prediction_target_holdoff && !sel_nop_saved));
+        if (f_target_holdoff_step) begin
+          p_noncross_handoff_next_pc_is_target_plus_4 : assert (next_pc == (pc_reg + 64'd4));
+        end
+        p_post_holdoff_step_distance :
+        assert (!(f_target_holdoff_prev_q && !pending_prediction_target_holdoff &&
+                  !f_post_holdoff_armed_pending_q) ||
+                (pc == (pc_reg + 64'd4)) ||
+                (pc == {pc_reg[XLEN-1:2], 2'b00}));
+        p_post_holdoff_armed_parity_consistent :
+        assert (!(f_post_holdoff_armed_pending_q && pc_reg[1]) ||
+                f_post_holdoff_odd_armed_pending_q);
+        p_post_holdoff_odd_slot1_keeps_pending :
+        assert (!f_post_holdoff_odd_armed_pending_q ||
+                (pc_reg[1] && (pc_reg == pending_prediction_pc) &&
+                 (!f_no_npc_redirect || pending_prediction_active)));
+        if (f_stepped_from_target_holdoff_q) begin
+          p_stepped_target_matches_pc_reg : assert (f_stepped_target_q == pc_reg);
+          p_after_noncross_handoff_pc_is_target_plus_4 :
+          assert ((pc == (f_stepped_target_q + 64'd4)) && (pc[1] == pc_reg[1]));
+        end
+        // Non-crossing target holdoff steps o_pc to target + 4 (or resteers to
+        // pc_reg's word base during a response gap), while a slot-1 prediction
+        // at an odd target during target holdoff sets pending_prediction_valid
+        // unless a redirect arm (npc_cond[4:1]) wins next_pc. A post-holdoff
+        // halfword lead of +2 without pending state or redirect is therefore
+        // unreachable.
+        p_halfword_target_lead_catchup_unreachable :
+        assert (!(f_no_npc_redirect &&
+                  f_target_holdoff_prev_q &&
+                  !pending_prediction_target_holdoff &&
+                  !pending_prediction_active &&
+                  !(sel_nop_wcs0_for_pc || i_window_cannot_serve_raw) &&
+                  i_is_compressed_fast &&
+                  pc_reg[1] &&
+                  (pc == (pc_reg + 64'd2))));
+        cover_even_to_odd_handoff_with_stall_and_gap :
+        cover (f_stepped_from_target_holdoff_q && f_stepped_target_q[1] &&
+               f_stepped_saw_stall_q && f_stepped_saw_gap_q &&
+               (pc == (f_stepped_target_q + 64'd4)) && (pc[1] == pc_reg[1]));
+      end
+    end
+  end
+`endif
 
 endmodule : prediction_release_formal
