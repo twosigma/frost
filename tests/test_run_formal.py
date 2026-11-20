@@ -1139,9 +1139,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "vec_hold_rows.sby",
-        "Vector range holds: a scalar entry is held exactly while an older live "
-        "vector memory table entry overlaps it or has an unknown range",
-        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "cover"),
+        "Vector range holds: an older live vector memory table entry holds an "
+        "atomic scalar entry or one with an unknown address, unknown vector range, "
+        "or overlap. A settled hold has such a cause in either queue",
+        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "vhold_lq_cover", "cover"),
     ),
     FormalTarget(
         "vec_vmt.sby",
@@ -3380,6 +3381,10 @@ SBY_TASKS = [
     (
         "vhold_sq_bmc",
         "Vector range holds with the store queue's per-entry addresses, 8 frames.",
+    ),
+    (
+        "vhold_lq_cover",
+        "Vector range-hold reachability with the load queue's address-update port, 16 frames.",
     ),
     (
         "vmt_bmc",

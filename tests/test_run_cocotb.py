@@ -2031,9 +2031,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_debug_partial",
         hdl_toplevel_module="frost",
         app_name="debug_target",
-        description="Debug Mode partial vector load dirties mstatus.VS",
+        description="Debug Mode partial unit-stride and strided vector loads dirty mstatus.VS",
         verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
-        include_in_pytest=False,
     ),
     "debug_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug",
