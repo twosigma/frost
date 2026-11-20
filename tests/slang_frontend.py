@@ -32,6 +32,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from collections import defaultdict
@@ -77,6 +78,7 @@ class SlangCase:
     abstracts: tuple[str, ...] = ()
     tasks: tuple[str, ...] = ()
     ast_only: bool = True
+    source_projection: tuple[Path, Path] | None = None
 
 
 def expand_filelist(filelist: Path, root: Path = ROOT) -> list[str]:
@@ -243,6 +245,10 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
                 dest: (sby.parent / path).resolve()
                 for dest, path in config.files.items()
             }
+            projection = sby_config.store_completion_cone_helper(sby)
+            source_projection = (
+                (projection, filemap["tomasulo_wrapper.sv"]) if projection else None
+            )
             includes = tuple(
                 "-I" + str(p)
                 for p in sorted({sby.parent} | {p.parent for p in filemap.values()})
@@ -380,8 +386,15 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
                     tuple(sorted(parameters[top].items())),
                     tuple(sorted(abstracts)),
                     (f"{sby.name}:{name}",),
+                    source_projection=source_projection,
                 )
-                key = (case.top, case.units, case.parameters, case.abstracts)
+                key = (
+                    case.top,
+                    case.units,
+                    case.parameters,
+                    case.abstracts,
+                    case.source_projection,
+                )
                 if key in cases:
                     cases[key] = replace(
                         cases[key], tasks=cases[key].tasks + case.tasks
@@ -407,6 +420,16 @@ def run_case(case: SlangCase, yosys: str = "yosys") -> SlangResult:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="frost-slang-") as directory:
         temp = Path(directory)
+        projected_include: tuple[str, ...] = ()
+        if case.source_projection is not None:
+            helper, wrapper_source = case.source_projection
+            subprocess.run(
+                [sys.executable, str(helper), str(wrapper_source)],
+                cwd=temp,
+                check=True,
+                timeout=10,
+            )
+            projected_include = ("-I" + str(temp),)
         options = [
             "--error-limit=0",
             f"--unroll-limit={UNROLL_LIMIT}",
@@ -446,7 +469,9 @@ def run_case(case: SlangCase, yosys: str = "yosys") -> SlangResult:
                 options += [*unit.options, *unit.sources]
                 continue
             path = temp / f"unit{i}.f"
-            path.write_text(shlex.join((*unit.options, *unit.sources)) + "\n")
+            path.write_text(
+                shlex.join((*projected_include, *unit.options, *unit.sources)) + "\n"
+            )
             options += ["-C", str(path)]
         for module in case.abstracts:
             sources = list((ROOT / "hw/rtl").rglob(module + ".sv"))

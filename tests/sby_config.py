@@ -1528,17 +1528,26 @@ def cmo_replay_helper(path: Path, task: str | None = None) -> Path | None:
     return None
 
 
+def store_completion_cone_helper(path: Path) -> Path | None:
+    """Locate the source projection for the wrapper's store-completion proof."""
+    if path.name == "store_completion_cofactor.sby":
+        return path.parent.parent / "tests" / "store_completion_cofactor.py"
+    return None
+
+
 def stage_proof(path: Path, root: Path, fixture: Path) -> Path:
     """Copy a proof and all its inputs into a private checkout layout.
 
     SymbiYosys stages every external input from [files], including sources
     read by nested Yosys scripts. Inline [file] bodies travel with the proof.
-    A registered Python replay travels with the fixture in its tests directory.
+    The source projection and witness replay travel in the tests directory.
     """
     root = Path(os.path.abspath(root))
     sources = proof_inputs(path)
     if replay := cmo_replay_helper(path):
         sources.append(replay)
+    if projection := store_completion_cone_helper(path):
+        sources.append(projection)
     destinations = [
         fixture / Path(os.path.abspath(source_file)).relative_to(root)
         for source_file in sources

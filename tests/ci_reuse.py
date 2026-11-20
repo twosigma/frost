@@ -301,6 +301,14 @@ def formal_task_key(
         runner = canonical_digest(
             {"main": runner, "replay": {replay_name: replay_digest}}
         )
+    if projection := sby_config.store_completion_cone_helper(sby_path):
+        projection_name = relative(projection, root)
+        projection_digest = cache.digest(projection)
+        if projection_digest is None:
+            raise ReuseKeyError(f"missing formal source projection: {projection_name}")
+        runner = canonical_digest(
+            {"main": runner, "projection": {projection_name: projection_digest}}
+        )
     try:
         sections = dict(sby_config.source(sby_path).sections)
     except sby_config.ConfigError as error:

@@ -83,6 +83,9 @@ source errors. Run it directly or through the manual hook:
 ./scripts/frost.py run python3 tests/slang_frontend.py --case 'formal/immu_bare/*'
 ```
 
+The `store_completion_cofactor` views generate their assertion cone from
+the staged wrapper source with the same projection as the proof runner.
+
 Declarations must precede **every** reference, including assertion/debug
 code and primitive instances inside generates. Put parameters and localparams
 in dependency order. When fixing order, preserve initializers, attributes,
@@ -2084,8 +2087,9 @@ computes a key for each one, a SHA-256 over:
 - the task's timeout, and the source of `tests/test_run_formal.py` or
   `tests/test_run_yosys.py` without its top-level `test_*` functions and the
   registry tables, whose entries for the task enter the key by value. The
-  `coh_home_cmo_cover` key also includes its Python replay helper. Private
-  proof fixtures copy the helper into their `tests/` directory;
+  `coh_home_cmo_cover` key also includes its Python replay helper. Both
+  `store_completion_cofactor` keys include their source projection helper.
+  Private proof fixtures copy these helpers into their `tests/` directory;
 - `tests/conftest.py`, the pytest settings in `pyproject.toml`, other pytest
   configuration files (present or absent), and `scripts/frost.py`;
 - the identity of the tool image (a digest of its layers and environment,
