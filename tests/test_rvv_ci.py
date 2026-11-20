@@ -14,6 +14,7 @@
 
 """Check the vector workflow's dispatch, selection and evidence."""
 
+import csv
 import hashlib
 import json
 import os
@@ -48,6 +49,7 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert job["needs"] == "build-docker"
     assert job["if"] == "${{ !cancelled() && needs.build-docker.result == 'success' }}"
     assert job["strategy"]["fail-fast"] is False
+    assert job["strategy"]["max-parallel"] == 20
     assert "needs.build-docker.outputs.rvv_matrix" in job["strategy"]["matrix"]
     assert (
         jobs["build-docker"]["outputs"]["rvv_matrix"]
@@ -57,18 +59,9 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert step["env"]["MAIN_RUN"] == "${{ needs.gate.outputs.main_run }}"
     assert step["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number }}"
     default = step["env"]["SLICES_PER_MAIN_RUN"]
-    assert 1 <= int(default) <= ci.SLICES
-    default_mode = "forms" if int(default) == ci.SLICES else "slice"
+    assert int(default) == ci.SLICES == 20
     for event, campaign, part, count, per_run, mode, parts in [
-        (
-            "push",
-            "rotation",
-            "",
-            "0",
-            default,
-            default_mode,
-            [str(i) for i in range(int(default))],
-        ),
+        ("push", "rotation", "", "0", default, "forms", []),
         ("push", "rotation", "", "7", "20", "forms", []),
         ("push", "rotation", "", "", "20", "forms", []),
         ("push", "rotation", "", "7", "1", "slice", ["7"]),
@@ -78,6 +71,7 @@ def test_vector_workflow(tmp_path: Path) -> None:
         ("pull_request", "rotation", "", "", default, "slice", ["4"]),
         ("workflow_dispatch", "rotation", "", "", default, "slice", ["19"]),
         ("workflow_dispatch", "rotation", "0", "", default, "slice", ["0"]),
+        ("workflow_dispatch", "rotation", "19", "", default, "slice", ["19"]),
         ("workflow_dispatch", "complete", "", "", default, "complete", []),
     ]:
         output = tmp_path / "outputs"
@@ -108,9 +102,9 @@ def test_vector_workflow(tmp_path: Path) -> None:
             ]
         else:
             widths = (
-                {128: 3, 256: 3, 512: 14}
+                {128: 6, 256: 12, 512: 32}
                 if mode == "complete"
-                else {128: 4, 256: 4, 512: 12}
+                else {128: 2, 256: 4, 512: 11}
             )
             assert Counter(r["vlen"] for r in rows) == widths
             for vlen, n in widths.items():
@@ -336,8 +330,50 @@ def test_rotation_and_manual_replay() -> None:
         with pytest.raises(ValueError, match="slices per run"):
             ci.matrix("rotation", 0, "", count)
     assert ci.matrix("rotation", 99, "19", 20) == ci.matrix("rotation", 0, "19")
-    assert ci.shard_options("forms", "2/4") == ["--one-per-form", "--shard", "2/4"]
-    assert ci.shard_options("complete", "2/3") == ["--shard", "2/3"]
+    profile = ["--cycle-profile", "tests/fixtures/rvv_ci_profile.csv"]
+    assert ci.shard_options("forms", "2/2") == [
+        "--one-per-form",
+        *profile,
+        "--shard",
+        "2/2",
+    ]
+    assert ci.shard_options("complete", "2/6") == [*profile, "--shard", "2/6"]
+
+
+@pytest.mark.parametrize(
+    ("width", "cycles", "selection"),
+    [
+        (
+            128,
+            98445694,
+            "5881ecf6d7bc560f12cbda17043cf5cb6d254624f61f69be2ec686ffd5e88583",
+        ),
+        (
+            256,
+            188047010,
+            "975b7c57e8a5d84d7f5ffdfb45b2851527f80143c32457c638d6a3d9fd97634d",
+        ),
+        (
+            512,
+            340151701,
+            "7142a2f20a72d44f31b6cb29bda4ab0c6d494e1eacf47e9698d3e8064f274183",
+        ),
+    ],
+)
+def test_ci_profile_matches_hosted_selection(
+    width: int, cycles: int, selection: str
+) -> None:
+    """The main weights cover every program in the hosted calibration run."""
+    profile = (ROOT / ci.CYCLE_PROFILE).read_bytes()
+    source = {
+        r["name"]: int(r["source_weight"])
+        for r in csv.DictReader(profile.decode().splitlines())
+        if int(r["vlen"]) == width and r["form_weight"]
+    }
+    measured = suite.calibrated_shard_weights(source, width, profile, one=True)
+    assert len(measured) == ci.FORMS_PER_WIDTH
+    assert suite.selection_sha256(list(measured), width) == selection
+    assert sum(measured.values()) == cycles
 
 
 def result(name: str) -> dict:
@@ -405,7 +441,7 @@ def test_shard_failures_and_reproduction(
 
 @pytest.mark.parametrize(
     ("mode", "part", "total"),
-    [("slice", "0", 665), ("forms", "1/4", 665), ("complete", "1/3", 3017)],
+    [("slice", "0", 665), ("forms", "1/2", 665), ("complete", "1/6", 3017)],
 )
 def test_shard_requires_full_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, part: str, total: int
@@ -417,6 +453,13 @@ def test_shard_requires_full_inventory(
     Path(f"{model}.json").write_text("{}")
 
     def simulate(command: list[str], deadline: float, transcript: object) -> int:
+        if mode == "slice":
+            assert "--cycle-profile" not in command
+        else:
+            assert (
+                Path(command[command.index("--cycle-profile") + 1])
+                == ROOT / ci.CYCLE_PROFILE
+            )
         work = Path(command[command.index("--workdir") + 1])
         (work / "Makefrag").write_text("tests =\nvadd_vv-0\n")
         (work / "selection.json").write_text(json.dumps(selection))

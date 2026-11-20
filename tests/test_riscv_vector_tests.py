@@ -40,6 +40,7 @@ FROST_RVV_TESTS_RTL=1 is set.
 """
 
 import argparse
+import csv
 import hashlib
 import heapq
 import json
@@ -222,11 +223,48 @@ def cycle_weight(source: Path, vlen: int) -> int:
     return code.count(b"\n") + 12 * checks
 
 
+def calibrated_shard_weights(
+    source: dict[str, int], vlen: int, profile: bytes, one: bool
+) -> dict[str, int]:
+    """Use measured weights for named programs and a scale for each other split."""
+    measured: dict[str, int] = {}
+    scales: dict[str, tuple[int, int]] = {}
+    for row in csv.DictReader(profile.decode().splitlines()):
+        if int(row["vlen"]) != vlen:
+            continue
+        name = row["name"]
+        weight = int(row["cycles" if one else "shard_weight"])
+        if name in measured or weight <= 0:
+            raise ValueError(f"cycle profile: duplicate or invalid weight for {name}")
+        measured[name] = weight
+        if row["form_weight"]:
+            form = name.rsplit("-", 1)[0]
+            numerator = int(row["cycles" if one else "form_weight"])
+            denominator = int(row["source_weight"])
+            if form in scales or min(numerator, denominator) <= 0:
+                raise ValueError(f"cycle profile: invalid scale for {form}")
+            scales[form] = numerator, denominator
+
+    weights = {}
+    for name, estimate in source.items():
+        if name in measured:
+            weights[name] = measured[name]
+        else:
+            form = name.rsplit("-", 1)[0]
+            if form not in scales:
+                raise ValueError(f"cycle profile: missing VLEN {vlen} scale for {form}")
+            numerator, denominator = scales[form]
+            weights[name] = max(1, estimate * numerator // denominator)
+    return weights
+
+
 def shard_weights(
-    stage1: Path, names: list[str], vlen: int, profile: bytes
+    stage1: Path, names: list[str], vlen: int, profile: bytes, *, one: bool = False
 ) -> dict[str, int]:
     """Use matching measured cycles and scale estimates for the unmeasured splits."""
     weights = {name: cycle_weight(stage1 / f"{name}.S", vlen) for name in names}
+    if profile.startswith(b"vlen,name,cycles,shard_weight,form_weight,source_weight"):
+        return calibrated_shard_weights(weights, vlen, profile, one)
     measured = {}
     for line in profile.splitlines():
         row = json.loads(line)
@@ -409,7 +447,7 @@ def generate_tests(
         "profile_sha256": hashlib.sha256(profile).hexdigest(),
     }
     if shard:
-        weights = shard_weights(stage1, selected, vlen, profile)
+        weights = shard_weights(stage1, selected, vlen, profile, one=one)
         selected = select_shard(weights, *shard)
     for name in set(names) - set(selected):
         (stage1 / f"{name}.S").unlink()
@@ -997,6 +1035,36 @@ def test_shard_weights_use_cycles(tmp_path: Path) -> None:
     assert select_shard(weights, 2, 2) == ["b-0", "c-0", "d-0"]
 
 
+def test_calibrated_shard_weights() -> None:
+    """Check measured and estimated splits even when the reference is filtered out."""
+    profile = (
+        b"vlen,name,cycles,shard_weight,form_weight,source_weight\n"
+        b"128,vadd_vv-1,100,11500,15000,12\n"
+        b"128,vadd_vv-2,260,34500,,\n"
+        b"256,vadd_vv-1,200,23000,30000,20\n"
+    )
+    source = {"vadd_vv-0": 6, "vadd_vv-1": 12, "vadd_vv-2": 24}
+    assert calibrated_shard_weights(source, 128, profile, True) == {
+        "vadd_vv-0": 50,
+        "vadd_vv-1": 100,
+        "vadd_vv-2": 260,
+    }
+    assert calibrated_shard_weights(source, 128, profile, False) == {
+        "vadd_vv-0": 7500,
+        "vadd_vv-1": 11500,
+        "vadd_vv-2": 34500,
+    }
+    assert calibrated_shard_weights({"vadd_vv-0": 6}, 256, profile, False) == {
+        "vadd_vv-0": 9000
+    }
+    with pytest.raises(ValueError, match="duplicate"):
+        calibrated_shard_weights(
+            source, 128, profile + b"128,vadd_vv-2,10,20,,\n", False
+        )
+    with pytest.raises(ValueError, match="missing VLEN 128 scale for vsub_vv"):
+        calibrated_shard_weights({"vsub_vv-0": 1}, 128, profile, False)
+
+
 @needs_suite
 def test_exact_generated_split(tmp_path: Path) -> None:
     """A failure command selects the named split and drops its siblings."""
@@ -1324,7 +1392,7 @@ def main() -> int:
     parser.add_argument(
         "--cycle-profile",
         type=Path,
-        help="use measured cycles from a results JSONL for sharding",
+        help="balance shards using prior JSONL results or the calibrated CI profile",
     )
     parser.add_argument(
         "--jobs",
