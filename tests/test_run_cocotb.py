@@ -4242,6 +4242,55 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="The cluster with three L1D request endpoints: loads in flight beside "
         "stores, probes and DMA",
     ),
+    "coherence_cluster_stress": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3", "-GHOME_FILLS=4"),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster_stress",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Seeded store visibility, read service, and DMA with three L1D endpoints",
+        extra_env=(("FROST_CLUSTER_STRESS_PROFILE", "three_endpoints"),),
+    ),
+    # The four-fill case shares the preceding Verilator build.
+    **{
+        f"coherence_cluster_fill_cycle_{fills}": CocotbRunConfig(
+            verilator_extra_args=(
+                "--assert",
+                "-GL1D_MISSES=3",
+                f"-GHOME_FILLS={fills}",
+            ),
+            python_test_module="cocotb_tests.cache.test_coherence_cluster_fill_cycle",
+            hdl_toplevel_module="coherence_cluster_test_harness",
+            description=f"Store and seated DMA reader progress with {fills} home fills",
+        )
+        for fills in (4, 2)
+    },
+    "coherence_cluster_stress_direct_mapped": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GL1D_MISSES=3",
+            "-GHOME_FILLS=4",
+            "-GL1D_CACHE_BYTES=256",
+            "-GL1D_WAYS=1",
+            "-GHOME_CACHE_BYTES=1024",
+            "-GHOME_WAYS=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster_stress",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Seeded store visibility and replacement in direct-mapped caches",
+        extra_env=(("FROST_CLUSTER_STRESS_PROFILE", "direct_mapped"),),
+    ),
+    "coherence_cluster_stress_wide": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GL1D_MISSES=8",
+            "-GHOME_FILLS=4",
+            "-GL1D_CACHE_BYTES=2048",
+            "-GHOME_CACHE_BYTES=4096",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster_stress",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Seeded store visibility, AMOs and non-allocating DMA with eight L1D endpoints",
+        extra_env=(("FROST_CLUSTER_STRESS_PROFILE", "wide"),),
+    ),
     "coherence_stale_line_prefetch_l2": CocotbRunConfig(
         verilator_extra_args=(
             "--assert",
@@ -6354,7 +6403,12 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "coherence_array_reset_uram_sweep",
         "coherence_cbo_zero_misses",
         "coherence_cluster",
+        "coherence_cluster_fill_cycle_2",
+        "coherence_cluster_fill_cycle_4",
         "coherence_cluster_misses",
+        "coherence_cluster_stress",
+        "coherence_cluster_stress_direct_mapped",
+        "coherence_cluster_stress_wide",
         "coherence_cluster_stream",
         "coherence_dma_ingress",
         "coherence_dma_ingress_8",
