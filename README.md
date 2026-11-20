@@ -121,15 +121,46 @@ and restore against live unseeded cocotb runs:
 With the `frost` development image built first (`docker build -t frost .`, see
 [Quick Start](#quick-start)) and the CoreMark submodule initialized,
 `demo/Dockerfile` packages baseline x86-64 simulator binaries (`1`, `4`, and `8`
-threads) and prebuilt `hello_world` and CoreMark images into a small standalone
-runtime container (`frost-demo:local`), which CI builds and runs in
-`test-demo-image`:
+threads) and prebuilt programs into a small standalone runtime container
+(`frost-demo:local`), which CI builds and runs in `test-demo-image`:
 
 ```bash
 git submodule update --init --recursive sw/apps/coremark/coremark
 docker build -f demo/Dockerfile -t frost-demo:local .
-docker run --rm -it frost-demo:local
+docker run --rm -it -e COLORTERM frost-demo:local
 ```
+
+The container runs for about five minutes on four cores. A
+[ray tracer](sw/apps/raytrace) draws its picture (a glossy red sphere and a
+glossy blue sphere on a tiled floor under a sunset) in the terminal row by row as
+the simulated CPU computes it, while a status line shows the rows done, the
+time left, and the core at work (instructions per cycle, branch predictions
+that hit, reorder-buffer entries in use, cycles that retire two instructions).
+One CoreMark iteration follows, reported as passed and in how many cycles,
+then a table of what the core did in each program, counted over the ray
+tracer's rendering and CoreMark's timed loop. Both
+programs check their own results. A computer too slow to draw the full picture
+in about six minutes gets the small one and says so (`--full` keeps the full
+one). `--quick` runs the small picture; `--raw` and `--app`
+print the unfiltered UART output of `hello_world` and CoreMark;
+`--help` lists the rest.
+
+The picture is drawn in 24-bit color when the terminal advertises it and in the
+256-color palette (nearest color, no dithering) otherwise. `frost-show` decides
+only from these, in order: `--truecolor` or `--256`; `NO_COLOR` (plain text);
+the `COLORTERM` variable (`truecolor` or `24bit`); a `TERM` that names direct
+color; else 256 colors, with one line under the picture saying how to get full
+color. It never queries the terminal. `-e COLORTERM` (no value) forwards your
+shell's variable, which modern terminals set; `-e COLORTERM=truecolor` states
+it outright; `--truecolor` or `--256` forces either mode (`docker run` sets
+`TERM=xterm` inside the container unless you pass `-e TERM`). `NO_COLOR`
+set, a `TERM` that is not a known cursor-addressable type, or output that is
+not a terminal gives plain text with no cursor or color codes. Known types are
+xterm and its relatives, screen, tmux, rxvt, vt100 and later, linux, alacritty,
+kitty, foot, wezterm, ghostty, konsole, gnome, st and iterm; anything else
+(`tty33`, `dumb`, `unknown`, unset) gets plain lines. On a terminal narrower than
+the picture (77 columns for the full one) the picture is scaled down by a
+whole factor, and below 39 columns it is not drawn.
 
 Every clock cycle evaluates the hardware model in software; RTL simulation is
 far slower than hardware. See [hw/sim/native/README.md](hw/sim/native/README.md)
@@ -355,7 +386,7 @@ For native builds outside the container, initialize the submodules first with
 |-----------|----------|
 | [hw/rtl/](hw/rtl/README.md) | CPU, caches, peripherals, and reusable hardware blocks |
 | [hw/sim/native/](hw/sim/native/README.md) | Standalone C++ Verilator runner for the SoC RTL |
-| [demo/](demo/Dockerfile) | Runtime Docker image for running `hello_world` and CoreMark on the RTL |
+| [demo/](demo/Dockerfile) | Runtime Docker image: the ray tracer and CoreMark on the RTL, presented by `frost-show`, and `hello_world` and CoreMark unfiltered |
 | [sw/](sw/README.md) | Bare-metal libraries, applications, and benchmarks |
 | [linux/](linux/README.md) | Linux boot images, firmware, and NIC driver |
 | [fpga/](fpga/README.md) | FPGA build, programming, and software-loading tools |

@@ -76,9 +76,14 @@ control registers at region offset `0x80000000`; the CPU port cannot.
 
 Svpbmt NC and IO mappings of DDR raise an access fault on this 2 GiB map:
 its 32-bit physical address space has no room for an uncached DDR alias.
-Device mappings are unaffected and support NC and IO attributes.
-Misaligned loads and stores raise address-misaligned exceptions (cause 4 or
-6) before translation for firmware to handle, including NC and IO accesses.
+Device mappings support NC and IO attributes.
+
+The CPU performs plain misaligned loads and stores to cached DDR in hardware
+by default. Misaligned accesses to low BRAM or mapped device registers raise
+the address-misaligned exception (cause 4 or 6). To use firmware emulation,
+build with `fpga/build/build.py vcu118 --no-misaligned-hw`. This sets the
+top-level `MISALIGNED_HW` parameter to 0. Disabling the cached tier also
+leaves the engine out.
 
 After calibration, `vcu118_ddr_init` writes zeros across the mapped region
 using full controller words. The address and data valid signals are

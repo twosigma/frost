@@ -342,7 +342,7 @@ static void build_tables(void)
         l0[i] = 0;
     }
     root[0] = PTE_PPN(PT_L1) | PTE_V;
-    /* 1 GiB leaf over the device quadrant: a CMO there is a no-op. */
+    /* The 1 GiB leaf covers the device windows and the gaps between them. */
     root[3] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
     l1[2] = PTE_PPN(PT_L0) | PTE_V;
     l0[PG_RW] = PTE_PPN(FRAME(PG_RW)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;

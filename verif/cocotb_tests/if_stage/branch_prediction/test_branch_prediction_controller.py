@@ -74,7 +74,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_mret_taken.value = 0
     dut.i_branch_taken.value = 0
     dut.i_any_holdoff_safe.value = 0
-    dut.i_is_32bit_spanning.value = 0
     dut.i_use_instr_buffer.value = 0
     dut.i_disable_branch_prediction.value = 0
     dut.i_disable_branch_prediction_wcs0.value = 0
@@ -548,40 +547,64 @@ async def test_first_stall_cycle_keeps_pc_select_but_not_metadata(dut: Any) -> N
 
 
 @cocotb.test()
-async def test_late_branch_and_spanning_gates_suppress_prediction_use(
+async def test_late_branch_gate_suppresses_prediction_use(
     dut: Any,
 ) -> None:
-    """Late branch resolution and spanning state suppress otherwise valid BTB hits."""
+    """Late branch resolution suppresses an otherwise valid BTB hit."""
     await _setup_test(dut)
     await _btb_update(dut, pc=PC_A, target=TARGET_A)
 
-    for signal_name in ("i_branch_taken", "i_is_32bit_spanning"):
-        _clear_inputs(dut)
-        dut.i_pc.value = PC_A
-        getattr(dut, signal_name).value = 1
-        await _settle()
+    _clear_inputs(dut)
+    dut.i_pc.value = PC_A
+    dut.i_branch_taken.value = 1
+    await _settle()
 
-        assert dut.dir_predicted_taken.value
-        assert int(dut.o_predicted_target.value) == TARGET_A
-        _assert_no_effective_slot1_prediction(dut)
+    assert dut.dir_predicted_taken.value
+    assert int(dut.o_predicted_target.value) == TARGET_A
+    _assert_no_effective_slot1_prediction(dut)
 
 
 @cocotb.test()
-async def test_halfword_slot1_btb_requires_compressed_entry(dut: Any) -> None:
-    """Slot-1 halfword PCs only use BTB entries trained as compressed branches."""
+async def test_halfword_slot1_btb_predicts_native_and_compressed_entries(
+    dut: Any,
+) -> None:
+    """Slot-1 halfword PCs use BTB entries for both native and compressed branches."""
     await _setup_test(dut)
+    await _ras_push(dut, TARGET_RAS_RETURN)
     await _btb_update(
         dut,
         pc=PC_HALFWORD,
         target=TARGET_HALFWORD,
         compressed=False,
+        call=True,
     )
 
     dut.i_pc.value = PC_HALFWORD
     await _settle()
 
     assert dut.dir_predicted_taken.value
-    _assert_no_effective_slot1_prediction(dut)
+    assert dut.o_prediction_used.value
+    assert dut.o_prediction_used_for_pc.value
+    assert dut.o_predicted_is_call.value
+    assert not dut.o_predicted_is_return.value
+    assert int(dut.o_predicted_target.value) == TARGET_HALFWORD
+    assert dut.o_control_flow_to_halfword_pred.value
+
+    await _btb_update(
+        dut,
+        pc=PC_HALFWORD,
+        target=TARGET_BTB_RETURN,
+        compressed=False,
+        ret=True,
+    )
+
+    dut.i_pc.value = PC_HALFWORD
+    await _settle()
+
+    assert dut.o_prediction_used.value
+    assert dut.o_prediction_used_for_pc.value
+    assert dut.o_predicted_is_return.value
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
 
     await _btb_update(
         dut,
@@ -661,7 +684,7 @@ async def test_untyped_and_call_hits_keep_the_btb_target(dut: Any) -> None:
 
 @cocotb.test()
 async def test_typed_return_obeys_the_btb_prediction_gates(dut: Any) -> None:
-    """A lower-parcel lookup, spanning, and a disable block a typed return like any hit.
+    """A lower-parcel lookup and a disable block a typed return like any hit.
 
     The target payload stays the stack top: the gates clear only validity.
     """
@@ -675,11 +698,6 @@ async def test_typed_return_obeys_the_btb_prediction_gates(dut: Any) -> None:
     _assert_no_effective_slot1_prediction(dut)
     assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
     dut.i_fetch_lookup_is_lower_parcel.value = 0
-
-    dut.i_is_32bit_spanning.value = 1
-    await _settle()
-    _assert_no_effective_slot1_prediction(dut)
-    dut.i_is_32bit_spanning.value = 0
 
     dut.i_disable_branch_prediction.value = 1
     dut.i_disable_branch_prediction_wcs0.value = 1
