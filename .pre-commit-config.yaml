@@ -70,11 +70,13 @@ repos:
         # frost-memerr need kernel headers. pgo_dump.c needs GCC's gcov.h and __gcov_info_*
         # symbols. hw/sim/ uses host libraries for DPI-C, and demo/ holds the
         # demonstration image's host C++ program. The wrapper's FROST software
-        # flags do not support these contexts.
+        # flags also differ from those of the formal runner's Yosys plugin,
+        # which the fast tests build with yosys-config.
         exclude: |
           (?x)^(
             demo/.*|
             hw/sim/.*|
+            tests/formal_model\.cc|
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
             sw/apps/coremark/iss/pgo_dump\.c|
