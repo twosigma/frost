@@ -128,6 +128,8 @@ def formal_tree(root: Path) -> Path:
         "tests/test_run_formal.py",
         "tests/sby_config.py",
         "tests/sby_dump.sby",
+        "tests/formal_model.cc",
+        "tests/formal_predicates.py",
         "tests/conftest.py",
         "pyproject.toml",
     ):
@@ -166,6 +168,8 @@ def edit(path: Path, old: str, new: str) -> None:
         "runner:    def prove(",
         "helper:tests/sby_config.py",
         "helper:tests/sby_dump.sby",
+        "helper:tests/formal_model.cc",
+        "helper:tests/formal_predicates.py",
         "new_helper",
     ],
 )

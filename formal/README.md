@@ -321,22 +321,72 @@ the older pins proofs) compares them directly. Its script reads the module twice
 once as shipped and once with the macro defined and Yosys's `xilinx/cells_sim.v`
 primitive models, flattens both (memories become registers, enable and reset
 flops are unmapped), and pairs registers and nets by name with `equiv_make`.
-`equiv_simple` then proves that every equivalence point whose cone holds a
-primitive cell has the same value in both forms, for any input and any state in
-which the paired registers agree. A register that `equiv_make` cannot pair by name keeps independent
-state in the two copies, and any compared point that depends on it stays unproven
-and fails the task. The unopened primitive forms set undefined constants to
-zero and drop initial values.
-Cells that come from the primitive models carry a `from_prim` attribute so the
-selection follows the primitives and not a hand-written signal list.
+Cells from the primitive models carry a `from_prim` attribute. The selection
+`@blk` follows those cells to the equivalence points they drive. Each task
+fixes a floor on that count so that a primitive whose output folds to a
+constant cannot silently reduce the coverage below the floor.
 
-Each task also fixes a floor on the number of points it compares with
-`select -assert-min`. A primitive whose output folds to a constant leaves no cell
-to find, and the floor turns that into a failure instead of a pass over nothing.
-Change the floor when an RTL edit adds or removes compared signals. A twin task
-passes the placeholder design in `prim_twin_done.sv` to SymbiYosys after the
-comparison, because the comparison itself runs in the Yosys script and ends in
-`equiv_status -assert`.
+`pd_target_candidate_twin`, `decoded_bundle_queue_twin`, `imem_predecode_twin`
+and `l0_store_boundary_twin` open each form with `free_undefined.ys`. After
+memory mapping they give undriven bits free values, keep named nets and
+remove unused cells. Both forms have no register initializers. The bundle
+queue, IMEM predecode and the store boundary cut their register outputs
+into input/output pairs. Each reader sees an arbitrary current value and each register drives
+a next-state comparison. All their registers use the rising edge of `i_clk`.
+The ports must match in position, name, direction, width, declared indices
+and signedness. The runner checks those declarations in `twin_ports.json`
+and checks each register's clock connection and edge.
+
+The comparison opens the two stashed forms under `twin_both` before
+`equiv_make`. The bundle queue uses `autoname t:$anyseq` in each form so that
+corresponding free cells of equal width share one arbitrary value per cycle.
+Each pairing is one-to-one. The store boundary keeps six independent free
+cells in each form and compares all 739 points, including the six driven
+by the store launch and completion primitives. IMEM predecode compares
+1,317 points with 22 independent free cells in the reference and 25 in the
+candidate. The scripts pin the census and a floor on the total points, then run
+`equiv_simple` and `equiv_status -assert` on every point. From any equal
+paired state the forms agree on outputs and next state, including the first
+cycle. Each task has a 60-second limit.
+
+Every opened in-script comparison declares its two forms, register and free-cell
+counts, primitive-cone floor and total point floor in `TWIN_COMPARISONS`.
+The fast registry test and the formal runner check the complete command sequence
+of each form through its stash, including commands in included scripts.
+Immediately after the undefined-value opening each form checks for initial
+values. Before the register cut it checks again for initial values, rejects
+unsupported state cells and checks its declared register count. Commands
+that remove or overwrite initialization are forbidden. These proofs start from
+arbitrary paired state and reject explicit register initializers in either form.
+
+A combinational task declares zero registers and no clock. A task with
+registers names one scalar clock input. Both forms check that this input
+drives every `$dff.CLK` before the cut. The runner independently checks the
+compiled register count, absence of init attributes and the rising edge and
+clock source of each register. It resolves the named input in each module's
+own bit numbering.
+
+Both stashes feed the same `twin_ports.json` dump and `equiv_make`.
+A successful comparison requires matching compiled port declarations, both
+point floors and unrestricted `equiv_simple` and `equiv_status -assert`.
+Only the named unopened tasks in `UNDEFINED_OPENING_TWINS` may use the
+older comparison.
+
+The `bmc`, `prove` and `cover` tasks of `backing_btb_twin`, `pd_history_twin`,
+`tage_predictor_twin` and `ittage_predictor_twin` compare two instances
+with SystemVerilog assertions. `PREDICTOR_ASSERTION_TASKS` identifies these
+twelve tasks by their preparation commands, staged file map and the tokens
+of the source files containing the checks. These include the named and
+unnamed checks, their guards and the PD fetch assumptions. The registered
+task mode determines which checks the harness keeps. The runner verifies
+the staged harness source after the proof. Other twin scripts require the
+declared full comparison described above.
+
+The primitive twins on `UNDEFINED_OPENING_TWINS` set undefined constants to
+zero, drop initial values and prove the points in `@blk` for any input and
+any state in which paired registers agree. A register without a name match
+keeps independent state in each form. The in-script comparisons hand
+`prim_twin_done.sv` to SymbiYosys after `equiv_status -assert`.
 
 `tests/test_prim_twins.py` lists every `FROST_XILINX_PRIMS` block in `hw/rtl`,
 fails on one that no registered check covers, and requires each covering file
@@ -344,7 +394,11 @@ to pass `-D FROST_XILINX_PRIMS` directly on the `read`, `read_verilog` or
 `read_slang` command that reads the covered source alongside
 `read_verilog -formal +/xilinx/cells_sim.v` in a design whose elaborated top
 retains a module from that source (or compares a stashed copy of that top in
-`equiv_make`).
+`equiv_make`). A source check flags literal edge controls, initialization,
+`always_ff`, `always_latch` and FD-family instances written directly in
+either arm. Macros can select state in common code, and an instance can
+contain state. The per-form state checks and compiled interface check apply
+independently of where the RTL declares the state.
 
 CI runs these comparisons in a formal shard of their own, `Primitive forms`,
 which takes the `*_twin` targets and the read select's `xilinx` tasks, and also
@@ -415,7 +469,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `branch_predictor_twin` | The branch predictor's slot-2 payload and relation selects (LUT6 per bit) equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 | `pc_controller_twin` | The fetch-PC mux, architectural next-PC mux, pending-relation selects, the sequential-PC calculator's selects and relations, and the control-flow tracker's halfword step equal their portable forms, with and without the slot-2 pending-handoff exclusion. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 | `control_flow_tracker_twin` | The tracker's halfword-next LUT6 equals its portable form |
-| `pd_target_candidate_twin` | The predecode target adder (CARRY8 with LUT2, LUT3, LUT5 and LUT6 helpers) and its saved-XOR select equal their portable form |
+| `pd_target_candidate_twin` | Every comparison point of the predecode target adder and its saved-XOR select agrees for all inputs. The primitive cone includes the CARRY8 and LUT2, LUT3, LUT5 and LUT6 helpers |
 
 `prediction_release` runs the real `pc_controller`, `c_ext_state`, and
 `slot2_prediction_capture` together. The harness replaces the PC-increment calculator with one whose PC
@@ -473,7 +527,7 @@ bits, so a type taken from a different source than its target would show.
 | `register_alias_table` | x0 is never renamed; a rename records its ROB tag; an INT commit clears a mapping only if the mapping still holds the committing tag; reset clears mappings and checkpoints; a full flush clears the checkpoints and, unless a checkpoint restore coincides, the mappings; a reclaim-all restore frees every checkpoint |
 | `rat_checkpoint_restore` | Register alias table coupled to a 32-entry circular ROB, per-allocation epoch toggle, 1-cycle pipelined commit bus, and 2-phase early and commit-time branch recovery, unbounded (`prove_int_active`, `prove_int_ckpt_lo`, `prove_int_ckpt_hi`, `prove_fp_active`, `prove_fp_ckpt_lo`, `prove_fp_ckpt_hi`) against an epoch-free instruction-sequence oracle for symbolic-constant watched registers across all 31 non-zero INT registers, all 32 FP registers, and all 8 checkpoint slots. All six tasks are required: each checks its owning partition while assuming only the preceding cycle's assertion results, so a first failure remains admissible in its owning partition. Dynamic `x0` probe lookups report unrenamed zero; lowest-free checkpoint allocation and availability match pool occupancy (`cover`, depth 11, reaches `o_checkpoint_available == 0`, slot `7` allocation, slot-2 overlay save and early restore, restoration of a live integer link after a younger rename to the same register, commit-time recovery clearing active rename state, and slot-2 FP commit clearing); slot-2 branch saves overlay a same-cycle slot-1 rename; early restores retain the jump’s own integer link and recover older unretired producers from the snapshot, and restore `o_ras_tos`, `o_ras_valid_count`, and the full `o_ras_top`; and dual-lane commits clear only matching tags. Assumes an initial reset and non-`x0` destination encoding. Unexplored inputs: watched lookups run only on `src1` ports; INT `src2` is checked only at `x0`; FP `src2` and `src3` are tied to `0`; register-file value passthrough is unchecked; a restore never coincides with `i_flush_all`; early restore selects live control-flow instructions with an integer destination or no destination; non-watched commits never name the watched register; recovery and free timing follow the harness's model of `cpu_ooo`; and `i_checkpoint_reclaim_all` is free here whereas the core ties it to `0` (`misprediction_flush_controller`) |
 | `l0_store_boundary_twin` | The SQ write stage, invalidate port and L0 byte strobes equal the original address-decoded boundary for every selected beat and launch decision |
-| `decoded_bundle_queue_twin` | The producer stall select and the shadow-next select (LUT3, LUT5 per bit) equal their portable form with the split shadow stall and four late copies |
+| `decoded_bundle_queue_twin` | Every comparison point of the queue agrees for arbitrary inputs, common register state and paired free values, including the producer stall and shadow-next selects (LUT3 and LUT5) with split shadow stall and four late copies |
 | `id_stage_kill_equiv` | `id_stage`, without the vector unit (`id_kill_equiv`) and with it (`id_kill_equiv_vector`), with early CSR-gated legality and post-classifier masking equals `id_stage` with `is_illegal_instruction` and `is_fetch_fault` applied inside `instr_operand_classifier`, across all 38 operand-class bits, register next states, and all eight stage outputs for both slots, for every instruction word, CSR legality input, and `inject_nop` state |
 
 `decoded_bundle_queue` uses an 8-bit symbolic payload, so the check does not
@@ -888,7 +942,7 @@ cycles, which clears arbitrary memory history.
    `opt -keepdc -mux_bool -fine`,
    plain `memory_map`, `setundef -zero`, `abc`, `peepopt`,
    `sim -clock ... -n 1 -w`, `chtype`, `techmap -max_iter 1 -map %<name>`,
-   `sat`, `equiv_simple` and `equiv_struct -icells` are in
+   `sat`, `autoname t:$anyseq`, `equiv_simple` and `equiv_struct -icells` are in
    `DONT_CARE_REJECTED` and run only where pinned in `DONT_CARE_OPEN`.
    The pin check compares each task's rejected commands in execution order.
    Adding, removing or editing safe commands leaves the pins intact when
@@ -982,17 +1036,44 @@ cycles, which clears arbitrary memory history.
    `design -load` brings back, may leave a narrower scope in place before
    `script free_undefined.ys`.
 
+   Every registered task must elaborate its input sources and parameter
+   overrides with `hierarchy -top` or the opening hierarchy of `prep -top`
+   before a transformation can consume their values. A partition may remove
+   properties or named modules and instances and import stashed modules
+   before elaboration. The runner checks the compiled top and all instantiated
+   modules at each boundary, including each form of an in-script comparison.
+   It rejects a high-impedance
+   constant bit in a connection, cell port or parameter, process, or wire
+   initial/default value. It also rejects RTLIL tri-state buffers, which Slang
+   can generate for a conditional z. Tasks using `read_slang` also treat the
+   frontend warning about converting z into x as an error. The rule includes
+   comparator operands. The native Verilog frontend lowers a variable
+   `$isunknown` test into comparisons with x and z.
+   Registered tasks require an empty `HIGH_IMPEDANCE_PENDING` tuple.
+   An exemption identifies the exact source path in `[files]`, the full
+   name of its enclosing check or block (for example, `top.guards.known`),
+   the checked expression and the target/task pairs that elaborate it.
+   The expression is the full sequence of SystemVerilog tokens with a space
+   between tokens, including operators and operands. The source parser skips
+   comments and layout. A property includes its clock and disable condition.
+   A macro in the expression prevents a match because its expansion can change.
+   Exactly one `$isunknown` call must match in the named scope. The runner
+   checks the identity in the checkout, then resolves its current token span
+   again in the staged HDL supplied to the compiler. The compiled check permits only the one-bit z on that call's `$eqx.B`
+   operand and requires the operand to occur. In-script equivalence
+   comparisons require the full check. The check uses the frontend's
+   elaborated RTLIL.
+   Inactive source branches, uninstantiated library models, and constants
+   folded by the frontend before that boundary fall outside its view.
+
    The opening does not reach undefined values that a cell computes, such as
    a `$shiftx` read past its input, which the backends and the shift
-   templates give a defined value; constant z bits, which `setundef -anyseq`
-   leaves as they are, as SymbiYosys's own `setundef` does, and which no
-   source has; or a memory initialized with x, which stops the next pass
-   that reads the memory with "Non-constant data". A value free in every
+   templates give a defined value. A memory initialized with x stops the next
+   pass that reads it with "Non-constant data". A value free in every
    cycle can also satisfy a cover that no circuit reaches, such as the same
-   inputs giving another output. Scripts that compare two designs inside the
-   script (the primitive twins and the other in-script equivalence checks)
-   do not open this way yet: both designs hold the same undefined constants,
-   and freeing them separately on each side would make the sides differ. The
+   inputs giving another output. In-script implementation comparisons open
+   each form and the comparison design separately. The Primitive twins
+   section describes how a task pairs corresponding free values. The
    fast Python tests check the opening of every script that
    `UNDEFINED_OPENING_PENDING` and `UNDEFINED_OPENING_TWINS` do not list,
    including that the script runs this repository's `free_undefined.ys`
@@ -1061,9 +1142,12 @@ FORMAL_TARGETS = [
    limits.
 5. A new `ifdef FROST_XILINX_PRIMS` block in `hw/rtl` needs a primitive-twin
    task (see Primitive twins) or an entry in `NOT_COVERED` in
-   `tests/test_prim_twins.py`, with the reason. Copy a `*_twin.sby`, list the
-   module's sources and parameters, and set the `select -assert-min` floor to the
-   `Found N $equiv cells` count in the first verbose run's log.
+   `tests/test_prim_twins.py`, with the reason. For an in-script comparison,
+   start from `pd_target_candidate_twin.sby` or `decoded_bundle_queue_twin.sby`.
+   Declare the inputs of both forms, their cut register count and clock,
+   their free-cell counts and both measured point floors in `TWIN_COMPARISONS`.
+   Keep the per-form initialization and clock checks, compiled port dump and
+   unrestricted point proof described in Primitive twins.
 
 ## Yosys SVA Limitations
 

@@ -93,8 +93,13 @@ SYNTHESIS_BY_VALUE = frozenset(
 
 # The wrapper that CI runs every check through.
 WRAPPERS = ("scripts/frost.py",)
-# Parser and SymbiYosys dump helpers shared by formal key computation and runs.
-FORMAL_HELPERS = ("tests/sby_config.py", "tests/sby_dump.sby")
+# Parser, configuration dump and elaborated-model checks used by formal runs.
+FORMAL_HELPERS = (
+    "tests/sby_config.py",
+    "tests/sby_dump.sby",
+    "tests/formal_model.cc",
+    "tests/formal_predicates.py",
+)
 # Files pytest reads for its configuration and hooks when it runs tests/*.py,
 # besides pyproject.toml; each enters keys as present or absent.
 PYTEST_CONFIGURATION = tuple(
