@@ -141,7 +141,7 @@ the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--vector` | off | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
 | `--vector-length` | 20 | Operation groups per generated vector trace |
 | `--vector-source-widths` | off | Add the directed integer, FP and memory source-width traces to `--vector` |
-| `--vector-directed` | off | Add the directed vector CSR and scalar-result trace to `--vector` |
+| `--vector-directed` | off | Add the directed vector CSR, scalar-result and fractional LMUL traces to `--vector` |
 | `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
 | `--seed` | random | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval`, `--crypto` and `--vector`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
@@ -417,21 +417,31 @@ legal controls. The memory trace checks traps before an access.
 [Integer](vector_source_widths_integer.S) · [Floating point](vector_source_widths_fp.S)
 · [Memory](vector_source_widths_memory.S)
 
-The `--vector-directed` option adds checks for vector CSRs, VS state,
-`vsetivli`, `vsetvl`, `vcpop.m`, `vfirst.m` and `vfmv.f.s`. The trace
+The `--vector-directed` option includes a state and scalar-result trace
+for vector CSRs, VS state, `vsetivli`, `vsetvl`, `vcpop.m`, `vfirst.m`
+and `vfmv.f.s`. The trace
 asserts the scalar results and selected trap outcomes. The mask operations
 read five active bits from initialized mask bytes. FP extraction reads
 initialized element zero and exposes its bits in integer registers. The
 vector setup uses tail- and mask-undisturbed policies. [State and scalar results](vector_state_results.S)
 
+The fractional LMUL trace checks VL and vtype at e8/mf8, e16/mf4 and
+e32/mf2, arithmetic and a widening result. Integer reads also check
+initialized tail elements under the tail-undisturbed policy and a
+neighboring register. With the tail- and mask-agnostic policies the trace
+reads only the initialized, mask-enabled element zero. The trace also checks
+that e64/mf2 and e32/mf8 set `vill` and clear `vl`, and that a legal
+setting after each rejection clears `vill` and restores a nonzero `vl`. [Fractional LMUL](vector_fractional_lmul.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at each
 of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
-groups from seed 42, the three source-width traces and the state and
-scalar-result trace. Both implementations must return every planned trace
-and instruction.
-The VLEN 128 job reuses its simulator to flip one bit in FROST's first
-`vmv.x.s a0,v16` reply for the integer source-width trace. It requires
-TestRIG to report the destination value mismatch.
+groups from seed 42, the three source-width traces, the state and
+scalar-result trace and the fractional LMUL trace. Both implementations
+must return every planned trace and instruction.
+The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
+destination in each of three replays. It checks `vmv.x.s` for integer
+source widths, `vcpop.m` for state and scalar results, and `vmv.x.s`
+for fractional LMUL. TestRIG must report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail

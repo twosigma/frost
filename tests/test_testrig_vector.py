@@ -246,12 +246,12 @@ def test_arguments() -> None:
             test_testrig.parse_arguments([option, "--vlen", "128"])
 
 
-@pytest.mark.parametrize("state_results", (False, True))
+@pytest.mark.parametrize("vector_directed", (False, True))
 @pytest.mark.parametrize(
     ("vlen", "instructions"), ((128, 2788), (256, 4324), (512, 7396))
 )
-def test_vector_source_width_replay(
-    tmp_path: Path, vlen: int, instructions: int, state_results: bool
+def test_vector_directed_replay(
+    tmp_path: Path, vlen: int, instructions: int, vector_directed: bool
 ) -> None:
     """Plan all generated and directed CI traces for the selected width."""
     options = [
@@ -265,14 +265,14 @@ def test_vector_source_width_replay(
         "--vlen",
         str(vlen),
     ]
-    if state_results:
+    if vector_directed:
         options.append("--vector-directed")
     arguments = test_testrig.parse_arguments(options)
     config = test_testrig.write_sail_config(30, tmp_path, vlen=vlen)
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (16, instructions + 69) if state_results else (15, instructions)
+    expected = (17, instructions + 123) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -280,20 +280,17 @@ def test_vector_source_width_replay(
         assert (trace_dir / filename).read_bytes() == (
             VERIF_DIR / "testrig" / filename
         ).read_bytes()
-    state_trace = trace_dir / "vector_state_results.S"
-    assert state_trace.is_file() == state_results
-    if state_results:
-        assert (
-            state_trace.read_bytes()
-            == (VERIF_DIR / "testrig" / state_trace.name).read_bytes()
-        )
-        assert (
-            sum(
-                line.startswith(".assert ")
-                for line in state_trace.read_text().splitlines()
-            )
-            == 56
-        )
+    for filename, words, checks in (
+        ("vector_state_results.S", 69, 56),
+        ("vector_fractional_lmul.S", 54, 62),
+    ):
+        trace = trace_dir / filename
+        assert trace.is_file() == vector_directed
+        if vector_directed:
+            assert trace.read_bytes() == (VERIF_DIR / "testrig" / filename).read_bytes()
+            lines = trace.read_text().splitlines()
+            assert sum(line.startswith(".4byte ") for line in lines) == words
+            assert sum(line.startswith(".assert ") for line in lines) == checks
 
 
 def test_readout_sees_every_register_and_vxsat() -> None:

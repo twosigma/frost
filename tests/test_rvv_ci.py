@@ -60,7 +60,18 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         if step.get("name") == "Check detection of an incorrect vector result"
     )
     assert control["if"] == "matrix.vlen == 128"
+    assert control["timeout-minutes"] == 9
     assert job["steps"].index(replay) < job["steps"].index(control)
+    calls = [
+        shlex.split(line)[1:3]
+        for line in control["run"].replace("\\\n", "").splitlines()
+        if line.startswith("check_vector_result ")
+    ]
+    assert calls == [
+        ["1", "vector_source_widths_integer"],
+        ["state", "vector_state_results"],
+        ["fractional-lmul", "vector_fractional_lmul"],
+    ]
 
 
 def test_vector_workflow(tmp_path: Path) -> None:
