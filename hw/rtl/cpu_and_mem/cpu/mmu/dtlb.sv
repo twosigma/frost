@@ -110,6 +110,21 @@ module dtlb #(
     // verdict before the winner selects it, so it is ready when o_hit is.
     input logic [NUM_PORTS-1:0] i_perm_atomic = '0,
     output logic [NUM_PORTS-1:0] o_clean_hit,
+    // Data entry exports. Valid qualifies a live ASID/global tag and the
+    // sampled permission context. Select the lowest level-masked match before
+    // testing whole_leaf. Its registered PMA flags apply to every address in
+    // that leaf only when whole_leaf is set. PPN is the stored leaf PPN.
+    input logic i_verdict_invalidate,
+    output logic [NUM_ENTRIES-1:0] o_entry_valid,
+    output logic [NUM_ENTRIES-1:0][riscv_pkg::Sv39VpnBits-1:0] o_entry_vpn,
+    output logic [NUM_ENTRIES-1:0][1:0] o_entry_level,
+    output logic [NUM_ENTRIES-1:0][riscv_pkg::PhysAddrBits-13:0] o_entry_ppn,
+    output logic [NUM_ENTRIES-1:0] o_entry_ppn_hi_nonzero,
+    output logic [NUM_ENTRIES-1:0] o_entry_load_ok,
+    output logic [NUM_ENTRIES-1:0] o_entry_store_ok,
+    output logic [NUM_ENTRIES-1:0] o_entry_device,
+    output logic [NUM_ENTRIES-1:0] o_entry_atomic_ok,
+    output logic [NUM_ENTRIES-1:0] o_entry_whole_leaf,
     // With FETCH_VERDICTS, check each hit before selection:
     //   o_fetch_perm_fault: X is clear or U differs from i_fetch_priv_u.
     //   o_fetch_pma_bad: high PPN bits are nonzero or pma_fetch_ok fails.
@@ -147,8 +162,7 @@ module dtlb #(
   logic [NUM_ENTRIES-1:0] e_r, e_w, e_x, e_u, e_d;
   // Svpbmt field. e_unc (NC or IO) and e_alias (NC or IO over the uncached
   // alias of DDR) are functions of the stored field and PPN only, so they
-  // settle with the entry, before any lookup. The alias window's boundaries
-  // are 1 GiB aligned, so a page is wholly inside it or outside it.
+  // settle with the entry, before any lookup.
   logic [1:0] e_pbmt[NUM_ENTRIES];
   logic [NUM_ENTRIES-1:0] e_unc;
   logic [NUM_ENTRIES-1:0] e_alias;
@@ -489,6 +503,82 @@ module dtlb #(
     end
   end
 
+  // A superpage can contain a PMA window even when both of its ends are
+  // unmapped. Check both boundaries of every populated data region at refill.
+  typedef logic [riscv_pkg::XLEN-1:0] pma_addr_t;
+  function automatic logic splits_region(input pma_addr_t first_pa, input pma_addr_t last_pa,
+                                         input pma_addr_t base, input pma_addr_t limit);
+    splits_region = base < limit && ((first_pa < base && base <= last_pa) ||
+                                     (first_pa < limit && limit <= last_pa));
+  endfunction
+
+  if (DATA_VERDICTS) begin : gen_entry_verdicts
+    pma_addr_t install_pa, offset_mask, first_pa, last_pa;
+    logic install_device, install_atomic, install_whole_leaf;
+    logic [2:0] perm_context, perm_context_q;
+    assign perm_context = {i_perm_priv_u, i_perm_sum, i_perm_mxr};
+    always_ff @(posedge i_clk) perm_context_q <= perm_context;
+    assign o_entry_valid = e_valid & asid_ok &
+        {NUM_ENTRIES{perm_context_q == perm_context && !i_verdict_invalidate && !i_flush.en}};
+    assign o_entry_ppn_hi_nonzero = e_ppn_hi_nonzero;
+
+    assign install_pa = riscv_pkg::XLEN'({i_install.ppn[PpnBits-1:0], 12'b0});
+    always_comb begin
+      case (i_install.level)
+        2'd2: offset_mask = 64'h3fff_ffff;
+        2'd1: offset_mask = 64'h001f_ffff;
+        default: offset_mask = '0;  // S1 checks one page base for a 4 KiB entry.
+      endcase
+    end
+    assign first_pa = install_pa & ~offset_mask;
+    assign last_pa = install_pa | offset_mask;
+    assign install_whole_leaf =
+        !(splits_region(first_pa, last_pa, riscv_pkg::DdrBase, riscv_pkg::DdrLimit) ||
+          splits_region(first_pa, last_pa, riscv_pkg::PmaUncachedBase,
+                        riscv_pkg::PmaUncachedLimit) ||
+          splits_region(first_pa, last_pa, riscv_pkg::PmaDevice0Base, riscv_pkg::PmaDevice0Limit) ||
+          splits_region(first_pa, last_pa, riscv_pkg::PmaDevice1Base, riscv_pkg::PmaDevice1Limit) ||
+          splits_region(first_pa, last_pa, riscv_pkg::PmaDevice2Base, riscv_pkg::PmaDevice2Limit) ||
+          splits_region(first_pa, last_pa, riscv_pkg::DdrBase + riscv_pkg::PbmtAliasOffset,
+                        riscv_pkg::PbmtAliasCoverLimit + riscv_pkg::PbmtAliasOffset));
+    assign install_atomic = i_install.pbmt == riscv_pkg::PbmtPma &&
+        riscv_pkg::pma_atomic_ok(install_pa);
+    assign install_device = riscv_pkg::pma_device_ok(install_pa) ||
+        (i_install.pbmt != riscv_pkg::PbmtPma &&
+         (riscv_pkg::pma_atomic_ok(install_pa) || riscv_pkg::pma_pbmt_alias_ok(install_pa)));
+
+    for (genvar e = 0; e < NUM_ENTRIES; e++) begin : gen_entry
+      assign o_entry_vpn[e]   = e_vpn[e];
+      assign o_entry_level[e] = e_level[e];
+      assign o_entry_ppn[e]   = e_ppn[e];
+      always_ff @(posedge i_clk) begin
+        if (!i_flush.en && i_install_valid && repl_ptr_q == EntryIdxBits'(e)) begin
+          o_entry_load_ok[e] <= leaf_perm_ok(1'b0, i_install.perm_r, i_install.perm_w,
+              i_install.perm_x, i_install.perm_u, i_install.perm_d);
+          o_entry_store_ok[e] <= leaf_perm_ok(1'b1, i_install.perm_r, i_install.perm_w,
+              i_install.perm_x, i_install.perm_u, i_install.perm_d);
+          o_entry_device[e] <= install_device;
+          o_entry_atomic_ok[e] <= install_atomic;
+          o_entry_whole_leaf[e] <= install_whole_leaf;
+        end else if (perm_context != perm_context_q) begin
+          o_entry_load_ok[e]  <= leaf_perm_ok(1'b0, e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]);
+          o_entry_store_ok[e] <= leaf_perm_ok(1'b1, e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]);
+        end
+      end
+    end
+  end else begin : gen_no_entry_verdicts
+    assign o_entry_valid = '0;
+    assign o_entry_vpn = '0;
+    assign o_entry_level = '0;
+    assign o_entry_ppn = '0;
+    assign o_entry_ppn_hi_nonzero = '0;
+    assign o_entry_load_ok = '0;
+    assign o_entry_store_ok = '0;
+    assign o_entry_device = '0;
+    assign o_entry_atomic_ok = '0;
+    assign o_entry_whole_leaf = '0;
+  end
+
 `ifndef SYNTHESIS
 `ifndef FORMAL
   // Lookup references read entry state, which is arbitrary before reset.
@@ -611,7 +701,117 @@ module dtlb #(
   end
 `endif
 
-`ifdef FORMAL
+`ifdef DTLB_ENTRY_VERDICT_PROOF
+  // One arbitrary slot, lookup and access class. The first edge requires reset.
+  (* anyconst *) logic [EntryIdxBits-1:0] f_slot;
+  logic f_started = 1'b0;
+  logic f_priv_u_q, f_sum_q, f_mxr_q;
+  logic [riscv_pkg::AsidBits-1:0] f_asid_q;
+  initial assume (!i_rst_n);
+  always_ff @(posedge i_clk) begin
+    f_started <= 1'b1;
+    {f_priv_u_q, f_sum_q, f_mxr_q, f_asid_q} <= {i_perm_priv_u, i_perm_sum, i_perm_mxr, i_asid};
+  end
+
+  pma_addr_t f_base_pa;
+  logic [1:0] f_level;
+  assign f_level = e_level[f_slot];
+  assign f_base_pa = riscv_pkg::XLEN'({e_ppn[f_slot], 12'b0});
+  // A boundary cuts a leaf if it shares its upper PPN bits and has a
+  // nonzero offset. A limit exactly at the next leaf is outside this one.
+  function automatic logic f_boundary_inside(input logic [1:0] level,
+                                             input pma_addr_t pa, input pma_addr_t addr);
+    case (level)
+      2'd2: f_boundary_inside = addr[63:30] == pa[63:30] && (|addr[29:0]);
+      2'd1: f_boundary_inside = addr[63:21] == pa[63:21] && (|addr[20:0]);
+      default: f_boundary_inside = 1'b0;
+    endcase
+  endfunction
+
+  function automatic logic f_region_cut(input logic [1:0] level,
+                                        input pma_addr_t pa, input pma_addr_t base,
+                                        input pma_addr_t limit);
+    f_region_cut = limit > base &&
+        (f_boundary_inside(level, pa, base) || f_boundary_inside(level, pa, limit));
+  endfunction
+
+  logic f_whole_leaf, f_priv_ok, f_valid, f_hit, f_perm_ok, f_clean;
+  assign f_whole_leaf =
+      !(f_region_cut(f_level, f_base_pa, riscv_pkg::DdrBase, riscv_pkg::DdrLimit) ||
+      f_region_cut(f_level, f_base_pa, riscv_pkg::PmaUncachedBase, riscv_pkg::PmaUncachedLimit) ||
+      f_region_cut(f_level, f_base_pa, riscv_pkg::PmaDevice0Base, riscv_pkg::PmaDevice0Limit) ||
+      f_region_cut(f_level, f_base_pa, riscv_pkg::PmaDevice1Base, riscv_pkg::PmaDevice1Limit) ||
+      f_region_cut(f_level, f_base_pa, riscv_pkg::PmaDevice2Base, riscv_pkg::PmaDevice2Limit) ||
+      f_region_cut(f_level, f_base_pa, riscv_pkg::DdrBase + riscv_pkg::PbmtAliasOffset,
+                   riscv_pkg::PbmtAliasCoverLimit + riscv_pkg::PbmtAliasOffset));
+  assign f_priv_ok = e_u[f_slot] ? (f_priv_u_q || f_sum_q) : !f_priv_u_q;
+  assign f_valid = e_valid[f_slot] && (e_g[f_slot] || e_asid[f_slot] == i_asid) &&
+      !i_verdict_invalidate && !i_flush.en &&
+      {i_perm_priv_u, i_perm_sum, i_perm_mxr} == {f_priv_u_q, f_sum_q, f_mxr_q};
+  assign f_hit = o_entry_valid[f_slot] && o_entry_whole_leaf[f_slot] && lowest_match[0][f_slot];
+
+  assign f_perm_ok = i_perm_store[0] ? o_entry_store_ok[f_slot] : o_entry_load_ok[f_slot];
+  assign f_clean = f_perm_ok && !o_entry_ppn_hi_nonzero[f_slot] &&
+      (o_entry_atomic_ok[f_slot] || (o_entry_device[f_slot] && !i_perm_atomic[0]));
+
+  logic [PpnBits-1:0] f_access_ppn;
+  always_comb begin
+    f_access_ppn = o_entry_ppn[f_slot];
+    case (o_entry_level[f_slot])
+      2'd2: f_access_ppn[17:0] = i_lookup_vpn[0][17:0];
+      2'd1: f_access_ppn[8:0] = i_lookup_vpn[0][8:0];
+      default: ;
+    endcase
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (f_started) begin
+      p_export_valid : assert (o_entry_valid[f_slot] == f_valid);
+      if ($past(!i_rst_n || flush_kill[f_slot])) begin
+        p_export_removed : assert (!o_entry_valid[f_slot]);
+      end
+      if (e_valid[f_slot]) begin
+        p_export_tag : assert ({o_entry_vpn[f_slot], o_entry_ppn[f_slot], o_entry_level[f_slot],
+            o_entry_ppn_hi_nonzero[f_slot]} == {e_vpn[f_slot], e_ppn[f_slot], e_level[f_slot],
+            e_ppn_hi_nonzero[f_slot]});
+        p_export_load : assert (o_entry_load_ok[f_slot] ==
+            (f_priv_ok && (e_r[f_slot] || (f_mxr_q && e_x[f_slot]))));
+        p_export_store : assert (o_entry_store_ok[f_slot] ==
+            (f_priv_ok && e_w[f_slot] && e_d[f_slot]));
+        p_export_region : assert (o_entry_whole_leaf[f_slot] == f_whole_leaf);
+        p_export_device : assert (o_entry_device[f_slot] == (riscv_pkg::pma_device_ok(f_base_pa) ||
+            (e_pbmt[f_slot] != riscv_pkg::PbmtPma && (riscv_pkg::pma_memory_ok(f_base_pa) ||
+            riscv_pkg::pma_pbmt_alias_ok(f_base_pa)))));
+        p_export_atomic : assert (o_entry_atomic_ok[f_slot] ==
+            (e_pbmt[f_slot] == riscv_pkg::PbmtPma && riscv_pkg::pma_atomic_ok(f_base_pa)));
+      end
+      if (o_entry_valid[f_slot] && o_entry_whole_leaf[f_slot]) begin
+        p_export_leaf : assert ({f_perm_ok, o_entry_device[f_slot],
+            o_entry_atomic_ok[f_slot], f_access_ppn} ==
+            {leaf_permissions[0][f_slot], leaf_device_page[0][f_slot], leaf_atomic_page[0][f_slot],
+            leaf_ppn[0][f_slot]});
+      end
+      if (f_hit) begin
+        p_export_winner : assert ({o_hit[0], o_ppn[0], o_ppn_hi_nonzero[0], o_perm_ok[0],
+            o_device_page[0], o_atomic_page[0], o_clean_hit[0]} ==
+            {1'b1, f_access_ppn, o_entry_ppn_hi_nonzero[f_slot], f_perm_ok,
+            o_entry_device[f_slot], o_entry_atomic_ok[f_slot], f_clean});
+      end
+      c_export_sum : cover (f_hit && o_entry_load_ok[f_slot] && e_u[f_slot] && !i_perm_priv_u &&
+          i_perm_sum && e_r[f_slot] && $past(i_rst_n && !i_perm_priv_u && !f_priv_u_q &&
+          i_perm_sum && !f_sum_q && e_valid[f_slot] && !i_install_valid &&
+          !o_entry_load_ok[f_slot]));
+      c_export_sfence : cover (f_hit && $past(i_rst_n && i_flush.en && i_flush.use_va &&
+          i_verdict_invalidate && e_valid[f_slot] && !flush_kill[f_slot]));
+      c_export_asid : cover (f_hit && !e_g[f_slot] && $past(i_rst_n && i_verdict_invalidate &&
+          i_asid != f_asid_q && i_asid == e_asid[f_slot] && e_valid[f_slot] && !i_install_valid));
+      c_export_mixed : cover (o_entry_valid[f_slot] && lowest_match[0][f_slot] &&
+          e_level[f_slot] == 2'd1 && !o_entry_whole_leaf[f_slot] && f_base_pa[63:21] == '0);
+      c_export_superpage : cover (f_hit && o_entry_level[f_slot] == 2'd2 &&
+          o_entry_atomic_ok[f_slot] && i_lookup_vpn[0][17:0] != o_entry_vpn[f_slot][17:0]);
+    end
+  end
+`elsif FORMAL
   // A watched slot must retain its last install until overwritten or flushed.
   // A level-masked lookup under the entry's ASID (or any ASID, when global)
   // must hit it while live; no lookup under another ASID may hit a non-global

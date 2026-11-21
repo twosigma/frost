@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -35,6 +36,30 @@ import rvv_simulator
 import test_riscv_vector_tests as suite
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_testrig_vector_matrix_and_replay_arguments() -> None:
+    """Run the seeded and directed suites with each job's vector length."""
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["test-testrig-vector"]
+    assert job["strategy"]["matrix"]["vlen"] == [128, 256, 512]
+    replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Compare seeded and directed vector traces"
+    )
+    command = shlex.split(replay["run"].replace("\\\n", ""))
+    arguments = command[command.index("tests/test_testrig.py") + 1 :]
+    assert arguments.count("--vlen") == 1
+    assert arguments[arguments.index("--vlen") + 1] == "${{ matrix.vlen }}"
+    assert "--vector-source-widths" in arguments
+    control = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Check detection of an incorrect vector result"
+    )
+    assert control["if"] == "matrix.vlen == 128"
+    assert job["steps"].index(replay) < job["steps"].index(control)
 
 
 def test_vector_workflow(tmp_path: Path) -> None:
@@ -204,6 +229,7 @@ REGULAR_CI = VECTOR_JOBS | {
     "build-frost-linux-mmu",
     "linux-boot-qemu-mmu",
 }
+RECURRING_CI = REGULAR_CI | {"test-testrig-vector"}
 
 
 def job_condition(condition: str, context: dict[str, str]) -> bool:
@@ -255,7 +281,9 @@ def test_ci_job_scope(
     """Check which jobs the selector, guards and dependencies enable."""
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     jobs = workflow["jobs"]
-    assert set(jobs) == REGULAR_CI | CAMPAIGN_JOBS
+    assert set(jobs) == RECURRING_CI | CAMPAIGN_JOBS
+    if expected == REGULAR_CI and event in ("push", "pull_request"):
+        expected = RECURRING_CI
     needs = {}
     for name, job in jobs.items():
         deps = job.get("needs", [])

@@ -612,16 +612,18 @@ readiness and tags.
 
 `tomasulo_wrapper_commit_bus` checks the registered commit path at depth 10.
 It reads the wrapper's connections from the 32-entry ROB to the commit
-pipeline and both RAT clear ports. A matching slot-1 commit clears the stored
-INT or FP mapping. When neither lane renames the INT register and slot 1
-commits a different tag to it, a matching slot-2 commit clears the mapping.
-If neither commit matches, the mapping and its tag are preserved. The stored
-valid bits are observed before the lookup's ROB liveness qualification, since
-the ROB invalidates a retiring tag one cycle before the RAT consumes the
-registered clear. Rename takes precedence over clearing, with slot 2 winning
-if both slots rename the same register. The wrapper's two fence checks
-distinguish FENCE.I and SFENCE.VMA from a flush delayed after a translation
-CSR commit.
+pipeline and both RAT clear ports. With neither lane renaming the register,
+a matching slot-1 commit clears the stored INT or FP mapping. When slot 1
+commits a different tag to the INT register, a matching slot-2 commit clears
+the mapping. If neither commit matches, the mapping and its tag are
+preserved. For an FP register, a matching commit from either slot clears
+the mapping. A commit to that FP register preserves the mapping and tag
+when neither slot matches. The stored valid bits are observed before the
+lookup's ROB liveness qualification, since the ROB invalidates a retiring
+tag one cycle before the RAT consumes the registered clear. Rename takes
+precedence over clearing, with slot 2 winning if both slots rename the same
+register. The wrapper's two fence checks distinguish FENCE.I and SFENCE.VMA
+from a flush delayed after a translation CSR commit.
 
 The proof uses the ROB's reset, allocation, and completion contracts,
 including one serializing class per allocation. Dispatch checks that rule in
@@ -634,14 +636,16 @@ acknowledgement. Full flush is driven by the fence flush pulse or an external
 flush request. The model keeps partial recovery, checkpoints, direct store
 completion, memory replay, and the ALU held-result path idle.
 
-The `cover` task reaches all five RAT assertion enables. The
-`c_younger_slot2_commit` cover reaches the slot-2 enable and observes the
-resulting clear. Covers also reach both rename priorities, a younger
-retirement that hides a mapping in the lookup before it clears, FENCE.I,
-SFENCE.VMA, and a `satp` write followed by its delayed flush. Both tasks
-run in Block proofs. The SBY and runner limits are 180 seconds for `bmc`
-and 360 seconds for `cover`. BMC uses ABC and replays failures with
-Boolector to report the failing assertion.
+The `cover` task reaches all seven RAT assertion enables. The INT and FP
+slot-2 clear covers observe two commits to the same register, with slot 2
+matching and clearing the mapping. The FP mismatch cover observes two
+commits to the same register that leave a younger mapping and its tag
+intact. Covers also reach both rename priorities, a younger retirement
+that hides a mapping in the lookup before it clears, FENCE.I, SFENCE.VMA,
+and a `satp` write followed by its delayed flush. Both tasks run in Block
+proofs. The SBY and runner limits are 180 seconds for `bmc` and 360 seconds
+for `cover`. BMC uses ABC and replays failures with Boolector to report
+the failing assertion.
 
 ### Load and store queues
 
@@ -832,7 +836,7 @@ the least populated ordinary partition, and keeps B-channel stability alone.
 | `coherence_replay_compare` | DMA-invalidation replay masks built from chunked compares equal full-width line equality at XLEN 32, 64, and 66. Assumes one initial reset |
 | `data_mem_request_router` | Device reads are staged and accepted only after committed stores drain, a device read held for an armed interrupt take does not arm until the hold has been off for two cycles, a flush cancels an unaccepted device read, read enables match acceptances, and a blocked request keeps its address. Assumes the load queue presents no new read while one is held. Built with `VARIABLE_UNCACHED=0`; the core sets 1, which no proof of this block covers |
 | `data_mem_response_mux` | Load data selected among BRAM, MMIO, and cached DDR equals the reference selection at 32 and 64 bits, for portable and Xilinx LUT5 builds |
-| `dmmu_mmio` | One-step combinational checks of the DMMU's S1 MMIO classification, DTLB PBMT/device-window, atomic and permission verdicts, and candidate address split and fault selection against reference logic. For arbitrary DTLB contents, the hit and walk-leaf permission verdicts use the live SUM, MXR and effective privilege, so no entry carries a permission from the state it was filled under |
+| `dmmu_mmio` | One-step combinational checks of the DMMU's S1 MMIO classification, DTLB PBMT/device-window, atomic and permission verdicts, and candidate address split and fault selection against reference logic. For arbitrary DTLB contents, the S1 hit and walk-leaf permission verdicts use the live SUM, MXR and effective privilege |
 | `dmmu_capture` | Bounded and inductive checks of S2 capture, packet fields, one-cycle bypass, last-page invalidation and the preceding LQ tag/valid pair. A last-page bypass grants an access only when the live SUM, MXR and privilege equal those captured and permit it. Assumes initial reset and permits arbitrary issue order, flushes and permission controls, and arbitrary TLB answers whose clean-hit verdict is a hit with no fault, as the DTLB's own checks prove. Covers LQ/SQ bypass and a bypass concurrent with a killed S1 resolution. Does not prove leaf provenance or downstream memory responses |
 | `dmmu_va_next` | The lookup stage's next payload, with the skid choice selecting the VA in one LUT per bit after the issue address, and the result stage's next VA, with the lookup stage's advance selecting last, equal the whole-payload selects. Combinational equivalence for every register state and input, in the portable and Xilinx-primitive builds |
 | `immu_bare` | With translation off, the IMMU's physical addresses and fault flags equal the reference for every PC, and word 1's fault is the PMA check of the next page. Capacity tasks select 1, 64, and 128 GiB explicitly. The XLEN 32 and 72 variants check only Bare mode and width conversion |
@@ -849,6 +853,7 @@ the least populated ordinary partition, and keeps B-channel stability alone.
 | `ptw_pbmt_alias` | The alias bit predicates equal the full-address range check for every address, with no assumptions. Checks a 256 MiB window and enabled power-of-two capacities from 1 through 128 GiB, excluding the disabled 2 GiB map. Wider maps exclude their top 2 GiB. Disabled-alias maps use the walker state and response proofs in `ptw` instead of constant comparisons. These tasks join the Memory management job |
 | `sc_head_query` | The coherence match and cached/uncached classification for the store-conditional at the ROB head equal direct comparisons of its selected address, from arbitrary table state |
 | `tlb` | Lookup, insert, and flush by page, ASID, both, or all: a watched entry (with its ASID and global bit) stays intact and every matching lookup under its ASID, or any ASID when global, hits it; a non-global entry never matches under another ASID; each flush form removes exactly the entries it names (an ASID flush spares global entries); no port hits while no entry is valid; and the one-hot lookup select returns the lowest matching entry's fields. The DTLB uses 16 entries and 3 ports; the ITLB uses 16 entries and 2 ports with fetch permission, PMA and superpage-successor checks, data verdicts disabled, and the PPN select tree, whose PPN parts (the output contract `immu_page_offset` assumes) equal the selected entry's |
+| `dtlb_entry_verdict` | Inductive checks of the data entry exports across reset, refill, selective flush and permission changes. For an arbitrary slot, VPN and access class, a whole-leaf verdict gives the lookup stage's permissions, device and atomic flags, and translated PPN. The range check includes interior PMA boundaries. Covers reach valid hits after SUM, selective SFENCE.VMA and ASID changes, a hit on another page of a uniform gigapage, and a mixed superpage whose verdict is ineligible |
 | `l2tlb` | The second-level TLB, as a two-set, two-way array with a two-entry superpage side array: for a watched page and ASID, every hit is backed by a fill that no flush (page, ASID, both, or all) has removed and returns that fill's PPN, PBMT, permissions and level bit for bit, including a 2 MiB or 1 GiB fill whose region holds the page and a page flush that names another page of that region; no lookup runs or is accepted while a flush runs, only clean translations fill (4 KiB leaves the set-associative array, superpages the side array), a superpage hit never reaches the walker, no response leaves with a discard raised, and flush-all empties both arrays. Covers reach each flush form, a hit on a global entry, 2 MiB and global 1 GiB hits, and an ASID flush that spares a global superpage |
 | `uncached_read_capture` | The factored uncached-read pending-bit update preserves enqueue, downstream handoff, and reset priority from arbitrary state, with no assumptions |
 | `coherence_home_twin` | The home's probe-address match, writeback reply-capture select, forward turn selects, and the parking, waiter-mask and fill-image next-state selects equal their portable form, at one way with two fills, four ways with three fills, and 40-bit addresses. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input. Saved copies are released after transfer into the active comparison. Each task has a 600-second SBY and runner limit |

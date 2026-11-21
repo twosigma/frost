@@ -563,6 +563,20 @@ The data MMU caches the last clean page translation and its permissions.
 A matching eligible access enters the result stage in one cycle. Other
 accesses use the lookup stage followed by the result stage. Reset, full flush,
 translation disable and TLB invalidation clear the last-page buffer.
+Each DTLB entry also exports its VPN, leaf level, stored PPN and high-PPN
+flag. It registers load and store permission for the effective data privilege,
+SUM and MXR. Outside translation invalidation, a matching permission context
+qualifies global entries and entries tagged with the live ASID. The next edge
+refreshes permissions when the context changes. A fill registers the permissions and PMA
+of the incoming entry together.
+
+S1 checks PMA at the translated 4 KiB page base. Every 4 KiB entry therefore
+qualifies its registered device and atomic flags for the whole leaf. A superpage
+qualifies when no data PMA or uncached-alias boundary lies inside its physical
+range. A superpage containing a device window and an unmapped page has its
+whole-leaf flag clear. Both interfaces report PPN bits above the physical
+width separately from the PMA flags.
+
 The issue VA is the base-plus-offset sum. The lookup stage's advance, which
 depends on the DTLB hit, and the skid choice for the lookup stage each select
 between a held VA and that sum in one LUT per bit after the full sum, so
@@ -847,11 +861,11 @@ can overwrite the CSR write or act on the old translation. Separately,
 registered results and discards the walker's walk) for every `satp` access, and
 for an `mstatus` write only when MPRV changes (or MPP while MPRV is set). A
 second pulse asks the TLBs to drop every entry when the `satp` root changes
-under the same ASID, or MPRV changes. SUM and MXR changes keep the TLBs: entries hold the raw leaf
-permissions, and every lookup applies the live SUM, MXR and effective
-privilege, so the full flush alone retires the old permission state. Linux
-toggles SUM around every user copy, so this keeps both TLBs warm across
-syscalls.
+under the same ASID, or MPRV changes. SUM and MXR changes keep the TLB entries
+resident. Each data lookup applies the live SUM, MXR and effective privilege
+to the raw leaf permissions. The DTLB qualifies its registered permissions
+with the same context. Linux toggles SUM around every user copy, so this keeps
+both TLBs warm across syscalls.
 
 Ssnpm uses `senvcfg.PMM` for effective scalar U-mode data accesses, including MPRV
 with MPP=U, unless MXR is set. The field supports PMLEN 0, 7 and 16, resets to

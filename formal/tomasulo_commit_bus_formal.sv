@@ -149,7 +149,7 @@ module tomasulo_commit_bus_formal (
   assign int_mapping_valid = int_rat_valid[int_reg];
   assign fp_mapping_valid  = fp_rat_valid[fp_reg];
 
-  logic watched_commit, watched_commit_2, watched_commit_fp;
+  logic watched_commit, watched_commit_2, watched_commit_fp, watched_commit_2_fp;
   logic watched_rename, watched_rename_2, watched_rename_fp;
   assign watched_commit = commit_q.valid && commit_q.dest_valid &&
                           !commit_q.dest_rf && commit_q.dest_reg == int_reg;
@@ -157,16 +157,25 @@ module tomasulo_commit_bus_formal (
                             !commit_2_q.dest_rf && commit_2_q.dest_reg == int_reg;
   assign watched_commit_fp = commit_q.valid && commit_q.dest_valid &&
                              commit_q.dest_rf && commit_q.dest_reg == fp_reg;
+  assign watched_commit_2_fp = commit_2_q.valid && commit_2_q.dest_valid &&
+                               commit_2_q.dest_rf && commit_2_q.dest_reg == fp_reg;
   assign watched_rename = rename && !i_alloc_req.dest_rf && i_alloc_req.dest_reg == int_reg;
   assign watched_rename_2 = rename_2 && !i_alloc_req_2.dest_rf && i_alloc_req_2.dest_reg == int_reg;
   assign watched_rename_fp = (rename && i_alloc_req.dest_rf && i_alloc_req.dest_reg == fp_reg) ||
       (rename_2 && i_alloc_req_2.dest_rf && i_alloc_req_2.dest_reg == fp_reg);
 
-  logic int_commit_only, fp_commit_only, slot2_matches_int;
+  logic int_commit_only, slot2_matches_int;
+  logic fp_commit_only, slot1_matches_fp, slot2_matches_fp;
+  logic fp_slot2_clear, fp_commit_mismatch;
   assign int_commit_only = watched_commit && int_mapping_valid &&
                            !watched_rename && !watched_rename_2;
-  assign fp_commit_only = watched_commit_fp && fp_mapping_valid && !watched_rename_fp;
   assign slot2_matches_int = watched_commit_2 && int_src1.tag == commit_2_q.tag;
+  assign fp_commit_only = (watched_commit_fp || watched_commit_2_fp) &&
+                          fp_mapping_valid && !watched_rename_fp;
+  assign slot1_matches_fp = watched_commit_fp && fp_src1.tag == commit_q.tag;
+  assign slot2_matches_fp = watched_commit_2_fp && fp_src1.tag == commit_2_q.tag;
+  assign fp_slot2_clear = fp_commit_only && !slot1_matches_fp && slot2_matches_fp;
+  assign fp_commit_mismatch = fp_commit_only && !slot1_matches_fp && !slot2_matches_fp;
 
   logic past_valid = 1'b0;
   always @(posedge i_clk) begin
@@ -182,8 +191,14 @@ module tomasulo_commit_bus_formal (
         p_waw_preserves_newer_int :
         assert (int_mapping_valid && int_src1.tag == $past(int_src1.tag));
       end
-      if ($past(fp_commit_only && fp_src1.tag == commit_q.tag)) begin
+      if ($past(fp_commit_only && slot1_matches_fp)) begin
         p_commit_clears_fp_via_bus : assert (!fp_mapping_valid);
+      end
+      if ($past(fp_slot2_clear)) begin
+        p_commit_2_clears_fp_via_bus : assert (!fp_mapping_valid);
+      end
+      if ($past(fp_commit_mismatch)) begin
+        p_waw_preserves_newer_fp : assert (fp_mapping_valid && fp_src1.tag == $past(fp_src1.tag));
       end
 
       // The FENCE.I payload remains observable on the full-flush cycle.
@@ -208,6 +223,16 @@ module tomasulo_commit_bus_formal (
       cover ($past(
           int_commit_only && int_src1.tag != commit_q.tag && !slot2_matches_int && int_src1.renamed
       ) && !int_src1.renamed && int_mapping_valid);
+
+      // Both FP retirement lanes target the watched register in these cases.
+      c_younger_slot2_fp_commit :
+      cover ($past(fp_slot2_clear && watched_commit_fp) && !fp_mapping_valid);
+      c_fp_waw_both_commits :
+      cover ($past(
+          fp_commit_mismatch && watched_commit_fp && watched_commit_2_fp
+      ) && fp_mapping_valid && fp_src1.tag == $past(
+          fp_src1.tag
+      ));
     end
   end
 endmodule
