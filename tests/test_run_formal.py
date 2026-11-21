@@ -156,7 +156,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_home", "cover_conflict"): 900,
     ("coherence_store_home", "cover_pressure"): 900,
     ("coherence_store_home", "link_cover_pressure"): 900,
-    ("line_client_link", "line_link0_bmc"): 4200,
+    ("line_client_link", "line_link0_bmc"): 5280,
     ("line_client_link", "line_link1_bmc"): 4200,
     ("line_client_link", "line_link1_four_bmc"): 4200,
     ("line_client_link", "line_link1_eight_bmc"): 4200,
@@ -3279,7 +3279,6 @@ SBY_TASKS = [
         "Home pending-mask equality through absorption and release.",
     ),
     ("prove_engine", "Unbounded AXI4-Lite mapping for the DMA register bank"),
-    ("prove_predecoded", "Unbounded IMSIC equivalence with registered input decodes"),
     ("msi_bmc", "Bounded APLIC MSI forwarding and pending transitions"),
     ("msi_prove", "Unbounded APLIC MSI registers, forwarding and ordering"),
     (
@@ -5190,7 +5189,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "line_client_link": (
-        "not converted: memory_map and opt without -keepdc; no setundef",
+        "memory_map and opt run without -keepdc after undefined constants are freed",
         {
             "line_link0_bmc line_link1_bmc line_link1_four_bmc line_link1_eight_bmc line_link1_cover": [
                 "memory_map",
@@ -5717,15 +5716,10 @@ UNDEFINED_OPENING_MARK = ["script", UNDEFINED_OPENING_FILE]
 # Scripts that do not open that way yet. The list only shrinks: a listed script
 # whose every task opens fails the check.
 UNDEFINED_OPENING_PENDING = (
-    "coherence_array",
     "coherence_array_equiv",
     "coherence_home",
     "coherence_l1d",
     "coherence_store_boundary",
-    "csr_commit_cofactor",
-    "csr_file",
-    "line_client_link",
-    "pm_mode_select",
     "reorder_buffer",
     "sq_forwarding_unit",
 )

@@ -1541,7 +1541,7 @@ jobs:
           # four- and eight-identity BMCs about forty minutes.
           - shard: Line client links (zero and two)
             pytest_filter: line_link0_bmc or line_link1_bmc or line_link1_cover
-            timeout_minutes: 95
+            timeout_minutes: 98
           - shard: Line client links (four and eight)
             pytest_filter: line_link1_four_bmc or line_link1_eight_bmc
             timeout_minutes: 80

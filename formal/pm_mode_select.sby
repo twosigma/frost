@@ -23,6 +23,8 @@ bmc_ddr37: verilog_defines -D FROST_DDR_CAPACITY_LOG2_BYTES=37
 read -formal -sv riscv_pkg.sv
 read -sv -D SYNTHESIS tomasulo_wrapper.sv
 read -formal -sv pm_mode_select.sv
+hierarchy -top pm_mode_select
+script free_undefined.ys
 prep -top pm_mode_select
 select -assert-count 14 t:$check
 select -assert-none t:$assume
@@ -31,3 +33,4 @@ select -assert-none t:$assume
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
 pm_mode_select.sv
+free_undefined.ys
