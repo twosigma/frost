@@ -1230,6 +1230,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover", "bmc_itlb", "cover_itlb"),
     ),
     FormalTarget(
+        "dtlb_entry_verdict.sby",
+        "Registered DTLB entry validity, permissions and whole-leaf PMA verdicts "
+        "against the data lookup for an arbitrary access",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "l2tlb.sby",
         "Second-level TLB hits are backed by a fill no flush has removed, return the "
         "filled data, and never run during a flush; the shared walk port selects "

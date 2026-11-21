@@ -1,0 +1,24 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 4
+cover: mode cover
+cover: depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read -formal -D SYNTHESIS -D DTLB_ENTRY_VERDICT_PROOF -sv dtlb.sv
+hierarchy -top dtlb
+script free_undefined.ys
+prep -top dtlb
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv
+free_undefined.ys
