@@ -907,7 +907,9 @@ needs a PutM only if its installed bytes are owed to the home. A matching
 frozen PutM supplies its full image and keeps its identity through WA.
 Keeping M saves a later successful SC a permission request. A home
 replacement or `cbo.clean` can take longer while the L1D returns the
-sector's data and downgrades it to S.
+sector's data and downgrades it to S. A store fill can also take
+longer when it displaces an M victim whose bytes are owed to the
+home. The L1D reads and freezes those bytes for PutM.
 A ProbeRead of M merges dirty bytes and leaves S. ProbeInvalidate leaves I
 after the CPU cut. CheckSC returns the selected reservation result.
 An ordinary probe starts its tag request on P capture when the array is ready.
