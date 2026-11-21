@@ -22,6 +22,7 @@ regression run [natively](../fpga/README.md#hardware-regression) instead.
 | [`test_riscv_torture.py`](#test_riscv_torturepy) | Random RV64IMAFDC programs against Spike references |
 | [`test_testrig.py`](#test_testrigpy) | Random instruction sequences against the Sail RISC-V model, one instruction at a time (TestRIG) |
 | [`test_run_yosys.py`](#test_run_yosyspy) | Portable and Xilinx synthesis |
+| [`test_yosys_equivalence.py`](#test_yosys_equivalencepy) | Portable and yosys-slang equivalence |
 | [`test_run_formal.py`](#test_run_formalpy) | Formal proofs |
 | [`net10g/`](net10g/README.md) | Standalone Ethernet MAC/PCS simulation and synthesis |
 
@@ -1668,6 +1669,47 @@ SystemVerilog parser.
 The standalone Ethernet MAC/PCS has its own
 [simulation and synthesis checks](net10g/README.md).
 
+### `test_yosys_equivalence.py`
+
+The Generic and checks synthesis shard compares the portable flow
+(`read_verilog`, with sv2v for the NIC and MAC) with `read_slang` on
+the generic `SYNTHESIS` view of `hw/rtl/frost.f`. Both elaborate the
+default `platform_top`. Before loading the cuts, each case checks both
+elaboration logs for their respective Verilog-2005 and SLANG frontend
+execution headers. The cases cover `soc_top`, `tage_history`, `dmmu`,
+`axi_mux`, `branch_predictor`, `lq_coherence_port`, `store_queue`,
+`coherence_home_completions`, `cpu_ooo`, `coherence_l1d`, `load_queue`, and
+`coherence_home`. Each case selects an instance from that hierarchy to
+use its elaborated parameters. The comparison includes the selected module's
+logic and its connections to direct children. Child outputs become shared
+inputs and child inputs become compared outputs. Slang uses typed black
+boxes for the image-loading children `axi_behavioral_memory`,
+`imem_predecode`, and `tdp_bram_dc_byte_en`.
+
+Yosys maps the selected module's memories to registers and read/write logic
+with `memory_map -keepdc`. Out-of-range read addresses use undefined data
+where mapping leaves undriven branches. A SAT miter checks observable outputs
+and next-state data for arbitrary defined inputs and matching register and
+memory contents. Defined bits in the slang reference must match. Its
+undefined bits are don't-cares. The proof checks the initialization of each
+paired bit. Uninitialized contents start from arbitrary matching values.
+The miter compares clock and asynchronous reset controls. Synchronous
+reset is part of the next-state logic, with reset inputs left free.
+Unpaired flop bits are independent arbitrary inputs to the two models.
+The same output and paired next-state checks must hold for every value of
+those bits. Yosys encodes the undefined-bit checks with `xprop` before
+ABC reduces the Boolean miter and SAT verifies the assertion.
+
+```bash
+./scripts/frost.py run pytest tests/test_yosys_equivalence.py -m synthesis -v
+```
+
+The runner writes the Yosys scripts, complete logs and any SAT witness to
+the pytest temporary directory. Set `FROST_YOSYS_EQUIV_DIR` to an empty
+directory to keep the files at a chosen path. CI uploads the scripts, logs
+and witnesses from the generic shard. Each frontend has 900 seconds to
+elaborate. Each memory lowering has 180 seconds and each proof has 420 seconds.
+
 ### `test_run_formal.py`
 
 See the [formal guide](../formal/README.md) for the targets, what each one
@@ -1779,7 +1821,8 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_CALIBRATION_TEST` | Limits the calibration capture to the runs of the registry test it names |
 | `FROST_CPU_PERIOD_PS` | Enables `ASYNC_CPU_CLOCK=1` in `frost` builds; the real-program and debug benches drive the independent CPU clock with this period in ps |
 | `FROST_CPU_PHASE_PS` | Initial CPU clock phase in ps when the independent clock is selected; default 700 |
-| `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
+| `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in `test_run_yosys.py` synthesis tests |
+| `FROST_YOSYS_EQUIV_DIR` | Empty directory for frontend equivalence scripts, logs and witnesses (default is a pytest temporary directory) |
 | `FROST_REUSE_DIR` | Turns on [reuse](#reusing-formal-and-synthesis-results) of formal and synthesis passes, with pass markers in this directory (a relative path starts at the repository root); unset or empty, every task runs and no marker is read or written |
 | `FROST_REUSE_TOOLS_ID` | The tool image's identity, required with `FROST_REUSE_DIR` (`python3 tests/ci_reuse.py image-id --image <image>`) |
 | `FROST_REUSE_FORCE` | `true` or `1` runs every task and refreshes its marker |
