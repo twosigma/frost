@@ -75,6 +75,9 @@ extern void ohp_m_trap_handler(void);
 #define VA_SPAN_PC (VA_PAGE0 + 0xffeul)
 #define EVICT_STRIDE 0x00080000ul
 #define EVICT_PAGES 20u
+/* Training calls and one faulting call per attempt (cases.S, ohp_page_caller). */
+#define TRAIN_ITERS 8u
+#define FAULT_ATTEMPTS 2u
 
 #define PTE_V (1ul << 0)
 #define PTE_R (1ul << 1)
@@ -100,6 +103,7 @@ struct ohp_s_ctx {
     uint64_t post_fault_a3;
     uint64_t outer_ret_mispred;
     uint64_t exit_mcause;
+    uint64_t fault_attempts;
 };
 
 _Static_assert(offsetof(struct ohp_s_ctx, va_page0_entry) == 0, "offset 0");
@@ -116,6 +120,7 @@ _Static_assert(offsetof(struct ohp_s_ctx, post_fault_a1) == 80, "offset 80");
 _Static_assert(offsetof(struct ohp_s_ctx, post_fault_a3) == 88, "offset 88");
 _Static_assert(offsetof(struct ohp_s_ctx, outer_ret_mispred) == 96, "offset 96");
 _Static_assert(offsetof(struct ohp_s_ctx, exit_mcause) == 104, "offset 104");
+_Static_assert(offsetof(struct ohp_s_ctx, fault_attempts) == 112, "offset 112");
 
 static inline uint64_t read_mhpm3(void)
 {
@@ -231,7 +236,8 @@ static int run_page_end_case(const char *name, int delegate_to_s)
     ctx->pte_page1_valid = valid_p1_pte;
     ctx->va_evict_base = VA_PAGE1 + EVICT_STRIDE + 0x100ul;
     ctx->evict_count = EVICT_PAGES;
-    ctx->train_iters = 8u;
+    ctx->train_iters = TRAIN_ITERS;
+    ctx->fault_attempts = FAULT_ATTEMPTS;
     ctx->seen_faults = 0u;
     ctx->seen_cause = ~0ull;
     ctx->seen_epc = ~0ull;
@@ -263,9 +269,11 @@ static int run_page_end_case(const char *name, int delegate_to_s)
                          : "memory");
 
     int ras_ok = delegate_to_s ? (ctx->outer_ret_mispred == 0u) : 1;
-    int ok = (ctx->seen_faults == 1u) && (ctx->seen_cause == 12u) &&
+    /* Each call through ohp_page0 adds 1 to a1 and 11 to a3. */
+    uint64_t calls = (uint64_t) FAULT_ATTEMPTS * (TRAIN_ITERS + 1u);
+    int ok = (ctx->seen_faults == FAULT_ATTEMPTS) && (ctx->seen_cause == 12u) &&
              (ctx->seen_epc == VA_SPAN_PC) && (ctx->seen_tval == (VA_SPAN_PC + 2ul)) &&
-             (ctx->post_fault_a1 == 9u) && (ctx->post_fault_a3 == 99u) &&
+             (ctx->post_fault_a1 == calls) && (ctx->post_fault_a3 == 11u * calls) &&
              (ctx->exit_mcause == 9u) && ras_ok;
 
     uart_printf("%s %s: faults=%llu cause=%llu epc=0x%llx tval=0x%llx "

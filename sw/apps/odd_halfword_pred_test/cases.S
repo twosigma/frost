@@ -307,10 +307,15 @@ ohp_page_caller:
     .option norvc
 0:
     ld      s1, 0(a5)
-    ld      s3, 40(a5)
     li      a1, 0
     li      a2, 0
     li      a3, 0
+    li      a6, 0                   /* fault attempt k */
+    li      a7, 0                   /* return mispredictions, summed */
+    /* Each of the ctx fault_attempts attempts runs the training calls, unmaps
+     * and evicts VA_PAGE1, and makes one faulting call. */
+5:
+    ld      s3, 40(a5)
 1:
     /* First three training calls take t5/t3 with t4=0 so TAGE trains bne t4
      * not-taken under (GHR, T, T); the remaining five take t1=0, t4=0 so TAGE
@@ -343,6 +348,20 @@ ohp_page_caller:
     addi    t2, t2, -1
     bnez    t2, 3b
 
+    /* The slot-1 prediction that the fault veto acts on needs immu's fault
+     * memo for VA_PAGE1, which expires every 64 clocks, to last from the walk
+     * that fills it to the refetch of +0xffe a few clocks later. Start attempt
+     * k at cycle phase 32 * k (mod 64), so that the two attempts meet the
+     * expiry 32 clocks apart and at most one of them loses the memo. */
+    rdcycle t0
+    slli    t2, a6, 5
+    sub     t2, t2, t0
+    andi    t2, t2, 63
+    add     t2, t2, t0
+6:
+    rdcycle t0
+    bltu    t0, t2, 6b
+
     /* Call across the page boundary: P predicts in IF, faults on VA_PAGE1,
      * repairs, retries, and returns through RAS. */
     li      t1, 1
@@ -350,9 +369,13 @@ ohp_page_caller:
     jal     ra, ohp_inner_tramp
     csrr    a4, hpmcounter4
     sub     a4, a4, t5
+    add     a7, a7, a4
+    ld      t0, 112(a5)
+    addi    a6, a6, 1
+    bltu    a6, t0, 5b
     sd      a1, 80(a5)
     sd      a3, 88(a5)
-    sd      a4, 96(a5)
+    sd      a7, 96(a5)
     ecall
 
     .org 0b + 0x0c0
@@ -369,7 +392,8 @@ ohp_inner_tramp:
     .org 0b + 0x200
 ohp_s_page_fault_handler:
     ld      t0, 48(a5)
-    bnez    t0, 9f
+    ld      t1, 112(a5)
+    bgeu    t0, t1, 9f
     addi    t0, t0, 1
     sd      t0, 48(a5)
     csrr    t1, scause
@@ -511,7 +535,8 @@ ohp_m_trap_handler:
     li      t1, 12
     bne     t0, t1, 2f
     ld      t1, 48(a5)
-    bnez    t1, 2f
+    ld      t2, 112(a5)
+    bgeu    t1, t2, 2f
     addi    t1, t1, 1
     sd      t1, 48(a5)
     sd      t0, 56(a5)
