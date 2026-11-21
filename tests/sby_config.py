@@ -716,6 +716,15 @@ SCRIPT_FORMS: tuple[CommandForm, ...] = (
         transition="act",
         log_kind="none",
     ),
+    CommandForm(
+        "autoname",
+        "autoname",
+        pos_arity="1",
+        pos_pattern=re.compile(r"t:\$anyseq"),
+        rejected_reason="public free-cell names decide which values equiv_make pairs",
+        transition="act",
+        log_kind="pass",
+    ),
     # Design management.
     CommandForm(
         "design_stash",
