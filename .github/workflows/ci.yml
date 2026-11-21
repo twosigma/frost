@@ -1292,12 +1292,11 @@ jobs:
 
   # Yosys synthesis. The Xilinx target runs in partitions
   # (test_xilinx_partition in tests/test_run_yosys.py), in two jobs of about
-  # equal length; the first job runs every other synthesis test. A fast test
-  # checks that the jobs run each synthesis test once. A synthesis target
-  # whose key has a pass marker is skipped, as in the formal jobs; the other
-  # synthesis tests always run. Each partition may run for two hours and
-  # each job for its timeout_minutes, both more than twice their time on the
-  # slowest runners.
+  # equal length. The first job runs the portable target and checks, including
+  # frontend equivalence. A fast test checks that the jobs run each synthesis
+  # test once. The portable target and Xilinx partitions can reuse pass
+  # markers. The remaining checks run on every full CI run. Each Xilinx
+  # partition has a two-hour limit. The matrix sets the limit for each shard.
   test-synthesis:
     name: Yosys Synthesis Check (${{ matrix.shard }})
     runs-on: ubuntu-26.04
@@ -1324,6 +1323,7 @@ jobs:
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
       FROST_YOSYS_XILINX_TIMEOUT_SEC: "7200"
+      FROST_YOSYS_EQUIV_DIR: tests/sim_build/yosys-equiv
       FROST_REUSE_DIR: ${{ needs.gate.outputs.reuse == 'true' && '.ci-reuse' || '' }}
       FROST_REUSE_TOOLS_ID: ${{ needs.build-docker.outputs.tools_id }}
       FROST_REUSE_MAIN_RUN: ${{ needs.gate.outputs.main_run }}
@@ -1367,6 +1367,22 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             pytest tests/ -m synthesis -k "$PYTEST_FILTER" -v --durations=0
+
+      - name: Upload frontend equivalence logs
+        if: ${{ always() && matrix.shard == 'Generic and checks' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: yosys-frontend-equivalence
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            tests/sim_build/yosys-equiv/**/*.log
+            tests/sim_build/yosys-equiv/**/*.ys
+            tests/sim_build/yosys-equiv/**/*.tcl
+            tests/sim_build/yosys-equiv/**/*.f
+            tests/sim_build/yosys-equiv/**/*.instance.il
+            tests/sim_build/yosys-equiv/**/*.module
+            tests/sim_build/yosys-equiv/**/counterexample.json
 
       - name: Summarize synthesized and reused targets
         if: always()
