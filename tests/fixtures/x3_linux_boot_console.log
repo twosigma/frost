@@ -534,6 +534,13 @@ FROST_USERSPACE_STRESS_PASS
 FROST_MEMERR_SELFTEST_PASS
 [  445.539480] frost_memerr 40021000.memory-controller: memory error reporting, ECC active
 FROST_MEMERR active=1 polls=220629,275501 ce=0 ue=0 rd=0 wr=0 scrubbed=64 skipped=1 patrol=96960,16958528 passes=0,1 restore=0
+[?2004hroot@frost:~# timeout -k 5 45 /usr/local/bin/frost_isa_probe suite --vlenb 32 -- run-id d536f34d; printf 'FROST_ISA_PROBE_EXIT id=%s rc=%s\n' d536f34d "$?"
+FROST_ISA_PROBE id=d536f34d case=discover verdict=PASS mode=absent
+FROST_ISA_PROBE id=d536f34d case=illegal verdict=PASS sigill=1 pc_match=1 scalar_pre=1
+FROST_ISA_PROBE id=d536f34d case=signal verdict=PASS rounds=4 end_magic=0 end_size=0
+FROST_ISA_PROBE id=d536f34d case=ptrace verdict=PASS gpr_ok=1 einval=1
+FROST_ISA_PROBE_SUMMARY id=d536f34d mode=absent passed=4 failed=0 verdict=PASS
+FROST_ISA_PROBE_EXIT id=d536f34d rc=0
 [?2004hroot@frost:~# m=$(cat /sys/class/net/eth0/mtu); f=$(cat /sys/class/net/eth0/flagss); echo 1 > /proc/sys/net/ipv6/conf/eth0/disable_ipv6; cp /usr/local/bin/frost_nnettest /dev/shm/; /dev/shm/frost_nettest; echo $m > /sys/class/net/eth0/mtu; echho $f > /sys/class/net/eth0/flags; echo 0 > /proc/sys/net/ipv6/conf/eth0/disable _ipv6; timeout -k 5 120 sh -c "echo frost > /root/.frost_alive && sync && rm -f  /root/.frost_alive"; echo FROST_ROOT_ALIVE=$?
 [?2004lFROST_NET_LOOPBACK: eth0: driver frost_net10g, address 02:11:22:33:44:55, loopback feature bit 42, run 2d150dfd; down
 FROST_NET_LOOPBACK: mtu 9000, loopback on, up: carrier after 3 ms

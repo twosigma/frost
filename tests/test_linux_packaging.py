@@ -2607,3 +2607,71 @@ def test_rj45_dhcp_uses_device_identity(
     calls = commands.read_text() if commands.exists() else ""
     assert ("udhcpc -i renamed" in calls) == (present and not configured)
     assert "eth0" not in calls
+
+
+def test_sbi_packer_accepts_supplied_dtb_and_checks_initrd_range(
+    tmp_path: Path,
+) -> None:
+    """--dtb packs a supplied compiled DTB verbatim and checks its header and initrd range."""
+    packer = _load_module(SBI_PACKER)
+    image = _linux_image(packer, image_size=0x400000, length=0x1000)
+    firmware = bytes(range(256)) * 16
+    initrd = bytes(range(251)) * 17
+    for name, content in {
+        "fw_jump.bin": firmware,
+        "Image": image,
+        "rootfs.cpio": initrd,
+    }.items():
+        (tmp_path / name).write_bytes(content)
+
+    # First generate a stock DTB for the exact same payload and initrd.
+    stock = tmp_path / "stock"
+    common = [
+        "--firmware",
+        str(tmp_path / "fw_jump.bin"),
+        "--payload",
+        str(tmp_path / "Image"),
+        "--initrd",
+        str(tmp_path / "rootfs.cpio"),
+    ]
+    assert packer.main([*common, "--out", str(stock)]) == 0
+    stock_dtb = stock / "frost.dtb"
+    assert packer.fdt_chosen_initrd_range(stock_dtb.read_bytes()) is not None
+
+    # Packing with --dtb preserves the exact bytes of the supplied DTB.
+    supplied = tmp_path / "custom.dtb"
+    supplied.write_bytes(stock_dtb.read_bytes())
+    repacked = tmp_path / "repacked"
+    assert packer.main([*common, "--dtb", str(supplied), "--out", str(repacked)]) == 0
+    assert (repacked / "frost.dtb").read_bytes() == supplied.read_bytes()
+    assert (repacked / "sw_ddr.mem").read_bytes() == (stock / "sw_ddr.mem").read_bytes()
+    assert (repacked / "sw_ddr.txt").read_bytes() == (stock / "sw_ddr.txt").read_bytes()
+
+    # Reject a DTB whose initrd range disagrees with the packed initrd.
+    other_initrd = tmp_path / "other.cpio"
+    other_initrd.write_bytes(initrd + b"\x00" * 64)
+    with pytest.raises(ValueError, match="linux,initrd range"):
+        packer.main(
+            [
+                "--firmware",
+                str(tmp_path / "fw_jump.bin"),
+                "--payload",
+                str(tmp_path / "Image"),
+                "--initrd",
+                str(other_initrd),
+                "--dtb",
+                str(supplied),
+                "--out",
+                str(tmp_path / "mismatch"),
+            ]
+        )
+
+    # Reject a corrupt or truncated DTB.
+    bad_dtb = tmp_path / "bad.dtb"
+    bad_dtb.write_bytes(b"\x00" * 64)
+    with pytest.raises(ValueError, match="invalid DTB magic"):
+        packer.load_dtb(bad_dtb, tmp_path, None)
+    short_dtb = tmp_path / "short.dtb"
+    short_dtb.write_bytes(supplied.read_bytes()[:-4])
+    with pytest.raises(ValueError, match="totalsize"):
+        packer.load_dtb(short_dtb, tmp_path, None)

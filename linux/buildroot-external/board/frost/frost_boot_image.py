@@ -514,6 +514,122 @@ def gen_dts(
 """
 
 
+FDT_MAGIC = 0xD00DFEED
+FDT_HEADER_BYTES = 40
+FDT_BEGIN_NODE = 1
+FDT_END_NODE = 2
+FDT_PROP = 3
+FDT_NOP = 4
+FDT_END = 9
+
+
+def _fdt_uint(data: bytes) -> int | None:
+    """Decode a big-endian 32-bit or 64-bit FDT integer property."""
+    if len(data) == 4:
+        return struct.unpack(">I", data)[0]
+    if len(data) == 8:
+        return struct.unpack(">Q", data)[0]
+    return None
+
+
+def fdt_chosen_initrd_range(dtb: bytes) -> tuple[int, int] | None:
+    """Return ``(start, end)`` from ``/chosen`` initrd properties, or None.
+
+    Validates the FDT header and bounds before walking the structure block.
+    """
+    if len(dtb) < FDT_HEADER_BYTES:
+        raise ValueError(
+            f"DTB is {len(dtb)} bytes; shorter than the 40-byte FDT header"
+        )
+    (
+        magic,
+        totalsize,
+        off_struct,
+        off_strings,
+        _off_rsv,
+        _ver,
+        _compat,
+        _boot,
+        sz_strings,
+        sz_struct,
+    ) = struct.unpack_from(">10I", dtb, 0)
+    if magic != FDT_MAGIC:
+        raise ValueError(f"invalid DTB magic 0x{magic:08x}; expected 0x{FDT_MAGIC:08x}")
+    if totalsize != len(dtb):
+        raise ValueError(
+            f"DTB header totalsize {totalsize} does not match file size {len(dtb)}"
+        )
+    if off_struct + sz_struct > totalsize or off_strings + sz_strings > totalsize:
+        raise ValueError("DTB structure or strings block exceeds totalsize")
+
+    strings = dtb[off_strings : off_strings + sz_strings]
+    cursor = off_struct
+    end = off_struct + sz_struct
+    path: list[str] = []
+    start_val: int | None = None
+    end_val: int | None = None
+
+    while cursor + 4 <= end:
+        (token,) = struct.unpack_from(">I", dtb, cursor)
+        cursor += 4
+        if token == FDT_BEGIN_NODE:
+            nul = dtb.find(b"\x00", cursor, end)
+            if nul < 0:
+                raise ValueError("unterminated node name in DTB")
+            name = dtb[cursor:nul].decode("ascii", errors="replace")
+            path.append(name)
+            cursor = (nul + 4) & ~3
+        elif token == FDT_END_NODE:
+            if not path:
+                raise ValueError("unbalanced FDT_END_NODE in DTB")
+            path.pop()
+        elif token == FDT_PROP:
+            if cursor + 8 > end:
+                raise ValueError("truncated FDT_PROP header in DTB")
+            prop_len, nameoff = struct.unpack_from(">II", dtb, cursor)
+            cursor += 8
+            if cursor + prop_len > end or nameoff >= len(strings):
+                raise ValueError("truncated FDT_PROP payload or name offset in DTB")
+            nul = strings.find(b"\x00", nameoff)
+            if nul < 0:
+                raise ValueError("unterminated property name in DTB")
+            prop_name = strings[nameoff:nul].decode("ascii", errors="replace")
+            value = dtb[cursor : cursor + prop_len]
+            cursor = (cursor + prop_len + 3) & ~3
+            if path == ["", "chosen"]:
+                if prop_name == "linux,initrd-start":
+                    start_val = _fdt_uint(value)
+                elif prop_name == "linux,initrd-end":
+                    end_val = _fdt_uint(value)
+        elif token == FDT_NOP:
+            continue
+        elif token == FDT_END:
+            break
+        else:
+            raise ValueError(f"unknown FDT token 0x{token:08x} in DTB")
+
+    if start_val is not None and end_val is not None:
+        return start_val, end_val
+    return None
+
+
+def load_dtb(
+    dtb_path: Path, out_dir: Path, initrd_range: tuple[int, int] | None
+) -> bytes:
+    """Load and validate a supplied compiled DTB and write ``frost.dtb`` in ``out_dir``."""
+    dtb = dtb_path.read_bytes()
+    chosen_initrd = fdt_chosen_initrd_range(dtb)
+    if initrd_range is not None and chosen_initrd != initrd_range:
+        raise ValueError(
+            f"{dtb_path}: /chosen linux,initrd range {chosen_initrd} does not match "
+            f"packed initrd range (0x{initrd_range[0]:x}, 0x{initrd_range[1]:x})"
+        )
+    target = out_dir / "frost.dtb"
+    if dtb_path.resolve() != target.resolve():
+        target.write_bytes(dtb)
+    return dtb
+
+
 def compile_dtb(dts: str, out_dir: Path, dtc: str) -> bytes:
     """Write frost.dts, compile it with dtc, and return the DTB bytes."""
     dts_path = out_dir / "frost.dts"
@@ -671,6 +787,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--board", choices=("x3", "vcu118"), default="x3")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
+        "--dtb",
+        help="compiled device tree blob (.dtb) to pack instead of generating one",
+    )
+    parser.add_argument(
         "--shim-march", default=env("FROST_SHIM_MARCH", DEFAULT_SHIM_MARCH)
     )
     parser.add_argument(
@@ -705,19 +825,22 @@ def main(argv: list[str] | None = None) -> int:
             DDR_BASE + layout.initrd_offset,
             DDR_BASE + layout.initrd_offset + len(initrd),
         )
-    dtb = compile_dtb(
-        gen_dts(
-            clk_hz=args.clk,
-            initrd_range=initrd_range,
-            bootargs=args.bootargs,
-            model=args.model,
-            mac=args.mac or NIC_MAC_ADDRESS,
-            mem_size=args.mem_size,
-            board=args.board,
-        ),
-        out_dir,
-        args.dtc,
-    )
+    if args.dtb:
+        dtb = load_dtb(Path(args.dtb), out_dir, initrd_range)
+    else:
+        dtb = compile_dtb(
+            gen_dts(
+                clk_hz=args.clk,
+                initrd_range=initrd_range,
+                bootargs=args.bootargs,
+                model=args.model,
+                mac=args.mac or NIC_MAC_ADDRESS,
+                mem_size=args.mem_size,
+                board=args.board,
+            ),
+            out_dir,
+            args.dtc,
+        )
     check_layout(layout, firmware, dtb, initrd, args.mem_size)
     shim = build_shim(out_dir, layout, args.cross, args.shim_march, args.shim_mabi)
     dense_words = write_images(out_dir, layout, shim, firmware, payload, dtb, initrd)
