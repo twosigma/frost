@@ -150,13 +150,14 @@ NON_LOGIC: dict[str, str] = {
 }
 
 
-def arms(text: str) -> list[tuple[int, str]]:
+def arms(text: str, *, include_portable: bool = False) -> list[tuple[int, str]]:
     """Return (line, primitive arm text) for each arm where the macro is defined.
 
     A chain `ifdef MACRO ... else ...` has one such arm, `ifndef MACRO ... else
     ...` has the arms after the first, and `ifdef OTHER ... elsif MACRO ...` has
     the elsif arm. An ifndef without an else yields none: its text is portable
-    only, and the primitive arm is a separate ifdef block.
+    only, and the primitive arm is a separate ifdef block. With include_portable,
+    return every arm of a conditional that tests the macro.
     """
     found: list[tuple[int, int, str]] = []
     # One frame per open conditional: a list of [kind, macro?, start line, lines].
@@ -193,7 +194,7 @@ def arms(text: str) -> list[tuple[int, str]]:
                     or (arm[0] == "elsif" and arm[1])
                     or (position > 0 and first[0] == "ifndef" and first[1])
                 )
-                if defined:
+                if defined or (include_portable and any(branch[1] for branch in frame)):
                     found.append((arm[2], number, "\n".join(arm[3])))
     found.sort()
     return [(start, body) for start, _, body in found]
@@ -302,6 +303,24 @@ def test_every_primitive_block_has_a_check() -> None:
         "add a primitive-twin check (see formal/README.md) or an entry in "
         "NOT_COVERED:\n" + "\n".join(missing)
     )
+
+
+def test_twin_macro_arms_omit_direct_state_constructs() -> None:
+    """Check literal state constructs written directly in the conditional arms."""
+    files = {
+        file
+        for sby, files in COVERAGE.items()
+        if sby.endswith("_twin.sby")
+        for file in files
+    }
+    state = re.compile(
+        r"\b(?:always_ff|always_latch|posedge|negedge|initial|FD[CEPRS]*(?:_1)?)\b"
+    )
+    for file in sorted(files):
+        source = sby_config.read_checked_text(RTL / file)
+        clean = re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"', " ", source, flags=re.S)
+        for line, body in arms(clean, include_portable=True):
+            assert not state.search(body), (file, line, body)
 
 
 def test_allowlists_have_no_stale_entries() -> None:

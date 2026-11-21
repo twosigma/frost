@@ -1,0 +1,38 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 2
+prove: timeout 60
+cover: mode cover
+cover: depth 9
+cover: timeout 120
+
+[engines]
+smtbmc boolector
+
+[script]
+# The runner projects the assertion and its drivers from the staged wrapper.
+read -sv riscv_pkg.sv
+cover: read -sv -D SYNTHESIS dtlb.sv dmmu.sv
+read -formal -sv store_completion_cofactor_cover.sv
+prove: hierarchy -check -top store_completion_cofactor
+cover: hierarchy -check -top store_completion_cofactor_cover
+script free_undefined.ys
+setattr -unset keep
+prove: prep -top store_completion_cofactor -flatten
+cover: prep -top store_completion_cofactor_cover -flatten
+select -assert-count 1 t:$check r:FLAVOR=assert %i
+select -assert-none t:$assume t:$check r:FLAVOR=assume %i
+prove: select -assert-none t:$*ff* t:$*latch*
+cover: select -assert-count 22 t:$check r:FLAVOR=cover %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
+store_completion_cofactor_cover.sv
+free_undefined.ys
