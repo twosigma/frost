@@ -75,6 +75,7 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "base-fp": 0x4310_2557,  # vmv.x.s a0, v17 in the FP results and flags trace
     "fma": 0x4360_2557,  # vmv.x.s a0, v22 in the fused multiply-add trace
     "fp-compare": 0x4388_2557,  # vcpop.m a0, v24 in the FP comparison trace
+    "fp-convert": 0x4380_2557,  # vmv.x.s a0, v24 in the FP conversion trace
 }
 
 # frost_rvfi_dii's error_flags bits.

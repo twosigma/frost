@@ -453,6 +453,15 @@ comparison bits. The trace checks the results and accrued flags for quiet
 and signaling NaNs. A masked comparison checks that a disabled NaN lane
 leaves the invalid flag clear. [FP comparisons](vector_fp_compare.S)
 
+The FP conversion trace checks conversions between floating-point and signed or
+unsigned integer values, and widening and narrowing between floating-point
+formats. It checks exact results, nearest-even rounding, truncation and
+round-to-odd narrowing through integer readouts. An overflowing narrowing
+conversion checks positive infinity and the overflow and inexact flags.
+The mask-undisturbed conversion checks the enabled result and the preserved
+masked-off element. The masked NaN leaves the invalid flag clear.
+[FP conversions](vector_fp_convert.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at each
 of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
 groups from seed 42, the source-width traces and the directed state,
@@ -460,9 +469,9 @@ fractional LMUL and FP traces. Both implementations must return every
 planned trace and instruction.
 The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer source
-widths, fractional LMUL, base FP results and fused multiply-add, and
-`vcpop.m` for state and scalar results and FP comparisons. TestRIG must report
-each destination value mismatch.
+widths, fractional LMUL, base FP results, fused multiply-add and FP
+conversions. It checks `vcpop.m` for state and scalar results and FP comparisons.
+TestRIG must report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail

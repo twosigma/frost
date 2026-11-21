@@ -1002,6 +1002,8 @@ jobs:
             'order=14 insn=0x43602557 rd=x10' '0xffffffffa8800000 != 0xffffffffa8800001'
           check_vector_result fp-compare vector_fp_compare \
             'order=15 insn=0x43882557 rd=x10' '0x1 != 0x0'
+          check_vector_result fp-convert vector_fp_convert \
+            'order=9 insn=0x43802557 rd=x10' '0x3 != 0x2'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
