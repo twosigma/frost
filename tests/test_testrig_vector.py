@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (24, instructions + 1750) if vector_directed else (15, instructions)
+    expected = (25, instructions + 2011) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -292,6 +292,7 @@ def test_vector_directed_replay(
         ("vector_cached_load.S", 13, 4),
         ("vector_cached_store.S", 12, 4),
         ("vector_unit_stride.S", 926, 336),
+        ("vector_int_compare.S", 261, 210),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -746,6 +747,54 @@ def test_vector_store_readback_covers_each_element(
     mutated.write_text("\n".join(lines) + "\n")
     with pytest.raises(AssertionError, match=error):
         _check_vector_store_readbacks([mutated])
+
+
+def test_vector_integer_compare_trace_covers_predicates() -> None:
+    """Check the e32 predicate forms and e64 equality and ordering."""
+    trace = VERIF_DIR / "testrig" / "vector_int_compare.S"
+    words = [
+        int(line.split()[1], 16)
+        for line in trace.read_text().splitlines()
+        if line.startswith(".4byte ")
+    ]
+    configurations = [
+        index for index, word in enumerate(words) if word & 0x707F == 0x7057
+    ]
+    assert [words[index] for index in configurations] == [0xC102_7657, 0xC181_7657]
+    _, e64 = configurations
+    assert words[e64 + 1] == 0xC210_25F3  # csrr a1, vtype
+    vv, vi, vx = 0, 3, 4
+    forms = {
+        0x18: (vv, vi, vx),  # vmseq
+        0x19: (vv, vi, vx),  # vmsne
+        0x1A: (vv, vx),  # vmsltu
+        0x1B: (vv, vx),  # vmslt
+        0x1C: (vv, vi, vx),  # vmsleu
+        0x1D: (vv, vi, vx),  # vmsle
+        0x1E: (vi, vx),  # vmsgtu
+        0x1F: (vi, vx),  # vmsgt
+    }
+    observed = [
+        (
+            32 if index < e64 else 64,
+            word >> 26,
+            (word >> 12) & 7,
+            bool(word & (1 << 25)),
+        )
+        for index, word in enumerate(words)
+        if word & 0x7F == 0x57
+        and word >> 26 in forms
+        and (word >> 12) & 7 in (vv, vi, vx)
+    ]
+    expected = {
+        (32, predicate, form, True)
+        for predicate, variants in forms.items()
+        for form in variants
+    }
+    expected.add((32, 0x1B, vx, False))
+    expected.update((64, predicate, vv, True) for predicate in (0x18, 0x1A, 0x1B))
+    assert len(observed) == len(expected)
+    assert set(observed) == expected
 
 
 def test_readout_sees_every_register_and_vxsat() -> None:

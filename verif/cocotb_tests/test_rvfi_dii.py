@@ -77,6 +77,7 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "fp-compare": 0x4388_2557,  # vcpop.m a0, v24 in the FP comparison trace
     "fp-convert": 0x4380_2557,  # vmv.x.s a0, v24 in the FP conversion trace
     "unit-stride": 0x43A0_2557,  # vmv.x.s a0, v26 in the unit-stride memory trace
+    "int-compare": 0x4390_2557,  # vmv.x.s a0, v25 in the integer comparison trace
 }
 
 # frost_rvfi_dii's error_flags bits.
