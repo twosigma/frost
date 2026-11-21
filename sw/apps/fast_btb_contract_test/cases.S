@@ -256,11 +256,14 @@ fbc_ms_itt_scrub:
     addi s3, s3, -1
     bnez s3, fbc_ms_itt_loop
 
-    /* Run 40 not-taken warmup iterations of bne + fbc_ms_jalr, switching
-     * branchlessly to s4 = 8<<56 and s0 = fbc_ms_stale on iteration 40 so the
-     * speculative pass enters bne with the exact same 64-bit GHR that was just
-     * trained strongly not-taken in both bimodal and TAGE. */
-    li   s3, 40
+    /* Run 64 not-taken warmup iterations of bne + fbc_ms_jalr, switching
+     * branchlessly to s4 = 8<<56 and s0 = fbc_ms_stale on iteration 64. Each
+     * iteration adds three bits of branch history, so the iterations fill all
+     * 128 bits well before the speculative pass, which enters bne with the
+     * same history as the last warmup iterations, trained strongly not-taken
+     * in both bimodal and TAGE. That includes a TAGE entry that a previous
+     * run's speculative pass allocated at this history. */
+    li   s3, 64
     li   s4, 0
     li   s5, 3
     la   s1, fbc_ms_warmup
@@ -284,7 +287,7 @@ fbc_ms_jalr:
     nop
     nop
 fbc_ms_warmup:                  /* +0x08: PC[3:2] == 2'b10 (distinct from 2'b00) */
-    addi s3, s3, -1             /* 40 -> 39 -> ... -> 1 */
+    addi s3, s3, -1             /* 64 -> 63 -> ... -> 1 */
     addi t0, s3, -1
     sltiu t0, t0, 1             /* t0 == 1 iff s3 == 1 (next pass is speculative) */
     slli t1, t0, 56
@@ -332,7 +335,8 @@ fbc_ms_real:
 
 /* Case 3: unsigned long fbc_flushed_interior_case(void)
  * Wrong-path JALR jumps to odd interior halfword P (fbc_inner_p) of a 32-bit
- * LUI a2 at P - 2, training fast BTB entry P -> P + 4 (fbc_inner_mid). P + 2
+ * LUI a2 at P - 2, where c.bnez a0 resolves taken against a not-taken
+ * prediction and trains fast BTB entry P -> P + 4 (fbc_inner_mid). P + 2
  * holds 32-bit addi a0, a0, 80 (0x05050513), whose upper halfword at P + 4 is
  * c.addi a0, 1 (0x0505). Because (P + 4) >> 2 == (P + 2) >> 2, the phantom
  * target window covers pc_reg = P + 2; without walk-past, P + 2 executes early
@@ -346,30 +350,32 @@ fbc_ms_real:
 fbc_flushed_interior_case:
     addi sp, sp, -64
     sd   ra, 0(sp)
-    sd   s0, 8(sp)
     sd   s1, 16(sp)
-    sd   s2, 24(sp)
     sd   s3, 32(sp)
     sd   s4, 40(sp)
     sd   s5, 48(sp)
 
-    /* Run 40 not-taken warmup iterations of bne, switching branchlessly to
-     * s4 = 8<<56 and s1 = fbc_inner_p on iteration 40 so the test pass enters
-     * bne with the exact same 64-bit GHR trained strongly not-taken in TAGE. */
+    /* Run 39 warmup passes through bne and through c.bnez a0 at P, both not
+     * taken (a0 = 0), switching branchlessly to s4 = 8<<56 and a0 = 1 on pass
+     * 40. Each pass adds six bits of branch history, so the test pass reaches
+     * both branches with the 128-bit history of the last warmup passes, and
+     * both are predicted not taken whatever the direction predictors held at
+     * power-up or kept from a previous run; both then mispredict. Each warmup
+     * pass ends with fence.i, which clears the fast BTB, so the test pass
+     * finds no entry at P and the early training of c.bnez installs
+     * P -> P + 4 as taken. */
     li   s3, 40
     li   s4, 0
     li   s5, 3
-    la   s0, fbc_c3_warmup
-    la   s2, fbc_inner_p
-    mv   s1, s0
-    li   a0, 1
+    la   s1, fbc_inner_p
+    li   a0, 0
     li   a2, 0
 
 fbc_c3_loop:
     divu t1, s4, s5
     divu t1, t1, s5             /* warmup -> 0 (NT); test pass -> nonzero (T) */
     bne  t1, zero, fbc_overlap_entry
-    jalr zero, 0(s1)            /* warmup -> fbc_c3_warmup; test -> odd P */
+    jalr zero, 0(s1)            /* odd P; returns through fbc_inner_check */
     j    .
 
 fbc_c3_warmup:
@@ -378,10 +384,8 @@ fbc_c3_warmup:
     sltiu t0, t0, 1             /* t0 == 1 iff s3 == 1 */
     slli t1, t0, 56
     slli s4, t1, 3              /* s4 = 8<<56 iff s3 == 1, else 0 */
-    neg  t3, t0
-    xor  t4, s0, s2
-    and  t4, t4, t3
-    xor  s1, s0, t4             /* s1 = fbc_inner_p iff s3 == 1, else fbc_c3_warmup */
+    mv   a0, t0                 /* a0 = 1 iff s3 == 1, else 0 */
+    fence.i
     bnez s3, fbc_c3_loop
     j    .
 
@@ -401,6 +405,8 @@ fbc_inner_mid:
     jal  zero, fbc_inner_check
 
 fbc_inner_check:
+    li   t5, 96                 /* 0 + 80 + 16: a warmup pass entered at P */
+    beq  a0, t5, fbc_c3_warmup
     li   t5, 97                 /* 1 + 80 + 16; would be 98 without walk-past */
     bne  a0, t5, 1f
     lhu  t4, 0(s1)
@@ -411,9 +417,7 @@ fbc_inner_check:
     j    2f
 1:  li   a0, 0
 2:  ld   ra, 0(sp)
-    ld   s0, 8(sp)
     ld   s1, 16(sp)
-    ld   s2, 24(sp)
     ld   s3, 32(sp)
     ld   s4, 40(sp)
     ld   s5, 48(sp)
