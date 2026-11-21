@@ -32,10 +32,10 @@ script free_undefined.ys
 
 # Check the original rename-precedence and fence properties and the effect
 # of both registered buses on the stored RAT mappings.
-select -set slot2_clear tomasulo_commit_bus_formal/c:p_commit_2_clears_int_via_bus
-select -set rat_checks tomasulo_commit_bus_formal/c:p_commit_clears_int_via_bus tomasulo_commit_bus_formal/c:p_waw_preserves_newer_int tomasulo_commit_bus_formal/c:p_commit_clears_fp_via_bus tomasulo_wrapper/c:p_rename_wins_over_commit @slot2_clear
+select -set rat_checks_with_covers tomasulo_commit_bus_formal/c:p_commit_2_clears_int_via_bus tomasulo_commit_bus_formal/c:p_commit_2_clears_fp_via_bus tomasulo_commit_bus_formal/c:p_waw_preserves_newer_fp
+select -set rat_checks tomasulo_commit_bus_formal/c:p_commit_clears_int_via_bus tomasulo_commit_bus_formal/c:p_waw_preserves_newer_int tomasulo_commit_bus_formal/c:p_commit_clears_fp_via_bus tomasulo_wrapper/c:p_rename_wins_over_commit @rat_checks_with_covers
 select -set fence_checks tomasulo_wrapper/c:p_registered_native_fence_implies_flush tomasulo_wrapper/c:p_native_fence_copy_matches_non_translation_flush
-select -assert-count 5 @rat_checks
+select -assert-count 7 @rat_checks
 select -assert-count 2 @fence_checks
 chformal -assert -remove t:$check r:FLAVOR=assert %i @rat_checks %d @fence_checks %d
 # The harness supplies the wrapper's environment. Keep the assumptions that
@@ -45,8 +45,8 @@ select -assert-count 3 @watchers
 chformal -assume -remove tomasulo_wrapper/* @watchers %d
 chformal -cover -remove t:$check r:FLAVOR=cover %i tomasulo_commit_bus_formal/* %d
 bmc: chformal -cover -remove
-# c_younger_slot2_commit reaches the slot-2 enable and checks for the clear.
-cover: chformal -assert -coverenable @rat_checks @slot2_clear %d
+# The two slot-2 clear cases and the FP tag mismatch have explicit covers.
+cover: chformal -assert -coverenable @rat_checks @rat_checks_with_covers %d
 cover: chformal -assert -remove
 
 # Remove the blocks outside the ROB-to-RAT path. At the ROB boundary, free
@@ -80,8 +80,8 @@ cd ..
 opt_clean -purge
 prep -top tomasulo_commit_bus_formal
 check -assert
-bmc: select -assert-count 7 t:$check r:FLAVOR=assert %i
-cover: select -assert-count 11 t:$check r:FLAVOR=cover %i
+bmc: select -assert-count 9 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 13 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
