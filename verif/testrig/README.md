@@ -141,7 +141,7 @@ the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--vector` | off | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
 | `--vector-length` | 20 | Operation groups per generated vector trace |
 | `--vector-source-widths` | off | Add the directed integer, FP and memory source-width traces to `--vector` |
-| `--vector-directed` | off | Add the directed vector CSR, scalar-result, fractional LMUL and FP traces to `--vector` |
+| `--vector-directed` | off | Add the directed vector CSR, scalar-result, fractional LMUL, FP and cached DDR memory traces to `--vector` |
 | `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
 | `--seed` | random | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval`, `--crypto` and `--vector`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
@@ -472,6 +472,14 @@ store trace asserts that the vector store retires and that scalar loads read
 the expected value from every written element.
 [Cached load](vector_cached_load.S) and [cached store](vector_cached_store.S).
 
+The unit-stride memory trace checks aligned cached DDR loads and stores at
+8, 16, 32 and 64-bit element widths, both unmasked and masked, and mask loads
+and stores (`vlm.v` and `vsm.v`). It covers vector lengths below and equal to
+VLMAX, tail-undisturbed and mask-undisturbed readouts where defined, multi-register
+and fractional EMUL transfers, zero-active transfers, and a cached page-boundary
+crossing. Every vector store reads back all written bytes through immediate
+scalar loads without reading `misa`. [Unit-stride memory](vector_unit_stride.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at each
 of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
 groups from seed 42, the source-width traces and the directed state,
@@ -479,9 +487,9 @@ fractional LMUL, FP and cached DDR traces. Both implementations must return
 every planned trace and instruction.
 The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer source
-widths, fractional LMUL, base FP results, fused multiply-add and FP
-conversions. It checks `vcpop.m` for state and scalar results and FP comparisons.
-TestRIG must report each destination value mismatch.
+widths, fractional LMUL, base FP results, fused multiply-add, FP conversions
+and unit-stride memory. It checks `vcpop.m` for state and scalar results and FP
+comparisons. TestRIG must report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail

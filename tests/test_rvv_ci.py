@@ -75,6 +75,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         ["fma", "vector_fma"],
         ["fp-compare", "vector_fp_compare"],
         ["fp-convert", "vector_fp_convert"],
+        ["unit-stride", "vector_unit_stride"],
     ]
 
 

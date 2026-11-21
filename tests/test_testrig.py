@@ -98,6 +98,7 @@ VECTOR_DIRECTED_TRACES = tuple(
         "fp_convert",
         "cached_load",
         "cached_store",
+        "unit_stride",
     )
 )
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
