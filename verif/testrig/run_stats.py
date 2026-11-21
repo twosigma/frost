@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Forward and count RVFI replies, with an opt-in Sail WFI normaliser."""
+"""Forward and count RVFI replies and normalize selected Sail replies."""
 
 import queue
 import socket
@@ -32,6 +32,8 @@ from testrig.rvfi_dii import (
     MODE_USER,
     V1_PACKET_BYTES,
     V2_HEADER_BYTES,
+    V2_INT_DATA_BYTES,
+    V2_MEM_DATA_BYTES,
     WFI_INSN,
     DiiPacket,
     PacketReader,
@@ -71,6 +73,7 @@ class TraceMonitor:
         self.name = name
         self.backend_port = backend_port
         self.timeout = timeout
+        self.clear_vector_stores = False
         self.traces: list[TraceCounts] = []
         self.errors: list[str] = []
         self._stopping = threading.Event()
@@ -191,6 +194,8 @@ class TraceMonitor:
                             # A transported execution packet counts even when
                             # its valid byte is clear, as in Sail's v2 replies.
                             received += 1
+                            if version == 2 and self.clear_vector_stores:
+                                raw = clear_vector_store_fields(raw)
                         engine.sendall(raw)
                         if halt:
                             break
@@ -210,6 +215,32 @@ class TraceMonitor:
         self._thread.join(timeout=2)
         if self._thread.is_alive() and not self.errors:
             self.errors.append(f"{self.name}: monitor did not stop")
+
+
+def is_vector_store(insn: int) -> bool:
+    """Recognize STORE-FP encodings with a vector element width."""
+    return (insn & 0x7F) == 0x27 and ((insn >> 12) & 0x7) in (0, 5, 6, 7)
+
+
+def clear_vector_store_fields(raw: bytes) -> bytes:
+    """Zero the mem-data payload of a retired vector store's v2 reply.
+
+    Sail supplies the last element's store fields. FROST records store-queue
+    writes, and the vector unit writes through the hart line client. Scalar
+    readbacks compare each element the vector instruction stored.
+    """
+    insn = struct.unpack_from("<Q", raw, 24)[0]
+    features = struct.unpack_from("<Q", raw, 56)[0]
+    if raw[32] or not features & 2 or not is_vector_store(insn):
+        return raw
+    offset = V2_HEADER_BYTES + (V2_INT_DATA_BYTES if features & 1 else 0)
+    if len(raw) < offset + V2_MEM_DATA_BYTES or raw[offset : offset + 8] != b"mem-data":
+        raise ValueError("invalid trace-v2 mem-data block")
+    return (
+        raw[: offset + 8]
+        + bytes(V2_MEM_DATA_BYTES - 8)
+        + raw[offset + V2_MEM_DATA_BYTES :]
+    )
 
 
 def _wfi_wait_reply(raw: bytes, reply: RvfiRecord) -> bool:

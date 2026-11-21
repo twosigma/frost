@@ -96,6 +96,8 @@ VECTOR_DIRECTED_TRACES = tuple(
         "fma",
         "fp_compare",
         "fp_convert",
+        "cached_load",
+        "cached_store",
     )
 )
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
@@ -718,6 +720,8 @@ def run(arguments: argparse.Namespace) -> int:
             sail_monitor("Sail", sail_port, arguments.response_timeout),
             TraceMonitor("FROST", frost_port, arguments.response_timeout),
         ]
+        if arguments.vlen and not arguments.wfi:
+            monitors[0].clear_vector_stores = True
         command = [
             tool_path("QCVEngine", "FROST_QCVENGINE"),
             "-a",
@@ -991,7 +995,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--vector-directed",
         action="store_true",
-        help="add directed vector state, scalar-result, fractional LMUL and FP traces",
+        help="add directed vector state, scalar-result, fractional LMUL, FP "
+        "and cached DDR traces",
     )
     parser.add_argument(
         "--vlen",

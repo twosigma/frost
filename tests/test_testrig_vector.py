@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,7 @@ vector = importlib.import_module("testrig.vector")
 test_testrig = importlib.import_module("test_testrig")
 
 WORD = re.compile(r"^\.4byte (0x[0-9a-f]{8})\s+# (.+)$")
+TRACE_WORD = re.compile(r"(?m)(?=^[ \t]*\.(?:2|4)byte[ \t]+)")
 
 
 def test_traces_are_reproducible(tmp_path: Path) -> None:
@@ -272,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (21, instructions + 799) if vector_directed else (15, instructions)
+    expected = (23, instructions + 824) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -287,6 +289,8 @@ def test_vector_directed_replay(
         ("vector_fma.S", 186, 146),
         ("vector_fp_compare.S", 206, 264),
         ("vector_fp_convert.S", 210, 209),
+        ("vector_cached_load.S", 13, 4),
+        ("vector_cached_store.S", 12, 4),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -295,6 +299,113 @@ def test_vector_directed_replay(
             lines = trace.read_text().splitlines()
             assert sum(line.startswith(".4byte ") for line in lines) == words
             assert sum(line.startswith(".assert ") for line in lines) == checks
+    _check_vector_store_readbacks(trace_dir.glob("*.S"))
+
+
+def _check_vector_store_readbacks(traces: Iterable[Path]) -> None:
+    """Each vector store must assert a trap or read back all written elements."""
+    for trace in traces:
+        blocks = TRACE_WORD.split(trace.read_text())[1:]
+        words = [int(block.split()[1], 0) for block in blocks]
+        stores = [
+            index
+            for index, word in enumerate(words)
+            if test_testrig.run_stats.is_vector_store(word)
+        ]
+        if trace.name != "vector_cached_store.S":
+            for store in stores:
+                assert re.search(
+                    r'(?m)^\.assert trap == 1(?:[ \t]+"|[ \t]*$)', blocks[store]
+                ), f"{trace.name}: vector store needs a trap or scalar readback check"
+            continue  # The replay enforces the trap assertion on each such store.
+
+        (store,) = stores
+        assert words[store] == 0x0204_6427  # vse32.v v8, (s0), unmasked
+        assert re.search(r"(?m)^\.assert trap == 0\b", blocks[store])
+
+        # Fix the setup so the store starts at lane zero with two active
+        # lanes at a fresh base, and nothing else can initialize that memory.
+        assert words[:store] == [
+            0x6000_0293,  # addi t0, zero, 0x600
+            0x3002_A073,  # csrs mstatus, t0
+            0x4000_8437,  # lui s0, 0x40008
+            0x0014_1413,  # slli s0, s0, 1
+            0xC101_7657,  # vsetivli a2, 2, e32, m1, tu, mu
+            0x0070_0313,  # addi t1, zero, 7
+            0x0050_0393,  # addi t2, zero, 5
+            0x5E03_C457,  # vmv.v.x v8, t2
+            0x4203_6457,  # vmv.s.x v8, t1
+        ], f"{trace.name}: unexpected vector store setup"
+        assert re.search(r"(?m)^\.assert rd_wdata == 0x2\b", blocks[4])
+
+        # Read consecutive stored addresses immediately, with both values
+        # asserted in the replay.
+        assert words[store + 1 :] == [
+            0x0004_6503,  # lwu a0, 0(s0)
+            0x0044_6503,  # lwu a0, 4(s0)
+        ], f"{trace.name}: expected two immediate scalar reads"
+        for block, value in zip(blocks[store + 1 :], (7, 5), strict=True):
+            assert re.search(rf"(?m)^\.assert rd_wdata == {value:#x}\b", block)
+
+
+@pytest.mark.parametrize(
+    ("position", "encoding", "error"),
+    [
+        pytest.param("before", "0x80037057", "unexpected.*setup", id="vsetvl-before"),
+        pytest.param(
+            "after", "0x01037057", "immediate scalar reads", id="vsetvli-after"
+        ),
+        pytest.param(
+            "after", "0x80037057", "immediate scalar reads", id="vsetvl-after"
+        ),
+        pytest.param("before", "0x0080d073", "unexpected.*setup", id="write-vstart"),
+        pytest.param("before", "0x00642023", "unexpected.*setup", id="prestore"),
+        pytest.param("before", "0xc018", "unexpected.*setup", id="compressed-prestore"),
+    ],
+)
+def test_vector_store_readback_rejects_extra_instruction(
+    tmp_path: Path, position: str, encoding: str, error: str
+) -> None:
+    """Setup and readback cannot change VL, vstart or prior memory contents."""
+    trace = tmp_path / "vector_cached_store.S"
+    lines = (VERIF_DIR / "testrig" / trace.name).read_text().splitlines()
+    anchor = "0x02046427" if position == "before" else "0x00046503"
+    index = next(
+        i for i, line in enumerate(lines) if line.startswith(f".4byte {anchor} ")
+    )
+    size = 2 if len(encoding) == 6 else 4
+    lines.insert(index, f".{size}byte {encoding}")
+    trace.write_text("\n".join(lines) + "\n")
+    with pytest.raises(AssertionError, match=error):
+        _check_vector_store_readbacks([trace])
+
+
+def test_vector_store_readback_rejects_vsetvli_before_store(tmp_path: Path) -> None:
+    """The extra configuration can raise VL without changing the word count."""
+    trace = tmp_path / "vector_cached_store.S"
+    source = (VERIF_DIR / "testrig" / trace.name).read_text()
+    trace.write_text(
+        source.replace("0x00500393", "0x01037057").replace("0x5e03c457", "0x5e02b457")
+    )
+    with pytest.raises(AssertionError, match="unexpected.*setup"):
+        _check_vector_store_readbacks([trace])
+
+
+def test_vector_source_width_store_needs_trap_or_readback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source-width entry needs the same check as a directed store."""
+    trace = tmp_path / "unobserved_vector_store.S"
+    source = (VERIF_DIR / "testrig" / "vector_cached_store.S").read_text()
+    trace.write_text(source.split(".4byte 0x00046503", 1)[0])
+    monkeypatch.setattr(test_testrig, "VECTOR_SOURCE_WIDTH_TRACES", (trace,))
+    arguments = test_testrig.parse_arguments(
+        ["--vector", "1", "--vector-source-widths", "--seed", "42"]
+    )
+    config = test_testrig.write_sail_config(30, tmp_path, vlen=128)
+    test_testrig.prepare_inputs(arguments, tmp_path, config)
+    with pytest.raises(AssertionError, match="unobserved_vector_store.S: vector store"):
+        _check_vector_store_readbacks((tmp_path / "vector").glob("*.S"))
 
 
 def test_vector_fp_compare_trace_covers_predicates() -> None:
