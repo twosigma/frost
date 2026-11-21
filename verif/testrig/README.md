@@ -171,8 +171,10 @@ Cacheable data requests and page-table walks use the coherent hart cache and
 shared home. FENCE.I drains committed stores, waits for instruction-copy
 writes, and invalidates L1I. Refills obtain dirty L1D data through home probes.
 Cached LR/SC and AMO operations use
-the CPU's protected atomic interface. The home serves the DMA ingress
-through the same probe and completion channels.
+the CPU's protected atomic interface. The home serves the DMA ingress and
+the vector unit's hart line client through its probe and completion channels.
+The line client shares the home with the coherent hart cache and uses
+source 0, class 3. The home routes grants and releases by message identity.
 The fixture has four-way 4 KiB L1D and L1I caches and a four-way 16 KiB L2.
 Whole-SoC program jobs also exercise the production cache capacities.
 The retirement timeout bounds cache service, synchronization and recovery.
@@ -200,11 +202,13 @@ presented, so a window presented after a redirect belongs to the new path.
 
 Each requested retirement, xRET, or exception produces one record: PC, next
 PC, trap, privilege, the integer destination and its value (FP destinations are not
-reported, as in Sail), and for a store or AMO its physical address, size
-mask, and data. Store data comes from the store queue's in-order memory
-writes; a CSR's read value from the delayed CSR write-back. The record's
-instruction word is the stream word the event consumed, not one read back
-from the core, so an injection error shows up in the other fields. The
+reported, as in Sail), and the physical address, mask and data of writes
+through the store queue. CSR read values arrive through delayed write-back.
+The vector unit writes through the hart line client. The runner clears
+Sail's memory payload for a retiring vector store. Committed vector-store
+traces must assert a trap or read back and assert each stored element with
+scalar loads. The instruction word records the consumed
+stream word. The other fields expose injection errors. The
 harness also checks its own assumptions and reports a violation as a
 simulation failure.
 
@@ -462,11 +466,17 @@ The mask-undisturbed conversion checks the enabled result and the preserved
 masked-off element. The masked NaN leaves the invalid flag clear.
 [FP conversions](vector_fp_convert.S)
 
+The cached DDR traces check aligned vector loads and stores. Scalar stores
+initialize the load input, and integer moves expose each loaded lane. The
+store trace asserts that the vector store retires and that scalar loads read
+the expected value from every written element.
+[Cached load](vector_cached_load.S) and [cached store](vector_cached_store.S).
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at each
 of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
 groups from seed 42, the source-width traces and the directed state,
-fractional LMUL and FP traces. Both implementations must return every
-planned trace and instruction.
+fractional LMUL, FP and cached DDR traces. Both implementations must return
+every planned trace and instruction.
 The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer source
 widths, fractional LMUL, base FP results, fused multiply-add and FP

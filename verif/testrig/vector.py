@@ -29,9 +29,9 @@ words, as in atomics.py and crypto.py. Each trace
    register with ``vmv.x.s`` and an in-place ``vslidedown.vi`` by one, then reads
    vxsat and vlenb.
 
-Step 4 is how a comparison sees vector state: RVFI-DII reports the integer
-destination of each instruction, and for a vector load or store only one
-element of its data, so a register image cannot be read back through memory.
+Step 4 exposes vector state through the integer destinations in RVFI-DII.
+Directed vector memory traces also use scalar destinations to compare loaded
+lanes and read back stored elements.
 The instructions are chosen to avoid reserved encodings: destination and
 source registers are multiples of LMUL, and widening or narrowing forms are
 left out and a masked operation never has vd = v0. A small share of operations

@@ -23,25 +23,34 @@
 .4byte 0x34202573  # csrr a0, mcause
 .4byte 0x0005f057  # vsetvli x0,a1,e8,m1,tu,mu
 .4byte 0x04050427  # vsuxei8.v v8,(a0),v0,v0.t: mask and index: reserved
+.assert trap == 1 "mask and index have different EEWs"
 .4byte 0x34202573  # csrr a0, mcause
 .4byte 0x00050027  # vse8.v v0,(a0),v0.t: mask and data: reserved
+.assert trap == 1 "mask and data have different EEWs"
 .4byte 0x34202573  # csrr a0, mcause
 .4byte 0x0015f057  # vsetvli x0,a1,e8,m2,tu,mu
 .4byte 0x00050027  # vse8.v v0,(a0),v0.t at LMUL 2: mask and data: reserved
+.assert trap == 1 "mask and grouped data have different EEWs"
 .4byte 0x34202573  # csrr a0, mcause
 .4byte 0x0005f057  # vsetvli x0,a1,e8,m1,tu,mu
 .4byte 0x08550027  # vsse8.v v0,(a0),t0,v0.t: mask and data: reserved
+.assert trap == 1 "mask and strided data have different EEWs"
 .4byte 0x34202573  # csrr a0, mcause
 .4byte 0x04850027  # vsuxei8.v v0,(a0),v8,v0.t: mask and data: reserved
+.assert trap == 1 "mask and indexed data have different EEWs"
 .4byte 0x34202573  # csrr a0, mcause
 .4byte 0x20050027  # vsseg2e8.v v0,(a0),v0.t: mask and data: reserved
+.assert trap == 1 "mask and segmented data have different EEWs"
 .4byte 0x34202573  # csrr a0, mcause
 .4byte 0x0085f057  # vsetvli x0,a1,e16,m1,tu,mu
 .4byte 0x06850427  # vsuxei8.v v8,(a0),v8 at SEW 16: data and index: reserved
+.assert trap == 1 "data and byte indices have different EEWs"
 .4byte 0x34202573  # csrr a0, mcause
 .4byte 0x0005f057  # vsetvli x0,a1,e8,m1,tu,mu
 .4byte 0x0e856427  # vsoxei32.v v8,(a0),v8 at SEW 8: data and index: reserved
+.assert trap == 1 "data and word indices have different EEWs"
 .4byte 0x34202573  # csrr a0, mcause
 .4byte 0x0085f057  # vsetvli x0,a1,e16,m1,tu,mu
 .4byte 0x26950427  # vsuxseg2ei8.v v8,(a0),v9 at SEW 16: data and index: reserved
+.assert trap == 1 "segmented data and indices have different EEWs"
 .4byte 0x34202573  # csrr a0, mcause

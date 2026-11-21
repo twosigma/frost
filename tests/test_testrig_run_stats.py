@@ -17,12 +17,52 @@
 import importlib
 import socket
 import threading
+from dataclasses import replace
+from io import BytesIO
 
 import pytest
 
 testrig = importlib.import_module("test_testrig")
 wire = testrig.rvfi_dii
 stats = importlib.import_module("testrig.run_stats")
+
+
+@pytest.mark.parametrize(
+    ("insn", "trap", "has_memory", "cleared"),
+    (
+        (0x0204_6427, 0, True, True),  # vse32.v
+        (0x0204_6427, 1, True, False),
+        (0x0204_6427, 0, False, False),
+        (0x0204_6407, 0, True, False),  # vle32.v
+        (0x00A4_6423, 0, True, False),  # sw
+        (0x00A4_3427, 0, True, False),  # fsd
+    ),
+)
+def test_vector_store_reply_fields(
+    insn: int, trap: int, has_memory: bool, cleared: bool
+) -> None:
+    """Clear only the mem-data payload of a retired vector store."""
+    record = wire.RvfiRecord(
+        order=19,
+        insn=insn,
+        trap=trap,
+        pc_rdata=0x8000004C,
+        pc_wdata=0x80000050,
+        rs1_rdata=0x80010000,
+        mem_addr=0x80010004 if has_memory else 0,
+        mem_wmask=0xF if has_memory else 0,
+        mem_wdata=5 if has_memory else 0,
+    )
+    raw = record.encode_v2()
+    reply = stats.clear_vector_store_fields(raw)
+    if cleared:
+        expected = replace(record, mem_addr=0, mem_wmask=0, mem_wdata=0)
+        mem_data_start = wire.V2_HEADER_BYTES + wire.V2_INT_DATA_BYTES + 8
+        assert reply[:mem_data_start] == raw[:mem_data_start]
+        assert len(reply) == len(raw)
+        assert wire.decode_v2(BytesIO(reply)) == expected
+    else:
+        assert reply == raw
 
 
 @pytest.mark.parametrize("version", (1, 2))

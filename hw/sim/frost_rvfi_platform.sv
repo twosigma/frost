@@ -690,6 +690,13 @@ module frost_rvfi_platform #(
   logic data_memory_cached_read_error, walk_line_resp_error, iup_resp_error;
   logic hart_fatal, home_fatal;
   wire cache_fatal = hart_fatal || home_fatal;
+  // The hart line client carries sector requests from the vector memory unit.
+  logic line_req_valid, line_req_ready, line_req_write;
+  logic [riscv_pkg::PhysAddrBits-1:0] line_req_addr;
+  logic [255:0] line_req_wdata, line_resp_rdata;
+  logic [31:0] line_req_wstrb;
+  logic [3:0] line_req_id, line_resp_id;
+  logic line_resp_valid, line_resp_error;
 
   logic iup_req_valid, iup_req_ready, iup_req_write;
   logic [riscv_pkg::PhysAddrBits-1:0] iup_req_addr;
@@ -943,6 +950,7 @@ module frost_rvfi_platform #(
       .MMIO_ADDR(MmioAddr),
       .CACHED_BASE(64'(CACHED_BASE)),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .CACHED_TIER_EN((ENABLE_CACHED_TIER != 0) && (CACHED_SIZE_BYTES != 64'd0)),
       .PERF_COUNTERS(PERF_COUNTERS),
       .VECTOR(VECTOR),
       .VLEN(VLEN),
@@ -1001,19 +1009,18 @@ module frost_rvfi_platform #(
       .o_uncached_write_byte_en(),
       .o_uncached_write_size(),
       .o_uncached_write_buffered(),
-      // The misaligned-access engine is not built in this platform
-      // (MISALIGNED_HW=0); its line requests and fatal report stay idle.
-      .o_ma_line_req_valid(),
-      .i_ma_line_req_ready(1'b0),
-      .o_ma_line_req_write(),
-      .o_ma_line_req_addr(),
-      .o_ma_line_req_data(),
-      .o_ma_line_req_mask(),
-      .o_ma_line_req_id(),
-      .i_ma_line_resp_valid(1'b0),
-      .i_ma_line_resp_id('0),
-      .i_ma_line_resp_data('0),
-      .i_ma_line_resp_error(1'b0),
+      // The vector unit uses the hart line-client port with MISALIGNED_HW=0.
+      .o_ma_line_req_valid(line_req_valid),
+      .i_ma_line_req_ready(line_req_ready),
+      .o_ma_line_req_write(line_req_write),
+      .o_ma_line_req_addr(line_req_addr),
+      .o_ma_line_req_data(line_req_wdata),
+      .o_ma_line_req_mask(line_req_wstrb),
+      .o_ma_line_req_id(line_req_id),
+      .i_ma_line_resp_valid(line_resp_valid),
+      .i_ma_line_resp_id(line_resp_id),
+      .i_ma_line_resp_data(line_resp_rdata),
+      .i_ma_line_resp_error(line_resp_error),
       .o_ma_fatal(),
       .o_ma_fatal_addr(),
       .i_clk,
@@ -2282,11 +2289,24 @@ module frost_rvfi_platform #(
 
     coh_d_t dma_d, home_d;
     coh_g_t grant;
-    coh_c_t dma_c, home_c;
+    coh_d_t line_d;
+    coh_c_t dma_c, home_c, line_c;
     coh_u_t release_message;
     logic dma_d_valid, dma_d_ready, home_d_valid, home_d_ready;
     logic g_valid, g_ready, dma_g_ready, dma_c_valid, dma_c_ready;
-    logic home_c_valid, home_c_ready, u_valid, u_ready, dma_u_ready, dma_owner_q;
+    logic home_c_valid, home_c_ready, u_valid, u_ready, dma_u_ready;
+    logic line_d_valid, line_d_ready, line_g_valid, line_g_ready;
+    logic line_c_valid, line_c_ready, line_u_valid, line_u_ready;
+    // Source 0 class 3 below HartLineIds names the hart line client. The
+    // CMO requester uses class 3 at CmoId and takes the hart cache path.
+    wire grant_hart = grant.q.src == 2'd0;
+    wire release_hart = release_message.q.src == 2'd0;
+    wire grant_line = grant_hart && grant.q.port_class == 2'd3 &&
+        int'(grant.q.id) < coherence_pkg::HartLineIds;
+    wire release_line = release_hart && release_message.q.port_class == 2'd3 &&
+        int'(release_message.q.id) < coherence_pkg::HartLineIds;
+    wire grant_dma = grant.q.src == 2'd2;
+    wire release_dma = release_message.q.src == 2'd2;
     coherence_line_bridge #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .ID_BITS(4),
@@ -2314,44 +2334,97 @@ module frost_rvfi_platform #(
         .o_d_valid(dma_d_valid),
         .i_d_ready(dma_d_ready),
         .o_d(dma_d),
-        .i_g_valid(g_valid && dma_owner_q),
+        .i_g_valid(g_valid && grant_dma),
         .o_g_ready(dma_g_ready),
         .i_g(grant),
         .o_c_valid(dma_c_valid),
         .i_c_ready(dma_c_ready),
         .o_c(dma_c),
-        .i_u_valid(u_valid && dma_owner_q),
+        .i_u_valid(u_valid && release_dma),
         .o_u_ready(dma_u_ready),
+        .i_u(release_message)
+    );
+    // The hart line client uses the home's DMA-style probe and merge service.
+    coherence_dma_ingress #(
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+        .SOURCE(2'd0),
+        .PORT_CLASS(2'd3),
+        .SLOTS(coherence_pkg::HartLineIds)
+    ) line_client (
+        .i_clk,
+        .i_rst(cpu_cache_rst),
+        .i_fatal_stop(cache_fatal),
+        .i_req_valid(line_req_valid),
+        .o_req_ready(line_req_ready),
+        .i_req_write(line_req_write),
+        .i_req_addr(line_req_addr),
+        .i_req_data(line_req_wdata),
+        .i_req_mask(line_req_wstrb),
+        .i_req_id(line_req_id),
+        .i_req_non_alloc(1'b0),
+        .o_resp_valid(line_resp_valid),
+        .o_resp_data(line_resp_rdata),
+        .o_resp_id(line_resp_id),
+        .o_resp_error(line_resp_error),
+        .o_d_valid(line_d_valid),
+        .i_d_ready(line_d_ready),
+        .o_d(line_d),
+        .i_g_valid(line_g_valid),
+        .o_g_ready(line_g_ready),
+        .i_g(grant),
+        .o_c_valid(line_c_valid),
+        .i_c_ready(line_c_ready),
+        .o_c(line_c),
+        .i_u_valid(line_u_valid),
+        .o_u_ready(line_u_ready),
         .i_u(release_message)
     );
     coherence_d_arbiter #(
         .WIDTH((riscv_pkg::PhysAddrBits + 312)),
-        .PORTS(2)
+        .PORTS(3)
     ) demands (
         .i_clk(i_clk),
         .i_rst(cpu_cache_rst),
-        .i_valid({dma_d_valid, hart_d_valid}),
-        .o_ready({dma_d_ready, hart_d_ready}),
-        .i_payload({dma_d, hart_d}),
+        .i_valid({line_d_valid, dma_d_valid, hart_d_valid}),
+        .o_ready({line_d_ready, dma_d_ready, hart_d_ready}),
+        .i_payload({line_d, dma_d, hart_d}),
         .o_valid(home_d_valid),
         .o_selected(),
         .i_ready(home_d_ready),
         .o_payload(home_d)
     );
-    always_ff @(posedge i_clk) begin
-      if (cpu_cache_rst) dma_owner_q <= 1'b0;
-      else if (home_d_valid && home_d_ready) dma_owner_q <= home_d.q[8:7] == 2;
-    end
-    assign hart_g_valid = g_valid && !dma_owner_q;
+    assign hart_g_valid = g_valid && grant_hart && !grant_line;
+    assign line_g_valid = g_valid && grant_line;
     assign hart_g = grant;
-    assign g_ready = dma_owner_q ? dma_g_ready : hart_g_ready;
-    assign home_c_valid = dma_owner_q ? dma_c_valid : hart_c_valid;
-    assign home_c = dma_owner_q ? dma_c : hart_c;
-    assign dma_c_ready = home_c_ready && dma_owner_q;
-    assign hart_c_ready = home_c_ready && !dma_owner_q;
-    assign hart_u_valid = u_valid && !dma_owner_q;
+    assign g_ready = grant_dma ? dma_g_ready : grant_hart && (grant_line || hart_g_ready);
+    coherence_d_arbiter #(
+        .WIDTH(riscv_pkg::PhysAddrBits + 18),
+        .PORTS(3),
+        .HOLD_VALID(1)
+    ) completions (
+        .i_clk,
+        .i_rst(cpu_cache_rst),
+        .i_valid({line_c_valid, dma_c_valid, hart_c_valid}),
+        .o_ready({line_c_ready, dma_c_ready, hart_c_ready}),
+        .i_payload({line_c, dma_c, hart_c}),
+        .o_valid(home_c_valid),
+        .o_selected(),
+        .i_ready(home_c_ready),
+        .o_payload(home_c)
+    );
+    assign hart_u_valid = u_valid && release_hart && !release_line;
+    assign line_u_valid = u_valid && release_line;
     assign hart_u = release_message;
-    assign u_ready = dma_owner_q ? dma_u_ready : hart_u_ready;
+    assign u_ready = release_dma ? dma_u_ready : release_hart && (release_line || hart_u_ready);
+`ifndef SYNTHESIS
+    // The line client's G and U are always taken, as in the cluster.
+    always_ff @(posedge i_clk) begin
+      if (reset_seen_q && !cpu_cache_rst && !cache_fatal) begin
+        if (line_g_valid) p_line_g_taken : assert (line_g_ready);
+        if (line_u_valid) p_line_u_taken : assert (line_u_ready);
+      end
+    end
+`endif
     coherence_home #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .LINE_BYTES(L2_LINE_BYTES),
@@ -2996,6 +3069,11 @@ module frost_rvfi_platform #(
     assign iup_resp_error = 1'b0;
     assign hart_fatal = 1'b0;
     assign home_fatal = 1'b0;
+    assign line_req_ready = 1'b0;
+    assign line_resp_valid = 1'b0;
+    assign line_resp_rdata = '0;
+    assign line_resp_id = '0;
+    assign line_resp_error = 1'b0;
     // No cached tier: the DMA test engine has no memory to move, so its
     // window reads as zero and it never interrupts; likewise the NIC.
     assign dma_engine_irq = 1'b0;
