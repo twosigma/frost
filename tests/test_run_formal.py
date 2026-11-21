@@ -328,6 +328,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "rob_wfi_head_ready.sby",
+        "Accepted WFI allocations complete and a nonexceptional WFI head is stored-ready",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "debug_go_pipeline.sby",
         "Registered debug GO keeps its command or resume target, holds until "
         "acknowledgement, and clears on acknowledgement or module reset",
