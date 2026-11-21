@@ -511,6 +511,7 @@ cycle; simulation asserts the last three. The split shadow select that
 | `rs_issue_tag_banks` | INT_RS with four issue-tag copies (`ISSUE_CDB_TAG_BANKS=4`), each bank input driven by its lane's tag, equals INT_RS with the single tags: every output and every next state are the same for any register state and input. `int_equiv` compares the portable builds and `int_equiv_prims` the Xilinx-primitive builds. Both are flattened as in the primitive twins, and every flop is then cut: its readers take a free input in its place (the state) and its output is compared (the next state). `equiv_make` pairs ports and nets by name, `equiv_struct` adds a point for each pair of matching cells, and `equiv_simple` must prove every point. A sat check in each build confirms that one entry of each quarter compares against its lane's tag. Each copy equals its tag after one clock edge, which `rs_issue_tag_copies` proves, and a station whose state equals the single-tag station's, with bank inputs equal to the tags, has the same outputs and next state; INT_RS's behavior is therefore unchanged from reset, or from any corresponding initial state. Each task has a 600-second limit in Primitive forms |
 | `rs_issue_tag_copies` | Each of `tomasulo_wrapper`'s INT_RS issue-tag copies equals its tag after one clock edge, from any initial state: the wrapper is read as `tomasulo_wrapper` reads it, the eight copy assertions (the wrapper's only checks gated by `$initstate`) are kept, every other assertion, every assumption and every cover is removed, the outputs are deleted and the two next-tag nets are cut to free values; induction of depth 2. The task has a 600-second limit in Primitive forms |
 | `tomasulo_wrapper` | The back end together (ROB, RAT, four stations, CDB arbiter, and memory queues): a full flush or reset empties every structure, each station's copy of the CDB matches the bus, and the stations' ROB-tag rule holds with the real ROB allocator. See below |
+| `tomasulo_wrapper_commit_bus` | The wrapper's ROB, commit pipeline, RAT and fence flush, with both retirement and rename lanes. See below |
 | `reservation_station_twin` | The indexed source-write selects (LUT5 and LUT3) in the INT-station configuration equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 
 `reservation_station` checks the module's default parameters at BMC depth
@@ -549,21 +550,42 @@ built with its default parameters, not the core's: `SPLIT_RS_DISPATCH`,
 `ROB_SHARED_LINK_BANK`, `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS`,
 `CACHE_NORMAL_MEMORY`, `CMO_HOME` and `VECTOR` are 0 and `L0_CACHE_DEPTH` is
 128 (`fp_repair_bmc` sets `ENABLE_DISPATCH_DONE_REPAIR`).
-The six checks that read the registered commit bus (a commit clearing or
-keeping a rename, a rename winning over a same-cycle commit, and the native
-fence's flush) first apply after an instruction has dispatched, completed,
-committed and passed that register, which depth 4 does not reach: they are
-not exercised by these tasks. With only those six kept, depth 5 still misses
-them and the sixth step did not finish within 25 minutes, so no task checks
-them yet; the [roadmap](../ROADMAP.md#verification) lists the cone-cut proof
-that would. Run deeper, the native-fence checks fail on allocations that
-carry several serializing classes at once, which the wrapper does not rule
-out; `reorder_buffer`'s own proof assumes one class per allocation, and
-dispatch's simulation check `p_rob_alloc_one_serializing_class` checks it in
-the core.
 `fp_repair_bmc` enables the FP dispatch done repair, as the CPU does, and
 assumes the repair channels carry the pending FP instruction's source
 readiness and tags.
+
+`tomasulo_wrapper_commit_bus` checks the registered commit path at depth 10.
+It reads the wrapper's connections from the 32-entry ROB to the commit
+pipeline and both RAT clear ports. A matching slot-1 commit clears the stored
+INT or FP mapping. When neither lane renames the INT register and slot 1
+commits a different tag to it, a matching slot-2 commit clears the mapping.
+If neither commit matches, the mapping and its tag are preserved. The stored
+valid bits are observed before the lookup's ROB liveness qualification, since
+the ROB invalidates a retiring tag one cycle before the RAT consumes the
+registered clear. Rename takes precedence over clearing, with slot 2 winning
+if both slots rename the same register. The wrapper's two fence checks
+distinguish FENCE.I and SFENCE.VMA from a flush delayed after a translation
+CSR commit.
+
+The proof uses the ROB's reset, allocation, and completion contracts,
+including one serializing class per allocation. Dispatch checks that rule in
+simulation. Rename fields and tags follow the allocation packets and ROB
+responses. Both rename lanes are idle during a full flush, and the shared
+link bank requires slot 2 to be idle behind a slot-1 branch. The scalar
+harness supplies CDB completions, the committed-store drain indication, an
+SFENCE.VMA operand issue, cache-sync readiness, and the one-cycle CSR start
+acknowledgement. Full flush is driven by the fence flush pulse or an external
+flush request. The model keeps partial recovery, checkpoints, direct store
+completion, memory replay, and the ALU held-result path idle.
+
+The `cover` task reaches all five RAT assertion enables. The
+`c_younger_slot2_commit` cover reaches the slot-2 enable and observes the
+resulting clear. Covers also reach both rename priorities, a younger
+retirement that hides a mapping in the lookup before it clears, FENCE.I,
+SFENCE.VMA, and a `satp` write followed by its delayed flush. Both tasks
+run in Block proofs. The SBY and runner limits are 180 seconds for `bmc`
+and 360 seconds for `cover`. BMC uses ABC and replays failures with
+Boolector to report the failing assertion.
 
 ### Load and store queues
 

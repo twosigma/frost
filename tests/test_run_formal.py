@@ -71,6 +71,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
     ("rob_retire_successor", "bmc"): 3600,
+    ("tomasulo_wrapper_commit_bus", "bmc"): 180,
+    ("tomasulo_wrapper_commit_bus", "cover"): 360,
     ("coherence_home", "coh_home_cmo_cover"): 6000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
@@ -1971,6 +1973,11 @@ FORMAL_TARGETS = [
         "tomasulo_wrapper.sby",
         "Tomasulo commit and flush integration, including FP dispatch done repair",
         tasks=("bmc", "cover", "fp_repair_bmc"),
+    ),
+    FormalTarget(
+        "tomasulo_wrapper_commit_bus.sby",
+        "Registered commit propagation from the Tomasulo ROB through the RAT and fence flush",
+        tasks=("bmc", "cover"),
     ),
     FormalTarget(
         "coherence_home_engine_twin.sby",
@@ -4381,6 +4388,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     registered = [name for name, _ in SBY_TASKS]
     required = {
         "predictor_fetch_contract": ["prove_buffer_source", "prove_slot1_sources"],
+        "tomasulo_wrapper_commit_bus": ["bmc", "cover"],
         "rs_mem_broadcast": ["prove", "prove_prims", "cover"],
         "axi_coherent_bridge": [
             "prove_soc",
