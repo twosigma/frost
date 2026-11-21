@@ -260,7 +260,7 @@ jobs:
         with:
           name: frost-docker-image
           path: /tmp/frost-dev.tar
-          retention-days: 1
+          retention-days: ${{ inputs.campaign == 'complete' && !inputs.toggle_coverage && 14 || 1 }}
 
   # Run programs in both memory tiers; separate long runs and group matching builds.
   # CPU architecture comes from the shared RTL defaults used by FPGA builds.
@@ -1060,6 +1060,8 @@ jobs:
       - name: Merge and report
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
+            make -C tests TOPLEVEL=vcu118_frost sim_build/vcu118_ddr_cone.sv
+          ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/coverage_report.py report coverage-jobs \
               --output-dir coverage-report --annotate --require-ci-artifacts \
               ${{ inputs.toggle_coverage && '--toggle-coverage' || '' }}
@@ -1543,7 +1545,7 @@ jobs:
           # four- and eight-identity BMCs about forty minutes.
           - shard: Line client links (zero and two)
             pytest_filter: line_link0_bmc or line_link1_bmc or line_link1_cover
-            timeout_minutes: 95
+            timeout_minutes: 98
           - shard: Line client links (four and eight)
             pytest_filter: line_link1_four_bmc or line_link1_eight_bmc
             timeout_minutes: 80
@@ -1796,7 +1798,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs: build-docker
     if: ${{ !cancelled() && needs.build-docker.result == 'success' && !inputs.toggle_coverage }}
-    timeout-minutes: ${{ matrix.job_minutes || (matrix.mode == 'complete' && 360 || 140) }}
+    timeout-minutes: ${{ matrix.job_minutes || 140 }}
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -1825,7 +1827,7 @@ jobs:
           rm -f /tmp/frost-dev.tar
       - name: Run vector programs
         id: programs
-        timeout-minutes: ${{ matrix.step_minutes || (matrix.mode == 'complete' && 310 || 100) }}
+        timeout-minutes: ${{ matrix.step_minutes || 100 }}
         env:
           VLEN: ${{ matrix.vlen }}
           MODE: ${{ matrix.mode }}

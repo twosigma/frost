@@ -33,7 +33,7 @@ every cover point with its hits in all runs and in whole-SoC runs, and line,
 branch, and toggle coverage per module. Toggle totals use the union of the
 points collected, with a separate whole-SoC union for builds that collect a
 subset. ``--annotate`` also writes annotated copies of the sources with
-verilator_coverage.
+verilator_coverage and requires the files at the recorded source paths.
 """
 
 import argparse
@@ -431,17 +431,25 @@ def ci_coverage_files(directory: Path, *, toggle_coverage: bool = False) -> list
     return sorted(files)
 
 
-def write_lcov(merged: Path, info: Path) -> None:
-    """Write merged line and branch coverage as lcov with repository-relative paths.
+def missing_source_paths(sources: Iterable[str]) -> list[str]:
+    """Return the distinct recorded paths that do not name files, in sorted order."""
+    return sorted(source for source in set(sources) if not Path(source).is_file())
+
+
+def write_lcov(merged: Path, info: Path) -> set[str]:
+    """Write lcov with repository-relative paths and return every recorded source path.
 
     verilator_coverage writes toggle and cover points as lcov branches, so the
     lcov file is written from a copy that holds only line and branch points
     (its --filter-type takes a single type pattern).
     """
     line_and_branch = info.with_suffix(".lines.dat")
+    sources: set[str] = set()
     with merged.open("rb") as source, line_and_branch.open("wb") as copy:
         for record in source:
             point = parse_point(record)
+            if point is not None and point.file:
+                sources.add(point.file)
             if point is None or point.kind in ("line", "branch"):
                 copy.write(record)
     try:
@@ -462,6 +470,7 @@ def write_lcov(merged: Path, info: Path) -> None:
         ),
         encoding="utf-8",
     )
+    return sources
 
 
 def report(inputs: Sequence[Path], output_dir: Path, *, annotate: bool = False) -> int:
@@ -472,8 +481,16 @@ def report(inputs: Sequence[Path], output_dir: Path, *, annotate: bool = False) 
     if not files:
         print("No coverage files found", file=sys.stderr)
         return 1
-    write_lcov(merged, output_dir / "coverage.info")
+    sources = write_lcov(merged, output_dir / "coverage.info")
     if annotate:
+        missing = missing_source_paths(sources)
+        if missing:
+            print(
+                "Missing source files for coverage annotation\n"
+                + "\n".join(f"  {path}" for path in missing),
+                file=sys.stderr,
+            )
+            return 1
         verilator_coverage(
             [
                 "--annotate",
