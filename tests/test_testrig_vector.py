@@ -272,7 +272,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (20, instructions + 589) if vector_directed else (15, instructions)
+    expected = (21, instructions + 799) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -286,6 +286,7 @@ def test_vector_directed_replay(
         ("vector_fp_results_flags.S", 74, 51),
         ("vector_fma.S", 186, 146),
         ("vector_fp_compare.S", 206, 264),
+        ("vector_fp_convert.S", 210, 209),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -334,6 +335,36 @@ def test_vector_fp_compare_trace_covers_predicates() -> None:
         for form in forms
     }
     expected.add((64, 0x1B, vv, False))
+    assert observed == expected
+
+
+def test_vector_fp_convert_trace_covers_forms() -> None:
+    """Check the encoded conversion forms, widths and guard."""
+    trace = VERIF_DIR / "testrig" / "vector_fp_convert.S"
+    single = {0, 1, 2, 3, 6, 7}
+    widening = {8, 9, 10, 11, 12, 14, 15}
+    narrowing = set(range(16, 24))
+    vtype = 0
+    observed = set()
+    for line in trace.read_text().splitlines():
+        if not line.startswith(".4byte "):
+            continue
+        word = int(line.split()[1], 16)
+        if word & 0xC000_707F == 0xC000_7057:  # vsetivli
+            vtype = (word >> 20) & 0xFF
+            assert vtype & 7 == 0  # LMUL 1
+            assert (word >> 15) & 31 == 2  # Immediate AVL
+        elif word & 0xFC00_707F == 0x4800_1057:  # FP conversion
+            sew = 8 << ((vtype >> 3) & 7)
+            selector = (word >> 15) & 31
+            unmasked = bool(word & (1 << 25))
+            if not unmasked:
+                assert vtype & 0xC0 == 0x40  # ta, mu
+            observed.add((sew, selector, unmasked))
+
+    expected = {(32, selector, True) for selector in single | widening | narrowing}
+    expected.update((64, selector, True) for selector in single)
+    expected.add((32, 1, False))  # Masked signed conversion from float
     assert observed == expected
 
 

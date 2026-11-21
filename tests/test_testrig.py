@@ -95,6 +95,7 @@ VECTOR_DIRECTED_TRACES = tuple(
         "fp_results_flags",
         "fma",
         "fp_compare",
+        "fp_convert",
     )
 )
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
