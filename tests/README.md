@@ -1054,6 +1054,14 @@ CI shard in both BRAM and DDR tiers. It checks that partial unit-stride and
 strided vector loads in Debug Mode write the completed elements before a page
 fault re-parks the hart and leave `mstatus.VS` Dirty.
 
+The `vec_hold_rows` and `vec_hold_rows_direct` unit benches use the load and
+store queue address interfaces, respectively. Their reference model rolls
+back the ROB tag on a flush, keeps retired vector memory entries live until
+completion, and frees flushed table entries on the cleanup edge. Both benches
+require an overlapping surviving scalar entry that stays unheld during
+cleanup, a scalar allocation on the cleanup edge, and reuse of a cleaned
+table index on the following edge.
+
 The `vec_stride_test_v128`, `vec_stride_test_v256`, and `vec_stride_test_v512`
 programs check strided vector loads and stores: every element width and EMUL
 with positive, negative, zero, misaligned and page-sized strides across sector,

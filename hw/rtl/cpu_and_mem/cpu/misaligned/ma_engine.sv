@@ -465,17 +465,26 @@ module ma_engine #(
 `endif
 
 `ifdef FORMAL
-  // Environment: starts only while idle, one response per issued identity.
-  logic [1:0] issued_q;
+  // The request controls and their state decodes agree after the first reset,
+  // for arbitrary inputs in every subsequent cycle.
   logic f_past_valid = 1'b0;
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
+    if (!f_past_valid) assume (i_rst);
+    if (f_past_valid) begin
+      p_lc_req_state : assert (lc_req_q == ((state_q == S_ISSUE_LO) || (state_q == S_ISSUE_HI)));
+      p_lc_hi_state : assert (lc_hi_q == (state_q == S_ISSUE_HI));
+    end
+  end
+
+`ifndef MA_ENGINE_REQUEST_PROOF
+  // Environment: starts only while idle, one response per issued identity.
+  logic [1:0] issued_q;
+  always_ff @(posedge i_clk) begin
     if (i_rst || (state_q == S_IDLE && i_start)) issued_q <= 2'b00;
     else if (o_lc_req_valid && i_lc_req_ready) issued_q[o_lc_req_id[0]] <= 1'b1;
   end
   always_comb begin
-    // Reset in the first cycle; starts only while idle.
-    if (!f_past_valid) assume (i_rst);
     assume (i_rst || !i_start || state_q == S_IDLE);
     if (i_lc_resp_valid) begin
       assume (in_memory_phase || state_q == S_FATAL);
@@ -509,8 +518,6 @@ module ma_engine #(
 
   always_ff @(posedge i_clk) begin
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
-      p_lc_req_state : assert (lc_req_q == ((state_q == S_ISSUE_LO) || (state_q == S_ISSUE_HI)));
-      p_lc_hi_state : assert (lc_hi_q == (state_q == S_ISSUE_HI));
       // No memory request before both parts have passed every check, and the
       // lower sector is always issued before the upper one.
       if (o_lc_req_valid) begin
@@ -602,6 +609,7 @@ module ma_engine #(
       cover_walked_upper : cover (state_q == S_WALK_RESP && part_q);
     end
   end
+`endif
 `endif
 
 endmodule
