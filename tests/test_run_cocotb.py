@@ -4726,7 +4726,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             python_test_module="cocotb_tests.cache.test_coherence_stale_line",
             hdl_toplevel_module="coherence_cluster_test_harness",
             description=f"Slab-like node reuse with full-line stores{text}",
-            extra_env=env,
+            # Upstream's stream-prefetch timing tests in the same module run in
+            # coherence_stale_line_prefetch_l2.
+            extra_env=(
+                *env,
+                (
+                    "COCOTB_TEST_FILTER",
+                    "(node_reuse_random|node_copy_beside_stream|zero_twin_beside_stream)$",
+                ),
+            ),
             include_in_pytest=suffix in ("", "_pressure"),
         )
         for suffix, params, env, text in (
