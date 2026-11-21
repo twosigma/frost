@@ -774,7 +774,7 @@ After the initial 1 ps settle, while clocks are low, the bench clears each
 NIC front's simulation-only reset history. The cold-reset postcondition
 therefore requires evidence from the driven reset, not an initial scheduling edge.
 
-The Cocotb, physical-address and TestRIG CI jobs set
+The Cocotb, physical-address and scalar TestRIG CI jobs set
 `FROST_STARTUP_SWEEP=1`. After a successful simulation, the runner reuses
 each compiled system model for short startup checks. Programs sharing a
 binary share its completed check. The selected builds divide a 180-second
@@ -1531,23 +1531,28 @@ builds the SoC with the simulation-only injection harness, and the image
 provides Sail and the engine.
 
 ```bash
+./scripts/frost.py run make -C tests clean
 ./scripts/frost.py run python3 tests/test_testrig.py
 ./scripts/frost.py run python3 tests/test_testrig.py --include '^(mem|pte)$' --tests 500
 ./scripts/frost.py run python3 tests/test_testrig.py --trace tests/testrig_failures/failure-<time>.S
 ./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
 ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf
 ./scripts/frost.py run python3 tests/test_testrig.py --crypto 50
-./scripts/frost.py run python3 tests/test_testrig.py --vector 100 --vlen 256
+./scripts/frost.py run python3 tests/test_testrig.py --vector 12 --vector-source-widths --seed 42 --vlen 256
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
 ./scripts/frost.py run python3 tests/test_testrig.py --wfi
 ```
 
-`--vector N` replays random vector-instruction tests from `verif/testrig/vector.py`
-on a core built with the vector unit at `--vlen` (128, 256 or 512), against Sail
-configured for the same length; it needs a vector core, so no CI job runs it yet.
-Each run draws new sequences. `--atomics` replays random A-extension tests
-from `verif/testrig/atomics.py` in place of the engine's templates, from a
-seed the runner prints. A mismatch is shrunk to a short counterexample
+`--vector N` replays generated vector traces from `verif/testrig/vector.py`
+with both implementations configured for `--vlen` (128, 256 or 512).
+`--vector-source-widths` includes the directed integer, FP and memory
+source-width traces in that replay. CI uses seed 42 and checks 12 generated
+and three directed traces at each length. The VLEN 128 job also checks that
+TestRIG reports a changed FROST vector readout.
+
+`--atomics` replays random A-extension tests from `verif/testrig/atomics.py`
+in place of the engine's templates, from a seed the runner prints. A mismatch
+is shrunk by default to a short counterexample
 in `tests/testrig_failures/`, which `--trace` replays; the logs and the
 engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
 replays the saved counterexamples in `verif/testrig/traces/`.
@@ -2031,6 +2036,7 @@ and Fast Python Tests jobs locally.
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
+| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares 12 seeded integer traces and three directed source-width traces against Sail |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |

@@ -299,8 +299,8 @@ manual CI run can check the full suite at all three lengths.
 
 FROST is tested with formal proofs of individual modules, unit benches, full
 programs, the RISC-V architecture tests and riscv-tests, riscv-torture
-programs against Spike, TestRIG against the Sail model in four parallel CI
-jobs, and Debian on the X3. The whole-SoC cocotb jobs draw DDR latency,
+programs against Spike, TestRIG against the Sail model in scalar and vector
+CI jobs, and Debian on the X3. The whole-SoC cocotb jobs draw DDR latency,
 jitter and completion order from a seed that a failing test names.
 The native vector shards share one DDR seed. CI merges line coverage of
 simulations that contribute most to it, the toggle coverage of the unit benches, and the counts of

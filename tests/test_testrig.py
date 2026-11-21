@@ -83,6 +83,10 @@ TraceMonitor = run_stats.TraceMonitor
 SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 DEFAULT_VECTOR_LENGTH = 128
 SAVED_TRACES_DIR = REPO_ROOT / "verif" / "testrig" / "traces"
+VECTOR_SOURCE_WIDTH_TRACES = tuple(
+    VERIF_DIR / "testrig" / f"vector_source_widths_{family}.S"
+    for family in ("integer", "fp", "memory")
+)
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
 DEFAULT_LOG_DIR = TESTS_DIR / "testrig_logs"
@@ -403,6 +407,9 @@ def prepare_inputs(
             arguments.vector_length,
             arguments.vlen,
         )
+        if arguments.vector_source_widths:
+            for trace in VECTOR_SOURCE_WIDTH_TRACES:
+                shutil.copyfile(trace, trace_dir / trace.name)
         print(
             f"Wrote {arguments.vector} vector tests at VLEN {arguments.vlen} "
             f"from seed {seed} (--seed {seed} regenerates them)",
@@ -516,6 +523,8 @@ def prepare_inputs(
             ),
             max(1, len(paths), len(wfi_strands)),
         )
+        if arguments.vector_source_widths:
+            requested += len(VECTOR_SOURCE_WIDTH_TRACES)
         if not directory.is_dir() or len(paths) < requested:
             raise ValueError(
                 f"expected at least {requested} .S traces in {directory}; "
@@ -961,6 +970,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="random vector operation groups per --vector test (default 20)",
     )
     parser.add_argument(
+        "--vector-source-widths",
+        action="store_true",
+        help="add the directed integer, FP and memory source-width traces to --vector",
+    )
+    parser.add_argument(
         "--vlen",
         type=int,
         choices=vector.VECTOR_LENGTHS,
@@ -1008,6 +1022,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="seconds the engine waits for one test's trace (default 600)",
     )
     arguments = parser.parse_args(argv)
+    if arguments.vector_source_widths and arguments.vector is None:
+        parser.error("--vector-source-widths requires --vector")
     if arguments.vector and arguments.vlen is None:
         arguments.vlen = DEFAULT_VECTOR_LENGTH
     active_modes = sum(
