@@ -73,6 +73,7 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "state": 0x4218_2557,  # vcpop.m a0, v1 in the state and scalar-result trace
     "fractional-lmul": 0x4290_2557,  # vmv.x.s a0, v9 in the fractional LMUL trace
     "base-fp": 0x4310_2557,  # vmv.x.s a0, v17 in the FP results and flags trace
+    "fma": 0x4360_2557,  # vmv.x.s a0, v22 in the fused multiply-add trace
 }
 
 # frost_rvfi_dii's error_flags bits.
