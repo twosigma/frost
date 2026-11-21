@@ -22,6 +22,7 @@ regression run [natively](../fpga/README.md#hardware-regression) instead.
 | [`test_riscv_torture.py`](#test_riscv_torturepy) | Random RV64IMAFDC programs against Spike references |
 | [`test_testrig.py`](#test_testrigpy) | Random instruction sequences against the Sail RISC-V model, one instruction at a time (TestRIG) |
 | [`test_run_yosys.py`](#test_run_yosyspy) | Portable and Xilinx synthesis |
+| [`test_yosys_equivalence.py`](#test_yosys_equivalencepy) | Portable and yosys-slang equivalence |
 | [`test_run_formal.py`](#test_run_formalpy) | Formal proofs |
 | [`net10g/`](net10g/README.md) | Standalone Ethernet MAC/PCS simulation and synthesis |
 
@@ -86,6 +87,9 @@ source errors. Run it directly or through the manual hook:
 ./scripts/frost.py run pre-commit run slang-frontend --hook-stage manual
 ./scripts/frost.py run python3 tests/slang_frontend.py --case 'formal/immu_bare/*'
 ```
+
+The `store_completion_cofactor` views generate their assertion cone from
+the staged wrapper source with the same projection as the proof runner.
 
 Declarations must precede **every** reference, including assertion/debug
 code and primitive instances inside generates. Put parameters and localparams
@@ -1054,6 +1058,14 @@ CI shard in both BRAM and DDR tiers. It checks that partial unit-stride and
 strided vector loads in Debug Mode write the completed elements before a page
 fault re-parks the hart and leave `mstatus.VS` Dirty.
 
+The `vec_hold_rows` and `vec_hold_rows_direct` unit benches use the load and
+store queue address interfaces, respectively. Their reference model rolls
+back the ROB tag on a flush, keeps retired vector memory entries live until
+completion, and frees flushed table entries on the cleanup edge. Both benches
+require an overlapping surviving scalar entry that stays unheld during
+cleanup, a scalar allocation on the cleanup edge, and reuse of a cleaned
+table index on the following edge.
+
 The `vec_stride_test_v128`, `vec_stride_test_v256`, and `vec_stride_test_v512`
 programs check strided vector loads and stores: every element width and EMUL
 with positive, negative, zero, misaligned and page-sized strides across sector,
@@ -1657,6 +1669,47 @@ SystemVerilog parser.
 The standalone Ethernet MAC/PCS has its own
 [simulation and synthesis checks](net10g/README.md).
 
+### `test_yosys_equivalence.py`
+
+The Generic and checks synthesis shard compares the portable flow
+(`read_verilog`, with sv2v for the NIC and MAC) with `read_slang` on
+the generic `SYNTHESIS` view of `hw/rtl/frost.f`. Both elaborate the
+default `platform_top`. Before loading the cuts, each case checks both
+elaboration logs for their respective Verilog-2005 and SLANG frontend
+execution headers. The cases cover `soc_top`, `tage_history`, `dmmu`,
+`axi_mux`, `branch_predictor`, `lq_coherence_port`, `store_queue`,
+`coherence_home_completions`, `cpu_ooo`, `coherence_l1d`, `load_queue`, and
+`coherence_home`. Each case selects an instance from that hierarchy to
+use its elaborated parameters. The comparison includes the selected module's
+logic and its connections to direct children. Child outputs become shared
+inputs and child inputs become compared outputs. Slang uses typed black
+boxes for the image-loading children `axi_behavioral_memory`,
+`imem_predecode`, and `tdp_bram_dc_byte_en`.
+
+Yosys maps the selected module's memories to registers and read/write logic
+with `memory_map -keepdc`. Out-of-range read addresses use undefined data
+where mapping leaves undriven branches. A SAT miter checks observable outputs
+and next-state data for arbitrary defined inputs and matching register and
+memory contents. Defined bits in the slang reference must match. Its
+undefined bits are don't-cares. The proof checks the initialization of each
+paired bit. Uninitialized contents start from arbitrary matching values.
+The miter compares clock and asynchronous reset controls. Synchronous
+reset is part of the next-state logic, with reset inputs left free.
+Unpaired flop bits are independent arbitrary inputs to the two models.
+The same output and paired next-state checks must hold for every value of
+those bits. Yosys encodes the undefined-bit checks with `xprop` before
+ABC reduces the Boolean miter and SAT verifies the assertion.
+
+```bash
+./scripts/frost.py run pytest tests/test_yosys_equivalence.py -m synthesis -v
+```
+
+The runner writes the Yosys scripts, complete logs and any SAT witness to
+the pytest temporary directory. Set `FROST_YOSYS_EQUIV_DIR` to an empty
+directory to keep the files at a chosen path. CI uploads the scripts, logs
+and witnesses from the generic shard. Each frontend has 900 seconds to
+elaborate. Each memory lowering has 180 seconds and each proof has 420 seconds.
+
 ### `test_run_formal.py`
 
 See the [formal guide](../formal/README.md) for the targets, what each one
@@ -1768,7 +1821,8 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_CALIBRATION_TEST` | Limits the calibration capture to the runs of the registry test it names |
 | `FROST_CPU_PERIOD_PS` | Enables `ASYNC_CPU_CLOCK=1` in `frost` builds; the real-program and debug benches drive the independent CPU clock with this period in ps |
 | `FROST_CPU_PHASE_PS` | Initial CPU clock phase in ps when the independent clock is selected; default 700 |
-| `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
+| `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in `test_run_yosys.py` synthesis tests |
+| `FROST_YOSYS_EQUIV_DIR` | Empty directory for frontend equivalence scripts, logs and witnesses (default is a pytest temporary directory) |
 | `FROST_REUSE_DIR` | Turns on [reuse](#reusing-formal-and-synthesis-results) of formal and synthesis passes, with pass markers in this directory (a relative path starts at the repository root); unset or empty, every task runs and no marker is read or written |
 | `FROST_REUSE_TOOLS_ID` | The tool image's identity, required with `FROST_REUSE_DIR` (`python3 tests/ci_reuse.py image-id --image <image>`) |
 | `FROST_REUSE_FORCE` | `true` or `1` runs every task and refreshes its marker |
@@ -2075,20 +2129,22 @@ SRAM macros in BRAM and C library and RTOS, DMA NIC and coherence, Interrupts,
 Memory link stage (other programs) and Privilege and MMU in DDR; four Physical address aperture jobs
 (1 GiB / Bare access, 1 GiB / Unit boundaries, 128 GiB / DMA, 128 GiB / NIC);
 riscv-tests (all suites / bram / p); riscv-torture (ddr / paged); TestRIG
-shards 1, 2 and 4; and the unit-bench job. A model build with coverage takes
-about 2.3 times as long and a simulation about a quarter longer, so the other
-jobs build without it. A job selects coverage through the `coverage` field of
-its matrix entry, which sets `FROST_COVERAGE` and enables the merge and upload
-steps. When a change adds a job or moves tests between jobs, check the points
+shards 1, 2 and 4; and both unit-bench jobs. Debug and UART collects
+`irq_take_hold_test` in BRAM. Interrupts collects it in DDR. A model build
+with coverage takes about 2.3 times as long and a simulation about a quarter
+longer, so the other jobs build without it. The `coverage` field of a matrix
+entry sets `FROST_COVERAGE` and enables the merge and upload steps.
+When a change adds a job or moves tests between jobs, check the points
 the report reaches and move the field if a job it relied on no longer
-contributes. The unit-bench job also
-sets `FROST_COVERAGE_TOGGLE=1`. Toggle coverage stays out of the whole-SoC
-jobs, which the full set would slow about sixfold, and the control set is
-for local runs. Each job merges its files into a `coverage-job-*` artifact,
-and the Coverage Report job merges those into the
-`coverage-report` artifact (the [report](#coverage) with annotated sources)
-and shows its summary on the job's page, after the other jobs finish, failed
-ones included.
+contributes. The unit-bench jobs also set `FROST_COVERAGE_TOGGLE=1`.
+Toggle coverage stays out of the whole-SoC jobs, which the full set would
+slow about sixfold. The control set is for local runs. Each contributing
+job merges its files into a `coverage-job-*`
+artifact. Coverage Report checks the downloaded artifacts against the matrix
+after the other jobs finish, including jobs that fail. A missing artifact or
+one without a coverage payload fails the job. With all inputs present, the job
+merges them into the `coverage-report` artifact (the [report](#coverage) with
+annotated sources) and shows the summary on the job's page.
 
 The workflow has the exact job filters. The named real-program shards select
 applications by name, and the "Runtime and other" shard runs every
@@ -2102,12 +2158,20 @@ their shared builds. Vector programs selects every registry name that starts
 with `vec_`, so a vector program added later joins it without a workflow
 change; "Runtime and other" excludes the same prefix. Each real-program job
 has a four-hour timeout, including setup and coverage uploads, unless its
-shard sets `timeout_minutes`. Size each shard's allowance at 1.8 times its
-slowest measured hosted job time, rounded up to whole minutes. The
-real-program ceiling is 300 minutes. Vector programs, Memory and NIC stress,
-Runtime and other, CoreMark-PRO nnet, and both OpenSBI smoke variants use that
-ceiling. CoreMark-PRO loops has a 340-minute exception because it cannot be
-split further.
+shard sets `timeout_minutes`. Size the timeout at 1.8 times the planned wall
+time, rounded up to whole minutes. The real-program ceiling is 300 minutes.
+Vector programs, Memory and NIC stress, Runtime and other, CoreMark-PRO nnet,
+and both OpenSBI smoke variants use that ceiling. CoreMark-PRO loops has a
+340-minute exception for its single workload.
+
+The fast budget check adds the job overhead and the cost of every selected
+program in that memory tier. The wall-time inputs come from hosted job elapsed
+times and pytest call durations, with estimates for configurations that lack
+a complete measurement. Record each program's cost for the tiers where it
+runs in `tests/fixtures/ci_real_program_budgets.json`. Include any extra model
+build in the cost. Refresh the inputs when a complete hosted run measures the
+selection. If the ceiling prevents the 1.8 multiplier, the recorded plan caps
+the selection's total cost.
 
 The other job families have a ceiling of 360 minutes, which is also the
 default for jobs without a configured timeout. The two cocotb unit jobs,
@@ -2116,12 +2180,13 @@ four records proof use 360-minute limits.
 
 Give each program that boots OpenSBI its own BRAM-only shard with coverage,
 including variants that disable a hardware feature or exercise reset through
-firmware. Programs whose registry cycle budget exceeds 10 million cycles
-also require a named shard. When adding a named selection, exclude it from
-"Runtime and other" on both tiers. The fast checks in
+firmware. Give programs with a cycle limit above 10 million, including bench
+defaults, or at least 30 minutes of planned wall time a named shard. When
+adding a named selection, exclude it from "Runtime and other" on both tiers.
+The fast checks in
 `test_ci_real_program_shards.py` require collection and exactly one selection
-per supported tier for every registered CI program, and keep OpenSBI and
-large cycle budgets out of the complement. Entries with
+per supported tier for every registered CI program, and keep OpenSBI and long
+programs out of the complement. Entries with
 `include_in_pytest=False` remain available through the command line. To see
 what a filter selects without running it:
 
@@ -2162,8 +2227,9 @@ computes a key for each one, a SHA-256 over:
 - the task's timeout, and the source of `tests/test_run_formal.py` or
   `tests/test_run_yosys.py` without its top-level `test_*` functions and the
   registry tables, whose entries for the task enter the key by value. The
-  `coh_home_cmo_cover` key also includes its Python replay helper. Private
-  proof fixtures copy the helper into their `tests/` directory;
+  `coh_home_cmo_cover` key also includes its Python replay helper. Both
+  `store_completion_cofactor` keys include their source projection helper.
+  Private proof fixtures copy these helpers into their `tests/` directory;
 - `tests/conftest.py`, the pytest settings in `pyproject.toml`, other pytest
   configuration files (present or absent), and `scripts/frost.py`;
 - the identity of the tool image (a digest of its layers and environment,

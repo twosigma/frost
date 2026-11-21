@@ -349,6 +349,15 @@ module vec_hold_rows_formal #(
     end
   end
 
+  // The cleanup witnesses follow ROB ordering throughout their history.
+  // Safety properties also admit a head advance on a rollback edge.
+  logic rob_order_q, rob_order;
+  assign rob_order = rob_order_q && !(rb_en && head_step != 2'd0);
+  always_ff @(posedge i_clk) begin
+    if (rst) rob_order_q <= 1'b1;
+    else rob_order_q <= rob_order;
+  end
+
   // Row cases
   logic [D-1:0] hold_p, hold_pp;
   always_ff @(posedge i_clk) begin
@@ -396,14 +405,14 @@ module vec_hold_rows_formal #(
       // A flushed table entry in its cleanup cycle overlaps a scalar entry
       // whose address has settled, and does not hold it.
       c_late_free :
-      cover (v_pend[0] && v_known_p[0] && s_valid[0] && ak_settled[0] && !s_atomic[0] &&
-             !hold[0] && (seg_hit(
+      cover (rob_order && v_pend[0] && v_known_p[0] && s_valid[0] && ak_settled[0] &&
+             !s_atomic[0] && !hold[0] && (seg_hit(
           addr_c[0], size_c[0], s_block[0], rng_v0[0], rng_p0[0], rng_lo0[0], rng_hi0[0]
       ) || seg_hit(
           addr_c[0], size_c[0], s_block[0], rng_v1[0], rng_p1[0], rng_lo1[0], rng_hi1[0]
       )));
       // A scalar entry is allocated in the cleanup cycle.
-      c_cleanup_alloc : cover (|v_pend && a1_en && !a1_vec);
+      c_cleanup_alloc : cover (rob_order && |v_pend && a1_en && !a1_vec);
     end
   end
 

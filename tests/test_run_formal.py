@@ -166,6 +166,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("rs_mem_broadcast", "prove"): 300,
     ("rs_mem_broadcast", "prove_prims"): 300,
     ("rs_mem_broadcast", "cover"): 90,
+    ("store_completion_cofactor", "prove"): 60,
+    ("store_completion_cofactor", "cover"): 120,
 }
 
 
@@ -1165,7 +1167,8 @@ FORMAL_TARGETS = [
         "vec_hold_rows.sby",
         "Vector range holds: an older live vector memory table entry holds an "
         "atomic scalar entry or one with an unknown address, unknown vector range, "
-        "or overlap. A settled hold has such a cause in either queue",
+        "or overlap. A settled hold has such a cause in either queue. The cleanup "
+        "covers forbid head advancement on rollback edges",
         tasks=("vhold_lq_bmc", "vhold_sq_bmc", "vhold_lq_cover", "cover"),
     ),
     FormalTarget(
@@ -1366,10 +1369,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ma_engine.sby",
-        "Misaligned-access engine: request controls match the issue states, no memory request before both parts pass their "
-        "checks, lower sector first, one request and response per identity, one "
-        "completion, fault or write-back per access, and terminal fatal stops",
-        tasks=("bmc", "cover"),
+        "Misaligned-access engine: unbounded equality of request controls and issue-state "
+        "decodes from reset. Bounded checks cover translation before requests, lower sector "
+        "first, unique request identities, completion, faults, write-back and terminal stops",
+        tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
         "alu_shift_hint.sby",
@@ -1477,6 +1480,12 @@ FORMAL_TARGETS = [
         "Occupied reservation-station stage2 and stage2b payloads loaded on FU readiness equal "
         "issue-fire capture across all four station configurations",
         tasks=("int_prove", "mul_prove", "mem_prove", "fp_prove", "int_cover"),
+    ),
+    FormalTarget(
+        "store_completion_cofactor.sby",
+        "The wrapper's ROB store-completion assertion with free cached bounds, "
+        "memory flags and issue inputs",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "rs_issue_tag_banks.sby",
@@ -4272,6 +4281,46 @@ def test_l0_store_boundary_requires_each_form(
     staged.write_text("design -stash gold\n".join(arms))
     with pytest.raises(sby_config.ConfigError, match=f"store boundary {form}:"):
         runner.run_formal(target, task)
+
+
+def test_store_completion_cofactor_production_inputs(tmp_path: Path) -> None:
+    """Bind the proof's file map and staged bytes to the checkout sources."""
+    root = Path(__file__).resolve().parents[1]
+    formal = root / FORMAL_DIR
+    cpu_rtl = root / "hw/rtl/cpu_and_mem/cpu"
+    proof = formal / "store_completion_cofactor.sby"
+    expected = {
+        "riscv_pkg.sv": cpu_rtl / "riscv_pkg.sv",
+        "dtlb.sv": cpu_rtl / "mmu/dtlb.sv",
+        "dmmu.sv": cpu_rtl / "mmu/dmmu.sv",
+        "tomasulo_wrapper.sv": (
+            cpu_rtl / "tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv"
+        ),
+        "store_completion_cofactor_cover.sv": formal
+        / "store_completion_cofactor_cover.sv",
+        "free_undefined.ys": formal / "free_undefined.ys",
+    }
+    source = sby_config.source(proof)
+    for task in source.tasks:
+        resolved = {
+            name: (formal / path).resolve(strict=True)
+            for name, path in source.task(task).files.items()
+        }
+        assert resolved == expected, task
+
+        setup = tmp_path / task
+        result = subprocess.run(
+            ["sby", "--setup", "-d", str(setup), proof.name, task],
+            cwd=formal,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        staged = setup / "src"
+        assert {path.name for path in staged.iterdir()} == expected.keys(), task
+        for name, path in expected.items():
+            assert (staged / name).read_bytes() == path.read_bytes(), (task, name)
 
 
 def test_formal_target_tasks_are_registered() -> None:
@@ -11085,8 +11134,9 @@ def write_yosys_header_wrapper(
     pending_predicates: tuple[PredicateExemption, ...] = (),
     *,
     uses_slang: bool = False,
+    source_projection: Path | None = None,
 ) -> Path:
-    """Load the elaborated-input check and structured header sink for the base model."""
+    """Prepare the base-model checks, header trace, and optional projection."""
     plugin = Path(__file__).with_name("formal_model.cc").read_text()
     predicate_setup = "os.environ['FROST_YOSYS_PENDING_PREDICATES'] = ''\n"
     if pending_predicates:
@@ -11107,6 +11157,9 @@ def write_yosys_header_wrapper(
         "args = sys.argv[1:]\n"
         'if "../model/design.ys" not in args:\n'
         '    os.execvp("yosys", ["yosys", *args])\n'
+        f"source_projection = {str(source_projection) if source_projection else None!r}\n"
+        "if source_projection is not None:\n"
+        "    subprocess.run([sys.executable, source_projection], check=True, timeout=10)\n"
         "ver = subprocess.check_output(['yosys', '-V'], text=True)\n"
         "digest = hashlib.sha256((ver + CC_SRC).encode()).hexdigest()[:16]\n"
         "so_path = Path(f'/tmp/frost-yosys-trace-{digest}.so')\n"
@@ -11743,6 +11796,7 @@ class FormalRunner:
                 Path(tmp_dir) / "yosys_wrapper.py",
                 entries,
                 uses_slang=any(cmd.form.id == "read_slang" for cmd in expanded),
+                source_projection=sby_config.store_completion_cone_helper(sby_path),
             )
             cmd = [
                 "sby",

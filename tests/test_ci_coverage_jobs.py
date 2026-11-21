@@ -14,94 +14,66 @@
 
 """Check which CI jobs collect coverage and that their steps agree."""
 
-import itertools
 import re
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Any
 
-import yaml  # type: ignore[import-untyped]
+import pytest
 
-WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
+from ci_matrix import (
+    COVERAGE_AXES,
+    UPLOAD_STEP,
+    coverage_artifacts,
+    expand_matrix,
+    workflow_jobs,
+)
+from coverage_report import HEADER, ci_coverage_files, main
 
-# Jobs that collect coverage: every one of these has a `coverage` field in its
-# matrix, and the rest of the matrix entries have it switched off.
 EXPECTED_COVERAGE_JOBS = 29
-
-
-def _expand(matrix: dict[str, Any]) -> list[dict[str, Any]]:
-    """Expand a job matrix the way GitHub does, for the shapes the workflow uses."""
-    axes = {k: v for k, v in matrix.items() if k not in ("include", "exclude")}
-    combos = (
-        [dict(zip(axes, values)) for values in itertools.product(*axes.values())]
-        if axes
-        else []
-    )
-    for extra in matrix.get("include", []):
-        matched = [
-            c for c in combos if all(c[k] == v for k, v in extra.items() if k in c)
-        ]
-        if matched and axes:
-            for combo in matched:
-                combo.update({k: v for k, v in extra.items() if k not in combo})
-        else:
-            combos.append(dict(extra))
-    return combos
-
-
-def _collects(job: str, combo: dict[str, Any]) -> bool:
-    if job == "test-verilator":
-        return bool(combo["mem_config"] in combo["shard"]["coverage"])
-    if job == "test-pa-width":
-        return bool(combo["capacity_gib"] in combo["shard"]["coverage"])
-    return bool(combo["coverage"] == 1)
 
 
 def test_coverage_is_selected_by_the_matrix() -> None:
     """Exactly the listed matrix entries collect coverage, and steps follow it."""
-    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
-    selecting = [
-        "test-verilator",
-        "test-pa-width",
-        "test-arch-compliance",
-        "test-riscv-tests",
-        "test-riscv-torture",
-        "test-testrig",
-    ]
-    enabled = 0
-    artifacts = []
+    jobs = workflow_jobs()
+    selecting = {
+        name
+        for name, job in jobs.items()
+        if any(
+            step.get("with", {}).get("name", "").startswith("coverage-job-")
+            for step in job.get("steps", [])
+        )
+    }
+    assert selecting == COVERAGE_AXES.keys()
+    artifacts = coverage_artifacts(jobs)
+    assert len(artifacts) == EXPECTED_COVERAGE_JOBS
     cocotb_files = []
-    for name in selecting:
+    for name, axis in COVERAGE_AXES.items():
         job = jobs[name]
         steps = {s.get("name"): s for s in job["steps"]}
-        for index, combo in enumerate(_expand(job["strategy"]["matrix"])):
-            if name in ("test-verilator", "test-pa-width"):
+        for combo in expand_matrix(job["strategy"]["matrix"]):
+            if axis is not None:
                 assert "coverage" in combo["shard"], (name, combo)
             else:
                 assert combo.get("coverage") in (0, 1), (name, combo)
-            enabled += _collects(name, combo)
-            if _collects(name, combo):
-                artifact = steps["Upload the job's coverage"]["with"]["name"]
-                artifact = artifact.replace("${{ github.job }}", name).replace(
-                    "${{ strategy.job-index }}", str(index)
-                )
-                assert "${{" not in artifact, artifact
-                artifacts.append(artifact)
-                if name == "test-verilator":
-                    label = steps["Merge the job's coverage"]["env"]["COVERAGE_NAME"]
-                    label = label.replace(
-                        "${{ matrix.shard.name }}", combo["shard"]["name"]
-                    ).replace("${{ matrix.mem_config }}", combo["mem_config"])
-                    cocotb_files.append(re.sub(r"[^A-Za-z0-9]+", "_", label))
-        for step in (
-            steps["Merge the job's coverage"],
-            steps["Upload the job's coverage"],
-        ):
-            assert "shard.name" not in step["if"], name
-        assert "coverage" in steps["Merge the job's coverage"]["if"], name
-        assert "coverage" in steps["Upload the job's coverage"]["if"], name
-    assert enabled == EXPECTED_COVERAGE_JOBS
-    assert len(set(artifacts)) == enabled, "Coverage artifact names must be unique"
+            if (
+                name == "test-verilator"
+                and combo["mem_config"] in combo["shard"]["coverage"]
+            ):
+                label = steps["Merge the job's coverage"]["env"]["COVERAGE_NAME"]
+                label = label.replace(
+                    "${{ matrix.shard.name }}", combo["shard"]["name"]
+                ).replace("${{ matrix.mem_config }}", combo["mem_config"])
+                cocotb_files.append(re.sub(r"[^A-Za-z0-9]+", "_", label))
+        coverage_condition = (
+            f"contains(matrix.shard.coverage, matrix.{axis})"
+            if axis is not None
+            else "matrix.coverage == 1"
+        )
+        assert steps[UPLOAD_STEP]["with"]["if-no-files-found"] == "error"
+        for step in (steps["Merge the job's coverage"], steps[UPLOAD_STEP]):
+            assert step["if"] == f"${{{{ !cancelled() && {coverage_condition} }}}}", (
+                name
+            )
     assert len(set(cocotb_files)) == len(cocotb_files), (
         "Merged filenames must be unique"
     )
@@ -113,3 +85,69 @@ def test_coverage_is_selected_by_the_matrix() -> None:
     assert all(
         fnmatchcase(artifact, download["with"]["pattern"]) for artifact in artifacts
     )
+    merge = next(s for s in report["steps"] if s.get("name") == "Merge and report")
+    assert "--require-ci-artifacts" in merge["run"]
+
+
+@pytest.fixture
+def coverage_payloads() -> dict[str, str]:
+    """Supply a sample coverage record for each artifact in the CI matrix."""
+    return {
+        artifact: HEADER + "C '\x01t\x02line\x01f\x02test.sv' 1\n"
+        for artifact in coverage_artifacts(workflow_jobs())
+    }
+
+
+def _write_download(directory: Path, contents: dict[str, str]) -> list[Path]:
+    payloads = []
+    for artifact, content in contents.items():
+        payload = directory / artifact / "coverage.dat"
+        payload.parent.mkdir()
+        payload.write_text(content)
+        payloads.append(payload)
+    return payloads
+
+
+def test_complete_ci_download_supplies_one_input_per_job(
+    tmp_path: Path, coverage_payloads: dict[str, str]
+) -> None:
+    """Accept the layout produced by the workflow's coverage download step."""
+    payloads = _write_download(tmp_path, coverage_payloads)
+    assert ci_coverage_files(tmp_path) == sorted(payloads)
+
+
+@pytest.mark.parametrize(
+    "payload", [None, "", HEADER], ids=["missing", "empty", "header-only"]
+)
+def test_report_requires_every_ci_payload(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    coverage_payloads: dict[str, str],
+    payload: str | None,
+) -> None:
+    """The report command fails before merging an incomplete download."""
+    artifact = next(iter(coverage_payloads))
+    if payload is None:
+        del coverage_payloads[artifact]
+        diagnostic = f"missing {artifact}"
+    else:
+        coverage_payloads[artifact] = payload
+        diagnostic = "has no coverage records"
+    _write_download(tmp_path, coverage_payloads)
+    output = tmp_path / "report"
+    assert (
+        main(
+            [
+                "report",
+                str(tmp_path),
+                "--output-dir",
+                str(output),
+                "--require-ci-artifacts",
+            ]
+        )
+        == 1
+    )
+    stderr = capsys.readouterr().err
+    assert "Incomplete CI coverage" in stderr
+    assert artifact in stderr and diagnostic in stderr
+    assert not output.exists()
