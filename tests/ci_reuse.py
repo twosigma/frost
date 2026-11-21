@@ -93,8 +93,13 @@ SYNTHESIS_BY_VALUE = frozenset(
 
 # The wrapper that CI runs every check through.
 WRAPPERS = ("scripts/frost.py",)
-# Parser and SymbiYosys dump helpers shared by formal key computation and runs.
-FORMAL_HELPERS = ("tests/sby_config.py", "tests/sby_dump.sby")
+# Parser, configuration dump and elaborated-model checks used by formal runs.
+FORMAL_HELPERS = (
+    "tests/sby_config.py",
+    "tests/sby_dump.sby",
+    "tests/formal_model.cc",
+    "tests/formal_predicates.py",
+)
 # Files pytest reads for its configuration and hooks when it runs tests/*.py,
 # besides pyproject.toml; each enters keys as present or absent.
 PYTEST_CONFIGURATION = tuple(
@@ -300,6 +305,14 @@ def formal_task_key(
             raise ReuseKeyError(f"missing formal replay helper: {replay_name}")
         runner = canonical_digest(
             {"main": runner, "replay": {replay_name: replay_digest}}
+        )
+    if projection := sby_config.store_completion_cone_helper(sby_path):
+        projection_name = relative(projection, root)
+        projection_digest = cache.digest(projection)
+        if projection_digest is None:
+            raise ReuseKeyError(f"missing formal source projection: {projection_name}")
+        runner = canonical_digest(
+            {"main": runner, "projection": {projection_name: projection_digest}}
         )
     try:
         sections = dict(sby_config.source(sby_path).sections)

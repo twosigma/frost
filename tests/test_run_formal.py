@@ -24,12 +24,14 @@ in formal/.
 
 import difflib
 import hashlib
+import json
 import re
 import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass, replace
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,12 @@ import pytest
 import ci_reuse
 import l0_store_boundary
 import sby_config
+from formal_predicates import (
+    PredicateExemption,
+    harness_tokens,
+    predicate_spans,
+    resolve_predicate_sites,
+)
 from sby_config import SCRIPT_FORMS, UNDEFINED_CONSTANT
 
 # Path to the formal/ directory relative to the repository root
@@ -52,6 +60,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("imem_predecode_twin", "imem_predecode_live"): 60,
     ("l0_store_boundary_twin", "boundary_twin"): 60,
     ("coherence_dma_ingress", "coh_dma_ingress_soc_prove"): 3120,
+    ("pd_target_candidate_twin", "pdt_twin"): 60,
+    ("decoded_bundle_queue_twin", "dbq_twin"): 60,
     ("coherence_home_twin", "home_twin_small"): 600,
     ("coherence_home_twin", "home_twin_four"): 600,
     ("coherence_home_twin", "home_twin_addr40"): 600,
@@ -71,6 +81,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
     ("rob_retire_successor", "bmc"): 3600,
+    ("tomasulo_wrapper_commit_bus", "bmc"): 180,
+    ("tomasulo_wrapper_commit_bus", "cover"): 360,
     ("coherence_home", "coh_home_cmo_cover"): 6000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
@@ -154,6 +166,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("rs_mem_broadcast", "prove"): 300,
     ("rs_mem_broadcast", "prove_prims"): 300,
     ("rs_mem_broadcast", "cover"): 90,
+    ("store_completion_cofactor", "prove"): 60,
+    ("store_completion_cofactor", "cover"): 120,
 }
 
 
@@ -1153,7 +1167,8 @@ FORMAL_TARGETS = [
         "vec_hold_rows.sby",
         "Vector range holds: an older live vector memory table entry holds an "
         "atomic scalar entry or one with an unknown address, unknown vector range, "
-        "or overlap. A settled hold has such a cause in either queue",
+        "or overlap. A settled hold has such a cause in either queue. The cleanup "
+        "covers forbid head advancement on rollback edges",
         tasks=("vhold_lq_bmc", "vhold_sq_bmc", "vhold_lq_cover", "cover"),
     ),
     FormalTarget(
@@ -1354,10 +1369,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ma_engine.sby",
-        "Misaligned-access engine: request controls match the issue states, no memory request before both parts pass their "
-        "checks, lower sector first, one request and response per identity, one "
-        "completion, fault or write-back per access, and terminal fatal stops",
-        tasks=("bmc", "cover"),
+        "Misaligned-access engine: unbounded equality of request controls and issue-state "
+        "decodes from reset. Bounded checks cover translation before requests, lower sector "
+        "first, unique request identities, completion, faults, write-back and terminal stops",
+        tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
         "alu_shift_hint.sby",
@@ -1465,6 +1480,12 @@ FORMAL_TARGETS = [
         "Occupied reservation-station stage2 and stage2b payloads loaded on FU readiness equal "
         "issue-fire capture across all four station configurations",
         tasks=("int_prove", "mul_prove", "mem_prove", "fp_prove", "int_cover"),
+    ),
+    FormalTarget(
+        "store_completion_cofactor.sby",
+        "The wrapper's ROB store-completion assertion with free cached bounds, "
+        "memory flags and issue inputs",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "rs_issue_tag_banks.sby",
@@ -1971,6 +1992,11 @@ FORMAL_TARGETS = [
         "tomasulo_wrapper.sby",
         "Tomasulo commit and flush integration, including FP dispatch done repair",
         tasks=("bmc", "cover", "fp_repair_bmc"),
+    ),
+    FormalTarget(
+        "tomasulo_wrapper_commit_bus.sby",
+        "Registered commit propagation from the Tomasulo ROB through the RAT and fence flush",
+        tasks=("bmc", "cover"),
     ),
     FormalTarget(
         "coherence_home_engine_twin.sby",
@@ -4257,6 +4283,46 @@ def test_l0_store_boundary_requires_each_form(
         runner.run_formal(target, task)
 
 
+def test_store_completion_cofactor_production_inputs(tmp_path: Path) -> None:
+    """Bind the proof's file map and staged bytes to the checkout sources."""
+    root = Path(__file__).resolve().parents[1]
+    formal = root / FORMAL_DIR
+    cpu_rtl = root / "hw/rtl/cpu_and_mem/cpu"
+    proof = formal / "store_completion_cofactor.sby"
+    expected = {
+        "riscv_pkg.sv": cpu_rtl / "riscv_pkg.sv",
+        "dtlb.sv": cpu_rtl / "mmu/dtlb.sv",
+        "dmmu.sv": cpu_rtl / "mmu/dmmu.sv",
+        "tomasulo_wrapper.sv": (
+            cpu_rtl / "tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv"
+        ),
+        "store_completion_cofactor_cover.sv": formal
+        / "store_completion_cofactor_cover.sv",
+        "free_undefined.ys": formal / "free_undefined.ys",
+    }
+    source = sby_config.source(proof)
+    for task in source.tasks:
+        resolved = {
+            name: (formal / path).resolve(strict=True)
+            for name, path in source.task(task).files.items()
+        }
+        assert resolved == expected, task
+
+        setup = tmp_path / task
+        result = subprocess.run(
+            ["sby", "--setup", "-d", str(setup), proof.name, task],
+            cwd=formal,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        staged = setup / "src"
+        assert {path.name for path in staged.iterdir()} == expected.keys(), task
+        for name, path in expected.items():
+            assert (staged / name).read_bytes() == path.read_bytes(), (task, name)
+
+
 def test_formal_target_tasks_are_registered() -> None:
     """Every SBY file and task must participate in CLI and pytest execution."""
     formal_dir = Path(__file__).resolve().parents[1] / FORMAL_DIR
@@ -4381,6 +4447,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     registered = [name for name, _ in SBY_TASKS]
     required = {
         "predictor_fetch_contract": ["prove_buffer_source", "prove_slot1_sources"],
+        "tomasulo_wrapper_commit_bus": ["bmc", "cover"],
         "rs_mem_broadcast": ["prove", "prove_prims", "cover"],
         "axi_coherent_bridge": [
             "prove_soc",
@@ -5030,9 +5097,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         {"boundary_twin": ["equiv_simple"]},
     ),
     "decoded_bundle_queue_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "the two autoname passes pair free cells before equiv_simple, which reads undefined bits as zero",
         {
-            "dbq_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+            "dbq_twin": ["autoname t:$anyseq", "autoname t:$anyseq", "equiv_simple"],
         },
     ),
     "dmmu_capture": (
@@ -5204,9 +5271,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "pd_target_candidate_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "pdt_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+            "pdt_twin": ["equiv_simple"],
         },
     ),
     "ras_checkpoint": (
@@ -5580,9 +5647,9 @@ def test_dont_care_classifies_every_command() -> None:
 # The opening does not reach undefined values that a cell computes, such as a
 # $shiftx read past its input, which the backends and the default techmap's
 # shift templates give a defined value, or a $pmux with more than one select
-# set; constant z bits, which setundef -anyseq leaves (as SymbiYosys's own
-# setundef does) and no source has; or a memory initialized with x, which makes
-# the next pass that reads the memory stop with "Non-constant data".
+# set. The runner checks the elaborated model for constant z bits before the
+# opening. An x-initialized memory stops the first pass that reads it with
+# "Non-constant data".
 UNDEFINED_OPENING = [
     ["select", "-clear"],
     ["proc_clean"],
@@ -5601,9 +5668,8 @@ UNDEFINED_OPENING = [
     ["opt_expr", "-keepdc"],
 ]
 # File-writing forms are a direct consequence of SCRIPT_FORMS: only forms with
-# writes_file=True may write a file. btb_pending_relation, btb_tag_compare,
-# data_mem_response_mux and sc_head_query write `write_json <file>`, and
-# axi_coherent_bridge writes `write_rtlil ../model/<file>`.
+# writes_file=True may write a file. These include compiled port lists in JSON
+# and the bridge's RTLIL model.
 SCRIPT_FILE_WRITES = frozenset(form.id for form in SCRIPT_FORMS if form.writes_file)
 # Options that write files on commands present in SCRIPT_FORMS; checked against
 # Yosys's help so no writes_file=False form can gain a file-writing option.
@@ -5649,31 +5715,511 @@ UNDEFINED_OPENING_PENDING = (
     "reorder_buffer",
     "sq_forwarding_unit",
 )
-# Scripts that compare two designs inside the script (the primitive twins and
-# the other in-script equivalence checks). Both designs hold the same undefined
-# constants, so freeing them separately on each side would make the sides
-# differ; these scripts wait for an opening of their own and do not open yet.
-UNDEFINED_OPENING_TWINS = (
-    "branch_predictor_twin",
-    "cached_tier_adapter_twin",
-    "coherence_home_engine_twin",
-    "coherence_home_twin",
-    "coherence_l1d_twin",
-    "coherent_store_pma_twin",
-    "control_flow_tracker_twin",
-    "csr_file_twin",
-    "data_mem_request_router_twin",
-    "decoded_bundle_queue_twin",
-    "dmmu_twin",
-    "fp_engine_twin",
-    "id_stage_kill_equiv",
-    "immu_twin",
-    "pc_controller_twin",
-    "pd_target_candidate_twin",
-    "reservation_station_twin",
-    "rs_issue_tag_banks",
-    "store_queue_twin",
+# Each exception names the existing tasks that still prove a selected cone.
+UNDEFINED_OPENING_TWINS = {
+    "branch_predictor_twin": ("bp_twin",),
+    "cached_tier_adapter_twin": ("cached_tier_twin", "cached_tier_unsplit"),
+    "coherence_home_engine_twin": (
+        "home_engine_twin32",
+        "home_engine_twin64",
+        "home_engine_twin40",
+    ),
+    "coherence_home_twin": ("home_twin_small", "home_twin_four", "home_twin_addr40"),
+    "coherence_l1d_twin": ("l1d_twin_single", "l1d_twin_multi", "l1d_twin_stream"),
+    "coherent_store_pma_twin": ("store_pma_twin_ddr30", "store_pma_twin_ddr31"),
+    "control_flow_tracker_twin": ("cft_twin",),
+    "csr_file_twin": ("csr_twin", "csr_twin_vector"),
+    "data_mem_request_router_twin": ("router_twin",),
+    "dmmu_twin": ("dmmu_twin",),
+    "fp_engine_twin": ("fp_engine_twin",),
+    "id_stage_kill_equiv": ("id_kill_equiv", "id_kill_equiv_vector"),
+    "immu_twin": ("immu_twin", "immu_twin_hold"),
+    "pc_controller_twin": ("pc_controller_twin", "pc_controller_twin_slot2"),
+    "reservation_station_twin": ("rs_twin_indexed",),
+    "rs_issue_tag_banks": ("int_equiv", "int_equiv_prims"),
+    "store_queue_twin": ("sq_twin", "sq_twin_cpu"),
+}
+
+
+@dataclass(frozen=True)
+class TwinComparison:
+    """Inputs, cut state and comparison points for one pair of compiled forms."""
+
+    primitive_points: int
+    all_points: int
+    top: str
+    gold_inputs: tuple[str, ...]
+    gate_inputs: tuple[str, ...]
+    registers: int
+    clock: str | None
+    paired_free: int = 0
+    gold_only_free: int = 0
+    gate_only_free: int = 0
+    name_free: bool = False
+
+
+DBQ_TWIN_PARAMETERS = (
+    "chparam -set WIDTH 8 -set SHADOW_WIDTH 3 -set SPLIT_SHADOW_STALL 1 "
+    "-set STALL_LATE_COPIES 4 decoded_bundle_queue"
 )
+
+# Each declaration pins both forms, their state cuts and the full point proof.
+TWIN_COMPARISONS = {
+    ("pd_target_candidate_twin", "pdt_twin"): TwinComparison(
+        primitive_points=16,
+        all_points=16,
+        top="pd_target_candidate",
+        gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv pd_target_candidate.sv",),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv pd_target_candidate.sv",
+        ),
+        registers=0,
+        clock=None,
+    ),
+    ("decoded_bundle_queue_twin", "dbq_twin"): TwinComparison(
+        primitive_points=3,
+        all_points=109,
+        top="decoded_bundle_queue",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS riscv_pkg.sv decoded_bundle_queue.sv",
+            DBQ_TWIN_PARAMETERS,
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv decoded_bundle_queue.sv",
+            DBQ_TWIN_PARAMETERS,
+        ),
+        registers=19,
+        clock="i_clk",
+        paired_free=6,
+        name_free=True,
+    ),
+    ("imem_predecode_twin", "imem_predecode_live"): TwinComparison(
+        primitive_points=64,
+        all_points=1317,
+        top="imem_predecode_boundary",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS sdp_block_ram_dc_init.sv",
+            "read -sv -D SYNTHESIS -D FROST_RANDOM_START -D FROST_VIVADO_SYNTH "
+            "imem_predecode_reference.sv imem_predecode_boundary.sv",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS sdp_block_ram_dc_init.sv",
+            "read -sv -D SYNTHESIS -D FROST_RANDOM_START -D FROST_VIVADO_SYNTH "
+            "-D IMEM_PREDECODE_CANDIDATE riscv_pkg.sv imem_predecode.sv "
+            "imem_predecode_boundary.sv",
+        ),
+        registers=35,
+        clock="i_clk",
+        gold_only_free=22,
+        gate_only_free=25,
+    ),
+    l0_store_boundary.PAIR: TwinComparison(
+        primitive_points=6,
+        all_points=739,
+        top="l0_store_boundary",
+        gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv l0_store_boundary.v",),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS -D L0_STORE_BOUNDARY_PROOF "
+            "riscv_pkg.sv l0_store_boundary.sv",
+        ),
+        registers=12,
+        clock="i_clk",
+        gold_only_free=6,
+        gate_only_free=6,
+    ),
+}
+
+
+# The registered proofs require no native $isunknown operand exemptions.
+HIGH_IMPEDANCE_PENDING: tuple[PredicateExemption, ...] = ()
+
+
+# These tasks prove SystemVerilog assertions over two stashed instances.
+# Each identity includes the harness's guards and predicates, the complete
+# preparation and check selections, and the mapping of staged source files.
+PREDICTOR_ASSERTION_TASKS = {
+    (target, task): (sources, identity, depth)
+    for target, sources, identity, depths in (
+        (
+            "backing_btb_twin",
+            ("backing_btb_twin.sv",),
+            "3cacf9d4afa13311be049f7f63f15a2151e1ae01d7d51dc96f6020ffad85152e",
+            (5, 2, 5),
+        ),
+        (
+            "pd_history_twin",
+            ("pd_history_twin.sv", "pd_fetch_contract.sv"),
+            "b89bfac2b4cebd615305ac506deee2726beeadf5a48c4318f2f42b3db009a5ca",
+            (12, 3, 7),
+        ),
+        (
+            "tage_predictor_twin",
+            ("predictor_table_twin.sv",),
+            "f2ea5071b8098c7c6598927c705b0f9a0418ecb12e2aca8188fe2b5f12a4418b",
+            (5, 2, 5),
+        ),
+        (
+            "ittage_predictor_twin",
+            ("predictor_table_twin.sv",),
+            "a2f9520e9c188a50ebcab346bb6b9e1f812f939080ac37b1fd437d1acaf7d0f6",
+            (5, 2, 5),
+        ),
+    )
+    for task, depth in zip(("bmc", "prove", "cover"), depths, strict=True)
+}
+
+
+def check_predictor_assertion_task(
+    target: str,
+    task: str,
+    directory: Path,
+    cfg: sby_config.TaskConfig,
+    commands: list[str],
+) -> None:
+    """Require the registered checks and the projection for this assertion task."""
+    sources, expected, depth = PREDICTOR_ASSERTION_TASKS[target, task]
+    projection = (
+        "chformal -assert -remove" if task == "cover" else "chformal -cover -remove"
+    )
+    if cfg.options != {"mode": task, "depth": str(depth)} or cfg.engines != [
+        ["smtbmc", "boolector"]
+    ]:
+        raise sby_config.ConfigError(
+            f"{target}:{task}: wrong assertion-harness options or engine"
+        )
+    if not commands or commands[-1] != projection:
+        raise sby_config.ConfigError(
+            f"{target}:{task}: wrong assertion-harness mode or projection"
+        )
+    if any(name not in cfg.files or name in cfg.inline_files for name in sources):
+        raise sby_config.ConfigError(
+            f"{target}:{task}: missing registered assertion-harness source"
+        )
+    body = [harness_tokens(directory / cfg.files[name]) for name in sources]
+    identity = json.dumps(
+        [commands[:-1], sorted(cfg.files.items()), body], separators=(",", ":")
+    )
+    if hashlib.sha256(identity.encode("ascii")).hexdigest() != expected:
+        raise sby_config.ConfigError(
+            f"{target}:{task}: assertion-harness check identity changed"
+        )
+
+
+def checked_predicate_exemptions(
+    target: str,
+    task: str,
+    directory: Path,
+    cfg: sby_config.TaskConfig,
+    parsed: list[sby_config.ParsedCommand],
+) -> tuple[PredicateExemption, ...]:
+    """Validate this task's keys against its declared sources before staging."""
+    entries = tuple(e for e in HIGH_IMPEDANCE_PENDING if (target, task) in e.tasks)
+    if not entries:
+        return ()
+    if (target, task) in TWIN_COMPARISONS or any(
+        c.args[0] == "equiv_make" for c in parsed
+    ):
+        raise sby_config.ConfigError(
+            f"{target}:{task}: high-impedance exemptions are forbidden for in-script comparisons"
+        )
+    for entry in entries:
+        name = Path(entry.source).name
+        if cfg.files.get(name) != entry.source or name in cfg.inline_files:
+            raise sby_config.ConfigError(
+                f"{target}:{task}: expected one staged predicate source {entry.source}"
+            )
+    resolve_predicate_sites(directory, entries)
+    return entries
+
+
+def twin_form_commands(spec: TwinComparison, form: str) -> list[str]:
+    """Prepare one full design and check its initial state and clock before cutting it."""
+    gate = form == "gate"
+    inputs = spec.gate_inputs if gate else spec.gold_inputs
+    for line in inputs:
+        form_id = sby_config.match_command_form(line.split()).id
+        if form_id not in (
+            "read_sources",
+            "read_verilog",
+            "read_slang",
+            "read_define",
+            "verilog_defines",
+            "chparam",
+        ):
+            raise sby_config.ConfigError(
+                f"{form} form input declaration cannot run {line!r}"
+            )
+    commands = ["design -reset", *inputs] if gate else list(inputs)
+    commands.extend(
+        [
+            f"hierarchy -check -top {spec.top}",
+            "script free_undefined.ys",
+            "select -assert-none a:init t:$initstate t:$anyinit",
+            "setattr -mod -unset keep_hierarchy *",
+        ]
+    )
+    if gate:
+        commands.append(
+            "setattr -set from_prim 1 $paramod*LUT*/* $paramod*MUXF*/* "
+            "$paramod*CARRY*/* $paramod*FD*/* LUT*/* MUXF*/* CARRY*/* FD*/*"
+        )
+    commands.extend(
+        [
+            "flatten",
+            "memory_map -keepdc",
+            "dffunmap",
+            "setundef -undriven -anyseq",
+            "setattr -set keep 1 w:* w:$* %d",
+            "opt_clean",
+            "check -assert",
+            "select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d",
+            "select -assert-none i:* o:* %i",
+            f"select -assert-count {spec.registers} t:$dff",
+        ]
+    )
+    if spec.clock is not None:
+        commands.append(f"select -assert-none t:$dff i:{spec.clock} %co1:+$dff[CLK] %d")
+    free = spec.paired_free + (spec.gate_only_free if gate else spec.gold_only_free)
+    commands.extend(
+        [
+            f"expose -dff -cut {spec.top}/w:*",
+            f"select -assert-none {spec.top}/t:$dff %co:+[Q] {spec.top}/w:* %i %co1 {spec.top}/t:* %i",
+            f"select -assert-count {free} t:$anyseq",
+        ]
+    )
+    if spec.name_free:
+        commands.append("autoname t:$anyseq")
+    return [*commands, f"rename -top {form}", f"design -stash {form}"]
+
+
+def check_twin_forms(
+    target: str, task: str, commands: list[str], spec: TwinComparison
+) -> None:
+    """Both stashes must contain the specified forms with their checks in order."""
+    if (
+        spec.registers < 0
+        or (spec.registers == 0) != (spec.clock is None)
+        or (spec.clock is not None and not sby_config.IDENT.fullmatch(spec.clock))
+    ):
+        raise sby_config.ConfigError(
+            f"{target}:{task}: declare one scalar clock input for a positive register count "
+            "or no clock for zero registers"
+        )
+    actual = iter(commands)
+    for form in ("gold", "gate"):
+        arm = []
+        for command in actual:
+            if command.startswith("setattr ") and re.search(
+                r" -(?:un)?set init(?: |$)", command
+            ):
+                raise sby_config.ConfigError(
+                    f"{target}:{task}: {form} form cannot change initial values with {command!r}"
+                )
+            arm.append(command)
+            if command == f"design -stash {form}":
+                break
+        for expected, command in zip_longest(twin_form_commands(spec, form), arm):
+            if command != expected:
+                raise sby_config.ConfigError(
+                    f"{target}:{task}: {form} form expected {expected!r}, got {command!r}"
+                )
+    trailing = next(actual, None)
+    if trailing is not None:
+        raise sby_config.ConfigError(
+            f"{target}:{task}: unexpected command after gate stash: {trailing}"
+        )
+
+
+def check_formal_input_contract(
+    target: str, task: str, directory: Path, cfg: sby_config.TaskConfig
+) -> tuple[bool, tuple[PredicateExemption, ...]]:
+    """Return the compiled port requirement and checked predicate keys for the task."""
+    parsed = cfg.parsed(directory, expand_opening=False)
+    entries = checked_predicate_exemptions(target, task, directory, cfg, parsed)
+    pending: str | None = None
+    for cmd in parsed:
+        if cmd.form.id in ("hierarchy_top", "hierarchy_chparam", "prep"):
+            pending = None
+        elif cmd.form.transition == "source":
+            pending = " ".join(cmd.args)
+        elif pending and cmd.form.transition not in ("define", "design_copy_from"):
+            # A partition can omit properties or remove named modules/instances
+            # before elaboration. Neither operation assigns a value to a retained net.
+            if cmd.form.id == "chformal_remove" or (
+                cmd.form.id == "delete"
+                and all(
+                    re.fullmatch(r"(?:t:)?[a-zA-Z_][a-zA-Z0-9_]*", arg)
+                    for arg in cmd.args[1:]
+                )
+            ):
+                continue
+            raise sby_config.ConfigError(
+                f"{target}:{task}: {pending} requires hierarchy -top or prep -top "
+                f"before {' '.join(cmd.args)}"
+            )
+    if pending:
+        raise sby_config.ConfigError(
+            f"{target}:{task}: missing elaboration after {pending}"
+        )
+
+    commands = [" ".join(cmd.args) for cmd in parsed]
+    if (target, task) in PREDICTOR_ASSERTION_TASKS:
+        check_predictor_assertion_task(target, task, directory, cfg, commands)
+        return False, entries
+    declaration = TWIN_COMPARISONS.get((target, task))
+    if declaration is None:
+        # rs_payload_twin uses a bounded two-instance assertion harness.
+        # A new *_twin script still needs a declaration if its entire point
+        # proof was accidentally omitted. Detect paired stashes under other
+        # names too. The unopened SQ forwarding harness predates this rule.
+        named_twin = target.endswith("_twin") and target != "rs_payload_twin"
+        copies = {
+            cmd.args[cmd.args.index("-copy-from") + 1]
+            for cmd in parsed
+            if cmd.form.id == "design_copy_from"
+        }
+        unopened_sq = (
+            (target, task) == ("sq_forwarding_unit", "tree_equiv")
+            and copies == {"shipped", "formal_sel"}
+            and "script free_undefined.ys" not in commands
+        )
+        if (
+            not named_twin
+            and (len(copies) < 2 or unopened_sq)
+            and not any(
+                cmd.args[0].startswith("equiv_") or "prim_twin_done.sv" in cmd.args
+                for cmd in parsed
+            )
+        ):
+            return False, entries
+        if (
+            task in UNDEFINED_OPENING_TWINS.get(target, ())
+            and "script free_undefined.ys" not in commands
+        ):
+            return False, entries
+        raise sby_config.ConfigError(
+            f"{target}:{task}: missing twin comparison declaration for all points and compiled ports"
+        )
+
+    # Make the ports and the points come from the same, fully selected pair.
+    wrapper = [
+        "design -reset",
+        "read -sv twin_both.sv",
+        "design -copy-from gold -as gold gold",
+        "design -copy-from gate -as gate gate",
+        "hierarchy -top twin_both",
+        "script free_undefined.ys",
+        "write_json twin_ports.json",
+        "equiv_make gold gate equiv",
+        "delete gold gate twin_both",
+        "setundef -anyseq",
+        "select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate",
+    ]
+    proof = [
+        "select -set prim t:* a:from_prim %i",
+        "select -set blk @prim %co*:-$equiv[Y] t:$equiv %i",
+        f"select -assert-min {declaration.primitive_points} @blk",
+        f"select -assert-min {declaration.all_points} t:$equiv",
+        "equiv_simple",
+        "equiv_status -assert",
+        "design -reset",
+        "read -formal -sv prim_twin_done.sv",
+        "hierarchy -top prim_twin_done",
+        "script free_undefined.ys",
+        "prep -top prim_twin_done",
+    ]
+    if not 0 < declaration.primitive_points <= declaration.all_points:
+        raise sby_config.ConfigError(
+            f"{target}:{task}: invalid comparison point floors"
+        )
+    if [cmd.args for cmd in parsed if cmd.args[0] == "equiv_make"] != [
+        ("equiv_make", "gold", "gate", "equiv")
+    ]:
+        raise sby_config.ConfigError(
+            f"{target}:{task}: expected one gold/gate comparison"
+        )
+    start = commands.index("equiv_make gold gate equiv") - wrapper.index(
+        "equiv_make gold gate equiv"
+    )
+    if start < 0 or commands[start : start + len(wrapper)] != wrapper:
+        raise sby_config.ConfigError(
+            f"{target}:{task}: expected compiled twin_ports.json from the opened gold/gate comparison"
+        )
+    opening_errors = undefined_opening_file_gaps(directory, cfg)
+    if opening_errors:
+        raise sby_config.ConfigError(f"{target}:{task}: {opening_errors[0]}")
+    check_twin_forms(target, task, commands[:start], declaration)
+    census = parsed[start + len(wrapper) : len(parsed) - len(proof)]
+    if (
+        not all(
+            cmd.form.id in ("select_assert_count", "select_assert_none")
+            for cmd in census
+        )
+        or commands[-len(proof) :] != proof
+    ):
+        raise sby_config.ConfigError(
+            f"{target}:{task}: expected both declared floors and an unselected proof of all comparison points"
+        )
+    return True, entries
+
+
+def test_registered_formal_input_contracts() -> None:
+    """Discover comparisons from the registered scripts, including new task names."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    checked = set()
+    assertion_tasks = set()
+    pending = set()
+    for target in FORMAL_TARGETS:
+        src = sby_config.source(formal / target.sby_file)
+        for task in target.tasks:
+            twin, entries = check_formal_input_contract(
+                target.name, task, formal, src.task(task)
+            )
+            if twin:
+                checked.add((target.name, task))
+            if (target.name, task) in PREDICTOR_ASSERTION_TASKS:
+                assertion_tasks.add((target.name, task))
+            if entries:
+                pending.add((target.name, task))
+    assert checked == set(TWIN_COMPARISONS)
+    assert assertion_tasks == PREDICTOR_ASSERTION_TASKS.keys()
+    assert pending == {pair for entry in HIGH_IMPEDANCE_PENDING for pair in entry.tasks}
+    assert not HIGH_IMPEDANCE_PENDING, (
+        "registered proofs require an empty predicate exemption list"
+    )
+
+
+@pytest.mark.parametrize(("target", "task"), TWIN_COMPARISONS)
+def test_opened_primitive_twin_comparison(target: str, task: str) -> None:
+    """Check each declared task's budget and measured free-cell pairing."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    cfg = sby_config.source(formal / f"{target}.sby").task(task)
+    assert int(cfg.options["timeout"]) == formal_task_timeout_s(target, task)
+    needs_ports, _ = check_formal_input_contract(target, task, formal, cfg)
+    assert needs_ports
+    spec = TWIN_COMPARISONS[target, task]
+    script = [" ".join(c.args) for c in cfg.parsed(formal, expand_opening=False)]
+    start = script.index("select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate") + 1
+    count = spec.paired_free + spec.gold_only_free + spec.gate_only_free
+    expected = [f"select -assert-count {count} t:$anyseq"]
+    if spec.gold_only_free or spec.gate_only_free:
+        expected.extend(
+            [
+                f"select -assert-count {spec.gold_only_free} t:$anyseq n:*_gold %i",
+                f"select -assert-count {spec.gate_only_free} t:$anyseq n:*_gate %i",
+            ]
+        )
+    else:
+        expected.append(
+            "select -assert-none t:$anyseq n:*_gold %i t:$anyseq n:*_gate %i"
+        )
+    assert (
+        script[start : script.index("select -set prim t:* a:from_prim %i")] == expected
+    )
 
 
 def script_write_gaps(sby_path: Path, cfg: sby_config.TaskConfig) -> list[str]:
@@ -5891,7 +6437,7 @@ def sby_tag_gaps(sby_path: Path) -> list[str]:
 
 
 def undefined_opening_file_gaps(
-    sby_path: Path, cfg: sby_config.TaskConfig
+    directory: Path, cfg: sby_config.TaskConfig
 ) -> list[str]:
     """Check the named opening against the file SymbiYosys gives this task."""
     name = UNDEFINED_OPENING_FILE
@@ -5901,7 +6447,7 @@ def undefined_opening_file_gaps(
         return [
             f"[files]: expected the single entry {name}, got {cfg.files.get(name)!r}"
         ]
-    copy = sby_path.parent / name
+    copy = directory / name
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
     if not copy.is_file() or copy.read_bytes() != (formal / name).read_bytes():
         return [f"{copy}: not the repository's {name}"]
@@ -5920,7 +6466,7 @@ def sby_undefined_opening_gaps(sby_path: Path) -> dict[str, list[str]]:
             UNDEFINED_OPENING_FILE in cfg.files
             or UNDEFINED_OPENING_FILE in cfg.inline_files
         )
-        gaps = undefined_opening_file_gaps(sby_path, cfg) if pre_named else []
+        gaps = undefined_opening_file_gaps(sby_path.parent, cfg) if pre_named else []
         try:
             parsed = cfg.parsed(sby_path.parent, expand_opening=False)
         except sby_config.ConfigError as error:
@@ -5929,7 +6475,7 @@ def sby_undefined_opening_gaps(sby_path: Path) -> dict[str, list[str]]:
         if not pre_named and any(
             cmd.args == tuple(UNDEFINED_OPENING_MARK) for cmd in parsed
         ):
-            gaps = undefined_opening_file_gaps(sby_path, cfg)
+            gaps = undefined_opening_file_gaps(sby_path.parent, cfg)
         gaps += undefined_opening_gaps(parsed)
         gaps += script_write_gaps(sby_path, cfg)
         if gaps:
@@ -6745,6 +7291,32 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
                 "bmc: opt -full\nbmc: techmap\n",
             ),
         ),
+    ),
+    # Naming free cells is registered once per form of the queue comparison.
+    (
+        "flag",
+        "coherence_array_plru",
+        (
+            (
+                "proof: opt -fast -keepdc\n",
+                "proof: autoname t:$anyseq\nproof: opt -fast -keepdc\n",
+            ),
+        ),
+    ),
+    (
+        "flag",
+        "pd_target_candidate_twin",
+        (("rename -top gold\n", "autoname t:$anyseq\nrename -top gold\n"),),
+    ),
+    (
+        "flag",
+        "decoded_bundle_queue_twin",
+        (("rename -top gold\n", "autoname t:$anyseq\nrename -top gold\n"),),
+    ),
+    (
+        "flag",
+        "decoded_bundle_queue_twin",
+        (("autoname t:$anyseq\nrename -top gold", "autoname\nrename -top gold"),),
     ),
     # A further command in pinned tasks of a file with an open entry.
     (
@@ -10552,65 +11124,42 @@ def fatal_frame_completed(output: str) -> bool:
 _YOSYS_SCRIPT_BANNER = re.compile(r"^-- Executing script file `([^']+)' --$")
 _YOSYS_TOP_HEADER = re.compile(r"^([1-9][0-9]*)\. (.*)$")
 
-_YOSYS_HEADER_TRACE_CC = """\
-#include "kernel/yosys.h"
-#include "kernel/log.h"
-#include <cstdlib>
-#include <fstream>
 
-USING_YOSYS_NAMESPACE
-PRIVATE_NAMESPACE_BEGIN
-
-struct HeaderTraceSink : public LogSink {
-    std::ofstream out;
-    explicit HeaderTraceSink(const char *path) : out(path, std::ios::out | std::ios::trunc) {}
-    void log(const LogMessage &msg) override {
-        if (!out.is_open()) return;
-        auto emit = [&](char tag, const std::string &body) {
-            out << tag << '\\t';
-            for (char c : body) {
-                if (c != '\\r' && c != '\\n') out << c;
-            }
-            out << '\\n';
-        };
-        if (msg.severity == LogSeverity::Header) {
-            emit('H', msg.prefix + msg.message);
-        } else if (msg.format.find("-- Executing script file ") == 0) {
-            emit('S', msg.message);
-        } else if (msg.format.find("End of script.") == 0) {
-            emit('E', msg.message);
-        }
-    }
-    void flush() override {
-        if (out.is_open()) out.flush();
-    }
-};
-
-struct HeaderTracePass : public Pass {
-    HeaderTracePass() : Pass("frost_header_trace_sink", "internal header trace sink") {}
-    void on_register() override {
-        const char *path = std::getenv("FROST_YOSYS_HEADER_TRACE");
-        if (path && *path) {
-            logger().add_sink<HeaderTraceSink>(path);
-        }
-    }
-    void execute(std::vector<std::string>, RTLIL::Design *) override {}
-} HeaderTracePass;
-
-PRIVATE_NAMESPACE_END
-"""
+# Slang emits this warning while an authored Z is still distinguishable from X.
+SLANG_Z_WARNING = "high-impedance state [(]Z[)] will be treated as undefined state [(]X[)] in this context"
 
 
-def write_yosys_header_wrapper(wrapper_path: Path) -> Path:
-    """Write an executable --yosys wrapper that records LogSeverity::Header events."""
+def write_yosys_header_wrapper(
+    wrapper_path: Path,
+    pending_predicates: tuple[PredicateExemption, ...] = (),
+    *,
+    uses_slang: bool = False,
+    source_projection: Path | None = None,
+) -> Path:
+    """Prepare the base-model checks, header trace, and optional projection."""
+    plugin = Path(__file__).with_name("formal_model.cc").read_text()
+    predicate_setup = "os.environ['FROST_YOSYS_PENDING_PREDICATES'] = ''\n"
+    if pending_predicates:
+        # Resolve the content again in SBY's src directory before loading the plugin.
+        predicate_setup = (
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})\n"
+            "from formal_predicates import PredicateExemption, resolve_predicate_sites\n"
+            f"sites = resolve_predicate_sites(Path.cwd(), {pending_predicates!r}, staged=True)\n"
+            "os.environ['FROST_YOSYS_PENDING_PREDICATES'] = '\\n'.join(sites)\n"
+        )
+    warning_args = ["-e", SLANG_Z_WARNING] if uses_slang else []
     script = (
         "#!/usr/bin/env python3\n"
         "import fcntl, hashlib, os, subprocess, sys\n"
         "from pathlib import Path\n"
-        f"CC_SRC = {_YOSYS_HEADER_TRACE_CC!r}\n"
+        f"CC_SRC = {plugin!r}\n"
+        f"WARNING_ARGS = {warning_args!r}\n"
         "args = sys.argv[1:]\n"
         'if "../model/design.ys" not in args:\n'
         '    os.execvp("yosys", ["yosys", *args])\n'
+        f"source_projection = {str(source_projection) if source_projection else None!r}\n"
+        "if source_projection is not None:\n"
+        "    subprocess.run([sys.executable, source_projection], check=True, timeout=10)\n"
         "ver = subprocess.check_output(['yosys', '-V'], text=True)\n"
         "digest = hashlib.sha256((ver + CC_SRC).encode()).hexdigest()[:16]\n"
         "so_path = Path(f'/tmp/frost-yosys-trace-{digest}.so')\n"
@@ -10628,9 +11177,9 @@ def write_yosys_header_wrapper(wrapper_path: Path) -> Path:
         "            finally:\n"
         "                cc_path.unlink(missing_ok=True)\n"
         "                tmp_so.unlink(missing_ok=True)\n"
-        "idx = args.index('../model/design.ys')\n"
         "os.environ['FROST_YOSYS_HEADER_TRACE'] = '../model/design.headers'\n"
-        "os.execvp('yosys', ['yosys', *args[:idx], '-m', str(so_path), *args[idx:]])\n"
+        f"{predicate_setup}"
+        "os.execvp('yosys', ['yosys', *WARNING_ARGS, '-m', str(so_path), *args])\n"
     )
     wrapper_path.write_text(script)
     wrapper_path.chmod(0o755)
@@ -10840,6 +11389,190 @@ def _output_has_engine_pass(output: str) -> bool:
     )
 
 
+def check_twin_interfaces(path: Path, comparison: TwinComparison) -> None:
+    """Check the register clocks, initial state and ordered ports of both cut designs."""
+    if not path.is_file():
+        raise ValueError(f"missing compiled twin interfaces in {path.name}")
+    try:
+        modules = json.loads(path.read_bytes())["modules"]
+        interfaces = []
+        for form in ("gold", "gate"):
+            module = modules[form]
+            ports = module["ports"]
+            for name, net in module["netnames"].items():
+                if "init" in net["attributes"]:
+                    raise ValueError(f"{form}: {name} has a compiled initial value")
+            dffs = {
+                name: cell
+                for name, cell in module["cells"].items()
+                if cell["type"] == "$dff"
+            }
+            if len(dffs) != comparison.registers:
+                raise ValueError(
+                    f"{form}: expected {comparison.registers} compiled $dff cells, found {len(dffs)}"
+                )
+            clock = comparison.clock
+            if clock is not None:
+                port = ports.get(clock)
+                if (
+                    port is None
+                    or port["direction"] != "input"
+                    or len(port["bits"]) != 1
+                    or type(port["bits"][0]) is not int
+                ):
+                    raise ValueError(f"{form}: {clock} must be a scalar clock input")
+            for name, cell in dffs.items():
+                if int(cell["parameters"]["CLK_POLARITY"], 2) != 1:
+                    raise ValueError(
+                        f"{form}: {name} does not use the rising clock edge"
+                    )
+                if clock is None or cell["connections"]["CLK"] != ports[clock]["bits"]:
+                    raise ValueError(
+                        f"{form}: {name}.CLK does not use the declared clock input {clock}"
+                    )
+            interfaces.append(
+                [
+                    (
+                        name,
+                        port["direction"],
+                        len(port["bits"]),
+                        port.get("offset", 0),
+                        port.get("upto", 0),
+                        port.get("signed", 0),
+                    )
+                    for name, port in ports.items()
+                ]
+            )
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError(f"invalid compiled twin interfaces in {path.name}") from error
+    for gold, gate in zip_longest(*interfaces):
+        if gold != gate:
+            raise ValueError(f"compiled twin ports differ: gold {gold}, gate {gate}")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("upto", 1), ("offset", 1), ("signed", 1), ("direction", "input"), ("bits", [7])],
+)
+def test_twin_port_shape(tmp_path: Path, field: str, value: object) -> None:
+    """The compiled declarations must agree even when equiv_make matches a net."""
+    path = tmp_path / "twin_ports.json"
+    gold = {"direction": "output", "bits": [2, 3]}
+    gate: dict[str, object] = {"direction": "output", "bits": [9, 7]}
+    modules = {
+        name: {"ports": {"y": port}, "cells": {}, "netnames": {}}
+        for name, port in (("gold", gold), ("gate", gate))
+    }
+    path.write_text(json.dumps({"modules": modules}))
+    check_twin_interfaces(
+        path, TWIN_COMPARISONS["pd_target_candidate_twin", "pdt_twin"]
+    )
+    gate[field] = value
+    path.write_text(json.dumps({"modules": modules}))
+    with pytest.raises(ValueError, match="compiled twin ports differ"):
+        check_twin_interfaces(
+            path, TWIN_COMPARISONS["pd_target_candidate_twin", "pdt_twin"]
+        )
+
+
+@pytest.mark.parametrize("other", [("b", "a"), ("a",), ("a", "b", "c")])
+def test_twin_compiled_port_order_and_membership(
+    tmp_path: Path, other: tuple[str, ...]
+) -> None:
+    """Even an extra or reordered port changes the compiled interface."""
+    path = tmp_path / "twin_ports.json"
+    modules = {
+        form: {
+            "ports": {
+                name: {"direction": "input", "bits": [bit]}
+                for bit, name in enumerate(names, 2)
+            },
+            "cells": {},
+            "netnames": {},
+        }
+        for form, names in (("gold", ("a", "b")), ("gate", other))
+    }
+    path.write_text(json.dumps({"modules": modules}))
+    with pytest.raises(ValueError, match="compiled twin ports differ"):
+        check_twin_interfaces(
+            path, TWIN_COMPARISONS["pd_target_candidate_twin", "pdt_twin"]
+        )
+
+
+@pytest.mark.parametrize(
+    ("edits", "reason"),
+    [
+        ({}, None),
+        (
+            {"gate.cells.q.connections.CLK": [8]},
+            "gate: q.CLK does not use the declared clock input clk",
+        ),
+        (
+            {"gold.cells.q.connections.CLK": [3], "gate.cells.q.connections.CLK": [8]},
+            "gold: q.CLK does not use the declared clock input clk",
+        ),
+        (
+            {"gate.cells.q.parameters.CLK_POLARITY": "0"},
+            "gate: q does not use the rising clock edge",
+        ),
+        (
+            {"gate.cells.q.connections.CLK": ["1"]},
+            "gate: q.CLK does not use the declared clock input clk",
+        ),
+        ({"gate.ports": {}}, "gate: clk must be a scalar clock input"),
+        (
+            {"gate.ports.clk.direction": "output"},
+            "gate: clk must be a scalar clock input",
+        ),
+        ({"gate.ports.clk.bits": [7, 9]}, "gate: clk must be a scalar clock input"),
+        ({"gate.ports.clk.bits": ["1"]}, "gate: clk must be a scalar clock input"),
+        ({"gate.cells": {}}, "gate: expected 1 compiled $dff cells, found 0"),
+        (
+            {"gate.netnames.value.attributes.init": "1"},
+            "gate: value has a compiled initial value",
+        ),
+    ],
+)
+def test_twin_compiled_state(
+    tmp_path: Path, edits: dict[str, object], reason: str | None
+) -> None:
+    """Clock net IDs are local to each module. Both must resolve to the declared input."""
+    path = tmp_path / "twin_ports.json"
+    spec = replace(
+        TWIN_COMPARISONS["decoded_bundle_queue_twin", "dbq_twin"],
+        registers=1,
+        clock="clk",
+    )
+    modules: dict[str, Any] = {}
+    for form, bit in (("gold", 2), ("gate", 7)):
+        modules[form] = {
+            "ports": {
+                "clk": {"direction": "input", "bits": [bit]},
+                "advance": {"direction": "input", "bits": [bit + 1]},
+            },
+            "netnames": {"value": {"attributes": {}}},
+            "cells": {
+                "q": {
+                    "type": "$dff",
+                    "parameters": {"CLK_POLARITY": "1"},
+                    "connections": {"CLK": [bit]},
+                }
+            },
+        }
+    for field, value in edits.items():
+        keys = field.split(".")
+        record = modules
+        for key in keys[:-1]:
+            record = record[key]
+        record[keys[-1]] = value
+    path.write_text(json.dumps({"modules": modules}))
+    if reason is None:
+        check_twin_interfaces(path, spec)
+    else:
+        with pytest.raises(ValueError, match=re.escape(reason)):
+            check_twin_interfaces(path, spec)
+
+
 def _verify_staged_engine_pass(workdir: Path, cfg: sby_config.TaskConfig) -> str | None:
     """Return an error reason if workdir lacks a genuine engine PASS verdict."""
     if not (workdir / "engine_0").is_dir():
@@ -10989,8 +11722,21 @@ class FormalRunner:
             for dest in staged_cfg.files:
                 if not (src_dir / dest).is_file():
                     fail(f"missing staged source {dest}")
+            needs_ports, _ = check_formal_input_contract(
+                target_name, task, sby_path.parent, checkout_cfg
+            )
+            if needs_ports:
+                check_twin_interfaces(
+                    src_dir / "twin_ports.json", TWIN_COMPARISONS[pair]
+                )
             if pair == l0_store_boundary.PAIR:
                 l0_store_boundary.check_model(src_dir / "twin_ports.json")
+            if pair in PREDICTOR_ASSERTION_TASKS:
+                sources, _, _ = PREDICTOR_ASSERTION_TASKS[pair]
+                for name in sources:
+                    checkout = sby_path.parent / checkout_cfg.files[name]
+                    if (src_dir / name).read_bytes() != checkout.read_bytes():
+                        fail(f"staged assertion harness differs from checkout: {name}")
             local_cfg = replace(
                 staged_cfg, files={dest: dest for dest in staged_cfg.files}
             )
@@ -11028,12 +11774,12 @@ class FormalRunner:
             raise FileNotFoundError(f"SBY file not found: {sby_path}")
 
         checkout_cfg = sby_config.source(sby_path).task(task)
-        checkout_cfg.parsed(sby_path.parent, expand_opening=True)
+        expanded = checkout_cfg.parsed(sby_path.parent)
         if (target.name, task) == l0_store_boundary.PAIR:
             l0_store_boundary.check_script(checkout_cfg, sby_path.parent)
-            opening_errors = undefined_opening_file_gaps(sby_path, checkout_cfg)
-            if opening_errors:
-                raise sby_config.ConfigError(opening_errors[0])
+        _, entries = check_formal_input_contract(
+            target.name, task, sby_path.parent, checkout_cfg
+        )
         expected_mode = registered_task_mode(task)
         if checkout_cfg.options.get("mode") != expected_mode:
             raise sby_config.ConfigError(
@@ -11047,7 +11793,10 @@ class FormalRunner:
         with tempfile.TemporaryDirectory(prefix="frost-sby-") as tmp_dir:
             workdir = Path(tmp_dir) / f"{target.name}_{task}"
             yosys_wrapper = write_yosys_header_wrapper(
-                Path(tmp_dir) / "yosys_wrapper.py"
+                Path(tmp_dir) / "yosys_wrapper.py",
+                entries,
+                uses_slang=any(cmd.form.id == "read_slang" for cmd in expanded),
+                source_projection=sby_config.store_completion_cone_helper(sby_path),
             )
             cmd = [
                 "sby",
@@ -11184,6 +11933,617 @@ class FormalRunner:
                 info["elapsed"] = line
 
         return info
+
+
+def _stage_twin(fixture: Path, name: str) -> tuple[FormalRunner, FormalTarget, Path]:
+    runner = FormalRunner()
+    target = next(t for t in FORMAL_TARGETS if t.name == name)
+    staged = sby_config.stage_proof(
+        runner.formal_dir / target.sby_file, runner.root_dir, fixture
+    )
+    runner.formal_dir = staged.parent
+    return runner, target, staged
+
+
+@pytest.mark.parametrize(
+    ("body", "diagnostic"),
+    [
+        ("assign y = a ? 1'b1 : 1'bz;", "port"),
+        ("always @* if (a) y = 1'bz; else y = 1'b0;", "process"),
+        ("child #(.VALUE(1'bz)) u(.y(y));", "VALUE"),
+        ("always @* y = a === 1'bz;", "port"),
+        ("always @* y = $isunknown(a);", "port"),
+        ("always @* casez ({a, a}) 2'b1?: y = 1; default: y = 0; endcase", ""),
+    ],
+)
+def test_elaborated_formal_input_values(
+    tmp_path: Path, body: str, diagnostic: str
+) -> None:
+    """Check ordinary prep, live children and case patterns at the elaboration boundary."""
+    src = tmp_path / "src"
+    model = tmp_path / "model"
+    src.mkdir()
+    model.mkdir()
+    (src / "design.sv").write_text(
+        "module child #(parameter VALUE = 0)(output y); assign y = VALUE; endmodule\n"
+        "module unused(output y); assign y = 1'bz; endmodule\n"
+        f"module top(input a, output reg y); {body} endmodule\n"
+    )
+    (model / "design.ys").write_text("read -sv design.sv\nprep -top top\n")
+    wrapper = write_yosys_header_wrapper(tmp_path / "yosys_wrapper.py")
+    result = subprocess.run(
+        [str(wrapper), "-Q", "-T", "-s", "../model/design.ys"],
+        cwd=src,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if diagnostic:
+        assert result.returncode != 0
+        assert "High-impedance constant in elaborated module" in result.stderr
+        assert diagnostic in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "Checked elaborated formal inputs of top" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("expression", "diagnostic"),
+    [
+        ("a ? 1'bz : 1'b0", "$tribuf"),
+        (
+            "1'bz",
+            "ERROR: high-impedance state (Z) will be treated as undefined state (X)",
+        ),
+        (
+            "a === 1'bz",
+            "ERROR: high-impedance state (Z) will be treated as undefined state (X)",
+        ),
+        (
+            "1'b?",
+            "ERROR: high-impedance state (Z) will be treated as undefined state (X)",
+        ),
+    ],
+)
+def test_slang_high_impedance_driver(
+    tmp_path: Path, expression: str, diagnostic: str
+) -> None:
+    """Catch both frontend Z-to-X conversion and conditional tri-state drivers."""
+    runner = FormalRunner()
+    runner.formal_dir = tmp_path
+    target = FormalTarget("slang_z.sby", "Slang elaboration", ("bmc",))
+    (tmp_path / "top.sv").write_text(
+        f"module top(input a, output y); assign y = {expression}; endmodule\n"
+    )
+    (tmp_path / target.sby_file).write_text(
+        "[tasks]\nbmc\n[options]\nmode bmc\ndepth 1\n[engines]\nsmtbmc boolector\n"
+        "[script]\nscript sources.ys\nhierarchy -top top\nprep -top top\n[files]\ntop.sv\n"
+        "[file sources.ys]\nread_slang --top top --single-unit top.sv\n"
+    )
+    result = runner.run_formal(target, "bmc")
+    assert result.returncode != 0
+    assert diagnostic in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("variant", "error"),
+    [
+        ("retained", None),
+        ("line_shift", None),
+        ("formatting", None),
+        ("changed_operand", "found 0"),
+        ("changed_expression", "found 0"),
+        ("renamed_block", "found 0"),
+        ("removed", "found 0"),
+        ("comment_only", "found 0"),
+        ("empty_source", "found 0"),
+        ("duplicate", "found 2"),
+        ("duplicate_entry", "duplicate high-impedance predicate exemption"),
+        ("other_file", "expected one staged predicate source"),
+        ("inactive", "Unused high-impedance predicate exemption"),
+        ("extra_comparison", "High-impedance constant in elaborated module"),
+        ("new_driver", "High-impedance constant in elaborated module"),
+        ("another_block", "High-impedance constant in elaborated module"),
+        ("unlisted", "High-impedance constant in elaborated module"),
+    ],
+)
+def test_high_impedance_exemption_through_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variant: str, error: str | None
+) -> None:
+    """Only the unique named predicate may supply the compiled comparison operand."""
+    runner = FormalRunner()
+    runner.formal_dir = tmp_path
+    target = FormalTarget("predicate.sby", "unknown-value predicate", ("bmc",))
+    source = "elsewhere/d.sv" if variant == "other_file" else "d.sv"
+    (tmp_path / target.sby_file).write_text(
+        "[tasks]\nbmc\n[options]\nmode bmc\ndepth 1\n[engines]\nsmtbmc boolector\n"
+        "[script]\nread -formal -sv d.sv\nhierarchy -top top\nprep -top top\n[files]\n"
+        f"{source}\n"
+    )
+    chosen = "another_task" if variant == "unlisted" else target.name
+    entry = PredicateExemption(
+        "d.sv", "top.known_input", "$isunknown ( a )", ((chosen, "bmc"),)
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "HIGH_IMPEDANCE_PENDING",
+        (entry, entry) if variant == "duplicate_entry" else (entry,),
+    )
+    predicate = {
+        "formatting": "$isunknown /* signal */ (\n	 a )",
+        "changed_operand": "$isunknown(b)",
+        "changed_expression": "!$isunknown(a)",
+        "removed": "a",
+        "comment_only": "a /* $isunknown(a) */",
+    }.get(variant, "$isunknown(a)")
+    label = "other" if variant == "renamed_block" else "known_input"
+    extra = {"extra_comparison": "a === 1'bz", "new_driver": "1'bz"}.get(variant, "a")
+    body = (
+        "module top(input a, b, output y, extra);\n"
+        + (
+            "// unrelated change before the block\n\n"
+            if variant == "line_shift"
+            else ""
+        )
+        + f"if ({int(variant != 'inactive')}) begin : {label}\n"
+        + f" assign y = {predicate};\n"
+        + (
+            " wire copy; assign copy = $isunknown(a);\n"
+            if variant == "duplicate"
+            else ""
+        )
+        + "end\n"
+        + (
+            "if (1) begin : second_check assign extra = $isunknown(a); end\n"
+            if variant == "another_block"
+            else f" assign extra = {extra};\n"
+        )
+        + " always @* assert (a == a); endmodule\n"
+    )
+    (tmp_path / source).parent.mkdir(exist_ok=True)
+    (tmp_path / source).write_text("" if variant == "empty_source" else body)
+    # The task sets its own compiled permission even if the caller supplies a span.
+    monkeypatch.setenv("FROST_YOSYS_PENDING_PREDICATES", "d.sv:3.13-3.23")
+    if error is not None and not error.startswith(("High-impedance", "Unused")):
+        with pytest.raises(sby_config.ConfigError, match=error):
+            runner.run_formal(target, "bmc")
+        return
+    result = runner.run_formal(target, "bmc")
+    if error is None:
+        assert result.returncode == 0, result.stdout + result.stderr
+    else:
+        assert result.returncode != 0
+        assert error in result.stdout
+
+
+def test_predicate_in_named_checks(tmp_path: Path) -> None:
+    """Named assertions and properties retain the entire condition and enclosing blocks."""
+    src = tmp_path / "checks.sv"
+    src.write_text(
+        "module top(input clk, a, b);\n"
+        " always @* begin : guards\n"
+        "   known: assert (b || !$isunknown(a));\n"
+        " end\n"
+        " p_known: assert property (@(posedge clk) disable iff (b) !$isunknown(a));\n"
+        " property check_b; @(posedge clk) a |-> !$isunknown(b); endproperty\n"
+        " if (1) begin wire y = $isunknown(a); end\n"
+        " always @* begin : guarded\n"
+        "   checked: assert (a) $display($isunknown(b)); else $display($isunknown(a));\n"
+        " end\n"
+        " `define WATCHED a\n"
+        " if (1) begin : with_macro wire y = $isunknown(`WATCHED); end\n"
+        "endmodule\n"
+    )
+    assert predicate_spans(src, "checks.sv") == {
+        ("top.guards.known", "b || ! $isunknown ( a )"): ["checks.sv:3.25-3.35"],
+        ("top.p_known", "@ ( posedge clk ) disable iff ( b ) ! $isunknown ( a )"): [
+            "checks.sv:5.60-5.70"
+        ],
+        ("top.check_b", "@ ( posedge clk ) a |-> ! $isunknown ( b )"): [
+            "checks.sv:6.42-6.52"
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "change_operand", [False, True], ids=["line_shift", "changed_operand"]
+)
+def test_compiler_resolves_predicate_in_staged_file(
+    tmp_path: Path, change_operand: bool
+) -> None:
+    """Grant the operand in the compiled copy only when its content still matches."""
+    src = tmp_path / "src"
+    model = tmp_path / "model"
+    src.mkdir()
+    model.mkdir()
+    rtl = "module top(input a, b, output y);\n if (1) begin : known\n assign y = $isunknown(a);\n end\nendmodule\n"
+    checkout = tmp_path / "rtl" / "d.sv"
+    checkout.parent.mkdir()
+    checkout.write_text(rtl)
+    entry = PredicateExemption(
+        "rtl/d.sv", "top.known", "$isunknown ( a )", (("sample", "bmc"),)
+    )
+    assert resolve_predicate_sites(tmp_path, (entry,)) == ("d.sv:3.13-3.23",)
+    compiled = (
+        rtl.replace("$isunknown(a)", "$isunknown(b)")
+        if change_operand
+        else "\n\n" + rtl
+    )
+    (src / "d.sv").write_text(compiled)
+    (model / "design.ys").write_text("read -sv d.sv\nhierarchy -top top\n")
+    wrapper = write_yosys_header_wrapper(tmp_path / "yosys_wrapper.py", (entry,))
+    result = subprocess.run(
+        [str(wrapper), "-Q", "-T", "-s", "../model/design.ys"],
+        cwd=src,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if change_operand:
+        assert result.returncode != 0
+        assert (
+            "expected one $isunknown predicate in rtl/d.sv at top.known"
+            in result.stderr
+        )
+        assert "found 0" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (
+            "Retained high-impedance predicate exemption at d.sv:5.13-5.23"
+            in result.stdout
+        )
+
+
+def test_in_script_twin_cannot_take_a_predicate_exemption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The equivalence comparison always checks every input, including predicate operands."""
+    target = next(t for t in FORMAL_TARGETS if t.name == "pd_target_candidate_twin")
+    (task,) = target.tasks
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "HIGH_IMPEDANCE_PENDING",
+        (
+            PredicateExemption(
+                "pd_target_candidate.sv",
+                "top.check",
+                "$isunknown ( a )",
+                ((target.name, task),),
+            ),
+        ),
+    )
+    with pytest.raises(
+        sby_config.ConfigError,
+        match="exemptions are forbidden for in-script comparisons",
+    ):
+        FormalRunner().run_formal(target, task)
+
+
+def test_registered_proofs_require_empty_predicate_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even a valid, uniquely resolved predicate cannot enter the registered inventory."""
+    target = FormalTarget("sample.sby", "named predicate", ("bmc",))
+    (tmp_path / target.sby_file).write_text(
+        "[tasks]\nbmc\n[options]\nmode bmc\ndepth 1\n[engines]\nsmtbmc boolector\n"
+        "[script]\nread -formal -sv d.sv\nprep -top top\n[files]\nd.sv\n"
+    )
+    (tmp_path / "d.sv").write_text(
+        "module top(input a, output y); if (1) begin : known\n"
+        " assign y = $isunknown(a); end endmodule\n"
+    )
+    entry = PredicateExemption(
+        "d.sv", "top.known", "$isunknown ( a )", (("sample", "bmc"),)
+    )
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "FORMAL_DIR", str(tmp_path))
+    monkeypatch.setattr(module, "FORMAL_TARGETS", [target])
+    monkeypatch.setattr(module, "TWIN_COMPARISONS", {})
+    monkeypatch.setattr(module, "PREDICTOR_ASSERTION_TASKS", {})
+    monkeypatch.setattr(module, "HIGH_IMPEDANCE_PENDING", (entry,))
+    with pytest.raises(AssertionError, match="empty predicate exemption list"):
+        test_registered_formal_input_contracts()
+
+
+@pytest.mark.parametrize(
+    ("target_name", "filename", "original", "changed"),
+    [
+        ("backing_btb_twin", "backing_btb_twin.sv", "p_hit :", "p_other :"),
+        (
+            "tage_predictor_twin",
+            "predictor_table_twin.sv",
+            "ref_out.bank0 ==",
+            "ref_out.bank0 !=",
+        ),
+        (
+            "pd_history_twin",
+            "pd_fetch_contract.sv",
+            "assume (!i_backing_hit[1]",
+            "assume (i_backing_hit[1]",
+        ),
+        (
+            "ittage_predictor_twin",
+            "ittage_predictor_twin.sby",
+            "select -assert-count 10",
+            "select -assert-count 9",
+        ),
+    ],
+)
+def test_predictor_assertion_task_requires_its_checks(
+    tmp_path: Path, target_name: str, filename: str, original: str, changed: str
+) -> None:
+    """Changing a label, predicate, assumption or selection invalidates the registration."""
+    runner, target, staged = _stage_twin(tmp_path, target_name)
+    path = staged.parent / filename
+    source = path.read_text()
+    assert source.count(original) == 1
+    path.write_text(source.replace(original, changed))
+    with pytest.raises(
+        sby_config.ConfigError, match="assertion-harness check identity changed"
+    ):
+        runner.run_formal(target, "bmc")
+
+
+def test_new_paired_assertion_harness_requires_full_comparison(tmp_path: Path) -> None:
+    """The known assertion harness cannot authorize a differently named comparison."""
+    runner, original, script = _stage_twin(tmp_path, "backing_btb_twin")
+    target = replace(original, sby_file="another_predictor.sby")
+    script.rename(script.with_name(target.sby_file))
+    with pytest.raises(
+        sby_config.ConfigError, match="missing twin comparison declaration"
+    ):
+        runner.run_formal(target, "prove")
+
+
+def test_twin_gate_carry_rejects_high_impedance(tmp_path: Path) -> None:
+    """A Z carry-in can compare equal to zero if it reaches the point solver."""
+    runner, target, staged = _stage_twin(tmp_path, "pd_target_candidate_twin")
+    (task,) = target.tasks
+    clean = runner.run_formal(target, task)
+    assert clean.returncode == 0, clean.stdout + clean.stderr
+    cfg = sby_config.source(staged).task(task)
+    rtl = staged.parent / cfg.files["pd_target_candidate.sv"]
+    source = rtl.read_text()
+    carry = "assign chain_ci = 1'b0;"
+    assert source.count(carry) == 1
+    rtl.write_text(source.replace(carry, "assign chain_ci = 1'bz;"))
+    result = runner.run_formal(target, task)
+    assert result.returncode != 0
+    assert (
+        "High-impedance constant in elaborated module pd_target_candidate"
+        in result.stdout
+    )
+    assert "gen_chain[0].chain_ci" in result.stdout
+
+
+def test_twin_forms_reject_erased_init_and_missing_clock(tmp_path: Path) -> None:
+    """Removing init and the clock checks from both stashes must fail the registered task."""
+    runner, target, staged = _stage_twin(tmp_path, "decoded_bundle_queue_twin")
+    source = staged.read_text()
+    clean = "opt_clean\ncheck -assert\n"
+    clock = "select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d\n"
+    assert source.count(clean) == source.count(clock) == 2
+    staged.write_text(
+        source.replace(
+            clean, "opt_clean\nsetattr -unset init\ncheck -assert\n"
+        ).replace(clock, "")
+    )
+    with pytest.raises(sby_config.ConfigError, match="gold form.*setattr -unset init"):
+        runner.run_formal(target, target.tasks[0])
+
+
+@pytest.mark.parametrize("form", ["gold", "gate"])
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        ("select -assert-none a:init t:$initstate t:$anyinit\n", ""),
+        (
+            "select -assert-none a:init t:$initstate t:$anyinit t:$anyconst",
+            "select -assert-none t:$anyconst",
+        ),
+        ("select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d\n", ""),
+        ("i:i_clk %co1:+$dff[CLK] %d", "i:i_advance %co1:+$dff[CLK] %d"),
+        ("check -assert\n", "setattr -unset init\ncheck -assert\n"),
+        ("rename -top", "setattr -unset init\nrename -top"),
+    ],
+)
+def test_new_twin_checks_each_form_before_stash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    form: str,
+    original: str,
+    replacement: str,
+) -> None:
+    """The general rule covers each arm of a newly declared comparison."""
+    runner, template, staged = _stage_twin(tmp_path, "decoded_bundle_queue_twin")
+    target = replace(template, sby_file="additional_comparison.sby")
+    task = target.tasks[0]
+    monkeypatch.setitem(
+        TWIN_COMPARISONS, (target.name, task), TWIN_COMPARISONS[template.name, task]
+    )
+    staged = staged.rename(staged.with_name(target.sby_file))
+    gold, separator, remainder = staged.read_text().partition("design -stash gold")
+    gate, gate_end, tail = remainder.partition("design -stash gate")
+    assert separator and gate_end and gold.count(original) == gate.count(original) == 1
+    if form == "gold":
+        gold = gold.replace(original, replacement)
+    else:
+        gate = gate.replace(original, replacement)
+    staged.write_text(gold + separator + gate + gate_end + tail)
+    with pytest.raises(
+        sby_config.ConfigError,
+        match=f"{form} form (expected|cannot change initial values)",
+    ):
+        runner.run_formal(target, task)
+
+
+@pytest.mark.parametrize(
+    ("registers", "clock"), [(19, None), (0, "i_clk"), (19, "*"), (-1, None)]
+)
+def test_twin_form_declaration_requires_clock_for_registers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registers: int, clock: str | None
+) -> None:
+    """Reject an inconsistent register count or an ambiguous clock selection."""
+    runner, target, _ = _stage_twin(tmp_path, "decoded_bundle_queue_twin")
+    pair = (target.name, target.tasks[0])
+    monkeypatch.setitem(
+        TWIN_COMPARISONS,
+        pair,
+        replace(TWIN_COMPARISONS[pair], registers=registers, clock=clock),
+    )
+    with pytest.raises(sby_config.ConfigError, match="declare one scalar clock input"):
+        runner.run_formal(target, target.tasks[0])
+
+
+def test_new_twin_checks_declared_clock_in_compiled_design(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new task can choose its clock's name and leave free values independent."""
+    runner, template, staged = _stage_twin(tmp_path, "decoded_bundle_queue_twin")
+    target = replace(template, sby_file="additional_comparison.sby")
+    task = target.tasks[0]
+    spec = replace(
+        TWIN_COMPARISONS[template.name, task],
+        clock="queue_clock",
+        paired_free=0,
+        gold_only_free=6,
+        gate_only_free=6,
+        name_free=False,
+    )
+    monkeypatch.setitem(TWIN_COMPARISONS, (target.name, task), spec)
+    monkeypatch.setitem(SBY_TASK_TIMEOUT_OVERRIDES_S, (target.name, task), 60)
+    cfg = sby_config.source(staged).task(task)
+    rtl = staged.parent / cfg.files["decoded_bundle_queue.sv"]
+    rtl.write_text(rtl.read_text().replace("i_clk", "queue_clock"))
+    staged = staged.rename(staged.with_name(target.sby_file))
+    src = (
+        staged.read_text()
+        .replace("i:i_clk ", "i:queue_clock ")
+        .replace("autoname t:$anyseq\n", "")
+    )
+    staged.write_text(
+        src.replace(
+            "dbq_twin: select -assert-count 6 t:$anyseq\nselect -assert-none t:$anyseq n:*_gold %i t:$anyseq n:*_gate %i",
+            "dbq_twin: select -assert-count 12 t:$anyseq\nselect -assert-count 6 t:$anyseq n:*_gold %i\n"
+            "select -assert-count 6 t:$anyseq n:*_gate %i",
+        )
+    )
+    monkeypatch.setattr(sys.modules[__name__], "FORMAL_DIR", str(runner.formal_dir))
+    test_opened_primitive_twin_comparison(target.name, task)
+    result = runner.run_formal(target, task)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_twin_initial_values_require_repository_opening(tmp_path: Path) -> None:
+    """An included opening cannot hide an init erasure from the form contract."""
+    runner, target, staged = _stage_twin(tmp_path, "decoded_bundle_queue_twin")
+    opening = staged.parent / UNDEFINED_OPENING_FILE
+    opening.write_text(opening.read_text() + "setattr -unset init\n")
+    with pytest.raises(
+        sby_config.ConfigError, match="not the repository's free_undefined.ys"
+    ):
+        runner.run_formal(target, target.tasks[0])
+
+
+def test_twin_solver_pass_requires_compiled_interface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful solver run still needs its compiled gold and gate port artifact."""
+    runner, target, _ = _stage_twin(tmp_path, "pd_target_candidate_twin")
+    check = check_twin_interfaces
+
+    def remove_artifact(path: Path, comparison: TwinComparison) -> None:
+        path.unlink()
+        check(path, comparison)
+
+    monkeypatch.setattr(sys.modules[__name__], "check_twin_interfaces", remove_artifact)
+    with pytest.raises(FormalArtifactError, match="missing compiled twin interfaces"):
+        runner.run_formal(target, target.tasks[0])
+
+
+def test_twin_register_edge_selected_in_common_code(tmp_path: Path) -> None:
+    """A gate-arm macro can select a falling edge outside the primitive conditional."""
+    runner, target, staged = _stage_twin(tmp_path, "decoded_bundle_queue_twin")
+    (task,) = target.tasks
+    cfg = sby_config.source(staged).task(task)
+    rtl = staged.parent / cfg.files["decoded_bundle_queue.sv"]
+    source = rtl.read_text()
+    arm = "if (SPLIT_SHADOW_STALL) begin : gen_split_shadow_stall\n`ifdef FROST_XILINX_PRIMS"
+    update = (
+        "    always_ff @(posedge i_clk) begin\n      nonempty_copy_q <= nonempty_next;"
+    )
+    assert source.count(arm) == source.count(update) == 1
+    rtl.write_text(
+        source.replace(arm, arm + "\n`define DBQ_TWIN_FALL").replace(
+            update,
+            "`ifdef DBQ_TWIN_FALL\n    always_ff @(negedge i_clk) begin\n`else\n"
+            "    always_ff @(posedge i_clk) begin\n`endif\n      nonempty_copy_q <= nonempty_next;",
+        )
+    )
+    with pytest.raises(
+        FormalArtifactError, match="gate: .* does not use the rising clock edge"
+    ):
+        runner.run_formal(target, task)
+
+
+@pytest.mark.parametrize(
+    ("original", "changed", "reason"),
+    [
+        ("write_json twin_ports.json", "", "expected compiled twin_ports.json"),
+        ("pdt_twin: select -assert-min 16 t:$equiv", "", "declared floors"),
+        ("equiv_simple\n", "equiv_simple @blk\n", "unselected proof"),
+        ("equiv_status -assert\n", "equiv_status -assert @blk\n", "unselected proof"),
+        (
+            "hierarchy -check -top pd_target_candidate",
+            "proc\nhierarchy -check -top pd_target_candidate",
+            "requires hierarchy",
+        ),
+    ],
+)
+def test_twin_input_contract_through_runner(
+    tmp_path: Path, original: str, changed: str, reason: str
+) -> None:
+    """Reject a missing interface, a partial point proof or an early transformation."""
+    runner, target, staged = _stage_twin(tmp_path, "pd_target_candidate_twin")
+    source = staged.read_text()
+    assert original in source
+    staged.write_text(source.replace(original, changed, 1))
+    with pytest.raises(sby_config.ConfigError, match=reason):
+        runner.run_formal(target, target.tasks[0])
+
+
+@pytest.mark.parametrize("omit_comparison", (False, True))
+def test_unregistered_twin_declaration_through_registry_and_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, omit_comparison: bool
+) -> None:
+    """A new registered script using the same comparison must declare its points and ports."""
+    runner, original, staged = _stage_twin(tmp_path, "pd_target_candidate_twin")
+    if omit_comparison:
+        source = staged.read_text()
+        before = source.index("[script]")
+        after = source.index("[files]", before)
+        staged.write_text(
+            source[:before] + "[script]\n"
+            "read -sv -D SYNTHESIS riscv_pkg.sv pd_target_candidate.sv\n"
+            "prep -top pd_target_candidate\n\n" + source[after:]
+        )
+    target = replace(
+        original,
+        sby_file="additional_twin.sby"
+        if omit_comparison
+        else "additional_comparison.sby",
+    )
+    staged.rename(staged.with_name(target.sby_file))
+    monkeypatch.setattr(sys.modules[__name__], "FORMAL_DIR", str(runner.formal_dir))
+    monkeypatch.setattr(sys.modules[__name__], "FORMAL_TARGETS", [target])
+    with pytest.raises(
+        sby_config.ConfigError, match="missing twin comparison declaration"
+    ):
+        test_registered_formal_input_contracts()
+    with pytest.raises(
+        sby_config.ConfigError, match="missing twin comparison declaration"
+    ):
+        runner.run_formal(target, target.tasks[0])
 
 
 @pytest.mark.parametrize("capture_output", (False, True))

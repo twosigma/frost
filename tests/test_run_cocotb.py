@@ -3763,7 +3763,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="vec_hold_rows",
         description=(
             "Range-ordering holds of a scalar queue against the vector memory table, "
-            "against a reference model"
+            "against a reference model with tag rollback and delayed flush cleanup"
         ),
     ),
     "vec_hold_rows_direct": CocotbRunConfig(
@@ -3771,7 +3771,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="vec_hold_rows",
         description=(
             "Range-ordering holds with per-entry address inputs (the store queue's "
-            "form), against a reference model"
+            "form), against a reference model with tag rollback and delayed flush cleanup"
         ),
         verilator_extra_args=("-GDIRECT_ADDR=1",),
     ),

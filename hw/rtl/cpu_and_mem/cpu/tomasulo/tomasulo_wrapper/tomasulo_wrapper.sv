@@ -5967,17 +5967,10 @@ module tomasulo_wrapper #(
     end
   end
 
-  // Slot 2's rename and registered commit act on the same RAT edge as slot
-  // 1's; a slot-2 rename of a register wins over slot 1's.
+  // A slot-2 rename of a register wins over slot 1's on the same RAT edge.
   logic f_slot2_renames_int_track;
-  logic f_slot2_renames_fp_track;
-  logic f_slot2_commit_int_track;
   assign f_slot2_renames_int_track =
       i_rat_alloc_valid_2 && !i_rat_alloc_dest_rf_2 && i_rat_alloc_dest_reg_2 == f_int_track;
-  assign f_slot2_renames_fp_track =
-      i_rat_alloc_valid_2 && i_rat_alloc_dest_rf_2 && i_rat_alloc_dest_reg_2 == f_fp_track;
-  assign f_slot2_commit_int_track = commit_bus_2_q_valid && commit_q_2_dest_valid &&
-      !commit_q_2_dest_rf && commit_q_2_dest_reg == f_int_track;
 
   // -------------------------------------------------------------------------
   // Sequential: commit propagation and flush
@@ -6005,106 +5998,6 @@ module tomasulo_wrapper #(
       assert (commit_bus_q.is_fence_i == (o_fence_i_flush && !$past(
           o_translation_csr_commit_shadow
       )));
-
-      // INT commit clears RAT entry when tag matches.
-      // RAT receives commit_bus_q (1-cycle pipelined), so check $past of
-      // the registered version rather than the combinational commit_bus.
-      if ($past(
-              commit_bus_q_valid
-          ) && $past(
-              commit_bus_q.dest_valid
-          ) && !$past(
-              commit_bus_q.dest_rf
-          ) && $past(
-              commit_bus_q.dest_reg
-          ) == f_int_track && $past(
-              o_int_src1.renamed
-          ) && $past(
-              o_int_src1.tag
-          ) == $past(
-              commit_bus_q.tag
-          ) && !$past(
-              i_flush_all
-          ) && !$past(
-              i_checkpoint_restore
-          ) && !($past(
-              i_rat_alloc_valid
-          ) && !$past(
-              i_rat_alloc_dest_rf
-          ) && $past(
-              i_rat_alloc_dest_reg
-          ) == f_int_track) && !$past(
-              f_slot2_renames_int_track
-          )) begin
-        p_commit_clears_int_via_bus : assert (!o_int_src1.renamed);
-      end
-
-      // INT WAW: commit does not clear when the tag mismatches (newer rename)
-      if ($past(
-              commit_bus_q_valid
-          ) && $past(
-              commit_bus_q.dest_valid
-          ) && !$past(
-              commit_bus_q.dest_rf
-          ) && $past(
-              commit_bus_q.dest_reg
-          ) == f_int_track && $past(
-              o_int_src1.renamed
-          ) && $past(
-              o_int_src1.tag
-          ) != $past(
-              commit_bus_q.tag
-          ) && !$past(
-              i_flush_all
-          ) && !$past(
-              i_checkpoint_restore
-          ) && !($past(
-              i_rat_alloc_valid
-          ) && !$past(
-              i_rat_alloc_dest_rf
-          ) && $past(
-              i_rat_alloc_dest_reg
-          ) == f_int_track) && !($past(
-              f_slot2_commit_int_track
-          ) && $past(
-              commit_q_2_tag
-          ) == $past(
-              o_int_src1.tag
-          ))) begin
-        p_waw_preserves_newer_int : assert (o_int_src1.renamed);
-      end
-
-      // FP commit clears RAT entry when tag matches
-      if ($past(
-              commit_bus_q_valid
-          ) && $past(
-              commit_bus_q.dest_valid
-          ) && $past(
-              commit_bus_q.dest_rf
-          ) && $past(
-              commit_bus_q.dest_reg
-          ) == f_fp_track && $past(
-              o_fp_src1.renamed
-          ) && $past(
-              o_fp_src1.tag
-          ) == $past(
-              commit_bus_q.tag
-          ) && !$past(
-              i_flush_all
-          ) && !$past(
-              i_checkpoint_restore
-          ) && !($past(
-              i_rat_alloc_valid
-          ) && $past(
-              i_rat_alloc_dest_rf
-          ) && $past(
-              i_rat_alloc_dest_reg
-          ) == f_fp_track) && !$past(
-              f_slot2_renames_fp_track
-          )) begin
-        p_commit_clears_fp_via_bus : assert (!o_fp_src1.renamed);
-      end
-
     end
   end
 

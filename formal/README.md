@@ -321,22 +321,72 @@ the older pins proofs) compares them directly. Its script reads the module twice
 once as shipped and once with the macro defined and Yosys's `xilinx/cells_sim.v`
 primitive models, flattens both (memories become registers, enable and reset
 flops are unmapped), and pairs registers and nets by name with `equiv_make`.
-`equiv_simple` then proves that every equivalence point whose cone holds a
-primitive cell has the same value in both forms, for any input and any state in
-which the paired registers agree. A register that `equiv_make` cannot pair by name keeps independent
-state in the two copies, and any compared point that depends on it stays unproven
-and fails the task. The unopened primitive forms set undefined constants to
-zero and drop initial values.
-Cells that come from the primitive models carry a `from_prim` attribute so the
-selection follows the primitives and not a hand-written signal list.
+Cells from the primitive models carry a `from_prim` attribute. The selection
+`@blk` follows those cells to the equivalence points they drive. Each task
+fixes a floor on that count so that a primitive whose output folds to a
+constant cannot silently reduce the coverage below the floor.
 
-Each task also fixes a floor on the number of points it compares with
-`select -assert-min`. A primitive whose output folds to a constant leaves no cell
-to find, and the floor turns that into a failure instead of a pass over nothing.
-Change the floor when an RTL edit adds or removes compared signals. A twin task
-passes the placeholder design in `prim_twin_done.sv` to SymbiYosys after the
-comparison, because the comparison itself runs in the Yosys script and ends in
-`equiv_status -assert`.
+`pd_target_candidate_twin`, `decoded_bundle_queue_twin`, `imem_predecode_twin`
+and `l0_store_boundary_twin` open each form with `free_undefined.ys`. After
+memory mapping they give undriven bits free values, keep named nets and
+remove unused cells. Both forms have no register initializers. The bundle
+queue, IMEM predecode and the store boundary cut their register outputs
+into input/output pairs. Each reader sees an arbitrary current value and each register drives
+a next-state comparison. All their registers use the rising edge of `i_clk`.
+The ports must match in position, name, direction, width, declared indices
+and signedness. The runner checks those declarations in `twin_ports.json`
+and checks each register's clock connection and edge.
+
+The comparison opens the two stashed forms under `twin_both` before
+`equiv_make`. The bundle queue uses `autoname t:$anyseq` in each form so that
+corresponding free cells of equal width share one arbitrary value per cycle.
+Each pairing is one-to-one. The store boundary keeps six independent free
+cells in each form and compares all 739 points, including the six driven
+by the store launch and completion primitives. IMEM predecode compares
+1,317 points with 22 independent free cells in the reference and 25 in the
+candidate. The scripts pin the census and a floor on the total points, then run
+`equiv_simple` and `equiv_status -assert` on every point. From any equal
+paired state the forms agree on outputs and next state, including the first
+cycle. Each task has a 60-second limit.
+
+Every opened in-script comparison declares its two forms, register and free-cell
+counts, primitive-cone floor and total point floor in `TWIN_COMPARISONS`.
+The fast registry test and the formal runner check the complete command sequence
+of each form through its stash, including commands in included scripts.
+Immediately after the undefined-value opening each form checks for initial
+values. Before the register cut it checks again for initial values, rejects
+unsupported state cells and checks its declared register count. Commands
+that remove or overwrite initialization are forbidden. These proofs start from
+arbitrary paired state and reject explicit register initializers in either form.
+
+A combinational task declares zero registers and no clock. A task with
+registers names one scalar clock input. Both forms check that this input
+drives every `$dff.CLK` before the cut. The runner independently checks the
+compiled register count, absence of init attributes and the rising edge and
+clock source of each register. It resolves the named input in each module's
+own bit numbering.
+
+Both stashes feed the same `twin_ports.json` dump and `equiv_make`.
+A successful comparison requires matching compiled port declarations, both
+point floors and unrestricted `equiv_simple` and `equiv_status -assert`.
+Only the named unopened tasks in `UNDEFINED_OPENING_TWINS` may use the
+older comparison.
+
+The `bmc`, `prove` and `cover` tasks of `backing_btb_twin`, `pd_history_twin`,
+`tage_predictor_twin` and `ittage_predictor_twin` compare two instances
+with SystemVerilog assertions. `PREDICTOR_ASSERTION_TASKS` identifies these
+twelve tasks by their preparation commands, staged file map and the tokens
+of the source files containing the checks. These include the named and
+unnamed checks, their guards and the PD fetch assumptions. The registered
+task mode determines which checks the harness keeps. The runner verifies
+the staged harness source after the proof. Other twin scripts require the
+declared full comparison described above.
+
+The primitive twins on `UNDEFINED_OPENING_TWINS` set undefined constants to
+zero, drop initial values and prove the points in `@blk` for any input and
+any state in which paired registers agree. A register without a name match
+keeps independent state in each form. The in-script comparisons hand
+`prim_twin_done.sv` to SymbiYosys after `equiv_status -assert`.
 
 `tests/test_prim_twins.py` lists every `FROST_XILINX_PRIMS` block in `hw/rtl`,
 fails on one that no registered check covers, and requires each covering file
@@ -344,7 +394,11 @@ to pass `-D FROST_XILINX_PRIMS` directly on the `read`, `read_verilog` or
 `read_slang` command that reads the covered source alongside
 `read_verilog -formal +/xilinx/cells_sim.v` in a design whose elaborated top
 retains a module from that source (or compares a stashed copy of that top in
-`equiv_make`).
+`equiv_make`). A source check flags literal edge controls, initialization,
+`always_ff`, `always_latch` and FD-family instances written directly in
+either arm. Macros can select state in common code, and an instance can
+contain state. The per-form state checks and compiled interface check apply
+independently of where the RTL declares the state.
 
 CI runs these comparisons in a formal shard of their own, `Primitive forms`,
 which takes the `*_twin` targets and the read select's `xilinx` tasks, and also
@@ -415,7 +469,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `branch_predictor_twin` | The branch predictor's slot-2 payload and relation selects (LUT6 per bit) equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 | `pc_controller_twin` | The fetch-PC mux, architectural next-PC mux, pending-relation selects, the sequential-PC calculator's selects and relations, and the control-flow tracker's halfword step equal their portable forms, with and without the slot-2 pending-handoff exclusion. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 | `control_flow_tracker_twin` | The tracker's halfword-next LUT6 equals its portable form |
-| `pd_target_candidate_twin` | The predecode target adder (CARRY8 with LUT2, LUT3, LUT5 and LUT6 helpers) and its saved-XOR select equal their portable form |
+| `pd_target_candidate_twin` | Every comparison point of the predecode target adder and its saved-XOR select agrees for all inputs. The primitive cone includes the CARRY8 and LUT2, LUT3, LUT5 and LUT6 helpers |
 
 `prediction_release` runs the real `pc_controller`, `c_ext_state`, and
 `slot2_prediction_capture` together. The harness replaces the PC-increment calculator with one whose PC
@@ -473,7 +527,7 @@ bits, so a type taken from a different source than its target would show.
 | `register_alias_table` | x0 is never renamed; a rename records its ROB tag; an INT commit clears a mapping only if the mapping still holds the committing tag; reset clears mappings and checkpoints; a full flush clears the checkpoints and, unless a checkpoint restore coincides, the mappings; a reclaim-all restore frees every checkpoint |
 | `rat_checkpoint_restore` | Register alias table coupled to a 32-entry circular ROB, per-allocation epoch toggle, 1-cycle pipelined commit bus, and 2-phase early and commit-time branch recovery, unbounded (`prove_int_active`, `prove_int_ckpt_lo`, `prove_int_ckpt_hi`, `prove_fp_active`, `prove_fp_ckpt_lo`, `prove_fp_ckpt_hi`) against an epoch-free instruction-sequence oracle for symbolic-constant watched registers across all 31 non-zero INT registers, all 32 FP registers, and all 8 checkpoint slots. All six tasks are required: each checks its owning partition while assuming only the preceding cycle's assertion results, so a first failure remains admissible in its owning partition. Dynamic `x0` probe lookups report unrenamed zero; lowest-free checkpoint allocation and availability match pool occupancy (`cover`, depth 11, reaches `o_checkpoint_available == 0`, slot `7` allocation, slot-2 overlay save and early restore, restoration of a live integer link after a younger rename to the same register, commit-time recovery clearing active rename state, and slot-2 FP commit clearing); slot-2 branch saves overlay a same-cycle slot-1 rename; early restores retain the jump’s own integer link and recover older unretired producers from the snapshot, and restore `o_ras_tos`, `o_ras_valid_count`, and the full `o_ras_top`; and dual-lane commits clear only matching tags. Assumes an initial reset and non-`x0` destination encoding. Unexplored inputs: watched lookups run only on `src1` ports; INT `src2` is checked only at `x0`; FP `src2` and `src3` are tied to `0`; register-file value passthrough is unchecked; a restore never coincides with `i_flush_all`; early restore selects live control-flow instructions with an integer destination or no destination; non-watched commits never name the watched register; recovery and free timing follow the harness's model of `cpu_ooo`; and `i_checkpoint_reclaim_all` is free here whereas the core ties it to `0` (`misprediction_flush_controller`) |
 | `l0_store_boundary_twin` | The SQ write stage, invalidate port and L0 byte strobes equal the original address-decoded boundary for every selected beat and launch decision |
-| `decoded_bundle_queue_twin` | The producer stall select and the shadow-next select (LUT3, LUT5 per bit) equal their portable form with the split shadow stall and four late copies |
+| `decoded_bundle_queue_twin` | Every comparison point of the queue agrees for arbitrary inputs, common register state and paired free values, including the producer stall and shadow-next selects (LUT3 and LUT5) with split shadow stall and four late copies |
 | `id_stage_kill_equiv` | `id_stage`, without the vector unit (`id_kill_equiv`) and with it (`id_kill_equiv_vector`), with early CSR-gated legality and post-classifier masking equals `id_stage` with `is_illegal_instruction` and `is_fetch_fault` applied inside `instr_operand_classifier`, across all 38 operand-class bits, register next states, and all eight stage outputs for both slots, for every instruction word, CSR legality input, and `inject_nop` state |
 
 `decoded_bundle_queue` uses an 8-bit symbolic payload, so the check does not
@@ -503,6 +557,7 @@ cycle; simulation asserts the last three. The split shadow select that
 | `sq_early_sq_copy` | The address and MMIO copies equal the untranslated packet or zero; the instantiated wrapper's final packets and capture enables equal the translation select for arbitrary state, reset, flush and translation inputs; depth-6 covers reach both translation transitions, fresh and repaired addresses, MMIO and reset |
 | `rs_payload_twin` | Two `tomasulo_wrapper` copies receive the same inputs, including PMM. Both start with the RTL's explicit initial values and zero in otherwise undefined initial bits. Each station's stage2/stage2b payload is arbitrary and independent while the stage holds no packet. Every wrapper output (including head-retirement and vector-configuration status) is equal, and payload outputs (issue packets, CDB, commit, memory and walk requests, trap value) are equal while their valid is set. The twin enables the coherent CMO requester, shares its ready and done inputs, and compares valid on every cycle and kind and address while valid. The other wrapper parameters have their defaults, which differ from the core's: `SPLIT_RS_DISPATCH`, `ENABLE_DISPATCH_DONE_REPAIR`, `ROB_SHARED_LINK_BANK`, `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS` and `CACHE_NORMAL_MEMORY` are 0, `L0_CACHE_DEPTH` is 128 and `PERF_COUNTERS` is 1; `VECTOR` is 0. Address translation is off (the wrapper's formal assumption). Independent undefined operands in the two wrappers make the wide packet comparisons expensive. Four tasks check the two CDB and two combinational commit packets, one checks the bypass and register-read operands in the Block proofs job, and one checks the remaining outputs. Five tasks use depth 5 to cover dispatch, issue and an ALU result. The second commit task also checks the three CMO outputs at depth 6. A committed store-queue entry first raises CMO valid in frame 5, counting the initial frame as 0. The registered `cover_cmo_request` task runs in Primitive forms and requires both copies to raise valid within the same six frames on the second commit model. `rs_stage2_payload_equiv` is the unbounded proof that a held payload is unchanged. After a deliberate change to the script, harness or other proof inputs outside the design RTL, run `python3 tests/rs_payload_twin_partition.py` in the formal image. The command also runs the registered request cover. Review the guarded comparisons and their compiled enables and operands for each task, then update the expected comparisons and SHA-256 hashes in `test_rs_payload_twin_assertion_groups` |
 | `rs_stage2_payload_equiv` | Unbounded induction across the INT (with dual issue), MUL, MEM, and FP station configurations: whenever `stage2_valid` or `stage2b_valid` holds, the FU-ready-loaded payload registers equal an `issue_fire`/`issue_fire_2`-gated reference across stalls, partial and full flushes, back-to-back issues, and mid-run resets, with `o_issue_is_jalr` and `MUL_RS` `o_issue.op` hold checks and reachability covers. The six-entry FP configuration checks each forward select, each operand's next-cycle value on a forward without a matching CDB lane, operand stability while held, and each resident source's deferred capture |
+| `store_completion_cofactor` | Unbounded proof of the direct ROB store-completion assertion from `tomasulo_wrapper` and the live `coherent_store_pm_select` equations. The runner extracts the named cone from the staged production wrapper. Translation mode, issue qualifiers, CMO flags, DMMU address, RS base and immediate, PMM mode, the shared PMA verdict, both memory flags and the 64-bit cached base and size are free. The effective address uses the wrapper's pointer mask and sum. The proof selects the split or full completion body using the production width rule and checks the assertion with zero assumptions. A depth-9 cover uses the DMMU and DTLB with a held MEM_RS stage and matching walk responses. It reaches completion, deferral, faults, stalls, kills, and overlapping RS issue and DMMU return. Both tasks run in the Other tasks job. |
 | `rs_primary_payload` | INT_RS's grouped port-0 payload read, address, and entry clear equal indexed selection at depths 4, 8, and 16; an unbounded proof compares grouped payload RAMs and opcode registers with a single RAM |
 | `rs_issue_clear` | The second issue port's one-hot entry clear equals the indexed clear, for single and dual issue at several depths and with the INT station's window |
 | `rs_pretag_cofactor` | The pre-issue ROB tag, computed for each combination of the two CDB valid bits, equals the reference priority select in two station configurations; the export tasks also check the candidate ready vectors |
@@ -511,6 +566,7 @@ cycle; simulation asserts the last three. The split shadow select that
 | `rs_issue_tag_banks` | INT_RS with four issue-tag copies (`ISSUE_CDB_TAG_BANKS=4`), each bank input driven by its lane's tag, equals INT_RS with the single tags: every output and every next state are the same for any register state and input. `int_equiv` compares the portable builds and `int_equiv_prims` the Xilinx-primitive builds. Both are flattened as in the primitive twins, and every flop is then cut: its readers take a free input in its place (the state) and its output is compared (the next state). `equiv_make` pairs ports and nets by name, `equiv_struct` adds a point for each pair of matching cells, and `equiv_simple` must prove every point. A sat check in each build confirms that one entry of each quarter compares against its lane's tag. Each copy equals its tag after one clock edge, which `rs_issue_tag_copies` proves, and a station whose state equals the single-tag station's, with bank inputs equal to the tags, has the same outputs and next state; INT_RS's behavior is therefore unchanged from reset, or from any corresponding initial state. Each task has a 600-second limit in Primitive forms |
 | `rs_issue_tag_copies` | Each of `tomasulo_wrapper`'s INT_RS issue-tag copies equals its tag after one clock edge, from any initial state: the wrapper is read as `tomasulo_wrapper` reads it, the eight copy assertions (the wrapper's only checks gated by `$initstate`) are kept, every other assertion, every assumption and every cover is removed, the outputs are deleted and the two next-tag nets are cut to free values; induction of depth 2. The task has a 600-second limit in Primitive forms |
 | `tomasulo_wrapper` | The back end together (ROB, RAT, four stations, CDB arbiter, and memory queues): a full flush or reset empties every structure, each station's copy of the CDB matches the bus, and the stations' ROB-tag rule holds with the real ROB allocator. See below |
+| `tomasulo_wrapper_commit_bus` | The wrapper's ROB, commit pipeline, RAT and fence flush, with both retirement and rename lanes. See below |
 | `reservation_station_twin` | The indexed source-write selects (LUT5 and LUT3) in the INT-station configuration equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 
 `reservation_station` checks the module's default parameters at BMC depth
@@ -549,21 +605,46 @@ built with its default parameters, not the core's: `SPLIT_RS_DISPATCH`,
 `ROB_SHARED_LINK_BANK`, `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS`,
 `CACHE_NORMAL_MEMORY`, `CMO_HOME` and `VECTOR` are 0 and `L0_CACHE_DEPTH` is
 128 (`fp_repair_bmc` sets `ENABLE_DISPATCH_DONE_REPAIR`).
-The six checks that read the registered commit bus (a commit clearing or
-keeping a rename, a rename winning over a same-cycle commit, and the native
-fence's flush) first apply after an instruction has dispatched, completed,
-committed and passed that register, which depth 4 does not reach: they are
-not exercised by these tasks. With only those six kept, depth 5 still misses
-them and the sixth step did not finish within 25 minutes, so no task checks
-them yet; the [roadmap](../ROADMAP.md#verification) lists the cone-cut proof
-that would. Run deeper, the native-fence checks fail on allocations that
-carry several serializing classes at once, which the wrapper does not rule
-out; `reorder_buffer`'s own proof assumes one class per allocation, and
-dispatch's simulation check `p_rob_alloc_one_serializing_class` checks it in
-the core.
 `fp_repair_bmc` enables the FP dispatch done repair, as the CPU does, and
 assumes the repair channels carry the pending FP instruction's source
 readiness and tags.
+
+`tomasulo_wrapper_commit_bus` checks the registered commit path at depth 10.
+It reads the wrapper's connections from the 32-entry ROB to the commit
+pipeline and both RAT clear ports. With neither lane renaming the register,
+a matching slot-1 commit clears the stored INT or FP mapping. When slot 1
+commits a different tag to the INT register, a matching slot-2 commit clears
+the mapping. If neither commit matches, the mapping and its tag are
+preserved. For an FP register, a matching commit from either slot clears
+the mapping. A commit to that FP register preserves the mapping and tag
+when neither slot matches. The stored valid bits are observed before the
+lookup's ROB liveness qualification, since the ROB invalidates a retiring
+tag one cycle before the RAT consumes the registered clear. Rename takes
+precedence over clearing, with slot 2 winning if both slots rename the same
+register. The wrapper's two fence checks distinguish FENCE.I and SFENCE.VMA
+from a flush delayed after a translation CSR commit.
+
+The proof uses the ROB's reset, allocation, and completion contracts,
+including one serializing class per allocation. Dispatch checks that rule in
+simulation. Rename fields and tags follow the allocation packets and ROB
+responses. Both rename lanes are idle during a full flush, and the shared
+link bank requires slot 2 to be idle behind a slot-1 branch. The scalar
+harness supplies CDB completions, the committed-store drain indication, an
+SFENCE.VMA operand issue, cache-sync readiness, and the one-cycle CSR start
+acknowledgement. Full flush is driven by the fence flush pulse or an external
+flush request. The model keeps partial recovery, checkpoints, direct store
+completion, memory replay, and the ALU held-result path idle.
+
+The `cover` task reaches all seven RAT assertion enables. The INT and FP
+slot-2 clear covers observe two commits to the same register, with slot 2
+matching and clearing the mapping. The FP mismatch cover observes two
+commits to the same register that leave a younger mapping and its tag
+intact. Covers also reach both rename priorities, a younger retirement
+that hides a mapping in the lookup before it clears, FENCE.I, SFENCE.VMA,
+and a `satp` write followed by its delayed flush. Both tasks run in Block
+proofs. The SBY and runner limits are 180 seconds for `bmc` and 360 seconds
+for `cover`. BMC uses ABC and replays failures with Boolector to report
+the failing assertion.
 
 ### Load and store queues
 
@@ -593,7 +674,7 @@ readiness and tags.
 | `sq_next_same` | The same-sector claim (`o_coherent_next_same`'s next value), formed for each launch outcome and selected by the launch, equals one expression of the cursor entry, sent marks and last write after the cycle's launch and allocation, for every register value and input and with no assumptions. The same check compares each sent register's input with allocation clearing followed by a completing write or a Zicbom drain. `bmc` uses the module's default parameters and `bmc_cpu` the CPU's: trusted dispatch room, precise uncached writes and buffered Normal-memory writes |
 | `vec_vtype_tracker` | A surviving allocation of a vector instruction other than configuration (arithmetic, floating point, cryptographic element groups, a vector-to-scalar move, a load or a store) keeps its predicted vstart clear through delayed architectural reload, including checkpoints saved while vtype is unknown. A later retiring CSR supersedes the prediction; full flush discards it, and partial recovery restores the saved ownership. The tracked vtype follows its rule in every cycle: reset, a full flush and a retiring CSR make it unknown; vsetvli and vsetivli install the vtype of their immediate, compared with the specification's rule (vill for a reserved setting or a SEW above LMUL * 64); vsetvl makes it unknown; any other cycle keeps a known vtype; an unknown vtype reloads the architectural vtype exactly when the last three cycles had no reset and no configuration instruction allocating or in flight, and none is in flight now; and a restore returns the vtype that its checkpoint's allocation produced, for one arbitrary watched checkpoint. Assumes an initial reset, no allocation during reset/recovery/CSR retirement, no checkpoint save during recovery, a checkpoint save only while slot 1 allocates (bundles dispatch whole; the core asserts it), restore only of a checkpoint saved since the last full flush, and no restore during reset, a full flush or an architectural reload. Architectural values and the delayed configuration indication are otherwise free. Bounded to 12 frames, and unbounded by property-directed reachability; covers reach reload with older nonzero architectural vstart, checkpoint restore and later CSR retirement, a legal and a vill immediate configuration, a known vtype held, a register-form configuration reloaded with a different vtype, and a restore that makes the vtype known |
 | `vec_lmul_legality_equiv` | `bmc`: `vec_arith_legality`, which forms the queue head's registered legality, equals `vector_arith_illegal` for every vtype and instruction, including floating point and the crypto geometry and architectural group bounds at VLEN 128, 256 and 512; given that value for slot 1's own instruction, dispatch's illegal flag (VECTOR=1) equals the arithmetic rule (which VTOF, `vfmv.f.s`, also takes), the vill rule for VTOX and the nonzero-vstart trap rule. Carry-less multiply, whole-register moves and the scalar inserts (`vmv.s.x`, `vfmv.s.f`) permit nonzero vstart, and element groups permit multiples of four; scalar extraction ignores it, while population and first-set reject it. Covers every vtype, instruction, operation and restart flag; combinational. `prove`: `vec_dispatch_legality`'s registered result matches the head's legality under the current vtype and its instruction's restart classes whenever it is ready, assuming that an unpopped, unflushed queue head keeps its instruction and that a known vtype changes only on an allocation or a flush (the core assertion checks the result at every vector arithmetic allocation); `cover` reaches a ready legal and a ready illegal result. These prove the restructured form against the reference function, not the reference against the specification |
-| `vec_hold_rows` | Range-ordering holds against the vector memory table, driven by a ghost program with two allocations a cycle, flush tag rollback, and retirement only as the head passes. A flushed table entry is freed on the flush edge or the next. Table ranges are fixed once published and can change after reuse. Scalar addresses are written once and confined to four pages, and the starting sequence can place tags near wrap. An older live table entry holds a scalar entry when the vector range or scalar address is unknown, the ranges share a byte, or the scalar entry is atomic. Cache-block entries use their aligned 64-byte block. A settled hold always has such a cause. Once every vector entry is free, every hold is released. Eventual memory completion requires environment fairness. `vhold_lq_bmc` and `vhold_sq_bmc` check two scalar and two table entries for 8 frames with the load queue's address-update port and the store queue's per-entry addresses, respectively. `vhold_lq_cover` and `cover` search 16 frames in those two configurations, respectively. Both cover slot-2 allocation behind a table entry, free and reallocation, table range reuse, unknown-to-known release, tag wrap, a retired table entry, a flush-cleanup entry that overlaps a settled scalar entry without holding it, and a scalar allocation during cleanup. The store-queue cover also isolates a hold from a single neighboring sector within a scalar cache block. Each task has a 1,800-second solver limit |
+| `vec_hold_rows` | Range-ordering holds against the vector memory table, driven by a ghost program with two allocations a cycle, flush tag rollback, and retirement only as the head passes. A flushed table entry is freed on the flush edge or the next. Table ranges are fixed once published and can change after reuse. Scalar addresses are written once and confined to four pages, and the starting sequence can place tags near wrap. An older live table entry holds a scalar entry when the vector range or scalar address is unknown, the ranges share a byte, or the scalar entry is atomic. Cache-block entries use their aligned 64-byte block. A settled hold always has such a cause. Once every vector entry is free, every hold is released. Eventual memory completion requires environment fairness. `vhold_lq_bmc` and `vhold_sq_bmc` check two scalar and two table entries for 8 frames with the load queue's address-update port and the store queue's per-entry addresses, respectively. `vhold_lq_cover` and `cover` search 16 frames in those two configurations, respectively. Both cover slot-2 allocation behind a table entry, free and reallocation, table range reuse, unknown-to-known release, tag wrap, a retired table entry, a flush-cleanup entry that overlaps a settled scalar entry without holding it, and a scalar allocation during cleanup. Both cleanup witnesses forbid head advancement on any rollback edge in their traces. The store-queue cover also isolates a hold from a single neighboring sector within a scalar cache block. Each task has a 1,800-second solver limit |
 | `vec_vmu` | A 193-byte read crossing seven sectors: request order and count, identity conservation, completion after every sector response, request stability under backpressure, and preparation-register stability when the selected slot is full. Bounded to 40 frames; 90-frame covers for completion and a full slot use concrete fair response schedules, either prompt or delayed until the slots fill. The safety check permits arbitrary response order and request stalls. Masked byte data and other widths are checked by the unit bench. Registers that load the constant descriptor, and the unused store datapath, keep arbitrary initial values, so the BMC has a 1,500-second limit; the cover has 180 seconds. Both run in the Vector job |
 | `vec_head_mmu` | A two-page four-element load with successful translation or a page-one fault: responses echo the accepted request VPN, no descriptor before both distinct pages have responded, one CDB completion and one descriptor per instruction, normal launch at retirement, every commit of the instruction consumed by that launch, partial launch bounded below the faulting element, older-store drain and the registered interrupt shield. The commit arrives at least two cycles after the CDB accepts the completion (the registered CDB and the registered commit bus), and the head's vector memory flag clears on that acceptance, as in `vec_unit`. Bounded to 48 frames with 90-frame covers, which include a commit at the earliest such cycle; each task has a 180-second limit in Other tasks. `stride_bmc` and `stride_cover` run a three-element strided load or store at VLEN 128, and `index_bmc` and `index_cover` an ordered or unordered indexed one whose index register gives the same elements; the elements straddle and share three pages, with any one page faulting and the base tagged under either pointer-masking length, a walker that answers in the next cycle and a memory unit that completes an element in the cycle after its launch: walks request the masked page numbers, each element's descriptor covers that element alone in element order after its pages have responded and older stores have drained, under the shield, one at a time; the completion follows exactly the elements before the faulting one, with that element as `vstart` and its address (or the next page's base) as `xtval`; loads report each register write; no range is written and retirement frees the entry. The four tasks run 60 frames, enough for the run to retire; the indexed ones fix pointer masking off (the strided ones cover it); 900 seconds each |
 | `vec_vmt` | The vector memory table against a ghost reorder buffer (in-order allocation with scalar instructions between, allocation only while not full, the head passing a vector memory instruction alone through the commit bus, full and partial flushes with tag rollback, completion only after retirement, unconstrained range writes, the sequence starting anywhere so tags wrap). The head may also pass instructions on a flush edge, which the reorder buffer never does; a vector memory instruction passing on a full flush then retires and stays live over its own pending removal: an index is allocated only when free before the edge, an entry stays live for one cycle after a flush removes its instruction and otherwise exactly while the instruction is in flight, carries its tag through that cycle too, and is retired when the head has passed it without flushing it; its range is written once and then fixed, and the registered no-live-retired-entry output and the full flag are exact. 14 frames; covers reach a full table and reuse, a partial flush that keeps an older entry, the no-live-retired-entry output falling and rising, tag wrap, a retirement in the cycle after a flush and a flush in the cycle after a retirement, an allocation in the cleanup cycle and reuse of a cleaned index in the next cycle, all with no instruction passing on a flush edge, and a retirement on a full-flush edge that keeps its entry |
@@ -602,7 +683,7 @@ readiness and tags.
 | `store_queue_twin` | The write launch, write completion, in-flight special and sent-bit selects, and the same-sector claim's launch copy and final select, equal their portable forms at the module's default settings and at the CPU's (`TRUST_DISPATCH_VALID`, `PRECISE_UNCACHED`, `CACHE_NORMAL_MEMORY`) |
 | `sq_forwarding_unit` | Store-queue forwarding unit at 8 entries against an independent ring-order scan from `i_sq_head_idx`, unbounded (`prove`): older-store address-known flag, dword and 64-byte `cbo.zero` conflict detection, Zicbom load conflicts through both views of a DDR block, same-cycle dual commit snoops, Zicbom, `cbo.zero`, MMIO, and SC forwarding vetoes, full byte-lane coverage, and registered winner-index and store-offset payload selection. `tree_equiv` (`read_slang` with `SYNTHESIS` defined and `FORMAL` undefined on the shipped copy, unbounded, assuming only an initial reset with no input assumptions) proves the shipped `ifndef FORMAL` balanced `fwd_node` reduction tree equivalent to the `ifdef FORMAL` linear ring scan. In `prove`, assumes an initial reset, equal replicated probe-address copies, `sq_is_zero` set whenever `sq_is_cmo` is set, write-once data-mirror stability across the consume cycle (which `load_queue` and `store_queue` establish), and byte masks formed by a copy of `mem_strobe_for` |
 | `line_align` | Extract and place in `line_align` equal a byte-by-byte reference for arbitrary lines, data, offsets and byte counts, and a placed access reads back unchanged, for 32-byte lines with 8 data bytes (`bmc`), 64-byte lines (`bmc_64x8`) and 32 data bytes (`bmc_32x32`) |
-| `ma_engine` | The misaligned-access engine from reset with an arbitrary walker, register file and line client: registered request controls equal their issue-state decodes, no sector request before both parts pass their checks, the lower sector issued first and an upper one only for a split access, each identity issued once with a stable payload, every check recorded before a request, completion only after every response, a load's response error reported as a load access fault after every response, at most one completion or fault and one register write per access, a store's masks covering exactly its bytes, nothing completed, faulted or requested on the edge that samples a hart stop or receives a failed write, and a failed write or hart stop terminal from the next cycle. Assumes starts only while idle and one response per issued identity, at least a cycle after its request |
+| `ma_engine` | The misaligned-access engine from reset with an arbitrary walker, register file and line client: registered request controls equal their issue-state decodes, no sector request before both parts pass their checks, the lower sector issued first and an upper one only for a split access, each identity issued once with a stable payload, every check recorded before a request, completion only after every response, a load's response error reported as a load access fault after every response, at most one completion or fault and one register write per access, a store's masks covering exactly its bytes, nothing completed, faulted or requested on the edge that samples a hart stop or receives a failed write, and a failed write or hart stop terminal from the next cycle. The 16-frame BMC and cover tasks assume starts only while idle and one response per issued identity, at least a cycle after its request. The separate unbounded proof checks only equality of the request controls and issue-state decodes. It assumes an initial reset and leaves every subsequent input free |
 | `ma_pkg` | The misaligned-access checks in `ma_pkg` equal direct references for an arbitrary address, size and part verdicts: access size, misalignment, sector and page crossing (agreeing with `line_align`'s crossing flag), the upper part's first byte, which part's verdict decides, the cause and trap value, the loaded register value, the leaf permission rule, superpage PPN composition and the physical-range check |
 
 `load_queue_amo_compute` starts from arbitrary state, with no reset or
@@ -866,7 +947,7 @@ cycles, which clears arbitrary memory history.
    `opt -keepdc -mux_bool -fine`,
    plain `memory_map`, `setundef -zero`, `abc`, `peepopt`,
    `sim -clock ... -n 1 -w`, `chtype`, `techmap -max_iter 1 -map %<name>`,
-   `sat`, `equiv_simple` and `equiv_struct -icells` are in
+   `sat`, `autoname t:$anyseq`, `equiv_simple` and `equiv_struct -icells` are in
    `DONT_CARE_REJECTED` and run only where pinned in `DONT_CARE_OPEN`.
    The pin check compares each task's rejected commands in execution order.
    Adding, removing or editing safe commands leaves the pins intact when
@@ -960,17 +1041,44 @@ cycles, which clears arbitrary memory history.
    `design -load` brings back, may leave a narrower scope in place before
    `script free_undefined.ys`.
 
+   Every registered task must elaborate its input sources and parameter
+   overrides with `hierarchy -top` or the opening hierarchy of `prep -top`
+   before a transformation can consume their values. A partition may remove
+   properties or named modules and instances and import stashed modules
+   before elaboration. The runner checks the compiled top and all instantiated
+   modules at each boundary, including each form of an in-script comparison.
+   It rejects a high-impedance
+   constant bit in a connection, cell port or parameter, process, or wire
+   initial/default value. It also rejects RTLIL tri-state buffers, which Slang
+   can generate for a conditional z. Tasks using `read_slang` also treat the
+   frontend warning about converting z into x as an error. The rule includes
+   comparator operands. The native Verilog frontend lowers a variable
+   `$isunknown` test into comparisons with x and z.
+   Registered tasks require an empty `HIGH_IMPEDANCE_PENDING` tuple.
+   An exemption identifies the exact source path in `[files]`, the full
+   name of its enclosing check or block (for example, `top.guards.known`),
+   the checked expression and the target/task pairs that elaborate it.
+   The expression is the full sequence of SystemVerilog tokens with a space
+   between tokens, including operators and operands. The source parser skips
+   comments and layout. A property includes its clock and disable condition.
+   A macro in the expression prevents a match because its expansion can change.
+   Exactly one `$isunknown` call must match in the named scope. The runner
+   checks the identity in the checkout, then resolves its current token span
+   again in the staged HDL supplied to the compiler. The compiled check permits only the one-bit z on that call's `$eqx.B`
+   operand and requires the operand to occur. In-script equivalence
+   comparisons require the full check. The check uses the frontend's
+   elaborated RTLIL.
+   Inactive source branches, uninstantiated library models, and constants
+   folded by the frontend before that boundary fall outside its view.
+
    The opening does not reach undefined values that a cell computes, such as
    a `$shiftx` read past its input, which the backends and the shift
-   templates give a defined value; constant z bits, which `setundef -anyseq`
-   leaves as they are, as SymbiYosys's own `setundef` does, and which no
-   source has; or a memory initialized with x, which stops the next pass
-   that reads the memory with "Non-constant data". A value free in every
+   templates give a defined value. A memory initialized with x stops the next
+   pass that reads it with "Non-constant data". A value free in every
    cycle can also satisfy a cover that no circuit reaches, such as the same
-   inputs giving another output. Scripts that compare two designs inside the
-   script (the primitive twins and the other in-script equivalence checks)
-   do not open this way yet: both designs hold the same undefined constants,
-   and freeing them separately on each side would make the sides differ. The
+   inputs giving another output. In-script implementation comparisons open
+   each form and the comparison design separately. The Primitive twins
+   section describes how a task pairs corresponding free values. The
    fast Python tests check the opening of every script that
    `UNDEFINED_OPENING_PENDING` and `UNDEFINED_OPENING_TWINS` do not list,
    including that the script runs this repository's `free_undefined.ys`
@@ -1039,9 +1147,12 @@ FORMAL_TARGETS = [
    limits.
 5. A new `ifdef FROST_XILINX_PRIMS` block in `hw/rtl` needs a primitive-twin
    task (see Primitive twins) or an entry in `NOT_COVERED` in
-   `tests/test_prim_twins.py`, with the reason. Copy a `*_twin.sby`, list the
-   module's sources and parameters, and set the `select -assert-min` floor to the
-   `Found N $equiv cells` count in the first verbose run's log.
+   `tests/test_prim_twins.py`, with the reason. For an in-script comparison,
+   start from `pd_target_candidate_twin.sby` or `decoded_bundle_queue_twin.sby`.
+   Declare the inputs of both forms, their cut register count and clock,
+   their free-cell counts and both measured point floors in `TWIN_COMPARISONS`.
+   Keep the per-form initialization and clock checks, compiled port dump and
+   unrestricted point proof described in Primitive twins.
 
 ## Yosys SVA Limitations
 

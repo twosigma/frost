@@ -318,14 +318,12 @@ of those need more endpoint protocol lemmas, such as that a failing or filled
 read is owned and unanswered and that endpoint 0 completes only after its
 installation.
 
-Open: `tomasulo_wrapper`'s six commit-bus checks (a commit clearing or
-keeping a rename, a rename winning over a same-cycle commit, and the native
-fence's flush) are not reached at the wrapper's depth, and the whole back end
-did not finish a sixth step in 25 minutes. A cone-cut proof of the ROB commit
-packet, `commit_bus_pipeline` and the RAT, with free completion and one
-serializing class per allocation, would check them.
+The [commit-bus proof](formal/README.md#reservation-stations-and-the-tomasulo-wrapper)
+checks the ROB, commit pipeline and RAT together. It covers the stored
+mapping clears and rename priority, and distinguishes the native fence flush
+from a delayed translation CSR flush.
 
-Open: shipped parameter values that no proof of the block covers yet:
+Open: shipped parameter values for the full-block proofs:
 `data_mem_request_router` with `VARIABLE_UNCACHED=1`, and `tomasulo_wrapper`
 with the core's `SPLIT_RS_DISPATCH`, `ROB_SHARED_LINK_BANK`,
 `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS`, `CACHE_NORMAL_MEMORY`,
@@ -380,9 +378,11 @@ script names itself, keep the unknown starting value of registers and
 memories and never merge two free inputs, and for each task of a script it
 lists as open it pins every other command, in order. It also pins commands
 that read undefined bits as defined, in twenty-two more files and some of
-those above: the primitive twins and two other equivalence checks zero
-undefined constants and prove with `equiv_simple`, which reads an undefined
-bit as 0; `rs_payload_twin.sby` starts both copies from a zero state; the
+those above: seventeen in-script comparisons zero undefined constants before
+`equiv_simple`, which reads an undefined bit as 0. The predecode target,
+decoded bundle queue, IMEM predecode and L0 store boundary comparisons open
+both forms and prove every point.
+`rs_payload_twin.sby` starts both copies from a zero state; the
 store-home BMCs run `peepopt`, and its compact covers `abc` and
 `opt -fine`, which merges equal multiplexer output bits; the load-queue
 capture checks run `abc` after cutting every flip-flop; and the AXI
@@ -397,7 +397,7 @@ or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
 `opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
 `prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). Of the 224 scripts, 194 open with `hierarchy -top` and
+each case). Of the 246 scripts, 218 open with `hierarchy -top` and
 `script free_undefined.ys`, which lowers processes pass by pass, frees the
 undefined inputs of every multiplexer and the undefined bits of every
 connection with `setundef -anyseq` before `proc_dlatch` and every other
@@ -407,13 +407,12 @@ port, a connection or a register when those passes run. Commands that a
 script's open entry pins are the exception: a plain `memory_map`, for one,
 writes x for words that nothing writes, and a plain `opt` after it can read
 them before SymbiYosys frees them. The fast check requires the shared
-opening for every task of those 194 scripts.
+opening for every task of those 218 scripts.
 
 Open: the 11 scripts listed in `UNDEFINED_OPENING_PENDING` in
-`tests/test_run_formal.py`, each to be opened with every task rerun. The 19
-scripts listed in `UNDEFINED_OPENING_TWINS` compare two designs inside the
-script and need an opening of their own because both designs hold the same
-undefined constants.
+`tests/test_run_formal.py`, each to be opened with every task rerun. The 17
+scripts listed in `UNDEFINED_OPENING_TWINS` need an opening for each
+form and a pairing for corresponding free values.
 
 Before the opening, a dump of every registered task's model
 before the first two `opt_muxtree` steps of each `opt` without `-fast` and

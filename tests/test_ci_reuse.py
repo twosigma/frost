@@ -128,6 +128,8 @@ def formal_tree(root: Path) -> Path:
         "tests/test_run_formal.py",
         "tests/sby_config.py",
         "tests/sby_dump.sby",
+        "tests/formal_model.cc",
+        "tests/formal_predicates.py",
         "tests/conftest.py",
         "pyproject.toml",
     ):
@@ -166,6 +168,8 @@ def edit(path: Path, old: str, new: str) -> None:
         "runner:    def prove(",
         "helper:tests/sby_config.py",
         "helper:tests/sby_dump.sby",
+        "helper:tests/formal_model.cc",
+        "helper:tests/formal_predicates.py",
         "new_helper",
     ],
 )
@@ -294,6 +298,24 @@ def test_home_cmo_replay_staging_and_key(tmp_path: Path) -> None:
     with pytest.raises(ci_reuse.ReuseKeyError, match="missing formal replay helper"):
         formal_key(root, cover)
     assert formal_key(root, control) == control_key
+
+
+def test_store_completion_projection_staging_and_keys(tmp_path: Path) -> None:
+    """Both tasks consume the source projection staged with the wrapper."""
+    root = formal_tree(tmp_path / "repo")
+    proof = ROOT / "formal/store_completion_cofactor.sby"
+    staged = sby_config.stage_proof(proof, ROOT, root)
+    helper = root / "tests/store_completion_cofactor.py"
+    assert sby_config.store_completion_cone_helper(staged) == helper
+    assert helper.read_bytes() == (ROOT / "tests" / helper.name).read_bytes()
+    tasks = ("store_completion_cofactor_prove", "store_completion_cofactor_cover")
+    before = {task: formal_key(root, task) for task in tasks}
+    trap_key = formal_key(root)
+    with helper.open("a") as stream:
+        stream.write("# changed projection\n")
+    for task in tasks:
+        assert formal_key(root, task) != before[task]
+    assert formal_key(root) == trap_key
 
 
 def test_formal_key_file_list_is_order_independent() -> None:
