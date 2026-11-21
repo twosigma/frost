@@ -239,12 +239,16 @@ other eight in the other, each with a 120-minute limit. The Coherence job
 runs the other coherence tasks, including the hart maintenance covers
 and the reset-state lemma induction, with a 300-minute limit. The home
 tasks have their separate 240-minute job.
-Seven jobs split the rest: Vector (the vector CSR
+Eight jobs split the rest: Vector (the vector CSR
 tasks, `vec_vtype_tracker`, `vec_lmul_legality_equiv` and `vec_vmu`, 90
 minutes), two Line client links jobs (95 and 80 minutes), Memory
 management (the page table
 walker, TLBs, instruction and data MMUs and interrupt controllers, 75), Load
-queue (60), Block proofs (the longest of the remaining block proofs: branch
+queue (the seven `load_queue` tasks, 130: their SBY allowances, about 2.2
+times each task's time on a development host, sum to 120 minutes), Load queue
+blocks (its helper blocks, its AMO datapath and the range holds at its
+address-update port, 77: about 2.2 times their 30 minutes on a development
+host, plus setup), Block proofs (the longest of the remaining block proofs: branch
 prediction hand-off and release, the flash-valid cache bits, the vector memory
 tracker, the wrapper and payload-twin operand comparisons, the reservation
 station and rename checkpoint proofs, the fetch shadow capture and the home's seat logic, 150) and Other tasks (120). Other tasks takes every task that no

@@ -1852,6 +1852,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
         verilator_extra_args=("--assert",),
     ),
+    "probe_zero_twin": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="probe_zero_twin",
+        nic_mac_clocks=False,
+        description=(
+            "Upper-sector loads behind a cbo.zero whose second store-buffer record "
+            "waits, with cached loads launched during the store-queue probe and "
+            "assertions enabled"
+        ),
+        verilator_extra_args=("--assert", "-GLQ_PROBE_LAUNCH=1"),
+    ),
     "cbo_zero_test_equal_lines": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3357,6 +3369,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Load-queue behavior with store-to-load forwarding enabled",
         verilator_extra_args=("-GENABLE_SQ_FORWARD_FAST_PATH=1",),
         extra_env=(("FROST_TEST_SQ_FORWARD_FAST_PATH", "1"),),
+    ),
+    "load_queue_probe_launch": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
+        hdl_toplevel_module="load_queue",
+        description="Load-queue behavior with forwarding on and cached loads launched "
+        "during the store-queue probe",
+        verilator_extra_args=("-GENABLE_SQ_FORWARD_FAST_PATH=1", "-GPROBE_LAUNCH=1"),
+        extra_env=(
+            ("FROST_TEST_SQ_FORWARD_FAST_PATH", "1"),
+            ("FROST_TEST_PROBE_LAUNCH", "1"),
+        ),
     ),
     **{
         f"lq_l0_cache_{depth}": CocotbRunConfig(
@@ -6328,6 +6351,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=(
             "-GENABLE_DISPATCH_DONE_REPAIR=1",
             "-GEARLY_LOAD_WAKEUP=0",
+        ),
+    ),
+    "tomasulo_wrapper_probe_launch": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description="Tomasulo integration with cached loads launched during the "
+        "store-queue probe and dispatch done repair enabled",
+        verilator_extra_args=(
+            "-GENABLE_DISPATCH_DONE_REPAIR=1",
+            "-GLQ_PROBE_LAUNCH=1",
         ),
     ),
     "tomasulo_load_wakeup": CocotbRunConfig(

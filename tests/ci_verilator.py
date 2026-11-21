@@ -239,6 +239,7 @@ VERILATOR_MATRIX: dict[str, Any] = {
             "coverage": ["bram"],
             "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
             "pytest_filter": (
+                "[probe_zero_twin] or "
                 "[cbo_mgmt_test] or [cbo_mgmt_test_assert] or [nic_cmo_loopback] or "
                 "[memerr_test] or [memerr_test_seeded] or [memerr_readback] or "
                 "[ecc_scrub_test] or [fatal_stop_irq] or [fatal_stop_irq_with_engine]"
@@ -324,6 +325,7 @@ VERILATOR_MATRIX: dict[str, Any] = {
                 "[l1i_set_test_l1i32] or [l1i_set_test_l1i32_hw_sweep] or [nic_bench] "
                 "or [nic_sg_loopback] or [nic_rate] or [l2_capacity_chase_capacity] or "
                 "[l2_capacity_chase_smoke] or [cbo_mgmt_test] or "
+                "[probe_zero_twin] or "
                 "[cbo_mgmt_test_assert] or [nic_cmo_loopback] or [misaligned_test] or "
                 "[memerr_test] or [memerr_test_seeded] or [memerr_readback] or "
                 "[ecc_scrub_test] or [fatal_stop_irq] or [fatal_stop_irq_with_engine] "
