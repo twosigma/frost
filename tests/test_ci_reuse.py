@@ -62,6 +62,9 @@ def test_every_formal_task_has_a_key() -> None:
         if task in target.tasks
     }
     assert set(registry.tasks) == expected
+    assert set(registry.define_inputs) == {
+        f"{task.target}:{task.task}" for task in registry.tasks.values()
+    }
     cache = ci_reuse.FileCache()
     keys = set()
     for test_id, task in registry.tasks.items():
@@ -127,6 +130,7 @@ def formal_tree(root: Path) -> Path:
     for name in (
         "tests/test_run_formal.py",
         "tests/sby_config.py",
+        sby_config.DEFINE_INPUTS_PATH,
         "tests/sby_dump.sby",
         "tests/formal_model.cc",
         "tests/formal_predicates.py",
@@ -141,6 +145,25 @@ def formal_tree(root: Path) -> Path:
 def formal_key(root: Path, test_id: str = "trap_unit_bmc", tools: str = TOOLS) -> str:
     """Return a formal key computed from scratch."""
     return ci_reuse.formal_task_key(root, test_id, tools)
+
+
+def test_formal_key_contains_the_task_define_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Record the selected task's expected define inputs in its reuse key."""
+    key_payloads = []
+    digest = ci_reuse.canonical_digest
+
+    def record_digest(payload: dict[str, Any]) -> str:
+        if payload.get("kind") == "formal":
+            key_payloads.append(payload)
+        return digest(payload)
+
+    monkeypatch.setattr(ci_reuse, "canonical_digest", record_digest)
+    formal_key(ROOT, "pm_mode_select_bmc_ddr36")
+    (payload,) = key_payloads
+    declaration = sby_config.read_define_inputs(ROOT)["pm_mode_select:bmc_ddr36"]
+    assert payload["define_inputs"] == declaration
 
 
 def edit(path: Path, old: str, new: str) -> None:

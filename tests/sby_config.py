@@ -75,6 +75,7 @@ AND_GATE = re.compile(r"AND")
 POS_INT = re.compile(r"[1-9][0-9]*")
 
 ALLOWED_FILE_SUFFIXES: tuple[str, ...] = (".sv", ".v", ".svh", ".vh", ".ys")
+DEFINE_INPUTS_PATH = Path("tests/formal_define_inputs.json")
 
 # Closed [options] keys and value patterns across all formal/*.sby tasks.
 OPTION_SPECS: dict[str, re.Pattern[str]] = {
@@ -1140,6 +1141,84 @@ def parse_script_lines(
             raise ConfigError(f"{origin}:{start}: {error}") from error
         parsed.append(ParsedCommand(tokens, form, included_from))
     return parsed
+
+
+def define_inputs(commands: Iterable[ParsedCommand]) -> tuple[str, ...]:
+    """Record explicit defines and their source-read positions in command order."""
+    result = []
+    design = 0
+    read = 0
+    persistent = False
+    for command in commands:
+        form = command.form.id
+        if form in ("design_stash", "design_reset", "design_load"):
+            design += 1
+        if form == "read_define":
+            result.append(
+                f"design {design} before read {read + 1}: {' '.join(command.args)}"
+            )
+            persistent = True
+            continue
+        if form not in (
+            "verilog_defines",
+            "read_sources",
+            "read_verilog",
+            "read_slang",
+        ):
+            continue
+
+        words = iter(command.args[1:])
+        arguments = tuple(
+            f"-D{next(words)}" if word == "-D" else word for word in words
+        )
+        if form == "verilog_defines":
+            result.append(
+                f"design {design} before read {read + 1}: verilog_defines {' '.join(arguments)}"
+            )
+            persistent = True
+            continue
+
+        read += 1
+        if persistent or any(word.startswith("-D") for word in arguments):
+            scope = (
+                word
+                for word in arguments
+                if word.startswith("-D")
+                or SOURCE_FILE.fullmatch(word)
+                or word in ("-formal", "-sv", "-nosynthesis", "--no-synthesis-define")
+            )
+            result.append(
+                f"design {design} read {read}: {command.args[0]} {' '.join(scope)}"
+            )
+    return tuple(result)
+
+
+def read_define_inputs(root: Path) -> dict[str, tuple[str, ...]]:
+    """Load the independent, checked-in define declaration for every task."""
+    path = root / DEFINE_INPUTS_PATH
+
+    def unique(entries: list[tuple[str, object]]) -> dict[str, object]:
+        rows = dict(entries)
+        if len(rows) != len(entries):
+            raise ValueError("duplicate task declaration")
+        return rows
+
+    try:
+        rows = json.loads(path.read_text(), object_pairs_hook=unique)
+    except (OSError, ValueError) as error:
+        raise ConfigError(f"{DEFINE_INPUTS_PATH}: {error}") from error
+    if not isinstance(rows, dict):
+        raise ConfigError(f"{DEFINE_INPUTS_PATH}: expected a task map")
+    declarations = {}
+    for task, steps in rows.items():
+        if not (
+            re.fullmatch(rf"{FILENAME}:{NAME}", task)
+            and isinstance(steps, list)
+            and all(isinstance(step, str) for step in steps)
+        ):
+            raise ConfigError(f"{DEFINE_INPUTS_PATH}: invalid declaration for {task!r}")
+        declarations[task] = tuple(steps)
+    return declarations
 
 
 @dataclass(frozen=True)

@@ -1047,6 +1047,23 @@ cycles, which clears arbitrary memory history.
    `design -load` brings back, may leave a narrower scope in place before
    `script free_undefined.ys`.
 
+   Each task lists its explicit macro inputs in `tests/formal_define_inputs.json`.
+   The input check resolves the task and its script includes, then compares
+   macro names and replacement tokens in command order. Persistent definitions
+   and read-local definitions are tied to their positions in the source reads
+   and design scopes. Bare defines and defines with replacement tokens have
+   distinct entries. The HDL sources supply any defaults.
+
+   After an intentional change to a task's macro inputs, run the declaration
+   update from the repository root.
+
+   ```bash
+   ./scripts/frost.py run python3 tests/test_run_formal.py --update-define-inputs pm_mode_select:bmc_ddr36
+   ```
+
+   Replace `pm_mode_select:bmc_ddr36` with the affected target and task.
+   Review the declaration diff together with the proof script.
+
    Every registered task must elaborate its input sources and parameter
    overrides with `hierarchy -top` or the opening hierarchy of `prep -top`
    before a transformation can consume their values. A partition may remove

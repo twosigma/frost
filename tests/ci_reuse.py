@@ -246,6 +246,10 @@ class FormalRegistry:
     def __init__(self, root: Path) -> None:
         """Read the registry and the runner's source."""
         module = ModuleSource(root / "tests/test_run_formal.py")
+        try:
+            self.define_inputs = sby_config.read_define_inputs(root)
+        except sby_config.ConfigError as error:
+            raise ReuseKeyError(str(error)) from error
         self.runner = module.runner_digest(FORMAL_BY_VALUE)
         self.formal_dir = module.literal("FORMAL_DIR")
         self.default_timeout = module.literal("SBY_TASK_TIMEOUT_S")
@@ -282,9 +286,9 @@ def formal_task_key(
 ) -> str:
     """Return the reuse key of a formal task.
 
-    The key holds the .sby text (with its [files] lines in sorted order, as
-    SymbiYosys copies the files by name) and the path and content of every
-    [files] entry. An entry must be one path to a regular file inside the
+    The key holds the .sby text (with its [files] lines in sorted order),
+    the path and content of every [files] entry, and the task's declared
+    define inputs. An entry must be one path to a regular file inside the
     repository. A task that replays its witnesses also keys its Python runner.
     """
     if not tools_id:
@@ -294,6 +298,9 @@ def formal_task_key(
     task = registry.tasks.get(test_id)
     if task is None:
         raise ReuseKeyError(f"{test_id} is not a registered formal task")
+    case = f"{task.target}:{task.task}"
+    if case not in registry.define_inputs:
+        raise ReuseKeyError(f"{case}: missing define input declaration")
     formal_dir = root / registry.formal_dir
     sby_path = formal_dir / task.sby_file
     name = task.sby_file
@@ -352,6 +359,7 @@ def formal_task_key(
             "formal_dir": registry.formal_dir,
             "sby": {"path": relative(sby_path, root), "sections": sections},
             "files": sorted(files, key=lambda f: (f["path"], f["entry"])),
+            "define_inputs": registry.define_inputs[case],
             "timeout": registry.timeout(task),
             "runner": runner,
             "helpers": helpers,
