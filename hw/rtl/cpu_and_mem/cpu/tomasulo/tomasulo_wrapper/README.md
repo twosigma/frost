@@ -507,10 +507,12 @@ top-level and cache counter blocks. See the
   ports, operand capture, lane contention, stalls, recovery, and tag reuse
   through retirement wraparound.
   `tomasulo_coherence` and `tomasulo_coherence_l0_256` cover DMA coherence races.
-- The `tomasulo_wrapper` formal target checks commit propagation, flush
-  composition, INT_RS's side-RAM tag rule against the real ROB, and the SC and
-  CDB-copy assertions above, with translation off; its `fp_repair_bmc` task
-  checks the FP buffer's repair timing and values.
+- The `tomasulo_wrapper` formal target checks the combinational commit
+  ports, flush composition, INT_RS's side-RAM tag rule against the real ROB,
+  and the SC and CDB-copy assertions above, with translation off. Its
+  `fp_repair_bmc` task checks the FP buffer's repair timing and values.
+- `tomasulo_wrapper_commit_bus` checks the registered commit effects on the
+  RAT's stored mappings, same-cycle rename priority, and fence flushes.
 - The FP forward checker follows each live offer through the pipeline tail,
   result FIFO, adapter and registered CDB. It checks the forwarded word on
   either result lane, tag allocation, and recovery of its consumers. FP_RS

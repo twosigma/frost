@@ -1,0 +1,100 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+cover: mode cover
+depth 10
+bmc: timeout 180
+bmc: aigsmt boolector
+cover: timeout 360
+
+[engines]
+bmc: abc bmc3
+cover: smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv
+read -sv rob_serializer.sv sfence_operand_store.sv
+# Keep the ROB's interface assumptions, including the one-class allocation
+# rule and the CDB drain window. The RAT and pipeline use their RTL only.
+read -formal -D SYNTHESIS -sv reorder_buffer.sv
+read -sv rob_link_value_ram.sv
+read -sv register_alias_table.sv commit_bus_pipeline.sv
+# This file also defines the wrapper's CDB restore helper.
+read -sv cdb_arbiter.sv
+read -formal -D SYNTHESIS -sv tomasulo_wrapper.sv tomasulo_commit_bus_formal.sv
+chparam -set ROB_SHARED_LINK_BANK 1 tomasulo_wrapper
+hierarchy -top tomasulo_commit_bus_formal
+script free_undefined.ys
+
+# Check the original rename-precedence and fence properties and the effect
+# of both registered buses on the stored RAT mappings.
+select -set slot2_clear tomasulo_commit_bus_formal/c:p_commit_2_clears_int_via_bus
+select -set rat_checks tomasulo_commit_bus_formal/c:p_commit_clears_int_via_bus tomasulo_commit_bus_formal/c:p_waw_preserves_newer_int tomasulo_commit_bus_formal/c:p_commit_clears_fp_via_bus tomasulo_wrapper/c:p_rename_wins_over_commit @slot2_clear
+select -set fence_checks tomasulo_wrapper/c:p_registered_native_fence_implies_flush tomasulo_wrapper/c:p_native_fence_copy_matches_non_translation_flush
+select -assert-count 5 @rat_checks
+select -assert-count 2 @fence_checks
+chformal -assert -remove t:$check r:FLAVOR=assert %i @rat_checks %d @fence_checks %d
+# The harness supplies the wrapper's environment. Keep the assumptions that
+# select and bind its watched registers to the RAT source lookup ports.
+select -set watchers tomasulo_wrapper/w:f_int_track tomasulo_wrapper/w:f_fp_track %u %co* t:$check %i r:FLAVOR=assume %i
+select -assert-count 3 @watchers
+chformal -assume -remove tomasulo_wrapper/* @watchers %d
+chformal -cover -remove t:$check r:FLAVOR=cover %i tomasulo_commit_bus_formal/* %d
+bmc: chformal -cover -remove
+# c_younger_slot2_commit reaches the slot-2 enable and checks for the clear.
+cover: chformal -assert -coverenable @rat_checks @slot2_clear %d
+cover: chformal -assert -remove
+
+# Remove the blocks outside the ROB-to-RAT path. At the ROB boundary, free
+# both CDB packets, their private match tags, the store-drained indication
+# and SFENCE.VMA operand issue. Retain the ROB's CDB match-tag assumptions.
+select -set cone tomasulo_wrapper/c:u_rob tomasulo_wrapper/c:commit_bus_pipeline_inst tomasulo_wrapper/c:u_rat
+select -assert-count 3 @cone
+# Name the removed types so the strict frontend can read their interfaces.
+delete t:reservation_station t:dispatch_rs_router t:mem_wakeup_merge t:fu_cdb_adapter t:int_alu_shim t:int_muldiv_shim t:fp_shim
+delete t:load_queue t:store_queue t:sc_pending_unit t:sq_early_addr_pipeline t:dmmu t:lq_coherence_port t:coherent_atomic_select t:tomasulo_perf_counters
+delete tomasulo_wrapper/c:u_cdb_arbiter tomasulo_wrapper/c:u_cdb_lane*_live_value_restore
+cd tomasulo_wrapper
+cutpoint w:cdb_write_from_arbiter w:cdb_write_from_arbiter_2 w:cdb_rob_match_tag w:cdb_rob_match_tag_2 w:sq_committed_empty_rob w:mem_rs_issue_w
+# CDB completions have reached the ROB. Stores, replay and the ALU adapter
+# hold protocol are outside this cut.
+connect -nomap -set store_complete_valid 1'b0
+connect -nomap -set coh_replay_set_mask 32'b0
+connect -nomap -set alu_result_held_q 32'b0
+connect -nomap -set rob_head_next_result_held 1'b0
+cd ..
+setattr -unset keep
+setattr -unset dont_touch
+setattr -mod -unset keep_hierarchy *
+flatten
+# Observe the stored rename valid bits without changing the ROB-qualified
+# lookup or any of the retirement, commit pipeline, or RAT inputs.
+cd tomasulo_commit_bus_formal
+connect -nomap -set int_rat_valid dut.u_rat.int_rat_valid
+connect -nomap -set fp_rat_valid dut.u_rat.fp_rat_valid
+cd ..
+opt_clean -purge
+prep -top tomasulo_commit_bus_formal
+check -assert
+bmc: select -assert-count 7 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 11 t:$check r:FLAVOR=cover %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/sfence_operand_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_link_value_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
+tomasulo_commit_bus_formal.sv
+free_undefined.ys

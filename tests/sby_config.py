@@ -597,6 +597,16 @@ SCRIPT_FORMS: tuple[CommandForm, ...] = (
         log_kind="none",
     ),
     CommandForm(
+        "chformal_coverenable",
+        "chformal",
+        required_flags=frozenset({"-assert", "-coverenable"}),
+        pos_arity="1+",
+        pos_pattern=SELECTION,
+        safe_reason="adds a cover of each selected assertion's enable signal",
+        transition="passive",
+        log_kind="none",
+    ),
+    CommandForm(
         "chformal_assert2assume",
         "chformal",
         required_flags=frozenset({"-assert2assume"}),
