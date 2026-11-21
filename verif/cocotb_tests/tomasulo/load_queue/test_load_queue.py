@@ -32,7 +32,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import Timer
 from config import MASK32, MASK64, MASK_XLEN
 
-from .lq_interface import LQInterface
+from .lq_interface import CACHED_BASE, LQInterface
 from .lq_model import (
     LQModel,
     FuComplete,
@@ -57,6 +57,23 @@ def wbeat(word: int) -> int:
 # Set by the load_queue_sq_forward target, which builds the LQ with
 # ENABLE_SQ_FORWARD_FAST_PATH=1 as the core does.
 SQ_FORWARD_FAST_PATH = os.environ.get("FROST_TEST_SQ_FORWARD_FAST_PATH", "0") == "1"
+
+# Set by the load_queue_probe_launch target, which builds the LQ with
+# PROBE_LAUNCH=1: an ordinary cached load reads memory in its probe cycle,
+# one cycle before the verdict.
+PROBE_LAUNCH = os.environ.get("FROST_TEST_PROBE_LAUNCH", "0") == "1"
+
+
+async def step_past_probe_verdict(dut_if: LQInterface, address: int) -> None:
+    """Step over the verdict cycle of a read launched during its probe.
+
+    A response in that cycle is drained and the load launches again, so a
+    bench that answers a launch on the next cycle waits one more cycle for a
+    cached load, as the L1D's pipeline does. Without PROBE_LAUNCH, or below
+    CACHED_BASE, it does nothing.
+    """
+    if PROBE_LAUNCH and address >= CACHED_BASE:
+        await dut_if.step()
 
 
 async def setup(dut: Any) -> tuple[LQInterface, LQModel]:
@@ -1357,6 +1374,8 @@ async def test_dword_response_bypass(dut: Any) -> None:
             request = await wait_for_mem_request(dut_if)
             assert request["en"] and request["addr"] == address
             await dut_if.step()
+            if kind != "lr.d":
+                await step_past_probe_verdict(dut_if, address)
             dut_if.drive_mem_response(value, dword=True)
             await dut_if.step()
             dut_if.clear_mem_response()
@@ -1398,6 +1417,7 @@ async def test_dword_response_backpressure_and_reordering(dut: Any) -> None:
         assert request["en"]
         requests.append(request)
         await dut_if.step()
+        await step_past_probe_verdict(dut_if, request["addr"])
     assert requests[0]["id"] != requests[1]["id"]
 
     dut_if.drive_mem_response(
@@ -1441,6 +1461,7 @@ async def test_dword_response_flush_boundary(dut: Any) -> None:
             request = await wait_for_mem_request(dut_if)
             assert request["en"]
             await dut_if.step()
+            await step_past_probe_verdict(dut_if, address)
             if flush == "full":
                 dut_if.drive_flush_all()
             else:
@@ -5113,6 +5134,7 @@ async def test_flh_memory_and_l0_boxing(dut: Any) -> None:
             request = await wait_for_mem_request(dut_if)
             assert request["en"] and request["addr"] == address
             await dut_if.step()
+            await step_past_probe_verdict(dut_if, address)
             dut_if.drive_mem_response(beat, dword=True)
             await dut_if.step()
             dut_if.clear_mem_response()
@@ -5197,3 +5219,191 @@ async def test_half_forwarding_and_queued_boxing(dut: Any) -> None:
                 )
                 dut_if.clear_sq_forward()
                 await accept_fu_complete(dut_if)
+
+
+# ============================================================================
+# Launch during the probe (PROBE_LAUNCH)
+# ============================================================================
+PROBE_ADDRESS = CACHED_BASE + 0x5A40
+
+
+async def stage_probed_dword_load(
+    dut_if: LQInterface, rob_tag: int, address: int = PROBE_ADDRESS
+) -> None:
+    """Stage a dword load and step to its first probe cycle."""
+    model = LQModel()
+    await alloc_and_addr(dut_if, model, rob_tag, address, size=MEM_SIZE_DOUBLE)
+    check = await wait_for_sq_check(dut_if)
+    assert check["valid"] and check["rob_tag"] == rob_tag
+
+
+async def expect_no_completion(dut_if: LQInterface, cycles: int) -> None:
+    """Step `cycles` times; no result and no memory read may appear."""
+    for _ in range(cycles):
+        await Timer(1, unit="ns")
+        assert not dut_if.read_fu_complete().valid, "unexpected completion"
+        assert not dut_if.read_mem_request()["en"], "unexpected memory read"
+        await dut_if.step()
+
+
+@cocotb.test()
+async def test_probe_launch_clean_verdict_keeps_read(dut: Any) -> None:
+    """A clean probe keeps the read launched during it, one cycle early."""
+    dut_if, _ = await setup(dut)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await stage_probed_dword_load(dut_if, rob_tag=5)
+    request = dut_if.read_mem_request()
+    assert request["en"] == PROBE_LAUNCH, "the read launches in the probe cycle"
+    if not PROBE_LAUNCH:
+        await dut_if.step()
+        request = dut_if.read_mem_request()
+        assert request["en"], "the read launches in the verdict cycle"
+    assert request["addr"] == PROBE_ADDRESS
+    # Answer two cycles after the launch, as the L1D does at the earliest.
+    await dut_if.step()
+    await dut_if.step()
+    value = 0x1357_9BDF_2468_ACE0
+    dut_if.drive_mem_response(value, dword=True, cached=True, slot=request["id"])
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = dut_if.read_fu_complete()
+    assert result.valid and result.tag == 5 and result.value == value
+    await accept_fu_complete(dut_if)
+    await expect_no_completion(dut_if, 6)
+    assert dut_if.empty
+
+
+@cocotb.test()
+async def test_probe_launch_forward_drops_read(dut: Any) -> None:
+    """A forwarding verdict completes the load and drains the early read."""
+    if not SQ_FORWARD_FAST_PATH:
+        return
+    dut_if, _ = await setup(dut)
+    forwarded = 0x0F1E_2D3C_4B5A_6978
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=True, can_forward=True, data=forwarded)
+    await stage_probed_dword_load(dut_if, rob_tag=6)
+    request = dut_if.read_mem_request()
+    assert request["en"] == PROBE_LAUNCH
+    await dut_if.step()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 6 and result.value == forwarded
+    dut_if.clear_sq_forward()
+    if PROBE_LAUNCH:
+        # The dropped read's response must not replace or repeat the result.
+        dut_if.drive_mem_response(
+            0xDEAD_BEEF_DEAD_BEEF, dword=True, cached=True, slot=request["id"]
+        )
+        await dut_if.step()
+        dut_if.clear_mem_response()
+        assert dut_if.read_fu_complete() == result
+    await accept_fu_complete(dut_if)
+    await expect_no_completion(dut_if, 6)
+    assert dut_if.empty
+
+
+@cocotb.test()
+async def test_probe_launch_block_relaunches(dut: Any) -> None:
+    """A blocking verdict drains the early read; the load launches again."""
+    dut_if, _ = await setup(dut)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=True, can_forward=False)
+    await stage_probed_dword_load(dut_if, rob_tag=7)
+    request = dut_if.read_mem_request()
+    assert request["en"] == PROBE_LAUNCH
+    await dut_if.step()
+    if PROBE_LAUNCH:
+        # After the verdict cycle, the response of the dropped read arrives
+        # while the load waits.
+        await expect_no_completion(dut_if, 1)
+        dut_if.drive_mem_response(
+            0xDEAD_BEEF_DEAD_BEEF, dword=True, cached=True, slot=request["id"]
+        )
+        await dut_if.step()
+        dut_if.clear_mem_response()
+    await expect_no_completion(dut_if, 4)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    relaunch = await wait_for_mem_request(dut_if)
+    assert relaunch["en"] and relaunch["addr"] == PROBE_ADDRESS
+    await dut_if.step()
+    value = 0x2468_ACE0_1357_9BDF
+    dut_if.drive_mem_response(value, dword=True, cached=True, slot=relaunch["id"])
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 7 and result.value == value
+    await accept_fu_complete(dut_if)
+    await expect_no_completion(dut_if, 6)
+    assert dut_if.empty
+
+
+@cocotb.test()
+async def test_probe_launch_verdict_cycle_response_is_drained(dut: Any) -> None:
+    """A response in the verdict cycle is drained and the load relaunches."""
+    if not PROBE_LAUNCH:
+        return
+    dut_if, _ = await setup(dut)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await stage_probed_dword_load(dut_if, rob_tag=8)
+    request = dut_if.read_mem_request()
+    assert request["en"]
+    await dut_if.step()
+    dut_if.drive_mem_response(
+        0xDEAD_BEEF_DEAD_BEEF, dword=True, cached=True, slot=request["id"]
+    )
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    assert not dut_if.read_fu_complete().valid, "the drained response completed"
+    relaunch = await wait_for_mem_request(dut_if, max_cycles=6)
+    assert relaunch["en"] and relaunch["addr"] == PROBE_ADDRESS
+    await dut_if.step()
+    await dut_if.step()
+    value = 0x1111_2222_3333_4444
+    dut_if.drive_mem_response(value, dword=True, cached=True, slot=relaunch["id"])
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 8 and result.value == value
+    await accept_fu_complete(dut_if)
+    await expect_no_completion(dut_if, 6)
+    assert dut_if.empty
+
+
+@cocotb.test()
+async def test_probe_launch_excludes_uncached_and_lr(dut: Any) -> None:
+    """Loads below the cached tier and LRs read memory only after the verdict."""
+    from .lq_interface import LR_D
+
+    dut_if, _ = await setup(dut)
+    for kind in ("uncached", "lr.d"):
+        await dut_if.reset_dut()
+        address = 0x5A40 if kind == "uncached" else PROBE_ADDRESS
+        dut_if.drive_rob_head_tag(9)
+        dut_if.drive_alloc(
+            9,
+            size=MEM_SIZE_DOUBLE,
+            is_lr=kind == "lr.d",
+            amo_op=LR_D if kind == "lr.d" else 0,
+        )
+        await dut_if.step()
+        dut_if.clear_alloc()
+        dut_if.drive_addr_update(9, address)
+        await dut_if.step()
+        dut_if.clear_addr_update()
+        dut_if.drive_sq_all_older_known(True)
+        dut_if.drive_sq_forward(match=False, can_forward=False)
+        check = await wait_for_sq_check(dut_if)
+        assert check["valid"]
+        assert not dut_if.read_mem_request()["en"], f"{kind}: read during the probe"
+        await dut_if.step()
+        request = dut_if.read_mem_request()
+        assert request["en"] and request["addr"] == address, kind
+        await dut_if.step()
+        dut_if.drive_mem_response(0x5555_6666_7777_8888, dword=True)
+        await dut_if.step()
+        dut_if.clear_mem_response()
+        result = await wait_for_fu_complete(dut_if)
+        assert result.valid and result.value == 0x5555_6666_7777_8888, kind
+        await accept_fu_complete(dut_if)

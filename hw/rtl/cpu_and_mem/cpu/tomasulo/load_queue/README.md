@@ -32,6 +32,7 @@ extracts and sign-extends bytes, halfwords and words from a 64-bit beat.
 | `PREISSUE_CANDIDATES`, `PREISSUE_SEL_WIDTH` | 0, 2; 1, 3 in the core | Select one of 2^`PREISSUE_SEL_WIDTH` look-ahead matches and register it (early load wakeup) |
 | `PREISSUE_READY_PICK`, `PREISSUE_RS_DEPTH` | 0, 8; 1, 8 in the core | Compare RS entry tags first, then select a match using each candidate's ready vector |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, 1 GiB | Cached (DDR) region |
+| `PROBE_LAUNCH` | 0 | An ordinary cached load reads memory in its probe cycle ([Launch during the probe](#launch-during-the-probe)) |
 
 FROST passes a 512-entry L0 when Normal read caching is enabled; the raw LQ
 and strict CPU profile retain the 128-entry default. Cache depth does not
@@ -269,6 +270,61 @@ This is why the SQ's scan may use unmasked commit pulses on a full-flush
 cycle. A partial flush that spares the staged load does not discard that
 cycle's result, which is safe: it kills only stores younger than the flush
 point, and so younger than the load.
+
+### Launch during the probe
+
+With `PROBE_LAUNCH=1`, an ordinary load to the cached tier that misses the L0
+launches its read in the cycle it probes the SQ, one cycle before the
+verdict. Device loads, LRs, AMOs, misaligned or faulting loads and loads
+outside the cached tier launch only after the verdict. Whether the staged
+load may launch this way (`probe_launch_ok_q`) is registered when it is
+staged, so the probe cycle's launch adds only the probe's own live terms
+beside the phase-2 launch, and the L0 hit meets the memory port last.
+The launch takes a cached slot marked `cs_spec` for the next cycle, the
+verdict cycle:
+
+| Verdict | The load then | Its read |
+|---------|---------------|----------|
+| No older store overlaps, and the load misses the L0 | Is issued; it leaves the stage as after a launch | Kept |
+| No older store overlaps, and the L0 now hits | Completes from the L0 | Dropped |
+| An older store forwards to it | Completes from the forwarded value | Dropped |
+| Anything else (an overlap that cannot forward, an unknown address, a hold, a flush, or the stage taken by an older load) | Is no longer issued; it probes or is staged again, unless the flush removes it | Dropped |
+
+A dropped read's slot is drop-marked (`cs_drop`) and its response is drained:
+it never writes the LQ data, enters the CDB stage (so it wakes no
+dependent) or fills the L0. A response that arrives in the verdict cycle
+itself is drained the same way, and the load, no longer issued, is staged
+again. If an older load takes the stage on the launch edge, the read is
+dropped on that edge and the load stays unissued.
+
+The verdict covers every older store the read might not see. The probe reads
+the SQ in the cycle whose edge launches the read, and a store stays in the SQ
+until its cached write completes, after the L1D took it into its store
+buffer. A store that left the SQ earlier was pushed into the L1D at least a
+cycle before the launch, and the same-sector hold of that cycle covers it, as
+for any launch. A store in the SQ during the probe that overlaps the load
+makes the verdict forward or block.
+
+The L1D also requires that no load reach it for a block whose cbo.zero waits
+for its second record: the cbo.zero's push records only its lower sector, and
+the upper one (the twin) follows once the store buffer has a free record. The
+phase-2 launch waits behind the cbo.zero in the SQ, which keeps it until the
+twin is recorded, but the launch during the probe precedes the verdict. So no
+load launches during its probe from the cycle a cbo.zero's block
+invalidation comes with its lower record's push until the cycle of its
+twin's push, nor in the cycle of any block invalidation (a cbo.zero, or a
+cbo.clean, cbo.flush or cbo.inval as it frees). The other store-side
+operations need no hold of their own: an AMO older than the load keeps it
+from launching (`older_amo_write_pending`); an SC, store or Zicbom operation
+in the SQ that overlaps the load's dword or block makes the verdict drop the
+read, and once handed to the L1D a store is covered by the same-sector hold
+and an SC keeps the port busy until its write completes; a store
+never spans two sectors, since a misaligned access runs on the
+misaligned-access engine while nothing younger is in flight.
+
+A dropped read is otherwise an ordinary L1D read: it can miss and fill a line,
+train the stream prefetcher, count in the L1D and home event counters, and
+record an observation for DMA coherence, which can make the load replay.
 
 ## Memory tiers
 
@@ -703,7 +759,8 @@ causes below it), waiting for the CDB, and already out of the LQ. See the
 
 The `load_queue` cocotb suite tests the queue in isolation,
 `load_queue_no_prepare_busy` reruns it with `PREPARE_LOAD_WHILE_BUSY=0`, and
-`load_queue_sq_forward` with `ENABLE_SQ_FORWARD_FAST_PATH=1`, as in the core.
+`load_queue_sq_forward` with `ENABLE_SQ_FORWARD_FAST_PATH=1`, as in the core,
+and `load_queue_probe_launch` with that and `PROBE_LAUNCH=1`.
 `lq_l0_cache_8`, `lq_l0_cache_128`, `lq_l0_cache_256` and `lq_l0_cache_512`
 test the L0 alone, including a tag-blind `cbo.zero` block clear against every
 word's concurrent lookup and fill. The eight-word case covers an L0 whose
@@ -721,7 +778,13 @@ flight, and the ROB-head load evicting a younger staged load. The L0's cover
 points count a response fill that coincides with a DMA or AMO invalidation,
 and a store update that takes the RAM port from a fill at another index.
 
-Formally, `load_queue` checks queue invariants from reset,
+Formally, `load_queue` checks queue invariants from reset, and its
+`bmc_probe_launch` and `cover_probe_launch` tasks repeat that with
+`PROBE_LAUNCH=1`: a dropped response reaches neither the LQ data, the CDB
+stage nor the L0, each verdict keeps or drops the read as above, and covers
+reach a launch followed by a forward, a keep, a block and relaunch, a
+replaced stage, a response in the verdict cycle, and a store accepted on the
+launch edge.
 `load_queue_amo_compute` the AMO datapath with no reset or admission
 assumptions, `lq_l0_cache` the L0, and the small `lq_*` targets each prove one
 optimized structure equal to its reference form.
