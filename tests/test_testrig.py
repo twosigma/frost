@@ -87,7 +87,10 @@ VECTOR_SOURCE_WIDTH_TRACES = tuple(
     VERIF_DIR / "testrig" / f"vector_source_widths_{family}.S"
     for family in ("integer", "fp", "memory")
 )
-VECTOR_DIRECTED_TRACES = (VERIF_DIR / "testrig" / "vector_state_results.S",)
+VECTOR_DIRECTED_TRACES = tuple(
+    VERIF_DIR / "testrig" / f"vector_{family}.S"
+    for family in ("state_results", "fractional_lmul")
+)
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
 DEFAULT_LOG_DIR = TESTS_DIR / "testrig_logs"
@@ -981,7 +984,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--vector-directed",
         action="store_true",
-        help="add directed vector CSR and scalar-result comparisons to --vector",
+        help="add the vector CSR, scalar-result and fractional LMUL traces to --vector",
     )
     parser.add_argument(
         "--vlen",
