@@ -480,16 +480,25 @@ and fractional EMUL transfers, zero-active transfers, and a cached page-boundary
 crossing. Every vector store reads back all written bytes through immediate
 scalar loads without reading `misa`. [Unit-stride memory](vector_unit_stride.S)
 
+The integer comparison trace checks vector, scalar and immediate predicates
+at SEW 32. It reads each active mask bit through an integer destination.
+The mask-undisturbed case checks enabled updates and preserved disabled bits.
+The SEW 64 cases read back `vtype` and check equality and ordering on
+operands with matching low halves and differing upper halves. The signed
+and unsigned ordering cases compare the same pairs, including one with
+opposite signs. [Integer comparisons](vector_int_compare.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at each
 of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
 groups from seed 42, the source-width traces and the directed state,
-fractional LMUL, FP and cached DDR traces. Both implementations must return
-every planned trace and instruction.
+fractional LMUL, FP, cached DDR and integer comparison traces. Both
+implementations must return every planned trace and instruction.
 The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer source
-widths, fractional LMUL, base FP results, fused multiply-add, FP conversions
-and unit-stride memory. It checks `vcpop.m` for state and scalar results and FP
-comparisons. TestRIG must report each destination value mismatch.
+widths, fractional LMUL, base FP results, fused multiply-add, FP
+conversions, unit-stride memory and integer comparisons. It checks `vcpop.m`
+for state and scalar results and FP comparisons. TestRIG must report each
+destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail
