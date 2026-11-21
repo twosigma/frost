@@ -611,16 +611,18 @@ readiness and tags.
 
 `tomasulo_wrapper_commit_bus` checks the registered commit path at depth 10.
 It reads the wrapper's connections from the 32-entry ROB to the commit
-pipeline and both RAT clear ports. A matching slot-1 commit clears the stored
-INT or FP mapping. When neither lane renames the INT register and slot 1
-commits a different tag to it, a matching slot-2 commit clears the mapping.
-If neither commit matches, the mapping and its tag are preserved. The stored
-valid bits are observed before the lookup's ROB liveness qualification, since
-the ROB invalidates a retiring tag one cycle before the RAT consumes the
-registered clear. Rename takes precedence over clearing, with slot 2 winning
-if both slots rename the same register. The wrapper's two fence checks
-distinguish FENCE.I and SFENCE.VMA from a flush delayed after a translation
-CSR commit.
+pipeline and both RAT clear ports. With neither lane renaming the register,
+a matching slot-1 commit clears the stored INT or FP mapping. When slot 1
+commits a different tag to the INT register, a matching slot-2 commit clears
+the mapping. If neither commit matches, the mapping and its tag are
+preserved. For an FP register, a matching commit from either slot clears
+the mapping. A commit to that FP register preserves the mapping and tag
+when neither slot matches. The stored valid bits are observed before the
+lookup's ROB liveness qualification, since the ROB invalidates a retiring
+tag one cycle before the RAT consumes the registered clear. Rename takes
+precedence over clearing, with slot 2 winning if both slots rename the same
+register. The wrapper's two fence checks distinguish FENCE.I and SFENCE.VMA
+from a flush delayed after a translation CSR commit.
 
 The proof uses the ROB's reset, allocation, and completion contracts,
 including one serializing class per allocation. Dispatch checks that rule in
@@ -633,14 +635,16 @@ acknowledgement. Full flush is driven by the fence flush pulse or an external
 flush request. The model keeps partial recovery, checkpoints, direct store
 completion, memory replay, and the ALU held-result path idle.
 
-The `cover` task reaches all five RAT assertion enables. The
-`c_younger_slot2_commit` cover reaches the slot-2 enable and observes the
-resulting clear. Covers also reach both rename priorities, a younger
-retirement that hides a mapping in the lookup before it clears, FENCE.I,
-SFENCE.VMA, and a `satp` write followed by its delayed flush. Both tasks
-run in Block proofs. The SBY and runner limits are 180 seconds for `bmc`
-and 360 seconds for `cover`. BMC uses ABC and replays failures with
-Boolector to report the failing assertion.
+The `cover` task reaches all seven RAT assertion enables. The INT and FP
+slot-2 clear covers observe two commits to the same register, with slot 2
+matching and clearing the mapping. The FP mismatch cover observes two
+commits to the same register that leave a younger mapping and its tag
+intact. Covers also reach both rename priorities, a younger retirement
+that hides a mapping in the lookup before it clears, FENCE.I, SFENCE.VMA,
+and a `satp` write followed by its delayed flush. Both tasks run in Block
+proofs. The SBY and runner limits are 180 seconds for `bmc` and 360 seconds
+for `cover`. BMC uses ABC and replays failures with Boolector to report
+the failing assertion.
 
 ### Load and store queues
 
