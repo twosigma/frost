@@ -264,23 +264,26 @@ def shard_weights(
     """Read wall times for a measured selection, or estimate work in cycles."""
     if profile.startswith(b"vlen,name,main_ms,complete_ms"):
         weights = {}
-        selected = set(names)
         for row in csv.DictReader(profile.decode().splitlines()):
-            name = row["name"]
-            if int(row["vlen"]) != vlen or name not in selected:
+            if int(row["vlen"]) != vlen:
                 continue
+            name = row["name"]
             times = [int(row[key]) for key in ("main_ms", "complete_ms") if row[key]]
             if name in weights or not times or min(times) <= 0:
                 raise ValueError(
                     f"wall-time profile: invalid or duplicate time for {name}"
                 )
             weights[name] = max(times)
-        missing = selected - weights.keys()
-        if missing:
-            raise ValueError(
-                f"wall-time profile: missing VLEN {vlen} time for {min(missing)}"
+        longest_ms = max(weights.values(), default=None)
+        for name in sorted(set(names) - weights.keys()):
+            if longest_ms is None:
+                raise ValueError(f"wall-time profile: no measurements for VLEN {vlen}")
+            weights[name] = longest_ms
+            print(
+                f"warning: no wall time for {name} at VLEN {vlen}, using {longest_ms} ms",
+                file=sys.stderr,
             )
-        return weights
+        return {name: weights[name] for name in names}
     weights = {name: cycle_weight(stage1 / f"{name}.S", vlen) for name in names}
     if profile.startswith(b"vlen,name,cycles,shard_weight,form_weight,source_weight"):
         return calibrated_shard_weights(weights, vlen, profile, one)
@@ -1055,7 +1058,7 @@ def test_shard_weights_use_cycles(tmp_path: Path) -> None:
 
 
 def test_shard_weights_use_wall_time(tmp_path: Path) -> None:
-    """Both runs have independent observations and every selected name needs one."""
+    """Use the larger observation and reject invalid or duplicate timings."""
     header = b"vlen,name,main_ms,complete_ms\n"
     profile = header + b"128,a,10,20\n128,b,30,22\n128,c,,40\n128,d,15,\n256,a,90,105\n"
     assert shard_weights(tmp_path, ["a", "b", "c", "d"], 128, profile) == {
@@ -1064,11 +1067,34 @@ def test_shard_weights_use_wall_time(tmp_path: Path) -> None:
         "c": 40,
         "d": 15,
     }
-    with pytest.raises(ValueError, match="missing VLEN 256 time for b"):
-        shard_weights(tmp_path, ["a", "b"], 256, profile)
     for invalid in (b"128,a,1,2\n", b"128,e,,\n", b"128,e,0,10\n"):
         with pytest.raises(ValueError, match="invalid or duplicate"):
             shard_weights(tmp_path, ["a", "e"], 128, profile + invalid)
+    with pytest.raises(ValueError, match="no measurements for VLEN 512"):
+        shard_weights(tmp_path, ["a"], 512, profile)
+
+
+def test_shard_schedules_programs_missing_wall_time(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unmeasured program gets the longest time recorded at its width."""
+    profile = (
+        b"vlen,name,main_ms,complete_ms\n"
+        b"128,vadd_vv-0,20,10\n"
+        b"128,vmul_vv-0,,150\n"
+        b"256,vsub_vv-0,900,1000\n"
+    )
+    names = ["vsub_vv-0", "vadd_vv-0", "vand_vv-0"]
+    weights = shard_weights(tmp_path, names, 128, profile)
+    assert weights == {"vadd_vv-0": 20, "vand_vv-0": 150, "vsub_vv-0": 150}
+    assert select_shard(weights, 1, 2) == ["vadd_vv-0", "vand_vv-0"]
+    assert select_shard(weights, 2, 2) == ["vsub_vv-0"]
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err.splitlines() == [
+        "warning: no wall time for vand_vv-0 at VLEN 128, using 150 ms",
+        "warning: no wall time for vsub_vv-0 at VLEN 128, using 150 ms",
+    ]
 
 
 def test_calibrated_shard_weights() -> None:
