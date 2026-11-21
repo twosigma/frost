@@ -32,7 +32,7 @@ For the boot interface, memory map, and kernel requirements, see the
 | --- | --- |
 | `external.desc`, `external.mk`, `Config.in` | Buildroot external-tree registration |
 | `configs/frost_rv64_defconfig` | OpenSBI and the musl test userspace, built with the Bootlin riscv64 `lp64d` toolchain |
-| `package/frost-stress/` | Boot stress, signal-return, and NIC loopback programs |
+| `package/frost-stress/` | Boot stress, signal-return, ISA-discovery, and NIC loopback programs |
 | `board/frost/busybox-mmu.fragment` | BusyBox configuration (statically linked) |
 | `board/frost/rootfs-overlay-mmu/` | Startup scripts and login configuration |
 | `board/frost/post-image-mmu.sh` | Builds the firmware, stages Debian's kernel and driver modules, and packs the images |
@@ -105,11 +105,13 @@ kernel's `ip=` (default `dhcp`) and `FROST_LINUX_MAC` the board's MAC, which
 must be unique on a shared network. The [NFS root options](../README.md#nfs-root)
 cover these variables and what an NFS boot needs from the kernel.
 
-To load images built elsewhere, stage them and set `FROST_LINUX_PREBUILT=1`:
+To load images built elsewhere, stage both image formats for BRAM and DDR
+and set `FROST_LINUX_PREBUILT=1`. The Makefile uses the `.mem` files and
+the JTAG loader reads the `.txt` files.
 
 ```bash
-cp <elsewhere>/sw.mem     sw/apps/linux_boot/sw.mem
-cp <elsewhere>/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
+image_dir=/path/to/packed-images
+cp "$image_dir"/{sw.mem,sw.txt,sw_ddr.mem,sw_ddr.txt} sw/apps/linux_boot/
 FROST_LINUX_PREBUILT=1 ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
@@ -137,6 +139,7 @@ OpenSBI. RTL simulation does not boot Linux.
 | `frost_stress` | Boot-time stress of signals, process and memory operations, futexes, and atomics; prints `FROST_USERSPACE_STRESS_PASS` or `FROST_USERSPACE_STRESS_FAIL` |
 | `frost_stress --counters` | Runs a fixed workload in a child process and reports its cycles and instructions (counted through `perf_event_open` from the child's exec to its exit), the elapsed time, and IPC; replaces `perf stat` in this image |
 | `frost_sigprobe` | vDSO signal-return probe |
+| `frost_isa_probe` | Queries the ISA extensions the kernel exposes through the live device tree, `/proc/cpuinfo`, `riscv_hwprobe`, `AT_HWCAP`, and `prctl`, and runs the matching discovery and register-state verification matrix (`FROST_ISA_PROBE` / `FROST_ISA_PROBE_SUMMARY`) |
 | `frost_nettest` | Driver loopback test; an optional interface argument selects the NIC. Prints `FROST_NET_LOOPBACK_PASS` or `FROST_NET_LOOPBACK_FAIL <reason>` and leaves the interface down with loopback disabled |
 
 `frost_nettest` opens the interface's sysfs directory, packet and error

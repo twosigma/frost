@@ -319,6 +319,8 @@ module soc_top #(
     input logic i_dbg_parked,
     input logic i_dbg_cmd_err,
     input logic i_dbg_go_taken,
+    // The hart's fatal stop, for the debug module's unavailable report.
+    input logic i_dbg_fatal_stop = 1'b0,
     input logic i_commit_valid,
     input logic [5:0] i_debug_irq_status,
     input logic [63:0] i_debug_commit_pc,
@@ -1225,6 +1227,7 @@ module soc_top #(
       .i_go_taken(dbg_go_taken),
       // The debug module reports the core's reset as status.
       .i_core_in_reset(ASYNC_CPU_CLOCK ? o_cpu_rst : rst_core),
+      .i_hart_fatal_stop(i_dbg_fatal_stop),
       .o_ndmreset(dbg_ndmreset),
       .o_slice_req_valid(dm_slice_req_valid),
       .o_slice_word_addr(dm_slice_word_addr),

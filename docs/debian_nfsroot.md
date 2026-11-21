@@ -310,8 +310,8 @@ Beyond a root that boots by hand, the stage needs:
 |---|---|
 | The export directory on the loading host | The stage reads the tree's console configuration and installs programs into it. If the server is another machine, mount the export on the loading host at the same path, or run the regression on the server. |
 | The console autologin from step 2 | The stage logs in on the UART, and root has no usable password. |
-| `usr/local/bin` writable by the user running the regression | Before each run, the stage cross-compiles `frost_stress` and `frost_nettest` from `linux/buildroot-external/package/frost-stress` and installs them there, so the programs it runs come from this checkout. The tree belongs to root, so give that one directory away: `install -d -m 755 -o <user> /srv/nfs/debian/usr/local/bin`. |
-| A riscv64 Linux cross compiler on the loading host | It builds those programs as static binaries: Debian's `gcc-riscv64-linux-gnu`, a `FROST_LINUX_CROSS_COMPILE` prefix, or the toolchain a Buildroot build leaves in `linux/build-mmu/host/bin`. |
+| `usr/local/bin` writable by the user running the regression | Before each run, the stage cross-compiles `frost_stress`, `frost_nettest`, and `frost_isa_probe` from `linux/buildroot-external/package/frost-stress` and installs them there, so the programs it runs come from this checkout. The tree belongs to root, so give that one directory away: `install -d -m 755 -o <user> /srv/nfs/debian/usr/local/bin`. |
+| A riscv64 Linux cross compiler on the loading host | It builds those programs as static binaries: Debian's `gcc-riscv64-linux-gnu`, a `FROST_LINUX_CROSS_COMPILE` prefix, or the toolchain a Buildroot build leaves in `linux/build-mmu/host/bin`. Preflight verifies via `readelf` and `objdump` that the static binaries carry plain RV64GC attributes and opcodes (allowing only `frost_isa_probe`'s `isa_probe_*` leaf routines to hold non-RV64GC probe encodings). |
 | The pinned kernel release on the root | The stage requires that release's boot banner, and the preflight reads the release out of the packed `Image` first. Install that version on the root, with `frost_net10g` in its initramfs (step 3). |
 | The pinned kernel in the checkout's cache | Unless `FROST_LINUX_KERNEL` names a kernel, the stage packs the one in `linux/debian-kernel` (or `FROST_DEBIAN_KERNEL_CACHE`), and the preflight fails if it is not there yet. Run `python3 linux/debian_kernel.py fetch` once to fill the cache. |
 | NFSv3 over TCP | Step 4. The preflight sends the server an NFSv3 NULL call. |
@@ -358,9 +358,12 @@ stage. It loads the memory error driver, requires its scrub self-test and an
 accelerated RAM patrol pass with zero memory error counts, and reloads it at
 the daily default. The X3 checks require advancing CPU-visible ECC polls.
 VCU118 reports the controller's ECC state separately through JTAG in the
-`ddr_ecc` stage. The patrol check allows 150 one-second waits. The stage runs
-the NIC loopback test from `/dev/shm` on the interface named in the kernel
-`ip=` parameter and checks the interface reported by each run. It drops
+`ddr_ecc` stage. The patrol check allows 150 one-second waits. It then runs
+`frost_isa_probe` to check ISA discovery and register-state handling against
+the configured expectation (`--linux-isa-expect`, defaulting to `absent`;
+`--linux-dtb` or `FROST_LINUX_DTB` overrides the packed device tree). The
+stage runs the NIC loopback test from `/dev/shm` on the interface named in the
+kernel `ip=` parameter and checks the interface reported by each run. It drops
 dentry and inode caches before the test. Sysfs counters and carrier are
 opened before the link goes down.
 The test holds the interface down for 65 seconds before reading counters,
@@ -371,7 +374,8 @@ The shell opens MTU, flags and IPv6 restoration files before the test and
 writes through those descriptors, since absolute sysfs or proc lookups can
 revalidate the NFS root. It writes, syncs and removes a file on the root to
 prove that the root came back after the test took its link down. It leaves
-`frost_stress`, `frost_nettest`, and `frost_memerr.ko` in `/usr/local/bin`.
+`frost_stress`, `frost_nettest`, `frost_isa_probe`, and `frost_memerr.ko` in
+`/usr/local/bin`.
 Reload the X3 images for a fresh boot: SYSRESET does not restore the mutable
 firmware and kernel images in DDR.
 

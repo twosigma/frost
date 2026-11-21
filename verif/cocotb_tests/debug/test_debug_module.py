@@ -48,6 +48,7 @@ async def _setup(dut: Any) -> None:
         dut.i_cmd_err,
         dut.i_go_taken,
         dut.i_core_in_reset,
+        dut.i_hart_fatal_stop,
         dut.i_slice_overflow,
     ):
         sig.value = 0
@@ -320,3 +321,127 @@ async def test_dirty_words_wait_and_preserve_overlapping_write(dut: Any) -> None
     dut.i_slice_req_ready.value = 1
     await FallingEdge(dut.i_clk)
     assert not int(dut.o_slice_req_valid.value)
+
+
+DM_ABSTRACTCS = 0x16
+DM_HALTSUM0 = 0x40
+DMSTATUS_HALTED = 0b11 << 8
+DMSTATUS_RUNNING = 0b11 << 10
+DMSTATUS_UNAVAIL = 0b11 << 12
+ABSTRACTCS_BUSY = 1 << 12
+CMDERR_HALT_RESUME = 4
+
+
+async def _dmstatus(dut: Any) -> int:
+    status, value = await _request(dut, OP_READ, DM_DMSTATUS)
+    assert status == STATUS_OK
+    return value
+
+
+async def _abstractcs(dut: Any) -> tuple[int, int]:
+    """Return (busy, cmderr)."""
+    status, value = await _request(dut, OP_READ, DM_ABSTRACTCS)
+    assert status == STATUS_OK
+    return (value >> 12) & 1, (value >> 8) & 7
+
+
+async def _clear_cmderr(dut: Any) -> None:
+    assert (await _request(dut, OP_WRITE, DM_ABSTRACTCS, 0x700))[0] == STATUS_OK
+
+
+@cocotb.test()
+async def test_fatal_stop_reports_unavailable(dut: Any) -> None:
+    """A fatal stop reads as unavailable, also for a hart already in Debug Mode."""
+    await _setup(dut)
+    await _activate_hart(dut)
+    status = await _dmstatus(dut)
+    assert status & DMSTATUS_HALTED == DMSTATUS_HALTED, f"dmstatus {status:#x}"
+    assert not status & (DMSTATUS_RUNNING | DMSTATUS_UNAVAIL)
+    assert (await _request(dut, OP_READ, DM_HALTSUM0))[1] == 1
+    await _go_edge(dut, i_hart_fatal_stop=1)
+    status = await _dmstatus(dut)
+    assert status & DMSTATUS_UNAVAIL == DMSTATUS_UNAVAIL, f"dmstatus {status:#x}"
+    assert not status & (DMSTATUS_HALTED | DMSTATUS_RUNNING), f"dmstatus {status:#x}"
+    assert (await _request(dut, OP_READ, DM_HALTSUM0))[1] == 0
+    await _go_edge(dut, i_hart_fatal_stop=0)
+    status = await _dmstatus(dut)
+    assert status & DMSTATUS_HALTED == DMSTATUS_HALTED and not status & DMSTATUS_UNAVAIL
+
+
+@cocotb.test()
+async def test_fatal_stop_refuses_a_command(dut: Any) -> None:
+    """A command written while the hart is unavailable starts nothing: cmderr 4."""
+    await _setup(dut)
+    await _activate_hart(dut)
+    await _go_edge(dut, i_hart_fatal_stop=1, i_slice_all_done=1)
+    assert await _request(dut, OP_WRITE, DM_COMMAND, 0) == (STATUS_OK, 0)
+    for _ in range(10):
+        assert (await _go_edge(dut))[0] == 0, "a refused command requested a GO"
+    assert await _abstractcs(dut) == (0, CMDERR_HALT_RESUME)
+    await _clear_cmderr(dut)
+    assert await _abstractcs(dut) == (0, 0)
+
+
+@cocotb.test()
+async def test_fatal_stop_ends_a_command_in_flight(dut: Any) -> None:
+    """A command in flight ends with cmderr 4 and busy clears, in every state."""
+    await _setup(dut)
+    for state in ("go", "start", "done"):
+        await _go_edge(dut, i_rst=1, i_hart_fatal_stop=0, i_go_taken=0, i_parked=1)
+        await _activate_hart(dut)
+        await _prepare_go(dut, resume=False)
+        assert (await _go_edge(dut))[0] == 1
+        assert (await _abstractcs(dut))[0] == 1
+        if state != "go":
+            await _go_edge(dut, i_go_taken=1)
+            await _go_edge(dut, i_go_taken=0)
+        if state == "done":
+            await _go_edge(dut, i_parked=0)
+        await _go_edge(dut, i_hart_fatal_stop=1)
+        for _ in range(3):
+            assert (await _go_edge(dut))[0] == 0, f"GO after the stop ({state})"
+        assert await _abstractcs(dut) == (0, CMDERR_HALT_RESUME), state
+        await _clear_cmderr(dut)
+
+
+@cocotb.test()
+async def test_fatal_stop_ignores_resume_and_keeps_the_halt_level(dut: Any) -> None:
+    """Resumereq starts nothing and a resume in flight ends; haltreq stays a level."""
+    await _setup(dut)
+    await _activate_hart(dut)
+    await _prepare_go(dut, resume=True)
+    assert (await _go_edge(dut))[0] == 1
+    await _go_edge(dut, i_hart_fatal_stop=1)
+    for _ in range(3):
+        assert (await _go_edge(dut))[0] == 0, "resume GO after the stop"
+    assert not (await _dmstatus(dut)) & (1 << 17), "resumeack after an ended resume"
+    assert await _request(dut, OP_WRITE, DM_DMCONTROL, (1 << 30) | 1) == (STATUS_OK, 1)
+    for _ in range(10):
+        assert (await _go_edge(dut))[0] == 0, "resumereq started a resume"
+    assert not (await _dmstatus(dut)) & (1 << 17)
+    assert await _request(dut, OP_WRITE, DM_DMCONTROL, (1 << 31) | 1) == (STATUS_OK, 1)
+    assert int(dut.o_haltreq.value) == 1, "haltreq is a level the module keeps"
+    assert (await _dmstatus(dut)) & DMSTATUS_UNAVAIL == DMSTATUS_UNAVAIL
+
+
+@cocotb.test()
+async def test_fatal_stop_resumereq_clears_a_stale_acknowledge(dut: Any) -> None:
+    """A resumereq after the stop clears the old acknowledge and starts nothing."""
+    await _setup(dut)
+    await _activate_hart(dut)
+    await _prepare_go(dut, resume=True)
+    assert (await _go_edge(dut))[0] == 1
+    await _complete_go(dut, resume=True)
+    assert (await _dmstatus(dut)) & (1 << 17), (
+        "the completed resume was not acknowledged"
+    )
+    await _go_edge(dut, i_hart_fatal_stop=1)
+    assert (await _dmstatus(dut)) & (1 << 17), (
+        "the stop alone must not clear the acknowledge"
+    )
+    assert await _request(dut, OP_WRITE, DM_DMCONTROL, (1 << 30) | 1) == (STATUS_OK, 1)
+    for _ in range(10):
+        assert (await _go_edge(dut))[0] == 0, "resumereq started a resume"
+    status = await _dmstatus(dut)
+    assert not status & (0b11 << 16), f"stale resumeack survived the write: {status:#x}"
+    assert status & DMSTATUS_UNAVAIL == DMSTATUS_UNAVAIL

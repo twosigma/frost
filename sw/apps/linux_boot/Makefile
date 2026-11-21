@@ -106,6 +106,9 @@ unexport FROST_INITRD
 # packer's default applies: 64 MiB (MEM_SIZE in frost_boot_image.py).
 # sw/apps/compile_app.py keeps simulation builds from inheriting a board's size.
 PACK_ARGS += $(if $(FROST_LINUX_MEM_SIZE),--mem-size "$(FROST_LINUX_MEM_SIZE)")
+# FROST_LINUX_DTB=<path> packs that compiled device tree blob instead of
+# generating one from the options above.
+PACK_ARGS += $(if $(FROST_LINUX_DTB),--dtb "$(FROST_LINUX_DTB)")
 
 # Select the first available boot-shim compiler: RISCV_PREFIX, riscv64-linux-
 # on PATH, or Buildroot's toolchain. Resolve it when the recipe runs, after
@@ -166,7 +169,7 @@ sw64.mem: sw.mem ../../common/make_dword_mem.py
 # Reject configurations that build a kernel: their patch directory is absent
 # here. Rerunning defconfig would leave perf and elfutils in target/, since
 # Buildroot does not uninstall deselected packages; these builds need a new tree.
-FROST_STRESS_SRC := $(wildcard $(BR2_EXTERNAL)/package/frost-stress/src/*.c)
+FROST_STRESS_SRC := $(wildcard $(BR2_EXTERNAL)/package/frost-stress/src/*.c $(BR2_EXTERNAL)/package/frost-stress/src/*.S)
 BR2_OVERLAY := $(wildcard $(BOARD_DIR)/rootfs-overlay-mmu/etc/inittab)
 BR2_RECORDED = $(patsubst "%",%,$(shell sed -n \
   's/^BR2_EXTERNAL_FROST_PATH=//p' "$(BR2_OUT)/.config" 2>/dev/null))
@@ -242,7 +245,7 @@ rootfs.uimg: $(INITRD_IMG)
 # Grouped target (&:): one packer run writes all four files, so make -j must
 # not start a second run for another of them.
 sw_ddr.mem sw.mem sw_ddr.txt sw.txt &: $(PAYLOAD) $(PACK_INITRD) $(FW_JUMP) \
-    $(BOARD_DIR)/frost_boot_image.py
+    $(FROST_LINUX_DTB) $(BOARD_DIR)/frost_boot_image.py
 	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) $(SHIM_CROSS) \
 	  python3 "$(BOARD_DIR)/frost_boot_image.py" \
 	    --firmware "$(FW_JUMP)" --payload "$(PAYLOAD)" $(PACK_ARGS) \

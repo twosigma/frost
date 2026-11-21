@@ -260,7 +260,7 @@ jobs:
         with:
           name: frost-docker-image
           path: /tmp/frost-dev.tar
-          retention-days: 1
+          retention-days: ${{ inputs.campaign == 'complete' && !inputs.toggle_coverage && 14 || 1 }}
 
   # Run programs in both memory tiers; separate long runs and group matching builds.
   # CPU architecture comes from the shared RTL defaults used by FPGA builds.
@@ -971,23 +971,35 @@ jobs:
       - name: Check detection of an incorrect vector result
         if: matrix.vlen == 128
         timeout-minutes: 9
-        env:
-          FROST_TESTRIG_VECTOR_RESULT_CONTROL: "1"
         run: |
-          logs=tests/testrig_logs/vector-result-control
-          status=0
-          ./scripts/frost.py --image frost-dev:latest run \
-            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 420s \
-            python3 tests/test_testrig.py --trace verif/testrig/vector_source_widths_integer.S \
-              --vlen 128 --ddr-capacity-log2-bytes 30 --startup-timeout 360 --response-timeout 60 \
-              --no-shrink --verbosity 2 --log-dir "$logs" \
-              --save-dir tests/testrig_failures/vector-result-control || status=$?
-          test "$status" -eq 1
-          test "$(grep -Fc 'Vector result control: ' "$logs/frost.log")" -eq 1
-          grep -Fq 'Vector result control: order=17 insn=0x43002557 rd=x10' "$logs/frost.log"
-          grep -Fq 'TESTS=1 PASS=1 FAIL=0' "$logs/frost.log"
-          grep -Fq 'mismatch in field rd_wdata: 0x8 != 0x9' "$logs/engine.log"
-          echo "TestRIG reported the injected vector result mismatch."
+          check_vector_result() {
+            local selector=$1 trace=$2 record=$3 mismatch=$4
+            local logs="tests/testrig_logs/vector-result-control/$trace" status=0
+            FROST_TESTRIG_VECTOR_RESULT_CONTROL="$selector" \
+              ./scripts/frost.py --image frost-dev:latest run \
+              env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 420s \
+              python3 tests/test_testrig.py --trace "verif/testrig/$trace.S" \
+                --vlen 128 --ddr-capacity-log2-bytes 30 --startup-timeout 360 --response-timeout 60 \
+                --no-shrink --verbosity 2 --log-dir "$logs" \
+                --save-dir "tests/testrig_failures/vector-result-control/$trace" || status=$?
+            test "$status" -eq 1
+            test "$(grep -Fc 'Vector result control: ' "$logs/frost.log")" -eq 1
+            grep -Fq "Vector result control: $record" "$logs/frost.log"
+            grep -Fq 'TESTS=1 PASS=1 FAIL=0' "$logs/frost.log"
+            grep -Fq "mismatch in field rd_wdata: $mismatch" "$logs/engine.log"
+            echo "TestRIG reported the injected vector result mismatch in $trace."
+          }
+
+          check_vector_result 1 vector_source_widths_integer \
+            'order=17 insn=0x43002557 rd=x10' '0x8 != 0x9'
+          check_vector_result state vector_state_results \
+            'order=49 insn=0x42182557 rd=x10' '0x3 != 0x2'
+          check_vector_result fractional-lmul vector_fractional_lmul \
+            'order=14 insn=0x42902557 rd=x10' '0x9 != 0x8'
+          check_vector_result base-fp vector_fp_results_flags \
+            'order=10 insn=0x43102557 rd=x10' '0x40400000 != 0x40400001'
+          check_vector_result fma vector_fma \
+            'order=14 insn=0x43602557 rd=x10' '0xffffffffa8800000 != 0xffffffffa8800001'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
@@ -1776,7 +1788,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs: build-docker
     if: ${{ !cancelled() && needs.build-docker.result == 'success' && !inputs.toggle_coverage }}
-    timeout-minutes: ${{ matrix.job_minutes || (matrix.mode == 'complete' && 360 || 140) }}
+    timeout-minutes: ${{ matrix.job_minutes || 140 }}
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -1805,7 +1817,7 @@ jobs:
           rm -f /tmp/frost-dev.tar
       - name: Run vector programs
         id: programs
-        timeout-minutes: ${{ matrix.step_minutes || (matrix.mode == 'complete' && 310 || 100) }}
+        timeout-minutes: ${{ matrix.step_minutes || 100 }}
         env:
           VLEN: ${{ matrix.vlen }}
           MODE: ${{ matrix.mode }}
