@@ -5012,6 +5012,11 @@ module cpu_ooo #(
       p_lc_ma_vec_disjoint : assert (!(ma_lc_req_valid_out && vec_lc_req_valid));
       p_lc_ma_owner : assert (!ma_lc_req_valid_out || ma_lc_owner_q);
       p_lc_vec_owner : assert (!vec_lc_req_valid || !ma_lc_owner_q);
+      // The engine sees the client's ready directly. Its acceptance must
+      // transfer the same request identity at the shared client port.
+      if (ma_lc_req_valid_out && i_ma_line_req_ready)
+        p_lc_ma_accept_reaches_client :
+        assert (o_ma_line_req_valid && (o_ma_line_req_id == ma_lc_req_id_out));
       p_rf_ma_vec_disjoint : assert (!(ma_busy && vec_rf_read_en));
     end
   end
@@ -6277,7 +6282,7 @@ module cpu_ooo #(
         .o_quiet_q(vec_vmem_quiet)
     );
 `ifndef SYNTHESIS
-    logic vmt_head_retiring;
+    logic vmt_head_retiring, vmt_head_retiring_q;
     always_comb begin
       vmt_head_retiring = 1'b0;
       for (int t = 0; t < riscv_pkg::VmtDepth; t++) begin
@@ -6292,12 +6297,17 @@ module cpu_ooo #(
       end
     end
     always_ff @(posedge i_clk) begin
+      if (i_rst) vmt_head_retiring_q <= 1'b0;
+      else vmt_head_retiring_q <= vmt_head_retiring;
       if (reset_seen_q && !i_rst) begin
         if (rob_commit_comb.valid) p_vmt_commit_head_tag : assert (rob_commit_comb.tag == head_tag);
         if (vmt_head_retiring) begin
           p_vmem_no_trap_cancelled_retire : assert (!trap_taken && !xret_taken && !flush_all);
           p_vmem_retires_alone : assert (!rob_commit_comb_2.valid);
         end
+        // The VMT retires a cycle before the head unit sees the registered
+        // commit. A full flush then would mask the commit needed by that unit.
+        if (vmt_head_retiring_q) p_vmem_no_flush_after_retire : assert (!flush_all);
         p_vmem_fault_vstart_exclusive :
         assert (!(vec_vmem_fault_vstart_valid &&
                   (csr_commit_fire || vcfg_commit.valid || vec_varith_commit ||
