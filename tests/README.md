@@ -2279,8 +2279,9 @@ computes a key for each one, a SHA-256 over:
   resolves includes and `$readmemh` names;
 - the task's timeout, and the source of `tests/test_run_formal.py` or
   `tests/test_run_yosys.py` without its top-level `test_*` functions and the
-  registry tables, whose entries for the task enter the key by value. The
-  `coh_home_cmo_cover` key also includes its Python replay helper. Both
+  registry tables, whose entries for the task enter the key by value. Each
+  formal key also includes the task's entry in `tests/formal_define_inputs.json`.
+  The `coh_home_cmo_cover` key also includes its Python replay helper. Both
   `store_completion_cofactor` keys include their source projection helper.
   Private proof fixtures copy these helpers into their `tests/` directory;
 - `tests/conftest.py`, the pytest settings in `pyproject.toml`, other pytest

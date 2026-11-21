@@ -6053,11 +6053,57 @@ def check_twin_forms(
         )
 
 
+FORMAL_DEFINE_TASKS = frozenset(
+    f"{target.name}:{task}" for target in FORMAL_TARGETS for task in target.tasks
+)
+
+
 def check_formal_input_contract(
-    target: str, task: str, directory: Path, cfg: sby_config.TaskConfig
+    target: str,
+    task: str,
+    directory: Path,
+    cfg: sby_config.TaskConfig,
+    *,
+    expanded: list[sby_config.ParsedCommand] | None = None,
+    define_declarations: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[bool, tuple[PredicateExemption, ...]]:
-    """Return the compiled port requirement and checked predicate keys for the task."""
-    parsed = cfg.parsed(directory, expand_opening=False)
+    """Check the task's input contract and return its compiled requirements."""
+    if expanded is None:
+        expanded = cfg.parsed(directory, keep_script_entries=True)
+    # The elaboration and twin contracts treat the opening as a single command.
+    parsed = [
+        command
+        for command in expanded
+        if UNDEFINED_OPENING_FILE not in command.included_from
+        and (command.form.id != "script" or command.args[1] == UNDEFINED_OPENING_FILE)
+    ]
+    requirements = formal_input_requirements(target, task, directory, cfg, parsed)
+    case = f"{target}:{task}"
+    if case in FORMAL_DEFINE_TASKS:
+        if define_declarations is None:
+            define_declarations = sby_config.read_define_inputs(
+                Path(__file__).resolve().parents[1]
+            )
+        if case not in define_declarations:
+            raise sby_config.ConfigError(f"{case}: missing define input declaration")
+        actual = sby_config.define_inputs(expanded)
+        expected = define_declarations[case]
+        for claimed, observed in zip_longest(expected, actual):
+            if claimed != observed:
+                raise sby_config.ConfigError(
+                    f"{case}: define inputs differ, expected {claimed!r}, observed {observed!r}"
+                )
+    return requirements
+
+
+def formal_input_requirements(
+    target: str,
+    task: str,
+    directory: Path,
+    cfg: sby_config.TaskConfig,
+    parsed: list[sby_config.ParsedCommand],
+) -> tuple[bool, tuple[PredicateExemption, ...]]:
+    """Check elaboration and return port requirements and predicate keys."""
     entries = checked_predicate_exemptions(target, task, directory, cfg, parsed)
     pending: str | None = None
     for cmd in parsed:
@@ -6188,7 +6234,9 @@ def check_formal_input_contract(
 
 def test_registered_formal_input_contracts() -> None:
     """Discover comparisons from the registered scripts, including new task names."""
-    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    root = Path(__file__).resolve().parents[1]
+    formal = root / FORMAL_DIR
+    define_declarations = sby_config.read_define_inputs(root)
     checked = set()
     assertion_tasks = set()
     pending = set()
@@ -6196,7 +6244,11 @@ def test_registered_formal_input_contracts() -> None:
         src = sby_config.source(formal / target.sby_file)
         for task in target.tasks:
             twin, entries = check_formal_input_contract(
-                target.name, task, formal, src.task(task)
+                target.name,
+                task,
+                formal,
+                src.task(task),
+                define_declarations=define_declarations,
             )
             if twin:
                 checked.add((target.name, task))
@@ -6210,6 +6262,70 @@ def test_registered_formal_input_contracts() -> None:
     assert not HIGH_IMPEDANCE_PENDING, (
         "registered proofs require an empty predicate exemption list"
     )
+
+
+def test_formal_define_input_membership() -> None:
+    """Every registered task has one declaration, including empty input lists."""
+    declared = sby_config.read_define_inputs(Path(__file__).resolve().parents[1])
+    missing = FORMAL_DEFINE_TASKS - declared.keys()
+    stale = declared.keys() - FORMAL_DEFINE_TASKS
+    assert not (missing or stale), {"missing": sorted(missing), "stale": sorted(stale)}
+
+
+def test_formal_define_inputs_preserve_read_scope(tmp_path: Path) -> None:
+    """Resolve tags and includes while keeping persistent and read-local inputs."""
+    config = sby_config.read_source(
+        Path("sample.sby"),
+        "[tasks]\nbmc\nother alternate\n[script]\n"
+        "script macros.ys\n"
+        "read -formal -sv top.sv\n"
+        "alternate: verilog_defines -DWIDTH=8\n"
+        "read_verilog -sv -D LOCAL=ReadOp top.sv\n"
+        "design -reset\n"
+        "read_slang --top top --single-unit -DLOCAL=0 top.sv\n"
+        "[files]\ntop.sv\n[file macros.ys]\n"
+        "read -define PERSISTENT\n"
+        "verilog_defines -D WIDTH=0 -D FLAG\n",
+    )
+    ordinary = sby_config.define_inputs(config.task("bmc").parsed(tmp_path))
+    assert ordinary == (
+        "design 0 before read 1: read -define PERSISTENT",
+        "design 0 before read 1: verilog_defines -DWIDTH=0 -DFLAG",
+        "design 0 read 1: read -formal -sv top.sv",
+        "design 0 read 2: read_verilog -sv -DLOCAL=ReadOp top.sv",
+        "design 1 read 3: read_slang -DLOCAL=0 top.sv",
+    )
+    alternate = sby_config.define_inputs(config.task("other").parsed(tmp_path))
+    assert alternate == (
+        *ordinary[:3],
+        "design 0 before read 2: verilog_defines -DWIDTH=8",
+        *ordinary[3:],
+    )
+
+
+def test_pm_mode_select_ddr36_define_value(tmp_path: Path) -> None:
+    """Reject an aperture override that disagrees with the registered value."""
+    runner = FormalRunner()
+    target = next(
+        target for target in FORMAL_TARGETS if target.name == "pm_mode_select"
+    )
+    task = "bmc_ddr36"
+    staged = sby_config.stage_proof(
+        runner.formal_dir / target.sby_file, runner.root_dir, tmp_path
+    )
+    runner.formal_dir = staged.parent
+    check_formal_input_contract(
+        target.name, task, staged.parent, sby_config.source(staged).task(task)
+    )
+    original = "FROST_DDR_CAPACITY_LOG2_BYTES=36"
+    text = staged.read_text()
+    assert text.count(original) == 1
+    staged.write_text(text.replace(original, "FROST_DDR_CAPACITY_LOG2_BYTES=35"))
+    with pytest.raises(
+        sby_config.ConfigError,
+        match=r"pm_mode_select:bmc_ddr36: define inputs differ.*BYTES=36.*BYTES=35",
+    ):
+        runner.run_formal(target, task)
 
 
 @pytest.mark.parametrize(("target", "task"), TWIN_COMPARISONS)
@@ -11741,8 +11857,9 @@ class FormalRunner:
             for dest in staged_cfg.files:
                 if not (src_dir / dest).is_file():
                     fail(f"missing staged source {dest}")
+            expanded = checkout_cfg.parsed(sby_path.parent, keep_script_entries=True)
             needs_ports, _ = check_formal_input_contract(
-                target_name, task, sby_path.parent, checkout_cfg
+                target_name, task, sby_path.parent, checkout_cfg, expanded=expanded
             )
             if needs_ports:
                 check_twin_interfaces(
@@ -11760,7 +11877,7 @@ class FormalRunner:
                 staged_cfg, files={dest: dest for dest in staged_cfg.files}
             )
             parsed = local_cfg.parsed(src_dir, keep_script_entries=True)
-            if parsed != checkout_cfg.parsed(sby_path.parent, keep_script_entries=True):
+            if parsed != expanded:
                 fail("staged script differs from checkout task")
             check_yosys_log(
                 sby_config.read_checked_text(design_headers),
@@ -11793,11 +11910,11 @@ class FormalRunner:
             raise FileNotFoundError(f"SBY file not found: {sby_path}")
 
         checkout_cfg = sby_config.source(sby_path).task(task)
-        expanded = checkout_cfg.parsed(sby_path.parent)
+        expanded = checkout_cfg.parsed(sby_path.parent, keep_script_entries=True)
         if (target.name, task) == l0_store_boundary.PAIR:
             l0_store_boundary.check_script(checkout_cfg, sby_path.parent)
         _, entries = check_formal_input_contract(
-            target.name, task, sby_path.parent, checkout_cfg
+            target.name, task, sby_path.parent, checkout_cfg, expanded=expanded
         )
         expected_mode = registered_task_mode(task)
         if checkout_cfg.options.get("mode") != expected_mode:
@@ -13520,6 +13637,61 @@ class TestFormalVerification:
 # ===========================================================================
 
 
+def update_define_inputs(root: Path, case: str | None) -> None:
+    """Initialize the declaration file or update a single registered task."""
+    import fcntl
+    import os
+
+    path = root / sby_config.DEFINE_INPUTS_PATH
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(directory_fd, fcntl.LOCK_EX)
+        registered = {
+            f"{target.name}:{task}": (target.sby_file, task)
+            for target in FORMAL_TARGETS
+            for task in target.tasks
+        }
+        if case is None:
+            if path.exists():
+                raise sby_config.ConfigError(
+                    f"{sby_config.DEFINE_INPUTS_PATH} already exists. "
+                    "Use --update-define-inputs TARGET:TASK."
+                )
+            declarations = {}
+            updates = registered
+        else:
+            declarations = sby_config.read_define_inputs(root)
+            updates = {}
+            if case in registered:
+                updates[case] = registered[case]
+            elif case in declarations:
+                del declarations[case]
+            else:
+                raise sby_config.ConfigError(f"{case}: unknown formal task")
+
+        sources: dict[str, sby_config.Source] = {}
+        for key, (sby_file, task) in updates.items():
+            if sby_file not in sources:
+                sources[sby_file] = sby_config.source(root / FORMAL_DIR / sby_file)
+            source = sources[sby_file]
+            if task not in source.tasks:
+                raise sby_config.ConfigError(f"{key}: task absent from {sby_file}")
+            parsed = source.task(task).parsed(root / FORMAL_DIR)
+            declarations[key] = sby_config.define_inputs(parsed)
+
+        rows = [
+            f"  {json.dumps(key)}: {json.dumps(inputs)}"
+            for key, inputs in sorted(declarations.items())
+        ]
+        text = "{\n" + ",\n".join(rows) + "\n}\n"
+        with tempfile.TemporaryDirectory(dir=path.parent) as temporary:
+            updated = Path(temporary) / path.name
+            updated.write_text(text)
+            updated.replace(path)
+    finally:
+        os.close(directory_fd)
+
+
 def main() -> int:
     """Run formal verification from command line."""
     import argparse
@@ -13566,8 +13738,28 @@ With pytest:
         help="Task name to run on targets that declare it (default: all declared "
         "tasks)",
     )
+    declarations = parser.add_mutually_exclusive_group()
+    declarations.add_argument(
+        "--initialize-define-inputs",
+        action="store_true",
+        help="Generate the define declarations when the file is first introduced",
+    )
+    declarations.add_argument(
+        "--update-define-inputs",
+        metavar="TARGET:TASK",
+        help="Refresh one task's define declaration after an intentional change",
+    )
 
     args = parser.parse_args()
+
+    if args.initialize_define_inputs or args.update_define_inputs is not None:
+        try:
+            update_define_inputs(
+                Path(__file__).resolve().parents[1], args.update_define_inputs
+            )
+        except sby_config.ConfigError as error:
+            parser.error(str(error))
+        return 0
 
     if args.list_targets:
         print("Available formal targets (from FORMAL_TARGETS):")
