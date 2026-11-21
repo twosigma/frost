@@ -399,11 +399,11 @@ def merge(inputs: Sequence[Path], output: Path) -> list[Path]:
     return files
 
 
-def ci_coverage_files(directory: Path) -> list[Path]:
+def ci_coverage_files(directory: Path, *, toggle_coverage: bool = False) -> list[Path]:
     """Require a readable coverage payload from each CI coverage producer."""
     from ci_matrix import coverage_artifacts, workflow_jobs
 
-    expected = coverage_artifacts(workflow_jobs())
+    expected = coverage_artifacts(workflow_jobs(), toggle_coverage=toggle_coverage)
     downloaded = {path.name for path in directory.glob("coverage-job-*")}
     errors = [
         f"missing {name} ({expected[name]})"
@@ -518,6 +518,11 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="require every coverage artifact selected by the CI workflow",
     )
+    report_parser.add_argument(
+        "--toggle-coverage",
+        action="store_true",
+        help="with --require-ci-artifacts, require the manual toggle shards",
+    )
     return parser.parse_args(argv)
 
 
@@ -534,7 +539,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("Give one CI artifact download directory", file=sys.stderr)
             return 1
         try:
-            inputs = ci_coverage_files(inputs[0])
+            inputs = ci_coverage_files(
+                inputs[0], toggle_coverage=arguments.toggle_coverage
+            )
         except ValueError as error:
             print(error, file=sys.stderr)
             return 1

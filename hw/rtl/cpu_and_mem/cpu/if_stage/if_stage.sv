@@ -1356,6 +1356,21 @@ module if_stage #(
   end
 `endif
 
+  // Shared override for the per-provider served-last predicate, reproducing
+  // instruction_aligner's saved-size (gated on !i_fence_i_flush) and
+  // stall-selected buffered-size branches.
+  logic coverage_use_saved_size;
+  logic coverage_prev_fast;
+  (* keep = "true" *)logic coverage_override_sel;
+  (* keep = "true" *)logic coverage_override_val;
+  assign coverage_use_saved_size =
+      if_stage_stall_registered && saved_values_valid && !i_fence_i_flush;
+  assign coverage_prev_fast = if_stage_stall_registered ?
+      prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
+  assign coverage_override_sel = coverage_use_saved_size || coverage_prev_fast;
+  assign coverage_override_val = coverage_use_saved_size ?
+      is_compressed_saved : instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi];
+
   served_window_coverage #(
       .WORD_BITS(XLEN - 2)
   ) u_served_window_coverage_low (
@@ -1365,7 +1380,11 @@ module if_stage #(
       .i_served_prev_word(i_served_prev_word_low),
       .i_served_prev_word_valid(i_served_prev_word_valid_low),
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
-      .i_no_buffer_accepts_served_last(no_buffer_accepts_served_last),
+      .i_hi_compressed_by_parity({
+        i_instr_pc_metadata_by_provider_parity[5], i_instr_pc_metadata_by_provider_parity[1]
+      }),
+      .i_override_sel(coverage_override_sel),
+      .i_override_val(coverage_override_val),
       .i_pc_high(pc_reg_high_for_coverage),
       .o_covers(served_window_covers_low)
   );
@@ -1379,13 +1398,21 @@ module if_stage #(
       .i_served_prev_word(i_served_prev_word_high),
       .i_served_prev_word_valid(i_served_prev_word_valid_high),
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
-      .i_no_buffer_accepts_served_last(no_buffer_accepts_served_last),
+      .i_hi_compressed_by_parity({
+        i_instr_pc_metadata_by_provider_parity[13], i_instr_pc_metadata_by_provider_parity[9]
+      }),
+      .i_override_sel(coverage_override_sel),
+      .i_override_val(coverage_override_val),
       .i_pc_high(pc_reg_high_for_coverage),
       .o_covers(served_window_covers_high)
   );
 
   assign served_window_covers_pc_reg = i_instr_pc_metadata_served_high ?
       served_window_covers_high : served_window_covers_low;
+
+  // Declared here for the served-window guard and low-BRAM arm below, which
+  // excludes saved-replay cycles; defined with the stall-capture logic.
+  logic replay_saved_if_outputs;
 
 `ifndef SYNTHESIS
   logic [XLEN-3:0] selected_served_word;
@@ -1399,9 +1426,33 @@ module if_stage #(
   logic served_window_covers_low_reference;
   logic served_window_covers_high_reference;
   logic served_window_native_high;
+  logic served_window_native_high_low;
+  logic served_window_native_high_high;
+  logic served_window_hi_comp_low;
+  logic served_window_hi_comp_high;
+  logic aligner_use_saved_is_compressed_ref;
+  logic aligner_prev_fast_ref;
+  logic aligner_covers_low_ref;
+  logic aligner_covers_high_ref;
+  logic aligner_covers_selected_ref;
+  logic aligner_window_cannot_serve_ref;
   logic served_contract_check_valid_q = 1'b0;
 
+  assign aligner_use_saved_is_compressed_ref =
+      if_stage_stall_registered && (saved_values_valid && !i_fence_i_flush);
+  assign aligner_prev_fast_ref = if_stage_stall_registered ?
+      prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
+  assign served_window_hi_comp_low = aligner_use_saved_is_compressed_ref ? is_compressed_saved :
+      (aligner_prev_fast_ref ? instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi] :
+       (pc_reg[2] ? i_instr_pc_metadata_by_provider_parity[5] :
+                    i_instr_pc_metadata_by_provider_parity[1]));
+  assign served_window_hi_comp_high = aligner_use_saved_is_compressed_ref ? is_compressed_saved :
+      (aligner_prev_fast_ref ? instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi] :
+       (pc_reg[2] ? i_instr_pc_metadata_by_provider_parity[13] :
+                    i_instr_pc_metadata_by_provider_parity[9]));
   assign served_window_native_high = pc_reg[1] && !is_compressed_for_pc_advance;
+  assign served_window_native_high_low = pc_reg[1] && !served_window_hi_comp_low;
+  assign served_window_native_high_high = pc_reg[1] && !served_window_hi_comp_high;
 
   assign selected_served_word = i_instr_pc_metadata_served_high ?
       i_served_word_high : i_served_word_low;
@@ -1424,13 +1475,30 @@ module if_stage #(
        (i_served_prev_word_valid_low && (i_served_prev_word_low == pc_reg_word)) ||
        (!pc_reg[1] && (i_served_last_word_low == pc_reg_word))) :
       ((i_served_word_low == pc_reg_word) ||
-       (!served_window_native_high && (i_served_last_word_low == pc_reg_word)));
+       (!served_window_native_high_low && (i_served_last_word_low == pc_reg_word)));
   assign served_window_covers_high_reference = use_instr_buffer_for_coverage_timing ?
       ((i_served_word_high == pc_reg_word) ||
        (i_served_prev_word_valid_high && (i_served_prev_word_high == pc_reg_word)) ||
        (!pc_reg[1] && (i_served_last_word_high == pc_reg_word))) :
       ((i_served_word_high == pc_reg_word) ||
-       (!served_window_native_high && (i_served_last_word_high == pc_reg_word)));
+       (!served_window_native_high_high && (i_served_last_word_high == pc_reg_word)));
+  assign aligner_covers_low_ref = (i_served_word_low == pc_reg_word) ||
+      ((i_served_last_word_low == pc_reg_word) &&
+       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
+        no_buffer_accepts_served_last)) ||
+      (i_served_prev_word_valid_low && (i_served_prev_word_low == pc_reg_word) &&
+       use_instr_buffer_for_coverage_timing);
+  assign aligner_covers_high_ref = (i_served_word_high == pc_reg_word) ||
+      ((i_served_last_word_high == pc_reg_word) &&
+       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
+        no_buffer_accepts_served_last)) ||
+      (i_served_prev_word_valid_high && (i_served_prev_word_high == pc_reg_word) &&
+       use_instr_buffer_for_coverage_timing);
+  assign aligner_covers_selected_ref = i_instr_pc_metadata_served_high ?
+      aligner_covers_high_ref : aligner_covers_low_ref;
+  assign aligner_window_cannot_serve_ref = i_instr_valid &&
+      (!aligner_covers_selected_ref || pending_prediction_walk_past) &&
+      (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) served_contract_check_valid_q <= 1'b0;
@@ -1450,12 +1518,18 @@ module if_stage #(
              i_instr_pc_metadata_served_high,
              i_served_high,
              pc_reg_word,
+             pc_reg_high_for_coverage,
              served_window_native_high,
+             served_window_native_high_low,
+             served_window_native_high_high,
              no_buffer_accepts_served_last,
              is_compressed_for_pc_advance,
              use_instr_buffer_for_coverage_timing,
              i_fence_i_flush,
-             use_instr_buffer}
+             use_instr_buffer,
+             i_instr_valid,
+             pending_prediction_walk_past,
+             replay_saved_if_outputs}
         )) begin
       p_served_low_last_word_contract :
       assert (i_served_last_word_low == (i_served_word_low + 1'b1));
@@ -1475,21 +1549,22 @@ module if_stage #(
       assert (served_window_covers_low == served_window_covers_low_reference);
       p_served_high_coverage_equivalent :
       assert (served_window_covers_high == served_window_covers_high_reference);
+      p_served_window_matches_aligner_exact :
+      assert (served_window_covers_pc_reg == aligner_covers_selected_ref);
       p_no_buffer_served_last_verdict_is_observationally_exact :
       assert (use_instr_buffer_for_coverage_timing ||
               (no_buffer_accepts_served_last ==
                (!pc_reg[1] || is_compressed_for_pc_advance)));
       p_served_window_guard_equivalent :
       assert (served_window_covers_pc_reg == served_window_covers_reference);
+      p_window_cannot_serve_guard_exact :
+      assert (window_cannot_serve_pc_reg == aligner_window_cannot_serve_ref);
       p_coverage_buffer_select_matches_packet_outside_fence :
       assert (i_fence_i_flush || (use_instr_buffer_for_coverage_timing == use_instr_buffer));
     end
   end
 `endif
 
-  // Declared here for the low-BRAM arm below, which excludes saved-replay
-  // cycles; defined with the stall-capture logic.
-  logic replay_saved_if_outputs;
   // Both providers need coverage checks: parity cannot detect an even-word
   // slip. A mismatch squashes the packet and resteers fetch to pc_reg.
   // A pending prediction that pc_reg has walked past does the same: its
@@ -1502,9 +1577,19 @@ module if_stage #(
   // squashing the saved instruction would wedge the handshake. The cached
   // provider already holds valid low during replay. Select by the registered
   // provider bit, not virtual pc_reg[31], which need not identify the provider.
-  assign window_cannot_serve_pc_reg = i_instr_valid &&
-      (!served_window_covers_pc_reg || pending_prediction_walk_past) &&
-      (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
+  (* keep = "true" *)logic window_guard_instr_valid;
+  (* keep = "true" *)logic window_guard_replay_saved;
+  assign window_guard_instr_valid  = i_instr_valid;
+  assign window_guard_replay_saved = replay_saved_if_outputs;
+  served_window_guard u_served_window_guard (
+      .i_instr_valid(window_guard_instr_valid),
+      .i_served_high(i_instr_pc_metadata_served_high),
+      .i_covers_high(served_window_covers_high),
+      .i_covers_low(served_window_covers_low),
+      .i_walk_past(pending_prediction_walk_past),
+      .i_replay_saved(window_guard_replay_saved),
+      .o_cannot_serve(window_cannot_serve_pc_reg)
+  );
 
 `ifndef SYNTHESIS
   always_comb begin
@@ -3590,6 +3675,36 @@ module if_stage #(
              o_backing_slot2_target_by_size[o_from_if_to_pd.sel_compressed]});
   end
 
+  // Direct check of if_stage's per-provider coverage wiring and guard
+  // against instruction_aligner's served-last output. No reset qualifier:
+  // the first step covers every register and input combination, including
+  // provider-parity bit wiring, fence.i cycles, and stall/buffer edge cases.
+  logic f_s2_aligner_cov_low, f_s2_aligner_cov_high;
+  logic f_s2_aligner_cov_sel, f_s2_aligner_wcs;
+  assign f_s2_aligner_cov_low = (i_served_word_low == pc_reg_word) ||
+      ((i_served_last_word_low == pc_reg_word) &&
+       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
+        no_buffer_accepts_served_last)) ||
+      (i_served_prev_word_valid_low && (i_served_prev_word_low == pc_reg_word) &&
+       use_instr_buffer_for_coverage_timing);
+  assign f_s2_aligner_cov_high = (i_served_word_high == pc_reg_word) ||
+      ((i_served_last_word_high == pc_reg_word) &&
+       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
+        no_buffer_accepts_served_last)) ||
+      (i_served_prev_word_valid_high && (i_served_prev_word_high == pc_reg_word) &&
+       use_instr_buffer_for_coverage_timing);
+  assign f_s2_aligner_cov_sel =
+      i_instr_pc_metadata_served_high ? f_s2_aligner_cov_high : f_s2_aligner_cov_low;
+  assign f_s2_aligner_wcs = i_instr_valid &&
+      (!f_s2_aligner_cov_sel || pending_prediction_walk_past) &&
+      (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
+  always_comb begin
+    f_if_served_window_wiring_matches_aligner :
+    assert (served_window_covers_pc_reg == f_s2_aligner_cov_sel);
+    f_if_window_cannot_serve_matches_aligner :
+    assert (window_cannot_serve_pc_reg == f_s2_aligner_wcs);
+  end
+
   always_ff @(posedge i_clk) begin
     if (f_slot2_past_valid && !i_pipeline_ctrl.reset) begin
       cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && !pc_reg[1] &&
@@ -3769,6 +3884,45 @@ module if_stage #(
 
 
 `ifdef IF_WALK_PAST_PROOF
+  // Direct check of if_stage's per-provider coverage wiring and guard against
+  // instruction_aligner's served-last output on every cycle.
+  logic f_wp_aligner_cov_low, f_wp_aligner_cov_high;
+  logic f_wp_aligner_cov_sel, f_wp_aligner_wcs;
+  assign f_wp_aligner_cov_low = (i_served_word_low == pc_reg_word) ||
+      ((i_served_last_word_low == pc_reg_word) &&
+       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
+        no_buffer_accepts_served_last)) ||
+      (i_served_prev_word_valid_low && (i_served_prev_word_low == pc_reg_word) &&
+       use_instr_buffer_for_coverage_timing);
+  assign f_wp_aligner_cov_high = (i_served_word_high == pc_reg_word) ||
+      ((i_served_last_word_high == pc_reg_word) &&
+       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
+        no_buffer_accepts_served_last)) ||
+      (i_served_prev_word_valid_high && (i_served_prev_word_high == pc_reg_word) &&
+       use_instr_buffer_for_coverage_timing);
+  assign f_wp_aligner_cov_sel =
+      i_instr_pc_metadata_served_high ? f_wp_aligner_cov_high : f_wp_aligner_cov_low;
+  assign f_wp_aligner_wcs = i_instr_valid &&
+      (!f_wp_aligner_cov_sel || pending_prediction_walk_past) &&
+      (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
+  always_comb begin
+    f_wp_served_window_wiring_matches_aligner :
+    assert (served_window_covers_pc_reg == f_wp_aligner_cov_sel);
+    f_wp_window_cannot_serve_matches_aligner :
+    assert (window_cannot_serve_pc_reg == f_wp_aligner_wcs);
+`ifndef IF_CONTINUITY_PROOF
+    if (!i_pipeline_ctrl.reset) begin
+      cover_if_served_window_fence_override :
+      cover (i_fence_i_flush && if_stage_stall_registered && saved_values_valid &&
+             pc_reg[1] && !use_instr_buffer_for_coverage_timing);
+      cover_if_served_window_stall_unsaved_prev_saved :
+      cover (if_stage_stall_registered && !saved_values_valid &&
+             prev_was_compressed_at_lo_saved && !prev_was_compressed_at_lo &&
+             pc_reg[1] && i_instr_valid);
+    end
+`endif
+  end
+
   logic f_wp_past_valid = 1'b0;
   logic f_wp_held_pc_check_q = 1'b0;
   logic f_wp_held_pc_sel_nop_q;

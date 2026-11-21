@@ -1,0 +1,464 @@
+{
+  "source_run": 44739263743,
+  "bram": {
+    "Real Programs (Debug and UART)": {
+      "observed_seconds": 14417,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "name": "debug program",
+          "overhead_seconds": 2150,
+          "case_seconds": {
+            "debug_test": 6100,
+            "debug_fence_test": 304,
+            "debug_fatal_stop": 750,
+            "debug_fatal_stop_with_engine": 663
+          }
+        },
+        {
+          "name": "OpenOCD and GDB",
+          "overhead_seconds": 2150,
+          "case_seconds": {
+            "debug_openocd_test": 9500
+          }
+        },
+        {
+          "name": "UART and reset",
+          "overhead_seconds": 1123,
+          "case_seconds": {
+            "sysreset_test": 949,
+            "bram_reload": 735,
+            "irq_take_hold_test": 900,
+            "print_clock_speed": 32,
+            "uart_echo": 610,
+            "instret_test": 3834,
+            "uart_burst": 66,
+            "hello_world": 96
+          }
+        }
+      ]
+    },
+    "Real Programs (Runtime benchmarks)": {
+      "observed_seconds": 1562,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "overhead_seconds": 735,
+          "case_seconds": {
+            "pause_test": 1190,
+            "ras_slot_bench": 87,
+            "ras_repair_bench": 150
+          }
+        }
+      ]
+    },
+    "Real Programs (Vector programs)": {
+      "observed_seconds": 18015,
+      "old_timeout_minutes": 300,
+      "parts": [
+        {
+          "name": "memory ordering and strides",
+          "overhead_seconds": 1208,
+          "case_seconds": {
+            "vec_state_test": 680,
+            "vec_order_test_v256": 1141,
+            "vec_mem_test_v256": 1485,
+            "vec_index_test_v256": 1675,
+            "vec_ff_test_v256": 476,
+            "vec_segment_test_v256": 1810,
+            "vec_stride_test_v256": 2300,
+            "vec_debug_partial": 1169
+          }
+        },
+        {
+          "name": "arithmetic and crypto",
+          "overhead_seconds": 1346,
+          "case_seconds": {
+            "vec_crypto_exec_test_v128": 677,
+            "vec_state_test_v256": 1249,
+            "vec_vsetvl_test_v256": 730,
+            "vec_integer_test_v256": 1344,
+            "vec_fp_test_v256": 776,
+            "vec_crypto_exec_test_v256": 246,
+            "vec_crypto_irq_test_v256": 4500,
+            "vec_arith_test_v256": 141
+          }
+        },
+        {
+          "name": "reserved forms and restart",
+          "overhead_seconds": 2150,
+          "case_seconds": {
+            "vec_vstart_reload_test_v256": 63,
+            "vec_vtype_handoff_test_v256": 36,
+            "vec_source_eew_test_v256": 42,
+            "vec_mem_reserved_forms_test_v256": 7200,
+            "vec_mem_source_eew_test_v256": 561
+          }
+        }
+      ]
+    },
+    "Real Programs (Memory and NIC stress)": {
+      "observed_seconds": 18015,
+      "old_timeout_minutes": 300,
+      "parts": [
+        {
+          "name": "NIC benchmarks",
+          "overhead_seconds": 1306,
+          "case_seconds": {
+            "nic_bench": 2640,
+            "nic_sg_loopback": 4883,
+            "nic_rate": 1161
+          }
+        },
+        {
+          "name": "memory faults and counters",
+          "overhead_seconds": 2150,
+          "case_seconds": {
+            "misaligned_test": 6134,
+            "ddr_hpm_refill_test": 1657,
+            "sstvala_fault_test": 1078
+          }
+        },
+        {
+          "name": "DDR reset",
+          "overhead_seconds": 2150,
+          "case_seconds": {
+            "ddr_reset_distribution": 400,
+            "ddr_reset_distribution_async": 753
+          }
+        },
+        {
+          "name": "L2 capacity",
+          "overhead_seconds": 2800,
+          "case_seconds": {
+            "l2_capacity_chase_capacity": 6588,
+            "l2_capacity_chase_smoke": 2040
+          }
+        }
+      ]
+    },
+    "Real Programs (Cache management and memory errors)": {
+      "observed_seconds": 12294,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "name": "cache management",
+          "overhead_seconds": 1198,
+          "case_seconds": {
+            "nic_cmo_loopback": 1469,
+            "cbo_mgmt_test": 4451,
+            "cbo_mgmt_test_assert": 4431
+          }
+        },
+        {
+          "name": "memory errors",
+          "overhead_seconds": 3148,
+          "case_seconds": {
+            "memerr_test": 156,
+            "ecc_scrub_test": 398,
+            "memerr_readback": 297,
+            "memerr_test_seeded": 803,
+            "fatal_stop_irq_with_engine": 1200,
+            "fatal_stop_irq": 1350
+          }
+        }
+      ]
+    },
+    "Real Programs (Self-modifying code and fence.i)": {
+      "observed_seconds": 14415,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "name": "stale instructions",
+          "overhead_seconds": 577,
+          "case_seconds": {
+            "smc_stale_test": 11930
+          }
+        },
+        {
+          "name": "fence.i and predictor",
+          "overhead_seconds": 2150,
+          "case_seconds": {
+            "fencei_bench": 3500,
+            "smc_torture": 1161,
+            "smc_predict_test": 72
+          }
+        }
+      ]
+    },
+    "Real Programs (Runtime and other)": {
+      "observed_seconds": 18017,
+      "old_timeout_minutes": 300,
+      "parts": [
+        {
+          "name": "fetch and branch prediction",
+          "overhead_seconds": 1386,
+          "case_seconds": {
+            "fefuzz_1": 704,
+            "fefuzz_4": 469,
+            "fefuzz_7": 108,
+            "fefuzz_11": 135,
+            "fefuzz_13": 416,
+            "fefuzz_19": 123,
+            "fefuzz_22": 273,
+            "fefuzz_23": 323,
+            "pd_itt_slot2": 411,
+            "bpred_trap_pair_test": 3906,
+            "bpred_probe": 237,
+            "mispen_probe": 2006,
+            "btb_mode_alias_test": 193,
+            "fast_btb_contract_test": 540,
+            "odd_halfword_pred_test": 550
+          }
+        },
+        {
+          "name": "ISA and NAPOT",
+          "overhead_seconds": 2150,
+          "case_seconds": {
+            "fs_off_test": 1179,
+            "zicbop_test": 614,
+            "zawrs_test": 511,
+            "zihpm_test": 267,
+            "svnapot_test": 1548,
+            "svnapot_test_assert": 1547,
+            "sstvala_test": 2907,
+            "svpbmt_cmo_test": 1908
+          }
+        },
+        {
+          "name": "pointer masking",
+          "overhead_seconds": 2150,
+          "case_seconds": {
+            "pm_test": 3921,
+            "pm_test_assert": 3933
+          }
+        },
+        {
+          "name": "runtime probes",
+          "overhead_seconds": 2800,
+          "case_seconds": {
+            "slot2_fault_test": 255,
+            "slot2_tage_bench": 108,
+            "debug_progbuf_btb_test": 204,
+            "irq_take_latency": 1497,
+            "perf_off_test": 186,
+            "writecount_probe": 78,
+            "fp_dyn_rm_test": 1494,
+            "fplat_probe": 348,
+            "raytrace": 900,
+            "walk_past_test": 243,
+            "svpbmt_cmo_test_inval_flush": 3327
+          }
+        },
+        {
+          "name": "fetch and reset variants",
+          "overhead_seconds": 3450,
+          "case_seconds": {
+            "walk_past_test_fetch_fuzz": 1680,
+            "odd_halfword_pred_test_fetch_fuzz": 540,
+            "served_window_resteer_fetch_fuzz": 2232,
+            "wfi_seed_recovery": 2700
+          }
+        }
+      ]
+    },
+    "Real Programs (SRAM macros)": {
+      "observed_seconds": 6455,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "overhead_seconds": 184,
+          "case_seconds": {
+            "isa_test_sram_macros": 2096,
+            "ddr_test_sram_macros": 285,
+            "ddr_exec_test_sram_macros": 398,
+            "nic_loopback_sram_macros": 3492
+          }
+        }
+      ]
+    },
+    "Real Programs (OpenSBI smoke)": {
+      "observed_seconds": 18017,
+      "old_timeout_minutes": 300,
+      "excluded_cases": [
+        "opensbi_smoke"
+      ]
+    },
+    "Real Programs (OpenSBI smoke, no misaligned hardware)": {
+      "observed_seconds": 18017,
+      "old_timeout_minutes": 300,
+      "excluded_cases": [
+        "opensbi_smoke_no_misaligned_hw"
+      ]
+    },
+    "Real Programs (OpenSBI cold reset)": {
+      "observed_seconds": 5117,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "overhead_seconds": 192,
+          "case_seconds": {
+            "opensbi_reset_cold": 4925
+          }
+        }
+      ]
+    },
+    "Real Programs (OpenSBI warm reset)": {
+      "observed_seconds": 5361,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "overhead_seconds": 124,
+          "case_seconds": {
+            "opensbi_reset_warm": 5237
+          }
+        }
+      ]
+    },
+    "Unit Tests A": {
+      "observed_seconds": 8951,
+      "old_timeout_minutes": 360
+    },
+    "Unit Tests B": {
+      "observed_seconds": 10715,
+      "old_timeout_minutes": 360
+    }
+  },
+  "ddr": {
+    "Real Programs (Privilege and MMU)": {
+      "observed_seconds": 16814,
+      "old_timeout_minutes": 280,
+      "parts": [
+        {
+          "name": "page attributes",
+          "overhead_seconds": 1863,
+          "case_seconds": {
+            "svpbmt_test": 3105,
+            "svpbmt_test_assert": 3080,
+            "svpbmt_bus_error": 144,
+            "svpbmt_test_2g": 1105
+          }
+        },
+        {
+          "name": "translation and privilege",
+          "overhead_seconds": 902,
+          "case_seconds": {
+            "csr_test": 978,
+            "umode_test": 90,
+            "pma_fault_test": 222,
+            "vm_test": 470,
+            "itlb_test": 4303,
+            "satp_drain_test": 42,
+            "sum_toggle_test": 253,
+            "asid_test": 731,
+            "svinval_test": 290,
+            "ptw_recovery_test": 249,
+            "ptw_bus_fault_test": 40,
+            "ad_fault_test": 192,
+            "smode_test": 431,
+            "csr_rmw_test": 913
+          }
+        }
+      ]
+    },
+    "Real Programs (Interrupts)": {
+      "observed_seconds": 13419,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "name": "controller and timer",
+          "overhead_seconds": 625,
+          "case_seconds": {
+            "imsic_csr_test": 2523,
+            "imsic_msi_test": 118,
+            "timer_replay_test": 203,
+            "imsic_collision_test": 49,
+            "imsic_aplic_coexist_test": 50,
+            "aplic_test": 344,
+            "sstc_test": 295,
+            "sscofpmf_test": 872,
+            "ns16550_irq_console_test": 43,
+            "wfi_mepc_test": 58,
+            "wfi_drain_mepc_test": 220,
+            "mret_timer_resume_test": 37,
+            "mtimer_stress": 1290
+          }
+        },
+        {
+          "name": "wake and Linux delivery",
+          "overhead_seconds": 2150,
+          "case_seconds": {
+            "wfi_lost_tick": 2840,
+            "irq_mie_window": 30,
+            "irq_take_hold_test": 562,
+            "ns16550_test": 103,
+            "clint_test": 30,
+            "linux_irq_ddr_test": 700,
+            "linux_irq_active_ddr_test": 1275,
+            "linux_irq_stack_slot_test": 442,
+            "linux_irq_find_next_slot_test": 1065
+          }
+        }
+      ]
+    },
+    "Real Programs (C library and RTOS)": {
+      "observed_seconds": 5727,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "overhead_seconds": 164,
+          "case_seconds": {
+            "freertos_demo": 2200,
+            "memory_test": 362,
+            "packet_parser": 184,
+            "sprintf_test": 2200,
+            "strings_test": 617
+          }
+        }
+      ]
+    },
+    "Real Programs (DMA, NIC and coherence)": {
+      "observed_seconds": 12410,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "overhead_seconds": 178,
+          "case_seconds": {
+            "cached_store_burst_test": 488,
+            "dma_torture": 1118,
+            "nic_loopback": 1395,
+            "nic_echo": 229,
+            "ifread_test": 86,
+            "smc_fencei_test": 199,
+            "ptw_coherence_test": 313,
+            "async_nic_loopback": 2114,
+            "async_dma_torture": 3204,
+            "ifread_test_equal_lines": 532,
+            "async_hello_world": 558,
+            "dma_torture_equal_lines": 1461,
+            "ptw_coherence_test_equal_lines": 326,
+            "smc_fencei_test_equal_lines": 209
+          }
+        }
+      ]
+    },
+    "Real Programs (Memory link stage, other programs)": {
+      "observed_seconds": 12090,
+      "old_timeout_minutes": 240,
+      "parts": [
+        {
+          "overhead_seconds": 205,
+          "case_seconds": {
+            "cbo_zero_pages_link1": 6985,
+            "coremark_link1": 1887,
+            "csr_test_link1": 198,
+            "dma_torture_link1": 1480,
+            "ptw_coherence_test_link1": 413,
+            "cached_store_burst_test_link1": 64,
+            "cbo_zero_test_link1": 858
+          }
+        }
+      ]
+    }
+  }
+}

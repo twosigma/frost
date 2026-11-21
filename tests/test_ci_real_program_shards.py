@@ -18,14 +18,17 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from typing import Any
 
 import pytest
 from _pytest.mark.expression import Expression
 
-from ci_matrix import WORKFLOW, expand_matrix, workflow_jobs
+from ci_matrix import WORKFLOW, workflow_jobs
+from ci_verilator import TOGGLE_BUDGET_FILE, VERILATOR_MATRIX, job_matrix
 from real_program_limits import real_program_cycle_limit
 from test_run_cocotb import (
     COREMARK_PRO_TESTS,
@@ -66,11 +69,6 @@ class ProgramShard:
         return self.selected
 
 
-def _matrix() -> dict[str, Any]:
-    matrix: dict[str, Any] = workflow_jobs()["test-verilator"]["strategy"]["matrix"]
-    return matrix
-
-
 def shard_filter(shard: dict[str, Any], tier: str) -> str:
     """Resolve the base selector and the tier-specific alternatives as in CI."""
     base: str = shard["pytest_filter"]
@@ -85,8 +83,8 @@ def _is_opensbi(name: str) -> bool:
 
 
 @pytest.fixture(scope="module")
-def real_program_shards() -> list[ProgramShard]:
-    """Evaluate the workflow's selectors on the collected real-program nodes."""
+def program_nodes() -> dict[str, str]:
+    """Collect the actual pytest nodes, keyed by registry name."""
     result = subprocess.run(
         [
             sys.executable,
@@ -117,14 +115,17 @@ def real_program_shards() -> list[ProgramShard]:
         f"Programs omitted from pytest: {set(REAL_PROGRAM_TESTS) - nodes_by_program.keys()}"
     )
 
+    return nodes_by_program
+
+
+def _program_shards(
+    rows: list[dict[str, Any]], nodes_by_program: dict[str, str]
+) -> list[ProgramShard]:
     shards = []
-    complements = []
-    for combo in expand_matrix(_matrix()):
+    for combo in rows:
         tier, shard = combo["mem_config"], combo["shard"]
         if not shard["name"].startswith(SHARD_TITLE_PREFIX):
             continue
-        if shard["pytest_filter"].lstrip().startswith("not ("):
-            complements.append((tier, shard["name"]))
         keyword_filter = Expression.compile(shard_filter(shard, tier))
         marker_filter = Expression.compile(shard["pytest_mark"])
         selected = set()
@@ -156,10 +157,104 @@ def real_program_shards() -> list[ProgramShard]:
                 frozenset(selected),
             )
         )
+    return shards
+
+
+@pytest.fixture(scope="module")
+def real_program_shards(program_nodes: dict[str, str]) -> list[ProgramShard]:
+    """Evaluate the ordinary CI selectors on the collected real-program nodes."""
+    rows = job_matrix(coverage_only=False)["include"]
+    complements = [
+        (row["mem_config"], row["shard"]["name"])
+        for row in rows
+        if row["shard"]["pytest_filter"].lstrip().startswith("not (")
+    ]
     assert complements == [
         (tier, f"{SHARD_TITLE_PREFIX}{COMPLEMENT})") for tier in ("bram", "ddr")
     ], complements
-    return shards
+    return _program_shards(rows, program_nodes)
+
+
+def test_toggle_shards_partition_covered_real_programs(
+    program_nodes: dict[str, str], real_program_shards: list[ProgramShard]
+) -> None:
+    """Each covered program runs once in toggle CI, apart from the long boots."""
+    rows = job_matrix(coverage_only=True)["include"]
+    emitted = _program_shards(rows, program_nodes)
+    actual = Counter((shard.tier, case) for shard in emitted for case in shard.cases)
+    expected = Counter(
+        (shard.tier, case)
+        for shard in real_program_shards
+        if shard.coverage
+        for case in shard.cases
+    )
+    exclusions = {
+        ("bram", "opensbi_smoke"),
+        ("bram", "opensbi_smoke_no_misaligned_hw"),
+    }
+    assert exclusions <= expected.keys()
+    for excluded in exclusions:
+        del expected[excluded]
+    assert actual == expected
+
+    data = json.loads(TOGGLE_BUDGET_FILE.read_text())
+    for parent in real_program_shards:
+        if not parent.coverage:
+            continue
+        budget = data[parent.tier][f"{SHARD_TITLE_PREFIX}{parent.name})"]
+        if "excluded_cases" in budget:
+            assert parent.cases == set(budget["excluded_cases"])
+            assert {(parent.tier, case) for case in parent.cases} <= exclusions
+            assert budget["observed_seconds"] > 216 * 60
+            continue
+        assert parent.cases == {
+            case for part in budget["parts"] for case in part["case_seconds"]
+        }
+        for part in budget["parts"]:
+            name = f"{parent.name}, {part['name']}" if "name" in part else parent.name
+            child = next(s for s in emitted if (s.tier, s.name) == (parent.tier, name))
+            assert child.coverage
+            assert child.cases == part["case_seconds"].keys()
+
+
+def test_toggle_job_timeouts_fit_budgeted_work() -> None:
+    """Keep projected toggle runs under the split threshold and hosted limit."""
+    ordinary = job_matrix(coverage_only=False)["include"]
+    emitted = {
+        (row["mem_config"], row["shard"]["name"]): row["shard"]
+        for row in job_matrix(coverage_only=True)["include"]
+    }
+    data = json.loads(TOGGLE_BUDGET_FILE.read_text())
+    expected = {
+        (row["mem_config"], row["shard"]["name"])
+        for row in ordinary
+        if row["mem_config"] in row["shard"]["coverage"]
+    }
+    assert {(tier, name) for tier in ("bram", "ddr") for name in data[tier]} == expected
+    for tier, name in expected:
+        budget = data[tier][name]
+        observed = budget["observed_seconds"]
+        if "excluded_cases" in budget:
+            continue
+        if name.startswith("Unit Tests"):
+            assert emitted[tier, name]["timeout_minutes"] == ceil(1.8 * observed / 60)
+            continue
+        parts = budget["parts"]
+        if observed > 216 * 60:
+            assert len(parts) > 1, (tier, name)
+        planned = 0
+        for part in parts:
+            wall = part["overhead_seconds"] + sum(part["case_seconds"].values())
+            assert all(seconds > 0 for seconds in part["case_seconds"].values())
+            assert 0 < wall <= 216 * 60, (tier, name, part)
+            child_name = (
+                f"{name.removesuffix(')')}, {part['name']})" if "name" in part else name
+            )
+            timeout = emitted[tier, child_name]["timeout_minutes"]
+            assert timeout == min(360, ceil(1.8 * wall / 60))
+            assert timeout > 40, (tier, name, part)
+            planned += wall
+        assert planned >= observed, (tier, name)
 
 
 @pytest.fixture(scope="module")
@@ -212,6 +307,11 @@ def test_registered_programs_have_one_ci_shard(
             )
             if len(matches) != expected:
                 errors.append((name, tier, matches, expected))
+            if name in (
+                "debug_fatal_stop",
+                "debug_fatal_stop_with_engine",
+            ) and matches != ["Debug and UART"]:
+                errors.append((name, tier, matches, ["Debug and UART"]))
             if name.startswith("vec_") and matches != [VECTOR_SHARD]:
                 errors.append((name, tier, matches, [VECTOR_SHARD]))
             if not name.startswith("vec_") and VECTOR_SHARD in matches:
@@ -352,10 +452,9 @@ def test_program_shards_fit_wall_time_budgets(
 
 def test_every_unit_bench_is_in_exactly_one_unit_job() -> None:
     """Require each unit bench to select one of the two unit-test CI jobs."""
-    matrix = _matrix()
     jobs = [
         job["shard"]
-        for job in matrix["include"]
+        for job in VERILATOR_MATRIX["include"]
         if job["shard"]["name"].startswith("Unit Tests")
     ]
     assert [job["name"] for job in jobs] == ["Unit Tests A", "Unit Tests B"]

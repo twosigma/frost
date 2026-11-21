@@ -33,8 +33,8 @@ from pathlib import Path
 from typing import Any, NamedTuple, TextIO
 
 
-class FormPlan(NamedTuple):
-    """Main shard count and its hosted execution and job limits."""
+class ShardPlan(NamedTuple):
+    """Shard count and hosted limits for one selection and vector length."""
 
     shards: int
     deadline_minutes: int
@@ -47,15 +47,20 @@ NATIVE = ["--rtl", "--simulator", "native"]
 SLICES = 20
 CYCLE_PROFILE = Path("tests/fixtures/rvv_ci_profile.csv")
 FORM_PROFILE = Path("tests/fixtures/rvv_ci_form_times.csv")
+COMPLETE_PROFILE = Path("tests/fixtures/rvv_ci_complete_times.csv")
 FORM_PLANS = {
-    128: FormPlan(4, 92, 130),
-    256: FormPlan(7, 92, 130),
-    512: FormPlan(13, 96, 134),
+    128: ShardPlan(4, 92, 130),
+    256: ShardPlan(7, 92, 130),
+    512: ShardPlan(13, 96, 134),
 }
-COMPLETE_SHARDS = {128: 6, 256: 12, 512: 32}
+COMPLETE_PLANS = {
+    128: ShardPlan(7, 297, 335),
+    256: ShardPlan(11, 296, 334),
+    512: ShardPlan(25, 316, 354),
+}
 PROGRAMS_PER_WIDTH = 3017
 FORMS_PER_WIDTH = 665
-SHARD_SECONDS = {"slice": 90 * 60, "complete": 300 * 60}
+SLICE_SECONDS = 90 * 60
 
 
 def matrix(
@@ -69,22 +74,21 @@ def matrix(
             raise ValueError("choose either a slice or the complete campaign")
         shard_options("slice", requested)
         parts = [requested]
-    elif campaign == "complete":
-        return [
-            {"vlen": width, "mode": "complete", "part": f"{k}/{count}"}
-            for width, count in COMPLETE_SHARDS.items()
-            for k in range(1, count + 1)
-        ]
-    elif slices_per_run == SLICES:
+    elif campaign == "complete" or slices_per_run == SLICES:
+        mode, plans = (
+            ("complete", COMPLETE_PLANS)
+            if campaign == "complete"
+            else ("forms", FORM_PLANS)
+        )
         return [
             {
                 "vlen": width,
-                "mode": "forms",
+                "mode": mode,
                 "part": f"{k}/{plan.shards}",
                 "step_minutes": plan.deadline_minutes + 3,
                 "job_minutes": plan.job_minutes,
             }
-            for width, plan in FORM_PLANS.items()
+            for width, plan in plans.items()
             for k in range(1, plan.shards + 1)
         ]
     else:
@@ -93,7 +97,7 @@ def matrix(
     return [
         {"vlen": width, "mode": "slice", "part": part}
         for part in parts
-        for width in COMPLETE_SHARDS
+        for width in COMPLETE_PLANS
     ]
 
 
@@ -111,7 +115,7 @@ def shard_options(mode: str, part: str, *, root: Path = Path(".")) -> list[str]:
             "--shard",
             part,
         ]
-    return ["--cycle-profile", str(root / CYCLE_PROFILE), "--shard", part]
+    return ["--shard-profile", str(root / COMPLETE_PROFILE), "--shard", part]
 
 
 def reproduce(vlen: int, selection: list[str]) -> str:
@@ -245,10 +249,12 @@ def run_shard(
     from test_riscv_vector_tests import parse_makefrag
 
     selection = shard_options(mode, part)
+    seconds = SLICE_SECONDS
     if mode != "slice":
-        total = FORM_PLANS[vlen].shards if mode == "forms" else COMPLETE_SHARDS[vlen]
-        if part not in {f"{k}/{total}" for k in range(1, total + 1)}:
+        plan = (FORM_PLANS if mode == "forms" else COMPLETE_PLANS)[vlen]
+        if part not in {f"{k}/{plan.shards}" for k in range(1, plan.shards + 1)}:
             raise ValueError(f"invalid {mode} shard for VLEN {vlen}: {part}")
+        seconds = plan.deadline_minutes * 60
 
     output.mkdir(parents=True, exist_ok=True)
     results = output / "results.jsonl"
@@ -260,11 +266,6 @@ def run_shard(
     summary.write_text(
         f"### Generated vectors at VLEN {vlen}, {mode} {part}\n\n"
         f"```sh\n{reproduce(vlen, selection)}\n```\n"
-    )
-    seconds = (
-        FORM_PLANS[vlen].deadline_minutes * 60
-        if mode == "forms"
-        else SHARD_SECONDS[mode]
     )
     deadline = time.monotonic() + seconds
     with (
@@ -371,15 +372,15 @@ def collect(artifacts: Path, output: Path, shard_status: str = "success") -> int
     widths: list[dict[str, Any]] = []
     lines = ["### Complete generated vector campaign", ""]
     sources = native_source_identity(os.environ.copy())
-    for vlen, count in COMPLETE_SHARDS.items():
+    for vlen, plan in COMPLETE_PLANS.items():
         merged = output / f"v{vlen}.jsonl"
         merged.unlink(missing_ok=True)
         item: dict[str, Any] = {"vlen": vlen, "passed": False}
         widths.append(item)
         try:
             shards = sorted(artifacts.glob(f"rvv-v{vlen}-*"))
-            if len(shards) != count:
-                raise ValueError(f"expected {count} shards, found {len(shards)}")
+            if len(shards) != plan.shards:
+                raise ValueError(f"expected {plan.shards} shards, found {len(shards)}")
             settings = VectorSimulator(
                 "native", vlen, DEFAULT_DDR_BYTES, 1
             ).model_settings
@@ -467,7 +468,7 @@ def main() -> int:
     plan.add_argument("--slices-per-run", type=int, default=1)
     plan.add_argument("--slice", default="")
     run = commands.add_parser("run")
-    run.add_argument("vlen", type=int, choices=COMPLETE_SHARDS)
+    run.add_argument("vlen", type=int, choices=COMPLETE_PLANS)
     run.add_argument("mode", choices=("slice", "forms", "complete"))
     run.add_argument("part")
     run.add_argument("--output", type=Path, default=Path("rvv-results"))

@@ -324,8 +324,9 @@ FORMAL_TARGETS = [
     FormalTarget(
         "wfi_commit_guard.sby",
         "The WFI resume-PC arm satisfies the ROB's recovery and full-flush "
-        "retirement qualification",
-        tasks=("prove", "cover"),
+        "retirement qualification. A head WFI cannot retire during an early redirect, "
+        "commit recovery, or flush.",
+        tasks=("prove", "cover", "retirement_prove", "retirement_cover"),
     ),
     FormalTarget(
         "rob_wfi_head_ready.sby",
@@ -1512,9 +1513,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "served_window_coverage.sby",
-        "Fetch-window coverage matches full-address comparisons for 32/64-bit "
-        "addresses and portable/Xilinx implementations",
-        tasks=("bmc", "bmc_xilinx", "bmc_32", "bmc_32_xilinx"),
+        "Per-provider fetch-window coverage and guard match full-address and "
+        "aligner references across portable/Xilinx twins for 32/64-bit addresses",
+        tasks=("bmc", "bmc_xilinx", "bmc_32", "bmc_32_xilinx", "prove", "cover"),
     ),
     FormalTarget(
         "rs_primary_payload.sby",
@@ -2205,6 +2206,8 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("retirement_prove", "Check head WFI retirement against a reference flush window"),
+    ("retirement_cover", "Reach a ready head WFI in each recovery or flush window"),
     (
         "cover_backing",
         "Reach a real second-slot backing hit after the full reset sweep",

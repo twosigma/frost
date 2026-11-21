@@ -31,6 +31,10 @@ define FROST_STRESS_BUILD_CMDS
 		-o $(@D)/frost_sigprobe $(@D)/frost_sigprobe.c
 	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
 		-o $(@D)/frost_nettest $(@D)/frost_nettest.c
+	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
+		-march=rv64gc -mabi=lp64d -fno-tree-vectorize -fno-builtin \
+		-o $(@D)/frost_isa_probe $(@D)/frost_isa_probe.c \
+		$(@D)/frost_isa_probe_asm.S
 endef
 
 define FROST_STRESS_INSTALL_TARGET_CMDS
@@ -40,6 +44,8 @@ define FROST_STRESS_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/bin/frost_sigprobe
 	$(INSTALL) -D -m 0755 $(@D)/frost_nettest \
 		$(TARGET_DIR)/usr/bin/frost_nettest
+	$(INSTALL) -D -m 0755 $(@D)/frost_isa_probe \
+		$(TARGET_DIR)/usr/bin/frost_isa_probe
 endef
 
 $(eval $(generic-package))

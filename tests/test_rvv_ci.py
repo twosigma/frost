@@ -53,13 +53,27 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     assert arguments.count("--vlen") == 1
     assert arguments[arguments.index("--vlen") + 1] == "${{ matrix.vlen }}"
     assert "--vector-source-widths" in arguments
+    assert "--vector-directed" in arguments
     control = next(
         step
         for step in job["steps"]
         if step.get("name") == "Check detection of an incorrect vector result"
     )
     assert control["if"] == "matrix.vlen == 128"
+    assert control["timeout-minutes"] == 9
     assert job["steps"].index(replay) < job["steps"].index(control)
+    calls = [
+        shlex.split(line)[1:3]
+        for line in control["run"].replace("\\\n", "").splitlines()
+        if line.startswith("check_vector_result ")
+    ]
+    assert calls == [
+        ["1", "vector_source_widths_integer"],
+        ["state", "vector_state_results"],
+        ["fractional-lmul", "vector_fractional_lmul"],
+        ["base-fp", "vector_fp_results_flags"],
+        ["fma", "vector_fma"],
+    ]
 
 
 def test_vector_workflow(tmp_path: Path) -> None:
@@ -73,7 +87,9 @@ def test_vector_workflow(tmp_path: Path) -> None:
     jobs = workflow["jobs"]
     job = jobs["test-rvv"]
     assert job["needs"] == "build-docker"
-    assert job["if"] == "${{ !cancelled() && needs.build-docker.result == 'success' }}"
+    assert job["if"] == (
+        "${{ !cancelled() && needs.build-docker.result == 'success' && !inputs.toggle_coverage }}"
+    )
     assert job["strategy"]["fail-fast"] is False
     assert job["strategy"]["max-parallel"] == 20
     assert "needs.build-docker.outputs.rvv_matrix" in job["strategy"]["matrix"]
@@ -91,9 +107,14 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert setup == [5, 5, 15, 5]
     setup_minutes = sum(setup)
     assert ci.FORM_PLANS == {
-        128: ci.FormPlan(4, 92, 130),
-        256: ci.FormPlan(7, 92, 130),
-        512: ci.FormPlan(13, 96, 134),
+        128: ci.ShardPlan(4, 92, 130),
+        256: ci.ShardPlan(7, 92, 130),
+        512: ci.ShardPlan(13, 96, 134),
+    }
+    assert ci.COMPLETE_PLANS == {
+        128: ci.ShardPlan(7, 297, 335),
+        256: ci.ShardPlan(11, 296, 334),
+        512: ci.ShardPlan(25, 316, 354),
     }
     for event, campaign, part, count, per_run, mode, parts in [
         ("push", "rotation", "", "0", default, "forms", []),
@@ -131,24 +152,21 @@ def test_vector_workflow(tmp_path: Path) -> None:
         assert key == "matrix"
         rows = json.loads(data)["include"]
         assert {r["mode"] for r in rows} == {mode}
+        plans = ci.COMPLETE_PLANS if mode == "complete" else ci.FORM_PLANS
         if mode == "slice":
             assert [(r["part"], r["vlen"]) for r in rows] == [
                 (p, v) for p in parts for v in (128, 256, 512)
             ]
         else:
-            widths = (
-                {128: 6, 256: 12, 512: 32}
-                if mode == "complete"
-                else {width: plan.shards for width, plan in ci.FORM_PLANS.items()}
-            )
+            widths = {vlen: plan.shards for vlen, plan in plans.items()}
             assert Counter(r["vlen"] for r in rows) == widths
             for vlen, n in widths.items():
                 assert {r["part"] for r in rows if r["vlen"] == vlen} == {
                     f"{i}/{n}" for i in range(1, n + 1)
                 }
         for row in rows:
-            if mode == "forms":
-                plan = ci.FORM_PLANS[row["vlen"]]
+            if mode != "slice":
+                plan = plans[row["vlen"]]
                 step_minutes = row["step_minutes"]
                 job_minutes = row["job_minutes"]
                 assert step_minutes == plan.deadline_minutes + 3
@@ -156,10 +174,8 @@ def test_vector_workflow(tmp_path: Path) -> None:
                 assert job_minutes == setup_minutes + step_minutes + 5
             else:
                 assert "step_minutes" not in row and "job_minutes" not in row
-                step_minutes, job_minutes = (
-                    (310, 360) if mode == "complete" else (100, 140)
-                )
-                assert ci.SHARD_SECONDS[mode] < step_minutes * 60
+                step_minutes, job_minutes = 100, 140
+                assert ci.SLICE_SECONDS < step_minutes * 60
             assert setup_minutes + step_minutes < job_minutes <= 360
     assert 'tests/rvv_ci.py run "$VLEN" "$MODE" "$PART"' in run["run"]
     assert run["env"] == {
@@ -168,12 +184,8 @@ def test_vector_workflow(tmp_path: Path) -> None:
         "PART": "${{ matrix.part }}",
     }
 
-    assert run["timeout-minutes"] == (
-        "${{ matrix.step_minutes || (matrix.mode == 'complete' && 310 || 100) }}"
-    )
-    assert job["timeout-minutes"] == (
-        "${{ matrix.job_minutes || (matrix.mode == 'complete' && 360 || 140) }}"
-    )
+    assert run["timeout-minutes"] == "${{ matrix.step_minutes || 100 }}"
+    assert job["timeout-minutes"] == "${{ matrix.job_minutes || 140 }}"
     summarize, upload = job["steps"][job["steps"].index(run) + 1 :]
     assert summarize["if"] == upload["if"] == "${{ !cancelled() }}"
     assert "rvv-results/summary.md" in summarize["run"]
@@ -205,8 +217,57 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert any(s.get("with", {}).get("name") == "rvv-complete" for s in report["steps"])
 
 
+def test_campaign_report_image_lifetime() -> None:
+    """A report queued after the last shard can still load the campaign's image."""
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    report = jobs["rvv-campaign-report"]
+    assert set(report["needs"]) == {"build-docker", "test-rvv"}
+    (image,) = (
+        s["with"]
+        for s in jobs["build-docker"]["steps"]
+        if s.get("uses", "").startswith("actions/upload-artifact@")
+        and s["with"]["name"] == "frost-docker-image"
+    )
+    (build,) = (
+        s["with"]
+        for s in jobs["build-docker"]["steps"]
+        if s.get("uses", "").startswith("docker/build-push-action@")
+    )
+    assert build["outputs"] == f"type=docker,dest={image['path']}"
+    (shards,) = (
+        s["with"]
+        for s in jobs["test-rvv"]["steps"]
+        if s.get("uses", "").startswith("actions/upload-artifact@")
+        and s["with"]["name"].startswith("rvv-v")
+    )
+    days = shards["retention-days"]
+    assert days >= 14
+    condition = "inputs.campaign == 'complete' && !inputs.toggle_coverage"
+    assert image["retention-days"] == "${{ " + f"{condition} && {days} || 1" + " }}"
+    (download,) = (
+        s["with"]
+        for s in report["steps"]
+        if s.get("uses", "").startswith("actions/download-artifact@")
+        and s["with"].get("name") == image["name"]
+    )
+    archive = Path(image["path"])
+    assert download == {"name": image["name"], "path": str(archive.parent)}
+    assert any(
+        f"docker load --input {archive}" in s.get("run", "") for s in report["steps"]
+    )
+    (collector,) = (
+        s for s in report["steps"] if "tests/rvv_ci.py collect" in s.get("run", "")
+    )
+    assert f"--image {build['tags']} run" in collector["run"]
+    assert (
+        collector["env"]["FROST_RVV_IMAGE_ID"]
+        == "${{ needs.build-docker.outputs.tools_id }}"
+    )
+
+
 VECTOR_JOBS = {"build-docker", "test-rvv"}
 CAMPAIGN_JOBS = VECTOR_JOBS | {"rvv-campaign-report"}
+TOGGLE_JOBS = {"build-docker", "test-verilator", "coverage-report"}
 REGULAR_CI = VECTOR_JOBS | {
     "gate",
     "lint",
@@ -245,6 +306,11 @@ def job_condition(condition: str, context: dict[str, str]) -> bool:
         compare,
         expression,
     ).replace("!cancelled()", "true")
+    expression = re.sub(
+        r"(!?)\b(inputs\.\w+)\b",
+        lambda match: str((context[match[2]] == "true") != bool(match[1])).lower(),
+        expression,
+    )
     assert re.fullmatch(r"(?:true|false|&&|\|\||[()\s])+", expression), condition
     result = subprocess.run(["bash", "-c", expression])
     assert result.returncode in (0, 1), condition
@@ -265,6 +331,21 @@ def job_condition(condition: str, context: dict[str, str]) -> bool:
         ("workflow_dispatch", {"slice": "19"}, (), VECTOR_JOBS),
         ("workflow_dispatch", {}, (), REGULAR_CI),
         ("workflow_dispatch", {"reprove": True}, (), REGULAR_CI),
+        ("workflow_dispatch", {"toggle_coverage": False}, (), REGULAR_CI),
+        ("workflow_dispatch", {"toggle_coverage": True}, (), TOGGLE_JOBS),
+        (
+            "workflow_dispatch",
+            {"reprove": True, "toggle_coverage": True},
+            (),
+            TOGGLE_JOBS,
+        ),
+        ("workflow_dispatch", {"slice": "0", "toggle_coverage": True}, (), TOGGLE_JOBS),
+        (
+            "workflow_dispatch",
+            {"campaign": "complete", "toggle_coverage": True},
+            (),
+            TOGGLE_JOBS,
+        ),
         ("push", {}, (), REGULAR_CI),
         ("pull_request", {}, ("run-ci",), REGULAR_CI),
         ("pull_request", {}, ("documentation",), {"gate"}),
@@ -297,6 +378,7 @@ def test_ci_job_scope(
             "run-ci" in labels
         ).lower(),
         "needs.gate.outputs.full": "",
+        "needs.build-docker.outputs.verilator_matrix": "",
     }
     for key, spec in workflow[True]["workflow_dispatch"]["inputs"].items():
         value = (
@@ -308,9 +390,15 @@ def test_ci_job_scope(
             str(value).lower() if isinstance(value, bool) else value
         )
     group = workflow["concurrency"]["group"]
-    guard, suffix = group.rsplit("${{", 1)[1].rsplit("&& format", 1)
-    assert suffix == "('-rvv-{0}', github.run_id) || '' }}"
-    assert job_condition(guard, context) == (expected in (VECTOR_JOBS, CAMPAIGN_JOBS))
+    _, toggle_group, vector_group = group.rsplit("${{", 2)
+    toggle_guard, toggle_suffix = toggle_group.rsplit("&&", 1)
+    vector_guard, vector_suffix = vector_group.rsplit("&& format", 1)
+    assert toggle_suffix == " '-toggle' || '' }}"
+    assert vector_suffix == "('-rvv-{0}', github.run_id) || '' }}"
+    assert job_condition(toggle_guard, context) == (expected == TOGGLE_JOBS)
+    assert job_condition(vector_guard, context) == (
+        expected in (VECTOR_JOBS, CAMPAIGN_JOBS)
+    )
     enabled: set[str] = set()
     for name in TopologicalSorter(needs).static_order():
         guard = jobs[name].get("if", "")
@@ -337,6 +425,15 @@ def test_ci_job_scope(
             context["needs.gate.outputs.full"] = dict(
                 line.split("=", 1) for line in output.read_text().splitlines()
             )["full"]
+        if runs and name == "build-docker":
+            steps = {s.get("id"): s for s in jobs[name]["steps"]}
+            has_verilator = job_condition(steps["verilator"]["if"], context)
+            assert has_verilator == ("test-verilator" in expected)
+            assert job_condition(steps["rvv"]["if"], context) == (
+                "test-rvv" in expected
+            )
+            if has_verilator:
+                context["needs.build-docker.outputs.verilator_matrix"] = "planned"
     assert enabled == expected
 
 
@@ -370,7 +467,6 @@ def test_rotation_and_manual_replay() -> None:
         with pytest.raises(ValueError, match="slices per run"):
             ci.matrix("rotation", 0, "", count)
     assert ci.matrix("rotation", 99, "19", 20) == ci.matrix("rotation", 0, "19")
-    profile = ["--cycle-profile", "tests/fixtures/rvv_ci_profile.csv"]
     assert ci.shard_options("forms", "2/4") == [
         "--one-per-form",
         "--shard-profile",
@@ -378,7 +474,12 @@ def test_rotation_and_manual_replay() -> None:
         "--shard",
         "2/4",
     ]
-    assert ci.shard_options("complete", "2/6") == [*profile, "--shard", "2/6"]
+    assert ci.shard_options("complete", "2/7") == [
+        "--shard-profile",
+        "tests/fixtures/rvv_ci_complete_times.csv",
+        "--shard",
+        "2/7",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -458,10 +559,99 @@ def test_main_shards_fit_measured_time(
     assert weights == observed
     plan = ci.FORM_PLANS[width]
     setup_ms = 1000 * (build_s + prepare_s)
+    batches = [
+        suite.select_shard(weights, i, plan.shards) for i in range(1, plan.shards + 1)
+    ]
+    peak_ms = assert_shards_fit(width, observed, plan, setup_ms, batches)
+    target_ms = 54 * 60_000
+    assert peak_ms < target_ms
+    assert sum(observed.values()) >= (plan.shards - 1) * (target_ms - setup_ms)
+
+
+@pytest.mark.parametrize(
+    ("width", "build_s", "prep_ms", "prep_cases", "program_ms", "selection"),
+    [
+        (
+            128,
+            260,
+            208301,
+            503,
+            65936307,
+            "0933c01e7bbb5b7491acf9aa593879c5b8b5ca59d67892741e3424840178ef1c",
+        ),
+        (
+            256,
+            307,
+            268254,
+            252,
+            101571876,
+            "e056bf89be5b467e061d79518fb018235718cb3d50aca8b0282531b4bbb7808e",
+        ),
+        (
+            512,
+            324,
+            453403,
+            95,
+            239939637,
+            "239e4d1e894f9331f17c7f6d1920e16cb34fc156ff93f1ad919cacd124ec1be5",
+        ),
+    ],
+)
+def test_complete_shards_fit_measured_time(
+    tmp_path: Path,
+    width: int,
+    build_s: int,
+    prep_ms: int,
+    prep_cases: int,
+    program_ms: int,
+    selection: str,
+) -> None:
+    """Partition every verified campaign case once within the execution and job limits."""
+    profile = (ROOT / ci.COMPLETE_PROFILE).read_bytes()
+    rows = [
+        r
+        for r in csv.DictReader(profile.decode().splitlines())
+        if int(r["vlen"]) == width
+    ]
+    names = [r["name"] for r in rows]
+    assert len(names) == len(set(names)) == ci.PROGRAMS_PER_WIDTH
+    assert suite.selection_sha256(names, width) == selection
+    assert all(not r["main_ms"] for r in rows)
+    observed = {r["name"]: int(r["complete_ms"]) for r in rows}
+    assert min(observed.values()) > 0 and sum(observed.values()) == program_ms
+    weights = suite.shard_weights(tmp_path, names, width, profile)
+    assert weights == observed
+    plan = ci.COMPLETE_PLANS[width]
+    batches = [
+        suite.select_shard(weights, i, plan.shards) for i in range(1, plan.shards + 1)
+    ]
+    # The slowest measured preparation also had the highest cost per guest.
+    largest = max(map(len, batches))
+    prepare_s = ceil(prep_ms * max(largest, prep_cases) / (1000 * prep_cases)) + 2
+    setup_ms = 1000 * (build_s + prepare_s)
+    peak_ms = assert_shards_fit(width, observed, plan, setup_ms, batches)
+    target_ms = 180 * 60_000
+    assert peak_ms < target_ms
+    # Even a perfectly balanced layout with one fewer job must exceed a limit.
+    assert ceil(len(names) / (plan.shards - 1)) >= largest
+    mean_if_fewer_ms = setup_ms + program_ms / (plan.shards - 1)
+    assert (
+        mean_if_fewer_ms >= target_ms
+        or ceil(1.8 * mean_if_fewer_ms / 60_000) + 38 > 360
+    )
+
+
+def assert_shards_fit(
+    width: int,
+    observed: dict[str, int],
+    plan: ci.ShardPlan,
+    setup_ms: int,
+    batches: list[list[str]],
+) -> int:
+    """Check each assigned batch against its measured cost and return the peak."""
     seen = []
     peak_ms = 0
-    for index in range(1, plan.shards + 1):
-        batch = suite.select_shard(weights, index, plan.shards)
+    for index, batch in enumerate(batches, 1):
         assert batch
         seen.extend(batch)
         inner_ms = sum(observed[n] for n in batch) + setup_ms
@@ -471,11 +661,9 @@ def test_main_shards_fit_measured_time(
             inner_ms,
         )
         peak_ms = max(peak_ms, inner_ms)
-    assert sorted(seen) == names
-    target_ms = 54 * 60_000
-    assert peak_ms < target_ms
-    assert sum(observed.values()) >= (plan.shards - 1) * (target_ms - setup_ms)
+    assert sorted(seen) == sorted(observed)
     assert plan.deadline_minutes == ceil(1.8 * peak_ms / 60_000)
+    return peak_ms
 
 
 def result(name: str) -> dict:
@@ -543,7 +731,7 @@ def test_shard_failures_and_reproduction(
 
 @pytest.mark.parametrize(
     ("mode", "part", "total"),
-    [("slice", "0", 665), ("forms", "1/4", 665), ("complete", "1/6", 3017)],
+    [("slice", "0", 665), ("forms", "1/4", 665), ("complete", "1/7", 3017)],
 )
 def test_shard_requires_full_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, part: str, total: int
@@ -554,26 +742,15 @@ def test_shard_requires_full_inventory(
     model = tmp_path / "model"
     Path(f"{model}.json").write_text("{}")
     monkeypatch.setattr(ci.time, "monotonic", lambda: 123.0)
-    seconds = (
-        ci.FORM_PLANS[128].deadline_minutes * 60
-        if mode == "forms"
-        else ci.SHARD_SECONDS[mode]
-    )
+    seconds = {"forms": 92 * 60, "complete": 297 * 60, "slice": 90 * 60}[mode]
 
     def simulate(command: list[str], deadline: float, transcript: object) -> int:
         assert deadline == 123.0 + seconds
         if mode == "slice":
             assert "--cycle-profile" not in command and "--shard-profile" not in command
-        elif mode == "forms":
-            assert (
-                Path(command[command.index("--shard-profile") + 1])
-                == ROOT / ci.FORM_PROFILE
-            )
         else:
-            assert (
-                Path(command[command.index("--cycle-profile") + 1])
-                == ROOT / ci.CYCLE_PROFILE
-            )
+            profile = ci.FORM_PROFILE if mode == "forms" else ci.COMPLETE_PROFILE
+            assert Path(command[command.index("--shard-profile") + 1]) == ROOT / profile
         work = Path(command[command.index("--workdir") + 1])
         (work / "Makefrag").write_text("tests =\nvadd_vv-0\n")
         (work / "selection.json").write_text(json.dumps(selection))
@@ -638,7 +815,7 @@ def test_shard_deadline_keeps_partial_results(
     )
     monkeypatch.setattr(ci, "SUITE", str(driver))
     monkeypatch.setenv("PYTHONPATH", str(ROOT / "tests"))
-    monkeypatch.setitem(ci.SHARD_SECONDS, "slice", 5)
+    monkeypatch.setattr(ci, "SLICE_SECONDS", 5)
     assert ci.run_shard(128, "slice", "0", tmp_path, model) == 1
     summary = (tmp_path / "summary.md").read_text()
     assert "5-second deadline" in summary and "2 selected, 1 ran, 1 failed" in summary
@@ -655,7 +832,7 @@ def test_shard_deadline_keeps_partial_results(
 @suite.needs_suite
 def test_campaign_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The complete union includes all checked models and rejects lost evidence."""
-    monkeypatch.setattr(ci, "COMPLETE_SHARDS", {128: 2})
+    monkeypatch.setattr(ci, "COMPLETE_PLANS", {128: ci.ShardPlan(2, 297, 335)})
     monkeypatch.setattr(ci, "PROGRAMS_PER_WIDTH", 2)
     names = ["vadd_vv-7", "vsub_vx-2"]
     manifest = {

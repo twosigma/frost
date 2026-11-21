@@ -5405,12 +5405,16 @@ module cpu_ooo #(
   //    resolved next PC of the entry the flush keeps last, and a full flush
   //    leaves the next allocation free. The front end keeps allocating
   //    behind an instruction that traps or carries a fetch fault (an illegal
-  //    or ebreak compressed slot 1 drops its slot-2 partner, and a faulting
-  //    fetch steps by a word whatever its parcel decodes to), so a slot-1
-  //    allocation may leave this order when the allocation before it is a
-  //    valid entry that has not completed without an exception. That entry is
-  //    then a barrier: it never completes without an exception while it is
-  //    valid, and every allocation until the next flush is free;
+  //    or ebreak compressed slot 1 drops its slot-2 partner, and fetch steps
+  //    past a faulting instruction by a size taken from arbitrary bytes,
+  //    whatever its parcel decodes to), so a slot-1 allocation may leave this
+  //    order when the allocation before it is a valid entry that has not
+  //    completed without an exception, and a slot-2 allocation when slot 1
+  //    does not allocate done without a fault. That entry is then a barrier:
+  //    it never completes without an exception while it is valid, and every
+  //    allocation is free until a flush removes the barrier. A partial flush
+  //    that keeps it, the early recovery of a younger branch, leaves the
+  //    barrier in force;
   //  - a branch update completes a conditional branch or JALR, once, and sets its
   //    misprediction flag exactly when the outcome, or the taken target,
   //    differs from the prediction the entry was allocated with;
@@ -5461,10 +5465,23 @@ module cpu_ooo #(
   logic rob_last_valid_q, rob_last_normal_q, rob_broken_q;
   logic [RobTagWidth-1:0] rob_last_tag_q, rob_barrier_tag_q;
   logic [RobDepth-1:0] rob_chk_normal_done;
-  logic rob_chk_off_chain;
+  logic rob_chk_off_chain, rob_chk_pair_off;
   int unsigned rob_barrier_count_q = 0, rob_barrier_free_count_q = 0, rob_barrier_off_count_q = 0;
   assign rob_chk_off_chain = rob_chk_alloc && rob_chain_valid_q && !rob_broken_q &&
       (rob_chk_req.pc != rob_chain_pc_q);
+  // Slot 2 away from slot 1's predicted next PC. For a fetch fault, fetch
+  // steps by slot 1's predecode sideband and PD sizes slot 1 from its parcel,
+  // both arbitrary bytes, so slot 2 may sit two bytes before or after slot
+  // 1's link address. Slot 1 is then the barrier.
+  assign rob_chk_pair_off = rob_chk_alloc_2 && !rob_broken_q && !rob_chk_off_chain &&
+      (rob_chk_req_2.pc != rob_chk_pred_next);
+  // The entries a flush removes this cycle, as the ROB clears them: all on a
+  // full flush or a commit-time recovery, those younger than the flush tag on
+  // an early recovery.
+  logic [RobDepth-1:0] rob_chk_flush_clear;
+  for (genvar e = 0; e < RobDepth; e++) begin : g_rob_chk_flush_clear
+    assign rob_chk_flush_clear[e] = u_tomasulo.u_rob.gen_valid_next[e].flush_clear;
+  end
   always_comb begin
     for (int i = 0; i < RobDepth; i++) begin
       rob_chk_normal_done[i] = rob_chk_completes[i] ||
@@ -5511,19 +5528,24 @@ module cpu_ooo #(
       if (rob_broken_q && u_tomasulo.u_rob.rob_valid[rob_barrier_tag_q] && !rob_chk_flush_all) begin
         p_rob_barrier_never_completes : assert (!rob_chk_normal_done[rob_barrier_tag_q]);
       end
-      if (rob_chk_off_chain) rob_barrier_count_q <= rob_barrier_count_q + 1;
+      if (rob_chk_off_chain || rob_chk_pair_off) rob_barrier_count_q <= rob_barrier_count_q + 1;
       if (rob_chk_alloc && (rob_broken_q || rob_chk_off_chain))
         rob_barrier_free_count_q <= rob_barrier_free_count_q + (rob_chk_alloc_2 ? 2 : 1);
+      else if (rob_chk_pair_off) rob_barrier_free_count_q <= rob_barrier_free_count_q + 1;
       if (rob_chk_alloc && (rob_broken_q || rob_chk_off_chain) && rob_chain_valid_q &&
           (rob_chk_req.pc != rob_chain_pc_q))
         rob_barrier_off_count_q <= rob_barrier_off_count_q + 1;
       if (rob_chk_flush_all || rob_chk_flush_en) begin
         rob_last_valid_q <= 1'b0;
-        rob_broken_q <= 1'b0;
+        // Only a flush that removes the barrier entry ends the barrier.
+        if (rob_chk_flush_clear[rob_barrier_tag_q]) rob_broken_q <= 1'b0;
       end else begin
         if (rob_chk_off_chain) begin
           rob_broken_q <= 1'b1;
           rob_barrier_tag_q <= rob_last_tag_q;
+        end else if (rob_chk_pair_off) begin
+          rob_broken_q <= 1'b1;
+          rob_barrier_tag_q <= rob_chk_tail;
         end
         if (rob_chk_alloc) begin
           rob_last_valid_q <= 1'b1;
@@ -5536,9 +5558,9 @@ module cpu_ooo #(
           rob_last_normal_q <= 1'b1;
         end
       end
-      if (rob_chk_alloc_2 && !rob_broken_q && !rob_chk_off_chain) begin
+      if (rob_chk_pair_off) begin
         p_rob_alloc_slot2_follows_slot1 :
-        assert (rob_chk_req_2.pc == rob_chk_pred_next)
+        assert (!(u_tomasulo.u_rob.alloc_done_value && !u_tomasulo.u_rob.alloc_legality_fault_data))
         else
           $error(
               "cpu_ooo: slot-2 ROB allocation at %0t at pc %016x, predicted next pc %016x",
@@ -5898,8 +5920,11 @@ module cpu_ooo #(
       .i_wfi_start(1'b0),  // WFI handled by ROB serialization
       // Debug Mode
       .i_debug_mode(csr_debug_mode),
-      .i_dbg_haltreq(i_dbg_haltreq),
-      .i_dbg_step_req(step_done_q),
+      // A fatal stop refuses Debug Mode entry in every configuration: the
+      // engine's terminal state already shields it when the engine is built.
+      // The debug module reports the hart as unavailable meanwhile.
+      .i_dbg_haltreq((MISALIGNED_HW || !i_fatal_stop) ? i_dbg_haltreq : 1'b0),
+      .i_dbg_step_req((MISALIGNED_HW || !i_fatal_stop) ? step_done_q : 1'b0),
       .i_dbg_step_armed(step_armed_q),
       .i_dbg_go(i_dbg_go),
       .i_dbg_go_target(XLEN'(i_dbg_go_addr)),

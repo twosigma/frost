@@ -36,6 +36,15 @@
  * resumereq redirects to the resume word; dret leaves Debug Mode, then
  * resumeack asserts.
  *
+ * A fatally stopped hart (i_hart_fatal_stop) cannot run Debug Mode code, so
+ * it reads as unavailable until the reset that clears the stop: dmstatus
+ * unavail, not running and not halted (haltsum0 reads 0), also when it was
+ * already in Debug Mode. A command written then is not started and sets
+ * cmderr 4; a command in flight ends with cmderr 4 and busy clear. A
+ * resumereq write clears resumeack and starts no resume, and a resume in
+ * flight ends with resumeack still 0. haltreq stays a level the module
+ * keeps: the hart ignores it while stopped and halts on it after the reset.
+ *
  * Register map (DMI addresses): data0/1 0x04-0x05, dmcontrol 0x10, dmstatus
  * 0x11, hartinfo 0x12 (nscratch 2, dataaccess 0, datasize 1, dataaddr
  * 0x7B4), abstractcs 0x16 (progbufsize 8, datacount 2), command 0x17,
@@ -85,6 +94,8 @@ module debug_module #(
     input  logic        i_cmd_err,        // the last command re-parked on an exception
     input  logic        i_go_taken,
     input  logic        i_core_in_reset,
+    // The hart's fatal stop (set until the core reset that clears it).
+    input  logic        i_hart_fatal_stop = 1'b0,
     output logic        o_ndmreset,
 
     // Slice writer (WRITE requests only; mirrors come from soc_top)
@@ -181,8 +192,11 @@ module debug_module #(
   assign res_busy = (res_state_q != ResIdle);
 
   logic halted, unavail;
-  assign halted  = i_debug_mode && !i_core_in_reset;
-  assign unavail = i_core_in_reset;
+  // A fatally stopped hart cannot run Debug Mode code (commit and the front
+  // end are held), so it reads as unavailable, also when it was already in
+  // Debug Mode, until the reset that clears the stop.
+  assign unavail = i_core_in_reset || i_hart_fatal_stop;
+  assign halted  = i_debug_mode && !unavail;
 
   // ---------------------------------------------------------------------------
   // DMI decode
@@ -406,7 +420,7 @@ module debug_module #(
             haltreq_q  <= wdata[31];
             ndmreset_q <= wdata[1];
             if (wdata[28]) havereset_q <= 1'b0;  // ackhavereset
-            if (wdata[30]) begin  // resumereq
+            if (wdata[30]) begin  // resumereq: clears the ack; no resume starts if unavailable
               resumeack_q <= 1'b0;
               if (halted && !cmd_busy && !res_busy) res_state_q <= ResSync;
             end
@@ -507,6 +521,17 @@ module debug_module #(
         end
         default: res_state_q <= ResIdle;
       endcase
+
+      // ---- Fatal stop: end what is in flight ----
+      // A command or resume cannot finish on a stopped hart. Command state
+      // CmdCheck ends by itself and keeps its own error.
+      if (i_hart_fatal_stop) begin
+        if (cmd_state_q != CmdIdle && cmd_state_q != CmdCheck) begin
+          if (cmderr_q == CmderrNone) cmderr_q <= CmderrHaltResume;
+          cmd_state_q <= CmdIdle;
+        end
+        if (res_state_q != ResIdle) res_state_q <= ResIdle;
+      end
     end
   end
 
@@ -568,7 +593,8 @@ module debug_module #(
       o_go <= 1'b0;
       o_go_addr <= riscv_pkg::DebugAbstractAddr;
     end else begin
-      o_go <= ((cmd_state_q == CmdGo) || (res_state_q == ResGo)) && !i_go_taken;
+      o_go <= ((cmd_state_q == CmdGo) || (res_state_q == ResGo)) && !i_go_taken &&
+               !i_hart_fatal_stop;
       o_go_addr <= (res_state_q == ResGo) ? riscv_pkg::DebugResumeAddr :
                                             riscv_pkg::DebugAbstractAddr;
     end
@@ -596,8 +622,13 @@ module debug_module #(
 
 `ifdef DEBUG_GO_PIPELINE_PROOF
   logic f_go_past_valid = 1'b0;
+  // The hold properties below describe a hart that has not stopped. A fatal
+  // stop withdraws GO and ends the sequences; the stop stays set until the
+  // core reset, so once seen it ends the hold properties for the run.
+  logic f_fatal_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     f_go_past_valid <= 1'b1;
+    if (i_hart_fatal_stop) f_fatal_seen_q <= 1'b1;
     if (!f_go_past_valid) assume (i_rst);
     assume (!i_go_taken || o_go);
     if (f_go_past_valid) begin
@@ -609,12 +640,22 @@ module debug_module #(
       end
       if ($past(dm_rst || i_go_taken)) assert (!o_go);
       if ($past(i_go_taken)) assert (cmd_state_q != CmdGo && res_state_q != ResGo);
-      if ($past(o_go && !i_go_taken && !dm_rst)) begin
+      if (!f_fatal_seen_q && $past(o_go && !i_go_taken && !dm_rst)) begin
         assert (o_go);
         assert (o_go_addr == $past(o_go_addr));
       end
-      if ($past(((cmd_state_q == CmdGo) || (res_state_q == ResGo)) && !dm_rst && !i_go_taken))
+      if (!f_fatal_seen_q &&
+          $past(((cmd_state_q == CmdGo) || (res_state_q == ResGo)) && !dm_rst && !i_go_taken))
         assert (o_go);
+      // A fatal stop ends any command or resume in flight, starts none and
+      // withdraws GO in the same cycle.
+      if ($past(i_hart_fatal_stop && !dm_rst)) begin
+        assert (cmd_state_q == CmdIdle && res_state_q == ResIdle);
+      end
+      if (i_hart_fatal_stop) assert (unavail && !halted);
+      if ($past(i_hart_fatal_stop && !dm_rst)) assert (!o_go);
+      cover ($past(i_hart_fatal_stop && !dm_rst && cmd_busy));
+      cover ($past(i_hart_fatal_stop && !dm_rst && res_busy));
       cover (o_go && i_go_taken && o_go_addr == riscv_pkg::DebugAbstractAddr);
       cover (o_go && i_go_taken && o_go_addr == riscv_pkg::DebugResumeAddr);
       cover (o_go && $past(o_go) && !i_go_taken);

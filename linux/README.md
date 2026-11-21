@@ -420,6 +420,7 @@ passes through:
 | `FROST_LINUX_IP` | Kernel `ip=` value; defaults to `dhcp` and requires `FROST_LINUX_NFSROOT` |
 | `FROST_LINUX_KERNEL` | Absolute path to a replacement kernel `Image` |
 | `FROST_LINUX_INITRD` | Absolute path to a replacement initramfs |
+| `FROST_LINUX_DTB` | Absolute path to a compiled device tree blob (`.dtb`) packed instead of generating one |
 | `FROST_LINUX_MAC` | Board MAC address; defaults to `02:11:22:33:44:55` |
 
 For Debian, pack the root's `/boot/vmlinux-<version>` with the matching

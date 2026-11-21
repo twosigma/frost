@@ -176,6 +176,29 @@ MEMERR_LINE = (
     + f"{hw.LINUX_MEMERR_TOKEN} active=1 polls=4113,5342 ce=0 ue=0 rd=0 wr=0 "
     + f"{MEMERR_PROGRESS}\r\r\n{PROMPT}"
 )
+ISA_RUN_ID = "a1b2c3d4"
+ISA_ABSENT_ECHO = hw.isa_probe_command(ISA_RUN_ID, "absent") + "\r\r\n"
+ISA_ABSENT_LINES = (
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=discover verdict=PASS mode=absent\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=illegal verdict=PASS sigill=1 pc_match=1 scalar_pre=1\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=signal verdict=PASS rounds=4 end_magic=0 end_size=0\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=ptrace verdict=PASS gpr_ok=1 einval=1\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_SUMMARY_TOKEN} id={ISA_RUN_ID} mode=absent passed=4 failed=0 verdict=PASS\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=0\r\r\n{PROMPT}"
+)
+ISA_PRESENT_ECHO = hw.isa_probe_command(ISA_RUN_ID, "present") + "\r\r\n"
+ISA_PRESENT_LINES = (
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=discover verdict=PASS mode=present vlenb=32 smoke=1\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=switch verdict=PASS rounds_a=64 rounds_b=64 cpu=0\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=signal verdict=PASS normal_rounds=8 alt_rounds=8 clobbers=16\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=ptrace verdict=PASS inactive_einval=1 active_bytes=1064 setregset_ok=1 resumed_ok=1\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=core verdict=PASS scalar_ok=1 note_bytes=1064 restored=1\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=fork verdict=PASS ctrl_ok=1 inactive_einval=1 init_zero=1 isolated=1\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=exec verdict=PASS on_ok=1 off_sigill=1\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=first-use verdict=PASS traps_before=0 traps_phase1=1 traps_phase2=1 missed=0 init_zero=1\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_SUMMARY_TOKEN} id={ISA_RUN_ID} mode=present passed=8 failed=0 verdict=PASS\r\r\n"
+    f"{hw.LINUX_ISA_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=0\r\r\n{PROMPT}"
+)
 # What the program prints when perf_event_open on the child fails.
 COUNTER_FAIL_LINE = (
     f"FROST_COUNTERS: scope=exec-child counters=unavailable verdict=FAIL\r\r\n{PROMPT}"
@@ -206,12 +229,13 @@ TO_SYSTEMD = TO_DRIVER + SYSTEMD_ECHO + SYSTEMD_RUNNING
 TO_STRESS = TO_SYSTEMD + STRESS_ECHO + STRESS_OUT
 COUNTER_TRANSCRIPT = TO_STRESS + COUNTER_ECHO + COUNTER_LINE
 MEMERR_TRANSCRIPT = COUNTER_TRANSCRIPT + MEMERR_ECHO + MEMERR_LINE
-FULL_TRANSCRIPT = MEMERR_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS + NET_ALIVE
+ISA_TRANSCRIPT = MEMERR_TRANSCRIPT + ISA_ABSENT_ECHO + ISA_ABSENT_LINES
+FULL_TRANSCRIPT = ISA_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS + NET_ALIVE
 
 
 def stage() -> Any:
     """Build the Linux stage for the transcript's root."""
-    return hw.linux_stage(ROOT)
+    return hw.linux_stage(ROOT, isa_run_id=ISA_RUN_ID)
 
 
 # --- The judge and the capture predicates ------------------------------------
@@ -242,9 +266,10 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
         (TO_SYSTEMD, "no 'FROST_USERSPACE_STRESS_PASS' after the login"),
         (TO_STRESS, "no FROST_COUNTERS: count"),
         (COUNTER_TRANSCRIPT, f"no {hw.LINUX_MEMERR_TOKEN} line"),
-        (MEMERR_TRANSCRIPT, "FROST_NET_LOOPBACK_PASS"),
+        (MEMERR_TRANSCRIPT, f"no {hw.LINUX_ISA_PROBE_EXIT_TOKEN} line"),
+        (ISA_TRANSCRIPT, "FROST_NET_LOOPBACK_PASS"),
         (
-            MEMERR_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS,
+            ISA_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS,
             f"no {hw.LINUX_ROOT_ALIVE_TOKEN}= status",
         ),
     ],
@@ -256,6 +281,7 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
         "after-stress",
         "after-counters",
         "after-memerr",
+        "after-isa-probe",
         "after-nettest",
     ],
 )
@@ -680,6 +706,8 @@ def test_the_memory_error_readback_must_be_clean(line: str, expected: str) -> No
         + MEMERR_ECHO
         + MEMERR_SELFTEST_LINE
         + f"{hw.LINUX_MEMERR_TOKEN} {line} {MEMERR_PROGRESS}\r\r\n{PROMPT}"
+        + ISA_ABSENT_ECHO
+        + ISA_ABSENT_LINES
         + NET_ECHO
         + NET_START
         + NET_PASS
@@ -764,7 +792,10 @@ def test_vcu118_linux_checks_memory_errors_without_cpu_ecc_polling(
     )
     assert hw.main() == 0
     linux = seen[hw.LINUX_STAGE]["stage"]
-    console = FULL_TRANSCRIPT.replace(
+    run_id_match = re.search(r"--run-id ([0-9a-fA-F]+)", linux.stimuli[-2][1])
+    assert run_id_match is not None
+    stage_run_id = run_id_match.group(1)
+    console = FULL_TRANSCRIPT.replace(ISA_RUN_ID, stage_run_id).replace(
         DRIVER_LINE, f"{hw.LINUX_DRIVER_VERSION_TOKEN}={driver_version}\r\r\n{PROMPT}"
     )
     transcript = console.replace("active=1 polls=4113,5342", "active=0 polls=0,0")
@@ -773,7 +804,9 @@ def test_vcu118_linux_checks_memory_errors_without_cpu_ecc_polling(
     assert f"NIC driver {driver_version}" in note
     assert linux.judge(console)[0] is False
     assert (
-        hw.linux_stage(ROOT, driver_version=driver_version).judge(transcript)[0]
+        hw.linux_stage(
+            ROOT, driver_version=driver_version, isa_run_id=stage_run_id
+        ).judge(transcript)[0]
         is False
     )
     ok, note = linux.judge(transcript.replace(driver_version, "0.0-stale"))
@@ -830,9 +863,10 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
         hw.LINUX_STRESS_COMMAND + "\r",
         hw.LINUX_COUNTER_COMMAND + "\r",
         hw.LINUX_MEMERR_COMMAND + "\r",
+        hw.isa_probe_command(ISA_RUN_ID, "absent") + "\r",
         hw.nettest_command("eth0") + "\r",
     ]
-    assert [trigger for trigger, _ in linux.stimuli[1:]] == [hw.LINUX_SHELL_PROMPT] * 7
+    assert [trigger for trigger, _ in linux.stimuli[1:]] == [hw.LINUX_SHELL_PROMPT] * 8
     # Nothing to type before the prompt, even though "# " could occur in a log.
     assert hw.next_stimulus(linux, "[    0.1] # not a prompt\r\n", 0, 0) is None
     text, after = hw.next_stimulus(linux, BOOT_TO_LOGIN, 0, 0)
@@ -848,7 +882,8 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
         (TO_SYSTEMD, hw.LINUX_STRESS_COMMAND),
         (TO_STRESS, hw.LINUX_COUNTER_COMMAND),
         (COUNTER_TRANSCRIPT, hw.LINUX_MEMERR_COMMAND),
-        (MEMERR_TRANSCRIPT, hw.nettest_command("eth0")),
+        (MEMERR_TRANSCRIPT, hw.isa_probe_command(ISA_RUN_ID, "absent")),
+        (ISA_TRANSCRIPT, hw.nettest_command("eth0")),
     ):
         # The prompt that took the previous command cannot fire this one.
         assert hw.next_stimulus(linux, transcript[: -len(PROMPT)], sent, after) is None
@@ -903,6 +938,19 @@ def test_the_autologin_stray_command_does_not_break_the_chain() -> None:
         + STRESS_OUT
         + COUNTER_ECHO
         + COUNTER_LINE,
+        boot
+        + MOUNT_ECHO
+        + MOUNT_LINE
+        + DRIVER_ECHO
+        + DRIVER_LINE
+        + SYSTEMD_ECHO
+        + SYSTEMD_RUNNING
+        + STRESS_ECHO
+        + STRESS_OUT
+        + COUNTER_ECHO
+        + COUNTER_LINE
+        + MEMERR_ECHO
+        + MEMERR_LINE,
     ):
         pending = hw.next_stimulus(linux, transcript, sent, after)
         assert pending is not None, sent
@@ -1481,9 +1529,10 @@ def _fake_root(export: Path) -> Any:
 
 
 def _fake_cross(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    """Return a stub cross gcc and an environment that selects its prefix.
+    """Return a stub cross toolchain (gcc, readelf, objdump) and its env prefix.
 
-    The stub writes ``stub`` to its ``-o`` file.
+    The gcc stub writes ``stub`` to its ``-o`` file; readelf and objdump report
+    clean RV64GC attributes and scalar disassembly.
     """
     binary_dir = tmp_path / "toolchain"
     binary_dir.mkdir()
@@ -1493,6 +1542,17 @@ def _fake_cross(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         'printf stub > "$2"\nexit 0\n'
     )
     gcc.chmod(0o755)
+    readelf = binary_dir / "stub-readelf"
+    readelf.write_text(
+        "#!/bin/sh\necho '  Tag_RISCV_arch: \"rv64i2p1_m2p0_a2p1_f2p2_d2p2_c2p0_zicsr2p0\"'\n"
+    )
+    readelf.chmod(0o755)
+    objdump = binary_dir / "stub-objdump"
+    objdump.write_text(
+        "#!/bin/sh\n"
+        "printf '0000000000010000 <main>:\\n   10000:\\t00000013\\taddi\\tzero,zero,0\\n'\n"
+    )
+    objdump.chmod(0o755)
     return gcc, {hw.CROSS_COMPILE_ENV: str(binary_dir / "stub-")}
 
 
@@ -1506,12 +1566,15 @@ def test_the_preflight_accepts_a_prepared_export_and_installs_the_programs(
     assert any("NFSv3" in note for note in notes)
     assert any(hw.KERNEL_RELEASE in note for note in notes)
     assert any("autologin" in note for note in notes)
-    assert any("installed frost_stress, frost_nettest" in note for note in notes)
+    assert any(
+        "installed frost_stress, frost_nettest, frost_isa_probe" in note
+        for note in notes
+    )
     assert any(f"installed {hw.MEMERR.name}.ko" in note for note in notes)
     assert (
         export / f"usr/local/bin/{hw.MEMERR.name}.ko"
     ).read_bytes() == b"stub module"
-    for name in ("frost_stress", "frost_nettest"):
+    for name in ("frost_stress", "frost_nettest", "frost_isa_probe"):
         installed = export / "usr/local/bin" / name
         assert installed.read_bytes() == b"stub"
         assert installed.stat().st_mode & 0o111
@@ -1818,8 +1881,10 @@ def test_the_regression_does_not_touch_the_board_when_the_root_is_unset(
 
 # --- The console a board really sends ----------------------------------------
 
-# X3 UART capture with the regression's typed-input notes removed; CRs and
-# escapes are unchanged.
+# Composite X3 UART fixture. The boot and stage output come from one
+# recording with the regression's typed-input notes removed. The ISA probe
+# command echo, four case verdicts, summary and exit come from a separate
+# Linux console capture. Both excerpts preserve CRs and escapes.
 # Bash disables bracketed paste before each command's first output:
 # ESC[?2004l CR <output>. Anchored patterns must handle that prefix.
 BOARD_CONSOLE = REPO_ROOT / "tests/fixtures/x3_linux_boot_console.log"
@@ -1841,30 +1906,60 @@ def board_console() -> str:
     return BOARD_CONSOLE.read_bytes().decode("utf-8", errors="replace")
 
 
-def test_recorded_console_with_pinned_release_passes_the_stage() -> None:
-    """Parse the recorded terminal formatting with the configured kernel release."""
-    console = board_console()
-    release = re.search(r"Linux version (\S+) ", console)
+def fixture_isa_run_id(raw_console: str) -> str:
+    """Extract the frost_isa_probe run id recorded in a captured UART log."""
+    clean = hw.console_text(raw_console)
+    match = hw.LINUX_ISA_SUMMARY_RE.search(clean) or hw.LINUX_ISA_EXIT_RE.search(clean)
+    assert match is not None, "capture carries no FROST_ISA_PROBE summary or exit line"
+    return match.group(1)
+
+
+def assert_captured_linux_console_passes(
+    raw_console: str,
+    nfsroot: str = BOARD_NFSROOT,
+    *,
+    isa_expect: str = hw.LINUX_ISA_EXPECT_DEFAULT,
+    isa_vlenb: int | None = None,
+) -> str:
+    """Verify a recorded Linux console capture passes the stage end to end."""
+    release = re.search(r"Linux version (\S+) ", raw_console)
     assert release is not None
-    console = console.replace(release[1], hw.KERNEL_RELEASE)
-    linux = hw.linux_stage(BOARD_ROOT)
+    console = raw_console.replace(release[1], hw.KERNEL_RELEASE)
+    run_id = fixture_isa_run_id(console)
+    root = dataclasses.replace(BOARD_ROOT, nfsroot=nfsroot)
+    linux = hw.linux_stage(
+        root, isa_expect=isa_expect, isa_run_id=run_id, isa_vlenb=isa_vlenb
+    )
     assert linux.success_done(console)
     assert not linux.failure_done(console)
     ok, note = linux.judge(console)
     assert ok, note
     assert hw.KERNEL_RELEASE in note
-    assert BOARD_NFSROOT in note and "vers=3" in note
+    assert f"NIC driver {hw.source_driver_version(REPO_ROOT)}" in note
+    assert nfsroot in note and "vers=3" in note
     assert "systemd running" in note
     counts = hw.counter_values(hw.console_text(console))
     assert all(int(counts[event]) > 0 for event in hw.LINUX_COUNTER_EVENTS)
     assert "no memory errors" in note
     assert "scrub self-test" in note and "a full pass" in note
+    expected_count = len(hw.LINUX_ISA_PROBE_CASES[isa_expect])
+    assert f"isa probe {isa_expect} ({expected_count}/{expected_count} cases)" in note
     assert "root alive" in note
+    return note
+
+
+def test_recorded_console_with_pinned_release_passes_the_stage() -> None:
+    """Parse the composite fixture with the recorded ISA probe run ID."""
+    raw = board_console()
+    assert fixture_isa_run_id(raw) == "d536f34d"
+    assert " -- \rrun-id d536f34d;" in raw
+    assert_captured_linux_console_passes(raw)
 
 
 def test_the_fixture_still_carries_the_escapes_it_is_here_for() -> None:
     """Preserve the fixture's bracketed-paste escapes, colored greeting, and CRs."""
     console = board_console()
+    # The probe's closing escape precedes its diagnostic output in the capture.
     assert console.count("\x1b[?2004l") == 7
     assert "\x1b[?2004l\rnfs " in console
     assert f"\x1b[?2004l\r{hw.LINUX_DRIVER_VERSION_TOKEN}=" in console
@@ -1925,7 +2020,7 @@ def test_the_real_prompts_fire_every_stimulus_in_order() -> None:
     root command because login discards the typed answer.
     """
     raw = board_console()
-    linux = hw.linux_stage(BOARD_ROOT)
+    linux = hw.linux_stage(BOARD_ROOT, isa_run_id=fixture_isa_run_id(raw))
     assert "frost login: root (automatic login)" in raw
     assert "\x1b[?2004hroot@frost:~# " in raw
     assert "command not found" not in raw
@@ -1939,12 +2034,49 @@ def test_the_real_prompts_fire_every_stimulus_in_order() -> None:
     assert hw.next_stimulus(linux, raw, sent, after) is None
 
 
+def test_linux_stage_accepts_real_probe_capture() -> None:
+    """Check a capture or exercise a synthetic probe with INFO lines and UART wrap.
+
+    Set ``FROST_TEST_LINUX_CAPTURE`` to a captured serial log file to verify a
+    fresh live capture directly through this hook.
+    """
+    capture_env = os.environ.get("FROST_TEST_LINUX_CAPTURE", "").strip()
+    if capture_env:
+        live = Path(capture_env).read_bytes().decode("utf-8", errors="replace")
+        assert_captured_linux_console_passes(live)
+        return
+
+    raw = board_console()
+    probe_start = raw.index(
+        f"\x1b[?2004h{PROMPT}timeout -k 5 45 /usr/local/bin/frost_isa_probe suite "
+    )
+    exit_line = f"{hw.LINUX_ISA_PROBE_EXIT_TOKEN} id={fixture_isa_run_id(raw)} rc=0\r\n"
+    probe_end = raw.index(exit_line, probe_start) + len(exit_line)
+    synthetic_id = "f7e6d5c4"
+    synthetic_block = (
+        "\x1b[?2004hroot@frost:~# timeout -k 5 45 /usr/local/bin/frost_isa_probe su\ruite "
+        f"--vlenb 32 --run-id {synthetic_id}; printf 'FROST_ISA_PROBE_EXIT id=%s rc=%s\\n' "
+        f'{synthetic_id} "$?"\r\n'
+        f"\x1b[?2004l\rFROST_ISA_PROBE_INFO id={synthetic_id} case=discover of=/sys/firmware/devicetree/base/cpus/cpu@0 dt_ext_ok=1 dt_ext_v=0 dt_ext_zve=0 dt_ext_cnt=49 dt_isa_ok=1 dt_isa_v=0 dt_isa_zve=0 ci_ok=1 ci_isa_v=0 ci_hart_v=0\r\n"
+        f"FROST_ISA_PROBE_INFO id={synthetic_id} case=discover hwprobe_all_rc=0(e=0) base=0x1 ext0=0x12811200000fb hwprobe_hart_rc=0(e=0) hbase=0x1 hext0=0x12811200000fb hwcap=0x112d prctl=-1(e=22) default_allow=missing\r\n"
+        f"FROST_ISA_PROBE id={synthetic_id} case=discover verdict=PASS mode=absent\r\n"
+        f"FROST_ISA_PROBE id={synthetic_id} case=illegal verdict=PASS sigill=1 pc_match=1 scalar_pre=1\r\n"
+        f"FROST_ISA_PROBE id={synthetic_id} case=signal verdict=PASS rounds=4 end_magic=0 end_size=0\r\n"
+        f"FROST_ISA_PROBE id={synthetic_id} case=ptrace verdict=PASS gpr_ok=1 einval=1\r\n"
+        f"FROST_ISA_PROBE_SUMMARY id={synthetic_id} mode=absent passed=4 failed=0 verdict=PASS\r\n"
+        f"FROST_ISA_PROBE_EXIT id={synthetic_id} rc=0\r\n"
+    )
+    transcript = raw[:probe_start] + synthetic_block + raw[probe_end:]
+    assert fixture_isa_run_id(transcript) == synthetic_id
+    assert_captured_linux_console_passes(transcript)
+
+
 def test_console_text_keeps_what_the_stage_reads() -> None:
     """Normalize escapes without changing console tokens, counts, or prompts."""
     assert hw.console_text(MOUNT_LINE) == MOUNT_LINE
     assert hw.console_text(COUNTER_LINE) == COUNTER_LINE
     stripped = hw.console_text(FULL_TRANSCRIPT)
-    assert hw.linux_stage(ROOT).judge(stripped)[0]
+    assert hw.linux_stage(ROOT, isa_run_id=ISA_RUN_ID).judge(stripped)[0]
     assert stripped.count(PROMPT) == FULL_TRANSCRIPT.count(PROMPT)
 
 
@@ -2740,7 +2872,7 @@ def test_the_repeated_command_carries_no_marker_and_types_once() -> None:
     assert not hw.LINUX_NET_DIAG_RE.search(command + "\r\n")
     assert hw.root_alive_status(command + "\r\n") is None
     assert "FROST_NETTEST_REPETITION=$r/3 FROST_NETTEST_EXPIRE_NFS_CACHE=1" in command
-    linux = hw.linux_stage(ROOT, 3)
+    linux = hw.linux_stage(ROOT, 3, isa_run_id=ISA_RUN_ID)
     assert linux.stimuli[-1][1] == hw.nettest_command(ROOT.interface, 3) + "\r"
     assert linux.stimuli[:-1] == stage().stimuli[:-1]
 
@@ -2809,11 +2941,11 @@ def test_vcu118_linux_loopback_exercises_the_rj45_root_interface(
     root = dataclasses.replace(
         ROOT, interface="eth1", ip=ROOT.ip.replace("eth0", "eth1")
     )
-    linux = hw.linux_stage(root, repeat, board="vcu118")
+    linux = hw.linux_stage(root, repeat, board="vcu118", isa_run_id=ISA_RUN_ID)
     output, _, _ = _run_repeated(
         tmp_path, monkeypatch, repeat, interface=root.interface
     )
-    before_loopback = MEMERR_TRANSCRIPT.replace(
+    before_loopback = ISA_TRANSCRIPT.replace(
         "active=1 polls=4113,5342", "active=0 polls=0,0"
     )
     transcript = (
@@ -2846,13 +2978,13 @@ def test_every_repetition_is_logged_and_only_the_last_ends_the_capture(
             "with nothing sent",
         ),
     }
-    linux = hw.linux_stage(ROOT, 3)
+    linux = hw.linux_stage(ROOT, 3, isa_run_id=ISA_RUN_ID)
     echo = hw.nettest_command(ROOT.interface, 3) + "\r\r\n"
     # Nothing before the last repetition's lines ends the capture.
     last = output.index("FROST_NET_LOOPBACK: repetition 3 of 3")
-    early = MEMERR_TRANSCRIPT + echo + output[:last]
+    early = ISA_TRANSCRIPT + echo + output[:last]
     assert not linux.failure_done(early) and not linux.success_done(early)
-    transcript = MEMERR_TRANSCRIPT + echo + output + PROMPT
+    transcript = ISA_TRANSCRIPT + echo + output + PROMPT
     assert linux.success_done(transcript) and not linux.failure_done(transcript)
     ok, note = linux.judge(transcript)
     assert not ok
@@ -2864,9 +2996,9 @@ def test_all_repetitions_passing_pass_the_stage(
 ) -> None:
     """The note says how many times the test ran."""
     output, _, _ = _run_repeated(tmp_path, monkeypatch, 3)
-    linux = hw.linux_stage(ROOT, 3)
+    linux = hw.linux_stage(ROOT, 3, isa_run_id=ISA_RUN_ID)
     transcript = (
-        MEMERR_TRANSCRIPT + hw.nettest_command(ROOT.interface, 3) + "\r\r\n" + output
+        ISA_TRANSCRIPT + hw.nettest_command(ROOT.interface, 3) + "\r\r\n" + output
     )
     ok, note = linux.judge(transcript + PROMPT)
     assert ok, note
@@ -2887,9 +3019,9 @@ def test_a_failing_last_repetition_reports_the_earlier_ones(
 ) -> None:
     """The last repetition's FAIL ends the capture; the note lists the others."""
     output, _, _ = _run_repeated(tmp_path, monkeypatch, 2, fail_rep=2)
-    linux = hw.linux_stage(ROOT, 2)
+    linux = hw.linux_stage(ROOT, 2, isa_run_id=ISA_RUN_ID)
     transcript = (
-        MEMERR_TRANSCRIPT + hw.nettest_command(ROOT.interface, 2) + "\r\r\n" + output
+        ISA_TRANSCRIPT + hw.nettest_command(ROOT.interface, 2) + "\r\r\n" + output
     )
     assert linux.failure_done(transcript)
     ok, note = linux.judge(transcript)
@@ -2916,8 +3048,8 @@ def test_a_root_that_does_not_come_back_ends_the_repetitions(
     output, _, _ = _run_repeated(tmp_path, monkeypatch, 3, alive_status=124)
     assert output.count("repetition") == 1
     assert output.endswith("FROST_ROOT_ALIVE=124\r\r\n")
-    transcript = MEMERR_TRANSCRIPT + hw.nettest_command(ROOT.interface, 3) + output
-    assert hw.linux_stage(ROOT, 3).failure_done(transcript)
+    transcript = ISA_TRANSCRIPT + hw.nettest_command(ROOT.interface, 3) + output
+    assert hw.linux_stage(ROOT, 3, isa_run_id=ISA_RUN_ID).failure_done(transcript)
 
 
 def test_the_rest_of_a_failure_line_is_read() -> None:
@@ -3047,7 +3179,7 @@ def test_without_the_poke_variable_the_command_is_unchanged() -> None:
     assert hw.nettest_command("eth0", 1, 0) == NETTEST_COMMAND_ETH0
     assert hw.nettest_command("eth0", 3, 0) == hw.nettest_command("eth0", 3)
     assert "frost_poke" not in hw.nettest_command("eth0", 3)
-    assert hw.linux_stage(ROOT, 1, 0).stimuli == stage().stimuli
+    assert hw.linux_stage(ROOT, 1, 0, isa_run_id=ISA_RUN_ID).stimuli == stage().stimuli
 
 
 @pytest.mark.parametrize("text", ["0", "-5", "x", "1.5", "301"])
@@ -3077,7 +3209,7 @@ def test_the_poke_is_scheduled_before_each_test_run_and_does_not_block(
     repeated = hw.nettest_command("eth0", 3, 30)
     assert repeated.count("frost_poke") == 1 and "/root/.frost_poke.$$.$r" in repeated
     assert not hw.LINUX_NET_DIAG_RE.search(repeated + "\r\n")
-    linux = hw.linux_stage(ROOT, 3, 30)
+    linux = hw.linux_stage(ROOT, 3, 30, isa_run_id=ISA_RUN_ID)
     assert linux.stimuli[-1][1] == repeated.replace("eth0", ROOT.interface) + "\r"
 
     started = time.monotonic()
@@ -3090,7 +3222,7 @@ def test_the_poke_is_scheduled_before_each_test_run_and_does_not_block(
     for rep in (1, 2, 3):
         at = lines.index(f"FROST_NET_LOOPBACK: repetition {rep} of 3")
         assert lines[at - 1] == scheduled
-    transcript = MEMERR_TRANSCRIPT + repeated + "\r\r\n" + output
+    transcript = ISA_TRANSCRIPT + repeated + "\r\r\n" + output
     ok, note = linux.judge(transcript + PROMPT)
     assert ok, note
 
@@ -4991,7 +5123,7 @@ def test_f2_runtime_driver_version_mismatch_or_missing_fails_immediately(
 
 def test_f2_runtime_driver_version_before_login_cannot_satisfy_the_check() -> None:
     """A line printed before the login prompt does not satisfy the runtime check."""
-    linux = hw.linux_stage(ROOT, driver_version="1.3")
+    linux = hw.linux_stage(ROOT, driver_version="1.3", isa_run_id=ISA_RUN_ID)
     spoofed = (
         BOOT_TO_LOGIN.replace(
             "login: ", f"{hw.LINUX_DRIVER_VERSION_TOKEN}=1.3\r\r\nlogin: "
@@ -5007,6 +5139,8 @@ def test_f2_runtime_driver_version_before_login_cannot_satisfy_the_check() -> No
         + COUNTER_LINE
         + MEMERR_ECHO
         + MEMERR_LINE
+        + ISA_ABSENT_ECHO
+        + ISA_ABSENT_LINES
         + NET_ECHO
         + NET_START
         + NET_PASS
@@ -5047,3 +5181,827 @@ def test_f2_driver_version_shell_command_handles_present_empty_and_missing(
             ["sh", "-c", cmd], capture_output=True, text=True, check=True, timeout=10
         )
         assert done.stdout == expected
+
+
+# --- ISA discovery and extended register-state probe -------------------------
+
+
+ISA_PROBE_SOURCE = (
+    REPO_ROOT / "linux/buildroot-external/package/frost-stress/src/frost_isa_probe.c"
+)
+ISA_PROBE_ASM = (
+    REPO_ROOT
+    / "linux/buildroot-external/package/frost-stress/src/frost_isa_probe_asm.S"
+)
+
+
+def _valid_dtb_bytes(size: int = 128) -> bytes:
+    """Return a minimal header-valid compiled FDT blob of ``size`` bytes."""
+    return struct.pack(">10I", 0xD00DFEED, size, 40, 40, 40, 17, 16, 0, 0, 0).ljust(
+        size, b"\x00"
+    )
+
+
+def test_isa_probe_command_carries_no_verdict_tokens_and_resists_wrapping() -> None:
+    """The echoed command never matches anchored probe verdict or exit lines."""
+    for expect, limit in (("absent", 45), ("present", 420)):
+        cmd = hw.isa_probe_command(ISA_RUN_ID, expect)
+        assert f"timeout -k 5 {limit} /usr/local/bin/frost_isa_probe suite" in cmd
+        assert f"--run-id {ISA_RUN_ID}" in cmd
+        for wrap in range(len(cmd)):
+            wrapped = f"{MEMERR_TRANSCRIPT}{cmd[:wrap]}\r\r\n{cmd[wrap:]}\r\r\n"
+            fail, passed, _ = hw.isa_probe_verdict(wrapped, ISA_RUN_ID, expect)
+            assert not fail and not passed, (expect, wrap)
+    # Default stage generates distinct 8-hex-digit run IDs across calls.
+    first = hw.linux_stage(ROOT).stimuli[-2][1]
+    second = hw.linux_stage(ROOT).stimuli[-2][1]
+    assert first != second
+
+
+def test_isa_probe_present_transcript_passes_with_present_expectation() -> None:
+    """All eight present-mode cases pass when the stage expects present."""
+    linux = hw.linux_stage(ROOT, isa_expect="present", isa_run_id=ISA_RUN_ID)
+    transcript = (
+        MEMERR_TRANSCRIPT
+        + ISA_PRESENT_ECHO
+        + ISA_PRESENT_LINES
+        + NET_ECHO
+        + NET_START
+        + NET_PASS
+        + NET_ALIVE
+    )
+    assert linux.success_done(transcript)
+    assert not linux.failure_done(transcript)
+    ok, note = linux.judge(transcript)
+    assert ok, note
+    assert "isa probe present (8/8 cases)" in note
+
+
+def test_isa_probe_rejects_mode_mismatch_in_both_directions() -> None:
+    """An absent run fails a present stage and a present run fails an absent stage."""
+    present_stage = hw.linux_stage(ROOT, isa_expect="present", isa_run_id=ISA_RUN_ID)
+    assert present_stage.failure_done(FULL_TRANSCRIPT)
+    ok, note = present_stage.judge(FULL_TRANSCRIPT)
+    assert not ok and "observed mode 'absent', expected 'present'" in note
+
+    present_transcript = (
+        MEMERR_TRANSCRIPT
+        + ISA_PRESENT_ECHO
+        + ISA_PRESENT_LINES
+        + NET_ECHO
+        + NET_START
+        + NET_PASS
+        + NET_ALIVE
+    )
+    absent_stage = stage()
+    assert absent_stage.failure_done(present_transcript)
+    ok, note = absent_stage.judge(present_transcript)
+    assert not ok and "observed mode 'present', expected 'absent'" in note
+
+
+@pytest.mark.parametrize(
+    "expect,before,after,expected_note",
+    [
+        ("absent", "sigill=1", "sigill=0", "illegal sigill='0'"),
+        ("absent", "rounds=4", "rounds=0", "signal rounds='0'"),
+        ("absent", "end_magic=0", "end_magic=1", "signal end=(1,0)"),
+        ("absent", "einval=1", "einval=0", "ptrace einval='0'"),
+        ("present", "smoke=1", "smoke=0", "discover smoke='0'"),
+        ("present", "traps_phase2=1", "traps_phase2=2", "first-use traps=(1,2)"),
+        ("present", "missed=0", "missed=1", "first-use missed=1"),
+        ("present", "rounds_a=64", "rounds_a=0", "switch rounds=(0,64)"),
+        ("present", "clobbers=16", "clobbers=15", "clobbers=15"),
+        ("present", "active_bytes=1064", "active_bytes=1024", "bytes=1024"),
+        ("present", "setregset_ok=1", "setregset_ok=0", "setregset=0"),
+        ("present", "restored=1", "restored=0", "restored=0"),
+        ("present", "isolated=1", "isolated=0", "fork isolated='0'"),
+        ("present", "off_sigill=1", "off_sigill=0", "exec off_sigill='0'"),
+    ],
+)
+def test_isa_probe_rejects_zero_or_invalid_coverage_fields(
+    expect: str, before: str, after: str, expected_note: str
+) -> None:
+    """Zero counts or wrong field sizes fail the stage even with rc=0."""
+    base = (
+        FULL_TRANSCRIPT
+        if expect == "absent"
+        else (
+            MEMERR_TRANSCRIPT
+            + ISA_PRESENT_ECHO
+            + ISA_PRESENT_LINES
+            + NET_ECHO
+            + NET_START
+            + NET_PASS
+            + NET_ALIVE
+        )
+    )
+    mutated = base.replace(before, after, 1)
+    assert mutated != base
+    linux = hw.linux_stage(ROOT, isa_expect=expect, isa_run_id=ISA_RUN_ID)
+    assert linux.failure_done(mutated)
+    ok, note = linux.judge(mutated)
+    assert not ok and expected_note in note
+
+
+def test_isa_probe_rejects_missing_stale_failed_and_nonzero_exit_records() -> None:
+    """Missing cases, stale run IDs, explicit FAIL lines, and timeouts all fail."""
+    # Missing one case line.
+    missing_case = FULL_TRANSCRIPT.replace(
+        f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=ptrace verdict=PASS gpr_ok=1 einval=1\r\r\n",
+        "",
+    )
+    assert stage().failure_done(missing_case)
+    ok, note = stage().judge(missing_case)
+    assert not ok and "missing ptrace" in note
+
+    # Stale lines with another hex ID cannot satisfy the current run ID.
+    stale = FULL_TRANSCRIPT.replace(ISA_RUN_ID, "deadbeef")
+    assert not stage().success_done(stale)
+    ok, note = stage().judge(stale)
+    assert not ok and f"no {hw.LINUX_ISA_PROBE_EXIT_TOKEN} line" in note
+
+    # Pre-login lines cannot satisfy the post-login check.
+    before_prompt = BOOT_TO_LOGIN[: -len(hw.LINUX_LOGIN_PROMPT)]
+    early = (
+        before_prompt
+        + ISA_ABSENT_LINES
+        + hw.LINUX_LOGIN_PROMPT
+        + LOGIN_TO_SHELL
+        + MOUNT_ECHO
+        + MOUNT_LINE
+        + DRIVER_ECHO
+        + DRIVER_LINE
+        + SYSTEMD_ECHO
+        + SYSTEMD_RUNNING
+        + STRESS_ECHO
+        + STRESS_OUT
+        + COUNTER_ECHO
+        + COUNTER_LINE
+        + MEMERR_ECHO
+        + MEMERR_LINE
+        + NET_ECHO
+        + NET_START
+        + NET_PASS
+        + NET_ALIVE
+    )
+    assert not stage().success_done(early)
+
+    # Explicit case FAIL ends capture immediately.
+    failed = (
+        MEMERR_TRANSCRIPT
+        + ISA_ABSENT_ECHO
+        + f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=illegal verdict=FAIL reason=no_sigill\r\r\n"
+    )
+    assert stage().failure_done(failed)
+    ok, note = stage().judge(failed)
+    assert not ok and "illegal: FAIL (no_sigill)" in note
+
+    # Nonzero wrapper exit code (e.g. timeout -> 124) ends capture immediately.
+    timed_out = (
+        MEMERR_TRANSCRIPT
+        + ISA_ABSENT_ECHO
+        + f"{hw.LINUX_ISA_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=124\r\r\n"
+    )
+    assert stage().failure_done(timed_out)
+    ok, note = stage().judge(timed_out)
+    assert not ok and "exited 124" in note
+
+    # Incomplete line without trailing newline is not parsed yet.
+    partial = (
+        MEMERR_TRANSCRIPT
+        + ISA_ABSENT_ECHO
+        + f"{hw.LINUX_ISA_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=124"
+    )
+    assert not stage().failure_done(partial)
+
+
+def test_linux_dtb_option_env_preflight_and_cli_dispatch(
+    prepared: tuple[Any, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--linux-dtb and FROST_LINUX_DTB validate the DTB and forward it to the loader."""
+    root, environment = prepared
+    dtb = tmp_path / "custom.dtb"
+    dtb.write_bytes(_valid_dtb_bytes())
+
+    # Env resolution and loader_env forwarding.
+    base_env = {hw.LINUX_NFSROOT_ENV: NFSROOT, hw.LINUX_IP_ENV: BOARD_IP}
+    from_env = hw.linux_root_from_env({**base_env, hw.LINUX_DTB_ENV: str(dtb)}, site={})
+    assert from_env.dtb == dtb.resolve()
+    assert hw.linux_loader_env(from_env)[hw.LINUX_DTB_ENV] == str(dtb.resolve())
+
+    # CLI override wins over environment.
+    dtb2 = tmp_path / "override.dtb"
+    dtb2.write_bytes(_valid_dtb_bytes())
+    from_cli = hw.linux_root_from_env(
+        {**base_env, hw.LINUX_DTB_ENV: str(dtb)}, site={}, dtb_override=dtb2
+    )
+    assert from_cli.dtb == dtb2.resolve()
+
+    # Preflight accepts a valid DTB and rejects bad/missing/oversized DTBs.
+    notes = hw.linux_root_preflight(
+        dataclasses.replace(root, dtb=dtb), REPO_ROOT, environment
+    )
+    assert any(f"device tree {dtb}" in note for note in notes)
+
+    bad = tmp_path / "bad.dtb"
+    bad.write_bytes(b"not a dtb" * 8)
+    with pytest.raises(hw.LinuxEnvironmentError, match="not a valid compiled DTB"):
+        hw.linux_root_preflight(
+            dataclasses.replace(root, dtb=bad), REPO_ROOT, environment
+        )
+
+    huge = tmp_path / "huge.dtb"
+    huge.write_bytes(_valid_dtb_bytes(0xF000))
+    with pytest.raises(hw.LinuxEnvironmentError, match="exceeds the boot DTB slot"):
+        hw.linux_root_preflight(
+            dataclasses.replace(root, dtb=huge), REPO_ROOT, environment
+        )
+
+    with pytest.raises(hw.LinuxEnvironmentError, match="is not a file"):
+        hw.linux_root_preflight(
+            dataclasses.replace(root, dtb=tmp_path / "missing.dtb"),
+            REPO_ROOT,
+            environment,
+        )
+
+    # CLI forwards --linux-dtb and --linux-isa-expect through main().
+    seen = _stub_board(monkeypatch)
+    seen_expect: list[str] = []
+    real_linux_stage = hw.linux_stage
+
+    def capture_stage(*args: Any, **kwargs: Any) -> Any:
+        seen_expect.append(kwargs.get("isa_expect", hw.LINUX_ISA_EXPECT_DEFAULT))
+        return real_linux_stage(*args, **kwargs)
+
+    monkeypatch.setattr(hw, "linux_stage", capture_stage)
+    monkeypatch.setattr(hw, "linux_root_preflight", lambda *args, **kwargs: ["stub"])
+    for name, value in hw.linux_loader_env(ROOT).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        hw.sys,
+        "argv",
+        [
+            "runner",
+            "--board",
+            "x3",
+            "--linux-dtb",
+            str(dtb),
+            "--linux-isa-expect",
+            "present",
+            "linux_boot",
+        ],
+    )
+    assert hw.main() == 0
+    assert seen[hw.LINUX_STAGE]["env"][hw.LINUX_DTB_ENV] == str(dtb.resolve())
+    assert seen_expect == ["present"]
+
+
+def _build_fdt_with_cpu_isa(isa_str: str, ext_list: tuple[str, ...]) -> bytes:
+    """Build a minimal compiled FDT with ``/cpus/cpu@0`` ISA properties."""
+
+    def pad4(data: bytes) -> bytes:
+        rem = len(data) & 3
+        return data if rem == 0 else data + b"\x00" * (4 - rem)
+
+    strings = b"riscv,isa\x00riscv,isa-extensions\x00"
+    off_isa = 0
+    off_ext = len(b"riscv,isa\x00")
+    val_isa = isa_str.encode("ascii") + b"\x00"
+    val_ext = b"".join(tok.encode("ascii") + b"\x00" for tok in ext_list)
+
+    struct_parts = [
+        struct.pack(">I", 1),
+        pad4(b"\x00"),  # /
+        struct.pack(">I", 1),
+        pad4(b"cpus\x00"),
+        struct.pack(">I", 1),
+        pad4(b"cpu@0\x00"),
+        struct.pack(">3I", 3, len(val_isa), off_isa),
+        pad4(val_isa),
+        struct.pack(">3I", 3, len(val_ext), off_ext),
+        pad4(val_ext),
+        struct.pack(">I", 2),  # end cpu@0
+        struct.pack(">I", 2),  # end cpus
+        struct.pack(">I", 2),  # end /
+        struct.pack(">I", 9),  # FDT_END
+    ]
+    struct_block = b"".join(struct_parts)
+    off_mem_rsvmap = 40
+    mem_rsvmap = b"\x00" * 16
+    off_struct = off_mem_rsvmap + len(mem_rsvmap)
+    off_strings = off_struct + len(struct_block)
+    totalsize = off_strings + len(strings)
+    header = struct.pack(
+        ">10I",
+        0xD00DFEED,
+        totalsize,
+        off_struct,
+        off_strings,
+        off_mem_rsvmap,
+        17,
+        16,
+        0,
+        len(strings),
+        len(struct_block),
+    )
+    return header + mem_rsvmap + struct_block + strings
+
+
+def test_isa_probe_accepts_vlen_128_256_512_and_resolves_from_dtb_or_rtl(
+    tmp_path: Path,
+) -> None:
+    """Stage accepts 128/256/512-bit widths and derives expected vlenb from DTB or RTL."""
+    for vlenb in (16, 32, 64):
+        regset_bytes = 40 + 32 * vlenb
+        lines = (
+            ISA_PRESENT_LINES.replace("vlenb=32", f"vlenb={vlenb}")
+            .replace("active_bytes=1064", f"active_bytes={regset_bytes}")
+            .replace("note_bytes=1064", f"note_bytes={regset_bytes}")
+        )
+        transcript = (
+            MEMERR_TRANSCRIPT
+            + hw.isa_probe_command(ISA_RUN_ID, "present", vlenb)
+            + "\r\r\n"
+            + lines
+            + NET_ECHO
+            + NET_START
+            + NET_PASS
+            + NET_ALIVE
+        )
+        # Auto mode (isa_vlenb=None) accepts any supported width with consistent byte counts.
+        auto_stage = hw.linux_stage(ROOT, isa_expect="present", isa_run_id=ISA_RUN_ID)
+        assert auto_stage.success_done(transcript)
+        assert not auto_stage.failure_done(transcript)
+        assert auto_stage.judge(transcript)[0]
+        # Explicit expected vlenb accepts matching width and rejects mismatched width.
+        exact_stage = hw.linux_stage(
+            ROOT, isa_expect="present", isa_run_id=ISA_RUN_ID, isa_vlenb=vlenb
+        )
+        assert exact_stage.judge(transcript)[0]
+        wrong_vlenb = 64 if vlenb != 64 else 32
+        wrong_stage = hw.linux_stage(
+            ROOT, isa_expect="present", isa_run_id=ISA_RUN_ID, isa_vlenb=wrong_vlenb
+        )
+        assert wrong_stage.failure_done(transcript)
+        assert f"discover vlenb='{vlenb}'" in wrong_stage.judge(transcript)[1]
+
+    # resolve_isa_vlenb prefers DTB zvl<N>b over RTL, then board top, then hw/rtl/frost.sv.
+    fake_repo = tmp_path / "repo"
+    (fake_repo / "boards/x3").mkdir(parents=True)
+    (fake_repo / "hw/rtl").mkdir(parents=True)
+    (fake_repo / "boards/x3/x3_frost.sv").write_text("  .VLEN(512),\n")
+    (fake_repo / "hw/rtl/frost.sv").write_text("parameter int unsigned VLEN = 256,\n")
+    assert hw.resolve_isa_vlenb(fake_repo, "x3", None) == 64
+
+    dtb_128 = tmp_path / "v128.dtb"
+    dtb_128.write_bytes(
+        _build_fdt_with_cpu_isa(
+            "rv64imafdcv_zvl128b", ("i", "m", "a", "f", "d", "c", "v", "zvl128b")
+        )
+    )
+    assert hw.resolve_isa_vlenb(fake_repo, "x3", dtb_128) == 16
+
+    # DTB without zvl*b falls back to the board RTL parameter.
+    dtb_no_zvl = tmp_path / "nozvl.dtb"
+    dtb_no_zvl.write_bytes(
+        _build_fdt_with_cpu_isa("rv64imafdcv_zfa", ("i", "m", "a", "f", "d", "c", "v"))
+    )
+    assert hw.resolve_isa_vlenb(fake_repo, "x3", dtb_no_zvl) == 64
+
+    # Repository's real X3 top resolves to 32 (VLEN=256).
+    assert hw.resolve_isa_vlenb(REPO_ROOT, "x3", None) == 32
+
+
+def test_preflight_scalar_binary_scan_fails_closed_and_scopes_leaf_exception(
+    prepared: tuple[Any, dict[str, str]],
+) -> None:
+    """Binary scan fails closed on tool errors and limits probe encodings to leaf symbols."""
+    root, environment = prepared
+    prefix = environment[hw.CROSS_COMPILE_ENV]
+    readelf = Path(prefix + "readelf")
+    objdump = Path(prefix + "objdump")
+    clean_readelf = readelf.read_text()
+    clean_objdump = objdump.read_text()
+
+    # 1. Missing readelf fails closed instead of passing silently.
+    readelf.unlink()
+    with pytest.raises(hw.LinuxEnvironmentError, match="readelf is not on PATH"):
+        hw.linux_root_preflight(root, REPO_ROOT, environment)
+
+    # 2. Nonzero readelf exit fails closed.
+    readelf.write_text("#!/bin/sh\necho bad >&2\nexit 1\n")
+    readelf.chmod(0o755)
+    with pytest.raises(hw.LinuxEnvironmentError, match="readelf -A failed"):
+        hw.linux_root_preflight(root, REPO_ROOT, environment)
+
+    # 3. Missing Tag_RISCV_arch fails closed.
+    readelf.write_text("#!/bin/sh\necho 'Attribute Section: riscv'\n")
+    with pytest.raises(hw.LinuxEnvironmentError, match="no Tag_RISCV_arch"):
+        hw.linux_root_preflight(root, REPO_ROOT, environment)
+
+    # 4. Static C library carrying V or Zve* extension tag is rejected.
+    readelf.write_text(
+        "#!/bin/sh\necho '  Tag_RISCV_arch: \"rv64i2p1_m2p0_a2p1_f2p2_d2p2_c2p0_v1p0\"'\n"
+    )
+    with pytest.raises(hw.LinuxEnvironmentError, match="Tag_RISCV_arch"):
+        hw.linux_root_preflight(root, REPO_ROOT, environment)
+    readelf.write_text(clean_readelf)
+
+    # 5. Missing or failing objdump fails closed.
+    objdump.unlink()
+    with pytest.raises(hw.LinuxEnvironmentError, match="objdump is not on PATH"):
+        hw.linux_root_preflight(root, REPO_ROOT, environment)
+    objdump.write_text("#!/bin/sh\nexit 1\n")
+    objdump.chmod(0o755)
+    with pytest.raises(hw.LinuxEnvironmentError, match="objdump -d failed"):
+        hw.linux_root_preflight(root, REPO_ROOT, environment)
+
+    # 6. Explicit leaf-routine exception allows isa_probe_* ONLY inside frost_isa_probe.
+    objdump.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do last="$a"; done\n'
+        'case "${last##*/}" in\n'
+        "  frost_isa_probe)\n"
+        "    printf '0000000000010000 <isa_probe_first_use_vsetvli>:\\n"
+        "   10000:\\t00807557\\tvsetvli\\ta0,zero,e16,m1,tu,mu\\n'\n"
+        "    ;;\n"
+        "  *)\n"
+        "    printf '0000000000010000 <main>:\\n   10000:\\t00000013\\taddi\\tzero,zero,0\\n'\n"
+        "    ;;\n"
+        "esac\n"
+    )
+    assert hw.linux_root_preflight(root, REPO_ROOT, environment)
+
+    # 7. Extended opcode outside isa_probe_* inside frost_isa_probe is rejected.
+    objdump.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do last="$a"; done\n'
+        'case "${last##*/}" in\n'
+        "  frost_isa_probe)\n"
+        "    printf '0000000000010000 <__libc_start_main>:\\n"
+        "   10000:\\t00807557\\tvsetvli\\ta0,zero,e16,m1,tu,mu\\n'\n"
+        "    ;;\n"
+        "  *)\n"
+        "    printf '0000000000010000 <main>:\\n   10000:\\t00000013\\taddi\\tzero,zero,0\\n'\n"
+        "    ;;\n"
+        "esac\n"
+    )
+    with pytest.raises(hw.LinuxEnvironmentError, match="__libc_start_main"):
+        hw.linux_root_preflight(root, REPO_ROOT, environment)
+
+    # 8. Other root programs get NO leaf exception even for a matching symbol prefix.
+    objdump.write_text(
+        "#!/bin/sh\n"
+        "printf '0000000000010000 <isa_probe_fake>:\\n"
+        "   10000:\\t00807557\\tvsetvli\\ta0,zero,e16,m1,tu,mu\\n'\n"
+    )
+    with pytest.raises(hw.LinuxEnvironmentError, match="frost_stress"):
+        hw.linux_root_preflight(root, REPO_ROOT, environment)
+    objdump.write_text(clean_objdump)
+    assert hw.linux_root_preflight(root, REPO_ROOT, environment)
+
+
+def test_frost_isa_probe_host_selftest_and_sources(tmp_path: Path) -> None:
+    """Build frost_isa_probe's parser self-test natively and run it."""
+    assert ISA_PROBE_SOURCE.is_file() and ISA_PROBE_ASM.is_file()
+    compiler = next(
+        (hw.shutil.which(name) for name in ("cc", "gcc") if hw.shutil.which(name)), None
+    )
+    if compiler is None:
+        pytest.skip("no native C compiler")
+    binary = tmp_path / "frost_isa_probe_selftest"
+    built = hw.subprocess.run(
+        [
+            compiler,
+            "-DFROST_ISA_PROBE_HOST_SELFTEST",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-o",
+            str(binary),
+            str(ISA_PROBE_SOURCE),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert built.returncode == 0, built.stderr
+    done = hw.subprocess.run(
+        [str(binary), "--selftest"], capture_output=True, text=True, timeout=30
+    )
+    assert done.returncode == 0, done.stdout
+    assert done.stdout.endswith("FROST_ISA_SELFTEST_PASS\n")
+    for case in (
+        "sha256",
+        "isa-parser",
+        "dt-parser",
+        "core-valid",
+        "core-scalar",
+        "core-owner",
+        "core-truncated",
+        "cpuinfo-zero",
+        "first-use-budget",
+        "progress-format",
+    ):
+        assert f"FROST_ISA_SELFTEST {case}: pass\n" in done.stdout
+
+    # Untraced present-mode cases must run before tracefs-based first-use in run_suite.
+    src = ISA_PROBE_SOURCE.read_text(encoding="utf-8")
+    suite_body = src[src.index("if (disc.mode == OBS_PRESENT) {") :]
+    suite_body = suite_body[: suite_body.index("/* Stock / absent matrix")]
+    first_use_pos = suite_body.index("run_first_use(")
+    for fn in (
+        "run_switch(",
+        "run_signal(",
+        "run_ptrace(",
+        "run_core(",
+        "run_fork_case(",
+        "run_exec_case(",
+    ):
+        assert suite_body.index(fn) < first_use_pos, fn
+
+
+def test_linux_stage_replays_first_use_phase1_timeout_capture() -> None:
+    """Replay a captured present-mode first-use phase1_timeout console log.
+
+    Set ``FROST_TEST_LINUX_CAPTURE_FAIL`` to a captured console file to replay
+    it directly through the integrated Linux stage judge.
+    """
+    capture_env = os.environ.get("FROST_TEST_LINUX_CAPTURE_FAIL", "").strip()
+    if capture_env:
+        transcript = Path(capture_env).read_bytes().decode("utf-8", errors="replace")
+        clean = hw.console_text(transcript)
+        match = hw.LINUX_ISA_CASE_RE.search(clean)
+        assert match is not None, "capture carries no FROST_ISA_PROBE case line"
+        run_id = match.group(1)
+    else:
+        raw = board_console()
+        probe_start = raw.index(
+            f"\x1b[?2004h{PROMPT}timeout -k 5 45 /usr/local/bin/frost_isa_probe suite "
+        )
+        run_id = "dd8b2724"
+        captured_fail_block = (
+            f"\x1b[?2004h{PROMPT}timeout -k 5 240 /usr/local/bin/frost_isa_probe suite "
+            f"--vlenb 32 - \r-run-id {run_id}; printf 'FROST_ISA_PROBE_EXIT id=%s rc=%s\\n' "
+            f'{run_id} "$?"\r\n'
+            f"\x1b[?2004l\rFROST_ISA_PROBE_INFO id={run_id} case=discover "
+            "of=/sys/firmware/devicetree/base/cpus/cpu@0 dt_ext_ok=1 dt_ext_v=1 "
+            "dt_ext_zve=0 dt_ext_cnt=51 dt_isa_ok=1 dt_isa_v=1 dt_isa_zve=0 "
+            "ci_ok=1 ci_isa_v=1 ci_hart_v=1\r\n"
+            f"FROST_ISA_PROBE_INFO id={run_id} case=discover hwprobe_all_rc=0(e=0) "
+            "base=0x1 ext0=0x1bff9300103ff hwprobe_hart_rc=0(e=0) hbase=0x1 "
+            "hext0=0x1bff9300103ff hwcap=0x20112d prctl=2(e=0) default_allow=1\r\n"
+            f"FROST_ISA_PROBE id={run_id} case=discover verdict=PASS "
+            "mode=present vlenb=32 smoke=1\r\n"
+            f"FROST_ISA_PROBE id={run_id} case=first-use verdict=FAIL "
+            "reason=phase1_timeout\r\n"
+        )
+        transcript = raw[:probe_start] + captured_fail_block
+
+    linux = hw.linux_stage(
+        BOARD_ROOT,
+        isa_expect="present",
+        isa_run_id=run_id,
+        isa_vlenb=32,
+    )
+    assert linux.failure_done(transcript)
+    assert not linux.success_done(transcript)
+    assert linux.failure_post_wait_s is not None
+    assert linux.failure_post_wait_s(transcript) == hw.LINUX_ISA_FAILURE_WAIT_S
+    ok, note = linux.judge(transcript)
+    assert not ok
+    assert "frost_isa_probe first-use: FAIL (phase1_timeout)" in note
+
+
+def test_linux_stage_passes_with_synthetic_slow_first_use_setup() -> None:
+    """Untraced cases precede first-use and a slow tracefs setup still passes."""
+    assert hw.LINUX_ISA_PROBE_CASES["present"] == (
+        "discover",
+        "switch",
+        "signal",
+        "ptrace",
+        "core",
+        "fork",
+        "exec",
+        "first-use",
+    )
+    assert hw.LINUX_ISA_PROBE_TIMEOUT_S["present"] >= 420
+
+    progress_and_verdicts = (
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=discover step=start t=0.000s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=discover step=surfaces_read t=0.120s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=discover step=smoke_start t=0.125s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=discover step=smoke_done t=0.290s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=discover step=done t=0.291s\r\r\n"
+        f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=discover verdict=PASS mode=present vlenb=32 smoke=1\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=switch step=start t=0.295s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=switch step=workers_spawned t=0.330s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=switch step=done t=2.140s\r\r\n"
+        f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=switch verdict=PASS rounds_a=64 rounds_b=64 cpu=0\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=signal step=start t=2.145s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=signal step=normal_start t=2.146s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=signal step=normal_done t=2.910s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=signal step=alt_start t=2.911s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=signal step=alt_done t=3.700s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=signal step=done t=3.701s\r\r\n"
+        f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=signal verdict=PASS normal_rounds=8 alt_rounds=8 clobbers=16\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=ptrace step=start t=3.705s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=ptrace step=stop1_done t=3.920s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=ptrace step=stop2_done t=4.180s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=ptrace step=stop3_done t=4.390s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=ptrace step=done t=4.410s\r\r\n"
+        f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=ptrace verdict=PASS inactive_einval=1 active_bytes=1064 setregset_ok=1 resumed_ok=1\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=core step=start t=4.415s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=core step=scalar_trial t=4.440s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=core step=live_trial t=5.120s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=core step=restore t=5.890s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=core step=done t=5.900s\r\r\n"
+        f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=core verdict=PASS scalar_ok=1 note_bytes=1064 restored=1\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=fork step=start t=5.905s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=fork step=launcher_spawned t=5.940s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=fork step=child_exited t=6.420s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=fork step=done t=6.480s\r\r\n"
+        f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=fork verdict=PASS ctrl_ok=1 inactive_einval=1 init_zero=1 isolated=1\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=exec step=start t=6.485s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=exec step=exec_on_start t=6.490s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=exec step=exec_off_start t=7.110s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=exec step=done t=7.650s\r\r\n"
+        f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=exec verdict=PASS on_ok=1 off_sigill=1\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=start t=7.655s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=preflight_done t=8.920s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=spawn_child t=8.921s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=gate_ready t=9.230s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=mkdir t=9.231s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=filter t=14.530s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=pid t=64.180s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=tracer t=64.420s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=options t=64.700s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=enable t=64.750s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=setup_done t=65.418s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=phase1_release t=65.419s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=phase1_done t=65.422s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=phase2_release t=65.423s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=phase2_done t=65.430s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=cleanup t=65.431s\r\r\n"
+        f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use step=done t=82.100s\r\r\n"
+        f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=first-use verdict=PASS traps_before=0 traps_phase1=1 traps_phase2=1 missed=0 init_zero=1\r\r\n"
+        f"{hw.LINUX_ISA_PROBE_SUMMARY_TOKEN} id={ISA_RUN_ID} mode=present passed=8 failed=0 verdict=PASS\r\r\n"
+        f"{hw.LINUX_ISA_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=0\r\r\n{PROMPT}"
+    )
+    transcript = (
+        MEMERR_TRANSCRIPT
+        + hw.isa_probe_command(ISA_RUN_ID, "present", 32)
+        + "\r\r\n"
+        + progress_and_verdicts
+        + NET_ECHO
+        + NET_START
+        + NET_PASS
+        + NET_ALIVE
+    )
+    linux = hw.linux_stage(
+        ROOT, isa_expect="present", isa_run_id=ISA_RUN_ID, isa_vlenb=32
+    )
+    assert linux.success_done(transcript)
+    assert not linux.failure_done(transcript)
+    ok, note = linux.judge(transcript)
+    assert ok, note
+    assert "isa probe present (8/8 cases)" in note
+
+
+def test_run_uart_stage_reads_console_for_60s_after_isa_case_fail_and_records_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """After an ISA probe case FAIL line, read and record 60 s of trailing console output."""
+    linux = hw.linux_stage(
+        ROOT, isa_expect="present", isa_run_id=ISA_RUN_ID, isa_vlenb=32
+    )
+    assert linux.failure_post_wait_s is not None
+    assert linux.failure_post_wait_s(MEMERR_TRANSCRIPT + hw.LINUX_TOKEN_FAIL) == 0.0
+
+    loader_fd, loader_write = os.pipe()
+    serial_fd, serial_write = os.pipe()
+    now = 0.0
+    failure_time: float | None = None
+    typed: list[str] = []
+    printed: list[str] = []
+    # Each entry is (deliver_at_s, payload_bytes).
+    scheduled: list[tuple[float, bytes]] = []
+    loader_chunks: list[bytes] = [(hw.LOAD_COMPLETE_SENTINEL + "\n").encode()]
+
+    class CaptureStdout:
+        def write(self, text: str) -> int:
+            printed.append(text)
+            return len(text)
+
+        def flush(self) -> None:
+            pass
+
+    class FinishedLoader:
+        returncode = 0
+
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            self.stdout = SimpleNamespace(fileno=lambda: loader_fd)
+
+        def poll(self) -> int:
+            return 0
+
+    pre_fail_prefix = (
+        MEMERR_TRANSCRIPT
+        + hw.isa_probe_command(ISA_RUN_ID, "present", 32)
+        + "\r\r\n"
+        + f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=discover verdict=PASS mode=present vlenb=32 smoke=1\r\r\n"
+        + f"{hw.LINUX_ISA_PROBE_TOKEN} id={ISA_RUN_ID} case=first-use verdict=FAIL reason=phase1_timeout\r\r\n"
+    )
+    # Deliver after the loader sentinel resets serial_buf at t=0.0.
+    scheduled.append((0.1, pre_fail_prefix.encode()))
+
+    def fake_select(
+        readable: list[int], _write: list[int], _error: list[int], timeout: float
+    ) -> tuple[list[int], list[int], list[int]]:
+        nonlocal now, failure_time
+        ready: list[int] = []
+        if loader_fd in readable and loader_chunks:
+            ready.append(loader_fd)
+        if serial_fd in readable and any(ts <= now for ts, _ in scheduled):
+            ready.append(serial_fd)
+        if ready:
+            return ready, [], []
+        now += timeout
+        return [], [], []
+
+    def fake_read(fd: int) -> bytes:
+        nonlocal failure_time
+        if fd == loader_fd:
+            return loader_chunks.pop(0) if loader_chunks else b""
+        due = [item for item in scheduled if item[0] <= now]
+        if not due:
+            return b""
+        scheduled[:] = [item for item in scheduled if item[0] > now]
+        payload = b"".join(chunk for _, chunk in due)
+        if failure_time is None and b"case=first-use verdict=FAIL" in payload:
+            failure_time = now
+            scheduled.extend(
+                [
+                    (
+                        failure_time + 10.0,
+                        (
+                            f"FROST_ISA_PROBE_INFO id={ISA_RUN_ID} case=first-use "
+                            "step=cleanup t=80.000s\r\n"
+                            f"{hw.LINUX_ISA_PROBE_SUMMARY_TOKEN} id={ISA_RUN_ID} "
+                            "mode=present passed=1 failed=1 verdict=FAIL\r\n"
+                            f"{hw.LINUX_ISA_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=1\r\n"
+                        ).encode(),
+                    ),
+                    (
+                        failure_time + 45.0,
+                        b"[  780.000000] Oops: delayed post-failure trace\r\n"
+                        + PROMPT.encode(),
+                    ),
+                    (
+                        failure_time + 65.0,
+                        b"AFTER_60S_WINDOW_NOT_READ\r\n",
+                    ),
+                ]
+            )
+        return payload
+
+    def fake_send(_fd: int, text: str) -> None:
+        typed.append(text)
+
+    monkeypatch.setattr(hw, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(hw, "select", SimpleNamespace(select=fake_select))
+    monkeypatch.setattr(hw, "sys", SimpleNamespace(stdout=CaptureStdout()))
+    monkeypatch.setattr(hw, "drain", lambda _fd: None)
+    monkeypatch.setattr(hw, "read_available", fake_read)
+    monkeypatch.setattr(hw.subprocess, "Popen", FinishedLoader)
+    monkeypatch.setattr(hw, "send_uart_probe", fake_send)
+
+    try:
+        result = hw.run_uart_stage(
+            tmp_path, serial_fd, "x3", linux, 300.0, [], "fixture-target"
+        )
+    finally:
+        for fd in (loader_fd, loader_write, serial_fd, serial_write):
+            os.close(fd)
+
+    assert failure_time is not None
+    assert result["status"] == "FAIL"
+    assert hw.LINUX_ISA_FAILURE_WAIT_S == 60.0
+    assert failure_time + 60.0 <= result["elapsed"] < failure_time + 61.0
+    assert "frost_isa_probe first-use: FAIL (phase1_timeout)" in result["note"]
+    assert "Oops" in result["note"]
+    post = result["post_failure_output"]
+    assert f"{hw.LINUX_ISA_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=1" in post
+    assert "Oops: delayed post-failure trace" in post
+    assert "AFTER_60S_WINDOW_NOT_READ" not in post
+    combined_stdout = "".join(printed)
+    driver_stdout = capsys.readouterr().out
+    assert "reading console for 60s before ending stage" in driver_stdout
+    assert "Oops: delayed post-failure trace" in combined_stdout
+    assert "AFTER_60S_WINDOW_NOT_READ" not in combined_stdout
+    assert not any("frost_nettest" in cmd for cmd in typed)

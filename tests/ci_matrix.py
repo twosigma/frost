@@ -20,6 +20,8 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
+from ci_verilator import job_matrix
+
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
 COVERAGE_AXES = {
     "test-verilator": "mem_config",
@@ -66,14 +68,23 @@ def expand_matrix(matrix: dict[str, Any]) -> list[dict[str, Any]]:
     return expanded
 
 
-def coverage_artifacts(jobs: dict[str, Any]) -> dict[str, str]:
+def coverage_artifacts(
+    jobs: dict[str, Any], *, toggle_coverage: bool = False
+) -> dict[str, str]:
     """Return each expected artifact name and a description of its matrix entry."""
     artifacts = {}
     for name, axis in COVERAGE_AXES.items():
+        if toggle_coverage and name != "test-verilator":
+            continue
         job = jobs[name]
         upload = next(step for step in job["steps"] if step.get("name") == UPLOAD_STEP)
         template = upload["with"]["name"]
-        for index, combo in enumerate(expand_matrix(job["strategy"]["matrix"])):
+        matrix = (
+            job_matrix(coverage_only=toggle_coverage)
+            if name == "test-verilator"
+            else job["strategy"]["matrix"]
+        )
+        for index, combo in enumerate(expand_matrix(matrix)):
             if axis is not None:
                 shard = combo["shard"]
                 label = f"{name} / {shard['name']} / {combo[axis]}"

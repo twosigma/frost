@@ -4056,11 +4056,13 @@ module reorder_buffer #(
   //    behind an instruction that traps or carries a fetch fault, and those
   //    allocations need not follow it: a slot-1 allocation away from the
   //    predicted next PC is allowed when the allocation before it is a valid
-  //    entry that has not completed without an exception, and that entry is
-  //    then the barrier. No completion without an exception reaches the
-  //    barrier while it is valid (p_rob_barrier_never_completes), and every
-  //    allocation until the next flush is free. The proof checks that no
-  //    entry allocated behind a barrier retires (p_retire_successor_barrier);
+  //    entry that has not completed without an exception, and a slot-2
+  //    allocation away from slot 1's when slot 1 does not allocate done
+  //    without a fault. That entry is then the barrier. No completion without
+  //    an exception reaches the barrier while it is valid
+  //    (p_rob_barrier_never_completes), and every allocation is free until a
+  //    flush removes the barrier. The proof checks that no entry allocated
+  //    behind a barrier retires (p_retire_successor_barrier);
   //  - each link address is the fall-through PC (the slot-1 and slot-2
   //    link_addr checks in this module);
   //  - a branch update reaches only a conditional branch or JALR, once, and
@@ -4108,7 +4110,7 @@ module reorder_buffer #(
   logic [ReorderBufferTagWidth-1:0] f_rs_last_tag_q, f_rs_barrier_tag_q;
   logic [ReorderBufferDepth-1:0] f_rs_behind_q;
   logic [ReorderBufferDepth-1:0] f_rs_normal_done;
-  logic f_rs_off_chain, f_rs_free;
+  logic f_rs_off_chain, f_rs_free, f_rs_pair_off;
   always_comb begin
     for (int i = 0; i < ReorderBufferDepth; i++) begin
       f_rs_normal_done[i] =
@@ -4124,6 +4126,9 @@ module reorder_buffer #(
       (i_alloc_req.pc != f_rs_chain_pc_q);
   // Allocations this cycle are free of the chain.
   assign f_rs_free = f_rs_broken_q || f_rs_off_chain;
+  // Slot 2 away from slot 1's predicted next PC: slot 1 is then the barrier.
+  assign f_rs_pair_off = alloc_en_2 && !f_rs_free &&
+      (i_alloc_req_2.pc != f_rs_predicted_next(i_alloc_req));
   logic [XLEN-1:0] f_rs_update_next;
   assign f_rs_update_next = i_branch_update.taken ? i_branch_update.target :
       f_rs_next_q[i_branch_update.tag];
@@ -4140,7 +4145,7 @@ module reorder_buffer #(
     if (alloc_en_2) begin
       assume (i_alloc_req_2.link_addr ==
               f_rs_fall_through(i_alloc_req_2.pc, i_alloc_req_2.is_compressed));
-      if (!f_rs_free) assume (i_alloc_req_2.pc == f_rs_predicted_next(i_alloc_req));
+      if (f_rs_pair_off) assume (!(alloc_done_value && !alloc_legality_fault_data));
     end
     if (f_rs_broken_q && rob_valid[f_rs_barrier_tag_q] && !i_flush_all)
       assume (!f_rs_normal_done[f_rs_barrier_tag_q]);
@@ -4179,6 +4184,8 @@ module reorder_buffer #(
       f_rs_chain_q <= 1'b1;
       f_rs_chain_pc_q <= f_rs_predicted_next(i_alloc_req);
     end
+    // Every partial flush here is a commit-time recovery, which empties the
+    // ROB, so every flush removes the barrier.
     if (!i_rst_n || i_flush_all || i_flush_en) begin
       f_rs_last_valid_q <= 1'b0;
       f_rs_broken_q <= 1'b0;
@@ -4186,6 +4193,9 @@ module reorder_buffer #(
       if (f_rs_off_chain) begin
         f_rs_broken_q <= 1'b1;
         f_rs_barrier_tag_q <= f_rs_last_tag_q;
+      end else if (f_rs_pair_off) begin
+        f_rs_broken_q <= 1'b1;
+        f_rs_barrier_tag_q <= tail_idx;
       end
       if (alloc_en) begin
         f_rs_last_valid_q <= 1'b1;
@@ -4197,7 +4207,7 @@ module reorder_buffer #(
       end
     end
     if (alloc_en) f_rs_behind_q[tail_idx] <= f_rs_free;
-    if (alloc_en_2) f_rs_behind_q[tail_idx_2] <= f_rs_free;
+    if (alloc_en_2) f_rs_behind_q[tail_idx_2] <= f_rs_free || f_rs_pair_off;
     if (!i_rst_n) f_rs_recovery_q <= 1'b0;
     else f_rs_recovery_q <= o_commit_misprediction_raw;
     f_rs_recovery_tag_q <= o_commit_comb.tag;
@@ -4251,18 +4261,28 @@ module reorder_buffer #(
   // Covers: a checked two-wide retirement behind a taken branch, a checked
   // commit after commit-time recovery, and one after an exception at the
   // head was flushed (a trap in the core), and a barrier: an allocation off
-  // the chain behind an excepting entry, flushed by its trap.
+  // the chain behind an excepting entry, flushed by its trap. A slot-1
+  // barrier, with slot 2 away from its predicted next PC, flushed by its own
+  // trap at the head, is followed by a checked commit.
   logic f_rs_recovered_q, f_rs_trapped_q, f_rs_barrier_flushed_q;
+  logic f_rs_pair_barrier_q, f_rs_pair_flushed_q;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       f_rs_recovered_q <= 1'b0;
       f_rs_trapped_q   <= 1'b0;
       f_rs_barrier_flushed_q <= 1'b0;
+      f_rs_pair_barrier_q <= 1'b0;
+      f_rs_pair_flushed_q <= 1'b0;
     end else begin
       if (f_rs_broken_q && head_valid && head_exception && i_flush_all)
         f_rs_barrier_flushed_q <= 1'b1;
       if (i_flush_en) f_rs_recovered_q <= 1'b1;
       if (head_valid && head_exception && i_flush_all) f_rs_trapped_q <= 1'b1;
+      if (f_rs_pair_off) f_rs_pair_barrier_q <= 1'b1;
+      else if (i_flush_all || i_flush_en) f_rs_pair_barrier_q <= 1'b0;
+      if (f_rs_pair_barrier_q && f_rs_broken_q && head_valid && head_exception &&
+          (head_idx == f_rs_barrier_tag_q) && i_flush_all)
+        f_rs_pair_flushed_q <= 1'b1;
     end
   end
   always_comb begin
@@ -4275,6 +4295,8 @@ module reorder_buffer #(
       p_retire_successor_cover_trap :
       cover (o_commit_comb.valid && f_rs_expect_q && f_rs_trapped_q);
       p_retire_successor_cover_barrier : cover (o_commit_comb.valid && f_rs_barrier_flushed_q);
+      p_retire_successor_cover_slot2_barrier :
+      cover (o_commit_comb.valid && f_rs_expect_q && f_rs_pair_flushed_q);
     end
   end
 `endif

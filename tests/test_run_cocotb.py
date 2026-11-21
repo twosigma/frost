@@ -6408,7 +6408,8 @@ TEST_REGISTRY["memerr_test_seeded"] = replace(
 TEST_REGISTRY["fatal_stop_irq"] = replace(
     TEST_REGISTRY["memerr_test"],
     description=(
-        "Fatal writeback stop and machine interrupts with the misaligned engine omitted"
+        "Fatal writeback stop, machine interrupts and a halt request with the misaligned "
+        "engine omitted"
     ),
     verilator_extra_args=(
         "../verif/cocotb_tests/fatal_stop_irq.vlt",
@@ -6426,9 +6427,36 @@ TEST_REGISTRY["fatal_stop_irq"] = replace(
 TEST_REGISTRY["fatal_stop_irq_with_engine"] = replace(
     TEST_REGISTRY["fatal_stop_irq"],
     description=(
-        "Fatal writeback stop and machine interrupts with the misaligned engine built"
+        "Fatal writeback stop, machine interrupts and a halt request with the misaligned "
+        "engine built"
     ),
     verilator_extra_args=("../verif/cocotb_tests/fatal_stop_irq.vlt",),
+)
+
+TEST_REGISTRY["debug_fatal_stop"] = replace(
+    TEST_REGISTRY["memerr_test"],
+    python_test_module="cocotb_tests.debug.test_debug_fatal_stop",
+    description=(
+        "Debugger view of a fatal writeback stop with the misaligned engine "
+        "omitted: unavailable until ndmreset, no halt, cmderr 4"
+    ),
+    verilator_extra_args=(
+        "../verif/cocotb_tests/debug_fatal_stop.vlt",
+        "-GMISALIGNED_HW=0",
+    ),
+    extra_env=(
+        *TEST_REGISTRY["memerr_test"].extra_env,
+        ("FROST_DDR_MODEL_SEED", ""),
+    ),
+)
+
+TEST_REGISTRY["debug_fatal_stop_with_engine"] = replace(
+    TEST_REGISTRY["debug_fatal_stop"],
+    description=(
+        "Debugger view of a fatal writeback stop with the misaligned engine "
+        "built: unavailable until ndmreset, no halt, cmderr 4"
+    ),
+    verilator_extra_args=("../verif/cocotb_tests/debug_fatal_stop.vlt",),
 )
 
 # The vector bring-up programs (sw/apps/vec_*) on a core built with the vector
