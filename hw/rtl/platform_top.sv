@@ -831,6 +831,7 @@ module platform_top #(
       .i_dbg_parked(dbg_parked),
       .i_dbg_cmd_err(dbg_cmd_err),
       .i_dbg_go_taken(dbg_go_taken),
+      .i_dbg_fatal_stop(fatal_error),
       .i_commit_valid(commit_valid),
       .i_debug_irq_status(debug_irq_status),
       .i_debug_commit_pc(debug_commit_pc),

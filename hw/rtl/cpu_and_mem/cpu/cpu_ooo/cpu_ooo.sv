@@ -5898,8 +5898,11 @@ module cpu_ooo #(
       .i_wfi_start(1'b0),  // WFI handled by ROB serialization
       // Debug Mode
       .i_debug_mode(csr_debug_mode),
-      .i_dbg_haltreq(i_dbg_haltreq),
-      .i_dbg_step_req(step_done_q),
+      // A fatal stop refuses Debug Mode entry in every configuration: the
+      // engine's terminal state already shields it when the engine is built.
+      // The debug module reports the hart as unavailable meanwhile.
+      .i_dbg_haltreq((MISALIGNED_HW || !i_fatal_stop) ? i_dbg_haltreq : 1'b0),
+      .i_dbg_step_req((MISALIGNED_HW || !i_fatal_stop) ? step_done_q : 1'b0),
       .i_dbg_step_armed(step_armed_q),
       .i_dbg_go(i_dbg_go),
       .i_dbg_go_target(XLEN'(i_dbg_go_addr)),

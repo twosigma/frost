@@ -719,6 +719,11 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
 
 ## Possible future work
 
+- Inspect a hart after a fatal memory-error stop. The stop holds commit and
+  the front end, and the debug module reports the hart as unavailable, so a
+  debugger can neither halt it nor read its registers. Inspection needs the
+  debug path exempt from the commit hold, the front-end stall and the
+  blocking of memory requests, while the program under debug stays stopped.
 - Vector loads and stores to uncached memory, such as the low BRAM and devices.
 - A check that corrects a fast-BTB taken prediction on an instruction that
   is not control flow. The BTB is tagged by fetch PC alone and is cleared

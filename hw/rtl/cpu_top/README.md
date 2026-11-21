@@ -233,7 +233,7 @@ indirect register map and simultaneous-event rules.
 
 The Debug Module interface uses the core clock:
 
-- `i_dbg_haltreq`: halt-request level; CPU entry is precise at the architectural boundary.
+- `i_dbg_haltreq`: halt-request level; CPU entry is precise at the architectural boundary. A fatal stop ignores it until reset.
 - `i_dbg_go` and `i_dbg_go_addr`: hold the request and 32-bit execution address until `o_dbg_go_taken` pulses. Go releases a parked hart to its debug code.
 - `i_dbg_data`: stable 64-bit debug data input. `o_dbg_data_we` is a one-cycle write pulse with `o_dbg_data_wdata`.
 - `o_debug_mode` is high throughout Debug Mode; `o_dbg_parked` is high there while no debug command runs. `o_dbg_cmd_err` latches a debug-command exception until the next accepted go or CPU reset. All three clear on CPU reset. Transport and Debug Module state belong outside the tile.

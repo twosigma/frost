@@ -548,7 +548,9 @@ tables trained, which the reset does not clear. The DDR tier defaults to
 one boot because the application changes its image in DDR. Entries with
 `rerun_after_reset=False` run once in both tiers. The `fatal_stop_irq` and
 `fatal_stop_irq_with_engine` tests boot once per combination of machine
-external, timer, or software interrupt and arrival at or after the fatal stop.
+external, timer, or software interrupt and arrival at or after the fatal stop,
+and the last boot also checks that a halt request does not enter Debug Mode
+after the stop.
 
 `fencei_jit_bench` has its own regular-CI shard and runs once in the BRAM
 tier, with `SIM_FAST_MAINT=0` and an eleven-million-cycle budget (about twice
@@ -667,7 +669,22 @@ Its fetch-provider composition checks cached windows and old responses arriving
 on or after the invalidation edge.
 `debug_module` checks DMI replies and registered command/resume GO requests,
 including waiting for slice completion, stable targets, acknowledgement, reset and
-module deactivation.
+module deactivation. It also drives the hart's fatal-stop input: the unavailable
+`dmstatus` and `haltsum0` report, a refused command with `cmderr` 4, a command
+in flight ending with busy clear, a resume in flight ending without
+acknowledge, and a `resumereq` that clears the acknowledge and starts nothing.
+`debug_fatal_stop` and `debug_fatal_stop_with_engine` run `memerr_test` through
+the JTAG debug module without and with the misaligned-access engine. A hart the
+debugger halted, and a running hart, stop on a real cached writeback error. The
+debugger then sees the hart as unavailable, `haltreq` does not enter Debug Mode,
+an abstract command ends with `cmderr` 4 and busy clear, and after `ndmreset`
+the hart halts and a register access works. Clearing and setting `dmactive`
+leaves the hart unavailable, and a `resumereq` after the stop clears the
+acknowledge of an earlier resume. A last case raises the stop, through forced
+flops, as a single step completes; the hart does not enter Debug Mode and no
+further step completes. OpenOCD cannot reach the fatal
+stop in `debug_openocd_test`, whose program raises no memory error, so no
+OpenOCD run covers the unavailable state.
 `debug_test` drives the JTAG debug module directly. Its older-load-fault
 case checks both the return stack and the architectural state of a younger
 indirect call discarded by the trap. `debug_openocd_test` runs
