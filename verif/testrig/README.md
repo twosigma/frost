@@ -444,7 +444,14 @@ vector-scalar forms in binary32 and binary64. A nonzero residual checks
 single rounding for a product that rounds to one on its own. The masked case
 reads only the enabled result and checks that the disabled zero-times-infinity
 element leaves the flags clear. The unmasked case checks the canonical NaN and
-the invalid flag. [Fused multiply-add](vector_fma.S)
+the invalid flag. A halfway fused result checks rounding under RNE and RUP
+and the accrued inexact flag. [Fused multiply-add](vector_fma.S)
+
+The FP comparison trace checks vector-vector and vector-scalar predicates
+in binary32 and binary64. Mask population and first-set index expose active
+comparison bits. The trace checks the results and accrued flags for quiet
+and signaling NaNs. A masked comparison checks that a disabled NaN lane
+leaves the invalid flag clear. [FP comparisons](vector_fp_compare.S)
 
 On main pushes and pull requests labelled `run-ci`, CI runs one job at each
 of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
@@ -454,8 +461,8 @@ planned trace and instruction.
 The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer source
 widths, fractional LMUL, base FP results and fused multiply-add, and
-`vcpop.m` for state and scalar results. TestRIG must report each destination
-value mismatch.
+`vcpop.m` for state and scalar results and FP comparisons. TestRIG must report
+each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail
