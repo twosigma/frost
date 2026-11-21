@@ -218,8 +218,9 @@ FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off
 The runner needs local access to the export, write access to its
 `usr/local/bin`, and a Linux cross compiler (`FROST_LINUX_CROSS_COMPILE`
 overrides discovery). It boots the pinned Debian kernel with the matching
-initramfs from the export; `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD`
-override them, and environment variables override `site.env`. Setup problems
+initramfs from the export; `FROST_LINUX_KERNEL`, `FROST_LINUX_INITRD`, and
+`FROST_LINUX_DTB` (or `--linux-dtb`) override the packed inputs, and
+environment variables override `site.env`. Setup problems
 are reported as `ENV_FAIL` before the board is touched. The runner also builds
 the memory error driver (`linux/frost-memerr`) for the pinned kernel and
 installs it in that `usr/local/bin`. After login it loads the driver and

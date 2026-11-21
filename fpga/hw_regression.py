@@ -41,6 +41,7 @@ import fcntl
 import ipaddress
 import os
 import re
+import secrets
 import select
 import shlex
 import shutil
@@ -202,7 +203,8 @@ LINUX_NFSROOT_ENV = "FROST_LINUX_NFSROOT"
 LINUX_IP_ENV = "FROST_LINUX_IP"
 LINUX_KERNEL_ENV = "FROST_LINUX_KERNEL"
 LINUX_INITRD_ENV = "FROST_LINUX_INITRD"
-# Required site settings; kernel and initramfs paths have overridable defaults.
+LINUX_DTB_ENV = "FROST_LINUX_DTB"
+# Required site settings; kernel, initramfs, and DTB paths have defaults.
 LINUX_ROOT_ENV_VARS = (
     LINUX_NFSROOT_ENV,
     LINUX_IP_ENV,
@@ -210,6 +212,7 @@ LINUX_ROOT_ENV_VARS = (
 LINUX_DERIVED_ENV_VARS = (
     LINUX_KERNEL_ENV,
     LINUX_INITRD_ENV,
+    LINUX_DTB_ENV,
 )
 SITE_ENV_FILE = SCRIPT_DIR / "site.env"
 
@@ -463,6 +466,10 @@ LINUX_ROOT_ALIVE_RE = re.compile(
 LINUX_ROOT_SYNC_S = 120
 # A failure line arrives in pieces; read up to this long for its end.
 LINUX_FAILURE_LINE_GRACE_S = 2.0
+# After an ISA probe case FAIL line, keep reading the console for this long
+# before ending the session so cleanup, later cases, kernel diagnostics, and
+# the exit line are recorded.
+LINUX_ISA_FAILURE_WAIT_S = 60.0
 
 # Covers a warm rebuild, the JTAG load of the DDR image (Debian's kernel and
 # initramfs, several minutes), boot through the NFS mount to a login, systemd's
@@ -550,6 +557,9 @@ class UartStage:
     # After a failure ends capture, keep reading this long at most for the
     # rest of the line, so a failure reason is not cut where a read ended.
     failure_line_grace_s: float = 0.0
+    # Optional callback returning additional seconds to keep reading and
+    # recording console output after ``failure_done`` triggers (0.0 for none).
+    failure_post_wait_s: Callable[[str], float] | None = None
 
 
 def next_stimulus(
@@ -696,6 +706,7 @@ class LinuxRoot:
     interface: str
     kernel: Path
     initrd: Path
+    dtb: Path | None = None
 
 
 def nfs_interface(ip_spec: str) -> str:
@@ -715,6 +726,8 @@ def nfs_interface(ip_spec: str) -> str:
 def linux_root_from_env(
     environment: Mapping[str, str] = os.environ,
     site: Mapping[str, str] | None = None,
+    *,
+    dtb_override: Path | None = None,
 ) -> LinuxRoot:
     """Resolve the NFS root from environment settings, then site-file values.
 
@@ -762,6 +775,11 @@ def linux_root_from_env(
         if values[LINUX_INITRD_ENV]
         else export / "boot" / f"initrd.img-{KERNEL_RELEASE}"
     )
+    dtb = (
+        dtb_override.resolve()
+        if dtb_override is not None
+        else (Path(values[LINUX_DTB_ENV]).resolve() if values[LINUX_DTB_ENV] else None)
+    )
     return LinuxRoot(
         nfsroot=nfsroot,
         server=server,
@@ -770,17 +788,21 @@ def linux_root_from_env(
         interface=nfs_interface(ip_spec),
         kernel=kernel,
         initrd=initrd,
+        dtb=dtb,
     )
 
 
 def linux_loader_env(root: LinuxRoot) -> dict[str, str]:
     """Return the FROST_LINUX_* variables the loader packs this root from."""
-    return {
+    env = {
         LINUX_NFSROOT_ENV: root.nfsroot,
         LINUX_IP_ENV: root.ip,
         LINUX_KERNEL_ENV: str(root.kernel),
         LINUX_INITRD_ENV: str(root.initrd),
     }
+    if root.dtb is not None:
+        env[LINUX_DTB_ENV] = str(root.dtb)
+    return env
 
 
 # Probe NFSv3 with ONC RPC NULL, without NFS client tools, an export mount,
@@ -907,8 +929,33 @@ def probe_nfs3_tcp(
 # Build current sources statically for Debian: the Buildroot copies need musl,
 # and frost_nettest must run while its NFS root's link is down.
 ROOT_PROGRAM_SRC = Path("linux/buildroot-external/package/frost-stress/src")
-ROOT_PROGRAMS = ("frost_stress", "frost_nettest")
+ROOT_PROGRAMS = ("frost_stress", "frost_nettest", "frost_isa_probe")
+ROOT_PROGRAM_EXTRA_SOURCES: dict[str, tuple[str, ...]] = {
+    "frost_isa_probe": ("frost_isa_probe_asm.S",),
+}
+ROOT_PROGRAM_EXTRA_CFLAGS: dict[str, tuple[str, ...]] = {
+    "frost_isa_probe": (
+        "-no-pie",
+        "-march=rv64gc",
+        "-mabi=lp64d",
+        "-fno-tree-vectorize",
+        "-fno-builtin",
+    ),
+}
+# Explicit named exception for the pre-session scalar binary scan: only
+# frost_isa_probe's assembly leaf routines (prefix isa_probe_) may hold
+# non-RV64GC encodings; every other function and every other root program
+# must remain scalar RV64GC.
+ROOT_PROGRAM_EXT_LEAF_PREFIXES: dict[str, tuple[str, ...]] = {
+    "frost_isa_probe": ("isa_probe_",),
+}
 ROOT_PROGRAM_CFLAGS = ("-O2", "-static")
+# Match Tag_RISCV_arch attribute strings emitted by readelf -A and symbols/words
+# emitted by objdump -d -M no-aliases.
+_RISCV_ARCH_TAG_RE = re.compile(r'Tag_RISCV_arch:\s*"([^"]+)"')
+_ELF_FUNC_RE = re.compile(r"^[0-9a-fA-F]+ <([^>]+)>:")
+_OBJDUMP_INSN_RE = re.compile(r"^\s*([0-9a-fA-F]+):\s+([0-9a-fA-F]{4,16})\s+(\S+)")
+_EXT_CSR_NUMS = frozenset((0x008, 0x009, 0x00A, 0x00F, 0xC20, 0xC21, 0xC22))
 # Cross prefixes, in order: FROST_LINUX_CROSS_COMPILE (the Docker image sets
 # it), the one Buildroot's own build produced (this stage's loader builds it),
 # then Debian's cross gcc.
@@ -937,6 +984,104 @@ def resolve_cross_compile(
     )
 
 
+def _is_non_scalar_riscv_insn(word_hex: str, mnemonic: str) -> bool:
+    """Return True if a disassembled 32-bit instruction is a non-RV64GC vector encoding."""
+    if len(word_hex) != 8:
+        return False
+    word = int(word_hex, 16)
+    opcode = word & 0x7F
+    funct3 = (word >> 12) & 0x7
+    csr = word >> 20
+    return (
+        mnemonic.startswith("v")
+        or opcode in (0x57, 0x77)
+        or (opcode in (0x07, 0x27) and funct3 in (0, 5, 6, 7))
+        or (opcode == 0x73 and funct3 != 0 and csr in _EXT_CSR_NUMS)
+    )
+
+
+def _check_scalar_static_binary(cross: str, built: Path, name: str) -> None:
+    """Verify a static root program carries plain RV64GC attributes and opcodes.
+
+    Fail closed when ``readelf`` or ``objdump`` is missing, exits nonzero, or
+    produces no verifiable output. Only programs listed in
+    ``ROOT_PROGRAM_EXT_LEAF_PREFIXES`` may carry non-RV64GC encodings, and only
+    inside functions matching their declared leaf-routine prefixes.
+    """
+    readelf = shutil.which(cross + "readelf")
+    if readelf is None:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {cross}readelf is not on PATH; cannot verify "
+            f"Tag_RISCV_arch for {name}"
+        )
+    done = subprocess.run([readelf, "-A", str(built)], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {readelf} -A failed for {name} (exit "
+            f"{done.returncode}): {done.stderr.strip()[-500:]}"
+        )
+    match = _RISCV_ARCH_TAG_RE.search(done.stdout)
+    if match is None:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {readelf} -A reported no Tag_RISCV_arch for {name}"
+        )
+    arch = match.group(1).lower()
+    head, _, rest = arch.partition("_")
+    tokens = set(re.findall(r"[a-z]", head.removeprefix("rv64").removeprefix("rv32")))
+    for token in rest.split("_"):
+        if token:
+            tokens.add(re.sub(r"\d+p\d+$", "", token))
+    if "v" in tokens or any(tok.startswith("zve") for tok in tokens):
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {cross}gcc linked {name} against a static C library "
+            f"whose Tag_RISCV_arch ({match.group(1)}) includes extensions beyond "
+            f"RV64GC. Set {CROSS_COMPILE_ENV} to an RV64GC static toolchain (such as "
+            "linux/build-mmu/host/bin/riscv64-linux-)."
+        )
+
+    objdump = shutil.which(cross + "objdump")
+    if objdump is None:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {cross}objdump is not on PATH; cannot scan "
+            f"instructions of {name}"
+        )
+    dis = subprocess.run(
+        [objdump, "-d", "-M", "no-aliases", str(built)], capture_output=True, text=True
+    )
+    if dis.returncode != 0:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {objdump} -d failed for {name} (exit "
+            f"{dis.returncode}): {dis.stderr.strip()[-500:]}"
+        )
+    allowed_prefixes = ROOT_PROGRAM_EXT_LEAF_PREFIXES.get(name, ())
+    current_symbol = ""
+    instructions = 0
+    bad_insns: list[str] = []
+    for line in dis.stdout.splitlines():
+        fn_match = _ELF_FUNC_RE.match(line)
+        if fn_match is not None:
+            current_symbol = fn_match.group(1)
+            continue
+        insn_match = _OBJDUMP_INSN_RE.match(line)
+        if insn_match is None:
+            continue
+        instructions += 1
+        if _is_non_scalar_riscv_insn(insn_match.group(2), insn_match.group(3)):
+            if any(current_symbol.startswith(prefix) for prefix in allowed_prefixes):
+                continue
+            if len(bad_insns) < 4:
+                bad_insns.append(f"{current_symbol or '<unknown>'}: {line.strip()}")
+    if instructions == 0:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {objdump} -d disassembled no instructions for {name}"
+        )
+    if bad_insns:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {name} contains non-RV64GC encoding(s) outside "
+            f"allowed leaf routines: {'; '.join(bad_insns)}"
+        )
+
+
 def install_root_programs(repo: Path, export: Path, cross: str) -> str:
     """Build the programs statically, install them in the export, and return a note.
 
@@ -947,7 +1092,7 @@ def install_root_programs(repo: Path, export: Path, cross: str) -> str:
     if not target.is_dir():
         raise LinuxEnvironmentError(
             f"{ENV_NOT_READY}: {target} is not a directory. The stage installs "
-            f"{' and '.join(ROOT_PROGRAMS)} there, in root's "
+            f"{', '.join(ROOT_PROGRAMS)} there, in root's "
             "PATH on the root filesystem."
         )
     if not os.access(target, os.W_OK):
@@ -962,13 +1107,20 @@ def install_root_programs(repo: Path, export: Path, cross: str) -> str:
     with tempfile.TemporaryDirectory() as scratch:
         for name in ROOT_PROGRAMS:
             built = Path(scratch) / name
-            source = repo / ROOT_PROGRAM_SRC / f"{name}.c"
+            sources = [
+                str(repo / ROOT_PROGRAM_SRC / f"{name}.c"),
+                *(
+                    str(repo / ROOT_PROGRAM_SRC / extra)
+                    for extra in ROOT_PROGRAM_EXTRA_SOURCES.get(name, ())
+                ),
+            ]
             command = [
                 cross + "gcc",
                 *ROOT_PROGRAM_CFLAGS,
+                *ROOT_PROGRAM_EXTRA_CFLAGS.get(name, ()),
                 "-o",
                 str(built),
-                str(source),
+                *sources,
             ]
             done = subprocess.run(command, capture_output=True, text=True)
             if done.returncode != 0:
@@ -976,6 +1128,7 @@ def install_root_programs(repo: Path, export: Path, cross: str) -> str:
                     f"{ENV_NOT_READY}: {' '.join(command)} exited "
                     f"{done.returncode}:\n{done.stderr.strip()[-1000:]}"
                 )
+            _check_scalar_static_binary(cross, built, name)
             # A unique name beside the target: the rename is atomic, and two
             # regressions installing at once cannot write each other's file.
             handle, staged_name = tempfile.mkstemp(dir=target, prefix=f".{name}.")
@@ -1544,6 +1697,27 @@ def _linux_root_preflight(
         f"kernel {root.kernel} ({release}), initramfs {root.initrd} "
         f"({initrd_mib:.1f} MiB)"
     )
+    if root.dtb is not None:
+        if not root.dtb.is_file():
+            raise LinuxEnvironmentError(
+                f"{ENV_NOT_READY}: {LINUX_DTB_ENV}={root.dtb} is not a file on this host"
+            )
+        dtb_bytes = root.dtb.read_bytes()
+        if len(dtb_bytes) < 40:
+            raise LinuxEnvironmentError(
+                f"{ENV_NOT_READY}: {LINUX_DTB_ENV}={root.dtb} is shorter than an FDT header"
+            )
+        magic, totalsize = struct.unpack_from(">2I", dtb_bytes, 0)
+        if magic != 0xD00DFEED or totalsize != len(dtb_bytes):
+            raise LinuxEnvironmentError(
+                f"{ENV_NOT_READY}: {LINUX_DTB_ENV}={root.dtb} is not a valid compiled DTB"
+            )
+        if totalsize + 0x2000 > 0x10000:
+            raise LinuxEnvironmentError(
+                f"{ENV_NOT_READY}: {LINUX_DTB_ENV}={root.dtb} ({totalsize} B) "
+                "exceeds the boot DTB slot"
+            )
+        notes.append(f"device tree {root.dtb} ({totalsize} B)")
     notes.extend(initrd_driver_note(root.initrd))
     notes.extend(check_initrd_driver_version(root.initrd, repo))
     notes.extend(subnet_note(root))
@@ -1835,6 +2009,410 @@ def driver_version_verdict(serial_buf: str, expected: str) -> tuple[bool, str]:
     return True, f"NIC driver {expected}"
 
 
+LINUX_ISA_PROBE_PROGRAM = "frost_isa_probe"
+LINUX_ISA_PROBE_TOKEN = "FROST_ISA_PROBE"
+LINUX_ISA_PROBE_SUMMARY_TOKEN = "FROST_ISA_PROBE_SUMMARY"
+LINUX_ISA_PROBE_EXIT_TOKEN = "FROST_ISA_PROBE_EXIT"
+LINUX_ISA_EXPECT_CHOICES = ("absent", "present")
+LINUX_ISA_EXPECT_DEFAULT = "absent"
+LINUX_ISA_PROBE_MIN_VLENB = 16
+LINUX_ISA_PROBE_MAX_VLENB = 256
+LINUX_ISA_PROBE_TIMEOUT_S = {"absent": 45, "present": 420}
+LINUX_ISA_PROBE_CASES: dict[str, tuple[str, ...]] = {
+    "absent": ("discover", "illegal", "signal", "ptrace"),
+    "present": (
+        "discover",
+        "switch",
+        "signal",
+        "ptrace",
+        "core",
+        "fork",
+        "exec",
+        "first-use",
+    ),
+}
+LINUX_ISA_CASE_RE = re.compile(
+    r"^\r*"
+    + LINUX_ISA_PROBE_TOKEN
+    + r" id=([0-9a-fA-F]+) case=([a-z-]+) verdict=(PASS|FAIL)((?: [a-z0-9_]+=\S+)*)[ \t\r]*\n",
+    re.MULTILINE,
+)
+LINUX_ISA_SUMMARY_RE = re.compile(
+    r"^\r*"
+    + LINUX_ISA_PROBE_SUMMARY_TOKEN
+    + r" id=([0-9a-fA-F]+) mode=(present|absent|unknown) passed=(\d+) failed=(\d+) "
+    r"verdict=(PASS|FAIL)[ \t\r]*\n",
+    re.MULTILINE,
+)
+LINUX_ISA_EXIT_RE = re.compile(
+    r"^\r*" + LINUX_ISA_PROBE_EXIT_TOKEN + r" id=([0-9a-fA-F]+) rc=(\d+)[ \t\r]*\n",
+    re.MULTILINE,
+)
+_ZVL_EXT_RE = re.compile(r"^zvl(\d+)b$")
+
+
+def _is_supported_vlenb(vlenb: int) -> bool:
+    """Return True if ``vlenb`` is a supported power-of-two register byte width."""
+    return (
+        LINUX_ISA_PROBE_MIN_VLENB <= vlenb <= LINUX_ISA_PROBE_MAX_VLENB
+        and (vlenb & (vlenb - 1)) == 0
+    )
+
+
+def _max_zvl_vlenb_from_tokens(tokens: list[str]) -> int | None:
+    """Return the byte width of the widest ``zvl<N>b`` token, or None."""
+    widest_bits = 0
+    for token in tokens:
+        match = _ZVL_EXT_RE.match(token.strip().lower())
+        if match is None:
+            continue
+        bits = int(match.group(1))
+        if bits >= 128 and (bits & (bits - 1)) == 0 and bits > widest_bits:
+            widest_bits = bits
+    if widest_bits == 0:
+        return None
+    vlenb = widest_bits // 8
+    return vlenb if _is_supported_vlenb(vlenb) else None
+
+
+def dtb_isa_vlenb(dtb: Path) -> int | None:
+    """Return the ``vlenb`` implied by ``zvl<N>b`` in a DTB's ``/cpus/cpu@0``, or None."""
+    try:
+        blob = dtb.read_bytes()
+    except OSError:
+        return None
+    if len(blob) < 40:
+        return None
+    magic, totalsize, off_struct, off_strings, _, _, _, _, size_strings, size_struct = (
+        struct.unpack_from(">10I", blob, 0)
+    )
+    if (
+        magic != 0xD00DFEED
+        or totalsize != len(blob)
+        or off_struct + size_struct > totalsize
+        or off_strings + size_strings > totalsize
+    ):
+        return None
+    pos = off_struct
+    end = off_struct + size_struct
+    stack: list[str] = []
+    tokens: list[str] = []
+    while pos + 4 <= end:
+        (tag,) = struct.unpack_from(">I", blob, pos)
+        pos += 4
+        if tag == 1:  # FDT_BEGIN_NODE
+            nul = blob.find(b"\x00", pos, end)
+            if nul < 0:
+                break
+            stack.append(blob[pos:nul].decode("ascii", errors="ignore"))
+            pos = (nul + 4) & ~3
+        elif tag == 2:  # FDT_END_NODE
+            if stack:
+                stack.pop()
+        elif tag == 3:  # FDT_PROP
+            if pos + 8 > end:
+                break
+            prop_len, nameoff = struct.unpack_from(">2I", blob, pos)
+            pos += 8
+            val = blob[pos : pos + prop_len]
+            pos = (pos + prop_len + 3) & ~3
+            if len(stack) == 3 and stack[1] == "cpus" and stack[2].startswith("cpu"):
+                str_end = blob.find(
+                    b"\x00", off_strings + nameoff, off_strings + size_strings
+                )
+                if str_end < 0:
+                    continue
+                pname = blob[off_strings + nameoff : str_end].decode(
+                    "ascii", errors="ignore"
+                )
+                if pname == "riscv,isa-extensions":
+                    tokens.extend(
+                        part.decode("ascii", errors="ignore")
+                        for part in val.split(b"\x00")
+                        if part
+                    )
+                elif pname == "riscv,isa":
+                    isa = val.split(b"\x00", 1)[0].decode("ascii", errors="ignore")
+                    tokens.extend(isa.split("_")[1:])
+        elif tag == 4:  # FDT_NOP
+            continue
+        elif tag == 9:  # FDT_END
+            break
+        else:
+            break
+    return _max_zvl_vlenb_from_tokens(tokens)
+
+
+def resolve_isa_vlenb(
+    repo: Path, board: str = "x3", dtb: Path | None = None
+) -> int | None:
+    """Derive expected ``vlenb`` from the supplied DTB or the board's RTL build."""
+    if dtb is not None:
+        from_dtb = dtb_isa_vlenb(dtb)
+        if from_dtb is not None:
+            return from_dtb
+    for path, pattern in (
+        (repo / f"boards/{board}/{board}_frost.sv", r"\.VLEN\(\s*(\d+)\s*\)"),
+        (repo / "hw/rtl/frost.sv", r"\bVLEN\s*=\s*(\d+)"),
+    ):
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        match = re.search(pattern, text)
+        if match is not None:
+            bits = int(match.group(1))
+            if bits % 8 == 0 and _is_supported_vlenb(bits // 8):
+                return bits // 8
+    return None
+
+
+def isa_probe_command(
+    run_id: str,
+    expect: str = LINUX_ISA_EXPECT_DEFAULT,
+    vlenb: int | None = None,
+) -> str:
+    """Return one shell command that runs frost_isa_probe and prints its exit line."""
+    limit = LINUX_ISA_PROBE_TIMEOUT_S[expect]
+    vlenb_arg = f"--vlenb {vlenb} " if vlenb is not None else ""
+    return (
+        f"timeout -k 5 {limit} {LINUX_ROOT_BIN}/{LINUX_ISA_PROBE_PROGRAM} "
+        f"suite {vlenb_arg}--run-id {run_id}; "
+        f"printf '{LINUX_ISA_PROBE_EXIT_TOKEN} id=%s rc=%s\\n' {run_id} \"$?\""
+    )
+
+
+def _isa_case_problems(
+    case: str, fields: Mapping[str, str], expect: str, vlenb: int | None
+) -> list[str]:
+    """Validate required positive coverage fields for one passing case record."""
+
+    def want_int(key: str) -> int | None:
+        raw = fields.get(key)
+        return int(raw) if raw is not None and raw.isdigit() else None
+
+    problems: list[str] = []
+    if expect == "absent":
+        if case == "discover" and fields.get("mode") != "absent":
+            problems.append(f"discover mode={fields.get('mode')!r}")
+        elif case == "illegal":
+            for key in ("sigill", "pc_match", "scalar_pre"):
+                if (want_int(key) or 0) < 1:
+                    problems.append(f"illegal {key}={fields.get(key)!r}")
+        elif case == "signal":
+            if (want_int("rounds") or 0) < 1:
+                problems.append(f"signal rounds={fields.get('rounds')!r}")
+            if want_int("end_magic") != 0 or want_int("end_size") != 0:
+                problems.append(
+                    f"signal end=({fields.get('end_magic')},{fields.get('end_size')})"
+                )
+        elif case == "ptrace":
+            for key in ("gpr_ok", "einval"):
+                if (want_int(key) or 0) < 1:
+                    problems.append(f"ptrace {key}={fields.get(key)!r}")
+        return problems
+
+    regset_bytes = (40 + 32 * vlenb) if vlenb is not None else None
+    if case == "discover":
+        if fields.get("mode") != "present":
+            problems.append(f"discover mode={fields.get('mode')!r}")
+        got_vlenb = want_int("vlenb")
+        if vlenb is not None:
+            if got_vlenb != vlenb:
+                problems.append(f"discover vlenb={fields.get('vlenb')!r}")
+        elif got_vlenb is None or not _is_supported_vlenb(got_vlenb):
+            problems.append(f"discover vlenb={fields.get('vlenb')!r}")
+        if (want_int("smoke") or 0) < 1:
+            problems.append(f"discover smoke={fields.get('smoke')!r}")
+    elif case == "first-use":
+        if want_int("traps_before") != 0:
+            problems.append(f"first-use traps_before={fields.get('traps_before')!r}")
+        if want_int("traps_phase1") != 1 or want_int("traps_phase2") != 1:
+            problems.append(
+                f"first-use traps=({fields.get('traps_phase1')},{fields.get('traps_phase2')})"
+            )
+        if want_int("missed") != 0 or (want_int("init_zero") or 0) < 1:
+            problems.append(
+                f"first-use missed={fields.get('missed')} init_zero={fields.get('init_zero')}"
+            )
+    elif case == "switch":
+        if (want_int("rounds_a") or 0) < 64 or (want_int("rounds_b") or 0) < 64:
+            problems.append(
+                f"switch rounds=({fields.get('rounds_a')},{fields.get('rounds_b')})"
+            )
+    elif case == "signal":
+        if (
+            (want_int("normal_rounds") or 0) < 8
+            or (want_int("alt_rounds") or 0) < 8
+            or (want_int("clobbers") or 0) < 16
+        ):
+            problems.append(
+                f"signal rounds=({fields.get('normal_rounds')},{fields.get('alt_rounds')}) "
+                f"clobbers={fields.get('clobbers')}"
+            )
+    elif case == "ptrace":
+        if (
+            (want_int("inactive_einval") or 0) < 1
+            or regset_bytes is None
+            or want_int("active_bytes") != regset_bytes
+            or (want_int("setregset_ok") or 0) < 1
+            or (want_int("resumed_ok") or 0) < 1
+        ):
+            problems.append(
+                f"ptrace inactive={fields.get('inactive_einval')} "
+                f"bytes={fields.get('active_bytes')} "
+                f"setregset={fields.get('setregset_ok')} "
+                f"resumed={fields.get('resumed_ok')}"
+            )
+    elif case == "core":
+        if (
+            (want_int("scalar_ok") or 0) < 1
+            or regset_bytes is None
+            or want_int("note_bytes") != regset_bytes
+            or (want_int("restored") or 0) < 1
+        ):
+            problems.append(
+                f"core scalar={fields.get('scalar_ok')} "
+                f"bytes={fields.get('note_bytes')} restored={fields.get('restored')}"
+            )
+    elif case == "fork":
+        for key in ("ctrl_ok", "inactive_einval", "init_zero", "isolated"):
+            if (want_int(key) or 0) < 1:
+                problems.append(f"fork {key}={fields.get(key)!r}")
+    elif case == "exec":
+        for key in ("on_ok", "off_sigill"):
+            if (want_int(key) or 0) < 1:
+                problems.append(f"exec {key}={fields.get(key)!r}")
+    return problems
+
+
+def isa_probe_verdict(
+    serial_buf: str,
+    run_id: str,
+    expect: str = LINUX_ISA_EXPECT_DEFAULT,
+    vlenb: int | None = None,
+) -> tuple[bool, bool, str]:
+    """Return ``(terminal_failure, passed, note)`` for ``frost_isa_probe`` output.
+
+    Match only complete anchored lines after login carrying ``run_id``.
+    """
+    prompt_at = serial_buf.find(LINUX_LOGIN_PROMPT)
+    if prompt_at < 0:
+        return False, False, f"{LINUX_ISA_PROBE_PROGRAM}: no login prompt"
+    region = serial_buf[prompt_at:]
+
+    cases: dict[str, tuple[str, dict[str, str]]] = {}
+    duplicates: list[str] = []
+    failed_cases: list[str] = []
+    for match in LINUX_ISA_CASE_RE.finditer(region):
+        rid, case, verdict, raw_fields = match.groups()
+        if rid != run_id:
+            continue
+        fields = dict(field.split("=", 1) for field in raw_fields.split())
+        if verdict == "FAIL":
+            reason = fields.get("reason", "unknown")
+            failed_cases.append(f"{case}: FAIL ({reason})")
+            continue
+        if case in cases:
+            duplicates.append(case)
+        cases[case] = (verdict, fields)
+    if failed_cases:
+        return True, False, f"{LINUX_ISA_PROBE_PROGRAM} " + "; ".join(failed_cases)
+
+    summaries = [
+        match.groups()
+        for match in LINUX_ISA_SUMMARY_RE.finditer(region)
+        if match.group(1) == run_id
+    ]
+    exits = [
+        int(match.group(2))
+        for match in LINUX_ISA_EXIT_RE.finditer(region)
+        if match.group(1) == run_id
+    ]
+
+    if summaries:
+        _, obs_mode, passed_s, failed_s, sum_verdict = summaries[-1]
+        if sum_verdict != "PASS" or int(failed_s) != 0:
+            return (
+                True,
+                False,
+                f"{LINUX_ISA_PROBE_PROGRAM}: summary verdict={sum_verdict} "
+                f"mode={obs_mode} passed={passed_s} failed={failed_s}",
+            )
+        if obs_mode != expect:
+            return (
+                True,
+                False,
+                f"{LINUX_ISA_PROBE_PROGRAM}: observed mode {obs_mode!r}, "
+                f"expected {expect!r}",
+            )
+
+    if exits:
+        rc = exits[-1]
+        if rc != 0:
+            return (
+                True,
+                False,
+                f"{LINUX_ISA_PROBE_PROGRAM}: exited {rc} (id={run_id})",
+            )
+
+    if not exits:
+        return (
+            False,
+            False,
+            f"{LINUX_ISA_PROBE_PROGRAM}: no {LINUX_ISA_PROBE_EXIT_TOKEN} line",
+        )
+    if not summaries:
+        return (
+            True,
+            False,
+            f"{LINUX_ISA_PROBE_PROGRAM}: exited 0 without {LINUX_ISA_PROBE_SUMMARY_TOKEN}",
+        )
+    if duplicates:
+        return (
+            True,
+            False,
+            f"{LINUX_ISA_PROBE_PROGRAM}: duplicate case record(s): {', '.join(duplicates)}",
+        )
+
+    expected_cases = LINUX_ISA_PROBE_CASES[expect]
+    _, obs_mode, passed_s, _, _ = summaries[-1]
+    if int(passed_s) != len(expected_cases):
+        return (
+            True,
+            False,
+            f"{LINUX_ISA_PROBE_PROGRAM}: summary passed={passed_s}, expected {len(expected_cases)}",
+        )
+    missing = [c for c in expected_cases if c not in cases]
+    extra = [c for c in cases if c not in expected_cases]
+    if missing or extra:
+        parts = []
+        if missing:
+            parts.append(f"missing {', '.join(missing)}")
+        if extra:
+            parts.append(f"unexpected {', '.join(extra)}")
+        return True, False, f"{LINUX_ISA_PROBE_PROGRAM}: " + "; ".join(parts)
+
+    effective_vlenb = vlenb
+    if expect == "present" and effective_vlenb is None:
+        raw_vlenb = cases["discover"][1].get("vlenb", "")
+        if raw_vlenb.isdigit() and _is_supported_vlenb(int(raw_vlenb)):
+            effective_vlenb = int(raw_vlenb)
+
+    bad: list[str] = []
+    for case in expected_cases:
+        _, fields = cases[case]
+        bad.extend(_isa_case_problems(case, fields, expect, effective_vlenb))
+    if bad:
+        return True, False, f"{LINUX_ISA_PROBE_PROGRAM}: " + "; ".join(bad)
+
+    return (
+        False,
+        True,
+        f"isa probe {obs_mode} ({len(expected_cases)}/{len(expected_cases)} cases)",
+    )
+
+
 def linux_stage(
     root: LinuxRoot,
     net_repeat: int = 1,
@@ -1842,6 +2420,9 @@ def linux_stage(
     driver_version: str | None = None,
     *,
     board: str = "x3",
+    isa_expect: str = LINUX_ISA_EXPECT_DEFAULT,
+    isa_run_id: str | None = None,
+    isa_vlenb: int | None = None,
 ) -> UartStage:
     """Build UART checks for Debian booting from the NFS root.
 
@@ -1850,8 +2431,8 @@ def linux_stage(
     ``/sys/module/frost_net10g/version``, systemd startup (allowing only
     session scope resource failures), stress result, nonzero counters, the
     selected board's memory error readback, scrub self-test, RAM patrol,
-    and loopback with root access restored. Explicit failures end capture
-    immediately.
+    ISA probe verdicts, and loopback with root access restored. Explicit
+    failures end capture immediately.
 
     ``net_repeat`` above 1 runs the network test that many times (see
     ``nettest_command``); a failed earlier repetition fails the stage too.
@@ -1863,6 +2444,11 @@ def linux_stage(
         if driver_version is None
         else driver_version
     )
+    if isa_expect not in LINUX_ISA_EXPECT_CHOICES:
+        raise ValueError(
+            f"isa_expect must be one of {LINUX_ISA_EXPECT_CHOICES}, got {isa_expect!r}"
+        )
+    run_id = secrets.token_hex(4) if isa_run_id is None else isa_run_id
     failure_markers = LINUX_FAILURE_MARKERS + (
         LINUX_TOKEN_FAIL,
         LINUX_NET_TOKEN_FAIL,
@@ -1900,10 +2486,15 @@ def linux_stage(
                 f"the root did not come back after {LINUX_NET_COMMAND}: "
                 f"sync exited {alive}"
             )
+        isa_fail, _, isa_note = isa_probe_verdict(
+            serial_buf, run_id, isa_expect, isa_vlenb
+        )
+        if isa_fail:
+            hit.append(isa_note)
         return hit
 
     def lx_success(raw_buf: str) -> bool:
-        """Login, driver version, systemd, counters, loopback, and root access."""
+        """Login, driver version, systemd, counters, ISA probe, loopback, and root access."""
         serial_buf = console_text(raw_buf)
         if not lx_login(serial_buf):
             return False
@@ -1912,6 +2503,8 @@ def linux_stage(
         if systemd_state(serial_buf) != LINUX_SYSTEMD_RUNNING:
             return False
         if not set(counter_values(serial_buf)) >= set(LINUX_COUNTER_EVENTS):
+            return False
+        if not isa_probe_verdict(serial_buf, run_id, isa_expect, isa_vlenb)[1]:
             return False
         if LINUX_NET_TOKEN not in serial_buf:
             return False
@@ -1925,6 +2518,19 @@ def linux_stage(
     def lx_failure(raw_buf: str) -> bool:
         """Return True once ``lx_reasons`` finds any terminal failure."""
         return bool(lx_reasons(console_text(raw_buf)))
+
+    def lx_failure_post_wait(raw_buf: str) -> float:
+        """Keep reading after an ISA probe case FAIL line before ending the stage."""
+        serial_buf = console_text(raw_buf)
+        prompt_at = serial_buf.find(LINUX_LOGIN_PROMPT)
+        if prompt_at < 0:
+            return 0.0
+        region = serial_buf[prompt_at:]
+        for match in LINUX_ISA_CASE_RE.finditer(region):
+            rid, _, verdict, _ = match.groups()
+            if rid == run_id and verdict == "FAIL":
+                return LINUX_ISA_FAILURE_WAIT_S
+        return 0.0
 
     def lx_judge(raw_buf: str) -> tuple[bool, str]:
         """Fail on a failure marker, else require every marker, line and count."""
@@ -1980,6 +2586,11 @@ def linux_stage(
         memerr_bad = memerr_problems(memerr, has_ecc_reader=has_ecc_reader)
         if memerr_bad:
             return False, f"{LINUX_MEMERR_TOKEN}: " + "; ".join(memerr_bad)
+        _, isa_ok, isa_note = isa_probe_verdict(
+            serial_buf, run_id, isa_expect, isa_vlenb
+        )
+        if not isa_ok:
+            return False, isa_note
         if LINUX_NET_TOKEN not in serial_buf:
             return False, f"{LINUX_NET_COMMAND}: no {LINUX_NET_TOKEN!r}"
         if root_alive_status(serial_buf) is None:
@@ -2018,7 +2629,7 @@ def linux_stage(
             f"{KERNEL_RELEASE}, {driver_note}, {mount_note}, systemd "
             f"{systemd_note}, login, stress token, counters "
             f"{summary}, {memory_note}, scrub self-test, "
-            f"RAM patrol ({patrol} lines, a full pass), "
+            f"RAM patrol ({patrol} lines, a full pass), {isa_note}, "
             f"{net_note}, root alive"
         )
 
@@ -2037,10 +2648,15 @@ def linux_stage(
             (LINUX_SHELL_PROMPT, LINUX_MEMERR_COMMAND + "\r"),
             (
                 LINUX_SHELL_PROMPT,
+                isa_probe_command(run_id, isa_expect, isa_vlenb) + "\r",
+            ),
+            (
+                LINUX_SHELL_PROMPT,
                 nettest_command(root.interface, net_repeat, net_poke_s) + "\r",
             ),
         ),
         failure_line_grace_s=LINUX_FAILURE_LINE_GRACE_S,
+        failure_post_wait_s=lx_failure_post_wait,
     )
 
 
@@ -2670,6 +3286,31 @@ def finish_line(serial_fd: int, serial_buf: str, grace_s: float) -> str:
     return text
 
 
+def read_for_duration(serial_fd: int, duration_s: float) -> str:
+    """Keep reading and echoing UART output for ``duration_s`` seconds.
+
+    Return every chunk read during the window so callers can record and judge it.
+    """
+    deadline = time.monotonic() + duration_s
+    text = ""
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if not select.select([serial_fd], [], [], min(remaining, 0.1))[0]:
+            continue
+        data = read_available(serial_fd)
+        if not data:
+            if hasattr(time, "sleep"):
+                time.sleep(min(remaining, 0.05))
+            continue
+        chunk = data.decode("utf-8", errors="replace")
+        text += chunk
+        sys.stdout.write(chunk)
+        sys.stdout.flush()
+    return text
+
+
 def run_uart_stage(
     repo: Path,
     serial_fd: int,
@@ -2712,6 +3353,7 @@ def run_uart_stage(
     loader_tail: collections.deque[str] = collections.deque(maxlen=80)
     loader_line_buf = ""
     serial_buf = ""
+    post_failure_output: str | None = None
     loader_done = False
     program_started = False
     stimuli_sent = 0
@@ -2797,10 +3439,24 @@ def run_uart_stage(
             and program_started
             and (success_ready() or stage.failure_done(serial_buf))
         ):
-            if not success_ready() and stage.failure_line_grace_s:
-                serial_buf += finish_line(
-                    serial_fd, serial_buf, stage.failure_line_grace_s
+            if not success_ready():
+                if stage.failure_line_grace_s:
+                    serial_buf += finish_line(
+                        serial_fd, serial_buf, stage.failure_line_grace_s
+                    )
+                post_wait_s = (
+                    stage.failure_post_wait_s(serial_buf)
+                    if stage.failure_post_wait_s is not None
+                    else 0.0
                 )
+                if post_wait_s > 0.0:
+                    print(
+                        f"\n[hw_regression] failure detected; reading console for "
+                        f"{post_wait_s:.0f}s before ending stage",
+                        flush=True,
+                    )
+                    post_failure_output = read_for_duration(serial_fd, post_wait_s)
+                    serial_buf += post_failure_output
             break
 
     killed_loader = False
@@ -2826,13 +3482,16 @@ def run_uart_stage(
         status = "TIMEOUT"
         note = f"no terminal UART output within {timeout_s:.0f}s"
 
-    return {
+    result: dict[str, Any] = {
         "stage": stage.app,
         "status": status,
         "elapsed": elapsed,
         "note": note,
         "loader_tail": list(loader_tail),
     }
+    if post_failure_output is not None:
+        result["post_failure_output"] = post_failure_output
+    return result
 
 
 def run_sweep_stage(
@@ -3040,6 +3699,24 @@ def _main() -> int:
         ),
     )
     parser.add_argument(
+        "--linux-dtb",
+        type=Path,
+        default=None,
+        help=(
+            "Compiled device tree blob (.dtb) to pack for linux_boot instead "
+            f"of generating one (overrides {LINUX_DTB_ENV})"
+        ),
+    )
+    parser.add_argument(
+        "--linux-isa-expect",
+        choices=LINUX_ISA_EXPECT_CHOICES,
+        default=LINUX_ISA_EXPECT_DEFAULT,
+        help=(
+            "Expected ISA extension probe mode during linux_boot "
+            f"(default: {LINUX_ISA_EXPECT_DEFAULT})"
+        ),
+    )
+    parser.add_argument(
         "--score-tolerance",
         type=float,
         default=DEFAULT_SCORE_TOLERANCE_PCT,
@@ -3126,7 +3803,11 @@ def _main() -> int:
     linux_env_error: str | None = None
     if LINUX_STAGE in selected:
         try:
-            linux_root = linux_root_from_env()
+            linux_root = (
+                linux_root_from_env(dtb_override=args.linux_dtb)
+                if args.linux_dtb is not None
+                else linux_root_from_env()
+            )
             for note in linux_root_preflight(linux_root, args.repo):
                 print(f"[hw_regression] Linux root: {mask_serial(note)}", flush=True)
         except Exception as error:  # noqa: BLE001
@@ -3185,6 +3866,8 @@ def _main() -> int:
                         net_poke_s,
                         driver_version=source_driver_version(args.repo),
                         board=board,
+                        isa_expect=args.linux_isa_expect,
+                        isa_vlenb=resolve_isa_vlenb(args.repo, board, linux_root.dtb),
                     )
                     stage_timeout = args.linux_timeout
                     loader_env = linux_loader_env(linux_root)
