@@ -1190,9 +1190,9 @@ def test_board_gty_generation_is_capability_gated() -> None:
         assert operation in guarded_body
     generate = tcl.index("generate_target all [get_ips]")
     # The IP cores, GTY included, synthesize in their own project-mode runs after
-    # generation: create_ip_run per core, then one launch_runs for the set.
+    # generation: create_ip_run per core, then one launch per run, each with its own Tcl Store area.
     create_run = tcl.index("create_ip_run $ip_core_xci", generate)
-    launch = tcl.index("launch_runs $ip_synth_runs", create_run)
+    launch = tcl.index("frost_launch_ip_runs_isolated $ip_synth_runs", create_run)
     assert guard.end() < generate < create_run < launch
 
     gty = (REPO_ROOT / "fpga/build/x3_gty_ip.tcl").read_text()
@@ -1255,9 +1255,12 @@ def test_synth_step_clears_project_dir_and_requires_ip_runs(tmp_path: Path) -> N
     start = tcl.index("    set ip_synth_runs [list]")
     end = tcl.index("\n    if {$board_has_ddr}", start)
     snippet = tcl[start:end]
+    proc_start = tcl.index("proc frost_launch_ip_runs_isolated")
+    proc_end = tcl.index("\n}\n", proc_start) + 3
+    launch_proc = tcl[proc_start:proc_end]
 
     for mode, expected_code, expected_text in (
-        ("normal", 0, "LAUNCHED jtag_axi_0_synth_1 axi_bram_ctrl_0_synth_1"),
+        ("normal", 0, "LAUNCHED axi_bram_ctrl_0_synth_1"),
         ("missing", 1, "IP synthesis run axi_bram_ctrl_0_synth_1 was not created"),
         ("failed", 1, "jtag_axi_0_synth_1 did not complete: synth_design ERROR"),
     ):
@@ -1299,15 +1302,25 @@ proc create_ip_run {{xci}} {{
 proc launch_runs {{runs args}} {{puts "LAUNCHED $runs"}}
 proc wait_on_run {{run}} {{}}
 """
+            + launch_proc
+            + "\n"
             + snippet
             + "\n"
         )
         result = subprocess.run(
-            ["tclsh", str(harness)], capture_output=True, text=True, timeout=10
+            ["tclsh", str(harness)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=tmp_path,
         )
         assert result.returncode == expected_code, (mode, result.stdout, result.stderr)
         combined = result.stdout + result.stderr
         assert expected_text in combined
+        if mode == "normal":
+            assert "LAUNCHED jtag_axi_0_synth_1" in combined
+            for run in ("jtag_axi_0_synth_1", "axi_bram_ctrl_0_synth_1"):
+                assert (tmp_path / "tclstore_ip" / run).is_dir()
 
 
 @pytest.mark.parametrize("message", ("8-11241", "8-6901"))

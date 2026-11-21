@@ -432,6 +432,43 @@ set top_level_module_name ${board_name}_frost
 
 set number_of_parallel_jobs 32
 
+# frost_launch_ip_runs_isolated RUNS JOBS: launch each IP out-of-context run with its own launch_runs call and its own
+# Tcl Store user area. One launch_runs call over all the runs starts the child Vivado sessions in the same second, and
+# sessions that share a user area (XILINX_TCLSTORE_USERAREA, or the default per-user one) race on its manifest:
+# [Common 17-354] Could not open ... for writing, [Common 17-1257] Failed to create directory. A child inherits
+# XILINX_TCLSTORE_USERAREA from this process at launch, so each run gets a private copy of the parent's area (or an
+# empty one) under the build directory. The parent's value is restored afterwards, also when a launch fails.
+proc frost_launch_ip_runs_isolated {runs jobs} {
+    set had_area [info exists ::env(XILINX_TCLSTORE_USERAREA)]
+    set parent_area ""
+    if {$had_area} {
+        set parent_area $::env(XILINX_TCLSTORE_USERAREA)
+    }
+    foreach run $runs {
+        set area [file normalize [file join [pwd] tclstore_ip $run]]
+        file mkdir $area
+        if {$parent_area ne "" && [file isdirectory $parent_area]} {
+            foreach entry [glob -nocomplain -directory $parent_area *] {
+                catch {file copy -force $entry $area}
+            }
+        }
+        set ::env(XILINX_TCLSTORE_USERAREA) $area
+        if {[catch {launch_runs $run -jobs $jobs} message]} {
+            if {$had_area} {
+                set ::env(XILINX_TCLSTORE_USERAREA) $parent_area
+            } else {
+                unset ::env(XILINX_TCLSTORE_USERAREA)
+            }
+            error $message
+        }
+    }
+    if {$had_area} {
+        set ::env(XILINX_TCLSTORE_USERAREA) $parent_area
+    } else {
+        unset -nocomplain ::env(XILINX_TCLSTORE_USERAREA)
+    }
+}
+
 # Directories
 
 # build.py sets the working directory.
@@ -513,7 +550,7 @@ if {$step eq "synth"} {
         lappend ip_synth_runs $ip_synth_run
     }
     if {[llength $ip_synth_runs]} {
-        launch_runs $ip_synth_runs -jobs $number_of_parallel_jobs
+        frost_launch_ip_runs_isolated $ip_synth_runs $number_of_parallel_jobs
         foreach ip_synth_run $ip_synth_runs {
             wait_on_run $ip_synth_run
             if {[get_property PROGRESS [get_runs $ip_synth_run]] ne "100%" ||
