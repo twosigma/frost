@@ -108,18 +108,21 @@ def test_formal_design_reset_splits_views(tmp_path: Path) -> None:
 
 
 def test_formal_read_slang_extracts_top_and_defines(tmp_path: Path) -> None:
-    """A script using read_slang records its top module and synthesis flags."""
+    """A read_slang view records its top, defines and typed blackboxes."""
     formal = tmp_path / "formal"
     formal.mkdir()
     (formal / "dut.sv").touch()
     (formal / "slang_view.sby").write_text(
         "[tasks]\nequiv\n[script]\n"
-        "read_slang --top dut --single-unit -DSYNTHESIS -DEXTRA -GWIDTH=16 dut.sv\n"
+        "read_slang --top dut --single-unit -DSYNTHESIS -DEXTRA -GWIDTH=16 "
+        "--blackboxed-module upstream --blackboxed-module downstream dut.sv\n"
+        "cutpoint -blackbox\n"
         "[files]\ndut.sv\n"
     )
     (case,) = slang.formal_cases(tmp_path)
     assert case.top == "dut"
     assert case.parameters == (("WIDTH", "16"),)
+    assert case.units[0].blackboxes == ("upstream", "downstream")
     assert "-DSYNTHESIS" in case.units[0].options
     assert "-DEXTRA" in case.units[0].options
     assert case.units[0].options.count("-DSYNTHESIS") == 1
