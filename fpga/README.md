@@ -393,6 +393,30 @@ setup endpoints. When `route`, `post_route_physopt`, or `second_route` meets
 it, the build skips to the bitstream. The X3 CPU datapath has no false-path or
 multicycle exceptions.
 
+### Near-critical path report
+
+Collect setup paths and clock interactions from a saved checkpoint, then
+summarize them by launch and capture clock:
+
+```bash
+vivado -mode batch -source fpga/build/near_critical.tcl -tclargs work/design.dcp near_critical
+python3 fpga/build/near_critical.py near_critical_paths.csv \
+  --clock-interaction near_critical_clock_interaction.rpt
+```
+
+The export selects one worst setup path per endpoint under 1.0 ns. The
+summary counts the exported rows and shows the signed minimum and counts
+strictly below 0, 0.4, 0.7 and 1.0 ns for each ordered clock pair. Blank clock
+fields appear as `<unknown>`. The interaction columns show the constraint,
+worst margin and endpoint count from Vivado's clock interaction table. A pair
+in `Asynchronous Groups` can have interaction endpoints and zero exported
+paths. Use path and interaction files from the same checkpoint and settings.
+
+The summarizer also accepts a path CSV with `start_clock`, `end_clock` and
+`slack_ns` columns. For a three-column `report_timing -path_type summary
+-no_header` file collected for one pair, pass `--summary-pair LAUNCH CAPTURE`
+with the two clocks used to collect it.
+
 ### X3 placement
 
 A full-rate X3 build places several candidates from the same post-opt

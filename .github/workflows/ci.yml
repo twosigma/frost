@@ -1767,8 +1767,8 @@ jobs:
           - shard: ROB retirement successor
             pytest_filter: rob_retire_successor
             timeout_minutes: 75
-          # Everything not named above: new small equivalence proofs and block
-          # proofs go here unless they belong to one of the areas above.
+          # Small equivalence proofs and block proofs without a dedicated
+          # shard use this job, including wfi_commit_guard prove and cover.
           - shard: Other tasks
             pytest_filter: >-
               not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or
