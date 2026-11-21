@@ -235,11 +235,47 @@ def test_arguments() -> None:
     assert arguments.vlen == 128 and arguments.vector == 3
     assert test_testrig.parse_arguments(["--trace", "x.S", "--vlen", "256"]).vlen == 256
     assert test_testrig.parse_arguments([]).vlen is None
+    assert not arguments.vector_source_widths
     for bad in (["--vector", "-1"], ["--vector", "2", "--vector-length", "0"]):
         with pytest.raises(SystemExit):
             test_testrig.parse_arguments(bad)
     with pytest.raises(SystemExit):
         test_testrig.parse_arguments(["--vector", "2", "--sscofpmf"])
+    with pytest.raises(SystemExit):
+        test_testrig.parse_arguments(["--vector-source-widths", "--vlen", "128"])
+
+
+@pytest.mark.parametrize(
+    ("vlen", "instructions"), ((128, 2788), (256, 4324), (512, 7396))
+)
+def test_vector_source_width_replay(
+    tmp_path: Path, vlen: int, instructions: int
+) -> None:
+    """Plan all generated and directed CI traces for the selected width."""
+    arguments = test_testrig.parse_arguments(
+        [
+            "--vector",
+            "12",
+            "--vector-length",
+            "20",
+            "--vector-source-widths",
+            "--seed",
+            "42",
+            "--vlen",
+            str(vlen),
+        ]
+    )
+    config = test_testrig.write_sail_config(30, tmp_path, vlen=vlen)
+    plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
+    trace_dir = tmp_path / "vector"
+    assert plan.command == ["-d", str(trace_dir)]
+    assert (plan.traces, plan.instructions) == (15, instructions)
+    assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
+    for family in ("integer", "fp", "memory"):
+        filename = f"vector_source_widths_{family}.S"
+        assert (trace_dir / filename).read_bytes() == (
+            VERIF_DIR / "testrig" / filename
+        ).read_bytes()
 
 
 def test_readout_sees_every_register_and_vxsat() -> None:

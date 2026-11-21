@@ -3212,10 +3212,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_rvfi_dii",
         hdl_toplevel_module="frost",
         nic_mac_clocks=False,
-        description=(
-            "TestRIG RVFI-DII server, run against the Sail model by "
-            "tests/test_testrig.py"
-        ),
+        description="Scalar and vector trace comparisons against Sail over RVFI-DII",
         include_in_pytest=False,
         verilator_extra_args=(
             "+define+FROST_RVFI_DII",
