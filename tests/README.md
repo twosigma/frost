@@ -22,6 +22,7 @@ regression run [natively](../fpga/README.md#hardware-regression) instead.
 | [`test_riscv_torture.py`](#test_riscv_torturepy) | Random RV64IMAFDC programs against Spike references |
 | [`test_testrig.py`](#test_testrigpy) | Random instruction sequences against the Sail RISC-V model, one instruction at a time (TestRIG) |
 | [`test_run_yosys.py`](#test_run_yosyspy) | Portable and Xilinx synthesis |
+| [`test_yosys_equivalence.py`](#test_yosys_equivalencepy) | Portable and yosys-slang equivalence |
 | [`test_run_formal.py`](#test_run_formalpy) | Formal proofs |
 | [`net10g/`](net10g/README.md) | Standalone Ethernet MAC/PCS simulation and synthesis |
 
@@ -777,7 +778,7 @@ After the initial 1 ps settle, while clocks are low, the bench clears each
 NIC front's simulation-only reset history. The cold-reset postcondition
 therefore requires evidence from the driven reset, not an initial scheduling edge.
 
-The Cocotb, physical-address and TestRIG CI jobs set
+The Cocotb, physical-address and scalar TestRIG CI jobs set
 `FROST_STARTUP_SWEEP=1`. After a successful simulation, the runner reuses
 each compiled system model for short startup checks. Programs sharing a
 binary share its completed check. The selected builds divide a 180-second
@@ -1056,6 +1057,14 @@ masking and the VS-dirty report). `vec_debug_partial` runs in the Vector program
 CI shard in both BRAM and DDR tiers. It checks that partial unit-stride and
 strided vector loads in Debug Mode write the completed elements before a page
 fault re-parks the hart and leave `mstatus.VS` Dirty.
+
+The `vec_hold_rows` and `vec_hold_rows_direct` unit benches use the load and
+store queue address interfaces, respectively. Their reference model rolls
+back the ROB tag on a flush, keeps retired vector memory entries live until
+completion, and frees flushed table entries on the cleanup edge. Both benches
+require an overlapping surviving scalar entry that stays unheld during
+cleanup, a scalar allocation on the cleanup edge, and reuse of a cleaned
+table index on the following edge.
 
 The `vec_stride_test_v128`, `vec_stride_test_v256`, and `vec_stride_test_v512`
 programs check strided vector loads and stores: every element width and EMUL
@@ -1534,23 +1543,28 @@ builds the SoC with the simulation-only injection harness, and the image
 provides Sail and the engine.
 
 ```bash
+./scripts/frost.py run make -C tests clean
 ./scripts/frost.py run python3 tests/test_testrig.py
 ./scripts/frost.py run python3 tests/test_testrig.py --include '^(mem|pte)$' --tests 500
 ./scripts/frost.py run python3 tests/test_testrig.py --trace tests/testrig_failures/failure-<time>.S
 ./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
 ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf
 ./scripts/frost.py run python3 tests/test_testrig.py --crypto 50
-./scripts/frost.py run python3 tests/test_testrig.py --vector 100 --vlen 256
+./scripts/frost.py run python3 tests/test_testrig.py --vector 12 --vector-source-widths --seed 42 --vlen 256
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
 ./scripts/frost.py run python3 tests/test_testrig.py --wfi
 ```
 
-`--vector N` replays random vector-instruction tests from `verif/testrig/vector.py`
-on a core built with the vector unit at `--vlen` (128, 256 or 512), against Sail
-configured for the same length; it needs a vector core, so no CI job runs it yet.
-Each run draws new sequences. `--atomics` replays random A-extension tests
-from `verif/testrig/atomics.py` in place of the engine's templates, from a
-seed the runner prints. A mismatch is shrunk to a short counterexample
+`--vector N` replays generated vector traces from `verif/testrig/vector.py`
+with both implementations configured for `--vlen` (128, 256 or 512).
+`--vector-source-widths` includes the directed integer, FP and memory
+source-width traces in that replay. CI uses seed 42 and checks 12 generated
+and three directed traces at each length. The VLEN 128 job also checks that
+TestRIG reports a changed FROST vector readout.
+
+`--atomics` replays random A-extension tests from `verif/testrig/atomics.py`
+in place of the engine's templates, from a seed the runner prints. A mismatch
+is shrunk by default to a short counterexample
 in `tests/testrig_failures/`, which `--trace` replays; the logs and the
 engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
 replays the saved counterexamples in `verif/testrig/traces/`.
@@ -1659,6 +1673,47 @@ SystemVerilog parser.
 
 The standalone Ethernet MAC/PCS has its own
 [simulation and synthesis checks](net10g/README.md).
+
+### `test_yosys_equivalence.py`
+
+The Generic and checks synthesis shard compares the portable flow
+(`read_verilog`, with sv2v for the NIC and MAC) with `read_slang` on
+the generic `SYNTHESIS` view of `hw/rtl/frost.f`. Both elaborate the
+default `platform_top`. Before loading the cuts, each case checks both
+elaboration logs for their respective Verilog-2005 and SLANG frontend
+execution headers. The cases cover `soc_top`, `tage_history`, `dmmu`,
+`axi_mux`, `branch_predictor`, `lq_coherence_port`, `store_queue`,
+`coherence_home_completions`, `cpu_ooo`, `coherence_l1d`, `load_queue`, and
+`coherence_home`. Each case selects an instance from that hierarchy to
+use its elaborated parameters. The comparison includes the selected module's
+logic and its connections to direct children. Child outputs become shared
+inputs and child inputs become compared outputs. Slang uses typed black
+boxes for the image-loading children `axi_behavioral_memory`,
+`imem_predecode`, and `tdp_bram_dc_byte_en`.
+
+Yosys maps the selected module's memories to registers and read/write logic
+with `memory_map -keepdc`. Out-of-range read addresses use undefined data
+where mapping leaves undriven branches. A SAT miter checks observable outputs
+and next-state data for arbitrary defined inputs and matching register and
+memory contents. Defined bits in the slang reference must match. Its
+undefined bits are don't-cares. The proof checks the initialization of each
+paired bit. Uninitialized contents start from arbitrary matching values.
+The miter compares clock and asynchronous reset controls. Synchronous
+reset is part of the next-state logic, with reset inputs left free.
+Unpaired flop bits are independent arbitrary inputs to the two models.
+The same output and paired next-state checks must hold for every value of
+those bits. Yosys encodes the undefined-bit checks with `xprop` before
+ABC reduces the Boolean miter and SAT verifies the assertion.
+
+```bash
+./scripts/frost.py run pytest tests/test_yosys_equivalence.py -m synthesis -v
+```
+
+The runner writes the Yosys scripts, complete logs and any SAT witness to
+the pytest temporary directory. Set `FROST_YOSYS_EQUIV_DIR` to an empty
+directory to keep the files at a chosen path. CI uploads the scripts, logs
+and witnesses from the generic shard. Each frontend has 900 seconds to
+elaborate. Each memory lowering has 180 seconds and each proof has 420 seconds.
 
 ### `test_run_formal.py`
 
@@ -1771,7 +1826,8 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_CALIBRATION_TEST` | Limits the calibration capture to the runs of the registry test it names |
 | `FROST_CPU_PERIOD_PS` | Enables `ASYNC_CPU_CLOCK=1` in `frost` builds; the real-program and debug benches drive the independent CPU clock with this period in ps |
 | `FROST_CPU_PHASE_PS` | Initial CPU clock phase in ps when the independent clock is selected; default 700 |
-| `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
+| `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in `test_run_yosys.py` synthesis tests |
+| `FROST_YOSYS_EQUIV_DIR` | Empty directory for frontend equivalence scripts, logs and witnesses (default is a pytest temporary directory) |
 | `FROST_REUSE_DIR` | Turns on [reuse](#reusing-formal-and-synthesis-results) of formal and synthesis passes, with pass markers in this directory (a relative path starts at the repository root); unset or empty, every task runs and no marker is read or written |
 | `FROST_REUSE_TOOLS_ID` | The tool image's identity, required with `FROST_REUSE_DIR` (`python3 tests/ci_reuse.py image-id --image <image>`) |
 | `FROST_REUSE_FORCE` | `true` or `1` runs every task and refreshes its marker |
@@ -2034,6 +2090,7 @@ and Fast Python Tests jobs locally.
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
+| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares 12 seeded integer traces and three directed source-width traces against Sail |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |

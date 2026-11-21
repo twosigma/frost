@@ -228,6 +228,59 @@ def test_incomplete_generator(
     assert "expected" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("generated", (0, 11))
+def test_vector_source_widths_require_all_generated_traces(
+    generated: int,
+    session: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    """The directed inputs cannot replace missing traces from the generator."""
+
+    def write_tests(
+        directory: Path, count: int, seed: int, length: int, vlen: int
+    ) -> None:
+        assert (count, seed, length, vlen) == (12, 42, 20, 128)
+        directory.mkdir()
+        for index in range(generated):
+            (directory / f"vector_{index}.S").write_text(".4byte 0x13\n")
+
+    monkeypatch.setattr(testrig.vector, "write_tests", write_tests)
+    assert (
+        session.run(["--vector", "12", "--vector-source-widths", "--seed", "42"]) == 1
+    )
+    assert session.starts == 0
+    output = capsys.readouterr().out
+    assert "expected at least 15 .S traces" in output
+    assert f"found {generated + 3}" in output
+
+
+@pytest.mark.parametrize(
+    "sail,frost,diagnostic",
+    (
+        ([], [], "found 0 traces and 0 instructions"),
+        ([(224, 224)], [(224, 224)], "found 1 traces and 224 instructions"),
+        ([(224, 224)], [(224, 223)], "expected 224 instructions from FROST in trace 1"),
+        ([(1, 1)] * 15, [(1, 1)] * 15, "found 15 traces and 15 instructions"),
+    ),
+)
+def test_vector_source_widths_require_complete_replies(
+    sail: list[tuple[int, int]],
+    frost: list[tuple[int, int]],
+    diagnostic: str,
+    session: SimpleNamespace,
+    capsys: Any,
+) -> None:
+    """An engine exit of zero still requires all vector reply records."""
+    session.sail, session.frost = sail, frost
+    assert (
+        session.run(["--vector", "12", "--vector-source-widths", "--seed", "42"]) == 1
+    )
+    output = capsys.readouterr().out
+    assert "TestRIG FAIL: expected at least 15 traces and 2788 instructions" in output
+    assert diagnostic in output
+
+
 @pytest.mark.parametrize(
     "sail,frost,passed",
     (

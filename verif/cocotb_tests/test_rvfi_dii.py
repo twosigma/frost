@@ -67,6 +67,8 @@ MAX_EVENTS = MAX_STREAM_WORDS + 16
 DEBUG = os.environ.get("FROST_RVFI_DII_DEBUG", "0") == "1"
 # The retirement bound covers cache service, synchronization and recovery.
 HANG_CYCLES = int(os.environ.get("FROST_RVFI_DII_HANG_CYCLES", "100000"))
+# vmv.x.s a0,v16 reads a vector result into an integer destination.
+VECTOR_RESULT_CONTROL_INSN = 0x4300_2557
 
 # frost_rvfi_dii's error_flags bits.
 HARNESS_ERRORS = {
@@ -118,6 +120,9 @@ class FrostRvfiDii:
     def __init__(self, dut: Any) -> None:
         """Bind the frost toplevel and its harness instance."""
         self.dut = dut
+        self.vector_result_control_pending = (
+            os.environ.get("FROST_TESTRIG_VECTOR_RESULT_CONTROL") == "1"
+        )
         self.harness = dut.cpu_and_memory_subsystem.u_rvfi_dii
         self.preamble = reset_preamble()
         self.errors: list[str] = []
@@ -209,6 +214,20 @@ class FrostRvfiDii:
                     f"next PC {actual_next_pc:#x}, retirement said {next_pc:#x}"
                 )
             record.pc_wdata = actual_next_pc
+            if (
+                self.vector_result_control_pending
+                and record.insn == VECTOR_RESULT_CONTROL_INSN
+                and not record.trap
+                and record.rd_addr == 10
+            ):
+                original = record.rd_wdata
+                record.rd_wdata ^= 1
+                self.vector_result_control_pending = False
+                cocotb.log.info(
+                    f"Vector result control: order={record.order} "
+                    f"insn={record.insn:#010x} rd=x{record.rd_addr} "
+                    f"original={original:#018x} forced={record.rd_wdata:#018x}"
+                )
             records.append(record)
         return records
 
@@ -300,3 +319,4 @@ async def test_rvfi_dii(dut: Any) -> None:
         connection.close()
     cocotb.log.info(f"RVFI-DII: served {traces_run} traces")
     assert not frost.errors, f"harness errors: {sorted(set(frost.errors))}"
+    assert not frost.vector_result_control_pending, "vector result control did not fire"

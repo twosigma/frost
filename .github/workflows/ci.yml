@@ -1231,6 +1231,80 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  test-testrig-vector:
+    name: TestRIG (FROST vs Sail / VLEN ${{ matrix.vlen }})
+    runs-on: ubuntu-26.04
+    needs: [build-docker, gate]
+    if: >-
+      ${{ needs.gate.outputs.full == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'pull_request') }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        vlen: [128, 256, 512]
+    env:
+      FROST_SKIP_SUBMODULE_INIT: "1"
+      FROST_DDR_MODEL_SEED: testrig-vector
+      FROST_RANDOM_START_SEED: testrig-vector
+      COCOTB_RANDOM_SEED: "42"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
+
+      - name: Compare seeded and directed vector traces
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run make -C tests clean
+          ./scripts/frost.py --image frost-dev:latest run \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 40m \
+            python3 tests/test_testrig.py --vector 12 --vector-length 20 \
+              --vector-source-widths --seed 42 --vlen "${{ matrix.vlen }}" \
+              --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
+              --response-timeout 600 --no-shrink
+
+      - name: Check detection of an incorrect vector result
+        if: matrix.vlen == 128
+        timeout-minutes: 9
+        env:
+          FROST_TESTRIG_VECTOR_RESULT_CONTROL: "1"
+        run: |
+          logs=tests/testrig_logs/vector-result-control
+          status=0
+          ./scripts/frost.py --image frost-dev:latest run \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 420s \
+            python3 tests/test_testrig.py --trace verif/testrig/vector_source_widths_integer.S \
+              --vlen 128 --ddr-capacity-log2-bytes 30 --startup-timeout 360 --response-timeout 60 \
+              --no-shrink --verbosity 2 --log-dir "$logs" \
+              --save-dir tests/testrig_failures/vector-result-control || status=$?
+          test "$status" -eq 1
+          test "$(grep -Fc 'Vector result control: ' "$logs/frost.log")" -eq 1
+          grep -Fq 'Vector result control: order=17 insn=0x43002557 rd=x10' "$logs/frost.log"
+          grep -Fq 'TESTS=1 PASS=1 FAIL=0' "$logs/frost.log"
+          grep -Fq 'mismatch in field rd_wdata: 0x8 != 0x9' "$logs/engine.log"
+          echo "TestRIG reported the injected vector result mismatch."
+
+      - name: Upload TestRIG counterexamples and logs
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: testrig-vector-results-${{ matrix.vlen }}
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            tests/testrig_failures/
+            tests/testrig_logs/
+
   # Merge the coverage that the simulating jobs uploaded into one report
   # (tests/README.md#coverage): the merged data, lcov line and branch coverage,
   # annotated sources, and a summary of the totals, the cover points with
@@ -1300,12 +1374,11 @@ jobs:
 
   # Yosys synthesis. The Xilinx target runs in partitions
   # (test_xilinx_partition in tests/test_run_yosys.py), in two jobs of about
-  # equal length; the first job runs every other synthesis test. A fast test
-  # checks that the jobs run each synthesis test once. A synthesis target
-  # whose key has a pass marker is skipped, as in the formal jobs; the other
-  # synthesis tests always run. Each partition may run for two hours and
-  # each job for its timeout_minutes, both more than twice their time on the
-  # slowest runners.
+  # equal length. The first job runs the portable target and checks, including
+  # frontend equivalence. A fast test checks that the jobs run each synthesis
+  # test once. The portable target and Xilinx partitions can reuse pass
+  # markers. The remaining checks run on every full CI run. Each Xilinx
+  # partition has a two-hour limit. The matrix sets the limit for each shard.
   test-synthesis:
     name: Yosys Synthesis Check (${{ matrix.shard }})
     runs-on: ubuntu-26.04
@@ -1332,6 +1405,7 @@ jobs:
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
       FROST_YOSYS_XILINX_TIMEOUT_SEC: "7200"
+      FROST_YOSYS_EQUIV_DIR: tests/sim_build/yosys-equiv
       FROST_REUSE_DIR: ${{ needs.gate.outputs.reuse == 'true' && '.ci-reuse' || '' }}
       FROST_REUSE_TOOLS_ID: ${{ needs.build-docker.outputs.tools_id }}
       FROST_REUSE_MAIN_RUN: ${{ needs.gate.outputs.main_run }}
@@ -1375,6 +1449,22 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             pytest tests/ -m synthesis -k "$PYTEST_FILTER" -v --durations=0
+
+      - name: Upload frontend equivalence logs
+        if: ${{ always() && matrix.shard == 'Generic and checks' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: yosys-frontend-equivalence
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            tests/sim_build/yosys-equiv/**/*.log
+            tests/sim_build/yosys-equiv/**/*.ys
+            tests/sim_build/yosys-equiv/**/*.tcl
+            tests/sim_build/yosys-equiv/**/*.f
+            tests/sim_build/yosys-equiv/**/*.instance.il
+            tests/sim_build/yosys-equiv/**/*.module
+            tests/sim_build/yosys-equiv/**/counterexample.json
 
       - name: Summarize synthesized and reused targets
         if: always()

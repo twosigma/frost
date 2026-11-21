@@ -1167,7 +1167,8 @@ FORMAL_TARGETS = [
         "vec_hold_rows.sby",
         "Vector range holds: an older live vector memory table entry holds an "
         "atomic scalar entry or one with an unknown address, unknown vector range, "
-        "or overlap. A settled hold has such a cause in either queue",
+        "or overlap. A settled hold has such a cause in either queue. The cleanup "
+        "covers forbid head advancement on rollback edges",
         tasks=("vhold_lq_bmc", "vhold_sq_bmc", "vhold_lq_cover", "cover"),
     ),
     FormalTarget(
@@ -1374,10 +1375,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ma_engine.sby",
-        "Misaligned-access engine: request controls match the issue states, no memory request before both parts pass their "
-        "checks, lower sector first, one request and response per identity, one "
-        "completion, fault or write-back per access, and terminal fatal stops",
-        tasks=("bmc", "cover"),
+        "Misaligned-access engine: unbounded equality of request controls and issue-state "
+        "decodes from reset. Bounded checks cover translation before requests, lower sector "
+        "first, unique request identities, completion, faults, write-back and terminal stops",
+        tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
         "alu_shift_hint.sby",

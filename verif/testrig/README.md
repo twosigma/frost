@@ -7,8 +7,8 @@ QuickCheckVEngine, generates random instruction sequences from templates,
 sends each sequence to two implementations over the RVFI-DII protocol, and
 compares the trace of every retired instruction: the destination register
 and its value, the next PC, whether it trapped, the privilege mode, and for a
-store its address, byte mask, and data. On a mismatch it shrinks the sequence
-to a short counterexample.
+store its address, byte mask, and data. By default it shrinks mismatches
+to short counterexamples.
 
 Directed tests check the behavior their authors chose, and the torture suite
 compares end states over a fixed corpus. TestRIG instead generates new
@@ -60,6 +60,7 @@ repository root:
 ./scripts/frost.py run python3 tests/test_testrig.py --cmo 80              # CMO, prefetch, Zawrs, and Sstvala tests
 ./scripts/frost.py run python3 tests/test_testrig.py --wfi                 # Directed WFI waits, wakes, and traps
 ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf           # deterministic counter controls
+./scripts/frost.py run python3 tests/test_testrig.py --vector 12 --vector-source-widths --seed 42 --vlen 128
 ./scripts/frost.py run python3 tests/test_testrig.py --ddr-capacity-log2-bytes 37 --trace-dir verif/testrig/traces
 ```
 
@@ -116,7 +117,7 @@ The fixture uses `i_clk` for the CPU and SoC and requires
 `ASYNC_CPU_CLOCK=0`. The independent CPU boundary belongs to the production
 `platform_top` integration.
 
-CI runs four TestRIG jobs in parallel. Each draws its own 100 sequences per
+CI runs four scalar TestRIG jobs in parallel. Each draws its own 100 sequences per
 template, 200 A-extension tests, 40 Sv39 MMU tests, and 80 CMO and Sstvala
 tests. The first job also runs the directed `--wfi` traces. Each job simulates
 the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
@@ -137,6 +138,8 @@ the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--svinval` | off | Replay this many random Svinval tests (`verif/testrig/svinval.py`) instead of the templates |
 | `--sscofpmf` | off | Replay the deterministic counter-control trace (`verif/testrig/sscofpmf/controls.S`); `--trace` overrides the trace path |
 | `--vector` | off | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
+| `--vector-length` | 20 | Operation groups per generated vector trace |
+| `--vector-source-widths` | off | Add the directed integer, FP and memory source-width traces to `--vector` |
 | `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
 | `--seed` | random | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval`, `--crypto` and `--vector`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
@@ -251,7 +254,7 @@ different implementation choice:
 | Misaligned accesses | Address-misaligned trap, after the PMA check; `Zicclsm` is left off because TestRIG builds omit the misaligned-access engine |
 | `mtval` | The faulting instruction's bits for illegal instructions (Sstvala) |
 | `mstatus.FS` | Dirty when an FP instruction raises a flag, even one already set |
-| `mstatus.VS` | Read-only zero: FROST has no V extension |
+| `mstatus.VS` | Read-only zero in the scalar fixture. The vector overlays allow all four VS states |
 | HPM counters | Machine counters 3..10 have storage; random and saved traces keep their selectors disabled. User aliases 3..10 mirror machine storage; aliases 11..31 read zero in M-mode and trap below M-mode |
 | Counter enables | `mcounteren`, `scounteren`: CY, TM, IR and HPM3..10; `mcountinhibit`: CY, IR and HPM3..10 |
 | Delegation | `medeleg` mask 0xB3FF; `mideleg` mask 0x2222 |
@@ -389,10 +392,11 @@ turns V on, makes `misa.V` read-only, and lets `mstatus.VS` take all four
 states.
 
 Each test enables FS and VS, zeroes v0..v31, `vxrm` and `vxsat`, runs random
-integer vector operations (arithmetic, shifts, saturating and fixed-point
-forms, multiplies, divides, slides) under random SEW, LMUL and AVL values with tail- and mask-undisturbed
-policies (agnostic elements may legally differ between implementations), and
-then reads the state out. The zeroing is in the test, not the preamble,
+integer vector operations (arithmetic, logic, shifts, saturation,
+multiplication, division and slides) under random SEW, LMUL and AVL values
+with tail- and mask-undisturbed policies, and then reads the state out.
+Agnostic elements may legally differ between implementations. The test
+initializes the vector state after the preamble
 because Sail does not reset the vector registers and the first `vsetvli` must
 use a non-`x0` AVL while `vtype.vill` is set; both implementations execute it.
 The read-out first reads `vl` and `vtype`, then moves every 64-bit element of
@@ -405,12 +409,24 @@ image cannot be read back through memory. The setup and the read-out are
 a small share may still trap on some register or mask combinations, which both
 implementations must report alike.
 
-The unit tests in `tests/test_testrig_vector.py` check every generated word
-against the assembler, the three Sail configurations, and, with two Sail
-instances, that the traces agree at each vector length and disagree between
-two. No CI job replays `--vector` until the core has a vector unit; to turn
-one on, add a TestRIG shard that runs `test_testrig.py --vector 100 --vlen 128`
-(and 256 and 512).
+The `--vector-source-widths` option adds directed integer, floating-point and
+memory traces to the same replay. They check reserved source overlaps and
+legal controls. The memory trace checks traps before an access.
+[Integer](vector_source_widths_integer.S) · [Floating point](vector_source_widths_fp.S)
+· [Memory](vector_source_widths_memory.S)
+
+On main pushes and pull requests labelled `run-ci`, CI runs one job at each
+of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
+groups from seed 42 and the three source-width traces. Both implementations
+must return every planned trace and instruction.
+The VLEN 128 job reuses its simulator to flip one bit in FROST's first
+`vmv.x.s a0,v16` reply for the integer source-width trace. It requires
+TestRIG to report the destination value mismatch.
+
+The unit tests in `tests/test_testrig_vector.py` check the replay inputs
+and match generated words against the assembler. They validate the Sail
+configurations and use two Sail instances to check trace agreement at each
+vector length and sensitivity to a width difference.
 
 ## Sv39 MMU, cache-block operations, and Sstvala
 
