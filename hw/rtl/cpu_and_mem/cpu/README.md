@@ -1571,13 +1571,18 @@ on the simulation check alone.
 
 The front end keeps allocating behind an instruction that traps or carries a
 fetch fault, and those allocations need not follow the predicted next PC: an
-illegal or `c.ebreak` compressed slot 1 drops its slot-2 partner, and a
-faulting fetch steps a whole word. An allocation may leave the order when the
-allocation before it has not completed without an exception. That entry is
-the barrier: the check requires that it never completes without an exception
-while it is valid, so it traps, and every allocation behind it is free until
-the flush that removes it. The proof shows that nothing allocated behind a
-barrier retires.
+illegal or `c.ebreak` compressed slot 1 drops its slot-2 partner, and fetch
+steps past a faulting instruction by a size taken from arbitrary bytes, which
+can differ from the size its parcel decodes to. An allocation may leave the
+order when the allocation before it, which for slot 2 is slot 1, has not
+completed without an exception. That entry is the barrier: the check requires
+that it never completes without an exception while it is valid, so it traps,
+and every allocation behind it is free until the flush that removes it. A
+partial flush that keeps the barrier, the early recovery of a younger branch,
+leaves it in force. The proof shows that nothing allocated behind a barrier
+retires; it covers only commit-time recovery, which empties the reorder
+buffer, so the barrier across an early recovery rests on the simulation check
+alone.
 
 See the [test runner](../../../../tests/README.md) for commands and the
 [formal guide](../../../../formal/README.md) for proof scope and assumptions.

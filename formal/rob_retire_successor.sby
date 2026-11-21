@@ -35,7 +35,7 @@ cover: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_retire_successor_c
 delete -port reorder_buffer/o:*
 prep -top reorder_buffer
 bmc: select -assert-count 3 t:$check r:FLAVOR=assert %i
-cover: select -assert-count 4 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 5 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
