@@ -141,7 +141,7 @@ the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--vector` | off | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
 | `--vector-length` | 20 | Operation groups per generated vector trace |
 | `--vector-source-widths` | off | Add the directed integer, FP and memory source-width traces to `--vector` |
-| `--vector-directed` | off | Add the directed vector CSR, scalar-result and fractional LMUL traces to `--vector` |
+| `--vector-directed` | off | Add the directed vector CSR, scalar-result, fractional LMUL and base FP traces to `--vector` |
 | `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
 | `--seed` | random | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval`, `--crypto` and `--vector`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
@@ -433,15 +433,22 @@ reads only the initialized, mask-enabled element zero. The trace also checks
 that e64/mf2 and e32/mf8 set `vill` and clear `vl`, and that a legal
 setting after each rejection clears `vill` and restores a nonzero `vl`. [Fractional LMUL](vector_fractional_lmul.S)
 
+The base FP trace checks binary32 vector adds and binary64 vector-scalar
+multiplication and division. It compares exact and rounded results, the canonical
+NaN and all five accrued exception flags. The masked add checks that the
+disabled signaling NaN leaves the flags clear and reads only the initialized,
+enabled result. [Base FP results and flags](vector_fp_results_flags.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at each
 of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
-groups from seed 42, the three source-width traces, the state and
-scalar-result trace and the fractional LMUL trace. Both implementations
-must return every planned trace and instruction.
+groups from seed 42, the three source-width traces, and directed traces
+for vector state and scalar results, fractional LMUL, and base FP results
+and flags. Both implementations must return every planned trace and
+instruction.
 The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
-destination in each of three replays. It checks `vmv.x.s` for integer
-source widths, `vcpop.m` for state and scalar results, and `vmv.x.s`
-for fractional LMUL. TestRIG must report each destination value mismatch.
+destination in each of four replays. It checks `vmv.x.s` for integer
+source widths, fractional LMUL and base FP results, and `vcpop.m` for
+state and scalar results. TestRIG must report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail

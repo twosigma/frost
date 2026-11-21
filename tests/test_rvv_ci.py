@@ -71,6 +71,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         ["1", "vector_source_widths_integer"],
         ["state", "vector_state_results"],
         ["fractional-lmul", "vector_fractional_lmul"],
+        ["base-fp", "vector_fp_results_flags"],
     ]
 
 
