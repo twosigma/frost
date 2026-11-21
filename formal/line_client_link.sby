@@ -11,7 +11,10 @@ line_link0_bmc: depth 16
 line_link1_bmc: depth 14
 line_link1_four_bmc: depth 12
 line_link1_eight_bmc: depth 10
-~line_link1_cover: timeout 4200
+line_link0_bmc: timeout 5280
+line_link1_bmc: timeout 4200
+line_link1_four_bmc: timeout 4200
+line_link1_eight_bmc: timeout 4200
 line_link1_cover: mode cover
 line_link1_cover: depth 24
 
@@ -30,6 +33,8 @@ line_link1_four_bmc: chparam -set STAGES 1 -set IDS 4 line_client_link
 line_link1_eight_bmc: chparam -set STAGES 1 -set IDS 8 line_client_link
 # The client's own simultaneous-handshake cover needs three live slots.
 line_link1_cover: chparam -set STAGES 1 -set IDS 8 line_client_link
+hierarchy -top line_client_link
+script free_undefined.ys
 prep -top line_client_link
 memory_map
 opt
@@ -41,3 +46,4 @@ opt
 ../hw/rtl/lib/cache/coherence_d_arbiter.sv
 ../hw/rtl/lib/cache/coherence_link.sv
 line_client_link.sv
+free_undefined.ys

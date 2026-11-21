@@ -31,6 +31,8 @@ bmc_perf_off: chparam -set PERF_COUNTERS 0 csr_file
 # The vector state (mstatus.VS and the vector CSRs) at VLEN 256.
 vector_bmc: chparam -set PERF_COUNTERS 0 -set VECTOR 1 -set VLEN 256 csr_file
 vector_cover: chparam -set PERF_COUNTERS 0 -set VECTOR 1 -set VLEN 256 csr_file
+hierarchy -top csr_file
+script free_undefined.ys
 prep -top csr_file
 # Keep the original standalone assumptions and isolate the PMM assertions.
 pm_mode_bmc: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_pm_mode_exact c:p_pm_mode_not_reserved c:p_pmm_not_reserved %u %u %d
@@ -39,3 +41,4 @@ pm_mode_bmc: select -assert-count 3 t:$check r:FLAVOR=assert %i
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv
+free_undefined.ys
