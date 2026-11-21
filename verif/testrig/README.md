@@ -60,7 +60,8 @@ repository root:
 ./scripts/frost.py run python3 tests/test_testrig.py --cmo 80              # CMO, prefetch, Zawrs, and Sstvala tests
 ./scripts/frost.py run python3 tests/test_testrig.py --wfi                 # Directed WFI waits, wakes, and traps
 ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf           # deterministic counter controls
-./scripts/frost.py run python3 tests/test_testrig.py --vector 12 --vector-source-widths --seed 42 --vlen 128
+./scripts/frost.py run python3 tests/test_testrig.py --vector 12 \
+  --vector-source-widths --vector-directed --seed 42 --vlen 128
 ./scripts/frost.py run python3 tests/test_testrig.py --ddr-capacity-log2-bytes 37 --trace-dir verif/testrig/traces
 ```
 
@@ -140,6 +141,7 @@ the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--vector` | off | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
 | `--vector-length` | 20 | Operation groups per generated vector trace |
 | `--vector-source-widths` | off | Add the directed integer, FP and memory source-width traces to `--vector` |
+| `--vector-directed` | off | Add the directed vector CSR and scalar-result trace to `--vector` |
 | `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
 | `--seed` | random | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval`, `--crypto` and `--vector`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
@@ -415,10 +417,18 @@ legal controls. The memory trace checks traps before an access.
 [Integer](vector_source_widths_integer.S) · [Floating point](vector_source_widths_fp.S)
 · [Memory](vector_source_widths_memory.S)
 
+The `--vector-directed` option adds checks for vector CSRs, VS state,
+`vsetivli`, `vsetvl`, `vcpop.m`, `vfirst.m` and `vfmv.f.s`. The trace
+asserts the scalar results and selected trap outcomes. The mask operations
+read five active bits from initialized mask bytes. FP extraction reads
+initialized element zero and exposes its bits in integer registers. The
+vector setup uses tail- and mask-undisturbed policies. [State and scalar results](vector_state_results.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at each
 of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
-groups from seed 42 and the three source-width traces. Both implementations
-must return every planned trace and instruction.
+groups from seed 42, the three source-width traces and the state and
+scalar-result trace. Both implementations must return every planned trace
+and instruction.
 The VLEN 128 job reuses its simulator to flip one bit in FROST's first
 `vmv.x.s a0,v16` reply for the integer source-width trace. It requires
 TestRIG to report the destination value mismatch.

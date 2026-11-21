@@ -53,6 +53,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     assert arguments.count("--vlen") == 1
     assert arguments[arguments.index("--vlen") + 1] == "${{ matrix.vlen }}"
     assert "--vector-source-widths" in arguments
+    assert "--vector-directed" in arguments
     control = next(
         step
         for step in job["steps"]
