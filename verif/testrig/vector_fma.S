@@ -314,3 +314,41 @@
 .4byte 0x43502557  # vmv.x.s a0, v21
 .assert rd_addr == 10 "vector element writes x10"
 .assert rd_wdata == 0x7fc00000 "active invalid fused result is canonical NaN"
+
+# The exact binary32 fused result 1 * 1 + 2^-24 lies halfway above 1.
+.4byte 0xc1017657  # vsetivli a2, 2, e32, m1, tu, mu
+.assert rd_addr == 12 "binary32 VL writes x12"
+.assert rd_wdata == 0x2 "binary32 VL is two"
+.4byte 0x00305073  # csrwi fcsr, 0
+.4byte 0x3f8002b7  # lui t0, 0x3f800
+.4byte 0x5e02c457  # vmv.v.x v8, t0
+.4byte 0x5e02c4d7  # vmv.v.x v9, t0
+.4byte 0x338002b7  # lui t0, 0x33800
+.4byte 0x5e02c857  # vmv.v.x v16, t0
+
+# RNE selects the even significand and raises inexact.
+.4byte 0xb2941857  # vfmacc.vv v16, v8, v9
+.assert trap == 0 "RNE fused accumulate retires"
+.4byte 0x43002557  # vmv.x.s a0, v16
+.assert rd_addr == 10 "RNE fused result writes x10"
+.assert rd_wdata == 0x3f800000 "RNE rounds the fused result to 1.0"
+.4byte 0x001025f3  # csrr a1, fflags
+.assert rd_addr == 11 "RNE fflags writes x11"
+.assert rd_wdata == 0x1 "RNE fused result raises NX"
+
+# RUP selects the next value above 1 and raises inexact.
+.4byte 0x0021d073  # csrwi frm, 3
+.4byte 0x00105073  # csrwi fflags, 0
+.4byte 0x00202673  # csrr a2, frm
+.assert rd_addr == 12 "frm writes x12"
+.assert rd_wdata == 0x3 "frm selects RUP"
+.4byte 0x5e02c857  # vmv.v.x v16, t0
+.4byte 0xb2941857  # vfmacc.vv v16, v8, v9
+.assert trap == 0 "RUP fused accumulate retires"
+.4byte 0x43002557  # vmv.x.s a0, v16
+.assert rd_addr == 10 "RUP fused result writes x10"
+.assert rd_wdata == 0x3f800001 "RUP rounds the fused result above 1.0"
+.4byte 0x001025f3  # csrr a1, fflags
+.assert rd_addr == 11 "RUP fflags writes x11"
+.assert rd_wdata == 0x1 "RUP fused result raises NX"
+.4byte 0x00205073  # csrwi frm, 0

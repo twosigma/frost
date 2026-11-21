@@ -89,7 +89,13 @@ VECTOR_SOURCE_WIDTH_TRACES = tuple(
 )
 VECTOR_DIRECTED_TRACES = tuple(
     VERIF_DIR / "testrig" / f"vector_{family}.S"
-    for family in ("state_results", "fractional_lmul", "fp_results_flags", "fma")
+    for family in (
+        "state_results",
+        "fractional_lmul",
+        "fp_results_flags",
+        "fma",
+        "fp_compare",
+    )
 )
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"

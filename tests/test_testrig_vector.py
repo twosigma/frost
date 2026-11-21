@@ -272,7 +272,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (19, instructions + 365) if vector_directed else (15, instructions)
+    expected = (20, instructions + 589) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -284,7 +284,8 @@ def test_vector_directed_replay(
         ("vector_state_results.S", 69, 56),
         ("vector_fractional_lmul.S", 54, 62),
         ("vector_fp_results_flags.S", 74, 51),
-        ("vector_fma.S", 168, 132),
+        ("vector_fma.S", 186, 146),
+        ("vector_fp_compare.S", 206, 264),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -293,6 +294,47 @@ def test_vector_directed_replay(
             lines = trace.read_text().splitlines()
             assert sum(line.startswith(".4byte ") for line in lines) == words
             assert sum(line.startswith(".assert ") for line in lines) == checks
+
+
+def test_vector_fp_compare_trace_covers_predicates() -> None:
+    """Check encoded predicate, operand form, SEW and mask coverage."""
+    trace = VERIF_DIR / "testrig" / "vector_fp_compare.S"
+    vv, vf = 0b001, 0b101
+    compare_forms = {
+        0x18: (vv, vf),  # vmfeq
+        0x19: (vv, vf),  # vmfle
+        0x1B: (vv, vf),  # vmflt
+        0x1C: (vv, vf),  # vmfne
+        0x1D: (vf,),  # vmfgt
+        0x1F: (vf,),  # vmfge
+    }
+    vtype = 0
+    observed = set()
+    for line in trace.read_text().splitlines():
+        if not line.startswith(".4byte "):
+            continue
+        word = int(line.split()[1], 16)
+        if word & 0xC000_707F == 0xC000_7057:  # vsetivli
+            vtype = (word >> 20) & 0xFF
+            assert vtype & 7 == 0  # LMUL 1
+            assert (word >> 15) & 31 == 2  # Immediate AVL
+        elif word & 0x7F == 0x57:  # OP-V
+            funct6, form = word >> 26, (word >> 12) & 7
+            if funct6 in compare_forms and form in (vv, vf):
+                unmasked = bool(word & (1 << 25))
+                if not unmasked:
+                    assert vtype & 0xC0 == 0xC0  # ta, ma
+                sew = 8 << ((vtype >> 3) & 7)
+                observed.add((sew, funct6, form, unmasked))
+
+    expected = {
+        (sew, funct6, form, True)
+        for sew in (32, 64)
+        for funct6, forms in compare_forms.items()
+        for form in forms
+    }
+    expected.add((64, 0x1B, vv, False))
+    assert observed == expected
 
 
 def test_readout_sees_every_register_and_vxsat() -> None:
