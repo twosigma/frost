@@ -65,6 +65,7 @@ class ReadUnit:
 
     options: tuple[str, ...]
     sources: tuple[str, ...]
+    blackboxes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -233,7 +234,8 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
     Preserve per-read FORMAL/SYNTHESIS and persistent read/verilog_defines
     settings. Replay final-top chparam settings only. Secondary-module
     rewrites, deletes, renames, cutpoints, and solver commands are not replayed.
-    Deleted child types get their real typed interface as a black box.
+    Replay explicit typed blackboxes. Deleted child types use their real
+    interfaces as blackboxes.
     """
     cases: dict[tuple[object, ...], SlangCase] = {}
     for sby in sorted((root / "formal").glob("*.sby")):
@@ -308,12 +310,17 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
                         *includes,
                     ]
                     sources = []
+                    blackboxes = []
                     slang_params: dict[str, str] = {}
                     i = 1
                     while i < len(words):
                         word = words[i]
                         if is_slang and word in ("--top", "-top"):
                             top = words[i + 1]
+                            i += 2
+                            continue
+                        if is_slang and word == "--blackboxed-module":
+                            blackboxes.append(words[i + 1])
                             i += 2
                             continue
                         if is_slang and word == "-G":
@@ -364,7 +371,11 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
                         parameters[top].update(slang_params)
                     if sources:
                         units.append(
-                            ReadUnit(tuple(dict.fromkeys(options)), tuple(sources))
+                            ReadUnit(
+                                tuple(dict.fromkeys(options)),
+                                tuple(sources),
+                                tuple(blackboxes),
+                            )
                         )
                 elif words[0] == "chparam":
                     for i, word in enumerate(words):
@@ -469,6 +480,9 @@ def run_case(case: SlangCase, yosys: str = "yosys") -> SlangResult:
                 value = "64'd" + value
             options.append(f"-G{name}={value}")
         for i, unit in enumerate(case.units):
+            # Slang reads blackbox options at the design level.
+            for module in unit.blackboxes:
+                options += ["--blackboxed-module", module]
             if not case.tasks:
                 options += [*unit.options, *unit.sources]
                 continue

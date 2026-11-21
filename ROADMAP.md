@@ -318,14 +318,12 @@ of those need more endpoint protocol lemmas, such as that a failing or filled
 read is owned and unanswered and that endpoint 0 completes only after its
 installation.
 
-Open: `tomasulo_wrapper`'s six commit-bus checks (a commit clearing or
-keeping a rename, a rename winning over a same-cycle commit, and the native
-fence's flush) are not reached at the wrapper's depth, and the whole back end
-did not finish a sixth step in 25 minutes. A cone-cut proof of the ROB commit
-packet, `commit_bus_pipeline` and the RAT, with free completion and one
-serializing class per allocation, would check them.
+The [commit-bus proof](formal/README.md#reservation-stations-and-the-tomasulo-wrapper)
+checks the ROB, commit pipeline and RAT together. It covers the stored
+mapping clears and rename priority, and distinguishes the native fence flush
+from a delayed translation CSR flush.
 
-Open: shipped parameter values that no proof of the block covers yet:
+Open: shipped parameter values for the full-block proofs:
 `data_mem_request_router` with `VARIABLE_UNCACHED=1`, and `tomasulo_wrapper`
 with the core's `SPLIT_RS_DISPATCH`, `ROB_SHARED_LINK_BANK`,
 `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS`, `CACHE_NORMAL_MEMORY`,
