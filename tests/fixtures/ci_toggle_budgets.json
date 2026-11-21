@@ -10,7 +10,9 @@
           "overhead_seconds": 2150,
           "case_seconds": {
             "debug_test": 6100,
-            "debug_fence_test": 304
+            "debug_fence_test": 304,
+            "debug_fatal_stop": 750,
+            "debug_fatal_stop_with_engine": 663
           }
         },
         {

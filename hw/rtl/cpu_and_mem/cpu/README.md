@@ -778,8 +778,12 @@ as the engine, so neither dispatch slot allocates in that terminal state.
 `lib/line_align.sv` moves the access between register order and the two
 sectors.
 
-A fatal stop holds issue, commit, normal front-end progress, and machine
-and supervisor interrupt entry with or without the misaligned-access engine.
+A fatal stop holds issue, commit, the front end, interrupt entry, and debug
+halt in every configuration, with or without the misaligned-access engine. A
+halt or step request after the stop is ignored, and the debug module reports
+the hart as unavailable until the reset that clears the stop. An exception
+latched in the cycle before the stop may still enter its handler state once;
+nothing retires and no request leaves the hart afterwards.
 
 ## Debug Mode
 

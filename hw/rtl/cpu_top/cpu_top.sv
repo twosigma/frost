@@ -286,7 +286,9 @@ module cpu_top #(
   // the L2's, the L1D's, and the L1I's. Each of those stops itself on its own
   // failure. The hart and the fetch, uncached and coherent paths stop on the
   // latched flag; the hart reads its own copy, which places beside the
-  // reorder buffer.
+  // reorder buffer. The flag stays set until the core reset; the debug
+  // module reads it to report the hart as unavailable, and the hart refuses
+  // a halt or step request while it is set.
   logic hart_cache_fatal, cluster_cache_fatal, cache_fatal, uncached_fatal;
   (* keep = "true", equivalent_register_removal = "no" *) logic hart_fatal_stop_q;
   logic [riscv_pkg::PhysAddrBits-1:0] hart_cache_fatal_addr, cluster_cache_fatal_addr;

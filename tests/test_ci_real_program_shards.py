@@ -307,6 +307,11 @@ def test_registered_programs_have_one_ci_shard(
             )
             if len(matches) != expected:
                 errors.append((name, tier, matches, expected))
+            if name in (
+                "debug_fatal_stop",
+                "debug_fatal_stop_with_engine",
+            ) and matches != ["Debug and UART"]:
+                errors.append((name, tier, matches, ["Debug and UART"]))
             if name.startswith("vec_") and matches != [VECTOR_SHARD]:
                 errors.append((name, tier, matches, [VECTOR_SHARD]))
             if not name.startswith("vec_") and VECTOR_SHARD in matches:

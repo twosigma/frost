@@ -335,8 +335,9 @@ system bus access.
 
 The Debug Module registers GO and its target after the instruction slice is
 visible. GO stays asserted with a stable target until the hart acknowledges
-it. Acknowledgement or module reset clears GO on that clock edge. Command
-and resume sequencing waits for the hart's response to this request.
+it. Acknowledgement, module reset or a fatal stop of the hart clears GO on that
+clock edge. Command and resume sequencing waits for the hart's response to this
+request.
 
 The system reset (the board-level reset, which on X3 follows the clock lock
 and DDR readiness, and the image-load reset) also resets the debug module, so
@@ -345,6 +346,22 @@ Debug Spec 0.13.2 (section 3.2) resets the module only at power-up and while
 `dmactive` is 0; FROST treats these resets as power-up. `ndmreset` and SYSRESET reset only
 the core. A DMI access that arrives while the system reset is held waits, with
 the DTM reporting busy, and is handled when the reset ends, with `dmactive` 0.
+
+A fatal memory-error stop of the hart makes the debug module report it as
+unavailable: `dmstatus` `allunavail` and `anyunavail` read 1, and `allrunning`,
+`anyrunning`, `allhalted` and `anyhalted` read 0, also for a hart that was
+already in Debug Mode when the stop arrived. `haltsum0` reads 0. The hart
+refuses halt and step requests after the stop, in every configuration. An
+abstract command written while the hart is unavailable is not started and sets
+`cmderr` 4; a command in flight when the stop arrives ends the same way, so
+`abstractcs.busy` clears. A `resumereq` write clears the resume acknowledge and
+starts no resume; a resume in flight when the stop arrives ends with the
+acknowledge still 0. `haltreq` remains the
+level the debugger wrote, so a set `haltreq` halts the hart once the reset has
+cleared the stop. The resets that clear the hart's stop end the report: the
+system reset, `ndmreset`, SYSRESET and the DDR or fabric reset; clearing
+`dmactive` does not. Inspecting a hart after a fatal stop is not supported
+(see the roadmap).
 
 A debugger write of the SYSRESET key executes through the program buffer and
 can leave its abstract command busy across the reset; halt the hart so it

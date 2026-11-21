@@ -253,7 +253,7 @@ async def check_fatal_stop_irq(
     )
 
     if run_number == len(IRQ_CASES):
-        # Observe the hart-side debug request outside the IRQ assertions.
+        # A hart-side halt request must not enter Debug Mode after the stop.
         await step()
         assert not irq_pending() and not int(cpu.csr_debug_mode.value)
         halt_cycle = cycle
@@ -267,9 +267,10 @@ async def check_fatal_stop_irq(
                 break
         platform.dbg_haltreq.value = Release()
         cocotb.log.info(
-            f"FATALSTOP FINDING: debug halt after stop: MISALIGNED_HW={engine} "
+            f"FATALSTOP debug halt after stop: MISALIGNED_HW={engine} "
             f"request={halt_cycle} last_sample={cycle} debug_entry={debug_cycle}"
         )
+        assert debug_cycle is None, "a halt request entered Debug Mode after the stop"
 
     if retire_cycles or request_cycles or take_cycles or first_csr_change is not None:
         return f"activity after fatal stop: {result}"

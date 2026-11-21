@@ -135,12 +135,14 @@ VERILATOR_MATRIX: dict[str, Any] = {
         },
         {
             "name": "Real Programs (Debug and UART)",
-            "timeout_minutes": 256,
+            "timeout_minutes": 270,
             "coverage": ["bram"],
             "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
             "pytest_filter_extra": {"bram": "[irq_take_hold_test]"},
             "pytest_filter": (
                 "[debug_test] or [debug_fence_test] or [debug_openocd_test] or "
+                "[debug_fatal_stop] or "
+                "[debug_fatal_stop_with_engine] or "
                 "[bram_reload] or [instret_test] or [hello_world] or [uart_burst] or "
                 "[uart_echo] or [print_clock_speed] or [sysreset_test]"
             ),
@@ -293,6 +295,8 @@ VERILATOR_MATRIX: dict[str, Any] = {
                 "[smc_fencei_test_equal_lines] or [ddr_test_equal_lines] or "
                 "[ddr_exec_test_equal_lines] or [ddr_atomic_test_equal_lines] or "
                 "[debug_test] or [debug_fence_test] or [debug_openocd_test] or "
+                "[debug_fatal_stop] or "
+                "[debug_fatal_stop_with_engine] or "
                 "[bram_reload] or [instret_test] or [hello_world] or [uart_burst] or "
                 "[uart_echo] or [print_clock_speed] or [sysreset_test] or [ddr_test] "
                 "or [ddr_exec_test] or [ddr_smc_test] or [ddr_heap_test] or "
