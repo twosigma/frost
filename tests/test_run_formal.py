@@ -308,6 +308,12 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "wfi_commit_guard.sby",
+        "The WFI resume-PC arm satisfies the ROB's recovery and full-flush "
+        "retirement qualification",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "debug_go_pipeline.sby",
         "Registered debug GO keeps its command or resume target, holds until "
         "acknowledgement, and clears on acknowledgement or module reset",
