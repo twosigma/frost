@@ -1008,6 +1008,8 @@ jobs:
             'order=109 insn=0x43a02557 rd=x10' '0x12345678 != 0x12345679'
           check_vector_result int-compare vector_int_compare \
             'order=21 insn=0x43902557 rd=x10' '0x0 != 0x1'
+          check_vector_result strided vector_strided \
+            'order=158 insn=0x43b02557 rd=x10' '0x24681356 != 0x24681357'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()

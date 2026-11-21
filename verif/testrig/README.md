@@ -475,10 +475,21 @@ the expected value from every written element.
 The unit-stride memory trace checks aligned cached DDR loads and stores at
 8, 16, 32 and 64-bit element widths, both unmasked and masked, and mask loads
 and stores (`vlm.v` and `vsm.v`). It covers vector lengths below and equal to
-VLMAX, tail-undisturbed and mask-undisturbed readouts where defined, multi-register
-and fractional EMUL transfers, zero-active transfers, and a cached page-boundary
-crossing. Every vector store reads back all written bytes through immediate
-scalar loads without reading `misa`. [Unit-stride memory](vector_unit_stride.S)
+VLMAX, tail-undisturbed and mask-undisturbed readouts where defined,
+multi-register and fractional EMUL transfers, zero-active transfers, and a
+cached page-boundary crossing. Every vector store reads back all written bytes
+through immediate scalar loads without reading `misa`.
+[Unit-stride memory](vector_unit_stride.S)
+
+The strided memory trace checks aligned cached DDR strided loads and stores at
+8, 16, 32 and 64-bit element widths, both unmasked and masked. It covers
+positive strides above and equal to the element size, negative strides, zero
+strides through `x0` and through a zero-valued register, vector lengths below
+and equal to VLMAX, tail-undisturbed and mask-undisturbed readouts where
+defined, multi-register and fractional EMUL transfers, zero-active transfers,
+and a cached page-boundary crossing. Every strided store reads back all
+written bytes through immediate scalar loads without reading `misa`.
+[Strided memory](vector_strided.S)
 
 The integer comparison trace checks vector, scalar and immediate predicates
 at SEW 32. It reads each active mask bit through an integer destination.
@@ -496,9 +507,9 @@ implementations must return every planned trace and instruction.
 The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer source
 widths, fractional LMUL, base FP results, fused multiply-add, FP
-conversions, unit-stride memory and integer comparisons. It checks `vcpop.m`
-for state and scalar results and FP comparisons. TestRIG must report each
-destination value mismatch.
+conversions, unit-stride memory, strided memory and integer comparisons. It
+checks `vcpop.m` for state and scalar results and FP comparisons. TestRIG
+must report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail
